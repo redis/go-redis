@@ -62,15 +62,16 @@ func PackReq(args []string) []byte {
 
 type Req interface {
 	Req() []byte
-	ParseReply(*bufreader.Reader)
+	ParseReply(*bufreader.Reader) (interface{}, error)
 	SetErr(error)
-	Err() error
+	SetVal(interface{})
 }
 
 //------------------------------------------------------------------------------
 
 type BaseReq struct {
 	args []string
+	val  interface{}
 	err  error
 }
 
@@ -85,18 +86,27 @@ func (r *BaseReq) Req() []byte {
 }
 
 func (r *BaseReq) SetErr(err error) {
+	if err == nil {
+		panic("non-nil value expected")
+	}
 	r.err = err
 }
 
-func (r *BaseReq) Err() error {
-	return r.err
+func (r *BaseReq) SetVal(val interface{}) {
+	if val == nil {
+		panic("non-nil value expected")
+	}
+	r.val = val
+}
+
+func (r *BaseReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
+	panic("abstract")
 }
 
 //------------------------------------------------------------------------------
 
 type StatusReq struct {
 	*BaseReq
-	val string
 }
 
 func NewStatusReq(args ...string) *StatusReq {
@@ -105,34 +115,32 @@ func NewStatusReq(args ...string) *StatusReq {
 	}
 }
 
-func (r *StatusReq) ParseReply(rd *bufreader.Reader) {
-	var line []byte
-
-	line, r.err = rd.ReadLine('\n')
-	if r.err != nil {
-		return
+func (r *StatusReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
+	line, err := rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
 	}
 
 	if line[0] == '-' {
-		r.err = errors.New(string(line[1:]))
-		return
+		return nil, errors.New(string(line[1:]))
 	} else if line[0] != '+' {
-		r.err = fmt.Errorf("Expected '+', but got %q of %q.", line, rd.Bytes())
-		return
+		return nil, fmt.Errorf("Expected '+', but got %q of %q.", line, rd.Bytes())
 	}
 
-	r.val = string(line[1:])
+	return string(line[1:]), nil
 }
 
 func (r *StatusReq) Reply() (string, error) {
-	return r.val, r.err
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.val.(string), nil
 }
 
 //------------------------------------------------------------------------------
 
 type IntReq struct {
 	*BaseReq
-	val int64
 }
 
 func NewIntReq(args ...string) *IntReq {
@@ -141,34 +149,32 @@ func NewIntReq(args ...string) *IntReq {
 	}
 }
 
-func (r *IntReq) ParseReply(rd *bufreader.Reader) {
-	var line []byte
-
-	line, r.err = rd.ReadLine('\n')
-	if r.err != nil {
-		return
+func (r *IntReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
+	line, err := rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
 	}
 
 	if line[0] == '-' {
-		r.err = errors.New(string(line[1:]))
-		return
+		return nil, errors.New(string(line[1:]))
 	} else if line[0] != ':' {
-		r.err = fmt.Errorf("Expected ':', but got %q of %q.", line, rd.Bytes())
-		return
+		return nil, fmt.Errorf("Expected ':', but got %q of %q.", line, rd.Bytes())
 	}
 
-	r.val, r.err = strconv.ParseInt(string(line[1:]), 10, 64)
+	return strconv.ParseInt(string(line[1:]), 10, 64)
 }
 
 func (r *IntReq) Reply() (int64, error) {
-	return r.val, r.err
+	if r.err != nil {
+		return 0, r.err
+	}
+	return r.val.(int64), nil
 }
 
 //------------------------------------------------------------------------------
 
 type BoolReq struct {
 	*BaseReq
-	val bool
 }
 
 func NewBoolReq(args ...string) *BoolReq {
@@ -177,34 +183,32 @@ func NewBoolReq(args ...string) *BoolReq {
 	}
 }
 
-func (r *BoolReq) ParseReply(rd *bufreader.Reader) {
-	var line []byte
-
-	line, r.err = rd.ReadLine('\n')
-	if r.err != nil {
-		return
+func (r *BoolReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
+	line, err := rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
 	}
 
 	if line[0] == '-' {
-		r.err = errors.New(string(line[1:]))
-		return
+		return nil, errors.New(string(line[1:]))
 	} else if line[0] != ':' {
-		r.err = fmt.Errorf("Expected ':', but got %q of %q.", line, rd.Bytes())
-		return
+		return nil, fmt.Errorf("Expected ':', but got %q of %q.", line, rd.Bytes())
 	}
 
-	r.val = line[1] == '1'
+	return line[1] == '1', nil
 }
 
 func (r *BoolReq) Reply() (bool, error) {
-	return r.val, r.err
+	if r.err != nil {
+		return false, r.err
+	}
+	return r.val.(bool), nil
 }
 
 //------------------------------------------------------------------------------
 
 type BulkReq struct {
 	*BaseReq
-	val string
 }
 
 func NewBulkReq(args ...string) *BulkReq {
@@ -213,44 +217,41 @@ func NewBulkReq(args ...string) *BulkReq {
 	}
 }
 
-func (r *BulkReq) ParseReply(rd *bufreader.Reader) {
-	var line []byte
-
-	line, r.err = rd.ReadLine('\n')
-	if r.err != nil {
-		return
+func (r *BulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
+	line, err := rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
 	}
 
 	if line[0] == '-' {
-		r.err = errors.New(string(line[1:]))
-		return
+		return nil, errors.New(string(line[1:]))
 	} else if line[0] != '$' {
-		r.err = fmt.Errorf("Expected '$', but got %q of %q.", line, rd.Bytes())
-		return
+		return nil, fmt.Errorf("Expected '$', but got %q of %q.", line, rd.Bytes())
 	}
 
 	if len(line) >= 3 && line[1] == '-' && line[2] == '1' {
-		r.err = Nil
-		return
+		return nil, Nil
 	}
 
-	line, r.err = rd.ReadLine('\n')
-	if r.err != nil {
-		return
+	line, err = rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
 	}
 
-	r.val = string(line)
+	return string(line), nil
 }
 
 func (r *BulkReq) Reply() (string, error) {
-	return r.val, r.err
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.val.(string), nil
 }
 
 //------------------------------------------------------------------------------
 
 type MultiBulkReq struct {
 	*BaseReq
-	val []interface{}
 }
 
 func NewMultiBulkReq(args ...string) *MultiBulkReq {
@@ -259,42 +260,36 @@ func NewMultiBulkReq(args ...string) *MultiBulkReq {
 	}
 }
 
-func (r *MultiBulkReq) ParseReply(rd *bufreader.Reader) {
-	var line []byte
-
-	line, r.err = rd.ReadLine('\n')
-	if r.err != nil {
-		return
+func (r *MultiBulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
+	line, err := rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
 	}
 
 	if line[0] == '-' {
-		r.err = errors.New(string(line[1:]))
-		return
+		return nil, errors.New(string(line[1:]))
 	} else if line[0] != '*' {
-		r.err = fmt.Errorf("Expected '*', but got line %q of %q.", line, rd.Bytes())
-		return
+		return nil, fmt.Errorf("Expected '*', but got line %q of %q.", line, rd.Bytes())
 	}
 
 	val := make([]interface{}, 0)
 
 	if len(line) >= 2 && line[1] == '0' {
-		r.val = val
-		return
+		return val, nil
 	} else if len(line) >= 3 && line[1] == '-' && line[2] == '1' {
-		r.err = Nil
-		return
+		return nil, Nil
 	}
 
-	line, r.err = rd.ReadLine('\n')
-	if r.err != nil {
-		return
+	line, err = rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
 	}
 	for {
 		if line[0] == ':' {
 			var n int64
-			n, r.err = strconv.ParseInt(string(line[1:]), 10, 64)
-			if r.err != nil {
-				return
+			n, err = strconv.ParseInt(string(line[1:]), 10, 64)
+			if err != nil {
+				return nil, err
 			}
 			val = append(val, n)
 		} else if line[0] == '$' {
@@ -303,32 +298,37 @@ func (r *MultiBulkReq) ParseReply(rd *bufreader.Reader) {
 			} else if len(line) >= 3 && line[1] == '-' && line[2] == '1' {
 				val = append(val, nil)
 			} else {
-				line, r.err = rd.ReadLine('\n')
-				if r.err != nil {
-					return
+				line, err = rd.ReadLine('\n')
+				if err != nil {
+					return nil, err
 				}
 				val = append(val, string(line))
 			}
 		} else {
-			r.err = fmt.Errorf("Expected '$', but got line %q of %q.", line, rd.Bytes())
-			return
+			return nil, fmt.Errorf("Expected '$', but got line %q of %q.", line, rd.Bytes())
 		}
 
-		line, r.err = rd.ReadLine('\n')
-		if r.err == io.EOF {
-			r.err = nil
-			break
+		line, err = rd.ReadLine('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
 		}
-		// Check for start of another reply.
+
+		// Check for the header of another reply.
 		if line[0] == '*' {
 			rd.UnreadLine('\n')
 			break
 		}
 	}
 
-	r.val = val
+	return val, nil
 }
 
 func (r *MultiBulkReq) Reply() ([]interface{}, error) {
-	return r.val, r.err
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.val.([]interface{}), nil
 }

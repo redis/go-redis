@@ -11,19 +11,23 @@ import (
 type connectFunc func() (io.ReadWriter, error)
 type disconnectFunc func(io.ReadWriter)
 
+func createReader() (*bufreader.Reader, error) {
+	return bufreader.NewSizedReader(8192), nil
+}
+
 type Client struct {
 	mtx        sync.Mutex
 	connect    connectFunc
 	disconnect disconnectFunc
 	currConn   io.ReadWriter
-	rd         *bufreader.Reader
+	readerPool *bufreader.ReaderPool
 
 	reqs []Req
 }
 
 func NewClient(connect connectFunc, disconnect disconnectFunc) *Client {
 	return &Client{
-		rd:         bufreader.NewSizedReader(8192),
+		readerPool: bufreader.NewReaderPool(10, createReader),
 		connect:    connect,
 		disconnect: disconnect,
 	}
@@ -31,7 +35,7 @@ func NewClient(connect connectFunc, disconnect disconnectFunc) *Client {
 
 func NewMultiClient(connect connectFunc, disconnect disconnectFunc) *Client {
 	return &Client{
-		rd:         bufreader.NewSizedReader(8192),
+		readerPool: bufreader.NewReaderPool(10, createReader),
 		connect:    connect,
 		disconnect: disconnect,
 
@@ -63,6 +67,7 @@ func (c *Client) WriteReq(buf []byte) error {
 	if err != nil {
 		return err
 	}
+
 	_, err = conn.Write(buf)
 	if err != nil {
 		c.Close()
@@ -70,26 +75,28 @@ func (c *Client) WriteReq(buf []byte) error {
 	return err
 }
 
-func (c *Client) ReadReply() (*bufreader.Reader, error) {
+func (c *Client) ReadReply(rd *bufreader.Reader) error {
 	conn, err := c.conn()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	_, err = c.rd.ReadFrom(conn)
+
+	_, err = rd.ReadFrom(conn)
 	if err != nil {
 		c.Close()
-		return nil, err
+		return err
 	}
-	return c.rd, nil
+
+	return nil
 }
 
-func (c *Client) WriteRead(buf []byte) (*bufreader.Reader, error) {
+func (c *Client) WriteRead(buf []byte, rd *bufreader.Reader) error {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	if err := c.WriteReq(buf); err != nil {
-		return nil, err
+		return err
 	}
-	return c.ReadReply()
+	return c.ReadReply(rd)
 }
 
 func (c *Client) Run(req Req) {
@@ -100,12 +107,25 @@ func (c *Client) Run(req Req) {
 		return
 	}
 
-	rd, err := c.WriteRead(req.Req())
+	rd, err := c.readerPool.Get()
 	if err != nil {
 		req.SetErr(err)
 		return
 	}
-	req.ParseReply(rd)
+	defer c.readerPool.Add(rd)
+
+	err = c.WriteRead(req.Req(), rd)
+	if err != nil {
+		req.SetErr(err)
+		return
+	}
+
+	val, err := req.ParseReply(rd)
+	if err != nil {
+		req.SetErr(err)
+		return
+	}
+	req.SetVal(val)
 }
 
 //------------------------------------------------------------------------------
@@ -137,7 +157,13 @@ func (c *Client) Exec() ([]Req, error) {
 	}
 	multiReq = append(multiReq, PackReq([]string{"EXEC"})...)
 
-	rd, err := c.WriteRead(multiReq)
+	rd, err := c.readerPool.Get()
+	if err != nil {
+		return nil, err
+	}
+	defer c.readerPool.Add(rd)
+
+	err = c.WriteRead(multiReq, rd)
 	if err != nil {
 		return nil, err
 	}
@@ -145,16 +171,14 @@ func (c *Client) Exec() ([]Req, error) {
 	statusReq := NewStatusReq()
 
 	// multi
-	statusReq.ParseReply(rd)
-	_, err = statusReq.Reply()
+	_, err = statusReq.ParseReply(rd)
 	if err != nil {
 		return nil, err
 	}
 
 	for _ = range reqs {
 		// queue
-		statusReq.ParseReply(rd)
-		_, err = statusReq.Reply()
+		_, err = statusReq.ParseReply(rd)
 		if err != nil {
 			return nil, err
 		}
@@ -169,7 +193,11 @@ func (c *Client) Exec() ([]Req, error) {
 	}
 
 	for _, req := range reqs {
-		req.ParseReply(rd)
+		val, err := req.ParseReply(rd)
+		if err != nil {
+			req.SetErr(err)
+		}
+		req.SetVal(val)
 	}
 
 	return reqs, nil

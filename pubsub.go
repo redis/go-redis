@@ -31,7 +31,17 @@ func (c *PubSubClient) consumeMessages() {
 	for {
 		// Replies can arrive in batches.
 		// Read whole reply and parse messages one by one.
-		rd, err := c.ReadReply()
+
+		rd, err := c.readerPool.Get()
+		if err != nil {
+			msg := &Message{}
+			msg.Err = err
+			c.ch <- msg
+			return
+		}
+		defer c.readerPool.Add(rd)
+
+		err = c.ReadReply(rd)
 		if err != nil {
 			msg := &Message{}
 			msg.Err = err
@@ -42,13 +52,13 @@ func (c *PubSubClient) consumeMessages() {
 		for {
 			msg := &Message{}
 
-			req.ParseReply(rd)
-			reply, err := req.Reply()
+			replyI, err := req.ParseReply(rd)
 			if err != nil {
 				msg.Err = err
 				c.ch <- msg
 				break
 			}
+			reply := replyI.([]interface{})
 
 			msgName := reply[0].(string)
 			switch msgName {
