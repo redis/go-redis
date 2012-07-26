@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"fmt"
 	"io"
 	"sync"
 
@@ -16,6 +17,8 @@ type Client struct {
 	disconnect disconnectFunc
 	currConn   io.ReadWriter
 	rd         *bufreader.Reader
+
+	reqs []Req
 }
 
 func NewClient(connect connectFunc, disconnect disconnectFunc) *Client {
@@ -23,6 +26,16 @@ func NewClient(connect connectFunc, disconnect disconnectFunc) *Client {
 		rd:         bufreader.NewSizedReader(8192),
 		connect:    connect,
 		disconnect: disconnect,
+	}
+}
+
+func NewMultiClient(connect connectFunc, disconnect disconnectFunc) *Client {
+	return &Client{
+		rd:         bufreader.NewSizedReader(8192),
+		connect:    connect,
+		disconnect: disconnect,
+
+		reqs: make([]Req, 0),
 	}
 }
 
@@ -71,6 +84,8 @@ func (c *Client) ReadReply() (*bufreader.Reader, error) {
 }
 
 func (c *Client) WriteRead(buf []byte) (*bufreader.Reader, error) {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
 	if err := c.WriteReq(buf); err != nil {
 		return nil, err
 	}
@@ -78,16 +93,84 @@ func (c *Client) WriteRead(buf []byte) (*bufreader.Reader, error) {
 }
 
 func (c *Client) Run(req Req) {
-	c.mtx.Lock()
-	c.run(req)
-	c.mtx.Unlock()
-}
+	if c.reqs != nil {
+		c.mtx.Lock()
+		c.reqs = append(c.reqs, req)
+		c.mtx.Unlock()
+		return
+	}
 
-func (c *Client) run(req Req) {
-	buf, err := c.WriteRead(req.Req())
+	rd, err := c.WriteRead(req.Req())
 	if err != nil {
 		req.SetErr(err)
 		return
 	}
-	req.ParseReply(buf)
+	req.ParseReply(rd)
+}
+
+//------------------------------------------------------------------------------
+
+func (c *Client) Discard() {
+	if c.reqs == nil {
+		panic("MultiClient required")
+	}
+
+	c.mtx.Lock()
+	c.reqs = c.reqs[:0]
+	c.mtx.Unlock()
+}
+
+func (c *Client) Exec() ([]Req, error) {
+	if c.reqs == nil {
+		panic("MultiClient required")
+	}
+
+	c.mtx.Lock()
+	reqs := c.reqs
+	c.reqs = make([]Req, 0)
+	c.mtx.Unlock()
+
+	multiReq := make([]byte, 0, 1024)
+	multiReq = append(multiReq, PackReq([]string{"MULTI"})...)
+	for _, req := range reqs {
+		multiReq = append(multiReq, req.Req()...)
+	}
+	multiReq = append(multiReq, PackReq([]string{"EXEC"})...)
+
+	rd, err := c.WriteRead(multiReq)
+	if err != nil {
+		return nil, err
+	}
+
+	statusReq := NewStatusReq()
+
+	// multi
+	statusReq.ParseReply(rd)
+	_, err = statusReq.Reply()
+	if err != nil {
+		return nil, err
+	}
+
+	for _ = range reqs {
+		// queue
+		statusReq.ParseReply(rd)
+		_, err = statusReq.Reply()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	line, err := rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
+	}
+	if line[0] != '*' {
+		return nil, fmt.Errorf("Expected '*', but got line %q of %q.", line, rd.Bytes())
+	}
+
+	for _, req := range reqs {
+		req.ParseReply(rd)
+	}
+
+	return reqs, nil
 }
