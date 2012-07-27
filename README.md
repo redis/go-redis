@@ -47,7 +47,7 @@ Or:
 
     multiClient = redis.NewMultiClient(connect, disconnect)
 
-Working with multiClient::
+Working with multiClient:
 
     futureGet1 := multiClient.Get("foo1")
     futureGet2 := multiClient.Get("foo2")
