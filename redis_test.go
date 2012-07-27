@@ -3,12 +3,14 @@ package redis_test
 import (
 	"io"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
 	. "launchpad.net/gocheck"
 
-	"github.com/togoio/redisgoproxy/redis"
+	"github.com/vmihailenco/bufreader"
+	"github.com/vmihailenco/redis"
 )
 
 //------------------------------------------------------------------------------
@@ -1166,20 +1168,82 @@ func (t *RedisTest) TestMultiExec(c *C) {
 
 //------------------------------------------------------------------------------
 
-func (t *RedisTest) BenchmarkPing(c *C) {
+func (t *RedisTest) TestConcAccess(c *C) {
+	for i := int64(0); i < 99; i++ {
+		go func() {
+			msg := "echo" + strconv.FormatInt(i, 10)
+			echo, err := t.redisC.Echo(msg).Reply()
+			c.Check(err, IsNil)
+			c.Check(echo, Equals, msg)
+		}()
+	}
+}
+
+//------------------------------------------------------------------------------
+
+func (t *RedisTest) BenchmarkRedisPing(c *C) {
+	c.StopTimer()
+
+	for i := 0; i < 10; i++ {
+		pong, err := t.redisC.Ping().Reply()
+		c.Check(err, IsNil)
+		c.Check(pong, Equals, "PONG")
+	}
+
+	c.StartTimer()
+
 	for i := 0; i < c.N; i++ {
 		t.redisC.Ping().Reply()
 	}
 }
 
-func (t *RedisTest) BenchmarkSet(c *C) {
+func (t *RedisTest) BenchmarkRedisSet(c *C) {
+	c.StopTimer()
+
+	for i := 0; i < 10; i++ {
+		ok, err := t.redisC.Set("foo", "bar").Reply()
+		c.Check(err, IsNil)
+		c.Check(ok, Equals, "OK")
+	}
+
+	c.StartTimer()
+
 	for i := 0; i < c.N; i++ {
 		t.redisC.Set("foo", "bar").Reply()
 	}
 }
 
-func (t *RedisTest) BenchmarkGet(c *C) {
+func (t *RedisTest) BenchmarkRedisGet(c *C) {
+	c.StopTimer()
+
+	for i := 0; i < 10; i++ {
+		v, err := t.redisC.Get("foo").Reply()
+		c.Check(err, Equals, redis.Nil)
+		c.Check(v, Equals, "")
+	}
+
+	c.StartTimer()
+
 	for i := 0; i < c.N; i++ {
 		t.redisC.Get("foo").Reply()
+	}
+}
+
+func (t *RedisTest) BenchmarkRedisWriteRead(c *C) {
+	c.StopTimer()
+
+	req := []byte("PING\r\n")
+	rd := bufreader.NewSizedReader(1024)
+
+	for i := 0; i < 10; i++ {
+		err := t.redisC.WriteRead(req, rd)
+		c.Check(err, IsNil)
+		c.Check(rd.Bytes(), DeepEquals, []byte("+PONG\r\n"))
+	}
+
+	c.StartTimer()
+
+	for i := 0; i < c.N; i++ {
+		t.redisC.WriteRead(req, rd)
 	}
 }

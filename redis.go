@@ -5,7 +5,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/togoio/redisgoproxy/bufreader"
+	"github.com/vmihailenco/bufreader"
 )
 
 type connectFunc func() (io.ReadWriter, error)
@@ -27,7 +27,7 @@ type Client struct {
 
 func NewClient(connect connectFunc, disconnect disconnectFunc) *Client {
 	return &Client{
-		readerPool: bufreader.NewReaderPool(10, createReader),
+		readerPool: bufreader.NewReaderPool(100, createReader),
 		connect:    connect,
 		disconnect: disconnect,
 	}
@@ -35,7 +35,7 @@ func NewClient(connect connectFunc, disconnect disconnectFunc) *Client {
 
 func NewMultiClient(connect connectFunc, disconnect disconnectFunc) *Client {
 	return &Client{
-		readerPool: bufreader.NewReaderPool(10, createReader),
+		readerPool: bufreader.NewReaderPool(100, createReader),
 		connect:    connect,
 		disconnect: disconnect,
 

@@ -6,7 +6,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/togoio/redisgoproxy/bufreader"
+	"github.com/vmihailenco/bufreader"
 )
 
 var Nil = errors.New("(nil)")
