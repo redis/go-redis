@@ -134,7 +134,7 @@ Example:
         return req
     }
 
-    value, err := Get(redisClient).Reply()
+    value, err := Get(redisClient, "foo").Reply()
     if err != nil {
         panic(err)
     }
