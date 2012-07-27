@@ -108,9 +108,7 @@ func (t *RedisTest) TestKeys(c *C) {
 
 	keys, err := t.redisC.Keys("*").Reply()
 	c.Check(err, IsNil)
-	c.Check(keys, HasLen, 2)
-	c.Check(keys[0], Equals, "foo1")
-	c.Check(keys[1], Equals, "foo2")
+	c.Check(keys, DeepEquals, []interface{}{"foo1", "foo2"})
 }
 
 func (t *RedisTest) TestMigrate(c *C) {
@@ -450,7 +448,6 @@ func (t *RedisTest) TestHGetAll(c *C) {
 
 	values, err := t.redisC.HGetAll("myhash").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 4)
 	c.Check(values, DeepEquals, []interface{}{"foo1", "bar1", "foo2", "bar2"})
 }
 
@@ -478,10 +475,9 @@ func (t *RedisTest) TestHKeys(c *C) {
 	t.redisC.HSet("myhash", "foo1", "bar1").Reply()
 	t.redisC.HSet("myhash", "foo2", "bar2").Reply()
 
-	values, err := t.redisC.HKeys("myhash").Reply()
+	keys, err := t.redisC.HKeys("myhash").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
-	c.Check(values, DeepEquals, []interface{}{"foo1", "foo2"})
+	c.Check(keys, DeepEquals, []interface{}{"foo1", "foo2"})
 }
 
 func (t *RedisTest) TestHLen(c *C) {
@@ -499,7 +495,6 @@ func (t *RedisTest) TestHMGet(c *C) {
 
 	values, err := t.redisC.HMGet("myhash", "foo1", "foo2", "_").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 3)
 	c.Check(values, DeepEquals, []interface{}{"bar1", "bar2", nil})
 }
 
@@ -545,10 +540,9 @@ func (t *RedisTest) TestHVals(c *C) {
 	t.redisC.HSet("myhash", "foo1", "bar1").Reply()
 	t.redisC.HSet("myhash", "foo2", "bar2").Reply()
 
-	values, err := t.redisC.HVals("myhash").Reply()
+	vals, err := t.redisC.HVals("myhash").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
-	c.Check(values, DeepEquals, []interface{}{"bar1", "bar2"})
+	c.Check(vals, DeepEquals, []interface{}{"bar1", "bar2"})
 }
 
 //------------------------------------------------------------------------------
@@ -558,7 +552,6 @@ func (t *RedisTest) TestBLPop(c *C) {
 
 	values, err := t.redisC.BLPop(0, "list1", "list2").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"list1", "a"})
 }
 
@@ -567,7 +560,6 @@ func (t *RedisTest) TestBrPop(c *C) {
 
 	values, err := t.redisC.BRPop(0, "list1", "list2").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"list1", "c"})
 }
 
@@ -606,7 +598,6 @@ func (t *RedisTest) TestLInsert(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 3)
 	c.Check(values, DeepEquals, []interface{}{"Hello", "There", "World"})
 }
 
@@ -630,7 +621,6 @@ func (t *RedisTest) TestLPop(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"two", "three"})
 }
 
@@ -640,7 +630,6 @@ func (t *RedisTest) TestLPush(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"Hello", "World"})
 }
 
@@ -661,7 +650,7 @@ func (t *RedisTest) TestLPushX(c *C) {
 
 	values, err = t.redisC.LRange("list2", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 0)
+	c.Check(values, DeepEquals, []interface{}{})
 }
 
 func (t *RedisTest) TestLRange(c *C) {
@@ -671,22 +660,19 @@ func (t *RedisTest) TestLRange(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, 0).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 1)
 	c.Check(values, DeepEquals, []interface{}{"one"})
 
 	values, err = t.redisC.LRange("list", -3, 2).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 3)
 	c.Check(values, DeepEquals, []interface{}{"one", "two", "three"})
 
 	values, err = t.redisC.LRange("list", -100, 100).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 3)
 	c.Check(values, DeepEquals, []interface{}{"one", "two", "three"})
 
 	values, err = t.redisC.LRange("list", 5, 10).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 0)
+	c.Check(values, DeepEquals, []interface{}{})
 }
 
 func (t *RedisTest) TestLRem(c *C) {
@@ -701,7 +687,6 @@ func (t *RedisTest) TestLRem(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"hello", "foo"})
 }
 
@@ -720,7 +705,6 @@ func (t *RedisTest) TestLSet(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 3)
 	c.Check(values, DeepEquals, []interface{}{"four", "five", "three"})
 }
 
@@ -735,7 +719,6 @@ func (t *RedisTest) TestLTrim(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"two", "three"})
 }
 
@@ -750,7 +733,6 @@ func (t *RedisTest) TestRPop(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"one", "two"})
 }
 
@@ -765,12 +747,10 @@ func (t *RedisTest) TestRPopLPush(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"one", "two"})
 
 	values, err = t.redisC.LRange("list2", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 1)
 	c.Check(values, DeepEquals, []interface{}{"three"})
 }
 
@@ -785,7 +765,6 @@ func (t *RedisTest) TestRPush(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"Hello", "World"})
 }
 
@@ -804,12 +783,11 @@ func (t *RedisTest) TestRPushX(c *C) {
 
 	values, err := t.redisC.LRange("list", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"Hello", "World"})
 
 	values, err = t.redisC.LRange("list2", 0, -1).Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 0)
+	c.Check(values, DeepEquals, []interface{}{})
 }
 
 //------------------------------------------------------------------------------
@@ -829,9 +807,7 @@ func (t *RedisTest) TestSAdd(c *C) {
 
 	members, err := t.redisC.SMembers("set").Reply()
 	c.Check(err, IsNil)
-	c.Check(members, HasLen, 2)
-	c.Check(members[0], Equals, "World")
-	c.Check(members[1], Equals, "Hello")
+	c.Check(members, DeepEquals, []interface{}{"World", "Hello"})
 }
 
 func (t *RedisTest) TestSCard(c *C) {
@@ -859,7 +835,6 @@ func (t *RedisTest) TestSDiff(c *C) {
 
 	values, err := t.redisC.SDiff("set1", "set2").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"a", "b"})
 }
 
@@ -878,7 +853,6 @@ func (t *RedisTest) TestSDiffStore(c *C) {
 
 	values, err := t.redisC.SMembers("set").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"a", "b"})
 }
 
@@ -893,7 +867,6 @@ func (t *RedisTest) TestSInter(c *C) {
 
 	values, err := t.redisC.SInter("set1", "set2").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 1)
 	c.Check(values, DeepEquals, []interface{}{"c"})
 }
 
@@ -912,7 +885,6 @@ func (t *RedisTest) TestSInterStore(c *C) {
 
 	values, err := t.redisC.SMembers("set").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 1)
 	c.Check(values, DeepEquals, []interface{}{"c"})
 }
 
@@ -934,7 +906,6 @@ func (t *RedisTest) TestSMembers(c *C) {
 
 	values, err := t.redisC.SMembers("set").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"World", "Hello"})
 }
 
@@ -950,12 +921,10 @@ func (t *RedisTest) TestSMove(c *C) {
 
 	values, err := t.redisC.SMembers("set1").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 1)
 	c.Check(values, DeepEquals, []interface{}{"one"})
 
 	values, err = t.redisC.SMembers("set2").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"three", "two"})
 }
 
@@ -1002,7 +971,6 @@ func (t *RedisTest) TestSRem(c *C) {
 
 	values, err := t.redisC.SMembers("set").Reply()
 	c.Check(err, IsNil)
-	c.Check(values, HasLen, 2)
 	c.Check(values, DeepEquals, []interface{}{"three", "two"})
 }
 
@@ -1036,6 +1004,263 @@ func (t *RedisTest) TestSUnionStore(c *C) {
 	values, err := t.redisC.SMembers("set").Reply()
 	c.Check(err, IsNil)
 	c.Check(values, HasLen, 5)
+}
+
+//------------------------------------------------------------------------------
+
+func (t *RedisTest) TestZAdd(c *C) {
+	n, err := t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(1))
+
+	n, err = t.redisC.ZAdd("zset", redis.NewZMember(1, "uno")).Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(1))
+
+	n, err = t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(1))
+
+	n, err = t.redisC.ZAdd("zset", redis.NewZMember(3, "two")).Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(0))
+
+	values, err := t.redisC.ZRange("zset", 0, -1, true).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"one", "1", "uno", "1", "two", "3"})
+}
+
+func (t *RedisTest) TestZCard(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+
+	n, err := t.redisC.ZCard("zset").Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(2))
+}
+
+func (t *RedisTest) TestZCount(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(3, "three")).Reply()
+
+	n, err := t.redisC.ZCount("zset", "-inf", "+inf").Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(3))
+
+	n, err = t.redisC.ZCount("zset", "(1", "3").Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(2))
+}
+
+func (t *RedisTest) TestZIncrBy(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZIncrBy("zset", 2, "one").Reply()
+
+	values, err := t.redisC.ZRange("zset", 0, -1, true).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"two", "2", "one", "3"})
+}
+
+func (t *RedisTest) TestZInterStore(c *C) {
+	t.redisC.ZAdd("zset1", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset1", redis.NewZMember(2, "two")).Reply()
+
+	t.redisC.ZAdd("zset2", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset2", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset3", redis.NewZMember(3, "two")).Reply()
+
+	n, err := t.redisC.ZInterStore(
+		"out",
+		2,
+		[]string{"zset1", "zset2"},
+		[]int64{2, 3},
+		"",
+	).Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(2))
+
+	values, err := t.redisC.ZRange("out", 0, -1, true).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"one", "5", "two", "10"})
+}
+
+func (t *RedisTest) TestZRange(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(3, "three")).Reply()
+
+	values, err := t.redisC.ZRange("zset", 0, -1, false).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"one", "two", "three"})
+
+	values, err = t.redisC.ZRange("zset", 2, 3, false).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"three"})
+
+	values, err = t.redisC.ZRange("zset", -2, -1, false).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"two", "three"})
+}
+
+func (t *RedisTest) TestZRangeByScore(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(3, "three")).Reply()
+
+	values, err := t.redisC.ZRangeByScore("zset", "-inf", "+inf", false, nil).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"one", "two", "three"})
+
+	values, err = t.redisC.ZRangeByScore("zset", "1", "2", false, nil).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"one", "two"})
+
+	values, err = t.redisC.ZRangeByScore("zset", "(1", "2", false, nil).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"two"})
+
+	values, err = t.redisC.ZRangeByScore("zset", "(1", "(2", false, nil).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{})
+}
+
+func (t *RedisTest) TestZRank(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(3, "three")).Reply()
+
+	n, err := t.redisC.ZRank("zset", "three").Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(2))
+
+	n, err = t.redisC.ZRank("zset", "four").Reply()
+	c.Check(err, Equals, redis.Nil)
+	c.Check(n, Equals, int64(0))
+}
+
+func (t *RedisTest) TestZRem(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(3, "three")).Reply()
+
+	n, err := t.redisC.ZRem("zset", "two").Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(1))
+
+	values, err := t.redisC.ZRange("zset", 0, -1, true).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"one", "1", "three", "3"})
+}
+
+func (t *RedisTest) TestZRemRangeByRank(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(3, "three")).Reply()
+
+	n, err := t.redisC.ZRemRangeByRank("zset", 0, 1).Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(2))
+
+	values, err := t.redisC.ZRange("zset", 0, -1, true).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"three", "3"})
+}
+
+func (t *RedisTest) TestZRemRangeByScore(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(3, "three")).Reply()
+
+	n, err := t.redisC.ZRemRangeByScore("zset", "-inf", "(2").Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(1))
+
+	values, err := t.redisC.ZRange("zset", 0, -1, true).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"two", "2", "three", "3"})
+}
+
+func (t *RedisTest) TestZRevRange(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(3, "three")).Reply()
+
+	values, err := t.redisC.ZRevRange("zset", "0", "-1", false).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"three", "two", "one"})
+
+	values, err = t.redisC.ZRevRange("zset", "2", "3", false).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"one"})
+
+	values, err = t.redisC.ZRevRange("zset", "-2", "-1", false).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"two", "one"})
+}
+
+func (t *RedisTest) TestZRevRangeByScore(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(3, "three")).Reply()
+
+	values, err := t.redisC.ZRevRangeByScore("zset", "+inf", "-inf", false, nil).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"three", "two", "one"})
+
+	values, err = t.redisC.ZRevRangeByScore("zset", "2", "(1", false, nil).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"two"})
+
+	values, err = t.redisC.ZRevRangeByScore("zset", "(2", "(1", false, nil).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{})
+}
+
+func (t *RedisTest) TestZRevRank(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset", redis.NewZMember(3, "three")).Reply()
+
+	n, err := t.redisC.ZRevRank("zset", "one").Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(2))
+
+	n, err = t.redisC.ZRevRank("zset", "four").Reply()
+	c.Check(err, Equals, redis.Nil)
+	c.Check(n, Equals, int64(0))
+}
+
+func (t *RedisTest) TestZScore(c *C) {
+	t.redisC.ZAdd("zset", redis.NewZMember(1.001, "one")).Reply()
+
+	score, err := t.redisC.ZScore("zset", "one").Reply()
+	c.Check(err, IsNil)
+	c.Check(score, Equals, float64(1.001))
+}
+
+func (t *RedisTest) TestZUnionStore(c *C) {
+	t.redisC.ZAdd("zset1", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset1", redis.NewZMember(2, "two")).Reply()
+
+	t.redisC.ZAdd("zset2", redis.NewZMember(1, "one")).Reply()
+	t.redisC.ZAdd("zset2", redis.NewZMember(2, "two")).Reply()
+	t.redisC.ZAdd("zset2", redis.NewZMember(3, "three")).Reply()
+
+	n, err := t.redisC.ZUnionStore(
+		"out",
+		2,
+		[]string{"zset1", "zset2"},
+		[]int64{2, 3},
+		"",
+	).Reply()
+	c.Check(err, IsNil)
+	c.Check(n, Equals, int64(3))
+
+	values, err := t.redisC.ZRange("out", 0, -1, true).Reply()
+	c.Check(err, IsNil)
+	c.Check(values, DeepEquals, []interface{}{"one", "5", "three", "9", "two", "10"})
 }
 
 //------------------------------------------------------------------------------

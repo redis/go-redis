@@ -13,6 +13,16 @@ var Nil = errors.New("(nil)")
 
 //------------------------------------------------------------------------------
 
+func isNil(buf []byte) bool {
+	return len(buf) == 3 && buf[0] == '$' && buf[1] == '-' && buf[2] == '1'
+}
+
+func isEmpty(buf []byte) bool {
+	return len(buf) == 2 && buf[0] == '$' && buf[1] == '0'
+}
+
+//------------------------------------------------------------------------------
+
 func ParseReq(rd *bufreader.Reader) ([]string, error) {
 	line, err := rd.ReadLine('\n')
 	if err != nil {
@@ -173,6 +183,42 @@ func (r *IntReq) Reply() (int64, error) {
 
 //------------------------------------------------------------------------------
 
+type IntNilReq struct {
+	*BaseReq
+}
+
+func NewIntNilReq(args ...string) *IntNilReq {
+	return &IntNilReq{
+		BaseReq: NewBaseReq(args...),
+	}
+}
+
+func (r *IntNilReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
+	line, err := rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
+	}
+
+	if line[0] == '-' {
+		return nil, errors.New(string(line[1:]))
+	} else if line[0] == ':' {
+		return strconv.ParseInt(string(line[1:]), 10, 64)
+	} else if isNil(line) {
+		return nil, Nil
+	}
+
+	return nil, fmt.Errorf("Expected ':', but got %q of %q.", line, rd.Bytes())
+}
+
+func (r *IntNilReq) Reply() (int64, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	return r.val.(int64), nil
+}
+
+//------------------------------------------------------------------------------
+
 type BoolReq struct {
 	*BaseReq
 }
@@ -229,7 +275,7 @@ func (r *BulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 		return nil, fmt.Errorf("Expected '$', but got %q of %q.", line, rd.Bytes())
 	}
 
-	if len(line) >= 3 && line[1] == '-' && line[2] == '1' {
+	if isNil(line) {
 		return nil, Nil
 	}
 
@@ -246,6 +292,49 @@ func (r *BulkReq) Reply() (string, error) {
 		return "", r.err
 	}
 	return r.val.(string), nil
+}
+
+//------------------------------------------------------------------------------
+
+type FloatReq struct {
+	*BaseReq
+}
+
+func NewFloatReq(args ...string) *FloatReq {
+	return &FloatReq{
+		BaseReq: NewBaseReq(args...),
+	}
+}
+
+func (r *FloatReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
+	line, err := rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
+	}
+
+	if line[0] == '-' {
+		return nil, errors.New(string(line[1:]))
+	} else if line[0] != '$' {
+		return nil, fmt.Errorf("Expected '$', but got %q of %q.", line, rd.Bytes())
+	}
+
+	if isNil(line) {
+		return nil, Nil
+	}
+
+	line, err = rd.ReadLine('\n')
+	if err != nil {
+		return nil, err
+	}
+
+	return strconv.ParseFloat(string(line), 64)
+}
+
+func (r *FloatReq) Reply() (float64, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	return r.val.(float64), nil
 }
 
 //------------------------------------------------------------------------------
@@ -276,7 +365,7 @@ func (r *MultiBulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 
 	if len(line) >= 2 && line[1] == '0' {
 		return val, nil
-	} else if len(line) >= 3 && line[1] == '-' && line[2] == '1' {
+	} else if isNil(line) {
 		return nil, Nil
 	}
 
@@ -293,9 +382,9 @@ func (r *MultiBulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 			}
 			val = append(val, n)
 		} else if line[0] == '$' {
-			if len(line) >= 2 && line[1] == '0' {
+			if isEmpty(line) {
 				val = append(val, "")
-			} else if len(line) >= 3 && line[1] == '-' && line[2] == '1' {
+			} else if isNil(line) {
 				val = append(val, nil)
 			} else {
 				line, err = rd.ReadLine('\n')

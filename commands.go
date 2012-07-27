@@ -6,6 +6,16 @@ import (
 
 //------------------------------------------------------------------------------
 
+type Limit struct {
+	Offset, Count int64
+}
+
+func NewLimit(offset, count int64) *Limit {
+	return &Limit{offset, count}
+}
+
+//------------------------------------------------------------------------------
+
 func (c *Client) Auth(password string) *StatusReq {
 	req := NewStatusReq("AUTH", password)
 	c.Run(req)
@@ -634,6 +644,207 @@ func (c *Client) SUnion(keys ...string) *MultiBulkReq {
 
 func (c *Client) SUnionStore(destination string, keys ...string) *IntReq {
 	args := append([]string{"SUNIONSTORE", destination}, keys...)
+	req := NewIntReq(args...)
+	c.Run(req)
+	return req
+}
+
+//------------------------------------------------------------------------------
+
+type ZMember struct {
+	Score  float64
+	Member string
+}
+
+func NewZMember(score float64, member string) *ZMember {
+	return &ZMember{score, member}
+}
+
+func (m *ZMember) ScoreString() string {
+	return strconv.FormatFloat(m.Score, 'f', -1, 32)
+}
+
+func (c *Client) ZAdd(key string, members ...*ZMember) *IntReq {
+	args := []string{"ZADD", key}
+	for _, m := range members {
+		args = append(args, m.ScoreString(), m.Member)
+	}
+	req := NewIntReq(args...)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZCard(key string) *IntReq {
+	req := NewIntReq("ZCARD", key)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZCount(key, min, max string) *IntReq {
+	req := NewIntReq("ZCOUNT", key, min, max)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZIncrBy(key string, increment int64, member string) *IntReq {
+	req := NewIntReq("ZINCRBY", key, strconv.FormatInt(increment, 10), member)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZInterStore(
+	destination string,
+	numkeys int64,
+	keys []string,
+	weights []int64,
+	aggregate string,
+) *IntReq {
+	args := []string{"ZINTERSTORE", destination, strconv.FormatInt(numkeys, 10)}
+	args = append(args, keys...)
+	if weights != nil {
+		args = append(args, "WEIGHTS")
+		for _, w := range weights {
+			args = append(args, strconv.FormatInt(w, 10))
+		}
+	}
+	if aggregate != "" {
+		args = append(args, "AGGREGATE", aggregate)
+	}
+	req := NewIntReq(args...)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZRange(key string, start, stop int64, withScores bool) *MultiBulkReq {
+	args := []string{
+		"ZRANGE",
+		key,
+		strconv.FormatInt(start, 10),
+		strconv.FormatInt(stop, 10),
+	}
+	if withScores {
+		args = append(args, "WITHSCORES")
+	}
+	req := NewMultiBulkReq(args...)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZRangeByScore(
+	key string,
+	min, max string,
+	withScores bool,
+	limit *Limit,
+) *MultiBulkReq {
+	args := []string{"ZRANGEBYSCORE", key, min, max}
+	if withScores {
+		args = append(args, "WITHSCORES")
+	}
+	if limit != nil {
+		args = append(
+			args,
+			"LIMIT",
+			strconv.FormatInt(limit.Offset, 10),
+			strconv.FormatInt(limit.Count, 10),
+		)
+	}
+	req := NewMultiBulkReq(args...)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZRank(key, member string) *IntNilReq {
+	req := NewIntNilReq("ZRANK", key, member)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZRem(key string, members ...string) *IntReq {
+	args := append([]string{"ZREM", key}, members...)
+	req := NewIntReq(args...)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZRemRangeByRank(key string, start, stop int64) *IntReq {
+	req := NewIntReq(
+		"ZREMRANGEBYRANK",
+		key,
+		strconv.FormatInt(start, 10),
+		strconv.FormatInt(stop, 10),
+	)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZRemRangeByScore(key, min, max string) *IntReq {
+	req := NewIntReq("ZREMRANGEBYSCORE", key, min, max)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZRevRange(key, start, stop string, withScores bool) *MultiBulkReq {
+	args := []string{"ZREVRANGE", key, start, stop}
+	if withScores {
+		args = append(args, "WITHSCORES")
+	}
+	req := NewMultiBulkReq(args...)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZRevRangeByScore(
+	key, start, stop string,
+	withScores bool,
+	limit *Limit,
+) *MultiBulkReq {
+	args := []string{"ZREVRANGEBYSCORE", key, start, stop}
+	if withScores {
+		args = append(args, "WITHSCORES")
+	}
+	if limit != nil {
+		args = append(
+			args,
+			"LIMIT",
+			strconv.FormatInt(limit.Offset, 10),
+			strconv.FormatInt(limit.Count, 10),
+		)
+	}
+	req := NewMultiBulkReq(args...)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZRevRank(key, member string) *IntNilReq {
+	req := NewIntNilReq("ZREVRANK", key, member)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZScore(key, member string) *FloatReq {
+	req := NewFloatReq("ZSCORE", key, member)
+	c.Run(req)
+	return req
+}
+
+func (c *Client) ZUnionStore(
+	destination string,
+	numkeys int64,
+	keys []string,
+	weights []int64,
+	aggregate string,
+) *IntReq {
+	args := []string{"ZUNIONSTORE", destination, strconv.FormatInt(numkeys, 10)}
+	args = append(args, keys...)
+	if weights != nil {
+		args = append(args, "WEIGHTS")
+		for _, w := range weights {
+			args = append(args, strconv.FormatInt(w, 10))
+		}
+	}
+	if aggregate != "" {
+		args = append(args, "AGGREGATE", aggregate)
+	}
 	req := NewIntReq(args...)
 	c.Run(req)
 	return req
