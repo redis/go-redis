@@ -122,3 +122,19 @@ Thread safety
 -------------
 
 Client is thread safe. Internally sync.Mutex is used to synchronize writes and reads.
+
+Custom commands
+---------------
+
+Example:
+
+    func Get(client *redis.Client, key string) *redis.BulkReq {
+        req := redis.NewBulkReq("GET", key)
+        client.Run(req)
+        return req
+    }
+
+    value, err := Get(redisClient).Reply()
+    if err != nil {
+        panic(err)
+    }
