@@ -1,12 +1,15 @@
 Readme
 ======
 
-Sync Redis client for Golang.
+Redis client for Golang.
 
 Usage
 -----
 
 Example:
+
+    import "github.com/vmihailenco/redis"
+
 
     connect := func() (io.ReadWriter, error) {
         fmt.Println("Connecting...")
@@ -23,20 +26,29 @@ Example:
 
     _, err := redisClient.Set("foo", "bar").Reply()
     if err != nil {
-       panic(err)
+        panic(err)
     }
 
     value, err := redisClient.Get("foo").Reply()
     if err != nil {
-       panic(err)
+        if err != redis.Nil {
+            panic(err)
+        }
     }
 
 Multi/Exec
 ----------
 
-Example 1:
+Getting multiClient:
 
     multiClient := redisClient.Multi()
+
+Or:
+
+    multiClient = redis.NewMultiClient(connect, disconnect)
+
+Working with multiClient::
+
     futureGet1 := multiClient.Get("foo1")
     futureGet2 := multiClient.Get("foo2")
     _, err := multiClient.Exec()
@@ -46,28 +58,34 @@ Example 1:
 
     value1, err := futureGet1.Reply()
     if err != nil {
-       panic(err)
+        if err != redis.Nil {
+            panic(err)
+        }
     }
 
     value2, err := futureGet2.Reply()
     if err != nil {
-       panic(err)
+        if err != redis.Nil {
+            panic(err)
+        }
     }
 
-Example 2:
+Or:
 
     multiClient := redisClient.Multi()
     multiClient.Get("foo1")
     multiClient.Get("foo2")
     reqs, err := multiClient.Exec()
     if err != nil {
-       panic(err)
+        panic(err)
     }
 
     for req := range reqs {
         value, err := req.Reply()
         if err != nil {
-           panic(err)
+            if err != redis.Nil {
+                panic(err)
+            }
         }
     }
 
@@ -84,6 +102,8 @@ Publish:
 Subscribe:
 
     pubsub := redisClient.PubSubClient()
+    // pubsub := redis.NewPubSubClient(connect, disconnect)
+
     ch, err := pubsub.Subscribe("mychannel")
     if err != nil {
         panic(err)
