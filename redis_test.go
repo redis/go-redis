@@ -31,11 +31,11 @@ func (t *RedisTest) SetUpTest(c *C) {
 	}
 
 	t.redisC = redis.NewClient(connect, nil)
-	t.redisC.Flushdb()
+	t.redisC.Flushdb().Reply()
 }
 
 func (t *RedisTest) TearDownTest(c *C) {
-	t.redisC.Flushdb()
+	t.redisC.Flushdb().Reply()
 }
 
 //------------------------------------------------------------------------------
@@ -120,7 +120,7 @@ func (t *RedisTest) TestMove(c *C) {
 	c.Check(err, IsNil)
 	c.Check(isMoved, Equals, false)
 
-	t.redisC.Set("foo", "bar")
+	t.redisC.Set("foo", "bar").Reply()
 
 	isMoved, err = t.redisC.Move("foo", 1).Reply()
 	c.Check(err, IsNil)
@@ -1349,6 +1349,27 @@ func (t *RedisTest) TestPubSub(c *C) {
 	case <-time.After(time.Second):
 		c.Error("Channel is empty.")
 	}
+}
+
+//------------------------------------------------------------------------------
+
+func (t *RedisTest) TestPipelining(c *C) {
+	t.redisC.Set("foo2", "bar2").Reply()
+
+	setReq := t.redisC.Set("foo1", "bar1")
+	getReq := t.redisC.Get("foo2")
+
+	reqs, err := t.redisC.RunQueued()
+	c.Check(err, IsNil)
+	c.Check(reqs, HasLen, 2)
+
+	ok, err := setReq.Reply()
+	c.Check(err, IsNil)
+	c.Check(ok, Equals, "OK")
+
+	v, err := getReq.Reply()
+	c.Check(err, IsNil)
+	c.Check(v, Equals, "bar2")
 }
 
 //------------------------------------------------------------------------------

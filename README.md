@@ -36,6 +36,31 @@ Example:
         }
     }
 
+Pipelining
+----------
+
+Client has ability to run several commands with one read/write:
+
+    setReq := redisClient.Set("foo1", "bar1") // queue command SET
+    getReq := redisClient.Get("foo2") // queue command GET
+
+    reqs, err := redisClient.RunQueued() // run queued commands
+    if err != nil {
+        panic(err)
+    }
+
+    ok, err := setReq.Reply()
+    if err != nil {
+        panic(err)
+    }
+
+    value, err := getReq.Reply()
+    if err != nil {
+        if err != redis.Nil {
+            panic(err)
+        }
+    }
+
 Multi/Exec
 ----------
 
@@ -126,15 +151,30 @@ Client is thread safe. Internally sync.Mutex is used to synchronize writes and r
 Custom commands
 ---------------
 
-Example:
+Lazy command:
 
     func Get(client *redis.Client, key string) *redis.BulkReq {
         req := redis.NewBulkReq("GET", key)
-        client.Run(req)
+        client.Queue(req)
         return req
     }
 
     value, err := Get(redisClient, "foo").Reply()
+    if err != nil {
+        if err != redis.Nil {
+            panic(err)
+        }
+    }
+
+Immediate command:
+
+    func Quit(client *redis.Client) *redis.StatusReq {
+        req := redis.NewStatusReq("QUIT")
+        client.Run(req)
+        return req
+    }
+
+    status, err := Quit(redisClient).Reply()
     if err != nil {
         panic(err)
     }
