@@ -1372,6 +1372,12 @@ func (t *RedisTest) TestPipelining(c *C) {
 	c.Check(v, Equals, "bar2")
 }
 
+func (t *RedisTest) TestRunQueuedOnEmptyQueue(c *C) {
+	reqs, err := t.redisC.RunQueued()
+	c.Check(err, IsNil)
+	c.Check(reqs, HasLen, 0)
+}
+
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) TestDiscard(c *C) {
@@ -1410,6 +1416,12 @@ func (t *RedisTest) TestMultiExec(c *C) {
 	v, err := getR.Reply()
 	c.Check(err, IsNil)
 	c.Check(v, Equals, "bar")
+}
+
+func (t *RedisTest) TestExecOnEmptyQueue(c *C) {
+	reqs, err := t.redisC.Exec()
+	c.Check(err, IsNil)
+	c.Check(reqs, HasLen, 0)
 }
 
 //------------------------------------------------------------------------------

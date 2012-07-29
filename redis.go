@@ -131,6 +131,10 @@ func (c *Client) Run(req Req) {
 }
 
 func (c *Client) RunQueued() ([]Req, error) {
+	if len(c.reqs) == 0 {
+		return c.reqs, nil
+	}
+
 	c.mtx.Lock()
 	reqs := c.reqs
 	c.reqs = make([]Req, 0)
@@ -177,6 +181,10 @@ func (c *Client) Discard() {
 }
 
 func (c *Client) Exec() ([]Req, error) {
+	if len(c.reqs) == 0 {
+		return c.reqs, nil
+	}
+
 	c.mtx.Lock()
 	reqs := c.reqs
 	c.reqs = make([]Req, 0)
