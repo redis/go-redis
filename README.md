@@ -171,6 +171,7 @@ Immediate command:
     func Quit(client *redis.Client) *redis.StatusReq {
         req := redis.NewStatusReq("QUIT")
         client.Run(req)
+        client.Close()
         return req
     }
 
@@ -178,3 +179,8 @@ Immediate command:
     if err != nil {
         panic(err)
     }
+
+Connection pool
+---------------
+
+Client does not support connection pool.
