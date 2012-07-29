@@ -1426,13 +1426,37 @@ func (t *RedisTest) TestExecOnEmptyQueue(c *C) {
 
 //------------------------------------------------------------------------------
 
-func (t *RedisTest) TestConcAccess(c *C) {
+func (t *RedisTest) TestRunningCommandsFromDifferentGoroutines(c *C) {
 	for i := int64(0); i < 99; i++ {
 		go func() {
 			msg := "echo" + strconv.FormatInt(i, 10)
 			echo, err := t.redisC.Echo(msg).Reply()
 			c.Check(err, IsNil)
 			c.Check(echo, Equals, msg)
+		}()
+	}
+}
+
+func (t *RedisTest) TestPipeliningFromDifferentGoroutines(c *C) {
+	for i := int64(0); i < 99; i += 2 {
+		go func() {
+			msg1 := "echo" + strconv.FormatInt(i, 10)
+			msg2 := "echo" + strconv.FormatInt(i+1, 10)
+
+			echo1Req := t.redisC.Echo(msg1)
+			echo2Req := t.redisC.Echo(msg2)
+
+			reqs, err := t.redisC.RunQueued()
+			c.Check(reqs, HasLen, 2)
+			c.Check(err, IsNil)
+
+			echo1, err := echo1Req.Reply()
+			c.Check(err, IsNil)
+			c.Check(echo1, Equals, msg1)
+
+			echo2, err := echo2Req.Reply()
+			c.Check(err, IsNil)
+			c.Check(echo2, Equals, msg2)
 		}()
 	}
 }
