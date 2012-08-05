@@ -11,6 +11,8 @@ import (
 
 var Nil = errors.New("(nil)")
 
+var errResultMissing = errors.New("Request was not run properly.")
+
 //------------------------------------------------------------------------------
 
 func isNil(buf []byte) bool {
@@ -73,19 +75,16 @@ func PackReq(args []string) []byte {
 type Req interface {
 	Req() []byte
 	ParseReply(*bufreader.Reader) (interface{}, error)
-	SetClient(*Client)
 	SetErr(error)
+	Err() error
 	SetVal(interface{})
+	Val() interface{}
 }
 
 //------------------------------------------------------------------------------
 
 type BaseReq struct {
 	args []string
-
-	client *Client
-	// TODO: use int32 and atomic access?
-	done bool
 
 	val interface{}
 	err error
@@ -101,24 +100,26 @@ func (r *BaseReq) Req() []byte {
 	return PackReq(r.args)
 }
 
-func (r *BaseReq) SetClient(c *Client) {
-	r.client = c
-}
-
 func (r *BaseReq) SetErr(err error) {
 	if err == nil {
 		panic("non-nil value expected")
 	}
-	r.done = true
 	r.err = err
+}
+
+func (r *BaseReq) Err() error {
+	return r.err
 }
 
 func (r *BaseReq) SetVal(val interface{}) {
 	if val == nil {
 		panic("non-nil value expected")
 	}
-	r.done = true
 	r.val = val
+}
+
+func (r *BaseReq) Val() interface{} {
+	return r.val
 }
 
 func (r *BaseReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
@@ -153,17 +154,9 @@ func (r *StatusReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 }
 
 func (r *StatusReq) Reply() (string, error) {
-	if !r.done {
-		_, err := r.client.RunQueued()
-		if err != nil {
-			return "", err
-		}
-		if !r.done {
-			panic("req is not ready")
-		}
-	}
-
-	if r.err != nil {
+	if r.val == nil && r.err == nil {
+		return "", errResultMissing
+	} else if r.err != nil {
 		return "", r.err
 	}
 	return r.val.(string), nil
@@ -197,17 +190,9 @@ func (r *IntReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 }
 
 func (r *IntReq) Reply() (int64, error) {
-	if !r.done {
-		_, err := r.client.RunQueued()
-		if err != nil {
-			return 0, err
-		}
-		if !r.done {
-			panic("req is not ready")
-		}
-	}
-
-	if r.err != nil {
+	if r.val == nil && r.err == nil {
+		return 0, errResultMissing
+	} else if r.err != nil {
 		return 0, r.err
 	}
 	return r.val.(int64), nil
@@ -243,17 +228,9 @@ func (r *IntNilReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 }
 
 func (r *IntNilReq) Reply() (int64, error) {
-	if !r.done {
-		_, err := r.client.RunQueued()
-		if err != nil {
-			return 0, err
-		}
-		if !r.done {
-			panic("req is not ready")
-		}
-	}
-
-	if r.err != nil {
+	if r.val == nil && r.err == nil {
+		return 0, errResultMissing
+	} else if r.err != nil {
 		return 0, r.err
 	}
 	return r.val.(int64), nil
@@ -287,17 +264,9 @@ func (r *BoolReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 }
 
 func (r *BoolReq) Reply() (bool, error) {
-	if !r.done {
-		_, err := r.client.RunQueued()
-		if err != nil {
-			return false, err
-		}
-		if !r.done {
-			panic("req is not ready")
-		}
-	}
-
-	if r.err != nil {
+	if r.val == nil && r.err == nil {
+		return false, errResultMissing
+	} else if r.err != nil {
 		return false, r.err
 	}
 	return r.val.(bool), nil
@@ -340,17 +309,9 @@ func (r *BulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 }
 
 func (r *BulkReq) Reply() (string, error) {
-	if !r.done {
-		_, err := r.client.RunQueued()
-		if err != nil {
-			return "", err
-		}
-		if !r.done {
-			panic("req is not ready")
-		}
-	}
-
-	if r.err != nil {
+	if r.val == nil && r.err == nil {
+		return "", errResultMissing
+	} else if r.err != nil {
 		return "", r.err
 	}
 	return r.val.(string), nil
@@ -393,17 +354,9 @@ func (r *FloatReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 }
 
 func (r *FloatReq) Reply() (float64, error) {
-	if !r.done {
-		_, err := r.client.RunQueued()
-		if err != nil {
-			return 0, err
-		}
-		if !r.done {
-			panic("req is not ready")
-		}
-	}
-
-	if r.err != nil {
+	if r.val == nil && r.err == nil {
+		return 0, errResultMissing
+	} else if r.err != nil {
 		return 0, r.err
 	}
 	return r.val.(float64), nil
@@ -488,17 +441,9 @@ func (r *MultiBulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 }
 
 func (r *MultiBulkReq) Reply() ([]interface{}, error) {
-	if !r.done {
-		_, err := r.client.RunQueued()
-		if err != nil {
-			return nil, err
-		}
-		if !r.done {
-			panic("req is not ready")
-		}
-	}
-
-	if r.err != nil {
+	if r.val == nil && r.err == nil {
+		return nil, errResultMissing
+	} else if r.err != nil {
 		return nil, r.err
 	}
 	return r.val.([]interface{}), nil

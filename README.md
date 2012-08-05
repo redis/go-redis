@@ -3,26 +3,52 @@ Readme
 
 Redis client for Golang.
 
-Usage
------
+Getting Client instance
+-----------------------
 
-Example:
+Example 1:
 
     import "github.com/vmihailenco/redis"
 
 
-    connect := func() (io.ReadWriter, error) {
+    redisClient := redis.NewTCPClient(":6379", "", 0)
+
+Example 2:
+
+    import "github.com/vmihailenco/redis"
+
+
+    openConn := func() (io.ReadWriter, error) {
         fmt.Println("Connecting...")
-        return net.Dial("tcp", "localhost:6379")
+        return net.Dial("tcp", ":6379")
     }
 
-    disconnect := func(conn io.ReadWriter) error {
+    closeConn := func(conn io.ReadWriter) error {
         fmt.Println("Disconnecting...")
         conn.Close()
         return nil
     }
 
-    redisClient = redis.NewClient(connect, disconnect)
+    initConn := func(client *Client) error {
+         _, err := client.Auth("foo").Reply()
+         if err != nil {
+             return err
+         }
+
+         _, err = client.Ping().Reply()
+         if err != nil {
+             return err
+         }
+
+         return nil
+    }
+
+    redisClient := redis.NewClient(openConn, closeConn, initConn)
+
+`closeConn` and `initConn` functions can be `nil`.
+
+Running commands
+----------------
 
     _, err := redisClient.Set("foo", "bar").Reply()
     if err != nil {
@@ -41,10 +67,12 @@ Pipelining
 
 Client has ability to run several commands with one read/write:
 
-    setReq := redisClient.Set("foo1", "bar1") // queue command SET
-    getReq := redisClient.Get("foo2") // queue command GET
+    multiClient := redisClient.Multi()
 
-    reqs, err := redisClient.RunQueued() // run queued commands
+    setReq := multiClient.Set("foo1", "bar1") // queue command SET
+    getReq := multiClient.Get("foo2") // queue command GET
+
+    reqs, err := multiClient.RunQueued() // run queued commands
     if err != nil {
         panic(err)
     }
@@ -64,15 +92,9 @@ Client has ability to run several commands with one read/write:
 Multi/Exec
 ----------
 
-Getting multiClient:
+Example 1:
 
     multiClient := redisClient.Multi()
-
-Or:
-
-    multiClient = redis.NewMultiClient(connect, disconnect)
-
-Working with multiClient:
 
     futureGet1 := multiClient.Get("foo1")
     futureGet2 := multiClient.Get("foo2")
@@ -95,9 +117,10 @@ Working with multiClient:
         }
     }
 
-Or:
+Example 2:
 
     multiClient := redisClient.Multi()
+
     multiClient.Get("foo1")
     multiClient.Get("foo2")
     reqs, err := multiClient.Exec()
@@ -127,7 +150,6 @@ Publish:
 Subscribe:
 
     pubsub := redisClient.PubSubClient()
-    // pubsub := redis.NewPubSubClient(connect, disconnect)
 
     ch, err := pubsub.Subscribe("mychannel")
     if err != nil {
@@ -146,12 +168,18 @@ Subscribe:
 Thread safety
 -------------
 
-Client is thread safe. Internally sync.Mutex is used to synchronize writes and reads.
+redis.Client methods are thread safe. Following code is correct:
+
+    for i := 0; i < 1000; i++ {
+        go func() {
+            redisClient.Incr("foo").Reply()
+        }()
+    }
 
 Custom commands
 ---------------
 
-Lazy command:
+Example:
 
     func Get(client *redis.Client, key string) *redis.BulkReq {
         req := redis.NewBulkReq("GET", key)
@@ -166,21 +194,9 @@ Lazy command:
         }
     }
 
-Immediate command:
-
-    func Quit(client *redis.Client) *redis.StatusReq {
-        req := redis.NewStatusReq("QUIT")
-        client.Run(req)
-        client.Close()
-        return req
-    }
-
-    status, err := Quit(redisClient).Reply()
-    if err != nil {
-        panic(err)
-    }
-
 Connection pool
 ---------------
 
-Client does not support connection pool.
+Client uses connection pool with default capacity of 10 connections. To change pool capacity:
+
+    redisClient.ConnPool.MaxCap = 1

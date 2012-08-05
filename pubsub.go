@@ -2,20 +2,28 @@ package redis
 
 import (
 	"fmt"
+	"sync"
 )
 
 type PubSubClient struct {
 	*Client
-	isSubscribed bool
-	ch           chan *Message
+	conn *Conn
+	ch   chan *Message
+	once sync.Once
 }
 
-func NewPubSubClient(connect connectFunc, disconnect disconnectFunc) *PubSubClient {
+func newPubSubClient(client *Client) (*PubSubClient, error) {
+	conn, _, err := client.ConnPool.Get()
+	if err != nil {
+		return nil, err
+	}
+
 	c := &PubSubClient{
-		Client: NewClient(connect, disconnect),
+		Client: client,
+		conn:   conn,
 		ch:     make(chan *Message),
 	}
-	return c
+	return c, nil
 }
 
 type Message struct {
@@ -32,16 +40,7 @@ func (c *PubSubClient) consumeMessages() {
 		// Replies can arrive in batches.
 		// Read whole reply and parse messages one by one.
 
-		rd, err := c.readerPool.Get()
-		if err != nil {
-			msg := &Message{}
-			msg.Err = err
-			c.ch <- msg
-			return
-		}
-		defer c.readerPool.Add(rd)
-
-		err = c.ReadReply(rd)
+		err := c.ReadReply(c.conn)
 		if err != nil {
 			msg := &Message{}
 			msg.Err = err
@@ -52,7 +51,7 @@ func (c *PubSubClient) consumeMessages() {
 		for {
 			msg := &Message{}
 
-			replyI, err := req.ParseReply(rd)
+			replyI, err := req.ParseReply(c.conn.Rd)
 			if err != nil {
 				msg.Err = err
 				c.ch <- msg
@@ -75,7 +74,7 @@ func (c *PubSubClient) consumeMessages() {
 			}
 			c.ch <- msg
 
-			if !rd.HasUnread() {
+			if !c.conn.Rd.HasUnread() {
 				break
 			}
 		}
@@ -86,16 +85,13 @@ func (c *PubSubClient) Subscribe(channels ...string) (chan *Message, error) {
 	args := append([]string{"SUBSCRIBE"}, channels...)
 	req := NewMultiBulkReq(args...)
 
-	if err := c.WriteReq(req.Req()); err != nil {
+	if err := c.WriteReq(req.Req(), c.conn); err != nil {
 		return nil, err
 	}
 
-	c.mtx.Lock()
-	if !c.isSubscribed {
-		c.isSubscribed = true
+	c.once.Do(func() {
 		go c.consumeMessages()
-	}
-	c.mtx.Unlock()
+	})
 
 	return c.ch, nil
 }
@@ -103,5 +99,5 @@ func (c *PubSubClient) Subscribe(channels ...string) (chan *Message, error) {
 func (c *PubSubClient) Unsubscribe(channels ...string) error {
 	args := append([]string{"UNSUBSCRIBE"}, channels...)
 	req := NewMultiBulkReq(args...)
-	return c.WriteReq(req.Req())
+	return c.WriteReq(req.Req(), c.conn)
 }
