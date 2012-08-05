@@ -15,12 +15,16 @@ var errResultMissing = errors.New("Request was not run properly.")
 
 //------------------------------------------------------------------------------
 
-func isNil(buf []byte) bool {
-	return len(buf) == 3 && buf[0] == '$' && buf[1] == '-' && buf[2] == '1'
+func isNil(line []byte) bool {
+	return len(line) == 3 && line[0] == '$' && line[1] == '-' && line[2] == '1'
 }
 
-func isEmpty(buf []byte) bool {
-	return len(buf) == 2 && buf[0] == '$' && buf[1] == '0'
+func isEmpty(line []byte) bool {
+	return len(line) == 2 && line[0] == '$' && line[1] == '0'
+}
+
+func isNoReplies(line []byte) bool {
+	return len(line) >= 2 && line[1] == '*' && line[1] == '0'
 }
 
 //------------------------------------------------------------------------------
@@ -384,21 +388,25 @@ func (r *MultiBulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 		return nil, errors.New(string(line[1:]))
 	} else if line[0] != '*' {
 		return nil, fmt.Errorf("Expected '*', but got line %q of %q.", line, rd.Bytes())
-	}
-
-	val := make([]interface{}, 0)
-
-	if len(line) >= 2 && line[1] == '0' {
-		return val, nil
 	} else if isNil(line) {
 		return nil, Nil
 	}
 
-	line, err = rd.ReadLine('\n')
+	val := make([]interface{}, 0)
+	if isNoReplies(line) {
+		return val, nil
+	}
+	numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
 	if err != nil {
 		return nil, err
 	}
-	for {
+
+	for i := int64(0); i < numReplies; i++ {
+		line, err = rd.ReadLine('\n')
+		if err != nil {
+			return nil, err
+		}
+
 		if line[0] == ':' {
 			var n int64
 			n, err = strconv.ParseInt(string(line[1:]), 10, 64)
@@ -420,20 +428,6 @@ func (r *MultiBulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 			}
 		} else {
 			return nil, fmt.Errorf("Expected '$', but got line %q of %q.", line, rd.Bytes())
-		}
-
-		line, err = rd.ReadLine('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-
-		// Check for the header of another reply.
-		if line[0] == '*' {
-			rd.UnreadLine('\n')
-			break
 		}
 	}
 

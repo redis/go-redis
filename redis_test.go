@@ -1539,63 +1539,63 @@ func (t *RedisTest) TestPipeliningFromGoroutines(c *C) {
 
 func (t *RedisTest) TestIncrFromGoroutines(c *C) {
 	wg := &sync.WaitGroup{}
-	for i := int64(0); i < 1000; i++ {
+	for i := int64(0); i < 20000; i++ {
 		wg.Add(1)
 		go func() {
-			_, err := t.client.Incr("key").Reply()
+			_, err := t.client.Incr("TestIncrFromGoroutinesKey").Reply()
 			c.Check(err, IsNil)
 			wg.Done()
 		}()
 	}
 	wg.Wait()
 
-	n, err := t.client.Get("key").Reply()
+	n, err := t.client.Get("TestIncrFromGoroutinesKey").Reply()
 	c.Check(err, IsNil)
-	c.Check(n, Equals, "1000")
+	c.Check(n, Equals, "20000")
 }
 
 func (t *RedisTest) TestIncrPipeliningFromGoroutines(c *C) {
-	c.Skip("conn pool required")
+	multiClient := t.client.Multi()
 
 	wg := &sync.WaitGroup{}
-	for i := int64(0); i < 10000; i++ {
+	for i := int64(0); i < 20000; i++ {
 		wg.Add(1)
 		go func() {
-			t.client.Incr("key")
+			multiClient.Incr("TestIncrPipeliningFromGoroutinesKey")
 			wg.Done()
 		}()
 	}
 	wg.Wait()
 
-	reqs, err := t.client.RunQueued()
+	reqs, err := multiClient.RunQueued()
 	c.Check(err, IsNil)
-	c.Check(reqs, HasLen, 10000)
+	c.Check(reqs, HasLen, 20000)
 
-	n, err := t.client.Get("key").Reply()
+	n, err := t.client.Get("TestIncrPipeliningFromGoroutinesKey").Reply()
 	c.Check(err, IsNil)
-	c.Check(n, Equals, "10000")
+	c.Check(n, Equals, "20000")
 }
 
 func (t *RedisTest) TestIncrTransaction(c *C) {
-	c.Skip("conn pool required")
+	multiClient := t.client.Multi()
 
 	wg := &sync.WaitGroup{}
-	for i := int64(0); i < 10000; i++ {
+	for i := int64(0); i < 20000; i++ {
 		wg.Add(1)
 		go func() {
-			t.client.Incr("key")
+			multiClient.Incr("TestIncrTransactionKey")
 			wg.Done()
 		}()
 	}
 	wg.Wait()
 
-	reqs, err := t.client.Exec()
+	reqs, err := multiClient.Exec()
 	c.Check(err, IsNil)
-	c.Check(reqs, HasLen, 10000)
+	c.Check(reqs, HasLen, 20000)
 
-	n, err := t.client.Get("key").Reply()
+	n, err := t.client.Get("TestIncrTransactionKey").Reply()
 	c.Check(err, IsNil)
-	c.Check(n, Equals, "10000")
+	c.Check(n, Equals, "20000")
 }
 
 //------------------------------------------------------------------------------
@@ -1632,13 +1632,32 @@ func (t *RedisTest) BenchmarkRedisSet(c *C) {
 	}
 }
 
-func (t *RedisTest) BenchmarkRedisGet(c *C) {
+func (t *RedisTest) BenchmarkRedisGetNil(c *C) {
 	c.StopTimer()
 
 	for i := 0; i < 10; i++ {
 		v, err := t.client.Get("foo").Reply()
 		c.Check(err, Equals, redis.Nil)
 		c.Check(v, Equals, "")
+	}
+
+	c.StartTimer()
+
+	for i := 0; i < c.N; i++ {
+		t.client.Get("foo").Reply()
+	}
+}
+
+func (t *RedisTest) BenchmarkRedisGet(c *C) {
+	c.StopTimer()
+
+	_, err := t.client.Set("foo", "bar").Reply()
+	c.Check(err, IsNil)
+
+	for i := 0; i < 10; i++ {
+		v, err := t.client.Get("foo").Reply()
+		c.Check(err, IsNil)
+		c.Check(v, Equals, "bar")
 	}
 
 	c.StartTimer()
@@ -1666,4 +1685,8 @@ func (t *RedisTest) BenchmarkRedisWriteRead(c *C) {
 	for i := 0; i < c.N; i++ {
 		t.client.WriteRead(req, conn)
 	}
+
+	c.StopTimer()
+	t.client.ConnPool.Add(conn)
+	c.StartTimer()
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/vmihailenco/bufreader"
 )
@@ -81,6 +82,13 @@ func (c *Client) WriteReq(buf []byte, conn *Conn) error {
 }
 
 func (c *Client) ReadReply(conn *Conn) error {
+	if false {
+		err := conn.RW.(*net.TCPConn).SetReadDeadline(time.Now().Add(time.Second))
+		if err != nil {
+			return err
+		}
+	}
+
 	_, err := conn.Rd.ReadFrom(conn.RW)
 	if err != nil {
 		return err
@@ -114,7 +122,6 @@ func (c *Client) Queue(req Req) {
 func (c *Client) Run(req Req) {
 	conn, _, err := c.ConnPool.Get()
 	if err != nil {
-		c.ConnPool.Remove(conn)
 		req.SetErr(err)
 		return
 	}
@@ -128,7 +135,7 @@ func (c *Client) Run(req Req) {
 
 	val, err := req.ParseReply(conn.Rd)
 	if err != nil {
-		c.ConnPool.Remove(conn)
+		c.ConnPool.Add(conn)
 		req.SetErr(err)
 		return
 	}
@@ -147,33 +154,47 @@ func (c *Client) RunQueued() ([]Req, error) {
 	c.reqs = make([]Req, 0)
 	c.mtx.Unlock()
 
-	return c.RunReqs(reqs)
+	conn, _, err := c.ConnPool.Get()
+	if err != nil {
+		return nil, err
+	}
+
+	err = c.RunReqs(reqs, conn)
+	if err != nil {
+		c.ConnPool.Remove(conn)
+		return nil, err
+	}
+
+	//	c.ConnPool.Add(conn)
+	return reqs, nil
 }
 
-func (c *Client) RunReqs(reqs []Req) ([]Req, error) {
+func (c *Client) RunReqs(reqs []Req, conn *Conn) error {
 	var multiReq []byte
 	if len(reqs) == 1 {
 		multiReq = reqs[0].Req()
 	} else {
+		// TODO: split req to chunks
 		multiReq = make([]byte, 0, 1024)
 		for _, req := range reqs {
 			multiReq = append(multiReq, req.Req()...)
 		}
 	}
 
-	conn, _, err := c.ConnPool.Get()
+	err := c.WriteRead(multiReq, conn)
 	if err != nil {
-		return nil, err
-	}
-
-	err = c.WriteRead(multiReq, conn)
-	if err != nil {
-		return nil, err
+		return err
 	}
 
 	for i := 0; i < len(reqs); i++ {
-		req := reqs[i]
+		if !conn.Rd.HasUnread() {
+			_, err := conn.Rd.ReadFrom(conn.RW)
+			if err != err {
+				return err
+			}
+		}
 
+		req := reqs[i]
 		val, err := req.ParseReply(conn.Rd)
 		if err != nil {
 			req.SetErr(err)
@@ -182,7 +203,7 @@ func (c *Client) RunReqs(reqs []Req) ([]Req, error) {
 		}
 	}
 
-	return reqs, nil
+	return nil
 }
 
 //------------------------------------------------------------------------------
@@ -203,6 +224,23 @@ func (c *Client) Exec() ([]Req, error) {
 	c.reqs = make([]Req, 0)
 	c.mtx.Unlock()
 
+	conn, _, err := c.ConnPool.Get()
+	if err != nil {
+		return nil, err
+	}
+
+	err = c.ExecReqs(reqs, conn)
+	if err != nil {
+		c.ConnPool.Remove(conn)
+		return nil, err
+	}
+
+	c.ConnPool.Add(conn)
+	return reqs, nil
+}
+
+func (c *Client) ExecReqs(reqs []Req, conn *Conn) error {
+	// TODO: split req to chunks
 	multiReq := make([]byte, 0, 1024)
 	multiReq = append(multiReq, PackReq([]string{"MULTI"})...)
 	for _, req := range reqs {
@@ -210,14 +248,9 @@ func (c *Client) Exec() ([]Req, error) {
 	}
 	multiReq = append(multiReq, PackReq([]string{"EXEC"})...)
 
-	conn, _, err := c.ConnPool.Get()
+	err := c.WriteRead(multiReq, conn)
 	if err != nil {
-		return nil, err
-	}
-
-	err = c.WriteRead(multiReq, conn)
-	if err != nil {
-		return nil, err
+		return err
 	}
 
 	statusReq := NewStatusReq()
@@ -225,24 +258,31 @@ func (c *Client) Exec() ([]Req, error) {
 	// Parse MULTI command reply.
 	_, err = statusReq.ParseReply(conn.Rd)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Parse queued replies.
 	for _ = range reqs {
+		if !conn.Rd.HasUnread() {
+			_, err := conn.Rd.ReadFrom(conn.RW)
+			if err != err {
+				return err
+			}
+		}
+
 		_, err = statusReq.ParseReply(conn.Rd)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
 	// Parse number of replies.
 	line, err := conn.Rd.ReadLine('\n')
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if line[0] != '*' {
-		return nil, fmt.Errorf("Expected '*', but got line %q of %q.", line, conn.Rd.Bytes())
+		return fmt.Errorf("Expected '*', but got line %q of %q.", line, conn.Rd.Bytes())
 	}
 
 	// Parse replies.
@@ -256,5 +296,5 @@ func (c *Client) Exec() ([]Req, error) {
 		}
 	}
 
-	return reqs, nil
+	return nil
 }
