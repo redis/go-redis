@@ -165,7 +165,7 @@ func (c *Client) RunQueued() ([]Req, error) {
 		return nil, err
 	}
 
-	//	c.ConnPool.Add(conn)
+	c.ConnPool.Add(conn)
 	return reqs, nil
 }
 
@@ -174,7 +174,6 @@ func (c *Client) RunReqs(reqs []Req, conn *Conn) error {
 	if len(reqs) == 1 {
 		multiReq = reqs[0].Req()
 	} else {
-		// TODO: split req to chunks
 		multiReq = make([]byte, 0, 1024)
 		for _, req := range reqs {
 			multiReq = append(multiReq, req.Req()...)
@@ -240,7 +239,6 @@ func (c *Client) Exec() ([]Req, error) {
 }
 
 func (c *Client) ExecReqs(reqs []Req, conn *Conn) error {
-	// TODO: split req to chunks
 	multiReq := make([]byte, 0, 1024)
 	multiReq = append(multiReq, PackReq([]string{"MULTI"})...)
 	for _, req := range reqs {
