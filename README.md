@@ -13,6 +13,22 @@ Supports:
 - TLS connections.
 - Thread safety.
 
+Installation
+------------
+
+Run:
+
+    go get github.com/vmihailenco/bufreader
+    go get github.com/vmihailenco/redis
+
+Run tests:
+
+    go test -gocheck.v
+
+Run benchmarks:
+
+    go test -gocheck.b
+
 Getting Client instance
 -----------------------
 
