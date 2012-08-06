@@ -3,6 +3,16 @@ Readme
 
 Redis client for Golang.
 
+Supports:
+
+- Redis 2.6 commands except QUIT command.
+- Pub/sub.
+- Transactions.
+- Pipelining.
+- Connection pool.
+- TLS connections.
+- Thread safety.
+
 Getting Client instance
 -----------------------
 
@@ -60,10 +70,8 @@ Running commands
     ok := set.Val()
 
     get := redisClient.Get("foo")
-    if get.Err() != nil {
-        if get.Err() != redis.Nil {
-            panic(get.Err())
-        }
+    if get.Err() != nil && get.Err() != redis.Nil {
+        panic(get.Err())
     }
     val := get.Val()
 
@@ -81,6 +89,9 @@ Client has ability to run several commands with one read/write:
     if err != nil {
         panic(err)
     }
+    for _, req := range reqs {
+        // ...
+    }
 
     if setReq.Err() != nil {
         panic(setReq.Err())
@@ -93,16 +104,20 @@ Client has ability to run several commands with one read/write:
 Multi/Exec
 ----------
 
-Example 1:
+Example:
 
     multiClient := redisClient.Multi()
 
     get1 := multiClient.Get("foo1")
     get2 := multiClient.Get("foo2")
-    _, err := multiClient.Exec()
+    reqs, err := multiClient.Exec()
     if err != nil {
-       panic(err)
+        panic(err)
     }
+    for _, req := range reqs {
+        // ...
+    }
+
 
     if get1.Err() != nil && get1.Err() != redis.Nil {
         panic(get1.Err())
@@ -113,23 +128,6 @@ Example 1:
         panic(get2.Err())
     }
     val2 := get2.Val()
-
-Example 2:
-
-    multiClient := redisClient.Multi()
-
-    multiClient.Get("foo1")
-    multiClient.Get("foo2")
-    reqs, err := multiClient.Exec()
-    if err != nil {
-        panic(err)
-    }
-
-    for req := range reqs {
-        if req.Err() != nil && req.Err() != redis.Nil {
-            panic(req.Err())
-        }
-    }
 
 Pub/sub
 -------
