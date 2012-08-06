@@ -326,7 +326,7 @@ func (c *Client) SetEx(key string, seconds int64, value string) *StatusReq {
 	return req
 }
 
-func (c *Client) SetNx(key, value string) *BoolReq {
+func (c *Client) SetNX(key, value string) *BoolReq {
 	req := NewBoolReq("SETNX", key, value)
 	c.Process(req)
 	return req
@@ -679,8 +679,8 @@ func (c *Client) ZCount(key, min, max string) *IntReq {
 	return req
 }
 
-func (c *Client) ZIncrBy(key string, increment int64, member string) *IntReq {
-	req := NewIntReq("ZINCRBY", key, strconv.FormatInt(increment, 10), member)
+func (c *Client) ZIncrBy(key string, increment int64, member string) *FloatReq {
+	req := NewFloatReq("ZINCRBY", key, strconv.FormatInt(increment, 10), member)
 	c.Process(req)
 	return req
 }

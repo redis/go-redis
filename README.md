@@ -33,14 +33,14 @@ Example 2:
     }
 
     initConn := func(client *redis.Client) error {
-         _, err := client.Auth("foo").Reply()
-         if err != nil {
-             return err
+         auth := client.Auth("foo")
+         if auth.Err() != nil {
+             return auth.Err()
          }
 
-         _, err = client.Ping().Reply()
-         if err != nil {
-             return err
+         ping := client.Ping()
+         if ping.Err() != nil {
+             return ping.Err()
          }
 
          return nil
@@ -53,17 +53,19 @@ Both `closeConn` and `initConn` functions can be `nil`.
 Running commands
 ----------------
 
-    _, err := redisClient.Set("foo", "bar").Reply()
-    if err != nil {
-        panic(err)
+    set := redisClient.Set("foo", "bar")
+    if set.Err() != nil {
+        panic(set.Err())
     }
+    ok := set.Val()
 
-    value, err := redisClient.Get("foo").Reply()
-    if err != nil {
-        if err != redis.Nil {
-            panic(err)
+    get := redisClient.Get("foo")
+    if get.Err() != nil {
+        if get.Err() != redis.Nil {
+            panic(get.Err())
         }
     }
+    val := get.Val()
 
 Pipelining
 ----------
@@ -80,16 +82,12 @@ Client has ability to run several commands with one read/write:
         panic(err)
     }
 
-    ok, err := setReq.Reply()
-    if err != nil {
-        panic(err)
+    if setReq.Err() != nil {
+        panic(setReq.Err())
     }
 
-    value, err := getReq.Reply()
-    if err != nil {
-        if err != redis.Nil {
-            panic(err)
-        }
+    if getReq.Err() != nil && getReq.Err() != redis.Nil {
+        panic(getReq.Err())
     }
 
 Multi/Exec
@@ -99,26 +97,22 @@ Example 1:
 
     multiClient := redisClient.Multi()
 
-    futureGet1 := multiClient.Get("foo1")
-    futureGet2 := multiClient.Get("foo2")
+    get1 := multiClient.Get("foo1")
+    get2 := multiClient.Get("foo2")
     _, err := multiClient.Exec()
     if err != nil {
        panic(err)
     }
 
-    value1, err := futureGet1.Reply()
-    if err != nil {
-        if err != redis.Nil {
-            panic(err)
-        }
+    if get1.Err() != nil && get1.Err() != redis.Nil {
+        panic(get1.Err())
     }
+    val1 := get1.Val()
 
-    value2, err := futureGet2.Reply()
-    if err != nil {
-        if err != redis.Nil {
-            panic(err)
-        }
+    if get2.Err() != nil && get2.Err() != redis.Nil {
+        panic(get2.Err())
     }
+    val2 := get2.Val()
 
 Example 2:
 
@@ -132,11 +126,8 @@ Example 2:
     }
 
     for req := range reqs {
-        value, err := req.Reply()
-        if err != nil {
-            if err != redis.Nil {
-                panic(err)
-            }
+        if req.Err() != nil && req.Err() != redis.Nil {
+            panic(req.Err())
         }
     }
 
@@ -145,14 +136,17 @@ Pub/sub
 
 Publish:
 
-    _, err := redisClient.Publish("mychannel", "hello").Reply()
-    if err != nil {
-        panic(err)
+    pub := redisClient.Publish("mychannel", "hello")
+    if pub.Err() != nil {
+        panic(pub.Err())
     }
 
 Subscribe:
 
-    pubsub := redisClient.PubSubClient()
+    pubsub, err := redisClient.PubSubClient()
+    if err != nil {
+        panic(err)
+    }
 
     ch, err := pubsub.Subscribe("mychannel")
     if err != nil {
@@ -164,18 +158,18 @@ Subscribe:
             if msg.Err != nil {
                 panic(err)
             }
-            fmt.Println(msg.Message)
+            message := msg.Message
         }
     }
 
 Thread safety
 -------------
 
-redis.Client methods are thread safe. Following code is correct:
+Commands are thread safe. Following code is correct:
 
     for i := 0; i < 1000; i++ {
         go func() {
-            redisClient.Incr("foo").Reply()
+            redisClient.Incr("foo")
         }()
     }
 
@@ -186,15 +180,13 @@ Example:
 
     func Get(client *redis.Client, key string) *redis.BulkReq {
         req := redis.NewBulkReq("GET", key)
-        client.Queue(req)
+        client.Process(req)
         return req
     }
 
-    value, err := Get(redisClient, "foo").Reply()
-    if err != nil {
-        if err != redis.Nil {
-            panic(err)
-        }
+    get := Get(redisClient, "foo")
+    if get.Err() != nil && get.Err() != redis.Nil {
+        panic(get.Err())
     }
 
 Connection pool

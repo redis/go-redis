@@ -35,9 +35,8 @@ func (t *RequestTest) BenchmarkStatusReq(c *C) {
 		c.Check(vI, Equals, "OK")
 
 		req.SetVal(vI)
-		v, err := req.Reply()
-		c.Check(err, IsNil)
-		c.Check(v, Equals, "OK")
+		c.Check(req.Err(), IsNil)
+		c.Check(req.Val(), Equals, "OK")
 	}
 
 	c.StartTimer()
@@ -46,6 +45,7 @@ func (t *RequestTest) BenchmarkStatusReq(c *C) {
 		rd.ResetPos()
 		v, _ := req.ParseReply(rd)
 		req.SetVal(v)
-		req.Reply()
+		req.Err()
+		req.Val()
 	}
 }

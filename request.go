@@ -82,7 +82,7 @@ type Req interface {
 	SetErr(error)
 	Err() error
 	SetVal(interface{})
-	Val() interface{}
+	InterfaceVal() interface{}
 }
 
 //------------------------------------------------------------------------------
@@ -112,7 +112,13 @@ func (r *BaseReq) SetErr(err error) {
 }
 
 func (r *BaseReq) Err() error {
-	return r.err
+	if r.err != nil {
+		return r.err
+	}
+	if r.val == nil {
+		return errResultMissing
+	}
+	return nil
 }
 
 func (r *BaseReq) SetVal(val interface{}) {
@@ -122,7 +128,7 @@ func (r *BaseReq) SetVal(val interface{}) {
 	r.val = val
 }
 
-func (r *BaseReq) Val() interface{} {
+func (r *BaseReq) InterfaceVal() interface{} {
 	return r.val
 }
 
@@ -157,13 +163,11 @@ func (r *StatusReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 	return string(line[1:]), nil
 }
 
-func (r *StatusReq) Reply() (string, error) {
-	if r.val == nil && r.err == nil {
-		return "", errResultMissing
-	} else if r.err != nil {
-		return "", r.err
+func (r *StatusReq) Val() string {
+	if r.val == nil {
+		return ""
 	}
-	return r.val.(string), nil
+	return r.val.(string)
 }
 
 //------------------------------------------------------------------------------
@@ -193,13 +197,11 @@ func (r *IntReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 	return strconv.ParseInt(string(line[1:]), 10, 64)
 }
 
-func (r *IntReq) Reply() (int64, error) {
-	if r.val == nil && r.err == nil {
-		return 0, errResultMissing
-	} else if r.err != nil {
-		return 0, r.err
+func (r *IntReq) Val() int64 {
+	if r.val == nil {
+		return 0
 	}
-	return r.val.(int64), nil
+	return r.val.(int64)
 }
 
 //------------------------------------------------------------------------------
@@ -231,13 +233,11 @@ func (r *IntNilReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 	return nil, fmt.Errorf("Expected ':', but got %q of %q.", line, rd.Bytes())
 }
 
-func (r *IntNilReq) Reply() (int64, error) {
-	if r.val == nil && r.err == nil {
-		return 0, errResultMissing
-	} else if r.err != nil {
-		return 0, r.err
+func (r *IntNilReq) Val() int64 {
+	if r.val == nil {
+		return 0
 	}
-	return r.val.(int64), nil
+	return r.val.(int64)
 }
 
 //------------------------------------------------------------------------------
@@ -267,13 +267,11 @@ func (r *BoolReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 	return line[1] == '1', nil
 }
 
-func (r *BoolReq) Reply() (bool, error) {
-	if r.val == nil && r.err == nil {
-		return false, errResultMissing
-	} else if r.err != nil {
-		return false, r.err
+func (r *BoolReq) Val() bool {
+	if r.val == nil {
+		return false
 	}
-	return r.val.(bool), nil
+	return r.val.(bool)
 }
 
 //------------------------------------------------------------------------------
@@ -312,13 +310,11 @@ func (r *BulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 	return string(line), nil
 }
 
-func (r *BulkReq) Reply() (string, error) {
-	if r.val == nil && r.err == nil {
-		return "", errResultMissing
-	} else if r.err != nil {
-		return "", r.err
+func (r *BulkReq) Val() string {
+	if r.val == nil {
+		return ""
 	}
-	return r.val.(string), nil
+	return r.val.(string)
 }
 
 //------------------------------------------------------------------------------
@@ -357,13 +353,11 @@ func (r *FloatReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 	return strconv.ParseFloat(string(line), 64)
 }
 
-func (r *FloatReq) Reply() (float64, error) {
-	if r.val == nil && r.err == nil {
-		return 0, errResultMissing
-	} else if r.err != nil {
-		return 0, r.err
+func (r *FloatReq) Val() float64 {
+	if r.val == nil {
+		return 0
 	}
-	return r.val.(float64), nil
+	return r.val.(float64)
 }
 
 //------------------------------------------------------------------------------
@@ -434,11 +428,9 @@ func (r *MultiBulkReq) ParseReply(rd *bufreader.Reader) (interface{}, error) {
 	return val, nil
 }
 
-func (r *MultiBulkReq) Reply() ([]interface{}, error) {
-	if r.val == nil && r.err == nil {
-		return nil, errResultMissing
-	} else if r.err != nil {
-		return nil, r.err
+func (r *MultiBulkReq) Val() []interface{} {
+	if r.val == nil {
+		return nil
 	}
-	return r.val.([]interface{}), nil
+	return r.val.([]interface{})
 }

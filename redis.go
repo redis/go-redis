@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/vmihailenco/bufreader"
 )
@@ -34,16 +33,16 @@ func AuthSelectFunc(password string, db int64) InitConnFunc {
 
 	return func(client *Client) error {
 		if password != "" {
-			_, err := client.Auth(password).Reply()
-			if err != nil {
-				return err
+			auth := client.Auth(password)
+			if auth.Err() != nil {
+				return auth.Err()
 			}
 		}
 
 		if db >= 0 {
-			_, err := client.Select(db).Reply()
-			if err != nil {
-				return err
+			sel := client.Select(db)
+			if sel.Err() != nil {
+				return sel.Err()
 			}
 		}
 
@@ -105,13 +104,6 @@ func (c *Client) WriteReq(buf []byte, conn *Conn) error {
 }
 
 func (c *Client) ReadReply(conn *Conn) error {
-	if false {
-		err := conn.RW.(*net.TCPConn).SetReadDeadline(time.Now().Add(time.Second))
-		if err != nil {
-			return err
-		}
-	}
-
 	_, err := conn.Rd.ReadFrom(conn.RW)
 	if err != nil {
 		return err
@@ -120,8 +112,6 @@ func (c *Client) ReadReply(conn *Conn) error {
 }
 
 func (c *Client) WriteRead(buf []byte, conn *Conn) error {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
 	if err := c.WriteReq(buf, conn); err != nil {
 		return err
 	}
