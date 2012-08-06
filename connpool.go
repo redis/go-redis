@@ -21,7 +21,16 @@ func NewConn(rw io.ReadWriter) *Conn {
 	}
 }
 
-type ConnPool struct {
+type ConnPool interface {
+	Get() (*Conn, bool, error)
+	Add(*Conn)
+	Remove(*Conn)
+	Len() int
+}
+
+//------------------------------------------------------------------------------
+
+type MultiConnPool struct {
 	Logger      *log.Logger
 	cond        *sync.Cond
 	conns       []*Conn
@@ -30,13 +39,13 @@ type ConnPool struct {
 	cap, MaxCap int64
 }
 
-func NewConnPool(openConn OpenConnFunc, closeConn CloseConnFunc, maxCap int64) *ConnPool {
+func NewMultiConnPool(openConn OpenConnFunc, closeConn CloseConnFunc, maxCap int64) *MultiConnPool {
 	logger := log.New(
 		os.Stdout,
 		"redis.connpool: ",
 		log.Ldate|log.Ltime|log.Lshortfile,
 	)
-	return &ConnPool{
+	return &MultiConnPool{
 		cond:      sync.NewCond(&sync.Mutex{}),
 		Logger:    logger,
 		conns:     make([]*Conn, 0),
@@ -46,7 +55,7 @@ func NewConnPool(openConn OpenConnFunc, closeConn CloseConnFunc, maxCap int64) *
 	}
 }
 
-func (p *ConnPool) Get() (*Conn, bool, error) {
+func (p *MultiConnPool) Get() (*Conn, bool, error) {
 	p.cond.L.Lock()
 	defer p.cond.L.Unlock()
 
@@ -72,14 +81,14 @@ func (p *ConnPool) Get() (*Conn, bool, error) {
 	return conn, false, nil
 }
 
-func (p *ConnPool) Add(conn *Conn) {
+func (p *MultiConnPool) Add(conn *Conn) {
 	p.cond.L.Lock()
 	defer p.cond.L.Unlock()
 	p.conns = append(p.conns, conn)
 	p.cond.Signal()
 }
 
-func (p *ConnPool) Remove(conn *Conn) {
+func (p *MultiConnPool) Remove(conn *Conn) {
 	p.cond.L.Lock()
 	p.cap--
 	p.cond.Signal()
@@ -90,6 +99,28 @@ func (p *ConnPool) Remove(conn *Conn) {
 	}
 }
 
-func (p *ConnPool) Len() int {
+func (p *MultiConnPool) Len() int {
 	return len(p.conns)
+}
+
+//------------------------------------------------------------------------------
+
+type OneConnPool struct {
+	conn *Conn
+}
+
+func NewOneConnPool(conn *Conn) *OneConnPool {
+	return &OneConnPool{conn: conn}
+}
+
+func (p *OneConnPool) Get() (*Conn, bool, error) {
+	return p.conn, false, nil
+}
+
+func (p *OneConnPool) Add(conn *Conn) {}
+
+func (p *OneConnPool) Remove(conn *Conn) {}
+
+func (p *OneConnPool) Len() int {
+	return 1
 }

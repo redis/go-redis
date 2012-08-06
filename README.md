@@ -11,7 +11,10 @@ Example 1:
     import "github.com/vmihailenco/redis"
 
 
-    redisClient := redis.NewTCPClient(":6379", "", 0)
+    address := ":6379"
+    password := "secret"
+    db := 0
+    redisClient := redis.NewTCPClient(address, password, db)
 
 Example 2:
 
@@ -29,7 +32,7 @@ Example 2:
         return nil
     }
 
-    initConn := func(client *Client) error {
+    initConn := func(client *redis.Client) error {
          _, err := client.Auth("foo").Reply()
          if err != nil {
              return err
@@ -45,7 +48,7 @@ Example 2:
 
     redisClient := redis.NewClient(openConn, closeConn, initConn)
 
-`closeConn` and `initConn` functions can be `nil`.
+Both `closeConn` and `initConn` functions can be `nil`.
 
 Running commands
 ----------------
@@ -199,4 +202,4 @@ Connection pool
 
 Client uses connection pool with default capacity of 10 connections. To change pool capacity:
 
-    redisClient.ConnPool.MaxCap = 1
+    redisClient.ConnPool.(*redis.MultiConnPool).MaxCap = 1

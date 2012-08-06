@@ -1,6 +1,8 @@
 package redis_test
 
 import (
+	"io"
+	"net"
 	"strconv"
 	"sync"
 	"testing"
@@ -24,7 +26,7 @@ func Test(t *testing.T) { TestingT(t) }
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) SetUpTest(c *C) {
-	t.client = redis.NewTCPClient(":6379", "", 0)
+	t.client = redis.NewTCPClient(":6379", "", -1)
 	_, err := t.client.Flushdb().Reply()
 	c.Check(err, IsNil)
 
@@ -37,6 +39,24 @@ func (t *RedisTest) TearDownTest(c *C) {
 }
 
 //------------------------------------------------------------------------------
+
+func (t *RedisTest) TestInitConn(c *C) {
+	openConn := func() (io.ReadWriter, error) {
+		return net.Dial("tcp", ":6379")
+	}
+
+	isInitConnCalled := false
+	initConn := func(client *redis.Client) error {
+		isInitConnCalled = true
+		return nil
+	}
+
+	client := redis.NewClient(openConn, nil, initConn)
+	pong, err := client.Ping().Reply()
+	c.Check(err, IsNil)
+	c.Check(pong, Equals, "PONG")
+	c.Check(isInitConnCalled, Equals, true)
+}
 
 func (t *RedisTest) TestRunWithMissingReplyPart(c *C) {
 	req := t.client.Set("foo", "bar")
@@ -1664,6 +1684,25 @@ func (t *RedisTest) BenchmarkRedisGet(c *C) {
 
 	for i := 0; i < c.N; i++ {
 		t.client.Get("foo").Reply()
+	}
+}
+
+func (t *RedisTest) BenchmarkRedisMGet(c *C) {
+	c.StopTimer()
+
+	_, err := t.client.MSet("foo1", "bar1", "foo2", "bar2").Reply()
+	c.Check(err, IsNil)
+
+	for i := 0; i < 10; i++ {
+		values, err := t.client.MGet("foo1", "foo2").Reply()
+		c.Check(err, IsNil)
+		c.Check(values, DeepEquals, []interface{}{"bar1", "bar2"})
+	}
+
+	c.StartTimer()
+
+	for i := 0; i < c.N; i++ {
+		t.client.MGet("foo1", "foo2").Reply()
 	}
 }
 
