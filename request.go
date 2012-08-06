@@ -3,7 +3,6 @@ package redis
 import (
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 
 	"github.com/vmihailenco/bufreader"
@@ -34,17 +33,19 @@ func ParseReq(rd *bufreader.Reader) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if line[0] != '*' {
 		return []string{string(line)}, nil
 	}
+	numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
+	if err != nil {
+		return nil, err
+	}
 
 	args := make([]string, 0)
-	for {
+	for i := int64(0); i < numReplies; i++ {
 		line, err = rd.ReadLine('\n')
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
 			return nil, err
 		}
 		if line[0] != '$' {
