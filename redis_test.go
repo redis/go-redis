@@ -1835,6 +1835,11 @@ func (t *RedisTest) TestIncrPipeliningFromGoroutines(c *C) {
 	reqs, err := multiClient.RunQueued()
 	c.Check(err, IsNil)
 	c.Check(reqs, HasLen, 20000)
+	for _, req := range reqs {
+		if req.Err() != nil {
+			c.Errorf("got %v, expected nil", req.Err())
+		}
+	}
 
 	get := t.client.Get("TestIncrPipeliningFromGoroutinesKey")
 	c.Check(get.Err(), IsNil)
@@ -1857,6 +1862,11 @@ func (t *RedisTest) TestIncrTransaction(c *C) {
 	reqs, err := multiClient.Exec()
 	c.Check(err, IsNil)
 	c.Check(reqs, HasLen, 20000)
+	for _, req := range reqs {
+		if req.Err() != nil {
+			c.Errorf("got %v, expected nil", req.Err())
+		}
+	}
 
 	get := t.client.Get("TestIncrTransactionKey")
 	c.Check(get.Err(), IsNil)
