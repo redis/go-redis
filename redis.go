@@ -88,7 +88,7 @@ func (c *Client) conn() (*Conn, error) {
 	}
 	if isNew && c.InitConn != nil {
 		client := &Client{
-			ConnPool: NewOneConnPool(conn),
+			ConnPool: NewSingleConnPool(conn),
 		}
 		err = c.InitConn(client)
 		if err != nil {

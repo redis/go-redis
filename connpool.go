@@ -105,22 +105,22 @@ func (p *MultiConnPool) Len() int {
 
 //------------------------------------------------------------------------------
 
-type OneConnPool struct {
+type SingleConnPool struct {
 	conn *Conn
 }
 
-func NewOneConnPool(conn *Conn) *OneConnPool {
-	return &OneConnPool{conn: conn}
+func NewSingleConnPool(conn *Conn) *SingleConnPool {
+	return &SingleConnPool{conn: conn}
 }
 
-func (p *OneConnPool) Get() (*Conn, bool, error) {
+func (p *SingleConnPool) Get() (*Conn, bool, error) {
 	return p.conn, false, nil
 }
 
-func (p *OneConnPool) Add(conn *Conn) {}
+func (p *SingleConnPool) Add(conn *Conn) {}
 
-func (p *OneConnPool) Remove(conn *Conn) {}
+func (p *SingleConnPool) Remove(conn *Conn) {}
 
-func (p *OneConnPool) Len() int {
+func (p *SingleConnPool) Len() int {
 	return 1
 }

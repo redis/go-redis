@@ -20,7 +20,7 @@ func newPubSubClient(client *Client) (*PubSubClient, error) {
 
 	c := &PubSubClient{
 		Client: &Client{
-			ConnPool: NewOneConnPool(pubSubConn),
+			ConnPool: NewSingleConnPool(pubSubConn),
 		},
 		ch: make(chan *Message),
 	}
