@@ -13,7 +13,7 @@ import (
 	"github.com/vmihailenco/redis"
 )
 
-const redisAddr = ":6379"
+const redisAddr = ":8888"
 
 //------------------------------------------------------------------------------
 
@@ -1608,17 +1608,64 @@ func (t *RedisTest) TestZUnionStore(c *C) {
 
 //------------------------------------------------------------------------------
 
+func (t *RedisTest) TestPatternPubSub(c *C) {
+	pubsub, err := t.client.PubSubClient()
+	c.Check(err, IsNil)
+
+	ch, err := pubsub.PSubscribe("mychannel*")
+	c.Check(err, IsNil)
+	c.Check(ch, Not(IsNil))
+
+	pub := t.client.Publish("mychannel1", "hello")
+	c.Check(pub.Err(), IsNil)
+	c.Check(pub.Val(), Equals, int64(1))
+
+	err = pubsub.PUnsubscribe("mychannel*")
+	c.Check(err, IsNil)
+
+	select {
+	case msg := <-ch:
+		c.Check(msg.Err, Equals, nil)
+		c.Check(msg.Name, Equals, "psubscribe")
+		c.Check(msg.Channel, Equals, "mychannel*")
+		c.Check(msg.Number, Equals, int64(1))
+	case <-time.After(time.Second):
+		c.Error("Channel is empty.")
+	}
+
+	select {
+	case msg := <-ch:
+		c.Check(msg.Err, Equals, nil)
+		c.Check(msg.Name, Equals, "pmessage")
+		c.Check(msg.ChannelPattern, Equals, "mychannel*")
+		c.Check(msg.Channel, Equals, "mychannel1")
+		c.Check(msg.Message, Equals, "hello")
+	case <-time.After(time.Second):
+		c.Error("Channel is empty.")
+	}
+
+	select {
+	case msg := <-ch:
+		c.Check(msg.Err, Equals, nil)
+		c.Check(msg.Name, Equals, "punsubscribe")
+		c.Check(msg.Channel, Equals, "mychannel*")
+		c.Check(msg.Number, Equals, int64(0))
+	case <-time.After(time.Second):
+		c.Error("Channel is empty.")
+	}
+}
+
 func (t *RedisTest) TestPubSub(c *C) {
 	pubsub, err := t.client.PubSubClient()
 	c.Check(err, IsNil)
 
 	ch, err := pubsub.Subscribe("mychannel")
 	c.Check(err, IsNil)
-	c.Check(ch, Not(Equals), nil)
+	c.Check(ch, Not(IsNil))
 
-	ch, err = pubsub.Subscribe("mychannel2")
+	ch2, err := pubsub.Subscribe("mychannel2")
 	c.Check(err, IsNil)
-	c.Check(ch, Not(Equals), nil)
+	c.Check(ch2, Equals, ch)
 
 	pub := t.client.Publish("mychannel", "hello")
 	c.Check(pub.Err(), IsNil)

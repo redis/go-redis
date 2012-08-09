@@ -28,14 +28,15 @@ func newPubSubClient(client *Client) (*PubSubClient, error) {
 }
 
 type Message struct {
-	Name, Channel, Message string
-	Number                 int64
+	Name, Channel, ChannelPattern, Message string
+	Number                                 int64
 
 	Err error
 }
 
 func (c *PubSubClient) consumeMessages() {
 	conn, err := c.conn()
+	// SignleConnPool never returns error.
 	if err != nil {
 		panic(err)
 	}
@@ -55,7 +56,7 @@ func (c *PubSubClient) consumeMessages() {
 
 			msgName := reply[0].(string)
 			switch msgName {
-			case "subscribe", "unsubscribe":
+			case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
 				msg.Name = msgName
 				msg.Channel = reply[1].(string)
 				msg.Number = reply[2].(int64)
@@ -63,6 +64,11 @@ func (c *PubSubClient) consumeMessages() {
 				msg.Name = msgName
 				msg.Channel = reply[1].(string)
 				msg.Message = reply[2].(string)
+			case "pmessage":
+				msg.Name = msgName
+				msg.ChannelPattern = reply[1].(string)
+				msg.Channel = reply[2].(string)
+				msg.Message = reply[3].(string)
 			default:
 				msg.Err = fmt.Errorf("Unsupported message name: %q.", msgName)
 			}
@@ -75,8 +81,8 @@ func (c *PubSubClient) consumeMessages() {
 	}
 }
 
-func (c *PubSubClient) Subscribe(channels ...string) (chan *Message, error) {
-	args := append([]string{"SUBSCRIBE"}, channels...)
+func (c *PubSubClient) subscribe(cmd string, channels ...string) (chan *Message, error) {
+	args := append([]string{cmd}, channels...)
 	req := NewMultiBulkReq(args...)
 
 	conn, err := c.conn()
@@ -95,8 +101,16 @@ func (c *PubSubClient) Subscribe(channels ...string) (chan *Message, error) {
 	return c.ch, nil
 }
 
-func (c *PubSubClient) Unsubscribe(channels ...string) error {
-	args := append([]string{"UNSUBSCRIBE"}, channels...)
+func (c *PubSubClient) Subscribe(channels ...string) (chan *Message, error) {
+	return c.subscribe("SUBSCRIBE", channels...)
+}
+
+func (c *PubSubClient) PSubscribe(patterns ...string) (chan *Message, error) {
+	return c.subscribe("PSUBSCRIBE", patterns...)
+}
+
+func (c *PubSubClient) unsubscribe(cmd string, channels ...string) error {
+	args := append([]string{cmd}, channels...)
 	req := NewMultiBulkReq(args...)
 
 	conn, err := c.conn()
@@ -105,4 +119,12 @@ func (c *PubSubClient) Unsubscribe(channels ...string) error {
 	}
 
 	return c.WriteReq(req.Req(), conn)
+}
+
+func (c *PubSubClient) Unsubscribe(channels ...string) error {
+	return c.unsubscribe("UNSUBSCRIBE", channels...)
+}
+
+func (c *PubSubClient) PUnsubscribe(patterns ...string) error {
+	return c.unsubscribe("PUNSUBSCRIBE", patterns...)
 }
