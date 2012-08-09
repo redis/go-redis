@@ -1,7 +1,6 @@
 package redis
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"strconv"
@@ -27,7 +26,24 @@ func isNoReplies(line []byte) bool {
 
 //------------------------------------------------------------------------------
 
-func ParseReq(rd *bufio.Reader) ([]string, error) {
+type ReadLiner interface {
+	ReadLine() ([]byte, bool, error)
+}
+
+func readLine(rd ReadLiner) ([]byte, error) {
+	line, isPrefix, err := rd.ReadLine()
+	if err != nil {
+		return line, err
+	}
+	if isPrefix {
+		return line, ErrReaderTooSmall
+	}
+	return line, nil
+}
+
+//------------------------------------------------------------------------------
+
+func ParseReq(rd ReadLiner) ([]string, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -48,8 +64,7 @@ func ParseReq(rd *bufio.Reader) ([]string, error) {
 			return nil, err
 		}
 		if line[0] != '$' {
-			buf, _ := rd.Peek(rd.Buffered())
-			return nil, fmt.Errorf("Expected '$', but got %q of %q.", line, buf)
+			return nil, fmt.Errorf("Expected '$', but got %q", line)
 		}
 
 		line, err = readLine(rd)
@@ -82,7 +97,7 @@ func PackReq(args []string) []byte {
 
 type Req interface {
 	Req() []byte
-	ParseReply(*bufio.Reader) (interface{}, error)
+	ParseReply(ReadLiner) (interface{}, error)
 	SetErr(error)
 	Err() error
 	SetVal(interface{})
@@ -136,7 +151,7 @@ func (r *BaseReq) InterfaceVal() interface{} {
 	return r.val
 }
 
-func (r *BaseReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
+func (r *BaseReq) ParseReply(rd ReadLiner) (interface{}, error) {
 	panic("abstract")
 }
 
@@ -152,7 +167,7 @@ func NewStatusReq(args ...string) *StatusReq {
 	}
 }
 
-func (r *StatusReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
+func (r *StatusReq) ParseReply(rd ReadLiner) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -161,8 +176,7 @@ func (r *StatusReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
 	if line[0] == '-' {
 		return nil, errors.New(string(line[1:]))
 	} else if line[0] != '+' {
-		buf, _ := rd.Peek(rd.Buffered())
-		return nil, fmt.Errorf("Expected '+', but got %q of %q.", line, buf)
+		return nil, fmt.Errorf("Expected '+', but got %q", line)
 	}
 
 	return string(line[1:]), nil
@@ -187,7 +201,7 @@ func NewIntReq(args ...string) *IntReq {
 	}
 }
 
-func (r *IntReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
+func (r *IntReq) ParseReply(rd ReadLiner) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -196,8 +210,7 @@ func (r *IntReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
 	if line[0] == '-' {
 		return nil, errors.New(string(line[1:]))
 	} else if line[0] != ':' {
-		buf, _ := rd.Peek(rd.Buffered())
-		return nil, fmt.Errorf("Expected ':', but got %q of %q.", line, buf)
+		return nil, fmt.Errorf("Expected ':', but got line %q", line)
 	}
 
 	return strconv.ParseInt(string(line[1:]), 10, 64)
@@ -222,7 +235,7 @@ func NewIntNilReq(args ...string) *IntNilReq {
 	}
 }
 
-func (r *IntNilReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
+func (r *IntNilReq) ParseReply(rd ReadLiner) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -236,8 +249,7 @@ func (r *IntNilReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
 		return nil, Nil
 	}
 
-	buf, _ := rd.Peek(rd.Buffered())
-	return nil, fmt.Errorf("Expected ':', but got %q of %q.", line, buf)
+	return nil, fmt.Errorf("Expected ':', but got line %q", line)
 }
 
 func (r *IntNilReq) Val() int64 {
@@ -259,7 +271,7 @@ func NewBoolReq(args ...string) *BoolReq {
 	}
 }
 
-func (r *BoolReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
+func (r *BoolReq) ParseReply(rd ReadLiner) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -268,8 +280,7 @@ func (r *BoolReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
 	if line[0] == '-' {
 		return nil, errors.New(string(line[1:]))
 	} else if line[0] != ':' {
-		buf, _ := rd.Peek(rd.Buffered())
-		return nil, fmt.Errorf("Expected ':', but got %q of %q.", line, buf)
+		return nil, fmt.Errorf("Expected ':', but got line %q", line)
 	}
 
 	return line[1] == '1', nil
@@ -294,7 +305,7 @@ func NewBulkReq(args ...string) *BulkReq {
 	}
 }
 
-func (r *BulkReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
+func (r *BulkReq) ParseReply(rd ReadLiner) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -303,8 +314,7 @@ func (r *BulkReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
 	if line[0] == '-' {
 		return nil, errors.New(string(line[1:]))
 	} else if line[0] != '$' {
-		buf, _ := rd.Peek(rd.Buffered())
-		return nil, fmt.Errorf("Expected '$', but got %q of %q.", line, buf)
+		return nil, fmt.Errorf("Expected '$', but got line %q", line)
 	}
 
 	if isNil(line) {
@@ -338,7 +348,7 @@ func NewFloatReq(args ...string) *FloatReq {
 	}
 }
 
-func (r *FloatReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
+func (r *FloatReq) ParseReply(rd ReadLiner) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -347,8 +357,7 @@ func (r *FloatReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
 	if line[0] == '-' {
 		return nil, errors.New(string(line[1:]))
 	} else if line[0] != '$' {
-		buf, _ := rd.Peek(rd.Buffered())
-		return nil, fmt.Errorf("Expected '$', but got %q of %q.", line, buf)
+		return nil, fmt.Errorf("Expected '$', but got line %q", line)
 	}
 
 	if isNil(line) {
@@ -382,7 +391,7 @@ func NewMultiBulkReq(args ...string) *MultiBulkReq {
 	}
 }
 
-func (r *MultiBulkReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
+func (r *MultiBulkReq) ParseReply(rd ReadLiner) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -391,8 +400,7 @@ func (r *MultiBulkReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
 	if line[0] == '-' {
 		return nil, errors.New(string(line[1:]))
 	} else if line[0] != '*' {
-		buf, _ := rd.Peek(rd.Buffered())
-		return nil, fmt.Errorf("Expected '*', but got line %q of %q.", line, buf)
+		return nil, fmt.Errorf("Expected '*', but got line %q", line)
 	} else if isNil(line) {
 		return nil, Nil
 	}
@@ -432,8 +440,7 @@ func (r *MultiBulkReq) ParseReply(rd *bufio.Reader) (interface{}, error) {
 				val = append(val, string(line))
 			}
 		} else {
-			buf, _ := rd.Peek(rd.Buffered())
-			return nil, fmt.Errorf("Expected '$', but got line %q of %q.", line, buf)
+			return nil, fmt.Errorf("Expected '$', but got line %q", line)
 		}
 	}
 

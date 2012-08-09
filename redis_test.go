@@ -13,6 +13,8 @@ import (
 	"github.com/vmihailenco/redis"
 )
 
+const redisAddr = ":6379"
+
 //------------------------------------------------------------------------------
 
 type RedisTest struct {
@@ -26,7 +28,7 @@ func Test(t *testing.T) { TestingT(t) }
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) SetUpTest(c *C) {
-	t.client = redis.NewTCPClient(":6379", "", -1)
+	t.client = redis.NewTCPClient(redisAddr, "", -1)
 	c.Check(t.client.Flushdb().Err(), IsNil)
 
 	t.multiClient = t.client.Multi()
@@ -40,7 +42,7 @@ func (t *RedisTest) TearDownTest(c *C) {
 
 func (t *RedisTest) TestInitConn(c *C) {
 	openConn := func() (io.ReadWriter, error) {
-		return net.Dial("tcp", ":6379")
+		return net.Dial("tcp", redisAddr)
 	}
 
 	isInitConnCalled := false
