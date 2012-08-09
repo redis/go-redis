@@ -12,15 +12,9 @@ type PubSubClient struct {
 }
 
 func newPubSubClient(client *Client) (*PubSubClient, error) {
-	pubSubConn, _, err := client.ConnPool.Get()
-	if err != nil {
-		return nil, err
-	}
-	client.ConnPool.Remove(pubSubConn)
-
 	c := &PubSubClient{
 		Client: &Client{
-			ConnPool: NewSingleConnPool(pubSubConn),
+			ConnPool: NewSingleConnPool(client.ConnPool),
 		},
 		ch: make(chan *Message),
 	}

@@ -3,7 +3,6 @@ package redis
 import (
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -82,6 +81,10 @@ func NewTLSClient(addr string, tlsConfig *tls.Config, password string, db int64)
 	)
 }
 
+func (c *Client) Close() {
+	c.ConnPool.Close()
+}
+
 func (c *Client) conn() (*Conn, error) {
 	conn, isNew, err := c.ConnPool.Get()
 	if err != nil {
@@ -89,7 +92,7 @@ func (c *Client) conn() (*Conn, error) {
 	}
 	if isNew && c.InitConn != nil {
 		client := &Client{
-			ConnPool: NewSingleConnPool(conn),
+			ConnPool: NewSingleConnPoolConn(c.ConnPool, conn),
 		}
 		err = c.InitConn(client)
 		if err != nil {
@@ -184,92 +187,6 @@ func (c *Client) RunReqs(reqs []Req, conn *Conn) error {
 		return err
 	}
 
-	for i := 0; i < len(reqs); i++ {
-		req := reqs[i]
-		val, err := req.ParseReply(conn.Rd)
-		if err != nil {
-			req.SetErr(err)
-		} else {
-			req.SetVal(val)
-		}
-	}
-
-	return nil
-}
-
-//------------------------------------------------------------------------------
-
-func (c *Client) Discard() {
-	c.mtx.Lock()
-	c.reqs = c.reqs[:0]
-	c.mtx.Unlock()
-}
-
-func (c *Client) Exec() ([]Req, error) {
-	c.mtx.Lock()
-	if len(c.reqs) == 0 {
-		c.mtx.Unlock()
-		return c.reqs, nil
-	}
-	reqs := c.reqs
-	c.reqs = make([]Req, 0)
-	c.mtx.Unlock()
-
-	conn, err := c.conn()
-	if err != nil {
-		return nil, err
-	}
-
-	err = c.ExecReqs(reqs, conn)
-	if err != nil {
-		c.ConnPool.Remove(conn)
-		return nil, err
-	}
-
-	c.ConnPool.Add(conn)
-	return reqs, nil
-}
-
-func (c *Client) ExecReqs(reqs []Req, conn *Conn) error {
-	multiReq := make([]byte, 0, 1024)
-	multiReq = append(multiReq, PackReq([]string{"MULTI"})...)
-	for _, req := range reqs {
-		multiReq = append(multiReq, req.Req()...)
-	}
-	multiReq = append(multiReq, PackReq([]string{"EXEC"})...)
-
-	err := c.WriteReq(multiReq, conn)
-	if err != nil {
-		return err
-	}
-
-	statusReq := NewStatusReq()
-
-	// Parse MULTI command reply.
-	_, err = statusReq.ParseReply(conn.Rd)
-	if err != nil {
-		return err
-	}
-
-	// Parse queued replies.
-	for _ = range reqs {
-		_, err = statusReq.ParseReply(conn.Rd)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Parse number of replies.
-	line, err := readLine(conn.Rd)
-	if err != nil {
-		return err
-	}
-	if line[0] != '*' {
-		buf, _ := conn.Rd.Peek(conn.Rd.Buffered())
-		return fmt.Errorf("Expected '*', but got line %q of %q.", line, buf)
-	}
-
-	// Parse replies.
 	for i := 0; i < len(reqs); i++ {
 		req := reqs[i]
 		val, err := req.ParseReply(conn.Rd)

@@ -20,8 +20,12 @@ func isEmpty(line []byte) bool {
 	return len(line) == 2 && line[0] == '$' && line[1] == '0'
 }
 
+func isNilReplies(line []byte) bool {
+	return len(line) == 3 && line[0] == '*' && line[1] == '-' && line[2] == '1'
+}
+
 func isNoReplies(line []byte) bool {
-	return len(line) >= 2 && line[1] == '*' && line[1] == '0'
+	return len(line) == 2 && line[1] == '*' && line[1] == '0'
 }
 
 //------------------------------------------------------------------------------
@@ -401,7 +405,7 @@ func (r *MultiBulkReq) ParseReply(rd ReadLiner) (interface{}, error) {
 		return nil, errors.New(string(line[1:]))
 	} else if line[0] != '*' {
 		return nil, fmt.Errorf("Expected '*', but got line %q", line)
-	} else if isNil(line) {
+	} else if isNilReplies(line) {
 		return nil, Nil
 	}
 
@@ -420,14 +424,15 @@ func (r *MultiBulkReq) ParseReply(rd ReadLiner) (interface{}, error) {
 			return nil, err
 		}
 
-		if line[0] == ':' {
+		switch line[0] {
+		case ':':
 			var n int64
 			n, err = strconv.ParseInt(string(line[1:]), 10, 64)
 			if err != nil {
 				return nil, err
 			}
 			val = append(val, n)
-		} else if line[0] == '$' {
+		case '$':
 			if isEmpty(line) {
 				val = append(val, "")
 			} else if isNil(line) {
@@ -439,7 +444,7 @@ func (r *MultiBulkReq) ParseReply(rd ReadLiner) (interface{}, error) {
 				}
 				val = append(val, string(line))
 			}
-		} else {
+		default:
 			return nil, fmt.Errorf("Expected '$', but got line %q", line)
 		}
 	}

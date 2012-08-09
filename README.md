@@ -93,14 +93,18 @@ Running commands
 Pipelining
 ----------
 
-Client has ability to run several commands with one read/write:
+Client has ability to run commands in batches:
 
-    multiClient := redisClient.Multi()
+    pipeline, err := redisClient.PipelineClient()
+    if err != nil {
+        panic(err)
+    }
+    defer pipeline.Close()
 
-    setReq := multiClient.Set("foo1", "bar1") // queue command SET
-    getReq := multiClient.Get("foo2") // queue command GET
+    setReq := pipeline.Set("foo1", "bar1") // queue command SET
+    getReq := pipeline.Get("foo2") // queue command GET
 
-    reqs, err := multiClient.RunQueued() // run queued commands
+    reqs, err := pipeline.RunQueued() // run queued commands
     if err != nil {
         panic(err)
     }
@@ -121,28 +125,33 @@ Multi/Exec
 
 Example:
 
-    multiClient := redisClient.Multi()
-
-    get1 := multiClient.Get("foo1")
-    get2 := multiClient.Get("foo2")
-    reqs, err := multiClient.Exec()
+    multiClient, err := redisClient.MultiClient()
     if err != nil {
+        panic(err)
+    }
+    defer multiClient.Close()
+
+    watch := mutliClient.Watch("foo")
+    if watch.Err() != nil {
+        panic(watch.Err())
+    }
+
+    // Start transaction.
+    multiClient.Multi()
+
+    set := multiClient.Set("foo", watch.Val() + "1")
+
+    reqs, err := multiClient.Exec()
+    if err == redis.Nil {
+        // Repeat transaction.
+    } else if err != nil {
         panic(err)
     }
     for _, req := range reqs {
         // ...
     }
 
-
-    if get1.Err() != nil && get1.Err() != redis.Nil {
-        panic(get1.Err())
-    }
-    val1 := get1.Val()
-
-    if get2.Err() != nil && get2.Err() != redis.Nil {
-        panic(get2.Err())
-    }
-    val2 := get2.Val()
+    ok := set.Val()
 
 Pub/sub
 -------
@@ -160,6 +169,7 @@ Subscribe:
     if err != nil {
         panic(err)
     }
+    defer pubsub.Close()
 
     ch, err := pubsub.Subscribe("mychannel")
     if err != nil {

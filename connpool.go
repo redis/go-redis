@@ -25,6 +25,7 @@ type ConnPool interface {
 	Add(*Conn)
 	Remove(*Conn)
 	Len() int
+	Close()
 }
 
 //------------------------------------------------------------------------------
@@ -102,18 +103,39 @@ func (p *MultiConnPool) Len() int {
 	return len(p.conns)
 }
 
+func (p *MultiConnPool) Close() {}
+
 //------------------------------------------------------------------------------
 
 type SingleConnPool struct {
+	mtx  sync.Mutex
+	pool ConnPool
 	conn *Conn
 }
 
-func NewSingleConnPool(conn *Conn) *SingleConnPool {
-	return &SingleConnPool{conn: conn}
+func NewSingleConnPoolConn(pool ConnPool, conn *Conn) *SingleConnPool {
+	return &SingleConnPool{
+		pool: pool,
+		conn: conn,
+	}
+}
+
+func NewSingleConnPool(pool ConnPool) *SingleConnPool {
+	return NewSingleConnPoolConn(pool, nil)
 }
 
 func (p *SingleConnPool) Get() (*Conn, bool, error) {
-	return p.conn, false, nil
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+	if p.conn != nil {
+		return p.conn, false, nil
+	}
+	conn, isNew, err := p.pool.Get()
+	if err != nil {
+		return nil, false, err
+	}
+	p.conn = conn
+	return p.conn, isNew, nil
 }
 
 func (p *SingleConnPool) Add(conn *Conn) {}
@@ -122,4 +144,11 @@ func (p *SingleConnPool) Remove(conn *Conn) {}
 
 func (p *SingleConnPool) Len() int {
 	return 1
+}
+
+func (p *SingleConnPool) Close() {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+	p.pool.Add(p.conn)
+	p.conn = nil
 }

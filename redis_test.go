@@ -18,7 +18,7 @@ const redisAddr = ":8888"
 //------------------------------------------------------------------------------
 
 type RedisTest struct {
-	client, multiClient *redis.Client
+	client *redis.Client
 }
 
 var _ = Suite(&RedisTest{})
@@ -30,8 +30,6 @@ func Test(t *testing.T) { TestingT(t) }
 func (t *RedisTest) SetUpTest(c *C) {
 	t.client = redis.NewTCPClient(redisAddr, "", -1)
 	c.Check(t.client.Flushdb().Err(), IsNil)
-
-	t.multiClient = t.client.Multi()
 }
 
 func (t *RedisTest) TearDownTest(c *C) {
@@ -1611,6 +1609,7 @@ func (t *RedisTest) TestZUnionStore(c *C) {
 func (t *RedisTest) TestPatternPubSub(c *C) {
 	pubsub, err := t.client.PubSubClient()
 	c.Check(err, IsNil)
+	defer pubsub.Close()
 
 	ch, err := pubsub.PSubscribe("mychannel*")
 	c.Check(err, IsNil)
@@ -1658,6 +1657,7 @@ func (t *RedisTest) TestPatternPubSub(c *C) {
 func (t *RedisTest) TestPubSub(c *C) {
 	pubsub, err := t.client.PubSubClient()
 	c.Check(err, IsNil)
+	defer pubsub.Close()
 
 	ch, err := pubsub.Subscribe("mychannel")
 	c.Check(err, IsNil)
@@ -1749,10 +1749,15 @@ func (t *RedisTest) TestPipelining(c *C) {
 	c.Check(set.Err(), IsNil)
 	c.Check(set.Val(), Equals, "OK")
 
-	setReq := t.multiClient.Set("foo1", "bar1")
-	getReq := t.multiClient.Get("foo2")
+	multi, err := t.client.MultiClient()
+	c.Check(err, IsNil)
 
-	reqs, err := t.multiClient.RunQueued()
+	multi.Multi()
+
+	setReq := multi.Set("foo1", "bar1")
+	getReq := multi.Get("foo2")
+
+	reqs, err := multi.RunQueued()
 	c.Check(err, IsNil)
 	c.Check(reqs, HasLen, 2)
 
@@ -1769,16 +1774,74 @@ func (t *RedisTest) TestRunQueuedOnEmptyQueue(c *C) {
 	c.Check(reqs, HasLen, 0)
 }
 
+func (t *RedisTest) TestIncrPipeliningFromGoroutines(c *C) {
+	multi, err := t.client.PipelineClient()
+	c.Check(err, IsNil)
+	defer multi.Close()
+
+	wg := &sync.WaitGroup{}
+	for i := int64(0); i < 20000; i++ {
+		wg.Add(1)
+		go func() {
+			multi.Incr("TestIncrPipeliningFromGoroutinesKey")
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	reqs, err := multi.RunQueued()
+	c.Check(err, IsNil)
+	c.Check(reqs, HasLen, 20000)
+	for _, req := range reqs {
+		if req.Err() != nil {
+			c.Errorf("got %v, expected nil", req.Err())
+		}
+	}
+
+	get := t.client.Get("TestIncrPipeliningFromGoroutinesKey")
+	c.Check(get.Err(), IsNil)
+	c.Check(get.Val(), Equals, "20000")
+}
+
+func (t *RedisTest) TestPipeliningFromGoroutines(c *C) {
+	multi, err := t.client.PipelineClient()
+	c.Check(err, IsNil)
+	defer multi.Close()
+
+	for i := int64(0); i < 1000; i += 2 {
+		go func() {
+			msg1 := "echo" + strconv.FormatInt(i, 10)
+			msg2 := "echo" + strconv.FormatInt(i+1, 10)
+
+			echo1Req := multi.Echo(msg1)
+			echo2Req := multi.Echo(msg2)
+
+			reqs, err := multi.RunQueued()
+			c.Check(reqs, HasLen, 2)
+			c.Check(err, IsNil)
+
+			c.Check(echo1Req.Err(), IsNil)
+			c.Check(echo1Req.Val(), Equals, msg1)
+
+			c.Check(echo2Req.Err(), IsNil)
+			c.Check(echo2Req.Val(), Equals, msg2)
+		}()
+	}
+}
+
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) TestDiscard(c *C) {
-	multiC := t.client.Multi()
+	multi, err := t.client.MultiClient()
+	c.Check(err, IsNil)
 
-	multiC.Set("foo1", "bar1")
-	multiC.Discard()
-	multiC.Set("foo2", "bar2")
+	multi.Multi()
 
-	reqs, err := multiC.Exec()
+	multi.Set("foo1", "bar1")
+	multi.Discard()
+	multi.Set("foo2", "bar2")
+
+	reqs, err := multi.Exec()
 	c.Check(err, IsNil)
 	c.Check(reqs, HasLen, 1)
 
@@ -1792,12 +1855,15 @@ func (t *RedisTest) TestDiscard(c *C) {
 }
 
 func (t *RedisTest) TestMultiExec(c *C) {
-	multiC := t.client.Multi()
+	multi, err := t.client.MultiClient()
+	c.Check(err, IsNil)
 
-	setR := multiC.Set("foo", "bar")
-	getR := multiC.Get("foo")
+	multi.Multi()
 
-	reqs, err := multiC.Exec()
+	setR := multi.Set("foo", "bar")
+	getR := multi.Get("foo")
+
+	reqs, err := multi.Exec()
 	c.Check(err, IsNil)
 	c.Check(reqs, HasLen, 2)
 
@@ -1827,30 +1893,6 @@ func (t *RedisTest) TestEchoFromGoroutines(c *C) {
 	}
 }
 
-func (t *RedisTest) TestPipeliningFromGoroutines(c *C) {
-	multiClient := t.client.Multi()
-
-	for i := int64(0); i < 1000; i += 2 {
-		go func() {
-			msg1 := "echo" + strconv.FormatInt(i, 10)
-			msg2 := "echo" + strconv.FormatInt(i+1, 10)
-
-			echo1Req := multiClient.Echo(msg1)
-			echo2Req := multiClient.Echo(msg2)
-
-			reqs, err := multiClient.RunQueued()
-			c.Check(reqs, HasLen, 2)
-			c.Check(err, IsNil)
-
-			c.Check(echo1Req.Err(), IsNil)
-			c.Check(echo1Req.Val(), Equals, msg1)
-
-			c.Check(echo2Req.Err(), IsNil)
-			c.Check(echo2Req.Val(), Equals, msg2)
-		}()
-	}
-}
-
 func (t *RedisTest) TestIncrFromGoroutines(c *C) {
 	wg := &sync.WaitGroup{}
 	for i := int64(0); i < 20000; i++ {
@@ -1868,47 +1910,23 @@ func (t *RedisTest) TestIncrFromGoroutines(c *C) {
 	c.Check(get.Val(), Equals, "20000")
 }
 
-func (t *RedisTest) TestIncrPipeliningFromGoroutines(c *C) {
-	multiClient := t.client.Multi()
-
-	wg := &sync.WaitGroup{}
-	for i := int64(0); i < 20000; i++ {
-		wg.Add(1)
-		go func() {
-			multiClient.Incr("TestIncrPipeliningFromGoroutinesKey")
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-
-	reqs, err := multiClient.RunQueued()
-	c.Check(err, IsNil)
-	c.Check(reqs, HasLen, 20000)
-	for _, req := range reqs {
-		if req.Err() != nil {
-			c.Errorf("got %v, expected nil", req.Err())
-		}
-	}
-
-	get := t.client.Get("TestIncrPipeliningFromGoroutinesKey")
-	c.Check(get.Err(), IsNil)
-	c.Check(get.Val(), Equals, "20000")
-}
-
 func (t *RedisTest) TestIncrTransaction(c *C) {
-	multiClient := t.client.Multi()
+	multi, err := t.client.MultiClient()
+	c.Check(err, IsNil)
+
+	multi.Multi()
 
 	wg := &sync.WaitGroup{}
 	for i := int64(0); i < 20000; i++ {
 		wg.Add(1)
 		go func() {
-			multiClient.Incr("TestIncrTransactionKey")
+			multi.Incr("TestIncrTransactionKey")
 			wg.Done()
 		}()
 	}
 	wg.Wait()
 
-	reqs, err := multiClient.Exec()
+	reqs, err := multi.Exec()
 	c.Check(err, IsNil)
 	c.Check(reqs, HasLen, 20000)
 	for _, req := range reqs {
@@ -1920,6 +1938,55 @@ func (t *RedisTest) TestIncrTransaction(c *C) {
 	get := t.client.Get("TestIncrTransactionKey")
 	c.Check(get.Err(), IsNil)
 	c.Check(get.Val(), Equals, "20000")
+}
+
+func (t *RedisTest) transactionalIncr(c *C, wg *sync.WaitGroup) {
+	multi, err := t.client.MultiClient()
+	c.Check(err, IsNil)
+	defer multi.Close()
+
+	watch := multi.Watch("foo")
+	c.Check(watch.Err(), IsNil)
+	c.Check(watch.Val(), Equals, "OK")
+
+	get := multi.Get("foo")
+	c.Check(get.Err(), IsNil)
+	c.Check(get.Val(), Not(Equals), redis.Nil)
+
+	v, err := strconv.ParseInt(get.Val(), 10, 64)
+	c.Check(err, IsNil)
+
+	multi.Multi()
+	set := multi.Set("foo", strconv.FormatInt(v+1, 10))
+	reqs, err := multi.Exec()
+	if err == redis.Nil {
+		t.transactionalIncr(c, wg)
+		return
+	}
+	c.Check(reqs, HasLen, 1)
+	c.Check(err, IsNil)
+
+	c.Check(set.Err(), IsNil)
+	c.Check(set.Val(), Equals, "OK")
+
+	wg.Done()
+}
+
+func (t *RedisTest) TestWatchUnwatch(c *C) {
+	set := t.client.Set("foo", "0")
+	c.Check(set.Err(), IsNil)
+	c.Check(set.Val(), Equals, "OK")
+
+	wg := &sync.WaitGroup{}
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go t.transactionalIncr(c, wg)
+	}
+	wg.Wait()
+
+	get := t.client.Get("foo")
+	c.Check(get.Err(), IsNil)
+	c.Check(get.Val(), Equals, "1000")
 }
 
 //------------------------------------------------------------------------------
