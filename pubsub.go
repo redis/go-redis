@@ -42,17 +42,6 @@ func (c *PubSubClient) consumeMessages() {
 	req := NewMultiBulkReq()
 
 	for {
-		// Replies can arrive in batches.
-		// Read whole reply and parse messages one by one.
-
-		err := c.ReadReply(conn)
-		if err != nil {
-			msg := &Message{}
-			msg.Err = err
-			c.ch <- msg
-			return
-		}
-
 		for {
 			msg := &Message{}
 
@@ -79,7 +68,7 @@ func (c *PubSubClient) consumeMessages() {
 			}
 			c.ch <- msg
 
-			if !conn.Rd.HasUnread() {
+			if conn.Rd.Buffered() <= 0 {
 				break
 			}
 		}

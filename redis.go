@@ -2,12 +2,15 @@ package redis
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
+)
 
-	"github.com/vmihailenco/bufreader"
+var (
+	ErrReaderTooSmall = errors.New("redis: Reader is too small")
 )
 
 type OpenConnFunc func() (io.ReadWriter, error)
@@ -50,9 +53,7 @@ func AuthSelectFunc(password string, db int64) InitConnFunc {
 	}
 }
 
-func createReader() (*bufreader.Reader, error) {
-	return bufreader.NewSizedReader(8192), nil
-}
+//------------------------------------------------------------------------------
 
 type Client struct {
 	mtx      sync.Mutex
@@ -103,21 +104,6 @@ func (c *Client) WriteReq(buf []byte, conn *Conn) error {
 	return err
 }
 
-func (c *Client) ReadReply(conn *Conn) error {
-	_, err := conn.Rd.ReadFrom(conn.RW)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *Client) WriteRead(buf []byte, conn *Conn) error {
-	if err := c.WriteReq(buf, conn); err != nil {
-		return err
-	}
-	return c.ReadReply(conn)
-}
-
 func (c *Client) Process(req Req) {
 	if c.reqs == nil {
 		c.Run(req)
@@ -139,7 +125,7 @@ func (c *Client) Run(req Req) {
 		return
 	}
 
-	err = c.WriteRead(req.Req(), conn)
+	err = c.WriteReq(req.Req(), conn)
 	if err != nil {
 		c.ConnPool.Remove(conn)
 		req.SetErr(err)
@@ -193,19 +179,12 @@ func (c *Client) RunReqs(reqs []Req, conn *Conn) error {
 		}
 	}
 
-	err := c.WriteRead(multiReq, conn)
+	err := c.WriteReq(multiReq, conn)
 	if err != nil {
 		return err
 	}
 
 	for i := 0; i < len(reqs); i++ {
-		if !conn.Rd.HasUnread() {
-			_, err := conn.Rd.ReadFrom(conn.RW)
-			if err != err {
-				return err
-			}
-		}
-
 		req := reqs[i]
 		val, err := req.ParseReply(conn.Rd)
 		if err != nil {
@@ -259,7 +238,7 @@ func (c *Client) ExecReqs(reqs []Req, conn *Conn) error {
 	}
 	multiReq = append(multiReq, PackReq([]string{"EXEC"})...)
 
-	err := c.WriteRead(multiReq, conn)
+	err := c.WriteReq(multiReq, conn)
 	if err != nil {
 		return err
 	}
@@ -274,13 +253,6 @@ func (c *Client) ExecReqs(reqs []Req, conn *Conn) error {
 
 	// Parse queued replies.
 	for _ = range reqs {
-		if !conn.Rd.HasUnread() {
-			_, err := conn.Rd.ReadFrom(conn.RW)
-			if err != err {
-				return err
-			}
-		}
-
 		_, err = statusReq.ParseReply(conn.Rd)
 		if err != nil {
 			return err
@@ -288,12 +260,13 @@ func (c *Client) ExecReqs(reqs []Req, conn *Conn) error {
 	}
 
 	// Parse number of replies.
-	line, err := conn.Rd.ReadLine('\n')
+	line, err := readLine(conn.Rd)
 	if err != nil {
 		return err
 	}
 	if line[0] != '*' {
-		return fmt.Errorf("Expected '*', but got line %q of %q.", line, conn.Rd.Bytes())
+		buf, _ := conn.Rd.Peek(conn.Rd.Buffered())
+		return fmt.Errorf("Expected '*', but got line %q of %q.", line, buf)
 	}
 
 	// Parse replies.

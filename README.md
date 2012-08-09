@@ -16,9 +16,8 @@ Supports:
 Installation
 ------------
 
-Run:
+Install:
 
-    go get github.com/vmihailenco/bufreader
     go get github.com/vmihailenco/redis
 
 Run tests:

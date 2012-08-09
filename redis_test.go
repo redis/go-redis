@@ -1964,20 +1964,23 @@ func (t *RedisTest) BenchmarkRedisMGet(c *C) {
 func (t *RedisTest) BenchmarkRedisWriteRead(c *C) {
 	c.StopTimer()
 
-	req := []byte("PING\r\n")
 	conn, _, err := t.client.ConnPool.Get()
 	c.Check(err, IsNil)
 
 	for i := 0; i < 10; i++ {
-		err := t.client.WriteRead(req, conn)
+		err := t.client.WriteReq([]byte("PING\r\n"), conn)
 		c.Check(err, IsNil)
-		c.Check(conn.Rd.Bytes(), DeepEquals, []byte("+PONG\r\n"))
+
+		line, _, err := conn.Rd.ReadLine()
+		c.Check(err, IsNil)
+		c.Check(line, DeepEquals, []byte("+PONG"))
 	}
 
 	c.StartTimer()
 
 	for i := 0; i < c.N; i++ {
-		t.client.WriteRead(req, conn)
+		t.client.WriteReq([]byte("PING\r\n"), conn)
+		conn.Rd.ReadLine()
 	}
 
 	c.StopTimer()

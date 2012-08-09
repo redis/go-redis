@@ -1,11 +1,26 @@
 package redis_test
 
 import (
-	"github.com/vmihailenco/bufreader"
+	"bufio"
+
 	. "launchpad.net/gocheck"
 
 	"github.com/vmihailenco/redis"
 )
+
+//------------------------------------------------------------------------------
+
+type LineReader struct {
+	line []byte
+}
+
+func NewLineReader(line []byte) *LineReader {
+	return &LineReader{line: line}
+}
+
+func (r *LineReader) Read(buf []byte) (int, error) {
+	return copy(buf, r.line), nil
+}
 
 //------------------------------------------------------------------------------
 
@@ -24,12 +39,11 @@ func (t *RequestTest) TearDownTest(c *C) {}
 func (t *RequestTest) BenchmarkStatusReq(c *C) {
 	c.StopTimer()
 
-	rd := bufreader.NewSizedReader(1024)
-	rd.Set([]byte("+OK\r\n"))
+	lineReader := NewLineReader([]byte("+OK\r\n"))
+	rd := bufio.NewReaderSize(lineReader, 1024)
 	req := redis.NewStatusReq()
 
 	for i := 0; i < 10; i++ {
-		rd.ResetPos()
 		vI, err := req.ParseReply(rd)
 		c.Check(err, IsNil)
 		c.Check(vI, Equals, "OK")
@@ -42,7 +56,6 @@ func (t *RequestTest) BenchmarkStatusReq(c *C) {
 	c.StartTimer()
 
 	for i := 0; i < c.N; i++ {
-		rd.ResetPos()
 		v, _ := req.ParseReply(rd)
 		req.SetVal(v)
 		req.Err()

@@ -1,23 +1,22 @@
 package redis
 
 import (
+	"bufio"
 	"io"
 	"log"
 	"os"
 	"sync"
-
-	"github.com/vmihailenco/bufreader"
 )
 
 type Conn struct {
 	RW io.ReadWriter
-	Rd *bufreader.Reader
+	Rd *bufio.Reader
 }
 
 func NewConn(rw io.ReadWriter) *Conn {
 	return &Conn{
 		RW: rw,
-		Rd: bufreader.NewSizedReader(8024),
+		Rd: bufio.NewReaderSize(rw, 1024),
 	}
 }
 
