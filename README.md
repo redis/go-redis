@@ -20,6 +20,13 @@ Install:
 
     go get github.com/vmihailenco/redis
 
+Contributing
+------------
+
+Configure Redis to allow maximum 10 clients:
+
+    maxclients 10
+
 Run tests:
 
     go test -gocheck.v

@@ -6,19 +6,29 @@ import (
 )
 
 type PubSubClient struct {
-	*Client
+	*BaseClient
 	ch   chan *Message
 	once sync.Once
 }
 
 func newPubSubClient(client *Client) (*PubSubClient, error) {
-	c := &PubSubClient{
-		Client: &Client{
-			ConnPool: NewSingleConnPool(client.ConnPool),
+	return &PubSubClient{
+		BaseClient: &BaseClient{
+			ConnPool: NewSingleConnPool(client.ConnPool, false),
+			InitConn: client.InitConn,
 		},
 		ch: make(chan *Message),
-	}
-	return c, nil
+	}, nil
+}
+
+func (c *Client) PubSubClient() (*PubSubClient, error) {
+	return newPubSubClient(c)
+}
+
+func (c *Client) Publish(channel, message string) *IntReq {
+	req := NewIntReq("PUBLISH", channel, message)
+	c.Process(req)
+	return req
 }
 
 type Message struct {
@@ -28,12 +38,7 @@ type Message struct {
 	Err error
 }
 
-func (c *PubSubClient) consumeMessages() {
-	conn, err := c.conn()
-	// SignleConnPool never returns error.
-	if err != nil {
-		panic(err)
-	}
+func (c *PubSubClient) consumeMessages(conn *Conn) {
 	req := NewMultiBulkReq()
 
 	for {
@@ -89,7 +94,7 @@ func (c *PubSubClient) subscribe(cmd string, channels ...string) (chan *Message,
 	}
 
 	c.once.Do(func() {
-		go c.consumeMessages()
+		go c.consumeMessages(conn)
 	})
 
 	return c.ch, nil
