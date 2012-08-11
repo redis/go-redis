@@ -43,7 +43,7 @@ Example 1:
     import "github.com/vmihailenco/redis"
 
 
-    address := ":6379"
+    address := "localhost:6379"
     password := "secret"
     db := 0
     redisClient := redis.NewTCPClient(address, password, db)
