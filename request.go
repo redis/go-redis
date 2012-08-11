@@ -8,7 +8,7 @@ import (
 
 var Nil = errors.New("(nil)")
 
-var errResultMissing = errors.New("Request was not run properly.")
+var ErrValNotSet = errors.New("redis: value is not set")
 
 //------------------------------------------------------------------------------
 
@@ -139,7 +139,7 @@ func (r *BaseReq) Err() error {
 		return r.err
 	}
 	if r.val == nil {
-		return errResultMissing
+		return ErrValNotSet
 	}
 	return nil
 }

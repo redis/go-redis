@@ -1886,7 +1886,7 @@ func (t *RedisTest) TestPubSub(c *C) {
 
 //------------------------------------------------------------------------------
 
-func (t *RedisTest) TestPipelining(c *C) {
+func (t *RedisTest) TestPipeline(c *C) {
 	set := t.client.Set("foo2", "bar2")
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
@@ -1911,7 +1911,18 @@ func (t *RedisTest) TestPipelining(c *C) {
 	c.Assert(getReq.Val(), Equals, "bar2")
 }
 
-func (t *RedisTest) TestRunQueuedOnEmptyQueue(c *C) {
+func (t *RedisTest) TestPipelineErrValNotSet(c *C) {
+	pipeline, err := t.client.PipelineClient()
+	c.Assert(err, IsNil)
+	defer func() {
+		c.Assert(pipeline.Close(), IsNil)
+	}()
+
+	get := pipeline.Get("foo")
+	c.Check(get.Err(), Equals, redis.ErrValNotSet)
+}
+
+func (t *RedisTest) TestPipelineRunQueuedOnEmptyQueue(c *C) {
 	pipeline, err := t.client.PipelineClient()
 	c.Assert(err, IsNil)
 	defer func() {
@@ -1923,7 +1934,7 @@ func (t *RedisTest) TestRunQueuedOnEmptyQueue(c *C) {
 	c.Assert(reqs, HasLen, 0)
 }
 
-func (t *RedisTest) TestIncrPipeliningFromGoroutines(c *C) {
+func (t *RedisTest) TestPipelineIncrFromGoroutines(c *C) {
 	pipeline, err := t.client.PipelineClient()
 	c.Assert(err, IsNil)
 	defer func() {
@@ -1954,7 +1965,7 @@ func (t *RedisTest) TestIncrPipeliningFromGoroutines(c *C) {
 	c.Assert(get.Val(), Equals, "20000")
 }
 
-func (t *RedisTest) TestPipeliningFromGoroutines(c *C) {
+func (t *RedisTest) TestPipelineEchoFromGoroutines(c *C) {
 	pipeline, err := t.client.PipelineClient()
 	c.Assert(err, IsNil)
 	defer func() {
