@@ -138,16 +138,22 @@ Example:
     }
     defer multiClient.Close()
 
-    watch := mutliClient.Watch("foo")
+    watch := multiClient.Watch("foo")
     if watch.Err() != nil {
         panic(watch.Err())
+    }
+
+    get := multiClient.Get("foo")
+    if get.Err() != nil {
+        panic(get.Err())
     }
 
     // Start transaction.
     multiClient.Multi()
 
-    set := multiClient.Set("foo", watch.Val() + "1")
+    set := multiClient.Set("foo", get.Val() + "1")
 
+    // Commit transaction.
     reqs, err := multiClient.Exec()
     if err == redis.Nil {
         // Repeat transaction.
