@@ -60,7 +60,6 @@ Example 2:
 
     closeConn := func(conn io.ReadWriteCloser) error {
         fmt.Println("Disconnecting...")
-        conn.Close()
         return nil
     }
 
