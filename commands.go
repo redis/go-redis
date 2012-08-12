@@ -42,20 +42,6 @@ func (c *Client) Select(index int64) *StatusReq {
 
 //------------------------------------------------------------------------------
 
-func (c *Client) Flushall() *StatusReq {
-	req := NewStatusReq("FLUSHALL")
-	c.Process(req)
-	return req
-}
-
-func (c *Client) Flushdb() *StatusReq {
-	req := NewStatusReq("FLUSHDB")
-	c.Process(req)
-	return req
-}
-
-//------------------------------------------------------------------------------
-
 func (c *Client) Del(keys ...string) *IntReq {
 	args := append([]string{"DEL"}, keys...)
 	req := NewIntReq(args...)
@@ -746,8 +732,8 @@ func (c *Client) ZRangeByScore(
 	return req
 }
 
-func (c *Client) ZRank(key, member string) *IntNilReq {
-	req := NewIntNilReq("ZRANK", key, member)
+func (c *Client) ZRank(key, member string) *IntReq {
+	req := NewIntReq("ZRANK", key, member)
 	c.Process(req)
 	return req
 }
@@ -808,8 +794,8 @@ func (c *Client) ZRevRangeByScore(
 	return req
 }
 
-func (c *Client) ZRevRank(key, member string) *IntNilReq {
-	req := NewIntNilReq("ZREVRANK", key, member)
+func (c *Client) ZRevRank(key, member string) *IntReq {
+	req := NewIntReq("ZREVRANK", key, member)
 	c.Process(req)
 	return req
 }
@@ -839,6 +825,114 @@ func (c *Client) ZUnionStore(
 		args = append(args, "AGGREGATE", aggregate)
 	}
 	req := NewIntReq(args...)
+	c.Process(req)
+	return req
+}
+
+//------------------------------------------------------------------------------
+
+func (c *Client) BgRewriteAOF() *StatusReq {
+	req := NewStatusReq("BGREWRITEAOF")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) BgSave() *StatusReq {
+	req := NewStatusReq("BGSAVE")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ClientKill(ipPort string) *StatusReq {
+	req := NewStatusReq("CLIENT", "KILL", ipPort)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ClientList() *BulkReq {
+	req := NewBulkReq("CLIENT", "LIST")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ConfigGet(parameter string) *MultiBulkReq {
+	req := NewMultiBulkReq("CONFIG", "GET", parameter)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ConfigResetStat() *StatusReq {
+	req := NewStatusReq("CONFIG", "RESETSTAT")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ConfigSet(parameter, value string) *StatusReq {
+	req := NewStatusReq("CONFIG", "SET", parameter, value)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) DbSize() *IntReq {
+	req := NewIntReq("DBSIZE")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) FlushAll() *StatusReq {
+	req := NewStatusReq("FLUSHALL")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) FlushDb() *StatusReq {
+	req := NewStatusReq("FLUSHDB")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) Info() *BulkReq {
+	req := NewBulkReq("INFO")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) LastSave() *IntReq {
+	req := NewIntReq("LASTSAVE")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) Monitor() {
+	panic("not implemented")
+}
+
+func (c *Client) Save() *StatusReq {
+	req := NewStatusReq("SAVE")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) Shutdown() {
+	panic("not implemented")
+}
+
+func (c *Client) SlaveOf(host, port string) *StatusReq {
+	req := NewStatusReq("SLAVEOF", host, port)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) SlowLog() {
+	panic("not implemented")
+}
+
+func (c *Client) Sync() {
+	panic("not implemented")
+}
+
+func (c *Client) Time() *MultiBulkReq {
+	req := NewMultiBulkReq("TIME")
 	c.Process(req)
 	return req
 }

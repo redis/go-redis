@@ -1,103 +1,8 @@
 package redis
 
 import (
-	"errors"
-	"fmt"
 	"strconv"
 )
-
-var Nil = errors.New("(nil)")
-
-var ErrValNotSet = errors.New("redis: value is not set")
-
-//------------------------------------------------------------------------------
-
-func isNil(line []byte) bool {
-	return len(line) == 3 && line[0] == '$' && line[1] == '-' && line[2] == '1'
-}
-
-func isEmpty(line []byte) bool {
-	return len(line) == 2 && line[0] == '$' && line[1] == '0'
-}
-
-func isNilReplies(line []byte) bool {
-	return len(line) == 3 && line[0] == '*' && line[1] == '-' && line[2] == '1'
-}
-
-func isNoReplies(line []byte) bool {
-	return len(line) == 2 && line[1] == '*' && line[1] == '0'
-}
-
-//------------------------------------------------------------------------------
-
-type ReadLiner interface {
-	ReadLine() ([]byte, bool, error)
-}
-
-func readLine(rd ReadLiner) ([]byte, error) {
-	line, isPrefix, err := rd.ReadLine()
-	if err != nil {
-		return line, err
-	}
-	if isPrefix {
-		return line, ErrReaderTooSmall
-	}
-	return line, nil
-}
-
-//------------------------------------------------------------------------------
-
-func ParseReq(rd ReadLiner) ([]string, error) {
-	line, err := readLine(rd)
-	if err != nil {
-		return nil, err
-	}
-
-	if line[0] != '*' {
-		return []string{string(line)}, nil
-	}
-	numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	args := make([]string, 0)
-	for i := int64(0); i < numReplies; i++ {
-		line, err = readLine(rd)
-		if err != nil {
-			return nil, err
-		}
-		if line[0] != '$' {
-			return nil, fmt.Errorf("Expected '$', but got %q", line)
-		}
-
-		line, err = readLine(rd)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, string(line))
-	}
-	return args, nil
-}
-
-//------------------------------------------------------------------------------
-
-func PackReq(args []string) []byte {
-	buf := make([]byte, 0, 1024)
-	buf = append(buf, '*')
-	buf = strconv.AppendUint(buf, uint64(len(args)), 10)
-	buf = append(buf, '\r', '\n')
-	for _, arg := range args {
-		buf = append(buf, '$')
-		buf = strconv.AppendUint(buf, uint64(len(arg)), 10)
-		buf = append(buf, '\r', '\n')
-		buf = append(buf, []byte(arg)...)
-		buf = append(buf, '\r', '\n')
-	}
-	return buf
-}
-
-//------------------------------------------------------------------------------
 
 type Req interface {
 	Req() []byte
@@ -139,7 +44,7 @@ func (r *BaseReq) Err() error {
 		return r.err
 	}
 	if r.val == nil {
-		return ErrValNotSet
+		return errValNotSet
 	}
 	return nil
 }
@@ -156,7 +61,7 @@ func (r *BaseReq) InterfaceVal() interface{} {
 }
 
 func (r *BaseReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	panic("abstract")
+	return ParseReply(rd)
 }
 
 //------------------------------------------------------------------------------
@@ -169,21 +74,6 @@ func NewStatusReq(args ...string) *StatusReq {
 	return &StatusReq{
 		BaseReq: NewBaseReq(args...),
 	}
-}
-
-func (r *StatusReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	line, err := readLine(rd)
-	if err != nil {
-		return nil, err
-	}
-
-	if line[0] == '-' {
-		return nil, errors.New(string(line[1:]))
-	} else if line[0] != '+' {
-		return nil, fmt.Errorf("Expected '+', but got %q", line)
-	}
-
-	return string(line[1:]), nil
 }
 
 func (r *StatusReq) Val() string {
@@ -205,58 +95,7 @@ func NewIntReq(args ...string) *IntReq {
 	}
 }
 
-func (r *IntReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	line, err := readLine(rd)
-	if err != nil {
-		return nil, err
-	}
-
-	if line[0] == '-' {
-		return nil, errors.New(string(line[1:]))
-	} else if line[0] != ':' {
-		return nil, fmt.Errorf("Expected ':', but got line %q", line)
-	}
-
-	return strconv.ParseInt(string(line[1:]), 10, 64)
-}
-
 func (r *IntReq) Val() int64 {
-	if r.val == nil {
-		return 0
-	}
-	return r.val.(int64)
-}
-
-//------------------------------------------------------------------------------
-
-type IntNilReq struct {
-	*BaseReq
-}
-
-func NewIntNilReq(args ...string) *IntNilReq {
-	return &IntNilReq{
-		BaseReq: NewBaseReq(args...),
-	}
-}
-
-func (r *IntNilReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	line, err := readLine(rd)
-	if err != nil {
-		return nil, err
-	}
-
-	if line[0] == '-' {
-		return nil, errors.New(string(line[1:]))
-	} else if line[0] == ':' {
-		return strconv.ParseInt(string(line[1:]), 10, 64)
-	} else if isNil(line) {
-		return nil, Nil
-	}
-
-	return nil, fmt.Errorf("Expected ':', but got line %q", line)
-}
-
-func (r *IntNilReq) Val() int64 {
 	if r.val == nil {
 		return 0
 	}
@@ -276,18 +115,11 @@ func NewBoolReq(args ...string) *BoolReq {
 }
 
 func (r *BoolReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	line, err := readLine(rd)
+	v, err := ParseReply(rd)
 	if err != nil {
 		return nil, err
 	}
-
-	if line[0] == '-' {
-		return nil, errors.New(string(line[1:]))
-	} else if line[0] != ':' {
-		return nil, fmt.Errorf("Expected ':', but got line %q", line)
-	}
-
-	return line[1] == '1', nil
+	return v.(int64) == 1, nil
 }
 
 func (r *BoolReq) Val() bool {
@@ -307,30 +139,6 @@ func NewBulkReq(args ...string) *BulkReq {
 	return &BulkReq{
 		BaseReq: NewBaseReq(args...),
 	}
-}
-
-func (r *BulkReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	line, err := readLine(rd)
-	if err != nil {
-		return nil, err
-	}
-
-	if line[0] == '-' {
-		return nil, errors.New(string(line[1:]))
-	} else if line[0] != '$' {
-		return nil, fmt.Errorf("Expected '$', but got line %q", line)
-	}
-
-	if isNil(line) {
-		return nil, Nil
-	}
-
-	line, err = readLine(rd)
-	if err != nil {
-		return nil, err
-	}
-
-	return string(line), nil
 }
 
 func (r *BulkReq) Val() string {
@@ -353,27 +161,11 @@ func NewFloatReq(args ...string) *FloatReq {
 }
 
 func (r *FloatReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	line, err := readLine(rd)
+	v, err := ParseReply(rd)
 	if err != nil {
 		return nil, err
 	}
-
-	if line[0] == '-' {
-		return nil, errors.New(string(line[1:]))
-	} else if line[0] != '$' {
-		return nil, fmt.Errorf("Expected '$', but got line %q", line)
-	}
-
-	if isNil(line) {
-		return nil, Nil
-	}
-
-	line, err = readLine(rd)
-	if err != nil {
-		return nil, err
-	}
-
-	return strconv.ParseFloat(string(line), 64)
+	return strconv.ParseFloat(v.(string), 64)
 }
 
 func (r *FloatReq) Val() float64 {
@@ -393,63 +185,6 @@ func NewMultiBulkReq(args ...string) *MultiBulkReq {
 	return &MultiBulkReq{
 		BaseReq: NewBaseReq(args...),
 	}
-}
-
-func (r *MultiBulkReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	line, err := readLine(rd)
-	if err != nil {
-		return nil, err
-	}
-
-	if line[0] == '-' {
-		return nil, errors.New(string(line[1:]))
-	} else if line[0] != '*' {
-		return nil, fmt.Errorf("Expected '*', but got line %q", line)
-	} else if isNilReplies(line) {
-		return nil, Nil
-	}
-
-	val := make([]interface{}, 0)
-	if isNoReplies(line) {
-		return val, nil
-	}
-	numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	for i := int64(0); i < numReplies; i++ {
-		line, err = readLine(rd)
-		if err != nil {
-			return nil, err
-		}
-
-		switch line[0] {
-		case ':':
-			var n int64
-			n, err = strconv.ParseInt(string(line[1:]), 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			val = append(val, n)
-		case '$':
-			if isEmpty(line) {
-				val = append(val, "")
-			} else if isNil(line) {
-				val = append(val, nil)
-			} else {
-				line, err = readLine(rd)
-				if err != nil {
-					return nil, err
-				}
-				val = append(val, string(line))
-			}
-		default:
-			return nil, fmt.Errorf("Expected '$', but got line %q", line)
-		}
-	}
-
-	return val, nil
 }
 
 func (r *MultiBulkReq) Val() []interface{} {

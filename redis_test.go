@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"bytes"
 	"io"
 	"net"
 	"strconv"
@@ -40,11 +41,11 @@ func (t *RedisTest) SetUpTest(c *C) {
 		return nil
 	}
 	t.client = redis.NewClient(openConn, closeConn, nil)
-	c.Assert(t.client.Flushdb().Err(), IsNil)
+	c.Assert(t.client.FlushDb().Err(), IsNil)
 }
 
 func (t *RedisTest) TearDownTest(c *C) {
-	c.Assert(t.client.Flushdb().Err(), IsNil)
+	c.Assert(t.client.FlushDb().Err(), IsNil)
 	c.Assert(t.client.Close(), IsNil)
 	c.Assert(t.openedConnsCount, Equals, t.closedConnsCount)
 }
@@ -75,6 +76,8 @@ func (t *RedisTest) TestInitConn(c *C) {
 
 func (t *RedisTest) TestRunWithouthCheckingErrVal(c *C) {
 	set := t.client.Set("foo", "bar")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
 
 	get := t.client.Get("foo")
 	c.Assert(get.Err(), IsNil)
@@ -82,6 +85,28 @@ func (t *RedisTest) TestRunWithouthCheckingErrVal(c *C) {
 
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
+}
+
+func (t *RedisTest) TestGetSpecChars(c *C) {
+	set := t.client.Set("foo", "bar1\r\nbar2\r\n")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	get := t.client.Get("foo")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, "bar1\r\nbar2\r\n")
+}
+
+func (t *RedisTest) TestGetBigVal(c *C) {
+	val := string(bytes.Repeat([]byte{'*'}, 2<<16))
+
+	set := t.client.Set("foo", val)
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	get := t.client.Get("foo")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, val)
 }
 
 //------------------------------------------------------------------------------
@@ -191,7 +216,7 @@ func (t *RedisTest) TestConnPoolRemovesBrokenConn(c *C) {
 	client := redis.NewTCPClient(redisAddr, "", -1)
 	client.ConnPool.(*redis.MultiConnPool).MaxCap = 1
 	defer func() {
-		c.Check(client.Close(), IsNil)
+		c.Assert(client.Close(), IsNil)
 	}()
 
 	c.Assert(client.ConnPool.Add(redis.NewConn(conn)), IsNil)
@@ -1919,7 +1944,7 @@ func (t *RedisTest) TestPipelineErrValNotSet(c *C) {
 	}()
 
 	get := pipeline.Get("foo")
-	c.Check(get.Err(), Equals, redis.ErrValNotSet)
+	c.Assert(get.Err(), ErrorMatches, "redis: value is not set")
 }
 
 func (t *RedisTest) TestPipelineRunQueuedOnEmptyQueue(c *C) {
@@ -2053,7 +2078,7 @@ func (t *RedisTest) TestMultiExecOnEmptyQueue(c *C) {
 	multi, err := t.client.MultiClient()
 	c.Assert(err, IsNil)
 	defer func() {
-		c.Check(multi.Close(), IsNil)
+		c.Assert(multi.Close(), IsNil)
 	}()
 
 	reqs, err := multi.Exec()
@@ -2063,7 +2088,7 @@ func (t *RedisTest) TestMultiExecOnEmptyQueue(c *C) {
 
 //------------------------------------------------------------------------------
 
-func (t *RedisTest) TestEchoFromGoroutines(c *C) {
+func (t *RedisTest) TestSyncEchoFromGoroutines(c *C) {
 	wg := &sync.WaitGroup{}
 	for i := int64(0); i < 1000; i++ {
 		wg.Add(1)
@@ -2177,6 +2202,109 @@ func (t *RedisTest) TestWatchUnwatch(c *C) {
 	get := t.client.Get("foo")
 	c.Assert(get.Err(), IsNil)
 	c.Assert(get.Val(), Equals, "1000")
+}
+
+//------------------------------------------------------------------------------
+
+func (t *RedisTest) TestCmdBgRewriteAOF(c *C) {
+	r := t.client.BgRewriteAOF()
+	c.Assert(r.Err(), IsNil)
+	c.Assert(r.Val(), Equals, "Background append only file rewriting started")
+}
+
+func (t *RedisTest) TestCmdBgSave(c *C) {
+	r := t.client.BgSave()
+	c.Assert(r.Err(), ErrorMatches, "ERR Can't BGSAVE while AOF log rewriting is in progress")
+	c.Assert(r.Val(), Equals, "")
+}
+
+func (t *RedisTest) TestCmdClientKill(c *C) {
+	r := t.client.ClientKill("1.1.1.1:1111")
+	c.Assert(r.Err(), ErrorMatches, "ERR No such client")
+	c.Assert(r.Val(), Equals, "")
+}
+
+func (t *RedisTest) TestCmdClientList(c *C) {
+	r := t.client.ClientList()
+	c.Assert(r.Err(), IsNil)
+	c.Assert(
+		r.Val(),
+		Matches,
+		"addr=127.0.0.1:[0-9]+ fd=[0-9]+ idle=0 flags=N db=0 sub=0 psub=0 qbuf=0 obl=0 oll=0 events=r cmd=client\n",
+	)
+}
+
+func (t *RedisTest) TestCmdConfigGet(c *C) {
+	r := t.client.ConfigGet("*")
+	c.Assert(r.Err(), IsNil)
+	c.Assert(len(r.Val()) > 0, Equals, true)
+}
+
+func (t *RedisTest) TestCmdConfigResetStat(c *C) {
+	r := t.client.ConfigResetStat()
+	c.Assert(r.Err(), IsNil)
+	c.Assert(r.Val(), Equals, "OK")
+}
+
+func (t *RedisTest) TestCmdConfigSet(c *C) {
+	configGet := t.client.ConfigGet("maxmemory")
+	c.Assert(configGet.Err(), IsNil)
+	c.Assert(configGet.Val(), HasLen, 2)
+	c.Assert(configGet.Val()[0].(string), Equals, "maxmemory")
+
+	configSet := t.client.ConfigSet("maxmemory", configGet.Val()[1].(string))
+	c.Assert(configSet.Err(), IsNil)
+	c.Assert(configSet.Val(), Equals, "OK")
+}
+
+func (t *RedisTest) TestCmdDbSize(c *C) {
+	dbSize := t.client.DbSize()
+	c.Assert(dbSize.Err(), IsNil)
+	c.Assert(dbSize.Val(), Equals, int64(0))
+}
+
+func (t *RedisTest) TestCmdFlushAll(c *C) {
+	// TODO
+}
+
+func (t *RedisTest) TestCmdFlushDb(c *C) {
+	// TODO
+}
+
+func (t *RedisTest) TestCmdInfo(c *C) {
+	info := t.client.Info()
+	c.Check(info.Err(), IsNil)
+	c.Check(info.Val(), Not(Equals), "")
+}
+
+func (t *RedisTest) TestCmdLastSave(c *C) {
+	lastSave := t.client.LastSave()
+	c.Check(lastSave.Err(), IsNil)
+	c.Check(lastSave.Val(), Not(Equals), 0)
+}
+
+func (t *RedisTest) TestCmdSave(c *C) {
+	save := t.client.Save()
+	c.Check(save.Err(), IsNil)
+	c.Check(save.Val(), Equals, "OK")
+}
+
+func (t *RedisTest) TestSlaveOf(c *C) {
+	slaveOf := t.client.SlaveOf("localhost", "8888")
+	c.Check(slaveOf.Err(), IsNil)
+	c.Check(slaveOf.Val(), Equals, "OK")
+
+	slaveOf = t.client.SlaveOf("NO", "ONE")
+	c.Check(slaveOf.Err(), IsNil)
+	c.Check(slaveOf.Val(), Equals, "OK")
+}
+
+func (t *RedisTest) TestTime(c *C) {
+	c.Skip("2.6")
+
+	time := t.client.Time()
+	c.Check(time.Err(), IsNil)
+	c.Check(time.Val(), HasLen, 2)
 }
 
 //------------------------------------------------------------------------------

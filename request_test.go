@@ -1,8 +1,7 @@
 package redis_test
 
 import (
-	"bufio"
-
+	"github.com/vmihailenco/bufio"
 	. "launchpad.net/gocheck"
 
 	"github.com/vmihailenco/redis"

@@ -2,14 +2,9 @@ package redis
 
 import (
 	"crypto/tls"
-	"errors"
 	"io"
 	"net"
 	"sync"
-)
-
-var (
-	ErrReaderTooSmall = errors.New("redis: Reader is too small")
 )
 
 type OpenConnFunc func() (io.ReadWriteCloser, error)
@@ -110,7 +105,11 @@ func (c *BaseClient) Run(req Req) {
 
 	val, err := req.ParseReply(conn.Rd)
 	if err != nil {
-		c.ConnPool.Add(conn)
+		if err == Nil {
+			c.ConnPool.Add(conn)
+		} else {
+			c.ConnPool.Remove(conn)
+		}
 		req.SetErr(err)
 		return
 	}

@@ -1,11 +1,12 @@
 package redis
 
 import (
-	"bufio"
 	"io"
 	"log"
 	"os"
 	"sync"
+
+	"github.com/vmihailenco/bufio"
 )
 
 type Conn struct {

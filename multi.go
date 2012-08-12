@@ -105,7 +105,7 @@ func (c *MultiClient) ExecReqs(reqs []Req, conn *Conn) error {
 	if line[0] != '*' {
 		return fmt.Errorf("Expected '*', but got line %q", line)
 	}
-	if isNilReplies(line) {
+	if len(line) == 3 && line[1] == '-' && line[2] == '1' {
 		return Nil
 	}
 
