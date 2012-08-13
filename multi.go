@@ -19,10 +19,6 @@ func (c *Client) MultiClient() (*MultiClient, error) {
 	}, nil
 }
 
-func (c *MultiClient) Multi() {
-	c.reqs = make([]Req, 0)
-}
-
 func (c *MultiClient) Watch(keys ...string) *StatusReq {
 	args := append([]string{"WATCH"}, keys...)
 	req := NewStatusReq(args...)
@@ -43,7 +39,13 @@ func (c *MultiClient) Discard() {
 	c.mtx.Unlock()
 }
 
-func (c *MultiClient) Exec() ([]Req, error) {
+func (c *MultiClient) Exec(do func()) ([]Req, error) {
+	c.mtx.Lock()
+	c.reqs = make([]Req, 0)
+	c.mtx.Unlock()
+
+	do()
+
 	c.mtx.Lock()
 	if len(c.reqs) == 0 {
 		c.mtx.Unlock()

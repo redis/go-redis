@@ -40,7 +40,7 @@ func PackReq(args []string) []byte {
 
 type ReadLiner interface {
 	ReadLine() ([]byte, bool, error)
-	Peek(n int) ([]byte, error)
+	Read([]byte) (int, error)
 	ReadN(n int) ([]byte, error)
 }
 
@@ -121,13 +121,14 @@ func ParseReply(rd ReadLiner) (interface{}, error) {
 		line, err = rd.ReadN(replyLen)
 		if err == bufio.ErrBufferFull {
 			buf := make([]byte, replyLen)
-			r := 0
+			r := copy(buf, line)
 
-			r += copy(buf, line)
-
-			for err == bufio.ErrBufferFull {
-				line, err = rd.ReadN(replyLen - r)
-				r += copy(buf[r:], line)
+			for r < replyLen {
+				n, err := rd.Read(buf[r:])
+				if err != nil {
+					return "", err
+				}
+				r += n
 			}
 
 			line = buf

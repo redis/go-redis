@@ -131,6 +131,22 @@ Multi/Exec
 
 Example:
 
+    func transaction(multi *redis.MultiClient) ([]redis.Req, error) {
+        get := multiClient.Get("foo")
+        if get.Err() != nil {
+            panic(get.Err())
+        }
+
+        reqs, err = multiClient.Exec(func() {
+            multi.Set("foo", get.Val() + "1")
+        })
+        if err == redis.Nil {
+            return transaction()
+        }
+
+        return reqs, err
+    }
+
     multiClient, err := redisClient.MultiClient()
     if err != nil {
         panic(err)
@@ -142,28 +158,13 @@ Example:
         panic(watch.Err())
     }
 
-    get := multiClient.Get("foo")
-    if get.Err() != nil {
-        panic(get.Err())
-    }
-
-    // Start transaction.
-    multiClient.Multi()
-
-    set := multiClient.Set("foo", get.Val() + "1")
-
-    // Commit transaction.
-    reqs, err := multiClient.Exec()
-    if err == redis.Nil {
-        // Repeat transaction.
-    } else if err != nil {
+    reqs, err := transaction(multiClient)
+    if err != nil {
         panic(err)
     }
     for _, req := range reqs {
         // ...
     }
-
-    ok := set.Val()
 
 Pub/sub
 -------
