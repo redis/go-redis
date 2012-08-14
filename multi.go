@@ -35,21 +35,20 @@ func (c *MultiClient) Unwatch(keys ...string) *StatusReq {
 
 func (c *MultiClient) Discard() {
 	c.mtx.Lock()
-	c.reqs = c.reqs[:0]
+	c.reqs = []Req{NewStatusReq("MULTI")}
 	c.mtx.Unlock()
 }
 
 func (c *MultiClient) Exec(do func()) ([]Req, error) {
-	c.mtx.Lock()
-	c.reqs = make([]Req, 0)
-	c.mtx.Unlock()
+	c.Discard()
 
 	do()
 
 	c.mtx.Lock()
-	if len(c.reqs) == 0 {
+	c.reqs = append(c.reqs, NewMultiBulkReq("EXEC"))
+	if len(c.reqs) == 2 {
 		c.mtx.Unlock()
-		return c.reqs, nil
+		return []Req{}, nil
 	}
 	reqs := c.reqs
 	c.reqs = nil
@@ -67,18 +66,11 @@ func (c *MultiClient) Exec(do func()) ([]Req, error) {
 	}
 
 	c.ConnPool.Add(conn)
-	return reqs, nil
+	return reqs[1 : len(reqs)-1], nil
 }
 
 func (c *MultiClient) ExecReqs(reqs []Req, conn *Conn) error {
-	multiReq := make([]byte, 0, 1024)
-	multiReq = append(multiReq, PackReq([]string{"MULTI"})...)
-	for _, req := range reqs {
-		multiReq = append(multiReq, req.Req()...)
-	}
-	multiReq = append(multiReq, PackReq([]string{"EXEC"})...)
-
-	err := c.WriteReq(multiReq, conn)
+	err := c.WriteReq(conn, reqs...)
 	if err != nil {
 		return err
 	}
@@ -92,7 +84,7 @@ func (c *MultiClient) ExecReqs(reqs []Req, conn *Conn) error {
 	}
 
 	// Parse queued replies.
-	for _ = range reqs {
+	for i := 1; i < len(reqs)-1; i++ {
 		_, err = statusReq.ParseReply(conn.Rd)
 		if err != nil {
 			return err
@@ -112,7 +104,7 @@ func (c *MultiClient) ExecReqs(reqs []Req, conn *Conn) error {
 	}
 
 	// Parse replies.
-	for i := 0; i < len(reqs); i++ {
+	for i := 1; i < len(reqs)-1; i++ {
 		req := reqs[i]
 		val, err := req.ParseReply(conn.Rd)
 		if err != nil {

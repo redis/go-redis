@@ -56,8 +56,13 @@ type BaseClient struct {
 	reqs     []Req
 }
 
-func (c *BaseClient) WriteReq(buf []byte, conn *Conn) error {
-	_, err := conn.RW.Write(buf)
+func (c *BaseClient) WriteReq(conn *Conn, reqs ...Req) error {
+	conn.ReqBuf = conn.ReqBuf[:0]
+	for _, req := range reqs {
+		conn.ReqBuf = AppendReq(conn.ReqBuf, req.Args())
+	}
+
+	_, err := conn.RW.Write(conn.ReqBuf)
 	return err
 }
 
@@ -96,7 +101,7 @@ func (c *BaseClient) Run(req Req) {
 		return
 	}
 
-	err = c.WriteReq(req.Req(), conn)
+	err = c.WriteReq(conn, req)
 	if err != nil {
 		c.ConnPool.Remove(conn)
 		req.SetErr(err)

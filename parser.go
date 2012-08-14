@@ -21,8 +21,7 @@ var (
 
 //------------------------------------------------------------------------------
 
-func PackReq(args []string) []byte {
-	buf := make([]byte, 0, 1024)
+func AppendReq(buf []byte, args []string) []byte {
 	buf = append(buf, '*')
 	buf = strconv.AppendUint(buf, uint64(len(args)), 10)
 	buf = append(buf, '\r', '\n')

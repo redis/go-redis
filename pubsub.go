@@ -89,7 +89,7 @@ func (c *PubSubClient) subscribe(cmd string, channels ...string) (chan *Message,
 		return nil, err
 	}
 
-	if err := c.WriteReq(req.Req(), conn); err != nil {
+	if err := c.WriteReq(conn, req); err != nil {
 		return nil, err
 	}
 
@@ -117,7 +117,7 @@ func (c *PubSubClient) unsubscribe(cmd string, channels ...string) error {
 		return err
 	}
 
-	return c.WriteReq(req.Req(), conn)
+	return c.WriteReq(conn, req)
 }
 
 func (c *PubSubClient) Unsubscribe(channels ...string) error {

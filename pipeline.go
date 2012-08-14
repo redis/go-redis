@@ -46,17 +46,7 @@ func (c *PipelineClient) RunQueued() ([]Req, error) {
 }
 
 func (c *PipelineClient) RunReqs(reqs []Req, conn *Conn) error {
-	var multiReq []byte
-	if len(reqs) == 1 {
-		multiReq = reqs[0].Req()
-	} else {
-		multiReq = make([]byte, 0, 1024)
-		for _, req := range reqs {
-			multiReq = append(multiReq, req.Req()...)
-		}
-	}
-
-	err := c.WriteReq(multiReq, conn)
+	err := c.WriteReq(conn, reqs...)
 	if err != nil {
 		return err
 	}

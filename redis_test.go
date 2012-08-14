@@ -2412,7 +2412,7 @@ func (t *RedisTest) BenchmarkRedisWriteRead(c *C) {
 	c.Assert(err, IsNil)
 
 	for i := 0; i < 10; i++ {
-		err := t.client.WriteReq([]byte("PING\r\n"), conn)
+		err := t.client.WriteReq(conn, redis.NewStatusReq("PING"))
 		c.Assert(err, IsNil)
 
 		line, _, err := conn.Rd.ReadLine()
@@ -2423,7 +2423,7 @@ func (t *RedisTest) BenchmarkRedisWriteRead(c *C) {
 	c.StartTimer()
 
 	for i := 0; i < c.N; i++ {
-		t.client.WriteReq([]byte("PING\r\n"), conn)
+		t.client.WriteReq(conn, redis.NewStatusReq("PING"))
 		conn.Rd.ReadLine()
 	}
 

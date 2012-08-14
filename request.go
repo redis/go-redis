@@ -5,7 +5,7 @@ import (
 )
 
 type Req interface {
-	Req() []byte
+	Args() []string
 	ParseReply(ReadLiner) (interface{}, error)
 	SetErr(error)
 	Err() error
@@ -28,8 +28,8 @@ func NewBaseReq(args ...string) *BaseReq {
 	}
 }
 
-func (r *BaseReq) Req() []byte {
-	return PackReq(r.args)
+func (r *BaseReq) Args() []string {
+	return r.args
 }
 
 func (r *BaseReq) SetErr(err error) {
