@@ -107,8 +107,6 @@ func ParseReply(rd ReadLiner) (interface{}, error) {
 	case '$':
 		if len(line) == 3 && line[1] == '-' && line[2] == '1' {
 			return "", Nil
-		} else if len(line) == 2 && line[1] == '0' {
-			return "", nil
 		}
 
 		replyLenInt32, err := strconv.ParseInt(string(line[1:]), 10, 32)
