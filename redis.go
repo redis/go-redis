@@ -57,12 +57,12 @@ type BaseClient struct {
 }
 
 func (c *BaseClient) WriteReq(conn *Conn, reqs ...Req) error {
-	conn.ReqBuf = conn.ReqBuf[:0]
+	buf := make([]byte, 0, 1000)
 	for _, req := range reqs {
-		conn.ReqBuf = AppendReq(conn.ReqBuf, req.Args())
+		buf = appendReq(buf, req.Args())
 	}
 
-	_, err := conn.RW.Write(conn.ReqBuf)
+	_, err := conn.RW.Write(buf)
 	return err
 }
 

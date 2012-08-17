@@ -20,21 +20,6 @@ Install:
 
     go get github.com/vmihailenco/redis
 
-Contributing
-------------
-
-Configure Redis to allow maximum 10 clients:
-
-    maxclients 10
-
-Run tests:
-
-    go test -gocheck.v
-
-Run benchmarks:
-
-    go test -gocheck.b
-
 Getting Client instance
 -----------------------
 
@@ -64,7 +49,7 @@ Example 2:
     }
 
     initConn := func(client *redis.Client) error {
-         auth := client.Auth("foo")
+         auth := client.Auth("key")
          if auth.Err() != nil {
              return auth.Err()
          }
@@ -84,13 +69,13 @@ Both `closeConn` and `initConn` functions can be `nil`.
 Running commands
 ----------------
 
-    set := redisClient.Set("foo", "bar")
+    set := redisClient.Set("key", "hello")
     if set.Err() != nil {
         panic(set.Err())
     }
     ok := set.Val()
 
-    get := redisClient.Get("foo")
+    get := redisClient.Get("key")
     if get.Err() != nil && get.Err() != redis.Nil {
         panic(get.Err())
     }
@@ -101,14 +86,27 @@ Pipelining
 
 Client has ability to run commands in batches:
 
+    reqs, err := redisClient.Pipelined(func(c *redis.PipelineClient) {
+        c.Set("key1", "hello1") // queue command SET
+        c.Set("key2", "hello2") // queue command SET
+    })
+    if err != nil {
+        panic(err)
+    }
+    for _, req := range reqs {
+        // ...
+    }
+
+Or:
+
     pipeline, err := redisClient.PipelineClient()
     if err != nil {
         panic(err)
     }
     defer pipeline.Close()
 
-    setReq := pipeline.Set("foo1", "bar1") // queue command SET
-    getReq := pipeline.Get("foo2") // queue command GET
+    setReq := pipeline.Set("key1", "hello1") // queue command SET
+    getReq := pipeline.Get("key2") // queue command GET
 
     reqs, err := pipeline.RunQueued() // run queued commands
     if err != nil {
@@ -132,13 +130,13 @@ Multi/Exec
 Example:
 
     func transaction(multi *redis.MultiClient) ([]redis.Req, error) {
-        get := multiClient.Get("foo")
+        get := multiClient.Get("key")
         if get.Err() != nil {
             panic(get.Err())
         }
 
         reqs, err = multiClient.Exec(func() {
-            multi.Set("foo", get.Val() + "1")
+            multi.Set("key", get.Val() + "1")
         })
         if err == redis.Nil {
             return transaction()
@@ -153,7 +151,7 @@ Example:
     }
     defer multiClient.Close()
 
-    watch := multiClient.Watch("foo")
+    watch := multiClient.Watch("key")
     if watch.Err() != nil {
         panic(watch.Err())
     }
@@ -205,7 +203,7 @@ Commands are thread safe. Following code is correct:
 
     for i := 0; i < 1000; i++ {
         go func() {
-            redisClient.Incr("foo")
+            redisClient.Incr("key")
         }()
     }
 
@@ -220,7 +218,7 @@ Example:
         return req
     }
 
-    get := Get(redisClient, "foo")
+    get := Get(redisClient, "key")
     if get.Err() != nil && get.Err() != redis.Nil {
         panic(get.Err())
     }
@@ -231,3 +229,32 @@ Connection pool
 Client uses connection pool with default capacity of 10 connections. To change pool capacity:
 
     redisClient.ConnPool.(*redis.MultiConnPool).MaxCap = 1
+
+Look and feel
+-------------
+
+Some corner cases:
+
+    SORT list LIMIT 0 2 ASC
+    client.Sort("list", redis.Sort{Offset: 0, Count: 2, Order: "ASC"})
+
+    ZRANGEBYSCORE zset -inf +inf WITHSCORES LIMIT 0 2
+    client.ZRangeByScoreWithScores("zset", "-inf", "+inf", 0, 2)
+
+    ZINTERSTORE out 2 zset1 zset2 WEIGHTS 2 3 AGGREGATE SUM
+    client.ZInterStore("out", 2, redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
+
+Contributing
+------------
+
+Configure Redis to allow maximum 10 clients:
+
+    maxclients 10
+
+Run tests:
+
+    go test -gocheck.v
+
+Run benchmarks:
+
+    go test -gocheck.b

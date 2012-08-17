@@ -21,7 +21,7 @@ var (
 
 //------------------------------------------------------------------------------
 
-func AppendReq(buf []byte, args []string) []byte {
+func appendReq(buf []byte, args []string) []byte {
 	buf = append(buf, '*')
 	buf = strconv.AppendUint(buf, uint64(len(args)), 10)
 	buf = append(buf, '\r', '\n')
@@ -37,13 +37,14 @@ func AppendReq(buf []byte, args []string) []byte {
 
 //------------------------------------------------------------------------------
 
-type ReadLiner interface {
+type reader interface {
 	ReadLine() ([]byte, bool, error)
 	Read([]byte) (int, error)
 	ReadN(n int) ([]byte, error)
+	Buffered() int
 }
 
-func readLine(rd ReadLiner) ([]byte, error) {
+func readLine(rd reader) ([]byte, error) {
 	line, isPrefix, err := rd.ReadLine()
 	if err != nil {
 		return line, err
@@ -56,42 +57,15 @@ func readLine(rd ReadLiner) ([]byte, error) {
 
 //------------------------------------------------------------------------------
 
-func ParseReq(rd ReadLiner) ([]string, error) {
-	line, err := readLine(rd)
-	if err != nil {
-		return nil, err
-	}
-
-	if line[0] != '*' {
-		return []string{string(line)}, nil
-	}
-	numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	args := make([]string, 0)
-	for i := int64(0); i < numReplies; i++ {
-		line, err = readLine(rd)
-		if err != nil {
-			return nil, err
-		}
-		if line[0] != '$' {
-			return nil, fmt.Errorf("Expected '$', but got %q", line)
-		}
-
-		line, err = readLine(rd)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, string(line))
-	}
-	return args, nil
+func parseReply(rd reader) (interface{}, error) {
+	return _parseReply(rd, false)
 }
 
-//------------------------------------------------------------------------------
+func parseIfaceSliceReply(rd reader) (interface{}, error) {
+	return _parseReply(rd, true)
+}
 
-func ParseReply(rd ReadLiner) (interface{}, error) {
+func _parseReply(rd reader, useIfaceSlice bool) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return 0, err
@@ -139,28 +113,51 @@ func ParseReply(rd ReadLiner) (interface{}, error) {
 			return nil, Nil
 		}
 
-		val := make([]interface{}, 0)
-		if len(line) == 2 && line[1] == '0' {
-			return val, nil
-		}
-
-		numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
-		if err != nil {
-			return nil, err
-		}
-
-		for i := int64(0); i < numReplies; i++ {
-			v, err := ParseReply(rd)
-			if err == Nil {
-				val = append(val, nil)
-			} else if err != nil {
-				return nil, err
-			} else {
-				val = append(val, v)
+		if useIfaceSlice {
+			vals := make([]interface{}, 0)
+			if len(line) == 2 && line[1] == '0' {
+				return vals, nil
 			}
-		}
 
-		return val, nil
+			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
+			if err != nil {
+				return nil, err
+			}
+
+			for i := int64(0); i < numReplies; i++ {
+				v, err := parseReply(rd)
+				if err == Nil {
+					vals = append(vals, nil)
+				} else if err != nil {
+					return nil, err
+				} else {
+					vals = append(vals, v)
+				}
+			}
+
+			return vals, nil
+		} else {
+			vals := make([]string, 0)
+			if len(line) == 2 && line[1] == '0' {
+				return vals, nil
+			}
+
+			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
+			if err != nil {
+				return nil, err
+			}
+
+			for i := int64(0); i < numReplies; i++ {
+				v, err := parseReply(rd)
+				if err != nil {
+					return nil, err
+				} else {
+					vals = append(vals, v.(string))
+				}
+			}
+
+			return vals, nil
+		}
 	default:
 		return nil, fmt.Errorf("redis: can't parse %q", line)
 	}

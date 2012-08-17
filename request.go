@@ -6,11 +6,11 @@ import (
 
 type Req interface {
 	Args() []string
-	ParseReply(ReadLiner) (interface{}, error)
+	ParseReply(reader) (interface{}, error)
 	SetErr(error)
 	Err() error
 	SetVal(interface{})
-	InterfaceVal() interface{}
+	IfaceVal() interface{}
 }
 
 //------------------------------------------------------------------------------
@@ -56,12 +56,12 @@ func (r *BaseReq) SetVal(val interface{}) {
 	r.val = val
 }
 
-func (r *BaseReq) InterfaceVal() interface{} {
+func (r *BaseReq) IfaceVal() interface{} {
 	return r.val
 }
 
-func (r *BaseReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	return ParseReply(rd)
+func (r *BaseReq) ParseReply(rd reader) (interface{}, error) {
+	return parseReply(rd)
 }
 
 //------------------------------------------------------------------------------
@@ -114,8 +114,8 @@ func NewBoolReq(args ...string) *BoolReq {
 	}
 }
 
-func (r *BoolReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	v, err := ParseReply(rd)
+func (r *BoolReq) ParseReply(rd reader) (interface{}, error) {
+	v, err := parseReply(rd)
 	if err != nil {
 		return nil, err
 	}
@@ -131,17 +131,17 @@ func (r *BoolReq) Val() bool {
 
 //------------------------------------------------------------------------------
 
-type BulkReq struct {
+type StringReq struct {
 	*BaseReq
 }
 
-func NewBulkReq(args ...string) *BulkReq {
-	return &BulkReq{
+func NewStringReq(args ...string) *StringReq {
+	return &StringReq{
 		BaseReq: NewBaseReq(args...),
 	}
 }
 
-func (r *BulkReq) Val() string {
+func (r *StringReq) Val() string {
 	if r.val == nil {
 		return ""
 	}
@@ -160,8 +160,8 @@ func NewFloatReq(args ...string) *FloatReq {
 	}
 }
 
-func (r *FloatReq) ParseReply(rd ReadLiner) (interface{}, error) {
-	v, err := ParseReply(rd)
+func (r *FloatReq) ParseReply(rd reader) (interface{}, error) {
+	v, err := parseReply(rd)
 	if err != nil {
 		return nil, err
 	}
@@ -177,19 +177,42 @@ func (r *FloatReq) Val() float64 {
 
 //------------------------------------------------------------------------------
 
-type MultiBulkReq struct {
+type IfaceSliceReq struct {
 	*BaseReq
 }
 
-func NewMultiBulkReq(args ...string) *MultiBulkReq {
-	return &MultiBulkReq{
+func NewIfaceSliceReq(args ...string) *IfaceSliceReq {
+	return &IfaceSliceReq{
 		BaseReq: NewBaseReq(args...),
 	}
 }
 
-func (r *MultiBulkReq) Val() []interface{} {
+func (r *IfaceSliceReq) ParseReply(rd reader) (interface{}, error) {
+	return parseIfaceSliceReply(rd)
+}
+
+func (r *IfaceSliceReq) Val() []interface{} {
 	if r.val == nil {
 		return nil
 	}
 	return r.val.([]interface{})
+}
+
+//------------------------------------------------------------------------------
+
+type StringSliceReq struct {
+	*BaseReq
+}
+
+func NewStringSliceReq(args ...string) *StringSliceReq {
+	return &StringSliceReq{
+		BaseReq: NewBaseReq(args...),
+	}
+}
+
+func (r *StringSliceReq) Val() []string {
+	if r.val == nil {
+		return nil
+	}
+	return r.val.([]string)
 }

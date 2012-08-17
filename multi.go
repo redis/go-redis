@@ -45,7 +45,7 @@ func (c *MultiClient) Exec(do func()) ([]Req, error) {
 	do()
 
 	c.mtx.Lock()
-	c.reqs = append(c.reqs, NewMultiBulkReq("EXEC"))
+	c.reqs = append(c.reqs, NewIfaceSliceReq("EXEC"))
 	if len(c.reqs) == 2 {
 		c.mtx.Unlock()
 		return []Req{}, nil

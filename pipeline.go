@@ -16,6 +16,16 @@ func (c *Client) PipelineClient() (*PipelineClient, error) {
 	}, nil
 }
 
+func (c *Client) Pipelined(do func(*PipelineClient)) ([]Req, error) {
+	pc, err := c.PipelineClient()
+	if err != nil {
+		return nil, err
+	}
+	defer pc.Close()
+	do(pc)
+	return pc.RunQueued()
+}
+
 func (c *PipelineClient) Close() error {
 	return nil
 }

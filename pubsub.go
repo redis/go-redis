@@ -11,18 +11,14 @@ type PubSubClient struct {
 	once sync.Once
 }
 
-func newPubSubClient(client *Client) (*PubSubClient, error) {
+func (c *Client) PubSubClient() (*PubSubClient, error) {
 	return &PubSubClient{
 		BaseClient: &BaseClient{
-			ConnPool: NewSingleConnPool(client.ConnPool, false),
-			InitConn: client.InitConn,
+			ConnPool: NewSingleConnPool(c.ConnPool, false),
+			InitConn: c.InitConn,
 		},
 		ch: make(chan *Message),
 	}, nil
-}
-
-func (c *Client) PubSubClient() (*PubSubClient, error) {
-	return newPubSubClient(c)
 }
 
 func (c *Client) Publish(channel, message string) *IntReq {
@@ -39,7 +35,7 @@ type Message struct {
 }
 
 func (c *PubSubClient) consumeMessages(conn *Conn) {
-	req := NewMultiBulkReq()
+	req := NewIfaceSliceReq()
 
 	for {
 		for {
@@ -82,7 +78,7 @@ func (c *PubSubClient) consumeMessages(conn *Conn) {
 
 func (c *PubSubClient) subscribe(cmd string, channels ...string) (chan *Message, error) {
 	args := append([]string{cmd}, channels...)
-	req := NewMultiBulkReq(args...)
+	req := NewIfaceSliceReq(args...)
 
 	conn, err := c.conn()
 	if err != nil {
@@ -110,7 +106,7 @@ func (c *PubSubClient) PSubscribe(patterns ...string) (chan *Message, error) {
 
 func (c *PubSubClient) unsubscribe(cmd string, channels ...string) error {
 	args := append([]string{cmd}, channels...)
-	req := NewMultiBulkReq(args...)
+	req := NewIfaceSliceReq(args...)
 
 	conn, err := c.conn()
 	if err != nil {

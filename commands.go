@@ -4,14 +4,8 @@ import (
 	"strconv"
 )
 
-//------------------------------------------------------------------------------
-
-type Limit struct {
-	Offset, Count int64
-}
-
-func NewLimit(offset, count int64) *Limit {
-	return &Limit{offset, count}
+func formatFloat(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 32)
 }
 
 //------------------------------------------------------------------------------
@@ -22,8 +16,8 @@ func (c *Client) Auth(password string) *StatusReq {
 	return req
 }
 
-func (c *Client) Echo(message string) *BulkReq {
-	req := NewBulkReq("ECHO", message)
+func (c *Client) Echo(message string) *StringReq {
+	req := NewStringReq("ECHO", message)
 	c.Process(req)
 	return req
 }
@@ -49,8 +43,8 @@ func (c *Client) Del(keys ...string) *IntReq {
 	return req
 }
 
-func (c *Client) Dump(key string) *BulkReq {
-	req := NewBulkReq("DUMP", key)
+func (c *Client) Dump(key string) *StringReq {
+	req := NewStringReq("DUMP", key)
 	c.Process(req)
 	return req
 }
@@ -73,19 +67,19 @@ func (c *Client) ExpireAt(key string, timestamp int64) *BoolReq {
 	return req
 }
 
-func (c *Client) Keys(pattern string) *MultiBulkReq {
-	req := NewMultiBulkReq("KEYS", pattern)
+func (c *Client) Keys(pattern string) *StringSliceReq {
+	req := NewStringSliceReq("KEYS", pattern)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Migrate(host string, port int32, key, db string, timeout int64) *StatusReq {
+func (c *Client) Migrate(host, port, key string, db, timeout int64) *StatusReq {
 	req := NewStatusReq(
 		"MIGRATE",
 		host,
-		strconv.FormatInt(int64(port), 10),
+		port,
 		key,
-		db,
+		strconv.FormatInt(db, 10),
 		strconv.FormatInt(timeout, 10),
 	)
 	c.Process(req)
@@ -105,9 +99,9 @@ func (c *Client) ObjectRefCount(keys ...string) *IntReq {
 	return req
 }
 
-func (c *Client) ObjectEncoding(keys ...string) *BulkReq {
+func (c *Client) ObjectEncoding(keys ...string) *StringReq {
 	args := append([]string{"OBJECT", "ENCODING"}, keys...)
-	req := NewBulkReq(args...)
+	req := NewStringReq(args...)
 	c.Process(req)
 	return req
 }
@@ -143,8 +137,8 @@ func (c *Client) PTTL(key string) *IntReq {
 	return req
 }
 
-func (c *Client) RandomKey() *BulkReq {
-	req := NewBulkReq("RANDOMKEY")
+func (c *Client) RandomKey() *StringReq {
+	req := NewStringReq("RANDOMKEY")
 	c.Process(req)
 	return req
 }
@@ -161,9 +155,10 @@ func (c *Client) RenameNX(key, newkey string) *BoolReq {
 	return req
 }
 
-func (c *Client) Restore(key, ttl int64, value string) *StatusReq {
+func (c *Client) Restore(key string, ttl int64, value string) *StatusReq {
 	req := NewStatusReq(
 		"RESTORE",
+		key,
 		strconv.FormatInt(ttl, 10),
 		value,
 	)
@@ -171,9 +166,36 @@ func (c *Client) Restore(key, ttl int64, value string) *StatusReq {
 	return req
 }
 
-func (c *Client) Sort(key string, params ...string) *MultiBulkReq {
-	args := append([]string{"SORT", key}, params...)
-	req := NewMultiBulkReq(args...)
+type Sort struct {
+	By            string
+	Offset, Count float64
+	Get           []string
+	Order         string
+	IsAlpha       bool
+	Store         string
+}
+
+func (c *Client) Sort(key string, sort Sort) *StringSliceReq {
+	args := []string{"SORT", key}
+	if sort.By != "" {
+		args = append(args, sort.By)
+	}
+	if sort.Offset != 0 || sort.Count != 0 {
+		args = append(args, "LIMIT", formatFloat(sort.Offset), formatFloat(sort.Count))
+	}
+	for _, get := range sort.Get {
+		args = append(args, "GET", get)
+	}
+	if sort.Order != "" {
+		args = append(args, sort.Order)
+	}
+	if sort.IsAlpha {
+		args = append(args, "ALPHA")
+	}
+	if sort.Store != "" {
+		args = append(args, "STORE", sort.Store)
+	}
+	req := NewStringSliceReq(args...)
 	c.Process(req)
 	return req
 }
@@ -214,8 +236,8 @@ func (c *Client) DecrBy(key string, decrement int64) *IntReq {
 	return req
 }
 
-func (c *Client) Get(key string) *BulkReq {
-	req := NewBulkReq("GET", key)
+func (c *Client) Get(key string) *StringReq {
+	req := NewStringReq("GET", key)
 	c.Process(req)
 	return req
 }
@@ -226,8 +248,8 @@ func (c *Client) GetBit(key string, offset int64) *IntReq {
 	return req
 }
 
-func (c *Client) GetRange(key string, start, end int64) *BulkReq {
-	req := NewBulkReq(
+func (c *Client) GetRange(key string, start, end int64) *StringReq {
+	req := NewStringReq(
 		"GETRANGE",
 		key,
 		strconv.FormatInt(start, 10),
@@ -237,8 +259,8 @@ func (c *Client) GetRange(key string, start, end int64) *BulkReq {
 	return req
 }
 
-func (c *Client) GetSet(key, value string) *BulkReq {
-	req := NewBulkReq("GETSET", key, value)
+func (c *Client) GetSet(key, value string) *StringReq {
+	req := NewStringReq("GETSET", key, value)
 	c.Process(req)
 	return req
 }
@@ -257,9 +279,9 @@ func (c *Client) IncrBy(key string, value int64) *IntReq {
 
 // incrbyfloat
 
-func (c *Client) MGet(keys ...string) *MultiBulkReq {
+func (c *Client) MGet(keys ...string) *IfaceSliceReq {
 	args := append([]string{"MGET"}, keys...)
-	req := NewMultiBulkReq(args...)
+	req := NewIfaceSliceReq(args...)
 	c.Process(req)
 	return req
 }
@@ -345,14 +367,14 @@ func (c *Client) HExists(key, field string) *BoolReq {
 	return req
 }
 
-func (c *Client) HGet(key, field string) *BulkReq {
-	req := NewBulkReq("HGET", key, field)
+func (c *Client) HGet(key, field string) *StringReq {
+	req := NewStringReq("HGET", key, field)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HGetAll(key string) *MultiBulkReq {
-	req := NewMultiBulkReq("HGETALL", key)
+func (c *Client) HGetAll(key string) *StringSliceReq {
+	req := NewStringSliceReq("HGETALL", key)
 	c.Process(req)
 	return req
 }
@@ -363,10 +385,14 @@ func (c *Client) HIncrBy(key, field string, incr int64) *IntReq {
 	return req
 }
 
-// hincrbyfloat
+func (c *Client) HIncrByFloat(key, field string, incr float64) *FloatReq {
+	req := NewFloatReq("HINCRBYFLOAT", key, field, formatFloat(incr))
+	c.Process(req)
+	return req
+}
 
-func (c *Client) HKeys(key string) *MultiBulkReq {
-	req := NewMultiBulkReq("HKEYS", key)
+func (c *Client) HKeys(key string) *StringSliceReq {
+	req := NewStringSliceReq("HKEYS", key)
 	c.Process(req)
 	return req
 }
@@ -377,9 +403,9 @@ func (c *Client) HLen(key string) *IntReq {
 	return req
 }
 
-func (c *Client) HMGet(key string, fields ...string) *MultiBulkReq {
+func (c *Client) HMGet(key string, fields ...string) *IfaceSliceReq {
 	args := append([]string{"HMGET", key}, fields...)
-	req := NewMultiBulkReq(args...)
+	req := NewIfaceSliceReq(args...)
 	c.Process(req)
 	return req
 }
@@ -403,32 +429,32 @@ func (c *Client) HSetNX(key, field, value string) *BoolReq {
 	return req
 }
 
-func (c *Client) HVals(key string) *MultiBulkReq {
-	req := NewMultiBulkReq("HVALS", key)
+func (c *Client) HVals(key string) *StringSliceReq {
+	req := NewStringSliceReq("HVALS", key)
 	c.Process(req)
 	return req
 }
 
 //------------------------------------------------------------------------------
 
-func (c *Client) BLPop(timeout int64, keys ...string) *MultiBulkReq {
+func (c *Client) BLPop(timeout int64, keys ...string) *StringSliceReq {
 	args := append([]string{"BLPOP"}, keys...)
 	args = append(args, strconv.FormatInt(timeout, 10))
-	req := NewMultiBulkReq(args...)
+	req := NewStringSliceReq(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) BRPop(timeout int64, keys ...string) *MultiBulkReq {
+func (c *Client) BRPop(timeout int64, keys ...string) *StringSliceReq {
 	args := append([]string{"BRPOP"}, keys...)
 	args = append(args, strconv.FormatInt(timeout, 10))
-	req := NewMultiBulkReq(args...)
+	req := NewStringSliceReq(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) BRPopLPush(source, destination string, timeout int64) *BulkReq {
-	req := NewBulkReq(
+func (c *Client) BRPopLPush(source, destination string, timeout int64) *StringReq {
+	req := NewStringReq(
 		"BRPOPLPUSH",
 		source,
 		destination,
@@ -438,8 +464,8 @@ func (c *Client) BRPopLPush(source, destination string, timeout int64) *BulkReq 
 	return req
 }
 
-func (c *Client) LIndex(key string, index int64) *BulkReq {
-	req := NewBulkReq("LINDEX", key, strconv.FormatInt(index, 10))
+func (c *Client) LIndex(key string, index int64) *StringReq {
+	req := NewStringReq("LINDEX", key, strconv.FormatInt(index, 10))
 	c.Process(req)
 	return req
 }
@@ -456,8 +482,8 @@ func (c *Client) LLen(key string) *IntReq {
 	return req
 }
 
-func (c *Client) LPop(key string) *BulkReq {
-	req := NewBulkReq("LPOP", key)
+func (c *Client) LPop(key string) *StringReq {
+	req := NewStringReq("LPOP", key)
 	c.Process(req)
 	return req
 }
@@ -475,8 +501,8 @@ func (c *Client) LPushX(key, value string) *IntReq {
 	return req
 }
 
-func (c *Client) LRange(key string, start, stop int64) *MultiBulkReq {
-	req := NewMultiBulkReq(
+func (c *Client) LRange(key string, start, stop int64) *StringSliceReq {
+	req := NewStringSliceReq(
 		"LRANGE",
 		key,
 		strconv.FormatInt(start, 10),
@@ -509,14 +535,14 @@ func (c *Client) LTrim(key string, start, stop int64) *StatusReq {
 	return req
 }
 
-func (c *Client) RPop(key string) *BulkReq {
-	req := NewBulkReq("RPOP", key)
+func (c *Client) RPop(key string) *StringReq {
+	req := NewStringReq("RPOP", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) RPopLPush(source, destination string) *BulkReq {
-	req := NewBulkReq("RPOPLPUSH", source, destination)
+func (c *Client) RPopLPush(source, destination string) *StringReq {
+	req := NewStringReq("RPOPLPUSH", source, destination)
 	c.Process(req)
 	return req
 }
@@ -549,9 +575,9 @@ func (c *Client) SCard(key string) *IntReq {
 	return req
 }
 
-func (c *Client) SDiff(keys ...string) *MultiBulkReq {
+func (c *Client) SDiff(keys ...string) *StringSliceReq {
 	args := append([]string{"SDIFF"}, keys...)
-	req := NewMultiBulkReq(args...)
+	req := NewStringSliceReq(args...)
 	c.Process(req)
 	return req
 }
@@ -563,9 +589,9 @@ func (c *Client) SDiffStore(destination string, keys ...string) *IntReq {
 	return req
 }
 
-func (c *Client) SInter(keys ...string) *MultiBulkReq {
+func (c *Client) SInter(keys ...string) *StringSliceReq {
 	args := append([]string{"SINTER"}, keys...)
-	req := NewMultiBulkReq(args...)
+	req := NewStringSliceReq(args...)
 	c.Process(req)
 	return req
 }
@@ -583,8 +609,8 @@ func (c *Client) SIsMember(key, member string) *BoolReq {
 	return req
 }
 
-func (c *Client) SMembers(key string) *MultiBulkReq {
-	req := NewMultiBulkReq("SMEMBERS", key)
+func (c *Client) SMembers(key string) *StringSliceReq {
+	req := NewStringSliceReq("SMEMBERS", key)
 	c.Process(req)
 	return req
 }
@@ -595,14 +621,14 @@ func (c *Client) SMove(source, destination, member string) *BoolReq {
 	return req
 }
 
-func (c *Client) SPop(key string) *BulkReq {
-	req := NewBulkReq("SPOP", key)
+func (c *Client) SPop(key string) *StringReq {
+	req := NewStringReq("SPOP", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SRandMember(key string) *BulkReq {
-	req := NewBulkReq("SRANDMEMBER", key)
+func (c *Client) SRandMember(key string) *StringReq {
+	req := NewStringReq("SRANDMEMBER", key)
 	c.Process(req)
 	return req
 }
@@ -614,9 +640,9 @@ func (c *Client) SRem(key string, members ...string) *IntReq {
 	return req
 }
 
-func (c *Client) SUnion(keys ...string) *MultiBulkReq {
+func (c *Client) SUnion(keys ...string) *StringSliceReq {
 	args := append([]string{"SUNION"}, keys...)
-	req := NewMultiBulkReq(args...)
+	req := NewStringSliceReq(args...)
 	c.Process(req)
 	return req
 }
@@ -630,20 +656,21 @@ func (c *Client) SUnionStore(destination string, keys ...string) *IntReq {
 
 //------------------------------------------------------------------------------
 
-type ZMember struct {
+type Z struct {
 	Score  float64
 	Member string
 }
 
-func NewZMember(score float64, member string) *ZMember {
-	return &ZMember{score, member}
+type ZStore struct {
+	Weights   []int64
+	Aggregate string
 }
 
-func (m *ZMember) ScoreString() string {
-	return strconv.FormatFloat(m.Score, 'f', -1, 32)
+func (m *Z) ScoreString() string {
+	return formatFloat(m.Score)
 }
 
-func (c *Client) ZAdd(key string, members ...*ZMember) *IntReq {
+func (c *Client) ZAdd(key string, members ...Z) *IntReq {
 	args := []string{"ZADD", key}
 	for _, m := range members {
 		args = append(args, m.ScoreString(), m.Member)
@@ -665,8 +692,8 @@ func (c *Client) ZCount(key, min, max string) *IntReq {
 	return req
 }
 
-func (c *Client) ZIncrBy(key string, increment int64, member string) *FloatReq {
-	req := NewFloatReq("ZINCRBY", key, strconv.FormatInt(increment, 10), member)
+func (c *Client) ZIncrBy(key string, increment float64, member string) *FloatReq {
+	req := NewFloatReq("ZINCRBY", key, formatFloat(increment), member)
 	c.Process(req)
 	return req
 }
@@ -674,27 +701,26 @@ func (c *Client) ZIncrBy(key string, increment int64, member string) *FloatReq {
 func (c *Client) ZInterStore(
 	destination string,
 	numkeys int64,
-	keys []string,
-	weights []int64,
-	aggregate string,
+	store ZStore,
+	keys ...string,
 ) *IntReq {
 	args := []string{"ZINTERSTORE", destination, strconv.FormatInt(numkeys, 10)}
 	args = append(args, keys...)
-	if weights != nil {
+	if len(store.Weights) > 0 {
 		args = append(args, "WEIGHTS")
-		for _, w := range weights {
-			args = append(args, strconv.FormatInt(w, 10))
+		for _, weight := range store.Weights {
+			args = append(args, strconv.FormatInt(weight, 10))
 		}
 	}
-	if aggregate != "" {
-		args = append(args, "AGGREGATE", aggregate)
+	if store.Aggregate != "" {
+		args = append(args, "AGGREGATE", store.Aggregate)
 	}
 	req := NewIntReq(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRange(key string, start, stop int64, withScores bool) *MultiBulkReq {
+func (c *Client) zRange(key string, start, stop int64, withScores bool) *StringSliceReq {
 	args := []string{
 		"ZRANGE",
 		key,
@@ -704,32 +730,48 @@ func (c *Client) ZRange(key string, start, stop int64, withScores bool) *MultiBu
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
-	req := NewMultiBulkReq(args...)
+	req := NewStringSliceReq(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRangeByScore(
+func (c *Client) ZRange(key string, start, stop int64) *StringSliceReq {
+	return c.zRange(key, start, stop, false)
+}
+
+func (c *Client) ZRangeWithScores(key string, start, stop int64) *StringSliceReq {
+	return c.zRange(key, start, stop, true)
+}
+
+func (c *Client) zRangeByScore(
 	key string,
 	min, max string,
 	withScores bool,
-	limit *Limit,
-) *MultiBulkReq {
+	offset, count int64,
+) *StringSliceReq {
 	args := []string{"ZRANGEBYSCORE", key, min, max}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
-	if limit != nil {
+	if offset != 0 || count != 0 {
 		args = append(
 			args,
 			"LIMIT",
-			strconv.FormatInt(limit.Offset, 10),
-			strconv.FormatInt(limit.Count, 10),
+			strconv.FormatInt(offset, 10),
+			strconv.FormatInt(count, 10),
 		)
 	}
-	req := NewMultiBulkReq(args...)
+	req := NewStringSliceReq(args...)
 	c.Process(req)
 	return req
+}
+
+func (c *Client) ZRangeByScore(key string, min, max string, offset, count int64) *StringSliceReq {
+	return c.zRangeByScore(key, min, max, false, offset, count)
+}
+
+func (c *Client) ZRangeByScoreWithScores(key string, min, max string, offset, count int64) *StringSliceReq {
+	return c.zRangeByScore(key, min, max, true, offset, count)
 }
 
 func (c *Client) ZRank(key, member string) *IntReq {
@@ -762,36 +804,48 @@ func (c *Client) ZRemRangeByScore(key, min, max string) *IntReq {
 	return req
 }
 
-func (c *Client) ZRevRange(key, start, stop string, withScores bool) *MultiBulkReq {
+func (c *Client) zRevRange(key, start, stop string, withScores bool) *StringSliceReq {
 	args := []string{"ZREVRANGE", key, start, stop}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
-	req := NewMultiBulkReq(args...)
+	req := NewStringSliceReq(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRevRangeByScore(
-	key, start, stop string,
-	withScores bool,
-	limit *Limit,
-) *MultiBulkReq {
+func (c *Client) ZRevRange(key, start, stop string) *StringSliceReq {
+	return c.zRevRange(key, start, stop, false)
+}
+
+func (c *Client) ZRevRangeWithScores(key, start, stop string) *StringSliceReq {
+	return c.zRevRange(key, start, stop, true)
+}
+
+func (c *Client) zRevRangeByScore(key, start, stop string, withScores bool, offset, count int64) *StringSliceReq {
 	args := []string{"ZREVRANGEBYSCORE", key, start, stop}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
-	if limit != nil {
+	if offset != 0 || count != 0 {
 		args = append(
 			args,
 			"LIMIT",
-			strconv.FormatInt(limit.Offset, 10),
-			strconv.FormatInt(limit.Count, 10),
+			strconv.FormatInt(offset, 10),
+			strconv.FormatInt(count, 10),
 		)
 	}
-	req := NewMultiBulkReq(args...)
+	req := NewStringSliceReq(args...)
 	c.Process(req)
 	return req
+}
+
+func (c *Client) ZRevRangeByScore(key, start, stop string, offset, count int64) *StringSliceReq {
+	return c.zRevRangeByScore(key, start, stop, false, offset, count)
+}
+
+func (c *Client) ZRevRangeByScoreWithScores(key, start, stop string, offset, count int64) *StringSliceReq {
+	return c.zRevRangeByScore(key, start, stop, false, offset, count)
 }
 
 func (c *Client) ZRevRank(key, member string) *IntReq {
@@ -809,20 +863,19 @@ func (c *Client) ZScore(key, member string) *FloatReq {
 func (c *Client) ZUnionStore(
 	destination string,
 	numkeys int64,
-	keys []string,
-	weights []int64,
-	aggregate string,
+	store ZStore,
+	keys ...string,
 ) *IntReq {
 	args := []string{"ZUNIONSTORE", destination, strconv.FormatInt(numkeys, 10)}
 	args = append(args, keys...)
-	if weights != nil {
+	if len(store.Weights) > 0 {
 		args = append(args, "WEIGHTS")
-		for _, w := range weights {
-			args = append(args, strconv.FormatInt(w, 10))
+		for _, weight := range store.Weights {
+			args = append(args, strconv.FormatInt(weight, 10))
 		}
 	}
-	if aggregate != "" {
-		args = append(args, "AGGREGATE", aggregate)
+	if store.Aggregate != "" {
+		args = append(args, "AGGREGATE", store.Aggregate)
 	}
 	req := NewIntReq(args...)
 	c.Process(req)
@@ -849,14 +902,14 @@ func (c *Client) ClientKill(ipPort string) *StatusReq {
 	return req
 }
 
-func (c *Client) ClientList() *BulkReq {
-	req := NewBulkReq("CLIENT", "LIST")
+func (c *Client) ClientList() *StringReq {
+	req := NewStringReq("CLIENT", "LIST")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ConfigGet(parameter string) *MultiBulkReq {
-	req := NewMultiBulkReq("CONFIG", "GET", parameter)
+func (c *Client) ConfigGet(parameter string) *StringSliceReq {
+	req := NewStringSliceReq("CONFIG", "GET", parameter)
 	c.Process(req)
 	return req
 }
@@ -891,8 +944,8 @@ func (c *Client) FlushDb() *StatusReq {
 	return req
 }
 
-func (c *Client) Info() *BulkReq {
-	req := NewBulkReq("INFO")
+func (c *Client) Info() *StringReq {
+	req := NewStringReq("INFO")
 	c.Process(req)
 	return req
 }
@@ -931,8 +984,8 @@ func (c *Client) Sync() {
 	panic("not implemented")
 }
 
-func (c *Client) Time() *MultiBulkReq {
-	req := NewMultiBulkReq("TIME")
+func (c *Client) Time() *StringSliceReq {
+	req := NewStringSliceReq("TIME")
 	c.Process(req)
 	return req
 }

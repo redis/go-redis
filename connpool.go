@@ -10,16 +10,14 @@ import (
 )
 
 type Conn struct {
-	RW     io.ReadWriteCloser
-	Rd     *bufio.Reader
-	ReqBuf []byte
+	RW io.ReadWriteCloser
+	Rd reader
 }
 
 func NewConn(rw io.ReadWriteCloser) *Conn {
 	return &Conn{
-		RW:     rw,
-		Rd:     bufio.NewReaderSize(rw, 1024),
-		ReqBuf: make([]byte, 0, 1024),
+		RW: rw,
+		Rd: bufio.NewReaderSize(rw, 1024),
 	}
 }
 
