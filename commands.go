@@ -950,8 +950,8 @@ func (c *Client) ClientList() *StringReq {
 	return req
 }
 
-func (c *Client) ConfigGet(parameter string) *StringSliceReq {
-	req := NewStringSliceReq("CONFIG", "GET", parameter)
+func (c *Client) ConfigGet(parameter string) *IfaceSliceReq {
+	req := NewIfaceSliceReq("CONFIG", "GET", parameter)
 	c.Process(req)
 	return req
 }

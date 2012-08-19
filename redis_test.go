@@ -2544,7 +2544,7 @@ func (t *RedisTest) TestCmdConfigSet(c *C) {
 	c.Assert(configGet.Val(), HasLen, 2)
 	c.Assert(configGet.Val()[0], Equals, "maxmemory")
 
-	configSet := t.client.ConfigSet("maxmemory", configGet.Val()[1])
+	configSet := t.client.ConfigSet("maxmemory", configGet.Val()[1].(string))
 	c.Assert(configSet.Err(), IsNil)
 	c.Assert(configSet.Val(), Equals, "OK")
 }
