@@ -30,6 +30,12 @@ func (c *PipelineClient) Close() error {
 	return nil
 }
 
+func (c *PipelineClient) DiscardQueued() {
+	c.mtx.Lock()
+	c.reqs = c.reqs[:0]
+	c.mtx.Unlock()
+}
+
 func (c *PipelineClient) RunQueued() ([]Req, error) {
 	c.mtx.Lock()
 	if len(c.reqs) == 0 {

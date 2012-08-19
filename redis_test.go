@@ -2184,6 +2184,20 @@ func (t *RedisTest) TestPipeline(c *C) {
 	c.Assert(getNil.Val(), Equals, "")
 }
 
+func (t *RedisTest) TestPipelineDiscardQueued(c *C) {
+	pipeline, err := t.client.PipelineClient()
+	c.Assert(err, IsNil)
+	defer func() {
+		c.Assert(pipeline.Close(), IsNil)
+	}()
+
+	pipeline.Get("key")
+	pipeline.DiscardQueued()
+	reqs, err := pipeline.RunQueued()
+	c.Assert(err, IsNil)
+	c.Assert(reqs, HasLen, 0)
+}
+
 func (t *RedisTest) TestPipelineFunc(c *C) {
 	var get *redis.StringReq
 	reqs, err := t.client.Pipelined(func(c *redis.PipelineClient) {
