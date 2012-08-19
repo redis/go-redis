@@ -41,13 +41,18 @@ func (c *PubSubClient) consumeMessages(conn *Conn) {
 		for {
 			msg := &Message{}
 
-			replyI, err := req.ParseReply(conn.Rd)
+			replyIface, err := req.ParseReply(conn.Rd)
 			if err != nil {
 				msg.Err = err
 				c.ch <- msg
 				break
 			}
-			reply := replyI.([]interface{})
+			reply, ok := replyIface.([]interface{})
+			if !ok {
+				msg.Err = fmt.Errorf("redis: unexpected reply type %T", replyIface)
+				c.ch <- msg
+				return
+			}
 
 			msgName := reply[0].(string)
 			switch msgName {

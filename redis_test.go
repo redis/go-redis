@@ -39,31 +39,48 @@ func sortStrings(slice []string) []string {
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) SetUpTest(c *C) {
+	if t.client == nil {
+		openConn := func() (io.ReadWriteCloser, error) {
+			t.openedConnCount++
+			return net.Dial("tcp", redisAddr)
+		}
+		initConn := func(c *redis.Client) error {
+			t.initedConnCount++
+			return nil
+		}
+		closeConn := func(conn io.ReadWriteCloser) error {
+			t.closedConnCount++
+			return nil
+		}
+
+		t.client = redis.NewClient(openConn, closeConn, initConn)
+		t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 10
+	}
+
 	t.openedConnCount = 0
-	openConn := func() (io.ReadWriteCloser, error) {
-		t.openedConnCount++
-		return net.Dial("tcp", redisAddr)
-	}
 	t.closedConnCount = 0
-	closeConn := func(conn io.ReadWriteCloser) error {
-		t.closedConnCount++
-		return nil
-	}
 	t.initedConnCount = 0
-	initConn := func(c *redis.Client) error {
-		t.initedConnCount++
-		return nil
-	}
-	t.client = redis.NewClient(openConn, closeConn, initConn)
-	t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 10
-	c.Assert(t.client.FlushDb().Err(), IsNil)
+	t.resetRedis(c)
 }
 
 func (t *RedisTest) TearDownTest(c *C) {
-	c.Assert(t.client.FlushDb().Err(), IsNil)
-	c.Assert(t.client.Close(), IsNil)
-	c.Assert(t.openedConnCount, Equals, t.closedConnCount)
+	t.resetRedis(c)
 	c.Assert(t.openedConnCount, Equals, t.initedConnCount)
+}
+
+func (t *RedisTest) resetRedis(c *C) {
+	c.Assert(t.client.Select(1).Err(), IsNil)
+	c.Assert(t.client.FlushDb().Err(), IsNil)
+
+	c.Assert(t.client.Select(0).Err(), IsNil)
+	c.Assert(t.client.FlushDb().Err(), IsNil)
+}
+
+func (t *RedisTest) resetClient(c *C) {
+	c.Assert(t.client.Close(), IsNil)
+	t.openedConnCount = 0
+	t.initedConnCount = 0
+	t.closedConnCount = 0
 }
 
 //------------------------------------------------------------------------------
@@ -106,6 +123,8 @@ func (t *RedisTest) TestGetBigVal(c *C) {
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) TestConnPoolMaxCap(c *C) {
+	t.resetClient(c)
+
 	wg := &sync.WaitGroup{}
 	for i := 0; i < 1000; i++ {
 		wg.Add(1)
@@ -124,6 +143,8 @@ func (t *RedisTest) TestConnPoolMaxCap(c *C) {
 }
 
 func (t *RedisTest) TestConnPoolMaxCapOnPipelineClient(c *C) {
+	t.resetClient(c)
+
 	wg := &sync.WaitGroup{}
 	for i := 0; i < 1000; i++ {
 		wg.Add(1)
@@ -151,6 +172,8 @@ func (t *RedisTest) TestConnPoolMaxCapOnPipelineClient(c *C) {
 }
 
 func (t *RedisTest) TestConnPoolMaxCapOnMultiClient(c *C) {
+	t.resetClient(c)
+
 	wg := &sync.WaitGroup{}
 	for i := 0; i < 1000; i++ {
 		wg.Add(1)
@@ -180,6 +203,8 @@ func (t *RedisTest) TestConnPoolMaxCapOnMultiClient(c *C) {
 }
 
 func (t *RedisTest) TestConnPoolMaxCapOnPubSubClient(c *C) {
+	t.resetClient(c)
+
 	wg := &sync.WaitGroup{}
 	for i := 0; i < 1000; i++ {
 		wg.Add(1)
@@ -2477,9 +2502,12 @@ func (t *RedisTest) TestCmdBgRewriteAOF(c *C) {
 }
 
 func (t *RedisTest) TestCmdBgSave(c *C) {
+	// workaround for "ERR Can't BGSAVE while AOF log rewriting is in progress"
+	time.Sleep(time.Second)
+
 	r := t.client.BgSave()
-	c.Assert(r.Err(), ErrorMatches, "ERR Can't BGSAVE while AOF log rewriting is in progress")
-	c.Assert(r.Val(), Equals, "")
+	c.Assert(r.Err(), IsNil)
+	c.Assert(r.Val(), Equals, "Background saving started")
 }
 
 func (t *RedisTest) TestCmdClientKill(c *C) {
@@ -2662,7 +2690,7 @@ func (t *RedisTest) BenchmarkRedisMGet(c *C) {
 	for i := 0; i < 10; i++ {
 		mGet := t.client.MGet("key1", "key2")
 		c.Assert(mGet.Err(), IsNil)
-		c.Assert(mGet.Val(), DeepEquals, []string{"hello1", "hello2"})
+		c.Assert(mGet.Val(), DeepEquals, []interface{}{"hello1", "hello2"})
 	}
 
 	c.StartTimer()

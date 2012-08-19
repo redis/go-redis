@@ -19,6 +19,11 @@ func (c *Client) MultiClient() (*MultiClient, error) {
 	}, nil
 }
 
+func (c *MultiClient) Close() error {
+	c.Unwatch()
+	return c.Client.Close()
+}
+
 func (c *MultiClient) Watch(keys ...string) *StatusReq {
 	args := append([]string{"WATCH"}, keys...)
 	req := NewStatusReq(args...)
