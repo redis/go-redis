@@ -220,9 +220,47 @@ func (c *Client) Append(key, value string) *IntReq {
 	return req
 }
 
-// BitCount
+type BitCount struct {
+	Start, End int64
+}
 
-// BitOp
+func (c *Client) BitCount(key string, bitCount *BitCount) *IntReq {
+	args := []string{"BITCOUNT", key}
+	if bitCount != nil {
+		args = append(
+			args,
+			strconv.FormatInt(bitCount.Start, 10),
+			strconv.FormatInt(bitCount.End, 10),
+		)
+	}
+	req := NewIntReq(args...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) bitOp(op, destKey string, keys ...string) *IntReq {
+	args := []string{"BITOP", op, destKey}
+	args = append(args, keys...)
+	req := NewIntReq(args...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) BitOpAnd(destKey string, keys ...string) *IntReq {
+	return c.bitOp("AND", destKey, keys...)
+}
+
+func (c *Client) BitOpOr(destKey string, keys ...string) *IntReq {
+	return c.bitOp("OR", destKey, keys...)
+}
+
+func (c *Client) BitOpXor(destKey string, keys ...string) *IntReq {
+	return c.bitOp("XOR", destKey, keys...)
+}
+
+func (c *Client) BitOpNot(destKey string, key string) *IntReq {
+	return c.bitOp("NOT", destKey, key)
+}
 
 func (c *Client) Decr(key string) *IntReq {
 	req := NewIntReq("DECR", key)
@@ -277,7 +315,11 @@ func (c *Client) IncrBy(key string, value int64) *IntReq {
 	return req
 }
 
-// incrbyfloat
+func (c *Client) IncrByFloat(key string, value float64) *FloatReq {
+	req := NewFloatReq("INCRBYFLOAT", key, formatFloat(value))
+	c.Process(req)
+	return req
+}
 
 func (c *Client) MGet(keys ...string) *IfaceSliceReq {
 	args := append([]string{"MGET"}, keys...)

@@ -21,8 +21,8 @@ const redisAddr = ":6379"
 //------------------------------------------------------------------------------
 
 type RedisTest struct {
-	openedConnsCount, closedConnsCount int64
-	client                             *redis.Client
+	openedConnCount, closedConnCount, initedConnCount int64
+	client                                            *redis.Client
 }
 
 var _ = Suite(&RedisTest{})
@@ -39,17 +39,22 @@ func sortStrings(slice []string) []string {
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) SetUpTest(c *C) {
-	t.openedConnsCount = 0
+	t.openedConnCount = 0
 	openConn := func() (io.ReadWriteCloser, error) {
-		t.openedConnsCount++
+		t.openedConnCount++
 		return net.Dial("tcp", redisAddr)
 	}
-	t.closedConnsCount = 0
+	t.closedConnCount = 0
 	closeConn := func(conn io.ReadWriteCloser) error {
-		t.closedConnsCount++
+		t.closedConnCount++
 		return nil
 	}
-	t.client = redis.NewClient(openConn, closeConn, nil)
+	t.initedConnCount = 0
+	initConn := func(c *redis.Client) error {
+		t.initedConnCount++
+		return nil
+	}
+	t.client = redis.NewClient(openConn, closeConn, initConn)
 	t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 10
 	c.Assert(t.client.FlushDb().Err(), IsNil)
 }
@@ -57,32 +62,11 @@ func (t *RedisTest) SetUpTest(c *C) {
 func (t *RedisTest) TearDownTest(c *C) {
 	c.Assert(t.client.FlushDb().Err(), IsNil)
 	c.Assert(t.client.Close(), IsNil)
-	c.Assert(t.openedConnsCount, Equals, t.closedConnsCount)
+	c.Assert(t.openedConnCount, Equals, t.closedConnCount)
+	c.Assert(t.openedConnCount, Equals, t.initedConnCount)
 }
 
 //------------------------------------------------------------------------------
-
-func (t *RedisTest) TestInitConn(c *C) {
-	openConn := func() (io.ReadWriteCloser, error) {
-		return net.Dial("tcp", redisAddr)
-	}
-
-	isInitConnCalled := false
-	initConn := func(client *redis.Client) error {
-		isInitConnCalled = true
-		return nil
-	}
-
-	client := redis.NewClient(openConn, nil, initConn)
-	defer func() {
-		c.Assert(client.Close(), IsNil)
-	}()
-
-	ping := client.Ping()
-	c.Assert(ping.Err(), IsNil)
-	c.Assert(ping.Val(), Equals, "PONG")
-	c.Assert(isInitConnCalled, Equals, true)
-}
 
 func (t *RedisTest) TestRunWithouthCheckingErrVal(c *C) {
 	set := t.client.Set("key", "hello")
@@ -135,8 +119,8 @@ func (t *RedisTest) TestConnPoolMaxCap(c *C) {
 	wg.Wait()
 
 	c.Assert(t.client.Close(), IsNil)
-	c.Assert(t.openedConnsCount, Equals, int64(10))
-	c.Assert(t.closedConnsCount, Equals, int64(10))
+	c.Assert(t.openedConnCount, Equals, int64(10))
+	c.Assert(t.closedConnCount, Equals, int64(10))
 }
 
 func (t *RedisTest) TestConnPoolMaxCapOnPipelineClient(c *C) {
@@ -162,8 +146,8 @@ func (t *RedisTest) TestConnPoolMaxCapOnPipelineClient(c *C) {
 	wg.Wait()
 
 	c.Assert(t.client.Close(), IsNil)
-	c.Assert(t.openedConnsCount, Equals, int64(10))
-	c.Assert(t.closedConnsCount, Equals, int64(10))
+	c.Assert(t.openedConnCount, Equals, int64(10))
+	c.Assert(t.closedConnCount, Equals, int64(10))
 }
 
 func (t *RedisTest) TestConnPoolMaxCapOnMultiClient(c *C) {
@@ -191,8 +175,8 @@ func (t *RedisTest) TestConnPoolMaxCapOnMultiClient(c *C) {
 	wg.Wait()
 
 	c.Assert(t.client.Close(), IsNil)
-	c.Assert(t.openedConnsCount, Equals, int64(10))
-	c.Assert(t.closedConnsCount, Equals, int64(10))
+	c.Assert(t.openedConnCount, Equals, int64(10))
+	c.Assert(t.closedConnCount, Equals, int64(10))
 }
 
 func (t *RedisTest) TestConnPoolMaxCapOnPubSubClient(c *C) {
@@ -214,8 +198,8 @@ func (t *RedisTest) TestConnPoolMaxCapOnPubSubClient(c *C) {
 	wg.Wait()
 
 	c.Assert(t.client.Close(), IsNil)
-	c.Assert(t.openedConnsCount, Equals, int64(1000))
-	c.Assert(t.closedConnsCount, Equals, int64(1000))
+	c.Assert(t.openedConnCount, Equals, int64(1000))
+	c.Assert(t.closedConnCount, Equals, int64(1000))
 }
 
 func (t *RedisTest) TestConnPoolRemovesBrokenConn(c *C) {
@@ -244,8 +228,8 @@ func (t *RedisTest) TestConnPoolRemovesBrokenConn(c *C) {
 
 func (t *RedisTest) TestAuth(c *C) {
 	auth := t.client.Auth("password")
-	c.Check(auth.Err(), ErrorMatches, "ERR Client sent AUTH, but no password is set")
-	c.Check(auth.Val(), Equals, "")
+	c.Assert(auth.Err(), ErrorMatches, "ERR Client sent AUTH, but no password is set")
+	c.Assert(auth.Val(), Equals, "")
 }
 
 func (t *RedisTest) TestEcho(c *C) {
@@ -270,11 +254,11 @@ func (t *RedisTest) TestSelect(c *C) {
 
 func (t *RedisTest) TestCmdKeysDel(c *C) {
 	set := t.client.Set("key1", "Hello")
-	c.Check(set.Err(), IsNil)
-	c.Check(set.Val(), Equals, "OK")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
 	set = t.client.Set("key2", "World")
-	c.Check(set.Err(), IsNil)
-	c.Check(set.Val(), Equals, "OK")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
 
 	del := t.client.Del("key1", "key2", "key3")
 	c.Assert(del.Err(), IsNil)
@@ -283,18 +267,18 @@ func (t *RedisTest) TestCmdKeysDel(c *C) {
 
 func (t *RedisTest) TestCmdKeysDump(c *C) {
 	set := t.client.Set("key", "hello")
-	c.Check(set.Err(), IsNil)
-	c.Check(set.Val(), Equals, "OK")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
 
 	dump := t.client.Dump("key")
-	c.Check(dump.Err(), IsNil)
-	c.Check(dump.Val(), Equals, "\x00\x05hello\x06\x00\xf5\x9f\xb7\xf6\x90a\x1c\x99")
+	c.Assert(dump.Err(), IsNil)
+	c.Assert(dump.Val(), Equals, "\x00\x05hello\x06\x00\xf5\x9f\xb7\xf6\x90a\x1c\x99")
 }
 
 func (t *RedisTest) TestCmdKeysExists(c *C) {
 	set := t.client.Set("key1", "Hello")
-	c.Check(set.Err(), IsNil)
-	c.Check(set.Val(), Equals, "OK")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
 
 	exists := t.client.Exists("key1")
 	c.Assert(exists.Err(), IsNil)
@@ -307,8 +291,8 @@ func (t *RedisTest) TestCmdKeysExists(c *C) {
 
 func (t *RedisTest) TestCmdKeysExpire(c *C) {
 	set := t.client.Set("key", "Hello")
-	c.Check(set.Err(), IsNil)
-	c.Check(set.Val(), Equals, "OK")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
 
 	expire := t.client.Expire("key", 10)
 	c.Assert(expire.Err(), IsNil)
@@ -329,8 +313,8 @@ func (t *RedisTest) TestCmdKeysExpire(c *C) {
 
 func (t *RedisTest) TestCmdKeysExpireAt(c *C) {
 	set := t.client.Set("key", "Hello")
-	c.Check(set.Err(), IsNil)
-	c.Check(set.Val(), Equals, "OK")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
 
 	exists := t.client.Exists("key")
 	c.Assert(exists.Err(), IsNil)
@@ -347,8 +331,8 @@ func (t *RedisTest) TestCmdKeysExpireAt(c *C) {
 
 func (t *RedisTest) TestCmdKeysKeys(c *C) {
 	mset := t.client.MSet("one", "1", "two", "2", "three", "3", "four", "4")
-	c.Check(mset.Err(), IsNil)
-	c.Check(mset.Val(), Equals, "OK")
+	c.Assert(mset.Err(), IsNil)
+	c.Assert(mset.Val(), Equals, "OK")
 
 	keys := t.client.Keys("*o*")
 	c.Assert(keys.Err(), IsNil)
@@ -369,16 +353,16 @@ func (t *RedisTest) TestCmdKeysKeys(c *C) {
 
 func (t *RedisTest) TestCmdKeysMigrate(c *C) {
 	migrate := t.client.Migrate("localhost", "6380", "key", 0, 0)
-	c.Check(migrate.Err(), IsNil)
-	c.Check(migrate.Val(), Equals, "NOKEY")
+	c.Assert(migrate.Err(), IsNil)
+	c.Assert(migrate.Val(), Equals, "NOKEY")
 
 	set := t.client.Set("key", "hello")
-	c.Check(set.Err(), IsNil)
-	c.Check(set.Val(), Equals, "OK")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
 
 	migrate = t.client.Migrate("localhost", "6380", "key", 0, 0)
-	c.Check(migrate.Err(), ErrorMatches, "IOERR error or timeout writing to target instance")
-	c.Check(migrate.Val(), Equals, "")
+	c.Assert(migrate.Err(), ErrorMatches, "IOERR error or timeout writing to target instance")
+	c.Assert(migrate.Val(), Equals, "")
 }
 
 func (t *RedisTest) TestCmdKeysMove(c *C) {
@@ -545,38 +529,38 @@ func (t *RedisTest) TestCmdKeysRestore(c *C) {
 	c.Assert(set.Val(), Equals, "OK")
 
 	dump := t.client.Dump("key")
-	c.Check(dump.Err(), IsNil)
+	c.Assert(dump.Err(), IsNil)
 
 	del := t.client.Del("key")
-	c.Check(del.Err(), IsNil)
+	c.Assert(del.Err(), IsNil)
 
 	restore := t.client.Restore("key", 0, dump.Val())
-	c.Check(restore.Err(), IsNil)
-	c.Check(restore.Val(), Equals, "OK")
+	c.Assert(restore.Err(), IsNil)
+	c.Assert(restore.Val(), Equals, "OK")
 
 	type_ := t.client.Type("key")
-	c.Check(type_.Err(), IsNil)
-	c.Check(type_.Val(), Equals, "string")
+	c.Assert(type_.Err(), IsNil)
+	c.Assert(type_.Val(), Equals, "string")
 
 	lRange := t.client.Get("key")
-	c.Check(lRange.Err(), IsNil)
-	c.Check(lRange.Val(), Equals, "hello")
+	c.Assert(lRange.Err(), IsNil)
+	c.Assert(lRange.Val(), Equals, "hello")
 }
 
 func (t *RedisTest) TestCmdKeysSort(c *C) {
 	lPush := t.client.LPush("list", "1")
-	c.Check(lPush.Err(), IsNil)
-	c.Check(lPush.Val(), Equals, int64(1))
+	c.Assert(lPush.Err(), IsNil)
+	c.Assert(lPush.Val(), Equals, int64(1))
 	lPush = t.client.LPush("list", "3")
-	c.Check(lPush.Err(), IsNil)
-	c.Check(lPush.Val(), Equals, int64(2))
+	c.Assert(lPush.Err(), IsNil)
+	c.Assert(lPush.Val(), Equals, int64(2))
 	lPush = t.client.LPush("list", "2")
-	c.Check(lPush.Err(), IsNil)
-	c.Check(lPush.Val(), Equals, int64(3))
+	c.Assert(lPush.Err(), IsNil)
+	c.Assert(lPush.Val(), Equals, int64(3))
 
 	sort := t.client.Sort("list", redis.Sort{Offset: 0, Count: 2, Order: "ASC"})
-	c.Check(sort.Err(), IsNil)
-	c.Check(sort.Val(), DeepEquals, []string{"1", "2"})
+	c.Assert(sort.Err(), IsNil)
+	c.Assert(sort.Val(), DeepEquals, []string{"1", "2"})
 }
 
 func (t *RedisTest) TestCmdKeysTTL(c *C) {
@@ -609,81 +593,249 @@ func (t *RedisTest) TestCmdKeysType(c *C) {
 
 //------------------------------------------------------------------------------
 
-func (t *RedisTest) TestAppend(c *C) {
-	append := t.client.Append("key", "hello")
+func (t *RedisTest) TestStringsAppend(c *C) {
+	exists := t.client.Exists("key")
+	c.Assert(exists.Err(), IsNil)
+	c.Assert(exists.Val(), Equals, false)
+
+	append := t.client.Append("key", "Hello")
 	c.Assert(append.Err(), IsNil)
 	c.Assert(append.Val(), Equals, int64(5))
-}
 
-func (t *RedisTest) TestDecr(c *C) {
-	decr := t.client.Decr("key")
-	c.Assert(decr.Err(), IsNil)
-	c.Assert(decr.Val(), Equals, int64(-1))
-}
-
-func (t *RedisTest) TestDecrBy(c *C) {
-	decrBy := t.client.DecrBy("key", 10)
-	c.Assert(decrBy.Err(), IsNil)
-	c.Assert(decrBy.Val(), Equals, int64(-10))
-}
-
-func (t *RedisTest) TestGet(c *C) {
-	get := t.client.Get("key")
-	c.Assert(get.Err(), Equals, redis.Nil)
-	c.Assert(get.Val(), Equals, "")
-}
-
-func (t *RedisTest) TestSetGetBig(c *C) {
-	getBit := t.client.GetBit("key", 5)
-	c.Assert(getBit.Err(), IsNil)
-	c.Assert(getBit.Val(), Equals, int64(0))
-
-	setBit := t.client.SetBit("key", 5, 1)
-	c.Assert(setBit.Err(), IsNil)
-	c.Assert(setBit.Val(), Equals, int64(0))
-
-	getBit = t.client.GetBit("key", 5)
-	c.Assert(getBit.Err(), IsNil)
-	c.Assert(getBit.Val(), Equals, int64(1))
-}
-
-func (t *RedisTest) TestGetRange(c *C) {
-	set := t.client.Set("key", "hello")
-	c.Assert(set.Err(), IsNil)
-	c.Assert(set.Val(), Equals, "OK")
-
-	getRange := t.client.GetRange("key", 0, 1)
-	c.Assert(getRange.Err(), IsNil)
-	c.Assert(getRange.Val(), Equals, "he")
-}
-
-func (t *RedisTest) TestGetSet(c *C) {
-	set := t.client.Set("key", "hello")
-	c.Assert(set.Err(), IsNil)
-	c.Assert(set.Val(), Equals, "OK")
-
-	getSet := t.client.GetSet("key", "hello2")
-	c.Assert(getSet.Err(), IsNil)
-	c.Assert(getSet.Val(), Equals, "hello")
+	append = t.client.Append("key", " World")
+	c.Assert(append.Err(), IsNil)
+	c.Assert(append.Val(), Equals, int64(11))
 
 	get := t.client.Get("key")
 	c.Assert(get.Err(), IsNil)
-	c.Assert(get.Val(), Equals, "hello2")
+	c.Assert(get.Val(), Equals, "Hello World")
 }
 
-func (t *RedisTest) TestIncr(c *C) {
+func (t *RedisTest) TestStringsBitCount(c *C) {
+	set := t.client.Set("key", "foobar")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	bitCount := t.client.BitCount("key", nil)
+	c.Assert(bitCount.Err(), IsNil)
+	c.Assert(bitCount.Val(), Equals, int64(26))
+
+	bitCount = t.client.BitCount("key", &redis.BitCount{0, 0})
+	c.Assert(bitCount.Err(), IsNil)
+	c.Assert(bitCount.Val(), Equals, int64(4))
+
+	bitCount = t.client.BitCount("key", &redis.BitCount{1, 1})
+	c.Assert(bitCount.Err(), IsNil)
+	c.Assert(bitCount.Val(), Equals, int64(6))
+}
+
+func (t *RedisTest) TestStringsBitOpAnd(c *C) {
+	set := t.client.Set("key1", "1")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	set = t.client.Set("key2", "0")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	bitOpAnd := t.client.BitOpAnd("dest", "key1", "key2")
+	c.Assert(bitOpAnd.Err(), IsNil)
+	c.Assert(bitOpAnd.Val(), Equals, int64(1))
+
+	get := t.client.Get("dest")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, "0")
+}
+
+func (t *RedisTest) TestStringsBitOpOr(c *C) {
+	set := t.client.Set("key1", "1")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	set = t.client.Set("key2", "0")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	bitOpOr := t.client.BitOpOr("dest", "key1", "key2")
+	c.Assert(bitOpOr.Err(), IsNil)
+	c.Assert(bitOpOr.Val(), Equals, int64(1))
+
+	get := t.client.Get("dest")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, "1")
+}
+
+func (t *RedisTest) TestStringsBitOpXor(c *C) {
+	set := t.client.Set("key1", "\xff")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	set = t.client.Set("key2", "\x0f")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	bitOpXor := t.client.BitOpXor("dest", "key1", "key2")
+	c.Assert(bitOpXor.Err(), IsNil)
+	c.Assert(bitOpXor.Val(), Equals, int64(1))
+
+	get := t.client.Get("dest")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, "\xf0")
+}
+
+func (t *RedisTest) TestStringsBitOpNot(c *C) {
+	set := t.client.Set("key1", "\x00")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	bitOpNot := t.client.BitOpNot("dest", "key1")
+	c.Assert(bitOpNot.Err(), IsNil)
+	c.Assert(bitOpNot.Val(), Equals, int64(1))
+
+	get := t.client.Get("dest")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, "\xff")
+}
+
+func (t *RedisTest) TestStringsDecr(c *C) {
+	set := t.client.Set("key", "10")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	decr := t.client.Decr("key")
+	c.Assert(decr.Err(), IsNil)
+	c.Assert(decr.Val(), Equals, int64(9))
+
+	set = t.client.Set("key", "234293482390480948029348230948")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	decr = t.client.Decr("key")
+	c.Assert(decr.Err(), ErrorMatches, "ERR value is not an integer or out of range")
+	c.Assert(decr.Val(), Equals, int64(0))
+}
+
+func (t *RedisTest) TestStringsDecrBy(c *C) {
+	set := t.client.Set("key", "10")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	decrBy := t.client.DecrBy("key", 5)
+	c.Assert(decrBy.Err(), IsNil)
+	c.Assert(decrBy.Val(), Equals, int64(5))
+}
+
+func (t *RedisTest) TestStringsGet(c *C) {
+	get := t.client.Get("_")
+	c.Assert(get.Err(), Equals, redis.Nil)
+	c.Assert(get.Val(), Equals, "")
+
+	set := t.client.Set("key", "hello")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	get = t.client.Get("key")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, "hello")
+}
+
+func (t *RedisTest) TestStringsGetBit(c *C) {
+	setBit := t.client.SetBit("key", 7, 1)
+	c.Assert(setBit.Err(), IsNil)
+	c.Assert(setBit.Val(), Equals, int64(0))
+
+	getBit := t.client.GetBit("key", 0)
+	c.Assert(getBit.Err(), IsNil)
+	c.Assert(getBit.Val(), Equals, int64(0))
+
+	getBit = t.client.GetBit("key", 7)
+	c.Assert(getBit.Err(), IsNil)
+	c.Assert(getBit.Val(), Equals, int64(1))
+
+	getBit = t.client.GetBit("key", 100)
+	c.Assert(getBit.Err(), IsNil)
+	c.Assert(getBit.Val(), Equals, int64(0))
+}
+
+func (t *RedisTest) TestStringsGetRange(c *C) {
+	set := t.client.Set("key", "This is a string")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	getRange := t.client.GetRange("key", 0, 3)
+	c.Assert(getRange.Err(), IsNil)
+	c.Assert(getRange.Val(), Equals, "This")
+
+	getRange = t.client.GetRange("key", -3, -1)
+	c.Assert(getRange.Err(), IsNil)
+	c.Assert(getRange.Val(), Equals, "ing")
+
+	getRange = t.client.GetRange("key", 0, -1)
+	c.Assert(getRange.Err(), IsNil)
+	c.Assert(getRange.Val(), Equals, "This is a string")
+
+	getRange = t.client.GetRange("key", 10, 100)
+	c.Assert(getRange.Err(), IsNil)
+	c.Assert(getRange.Val(), Equals, "string")
+}
+
+func (t *RedisTest) TestStringsGetSet(c *C) {
 	incr := t.client.Incr("key")
 	c.Assert(incr.Err(), IsNil)
 	c.Assert(incr.Val(), Equals, int64(1))
+
+	getSet := t.client.GetSet("key", "0")
+	c.Assert(getSet.Err(), IsNil)
+	c.Assert(getSet.Val(), Equals, "1")
+
+	get := t.client.Get("key")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, "0")
 }
 
-func (t *RedisTest) TestIncrBy(c *C) {
-	incrBy := t.client.IncrBy("key", 10)
+func (t *RedisTest) TestStringsIncr(c *C) {
+	set := t.client.Set("key", "10")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	incr := t.client.Incr("key")
+	c.Assert(incr.Err(), IsNil)
+	c.Assert(incr.Val(), Equals, int64(11))
+
+	get := t.client.Get("key")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, "11")
+}
+
+func (t *RedisTest) TestStringsIncrBy(c *C) {
+	set := t.client.Set("key", "10")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	incrBy := t.client.IncrBy("key", 5)
 	c.Assert(incrBy.Err(), IsNil)
-	c.Assert(incrBy.Val(), Equals, int64(10))
+	c.Assert(incrBy.Val(), Equals, int64(15))
 }
 
-func (t *RedisTest) TestMsetMget(c *C) {
+func (t *RedisTest) TestIncrByFloat(c *C) {
+	set := t.client.Set("key", "10.50")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	incrByFloat := t.client.IncrByFloat("key", 0.1)
+	c.Assert(incrByFloat.Err(), IsNil)
+	c.Assert(incrByFloat.Val(), Equals, 10.6)
+
+	set = t.client.Set("key", "5.0e3")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	incrByFloat = t.client.IncrByFloat("key", 2.0e2)
+	c.Assert(incrByFloat.Err(), IsNil)
+	c.Assert(incrByFloat.Val(), Equals, float64(5200))
+}
+
+func (t *RedisTest) TestStringsMSetMGet(c *C) {
 	mSet := t.client.MSet("key1", "hello1", "key2", "hello2")
 	c.Assert(mSet.Err(), IsNil)
 	c.Assert(mSet.Val(), Equals, "OK")
@@ -693,21 +845,31 @@ func (t *RedisTest) TestMsetMget(c *C) {
 	c.Assert(mGet.Val(), DeepEquals, []interface{}{"hello1", "hello2", nil})
 }
 
-func (t *RedisTest) MSetNX(c *C) {
+func (t *RedisTest) TestStringsMSetNX(c *C) {
 	mSetNX := t.client.MSetNX("key1", "hello1", "key2", "hello2")
 	c.Assert(mSetNX.Err(), IsNil)
 	c.Assert(mSetNX.Val(), Equals, true)
 
-	mSetNX = t.client.MSetNX("key1", "hello1", "key2", "hello2")
+	mSetNX = t.client.MSetNX("key2", "hello1", "key3", "hello2")
 	c.Assert(mSetNX.Err(), IsNil)
 	c.Assert(mSetNX.Val(), Equals, false)
 }
 
-func (t *RedisTest) PSetEx(c *C) {
-	c.Skip("not implemented")
+func (t *RedisTest) TestStringsPSetEx(c *C) {
+	pSetEx := t.client.PSetEx("key", 1000, "hello")
+	c.Assert(pSetEx.Err(), IsNil)
+	c.Assert(pSetEx.Val(), Equals, "OK")
+
+	pttl := t.client.PTTL("key")
+	c.Assert(pttl.Err(), IsNil)
+	c.Assert(pttl.Val() > 900 && pttl.Val() <= 1000, Equals, true)
+
+	get := t.client.Get("key")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, "hello")
 }
 
-func (t *RedisTest) TestSetGet(c *C) {
+func (t *RedisTest) TestStringsSetGet(c *C) {
 	set := t.client.Set("key", "hello")
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
@@ -717,7 +879,7 @@ func (t *RedisTest) TestSetGet(c *C) {
 	c.Assert(get.Val(), Equals, "hello")
 }
 
-func (t *RedisTest) TestSetEx(c *C) {
+func (t *RedisTest) TestStringsSetEx(c *C) {
 	setEx := t.client.SetEx("key", 10, "hello")
 	c.Assert(setEx.Err(), IsNil)
 	c.Assert(setEx.Val(), Equals, "OK")
@@ -727,7 +889,7 @@ func (t *RedisTest) TestSetEx(c *C) {
 	c.Assert(ttl.Val(), Equals, int64(10))
 }
 
-func (t *RedisTest) TestSetNX(c *C) {
+func (t *RedisTest) TestStringsSetNX(c *C) {
 	setNX := t.client.SetNX("key", "hello")
 	c.Assert(setNX.Err(), IsNil)
 	c.Assert(setNX.Val(), Equals, true)
@@ -741,7 +903,7 @@ func (t *RedisTest) TestSetNX(c *C) {
 	c.Assert(get.Val(), Equals, "hello")
 }
 
-func (t *RedisTest) TestSetRange(c *C) {
+func (t *RedisTest) TestStringsSetRange(c *C) {
 	set := t.client.Set("key", "Hello World")
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
@@ -755,7 +917,7 @@ func (t *RedisTest) TestSetRange(c *C) {
 	c.Assert(get.Val(), Equals, "Hello Redis")
 }
 
-func (t *RedisTest) TestStrLen(c *C) {
+func (t *RedisTest) TestStringsStrLen(c *C) {
 	set := t.client.Set("key", "hello")
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
@@ -840,20 +1002,20 @@ func (t *RedisTest) TestCmdHIncrBy(c *C) {
 
 func (t *RedisTest) TestCmdHIncrByFloat(c *C) {
 	hSet := t.client.HSet("hash", "field", "10.50")
-	c.Check(hSet.Err(), IsNil)
-	c.Check(hSet.Val(), Equals, true)
+	c.Assert(hSet.Err(), IsNil)
+	c.Assert(hSet.Val(), Equals, true)
 
 	hIncrByFloat := t.client.HIncrByFloat("hash", "field", 0.1)
-	c.Check(hIncrByFloat.Err(), IsNil)
-	c.Check(hIncrByFloat.Val(), Equals, 10.6)
+	c.Assert(hIncrByFloat.Err(), IsNil)
+	c.Assert(hIncrByFloat.Val(), Equals, 10.6)
 
 	hSet = t.client.HSet("hash", "field", "5.0e3")
-	c.Check(hSet.Err(), IsNil)
-	c.Check(hSet.Val(), Equals, false)
+	c.Assert(hSet.Err(), IsNil)
+	c.Assert(hSet.Val(), Equals, false)
 
 	hIncrByFloat = t.client.HIncrByFloat("hash", "field", 2.0e2)
-	c.Check(hIncrByFloat.Err(), IsNil)
-	c.Check(hIncrByFloat.Val(), Equals, float64(5200))
+	c.Assert(hIncrByFloat.Err(), IsNil)
+	c.Assert(hIncrByFloat.Val(), Equals, float64(5200))
 }
 
 func (t *RedisTest) TestCmdHKeys(c *C) {
@@ -1330,7 +1492,7 @@ func (t *RedisTest) TestSDiff(c *C) {
 
 	sDiff := t.client.SDiff("set1", "set2")
 	c.Assert(sDiff.Err(), IsNil)
-	c.Assert(sDiff.Val(), DeepEquals, []string{"a", "b"})
+	c.Assert(sortStrings(sDiff.Val()), DeepEquals, []string{"a", "b"})
 }
 
 func (t *RedisTest) TestSDiffStore(c *C) {
@@ -1354,7 +1516,7 @@ func (t *RedisTest) TestSDiffStore(c *C) {
 
 	sMembers := t.client.SMembers("set")
 	c.Assert(sMembers.Err(), IsNil)
-	c.Assert(sMembers.Val(), DeepEquals, []string{"a", "b"})
+	c.Assert(sortStrings(sMembers.Val()), DeepEquals, []string{"a", "b"})
 }
 
 func (t *RedisTest) TestSInter(c *C) {
@@ -2027,10 +2189,10 @@ func (t *RedisTest) TestPipelineFunc(c *C) {
 	reqs, err := t.client.Pipelined(func(c *redis.PipelineClient) {
 		get = c.Get("foo")
 	})
-	c.Check(err, IsNil)
-	c.Check(reqs, HasLen, 1)
-	c.Check(get.Err(), Equals, redis.Nil)
-	c.Check(get.Val(), Equals, "")
+	c.Assert(err, IsNil)
+	c.Assert(reqs, HasLen, 1)
+	c.Assert(get.Err(), Equals, redis.Nil)
+	c.Assert(get.Val(), Equals, "")
 }
 
 func (t *RedisTest) TestPipelineErrValNotSet(c *C) {
@@ -2361,36 +2523,36 @@ func (t *RedisTest) TestCmdFlushDb(c *C) {
 
 func (t *RedisTest) TestCmdInfo(c *C) {
 	info := t.client.Info()
-	c.Check(info.Err(), IsNil)
-	c.Check(info.Val(), Not(Equals), "")
+	c.Assert(info.Err(), IsNil)
+	c.Assert(info.Val(), Not(Equals), "")
 }
 
 func (t *RedisTest) TestCmdLastSave(c *C) {
 	lastSave := t.client.LastSave()
-	c.Check(lastSave.Err(), IsNil)
-	c.Check(lastSave.Val(), Not(Equals), 0)
+	c.Assert(lastSave.Err(), IsNil)
+	c.Assert(lastSave.Val(), Not(Equals), 0)
 }
 
 func (t *RedisTest) TestCmdSave(c *C) {
 	save := t.client.Save()
-	c.Check(save.Err(), IsNil)
-	c.Check(save.Val(), Equals, "OK")
+	c.Assert(save.Err(), IsNil)
+	c.Assert(save.Val(), Equals, "OK")
 }
 
 func (t *RedisTest) TestSlaveOf(c *C) {
 	slaveOf := t.client.SlaveOf("localhost", "8888")
-	c.Check(slaveOf.Err(), IsNil)
-	c.Check(slaveOf.Val(), Equals, "OK")
+	c.Assert(slaveOf.Err(), IsNil)
+	c.Assert(slaveOf.Val(), Equals, "OK")
 
 	slaveOf = t.client.SlaveOf("NO", "ONE")
-	c.Check(slaveOf.Err(), IsNil)
-	c.Check(slaveOf.Val(), Equals, "OK")
+	c.Assert(slaveOf.Err(), IsNil)
+	c.Assert(slaveOf.Val(), Equals, "OK")
 }
 
 func (t *RedisTest) TestTime(c *C) {
 	time := t.client.Time()
-	c.Check(time.Err(), IsNil)
-	c.Check(time.Val(), HasLen, 2)
+	c.Assert(time.Err(), IsNil)
+	c.Assert(time.Val(), HasLen, 2)
 }
 
 //------------------------------------------------------------------------------
