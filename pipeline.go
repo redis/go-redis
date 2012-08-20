@@ -67,7 +67,8 @@ func (c *PipelineClient) RunReqs(reqs []Req, conn *Conn) error {
 		return err
 	}
 
-	for i := 0; i < len(reqs); i++ {
+	reqsLen := len(reqs)
+	for i := 0; i < reqsLen; i++ {
 		req := reqs[i]
 		val, err := req.ParseReply(conn.Rd)
 		if err != nil {

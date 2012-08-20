@@ -82,14 +82,11 @@ func (c *MultiClient) ExecReqs(reqs []Req, conn *Conn) error {
 
 	statusReq := NewStatusReq()
 
-	// Parse MULTI command reply.
-	_, err = statusReq.ParseReply(conn.Rd)
-	if err != nil {
-		return err
-	}
+	// Omit last request (EXEC).
+	reqsLen := len(reqs) - 1
 
 	// Parse queued replies.
-	for i := 1; i < len(reqs)-1; i++ {
+	for i := 0; i < reqsLen; i++ {
 		_, err = statusReq.ParseReply(conn.Rd)
 		if err != nil {
 			return err
@@ -109,7 +106,8 @@ func (c *MultiClient) ExecReqs(reqs []Req, conn *Conn) error {
 	}
 
 	// Parse replies.
-	for i := 1; i < len(reqs)-1; i++ {
+	// Loop starts from 1 to omit first request (MULTI).
+	for i := 1; i < reqsLen; i++ {
 		req := reqs[i]
 		val, err := req.ParseReply(conn.Rd)
 		if err != nil {
