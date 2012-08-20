@@ -38,12 +38,12 @@ Example 2:
     import "github.com/vmihailenco/redis"
 
 
-    openConn := func() (io.ReadWriteCloser, error) {
+    openConn := func() (net.Conn, error) {
         fmt.Println("Connecting...")
         return net.Dial("tcp", ":6379")
     }
 
-    closeConn := func(conn io.ReadWriteCloser) error {
+    closeConn := func(conn net.Conn) error {
         fmt.Println("Disconnecting...")
         return nil
     }

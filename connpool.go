@@ -1,8 +1,8 @@
 package redis
 
 import (
-	"io"
 	"log"
+	"net"
 	"os"
 	"sync"
 
@@ -10,11 +10,11 @@ import (
 )
 
 type Conn struct {
-	RW io.ReadWriteCloser
+	RW net.Conn
 	Rd reader
 }
 
-func NewConn(rw io.ReadWriteCloser) *Conn {
+func NewConn(rw net.Conn) *Conn {
 	return &Conn{
 		RW: rw,
 		Rd: bufio.NewReaderSize(rw, 1024),

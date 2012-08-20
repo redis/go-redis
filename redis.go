@@ -2,23 +2,22 @@ package redis
 
 import (
 	"crypto/tls"
-	"io"
 	"net"
 	"sync"
 )
 
-type OpenConnFunc func() (io.ReadWriteCloser, error)
-type CloseConnFunc func(io.ReadWriteCloser) error
+type OpenConnFunc func() (net.Conn, error)
+type CloseConnFunc func(net.Conn) error
 type InitConnFunc func(*Client) error
 
 func TCPConnector(addr string) OpenConnFunc {
-	return func() (io.ReadWriteCloser, error) {
+	return func() (net.Conn, error) {
 		return net.Dial("tcp", addr)
 	}
 }
 
 func TLSConnector(addr string, tlsConfig *tls.Config) OpenConnFunc {
-	return func() (io.ReadWriteCloser, error) {
+	return func() (net.Conn, error) {
 		return tls.Dial("tcp", addr, tlsConfig)
 	}
 }

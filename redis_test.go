@@ -3,7 +3,6 @@ package redis_test
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net"
 	"runtime"
 	"sort"
@@ -41,7 +40,7 @@ func sortStrings(slice []string) []string {
 
 func (t *RedisTest) SetUpTest(c *C) {
 	if t.client == nil {
-		openConn := func() (io.ReadWriteCloser, error) {
+		openConn := func() (net.Conn, error) {
 			t.openedConnCount++
 			return net.Dial("tcp", redisAddr)
 		}
@@ -49,7 +48,7 @@ func (t *RedisTest) SetUpTest(c *C) {
 			t.initedConnCount++
 			return nil
 		}
-		closeConn := func(conn io.ReadWriteCloser) error {
+		closeConn := func(conn net.Conn) error {
 			t.closedConnCount++
 			return nil
 		}
