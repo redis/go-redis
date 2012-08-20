@@ -2,10 +2,12 @@ package redis
 
 import (
 	"fmt"
+	"sync"
 )
 
 type MultiClient struct {
 	*Client
+	execMtx sync.Mutex
 }
 
 func (c *Client) MultiClient() (*MultiClient, error) {
@@ -64,7 +66,10 @@ func (c *MultiClient) Exec(do func()) ([]Req, error) {
 		return nil, err
 	}
 
+	// Synchronize writes and reads to the connection using mutex.
+	c.execMtx.Lock()
 	err = c.ExecReqs(reqs, conn)
+	c.execMtx.Unlock()
 	if err != nil {
 		c.ConnPool.Remove(conn)
 		return nil, err
