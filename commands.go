@@ -742,11 +742,10 @@ func (c *Client) ZIncrBy(key string, increment float64, member string) *FloatReq
 
 func (c *Client) ZInterStore(
 	destination string,
-	numkeys int64,
 	store ZStore,
 	keys ...string,
 ) *IntReq {
-	args := []string{"ZINTERSTORE", destination, strconv.FormatInt(numkeys, 10)}
+	args := []string{"ZINTERSTORE", destination, strconv.FormatInt(int64(len(keys)), 10)}
 	args = append(args, keys...)
 	if len(store.Weights) > 0 {
 		args = append(args, "WEIGHTS")
@@ -904,11 +903,10 @@ func (c *Client) ZScore(key, member string) *FloatReq {
 
 func (c *Client) ZUnionStore(
 	destination string,
-	numkeys int64,
 	store ZStore,
 	keys ...string,
 ) *IntReq {
-	args := []string{"ZUNIONSTORE", destination, strconv.FormatInt(numkeys, 10)}
+	args := []string{"ZUNIONSTORE", destination, strconv.FormatInt(int64(len(keys)), 10)}
 	args = append(args, keys...)
 	if len(store.Weights) > 0 {
 		args = append(args, "WEIGHTS")
@@ -1028,6 +1026,51 @@ func (c *Client) Sync() {
 
 func (c *Client) Time() *StringSliceReq {
 	req := NewStringSliceReq("TIME")
+	c.Process(req)
+	return req
+}
+
+//------------------------------------------------------------------------------
+
+func (c *Client) Eval(script string, keys []string, args []string) *IfaceReq {
+	reqArgs := []string{"EVAL", script, strconv.FormatInt(int64(len(keys)), 10)}
+	reqArgs = append(reqArgs, keys...)
+	reqArgs = append(reqArgs, args...)
+	req := NewIfaceReq(reqArgs...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) EvalSha(sha1 string, keys []string, args []string) *IfaceReq {
+	reqArgs := []string{"EVALSHA", sha1, strconv.FormatInt(int64(len(keys)), 10)}
+	reqArgs = append(reqArgs, keys...)
+	reqArgs = append(reqArgs, args...)
+	req := NewIfaceReq(reqArgs...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ScriptExists(scripts ...string) *BoolSliceReq {
+	args := append([]string{"SCRIPT", "EXISTS"}, scripts...)
+	req := NewBoolSliceReq(args...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ScriptFlush() *StatusReq {
+	req := NewStatusReq("SCRIPT", "FLUSH")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ScriptKill() *StatusReq {
+	req := NewStatusReq("SCRIPT", "KILL")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ScriptLoad(script string) *StringReq {
+	req := NewStringReq("SCRIPT", "LOAD", script)
 	c.Process(req)
 	return req
 }

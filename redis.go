@@ -137,6 +137,7 @@ func (c *BaseClient) Close() error {
 
 type Client struct {
 	*BaseClient
+	TryEvalShaMinLen int
 }
 
 func NewClient(openConn OpenConnFunc, closeConn CloseConnFunc, initConn InitConnFunc) *Client {
@@ -145,6 +146,7 @@ func NewClient(openConn OpenConnFunc, closeConn CloseConnFunc, initConn InitConn
 			ConnPool: NewMultiConnPool(openConn, closeConn, 10),
 			InitConn: initConn,
 		},
+		TryEvalShaMinLen: 80,
 	}
 }
 

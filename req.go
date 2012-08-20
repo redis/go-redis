@@ -66,6 +66,22 @@ func (r *BaseReq) ParseReply(rd reader) (interface{}, error) {
 
 //------------------------------------------------------------------------------
 
+type IfaceReq struct {
+	*BaseReq
+}
+
+func NewIfaceReq(args ...string) *IfaceReq {
+	return &IfaceReq{
+		BaseReq: NewBaseReq(args...),
+	}
+}
+
+func (r *IfaceReq) Val() interface{} {
+	return r.val
+}
+
+//------------------------------------------------------------------------------
+
 type StatusReq struct {
 	*BaseReq
 }
@@ -187,10 +203,6 @@ func NewIfaceSliceReq(args ...string) *IfaceSliceReq {
 	}
 }
 
-func (r *IfaceSliceReq) ParseReply(rd reader) (interface{}, error) {
-	return parseIfaceSliceReply(rd)
-}
-
 func (r *IfaceSliceReq) Val() []interface{} {
 	if r.val == nil {
 		return nil
@@ -210,9 +222,36 @@ func NewStringSliceReq(args ...string) *StringSliceReq {
 	}
 }
 
+func (r *StringSliceReq) ParseReply(rd reader) (interface{}, error) {
+	return parseStringSliceReply(rd)
+}
+
 func (r *StringSliceReq) Val() []string {
 	if r.val == nil {
 		return nil
 	}
 	return r.val.([]string)
+}
+
+//------------------------------------------------------------------------------
+
+type BoolSliceReq struct {
+	*BaseReq
+}
+
+func NewBoolSliceReq(args ...string) *BoolSliceReq {
+	return &BoolSliceReq{
+		BaseReq: NewBaseReq(args...),
+	}
+}
+
+func (r *BoolSliceReq) ParseReply(rd reader) (interface{}, error) {
+	return parseBoolSliceReply(rd)
+}
+
+func (r *BoolSliceReq) Val() []bool {
+	if r.val == nil {
+		return nil
+	}
+	return r.val.([]bool)
 }

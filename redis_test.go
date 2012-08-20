@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"runtime"
@@ -1818,7 +1819,7 @@ func (t *RedisTest) TestZInterStore(c *C) {
 	c.Assert(zAdd.Err(), IsNil)
 
 	zInterStore := t.client.ZInterStore(
-		"out", 2, redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
+		"out", redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
 	c.Assert(zInterStore.Err(), IsNil)
 	c.Assert(zInterStore.Val(), Equals, int64(2))
 
@@ -2023,7 +2024,7 @@ func (t *RedisTest) TestZUnionStore(c *C) {
 	c.Assert(zAdd.Err(), IsNil)
 
 	zUnionStore := t.client.ZUnionStore(
-		"out", 2, redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
+		"out", redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
 	c.Assert(zUnionStore.Err(), IsNil)
 	c.Assert(zUnionStore.Val(), Equals, int64(3))
 
@@ -2595,6 +2596,88 @@ func (t *RedisTest) TestTime(c *C) {
 	time := t.client.Time()
 	c.Assert(time.Err(), IsNil)
 	c.Assert(time.Val(), HasLen, 2)
+}
+
+//------------------------------------------------------------------------------
+
+func (t *RedisTest) TestScriptingEval(c *C) {
+	eval := t.client.Eval(
+		"return {KEYS[1],KEYS[2],ARGV[1],ARGV[2]}",
+		[]string{"key1", "key2"},
+		[]string{"first", "second"},
+	)
+	c.Assert(eval.Err(), IsNil)
+	c.Assert(eval.Val(), DeepEquals, []interface{}{"key1", "key2", "first", "second"})
+
+	eval = t.client.Eval(
+		"return redis.call('set',KEYS[1],'bar')",
+		[]string{"foo"},
+		[]string{},
+	)
+	c.Assert(eval.Err(), IsNil)
+	c.Assert(eval.Val(), Equals, "OK")
+
+	eval = t.client.Eval("return 10", []string{}, []string{})
+	c.Assert(eval.Err(), IsNil)
+	c.Assert(eval.Val(), Equals, int64(10))
+
+	eval = t.client.Eval("return {1,2,{3,'Hello World!'}}", []string{}, []string{})
+	c.Assert(eval.Err(), IsNil)
+	// DeepEquals can't compare nested slices.
+	c.Assert(
+		fmt.Sprintf("%#v", eval.Val()),
+		Equals,
+		`[]interface {}{1, 2, []interface {}{3, "Hello World!"}}`,
+	)
+}
+
+func (t *RedisTest) TestScriptingEvalSha(c *C) {
+	set := t.client.Set("foo", "bar")
+	c.Assert(set.Err(), IsNil)
+	c.Assert(set.Val(), Equals, "OK")
+
+	eval := t.client.Eval("return redis.call('get','foo')", []string{}, []string{})
+	c.Assert(eval.Err(), IsNil)
+	c.Assert(eval.Val(), Equals, "bar")
+
+	evalSha := t.client.EvalSha("6b1bf486c81ceb7edf3c093f4c48582e38c0e791", []string{}, []string{})
+	c.Assert(evalSha.Err(), IsNil)
+	c.Assert(evalSha.Val(), Equals, "bar")
+
+	evalSha = t.client.EvalSha("ffffffffffffffffffffffffffffffffffffffff", []string{}, []string{})
+	c.Assert(evalSha.Err(), ErrorMatches, "NOSCRIPT No matching script. Please use EVAL.")
+	c.Assert(evalSha.Val(), Equals, nil)
+}
+
+func (t *RedisTest) TestScriptingScriptExists(c *C) {
+	scriptLoad := t.client.ScriptLoad("return 1")
+	c.Assert(scriptLoad.Err(), IsNil)
+	c.Assert(scriptLoad.Val(), Equals, "e0e1f9fabfc9d4800c877a703b823ac0578ff8db")
+
+	scriptExists := t.client.ScriptExists(
+		"e0e1f9fabfc9d4800c877a703b823ac0578ff8db",
+		"ffffffffffffffffffffffffffffffffffffffff",
+	)
+	c.Assert(scriptExists.Err(), IsNil)
+	c.Assert(scriptExists.Val(), DeepEquals, []bool{true, false})
+}
+
+func (t *RedisTest) TestScriptingScriptFlush(c *C) {
+	scriptFlush := t.client.ScriptFlush()
+	c.Assert(scriptFlush.Err(), IsNil)
+	c.Assert(scriptFlush.Val(), Equals, "OK")
+}
+
+func (t *RedisTest) TestScriptingScriptKill(c *C) {
+	scriptKill := t.client.ScriptKill()
+	c.Assert(scriptKill.Err(), ErrorMatches, "ERR No scripts in execution right now.")
+	c.Assert(scriptKill.Val(), Equals, "")
+}
+
+func (t *RedisTest) TestScriptingScriptLoad(c *C) {
+	scriptLoad := t.client.ScriptLoad("return redis.call('get','foo')")
+	c.Assert(scriptLoad.Err(), IsNil)
+	c.Assert(scriptLoad.Val(), Equals, "6b1bf486c81ceb7edf3c093f4c48582e38c0e791")
 }
 
 //------------------------------------------------------------------------------

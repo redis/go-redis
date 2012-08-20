@@ -57,15 +57,25 @@ func readLine(rd reader) ([]byte, error) {
 
 //------------------------------------------------------------------------------
 
+const (
+	ifaceSlice = iota
+	stringSlice
+	boolSlice
+)
+
 func parseReply(rd reader) (interface{}, error) {
-	return _parseReply(rd, false)
+	return _parseReply(rd, ifaceSlice)
 }
 
-func parseIfaceSliceReply(rd reader) (interface{}, error) {
-	return _parseReply(rd, true)
+func parseStringSliceReply(rd reader) (interface{}, error) {
+	return _parseReply(rd, stringSlice)
 }
 
-func _parseReply(rd reader, useIfaceSlice bool) (interface{}, error) {
+func parseBoolSliceReply(rd reader) (interface{}, error) {
+	return _parseReply(rd, boolSlice)
+}
+
+func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return 0, err
@@ -113,7 +123,42 @@ func _parseReply(rd reader, useIfaceSlice bool) (interface{}, error) {
 			return nil, Nil
 		}
 
-		if useIfaceSlice {
+		switch multiBulkType {
+		case stringSlice:
+			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
+			if err != nil {
+				return nil, err
+			}
+
+			vals := make([]string, 0, numReplies)
+			for i := int64(0); i < numReplies; i++ {
+				v, err := parseReply(rd)
+				if err != nil {
+					return nil, err
+				} else {
+					vals = append(vals, v.(string))
+				}
+			}
+
+			return vals, nil
+		case boolSlice:
+			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
+			if err != nil {
+				return nil, err
+			}
+
+			vals := make([]bool, 0, numReplies)
+			for i := int64(0); i < numReplies; i++ {
+				v, err := parseReply(rd)
+				if err != nil {
+					return nil, err
+				} else {
+					vals = append(vals, v.(int64) == 1)
+				}
+			}
+
+			return vals, nil
+		default:
 			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
 			if err != nil {
 				return nil, err
@@ -128,23 +173,6 @@ func _parseReply(rd reader, useIfaceSlice bool) (interface{}, error) {
 					return nil, err
 				} else {
 					vals = append(vals, v)
-				}
-			}
-
-			return vals, nil
-		} else {
-			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
-			if err != nil {
-				return nil, err
-			}
-
-			vals := make([]string, 0, numReplies)
-			for i := int64(0); i < numReplies; i++ {
-				v, err := parseReply(rd)
-				if err != nil {
-					return nil, err
-				} else {
-					vals = append(vals, v.(string))
 				}
 			}
 

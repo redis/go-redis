@@ -242,7 +242,10 @@ Some corner cases:
     client.ZRangeByScoreWithScores("zset", "-inf", "+inf", 0, 2)
 
     ZINTERSTORE out 2 zset1 zset2 WEIGHTS 2 3 AGGREGATE SUM
-    client.ZInterStore("out", 2, redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
+    client.ZInterStore("out", redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
+
+    EVAL "return {KEYS[1],ARGV[1]}" 1 "key" "hello"
+    client.Eval("return {KEYS[1],ARGV[1]}", []string{"key"}, []string{"hello"})
 
 Contributing
 ------------
