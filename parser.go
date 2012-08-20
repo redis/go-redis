@@ -114,16 +114,12 @@ func _parseReply(rd reader, useIfaceSlice bool) (interface{}, error) {
 		}
 
 		if useIfaceSlice {
-			vals := make([]interface{}, 0)
-			if len(line) == 2 && line[1] == '0' {
-				return vals, nil
-			}
-
 			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
 			if err != nil {
 				return nil, err
 			}
 
+			vals := make([]interface{}, 0, numReplies)
 			for i := int64(0); i < numReplies; i++ {
 				v, err := parseReply(rd)
 				if err == Nil {
@@ -137,16 +133,12 @@ func _parseReply(rd reader, useIfaceSlice bool) (interface{}, error) {
 
 			return vals, nil
 		} else {
-			vals := make([]string, 0)
-			if len(line) == 2 && line[1] == '0' {
-				return vals, nil
-			}
-
 			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
 			if err != nil {
 				return nil, err
 			}
 
+			vals := make([]string, 0, numReplies)
 			for i := int64(0); i < numReplies; i++ {
 				v, err := parseReply(rd)
 				if err != nil {

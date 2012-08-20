@@ -35,21 +35,17 @@ func (t *RequestTest) TearDownTest(c *C) {}
 
 //------------------------------------------------------------------------------
 
-func (t *RequestTest) BenchmarkStatusReq(c *C) {
+func (t *RequestTest) benchmarkReq(c *C, reqString string, req redis.Req, checker Checker, expected interface{}) {
 	c.StopTimer()
 
-	lineReader := NewLineReader([]byte("+OK\r\n"))
+	lineReader := NewLineReader([]byte(reqString))
 	rd := bufio.NewReaderSize(lineReader, 1024)
-	req := redis.NewStatusReq()
 
 	for i := 0; i < 10; i++ {
-		vI, err := req.ParseReply(rd)
+		vIface, err := req.ParseReply(rd)
 		c.Check(err, IsNil)
-		c.Check(vI, Equals, "OK")
-
-		req.SetVal(vI)
-		c.Check(req.Err(), IsNil)
-		c.Check(req.Val(), Equals, "OK")
+		c.Check(vIface, checker, expected)
+		req.SetVal(vIface)
 	}
 
 	c.StartTimer()
@@ -57,7 +53,23 @@ func (t *RequestTest) BenchmarkStatusReq(c *C) {
 	for i := 0; i < c.N; i++ {
 		v, _ := req.ParseReply(rd)
 		req.SetVal(v)
-		req.Err()
-		req.Val()
 	}
+}
+
+func (t *RequestTest) BenchmarkStatusReq(c *C) {
+	t.benchmarkReq(c, "+OK\r\n", redis.NewStatusReq(), Equals, "OK")
+}
+
+func (t *RequestTest) BenchmarkStringReq(c *C) {
+	t.benchmarkReq(c, "$5\r\nhello\r\n", redis.NewStringReq(), Equals, "hello")
+}
+
+func (t *RequestTest) BenchmarkStringSliceReq(c *C) {
+	t.benchmarkReq(
+		c,
+		"*2\r\n$5\r\nhello\r\n$5\r\nhello\r\n",
+		redis.NewStringSliceReq(),
+		DeepEquals,
+		[]string{"hello", "hello"},
+	)
 }
