@@ -60,8 +60,16 @@ func (t *RequestTest) BenchmarkStatusReq(c *C) {
 	t.benchmarkReq(c, "+OK\r\n", redis.NewStatusReq(), Equals, "OK")
 }
 
+func (t *RequestTest) BenchmarkIntReq(c *C) {
+	t.benchmarkReq(c, ":1\r\n", redis.NewIntReq(), Equals, int64(1))
+}
+
 func (t *RequestTest) BenchmarkStringReq(c *C) {
 	t.benchmarkReq(c, "$5\r\nhello\r\n", redis.NewStringReq(), Equals, "hello")
+}
+
+func (t *RequestTest) BenchmarkFloatReq(c *C) {
+	t.benchmarkReq(c, "$5\r\n1.111\r\n", redis.NewFloatReq(), Equals, 1.111)
 }
 
 func (t *RequestTest) BenchmarkStringSliceReq(c *C) {
@@ -71,5 +79,15 @@ func (t *RequestTest) BenchmarkStringSliceReq(c *C) {
 		redis.NewStringSliceReq(),
 		DeepEquals,
 		[]string{"hello", "hello"},
+	)
+}
+
+func (t *RequestTest) BenchmarkIfaceSliceReq(c *C) {
+	t.benchmarkReq(
+		c,
+		"*2\r\n$5\r\nhello\r\n$5\r\nhello\r\n",
+		redis.NewIfaceSliceReq(),
+		DeepEquals,
+		[]interface{}{"hello", "hello"},
 	)
 }

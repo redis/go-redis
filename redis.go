@@ -79,6 +79,9 @@ func (c *BaseClient) conn() (*Conn, error) {
 		}
 		err = c.InitConn(client)
 		if err != nil {
+			if err := c.ConnPool.Remove(conn); err != nil {
+				panic(err)
+			}
 			return nil, err
 		}
 	}
@@ -102,7 +105,9 @@ func (c *BaseClient) Run(req Req) {
 
 	err = c.WriteReq(conn, req)
 	if err != nil {
-		c.ConnPool.Remove(conn)
+		if err := c.ConnPool.Remove(conn); err != nil {
+			panic(err)
+		}
 		req.SetErr(err)
 		return
 	}
@@ -110,15 +115,21 @@ func (c *BaseClient) Run(req Req) {
 	val, err := req.ParseReply(conn.Rd)
 	if err != nil {
 		if err == Nil {
-			c.ConnPool.Add(conn)
+			if err := c.ConnPool.Add(conn); err != nil {
+				panic(err)
+			}
 		} else {
-			c.ConnPool.Remove(conn)
+			if err := c.ConnPool.Remove(conn); err != nil {
+				panic(err)
+			}
 		}
 		req.SetErr(err)
 		return
 	}
 
-	c.ConnPool.Add(conn)
+	if err := c.ConnPool.Add(conn); err != nil {
+		panic(err)
+	}
 	req.SetVal(val)
 }
 

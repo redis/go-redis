@@ -55,6 +55,66 @@ func readLine(rd reader) ([]byte, error) {
 	return line, nil
 }
 
+func readN(rd reader, n int) ([]byte, error) {
+	buf, err := rd.ReadN(n)
+	if err == bufio.ErrBufferFull {
+		newBuf := make([]byte, n)
+		r := copy(newBuf, buf)
+		buf = newBuf
+
+		for r < n {
+			n, err := rd.Read(buf[r:])
+			if err != nil {
+				return nil, err
+			}
+			r += n
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+//------------------------------------------------------------------------------
+
+func ParseReq(rd reader) ([]string, error) {
+	line, err := readLine(rd)
+	if err != nil {
+		return nil, err
+	}
+
+	if line[0] != '*' {
+		return []string{string(line)}, nil
+	}
+	numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	args := make([]string, 0, numReplies)
+	for i := int64(0); i < numReplies; i++ {
+		line, err = readLine(rd)
+		if err != nil {
+			return nil, err
+		}
+		if line[0] != '$' {
+			return nil, fmt.Errorf("Expected '$', but got %q", line)
+		}
+
+		argLen, err := strconv.ParseInt(string(line[1:]), 10, 32)
+		if err != nil {
+			return nil, err
+		}
+
+		arg, err := readN(rd, int(argLen)+2)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, string(arg[:argLen]))
+	}
+	return args, nil
+}
+
 //------------------------------------------------------------------------------
 
 const (
@@ -99,24 +159,10 @@ func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 		}
 		replyLen := int(replyLenInt32) + 2
 
-		line, err = rd.ReadN(replyLen)
-		if err == bufio.ErrBufferFull {
-			buf := make([]byte, replyLen)
-			r := copy(buf, line)
-
-			for r < replyLen {
-				n, err := rd.Read(buf[r:])
-				if err != nil {
-					return "", err
-				}
-				r += n
-			}
-
-			line = buf
-		} else if err != nil {
+		line, err = readN(rd, replyLen)
+		if err != nil {
 			return "", err
 		}
-
 		return string(line[:len(line)-2]), nil
 	case '*':
 		if len(line) == 3 && line[1] == '-' && line[2] == '1' {

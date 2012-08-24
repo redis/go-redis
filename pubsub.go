@@ -45,7 +45,7 @@ func (c *PubSubClient) consumeMessages(conn *Conn) {
 			if err != nil {
 				msg.Err = err
 				c.ch <- msg
-				break
+				return
 			}
 			reply, ok := replyIface.([]interface{})
 			if !ok {
