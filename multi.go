@@ -42,13 +42,20 @@ func (c *MultiClient) Unwatch(keys ...string) *StatusReq {
 
 func (c *MultiClient) Discard() {
 	c.reqsMtx.Lock()
-	c.reqs = []Req{NewStatusReq("MULTI")}
+	if c.reqs == nil {
+		panic("Discard can be used only inside Exec")
+	}
+	c.reqs = c.reqs[:1]
 	c.reqsMtx.Unlock()
 }
 
 func (c *MultiClient) Exec(do func()) ([]Req, error) {
-	c.Discard()
+	c.reqsMtx.Lock()
+	c.reqs = []Req{NewStatusReq("MULTI")}
+	c.reqsMtx.Unlock()
+
 	do()
+
 	c.Queue(NewIfaceSliceReq("EXEC"))
 
 	c.reqsMtx.Lock()
