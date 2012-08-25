@@ -2395,6 +2395,22 @@ func (t *RedisTest) TestMultiExecDiscard(c *C) {
 	c.Assert(get.Val(), Equals, "hello2")
 }
 
+func (t *RedisTest) TestMultiExecEmpty(c *C) {
+	multi, err := t.client.MultiClient()
+	c.Assert(err, IsNil)
+	defer func() {
+		c.Assert(multi.Close(), IsNil)
+	}()
+
+	reqs, err := multi.Exec(func() {})
+	c.Assert(err, IsNil)
+	c.Assert(reqs, HasLen, 0)
+
+	ping := multi.Ping()
+	c.Check(ping.Err(), IsNil)
+	c.Check(ping.Val(), Equals, "PONG")
+}
+
 func (t *RedisTest) TestMultiExecOnEmptyQueue(c *C) {
 	multi, err := t.client.MultiClient()
 	c.Assert(err, IsNil)
