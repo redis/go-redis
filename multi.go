@@ -41,27 +41,24 @@ func (c *MultiClient) Unwatch(keys ...string) *StatusReq {
 }
 
 func (c *MultiClient) Discard() {
-	c.mtx.Lock()
+	c.reqsMtx.Lock()
 	c.reqs = []Req{NewStatusReq("MULTI")}
-	c.mtx.Unlock()
+	c.reqsMtx.Unlock()
 }
 
 func (c *MultiClient) Exec(do func()) ([]Req, error) {
 	c.Discard()
-
 	do()
+	c.Queue(NewIfaceSliceReq("EXEC"))
 
-	c.mtx.Lock()
-	c.reqs = append(c.reqs, NewIfaceSliceReq("EXEC"))
-
+	c.reqsMtx.Lock()
 	reqs := c.reqs
 	c.reqs = nil
+	c.reqsMtx.Unlock()
 
 	if len(reqs) == 2 {
-		c.mtx.Unlock()
 		return []Req{}, nil
 	}
-	c.mtx.Unlock()
 
 	conn, err := c.conn()
 	if err != nil {

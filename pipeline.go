@@ -22,7 +22,9 @@ func (c *Client) Pipelined(do func(*PipelineClient)) ([]Req, error) {
 		return nil, err
 	}
 	defer pc.Close()
+
 	do(pc)
+
 	return pc.RunQueued()
 }
 
@@ -31,20 +33,20 @@ func (c *PipelineClient) Close() error {
 }
 
 func (c *PipelineClient) DiscardQueued() {
-	c.mtx.Lock()
+	c.reqsMtx.Lock()
 	c.reqs = c.reqs[:0]
-	c.mtx.Unlock()
+	c.reqsMtx.Unlock()
 }
 
 func (c *PipelineClient) RunQueued() ([]Req, error) {
-	c.mtx.Lock()
-	if len(c.reqs) == 0 {
-		c.mtx.Unlock()
-		return c.reqs, nil
-	}
+	c.reqsMtx.Lock()
 	reqs := c.reqs
 	c.reqs = make([]Req, 0)
-	c.mtx.Unlock()
+	c.reqsMtx.Unlock()
+
+	if len(reqs) == 0 {
+		return []Req{}, nil
+	}
 
 	conn, err := c.conn()
 	if err != nil {

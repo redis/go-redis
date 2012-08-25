@@ -54,10 +54,10 @@ func AuthSelectFunc(password string, db int64) InitConnFunc {
 //------------------------------------------------------------------------------
 
 type BaseClient struct {
-	mtx      sync.Mutex
 	ConnPool ConnPool
 	InitConn InitConnFunc
 	reqs     []Req
+	reqsMtx  sync.Mutex
 }
 
 func (c *BaseClient) WriteReq(conn *Conn, reqs ...Req) error {
@@ -138,10 +138,11 @@ func (c *BaseClient) Run(req Req) {
 	req.SetVal(val)
 }
 
+// Queues request to be executed later.
 func (c *BaseClient) Queue(req Req) {
-	c.mtx.Lock()
+	c.reqsMtx.Lock()
 	c.reqs = append(c.reqs, req)
-	c.mtx.Unlock()
+	c.reqsMtx.Unlock()
 }
 
 func (c *BaseClient) Close() error {
