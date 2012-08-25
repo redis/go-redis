@@ -64,7 +64,7 @@ or:
     defer pipeline.Close()
 
     set := pipeline.Set("key1", "hello1")
-    get := pipline.Get("key2")
+    get := pipleine.Get("key2")
 
     reqs, err := pipeline.RunQueued()
     if err != nil { panic(err) }
