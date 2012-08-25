@@ -1,27 +1,9 @@
-Readme
-======
+// Copyright 2012 The Redis Client Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
-Redis client for Golang.
-
-Supports:
-
-- Redis 2.6 commands except QUIT, MONITOR, SLOWLOG and SYNC.
-- Pub/sub.
-- Transactions.
-- Pipelining.
-- Connection pool.
-- TLS connections.
-- Thread safety.
-
-Installation
-------------
-
-Install:
-
-    go get github.com/vmihailenco/redis
-
-Getting started
----------------
+/*
+Package github.com/vmihailenco/redis implements a Redis client.
 
 Let's start with connecting to Redis:
 
@@ -137,35 +119,5 @@ You can also write custom commands:
 Client uses connection pool to send commands. You can change maximum number of connections with:
 
     client.ConnPool.(*redis.MultiConnPool).MaxCap = 1
-
-Look and feel
--------------
-
-Some corner cases:
-
-    SORT list LIMIT 0 2 ASC
-    client.Sort("list", redis.Sort{Offset: 0, Count: 2, Order: "ASC"})
-
-    ZRANGEBYSCORE zset -inf +inf WITHSCORES LIMIT 0 2
-    client.ZRangeByScoreWithScores("zset", "-inf", "+inf", 0, 2)
-
-    ZINTERSTORE out 2 zset1 zset2 WEIGHTS 2 3 AGGREGATE SUM
-    client.ZInterStore("out", redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
-
-    EVAL "return {KEYS[1],ARGV[1]}" 1 "key" "hello"
-    client.Eval("return {KEYS[1],ARGV[1]}", []string{"key"}, []string{"hello"})
-
-Contributing
-------------
-
-Configure Redis to allow maximum 10 clients:
-
-    maxclients 10
-
-Run tests:
-
-    go test -gocheck.v
-
-Run benchmarks:
-
-    go test -gocheck.b
+*/
+package redis
