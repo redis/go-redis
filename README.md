@@ -13,6 +13,8 @@ Supports:
 - TLS connections.
 - Thread safety.
 
+API docs: http://go.pkgdoc.org/github.com/vmihailenco/redis
+
 Installation
 ------------
 
