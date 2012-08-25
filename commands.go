@@ -28,6 +28,10 @@ func (c *Client) Ping() *StatusReq {
 	return req
 }
 
+func (c *Client) Quit() *StatusReq {
+	panic("not implemented")
+}
+
 func (c *Client) Select(index int64) *StatusReq {
 	req := NewStatusReq("SELECT", strconv.FormatInt(index, 10))
 	c.Process(req)

@@ -5,7 +5,7 @@ Redis client for Golang.
 
 Supports:
 
-- Redis 2.6 commands except QUIT command.
+- Redis 2.6 commands except QUIT, MONITOR, SLOWLOG and SYNC.
 - Pub/sub.
 - Transactions.
 - Pipelining.
@@ -50,13 +50,13 @@ Example 2:
 
     initConn := func(client *redis.Client) error {
          auth := client.Auth("key")
-         if auth.Err() != nil {
-             return auth.Err()
+         if err := auth.Err(); err != nil {
+             return err
          }
 
          ping := client.Ping()
-         if ping.Err() != nil {
-             return ping.Err()
+         if err := ping.Err(); err != nil {
+             return err
          }
 
          return nil
@@ -70,14 +70,14 @@ Running commands
 ----------------
 
     set := redisClient.Set("key", "hello")
-    if set.Err() != nil {
-        panic(set.Err())
+    if err := set.Err(); err != nil {
+        panic(err)
     }
     ok := set.Val()
 
     get := redisClient.Get("key")
-    if get.Err() != nil && get.Err() != redis.Nil {
-        panic(get.Err())
+    if err := get.Err(); err != nil && err != redis.Nil {
+        panic(err)
     }
     val := get.Val()
 
@@ -116,12 +116,12 @@ Or:
         // ...
     }
 
-    if setReq.Err() != nil {
-        panic(setReq.Err())
+    if err := setReq.Err(); err != nil {
+        panic(err
     }
 
-    if getReq.Err() != nil && getReq.Err() != redis.Nil {
-        panic(getReq.Err())
+    if err := getReq.Err(); err != nil && err != redis.Nil {
+        panic(err)
     }
 
 Multi/Exec
@@ -131,8 +131,8 @@ Example:
 
     func transaction(multi *redis.MultiClient) ([]redis.Req, error) {
         get := multiClient.Get("key")
-        if get.Err() != nil {
-            panic(get.Err())
+        if err := get.Err(); err != nil {
+            panic(err)
         }
 
         reqs, err = multiClient.Exec(func() {
@@ -152,8 +152,8 @@ Example:
     defer multiClient.Close()
 
     watch := multiClient.Watch("key")
-    if watch.Err() != nil {
-        panic(watch.Err())
+    if err := watch.Err(); err != nil {
+        panic(err)
     }
 
     reqs, err := transaction(multiClient)
@@ -170,8 +170,8 @@ Pub/sub
 Publish:
 
     pub := redisClient.Publish("mychannel", "hello")
-    if pub.Err() != nil {
-        panic(pub.Err())
+    if err := pub.Err(); err != nil {
+        panic(err)
     }
 
 Subscribe:
@@ -219,8 +219,8 @@ Example:
     }
 
     get := Get(redisClient, "key")
-    if get.Err() != nil && get.Err() != redis.Nil {
-        panic(get.Err())
+    if err := get.Err(); err != nil && err != redis.Nil {
+        panic(err)
     }
 
 Connection pool
