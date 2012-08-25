@@ -1006,8 +1006,29 @@ func (c *Client) Save() *StatusReq {
 	return req
 }
 
-func (c *Client) Shutdown() {
-	panic("not implemented")
+func (c *Client) shutdown(modifier string) *StatusReq {
+	var args []string
+	if modifier == "" {
+		args = []string{"SHUTDOWN"}
+	} else {
+		args = []string{"SHUTDOWN", modifier}
+	}
+	req := NewStatusReq(args...)
+	c.Process(req)
+	c.Close()
+	return req
+}
+
+func (c *Client) Shutdown() *StatusReq {
+	return c.shutdown("")
+}
+
+func (c *Client) ShutdownSave() *StatusReq {
+	return c.shutdown("SAVE")
+}
+
+func (c *Client) ShutdownNoSave() *StatusReq {
+	return c.shutdown("NOSAVE")
 }
 
 func (c *Client) SlaveOf(host, port string) *StatusReq {

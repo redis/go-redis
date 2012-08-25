@@ -3,6 +3,7 @@ package redis_test
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"runtime"
 	"sort"
@@ -20,6 +21,37 @@ const redisAddr = ":6379"
 
 //------------------------------------------------------------------------------
 
+func sortStrings(slice []string) []string {
+	sort.Strings(slice)
+	return slice
+}
+
+//------------------------------------------------------------------------------
+
+type RedisShutdownTest struct {
+	client *redis.Client
+}
+
+var _ = Suite(&RedisShutdownTest{})
+
+func (t *RedisShutdownTest) SetUpTest(c *C) {
+	t.client = redis.NewTCPClient(redisAddr, "", -1)
+}
+
+func (t *RedisShutdownTest) TestShutdown(c *C) {
+	c.Skip("shutdowns server")
+
+	shutdown := t.client.Shutdown()
+	c.Check(shutdown.Err(), Equals, io.EOF)
+	c.Check(shutdown.Val(), Equals, "")
+
+	ping := t.client.Ping()
+	c.Check(ping.Err(), ErrorMatches, "dial tcp <nil>:[0-9]+: connection refused")
+	c.Check(ping.Val(), Equals, "")
+}
+
+//------------------------------------------------------------------------------
+
 type RedisTest struct {
 	openedConnCount, closedConnCount, initedConnCount int64
 	client                                            *redis.Client
@@ -28,15 +60,6 @@ type RedisTest struct {
 var _ = Suite(&RedisTest{})
 
 func Test(t *testing.T) { TestingT(t) }
-
-//------------------------------------------------------------------------------
-
-func sortStrings(slice []string) []string {
-	sort.Strings(slice)
-	return slice
-}
-
-//------------------------------------------------------------------------------
 
 func (t *RedisTest) SetUpTest(c *C) {
 	if t.client == nil {
