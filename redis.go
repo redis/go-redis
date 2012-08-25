@@ -2,9 +2,14 @@ package redis
 
 import (
 	"crypto/tls"
+	"log"
 	"net"
+	"os"
 	"sync"
 )
+
+// Package logger.
+var Logger = log.New(os.Stdout, "redis: ", log.Ldate|log.Ltime)
 
 type OpenConnFunc func() (net.Conn, error)
 type CloseConnFunc func(net.Conn) error
@@ -80,7 +85,7 @@ func (c *BaseClient) conn() (*Conn, error) {
 		err = c.InitConn(client)
 		if err != nil {
 			if err := c.ConnPool.Remove(conn); err != nil {
-				panic(err)
+				Logger.Printf("ConnPool.Remove error: %v", err)
 			}
 			return nil, err
 		}
@@ -106,7 +111,7 @@ func (c *BaseClient) Run(req Req) {
 	err = c.WriteReq(conn, req)
 	if err != nil {
 		if err := c.ConnPool.Remove(conn); err != nil {
-			panic(err)
+			Logger.Printf("ConnPool.Remove error: %v", err)
 		}
 		req.SetErr(err)
 		return
@@ -116,11 +121,11 @@ func (c *BaseClient) Run(req Req) {
 	if err != nil {
 		if err == Nil {
 			if err := c.ConnPool.Add(conn); err != nil {
-				panic(err)
+				Logger.Printf("ConnPool.Add error: %v", err)
 			}
 		} else {
 			if err := c.ConnPool.Remove(conn); err != nil {
-				panic(err)
+				Logger.Printf("ConnPool.Remove error: %v", err)
 			}
 		}
 		req.SetErr(err)
@@ -128,7 +133,7 @@ func (c *BaseClient) Run(req Req) {
 	}
 
 	if err := c.ConnPool.Add(conn); err != nil {
-		panic(err)
+		Logger.Printf("ConnPool.Add error: %v", err)
 	}
 	req.SetVal(val)
 }
