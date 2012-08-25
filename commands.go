@@ -712,14 +712,10 @@ type ZStore struct {
 	Aggregate string
 }
 
-func (m *Z) ScoreString() string {
-	return formatFloat(m.Score)
-}
-
 func (c *Client) ZAdd(key string, members ...Z) *IntReq {
 	args := []string{"ZADD", key}
 	for _, m := range members {
-		args = append(args, m.ScoreString(), m.Member)
+		args = append(args, formatFloat(m.Score), m.Member)
 	}
 	req := NewIntReq(args...)
 	c.Process(req)
