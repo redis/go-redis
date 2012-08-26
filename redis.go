@@ -119,13 +119,13 @@ func (c *BaseClient) Run(req Req) {
 
 	val, err := req.ParseReply(conn.Rd)
 	if err != nil {
-		if err == Nil {
-			if err := c.ConnPool.Add(conn); err != nil {
-				Logger.Printf("ConnPool.Add error: %v", err)
-			}
-		} else {
+		if _, ok := err.(*parserError); ok {
 			if err := c.ConnPool.Remove(conn); err != nil {
 				Logger.Printf("ConnPool.Remove error: %v", err)
+			}
+		} else {
+			if err := c.ConnPool.Add(conn); err != nil {
+				Logger.Printf("ConnPool.Add error: %v", err)
 			}
 		}
 		req.SetErr(err)

@@ -22,6 +22,16 @@ var (
 
 //------------------------------------------------------------------------------
 
+type parserError struct {
+	err error
+}
+
+func (e *parserError) Error() string {
+	return e.err.Error()
+}
+
+//------------------------------------------------------------------------------
+
 func appendReq(buf []byte, args []string) []byte {
 	buf = append(buf, '*')
 	buf = strconv.AppendUint(buf, uint64(len(args)), 10)
@@ -139,7 +149,7 @@ func parseBoolSliceReply(rd reader) (interface{}, error) {
 func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
-		return 0, err
+		return 0, &parserError{err}
 	}
 
 	switch line[0] {
@@ -148,7 +158,11 @@ func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 	case '+':
 		return string(line[1:]), nil
 	case ':':
-		return strconv.ParseInt(string(line[1:]), 10, 64)
+		v, err := strconv.ParseInt(string(line[1:]), 10, 64)
+		if err != nil {
+			return 0, &parserError{err}
+		}
+		return v, nil
 	case '$':
 		if len(line) == 3 && line[1] == '-' && line[2] == '1' {
 			return "", Nil
@@ -156,13 +170,13 @@ func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 
 		replyLenInt32, err := strconv.ParseInt(string(line[1:]), 10, 32)
 		if err != nil {
-			return "", err
+			return "", &parserError{err}
 		}
 		replyLen := int(replyLenInt32) + 2
 
 		line, err = readN(rd, replyLen)
 		if err != nil {
-			return "", err
+			return "", &parserError{err}
 		}
 		return string(line[:len(line)-2]), nil
 	case '*':
@@ -170,13 +184,13 @@ func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 			return nil, Nil
 		}
 
+		numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
+		if err != nil {
+			return nil, &parserError{err}
+		}
+
 		switch multiBulkType {
 		case stringSlice:
-			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
-			if err != nil {
-				return nil, err
-			}
-
 			vals := make([]string, 0, numReplies)
 			for i := int64(0); i < numReplies; i++ {
 				v, err := parseReply(rd)
@@ -189,11 +203,6 @@ func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 
 			return vals, nil
 		case boolSlice:
-			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
-			if err != nil {
-				return nil, err
-			}
-
 			vals := make([]bool, 0, numReplies)
 			for i := int64(0); i < numReplies; i++ {
 				v, err := parseReply(rd)
@@ -206,11 +215,6 @@ func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 
 			return vals, nil
 		default:
-			numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
-			if err != nil {
-				return nil, err
-			}
-
 			vals := make([]interface{}, 0, numReplies)
 			for i := int64(0); i < numReplies; i++ {
 				v, err := parseReply(rd)
@@ -226,7 +230,7 @@ func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 			return vals, nil
 		}
 	default:
-		return nil, fmt.Errorf("redis: can't parse %q", line)
+		return nil, &parserError{fmt.Errorf("redis: can't parse %q", line)}
 	}
 	panic("not reachable")
 }

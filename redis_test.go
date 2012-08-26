@@ -52,8 +52,154 @@ func (t *RedisShutdownTest) TestShutdown(c *C) {
 
 //------------------------------------------------------------------------------
 
-type RedisTest struct {
+type RedisConnPoolTest struct {
 	openedConnCount, closedConnCount, initedConnCount int64
+	client                                            *redis.Client
+}
+
+var _ = Suite(&RedisConnPoolTest{})
+
+func (t *RedisConnPoolTest) SetUpTest(c *C) {
+	if t.client == nil {
+		openConn := func() (net.Conn, error) {
+			t.openedConnCount++
+			return net.Dial("tcp", redisAddr)
+		}
+		initConn := func(c *redis.Client) error {
+			t.initedConnCount++
+			return nil
+		}
+		closeConn := func(conn net.Conn) error {
+			t.closedConnCount++
+			return nil
+		}
+
+		t.client = redis.NewClient(openConn, closeConn, initConn)
+		t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 10
+	}
+}
+
+func (t *RedisConnPoolTest) TearDownTest(c *C) {
+	t.resetRedis(c)
+	t.resetClient(c)
+}
+
+func (t *RedisConnPoolTest) resetRedis(c *C) {
+	// This is much faster than Flushall.
+	c.Assert(t.client.Select(1).Err(), IsNil)
+	c.Assert(t.client.FlushDb().Err(), IsNil)
+	c.Assert(t.client.Select(0).Err(), IsNil)
+	c.Assert(t.client.FlushDb().Err(), IsNil)
+}
+
+func (t *RedisConnPoolTest) resetClient(c *C) {
+	t.client.Close()
+	c.Check(t.closedConnCount, Equals, t.openedConnCount)
+	c.Check(t.initedConnCount, Equals, t.openedConnCount)
+	t.openedConnCount, t.closedConnCount, t.initedConnCount = 0, 0, 0
+}
+
+func (t *RedisConnPoolTest) TestConnPoolMaxCap(c *C) {
+	wg := &sync.WaitGroup{}
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			ping := t.client.Ping()
+			c.Assert(ping.Err(), IsNil)
+			c.Assert(ping.Val(), Equals, "PONG")
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	c.Assert(t.client.Close(), IsNil)
+	c.Assert(t.openedConnCount, Equals, int64(10))
+	c.Assert(t.closedConnCount, Equals, int64(10))
+}
+
+func (t *RedisConnPoolTest) TestConnPoolMaxCapOnPipelineClient(c *C) {
+	wg := &sync.WaitGroup{}
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			pipeline, err := t.client.PipelineClient()
+			c.Assert(err, IsNil)
+
+			ping := pipeline.Ping()
+			reqs, err := pipeline.RunQueued()
+			c.Assert(err, IsNil)
+			c.Assert(reqs, HasLen, 1)
+			c.Assert(ping.Err(), IsNil)
+			c.Assert(ping.Val(), Equals, "PONG")
+
+			c.Assert(pipeline.Close(), IsNil)
+
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	c.Assert(t.client.Close(), IsNil)
+	c.Assert(t.openedConnCount, Equals, int64(10))
+	c.Assert(t.closedConnCount, Equals, int64(10))
+}
+
+func (t *RedisConnPoolTest) TestConnPoolMaxCapOnMultiClient(c *C) {
+	wg := &sync.WaitGroup{}
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			multi, err := t.client.MultiClient()
+			c.Assert(err, IsNil)
+
+			var ping *redis.StatusReq
+			reqs, err := multi.Exec(func() {
+				ping = multi.Ping()
+			})
+			c.Assert(err, IsNil)
+			c.Assert(reqs, HasLen, 1)
+			c.Assert(ping.Err(), IsNil)
+			c.Assert(ping.Val(), Equals, "PONG")
+
+			c.Assert(multi.Close(), IsNil)
+
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	c.Assert(t.client.Close(), IsNil)
+	c.Assert(t.openedConnCount, Equals, int64(10))
+	c.Assert(t.closedConnCount, Equals, int64(10))
+}
+
+func (t *RedisConnPoolTest) TestConnPoolMaxCapOnPubSubClient(c *C) {
+	wg := &sync.WaitGroup{}
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			pubsub, err := t.client.PubSubClient()
+			c.Assert(err, IsNil)
+
+			_, err = pubsub.Subscribe()
+			c.Assert(err, IsNil)
+
+			c.Assert(pubsub.Close(), IsNil)
+
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	c.Assert(t.client.Close(), IsNil)
+	c.Assert(t.openedConnCount, Equals, int64(1000))
+	c.Assert(t.closedConnCount, Equals, int64(1000))
+}
+
+//------------------------------------------------------------------------------
+
+type RedisTest struct {
+	openedConnCount, closedConnCount, initedConnCount int
 	client                                            *redis.Client
 }
 
@@ -79,31 +225,26 @@ func (t *RedisTest) SetUpTest(c *C) {
 		t.client = redis.NewClient(openConn, closeConn, initConn)
 		t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 10
 	}
-
-	t.openedConnCount = 0
-	t.closedConnCount = 0
-	t.initedConnCount = 0
-	t.resetRedis(c)
 }
 
 func (t *RedisTest) TearDownTest(c *C) {
-	t.resetRedis(c)
+	// Assert that all connections are in pool.
+	c.Assert(
+		t.client.ConnPool.(*redis.MultiConnPool).Len(),
+		Equals,
+		t.openedConnCount-t.closedConnCount,
+	)
+
 	c.Assert(t.openedConnCount, Equals, t.initedConnCount)
+	t.resetRedis(c)
 }
 
 func (t *RedisTest) resetRedis(c *C) {
+	// This is much faster than Flushall.
 	c.Assert(t.client.Select(1).Err(), IsNil)
 	c.Assert(t.client.FlushDb().Err(), IsNil)
-
 	c.Assert(t.client.Select(0).Err(), IsNil)
 	c.Assert(t.client.FlushDb().Err(), IsNil)
-}
-
-func (t *RedisTest) resetClient(c *C) {
-	c.Assert(t.client.Close(), IsNil)
-	t.openedConnCount = 0
-	t.initedConnCount = 0
-	t.closedConnCount = 0
 }
 
 //------------------------------------------------------------------------------
@@ -144,111 +285,6 @@ func (t *RedisTest) TestGetBigVal(c *C) {
 }
 
 //------------------------------------------------------------------------------
-
-func (t *RedisTest) TestConnPoolMaxCap(c *C) {
-	t.resetClient(c)
-
-	wg := &sync.WaitGroup{}
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
-		go func() {
-			ping := t.client.Ping()
-			c.Assert(ping.Err(), IsNil)
-			c.Assert(ping.Val(), Equals, "PONG")
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-
-	c.Assert(t.client.Close(), IsNil)
-	c.Assert(t.openedConnCount, Equals, int64(10))
-	c.Assert(t.closedConnCount, Equals, int64(10))
-}
-
-func (t *RedisTest) TestConnPoolMaxCapOnPipelineClient(c *C) {
-	t.resetClient(c)
-
-	wg := &sync.WaitGroup{}
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
-		go func() {
-			pipeline, err := t.client.PipelineClient()
-			c.Assert(err, IsNil)
-
-			ping := pipeline.Ping()
-			reqs, err := pipeline.RunQueued()
-			c.Assert(err, IsNil)
-			c.Assert(reqs, HasLen, 1)
-			c.Assert(ping.Err(), IsNil)
-			c.Assert(ping.Val(), Equals, "PONG")
-
-			c.Assert(pipeline.Close(), IsNil)
-
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-
-	c.Assert(t.client.Close(), IsNil)
-	c.Assert(t.openedConnCount, Equals, int64(10))
-	c.Assert(t.closedConnCount, Equals, int64(10))
-}
-
-func (t *RedisTest) TestConnPoolMaxCapOnMultiClient(c *C) {
-	t.resetClient(c)
-
-	wg := &sync.WaitGroup{}
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
-		go func() {
-			multi, err := t.client.MultiClient()
-			c.Assert(err, IsNil)
-
-			var ping *redis.StatusReq
-			reqs, err := multi.Exec(func() {
-				ping = multi.Ping()
-			})
-			c.Assert(err, IsNil)
-			c.Assert(reqs, HasLen, 1)
-			c.Assert(ping.Err(), IsNil)
-			c.Assert(ping.Val(), Equals, "PONG")
-
-			c.Assert(multi.Close(), IsNil)
-
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-
-	c.Assert(t.client.Close(), IsNil)
-	c.Assert(t.openedConnCount, Equals, int64(10))
-	c.Assert(t.closedConnCount, Equals, int64(10))
-}
-
-func (t *RedisTest) TestConnPoolMaxCapOnPubSubClient(c *C) {
-	t.resetClient(c)
-
-	wg := &sync.WaitGroup{}
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
-		go func() {
-			pubsub, err := t.client.PubSubClient()
-			c.Assert(err, IsNil)
-
-			_, err = pubsub.Subscribe()
-			c.Assert(err, IsNil)
-
-			c.Assert(pubsub.Close(), IsNil)
-
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-
-	c.Assert(t.client.Close(), IsNil)
-	c.Assert(t.openedConnCount, Equals, int64(1000))
-	c.Assert(t.closedConnCount, Equals, int64(1000))
-}
 
 func (t *RedisTest) TestConnPoolRemovesBrokenConn(c *C) {
 	conn, err := net.Dial("tcp", redisAddr)
