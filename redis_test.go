@@ -1542,7 +1542,7 @@ func (t *RedisTest) TestSAdd(c *C) {
 
 	sMembers := t.client.SMembers("set")
 	c.Assert(sMembers.Err(), IsNil)
-	c.Assert(sMembers.Val(), DeepEquals, []string{"World", "Hello"})
+	c.Assert(sortStrings(sMembers.Val()), DeepEquals, []string{"Hello", "World"})
 }
 
 func (t *RedisTest) TestSCard(c *C) {
@@ -1668,7 +1668,7 @@ func (t *RedisTest) TestSMembers(c *C) {
 
 	sMembers := t.client.SMembers("set")
 	c.Assert(sMembers.Err(), IsNil)
-	c.Assert(sMembers.Val(), DeepEquals, []string{"World", "Hello"})
+	c.Assert(sortStrings(sMembers.Val()), DeepEquals, []string{"Hello", "World"})
 }
 
 func (t *RedisTest) TestSMove(c *C) {
