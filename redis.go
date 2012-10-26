@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 )
 
 // Package logger.
@@ -17,13 +18,17 @@ type InitConnFunc func(*Client) error
 
 func TCPConnector(addr string) OpenConnFunc {
 	return func() (net.Conn, error) {
-		return net.Dial("tcp", addr)
+		return net.DialTimeout("tcp", addr, 3*time.Second)
 	}
 }
 
 func TLSConnector(addr string, tlsConfig *tls.Config) OpenConnFunc {
 	return func() (net.Conn, error) {
-		return tls.Dial("tcp", addr, tlsConfig)
+		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		return tls.Client(conn, tlsConfig)
 	}
 }
 
