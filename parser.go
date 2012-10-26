@@ -73,12 +73,16 @@ func readN(rd reader, n int) ([]byte, error) {
 		r := copy(newBuf, buf)
 		buf = newBuf
 
-		for r < n {
-			n, err := rd.Read(buf[r:])
+		for {
+			nn, err := rd.Read(buf[r:])
+			r += nn
+			if r >= n {
+				// Ignore error if we read enough.
+				break
+			}
 			if err != nil {
 				return nil, err
 			}
-			r += n
 		}
 	} else if err != nil {
 		return nil, err
