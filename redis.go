@@ -28,7 +28,7 @@ func TLSConnector(addr string, tlsConfig *tls.Config) OpenConnFunc {
 		if err != nil {
 			return nil, err
 		}
-		return tls.Client(conn, tlsConfig)
+		return tls.Client(conn, tlsConfig), nil
 	}
 }
 

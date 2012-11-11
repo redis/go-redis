@@ -2591,16 +2591,6 @@ func (t *RedisTest) TestCmdClientKill(c *C) {
 	c.Assert(r.Val(), Equals, "")
 }
 
-func (t *RedisTest) TestCmdClientList(c *C) {
-	r := t.client.ClientList()
-	c.Assert(r.Err(), IsNil)
-	c.Assert(
-		r.Val(),
-		Matches,
-		"addr=127.0.0.1:[0-9]+ .+\n",
-	)
-}
-
 func (t *RedisTest) TestCmdConfigGet(c *C) {
 	r := t.client.ConfigGet("*")
 	c.Assert(r.Err(), IsNil)
