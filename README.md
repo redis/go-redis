@@ -32,10 +32,15 @@ Let's start with connecting to Redis:
 
 Then we can start sending commands:
 
-    if err := client.Set("foo", "bar"); err != nil { panic(err) }
+    set := client.Set("foo", "bar"); 
+    if err := set.Err(); err != nil { 
+        panic(set.Err()) 
+    }
 
     get := client.Get("foo")
-    if err := get.Err(); err != nil { panic(err) }
+    if err := get.Err(); err != nil { 
+        panic(err) 
+    }
     fmt.Println(get.Val())
 
 We can also pipeline two commands together:
