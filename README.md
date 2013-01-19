@@ -32,14 +32,14 @@ Let's start with connecting to Redis:
 
 Then we can start sending commands:
 
-    set := client.Set("foo", "bar"); 
-    if err := set.Err(); err != nil { 
-        panic(set.Err()) 
+    set := client.Set("foo", "bar");
+    if err := set.Err(); err != nil {
+        panic(err)
     }
 
     get := client.Get("foo")
-    if err := get.Err(); err != nil { 
-        panic(err) 
+    if err := get.Err(); err != nil {
+        panic(err)
     }
     fmt.Println(get.Val())
 
