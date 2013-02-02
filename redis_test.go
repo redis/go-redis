@@ -1258,6 +1258,12 @@ func (t *RedisTest) TestCmdListsBLPopBlocks(c *C) {
 	}
 }
 
+func (t *RedisTest) TestCmdListsBLPopTimeout(c *C) {
+	bLPop := t.client.BLPop(1, "list1")
+	c.Assert(bLPop.Err(), Equals, redis.Nil)
+	c.Assert(bLPop.Val(), IsNil)
+}
+
 func (t *RedisTest) TestCmdListsBRPop(c *C) {
 	rPush := t.client.RPush("list1", "a", "b", "c")
 	c.Assert(rPush.Err(), IsNil)
