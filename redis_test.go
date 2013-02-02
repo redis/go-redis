@@ -52,9 +52,30 @@ func (t *RedisShutdownTest) TestShutdown(c *C) {
 
 //------------------------------------------------------------------------------
 
+type RedisConnectorTest struct{}
+
+var _ = Suite(&RedisConnectorTest{})
+
+func (t *RedisConnectorTest) TestTCPConnector(c *C) {
+	client := redis.NewTCPClient(":6379", "", -1)
+	ping := client.Ping()
+	c.Check(ping.Err(), IsNil)
+	c.Check(ping.Val(), Equals, "PONG")
+}
+
+func (t *RedisConnectorTest) TestUnixConnector(c *C) {
+	client := redis.NewUnixClient("/tmp/redis.sock", "", -1)
+	ping := client.Ping()
+	c.Check(ping.Err(), IsNil)
+	c.Check(ping.Val(), Equals, "PONG")
+}
+
+//------------------------------------------------------------------------------
+
 type RedisConnPoolTest struct {
 	openedConnCount, closedConnCount, initedConnCount int64
-	client                                            *redis.Client
+
+	client *redis.Client
 }
 
 var _ = Suite(&RedisConnPoolTest{})
@@ -2734,7 +2755,7 @@ func (t *RedisTest) TestScriptingScriptFlush(c *C) {
 
 func (t *RedisTest) TestScriptingScriptKill(c *C) {
 	scriptKill := t.client.ScriptKill()
-	c.Assert(scriptKill.Err(), ErrorMatches, "ERR No scripts in execution right now.")
+	c.Assert(scriptKill.Err(), ErrorMatches, ".*No scripts in execution right now.")
 	c.Assert(scriptKill.Val(), Equals, "")
 }
 

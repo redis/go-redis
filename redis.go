@@ -32,6 +32,12 @@ func TLSConnector(addr string, tlsConfig *tls.Config) OpenConnFunc {
 	}
 }
 
+func UnixConnector(addr string) OpenConnFunc {
+	return func() (net.Conn, error) {
+		return net.DialTimeout("unix", addr, 3*time.Second)
+	}
+}
+
 func AuthSelectFunc(password string, db int64) InitConnFunc {
 	if password == "" && db < 0 {
 		return nil
@@ -181,4 +187,8 @@ func NewTLSClient(addr string, tlsConfig *tls.Config, password string, db int64)
 		nil,
 		AuthSelectFunc(password, db),
 	)
+}
+
+func NewUnixClient(addr string, password string, db int64) *Client {
+	return NewClient(UnixConnector(addr), nil, AuthSelectFunc(password, db))
 }
