@@ -231,7 +231,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 				}
 			}
 			return vals, nil
-		case stringStringMap:
+		case stringStringMap: // TODO: Consider handling Nil values.
 			m := make(map[string]string, repliesNum/2)
 			for i := int64(0); i < repliesNum; i += 2 {
 				keyI, err := parseReply(rd)
@@ -255,7 +255,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 				m[key] = value
 			}
 			return m, nil
-		case stringFloatMap:
+		case stringFloatMap: // TODO: Consider handling Nil values.
 			m := make(map[string]float64, repliesNum/2)
 			for i := int64(0); i < repliesNum; i += 2 {
 				keyI, err := parseReply(rd)
