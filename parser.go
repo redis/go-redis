@@ -40,7 +40,7 @@ func appendReq(buf []byte, args []string) []byte {
 		buf = append(buf, '$')
 		buf = strconv.AppendUint(buf, uint64(len(arg)), 10)
 		buf = append(buf, '\r', '\n')
-		buf = append(buf, []byte(arg)...)
+		buf = append(buf, arg...)
 		buf = append(buf, '\r', '\n')
 	}
 	return buf
