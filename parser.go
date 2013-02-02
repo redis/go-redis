@@ -8,16 +8,23 @@ import (
 	"github.com/vmihailenco/bufio"
 )
 
-//------------------------------------------------------------------------------
+type replyType int
+
+const (
+	ifaceSlice replyType = iota
+	stringSlice
+	boolSlice
+	stringStringMap
+	stringFloatMap
+)
 
 // Represents Redis nil reply.
 var Nil = errors.New("(nil)")
 
-//------------------------------------------------------------------------------
-
 var (
 	errReaderTooSmall = errors.New("redis: reader is too small")
 	errValNotSet      = errors.New("redis: value is not set")
+	errInvalidType    = errors.New("redis: invalid reply type")
 )
 
 //------------------------------------------------------------------------------
@@ -113,7 +120,7 @@ func ParseReq(rd reader) ([]string, error) {
 			return nil, err
 		}
 		if line[0] != '$' {
-			return nil, fmt.Errorf("Expected '$', but got %q", line)
+			return nil, fmt.Errorf("redis: expected '$', but got %q", line)
 		}
 
 		argLen, err := strconv.ParseInt(string(line[1:]), 10, 32)
@@ -132,12 +139,6 @@ func ParseReq(rd reader) ([]string, error) {
 
 //------------------------------------------------------------------------------
 
-const (
-	ifaceSlice = iota
-	stringSlice
-	boolSlice
-)
-
 func parseReply(rd reader) (interface{}, error) {
 	return _parseReply(rd, ifaceSlice)
 }
@@ -150,7 +151,15 @@ func parseBoolSliceReply(rd reader) (interface{}, error) {
 	return _parseReply(rd, boolSlice)
 }
 
-func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
+func parseStringStringMapReply(rd reader) (interface{}, error) {
+	return _parseReply(rd, stringStringMap)
+}
+
+func parseStringFloatMapReply(rd reader) (interface{}, error) {
+	return _parseReply(rd, stringFloatMap)
+}
+
+func _parseReply(rd reader, typ replyType) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return 0, &parserError{err}
@@ -188,39 +197,95 @@ func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 			return nil, Nil
 		}
 
-		numReplies, err := strconv.ParseInt(string(line[1:]), 10, 64)
+		repliesNum, err := strconv.ParseInt(string(line[1:]), 10, 64)
 		if err != nil {
 			return nil, &parserError{err}
 		}
 
-		switch multiBulkType {
+		switch typ {
 		case stringSlice:
-			vals := make([]string, 0, numReplies)
-			for i := int64(0); i < numReplies; i++ {
-				v, err := parseReply(rd)
+			vals := make([]string, 0, repliesNum)
+			for i := int64(0); i < repliesNum; i++ {
+				vi, err := parseReply(rd)
 				if err != nil {
 					return nil, err
+				}
+				if v, ok := vi.(string); ok {
+					vals = append(vals, v)
 				} else {
-					vals = append(vals, v.(string))
+					return nil, errInvalidType
 				}
 			}
-
 			return vals, nil
 		case boolSlice:
-			vals := make([]bool, 0, numReplies)
-			for i := int64(0); i < numReplies; i++ {
-				v, err := parseReply(rd)
+			vals := make([]bool, 0, repliesNum)
+			for i := int64(0); i < repliesNum; i++ {
+				vi, err := parseReply(rd)
 				if err != nil {
 					return nil, err
+				}
+				if v, ok := vi.(int64); ok {
+					vals = append(vals, v == 1)
 				} else {
-					vals = append(vals, v.(int64) == 1)
+					return nil, errInvalidType
 				}
 			}
-
 			return vals, nil
+		case stringStringMap:
+			m := make(map[string]string, repliesNum/2)
+			for i := int64(0); i < repliesNum; i += 2 {
+				keyI, err := parseReply(rd)
+				if err != nil {
+					return nil, err
+				}
+				key, ok := keyI.(string)
+				if !ok {
+					return nil, errInvalidType
+				}
+
+				valueI, err := parseReply(rd)
+				if err != nil {
+					return nil, err
+				}
+				value, ok := valueI.(string)
+				if !ok {
+					return nil, errInvalidType
+				}
+
+				m[key] = value
+			}
+			return m, nil
+		case stringFloatMap:
+			m := make(map[string]float64, repliesNum/2)
+			for i := int64(0); i < repliesNum; i += 2 {
+				keyI, err := parseReply(rd)
+				if err != nil {
+					return nil, err
+				}
+				key, ok := keyI.(string)
+				if !ok {
+					return nil, errInvalidType
+				}
+
+				valueI, err := parseReply(rd)
+				if err != nil {
+					return nil, err
+				}
+				valueS, ok := valueI.(string)
+				if !ok {
+					return nil, errInvalidType
+				}
+				value, err := strconv.ParseFloat(valueS, 64)
+				if err != nil {
+					return nil, &parserError{err}
+				}
+
+				m[key] = value
+			}
+			return m, nil
 		default:
-			vals := make([]interface{}, 0, numReplies)
-			for i := int64(0); i < numReplies; i++ {
+			vals := make([]interface{}, 0, repliesNum)
+			for i := int64(0); i < repliesNum; i++ {
 				v, err := parseReply(rd)
 				if err == Nil {
 					vals = append(vals, nil)
@@ -230,7 +295,6 @@ func _parseReply(rd reader, multiBulkType int) (interface{}, error) {
 					vals = append(vals, v)
 				}
 			}
-
 			return vals, nil
 		}
 	default:

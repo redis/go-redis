@@ -255,3 +255,49 @@ func (r *BoolSliceReq) Val() []bool {
 	}
 	return r.val.([]bool)
 }
+
+//------------------------------------------------------------------------------
+
+type StringStringMapReq struct {
+	*BaseReq
+}
+
+func NewStringStringMapReq(args ...string) *StringStringMapReq {
+	return &StringStringMapReq{
+		BaseReq: NewBaseReq(args...),
+	}
+}
+
+func (r *StringStringMapReq) ParseReply(rd reader) (interface{}, error) {
+	return parseStringStringMapReply(rd)
+}
+
+func (r *StringStringMapReq) Val() map[string]string {
+	if r.val == nil {
+		return nil
+	}
+	return r.val.(map[string]string)
+}
+
+//------------------------------------------------------------------------------
+
+type StringFloatMapReq struct {
+	*BaseReq
+}
+
+func NewStringFloatMapReq(args ...string) *StringFloatMapReq {
+	return &StringFloatMapReq{
+		BaseReq: NewBaseReq(args...),
+	}
+}
+
+func (r *StringFloatMapReq) ParseReply(rd reader) (interface{}, error) {
+	return parseStringFloatMapReply(rd)
+}
+
+func (r *StringFloatMapReq) Val() map[string]float64 {
+	if r.val == nil {
+		return nil
+	}
+	return r.val.(map[string]float64)
+}

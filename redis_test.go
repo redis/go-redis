@@ -1088,6 +1088,17 @@ func (t *RedisTest) TestCmdHGetAll(c *C) {
 	c.Assert(hGetAll.Val(), DeepEquals, []string{"key1", "hello1", "key2", "hello2"})
 }
 
+func (t *RedisTest) TestCmdHGetAllMap(c *C) {
+	hSet := t.client.HSet("hash", "key1", "hello1")
+	c.Assert(hSet.Err(), IsNil)
+	hSet = t.client.HSet("hash", "key2", "hello2")
+	c.Assert(hSet.Err(), IsNil)
+
+	hGetAll := t.client.HGetAllMap("hash")
+	c.Assert(hGetAll.Err(), IsNil)
+	c.Assert(hGetAll.Val(), DeepEquals, map[string]string{"key1": "hello1", "key2": "hello2"})
+}
+
 func (t *RedisTest) TestCmdHIncrBy(c *C) {
 	hSet := t.client.HSet("hash", "key", "5")
 	c.Assert(hSet.Err(), IsNil)
@@ -1928,6 +1939,27 @@ func (t *RedisTest) TestZRange(c *C) {
 	c.Assert(zRange.Val(), DeepEquals, []string{"two", "three"})
 }
 
+func (t *RedisTest) TestZRangeWithScoresMap(c *C) {
+	zAdd := t.client.ZAdd("zset", redis.Z{1, "one"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{2, "two"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{3, "three"})
+	c.Assert(zAdd.Err(), IsNil)
+
+	zRange := t.client.ZRangeWithScoresMap("zset", 0, -1)
+	c.Assert(zRange.Err(), IsNil)
+	c.Assert(zRange.Val(), DeepEquals, map[string]float64{"one": 1, "two": 2, "three": 3})
+
+	zRange = t.client.ZRangeWithScoresMap("zset", 2, 3)
+	c.Assert(zRange.Err(), IsNil)
+	c.Assert(zRange.Val(), DeepEquals, map[string]float64{"three": 3})
+
+	zRange = t.client.ZRangeWithScoresMap("zset", -2, -1)
+	c.Assert(zRange.Err(), IsNil)
+	c.Assert(zRange.Val(), DeepEquals, map[string]float64{"two": 2, "three": 3})
+}
+
 func (t *RedisTest) TestZRangeByScore(c *C) {
 	zAdd := t.client.ZAdd("zset", redis.Z{1, "one"})
 	c.Assert(zAdd.Err(), IsNil)
@@ -1951,6 +1983,31 @@ func (t *RedisTest) TestZRangeByScore(c *C) {
 	zRangeByScore = t.client.ZRangeByScore("zset", "(1", "(2", 0, 0)
 	c.Assert(zRangeByScore.Err(), IsNil)
 	c.Assert(zRangeByScore.Val(), DeepEquals, []string{})
+}
+
+func (t *RedisTest) TestZRangeByScoreWithScoresMap(c *C) {
+	zAdd := t.client.ZAdd("zset", redis.Z{1, "one"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{2, "two"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{3, "three"})
+	c.Assert(zAdd.Err(), IsNil)
+
+	zRangeByScore := t.client.ZRangeByScoreWithScoresMap("zset", "-inf", "+inf", 0, 0)
+	c.Assert(zRangeByScore.Err(), IsNil)
+	c.Assert(zRangeByScore.Val(), DeepEquals, map[string]float64{"one": 1, "two": 2, "three": 3})
+
+	zRangeByScore = t.client.ZRangeByScoreWithScoresMap("zset", "1", "2", 0, 0)
+	c.Assert(zRangeByScore.Err(), IsNil)
+	c.Assert(zRangeByScore.Val(), DeepEquals, map[string]float64{"one": 1, "two": 2})
+
+	zRangeByScore = t.client.ZRangeByScoreWithScoresMap("zset", "(1", "2", 0, 0)
+	c.Assert(zRangeByScore.Err(), IsNil)
+	c.Assert(zRangeByScore.Val(), DeepEquals, map[string]float64{"two": 2})
+
+	zRangeByScore = t.client.ZRangeByScoreWithScoresMap("zset", "(1", "(2", 0, 0)
+	c.Assert(zRangeByScore.Err(), IsNil)
+	c.Assert(zRangeByScore.Val(), DeepEquals, map[string]float64{})
 }
 
 func (t *RedisTest) TestZRank(c *C) {
@@ -2042,6 +2099,27 @@ func (t *RedisTest) TestZRevRange(c *C) {
 	c.Assert(zRevRange.Val(), DeepEquals, []string{"two", "one"})
 }
 
+func (t *RedisTest) TestZRevRangeWithScoresMap(c *C) {
+	zAdd := t.client.ZAdd("zset", redis.Z{1, "one"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{2, "two"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{3, "three"})
+	c.Assert(zAdd.Err(), IsNil)
+
+	zRevRange := t.client.ZRevRangeWithScoresMap("zset", "0", "-1")
+	c.Assert(zRevRange.Err(), IsNil)
+	c.Assert(zRevRange.Val(), DeepEquals, map[string]float64{"three": 3, "two": 2, "one": 1})
+
+	zRevRange = t.client.ZRevRangeWithScoresMap("zset", "2", "3")
+	c.Assert(zRevRange.Err(), IsNil)
+	c.Assert(zRevRange.Val(), DeepEquals, map[string]float64{"one": 1})
+
+	zRevRange = t.client.ZRevRangeWithScoresMap("zset", "-2", "-1")
+	c.Assert(zRevRange.Err(), IsNil)
+	c.Assert(zRevRange.Val(), DeepEquals, map[string]float64{"two": 2, "one": 1})
+}
+
 func (t *RedisTest) TestZRevRangeByScore(c *C) {
 	zAdd := t.client.ZAdd("zset", redis.Z{1, "one"})
 	c.Assert(zAdd.Err(), IsNil)
@@ -2061,6 +2139,27 @@ func (t *RedisTest) TestZRevRangeByScore(c *C) {
 	zRevRangeByScore = t.client.ZRevRangeByScore("zset", "(2", "(1", 0, 0)
 	c.Assert(zRevRangeByScore.Err(), IsNil)
 	c.Assert(zRevRangeByScore.Val(), DeepEquals, []string{})
+}
+
+func (t *RedisTest) TestZRevRangeByScoreWithScoresMap(c *C) {
+	zAdd := t.client.ZAdd("zset", redis.Z{1, "one"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{2, "two"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{3, "three"})
+	c.Assert(zAdd.Err(), IsNil)
+
+	zRevRangeByScore := t.client.ZRevRangeByScoreWithScoresMap("zset", "+inf", "-inf", 0, 0)
+	c.Assert(zRevRangeByScore.Err(), IsNil)
+	c.Assert(zRevRangeByScore.Val(), DeepEquals, map[string]float64{"three": 3, "two": 2, "one": 1})
+
+	zRevRangeByScore = t.client.ZRevRangeByScoreWithScoresMap("zset", "2", "(1", 0, 0)
+	c.Assert(zRevRangeByScore.Err(), IsNil)
+	c.Assert(zRevRangeByScore.Val(), DeepEquals, map[string]float64{"two": 2})
+
+	zRevRangeByScore = t.client.ZRevRangeByScoreWithScoresMap("zset", "(2", "(1", 0, 0)
+	c.Assert(zRevRangeByScore.Err(), IsNil)
+	c.Assert(zRevRangeByScore.Val(), DeepEquals, map[string]float64{})
 }
 
 func (t *RedisTest) TestZRevRank(c *C) {
