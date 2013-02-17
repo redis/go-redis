@@ -36,12 +36,12 @@ Let's start with connecting to Redis using TCP:
 
 or using Unix socket:
 
-   client := redis.NewUnixClient("/tmp/redis.sock", "", -1)
-   defer client.Close()
+    client := redis.NewUnixClient("/tmp/redis.sock", "", -1)
+    defer client.Close()
 
-   ping := client.Ping()
-   fmt.Println(ping.Err(), ping.Val())
-   // Output: <nil> PONG
+    ping := client.Ping()
+    fmt.Println(ping.Err(), ping.Val())
+    // Output: <nil> PONG
 
 Then we can start sending commands:
 
