@@ -1,7 +1,9 @@
 package redis
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
 )
 
 type Req interface {
@@ -62,6 +64,16 @@ func (r *BaseReq) IfaceVal() interface{} {
 
 func (r *BaseReq) ParseReply(rd reader) (interface{}, error) {
 	return parseReply(rd)
+}
+
+func (r *BaseReq) String() string {
+	args := strings.Join(r.args, " ")
+	if r.err != nil {
+		return args + ": " + r.err.Error()
+	} else if r.val != nil {
+		return args + ": " + fmt.Sprint(r.val)
+	}
+	return args
 }
 
 //------------------------------------------------------------------------------

@@ -270,6 +270,19 @@ func (t *RedisTest) resetRedis(c *C) {
 
 //------------------------------------------------------------------------------
 
+func (t *RedisTest) TestReqStringMethod(c *C) {
+	set := t.client.Set("foo", "bar")
+	c.Assert(set.String(), Equals, "SET foo bar: OK")
+
+	get := t.client.Get("foo")
+	c.Assert(get.String(), Equals, "GET foo: bar")
+}
+
+func (t *RedisTest) TestReqStringMethodError(c *C) {
+	get2 := t.client.Get("key_does_not_exists")
+	c.Assert(get2.String(), Equals, "GET key_does_not_exists: (nil)")
+}
+
 func (t *RedisTest) TestRunWithouthCheckingErrVal(c *C) {
 	set := t.client.Set("key", "hello")
 	c.Assert(set.Err(), IsNil)
