@@ -62,12 +62,10 @@ We can also pipeline two commands together:
         set = c.Set("key1", "hello1")
         get = c.Get("key2")
     })
-    fmt.Println(err)
-    fmt.Println(reqs)
+    fmt.Println(err, reqs)
     fmt.Println(set)
     fmt.Println(get)
-    // Output: <nil
-    // Output: <nil> [SET key1 hello1: OK GET key2: (nil)]>
+    // Output: <nil> [SET key1 hello1: OK GET key2: (nil)]
     // SET key1 hello1: OK
     // GET key2: (nil)
 
