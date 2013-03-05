@@ -953,6 +953,12 @@ func (t *RedisTest) TestIncrByFloat(c *C) {
 	c.Assert(incrByFloat.Val(), Equals, float64(5200))
 }
 
+func (t *RedisTest) TestIncrByFloatOverflow(c *C) {
+	incrByFloat := t.client.IncrByFloat("key", 996945661)
+	c.Assert(incrByFloat.Err(), IsNil)
+	c.Assert(incrByFloat.Val(), Equals, float64(996945661))
+}
+
 func (t *RedisTest) TestStringsMSetMGet(c *C) {
 	mSet := t.client.MSet("key1", "hello1", "key2", "hello2")
 	c.Assert(mSet.Err(), IsNil)
