@@ -318,6 +318,15 @@ func (t *RedisTest) TestGetBigVal(c *C) {
 	c.Assert(get.Val(), Equals, val)
 }
 
+func (t *RedisTest) TestManyKeys(c *C) {
+	for i := 0; i < 100000; i++ {
+		t.client.Set("keys.key"+strconv.Itoa(i), "hello")
+	}
+	keys := t.client.Keys("keys.*")
+	c.Assert(keys.Err(), IsNil)
+	c.Assert(len(keys.Val()), Equals, 100000)
+}
+
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) TestConnPoolRemovesBrokenConn(c *C) {

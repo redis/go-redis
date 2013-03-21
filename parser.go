@@ -74,14 +74,14 @@ func readLine(rd reader) ([]byte, error) {
 }
 
 func readN(rd reader, n int) ([]byte, error) {
-	buf, err := rd.ReadN(n)
+	b, err := rd.ReadN(n)
 	if err == bufio.ErrBufferFull {
-		newBuf := make([]byte, n)
-		r := copy(newBuf, buf)
-		buf = newBuf
+		newB := make([]byte, n)
+		r := copy(newB, b)
+		b = newB
 
 		for {
-			nn, err := rd.Read(buf[r:])
+			nn, err := rd.Read(b[r:])
 			r += nn
 			if r >= n {
 				// Ignore error if we read enough.
@@ -94,7 +94,7 @@ func readN(rd reader, n int) ([]byte, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	return buf, nil
+	return b, nil
 }
 
 //------------------------------------------------------------------------------
