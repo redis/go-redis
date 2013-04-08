@@ -830,7 +830,7 @@ func (c *Client) ZRangeByScore(key string, min, max string, offset, count int64)
 	return c.zRangeByScore(key, min, max, false, offset, count)
 }
 
-func (c *Client) ZRangeByScoreWithScores(key string, min, max string, offset, count int64) *StringSliceReq {
+func (c *Client) ZRangeByScoreWithScores(key, min, max string, offset, count int64) *StringSliceReq {
 	return c.zRangeByScore(key, min, max, true, offset, count)
 }
 

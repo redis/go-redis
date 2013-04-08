@@ -5,16 +5,15 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"runtime"
 	"sort"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
-	. "launchpad.net/gocheck"
-
 	"github.com/vmihailenco/redis"
+
+	. "launchpad.net/gocheck"
 )
 
 const redisAddr = ":6379"
@@ -2901,131 +2900,74 @@ func (t *RedisTest) TestScriptingScriptLoad(c *C) {
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) BenchmarkRedisPing(c *C) {
-	c.StopTimer()
-
-	runtime.LockOSThread()
-	t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 1
-
-	for i := 0; i < 10; i++ {
-		ping := t.client.Ping()
-		c.Assert(ping.Err(), IsNil)
-		c.Assert(ping.Val(), Equals, "PONG")
-	}
-
-	c.StartTimer()
-
 	for i := 0; i < c.N; i++ {
-		t.client.Ping()
+		if err := t.client.Ping().Err(); err != nil {
+			panic(err)
+		}
 	}
 }
 
 func (t *RedisTest) BenchmarkRedisSet(c *C) {
-	c.StopTimer()
-
-	runtime.LockOSThread()
-	t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 1
-
-	for i := 0; i < 10; i++ {
-		set := t.client.Set("key", "hello")
-		c.Assert(set.Err(), IsNil)
-		c.Assert(set.Val(), Equals, "OK")
-	}
-
-	c.StartTimer()
-
 	for i := 0; i < c.N; i++ {
-		t.client.Set("key", "hello")
+		if err := t.client.Set("key", "hello").Err(); err != nil {
+			panic(err)
+		}
 	}
 }
 
 func (t *RedisTest) BenchmarkRedisGetNil(c *C) {
-	c.StopTimer()
-
-	runtime.LockOSThread()
-	t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 1
-
-	for i := 0; i < 10; i++ {
-		get := t.client.Get("key")
-		c.Assert(get.Err(), Equals, redis.Nil)
-		c.Assert(get.Val(), Equals, "")
-	}
-
-	c.StartTimer()
-
 	for i := 0; i < c.N; i++ {
-		t.client.Get("key")
+		if err := t.client.Get("key").Err(); err != redis.Nil {
+			panic(err)
+		}
 	}
 }
 
 func (t *RedisTest) BenchmarkRedisGet(c *C) {
 	c.StopTimer()
 
-	runtime.LockOSThread()
-	t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 1
-
 	set := t.client.Set("key", "hello")
 	c.Assert(set.Err(), IsNil)
-
-	for i := 0; i < 10; i++ {
-		get := t.client.Get("key")
-		c.Assert(get.Err(), IsNil)
-		c.Assert(get.Val(), Equals, "hello")
-	}
 
 	c.StartTimer()
 
 	for i := 0; i < c.N; i++ {
-		t.client.Get("key")
+		if err := t.client.Get("key").Err(); err != nil {
+			panic(err)
+		}
 	}
 }
 
 func (t *RedisTest) BenchmarkRedisMGet(c *C) {
 	c.StopTimer()
 
-	runtime.LockOSThread()
-	t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 1
-
 	mSet := t.client.MSet("key1", "hello1", "key2", "hello2")
 	c.Assert(mSet.Err(), IsNil)
-
-	for i := 0; i < 10; i++ {
-		mGet := t.client.MGet("key1", "key2")
-		c.Assert(mGet.Err(), IsNil)
-		c.Assert(mGet.Val(), DeepEquals, []interface{}{"hello1", "hello2"})
-	}
 
 	c.StartTimer()
 
 	for i := 0; i < c.N; i++ {
-		t.client.MGet("key1", "key2")
+		if err := t.client.MGet("key1", "key2").Err(); err != nil {
+			panic(err)
+		}
 	}
 }
 
 func (t *RedisTest) BenchmarkRedisWriteRead(c *C) {
 	c.StopTimer()
 
-	runtime.LockOSThread()
-
 	conn, _, err := t.client.ConnPool.Get()
 	c.Assert(err, IsNil)
-
-	for i := 0; i < 10; i++ {
-		err := t.client.WriteReq(conn, redis.NewStatusReq("PING"))
-		c.Assert(err, IsNil)
-
-		line, _, err := conn.Rd.ReadLine()
-		c.Assert(err, IsNil)
-		c.Assert(line, DeepEquals, []byte("+PONG"))
-	}
+	defer t.client.ConnPool.Add(conn)
 
 	c.StartTimer()
 
 	for i := 0; i < c.N; i++ {
-		t.client.WriteReq(conn, redis.NewStatusReq("PING"))
-		conn.Rd.ReadLine()
+		if err := t.client.WriteReq(conn, redis.NewStatusReq("PING")); err != nil {
+			panic(err)
+		}
+		if _, _, err := conn.Rd.ReadLine(); err != nil {
+			panic(err)
+		}
 	}
-
-	c.StopTimer()
-	t.client.ConnPool.Add(conn)
-	c.StartTimer()
 }
