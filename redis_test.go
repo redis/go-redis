@@ -306,7 +306,7 @@ func (t *RedisTest) TestGetSpecChars(c *C) {
 }
 
 func (t *RedisTest) TestGetBigVal(c *C) {
-	val := string(bytes.Repeat([]byte{'*'}, 2<<16))
+	val := string(bytes.Repeat([]byte{'*'}, 1<<16))
 
 	set := t.client.Set("key", val)
 	c.Assert(set.Err(), IsNil)
@@ -319,11 +319,31 @@ func (t *RedisTest) TestGetBigVal(c *C) {
 
 func (t *RedisTest) TestManyKeys(c *C) {
 	for i := 0; i < 100000; i++ {
-		t.client.Set("keys.key"+strconv.Itoa(i), "hello")
+		t.client.Set("keys.key"+strconv.Itoa(i), "hello"+strconv.Itoa(i))
 	}
 	keys := t.client.Keys("keys.*")
 	c.Assert(keys.Err(), IsNil)
-	c.Assert(len(keys.Val()), Equals, 100000)
+	c.Assert(keys.Val(), HasLen, 100000)
+}
+
+func (t *RedisTest) TestManyKeys2(c *C) {
+	keys := []string{"non-existent-key"}
+	for i := 0; i < 100000; i++ {
+		key := "keys.key" + strconv.Itoa(i)
+		t.client.Set(key, "hello"+strconv.Itoa(i))
+		keys = append(keys, key)
+	}
+	keys = append(keys, "non-existent-key")
+
+	mget := t.client.MGet(keys...)
+	c.Assert(mget.Err(), IsNil)
+	c.Assert(mget.Val(), HasLen, 100002)
+	vals := mget.Val()
+	for i := 0; i < 100000; i++ {
+		c.Assert(vals[i+1], Equals, "hello"+strconv.Itoa(i))
+	}
+	c.Assert(vals[0], Equals, nil)
+	c.Assert(vals[100001], Equals, nil)
 }
 
 //------------------------------------------------------------------------------
@@ -2969,5 +2989,11 @@ func (t *RedisTest) BenchmarkRedisWriteRead(c *C) {
 		if _, _, err := conn.Rd.ReadLine(); err != nil {
 			panic(err)
 		}
+	}
+}
+
+func (t *RedisTest) BenchmarkFireAndForget(c *C) {
+	for i := 0; i < c.N; i++ {
+		t.client.Incr("key")
 	}
 }
