@@ -2038,6 +2038,31 @@ func (t *RedisTest) TestZRangeByScore(c *C) {
 	c.Assert(zRangeByScore.Val(), DeepEquals, []string{})
 }
 
+func (t *RedisTest) TestZRangeByScoreWithScores(c *C) {
+	zAdd := t.client.ZAdd("zset", redis.Z{1, "one"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{2, "two"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{3, "three"})
+	c.Assert(zAdd.Err(), IsNil)
+
+	zRangeByScore := t.client.ZRangeByScoreWithScores("zset", "-inf", "+inf", 0, 0)
+	c.Assert(zRangeByScore.Err(), IsNil)
+	c.Assert(zRangeByScore.Val(), DeepEquals, []string{"one", "1", "two", "2", "three", "3"})
+
+	zRangeByScore = t.client.ZRangeByScoreWithScores("zset", "1", "2", 0, 0)
+	c.Assert(zRangeByScore.Err(), IsNil)
+	c.Assert(zRangeByScore.Val(), DeepEquals, []string{"one", "1", "two", "2"})
+
+	zRangeByScore = t.client.ZRangeByScoreWithScores("zset", "(1", "2", 0, 0)
+	c.Assert(zRangeByScore.Err(), IsNil)
+	c.Assert(zRangeByScore.Val(), DeepEquals, []string{"two", "2"})
+
+	zRangeByScore = t.client.ZRangeByScoreWithScores("zset", "(1", "(2", 0, 0)
+	c.Assert(zRangeByScore.Err(), IsNil)
+	c.Assert(zRangeByScore.Val(), DeepEquals, []string{})
+}
+
 func (t *RedisTest) TestZRangeByScoreWithScoresMap(c *C) {
 	zAdd := t.client.ZAdd("zset", redis.Z{1, "one"})
 	c.Assert(zAdd.Err(), IsNil)
@@ -2190,6 +2215,27 @@ func (t *RedisTest) TestZRevRangeByScore(c *C) {
 	c.Assert(zRevRangeByScore.Val(), DeepEquals, []string{"two"})
 
 	zRevRangeByScore = t.client.ZRevRangeByScore("zset", "(2", "(1", 0, 0)
+	c.Assert(zRevRangeByScore.Err(), IsNil)
+	c.Assert(zRevRangeByScore.Val(), DeepEquals, []string{})
+}
+
+func (t *RedisTest) TestZRevRangeByScoreWithScores(c *C) {
+	zAdd := t.client.ZAdd("zset", redis.Z{1, "one"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{2, "two"})
+	c.Assert(zAdd.Err(), IsNil)
+	zAdd = t.client.ZAdd("zset", redis.Z{3, "three"})
+	c.Assert(zAdd.Err(), IsNil)
+
+	zRevRangeByScore := t.client.ZRevRangeByScoreWithScores("zset", "+inf", "-inf", 0, 0)
+	c.Assert(zRevRangeByScore.Err(), IsNil)
+	c.Assert(zRevRangeByScore.Val(), DeepEquals, []string{"three", "3", "two", "2", "one", "1"})
+
+	zRevRangeByScore = t.client.ZRevRangeByScoreWithScores("zset", "2", "(1", 0, 0)
+	c.Assert(zRevRangeByScore.Err(), IsNil)
+	c.Assert(zRevRangeByScore.Val(), DeepEquals, []string{"two", "2"})
+
+	zRevRangeByScore = t.client.ZRevRangeByScoreWithScores("zset", "(2", "(1", 0, 0)
 	c.Assert(zRevRangeByScore.Err(), IsNil)
 	c.Assert(zRevRangeByScore.Val(), DeepEquals, []string{})
 }
