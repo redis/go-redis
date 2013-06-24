@@ -928,7 +928,7 @@ func (c *Client) ZRevRangeByScore(key, start, stop string, offset, count int64) 
 }
 
 func (c *Client) ZRevRangeByScoreWithScores(key, start, stop string, offset, count int64) *StringSliceReq {
-	return c.zRevRangeByScore(key, start, stop, false, offset, count)
+	return c.zRevRangeByScore(key, start, stop, true, offset, count)
 }
 
 func (c *Client) ZRevRangeByScoreWithScoresMap(
