@@ -17,31 +17,31 @@ type Req interface {
 
 //------------------------------------------------------------------------------
 
-type BaseReq struct {
+type baseReq struct {
 	args []string
 
 	val interface{}
 	err error
 }
 
-func NewBaseReq(args ...string) *BaseReq {
-	return &BaseReq{
+func newBaseReq(args ...string) *baseReq {
+	return &baseReq{
 		args: args,
 	}
 }
 
-func (r *BaseReq) Args() []string {
+func (r *baseReq) Args() []string {
 	return r.args
 }
 
-func (r *BaseReq) SetErr(err error) {
+func (r *baseReq) SetErr(err error) {
 	if err == nil {
 		panic("non-nil value expected")
 	}
 	r.err = err
 }
 
-func (r *BaseReq) Err() error {
+func (r *baseReq) Err() error {
 	if r.err != nil {
 		return r.err
 	}
@@ -51,22 +51,22 @@ func (r *BaseReq) Err() error {
 	return nil
 }
 
-func (r *BaseReq) SetVal(val interface{}) {
+func (r *baseReq) SetVal(val interface{}) {
 	if val == nil {
 		panic("non-nil value expected")
 	}
 	r.val = val
 }
 
-func (r *BaseReq) IfaceVal() interface{} {
+func (r *baseReq) IfaceVal() interface{} {
 	return r.val
 }
 
-func (r *BaseReq) ParseReply(rd reader) (interface{}, error) {
+func (r *baseReq) ParseReply(rd reader) (interface{}, error) {
 	return parseReply(rd)
 }
 
-func (r *BaseReq) String() string {
+func (r *baseReq) String() string {
 	args := strings.Join(r.args, " ")
 	if r.err != nil {
 		return args + ": " + r.err.Error()
@@ -79,12 +79,12 @@ func (r *BaseReq) String() string {
 //------------------------------------------------------------------------------
 
 type IfaceReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewIfaceReq(args ...string) *IfaceReq {
 	return &IfaceReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
@@ -95,12 +95,12 @@ func (r *IfaceReq) Val() interface{} {
 //------------------------------------------------------------------------------
 
 type StatusReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewStatusReq(args ...string) *StatusReq {
 	return &StatusReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
@@ -114,12 +114,12 @@ func (r *StatusReq) Val() string {
 //------------------------------------------------------------------------------
 
 type IntReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewIntReq(args ...string) *IntReq {
 	return &IntReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
@@ -133,12 +133,12 @@ func (r *IntReq) Val() int64 {
 //------------------------------------------------------------------------------
 
 type BoolReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewBoolReq(args ...string) *BoolReq {
 	return &BoolReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
@@ -160,12 +160,12 @@ func (r *BoolReq) Val() bool {
 //------------------------------------------------------------------------------
 
 type StringReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewStringReq(args ...string) *StringReq {
 	return &StringReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
@@ -179,12 +179,12 @@ func (r *StringReq) Val() string {
 //------------------------------------------------------------------------------
 
 type FloatReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewFloatReq(args ...string) *FloatReq {
 	return &FloatReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
@@ -206,12 +206,12 @@ func (r *FloatReq) Val() float64 {
 //------------------------------------------------------------------------------
 
 type IfaceSliceReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewIfaceSliceReq(args ...string) *IfaceSliceReq {
 	return &IfaceSliceReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
@@ -225,12 +225,12 @@ func (r *IfaceSliceReq) Val() []interface{} {
 //------------------------------------------------------------------------------
 
 type StringSliceReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewStringSliceReq(args ...string) *StringSliceReq {
 	return &StringSliceReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
@@ -248,12 +248,12 @@ func (r *StringSliceReq) Val() []string {
 //------------------------------------------------------------------------------
 
 type BoolSliceReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewBoolSliceReq(args ...string) *BoolSliceReq {
 	return &BoolSliceReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
@@ -271,12 +271,12 @@ func (r *BoolSliceReq) Val() []bool {
 //------------------------------------------------------------------------------
 
 type StringStringMapReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewStringStringMapReq(args ...string) *StringStringMapReq {
 	return &StringStringMapReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
@@ -294,12 +294,12 @@ func (r *StringStringMapReq) Val() map[string]string {
 //------------------------------------------------------------------------------
 
 type StringFloatMapReq struct {
-	*BaseReq
+	*baseReq
 }
 
 func NewStringFloatMapReq(args ...string) *StringFloatMapReq {
 	return &StringFloatMapReq{
-		BaseReq: NewBaseReq(args...),
+		baseReq: newBaseReq(args...),
 	}
 }
 
