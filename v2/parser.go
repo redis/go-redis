@@ -100,7 +100,7 @@ func readN(rd reader, n int) ([]byte, error) {
 
 //------------------------------------------------------------------------------
 
-func ParseReq(rd reader) ([]string, error) {
+func parseReq(rd reader) ([]string, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
