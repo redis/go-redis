@@ -28,12 +28,9 @@ type conn struct {
 	readTimeout, writeTimeout time.Duration
 }
 
-func newConn(netcn net.Conn, readTimeout, writeTimeout time.Duration) *conn {
+func newConn(netcn net.Conn) *conn {
 	cn := &conn{
 		Cn: netcn,
-
-		readTimeout:  readTimeout,
-		writeTimeout: writeTimeout,
 	}
 	cn.Rd = bufio.NewReaderSize(cn, 1024)
 	return cn
@@ -42,6 +39,8 @@ func newConn(netcn net.Conn, readTimeout, writeTimeout time.Duration) *conn {
 func (cn *conn) Read(b []byte) (int, error) {
 	if cn.readTimeout != 0 {
 		cn.Cn.SetReadDeadline(time.Now().Add(cn.readTimeout))
+	} else {
+		cn.Cn.SetReadDeadline(time.Time{})
 	}
 	return cn.Cn.Read(b)
 }
@@ -49,6 +48,8 @@ func (cn *conn) Read(b []byte) (int, error) {
 func (cn *conn) Write(b []byte) (int, error) {
 	if cn.writeTimeout != 0 {
 		cn.Cn.SetWriteDeadline(time.Now().Add(cn.writeTimeout))
+	} else {
+		cn.Cn.SetReadDeadline(time.Time{})
 	}
 	return cn.Cn.Write(b)
 }
@@ -70,7 +71,7 @@ type connPool struct {
 func newConnPool(
 	dial func() (net.Conn, error),
 	maxSize int,
-	readTimeout, writeTimeout, idleTimeout time.Duration,
+	idleTimeout time.Duration,
 ) *connPool {
 	return &connPool{
 		dial: dial,
@@ -78,11 +79,8 @@ func newConnPool(
 		cond:  sync.NewCond(&sync.Mutex{}),
 		conns: list.New(),
 
-		maxSize: maxSize,
-
-		readTimeout:  readTimeout,
-		writeTimeout: writeTimeout,
-		idleTimeout:  idleTimeout,
+		maxSize:     maxSize,
+		idleTimeout: idleTimeout,
 	}
 }
 
@@ -110,7 +108,7 @@ func (p *connPool) Get() (*conn, bool, error) {
 		}
 
 		p.size++
-		return newConn(rw, p.readTimeout, p.writeTimeout), true, nil
+		return newConn(rw), true, nil
 	}
 
 	elem := p.conns.Front()

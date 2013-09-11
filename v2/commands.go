@@ -2,10 +2,18 @@ package redis
 
 import (
 	"strconv"
+	"time"
 )
 
 func formatFloat(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+func readTimeout(sec int64) time.Duration {
+	if sec == 0 {
+		return 0
+	}
+	return time.Duration(sec+1) * time.Second
 }
 
 //------------------------------------------------------------------------------
@@ -86,6 +94,7 @@ func (c *Client) Migrate(host, port, key string, db, timeout int64) *StatusReq {
 		strconv.FormatInt(db, 10),
 		strconv.FormatInt(timeout, 10),
 	)
+	req.setReadTimeout(readTimeout(timeout))
 	c.Process(req)
 	return req
 }
@@ -493,6 +502,7 @@ func (c *Client) BLPop(timeout int64, keys ...string) *StringSliceReq {
 	args := append([]string{"BLPOP"}, keys...)
 	args = append(args, strconv.FormatInt(timeout, 10))
 	req := NewStringSliceReq(args...)
+	req.setReadTimeout(readTimeout(timeout))
 	c.Process(req)
 	return req
 }
@@ -501,6 +511,7 @@ func (c *Client) BRPop(timeout int64, keys ...string) *StringSliceReq {
 	args := append([]string{"BRPOP"}, keys...)
 	args = append(args, strconv.FormatInt(timeout, 10))
 	req := NewStringSliceReq(args...)
+	req.setReadTimeout(readTimeout(timeout))
 	c.Process(req)
 	return req
 }
@@ -512,6 +523,7 @@ func (c *Client) BRPopLPush(source, destination string, timeout int64) *StringRe
 		destination,
 		strconv.FormatInt(timeout, 10),
 	)
+	req.setReadTimeout(readTimeout(timeout))
 	c.Process(req)
 	return req
 }

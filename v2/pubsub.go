@@ -15,10 +15,8 @@ type PubSubClient struct {
 func (c *Client) PubSubClient() (*PubSubClient, error) {
 	return &PubSubClient{
 		baseClient: &baseClient{
+			opt:      c.opt,
 			connPool: newSingleConnPool(c.connPool, nil, false),
-
-			password: c.password,
-			db:       c.db,
 		},
 
 		ch: make(chan *Message),

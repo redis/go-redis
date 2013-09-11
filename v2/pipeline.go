@@ -8,10 +8,8 @@ func (c *Client) PipelineClient() (*PipelineClient, error) {
 	return &PipelineClient{
 		Client: &Client{
 			baseClient: &baseClient{
+				opt:      c.opt,
 				connPool: c.connPool,
-
-				password: c.password,
-				db:       c.db,
 
 				reqs: make([]Req, 0),
 			},

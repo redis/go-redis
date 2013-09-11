@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Req interface {
@@ -13,6 +14,9 @@ type Req interface {
 	Err() error
 	SetVal(interface{})
 	IfaceVal() interface{}
+
+	writeTimeout() *time.Duration
+	readTimeout() *time.Duration
 }
 
 //------------------------------------------------------------------------------
@@ -22,6 +26,8 @@ type baseReq struct {
 
 	val interface{}
 	err error
+
+	_writeTimeout, _readTimeout *time.Duration
 }
 
 func newBaseReq(args ...string) *baseReq {
@@ -74,6 +80,22 @@ func (r *baseReq) String() string {
 		return args + ": " + fmt.Sprint(r.val)
 	}
 	return args
+}
+
+func (r *baseReq) readTimeout() *time.Duration {
+	return r._readTimeout
+}
+
+func (r *baseReq) setReadTimeout(d time.Duration) {
+	r._readTimeout = &d
+}
+
+func (r *baseReq) writeTimeout() *time.Duration {
+	return r._writeTimeout
+}
+
+func (r *baseReq) setWriteTimeout(d time.Duration) {
+	r._writeTimeout = &d
 }
 
 //------------------------------------------------------------------------------

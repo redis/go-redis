@@ -14,10 +14,8 @@ func (c *Client) MultiClient() (*MultiClient, error) {
 	return &MultiClient{
 		Client: &Client{
 			baseClient: &baseClient{
+				opt:      c.opt,
 				connPool: newSingleConnPool(c.connPool, nil, true),
-
-				password: c.password,
-				db:       c.db,
 			},
 		},
 	}, nil

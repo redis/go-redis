@@ -17,8 +17,7 @@ var Logger = log.New(os.Stdout, "redis: ", log.Ldate|log.Ltime)
 type baseClient struct {
 	connPool pool
 
-	password string
-	db       int64
+	opt *Options
 
 	reqs    []Req
 	reqsMtx sync.Mutex
@@ -40,8 +39,8 @@ func (c *baseClient) conn() (*conn, error) {
 		return nil, err
 	}
 
-	if isNew && (c.password != "" || c.db > 0) {
-		if err = c.init(cn, c.password, c.db); err != nil {
+	if isNew && (c.opt.Password != "" || c.opt.DB > 0) {
+		if err = c.init(cn, c.opt.Password, c.opt.DB); err != nil {
 			c.removeConn(cn)
 			return nil, err
 		}
@@ -102,8 +101,17 @@ func (c *baseClient) run(req Req) {
 		return
 	}
 
-	err = c.writeReq(cn, req)
-	if err != nil {
+	cn.writeTimeout = c.opt.WriteTimeout
+	if timeout := req.writeTimeout(); timeout != nil {
+		cn.writeTimeout = *timeout
+	}
+
+	cn.readTimeout = c.opt.ReadTimeout
+	if timeout := req.readTimeout(); timeout != nil {
+		cn.readTimeout = *timeout
+	}
+
+	if err := c.writeReq(cn, req); err != nil {
 		c.removeConn(cn)
 		req.SetErr(err)
 		return
@@ -173,12 +181,11 @@ type Client struct {
 func newClient(opt *Options, dial func() (net.Conn, error)) *Client {
 	return &Client{
 		baseClient: &baseClient{
-			password: opt.Password,
-			db:       opt.DB,
+			opt: opt,
 
 			connPool: newConnPool(
 				dial, opt.getPoolSize(),
-				opt.ReadTimeout, opt.WriteTimeout, opt.IdleTimeout,
+				opt.IdleTimeout,
 			),
 		},
 	}
