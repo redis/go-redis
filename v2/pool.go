@@ -35,19 +35,19 @@ func newConn(netcn net.Conn, readTimeout, writeTimeout time.Duration) *conn {
 		readTimeout:  readTimeout,
 		writeTimeout: writeTimeout,
 	}
-	cn.Rd = bufio.NewReaderSize(netcn, 1024)
+	cn.Rd = bufio.NewReaderSize(cn, 1024)
 	return cn
 }
 
 func (cn *conn) Read(b []byte) (int, error) {
-	if cn.readTimeout > 0 {
+	if cn.readTimeout != 0 {
 		cn.Cn.SetReadDeadline(time.Now().Add(cn.readTimeout))
 	}
 	return cn.Cn.Read(b)
 }
 
 func (cn *conn) Write(b []byte) (int, error) {
-	if cn.writeTimeout > 0 {
+	if cn.writeTimeout != 0 {
 		cn.Cn.SetWriteDeadline(time.Now().Add(cn.writeTimeout))
 	}
 	return cn.Cn.Write(b)
@@ -56,8 +56,7 @@ func (cn *conn) Write(b []byte) (int, error) {
 //------------------------------------------------------------------------------
 
 type connPool struct {
-	dial  func() (net.Conn, error)
-	close func(net.Conn) error
+	dial func() (net.Conn, error)
 
 	cond  *sync.Cond
 	conns *list.List
@@ -70,13 +69,11 @@ type connPool struct {
 
 func newConnPool(
 	dial func() (net.Conn, error),
-	close func(net.Conn) error,
 	maxSize int,
 	readTimeout, writeTimeout, idleTimeout time.Duration,
 ) *connPool {
 	return &connPool{
-		dial:  dial,
-		close: close,
+		dial: dial,
 
 		cond:  sync.NewCond(&sync.Mutex{}),
 		conns: list.New(),
@@ -143,10 +140,14 @@ func (p *connPool) Remove(cn *conn) error {
 }
 
 func (p *connPool) Len() int {
+	defer p.cond.L.Unlock()
+	p.cond.L.Lock()
 	return p.conns.Len()
 }
 
 func (p *connPool) Size() int {
+	defer p.cond.L.Unlock()
+	p.cond.L.Lock()
 	return p.size
 }
 
@@ -166,11 +167,7 @@ func (p *connPool) Close() error {
 }
 
 func (p *connPool) closeConn(cn *conn) error {
-	if p.close != nil {
-		return p.close(cn.Cn)
-	} else {
-		return cn.Cn.Close()
-	}
+	return cn.Cn.Close()
 }
 
 //------------------------------------------------------------------------------

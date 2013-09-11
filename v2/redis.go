@@ -137,46 +137,31 @@ func (c *baseClient) Close() error {
 
 //------------------------------------------------------------------------------
 
-type ClientFactory struct {
-	Dial  func() (net.Conn, error)
-	Close func(net.Conn) error
-
+type Options struct {
+	Addr     string
 	Password string
 	DB       int64
 
 	PoolSize int
 
-	ReadTimeout, WriteTimeout, IdleTimeout time.Duration
+	DialTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
 }
 
-func (f *ClientFactory) New() *Client {
-	return &Client{
-		baseClient: &baseClient{
-			password: f.Password,
-			db:       f.DB,
-
-			connPool: newConnPool(
-				f.Dial, f.getClose(), f.getPoolSize(),
-				f.ReadTimeout, f.WriteTimeout, f.IdleTimeout,
-			),
-		},
-	}
-}
-
-func (f *ClientFactory) getClose() func(net.Conn) error {
-	if f.Close == nil {
-		return func(conn net.Conn) error {
-			return conn.Close()
-		}
-	}
-	return f.Close
-}
-
-func (f *ClientFactory) getPoolSize() int {
-	if f.PoolSize == 0 {
+func (opt *Options) getPoolSize() int {
+	if opt.PoolSize == 0 {
 		return 10
 	}
-	return f.PoolSize
+	return opt.PoolSize
+}
+
+func (opt *Options) getDialTimeout() time.Duration {
+	if opt.DialTimeout == 0 {
+		return 5 * time.Second
+	}
+	return opt.DialTimeout
 }
 
 //------------------------------------------------------------------------------
@@ -185,42 +170,41 @@ type Client struct {
 	*baseClient
 }
 
-func NewTCPClient(addr string, password string, db int64) *Client {
-	dial := func() (net.Conn, error) {
-		return net.DialTimeout("tcp", addr, 3*time.Second)
-	}
-	return (&ClientFactory{
-		Dial: dial,
+func newClient(opt *Options, dial func() (net.Conn, error)) *Client {
+	return &Client{
+		baseClient: &baseClient{
+			password: opt.Password,
+			db:       opt.DB,
 
-		Password: password,
-		DB:       db,
-	}).New()
+			connPool: newConnPool(
+				dial, opt.getPoolSize(),
+				opt.ReadTimeout, opt.WriteTimeout, opt.IdleTimeout,
+			),
+		},
+	}
 }
 
-func NewTLSClient(addr string, tlsConfig *tls.Config, password string, db int64) *Client {
+func DialTCP(opt *Options) *Client {
 	dial := func() (net.Conn, error) {
-		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		return net.DialTimeout("tcp", opt.Addr, opt.getDialTimeout())
+	}
+	return newClient(opt, dial)
+}
+
+func DialTLS(opt *Options, tlsConfig *tls.Config) *Client {
+	dial := func() (net.Conn, error) {
+		conn, err := net.DialTimeout("tcp", opt.Addr, opt.getDialTimeout())
 		if err != nil {
 			return nil, err
 		}
 		return tls.Client(conn, tlsConfig), nil
 	}
-	return (&ClientFactory{
-		Dial: dial,
-
-		Password: password,
-		DB:       db,
-	}).New()
+	return newClient(opt, dial)
 }
 
-func NewUnixClient(addr string, password string, db int64) *Client {
+func DialUnix(opt *Options) *Client {
 	dial := func() (net.Conn, error) {
-		return net.DialTimeout("unix", addr, 3*time.Second)
+		return net.DialTimeout("unix", opt.Addr, opt.getDialTimeout())
 	}
-	return (&ClientFactory{
-		Dial: dial,
-
-		Password: password,
-		DB:       db,
-	}).New()
+	return newClient(opt, dial)
 }
