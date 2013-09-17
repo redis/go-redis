@@ -119,10 +119,10 @@ func (c *baseClient) run(req Req) {
 
 	val, err := req.ParseReply(cn.Rd)
 	if err != nil {
-		if _, ok := err.(*parserError); ok {
-			c.removeConn(cn)
-		} else {
+		if err == Nil {
 			c.putConn(cn)
+		} else {
+			c.removeConn(cn)
 		}
 		req.SetErr(err)
 		return

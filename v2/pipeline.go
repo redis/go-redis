@@ -4,6 +4,8 @@ type PipelineClient struct {
 	*Client
 }
 
+// TODO: rename to Pipeline
+// TODO: return just *PipelineClient
 func (c *Client) PipelineClient() (*PipelineClient, error) {
 	return &PipelineClient{
 		Client: &Client{
@@ -39,6 +41,8 @@ func (c *PipelineClient) DiscardQueued() {
 	c.reqsMtx.Unlock()
 }
 
+// TODO: rename to Run or ...
+// TODO: should return error if one of the commands failed
 func (c *PipelineClient) RunQueued() ([]Req, error) {
 	c.reqsMtx.Lock()
 	reqs := c.reqs
@@ -49,18 +53,17 @@ func (c *PipelineClient) RunQueued() ([]Req, error) {
 		return []Req{}, nil
 	}
 
-	conn, err := c.conn()
+	cn, err := c.conn()
 	if err != nil {
 		return nil, err
 	}
 
-	err = c.runReqs(reqs, conn)
-	if err != nil {
-		c.removeConn(conn)
+	if err := c.runReqs(reqs, cn); err != nil {
+		c.removeConn(cn)
 		return nil, err
 	}
 
-	c.putConn(conn)
+	c.putConn(cn)
 	return reqs, nil
 }
 

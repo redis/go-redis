@@ -29,16 +29,6 @@ var (
 
 //------------------------------------------------------------------------------
 
-type parserError struct {
-	err error
-}
-
-func (e *parserError) Error() string {
-	return e.err.Error()
-}
-
-//------------------------------------------------------------------------------
-
 func appendReq(buf []byte, args []string) []byte {
 	buf = append(buf, '*')
 	buf = strconv.AppendUint(buf, uint64(len(args)), 10)
@@ -163,7 +153,7 @@ func parseStringFloatMapReply(rd reader) (interface{}, error) {
 func _parseReply(rd reader, typ replyType) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
-		return 0, &parserError{err}
+		return 0, err
 	}
 
 	switch line[0] {
@@ -174,7 +164,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 	case ':':
 		v, err := strconv.ParseInt(string(line[1:]), 10, 64)
 		if err != nil {
-			return 0, &parserError{err}
+			return 0, err
 		}
 		return v, nil
 	case '$':
@@ -184,13 +174,13 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 
 		replyLenInt32, err := strconv.ParseInt(string(line[1:]), 10, 32)
 		if err != nil {
-			return "", &parserError{err}
+			return "", err
 		}
 		replyLen := int(replyLenInt32) + 2
 
 		line, err = readN(rd, replyLen)
 		if err != nil {
-			return "", &parserError{err}
+			return "", err
 		}
 		return string(line[:len(line)-2]), nil
 	case '*':
@@ -200,7 +190,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 
 		repliesNum, err := strconv.ParseInt(string(line[1:]), 10, 64)
 		if err != nil {
-			return nil, &parserError{err}
+			return nil, err
 		}
 
 		switch typ {
@@ -278,7 +268,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 				}
 				value, err := strconv.ParseFloat(valueS, 64)
 				if err != nil {
-					return nil, &parserError{err}
+					return nil, err
 				}
 
 				m[key] = value
@@ -299,6 +289,6 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 			return vals, nil
 		}
 	default:
-		return nil, &parserError{fmt.Errorf("redis: can't parse %q", line)}
+		return nil, fmt.Errorf("redis: can't parse %q", line)
 	}
 }
