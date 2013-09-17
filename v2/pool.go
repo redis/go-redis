@@ -117,6 +117,10 @@ func (p *connPool) Get() (*conn, bool, error) {
 }
 
 func (p *connPool) Put(cn *conn) error {
+	if cn.Rd.Buffered() != 0 {
+		panic("pool: put connection with buffered data")
+	}
+
 	p.cond.L.Lock()
 	cn.UsedAt = time.Now()
 	p.conns.PushFront(cn)

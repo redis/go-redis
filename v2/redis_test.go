@@ -27,19 +27,25 @@ func sortStrings(slice []string) []string {
 
 //------------------------------------------------------------------------------
 
-type RedisShutdownTest struct {
+type RedisConnectionTest struct {
+	opt    *redis.Options
 	client *redis.Client
 }
 
-var _ = Suite(&RedisShutdownTest{})
+var _ = Suite(&RedisConnectionTest{})
 
-func (t *RedisShutdownTest) SetUpTest(c *C) {
-	t.client = redis.DialTCP(&redis.Options{
+func (t *RedisConnectionTest) SetUpTest(c *C) {
+	t.opt = &redis.Options{
 		Addr: redisAddr,
-	})
+	}
+	t.client = redis.DialTCP(t.opt)
 }
 
-func (t *RedisShutdownTest) TestShutdown(c *C) {
+func (t *RedisConnectionTest) TearDownTest(c *C) {
+	c.Assert(t.client.Close(), IsNil)
+}
+
+func (t *RedisConnectionTest) TestShutdown(c *C) {
 	c.Skip("shutdowns server")
 
 	shutdown := t.client.Shutdown()
