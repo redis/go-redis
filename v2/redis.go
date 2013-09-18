@@ -53,6 +53,7 @@ func (c *baseClient) init(cn *conn, password string, db int64) error {
 	// Client is not closed on purpose.
 	client := &Client{
 		baseClient: &baseClient{
+			opt:      c.opt,
 			connPool: newSingleConnPool(c.connPool, cn, false),
 		},
 	}
