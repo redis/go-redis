@@ -62,8 +62,6 @@ type connPool struct {
 	cond  *sync.Cond
 	conns *list.List
 
-	readTimeout, writeTimeout time.Duration
-
 	size, maxSize int
 	idleTimeout   time.Duration
 }
@@ -118,7 +116,7 @@ func (p *connPool) Get() (*conn, bool, error) {
 
 func (p *connPool) Put(cn *conn) error {
 	if cn.Rd.Buffered() != 0 {
-		panic("pool: put connection with buffered data")
+		panic("pool: attempt to put connection with buffered data")
 	}
 
 	p.cond.L.Lock()
