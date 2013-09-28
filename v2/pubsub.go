@@ -2,14 +2,11 @@ package redis
 
 import (
 	"fmt"
-	"sync"
+	"time"
 )
 
 type PubSubClient struct {
 	*baseClient
-
-	ch   chan *Message
-	once sync.Once
 }
 
 func (c *Client) PubSubClient() (*PubSubClient, error) {
@@ -18,8 +15,6 @@ func (c *Client) PubSubClient() (*PubSubClient, error) {
 			opt:      c.opt,
 			connPool: newSingleConnPool(c.connPool, nil, false),
 		},
-
-		ch: make(chan *Message),
 	}, nil
 }
 
@@ -30,90 +25,88 @@ func (c *Client) Publish(channel, message string) *IntReq {
 }
 
 type Message struct {
-	Name, Channel, ChannelPattern, Message string
-	Number                                 int64
-
-	Err error
+	Channel string
+	Payload string
 }
 
-func (c *PubSubClient) consumeMessages(cn *conn) {
-	req := NewIfaceSliceReq()
-
-	for {
-		msg := &Message{}
-
-		replyIface, err := req.ParseReply(cn.Rd)
-		if err != nil {
-			msg.Err = err
-			c.ch <- msg
-			return
-		}
-		reply, ok := replyIface.([]interface{})
-		if !ok {
-			msg.Err = fmt.Errorf("redis: unexpected reply type %T", replyIface)
-			c.ch <- msg
-			return
-		}
-
-		msgName := reply[0].(string)
-		switch msgName {
-		case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
-			msg.Name = msgName
-			msg.Channel = reply[1].(string)
-			msg.Number = reply[2].(int64)
-		case "message":
-			msg.Name = msgName
-			msg.Channel = reply[1].(string)
-			msg.Message = reply[2].(string)
-		case "pmessage":
-			msg.Name = msgName
-			msg.ChannelPattern = reply[1].(string)
-			msg.Channel = reply[2].(string)
-			msg.Message = reply[3].(string)
-		default:
-			msg.Err = fmt.Errorf("redis: unsupported message name: %q", msgName)
-		}
-		c.ch <- msg
-	}
+type PMessage struct {
+	Channel string
+	Pattern string
+	Payload string
 }
 
-func (c *PubSubClient) subscribe(cmd string, channels ...string) (chan *Message, error) {
-	args := append([]string{cmd}, channels...)
-	req := NewIfaceSliceReq(args...)
+type Subscription struct {
+	Kind    string
+	Channel string
+	Count   int
+}
 
+func (c *PubSubClient) Receive(timeout time.Duration) (interface{}, error) {
 	cn, err := c.conn()
 	if err != nil {
 		return nil, err
 	}
+	cn.readTimeout = timeout
 
-	if err := c.writeReq(cn, req); err != nil {
+	replyIface, err := NewIfaceSliceReq().ParseReply(cn.Rd)
+	if err != nil {
 		return nil, err
 	}
+	reply, ok := replyIface.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("redis: unexpected reply type %T", replyIface)
+	}
 
-	c.once.Do(func() {
-		go c.consumeMessages(cn)
-	})
-
-	return c.ch, nil
+	switch msgName := reply[0].(string); msgName {
+	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
+		return &Subscription{
+			Kind:    msgName,
+			Channel: reply[1].(string),
+			Count:   int(reply[2].(int64)),
+		}, nil
+	case "message":
+		return &Message{
+			Channel: reply[1].(string),
+			Payload: reply[2].(string),
+		}, nil
+	case "pmessage":
+		return &PMessage{
+			Pattern: reply[1].(string),
+			Channel: reply[2].(string),
+			Payload: reply[3].(string),
+		}, nil
+	default:
+		return nil, fmt.Errorf("redis: unsupported message name: %q", msgName)
+	}
 }
 
-func (c *PubSubClient) Subscribe(channels ...string) (chan *Message, error) {
-	return c.subscribe("SUBSCRIBE", channels...)
-}
-
-func (c *PubSubClient) PSubscribe(patterns ...string) (chan *Message, error) {
-	return c.subscribe("PSUBSCRIBE", patterns...)
-}
-
-func (c *PubSubClient) unsubscribe(cmd string, channels ...string) error {
-	args := append([]string{cmd}, channels...)
-	req := NewIfaceSliceReq(args...)
-
+func (c *PubSubClient) subscribe(cmd string, channels ...string) error {
 	cn, err := c.conn()
 	if err != nil {
 		return err
 	}
 
+	args := append([]string{cmd}, channels...)
+	req := NewIfaceSliceReq(args...)
+	return c.writeReq(cn, req)
+}
+
+func (c *PubSubClient) Subscribe(channels ...string) error {
+	return c.subscribe("SUBSCRIBE", channels...)
+}
+
+func (c *PubSubClient) PSubscribe(patterns ...string) error {
+	return c.subscribe("PSUBSCRIBE", patterns...)
+}
+
+func (c *PubSubClient) unsubscribe(cmd string, channels ...string) error {
+	cn, err := c.conn()
+	if err != nil {
+		return err
+	}
+
+	args := append([]string{cmd}, channels...)
+	req := NewIfaceSliceReq(args...)
 	return c.writeReq(cn, req)
 }
 

@@ -115,20 +115,19 @@ func ExamplePubSub() {
 	pubsub, err := client.PubSubClient()
 	defer pubsub.Close()
 
-	ch, err := pubsub.Subscribe("mychannel")
-	_ = err
+	err = pubsub.Subscribe("mychannel")
 
-	subscribeMsg := <-ch
-	fmt.Println(subscribeMsg.Err, subscribeMsg.Name)
+	msg, err := pubsub.Receive(0)
+	fmt.Println(msg, err)
 
 	pub := client.Publish("mychannel", "hello")
 	_ = pub.Err()
 
-	msg := <-ch
-	fmt.Println(msg.Err, msg.Message)
+	msg, err = pubsub.Receive(0)
+	fmt.Println(msg, err)
 
-	// Output: <nil> subscribe
-	// <nil> hello
+	// Output: &{subscribe mychannel 1} <nil>
+	// &{mychannel hello} <nil>
 }
 
 func Get(client *redis.Client, key string) *redis.StringReq {

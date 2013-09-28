@@ -2268,46 +2268,45 @@ func (t *RedisTest) TestPatternPubSub(c *C) {
 		c.Assert(pubsub.Close(), IsNil)
 	}()
 
-	ch, err := pubsub.PSubscribe("mychannel*")
-	c.Assert(err, IsNil)
-	c.Assert(ch, Not(IsNil))
+	c.Assert(pubsub.PSubscribe("mychannel*"), IsNil)
 
 	pub := t.client.Publish("mychannel1", "hello")
 	c.Assert(pub.Err(), IsNil)
 	c.Assert(pub.Val(), Equals, int64(1))
 
-	err = pubsub.PUnsubscribe("mychannel*")
-	c.Assert(err, IsNil)
+	c.Assert(pubsub.PUnsubscribe("mychannel*"), IsNil)
 
-	select {
-	case msg := <-ch:
-		c.Assert(msg.Err, Equals, nil)
-		c.Assert(msg.Name, Equals, "psubscribe")
-		c.Assert(msg.Channel, Equals, "mychannel*")
-		c.Assert(msg.Number, Equals, int64(1))
-	case <-time.After(time.Second):
-		c.Error("Channel is empty.")
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err, IsNil)
+		subscr := msgi.(*redis.Subscription)
+		c.Assert(subscr.Kind, Equals, "psubscribe")
+		c.Assert(subscr.Channel, Equals, "mychannel*")
+		c.Assert(subscr.Count, Equals, 1)
 	}
 
-	select {
-	case msg := <-ch:
-		c.Assert(msg.Err, Equals, nil)
-		c.Assert(msg.Name, Equals, "pmessage")
-		c.Assert(msg.ChannelPattern, Equals, "mychannel*")
-		c.Assert(msg.Channel, Equals, "mychannel1")
-		c.Assert(msg.Message, Equals, "hello")
-	case <-time.After(time.Second):
-		c.Error("Channel is empty.")
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err, IsNil)
+		subscr := msgi.(*redis.PMessage)
+		c.Assert(subscr.Channel, Equals, "mychannel1")
+		c.Assert(subscr.Pattern, Equals, "mychannel*")
+		c.Assert(subscr.Payload, Equals, "hello")
 	}
 
-	select {
-	case msg := <-ch:
-		c.Assert(msg.Err, Equals, nil)
-		c.Assert(msg.Name, Equals, "punsubscribe")
-		c.Assert(msg.Channel, Equals, "mychannel*")
-		c.Assert(msg.Number, Equals, int64(0))
-	case <-time.After(time.Second):
-		c.Error("Channel is empty.")
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err, IsNil)
+		subscr := msgi.(*redis.Subscription)
+		c.Assert(subscr.Kind, Equals, "punsubscribe")
+		c.Assert(subscr.Channel, Equals, "mychannel*")
+		c.Assert(subscr.Count, Equals, 0)
+	}
+
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err.(net.Error).Timeout(), Equals, true)
+		c.Assert(msgi, IsNil)
 	}
 }
 
@@ -2318,13 +2317,7 @@ func (t *RedisTest) TestPubSub(c *C) {
 		c.Assert(pubsub.Close(), IsNil)
 	}()
 
-	ch, err := pubsub.Subscribe("mychannel")
-	c.Assert(err, IsNil)
-	c.Assert(ch, Not(IsNil))
-
-	ch2, err := pubsub.Subscribe("mychannel2")
-	c.Assert(err, IsNil)
-	c.Assert(ch2, Equals, ch)
+	c.Assert(pubsub.Subscribe("mychannel", "mychannel2"), IsNil)
 
 	pub := t.client.Publish("mychannel", "hello")
 	c.Assert(pub.Err(), IsNil)
@@ -2334,70 +2327,64 @@ func (t *RedisTest) TestPubSub(c *C) {
 	c.Assert(pub.Err(), IsNil)
 	c.Assert(pub.Val(), Equals, int64(1))
 
-	err = pubsub.Unsubscribe("mychannel")
-	c.Assert(err, IsNil)
+	c.Assert(pubsub.Unsubscribe("mychannel", "mychannel2"), IsNil)
 
-	err = pubsub.Unsubscribe("mychannel2")
-	c.Assert(err, IsNil)
-
-	select {
-	case msg := <-ch:
-		c.Assert(msg.Err, Equals, nil)
-		c.Assert(msg.Name, Equals, "subscribe")
-		c.Assert(msg.Channel, Equals, "mychannel")
-		c.Assert(msg.Number, Equals, int64(1))
-	case <-time.After(time.Second):
-		c.Error("Channel is empty.")
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err, IsNil)
+		subscr := msgi.(*redis.Subscription)
+		c.Assert(subscr.Kind, Equals, "subscribe")
+		c.Assert(subscr.Channel, Equals, "mychannel")
+		c.Assert(subscr.Count, Equals, 1)
 	}
 
-	select {
-	case msg := <-ch:
-		c.Assert(msg.Err, Equals, nil)
-		c.Assert(msg.Name, Equals, "subscribe")
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err, IsNil)
+		subscr := msgi.(*redis.Subscription)
+		c.Assert(subscr.Kind, Equals, "subscribe")
+		c.Assert(subscr.Channel, Equals, "mychannel2")
+		c.Assert(subscr.Count, Equals, 2)
+	}
+
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err, IsNil)
+		subscr := msgi.(*redis.Message)
+		c.Assert(subscr.Channel, Equals, "mychannel")
+		c.Assert(subscr.Payload, Equals, "hello")
+	}
+
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err, IsNil)
+		msg := msgi.(*redis.Message)
 		c.Assert(msg.Channel, Equals, "mychannel2")
-		c.Assert(msg.Number, Equals, int64(2))
-	case <-time.After(time.Second):
-		c.Error("Channel is empty.")
+		c.Assert(msg.Payload, Equals, "hello2")
 	}
 
-	select {
-	case msg := <-ch:
-		c.Assert(msg.Err, Equals, nil)
-		c.Assert(msg.Name, Equals, "message")
-		c.Assert(msg.Channel, Equals, "mychannel")
-		c.Assert(msg.Message, Equals, "hello")
-	case <-time.After(time.Second):
-		c.Error("Channel is empty.")
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err, IsNil)
+		subscr := msgi.(*redis.Subscription)
+		c.Assert(subscr.Kind, Equals, "unsubscribe")
+		c.Assert(subscr.Channel, Equals, "mychannel")
+		c.Assert(subscr.Count, Equals, 1)
 	}
 
-	select {
-	case msg := <-ch:
-		c.Assert(msg.Err, Equals, nil)
-		c.Assert(msg.Name, Equals, "message")
-		c.Assert(msg.Channel, Equals, "mychannel2")
-		c.Assert(msg.Message, Equals, "hello2")
-	case <-time.After(time.Second):
-		c.Error("Channel is empty.")
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err, IsNil)
+		subscr := msgi.(*redis.Subscription)
+		c.Assert(subscr.Kind, Equals, "unsubscribe")
+		c.Assert(subscr.Channel, Equals, "mychannel2")
+		c.Assert(subscr.Count, Equals, 0)
 	}
 
-	select {
-	case msg := <-ch:
-		c.Assert(msg.Err, Equals, nil)
-		c.Assert(msg.Name, Equals, "unsubscribe")
-		c.Assert(msg.Channel, Equals, "mychannel")
-		c.Assert(msg.Number, Equals, int64(1))
-	case <-time.After(time.Second):
-		c.Error("Channel is empty.")
-	}
-
-	select {
-	case msg := <-ch:
-		c.Assert(msg.Err, Equals, nil)
-		c.Assert(msg.Name, Equals, "unsubscribe")
-		c.Assert(msg.Channel, Equals, "mychannel2")
-		c.Assert(msg.Number, Equals, int64(0))
-	case <-time.After(time.Second):
-		c.Error("Channel is empty.")
+	{
+		msgi, err := pubsub.Receive(time.Second)
+		c.Assert(err.(net.Error).Timeout(), Equals, true)
+		c.Assert(msgi, IsNil)
 	}
 }
 
