@@ -47,7 +47,7 @@ func ExampleClient() {
 	// <nil> bar
 }
 
-func ExamplePipeline2() {
+func ExampleClient_Pipelined() {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
@@ -146,13 +146,13 @@ func ExamplePubSub() {
 	// &{mychannel hello} <nil>
 }
 
-func Get(client *redis.Client, key string) *redis.StringCmd {
-	cmd := redis.NewStringCmd("GET", key)
-	client.Process(cmd)
-	return cmd
-}
+func Example_CustomCommand() {
+	Get := func(client *redis.Client, key string) *redis.StringCmd {
+		cmd := redis.NewStringCmd("GET", key)
+		client.Process(cmd)
+		return cmd
+	}
 
-func ExampleCustomCommand() {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
