@@ -202,12 +202,12 @@ func (t *RedisConnectorTest) TestUnixConnector(c *C) {
 // 	c.Assert(t.closedConns, Equals, int64(10))
 // }
 
-// func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnPubSubClient(c *C) {
+// func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnPubSub(c *C) {
 // 	wg := &sync.WaitGroup{}
 // 	for i := 0; i < 1000; i++ {
 // 		wg.Add(1)
 // 		go func() {
-// 			pubsub, err := t.client.PubSubClient()
+// 			pubsub, err := t.client.PubSub()
 // 			c.Assert(err, IsNil)
 
 // 			_, err = pubsub.Subscribe()
@@ -2262,8 +2262,7 @@ func (t *RedisTest) TestZUnionStore(c *C) {
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) TestPatternPubSub(c *C) {
-	pubsub, err := t.client.PubSubClient()
-	c.Assert(err, IsNil)
+	pubsub := t.client.PubSub()
 	defer func() {
 		c.Assert(pubsub.Close(), IsNil)
 	}()
@@ -2277,7 +2276,7 @@ func (t *RedisTest) TestPatternPubSub(c *C) {
 	c.Assert(pubsub.PUnsubscribe("mychannel*"), IsNil)
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err, IsNil)
 		subscr := msgi.(*redis.Subscription)
 		c.Assert(subscr.Kind, Equals, "psubscribe")
@@ -2286,7 +2285,7 @@ func (t *RedisTest) TestPatternPubSub(c *C) {
 	}
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err, IsNil)
 		subscr := msgi.(*redis.PMessage)
 		c.Assert(subscr.Channel, Equals, "mychannel1")
@@ -2295,7 +2294,7 @@ func (t *RedisTest) TestPatternPubSub(c *C) {
 	}
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err, IsNil)
 		subscr := msgi.(*redis.Subscription)
 		c.Assert(subscr.Kind, Equals, "punsubscribe")
@@ -2304,15 +2303,14 @@ func (t *RedisTest) TestPatternPubSub(c *C) {
 	}
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err.(net.Error).Timeout(), Equals, true)
 		c.Assert(msgi, IsNil)
 	}
 }
 
 func (t *RedisTest) TestPubSub(c *C) {
-	pubsub, err := t.client.PubSubClient()
-	c.Assert(err, IsNil)
+	pubsub := t.client.PubSub()
 	defer func() {
 		c.Assert(pubsub.Close(), IsNil)
 	}()
@@ -2330,7 +2328,7 @@ func (t *RedisTest) TestPubSub(c *C) {
 	c.Assert(pubsub.Unsubscribe("mychannel", "mychannel2"), IsNil)
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err, IsNil)
 		subscr := msgi.(*redis.Subscription)
 		c.Assert(subscr.Kind, Equals, "subscribe")
@@ -2339,7 +2337,7 @@ func (t *RedisTest) TestPubSub(c *C) {
 	}
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err, IsNil)
 		subscr := msgi.(*redis.Subscription)
 		c.Assert(subscr.Kind, Equals, "subscribe")
@@ -2348,7 +2346,7 @@ func (t *RedisTest) TestPubSub(c *C) {
 	}
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err, IsNil)
 		subscr := msgi.(*redis.Message)
 		c.Assert(subscr.Channel, Equals, "mychannel")
@@ -2356,7 +2354,7 @@ func (t *RedisTest) TestPubSub(c *C) {
 	}
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err, IsNil)
 		msg := msgi.(*redis.Message)
 		c.Assert(msg.Channel, Equals, "mychannel2")
@@ -2364,7 +2362,7 @@ func (t *RedisTest) TestPubSub(c *C) {
 	}
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err, IsNil)
 		subscr := msgi.(*redis.Subscription)
 		c.Assert(subscr.Kind, Equals, "unsubscribe")
@@ -2373,7 +2371,7 @@ func (t *RedisTest) TestPubSub(c *C) {
 	}
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err, IsNil)
 		subscr := msgi.(*redis.Subscription)
 		c.Assert(subscr.Kind, Equals, "unsubscribe")
@@ -2382,7 +2380,7 @@ func (t *RedisTest) TestPubSub(c *C) {
 	}
 
 	{
-		msgi, err := pubsub.Receive(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		c.Assert(err.(net.Error).Timeout(), Equals, true)
 		c.Assert(msgi, IsNil)
 	}

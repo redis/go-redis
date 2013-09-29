@@ -5,17 +5,17 @@ import (
 	"time"
 )
 
-type PubSubClient struct {
+type PubSub struct {
 	*baseClient
 }
 
-func (c *Client) PubSubClient() (*PubSubClient, error) {
-	return &PubSubClient{
+func (c *Client) PubSub() *PubSub {
+	return &PubSub{
 		baseClient: &baseClient{
 			opt:      c.opt,
 			connPool: newSingleConnPool(c.connPool, nil, false),
 		},
-	}, nil
+	}
 }
 
 func (c *Client) Publish(channel, message string) *IntReq {
@@ -41,7 +41,11 @@ type Subscription struct {
 	Count   int
 }
 
-func (c *PubSubClient) Receive(timeout time.Duration) (interface{}, error) {
+func (c *PubSub) Receive() (interface{}, error) {
+	return c.ReceiveTimeout(0)
+}
+
+func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	cn, err := c.conn()
 	if err != nil {
 		return nil, err
@@ -80,7 +84,7 @@ func (c *PubSubClient) Receive(timeout time.Duration) (interface{}, error) {
 	}
 }
 
-func (c *PubSubClient) subscribe(cmd string, channels ...string) error {
+func (c *PubSub) subscribe(cmd string, channels ...string) error {
 	cn, err := c.conn()
 	if err != nil {
 		return err
@@ -91,15 +95,15 @@ func (c *PubSubClient) subscribe(cmd string, channels ...string) error {
 	return c.writeReq(cn, req)
 }
 
-func (c *PubSubClient) Subscribe(channels ...string) error {
+func (c *PubSub) Subscribe(channels ...string) error {
 	return c.subscribe("SUBSCRIBE", channels...)
 }
 
-func (c *PubSubClient) PSubscribe(patterns ...string) error {
+func (c *PubSub) PSubscribe(patterns ...string) error {
 	return c.subscribe("PSUBSCRIBE", patterns...)
 }
 
-func (c *PubSubClient) unsubscribe(cmd string, channels ...string) error {
+func (c *PubSub) unsubscribe(cmd string, channels ...string) error {
 	cn, err := c.conn()
 	if err != nil {
 		return err
@@ -110,10 +114,10 @@ func (c *PubSubClient) unsubscribe(cmd string, channels ...string) error {
 	return c.writeReq(cn, req)
 }
 
-func (c *PubSubClient) Unsubscribe(channels ...string) error {
+func (c *PubSub) Unsubscribe(channels ...string) error {
 	return c.unsubscribe("UNSUBSCRIBE", channels...)
 }
 
-func (c *PubSubClient) PUnsubscribe(patterns ...string) error {
+func (c *PubSub) PUnsubscribe(patterns ...string) error {
 	return c.unsubscribe("PUNSUBSCRIBE", patterns...)
 }

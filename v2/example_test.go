@@ -112,18 +112,19 @@ func ExamplePubSub() {
 	})
 	defer client.Close()
 
-	pubsub, err := client.PubSubClient()
+	pubsub := client.PubSub()
 	defer pubsub.Close()
 
-	err = pubsub.Subscribe("mychannel")
+	err := pubsub.Subscribe("mychannel")
+	_ = err
 
-	msg, err := pubsub.Receive(0)
+	msg, err := pubsub.Receive()
 	fmt.Println(msg, err)
 
 	pub := client.Publish("mychannel", "hello")
 	_ = pub.Err()
 
-	msg, err = pubsub.Receive(0)
+	msg, err = pubsub.Receive()
 	fmt.Println(msg, err)
 
 	// Output: &{subscribe mychannel 1} <nil>
