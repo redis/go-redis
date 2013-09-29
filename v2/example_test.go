@@ -16,8 +16,8 @@ func ExampleNewTCPClient() {
 	defer client.Close()
 
 	ping := client.Ping()
-	fmt.Println(ping.Err(), ping.Val())
-	// Output: <nil> PONG
+	fmt.Println(ping.Val(), ping.Err())
+	// Output: PONG <nil>
 }
 
 func ExampleNewUnixClient() {
@@ -27,8 +27,8 @@ func ExampleNewUnixClient() {
 	defer client.Close()
 
 	ping := client.Ping()
-	fmt.Println(ping.Err(), ping.Val())
-	// Output: <nil> PONG
+	fmt.Println(ping.Val(), ping.Err())
+	// Output: PONG <nil>
 }
 
 func ExampleClient() {
@@ -114,11 +114,11 @@ func ExampleMulti() {
 		} else if err != nil {
 			panic(err)
 		}
-		fmt.Println(err, cmds)
+		fmt.Println(cmds, err)
 		break
 	}
 
-	// Output: <nil> [SET key 1: OK]
+	// Output: [SET key 1: OK] <nil>
 }
 
 func ExamplePubSub() {
@@ -159,6 +159,6 @@ func Example_customCommand() {
 	defer client.Close()
 
 	get := Get(client, "key_does_not_exist")
-	fmt.Println(get.Err(), get.Val())
-	// Output: (nil)
+	fmt.Printf("%q %s", get.Val(), get.Err())
+	// Output: "" (nil)
 }
