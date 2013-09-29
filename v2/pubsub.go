@@ -18,8 +18,8 @@ func (c *Client) PubSub() *PubSub {
 	}
 }
 
-func (c *Client) Publish(channel, message string) *IntReq {
-	req := NewIntReq("PUBLISH", channel, message)
+func (c *Client) Publish(channel, message string) *IntCmd {
+	req := NewIntCmd("PUBLISH", channel, message)
 	c.Process(req)
 	return req
 }
@@ -52,7 +52,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	}
 	cn.readTimeout = timeout
 
-	replyIface, err := NewIfaceSliceReq().ParseReply(cn.Rd)
+	replyIface, err := NewSliceCmd().parseReply(cn.Rd)
 	if err != nil {
 		return nil, err
 	}
@@ -91,8 +91,8 @@ func (c *PubSub) subscribe(cmd string, channels ...string) error {
 	}
 
 	args := append([]string{cmd}, channels...)
-	req := NewIfaceSliceReq(args...)
-	return c.writeReq(cn, req)
+	req := NewSliceCmd(args...)
+	return c.writeCmd(cn, req)
 }
 
 func (c *PubSub) Subscribe(channels ...string) error {
@@ -110,8 +110,8 @@ func (c *PubSub) unsubscribe(cmd string, channels ...string) error {
 	}
 
 	args := append([]string{cmd}, channels...)
-	req := NewIfaceSliceReq(args...)
-	return c.writeReq(cn, req)
+	req := NewSliceCmd(args...)
+	return c.writeCmd(cn, req)
 }
 
 func (c *PubSub) Unsubscribe(channels ...string) error {

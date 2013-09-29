@@ -20,23 +20,23 @@ func NewScript(src string) *Script {
 	}
 }
 
-func (s *Script) Load(c *Client) *StringReq {
+func (s *Script) Load(c *Client) *StringCmd {
 	return c.ScriptLoad(s.src)
 }
 
-func (s *Script) Exists(c *Client) *BoolSliceReq {
+func (s *Script) Exists(c *Client) *BoolSliceCmd {
 	return c.ScriptExists(s.src)
 }
 
-func (s *Script) Eval(c *Client, keys []string, args []string) *IfaceReq {
+func (s *Script) Eval(c *Client, keys []string, args []string) *Cmd {
 	return c.Eval(s.src, keys, args)
 }
 
-func (s *Script) EvalSha(c *Client, keys []string, args []string) *IfaceReq {
+func (s *Script) EvalSha(c *Client, keys []string, args []string) *Cmd {
 	return c.EvalSha(s.hash, keys, args)
 }
 
-func (s *Script) Run(c *Client, keys []string, args []string) *IfaceReq {
+func (s *Script) Run(c *Client, keys []string, args []string) *Cmd {
 	r := s.EvalSha(c, keys, args)
 	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
 		return s.Eval(c, keys, args)

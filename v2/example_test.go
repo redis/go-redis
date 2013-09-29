@@ -53,13 +53,13 @@ func ExamplePipeline() {
 	})
 	defer client.Close()
 
-	var set *redis.StatusReq
-	var get *redis.StringReq
-	reqs, err := client.Pipelined(func(c *redis.Pipeline) {
+	var set *redis.StatusCmd
+	var get *redis.StringCmd
+	cmds, err := client.Pipelined(func(c *redis.Pipeline) {
 		set = c.Set("key1", "hello1")
 		get = c.Get("key2")
 	})
-	fmt.Println(err, reqs)
+	fmt.Println(err, cmds)
 	fmt.Println(set)
 	fmt.Println(get)
 	// Output: (nil) [SET key1 hello1: OK GET key2: (nil)]
@@ -67,7 +67,7 @@ func ExamplePipeline() {
 	// GET key2: (nil)
 }
 
-func incr(tx *redis.Multi) ([]redis.Req, error) {
+func incr(tx *redis.Multi) ([]redis.Cmder, error) {
 	get := tx.Get("key")
 	if err := get.Err(); err != nil && err != redis.Nil {
 		return nil, err
@@ -75,14 +75,14 @@ func incr(tx *redis.Multi) ([]redis.Req, error) {
 
 	val, _ := strconv.ParseInt(get.Val(), 10, 64)
 
-	reqs, err := tx.Exec(func() {
+	cmds, err := tx.Exec(func() {
 		tx.Set("key", strconv.FormatInt(val+1, 10))
 	})
 	// Transaction failed. Repeat.
 	if err == redis.Nil {
 		return incr(tx)
 	}
-	return reqs, err
+	return cmds, err
 }
 
 func ExampleTransaction() {
@@ -99,8 +99,8 @@ func ExampleTransaction() {
 	watch := tx.Watch("key")
 	_ = watch.Err()
 
-	reqs, err := incr(tx)
-	fmt.Println(err, reqs)
+	cmds, err := incr(tx)
+	fmt.Println(err, cmds)
 
 	// Output: <nil> [SET key 1: OK]
 }
@@ -130,10 +130,10 @@ func ExamplePubSub() {
 	// &{mychannel hello} <nil>
 }
 
-func Get(client *redis.Client, key string) *redis.StringReq {
-	req := redis.NewStringReq("GET", key)
-	client.Process(req)
-	return req
+func Get(client *redis.Client, key string) *redis.StringCmd {
+	cmd := redis.NewStringCmd("GET", key)
+	client.Process(cmd)
+	return cmd
 }
 
 func ExampleCustomCommand() {

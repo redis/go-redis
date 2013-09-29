@@ -12,18 +12,18 @@ func (c *Client) Pipeline() *Pipeline {
 				opt:      c.opt,
 				connPool: c.connPool,
 
-				reqs: make([]Req, 0),
+				cmds: make([]Cmder, 0),
 			},
 		},
 	}
 }
 
-func (c *Client) Pipelined(f func(*Pipeline)) ([]Req, error) {
+func (c *Client) Pipelined(f func(*Pipeline)) ([]Cmder, error) {
 	pc := c.Pipeline()
 	f(pc)
-	reqs, err := pc.Exec()
+	cmds, err := pc.Exec()
 	pc.Close()
-	return reqs, err
+	return cmds, err
 }
 
 func (c *Pipeline) Close() error {
@@ -31,55 +31,55 @@ func (c *Pipeline) Close() error {
 }
 
 func (c *Pipeline) Discard() error {
-	c.reqs = c.reqs[:0]
+	c.cmds = c.cmds[:0]
 	return nil
 }
 
 // Always returns list of commands and error of the first failed
 // command if any.
-func (c *Pipeline) Exec() ([]Req, error) {
-	reqs := c.reqs
-	c.reqs = make([]Req, 0)
+func (c *Pipeline) Exec() ([]Cmder, error) {
+	cmds := c.cmds
+	c.cmds = make([]Cmder, 0)
 
-	if len(reqs) == 0 {
-		return []Req{}, nil
+	if len(cmds) == 0 {
+		return []Cmder{}, nil
 	}
 
 	cn, err := c.conn()
 	if err != nil {
-		return reqs, err
+		return cmds, err
 	}
 
-	if err := c.execReqs(reqs, cn); err != nil {
+	if err := c.execCmds(cmds, cn); err != nil {
 		c.freeConn(cn, err)
-		return reqs, err
+		return cmds, err
 	}
 
 	c.putConn(cn)
-	return reqs, nil
+	return cmds, nil
 }
 
-func (c *Pipeline) execReqs(reqs []Req, cn *conn) error {
-	err := c.writeReq(cn, reqs...)
+func (c *Pipeline) execCmds(cmds []Cmder, cn *conn) error {
+	err := c.writeCmd(cn, cmds...)
 	if err != nil {
-		for _, req := range reqs {
-			req.SetErr(err)
+		for _, cmd := range cmds {
+			cmd.setErr(err)
 		}
 		return err
 	}
 
-	var firstReqErr error
-	for _, req := range reqs {
-		val, err := req.ParseReply(cn.Rd)
+	var firstCmdErr error
+	for _, cmd := range cmds {
+		val, err := cmd.parseReply(cn.Rd)
 		if err != nil {
-			req.SetErr(err)
-			if err != nil {
-				firstReqErr = err
+			cmd.setErr(err)
+			if firstCmdErr == nil {
+				firstCmdErr = err
 			}
 		} else {
-			req.SetVal(val)
+			cmd.setVal(val)
 		}
 	}
 
-	return firstReqErr
+	return firstCmdErr
 }

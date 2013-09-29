@@ -18,13 +18,13 @@ type baseClient struct {
 
 	opt *Options
 
-	reqs []Req
+	cmds []Cmder
 }
 
-func (c *baseClient) writeReq(cn *conn, reqs ...Req) error {
+func (c *baseClient) writeCmd(cn *conn, cmds ...Cmder) error {
 	buf := make([]byte, 0, 1000)
-	for _, req := range reqs {
-		buf = appendReq(buf, req.Args())
+	for _, cmd := range cmds {
+		buf = appendCmd(buf, cmd.args())
 	}
 
 	_, err := cn.Write(buf)
@@ -93,46 +93,46 @@ func (c *baseClient) putConn(cn *conn) {
 	}
 }
 
-func (c *baseClient) Process(req Req) {
-	if c.reqs == nil {
-		c.run(req)
+func (c *baseClient) Process(cmd Cmder) {
+	if c.cmds == nil {
+		c.run(cmd)
 	} else {
-		c.reqs = append(c.reqs, req)
+		c.cmds = append(c.cmds, cmd)
 	}
 }
 
-func (c *baseClient) run(req Req) {
+func (c *baseClient) run(cmd Cmder) {
 	cn, err := c.conn()
 	if err != nil {
-		req.SetErr(err)
+		cmd.setErr(err)
 		return
 	}
 
 	cn.writeTimeout = c.opt.WriteTimeout
-	if timeout := req.writeTimeout(); timeout != nil {
+	if timeout := cmd.writeTimeout(); timeout != nil {
 		cn.writeTimeout = *timeout
 	}
 
 	cn.readTimeout = c.opt.ReadTimeout
-	if timeout := req.readTimeout(); timeout != nil {
+	if timeout := cmd.readTimeout(); timeout != nil {
 		cn.readTimeout = *timeout
 	}
 
-	if err := c.writeReq(cn, req); err != nil {
+	if err := c.writeCmd(cn, cmd); err != nil {
 		c.removeConn(cn)
-		req.SetErr(err)
+		cmd.setErr(err)
 		return
 	}
 
-	val, err := req.ParseReply(cn.Rd)
+	val, err := cmd.parseReply(cn.Rd)
 	if err != nil {
 		c.freeConn(cn, err)
-		req.SetErr(err)
+		cmd.setErr(err)
 		return
 	}
 
 	c.putConn(cn)
-	req.SetVal(val)
+	cmd.setVal(val)
 }
 
 func (c *baseClient) Close() error {

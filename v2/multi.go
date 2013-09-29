@@ -28,38 +28,38 @@ func (c *Multi) Close() error {
 	return c.Client.Close()
 }
 
-func (c *Multi) Watch(keys ...string) *StatusReq {
+func (c *Multi) Watch(keys ...string) *StatusCmd {
 	args := append([]string{"WATCH"}, keys...)
-	req := NewStatusReq(args...)
-	c.Process(req)
-	return req
+	cmd := NewStatusCmd(args...)
+	c.Process(cmd)
+	return cmd
 }
 
-func (c *Multi) Unwatch(keys ...string) *StatusReq {
+func (c *Multi) Unwatch(keys ...string) *StatusCmd {
 	args := append([]string{"UNWATCH"}, keys...)
-	req := NewStatusReq(args...)
-	c.Process(req)
-	return req
+	cmd := NewStatusCmd(args...)
+	c.Process(cmd)
+	return cmd
 }
 
 func (c *Multi) Discard() error {
-	if c.reqs == nil {
+	if c.cmds == nil {
 		return errDiscard
 	}
-	c.reqs = c.reqs[:1]
+	c.cmds = c.cmds[:1]
 	return nil
 }
 
-func (c *Multi) Exec(f func()) ([]Req, error) {
-	c.reqs = []Req{NewStatusReq("MULTI")}
+func (c *Multi) Exec(f func()) ([]Cmder, error) {
+	c.cmds = []Cmder{NewStatusCmd("MULTI")}
 	f()
-	c.reqs = append(c.reqs, NewIfaceSliceReq("EXEC"))
+	c.cmds = append(c.cmds, NewSliceCmd("EXEC"))
 
-	reqs := c.reqs
-	c.reqs = nil
+	cmds := c.cmds
+	c.cmds = nil
 
-	if len(reqs) == 2 {
-		return []Req{}, nil
+	if len(cmds) == 2 {
+		return []Cmder{}, nil
 	}
 
 	cn, err := c.conn()
@@ -68,30 +68,30 @@ func (c *Multi) Exec(f func()) ([]Req, error) {
 	}
 
 	// Synchronize writes and reads to the connection using mutex.
-	err = c.execReqs(reqs, cn)
+	err = c.execCmds(cmds, cn)
 	if err != nil {
 		c.removeConn(cn)
 		return nil, err
 	}
 
 	c.putConn(cn)
-	return reqs[1 : len(reqs)-1], nil
+	return cmds[1 : len(cmds)-1], nil
 }
 
-func (c *Multi) execReqs(reqs []Req, cn *conn) error {
-	err := c.writeReq(cn, reqs...)
+func (c *Multi) execCmds(cmds []Cmder, cn *conn) error {
+	err := c.writeCmd(cn, cmds...)
 	if err != nil {
 		return err
 	}
 
-	statusReq := NewStatusReq()
+	statusCmd := NewStatusCmd()
 
-	// Omit last request (EXEC).
-	reqsLen := len(reqs) - 1
+	// Omit last cmduest (EXEC).
+	cmdsLen := len(cmds) - 1
 
 	// Parse queued replies.
-	for i := 0; i < reqsLen; i++ {
-		_, err = statusReq.ParseReply(cn.Rd)
+	for i := 0; i < cmdsLen; i++ {
+		_, err = statusCmd.parseReply(cn.Rd)
 		if err != nil {
 			return err
 		}
@@ -110,14 +110,14 @@ func (c *Multi) execReqs(reqs []Req, cn *conn) error {
 	}
 
 	// Parse replies.
-	// Loop starts from 1 to omit first request (MULTI).
-	for i := 1; i < reqsLen; i++ {
-		req := reqs[i]
-		val, err := req.ParseReply(cn.Rd)
+	// Loop starts from 1 to omit first cmduest (MULTI).
+	for i := 1; i < cmdsLen; i++ {
+		cmd := cmds[i]
+		val, err := cmd.parseReply(cn.Rd)
 		if err != nil {
-			req.SetErr(err)
+			cmd.setErr(err)
 		} else {
-			req.SetVal(val)
+			cmd.setVal(val)
 		}
 	}
 
