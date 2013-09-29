@@ -52,7 +52,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	}
 	cn.readTimeout = timeout
 
-	replyIface, err := NewSliceCmd().parseReply(cn.Rd)
+	replyIface, err := NewSliceCmd().parseReply(cn.rd)
 	if err != nil {
 		return nil, err
 	}

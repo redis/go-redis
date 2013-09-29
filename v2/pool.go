@@ -20,38 +20,37 @@ type pool interface {
 //------------------------------------------------------------------------------
 
 type conn struct {
-	Cn net.Conn
-	Rd reader
-
-	UsedAt time.Time
+	cn     net.Conn
+	rd     reader
+	usedAt time.Time
 
 	readTimeout, writeTimeout time.Duration
 }
 
 func newConn(netcn net.Conn) *conn {
 	cn := &conn{
-		Cn: netcn,
+		cn: netcn,
 	}
-	cn.Rd = bufio.NewReaderSize(cn, 1024)
+	cn.rd = bufio.NewReaderSize(cn, 1024)
 	return cn
 }
 
 func (cn *conn) Read(b []byte) (int, error) {
 	if cn.readTimeout != 0 {
-		cn.Cn.SetReadDeadline(time.Now().Add(cn.readTimeout))
+		cn.cn.SetReadDeadline(time.Now().Add(cn.readTimeout))
 	} else {
-		cn.Cn.SetReadDeadline(time.Time{})
+		cn.cn.SetReadDeadline(time.Time{})
 	}
-	return cn.Cn.Read(b)
+	return cn.cn.Read(b)
 }
 
 func (cn *conn) Write(b []byte) (int, error) {
 	if cn.writeTimeout != 0 {
-		cn.Cn.SetWriteDeadline(time.Now().Add(cn.writeTimeout))
+		cn.cn.SetWriteDeadline(time.Now().Add(cn.writeTimeout))
 	} else {
-		cn.Cn.SetReadDeadline(time.Time{})
+		cn.cn.SetReadDeadline(time.Time{})
 	}
-	return cn.Cn.Write(b)
+	return cn.cn.Write(b)
 }
 
 //------------------------------------------------------------------------------
@@ -93,7 +92,7 @@ func (p *connPool) Get() (*conn, bool, error) {
 	if p.idleTimeout > 0 {
 		for e := p.conns.Front(); e != nil; e = e.Next() {
 			cn := e.Value.(*conn)
-			if time.Since(cn.UsedAt) > p.idleTimeout {
+			if time.Since(cn.usedAt) > p.idleTimeout {
 				p.conns.Remove(e)
 			}
 		}
@@ -115,12 +114,12 @@ func (p *connPool) Get() (*conn, bool, error) {
 }
 
 func (p *connPool) Put(cn *conn) error {
-	if cn.Rd.Buffered() != 0 {
-		panic("pool: attempt to put connection with buffered data")
+	if cn.rd.Buffered() != 0 {
+		panic("redis: attempt to put connection with buffered data")
 	}
 
 	p.cond.L.Lock()
-	cn.UsedAt = time.Now()
+	cn.usedAt = time.Now()
 	p.conns.PushFront(cn)
 	p.cond.Signal()
 	p.cond.L.Unlock()
@@ -167,7 +166,7 @@ func (p *connPool) Close() error {
 }
 
 func (p *connPool) closeConn(cn *conn) error {
-	return cn.Cn.Close()
+	return cn.cn.Close()
 }
 
 //------------------------------------------------------------------------------

@@ -70,7 +70,7 @@ func (c *Pipeline) execCmds(cmds []Cmder, cn *conn) error {
 
 	var firstCmdErr error
 	for _, cmd := range cmds {
-		val, err := cmd.parseReply(cn.Rd)
+		val, err := cmd.parseReply(cn.rd)
 		if err != nil {
 			cmd.setErr(err)
 			if firstCmdErr == nil {

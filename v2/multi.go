@@ -91,14 +91,14 @@ func (c *Multi) execCmds(cmds []Cmder, cn *conn) error {
 
 	// Parse queued replies.
 	for i := 0; i < cmdsLen; i++ {
-		_, err = statusCmd.parseReply(cn.Rd)
+		_, err = statusCmd.parseReply(cn.rd)
 		if err != nil {
 			return err
 		}
 	}
 
 	// Parse number of replies.
-	line, err := readLine(cn.Rd)
+	line, err := readLine(cn.rd)
 	if err != nil {
 		return err
 	}
@@ -113,7 +113,7 @@ func (c *Multi) execCmds(cmds []Cmder, cn *conn) error {
 	// Loop starts from 1 to omit first cmduest (MULTI).
 	for i := 1; i < cmdsLen; i++ {
 		cmd := cmds[i]
-		val, err := cmd.parseReply(cn.Rd)
+		val, err := cmd.parseReply(cn.rd)
 		if err != nil {
 			cmd.setErr(err)
 		} else {

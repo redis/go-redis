@@ -124,7 +124,7 @@ func (c *baseClient) run(cmd Cmder) {
 		return
 	}
 
-	val, err := cmd.parseReply(cn.Rd)
+	val, err := cmd.parseReply(cn.rd)
 	if err != nil {
 		c.freeConn(cn, err)
 		cmd.setErr(err)
