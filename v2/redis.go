@@ -73,7 +73,7 @@ func (c *baseClient) init(cn *conn, password string, db int64) error {
 }
 
 func (c *baseClient) freeConn(cn *conn, err error) {
-	if err == Nil {
+	if err == Nil || err == TxFailedErr {
 		c.putConn(cn)
 	} else {
 		c.removeConn(cn)

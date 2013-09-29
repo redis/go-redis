@@ -2643,13 +2643,9 @@ func (t *RedisTest) transactionalIncr(c *C) ([]redis.Cmder, error) {
 	v, err := strconv.ParseInt(get.Val(), 10, 64)
 	c.Assert(err, IsNil)
 
-	cmds, err := multi.Exec(func() {
+	return multi.Exec(func() {
 		multi.Set("key", strconv.FormatInt(v+1, 10))
 	})
-	if err == redis.Nil {
-		return t.transactionalIncr(c)
-	}
-	return cmds, err
 }
 
 func (t *RedisTest) TestWatchUnwatch(c *C) {
@@ -2661,10 +2657,16 @@ func (t *RedisTest) TestWatchUnwatch(c *C) {
 	for i := 0; i < 1000; i++ {
 		wg.Add(1)
 		go func() {
-			cmds, err := t.transactionalIncr(c)
-			c.Assert(cmds, HasLen, 1)
-			c.Assert(err, IsNil)
-			c.Assert(cmds[0].Err(), IsNil)
+			for {
+				cmds, err := t.transactionalIncr(c)
+				if err == redis.TxFailedErr {
+					continue
+				}
+				c.Assert(err, IsNil)
+				c.Assert(cmds, HasLen, 1)
+				c.Assert(cmds[0].Err(), IsNil)
+				break
+			}
 			wg.Done()
 		}()
 	}

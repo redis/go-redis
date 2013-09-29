@@ -50,6 +50,9 @@ func (c *Multi) Discard() error {
 	return nil
 }
 
+// Exec always returns list of commands. If transaction fails
+// TxFailedErr is returned. Otherwise Exec returns error of the first
+// failed command or nil.
 func (c *Multi) Exec(f func()) ([]Cmder, error) {
 	c.cmds = []Cmder{NewStatusCmd("MULTI")}
 	f()
@@ -64,35 +67,38 @@ func (c *Multi) Exec(f func()) ([]Cmder, error) {
 
 	cn, err := c.conn()
 	if err != nil {
-		return nil, err
+		setCmdsErr(cmds[1:len(cmds)-1], err)
+		return cmds[1 : len(cmds)-1], err
 	}
 
 	// Synchronize writes and reads to the connection using mutex.
-	err = c.execCmds(cmds, cn)
+	err = c.execCmds(cn, cmds)
 	if err != nil {
-		c.removeConn(cn)
-		return nil, err
+		c.freeConn(cn, err)
+		return cmds[1 : len(cmds)-1], err
 	}
 
 	c.putConn(cn)
 	return cmds[1 : len(cmds)-1], nil
 }
 
-func (c *Multi) execCmds(cmds []Cmder, cn *conn) error {
+func (c *Multi) execCmds(cn *conn, cmds []Cmder) error {
 	err := c.writeCmd(cn, cmds...)
 	if err != nil {
+		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
 	}
 
 	statusCmd := NewStatusCmd()
 
-	// Omit last cmduest (EXEC).
+	// Omit last command (EXEC).
 	cmdsLen := len(cmds) - 1
 
 	// Parse queued replies.
 	for i := 0; i < cmdsLen; i++ {
 		_, err = statusCmd.parseReply(cn.rd)
 		if err != nil {
+			setCmdsErr(cmds[1:len(cmds)-1], err)
 			return err
 		}
 	}
@@ -100,14 +106,20 @@ func (c *Multi) execCmds(cmds []Cmder, cn *conn) error {
 	// Parse number of replies.
 	line, err := readLine(cn.rd)
 	if err != nil {
+		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
 	}
 	if line[0] != '*' {
-		return fmt.Errorf("redis: expected '*', but got line %q", line)
+		err := fmt.Errorf("redis: expected '*', but got line %q", line)
+		setCmdsErr(cmds[1:len(cmds)-1], err)
+		return err
 	}
 	if len(line) == 3 && line[1] == '-' && line[2] == '1' {
-		return Nil
+		setCmdsErr(cmds[1:len(cmds)-1], TxFailedErr)
+		return TxFailedErr
 	}
+
+	var firstCmdErr error
 
 	// Parse replies.
 	// Loop starts from 1 to omit first cmduest (MULTI).
@@ -116,10 +128,13 @@ func (c *Multi) execCmds(cmds []Cmder, cn *conn) error {
 		val, err := cmd.parseReply(cn.rd)
 		if err != nil {
 			cmd.setErr(err)
+			if firstCmdErr == nil {
+				firstCmdErr = err
+			}
 		} else {
 			cmd.setVal(val)
 		}
 	}
 
-	return nil
+	return firstCmdErr
 }

@@ -19,6 +19,12 @@ type Cmder interface {
 	Err() error
 }
 
+func setCmdsErr(cmds []Cmder, e error) {
+	for _, cmd := range cmds {
+		cmd.setErr(e)
+	}
+}
+
 //------------------------------------------------------------------------------
 
 type baseCmd struct {

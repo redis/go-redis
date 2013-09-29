@@ -35,7 +35,7 @@ func (c *Pipeline) Discard() error {
 	return nil
 }
 
-// Always returns list of commands and error of the first failed
+// Exec always returns list of commands and error of the first failed
 // command if any.
 func (c *Pipeline) Exec() ([]Cmder, error) {
 	cmds := c.cmds
@@ -47,10 +47,11 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 
 	cn, err := c.conn()
 	if err != nil {
+		setCmdsErr(cmds, err)
 		return cmds, err
 	}
 
-	if err := c.execCmds(cmds, cn); err != nil {
+	if err := c.execCmds(cn, cmds); err != nil {
 		c.freeConn(cn, err)
 		return cmds, err
 	}
@@ -59,12 +60,10 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 	return cmds, nil
 }
 
-func (c *Pipeline) execCmds(cmds []Cmder, cn *conn) error {
+func (c *Pipeline) execCmds(cn *conn, cmds []Cmder) error {
 	err := c.writeCmd(cn, cmds...)
 	if err != nil {
-		for _, cmd := range cmds {
-			cmd.setErr(err)
-		}
+		setCmdsErr(cmds, err)
 		return err
 	}
 

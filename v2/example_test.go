@@ -108,8 +108,7 @@ func ExampleMulti() {
 
 	for {
 		cmds, err := incr(tx)
-		if err == redis.Nil {
-			// Transaction failed. Repeat.
+		if err == redis.TxFailedErr {
 			continue
 		} else if err != nil {
 			panic(err)

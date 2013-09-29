@@ -18,8 +18,11 @@ const (
 	stringFloatMap
 )
 
-// Represents Redis nil reply.
+// Redis nil reply.
 var Nil = errors.New("(nil)")
+
+// Redis transaction failed.
+var TxFailedErr = errors.New("redis: transaction failed")
 
 var (
 	errReaderTooSmall   = errors.New("redis: reader is too small")
