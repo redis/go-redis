@@ -11,7 +11,7 @@ Supports:
 - TLS connections.
 - Thread safety.
 
-API docs: http://go.pkgdoc.org/github.com/vmihailenco/redis
+API docs: http://godoc.org/github.com/vmihailenco/redis
 
 Installation
 ------------
