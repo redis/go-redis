@@ -146,7 +146,7 @@ func ExamplePubSub() {
 	// &{mychannel hello} <nil>
 }
 
-func Example_CustomCommand() {
+func Example_customCommand() {
 	Get := func(client *redis.Client, key string) *redis.StringCmd {
 		cmd := redis.NewStringCmd("GET", key)
 		client.Process(cmd)
