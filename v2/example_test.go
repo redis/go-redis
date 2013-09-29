@@ -31,7 +31,7 @@ func ExampleNewUnixClient() {
 	// Output: <nil> PONG
 }
 
-func ExampleSet() {
+func ExampleClient() {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
@@ -47,7 +47,7 @@ func ExampleSet() {
 	// <nil> bar
 }
 
-func ExampleClientPipelined() {
+func ExamplePipeline2() {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
