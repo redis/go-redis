@@ -47,7 +47,7 @@ func ExampleSet() {
 	// <nil> bar
 }
 
-func ExamplePipelinePipelined() {
+func ExampleClientPipelined() {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
