@@ -7,7 +7,7 @@ import (
 	"github.com/vmihailenco/redis/v2"
 )
 
-func ExampleTCPClient() {
+func ExampleNewTCPClient() {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr:     "localhost:6379",
 		Password: "", // no password set
@@ -20,7 +20,7 @@ func ExampleTCPClient() {
 	// Output: <nil> PONG
 }
 
-func ExampleUnixClient() {
+func ExampleNewUnixClient() {
 	client := redis.NewUnixClient(&redis.Options{
 		Addr: "/tmp/redis.sock",
 	})
@@ -31,7 +31,7 @@ func ExampleUnixClient() {
 	// Output: <nil> PONG
 }
 
-func ExampleSetGet() {
+func ExampleSet() {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
@@ -85,7 +85,7 @@ func incr(tx *redis.Multi) ([]redis.Cmder, error) {
 	return cmds, err
 }
 
-func ExampleTransaction() {
+func ExampleMulti() {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
