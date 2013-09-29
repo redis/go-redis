@@ -3,131 +3,160 @@ Package github.com/vmihailenco/redis implements a Redis client.
 
 Let's start with connecting to Redis using TCP:
 
-    password := ""  // no password set
-    db := int64(-1) // use default DB
-    client := redis.NewTCPClient("localhost:6379", password, db)
-    defer client.Close()
+	client := redis.NewTCPClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+	defer client.Close()
 
-    ping := client.Ping()
-    fmt.Println(ping.Err(), ping.Val())
-    // Output: <nil> PONG
+	ping := client.Ping()
+	fmt.Println(ping.Err(), ping.Val())
+	// Output: <nil> PONG
 
 or using Unix socket:
 
-    client := redis.NewUnixClient("/tmp/redis.sock", "", -1)
-    defer client.Close()
+	client := redis.NewUnixClient(&redis.Options{
+		Addr: "/tmp/redis.sock",
+	})
+	defer client.Close()
 
-    ping := client.Ping()
-    fmt.Println(ping.Err(), ping.Val())
-    // Output: <nil> PONG
+	ping := client.Ping()
+	fmt.Println(ping.Err(), ping.Val())
+	// Output: <nil> PONG
 
 Then we can start sending commands:
 
-    set := client.Set("foo", "bar")
-    fmt.Println(set.Err(), set.Val())
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: ":6379",
+	})
+	defer client.Close()
 
-    get := client.Get("foo")
-    fmt.Println(get.Err(), get.Val())
+	set := client.Set("foo", "bar")
+	fmt.Println(set.Err(), set.Val())
 
-    // Output: <nil> OK
-    // <nil> bar
+	get := client.Get("foo")
+	fmt.Println(get.Err(), get.Val())
+
+	// Output: <nil> OK
+	// <nil> bar
 
 We can also pipeline two commands together:
 
-    var set *redis.StatusReq
-    var get *redis.StringReq
-    reqs, err := client.Pipelined(func(c *redis.PipelineClient) {
-        set = c.Set("key1", "hello1")
-        get = c.Get("key2")
-    })
-    fmt.Println(err, reqs)
-    fmt.Println(set)
-    fmt.Println(get)
-    // Output: <nil> [SET key1 hello1: OK GET key2: (nil)]
-    // SET key1 hello1: OK
-    // GET key2: (nil)
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: ":6379",
+	})
+	defer client.Close()
+
+	cmds, err := client.Pipelined(func(c *redis.Pipeline) {
+		c.Set("key1", "hello1")
+		c.Get("key2")
+	})
+	fmt.Println(cmds, err)
+	// Output: [SET key1 hello1: OK GET key2: (nil)] (nil)
 
 or:
 
-    var set *redis.StatusReq
-    var get *redis.StringReq
-    reqs, err := client.Pipelined(func(c *redis.PipelineClient) {
-        set = c.Set("key1", "hello1")
-        get = c.Get("key2")
-    })
-    fmt.Println(err, reqs)
-    fmt.Println(set)
-    fmt.Println(get)
-    // Output: <nil> [SET key1 hello1 GET key2]
-    // SET key1 hello1
-    // GET key2
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: ":6379",
+	})
+	defer client.Close()
+
+	pipeline := client.Pipeline()
+	set := pipeline.Set("key1", "hello1")
+	get := pipeline.Get("key2")
+	cmds, err := pipeline.Exec()
+	fmt.Println(cmds, err)
+	fmt.Println(set)
+	fmt.Println(get)
+	// Output: [SET key1 hello1: OK GET key2: (nil)] (nil)
+	// SET key1 hello1: OK
+	// GET key2: (nil)
 
 We can also send several commands in transaction:
 
-    func transaction(multi *redis.MultiClient) ([]redis.Req, error) {
-        get := multi.Get("key")
-        if err := get.Err(); err != nil && err != redis.Nil {
-            return nil, err
-        }
+	incr := func(tx *redis.Multi) ([]redis.Cmder, error) {
+		get := tx.Get("key")
+		if err := get.Err(); err != nil && err != redis.Nil {
+			return nil, err
+		}
 
-        val, _ := strconv.ParseInt(get.Val(), 10, 64)
+		val, _ := strconv.ParseInt(get.Val(), 10, 64)
 
-        reqs, err := multi.Exec(func() {
-            multi.Set("key", strconv.FormatInt(val+1, 10))
-        })
-        // Transaction failed. Repeat.
-        if err == redis.Nil {
-            return transaction(multi)
-        }
-        return reqs, err
-    }
+		return tx.Exec(func() {
+			tx.Set("key", strconv.FormatInt(val+1, 10))
+		})
+	}
 
-    multi, err := client.MultiClient()
-    _ = err
-    defer multi.Close()
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: ":6379",
+	})
+	defer client.Close()
 
-    watch := multi.Watch("key")
-    _ = watch.Err()
+	client.Del("key")
 
-    reqs, err := transaction(multi)
-    fmt.Println(err, reqs)
+	tx := client.Multi()
+	defer tx.Close()
 
-    // Output: <nil> [SET key 1: OK]
+	watch := tx.Watch("key")
+	_ = watch.Err()
+
+	for {
+		cmds, err := incr(tx)
+		if err == redis.Nil {
+			// Transaction failed. Repeat.
+			continue
+		} else if err != nil {
+			panic(err)
+		}
+		fmt.Println(err, cmds)
+		break
+	}
+
+	// Output: <nil> [SET key 1: OK]
 
 To subscribe to the channel:
 
-    pubsub, err := client.PubSubClient()
-    defer pubsub.Close()
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: ":6379",
+	})
+	defer client.Close()
 
-    ch, err := pubsub.Subscribe("mychannel")
-    _ = err
+	pubsub := client.PubSub()
+	defer pubsub.Close()
 
-    subscribeMsg := <-ch
-    fmt.Println(subscribeMsg.Err, subscribeMsg.Name)
+	err := pubsub.Subscribe("mychannel")
+	_ = err
 
-    pub := client.Publish("mychannel", "hello")
-    _ = pub.Err()
+	msg, err := pubsub.Receive()
+	fmt.Println(msg, err)
 
-    msg := <-ch
-    fmt.Println(msg.Err, msg.Message)
+	pub := client.Publish("mychannel", "hello")
+	_ = pub.Err()
 
-    // Output: <nil> subscribe
-    // <nil> hello
+	msg, err = pubsub.Receive()
+	fmt.Println(msg, err)
+
+	// Output: &{subscribe mychannel 1} <nil>
+	// &{mychannel hello} <nil>
 
 You can also write custom commands:
 
-    func Get(client *redis.Client, key string) *redis.StringReq {
-        req := redis.NewStringReq("GET", key)
-        client.Process(req)
-        return req
-    }
+	func Get(client *redis.Client, key string) *redis.StringCmd {
+		cmd := redis.NewStringCmd("GET", key)
+		client.Process(cmd)
+		return cmd
+	}
 
-    get := Get(client, "key_does_not_exist")
-    fmt.Println(get.Err(), get.Val())
-    // Output: (nil)
+	func ExampleCustomCommand() {
+		client := redis.NewTCPClient(&redis.Options{
+			Addr: ":6379",
+		})
+		defer client.Close()
 
-Client uses connection pool to send commands. You can change maximum number of connections with:
-
-    client.ConnPool.(*redis.MultiConnPool).MaxCap = 1
+		get := Get(client, "key_does_not_exist")
+		fmt.Println(get.Err(), get.Val())
+		// Output: (nil)
+	}
 */
 package redis

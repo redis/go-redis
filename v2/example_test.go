@@ -47,45 +47,52 @@ func ExampleSet() {
 	// <nil> bar
 }
 
+func ExamplePipelined() {
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: ":6379",
+	})
+	defer client.Close()
+
+	cmds, err := client.Pipelined(func(c *redis.Pipeline) {
+		c.Set("key1", "hello1")
+		c.Get("key2")
+	})
+	fmt.Println(cmds, err)
+	// Output: [SET key1 hello1: OK GET key2: (nil)] (nil)
+}
+
 func ExamplePipeline() {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
 	defer client.Close()
 
-	var set *redis.StatusCmd
-	var get *redis.StringCmd
-	cmds, err := client.Pipelined(func(c *redis.Pipeline) {
-		set = c.Set("key1", "hello1")
-		get = c.Get("key2")
-	})
-	fmt.Println(err, cmds)
+	pipeline := client.Pipeline()
+	set := pipeline.Set("key1", "hello1")
+	get := pipeline.Get("key2")
+	cmds, err := pipeline.Exec()
+	fmt.Println(cmds, err)
 	fmt.Println(set)
 	fmt.Println(get)
-	// Output: (nil) [SET key1 hello1: OK GET key2: (nil)]
+	// Output: [SET key1 hello1: OK GET key2: (nil)] (nil)
 	// SET key1 hello1: OK
 	// GET key2: (nil)
 }
 
-func incr(tx *redis.Multi) ([]redis.Cmder, error) {
-	get := tx.Get("key")
-	if err := get.Err(); err != nil && err != redis.Nil {
-		return nil, err
-	}
-
-	val, _ := strconv.ParseInt(get.Val(), 10, 64)
-
-	cmds, err := tx.Exec(func() {
-		tx.Set("key", strconv.FormatInt(val+1, 10))
-	})
-	// Transaction failed. Repeat.
-	if err == redis.Nil {
-		return incr(tx)
-	}
-	return cmds, err
-}
-
 func ExampleMulti() {
+	incr := func(tx *redis.Multi) ([]redis.Cmder, error) {
+		get := tx.Get("key")
+		if err := get.Err(); err != nil && err != redis.Nil {
+			return nil, err
+		}
+
+		val, _ := strconv.ParseInt(get.Val(), 10, 64)
+
+		return tx.Exec(func() {
+			tx.Set("key", strconv.FormatInt(val+1, 10))
+		})
+	}
+
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
@@ -99,8 +106,17 @@ func ExampleMulti() {
 	watch := tx.Watch("key")
 	_ = watch.Err()
 
-	cmds, err := incr(tx)
-	fmt.Println(err, cmds)
+	for {
+		cmds, err := incr(tx)
+		if err == redis.Nil {
+			// Transaction failed. Repeat.
+			continue
+		} else if err != nil {
+			panic(err)
+		}
+		fmt.Println(err, cmds)
+		break
+	}
 
 	// Output: <nil> [SET key 1: OK]
 }
