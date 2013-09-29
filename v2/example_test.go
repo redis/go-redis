@@ -8,7 +8,7 @@ import (
 )
 
 func ExampleTCPClient() {
-	client := redis.DialTCP(&redis.Options{
+	client := redis.NewTCPClient(&redis.Options{
 		Addr:     "localhost:6379",
 		Password: "", // no password set
 		DB:       0,  // use default DB
@@ -21,7 +21,7 @@ func ExampleTCPClient() {
 }
 
 func ExampleUnixClient() {
-	client := redis.DialUnix(&redis.Options{
+	client := redis.NewUnixClient(&redis.Options{
 		Addr: "/tmp/redis.sock",
 	})
 	defer client.Close()
@@ -32,7 +32,7 @@ func ExampleUnixClient() {
 }
 
 func ExampleSetGet() {
-	client := redis.DialTCP(&redis.Options{
+	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
 	defer client.Close()
@@ -48,7 +48,7 @@ func ExampleSetGet() {
 }
 
 func ExamplePipeline() {
-	client := redis.DialTCP(&redis.Options{
+	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
 	defer client.Close()
@@ -86,7 +86,7 @@ func incr(tx *redis.Multi) ([]redis.Cmder, error) {
 }
 
 func ExampleTransaction() {
-	client := redis.DialTCP(&redis.Options{
+	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
 	defer client.Close()
@@ -106,7 +106,7 @@ func ExampleTransaction() {
 }
 
 func ExamplePubSub() {
-	client := redis.DialTCP(&redis.Options{
+	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
 	defer client.Close()
@@ -137,7 +137,7 @@ func Get(client *redis.Client, key string) *redis.StringCmd {
 }
 
 func ExampleCustomCommand() {
-	client := redis.DialTCP(&redis.Options{
+	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
 	defer client.Close()

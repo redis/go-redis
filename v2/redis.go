@@ -1,7 +1,6 @@
 package redis
 
 import (
-	"crypto/tls"
 	"log"
 	"net"
 	"os"
@@ -187,25 +186,14 @@ func newClient(opt *Options, dial func() (net.Conn, error)) *Client {
 	}
 }
 
-func DialTCP(opt *Options) *Client {
+func NewTCPClient(opt *Options) *Client {
 	dial := func() (net.Conn, error) {
 		return net.DialTimeout("tcp", opt.Addr, opt.getDialTimeout())
 	}
 	return newClient(opt, dial)
 }
 
-func DialTLS(opt *Options, tlsConfig *tls.Config) *Client {
-	dial := func() (net.Conn, error) {
-		conn, err := net.DialTimeout("tcp", opt.Addr, opt.getDialTimeout())
-		if err != nil {
-			return nil, err
-		}
-		return tls.Client(conn, tlsConfig), nil
-	}
-	return newClient(opt, dial)
-}
-
-func DialUnix(opt *Options) *Client {
+func NewUnixClient(opt *Options) *Client {
 	dial := func() (net.Conn, error) {
 		return net.DialTimeout("unix", opt.Addr, opt.getDialTimeout())
 	}

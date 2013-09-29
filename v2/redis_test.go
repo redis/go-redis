@@ -38,7 +38,7 @@ func (t *RedisConnectionTest) SetUpTest(c *C) {
 	t.opt = &redis.Options{
 		Addr: redisAddr,
 	}
-	t.client = redis.DialTCP(t.opt)
+	t.client = redis.NewTCPClient(t.opt)
 }
 
 func (t *RedisConnectionTest) TearDownTest(c *C) {
@@ -64,7 +64,7 @@ type RedisConnectorTest struct{}
 var _ = Suite(&RedisConnectorTest{})
 
 func (t *RedisConnectorTest) TestTCPConnector(c *C) {
-	client := redis.DialTCP(&redis.Options{
+	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
 	ping := client.Ping()
@@ -73,7 +73,7 @@ func (t *RedisConnectorTest) TestTCPConnector(c *C) {
 }
 
 func (t *RedisConnectorTest) TestUnixConnector(c *C) {
-	client := redis.DialUnix(&redis.Options{
+	client := redis.NewUnixClient(&redis.Options{
 		Addr: "/tmp/redis.sock",
 	})
 	ping := client.Ping()
@@ -237,7 +237,7 @@ func Test(t *testing.T) { TestingT(t) }
 
 func (t *RedisTest) SetUpTest(c *C) {
 	if t.client == nil {
-		t.client = redis.DialTCP(&redis.Options{
+		t.client = redis.NewTCPClient(&redis.Options{
 			Addr: ":6379",
 		})
 	}
@@ -343,7 +343,7 @@ func (t *RedisTest) TestConnPoolRemovesBrokenConn(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(conn.Close(), IsNil)
 
-	client := redis.DialTCP(&redis.Options{
+	client := redis.NewTCPClient(&redis.Options{
 		Addr: redisAddr,
 	})
 	defer func() {
