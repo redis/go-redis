@@ -1,13 +1,12 @@
 package redis
 
-type PipelineClient struct {
+// Not thread-safe.
+type Pipeline struct {
 	*Client
 }
 
-// TODO: rename to Pipeline
-// TODO: return just *PipelineClient
-func (c *Client) PipelineClient() (*PipelineClient, error) {
-	return &PipelineClient{
+func (c *Client) Pipeline() *Pipeline {
+	return &Pipeline{
 		Client: &Client{
 			baseClient: &baseClient{
 				opt:      c.opt,
@@ -16,38 +15,31 @@ func (c *Client) PipelineClient() (*PipelineClient, error) {
 				reqs: make([]Req, 0),
 			},
 		},
-	}, nil
-}
-
-func (c *Client) Pipelined(do func(*PipelineClient)) ([]Req, error) {
-	pc, err := c.PipelineClient()
-	if err != nil {
-		return nil, err
 	}
-	defer pc.Close()
-
-	do(pc)
-
-	return pc.RunQueued()
 }
 
-func (c *PipelineClient) Close() error {
+func (c *Client) Pipelined(f func(*Pipeline)) ([]Req, error) {
+	pc := c.Pipeline()
+	f(pc)
+	reqs, err := pc.Exec()
+	pc.Close()
+	return reqs, err
+}
+
+func (c *Pipeline) Close() error {
 	return nil
 }
 
-func (c *PipelineClient) DiscardQueued() {
-	c.reqsMtx.Lock()
+func (c *Pipeline) Discard() error {
 	c.reqs = c.reqs[:0]
-	c.reqsMtx.Unlock()
+	return nil
 }
 
-// TODO: rename to Run or ...
-// TODO: should return error if one of the commands failed
-func (c *PipelineClient) RunQueued() ([]Req, error) {
-	c.reqsMtx.Lock()
+// Always returns list of commands and error of the first failed
+// command if any.
+func (c *Pipeline) Exec() ([]Req, error) {
 	reqs := c.reqs
 	c.reqs = make([]Req, 0)
-	c.reqsMtx.Unlock()
 
 	if len(reqs) == 0 {
 		return []Req{}, nil
@@ -55,34 +47,39 @@ func (c *PipelineClient) RunQueued() ([]Req, error) {
 
 	cn, err := c.conn()
 	if err != nil {
-		return nil, err
+		return reqs, err
 	}
 
-	if err := c.runReqs(reqs, cn); err != nil {
-		c.removeConn(cn)
-		return nil, err
+	if err := c.execReqs(reqs, cn); err != nil {
+		c.freeConn(cn, err)
+		return reqs, err
 	}
 
 	c.putConn(cn)
 	return reqs, nil
 }
 
-func (c *PipelineClient) runReqs(reqs []Req, cn *conn) error {
+func (c *Pipeline) execReqs(reqs []Req, cn *conn) error {
 	err := c.writeReq(cn, reqs...)
 	if err != nil {
+		for _, req := range reqs {
+			req.SetErr(err)
+		}
 		return err
 	}
 
-	reqsLen := len(reqs)
-	for i := 0; i < reqsLen; i++ {
-		req := reqs[i]
+	var firstReqErr error
+	for _, req := range reqs {
 		val, err := req.ParseReply(cn.Rd)
 		if err != nil {
 			req.SetErr(err)
+			if err != nil {
+				firstReqErr = err
+			}
 		} else {
 			req.SetVal(val)
 		}
 	}
 
-	return nil
+	return firstReqErr
 }

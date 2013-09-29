@@ -55,32 +55,32 @@ func ExamplePipeline() {
 
 	var set *redis.StatusReq
 	var get *redis.StringReq
-	reqs, err := client.Pipelined(func(c *redis.PipelineClient) {
+	reqs, err := client.Pipelined(func(c *redis.Pipeline) {
 		set = c.Set("key1", "hello1")
 		get = c.Get("key2")
 	})
 	fmt.Println(err, reqs)
 	fmt.Println(set)
 	fmt.Println(get)
-	// Output: <nil> [SET key1 hello1: OK GET key2: (nil)]
+	// Output: (nil) [SET key1 hello1: OK GET key2: (nil)]
 	// SET key1 hello1: OK
 	// GET key2: (nil)
 }
 
-func transaction(multi *redis.MultiClient) ([]redis.Req, error) {
-	get := multi.Get("key")
+func incr(tx *redis.Multi) ([]redis.Req, error) {
+	get := tx.Get("key")
 	if err := get.Err(); err != nil && err != redis.Nil {
 		return nil, err
 	}
 
 	val, _ := strconv.ParseInt(get.Val(), 10, 64)
 
-	reqs, err := multi.Exec(func() {
-		multi.Set("key", strconv.FormatInt(val+1, 10))
+	reqs, err := tx.Exec(func() {
+		tx.Set("key", strconv.FormatInt(val+1, 10))
 	})
 	// Transaction failed. Repeat.
 	if err == redis.Nil {
-		return transaction(multi)
+		return incr(tx)
 	}
 	return reqs, err
 }
@@ -93,14 +93,13 @@ func ExampleTransaction() {
 
 	client.Del("key")
 
-	multi, err := client.MultiClient()
-	_ = err
-	defer multi.Close()
+	tx := client.Multi()
+	defer tx.Close()
 
-	watch := multi.Watch("key")
+	watch := tx.Watch("key")
 	_ = watch.Err()
 
-	reqs, err := transaction(multi)
+	reqs, err := incr(tx)
 	fmt.Println(err, reqs)
 
 	// Output: <nil> [SET key 1: OK]

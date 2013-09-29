@@ -1,67 +1,62 @@
 package redis
 
 import (
+	"errors"
 	"fmt"
-	"sync"
 )
 
-type MultiClient struct {
+var errDiscard = errors.New("redis: Discard can be used only inside Exec")
+
+// Not thread-safe.
+type Multi struct {
 	*Client
-	execMtx sync.Mutex
 }
 
-func (c *Client) MultiClient() (*MultiClient, error) {
-	return &MultiClient{
+func (c *Client) Multi() *Multi {
+	return &Multi{
 		Client: &Client{
 			baseClient: &baseClient{
 				opt:      c.opt,
 				connPool: newSingleConnPool(c.connPool, nil, true),
 			},
 		},
-	}, nil
+	}
 }
 
-func (c *MultiClient) Close() error {
+func (c *Multi) Close() error {
 	c.Unwatch()
 	return c.Client.Close()
 }
 
-func (c *MultiClient) Watch(keys ...string) *StatusReq {
+func (c *Multi) Watch(keys ...string) *StatusReq {
 	args := append([]string{"WATCH"}, keys...)
 	req := NewStatusReq(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *MultiClient) Unwatch(keys ...string) *StatusReq {
+func (c *Multi) Unwatch(keys ...string) *StatusReq {
 	args := append([]string{"UNWATCH"}, keys...)
 	req := NewStatusReq(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *MultiClient) Discard() {
-	c.reqsMtx.Lock()
+func (c *Multi) Discard() error {
 	if c.reqs == nil {
-		panic("Discard can be used only inside Exec")
+		return errDiscard
 	}
 	c.reqs = c.reqs[:1]
-	c.reqsMtx.Unlock()
+	return nil
 }
 
-func (c *MultiClient) Exec(do func()) ([]Req, error) {
-	c.reqsMtx.Lock()
+func (c *Multi) Exec(f func()) ([]Req, error) {
 	c.reqs = []Req{NewStatusReq("MULTI")}
-	c.reqsMtx.Unlock()
+	f()
+	c.reqs = append(c.reqs, NewIfaceSliceReq("EXEC"))
 
-	do()
-
-	c.queue(NewIfaceSliceReq("EXEC"))
-
-	c.reqsMtx.Lock()
 	reqs := c.reqs
 	c.reqs = nil
-	c.reqsMtx.Unlock()
 
 	if len(reqs) == 2 {
 		return []Req{}, nil
@@ -73,9 +68,7 @@ func (c *MultiClient) Exec(do func()) ([]Req, error) {
 	}
 
 	// Synchronize writes and reads to the connection using mutex.
-	c.execMtx.Lock()
 	err = c.execReqs(reqs, cn)
-	c.execMtx.Unlock()
 	if err != nil {
 		c.removeConn(cn)
 		return nil, err
@@ -85,7 +78,7 @@ func (c *MultiClient) Exec(do func()) ([]Req, error) {
 	return reqs[1 : len(reqs)-1], nil
 }
 
-func (c *MultiClient) execReqs(reqs []Req, cn *conn) error {
+func (c *Multi) execReqs(reqs []Req, cn *conn) error {
 	err := c.writeReq(cn, reqs...)
 	if err != nil {
 		return err
@@ -110,7 +103,7 @@ func (c *MultiClient) execReqs(reqs []Req, cn *conn) error {
 		return err
 	}
 	if line[0] != '*' {
-		return fmt.Errorf("Expected '*', but got line %q", line)
+		return fmt.Errorf("redis: expected '*', but got line %q", line)
 	}
 	if len(line) == 3 && line[1] == '-' && line[2] == '1' {
 		return Nil

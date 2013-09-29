@@ -5,7 +5,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"sync"
 	"time"
 )
 
@@ -19,8 +18,7 @@ type baseClient struct {
 
 	opt *Options
 
-	reqs    []Req
-	reqsMtx sync.Mutex
+	reqs []Req
 }
 
 func (c *baseClient) writeReq(cn *conn, reqs ...Req) error {
@@ -75,6 +73,14 @@ func (c *baseClient) init(cn *conn, password string, db int64) error {
 	return nil
 }
 
+func (c *baseClient) freeConn(cn *conn, err error) {
+	if err == Nil {
+		c.putConn(cn)
+	} else {
+		c.removeConn(cn)
+	}
+}
+
 func (c *baseClient) removeConn(cn *conn) {
 	if err := c.connPool.Remove(cn); err != nil {
 		Logger.Printf("connPool.Remove error: %v", err)
@@ -91,7 +97,7 @@ func (c *baseClient) Process(req Req) {
 	if c.reqs == nil {
 		c.run(req)
 	} else {
-		c.queue(req)
+		c.reqs = append(c.reqs, req)
 	}
 }
 
@@ -120,24 +126,13 @@ func (c *baseClient) run(req Req) {
 
 	val, err := req.ParseReply(cn.Rd)
 	if err != nil {
-		if err == Nil {
-			c.putConn(cn)
-		} else {
-			c.removeConn(cn)
-		}
+		c.freeConn(cn, err)
 		req.SetErr(err)
 		return
 	}
 
 	c.putConn(cn)
 	req.SetVal(val)
-}
-
-// Queues request to be executed later.
-func (c *baseClient) queue(req Req) {
-	c.reqsMtx.Lock()
-	c.reqs = append(c.reqs, req)
-	c.reqsMtx.Unlock()
 }
 
 func (c *baseClient) Close() error {
