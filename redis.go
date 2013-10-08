@@ -32,6 +32,12 @@ func TLSConnector(addr string, tlsConfig *tls.Config) OpenConnFunc {
 	}
 }
 
+func UnixConnector(addr string) OpenConnFunc {
+	return func() (net.Conn, error) {
+		return net.DialTimeout("unix", addr, 3*time.Second)
+	}
+}
+
 func AuthSelectFunc(password string, db int64) InitConnFunc {
 	if password == "" && db < 0 {
 		return nil
@@ -158,7 +164,6 @@ func (c *BaseClient) Close() error {
 
 type Client struct {
 	*BaseClient
-	TryEvalShaMinLen int
 }
 
 func NewClient(openConn OpenConnFunc, closeConn CloseConnFunc, initConn InitConnFunc) *Client {
@@ -167,7 +172,6 @@ func NewClient(openConn OpenConnFunc, closeConn CloseConnFunc, initConn InitConn
 			ConnPool: NewMultiConnPool(openConn, closeConn, 10),
 			InitConn: initConn,
 		},
-		TryEvalShaMinLen: 80,
 	}
 }
 
@@ -181,4 +185,8 @@ func NewTLSClient(addr string, tlsConfig *tls.Config, password string, db int64)
 		nil,
 		AuthSelectFunc(password, db),
 	)
+}
+
+func NewUnixClient(addr string, password string, db int64) *Client {
+	return NewClient(UnixConnector(addr), nil, AuthSelectFunc(password, db))
 }

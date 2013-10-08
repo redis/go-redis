@@ -5,7 +5,7 @@ import (
 )
 
 func formatFloat(f float64) string {
-	return strconv.FormatFloat(f, 'f', -1, 32)
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 //------------------------------------------------------------------------------
@@ -425,6 +425,12 @@ func (c *Client) HGetAll(key string) *StringSliceReq {
 	return req
 }
 
+func (c *Client) HGetAllMap(key string) *StringStringMapReq {
+	req := NewStringStringMapReq("HGETALL", key)
+	c.Process(req)
+	return req
+}
+
 func (c *Client) HIncrBy(key, field string, incr int64) *IntReq {
 	req := NewIntReq("HINCRBY", key, field, strconv.FormatInt(incr, 10))
 	c.Process(req)
@@ -784,6 +790,19 @@ func (c *Client) ZRangeWithScores(key string, start, stop int64) *StringSliceReq
 	return c.zRange(key, start, stop, true)
 }
 
+func (c *Client) ZRangeWithScoresMap(key string, start, stop int64) *StringFloatMapReq {
+	args := []string{
+		"ZRANGE",
+		key,
+		strconv.FormatInt(start, 10),
+		strconv.FormatInt(stop, 10),
+		"WITHSCORES",
+	}
+	req := NewStringFloatMapReq(args...)
+	c.Process(req)
+	return req
+}
+
 func (c *Client) zRangeByScore(
 	key string,
 	min, max string,
@@ -811,8 +830,24 @@ func (c *Client) ZRangeByScore(key string, min, max string, offset, count int64)
 	return c.zRangeByScore(key, min, max, false, offset, count)
 }
 
-func (c *Client) ZRangeByScoreWithScores(key string, min, max string, offset, count int64) *StringSliceReq {
+func (c *Client) ZRangeByScoreWithScores(key, min, max string, offset, count int64) *StringSliceReq {
 	return c.zRangeByScore(key, min, max, true, offset, count)
+}
+
+func (c *Client) ZRangeByScoreWithScoresMap(
+	key string, min, max string, offset, count int64) *StringFloatMapReq {
+	args := []string{"ZRANGEBYSCORE", key, min, max, "WITHSCORES"}
+	if offset != 0 || count != 0 {
+		args = append(
+			args,
+			"LIMIT",
+			strconv.FormatInt(offset, 10),
+			strconv.FormatInt(count, 10),
+		)
+	}
+	req := NewStringFloatMapReq(args...)
+	c.Process(req)
+	return req
 }
 
 func (c *Client) ZRank(key, member string) *IntReq {
@@ -863,6 +898,13 @@ func (c *Client) ZRevRangeWithScores(key, start, stop string) *StringSliceReq {
 	return c.zRevRange(key, start, stop, true)
 }
 
+func (c *Client) ZRevRangeWithScoresMap(key, start, stop string) *StringFloatMapReq {
+	args := []string{"ZREVRANGE", key, start, stop, "WITHSCORES"}
+	req := NewStringFloatMapReq(args...)
+	c.Process(req)
+	return req
+}
+
 func (c *Client) zRevRangeByScore(key, start, stop string, withScores bool, offset, count int64) *StringSliceReq {
 	args := []string{"ZREVRANGEBYSCORE", key, start, stop}
 	if withScores {
@@ -886,7 +928,23 @@ func (c *Client) ZRevRangeByScore(key, start, stop string, offset, count int64) 
 }
 
 func (c *Client) ZRevRangeByScoreWithScores(key, start, stop string, offset, count int64) *StringSliceReq {
-	return c.zRevRangeByScore(key, start, stop, false, offset, count)
+	return c.zRevRangeByScore(key, start, stop, true, offset, count)
+}
+
+func (c *Client) ZRevRangeByScoreWithScoresMap(
+	key, start, stop string, offset, count int64) *StringFloatMapReq {
+	args := []string{"ZREVRANGEBYSCORE", key, start, stop, "WITHSCORES"}
+	if offset != 0 || count != 0 {
+		args = append(
+			args,
+			"LIMIT",
+			strconv.FormatInt(offset, 10),
+			strconv.FormatInt(count, 10),
+		)
+	}
+	req := NewStringFloatMapReq(args...)
+	c.Process(req)
+	return req
 }
 
 func (c *Client) ZRevRank(key, member string) *IntReq {

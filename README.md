@@ -11,7 +11,7 @@ Supports:
 - TLS connections.
 - Thread safety.
 
-API docs: http://go.pkgdoc.org/github.com/vmihailenco/redis
+API docs: http://godoc.org/github.com/vmihailenco/redis
 
 Installation
 ------------
@@ -23,120 +23,149 @@ Install:
 Getting started
 ---------------
 
-Let's start with connecting to Redis:
+Let's start with connecting to Redis using TCP:
 
-    password := "" // no password set
-    db := -1 // use default DB
-    client := redis.NewTCPClient("localhost:6379", password, db)
-    defer client.Close()
+```go
+password := ""  // no password set
+db := int64(-1) // use default DB
+client := redis.NewTCPClient("localhost:6379", password, db)
+defer client.Close()
 
+ping := client.Ping()
+fmt.Println(ping.Err(), ping.Val())
+// Output: <nil> PONG
+```
+or using Unix socket:
+
+```go
+client := redis.NewUnixClient("/tmp/redis.sock", "", -1)
+defer client.Close()
+
+ping := client.Ping()
+fmt.Println(ping.Err(), ping.Val())
+// Output: <nil> PONG
+```
 Then we can start sending commands:
 
-    if err := client.Set("foo", "bar"); err != nil { panic(err) }
+```go
+set := client.Set("foo", "bar")
+fmt.Println(set.Err(), set.Val())
 
-    get := client.Get("foo")
-    if err := get.Err(); err != nil { panic(err) }
-    fmt.Println(get.Val())
+get := client.Get("foo")
+fmt.Println(get.Err(), get.Val())
+
+// Output: <nil> OK
+// <nil> bar
+```
 
 We can also pipeline two commands together:
 
-    var set *redis.StatusReq
-    var get *redis.StringReq
-    reqs, err := client.Pipelined(func(c *redis.PipelineClient)) {
-        set = c.Set("key1", "hello1")
-        get = c.Get("key2")
-    }
-    if err != nil { panic(err) }
-    if err := set.Err(); err != nil { panic(err) }
-    if err := get.Err(); err != nil { panic(err) }
-    fmt.Println(get.Val())
-    fmt.Println(reqs[0] == set)
-    fmt.Println(reqs[1] == get)
-
+```go
+var set *redis.StatusReq
+var get *redis.StringReq
+reqs, err := client.Pipelined(func(c *redis.PipelineClient) {
+    set = c.Set("key1", "hello1")
+    get = c.Get("key2")
+})
+fmt.Println(err, reqs)
+fmt.Println(set)
+fmt.Println(get)
+// Output: <nil> [SET key1 hello1: OK GET key2: (nil)]
+// SET key1 hello1: OK
+// GET key2: (nil)
+```
 or:
 
-    pipeline, err := client.PipelineClient()
-    if err != nil {
-        panic(err)
-    }
-    defer pipeline.Close()
-
-    set := pipeline.Set("key1", "hello1")
-    get := pipleine.Get("key2")
-
-    reqs, err := pipeline.RunQueued()
-    if err != nil { panic(err) }
-
-    if err := set.Err(); err != nil { panic(err) }
-    if err := get.Err(); err != nil { panic(err) }
-    fmt.Println(get.Val())
-    fmt.Println(reqs[0] == set)
-    fmt.Println(reqs[1] == get)
+```go
+var set *redis.StatusReq
+var get *redis.StringReq
+reqs, err := client.Pipelined(func(c *redis.PipelineClient) {
+    set = c.Set("key1", "hello1")
+    get = c.Get("key2")
+})
+fmt.Println(err, reqs)
+fmt.Println(set)
+fmt.Println(get)
+// Output: <nil> [SET key1 hello1 GET key2]
+// SET key1 hello1
+// GET key2
+```
 
 We can also send several commands in transaction:
 
-    func incrKeyInTransaction(multi *redis.MultiClient) ([]redis.Req, error) {
-        get := multi.Get("key")
-        if err := get.Err(); err != nil {
-            panic(err)
-        }
-
-        val, err := strconv.ParseInt(get.Val(), 10, 64)
-        if err != nil { panic(err) }
-
-        reqs, err = multi.Exec(func() {
-            multi.Set("key", val + 1)
-        })
-        // Transaction failed. Repeat.
-        if err == redis.Nil {
-            return incrKeyInTransaction(multi)
-        }
-        return reqs, err
+```go
+func transaction(multi *redis.MultiClient) ([]redis.Req, error) {
+    get := multi.Get("key")
+    if err := get.Err(); err != nil && err != redis.Nil {
+        return nil, err
     }
 
-    multi, err := client.MultiClient()
-    if err != nil { panic(err) }
-    defer multi.Close()
+    val, _ := strconv.ParseInt(get.Val(), 10, 64)
 
-    watch := multi.Watch("key")
-    if err := watch.Err(); err != nil { panic(err) }
-
-    reqs, err := incrKeyInTransaction(multi)
-    if err != nil { panic(err) }
-    for _, req := range reqs {
-        // ...
+    reqs, err := multi.Exec(func() {
+        multi.Set("key", strconv.FormatInt(val+1, 10))
+    })
+    // Transaction failed. Repeat.
+    if err == redis.Nil {
+        return transaction(multi)
     }
+    return reqs, err
+}
+
+multi, err := client.MultiClient()
+_ = err
+defer multi.Close()
+
+watch := multi.Watch("key")
+_ = watch.Err()
+
+reqs, err := transaction(multi)
+fmt.Println(err, reqs)
+
+// Output: <nil> [SET key 1: OK]
+```
 
 To subscribe to the channel:
 
-    pubsub, err := client.PubSubClient()
-    if err != nil { panic(err) }
-    defer pubsub.Close()
+```go
+pubsub, err := client.PubSubClient()
+defer pubsub.Close()
 
-    ch, err := pubsub.Subscribe("mychannel")
-    if err != nil { panic(err) }
+ch, err := pubsub.Subscribe("mychannel")
+_ = err
 
-    go func() {
-        for msg := range ch {
-            if err := msg.Err; err != nil { panic(err) }
-            message := msg.Message
-        }
-    }
+subscribeMsg := <-ch
+fmt.Println(subscribeMsg.Err, subscribeMsg.Name)
+
+pub := client.Publish("mychannel", "hello")
+_ = pub.Err()
+
+msg := <-ch
+fmt.Println(msg.Err, msg.Message)
+
+// Output: <nil> subscribe
+// <nil> hello
+```
 
 You can also write custom commands:
 
-    func Get(client *redis.Client, key string) *redis.StringReq {
-        req := redis.NewStringReq("GET", key)
-        client.Process(req)
-        return req
-    }
+```go
+func Get(client *redis.Client, key string) *redis.StringReq {
+    req := redis.NewStringReq("GET", key)
+    client.Process(req)
+    return req
+}
 
-    get := Get(redisClient, "key")
-    if err := get.Err(); err != nil && err != redis.Nil { panic(err) }
+get := Get(client, "key_does_not_exist")
+fmt.Println(get.Err(), get.Val())
+// Output: (nil)
+```
 
 Client uses connection pool to send commands. You can change maximum number of connections with:
 
-    client.ConnPool.(*redis.MultiConnPool).MaxCap = 1
+```go
+client.ConnPool.(*redis.MultiConnPool).MaxCap = 1
+```
 
 Look and feel
 -------------

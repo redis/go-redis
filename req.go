@@ -1,7 +1,9 @@
 package redis
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
 )
 
 type Req interface {
@@ -62,6 +64,16 @@ func (r *BaseReq) IfaceVal() interface{} {
 
 func (r *BaseReq) ParseReply(rd reader) (interface{}, error) {
 	return parseReply(rd)
+}
+
+func (r *BaseReq) String() string {
+	args := strings.Join(r.args, " ")
+	if r.err != nil {
+		return args + ": " + r.err.Error()
+	} else if r.val != nil {
+		return args + ": " + fmt.Sprint(r.val)
+	}
+	return args
 }
 
 //------------------------------------------------------------------------------
@@ -254,4 +266,50 @@ func (r *BoolSliceReq) Val() []bool {
 		return nil
 	}
 	return r.val.([]bool)
+}
+
+//------------------------------------------------------------------------------
+
+type StringStringMapReq struct {
+	*BaseReq
+}
+
+func NewStringStringMapReq(args ...string) *StringStringMapReq {
+	return &StringStringMapReq{
+		BaseReq: NewBaseReq(args...),
+	}
+}
+
+func (r *StringStringMapReq) ParseReply(rd reader) (interface{}, error) {
+	return parseStringStringMapReply(rd)
+}
+
+func (r *StringStringMapReq) Val() map[string]string {
+	if r.val == nil {
+		return nil
+	}
+	return r.val.(map[string]string)
+}
+
+//------------------------------------------------------------------------------
+
+type StringFloatMapReq struct {
+	*BaseReq
+}
+
+func NewStringFloatMapReq(args ...string) *StringFloatMapReq {
+	return &StringFloatMapReq{
+		BaseReq: NewBaseReq(args...),
+	}
+}
+
+func (r *StringFloatMapReq) ParseReply(rd reader) (interface{}, error) {
+	return parseStringFloatMapReply(rd)
+}
+
+func (r *StringFloatMapReq) Val() map[string]float64 {
+	if r.val == nil {
+		return nil
+	}
+	return r.val.(map[string]float64)
 }

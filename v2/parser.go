@@ -18,28 +18,21 @@ const (
 	stringFloatMap
 )
 
-// Represents Redis nil reply.
+// Redis nil reply.
 var Nil = errors.New("(nil)")
 
+// Redis transaction failed.
+var TxFailedErr = errors.New("redis: transaction failed")
+
 var (
-	errReaderTooSmall = errors.New("redis: reader is too small")
-	errValNotSet      = errors.New("redis: value is not set")
-	errInvalidType    = errors.New("redis: invalid reply type")
+	errReaderTooSmall   = errors.New("redis: reader is too small")
+	errValNotSet        = errors.New("redis: value is not set")
+	errInvalidReplyType = errors.New("redis: invalid reply type")
 )
 
 //------------------------------------------------------------------------------
 
-type parserError struct {
-	err error
-}
-
-func (e *parserError) Error() string {
-	return e.err.Error()
-}
-
-//------------------------------------------------------------------------------
-
-func appendReq(buf []byte, args []string) []byte {
+func appendCmd(buf []byte, args []string) []byte {
 	buf = append(buf, '*')
 	buf = strconv.AppendUint(buf, uint64(len(args)), 10)
 	buf = append(buf, '\r', '\n')
@@ -60,6 +53,7 @@ type reader interface {
 	Read([]byte) (int, error)
 	ReadN(n int) ([]byte, error)
 	Buffered() int
+	Peek(int) ([]byte, error)
 }
 
 func readLine(rd reader) ([]byte, error) {
@@ -99,7 +93,7 @@ func readN(rd reader, n int) ([]byte, error) {
 
 //------------------------------------------------------------------------------
 
-func ParseReq(rd reader) ([]string, error) {
+func parseReq(rd reader) ([]string, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -162,7 +156,7 @@ func parseStringFloatMapReply(rd reader) (interface{}, error) {
 func _parseReply(rd reader, typ replyType) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
-		return 0, &parserError{err}
+		return 0, err
 	}
 
 	switch line[0] {
@@ -173,7 +167,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 	case ':':
 		v, err := strconv.ParseInt(string(line[1:]), 10, 64)
 		if err != nil {
-			return 0, &parserError{err}
+			return 0, err
 		}
 		return v, nil
 	case '$':
@@ -183,13 +177,13 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 
 		replyLenInt32, err := strconv.ParseInt(string(line[1:]), 10, 32)
 		if err != nil {
-			return "", &parserError{err}
+			return "", err
 		}
 		replyLen := int(replyLenInt32) + 2
 
 		line, err = readN(rd, replyLen)
 		if err != nil {
-			return "", &parserError{err}
+			return "", err
 		}
 		return string(line[:len(line)-2]), nil
 	case '*':
@@ -199,7 +193,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 
 		repliesNum, err := strconv.ParseInt(string(line[1:]), 10, 64)
 		if err != nil {
-			return nil, &parserError{err}
+			return nil, err
 		}
 
 		switch typ {
@@ -213,7 +207,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 				if v, ok := vi.(string); ok {
 					vals = append(vals, v)
 				} else {
-					return nil, errInvalidType
+					return nil, errInvalidReplyType
 				}
 			}
 			return vals, nil
@@ -227,7 +221,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 				if v, ok := vi.(int64); ok {
 					vals = append(vals, v == 1)
 				} else {
-					return nil, errInvalidType
+					return nil, errInvalidReplyType
 				}
 			}
 			return vals, nil
@@ -240,7 +234,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 				}
 				key, ok := keyI.(string)
 				if !ok {
-					return nil, errInvalidType
+					return nil, errInvalidReplyType
 				}
 
 				valueI, err := parseReply(rd)
@@ -249,7 +243,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 				}
 				value, ok := valueI.(string)
 				if !ok {
-					return nil, errInvalidType
+					return nil, errInvalidReplyType
 				}
 
 				m[key] = value
@@ -264,7 +258,7 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 				}
 				key, ok := keyI.(string)
 				if !ok {
-					return nil, errInvalidType
+					return nil, errInvalidReplyType
 				}
 
 				valueI, err := parseReply(rd)
@@ -273,11 +267,11 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 				}
 				valueS, ok := valueI.(string)
 				if !ok {
-					return nil, errInvalidType
+					return nil, errInvalidReplyType
 				}
 				value, err := strconv.ParseFloat(valueS, 64)
 				if err != nil {
-					return nil, &parserError{err}
+					return nil, err
 				}
 
 				m[key] = value
@@ -298,7 +292,6 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 			return vals, nil
 		}
 	default:
-		return nil, &parserError{fmt.Errorf("redis: can't parse %q", line)}
+		return nil, fmt.Errorf("redis: can't parse %q", line)
 	}
-	panic("not reachable")
 }
