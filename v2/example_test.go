@@ -152,12 +152,12 @@ func ExampleScript() {
 	defer client.Close()
 
 	setnx := redis.NewScript(`
-		if redis.call("get", KEYS[1]) == false then
-			redis.call("set", KEYS[1], ARGV[1])
-			return 1
-		end
-		return 0
-	`)
+        if redis.call("get", KEYS[1]) == false then
+            redis.call("set", KEYS[1], ARGV[1])
+            return 1
+        end
+        return 0
+    `)
 
 	run1 := setnx.Run(client, []string{"keynx"}, []string{"foo"})
 	fmt.Println(run1.Val().(int64), run1.Err())
