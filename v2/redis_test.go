@@ -431,13 +431,13 @@ func (t *RedisTest) TestCmdKeysExpire(c *C) {
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
 
-	expire := t.client.Expire("key", 10)
+	expire := t.client.Expire("key", 10*time.Second)
 	c.Assert(expire.Err(), IsNil)
 	c.Assert(expire.Val(), Equals, true)
 
 	ttl := t.client.TTL("key")
 	c.Assert(ttl.Err(), IsNil)
-	c.Assert(ttl.Val(), Equals, int64(10))
+	c.Assert(ttl.Val(), Equals, 10*time.Second)
 
 	set = t.client.Set("key", "Hello World")
 	c.Assert(set.Err(), IsNil)
@@ -445,7 +445,7 @@ func (t *RedisTest) TestCmdKeysExpire(c *C) {
 
 	ttl = t.client.TTL("key")
 	c.Assert(ttl.Err(), IsNil)
-	c.Assert(ttl.Val(), Equals, int64(-1))
+	c.Assert(ttl.Val(), Equals, time.Duration(-1))
 }
 
 func (t *RedisTest) TestCmdKeysExpireAt(c *C) {
@@ -457,7 +457,7 @@ func (t *RedisTest) TestCmdKeysExpireAt(c *C) {
 	c.Assert(exists.Err(), IsNil)
 	c.Assert(exists.Val(), Equals, true)
 
-	expireAt := t.client.ExpireAt("key", 1293840000)
+	expireAt := t.client.ExpireAt("key", time.Now().Add(-time.Hour))
 	c.Assert(expireAt.Err(), IsNil)
 	c.Assert(expireAt.Val(), Equals, true)
 
@@ -543,7 +543,7 @@ func (t *RedisTest) TestCmdKeysObject(c *C) {
 
 	idleTime := t.client.ObjectIdleTime("key")
 	c.Assert(idleTime.Err(), IsNil)
-	c.Assert(idleTime.Val(), Equals, int64(0))
+	c.Assert(idleTime.Val(), Equals, time.Duration(0))
 }
 
 func (t *RedisTest) TestCmdKeysPersist(c *C) {
@@ -551,13 +551,13 @@ func (t *RedisTest) TestCmdKeysPersist(c *C) {
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
 
-	expire := t.client.Expire("key", 10)
+	expire := t.client.Expire("key", 10*time.Second)
 	c.Assert(expire.Err(), IsNil)
 	c.Assert(expire.Val(), Equals, true)
 
 	ttl := t.client.TTL("key")
 	c.Assert(ttl.Err(), IsNil)
-	c.Assert(ttl.Val(), Equals, int64(10))
+	c.Assert(ttl.Val(), Equals, 10*time.Second)
 
 	persist := t.client.Persist("key")
 	c.Assert(persist.Err(), IsNil)
@@ -565,7 +565,7 @@ func (t *RedisTest) TestCmdKeysPersist(c *C) {
 
 	ttl = t.client.TTL("key")
 	c.Assert(ttl.Err(), IsNil)
-	c.Assert(ttl.Val(), Equals, int64(-1))
+	c.Assert(ttl.Val(), Equals, time.Duration(-1))
 }
 
 func (t *RedisTest) TestCmdKeysPExpire(c *C) {
@@ -573,17 +573,17 @@ func (t *RedisTest) TestCmdKeysPExpire(c *C) {
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
 
-	pexpire := t.client.PExpire("key", 1900)
+	pexpire := t.client.PExpire("key", 900*time.Millisecond)
 	c.Assert(pexpire.Err(), IsNil)
 	c.Assert(pexpire.Val(), Equals, true)
 
 	ttl := t.client.TTL("key")
 	c.Assert(ttl.Err(), IsNil)
-	c.Assert(ttl.Val(), Equals, int64(2))
+	c.Assert(ttl.Val(), Equals, time.Second)
 
 	pttl := t.client.PTTL("key")
 	c.Assert(pttl.Err(), IsNil)
-	c.Assert(pttl.Val() > 1800 && pttl.Val() <= 1900, Equals, true)
+	c.Assert(pttl.Val(), Equals, 900*time.Millisecond)
 }
 
 func (t *RedisTest) TestCmdKeysPExpireAt(c *C) {
@@ -591,17 +591,17 @@ func (t *RedisTest) TestCmdKeysPExpireAt(c *C) {
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
 
-	pExpireAt := t.client.PExpireAt("key", 1555555555005)
+	pExpireAt := t.client.PExpireAt("key", time.Now().Add(900*time.Millisecond))
 	c.Assert(pExpireAt.Err(), IsNil)
 	c.Assert(pExpireAt.Val(), Equals, true)
 
 	ttl := t.client.TTL("key")
 	c.Assert(ttl.Err(), IsNil)
-	c.Assert(ttl.Val(), Not(Equals), int64(0))
+	c.Assert(ttl.Val(), Equals, time.Second)
 
 	pttl := t.client.PTTL("key")
 	c.Assert(pttl.Err(), IsNil)
-	c.Assert(pttl.Val(), Not(Equals), int64(0))
+	c.Assert(pttl.Val(), Equals, 900*time.Millisecond)
 }
 
 func (t *RedisTest) TestCmdKeysPTTL(c *C) {
@@ -609,13 +609,13 @@ func (t *RedisTest) TestCmdKeysPTTL(c *C) {
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
 
-	expire := t.client.Expire("key", 1)
+	expire := t.client.Expire("key", time.Second)
 	c.Assert(expire.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
 
 	pttl := t.client.PTTL("key")
 	c.Assert(pttl.Err(), IsNil)
-	c.Assert(pttl.Val() > 900 && pttl.Val() <= 1000, Equals, true)
+	c.Assert(pttl.Val(), Equals, time.Second)
 }
 
 func (t *RedisTest) TestCmdKeysRandomKey(c *C) {
@@ -703,19 +703,19 @@ func (t *RedisTest) TestCmdKeysSort(c *C) {
 func (t *RedisTest) TestCmdKeysTTL(c *C) {
 	ttl := t.client.TTL("key")
 	c.Assert(ttl.Err(), IsNil)
-	c.Assert(ttl.Val(), Equals, int64(-1))
+	c.Assert(ttl.Val(), Equals, time.Duration(-1))
 
 	set := t.client.Set("key", "hello")
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
 
-	expire := t.client.Expire("key", 60)
+	expire := t.client.Expire("key", 60*time.Second)
 	c.Assert(expire.Err(), IsNil)
 	c.Assert(expire.Val(), Equals, true)
 
 	ttl = t.client.TTL("key")
 	c.Assert(ttl.Err(), IsNil)
-	c.Assert(ttl.Val(), Equals, int64(60))
+	c.Assert(ttl.Val(), Equals, 60*time.Second)
 }
 
 func (t *RedisTest) TestCmdKeysType(c *C) {
@@ -999,13 +999,13 @@ func (t *RedisTest) TestStringsMSetNX(c *C) {
 }
 
 func (t *RedisTest) TestStringsPSetEx(c *C) {
-	pSetEx := t.client.PSetEx("key", 1000, "hello")
+	pSetEx := t.client.PSetEx("key", 50*time.Millisecond, "hello")
 	c.Assert(pSetEx.Err(), IsNil)
 	c.Assert(pSetEx.Val(), Equals, "OK")
 
 	pttl := t.client.PTTL("key")
 	c.Assert(pttl.Err(), IsNil)
-	c.Assert(pttl.Val() > 900 && pttl.Val() <= 1000, Equals, true)
+	c.Assert(pttl.Val(), Equals, 50*time.Millisecond)
 
 	get := t.client.Get("key")
 	c.Assert(get.Err(), IsNil)
@@ -1023,13 +1023,13 @@ func (t *RedisTest) TestStringsSetGet(c *C) {
 }
 
 func (t *RedisTest) TestStringsSetEx(c *C) {
-	setEx := t.client.SetEx("key", 10, "hello")
+	setEx := t.client.SetEx("key", 10*time.Second, "hello")
 	c.Assert(setEx.Err(), IsNil)
 	c.Assert(setEx.Val(), Equals, "OK")
 
 	ttl := t.client.TTL("key")
 	c.Assert(ttl.Err(), IsNil)
-	c.Assert(ttl.Val(), Equals, int64(10))
+	c.Assert(ttl.Val(), Equals, 10*time.Second)
 }
 
 func (t *RedisTest) TestStringsSetNX(c *C) {

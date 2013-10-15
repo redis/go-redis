@@ -67,14 +67,14 @@ func (c *Client) Exists(key string) *BoolCmd {
 	return req
 }
 
-func (c *Client) Expire(key string, seconds int64) *BoolCmd {
-	req := NewBoolCmd("EXPIRE", key, strconv.FormatInt(seconds, 10))
+func (c *Client) Expire(key string, dur time.Duration) *BoolCmd {
+	req := NewBoolCmd("EXPIRE", key, strconv.FormatInt(int64(dur/time.Second), 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ExpireAt(key string, timestamp int64) *BoolCmd {
-	req := NewBoolCmd("EXPIREAT", key, strconv.FormatInt(timestamp, 10))
+func (c *Client) ExpireAt(key string, tm time.Time) *BoolCmd {
+	req := NewBoolCmd("EXPIREAT", key, strconv.FormatInt(tm.Unix(), 10))
 	c.Process(req)
 	return req
 }
@@ -119,9 +119,9 @@ func (c *Client) ObjectEncoding(keys ...string) *StringCmd {
 	return req
 }
 
-func (c *Client) ObjectIdleTime(keys ...string) *IntCmd {
+func (c *Client) ObjectIdleTime(keys ...string) *DurationCmd {
 	args := append([]string{"OBJECT", "IDLETIME"}, keys...)
-	req := NewIntCmd(args...)
+	req := NewDurationCmd(time.Second, args...)
 	c.Process(req)
 	return req
 }
@@ -132,20 +132,24 @@ func (c *Client) Persist(key string) *BoolCmd {
 	return req
 }
 
-func (c *Client) PExpire(key string, milliseconds int64) *BoolCmd {
-	req := NewBoolCmd("PEXPIRE", key, strconv.FormatInt(milliseconds, 10))
+func (c *Client) PExpire(key string, dur time.Duration) *BoolCmd {
+	req := NewBoolCmd("PEXPIRE", key, strconv.FormatInt(int64(dur/time.Millisecond), 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) PExpireAt(key string, milliseconds int64) *BoolCmd {
-	req := NewBoolCmd("PEXPIREAT", key, strconv.FormatInt(milliseconds, 10))
+func (c *Client) PExpireAt(key string, tm time.Time) *BoolCmd {
+	req := NewBoolCmd(
+		"PEXPIREAT",
+		key,
+		strconv.FormatInt(tm.UnixNano()/int64(time.Millisecond), 10),
+	)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) PTTL(key string) *IntCmd {
-	req := NewIntCmd("PTTL", key)
+func (c *Client) PTTL(key string) *DurationCmd {
+	req := NewDurationCmd(time.Millisecond, "PTTL", key)
 	c.Process(req)
 	return req
 }
@@ -213,8 +217,8 @@ func (c *Client) Sort(key string, sort Sort) *StringSliceCmd {
 	return req
 }
 
-func (c *Client) TTL(key string) *IntCmd {
-	req := NewIntCmd("TTL", key)
+func (c *Client) TTL(key string) *DurationCmd {
+	req := NewDurationCmd(time.Second, "TTL", key)
 	c.Process(req)
 	return req
 }
@@ -355,11 +359,11 @@ func (c *Client) MSetNX(pairs ...string) *BoolCmd {
 	return req
 }
 
-func (c *Client) PSetEx(key string, milliseconds int64, value string) *StatusCmd {
+func (c *Client) PSetEx(key string, dur time.Duration, value string) *StatusCmd {
 	req := NewStatusCmd(
 		"PSETEX",
 		key,
-		strconv.FormatInt(milliseconds, 10),
+		strconv.FormatInt(int64(dur/time.Millisecond), 10),
 		value,
 	)
 	c.Process(req)
@@ -383,8 +387,8 @@ func (c *Client) SetBit(key string, offset int64, value int) *IntCmd {
 	return req
 }
 
-func (c *Client) SetEx(key string, seconds int64, value string) *StatusCmd {
-	req := NewStatusCmd("SETEX", key, strconv.FormatInt(seconds, 10), value)
+func (c *Client) SetEx(key string, dur time.Duration, value string) *StatusCmd {
+	req := NewStatusCmd("SETEX", key, strconv.FormatInt(int64(dur/time.Second), 10), value)
 	c.Process(req)
 	return req
 }
@@ -1064,10 +1068,6 @@ func (c *Client) LastSave() *IntCmd {
 	req := NewIntCmd("LASTSAVE")
 	c.Process(req)
 	return req
-}
-
-func (c *Client) Monitor() {
-	panic("not implemented")
 }
 
 func (c *Client) Save() *StatusCmd {

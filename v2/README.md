@@ -21,6 +21,11 @@ Install:
 
     go get github.com/vmihailenco/redis/v2
 
+Updgrading from previous version
+--------------------------------
+
+Type system should catch most changes. But you have manually change `SetEx`, `PSetEx`, `Expire` and `PExpire` to use `time.Duration` instead of `int64`.
+
 Getting started
 ---------------
 

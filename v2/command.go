@@ -156,6 +156,39 @@ func (cmd *IntCmd) Val() int64 {
 
 //------------------------------------------------------------------------------
 
+type DurationCmd struct {
+	*baseCmd
+	precision time.Duration
+}
+
+func NewDurationCmd(precision time.Duration, args ...string) *DurationCmd {
+	return &DurationCmd{
+		baseCmd:   newBaseCmd(args...),
+		precision: precision,
+	}
+}
+
+func (cmd *DurationCmd) parseReply(rd reader) (interface{}, error) {
+	v, err := parseReply(rd)
+	if err != nil {
+		return 0, err
+	}
+	vv := time.Duration(v.(int64))
+	if vv == -1 {
+		return vv, nil
+	}
+	return vv * cmd.precision, nil
+}
+
+func (cmd *DurationCmd) Val() time.Duration {
+	if cmd.val == nil {
+		return 0
+	}
+	return cmd.val.(time.Duration)
+}
+
+//------------------------------------------------------------------------------
+
 type BoolCmd struct {
 	*baseCmd
 }
