@@ -1,16 +1,11 @@
 package redis
 
 import (
-	"log"
 	"net"
-	"os"
 	"time"
+
+	"github.com/golang/glog"
 )
-
-// Package logger.
-var Logger = log.New(os.Stdout, "redis: ", log.Ldate|log.Ltime)
-
-//------------------------------------------------------------------------------
 
 type baseClient struct {
 	connPool pool
@@ -82,13 +77,13 @@ func (c *baseClient) freeConn(cn *conn, err error) {
 
 func (c *baseClient) removeConn(cn *conn) {
 	if err := c.connPool.Remove(cn); err != nil {
-		Logger.Printf("connPool.Remove error: %v", err)
+		glog.Errorf("pool.Remove failed: %s", err)
 	}
 }
 
 func (c *baseClient) putConn(cn *conn) {
 	if err := c.connPool.Put(cn); err != nil {
-		Logger.Printf("connPool.Add error: %v", err)
+		glog.Errorf("pool.Put failed: %s", err)
 	}
 }
 
