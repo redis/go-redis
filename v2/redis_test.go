@@ -267,7 +267,7 @@ func (t *RedisTest) TestCmdStringMethod(c *C) {
 
 func (t *RedisTest) TestCmdStringMethodError(c *C) {
 	get2 := t.client.Get("key_does_not_exists")
-	c.Assert(get2.String(), Equals, "GET key_does_not_exists: (nil)")
+	c.Assert(get2.String(), Equals, "GET key_does_not_exists: redis: nil")
 }
 
 func (t *RedisTest) TestRunWithouthCheckingErrVal(c *C) {

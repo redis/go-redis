@@ -19,7 +19,7 @@ const (
 )
 
 // Redis nil reply.
-var Nil = errors.New("(nil)")
+var Nil = errors.New("redis: nil")
 
 // Redis transaction failed.
 var TxFailedErr = errors.New("redis: transaction failed")

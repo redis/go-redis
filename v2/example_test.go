@@ -7,6 +7,14 @@ import (
 	"github.com/vmihailenco/redis/v2"
 )
 
+var client *redis.Client
+
+func init() {
+	client = redis.NewTCPClient(&redis.Options{
+		Addr: ":6379",
+	})
+}
+
 func ExampleNewTCPClient() {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr:     "localhost:6379",
@@ -32,27 +40,17 @@ func ExampleNewUnixClient() {
 }
 
 func ExampleClient() {
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: ":6379",
-	})
-	defer client.Close()
-
 	set := client.Set("foo", "bar")
 	fmt.Println(set.Val(), set.Err())
 
-	get := client.Get("foo")
-	fmt.Println(get.Val(), get.Err())
+	get := client.Get("hello")
+	fmt.Printf("%q %s %v", get.Val(), get.Err(), get.Err() == redis.Nil)
 
 	// Output: OK <nil>
-	// bar <nil>
+	// "" redis: nil true
 }
 
 func ExampleClient_Pipelined() {
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: ":6379",
-	})
-	defer client.Close()
-
 	cmds, err := client.Pipelined(func(c *redis.Pipeline) {
 		c.Set("key1", "hello1")
 		c.Get("key1")
@@ -64,21 +62,16 @@ func ExampleClient_Pipelined() {
 }
 
 func ExamplePipeline() {
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: ":6379",
-	})
-	defer client.Close()
-
 	pipeline := client.Pipeline()
 	set := pipeline.Set("key1", "hello1")
-	get := pipeline.Get("key2")
+	get := pipeline.Get("key1")
 	cmds, err := pipeline.Exec()
 	fmt.Println(cmds, err)
 	fmt.Println(set)
 	fmt.Println(get)
-	// Output: [SET key1 hello1: OK GET key2: (nil)] (nil)
+	// Output: [SET key1 hello1: OK GET key1: hello1] <nil>
 	// SET key1 hello1: OK
-	// GET key2: (nil)
+	// GET key1: hello1
 }
 
 func ExampleMulti() {
@@ -94,11 +87,6 @@ func ExampleMulti() {
 			tx.Set("key", strconv.FormatInt(val+1, 10))
 		})
 	}
-
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: ":6379",
-	})
-	defer client.Close()
 
 	client.Del("key")
 
@@ -123,11 +111,6 @@ func ExampleMulti() {
 }
 
 func ExamplePubSub() {
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: ":6379",
-	})
-	defer client.Close()
-
 	pubsub := client.PubSub()
 	defer pubsub.Close()
 
@@ -148,11 +131,6 @@ func ExamplePubSub() {
 }
 
 func ExampleScript() {
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: ":6379",
-	})
-	defer client.Close()
-
 	setnx := redis.NewScript(`
         if redis.call("get", KEYS[1]) == false then
             redis.call("set", KEYS[1], ARGV[1])
@@ -182,12 +160,7 @@ func Example_customCommand() {
 		return cmd
 	}
 
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: ":6379",
-	})
-	defer client.Close()
-
 	get := Get(client, "key_does_not_exist")
 	fmt.Printf("%q %s", get.Val(), get.Err())
-	// Output: "" (nil)
+	// Output: "" redis: nil
 }
