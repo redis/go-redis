@@ -38,13 +38,13 @@ func ExampleClient() {
 	defer client.Close()
 
 	set := client.Set("foo", "bar")
-	fmt.Println(set.Err(), set.Val())
+	fmt.Println(set.Val(), set.Err())
 
 	get := client.Get("foo")
-	fmt.Println(get.Err(), get.Val())
+	fmt.Println(get.Val(), get.Err())
 
-	// Output: <nil> OK
-	// <nil> bar
+	// Output: OK <nil>
+	// bar <nil>
 }
 
 func ExampleClient_Pipelined() {
@@ -55,10 +55,12 @@ func ExampleClient_Pipelined() {
 
 	cmds, err := client.Pipelined(func(c *redis.Pipeline) {
 		c.Set("key1", "hello1")
-		c.Get("key2")
+		c.Get("key1")
 	})
-	fmt.Println(cmds, err)
-	// Output: [SET key1 hello1: OK GET key2: (nil)] (nil)
+	set := cmds[0].(*redis.StatusCmd)
+	get := cmds[1].(*redis.StringCmd)
+	fmt.Println(set, get, err)
+	// Output: SET key1 hello1: OK GET key1: hello1 <nil>
 }
 
 func ExamplePipeline() {
