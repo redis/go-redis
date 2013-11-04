@@ -31,7 +31,7 @@ func newConn(netcn net.Conn) *conn {
 	cn := &conn{
 		cn: netcn,
 	}
-	cn.rd = bufio.NewReaderSize(cn, 1024)
+	cn.rd = bufio.NewReader(cn)
 	return cn
 }
 
@@ -51,6 +51,10 @@ func (cn *conn) Write(b []byte) (int, error) {
 		cn.cn.SetReadDeadline(time.Time{})
 	}
 	return cn.cn.Write(b)
+}
+
+func (cn *conn) Close() error {
+	return cn.cn.Close()
 }
 
 //------------------------------------------------------------------------------
@@ -129,7 +133,7 @@ func (p *connPool) Put(cn *conn) error {
 func (p *connPool) Remove(cn *conn) error {
 	var err error
 	if cn != nil {
-		err = p.closeConn(cn)
+		err = cn.Close()
 	}
 	p.cond.L.Lock()
 	p.size--
@@ -155,7 +159,7 @@ func (p *connPool) Close() error {
 	p.cond.L.Lock()
 
 	for e := p.conns.Front(); e != nil; e = e.Next() {
-		if err := p.closeConn(e.Value.(*conn)); err != nil {
+		if err := e.Value.(*conn).Close(); err != nil {
 			return err
 		}
 	}
@@ -163,10 +167,6 @@ func (p *connPool) Close() error {
 	p.size = 0
 
 	return nil
-}
-
-func (p *connPool) closeConn(cn *conn) error {
-	return cn.cn.Close()
 }
 
 //------------------------------------------------------------------------------
