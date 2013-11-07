@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// Not thread-safe.
 type PubSub struct {
 	*baseClient
 }

@@ -83,147 +83,141 @@ func (t *RedisConnectorTest) TestUnixConnector(c *C) {
 
 //------------------------------------------------------------------------------
 
-// type RedisConnPoolTest struct {
-// 	dialedConns, closedConns int64
+type RedisConnPoolTest struct {
+	client *redis.Client
+}
 
-// 	client *redis.Client
-// }
+var _ = Suite(&RedisConnPoolTest{})
 
-// var _ = Suite(&RedisConnPoolTest{})
+func (t *RedisConnPoolTest) SetUpTest(c *C) {
+	t.client = redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+}
 
-// func (t *RedisConnPoolTest) SetUpTest(c *C) {
-// 	if t.client == nil {
-// 		dial := func() (net.Conn, error) {
-// 			t.dialedConns++
-// 			return net.Dial("tcp", redisAddr)
-// 		}
-// 		close := func(conn net.Conn) error {
-// 			t.closedConns++
-// 			return nil
-// 		}
+func (t *RedisConnPoolTest) TearDownTest(c *C) {
+	c.Assert(t.client.FlushDb().Err(), IsNil)
+	c.Assert(t.client.Close(), IsNil)
+}
 
-// 		t.client = (&redis.ClientFactory{
-// 			Dial:  dial,
-// 			Close: close,
-// 		}).New()
-// 	}
-// }
+func (t *RedisConnPoolTest) TestConnPoolMaxSize(c *C) {
+	wg := &sync.WaitGroup{}
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			ping := t.client.Ping()
+			c.Assert(ping.Err(), IsNil)
+			c.Assert(ping.Val(), Equals, "PONG")
+			wg.Done()
+		}()
+	}
+	wg.Wait()
 
-// func (t *RedisConnPoolTest) TearDownTest(c *C) {
-// 	t.resetRedis(c)
-// 	t.resetClient(c)
-// }
+	c.Assert(t.client.Pool().Size(), Equals, 10)
+	c.Assert(t.client.Pool().Len(), Equals, 10)
+}
 
-// func (t *RedisConnPoolTest) resetRedis(c *C) {
-// 	// This is much faster than Flushall.
-// 	c.Assert(t.client.Select(1).Err(), IsNil)
-// 	c.Assert(t.client.FlushDb().Err(), IsNil)
-// 	c.Assert(t.client.Select(0).Err(), IsNil)
-// 	c.Assert(t.client.FlushDb().Err(), IsNil)
-// }
+func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnPipelineClient(c *C) {
+	const N = 1000
 
-// func (t *RedisConnPoolTest) resetClient(c *C) {
-// 	t.client.Close()
-// 	c.Check(t.closedConns, Equals, t.dialedConns)
-// 	t.dialedConns, t.closedConns = 0, 0
-// }
+	wg := &sync.WaitGroup{}
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			pipeline := t.client.Pipeline()
+			ping := pipeline.Ping()
+			cmds, err := pipeline.Exec()
+			c.Assert(err, IsNil)
+			c.Assert(cmds, HasLen, 1)
+			c.Assert(ping.Err(), IsNil)
+			c.Assert(ping.Val(), Equals, "PONG")
 
-// func (t *RedisConnPoolTest) TestConnPoolMaxSize(c *C) {
-// 	wg := &sync.WaitGroup{}
-// 	for i := 0; i < 1000; i++ {
-// 		wg.Add(1)
-// 		go func() {
-// 			ping := t.client.Ping()
-// 			c.Assert(ping.Err(), IsNil)
-// 			c.Assert(ping.Val(), Equals, "PONG")
-// 			wg.Done()
-// 		}()
-// 	}
-// 	wg.Wait()
+			c.Assert(pipeline.Close(), IsNil)
 
-// 	c.Assert(t.client.Close(), IsNil)
-// 	c.Assert(t.dialedConns, Equals, int64(10))
-// 	c.Assert(t.closedConns, Equals, int64(10))
-// }
+			wg.Done()
+		}()
+	}
+	wg.Wait()
 
-// func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnPipelineClient(c *C) {
-// 	wg := &sync.WaitGroup{}
-// 	for i := 0; i < 1000; i++ {
-// 		wg.Add(1)
-// 		go func() {
-// 			pipeline, err := t.client.PipelineClient()
-// 			c.Assert(err, IsNil)
+	c.Assert(t.client.Pool().Size(), Equals, 10)
+	c.Assert(t.client.Pool().Len(), Equals, 10)
+}
 
-// 			ping := pipeline.Ping()
-// 			cmds, err := pipeline.RunQueued()
-// 			c.Assert(err, IsNil)
-// 			c.Assert(cmds, HasLen, 1)
-// 			c.Assert(ping.Err(), IsNil)
-// 			c.Assert(ping.Val(), Equals, "PONG")
+func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnMultiClient(c *C) {
+	const N = 1000
 
-// 			c.Assert(pipeline.Close(), IsNil)
+	wg := &sync.WaitGroup{}
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			multi := t.client.Multi()
+			var ping *redis.StatusCmd
+			cmds, err := multi.Exec(func() {
+				ping = multi.Ping()
+			})
+			c.Assert(err, IsNil)
+			c.Assert(cmds, HasLen, 1)
+			c.Assert(ping.Err(), IsNil)
+			c.Assert(ping.Val(), Equals, "PONG")
 
-// 			wg.Done()
-// 		}()
-// 	}
-// 	wg.Wait()
+			c.Assert(multi.Close(), IsNil)
 
-// 	c.Assert(t.client.Close(), IsNil)
-// 	c.Assert(t.dialedConns, Equals, int64(10))
-// 	c.Assert(t.closedConns, Equals, int64(10))
-// }
+			wg.Done()
+		}()
+	}
+	wg.Wait()
 
-// func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnMultiClient(c *C) {
-// 	wg := &sync.WaitGroup{}
-// 	for i := 0; i < 1000; i++ {
-// 		wg.Add(1)
-// 		go func() {
-// 			multi, err := t.client.MultiClient()
-// 			c.Assert(err, IsNil)
+	c.Assert(t.client.Pool().Size(), Equals, 10)
+	c.Assert(t.client.Pool().Len(), Equals, 10)
+}
 
-// 			var ping *redis.StatusCmd
-// 			cmds, err := multi.Exec(func() {
-// 				ping = multi.Ping()
-// 			})
-// 			c.Assert(err, IsNil)
-// 			c.Assert(cmds, HasLen, 1)
-// 			c.Assert(ping.Err(), IsNil)
-// 			c.Assert(ping.Val(), Equals, "PONG")
+func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnPubSub(c *C) {
+	const N = 1000
 
-// 			c.Assert(multi.Close(), IsNil)
+	wg := &sync.WaitGroup{}
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			pubsub := t.client.PubSub()
+			c.Assert(pubsub.Subscribe(), IsNil)
+			c.Assert(pubsub.Close(), IsNil)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
 
-// 			wg.Done()
-// 		}()
-// 	}
-// 	wg.Wait()
+	c.Assert(t.client.Pool().Size(), Equals, 0)
+	c.Assert(t.client.Pool().Len(), Equals, 0)
+}
 
-// 	c.Assert(t.client.Close(), IsNil)
-// 	c.Assert(t.dialedConns, Equals, int64(10))
-// 	c.Assert(t.closedConns, Equals, int64(10))
-// }
+func (t *RedisConnPoolTest) TestConnPoolRemovesBrokenConn(c *C) {
+	cn, _, err := t.client.Pool().Get()
+	c.Assert(err, IsNil)
+	c.Assert(cn.Close(), IsNil)
+	c.Assert(t.client.Pool().Put(cn), IsNil)
 
-// func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnPubSub(c *C) {
-// 	wg := &sync.WaitGroup{}
-// 	for i := 0; i < 1000; i++ {
-// 		wg.Add(1)
-// 		go func() {
-// 			pubsub, err := t.client.PubSub()
-// 			c.Assert(err, IsNil)
+	ping := t.client.Ping()
+	c.Assert(ping.Err().Error(), Equals, "use of closed network connection")
+	c.Assert(ping.Val(), Equals, "")
 
-// 			_, err = pubsub.Subscribe()
-// 			c.Assert(err, IsNil)
+	ping = t.client.Ping()
+	c.Assert(ping.Err(), IsNil)
+	c.Assert(ping.Val(), Equals, "PONG")
 
-// 			c.Assert(pubsub.Close(), IsNil)
+	c.Assert(t.client.Pool().Size(), Equals, 1)
+	c.Assert(t.client.Pool().Len(), Equals, 1)
+}
 
-// 			wg.Done()
-// 		}()
-// 	}
-// 	wg.Wait()
+func (t *RedisConnPoolTest) TestConnPoolReusesConn(c *C) {
+	for i := 0; i < 1000; i++ {
+		ping := t.client.Ping()
+		c.Assert(ping.Err(), IsNil)
+		c.Assert(ping.Val(), Equals, "PONG")
+	}
 
-// 	c.Assert(t.client.Close(), IsNil)
-// 	c.Assert(t.dialedConns, Equals, int64(1000))
-// 	c.Assert(t.closedConns, Equals, int64(1000))
-// }
+	c.Assert(t.client.Pool().Size(), Equals, 1)
+	c.Assert(t.client.Pool().Len(), Equals, 1)
+}
 
 //------------------------------------------------------------------------------
 
@@ -235,12 +229,14 @@ var _ = Suite(&RedisTest{})
 
 func Test(t *testing.T) { TestingT(t) }
 
+func (t *RedisTest) SetUpSuite(c *C) {
+	t.client = redis.NewTCPClient(&redis.Options{
+		Addr: ":6379",
+	})
+}
+
 func (t *RedisTest) SetUpTest(c *C) {
-	if t.client == nil {
-		t.client = redis.NewTCPClient(&redis.Options{
-			Addr: ":6379",
-		})
-	}
+	t.resetRedis(c)
 }
 
 func (t *RedisTest) TearDownTest(c *C) {
@@ -332,33 +328,6 @@ func (t *RedisTest) TestManyKeys2(c *C) {
 	}
 	c.Assert(vals[0], Equals, nil)
 	c.Assert(vals[100001], Equals, nil)
-}
-
-//------------------------------------------------------------------------------
-
-func (t *RedisTest) TestConnPoolRemovesBrokenConn(c *C) {
-	c.Skip("fix me")
-
-	conn, err := net.Dial("tcp", redisAddr)
-	c.Assert(err, IsNil)
-	c.Assert(conn.Close(), IsNil)
-
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: redisAddr,
-	})
-	defer func() {
-		c.Assert(client.Close(), IsNil)
-	}()
-
-	//	c.Assert(client.ConnPool.Add(redis.NewConn(conn)), IsNil)
-
-	ping := client.Ping()
-	c.Assert(ping.Err().Error(), Equals, "use of closed network connection")
-	c.Assert(ping.Val(), Equals, "")
-
-	ping = client.Ping()
-	c.Assert(ping.Err(), IsNil)
-	c.Assert(ping.Val(), Equals, "PONG")
 }
 
 //------------------------------------------------------------------------------
@@ -2446,15 +2415,14 @@ func (t *RedisTest) TestPipeline(c *C) {
 
 func (t *RedisTest) TestPipelineDiscardQueued(c *C) {
 	pipeline := t.client.Pipeline()
-	defer func() {
-		c.Assert(pipeline.Close(), IsNil)
-	}()
 
 	pipeline.Get("key")
 	pipeline.Discard()
 	cmds, err := pipeline.Exec()
 	c.Assert(err, IsNil)
 	c.Assert(cmds, HasLen, 0)
+
+	c.Assert(pipeline.Close(), IsNil)
 }
 
 func (t *RedisTest) TestPipelineFunc(c *C) {
@@ -2489,19 +2457,18 @@ func (t *RedisTest) TestPipelineRunQueuedOnEmptyQueue(c *C) {
 	c.Assert(cmds, HasLen, 0)
 }
 
-func (t *RedisTest) TestPipelineIncrFromGoroutines(c *C) {
+// TODO: make thread safe?
+func (t *RedisTest) TestPipelineIncr(c *C) {
+	const N = 20000
+	key := "TestPipelineIncr"
+
 	pipeline := t.client.Pipeline()
-	defer func() {
-		c.Assert(pipeline.Close(), IsNil)
-	}()
 
 	wg := &sync.WaitGroup{}
-	for i := int64(0); i < 20000; i++ {
-		wg.Add(1)
-		go func() {
-			pipeline.Incr("TestIncrPipeliningFromGoroutinesKey")
-			wg.Done()
-		}()
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		pipeline.Incr(key)
+		wg.Done()
 	}
 	wg.Wait()
 
@@ -2514,23 +2481,24 @@ func (t *RedisTest) TestPipelineIncrFromGoroutines(c *C) {
 		}
 	}
 
-	get := t.client.Get("TestIncrPipeliningFromGoroutinesKey")
+	get := t.client.Get(key)
 	c.Assert(get.Err(), IsNil)
-	c.Assert(get.Val(), Equals, "20000")
+	c.Assert(get.Val(), Equals, strconv.Itoa(N))
+
+	c.Assert(pipeline.Close(), IsNil)
 }
 
-func (t *RedisTest) TestPipelineEchoFromGoroutines(c *C) {
-	pipeline := t.client.Pipeline()
-	defer func() {
-		c.Assert(pipeline.Close(), IsNil)
-	}()
+func (t *RedisTest) TestPipelineEcho(c *C) {
+	const N = 1000
 
 	wg := &sync.WaitGroup{}
-	for i := int64(0); i < 1000; i += 2 {
-		wg.Add(1)
-		go func() {
-			msg1 := "echo" + strconv.FormatInt(i, 10)
-			msg2 := "echo" + strconv.FormatInt(i+1, 10)
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			pipeline := t.client.Pipeline()
+
+			msg1 := "echo" + strconv.Itoa(i)
+			msg2 := "echo" + strconv.Itoa(i+1)
 
 			echo1 := pipeline.Echo(msg1)
 			echo2 := pipeline.Echo(msg2)
@@ -2545,8 +2513,10 @@ func (t *RedisTest) TestPipelineEchoFromGoroutines(c *C) {
 			c.Assert(echo2.Err(), IsNil)
 			c.Assert(echo2.Val(), Equals, msg2)
 
+			c.Assert(pipeline.Close(), IsNil)
+
 			wg.Done()
-		}()
+		}(i)
 	}
 	wg.Wait()
 }
@@ -2703,36 +2673,43 @@ func (t *RedisTest) TestWatchUnwatch(c *C) {
 
 //------------------------------------------------------------------------------
 
-func (t *RedisTest) TestSyncEchoFromGoroutines(c *C) {
+func (t *RedisTest) TestRaceEcho(c *C) {
+	const N = 10000
+
 	wg := &sync.WaitGroup{}
-	for i := int64(0); i < 1000; i++ {
-		wg.Add(1)
-		go func() {
-			msg := "echo" + strconv.FormatInt(i, 10)
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			msg := "echo" + strconv.Itoa(i)
 			echo := t.client.Echo(msg)
 			c.Assert(echo.Err(), IsNil)
 			c.Assert(echo.Val(), Equals, msg)
 			wg.Done()
-		}()
+		}(i)
 	}
 	wg.Wait()
 }
 
-func (t *RedisTest) TestIncrFromGoroutines(c *C) {
+func (t *RedisTest) TestRaceIncr(c *C) {
+	const N = 10000
+	key := "TestIncrFromGoroutines"
+
 	wg := &sync.WaitGroup{}
-	for i := int64(0); i < 20000; i++ {
-		wg.Add(1)
+	wg.Add(N)
+	for i := int64(0); i < N; i++ {
 		go func() {
-			incr := t.client.Incr("TestIncrFromGoroutinesKey")
-			c.Assert(incr.Err(), IsNil)
+			incr := t.client.Incr(key)
+			if err := incr.Err(); err != nil {
+				panic(err)
+			}
 			wg.Done()
 		}()
 	}
 	wg.Wait()
 
-	get := t.client.Get("TestIncrFromGoroutinesKey")
+	get := t.client.Get(key)
 	c.Assert(get.Err(), IsNil)
-	c.Assert(get.Val(), Equals, "20000")
+	c.Assert(get.Val(), Equals, strconv.Itoa(N))
 }
 
 //------------------------------------------------------------------------------

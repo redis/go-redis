@@ -113,7 +113,7 @@ func (c *baseClient) run(cmd Cmder) {
 	}
 
 	if err := c.writeCmd(cn, cmd); err != nil {
-		c.removeConn(cn)
+		c.freeConn(cn, err)
 		cmd.setErr(err)
 		return
 	}
@@ -173,10 +173,7 @@ func newClient(opt *Options, dial func() (net.Conn, error)) *Client {
 		baseClient: &baseClient{
 			opt: opt,
 
-			connPool: newConnPool(
-				dial, opt.getPoolSize(),
-				opt.IdleTimeout,
-			),
+			connPool: newConnPool(newConnFunc(dial), opt.getPoolSize(), opt.IdleTimeout),
 		},
 	}
 }

@@ -2,11 +2,17 @@ package redis
 
 import (
 	"container/list"
+	"errors"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/golang/glog"
 	"github.com/vmihailenco/bufio"
+)
+
+var (
+	errPoolClosed = errors.New("attempt to use closed connection pool")
 )
 
 type pool interface {
@@ -14,6 +20,7 @@ type pool interface {
 	Put(*conn) error
 	Remove(*conn) error
 	Len() int
+	Size() int
 	Close() error
 }
 
@@ -22,17 +29,27 @@ type pool interface {
 type conn struct {
 	cn     net.Conn
 	rd     reader
+	inUse  bool
 	usedAt time.Time
 
 	readTimeout, writeTimeout time.Duration
+
+	elem *list.Element
 }
 
-func newConn(netcn net.Conn) *conn {
-	cn := &conn{
-		cn: netcn,
+func newConnFunc(dial func() (net.Conn, error)) func() (*conn, error) {
+	return func() (*conn, error) {
+		netcn, err := dial()
+		if err != nil {
+			return nil, err
+		}
+
+		cn := &conn{
+			cn: netcn,
+		}
+		cn.rd = bufio.NewReader(cn)
+		return cn, nil
 	}
-	cn.rd = bufio.NewReader(cn)
-	return cn
 }
 
 func (cn *conn) Read(b []byte) (int, error) {
@@ -60,22 +77,25 @@ func (cn *conn) Close() error {
 //------------------------------------------------------------------------------
 
 type connPool struct {
-	dial func() (net.Conn, error)
+	New func() (*conn, error)
 
 	cond  *sync.Cond
 	conns *list.List
 
-	size, maxSize int
-	idleTimeout   time.Duration
+	len         int
+	maxSize     int
+	idleTimeout time.Duration
+
+	closed bool
 }
 
 func newConnPool(
-	dial func() (net.Conn, error),
+	dial func() (*conn, error),
 	maxSize int,
 	idleTimeout time.Duration,
 ) *connPool {
 	return &connPool{
-		dial: dial,
+		New: dial,
 
 		cond:  sync.NewCond(&sync.Mutex{}),
 		conns: list.New(),
@@ -86,87 +106,129 @@ func newConnPool(
 }
 
 func (p *connPool) Get() (*conn, bool, error) {
-	defer p.cond.L.Unlock()
 	p.cond.L.Lock()
 
-	for p.conns.Len() == 0 && p.size >= p.maxSize {
-		p.cond.Wait()
+	if p.closed {
+		p.cond.L.Unlock()
+		return nil, false, errPoolClosed
 	}
 
 	if p.idleTimeout > 0 {
 		for e := p.conns.Front(); e != nil; e = e.Next() {
 			cn := e.Value.(*conn)
+			if cn.inUse {
+				break
+			}
 			if time.Since(cn.usedAt) > p.idleTimeout {
-				p.conns.Remove(e)
+				if err := p.Remove(cn); err != nil {
+					glog.Errorf("Remove failed: %s", err)
+				}
 			}
 		}
 	}
 
-	if p.conns.Len() == 0 {
-		rw, err := p.dial()
+	for p.conns.Len() >= p.maxSize && p.len == 0 {
+		p.cond.Wait()
+	}
+
+	if p.len > 0 {
+		elem := p.conns.Front()
+		cn := elem.Value.(*conn)
+		if cn.inUse {
+			panic("pool: precondition failed")
+		}
+		cn.inUse = true
+		p.conns.MoveToBack(elem)
+		p.len--
+
+		p.cond.L.Unlock()
+		return cn, false, nil
+	}
+
+	if p.conns.Len() < p.maxSize {
+		cn, err := p.New()
 		if err != nil {
+			p.cond.L.Unlock()
 			return nil, false, err
 		}
 
-		p.size++
-		return newConn(rw), true, nil
+		cn.inUse = true
+		cn.elem = p.conns.PushBack(cn)
+
+		p.cond.L.Unlock()
+		return cn, true, nil
 	}
 
-	elem := p.conns.Front()
-	p.conns.Remove(elem)
-	return elem.Value.(*conn), false, nil
+	panic("not reached")
 }
 
 func (p *connPool) Put(cn *conn) error {
 	if cn.rd.Buffered() != 0 {
 		panic("redis: attempt to put connection with buffered data")
 	}
-
 	p.cond.L.Lock()
+	if p.closed {
+		p.cond.L.Unlock()
+		return errPoolClosed
+	}
+	cn.inUse = false
 	cn.usedAt = time.Now()
-	p.conns.PushFront(cn)
+	p.conns.MoveToFront(cn.elem)
+	p.len++
 	p.cond.Signal()
 	p.cond.L.Unlock()
 	return nil
 }
 
-func (p *connPool) Remove(cn *conn) error {
-	var err error
+func (p *connPool) Remove(cn *conn) (err error) {
+	p.cond.L.Lock()
+	if p.closed {
+		// Noop, connection is already closed.
+		p.cond.L.Unlock()
+		return nil
+	}
 	if cn != nil {
 		err = cn.Close()
 	}
-	p.cond.L.Lock()
-	p.size--
+	p.conns.Remove(cn.elem)
+	cn.elem = nil
 	p.cond.Signal()
 	p.cond.L.Unlock()
 	return err
 }
 
+// Returns number of idle connections.
 func (p *connPool) Len() int {
+	defer p.cond.L.Unlock()
+	p.cond.L.Lock()
+	return p.len
+}
+
+// Returns size of the pool.
+func (p *connPool) Size() int {
 	defer p.cond.L.Unlock()
 	p.cond.L.Lock()
 	return p.conns.Len()
 }
 
-func (p *connPool) Size() int {
-	defer p.cond.L.Unlock()
-	p.cond.L.Lock()
-	return p.size
-}
-
 func (p *connPool) Close() error {
 	defer p.cond.L.Unlock()
 	p.cond.L.Lock()
-
-	for e := p.conns.Front(); e != nil; e = e.Next() {
-		if err := e.Value.(*conn).Close(); err != nil {
-			return err
-		}
+	if p.closed {
+		return nil
 	}
-	p.conns.Init()
-	p.size = 0
-
-	return nil
+	p.closed = true
+	var retErr error
+	for e := p.conns.Front(); e != nil; e = e.Next() {
+		cn := e.Value.(*conn)
+		if err := cn.Close(); err != nil {
+			glog.Errorf("cn.Close failed: %s", err)
+			retErr = err
+		}
+		cn.elem = nil
+	}
+	p.conns = nil
+	return retErr
 }
 
 //------------------------------------------------------------------------------
@@ -195,38 +257,46 @@ func (p *singleConnPool) Get() (*conn, bool, error) {
 	}
 	p.l.RUnlock()
 
-	defer p.l.Unlock()
 	p.l.Lock()
-
 	cn, isNew, err := p.pool.Get()
 	if err != nil {
+		p.l.Unlock()
 		return nil, false, err
 	}
 	p.cn = cn
-
+	p.l.Unlock()
 	return cn, isNew, nil
 }
 
 func (p *singleConnPool) Put(cn *conn) error {
-	defer p.l.Unlock()
 	p.l.Lock()
 	if p.cn != cn {
 		panic("p.cn != cn")
 	}
+	p.l.Unlock()
 	return nil
 }
 
 func (p *singleConnPool) Remove(cn *conn) error {
-	defer p.l.Unlock()
 	p.l.Lock()
 	if p.cn != cn {
 		panic("p.cn != cn")
 	}
 	p.cn = nil
+	p.l.Unlock()
 	return nil
 }
 
 func (p *singleConnPool) Len() int {
+	defer p.l.Unlock()
+	p.l.Lock()
+	if p.cn == nil {
+		return 0
+	}
+	return 1
+}
+
+func (p *singleConnPool) Size() int {
 	defer p.l.Unlock()
 	p.l.Lock()
 	if p.cn == nil {
