@@ -129,6 +129,7 @@ func (c *baseClient) run(cmd Cmder) {
 	cmd.setVal(val)
 }
 
+// Close closes the client, releasing any open resources.
 func (c *baseClient) Close() error {
 	return c.connPool.Close()
 }
