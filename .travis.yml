@@ -10,4 +10,6 @@ go:
   - tip
 
 install:
+  - go get github.com/vmihailenco/bufio
+  - go get github.com/golang/glog
   - go get launchpad.net/gocheck
