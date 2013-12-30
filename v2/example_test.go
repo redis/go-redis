@@ -28,17 +28,6 @@ func ExampleNewTCPClient() {
 	// Output: PONG <nil>
 }
 
-func ExampleNewUnixClient() {
-	client := redis.NewUnixClient(&redis.Options{
-		Addr: "/tmp/redis.sock",
-	})
-	defer client.Close()
-
-	ping := client.Ping()
-	fmt.Println(ping.Val(), ping.Err())
-	// Output: PONG <nil>
-}
-
 func ExampleClient() {
 	set := client.Set("foo", "bar")
 	fmt.Println(set.Val(), set.Err())
