@@ -60,6 +60,7 @@ func (t *RedisConnectorTest) TestTCPConnector(c *C) {
 	ping := client.Ping()
 	c.Check(ping.Err(), IsNil)
 	c.Check(ping.Val(), Equals, "PONG")
+	c.Assert(client.Close(), IsNil)
 }
 
 func (t *RedisConnectorTest) TestUnixConnector(c *C) {
@@ -67,6 +68,7 @@ func (t *RedisConnectorTest) TestUnixConnector(c *C) {
 	ping := client.Ping()
 	c.Check(ping.Err(), IsNil)
 	c.Check(ping.Val(), Equals, "PONG")
+	c.Assert(client.Close(), IsNil)
 }
 
 //------------------------------------------------------------------------------
@@ -79,24 +81,26 @@ type RedisConnPoolTest struct {
 
 var _ = Suite(&RedisConnPoolTest{})
 
-func (t *RedisConnPoolTest) SetUpTest(c *C) {
-	if t.client == nil {
-		openConn := func() (net.Conn, error) {
-			t.openedConnCount++
-			return net.Dial("tcp", redisAddr)
-		}
-		initConn := func(c *redis.Client) error {
-			t.initedConnCount++
-			return nil
-		}
-		closeConn := func(conn net.Conn) error {
-			t.closedConnCount++
-			return nil
-		}
-
-		t.client = redis.NewClient(openConn, closeConn, initConn)
-		t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 10
+func (t *RedisConnPoolTest) SetUpSuite(c *C) {
+	openConn := func() (net.Conn, error) {
+		t.openedConnCount++
+		return net.Dial("tcp", redisAddr)
 	}
+	initConn := func(c *redis.Client) error {
+		t.initedConnCount++
+		return nil
+	}
+	closeConn := func(conn net.Conn) error {
+		t.closedConnCount++
+		return nil
+	}
+
+	t.client = redis.NewClient(openConn, closeConn, initConn)
+	t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 10
+}
+
+func (t *RedisConnPoolTest) TearDownSuite(c *C) {
+	c.Assert(t.client.Close(), IsNil)
 }
 
 func (t *RedisConnPoolTest) TearDownTest(c *C) {
@@ -227,24 +231,26 @@ var _ = Suite(&RedisTest{})
 
 func Test(t *testing.T) { TestingT(t) }
 
-func (t *RedisTest) SetUpTest(c *C) {
-	if t.client == nil {
-		openConn := func() (net.Conn, error) {
-			t.openedConnCount++
-			return net.Dial("tcp", redisAddr)
-		}
-		initConn := func(c *redis.Client) error {
-			t.initedConnCount++
-			return nil
-		}
-		closeConn := func(conn net.Conn) error {
-			t.closedConnCount++
-			return nil
-		}
-
-		t.client = redis.NewClient(openConn, closeConn, initConn)
-		t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 10
+func (t *RedisTest) SetUpSuite(c *C) {
+	openConn := func() (net.Conn, error) {
+		t.openedConnCount++
+		return net.Dial("tcp", redisAddr)
 	}
+	initConn := func(c *redis.Client) error {
+		t.initedConnCount++
+		return nil
+	}
+	closeConn := func(conn net.Conn) error {
+		t.closedConnCount++
+		return nil
+	}
+
+	t.client = redis.NewClient(openConn, closeConn, initConn)
+	t.client.ConnPool.(*redis.MultiConnPool).MaxCap = 10
+}
+
+func (t *RedisTest) TearDownSuite(c *C) {
+	c.Assert(t.client.Close(), IsNil)
 }
 
 func (t *RedisTest) TearDownTest(c *C) {
@@ -323,7 +329,7 @@ func (t *RedisTest) TestManyKeys(c *C) {
 	}
 	keys := t.client.Keys("keys.*")
 	c.Assert(keys.Err(), IsNil)
-	c.Assert(keys.Val(), HasLen, 100000)
+	c.Assert(len(keys.Val()), Equals, 100000)
 }
 
 func (t *RedisTest) TestManyKeys2(c *C) {
@@ -337,7 +343,7 @@ func (t *RedisTest) TestManyKeys2(c *C) {
 
 	mget := t.client.MGet(keys...)
 	c.Assert(mget.Err(), IsNil)
-	c.Assert(mget.Val(), HasLen, 100002)
+	c.Assert(len(mget.Val()), Equals, 100002)
 	vals := mget.Val()
 	for i := 0; i < 100000; i++ {
 		c.Assert(vals[i+1], Equals, "hello"+strconv.Itoa(i))
@@ -2554,7 +2560,7 @@ func (t *RedisTest) TestPipelineIncrFromGoroutines(c *C) {
 
 	reqs, err := pipeline.RunQueued()
 	c.Assert(err, IsNil)
-	c.Assert(reqs, HasLen, 20000)
+	c.Assert(len(reqs), Equals, 20000)
 	for _, req := range reqs {
 		if req.Err() != nil {
 			c.Errorf("got %v, expected nil", req.Err())
@@ -2691,7 +2697,7 @@ func (t *RedisTest) TestMultiExecIncrTransaction(c *C) {
 		}
 	})
 	c.Assert(err, IsNil)
-	c.Assert(reqs, HasLen, 20000)
+	c.Assert(len(reqs), Equals, 20000)
 	for _, req := range reqs {
 		if req.Err() != nil {
 			c.Errorf("got %v, expected nil", req.Err())

@@ -63,22 +63,26 @@ type RedisConnectorTest struct{}
 
 var _ = Suite(&RedisConnectorTest{})
 
-func (t *RedisConnectorTest) TestTCPConnector(c *C) {
+func (t *RedisConnectorTest) TestNewTCPClient(c *C) {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
 	ping := client.Ping()
 	c.Check(ping.Err(), IsNil)
 	c.Check(ping.Val(), Equals, "PONG")
+	c.Assert(client.Close(), IsNil)
 }
 
-func (t *RedisConnectorTest) TestUnixConnector(c *C) {
+func (t *RedisConnectorTest) TestNewUnixClient(c *C) {
+	c.Skip("not available on Travis CI")
+
 	client := redis.NewUnixClient(&redis.Options{
 		Addr: "/tmp/redis.sock",
 	})
 	ping := client.Ping()
 	c.Check(ping.Err(), IsNil)
 	c.Check(ping.Val(), Equals, "PONG")
+	c.Assert(client.Close(), IsNil)
 }
 
 //------------------------------------------------------------------------------
@@ -235,11 +239,11 @@ func (t *RedisTest) SetUpSuite(c *C) {
 	})
 }
 
-func (t *RedisTest) SetUpTest(c *C) {
-	t.resetRedis(c)
+func (t *RedisTest) TearDownSuite(c *C) {
+	c.Assert(t.client.Close(), IsNil)
 }
 
-func (t *RedisTest) TearDownTest(c *C) {
+func (t *RedisTest) SetUpTest(c *C) {
 	t.resetRedis(c)
 }
 
@@ -307,7 +311,7 @@ func (t *RedisTest) TestManyKeys(c *C) {
 	}
 	keys := t.client.Keys("keys.*")
 	c.Assert(keys.Err(), IsNil)
-	c.Assert(keys.Val(), HasLen, 100000)
+	c.Assert(len(keys.Val()), Equals, 100000)
 }
 
 func (t *RedisTest) TestManyKeys2(c *C) {
@@ -321,7 +325,7 @@ func (t *RedisTest) TestManyKeys2(c *C) {
 
 	mget := t.client.MGet(keys...)
 	c.Assert(mget.Err(), IsNil)
-	c.Assert(mget.Val(), HasLen, 100002)
+	c.Assert(len(mget.Val()), Equals, 100002)
 	vals := mget.Val()
 	for i := 0; i < 100000; i++ {
 		c.Assert(vals[i+1], Equals, "hello"+strconv.Itoa(i))
@@ -560,7 +564,8 @@ func (t *RedisTest) TestCmdKeysPExpireAt(c *C) {
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
 
-	pExpireAt := t.client.PExpireAt("key", time.Now().Add(900*time.Millisecond))
+	expire := 900 * time.Millisecond
+	pExpireAt := t.client.PExpireAt("key", time.Now().Add(expire))
 	c.Assert(pExpireAt.Err(), IsNil)
 	c.Assert(pExpireAt.Val(), Equals, true)
 
@@ -570,7 +575,8 @@ func (t *RedisTest) TestCmdKeysPExpireAt(c *C) {
 
 	pttl := t.client.PTTL("key")
 	c.Assert(pttl.Err(), IsNil)
-	c.Assert(pttl.Val(), Equals, 900*time.Millisecond)
+	c.Assert(pttl.Val() <= expire, Equals, true)
+	c.Assert(pttl.Val() >= expire-time.Millisecond, Equals, true)
 }
 
 func (t *RedisTest) TestCmdKeysPTTL(c *C) {
@@ -968,13 +974,15 @@ func (t *RedisTest) TestStringsMSetNX(c *C) {
 }
 
 func (t *RedisTest) TestStringsPSetEx(c *C) {
-	pSetEx := t.client.PSetEx("key", 50*time.Millisecond, "hello")
+	expire := 50 * time.Millisecond
+	pSetEx := t.client.PSetEx("key", expire, "hello")
 	c.Assert(pSetEx.Err(), IsNil)
 	c.Assert(pSetEx.Val(), Equals, "OK")
 
 	pttl := t.client.PTTL("key")
 	c.Assert(pttl.Err(), IsNil)
-	c.Assert(pttl.Val(), Equals, 50*time.Millisecond)
+	c.Assert(pttl.Val() <= expire, Equals, true)
+	c.Assert(pttl.Val() >= expire-time.Millisecond, Equals, true)
 
 	get := t.client.Get("key")
 	c.Assert(get.Err(), IsNil)
@@ -2474,7 +2482,7 @@ func (t *RedisTest) TestPipelineIncr(c *C) {
 
 	cmds, err := pipeline.Exec()
 	c.Assert(err, IsNil)
-	c.Assert(cmds, HasLen, 20000)
+	c.Assert(len(cmds), Equals, 20000)
 	for _, cmd := range cmds {
 		if cmd.Err() != nil {
 			c.Errorf("got %v, expected nil", cmd.Err())
@@ -2608,7 +2616,7 @@ func (t *RedisTest) TestMultiExecIncr(c *C) {
 		}
 	})
 	c.Assert(err, IsNil)
-	c.Assert(cmds, HasLen, 20000)
+	c.Assert(len(cmds), Equals, 20000)
 	for _, cmd := range cmds {
 		if cmd.Err() != nil {
 			c.Errorf("got %v, expected nil", cmd.Err())
@@ -2961,8 +2969,8 @@ func (t *RedisTest) BenchmarkRedisGet(c *C) {
 func (t *RedisTest) BenchmarkRedisMGet(c *C) {
 	c.StopTimer()
 
-	mSet := t.client.MSet("key1", "hello1", "key2", "hello2")
-	c.Assert(mSet.Err(), IsNil)
+	mset := t.client.MSet("key1", "hello1", "key2", "hello2")
+	c.Assert(mset.Err(), IsNil)
 
 	c.StartTimer()
 
