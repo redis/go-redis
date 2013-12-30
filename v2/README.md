@@ -12,7 +12,8 @@ Supports:
 - Thread safety.
 - Timeouts.
 
-API docs: http://godoc.org/github.com/vmihailenco/redis/v2
+API docs: http://godoc.org/github.com/vmihailenco/redis/v2.
+Examples: http://godoc.org/github.com/vmihailenco/redis/v2#pkg-examples.
 
 Installation
 ------------
@@ -24,7 +25,7 @@ Install:
 Updgrading from previous version
 --------------------------------
 
-Type system should catch most changes. But you have manually change `SetEx`, `PSetEx`, `Expire` and `PExpire` to use `time.Duration` instead of `int64`.
+Type system should catch most changes. But you have to manually change `SetEx`, `PSetEx`, `Expire` and `PExpire` to use `time.Duration` instead of `int64`.
 
 Getting started
 ---------------
