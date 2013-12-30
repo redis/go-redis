@@ -2844,15 +2844,15 @@ func (t *RedisTest) TestScriptingEvalSha(c *C) {
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
 
-	eval := t.client.Eval("return redis.call('get','foo')", []string{}, []string{})
+	eval := t.client.Eval("return redis.call('get','foo')", nil, nil)
 	c.Assert(eval.Err(), IsNil)
 	c.Assert(eval.Val(), Equals, "bar")
 
-	evalSha := t.client.EvalSha("6b1bf486c81ceb7edf3c093f4c48582e38c0e791", []string{}, []string{})
+	evalSha := t.client.EvalSha("6b1bf486c81ceb7edf3c093f4c48582e38c0e791", nil, nil)
 	c.Assert(evalSha.Err(), IsNil)
 	c.Assert(evalSha.Val(), Equals, "bar")
 
-	evalSha = t.client.EvalSha("ffffffffffffffffffffffffffffffffffffffff", []string{}, []string{})
+	evalSha = t.client.EvalSha("ffffffffffffffffffffffffffffffffffffffff", nil, nil)
 	c.Assert(evalSha.Err(), ErrorMatches, "NOSCRIPT No matching script. Please use EVAL.")
 	c.Assert(evalSha.Val(), Equals, nil)
 }
@@ -2886,6 +2886,35 @@ func (t *RedisTest) TestScriptingScriptLoad(c *C) {
 	scriptLoad := t.client.ScriptLoad("return redis.call('get','foo')")
 	c.Assert(scriptLoad.Err(), IsNil)
 	c.Assert(scriptLoad.Val(), Equals, "6b1bf486c81ceb7edf3c093f4c48582e38c0e791")
+}
+
+func (t *RedisTest) TestNewScript(c *C) {
+	s := redis.NewScript("return 1")
+	run := s.Run(t.client, nil, nil)
+	c.Assert(run.Err(), IsNil)
+	c.Assert(run.Val(), Equals, int64(1))
+}
+
+func (t *RedisTest) TestEvalAndPipeline(c *C) {
+	pipeline := t.client.Pipeline()
+	s := redis.NewScript("return 1")
+	run := s.Eval(pipeline, nil, nil)
+	_, err := pipeline.Exec()
+	c.Assert(err, IsNil)
+	c.Assert(run.Err(), IsNil)
+	c.Assert(run.Val(), Equals, int64(1))
+}
+
+func (t *RedisTest) TestEvalShaAndPipeline(c *C) {
+	s := redis.NewScript("return 1")
+	c.Assert(s.Load(t.client).Err(), IsNil)
+
+	pipeline := t.client.Pipeline()
+	run := s.Eval(pipeline, nil, nil)
+	_, err := pipeline.Exec()
+	c.Assert(err, IsNil)
+	c.Assert(run.Err(), IsNil)
+	c.Assert(run.Val(), Equals, int64(1))
 }
 
 //------------------------------------------------------------------------------

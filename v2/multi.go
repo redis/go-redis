@@ -71,7 +71,6 @@ func (c *Multi) Exec(f func()) ([]Cmder, error) {
 		return cmds[1 : len(cmds)-1], err
 	}
 
-	// Synchronize writes and reads to the connection using mutex.
 	err = c.execCmds(cn, cmds)
 	if err != nil {
 		c.freeConn(cn, err)
@@ -122,7 +121,7 @@ func (c *Multi) execCmds(cn *conn, cmds []Cmder) error {
 	var firstCmdErr error
 
 	// Parse replies.
-	// Loop starts from 1 to omit first cmduest (MULTI).
+	// Loop starts from 1 to omit MULTI cmd.
 	for i := 1; i < cmdsLen; i++ {
 		cmd := cmds[i]
 		val, err := cmd.parseReply(cn.rd)

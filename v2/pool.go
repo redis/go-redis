@@ -82,7 +82,7 @@ type connPool struct {
 	cond  *sync.Cond
 	conns *list.List
 
-	len         int
+	idleNum     int
 	maxSize     int
 	idleTimeout time.Duration
 
@@ -114,8 +114,8 @@ func (p *connPool) Get() (*conn, bool, error) {
 	}
 
 	if p.idleTimeout > 0 {
-		for e := p.conns.Front(); e != nil; e = e.Next() {
-			cn := e.Value.(*conn)
+		for el := p.conns.Front(); el != nil; el = el.Next() {
+			cn := el.Value.(*conn)
 			if cn.inUse {
 				break
 			}
@@ -127,11 +127,11 @@ func (p *connPool) Get() (*conn, bool, error) {
 		}
 	}
 
-	for p.conns.Len() >= p.maxSize && p.len == 0 {
+	for p.conns.Len() >= p.maxSize && p.idleNum == 0 {
 		p.cond.Wait()
 	}
 
-	if p.len > 0 {
+	if p.idleNum > 0 {
 		elem := p.conns.Front()
 		cn := elem.Value.(*conn)
 		if cn.inUse {
@@ -139,7 +139,7 @@ func (p *connPool) Get() (*conn, bool, error) {
 		}
 		cn.inUse = true
 		p.conns.MoveToBack(elem)
-		p.len--
+		p.idleNum--
 
 		p.cond.L.Unlock()
 		return cn, false, nil
@@ -166,15 +166,18 @@ func (p *connPool) Put(cn *conn) error {
 	if cn.rd.Buffered() != 0 {
 		panic("redis: attempt to put connection with buffered data")
 	}
+	if p.idleTimeout > 0 {
+		cn.usedAt = time.Now()
+	}
+
 	p.cond.L.Lock()
 	if p.closed {
 		p.cond.L.Unlock()
 		return errPoolClosed
 	}
 	cn.inUse = false
-	cn.usedAt = time.Now()
 	p.conns.MoveToFront(cn.elem)
-	p.len++
+	p.idleNum++
 	p.cond.Signal()
 	p.cond.L.Unlock()
 	return nil
@@ -201,10 +204,10 @@ func (p *connPool) Remove(cn *conn) (err error) {
 func (p *connPool) Len() int {
 	defer p.cond.L.Unlock()
 	p.cond.L.Lock()
-	return p.len
+	return p.idleNum
 }
 
-// Returns size of the pool.
+// Returns number of connections in the pool.
 func (p *connPool) Size() int {
 	defer p.cond.L.Unlock()
 	p.cond.L.Lock()
