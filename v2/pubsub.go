@@ -62,7 +62,8 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 		return nil, fmt.Errorf("redis: unexpected reply type %T", replyIface)
 	}
 
-	switch msgName := reply[0].(string); msgName {
+	msgName := reply[0].(string)
+	switch msgName {
 	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
 		return &Subscription{
 			Kind:    msgName,
@@ -80,9 +81,8 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 			Channel: reply[2].(string),
 			Payload: reply[3].(string),
 		}, nil
-	default:
-		return nil, fmt.Errorf("redis: unsupported message name: %q", msgName)
 	}
+	return nil, fmt.Errorf("redis: unsupported message name: %q", msgName)
 }
 
 func (c *PubSub) subscribe(cmd string, channels ...string) error {

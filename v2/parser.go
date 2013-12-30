@@ -291,7 +291,6 @@ func _parseReply(rd reader, typ replyType) (interface{}, error) {
 			}
 			return vals, nil
 		}
-	default:
-		return nil, fmt.Errorf("redis: can't parse %q", line)
 	}
+	return nil, fmt.Errorf("redis: can't parse %q", line)
 }
