@@ -174,9 +174,6 @@ func (cmd *DurationCmd) parseReply(rd reader) (interface{}, error) {
 		return 0, err
 	}
 	vv := time.Duration(v.(int64))
-	if vv == -1 {
-		return vv, nil
-	}
 	return vv * cmd.precision, nil
 }
 
