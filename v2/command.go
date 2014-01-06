@@ -9,7 +9,7 @@ import (
 
 type Cmder interface {
 	args() []string
-	parseReply(reader) (interface{}, error)
+	parseReply(reader) error
 	setErr(error)
 	setVal(interface{})
 
@@ -80,8 +80,9 @@ func (cmd *baseCmd) setVal(val interface{}) {
 	cmd.val = val
 }
 
-func (cmd *baseCmd) parseReply(rd reader) (interface{}, error) {
-	return parseReply(rd)
+func (cmd *baseCmd) parseReply(rd reader) error {
+	cmd.val, cmd.err = parseReply(rd, parseSlice)
+	return cmd.err
 }
 
 func (cmd *baseCmd) readTimeout() *time.Duration {
@@ -168,13 +169,10 @@ func NewDurationCmd(precision time.Duration, args ...string) *DurationCmd {
 	}
 }
 
-func (cmd *DurationCmd) parseReply(rd reader) (interface{}, error) {
-	v, err := parseReply(rd)
-	if err != nil {
-		return 0, err
-	}
-	vv := time.Duration(v.(int64))
-	return vv * cmd.precision, nil
+func (cmd *DurationCmd) parseReply(rd reader) error {
+	cmd.val, cmd.err = parseReply(rd, nil)
+	cmd.val = time.Duration(cmd.val.(int64)) * cmd.precision
+	return cmd.err
 }
 
 func (cmd *DurationCmd) Val() time.Duration {
@@ -196,12 +194,10 @@ func NewBoolCmd(args ...string) *BoolCmd {
 	}
 }
 
-func (cmd *BoolCmd) parseReply(rd reader) (interface{}, error) {
-	v, err := parseReply(rd)
-	if err != nil {
-		return nil, err
-	}
-	return v.(int64) == 1, nil
+func (cmd *BoolCmd) parseReply(rd reader) error {
+	cmd.val, cmd.err = parseReply(rd, nil)
+	cmd.val = cmd.val.(int64) == 1
+	return cmd.err
 }
 
 func (cmd *BoolCmd) Val() bool {
@@ -242,12 +238,13 @@ func NewFloatCmd(args ...string) *FloatCmd {
 	}
 }
 
-func (cmd *FloatCmd) parseReply(rd reader) (interface{}, error) {
-	v, err := parseReply(rd)
-	if err != nil {
-		return nil, err
+func (cmd *FloatCmd) parseReply(rd reader) error {
+	cmd.val, cmd.err = parseReply(rd, nil)
+	if cmd.err != nil {
+		return cmd.err
 	}
-	return strconv.ParseFloat(v.(string), 64)
+	cmd.val, cmd.err = strconv.ParseFloat(cmd.val.(string), 64)
+	return cmd.err
 }
 
 func (cmd *FloatCmd) Val() float64 {
@@ -288,8 +285,9 @@ func NewStringSliceCmd(args ...string) *StringSliceCmd {
 	}
 }
 
-func (cmd *StringSliceCmd) parseReply(rd reader) (interface{}, error) {
-	return parseStringSliceReply(rd)
+func (cmd *StringSliceCmd) parseReply(rd reader) error {
+	cmd.val, cmd.err = parseReply(rd, parseStringSlice)
+	return cmd.err
 }
 
 func (cmd *StringSliceCmd) Val() []string {
@@ -311,8 +309,9 @@ func NewBoolSliceCmd(args ...string) *BoolSliceCmd {
 	}
 }
 
-func (cmd *BoolSliceCmd) parseReply(rd reader) (interface{}, error) {
-	return parseBoolSliceReply(rd)
+func (cmd *BoolSliceCmd) parseReply(rd reader) error {
+	cmd.val, cmd.err = parseReply(rd, parseBoolSlice)
+	return cmd.err
 }
 
 func (cmd *BoolSliceCmd) Val() []bool {
@@ -334,8 +333,9 @@ func NewStringStringMapCmd(args ...string) *StringStringMapCmd {
 	}
 }
 
-func (cmd *StringStringMapCmd) parseReply(rd reader) (interface{}, error) {
-	return parseStringStringMapReply(rd)
+func (cmd *StringStringMapCmd) parseReply(rd reader) error {
+	cmd.val, cmd.err = parseReply(rd, parseStringStringMap)
+	return cmd.err
 }
 
 func (cmd *StringStringMapCmd) Val() map[string]string {
@@ -357,8 +357,9 @@ func NewStringFloatMapCmd(args ...string) *StringFloatMapCmd {
 	}
 }
 
-func (cmd *StringFloatMapCmd) parseReply(rd reader) (interface{}, error) {
-	return parseStringFloatMapReply(rd)
+func (cmd *StringFloatMapCmd) parseReply(rd reader) error {
+	cmd.val, cmd.err = parseReply(rd, parseStringFloatMap)
+	return cmd.err
 }
 
 func (cmd *StringFloatMapCmd) Val() map[string]float64 {

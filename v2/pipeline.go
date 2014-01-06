@@ -79,14 +79,10 @@ func (c *Pipeline) execCmds(cn *conn, cmds []Cmder) error {
 
 	var firstCmdErr error
 	for _, cmd := range cmds {
-		val, err := cmd.parseReply(cn.rd)
-		if err != nil {
-			cmd.setErr(err)
+		if err := cmd.parseReply(cn.rd); err != nil {
 			if firstCmdErr == nil {
 				firstCmdErr = err
 			}
-		} else {
-			cmd.setVal(val)
 		}
 	}
 

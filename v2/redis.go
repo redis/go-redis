@@ -118,15 +118,12 @@ func (c *baseClient) run(cmd Cmder) {
 		return
 	}
 
-	val, err := cmd.parseReply(cn.rd)
-	if err != nil {
+	if err := cmd.parseReply(cn.rd); err != nil {
 		c.freeConn(cn, err)
-		cmd.setErr(err)
 		return
 	}
 
 	c.putConn(cn)
-	cmd.setVal(val)
 }
 
 // Close closes the client, releasing any open resources.

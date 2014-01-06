@@ -53,14 +53,12 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	}
 	cn.readTimeout = timeout
 
-	replyIface, err := NewSliceCmd().parseReply(cn.rd)
-	if err != nil {
+	cmd := NewSliceCmd()
+	if err := cmd.parseReply(cn.rd); err != nil {
 		return nil, err
 	}
-	reply, ok := replyIface.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("redis: unexpected reply type %T", replyIface)
-	}
+
+	reply := cmd.Val()
 
 	msgName := reply[0].(string)
 	switch msgName {
