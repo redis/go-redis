@@ -1165,3 +1165,11 @@ func (c *Client) ScriptLoad(script string) *StringCmd {
 	c.Process(req)
 	return req
 }
+
+//------------------------------------------------------------------------------
+
+func (c *Client) DebugObject(key string) *StringCmd {
+	req := NewStringCmd("DEBUG", "OBJECT", key)
+	c.Process(req)
+	return req
+}

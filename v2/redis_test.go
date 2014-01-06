@@ -2900,14 +2900,14 @@ func (t *RedisTest) TestScriptingScriptLoad(c *C) {
 	c.Assert(scriptLoad.Val(), Equals, "6b1bf486c81ceb7edf3c093f4c48582e38c0e791")
 }
 
-func (t *RedisTest) TestNewScript(c *C) {
+func (t *RedisTest) TestScriptingNewScript(c *C) {
 	s := redis.NewScript("return 1")
 	run := s.Run(t.client, nil, nil)
 	c.Assert(run.Err(), IsNil)
 	c.Assert(run.Val(), Equals, int64(1))
 }
 
-func (t *RedisTest) TestEvalAndPipeline(c *C) {
+func (t *RedisTest) TestScriptingEvalAndPipeline(c *C) {
 	pipeline := t.client.Pipeline()
 	s := redis.NewScript("return 1")
 	run := s.Eval(pipeline, nil, nil)
@@ -2917,7 +2917,7 @@ func (t *RedisTest) TestEvalAndPipeline(c *C) {
 	c.Assert(run.Val(), Equals, int64(1))
 }
 
-func (t *RedisTest) TestEvalShaAndPipeline(c *C) {
+func (t *RedisTest) TestScriptingEvalShaAndPipeline(c *C) {
 	s := redis.NewScript("return 1")
 	c.Assert(s.Load(t.client).Err(), IsNil)
 
@@ -2927,6 +2927,24 @@ func (t *RedisTest) TestEvalShaAndPipeline(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(run.Err(), IsNil)
 	c.Assert(run.Val(), Equals, int64(1))
+}
+
+//------------------------------------------------------------------------------
+
+func (t *RedisTest) TestCmdDebugObject(c *C) {
+	{
+		debug := t.client.DebugObject("foo")
+		c.Assert(debug.Err(), Not(IsNil))
+		c.Assert(debug.Err().Error(), Equals, "ERR no such key")
+	}
+
+	{
+		t.client.Set("foo", "bar")
+		debug := t.client.DebugObject("foo")
+		c.Assert(debug.Err(), IsNil)
+		c.Assert(debug.Val(), FitsTypeOf, "")
+		c.Assert(debug.Val(), Not(Equals), "")
+	}
 }
 
 //------------------------------------------------------------------------------
