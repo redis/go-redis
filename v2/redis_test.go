@@ -27,45 +27,29 @@ func sortStrings(slice []string) []string {
 
 //------------------------------------------------------------------------------
 
-type RedisConnectionTest struct {
-	opt    *redis.Options
-	client *redis.Client
-}
-
-var _ = Suite(&RedisConnectionTest{})
-
-func (t *RedisConnectionTest) SetUpTest(c *C) {
-	t.opt = &redis.Options{
-		Addr: redisAddr,
-	}
-	t.client = redis.NewTCPClient(t.opt)
-}
-
-func (t *RedisConnectionTest) TearDownTest(c *C) {
-	c.Assert(t.client.Close(), IsNil)
-}
-
-func (t *RedisConnectionTest) TestShutdown(c *C) {
-	c.Skip("shutdowns server")
-
-	shutdown := t.client.Shutdown()
-	c.Check(shutdown.Err(), Equals, io.EOF)
-	c.Check(shutdown.Val(), Equals, "")
-
-	ping := t.client.Ping()
-	c.Check(ping.Err(), ErrorMatches, "dial tcp <nil>:[0-9]+: connection refused")
-	c.Check(ping.Val(), Equals, "")
-}
-
-//------------------------------------------------------------------------------
-
 type RedisConnectorTest struct{}
 
 var _ = Suite(&RedisConnectorTest{})
 
+func (t *RedisConnectorTest) TestShutdown(c *C) {
+	c.Skip("shutdowns server")
+
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+
+	shutdown := client.Shutdown()
+	c.Check(shutdown.Err(), Equals, io.EOF)
+	c.Check(shutdown.Val(), Equals, "")
+
+	ping := client.Ping()
+	c.Check(ping.Err(), ErrorMatches, "dial tcp <nil>:[0-9]+: connection refused")
+	c.Check(ping.Val(), Equals, "")
+}
+
 func (t *RedisConnectorTest) TestNewTCPClient(c *C) {
 	client := redis.NewTCPClient(&redis.Options{
-		Addr: ":6379",
+		Addr: redisAddr,
 	})
 	ping := client.Ping()
 	c.Check(ping.Err(), IsNil)
@@ -82,6 +66,75 @@ func (t *RedisConnectorTest) TestNewUnixClient(c *C) {
 	ping := client.Ping()
 	c.Check(ping.Err(), IsNil)
 	c.Check(ping.Val(), Equals, "PONG")
+	c.Assert(client.Close(), IsNil)
+}
+
+func (t *RedisConnectorTest) TestClose(c *C) {
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	c.Assert(client.Close(), IsNil)
+
+	ping := client.Ping()
+	c.Assert(ping.Err(), Not(IsNil))
+	c.Assert(ping.Err().Error(), Equals, "redis: client is closed")
+
+	c.Assert(client.Close(), IsNil)
+}
+
+func (t *RedisConnectorTest) TestPubSubClose(c *C) {
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+
+	pubsub := client.PubSub()
+	c.Assert(pubsub.Close(), IsNil)
+
+	_, err := pubsub.Receive()
+	c.Assert(err, Not(IsNil))
+	c.Assert(err.Error(), Equals, "redis: client is closed")
+
+	ping := client.Ping()
+	c.Assert(ping.Err(), IsNil)
+
+	c.Assert(client.Close(), IsNil)
+}
+
+func (t *RedisConnectorTest) TestMultiClose(c *C) {
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+
+	multi := client.Multi()
+	c.Assert(multi.Close(), IsNil)
+
+	_, err := multi.Exec(func() {
+		multi.Ping()
+	})
+	c.Assert(err, Not(IsNil))
+	c.Assert(err.Error(), Equals, "redis: client is closed")
+
+	ping := client.Ping()
+	c.Assert(ping.Err(), IsNil)
+
+	c.Assert(client.Close(), IsNil)
+}
+
+func (t *RedisConnectorTest) TestPipelineClose(c *C) {
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+
+	_, err := client.Pipelined(func(pipeline *redis.Pipeline) {
+		c.Assert(pipeline.Close(), IsNil)
+		pipeline.Ping()
+	})
+	c.Assert(err, Not(IsNil))
+	c.Assert(err.Error(), Equals, "redis: client is closed")
+
+	ping := client.Ping()
+	c.Assert(ping.Err(), IsNil)
+
 	c.Assert(client.Close(), IsNil)
 }
 

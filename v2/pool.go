@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	errPoolClosed = errors.New("attempt to use closed connection pool")
+	errClosed = errors.New("redis: client is closed")
 )
 
 type pool interface {
@@ -110,7 +110,7 @@ func (p *connPool) Get() (*conn, bool, error) {
 
 	if p.closed {
 		p.cond.L.Unlock()
-		return nil, false, errPoolClosed
+		return nil, false, errClosed
 	}
 
 	if p.idleTimeout > 0 {
@@ -173,7 +173,7 @@ func (p *connPool) Put(cn *conn) error {
 	p.cond.L.Lock()
 	if p.closed {
 		p.cond.L.Unlock()
-		return errPoolClosed
+		return errClosed
 	}
 	cn.inUse = false
 	p.conns.MoveToFront(cn.elem)
@@ -242,6 +242,8 @@ type singleConnPool struct {
 	l        sync.RWMutex
 	cn       *conn
 	reusable bool
+
+	closed bool
 }
 
 func newSingleConnPool(pool pool, cn *conn, reusable bool) *singleConnPool {
@@ -254,6 +256,10 @@ func newSingleConnPool(pool pool, cn *conn, reusable bool) *singleConnPool {
 
 func (p *singleConnPool) Get() (*conn, bool, error) {
 	p.l.RLock()
+	if p.closed {
+		p.l.RUnlock()
+		return nil, false, errClosed
+	}
 	if p.cn != nil {
 		p.l.RUnlock()
 		return p.cn, false, nil
@@ -276,6 +282,10 @@ func (p *singleConnPool) Put(cn *conn) error {
 	if p.cn != cn {
 		panic("p.cn != cn")
 	}
+	if p.closed {
+		p.l.Unlock()
+		return errClosed
+	}
 	p.l.Unlock()
 	return nil
 }
@@ -284,6 +294,10 @@ func (p *singleConnPool) Remove(cn *conn) error {
 	p.l.Lock()
 	if p.cn != cn {
 		panic("p.cn != cn")
+	}
+	if p.closed {
+		p.l.Unlock()
+		return errClosed
 	}
 	p.cn = nil
 	p.l.Unlock()
@@ -311,6 +325,11 @@ func (p *singleConnPool) Size() int {
 func (p *singleConnPool) Close() error {
 	defer p.l.Unlock()
 	p.l.Lock()
+
+	if p.closed {
+		return nil
+	}
+	p.closed = true
 
 	var err error
 	if p.cn != nil {

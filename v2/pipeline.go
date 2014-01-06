@@ -3,6 +3,8 @@ package redis
 // Not thread-safe.
 type Pipeline struct {
 	*Client
+
+	closed bool
 }
 
 func (c *Client) Pipeline() *Pipeline {
@@ -27,10 +29,14 @@ func (c *Client) Pipelined(f func(*Pipeline)) ([]Cmder, error) {
 }
 
 func (c *Pipeline) Close() error {
+	c.closed = true
 	return nil
 }
 
 func (c *Pipeline) Discard() error {
+	if c.closed {
+		return errClosed
+	}
 	c.cmds = c.cmds[:0]
 	return nil
 }
@@ -38,6 +44,10 @@ func (c *Pipeline) Discard() error {
 // Exec always returns list of commands and error of the first failed
 // command if any.
 func (c *Pipeline) Exec() ([]Cmder, error) {
+	if c.closed {
+		return nil, errClosed
+	}
+
 	cmds := c.cmds
 	c.cmds = make([]Cmder, 0)
 
