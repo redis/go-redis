@@ -201,7 +201,7 @@ func (cmd *BoolCmd) parseReply(rd reader) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	return v.(int64) == 1, nil
+	return v.(int64) == 0 || v.(int64) == 1, nil
 }
 
 func (cmd *BoolCmd) Val() bool {
