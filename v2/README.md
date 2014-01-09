@@ -33,18 +33,18 @@ Look and feel
 Some corner cases:
 
     SORT list LIMIT 0 2 ASC
-    client.Sort("list", redis.Sort{Offset: 0, Count: 2, Order: "ASC"})
+    vals, err := client.Sort("list", redis.Sort{Offset: 0, Count: 2, Order: "ASC"}).Result()
 
     ZRANGEBYSCORE zset -inf +inf WITHSCORES LIMIT 0 2
-    client.ZRangeByScoreWithScores("zset", redis.ZRangeByScore{
+    vals, err := client.ZRangeByScoreWithScores("zset", redis.ZRangeByScore{
         Min: "-inf",
         Max: "+inf",
         Offset: 0,
         Count: 2,
-    })
+    }).Result()
 
     ZINTERSTORE out 2 zset1 zset2 WEIGHTS 2 3 AGGREGATE SUM
-    client.ZInterStore("out", redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
+    vals, err := client.ZInterStore("out", redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2").Result()
 
     EVAL "return {KEYS[1],ARGV[1]}" 1 "key" "hello"
-    client.Eval("return {KEYS[1],ARGV[1]}", []string{"key"}, []string{"hello"})
+    vals, err := client.Eval("return {KEYS[1],ARGV[1]}", []string{"key"}, []string{"hello"}).Result()
