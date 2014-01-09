@@ -399,6 +399,10 @@ func (cmd *StringSliceCmd) Val() []string {
 	return cmd.val
 }
 
+func (cmd *StringSliceCmd) Result() ([]string, error) {
+	return cmd.Val(), cmd.Err()
+}
+
 func (cmd *StringSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }

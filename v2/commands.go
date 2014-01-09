@@ -877,17 +877,17 @@ type ZRangeByScore struct {
 	Offset, Count int64
 }
 
-func (c *Client) zRangeByScore(key string, opts ZRangeByScore, withScores bool) *StringSliceCmd {
-	args := []string{"ZRANGEBYSCORE", key, opts.Min, opts.Max}
+func (c *Client) zRangeByScore(key string, opt ZRangeByScore, withScores bool) *StringSliceCmd {
+	args := []string{"ZRANGEBYSCORE", key, opt.Min, opt.Max}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
-	if opts.Offset != 0 || opts.Count != 0 {
+	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
 			"LIMIT",
-			strconv.FormatInt(opts.Offset, 10),
-			strconv.FormatInt(opts.Count, 10),
+			strconv.FormatInt(opt.Offset, 10),
+			strconv.FormatInt(opt.Count, 10),
 		)
 	}
 	req := NewStringSliceCmd(args...)
@@ -895,22 +895,22 @@ func (c *Client) zRangeByScore(key string, opts ZRangeByScore, withScores bool) 
 	return req
 }
 
-func (c *Client) ZRangeByScore(key string, opts ZRangeByScore) *StringSliceCmd {
-	return c.zRangeByScore(key, opts, false)
+func (c *Client) ZRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRangeByScore(key, opt, false)
 }
 
-func (c *Client) ZRangeByScoreWithScores(key string, opts ZRangeByScore) *StringSliceCmd {
-	return c.zRangeByScore(key, opts, true)
+func (c *Client) ZRangeByScoreWithScores(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRangeByScore(key, opt, true)
 }
 
-func (c *Client) ZRangeByScoreWithScoresMap(key string, opts ZRangeByScore) *StringFloatMapCmd {
-	args := []string{"ZRANGEBYSCORE", key, opts.Min, opts.Max, "WITHSCORES"}
-	if opts.Offset != 0 || opts.Count != 0 {
+func (c *Client) ZRangeByScoreWithScoresMap(key string, opt ZRangeByScore) *StringFloatMapCmd {
+	args := []string{"ZRANGEBYSCORE", key, opt.Min, opt.Max, "WITHSCORES"}
+	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
 			"LIMIT",
-			strconv.FormatInt(opts.Offset, 10),
-			strconv.FormatInt(opts.Count, 10),
+			strconv.FormatInt(opt.Offset, 10),
+			strconv.FormatInt(opt.Count, 10),
 		)
 	}
 	req := NewStringFloatMapCmd(args...)
@@ -973,17 +973,17 @@ func (c *Client) ZRevRangeWithScoresMap(key, start, stop string) *StringFloatMap
 	return req
 }
 
-func (c *Client) zRevRangeByScore(key, start, stop string, withScores bool, offset, count int64) *StringSliceCmd {
-	args := []string{"ZREVRANGEBYSCORE", key, start, stop}
+func (c *Client) zRevRangeByScore(key string, opt ZRangeByScore, withScores bool) *StringSliceCmd {
+	args := []string{"ZREVRANGEBYSCORE", key, opt.Max, opt.Min}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
-	if offset != 0 || count != 0 {
+	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
 			"LIMIT",
-			strconv.FormatInt(offset, 10),
-			strconv.FormatInt(count, 10),
+			strconv.FormatInt(opt.Offset, 10),
+			strconv.FormatInt(opt.Count, 10),
 		)
 	}
 	req := NewStringSliceCmd(args...)
@@ -991,23 +991,22 @@ func (c *Client) zRevRangeByScore(key, start, stop string, withScores bool, offs
 	return req
 }
 
-func (c *Client) ZRevRangeByScore(key, start, stop string, offset, count int64) *StringSliceCmd {
-	return c.zRevRangeByScore(key, start, stop, false, offset, count)
+func (c *Client) ZRevRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRevRangeByScore(key, opt, false)
 }
 
-func (c *Client) ZRevRangeByScoreWithScores(key, start, stop string, offset, count int64) *StringSliceCmd {
-	return c.zRevRangeByScore(key, start, stop, false, offset, count)
+func (c *Client) ZRevRangeByScoreWithScores(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRevRangeByScore(key, opt, true)
 }
 
-func (c *Client) ZRevRangeByScoreWithScoresMap(
-	key, start, stop string, offset, count int64) *StringFloatMapCmd {
-	args := []string{"ZREVRANGEBYSCORE", key, start, stop, "WITHSCORES"}
-	if offset != 0 || count != 0 {
+func (c *Client) ZRevRangeByScoreWithScoresMap(key string, opt ZRangeByScore) *StringFloatMapCmd {
+	args := []string{"ZREVRANGEBYSCORE", key, opt.Max, opt.Min, "WITHSCORES"}
+	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
 			"LIMIT",
-			strconv.FormatInt(offset, 10),
-			strconv.FormatInt(count, 10),
+			strconv.FormatInt(opt.Offset, 10),
+			strconv.FormatInt(opt.Count, 10),
 		)
 	}
 	req := NewStringFloatMapCmd(args...)
