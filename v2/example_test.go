@@ -23,19 +23,19 @@ func ExampleNewTCPClient() {
 	})
 	defer client.Close()
 
-	ping := client.Ping()
-	fmt.Println(ping.Val(), ping.Err())
+	pong, err := client.Ping().Result()
+	fmt.Println(pong, err)
 	// Output: PONG <nil>
 }
 
 func ExampleClient() {
 	set := client.Set("foo", "bar")
-	fmt.Println(set.Val(), set.Err())
+	fmt.Println(set.Err())
 
-	get := client.Get("hello")
-	fmt.Printf("%q %s %v", get.Val(), get.Err(), get.Err() == redis.Nil)
+	v, err := client.Get("hello").Result()
+	fmt.Printf("%q %s %v", v, err, err == redis.Nil)
 
-	// Output: OK <nil>
+	// Output: <nil>
 	// "" redis: nil true
 }
 
@@ -44,10 +44,14 @@ func ExampleClient_Pipelined() {
 		c.Set("key1", "hello1")
 		c.Get("key1")
 	})
+	fmt.Println(err)
 	set := cmds[0].(*redis.StatusCmd)
+	fmt.Println(set)
 	get := cmds[1].(*redis.StringCmd)
-	fmt.Println(set, get, err)
-	// Output: SET key1 hello1: OK GET key1: hello1 <nil>
+	fmt.Println(get)
+	// Output: <nil>
+	// SET key1 hello1: OK
+	// GET key1: hello1
 }
 
 func ExamplePipeline() {
@@ -65,15 +69,14 @@ func ExamplePipeline() {
 
 func ExampleMulti() {
 	incr := func(tx *redis.Multi) ([]redis.Cmder, error) {
-		get := tx.Get("key")
-		if err := get.Err(); err != nil && err != redis.Nil {
+		s, err := tx.Get("key").Result()
+		if err != nil && err != redis.Nil {
 			return nil, err
 		}
-
-		val, _ := strconv.ParseInt(get.Val(), 10, 64)
+		n, _ := strconv.ParseInt(s, 10, 64)
 
 		return tx.Exec(func() {
-			tx.Set("key", strconv.FormatInt(val+1, 10))
+			tx.Set("key", strconv.FormatInt(n+1, 10))
 		})
 	}
 
@@ -128,11 +131,11 @@ func ExampleScript() {
         return 0
     `)
 
-	run1 := setnx.Run(client, []string{"keynx"}, []string{"foo"})
-	fmt.Println(run1.Val().(int64), run1.Err())
+	v1, err := setnx.Run(client, []string{"keynx"}, []string{"foo"}).Result()
+	fmt.Println(v1.(int64), err)
 
-	run2 := setnx.Run(client, []string{"keynx"}, []string{"bar"})
-	fmt.Println(run2.Val().(int64), run2.Err())
+	v2, err := setnx.Run(client, []string{"keynx"}, []string{"bar"}).Result()
+	fmt.Println(v2.(int64), err)
 
 	get := client.Get("keynx")
 	fmt.Println(get)
@@ -149,7 +152,7 @@ func Example_customCommand() {
 		return cmd
 	}
 
-	get := Get(client, "key_does_not_exist")
-	fmt.Printf("%q %s", get.Val(), get.Err())
+	v, err := Get(client, "key_does_not_exist").Result()
+	fmt.Printf("%q %s", v, err)
 	// Output: "" redis: nil
 }
