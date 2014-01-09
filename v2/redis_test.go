@@ -760,6 +760,54 @@ func (t *RedisTest) TestCmdKeysType(c *C) {
 	c.Assert(type_.Val(), Equals, "string")
 }
 
+func (t *RedisTest) TestCmdScan(c *C) {
+	for i := 0; i < 1000; i++ {
+		set := t.client.Set(fmt.Sprintf("key%d", i), "hello")
+		c.Assert(set.Err(), IsNil)
+	}
+
+	cursor, keys, err := t.client.Scan(0, "", 0).Result()
+	c.Assert(err, IsNil)
+	c.Assert(cursor > 0, Equals, true)
+	c.Assert(len(keys) > 0, Equals, true)
+}
+
+func (t *RedisTest) TestCmdSScan(c *C) {
+	for i := 0; i < 1000; i++ {
+		sadd := t.client.SAdd("myset", fmt.Sprintf("member%d", i))
+		c.Assert(sadd.Err(), IsNil)
+	}
+
+	cursor, keys, err := t.client.SScan("myset", 0, "", 0).Result()
+	c.Assert(err, IsNil)
+	c.Assert(cursor > 0, Equals, true)
+	c.Assert(len(keys) > 0, Equals, true)
+}
+
+func (t *RedisTest) TestCmdHScan(c *C) {
+	for i := 0; i < 1000; i++ {
+		sadd := t.client.HSet("myhash", fmt.Sprintf("key%d", i), "hello")
+		c.Assert(sadd.Err(), IsNil)
+	}
+
+	cursor, keys, err := t.client.HScan("myhash", 0, "", 0).Result()
+	c.Assert(err, IsNil)
+	c.Assert(cursor > 0, Equals, true)
+	c.Assert(len(keys) > 0, Equals, true)
+}
+
+func (t *RedisTest) TestCmdZScan(c *C) {
+	for i := 0; i < 1000; i++ {
+		sadd := t.client.ZAdd("myset", redis.Z{float64(i), fmt.Sprintf("member%d", i)})
+		c.Assert(sadd.Err(), IsNil)
+	}
+
+	cursor, keys, err := t.client.ZScan("myset", 0, "", 0).Result()
+	c.Assert(err, IsNil)
+	c.Assert(cursor > 0, Equals, true)
+	c.Assert(len(keys) > 0, Equals, true)
+}
+
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) TestStringsAppend(c *C) {
@@ -2508,7 +2556,8 @@ func (t *RedisTest) TestPipelineErrValNotSet(c *C) {
 	}()
 
 	get := pipeline.Get("key")
-	c.Assert(get.Err(), ErrorMatches, "redis: value is not set")
+	c.Assert(get.Err(), IsNil)
+	c.Assert(get.Val(), Equals, "")
 }
 
 func (t *RedisTest) TestPipelineRunQueuedOnEmptyQueue(c *C) {

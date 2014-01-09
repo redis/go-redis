@@ -18,7 +18,6 @@ var TxFailedErr = errors.New("redis: transaction failed")
 
 var (
 	errReaderTooSmall   = errors.New("redis: reader is too small")
-	errValNotSet        = errors.New("redis: value is not set")
 	errInvalidReplyType = errors.New("redis: invalid reply type")
 )
 

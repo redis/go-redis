@@ -229,18 +229,57 @@ func (c *Client) Type(key string) *StatusCmd {
 	return req
 }
 
-// func (c *Client) Scan(cursor, match string, count int64) *ScanCmd {
-// 	args := []string{"SCAN", cursor}
-// 	if match != "" {
-// 		args = append(args, "MATCH", match)
-// 	}
-// 	if count > 0 {
-// 		args = append(args, "COUNT", strconv.FormatInt(count, 10))
-// 	}
-// 	req := NewScanCmd(args...)
-// 	c.Process(req)
-// 	return req
-// }
+func (c *Client) Scan(cursor int64, match string, count int64) *ScanCmd {
+	args := []string{"SCAN", strconv.FormatInt(cursor, 10)}
+	if match != "" {
+		args = append(args, "MATCH", match)
+	}
+	if count > 0 {
+		args = append(args, "COUNT", strconv.FormatInt(count, 10))
+	}
+	req := NewScanCmd(args...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) SScan(key string, cursor int64, match string, count int64) *ScanCmd {
+	args := []string{"SSCAN", key, strconv.FormatInt(cursor, 10)}
+	if match != "" {
+		args = append(args, "MATCH", match)
+	}
+	if count > 0 {
+		args = append(args, "COUNT", strconv.FormatInt(count, 10))
+	}
+	req := NewScanCmd(args...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) HScan(key string, cursor int64, match string, count int64) *ScanCmd {
+	args := []string{"HSCAN", key, strconv.FormatInt(cursor, 10)}
+	if match != "" {
+		args = append(args, "MATCH", match)
+	}
+	if count > 0 {
+		args = append(args, "COUNT", strconv.FormatInt(count, 10))
+	}
+	req := NewScanCmd(args...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ZScan(key string, cursor int64, match string, count int64) *ScanCmd {
+	args := []string{"ZSCAN", key, strconv.FormatInt(cursor, 10)}
+	if match != "" {
+		args = append(args, "MATCH", match)
+	}
+	if count > 0 {
+		args = append(args, "COUNT", strconv.FormatInt(count, 10))
+	}
+	req := NewScanCmd(args...)
+	c.Process(req)
+	return req
+}
 
 //------------------------------------------------------------------------------
 
