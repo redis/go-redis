@@ -138,6 +138,16 @@ func (t *RedisConnectorTest) TestPipelineClose(c *C) {
 	c.Assert(client.Close(), IsNil)
 }
 
+func (t *RedisConnectorTest) TestIdleTimeout(c *C) {
+	client := redis.NewTCPClient(&redis.Options{
+		Addr:        redisAddr,
+		IdleTimeout: time.Nanosecond,
+	})
+	for i := 0; i < 10; i++ {
+		c.Assert(client.Ping().Err(), IsNil)
+	}
+}
+
 //------------------------------------------------------------------------------
 
 type RedisConnPoolTest struct {

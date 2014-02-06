@@ -120,8 +120,8 @@ func (p *connPool) Get() (*conn, bool, error) {
 				break
 			}
 			if time.Since(cn.usedAt) > p.idleTimeout {
-				if err := p.Remove(cn); err != nil {
-					glog.Errorf("Remove failed: %s", err)
+				if err := p.remove(cn); err != nil {
+					glog.Errorf("remove failed: %s", err)
 				}
 			}
 		}
@@ -183,21 +183,26 @@ func (p *connPool) Put(cn *conn) error {
 	return nil
 }
 
-func (p *connPool) Remove(cn *conn) (err error) {
+func (p *connPool) Remove(cn *conn) error {
 	p.cond.L.Lock()
 	if p.closed {
 		// Noop, connection is already closed.
 		p.cond.L.Unlock()
 		return nil
 	}
-	if cn != nil {
-		err = cn.Close()
-	}
-	p.conns.Remove(cn.elem)
-	cn.elem = nil
+	err := p.remove(cn)
 	p.cond.Signal()
 	p.cond.L.Unlock()
 	return err
+}
+
+func (p *connPool) remove(cn *conn) error {
+	p.conns.Remove(cn.elem)
+	cn.elem = nil
+	if !cn.inUse {
+		p.idleNum--
+	}
+	return cn.Close()
 }
 
 // Returns number of idle connections.
@@ -223,14 +228,11 @@ func (p *connPool) Close() error {
 	p.closed = true
 	var retErr error
 	for e := p.conns.Front(); e != nil; e = e.Next() {
-		cn := e.Value.(*conn)
-		if err := cn.Close(); err != nil {
+		if err := p.remove(e.Value.(*conn)); err != nil {
 			glog.Errorf("cn.Close failed: %s", err)
 			retErr = err
 		}
-		cn.elem = nil
 	}
-	p.conns = nil
 	return retErr
 }
 
