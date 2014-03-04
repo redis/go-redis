@@ -27,12 +27,14 @@ type pool interface {
 //------------------------------------------------------------------------------
 
 type conn struct {
-	cn     net.Conn
-	rd     reader
-	inUse  bool
+	cn    net.Conn
+	rd    reader
+	inUse bool
+
 	usedAt time.Time
 
-	readTimeout, writeTimeout time.Duration
+	readTimeout  time.Duration
+	writeTimeout time.Duration
 
 	elem *list.Element
 }
@@ -164,8 +166,11 @@ func (p *connPool) Get() (*conn, bool, error) {
 
 func (p *connPool) Put(cn *conn) error {
 	if cn.rd.Buffered() != 0 {
-		panic("redis: attempt to put connection with buffered data")
+		b, _ := cn.rd.ReadN(cn.rd.Buffered())
+		glog.Errorf("redis: connection has unread data: %q", b)
+		return p.Remove(cn)
 	}
+
 	if p.idleTimeout > 0 {
 		cn.usedAt = time.Now()
 	}
@@ -180,6 +185,7 @@ func (p *connPool) Put(cn *conn) error {
 	p.idleNum++
 	p.cond.Signal()
 	p.cond.L.Unlock()
+
 	return nil
 }
 
@@ -205,14 +211,14 @@ func (p *connPool) remove(cn *conn) error {
 	return cn.Close()
 }
 
-// Returns number of idle connections.
+// Len returns number of idle connections.
 func (p *connPool) Len() int {
 	defer p.cond.L.Unlock()
 	p.cond.L.Lock()
 	return p.idleNum
 }
 
-// Returns number of connections in the pool.
+// Size returns number of connections in the pool.
 func (p *connPool) Size() int {
 	defer p.cond.L.Unlock()
 	p.cond.L.Lock()
