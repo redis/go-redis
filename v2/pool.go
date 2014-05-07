@@ -15,6 +15,10 @@ var (
 	errClosed = errors.New("redis: client is closed")
 )
 
+var (
+	zeroTime = time.Time{}
+)
+
 type pool interface {
 	Get() (*conn, bool, error)
 	Put(*conn) error
@@ -58,7 +62,7 @@ func (cn *conn) Read(b []byte) (int, error) {
 	if cn.readTimeout != 0 {
 		cn.cn.SetReadDeadline(time.Now().Add(cn.readTimeout))
 	} else {
-		cn.cn.SetReadDeadline(time.Time{})
+		cn.cn.SetReadDeadline(zeroTime)
 	}
 	return cn.cn.Read(b)
 }
@@ -67,7 +71,7 @@ func (cn *conn) Write(b []byte) (int, error) {
 	if cn.writeTimeout != 0 {
 		cn.cn.SetWriteDeadline(time.Now().Add(cn.writeTimeout))
 	} else {
-		cn.cn.SetReadDeadline(time.Time{})
+		cn.cn.SetWriteDeadline(zeroTime)
 	}
 	return cn.cn.Write(b)
 }
