@@ -27,15 +27,16 @@ type pool interface {
 	Len() int
 	Size() int
 	Close() error
+	Filter(func(*conn) bool)
 }
 
 //------------------------------------------------------------------------------
 
 type conn struct {
-	cn    net.Conn
+	netcn net.Conn
 	rd    reader
-	inUse bool
 
+	inUse  bool
 	usedAt time.Time
 
 	readTimeout  time.Duration
@@ -50,9 +51,8 @@ func newConnFunc(dial func() (net.Conn, error)) func() (*conn, error) {
 		if err != nil {
 			return nil, err
 		}
-
 		cn := &conn{
-			cn: netcn,
+			netcn: netcn,
 		}
 		cn.rd = bufio.NewReader(cn)
 		return cn, nil
@@ -61,24 +61,28 @@ func newConnFunc(dial func() (net.Conn, error)) func() (*conn, error) {
 
 func (cn *conn) Read(b []byte) (int, error) {
 	if cn.readTimeout != 0 {
-		cn.cn.SetReadDeadline(time.Now().Add(cn.readTimeout))
+		cn.netcn.SetReadDeadline(time.Now().Add(cn.readTimeout))
 	} else {
-		cn.cn.SetReadDeadline(zeroTime)
+		cn.netcn.SetReadDeadline(zeroTime)
 	}
-	return cn.cn.Read(b)
+	return cn.netcn.Read(b)
 }
 
 func (cn *conn) Write(b []byte) (int, error) {
 	if cn.writeTimeout != 0 {
-		cn.cn.SetWriteDeadline(time.Now().Add(cn.writeTimeout))
+		cn.netcn.SetWriteDeadline(time.Now().Add(cn.writeTimeout))
 	} else {
-		cn.cn.SetWriteDeadline(zeroTime)
+		cn.netcn.SetWriteDeadline(zeroTime)
 	}
-	return cn.cn.Write(b)
+	return cn.netcn.Write(b)
+}
+
+func (cn *conn) RemoteAddr() net.Addr {
+	return cn.netcn.RemoteAddr()
 }
 
 func (cn *conn) Close() error {
-	return cn.cn.Close()
+	return cn.netcn.Close()
 }
 
 //------------------------------------------------------------------------------
@@ -87,30 +91,24 @@ type connPool struct {
 	dial func() (*conn, error)
 	rl   *rateLimiter
 
+	opt *options
+
 	cond  *sync.Cond
 	conns *list.List
 
-	idleNum     int
-	maxSize     int
-	idleTimeout time.Duration
-
-	closed bool
+	idleNum int
+	closed  bool
 }
 
-func newConnPool(
-	dial func() (*conn, error),
-	maxSize int,
-	idleTimeout time.Duration,
-) *connPool {
+func newConnPool(dial func() (*conn, error), opt *options) *connPool {
 	return &connPool{
 		dial: dial,
-		rl:   newRateLimiter(time.Second, 2*maxSize),
+		rl:   newRateLimiter(time.Second, 2*opt.PoolSize),
+
+		opt: opt,
 
 		cond:  sync.NewCond(&sync.Mutex{}),
 		conns: list.New(),
-
-		maxSize:     maxSize,
-		idleTimeout: idleTimeout,
 	}
 }
 
@@ -131,13 +129,13 @@ func (p *connPool) Get() (*conn, bool, error) {
 		return nil, false, errClosed
 	}
 
-	if p.idleTimeout > 0 {
+	if p.opt.IdleTimeout > 0 {
 		for el := p.conns.Front(); el != nil; el = el.Next() {
 			cn := el.Value.(*conn)
 			if cn.inUse {
 				break
 			}
-			if time.Since(cn.usedAt) > p.idleTimeout {
+			if time.Since(cn.usedAt) > p.opt.IdleTimeout {
 				if err := p.remove(cn); err != nil {
 					glog.Errorf("remove failed: %s", err)
 				}
@@ -145,7 +143,7 @@ func (p *connPool) Get() (*conn, bool, error) {
 		}
 	}
 
-	for p.conns.Len() >= p.maxSize && p.idleNum == 0 {
+	for p.conns.Len() >= p.opt.PoolSize && p.idleNum == 0 {
 		p.cond.Wait()
 	}
 
@@ -163,8 +161,8 @@ func (p *connPool) Get() (*conn, bool, error) {
 		return cn, false, nil
 	}
 
-	if p.conns.Len() < p.maxSize {
-		cn, err := p.new()
+	if p.conns.Len() < p.opt.PoolSize {
+		cn, err := p.dial()
 		if err != nil {
 			p.cond.L.Unlock()
 			return nil, false, err
@@ -187,7 +185,7 @@ func (p *connPool) Put(cn *conn) error {
 		return p.Remove(cn)
 	}
 
-	if p.idleTimeout > 0 {
+	if p.opt.IdleTimeout > 0 {
 		cn.usedAt = time.Now()
 	}
 
@@ -241,6 +239,18 @@ func (p *connPool) Size() int {
 	return p.conns.Len()
 }
 
+func (p *connPool) Filter(f func(*conn) bool) {
+	p.cond.L.Lock()
+	for el, next := p.conns.Front(), p.conns.Front(); el != nil; el = next {
+		next = el.Next()
+		cn := el.Value.(*conn)
+		if !f(cn) {
+			p.remove(cn)
+		}
+	}
+	p.cond.L.Unlock()
+}
+
 func (p *connPool) Close() error {
 	defer p.cond.L.Unlock()
 	p.cond.L.Lock()
@@ -249,7 +259,11 @@ func (p *connPool) Close() error {
 	}
 	p.closed = true
 	var retErr error
-	for e := p.conns.Front(); e != nil; e = e.Next() {
+	for {
+		e := p.conns.Front()
+		if e == nil {
+			break
+		}
 		if err := p.remove(e.Value.(*conn)); err != nil {
 			glog.Errorf("cn.Close failed: %s", err)
 			retErr = err
@@ -315,17 +329,24 @@ func (p *singleConnPool) Put(cn *conn) error {
 }
 
 func (p *singleConnPool) Remove(cn *conn) error {
+	defer p.l.Unlock()
 	p.l.Lock()
+	if p.cn == nil {
+		panic("p.cn == nil")
+	}
 	if p.cn != cn {
 		panic("p.cn != cn")
 	}
 	if p.closed {
-		p.l.Unlock()
 		return errClosed
 	}
+	return p.remove()
+}
+
+func (p *singleConnPool) remove() error {
+	err := p.pool.Remove(p.cn)
 	p.cn = nil
-	p.l.Unlock()
-	return nil
+	return err
 }
 
 func (p *singleConnPool) Len() int {
@@ -346,15 +367,23 @@ func (p *singleConnPool) Size() int {
 	return 1
 }
 
+func (p *singleConnPool) Filter(f func(*conn) bool) {
+	p.l.Lock()
+	if p.cn != nil {
+		if !f(p.cn) {
+			p.remove()
+		}
+	}
+	p.l.Unlock()
+}
+
 func (p *singleConnPool) Close() error {
 	defer p.l.Unlock()
 	p.l.Lock()
-
 	if p.closed {
 		return nil
 	}
 	p.closed = true
-
 	var err error
 	if p.cn != nil {
 		if p.reusable {
@@ -364,6 +393,5 @@ func (p *singleConnPool) Close() error {
 		}
 	}
 	p.cn = nil
-
 	return err
 }
