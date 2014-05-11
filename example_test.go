@@ -4,132 +4,155 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/vmihailenco/redis"
+	"gopkg.in/redis.v1"
 )
 
-func ExampleTCPClient() {
-	password := ""  // no password set
-	db := int64(-1) // use default DB
-	client := redis.NewTCPClient("localhost:6379", password, db)
-	defer client.Close()
+var client *redis.Client
 
-	ping := client.Ping()
-	fmt.Println(ping.Err(), ping.Val())
-	// Output: <nil> PONG
+func init() {
+	client = redis.NewTCPClient(&redis.Options{
+		Addr: ":6379",
+	})
 }
 
-func ExampleUnixClient() {
-	client := redis.NewUnixClient("/tmp/redis.sock", "", -1)
+func ExampleNewTCPClient() {
+	client := redis.NewTCPClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
 	defer client.Close()
 
-	ping := client.Ping()
-	fmt.Println(ping.Err(), ping.Val())
-	// Output: <nil> PONG
+	pong, err := client.Ping().Result()
+	fmt.Println(pong, err)
+	// Output: PONG <nil>
 }
 
-func ExampleSetGet() {
-	client := redis.NewTCPClient(":6379", "", -1)
-	defer client.Close()
-
+func ExampleClient() {
 	set := client.Set("foo", "bar")
-	fmt.Println(set.Err(), set.Val())
+	fmt.Println(set.Err())
 
-	get := client.Get("foo")
-	fmt.Println(get.Err(), get.Val())
+	v, err := client.Get("hello").Result()
+	fmt.Printf("%q %s %v", v, err, err == redis.Nil)
 
-	// Output: <nil> OK
-	// <nil> bar
+	// Output: <nil>
+	// "" redis: nil true
+}
+
+func ExampleClient_Pipelined() {
+	cmds, err := client.Pipelined(func(c *redis.Pipeline) {
+		c.Set("key1", "hello1")
+		c.Get("key1")
+	})
+	fmt.Println(err)
+	set := cmds[0].(*redis.StatusCmd)
+	fmt.Println(set)
+	get := cmds[1].(*redis.StringCmd)
+	fmt.Println(get)
+	// Output: <nil>
+	// SET key1 hello1: OK
+	// GET key1: hello1
 }
 
 func ExamplePipeline() {
-	client := redis.NewTCPClient(":6379", "", -1)
-	defer client.Close()
-
-	var set *redis.StatusReq
-	var get *redis.StringReq
-	reqs, err := client.Pipelined(func(c *redis.PipelineClient) {
-		set = c.Set("key1", "hello1")
-		get = c.Get("key2")
-	})
-	fmt.Println(err, reqs)
+	pipeline := client.Pipeline()
+	set := pipeline.Set("key1", "hello1")
+	get := pipeline.Get("key1")
+	cmds, err := pipeline.Exec()
+	fmt.Println(cmds, err)
 	fmt.Println(set)
 	fmt.Println(get)
-	// Output: <nil> [SET key1 hello1: OK GET key2: (nil)]
+	// Output: [SET key1 hello1: OK GET key1: hello1] <nil>
 	// SET key1 hello1: OK
-	// GET key2: (nil)
+	// GET key1: hello1
 }
 
-func transaction(multi *redis.MultiClient) ([]redis.Req, error) {
-	get := multi.Get("key")
-	if err := get.Err(); err != nil && err != redis.Nil {
-		return nil, err
+func ExampleMulti() {
+	incr := func(tx *redis.Multi) ([]redis.Cmder, error) {
+		s, err := tx.Get("key").Result()
+		if err != nil && err != redis.Nil {
+			return nil, err
+		}
+		n, _ := strconv.ParseInt(s, 10, 64)
+
+		return tx.Exec(func() {
+			tx.Set("key", strconv.FormatInt(n+1, 10))
+		})
 	}
-
-	val, _ := strconv.ParseInt(get.Val(), 10, 64)
-
-	reqs, err := multi.Exec(func() {
-		multi.Set("key", strconv.FormatInt(val+1, 10))
-	})
-	// Transaction failed. Repeat.
-	if err == redis.Nil {
-		return transaction(multi)
-	}
-	return reqs, err
-}
-
-func ExampleTransaction() {
-	client := redis.NewTCPClient(":6379", "", -1)
-	defer client.Close()
 
 	client.Del("key")
 
-	multi, err := client.MultiClient()
-	_ = err
-	defer multi.Close()
+	tx := client.Multi()
+	defer tx.Close()
 
-	watch := multi.Watch("key")
+	watch := tx.Watch("key")
 	_ = watch.Err()
 
-	reqs, err := transaction(multi)
-	fmt.Println(err, reqs)
+	for {
+		cmds, err := incr(tx)
+		if err == redis.TxFailedErr {
+			continue
+		} else if err != nil {
+			panic(err)
+		}
+		fmt.Println(cmds, err)
+		break
+	}
 
-	// Output: <nil> [SET key 1: OK]
+	// Output: [SET key 1: OK] <nil>
 }
 
 func ExamplePubSub() {
-	client := redis.NewTCPClient(":6379", "", -1)
-	defer client.Close()
-
-	pubsub, err := client.PubSubClient()
+	pubsub := client.PubSub()
 	defer pubsub.Close()
 
-	ch, err := pubsub.Subscribe("mychannel")
+	err := pubsub.Subscribe("mychannel")
 	_ = err
 
-	subscribeMsg := <-ch
-	fmt.Println(subscribeMsg.Err, subscribeMsg.Name)
+	msg, err := pubsub.Receive()
+	fmt.Println(msg, err)
 
 	pub := client.Publish("mychannel", "hello")
 	_ = pub.Err()
 
-	msg := <-ch
-	fmt.Println(msg.Err, msg.Message)
+	msg, err = pubsub.Receive()
+	fmt.Println(msg, err)
 
-	// Output: <nil> subscribe
-	// <nil> hello
+	// Output: &{subscribe mychannel 1} <nil>
+	// &{mychannel hello} <nil>
 }
 
-func Get(client *redis.Client, key string) *redis.StringReq {
-	req := redis.NewStringReq("GET", key)
-	client.Process(req)
-	return req
+func ExampleScript() {
+	setnx := redis.NewScript(`
+        if redis.call("get", KEYS[1]) == false then
+            redis.call("set", KEYS[1], ARGV[1])
+            return 1
+        end
+        return 0
+    `)
+
+	v1, err := setnx.Run(client, []string{"keynx"}, []string{"foo"}).Result()
+	fmt.Println(v1.(int64), err)
+
+	v2, err := setnx.Run(client, []string{"keynx"}, []string{"bar"}).Result()
+	fmt.Println(v2.(int64), err)
+
+	get := client.Get("keynx")
+	fmt.Println(get)
+
+	// Output: 1 <nil>
+	// 0 <nil>
+	// GET keynx: foo
 }
 
-func ExampleCustomCommand() {
-	client := redis.NewTCPClient(":6379", "", -1)
-	defer client.Close()
+func Example_customCommand() {
+	Get := func(client *redis.Client, key string) *redis.StringCmd {
+		cmd := redis.NewStringCmd("GET", key)
+		client.Process(cmd)
+		return cmd
+	}
 
-	get := Get(client, "key_does_not_exist")
-	fmt.Println(get.Err(), get.Val())
-	// Output: (nil)
+	v, err := Get(client, "key_does_not_exist").Result()
+	fmt.Printf("%q %s", v, err)
+	// Output: "" redis: nil
 }

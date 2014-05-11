@@ -1,2 +1,2 @@
 all:
-	go test ./v2
+	go test gopkg.in/redis.v1

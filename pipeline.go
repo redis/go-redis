@@ -1,84 +1,90 @@
 package redis
 
-type PipelineClient struct {
+// Not thread-safe.
+type Pipeline struct {
 	*Client
+
+	closed bool
 }
 
-func (c *Client) PipelineClient() (*PipelineClient, error) {
-	return &PipelineClient{
+func (c *Client) Pipeline() *Pipeline {
+	return &Pipeline{
 		Client: &Client{
-			BaseClient: &BaseClient{
-				ConnPool: c.ConnPool,
-				InitConn: c.InitConn,
-				reqs:     make([]Req, 0),
+			baseClient: &baseClient{
+				opt:      c.opt,
+				connPool: c.connPool,
+
+				cmds: make([]Cmder, 0),
 			},
 		},
-	}, nil
-}
-
-func (c *Client) Pipelined(do func(*PipelineClient)) ([]Req, error) {
-	pc, err := c.PipelineClient()
-	if err != nil {
-		return nil, err
 	}
-	defer pc.Close()
-
-	do(pc)
-
-	return pc.RunQueued()
 }
 
-func (c *PipelineClient) Close() error {
+func (c *Client) Pipelined(f func(*Pipeline)) ([]Cmder, error) {
+	pc := c.Pipeline()
+	f(pc)
+	cmds, err := pc.Exec()
+	pc.Close()
+	return cmds, err
+}
+
+func (c *Pipeline) Close() error {
+	c.closed = true
 	return nil
 }
 
-func (c *PipelineClient) DiscardQueued() {
-	c.reqsMtx.Lock()
-	c.reqs = c.reqs[:0]
-	c.reqsMtx.Unlock()
+func (c *Pipeline) Discard() error {
+	if c.closed {
+		return errClosed
+	}
+	c.cmds = c.cmds[:0]
+	return nil
 }
 
-func (c *PipelineClient) RunQueued() ([]Req, error) {
-	c.reqsMtx.Lock()
-	reqs := c.reqs
-	c.reqs = make([]Req, 0)
-	c.reqsMtx.Unlock()
-
-	if len(reqs) == 0 {
-		return []Req{}, nil
+// Exec always returns list of commands and error of the first failed
+// command if any.
+func (c *Pipeline) Exec() ([]Cmder, error) {
+	if c.closed {
+		return nil, errClosed
 	}
 
-	conn, err := c.conn()
+	cmds := c.cmds
+	c.cmds = make([]Cmder, 0)
+
+	if len(cmds) == 0 {
+		return []Cmder{}, nil
+	}
+
+	cn, err := c.conn()
 	if err != nil {
-		return nil, err
+		setCmdsErr(cmds, err)
+		return cmds, err
 	}
 
-	err = c.RunReqs(reqs, conn)
-	if err != nil {
-		c.ConnPool.Remove(conn)
-		return nil, err
+	if err := c.execCmds(cn, cmds); err != nil {
+		c.freeConn(cn, err)
+		return cmds, err
 	}
 
-	c.ConnPool.Add(conn)
-	return reqs, nil
+	c.putConn(cn)
+	return cmds, nil
 }
 
-func (c *PipelineClient) RunReqs(reqs []Req, conn *Conn) error {
-	err := c.WriteReq(conn, reqs...)
+func (c *Pipeline) execCmds(cn *conn, cmds []Cmder) error {
+	err := c.writeCmd(cn, cmds...)
 	if err != nil {
+		setCmdsErr(cmds, err)
 		return err
 	}
 
-	reqsLen := len(reqs)
-	for i := 0; i < reqsLen; i++ {
-		req := reqs[i]
-		val, err := req.ParseReply(conn.Rd)
-		if err != nil {
-			req.SetErr(err)
-		} else {
-			req.SetVal(val)
+	var firstCmdErr error
+	for _, cmd := range cmds {
+		if err := cmd.parseReply(cn.rd); err != nil {
+			if firstCmdErr == nil {
+				firstCmdErr = err
+			}
 		}
 	}
 
-	return nil
+	return firstCmdErr
 }

@@ -2,83 +2,91 @@ package redis
 
 import (
 	"strconv"
+	"time"
 )
 
 func formatFloat(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
+func readTimeout(sec int64) time.Duration {
+	if sec == 0 {
+		return 0
+	}
+	return time.Duration(sec+1) * time.Second
+}
+
 //------------------------------------------------------------------------------
 
-func (c *Client) Auth(password string) *StatusReq {
-	req := NewStatusReq("AUTH", password)
+func (c *Client) Auth(password string) *StatusCmd {
+	req := NewStatusCmd("AUTH", password)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Echo(message string) *StringReq {
-	req := NewStringReq("ECHO", message)
+func (c *Client) Echo(message string) *StringCmd {
+	req := NewStringCmd("ECHO", message)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Ping() *StatusReq {
-	req := NewStatusReq("PING")
+func (c *Client) Ping() *StatusCmd {
+	req := NewStatusCmd("PING")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Quit() *StatusReq {
+func (c *Client) Quit() *StatusCmd {
 	panic("not implemented")
 }
 
-func (c *Client) Select(index int64) *StatusReq {
-	req := NewStatusReq("SELECT", strconv.FormatInt(index, 10))
+func (c *Client) Select(index int64) *StatusCmd {
+	req := NewStatusCmd("SELECT", strconv.FormatInt(index, 10))
 	c.Process(req)
 	return req
 }
 
 //------------------------------------------------------------------------------
 
-func (c *Client) Del(keys ...string) *IntReq {
+func (c *Client) Del(keys ...string) *IntCmd {
 	args := append([]string{"DEL"}, keys...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Dump(key string) *StringReq {
-	req := NewStringReq("DUMP", key)
+func (c *Client) Dump(key string) *StringCmd {
+	req := NewStringCmd("DUMP", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Exists(key string) *BoolReq {
-	req := NewBoolReq("EXISTS", key)
+func (c *Client) Exists(key string) *BoolCmd {
+	req := NewBoolCmd("EXISTS", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Expire(key string, seconds int64) *BoolReq {
-	req := NewBoolReq("EXPIRE", key, strconv.FormatInt(seconds, 10))
+func (c *Client) Expire(key string, dur time.Duration) *BoolCmd {
+	req := NewBoolCmd("EXPIRE", key, strconv.FormatInt(int64(dur/time.Second), 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ExpireAt(key string, timestamp int64) *BoolReq {
-	req := NewBoolReq("EXPIREAT", key, strconv.FormatInt(timestamp, 10))
+func (c *Client) ExpireAt(key string, tm time.Time) *BoolCmd {
+	req := NewBoolCmd("EXPIREAT", key, strconv.FormatInt(tm.Unix(), 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Keys(pattern string) *StringSliceReq {
-	req := NewStringSliceReq("KEYS", pattern)
+func (c *Client) Keys(pattern string) *StringSliceCmd {
+	req := NewStringSliceCmd("KEYS", pattern)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Migrate(host, port, key string, db, timeout int64) *StatusReq {
-	req := NewStatusReq(
+func (c *Client) Migrate(host, port, key string, db, timeout int64) *StatusCmd {
+	req := NewStatusCmd(
 		"MIGRATE",
 		host,
 		port,
@@ -86,81 +94,86 @@ func (c *Client) Migrate(host, port, key string, db, timeout int64) *StatusReq {
 		strconv.FormatInt(db, 10),
 		strconv.FormatInt(timeout, 10),
 	)
+	req.setReadTimeout(readTimeout(timeout))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Move(key string, db int64) *BoolReq {
-	req := NewBoolReq("MOVE", key, strconv.FormatInt(db, 10))
+func (c *Client) Move(key string, db int64) *BoolCmd {
+	req := NewBoolCmd("MOVE", key, strconv.FormatInt(db, 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ObjectRefCount(keys ...string) *IntReq {
+func (c *Client) ObjectRefCount(keys ...string) *IntCmd {
 	args := append([]string{"OBJECT", "REFCOUNT"}, keys...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ObjectEncoding(keys ...string) *StringReq {
+func (c *Client) ObjectEncoding(keys ...string) *StringCmd {
 	args := append([]string{"OBJECT", "ENCODING"}, keys...)
-	req := NewStringReq(args...)
+	req := NewStringCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ObjectIdleTime(keys ...string) *IntReq {
+func (c *Client) ObjectIdleTime(keys ...string) *DurationCmd {
 	args := append([]string{"OBJECT", "IDLETIME"}, keys...)
-	req := NewIntReq(args...)
+	req := NewDurationCmd(time.Second, args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Persist(key string) *BoolReq {
-	req := NewBoolReq("PERSIST", key)
+func (c *Client) Persist(key string) *BoolCmd {
+	req := NewBoolCmd("PERSIST", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) PExpire(key string, milliseconds int64) *BoolReq {
-	req := NewBoolReq("PEXPIRE", key, strconv.FormatInt(milliseconds, 10))
+func (c *Client) PExpire(key string, dur time.Duration) *BoolCmd {
+	req := NewBoolCmd("PEXPIRE", key, strconv.FormatInt(int64(dur/time.Millisecond), 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) PExpireAt(key string, milliseconds int64) *BoolReq {
-	req := NewBoolReq("PEXPIREAT", key, strconv.FormatInt(milliseconds, 10))
+func (c *Client) PExpireAt(key string, tm time.Time) *BoolCmd {
+	req := NewBoolCmd(
+		"PEXPIREAT",
+		key,
+		strconv.FormatInt(tm.UnixNano()/int64(time.Millisecond), 10),
+	)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) PTTL(key string) *IntReq {
-	req := NewIntReq("PTTL", key)
+func (c *Client) PTTL(key string) *DurationCmd {
+	req := NewDurationCmd(time.Millisecond, "PTTL", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) RandomKey() *StringReq {
-	req := NewStringReq("RANDOMKEY")
+func (c *Client) RandomKey() *StringCmd {
+	req := NewStringCmd("RANDOMKEY")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Rename(key, newkey string) *StatusReq {
-	req := NewStatusReq("RENAME", key, newkey)
+func (c *Client) Rename(key, newkey string) *StatusCmd {
+	req := NewStatusCmd("RENAME", key, newkey)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) RenameNX(key, newkey string) *BoolReq {
-	req := NewBoolReq("RENAMENX", key, newkey)
+func (c *Client) RenameNX(key, newkey string) *BoolCmd {
+	req := NewBoolCmd("RENAMENX", key, newkey)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Restore(key string, ttl int64, value string) *StatusReq {
-	req := NewStatusReq(
+func (c *Client) Restore(key string, ttl int64, value string) *StatusCmd {
+	req := NewStatusCmd(
 		"RESTORE",
 		key,
 		strconv.FormatInt(ttl, 10),
@@ -179,7 +192,7 @@ type Sort struct {
 	Store         string
 }
 
-func (c *Client) Sort(key string, sort Sort) *StringSliceReq {
+func (c *Client) Sort(key string, sort Sort) *StringSliceCmd {
 	args := []string{"SORT", key}
 	if sort.By != "" {
 		args = append(args, sort.By)
@@ -199,27 +212,79 @@ func (c *Client) Sort(key string, sort Sort) *StringSliceReq {
 	if sort.Store != "" {
 		args = append(args, "STORE", sort.Store)
 	}
-	req := NewStringSliceReq(args...)
+	req := NewStringSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) TTL(key string) *IntReq {
-	req := NewIntReq("TTL", key)
+func (c *Client) TTL(key string) *DurationCmd {
+	req := NewDurationCmd(time.Second, "TTL", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Type(key string) *StatusReq {
-	req := NewStatusReq("TYPE", key)
+func (c *Client) Type(key string) *StatusCmd {
+	req := NewStatusCmd("TYPE", key)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) Scan(cursor int64, match string, count int64) *ScanCmd {
+	args := []string{"SCAN", strconv.FormatInt(cursor, 10)}
+	if match != "" {
+		args = append(args, "MATCH", match)
+	}
+	if count > 0 {
+		args = append(args, "COUNT", strconv.FormatInt(count, 10))
+	}
+	req := NewScanCmd(args...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) SScan(key string, cursor int64, match string, count int64) *ScanCmd {
+	args := []string{"SSCAN", key, strconv.FormatInt(cursor, 10)}
+	if match != "" {
+		args = append(args, "MATCH", match)
+	}
+	if count > 0 {
+		args = append(args, "COUNT", strconv.FormatInt(count, 10))
+	}
+	req := NewScanCmd(args...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) HScan(key string, cursor int64, match string, count int64) *ScanCmd {
+	args := []string{"HSCAN", key, strconv.FormatInt(cursor, 10)}
+	if match != "" {
+		args = append(args, "MATCH", match)
+	}
+	if count > 0 {
+		args = append(args, "COUNT", strconv.FormatInt(count, 10))
+	}
+	req := NewScanCmd(args...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ZScan(key string, cursor int64, match string, count int64) *ScanCmd {
+	args := []string{"ZSCAN", key, strconv.FormatInt(cursor, 10)}
+	if match != "" {
+		args = append(args, "MATCH", match)
+	}
+	if count > 0 {
+		args = append(args, "COUNT", strconv.FormatInt(count, 10))
+	}
+	req := NewScanCmd(args...)
 	c.Process(req)
 	return req
 }
 
 //------------------------------------------------------------------------------
 
-func (c *Client) Append(key, value string) *IntReq {
-	req := NewIntReq("APPEND", key, value)
+func (c *Client) Append(key, value string) *IntCmd {
+	req := NewIntCmd("APPEND", key, value)
 	c.Process(req)
 	return req
 }
@@ -228,7 +293,7 @@ type BitCount struct {
 	Start, End int64
 }
 
-func (c *Client) BitCount(key string, bitCount *BitCount) *IntReq {
+func (c *Client) BitCount(key string, bitCount *BitCount) *IntCmd {
 	args := []string{"BITCOUNT", key}
 	if bitCount != nil {
 		args = append(
@@ -237,61 +302,61 @@ func (c *Client) BitCount(key string, bitCount *BitCount) *IntReq {
 			strconv.FormatInt(bitCount.End, 10),
 		)
 	}
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) bitOp(op, destKey string, keys ...string) *IntReq {
+func (c *Client) bitOp(op, destKey string, keys ...string) *IntCmd {
 	args := []string{"BITOP", op, destKey}
 	args = append(args, keys...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) BitOpAnd(destKey string, keys ...string) *IntReq {
+func (c *Client) BitOpAnd(destKey string, keys ...string) *IntCmd {
 	return c.bitOp("AND", destKey, keys...)
 }
 
-func (c *Client) BitOpOr(destKey string, keys ...string) *IntReq {
+func (c *Client) BitOpOr(destKey string, keys ...string) *IntCmd {
 	return c.bitOp("OR", destKey, keys...)
 }
 
-func (c *Client) BitOpXor(destKey string, keys ...string) *IntReq {
+func (c *Client) BitOpXor(destKey string, keys ...string) *IntCmd {
 	return c.bitOp("XOR", destKey, keys...)
 }
 
-func (c *Client) BitOpNot(destKey string, key string) *IntReq {
+func (c *Client) BitOpNot(destKey string, key string) *IntCmd {
 	return c.bitOp("NOT", destKey, key)
 }
 
-func (c *Client) Decr(key string) *IntReq {
-	req := NewIntReq("DECR", key)
+func (c *Client) Decr(key string) *IntCmd {
+	req := NewIntCmd("DECR", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) DecrBy(key string, decrement int64) *IntReq {
-	req := NewIntReq("DECRBY", key, strconv.FormatInt(decrement, 10))
+func (c *Client) DecrBy(key string, decrement int64) *IntCmd {
+	req := NewIntCmd("DECRBY", key, strconv.FormatInt(decrement, 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Get(key string) *StringReq {
-	req := NewStringReq("GET", key)
+func (c *Client) Get(key string) *StringCmd {
+	req := NewStringCmd("GET", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) GetBit(key string, offset int64) *IntReq {
-	req := NewIntReq("GETBIT", key, strconv.FormatInt(offset, 10))
+func (c *Client) GetBit(key string, offset int64) *IntCmd {
+	req := NewIntCmd("GETBIT", key, strconv.FormatInt(offset, 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) GetRange(key string, start, end int64) *StringReq {
-	req := NewStringReq(
+func (c *Client) GetRange(key string, start, end int64) *StringCmd {
+	req := NewStringCmd(
 		"GETRANGE",
 		key,
 		strconv.FormatInt(start, 10),
@@ -301,70 +366,70 @@ func (c *Client) GetRange(key string, start, end int64) *StringReq {
 	return req
 }
 
-func (c *Client) GetSet(key, value string) *StringReq {
-	req := NewStringReq("GETSET", key, value)
+func (c *Client) GetSet(key, value string) *StringCmd {
+	req := NewStringCmd("GETSET", key, value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Incr(key string) *IntReq {
-	req := NewIntReq("INCR", key)
+func (c *Client) Incr(key string) *IntCmd {
+	req := NewIntCmd("INCR", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) IncrBy(key string, value int64) *IntReq {
-	req := NewIntReq("INCRBY", key, strconv.FormatInt(value, 10))
+func (c *Client) IncrBy(key string, value int64) *IntCmd {
+	req := NewIntCmd("INCRBY", key, strconv.FormatInt(value, 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) IncrByFloat(key string, value float64) *FloatReq {
-	req := NewFloatReq("INCRBYFLOAT", key, formatFloat(value))
+func (c *Client) IncrByFloat(key string, value float64) *FloatCmd {
+	req := NewFloatCmd("INCRBYFLOAT", key, formatFloat(value))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) MGet(keys ...string) *IfaceSliceReq {
+func (c *Client) MGet(keys ...string) *SliceCmd {
 	args := append([]string{"MGET"}, keys...)
-	req := NewIfaceSliceReq(args...)
+	req := NewSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) MSet(pairs ...string) *StatusReq {
+func (c *Client) MSet(pairs ...string) *StatusCmd {
 	args := append([]string{"MSET"}, pairs...)
-	req := NewStatusReq(args...)
+	req := NewStatusCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) MSetNX(pairs ...string) *BoolReq {
+func (c *Client) MSetNX(pairs ...string) *BoolCmd {
 	args := append([]string{"MSETNX"}, pairs...)
-	req := NewBoolReq(args...)
+	req := NewBoolCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) PSetEx(key string, milliseconds int64, value string) *StatusReq {
-	req := NewStatusReq(
+func (c *Client) PSetEx(key string, dur time.Duration, value string) *StatusCmd {
+	req := NewStatusCmd(
 		"PSETEX",
 		key,
-		strconv.FormatInt(milliseconds, 10),
+		strconv.FormatInt(int64(dur/time.Millisecond), 10),
 		value,
 	)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Set(key, value string) *StatusReq {
-	req := NewStatusReq("SET", key, value)
+func (c *Client) Set(key, value string) *StatusCmd {
+	req := NewStatusCmd("SET", key, value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SetBit(key string, offset int64, value int) *IntReq {
-	req := NewIntReq(
+func (c *Client) SetBit(key string, offset int64, value int) *IntCmd {
+	req := NewIntCmd(
 		"SETBIT",
 		key,
 		strconv.FormatInt(offset, 10),
@@ -374,187 +439,190 @@ func (c *Client) SetBit(key string, offset int64, value int) *IntReq {
 	return req
 }
 
-func (c *Client) SetEx(key string, seconds int64, value string) *StatusReq {
-	req := NewStatusReq("SETEX", key, strconv.FormatInt(seconds, 10), value)
+func (c *Client) SetEx(key string, dur time.Duration, value string) *StatusCmd {
+	req := NewStatusCmd("SETEX", key, strconv.FormatInt(int64(dur/time.Second), 10), value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SetNX(key, value string) *BoolReq {
-	req := NewBoolReq("SETNX", key, value)
+func (c *Client) SetNX(key, value string) *BoolCmd {
+	req := NewBoolCmd("SETNX", key, value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SetRange(key string, offset int64, value string) *IntReq {
-	req := NewIntReq("SETRANGE", key, strconv.FormatInt(offset, 10), value)
+func (c *Client) SetRange(key string, offset int64, value string) *IntCmd {
+	req := NewIntCmd("SETRANGE", key, strconv.FormatInt(offset, 10), value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) StrLen(key string) *IntReq {
-	req := NewIntReq("STRLEN", key)
+func (c *Client) StrLen(key string) *IntCmd {
+	req := NewIntCmd("STRLEN", key)
 	c.Process(req)
 	return req
 }
 
 //------------------------------------------------------------------------------
 
-func (c *Client) HDel(key string, fields ...string) *IntReq {
+func (c *Client) HDel(key string, fields ...string) *IntCmd {
 	args := append([]string{"HDEL", key}, fields...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HExists(key, field string) *BoolReq {
-	req := NewBoolReq("HEXISTS", key, field)
+func (c *Client) HExists(key, field string) *BoolCmd {
+	req := NewBoolCmd("HEXISTS", key, field)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HGet(key, field string) *StringReq {
-	req := NewStringReq("HGET", key, field)
+func (c *Client) HGet(key, field string) *StringCmd {
+	req := NewStringCmd("HGET", key, field)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HGetAll(key string) *StringSliceReq {
-	req := NewStringSliceReq("HGETALL", key)
+func (c *Client) HGetAll(key string) *StringSliceCmd {
+	req := NewStringSliceCmd("HGETALL", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HGetAllMap(key string) *StringStringMapReq {
-	req := NewStringStringMapReq("HGETALL", key)
+func (c *Client) HGetAllMap(key string) *StringStringMapCmd {
+	req := NewStringStringMapCmd("HGETALL", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HIncrBy(key, field string, incr int64) *IntReq {
-	req := NewIntReq("HINCRBY", key, field, strconv.FormatInt(incr, 10))
+func (c *Client) HIncrBy(key, field string, incr int64) *IntCmd {
+	req := NewIntCmd("HINCRBY", key, field, strconv.FormatInt(incr, 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HIncrByFloat(key, field string, incr float64) *FloatReq {
-	req := NewFloatReq("HINCRBYFLOAT", key, field, formatFloat(incr))
+func (c *Client) HIncrByFloat(key, field string, incr float64) *FloatCmd {
+	req := NewFloatCmd("HINCRBYFLOAT", key, field, formatFloat(incr))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HKeys(key string) *StringSliceReq {
-	req := NewStringSliceReq("HKEYS", key)
+func (c *Client) HKeys(key string) *StringSliceCmd {
+	req := NewStringSliceCmd("HKEYS", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HLen(key string) *IntReq {
-	req := NewIntReq("HLEN", key)
+func (c *Client) HLen(key string) *IntCmd {
+	req := NewIntCmd("HLEN", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HMGet(key string, fields ...string) *IfaceSliceReq {
+func (c *Client) HMGet(key string, fields ...string) *SliceCmd {
 	args := append([]string{"HMGET", key}, fields...)
-	req := NewIfaceSliceReq(args...)
+	req := NewSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HMSet(key, field, value string, pairs ...string) *StatusReq {
+func (c *Client) HMSet(key, field, value string, pairs ...string) *StatusCmd {
 	args := append([]string{"HMSET", key, field, value}, pairs...)
-	req := NewStatusReq(args...)
+	req := NewStatusCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HSet(key, field, value string) *BoolReq {
-	req := NewBoolReq("HSET", key, field, value)
+func (c *Client) HSet(key, field, value string) *BoolCmd {
+	req := NewBoolCmd("HSET", key, field, value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HSetNX(key, field, value string) *BoolReq {
-	req := NewBoolReq("HSETNX", key, field, value)
+func (c *Client) HSetNX(key, field, value string) *BoolCmd {
+	req := NewBoolCmd("HSETNX", key, field, value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) HVals(key string) *StringSliceReq {
-	req := NewStringSliceReq("HVALS", key)
+func (c *Client) HVals(key string) *StringSliceCmd {
+	req := NewStringSliceCmd("HVALS", key)
 	c.Process(req)
 	return req
 }
 
 //------------------------------------------------------------------------------
 
-func (c *Client) BLPop(timeout int64, keys ...string) *StringSliceReq {
+func (c *Client) BLPop(timeout int64, keys ...string) *StringSliceCmd {
 	args := append([]string{"BLPOP"}, keys...)
 	args = append(args, strconv.FormatInt(timeout, 10))
-	req := NewStringSliceReq(args...)
+	req := NewStringSliceCmd(args...)
+	req.setReadTimeout(readTimeout(timeout))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) BRPop(timeout int64, keys ...string) *StringSliceReq {
+func (c *Client) BRPop(timeout int64, keys ...string) *StringSliceCmd {
 	args := append([]string{"BRPOP"}, keys...)
 	args = append(args, strconv.FormatInt(timeout, 10))
-	req := NewStringSliceReq(args...)
+	req := NewStringSliceCmd(args...)
+	req.setReadTimeout(readTimeout(timeout))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) BRPopLPush(source, destination string, timeout int64) *StringReq {
-	req := NewStringReq(
+func (c *Client) BRPopLPush(source, destination string, timeout int64) *StringCmd {
+	req := NewStringCmd(
 		"BRPOPLPUSH",
 		source,
 		destination,
 		strconv.FormatInt(timeout, 10),
 	)
+	req.setReadTimeout(readTimeout(timeout))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) LIndex(key string, index int64) *StringReq {
-	req := NewStringReq("LINDEX", key, strconv.FormatInt(index, 10))
+func (c *Client) LIndex(key string, index int64) *StringCmd {
+	req := NewStringCmd("LINDEX", key, strconv.FormatInt(index, 10))
 	c.Process(req)
 	return req
 }
 
-func (c *Client) LInsert(key, op, pivot, value string) *IntReq {
-	req := NewIntReq("LINSERT", key, op, pivot, value)
+func (c *Client) LInsert(key, op, pivot, value string) *IntCmd {
+	req := NewIntCmd("LINSERT", key, op, pivot, value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) LLen(key string) *IntReq {
-	req := NewIntReq("LLEN", key)
+func (c *Client) LLen(key string) *IntCmd {
+	req := NewIntCmd("LLEN", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) LPop(key string) *StringReq {
-	req := NewStringReq("LPOP", key)
+func (c *Client) LPop(key string) *StringCmd {
+	req := NewStringCmd("LPOP", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) LPush(key string, values ...string) *IntReq {
+func (c *Client) LPush(key string, values ...string) *IntCmd {
 	args := append([]string{"LPUSH", key}, values...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) LPushX(key, value string) *IntReq {
-	req := NewIntReq("LPUSHX", key, value)
+func (c *Client) LPushX(key, value string) *IntCmd {
+	req := NewIntCmd("LPUSHX", key, value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) LRange(key string, start, stop int64) *StringSliceReq {
-	req := NewStringSliceReq(
+func (c *Client) LRange(key string, start, stop int64) *StringSliceCmd {
+	req := NewStringSliceCmd(
 		"LRANGE",
 		key,
 		strconv.FormatInt(start, 10),
@@ -564,20 +632,20 @@ func (c *Client) LRange(key string, start, stop int64) *StringSliceReq {
 	return req
 }
 
-func (c *Client) LRem(key string, count int64, value string) *IntReq {
-	req := NewIntReq("LREM", key, strconv.FormatInt(count, 10), value)
+func (c *Client) LRem(key string, count int64, value string) *IntCmd {
+	req := NewIntCmd("LREM", key, strconv.FormatInt(count, 10), value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) LSet(key string, index int64, value string) *StatusReq {
-	req := NewStatusReq("LSET", key, strconv.FormatInt(index, 10), value)
+func (c *Client) LSet(key string, index int64, value string) *StatusCmd {
+	req := NewStatusCmd("LSET", key, strconv.FormatInt(index, 10), value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) LTrim(key string, start, stop int64) *StatusReq {
-	req := NewStatusReq(
+func (c *Client) LTrim(key string, start, stop int64) *StatusCmd {
+	req := NewStatusCmd(
 		"LTRIM",
 		key,
 		strconv.FormatInt(start, 10),
@@ -587,121 +655,121 @@ func (c *Client) LTrim(key string, start, stop int64) *StatusReq {
 	return req
 }
 
-func (c *Client) RPop(key string) *StringReq {
-	req := NewStringReq("RPOP", key)
+func (c *Client) RPop(key string) *StringCmd {
+	req := NewStringCmd("RPOP", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) RPopLPush(source, destination string) *StringReq {
-	req := NewStringReq("RPOPLPUSH", source, destination)
+func (c *Client) RPopLPush(source, destination string) *StringCmd {
+	req := NewStringCmd("RPOPLPUSH", source, destination)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) RPush(key string, values ...string) *IntReq {
+func (c *Client) RPush(key string, values ...string) *IntCmd {
 	args := append([]string{"RPUSH", key}, values...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) RPushX(key string, value string) *IntReq {
-	req := NewIntReq("RPUSHX", key, value)
+func (c *Client) RPushX(key string, value string) *IntCmd {
+	req := NewIntCmd("RPUSHX", key, value)
 	c.Process(req)
 	return req
 }
 
 //------------------------------------------------------------------------------
 
-func (c *Client) SAdd(key string, members ...string) *IntReq {
+func (c *Client) SAdd(key string, members ...string) *IntCmd {
 	args := append([]string{"SADD", key}, members...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SCard(key string) *IntReq {
-	req := NewIntReq("SCARD", key)
+func (c *Client) SCard(key string) *IntCmd {
+	req := NewIntCmd("SCARD", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SDiff(keys ...string) *StringSliceReq {
+func (c *Client) SDiff(keys ...string) *StringSliceCmd {
 	args := append([]string{"SDIFF"}, keys...)
-	req := NewStringSliceReq(args...)
+	req := NewStringSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SDiffStore(destination string, keys ...string) *IntReq {
+func (c *Client) SDiffStore(destination string, keys ...string) *IntCmd {
 	args := append([]string{"SDIFFSTORE", destination}, keys...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SInter(keys ...string) *StringSliceReq {
+func (c *Client) SInter(keys ...string) *StringSliceCmd {
 	args := append([]string{"SINTER"}, keys...)
-	req := NewStringSliceReq(args...)
+	req := NewStringSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SInterStore(destination string, keys ...string) *IntReq {
+func (c *Client) SInterStore(destination string, keys ...string) *IntCmd {
 	args := append([]string{"SINTERSTORE", destination}, keys...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SIsMember(key, member string) *BoolReq {
-	req := NewBoolReq("SISMEMBER", key, member)
+func (c *Client) SIsMember(key, member string) *BoolCmd {
+	req := NewBoolCmd("SISMEMBER", key, member)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SMembers(key string) *StringSliceReq {
-	req := NewStringSliceReq("SMEMBERS", key)
+func (c *Client) SMembers(key string) *StringSliceCmd {
+	req := NewStringSliceCmd("SMEMBERS", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SMove(source, destination, member string) *BoolReq {
-	req := NewBoolReq("SMOVE", source, destination, member)
+func (c *Client) SMove(source, destination, member string) *BoolCmd {
+	req := NewBoolCmd("SMOVE", source, destination, member)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SPop(key string) *StringReq {
-	req := NewStringReq("SPOP", key)
+func (c *Client) SPop(key string) *StringCmd {
+	req := NewStringCmd("SPOP", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SRandMember(key string) *StringReq {
-	req := NewStringReq("SRANDMEMBER", key)
+func (c *Client) SRandMember(key string) *StringCmd {
+	req := NewStringCmd("SRANDMEMBER", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SRem(key string, members ...string) *IntReq {
+func (c *Client) SRem(key string, members ...string) *IntCmd {
 	args := append([]string{"SREM", key}, members...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SUnion(keys ...string) *StringSliceReq {
+func (c *Client) SUnion(keys ...string) *StringSliceCmd {
 	args := append([]string{"SUNION"}, keys...)
-	req := NewStringSliceReq(args...)
+	req := NewStringSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) SUnionStore(destination string, keys ...string) *IntReq {
+func (c *Client) SUnionStore(destination string, keys ...string) *IntCmd {
 	args := append([]string{"SUNIONSTORE", destination}, keys...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
@@ -718,30 +786,30 @@ type ZStore struct {
 	Aggregate string
 }
 
-func (c *Client) ZAdd(key string, members ...Z) *IntReq {
+func (c *Client) ZAdd(key string, members ...Z) *IntCmd {
 	args := []string{"ZADD", key}
 	for _, m := range members {
 		args = append(args, formatFloat(m.Score), m.Member)
 	}
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZCard(key string) *IntReq {
-	req := NewIntReq("ZCARD", key)
+func (c *Client) ZCard(key string) *IntCmd {
+	req := NewIntCmd("ZCARD", key)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZCount(key, min, max string) *IntReq {
-	req := NewIntReq("ZCOUNT", key, min, max)
+func (c *Client) ZCount(key, min, max string) *IntCmd {
+	req := NewIntCmd("ZCOUNT", key, min, max)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZIncrBy(key string, increment float64, member string) *FloatReq {
-	req := NewFloatReq("ZINCRBY", key, formatFloat(increment), member)
+func (c *Client) ZIncrBy(key string, increment float64, member string) *FloatCmd {
+	req := NewFloatCmd("ZINCRBY", key, formatFloat(increment), member)
 	c.Process(req)
 	return req
 }
@@ -750,7 +818,7 @@ func (c *Client) ZInterStore(
 	destination string,
 	store ZStore,
 	keys ...string,
-) *IntReq {
+) *IntCmd {
 	args := []string{"ZINTERSTORE", destination, strconv.FormatInt(int64(len(keys)), 10)}
 	args = append(args, keys...)
 	if len(store.Weights) > 0 {
@@ -762,12 +830,12 @@ func (c *Client) ZInterStore(
 	if store.Aggregate != "" {
 		args = append(args, "AGGREGATE", store.Aggregate)
 	}
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) zRange(key string, start, stop int64, withScores bool) *StringSliceReq {
+func (c *Client) zRange(key string, start, stop int64, withScores bool) *StringSliceCmd {
 	args := []string{
 		"ZRANGE",
 		key,
@@ -777,20 +845,20 @@ func (c *Client) zRange(key string, start, stop int64, withScores bool) *StringS
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
-	req := NewStringSliceReq(args...)
+	req := NewStringSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRange(key string, start, stop int64) *StringSliceReq {
+func (c *Client) ZRange(key string, start, stop int64) *StringSliceCmd {
 	return c.zRange(key, start, stop, false)
 }
 
-func (c *Client) ZRangeWithScores(key string, start, stop int64) *StringSliceReq {
+func (c *Client) ZRangeWithScores(key string, start, stop int64) *StringSliceCmd {
 	return c.zRange(key, start, stop, true)
 }
 
-func (c *Client) ZRangeWithScoresMap(key string, start, stop int64) *StringFloatMapReq {
+func (c *Client) ZRangeWithScoresMap(key string, start, stop int64) *StringFloatMapCmd {
 	args := []string{
 		"ZRANGE",
 		key,
@@ -798,73 +866,73 @@ func (c *Client) ZRangeWithScoresMap(key string, start, stop int64) *StringFloat
 		strconv.FormatInt(stop, 10),
 		"WITHSCORES",
 	}
-	req := NewStringFloatMapReq(args...)
+	req := NewStringFloatMapCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) zRangeByScore(
-	key string,
-	min, max string,
-	withScores bool,
-	offset, count int64,
-) *StringSliceReq {
-	args := []string{"ZRANGEBYSCORE", key, min, max}
+type ZRangeByScore struct {
+	Min, Max string
+
+	Offset, Count int64
+}
+
+func (c *Client) zRangeByScore(key string, opt ZRangeByScore, withScores bool) *StringSliceCmd {
+	args := []string{"ZRANGEBYSCORE", key, opt.Min, opt.Max}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
-	if offset != 0 || count != 0 {
+	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
 			"LIMIT",
-			strconv.FormatInt(offset, 10),
-			strconv.FormatInt(count, 10),
+			strconv.FormatInt(opt.Offset, 10),
+			strconv.FormatInt(opt.Count, 10),
 		)
 	}
-	req := NewStringSliceReq(args...)
+	req := NewStringSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRangeByScore(key string, min, max string, offset, count int64) *StringSliceReq {
-	return c.zRangeByScore(key, min, max, false, offset, count)
+func (c *Client) ZRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRangeByScore(key, opt, false)
 }
 
-func (c *Client) ZRangeByScoreWithScores(key, min, max string, offset, count int64) *StringSliceReq {
-	return c.zRangeByScore(key, min, max, true, offset, count)
+func (c *Client) ZRangeByScoreWithScores(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRangeByScore(key, opt, true)
 }
 
-func (c *Client) ZRangeByScoreWithScoresMap(
-	key string, min, max string, offset, count int64) *StringFloatMapReq {
-	args := []string{"ZRANGEBYSCORE", key, min, max, "WITHSCORES"}
-	if offset != 0 || count != 0 {
+func (c *Client) ZRangeByScoreWithScoresMap(key string, opt ZRangeByScore) *StringFloatMapCmd {
+	args := []string{"ZRANGEBYSCORE", key, opt.Min, opt.Max, "WITHSCORES"}
+	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
 			"LIMIT",
-			strconv.FormatInt(offset, 10),
-			strconv.FormatInt(count, 10),
+			strconv.FormatInt(opt.Offset, 10),
+			strconv.FormatInt(opt.Count, 10),
 		)
 	}
-	req := NewStringFloatMapReq(args...)
+	req := NewStringFloatMapCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRank(key, member string) *IntReq {
-	req := NewIntReq("ZRANK", key, member)
+func (c *Client) ZRank(key, member string) *IntCmd {
+	req := NewIntCmd("ZRANK", key, member)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRem(key string, members ...string) *IntReq {
+func (c *Client) ZRem(key string, members ...string) *IntCmd {
 	args := append([]string{"ZREM", key}, members...)
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRemRangeByRank(key string, start, stop int64) *IntReq {
-	req := NewIntReq(
+func (c *Client) ZRemRangeByRank(key string, start, stop int64) *IntCmd {
+	req := NewIntCmd(
 		"ZREMRANGEBYRANK",
 		key,
 		strconv.FormatInt(start, 10),
@@ -874,87 +942,86 @@ func (c *Client) ZRemRangeByRank(key string, start, stop int64) *IntReq {
 	return req
 }
 
-func (c *Client) ZRemRangeByScore(key, min, max string) *IntReq {
-	req := NewIntReq("ZREMRANGEBYSCORE", key, min, max)
+func (c *Client) ZRemRangeByScore(key, min, max string) *IntCmd {
+	req := NewIntCmd("ZREMRANGEBYSCORE", key, min, max)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) zRevRange(key, start, stop string, withScores bool) *StringSliceReq {
+func (c *Client) zRevRange(key, start, stop string, withScores bool) *StringSliceCmd {
 	args := []string{"ZREVRANGE", key, start, stop}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
-	req := NewStringSliceReq(args...)
+	req := NewStringSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRevRange(key, start, stop string) *StringSliceReq {
+func (c *Client) ZRevRange(key, start, stop string) *StringSliceCmd {
 	return c.zRevRange(key, start, stop, false)
 }
 
-func (c *Client) ZRevRangeWithScores(key, start, stop string) *StringSliceReq {
+func (c *Client) ZRevRangeWithScores(key, start, stop string) *StringSliceCmd {
 	return c.zRevRange(key, start, stop, true)
 }
 
-func (c *Client) ZRevRangeWithScoresMap(key, start, stop string) *StringFloatMapReq {
+func (c *Client) ZRevRangeWithScoresMap(key, start, stop string) *StringFloatMapCmd {
 	args := []string{"ZREVRANGE", key, start, stop, "WITHSCORES"}
-	req := NewStringFloatMapReq(args...)
+	req := NewStringFloatMapCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) zRevRangeByScore(key, start, stop string, withScores bool, offset, count int64) *StringSliceReq {
-	args := []string{"ZREVRANGEBYSCORE", key, start, stop}
+func (c *Client) zRevRangeByScore(key string, opt ZRangeByScore, withScores bool) *StringSliceCmd {
+	args := []string{"ZREVRANGEBYSCORE", key, opt.Max, opt.Min}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
-	if offset != 0 || count != 0 {
+	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
 			"LIMIT",
-			strconv.FormatInt(offset, 10),
-			strconv.FormatInt(count, 10),
+			strconv.FormatInt(opt.Offset, 10),
+			strconv.FormatInt(opt.Count, 10),
 		)
 	}
-	req := NewStringSliceReq(args...)
+	req := NewStringSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRevRangeByScore(key, start, stop string, offset, count int64) *StringSliceReq {
-	return c.zRevRangeByScore(key, start, stop, false, offset, count)
+func (c *Client) ZRevRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRevRangeByScore(key, opt, false)
 }
 
-func (c *Client) ZRevRangeByScoreWithScores(key, start, stop string, offset, count int64) *StringSliceReq {
-	return c.zRevRangeByScore(key, start, stop, true, offset, count)
+func (c *Client) ZRevRangeByScoreWithScores(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRevRangeByScore(key, opt, true)
 }
 
-func (c *Client) ZRevRangeByScoreWithScoresMap(
-	key, start, stop string, offset, count int64) *StringFloatMapReq {
-	args := []string{"ZREVRANGEBYSCORE", key, start, stop, "WITHSCORES"}
-	if offset != 0 || count != 0 {
+func (c *Client) ZRevRangeByScoreWithScoresMap(key string, opt ZRangeByScore) *StringFloatMapCmd {
+	args := []string{"ZREVRANGEBYSCORE", key, opt.Max, opt.Min, "WITHSCORES"}
+	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
 			"LIMIT",
-			strconv.FormatInt(offset, 10),
-			strconv.FormatInt(count, 10),
+			strconv.FormatInt(opt.Offset, 10),
+			strconv.FormatInt(opt.Count, 10),
 		)
 	}
-	req := NewStringFloatMapReq(args...)
+	req := NewStringFloatMapCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZRevRank(key, member string) *IntReq {
-	req := NewIntReq("ZREVRANK", key, member)
+func (c *Client) ZRevRank(key, member string) *IntCmd {
+	req := NewIntCmd("ZREVRANK", key, member)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ZScore(key, member string) *FloatReq {
-	req := NewFloatReq("ZSCORE", key, member)
+func (c *Client) ZScore(key, member string) *FloatCmd {
+	req := NewFloatCmd("ZSCORE", key, member)
 	c.Process(req)
 	return req
 }
@@ -963,7 +1030,7 @@ func (c *Client) ZUnionStore(
 	destination string,
 	store ZStore,
 	keys ...string,
-) *IntReq {
+) *IntCmd {
 	args := []string{"ZUNIONSTORE", destination, strconv.FormatInt(int64(len(keys)), 10)}
 	args = append(args, keys...)
 	if len(store.Weights) > 0 {
@@ -975,122 +1042,118 @@ func (c *Client) ZUnionStore(
 	if store.Aggregate != "" {
 		args = append(args, "AGGREGATE", store.Aggregate)
 	}
-	req := NewIntReq(args...)
+	req := NewIntCmd(args...)
 	c.Process(req)
 	return req
 }
 
 //------------------------------------------------------------------------------
 
-func (c *Client) BgRewriteAOF() *StatusReq {
-	req := NewStatusReq("BGREWRITEAOF")
+func (c *Client) BgRewriteAOF() *StatusCmd {
+	req := NewStatusCmd("BGREWRITEAOF")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) BgSave() *StatusReq {
-	req := NewStatusReq("BGSAVE")
+func (c *Client) BgSave() *StatusCmd {
+	req := NewStatusCmd("BGSAVE")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ClientKill(ipPort string) *StatusReq {
-	req := NewStatusReq("CLIENT", "KILL", ipPort)
+func (c *Client) ClientKill(ipPort string) *StatusCmd {
+	req := NewStatusCmd("CLIENT", "KILL", ipPort)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ClientList() *StringReq {
-	req := NewStringReq("CLIENT", "LIST")
+func (c *Client) ClientList() *StringCmd {
+	req := NewStringCmd("CLIENT", "LIST")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ConfigGet(parameter string) *IfaceSliceReq {
-	req := NewIfaceSliceReq("CONFIG", "GET", parameter)
+func (c *Client) ConfigGet(parameter string) *SliceCmd {
+	req := NewSliceCmd("CONFIG", "GET", parameter)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ConfigResetStat() *StatusReq {
-	req := NewStatusReq("CONFIG", "RESETSTAT")
+func (c *Client) ConfigResetStat() *StatusCmd {
+	req := NewStatusCmd("CONFIG", "RESETSTAT")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ConfigSet(parameter, value string) *StatusReq {
-	req := NewStatusReq("CONFIG", "SET", parameter, value)
+func (c *Client) ConfigSet(parameter, value string) *StatusCmd {
+	req := NewStatusCmd("CONFIG", "SET", parameter, value)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) DbSize() *IntReq {
-	req := NewIntReq("DBSIZE")
+func (c *Client) DbSize() *IntCmd {
+	req := NewIntCmd("DBSIZE")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) FlushAll() *StatusReq {
-	req := NewStatusReq("FLUSHALL")
+func (c *Client) FlushAll() *StatusCmd {
+	req := NewStatusCmd("FLUSHALL")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) FlushDb() *StatusReq {
-	req := NewStatusReq("FLUSHDB")
+func (c *Client) FlushDb() *StatusCmd {
+	req := NewStatusCmd("FLUSHDB")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Info() *StringReq {
-	req := NewStringReq("INFO")
+func (c *Client) Info() *StringCmd {
+	req := NewStringCmd("INFO")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) LastSave() *IntReq {
-	req := NewIntReq("LASTSAVE")
+func (c *Client) LastSave() *IntCmd {
+	req := NewIntCmd("LASTSAVE")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) Monitor() {
-	panic("not implemented")
-}
-
-func (c *Client) Save() *StatusReq {
-	req := NewStatusReq("SAVE")
+func (c *Client) Save() *StatusCmd {
+	req := NewStatusCmd("SAVE")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) shutdown(modifier string) *StatusReq {
+func (c *Client) shutdown(modifier string) *StatusCmd {
 	var args []string
 	if modifier == "" {
 		args = []string{"SHUTDOWN"}
 	} else {
 		args = []string{"SHUTDOWN", modifier}
 	}
-	req := NewStatusReq(args...)
+	req := NewStatusCmd(args...)
 	c.Process(req)
 	c.Close()
 	return req
 }
 
-func (c *Client) Shutdown() *StatusReq {
+func (c *Client) Shutdown() *StatusCmd {
 	return c.shutdown("")
 }
 
-func (c *Client) ShutdownSave() *StatusReq {
+func (c *Client) ShutdownSave() *StatusCmd {
 	return c.shutdown("SAVE")
 }
 
-func (c *Client) ShutdownNoSave() *StatusReq {
+func (c *Client) ShutdownNoSave() *StatusCmd {
 	return c.shutdown("NOSAVE")
 }
 
-func (c *Client) SlaveOf(host, port string) *StatusReq {
-	req := NewStatusReq("SLAVEOF", host, port)
+func (c *Client) SlaveOf(host, port string) *StatusCmd {
+	req := NewStatusCmd("SLAVEOF", host, port)
 	c.Process(req)
 	return req
 }
@@ -1103,53 +1166,61 @@ func (c *Client) Sync() {
 	panic("not implemented")
 }
 
-func (c *Client) Time() *StringSliceReq {
-	req := NewStringSliceReq("TIME")
+func (c *Client) Time() *StringSliceCmd {
+	req := NewStringSliceCmd("TIME")
 	c.Process(req)
 	return req
 }
 
 //------------------------------------------------------------------------------
 
-func (c *Client) Eval(script string, keys []string, args []string) *IfaceReq {
+func (c *Client) Eval(script string, keys []string, args []string) *Cmd {
 	reqArgs := []string{"EVAL", script, strconv.FormatInt(int64(len(keys)), 10)}
 	reqArgs = append(reqArgs, keys...)
 	reqArgs = append(reqArgs, args...)
-	req := NewIfaceReq(reqArgs...)
+	req := NewCmd(reqArgs...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) EvalSha(sha1 string, keys []string, args []string) *IfaceReq {
+func (c *Client) EvalSha(sha1 string, keys []string, args []string) *Cmd {
 	reqArgs := []string{"EVALSHA", sha1, strconv.FormatInt(int64(len(keys)), 10)}
 	reqArgs = append(reqArgs, keys...)
 	reqArgs = append(reqArgs, args...)
-	req := NewIfaceReq(reqArgs...)
+	req := NewCmd(reqArgs...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ScriptExists(scripts ...string) *BoolSliceReq {
+func (c *Client) ScriptExists(scripts ...string) *BoolSliceCmd {
 	args := append([]string{"SCRIPT", "EXISTS"}, scripts...)
-	req := NewBoolSliceReq(args...)
+	req := NewBoolSliceCmd(args...)
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ScriptFlush() *StatusReq {
-	req := NewStatusReq("SCRIPT", "FLUSH")
+func (c *Client) ScriptFlush() *StatusCmd {
+	req := NewStatusCmd("SCRIPT", "FLUSH")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ScriptKill() *StatusReq {
-	req := NewStatusReq("SCRIPT", "KILL")
+func (c *Client) ScriptKill() *StatusCmd {
+	req := NewStatusCmd("SCRIPT", "KILL")
 	c.Process(req)
 	return req
 }
 
-func (c *Client) ScriptLoad(script string) *StringReq {
-	req := NewStringReq("SCRIPT", "LOAD", script)
+func (c *Client) ScriptLoad(script string) *StringCmd {
+	req := NewStringCmd("SCRIPT", "LOAD", script)
+	c.Process(req)
+	return req
+}
+
+//------------------------------------------------------------------------------
+
+func (c *Client) DebugObject(key string) *StringCmd {
+	req := NewStringCmd("DEBUG", "OBJECT", key)
 	c.Process(req)
 	return req
 }

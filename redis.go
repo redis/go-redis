@@ -1,192 +1,191 @@
 package redis
 
 import (
-	"crypto/tls"
-	"log"
 	"net"
-	"os"
-	"sync"
 	"time"
+
+	"github.com/golang/glog"
 )
 
-// Package logger.
-var Logger = log.New(os.Stdout, "redis: ", log.Ldate|log.Ltime)
+type baseClient struct {
+	connPool pool
 
-type OpenConnFunc func() (net.Conn, error)
-type CloseConnFunc func(net.Conn) error
-type InitConnFunc func(*Client) error
+	opt *Options
 
-func TCPConnector(addr string) OpenConnFunc {
-	return func() (net.Conn, error) {
-		return net.DialTimeout("tcp", addr, 3*time.Second)
-	}
+	cmds []Cmder
 }
 
-func TLSConnector(addr string, tlsConfig *tls.Config) OpenConnFunc {
-	return func() (net.Conn, error) {
-		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
-		if err != nil {
-			return nil, err
-		}
-		return tls.Client(conn, tlsConfig), nil
-	}
-}
-
-func UnixConnector(addr string) OpenConnFunc {
-	return func() (net.Conn, error) {
-		return net.DialTimeout("unix", addr, 3*time.Second)
-	}
-}
-
-func AuthSelectFunc(password string, db int64) InitConnFunc {
-	if password == "" && db < 0 {
-		return nil
-	}
-
-	return func(client *Client) error {
-		if password != "" {
-			auth := client.Auth(password)
-			if auth.Err() != nil {
-				return auth.Err()
-			}
-		}
-
-		if db >= 0 {
-			sel := client.Select(db)
-			if sel.Err() != nil {
-				return sel.Err()
-			}
-		}
-
-		return nil
-	}
-}
-
-//------------------------------------------------------------------------------
-
-type BaseClient struct {
-	ConnPool ConnPool
-	InitConn InitConnFunc
-	reqs     []Req
-	reqsMtx  sync.Mutex
-}
-
-func (c *BaseClient) WriteReq(conn *Conn, reqs ...Req) error {
+func (c *baseClient) writeCmd(cn *conn, cmds ...Cmder) error {
 	buf := make([]byte, 0, 1000)
-	for _, req := range reqs {
-		buf = appendReq(buf, req.Args())
+	for _, cmd := range cmds {
+		buf = appendCmd(buf, cmd.args())
 	}
 
-	_, err := conn.RW.Write(buf)
+	_, err := cn.Write(buf)
 	return err
 }
 
-func (c *BaseClient) conn() (*Conn, error) {
-	conn, isNew, err := c.ConnPool.Get()
+func (c *baseClient) conn() (*conn, error) {
+	cn, isNew, err := c.connPool.Get()
 	if err != nil {
 		return nil, err
 	}
 
-	if isNew && c.InitConn != nil {
-		client := &Client{
-			BaseClient: &BaseClient{
-				ConnPool: NewSingleConnPoolConn(c.ConnPool, conn, true),
-			},
-		}
-		err = c.InitConn(client)
-		if err != nil {
-			if err := c.ConnPool.Remove(conn); err != nil {
-				Logger.Printf("ConnPool.Remove error: %v", err)
-			}
+	if isNew && (c.opt.Password != "" || c.opt.DB > 0) {
+		if err = c.init(cn, c.opt.Password, c.opt.DB); err != nil {
+			c.removeConn(cn)
 			return nil, err
 		}
 	}
-	return conn, nil
+
+	return cn, nil
 }
 
-func (c *BaseClient) Process(req Req) {
-	if c.reqs == nil {
-		c.Run(req)
+func (c *baseClient) init(cn *conn, password string, db int64) error {
+	// Client is not closed on purpose.
+	client := &Client{
+		baseClient: &baseClient{
+			opt:      c.opt,
+			connPool: newSingleConnPool(c.connPool, cn, false),
+		},
+	}
+
+	if password != "" {
+		auth := client.Auth(password)
+		if auth.Err() != nil {
+			return auth.Err()
+		}
+	}
+
+	if db > 0 {
+		sel := client.Select(db)
+		if sel.Err() != nil {
+			return sel.Err()
+		}
+	}
+
+	return nil
+}
+
+func (c *baseClient) freeConn(cn *conn, err error) {
+	if err == Nil || err == TxFailedErr {
+		c.putConn(cn)
 	} else {
-		c.Queue(req)
+		c.removeConn(cn)
 	}
 }
 
-func (c *BaseClient) Run(req Req) {
-	conn, err := c.conn()
-	if err != nil {
-		req.SetErr(err)
-		return
+func (c *baseClient) removeConn(cn *conn) {
+	if err := c.connPool.Remove(cn); err != nil {
+		glog.Errorf("pool.Remove failed: %s", err)
 	}
-
-	err = c.WriteReq(conn, req)
-	if err != nil {
-		if err := c.ConnPool.Remove(conn); err != nil {
-			Logger.Printf("ConnPool.Remove error: %v", err)
-		}
-		req.SetErr(err)
-		return
-	}
-
-	val, err := req.ParseReply(conn.Rd)
-	if err != nil {
-		if _, ok := err.(*parserError); ok {
-			if err := c.ConnPool.Remove(conn); err != nil {
-				Logger.Printf("ConnPool.Remove error: %v", err)
-			}
-		} else {
-			if err := c.ConnPool.Add(conn); err != nil {
-				Logger.Printf("ConnPool.Add error: %v", err)
-			}
-		}
-		req.SetErr(err)
-		return
-	}
-
-	if err := c.ConnPool.Add(conn); err != nil {
-		Logger.Printf("ConnPool.Add error: %v", err)
-	}
-	req.SetVal(val)
 }
 
-// Queues request to be executed later.
-func (c *BaseClient) Queue(req Req) {
-	c.reqsMtx.Lock()
-	c.reqs = append(c.reqs, req)
-	c.reqsMtx.Unlock()
+func (c *baseClient) putConn(cn *conn) {
+	if err := c.connPool.Put(cn); err != nil {
+		glog.Errorf("pool.Put failed: %s", err)
+	}
 }
 
-func (c *BaseClient) Close() error {
-	return c.ConnPool.Close()
+func (c *baseClient) Process(cmd Cmder) {
+	if c.cmds == nil {
+		c.run(cmd)
+	} else {
+		c.cmds = append(c.cmds, cmd)
+	}
+}
+
+func (c *baseClient) run(cmd Cmder) {
+	cn, err := c.conn()
+	if err != nil {
+		cmd.setErr(err)
+		return
+	}
+
+	cn.writeTimeout = c.opt.WriteTimeout
+	if timeout := cmd.writeTimeout(); timeout != nil {
+		cn.writeTimeout = *timeout
+	}
+
+	cn.readTimeout = c.opt.ReadTimeout
+	if timeout := cmd.readTimeout(); timeout != nil {
+		cn.readTimeout = *timeout
+	}
+
+	if err := c.writeCmd(cn, cmd); err != nil {
+		c.freeConn(cn, err)
+		cmd.setErr(err)
+		return
+	}
+
+	if err := cmd.parseReply(cn.rd); err != nil {
+		c.freeConn(cn, err)
+		return
+	}
+
+	c.putConn(cn)
+}
+
+// Close closes the client, releasing any open resources.
+func (c *baseClient) Close() error {
+	return c.connPool.Close()
+}
+
+//------------------------------------------------------------------------------
+
+type Options struct {
+	Addr     string
+	Password string
+	DB       int64
+
+	PoolSize int
+
+	DialTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+}
+
+func (opt *Options) getPoolSize() int {
+	if opt.PoolSize == 0 {
+		return 10
+	}
+	return opt.PoolSize
+}
+
+func (opt *Options) getDialTimeout() time.Duration {
+	if opt.DialTimeout == 0 {
+		return 5 * time.Second
+	}
+	return opt.DialTimeout
 }
 
 //------------------------------------------------------------------------------
 
 type Client struct {
-	*BaseClient
+	*baseClient
 }
 
-func NewClient(openConn OpenConnFunc, closeConn CloseConnFunc, initConn InitConnFunc) *Client {
+func newClient(opt *Options, dial func() (net.Conn, error)) *Client {
 	return &Client{
-		BaseClient: &BaseClient{
-			ConnPool: NewMultiConnPool(openConn, closeConn, 10),
-			InitConn: initConn,
+		baseClient: &baseClient{
+			opt: opt,
+
+			connPool: newConnPool(newConnFunc(dial), opt.getPoolSize(), opt.IdleTimeout),
 		},
 	}
 }
 
-func NewTCPClient(addr string, password string, db int64) *Client {
-	return NewClient(TCPConnector(addr), nil, AuthSelectFunc(password, db))
+func NewTCPClient(opt *Options) *Client {
+	dial := func() (net.Conn, error) {
+		return net.DialTimeout("tcp", opt.Addr, opt.getDialTimeout())
+	}
+	return newClient(opt, dial)
 }
 
-func NewTLSClient(addr string, tlsConfig *tls.Config, password string, db int64) *Client {
-	return NewClient(
-		TLSConnector(addr, tlsConfig),
-		nil,
-		AuthSelectFunc(password, db),
-	)
-}
-
-func NewUnixClient(addr string, password string, db int64) *Client {
-	return NewClient(UnixConnector(addr), nil, AuthSelectFunc(password, db))
+func NewUnixClient(opt *Options) *Client {
+	dial := func() (net.Conn, error) {
+		return net.DialTimeout("unix", opt.Addr, opt.getDialTimeout())
+	}
+	return newClient(opt, dial)
 }

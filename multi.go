@@ -1,132 +1,134 @@
 package redis
 
 import (
+	"errors"
 	"fmt"
-	"sync"
 )
 
-type MultiClient struct {
+var errDiscard = errors.New("redis: Discard can be used only inside Exec")
+
+// Not thread-safe.
+type Multi struct {
 	*Client
-	execMtx sync.Mutex
 }
 
-func (c *Client) MultiClient() (*MultiClient, error) {
-	return &MultiClient{
+func (c *Client) Multi() *Multi {
+	return &Multi{
 		Client: &Client{
-			BaseClient: &BaseClient{
-				ConnPool: NewSingleConnPool(c.ConnPool, true),
-				InitConn: c.InitConn,
+			baseClient: &baseClient{
+				opt:      c.opt,
+				connPool: newSingleConnPool(c.connPool, nil, true),
 			},
 		},
-	}, nil
+	}
 }
 
-func (c *MultiClient) Close() error {
+func (c *Multi) Close() error {
 	c.Unwatch()
 	return c.Client.Close()
 }
 
-func (c *MultiClient) Watch(keys ...string) *StatusReq {
+func (c *Multi) Watch(keys ...string) *StatusCmd {
 	args := append([]string{"WATCH"}, keys...)
-	req := NewStatusReq(args...)
-	c.Process(req)
-	return req
+	cmd := NewStatusCmd(args...)
+	c.Process(cmd)
+	return cmd
 }
 
-func (c *MultiClient) Unwatch(keys ...string) *StatusReq {
+func (c *Multi) Unwatch(keys ...string) *StatusCmd {
 	args := append([]string{"UNWATCH"}, keys...)
-	req := NewStatusReq(args...)
-	c.Process(req)
-	return req
+	cmd := NewStatusCmd(args...)
+	c.Process(cmd)
+	return cmd
 }
 
-func (c *MultiClient) Discard() {
-	c.reqsMtx.Lock()
-	if c.reqs == nil {
-		panic("Discard can be used only inside Exec")
+func (c *Multi) Discard() error {
+	if c.cmds == nil {
+		return errDiscard
 	}
-	c.reqs = c.reqs[:1]
-	c.reqsMtx.Unlock()
+	c.cmds = c.cmds[:1]
+	return nil
 }
 
-func (c *MultiClient) Exec(do func()) ([]Req, error) {
-	c.reqsMtx.Lock()
-	c.reqs = []Req{NewStatusReq("MULTI")}
-	c.reqsMtx.Unlock()
+// Exec always returns list of commands. If transaction fails
+// TxFailedErr is returned. Otherwise Exec returns error of the first
+// failed command or nil.
+func (c *Multi) Exec(f func()) ([]Cmder, error) {
+	c.cmds = []Cmder{NewStatusCmd("MULTI")}
+	f()
+	c.cmds = append(c.cmds, NewSliceCmd("EXEC"))
 
-	do()
+	cmds := c.cmds
+	c.cmds = nil
 
-	c.Queue(NewIfaceSliceReq("EXEC"))
-
-	c.reqsMtx.Lock()
-	reqs := c.reqs
-	c.reqs = nil
-	c.reqsMtx.Unlock()
-
-	if len(reqs) == 2 {
-		return []Req{}, nil
+	if len(cmds) == 2 {
+		return []Cmder{}, nil
 	}
 
-	conn, err := c.conn()
+	cn, err := c.conn()
 	if err != nil {
-		return nil, err
+		setCmdsErr(cmds[1:len(cmds)-1], err)
+		return cmds[1 : len(cmds)-1], err
 	}
 
-	// Synchronize writes and reads to the connection using mutex.
-	c.execMtx.Lock()
-	err = c.ExecReqs(reqs, conn)
-	c.execMtx.Unlock()
+	err = c.execCmds(cn, cmds)
 	if err != nil {
-		c.ConnPool.Remove(conn)
-		return nil, err
+		c.freeConn(cn, err)
+		return cmds[1 : len(cmds)-1], err
 	}
 
-	c.ConnPool.Add(conn)
-	return reqs[1 : len(reqs)-1], nil
+	c.putConn(cn)
+	return cmds[1 : len(cmds)-1], nil
 }
 
-func (c *MultiClient) ExecReqs(reqs []Req, conn *Conn) error {
-	err := c.WriteReq(conn, reqs...)
+func (c *Multi) execCmds(cn *conn, cmds []Cmder) error {
+	err := c.writeCmd(cn, cmds...)
 	if err != nil {
+		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
 	}
 
-	statusReq := NewStatusReq()
+	statusCmd := NewStatusCmd()
 
-	// Omit last request (EXEC).
-	reqsLen := len(reqs) - 1
+	// Omit last command (EXEC).
+	cmdsLen := len(cmds) - 1
 
 	// Parse queued replies.
-	for i := 0; i < reqsLen; i++ {
-		_, err = statusReq.ParseReply(conn.Rd)
-		if err != nil {
+	for i := 0; i < cmdsLen; i++ {
+		if err := statusCmd.parseReply(cn.rd); err != nil {
+			setCmdsErr(cmds[1:len(cmds)-1], err)
 			return err
 		}
 	}
 
 	// Parse number of replies.
-	line, err := readLine(conn.Rd)
+	line, err := readLine(cn.rd)
 	if err != nil {
+		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
 	}
 	if line[0] != '*' {
-		return fmt.Errorf("Expected '*', but got line %q", line)
+		err := fmt.Errorf("redis: expected '*', but got line %q", line)
+		setCmdsErr(cmds[1:len(cmds)-1], err)
+		return err
 	}
 	if len(line) == 3 && line[1] == '-' && line[2] == '1' {
-		return Nil
+		setCmdsErr(cmds[1:len(cmds)-1], TxFailedErr)
+		return TxFailedErr
 	}
 
+	var firstCmdErr error
+
 	// Parse replies.
-	// Loop starts from 1 to omit first request (MULTI).
-	for i := 1; i < reqsLen; i++ {
-		req := reqs[i]
-		val, err := req.ParseReply(conn.Rd)
-		if err != nil {
-			req.SetErr(err)
-		} else {
-			req.SetVal(val)
+	// Loop starts from 1 to omit MULTI cmd.
+	for i := 1; i < cmdsLen; i++ {
+		cmd := cmds[i]
+		if err := cmd.parseReply(cn.rd); err != nil {
+			if firstCmdErr == nil {
+				firstCmdErr = err
+			}
 		}
 	}
 
-	return nil
+	return firstCmdErr
 }
