@@ -239,16 +239,16 @@ func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnMultiClient(c *C) {
 }
 
 func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnPubSub(c *C) {
-	const N = 1000
+	const N = 10
 
 	wg := &sync.WaitGroup{}
 	wg.Add(N)
 	for i := 0; i < N; i++ {
 		go func() {
+			defer wg.Done()
 			pubsub := t.client.PubSub()
 			c.Assert(pubsub.Subscribe(), IsNil)
 			c.Assert(pubsub.Close(), IsNil)
-			wg.Done()
 		}()
 	}
 	wg.Wait()
@@ -296,26 +296,20 @@ var _ = Suite(&RedisTest{})
 
 func Test(t *testing.T) { TestingT(t) }
 
-func (t *RedisTest) SetUpSuite(c *C) {
+func (t *RedisTest) SetUpTest(c *C) {
 	t.client = redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
-}
 
-func (t *RedisTest) TearDownSuite(c *C) {
-	c.Assert(t.client.Close(), IsNil)
-}
-
-func (t *RedisTest) SetUpTest(c *C) {
-	t.resetRedis(c)
-}
-
-func (t *RedisTest) resetRedis(c *C) {
 	// This is much faster than Flushall.
 	c.Assert(t.client.Select(1).Err(), IsNil)
 	c.Assert(t.client.FlushDb().Err(), IsNil)
 	c.Assert(t.client.Select(0).Err(), IsNil)
 	c.Assert(t.client.FlushDb().Err(), IsNil)
+}
+
+func (t *RedisTest) TearDownTest(c *C) {
+	c.Assert(t.client.Close(), IsNil)
 }
 
 //------------------------------------------------------------------------------
@@ -2787,14 +2781,17 @@ func (t *RedisTest) transactionalIncr(c *C) ([]redis.Cmder, error) {
 }
 
 func (t *RedisTest) TestWatchUnwatch(c *C) {
+	const N = 10000
+
 	set := t.client.Set("key", "0")
 	c.Assert(set.Err(), IsNil)
 	c.Assert(set.Val(), Equals, "OK")
 
 	wg := &sync.WaitGroup{}
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < N; i++ {
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			for {
 				cmds, err := t.transactionalIncr(c)
 				if err == redis.TxFailedErr {
@@ -2805,14 +2802,13 @@ func (t *RedisTest) TestWatchUnwatch(c *C) {
 				c.Assert(cmds[0].Err(), IsNil)
 				break
 			}
-			wg.Done()
 		}()
 	}
 	wg.Wait()
 
 	get := t.client.Get("key")
 	c.Assert(get.Err(), IsNil)
-	c.Assert(get.Val(), Equals, "1000")
+	c.Assert(get.Val(), Equals, strconv.FormatInt(N, 10))
 }
 
 //------------------------------------------------------------------------------

@@ -24,7 +24,9 @@ func (c *Client) Multi() *Multi {
 }
 
 func (c *Multi) Close() error {
-	c.Unwatch()
+	if err := c.Unwatch().Err(); err != nil {
+		return err
+	}
 	return c.Client.Close()
 }
 
