@@ -12,7 +12,8 @@ import (
 )
 
 var (
-	errClosed = errors.New("redis: client is closed")
+	errClosed      = errors.New("redis: client is closed")
+	errRateLimited = errors.New("redis: you open connections too fast")
 )
 
 var (
@@ -83,7 +84,8 @@ func (cn *conn) Close() error {
 //------------------------------------------------------------------------------
 
 type connPool struct {
-	New func() (*conn, error)
+	dial func() (*conn, error)
+	rl   *rateLimiter
 
 	cond  *sync.Cond
 	conns *list.List
@@ -101,7 +103,8 @@ func newConnPool(
 	idleTimeout time.Duration,
 ) *connPool {
 	return &connPool{
-		New: dial,
+		dial: dial,
+		rl:   newRateLimiter(time.Second, 2*maxSize),
 
 		cond:  sync.NewCond(&sync.Mutex{}),
 		conns: list.New(),
@@ -109,6 +112,15 @@ func newConnPool(
 		maxSize:     maxSize,
 		idleTimeout: idleTimeout,
 	}
+}
+
+func (p *connPool) new() (*conn, error) {
+	select {
+	case <-p.rl.C:
+	default:
+		return nil, errRateLimited
+	}
+	return p.dial()
 }
 
 func (p *connPool) Get() (*conn, bool, error) {
@@ -152,7 +164,7 @@ func (p *connPool) Get() (*conn, bool, error) {
 	}
 
 	if p.conns.Len() < p.maxSize {
-		cn, err := p.New()
+		cn, err := p.new()
 		if err != nil {
 			p.cond.L.Unlock()
 			return nil, false, err
