@@ -30,16 +30,28 @@ type Message struct {
 	Payload string
 }
 
+func (m *Message) String() string {
+	return fmt.Sprintf("Message<%s: %s>", m.Channel, m.Payload)
+}
+
 type PMessage struct {
 	Channel string
 	Pattern string
 	Payload string
 }
 
+func (m *PMessage) String() string {
+	return fmt.Sprintf("PMessage<%s: %s>", m.Channel, m.Payload)
+}
+
 type Subscription struct {
 	Kind    string
 	Channel string
 	Count   int
+}
+
+func (m *Subscription) String() string {
+	return fmt.Sprintf("%s: %s", m.Kind, m.Channel)
 }
 
 func (c *PubSub) Receive() (interface{}, error) {

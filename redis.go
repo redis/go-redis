@@ -9,10 +9,8 @@ import (
 
 type baseClient struct {
 	connPool pool
-
-	opt *Options
-
-	cmds []Cmder
+	opt      *options
+	cmds     []Cmder
 }
 
 func (c *baseClient) writeCmd(cn *conn, cmds ...Cmder) error {
@@ -133,17 +131,29 @@ func (c *baseClient) Close() error {
 
 //------------------------------------------------------------------------------
 
+type options struct {
+	Password string
+	DB       int64
+
+	DialTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+
+	PoolSize    int
+	IdleTimeout time.Duration
+}
+
 type Options struct {
 	Addr     string
 	Password string
 	DB       int64
 
-	PoolSize int
-
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
+
+	PoolSize    int
+	IdleTimeout time.Duration
 }
 
 func (opt *Options) getPoolSize() int {
@@ -160,32 +170,41 @@ func (opt *Options) getDialTimeout() time.Duration {
 	return opt.DialTimeout
 }
 
-//------------------------------------------------------------------------------
+func (opt *Options) options() *options {
+	return &options{
+		DB:       opt.DB,
+		Password: opt.Password,
+
+		DialTimeout:  opt.getDialTimeout(),
+		ReadTimeout:  opt.ReadTimeout,
+		WriteTimeout: opt.WriteTimeout,
+
+		PoolSize:    opt.getPoolSize(),
+		IdleTimeout: opt.IdleTimeout,
+	}
+}
 
 type Client struct {
 	*baseClient
 }
 
-func newClient(opt *Options, dial func() (net.Conn, error)) *Client {
+func newClient(clOpt *Options, network string) *Client {
+	opt := clOpt.options()
+	dialer := func() (net.Conn, error) {
+		return net.DialTimeout(network, clOpt.Addr, opt.DialTimeout)
+	}
 	return &Client{
 		baseClient: &baseClient{
-			opt: opt,
-
-			connPool: newConnPool(newConnFunc(dial), opt.getPoolSize(), opt.IdleTimeout),
+			opt:      opt,
+			connPool: newConnPool(newConnFunc(dialer), opt),
 		},
 	}
 }
 
 func NewTCPClient(opt *Options) *Client {
-	dial := func() (net.Conn, error) {
-		return net.DialTimeout("tcp", opt.Addr, opt.getDialTimeout())
-	}
-	return newClient(opt, dial)
+	return newClient(opt, "tcp")
 }
 
 func NewUnixClient(opt *Options) *Client {
-	dial := func() (net.Conn, error) {
-		return net.DialTimeout("unix", opt.Addr, opt.getDialTimeout())
-	}
-	return newClient(opt, dial)
+	return newClient(opt, "unix")
 }

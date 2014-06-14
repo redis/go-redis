@@ -118,8 +118,8 @@ func ExamplePubSub() {
 	msg, err = pubsub.Receive()
 	fmt.Println(msg, err)
 
-	// Output: &{subscribe mychannel 1} <nil>
-	// &{mychannel hello} <nil>
+	// Output: subscribe: mychannel <nil>
+	// Message<mychannel: hello> <nil>
 }
 
 func ExampleScript() {
