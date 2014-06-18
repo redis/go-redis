@@ -65,12 +65,14 @@ func (c *baseClient) init(cn *conn, password string, db int64) error {
 	return nil
 }
 
-func (c *baseClient) freeConn(cn *conn, err error) {
-	if err == Nil || err == TxFailedErr {
-		c.putConn(cn)
-	} else {
-		c.removeConn(cn)
+func (c *baseClient) freeConn(cn *conn, ei error) error {
+	if cn.rd.Buffered() > 0 {
+		return c.connPool.Remove(cn)
 	}
+	if _, ok := ei.(redisError); ok {
+		return c.connPool.Put(cn)
+	}
+	return c.connPool.Remove(cn)
 }
 
 func (c *baseClient) removeConn(cn *conn) {

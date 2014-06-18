@@ -10,12 +10,6 @@ import (
 
 type multiBulkParser func(rd reader, n int64) (interface{}, error)
 
-// Redis nil reply.
-var Nil = errors.New("redis: nil")
-
-// Redis transaction failed.
-var TxFailedErr = errors.New("redis: transaction failed")
-
 var (
 	errReaderTooSmall   = errors.New("redis: reader is too small")
 	errInvalidReplyType = errors.New("redis: invalid reply type")
@@ -132,7 +126,7 @@ func parseReply(rd reader, p multiBulkParser) (interface{}, error) {
 
 	switch line[0] {
 	case '-':
-		return nil, errors.New(string(line[1:]))
+		return nil, errorf(string(line[1:]))
 	case '+':
 		return string(line[1:]), nil
 	case ':':
