@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-	"github.com/vmihailenco/bufio"
+	"gopkg.in/bufio.v1"
 )
 
 var (
@@ -34,7 +34,7 @@ type pool interface {
 
 type conn struct {
 	netcn net.Conn
-	rd    reader
+	rd    *bufio.Reader
 
 	inUse  bool
 	usedAt time.Time

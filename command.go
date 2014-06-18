@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/bufio.v1"
 )
 
 var (
@@ -25,7 +27,7 @@ var (
 
 type Cmder interface {
 	args() []string
-	parseReply(reader) error
+	parseReply(*bufio.Reader) error
 	setErr(error)
 
 	writeTimeout() *time.Duration
@@ -126,7 +128,7 @@ func (cmd *Cmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *Cmd) parseReply(rd reader) error {
+func (cmd *Cmd) parseReply(rd *bufio.Reader) error {
 	cmd.val, cmd.err = parseReply(rd, parseSlice)
 	return cmd.err
 }
@@ -157,7 +159,7 @@ func (cmd *SliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *SliceCmd) parseReply(rd reader) error {
+func (cmd *SliceCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, parseSlice)
 	if err != nil {
 		cmd.err = err
@@ -193,7 +195,7 @@ func (cmd *StatusCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StatusCmd) parseReply(rd reader) error {
+func (cmd *StatusCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, nil)
 	if err != nil {
 		cmd.err = err
@@ -229,7 +231,7 @@ func (cmd *IntCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *IntCmd) parseReply(rd reader) error {
+func (cmd *IntCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, nil)
 	if err != nil {
 		cmd.err = err
@@ -267,7 +269,7 @@ func (cmd *DurationCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *DurationCmd) parseReply(rd reader) error {
+func (cmd *DurationCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, nil)
 	if err != nil {
 		cmd.err = err
@@ -303,7 +305,7 @@ func (cmd *BoolCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *BoolCmd) parseReply(rd reader) error {
+func (cmd *BoolCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, nil)
 	if err != nil {
 		cmd.err = err
@@ -339,7 +341,7 @@ func (cmd *StringCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringCmd) parseReply(rd reader) error {
+func (cmd *StringCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, nil)
 	if err != nil {
 		cmd.err = err
@@ -371,7 +373,7 @@ func (cmd *FloatCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *FloatCmd) parseReply(rd reader) error {
+func (cmd *FloatCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, nil)
 	if err != nil {
 		cmd.err = err
@@ -407,7 +409,7 @@ func (cmd *StringSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringSliceCmd) parseReply(rd reader) error {
+func (cmd *StringSliceCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, parseStringSlice)
 	if err != nil {
 		cmd.err = err
@@ -443,7 +445,7 @@ func (cmd *BoolSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *BoolSliceCmd) parseReply(rd reader) error {
+func (cmd *BoolSliceCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, parseBoolSlice)
 	if err != nil {
 		cmd.err = err
@@ -479,7 +481,7 @@ func (cmd *StringStringMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringStringMapCmd) parseReply(rd reader) error {
+func (cmd *StringStringMapCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, parseStringStringMap)
 	if err != nil {
 		cmd.err = err
@@ -515,7 +517,7 @@ func (cmd *StringFloatMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringFloatMapCmd) parseReply(rd reader) error {
+func (cmd *StringFloatMapCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, parseStringFloatMap)
 	if err != nil {
 		cmd.err = err
@@ -552,7 +554,7 @@ func (cmd *ScanCmd) String() string {
 	return cmdString(cmd, cmd.keys)
 }
 
-func (cmd *ScanCmd) parseReply(rd reader) error {
+func (cmd *ScanCmd) parseReply(rd *bufio.Reader) error {
 	vi, err := parseReply(rd, parseSlice)
 	if err != nil {
 		cmd.err = err

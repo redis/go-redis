@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/vmihailenco/bufio"
+	"gopkg.in/bufio.v1"
 )
 
-type multiBulkParser func(rd reader, n int64) (interface{}, error)
+type multiBulkParser func(rd *bufio.Reader, n int64) (interface{}, error)
 
 var (
 	errReaderTooSmall   = errors.New("redis: reader is too small")
@@ -33,15 +33,7 @@ func appendCmd(buf []byte, args []string) []byte {
 
 //------------------------------------------------------------------------------
 
-type reader interface {
-	ReadLine() ([]byte, bool, error)
-	Read([]byte) (int, error)
-	ReadN(n int) ([]byte, error)
-	Buffered() int
-	Peek(int) ([]byte, error)
-}
-
-func readLine(rd reader) ([]byte, error) {
+func readLine(rd *bufio.Reader) ([]byte, error) {
 	line, isPrefix, err := rd.ReadLine()
 	if err != nil {
 		return line, err
@@ -52,12 +44,12 @@ func readLine(rd reader) ([]byte, error) {
 	return line, nil
 }
 
-func readN(rd reader, n int) ([]byte, error) {
+func readN(rd *bufio.Reader, n int) ([]byte, error) {
 	b, err := rd.ReadN(n)
 	if err == bufio.ErrBufferFull {
-		newB := make([]byte, n)
-		r := copy(newB, b)
-		b = newB
+		tmp := make([]byte, n)
+		r := copy(tmp, b)
+		b = tmp
 
 		for {
 			nn, err := rd.Read(b[r:])
@@ -78,7 +70,7 @@ func readN(rd reader, n int) ([]byte, error) {
 
 //------------------------------------------------------------------------------
 
-func parseReq(rd reader) ([]string, error) {
+func parseReq(rd *bufio.Reader) ([]string, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -118,7 +110,7 @@ func parseReq(rd reader) ([]string, error) {
 
 //------------------------------------------------------------------------------
 
-func parseReply(rd reader, p multiBulkParser) (interface{}, error) {
+func parseReply(rd *bufio.Reader, p multiBulkParser) (interface{}, error) {
 	line, err := readLine(rd)
 	if err != nil {
 		return nil, err
@@ -166,7 +158,7 @@ func parseReply(rd reader, p multiBulkParser) (interface{}, error) {
 	return nil, fmt.Errorf("redis: can't parse %q", line)
 }
 
-func parseSlice(rd reader, n int64) (interface{}, error) {
+func parseSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 	vals := make([]interface{}, 0, n)
 	for i := int64(0); i < n; i++ {
 		v, err := parseReply(rd, parseSlice)
@@ -181,7 +173,7 @@ func parseSlice(rd reader, n int64) (interface{}, error) {
 	return vals, nil
 }
 
-func parseStringSlice(rd reader, n int64) (interface{}, error) {
+func parseStringSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 	vals := make([]string, 0, n)
 	for i := int64(0); i < n; i++ {
 		vi, err := parseReply(rd, nil)
@@ -197,7 +189,7 @@ func parseStringSlice(rd reader, n int64) (interface{}, error) {
 	return vals, nil
 }
 
-func parseBoolSlice(rd reader, n int64) (interface{}, error) {
+func parseBoolSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 	vals := make([]bool, 0, n)
 	for i := int64(0); i < n; i++ {
 		vi, err := parseReply(rd, nil)
@@ -213,7 +205,7 @@ func parseBoolSlice(rd reader, n int64) (interface{}, error) {
 	return vals, nil
 }
 
-func parseStringStringMap(rd reader, n int64) (interface{}, error) {
+func parseStringStringMap(rd *bufio.Reader, n int64) (interface{}, error) {
 	m := make(map[string]string, n/2)
 	for i := int64(0); i < n; i += 2 {
 		keyI, err := parseReply(rd, nil)
@@ -239,7 +231,7 @@ func parseStringStringMap(rd reader, n int64) (interface{}, error) {
 	return m, nil
 }
 
-func parseStringFloatMap(rd reader, n int64) (interface{}, error) {
+func parseStringFloatMap(rd *bufio.Reader, n int64) (interface{}, error) {
 	m := make(map[string]float64, n/2)
 	for i := int64(0); i < n; i += 2 {
 		keyI, err := parseReply(rd, nil)
