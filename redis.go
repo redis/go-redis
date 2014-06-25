@@ -1,36 +1,42 @@
 package redis
 
 import (
+	"fmt"
 	"net"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/golang/glog"
 )
 
 type baseClient struct {
-	connPool pool
-	opt      *options
-	cmds     []Cmder
+	opt  *options
+	cmds []Cmder
+
+	connPool     pool
+	connPoolsMtx sync.Mutex
+	connPools    map[string]pool
 }
 
 func (c *baseClient) writeCmd(cn *conn, cmds ...Cmder) error {
-	buf := make([]byte, 0, 1000)
+	buf := make([]byte, 0, 64)
 	for _, cmd := range cmds {
-		buf = appendCmd(buf, cmd.args())
+		buf = appendArgs(buf, cmd.Args())
 	}
 
 	_, err := cn.Write(buf)
 	return err
 }
 
-func (c *baseClient) conn() (*conn, error) {
-	cn, isNew, err := c.connPool.Get()
+func (c *baseClient) connFromPool(p pool, opt *options) (*conn, error) {
+	cn, isNew, err := p.Get()
 	if err != nil {
 		return nil, err
 	}
 
-	if isNew && (c.opt.Password != "" || c.opt.DB > 0) {
-		if err = c.init(cn, c.opt.Password, c.opt.DB); err != nil {
+	if isNew {
+		if err = c.initConn(p, cn, opt); err != nil {
 			c.removeConn(cn)
 			return nil, err
 		}
@@ -39,50 +45,93 @@ func (c *baseClient) conn() (*conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) init(cn *conn, password string, db int64) error {
-	// Client is not closed on purpose.
+func (c *baseClient) initConn(p pool, cn *conn, opt *options) error {
+	if opt.Password == "" || opt.DB == 0 {
+		return nil
+	}
+
+	pp := newSingleConnPool(p, false)
+	pp.SetConn(cn)
+
+	// Client is not closed because we want to reuse underlying connection.
 	client := &Client{
 		baseClient: &baseClient{
-			opt:      c.opt,
-			connPool: newSingleConnPool(c.connPool, cn, false),
+			opt:      opt,
+			connPool: pp,
 		},
 	}
 
-	if password != "" {
-		auth := client.Auth(password)
-		if auth.Err() != nil {
-			return auth.Err()
+	if opt.Password != "" {
+		if err := client.Auth(opt.Password).Err(); err != nil {
+			return err
 		}
 	}
 
-	if db > 0 {
-		sel := client.Select(db)
-		if sel.Err() != nil {
-			return sel.Err()
+	if opt.DB > 0 {
+		if err := client.Select(opt.DB).Err(); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
+func (c *baseClient) conn(cmds ...Cmder) (*conn, error) {
+	if c.connPools != nil {
+		return c.shardConn(cmds...)
+	}
+	return c.connFromPool(c.connPool, c.opt)
+}
+
+func (c *baseClient) shardConn(cmds ...Cmder) (*conn, error) {
+	shard, err := c.opt.Shard(cmds)
+	if err != nil {
+		return nil, err
+	}
+	switch opt := shard.(type) {
+	case *Options:
+		return c.connFromPool(c.getConnPool(opt), opt.options())
+	default:
+		return nil, fmt.Errorf("redis: unsupported shard type: %v", shard)
+	}
+}
+
+func (c *baseClient) getConnPool(shardOpt *Options) pool {
+	shardId := shardOpt.shardId()
+	opt := shardOpt.options()
+
+	c.connPoolsMtx.Lock()
+	pool, ok := c.connPools[shardId]
+	if !ok {
+		dialer := func() (net.Conn, error) {
+			return net.DialTimeout("tcp", shardOpt.Addr, opt.DialTimeout)
+		}
+		pool = newConnPool(newConnFunc(dialer), opt)
+		c.connPools[shardId] = pool
+	}
+	c.connPoolsMtx.Unlock()
+
+	return pool
+}
+
 func (c *baseClient) freeConn(cn *conn, ei error) error {
 	if cn.rd.Buffered() > 0 {
-		return c.connPool.Remove(cn)
+		return cn.pool.Remove(cn)
 	}
 	if _, ok := ei.(redisError); ok {
-		return c.connPool.Put(cn)
+		return cn.pool.Put(cn)
 	}
-	return c.connPool.Remove(cn)
+	return cn.pool.Remove(cn)
 }
 
 func (c *baseClient) removeConn(cn *conn) {
-	if err := c.connPool.Remove(cn); err != nil {
+	if err := cn.pool.Remove(cn); err != nil {
 		glog.Errorf("pool.Remove failed: %s", err)
 	}
 }
 
 func (c *baseClient) putConn(cn *conn) {
-	if err := c.connPool.Put(cn); err != nil {
+	if err := cn.pool.Put(cn); err != nil {
 		glog.Errorf("pool.Put failed: %s", err)
 	}
 }
@@ -96,20 +145,22 @@ func (c *baseClient) Process(cmd Cmder) {
 }
 
 func (c *baseClient) run(cmd Cmder) {
-	cn, err := c.conn()
+	cn, err := c.conn(cmd)
 	if err != nil {
 		cmd.setErr(err)
 		return
 	}
 
-	cn.writeTimeout = c.opt.WriteTimeout
 	if timeout := cmd.writeTimeout(); timeout != nil {
 		cn.writeTimeout = *timeout
+	} else {
+		cn.writeTimeout = c.opt.WriteTimeout
 	}
 
-	cn.readTimeout = c.opt.ReadTimeout
 	if timeout := cmd.readTimeout(); timeout != nil {
 		cn.readTimeout = *timeout
+	} else {
+		cn.readTimeout = c.opt.ReadTimeout
 	}
 
 	if err := c.writeCmd(cn, cmd); err != nil {
@@ -143,6 +194,8 @@ type options struct {
 
 	PoolSize    int
 	IdleTimeout time.Duration
+
+	Shard func(cmds []Cmder) (interface{}, error)
 }
 
 type Options struct {
@@ -156,6 +209,8 @@ type Options struct {
 
 	PoolSize    int
 	IdleTimeout time.Duration
+
+	Shard func(cmds []Cmder) (interface{}, error)
 }
 
 func (opt *Options) getPoolSize() int {
@@ -183,7 +238,13 @@ func (opt *Options) options() *options {
 
 		PoolSize:    opt.getPoolSize(),
 		IdleTimeout: opt.IdleTimeout,
+
+		Shard: opt.Shard,
 	}
+}
+
+func (opt *Options) shardId() string {
+	return opt.Addr + opt.Password + strconv.FormatInt(opt.DB, 10)
 }
 
 type Client struct {
@@ -209,4 +270,25 @@ func NewTCPClient(opt *Options) *Client {
 
 func NewUnixClient(opt *Options) *Client {
 	return newClient(opt, "unix")
+}
+
+//------------------------------------------------------------------------------
+
+type ShardingOptions struct {
+	Shard func(cmds []Cmder) (interface{}, error)
+}
+
+func (opt *ShardingOptions) options() *options {
+	return &options{
+		Shard: opt.Shard,
+	}
+}
+
+func NewShardingClient(shardingOpt *ShardingOptions) *Client {
+	return &Client{
+		baseClient: &baseClient{
+			opt:       shardingOpt.options(),
+			connPools: make(map[string]pool),
+		},
+	}
 }

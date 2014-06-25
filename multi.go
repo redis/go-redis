@@ -17,7 +17,7 @@ func (c *Client) Multi() *Multi {
 		Client: &Client{
 			baseClient: &baseClient{
 				opt:      c.opt,
-				connPool: newSingleConnPool(c.connPool, nil, true),
+				connPool: newSingleConnPool(c.connPool, true),
 			},
 		},
 	}
@@ -67,14 +67,13 @@ func (c *Multi) Exec(f func()) ([]Cmder, error) {
 		return []Cmder{}, nil
 	}
 
-	cn, err := c.conn()
+	cn, err := c.conn(cmds...)
 	if err != nil {
 		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return cmds[1 : len(cmds)-1], err
 	}
 
-	err = c.execCmds(cn, cmds)
-	if err != nil {
+	if err := c.execCmds(cn, cmds); err != nil {
 		c.freeConn(cn, err)
 		return cmds[1 : len(cmds)-1], err
 	}
