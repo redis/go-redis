@@ -55,7 +55,7 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 		return []Cmder{}, nil
 	}
 
-	cn, err := c.conn()
+	cn, err := c.conn(cmds...)
 	if err != nil {
 		setCmdsErr(cmds, err)
 		return cmds, err

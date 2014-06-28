@@ -26,7 +26,9 @@ var (
 )
 
 type Cmder interface {
-	args() []string
+	Args() []string
+	Arg(int) string
+
 	parseReply(*bufio.Reader) error
 	setErr(error)
 
@@ -44,7 +46,7 @@ func setCmdsErr(cmds []Cmder, e error) {
 }
 
 func cmdString(cmd Cmder, val interface{}) string {
-	s := strings.Join(cmd.args(), " ")
+	s := strings.Join(cmd.Args(), " ")
 	if err := cmd.Err(); err != nil {
 		return s + ": " + err.Error()
 	}
@@ -58,7 +60,8 @@ func cmdString(cmd Cmder, val interface{}) string {
 //------------------------------------------------------------------------------
 
 type baseCmd struct {
-	_args []string
+	_args      []string
+	_shardable bool
 
 	err error
 
@@ -78,8 +81,15 @@ func (cmd *baseCmd) Err() error {
 	return nil
 }
 
-func (cmd *baseCmd) args() []string {
+func (cmd *baseCmd) Args() []string {
 	return cmd._args
+}
+
+func (cmd *baseCmd) Arg(i int) string {
+	if len(cmd._args) > i {
+		return cmd._args[i]
+	}
+	return ""
 }
 
 func (cmd *baseCmd) readTimeout() *time.Duration {
