@@ -17,7 +17,7 @@ func (c *Client) Multi() *Multi {
 		Client: &Client{
 			baseClient: &baseClient{
 				opt:      c.opt,
-				connPool: newSingleConnPool(c.connPool, nil, true),
+				connPool: newSingleConnPool(c.connPool, true),
 			},
 		},
 	}

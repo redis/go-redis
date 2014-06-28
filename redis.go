@@ -14,9 +14,9 @@ type baseClient struct {
 }
 
 func (c *baseClient) writeCmd(cn *conn, cmds ...Cmder) error {
-	buf := make([]byte, 0, 1000)
+	buf := make([]byte, 0, 64)
 	for _, cmd := range cmds {
-		buf = appendCmd(buf, cmd.args())
+		buf = appendArgs(buf, cmd.args())
 	}
 
 	_, err := cn.Write(buf)
@@ -29,8 +29,8 @@ func (c *baseClient) conn() (*conn, error) {
 		return nil, err
 	}
 
-	if isNew && (c.opt.Password != "" || c.opt.DB > 0) {
-		if err = c.init(cn, c.opt.Password, c.opt.DB); err != nil {
+	if isNew {
+		if err := c.initConn(cn); err != nil {
 			c.removeConn(cn)
 			return nil, err
 		}
@@ -39,26 +39,31 @@ func (c *baseClient) conn() (*conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) init(cn *conn, password string, db int64) error {
-	// Client is not closed on purpose.
+func (c *baseClient) initConn(cn *conn) error {
+	if c.opt.Password == "" || c.opt.DB == 0 {
+		return nil
+	}
+
+	pool := newSingleConnPool(c.connPool, false)
+	pool.SetConn(cn)
+
+	// Client is not closed because we want to reuse underlying connection.
 	client := &Client{
 		baseClient: &baseClient{
 			opt:      c.opt,
-			connPool: newSingleConnPool(c.connPool, cn, false),
+			connPool: pool,
 		},
 	}
 
-	if password != "" {
-		auth := client.Auth(password)
-		if auth.Err() != nil {
-			return auth.Err()
+	if c.opt.Password != "" {
+		if err := client.Auth(c.opt.Password).Err(); err != nil {
+			return err
 		}
 	}
 
-	if db > 0 {
-		sel := client.Select(db)
-		if sel.Err() != nil {
-			return sel.Err()
+	if c.opt.DB > 0 {
+		if err := client.Select(c.opt.DB).Err(); err != nil {
+			return err
 		}
 	}
 
@@ -102,14 +107,16 @@ func (c *baseClient) run(cmd Cmder) {
 		return
 	}
 
-	cn.writeTimeout = c.opt.WriteTimeout
 	if timeout := cmd.writeTimeout(); timeout != nil {
 		cn.writeTimeout = *timeout
+	} else {
+		cn.writeTimeout = c.opt.WriteTimeout
 	}
 
-	cn.readTimeout = c.opt.ReadTimeout
 	if timeout := cmd.readTimeout(); timeout != nil {
 		cn.readTimeout = *timeout
+	} else {
+		cn.readTimeout = c.opt.ReadTimeout
 	}
 
 	if err := c.writeCmd(cn, cmd); err != nil {
