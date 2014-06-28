@@ -17,7 +17,7 @@ var (
 
 //------------------------------------------------------------------------------
 
-func appendCmd(buf []byte, args []string) []byte {
+func appendArgs(buf []byte, args []string) []byte {
 	buf = append(buf, '*')
 	buf = strconv.AppendUint(buf, uint64(len(args)), 10)
 	buf = append(buf, '\r', '\n')
