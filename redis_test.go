@@ -13,7 +13,7 @@ import (
 
 	"gopkg.in/redis.v1"
 
-	. "launchpad.net/gocheck"
+	. "gopkg.in/check.v1"
 )
 
 const redisAddr = ":6379"
