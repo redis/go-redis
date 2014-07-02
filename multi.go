@@ -55,9 +55,11 @@ func (c *Multi) Discard() error {
 // Exec always returns list of commands. If transaction fails
 // TxFailedErr is returned. Otherwise Exec returns error of the first
 // failed command or nil.
-func (c *Multi) Exec(f func()) ([]Cmder, error) {
+func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 	c.cmds = []Cmder{NewStatusCmd("MULTI")}
-	f()
+	if err := f(); err != nil {
+		return nil, err
+	}
 	c.cmds = append(c.cmds, NewSliceCmd("EXEC"))
 
 	cmds := c.cmds

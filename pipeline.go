@@ -20,9 +20,11 @@ func (c *Client) Pipeline() *Pipeline {
 	}
 }
 
-func (c *Client) Pipelined(f func(*Pipeline)) ([]Cmder, error) {
+func (c *Client) Pipelined(f func(*Pipeline) error) ([]Cmder, error) {
 	pc := c.Pipeline()
-	f(pc)
+	if err := f(pc); err != nil {
+		return nil, err
+	}
 	cmds, err := pc.Exec()
 	pc.Close()
 	return cmds, err
