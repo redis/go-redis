@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"gopkg.in/redis.v1"
+	"gopkg.in/redis.v2"
 
 	. "gopkg.in/check.v1"
 )

@@ -13,4 +13,5 @@ install:
   - go get github.com/golang/glog
   - go get gopkg.in/bufio.v1
   - go get gopkg.in/check.v1
-  - go get gopkg.in/redis.v1
+  - mkdir -p $HOME/gopath/src/gopkg.in
+  - ln -s `pwd` $HOME/gopath/src/gopkg.in/redis.v2

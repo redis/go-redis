@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"gopkg.in/redis.v1"
+	"gopkg.in/redis.v2"
 )
 
 var client *redis.Client
