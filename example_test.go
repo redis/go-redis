@@ -13,6 +13,7 @@ func init() {
 	client = redis.NewTCPClient(&redis.Options{
 		Addr: ":6379",
 	})
+	client.FlushDb()
 }
 
 func ExampleNewTCPClient() {
@@ -40,9 +41,10 @@ func ExampleClient() {
 }
 
 func ExampleClient_Pipelined() {
-	cmds, err := client.Pipelined(func(c *redis.Pipeline) {
+	cmds, err := client.Pipelined(func(c *redis.Pipeline) error {
 		c.Set("key1", "hello1")
 		c.Get("key1")
+		return nil
 	})
 	fmt.Println(err)
 	set := cmds[0].(*redis.StatusCmd)
@@ -75,8 +77,9 @@ func ExampleMulti() {
 		}
 		n, _ := strconv.ParseInt(s, 10, 64)
 
-		return tx.Exec(func() {
+		return tx.Exec(func() error {
 			tx.Set("key", strconv.FormatInt(n+1, 10))
+			return nil
 		})
 	}
 
