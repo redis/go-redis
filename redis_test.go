@@ -108,8 +108,9 @@ func (t *RedisConnectorTest) TestMultiClose(c *C) {
 	multi := client.Multi()
 	c.Assert(multi.Close(), IsNil)
 
-	_, err := multi.Exec(func() {
+	_, err := multi.Exec(func() error {
 		multi.Ping()
+		return nil
 	})
 	c.Assert(err, Not(IsNil))
 	c.Assert(err.Error(), Equals, "redis: client is closed")
@@ -125,9 +126,10 @@ func (t *RedisConnectorTest) TestPipelineClose(c *C) {
 		Addr: redisAddr,
 	})
 
-	_, err := client.Pipelined(func(pipeline *redis.Pipeline) {
+	_, err := client.Pipelined(func(pipeline *redis.Pipeline) error {
 		c.Assert(pipeline.Close(), IsNil)
 		pipeline.Ping()
+		return nil
 	})
 	c.Assert(err, Not(IsNil))
 	c.Assert(err.Error(), Equals, "redis: client is closed")
@@ -219,8 +221,9 @@ func (t *RedisConnPoolTest) TestConnPoolMaxSizeOnMultiClient(c *C) {
 		go func() {
 			multi := t.client.Multi()
 			var ping *redis.StatusCmd
-			cmds, err := multi.Exec(func() {
+			cmds, err := multi.Exec(func() error {
 				ping = multi.Ping()
+				return nil
 			})
 			c.Assert(err, IsNil)
 			c.Assert(cmds, HasLen, 1)
@@ -2564,8 +2567,9 @@ func (t *RedisTest) TestPipelineDiscardQueued(c *C) {
 
 func (t *RedisTest) TestPipelineFunc(c *C) {
 	var get *redis.StringCmd
-	cmds, err := t.client.Pipelined(func(c *redis.Pipeline) {
+	cmds, err := t.client.Pipelined(func(c *redis.Pipeline) error {
 		get = c.Get("foo")
+		return nil
 	})
 	c.Assert(err, Equals, redis.Nil)
 	c.Assert(cmds, HasLen, 1)
@@ -2671,9 +2675,10 @@ func (t *RedisTest) TestMultiExec(c *C) {
 		set *redis.StatusCmd
 		get *redis.StringCmd
 	)
-	cmds, err := multi.Exec(func() {
+	cmds, err := multi.Exec(func() error {
 		set = multi.Set("key", "hello")
 		get = multi.Get("key")
+		return nil
 	})
 	c.Assert(err, IsNil)
 	c.Assert(cmds, HasLen, 2)
@@ -2691,10 +2696,11 @@ func (t *RedisTest) TestMultiExecDiscard(c *C) {
 		c.Assert(multi.Close(), IsNil)
 	}()
 
-	cmds, err := multi.Exec(func() {
+	cmds, err := multi.Exec(func() error {
 		multi.Set("key1", "hello1")
 		multi.Discard()
 		multi.Set("key2", "hello2")
+		return nil
 	})
 	c.Assert(err, IsNil)
 	c.Assert(cmds, HasLen, 1)
@@ -2714,7 +2720,7 @@ func (t *RedisTest) TestMultiExecEmpty(c *C) {
 		c.Assert(multi.Close(), IsNil)
 	}()
 
-	cmds, err := multi.Exec(func() {})
+	cmds, err := multi.Exec(func() error { return nil })
 	c.Assert(err, IsNil)
 	c.Assert(cmds, HasLen, 0)
 
@@ -2729,7 +2735,7 @@ func (t *RedisTest) TestMultiExecOnEmptyQueue(c *C) {
 		c.Assert(multi.Close(), IsNil)
 	}()
 
-	cmds, err := multi.Exec(func() {})
+	cmds, err := multi.Exec(func() error { return nil })
 	c.Assert(err, IsNil)
 	c.Assert(cmds, HasLen, 0)
 }
@@ -2740,10 +2746,11 @@ func (t *RedisTest) TestMultiExecIncr(c *C) {
 		c.Assert(multi.Close(), IsNil)
 	}()
 
-	cmds, err := multi.Exec(func() {
+	cmds, err := multi.Exec(func() error {
 		for i := int64(0); i < 20000; i++ {
 			multi.Incr("key")
 		}
+		return nil
 	})
 	c.Assert(err, IsNil)
 	c.Assert(len(cmds), Equals, 20000)
@@ -2775,8 +2782,9 @@ func (t *RedisTest) transactionalIncr(c *C) ([]redis.Cmder, error) {
 	v, err := strconv.ParseInt(get.Val(), 10, 64)
 	c.Assert(err, IsNil)
 
-	return multi.Exec(func() {
+	return multi.Exec(func() error {
 		multi.Set("key", strconv.FormatInt(v+1, 10))
+		return nil
 	})
 }
 
