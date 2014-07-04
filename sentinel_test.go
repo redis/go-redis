@@ -14,7 +14,7 @@ import (
 
 func startRedis(port string) (*exec.Cmd, error) {
 	cmd := exec.Command("redis-server", "--port", port)
-	if false {
+	if true {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}
@@ -26,7 +26,7 @@ func startRedis(port string) (*exec.Cmd, error) {
 
 func startRedisSlave(port, slave string) (*exec.Cmd, error) {
 	cmd := exec.Command("redis-server", "--port", port, "--slaveof", "127.0.0.1", slave)
-	if false {
+	if true {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}
@@ -62,7 +62,7 @@ func startRedisSentinel(port, masterName, masterPort string) (*exec.Cmd, error) 
 	}
 
 	cmd := exec.Command("redis-server", sentinelConfFilepath, "--sentinel")
-	if false {
+	if true {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}
