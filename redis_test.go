@@ -3138,3 +3138,27 @@ func (t *RedisTest) BenchmarkRedisMGet(c *C) {
 		}
 	}
 }
+
+func (t *RedisTest) BenchmarkSetExpire(c *C) {
+	for i := 0; i < c.N; i++ {
+		if err := t.client.Set("key", "hello").Err(); err != nil {
+			panic(err)
+		}
+		if err := t.client.Expire("key", time.Second).Err(); err != nil {
+			panic(err)
+		}
+	}
+}
+
+func (t *RedisTest) BenchmarkPipeline(c *C) {
+	for i := 0; i < c.N; i++ {
+		_, err := t.client.Pipelined(func(pipe *redis.Pipeline) error {
+			pipe.Set("key", "hello")
+			pipe.Expire("key", time.Second)
+			return nil
+		})
+		if err != nil {
+			panic(err)
+		}
+	}
+}

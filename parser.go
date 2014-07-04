@@ -132,17 +132,16 @@ func parseReply(rd *bufio.Reader, p multiBulkParser) (interface{}, error) {
 			return nil, Nil
 		}
 
-		replyLenInt32, err := strconv.ParseInt(string(line[1:]), 10, 32)
+		replyLen, err := strconv.Atoi(string(line[1:]))
 		if err != nil {
 			return nil, err
 		}
-		replyLen := int(replyLenInt32) + 2
 
-		line, err = readN(rd, replyLen)
+		b, err := readN(rd, replyLen+2)
 		if err != nil {
 			return nil, err
 		}
-		return string(line[:len(line)-2]), nil
+		return string(b[:replyLen]), nil
 	case '*':
 		if len(line) == 3 && line[1] == '-' && line[2] == '1' {
 			return nil, Nil
