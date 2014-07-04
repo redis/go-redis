@@ -14,7 +14,7 @@ import (
 
 func startRedis(port string) (*exec.Cmd, error) {
 	cmd := exec.Command("redis-server", "--port", port)
-	if true {
+	if false {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}
@@ -26,7 +26,7 @@ func startRedis(port string) (*exec.Cmd, error) {
 
 func startRedisSlave(port, slave string) (*exec.Cmd, error) {
 	cmd := exec.Command("redis-server", "--port", port, "--slaveof", "127.0.0.1", slave)
-	if true {
+	if false {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}
@@ -151,7 +151,7 @@ func TestSentinel(t *testing.T) {
 	master.Shutdown()
 
 	// Wait for Redis sentinel to elect new master.
-	time.Sleep(3 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	// Check that client picked up new master.
 	val, err = client.Get("foo").Result()
@@ -167,7 +167,7 @@ var sentinelConf = `
 port {{ .Port }}
 
 sentinel monitor {{ .MasterName }} 127.0.0.1 {{ .MasterPort }} 1
-sentinel down-after-milliseconds {{ .MasterName }} 200
-sentinel failover-timeout {{ .MasterName }} 400
+sentinel down-after-milliseconds {{ .MasterName }} 1000
+sentinel failover-timeout {{ .MasterName }} 2000
 sentinel parallel-syncs {{ .MasterName }} 1
 `
