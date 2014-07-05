@@ -854,11 +854,7 @@ func (c *Client) ZRange(key string, start, stop int64) *StringSliceCmd {
 	return c.zRange(key, start, stop, false)
 }
 
-func (c *Client) ZRangeWithScores(key string, start, stop int64) *StringSliceCmd {
-	return c.zRange(key, start, stop, true)
-}
-
-func (c *Client) ZRangeWithScoresMap(key string, start, stop int64) *StringFloatMapCmd {
+func (c *Client) ZRangeWithScores(key string, start, stop int64) *ZSliceCmd {
 	args := []string{
 		"ZRANGE",
 		key,
@@ -866,7 +862,7 @@ func (c *Client) ZRangeWithScoresMap(key string, start, stop int64) *StringFloat
 		strconv.FormatInt(stop, 10),
 		"WITHSCORES",
 	}
-	cmd := NewStringFloatMapCmd(args...)
+	cmd := NewZSliceCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
@@ -899,11 +895,7 @@ func (c *Client) ZRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
 	return c.zRangeByScore(key, opt, false)
 }
 
-func (c *Client) ZRangeByScoreWithScores(key string, opt ZRangeByScore) *StringSliceCmd {
-	return c.zRangeByScore(key, opt, true)
-}
-
-func (c *Client) ZRangeByScoreWithScoresMap(key string, opt ZRangeByScore) *StringFloatMapCmd {
+func (c *Client) ZRangeByScoreWithScores(key string, opt ZRangeByScore) *ZSliceCmd {
 	args := []string{"ZRANGEBYSCORE", key, opt.Min, opt.Max, "WITHSCORES"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -913,7 +905,7 @@ func (c *Client) ZRangeByScoreWithScoresMap(key string, opt ZRangeByScore) *Stri
 			strconv.FormatInt(opt.Count, 10),
 		)
 	}
-	cmd := NewStringFloatMapCmd(args...)
+	cmd := NewZSliceCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
@@ -962,13 +954,9 @@ func (c *Client) ZRevRange(key, start, stop string) *StringSliceCmd {
 	return c.zRevRange(key, start, stop, false)
 }
 
-func (c *Client) ZRevRangeWithScores(key, start, stop string) *StringSliceCmd {
-	return c.zRevRange(key, start, stop, true)
-}
-
-func (c *Client) ZRevRangeWithScoresMap(key, start, stop string) *StringFloatMapCmd {
+func (c *Client) ZRevRangeWithScores(key, start, stop string) *ZSliceCmd {
 	args := []string{"ZREVRANGE", key, start, stop, "WITHSCORES"}
-	cmd := NewStringFloatMapCmd(args...)
+	cmd := NewZSliceCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
@@ -995,11 +983,7 @@ func (c *Client) ZRevRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd
 	return c.zRevRangeByScore(key, opt, false)
 }
 
-func (c *Client) ZRevRangeByScoreWithScores(key string, opt ZRangeByScore) *StringSliceCmd {
-	return c.zRevRangeByScore(key, opt, true)
-}
-
-func (c *Client) ZRevRangeByScoreWithScoresMap(key string, opt ZRangeByScore) *StringFloatMapCmd {
+func (c *Client) ZRevRangeByScoreWithScores(key string, opt ZRangeByScore) *ZSliceCmd {
 	args := []string{"ZREVRANGEBYSCORE", key, opt.Max, opt.Min, "WITHSCORES"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1009,7 +993,7 @@ func (c *Client) ZRevRangeByScoreWithScoresMap(key string, opt ZRangeByScore) *S
 			strconv.FormatInt(opt.Count, 10),
 		)
 	}
-	cmd := NewStringFloatMapCmd(args...)
+	cmd := NewZSliceCmd(args...)
 	c.Process(cmd)
 	return cmd
 }

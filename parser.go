@@ -11,8 +11,7 @@ import (
 type multiBulkParser func(rd *bufio.Reader, n int64) (interface{}, error)
 
 var (
-	errReaderTooSmall   = errors.New("redis: reader is too small")
-	errInvalidReplyType = errors.New("redis: invalid reply type")
+	errReaderTooSmall = errors.New("redis: reader is too small")
 )
 
 //------------------------------------------------------------------------------
@@ -175,15 +174,15 @@ func parseSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 func parseStringSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 	vals := make([]string, 0, n)
 	for i := int64(0); i < n; i++ {
-		vi, err := parseReply(rd, nil)
+		viface, err := parseReply(rd, nil)
 		if err != nil {
 			return nil, err
 		}
-		if v, ok := vi.(string); ok {
-			vals = append(vals, v)
-		} else {
-			return nil, errInvalidReplyType
+		v, ok := viface.(string)
+		if !ok {
+			return nil, fmt.Errorf("got %T, expected string", viface)
 		}
+		vals = append(vals, v)
 	}
 	return vals, nil
 }
@@ -191,15 +190,15 @@ func parseStringSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 func parseBoolSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 	vals := make([]bool, 0, n)
 	for i := int64(0); i < n; i++ {
-		vi, err := parseReply(rd, nil)
+		viface, err := parseReply(rd, nil)
 		if err != nil {
 			return nil, err
 		}
-		if v, ok := vi.(int64); ok {
-			vals = append(vals, v == 1)
-		} else {
-			return nil, errInvalidReplyType
+		v, ok := viface.(int64)
+		if !ok {
+			return nil, fmt.Errorf("got %T, expected int64", viface)
 		}
+		vals = append(vals, v == 1)
 	}
 	return vals, nil
 }
@@ -207,22 +206,22 @@ func parseBoolSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 func parseStringStringMap(rd *bufio.Reader, n int64) (interface{}, error) {
 	m := make(map[string]string, n/2)
 	for i := int64(0); i < n; i += 2 {
-		keyI, err := parseReply(rd, nil)
+		keyiface, err := parseReply(rd, nil)
 		if err != nil {
 			return nil, err
 		}
-		key, ok := keyI.(string)
+		key, ok := keyiface.(string)
 		if !ok {
-			return nil, errInvalidReplyType
+			return nil, fmt.Errorf("got %T, expected string", keyiface)
 		}
 
-		valueI, err := parseReply(rd, nil)
+		valueiface, err := parseReply(rd, nil)
 		if err != nil {
 			return nil, err
 		}
-		value, ok := valueI.(string)
+		value, ok := valueiface.(string)
 		if !ok {
-			return nil, errInvalidReplyType
+			return nil, fmt.Errorf("got %T, expected string", valueiface)
 		}
 
 		m[key] = value
@@ -230,32 +229,34 @@ func parseStringStringMap(rd *bufio.Reader, n int64) (interface{}, error) {
 	return m, nil
 }
 
-func parseStringFloatMap(rd *bufio.Reader, n int64) (interface{}, error) {
-	m := make(map[string]float64, n/2)
+func parseZSlice(rd *bufio.Reader, n int64) (interface{}, error) {
+	zz := make([]Z, n/2)
 	for i := int64(0); i < n; i += 2 {
-		keyI, err := parseReply(rd, nil)
-		if err != nil {
-			return nil, err
-		}
-		key, ok := keyI.(string)
-		if !ok {
-			return nil, errInvalidReplyType
-		}
+		z := &zz[i/2]
 
-		valueI, err := parseReply(rd, nil)
+		memberiface, err := parseReply(rd, nil)
 		if err != nil {
 			return nil, err
 		}
-		valueS, ok := valueI.(string)
+		member, ok := memberiface.(string)
 		if !ok {
-			return nil, errInvalidReplyType
+			return nil, fmt.Errorf("got %T, expected string", memberiface)
 		}
-		value, err := strconv.ParseFloat(valueS, 64)
+		z.Member = member
+
+		scoreiface, err := parseReply(rd, nil)
 		if err != nil {
 			return nil, err
 		}
-
-		m[key] = value
+		scorestr, ok := scoreiface.(string)
+		if !ok {
+			return nil, fmt.Errorf("got %T, expected string", scoreiface)
+		}
+		score, err := strconv.ParseFloat(scorestr, 64)
+		if err != nil {
+			return nil, err
+		}
+		z.Score = score
 	}
-	return m, nil
+	return zz, nil
 }

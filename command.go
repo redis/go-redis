@@ -21,7 +21,7 @@ var (
 	_ Cmder = (*StringSliceCmd)(nil)
 	_ Cmder = (*BoolSliceCmd)(nil)
 	_ Cmder = (*StringStringMapCmd)(nil)
-	_ Cmder = (*StringFloatMapCmd)(nil)
+	_ Cmder = (*ZSliceCmd)(nil)
 	_ Cmder = (*ScanCmd)(nil)
 )
 
@@ -493,37 +493,37 @@ func (cmd *StringStringMapCmd) parseReply(rd *bufio.Reader) error {
 
 //------------------------------------------------------------------------------
 
-type StringFloatMapCmd struct {
+type ZSliceCmd struct {
 	*baseCmd
 
-	val map[string]float64
+	val []Z
 }
 
-func NewStringFloatMapCmd(args ...string) *StringFloatMapCmd {
-	return &StringFloatMapCmd{
+func NewZSliceCmd(args ...string) *ZSliceCmd {
+	return &ZSliceCmd{
 		baseCmd: newBaseCmd(args...),
 	}
 }
 
-func (cmd *StringFloatMapCmd) Val() map[string]float64 {
+func (cmd *ZSliceCmd) Val() []Z {
 	return cmd.val
 }
 
-func (cmd *StringFloatMapCmd) Result() (map[string]float64, error) {
+func (cmd *ZSliceCmd) Result() ([]Z, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *StringFloatMapCmd) String() string {
+func (cmd *ZSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringFloatMapCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, parseStringFloatMap)
+func (cmd *ZSliceCmd) parseReply(rd *bufio.Reader) error {
+	v, err := parseReply(rd, parseZSlice)
 	if err != nil {
 		cmd.err = err
 		return err
 	}
-	cmd.val = v.(map[string]float64)
+	cmd.val = v.([]Z)
 	return nil
 }
 
