@@ -40,7 +40,7 @@ func (c *baseClient) conn() (*conn, error) {
 }
 
 func (c *baseClient) initConn(cn *conn) error {
-	if c.opt.Password == "" || c.opt.DB == 0 {
+	if c.opt.Password == "" && c.opt.DB == 0 {
 		return nil
 	}
 

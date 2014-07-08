@@ -150,6 +150,20 @@ func (t *RedisConnectorTest) TestIdleTimeout(c *C) {
 	}
 }
 
+func (t *RedisConnectorTest) TestSelectDb(c *C) {
+	client1 := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+		DB:   1,
+	})
+	c.Assert(client1.Set("key", "db1").Err(), IsNil)
+
+	client2 := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+		DB:   2,
+	})
+	c.Assert(client2.Get("key").Err(), Equals, redis.Nil)
+}
+
 //------------------------------------------------------------------------------
 
 type RedisConnPoolTest struct {
