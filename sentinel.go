@@ -79,6 +79,8 @@ type sentinelClient struct {
 
 func newSentinel(clOpt *Options) *sentinelClient {
 	opt := clOpt.options()
+	opt.Password = ""
+	opt.DB = 0
 	dialer := func() (net.Conn, error) {
 		return net.DialTimeout("tcp", clOpt.Addr, opt.DialTimeout)
 	}
