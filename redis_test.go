@@ -3099,80 +3099,117 @@ func (t *RedisTest) TestCmdDebugObject(c *C) {
 
 //------------------------------------------------------------------------------
 
-func (t *RedisTest) BenchmarkRedisPing(c *C) {
-	for i := 0; i < c.N; i++ {
-		if err := t.client.Ping().Err(); err != nil {
+func BenchmarkRedisPing(b *testing.B) {
+	b.StopTimer()
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		if err := client.Ping().Err(); err != nil {
 			panic(err)
 		}
 	}
 }
 
-func (t *RedisTest) BenchmarkRedisSet(c *C) {
-	for i := 0; i < c.N; i++ {
-		if err := t.client.Set("key", "hello").Err(); err != nil {
+func BenchmarkRedisSet(b *testing.B) {
+	b.StopTimer()
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		if err := client.Set("key", "hello").Err(); err != nil {
 			panic(err)
 		}
 	}
 }
 
-func (t *RedisTest) BenchmarkRedisGetNil(c *C) {
-	for i := 0; i < c.N; i++ {
-		if err := t.client.Get("key").Err(); err != redis.Nil {
-			panic(err)
+func BenchmarkRedisGetNil(b *testing.B) {
+	b.StopTimer()
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	if err := client.FlushDb().Err(); err != nil {
+		b.Fatal(err)
+	}
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		if err := client.Get("key").Err(); err != redis.Nil {
+			b.Fatal(err)
 		}
 	}
 }
 
-func (t *RedisTest) BenchmarkRedisGet(c *C) {
-	c.StopTimer()
+func BenchmarkRedisGet(b *testing.B) {
+	b.StopTimer()
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	if err := client.Set("key", "hello").Err(); err != nil {
+		b.Fatal(err)
+	}
+	b.StartTimer()
 
-	set := t.client.Set("key", "hello")
-	c.Assert(set.Err(), IsNil)
-
-	c.StartTimer()
-
-	for i := 0; i < c.N; i++ {
-		if err := t.client.Get("key").Err(); err != nil {
-			panic(err)
+	for i := 0; i < b.N; i++ {
+		if err := client.Get("key").Err(); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
 
-func (t *RedisTest) BenchmarkRedisMGet(c *C) {
-	c.StopTimer()
+func BenchmarkRedisMGet(b *testing.B) {
+	b.StopTimer()
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	if err := client.MSet("key1", "hello1", "key2", "hello2").Err(); err != nil {
+		b.Fatal(err)
+	}
+	b.StartTimer()
 
-	mset := t.client.MSet("key1", "hello1", "key2", "hello2")
-	c.Assert(mset.Err(), IsNil)
-
-	c.StartTimer()
-
-	for i := 0; i < c.N; i++ {
-		if err := t.client.MGet("key1", "key2").Err(); err != nil {
-			panic(err)
+	for i := 0; i < b.N; i++ {
+		if err := client.MGet("key1", "key2").Err(); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
 
-func (t *RedisTest) BenchmarkSetExpire(c *C) {
-	for i := 0; i < c.N; i++ {
-		if err := t.client.Set("key", "hello").Err(); err != nil {
-			panic(err)
+func BenchmarkSetExpire(b *testing.B) {
+	b.StopTimer()
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		if err := client.Set("key", "hello").Err(); err != nil {
+			b.Fatal(err)
 		}
-		if err := t.client.Expire("key", time.Second).Err(); err != nil {
-			panic(err)
+		if err := client.Expire("key", time.Second).Err(); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
 
-func (t *RedisTest) BenchmarkPipeline(c *C) {
-	for i := 0; i < c.N; i++ {
-		_, err := t.client.Pipelined(func(pipe *redis.Pipeline) error {
+func BenchmarkPipeline(b *testing.B) {
+	b.StopTimer()
+	client := redis.NewTCPClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
 			pipe.Set("key", "hello")
 			pipe.Expire("key", time.Second)
 			return nil
 		})
 		if err != nil {
-			panic(err)
+			b.Fatal(err)
 		}
 	}
 }
