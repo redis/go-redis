@@ -2579,14 +2579,15 @@ func (t *RedisTest) TestPipelineDiscardQueued(c *C) {
 	c.Assert(pipeline.Close(), IsNil)
 }
 
-func (t *RedisTest) TestPipelineFunc(c *C) {
+func (t *RedisTest) TestPipelined(c *C) {
 	var get *redis.StringCmd
-	cmds, err := t.client.Pipelined(func(c *redis.Pipeline) error {
-		get = c.Get("foo")
+	cmds, err := t.client.Pipelined(func(pipe *redis.Pipeline) error {
+		get = pipe.Get("foo")
 		return nil
 	})
 	c.Assert(err, Equals, redis.Nil)
 	c.Assert(cmds, HasLen, 1)
+	c.Assert(cmds[0], Equals, get)
 	c.Assert(get.Err(), Equals, redis.Nil)
 	c.Assert(get.Val(), Equals, "")
 }
