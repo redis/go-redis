@@ -11,16 +11,17 @@ Supports:
 - TLS connections.
 - Thread safety.
 - Timeouts.
+- Redis Sentinel.
 
-API docs: http://godoc.org/gopkg.in/redis.v1.
-Examples: http://godoc.org/gopkg.in/redis.v1#pkg-examples.
+API docs: http://godoc.org/gopkg.in/redis.v2.
+Examples: http://godoc.org/gopkg.in/redis.v2#pkg-examples.
 
 Installation
 ------------
 
 Install:
 
-    go get gopkg.in/redis.v1
+    go get gopkg.in/redis.v2
 
 Look and feel
 -------------

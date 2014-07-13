@@ -86,7 +86,7 @@ func TestSentinel(t *testing.T) {
 	masterName := "mymaster"
 	masterPort := "8123"
 	slavePort := "8124"
-	sentinelPort := "26379"
+	sentinelPort := "8125"
 
 	_, err := startRedis(masterPort)
 	if err != nil {

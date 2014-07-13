@@ -15,3 +15,6 @@ install:
   - go get gopkg.in/check.v1
   - mkdir -p $HOME/gopath/src/gopkg.in
   - ln -s `pwd` $HOME/gopath/src/gopkg.in/redis.v2
+
+before_script:
+  - redis-server testdata/sentinel.conf --sentinel &

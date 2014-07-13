@@ -22,7 +22,17 @@ func ExampleNewTCPClient() {
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
-	defer client.Close()
+
+	pong, err := client.Ping().Result()
+	fmt.Println(pong, err)
+	// Output: PONG <nil>
+}
+
+func ExampleNewFailoverClient() {
+	client := redis.NewFailoverClient(&redis.FailoverOptions{
+		MasterName:    "master",
+		SentinelAddrs: []string{":26379"},
+	})
 
 	pong, err := client.Ping().Result()
 	fmt.Println(pong, err)
