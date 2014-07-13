@@ -14,7 +14,7 @@ type baseClient struct {
 }
 
 func (c *baseClient) writeCmd(cn *conn, cmds ...Cmder) error {
-	buf := make([]byte, 0, 64)
+	buf := cn.buf[:0]
 	for _, cmd := range cmds {
 		buf = appendArgs(buf, cmd.args())
 	}

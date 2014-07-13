@@ -35,6 +35,7 @@ type pool interface {
 type conn struct {
 	netcn net.Conn
 	rd    *bufio.Reader
+	buf   []byte
 
 	inUse  bool
 	usedAt time.Time
@@ -53,6 +54,7 @@ func newConnFunc(dial func() (net.Conn, error)) func() (*conn, error) {
 		}
 		cn := &conn{
 			netcn: netcn,
+			buf:   make([]byte, 0, 64),
 		}
 		cn.rd = bufio.NewReader(cn)
 		return cn, nil
