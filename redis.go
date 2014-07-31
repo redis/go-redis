@@ -1,10 +1,9 @@
 package redis
 
 import (
+	"log"
 	"net"
 	"time"
-
-	"github.com/golang/glog"
 )
 
 type baseClient struct {
@@ -82,13 +81,13 @@ func (c *baseClient) freeConn(cn *conn, ei error) error {
 
 func (c *baseClient) removeConn(cn *conn) {
 	if err := c.connPool.Remove(cn); err != nil {
-		glog.Errorf("pool.Remove failed: %s", err)
+		log.Printf("pool.Remove failed: %s", err)
 	}
 }
 
 func (c *baseClient) putConn(cn *conn) {
 	if err := c.connPool.Put(cn); err != nil {
-		glog.Errorf("pool.Put failed: %s", err)
+		log.Printf("pool.Put failed: %s", err)
 	}
 }
 
