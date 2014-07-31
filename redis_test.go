@@ -408,6 +408,23 @@ func (t *RedisTest) TestManyKeys2(c *C) {
 	c.Assert(vals[100001], Equals, nil)
 }
 
+func (t *RedisTest) TestStringCmdHelpers(c *C) {
+	set := t.client.Set("key", "10")
+	c.Assert(set.Err(), IsNil)
+
+	n, err := t.client.Get("key").Int64()
+	c.Assert(err, IsNil)
+	c.Assert(n, Equals, int64(10))
+
+	un, err := t.client.Get("key").Uint64()
+	c.Assert(err, IsNil)
+	c.Assert(un, Equals, uint64(10))
+
+	f, err := t.client.Get("key").Float64()
+	c.Assert(err, IsNil)
+	c.Assert(f, Equals, float64(10))
+}
+
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) TestAuth(c *C) {
