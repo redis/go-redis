@@ -40,14 +40,23 @@ func ExampleNewFailoverClient() {
 }
 
 func ExampleClient() {
-	set := client.Set("foo", "bar")
-	fmt.Println(set.Err())
+	if err := client.Set("foo", "bar").Err(); err != nil {
+		panic(err)
+	}
 
 	v, err := client.Get("hello").Result()
-	fmt.Printf("%q %s %v", v, err, err == redis.Nil)
+	fmt.Printf("%q %q %v", v, err, err == redis.Nil)
+	// Output: "" "redis: nil" true
+}
 
-	// Output: <nil>
-	// "" redis: nil true
+func ExampleClient_Incr() {
+	if err := client.Incr("counter").Err(); err != nil {
+		panic(err)
+	}
+
+	n, err := client.Get("counter").Int64()
+	fmt.Println(n, err)
+	// Output: 1 <nil>
 }
 
 func ExampleClient_Pipelined() {

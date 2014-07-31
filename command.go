@@ -337,6 +337,27 @@ func (cmd *StringCmd) Result() (string, error) {
 	return cmd.val, cmd.err
 }
 
+func (cmd *StringCmd) Int64() (int64, error) {
+	if cmd.err != nil {
+		return 0, cmd.err
+	}
+	return strconv.ParseInt(cmd.val, 10, 64)
+}
+
+func (cmd *StringCmd) Uint64() (uint64, error) {
+	if cmd.err != nil {
+		return 0, cmd.err
+	}
+	return strconv.ParseUint(cmd.val, 10, 64)
+}
+
+func (cmd *StringCmd) Float64() (float64, error) {
+	if cmd.err != nil {
+		return 0, cmd.err
+	}
+	return strconv.ParseFloat(cmd.val, 64)
+}
+
 func (cmd *StringCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
