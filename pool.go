@@ -3,11 +3,11 @@ package redis
 import (
 	"container/list"
 	"errors"
+	"log"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/golang/glog"
 	"gopkg.in/bufio.v1"
 )
 
@@ -139,7 +139,7 @@ func (p *connPool) Get() (*conn, bool, error) {
 			}
 			if time.Since(cn.usedAt) > p.opt.IdleTimeout {
 				if err := p.remove(cn); err != nil {
-					glog.Errorf("remove failed: %s", err)
+					log.Printf("remove failed: %s", err)
 				}
 			}
 		}
@@ -183,7 +183,7 @@ func (p *connPool) Get() (*conn, bool, error) {
 func (p *connPool) Put(cn *conn) error {
 	if cn.rd.Buffered() != 0 {
 		b, _ := cn.rd.ReadN(cn.rd.Buffered())
-		glog.Errorf("redis: connection has unread data: %q", b)
+		log.Printf("redis: connection has unread data: %q", b)
 		return p.Remove(cn)
 	}
 
@@ -267,7 +267,7 @@ func (p *connPool) Close() error {
 			break
 		}
 		if err := p.remove(e.Value.(*conn)); err != nil {
-			glog.Errorf("cn.Close failed: %s", err)
+			log.Printf("cn.Close failed: %s", err)
 			retErr = err
 		}
 	}

@@ -2,12 +2,11 @@ package redis
 
 import (
 	"errors"
+	"log"
 	"net"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/golang/glog"
 )
 
 //------------------------------------------------------------------------------
@@ -149,11 +148,11 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 	if d._sentinel != nil {
 		addr, err := d._sentinel.GetMasterAddrByName(d.masterName).Result()
 		if err != nil {
-			glog.Errorf("redis-sentinel: GetMasterAddrByName %s failed: %s", d.masterName, err)
+			log.Printf("redis-sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
 			d.resetSentinel()
 		} else {
 			addr := net.JoinHostPort(addr[0], addr[1])
-			glog.Infof("redis-sentinel: %s addr is %s", d.masterName, addr)
+			log.Printf("redis-sentinel: %q addr is %s", d.masterName, addr)
 			return addr, nil
 		}
 	}
@@ -174,14 +173,14 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 		})
 		addr, err := sentinel.GetMasterAddrByName(d.masterName).Result()
 		if err != nil {
-			glog.Errorf("redis-sentinel: GetMasterAddrByName %s failed: %s", d.masterName, err)
+			log.Printf("redis-sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
 		} else {
 			// Push working sentinel to the top.
 			d.sentinelAddrs[0], d.sentinelAddrs[i] = d.sentinelAddrs[i], d.sentinelAddrs[0]
 
 			d.setSentinel(sentinel)
 			addr := net.JoinHostPort(addr[0], addr[1])
-			glog.Infof("redis-sentinel: %s addr is %s", d.masterName, addr)
+			log.Printf("redis-sentinel: %q addr is %s", d.masterName, addr)
 			return addr, nil
 		}
 	}
@@ -198,7 +197,7 @@ func (d *sentinelFailover) setSentinel(sentinel *sentinelClient) {
 func (d *sentinelFailover) discoverSentinels(sentinel *sentinelClient) {
 	sentinels, err := sentinel.Sentinels(d.masterName).Result()
 	if err != nil {
-		glog.Errorf("redis-sentinel: Sentinels %s failed: %s", d.masterName, err)
+		log.Printf("redis-sentinel: Sentinels %q failed: %s", d.masterName, err)
 		return
 	}
 	for _, sentinel := range sentinels {
@@ -208,8 +207,8 @@ func (d *sentinelFailover) discoverSentinels(sentinel *sentinelClient) {
 			if key == "name" {
 				sentinelAddr := vals[i+1].(string)
 				if !contains(d.sentinelAddrs, sentinelAddr) {
-					glog.Infof(
-						"redis-sentinel: discovered new sentinel for %s: %s",
+					log.Printf(
+						"redis-sentinel: discovered new %q sentinel: %s",
 						d.masterName, sentinelAddr,
 					)
 					d.sentinelAddrs = append(d.sentinelAddrs, sentinelAddr)
@@ -225,7 +224,7 @@ func (d *sentinelFailover) listen() {
 		if pubsub == nil {
 			pubsub = d._sentinel.PubSub()
 			if err := pubsub.Subscribe("+switch-master"); err != nil {
-				glog.Errorf("redis-sentinel: Subscribe failed: %s", err)
+				log.Printf("redis-sentinel: Subscribe failed: %s", err)
 				d.lock.Lock()
 				d.resetSentinel()
 				d.lock.Unlock()
@@ -235,7 +234,7 @@ func (d *sentinelFailover) listen() {
 
 		msgIface, err := pubsub.Receive()
 		if err != nil {
-			glog.Errorf("redis-sentinel: Receive failed: %s", err)
+			log.Printf("redis-sentinel: Receive failed: %s", err)
 			pubsub = nil
 			return
 		}
@@ -246,17 +245,17 @@ func (d *sentinelFailover) listen() {
 			case "+switch-master":
 				parts := strings.Split(msg.Payload, " ")
 				if parts[0] != d.masterName {
-					glog.Errorf("redis-sentinel: ignore new %s addr", parts[0])
+					log.Printf("redis-sentinel: ignore new %s addr", parts[0])
 					continue
 				}
 				addr := net.JoinHostPort(parts[3], parts[4])
-				glog.Infof(
-					"redis-sentinel: new %s addr is %s",
+				log.Printf(
+					"redis-sentinel: new %q addr is %s",
 					d.masterName, addr,
 				)
 				d.pool.Filter(func(cn *conn) bool {
 					if cn.RemoteAddr().String() != addr {
-						glog.Infof(
+						log.Printf(
 							"redis-sentinel: closing connection to old master %s",
 							cn.RemoteAddr(),
 						)
@@ -265,12 +264,12 @@ func (d *sentinelFailover) listen() {
 					return true
 				})
 			default:
-				glog.Errorf("redis-sentinel: unsupported message: %s", msg)
+				log.Printf("redis-sentinel: unsupported message: %s", msg)
 			}
 		case *Subscription:
 			// Ignore.
 		default:
-			glog.Errorf("redis-sentinel: unsupported message: %s", msgIface)
+			log.Printf("redis-sentinel: unsupported message: %s", msgIface)
 		}
 	}
 }
