@@ -260,7 +260,7 @@ func (p *connPool) Close() error {
 		return nil
 	}
 	p.closed = true
-	var retErr error
+	retErr := p.rl.Close()
 	for {
 		e := p.conns.Front()
 		if e == nil {
