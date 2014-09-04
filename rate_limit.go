@@ -20,6 +20,9 @@ func newRateLimiter(limit time.Duration, chanSize int) *rateLimiter {
 }
 
 func (rl *rateLimiter) loop(limit time.Duration) {
+	defer func() {
+		recover()
+	}()
 	for {
 		select {
 		case rl.C <- struct{}{}:
