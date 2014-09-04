@@ -196,17 +196,10 @@ type Client struct {
 	*baseClient
 }
 
-func newClient(clOpt *Options, network string) *Client {
-	opt := clOpt.options()
-	dialer := func() (net.Conn, error) {
-		return net.DialTimeout(network, clOpt.Addr, opt.DialTimeout)
-	}
-	return &Client{
-		baseClient: &baseClient{
-			opt:      opt,
-			connPool: newConnPool(newConnFunc(dialer), opt),
-		},
-	}
+func newClient(opt *Options, network string) *Client {
+	return DialClient(opt, func() (net.Conn, error) {
+		return net.DialTimeout(network, opt.Addr, opt.DialTimeout)
+	})
 }
 
 func NewTCPClient(opt *Options) *Client {
@@ -215,4 +208,14 @@ func NewTCPClient(opt *Options) *Client {
 
 func NewUnixClient(opt *Options) *Client {
 	return newClient(opt, "unix")
+}
+
+func DialClient(clOpt *Options, dialer func() (net.Conn, error)) *Client {
+	opt := clOpt.options()
+	return &Client{
+		baseClient: &baseClient{
+			opt:      opt,
+			connPool: newConnPool(newConnFunc(dialer), opt),
+		},
+	}
 }
