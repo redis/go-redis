@@ -115,12 +115,7 @@ func newConnPool(dial func() (*conn, error), opt *options) *connPool {
 }
 
 func (p *connPool) new() (*conn, error) {
-	select {
-	case _, ok := <-p.rl.C:
-		if !ok {
-			return nil, errClosed
-		}
-	default:
+	if !p.rl.Check() {
 		return nil, errRateLimited
 	}
 	return p.dial()
@@ -263,7 +258,7 @@ func (p *connPool) Close() error {
 		return nil
 	}
 	p.closed = true
-	close(p.rl.C)
+	p.rl.Close()
 	var retErr error
 	for {
 		e := p.conns.Front()
