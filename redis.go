@@ -152,7 +152,13 @@ type options struct {
 }
 
 type Options struct {
-	Addr     string
+	Network string
+	Addr    string
+
+	// Dialer creates new network connection and has priority over
+	// Network and Addr options.
+	Dialer func() (net.Conn, error)
+
 	Password string
 	DB       int64
 
@@ -196,10 +202,13 @@ type Client struct {
 	*baseClient
 }
 
-func newClient(clOpt *Options, network string) *Client {
+func NewClient(clOpt *Options) *Client {
 	opt := clOpt.options()
-	dialer := func() (net.Conn, error) {
-		return net.DialTimeout(network, clOpt.Addr, opt.DialTimeout)
+	dialer := clOpt.Dialer
+	if dialer == nil {
+		dialer = func() (net.Conn, error) {
+			return net.DialTimeout(clOpt.Network, clOpt.Addr, opt.DialTimeout)
+		}
 	}
 	return &Client{
 		baseClient: &baseClient{
@@ -209,10 +218,14 @@ func newClient(clOpt *Options, network string) *Client {
 	}
 }
 
+// Deprecated. Use NewClient instead.
 func NewTCPClient(opt *Options) *Client {
-	return newClient(opt, "tcp")
+	opt.Network = "tcp"
+	return NewClient(opt)
 }
 
+// Deprecated. Use NewClient instead.
 func NewUnixClient(opt *Options) *Client {
-	return newClient(opt, "unix")
+	opt.Network = "unix"
+	return NewClient(opt)
 }

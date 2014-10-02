@@ -69,6 +69,18 @@ func (t *RedisConnectorTest) TestNewUnixClient(c *C) {
 	c.Assert(client.Close(), IsNil)
 }
 
+func (t *RedisConnectorTest) TestDialer(c *C) {
+	client := redis.NewClient(&redis.Options{
+		Dialer: func() (net.Conn, error) {
+			return net.Dial("tcp", redisAddr)
+		},
+	})
+	ping := client.Ping()
+	c.Check(ping.Err(), IsNil)
+	c.Check(ping.Val(), Equals, "PONG")
+	c.Assert(client.Close(), IsNil)
+}
+
 func (t *RedisConnectorTest) TestClose(c *C) {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: redisAddr,
