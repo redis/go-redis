@@ -2833,14 +2833,16 @@ func (t *RedisTest) transactionalIncr(c *C) ([]redis.Cmder, error) {
 }
 
 func (t *RedisTest) TestWatchUnwatch(c *C) {
-	const N = 10000
+	var n = 10000
+	if testing.Short() {
+		n = 1000
+	}
 
 	set := t.client.Set("key", "0")
 	c.Assert(set.Err(), IsNil)
-	c.Assert(set.Val(), Equals, "OK")
 
 	wg := &sync.WaitGroup{}
-	for i := 0; i < N; i++ {
+	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -2858,19 +2860,22 @@ func (t *RedisTest) TestWatchUnwatch(c *C) {
 	}
 	wg.Wait()
 
-	get := t.client.Get("key")
-	c.Assert(get.Err(), IsNil)
-	c.Assert(get.Val(), Equals, strconv.FormatInt(N, 10))
+	val, err := t.client.Get("key").Int64()
+	c.Assert(err, IsNil)
+	c.Assert(val, Equals, int64(n))
 }
 
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) TestRaceEcho(c *C) {
-	const N = 10000
+	var n = 10000
+	if testing.Short() {
+		n = 1000
+	}
 
 	wg := &sync.WaitGroup{}
-	wg.Add(N)
-	for i := 0; i < N; i++ {
+	wg.Add(n)
+	for i := 0; i < n; i++ {
 		go func(i int) {
 			msg := "echo" + strconv.Itoa(i)
 			echo := t.client.Echo(msg)
@@ -2883,14 +2888,16 @@ func (t *RedisTest) TestRaceEcho(c *C) {
 }
 
 func (t *RedisTest) TestRaceIncr(c *C) {
-	const N = 10000
-	key := "TestIncrFromGoroutines"
+	var n = 10000
+	if testing.Short() {
+		n = 1000
+	}
 
 	wg := &sync.WaitGroup{}
-	wg.Add(N)
-	for i := int64(0); i < N; i++ {
+	wg.Add(n)
+	for i := 0; i < n; i++ {
 		go func() {
-			incr := t.client.Incr(key)
+			incr := t.client.Incr("TestRaceIncr")
 			if err := incr.Err(); err != nil {
 				panic(err)
 			}
@@ -2899,9 +2906,9 @@ func (t *RedisTest) TestRaceIncr(c *C) {
 	}
 	wg.Wait()
 
-	get := t.client.Get(key)
-	c.Assert(get.Err(), IsNil)
-	c.Assert(get.Val(), Equals, strconv.Itoa(N))
+	val, err := t.client.Get("TestRaceIncr").Result()
+	c.Assert(err, IsNil)
+	c.Assert(val, Equals, strconv.Itoa(n))
 }
 
 //------------------------------------------------------------------------------
