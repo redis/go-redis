@@ -289,6 +289,7 @@ func (c *Client) Append(key, value string) *IntCmd {
 	return cmd
 }
 
+// Deprecated. Use BitPos instead.
 type BitCount struct {
 	Start, End int64
 }
@@ -329,6 +330,23 @@ func (c *Client) BitOpXor(destKey string, keys ...string) *IntCmd {
 
 func (c *Client) BitOpNot(destKey string, key string) *IntCmd {
 	return c.bitOp("NOT", destKey, key)
+}
+
+type BitPos struct {
+	Start, End int64
+}
+
+func (c *Client) BitPos(key string, bit int64, pos *BitPos) *IntCmd {
+	args := []string{"BITPOS", key, strconv.FormatInt(bit, 10)}
+	if pos != nil {
+		args = append(args, strconv.FormatInt(pos.Start, 10))
+		if pos.End != 0 {
+			args = append(args, strconv.FormatInt(pos.End, 10))
+		}
+	}
+	cmd := NewIntCmd(args...)
+	c.Process(cmd)
+	return cmd
 }
 
 func (c *Client) Decr(key string) *IntCmd {
