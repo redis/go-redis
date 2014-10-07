@@ -2562,6 +2562,52 @@ func (t *RedisTest) TestPubSub(c *C) {
 	}
 }
 
+func (t *RedisTest) TestPubSubChannels(c *C) {
+	channels, err := t.client.PubSubChannels("mychannel*").Result()
+	c.Assert(err, IsNil)
+	c.Assert(channels, HasLen, 0)
+	c.Assert(channels, Not(IsNil))
+
+	pubsub := t.client.PubSub()
+	defer pubsub.Close()
+
+	c.Assert(pubsub.Subscribe("mychannel", "mychannel2"), IsNil)
+
+	channels, err = t.client.PubSubChannels("mychannel*").Result()
+	c.Assert(err, IsNil)
+	c.Assert(sortStrings(channels), DeepEquals, []string{"mychannel", "mychannel2"})
+}
+
+func (t *RedisTest) TestPubSubNumSub(c *C) {
+	pubsub := t.client.PubSub()
+	defer pubsub.Close()
+
+	c.Assert(pubsub.Subscribe("mychannel", "mychannel2"), IsNil)
+
+	channels, err := t.client.PubSubNumSub("mychannel", "mychannel2", "mychannel3").Result()
+	c.Assert(err, IsNil)
+	c.Assert(
+		channels,
+		DeepEquals,
+		[]string{"mychannel", "1", "mychannel2", "1", "mychannel3", "0"},
+	)
+}
+
+func (t *RedisTest) TestPubSubNumPat(c *C) {
+	num, err := t.client.PubSubNumPat().Result()
+	c.Assert(err, IsNil)
+	c.Assert(num, Equals, int64(0))
+
+	pubsub := t.client.PubSub()
+	defer pubsub.Close()
+
+	c.Assert(pubsub.PSubscribe("mychannel*"), IsNil)
+
+	num, err = t.client.PubSubNumPat().Result()
+	c.Assert(err, IsNil)
+	c.Assert(num, Equals, int64(1))
+}
+
 //------------------------------------------------------------------------------
 
 func (t *RedisTest) TestPipeline(c *C) {

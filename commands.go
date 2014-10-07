@@ -1208,3 +1208,25 @@ func (c *Client) DebugObject(key string) *StringCmd {
 	c.Process(cmd)
 	return cmd
 }
+
+//------------------------------------------------------------------------------
+
+func (c *Client) PubSubChannels(pattern string) *StringSliceCmd {
+	cmd := NewStringSliceCmd("PUBSUB", "CHANNELS", pattern)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *Client) PubSubNumSub(channels ...string) *StringSliceCmd {
+	args := []string{"PUBSUB", "NUMSUB"}
+	args = append(args, channels...)
+	cmd := NewStringSliceCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *Client) PubSubNumPat() *IntCmd {
+	cmd := NewIntCmd("PUBSUB", "NUMPAT")
+	c.Process(cmd)
+	return cmd
+}
