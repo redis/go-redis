@@ -668,6 +668,47 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("\xff"))
 		})
 
+		It("should BitPos", func() {
+			err := client.Set("mykey", "\xff\xf0\x00", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			pos, err := client.BitPos("mykey", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(12)))
+
+			pos, err = client.BitPos("mykey", 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(0)))
+
+			pos, err = client.BitPos("mykey", 0, 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(16)))
+
+			pos, err = client.BitPos("mykey", 1, 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(-1)))
+
+			pos, err = client.BitPos("mykey", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(16)))
+
+			pos, err = client.BitPos("mykey", 1, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(-1)))
+
+			pos, err = client.BitPos("mykey", 0, 2, 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(-1)))
+
+			pos, err = client.BitPos("mykey", 0, 0, -3).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(-1)))
+
+			pos, err = client.BitPos("mykey", 0, 0, 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(-1)))
+		})
+
 		It("should Decr", func() {
 			set := client.Set("key", "10", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
