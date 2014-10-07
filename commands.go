@@ -1212,7 +1212,11 @@ func (c *Client) DebugObject(key string) *StringCmd {
 //------------------------------------------------------------------------------
 
 func (c *Client) PubSubChannels(pattern string) *StringSliceCmd {
-	cmd := NewStringSliceCmd("PUBSUB", "CHANNELS", pattern)
+	args := []string{"PUBSUB", "CHANNELS"}
+	if pattern != "*" {
+		args = append(args, pattern)
+	}
+	cmd := NewStringSliceCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
