@@ -1,4 +1,4 @@
 /*
-Package gopkg.in/redis.v1 implements a Redis client.
+Package redis implements a Redis client.
 */
 package redis
