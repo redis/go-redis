@@ -2576,6 +2576,14 @@ func (t *RedisTest) TestPubSubChannels(c *C) {
 	channels, err = t.client.PubSubChannels("mychannel*").Result()
 	c.Assert(err, IsNil)
 	c.Assert(sortStrings(channels), DeepEquals, []string{"mychannel", "mychannel2"})
+
+	channels, err = t.client.PubSubChannels("").Result()
+	c.Assert(err, IsNil)
+	c.Assert(channels, HasLen, 0)
+
+	channels, err = t.client.PubSubChannels("*").Result()
+	c.Assert(err, IsNil)
+	c.Assert(len(channels) >= 2, Equals, true)
 }
 
 func (t *RedisTest) TestPubSubNumSub(c *C) {
