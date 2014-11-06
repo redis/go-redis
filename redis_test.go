@@ -2597,7 +2597,7 @@ func (t *RedisTest) TestPubSubNumSub(c *C) {
 	c.Assert(
 		channels,
 		DeepEquals,
-		[]string{"mychannel", "1", "mychannel2", "1", "mychannel3", "0"},
+		[]interface{}{"mychannel", int64(1), "mychannel2", int64(1), "mychannel3", int64(0)},
 	)
 }
 
