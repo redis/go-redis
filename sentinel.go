@@ -157,9 +157,9 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 		}
 	}
 
-	for i, addr := range d.sentinelAddrs {
+	for i, sentinelAddr := range d.sentinelAddrs {
 		sentinel := newSentinel(&Options{
-			Addr: addr,
+			Addr: sentinelAddr,
 
 			DB:       d.opt.DB,
 			Password: d.opt.Password,
@@ -171,18 +171,20 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 			PoolSize:    d.opt.PoolSize,
 			IdleTimeout: d.opt.IdleTimeout,
 		})
-		addr, err := sentinel.GetMasterAddrByName(d.masterName).Result()
+		masterAddr, err := sentinel.GetMasterAddrByName(d.masterName).Result()
 		if err != nil {
 			log.Printf("redis-sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
-		} else {
-			// Push working sentinel to the top.
-			d.sentinelAddrs[0], d.sentinelAddrs[i] = d.sentinelAddrs[i], d.sentinelAddrs[0]
-
-			d.setSentinel(sentinel)
-			addr := net.JoinHostPort(addr[0], addr[1])
-			log.Printf("redis-sentinel: %q addr is %s", d.masterName, addr)
-			return addr, nil
+			sentinel.Close()
+			continue
 		}
+
+		// Push working sentinel to the top.
+		d.sentinelAddrs[0], d.sentinelAddrs[i] = d.sentinelAddrs[i], d.sentinelAddrs[0]
+
+		d.setSentinel(sentinel)
+		addr := net.JoinHostPort(masterAddr[0], masterAddr[1])
+		log.Printf("redis-sentinel: %q addr is %s", d.masterName, addr)
+		return addr, nil
 	}
 
 	return "", errors.New("redis: all sentinels are unreachable")
@@ -235,7 +237,7 @@ func (d *sentinelFailover) listen() {
 		msgIface, err := pubsub.Receive()
 		if err != nil {
 			log.Printf("redis-sentinel: Receive failed: %s", err)
-			pubsub = nil
+			pubsub.Close()
 			return
 		}
 
