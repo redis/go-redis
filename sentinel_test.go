@@ -88,10 +88,13 @@ func TestSentinel(t *testing.T) {
 	slavePort := "8124"
 	sentinelPort := "8125"
 
-	_, err := startRedis(masterPort)
+	masterCmd, err := startRedis(masterPort)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer masterCmd.Process.Kill()
+
+	// Wait for master to start.
 	time.Sleep(200 * time.Millisecond)
 
 	master := redis.NewTCPClient(&redis.Options{
@@ -100,12 +103,14 @@ func TestSentinel(t *testing.T) {
 	if err := master.Ping().Err(); err != nil {
 		t.Fatal(err)
 	}
-	defer master.Shutdown()
 
-	_, err = startRedisSlave(slavePort, masterPort)
+	slaveCmd, err := startRedisSlave(slavePort, masterPort)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer slaveCmd.Process.Kill()
+
+	// Wait for slave to start.
 	time.Sleep(200 * time.Millisecond)
 
 	slave := redis.NewTCPClient(&redis.Options{
@@ -114,12 +119,14 @@ func TestSentinel(t *testing.T) {
 	if err := slave.Ping().Err(); err != nil {
 		t.Fatal(err)
 	}
-	defer slave.Shutdown()
 
-	_, err = startRedisSentinel(sentinelPort, masterName, masterPort)
+	sentinelCmd, err := startRedisSentinel(sentinelPort, masterName, masterPort)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer sentinelCmd.Process.Kill()
+
+	// Wait for sentinel to start.
 	time.Sleep(200 * time.Millisecond)
 
 	sentinel := redis.NewTCPClient(&redis.Options{
@@ -147,8 +154,13 @@ func TestSentinel(t *testing.T) {
 		t.Fatalf(`got %q, expected "master"`, val)
 	}
 
-	// Kill master.
-	master.Shutdown()
+	// Kill Redis master.
+	if err := masterCmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := master.Ping().Err(); err == nil {
+		t.Fatalf("master was not killed")
+	}
 
 	// Wait for Redis sentinel to elect new master.
 	time.Sleep(5 * time.Second)

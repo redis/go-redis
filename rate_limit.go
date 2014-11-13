@@ -37,8 +37,9 @@ func (rl *rateLimiter) Check() bool {
 			if atomic.CompareAndSwapInt64(&rl.v, v, v-1) {
 				return true
 			}
+		} else {
+			return false
 		}
-		return false
 	}
 }
 
