@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"io"
 	"strconv"
 	"time"
 )
@@ -1120,7 +1121,16 @@ func (c *Client) shutdown(modifier string) *StatusCmd {
 	}
 	cmd := NewStatusCmd(args...)
 	c.Process(cmd)
-	c.Close()
+	if err := cmd.Err(); err != nil {
+		if err == io.EOF {
+			// Server quit as expected.
+			cmd.err = nil
+		}
+	} else {
+		// Server did not quit. String reply contains the reason.
+		cmd.err = errorf(cmd.val)
+		cmd.val = ""
+	}
 	return cmd
 }
 
