@@ -392,17 +392,21 @@ func (t *RedisTest) TestGetBigVal(c *C) {
 }
 
 func (t *RedisTest) TestManyKeys(c *C) {
-	for i := 0; i < 100000; i++ {
+	var n = 100000
+
+	for i := 0; i < n; i++ {
 		t.client.Set("keys.key"+strconv.Itoa(i), "hello"+strconv.Itoa(i))
 	}
 	keys := t.client.Keys("keys.*")
 	c.Assert(keys.Err(), IsNil)
-	c.Assert(len(keys.Val()), Equals, 100000)
+	c.Assert(len(keys.Val()), Equals, n)
 }
 
 func (t *RedisTest) TestManyKeys2(c *C) {
+	var n = 100000
+
 	keys := []string{"non-existent-key"}
-	for i := 0; i < 100000; i++ {
+	for i := 0; i < n; i++ {
 		key := "keys.key" + strconv.Itoa(i)
 		t.client.Set(key, "hello"+strconv.Itoa(i))
 		keys = append(keys, key)
@@ -411,13 +415,13 @@ func (t *RedisTest) TestManyKeys2(c *C) {
 
 	mget := t.client.MGet(keys...)
 	c.Assert(mget.Err(), IsNil)
-	c.Assert(len(mget.Val()), Equals, 100002)
+	c.Assert(len(mget.Val()), Equals, n+2)
 	vals := mget.Val()
-	for i := 0; i < 100000; i++ {
+	for i := 0; i < n; i++ {
 		c.Assert(vals[i+1], Equals, "hello"+strconv.Itoa(i))
 	}
 	c.Assert(vals[0], Equals, nil)
-	c.Assert(vals[100001], Equals, nil)
+	c.Assert(vals[n+1], Equals, nil)
 }
 
 func (t *RedisTest) TestStringCmdHelpers(c *C) {
