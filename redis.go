@@ -169,7 +169,7 @@ type Client struct {
 func NewClient(openConn OpenConnFunc, closeConn CloseConnFunc, initConn InitConnFunc) *Client {
 	return &Client{
 		BaseClient: &BaseClient{
-			ConnPool: NewMultiConnPool(openConn, closeConn, 40),
+			ConnPool: NewMultiConnPool(openConn, closeConn, 100),
 			InitConn: initConn,
 		},
 	}
