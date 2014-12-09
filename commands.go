@@ -196,7 +196,7 @@ type Sort struct {
 func (c *Client) Sort(key string, sort Sort) *StringSliceCmd {
 	args := []string{"SORT", key}
 	if sort.By != "" {
-		args = append(args, sort.By)
+		args = append(args, "BY", sort.By)
 	}
 	if sort.Offset != 0 || sort.Count != 0 {
 		args = append(args, "LIMIT", formatFloat(sort.Offset), formatFloat(sort.Count))
