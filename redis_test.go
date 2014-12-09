@@ -782,6 +782,29 @@ func (t *RedisTest) TestCmdKeysSort(c *C) {
 	c.Assert(sort.Val(), DeepEquals, []string{"1", "2"})
 }
 
+func (t *RedisTest) TestCmdKeysSortBy(c *C) {
+	lPush := t.client.LPush("list", "1")
+	c.Assert(lPush.Err(), IsNil)
+	c.Assert(lPush.Val(), Equals, int64(1))
+	lPush = t.client.LPush("list", "3")
+	c.Assert(lPush.Err(), IsNil)
+	c.Assert(lPush.Val(), Equals, int64(2))
+	lPush = t.client.LPush("list", "2")
+	c.Assert(lPush.Err(), IsNil)
+	c.Assert(lPush.Val(), Equals, int64(3))
+
+	set := t.client.Set("weight_1", "5")
+	c.Assert(set.Err(), IsNil)
+	set = t.client.Set("weight_2", "2")
+	c.Assert(set.Err(), IsNil)
+	set = t.client.Set("weight_3", "8")
+	c.Assert(set.Err(), IsNil)
+
+	sort := t.client.Sort("list", redis.Sort{Offset: 0, Count: 2, Order: "ASC", By: "weight_*"})
+	c.Assert(sort.Err(), IsNil)
+	c.Assert(sort.Val(), DeepEquals, []string{"2", "1"})
+}
+
 func (t *RedisTest) TestCmdKeysTTL(c *C) {
 	ttl := t.client.TTL("key")
 	c.Assert(ttl.Err(), IsNil)
