@@ -12,6 +12,7 @@ Supports:
 - Thread safety.
 - Timeouts.
 - Redis Sentinel.
+- Redis Cluster: https://github.com/bsm/redis-cluster.
 
 API docs: http://godoc.org/gopkg.in/redis.v2.
 Examples: http://godoc.org/gopkg.in/redis.v2#pkg-examples.
