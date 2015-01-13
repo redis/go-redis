@@ -33,6 +33,8 @@ type Cmder interface {
 	writeTimeout() *time.Duration
 	readTimeout() *time.Duration
 
+	// Reset resets internal state of the command.
+	Reset()
 	Err() error
 	String() string
 }
@@ -116,6 +118,11 @@ func NewCmd(args ...string) *Cmd {
 	}
 }
 
+func (cmd *Cmd) Reset() {
+	cmd.val = nil
+	cmd.err = nil
+}
+
 func (cmd *Cmd) Val() interface{} {
 	return cmd.val
 }
@@ -145,6 +152,11 @@ func NewSliceCmd(args ...string) *SliceCmd {
 	return &SliceCmd{
 		baseCmd: newBaseCmd(args...),
 	}
+}
+
+func (cmd *SliceCmd) Reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *SliceCmd) Val() []interface{} {
@@ -183,6 +195,11 @@ func NewStatusCmd(args ...string) *StatusCmd {
 	}
 }
 
+func (cmd *StatusCmd) Reset() {
+	cmd.val = ""
+	cmd.err = nil
+}
+
 func (cmd *StatusCmd) Val() string {
 	return cmd.val
 }
@@ -217,6 +234,11 @@ func NewIntCmd(args ...string) *IntCmd {
 	return &IntCmd{
 		baseCmd: newBaseCmd(args...),
 	}
+}
+
+func (cmd *IntCmd) Reset() {
+	cmd.val = 0
+	cmd.err = nil
 }
 
 func (cmd *IntCmd) Val() int64 {
@@ -257,6 +279,11 @@ func NewDurationCmd(precision time.Duration, args ...string) *DurationCmd {
 	}
 }
 
+func (cmd *DurationCmd) Reset() {
+	cmd.val = 0
+	cmd.err = nil
+}
+
 func (cmd *DurationCmd) Val() time.Duration {
 	return cmd.val
 }
@@ -293,6 +320,11 @@ func NewBoolCmd(args ...string) *BoolCmd {
 	}
 }
 
+func (cmd *BoolCmd) Reset() {
+	cmd.val = false
+	cmd.err = nil
+}
+
 func (cmd *BoolCmd) Val() bool {
 	return cmd.val
 }
@@ -327,6 +359,11 @@ func NewStringCmd(args ...string) *StringCmd {
 	return &StringCmd{
 		baseCmd: newBaseCmd(args...),
 	}
+}
+
+func (cmd *StringCmd) Reset() {
+	cmd.val = ""
+	cmd.err = nil
 }
 
 func (cmd *StringCmd) Val() string {
@@ -386,6 +423,11 @@ func NewFloatCmd(args ...string) *FloatCmd {
 	}
 }
 
+func (cmd *FloatCmd) Reset() {
+	cmd.val = 0
+	cmd.err = nil
+}
+
 func (cmd *FloatCmd) Val() float64 {
 	return cmd.val
 }
@@ -416,6 +458,11 @@ func NewStringSliceCmd(args ...string) *StringSliceCmd {
 	return &StringSliceCmd{
 		baseCmd: newBaseCmd(args...),
 	}
+}
+
+func (cmd *StringSliceCmd) Reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *StringSliceCmd) Val() []string {
@@ -454,6 +501,11 @@ func NewBoolSliceCmd(args ...string) *BoolSliceCmd {
 	}
 }
 
+func (cmd *BoolSliceCmd) Reset() {
+	cmd.val = nil
+	cmd.err = nil
+}
+
 func (cmd *BoolSliceCmd) Val() []bool {
 	return cmd.val
 }
@@ -488,6 +540,11 @@ func NewStringStringMapCmd(args ...string) *StringStringMapCmd {
 	return &StringStringMapCmd{
 		baseCmd: newBaseCmd(args...),
 	}
+}
+
+func (cmd *StringStringMapCmd) Reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *StringStringMapCmd) Val() map[string]string {
@@ -526,6 +583,11 @@ func NewZSliceCmd(args ...string) *ZSliceCmd {
 	}
 }
 
+func (cmd *ZSliceCmd) Reset() {
+	cmd.val = nil
+	cmd.err = nil
+}
+
 func (cmd *ZSliceCmd) Val() []Z {
 	return cmd.val
 }
@@ -561,6 +623,12 @@ func NewScanCmd(args ...string) *ScanCmd {
 	return &ScanCmd{
 		baseCmd: newBaseCmd(args...),
 	}
+}
+
+func (cmd *ScanCmd) Reset() {
+	cmd.cursor = 0
+	cmd.keys = nil
+	cmd.err = nil
 }
 
 func (cmd *ScanCmd) Val() (int64, []string) {
