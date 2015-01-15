@@ -11,7 +11,8 @@ go:
 
 install:
   - go get gopkg.in/bufio.v1
-  - go get gopkg.in/check.v1
+  - go get onsi.github.io/ginkgo
+  - go get onsi.github.io/gomega
   - mkdir -p $HOME/gopath/src/gopkg.in
   - ln -s `pwd` $HOME/gopath/src/gopkg.in/redis.v2
 
