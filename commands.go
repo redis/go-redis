@@ -1236,6 +1236,14 @@ func (c *Client) PubSubNumSub(channels ...string) *SliceCmd {
 	args = append(args, channels...)
 	cmd := NewSliceCmd(args...)
 	c.Process(cmd)
+
+	// Normalize result - https://github.com/antirez/redis/issues/1561
+	for i := 1; i < len(cmd.val); i += 2 {
+		switch v := cmd.val[i].(type) {
+		case string:
+			cmd.val[i], _ = strconv.ParseInt(v, 10, 64)
+		}
+	}
 	return cmd
 }
 
