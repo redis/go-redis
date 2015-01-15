@@ -2,6 +2,8 @@ package redis_test
 
 import (
 	"net"
+	"os"
+	"os/exec"
 	"sort"
 	"testing"
 	"time"
@@ -126,6 +128,78 @@ func TestGinkgoSuite(t *testing.T) {
 func sortStrings(slice []string) []string {
 	sort.Strings(slice)
 	return slice
+}
+
+func execCmd(name string, args ...string) (*os.Process, error) {
+	cmd := exec.Command(name, args...)
+	if false {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+	return cmd.Process, cmd.Start()
+}
+
+func connectTo(port string) (client *redis.Client, err error) {
+	client = redis.NewTCPClient(&redis.Options{
+		Addr: ":" + port,
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if err = client.Ping().Err(); err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return
+}
+
+type redisProcess struct {
+	*os.Process
+	*redis.Client
+}
+
+func (p *redisProcess) Close() error {
+	p.Client.Close()
+	return p.Kill()
+}
+
+func startRedis(port string, args ...string) (*redisProcess, error) {
+	process, err := execCmd("redis-server", append([]string{"--port", port}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	client, err := connectTo(port)
+	if err != nil {
+		process.Kill()
+		return nil, err
+	}
+	return &redisProcess{process, client}, err
+}
+
+func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
+	process, err := execCmd("redis-server", os.DevNull, "--sentinel", "--port", port)
+	if err != nil {
+		return nil, err
+	}
+	client, err := connectTo(port)
+	if err != nil {
+		process.Kill()
+		return nil, err
+	}
+	for _, cmd := range []*redis.StatusCmd{
+		redis.NewStatusCmd("SENTINEL", "MONITOR", masterName, "127.0.0.1", masterPort, "1"),
+		redis.NewStatusCmd("SENTINEL", "SET", masterName, "down-after-milliseconds", "500"),
+		redis.NewStatusCmd("SENTINEL", "SET", masterName, "failover-timeout", "1000"),
+		redis.NewStatusCmd("SENTINEL", "SET", masterName, "parallel-syncs", "1"),
+	} {
+		client.Process(cmd)
+		if err := cmd.Err(); err != nil {
+			process.Kill()
+			return nil, err
+		}
+	}
+	return &redisProcess{process, client}, err
 }
 
 //------------------------------------------------------------------------------
