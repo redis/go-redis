@@ -7,12 +7,13 @@ go:
   - 1.1
   - 1.2
   - 1.3
+  - 1.4
   - tip
 
 install:
   - go get gopkg.in/bufio.v1
-  - go get onsi.github.io/ginkgo
-  - go get onsi.github.io/gomega
+  - go get github.com/onsi/ginkgo
+  - go get github.com/onsi/gomega
   - mkdir -p $HOME/gopath/src/gopkg.in
   - ln -s `pwd` $HOME/gopath/src/gopkg.in/redis.v2
 
