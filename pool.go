@@ -3,6 +3,7 @@ package redis
 import (
 	"container/list"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -12,8 +13,7 @@ import (
 )
 
 var (
-	errClosed      = errors.New("redis: client is closed")
-	errRateLimited = errors.New("redis: you open connections too fast")
+	errClosed = errors.New("redis: client is closed")
 )
 
 var (
@@ -100,6 +100,8 @@ type connPool struct {
 
 	idleNum int
 	closed  bool
+
+	lastDialErr error
 }
 
 func newConnPool(dial func() (*conn, error), opt *options) *connPool {
@@ -116,9 +118,17 @@ func newConnPool(dial func() (*conn, error), opt *options) *connPool {
 
 func (p *connPool) new() (*conn, error) {
 	if !p.rl.Check() {
-		return nil, errRateLimited
+		err := fmt.Errorf(
+			"redis: you open connections too fast (last error: %s)",
+			p.lastDialErr,
+		)
+		return nil, err
 	}
-	return p.dial()
+	cn, err := p.dial()
+	if err != nil {
+		p.lastDialErr = err
+	}
+	return cn, err
 }
 
 func (p *connPool) Get() (*conn, bool, error) {
