@@ -1,4 +1,4 @@
-package redis
+package redis // import "gopkg.in/redis.v2"
 
 import (
 	"log"
