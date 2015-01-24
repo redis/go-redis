@@ -65,7 +65,7 @@ var _ = Describe("Commands", func() {
 			// workaround for "ERR Can't BGSAVE while AOF log rewriting is in progress"
 			Eventually(func() string {
 				return client.BgSave().Val()
-			}).Should(Equal("Background saving started"))
+			}, "10s").Should(Equal("Background saving started"))
 		})
 
 		It("should ClientKill", func() {
@@ -119,7 +119,7 @@ var _ = Describe("Commands", func() {
 			// workaround for "ERR Background save already in progress"
 			Eventually(func() string {
 				return client.Save().Val()
-			}).Should(Equal("OK"))
+			}, "10s").Should(Equal("OK"))
 		})
 
 		It("should SlaveOf", func() {

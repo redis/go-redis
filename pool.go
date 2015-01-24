@@ -58,6 +58,16 @@ func newConnFunc(dial func() (net.Conn, error)) func() (*conn, error) {
 	}
 }
 
+func (cn *conn) writeCmds(cmds ...Cmder) error {
+	buf := cn.buf[:0]
+	for _, cmd := range cmds {
+		buf = appendArgs(buf, cmd.args())
+	}
+
+	_, err := cn.Write(buf)
+	return err
+}
+
 func (cn *conn) Read(b []byte) (int, error) {
 	if cn.readTimeout != 0 {
 		cn.netcn.SetReadDeadline(time.Now().Add(cn.readTimeout))
