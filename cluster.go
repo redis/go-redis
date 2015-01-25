@@ -1,104 +1,12 @@
 package redis
 
 import (
-	"fmt"
 	"math/rand"
-	"net"
-	"strconv"
 	"strings"
 	"time"
-
-	"gopkg.in/bufio.v1"
 )
 
 const HashSlots = 16384
-
-var (
-	_ Cmder = (*ClusterSlotCmd)(nil)
-)
-
-//------------------------------------------------------------------------------
-
-func (c *Client) ClusterSlots() *ClusterSlotCmd {
-	req := NewClusterSlotCmd("CLUSTER", "slots")
-	c.Process(req)
-	return req
-}
-
-func (c *Client) ClusterNodes() *StringCmd {
-	req := NewStringCmd("CLUSTER", "nodes")
-	c.Process(req)
-	return req
-}
-
-func (c *Client) ClusterMeet(host, port string) *StatusCmd {
-	req := NewStatusCmd("CLUSTER", "meet", host, port)
-	c.Process(req)
-	return req
-}
-
-func (c *Client) ClusterReplicate(nodeID string) *StatusCmd {
-	req := NewStatusCmd("CLUSTER", "replicate", nodeID)
-	c.Process(req)
-	return req
-}
-
-func (c *Client) ClusterAddSlots(slots ...int) *StatusCmd {
-	args := make([]string, len(slots)+2)
-	args[0] = "CLUSTER"
-	args[1] = "addslots"
-	for i, num := range slots {
-		args[i+2] = strconv.Itoa(num)
-	}
-	req := NewStatusCmd(args...)
-	c.Process(req)
-	return req
-}
-
-func (c *Client) ClusterAddSlotsRange(min, max int) *StatusCmd {
-	size := max - min + 1
-	slots := make([]int, size)
-	for i := 0; i < size; i++ {
-		slots[i] = min + i
-	}
-	return c.ClusterAddSlots(slots...)
-}
-
-//------------------------------------------------------------------------------
-
-type ClusterSlotCmd struct {
-	*baseCmd
-
-	val []ClusterSlotInfo
-}
-
-func NewClusterSlotCmd(args ...string) *ClusterSlotCmd {
-	return &ClusterSlotCmd{
-		baseCmd: newBaseCmd(args...),
-	}
-}
-
-func (cmd *ClusterSlotCmd) Val() []ClusterSlotInfo {
-	return cmd.val
-}
-
-func (cmd *ClusterSlotCmd) Result() ([]ClusterSlotInfo, error) {
-	return cmd.Val(), cmd.Err()
-}
-
-func (cmd *ClusterSlotCmd) String() string {
-	return cmdString(cmd, cmd.val)
-}
-
-func (cmd *ClusterSlotCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, parseClusterSlotInfos)
-	if err != nil {
-		cmd.err = err
-		return err
-	}
-	cmd.val = v.([]ClusterSlotInfo)
-	return nil
-}
 
 //------------------------------------------------------------------------------
 
@@ -150,53 +58,6 @@ func (opt *ClusterOptions) options() *options {
 type ClusterSlotInfo struct {
 	Min, Max int
 	Addrs    []string
-}
-
-func parseClusterSlotInfos(rd *bufio.Reader, n int64) (interface{}, error) {
-	infos := make([]ClusterSlotInfo, 0, n)
-	for i := int64(0); i < n; i++ {
-		viface, err := parseReply(rd, parseSlice)
-		if err != nil {
-			return nil, err
-		}
-
-		item, ok := viface.([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("got %T, expected []interface{}", viface)
-		} else if len(item) < 3 {
-			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
-		}
-
-		min, ok := item[0].(int64)
-		if !ok || min < 0 || min > HashSlots {
-			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
-		}
-		max, ok := item[1].(int64)
-		if !ok || max < 0 || max > HashSlots {
-			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
-		}
-
-		info := ClusterSlotInfo{int(min), int(max), make([]string, len(item)-2)}
-		for n, ipair := range item[2:] {
-			pair, ok := ipair.([]interface{})
-			if !ok || len(pair) != 2 {
-				return nil, fmt.Errorf("got %v, expected []interface{host, port}", viface)
-			}
-
-			ip, ok := pair[0].(string)
-			if !ok || len(ip) < 1 {
-				return nil, fmt.Errorf("got %v, expected IP PORT pair", pair)
-			}
-			port, ok := pair[1].(int64)
-			if !ok || port < 1 {
-				return nil, fmt.Errorf("got %v, expected IP PORT pair", pair)
-			}
-
-			info.Addrs[n] = net.JoinHostPort(ip, strconv.FormatInt(port, 10))
-		}
-		infos = append(infos, info)
-	}
-	return infos, nil
 }
 
 //------------------------------------------------------------------------------

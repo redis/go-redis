@@ -1244,3 +1244,50 @@ func (c *Client) PubSubNumPat() *IntCmd {
 	c.Process(cmd)
 	return cmd
 }
+
+//------------------------------------------------------------------------------
+
+func (c *Client) ClusterSlots() *ClusterSlotCmd {
+	req := NewClusterSlotCmd("CLUSTER", "slots")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ClusterNodes() *StringCmd {
+	req := NewStringCmd("CLUSTER", "nodes")
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ClusterMeet(host, port string) *StatusCmd {
+	req := NewStatusCmd("CLUSTER", "meet", host, port)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ClusterReplicate(nodeID string) *StatusCmd {
+	req := NewStatusCmd("CLUSTER", "replicate", nodeID)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ClusterAddSlots(slots ...int) *StatusCmd {
+	args := make([]string, len(slots)+2)
+	args[0] = "CLUSTER"
+	args[1] = "addslots"
+	for i, num := range slots {
+		args[i+2] = strconv.Itoa(num)
+	}
+	req := NewStatusCmd(args...)
+	c.Process(req)
+	return req
+}
+
+func (c *Client) ClusterAddSlotsRange(min, max int) *StatusCmd {
+	size := max - min + 1
+	slots := make([]int, size)
+	for i := 0; i < size; i++ {
+		slots[i] = min + i
+	}
+	return c.ClusterAddSlots(slots...)
+}

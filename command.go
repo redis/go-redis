@@ -23,6 +23,7 @@ var (
 	_ Cmder = (*StringStringMapCmd)(nil)
 	_ Cmder = (*ZSliceCmd)(nil)
 	_ Cmder = (*ScanCmd)(nil)
+	_ Cmder = (*ClusterSlotCmd)(nil)
 )
 
 type Cmder interface {
@@ -593,5 +594,41 @@ func (cmd *ScanCmd) parseReply(rd *bufio.Reader) error {
 		cmd.keys = append(cmd.keys, keyi.(string))
 	}
 
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type ClusterSlotCmd struct {
+	*baseCmd
+
+	val []ClusterSlotInfo
+}
+
+func NewClusterSlotCmd(args ...string) *ClusterSlotCmd {
+	return &ClusterSlotCmd{
+		baseCmd: newBaseCmd(args...),
+	}
+}
+
+func (cmd *ClusterSlotCmd) Val() []ClusterSlotInfo {
+	return cmd.val
+}
+
+func (cmd *ClusterSlotCmd) Result() ([]ClusterSlotInfo, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *ClusterSlotCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterSlotCmd) parseReply(rd *bufio.Reader) error {
+	v, err := parseReply(rd, parseClusterSlotInfoSlice)
+	if err != nil {
+		cmd.err = err
+		return err
+	}
+	cmd.val = v.([]ClusterSlotInfo)
 	return nil
 }
