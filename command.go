@@ -33,6 +33,7 @@ type Cmder interface {
 
 	writeTimeout() *time.Duration
 	readTimeout() *time.Duration
+	firstKey() string
 
 	Err() error
 	String() string
@@ -63,12 +64,15 @@ type baseCmd struct {
 
 	err error
 
+	_firstKeyPos int
+
 	_writeTimeout, _readTimeout *time.Duration
 }
 
 func newBaseCmd(args ...string) *baseCmd {
 	return &baseCmd{
-		_args: args,
+		_args:        args,
+		_firstKeyPos: 1,
 	}
 }
 
@@ -93,6 +97,17 @@ func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 
 func (cmd *baseCmd) writeTimeout() *time.Duration {
 	return cmd._writeTimeout
+}
+
+func (cmd *baseCmd) firstKey() string {
+	if cmd._firstKeyPos < len(cmd._args) {
+		return cmd._args[cmd._firstKeyPos]
+	}
+	return ""
+}
+
+func (cmd *baseCmd) setFirstKeyPos(pos int) {
+	cmd._firstKeyPos = pos
 }
 
 func (cmd *baseCmd) setWriteTimeout(d time.Duration) {

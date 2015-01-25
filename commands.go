@@ -95,6 +95,7 @@ func (c *Client) Migrate(host, port, key string, db, timeout int64) *StatusCmd {
 		strconv.FormatInt(db, 10),
 		strconv.FormatInt(timeout, 10),
 	)
+	cmd.setFirstKeyPos(2)
 	cmd.setReadTimeout(readTimeout(timeout))
 	c.Process(cmd)
 	return cmd
@@ -109,6 +110,7 @@ func (c *Client) Move(key string, db int64) *BoolCmd {
 func (c *Client) ObjectRefCount(keys ...string) *IntCmd {
 	args := append([]string{"OBJECT", "REFCOUNT"}, keys...)
 	cmd := NewIntCmd(args...)
+	cmd.setFirstKeyPos(2)
 	c.Process(cmd)
 	return cmd
 }
@@ -116,6 +118,7 @@ func (c *Client) ObjectRefCount(keys ...string) *IntCmd {
 func (c *Client) ObjectEncoding(keys ...string) *StringCmd {
 	args := append([]string{"OBJECT", "ENCODING"}, keys...)
 	cmd := NewStringCmd(args...)
+	cmd.setFirstKeyPos(2)
 	c.Process(cmd)
 	return cmd
 }
@@ -123,6 +126,7 @@ func (c *Client) ObjectEncoding(keys ...string) *StringCmd {
 func (c *Client) ObjectIdleTime(keys ...string) *DurationCmd {
 	args := append([]string{"OBJECT", "IDLETIME"}, keys...)
 	cmd := NewDurationCmd(time.Second, args...)
+	cmd.setFirstKeyPos(2)
 	c.Process(cmd)
 	return cmd
 }
@@ -1173,6 +1177,7 @@ func (c *Client) Eval(script string, keys []string, args []string) *Cmd {
 	cmdArgs = append(cmdArgs, keys...)
 	cmdArgs = append(cmdArgs, args...)
 	cmd := NewCmd(cmdArgs...)
+	cmd.setFirstKeyPos(2)
 	c.Process(cmd)
 	return cmd
 }
@@ -1182,6 +1187,7 @@ func (c *Client) EvalSha(sha1 string, keys []string, args []string) *Cmd {
 	cmdArgs = append(cmdArgs, keys...)
 	cmdArgs = append(cmdArgs, args...)
 	cmd := NewCmd(cmdArgs...)
+	cmd.setFirstKeyPos(2)
 	c.Process(cmd)
 	return cmd
 }
@@ -1215,6 +1221,7 @@ func (c *Client) ScriptLoad(script string) *StringCmd {
 
 func (c *Client) DebugObject(key string) *StringCmd {
 	cmd := NewStringCmd("DEBUG", "OBJECT", key)
+	cmd.setFirstKeyPos(2)
 	c.Process(cmd)
 	return cmd
 }
@@ -1248,27 +1255,27 @@ func (c *Client) PubSubNumPat() *IntCmd {
 //------------------------------------------------------------------------------
 
 func (c *Client) ClusterSlots() *ClusterSlotCmd {
-	req := NewClusterSlotCmd("CLUSTER", "slots")
-	c.Process(req)
-	return req
+	cmd := NewClusterSlotCmd("CLUSTER", "slots")
+	c.Process(cmd)
+	return cmd
 }
 
 func (c *Client) ClusterNodes() *StringCmd {
-	req := NewStringCmd("CLUSTER", "nodes")
-	c.Process(req)
-	return req
+	cmd := NewStringCmd("CLUSTER", "nodes")
+	c.Process(cmd)
+	return cmd
 }
 
 func (c *Client) ClusterMeet(host, port string) *StatusCmd {
-	req := NewStatusCmd("CLUSTER", "meet", host, port)
-	c.Process(req)
-	return req
+	cmd := NewStatusCmd("CLUSTER", "meet", host, port)
+	c.Process(cmd)
+	return cmd
 }
 
 func (c *Client) ClusterReplicate(nodeID string) *StatusCmd {
-	req := NewStatusCmd("CLUSTER", "replicate", nodeID)
-	c.Process(req)
-	return req
+	cmd := NewStatusCmd("CLUSTER", "replicate", nodeID)
+	c.Process(cmd)
+	return cmd
 }
 
 func (c *Client) ClusterAddSlots(slots ...int) *StatusCmd {
@@ -1278,9 +1285,9 @@ func (c *Client) ClusterAddSlots(slots ...int) *StatusCmd {
 	for i, num := range slots {
 		args[i+2] = strconv.Itoa(num)
 	}
-	req := NewStatusCmd(args...)
-	c.Process(req)
-	return req
+	cmd := NewStatusCmd(args...)
+	c.Process(cmd)
+	return cmd
 }
 
 func (c *Client) ClusterAddSlotsRange(min, max int) *StatusCmd {
