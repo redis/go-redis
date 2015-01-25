@@ -1,9 +1,9 @@
 all: testdeps
-	go test ./... -v 1 -cpu=1,2,4
-	go test ./... -v 1 -short -race
+	go test ./... -v 1 -ginkgo.slowSpecThreshold=10 -cpu=1,2,4
+	go test ./... -v 1 -ginkgo.slowSpecThreshold=10 -short -race
 
 test: testdeps
-	go test ./... -v 1
+	go test ./... -v 1 -ginkgo.slowSpecThreshold=10
 
 testdeps: .test/redis/src/redis-server
 
