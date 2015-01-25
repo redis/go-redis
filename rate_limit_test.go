@@ -1,31 +1,25 @@
 package redis
 
 import (
-	"sync"
 	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
 )
 
-func TestRateLimiter(t *testing.T) {
+var _ = Describe("RateLimiter", func() {
 	var n = 100000
 	if testing.Short() {
 		n = 1000
 	}
-	rl := newRateLimiter(time.Minute, n)
 
-	wg := &sync.WaitGroup{}
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func() {
-			if !rl.Check() {
-				panic("check failed")
-			}
-			wg.Done()
-		}()
-	}
-	wg.Wait()
+	It("should rate limit", func() {
+		rl := newRateLimiter(time.Minute, n)
+		for i := 0; i <= n; i++ {
+			Expect(rl.Check()).To(BeTrue())
+		}
+		Expect(rl.Check()).To(BeFalse())
+	})
 
-	if rl.Check() && rl.Check() {
-		t.Fatal("check passed")
-	}
-}
+})
