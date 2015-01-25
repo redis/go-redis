@@ -1231,10 +1231,10 @@ func (c *Client) PubSubChannels(pattern string) *StringSliceCmd {
 	return cmd
 }
 
-func (c *Client) PubSubNumSub(channels ...string) *SliceCmd {
+func (c *Client) PubSubNumSub(channels ...string) *StringIntMapCmd {
 	args := []string{"PUBSUB", "NUMSUB"}
 	args = append(args, channels...)
-	cmd := NewSliceCmd(args...)
+	cmd := NewStringIntMapCmd(args...)
 	c.Process(cmd)
 	return cmd
 }

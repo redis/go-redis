@@ -101,10 +101,10 @@ var _ = Describe("PubSub", func() {
 
 		channels, err := client.PubSubNumSub("mychannel", "mychannel2", "mychannel3").Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(channels).To(Equal([]interface{}{
-			"mychannel", int64(1),
-			"mychannel2", int64(1),
-			"mychannel3", int64(0),
+		Expect(channels).To(Equal(map[string]int64{
+			"mychannel":  1,
+			"mychannel2": 1,
+			"mychannel3": 0,
 		}))
 	})
 
