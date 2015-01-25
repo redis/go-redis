@@ -30,7 +30,7 @@ func ExampleNewTCPClient() {
 
 func ExampleNewFailoverClient() {
 	client := redis.NewFailoverClient(&redis.FailoverOptions{
-		MasterName:    "mymaster",
+		MasterName:    "master",
 		SentinelAddrs: []string{":26379"},
 	})
 
