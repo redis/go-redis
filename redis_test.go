@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -164,8 +165,32 @@ func (p *redisProcess) Close() error {
 	return p.Kill()
 }
 
+var (
+	redisServerBin  = filepath.Join(".test", "redis", "src", "redis-server")
+	redisServerConf = filepath.Join(".test", "redis", "redis.conf")
+)
+
+func redisDir(port string) (string, error) {
+	dir, err := filepath.Abs(filepath.Join(".test", "instances", port))
+	if err != nil {
+		return "", err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0775); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 func startRedis(port string, args ...string) (*redisProcess, error) {
-	process, err := execCmd("redis-server", append([]string{"--port", port}, args...)...)
+	dir, err := redisDir(port)
+	if err != nil {
+		return nil, err
+	}
+	baseArgs := []string{redisServerConf, "--port", port, "--dir", dir}
+	process, err := execCmd(redisServerBin, append(baseArgs, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +203,11 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 }
 
 func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
-	process, err := execCmd("redis-server", os.DevNull, "--sentinel", "--port", port)
+	dir, err := redisDir(port)
+	if err != nil {
+		return nil, err
+	}
+	process, err := execCmd(redisServerBin, os.DevNull, "--sentinel", "--port", port, "--dir", dir)
 	if err != nil {
 		return nil, err
 	}
