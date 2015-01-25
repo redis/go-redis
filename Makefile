@@ -1,5 +1,3 @@
-testdeps: .test/redis/src/redis-server
-
 all: testdeps
 	go test ./... -v 1 -cpu=1,2,4
 	go test ./... -v 1 -short -race
@@ -7,7 +5,9 @@ all: testdeps
 test: testdeps
 	go test ./... -v 1
 
-.PHONY: all testdeps
+testdeps: .test/redis/src/redis-server
+
+.PHONY: all test testdeps
 
 .test/redis:
 	mkdir -p $@
