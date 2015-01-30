@@ -39,8 +39,10 @@ var _ = Describe("Pool", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("PONG"))
 		})
-		Expect(client.Pool().Size()).To(Equal(10))
-		Expect(client.Pool().Len()).To(Equal(10))
+		pool := client.Pool()
+		Expect(pool.Size()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(BeNumerically("<=", 10))
+		Expect(pool.Size()).To(Equal(pool.Len()))
 	})
 
 	It("should respect max on multi", func() {
