@@ -51,6 +51,11 @@ var _ = Describe("Sentinel", func() {
 			return slave2.Get("foo").Val()
 		}, "1s", "100ms").Should(Equal("master"))
 
+		// Wait until slaves are picked up by sentinel.
+		Eventually(func() string {
+			return sentinel.Info().Val()
+		}, "10s", "100ms").Should(ContainSubstring("slaves=2"))
+
 		// Kill master.
 		master.Shutdown()
 		Eventually(func() error {
@@ -60,12 +65,12 @@ var _ = Describe("Sentinel", func() {
 		// Wait for Redis sentinel to elect new master.
 		Eventually(func() string {
 			return slave1.Info().Val() + slave2.Info().Val()
-		}, "30s", "500ms").Should(ContainSubstring("role:master"))
+		}, "30s", "1s").Should(ContainSubstring("role:master"))
 
 		// Check that client picked up new master.
-		val, err = client.Get("foo").Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(val).To(Equal("master"))
+		Eventually(func() error {
+			return client.Get("foo").Err()
+		}, "5s", "100ms").ShouldNot(HaveOccurred())
 	})
 
 })

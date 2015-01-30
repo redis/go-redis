@@ -140,18 +140,19 @@ func execCmd(name string, args ...string) (*os.Process, error) {
 }
 
 func connectTo(port string) (client *redis.Client, err error) {
-	client = redis.NewTCPClient(&redis.Options{
+	client = redis.NewClient(&redis.Options{
 		Addr: ":" + port,
 	})
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if err = client.Ping().Err(); err == nil {
-			break
+			return client, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return
+
+	return nil, err
 }
 
 type redisProcess struct {
@@ -199,7 +200,7 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 			return nil, err
 		}
 	}
-	return &redisProcess{process, client}, err
+	return &redisProcess{process, client}, nil
 }
 
 //------------------------------------------------------------------------------
