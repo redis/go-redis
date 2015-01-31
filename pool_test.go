@@ -17,7 +17,9 @@ var _ = Describe("Pool", func() {
 		for i := 0; i < n; i++ {
 			wg.Add(1)
 			go func() {
+				defer GinkgoRecover()
 				defer wg.Done()
+
 				cb()
 			}()
 		}

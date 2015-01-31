@@ -23,6 +23,7 @@ type FailoverOptions struct {
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+	PoolTimeout  time.Duration
 	IdleTimeout  time.Duration
 }
 
@@ -31,6 +32,13 @@ func (opt *FailoverOptions) getPoolSize() int {
 		return 10
 	}
 	return opt.PoolSize
+}
+
+func (opt *FailoverOptions) getPoolTimeout() time.Duration {
+	if opt.PoolTimeout == 0 {
+		return 5 * time.Second
+	}
+	return opt.PoolTimeout
 }
 
 func (opt *FailoverOptions) getDialTimeout() time.Duration {
@@ -50,6 +58,7 @@ func (opt *FailoverOptions) options() *options {
 		WriteTimeout: opt.WriteTimeout,
 
 		PoolSize:    opt.getPoolSize(),
+		PoolTimeout: opt.getPoolTimeout(),
 		IdleTimeout: opt.IdleTimeout,
 	}
 }
@@ -169,6 +178,7 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 			WriteTimeout: d.opt.WriteTimeout,
 
 			PoolSize:    d.opt.PoolSize,
+			PoolTimeout: d.opt.PoolTimeout,
 			IdleTimeout: d.opt.IdleTimeout,
 		})
 		masterAddr, err := sentinel.GetMasterAddrByName(d.masterName).Result()

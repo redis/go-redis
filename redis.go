@@ -148,6 +148,7 @@ type options struct {
 	WriteTimeout time.Duration
 
 	PoolSize    int
+	PoolTimeout time.Duration
 	IdleTimeout time.Duration
 }
 
@@ -167,6 +168,7 @@ type Options struct {
 	WriteTimeout time.Duration
 
 	PoolSize    int
+	PoolTimeout time.Duration
 	IdleTimeout time.Duration
 }
 
@@ -191,6 +193,13 @@ func (opt *Options) getDialTimeout() time.Duration {
 	return opt.DialTimeout
 }
 
+func (opt *Options) getPoolTimeout() time.Duration {
+	if opt.PoolTimeout == 0 {
+		return 5 * time.Second
+	}
+	return opt.PoolTimeout
+}
+
 func (opt *Options) options() *options {
 	return &options{
 		DB:       opt.DB,
@@ -201,6 +210,7 @@ func (opt *Options) options() *options {
 		WriteTimeout: opt.WriteTimeout,
 
 		PoolSize:    opt.getPoolSize(),
+		PoolTimeout: opt.getPoolTimeout(),
 		IdleTimeout: opt.IdleTimeout,
 	}
 }
