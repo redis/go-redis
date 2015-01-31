@@ -119,7 +119,7 @@ func newConnPool(dial func() (*conn, error), opt *options) *connPool {
 func (p *connPool) new() (*conn, error) {
 	if !p.rl.Check() {
 		err := fmt.Errorf(
-			"redis: you open connections too fast (last error: %s)",
+			"redis: you open connections too fast (last error: %v)",
 			p.lastDialErr,
 		)
 		return nil, err
