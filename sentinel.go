@@ -12,19 +12,40 @@ import (
 //------------------------------------------------------------------------------
 
 type FailoverOptions struct {
-	MasterName    string
+	// The master name.
+	MasterName string
+	// Seed addresses of sentinel nodes.
 	SentinelAddrs []string
 
+	// An optional password. Must match the password specified in the
+	// `requirepass` server configuration option.
 	Password string
-	DB       int64
+	// Select a database.
+	// Default: 0
+	DB int64
 
-	PoolSize int
-
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
+	// Sets the deadline for establishing new connections. If reached,
+	// deal attepts will fail with a timeout.
+	DialTimeout time.Duration
+	// Sets the deadline for socket reads. If reached, commands will
+	// fail with a timeout instead of blocking.
+	ReadTimeout time.Duration
+	// Sets the deadline for socket writes. If reached, commands will
+	// fail with a timeout instead of blocking.
 	WriteTimeout time.Duration
-	PoolTimeout  time.Duration
-	IdleTimeout  time.Duration
+
+	// The maximum number of socket connections.
+	// Default: 10
+	PoolSize int
+	// If all socket connections is the pool are busy, the pool will wait
+	// this amount of time for a conection to become available, before
+	// returning an error.
+	// Default: 5s
+	PoolTimeout time.Duration
+	// Evict connections from the pool after they have been idle for longer
+	// than specified in this option.
+	// Default: 0 = no eviction
+	IdleTimeout time.Duration
 }
 
 func (opt *FailoverOptions) getPoolSize() int {

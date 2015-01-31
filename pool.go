@@ -251,13 +251,13 @@ func (p *connPool) Close() (err error) {
 
 	for {
 		if p.Size() < 1 {
-			return
+			break
 		}
 		if e := p.remove(<-p.conns); e != nil {
 			err = e
 		}
 	}
-	panic("not reached")
+	return
 }
 
 //------------------------------------------------------------------------------
