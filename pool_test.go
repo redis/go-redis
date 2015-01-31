@@ -3,6 +3,7 @@ package redis_test
 import (
 	"sync"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -134,7 +135,8 @@ var _ = Describe("Pool", func() {
 
 func BenchmarkPool(b *testing.B) {
 	client := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr:        redisAddr,
+		IdleTimeout: 100 * time.Millisecond,
 	})
 	defer client.Close()
 
