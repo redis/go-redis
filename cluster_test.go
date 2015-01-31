@@ -26,10 +26,10 @@ var _ = Describe("Cluster", func() {
 	BeforeSuite(func() {
 		// Start processes, connect individual clients
 		for pos, port := range scenario.ports {
-			process, err := startRedis(port, "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf")
+			process, err := startRedis(port, "--cluster-enabled", "yes")
 			Expect(err).NotTo(HaveOccurred())
 
-			client := redis.NewTCPClient(&redis.Options{Addr: "127.0.0.1:" + port})
+			client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:" + port})
 			info, err := client.ClusterNodes().Result()
 			Expect(err).NotTo(HaveOccurred())
 

@@ -133,7 +133,7 @@ func sortStrings(slice []string) []string {
 
 func execCmd(name string, args ...string) (*os.Process, error) {
 	cmd := exec.Command(name, args...)
-	if true {
+	if false {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}
@@ -167,19 +167,17 @@ func (p *redisProcess) Close() error {
 }
 
 var (
-	redisServerBin  = filepath.Join(".test", "redis", "src", "redis-server")
-	redisServerConf = filepath.Join(".test", "redis", "redis.conf")
+	redisServerBin, _  = filepath.Abs(filepath.Join(".test", "redis", "src", "redis-server"))
+	redisServerConf, _ = filepath.Abs(filepath.Join(".test", "redis.conf"))
 )
 
 func redisDir(port string) (string, error) {
 	dir, err := filepath.Abs(filepath.Join(".test", "instances", port))
 	if err != nil {
 		return "", err
-	}
-	if err := os.RemoveAll(dir); err != nil {
+	} else if err = os.RemoveAll(dir); err != nil {
 		return "", err
-	}
-	if err := os.MkdirAll(dir, 0775); err != nil {
+	} else if err = os.MkdirAll(dir, 0775); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -190,7 +188,11 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 	if err != nil {
 		return nil, err
 	}
-	baseArgs := []string{redisServerConf, "--port", port, "--dir", dir}
+	if err = exec.Command("cp", "-f", redisServerConf, dir).Run(); err != nil {
+		return nil, err
+	}
+
+	baseArgs := []string{filepath.Join(dir, "redis.conf"), "--port", port, "--dir", dir}
 	process, err := execCmd(redisServerBin, append(baseArgs, args...)...)
 	if err != nil {
 		return nil, err
