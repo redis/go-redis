@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"sync"
+	"testing"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -130,3 +131,23 @@ var _ = Describe("Pool", func() {
 	})
 
 })
+
+func BenchmarkPool(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer client.Close()
+
+	pool := client.Pool()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			conn, _, err := pool.Get()
+			if err != nil {
+				b.Fatalf("no error expected on pool.Get but received: %s", err.Error())
+			}
+			if err = pool.Put(conn); err != nil {
+				b.Fatalf("no error expected on pool.Put but received: %s", err.Error())
+			}
+		}
+	})
+}
