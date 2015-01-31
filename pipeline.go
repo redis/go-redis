@@ -73,7 +73,7 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 }
 
 func (c *Pipeline) execCmds(cn *conn, cmds []Cmder) error {
-	if err := c.writeCmd(cn, cmds...); err != nil {
+	if err := cn.writeCmds(cmds...); err != nil {
 		setCmdsErr(cmds, err)
 		return err
 	}

@@ -1,14 +1,144 @@
 package redis
 
 import (
+	"errors"
 	"math/rand"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const HashSlots = 16384
 
 //------------------------------------------------------------------------------
+
+type clusterPool struct {
+	addrs []string
+	slots [][]string
+	conns map[string]pool
+	opts  *ClusterOptions
+
+	_forceReload uint32
+	sync.RWMutex
+}
+
+func newClusterPool(opts *ClusterOptions) (*clusterPool, error) {
+	addrs, err := opts.ensureAddrs()
+	if err != nil {
+		return nil, err
+	}
+
+	p := &clusterPool{addrs: addrs, opts: opts, _forceReload: 1}
+	p.reset()
+	return p, nil
+}
+
+// Closes the pool
+func (p *clusterPool) Close() (err error) {
+	p.Lock()
+	defer p.Unlock()
+
+	p.reset()
+	return nil
+}
+
+// Closes all connections and reloads slot cache
+func (p *clusterPool) Reload() (err error) {
+	var infos []ClusterSlotInfo
+
+	p.Lock()
+	defer p.Unlock()
+
+	for _, addr := range p.addrs {
+		p.reset()
+
+		if infos, err = p.fetch(addr); err == nil {
+			p.update(infos)
+			break
+		}
+	}
+	return
+}
+
+// Finds the current master address for a hash slot
+func (p *clusterPool) master(hashSlot int) string {
+	if addrs := p.slots[hashSlot]; len(addrs) > 0 {
+		return addrs[0]
+	}
+	return ""
+}
+
+// Find the next unseen address
+func (p *clusterPool) next(seen map[string]struct{}) string {
+	for _, addr := range p.addrs {
+		if _, ok := seen[addr]; !ok {
+			return addr
+		}
+	}
+	return ""
+}
+
+// Fetch slot information
+func (p *clusterPool) fetch(addr string) ([]ClusterSlotInfo, error) {
+	client := NewTCPClient(p.opts.opts(addr))
+	defer client.Close()
+
+	return client.ClusterSlots().Result()
+}
+
+// Update slot information
+func (p *clusterPool) update(infos []ClusterSlotInfo) {
+
+	// Create a map of known nodes
+	known := make(map[string]struct{}, len(p.addrs))
+	for _, addr := range p.addrs {
+		known[addr] = struct{}{}
+	}
+
+	// Populate slots, store unknown nodes
+	for _, info := range infos {
+		for i := info.Min; i <= info.Max; i++ {
+			p.slots[i] = info.Addrs
+		}
+
+		for _, addr := range info.Addrs {
+			if _, ok := known[addr]; !ok {
+				p.addrs = append(p.addrs, addr)
+				known[addr] = struct{}{}
+			}
+		}
+	}
+
+	// Shuffle addresses
+	for i := range p.addrs {
+		j := rand.Intn(i + 1)
+		p.addrs[i], p.addrs[j] = p.addrs[j], p.addrs[i]
+	}
+}
+
+// Closes all connections and flushes slots cache
+func (p *clusterPool) reset() {
+	for _, conn := range p.conns {
+		conn.Close()
+	}
+	p.conns = make(map[string]pool, 10)
+	p.slots = make([][]string, HashSlots)
+}
+
+// Is a cache reload due
+func (p *clusterPool) reloadDue() bool {
+	return atomic.CompareAndSwapUint32(&p._forceReload, 1, 0)
+}
+
+// Forces a cache reload on next request
+func (p *clusterPool) forceReload() {
+	atomic.StoreUint32(&p._forceReload, 1)
+}
+
+//------------------------------------------------------------------------------
+
+var errNoAddrs = errors.New("redis: no addresses")
 
 type ClusterOptions struct {
 	// A seed-list of host:port addresses of known cluster nodes
@@ -39,8 +169,16 @@ func (opt *ClusterOptions) getDialTimeout() time.Duration {
 	return opt.DialTimeout
 }
 
-func (opt *ClusterOptions) options() *options {
-	return &options{
+func (opt *ClusterOptions) ensureAddrs() ([]string, error) {
+	if len(opt.Addrs) < 1 {
+		return nil, errNoAddrs
+	}
+	return opt.Addrs, nil
+}
+
+func (opt *ClusterOptions) opts(addr string) *Options {
+	return &Options{
+		Addr:     addr,
 		DB:       0,
 		Password: opt.Password,
 

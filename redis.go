@@ -12,16 +12,6 @@ type baseClient struct {
 	cmds     []Cmder
 }
 
-func (c *baseClient) writeCmd(cn *conn, cmds ...Cmder) error {
-	buf := cn.buf[:0]
-	for _, cmd := range cmds {
-		buf = appendArgs(buf, cmd.args())
-	}
-
-	_, err := cn.Write(buf)
-	return err
-}
-
 func (c *baseClient) conn() (*conn, error) {
 	cn, isNew, err := c.connPool.Get()
 	if err != nil {
@@ -118,7 +108,7 @@ func (c *baseClient) run(cmd Cmder) {
 		cn.readTimeout = c.opt.ReadTimeout
 	}
 
-	if err := c.writeCmd(cn, cmd); err != nil {
+	if err := cn.writeCmds(cmd); err != nil {
 		c.freeConn(cn, err)
 		cmd.setErr(err)
 		return

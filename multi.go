@@ -86,7 +86,7 @@ func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 }
 
 func (c *Multi) execCmds(cn *conn, cmds []Cmder) error {
-	err := c.writeCmd(cn, cmds...)
+	err := cn.writeCmds(cmds...)
 	if err != nil {
 		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
