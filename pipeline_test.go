@@ -25,12 +25,12 @@ var _ = Describe("Pipelining", func() {
 	})
 
 	It("should pipeline", func() {
-		set := client.Set("key2", "hello2")
+		set := client.Set("key2", "hello2", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 		Expect(set.Val()).To(Equal("OK"))
 
 		pipeline := client.Pipeline()
-		set = pipeline.Set("key1", "hello1")
+		set = pipeline.Set("key1", "hello1", 0)
 		get := pipeline.Get("key2")
 		incr := pipeline.Incr("key3")
 		getNil := pipeline.Get("key4")

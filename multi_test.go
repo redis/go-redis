@@ -32,7 +32,7 @@ var _ = Describe("Multi", func() {
 			get *redis.StringCmd
 		)
 		cmds, err := multi.Exec(func() error {
-			set = multi.Set("key", "hello")
+			set = multi.Set("key", "hello", 0)
 			get = multi.Get("key")
 			return nil
 		})
@@ -53,9 +53,9 @@ var _ = Describe("Multi", func() {
 		}()
 
 		cmds, err := multi.Exec(func() error {
-			multi.Set("key1", "hello1")
+			multi.Set("key1", "hello1", 0)
 			multi.Discard()
-			multi.Set("key2", "hello2")
+			multi.Set("key2", "hello2", 0)
 			return nil
 		})
 		Expect(err).NotTo(HaveOccurred())

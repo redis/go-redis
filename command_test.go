@@ -26,7 +26,7 @@ var _ = Describe("Command", func() {
 	})
 
 	It("should have a plain string result", func() {
-		set := client.Set("foo", "bar")
+		set := client.Set("foo", "bar", 0)
 		Expect(set.String()).To(Equal("SET foo bar: OK"))
 
 		get := client.Get("foo")
@@ -34,7 +34,7 @@ var _ = Describe("Command", func() {
 	})
 
 	It("should have correct val/err states", func() {
-		set := client.Set("key", "hello")
+		set := client.Set("key", "hello", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 		Expect(set.Val()).To(Equal("OK"))
 
@@ -47,7 +47,7 @@ var _ = Describe("Command", func() {
 	})
 
 	It("should escape special chars", func() {
-		set := client.Set("key", "hello1\r\nhello2\r\n")
+		set := client.Set("key", "hello1\r\nhello2\r\n", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 		Expect(set.Val()).To(Equal("OK"))
 
@@ -58,7 +58,7 @@ var _ = Describe("Command", func() {
 
 	It("should handle big vals", func() {
 		val := string(bytes.Repeat([]byte{'*'}, 1<<16))
-		set := client.Set("key", val)
+		set := client.Set("key", val, 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 		Expect(set.Val()).To(Equal("OK"))
 
@@ -70,7 +70,7 @@ var _ = Describe("Command", func() {
 	It("should handle many keys #1", func() {
 		const n = 100000
 		for i := 0; i < n; i++ {
-			client.Set("keys.key"+strconv.Itoa(i), "hello"+strconv.Itoa(i))
+			client.Set("keys.key"+strconv.Itoa(i), "hello"+strconv.Itoa(i), 0)
 		}
 		keys := client.Keys("keys.*")
 		Expect(keys.Err()).NotTo(HaveOccurred())
@@ -83,7 +83,7 @@ var _ = Describe("Command", func() {
 		keys := []string{"non-existent-key"}
 		for i := 0; i < n; i++ {
 			key := "keys.key" + strconv.Itoa(i)
-			client.Set(key, "hello"+strconv.Itoa(i))
+			client.Set(key, "hello"+strconv.Itoa(i), 0)
 			keys = append(keys, key)
 		}
 		keys = append(keys, "non-existent-key")
@@ -100,7 +100,7 @@ var _ = Describe("Command", func() {
 	})
 
 	It("should convert strings via helpers", func() {
-		set := client.Set("key", "10")
+		set := client.Set("key", "10", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 
 		n, err := client.Get("key").Int64()
