@@ -230,6 +230,38 @@ func parseStringStringMap(rd *bufio.Reader, n int64) (interface{}, error) {
 	return m, nil
 }
 
+func parseStringIntMap(rd *bufio.Reader, n int64) (interface{}, error) {
+	m := make(map[string]int64, n/2)
+	for i := int64(0); i < n; i += 2 {
+		keyiface, err := parseReply(rd, nil)
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyiface.(string)
+		if !ok {
+			return nil, fmt.Errorf("got %T, expected string", keyiface)
+		}
+
+		valueiface, err := parseReply(rd, nil)
+		if err != nil {
+			return nil, err
+		}
+		switch value := valueiface.(type) {
+		case int64:
+			m[key] = value
+		case string:
+			m[key], err = strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("got %v, expected number", value)
+			}
+		default:
+			return nil, fmt.Errorf("got %T, expected number or string", valueiface)
+
+		}
+	}
+	return m, nil
+}
+
 func parseZSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 	zz := make([]Z, n/2)
 	for i := int64(0); i < n; i += 2 {

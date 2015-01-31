@@ -160,6 +160,13 @@ type Options struct {
 	IdleTimeout time.Duration
 }
 
+func (opt *Options) getNetwork() string {
+	if opt.Network == "" {
+		return "tcp"
+	}
+	return opt.Network
+}
+
 func (opt *Options) getPoolSize() int {
 	if opt.PoolSize == 0 {
 		return 10
@@ -197,7 +204,7 @@ func NewClient(clOpt *Options) *Client {
 	dialer := clOpt.Dialer
 	if dialer == nil {
 		dialer = func() (net.Conn, error) {
-			return net.DialTimeout(clOpt.Network, clOpt.Addr, opt.DialTimeout)
+			return net.DialTimeout(clOpt.getNetwork(), clOpt.Addr, opt.DialTimeout)
 		}
 	}
 	return &Client{

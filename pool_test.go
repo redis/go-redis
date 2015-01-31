@@ -39,8 +39,11 @@ var _ = Describe("Pool", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("PONG"))
 		})
-		Expect(client.Pool().Size()).To(Equal(10))
-		Expect(client.Pool().Len()).To(Equal(10))
+
+		pool := client.Pool()
+		Expect(pool.Size()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(BeNumerically("<=", 10))
+		Expect(pool.Size()).To(Equal(pool.Len()))
 	})
 
 	It("should respect max on multi", func() {
@@ -59,8 +62,10 @@ var _ = Describe("Pool", func() {
 			Expect(multi.Close()).NotTo(HaveOccurred())
 		})
 
-		Expect(client.Pool().Size()).To(Equal(10))
-		Expect(client.Pool().Len()).To(Equal(10))
+		pool := client.Pool()
+		Expect(pool.Size()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(BeNumerically("<=", 10))
+		Expect(pool.Size()).To(Equal(pool.Len()))
 	})
 
 	It("should respect max on pipelines", func() {
@@ -75,8 +80,10 @@ var _ = Describe("Pool", func() {
 			Expect(pipe.Close()).NotTo(HaveOccurred())
 		})
 
-		Expect(client.Pool().Size()).To(Equal(10))
-		Expect(client.Pool().Len()).To(Equal(10))
+		pool := client.Pool()
+		Expect(pool.Size()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(BeNumerically("<=", 10))
+		Expect(pool.Size()).To(Equal(pool.Len()))
 	})
 
 	It("should respect max on pubsub", func() {
@@ -86,8 +93,9 @@ var _ = Describe("Pool", func() {
 			Expect(pubsub.Close()).NotTo(HaveOccurred())
 		})
 
-		Expect(client.Pool().Size()).To(Equal(0))
-		Expect(client.Pool().Len()).To(Equal(0))
+		pool := client.Pool()
+		Expect(pool.Size()).To(Equal(0))
+		Expect(pool.Len()).To(Equal(0))
 	})
 
 	It("should remove broken connections", func() {
@@ -104,8 +112,9 @@ var _ = Describe("Pool", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal("PONG"))
 
-		Expect(client.Pool().Size()).To(Equal(1))
-		Expect(client.Pool().Len()).To(Equal(1))
+		pool := client.Pool()
+		Expect(pool.Size()).To(Equal(1))
+		Expect(pool.Len()).To(Equal(1))
 	})
 
 	It("should reuse connections", func() {
@@ -115,8 +124,9 @@ var _ = Describe("Pool", func() {
 			Expect(val).To(Equal("PONG"))
 		}
 
-		Expect(client.Pool().Size()).To(Equal(1))
-		Expect(client.Pool().Len()).To(Equal(1))
+		pool := client.Pool()
+		Expect(pool.Size()).To(Equal(1))
+		Expect(pool.Len()).To(Equal(1))
 	})
 
 })

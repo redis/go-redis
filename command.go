@@ -21,6 +21,7 @@ var (
 	_ Cmder = (*StringSliceCmd)(nil)
 	_ Cmder = (*BoolSliceCmd)(nil)
 	_ Cmder = (*StringStringMapCmd)(nil)
+	_ Cmder = (*StringIntMapCmd)(nil)
 	_ Cmder = (*ZSliceCmd)(nil)
 	_ Cmder = (*ScanCmd)(nil)
 	_ Cmder = (*ClusterSlotCmd)(nil)
@@ -525,6 +526,42 @@ func (cmd *StringStringMapCmd) parseReply(rd *bufio.Reader) error {
 		return err
 	}
 	cmd.val = v.(map[string]string)
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type StringIntMapCmd struct {
+	*baseCmd
+
+	val map[string]int64
+}
+
+func NewStringIntMapCmd(args ...string) *StringIntMapCmd {
+	return &StringIntMapCmd{
+		baseCmd: newBaseCmd(args...),
+	}
+}
+
+func (cmd *StringIntMapCmd) Val() map[string]int64 {
+	return cmd.val
+}
+
+func (cmd *StringIntMapCmd) Result() (map[string]int64, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *StringIntMapCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *StringIntMapCmd) parseReply(rd *bufio.Reader) error {
+	v, err := parseReply(rd, parseStringIntMap)
+	if err != nil {
+		cmd.err = err
+		return err
+	}
+	cmd.val = v.(map[string]int64)
 	return nil
 }
 

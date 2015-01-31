@@ -29,14 +29,10 @@ func ExampleNewTCPClient() {
 }
 
 func ExampleNewFailoverClient() {
-	client := redis.NewFailoverClient(&redis.FailoverOptions{
+	redis.NewFailoverClient(&redis.FailoverOptions{
 		MasterName:    "master",
 		SentinelAddrs: []string{":26379"},
 	})
-
-	pong, err := client.Ping().Result()
-	fmt.Println(pong, err)
-	// Output: PONG <nil>
 }
 
 func ExampleClient() {

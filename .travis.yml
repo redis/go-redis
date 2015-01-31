@@ -16,6 +16,3 @@ install:
   - mkdir -p $HOME/gopath/src/gopkg.in
   - mv $HOME/gopath/src/github.com/go-redis/redis $HOME/gopath/src/gopkg.in/redis.v2
   - cd $HOME/gopath/src/gopkg.in/redis.v2
-
-before_script:
-  - redis-server testdata/sentinel.conf --sentinel &
