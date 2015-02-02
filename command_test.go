@@ -150,7 +150,9 @@ var _ = Describe("Command", func() {
 			wg.Add(n)
 			for i := 0; i < n; i++ {
 				go func() {
+					defer GinkgoRecover()
 					defer wg.Done()
+
 					err := client.Incr(key).Err()
 					Expect(err).NotTo(HaveOccurred())
 				}()
