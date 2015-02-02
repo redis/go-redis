@@ -138,25 +138,49 @@ type options struct {
 	WriteTimeout time.Duration
 
 	PoolSize    int
+	PoolTimeout time.Duration
 	IdleTimeout time.Duration
 }
 
 type Options struct {
+	// The network type, either "tcp" or "unix".
+	// Default: "tcp"
 	Network string
-	Addr    string
+	// The network address.
+	Addr string
 
 	// Dialer creates new network connection and has priority over
 	// Network and Addr options.
 	Dialer func() (net.Conn, error)
 
+	// An optional password. Must match the password specified in the
+	// `requirepass` server configuration option.
 	Password string
-	DB       int64
+	// Select a database.
+	// Default: 0
+	DB int64
 
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
+	// Sets the deadline for establishing new connections. If reached,
+	// deal attepts will fail with a timeout.
+	DialTimeout time.Duration
+	// Sets the deadline for socket reads. If reached, commands will
+	// fail with a timeout instead of blocking.
+	ReadTimeout time.Duration
+	// Sets the deadline for socket writes. If reached, commands will
+	// fail with a timeout instead of blocking.
 	WriteTimeout time.Duration
 
-	PoolSize    int
+	// The maximum number of socket connections.
+	// Default: 10
+	PoolSize int
+	// If all socket connections is the pool are busy, the pool will wait
+	// this amount of time for a conection to become available, before
+	// returning an error.
+	// Default: 5s
+	PoolTimeout time.Duration
+	// Evict connections from the pool after they have been idle for longer
+	// than specified in this option.
+	// Default: 0 = no eviction
 	IdleTimeout time.Duration
 }
 
@@ -181,6 +205,13 @@ func (opt *Options) getDialTimeout() time.Duration {
 	return opt.DialTimeout
 }
 
+func (opt *Options) getPoolTimeout() time.Duration {
+	if opt.PoolTimeout == 0 {
+		return 5 * time.Second
+	}
+	return opt.PoolTimeout
+}
+
 func (opt *Options) options() *options {
 	return &options{
 		DB:       opt.DB,
@@ -191,6 +222,7 @@ func (opt *Options) options() *options {
 		WriteTimeout: opt.WriteTimeout,
 
 		PoolSize:    opt.getPoolSize(),
+		PoolTimeout: opt.getPoolTimeout(),
 		IdleTimeout: opt.IdleTimeout,
 	}
 }

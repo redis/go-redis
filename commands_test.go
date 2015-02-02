@@ -17,7 +17,8 @@ var _ = Describe("Commands", func() {
 
 	BeforeEach(func() {
 		client = redis.NewTCPClient(&redis.Options{
-			Addr: redisAddr,
+			Addr:        redisAddr,
+			PoolTimeout: 30 * time.Second,
 		})
 	})
 
@@ -1116,6 +1117,8 @@ var _ = Describe("Commands", func() {
 			started := make(chan bool)
 			done := make(chan bool)
 			go func() {
+				defer GinkgoRecover()
+
 				started <- true
 				bLPop := client.BLPop(0, "list")
 				Expect(bLPop.Err()).NotTo(HaveOccurred())
@@ -1161,6 +1164,8 @@ var _ = Describe("Commands", func() {
 			started := make(chan bool)
 			done := make(chan bool)
 			go func() {
+				defer GinkgoRecover()
+
 				started <- true
 				brpop := client.BRPop(0, "list")
 				Expect(brpop.Err()).NotTo(HaveOccurred())
@@ -2190,7 +2195,9 @@ var _ = Describe("Commands", func() {
 				wg.Add(1)
 
 				go func() {
+					defer GinkgoRecover()
 					defer wg.Done()
+
 					for {
 						cmds, err := safeIncr()
 						if err == redis.TxFailedErr {
