@@ -4,7 +4,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"sort"
 	"testing"
 	"time"
 
@@ -123,11 +122,6 @@ var _ = Describe("Client", func() {
 func TestGinkgoSuite(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "gopkg.in/redis.v2")
-}
-
-func sortStrings(slice []string) []string {
-	sort.Strings(slice)
-	return slice
 }
 
 func execCmd(name string, args ...string) (*os.Process, error) {
