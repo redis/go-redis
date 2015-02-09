@@ -245,7 +245,7 @@ var _ = Describe("Commands", func() {
 
 			keys := client.Keys("*o*")
 			Expect(keys.Err()).NotTo(HaveOccurred())
-			Expect(sortStrings(keys.Val())).To(Equal([]string{"four", "one", "two"}))
+			Expect(keys.Val()).To(ConsistOf([]string{"four", "one", "two"}))
 
 			keys = client.Keys("t??")
 			Expect(keys.Err()).NotTo(HaveOccurred())
@@ -253,7 +253,7 @@ var _ = Describe("Commands", func() {
 
 			keys = client.Keys("*")
 			Expect(keys.Err()).NotTo(HaveOccurred())
-			Expect(sortStrings(keys.Val())).To(Equal([]string{"four", "one", "three", "two"}))
+			Expect(keys.Val()).To(ConsistOf([]string{"four", "one", "three", "two"}))
 		})
 
 		It("should Migrate", func() {
@@ -1473,7 +1473,7 @@ var _ = Describe("Commands", func() {
 
 			sMembers := client.SMembers("set")
 			Expect(sMembers.Err()).NotTo(HaveOccurred())
-			Expect(sortStrings(sMembers.Val())).To(Equal([]string{"Hello", "World"}))
+			Expect(sMembers.Val()).To(ConsistOf([]string{"Hello", "World"}))
 		})
 
 		It("should SCard", func() {
@@ -1507,7 +1507,7 @@ var _ = Describe("Commands", func() {
 
 			sDiff := client.SDiff("set1", "set2")
 			Expect(sDiff.Err()).NotTo(HaveOccurred())
-			Expect(sortStrings(sDiff.Val())).To(Equal([]string{"a", "b"}))
+			Expect(sDiff.Val()).To(ConsistOf([]string{"a", "b"}))
 		})
 
 		It("should SDiffStore", func() {
@@ -1531,7 +1531,7 @@ var _ = Describe("Commands", func() {
 
 			sMembers := client.SMembers("set")
 			Expect(sMembers.Err()).NotTo(HaveOccurred())
-			Expect(sortStrings(sMembers.Val())).To(Equal([]string{"a", "b"}))
+			Expect(sMembers.Val()).To(ConsistOf([]string{"a", "b"}))
 		})
 
 		It("should SInter", func() {
@@ -1599,7 +1599,7 @@ var _ = Describe("Commands", func() {
 
 			sMembers := client.SMembers("set")
 			Expect(sMembers.Err()).NotTo(HaveOccurred())
-			Expect(sortStrings(sMembers.Val())).To(Equal([]string{"Hello", "World"}))
+			Expect(sMembers.Val()).To(ConsistOf([]string{"Hello", "World"}))
 		})
 
 		It("should SMove", func() {
@@ -1621,7 +1621,7 @@ var _ = Describe("Commands", func() {
 
 			sMembers = client.SMembers("set2")
 			Expect(sMembers.Err()).NotTo(HaveOccurred())
-			Expect(sortStrings(sMembers.Val())).To(Equal([]string{"three", "two"}))
+			Expect(sMembers.Val()).To(ConsistOf([]string{"three", "two"}))
 		})
 
 		It("should SPop", func() {
@@ -1676,7 +1676,7 @@ var _ = Describe("Commands", func() {
 
 			sMembers := client.SMembers("set")
 			Expect(sMembers.Err()).NotTo(HaveOccurred())
-			Expect(sortStrings(sMembers.Val())).To(ConsistOf([]string{"three", "two"}))
+			Expect(sMembers.Val()).To(ConsistOf([]string{"three", "two"}))
 		})
 
 		It("should SUnion", func() {
