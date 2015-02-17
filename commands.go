@@ -429,6 +429,29 @@ func (c *Client) Set(key, value string) *StatusCmd {
 	return cmd
 }
 
+type SetOpt struct {
+	EX, PX time.Duration
+	NX, XX bool
+}
+
+func (c *Client) SetSpecial(key, value string, opt SetOpt) *StatusCmd {
+	args := append(make([]string, 0, 6), "SET", key, value)
+	if opt.PX > 0 {
+		args = append(args, "PX", strconv.FormatInt(int64(opt.PX/time.Millisecond), 10))
+	} else if opt.EX > 0 {
+		args = append(args, "EX", strconv.FormatInt(int64(opt.EX/time.Second), 10))
+	}
+	if opt.NX {
+		args = append(args, "NX")
+	} else if opt.XX {
+		args = append(args, "XX")
+	}
+
+	cmd := NewStatusCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *Client) SetBit(key string, offset int64, value int) *IntCmd {
 	cmd := NewIntCmd(
 		"SETBIT",

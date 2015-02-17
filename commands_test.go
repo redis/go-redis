@@ -858,6 +858,50 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("hello"))
 		})
 
+		It("should SetSpecial", func() {
+			val, err := client.SetSpecial("key", "v1", redis.SetOpt{EX: time.Minute}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+			ttl, err := client.TTL("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ttl).To(BeNumerically("~", time.Minute, 10*time.Millisecond))
+
+			val, err = client.SetSpecial("key", "v2", redis.SetOpt{PX: 2 * time.Minute}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+			ttl, err = client.TTL("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ttl).To(BeNumerically("~", 2*time.Minute, 10*time.Millisecond))
+
+			val, err = client.SetSpecial("key", "v3", redis.SetOpt{XX: true}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+			val, err = client.Get("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("v3"))
+
+			err = client.SetSpecial("key", "v4", redis.SetOpt{NX: true}).Err()
+			Expect(err).To(Equal(redis.Nil))
+			val, err = client.Get("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("v3"))
+
+			err = client.Del("key").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.SetSpecial("key", "v5", redis.SetOpt{XX: true}).Err()
+			Expect(err).To(Equal(redis.Nil))
+			err = client.Get("key").Err()
+			Expect(err).To(Equal(redis.Nil))
+
+			val, err = client.SetSpecial("key", "v6", redis.SetOpt{NX: true}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+			val, err = client.Get("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("v6"))
+		})
+
 		It("should SetEx", func() {
 			setEx := client.SetEx("key", 10*time.Second, "hello")
 			Expect(setEx.Err()).NotTo(HaveOccurred())
