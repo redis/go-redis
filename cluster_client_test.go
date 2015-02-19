@@ -7,9 +7,9 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("clusterPool", func() {
+var _ = Describe("ClusterClient", func() {
 
-	var subject *clusterPool
+	var subject *ClusterClient
 	var populate = func() {
 		subject.reset()
 		subject.update([]ClusterSlotInfo{
@@ -22,7 +22,7 @@ var _ = Describe("clusterPool", func() {
 
 	BeforeEach(func() {
 		var err error
-		subject, err = newClusterPool(&ClusterOptions{
+		subject, err = NewClusterClient(&ClusterOptions{
 			Addrs: []string{"127.0.0.1:6379", "127.0.0.1:7003", "127.0.0.1:7006"},
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -36,7 +36,7 @@ var _ = Describe("clusterPool", func() {
 		Expect(subject.addrs).To(HaveLen(3))
 		Expect(subject.slots).To(HaveLen(HashSlots))
 		Expect(subject.conns).To(BeEmpty())
-		Expect(subject._forceReload).To(Equal(uint32(1)))
+		Expect(subject._reload).To(Equal(uint32(1)))
 	})
 
 	It("should update slots cache", func() {
@@ -87,10 +87,10 @@ var _ = Describe("clusterPool", func() {
 	})
 
 	It("should check if reload is due", func() {
-		Expect(subject.reloadDue()).To(BeTrue())
-		Expect(subject.reloadDue()).To(BeFalse())
+		Expect(subject.needReload()).To(BeTrue())
+		Expect(subject.needReload()).To(BeFalse())
 		subject.forceReload()
-		Expect(subject.reloadDue()).To(BeTrue())
-		Expect(subject.reloadDue()).To(BeFalse())
+		Expect(subject.needReload()).To(BeTrue())
+		Expect(subject.needReload()).To(BeFalse())
 	})
 })

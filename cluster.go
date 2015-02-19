@@ -1,77 +1,159 @@
 package redis
 
 import (
+	"container/list"
 	"errors"
+	"io"
 	"math/rand"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-const HashSlots = 16384
+type ClusterClient struct {
+	commandable
 
-//------------------------------------------------------------------------------
-
-type clusterPool struct {
 	addrs []string
 	slots [][]string
-	conns map[string]pool
-	opts  *ClusterOptions
+	conns *lruPool
+	opt   *ClusterOptions
 
-	_forceReload uint32
-	sync.RWMutex
+	cachemx sync.RWMutex
+	_reload uint32
 }
 
-func newClusterPool(opts *ClusterOptions) (*clusterPool, error) {
-	addrs, err := opts.ensureAddrs()
+func NewClusterClient(opt *ClusterOptions) (*ClusterClient, error) {
+	addrs, err := opt.getAddrs()
 	if err != nil {
 		return nil, err
 	}
 
-	p := &clusterPool{addrs: addrs, opts: opts, _forceReload: 1}
-	p.reset()
-	return p, nil
+	client := &ClusterClient{
+		addrs:   addrs,
+		conns:   newLRUPool(opt),
+		opt:     opt,
+		_reload: 1,
+	}
+	client.commandable.process = client.process
+	client.reset()
+	return client, nil
 }
 
 // Closes the pool
-func (p *clusterPool) Close() (err error) {
-	p.Lock()
-	defer p.Unlock()
+func (c *ClusterClient) Close() error {
+	c.cachemx.Lock()
+	defer c.cachemx.Unlock()
 
-	p.reset()
-	return nil
+	return c.reset()
 }
 
-// Closes all connections and reloads slot cache
-func (p *clusterPool) Reload() (err error) {
+func (c *ClusterClient) process(cmd Cmder) {
+	c.reloadIfDue()
+	ask := false
+
+	c.cachemx.RLock()
+	defer c.cachemx.RUnlock()
+
+	tried := make(map[string]struct{}, len(c.addrs))
+	addr := c.master(hashSlot)
+	for attempt := 0; attempt < c.opt.getMaxRedirects(); attempt++ {
+		tried[addr] = struct{}{}
+
+		// Pick the connection, process request
+		conn := c.conns.Fetch(addr, c.connectTo)
+		if ask {
+			pipe := conn.Pipeline()
+			pipe.Process(NewCmd("ASKING"))
+			pipe.Process(cmd)
+			_, _ = pipe.Exec()
+			ask = false
+		} else {
+			conn.Process(cmd)
+		}
+
+		// If there is no (real) error, we are done!
+		err := cmd.Err()
+		if err == nil || err == Nil {
+			return
+		}
+
+		// On connection errors, pick the next (not previosuly) tried connection
+		// and try again
+		if _, ok := err.(*net.OpError); ok || err == io.EOF {
+			if addr = c.next(tried); addr == "" {
+				return
+			}
+			cmd.Reset()
+			continue
+		}
+
+		// Check the error message, return if unexpected
+		parts := strings.SplitN(err.Error(), " ", 3)
+		if len(parts) != 3 {
+			return
+		}
+
+		// Handle MOVE and ASK redirections, return on any other error
+		switch parts[0] {
+		case "MOVED":
+			c.forceReloadOnNextCommand()
+			addr = parts[2]
+		case "ASK":
+			ask = true
+			addr = parts[2]
+		default:
+			return
+		}
+		cmd.Reset()
+	}
+}
+
+// Closes all connections and reloads slot cache, if due
+func (c *ClusterClient) reloadIfDue() (err error) {
+	if !atomic.CompareAndSwapUint32(&c._reload, 1, 0) {
+		return
+	}
 	var infos []ClusterSlotInfo
 
-	p.Lock()
-	defer p.Unlock()
+	c.cachemx.Lock()
+	defer c.cachemx.Unlock()
 
-	for _, addr := range p.addrs {
-		p.reset()
+	for _, addr := range c.addrs {
+		c.reset()
 
-		if infos, err = p.fetch(addr); err == nil {
-			p.update(infos)
+		if infos, err = c.fetch(addr); err == nil {
+			c.update(infos)
 			break
 		}
 	}
 	return
 }
 
+// Closes all connections and flushes slots cache
+func (c *ClusterClient) reset() error {
+	err := c.conns.Clear()
+	c.slots = make([][]string, HashSlots)
+	return err
+}
+
+// Forces a cache reload on next request
+func (c *ClusterClient) forceReload() {
+	atomic.StoreUint32(&c._reload, 1)
+}
+
 // Finds the current master address for a hash slot
-func (p *clusterPool) master(hashSlot int) string {
-	if addrs := p.slots[hashSlot]; len(addrs) > 0 {
+func (c *ClusterClient) master(hashSlot int) string {
+	if addrs := c.slots[hashSlot]; len(addrs) > 0 {
 		return addrs[0]
 	}
 	return ""
 }
 
 // Find the next unseen address
-func (p *clusterPool) next(seen map[string]struct{}) string {
-	for _, addr := range p.addrs {
+func (c *ClusterClient) next(seen map[string]struct{}) string {
+	for _, addr := range c.addrs {
 		if _, ok := seen[addr]; !ok {
 			return addr
 		}
@@ -80,60 +162,41 @@ func (p *clusterPool) next(seen map[string]struct{}) string {
 }
 
 // Fetch slot information
-func (p *clusterPool) fetch(addr string) ([]ClusterSlotInfo, error) {
-	client := NewTCPClient(p.opts.opts(addr))
+func (c *ClusterClient) fetch(addr string) ([]ClusterSlotInfo, error) {
+	client := NewClient(c.opt.clientOpts(addr))
 	defer client.Close()
 
 	return client.ClusterSlots().Result()
 }
 
 // Update slot information
-func (p *clusterPool) update(infos []ClusterSlotInfo) {
+func (c *ClusterClient) update(infos []ClusterSlotInfo) {
 
 	// Create a map of known nodes
-	known := make(map[string]struct{}, len(p.addrs))
-	for _, addr := range p.addrs {
+	known := make(map[string]struct{}, len(c.addrs))
+	for _, addr := range c.addrs {
 		known[addr] = struct{}{}
 	}
 
 	// Populate slots, store unknown nodes
 	for _, info := range infos {
 		for i := info.Min; i <= info.Max; i++ {
-			p.slots[i] = info.Addrs
+			c.slots[i] = info.Addrs
 		}
 
 		for _, addr := range info.Addrs {
 			if _, ok := known[addr]; !ok {
-				p.addrs = append(p.addrs, addr)
+				c.addrs = append(c.addrs, addr)
 				known[addr] = struct{}{}
 			}
 		}
 	}
 
 	// Shuffle addresses
-	for i := range p.addrs {
+	for i := range c.addrs {
 		j := rand.Intn(i + 1)
-		p.addrs[i], p.addrs[j] = p.addrs[j], p.addrs[i]
+		c.addrs[i], c.addrs[j] = c.addrs[j], c.addrs[i]
 	}
-}
-
-// Closes all connections and flushes slots cache
-func (p *clusterPool) reset() {
-	for _, conn := range p.conns {
-		conn.Close()
-	}
-	p.conns = make(map[string]pool, 10)
-	p.slots = make([][]string, HashSlots)
-}
-
-// Is a cache reload due
-func (p *clusterPool) reloadDue() bool {
-	return atomic.CompareAndSwapUint32(&p._forceReload, 1, 0)
-}
-
-// Forces a cache reload on next request
-func (p *clusterPool) forceReload() {
-	atomic.StoreUint32(&p._forceReload, 1)
 }
 
 //------------------------------------------------------------------------------
@@ -147,8 +210,16 @@ type ClusterOptions struct {
 	// An optional password
 	Password string
 
-	// The maximum number of total TCP connections to all
-	// cluster nodes. Default: 60
+	// The maximum number of MOVED/ASK redirects to follow, before
+	// giving up. Default: 16
+	MaxRedirects int
+
+	// The maximum number of open connections to cluster nodes. Default: 10.
+	// WARNING: Each connection maintains its own connection pool. The maximum
+	// possible number of socket connections is therefore MaxConns x PoolSize
+	MaxConns int
+
+	// The maximum number of TCP sockets per connection. Default: 5
 	PoolSize int
 
 	// Timeout settings
@@ -156,8 +227,15 @@ type ClusterOptions struct {
 }
 
 func (opt *ClusterOptions) getPoolSize() int {
-	if opt.PoolSize == 0 {
-		return 60
+	if opt.PoolSize < 1 {
+		return 5
+	}
+	return opt.PoolSize
+}
+
+func (opt *ClusterOptions) getMaxConns() int {
+	if opt.MaxConns < 1 {
+		return 10
 	}
 	return opt.PoolSize
 }
@@ -169,14 +247,21 @@ func (opt *ClusterOptions) getDialTimeout() time.Duration {
 	return opt.DialTimeout
 }
 
-func (opt *ClusterOptions) ensureAddrs() ([]string, error) {
+func (opt *ClusterOptions) getMaxRedirects() int {
+	if opt.MaxRedirects < 1 {
+		return 16
+	}
+	return opt.MaxRedirects
+}
+
+func (opt *ClusterOptions) getAddrs() ([]string, error) {
 	if len(opt.Addrs) < 1 {
 		return nil, errNoAddrs
 	}
 	return opt.Addrs, nil
 }
 
-func (opt *ClusterOptions) opts(addr string) *Options {
+func (opt *ClusterOptions) clientOpts(addr string) *Options {
 	return &Options{
 		Addr:     addr,
 		DB:       0,
@@ -193,12 +278,7 @@ func (opt *ClusterOptions) opts(addr string) *Options {
 
 //------------------------------------------------------------------------------
 
-type ClusterSlotInfo struct {
-	Min, Max int
-	Addrs    []string
-}
-
-//------------------------------------------------------------------------------
+const HashSlots = 16384
 
 // HashSlot returns a consistent slot number between 0 and 16383
 // for any given string key
@@ -257,4 +337,102 @@ func crc16sum(key string) (crc uint16) {
 		crc = (crc << 8) ^ crc16tab[(byte(crc>>8)^byte(v))&0x00ff]
 	}
 	return
+}
+
+// ------------------------------------------------------------------------
+
+// Shamelessly copied and adapted from:
+// https://github.com/camlistore/camlistore/blob/master/pkg/lru/cache.go
+// Copyright 2011 Google Inc. - http://www.apache.org/licenses/LICENSE-2.0
+
+// lruPool is a thread-safe connection LRU pool
+type lruPool struct {
+	opts  *ClusterOptions
+	limit int
+	order *list.List
+	cache map[string]*list.Element
+
+	sync.Mutex
+}
+
+type lruEntry struct {
+	addr string
+	conn *Client
+}
+
+func newLRUPool(opt *ClusterOptions) *lruPool {
+	return &lruPool{
+		opts:  opt,
+		limit: limit,
+		order: list.New(),
+		cache: make(map[string]*list.Element, limit),
+	}
+}
+
+// Fetch gets or creates a new connection
+func (c *lruPool) Fetch(addr string) *Client {
+	c.Lock()
+	defer c.Unlock()
+
+	conn, ok := c.get(addr)
+	if !ok {
+		conn = NewTCPClient(c.opts.clientOpts(addr))
+		c.add(addr, conn)
+	}
+	return conn
+}
+
+// Clear clears the cache
+func (c *lruPool) Clear() (err error) {
+	c.Lock()
+	defer c.Unlock()
+
+	for c.len() > 0 {
+		if e := c.closeOldest(); e != nil {
+			err = e
+		}
+	}
+	return
+}
+
+func (c *lruPool) len() int { return c.order.Len() }
+
+func (c *lruPool) get(addr string) (conn *Client, ok bool) {
+	if ee, ok := c.cache[addr]; ok {
+		c.order.MoveToFront(ee)
+		return ee.Value.(*lruEntry).conn, true
+	}
+	return
+}
+
+func (c *lruPool) add(addr string, conn *Client) {
+	if ee, ok := c.cache[addr]; ok {
+		c.order.MoveToFront(ee)
+		val := ee.Value.(*lruEntry)
+		val.conn.Close() // Close existing
+		val.conn = conn
+		return
+	}
+
+	// Add to cache if not present
+	ee := c.order.PushFront(&lruEntry{addr, conn})
+	c.cache[addr] = ee
+
+	if c.len() > c.maxEntries {
+		c.closeOldest()
+	}
+}
+
+func (c *lruPool) closeOldest() error {
+	ee := c.order.Back()
+	if ee == nil {
+		return nil
+	}
+
+	c.order.Remove(ee)
+	val := ee.Value.(*lruEntry)
+	delete(c.cache, val.addr)
+
+	// Close connection
+	return val.conn.Close()
 }

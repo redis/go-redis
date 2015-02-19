@@ -65,7 +65,7 @@ type baseCmd struct {
 
 	err error
 
-	_firstKeyPos int
+	_keyPos int
 
 	_writeTimeout, _readTimeout *time.Duration
 }
@@ -94,14 +94,10 @@ func (cmd *baseCmd) writeTimeout() *time.Duration {
 }
 
 func (cmd *baseCmd) firstKey() string {
-	if cmd._firstKeyPos < len(cmd._args) {
-		return cmd._args[cmd._firstKeyPos]
+	if cmd._keyPos > 0 && cmd._keyPos < len(cmd._args) {
+		return cmd._args[cmd._keyPos]
 	}
 	return ""
-}
-
-func (cmd *baseCmd) setFirstKeyPos(pos int) {
-	cmd._firstKeyPos = pos
 }
 
 func (cmd *baseCmd) setWriteTimeout(d time.Duration) {
@@ -617,6 +613,11 @@ func (cmd *ScanCmd) parseReply(rd *bufio.Reader) error {
 }
 
 //------------------------------------------------------------------------------
+
+type ClusterSlotInfo struct {
+	Min, Max int
+	Addrs    []string
+}
 
 type ClusterSlotCmd struct {
 	baseCmd
