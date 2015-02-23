@@ -49,20 +49,43 @@ func (c *ClusterClient) Close() error {
 	return c.reset()
 }
 
+// GetMasterAddrBySlot finds the current master address for a given hash slot
+func (c *ClusterClient) GetMasterAddrBySlot(hashSlot int) string {
+	if addrs := c.slots[hashSlot]; len(addrs) > 0 {
+		return addrs[0]
+	}
+	return ""
+}
+
+// GetNodeClientByAddr returns a node's client for a given address
+func (c *ClusterClient) GetNodeClientByAddr(addr string) *Client {
+	return c.conns.Fetch(addr)
+}
+
+// ------------------------------------------------------------------------
+
 func (c *ClusterClient) process(cmd Cmder) {
+	var hashSlot int
+
 	c.reloadIfDue()
 	ask := false
+
+	if key := cmd.firstKey(); key != "" {
+		hashSlot = HashSlot(key)
+	} else {
+		hashSlot = rand.Intn(HashSlots)
+	}
 
 	c.cachemx.RLock()
 	defer c.cachemx.RUnlock()
 
 	tried := make(map[string]struct{}, len(c.addrs))
-	addr := c.master(hashSlot)
+	addr := c.GetMasterAddrBySlot(hashSlot)
 	for attempt := 0; attempt < c.opt.getMaxRedirects(); attempt++ {
 		tried[addr] = struct{}{}
 
 		// Pick the connection, process request
-		conn := c.conns.Fetch(addr, c.connectTo)
+		conn := c.GetNodeClientByAddr(addr)
 		if ask {
 			pipe := conn.Pipeline()
 			pipe.Process(NewCmd("ASKING"))
@@ -141,14 +164,6 @@ func (c *ClusterClient) reset() error {
 // Forces a cache reload on next request
 func (c *ClusterClient) forceReload() {
 	atomic.StoreUint32(&c._reload, 1)
-}
-
-// Finds the current master address for a hash slot
-func (c *ClusterClient) master(hashSlot int) string {
-	if addrs := c.slots[hashSlot]; len(addrs) > 0 {
-		return addrs[0]
-	}
-	return ""
 }
 
 // Find the next unseen address

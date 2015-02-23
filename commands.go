@@ -28,19 +28,20 @@ func (c *commandable) Process(cmd Cmder) {
 //------------------------------------------------------------------------------
 
 func (c *commandable) Auth(password string) *StatusCmd {
-	cmd := NewStatusCmd("AUTH", password)
+	cmd := NewServerStatusCmd("AUTH", password)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) Echo(message string) *StringCmd {
 	cmd := NewStringCmd("ECHO", message)
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) Ping() *StatusCmd {
-	cmd := NewStatusCmd("PING")
+	cmd := NewServerStatusCmd("PING")
 	c.Process(cmd)
 	return cmd
 }
@@ -50,7 +51,7 @@ func (c *commandable) Quit() *StatusCmd {
 }
 
 func (c *commandable) Select(index int64) *StatusCmd {
-	cmd := NewStatusCmd("SELECT", strconv.FormatInt(index, 10))
+	cmd := NewServerStatusCmd("SELECT", strconv.FormatInt(index, 10))
 	c.Process(cmd)
 	return cmd
 }
@@ -103,6 +104,7 @@ func (c *commandable) Migrate(host, port, key string, db, timeout int64) *Status
 		strconv.FormatInt(db, 10),
 		strconv.FormatInt(timeout, 10),
 	)
+	cmd.SetKeyArgPos(3)
 	cmd.setReadTimeout(readTimeout(timeout))
 	c.Process(cmd)
 	return cmd
@@ -117,6 +119,7 @@ func (c *commandable) Move(key string, db int64) *BoolCmd {
 func (c *commandable) ObjectRefCount(keys ...string) *IntCmd {
 	args := append([]string{"OBJECT", "REFCOUNT"}, keys...)
 	cmd := NewIntCmd(args...)
+	cmd.SetKeyArgPos(2)
 	c.Process(cmd)
 	return cmd
 }
@@ -124,6 +127,7 @@ func (c *commandable) ObjectRefCount(keys ...string) *IntCmd {
 func (c *commandable) ObjectEncoding(keys ...string) *StringCmd {
 	args := append([]string{"OBJECT", "ENCODING"}, keys...)
 	cmd := NewStringCmd(args...)
+	cmd.SetKeyArgPos(2)
 	c.Process(cmd)
 	return cmd
 }
@@ -131,6 +135,7 @@ func (c *commandable) ObjectEncoding(keys ...string) *StringCmd {
 func (c *commandable) ObjectIdleTime(keys ...string) *DurationCmd {
 	args := append([]string{"OBJECT", "IDLETIME"}, keys...)
 	cmd := NewDurationCmd(time.Second, args...)
+	cmd.SetKeyArgPos(2)
 	c.Process(cmd)
 	return cmd
 }
@@ -1044,78 +1049,87 @@ func (c *commandable) ZUnionStore(
 
 func (c *commandable) BgRewriteAOF() *StatusCmd {
 	cmd := NewStatusCmd("BGREWRITEAOF")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) BgSave() *StatusCmd {
 	cmd := NewStatusCmd("BGSAVE")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ClientKill(ipPort string) *StatusCmd {
 	cmd := NewStatusCmd("CLIENT", "KILL", ipPort)
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ClientList() *StringCmd {
 	cmd := NewStringCmd("CLIENT", "LIST")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ConfigGet(parameter string) *SliceCmd {
 	cmd := NewSliceCmd("CONFIG", "GET", parameter)
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ConfigResetStat() *StatusCmd {
 	cmd := NewStatusCmd("CONFIG", "RESETSTAT")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ConfigSet(parameter, value string) *StatusCmd {
 	cmd := NewStatusCmd("CONFIG", "SET", parameter, value)
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) DbSize() *IntCmd {
 	cmd := NewIntCmd("DBSIZE")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) FlushAll() *StatusCmd {
-	cmd := NewStatusCmd("FLUSHALL")
+	cmd := NewServerStatusCmd("FLUSHALL")
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) FlushDb() *StatusCmd {
-	cmd := NewStatusCmd("FLUSHDB")
+	cmd := NewServerStatusCmd("FLUSHDB")
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) Info() *StringCmd {
-	cmd := NewStringCmd("INFO")
+	cmd := NewServerStringCmd("INFO")
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) LastSave() *IntCmd {
 	cmd := NewIntCmd("LASTSAVE")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) Save() *StatusCmd {
-	cmd := NewStatusCmd("SAVE")
+	cmd := NewServerStatusCmd("SAVE")
 	c.Process(cmd)
 	return cmd
 }
@@ -1127,7 +1141,7 @@ func (c *commandable) shutdown(modifier string) *StatusCmd {
 	} else {
 		args = []string{"SHUTDOWN", modifier}
 	}
-	cmd := NewStatusCmd(args...)
+	cmd := NewServerStatusCmd(args...)
 	c.Process(cmd)
 	if err := cmd.Err(); err != nil {
 		if err == io.EOF {
@@ -1155,7 +1169,7 @@ func (c *commandable) ShutdownNoSave() *StatusCmd {
 }
 
 func (c *commandable) SlaveOf(host, port string) *StatusCmd {
-	cmd := NewStatusCmd("SLAVEOF", host, port)
+	cmd := NewServerStatusCmd("SLAVEOF", host, port)
 	c.Process(cmd)
 	return cmd
 }
@@ -1170,6 +1184,7 @@ func (c *commandable) Sync() {
 
 func (c *commandable) Time() *StringSliceCmd {
 	cmd := NewStringSliceCmd("TIME")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
@@ -1181,6 +1196,9 @@ func (c *commandable) Eval(script string, keys []string, args []string) *Cmd {
 	cmdArgs = append(cmdArgs, keys...)
 	cmdArgs = append(cmdArgs, args...)
 	cmd := NewCmd(cmdArgs...)
+	if len(keys) > 0 {
+		cmd.SetKeyArgPos(3)
+	}
 	c.Process(cmd)
 	return cmd
 }
@@ -1190,6 +1208,9 @@ func (c *commandable) EvalSha(sha1 string, keys []string, args []string) *Cmd {
 	cmdArgs = append(cmdArgs, keys...)
 	cmdArgs = append(cmdArgs, args...)
 	cmd := NewCmd(cmdArgs...)
+	if len(keys) > 0 {
+		cmd.SetKeyArgPos(3)
+	}
 	c.Process(cmd)
 	return cmd
 }
@@ -1197,24 +1218,25 @@ func (c *commandable) EvalSha(sha1 string, keys []string, args []string) *Cmd {
 func (c *commandable) ScriptExists(scripts ...string) *BoolSliceCmd {
 	args := append([]string{"SCRIPT", "EXISTS"}, scripts...)
 	cmd := NewBoolSliceCmd(args...)
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ScriptFlush() *StatusCmd {
-	cmd := NewStatusCmd("SCRIPT", "FLUSH")
+	cmd := NewServerStatusCmd("SCRIPT", "FLUSH")
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ScriptKill() *StatusCmd {
-	cmd := NewStatusCmd("SCRIPT", "KILL")
+	cmd := NewServerStatusCmd("SCRIPT", "KILL")
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ScriptLoad(script string) *StringCmd {
-	cmd := NewStringCmd("SCRIPT", "LOAD", script)
+	cmd := NewServerStatusCmd("SCRIPT", "LOAD", script)
 	c.Process(cmd)
 	return cmd
 }
@@ -1223,6 +1245,7 @@ func (c *commandable) ScriptLoad(script string) *StringCmd {
 
 func (c *commandable) DebugObject(key string) *StringCmd {
 	cmd := NewStringCmd("DEBUG", "OBJECT", key)
+	cmd.SetKeyArgPos(2)
 	c.Process(cmd)
 	return cmd
 }
@@ -1235,6 +1258,7 @@ func (c *commandable) PubSubChannels(pattern string) *StringSliceCmd {
 		args = append(args, pattern)
 	}
 	cmd := NewStringSliceCmd(args...)
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
@@ -1243,12 +1267,14 @@ func (c *commandable) PubSubNumSub(channels ...string) *StringIntMapCmd {
 	args := []string{"PUBSUB", "NUMSUB"}
 	args = append(args, channels...)
 	cmd := NewStringIntMapCmd(args...)
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) PubSubNumPat() *IntCmd {
 	cmd := NewIntCmd("PUBSUB", "NUMPAT")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
@@ -1257,24 +1283,26 @@ func (c *commandable) PubSubNumPat() *IntCmd {
 
 func (c *commandable) ClusterSlots() *ClusterSlotCmd {
 	cmd := NewClusterSlotCmd("CLUSTER", "slots")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ClusterNodes() *StringCmd {
 	cmd := NewStringCmd("CLUSTER", "nodes")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ClusterMeet(host, port string) *StatusCmd {
-	cmd := NewStatusCmd("CLUSTER", "meet", host, port)
+	cmd := NewServerStatusCmd("CLUSTER", "meet", host, port)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ClusterReplicate(nodeID string) *StatusCmd {
-	cmd := NewStatusCmd("CLUSTER", "replicate", nodeID)
+	cmd := NewServerStatusCmd("CLUSTER", "replicate", nodeID)
 	c.Process(cmd)
 	return cmd
 }
@@ -1286,7 +1314,7 @@ func (c *commandable) ClusterAddSlots(slots ...int) *StatusCmd {
 	for i, num := range slots {
 		args[i+2] = strconv.Itoa(num)
 	}
-	cmd := NewStatusCmd(args...)
+	cmd := NewServerStatusCmd(args...)
 	c.Process(cmd)
 	return cmd
 }

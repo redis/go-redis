@@ -3,10 +3,9 @@ package redis_test
 import (
 	"math/rand"
 
-	"gopkg.in/redis.v2"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"gopkg.in/redis.v2"
 )
 
 var _ = Describe("Cluster", func() {

@@ -39,6 +39,12 @@ var _ = Describe("ClusterClient", func() {
 		Expect(subject._reload).To(Equal(uint32(1)))
 	})
 
+	It("should find the current master address of a slot", func() {
+		Expect(subject.GetMasterAddrBySlot(1000)).To(Equal(""))
+		populate()
+		Expect(subject.GetMasterAddrBySlot(1000)).To(Equal("127.0.0.1:7000"))
+	})
+
 	It("should update slots cache", func() {
 		populate()
 		Expect(subject.slots[0]).To(Equal([]string{"127.0.0.1:7000", "127.0.0.1:7004"}))
@@ -54,12 +60,6 @@ var _ = Describe("ClusterClient", func() {
 			"127.0.0.1:7000", "127.0.0.1:7001", "127.0.0.1:7002", "127.0.0.1:7003",
 			"127.0.0.1:7004", "127.0.0.1:7005", "127.0.0.1:7006", "127.0.0.1:7007",
 		}))
-	})
-
-	It("should find the current master address of a slot", func() {
-		Expect(subject.master(1000)).To(Equal(""))
-		populate()
-		Expect(subject.master(1000)).To(Equal("127.0.0.1:7000"))
 	})
 
 	It("should find next addresses", func() {
