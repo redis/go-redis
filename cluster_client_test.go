@@ -35,7 +35,6 @@ var _ = Describe("ClusterClient", func() {
 	It("should initialize", func() {
 		Expect(subject.addrs).To(HaveLen(3))
 		Expect(subject.slots).To(HaveLen(HashSlots))
-		Expect(subject.conns).To(BeEmpty())
 		Expect(subject._reload).To(Equal(uint32(1)))
 	})
 
@@ -87,10 +86,9 @@ var _ = Describe("ClusterClient", func() {
 	})
 
 	It("should check if reload is due", func() {
-		Expect(subject.needReload()).To(BeTrue())
-		Expect(subject.needReload()).To(BeFalse())
+		subject._reload = 0
+		Expect(subject._reload).To(Equal(uint32(0)))
 		subject.forceReload()
-		Expect(subject.needReload()).To(BeTrue())
-		Expect(subject.needReload()).To(BeFalse())
+		Expect(subject._reload).To(Equal(uint32(1)))
 	})
 })

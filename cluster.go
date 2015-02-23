@@ -121,7 +121,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 		// Handle MOVE and ASK redirections, return on any other error
 		switch parts[0] {
 		case "MOVED":
-			c.forceReloadOnNextCommand()
+			c.forceReload()
 			addr = parts[2]
 		case "ASK":
 			ask = true
@@ -378,9 +378,9 @@ type lruEntry struct {
 func newLRUPool(opt *ClusterOptions) *lruPool {
 	return &lruPool{
 		opts:  opt,
-		limit: limit,
+		limit: opt.MaxConns,
 		order: list.New(),
-		cache: make(map[string]*list.Element, limit),
+		cache: make(map[string]*list.Element, opt.MaxConns),
 	}
 }
 
@@ -433,7 +433,7 @@ func (c *lruPool) add(addr string, conn *Client) {
 	ee := c.order.PushFront(&lruEntry{addr, conn})
 	c.cache[addr] = ee
 
-	if c.len() > c.maxEntries {
+	if c.len() > c.limit {
 		c.closeOldest()
 	}
 }

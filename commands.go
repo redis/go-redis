@@ -1116,7 +1116,8 @@ func (c *commandable) FlushDb() *StatusCmd {
 }
 
 func (c *commandable) Info() *StringCmd {
-	cmd := NewServerStringCmd("INFO")
+	cmd := NewStringCmd("INFO")
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }
@@ -1236,7 +1237,8 @@ func (c *commandable) ScriptKill() *StatusCmd {
 }
 
 func (c *commandable) ScriptLoad(script string) *StringCmd {
-	cmd := NewServerStatusCmd("SCRIPT", "LOAD", script)
+	cmd := NewStringCmd("SCRIPT", "LOAD", script)
+	cmd.SetKeyArgPos(0)
 	c.Process(cmd)
 	return cmd
 }

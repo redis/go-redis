@@ -588,6 +588,11 @@ func (cmd *StringIntMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
+func (cmd *StringIntMapCmd) Reset() {
+	cmd.val = nil
+	cmd.err = nil
+}
+
 func (cmd *StringIntMapCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, parseStringIntMap)
 	if err != nil {
@@ -716,6 +721,11 @@ func (cmd *ClusterSlotCmd) Result() ([]ClusterSlotInfo, error) {
 
 func (cmd *ClusterSlotCmd) String() string {
 	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterSlotCmd) Reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *ClusterSlotCmd) parseReply(rd *bufio.Reader) error {
