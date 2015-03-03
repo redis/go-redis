@@ -178,7 +178,7 @@ func (c *ClusterClient) next(seen map[string]struct{}) string {
 
 // Fetch slot information
 func (c *ClusterClient) fetch(addr string) ([]ClusterSlotInfo, error) {
-	client := NewClient(c.opt.clientOpts(addr))
+	client := NewClient(c.opt.ClientOptions(addr))
 	defer client.Close()
 
 	return client.ClusterSlots().Result()
@@ -276,7 +276,7 @@ func (opt *ClusterOptions) getAddrs() ([]string, error) {
 	return opt.Addrs, nil
 }
 
-func (opt *ClusterOptions) clientOpts(addr string) *Options {
+func (opt *ClusterOptions) ClientOptions(addr string) *Options {
 	return &Options{
 		Addr:     addr,
 		DB:       0,
@@ -362,7 +362,7 @@ func crc16sum(key string) (crc uint16) {
 
 // lruPool is a thread-safe connection LRU pool
 type lruPool struct {
-	opts  *ClusterOptions
+	opt   *ClusterOptions
 	limit int
 	order *list.List
 	cache map[string]*list.Element
@@ -377,7 +377,7 @@ type lruEntry struct {
 
 func newLRUPool(opt *ClusterOptions) *lruPool {
 	return &lruPool{
-		opts:  opt,
+		opt:   opt,
 		limit: opt.MaxConns,
 		order: list.New(),
 		cache: make(map[string]*list.Element, opt.MaxConns),
@@ -391,7 +391,7 @@ func (c *lruPool) Fetch(addr string) *Client {
 
 	conn, ok := c.get(addr)
 	if !ok {
-		conn = NewTCPClient(c.opts.clientOpts(addr))
+		conn = NewTCPClient(c.opt.ClientOptions(addr))
 		c.add(addr, conn)
 	}
 	return conn
