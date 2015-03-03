@@ -1309,6 +1309,19 @@ func (c *commandable) ClusterReplicate(nodeID string) *StatusCmd {
 	return cmd
 }
 
+func (c *commandable) ClusterInfo() *StringCmd {
+	cmd := NewStringCmd("CLUSTER", "info")
+	cmd.SetKeyArgPos(0)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) ClusterFailover() *StatusCmd {
+	cmd := NewServerStatusCmd("CLUSTER", "failover")
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *commandable) ClusterAddSlots(slots ...int) *StatusCmd {
 	args := make([]string, len(slots)+2)
 	args[0] = "CLUSTER"

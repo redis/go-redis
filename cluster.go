@@ -37,7 +37,7 @@ func NewClusterClient(opt *ClusterOptions) (*ClusterClient, error) {
 		_reload: 1,
 	}
 	client.commandable.process = client.process
-	client.reset()
+	client.reloadIfDue()
 	return client, nil
 }
 
@@ -57,6 +57,14 @@ func (c *ClusterClient) GetMasterAddrBySlot(hashSlot int) string {
 	return ""
 }
 
+// GetSlaveAddrsBySlot finds the current slave addresses for a given hash slot
+func (c *ClusterClient) GetSlaveAddrsBySlot(hashSlot int) []string {
+	if addrs := c.slots[hashSlot]; len(addrs) > 0 {
+		return addrs[1:]
+	}
+	return []string{}
+}
+
 // GetNodeClientByAddr returns a node's client for a given address
 func (c *ClusterClient) GetNodeClientByAddr(addr string) *Client {
 	return c.conns.Fetch(addr)
@@ -70,7 +78,8 @@ func (c *ClusterClient) process(cmd Cmder) {
 	c.reloadIfDue()
 	ask := false
 
-	if key := cmd.firstKey(); key != "" {
+	key := cmd.firstKey()
+	if key != "" {
 		hashSlot = HashSlot(key)
 	} else {
 		hashSlot = rand.Intn(HashSlots)
@@ -108,7 +117,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 			if addr = c.next(tried); addr == "" {
 				return
 			}
-			cmd.Reset()
+			cmd.reset()
 			continue
 		}
 
@@ -129,7 +138,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 		default:
 			return
 		}
-		cmd.Reset()
+		cmd.reset()
 	}
 }
 
@@ -138,6 +147,7 @@ func (c *ClusterClient) reloadIfDue() (err error) {
 	if !atomic.CompareAndSwapUint32(&c._reload, 1, 0) {
 		return
 	}
+
 	var infos []ClusterSlotInfo
 
 	c.cachemx.Lock()
@@ -146,7 +156,8 @@ func (c *ClusterClient) reloadIfDue() (err error) {
 	for _, addr := range c.addrs {
 		c.reset()
 
-		if infos, err = c.fetch(addr); err == nil {
+		infos, err = c.fetch(addr)
+		if err == nil {
 			c.update(infos)
 			break
 		}
@@ -378,9 +389,9 @@ type lruEntry struct {
 func newLRUPool(opt *ClusterOptions) *lruPool {
 	return &lruPool{
 		opt:   opt,
-		limit: opt.MaxConns,
+		limit: opt.getMaxConns(),
 		order: list.New(),
-		cache: make(map[string]*list.Element, opt.MaxConns),
+		cache: make(map[string]*list.Element, opt.getMaxConns()),
 	}
 }
 

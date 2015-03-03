@@ -35,13 +35,7 @@ var _ = Describe("ClusterClient", func() {
 	It("should initialize", func() {
 		Expect(subject.addrs).To(HaveLen(3))
 		Expect(subject.slots).To(HaveLen(HashSlots))
-		Expect(subject._reload).To(Equal(uint32(1)))
-	})
-
-	It("should find the current master address of a slot", func() {
-		Expect(subject.GetMasterAddrBySlot(1000)).To(Equal(""))
-		populate()
-		Expect(subject.GetMasterAddrBySlot(1000)).To(Equal("127.0.0.1:7000"))
+		Expect(subject._reload).To(Equal(uint32(0)))
 	})
 
 	It("should update slots cache", func() {

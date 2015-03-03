@@ -31,13 +31,12 @@ type Cmder interface {
 	args() []string
 	parseReply(*bufio.Reader) error
 	setErr(error)
+	reset()
 
 	writeTimeout() *time.Duration
 	readTimeout() *time.Duration
 	firstKey() string
 
-	// Reset resets internal state of the command.
-	Reset()
 	Err() error
 	String() string
 	SetKeyArgPos(int)
@@ -127,7 +126,7 @@ func NewCmd(args ...string) *Cmd {
 	return &Cmd{baseCmd: baseCmd{_args: args}}
 }
 
-func (cmd *Cmd) Reset() {
+func (cmd *Cmd) reset() {
 	cmd.val = nil
 	cmd.err = nil
 }
@@ -161,7 +160,7 @@ func NewSliceCmd(args ...string) *SliceCmd {
 	return &SliceCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *SliceCmd) Reset() {
+func (cmd *SliceCmd) reset() {
 	cmd.val = nil
 	cmd.err = nil
 }
@@ -204,7 +203,7 @@ func NewStatusCmd(args ...string) *StatusCmd {
 	return &StatusCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *StatusCmd) Reset() {
+func (cmd *StatusCmd) reset() {
 	cmd.val = ""
 	cmd.err = nil
 }
@@ -243,7 +242,7 @@ func NewIntCmd(args ...string) *IntCmd {
 	return &IntCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *IntCmd) Reset() {
+func (cmd *IntCmd) reset() {
 	cmd.val = 0
 	cmd.err = nil
 }
@@ -286,7 +285,7 @@ func NewDurationCmd(precision time.Duration, args ...string) *DurationCmd {
 	}
 }
 
-func (cmd *DurationCmd) Reset() {
+func (cmd *DurationCmd) reset() {
 	cmd.val = 0
 	cmd.err = nil
 }
@@ -325,7 +324,7 @@ func NewBoolCmd(args ...string) *BoolCmd {
 	return &BoolCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *BoolCmd) Reset() {
+func (cmd *BoolCmd) reset() {
 	cmd.val = false
 	cmd.err = nil
 }
@@ -364,7 +363,7 @@ func NewStringCmd(args ...string) *StringCmd {
 	return &StringCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *StringCmd) Reset() {
+func (cmd *StringCmd) reset() {
 	cmd.val = ""
 	cmd.err = nil
 }
@@ -424,7 +423,7 @@ func NewFloatCmd(args ...string) *FloatCmd {
 	return &FloatCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *FloatCmd) Reset() {
+func (cmd *FloatCmd) reset() {
 	cmd.val = 0
 	cmd.err = nil
 }
@@ -459,7 +458,7 @@ func NewStringSliceCmd(args ...string) *StringSliceCmd {
 	return &StringSliceCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *StringSliceCmd) Reset() {
+func (cmd *StringSliceCmd) reset() {
 	cmd.val = nil
 	cmd.err = nil
 }
@@ -498,7 +497,7 @@ func NewBoolSliceCmd(args ...string) *BoolSliceCmd {
 	return &BoolSliceCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *BoolSliceCmd) Reset() {
+func (cmd *BoolSliceCmd) reset() {
 	cmd.val = nil
 	cmd.err = nil
 }
@@ -537,7 +536,7 @@ func NewStringStringMapCmd(args ...string) *StringStringMapCmd {
 	return &StringStringMapCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *StringStringMapCmd) Reset() {
+func (cmd *StringStringMapCmd) reset() {
 	cmd.val = nil
 	cmd.err = nil
 }
@@ -588,7 +587,7 @@ func (cmd *StringIntMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringIntMapCmd) Reset() {
+func (cmd *StringIntMapCmd) reset() {
 	cmd.val = nil
 	cmd.err = nil
 }
@@ -615,7 +614,7 @@ func NewZSliceCmd(args ...string) *ZSliceCmd {
 	return &ZSliceCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *ZSliceCmd) Reset() {
+func (cmd *ZSliceCmd) reset() {
 	cmd.val = nil
 	cmd.err = nil
 }
@@ -655,7 +654,7 @@ func NewScanCmd(args ...string) *ScanCmd {
 	return &ScanCmd{baseCmd: baseCmd{_args: args, _keyPos: 1}}
 }
 
-func (cmd *ScanCmd) Reset() {
+func (cmd *ScanCmd) reset() {
 	cmd.cursor = 0
 	cmd.keys = nil
 	cmd.err = nil
@@ -723,7 +722,7 @@ func (cmd *ClusterSlotCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ClusterSlotCmd) Reset() {
+func (cmd *ClusterSlotCmd) reset() {
 	cmd.val = nil
 	cmd.err = nil
 }

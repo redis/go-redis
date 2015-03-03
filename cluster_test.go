@@ -69,6 +69,10 @@ var _ = Describe("Cluster", func() {
 				return scenario.master.ClusterNodes().Val()
 			}, "10s").Should(ContainSubstring("slave " + masterID))
 		}
+
+		Eventually(func() string { // Wait for cluster state to turn OK
+			return scenario.master.ClusterInfo().Val()
+		}, "10s").Should(ContainSubstring("cluster_state:ok"))
 	})
 
 	AfterSuite(func() {
@@ -128,6 +132,76 @@ var _ = Describe("Cluster", func() {
 			res, err := scenario.master.ClusterNodes().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(res)).To(BeNumerically(">", 400))
+		})
+
+		It("should CLUSTER INFO", func() {
+			res, err := scenario.master.ClusterInfo().Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(ContainSubstring("cluster_known_nodes:6"))
+		})
+
+	})
+
+	Describe("Client", func() {
+		var client *redis.ClusterClient
+
+		BeforeEach(func() {
+			var err error
+			client, err = redis.NewClusterClient(&redis.ClusterOptions{
+				Addrs: []string{"127.0.0.1:8220", "127.0.0.1:8221", "127.0.0.1:8222", "127.0.0.1:8223", "127.0.0.1:8224", "127.0.0.1:8225"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			for _, node := range scenario.clients {
+				node.FlushDb()
+			}
+			Expect(client.Close()).NotTo(HaveOccurred())
+		})
+
+		It("should retrieve master address for slot", func() {
+			addr := client.GetMasterAddrBySlot(4000)
+			Expect(addr).To(ContainSubstring("127.0.0.1:"))
+		})
+
+		It("should retrieve slave addresses for slot", func() {
+			addrs := client.GetSlaveAddrsBySlot(4000)
+			Expect(addrs).To(HaveLen(1))
+		})
+
+		It("should GET/SET/DEL", func() {
+			val, err := client.Get("A").Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+
+			val, err = client.Set("A", "VALUE").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+
+			val, err = client.Get("A").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("VALUE"))
+
+			cnt, err := client.Del("A").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cnt).To(Equal(int64(1)))
+		})
+
+		It("should follow redirects", func() {
+			slot := redis.HashSlot("A")
+			Expect(client.Set("A", "VALUE").Err()).NotTo(HaveOccurred())
+
+			addrs := client.GetSlaveAddrsBySlot(slot)
+			Expect(addrs).To(HaveLen(1))
+
+			val, err := client.GetNodeClientByAddr(addrs[0]).ClusterFailover().Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+
+			val, err = client.Get("A").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("VALUE"))
 		})
 
 	})
