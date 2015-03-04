@@ -87,14 +87,23 @@ var _ = Describe("Cluster", func() {
 	Describe("HashSlot", func() {
 
 		It("should calculate hash slots", func() {
+			tests := []struct {
+				key  string
+				slot int
+			}{
+				{"123456789", 12739},
+				{"{}foo", 9500},
+				{"foo{}", 5542},
+				{"foo{}{bar}", 8363},
+				{"", 10503},
+				{"", 5176},
+				{string([]byte{83, 153, 134, 118, 229, 214, 244, 75, 140, 37, 215, 215}), 5463},
+			}
 			rand.Seed(100)
 
-			Expect(redis.HashSlot("123456789")).To(Equal(12739))
-			Expect(redis.HashSlot("{}foo")).To(Equal(9500))
-			Expect(redis.HashSlot("foo{}")).To(Equal(5542))
-			Expect(redis.HashSlot("foo{}{bar}")).To(Equal(8363))
-			Expect(redis.HashSlot("")).To(Equal(10503))
-			Expect(redis.HashSlot("")).To(Equal(5176))
+			for _, test := range tests {
+				Expect(redis.HashSlot(test.key)).To(Equal(test.slot), "for %s", test.key)
+			}
 		})
 
 		It("should extract keys from tags", func() {
