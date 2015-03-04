@@ -359,8 +359,8 @@ var crc16tab = [256]uint16{
 }
 
 func crc16sum(key string) (crc uint16) {
-	for _, v := range []byte(key) {
-		crc = (crc << 8) ^ crc16tab[(byte(crc>>8)^v)&0x00ff]
+	for i := 0; i < len(key); i++ {
+		crc = (crc << 8) ^ crc16tab[(byte(crc>>8)^key[i])&0x00ff]
 	}
 	return
 }
