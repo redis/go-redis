@@ -34,7 +34,7 @@ var _ = Describe("ClusterClient", func() {
 
 	It("should initialize", func() {
 		Expect(subject.addrs).To(HaveLen(3))
-		Expect(subject.slots).To(HaveLen(HashSlots))
+		Expect(subject.slots).To(HaveLen(hashSlots))
 		Expect(subject._reload).To(Equal(uint32(0)))
 	})
 

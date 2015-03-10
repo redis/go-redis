@@ -46,7 +46,7 @@ var _ = Describe("Cluster", func() {
 		}
 
 		// Bootstrap masters
-		slots := []int{0, 5000, 10000, redis.HashSlots}
+		slots := []int{0, 5000, 10000, 16384}
 		for pos, port := range scenario.ports[:3] {
 			client := scenario.clients[port]
 			err := client.ClusterAddSlotsRange(slots[pos], slots[pos+1]-1).Err()

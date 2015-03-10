@@ -309,16 +309,16 @@ func parseClusterSlotInfoSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
 		}
 
-		min, ok := item[0].(int64)
-		if !ok || min < 0 || min > HashSlots {
+		start, ok := item[0].(int64)
+		if !ok || start < 0 || start > hashSlots {
 			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
 		}
-		max, ok := item[1].(int64)
-		if !ok || max < 0 || max > HashSlots {
+		end, ok := item[1].(int64)
+		if !ok || end < 0 || end > hashSlots {
 			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
 		}
 
-		info := ClusterSlotInfo{int(min), int(max), make([]string, len(item)-2)}
+		info := ClusterSlotInfo{int(start), int(end), make([]string, len(item)-2)}
 		for n, ipair := range item[2:] {
 			pair, ok := ipair.([]interface{})
 			if !ok || len(pair) != 2 {
