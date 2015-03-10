@@ -19,6 +19,7 @@ type ClusterClient struct {
 	conns *lruPool
 	opt   *ClusterOptions
 
+	// Protect the addrs and slots cache
 	cachemx sync.RWMutex
 	_reload uint32
 }
@@ -72,17 +73,11 @@ func (c *ClusterClient) GetNodeClientByAddr(addr string) *Client {
 // ------------------------------------------------------------------------
 
 func (c *ClusterClient) process(cmd Cmder) {
-	var hashSlot int
+	var ask bool
 
 	c.reloadIfDue()
-	ask := false
 
-	key := cmd.firstKey()
-	if key != "" {
-		hashSlot = HashSlot(key)
-	} else {
-		hashSlot = rand.Intn(hashSlots)
-	}
+	hashSlot := HashSlot(cmd.clusterKey())
 
 	c.cachemx.RLock()
 	defer c.cachemx.RUnlock()
@@ -113,7 +108,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 		// On connection errors, pick the next (not previosuly) tried connection
 		// and try again
 		if _, ok := err.(*net.OpError); ok || err == io.EOF {
-			if addr = c.next(tried); addr == "" {
+			if addr = c.findNextAddr(tried); addr == "" {
 				return
 			}
 			cmd.reset()
@@ -155,7 +150,7 @@ func (c *ClusterClient) reloadIfDue() (err error) {
 	for _, addr := range c.addrs {
 		c.reset()
 
-		infos, err = c.fetch(addr)
+		infos, err = c.fetchClusterSlots(addr)
 		if err == nil {
 			c.update(infos)
 			break
@@ -177,7 +172,7 @@ func (c *ClusterClient) forceReload() {
 }
 
 // Find the next unseen address
-func (c *ClusterClient) next(seen map[string]struct{}) string {
+func (c *ClusterClient) findNextAddr(seen map[string]struct{}) string {
 	for _, addr := range c.addrs {
 		if _, ok := seen[addr]; !ok {
 			return addr
@@ -187,7 +182,7 @@ func (c *ClusterClient) next(seen map[string]struct{}) string {
 }
 
 // Fetch slot information
-func (c *ClusterClient) fetch(addr string) ([]ClusterSlotInfo, error) {
+func (c *ClusterClient) fetchClusterSlots(addr string) ([]ClusterSlotInfo, error) {
 	client := NewClient(c.opt.ClientOptions(addr))
 	defer client.Close()
 
@@ -205,7 +200,7 @@ func (c *ClusterClient) update(infos []ClusterSlotInfo) {
 
 	// Populate slots, store unknown nodes
 	for _, info := range infos {
-		for i := info.Min; i <= info.Max; i++ {
+		for i := info.Start; i <= info.End; i++ {
 			c.slots[i] = info.Addrs
 		}
 
@@ -217,7 +212,10 @@ func (c *ClusterClient) update(infos []ClusterSlotInfo) {
 		}
 	}
 
-	// Shuffle addresses
+	// Shuffle addresses to randomize them for the slot cache reload.
+	// It's more effective to do it here, than in reloadIfDue()
+	// http://redis.io/topics/cluster-spec#clients-first-connection-and-handling-of-redirections
+	// https://github.com/antirez/redis-rb-cluster/blob/fd931ed/cluster.rb#L157
 	for i := range c.addrs {
 		j := rand.Intn(i + 1)
 		c.addrs[i], c.addrs[j] = c.addrs[j], c.addrs[i]

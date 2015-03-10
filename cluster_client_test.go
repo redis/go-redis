@@ -64,19 +64,19 @@ var _ = Describe("ClusterClient", func() {
 		}
 		sort.Strings(subject.addrs)
 
-		Expect(subject.next(seen)).To(Equal("127.0.0.1:6379"))
+		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:6379"))
 		seen["127.0.0.1:6379"] = struct{}{}
-		Expect(subject.next(seen)).To(Equal("127.0.0.1:7002"))
+		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:7002"))
 		seen["127.0.0.1:7002"] = struct{}{}
-		Expect(subject.next(seen)).To(Equal("127.0.0.1:7004"))
+		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:7004"))
 		seen["127.0.0.1:7004"] = struct{}{}
-		Expect(subject.next(seen)).To(Equal("127.0.0.1:7005"))
+		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:7005"))
 		seen["127.0.0.1:7005"] = struct{}{}
-		Expect(subject.next(seen)).To(Equal("127.0.0.1:7006"))
+		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:7006"))
 		seen["127.0.0.1:7006"] = struct{}{}
-		Expect(subject.next(seen)).To(Equal("127.0.0.1:7007"))
+		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:7007"))
 		seen["127.0.0.1:7007"] = struct{}{}
-		Expect(subject.next(seen)).To(Equal(""))
+		Expect(subject.findNextAddr(seen)).To(Equal(""))
 	})
 
 	It("should check if reload is due", func() {

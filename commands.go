@@ -35,7 +35,7 @@ func (c *commandable) Auth(password string) *StatusCmd {
 
 func (c *commandable) Echo(message string) *StringCmd {
 	cmd := NewStringCmd("ECHO", message)
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
@@ -104,7 +104,7 @@ func (c *commandable) Migrate(host, port, key string, db, timeout int64) *Status
 		strconv.FormatInt(db, 10),
 		strconv.FormatInt(timeout, 10),
 	)
-	cmd.SetKeyArgPos(3)
+	cmd._clusterKeyPos = 3
 	cmd.setReadTimeout(readTimeout(timeout))
 	c.Process(cmd)
 	return cmd
@@ -119,7 +119,7 @@ func (c *commandable) Move(key string, db int64) *BoolCmd {
 func (c *commandable) ObjectRefCount(keys ...string) *IntCmd {
 	args := append([]string{"OBJECT", "REFCOUNT"}, keys...)
 	cmd := NewIntCmd(args...)
-	cmd.SetKeyArgPos(2)
+	cmd._clusterKeyPos = 2
 	c.Process(cmd)
 	return cmd
 }
@@ -127,7 +127,7 @@ func (c *commandable) ObjectRefCount(keys ...string) *IntCmd {
 func (c *commandable) ObjectEncoding(keys ...string) *StringCmd {
 	args := append([]string{"OBJECT", "ENCODING"}, keys...)
 	cmd := NewStringCmd(args...)
-	cmd.SetKeyArgPos(2)
+	cmd._clusterKeyPos = 2
 	c.Process(cmd)
 	return cmd
 }
@@ -135,7 +135,7 @@ func (c *commandable) ObjectEncoding(keys ...string) *StringCmd {
 func (c *commandable) ObjectIdleTime(keys ...string) *DurationCmd {
 	args := append([]string{"OBJECT", "IDLETIME"}, keys...)
 	cmd := NewDurationCmd(time.Second, args...)
-	cmd.SetKeyArgPos(2)
+	cmd._clusterKeyPos = 2
 	c.Process(cmd)
 	return cmd
 }
@@ -1049,56 +1049,56 @@ func (c *commandable) ZUnionStore(
 
 func (c *commandable) BgRewriteAOF() *StatusCmd {
 	cmd := NewStatusCmd("BGREWRITEAOF")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) BgSave() *StatusCmd {
 	cmd := NewStatusCmd("BGSAVE")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ClientKill(ipPort string) *StatusCmd {
 	cmd := NewStatusCmd("CLIENT", "KILL", ipPort)
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ClientList() *StringCmd {
 	cmd := NewStringCmd("CLIENT", "LIST")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ConfigGet(parameter string) *SliceCmd {
 	cmd := NewSliceCmd("CONFIG", "GET", parameter)
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ConfigResetStat() *StatusCmd {
 	cmd := NewStatusCmd("CONFIG", "RESETSTAT")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ConfigSet(parameter, value string) *StatusCmd {
 	cmd := NewStatusCmd("CONFIG", "SET", parameter, value)
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) DbSize() *IntCmd {
 	cmd := NewIntCmd("DBSIZE")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
@@ -1117,14 +1117,14 @@ func (c *commandable) FlushDb() *StatusCmd {
 
 func (c *commandable) Info() *StringCmd {
 	cmd := NewStringCmd("INFO")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) LastSave() *IntCmd {
 	cmd := NewIntCmd("LASTSAVE")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
@@ -1185,7 +1185,7 @@ func (c *commandable) Sync() {
 
 func (c *commandable) Time() *StringSliceCmd {
 	cmd := NewStringSliceCmd("TIME")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
@@ -1198,7 +1198,7 @@ func (c *commandable) Eval(script string, keys []string, args []string) *Cmd {
 	cmdArgs = append(cmdArgs, args...)
 	cmd := NewCmd(cmdArgs...)
 	if len(keys) > 0 {
-		cmd.SetKeyArgPos(3)
+		cmd._clusterKeyPos = 3
 	}
 	c.Process(cmd)
 	return cmd
@@ -1210,7 +1210,7 @@ func (c *commandable) EvalSha(sha1 string, keys []string, args []string) *Cmd {
 	cmdArgs = append(cmdArgs, args...)
 	cmd := NewCmd(cmdArgs...)
 	if len(keys) > 0 {
-		cmd.SetKeyArgPos(3)
+		cmd._clusterKeyPos = 3
 	}
 	c.Process(cmd)
 	return cmd
@@ -1219,7 +1219,7 @@ func (c *commandable) EvalSha(sha1 string, keys []string, args []string) *Cmd {
 func (c *commandable) ScriptExists(scripts ...string) *BoolSliceCmd {
 	args := append([]string{"SCRIPT", "EXISTS"}, scripts...)
 	cmd := NewBoolSliceCmd(args...)
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
@@ -1238,7 +1238,7 @@ func (c *commandable) ScriptKill() *StatusCmd {
 
 func (c *commandable) ScriptLoad(script string) *StringCmd {
 	cmd := NewStringCmd("SCRIPT", "LOAD", script)
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
@@ -1247,7 +1247,7 @@ func (c *commandable) ScriptLoad(script string) *StringCmd {
 
 func (c *commandable) DebugObject(key string) *StringCmd {
 	cmd := NewStringCmd("DEBUG", "OBJECT", key)
-	cmd.SetKeyArgPos(2)
+	cmd._clusterKeyPos = 2
 	c.Process(cmd)
 	return cmd
 }
@@ -1260,7 +1260,7 @@ func (c *commandable) PubSubChannels(pattern string) *StringSliceCmd {
 		args = append(args, pattern)
 	}
 	cmd := NewStringSliceCmd(args...)
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
@@ -1269,14 +1269,14 @@ func (c *commandable) PubSubNumSub(channels ...string) *StringIntMapCmd {
 	args := []string{"PUBSUB", "NUMSUB"}
 	args = append(args, channels...)
 	cmd := NewStringIntMapCmd(args...)
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) PubSubNumPat() *IntCmd {
 	cmd := NewIntCmd("PUBSUB", "NUMPAT")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
@@ -1285,14 +1285,14 @@ func (c *commandable) PubSubNumPat() *IntCmd {
 
 func (c *commandable) ClusterSlots() *ClusterSlotCmd {
 	cmd := NewClusterSlotCmd("CLUSTER", "slots")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) ClusterNodes() *StringCmd {
 	cmd := NewStringCmd("CLUSTER", "nodes")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
@@ -1311,7 +1311,7 @@ func (c *commandable) ClusterReplicate(nodeID string) *StatusCmd {
 
 func (c *commandable) ClusterInfo() *StringCmd {
 	cmd := NewStringCmd("CLUSTER", "info")
-	cmd.SetKeyArgPos(0)
+	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
 }
