@@ -1,8 +1,6 @@
 package redis
 
 import (
-	"sort"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -48,10 +46,16 @@ var _ = Describe("ClusterClient", func() {
 		Expect(subject.slots[12287]).To(Equal([]string{"127.0.0.1:7002", "127.0.0.1:7006"}))
 		Expect(subject.slots[12288]).To(Equal([]string{"127.0.0.1:7003", "127.0.0.1:7007"}))
 		Expect(subject.slots[16383]).To(Equal([]string{"127.0.0.1:7003", "127.0.0.1:7007"}))
-		Expect(subject.addrs).To(ConsistOf([]string{
-			"127.0.0.1:6379",
-			"127.0.0.1:7000", "127.0.0.1:7001", "127.0.0.1:7002", "127.0.0.1:7003",
-			"127.0.0.1:7004", "127.0.0.1:7005", "127.0.0.1:7006", "127.0.0.1:7007",
+		Expect(subject.addrs).To(Equal(map[string]struct{}{
+			"127.0.0.1:6379": struct{}{},
+			"127.0.0.1:7000": struct{}{},
+			"127.0.0.1:7001": struct{}{},
+			"127.0.0.1:7002": struct{}{},
+			"127.0.0.1:7003": struct{}{},
+			"127.0.0.1:7004": struct{}{},
+			"127.0.0.1:7005": struct{}{},
+			"127.0.0.1:7006": struct{}{},
+			"127.0.0.1:7007": struct{}{},
 		}))
 	})
 
@@ -62,21 +66,24 @@ var _ = Describe("ClusterClient", func() {
 			"127.0.0.1:7001": struct{}{},
 			"127.0.0.1:7003": struct{}{},
 		}
-		sort.Strings(subject.addrs)
 
-		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:6379"))
-		seen["127.0.0.1:6379"] = struct{}{}
-		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:7002"))
-		seen["127.0.0.1:7002"] = struct{}{}
-		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:7004"))
-		seen["127.0.0.1:7004"] = struct{}{}
-		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:7005"))
-		seen["127.0.0.1:7005"] = struct{}{}
-		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:7006"))
-		seen["127.0.0.1:7006"] = struct{}{}
-		Expect(subject.findNextAddr(seen)).To(Equal("127.0.0.1:7007"))
-		seen["127.0.0.1:7007"] = struct{}{}
+		addr := subject.findNextAddr(seen)
+		for addr != "" {
+			seen[addr] = struct{}{}
+			addr = subject.findNextAddr(seen)
+		}
 		Expect(subject.findNextAddr(seen)).To(Equal(""))
+		Expect(seen).To(Equal(map[string]struct{}{
+			"127.0.0.1:6379": struct{}{},
+			"127.0.0.1:7000": struct{}{},
+			"127.0.0.1:7001": struct{}{},
+			"127.0.0.1:7002": struct{}{},
+			"127.0.0.1:7003": struct{}{},
+			"127.0.0.1:7004": struct{}{},
+			"127.0.0.1:7005": struct{}{},
+			"127.0.0.1:7006": struct{}{},
+			"127.0.0.1:7007": struct{}{},
+		}))
 	})
 
 	It("should check if reload is due", func() {

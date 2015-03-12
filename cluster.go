@@ -14,7 +14,7 @@ import (
 type ClusterClient struct {
 	commandable
 
-	addrs []string
+	addrs map[string]struct{}
 	slots [][]string
 	conns *lruPool
 	opt   *ClusterOptions
@@ -24,8 +24,10 @@ type ClusterClient struct {
 	_reload uint32
 }
 
+// NewClusterClient initializes a new cluster-aware client using given options.
+// A list of seed addresses must be provided.
 func NewClusterClient(opt *ClusterOptions) (*ClusterClient, error) {
-	addrs, err := opt.getAddrs()
+	addrs, err := opt.getAddrSet()
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +43,7 @@ func NewClusterClient(opt *ClusterOptions) (*ClusterClient, error) {
 	return client, nil
 }
 
-// Closes the pool
+// Close closes the cluster connection
 func (c *ClusterClient) Close() error {
 	c.cachemx.Lock()
 	defer c.cachemx.Unlock()
@@ -105,8 +107,8 @@ func (c *ClusterClient) process(cmd Cmder) {
 			return
 		}
 
-		// On connection errors, pick the next (not previosuly) tried connection
-		// and try again
+		// On connection errors, pick a random, previosuly untried connection
+		// and request again.
 		if _, ok := err.(*net.OpError); ok || err == io.EOF {
 			if addr = c.findNextAddr(tried); addr == "" {
 				return
@@ -147,7 +149,10 @@ func (c *ClusterClient) reloadIfDue() (err error) {
 	c.cachemx.Lock()
 	defer c.cachemx.Unlock()
 
-	for _, addr := range c.addrs {
+	// Try known addresses in random order (map interation order is random in Go)
+	// http://redis.io/topics/cluster-spec#clients-first-connection-and-handling-of-redirections
+	// https://github.com/antirez/redis-rb-cluster/blob/fd931ed/cluster.rb#L157
+	for addr := range c.addrs {
 		c.reset()
 
 		infos, err = c.fetchClusterSlots(addr)
@@ -171,10 +176,10 @@ func (c *ClusterClient) forceReload() {
 	atomic.StoreUint32(&c._reload, 1)
 }
 
-// Find the next unseen address
-func (c *ClusterClient) findNextAddr(seen map[string]struct{}) string {
-	for _, addr := range c.addrs {
-		if _, ok := seen[addr]; !ok {
+// Find the next untried address
+func (c *ClusterClient) findNextAddr(tried map[string]struct{}) string {
+	for addr := range c.addrs {
+		if _, ok := tried[addr]; !ok {
 			return addr
 		}
 	}
@@ -189,36 +194,16 @@ func (c *ClusterClient) fetchClusterSlots(addr string) ([]ClusterSlotInfo, error
 	return client.ClusterSlots().Result()
 }
 
-// Update slot information
+// Update slot information, populate slots
 func (c *ClusterClient) update(infos []ClusterSlotInfo) {
-
-	// Create a map of known nodes
-	known := make(map[string]struct{}, len(c.addrs))
-	for _, addr := range c.addrs {
-		known[addr] = struct{}{}
-	}
-
-	// Populate slots, store unknown nodes
 	for _, info := range infos {
 		for i := info.Start; i <= info.End; i++ {
 			c.slots[i] = info.Addrs
 		}
 
 		for _, addr := range info.Addrs {
-			if _, ok := known[addr]; !ok {
-				c.addrs = append(c.addrs, addr)
-				known[addr] = struct{}{}
-			}
+			c.addrs[addr] = struct{}{}
 		}
-	}
-
-	// Shuffle addresses to randomize them for the slot cache reload.
-	// It's more effective to do it here, than in reloadIfDue()
-	// http://redis.io/topics/cluster-spec#clients-first-connection-and-handling-of-redirections
-	// https://github.com/antirez/redis-rb-cluster/blob/fd931ed/cluster.rb#L157
-	for i := range c.addrs {
-		j := rand.Intn(i + 1)
-		c.addrs[i], c.addrs[j] = c.addrs[j], c.addrs[i]
 	}
 }
 
@@ -277,11 +262,17 @@ func (opt *ClusterOptions) getMaxRedirects() int {
 	return opt.MaxRedirects
 }
 
-func (opt *ClusterOptions) getAddrs() ([]string, error) {
-	if len(opt.Addrs) < 1 {
+func (opt *ClusterOptions) getAddrSet() (map[string]struct{}, error) {
+	size := len(opt.Addrs)
+	if size < 1 {
 		return nil, errNoAddrs
 	}
-	return opt.Addrs, nil
+
+	addrs := make(map[string]struct{}, size)
+	for _, addr := range opt.Addrs {
+		addrs[addr] = struct{}{}
+	}
+	return addrs, nil
 }
 
 func (opt *ClusterOptions) ClientOptions(addr string) *Options {
