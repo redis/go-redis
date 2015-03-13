@@ -19,7 +19,7 @@ type ClusterClient struct {
 	conns *lruPool
 	opt   *ClusterOptions
 
-	// Protect the addrs and slots cache
+	// Protect addrs, slots and conns cache
 	cachemx sync.RWMutex
 	_reload uint32
 }
@@ -51,24 +51,29 @@ func (c *ClusterClient) Close() error {
 	return c.reset()
 }
 
-// GetMasterAddrBySlot finds the current master address for a given hash slot
-func (c *ClusterClient) GetMasterAddrBySlot(hashSlot int) string {
+// Pipeline creates a new pipeline against a single cluster shard
+// using the provided key as a reference. Be aware that pipelines are
+// not able to follow redirects and you will receive an error if the node
+// fails or if a key is moved during pipeline execution. You may also
+// receive errors if you try to execute commands against other keys.
+func (c *ClusterClient) Pipeline(key string) *Pipeline {
+	c.cachemx.RLock()
+	defer c.cachemx.RUnlock()
+
+	addr := c.getMasterAddrBySlot(HashSlot(key))
+	return c.getNodeClientByAddr(addr).Pipeline()
+}
+
+// Finds the current master address for a given hash slot
+func (c *ClusterClient) getMasterAddrBySlot(hashSlot int) string {
 	if addrs := c.slots[hashSlot]; len(addrs) > 0 {
 		return addrs[0]
 	}
 	return ""
 }
 
-// GetSlaveAddrsBySlot finds the current slave addresses for a given hash slot
-func (c *ClusterClient) GetSlaveAddrsBySlot(hashSlot int) []string {
-	if addrs := c.slots[hashSlot]; len(addrs) > 0 {
-		return addrs[1:]
-	}
-	return nil
-}
-
-// GetNodeClientByAddr returns a node's client for a given address
-func (c *ClusterClient) GetNodeClientByAddr(addr string) *Client {
+// Returns a node's client for a given address
+func (c *ClusterClient) getNodeClientByAddr(addr string) *Client {
 	return c.conns.Fetch(addr)
 }
 
@@ -85,12 +90,12 @@ func (c *ClusterClient) process(cmd Cmder) {
 	defer c.cachemx.RUnlock()
 
 	tried := make(map[string]struct{}, len(c.addrs))
-	addr := c.GetMasterAddrBySlot(hashSlot)
+	addr := c.getMasterAddrBySlot(hashSlot)
 	for attempt := 0; attempt < c.opt.getMaxRedirects(); attempt++ {
 		tried[addr] = struct{}{}
 
 		// Pick the connection, process request
-		conn := c.GetNodeClientByAddr(addr)
+		conn := c.getNodeClientByAddr(addr)
 		if ask {
 			pipe := conn.Pipeline()
 			pipe.Process(NewCmd("ASKING"))

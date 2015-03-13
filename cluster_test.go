@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"math/rand"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -70,9 +71,13 @@ var _ = Describe("Cluster", func() {
 			}, "10s").Should(ContainSubstring("slave " + masterID))
 		}
 
-		Eventually(func() string { // Wait for cluster state to turn OK
-			return scenario.master.ClusterInfo().Val()
-		}, "10s").Should(ContainSubstring("cluster_state:ok"))
+		// Wait for cluster state to turn OK
+		for _, client := range scenario.clients {
+			Eventually(func() string {
+				return client.ClusterInfo().Val()
+			}, "10s").Should(ContainSubstring("cluster_state:ok"))
+		}
+
 	})
 
 	AfterSuite(func() {
@@ -169,16 +174,6 @@ var _ = Describe("Cluster", func() {
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
-		It("should retrieve master address for slot", func() {
-			addr := client.GetMasterAddrBySlot(4000)
-			Expect(addr).To(ContainSubstring("127.0.0.1:"))
-		})
-
-		It("should retrieve slave addresses for slot", func() {
-			addrs := client.GetSlaveAddrsBySlot(4000)
-			Expect(addrs).To(HaveLen(1))
-		})
-
 		It("should GET/SET/DEL", func() {
 			val, err := client.Get("A").Result()
 			Expect(err).To(Equal(redis.Nil))
@@ -198,19 +193,38 @@ var _ = Describe("Cluster", func() {
 		})
 
 		It("should follow redirects", func() {
-			slot := redis.HashSlot("A")
 			Expect(client.Set("A", "VALUE").Err()).NotTo(HaveOccurred())
 
-			addrs := client.GetSlaveAddrsBySlot(slot)
-			Expect(addrs).To(HaveLen(1))
-
-			val, err := client.GetNodeClientByAddr(addrs[0]).ClusterFailover().Result()
+			slot := redis.HashSlot("A")
+			info, err := client.ClusterSlots().Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(val).To(Equal("OK"))
 
-			val, err = client.Get("A").Result()
+			var failoverOK string
+			for _, node := range info {
+				if node.Start <= slot && node.End >= slot {
+					client := redis.NewTCPClient(&redis.Options{Addr: node.Addrs[len(node.Addrs)-1]})
+					defer client.Close()
+					failoverOK, err = client.ClusterFailover().Result()
+					Expect(err).NotTo(HaveOccurred())
+					break
+				}
+			}
+			Expect(failoverOK).To(Equal("OK"))
+
+			val, err := client.Get("A").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("VALUE"))
+		})
+
+		It("should create node pipelines", func() {
+			pipe := client.Pipeline("B")
+			pipe.Set("B", "value")
+			pipe.Expire("B", time.Hour)
+			cmd := pipe.Get("B")
+			cmds, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmds).To(HaveLen(3))
+			Expect(cmd.Val()).To(Equal("value"))
 		})
 
 	})
