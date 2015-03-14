@@ -53,9 +53,10 @@ func (c *ClusterClient) Close() error {
 
 // Pipeline creates a new pipeline against a single cluster shard
 // using the provided key as a reference. Be aware that pipelines are
-// not able to follow redirects and you will receive an error if the node
-// fails or if a key is moved during pipeline execution. You may also
-// receive errors if you try to execute commands against other keys.
+// not able to follow redirects and you may receive errors if a node
+// fails or if keys are moved before/during pipeline execution.
+// You may also receive errors if you try to execute commands against keys
+// held in other shards.
 func (c *ClusterClient) Pipeline(key string) *Pipeline {
 	c.cachemx.RLock()
 	defer c.cachemx.RUnlock()
@@ -63,6 +64,8 @@ func (c *ClusterClient) Pipeline(key string) *Pipeline {
 	addr := c.getMasterAddrBySlot(HashSlot(key))
 	return c.getNodeClientByAddr(addr).Pipeline()
 }
+
+// ------------------------------------------------------------------------
 
 // Finds the current master address for a given hash slot
 func (c *ClusterClient) getMasterAddrBySlot(hashSlot int) string {
@@ -77,8 +80,7 @@ func (c *ClusterClient) getNodeClientByAddr(addr string) *Client {
 	return c.conns.Fetch(addr)
 }
 
-// ------------------------------------------------------------------------
-
+// Process a command
 func (c *ClusterClient) process(cmd Cmder) {
 	var ask bool
 

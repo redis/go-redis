@@ -10,13 +10,7 @@ import (
 )
 
 var _ = Describe("Cluster", func() {
-	var scenario = struct {
-		ports     []string
-		nodeIDs   []string
-		processes map[string]*redisProcess
-		clients   map[string]*redis.Client
-		master    *redis.Client
-	}{
+	var scenario = &clusterScenario{
 		ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
 		nodeIDs:   make([]string, 6),
 		processes: make(map[string]*redisProcess, 6),
@@ -37,26 +31,22 @@ var _ = Describe("Cluster", func() {
 			scenario.clients[port] = client
 			scenario.nodeIDs[pos] = info[:40]
 		}
-		scenario.master = scenario.clients[scenario.ports[0]]
 
 		// Meet cluster nodes
-		for _, port := range scenario.ports {
-			client := scenario.clients[port]
+		for _, client := range scenario.clients {
 			err := client.ClusterMeet("127.0.0.1", scenario.ports[0]).Err()
 			Expect(err).NotTo(HaveOccurred())
 		}
 
 		// Bootstrap masters
 		slots := []int{0, 5000, 10000, 16384}
-		for pos, port := range scenario.ports[:3] {
-			client := scenario.clients[port]
+		for pos, client := range scenario.masters() {
 			err := client.ClusterAddSlotsRange(slots[pos], slots[pos+1]-1).Err()
 			Expect(err).NotTo(HaveOccurred())
 		}
 
 		// Bootstrap slaves
-		for pos, port := range scenario.ports[3:] {
-			client := scenario.clients[port]
+		for pos, client := range scenario.slaves() {
 			masterID := scenario.nodeIDs[pos]
 
 			Eventually(func() string { // Wait for masters
@@ -67,7 +57,7 @@ var _ = Describe("Cluster", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func() string { // Wait for slaves
-				return scenario.master.ClusterNodes().Val()
+				return scenario.primary().ClusterNodes().Val()
 			}, "10s").Should(ContainSubstring("slave " + masterID))
 		}
 
@@ -77,7 +67,6 @@ var _ = Describe("Cluster", func() {
 				return client.ClusterInfo().Val()
 			}, "10s").Should(ContainSubstring("cluster_state:ok"))
 		}
-
 	})
 
 	AfterSuite(func() {
@@ -132,7 +121,7 @@ var _ = Describe("Cluster", func() {
 	Describe("Commands", func() {
 
 		It("should CLUSTER SLOTS", func() {
-			res, err := scenario.master.ClusterSlots().Result()
+			res, err := scenario.primary().ClusterSlots().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(HaveLen(3))
 			Expect(res).To(ConsistOf([]redis.ClusterSlotInfo{
@@ -143,13 +132,13 @@ var _ = Describe("Cluster", func() {
 		})
 
 		It("should CLUSTER NODES", func() {
-			res, err := scenario.master.ClusterNodes().Result()
+			res, err := scenario.primary().ClusterNodes().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(res)).To(BeNumerically(">", 400))
 		})
 
 		It("should CLUSTER INFO", func() {
-			res, err := scenario.master.ClusterInfo().Result()
+			res, err := scenario.primary().ClusterInfo().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(ContainSubstring("cluster_known_nodes:6"))
 		})
@@ -168,10 +157,18 @@ var _ = Describe("Cluster", func() {
 		})
 
 		AfterEach(func() {
-			for _, node := range scenario.clients {
-				node.FlushDb()
+			for _, client := range scenario.clients {
+				client.FlushDb()
 			}
 			Expect(client.Close()).NotTo(HaveOccurred())
+
+			// Resets master and slave status
+			for _, master := range scenario.masters() {
+				Eventually(func() string {
+					master.ClusterFailover()
+					return master.Info().Val()
+				}, "5s", "200ms").Should(ContainSubstring("role:master"))
+			}
 		})
 
 		It("should GET/SET/DEL", func() {
@@ -195,37 +192,86 @@ var _ = Describe("Cluster", func() {
 		It("should follow redirects", func() {
 			Expect(client.Set("A", "VALUE").Err()).NotTo(HaveOccurred())
 
-			slot := redis.HashSlot("A")
-			info, err := client.ClusterSlots().Result()
-			Expect(err).NotTo(HaveOccurred())
-
-			var failoverOK string
-			for _, node := range info {
-				if node.Start <= slot && node.End >= slot {
-					client := redis.NewTCPClient(&redis.Options{Addr: node.Addrs[len(node.Addrs)-1]})
-					defer client.Close()
-					failoverOK, err = client.ClusterFailover().Result()
-					Expect(err).NotTo(HaveOccurred())
-					break
-				}
+			// Make all slaves masters
+			for _, client := range scenario.slaves() {
+				Eventually(func() string {
+					client.ClusterFailover()
+					return client.Info().Val()
+				}, "5s", "200ms").Should(ContainSubstring("role:master"))
 			}
-			Expect(failoverOK).To(Equal("OK"))
 
 			val, err := client.Get("A").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("VALUE"))
 		})
 
-		It("should create node pipelines", func() {
+		It("should perform node pipelines", func() {
 			pipe := client.Pipeline("B")
+			defer pipe.Close()
+
 			pipe.Set("B", "value")
 			pipe.Expire("B", time.Hour)
 			cmd := pipe.Get("B")
+
 			cmds, err := pipe.Exec()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(3))
 			Expect(cmd.Val()).To(Equal("value"))
 		})
 
+		It("should perform multi-pipelines", func() {
+			pipe := client.MultiPipeline()
+			defer pipe.Close()
+
+			keys := []string{"A", "B", "C", "D", "E", "F", "G"}
+			for i, key := range keys {
+				pipe.Set(key, key+"_value")
+				pipe.Expire(key, time.Duration(i+1)*time.Hour)
+			}
+			for _, key := range keys {
+				pipe.Get(key)
+				pipe.TTL(key)
+			}
+
+			cmds, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmds).To(HaveLen(28))
+			Expect(cmds[14].(*redis.StringCmd).Val()).To(Equal("A_value"))
+			Expect(cmds[15].(*redis.DurationCmd).Val()).To(BeNumerically("~", 1*time.Hour, time.Second))
+			Expect(cmds[20].(*redis.StringCmd).Val()).To(Equal("D_value"))
+			Expect(cmds[21].(*redis.DurationCmd).Val()).To(BeNumerically("~", 4*time.Hour, time.Second))
+			Expect(cmds[26].(*redis.StringCmd).Val()).To(Equal("G_value"))
+			Expect(cmds[27].(*redis.DurationCmd).Val()).To(BeNumerically("~", 7*time.Hour, time.Second))
+		})
+
 	})
 })
+
+// --------------------------------------------------------------------
+
+type clusterScenario struct {
+	ports     []string
+	nodeIDs   []string
+	processes map[string]*redisProcess
+	clients   map[string]*redis.Client
+}
+
+func (s *clusterScenario) primary() *redis.Client {
+	return s.clients[s.ports[0]]
+}
+
+func (s *clusterScenario) masters() []*redis.Client {
+	result := make([]*redis.Client, 3)
+	for pos, port := range s.ports[:3] {
+		result[pos] = s.clients[port]
+	}
+	return result
+}
+
+func (s *clusterScenario) slaves() []*redis.Client {
+	result := make([]*redis.Client, 3)
+	for pos, port := range s.ports[3:] {
+		result[pos] = s.clients[port]
+	}
+	return result
+}
