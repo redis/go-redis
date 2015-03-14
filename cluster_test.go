@@ -167,7 +167,7 @@ var _ = Describe("Cluster", func() {
 				Eventually(func() string {
 					master.ClusterFailover()
 					return master.Info().Val()
-				}, "5s", "200ms").Should(ContainSubstring("role:master"))
+				}, "10s", "200ms").Should(ContainSubstring("role:master"))
 			}
 		})
 
@@ -197,7 +197,7 @@ var _ = Describe("Cluster", func() {
 				Eventually(func() string {
 					client.ClusterFailover()
 					return client.Info().Val()
-				}, "5s", "200ms").Should(ContainSubstring("role:master"))
+				}, "10s", "200ms").Should(ContainSubstring("role:master"))
 			}
 
 			val, err := client.Get("A").Result()
