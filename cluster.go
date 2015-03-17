@@ -16,7 +16,7 @@ type ClusterClient struct {
 
 	addrs map[string]struct{}
 	slots [][]string
-	conns *lruPool
+	conns map[string]*Client
 	opt   *ClusterOptions
 
 	// Protect addrs, slots and conns cache
@@ -34,7 +34,7 @@ func NewClusterClient(opt *ClusterOptions) (*ClusterClient, error) {
 
 	client := &ClusterClient{
 		addrs:   addrs,
-		conns:   newLRUPool(opt),
+		conns:   make(map[string]*Client),
 		opt:     opt,
 		_reload: 1,
 	}
@@ -77,7 +77,14 @@ func (c *ClusterClient) getMasterAddrBySlot(hashSlot int) string {
 
 // Returns a node's client for a given address
 func (c *ClusterClient) getNodeClientByAddr(addr string) *Client {
-	return c.conns.Fetch(addr)
+	client, ok := c.conns[addr]
+	if !ok {
+		opt := c.opt.clientOptions()
+		opt.Addr = addr
+		client = NewTCPClient(opt)
+		c.conns[addr] = client
+	}
+	return client
 }
 
 // Process a command
@@ -172,10 +179,15 @@ func (c *ClusterClient) reloadIfDue() (err error) {
 }
 
 // Closes all connections and flushes slots cache
-func (c *ClusterClient) reset() error {
-	err := c.conns.Clear()
+func (c *ClusterClient) reset() (err error) {
+	for addr, client := range c.conns {
+		if e := client.Close(); e != nil {
+			err = e
+		}
+		delete(c.conns, addr)
+	}
 	c.slots = make([][]string, hashSlots)
-	return err
+	return
 }
 
 // Forces a cache reload on next request
@@ -195,7 +207,9 @@ func (c *ClusterClient) findNextAddr(tried map[string]struct{}) string {
 
 // Fetch slot information
 func (c *ClusterClient) fetchClusterSlots(addr string) ([]ClusterSlotInfo, error) {
-	client := NewClient(c.opt.ClientOptions(addr))
+	opt := c.opt.clientOptions()
+	opt.Addr = addr
+	client := NewClient(opt)
 	defer client.Close()
 
 	return client.ClusterSlots().Result()
@@ -229,11 +243,6 @@ type ClusterOptions struct {
 	// giving up. Default: 16
 	MaxRedirects int
 
-	// The maximum number of open connections to cluster nodes. Default: 10.
-	// WARNING: Each connection maintains its own connection pool. The maximum
-	// possible number of socket connections is therefore MaxConns x PoolSize
-	MaxConns int
-
 	// The maximum number of TCP sockets per connection. Default: 5
 	PoolSize int
 
@@ -244,13 +253,6 @@ type ClusterOptions struct {
 func (opt *ClusterOptions) getPoolSize() int {
 	if opt.PoolSize < 1 {
 		return 5
-	}
-	return opt.PoolSize
-}
-
-func (opt *ClusterOptions) getMaxConns() int {
-	if opt.MaxConns < 1 {
-		return 10
 	}
 	return opt.PoolSize
 }
@@ -282,9 +284,8 @@ func (opt *ClusterOptions) getAddrSet() (map[string]struct{}, error) {
 	return addrs, nil
 }
 
-func (opt *ClusterOptions) ClientOptions(addr string) *Options {
+func (opt *ClusterOptions) clientOptions() *Options {
 	return &Options{
-		Addr:     addr,
 		DB:       0,
 		Password: opt.Password,
 
