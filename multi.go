@@ -9,17 +9,25 @@ var errDiscard = errors.New("redis: Discard can be used only inside Exec")
 
 // Not thread-safe.
 type Multi struct {
-	*Client
+	commandable
+
+	base *baseClient
+	cmds []Cmder
 }
 
 func (c *Client) Multi() *Multi {
-	return &Multi{
-		Client: &Client{
-			baseClient: &baseClient{
-				opt:      c.opt,
-				connPool: newSingleConnPool(c.connPool, true),
-			},
-		},
+	multi := &Multi{
+		base: &baseClient{opt: c.opt, connPool: newSingleConnPool(c.connPool, true)},
+	}
+	multi.commandable.process = multi.process
+	return multi
+}
+
+func (c *Multi) process(cmd Cmder) {
+	if c.cmds == nil {
+		c.base.process(cmd)
+	} else {
+		c.cmds = append(c.cmds, cmd)
 	}
 }
 
@@ -27,7 +35,7 @@ func (c *Multi) Close() error {
 	if err := c.Unwatch().Err(); err != nil {
 		return err
 	}
-	return c.Client.Close()
+	return c.base.Close()
 }
 
 func (c *Multi) Watch(keys ...string) *StatusCmd {
@@ -69,7 +77,7 @@ func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 		return []Cmder{}, nil
 	}
 
-	cn, err := c.conn()
+	cn, err := c.base.conn()
 	if err != nil {
 		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return cmds[1 : len(cmds)-1], err
@@ -77,16 +85,16 @@ func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 
 	err = c.execCmds(cn, cmds)
 	if err != nil {
-		c.freeConn(cn, err)
+		c.base.freeConn(cn, err)
 		return cmds[1 : len(cmds)-1], err
 	}
 
-	c.putConn(cn)
+	c.base.putConn(cn)
 	return cmds[1 : len(cmds)-1], nil
 }
 
 func (c *Multi) execCmds(cn *conn, cmds []Cmder) error {
-	err := c.writeCmd(cn, cmds...)
+	err := cn.writeCmds(cmds...)
 	if err != nil {
 		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
