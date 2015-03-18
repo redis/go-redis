@@ -127,7 +127,7 @@ func TestGinkgoSuite(t *testing.T) {
 
 func execCmd(name string, args ...string) (*os.Process, error) {
 	cmd := exec.Command(name, args...)
-	if false {
+	if true {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}
