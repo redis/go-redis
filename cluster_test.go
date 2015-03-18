@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"math/rand"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -203,6 +204,32 @@ var _ = Describe("Cluster", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("VALUE"))
 		})
+
+		It("should perform multi-pipelines", func() {
+			pipe := client.MultiPipeline()
+			defer pipe.Close()
+
+			keys := []string{"A", "B", "C", "D", "E", "F", "G"}
+			for i, key := range keys {
+				pipe.Set(key, key+"_value")
+				pipe.Expire(key, time.Duration(i+1)*time.Hour)
+			}
+			for _, key := range keys {
+				pipe.Get(key)
+				pipe.TTL(key)
+			}
+
+			cmds, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmds).To(HaveLen(28))
+			Expect(cmds[14].(*redis.StringCmd).Val()).To(Equal("A_value"))
+			Expect(cmds[15].(*redis.DurationCmd).Val()).To(BeNumerically("~", 1*time.Hour, time.Second))
+			Expect(cmds[20].(*redis.StringCmd).Val()).To(Equal("D_value"))
+			Expect(cmds[21].(*redis.DurationCmd).Val()).To(BeNumerically("~", 4*time.Hour, time.Second))
+			Expect(cmds[26].(*redis.StringCmd).Val()).To(Equal("G_value"))
+			Expect(cmds[27].(*redis.DurationCmd).Val()).To(BeNumerically("~", 7*time.Hour, time.Second))
+		})
+
 	})
 })
 
