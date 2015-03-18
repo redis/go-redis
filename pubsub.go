@@ -103,7 +103,7 @@ func (c *PubSub) subscribe(cmd string, channels ...string) error {
 
 	args := append([]string{cmd}, channels...)
 	req := NewSliceCmd(args...)
-	return c.writeCmd(cn, req)
+	return cn.writeCmds(req)
 }
 
 func (c *PubSub) Subscribe(channels ...string) error {
@@ -122,7 +122,7 @@ func (c *PubSub) unsubscribe(cmd string, channels ...string) error {
 
 	args := append([]string{cmd}, channels...)
 	req := NewSliceCmd(args...)
-	return c.writeCmd(cn, req)
+	return cn.writeCmds(req)
 }
 
 func (c *PubSub) Unsubscribe(channels ...string) error {

@@ -3,6 +3,7 @@ package redis
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 
 	"gopkg.in/bufio.v1"
@@ -291,4 +292,51 @@ func parseZSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 		z.Score = score
 	}
 	return zz, nil
+}
+
+func parseClusterSlotInfoSlice(rd *bufio.Reader, n int64) (interface{}, error) {
+	infos := make([]ClusterSlotInfo, 0, n)
+	for i := int64(0); i < n; i++ {
+		viface, err := parseReply(rd, parseSlice)
+		if err != nil {
+			return nil, err
+		}
+
+		item, ok := viface.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("got %T, expected []interface{}", viface)
+		} else if len(item) < 3 {
+			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
+		}
+
+		start, ok := item[0].(int64)
+		if !ok || start < 0 || start > hashSlots {
+			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
+		}
+		end, ok := item[1].(int64)
+		if !ok || end < 0 || end > hashSlots {
+			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
+		}
+
+		info := ClusterSlotInfo{int(start), int(end), make([]string, len(item)-2)}
+		for n, ipair := range item[2:] {
+			pair, ok := ipair.([]interface{})
+			if !ok || len(pair) != 2 {
+				return nil, fmt.Errorf("got %v, expected []interface{host, port}", viface)
+			}
+
+			ip, ok := pair[0].(string)
+			if !ok || len(ip) < 1 {
+				return nil, fmt.Errorf("got %v, expected IP PORT pair", pair)
+			}
+			port, ok := pair[1].(int64)
+			if !ok || port < 1 {
+				return nil, fmt.Errorf("got %v, expected IP PORT pair", pair)
+			}
+
+			info.Addrs[n] = net.JoinHostPort(ip, strconv.FormatInt(port, 10))
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
 }
