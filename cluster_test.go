@@ -161,14 +161,6 @@ var _ = Describe("Cluster", func() {
 				client.FlushDb()
 			}
 			Expect(client.Close()).NotTo(HaveOccurred())
-
-			// Resets master and slave status
-			// for _, master := range scenario.masters() {
-			// 	master.ClusterFailover()
-			// 	Eventually(func() string {
-			// 		return master.Info().Val()
-			// 	}, "30s", "1s").Should(ContainSubstring("role:master"))
-			// }
 		})
 
 		It("should GET/SET/DEL", func() {
@@ -191,14 +183,18 @@ var _ = Describe("Cluster", func() {
 
 		It("should follow redirects", func() {
 			Expect(client.Set("A", "VALUE").Err()).NotTo(HaveOccurred())
+			Expect(redis.HashSlot("A")).To(Equal(6373))
 
-			// Make all slaves masters
-			for _, client := range scenario.slaves() {
-				client.ClusterFailover()
-				Eventually(func() string {
-					return client.Info().Val()
-				}, "10s", "200ms").Should(ContainSubstring("role:master"))
-			}
+			// Slot 6373 is stored on the second node
+			defer func() {
+				scenario.masters()[1].ClusterFailover()
+			}()
+
+			slave := scenario.slaves()[1]
+			Expect(slave.ClusterFailover().Err()).NotTo(HaveOccurred())
+			Eventually(func() string {
+				return slave.Info().Val()
+			}, "10s", "200ms").Should(ContainSubstring("role:master"))
 
 			val, err := client.Get("A").Result()
 			Expect(err).NotTo(HaveOccurred())

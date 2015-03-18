@@ -52,25 +52,78 @@ func (c *MultiPipeline) Exec() ([]Cmder, error) {
 		return []Cmder{}, nil
 	}
 
-	c.client.cachemx.RLock()
-	pipes := make(map[string]*Pipeline)
-	for _, cmd := range cmds {
-		hashSlot := HashSlot(cmd.clusterKey())
-		addr := c.client.getMasterAddrBySlot(hashSlot)
-		pipe, ok := pipes[addr]
-		if !ok {
-			pipe = c.client.getNodeClientByAddr(addr).Pipeline()
-			pipes[addr] = pipe
-		}
-		pipe.process(cmd)
-	}
-	c.client.cachemx.RUnlock()
+	pipes := &clusterPipelines{make(map[string]*Pipeline), c.client}
 
-	var err error
-	for _, pipe := range pipes {
-		if _, e := pipe.Exec(); e != nil && err == nil {
-			err = e
+	// Assign commands to pipelines
+	for _, cmd := range cmds {
+		pipes.process(cmd)
+	}
+	pipes.exec()
+
+	// Detect MOVED errors, try again
+	for i := 0; i < c.client.opt.MaxRedirects; i++ {
+		for _, cmd := range cmds {
+			if err := cmd.Err(); err != nil {
+				if moved, _, addr := c.client.hasMoved(err); moved {
+					cmd.reset()
+					pipes.processOn(addr, cmd)
+				}
+			}
+		}
+		if pipes.len() == 0 {
+			break
+		}
+		pipes.exec()
+	}
+
+	// Search for the first error
+	for _, cmd := range cmds {
+		if err := cmd.Err(); err != nil {
+			return cmds, err
 		}
 	}
-	return cmds, err
+	return cmds, nil
+}
+
+// ------------------------------------------------------------------------
+
+type clusterPipelines struct {
+	pipes  map[string]*Pipeline
+	client *ClusterClient
+}
+
+func (cp *clusterPipelines) fetch(addr string) *Pipeline {
+	pipe, ok := cp.pipes[addr]
+	if !ok {
+		pipe = cp.client.getNodeClientByAddr(addr).Pipeline()
+		cp.pipes[addr] = pipe
+	}
+	return pipe
+}
+
+func (cp *clusterPipelines) process(cmd Cmder) {
+	hashSlot := HashSlot(cmd.clusterKey())
+
+	cp.client.cachemx.RLock()
+	addr := cp.client.getMasterAddrBySlot(hashSlot)
+	cp.fetch(addr).process(cmd)
+	cp.client.cachemx.RUnlock()
+}
+
+func (cp *clusterPipelines) processOn(addr string, cmd Cmder) {
+	cp.client.cachemx.RLock()
+	cp.fetch(addr).process(cmd)
+	cp.client.cachemx.RUnlock()
+}
+
+func (cp *clusterPipelines) len() int {
+	return len(cp.pipes)
+}
+
+func (cp *clusterPipelines) exec() {
+	for addr, pipe := range cp.pipes {
+		pipe.Exec()
+		pipe.Close()
+		delete(cp.pipes, addr)
+	}
 }

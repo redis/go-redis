@@ -75,7 +75,7 @@ func (c *ClusterClient) getNodeClientByAddr(addr string) *Client {
 
 // Process a command
 func (c *ClusterClient) process(cmd Cmder) {
-	var ask bool
+	var moved, ask bool
 
 	c.reloadIfDue()
 
@@ -117,24 +117,15 @@ func (c *ClusterClient) process(cmd Cmder) {
 			continue
 		}
 
-		// Check the error message, return if unexpected
-		parts := strings.SplitN(err.Error(), " ", 3)
-		if len(parts) != 3 {
-			return
-		}
-
-		// Handle MOVE and ASK redirections, return on any other error
-		switch parts[0] {
-		case "MOVED":
+		if moved, ask, addr = c.hasMoved(err); moved {
 			c.forceReload()
-			addr = parts[2]
-		case "ASK":
-			ask = true
-			addr = parts[2]
-		default:
-			return
+			cmd.reset()
+			continue
+		} else if ask {
+			cmd.reset()
+			continue
 		}
-		cmd.reset()
+		break
 	}
 }
 
@@ -212,6 +203,28 @@ func (c *ClusterClient) update(infos []ClusterSlotInfo) {
 			c.addrs[addr] = struct{}{}
 		}
 	}
+}
+
+// Check if the the error message, return if unexpected
+func (c *ClusterClient) hasMoved(err error) (moved bool, ask bool, addr string) {
+	if _, ok := err.(redisError); !ok {
+		return
+	}
+
+	parts := strings.SplitN(err.Error(), " ", 3)
+	if len(parts) != 3 {
+		return
+	}
+
+	switch parts[0] {
+	case "MOVED":
+		moved = true
+		addr = parts[2]
+	case "ASK":
+		ask = true
+		addr = parts[2]
+	}
+	return
 }
 
 //------------------------------------------------------------------------------
