@@ -47,12 +47,16 @@ func (c *ClusterClient) Close() error {
 // ------------------------------------------------------------------------
 
 // getClient returns a Client for a given address.
-func (c *ClusterClient) getClient(addr string) *Client {
+func (c *ClusterClient) getClient(addr string) (*Client, error) {
+	if addr == "" {
+		return c.randomClient()
+	}
+
 	c.clientsMx.RLock()
 	client, ok := c.clients[addr]
 	if ok {
 		c.clientsMx.RUnlock()
-		return client
+		return client, nil
 	}
 	c.clientsMx.RUnlock()
 
@@ -66,14 +70,24 @@ func (c *ClusterClient) getClient(addr string) *Client {
 	}
 	c.clientsMx.Unlock()
 
-	return client
+	return client, nil
+}
+
+func (c *ClusterClient) slotAddrs(slot int) []string {
+	c.slotsMx.RLock()
+	addrs := c.slots[slot]
+	c.slotsMx.RUnlock()
+	return addrs
 }
 
 // randomClient returns a Client for the first live node.
 func (c *ClusterClient) randomClient() (client *Client, err error) {
 	for i := 0; i < 10; i++ {
 		n := rand.Intn(len(c.addrs))
-		client = c.getClient(c.addrs[n])
+		client, err = c.getClient(c.addrs[n])
+		if err != nil {
+			continue
+		}
 		err = client.Ping().Err()
 		if err == nil {
 			return client, nil
@@ -82,27 +96,22 @@ func (c *ClusterClient) randomClient() (client *Client, err error) {
 	return nil, err
 }
 
-// Process a command
 func (c *ClusterClient) process(cmd Cmder) {
-	var client *Client
 	var ask bool
 
 	c.reloadIfDue()
 
 	slot := hashSlot(cmd.clusterKey())
-	c.slotsMx.RLock()
-	addrs := c.slots[slot]
-	c.slotsMx.RUnlock()
 
-	if len(addrs) > 0 {
-		client = c.getClient(addrs[0]) // First address is master.
-	} else {
-		var err error
-		client, err = c.randomClient()
-		if err != nil {
-			cmd.setErr(err)
-			return
-		}
+	var addr string
+	if addrs := c.slotAddrs(slot); len(addrs) > 0 {
+		addr = addrs[0] // First address is master.
+	}
+
+	client, err := c.getClient(addr)
+	if err != nil {
+		cmd.setErr(err)
+		return
 	}
 
 	for attempt := 0; attempt <= c.opt.getMaxRedirects(); attempt++ {
@@ -132,24 +141,22 @@ func (c *ClusterClient) process(cmd Cmder) {
 			continue
 		}
 
-		// Check the error message, return if unexpected
-		parts := strings.SplitN(err.Error(), " ", 3)
-		if len(parts) != 3 {
-			return
+		var moved bool
+		var addr string
+		moved, ask, addr = isMovedError(err)
+		if moved || ask {
+			if moved {
+				c.scheduleReload()
+			}
+			client, err = c.getClient(addr)
+			if err != nil {
+				return
+			}
+			cmd.reset()
+			continue
 		}
 
-		// Handle MOVE and ASK redirections, return on any other error
-		switch parts[0] {
-		case "MOVED":
-			c.scheduleReload()
-			client = c.getClient(parts[2])
-		case "ASK":
-			ask = true
-			client = c.getClient(parts[2])
-		default:
-			return
-		}
-		cmd.reset()
+		break
 	}
 }
 
