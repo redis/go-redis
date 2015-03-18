@@ -1,6 +1,6 @@
 all: testdeps
 	go test ./... -v 1 -ginkgo.slowSpecThreshold=10 -cpu=1,2,4
-	go test ./... -v 1 -ginkgo.slowSpecThreshold=10 -short -race
+	go test ./... -v 1 -ginkgo.slowSpecThreshold=10 -ginkgo.v -short -race
 
 test: testdeps
 	go test ./... -v 1 -ginkgo.slowSpecThreshold=10
