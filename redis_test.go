@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -126,7 +127,7 @@ func TestGinkgoSuite(t *testing.T) {
 
 func execCmd(name string, args ...string) (*os.Process, error) {
 	cmd := exec.Command(name, args...)
-	if true {
+	if false {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}
@@ -138,12 +139,12 @@ func connectTo(port string) (client *redis.Client, err error) {
 		Addr: ":" + port,
 	})
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if err = client.Ping().Err(); err == nil {
 			return client, nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 	}
 
 	return nil, err
@@ -159,11 +160,38 @@ func (p *redisProcess) Close() error {
 	return p.Kill()
 }
 
+var (
+	redisServerBin, _  = filepath.Abs(filepath.Join(".test", "redis", "src", "redis-server"))
+	redisServerConf, _ = filepath.Abs(filepath.Join(".test", "redis.conf"))
+)
+
+func redisDir(port string) (string, error) {
+	dir, err := filepath.Abs(filepath.Join(".test", "instances", port))
+	if err != nil {
+		return "", err
+	} else if err = os.RemoveAll(dir); err != nil {
+		return "", err
+	} else if err = os.MkdirAll(dir, 0775); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 func startRedis(port string, args ...string) (*redisProcess, error) {
-	process, err := execCmd("redis-server", append([]string{"--port", port}, args...)...)
+	dir, err := redisDir(port)
 	if err != nil {
 		return nil, err
 	}
+	if err = exec.Command("cp", "-f", redisServerConf, dir).Run(); err != nil {
+		return nil, err
+	}
+
+	baseArgs := []string{filepath.Join(dir, "redis.conf"), "--port", port, "--dir", dir}
+	process, err := execCmd(redisServerBin, append(baseArgs, args...)...)
+	if err != nil {
+		return nil, err
+	}
+
 	client, err := connectTo(port)
 	if err != nil {
 		process.Kill()
@@ -173,7 +201,11 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 }
 
 func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
-	process, err := execCmd("redis-server", os.DevNull, "--sentinel", "--port", port)
+	dir, err := redisDir(port)
+	if err != nil {
+		return nil, err
+	}
+	process, err := execCmd(redisServerBin, os.DevNull, "--sentinel", "--port", port, "--dir", dir)
 	if err != nil {
 		return nil, err
 	}

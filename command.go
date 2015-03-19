@@ -24,15 +24,18 @@ var (
 	_ Cmder = (*StringIntMapCmd)(nil)
 	_ Cmder = (*ZSliceCmd)(nil)
 	_ Cmder = (*ScanCmd)(nil)
+	_ Cmder = (*ClusterSlotCmd)(nil)
 )
 
 type Cmder interface {
 	args() []string
 	parseReply(*bufio.Reader) error
 	setErr(error)
+	reset()
 
 	writeTimeout() *time.Duration
 	readTimeout() *time.Duration
+	clusterKey() string
 
 	Err() error
 	String() string
@@ -63,13 +66,9 @@ type baseCmd struct {
 
 	err error
 
-	_writeTimeout, _readTimeout *time.Duration
-}
+	_clusterKeyPos int
 
-func newBaseCmd(args ...string) *baseCmd {
-	return &baseCmd{
-		_args: args,
-	}
+	_writeTimeout, _readTimeout *time.Duration
 }
 
 func (cmd *baseCmd) Err() error {
@@ -95,6 +94,13 @@ func (cmd *baseCmd) writeTimeout() *time.Duration {
 	return cmd._writeTimeout
 }
 
+func (cmd *baseCmd) clusterKey() string {
+	if cmd._clusterKeyPos > 0 && cmd._clusterKeyPos < len(cmd._args) {
+		return cmd._args[cmd._clusterKeyPos]
+	}
+	return ""
+}
+
 func (cmd *baseCmd) setWriteTimeout(d time.Duration) {
 	cmd._writeTimeout = &d
 }
@@ -106,15 +112,18 @@ func (cmd *baseCmd) setErr(e error) {
 //------------------------------------------------------------------------------
 
 type Cmd struct {
-	*baseCmd
+	baseCmd
 
 	val interface{}
 }
 
 func NewCmd(args ...string) *Cmd {
-	return &Cmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &Cmd{baseCmd: baseCmd{_args: args}}
+}
+
+func (cmd *Cmd) reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *Cmd) Val() interface{} {
@@ -137,15 +146,18 @@ func (cmd *Cmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type SliceCmd struct {
-	*baseCmd
+	baseCmd
 
 	val []interface{}
 }
 
 func NewSliceCmd(args ...string) *SliceCmd {
-	return &SliceCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &SliceCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *SliceCmd) reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *SliceCmd) Val() []interface{} {
@@ -173,15 +185,22 @@ func (cmd *SliceCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type StatusCmd struct {
-	*baseCmd
+	baseCmd
 
 	val string
 }
 
 func NewStatusCmd(args ...string) *StatusCmd {
-	return &StatusCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &StatusCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func newKeylessStatusCmd(args ...string) *StatusCmd {
+	return &StatusCmd{baseCmd: baseCmd{_args: args}}
+}
+
+func (cmd *StatusCmd) reset() {
+	cmd.val = ""
+	cmd.err = nil
 }
 
 func (cmd *StatusCmd) Val() string {
@@ -209,15 +228,18 @@ func (cmd *StatusCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type IntCmd struct {
-	*baseCmd
+	baseCmd
 
 	val int64
 }
 
 func NewIntCmd(args ...string) *IntCmd {
-	return &IntCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &IntCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *IntCmd) reset() {
+	cmd.val = 0
+	cmd.err = nil
 }
 
 func (cmd *IntCmd) Val() int64 {
@@ -245,7 +267,7 @@ func (cmd *IntCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type DurationCmd struct {
-	*baseCmd
+	baseCmd
 
 	val       time.Duration
 	precision time.Duration
@@ -253,9 +275,14 @@ type DurationCmd struct {
 
 func NewDurationCmd(precision time.Duration, args ...string) *DurationCmd {
 	return &DurationCmd{
-		baseCmd:   newBaseCmd(args...),
 		precision: precision,
+		baseCmd:   baseCmd{_args: args, _clusterKeyPos: 1},
 	}
+}
+
+func (cmd *DurationCmd) reset() {
+	cmd.val = 0
+	cmd.err = nil
 }
 
 func (cmd *DurationCmd) Val() time.Duration {
@@ -283,15 +310,18 @@ func (cmd *DurationCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type BoolCmd struct {
-	*baseCmd
+	baseCmd
 
 	val bool
 }
 
 func NewBoolCmd(args ...string) *BoolCmd {
-	return &BoolCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &BoolCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *BoolCmd) reset() {
+	cmd.val = false
+	cmd.err = nil
 }
 
 func (cmd *BoolCmd) Val() bool {
@@ -319,15 +349,18 @@ func (cmd *BoolCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type StringCmd struct {
-	*baseCmd
+	baseCmd
 
 	val string
 }
 
 func NewStringCmd(args ...string) *StringCmd {
-	return &StringCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &StringCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *StringCmd) reset() {
+	cmd.val = ""
+	cmd.err = nil
 }
 
 func (cmd *StringCmd) Val() string {
@@ -376,15 +409,18 @@ func (cmd *StringCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type FloatCmd struct {
-	*baseCmd
+	baseCmd
 
 	val float64
 }
 
 func NewFloatCmd(args ...string) *FloatCmd {
-	return &FloatCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &FloatCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *FloatCmd) reset() {
+	cmd.val = 0
+	cmd.err = nil
 }
 
 func (cmd *FloatCmd) Val() float64 {
@@ -408,15 +444,18 @@ func (cmd *FloatCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type StringSliceCmd struct {
-	*baseCmd
+	baseCmd
 
 	val []string
 }
 
 func NewStringSliceCmd(args ...string) *StringSliceCmd {
-	return &StringSliceCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &StringSliceCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *StringSliceCmd) reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *StringSliceCmd) Val() []string {
@@ -444,15 +483,18 @@ func (cmd *StringSliceCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type BoolSliceCmd struct {
-	*baseCmd
+	baseCmd
 
 	val []bool
 }
 
 func NewBoolSliceCmd(args ...string) *BoolSliceCmd {
-	return &BoolSliceCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &BoolSliceCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *BoolSliceCmd) reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *BoolSliceCmd) Val() []bool {
@@ -480,15 +522,18 @@ func (cmd *BoolSliceCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type StringStringMapCmd struct {
-	*baseCmd
+	baseCmd
 
 	val map[string]string
 }
 
 func NewStringStringMapCmd(args ...string) *StringStringMapCmd {
-	return &StringStringMapCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &StringStringMapCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *StringStringMapCmd) reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *StringStringMapCmd) Val() map[string]string {
@@ -516,15 +561,13 @@ func (cmd *StringStringMapCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type StringIntMapCmd struct {
-	*baseCmd
+	baseCmd
 
 	val map[string]int64
 }
 
 func NewStringIntMapCmd(args ...string) *StringIntMapCmd {
-	return &StringIntMapCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &StringIntMapCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
 }
 
 func (cmd *StringIntMapCmd) Val() map[string]int64 {
@@ -537,6 +580,11 @@ func (cmd *StringIntMapCmd) Result() (map[string]int64, error) {
 
 func (cmd *StringIntMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *StringIntMapCmd) reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *StringIntMapCmd) parseReply(rd *bufio.Reader) error {
@@ -552,15 +600,18 @@ func (cmd *StringIntMapCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type ZSliceCmd struct {
-	*baseCmd
+	baseCmd
 
 	val []Z
 }
 
 func NewZSliceCmd(args ...string) *ZSliceCmd {
-	return &ZSliceCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &ZSliceCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *ZSliceCmd) reset() {
+	cmd.val = nil
+	cmd.err = nil
 }
 
 func (cmd *ZSliceCmd) Val() []Z {
@@ -588,16 +639,20 @@ func (cmd *ZSliceCmd) parseReply(rd *bufio.Reader) error {
 //------------------------------------------------------------------------------
 
 type ScanCmd struct {
-	*baseCmd
+	baseCmd
 
 	cursor int64
 	keys   []string
 }
 
 func NewScanCmd(args ...string) *ScanCmd {
-	return &ScanCmd{
-		baseCmd: newBaseCmd(args...),
-	}
+	return &ScanCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *ScanCmd) reset() {
+	cmd.cursor = 0
+	cmd.keys = nil
+	cmd.err = nil
 }
 
 func (cmd *ScanCmd) Val() (int64, []string) {
@@ -630,5 +685,49 @@ func (cmd *ScanCmd) parseReply(rd *bufio.Reader) error {
 		cmd.keys = append(cmd.keys, keyi.(string))
 	}
 
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type ClusterSlotInfo struct {
+	Start, End int
+	Addrs      []string
+}
+
+type ClusterSlotCmd struct {
+	baseCmd
+
+	val []ClusterSlotInfo
+}
+
+func NewClusterSlotCmd(args ...string) *ClusterSlotCmd {
+	return &ClusterSlotCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *ClusterSlotCmd) Val() []ClusterSlotInfo {
+	return cmd.val
+}
+
+func (cmd *ClusterSlotCmd) Result() ([]ClusterSlotInfo, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *ClusterSlotCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterSlotCmd) reset() {
+	cmd.val = nil
+	cmd.err = nil
+}
+
+func (cmd *ClusterSlotCmd) parseReply(rd *bufio.Reader) error {
+	v, err := parseReply(rd, parseClusterSlotInfoSlice)
+	if err != nil {
+		cmd.err = err
+		return err
+	}
+	cmd.val = v.([]ClusterSlotInfo)
 	return nil
 }

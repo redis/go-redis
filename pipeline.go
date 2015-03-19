@@ -2,22 +2,23 @@ package redis
 
 // Not thread-safe.
 type Pipeline struct {
-	*Client
+	commandable
 
+	cmds   []Cmder
+	client *baseClient
 	closed bool
 }
 
 func (c *Client) Pipeline() *Pipeline {
-	return &Pipeline{
-		Client: &Client{
-			baseClient: &baseClient{
-				opt:      c.opt,
-				connPool: c.connPool,
-
-				cmds: make([]Cmder, 0),
-			},
+	pipe := &Pipeline{
+		client: &baseClient{
+			opt:      c.opt,
+			connPool: c.connPool,
 		},
+		cmds: make([]Cmder, 0, 10),
 	}
+	pipe.commandable.process = pipe.process
+	return pipe
 }
 
 func (c *Client) Pipelined(f func(*Pipeline) error) ([]Cmder, error) {
@@ -28,6 +29,10 @@ func (c *Client) Pipelined(f func(*Pipeline) error) ([]Cmder, error) {
 	cmds, err := pc.Exec()
 	pc.Close()
 	return cmds, err
+}
+
+func (c *Pipeline) process(cmd Cmder) {
+	c.cmds = append(c.cmds, cmd)
 }
 
 func (c *Pipeline) Close() error {
@@ -51,29 +56,29 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 	}
 
 	cmds := c.cmds
-	c.cmds = make([]Cmder, 0)
+	c.cmds = make([]Cmder, 0, 0)
 
 	if len(cmds) == 0 {
 		return []Cmder{}, nil
 	}
 
-	cn, err := c.conn()
+	cn, err := c.client.conn()
 	if err != nil {
 		setCmdsErr(cmds, err)
 		return cmds, err
 	}
 
 	if err := c.execCmds(cn, cmds); err != nil {
-		c.freeConn(cn, err)
+		c.client.freeConn(cn, err)
 		return cmds, err
 	}
 
-	c.putConn(cn)
+	c.client.putConn(cn)
 	return cmds, nil
 }
 
 func (c *Pipeline) execCmds(cn *conn, cmds []Cmder) error {
-	if err := c.writeCmd(cn, cmds...); err != nil {
+	if err := cn.writeCmds(cmds...); err != nil {
 		setCmdsErr(cmds, err)
 		return err
 	}

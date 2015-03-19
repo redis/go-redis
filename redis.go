@@ -9,17 +9,6 @@ import (
 type baseClient struct {
 	connPool pool
 	opt      *options
-	cmds     []Cmder
-}
-
-func (c *baseClient) writeCmd(cn *conn, cmds ...Cmder) error {
-	buf := cn.buf[:0]
-	for _, cmd := range cmds {
-		buf = appendArgs(buf, cmd.args())
-	}
-
-	_, err := cn.Write(buf)
-	return err
 }
 
 func (c *baseClient) conn() (*conn, error) {
@@ -47,12 +36,7 @@ func (c *baseClient) initConn(cn *conn) error {
 	pool.SetConn(cn)
 
 	// Client is not closed because we want to reuse underlying connection.
-	client := &Client{
-		baseClient: &baseClient{
-			opt:      c.opt,
-			connPool: pool,
-		},
-	}
+	client := newClient(c.opt, pool)
 
 	if c.opt.Password != "" {
 		if err := client.Auth(c.opt.Password).Err(); err != nil {
@@ -91,15 +75,7 @@ func (c *baseClient) putConn(cn *conn) {
 	}
 }
 
-func (c *baseClient) Process(cmd Cmder) {
-	if c.cmds == nil {
-		c.run(cmd)
-	} else {
-		c.cmds = append(c.cmds, cmd)
-	}
-}
-
-func (c *baseClient) run(cmd Cmder) {
+func (c *baseClient) process(cmd Cmder) {
 	cn, err := c.conn()
 	if err != nil {
 		cmd.setErr(err)
@@ -118,7 +94,7 @@ func (c *baseClient) run(cmd Cmder) {
 		cn.readTimeout = c.opt.ReadTimeout
 	}
 
-	if err := c.writeCmd(cn, cmd); err != nil {
+	if err := cn.writeCmds(cmd); err != nil {
 		c.freeConn(cn, err)
 		cmd.setErr(err)
 		return
@@ -237,8 +213,19 @@ func (opt *Options) options() *options {
 	}
 }
 
+//------------------------------------------------------------------------------
+
 type Client struct {
 	*baseClient
+	commandable
+}
+
+func newClient(opt *options, pool pool) *Client {
+	base := &baseClient{opt: opt, connPool: pool}
+	return &Client{
+		baseClient:  base,
+		commandable: commandable{process: base.process},
+	}
 }
 
 func NewClient(clOpt *Options) *Client {
@@ -249,12 +236,7 @@ func NewClient(clOpt *Options) *Client {
 			return net.DialTimeout(clOpt.getNetwork(), clOpt.Addr, opt.DialTimeout)
 		}
 	}
-	return &Client{
-		baseClient: &baseClient{
-			opt:      opt,
-			connPool: newConnPool(newConnFunc(dialer), opt),
-		},
-	}
+	return newClient(opt, newConnPool(newConnFunc(dialer), opt))
 }
 
 // Deprecated. Use NewClient instead.

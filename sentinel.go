@@ -92,17 +92,13 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 		opt: opt,
 	}
-	return &Client{
-		baseClient: &baseClient{
-			opt:      opt,
-			connPool: failover.Pool(),
-		},
-	}
+	return newClient(opt, failover.Pool())
 }
 
 //------------------------------------------------------------------------------
 
 type sentinelClient struct {
+	commandable
 	*baseClient
 }
 
@@ -113,11 +109,13 @@ func newSentinel(clOpt *Options) *sentinelClient {
 	dialer := func() (net.Conn, error) {
 		return net.DialTimeout("tcp", clOpt.Addr, opt.DialTimeout)
 	}
+	base := &baseClient{
+		opt:      opt,
+		connPool: newConnPool(newConnFunc(dialer), opt),
+	}
 	return &sentinelClient{
-		baseClient: &baseClient{
-			opt:      opt,
-			connPool: newConnPool(newConnFunc(dialer), opt),
-		},
+		baseClient:  base,
+		commandable: commandable{process: base.process},
 	}
 }
 
