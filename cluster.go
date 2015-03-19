@@ -86,7 +86,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 
 	tried := make(map[string]struct{}, len(c.addrs))
 	addr := c.getMasterAddrBySlot(hashSlot)
-	for attempt := 0; attempt < c.opt.getMaxRedirects(); attempt++ {
+	for attempt := 0; attempt <= c.opt.getMaxRedirects(); attempt++ {
 		tried[addr] = struct{}{}
 
 		// Pick the connection, process request
