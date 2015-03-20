@@ -140,28 +140,31 @@ var _ = Describe("Command", func() {
 		})
 
 		It("should incr", func() {
-			var n = 10000
+			var C, N = 10, 1000
 			if testing.Short() {
-				n = 1000
+				N = 100
 			}
 
 			key := "TestIncrFromGoroutines"
 			wg := &sync.WaitGroup{}
-			wg.Add(n)
-			for i := 0; i < n; i++ {
+			for i := 0; i < C; i++ {
+				wg.Add(1)
+
 				go func() {
 					defer GinkgoRecover()
 					defer wg.Done()
 
-					err := client.Incr(key).Err()
-					Expect(err).NotTo(HaveOccurred())
+					for j := 0; j < N; j++ {
+						err := client.Incr(key).Err()
+						Expect(err).NotTo(HaveOccurred())
+					}
 				}()
 			}
 			wg.Wait()
 
 			val, err := client.Get(key).Int64()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(val).To(Equal(int64(n)))
+			Expect(val).To(Equal(int64(C * N)))
 		})
 
 	})

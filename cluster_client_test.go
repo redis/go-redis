@@ -5,6 +5,23 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// GetSlot returns the cached slot addresses
+func (c *ClusterClient) GetSlot(pos int) []string {
+	c.cachemx.RLock()
+	defer c.cachemx.RUnlock()
+
+	return c.slots[pos]
+}
+
+// SwapSlot swaps a slot's master/slave address
+// for testing MOVED redirects
+func (c *ClusterClient) SwapSlot(pos int) []string {
+	c.cachemx.Lock()
+	defer c.cachemx.Unlock()
+	c.slots[pos][0], c.slots[pos][1] = c.slots[pos][1], c.slots[pos][0]
+	return c.slots[pos]
+}
+
 var _ = Describe("ClusterClient", func() {
 
 	var subject *ClusterClient

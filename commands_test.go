@@ -2160,53 +2160,49 @@ var _ = Describe("Commands", func() {
 
 	Describe("watch/unwatch", func() {
 
-		var safeIncr = func() ([]redis.Cmder, error) {
-			multi := client.Multi()
-			defer multi.Close()
-
-			watch := multi.Watch("key")
-			Expect(watch.Err()).NotTo(HaveOccurred())
-			Expect(watch.Val()).To(Equal("OK"))
-
-			get := multi.Get("key")
-			Expect(get.Err()).NotTo(HaveOccurred())
-			Expect(get.Val()).NotTo(Equal(redis.Nil))
-
-			v, err := strconv.ParseInt(get.Val(), 10, 64)
-			Expect(err).NotTo(HaveOccurred())
-
-			return multi.Exec(func() error {
-				multi.Set("key", strconv.FormatInt(v+1, 10))
-				return nil
-			})
-		}
-
 		It("should WatchUnwatch", func() {
-			var n = 10000
+			var C, N = 10, 1000
 			if testing.Short() {
-				n = 1000
+				N = 100
 			}
 
 			err := client.Set("key", "0").Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			wg := &sync.WaitGroup{}
-			for i := 0; i < n; i++ {
+			for i := 0; i < C; i++ {
 				wg.Add(1)
 
 				go func() {
 					defer GinkgoRecover()
 					defer wg.Done()
 
-					for {
-						cmds, err := safeIncr()
+					multi := client.Multi()
+					defer multi.Close()
+
+					for j := 0; j < N; j++ {
+						val, err := multi.Watch("key").Result()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(val).To(Equal("OK"))
+
+						val, err = multi.Get("key").Result()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(val).NotTo(Equal(redis.Nil))
+
+						num, err := strconv.ParseInt(val, 10, 64)
+						Expect(err).NotTo(HaveOccurred())
+
+						cmds, err := multi.Exec(func() error {
+							multi.Set("key", strconv.FormatInt(num+1, 10))
+							return nil
+						})
 						if err == redis.TxFailedErr {
+							j--
 							continue
 						}
 						Expect(err).NotTo(HaveOccurred())
 						Expect(cmds).To(HaveLen(1))
 						Expect(cmds[0].Err()).NotTo(HaveOccurred())
-						break
 					}
 				}()
 			}
@@ -2214,7 +2210,7 @@ var _ = Describe("Commands", func() {
 
 			val, err := client.Get("key").Int64()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(val).To(Equal(int64(n)))
+			Expect(val).To(Equal(int64(C * N)))
 		})
 
 	})

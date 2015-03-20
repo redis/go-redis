@@ -61,7 +61,7 @@ func (c *MultiPipeline) Exec() ([]Cmder, error) {
 	pipes.exec()
 
 	// Detect MOVED errors, try again
-	for i := 0; i < c.client.opt.MaxRedirects; i++ {
+	for i := 0; i <= c.client.opt.getMaxRedirects(); i++ {
 		for _, cmd := range cmds {
 			if err := cmd.Err(); err != nil {
 				if moved, _, addr := c.client.hasMoved(err); moved {

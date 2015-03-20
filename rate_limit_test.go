@@ -9,15 +9,15 @@ import (
 )
 
 var _ = Describe("RateLimiter", func() {
-	var n = 100000
+	var N = 10000
 	if testing.Short() {
-		n = 1000
+		N = 1000
 	}
 
 	It("should rate limit", func() {
-		rl := newRateLimiter(time.Minute, n)
-		for i := 0; i <= n; i++ {
-			Expect(rl.Check()).To(BeTrue())
+		rl := newRateLimiter(time.Minute, N)
+		for i := 0; i <= N; i++ {
+			Expect(rl.Check()).To(BeTrue(), "cycle %d/%d", i, N)
 		}
 		Expect(rl.Check()).To(BeFalse())
 	})
