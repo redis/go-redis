@@ -117,34 +117,32 @@ var _ = Describe("Command", func() {
 	})
 
 	Describe("races", func() {
+		var C, N = 10, 1000
+		if testing.Short() {
+			N = 100
+		}
 
 		It("should echo", func() {
-			var n = 10000
-			if testing.Short() {
-				n = 1000
-			}
-
 			wg := &sync.WaitGroup{}
-			wg.Add(n)
-			for i := 0; i < n; i++ {
+			for i := 0; i < C; i++ {
+				wg.Add(1)
+
 				go func(i int) {
+					defer GinkgoRecover()
 					defer wg.Done()
 
-					msg := "echo" + strconv.Itoa(i)
-					echo := client.Echo(msg)
-					Expect(echo.Err()).NotTo(HaveOccurred())
-					Expect(echo.Val()).To(Equal(msg))
+					for j := 0; j < N; j++ {
+						msg := "echo" + strconv.Itoa(i)
+						echo := client.Echo(msg)
+						Expect(echo.Err()).NotTo(HaveOccurred())
+						Expect(echo.Val()).To(Equal(msg))
+					}
 				}(i)
 			}
 			wg.Wait()
 		})
 
 		It("should incr", func() {
-			var C, N = 10, 1000
-			if testing.Short() {
-				N = 100
-			}
-
 			key := "TestIncrFromGoroutines"
 			wg := &sync.WaitGroup{}
 			for i := 0; i < C; i++ {
