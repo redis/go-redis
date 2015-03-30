@@ -167,7 +167,7 @@ var _ = Describe("Cluster", func() {
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(Equal(""))
 
-			val, err = client.Set("A", "VALUE").Result()
+			val, err = client.Set("A", "VALUE", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("OK"))
 
@@ -181,7 +181,7 @@ var _ = Describe("Cluster", func() {
 		})
 
 		It("should follow redirects", func() {
-			Expect(client.Set("A", "VALUE").Err()).NotTo(HaveOccurred())
+			Expect(client.Set("A", "VALUE", 0).Err()).NotTo(HaveOccurred())
 			Expect(redis.HashSlot("A")).To(Equal(6373))
 
 			// Slot 6373 is stored on the second node

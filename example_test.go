@@ -36,7 +36,7 @@ func ExampleNewFailoverClient() {
 }
 
 func ExampleClient() {
-	if err := client.Set("foo", "bar").Err(); err != nil {
+	if err := client.Set("foo", "bar", 0).Err(); err != nil {
 		panic(err)
 	}
 
@@ -57,7 +57,7 @@ func ExampleClient_Incr() {
 
 func ExampleClient_Pipelined() {
 	cmds, err := client.Pipelined(func(c *redis.Pipeline) error {
-		c.Set("key1", "hello1")
+		c.Set("key1", "hello1", 0)
 		c.Get("key1")
 		return nil
 	})
@@ -73,7 +73,7 @@ func ExampleClient_Pipelined() {
 
 func ExamplePipeline() {
 	pipeline := client.Pipeline()
-	set := pipeline.Set("key1", "hello1")
+	set := pipeline.Set("key1", "hello1", 0)
 	get := pipeline.Get("key1")
 	cmds, err := pipeline.Exec()
 	fmt.Println(cmds, err)
@@ -93,7 +93,7 @@ func ExampleMulti() {
 		n, _ := strconv.ParseInt(s, 10, 64)
 
 		return tx.Exec(func() error {
-			tx.Set("key", strconv.FormatInt(n+1, 10))
+			tx.Set("key", strconv.FormatInt(n+1, 10), 0)
 			return nil
 		})
 	}

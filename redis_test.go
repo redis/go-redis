@@ -109,7 +109,7 @@ var _ = Describe("Client", func() {
 		defer db1.Close()
 
 		Expect(db1.Get("key").Err()).To(Equal(redis.Nil))
-		Expect(db1.Set("key", "value").Err()).NotTo(HaveOccurred())
+		Expect(db1.Set("key", "value", 0).Err()).NotTo(HaveOccurred())
 
 		Expect(client.Get("key").Err()).To(Equal(redis.Nil))
 		Expect(db1.Get("key").Val()).To(Equal("value"))
@@ -253,7 +253,7 @@ func BenchmarkRedisSet(b *testing.B) {
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
-		if err := client.Set("key", "hello").Err(); err != nil {
+		if err := client.Set("key", "hello", 0).Err(); err != nil {
 			panic(err)
 		}
 	}
@@ -281,7 +281,7 @@ func BenchmarkRedisGet(b *testing.B) {
 	client := redis.NewTCPClient(&redis.Options{
 		Addr: redisAddr,
 	})
-	if err := client.Set("key", "hello").Err(); err != nil {
+	if err := client.Set("key", "hello", 0).Err(); err != nil {
 		b.Fatal(err)
 	}
 	b.StartTimer()
@@ -318,7 +318,7 @@ func BenchmarkSetExpire(b *testing.B) {
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
-		if err := client.Set("key", "hello").Err(); err != nil {
+		if err := client.Set("key", "hello", 0).Err(); err != nil {
 			b.Fatal(err)
 		}
 		if err := client.Expire("key", time.Second).Err(); err != nil {
@@ -336,7 +336,7 @@ func BenchmarkPipeline(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
-			pipe.Set("key", "hello")
+			pipe.Set("key", "hello", 0)
 			pipe.Expire("key", time.Second)
 			return nil
 		})

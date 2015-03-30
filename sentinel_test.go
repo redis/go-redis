@@ -36,7 +36,7 @@ var _ = Describe("Sentinel", func() {
 		defer client.Close()
 
 		// Set value on master, verify
-		err = client.Set("foo", "master").Err()
+		err = client.Set("foo", "master", 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		val, err := master.Get("foo").Result()

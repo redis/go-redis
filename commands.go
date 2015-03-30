@@ -25,6 +25,18 @@ func (c *commandable) Process(cmd Cmder) {
 	c.process(cmd)
 }
 
+func usePrecise(dur time.Duration) bool {
+	return dur < time.Second || dur%time.Second != 0
+}
+
+func formatMs(dur time.Duration) string {
+	return strconv.FormatInt(int64(dur/time.Millisecond), 10)
+}
+
+func formatSec(dur time.Duration) string {
+	return strconv.FormatInt(int64(dur/time.Second), 10)
+}
+
 //------------------------------------------------------------------------------
 
 func (c *commandable) Auth(password string) *StatusCmd {
@@ -77,8 +89,8 @@ func (c *commandable) Exists(key string) *BoolCmd {
 	return cmd
 }
 
-func (c *commandable) Expire(key string, dur time.Duration) *BoolCmd {
-	cmd := NewBoolCmd("EXPIRE", key, strconv.FormatInt(int64(dur/time.Second), 10))
+func (c *commandable) Expire(key string, expiration time.Duration) *BoolCmd {
+	cmd := NewBoolCmd("EXPIRE", key, formatSec(expiration))
 	c.Process(cmd)
 	return cmd
 }
@@ -146,8 +158,8 @@ func (c *commandable) Persist(key string) *BoolCmd {
 	return cmd
 }
 
-func (c *commandable) PExpire(key string, dur time.Duration) *BoolCmd {
-	cmd := NewBoolCmd("PEXPIRE", key, strconv.FormatInt(int64(dur/time.Millisecond), 10))
+func (c *commandable) PExpire(key string, expiration time.Duration) *BoolCmd {
+	cmd := NewBoolCmd("PEXPIRE", key, formatMs(expiration))
 	c.Process(cmd)
 	return cmd
 }
@@ -425,19 +437,22 @@ func (c *commandable) MSetNX(pairs ...string) *BoolCmd {
 	return cmd
 }
 
-func (c *commandable) PSetEx(key string, dur time.Duration, value string) *StatusCmd {
-	cmd := NewStatusCmd(
-		"PSETEX",
-		key,
-		strconv.FormatInt(int64(dur/time.Millisecond), 10),
-		value,
-	)
+func (c *commandable) PSetEx(key string, expiration time.Duration, value string) *StatusCmd {
+	cmd := NewStatusCmd("PSETEX", key, formatMs(expiration), value)
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) Set(key, value string) *StatusCmd {
-	cmd := NewStatusCmd("SET", key, value)
+func (c *commandable) Set(key, value string, expiration time.Duration) *StatusCmd {
+	args := []string{"SET", key, value}
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "PX", formatMs(expiration))
+		} else {
+			args = append(args, "EX", formatSec(expiration))
+		}
+	}
+	cmd := NewStatusCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
@@ -453,14 +468,35 @@ func (c *commandable) SetBit(key string, offset int64, value int) *IntCmd {
 	return cmd
 }
 
-func (c *commandable) SetEx(key string, dur time.Duration, value string) *StatusCmd {
-	cmd := NewStatusCmd("SETEX", key, strconv.FormatInt(int64(dur/time.Second), 10), value)
+func (c *commandable) SetEx(key string, expiration time.Duration, value string) *StatusCmd {
+	cmd := NewStatusCmd("SETEX", key, formatSec(expiration), value)
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) SetNX(key, value string) *BoolCmd {
-	cmd := NewBoolCmd("SETNX", key, value)
+func (c *commandable) SetNX(key, value string, expiration time.Duration) *BoolCmd {
+	var cmd *BoolCmd
+	if expiration == 0 {
+		// Use old `SETNX` to support old Redis versions.
+		cmd = NewBoolCmd("SETNX", key, value)
+	} else {
+		if usePrecise(expiration) {
+			cmd = NewBoolCmd("SET", key, value, "PX", formatMs(expiration), "NX")
+		} else {
+			cmd = NewBoolCmd("SET", key, value, "EX", formatSec(expiration), "NX")
+		}
+	}
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *Client) SetXX(key, value string, expiration time.Duration) *BoolCmd {
+	var cmd *BoolCmd
+	if usePrecise(expiration) {
+		cmd = NewBoolCmd("SET", key, value, "PX", formatMs(expiration), "XX")
+	} else {
+		cmd = NewBoolCmd("SET", key, value, "EX", formatSec(expiration), "XX")
+	}
 	c.Process(cmd)
 	return cmd
 }

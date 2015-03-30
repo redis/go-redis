@@ -338,12 +338,25 @@ func (cmd *BoolCmd) String() string {
 
 func (cmd *BoolCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, nil)
+	// `SET key value NX` returns nil when key already exists.
+	if err == Nil {
+		cmd.val = false
+		return nil
+	}
 	if err != nil {
 		cmd.err = err
 		return err
 	}
-	cmd.val = v.(int64) == 1
-	return nil
+	switch vv := v.(type) {
+	case int64:
+		cmd.val = vv == 1
+		return nil
+	case string:
+		cmd.val = vv == "OK"
+		return nil
+	default:
+		return fmt.Errorf("got %T, wanted int64 or string")
+	}
 }
 
 //------------------------------------------------------------------------------
