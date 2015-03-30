@@ -79,7 +79,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 
 	c.reloadIfDue()
 
-	hashSlot := HashSlot(cmd.clusterKey())
+	hashSlot := hashSlot(cmd.clusterKey())
 
 	c.cachemx.RLock()
 	defer c.cachemx.RUnlock()
@@ -288,9 +288,9 @@ func (opt *ClusterOptions) clientOptions() *Options {
 
 const hashSlots = 16384
 
-// HashSlot returns a consistent slot number between 0 and 16383
-// for any given string key
-func HashSlot(key string) int {
+// hashSlot returns a consistent slot number between 0 and 16383
+// for any given string key.
+func hashSlot(key string) int {
 	if s := strings.IndexByte(key, '{'); s > -1 {
 		if e := strings.IndexByte(key[s+1:], '}'); e > 0 {
 			key = key[s+1 : s+e+1]
