@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gopkg.in/bsm/ratelimit.v1"
 	"gopkg.in/bufio.v1"
 )
 
@@ -102,7 +103,7 @@ func (cn *conn) isIdle(timeout time.Duration) bool {
 
 type connPool struct {
 	dial func() (*conn, error)
-	rl   *rateLimiter
+	rl   *ratelimit.RateLimiter
 
 	opt   *options
 	conns chan *conn
@@ -116,7 +117,7 @@ type connPool struct {
 func newConnPool(dial func() (*conn, error), opt *options) *connPool {
 	return &connPool{
 		dial: dial,
-		rl:   newRateLimiter(time.Second, 2*opt.PoolSize),
+		rl:   ratelimit.New(2*opt.PoolSize, time.Second),
 
 		opt:   opt,
 		conns: make(chan *conn, opt.PoolSize),
@@ -160,7 +161,7 @@ func (p *connPool) wait() (*conn, error) {
 
 // Establish a new connection
 func (p *connPool) new() (*conn, error) {
-	if !p.rl.Check() {
+	if p.rl.Limit() {
 		err := fmt.Errorf(
 			"redis: you open connections too fast (last error: %v)",
 			p.lastDialErr,
@@ -257,7 +258,6 @@ func (p *connPool) Close() (err error) {
 	if !atomic.CompareAndSwapInt32(&p.closed, 0, 1) {
 		return nil
 	}
-	p.rl.Close()
 
 	for {
 		if p.Size() < 1 {
