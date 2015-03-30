@@ -10,6 +10,10 @@ func formatFloat(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
+func formatInt(i int64) string {
+	return strconv.FormatInt(i, 10)
+}
+
 func readTimeout(sec int64) time.Duration {
 	if sec == 0 {
 		return 0
@@ -882,8 +886,7 @@ func (c *commandable) ZRangeWithScores(key string, start, stop int64) *ZSliceCmd
 }
 
 type ZRangeByScore struct {
-	Min, Max string
-
+	Min, Max      string
 	Offset, Count int64
 }
 
@@ -954,32 +957,20 @@ func (c *commandable) ZRemRangeByScore(key, min, max string) *IntCmd {
 	return cmd
 }
 
-func (c *commandable) zRevRange(key, start, stop string, withScores bool) *StringSliceCmd {
-	args := []string{"ZREVRANGE", key, start, stop}
-	if withScores {
-		args = append(args, "WITHSCORES")
-	}
-	cmd := NewStringSliceCmd(args...)
+func (c *commandable) ZRevRange(key string, start, stop int64) *StringSliceCmd {
+	cmd := NewStringSliceCmd("ZREVRANGE", key, formatInt(start), formatInt(stop))
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) ZRevRange(key, start, stop string) *StringSliceCmd {
-	return c.zRevRange(key, start, stop, false)
-}
-
-func (c *commandable) ZRevRangeWithScores(key, start, stop string) *ZSliceCmd {
-	args := []string{"ZREVRANGE", key, start, stop, "WITHSCORES"}
-	cmd := NewZSliceCmd(args...)
+func (c *commandable) ZRevRangeWithScores(key string, start, stop int64) *ZSliceCmd {
+	cmd := NewZSliceCmd("ZREVRANGE", key, formatInt(start), formatInt(stop), "WITHSCORES")
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) zRevRangeByScore(key string, opt ZRangeByScore, withScores bool) *StringSliceCmd {
+func (c *commandable) ZRevRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
 	args := []string{"ZREVRANGEBYSCORE", key, opt.Max, opt.Min}
-	if withScores {
-		args = append(args, "WITHSCORES")
-	}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
@@ -991,10 +982,6 @@ func (c *commandable) zRevRangeByScore(key string, opt ZRangeByScore, withScores
 	cmd := NewStringSliceCmd(args...)
 	c.Process(cmd)
 	return cmd
-}
-
-func (c *commandable) ZRevRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
-	return c.zRevRangeByScore(key, opt, false)
 }
 
 func (c *commandable) ZRevRangeByScoreWithScores(key string, opt ZRangeByScore) *ZSliceCmd {
@@ -1024,12 +1011,8 @@ func (c *commandable) ZScore(key, member string) *FloatCmd {
 	return cmd
 }
 
-func (c *commandable) ZUnionStore(
-	destination string,
-	store ZStore,
-	keys ...string,
-) *IntCmd {
-	args := []string{"ZUNIONSTORE", destination, strconv.FormatInt(int64(len(keys)), 10)}
+func (c *commandable) ZUnionStore(dest string, store ZStore, keys ...string) *IntCmd {
+	args := []string{"ZUNIONSTORE", dest, strconv.FormatInt(int64(len(keys)), 10)}
 	args = append(args, keys...)
 	if len(store.Weights) > 0 {
 		args = append(args, "WEIGHTS")
