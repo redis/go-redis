@@ -18,8 +18,8 @@ type ClusterClient struct {
 	slots   [][]string
 	slotsMx sync.RWMutex // protects slots & addrs cache
 
-	conns  map[string]*Client
-	connMx sync.Mutex // protects conns
+	conns   map[string]*Client
+	connsMx sync.Mutex // protects conns
 
 	opt *ClusterOptions
 
@@ -65,7 +65,7 @@ func (c *ClusterClient) getMasterAddrBySlot(hashSlot int) string {
 
 // Returns a node's client for a given address
 func (c *ClusterClient) getNodeClientByAddr(addr string) *Client {
-	c.connMx.Lock()
+	c.connsMx.Lock()
 	client, ok := c.conns[addr]
 	if !ok {
 		opt := c.opt.clientOptions()
@@ -73,7 +73,7 @@ func (c *ClusterClient) getNodeClientByAddr(addr string) *Client {
 		client = NewTCPClient(opt)
 		c.conns[addr] = client
 	}
-	c.connMx.Unlock()
+	c.connsMx.Unlock()
 	return client
 }
 
@@ -170,14 +170,14 @@ func (c *ClusterClient) reloadIfDue() (err error) {
 
 // Closes all connections and flushes slots cache
 func (c *ClusterClient) reset() (err error) {
-	c.connMx.Lock()
+	c.connsMx.Lock()
 	for addr, client := range c.conns {
 		if e := client.Close(); e != nil {
 			err = e
 		}
 		delete(c.conns, addr)
 	}
-	c.connMx.Unlock()
+	c.connsMx.Unlock()
 	c.slots = make([][]string, hashSlots)
 	return
 }
