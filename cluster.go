@@ -14,12 +14,12 @@ import (
 type ClusterClient struct {
 	commandable
 
-	addrs map[string]struct{}
-	slots [][]string
-	sLock sync.RWMutex // protects slots & addrs cache
+	addrs   map[string]struct{}
+	slots   [][]string
+	slotsMx sync.RWMutex // protects slots & addrs cache
 
-	conns map[string]*Client
-	cLock sync.Mutex // protects conns
+	conns  map[string]*Client
+	connMx sync.Mutex // protects conns
 
 	opt *ClusterOptions
 
@@ -47,8 +47,8 @@ func NewClusterClient(opt *ClusterOptions) (*ClusterClient, error) {
 
 // Close closes the cluster connection
 func (c *ClusterClient) Close() error {
-	c.sLock.Lock()
-	defer c.sLock.Unlock()
+	c.slotsMx.Lock()
+	defer c.slotsMx.Unlock()
 
 	return c.reset()
 }
@@ -65,7 +65,7 @@ func (c *ClusterClient) getMasterAddrBySlot(hashSlot int) string {
 
 // Returns a node's client for a given address
 func (c *ClusterClient) getNodeClientByAddr(addr string) *Client {
-	c.cLock.Lock()
+	c.connMx.Lock()
 	client, ok := c.conns[addr]
 	if !ok {
 		opt := c.opt.clientOptions()
@@ -73,7 +73,7 @@ func (c *ClusterClient) getNodeClientByAddr(addr string) *Client {
 		client = NewTCPClient(opt)
 		c.conns[addr] = client
 	}
-	c.cLock.Unlock()
+	c.connMx.Unlock()
 	return client
 }
 
@@ -85,8 +85,8 @@ func (c *ClusterClient) process(cmd Cmder) {
 
 	hashSlot := hashSlot(cmd.clusterKey())
 
-	c.sLock.RLock()
-	defer c.sLock.RUnlock()
+	c.slotsMx.RLock()
+	defer c.slotsMx.RUnlock()
 
 	tried := make(map[string]struct{}, len(c.addrs))
 	addr := c.getMasterAddrBySlot(hashSlot)
@@ -150,8 +150,8 @@ func (c *ClusterClient) reloadIfDue() (err error) {
 
 	var infos []ClusterSlotInfo
 
-	c.sLock.Lock()
-	defer c.sLock.Unlock()
+	c.slotsMx.Lock()
+	defer c.slotsMx.Unlock()
 
 	// Try known addresses in random order (map interation order is random in Go)
 	// http://redis.io/topics/cluster-spec#clients-first-connection-and-handling-of-redirections
@@ -170,14 +170,14 @@ func (c *ClusterClient) reloadIfDue() (err error) {
 
 // Closes all connections and flushes slots cache
 func (c *ClusterClient) reset() (err error) {
-	c.cLock.Lock()
+	c.connMx.Lock()
 	for addr, client := range c.conns {
 		if e := client.Close(); e != nil {
 			err = e
 		}
 		delete(c.conns, addr)
 	}
-	c.cLock.Unlock()
+	c.connMx.Unlock()
 	c.slots = make([][]string, hashSlots)
 	return
 }
