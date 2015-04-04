@@ -2053,15 +2053,15 @@ var _ = Describe("Commands", func() {
 			zAdd = client.ZAdd("zset", redis.Z{3, "three"})
 			Expect(zAdd.Err()).NotTo(HaveOccurred())
 
-			zRevRange := client.ZRevRange("zset", "0", "-1")
+			zRevRange := client.ZRevRange("zset", 0, -1)
 			Expect(zRevRange.Err()).NotTo(HaveOccurred())
 			Expect(zRevRange.Val()).To(Equal([]string{"three", "two", "one"}))
 
-			zRevRange = client.ZRevRange("zset", "2", "3")
+			zRevRange = client.ZRevRange("zset", 2, 3)
 			Expect(zRevRange.Err()).NotTo(HaveOccurred())
 			Expect(zRevRange.Val()).To(Equal([]string{"one"}))
 
-			zRevRange = client.ZRevRange("zset", "-2", "-1")
+			zRevRange = client.ZRevRange("zset", -2, -1)
 			Expect(zRevRange.Err()).NotTo(HaveOccurred())
 			Expect(zRevRange.Val()).To(Equal([]string{"two", "one"}))
 		})
@@ -2074,15 +2074,15 @@ var _ = Describe("Commands", func() {
 			zAdd = client.ZAdd("zset", redis.Z{3, "three"})
 			Expect(zAdd.Err()).NotTo(HaveOccurred())
 
-			val, err := client.ZRevRangeWithScores("zset", "0", "-1").Result()
+			val, err := client.ZRevRangeWithScores("zset", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]redis.Z{{3, "three"}, {2, "two"}, {1, "one"}}))
 
-			val, err = client.ZRevRangeWithScores("zset", "2", "3").Result()
+			val, err = client.ZRevRangeWithScores("zset", 2, 3).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]redis.Z{{1, "one"}}))
 
-			val, err = client.ZRevRangeWithScores("zset", "-2", "-1").Result()
+			val, err = client.ZRevRangeWithScores("zset", -2, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]redis.Z{{2, "two"}, {1, "one"}}))
 		})
