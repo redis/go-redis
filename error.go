@@ -2,6 +2,8 @@ package redis
 
 import (
 	"fmt"
+	"io"
+	"net"
 )
 
 // Redis nil reply.
@@ -20,4 +22,11 @@ func errorf(s string, args ...interface{}) redisError {
 
 func (err redisError) Error() string {
 	return err.s
+}
+
+func isNetworkError(err error) bool {
+	if _, ok := err.(*net.OpError); ok || err == io.EOF {
+		return true
+	}
+	return false
 }

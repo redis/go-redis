@@ -1,25 +1,36 @@
 package redis
 
 import (
-	"errors"
-	"io"
 	"math/rand"
-	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+func removeDuplicates(slice []string) []string {
+	seen := make(map[string]struct{}, len(slice))
+	for i := 0; i < len(slice); {
+		addr := slice[i]
+		if _, ok := seen[addr]; ok {
+			slice = append(slice[:i], slice[i+1:]...)
+		} else {
+			seen[addr] = struct{}{}
+			i++
+		}
+	}
+	return slice
+}
+
 type ClusterClient struct {
 	commandable
 
-	addrs   map[string]struct{}
+	addrs   []string
 	slots   [][]string
 	slotsMx sync.RWMutex // protects slots & addrs cache
 
-	conns   map[string]*Client
-	connsMx sync.Mutex // protects conns
+	clients   map[string]*Client
+	clientsMx sync.RWMutex // protects clients
 
 	opt *ClusterOptions
 
@@ -28,95 +39,122 @@ type ClusterClient struct {
 
 // NewClusterClient initializes a new cluster-aware client using given options.
 // A list of seed addresses must be provided.
-func NewClusterClient(opt *ClusterOptions) (*ClusterClient, error) {
-	addrs, err := opt.getAddrSet()
-	if err != nil {
-		return nil, err
-	}
-
+func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	client := &ClusterClient{
-		addrs:   addrs,
-		conns:   make(map[string]*Client),
+		addrs:   opt.getAddrs(),
+		clients: make(map[string]*Client),
 		opt:     opt,
 		_reload: 1,
 	}
 	client.commandable.process = client.process
-	client.reloadIfDue()
 	go client.reaper(time.NewTicker(5 * time.Minute))
-	return client, nil
+	return client
 }
 
-// Close closes the cluster connection
+// Close closes the cluster client.
 func (c *ClusterClient) Close() error {
-	c.slotsMx.Lock()
-	defer c.slotsMx.Unlock()
-
-	return c.reset()
+	// TODO: close should make client unusable
+	c.setSlots(nil)
+	return nil
 }
 
 // ------------------------------------------------------------------------
 
-// Finds the current master address for a given hash slot
-func (c *ClusterClient) getMasterAddrBySlot(hashSlot int) string {
-	if addrs := c.slots[hashSlot]; len(addrs) > 0 {
-		return addrs[0]
+// getClient returns a Client for a given address.
+func (c *ClusterClient) getClient(addr string) *Client {
+	c.clientsMx.RLock()
+	client, ok := c.clients[addr]
+	if ok {
+		c.clientsMx.RUnlock()
+		return client
 	}
-	return ""
-}
+	c.clientsMx.RUnlock()
 
-// Returns a node's client for a given address
-func (c *ClusterClient) getNodeClientByAddr(addr string) *Client {
-	c.connsMx.Lock()
-	client, ok := c.conns[addr]
+	c.clientsMx.Lock()
+	client, ok = c.clients[addr]
 	if !ok {
 		opt := c.opt.clientOptions()
 		opt.Addr = addr
 		client = NewTCPClient(opt)
-		c.conns[addr] = client
+		c.clients[addr] = client
 	}
-	c.connsMx.Unlock()
+	c.clientsMx.Unlock()
+
 	return client
+}
+
+// randomClient returns a Client for the first live node.
+func (c *ClusterClient) randomClient() (client *Client, err error) {
+	for i := 0; i < 10; i++ {
+		n := rand.Intn(len(c.addrs))
+		client = c.getClient(c.addrs[n])
+		err = client.Ping().Err()
+		if err == nil {
+			return client, nil
+		}
+	}
+	return nil, err
 }
 
 // Process a command
 func (c *ClusterClient) process(cmd Cmder) {
+	var client *Client
 	var ask bool
 
 	c.reloadIfDue()
 
-	hashSlot := hashSlot(cmd.clusterKey())
+	slot := hashSlot(cmd.clusterKey())
 
 	c.slotsMx.RLock()
 	defer c.slotsMx.RUnlock()
 
-	tried := make(map[string]struct{}, len(c.addrs))
-	addr := c.getMasterAddrBySlot(hashSlot)
-	for attempt := 0; attempt <= c.opt.getMaxRedirects(); attempt++ {
-		tried[addr] = struct{}{}
+	addrs := c.slots[slot]
+	if len(addrs) > 0 {
+		// First address is master.
+		client = c.getClient(addrs[0])
+	} else {
+		var err error
+		client, err = c.randomClient()
+		if err != nil {
+			cmd.setErr(err)
+			return
+		}
+	}
 
-		// Pick the connection, process request
-		conn := c.getNodeClientByAddr(addr)
+	// Index in the addrs slice pointing to the next replica.
+	replicaIndex := 1
+
+	for attempt := 0; attempt <= c.opt.getMaxRedirects(); attempt++ {
 		if ask {
-			pipe := conn.Pipeline()
+			pipe := client.Pipeline()
 			pipe.Process(NewCmd("ASKING"))
 			pipe.Process(cmd)
 			_, _ = pipe.Exec()
 			ask = false
 		} else {
-			conn.Process(cmd)
+			client.Process(cmd)
 		}
 
 		// If there is no (real) error, we are done!
 		err := cmd.Err()
-		if err == nil || err == Nil {
+		if err == nil || err == Nil || err == TxFailedErr {
 			return
 		}
 
-		// On connection errors, pick a random, previosuly untried connection
-		// and request again.
-		if _, ok := err.(*net.OpError); ok || err == io.EOF {
-			if addr = c.findNextAddr(tried); addr == "" {
-				return
+		// On network errors try another node.
+		if isNetworkError(err) {
+			if replicaIndex < len(addrs) {
+				// Try next available replica.
+				client = c.getClient(addrs[replicaIndex])
+				replicaIndex++
+				cmd.reset()
+				continue
+			} else {
+				// Otherwise try random node.
+				client, err = c.randomClient()
+				if err != nil {
+					return
+				}
 			}
 			cmd.reset()
 			continue
@@ -131,11 +169,11 @@ func (c *ClusterClient) process(cmd Cmder) {
 		// Handle MOVE and ASK redirections, return on any other error
 		switch parts[0] {
 		case "MOVED":
-			c.forceReload()
-			addr = parts[2]
+			c.scheduleReload()
+			client = c.getClient(parts[2])
 		case "ASK":
 			ask = true
-			addr = parts[2]
+			client = c.getClient(parts[2])
 		default:
 			return
 		}
@@ -143,82 +181,58 @@ func (c *ClusterClient) process(cmd Cmder) {
 	}
 }
 
-// Closes all connections and reloads slot cache, if due
+// Closes all clients and returns last error if there are any.
+func (c *ClusterClient) resetClients() (err error) {
+	c.clientsMx.Lock()
+	for addr, client := range c.clients {
+		if e := client.Close(); e != nil {
+			err = e
+		}
+		delete(c.clients, addr)
+	}
+	c.clientsMx.Unlock()
+	return err
+}
+
+func (c *ClusterClient) setSlots(slots []ClusterSlotInfo) {
+	c.slotsMx.Lock()
+
+	c.slots = make([][]string, hashSlots)
+	for _, info := range slots {
+		for i := info.Start; i <= info.End; i++ {
+			c.slots[i] = info.Addrs
+		}
+		c.addrs = append(c.addrs, info.Addrs...)
+	}
+	c.addrs = removeDuplicates(c.addrs)
+	c.resetClients()
+
+	c.slotsMx.Unlock()
+}
+
+// Closes all connections and reloads slot cache, if due.
 func (c *ClusterClient) reloadIfDue() (err error) {
 	if !atomic.CompareAndSwapUint32(&c._reload, 1, 0) {
 		return
 	}
 
-	var infos []ClusterSlotInfo
-
-	c.slotsMx.Lock()
-	defer c.slotsMx.Unlock()
-
-	// Try known addresses in random order (map interation order is random in Go)
-	// http://redis.io/topics/cluster-spec#clients-first-connection-and-handling-of-redirections
-	// https://github.com/antirez/redis-rb-cluster/blob/fd931ed/cluster.rb#L157
-	for addr := range c.addrs {
-		c.reset()
-
-		infos, err = c.fetchClusterSlots(addr)
-		if err == nil {
-			c.update(infos)
-			break
-		}
+	client, err := c.randomClient()
+	if err != nil {
+		return err
 	}
-	return
+
+	slots, err := client.ClusterSlots().Result()
+	if err != nil {
+		return err
+	}
+	c.setSlots(slots)
+
+	return nil
 }
 
-// Closes all connections and flushes slots cache
-func (c *ClusterClient) reset() (err error) {
-	c.connsMx.Lock()
-	for addr, client := range c.conns {
-		if e := client.Close(); e != nil {
-			err = e
-		}
-		delete(c.conns, addr)
-	}
-	c.connsMx.Unlock()
-	c.slots = make([][]string, hashSlots)
-	return
-}
-
-// Forces a cache reload on next request
-func (c *ClusterClient) forceReload() {
+// Schedules slots reload on next request.
+func (c *ClusterClient) scheduleReload() {
 	atomic.StoreUint32(&c._reload, 1)
-}
-
-// Find the next untried address
-func (c *ClusterClient) findNextAddr(tried map[string]struct{}) string {
-	for addr := range c.addrs {
-		if _, ok := tried[addr]; !ok {
-			return addr
-		}
-	}
-	return ""
-}
-
-// Fetch slot information
-func (c *ClusterClient) fetchClusterSlots(addr string) ([]ClusterSlotInfo, error) {
-	opt := c.opt.clientOptions()
-	opt.Addr = addr
-	client := NewClient(opt)
-	defer client.Close()
-
-	return client.ClusterSlots().Result()
-}
-
-// Update slot information, populate slots
-func (c *ClusterClient) update(infos []ClusterSlotInfo) {
-	for _, info := range infos {
-		for i := info.Start; i <= info.End; i++ {
-			c.slots[i] = info.Addrs
-		}
-
-		for _, addr := range info.Addrs {
-			c.addrs[addr] = struct{}{}
-		}
-	}
 }
 
 // reaper closes idle connections to the cluster.
@@ -236,8 +250,6 @@ func (c *ClusterClient) reaper(ticker *time.Ticker) {
 }
 
 //------------------------------------------------------------------------------
-
-var errNoAddrs = errors.New("redis: no addresses")
 
 type ClusterOptions struct {
 	// A seed-list of host:port addresses of known cluster nodes
@@ -278,17 +290,9 @@ func (opt *ClusterOptions) getMaxRedirects() int {
 	return opt.MaxRedirects
 }
 
-func (opt *ClusterOptions) getAddrSet() (map[string]struct{}, error) {
-	size := len(opt.Addrs)
-	if size < 1 {
-		return nil, errNoAddrs
-	}
-
-	addrs := make(map[string]struct{}, size)
-	for _, addr := range opt.Addrs {
-		addrs[addr] = struct{}{}
-	}
-	return addrs, nil
+func (opt *ClusterOptions) getAddrs() []string {
+	opt.Addrs = removeDuplicates(opt.Addrs)
+	return opt.Addrs
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
