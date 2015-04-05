@@ -249,6 +249,34 @@ func (d *sentinelFailover) discoverSentinels(sentinel *sentinelClient) {
 	}
 }
 
+// closeOldConns closes connections to the old master after failover switch.
+func (d *sentinelFailover) closeOldConns(newMaster string) {
+	// Good connections that should be put back to the pool. They
+	// can't be put immediately, because pool.First will return them
+	// again on next iteration.
+	cnsToPut := make([]*conn, 0)
+
+	for {
+		cn := d.pool.First()
+		if cn == nil {
+			break
+		}
+		if cn.RemoteAddr().String() != newMaster {
+			log.Printf(
+				"redis-sentinel: closing connection to the old master %s",
+				cn.RemoteAddr(),
+			)
+			d.pool.Remove(cn)
+		} else {
+			cnsToPut = append(cnsToPut, cn)
+		}
+	}
+
+	for _, cn := range cnsToPut {
+		d.pool.Put(cn)
+	}
+}
+
 func (d *sentinelFailover) listen() {
 	var pubsub *PubSub
 	for {
@@ -284,16 +312,8 @@ func (d *sentinelFailover) listen() {
 					"redis-sentinel: new %q addr is %s",
 					d.masterName, addr,
 				)
-				d.pool.Filter(func(cn *conn) bool {
-					if cn.RemoteAddr().String() != addr {
-						log.Printf(
-							"redis-sentinel: closing connection to old master %s",
-							cn.RemoteAddr(),
-						)
-						return false
-					}
-					return true
-				})
+
+				d.closeOldConns(addr)
 			default:
 				log.Printf("redis-sentinel: unsupported message: %s", msg)
 			}
