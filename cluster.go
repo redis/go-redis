@@ -42,6 +42,7 @@ func NewClusterClient(opt *ClusterOptions) (*ClusterClient, error) {
 	}
 	client.commandable.process = client.process
 	client.reloadIfDue()
+	go client.reaper(time.NewTicker(5 * time.Minute))
 	return client, nil
 }
 
@@ -216,6 +217,20 @@ func (c *ClusterClient) update(infos []ClusterSlotInfo) {
 
 		for _, addr := range info.Addrs {
 			c.addrs[addr] = struct{}{}
+		}
+	}
+}
+
+// reaper closes idle connections to the cluster.
+func (c *ClusterClient) reaper(ticker *time.Ticker) {
+	for _ = range ticker.C {
+		for _, client := range c.conns {
+			pool := client.connPool
+			// pool.First removes idle connections from the pool for us. So
+			// just put returned connection back.
+			if cn := pool.First(); cn != nil {
+				pool.Put(cn)
+			}
 		}
 	}
 }
