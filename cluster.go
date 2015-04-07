@@ -8,20 +8,6 @@ import (
 	"time"
 )
 
-func removeDuplicates(slice []string) []string {
-	seen := make(map[string]struct{}, len(slice))
-	for i := 0; i < len(slice); {
-		addr := slice[i]
-		if _, ok := seen[addr]; ok {
-			slice = append(slice[:i], slice[i+1:]...)
-		} else {
-			seen[addr] = struct{}{}
-			i++
-		}
-	}
-	return slice
-}
-
 type ClusterClient struct {
 	commandable
 
@@ -285,7 +271,6 @@ func (opt *ClusterOptions) getMaxRedirects() int {
 }
 
 func (opt *ClusterOptions) getAddrs() []string {
-	opt.Addrs = removeDuplicates(opt.Addrs)
 	return opt.Addrs
 }
 
