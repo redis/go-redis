@@ -2,6 +2,7 @@ package redis
 
 import (
 	"io"
+	"log"
 	"strconv"
 	"time"
 )
@@ -14,11 +15,11 @@ func formatInt(i int64) string {
 	return strconv.FormatInt(i, 10)
 }
 
-func readTimeout(sec int64) time.Duration {
-	if sec == 0 {
+func readTimeout(timeout time.Duration) time.Duration {
+	if timeout == 0 {
 		return 0
 	}
-	return time.Duration(sec+1) * time.Second
+	return timeout + time.Second
 }
 
 type commandable struct {
@@ -34,10 +35,22 @@ func usePrecise(dur time.Duration) bool {
 }
 
 func formatMs(dur time.Duration) string {
+	if dur > 0 && dur < time.Millisecond {
+		log.Printf(
+			"redis: specified duration is %s, but minimal supported value is %s",
+			dur, time.Millisecond,
+		)
+	}
 	return strconv.FormatInt(int64(dur/time.Millisecond), 10)
 }
 
 func formatSec(dur time.Duration) string {
+	if dur > 0 && dur < time.Second {
+		log.Printf(
+			"redis: specified duration is %s, but minimal supported value is %s",
+			dur, time.Second,
+		)
+	}
 	return strconv.FormatInt(int64(dur/time.Second), 10)
 }
 
@@ -111,14 +124,14 @@ func (c *commandable) Keys(pattern string) *StringSliceCmd {
 	return cmd
 }
 
-func (c *commandable) Migrate(host, port, key string, db, timeout int64) *StatusCmd {
+func (c *commandable) Migrate(host, port, key string, db int64, timeout time.Duration) *StatusCmd {
 	cmd := NewStatusCmd(
 		"MIGRATE",
 		host,
 		port,
 		key,
 		strconv.FormatInt(db, 10),
-		strconv.FormatInt(timeout, 10),
+		formatMs(timeout),
 	)
 	cmd._clusterKeyPos = 3
 	cmd.setReadTimeout(readTimeout(timeout))
@@ -624,30 +637,30 @@ func (c *commandable) HVals(key string) *StringSliceCmd {
 
 //------------------------------------------------------------------------------
 
-func (c *commandable) BLPop(timeout int64, keys ...string) *StringSliceCmd {
+func (c *commandable) BLPop(timeout time.Duration, keys ...string) *StringSliceCmd {
 	args := append([]string{"BLPOP"}, keys...)
-	args = append(args, strconv.FormatInt(timeout, 10))
+	args = append(args, formatSec(timeout))
 	cmd := NewStringSliceCmd(args...)
 	cmd.setReadTimeout(readTimeout(timeout))
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) BRPop(timeout int64, keys ...string) *StringSliceCmd {
+func (c *commandable) BRPop(timeout time.Duration, keys ...string) *StringSliceCmd {
 	args := append([]string{"BRPOP"}, keys...)
-	args = append(args, strconv.FormatInt(timeout, 10))
+	args = append(args, formatSec(timeout))
 	cmd := NewStringSliceCmd(args...)
 	cmd.setReadTimeout(readTimeout(timeout))
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) BRPopLPush(source, destination string, timeout int64) *StringCmd {
+func (c *commandable) BRPopLPush(source, destination string, timeout time.Duration) *StringCmd {
 	cmd := NewStringCmd(
 		"BRPOPLPUSH",
 		source,
 		destination,
-		strconv.FormatInt(timeout, 10),
+		formatSec(timeout),
 	)
 	cmd.setReadTimeout(readTimeout(timeout))
 	c.Process(cmd)
