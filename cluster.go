@@ -27,7 +27,7 @@ type ClusterClient struct {
 // A list of seed addresses must be provided.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	client := &ClusterClient{
-		addrs:   opt.getAddrs(),
+		addrs:   opt.Addrs,
 		clients: make(map[string]*Client),
 		opt:     opt,
 		_reload: 1,
@@ -271,10 +271,6 @@ func (opt *ClusterOptions) getMaxRedirects() int {
 		return 16
 	}
 	return opt.MaxRedirects
-}
-
-func (opt *ClusterOptions) getAddrs() []string {
-	return opt.Addrs
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
