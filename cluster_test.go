@@ -148,11 +148,9 @@ var _ = Describe("Cluster", func() {
 		var client *redis.ClusterClient
 
 		BeforeEach(func() {
-			var err error
-			client, err = redis.NewClusterClient(&redis.ClusterOptions{
+			client = redis.NewClusterClient(&redis.ClusterOptions{
 				Addrs: []string{"127.0.0.1:8220", "127.0.0.1:8221", "127.0.0.1:8222", "127.0.0.1:8223", "127.0.0.1:8224", "127.0.0.1:8225"},
 			})
-			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {

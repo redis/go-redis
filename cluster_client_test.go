@@ -6,11 +6,10 @@ import (
 )
 
 var _ = Describe("ClusterClient", func() {
-
 	var subject *ClusterClient
+
 	var populate = func() {
-		subject.reset()
-		subject.update([]ClusterSlotInfo{
+		subject.setSlots([]ClusterSlotInfo{
 			{0, 4095, []string{"127.0.0.1:7000", "127.0.0.1:7004"}},
 			{12288, 16383, []string{"127.0.0.1:7003", "127.0.0.1:7007"}},
 			{4096, 8191, []string{"127.0.0.1:7001", "127.0.0.1:7005"}},
@@ -20,7 +19,7 @@ var _ = Describe("ClusterClient", func() {
 
 	BeforeEach(func() {
 		var err error
-		subject, err = NewClusterClient(&ClusterOptions{
+		subject = NewClusterClient(&ClusterOptions{
 			Addrs: []string{"127.0.0.1:6379", "127.0.0.1:7003", "127.0.0.1:7006"},
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -32,8 +31,7 @@ var _ = Describe("ClusterClient", func() {
 
 	It("should initialize", func() {
 		Expect(subject.addrs).To(HaveLen(3))
-		Expect(subject.slots).To(HaveLen(hashSlots))
-		Expect(subject._reload).To(Equal(uint32(0)))
+		Expect(subject._reload).To(Equal(uint32(1)))
 	})
 
 	It("should update slots cache", func() {
@@ -46,50 +44,23 @@ var _ = Describe("ClusterClient", func() {
 		Expect(subject.slots[12287]).To(Equal([]string{"127.0.0.1:7002", "127.0.0.1:7006"}))
 		Expect(subject.slots[12288]).To(Equal([]string{"127.0.0.1:7003", "127.0.0.1:7007"}))
 		Expect(subject.slots[16383]).To(Equal([]string{"127.0.0.1:7003", "127.0.0.1:7007"}))
-		Expect(subject.addrs).To(Equal(map[string]struct{}{
-			"127.0.0.1:6379": struct{}{},
-			"127.0.0.1:7000": struct{}{},
-			"127.0.0.1:7001": struct{}{},
-			"127.0.0.1:7002": struct{}{},
-			"127.0.0.1:7003": struct{}{},
-			"127.0.0.1:7004": struct{}{},
-			"127.0.0.1:7005": struct{}{},
-			"127.0.0.1:7006": struct{}{},
-			"127.0.0.1:7007": struct{}{},
-		}))
-	})
-
-	It("should find next addresses", func() {
-		populate()
-		seen := map[string]struct{}{
-			"127.0.0.1:7000": struct{}{},
-			"127.0.0.1:7001": struct{}{},
-			"127.0.0.1:7003": struct{}{},
-		}
-
-		addr := subject.findNextAddr(seen)
-		for addr != "" {
-			seen[addr] = struct{}{}
-			addr = subject.findNextAddr(seen)
-		}
-		Expect(subject.findNextAddr(seen)).To(Equal(""))
-		Expect(seen).To(Equal(map[string]struct{}{
-			"127.0.0.1:6379": struct{}{},
-			"127.0.0.1:7000": struct{}{},
-			"127.0.0.1:7001": struct{}{},
-			"127.0.0.1:7002": struct{}{},
-			"127.0.0.1:7003": struct{}{},
-			"127.0.0.1:7004": struct{}{},
-			"127.0.0.1:7005": struct{}{},
-			"127.0.0.1:7006": struct{}{},
-			"127.0.0.1:7007": struct{}{},
+		Expect(subject.addrs).To(Equal([]string{
+			"127.0.0.1:6379",
+			"127.0.0.1:7003",
+			"127.0.0.1:7006",
+			"127.0.0.1:7000",
+			"127.0.0.1:7004",
+			"127.0.0.1:7007",
+			"127.0.0.1:7001",
+			"127.0.0.1:7005",
+			"127.0.0.1:7002",
 		}))
 	})
 
 	It("should check if reload is due", func() {
 		subject._reload = 0
 		Expect(subject._reload).To(Equal(uint32(0)))
-		subject.forceReload()
+		subject.scheduleReload()
 		Expect(subject._reload).To(Equal(uint32(1)))
 	})
 })
