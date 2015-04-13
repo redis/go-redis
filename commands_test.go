@@ -1231,7 +1231,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BLPop timeout", func() {
-			bLPop := client.BLPop(1, "list1")
+			bLPop := client.BLPop(time.Second, "list1")
 			Expect(bLPop.Val()).To(BeNil())
 			Expect(bLPop.Err()).To(Equal(redis.Nil))
 		})
@@ -1245,7 +1245,7 @@ var _ = Describe("Commands", func() {
 			Expect(bRPop.Val()).To(Equal([]string{"list1", "c"}))
 		})
 
-		It("should BRPopBlocks", func() {
+		It("should BRPop blocks", func() {
 			started := make(chan bool)
 			done := make(chan bool)
 			go func() {
