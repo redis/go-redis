@@ -56,8 +56,9 @@ func (c *baseClient) initConn(cn *conn) error {
 func (c *baseClient) freeConn(cn *conn, ei error) error {
 	if cn.rd.Buffered() > 0 {
 		return c.connPool.Remove(cn)
-	}
-	if _, ok := ei.(redisError); ok {
+	} else if ei == nil {
+		return c.connPool.Put(cn)
+	} else if _, ok := ei.(redisError); ok {
 		return c.connPool.Put(cn)
 	}
 	return c.connPool.Remove(cn)
