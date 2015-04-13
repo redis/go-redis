@@ -28,11 +28,14 @@ type ClusterClient struct {
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	client := &ClusterClient{
 		addrs:   opt.Addrs,
+		slots:   make([][]string, hashSlots),
 		clients: make(map[string]*Client),
 		opt:     opt,
 		_reload: 1,
 	}
 	client.commandable.process = client.process
+	client.reloadIfDue()
+
 	go client.reaper(time.NewTicker(5 * time.Minute))
 	return client
 }
@@ -176,14 +179,15 @@ func (c *ClusterClient) resetClients() (err error) {
 func (c *ClusterClient) setSlots(slots []ClusterSlotInfo) {
 	c.slotsMx.Lock()
 
-	c.slots = make([][]string, hashSlots)
 	c.resetClients()
-
 	seen := make(map[string]struct{})
 	for _, addr := range c.addrs {
 		seen[addr] = struct{}{}
 	}
 
+	for i := 0; i < hashSlots; i++ {
+		c.slots[i] = c.slots[i][:0]
+	}
 	for _, info := range slots {
 		for slot := info.Start; slot <= info.End; slot++ {
 			c.slots[slot] = info.Addrs

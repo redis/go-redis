@@ -48,7 +48,8 @@ var _ = Describe("ClusterClient", func() {
 
 	It("should initialize", func() {
 		Expect(subject.addrs).To(HaveLen(3))
-		Expect(subject._reload).To(Equal(uint32(1)))
+		Expect(subject.slots).To(HaveLen(16384))
+		Expect(subject._reload).To(Equal(uint32(0)))
 	})
 
 	It("should update slots cache", func() {
@@ -72,6 +73,16 @@ var _ = Describe("ClusterClient", func() {
 			"127.0.0.1:7005",
 			"127.0.0.1:7002",
 		}))
+	})
+
+	It("should close", func() {
+		populate()
+		Expect(subject.Close()).NotTo(HaveOccurred())
+		Expect(subject.clients).To(BeEmpty())
+		Expect(subject.slots[0]).To(BeEmpty())
+		Expect(subject.slots[8191]).To(BeEmpty())
+		Expect(subject.slots[8192]).To(BeEmpty())
+		Expect(subject.slots[16383]).To(BeEmpty())
 	})
 
 	It("should check if reload is due", func() {
