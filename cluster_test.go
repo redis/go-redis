@@ -2,9 +2,11 @@ package redis_test
 
 import (
 	"math/rand"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
 	"gopkg.in/redis.v2"
 )
 
@@ -181,22 +183,50 @@ var _ = Describe("Cluster", func() {
 		It("should follow redirects", func() {
 			Expect(client.Set("A", "VALUE", 0).Err()).NotTo(HaveOccurred())
 			Expect(redis.HashSlot("A")).To(Equal(6373))
-
-			// Slot 6373 is stored on the second node
-			defer func() {
-				scenario.masters()[1].ClusterFailover()
-			}()
-
-			slave := scenario.slaves()[1]
-			Expect(slave.ClusterFailover().Err()).NotTo(HaveOccurred())
-			Eventually(func() string {
-				return slave.Info().Val()
-			}, "10s", "200ms").Should(ContainSubstring("role:master"))
+			Expect(client.SwapSlot(6373)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			val, err := client.Get("A").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("VALUE"))
+			Expect(client.GetSlot(6373)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+
+			val, err = client.Get("A").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("VALUE"))
+			Expect(client.GetSlot(6373)).To(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
 		})
+
+		It("should perform multi-pipelines", func() {
+			// Dummy command to load slots info.
+			Expect(client.Ping().Err()).NotTo(HaveOccurred())
+
+			slot := redis.HashSlot("A")
+			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+
+			pipe := client.Pipeline()
+			defer pipe.Close()
+
+			keys := []string{"A", "B", "C", "D", "E", "F", "G"}
+			for i, key := range keys {
+				pipe.Set(key, key+"_value", 0)
+				pipe.Expire(key, time.Duration(i+1)*time.Hour)
+			}
+			for _, key := range keys {
+				pipe.Get(key)
+				pipe.TTL(key)
+			}
+
+			cmds, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmds).To(HaveLen(28))
+			Expect(cmds[14].(*redis.StringCmd).Val()).To(Equal("A_value"))
+			Expect(cmds[15].(*redis.DurationCmd).Val()).To(BeNumerically("~", 1*time.Hour, time.Second))
+			Expect(cmds[20].(*redis.StringCmd).Val()).To(Equal("D_value"))
+			Expect(cmds[21].(*redis.DurationCmd).Val()).To(BeNumerically("~", 4*time.Hour, time.Second))
+			Expect(cmds[26].(*redis.StringCmd).Val()).To(Equal("G_value"))
+			Expect(cmds[27].(*redis.DurationCmd).Val()).To(BeNumerically("~", 7*time.Hour, time.Second))
+		})
+
 	})
 })
 

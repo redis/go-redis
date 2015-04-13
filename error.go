@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 )
 
 // Redis nil reply.
@@ -29,4 +30,26 @@ func isNetworkError(err error) bool {
 		return true
 	}
 	return false
+}
+
+func isMovedError(err error) (moved bool, ask bool, addr string) {
+	if _, ok := err.(redisError); !ok {
+		return
+	}
+
+	parts := strings.SplitN(err.Error(), " ", 3)
+	if len(parts) != 3 {
+		return
+	}
+
+	switch parts[0] {
+	case "MOVED":
+		moved = true
+		addr = parts[2]
+	case "ASK":
+		ask = true
+		addr = parts[2]
+	}
+
+	return
 }

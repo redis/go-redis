@@ -54,13 +54,12 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 	if c.closed {
 		return nil, errClosed
 	}
+	if len(c.cmds) == 0 {
+		return []Cmder{}, nil
+	}
 
 	cmds := c.cmds
 	c.cmds = make([]Cmder, 0, 0)
-
-	if len(cmds) == 0 {
-		return []Cmder{}, nil
-	}
 
 	cn, err := c.client.conn()
 	if err != nil {
@@ -84,11 +83,16 @@ func (c *Pipeline) execCmds(cn *conn, cmds []Cmder) error {
 	}
 
 	var firstCmdErr error
-	for _, cmd := range cmds {
-		if err := cmd.parseReply(cn.rd); err != nil {
-			if firstCmdErr == nil {
-				firstCmdErr = err
-			}
+	for i, cmd := range cmds {
+		err := cmd.parseReply(cn.rd)
+		if err == nil {
+			continue
+		}
+		if firstCmdErr == nil {
+			firstCmdErr = err
+		}
+		if isNetworkError(err) {
+			setCmdsErr(cmds[i:], err)
 		}
 	}
 
