@@ -92,7 +92,7 @@ var _ = Describe("Client", func() {
 	It("should support idle-timeouts", func() {
 		idle := redis.NewTCPClient(&redis.Options{
 			Addr:        redisAddr,
-			IdleTimeout: time.Nanosecond,
+			IdleTimeout: 100 * time.Microsecond,
 		})
 		defer idle.Close()
 

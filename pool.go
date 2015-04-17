@@ -133,7 +133,7 @@ func (p *connPool) First() *conn {
 		select {
 		case cn := <-p.freeConns:
 			if cn.isIdle(p.opt.IdleTimeout) {
-				p.remove(cn)
+				p.Remove(cn)
 				continue
 			}
 			return cn
@@ -151,7 +151,7 @@ func (p *connPool) wait(timeout time.Duration) *conn {
 		select {
 		case cn := <-p.freeConns:
 			if cn.isIdle(p.opt.IdleTimeout) {
-				p.remove(cn)
+				p.Remove(cn)
 				continue
 			}
 			return cn
@@ -215,10 +215,6 @@ func (p *connPool) Put(cn *conn) error {
 		log.Printf("redis: connection has unread data: %q", b)
 		return p.Remove(cn)
 	}
-
-	if p.isClosed() {
-		return errClosed
-	}
 	if p.opt.IdleTimeout > 0 {
 		cn.usedAt = time.Now()
 	}
@@ -228,13 +224,18 @@ func (p *connPool) Put(cn *conn) error {
 
 func (p *connPool) Remove(cn *conn) error {
 	if p.isClosed() {
-		return nil
+		atomic.AddInt32(&p.size, -1)
+		return cn.Close()
 	}
-	return p.remove(cn)
-}
 
-func (p *connPool) remove(cn *conn) error {
-	atomic.AddInt32(&p.size, -1)
+	// Replace existing connection with new one and unblock `wait`.
+	newcn, err := p.new()
+	if err != nil {
+		atomic.AddInt32(&p.size, -1)
+	} else {
+		p.Put(newcn)
+	}
+
 	return cn.Close()
 }
 
@@ -259,7 +260,7 @@ func (p *connPool) Close() (retErr error) {
 		if cn == nil {
 			break
 		}
-		if err := p.remove(cn); err != nil {
+		if err := p.Remove(cn); err != nil {
 			retErr = err
 		}
 	}

@@ -160,10 +160,8 @@ type Options struct {
 	// The maximum number of socket connections.
 	// Default: 10
 	PoolSize int
-	// If all socket connections is the pool are busy, the pool will wait
-	// this amount of time for a conection to become available, before
-	// returning an error.
-	// Default: 5s
+	// PoolTimeout specifies amount of time client waits for a free
+	// connection in the pool. Default timeout is 1s.
 	PoolTimeout time.Duration
 	// Evict connections from the pool after they have been idle for longer
 	// than specified in this option.
@@ -194,7 +192,7 @@ func (opt *Options) getDialTimeout() time.Duration {
 
 func (opt *Options) getPoolTimeout() time.Duration {
 	if opt.PoolTimeout == 0 {
-		return 5 * time.Second
+		return 1 * time.Second
 	}
 	return opt.PoolTimeout
 }
