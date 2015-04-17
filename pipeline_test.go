@@ -123,6 +123,9 @@ var _ = Describe("Pipelining", func() {
 		wg.Add(N)
 		for i := 0; i < N; i++ {
 			go func(i int) {
+				defer GinkgoRecover()
+				defer wg.Done()
+
 				pipeline := client.Pipeline()
 
 				msg1 := "echo" + strconv.Itoa(i)
@@ -142,8 +145,6 @@ var _ = Describe("Pipelining", func() {
 				Expect(echo2.Val()).To(Equal(msg2))
 
 				Expect(pipeline.Close()).NotTo(HaveOccurred())
-
-				wg.Done()
 			}(i)
 		}
 		wg.Wait()
