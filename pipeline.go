@@ -67,13 +67,9 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 		return cmds, err
 	}
 
-	if err := c.execCmds(cn, cmds); err != nil {
-		c.client.freeConn(cn, err)
-		return cmds, err
-	}
-
-	c.client.putConn(cn)
-	return cmds, nil
+	err = c.execCmds(cn, cmds)
+	c.client.putConn(cn, err)
+	return cmds, err
 }
 
 func (c *Pipeline) execCmds(cn *conn, cmds []Cmder) error {

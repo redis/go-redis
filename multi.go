@@ -84,13 +84,8 @@ func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 	}
 
 	err = c.execCmds(cn, cmds)
-	if err != nil {
-		c.base.freeConn(cn, err)
-		return cmds[1 : len(cmds)-1], err
-	}
-
-	c.base.putConn(cn)
-	return cmds[1 : len(cmds)-1], nil
+	c.base.putConn(cn, err)
+	return cmds[1 : len(cmds)-1], err
 }
 
 func (c *Multi) execCmds(cn *conn, cmds []Cmder) error {

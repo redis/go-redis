@@ -19,7 +19,7 @@ func (c *baseClient) conn() (*conn, error) {
 
 	if isNew {
 		if err := c.initConn(cn); err != nil {
-			c.removeConn(cn)
+			c.putConn(cn, err)
 			return nil, err
 		}
 	}
@@ -53,26 +53,19 @@ func (c *baseClient) initConn(cn *conn) error {
 	return nil
 }
 
-func (c *baseClient) freeConn(cn *conn, ei error) error {
+func (c *baseClient) putConn(cn *conn, ei error) {
+	var err error
 	if cn.rd.Buffered() > 0 {
-		return c.connPool.Remove(cn)
+		err = c.connPool.Remove(cn)
 	} else if ei == nil {
-		return c.connPool.Put(cn)
+		err = c.connPool.Put(cn)
 	} else if _, ok := ei.(redisError); ok {
-		return c.connPool.Put(cn)
+		err = c.connPool.Put(cn)
+	} else {
+		err = c.connPool.Remove(cn)
 	}
-	return c.connPool.Remove(cn)
-}
-
-func (c *baseClient) removeConn(cn *conn) {
-	if err := c.connPool.Remove(cn); err != nil {
-		log.Printf("pool.Remove failed: %s", err)
-	}
-}
-
-func (c *baseClient) putConn(cn *conn) {
-	if err := c.connPool.Put(cn); err != nil {
-		log.Printf("pool.Put failed: %s", err)
+	if err != nil {
+		log.Printf("redis: putConn failed: %s", err)
 	}
 }
 
@@ -96,17 +89,13 @@ func (c *baseClient) process(cmd Cmder) {
 	}
 
 	if err := cn.writeCmds(cmd); err != nil {
-		c.freeConn(cn, err)
+		c.putConn(cn, err)
 		cmd.setErr(err)
 		return
 	}
 
-	if err := cmd.parseReply(cn.rd); err != nil {
-		c.freeConn(cn, err)
-		return
-	}
-
-	c.putConn(cn)
+	err = cmd.parseReply(cn.rd)
+	c.putConn(cn, err)
 }
 
 // Close closes the client, releasing any open resources.

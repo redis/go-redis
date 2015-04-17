@@ -85,7 +85,7 @@ func (c *ClusterPipeline) Exec() (cmds []Cmder, retErr error) {
 			if err != nil {
 				retErr = err
 			}
-			client.freeConn(cn, err)
+			client.putConn(cn, err)
 		}
 
 		cmdsMap = failedCmds
