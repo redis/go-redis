@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 
@@ -106,7 +107,7 @@ var _ = Describe("Pipelining", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(pipeline.Close()).NotTo(HaveOccurred())
 
-		Expect(len(cmds)).To(Equal(20000))
+		Expect(len(cmds)).To(Equal(N))
 		for _, cmd := range cmds {
 			Expect(cmd.Err()).NotTo(HaveOccurred())
 		}
@@ -117,33 +118,38 @@ var _ = Describe("Pipelining", func() {
 	})
 
 	It("should PipelineEcho", func() {
-		const N = 1000
+		const C = 10
+		const N = 100
 
 		wg := &sync.WaitGroup{}
-		wg.Add(N)
-		for i := 0; i < N; i++ {
+		for i := 0; i < C; i++ {
+			wg.Add(1)
+
 			go func(i int) {
-				pipeline := client.Pipeline()
+				defer GinkgoRecover()
+				defer wg.Done()
 
-				msg1 := "echo" + strconv.Itoa(i)
-				msg2 := "echo" + strconv.Itoa(i+1)
+				for j := 0; j < N; j++ {
+					pipeline := client.Pipeline()
 
-				echo1 := pipeline.Echo(msg1)
-				echo2 := pipeline.Echo(msg2)
+					msg1 := fmt.Sprintf("echo %d.%d.1", i, j)
+					msg2 := fmt.Sprintf("echo %d.%d.2", i, j)
 
-				cmds, err := pipeline.Exec()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(cmds).To(HaveLen(2))
+					echo1 := pipeline.Echo(msg1)
+					echo2 := pipeline.Echo(msg2)
 
-				Expect(echo1.Err()).NotTo(HaveOccurred())
-				Expect(echo1.Val()).To(Equal(msg1))
+					cmds, err := pipeline.Exec()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(cmds).To(HaveLen(2))
 
-				Expect(echo2.Err()).NotTo(HaveOccurred())
-				Expect(echo2.Val()).To(Equal(msg2))
+					Expect(echo1.Err()).NotTo(HaveOccurred())
+					Expect(echo1.Val()).To(Equal(msg1))
 
-				Expect(pipeline.Close()).NotTo(HaveOccurred())
+					Expect(echo2.Err()).NotTo(HaveOccurred())
+					Expect(echo2.Val()).To(Equal(msg2))
 
-				wg.Done()
+					Expect(pipeline.Close()).NotTo(HaveOccurred())
+				}
 			}(i)
 		}
 		wg.Wait()

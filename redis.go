@@ -125,7 +125,6 @@ type options struct {
 	WriteTimeout time.Duration
 
 	PoolSize    int
-	PoolTimeout time.Duration
 	IdleTimeout time.Duration
 }
 
@@ -160,11 +159,6 @@ type Options struct {
 	// The maximum number of socket connections.
 	// Default: 10
 	PoolSize int
-	// If all socket connections is the pool are busy, the pool will wait
-	// this amount of time for a conection to become available, before
-	// returning an error.
-	// Default: 5s
-	PoolTimeout time.Duration
 	// Evict connections from the pool after they have been idle for longer
 	// than specified in this option.
 	// Default: 0 = no eviction
@@ -192,13 +186,6 @@ func (opt *Options) getDialTimeout() time.Duration {
 	return opt.DialTimeout
 }
 
-func (opt *Options) getPoolTimeout() time.Duration {
-	if opt.PoolTimeout == 0 {
-		return 5 * time.Second
-	}
-	return opt.PoolTimeout
-}
-
 func (opt *Options) options() *options {
 	return &options{
 		DB:       opt.DB,
@@ -209,7 +196,6 @@ func (opt *Options) options() *options {
 		WriteTimeout: opt.WriteTimeout,
 
 		PoolSize:    opt.getPoolSize(),
-		PoolTimeout: opt.getPoolTimeout(),
 		IdleTimeout: opt.IdleTimeout,
 	}
 }

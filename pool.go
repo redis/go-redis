@@ -14,8 +14,7 @@ import (
 )
 
 var (
-	errClosed      = errors.New("redis: client is closed")
-	errPoolTimeout = errors.New("redis: connection pool timeout")
+	errClosed = errors.New("redis: client is closed")
 )
 
 var (
@@ -28,7 +27,6 @@ type pool interface {
 	Put(*conn) error
 	Remove(*conn) error
 	Len() int
-	Size() int
 	Close() error
 }
 
@@ -108,7 +106,6 @@ type connPool struct {
 	opt       *options
 	freeConns chan *conn
 
-	size   int32
 	closed int32
 
 	lastDialErr error
@@ -133,7 +130,7 @@ func (p *connPool) First() *conn {
 		select {
 		case cn := <-p.freeConns:
 			if cn.isIdle(p.opt.IdleTimeout) {
-				p.remove(cn)
+				p.Remove(cn)
 				continue
 			}
 			return cn
@@ -141,25 +138,6 @@ func (p *connPool) First() *conn {
 			return nil
 		}
 	}
-	panic("not reached")
-}
-
-// wait waits for free non-idle connection. It returns nil on timeout.
-func (p *connPool) wait(timeout time.Duration) *conn {
-	deadline := time.After(timeout)
-	for {
-		select {
-		case cn := <-p.freeConns:
-			if cn.isIdle(p.opt.IdleTimeout) {
-				p.remove(cn)
-				continue
-			}
-			return cn
-		case <-deadline:
-			return nil
-		}
-	}
-	panic("not reached")
 }
 
 // Establish a new connection
@@ -171,6 +149,7 @@ func (p *connPool) new() (*conn, error) {
 		)
 		return nil, err
 	}
+
 	cn, err := p.dial()
 	if err != nil {
 		p.lastDialErr = err
@@ -190,23 +169,9 @@ func (p *connPool) Get() (*conn, bool, error) {
 		return cn, false, nil
 	}
 
-	// Try to create a new one
-	if ref := atomic.AddInt32(&p.size, 1); int(ref) <= p.opt.PoolSize {
-		cn, err := p.new()
-		if err != nil {
-			atomic.AddInt32(&p.size, -1) // Undo ref increment
-			return nil, false, err
-		}
-		return cn, true, nil
-	}
-	atomic.AddInt32(&p.size, -1)
-
-	// Otherwise, wait for the available connection
-	if cn := p.wait(p.opt.PoolTimeout); cn != nil {
-		return cn, false, nil
-	}
-
-	return nil, false, errPoolTimeout
+	// Create a new one
+	cn, err := p.new()
+	return cn, true, err
 }
 
 func (p *connPool) Put(cn *conn) error {
@@ -217,75 +182,66 @@ func (p *connPool) Put(cn *conn) error {
 	}
 
 	if p.isClosed() {
+		cn.Close()
 		return errClosed
 	}
 	if p.opt.IdleTimeout > 0 {
 		cn.usedAt = time.Now()
 	}
-	p.freeConns <- cn
-	return nil
-}
 
-func (p *connPool) Remove(cn *conn) error {
-	if p.isClosed() {
+	// Try to return a connection for re-use,
+	// or close and discard it if the pool is full
+	select {
+	case p.freeConns <- cn:
 		return nil
+	default:
+		return p.Remove(cn)
 	}
-	return p.remove(cn)
 }
 
-func (p *connPool) remove(cn *conn) error {
-	atomic.AddInt32(&p.size, -1)
-	return cn.Close()
-}
+// Remove removes a connection
+func (p *connPool) Remove(cn *conn) error { return cn.Close() }
 
 // Len returns number of idle connections.
-func (p *connPool) Len() int {
-	return len(p.freeConns)
-}
+func (p *connPool) Len() int { return len(p.freeConns) }
 
-// Size returns number of connections in the pool.
-func (p *connPool) Size() int {
-	return int(atomic.LoadInt32(&p.size))
-}
-
+// Close closes the pool
 func (p *connPool) Close() (retErr error) {
 	if !atomic.CompareAndSwapInt32(&p.closed, 0, 1) {
 		return nil
 	}
 
-	// Wait until pool has no connections
-	for p.Size() > 0 {
-		cn := p.wait(p.opt.PoolTimeout)
+	for {
+		cn := p.First()
 		if cn == nil {
-			break
-		}
-		if err := p.remove(cn); err != nil {
+			return
+		} else if err := p.Remove(cn); err != nil {
 			retErr = err
 		}
 	}
-
-	return retErr
 }
 
 //------------------------------------------------------------------------------
 
 type singleConnPool struct {
-	pool pool
+	parent pool
 
 	cnMtx sync.Mutex
 	cn    *conn
 
 	reusable bool
 
-	closed bool
+	closed int32
 }
 
-func newSingleConnPool(pool pool, reusable bool) *singleConnPool {
+func newSingleConnPool(parent pool, reusable bool) *singleConnPool {
 	return &singleConnPool{
-		pool:     pool,
+		parent:   parent,
 		reusable: reusable,
 	}
 }
+
+func (p *singleConnPool) isClosed() bool { return atomic.LoadInt32(&p.closed) > 0 }
 
 func (p *singleConnPool) SetConn(cn *conn) {
 	p.cnMtx.Lock()
@@ -294,23 +250,25 @@ func (p *singleConnPool) SetConn(cn *conn) {
 }
 
 func (p *singleConnPool) First() *conn {
-	defer p.cnMtx.Unlock()
 	p.cnMtx.Lock()
-	return p.cn
+	cn := p.cn
+	p.cnMtx.Unlock()
+	return cn
 }
 
 func (p *singleConnPool) Get() (*conn, bool, error) {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
-
-	if p.closed {
+	if p.isClosed() {
 		return nil, false, errClosed
 	}
+
+	p.cnMtx.Lock()
+	defer p.cnMtx.Unlock()
+
 	if p.cn != nil {
 		return p.cn, false, nil
 	}
 
-	cn, isNew, err := p.pool.Get()
+	cn, isNew, err := p.parent.Get()
 	if err != nil {
 		return nil, false, err
 	}
@@ -320,76 +278,48 @@ func (p *singleConnPool) Get() (*conn, bool, error) {
 }
 
 func (p *singleConnPool) Put(cn *conn) error {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
-	if p.cn != cn {
-		panic("p.cn != cn")
-	}
-	if p.closed {
+	if p.isClosed() {
 		return errClosed
+	}
+
+	p.cnMtx.Lock()
+	ok := p.cn == cn
+	p.cnMtx.Unlock()
+	if !ok {
+		panic("p.cn != cn")
 	}
 	return nil
 }
 
-func (p *singleConnPool) put() error {
-	err := p.pool.Put(p.cn)
-	p.cn = nil
-	return err
-}
-
 func (p *singleConnPool) Remove(cn *conn) error {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
-	if p.cn == nil {
-		panic("p.cn == nil")
-	}
-	if p.cn != cn {
-		panic("p.cn != cn")
-	}
-	if p.closed {
-		return errClosed
-	}
-	return p.remove()
-}
-
-func (p *singleConnPool) remove() error {
-	err := p.pool.Remove(p.cn)
-	p.cn = nil
-	return err
+	return p.parent.Remove(cn)
 }
 
 func (p *singleConnPool) Len() int {
-	defer p.cnMtx.Unlock()
 	p.cnMtx.Lock()
-	if p.cn == nil {
+	cn := p.cn
+	p.cnMtx.Unlock()
+
+	if cn == nil {
 		return 0
 	}
 	return 1
 }
 
-func (p *singleConnPool) Size() int {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
-	if p.cn == nil {
-		return 0
-	}
-	return 1
-}
-
-func (p *singleConnPool) Close() error {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
-	if p.closed {
+func (p *singleConnPool) Close() (err error) {
+	if !atomic.CompareAndSwapInt32(&p.closed, 0, 1) {
 		return nil
 	}
-	p.closed = true
-	var err error
+
+	p.cnMtx.Lock()
 	if p.cn != nil {
 		if p.reusable {
-			err = p.put()
+			err = p.parent.Put(p.cn)
 		} else {
-			err = p.remove()
+			err = p.cn.Close()
 		}
+		p.cn = nil
 	}
-	return err
+	p.cnMtx.Unlock()
+	return
 }

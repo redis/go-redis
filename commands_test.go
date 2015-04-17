@@ -17,8 +17,7 @@ var _ = Describe("Commands", func() {
 
 	BeforeEach(func() {
 		client = redis.NewTCPClient(&redis.Options{
-			Addr:        redisAddr,
-			PoolTimeout: 30 * time.Second,
+			Addr: redisAddr,
 		})
 	})
 

@@ -37,11 +37,6 @@ type FailoverOptions struct {
 	// The maximum number of socket connections.
 	// Default: 10
 	PoolSize int
-	// If all socket connections is the pool are busy, the pool will wait
-	// this amount of time for a conection to become available, before
-	// returning an error.
-	// Default: 5s
-	PoolTimeout time.Duration
 	// Evict connections from the pool after they have been idle for longer
 	// than specified in this option.
 	// Default: 0 = no eviction
@@ -53,13 +48,6 @@ func (opt *FailoverOptions) getPoolSize() int {
 		return 10
 	}
 	return opt.PoolSize
-}
-
-func (opt *FailoverOptions) getPoolTimeout() time.Duration {
-	if opt.PoolTimeout == 0 {
-		return 5 * time.Second
-	}
-	return opt.PoolTimeout
 }
 
 func (opt *FailoverOptions) getDialTimeout() time.Duration {
@@ -79,7 +67,6 @@ func (opt *FailoverOptions) options() *options {
 		WriteTimeout: opt.WriteTimeout,
 
 		PoolSize:    opt.getPoolSize(),
-		PoolTimeout: opt.getPoolTimeout(),
 		IdleTimeout: opt.IdleTimeout,
 	}
 }
@@ -197,7 +184,6 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 			WriteTimeout: d.opt.WriteTimeout,
 
 			PoolSize:    d.opt.PoolSize,
-			PoolTimeout: d.opt.PoolTimeout,
 			IdleTimeout: d.opt.IdleTimeout,
 		})
 		masterAddr, err := sentinel.GetMasterAddrByName(d.masterName).Result()

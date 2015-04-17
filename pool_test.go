@@ -12,15 +12,17 @@ import (
 
 var _ = Describe("Pool", func() {
 	var client *redis.Client
-	var perform = func(n int, cb func()) {
+	var perform = func(c, n int, cb func()) {
 		wg := &sync.WaitGroup{}
-		for i := 0; i < n; i++ {
+		for i := 0; i < c; i++ {
 			wg.Add(1)
 			go func() {
 				defer GinkgoRecover()
 				defer wg.Done()
 
-				cb()
+				for j := 0; j < n; j++ {
+					cb()
+				}
 			}()
 		}
 		wg.Wait()
@@ -38,20 +40,18 @@ var _ = Describe("Pool", func() {
 	})
 
 	It("should respect max size", func() {
-		perform(1000, func() {
+		perform(20, 50, func() {
 			val, err := client.Ping().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("PONG"))
 		})
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(BeNumerically("<=", 10))
 		Expect(pool.Len()).To(BeNumerically("<=", 10))
-		Expect(pool.Size()).To(Equal(pool.Len()))
 	})
 
 	It("should respect max on multi", func() {
-		perform(1000, func() {
+		perform(20, 50, func() {
 			var ping *redis.StatusCmd
 
 			multi := client.Multi()
@@ -67,13 +67,11 @@ var _ = Describe("Pool", func() {
 		})
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(BeNumerically("<=", 10))
 		Expect(pool.Len()).To(BeNumerically("<=", 10))
-		Expect(pool.Size()).To(Equal(pool.Len()))
 	})
 
 	It("should respect max on pipelines", func() {
-		perform(1000, func() {
+		perform(20, 50, func() {
 			pipe := client.Pipeline()
 			ping := pipe.Ping()
 			cmds, err := pipe.Exec()
@@ -85,20 +83,17 @@ var _ = Describe("Pool", func() {
 		})
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(BeNumerically("<=", 10))
 		Expect(pool.Len()).To(BeNumerically("<=", 10))
-		Expect(pool.Size()).To(Equal(pool.Len()))
 	})
 
 	It("should respect max on pubsub", func() {
-		perform(10, func() {
+		perform(20, 1, func() {
 			pubsub := client.PubSub()
 			Expect(pubsub.Subscribe()).NotTo(HaveOccurred())
 			Expect(pubsub.Close()).NotTo(HaveOccurred())
 		})
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(Equal(0))
 		Expect(pool.Len()).To(Equal(0))
 	})
 
@@ -117,7 +112,6 @@ var _ = Describe("Pool", func() {
 		Expect(val).To(Equal("PONG"))
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(Equal(1))
 		Expect(pool.Len()).To(Equal(1))
 	})
 
@@ -129,7 +123,6 @@ var _ = Describe("Pool", func() {
 		}
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(Equal(1))
 		Expect(pool.Len()).To(Equal(1))
 	})
 
