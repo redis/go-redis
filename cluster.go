@@ -256,29 +256,13 @@ type ClusterOptions struct {
 	// giving up. Default: 16
 	MaxRedirects int
 
-	// The maximum number of TCP sockets per connection. Default: 5
-	PoolSize int
-
-	// Timeout settings
-	DialTimeout, ReadTimeout, WriteTimeout, IdleTimeout time.Duration
-}
-
-func (opt *ClusterOptions) getPoolSize() int {
-	if opt.PoolSize < 1 {
-		return 5
-	}
-	return opt.PoolSize
-}
-
-func (opt *ClusterOptions) getDialTimeout() time.Duration {
-	if opt.DialTimeout == 0 {
-		return 5 * time.Second
-	}
-	return opt.DialTimeout
+	// Following options are copied from `redis.Options`.
+	PoolSize                                                         int
+	DialTimeout, ReadTimeout, WriteTimeout, PoolTimeout, IdleTimeout time.Duration
 }
 
 func (opt *ClusterOptions) getMaxRedirects() int {
-	if opt.MaxRedirects < 1 {
+	if opt.MaxRedirects == 0 {
 		return 16
 	}
 	return opt.MaxRedirects
@@ -289,11 +273,12 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		DB:       0,
 		Password: opt.Password,
 
-		DialTimeout:  opt.getDialTimeout(),
+		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolSize:    opt.getPoolSize(),
+		PoolSize:    opt.PoolSize,
+		PoolTimeout: opt.PoolTimeout,
 		IdleTimeout: opt.IdleTimeout,
 	}
 }

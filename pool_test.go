@@ -7,11 +7,13 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
 	"gopkg.in/redis.v2"
 )
 
 var _ = Describe("Pool", func() {
 	var client *redis.Client
+
 	var perform = func(n int, cb func()) {
 		wg := &sync.WaitGroup{}
 		for i := 0; i < n; i++ {
@@ -27,13 +29,14 @@ var _ = Describe("Pool", func() {
 	}
 
 	BeforeEach(func() {
-		client = redis.NewTCPClient(&redis.Options{
-			Addr: redisAddr,
+		client = redis.NewClient(&redis.Options{
+			Addr:     redisAddr,
+			PoolSize: 10,
 		})
 	})
 
 	AfterEach(func() {
-		client.FlushDb()
+		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
@@ -98,8 +101,8 @@ var _ = Describe("Pool", func() {
 		})
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(Equal(0))
-		Expect(pool.Len()).To(Equal(0))
+		Expect(pool.Size()).To(Equal(10))
+		Expect(pool.Len()).To(Equal(10))
 	})
 
 	It("should remove broken connections", func() {
@@ -133,6 +136,48 @@ var _ = Describe("Pool", func() {
 		Expect(pool.Len()).To(Equal(1))
 	})
 
+	It("should unblock client when connection is removed", func() {
+		pool := client.Pool()
+
+		// Reserve one connection.
+		cn, _, err := client.Pool().Get()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Reserve the rest of connections.
+		for i := 0; i < 9; i++ {
+			_, _, err := client.Pool().Get()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		var ping *redis.StatusCmd
+		started := make(chan bool, 1)
+		done := make(chan bool, 1)
+		go func() {
+			started <- true
+			ping = client.Ping()
+			done <- true
+		}()
+		<-started
+
+		// Check that Ping is blocked.
+		select {
+		case <-done:
+			panic("Ping is not blocked")
+		default:
+			// ok
+		}
+
+		Expect(pool.Remove(cn)).NotTo(HaveOccurred())
+
+		// Check that Ping is unblocked.
+		select {
+		case <-done:
+			// ok
+		case <-time.After(time.Second):
+			panic("Ping is not unblocked")
+		}
+		Expect(ping.Err()).NotTo(HaveOccurred())
+	})
 })
 
 func BenchmarkPool(b *testing.B) {
