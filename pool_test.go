@@ -106,7 +106,7 @@ var _ = Describe("Pool", func() {
 	})
 
 	It("should remove broken connections", func() {
-		cn, _, err := client.Pool().Get()
+		cn, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn.Close()).NotTo(HaveOccurred())
 		Expect(client.Pool().Put(cn)).NotTo(HaveOccurred())
@@ -140,12 +140,12 @@ var _ = Describe("Pool", func() {
 		pool := client.Pool()
 
 		// Reserve one connection.
-		cn, _, err := client.Pool().Get()
+		cn, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 
 		// Reserve the rest of connections.
 		for i := 0; i < 9; i++ {
-			_, _, err := client.Pool().Get()
+			_, err := client.Pool().Get()
 			Expect(err).NotTo(HaveOccurred())
 		}
 
@@ -190,7 +190,7 @@ func BenchmarkPool(b *testing.B) {
 	pool := client.Pool()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			conn, _, err := pool.Get()
+			conn, err := pool.Get()
 			if err != nil {
 				b.Fatalf("no error expected on pool.Get but received: %s", err.Error())
 			}

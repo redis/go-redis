@@ -12,45 +12,7 @@ type baseClient struct {
 }
 
 func (c *baseClient) conn() (*conn, error) {
-	cn, isNew, err := c.connPool.Get()
-	if err != nil {
-		return nil, err
-	}
-
-	if isNew {
-		if err := c.initConn(cn); err != nil {
-			c.putConn(cn, err)
-			return nil, err
-		}
-	}
-
-	return cn, nil
-}
-
-func (c *baseClient) initConn(cn *conn) error {
-	if c.opt.Password == "" && c.opt.DB == 0 {
-		return nil
-	}
-
-	pool := newSingleConnPool(c.connPool, false)
-	pool.SetConn(cn)
-
-	// Client is not closed because we want to reuse underlying connection.
-	client := newClient(c.opt, pool)
-
-	if c.opt.Password != "" {
-		if err := client.Auth(c.opt.Password).Err(); err != nil {
-			return err
-		}
-	}
-
-	if c.opt.DB > 0 {
-		if err := client.Select(c.opt.DB).Err(); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return c.connPool.Get()
 }
 
 func (c *baseClient) putConn(cn *conn, ei error) {
