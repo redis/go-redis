@@ -113,7 +113,7 @@ var _ = Describe("Pool", func() {
 
 		err = client.Ping().Err()
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal("use of closed network connection"))
+		Expect(err.Error()).To(ContainSubstring("use of closed network connection"))
 
 		val, err := client.Ping().Result()
 		Expect(err).NotTo(HaveOccurred())
