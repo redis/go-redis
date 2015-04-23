@@ -178,8 +178,8 @@ func (p *connPool) new() (*conn, error) {
 		return nil, err
 	}
 
-	if err := p.init(cn); err != nil {
-		p.Remove(cn)
+	if err := p.initConn(cn); err != nil {
+		cn.Close()
 		return nil, err
 	}
 
@@ -187,7 +187,7 @@ func (p *connPool) new() (*conn, error) {
 }
 
 // Initialize connection
-func (p *connPool) init(cn *conn) error {
+func (p *connPool) initConn(cn *conn) error {
 	if p.opt.Password == "" && p.opt.DB == 0 {
 		return nil
 	}
