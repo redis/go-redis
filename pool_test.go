@@ -186,8 +186,10 @@ func BenchmarkPool(b *testing.B) {
 		IdleTimeout: 100 * time.Millisecond,
 	})
 	defer client.Close()
-
 	pool := client.Pool()
+
+	b.ResetTimer()
+
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			conn, err := pool.Get()
