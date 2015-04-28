@@ -35,7 +35,6 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	}
 	client.commandable.process = client.process
 	client.reloadIfDue()
-
 	go client.reaper(time.NewTicker(5 * time.Minute))
 	return client
 }
@@ -44,6 +43,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 func (c *ClusterClient) Close() error {
 	// TODO: close should make client unusable
 	c.setSlots(nil)
+	c.resetClients()
 	return nil
 }
 
@@ -179,7 +179,6 @@ func (c *ClusterClient) resetClients() (err error) {
 func (c *ClusterClient) setSlots(slots []ClusterSlotInfo) {
 	c.slotsMx.Lock()
 
-	c.resetClients()
 	seen := make(map[string]struct{})
 	for _, addr := range c.addrs {
 		seen[addr] = struct{}{}
