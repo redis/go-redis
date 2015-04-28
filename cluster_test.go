@@ -2,6 +2,9 @@ package redis_test
 
 import (
 	"math/rand"
+	"net"
+
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -10,73 +13,148 @@ import (
 	"gopkg.in/redis.v2"
 )
 
+type clusterScenario struct {
+	ports     []string
+	nodeIds   []string
+	processes map[string]*redisProcess
+	clients   map[string]*redis.Client
+}
+
+func (s *clusterScenario) primary() *redis.Client {
+	return s.clients[s.ports[0]]
+}
+
+func (s *clusterScenario) masters() []*redis.Client {
+	result := make([]*redis.Client, 3)
+	for pos, port := range s.ports[:3] {
+		result[pos] = s.clients[port]
+	}
+	return result
+}
+
+func (s *clusterScenario) slaves() []*redis.Client {
+	result := make([]*redis.Client, 3)
+	for pos, port := range s.ports[3:] {
+		result[pos] = s.clients[port]
+	}
+	return result
+}
+
+func (s *clusterScenario) clusterClient() *redis.ClusterClient {
+	addrs := make([]string, len(s.ports))
+	for i, port := range s.ports {
+		addrs[i] = net.JoinHostPort("127.0.0.1", port)
+	}
+	return redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: addrs,
+	})
+}
+
+func startCluster(scenario *clusterScenario) error {
+	// Start processes, connect individual clients
+	for pos, port := range scenario.ports {
+		process, err := startRedis(port, "--cluster-enabled", "yes")
+		if err != nil {
+			return err
+		}
+
+		client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:" + port})
+		info, err := client.ClusterNodes().Result()
+		if err != nil {
+			return err
+		}
+
+		scenario.processes[port] = process
+		scenario.clients[port] = client
+		scenario.nodeIds[pos] = info[:40]
+	}
+
+	// Meet cluster nodes
+	for _, client := range scenario.clients {
+		err := client.ClusterMeet("127.0.0.1", scenario.ports[0]).Err()
+		if err != nil {
+			return err
+		}
+	}
+
+	// Bootstrap masters
+	slots := []int{0, 5000, 10000, 16384}
+	for pos, client := range scenario.masters() {
+		err := client.ClusterAddSlotsRange(slots[pos], slots[pos+1]-1).Err()
+		if err != nil {
+			return err
+		}
+	}
+
+	// Bootstrap slaves
+	for pos, client := range scenario.slaves() {
+		masterId := scenario.nodeIds[pos]
+
+		// Wait for masters
+		err := waitForSubstring(func() string {
+			return client.ClusterNodes().Val()
+		}, masterId, 10*time.Second)
+		if err != nil {
+			return err
+		}
+
+		err = client.ClusterReplicate(masterId).Err()
+		if err != nil {
+			return err
+		}
+
+		// Wait for slaves
+		err = waitForSubstring(func() string {
+			return scenario.primary().ClusterNodes().Val()
+		}, "slave "+masterId, 10*time.Second)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Wait for cluster state to turn OK
+	for _, client := range scenario.clients {
+		err := waitForSubstring(func() string {
+			return client.ClusterInfo().Val()
+		}, "cluster_state:ok", 10*time.Second)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func stopCluster(scenario *clusterScenario) error {
+	for _, client := range scenario.clients {
+		if err := client.Close(); err != nil {
+			return err
+		}
+	}
+	for _, process := range scenario.processes {
+		if err := process.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
 var _ = Describe("Cluster", func() {
-	var scenario = &clusterScenario{
+	scenario := &clusterScenario{
 		ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
-		nodeIDs:   make([]string, 6),
+		nodeIds:   make([]string, 6),
 		processes: make(map[string]*redisProcess, 6),
 		clients:   make(map[string]*redis.Client, 6),
 	}
 
 	BeforeSuite(func() {
-		// Start processes, connect individual clients
-		for pos, port := range scenario.ports {
-			process, err := startRedis(port, "--cluster-enabled", "yes")
-			Expect(err).NotTo(HaveOccurred())
-
-			client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:" + port})
-			info, err := client.ClusterNodes().Result()
-			Expect(err).NotTo(HaveOccurred())
-
-			scenario.processes[port] = process
-			scenario.clients[port] = client
-			scenario.nodeIDs[pos] = info[:40]
-		}
-
-		// Meet cluster nodes
-		for _, client := range scenario.clients {
-			err := client.ClusterMeet("127.0.0.1", scenario.ports[0]).Err()
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		// Bootstrap masters
-		slots := []int{0, 5000, 10000, 16384}
-		for pos, client := range scenario.masters() {
-			err := client.ClusterAddSlotsRange(slots[pos], slots[pos+1]-1).Err()
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		// Bootstrap slaves
-		for pos, client := range scenario.slaves() {
-			masterID := scenario.nodeIDs[pos]
-
-			Eventually(func() string { // Wait for masters
-				return client.ClusterNodes().Val()
-			}, "10s").Should(ContainSubstring(masterID))
-
-			err := client.ClusterReplicate(masterID).Err()
-			Expect(err).NotTo(HaveOccurred())
-
-			Eventually(func() string { // Wait for slaves
-				return scenario.primary().ClusterNodes().Val()
-			}, "10s").Should(ContainSubstring("slave " + masterID))
-		}
-
-		// Wait for cluster state to turn OK
-		for _, client := range scenario.clients {
-			Eventually(func() string {
-				return client.ClusterInfo().Val()
-			}, "10s").Should(ContainSubstring("cluster_state:ok"))
-		}
+		Expect(startCluster(scenario)).NotTo(HaveOccurred())
 	})
 
 	AfterSuite(func() {
-		for _, client := range scenario.clients {
-			client.Close()
-		}
-		for _, process := range scenario.processes {
-			process.Close()
-		}
+		Expect(stopCluster(scenario)).NotTo(HaveOccurred())
 	})
 
 	Describe("HashSlot", func() {
@@ -150,14 +228,12 @@ var _ = Describe("Cluster", func() {
 		var client *redis.ClusterClient
 
 		BeforeEach(func() {
-			client = redis.NewClusterClient(&redis.ClusterOptions{
-				Addrs: []string{"127.0.0.1:8220", "127.0.0.1:8221", "127.0.0.1:8222", "127.0.0.1:8223", "127.0.0.1:8224", "127.0.0.1:8225"},
-			})
+			client = scenario.clusterClient()
 		})
 
 		AfterEach(func() {
-			for _, client := range scenario.clients {
-				client.FlushDb()
+			for _, client := range scenario.masters() {
+				Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 			}
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
@@ -230,31 +306,29 @@ var _ = Describe("Cluster", func() {
 	})
 })
 
-// --------------------------------------------------------------------
+//------------------------------------------------------------------------------
 
-type clusterScenario struct {
-	ports     []string
-	nodeIDs   []string
-	processes map[string]*redisProcess
-	clients   map[string]*redis.Client
-}
-
-func (s *clusterScenario) primary() *redis.Client {
-	return s.clients[s.ports[0]]
-}
-
-func (s *clusterScenario) masters() []*redis.Client {
-	result := make([]*redis.Client, 3)
-	for pos, port := range s.ports[:3] {
-		result[pos] = s.clients[port]
+func BenchmarkRedisClusterPing(b *testing.B) {
+	scenario := &clusterScenario{
+		ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
+		nodeIds:   make([]string, 6),
+		processes: make(map[string]*redisProcess, 6),
+		clients:   make(map[string]*redis.Client, 6),
 	}
-	return result
-}
-
-func (s *clusterScenario) slaves() []*redis.Client {
-	result := make([]*redis.Client, 3)
-	for pos, port := range s.ports[3:] {
-		result[pos] = s.clients[port]
+	if err := startCluster(scenario); err != nil {
+		b.Fatal(err)
 	}
-	return result
+	defer stopCluster(scenario)
+	client := scenario.clusterClient()
+	defer client.Close()
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.Ping().Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

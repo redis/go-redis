@@ -1,10 +1,13 @@
 package redis_test
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +18,11 @@ import (
 )
 
 const redisAddr = ":6379"
+
+func TestGinkgoSuite(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "gopkg.in/redis.v2")
+}
 
 var _ = Describe("Client", func() {
 	var client *redis.Client
@@ -120,9 +128,168 @@ var _ = Describe("Client", func() {
 
 //------------------------------------------------------------------------------
 
-func TestGinkgoSuite(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "gopkg.in/redis.v2")
+func BenchmarkRedisPing(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer client.Close()
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.Ping().Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkRedisSet(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer client.Close()
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.Set("key", "hello", 0).Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkRedisGetNil(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer client.Close()
+	if err := client.FlushDb().Err(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.Get("key").Err(); err != redis.Nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkRedisGet(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer client.Close()
+	if err := client.Set("key", "hello", 0).Err(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.Get("key").Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkRedisMGet(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer client.Close()
+	if err := client.MSet("key1", "hello1", "key2", "hello2").Err(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.MGet("key1", "key2").Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkSetExpire(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer client.Close()
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.Set("key", "hello", 0).Err(); err != nil {
+				b.Fatal(err)
+			}
+			if err := client.Expire("key", time.Second).Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkPipeline(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer client.Close()
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+				pipe.Set("key", "hello", 0)
+				pipe.Expire("key", time.Second)
+				return nil
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+//------------------------------------------------------------------------------
+
+// Replaces ginkgo's Eventually.
+func waitForSubstring(fn func() string, substr string, timeout time.Duration) error {
+	var s string
+
+	found := make(chan struct{})
+	var exit int32
+	go func() {
+		for atomic.LoadInt32(&exit) == 0 {
+			s = fn()
+			if strings.Contains(s, substr) {
+				found <- struct{}{}
+				return
+			}
+			time.Sleep(timeout / 100)
+		}
+	}()
+
+	select {
+	case <-found:
+		return nil
+	case <-time.After(timeout):
+		atomic.StoreInt32(&exit, 1)
+	}
+	return fmt.Errorf("%q does not contain %q", s, substr)
 }
 
 func execCmd(name string, args ...string) (*os.Process, error) {
@@ -227,121 +394,4 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 		}
 	}
 	return &redisProcess{process, client}, nil
-}
-
-//------------------------------------------------------------------------------
-
-func BenchmarkRedisPing(b *testing.B) {
-	b.StopTimer()
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: redisAddr,
-	})
-	b.StartTimer()
-
-	for i := 0; i < b.N; i++ {
-		if err := client.Ping().Err(); err != nil {
-			panic(err)
-		}
-	}
-}
-
-func BenchmarkRedisSet(b *testing.B) {
-	b.StopTimer()
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: redisAddr,
-	})
-	b.StartTimer()
-
-	for i := 0; i < b.N; i++ {
-		if err := client.Set("key", "hello", 0).Err(); err != nil {
-			panic(err)
-		}
-	}
-}
-
-func BenchmarkRedisGetNil(b *testing.B) {
-	b.StopTimer()
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: redisAddr,
-	})
-	if err := client.FlushDb().Err(); err != nil {
-		b.Fatal(err)
-	}
-	b.StartTimer()
-
-	for i := 0; i < b.N; i++ {
-		if err := client.Get("key").Err(); err != redis.Nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkRedisGet(b *testing.B) {
-	b.StopTimer()
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: redisAddr,
-	})
-	if err := client.Set("key", "hello", 0).Err(); err != nil {
-		b.Fatal(err)
-	}
-	b.StartTimer()
-
-	for i := 0; i < b.N; i++ {
-		if err := client.Get("key").Err(); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkRedisMGet(b *testing.B) {
-	b.StopTimer()
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: redisAddr,
-	})
-	if err := client.MSet("key1", "hello1", "key2", "hello2").Err(); err != nil {
-		b.Fatal(err)
-	}
-	b.StartTimer()
-
-	for i := 0; i < b.N; i++ {
-		if err := client.MGet("key1", "key2").Err(); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkSetExpire(b *testing.B) {
-	b.StopTimer()
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: redisAddr,
-	})
-	b.StartTimer()
-
-	for i := 0; i < b.N; i++ {
-		if err := client.Set("key", "hello", 0).Err(); err != nil {
-			b.Fatal(err)
-		}
-		if err := client.Expire("key", time.Second).Err(); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkPipeline(b *testing.B) {
-	b.StopTimer()
-	client := redis.NewTCPClient(&redis.Options{
-		Addr: redisAddr,
-	})
-	b.StartTimer()
-
-	for i := 0; i < b.N; i++ {
-		_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
-			pipe.Set("key", "hello", 0)
-			pipe.Expire("key", time.Second)
-			return nil
-		})
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
 }
