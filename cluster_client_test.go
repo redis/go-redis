@@ -83,6 +83,7 @@ var _ = Describe("ClusterClient", func() {
 		Expect(subject.slots[8191]).To(BeEmpty())
 		Expect(subject.slots[8192]).To(BeEmpty())
 		Expect(subject.slots[16383]).To(BeEmpty())
+		Expect(subject.Ping().Err().Error()).To(Equal("redis: client is closed"))
 	})
 
 	It("should check if reload is due", func() {
