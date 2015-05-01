@@ -5,12 +5,8 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// GetSlot returns the cached slot addresses
-func (c *ClusterClient) GetSlot(pos int) []string {
-	c.slotsMx.RLock()
-	defer c.slotsMx.RUnlock()
-
-	return c.slots[pos]
+func (c *ClusterClient) SlotAddrs(slot int) []string {
+	return c.slotAddrs(slot)
 }
 
 // SwapSlot swaps a slot's master/slave address
@@ -49,7 +45,6 @@ var _ = Describe("ClusterClient", func() {
 	It("should initialize", func() {
 		Expect(subject.addrs).To(HaveLen(3))
 		Expect(subject.slots).To(HaveLen(16384))
-		Expect(subject._reload).To(Equal(uint32(0)))
 	})
 
 	It("should update slots cache", func() {
@@ -84,12 +79,5 @@ var _ = Describe("ClusterClient", func() {
 		Expect(subject.slots[8192]).To(BeEmpty())
 		Expect(subject.slots[16383]).To(BeEmpty())
 		Expect(subject.Ping().Err().Error()).To(Equal("redis: client is closed"))
-	})
-
-	It("should check if reload is due", func() {
-		subject._reload = 0
-		Expect(subject._reload).To(Equal(uint32(0)))
-		subject.scheduleReload()
-		Expect(subject._reload).To(Equal(uint32(1)))
 	})
 })

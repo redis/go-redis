@@ -258,25 +258,23 @@ var _ = Describe("Cluster", func() {
 
 		It("should follow redirects", func() {
 			Expect(client.Set("A", "VALUE", 0).Err()).NotTo(HaveOccurred())
-			Expect(redis.HashSlot("A")).To(Equal(6373))
-			Expect(client.SwapSlot(6373)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+
+			slot := redis.HashSlot("A")
+			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			val, err := client.Get("A").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("VALUE"))
-			Expect(client.GetSlot(6373)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+			Expect(client.SlotAddrs(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
-			val, err = client.Get("A").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(val).To(Equal("VALUE"))
-			Expect(client.GetSlot(6373)).To(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
+			Eventually(func() []string {
+				return client.SlotAddrs(slot)
+			}).Should(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
 		})
 
 		It("should perform multi-pipelines", func() {
-			// Dummy command to load slots info.
-			Expect(client.Ping().Err()).NotTo(HaveOccurred())
-
 			slot := redis.HashSlot("A")
+			Expect(client.SlotAddrs(slot)).To(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
 			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			pipe := client.Pipeline()

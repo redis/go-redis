@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"log"
 	"math/rand"
 	"strings"
 	"sync"
@@ -21,7 +22,8 @@ type ClusterClient struct {
 
 	opt *ClusterOptions
 
-	_reload uint32
+	// Reports where slots reloading is in progress.
+	reloading uint32
 }
 
 // NewClusterClient initializes a new cluster-aware client using given options.
@@ -32,10 +34,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		slots:   make([][]string, hashSlots),
 		clients: make(map[string]*Client),
 		opt:     opt,
-		_reload: 1,
 	}
 	client.commandable.process = client.process
-	client.reloadIfDue()
+	client.reloadSlots()
 	go client.reaper()
 	return client
 }
@@ -115,8 +116,6 @@ func (c *ClusterClient) randomClient() (client *Client, err error) {
 func (c *ClusterClient) process(cmd Cmder) {
 	var ask bool
 
-	c.reloadIfDue()
-
 	slot := hashSlot(cmd.clusterKey())
 
 	var addr string
@@ -162,7 +161,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 		moved, ask, addr = isMovedError(err)
 		if moved || ask {
 			if moved {
-				c.scheduleReload()
+				c.lazyReloadSlots()
 			}
 			client, err = c.getClient(addr)
 			if err != nil {
@@ -214,29 +213,28 @@ func (c *ClusterClient) setSlots(slots []ClusterSlotInfo) {
 	c.slotsMx.Unlock()
 }
 
-// Closes all connections and reloads slot cache, if due.
-func (c *ClusterClient) reloadIfDue() (err error) {
-	if !atomic.CompareAndSwapUint32(&c._reload, 1, 0) {
-		return
-	}
+func (c *ClusterClient) reloadSlots() {
+	defer atomic.StoreUint32(&c.reloading, 0)
 
 	client, err := c.randomClient()
 	if err != nil {
-		return err
+		log.Printf("redis: randomClient failed: %s", err)
+		return
 	}
 
 	slots, err := client.ClusterSlots().Result()
 	if err != nil {
-		return err
+		log.Printf("redis: ClusterSlots failed: %s", err)
+		return
 	}
 	c.setSlots(slots)
-
-	return nil
 }
 
-// Schedules slots reload on next request.
-func (c *ClusterClient) scheduleReload() {
-	atomic.StoreUint32(&c._reload, 1)
+func (c *ClusterClient) lazyReloadSlots() {
+	if !atomic.CompareAndSwapUint32(&c.reloading, 0, 1) {
+		return
+	}
+	go c.reloadSlots()
 }
 
 // reaper closes idle connections to the cluster.
