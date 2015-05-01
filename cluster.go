@@ -36,7 +36,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	}
 	client.commandable.process = client.process
 	client.reloadIfDue()
-	go client.reaper(time.NewTicker(5 * time.Minute))
+	go client.reaper()
 	return client
 }
 
@@ -45,6 +45,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 // It is rare to Close a Client, as the Client is meant to be
 // long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
+	defer c.clientsMx.Unlock()
 	c.clientsMx.Lock()
 
 	if c.closed {
@@ -53,8 +54,6 @@ func (c *ClusterClient) Close() error {
 	c.closed = true
 	c.resetClients()
 	c.setSlots(nil)
-
-	c.clientsMx.Unlock()
 	return nil
 }
 
@@ -74,6 +73,7 @@ func (c *ClusterClient) getClient(addr string) (*Client, error) {
 
 	c.clientsMx.Lock()
 	if c.closed {
+		c.clientsMx.Unlock()
 		return nil, errClosed
 	}
 
@@ -240,13 +240,15 @@ func (c *ClusterClient) scheduleReload() {
 }
 
 // reaper closes idle connections to the cluster.
-func (c *ClusterClient) reaper(ticker *time.Ticker) {
+func (c *ClusterClient) reaper() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
 	for _ = range ticker.C {
 		c.clientsMx.RLock()
 
 		if c.closed {
 			c.clientsMx.RUnlock()
-			return
+			break
 		}
 
 		for _, client := range c.clients {
