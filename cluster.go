@@ -241,7 +241,7 @@ func (c *ClusterClient) scheduleReload() {
 
 // reaper closes idle connections to the cluster.
 func (c *ClusterClient) reaper() {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for _ = range ticker.C {
 		c.clientsMx.RLock()
