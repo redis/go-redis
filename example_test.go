@@ -10,14 +10,14 @@ import (
 var client *redis.Client
 
 func init() {
-	client = redis.NewTCPClient(&redis.Options{
+	client = redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
 	client.FlushDb()
 }
 
-func ExampleNewTCPClient() {
-	client := redis.NewTCPClient(&redis.Options{
+func ExampleNewClient() {
+	client := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
 		Password: "", // no password set
 		DB:       0,  // use default DB

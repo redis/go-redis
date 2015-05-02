@@ -188,15 +188,3 @@ func NewClient(clOpt *Options) *Client {
 	}
 	return newClient(opt, newConnPool(newConnFunc(dialer), opt))
 }
-
-// Deprecated. Use NewClient instead.
-func NewTCPClient(opt *Options) *Client {
-	opt.Network = "tcp"
-	return NewClient(opt)
-}
-
-// Deprecated. Use NewClient instead.
-func NewUnixClient(opt *Options) *Client {
-	opt.Network = "unix"
-	return NewClient(opt)
-}

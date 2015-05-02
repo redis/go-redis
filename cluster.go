@@ -81,7 +81,7 @@ func (c *ClusterClient) getClient(addr string) (*Client, error) {
 	if !ok {
 		opt := c.opt.clientOptions()
 		opt.Addr = addr
-		client = NewTCPClient(opt)
+		client = NewClient(opt)
 		c.clients[addr] = client
 	}
 	c.clientsMx.Unlock()

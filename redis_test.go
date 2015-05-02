@@ -28,7 +28,7 @@ var _ = Describe("Client", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewTCPClient(&redis.Options{
+		client = redis.NewClient(&redis.Options{
 			Addr: redisAddr,
 		})
 	})
@@ -98,7 +98,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should support idle-timeouts", func() {
-		idle := redis.NewTCPClient(&redis.Options{
+		idle := redis.NewClient(&redis.Options{
 			Addr:        redisAddr,
 			IdleTimeout: 100 * time.Microsecond,
 		})
@@ -110,7 +110,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should support DB selection", func() {
-		db1 := redis.NewTCPClient(&redis.Options{
+		db1 := redis.NewClient(&redis.Options{
 			Addr: redisAddr,
 			DB:   1,
 		})
