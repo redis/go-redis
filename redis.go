@@ -67,19 +67,6 @@ func (c *baseClient) Close() error {
 
 //------------------------------------------------------------------------------
 
-type options struct {
-	Password string
-	DB       int64
-
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-
-	PoolSize    int
-	PoolTimeout time.Duration
-	IdleTimeout time.Duration
-}
-
 type Options struct {
 	// The network type, either "tcp" or "unix".
 	// Default: "tcp"
@@ -120,6 +107,15 @@ type Options struct {
 	IdleTimeout time.Duration
 }
 
+func (opt *Options) getDialer() func() (net.Conn, error) {
+	if opt.Dialer == nil {
+		return func() (net.Conn, error) {
+			return net.DialTimeout(opt.getNetwork(), opt.Addr, opt.getDialTimeout())
+		}
+	}
+	return opt.Dialer
+}
+
 func (opt *Options) getNetwork() string {
 	if opt.Network == "" {
 		return "tcp"
@@ -150,15 +146,39 @@ func (opt *Options) getPoolTimeout() time.Duration {
 
 func (opt *Options) options() *options {
 	return &options{
+		Dialer:      opt.getDialer(),
+		PoolSize:    opt.getPoolSize(),
+		PoolTimeout: opt.getPoolTimeout(),
+		IdleTimeout: opt.IdleTimeout,
+
 		DB:       opt.DB,
 		Password: opt.Password,
 
 		DialTimeout:  opt.getDialTimeout(),
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
+	}
+}
 
-		PoolSize:    opt.getPoolSize(),
-		PoolTimeout: opt.getPoolTimeout(),
+type options struct {
+	Dialer      func() (net.Conn, error)
+	PoolSize    int
+	PoolTimeout time.Duration
+	IdleTimeout time.Duration
+
+	Password string
+	DB       int64
+
+	DialTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+}
+
+func (opt *options) connPoolOptions() *connPoolOptions {
+	return &connPoolOptions{
+		Dialer:      newConnDialer(opt),
+		PoolSize:    opt.PoolSize,
+		PoolTimeout: opt.PoolTimeout,
 		IdleTimeout: opt.IdleTimeout,
 	}
 }
@@ -180,13 +200,8 @@ func newClient(opt *options, pool pool) *Client {
 
 func NewClient(clOpt *Options) *Client {
 	opt := clOpt.options()
-	dialer := clOpt.Dialer
-	if dialer == nil {
-		dialer = func() (net.Conn, error) {
-			return net.DialTimeout(clOpt.getNetwork(), clOpt.Addr, opt.DialTimeout)
-		}
-	}
-	return newClient(opt, newConnPool(newConnFunc(dialer), opt))
+	pool := newConnPool(opt.connPoolOptions())
+	return newClient(opt, pool)
 }
 
 // Deprecated. Use NewClient instead.

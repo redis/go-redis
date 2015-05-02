@@ -48,9 +48,9 @@ var _ = Describe("Pool", func() {
 		})
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(BeNumerically("<=", 10))
 		Expect(pool.Len()).To(BeNumerically("<=", 10))
-		Expect(pool.Size()).To(Equal(pool.Len()))
+		Expect(pool.FreeLen()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(Equal(pool.FreeLen()))
 	})
 
 	It("should respect max on multi", func() {
@@ -70,9 +70,9 @@ var _ = Describe("Pool", func() {
 		})
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(BeNumerically("<=", 10))
 		Expect(pool.Len()).To(BeNumerically("<=", 10))
-		Expect(pool.Size()).To(Equal(pool.Len()))
+		Expect(pool.FreeLen()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(Equal(pool.FreeLen()))
 	})
 
 	It("should respect max on pipelines", func() {
@@ -88,9 +88,9 @@ var _ = Describe("Pool", func() {
 		})
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(BeNumerically("<=", 10))
 		Expect(pool.Len()).To(BeNumerically("<=", 10))
-		Expect(pool.Size()).To(Equal(pool.Len()))
+		Expect(pool.FreeLen()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(Equal(pool.FreeLen()))
 	})
 
 	It("should respect max on pubsub", func() {
@@ -101,8 +101,8 @@ var _ = Describe("Pool", func() {
 		})
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(Equal(10))
 		Expect(pool.Len()).To(Equal(10))
+		Expect(pool.FreeLen()).To(Equal(10))
 	})
 
 	It("should remove broken connections", func() {
@@ -120,8 +120,8 @@ var _ = Describe("Pool", func() {
 		Expect(val).To(Equal("PONG"))
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(Equal(1))
 		Expect(pool.Len()).To(Equal(1))
+		Expect(pool.FreeLen()).To(Equal(1))
 	})
 
 	It("should reuse connections", func() {
@@ -132,8 +132,8 @@ var _ = Describe("Pool", func() {
 		}
 
 		pool := client.Pool()
-		Expect(pool.Size()).To(Equal(1))
 		Expect(pool.Len()).To(Equal(1))
+		Expect(pool.FreeLen()).To(Equal(1))
 	})
 
 	It("should unblock client when connection is removed", func() {
