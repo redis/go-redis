@@ -113,7 +113,7 @@ func (c *ClusterPipeline) execClusterCmds(
 			failedCmds[""] = append(failedCmds[""], cmds[i:]...)
 			break
 		} else if moved, ask, addr := isMovedError(err); moved {
-			c.cluster.scheduleReload()
+			c.cluster.lazyReloadSlots()
 			cmd.reset()
 			failedCmds[addr] = append(failedCmds[addr], cmd)
 		} else if ask {
