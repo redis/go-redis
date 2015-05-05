@@ -11,7 +11,7 @@ var _ = Describe("Multi", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewTCPClient(&redis.Options{
+		client = redis.NewClient(&redis.Options{
 			Addr: redisAddr,
 		})
 	})
