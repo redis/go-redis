@@ -34,7 +34,7 @@ var _ = Describe("Client", func() {
 	})
 
 	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
+		client.Close()
 	})
 
 	It("should ping", func() {

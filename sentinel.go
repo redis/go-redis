@@ -104,14 +104,9 @@ type sentinelClient struct {
 
 func newSentinel(clOpt *Options) *sentinelClient {
 	opt := clOpt.options()
-	opt.Password = ""
-	opt.DB = 0
-	dialer := func() (net.Conn, error) {
-		return net.DialTimeout("tcp", clOpt.Addr, opt.DialTimeout)
-	}
 	base := &baseClient{
 		opt:      opt,
-		connPool: newConnPool(newConnFunc(dialer), opt),
+		connPool: newConnPool(opt.connPoolOptions()),
 	}
 	return &sentinelClient{
 		baseClient:  base,
@@ -163,7 +158,8 @@ func (d *sentinelFailover) dial() (net.Conn, error) {
 
 func (d *sentinelFailover) Pool() pool {
 	d.poolOnce.Do(func() {
-		d.pool = newConnPool(newConnFunc(d.dial), d.opt)
+		d.opt.Dialer = d.dial
+		d.pool = newConnPool(d.opt.connPoolOptions())
 	})
 	return d.pool
 }
