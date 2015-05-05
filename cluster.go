@@ -97,6 +97,14 @@ func (c *ClusterClient) slotAddrs(slot int) []string {
 	return addrs
 }
 
+func (c *ClusterClient) slotMasterAddr(slot int) string {
+	addrs := c.slotAddrs(slot)
+	if len(addrs) > 0 {
+		return addrs[0]
+	}
+	return ""
+}
+
 // randomClient returns a Client for the first live node.
 func (c *ClusterClient) randomClient() (client *Client, err error) {
 	for i := 0; i < 10; i++ {
@@ -118,11 +126,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 
 	slot := hashSlot(cmd.clusterKey())
 
-	var addr string
-	if addrs := c.slotAddrs(slot); len(addrs) > 0 {
-		addr = addrs[0] // First address is master.
-	}
-
+	addr := c.slotMasterAddr(slot)
 	client, err := c.getClient(addr)
 	if err != nil {
 		cmd.setErr(err)
@@ -163,7 +167,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 		var addr string
 		moved, ask, addr = isMovedError(err)
 		if moved || ask {
-			if moved {
+			if moved && c.slotMasterAddr(slot) != addr {
 				c.lazyReloadSlots()
 			}
 			client, err = c.getClient(addr)
