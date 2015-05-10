@@ -130,6 +130,10 @@ func (c *ClusterClient) process(cmd Cmder) {
 	}
 
 	for attempt := 0; attempt <= c.opt.getMaxRedirects(); attempt++ {
+		if attempt > 0 {
+			cmd.reset()
+		}
+
 		if ask {
 			pipe := client.Pipeline()
 			pipe.Process(NewCmd("ASKING"))
@@ -152,7 +156,6 @@ func (c *ClusterClient) process(cmd Cmder) {
 			if err != nil {
 				return
 			}
-			cmd.reset()
 			continue
 		}
 
@@ -167,7 +170,6 @@ func (c *ClusterClient) process(cmd Cmder) {
 			if err != nil {
 				return
 			}
-			cmd.reset()
 			continue
 		}
 
@@ -282,6 +284,9 @@ type ClusterOptions struct {
 }
 
 func (opt *ClusterOptions) getMaxRedirects() int {
+	if opt.MaxRedirects == -1 {
+		return 0
+	}
 	if opt.MaxRedirects == 0 {
 		return 16
 	}
