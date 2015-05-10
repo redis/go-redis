@@ -32,32 +32,46 @@ func (c *baseClient) putConn(cn *conn, ei error) {
 }
 
 func (c *baseClient) process(cmd Cmder) {
-	cn, err := c.conn()
-	if err != nil {
-		cmd.setErr(err)
-		return
-	}
+	for i := 0; i <= c.opt.MaxRetries; i++ {
+		if i > 0 {
+			cmd.reset()
+		}
 
-	if timeout := cmd.writeTimeout(); timeout != nil {
-		cn.writeTimeout = *timeout
-	} else {
-		cn.writeTimeout = c.opt.WriteTimeout
-	}
+		cn, err := c.conn()
+		if err != nil {
+			cmd.setErr(err)
+			return
+		}
 
-	if timeout := cmd.readTimeout(); timeout != nil {
-		cn.readTimeout = *timeout
-	} else {
-		cn.readTimeout = c.opt.ReadTimeout
-	}
+		if timeout := cmd.writeTimeout(); timeout != nil {
+			cn.WriteTimeout = *timeout
+		} else {
+			cn.WriteTimeout = c.opt.WriteTimeout
+		}
 
-	if err := cn.writeCmds(cmd); err != nil {
+		if timeout := cmd.readTimeout(); timeout != nil {
+			cn.ReadTimeout = *timeout
+		} else {
+			cn.ReadTimeout = c.opt.ReadTimeout
+		}
+
+		if err := cn.writeCmds(cmd); err != nil {
+			c.putConn(cn, err)
+			cmd.setErr(err)
+			if shouldRetry(err) {
+				continue
+			}
+			return
+		}
+
+		err = cmd.parseReply(cn.rd)
 		c.putConn(cn, err)
-		cmd.setErr(err)
+		if shouldRetry(err) {
+			continue
+		}
+
 		return
 	}
-
-	err = cmd.parseReply(cn.rd)
-	c.putConn(cn, err)
 }
 
 // Close closes the client, releasing any open resources.
@@ -105,6 +119,10 @@ type Options struct {
 	// than specified in this option.
 	// Default: 0 = no eviction
 	IdleTimeout time.Duration
+
+	// MaxRetries specifies maximum number of times client will retry
+	// failed command. Default is to not retry failed command.
+	MaxRetries int
 }
 
 func (opt *Options) getDialer() func() (net.Conn, error) {
@@ -157,6 +175,8 @@ func (opt *Options) options() *options {
 		DialTimeout:  opt.getDialTimeout(),
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
+
+		MaxRetries: opt.MaxRetries,
 	}
 }
 
@@ -172,6 +192,8 @@ type options struct {
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+
+	MaxRetries int
 }
 
 func (opt *options) connPoolOptions() *connPoolOptions {

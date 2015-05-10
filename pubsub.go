@@ -63,7 +63,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	cn.readTimeout = timeout
+	cn.ReadTimeout = timeout
 
 	cmd := NewSliceCmd()
 	if err := cmd.parseReply(cn.rd); err != nil {
@@ -92,6 +92,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 			Payload: reply[3].(string),
 		}, nil
 	}
+
 	return nil, fmt.Errorf("redis: unsupported message name: %q", msgName)
 }
 

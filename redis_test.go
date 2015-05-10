@@ -124,6 +124,23 @@ var _ = Describe("Client", func() {
 		Expect(db1.FlushDb().Err()).NotTo(HaveOccurred())
 	})
 
+	It("should retry command on network error", func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+
+		client = redis.NewClient(&redis.Options{
+			Addr:       redisAddr,
+			MaxRetries: 1,
+		})
+
+		// Put bad connection in the pool.
+		cn, err := client.Pool().Get()
+		Expect(err).NotTo(HaveOccurred())
+		cn.SetNetConn(newBadNetConn())
+		Expect(client.Pool().Put(cn)).NotTo(HaveOccurred())
+
+		err = client.Ping().Err()
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
 
 //------------------------------------------------------------------------------
@@ -265,6 +282,24 @@ func BenchmarkPipeline(b *testing.B) {
 }
 
 //------------------------------------------------------------------------------
+
+type badNetConn struct {
+	net.TCPConn
+}
+
+var _ net.Conn = &badNetConn{}
+
+func newBadNetConn() net.Conn {
+	return &badNetConn{}
+}
+
+func (badNetConn) Read([]byte) (int, error) {
+	return 0, net.UnknownNetworkError("badNetConn")
+}
+
+func (badNetConn) Write([]byte) (int, error) {
+	return 0, net.UnknownNetworkError("badNetConn")
+}
 
 // Replaces ginkgo's Eventually.
 func waitForSubstring(fn func() string, substr string, timeout time.Duration) error {

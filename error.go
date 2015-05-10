@@ -26,7 +26,7 @@ func (err redisError) Error() string {
 }
 
 func isNetworkError(err error) bool {
-	if _, ok := err.(*net.OpError); ok || err == io.EOF {
+	if _, ok := err.(net.Error); ok || err == io.EOF {
 		return true
 	}
 	return false
@@ -52,4 +52,12 @@ func isMovedError(err error) (moved bool, ask bool, addr string) {
 	}
 
 	return
+}
+
+// shouldRetry reports whether failed command should be retried.
+func shouldRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isNetworkError(err)
 }
