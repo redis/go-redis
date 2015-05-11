@@ -40,14 +40,16 @@ func (s *clusterScenario) slaves() []*redis.Client {
 	return result
 }
 
-func (s *clusterScenario) clusterClient() *redis.ClusterClient {
+func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
 	addrs := make([]string, len(s.ports))
 	for i, port := range s.ports {
 		addrs[i] = net.JoinHostPort("127.0.0.1", port)
 	}
-	return redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs: addrs,
-	})
+	if opt == nil {
+		opt = &redis.ClusterOptions{}
+	}
+	opt.Addrs = addrs
+	return redis.NewClusterClient(opt)
 }
 
 func startCluster(scenario *clusterScenario) error {
@@ -228,7 +230,7 @@ var _ = Describe("Cluster", func() {
 		var client *redis.ClusterClient
 
 		BeforeEach(func() {
-			client = scenario.clusterClient()
+			client = scenario.clusterClient(nil)
 		})
 
 		AfterEach(func() {
@@ -301,6 +303,18 @@ var _ = Describe("Cluster", func() {
 			Expect(cmds[27].(*redis.DurationCmd).Val()).To(BeNumerically("~", 7*time.Hour, time.Second))
 		})
 
+		It("should return error when there are no attempts left", func() {
+			client = scenario.clusterClient(&redis.ClusterOptions{
+				MaxRedirects: -1,
+			})
+
+			slot := redis.HashSlot("A")
+			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+
+			err := client.Get("A").Err()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("MOVED"))
+		})
 	})
 })
 
@@ -317,7 +331,7 @@ func BenchmarkRedisClusterPing(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer stopCluster(scenario)
-	client := scenario.clusterClient()
+	client := scenario.clusterClient(nil)
 	defer client.Close()
 
 	b.ResetTimer()
