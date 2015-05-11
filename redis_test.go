@@ -267,3 +267,20 @@ func BenchmarkPipeline(b *testing.B) {
 		}
 	})
 }
+
+func BenchmarkZAdd(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer client.Close()
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.ZAdd("key", redis.Z{float64(1), "hello"}).Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
