@@ -307,9 +307,8 @@ var _ = Describe("Commands", func() {
 			Expect(refCount.Err()).NotTo(HaveOccurred())
 			Expect(refCount.Val()).To(Equal(int64(1)))
 
-			enc := client.ObjectEncoding("key")
-			Expect(enc.Err()).NotTo(HaveOccurred())
-			Expect(enc.Val()).To(Equal("raw"))
+			err := client.ObjectEncoding("key").Err()
+			Expect(err).NotTo(HaveOccurred())
 
 			idleTime := client.ObjectIdleTime("key")
 			Expect(idleTime.Err()).NotTo(HaveOccurred())

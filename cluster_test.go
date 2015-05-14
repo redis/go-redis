@@ -144,21 +144,6 @@ func stopCluster(scenario *clusterScenario) error {
 //------------------------------------------------------------------------------
 
 var _ = Describe("Cluster", func() {
-	scenario := &clusterScenario{
-		ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
-		nodeIds:   make([]string, 6),
-		processes: make(map[string]*redisProcess, 6),
-		clients:   make(map[string]*redis.Client, 6),
-	}
-
-	BeforeSuite(func() {
-		Expect(startCluster(scenario)).NotTo(HaveOccurred())
-	})
-
-	AfterSuite(func() {
-		Expect(stopCluster(scenario)).NotTo(HaveOccurred())
-	})
-
 	Describe("HashSlot", func() {
 
 		It("should calculate hash slots", func() {
@@ -202,7 +187,7 @@ var _ = Describe("Cluster", func() {
 	Describe("Commands", func() {
 
 		It("should CLUSTER SLOTS", func() {
-			res, err := scenario.primary().ClusterSlots().Result()
+			res, err := cluster.primary().ClusterSlots().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(HaveLen(3))
 			Expect(res).To(ConsistOf([]redis.ClusterSlotInfo{
@@ -213,13 +198,13 @@ var _ = Describe("Cluster", func() {
 		})
 
 		It("should CLUSTER NODES", func() {
-			res, err := scenario.primary().ClusterNodes().Result()
+			res, err := cluster.primary().ClusterNodes().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(res)).To(BeNumerically(">", 400))
 		})
 
 		It("should CLUSTER INFO", func() {
-			res, err := scenario.primary().ClusterInfo().Result()
+			res, err := cluster.primary().ClusterInfo().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(ContainSubstring("cluster_known_nodes:6"))
 		})
@@ -230,11 +215,11 @@ var _ = Describe("Cluster", func() {
 		var client *redis.ClusterClient
 
 		BeforeEach(func() {
-			client = scenario.clusterClient(nil)
+			client = cluster.clusterClient(nil)
 		})
 
 		AfterEach(func() {
-			for _, client := range scenario.masters() {
+			for _, client := range cluster.masters() {
 				Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 			}
 			Expect(client.Close()).NotTo(HaveOccurred())
@@ -304,7 +289,7 @@ var _ = Describe("Cluster", func() {
 		})
 
 		It("should return error when there are no attempts left", func() {
-			client = scenario.clusterClient(&redis.ClusterOptions{
+			client = cluster.clusterClient(&redis.ClusterOptions{
 				MaxRedirects: -1,
 			})
 
@@ -321,17 +306,17 @@ var _ = Describe("Cluster", func() {
 //------------------------------------------------------------------------------
 
 func BenchmarkRedisClusterPing(b *testing.B) {
-	scenario := &clusterScenario{
+	cluster := &clusterScenario{
 		ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
 		nodeIds:   make([]string, 6),
 		processes: make(map[string]*redisProcess, 6),
 		clients:   make(map[string]*redis.Client, 6),
 	}
-	if err := startCluster(scenario); err != nil {
+	if err := startCluster(cluster); err != nil {
 		b.Fatal(err)
 	}
-	defer stopCluster(scenario)
-	client := scenario.clusterClient(nil)
+	defer stopCluster(cluster)
+	client := cluster.clusterClient(nil)
 	defer client.Close()
 
 	b.ResetTimer()
