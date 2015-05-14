@@ -7,14 +7,18 @@ import (
 	"gopkg.in/bufio.v1"
 )
 
+var (
+	zeroTime = time.Time{}
+)
+
 type conn struct {
 	netcn net.Conn
 	rd    *bufio.Reader
 	buf   []byte
 
 	usedAt       time.Time
-	readTimeout  time.Duration
-	writeTimeout time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
 }
 
 func newConnDialer(opt *options) func() (*conn, error) {
@@ -70,8 +74,8 @@ func (cn *conn) writeCmds(cmds ...Cmder) error {
 }
 
 func (cn *conn) Read(b []byte) (int, error) {
-	if cn.readTimeout != 0 {
-		cn.netcn.SetReadDeadline(time.Now().Add(cn.readTimeout))
+	if cn.ReadTimeout != 0 {
+		cn.netcn.SetReadDeadline(time.Now().Add(cn.ReadTimeout))
 	} else {
 		cn.netcn.SetReadDeadline(zeroTime)
 	}
@@ -79,8 +83,8 @@ func (cn *conn) Read(b []byte) (int, error) {
 }
 
 func (cn *conn) Write(b []byte) (int, error) {
-	if cn.writeTimeout != 0 {
-		cn.netcn.SetWriteDeadline(time.Now().Add(cn.writeTimeout))
+	if cn.WriteTimeout != 0 {
+		cn.netcn.SetWriteDeadline(time.Now().Add(cn.WriteTimeout))
 	} else {
 		cn.netcn.SetWriteDeadline(zeroTime)
 	}

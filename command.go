@@ -47,6 +47,12 @@ func setCmdsErr(cmds []Cmder, e error) {
 	}
 }
 
+func resetCmds(cmds []Cmder) {
+	for _, cmd := range cmds {
+		cmd.reset()
+	}
+}
+
 func cmdString(cmd Cmder, val interface{}) string {
 	s := strings.Join(cmd.args(), " ")
 	if err := cmd.Err(); err != nil {

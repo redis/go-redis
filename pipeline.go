@@ -50,26 +50,38 @@ func (c *Pipeline) Discard() error {
 
 // Exec always returns list of commands and error of the first failed
 // command if any.
-func (c *Pipeline) Exec() ([]Cmder, error) {
+func (c *Pipeline) Exec() (cmds []Cmder, retErr error) {
 	if c.closed {
 		return nil, errClosed
 	}
 	if len(c.cmds) == 0 {
-		return []Cmder{}, nil
+		return c.cmds, nil
 	}
 
-	cmds := c.cmds
+	cmds = c.cmds
 	c.cmds = make([]Cmder, 0, 0)
 
-	cn, err := c.client.conn()
-	if err != nil {
-		setCmdsErr(cmds, err)
-		return cmds, err
+	for i := 0; i <= c.client.opt.MaxRetries; i++ {
+		if i > 0 {
+			resetCmds(cmds)
+		}
+
+		cn, err := c.client.conn()
+		if err != nil {
+			setCmdsErr(cmds, err)
+			return cmds, err
+		}
+
+		retErr = c.execCmds(cn, cmds)
+		c.client.putConn(cn, err)
+		if shouldRetry(err) {
+			continue
+		}
+
+		break
 	}
 
-	err = c.execCmds(cn, cmds)
-	c.client.putConn(cn, err)
-	return cmds, err
+	return cmds, retErr
 }
 
 func (c *Pipeline) execCmds(cn *conn, cmds []Cmder) error {
@@ -79,16 +91,10 @@ func (c *Pipeline) execCmds(cn *conn, cmds []Cmder) error {
 	}
 
 	var firstCmdErr error
-	for i, cmd := range cmds {
+	for _, cmd := range cmds {
 		err := cmd.parseReply(cn.rd)
-		if err == nil {
-			continue
-		}
-		if firstCmdErr == nil {
+		if err != nil && firstCmdErr == nil {
 			firstCmdErr = err
-		}
-		if isNetworkError(err) {
-			setCmdsErr(cmds[i:], err)
 		}
 	}
 

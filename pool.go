@@ -16,10 +16,6 @@ var (
 	errPoolTimeout = errors.New("redis: connection pool timeout")
 )
 
-var (
-	zeroTime = time.Time{}
-)
-
 type pool interface {
 	First() *conn
 	Get() (*conn, error)
