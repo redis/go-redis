@@ -271,7 +271,7 @@ var _ = Describe("Cluster", func() {
 
 			Eventually(func() []string {
 				return client.SlotAddrs(slot)
-			}).Should(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
+			}, "5s").Should(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
 		})
 
 		It("should perform multi-pipelines", func() {
