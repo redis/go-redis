@@ -97,7 +97,7 @@ func (c *ClusterClient) slotAddrs(slot int) []string {
 	return addrs
 }
 
-// randomClient returns a Client for the first pingable node.
+// randomClient returns a Client for the first live node.
 func (c *ClusterClient) randomClient() (client *Client, err error) {
 	for i := 0; i < 10; i++ {
 		n := rand.Intn(len(c.addrs))
@@ -105,7 +105,7 @@ func (c *ClusterClient) randomClient() (client *Client, err error) {
 		if err != nil {
 			continue
 		}
-		err = client.Ping().Err()
+		err = client.ClusterInfo().Err()
 		if err == nil {
 			return client, nil
 		}
