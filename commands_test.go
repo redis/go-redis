@@ -872,22 +872,6 @@ var _ = Describe("Commands", func() {
 			Expect(mSetNX.Val()).To(Equal(false))
 		})
 
-		It("should PSetEx", func() {
-			expiration := 50 * time.Millisecond
-			psetex := client.PSetEx("key", expiration, "hello")
-			Expect(psetex.Err()).NotTo(HaveOccurred())
-			Expect(psetex.Val()).To(Equal("OK"))
-
-			pttl := client.PTTL("key")
-			Expect(pttl.Err()).NotTo(HaveOccurred())
-			Expect(pttl.Val() <= expiration).To(Equal(true))
-			Expect(pttl.Val() >= expiration-time.Millisecond).To(Equal(true))
-
-			get := client.Get("key")
-			Expect(get.Err()).NotTo(HaveOccurred())
-			Expect(get.Val()).To(Equal("hello"))
-		})
-
 		It("should Set with expiration", func() {
 			err := client.Set("key", "hello", 100*time.Millisecond).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -909,16 +893,6 @@ var _ = Describe("Commands", func() {
 			get := client.Get("key")
 			Expect(get.Err()).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("hello"))
-		})
-
-		It("should SetEx", func() {
-			setEx := client.SetEx("key", 10*time.Second, "hello")
-			Expect(setEx.Err()).NotTo(HaveOccurred())
-			Expect(setEx.Val()).To(Equal("OK"))
-
-			ttl := client.TTL("key")
-			Expect(ttl.Err()).NotTo(HaveOccurred())
-			Expect(ttl.Val()).To(Equal(10 * time.Second))
 		})
 
 		It("should SetNX", func() {

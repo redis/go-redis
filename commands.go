@@ -470,12 +470,6 @@ func (c *commandable) MSetNX(pairs ...string) *BoolCmd {
 	return cmd
 }
 
-func (c *commandable) PSetEx(key string, expiration time.Duration, value string) *StatusCmd {
-	cmd := NewStatusCmd("PSETEX", key, formatMs(expiration), value)
-	c.Process(cmd)
-	return cmd
-}
-
 func (c *commandable) Set(key, value string, expiration time.Duration) *StatusCmd {
 	args := []string{"SET", key, value}
 	if expiration > 0 {
@@ -497,12 +491,6 @@ func (c *commandable) SetBit(key string, offset int64, value int) *IntCmd {
 		strconv.FormatInt(offset, 10),
 		strconv.FormatInt(int64(value), 10),
 	)
-	c.Process(cmd)
-	return cmd
-}
-
-func (c *commandable) SetEx(key string, expiration time.Duration, value string) *StatusCmd {
-	cmd := NewStatusCmd("SETEX", key, formatSec(expiration), value)
 	c.Process(cmd)
 	return cmd
 }
