@@ -185,9 +185,6 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 		sentinel := newSentinel(&Options{
 			Addr: sentinelAddr,
 
-			DB:       d.opt.DB,
-			Password: d.opt.Password,
-
 			DialTimeout:  d.opt.DialTimeout,
 			ReadTimeout:  d.opt.ReadTimeout,
 			WriteTimeout: d.opt.WriteTimeout,
