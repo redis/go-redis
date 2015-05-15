@@ -1114,6 +1114,13 @@ func (c *commandable) ClientList() *StringCmd {
 	return cmd
 }
 
+func (c *commandable) ClientPause(dur time.Duration) *BoolCmd {
+	cmd := NewBoolCmd("CLIENT", "PAUSE", formatMs(dur))
+	cmd._clusterKeyPos = 0
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *commandable) ConfigGet(parameter string) *SliceCmd {
 	cmd := NewSliceCmd("CONFIG", "GET", parameter)
 	cmd._clusterKeyPos = 0

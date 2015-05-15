@@ -18,8 +18,10 @@ var _ = Describe("Commands", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(&redis.Options{
-			Addr:        redisAddr,
-			PoolTimeout: 30 * time.Second,
+			Addr:         redisAddr,
+			ReadTimeout:  100 * time.Millisecond,
+			WriteTimeout: 100 * time.Millisecond,
+			PoolTimeout:  30 * time.Second,
 		})
 	})
 
@@ -73,6 +75,19 @@ var _ = Describe("Commands", func() {
 			r := client.ClientKill("1.1.1.1:1111")
 			Expect(r.Err()).To(MatchError("ERR No such client"))
 			Expect(r.Val()).To(Equal(""))
+		})
+
+		It("should ClientPause", func() {
+			err := client.ClientPause(time.Second).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			Consistently(func() error {
+				return client.Ping().Err()
+			}, "500ms").Should(HaveOccurred())
+
+			Eventually(func() error {
+				return client.Ping().Err()
+			}, "1s").ShouldNot(HaveOccurred())
 		})
 
 		It("should ConfigGet", func() {
