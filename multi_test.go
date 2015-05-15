@@ -1,10 +1,10 @@
 package redis_test
 
 import (
-	"gopkg.in/redis.v2"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"gopkg.in/redis.v3"
 )
 
 var _ = Describe("Multi", func() {

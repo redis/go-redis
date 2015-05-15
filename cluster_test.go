@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"gopkg.in/redis.v2"
+	"gopkg.in/redis.v3"
 )
 
 type clusterScenario struct {
