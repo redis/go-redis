@@ -858,9 +858,12 @@ type ZStore struct {
 }
 
 func (c *commandable) ZAdd(key string, members ...Z) *IntCmd {
-	args := []string{"ZADD", key}
-	for _, m := range members {
-		args = append(args, formatFloat(m.Score), m.Member)
+	args := make([]string, 2+2*len(members))
+	args[0] = "ZADD"
+	args[1] = key
+	for i, m := range members {
+		args[2+2*i] = formatFloat(m.Score)
+		args[2+2*i+1] = m.Member
 	}
 	cmd := NewIntCmd(args...)
 	c.Process(cmd)
