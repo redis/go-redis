@@ -273,7 +273,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Migrate", func() {
-			migrate := client.Migrate("localhost", "6380", "key", 0, 0)
+			migrate := client.Migrate("localhost", redisSecondaryPort, "key", 0, 0)
 			Expect(migrate.Err()).NotTo(HaveOccurred())
 			Expect(migrate.Val()).To(Equal("NOKEY"))
 
@@ -281,7 +281,7 @@ var _ = Describe("Commands", func() {
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
 
-			migrate = client.Migrate("localhost", "6380", "key", 0, 0)
+			migrate = client.Migrate("localhost", redisSecondaryPort, "key", 0, 0)
 			Expect(migrate.Err()).To(MatchError("IOERR error or timeout writing to target instance"))
 			Expect(migrate.Val()).To(Equal(""))
 		})
