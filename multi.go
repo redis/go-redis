@@ -7,7 +7,8 @@ import (
 
 var errDiscard = errors.New("redis: Discard can be used only inside Exec")
 
-// Not thread-safe.
+// Multi implements Redis transactions as described in
+// http://redis.io/topics/transactions.
 type Multi struct {
 	commandable
 
