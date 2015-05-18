@@ -1,6 +1,7 @@
 package redis // import "gopkg.in/redis.v3"
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"time"
@@ -9,6 +10,10 @@ import (
 type baseClient struct {
 	connPool pool
 	opt      *options
+}
+
+func (c *baseClient) String() string {
+	return fmt.Sprintf("Redis<%s db:%d>", c.opt.Addr, c.opt.DB)
 }
 
 func (c *baseClient) conn() (*conn, error) {
@@ -164,6 +169,7 @@ func (opt *Options) getPoolTimeout() time.Duration {
 
 func (opt *Options) options() *options {
 	return &options{
+		Addr:        opt.Addr,
 		Dialer:      opt.getDialer(),
 		PoolSize:    opt.getPoolSize(),
 		PoolTimeout: opt.getPoolTimeout(),
@@ -181,6 +187,7 @@ func (opt *Options) options() *options {
 }
 
 type options struct {
+	Addr        string
 	Dialer      func() (net.Conn, error)
 	PoolSize    int
 	PoolTimeout time.Duration

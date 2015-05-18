@@ -31,11 +31,9 @@ var _ = Describe("ClusterClient", func() {
 	}
 
 	BeforeEach(func() {
-		var err error
 		subject = NewClusterClient(&ClusterOptions{
 			Addrs: []string{"127.0.0.1:6379", "127.0.0.1:7003", "127.0.0.1:7006"},
 		})
-		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {

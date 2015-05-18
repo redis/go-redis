@@ -24,6 +24,10 @@ var _ = Describe("Client", func() {
 		client.Close()
 	})
 
+	It("should Stringer", func() {
+		Expect(client.String()).To(Equal("Redis<:6380 db:0>"))
+	})
+
 	It("should ping", func() {
 		val, err := client.Ping().Result()
 		Expect(err).NotTo(HaveOccurred())
