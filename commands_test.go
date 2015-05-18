@@ -19,8 +19,8 @@ var _ = Describe("Commands", func() {
 	BeforeEach(func() {
 		client = redis.NewClient(&redis.Options{
 			Addr:         redisAddr,
-			ReadTimeout:  100 * time.Millisecond,
-			WriteTimeout: 100 * time.Millisecond,
+			ReadTimeout:  500 * time.Millisecond,
+			WriteTimeout: 500 * time.Millisecond,
 			PoolTimeout:  30 * time.Second,
 		})
 	})
@@ -83,7 +83,7 @@ var _ = Describe("Commands", func() {
 
 			Consistently(func() error {
 				return client.Ping().Err()
-			}, "500ms").Should(HaveOccurred())
+			}, "900ms").Should(HaveOccurred())
 
 			Eventually(func() error {
 				return client.Ping().Err()
