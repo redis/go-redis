@@ -17,7 +17,11 @@ import (
 	"gopkg.in/redis.v3"
 )
 
-const redisAddr = ":6379"
+const (
+	redisPort          = "6380"
+	redisAddr          = ":" + redisPort
+	redisSecondaryPort = "6381"
+)
 
 const (
 	sentinelName       = "mymaster"
@@ -27,7 +31,7 @@ const (
 	sentinelPort       = "8126"
 )
 
-var sentinelMaster, sentinelSlave1, sentinelSlave2, sentinel *redisProcess
+var redisMain, sentinelMaster, sentinelSlave1, sentinelSlave2, sentinel *redisProcess
 
 var cluster = &clusterScenario{
 	ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
@@ -38,6 +42,9 @@ var cluster = &clusterScenario{
 
 var _ = BeforeSuite(func() {
 	var err error
+
+	redisMain, err = startRedis(redisPort)
+	Expect(err).NotTo(HaveOccurred())
 
 	sentinelMaster, err = startRedis(sentinelMasterPort)
 	Expect(err).NotTo(HaveOccurred())
@@ -57,6 +64,8 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
+	Expect(redisMain.Close()).NotTo(HaveOccurred())
+
 	Expect(sentinel.Close()).NotTo(HaveOccurred())
 	Expect(sentinelSlave1.Close()).NotTo(HaveOccurred())
 	Expect(sentinelSlave2.Close()).NotTo(HaveOccurred())

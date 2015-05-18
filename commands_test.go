@@ -18,8 +18,10 @@ var _ = Describe("Commands", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(&redis.Options{
-			Addr:        redisAddr,
-			PoolTimeout: 30 * time.Second,
+			Addr:         redisAddr,
+			ReadTimeout:  500 * time.Millisecond,
+			WriteTimeout: 500 * time.Millisecond,
+			PoolTimeout:  30 * time.Second,
 		})
 	})
 
@@ -73,6 +75,19 @@ var _ = Describe("Commands", func() {
 			r := client.ClientKill("1.1.1.1:1111")
 			Expect(r.Err()).To(MatchError("ERR No such client"))
 			Expect(r.Val()).To(Equal(""))
+		})
+
+		It("should ClientPause", func() {
+			err := client.ClientPause(time.Second).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			Consistently(func() error {
+				return client.Ping().Err()
+			}, "900ms").Should(HaveOccurred())
+
+			Eventually(func() error {
+				return client.Ping().Err()
+			}, "1s").ShouldNot(HaveOccurred())
 		})
 
 		It("should ConfigGet", func() {
@@ -258,7 +273,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Migrate", func() {
-			migrate := client.Migrate("localhost", "6380", "key", 0, 0)
+			migrate := client.Migrate("localhost", redisSecondaryPort, "key", 0, 0)
 			Expect(migrate.Err()).NotTo(HaveOccurred())
 			Expect(migrate.Val()).To(Equal("NOKEY"))
 
@@ -266,7 +281,7 @@ var _ = Describe("Commands", func() {
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
 
-			migrate = client.Migrate("localhost", "6380", "key", 0, 0)
+			migrate = client.Migrate("localhost", redisSecondaryPort, "key", 0, 0)
 			Expect(migrate.Err()).To(MatchError("IOERR error or timeout writing to target instance"))
 			Expect(migrate.Val()).To(Equal(""))
 		})
