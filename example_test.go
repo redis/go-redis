@@ -31,10 +31,22 @@ func ExampleNewClient() {
 }
 
 func ExampleNewFailoverClient() {
-	redis.NewFailoverClient(&redis.FailoverOptions{
+	// See http://redis.io/topics/sentinel for instructions how to
+	// setup Redis Sentinel.
+	client := redis.NewFailoverClient(&redis.FailoverOptions{
 		MasterName:    "master",
 		SentinelAddrs: []string{":26379"},
 	})
+	client.Ping()
+}
+
+func ExampleNewClusterClient() {
+	// See http://redis.io/topics/cluster-tutorial for instructions
+	// how to setup Redis Cluster.
+	client := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{":7000", ":7001", ":7002", ":7003", ":7004", ":7005"},
+	})
+	client.Ping()
 }
 
 func ExampleClient() {

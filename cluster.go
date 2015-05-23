@@ -26,8 +26,8 @@ type ClusterClient struct {
 	reloading uint32
 }
 
-// NewClusterClient initializes a new cluster-aware client using given options.
-// A list of seed addresses must be provided.
+// NewClusterClient returns a new Redis Cluster client as described in
+// http://redis.io/topics/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	client := &ClusterClient{
 		addrs:   opt.Addrs,
