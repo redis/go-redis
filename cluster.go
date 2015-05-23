@@ -267,20 +267,28 @@ func (c *ClusterClient) reaper() {
 
 //------------------------------------------------------------------------------
 
+// ClusterOptions are used to configure a cluster client and should be
+// passed to NewClusterClient.
 type ClusterOptions struct {
-	// A seed-list of host:port addresses of known cluster nodes
+	// A seed list of host:port addresses of cluster nodes.
 	Addrs []string
 
-	// An optional password
-	Password string
-
-	// The maximum number of MOVED/ASK redirects to follow, before
-	// giving up. Default: 16
+	// The maximum number of MOVED/ASK redirects to follow before
+	// giving up.
+	// Default is 16
 	MaxRedirects int
 
-	// Following options are copied from `redis.Options`.
-	PoolSize                                                         int
-	DialTimeout, ReadTimeout, WriteTimeout, PoolTimeout, IdleTimeout time.Duration
+	// Following options are copied from Options struct.
+
+	Password string
+
+	DialTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+
+	PoolSize    int
+	PoolTimeout time.Duration
+	IdleTimeout time.Duration
 }
 
 func (opt *ClusterOptions) getMaxRedirects() int {

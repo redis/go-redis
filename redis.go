@@ -9,7 +9,7 @@ import (
 
 type baseClient struct {
 	connPool pool
-	opt      *options
+	opt      *Options
 }
 
 func (c *baseClient) String() string {
@@ -87,10 +87,10 @@ func (c *baseClient) Close() error {
 //------------------------------------------------------------------------------
 
 type Options struct {
-	// The network type, either "tcp" or "unix".
-	// Default: "tcp"
+	// The network type, either tcp or unix.
+	// Default is tcp.
 	Network string
-	// The network address.
+	// host:port address.
 	Addr string
 
 	// Dialer creates new network connection and has priority over
@@ -98,14 +98,17 @@ type Options struct {
 	Dialer func() (net.Conn, error)
 
 	// An optional password. Must match the password specified in the
-	// `requirepass` server configuration option.
+	// requirepass server configuration option.
 	Password string
-	// Select a database.
-	// Default: 0
+	// A database to be selected after connecting to server.
 	DB int64
 
+	// The maximum number of retries before giving up.
+	// Default is to not retry failed commands.
+	MaxRetries int
+
 	// Sets the deadline for establishing new connections. If reached,
-	// deal attepts will fail with a timeout.
+	// dial will fail with a timeout.
 	DialTimeout time.Duration
 	// Sets the deadline for socket reads. If reached, commands will
 	// fail with a timeout instead of blocking.
@@ -115,28 +118,16 @@ type Options struct {
 	WriteTimeout time.Duration
 
 	// The maximum number of socket connections.
-	// Default: 10
+	// Default is 10 connections.
 	PoolSize int
-	// PoolTimeout specifies amount of time client waits for a free
-	// connection in the pool. Default timeout is 1s.
+	// Specifies amount of time client waits for connection if all
+	// connections are busy before returning an error.
+	// Default is 5 seconds.
 	PoolTimeout time.Duration
-	// Evict connections from the pool after they have been idle for longer
-	// than specified in this option.
-	// Default: 0 = no eviction
+	// Specifies amount of time after which client closes idle
+	// connections. Should be less than server's timeout.
+	// Default is to not close idle connections.
 	IdleTimeout time.Duration
-
-	// MaxRetries specifies maximum number of times client will retry
-	// failed command. Default is to not retry failed command.
-	MaxRetries int
-}
-
-func (opt *Options) getDialer() func() (net.Conn, error) {
-	if opt.Dialer == nil {
-		return func() (net.Conn, error) {
-			return net.DialTimeout(opt.getNetwork(), opt.Addr, opt.getDialTimeout())
-		}
-	}
-	return opt.Dialer
 }
 
 func (opt *Options) getNetwork() string {
@@ -144,6 +135,15 @@ func (opt *Options) getNetwork() string {
 		return "tcp"
 	}
 	return opt.Network
+}
+
+func (opt *Options) getDialer() func() (net.Conn, error) {
+	if opt.Dialer == nil {
+		opt.Dialer = func() (net.Conn, error) {
+			return net.DialTimeout(opt.getNetwork(), opt.Addr, opt.getDialTimeout())
+		}
+	}
+	return opt.Dialer
 }
 
 func (opt *Options) getPoolSize() int {
@@ -167,49 +167,8 @@ func (opt *Options) getPoolTimeout() time.Duration {
 	return opt.PoolTimeout
 }
 
-func (opt *Options) options() *options {
-	return &options{
-		Addr:        opt.Addr,
-		Dialer:      opt.getDialer(),
-		PoolSize:    opt.getPoolSize(),
-		PoolTimeout: opt.getPoolTimeout(),
-		IdleTimeout: opt.IdleTimeout,
-
-		DB:       opt.DB,
-		Password: opt.Password,
-
-		DialTimeout:  opt.getDialTimeout(),
-		ReadTimeout:  opt.ReadTimeout,
-		WriteTimeout: opt.WriteTimeout,
-
-		MaxRetries: opt.MaxRetries,
-	}
-}
-
-type options struct {
-	Addr        string
-	Dialer      func() (net.Conn, error)
-	PoolSize    int
-	PoolTimeout time.Duration
-	IdleTimeout time.Duration
-
-	Password string
-	DB       int64
-
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-
-	MaxRetries int
-}
-
-func (opt *options) connPoolOptions() *connPoolOptions {
-	return &connPoolOptions{
-		Dialer:      newConnDialer(opt),
-		PoolSize:    opt.PoolSize,
-		PoolTimeout: opt.PoolTimeout,
-		IdleTimeout: opt.IdleTimeout,
-	}
+func (opt *Options) getIdleTimeout() time.Duration {
+	return opt.IdleTimeout
 }
 
 //------------------------------------------------------------------------------
@@ -219,7 +178,7 @@ type Client struct {
 	commandable
 }
 
-func newClient(opt *options, pool pool) *Client {
+func newClient(opt *Options, pool pool) *Client {
 	base := &baseClient{opt: opt, connPool: pool}
 	return &Client{
 		baseClient:  base,
@@ -227,8 +186,7 @@ func newClient(opt *options, pool pool) *Client {
 	}
 }
 
-func NewClient(clOpt *Options) *Client {
-	opt := clOpt.options()
-	pool := newConnPool(opt.connPoolOptions())
+func NewClient(opt *Options) *Client {
+	pool := newConnPool(opt)
 	return newClient(opt, pool)
 }

@@ -110,17 +110,11 @@ func (l *connList) Close() (retErr error) {
 	return retErr
 }
 
-type connPoolOptions struct {
-	Dialer             func() (*conn, error)
-	PoolSize           int
-	PoolTimeout        time.Duration
-	IdleTimeout        time.Duration
-	IdleCheckFrequency time.Duration
-}
-
 type connPool struct {
+	dialer func() (*conn, error)
+
 	rl        *ratelimit.RateLimiter
-	opt       *connPoolOptions
+	opt       *Options
 	conns     *connList
 	freeConns chan *conn
 
@@ -129,14 +123,16 @@ type connPool struct {
 	lastDialErr error
 }
 
-func newConnPool(opt *connPoolOptions) *connPool {
+func newConnPool(opt *Options) *connPool {
 	p := &connPool{
-		rl:        ratelimit.New(2*opt.PoolSize, time.Second),
+		dialer: newConnDialer(opt),
+
+		rl:        ratelimit.New(2*opt.getPoolSize(), time.Second),
 		opt:       opt,
-		conns:     newConnList(opt.PoolSize),
-		freeConns: make(chan *conn, opt.PoolSize),
+		conns:     newConnList(opt.getPoolSize()),
+		freeConns: make(chan *conn, opt.getPoolSize()),
 	}
-	if p.opt.IdleTimeout > 0 && p.opt.IdleCheckFrequency > 0 {
+	if p.opt.getIdleTimeout() > 0 {
 		go p.reaper()
 	}
 	return p
@@ -147,7 +143,7 @@ func (p *connPool) closed() bool {
 }
 
 func (p *connPool) isIdle(cn *conn) bool {
-	return p.opt.IdleTimeout > 0 && time.Since(cn.usedAt) > p.opt.IdleTimeout
+	return p.opt.getIdleTimeout() > 0 && time.Since(cn.usedAt) > p.opt.getIdleTimeout()
 }
 
 // First returns first non-idle connection from the pool or nil if
@@ -170,7 +166,7 @@ func (p *connPool) First() *conn {
 
 // wait waits for free non-idle connection. It returns nil on timeout.
 func (p *connPool) wait() *conn {
-	deadline := time.After(p.opt.PoolTimeout)
+	deadline := time.After(p.opt.getPoolTimeout())
 	for {
 		select {
 		case cn := <-p.freeConns:
@@ -196,7 +192,7 @@ func (p *connPool) new() (*conn, error) {
 		return nil, err
 	}
 
-	cn, err := p.opt.Dialer()
+	cn, err := p.dialer()
 	if err != nil {
 		p.lastDialErr = err
 		return nil, err
@@ -241,7 +237,7 @@ func (p *connPool) Put(cn *conn) error {
 		log.Printf("redis: connection has unread data: %q", b)
 		return p.Remove(cn)
 	}
-	if p.opt.IdleTimeout > 0 {
+	if p.opt.getIdleTimeout() > 0 {
 		cn.usedAt = time.Now()
 	}
 	p.freeConns <- cn
@@ -295,7 +291,7 @@ func (p *connPool) Close() (retErr error) {
 }
 
 func (p *connPool) reaper() {
-	ticker := time.NewTicker(p.opt.IdleCheckFrequency)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
 	for _ = range ticker.C {
