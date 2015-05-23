@@ -26,6 +26,7 @@ func (c *Client) Publish(channel, message string) *IntCmd {
 	return req
 }
 
+// Message received as result of a PUBLISH command issued by another client.
 type Message struct {
 	Channel string
 	Payload string
@@ -35,6 +36,8 @@ func (m *Message) String() string {
 	return fmt.Sprintf("Message<%s: %s>", m.Channel, m.Payload)
 }
 
+// Message matching a pattern-matching subscription received as result
+// of a PUBLISH command issued by another client.
 type PMessage struct {
 	Channel string
 	Pattern string
@@ -45,10 +48,14 @@ func (m *PMessage) String() string {
 	return fmt.Sprintf("PMessage<%s: %s>", m.Channel, m.Payload)
 }
 
+// Message received after a successful subscription to channel.
 type Subscription struct {
-	Kind    string
+	// Can be "subscribe", "unsubscribe", "psubscribe" or "punsubscribe".
+	Kind string
+	// Channel name we have subscribed to.
 	Channel string
-	Count   int
+	// Number of channels we are currently subscribed to.
+	Count int
 }
 
 func (m *Subscription) String() string {
