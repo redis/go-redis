@@ -83,7 +83,7 @@ var _ = Describe("Commands", func() {
 
 			Consistently(func() error {
 				return client.Ping().Err()
-			}, "900ms").Should(HaveOccurred())
+			}, "400ms").Should(HaveOccurred()) // pause time - read timeout
 
 			Eventually(func() error {
 				return client.Ping().Err()
