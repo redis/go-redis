@@ -2,7 +2,9 @@ package redis_test
 
 import (
 	"fmt"
+	"net"
 	"strconv"
+	"time"
 
 	"gopkg.in/redis.v3"
 )
@@ -125,19 +127,37 @@ func ExamplePubSub() {
 	defer pubsub.Close()
 
 	err := pubsub.Subscribe("mychannel")
-	_ = err
+	if err != nil {
+		panic(err)
+	}
 
-	msg, err := pubsub.Receive()
-	fmt.Println(msg, err)
+	err = client.Publish("mychannel", "hello").Err()
+	if err != nil {
+		panic(err)
+	}
 
-	pub := client.Publish("mychannel", "hello")
-	_ = pub.Err()
+	for {
+		msgi, err := pubsub.ReceiveTimeout(100 * time.Millisecond)
+		if err != nil {
+			if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
+				// There are no more messages to process. Stop.
+				break
+			}
+			panic(err)
+		}
 
-	msg, err = pubsub.Receive()
-	fmt.Println(msg, err)
+		switch msg := msgi.(type) {
+		case *redis.Subscription:
+			fmt.Println(msg.Kind, msg.Channel)
+		case *redis.Message:
+			fmt.Println(msg.Channel, msg.Payload)
+		default:
+			panic(fmt.Sprintf("unknown message: %#v", msgi))
+		}
+	}
 
-	// Output: subscribe: mychannel <nil>
-	// Message<mychannel: hello> <nil>
+	// Output: subscribe mychannel
+	// mychannel hello
 }
 
 func ExampleScript() {

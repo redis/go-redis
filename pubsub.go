@@ -5,7 +5,8 @@ import (
 	"time"
 )
 
-// Not thread-safe.
+// PubSub implements Pub/Sub commands as described in
+// http://redis.io/topics/pubsub.
 type PubSub struct {
 	*baseClient
 }
