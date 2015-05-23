@@ -21,9 +21,10 @@ type conn struct {
 	WriteTimeout time.Duration
 }
 
-func newConnDialer(opt *options) func() (*conn, error) {
+func newConnDialer(opt *Options) func() (*conn, error) {
+	dialer := opt.getDialer()
 	return func() (*conn, error) {
-		netcn, err := opt.Dialer()
+		netcn, err := dialer()
 		if err != nil {
 			return nil, err
 		}
@@ -36,7 +37,7 @@ func newConnDialer(opt *options) func() (*conn, error) {
 	}
 }
 
-func (cn *conn) init(opt *options) error {
+func (cn *conn) init(opt *Options) error {
 	if opt.Password == "" && opt.DB == 0 {
 		return nil
 	}
