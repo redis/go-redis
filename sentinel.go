@@ -84,7 +84,7 @@ func (opt *FailoverOptions) options() *options {
 	}
 }
 
-// NewFailoverClient returns Redis client with automatic failover
+// NewFailoverClient returns a Redis client with automatic failover
 // capabilities using Redis Sentinel.
 func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	opt := failoverOpt.options()
