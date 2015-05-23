@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Redis nil reply.
+// Redis nil reply, .e.g. when key does not exist.
 var Nil = errorf("redis: nil")
 
 // Redis transaction failed.
