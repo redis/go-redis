@@ -38,13 +38,27 @@ func ExampleNewFailoverClient() {
 }
 
 func ExampleClient() {
-	if err := client.Set("foo", "bar", 0).Err(); err != nil {
+	err := client.Set("key", "value", 0).Err()
+	if err != nil {
 		panic(err)
 	}
 
-	v, err := client.Get("hello").Result()
-	fmt.Printf("%q %q %v", v, err, err == redis.Nil)
-	// Output: "" "redis: nil" true
+	val, err := client.Get("key").Result()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("key", val)
+
+	val2, err := client.Get("key2").Result()
+	if err == redis.Nil {
+		fmt.Println("key2 does not exists")
+	} else if err != nil {
+		panic(err)
+	} else {
+		fmt.Println("key2", val2)
+	}
+	// Output: key value
+	// key2 does not exists
 }
 
 func ExampleClient_Incr() {

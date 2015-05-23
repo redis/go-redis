@@ -3,31 +3,78 @@ Redis client for Golang [![Build Status](https://travis-ci.org/go-redis/redis.pn
 
 Supports:
 
-- Redis 2.8 commands except QUIT, MONITOR, SLOWLOG and SYNC.
-- Pub/sub.
+- Redis 3 commands except QUIT, MONITOR, SLOWLOG and SYNC.
+- Pub/Sub.
 - Transactions.
-- Pipelining.
-- Connection pool.
-- TLS connections.
-- Thread safety.
+- Pipelines.
+- Connection pool. Client can be safely used from multiple goroutines.
 - Timeouts.
-- Redis Sentinel.
-- Redis Cluster: https://github.com/bsm/redis-cluster.
+- [Redis Sentinel](http://godoc.org/gopkg.in/redis.v3#NewFailoverClient).
+- [Redis Cluster](http://godoc.org/gopkg.in/redis.v3#NewClusterClient).
 
-API docs: http://godoc.org/gopkg.in/redis.v2.
-Examples: http://godoc.org/gopkg.in/redis.v2#pkg-examples.
+API docs: http://godoc.org/gopkg.in/redis.v3.
+Examples: http://godoc.org/gopkg.in/redis.v3#pkg-examples.
 
 Installation
 ------------
 
 Install:
 
-    go get gopkg.in/redis.v2
+    go get gopkg.in/redis.v3
+
+Quickstart
+----------
+
+```go
+func ExampleNewClient() {
+	client := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+
+	pong, err := client.Ping().Result()
+	fmt.Println(pong, err)
+	// Output: PONG <nil>
+}
+
+func ExampleClient() {
+	err := client.Set("key", "value", 0).Err()
+	if err != nil {
+		panic(err)
+	}
+
+	val, err := client.Get("key").Result()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("key", val)
+
+	val2, err := client.Get("key2").Result()
+	if err == redis.Nil {
+		fmt.Println("key2 does not exists")
+	} else if err != nil {
+		panic(err)
+	} else {
+		fmt.Println("key2", val2)
+	}
+	// Output: key value
+	// key2 does not exists
+}
+```
+
+Howto
+-----
+
+Please go through [examples](http://godoc.org/gopkg.in/redis.v3#pkg-examples) to get an idea how to use this package.
 
 Look and feel
 -------------
 
 Some corner cases:
+
+    SET key value EX 10 NX
+    set, err := client.SetNX("key", "value", 10*time.Second).Result()
 
     SORT list LIMIT 0 2 ASC
     vals, err := client.Sort("list", redis.Sort{Offset: 0, Count: 2, Order: "ASC"}).Result()
