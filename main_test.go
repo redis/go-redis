@@ -24,6 +24,11 @@ const (
 )
 
 const (
+	ringShard1Port = "6390"
+	ringShard2Port = "6391"
+)
+
+const (
 	sentinelName       = "mymaster"
 	sentinelMasterPort = "8123"
 	sentinelSlave1Port = "8124"
@@ -31,7 +36,11 @@ const (
 	sentinelPort       = "8126"
 )
 
-var redisMain, sentinelMaster, sentinelSlave1, sentinelSlave2, sentinel *redisProcess
+var (
+	redisMain                                                *redisProcess
+	ringShard1, ringShard2                                   *redisProcess
+	sentinelMaster, sentinelSlave1, sentinelSlave2, sentinel *redisProcess
+)
 
 var cluster = &clusterScenario{
 	ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
@@ -44,6 +53,12 @@ var _ = BeforeSuite(func() {
 	var err error
 
 	redisMain, err = startRedis(redisPort)
+	Expect(err).NotTo(HaveOccurred())
+
+	ringShard1, err = startRedis(ringShard1Port)
+	Expect(err).NotTo(HaveOccurred())
+
+	ringShard2, err = startRedis(ringShard2Port)
 	Expect(err).NotTo(HaveOccurred())
 
 	sentinelMaster, err = startRedis(sentinelMasterPort)
@@ -65,6 +80,8 @@ var _ = BeforeSuite(func() {
 
 var _ = AfterSuite(func() {
 	Expect(redisMain.Close()).NotTo(HaveOccurred())
+	Expect(ringShard1.Close()).NotTo(HaveOccurred())
+	Expect(ringShard2.Close()).NotTo(HaveOccurred())
 
 	Expect(sentinel.Close()).NotTo(HaveOccurred())
 	Expect(sentinelSlave1.Close()).NotTo(HaveOccurred())

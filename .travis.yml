@@ -10,6 +10,7 @@ go:
 install:
   - go get gopkg.in/bufio.v1
   - go get gopkg.in/bsm/ratelimit.v1
+  - go get github.com/golang/groupcache/consistenthash
   - go get github.com/onsi/ginkgo
   - go get github.com/onsi/gomega
   - mkdir -p $HOME/gopath/src/gopkg.in
