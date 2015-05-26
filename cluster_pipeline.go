@@ -53,13 +53,7 @@ func (c *ClusterPipeline) Exec() (cmds []Cmder, retErr error) {
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
 		slot := hashSlot(cmd.clusterKey())
-		addrs := c.cluster.slotAddrs(slot)
-
-		var addr string
-		if len(addrs) > 0 {
-			addr = addrs[0] // First address is master.
-		}
-
+		addr := c.cluster.slotMasterAddr(slot)
 		cmdsMap[addr] = append(cmdsMap[addr], cmd)
 	}
 
