@@ -80,11 +80,11 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 
 	reply := cmd.Val()
 
-	msgName := reply[0].(string)
-	switch msgName {
+	kind := reply[0].(string)
+	switch kind {
 	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
 		return &Subscription{
-			Kind:    msgName,
+			Kind:    kind,
 			Channel: reply[1].(string),
 			Count:   int(reply[2].(int64)),
 		}, nil
@@ -101,7 +101,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 		}, nil
 	}
 
-	return nil, fmt.Errorf("redis: unsupported message name: %q", msgName)
+	return nil, fmt.Errorf("redis: unsupported pubsub notification: %q", kind)
 }
 
 func (c *PubSub) subscribe(cmd string, channels ...string) error {
@@ -110,7 +110,11 @@ func (c *PubSub) subscribe(cmd string, channels ...string) error {
 		return err
 	}
 
-	args := append([]string{cmd}, channels...)
+	args := make([]interface{}, 1+len(channels))
+	args[0] = cmd
+	for i, channel := range channels {
+		args[1+i] = channel
+	}
 	req := NewSliceCmd(args...)
 	return cn.writeCmds(req)
 }
@@ -123,21 +127,10 @@ func (c *PubSub) PSubscribe(patterns ...string) error {
 	return c.subscribe("PSUBSCRIBE", patterns...)
 }
 
-func (c *PubSub) unsubscribe(cmd string, channels ...string) error {
-	cn, err := c.conn()
-	if err != nil {
-		return err
-	}
-
-	args := append([]string{cmd}, channels...)
-	req := NewSliceCmd(args...)
-	return cn.writeCmds(req)
-}
-
 func (c *PubSub) Unsubscribe(channels ...string) error {
-	return c.unsubscribe("UNSUBSCRIBE", channels...)
+	return c.subscribe("UNSUBSCRIBE", channels...)
 }
 
 func (c *PubSub) PUnsubscribe(patterns ...string) error {
-	return c.unsubscribe("PUNSUBSCRIBE", patterns...)
+	return c.subscribe("PUNSUBSCRIBE", patterns...)
 }

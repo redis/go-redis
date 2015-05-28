@@ -1,7 +1,9 @@
 package redis_test
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"sync"
 	"testing"
@@ -2286,4 +2288,95 @@ var _ = Describe("Commands", func() {
 
 	})
 
+	Describe("marshaling/unmarshaling", func() {
+
+		type convTest struct {
+			value  interface{}
+			wanted string
+			dest   interface{}
+		}
+
+		convTests := []convTest{
+			{nil, "", nil},
+			{"hello", "hello", new(string)},
+			{[]byte("hello"), "hello", new([]byte)},
+			{int(1), "1", new(int)},
+			{int8(1), "1", new(int8)},
+			{int16(1), "1", new(int16)},
+			{int32(1), "1", new(int32)},
+			{int64(1), "1", new(int64)},
+			{uint(1), "1", new(uint)},
+			{uint8(1), "1", new(uint8)},
+			{uint16(1), "1", new(uint16)},
+			{uint32(1), "1", new(uint32)},
+			{uint64(1), "1", new(uint64)},
+			{float32(1.0), "1", new(float32)},
+			{float64(1.0), "1", new(float64)},
+			{true, "1", new(bool)},
+			{false, "0", new(bool)},
+		}
+
+		It("should convert to string", func() {
+			for _, test := range convTests {
+				err := client.Set("key", test.value, 0).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				s, err := client.Get("key").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(s).To(Equal(test.wanted))
+
+				if test.dest == nil {
+					continue
+				}
+
+				err = client.Get("key").Scan(test.dest)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(deref(test.dest)).To(Equal(test.value))
+			}
+		})
+
+	})
+
+	Describe("json marshaling/unmarshaling", func() {
+		BeforeEach(func() {
+			value := &numberStruct{Number: 42}
+			err := client.Set("key", value, 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should marshal custom values using json", func() {
+			s, err := client.Get("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s).To(Equal(`{"Number":42}`))
+		})
+
+		It("should scan custom values using json", func() {
+			value := &numberStruct{}
+			err := client.Get("key").Scan(value)
+			Expect(err).To(BeNil())
+			Expect(value.Number).To(Equal(42))
+		})
+
+	})
+
 })
+
+type numberStruct struct {
+	Number int
+}
+
+func (s *numberStruct) MarshalBinary() ([]byte, error) {
+	return json.Marshal(s)
+}
+
+func (s *numberStruct) UnmarshalBinary(b []byte) error {
+	return json.Unmarshal(b, s)
+}
+
+func deref(viface interface{}) interface{} {
+	v := reflect.ValueOf(viface)
+	for v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	return v.Interface()
+}
