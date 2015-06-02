@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/groupcache/consistenthash"
+	"gopkg.in/redis.v3/internal/consistenthash"
 )
 
 var (
