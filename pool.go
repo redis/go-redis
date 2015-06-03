@@ -80,6 +80,9 @@ func (l *connList) Remove(cn *conn) error {
 		}
 	}
 
+	if l.closed() {
+		return nil
+	}
 	panic("conn not found in the list")
 }
 
@@ -94,6 +97,9 @@ func (l *connList) Replace(cn, newcn *conn) error {
 		}
 	}
 
+	if l.closed() {
+		return newcn.Close()
+	}
 	panic("conn not found in the list")
 }
 
@@ -108,6 +114,10 @@ func (l *connList) Close() (retErr error) {
 	atomic.StoreInt32(&l.len, 0)
 	l.mx.Unlock()
 	return retErr
+}
+
+func (l *connList) closed() bool {
+	return l.cns == nil
 }
 
 type connPool struct {
@@ -245,11 +255,6 @@ func (p *connPool) Put(cn *conn) error {
 }
 
 func (p *connPool) Remove(cn *conn) error {
-	if p.closed() {
-		// Close already closed all connections.
-		return nil
-	}
-
 	// Replace existing connection with new one and unblock waiter.
 	newcn, err := p.new()
 	if err != nil {
@@ -372,12 +377,6 @@ func (p *singleConnPool) Put(cn *conn) error {
 	return nil
 }
 
-func (p *singleConnPool) put() error {
-	err := p.pool.Put(p.cn)
-	p.cn = nil
-	return err
-}
-
 func (p *singleConnPool) Remove(cn *conn) error {
 	defer p.cnMtx.Unlock()
 	p.cnMtx.Lock()
@@ -427,7 +426,8 @@ func (p *singleConnPool) Close() error {
 	var err error
 	if p.cn != nil {
 		if p.reusable {
-			err = p.put()
+			err = p.pool.Put(p.cn)
+			p.cn = nil
 		} else {
 			err = p.remove()
 		}
