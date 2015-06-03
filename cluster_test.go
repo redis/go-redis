@@ -252,7 +252,6 @@ var _ = Describe("Cluster", func() {
 			val, err := client.Get("A").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("VALUE"))
-			Expect(client.SlotAddrs(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			Eventually(func() []string {
 				return client.SlotAddrs(slot)
