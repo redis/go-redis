@@ -101,8 +101,9 @@ var _ = Describe("Pool", func() {
 		})
 
 		pool := client.Pool()
-		Expect(pool.Len()).To(Equal(10))
-		Expect(pool.FreeLen()).To(Equal(10))
+		Expect(pool.Len()).To(BeNumerically("<=", 10))
+		Expect(pool.FreeLen()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(Equal(pool.FreeLen()))
 	})
 
 	It("should remove broken connections", func() {
