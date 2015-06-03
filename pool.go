@@ -278,17 +278,13 @@ func (p *connPool) Close() (retErr error) {
 	if !atomic.CompareAndSwapInt32(&p._closed, 0, 1) {
 		return errClosed
 	}
-	// First close free connections.
-	for p.Len() > 0 {
-		cn := p.wait()
-		if cn == nil {
+	// Wait for app to free connections, but don't close them immediately.
+	for i := 0; i < p.Len(); i++ {
+		if cn := p.wait(); cn == nil {
 			break
 		}
-		if err := p.conns.Remove(cn); err != nil {
-			retErr = err
-		}
 	}
-	// Then close the rest.
+	// Close all connections.
 	if err := p.conns.Close(); err != nil {
 		retErr = err
 	}
