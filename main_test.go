@@ -80,6 +80,7 @@ var _ = BeforeSuite(func() {
 
 var _ = AfterSuite(func() {
 	Expect(redisMain.Close()).NotTo(HaveOccurred())
+
 	Expect(ringShard1.Close()).NotTo(HaveOccurred())
 	Expect(ringShard2.Close()).NotTo(HaveOccurred())
 
