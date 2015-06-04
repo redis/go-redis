@@ -25,6 +25,8 @@ type RingOptions struct {
 	DB       int64
 	Password string
 
+	MaxRetries int
+
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
@@ -105,6 +107,7 @@ func (shard *ringShard) Vote(up bool) bool {
 type Ring struct {
 	commandable
 
+	opt       *RingOptions
 	nreplicas int
 
 	mx     sync.RWMutex
@@ -117,9 +120,11 @@ type Ring struct {
 func NewRing(opt *RingOptions) *Ring {
 	const nreplicas = 100
 	ring := &Ring{
+		opt:       opt,
 		nreplicas: nreplicas,
-		hash:      consistenthash.New(nreplicas, nil),
-		shards:    make(map[string]*ringShard),
+
+		hash:   consistenthash.New(nreplicas, nil),
+		shards: make(map[string]*ringShard),
 	}
 	ring.commandable.process = ring.process
 	for name, addr := range opt.Addrs {
@@ -234,4 +239,116 @@ func (ring *Ring) Close() (retErr error) {
 	ring.shards = nil
 
 	return retErr
+}
+
+// RingPipeline creates a new pipeline which is able to execute commands
+// against multiple shards.
+type RingPipeline struct {
+	commandable
+
+	ring *Ring
+
+	cmds   []Cmder
+	closed bool
+}
+
+func (ring *Ring) Pipeline() *RingPipeline {
+	pipe := &RingPipeline{
+		ring: ring,
+		cmds: make([]Cmder, 0, 10),
+	}
+	pipe.commandable.process = pipe.process
+	return pipe
+}
+
+func (ring *Ring) Pipelined(fn func(*RingPipeline) error) ([]Cmder, error) {
+	pipe := ring.Pipeline()
+	if err := fn(pipe); err != nil {
+		return nil, err
+	}
+	cmds, err := pipe.Exec()
+	pipe.Close()
+	return cmds, err
+}
+
+func (pipe *RingPipeline) process(cmd Cmder) {
+	pipe.cmds = append(pipe.cmds, cmd)
+}
+
+// Discard resets the pipeline and discards queued commands.
+func (pipe *RingPipeline) Discard() error {
+	if pipe.closed {
+		return errClosed
+	}
+	pipe.cmds = pipe.cmds[:0]
+	return nil
+}
+
+// Exec always returns list of commands and error of the first failed
+// command if any.
+func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
+	if pipe.closed {
+		return nil, errClosed
+	}
+	if len(pipe.cmds) == 0 {
+		return pipe.cmds, nil
+	}
+
+	cmds = pipe.cmds
+	pipe.cmds = make([]Cmder, 0, 10)
+
+	cmdsMap := make(map[string][]Cmder)
+	for _, cmd := range cmds {
+		name := pipe.ring.hash.Get(cmd.clusterKey())
+		cmdsMap[name] = append(cmdsMap[name], cmd)
+	}
+
+	for i := 0; i <= pipe.ring.opt.MaxRetries; i++ {
+		failedCmdsMap := make(map[string][]Cmder)
+
+		for name, cmds := range cmdsMap {
+			client, err := pipe.ring.getClient(name)
+			if err != nil {
+				setCmdsErr(cmds, err)
+				if retErr == nil {
+					retErr = err
+				}
+				continue
+			}
+
+			cn, err := client.conn()
+			if err != nil {
+				setCmdsErr(cmds, err)
+				if retErr == nil {
+					retErr = err
+				}
+				continue
+			}
+
+			if i > 0 {
+				resetCmds(cmds)
+			}
+			failedCmds, err := execCmds(cn, cmds)
+			client.putConn(cn, err)
+			if err != nil && retErr == nil {
+				retErr = err
+			}
+			if len(failedCmds) > 0 {
+				failedCmdsMap[name] = failedCmds
+			}
+		}
+
+		if len(failedCmdsMap) == 0 {
+			break
+		}
+		cmdsMap = failedCmdsMap
+	}
+
+	return cmds, retErr
+}
+
+func (pipe *RingPipeline) Close() error {
+	pipe.Discard()
+	pipe.closed = true
+	return nil
 }

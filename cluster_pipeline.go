@@ -20,48 +20,42 @@ func (c *ClusterClient) Pipeline() *ClusterPipeline {
 	return pipe
 }
 
-func (c *ClusterPipeline) process(cmd Cmder) {
-	c.cmds = append(c.cmds, cmd)
+func (pipe *ClusterPipeline) process(cmd Cmder) {
+	pipe.cmds = append(pipe.cmds, cmd)
 }
 
-// Close marks the pipeline as closed
-func (c *ClusterPipeline) Close() error {
-	c.closed = true
-	return nil
-}
-
-// Discard resets the pipeline and discards queued commands
-func (c *ClusterPipeline) Discard() error {
-	if c.closed {
+// Discard resets the pipeline and discards queued commands.
+func (pipe *ClusterPipeline) Discard() error {
+	if pipe.closed {
 		return errClosed
 	}
-	c.cmds = c.cmds[:0]
+	pipe.cmds = pipe.cmds[:0]
 	return nil
 }
 
-func (c *ClusterPipeline) Exec() (cmds []Cmder, retErr error) {
-	if c.closed {
+func (pipe *ClusterPipeline) Exec() (cmds []Cmder, retErr error) {
+	if pipe.closed {
 		return nil, errClosed
 	}
-	if len(c.cmds) == 0 {
+	if len(pipe.cmds) == 0 {
 		return []Cmder{}, nil
 	}
 
-	cmds = c.cmds
-	c.cmds = make([]Cmder, 0, 10)
+	cmds = pipe.cmds
+	pipe.cmds = make([]Cmder, 0, 10)
 
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
 		slot := hashSlot(cmd.clusterKey())
-		addr := c.cluster.slotMasterAddr(slot)
+		addr := pipe.cluster.slotMasterAddr(slot)
 		cmdsMap[addr] = append(cmdsMap[addr], cmd)
 	}
 
-	for attempt := 0; attempt <= c.cluster.opt.getMaxRedirects(); attempt++ {
+	for attempt := 0; attempt <= pipe.cluster.opt.getMaxRedirects(); attempt++ {
 		failedCmds := make(map[string][]Cmder)
 
 		for addr, cmds := range cmdsMap {
-			client, err := c.cluster.getClient(addr)
+			client, err := pipe.cluster.getClient(addr)
 			if err != nil {
 				setCmdsErr(cmds, err)
 				retErr = err
@@ -75,7 +69,7 @@ func (c *ClusterPipeline) Exec() (cmds []Cmder, retErr error) {
 				continue
 			}
 
-			failedCmds, err = c.execClusterCmds(cn, cmds, failedCmds)
+			failedCmds, err = pipe.execClusterCmds(cn, cmds, failedCmds)
 			if err != nil {
 				retErr = err
 			}
@@ -88,7 +82,14 @@ func (c *ClusterPipeline) Exec() (cmds []Cmder, retErr error) {
 	return cmds, retErr
 }
 
-func (c *ClusterPipeline) execClusterCmds(
+// Close marks the pipeline as closed
+func (pipe *ClusterPipeline) Close() error {
+	pipe.Discard()
+	pipe.closed = true
+	return nil
+}
+
+func (pipe *ClusterPipeline) execClusterCmds(
 	cn *conn, cmds []Cmder, failedCmds map[string][]Cmder,
 ) (map[string][]Cmder, error) {
 	if err := cn.writeCmds(cmds...); err != nil {
@@ -107,7 +108,7 @@ func (c *ClusterPipeline) execClusterCmds(
 			failedCmds[""] = append(failedCmds[""], cmds[i:]...)
 			break
 		} else if moved, ask, addr := isMovedError(err); moved {
-			c.cluster.lazyReloadSlots()
+			pipe.cluster.lazyReloadSlots()
 			cmd.reset()
 			failedCmds[addr] = append(failedCmds[addr], cmd)
 		} else if ask {
