@@ -307,7 +307,6 @@ func (opt *ClusterOptions) getMaxRedirects() int {
 
 func (opt *ClusterOptions) clientOptions() *Options {
 	return &Options{
-		DB:       0,
 		Password: opt.Password,
 
 		DialTimeout:  opt.DialTimeout,
@@ -324,14 +323,19 @@ func (opt *ClusterOptions) clientOptions() *Options {
 
 const hashSlots = 16384
 
-// hashSlot returns a consistent slot number between 0 and 16383
-// for any given string key.
-func hashSlot(key string) int {
+func hashKey(key string) string {
 	if s := strings.IndexByte(key, '{'); s > -1 {
 		if e := strings.IndexByte(key[s+1:], '}'); e > 0 {
 			key = key[s+1 : s+e+1]
 		}
 	}
+	return key
+}
+
+// hashSlot returns a consistent slot number between 0 and 16383
+// for any given string key.
+func hashSlot(key string) int {
+	key = hashKey(key)
 	if key == "" {
 		return rand.Intn(hashSlots)
 	}

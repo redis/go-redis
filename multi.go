@@ -3,6 +3,7 @@ package redis
 import (
 	"errors"
 	"fmt"
+	"log"
 )
 
 var errDiscard = errors.New("redis: Discard can be used only inside Exec")
@@ -18,7 +19,10 @@ type Multi struct {
 
 func (c *Client) Multi() *Multi {
 	multi := &Multi{
-		base: &baseClient{opt: c.opt, connPool: newSingleConnPool(c.connPool, true)},
+		base: &baseClient{
+			opt:      c.opt,
+			connPool: newSingleConnPool(c.connPool, true),
+		},
 	}
 	multi.commandable.process = multi.process
 	return multi
@@ -34,7 +38,7 @@ func (c *Multi) process(cmd Cmder) {
 
 func (c *Multi) Close() error {
 	if err := c.Unwatch().Err(); err != nil {
-		return err
+		log.Printf("redis: Unwatch failed: %s", err)
 	}
 	return c.base.Close()
 }

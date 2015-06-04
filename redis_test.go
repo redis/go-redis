@@ -88,6 +88,24 @@ var _ = Describe("Client", func() {
 		Expect(client.Ping().Err()).NotTo(HaveOccurred())
 	})
 
+	It("should close pubsub when client is closed", func() {
+		pubsub := client.PubSub()
+		Expect(client.Close()).NotTo(HaveOccurred())
+		Expect(pubsub.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should close multi when client is closed", func() {
+		multi := client.Multi()
+		Expect(client.Close()).NotTo(HaveOccurred())
+		Expect(multi.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should close pipeline when client is closed", func() {
+		pipeline := client.Pipeline()
+		Expect(client.Close()).NotTo(HaveOccurred())
+		Expect(pipeline.Close()).NotTo(HaveOccurred())
+	})
+
 	It("should support idle-timeouts", func() {
 		idle := redis.NewClient(&redis.Options{
 			Addr:        redisAddr,

@@ -369,8 +369,7 @@ var _ = Describe("Commands", func() {
 
 			pttl := client.PTTL("key")
 			Expect(pttl.Err()).NotTo(HaveOccurred())
-			Expect(pttl.Val() <= expiration).To(Equal(true))
-			Expect(pttl.Val() >= expiration-time.Millisecond).To(Equal(true))
+			Expect(pttl.Val()).To(BeNumerically("~", expiration, 10*time.Millisecond))
 		})
 
 		It("should PExpireAt", func() {
@@ -389,8 +388,7 @@ var _ = Describe("Commands", func() {
 
 			pttl := client.PTTL("key")
 			Expect(pttl.Err()).NotTo(HaveOccurred())
-			Expect(pttl.Val() <= expiration).To(Equal(true))
-			Expect(pttl.Val() >= expiration-time.Millisecond).To(Equal(true))
+			Expect(pttl.Val()).To(BeNumerically("~", expiration, 10*time.Millisecond))
 		})
 
 		It("should PTTL", func() {
@@ -405,8 +403,7 @@ var _ = Describe("Commands", func() {
 
 			pttl := client.PTTL("key")
 			Expect(pttl.Err()).NotTo(HaveOccurred())
-			Expect(pttl.Val() <= expiration).To(Equal(true))
-			Expect(pttl.Val() >= expiration-time.Millisecond).To(Equal(true))
+			Expect(pttl.Val()).To(BeNumerically("~", expiration, 10*time.Millisecond))
 		})
 
 		It("should RandomKey", func() {

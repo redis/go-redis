@@ -258,10 +258,12 @@ func (p *connPool) Remove(cn *conn) error {
 	// Replace existing connection with new one and unblock waiter.
 	newcn, err := p.new()
 	if err != nil {
+		log.Printf("redis: new failed: %s", err)
 		return p.conns.Remove(cn)
 	}
+	err = p.conns.Replace(cn, newcn)
 	p.freeConns <- newcn
-	return p.conns.Replace(cn, newcn)
+	return err
 }
 
 // Len returns total number of connections.
@@ -278,17 +280,13 @@ func (p *connPool) Close() (retErr error) {
 	if !atomic.CompareAndSwapInt32(&p._closed, 0, 1) {
 		return errClosed
 	}
-	// First close free connections.
-	for p.Len() > 0 {
-		cn := p.wait()
-		if cn == nil {
+	// Wait for app to free connections, but don't close them immediately.
+	for i := 0; i < p.Len(); i++ {
+		if cn := p.wait(); cn == nil {
 			break
 		}
-		if err := p.conns.Remove(cn); err != nil {
-			retErr = err
-		}
 	}
-	// Then close the rest.
+	// Close all connections.
 	if err := p.conns.Close(); err != nil {
 		retErr = err
 	}
@@ -316,14 +314,12 @@ func (p *connPool) reaper() {
 //------------------------------------------------------------------------------
 
 type singleConnPool struct {
-	pool pool
-
-	cnMtx sync.Mutex
-	cn    *conn
-
+	pool     pool
 	reusable bool
 
+	cn     *conn
 	closed bool
+	mx     sync.Mutex
 }
 
 func newSingleConnPool(pool pool, reusable bool) *singleConnPool {
@@ -334,20 +330,24 @@ func newSingleConnPool(pool pool, reusable bool) *singleConnPool {
 }
 
 func (p *singleConnPool) SetConn(cn *conn) {
-	p.cnMtx.Lock()
+	p.mx.Lock()
+	if p.cn != nil {
+		panic("p.cn != nil")
+	}
 	p.cn = cn
-	p.cnMtx.Unlock()
+	p.mx.Unlock()
 }
 
 func (p *singleConnPool) First() *conn {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
-	return p.cn
+	p.mx.Lock()
+	cn := p.cn
+	p.mx.Unlock()
+	return cn
 }
 
 func (p *singleConnPool) Get() (*conn, error) {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
+	defer p.mx.Unlock()
+	p.mx.Lock()
 
 	if p.closed {
 		return nil, errClosed
@@ -366,8 +366,8 @@ func (p *singleConnPool) Get() (*conn, error) {
 }
 
 func (p *singleConnPool) Put(cn *conn) error {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
+	defer p.mx.Unlock()
+	p.mx.Lock()
 	if p.cn != cn {
 		panic("p.cn != cn")
 	}
@@ -378,8 +378,8 @@ func (p *singleConnPool) Put(cn *conn) error {
 }
 
 func (p *singleConnPool) Remove(cn *conn) error {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
+	defer p.mx.Unlock()
+	p.mx.Lock()
 	if p.cn == nil {
 		panic("p.cn == nil")
 	}
@@ -399,8 +399,8 @@ func (p *singleConnPool) remove() error {
 }
 
 func (p *singleConnPool) Len() int {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
+	defer p.mx.Unlock()
+	p.mx.Lock()
 	if p.cn == nil {
 		return 0
 	}
@@ -408,19 +408,19 @@ func (p *singleConnPool) Len() int {
 }
 
 func (p *singleConnPool) FreeLen() int {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
+	defer p.mx.Unlock()
+	p.mx.Lock()
 	if p.cn == nil {
-		return 0
+		return 1
 	}
-	return 1
+	return 0
 }
 
 func (p *singleConnPool) Close() error {
-	defer p.cnMtx.Unlock()
-	p.cnMtx.Lock()
+	defer p.mx.Unlock()
+	p.mx.Lock()
 	if p.closed {
-		return nil
+		return errClosed
 	}
 	p.closed = true
 	var err error
