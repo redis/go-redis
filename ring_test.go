@@ -81,4 +81,25 @@ var _ = Describe("Redis ring", func() {
 		// RingShard2 should have its keys.
 		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
 	})
+
+	It("supports pipelining", func() {
+		pipe := ring.Pipeline()
+		for i := 0; i < 100; i++ {
+			err := pipe.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
+		cmds, err := pipe.Exec()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cmds).To(HaveLen(100))
+		Expect(pipe.Close()).NotTo(HaveOccurred())
+
+		for _, cmd := range cmds {
+			Expect(cmd.Err()).NotTo(HaveOccurred())
+			Expect(cmd.(*redis.StatusCmd).Val()).To(Equal("OK"))
+		}
+
+		// Both shards should have some keys now.
+		Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=57"))
+		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
+	})
 })
