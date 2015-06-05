@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"gopkg.in/redis.v3"
@@ -49,6 +50,17 @@ func ExampleNewClusterClient() {
 	client.Ping()
 }
 
+func ExampleNewRing() {
+	client := redis.NewRing(&redis.RingOptions{
+		Addrs: map[string]string{
+			"shard1": ":7000",
+			"shard2": ":7001",
+			"shard3": ":7002",
+		},
+	})
+	client.Ping()
+}
+
 func ExampleClient() {
 	err := client.Set("key", "value", 0).Err()
 	if err != nil {
@@ -84,68 +96,73 @@ func ExampleClient_Incr() {
 }
 
 func ExampleClient_Pipelined() {
-	cmds, err := client.Pipelined(func(c *redis.Pipeline) error {
-		c.Set("key1", "hello1", 0)
-		c.Get("key1")
+	var incr *redis.IntCmd
+	_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+		incr = pipe.Incr("counter1")
+		pipe.Expire("counter1", time.Hour)
 		return nil
 	})
-	fmt.Println(err)
-	set := cmds[0].(*redis.StatusCmd)
-	fmt.Println(set)
-	get := cmds[1].(*redis.StringCmd)
-	fmt.Println(get)
-	// Output: <nil>
-	// SET key1 hello1: OK
-	// GET key1: hello1
+	fmt.Println(incr.Val(), err)
+	// Output: 1 <nil>
 }
 
 func ExamplePipeline() {
-	pipeline := client.Pipeline()
-	set := pipeline.Set("key1", "hello1", 0)
-	get := pipeline.Get("key1")
-	cmds, err := pipeline.Exec()
-	fmt.Println(cmds, err)
-	fmt.Println(set)
-	fmt.Println(get)
-	// Output: [SET key1 hello1: OK GET key1: hello1] <nil>
-	// SET key1 hello1: OK
-	// GET key1: hello1
+	pipe := client.Pipeline()
+	defer pipe.Close()
+
+	incr := pipe.Incr("counter2")
+	pipe.Expire("counter2", time.Hour)
+	_, err := pipe.Exec()
+	fmt.Println(incr.Val(), err)
+	// Output: 1 <nil>
 }
 
 func ExampleMulti() {
-	incr := func(tx *redis.Multi) ([]redis.Cmder, error) {
-		s, err := tx.Get("key").Result()
-		if err != nil && err != redis.Nil {
-			return nil, err
+	// Transactionally increments key using GET and SET commands.
+	incr := func(tx *redis.Multi, key string) error {
+		err := tx.Watch(key).Err()
+		if err != nil {
+			return err
 		}
-		n, _ := strconv.ParseInt(s, 10, 64)
 
-		return tx.Exec(func() error {
-			tx.Set("key", strconv.FormatInt(n+1, 10), 0)
+		n, err := tx.Get(key).Int64()
+		if err != nil && err != redis.Nil {
+			return err
+		}
+
+		_, err = tx.Exec(func() error {
+			tx.Set(key, strconv.FormatInt(n+1, 10), 0)
 			return nil
 		})
+		return err
 	}
 
-	client.Del("key")
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 
-	tx := client.Multi()
-	defer tx.Close()
+			tx := client.Multi()
+			defer tx.Close()
 
-	watch := tx.Watch("key")
-	_ = watch.Err()
-
-	for {
-		cmds, err := incr(tx)
-		if err == redis.TxFailedErr {
-			continue
-		} else if err != nil {
-			panic(err)
-		}
-		fmt.Println(cmds, err)
-		break
+			for {
+				err := incr(tx, "counter3")
+				if err == redis.TxFailedErr {
+					// Retry.
+					continue
+				} else if err != nil {
+					panic(err)
+				}
+				break
+			}
+		}()
 	}
+	wg.Wait()
 
-	// Output: [SET key 1: OK] <nil>
+	n, err := client.Get("counter3").Int64()
+	fmt.Println(n, err)
+	// Output: 10 <nil>
 }
 
 func ExamplePubSub() {
