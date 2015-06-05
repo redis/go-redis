@@ -4,9 +4,9 @@ Redis client for Golang [![Build Status](https://travis-ci.org/go-redis/redis.pn
 Supports:
 
 - Redis 3 commands except QUIT, MONITOR, SLOWLOG and SYNC.
-- [Pub/Sub](http://godoc.org/gopkg.in/redis.v3#example-PubSub).
-- [Transactions](http://godoc.org/gopkg.in/redis.v3#example-Multi).
-- [Pipelining](http://godoc.org/gopkg.in/redis.v3#example-Client-Pipelined).
+- [Pub/Sub](http://godoc.org/gopkg.in/redis.v3#PubSub).
+- [Transactions](http://godoc.org/gopkg.in/redis.v3#Multi).
+- [Pipelining](http://godoc.org/gopkg.in/redis.v3#Client.Pipeline).
 - [Timeouts](http://godoc.org/gopkg.in/redis.v3#Options).
 - [Redis Sentinel](http://godoc.org/gopkg.in/redis.v3#NewFailoverClient).
 - [Redis Cluster](http://godoc.org/gopkg.in/redis.v3#NewClusterClient).
