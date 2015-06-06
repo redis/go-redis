@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"bytes"
 	"net"
 	"testing"
 	"time"
@@ -154,9 +155,11 @@ var _ = Describe("Client", func() {
 
 //------------------------------------------------------------------------------
 
+const benchRedisAddr = ":6379"
+
 func BenchmarkRedisPing(b *testing.B) {
 	client := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr: benchRedisAddr,
 	})
 	defer client.Close()
 
@@ -173,15 +176,34 @@ func BenchmarkRedisPing(b *testing.B) {
 
 func BenchmarkRedisSet(b *testing.B) {
 	client := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr: benchRedisAddr,
 	})
 	defer client.Close()
+	value := string(bytes.Repeat([]byte{'1'}, 10000))
 
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := client.Set("key", "hello", 0).Err(); err != nil {
+			if err := client.Set("key", value, 0).Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkRedisSetBytes(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: benchRedisAddr,
+	})
+	defer client.Close()
+	value := bytes.Repeat([]byte{'1'}, 10000)
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.Set("key", string(value), 0).Err(); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -190,7 +212,7 @@ func BenchmarkRedisSet(b *testing.B) {
 
 func BenchmarkRedisGetNil(b *testing.B) {
 	client := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr: benchRedisAddr,
 	})
 	defer client.Close()
 	if err := client.FlushDb().Err(); err != nil {
@@ -210,7 +232,7 @@ func BenchmarkRedisGetNil(b *testing.B) {
 
 func BenchmarkRedisGet(b *testing.B) {
 	client := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr: benchRedisAddr,
 	})
 	defer client.Close()
 	if err := client.Set("key", "hello", 0).Err(); err != nil {
@@ -230,7 +252,7 @@ func BenchmarkRedisGet(b *testing.B) {
 
 func BenchmarkRedisMGet(b *testing.B) {
 	client := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr: benchRedisAddr,
 	})
 	defer client.Close()
 	if err := client.MSet("key1", "hello1", "key2", "hello2").Err(); err != nil {
@@ -250,7 +272,7 @@ func BenchmarkRedisMGet(b *testing.B) {
 
 func BenchmarkSetExpire(b *testing.B) {
 	client := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr: benchRedisAddr,
 	})
 	defer client.Close()
 
@@ -270,7 +292,7 @@ func BenchmarkSetExpire(b *testing.B) {
 
 func BenchmarkPipeline(b *testing.B) {
 	client := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr: benchRedisAddr,
 	})
 	defer client.Close()
 
@@ -292,7 +314,7 @@ func BenchmarkPipeline(b *testing.B) {
 
 func BenchmarkZAdd(b *testing.B) {
 	client := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr: benchRedisAddr,
 	})
 	defer client.Close()
 
