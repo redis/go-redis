@@ -43,7 +43,7 @@ func (s *Script) EvalSha(c scripter, keys []string, args []string) *Cmd {
 	return c.EvalSha(s.hash, keys, args)
 }
 
-func (s *Script) Run(c *Client, keys []string, args []string) *Cmd {
+func (s *Script) Run(c scripter, keys []string, args []string) *Cmd {
 	r := s.EvalSha(c, keys, args)
 	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
 		return s.Eval(c, keys, args)
