@@ -204,26 +204,26 @@ func ExamplePubSub() {
 }
 
 func ExampleScript() {
-	setnx := redis.NewScript(`
-        if redis.call("get", KEYS[1]) == false then
-            redis.call("set", KEYS[1], ARGV[1])
-            return 1
-        end
-        return 0
-    `)
+	IncrByXX := redis.NewScript(`
+		if redis.call("GET", KEYS[1]) ~= false then
+			return redis.call("INCRBY", KEYS[1], ARGV[1])
+		end
+		return false
+	`)
 
-	v1, err := setnx.Run(client, []string{"keynx"}, []string{"foo"}).Result()
-	fmt.Println(v1.(int64), err)
+	n, err := IncrByXX.Run(client, []string{"xx_counter"}, []string{"2"}).Result()
+	fmt.Println(n, err)
 
-	v2, err := setnx.Run(client, []string{"keynx"}, []string{"bar"}).Result()
-	fmt.Println(v2.(int64), err)
+	err = client.Set("xx_counter", "40", 0).Err()
+	if err != nil {
+		panic(err)
+	}
 
-	get := client.Get("keynx")
-	fmt.Println(get)
+	n, err = IncrByXX.Run(client, []string{"xx_counter"}, []string{"2"}).Result()
+	fmt.Println(n, err)
 
-	// Output: 1 <nil>
-	// 0 <nil>
-	// GET keynx: foo
+	// Output: <nil> redis: nil
+	// 42 <nil>
 }
 
 func Example_customCommand() {
