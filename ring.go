@@ -203,7 +203,7 @@ func (ring *Ring) heartbeat() {
 
 		for _, shard := range ring.shards {
 			err := shard.Client.Ping().Err()
-			if shard.Vote(err == nil) {
+			if shard.Vote(err == nil || err == errPoolTimeout) {
 				log.Printf("redis: ring shard state changed: %s", shard)
 				rebalance = true
 			}
