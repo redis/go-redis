@@ -7,6 +7,7 @@ Supports:
 - [Pub/Sub](http://godoc.org/gopkg.in/redis.v3#PubSub).
 - [Transactions](http://godoc.org/gopkg.in/redis.v3#Multi).
 - [Pipelining](http://godoc.org/gopkg.in/redis.v3#Client.Pipeline).
+- [Scripting](http://godoc.org/gopkg.in/redis.v3#Script).
 - [Timeouts](http://godoc.org/gopkg.in/redis.v3#Options).
 - [Redis Sentinel](http://godoc.org/gopkg.in/redis.v3#NewFailoverClient).
 - [Redis Cluster](http://godoc.org/gopkg.in/redis.v3#NewClusterClient).
