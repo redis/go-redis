@@ -150,23 +150,19 @@ func (ring *Ring) getClient(key string) (*Client, error) {
 		return nil, errClosed
 	}
 
-	name := ring.hash.Get(key)
+	name := ring.hash.Get(hashKey(key))
 	if name == "" {
 		ring.mx.RUnlock()
 		return nil, errRingShardsDown
 	}
 
-	if shard, ok := ring.shards[name]; ok {
-		ring.mx.RUnlock()
-		return shard.Client, nil
-	}
-
+	cl := ring.shards[name].Client
 	ring.mx.RUnlock()
-	return nil, errRingShardsDown
+	return cl, nil
 }
 
 func (ring *Ring) process(cmd Cmder) {
-	cl, err := ring.getClient(hashKey(cmd.clusterKey()))
+	cl, err := ring.getClient(cmd.clusterKey())
 	if err != nil {
 		cmd.setErr(err)
 		return
@@ -299,7 +295,11 @@ func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
 
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
-		name := pipe.ring.hash.Get(cmd.clusterKey())
+		name := pipe.ring.hash.Get(hashKey(cmd.clusterKey()))
+		if name == "" {
+			cmd.setErr(errRingShardsDown)
+			continue
+		}
 		cmdsMap[name] = append(cmdsMap[name], cmd)
 	}
 
@@ -307,15 +307,7 @@ func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
 		failedCmdsMap := make(map[string][]Cmder)
 
 		for name, cmds := range cmdsMap {
-			client, err := pipe.ring.getClient(name)
-			if err != nil {
-				setCmdsErr(cmds, err)
-				if retErr == nil {
-					retErr = err
-				}
-				continue
-			}
-
+			client := pipe.ring.shards[name].Client
 			cn, err := client.conn()
 			if err != nil {
 				setCmdsErr(cmds, err)

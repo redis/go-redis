@@ -326,7 +326,7 @@ const hashSlots = 16384
 func hashKey(key string) string {
 	if s := strings.IndexByte(key, '{'); s > -1 {
 		if e := strings.IndexByte(key[s+1:], '}'); e > 0 {
-			key = key[s+1 : s+e+1]
+			return key[s+1 : s+e+1]
 		}
 	}
 	return key

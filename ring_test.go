@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"crypto/rand"
 	"fmt"
 	"time"
 
@@ -23,8 +24,8 @@ var _ = Describe("Redis ring", func() {
 	BeforeEach(func() {
 		ring = redis.NewRing(&redis.RingOptions{
 			Addrs: map[string]string{
-				"ringShard1": ":" + ringShard1Port,
-				"ringShard2": ":" + ringShard2Port,
+				"ringShardOne": ":" + ringShard1Port,
+				"ringShardTwo": ":" + ringShard2Port,
 			},
 		})
 
@@ -82,6 +83,16 @@ var _ = Describe("Redis ring", func() {
 		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
 	})
 
+	It("supports hash tags", func() {
+		for i := 0; i < 100; i++ {
+			err := ring.Set(fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		Expect(ringShard1.Info().Val()).ToNot(ContainSubstring("keys="))
+		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=100"))
+	})
+
 	Describe("pipelining", func() {
 		It("uses both shards", func() {
 			pipe := ring.Pipeline()
@@ -104,16 +115,41 @@ var _ = Describe("Redis ring", func() {
 			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
 		})
 
-		It("is consistent", func() {
+		It("is consistent with ring", func() {
+			var keys []string
+			for i := 0; i < 100; i++ {
+				key := make([]byte, 64)
+				_, err := rand.Read(key)
+				Expect(err).NotTo(HaveOccurred())
+				keys = append(keys, string(key))
+			}
+
 			_, err := ring.Pipelined(func(pipe *redis.RingPipeline) error {
-				pipe.Set("mykey", "pipeline", 0)
+				for _, key := range keys {
+					pipe.Set(key, "value", 0).Err()
+				}
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			val, err := ring.Get("mykey").Result()
+			for _, key := range keys {
+				val, err := ring.Get(key).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("value"))
+			}
+		})
+
+		It("supports hash tags", func() {
+			_, err := ring.Pipelined(func(pipe *redis.RingPipeline) error {
+				for i := 0; i < 100; i++ {
+					pipe.Set(fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
+				}
+				return nil
+			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(val).To(Equal("pipeline"))
+
+			Expect(ringShard1.Info().Val()).ToNot(ContainSubstring("keys="))
+			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=100"))
 		})
 	})
 })
