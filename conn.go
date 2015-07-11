@@ -67,7 +67,11 @@ func (cn *conn) init(opt *Options) error {
 func (cn *conn) writeCmds(cmds ...Cmder) error {
 	buf := cn.buf[:0]
 	for _, cmd := range cmds {
-		buf = appendArgs(buf, cmd.args())
+		var err error
+		buf, err = appendArgs(buf, cmd.args())
+		if err != nil {
+			return err
+		}
 	}
 
 	_, err := cn.Write(buf)

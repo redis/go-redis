@@ -47,7 +47,7 @@ func benchmarkParseReply(b *testing.B, reply string, p multiBulkParser, wanterr 
 
 func BenchmarkAppendArgs(b *testing.B) {
 	buf := make([]byte, 0, 64)
-	args := []string{"hello", "world", "foo", "bar"}
+	args := []interface{}{"hello", "world", "foo", "bar"}
 	for i := 0; i < b.N; i++ {
 		appendArgs(buf, args)
 	}

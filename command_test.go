@@ -26,7 +26,7 @@ var _ = Describe("Command", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should have a plain string result", func() {
+	It("should implement Stringer", func() {
 		set := client.Set("foo", "bar", 0)
 		Expect(set.String()).To(Equal("SET foo bar: OK"))
 
@@ -115,6 +115,13 @@ var _ = Describe("Command", func() {
 		f, err := client.Get("key").Float64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(f).To(Equal(float64(10)))
+	})
+
+	It("Cmd should return string", func() {
+		cmd := redis.NewCmd("PING")
+		client.Process(cmd)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+		Expect(cmd.Val()).To(Equal("PONG"))
 	})
 
 	Describe("races", func() {

@@ -192,24 +192,6 @@ func BenchmarkRedisSet(b *testing.B) {
 	})
 }
 
-func BenchmarkRedisSetBytes(b *testing.B) {
-	client := redis.NewClient(&redis.Options{
-		Addr: benchRedisAddr,
-	})
-	defer client.Close()
-	value := bytes.Repeat([]byte{'1'}, 10000)
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			if err := client.Set("key", string(value), 0).Err(); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-}
-
 func BenchmarkRedisGetNil(b *testing.B) {
 	client := redis.NewClient(&redis.Options{
 		Addr: benchRedisAddr,
@@ -235,7 +217,9 @@ func BenchmarkRedisGet(b *testing.B) {
 		Addr: benchRedisAddr,
 	})
 	defer client.Close()
-	if err := client.Set("key", "hello", 0).Err(); err != nil {
+
+	value := bytes.Repeat([]byte{'1'}, 10000)
+	if err := client.Set("key", value, 0).Err(); err != nil {
 		b.Fatal(err)
 	}
 
@@ -243,8 +227,39 @@ func BenchmarkRedisGet(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := client.Get("key").Err(); err != nil {
+			s, err := client.Get("key").Result()
+			if err != nil {
 				b.Fatal(err)
+			}
+			if len(s) != 10000 {
+				panic("len(s) != 10000")
+			}
+		}
+	})
+}
+
+func BenchmarkRedisGetSetBytes(b *testing.B) {
+	client := redis.NewClient(&redis.Options{
+		Addr: benchRedisAddr,
+	})
+	defer client.Close()
+
+	src := bytes.Repeat([]byte{'1'}, 10000)
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.Set("key", src, 0).Err(); err != nil {
+				b.Fatal(err)
+			}
+
+			dst, err := client.Get("key").Bytes()
+			if err != nil {
+				b.Fatal(err)
+			}
+			if !bytes.Equal(dst, src) {
+				panic("len(dst) != 10000")
 			}
 		}
 	})
