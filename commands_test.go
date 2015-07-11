@@ -451,27 +451,46 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Restore", func() {
-			set := client.Set("key", "hello", 0)
-			Expect(set.Err()).NotTo(HaveOccurred())
-			Expect(set.Val()).To(Equal("OK"))
+			err := client.Set("key", "hello", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
 
 			dump := client.Dump("key")
 			Expect(dump.Err()).NotTo(HaveOccurred())
 
-			del := client.Del("key")
-			Expect(del.Err()).NotTo(HaveOccurred())
+			err = client.Del("key").Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			restore := client.Restore("key", 0, dump.Val())
-			Expect(restore.Err()).NotTo(HaveOccurred())
-			Expect(restore.Val()).To(Equal("OK"))
+			restore, err := client.Restore("key", 0, dump.Val()).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restore).To(Equal("OK"))
 
-			type_ := client.Type("key")
-			Expect(type_.Err()).NotTo(HaveOccurred())
-			Expect(type_.Val()).To(Equal("string"))
+			type_, err := client.Type("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(type_).To(Equal("string"))
 
-			lRange := client.Get("key")
-			Expect(lRange.Err()).NotTo(HaveOccurred())
-			Expect(lRange.Val()).To(Equal("hello"))
+			val, err := client.Get("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+		})
+
+		It("should RestoreReplace", func() {
+			err := client.Set("key", "hello", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			dump := client.Dump("key")
+			Expect(dump.Err()).NotTo(HaveOccurred())
+
+			restore, err := client.RestoreReplace("key", 0, dump.Val()).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restore).To(Equal("OK"))
+
+			type_, err := client.Type("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(type_).To(Equal("string"))
+
+			val, err := client.Get("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
 		})
 
 		It("should Sort", func() {

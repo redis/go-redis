@@ -249,6 +249,18 @@ func (c *commandable) Restore(key string, ttl int64, value string) *StatusCmd {
 	return cmd
 }
 
+func (c *commandable) RestoreReplace(key string, ttl time.Duration, value string) *StatusCmd {
+	cmd := NewStatusCmd(
+		"RESTORE",
+		key,
+		formatMs(ttl),
+		value,
+		"REPLACE",
+	)
+	c.Process(cmd)
+	return cmd
+}
+
 type Sort struct {
 	By            string
 	Offset, Count float64
