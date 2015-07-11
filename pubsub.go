@@ -26,6 +26,20 @@ func (c *Client) Publish(channel, message string) *IntCmd {
 	return req
 }
 
+func (c *PubSub) Ping(payload string) error {
+	cn, err := c.conn()
+	if err != nil {
+		return err
+	}
+
+	args := []interface{}{"PING"}
+	if payload != "" {
+		args = append(args, payload)
+	}
+	cmd := NewCmd(args...)
+	return cn.writeCmds(cmd)
+}
+
 // Message received as result of a PUBLISH command issued by another client.
 type Message struct {
 	Channel string
@@ -48,6 +62,18 @@ func (m *PMessage) String() string {
 	return fmt.Sprintf("PMessage<%s: %s>", m.Channel, m.Payload)
 }
 
+// Pong received as result of a PING command issued by another client.
+type Pong struct {
+	Payload string
+}
+
+func (p *Pong) String() string {
+	if p.Payload != "" {
+		return fmt.Sprintf("Pong<%s>", p.Payload)
+	}
+	return "Pong"
+}
+
 // Message received after a successful subscription to channel.
 type Subscription struct {
 	// Can be "subscribe", "unsubscribe", "psubscribe" or "punsubscribe".
@@ -66,22 +92,8 @@ func (c *PubSub) Receive() (interface{}, error) {
 	return c.ReceiveTimeout(0)
 }
 
-func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
-	cn, err := c.conn()
-	if err != nil {
-		return nil, err
-	}
-	cn.ReadTimeout = timeout
-
-	cmd := NewSliceCmd()
-	if err := cmd.parseReply(cn.rd); err != nil {
-		return nil, err
-	}
-
-	reply := cmd.Val()
-
-	kind := reply[0].(string)
-	switch kind {
+func newMessage(reply []interface{}) (interface{}, error) {
+	switch kind := reply[0].(string); kind {
 	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
 		return &Subscription{
 			Kind:    kind,
@@ -99,9 +111,27 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 			Channel: reply[2].(string),
 			Payload: reply[3].(string),
 		}, nil
+	case "pong":
+		return &Pong{
+			Payload: reply[1].(string),
+		}, nil
+	default:
+		return nil, fmt.Errorf("redis: unsupported pubsub notification: %q", kind)
 	}
+}
 
-	return nil, fmt.Errorf("redis: unsupported pubsub notification: %q", kind)
+func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
+	cn, err := c.conn()
+	if err != nil {
+		return nil, err
+	}
+	cn.ReadTimeout = timeout
+
+	cmd := NewSliceCmd()
+	if err := cmd.parseReply(cn.rd); err != nil {
+		return nil, err
+	}
+	return newMessage(cmd.Val())
 }
 
 func (c *PubSub) subscribe(cmd string, channels ...string) error {
