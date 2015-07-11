@@ -165,13 +165,11 @@ func ExampleMulti() {
 }
 
 func ExamplePubSub() {
-	pubsub := client.PubSub()
-	defer pubsub.Close()
-
-	err := pubsub.Subscribe("mychannel")
+	pubsub, err := client.Subscribe("mychannel")
 	if err != nil {
 		panic(err)
 	}
+	defer pubsub.Close()
 
 	err = client.Publish("mychannel", "hello").Err()
 	if err != nil {
