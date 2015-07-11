@@ -5,12 +5,20 @@ import (
 	"time"
 )
 
+// Posts a message to the given channel.
+func (c *Client) Publish(channel, message string) *IntCmd {
+	req := NewIntCmd("PUBLISH", channel, message)
+	c.Process(req)
+	return req
+}
+
 // PubSub implements Pub/Sub commands as described in
 // http://redis.io/topics/pubsub.
 type PubSub struct {
 	*baseClient
 }
 
+// Deprecated. Use Subscribe/PSubscribe instead.
 func (c *Client) PubSub() *PubSub {
 	return &PubSub{
 		baseClient: &baseClient{
@@ -20,10 +28,16 @@ func (c *Client) PubSub() *PubSub {
 	}
 }
 
-func (c *Client) Publish(channel, message string) *IntCmd {
-	req := NewIntCmd("PUBLISH", channel, message)
-	c.Process(req)
-	return req
+// Subscribes the client to the specified channels.
+func (c *Client) Subscribe(channels ...string) (*PubSub, error) {
+	pubsub := c.PubSub()
+	return pubsub, pubsub.Subscribe(channels...)
+}
+
+// Subscribes the client to the given patterns.
+func (c *Client) PSubscribe(channels ...string) (*PubSub, error) {
+	pubsub := c.PubSub()
+	return pubsub, pubsub.PSubscribe(channels...)
 }
 
 func (c *PubSub) Ping(payload string) error {
@@ -38,6 +52,20 @@ func (c *PubSub) Ping(payload string) error {
 	}
 	cmd := NewCmd(args...)
 	return cn.writeCmds(cmd)
+}
+
+// Message received after a successful subscription to channel.
+type Subscription struct {
+	// Can be "subscribe", "unsubscribe", "psubscribe" or "punsubscribe".
+	Kind string
+	// Channel name we have subscribed to.
+	Channel string
+	// Number of channels we are currently subscribed to.
+	Count int
+}
+
+func (m *Subscription) String() string {
+	return fmt.Sprintf("%s: %s", m.Kind, m.Channel)
 }
 
 // Message received as result of a PUBLISH command issued by another client.
@@ -74,20 +102,8 @@ func (p *Pong) String() string {
 	return "Pong"
 }
 
-// Message received after a successful subscription to channel.
-type Subscription struct {
-	// Can be "subscribe", "unsubscribe", "psubscribe" or "punsubscribe".
-	Kind string
-	// Channel name we have subscribed to.
-	Channel string
-	// Number of channels we are currently subscribed to.
-	Count int
-}
-
-func (m *Subscription) String() string {
-	return fmt.Sprintf("%s: %s", m.Kind, m.Channel)
-}
-
+// Returns a message as a Subscription, Message, PMessage, Pong or
+// error. See PubSub example for details.
 func (c *PubSub) Receive() (interface{}, error) {
 	return c.ReceiveTimeout(0)
 }
@@ -120,6 +136,8 @@ func newMessage(reply []interface{}) (interface{}, error) {
 	}
 }
 
+// ReceiveTimeout acts like Receive but returns an error if message
+// is not received in time.
 func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	cn, err := c.conn()
 	if err != nil {
@@ -149,18 +167,24 @@ func (c *PubSub) subscribe(cmd string, channels ...string) error {
 	return cn.writeCmds(req)
 }
 
+// Subscribes the client to the specified channels.
 func (c *PubSub) Subscribe(channels ...string) error {
 	return c.subscribe("SUBSCRIBE", channels...)
 }
 
+// Subscribes the client to the given patterns.
 func (c *PubSub) PSubscribe(patterns ...string) error {
 	return c.subscribe("PSUBSCRIBE", patterns...)
 }
 
+// Unsubscribes the client from the given channels, or from all of
+// them if none is given.
 func (c *PubSub) Unsubscribe(channels ...string) error {
 	return c.subscribe("UNSUBSCRIBE", channels...)
 }
 
+// Unsubscribes the client from the given patterns, or from all of
+// them if none is given.
 func (c *PubSub) PUnsubscribe(patterns ...string) error {
 	return c.subscribe("PUNSUBSCRIBE", patterns...)
 }

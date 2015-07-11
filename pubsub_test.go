@@ -12,27 +12,26 @@ import (
 
 var _ = Describe("PubSub", func() {
 	var client *redis.Client
-	var pubsub *redis.PubSub
 
 	BeforeEach(func() {
 		client = redis.NewClient(&redis.Options{
 			Addr: redisAddr,
 		})
 		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
-		pubsub = client.PubSub()
 	})
 
 	AfterEach(func() {
-		Expect(pubsub.Close()).NotTo(HaveOccurred())
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
 	It("should support pattern matching", func() {
-		Expect(pubsub.PSubscribe("mychannel*")).NotTo(HaveOccurred())
+		pubsub, err := client.PSubscribe("mychannel*")
+		Expect(err).NotTo(HaveOccurred())
+		defer pubsub.Close()
 
-		pub := client.Publish("mychannel1", "hello")
-		Expect(pub.Err()).NotTo(HaveOccurred())
-		Expect(pub.Val()).To(Equal(int64(1)))
+		n, err := client.Publish("mychannel1", "hello").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(1)))
 
 		Expect(pubsub.PUnsubscribe("mychannel*")).NotTo(HaveOccurred())
 
@@ -75,7 +74,9 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(channels).To(BeEmpty())
 
-		Expect(pubsub.Subscribe("mychannel", "mychannel2")).NotTo(HaveOccurred())
+		pubsub, err := client.Subscribe("mychannel", "mychannel2")
+		Expect(err).NotTo(HaveOccurred())
+		defer pubsub.Close()
 
 		channels, err = client.PubSubChannels("mychannel*").Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -91,7 +92,9 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should return the numbers of subscribers", func() {
-		Expect(pubsub.Subscribe("mychannel", "mychannel2")).NotTo(HaveOccurred())
+		pubsub, err := client.Subscribe("mychannel", "mychannel2")
+		Expect(err).NotTo(HaveOccurred())
+		defer pubsub.Close()
 
 		channels, err := client.PubSubNumSub("mychannel", "mychannel2", "mychannel3").Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -107,7 +110,9 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(num).To(Equal(int64(0)))
 
-		Expect(pubsub.PSubscribe("*")).NotTo(HaveOccurred())
+		pubsub, err := client.PSubscribe("*")
+		Expect(err).NotTo(HaveOccurred())
+		defer pubsub.Close()
 
 		num, err = client.PubSubNumPat().Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -115,15 +120,17 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should pub/sub", func() {
-		Expect(pubsub.Subscribe("mychannel", "mychannel2")).NotTo(HaveOccurred())
+		pubsub, err := client.Subscribe("mychannel", "mychannel2")
+		Expect(err).NotTo(HaveOccurred())
+		defer pubsub.Close()
 
-		pub := client.Publish("mychannel", "hello")
-		Expect(pub.Err()).NotTo(HaveOccurred())
-		Expect(pub.Val()).To(Equal(int64(1)))
+		n, err := client.Publish("mychannel", "hello").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(1)))
 
-		pub = client.Publish("mychannel2", "hello2")
-		Expect(pub.Err()).NotTo(HaveOccurred())
-		Expect(pub.Val()).To(Equal(int64(1)))
+		n, err = client.Publish("mychannel2", "hello2").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(1)))
 
 		Expect(pubsub.Unsubscribe("mychannel", "mychannel2")).NotTo(HaveOccurred())
 
@@ -187,8 +194,9 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should ping/pong", func() {
-		err := pubsub.Subscribe("mychannel")
+		pubsub, err := client.Subscribe("mychannel")
 		Expect(err).NotTo(HaveOccurred())
+		defer pubsub.Close()
 
 		_, err = pubsub.ReceiveTimeout(time.Second)
 		Expect(err).NotTo(HaveOccurred())
@@ -203,8 +211,9 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should ping/pong with payload", func() {
-		err := pubsub.Subscribe("mychannel")
+		pubsub, err := client.Subscribe("mychannel")
 		Expect(err).NotTo(HaveOccurred())
+		defer pubsub.Close()
 
 		_, err = pubsub.ReceiveTimeout(time.Second)
 		Expect(err).NotTo(HaveOccurred())
