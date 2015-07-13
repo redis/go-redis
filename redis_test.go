@@ -134,6 +134,20 @@ var _ = Describe("Client", func() {
 		Expect(db1.FlushDb().Err()).NotTo(HaveOccurred())
 	})
 
+	It("should support DB selection with read timeout (issue #135)", func() {
+		for i := 0; i < 100; i++ {
+			db1 := redis.NewClient(&redis.Options{
+				Addr:        redisAddr,
+				DB:          1,
+				ReadTimeout: time.Nanosecond,
+			})
+
+			err := db1.Ping().Err()
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
+		}
+	})
+
 	It("should retry command on network error", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 
