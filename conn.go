@@ -42,9 +42,8 @@ func (cn *conn) init(opt *Options) error {
 		return nil
 	}
 
-	// Use connection to connect to redis
-	pool := newSingleConnPool(nil, false)
-	pool.SetConn(cn)
+	// Use connection to connect to Redis.
+	pool := newSingleConnPoolConn(cn)
 
 	// Client is not closed because we want to reuse underlying connection.
 	client := newClient(opt, pool)

@@ -329,13 +329,10 @@ func newSingleConnPool(pool pool, reusable bool) *singleConnPool {
 	}
 }
 
-func (p *singleConnPool) SetConn(cn *conn) {
-	p.mx.Lock()
-	if p.cn != nil {
-		panic("p.cn != nil")
+func newSingleConnPoolConn(cn *conn) *singleConnPool {
+	return &singleConnPool{
+		cn: cn,
 	}
-	p.cn = cn
-	p.mx.Unlock()
 }
 
 func (p *singleConnPool) First() *conn {
@@ -365,6 +362,14 @@ func (p *singleConnPool) Get() (*conn, error) {
 	return p.cn, nil
 }
 
+func (p *singleConnPool) put() (err error) {
+	if p.pool != nil {
+		err = p.pool.Put(p.cn)
+	}
+	p.cn = nil
+	return err
+}
+
 func (p *singleConnPool) Put(cn *conn) error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
@@ -375,6 +380,14 @@ func (p *singleConnPool) Put(cn *conn) error {
 		return errClosed
 	}
 	return nil
+}
+
+func (p *singleConnPool) remove() (err error) {
+	if p.pool != nil {
+		err = p.pool.Remove(p.cn)
+	}
+	p.cn = nil
+	return err
 }
 
 func (p *singleConnPool) Remove(cn *conn) error {
@@ -390,12 +403,6 @@ func (p *singleConnPool) Remove(cn *conn) error {
 		return errClosed
 	}
 	return p.remove()
-}
-
-func (p *singleConnPool) remove() error {
-	err := p.pool.Remove(p.cn)
-	p.cn = nil
-	return err
 }
 
 func (p *singleConnPool) Len() int {
@@ -426,8 +433,7 @@ func (p *singleConnPool) Close() error {
 	var err error
 	if p.cn != nil {
 		if p.reusable {
-			err = p.pool.Put(p.cn)
-			p.cn = nil
+			err = p.put()
 		} else {
 			err = p.remove()
 		}
