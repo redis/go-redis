@@ -94,6 +94,15 @@ var _ = Describe("Redis ring", func() {
 	})
 
 	Describe("pipelining", func() {
+		It("returns an error when all shards are down", func() {
+			ring := redis.NewRing(&redis.RingOptions{})
+			_, err := ring.Pipelined(func(pipe *redis.RingPipeline) error {
+				pipe.Ping()
+				return nil
+			})
+			Expect(err).To(MatchError("redis: all ring shards are down"))
+		})
+
 		It("uses both shards", func() {
 			pipe := ring.Pipeline()
 			for i := 0; i < 100; i++ {
