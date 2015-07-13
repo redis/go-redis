@@ -238,11 +238,11 @@ func (c *commandable) RenameNX(key, newkey string) *BoolCmd {
 	return cmd
 }
 
-func (c *commandable) Restore(key string, ttl int64, value string) *StatusCmd {
+func (c *commandable) Restore(key string, ttl time.Duration, value string) *StatusCmd {
 	cmd := NewStatusCmd(
 		"RESTORE",
 		key,
-		formatInt(ttl),
+		formatMs(ttl),
 		value,
 	)
 	c.Process(cmd)
