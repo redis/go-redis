@@ -298,6 +298,9 @@ func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
 		name := pipe.ring.hash.Get(hashKey(cmd.clusterKey()))
 		if name == "" {
 			cmd.setErr(errRingShardsDown)
+			if retErr == nil {
+				retErr = errRingShardsDown
+			}
 			continue
 		}
 		cmdsMap[name] = append(cmdsMap[name], cmd)
