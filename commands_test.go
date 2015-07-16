@@ -1822,21 +1822,43 @@ var _ = Describe("Commands", func() {
 	Describe("sorted sets", func() {
 
 		It("should ZAdd", func() {
-			zAdd := client.ZAdd("zset", redis.Z{1, "one"})
-			Expect(zAdd.Err()).NotTo(HaveOccurred())
-			Expect(zAdd.Val()).To(Equal(int64(1)))
+			added, err := client.ZAdd("zset", redis.Z{1, "one"}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(1)))
 
-			zAdd = client.ZAdd("zset", redis.Z{1, "uno"})
-			Expect(zAdd.Err()).NotTo(HaveOccurred())
-			Expect(zAdd.Val()).To(Equal(int64(1)))
+			added, err = client.ZAdd("zset", redis.Z{1, "uno"}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(1)))
 
-			zAdd = client.ZAdd("zset", redis.Z{2, "two"})
-			Expect(zAdd.Err()).NotTo(HaveOccurred())
-			Expect(zAdd.Val()).To(Equal(int64(1)))
+			added, err = client.ZAdd("zset", redis.Z{2, "two"}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(1)))
 
-			zAdd = client.ZAdd("zset", redis.Z{3, "two"})
-			Expect(zAdd.Err()).NotTo(HaveOccurred())
-			Expect(zAdd.Val()).To(Equal(int64(0)))
+			added, err = client.ZAdd("zset", redis.Z{3, "two"}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(0)))
+
+			val, err := client.ZRangeWithScores("zset", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]redis.Z{{1, "one"}, {1, "uno"}, {3, "two"}}))
+		})
+
+		It("should ZAdd bytes", func() {
+			added, err := client.ZAdd("zset", redis.Z{1, []byte("one")}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(1)))
+
+			added, err = client.ZAdd("zset", redis.Z{1, []byte("uno")}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(1)))
+
+			added, err = client.ZAdd("zset", redis.Z{2, []byte("two")}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(1)))
+
+			added, err = client.ZAdd("zset", redis.Z{3, []byte("two")}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(0)))
 
 			val, err := client.ZRangeWithScores("zset", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
