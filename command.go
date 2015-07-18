@@ -400,7 +400,7 @@ func (cmd *StringCmd) reset() {
 }
 
 func (cmd *StringCmd) Val() string {
-	return string(cmd.val)
+	return bytesToString(cmd.val)
 }
 
 func (cmd *StringCmd) Result() (string, error) {
@@ -486,7 +486,8 @@ func (cmd *FloatCmd) parseReply(rd *bufio.Reader) error {
 		cmd.err = err
 		return err
 	}
-	cmd.val, cmd.err = strconv.ParseFloat(string(v.([]byte)), 64)
+	b := v.([]byte)
+	cmd.val, cmd.err = strconv.ParseFloat(bytesToString(b), 64)
 	return cmd.err
 }
 
