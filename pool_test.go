@@ -182,11 +182,9 @@ var _ = Describe("Pool", func() {
 })
 
 func BenchmarkPool(b *testing.B) {
-	client := redis.NewClient(&redis.Options{
-		Addr:        redisAddr,
-		IdleTimeout: 100 * time.Millisecond,
-	})
+	client := benchRedisClient()
 	defer client.Close()
+
 	pool := client.Pool()
 
 	b.ResetTimer()
