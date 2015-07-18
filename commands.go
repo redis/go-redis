@@ -978,13 +978,16 @@ func (c *commandable) SUnionStore(destination string, keys ...string) *IntCmd {
 
 //------------------------------------------------------------------------------
 
+// Sorted set member.
 type Z struct {
 	Score  float64
-	Member string
+	Member interface{}
 }
 
+// Sorted set store operation.
 type ZStore struct {
-	Weights   []int64
+	Weights []int64
+	// Can be SUM, MIN or MAX.
 	Aggregate string
 }
 
