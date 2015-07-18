@@ -305,6 +305,10 @@ var _ = Describe("Cluster", func() {
 //------------------------------------------------------------------------------
 
 func BenchmarkRedisClusterPing(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping in short mode")
+	}
+
 	cluster := &clusterScenario{
 		ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
 		nodeIds:   make([]string, 6),
