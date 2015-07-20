@@ -226,50 +226,67 @@ func BenchmarkRedisGetNil(b *testing.B) {
 	})
 }
 
-func BenchmarkRedisGet(b *testing.B) {
+func benchmarkRedisSetGet(b *testing.B, size int) {
 	client := benchRedisClient()
 	defer client.Close()
 
-	value := bytes.Repeat([]byte{'1'}, 10000)
-	if err := client.Set("key", value, 0).Err(); err != nil {
-		b.Fatal(err)
-	}
+	value := string(bytes.Repeat([]byte{'1'}, size))
 
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s, err := client.Get("key").Result()
+			if err := client.Set("key", value, 0).Err(); err != nil {
+				b.Fatal(err)
+			}
+
+			got, err := client.Get("key").Result()
 			if err != nil {
 				b.Fatal(err)
 			}
-			if len(s) != 10000 {
-				panic("len(s) != 10000")
+			if got != value {
+				b.Fatalf("got != value")
 			}
 		}
 	})
 }
 
-func BenchmarkRedisGetSetBytes(b *testing.B) {
+func BenchmarkRedisSetGet64Bytes(b *testing.B) {
+	benchmarkRedisSetGet(b, 64)
+}
+
+func BenchmarkRedisSetGet1KB(b *testing.B) {
+	benchmarkRedisSetGet(b, 1024)
+}
+
+func BenchmarkRedisSetGet10KB(b *testing.B) {
+	benchmarkRedisSetGet(b, 10*1024)
+}
+
+func BenchmarkRedisSetGet1MB(b *testing.B) {
+	benchmarkRedisSetGet(b, 1024*1024)
+}
+
+func BenchmarkRedisSetGetBytes(b *testing.B) {
 	client := benchRedisClient()
 	defer client.Close()
 
-	src := bytes.Repeat([]byte{'1'}, 10000)
+	value := bytes.Repeat([]byte{'1'}, 10000)
 
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := client.Set("key", src, 0).Err(); err != nil {
+			if err := client.Set("key", value, 0).Err(); err != nil {
 				b.Fatal(err)
 			}
 
-			dst, err := client.Get("key").Bytes()
+			got, err := client.Get("key").Bytes()
 			if err != nil {
 				b.Fatal(err)
 			}
-			if !bytes.Equal(dst, src) {
-				panic("len(dst) != 10000")
+			if !bytes.Equal(got, value) {
+				b.Fatalf("got != value")
 			}
 		}
 	})
