@@ -118,80 +118,80 @@ func scan(b []byte, val interface{}) error {
 	case nil:
 		return errorf("redis: Scan(nil)")
 	case *string:
-		*v = string(b)
+		*v = bytesToString(b)
 		return nil
 	case *[]byte:
 		*v = b
 		return nil
 	case *int:
 		var err error
-		*v, err = strconv.Atoi(string(b))
+		*v, err = strconv.Atoi(bytesToString(b))
 		return err
 	case *int8:
-		n, err := strconv.ParseInt(string(b), 10, 8)
+		n, err := strconv.ParseInt(bytesToString(b), 10, 8)
 		if err != nil {
 			return err
 		}
 		*v = int8(n)
 		return nil
 	case *int16:
-		n, err := strconv.ParseInt(string(b), 10, 16)
+		n, err := strconv.ParseInt(bytesToString(b), 10, 16)
 		if err != nil {
 			return err
 		}
 		*v = int16(n)
 		return nil
 	case *int32:
-		n, err := strconv.ParseInt(string(b), 10, 16)
+		n, err := strconv.ParseInt(bytesToString(b), 10, 16)
 		if err != nil {
 			return err
 		}
 		*v = int32(n)
 		return nil
 	case *int64:
-		n, err := strconv.ParseInt(string(b), 10, 64)
+		n, err := strconv.ParseInt(bytesToString(b), 10, 64)
 		if err != nil {
 			return err
 		}
 		*v = n
 		return nil
 	case *uint:
-		n, err := strconv.ParseUint(string(b), 10, 64)
+		n, err := strconv.ParseUint(bytesToString(b), 10, 64)
 		if err != nil {
 			return err
 		}
 		*v = uint(n)
 		return nil
 	case *uint8:
-		n, err := strconv.ParseUint(string(b), 10, 8)
+		n, err := strconv.ParseUint(bytesToString(b), 10, 8)
 		if err != nil {
 			return err
 		}
 		*v = uint8(n)
 		return nil
 	case *uint16:
-		n, err := strconv.ParseUint(string(b), 10, 16)
+		n, err := strconv.ParseUint(bytesToString(b), 10, 16)
 		if err != nil {
 			return err
 		}
 		*v = uint16(n)
 		return nil
 	case *uint32:
-		n, err := strconv.ParseUint(string(b), 10, 32)
+		n, err := strconv.ParseUint(bytesToString(b), 10, 32)
 		if err != nil {
 			return err
 		}
 		*v = uint32(n)
 		return nil
 	case *uint64:
-		n, err := strconv.ParseUint(string(b), 10, 64)
+		n, err := strconv.ParseUint(bytesToString(b), 10, 64)
 		if err != nil {
 			return err
 		}
 		*v = n
 		return nil
 	case *float32:
-		n, err := strconv.ParseFloat(string(b), 32)
+		n, err := strconv.ParseFloat(bytesToString(b), 32)
 		if err != nil {
 			return err
 		}
@@ -199,7 +199,7 @@ func scan(b []byte, val interface{}) error {
 		return err
 	case *float64:
 		var err error
-		*v, err = strconv.ParseFloat(string(b), 64)
+		*v, err = strconv.ParseFloat(bytesToString(b), 64)
 		return err
 	case *bool:
 		*v = len(b) == 1 && b[0] == '1'
@@ -305,7 +305,7 @@ func parseReply(rd *bufio.Reader, p multiBulkParser) (interface{}, error) {
 	case '+':
 		return line[1:], nil
 	case ':':
-		v, err := strconv.ParseInt(string(line[1:]), 10, 64)
+		v, err := strconv.ParseInt(bytesToString(line[1:]), 10, 64)
 		if err != nil {
 			return nil, err
 		}
@@ -330,7 +330,7 @@ func parseReply(rd *bufio.Reader, p multiBulkParser) (interface{}, error) {
 			return nil, Nil
 		}
 
-		repliesNum, err := strconv.ParseInt(string(line[1:]), 10, 64)
+		repliesNum, err := strconv.ParseInt(bytesToString(line[1:]), 10, 64)
 		if err != nil {
 			return nil, err
 		}
@@ -472,7 +472,7 @@ func parseZSlice(rd *bufio.Reader, n int64) (interface{}, error) {
 		if !ok {
 			return nil, fmt.Errorf("got %T, expected string", scoreiface)
 		}
-		score, err := strconv.ParseFloat(string(scoreb), 64)
+		score, err := strconv.ParseFloat(bytesToString(scoreb), 64)
 		if err != nil {
 			return nil, err
 		}
