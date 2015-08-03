@@ -12,6 +12,7 @@ Supports:
 - [Redis Sentinel](http://godoc.org/gopkg.in/redis.v3#NewFailoverClient).
 - [Redis Cluster](http://godoc.org/gopkg.in/redis.v3#NewClusterClient).
 - [Ring](http://godoc.org/gopkg.in/redis.v3#NewRing).
+- [Cache friendly](https://github.com/go-redis/cache).
 
 API docs: http://godoc.org/gopkg.in/redis.v3.
 Examples: http://godoc.org/gopkg.in/redis.v3#pkg-examples.
