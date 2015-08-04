@@ -1470,6 +1470,14 @@ func (c *commandable) DebugObject(key string) *StringCmd {
 
 //------------------------------------------------------------------------------
 
+// Posts a message to the given channel.
+func (c *commandable) Publish(channel, message string) *IntCmd {
+	cmd := NewIntCmd("PUBLISH", channel, message)
+	cmd._clusterKeyPos = 0
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *commandable) PubSubChannels(pattern string) *StringSliceCmd {
 	args := []interface{}{"PUBSUB", "CHANNELS"}
 	if pattern != "*" {

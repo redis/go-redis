@@ -212,6 +212,7 @@ var _ = Describe("Cluster", func() {
 	})
 
 	Describe("Client", func() {
+
 		var client *redis.ClusterClient
 
 		BeforeEach(func() {
@@ -299,6 +300,38 @@ var _ = Describe("Cluster", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("MOVED"))
 		})
+
+		It("supports pub/sub", func() {
+			pubsub, err := client.Subscribe("mychannel")
+			Expect(err).NotTo(HaveOccurred())
+			defer pubsub.Close()
+
+			Eventually(func() int64 {
+				n, err := client.Publish("mychannel", "hello").Result()
+				Expect(err).NotTo(HaveOccurred())
+				return n
+			}).Should(Equal(int64(1)))
+
+			Expect(pubsub.Unsubscribe("mychannel")).NotTo(HaveOccurred())
+
+			{
+				msgi, err := pubsub.ReceiveTimeout(time.Second)
+				Expect(err).NotTo(HaveOccurred())
+				subscr := msgi.(*redis.Subscription)
+				Expect(subscr.Kind).To(Equal("subscribe"))
+				Expect(subscr.Channel).To(Equal("mychannel"))
+				Expect(subscr.Count).To(Equal(1))
+			}
+
+			{
+				msgi, err := pubsub.ReceiveTimeout(time.Second)
+				Expect(err).NotTo(HaveOccurred())
+				msg := msgi.(*redis.Message)
+				Expect(msg.Channel).To(Equal("mychannel"))
+				Expect(msg.Payload).To(Equal("hello"))
+			}
+		})
+
 	})
 })
 

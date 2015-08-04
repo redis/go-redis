@@ -162,7 +162,7 @@ func (p *redisProcess) Close() error {
 
 var (
 	redisServerBin, _  = filepath.Abs(filepath.Join(".test", "redis", "src", "redis-server"))
-	redisServerConf, _ = filepath.Abs(filepath.Join(".test", "redis.conf"))
+	redisServerConf, _ = filepath.Abs(filepath.Join(".test", "redis", "redis.conf"))
 )
 
 func redisDir(port string) (string, error) {
@@ -182,7 +182,8 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = exec.Command("cp", "-f", redisServerConf, dir).Run(); err != nil {
+	_, err = execCmd("cp", "-f", redisServerConf, dir)
+	if err != nil {
 		return nil, err
 	}
 

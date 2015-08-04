@@ -13,6 +13,7 @@ type ClusterClient struct {
 	commandable
 
 	addrs   []string
+	masters []string
 	slots   [][]string
 	slotsMx sync.RWMutex // Protects slots and addrs.
 
@@ -22,7 +23,7 @@ type ClusterClient struct {
 
 	opt *ClusterOptions
 
-	// Reports where slots reloading is in progress.
+	// Reports whether slots reloading is in progress.
 	reloading uint32
 }
 
@@ -108,8 +109,15 @@ func (c *ClusterClient) slotMasterAddr(slot int) string {
 // randomClient returns a Client for the first live node.
 func (c *ClusterClient) randomClient() (client *Client, err error) {
 	for i := 0; i < 10; i++ {
-		n := rand.Intn(len(c.addrs))
-		client, err = c.getClient(c.addrs[n])
+		var addr string
+		if len(c.masters) > 0 {
+			n := rand.Intn(len(c.masters))
+			addr = c.masters[n]
+		} else {
+			n := rand.Intn(len(c.addrs))
+			addr = c.addrs[n]
+		}
+		client, err = c.getClient(addr)
 		if err != nil {
 			continue
 		}
@@ -195,24 +203,33 @@ func (c *ClusterClient) resetClients() (err error) {
 func (c *ClusterClient) setSlots(slots []ClusterSlotInfo) {
 	c.slotsMx.Lock()
 
-	seen := make(map[string]struct{})
+	seenAddrs := make(map[string]struct{})
 	for _, addr := range c.addrs {
-		seen[addr] = struct{}{}
+		seenAddrs[addr] = struct{}{}
 	}
 
 	for i := 0; i < hashSlots; i++ {
 		c.slots[i] = c.slots[i][:0]
 	}
+
+	c.masters = c.masters[:0]
+	seenMasters := make(map[string]struct{})
+
 	for _, info := range slots {
 		for slot := info.Start; slot <= info.End; slot++ {
 			c.slots[slot] = info.Addrs
 		}
 
 		for _, addr := range info.Addrs {
-			if _, ok := seen[addr]; !ok {
+			if _, ok := seenAddrs[addr]; !ok {
 				c.addrs = append(c.addrs, addr)
-				seen[addr] = struct{}{}
+				seenAddrs[addr] = struct{}{}
 			}
+		}
+
+		master := info.Addrs[0]
+		if _, ok := seenMasters[master]; !ok {
+			c.masters = append(c.masters, master)
 		}
 	}
 
@@ -267,6 +284,26 @@ func (c *ClusterClient) reaper() {
 
 		c.clientsMx.RUnlock()
 	}
+}
+
+//------------------------------------------------------------------------------
+
+// Subscribes the client to the specified channels.
+func (c *ClusterClient) Subscribe(channels ...string) (*PubSub, error) {
+	cl, err := c.randomClient()
+	if err != nil {
+		return nil, err
+	}
+	return cl.Subscribe(channels...)
+}
+
+// Subscribes the client to the given patterns.
+func (c *ClusterClient) PSubscribe(channels ...string) (*PubSub, error) {
+	cl, err := c.randomClient()
+	if err != nil {
+		return nil, err
+	}
+	return cl.PSubscribe(channels...)
 }
 
 //------------------------------------------------------------------------------
