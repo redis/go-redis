@@ -84,6 +84,21 @@ func ExampleClient() {
 	// key2 does not exists
 }
 
+func ExampleClient_Set() {
+	// Last argument is expiration. Zero means the key has no
+	// expiration time.
+	err := client.Set("key", "value", 0).Err()
+	if err != nil {
+		panic(err)
+	}
+
+	// key2 will expire in an hour.
+	err = client.Set("key2", "value", time.Hour).Err()
+	if err != nil {
+		panic(err)
+	}
+}
+
 func ExampleClient_Incr() {
 	if err := client.Incr("counter").Err(); err != nil {
 		panic(err)

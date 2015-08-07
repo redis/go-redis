@@ -526,6 +526,9 @@ func (c *commandable) MSetNX(pairs ...string) *BoolCmd {
 	return cmd
 }
 
+// Redis `SET key value [expiration]` command.
+//
+// Zero expiration means the key has no expiration time.
 func (c *commandable) Set(key string, value interface{}, expiration time.Duration) *StatusCmd {
 	args := make([]interface{}, 3, 5)
 	args[0] = "SET"
@@ -554,6 +557,9 @@ func (c *commandable) SetBit(key string, offset int64, value int) *IntCmd {
 	return cmd
 }
 
+// Redis `SET key value [expiration] NX` command.
+//
+// Zero expiration means the key has no expiration time.
 func (c *commandable) SetNX(key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	if expiration == 0 {
@@ -570,6 +576,9 @@ func (c *commandable) SetNX(key string, value interface{}, expiration time.Durat
 	return cmd
 }
 
+// Redis `SET key value [expiration] XX` command.
+//
+// Zero expiration means the key has no expiration time.
 func (c *Client) SetXX(key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	if usePrecise(expiration) {
