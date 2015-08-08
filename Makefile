@@ -11,7 +11,7 @@ testdeps: .test/redis/src/redis-server
 
 .test/redis:
 	mkdir -p $@
-	wget -qO- https://github.com/antirez/redis/archive/3.0.tar.gz | tar xvz --strip-components=1 -C $@
+	wget -qO- https://github.com/antirez/redis/archive/3.0.3.tar.gz | tar xvz --strip-components=1 -C $@
 
 .test/redis/src/redis-server: .test/redis
 	cd $< && make all
