@@ -1094,8 +1094,14 @@ type ZRangeByScore struct {
 	Offset, Count int64
 }
 
-func (c *commandable) zRangeByScore(key string, opt ZRangeByScore, withScores bool) *StringSliceCmd {
-	args := []interface{}{"ZRANGEBYSCORE", key, opt.Min, opt.Max}
+func (c *commandable) zRangeByScore(key string, opt ZRangeByScore, withScores, isLex bool) *StringSliceCmd {
+	var zcmd string
+	if isLex {
+		zcmd = "ZRANGEBYLEX"
+	} else {
+		zcmd = "ZRANGEBYSCORE"
+	}
+	args := []interface{}{zcmd, key, opt.Min, opt.Max}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
@@ -1113,7 +1119,11 @@ func (c *commandable) zRangeByScore(key string, opt ZRangeByScore, withScores bo
 }
 
 func (c *commandable) ZRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
-	return c.zRangeByScore(key, opt, false)
+	return c.zRangeByScore(key, opt, false, false)
+}
+
+func (c *commandable) ZRangeByLex(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRangeByScore(key, opt, false, true)
 }
 
 func (c *commandable) ZRangeByScoreWithScores(key string, opt ZRangeByScore) *ZSliceCmd {

@@ -2010,6 +2010,42 @@ var _ = Describe("Commands", func() {
 			Expect(zRangeByScore.Val()).To(Equal([]string{}))
 		})
 
+		It("should ZRangeByLex", func() {
+			zAdd := client.ZAdd("zset", redis.Z{0, "a"})
+			Expect(zAdd.Err()).NotTo(HaveOccurred())
+			zAdd = client.ZAdd("zset", redis.Z{0, "b"})
+			Expect(zAdd.Err()).NotTo(HaveOccurred())
+			zAdd = client.ZAdd("zset", redis.Z{0, "c"})
+
+			zRangeByLex := client.ZRangeByLex("zset", redis.ZRangeByScore{
+				Min: "-",
+				Max: "+",
+			})
+			Expect(zRangeByLex.Err()).NotTo(HaveOccurred())
+			Expect(zRangeByLex.Val()).To(Equal([]string{"a", "b", "c"}))
+
+			zRangeByLex = client.ZRangeByLex("zset", redis.ZRangeByScore{
+				Min: "[a",
+				Max: "[b",
+			})
+			Expect(zRangeByLex.Err()).NotTo(HaveOccurred())
+			Expect(zRangeByLex.Val()).To(Equal([]string{"a", "b"}))
+
+			zRangeByLex = client.ZRangeByLex("zset", redis.ZRangeByScore{
+				Min: "(a",
+				Max: "[b",
+			})
+			Expect(zRangeByLex.Err()).NotTo(HaveOccurred())
+			Expect(zRangeByLex.Val()).To(Equal([]string{"b"}))
+
+			zRangeByLex = client.ZRangeByLex("zset", redis.ZRangeByScore{
+				Min: "(a",
+				Max: "(b",
+			})
+			Expect(zRangeByLex.Err()).NotTo(HaveOccurred())
+			Expect(zRangeByLex.Val()).To(Equal([]string{}))
+		})
+
 		It("should ZRangeByScoreWithScoresMap", func() {
 			zAdd := client.ZAdd("zset", redis.Z{1, "one"})
 			Expect(zAdd.Err()).NotTo(HaveOccurred())
