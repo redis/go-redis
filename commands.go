@@ -1089,19 +1089,13 @@ func (c *commandable) ZRangeWithScores(key string, start, stop int64) *ZSliceCmd
 	return cmd
 }
 
-type ZRangeByScore struct {
+type ZRangeBy struct {
 	Min, Max      string
 	Offset, Count int64
 }
 
-func (c *commandable) zRangeByScore(key string, opt ZRangeByScore, withScores, isLex bool) *StringSliceCmd {
-	var zcmd string
-	if isLex {
-		zcmd = "ZRANGEBYLEX"
-	} else {
-		zcmd = "ZRANGEBYSCORE"
-	}
-	args := []interface{}{zcmd, key, opt.Min, opt.Max}
+func (c *commandable) zRangeBy(zRangeType, key string, opt ZRangeBy, withScores bool) *StringSliceCmd {
+	args := []interface{}{zRangeType, key, opt.Min, opt.Max}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
@@ -1118,15 +1112,15 @@ func (c *commandable) zRangeByScore(key string, opt ZRangeByScore, withScores, i
 	return cmd
 }
 
-func (c *commandable) ZRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
-	return c.zRangeByScore(key, opt, false, false)
+func (c *commandable) ZRangeByScore(key string, opt ZRangeBy) *StringSliceCmd {
+	return c.zRangeBy("ZRANGEBYSCORE", key, opt, false)
 }
 
-func (c *commandable) ZRangeByLex(key string, opt ZRangeByScore) *StringSliceCmd {
-	return c.zRangeByScore(key, opt, false, true)
+func (c *commandable) ZRangeByLex(key string, opt ZRangeBy) *StringSliceCmd {
+	return c.zRangeBy("ZRANGEBYLEX", key, opt, false)
 }
 
-func (c *commandable) ZRangeByScoreWithScores(key string, opt ZRangeByScore) *ZSliceCmd {
+func (c *commandable) ZRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd {
 	args := []interface{}{"ZRANGEBYSCORE", key, opt.Min, opt.Max, "WITHSCORES"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1188,7 +1182,7 @@ func (c *commandable) ZRevRangeWithScores(key string, start, stop int64) *ZSlice
 	return cmd
 }
 
-func (c *commandable) ZRevRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
+func (c *commandable) ZRevRangeByScore(key string, opt ZRangeBy) *StringSliceCmd {
 	args := []interface{}{"ZREVRANGEBYSCORE", key, opt.Max, opt.Min}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1203,7 +1197,7 @@ func (c *commandable) ZRevRangeByScore(key string, opt ZRangeByScore) *StringSli
 	return cmd
 }
 
-func (c *commandable) ZRevRangeByScoreWithScores(key string, opt ZRangeByScore) *ZSliceCmd {
+func (c *commandable) ZRevRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd {
 	args := []interface{}{"ZREVRANGEBYSCORE", key, opt.Max, opt.Min, "WITHSCORES"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
