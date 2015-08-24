@@ -31,6 +31,8 @@ type FailoverOptions struct {
 	PoolSize    int
 	PoolTimeout time.Duration
 	IdleTimeout time.Duration
+
+	MaxRetries int
 }
 
 func (opt *FailoverOptions) options() *Options {
@@ -47,6 +49,8 @@ func (opt *FailoverOptions) options() *Options {
 		PoolSize:    opt.PoolSize,
 		PoolTimeout: opt.PoolTimeout,
 		IdleTimeout: opt.IdleTimeout,
+
+		MaxRetries: opt.MaxRetries,
 	}
 }
 
