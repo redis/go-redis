@@ -2002,7 +2002,7 @@ var _ = Describe("Commands", func() {
 			Expect(zRangeByScore.Err()).NotTo(HaveOccurred())
 			Expect(zRangeByScore.Val()).To(Equal([]string{"two"}))
 
-			zRangeByScore = client.ZRangeByScore("ZRANGEBYSCORE", "zset", redis.ZRangeBy{
+			zRangeByScore = client.ZRangeByScore("zset", redis.ZRangeBy{
 				Min: "(1",
 				Max: "(2",
 			})
@@ -2202,17 +2202,17 @@ var _ = Describe("Commands", func() {
 			Expect(zadd.Err()).NotTo(HaveOccurred())
 
 			vals, err := client.ZRevRangeByScore(
-				"zset", redis.ZRangeByScore{Max: "+inf", Min: "-inf"}).Result()
+				"zset", redis.ZRangeBy{Max: "+inf", Min: "-inf"}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"three", "two", "one"}))
 
 			vals, err = client.ZRevRangeByScore(
-				"zset", redis.ZRangeByScore{Max: "2", Min: "(1"}).Result()
+				"zset", redis.ZRangeBy{Max: "2", Min: "(1"}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"two"}))
 
 			vals, err = client.ZRevRangeByScore(
-				"zset", redis.ZRangeByScore{Max: "(2", Min: "(1"}).Result()
+				"zset", redis.ZRangeBy{Max: "(2", Min: "(1"}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{}))
 		})
@@ -2226,7 +2226,7 @@ var _ = Describe("Commands", func() {
 			Expect(zadd.Err()).NotTo(HaveOccurred())
 
 			vals, err := client.ZRevRangeByScoreWithScores(
-				"zset", redis.ZRangeByScore{Max: "+inf", Min: "-inf"}).Result()
+				"zset", redis.ZRangeBy{Max: "+inf", Min: "-inf"}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.Z{{3, "three"}, {2, "two"}, {1, "one"}}))
 		})
@@ -2240,17 +2240,17 @@ var _ = Describe("Commands", func() {
 			Expect(zAdd.Err()).NotTo(HaveOccurred())
 
 			val, err := client.ZRevRangeByScoreWithScores(
-				"zset", redis.ZRangeByScore{Max: "+inf", Min: "-inf"}).Result()
+				"zset", redis.ZRangeBy{Max: "+inf", Min: "-inf"}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]redis.Z{{3, "three"}, {2, "two"}, {1, "one"}}))
 
 			val, err = client.ZRevRangeByScoreWithScores(
-				"zset", redis.ZRangeByScore{Max: "2", Min: "(1"}).Result()
+				"zset", redis.ZRangeBy{Max: "2", Min: "(1"}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]redis.Z{{2, "two"}}))
 
 			val, err = client.ZRevRangeByScoreWithScores(
-				"zset", redis.ZRangeByScore{Max: "(2", Min: "(1"}).Result()
+				"zset", redis.ZRangeBy{Max: "(2", Min: "(1"}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]redis.Z{}))
 		})
