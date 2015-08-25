@@ -2230,12 +2230,12 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"c", "b", "a"}))
 
-			vals, err := client.ZRevRangeByLex(
+			vals, err = client.ZRevRangeByLex(
 				"zset", redis.ZRangeByScore{Max: "[b", Min: "(a"}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"b"}))
 
-			vals, err := client.ZRevRangeByLex(
+			vals, err = client.ZRevRangeByLex(
 				"zset", redis.ZRangeByScore{Max: "(b", Min: "(a"}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{}))
