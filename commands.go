@@ -1089,13 +1089,14 @@ func (c *commandable) ZRangeWithScores(key string, start, stop int64) *ZSliceCmd
 	return cmd
 }
 
-type ZRangeBy struct {
+// TODO: Rename to something more generic in v4
+type ZRangeByScore struct {
 	Min, Max      string
 	Offset, Count int64
 }
 
-func (c *commandable) zRangeBy(zRangeType, key string, opt ZRangeBy, withScores bool) *StringSliceCmd {
-	args := []interface{}{zRangeType, key, opt.Min, opt.Max}
+func (c *commandable) zRangeBy(zcmd, key string, opt ZRangeByScore, withScores bool) *StringSliceCmd {
+	args := []interface{}{zcmd, key, opt.Min, opt.Max}
 	if withScores {
 		args = append(args, "WITHSCORES")
 	}
@@ -1112,15 +1113,15 @@ func (c *commandable) zRangeBy(zRangeType, key string, opt ZRangeBy, withScores 
 	return cmd
 }
 
-func (c *commandable) ZRangeByScore(key string, opt ZRangeBy) *StringSliceCmd {
+func (c *commandable) ZRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
 	return c.zRangeBy("ZRANGEBYSCORE", key, opt, false)
 }
 
-func (c *commandable) ZRangeByLex(key string, opt ZRangeBy) *StringSliceCmd {
+func (c *commandable) ZRangeByLex(key string, opt ZRangeByScore) *StringSliceCmd {
 	return c.zRangeBy("ZRANGEBYLEX", key, opt, false)
 }
 
-func (c *commandable) ZRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd {
+func (c *commandable) ZRangeByScoreWithScores(key string, opt ZRangeByScore) *ZSliceCmd {
 	args := []interface{}{"ZRANGEBYSCORE", key, opt.Min, opt.Max, "WITHSCORES"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1182,8 +1183,8 @@ func (c *commandable) ZRevRangeWithScores(key string, start, stop int64) *ZSlice
 	return cmd
 }
 
-func (c *commandable) ZRevRangeByScore(key string, opt ZRangeBy) *StringSliceCmd {
-	args := []interface{}{"ZREVRANGEBYSCORE", key, opt.Max, opt.Min}
+func (c *commandable) zRevRangeBy(zcmd, key string, opt ZRangeByScore) *StringSliceCmd {
+	args := []interface{}{zcmd, key, opt.Max, opt.Min}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
@@ -1197,7 +1198,15 @@ func (c *commandable) ZRevRangeByScore(key string, opt ZRangeBy) *StringSliceCmd
 	return cmd
 }
 
-func (c *commandable) ZRevRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd {
+func (c *commandable) ZRevRangeByScore(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRevRangeBy("ZREVRANGEBYSCORE", key, opt)
+}
+
+func (c commandable) ZRevRangeByLex(key string, opt ZRangeByScore) *StringSliceCmd {
+	return c.zRevRangeBy("ZREVRANGEBYLEX", key, opt)
+}
+
+func (c *commandable) ZRevRangeByScoreWithScores(key string, opt ZRangeByScore) *ZSliceCmd {
 	args := []interface{}{"ZREVRANGEBYSCORE", key, opt.Max, opt.Min, "WITHSCORES"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
