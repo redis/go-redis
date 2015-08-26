@@ -1733,21 +1733,25 @@ var _ = Describe("Commands", func() {
 			Expect(sMembers.Val()).To(HaveLen(2))
 		})
 
-		It("should SRandMember", func() {
-			sAdd := client.SAdd("set", "one")
-			Expect(sAdd.Err()).NotTo(HaveOccurred())
-			sAdd = client.SAdd("set", "two")
-			Expect(sAdd.Err()).NotTo(HaveOccurred())
-			sAdd = client.SAdd("set", "three")
-			Expect(sAdd.Err()).NotTo(HaveOccurred())
+		It("should SRandMember and SRandMemberN", func() {
+			err := client.SAdd("set", "one").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.SAdd("set", "two").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.SAdd("set", "three").Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			sRandMember := client.SRandMember("set")
-			Expect(sRandMember.Err()).NotTo(HaveOccurred())
-			Expect(sRandMember.Val()).NotTo(Equal(""))
+			members, err := client.SMembers("set").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(members).To(HaveLen(3))
 
-			sMembers := client.SMembers("set")
-			Expect(sMembers.Err()).NotTo(HaveOccurred())
-			Expect(sMembers.Val()).To(HaveLen(3))
+			member, err := client.SRandMember("set").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(member).NotTo(Equal(""))
+
+			members, err = client.SRandMemberN("set", 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(members).To(HaveLen(2))
 		})
 
 		It("should SRem", func() {

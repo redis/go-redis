@@ -944,8 +944,16 @@ func (c *commandable) SPop(key string) *StringCmd {
 	return cmd
 }
 
+// Redis `SRANDMEMBER key` command.
 func (c *commandable) SRandMember(key string) *StringCmd {
 	cmd := NewStringCmd("SRANDMEMBER", key)
+	c.Process(cmd)
+	return cmd
+}
+
+// Redis `SRANDMEMBER key count` command.
+func (c *commandable) SRandMemberN(key string, count int64) *StringSliceCmd {
+	cmd := NewStringSliceCmd("SRANDMEMBER", key, formatInt(count))
 	c.Process(cmd)
 	return cmd
 }
