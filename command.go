@@ -378,7 +378,7 @@ func (cmd *BoolCmd) parseReply(rd *bufio.Reader) error {
 		cmd.val = bytes.Equal(vv, ok)
 		return nil
 	default:
-		return fmt.Errorf("got %T, wanted int64 or string")
+		return fmt.Errorf("got %T, wanted int64 or string", v)
 	}
 }
 
