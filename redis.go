@@ -69,7 +69,7 @@ func (c *baseClient) process(cmd Cmder) {
 			return
 		}
 
-		err = cmd.parseReply(cn.rd)
+		err = cmd.parseReply(cn)
 		c.putConn(cn, err)
 		if shouldRetry(err) {
 			continue

@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"gopkg.in/bufio.v1"
 )
 
 var (
@@ -30,7 +28,7 @@ var (
 
 type Cmder interface {
 	args() []interface{}
-	parseReply(*bufio.Reader) error
+	parseReply(*conn) error
 	setErr(error)
 	reset()
 
@@ -154,8 +152,8 @@ func (cmd *Cmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *Cmd) parseReply(rd *bufio.Reader) error {
-	cmd.val, cmd.err = parseReply(rd, parseSlice)
+func (cmd *Cmd) parseReply(cn *conn) error {
+	cmd.val, cmd.err = parseReply(cn, parseSlice)
 	// Convert to string to preserve old behaviour.
 	// TODO: remove in v4
 	if v, ok := cmd.val.([]byte); ok {
@@ -193,8 +191,8 @@ func (cmd *SliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *SliceCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, parseSlice)
+func (cmd *SliceCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, parseSlice)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -236,8 +234,8 @@ func (cmd *StatusCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StatusCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, nil)
+func (cmd *StatusCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, nil)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -275,8 +273,8 @@ func (cmd *IntCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *IntCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, nil)
+func (cmd *IntCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, nil)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -318,8 +316,8 @@ func (cmd *DurationCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *DurationCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, nil)
+func (cmd *DurationCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, nil)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -359,8 +357,8 @@ func (cmd *BoolCmd) String() string {
 
 var ok = []byte("OK")
 
-func (cmd *BoolCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, nil)
+func (cmd *BoolCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, nil)
 	// `SET key value NX` returns nil when key already exists, which
 	// is inconsistent with `SETNX key value`.
 	// TODO: is this okay?
@@ -445,15 +443,13 @@ func (cmd *StringCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, nil)
+func (cmd *StringCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, nil)
 	if err != nil {
 		cmd.err = err
 		return err
 	}
-	b := v.([]byte)
-	cmd.val = make([]byte, len(b))
-	copy(cmd.val, b)
+	cmd.val = cn.copyBuf(v.([]byte))
 	return nil
 }
 
@@ -486,8 +482,8 @@ func (cmd *FloatCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *FloatCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, nil)
+func (cmd *FloatCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, nil)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -526,8 +522,8 @@ func (cmd *StringSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringSliceCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, parseStringSlice)
+func (cmd *StringSliceCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, parseStringSlice)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -565,8 +561,8 @@ func (cmd *BoolSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *BoolSliceCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, parseBoolSlice)
+func (cmd *BoolSliceCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, parseBoolSlice)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -604,8 +600,8 @@ func (cmd *StringStringMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringStringMapCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, parseStringStringMap)
+func (cmd *StringStringMapCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, parseStringStringMap)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -643,8 +639,8 @@ func (cmd *StringIntMapCmd) reset() {
 	cmd.err = nil
 }
 
-func (cmd *StringIntMapCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, parseStringIntMap)
+func (cmd *StringIntMapCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, parseStringIntMap)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -682,8 +678,8 @@ func (cmd *ZSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ZSliceCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, parseZSlice)
+func (cmd *ZSliceCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, parseZSlice)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -723,8 +719,8 @@ func (cmd *ScanCmd) String() string {
 	return cmdString(cmd, cmd.keys)
 }
 
-func (cmd *ScanCmd) parseReply(rd *bufio.Reader) error {
-	vi, err := parseReply(rd, parseSlice)
+func (cmd *ScanCmd) parseReply(cn *conn) error {
+	vi, err := parseReply(cn, parseSlice)
 	if err != nil {
 		cmd.err = err
 		return cmd.err
@@ -778,8 +774,8 @@ func (cmd *ClusterSlotCmd) reset() {
 	cmd.err = nil
 }
 
-func (cmd *ClusterSlotCmd) parseReply(rd *bufio.Reader) error {
-	v, err := parseReply(rd, parseClusterSlotInfoSlice)
+func (cmd *ClusterSlotCmd) parseReply(cn *conn) error {
+	v, err := parseReply(cn, parseClusterSlotInfoSlice)
 	if err != nil {
 		cmd.err = err
 		return err

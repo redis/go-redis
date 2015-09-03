@@ -1,9 +1,9 @@
 package redis
 
 import (
+	"bufio"
+	"bytes"
 	"testing"
-
-	"gopkg.in/bufio.v1"
 )
 
 func BenchmarkParseReplyStatus(b *testing.B) {
@@ -27,20 +27,21 @@ func BenchmarkParseReplySlice(b *testing.B) {
 }
 
 func benchmarkParseReply(b *testing.B, reply string, p multiBulkParser, wanterr bool) {
-	b.StopTimer()
-
-	buf := &bufio.Buffer{}
-	rd := bufio.NewReader(buf)
+	buf := &bytes.Buffer{}
 	for i := 0; i < b.N; i++ {
 		buf.WriteString(reply)
 	}
+	cn := &conn{
+		rd:  bufio.NewReader(buf),
+		buf: make([]byte, 0, defaultBufSize),
+	}
 
-	b.StartTimer()
+	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_, err := parseReply(rd, p)
+		_, err := parseReply(cn, p)
 		if !wanterr && err != nil {
-			panic(err)
+			b.Fatal(err)
 		}
 	}
 }
