@@ -361,7 +361,9 @@ var ok = []byte("OK")
 
 func (cmd *BoolCmd) parseReply(rd *bufio.Reader) error {
 	v, err := parseReply(rd, nil)
-	// `SET key value NX` returns nil when key already exists.
+	// `SET key value NX` returns nil when key already exists, which
+	// is inconsistent with `SETNX key value`.
+	// TODO: is this okay?
 	if err == Nil {
 		cmd.val = false
 		return nil
@@ -474,6 +476,10 @@ func (cmd *FloatCmd) reset() {
 
 func (cmd *FloatCmd) Val() float64 {
 	return cmd.val
+}
+
+func (cmd *FloatCmd) Result() (float64, error) {
+	return cmd.Val(), cmd.Err()
 }
 
 func (cmd *FloatCmd) String() string {

@@ -1008,17 +1008,96 @@ type ZStore struct {
 	Aggregate string
 }
 
-func (c *commandable) ZAdd(key string, members ...Z) *IntCmd {
-	args := make([]interface{}, 2+2*len(members))
-	args[0] = "ZADD"
-	args[1] = key
+func (c *commandable) zAdd(a []interface{}, n int, members ...Z) *IntCmd {
 	for i, m := range members {
-		args[2+2*i] = formatFloat(m.Score)
-		args[2+2*i+1] = m.Member
+		a[n+2*i] = formatFloat(m.Score)
+		a[n+2*i+1] = m.Member
 	}
-	cmd := NewIntCmd(args...)
+	cmd := NewIntCmd(a...)
 	c.Process(cmd)
 	return cmd
+}
+
+// Redis `ZADD key score member [score member ...]` command.
+func (c *commandable) ZAdd(key string, members ...Z) *IntCmd {
+	const n = 2
+	a := make([]interface{}, n+2*len(members))
+	a[0], a[1] = "ZADD", key
+	return c.zAdd(a, n, members...)
+}
+
+// Redis `ZADD key NX score member [score member ...]` command.
+func (c *commandable) ZAddNX(key string, members ...Z) *IntCmd {
+	const n = 3
+	a := make([]interface{}, n+2*len(members))
+	a[0], a[1], a[2] = "ZADD", key, "NX"
+	return c.zAdd(a, n, members...)
+}
+
+// Redis `ZADD key XX score member [score member ...]` command.
+func (c *commandable) ZAddXX(key string, members ...Z) *IntCmd {
+	const n = 3
+	a := make([]interface{}, n+2*len(members))
+	a[0], a[1], a[2] = "ZADD", key, "XX"
+	return c.zAdd(a, n, members...)
+}
+
+// Redis `ZADD key CH score member [score member ...]` command.
+func (c *commandable) ZAddCh(key string, members ...Z) *IntCmd {
+	const n = 3
+	a := make([]interface{}, n+2*len(members))
+	a[0], a[1], a[2] = "ZADD", key, "CH"
+	return c.zAdd(a, n, members...)
+}
+
+// Redis `ZADD key NX CH score member [score member ...]` command.
+func (c *commandable) ZAddNXCh(key string, members ...Z) *IntCmd {
+	const n = 4
+	a := make([]interface{}, n+2*len(members))
+	a[0], a[1], a[2], a[3] = "ZADD", key, "NX", "CH"
+	return c.zAdd(a, n, members...)
+}
+
+// Redis `ZADD key XX CH score member [score member ...]` command.
+func (c *commandable) ZAddXXCh(key string, members ...Z) *IntCmd {
+	const n = 4
+	a := make([]interface{}, n+2*len(members))
+	a[0], a[1], a[2], a[3] = "ZADD", key, "XX", "CH"
+	return c.zAdd(a, n, members...)
+}
+
+func (c *commandable) zIncr(a []interface{}, n int, members ...Z) *FloatCmd {
+	for i, m := range members {
+		a[n+2*i] = formatFloat(m.Score)
+		a[n+2*i+1] = m.Member
+	}
+	cmd := NewFloatCmd(a...)
+	c.Process(cmd)
+	return cmd
+}
+
+// Redis `ZADD key INCR score member` command.
+func (c *commandable) ZIncr(key string, member Z) *FloatCmd {
+	const n = 3
+	a := make([]interface{}, n+2)
+	a[0], a[1], a[2] = "ZADD", key, "INCR"
+	return c.zIncr(a, n, member)
+}
+
+// Redis `ZADD key NX INCR score member` command.
+func (c *commandable) ZIncrNX(key string, member Z) *FloatCmd {
+	const n = 4
+	a := make([]interface{}, n+2)
+	a[0], a[1], a[2], a[3] = "ZADD", key, "INCR", "NX"
+	return c.zIncr(a, n, member)
+}
+
+// Redis `ZADD key XX INCR score member` command.
+func (c *commandable) ZIncrXX(key string, member Z) *FloatCmd {
+	const n = 4
+	a := make([]interface{}, n+2)
+	a[0], a[1], a[2], a[3] = "ZADD", key, "INCR", "XX"
+	return c.zIncr(a, n, member)
 }
 
 func (c *commandable) ZCard(key string) *IntCmd {
