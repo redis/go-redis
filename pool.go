@@ -243,7 +243,7 @@ func (p *connPool) Get() (*conn, error) {
 
 func (p *connPool) Put(cn *conn) error {
 	if cn.rd.Buffered() != 0 {
-		b, _ := cn.rd.ReadN(cn.rd.Buffered())
+		b, _ := cn.rd.Peek(cn.rd.Buffered())
 		log.Printf("redis: connection has unread data: %q", b)
 		return p.Remove(cn)
 	}
