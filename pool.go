@@ -396,8 +396,8 @@ func (p *singleConnPool) Remove(cn *conn) error {
 	if p.cn == nil {
 		panic("p.cn == nil")
 	}
-	if p.cn != cn {
-		panic("p.cn != cn")
+	if cn != nil && cn != p.cn {
+		panic("cn != p.cn")
 	}
 	if p.closed {
 		return errClosed
