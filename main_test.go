@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -231,20 +232,33 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 
 //------------------------------------------------------------------------------
 
-type badNetConn struct {
+var errTimeout = syscall.ETIMEDOUT
+
+type badConn struct {
 	net.TCPConn
+
+	readDelay, writeDelay time.Duration
+	readErr, writeErr     error
 }
 
-var _ net.Conn = &badNetConn{}
+var _ net.Conn = &badConn{}
 
-func newBadNetConn() net.Conn {
-	return &badNetConn{}
+func (cn *badConn) Read([]byte) (int, error) {
+	if cn.readDelay != 0 {
+		time.Sleep(cn.readDelay)
+	}
+	if cn.readErr != nil {
+		return 0, cn.readErr
+	}
+	return 0, net.UnknownNetworkError("badConn")
 }
 
-func (badNetConn) Read([]byte) (int, error) {
-	return 0, net.UnknownNetworkError("badNetConn")
-}
-
-func (badNetConn) Write([]byte) (int, error) {
-	return 0, net.UnknownNetworkError("badNetConn")
+func (cn *badConn) Write([]byte) (int, error) {
+	if cn.writeDelay != 0 {
+		time.Sleep(cn.writeDelay)
+	}
+	if cn.writeErr != nil {
+		return 0, cn.writeErr
+	}
+	return 0, net.UnknownNetworkError("badConn")
 }

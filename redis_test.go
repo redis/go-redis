@@ -159,7 +159,8 @@ var _ = Describe("Client", func() {
 		// Put bad connection in the pool.
 		cn, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
-		cn.SetNetConn(newBadNetConn())
+
+		cn.SetNetConn(&badConn{})
 		Expect(client.Pool().Put(cn)).NotTo(HaveOccurred())
 
 		err = client.Ping().Err()

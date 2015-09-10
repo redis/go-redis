@@ -2,6 +2,8 @@ package redis
 
 import (
 	"fmt"
+	"log"
+	"net"
 	"time"
 )
 
@@ -16,6 +18,9 @@ func (c *Client) Publish(channel, message string) *IntCmd {
 // http://redis.io/topics/pubsub.
 type PubSub struct {
 	*baseClient
+
+	channels []string
+	patterns []string
 }
 
 // Deprecated. Use Subscribe/PSubscribe instead.
@@ -38,6 +43,71 @@ func (c *Client) Subscribe(channels ...string) (*PubSub, error) {
 func (c *Client) PSubscribe(channels ...string) (*PubSub, error) {
 	pubsub := c.PubSub()
 	return pubsub, pubsub.PSubscribe(channels...)
+}
+
+func (c *PubSub) subscribe(cmd string, channels ...string) error {
+	cn, err := c.conn()
+	if err != nil {
+		return err
+	}
+
+	args := make([]interface{}, 1+len(channels))
+	args[0] = cmd
+	for i, channel := range channels {
+		args[1+i] = channel
+	}
+	req := NewSliceCmd(args...)
+	return cn.writeCmds(req)
+}
+
+// Subscribes the client to the specified channels.
+func (c *PubSub) Subscribe(channels ...string) error {
+	err := c.subscribe("SUBSCRIBE", channels...)
+	if err == nil {
+		c.channels = append(c.channels, channels...)
+	}
+	return err
+}
+
+// Subscribes the client to the given patterns.
+func (c *PubSub) PSubscribe(patterns ...string) error {
+	err := c.subscribe("PSUBSCRIBE", patterns...)
+	if err == nil {
+		c.channels = append(c.channels, patterns...)
+	}
+	return err
+}
+
+func remove(ss []string, es ...string) []string {
+	for _, e := range es {
+		for i, s := range ss {
+			if s == e {
+				ss = append(ss[:i], ss[i+1:]...)
+				break
+			}
+		}
+	}
+	return ss
+}
+
+// Unsubscribes the client from the given channels, or from all of
+// them if none is given.
+func (c *PubSub) Unsubscribe(channels ...string) error {
+	err := c.subscribe("UNSUBSCRIBE", channels...)
+	if err == nil {
+		c.channels = remove(c.channels, channels...)
+	}
+	return err
+}
+
+// Unsubscribes the client from the given patterns, or from all of
+// them if none is given.
+func (c *PubSub) PUnsubscribe(patterns ...string) error {
+	err := c.subscribe("PUNSUBSCRIBE", patterns...)
+	if err == nil {
+		c.patterns = remove(c.patterns, patterns...)
+	}
+	return err
 }
 
 func (c *PubSub) Ping(payload string) error {
@@ -71,12 +141,15 @@ func (m *Subscription) String() string {
 // Message received as result of a PUBLISH command issued by another client.
 type Message struct {
 	Channel string
+	Pattern string
 	Payload string
 }
 
 func (m *Message) String() string {
 	return fmt.Sprintf("Message<%s: %s>", m.Channel, m.Payload)
 }
+
+// TODO: remove PMessage if favor of Message
 
 // Message matching a pattern-matching subscription received as result
 // of a PUBLISH command issued by another client.
@@ -100,12 +173,6 @@ func (p *Pong) String() string {
 		return fmt.Sprintf("Pong<%s>", p.Payload)
 	}
 	return "Pong"
-}
-
-// Returns a message as a Subscription, Message, PMessage, Pong or
-// error. See PubSub example for details.
-func (c *PubSub) Receive() (interface{}, error) {
-	return c.ReceiveTimeout(0)
 }
 
 func newMessage(reply []interface{}) (interface{}, error) {
@@ -137,7 +204,8 @@ func newMessage(reply []interface{}) (interface{}, error) {
 }
 
 // ReceiveTimeout acts like Receive but returns an error if message
-// is not received in time.
+// is not received in time. This is low-level API and most clients
+// should use ReceiveMessage.
 func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	cn, err := c.conn()
 	if err != nil {
@@ -152,39 +220,74 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	return newMessage(cmd.Val())
 }
 
-func (c *PubSub) subscribe(cmd string, channels ...string) error {
-	cn, err := c.conn()
-	if err != nil {
-		return err
+// Receive returns a message as a Subscription, Message, PMessage,
+// Pong or error. See PubSub example for details. This is low-level
+// API and most clients should use ReceiveMessage.
+func (c *PubSub) Receive() (interface{}, error) {
+	return c.ReceiveTimeout(0)
+}
+
+func (c *PubSub) reconnect() {
+	c.connPool.Remove(nil) // close current connection
+	if len(c.channels) > 0 {
+		if err := c.Subscribe(c.channels...); err != nil {
+			log.Printf("redis: Subscribe failed: %s", err)
+		}
 	}
-
-	args := make([]interface{}, 1+len(channels))
-	args[0] = cmd
-	for i, channel := range channels {
-		args[1+i] = channel
+	if len(c.patterns) > 0 {
+		if err := c.PSubscribe(c.patterns...); err != nil {
+			log.Printf("redis: Subscribe failed: %s", err)
+		}
 	}
-	req := NewSliceCmd(args...)
-	return cn.writeCmds(req)
 }
 
-// Subscribes the client to the specified channels.
-func (c *PubSub) Subscribe(channels ...string) error {
-	return c.subscribe("SUBSCRIBE", channels...)
-}
+// ReceiveMessage returns a message or error. It automatically
+// reconnects to Redis in case of network errors.
+func (c *PubSub) ReceiveMessage() (*Message, error) {
+	var badConn bool
+	for {
+		msgi, err := c.ReceiveTimeout(5 * time.Second)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				if badConn {
+					c.reconnect()
+					badConn = false
+					continue
+				}
 
-// Subscribes the client to the given patterns.
-func (c *PubSub) PSubscribe(patterns ...string) error {
-	return c.subscribe("PSUBSCRIBE", patterns...)
-}
+				err := c.Ping("")
+				if err != nil {
+					c.reconnect()
+				} else {
+					badConn = true
+				}
+				continue
+			}
 
-// Unsubscribes the client from the given channels, or from all of
-// them if none is given.
-func (c *PubSub) Unsubscribe(channels ...string) error {
-	return c.subscribe("UNSUBSCRIBE", channels...)
-}
+			if isNetworkError(err) {
+				c.reconnect()
+				continue
+			}
 
-// Unsubscribes the client from the given patterns, or from all of
-// them if none is given.
-func (c *PubSub) PUnsubscribe(patterns ...string) error {
-	return c.subscribe("PUNSUBSCRIBE", patterns...)
+			return nil, err
+		}
+
+		switch msg := msgi.(type) {
+		case *Subscription:
+			// Ignore.
+		case *Pong:
+			badConn = false
+			// Ignore.
+		case *Message:
+			return msg, nil
+		case *PMessage:
+			return &Message{
+				Channel: msg.Channel,
+				Pattern: msg.Pattern,
+				Payload: msg.Payload,
+			}, nil
+		default:
+			return nil, fmt.Errorf("redis: unknown message: %T", msgi)
+		}
+	}
 }

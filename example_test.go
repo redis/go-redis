@@ -219,14 +219,31 @@ func ExamplePubSub() {
 		panic(err)
 	}
 
-	for i := 0; i < 4; i++ {
+	msg, err := pubsub.ReceiveMessage()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(msg.Channel, msg.Payload)
+	// Output: mychannel hello
+}
+
+func ExamplePubSub_Receive() {
+	pubsub, err := client.Subscribe("mychannel")
+	if err != nil {
+		panic(err)
+	}
+	defer pubsub.Close()
+
+	err = client.Publish("mychannel", "hello").Err()
+	if err != nil {
+		panic(err)
+	}
+
+	for i := 0; i < 2; i++ {
 		msgi, err := pubsub.ReceiveTimeout(100 * time.Millisecond)
 		if err != nil {
-			err := pubsub.Ping("")
-			if err != nil {
-				panic(err)
-			}
-			continue
+			panic(err)
 		}
 
 		switch msg := msgi.(type) {
@@ -234,8 +251,6 @@ func ExamplePubSub() {
 			fmt.Println(msg.Kind, msg.Channel)
 		case *redis.Message:
 			fmt.Println(msg.Channel, msg.Payload)
-		case *redis.Pong:
-			fmt.Println(msg)
 		default:
 			panic(fmt.Sprintf("unknown message: %#v", msgi))
 		}
@@ -243,7 +258,6 @@ func ExamplePubSub() {
 
 	// Output: subscribe mychannel
 	// mychannel hello
-	// Pong
 }
 
 func ExampleScript() {
