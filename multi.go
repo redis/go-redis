@@ -9,7 +9,8 @@ import (
 var errDiscard = errors.New("redis: Discard can be used only inside Exec")
 
 // Multi implements Redis transactions as described in
-// http://redis.io/topics/transactions.
+// http://redis.io/topics/transactions. It's NOT safe for concurrent
+// use by multiple goroutines.
 type Multi struct {
 	commandable
 

@@ -15,7 +15,8 @@ func (c *Client) Publish(channel, message string) *IntCmd {
 }
 
 // PubSub implements Pub/Sub commands as described in
-// http://redis.io/topics/pubsub.
+// http://redis.io/topics/pubsub. It's NOT safe for concurrent use by
+// multiple goroutines.
 type PubSub struct {
 	*baseClient
 

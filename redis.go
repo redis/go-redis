@@ -80,6 +80,9 @@ func (c *baseClient) process(cmd Cmder) {
 }
 
 // Close closes the client, releasing any open resources.
+//
+// It is rare to Close a Client, as the Client is meant to be
+// long-lived and shared between many goroutines.
 func (c *baseClient) Close() error {
 	return c.connPool.Close()
 }
@@ -173,6 +176,9 @@ func (opt *Options) getIdleTimeout() time.Duration {
 
 //------------------------------------------------------------------------------
 
+// Client is a Redis client representing a pool of zero or more
+// underlying connections. It's safe for concurrent use by multiple
+// goroutines.
 type Client struct {
 	*baseClient
 	commandable
@@ -186,6 +192,7 @@ func newClient(opt *Options, pool pool) *Client {
 	}
 }
 
+// NewClient returns a client to the Redis Server specified by Options.
 func NewClient(opt *Options) *Client {
 	pool := newConnPool(opt)
 	return newClient(opt, pool)

@@ -92,7 +92,8 @@ func (shard *ringShard) Vote(up bool) bool {
 }
 
 // Ring is a Redis client that uses constistent hashing to distribute
-// keys across multiple Redis servers (shards).
+// keys across multiple Redis servers (shards). It's safe for
+// concurrent use by multiple goroutines.
 //
 // It monitors the state of each shard and removes dead shards from
 // the ring. When shard comes online it is added back to the ring. This
@@ -215,8 +216,8 @@ func (ring *Ring) heartbeat() {
 
 // Close closes the ring client, releasing any open resources.
 //
-// It is rare to Close a Client, as the Client is meant to be
-// long-lived and shared between many goroutines.
+// It is rare to Close a Ring, as the Ring is meant to be long-lived
+// and shared between many goroutines.
 func (ring *Ring) Close() (retErr error) {
 	defer ring.mx.Unlock()
 	ring.mx.Lock()
@@ -238,7 +239,8 @@ func (ring *Ring) Close() (retErr error) {
 }
 
 // RingPipeline creates a new pipeline which is able to execute commands
-// against multiple shards.
+// against multiple shards. It's NOT safe for concurrent use by
+// multiple goroutines.
 type RingPipeline struct {
 	commandable
 
@@ -342,6 +344,7 @@ func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
 	return cmds, retErr
 }
 
+// Close closes the pipeline, releasing any open resources.
 func (pipe *RingPipeline) Close() error {
 	pipe.Discard()
 	pipe.closed = true

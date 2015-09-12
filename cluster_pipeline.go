@@ -10,7 +10,8 @@ type ClusterPipeline struct {
 }
 
 // Pipeline creates a new pipeline which is able to execute commands
-// against multiple shards.
+// against multiple shards. It's NOT safe for concurrent use by
+// multiple goroutines.
 func (c *ClusterClient) Pipeline() *ClusterPipeline {
 	pipe := &ClusterPipeline{
 		cluster: c,
@@ -82,7 +83,7 @@ func (pipe *ClusterPipeline) Exec() (cmds []Cmder, retErr error) {
 	return cmds, retErr
 }
 
-// Close marks the pipeline as closed
+// Close closes the pipeline, releasing any open resources.
 func (pipe *ClusterPipeline) Close() error {
 	pipe.Discard()
 	pipe.closed = true
