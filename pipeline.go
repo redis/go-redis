@@ -1,9 +1,8 @@
 package redis
 
 // Pipeline implements pipelining as described in
-// http://redis.io/topics/pipelining.
-//
-// Pipeline is not thread-safe.
+// http://redis.io/topics/pipelining. It's NOT safe for concurrent use
+// by multiple goroutines.
 type Pipeline struct {
 	commandable
 
@@ -36,6 +35,7 @@ func (pipe *Pipeline) process(cmd Cmder) {
 	pipe.cmds = append(pipe.cmds, cmd)
 }
 
+// Close closes the pipeline, releasing any open resources.
 func (pipe *Pipeline) Close() error {
 	pipe.Discard()
 	pipe.closed = true

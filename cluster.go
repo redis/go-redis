@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// ClusterClient is a Redis Cluster client representing a pool of zero
+// or more underlying connections. It's safe for concurrent use by
+// multiple goroutines.
 type ClusterClient struct {
 	commandable
 
@@ -26,7 +29,7 @@ type ClusterClient struct {
 	reloading uint32
 }
 
-// NewClusterClient returns a new Redis Cluster client as described in
+// NewClusterClient returns a Redis Cluster client as described in
 // http://redis.io/topics/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	client := &ClusterClient{
@@ -43,8 +46,8 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 
 // Close closes the cluster client, releasing any open resources.
 //
-// It is rare to Close a Client, as the Client is meant to be
-// long-lived and shared between many goroutines.
+// It is rare to Close a ClusterClient, as the ClusterClient is meant
+// to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
 	defer c.clientsMx.Unlock()
 	c.clientsMx.Lock()
