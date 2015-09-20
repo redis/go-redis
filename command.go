@@ -783,3 +783,102 @@ func (cmd *ClusterSlotCmd) parseReply(cn *conn) error {
 	cmd.val = v.([]ClusterSlotInfo)
 	return nil
 }
+
+//------------------------------------------------------------------------------
+
+// Location type for GEO operations in Redis
+type GeoLocation struct {
+	Name string
+	Longitude, Latitude, Distance float64
+	GeoHash int64
+}
+
+type GeoCmd struct {
+	baseCmd
+
+	locations []GeoLocation
+}
+
+// Query type for geo radius
+type GeoRadiusQuery struct {
+	Key string
+	Longitude, Latitude, Radius float64
+	// Unit default to km when nil
+	Unit string
+	WithCoordinates, WithDistance, WithGeoHash bool
+	// Count default to 0 and ignored limit.
+	Count int
+	// Sort default to unsorted, ASC or DESC otherwise
+	Sort string
+}
+
+func NewGeoCmd(args ...interface{}) *GeoCmd {
+	return &GeoCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *GeoCmd) reset() {
+	cmd.locations = nil
+	cmd.err = nil
+}
+
+func (cmd *GeoCmd) Val() ([]GeoLocation) {
+	return cmd.locations
+}
+
+func (cmd *GeoCmd) Result() ([]GeoLocation, error) {
+	return cmd.locations, cmd.err
+}
+
+func (cmd *GeoCmd) String() string {
+	return cmdString(cmd, cmd.locations)
+}
+
+func (cmd *GeoCmd) parseReply(cn *conn) error {
+	vi, err := parseReply(cn, parseSlice)
+	if err != nil {
+		cmd.err = err
+		return cmd.err
+	}
+
+	v := vi.([]interface{})
+
+	if len(v) == 0 {
+		return nil
+	}
+
+	if _, ok := v[0].(string); ok { // Location names only (single level string array)
+		for _, keyi := range v {
+			cmd.locations = append(cmd.locations, GeoLocation{Name: keyi.(string)})
+		}
+	} else { // Full location details (nested arrays)
+		for _, keyi := range v {
+			tmpLocation := GeoLocation{}
+			keyiface := keyi.([]interface{})
+			for _, subKeyi := range keyiface {
+				if strVal, ok := subKeyi.(string); ok {
+					if len(tmpLocation.Name) == 0 {
+						tmpLocation.Name = strVal
+					} else {
+						tmpLocation.Distance, err = strconv.ParseFloat(strVal, 64)
+						if err != nil {
+							return err
+						}
+					}
+				} else if intVal, ok := subKeyi.(int64); ok {
+					tmpLocation.GeoHash = intVal
+				} else if ifcVal, ok := subKeyi.([]interface{}); ok {
+					tmpLocation.Longitude, err = strconv.ParseFloat(ifcVal[0].(string), 64)
+					if err != nil {
+						return err
+					}
+					tmpLocation.Latitude, err = strconv.ParseFloat(ifcVal[1].(string), 64)
+					if err != nil {
+						return err
+					}
+				}
+			}
+			cmd.locations = append(cmd.locations, tmpLocation)
+		}
+	}
+	return nil
+}
