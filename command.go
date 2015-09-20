@@ -783,3 +783,80 @@ func (cmd *ClusterSlotCmd) parseReply(cn *conn) error {
 	cmd.val = v.([]ClusterSlotInfo)
 	return nil
 }
+
+//------------------------------------------------------------------------------
+
+type Location struct {
+	Name string
+	Distance string
+	GeoHash int64
+	Coordinates [2]string
+}
+
+type GeoCmd struct {
+	baseCmd
+
+	locations   []Location
+}
+
+func NewGeoCmd(args ...interface{}) *GeoCmd {
+	return &GeoCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *GeoCmd) reset() {
+	cmd.locations = nil
+	cmd.err = nil
+}
+
+func (cmd *GeoCmd) Val() ([]Location) {
+	return cmd.locations
+}
+
+func (cmd *GeoCmd) Result() ([]Location, error) {
+	return cmd.locations, cmd.err
+}
+
+func (cmd *GeoCmd) String() string {
+	return cmdString(cmd, cmd.locations)
+}
+
+func (cmd *GeoCmd) parseReply(cn *conn) error {
+	vi, err := parseReply(cn, parseSlice)
+	if err != nil {
+		cmd.err = err
+		return cmd.err
+	}
+
+	v := vi.([]interface{})
+
+
+	if len(v) == 0 {
+		return nil
+	}
+
+	if _, ok := v[0].(string); ok { // Location names only (single level string array)
+		for _, keyi := range v {
+			cmd.locations = append(cmd.locations, Location{Name: keyi.(string)})
+		}
+	} else { // Full location details (nested arrays)
+		for _, keyi := range v {
+			tmpLocation := Location{}
+			keyiface := keyi.([]interface{})
+			for _, subKeyi := range keyiface {
+				if strVal, ok := subKeyi.(string); ok {
+					if len(tmpLocation.Name) == 0 {
+						tmpLocation.Name = strVal
+					} else {
+						tmpLocation.Distance = strVal
+					}
+				} else if intVal, ok := subKeyi.(int64); ok {
+					tmpLocation.GeoHash = intVal
+				} else if ifcVal, ok := subKeyi.([]interface{}); ok {
+					tmpLocation.Coordinates = [2]string{ifcVal[0].(string), ifcVal[1].(string)}
+				}
+			}
+			cmd.locations = append(cmd.locations, tmpLocation)
+		}
+	}
+	return nil
+}

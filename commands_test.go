@@ -2521,6 +2521,60 @@ var _ = Describe("Commands", func() {
 
 	})
 
+	Describe("Geo add and radius search", func() {
+		It("should add one geo location", func() {
+			geoAdd := client.GeoAdd("Sicily", "13.361389", "38.115556", "Palermo")
+			Expect(geoAdd.Err()).NotTo(HaveOccurred())
+			Expect(geoAdd.Val()).To(Equal(int64(1)))
+		})
+
+		It("should add multiple geo locations", func() {
+			geoAdd := client.GeoAdd("Sicily", "13.361389", "38.115556", "Palermo", "15.087269", "37.502669", "Catania")
+			Expect(geoAdd.Err()).NotTo(HaveOccurred())
+			Expect(geoAdd.Val()).To(Equal(int64(2)))
+		})
+
+		It("should search geo radius", func() {
+			geoAdd := client.GeoAdd("Sicily", "13.361389", "38.115556", "Palermo", "15.087269", "37.502669", "Catania")
+			Expect(geoAdd.Err()).NotTo(HaveOccurred())
+			Expect(geoAdd.Val()).To(Equal(int64(2)))
+
+			geoRadius := client.GeoRadius("Sicily", "15", "37", "200", "km")
+			Expect(geoRadius.Err()).NotTo(HaveOccurred())
+			Expect(geoRadius.Val()[0].Name).To(Equal("Palermo"))
+			Expect(geoRadius.Val()[1].Name).To(Equal("Catania"))
+		})
+
+		It("should search geo radius with options", func() {
+			geoAdd := client.GeoAdd("Sicily", "13.361389", "38.115556", "Palermo", "15.087269", "37.502669", "Catania")
+			Expect(geoAdd.Err()).NotTo(HaveOccurred())
+			Expect(geoAdd.Val()).To(Equal(int64(2)))
+
+			geoRadius := client.GeoRadius("Sicily", "15", "37", "200", "km", "WITHHASH", "WITHCOORD", "WITHDIST")
+			Expect(geoRadius.Err()).NotTo(HaveOccurred())
+			Expect(geoRadius.Val()[0].Name).To(Equal("Palermo"))
+			Expect(geoRadius.Val()[0].Distance).To(Equal("190.4424"))
+			Expect(geoRadius.Val()[0].GeoHash).To(Equal(int64(3479099956230698)))
+			Expect(geoRadius.Val()[0].Coordinates[0]).To(Equal("13.361389338970184"))
+			Expect(geoRadius.Val()[0].Coordinates[1]).To(Equal("38.115556395496299"))
+			Expect(geoRadius.Val()[1].Name).To(Equal("Catania"))
+			Expect(geoRadius.Val()[1].Distance).To(Equal("56.4413"))
+			Expect(geoRadius.Val()[1].GeoHash).To(Equal(int64(3479447370796909)))
+			Expect(geoRadius.Val()[1].Coordinates[0]).To(Equal("15.087267458438873"))
+			Expect(geoRadius.Val()[1].Coordinates[1]).To(Equal("37.50266842333162"))
+		})
+
+		It("should search geo radius with no results", func() {
+			geoAdd := client.GeoAdd("Sicily", "13.361389", "38.115556", "Palermo", "15.087269", "37.502669", "Catania")
+			Expect(geoAdd.Err()).NotTo(HaveOccurred())
+			Expect(geoAdd.Val()).To(Equal(int64(2)))
+
+			geoRadius := client.GeoRadius("Sicily", "99", "37", "200", "km", "WITHHASH", "WITHCOORD", "WITHDIST")
+			Expect(geoRadius.Err()).NotTo(HaveOccurred())
+			Expect(len(geoRadius.Val())).To(Equal(0))
+		})
+	})
+
 	Describe("marshaling/unmarshaling", func() {
 
 		type convTest struct {

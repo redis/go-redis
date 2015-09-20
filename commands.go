@@ -1671,3 +1671,33 @@ func (c *commandable) ClusterAddSlotsRange(min, max int) *StatusCmd {
 	}
 	return c.ClusterAddSlots(slots...)
 }
+
+//------------------------------------------------------------------------------
+
+func (c *commandable) GeoAdd(key string, longLatMember...string) *IntCmd {
+	args := make([]interface{}, 2+len(longLatMember))
+	args[0] = "GEOADD"
+	args[1] = key
+	for i, triplet := range longLatMember {
+		args[2+i] = triplet
+	}
+	cmd := NewIntCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) GeoRadius(key, longitude, latitude, radius, unit string, options ...string) *GeoCmd {
+	args := make([]interface{}, 6+len(options))
+	args[0] = "GEORADIUS"
+	args[1] = key
+	args[2] = longitude
+	args[3] = latitude
+	args[4] = radius
+	args[5] = unit
+	for i, key := range options {
+		args[6+i] = key
+	}
+	cmd := NewGeoCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
