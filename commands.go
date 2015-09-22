@@ -1674,29 +1674,71 @@ func (c *commandable) ClusterAddSlotsRange(min, max int) *StatusCmd {
 
 //------------------------------------------------------------------------------
 
-func (c *commandable) GeoAdd(key string, longLatMember...string) *IntCmd {
-	args := make([]interface{}, 2+len(longLatMember))
+func (c *commandable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
+	args := make([]interface{}, 2+3*len(geoLocation))
 	args[0] = "GEOADD"
 	args[1] = key
-	for i, triplet := range longLatMember {
-		args[2+i] = triplet
+	for i, eachLoc := range geoLocation {
+		args[2+3*i] = eachLoc.Longitude
+		args[2+3*i+1] = eachLoc.Latitude
+		args[2+3*i+2] = eachLoc.Name
 	}
 	cmd := NewIntCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) GeoRadius(key, longitude, latitude, radius, unit string, options ...string) *GeoCmd {
-	args := make([]interface{}, 6+len(options))
-	args[0] = "GEORADIUS"
-	args[1] = key
-	args[2] = longitude
-	args[3] = latitude
-	args[4] = radius
-	args[5] = unit
-	for i, key := range options {
-		args[6+i] = key
+func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoCmd {
+	var options, optionsCtr int
+	if query.WithCoord {
+		options++
 	}
+	if query.WithDist {
+		options++
+	}
+	if query.WithHash {
+		options++
+	}
+	if query.Count > 0 {
+		options += 2
+	}
+	if len(query.Sort) > 0 {
+		options++
+	}
+
+	args := make([]interface{}, 6 + options)
+	args[0] = "GEORADIUS"
+	args[1] = query.Key
+	args[2] = query.Longitude
+	args[3] = query.Latitude
+	args[4] = query.Radius
+	if len(query.Unit) > 0 {
+		args[5] = query.Unit
+	} else {
+		args[5] = "km"
+	}
+	if query.WithCoord {
+		args[6+optionsCtr] = "WITHCOORD"
+		optionsCtr++
+	}
+	if query.WithDist {
+		args[6+optionsCtr] = "WITHDIST"
+		optionsCtr++
+	}
+	if query.WithHash {
+		args[6+optionsCtr] = "WITHHASH"
+		optionsCtr++
+	}
+	if query.Count > 0 {
+		args[6+optionsCtr] = "COUNT"
+		optionsCtr++
+		args[6+optionsCtr] = query.Count
+		optionsCtr++
+	}
+	if len(query.Sort) > 0 {
+		args[6+optionsCtr] = query.Sort
+	}
+
 	cmd := NewGeoCmd(args...)
 	c.Process(cmd)
 	return cmd

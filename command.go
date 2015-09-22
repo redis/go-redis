@@ -786,17 +786,29 @@ func (cmd *ClusterSlotCmd) parseReply(cn *conn) error {
 
 //------------------------------------------------------------------------------
 
-type Location struct {
-	Name string
-	Distance string
+// Location type for GEO operations in Redis
+type GeoLocation struct {
+	Longitude, Latitude, Name, Distance string
 	GeoHash int64
-	Coordinates [2]string
 }
 
 type GeoCmd struct {
 	baseCmd
 
-	locations   []Location
+	locations []GeoLocation
+}
+
+// Query type for geo radius
+type GeoRadiusQuery struct {
+	Key string
+	Longitude, Latitude, Radius string
+	// Unit default to km when nil
+	Unit string
+	WithCoord, WithDist, WithHash bool
+	// Count default to 0 and ignored limit.
+	Count int
+	// Sort default to unsorted, ASC or DESC otherwise
+	Sort string
 }
 
 func NewGeoCmd(args ...interface{}) *GeoCmd {
@@ -808,11 +820,11 @@ func (cmd *GeoCmd) reset() {
 	cmd.err = nil
 }
 
-func (cmd *GeoCmd) Val() ([]Location) {
+func (cmd *GeoCmd) Val() ([]GeoLocation) {
 	return cmd.locations
 }
 
-func (cmd *GeoCmd) Result() ([]Location, error) {
+func (cmd *GeoCmd) Result() ([]GeoLocation, error) {
 	return cmd.locations, cmd.err
 }
 
@@ -829,18 +841,17 @@ func (cmd *GeoCmd) parseReply(cn *conn) error {
 
 	v := vi.([]interface{})
 
-
 	if len(v) == 0 {
 		return nil
 	}
 
 	if _, ok := v[0].(string); ok { // Location names only (single level string array)
 		for _, keyi := range v {
-			cmd.locations = append(cmd.locations, Location{Name: keyi.(string)})
+			cmd.locations = append(cmd.locations, GeoLocation{Name: keyi.(string)})
 		}
 	} else { // Full location details (nested arrays)
 		for _, keyi := range v {
-			tmpLocation := Location{}
+			tmpLocation := GeoLocation{}
 			keyiface := keyi.([]interface{})
 			for _, subKeyi := range keyiface {
 				if strVal, ok := subKeyi.(string); ok {
@@ -852,7 +863,8 @@ func (cmd *GeoCmd) parseReply(cn *conn) error {
 				} else if intVal, ok := subKeyi.(int64); ok {
 					tmpLocation.GeoHash = intVal
 				} else if ifcVal, ok := subKeyi.([]interface{}); ok {
-					tmpLocation.Coordinates = [2]string{ifcVal[0].(string), ifcVal[1].(string)}
+					tmpLocation.Longitude = ifcVal[0].(string)
+					tmpLocation.Latitude = ifcVal[1].(string)
 				}
 			}
 			cmd.locations = append(cmd.locations, tmpLocation)
