@@ -1690,19 +1690,19 @@ func (c *commandable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 
 func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoCmd {
 	var options, optionsCtr int
-	if query.WithCoord {
+	if query.WithCoordinates {
 		options++
 	}
-	if query.WithDist {
+	if query.WithDistance {
 		options++
 	}
-	if query.WithHash {
+	if query.WithGeoHash {
 		options++
 	}
 	if query.Count > 0 {
 		options += 2
 	}
-	if len(query.Sort) > 0 {
+	if query.Sort != "" {
 		options++
 	}
 
@@ -1712,20 +1712,20 @@ func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoCmd {
 	args[2] = query.Longitude
 	args[3] = query.Latitude
 	args[4] = query.Radius
-	if len(query.Unit) > 0 {
+	if query.Unit != "" {
 		args[5] = query.Unit
 	} else {
 		args[5] = "km"
 	}
-	if query.WithCoord {
+	if query.WithCoordinates {
 		args[6+optionsCtr] = "WITHCOORD"
 		optionsCtr++
 	}
-	if query.WithDist {
+	if query.WithDistance {
 		args[6+optionsCtr] = "WITHDIST"
 		optionsCtr++
 	}
-	if query.WithHash {
+	if query.WithGeoHash {
 		args[6+optionsCtr] = "WITHHASH"
 		optionsCtr++
 	}
@@ -1735,7 +1735,7 @@ func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoCmd {
 		args[6+optionsCtr] = query.Count
 		optionsCtr++
 	}
-	if len(query.Sort) > 0 {
+	if query.Sort != "" {
 		args[6+optionsCtr] = query.Sort
 	}
 

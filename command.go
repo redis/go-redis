@@ -788,7 +788,8 @@ func (cmd *ClusterSlotCmd) parseReply(cn *conn) error {
 
 // Location type for GEO operations in Redis
 type GeoLocation struct {
-	Longitude, Latitude, Name, Distance string
+	Name string
+	Longitude, Latitude, Distance float64
 	GeoHash int64
 }
 
@@ -801,10 +802,10 @@ type GeoCmd struct {
 // Query type for geo radius
 type GeoRadiusQuery struct {
 	Key string
-	Longitude, Latitude, Radius string
+	Longitude, Latitude, Radius float64
 	// Unit default to km when nil
 	Unit string
-	WithCoord, WithDist, WithHash bool
+	WithCoordinates, WithDistance, WithGeoHash bool
 	// Count default to 0 and ignored limit.
 	Count int
 	// Sort default to unsorted, ASC or DESC otherwise
@@ -858,13 +859,22 @@ func (cmd *GeoCmd) parseReply(cn *conn) error {
 					if len(tmpLocation.Name) == 0 {
 						tmpLocation.Name = strVal
 					} else {
-						tmpLocation.Distance = strVal
+						tmpLocation.Distance, err = strconv.ParseFloat(strVal, 64)
+						if err != nil {
+							return err
+						}
 					}
 				} else if intVal, ok := subKeyi.(int64); ok {
 					tmpLocation.GeoHash = intVal
 				} else if ifcVal, ok := subKeyi.([]interface{}); ok {
-					tmpLocation.Longitude = ifcVal[0].(string)
-					tmpLocation.Latitude = ifcVal[1].(string)
+					tmpLocation.Longitude, err = strconv.ParseFloat(ifcVal[0].(string), 64)
+					if err != nil {
+						return err
+					}
+					tmpLocation.Latitude, err = strconv.ParseFloat(ifcVal[1].(string), 64)
+					if err != nil {
+						return err
+					}
 				}
 			}
 			cmd.locations = append(cmd.locations, tmpLocation)
