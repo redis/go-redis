@@ -215,7 +215,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	cn.ReadTimeout = timeout
 
 	cmd := NewSliceCmd()
-	if err := cmd.parseReply(cn); err != nil {
+	if err := cmd.readReply(cn); err != nil {
 		return nil, err
 	}
 	return newMessage(cmd.Val())

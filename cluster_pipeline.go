@@ -100,7 +100,7 @@ func (pipe *ClusterPipeline) execClusterCmds(
 
 	var firstCmdErr error
 	for i, cmd := range cmds {
-		err := cmd.parseReply(cn)
+		err := cmd.readReply(cn)
 		if err == nil {
 			continue
 		}

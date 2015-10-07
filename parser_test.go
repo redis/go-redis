@@ -23,7 +23,7 @@ func BenchmarkParseReplyString(b *testing.B) {
 }
 
 func BenchmarkParseReplySlice(b *testing.B) {
-	benchmarkParseReply(b, "*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n", parseSlice, false)
+	benchmarkParseReply(b, "*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n", sliceParser, false)
 }
 
 func benchmarkParseReply(b *testing.B, reply string, p multiBulkParser, wanterr bool) {
@@ -39,7 +39,7 @@ func benchmarkParseReply(b *testing.B, reply string, p multiBulkParser, wanterr 
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_, err := parseReply(cn, p)
+		_, err := readReply(cn, p)
 		if !wanterr && err != nil {
 			b.Fatal(err)
 		}

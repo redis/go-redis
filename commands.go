@@ -1688,25 +1688,8 @@ func (c *commandable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 	return cmd
 }
 
-func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoCmd {
-	var options, optionsCtr int
-	if query.WithCoordinates {
-		options++
-	}
-	if query.WithDistance {
-		options++
-	}
-	if query.WithGeoHash {
-		options++
-	}
-	if query.Count > 0 {
-		options += 2
-	}
-	if query.Sort != "" {
-		options++
-	}
-
-	args := make([]interface{}, 6 + options)
+func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoLocationCmd {
+	args := make([]interface{}, 6)
 	args[0] = "GEORADIUS"
 	args[1] = query.Key
 	args[2] = query.Longitude
@@ -1718,28 +1701,22 @@ func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoCmd {
 		args[5] = "km"
 	}
 	if query.WithCoordinates {
-		args[6+optionsCtr] = "WITHCOORD"
-		optionsCtr++
+		args = append(args, "WITHCOORD")
 	}
 	if query.WithDistance {
-		args[6+optionsCtr] = "WITHDIST"
-		optionsCtr++
+		args = append(args, "WITHDIST")
 	}
 	if query.WithGeoHash {
-		args[6+optionsCtr] = "WITHHASH"
-		optionsCtr++
+		args = append(args, "WITHHASH")
 	}
 	if query.Count > 0 {
-		args[6+optionsCtr] = "COUNT"
-		optionsCtr++
-		args[6+optionsCtr] = query.Count
-		optionsCtr++
+		args = append(args, "COUNT", query.Count)
 	}
 	if query.Sort != "" {
-		args[6+optionsCtr] = query.Sort
+		args = append(args, query.Sort)
 	}
 
-	cmd := NewGeoCmd(args...)
+	cmd := NewGeoLocationCmd(args...)
 	c.Process(cmd)
 	return cmd
 }

@@ -8,6 +8,14 @@ import (
 	"strconv"
 )
 
+const (
+	errorReply  = '-'
+	statusReply = '+'
+	intReply    = ':'
+	stringReply = '$'
+	arrayReply  = '*'
+)
+
 type multiBulkParser func(cn *conn, n int64) (interface{}, error)
 
 var (
@@ -239,57 +247,157 @@ func readN(cn *conn, n int) ([]byte, error) {
 
 //------------------------------------------------------------------------------
 
-func parseReply(cn *conn, p multiBulkParser) (interface{}, error) {
+func parseErrorReply(cn *conn, line []byte) error {
+	return errorf(string(line[1:]))
+}
+
+func parseIntReply(cn *conn, line []byte) (int64, error) {
+	n, err := strconv.ParseInt(bytesToString(line[1:]), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func readIntReply(cn *conn) (int64, error) {
+	line, err := readLine(cn)
+	if err != nil {
+		return 0, err
+	}
+	switch line[0] {
+	case errorReply:
+		return 0, parseErrorReply(cn, line)
+	case intReply:
+		return parseIntReply(cn, line)
+	default:
+		return 0, fmt.Errorf("readIntReply: can't parse %.100q", line)
+	}
+}
+
+func parseBytesReply(cn *conn, line []byte) ([]byte, error) {
+	if len(line) == 3 && line[1] == '-' && line[2] == '1' {
+		return nil, Nil
+	}
+
+	replyLen, err := strconv.Atoi(bytesToString(line[1:]))
+	if err != nil {
+		return nil, err
+	}
+
+	b, err := readN(cn, replyLen+2)
+	if err != nil {
+		return nil, err
+	}
+
+	return b[:replyLen], nil
+}
+
+func readBytesReply(cn *conn) ([]byte, error) {
+	line, err := readLine(cn)
+	if err != nil {
+		return nil, err
+	}
+	switch line[0] {
+	case errorReply:
+		return nil, parseErrorReply(cn, line)
+	case stringReply:
+		return parseBytesReply(cn, line)
+	default:
+		return nil, fmt.Errorf("readBytesReply: can't parse %.100q", line)
+	}
+}
+
+func readStringReply(cn *conn) (string, error) {
+	b, err := readBytesReply(cn)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func readFloatReply(cn *conn) (float64, error) {
+	b, err := readBytesReply(cn)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseFloat(bytesToString(b), 64)
+}
+
+func parseArrayHeader(cn *conn, line []byte) (int64, error) {
+	if len(line) == 3 && line[1] == '-' && line[2] == '1' {
+		return 0, Nil
+	}
+
+	n, err := strconv.ParseInt(bytesToString(line[1:]), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func parseArrayReply(cn *conn, p multiBulkParser, line []byte) (interface{}, error) {
+	n, err := parseArrayHeader(cn, line)
+	if err != nil {
+		return nil, err
+	}
+	return p(cn, n)
+}
+
+func readArrayHeader(cn *conn) (int64, error) {
+	line, err := readLine(cn)
+	if err != nil {
+		return 0, err
+	}
+	switch line[0] {
+	case errorReply:
+		return 0, parseErrorReply(cn, line)
+	case arrayReply:
+		return parseArrayHeader(cn, line)
+	default:
+		return 0, fmt.Errorf("readArrayReply: can't parse %.100q", line)
+	}
+}
+
+func readArrayReply(cn *conn, p multiBulkParser) (interface{}, error) {
+	line, err := readLine(cn)
+	if err != nil {
+		return nil, err
+	}
+	switch line[0] {
+	case errorReply:
+		return nil, parseErrorReply(cn, line)
+	case arrayReply:
+		return parseArrayReply(cn, p, line)
+	default:
+		return nil, fmt.Errorf("readArrayReply: can't parse %.100q", line)
+	}
+}
+
+func readReply(cn *conn, p multiBulkParser) (interface{}, error) {
 	line, err := readLine(cn)
 	if err != nil {
 		return nil, err
 	}
 
 	switch line[0] {
-	case '-':
-		return nil, errorf(string(line[1:]))
-	case '+':
+	case errorReply:
+		return nil, parseErrorReply(cn, line)
+	case statusReply:
 		return line[1:], nil
-	case ':':
-		v, err := strconv.ParseInt(bytesToString(line[1:]), 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		return v, nil
-	case '$':
-		if len(line) == 3 && line[1] == '-' && line[2] == '1' {
-			return nil, Nil
-		}
-
-		replyLen, err := strconv.Atoi(bytesToString(line[1:]))
-		if err != nil {
-			return nil, err
-		}
-
-		b, err := readN(cn, replyLen+2)
-		if err != nil {
-			return nil, err
-		}
-		return b[:replyLen], nil
-	case '*':
-		if len(line) == 3 && line[1] == '-' && line[2] == '1' {
-			return nil, Nil
-		}
-
-		repliesNum, err := strconv.ParseInt(bytesToString(line[1:]), 10, 64)
-		if err != nil {
-			return nil, err
-		}
-
-		return p(cn, repliesNum)
+	case intReply:
+		return parseIntReply(cn, line)
+	case stringReply:
+		return parseBytesReply(cn, line)
+	case arrayReply:
+		return parseArrayReply(cn, p, line)
 	}
 	return nil, fmt.Errorf("redis: can't parse %q", line)
 }
 
-func parseSlice(cn *conn, n int64) (interface{}, error) {
+func sliceParser(cn *conn, n int64) (interface{}, error) {
 	vals := make([]interface{}, 0, n)
 	for i := int64(0); i < n; i++ {
-		v, err := parseReply(cn, parseSlice)
+		v, err := readReply(cn, sliceParser)
 		if err == Nil {
 			vals = append(vals, nil)
 		} else if err != nil {
@@ -306,171 +414,224 @@ func parseSlice(cn *conn, n int64) (interface{}, error) {
 	return vals, nil
 }
 
-func parseStringSlice(cn *conn, n int64) (interface{}, error) {
-	vals := make([]string, 0, n)
+func intSliceParser(cn *conn, n int64) (interface{}, error) {
+	ints := make([]int64, 0, n)
 	for i := int64(0); i < n; i++ {
-		viface, err := parseReply(cn, nil)
+		n, err := readIntReply(cn)
 		if err != nil {
 			return nil, err
 		}
-		v, ok := viface.([]byte)
-		if !ok {
-			return nil, fmt.Errorf("got %T, expected string", viface)
-		}
-		vals = append(vals, string(v))
+		ints = append(ints, n)
 	}
-	return vals, nil
+	return ints, nil
 }
 
-func parseBoolSlice(cn *conn, n int64) (interface{}, error) {
-	vals := make([]bool, 0, n)
+func boolSliceParser(cn *conn, n int64) (interface{}, error) {
+	bools := make([]bool, 0, n)
 	for i := int64(0); i < n; i++ {
-		viface, err := parseReply(cn, nil)
+		n, err := readIntReply(cn)
 		if err != nil {
 			return nil, err
 		}
-		v, ok := viface.(int64)
-		if !ok {
-			return nil, fmt.Errorf("got %T, expected int64", viface)
-		}
-		vals = append(vals, v == 1)
+		bools = append(bools, n == 1)
 	}
-	return vals, nil
+	return bools, nil
 }
 
-func parseStringStringMap(cn *conn, n int64) (interface{}, error) {
+func stringSliceParser(cn *conn, n int64) (interface{}, error) {
+	ss := make([]string, 0, n)
+	for i := int64(0); i < n; i++ {
+		s, err := readStringReply(cn)
+		if err != nil {
+			return nil, err
+		}
+		ss = append(ss, s)
+	}
+	return ss, nil
+}
+
+func floatSliceParser(cn *conn, n int64) (interface{}, error) {
+	nn := make([]float64, 0, n)
+	for i := int64(0); i < n; i++ {
+		n, err := readFloatReply(cn)
+		if err != nil {
+			return nil, err
+		}
+		nn = append(nn, n)
+	}
+	return nn, nil
+}
+
+func stringStringMapParser(cn *conn, n int64) (interface{}, error) {
 	m := make(map[string]string, n/2)
 	for i := int64(0); i < n; i += 2 {
-		keyIface, err := parseReply(cn, nil)
+		key, err := readStringReply(cn)
 		if err != nil {
 			return nil, err
 		}
-		keyBytes, ok := keyIface.([]byte)
-		if !ok {
-			return nil, fmt.Errorf("got %T, expected []byte", keyIface)
-		}
-		key := string(keyBytes)
 
-		valueIface, err := parseReply(cn, nil)
+		value, err := readStringReply(cn)
 		if err != nil {
 			return nil, err
 		}
-		valueBytes, ok := valueIface.([]byte)
-		if !ok {
-			return nil, fmt.Errorf("got %T, expected []byte", valueIface)
-		}
 
-		m[key] = string(valueBytes)
+		m[key] = value
 	}
 	return m, nil
 }
 
-func parseStringIntMap(cn *conn, n int64) (interface{}, error) {
+func stringIntMapParser(cn *conn, n int64) (interface{}, error) {
 	m := make(map[string]int64, n/2)
 	for i := int64(0); i < n; i += 2 {
-		keyiface, err := parseReply(cn, nil)
+		key, err := readStringReply(cn)
 		if err != nil {
 			return nil, err
-		}
-		key, ok := keyiface.([]byte)
-		if !ok {
-			return nil, fmt.Errorf("got %T, expected string", keyiface)
 		}
 
-		valueiface, err := parseReply(cn, nil)
+		n, err := readIntReply(cn)
 		if err != nil {
 			return nil, err
 		}
-		switch value := valueiface.(type) {
-		case int64:
-			m[string(key)] = value
-		case string:
-			m[string(key)], err = strconv.ParseInt(value, 10, 64)
-			if err != nil {
-				return nil, fmt.Errorf("got %v, expected number", value)
-			}
-		default:
-			return nil, fmt.Errorf("got %T, expected number or string", valueiface)
-		}
+
+		m[key] = n
 	}
 	return m, nil
 }
 
-func parseZSlice(cn *conn, n int64) (interface{}, error) {
+func zSliceParser(cn *conn, n int64) (interface{}, error) {
 	zz := make([]Z, n/2)
 	for i := int64(0); i < n; i += 2 {
+		var err error
+
 		z := &zz[i/2]
 
-		memberiface, err := parseReply(cn, nil)
+		z.Member, err = readStringReply(cn)
 		if err != nil {
 			return nil, err
 		}
-		member, ok := memberiface.([]byte)
-		if !ok {
-			return nil, fmt.Errorf("got %T, expected string", memberiface)
-		}
-		z.Member = string(member)
 
-		scoreiface, err := parseReply(cn, nil)
+		z.Score, err = readFloatReply(cn)
 		if err != nil {
 			return nil, err
 		}
-		scoreb, ok := scoreiface.([]byte)
-		if !ok {
-			return nil, fmt.Errorf("got %T, expected string", scoreiface)
-		}
-		score, err := strconv.ParseFloat(bytesToString(scoreb), 64)
-		if err != nil {
-			return nil, err
-		}
-		z.Score = score
 	}
 	return zz, nil
 }
 
-func parseClusterSlotInfoSlice(cn *conn, n int64) (interface{}, error) {
+func clusterSlotInfoSliceParser(cn *conn, n int64) (interface{}, error) {
 	infos := make([]ClusterSlotInfo, 0, n)
 	for i := int64(0); i < n; i++ {
-		viface, err := parseReply(cn, parseSlice)
+		n, err := readArrayHeader(cn)
+		if err != nil {
+			return nil, err
+		}
+		if n < 2 {
+			return nil, fmt.Errorf("got %d elements in cluster info, expected at least 2", n)
+		}
+
+		start, err := readIntReply(cn)
 		if err != nil {
 			return nil, err
 		}
 
-		item, ok := viface.([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("got %T, expected []interface{}", viface)
-		} else if len(item) < 3 {
-			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
+		end, err := readIntReply(cn)
+		if err != nil {
+			return nil, err
 		}
 
-		start, ok := item[0].(int64)
-		if !ok || start < 0 || start > hashSlots {
-			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
-		}
-		end, ok := item[1].(int64)
-		if !ok || end < 0 || end > hashSlots {
-			return nil, fmt.Errorf("got %v, expected {int64, int64, string...}", item)
+		addrsn := n - 2
+		info := ClusterSlotInfo{
+			Start: int(start),
+			End:   int(end),
+			Addrs: make([]string, addrsn),
 		}
 
-		info := ClusterSlotInfo{int(start), int(end), make([]string, len(item)-2)}
-		for n, ipair := range item[2:] {
-			pair, ok := ipair.([]interface{})
-			if !ok || len(pair) != 2 {
-				return nil, fmt.Errorf("got %v, expected []interface{host, port}", viface)
+		for i := int64(0); i < addrsn; i++ {
+			n, err := readArrayHeader(cn)
+			if err != nil {
+				return nil, err
+			}
+			if n != 2 {
+				return nil, fmt.Errorf("got %d elements in cluster info address, expected 2", n)
 			}
 
-			ip, ok := pair[0].(string)
-			if !ok || len(ip) < 1 {
-				return nil, fmt.Errorf("got %v, expected IP PORT pair", pair)
-			}
-			port, ok := pair[1].(int64)
-			if !ok || port < 1 {
-				return nil, fmt.Errorf("got %v, expected IP PORT pair", pair)
+			ip, err := readStringReply(cn)
+			if err != nil {
+				return nil, err
 			}
 
-			info.Addrs[n] = net.JoinHostPort(ip, strconv.FormatInt(port, 10))
+			port, err := readIntReply(cn)
+			if err != nil {
+				return nil, err
+			}
+
+			info.Addrs[i] = net.JoinHostPort(ip, strconv.FormatInt(port, 10))
 		}
+
 		infos = append(infos, info)
 	}
 	return infos, nil
+}
+
+func geoLocationParser(cn *conn, n int64) (interface{}, error) {
+	loc := &GeoLocation{}
+
+	var err error
+	loc.Name, err = readStringReply(cn)
+	if err != nil {
+		return nil, err
+	}
+	if n >= 2 {
+		loc.Distance, err = readFloatReply(cn)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if n >= 3 {
+		loc.GeoHash, err = readIntReply(cn)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if n >= 4 {
+		n, err := readArrayHeader(cn)
+		if err != nil {
+			return nil, err
+		}
+		if n != 2 {
+			return nil, fmt.Errorf("got %d coordinates, expected 2", n)
+		}
+
+		loc.Longitude, err = readFloatReply(cn)
+		if err != nil {
+			return nil, err
+		}
+		loc.Latitude, err = readFloatReply(cn)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return loc, nil
+}
+
+func geoLocationSliceParser(cn *conn, n int64) (interface{}, error) {
+	locs := make([]GeoLocation, 0, n)
+	for i := int64(0); i < n; i++ {
+		v, err := readReply(cn, geoLocationParser)
+		if err != nil {
+			return nil, err
+		}
+		switch vv := v.(type) {
+		case []byte:
+			locs = append(locs, GeoLocation{
+				Name: string(vv),
+			})
+		case *GeoLocation:
+			locs = append(locs, *vv)
+		default:
+			return nil, fmt.Errorf("got %T, expected string or *GeoLocation", v)
+		}
+	}
+	return locs, nil
 }
