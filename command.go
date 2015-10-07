@@ -198,7 +198,7 @@ func (cmd *SliceCmd) String() string {
 }
 
 func (cmd *SliceCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, sliceParser)
+	v, err := readArrayReply(cn, sliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -241,13 +241,8 @@ func (cmd *StatusCmd) String() string {
 }
 
 func (cmd *StatusCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, nil)
-	if err != nil {
-		cmd.err = err
-		return err
-	}
-	cmd.val = string(v.([]byte))
-	return nil
+	cmd.val, cmd.err = readStringReply(cn)
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -280,13 +275,8 @@ func (cmd *IntCmd) String() string {
 }
 
 func (cmd *IntCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, nil)
-	if err != nil {
-		cmd.err = err
-		return err
-	}
-	cmd.val = v.(int64)
-	return nil
+	cmd.val, cmd.err = readIntReply(cn)
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -323,12 +313,12 @@ func (cmd *DurationCmd) String() string {
 }
 
 func (cmd *DurationCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, nil)
+	n, err := readIntReply(cn)
 	if err != nil {
 		cmd.err = err
 		return err
 	}
-	cmd.val = time.Duration(v.(int64)) * cmd.precision
+	cmd.val = time.Duration(n) * cmd.precision
 	return nil
 }
 
@@ -365,8 +355,8 @@ var ok = []byte("OK")
 
 func (cmd *BoolCmd) readReply(cn *conn) error {
 	v, err := readReply(cn, nil)
-	// `SET key value NX` returns nil when key already exists, which
-	// is inconsistent with `SETNX key value`.
+	// `SET key value NX` returns nil when key already exists. But
+	// `SETNX key value` returns bool (0/1). So convert nil to bool.
 	// TODO: is this okay?
 	if err == Nil {
 		cmd.val = false
@@ -450,12 +440,12 @@ func (cmd *StringCmd) String() string {
 }
 
 func (cmd *StringCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, nil)
+	b, err := readBytesReply(cn)
 	if err != nil {
 		cmd.err = err
 		return err
 	}
-	cmd.val = cn.copyBuf(v.([]byte))
+	cmd.val = cn.copyBuf(b)
 	return nil
 }
 
@@ -489,13 +479,7 @@ func (cmd *FloatCmd) String() string {
 }
 
 func (cmd *FloatCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, nil)
-	if err != nil {
-		cmd.err = err
-		return err
-	}
-	b := v.([]byte)
-	cmd.val, cmd.err = strconv.ParseFloat(bytesToString(b), 64)
+	cmd.val, cmd.err = readFloatReply(cn)
 	return cmd.err
 }
 
@@ -529,7 +513,7 @@ func (cmd *StringSliceCmd) String() string {
 }
 
 func (cmd *StringSliceCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, stringSliceParser)
+	v, err := readArrayReply(cn, stringSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -568,7 +552,7 @@ func (cmd *BoolSliceCmd) String() string {
 }
 
 func (cmd *BoolSliceCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, boolSliceParser)
+	v, err := readArrayReply(cn, boolSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -607,7 +591,7 @@ func (cmd *StringStringMapCmd) String() string {
 }
 
 func (cmd *StringStringMapCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, stringStringMapParser)
+	v, err := readArrayReply(cn, stringStringMapParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -646,7 +630,7 @@ func (cmd *StringIntMapCmd) reset() {
 }
 
 func (cmd *StringIntMapCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, stringIntMapParser)
+	v, err := readArrayReply(cn, stringIntMapParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -685,7 +669,7 @@ func (cmd *ZSliceCmd) String() string {
 }
 
 func (cmd *ZSliceCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, zSliceParser)
+	v, err := readArrayReply(cn, zSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -713,6 +697,9 @@ func (cmd *ScanCmd) reset() {
 	cmd.err = nil
 }
 
+// TODO: cursor should be string to match redis type
+// TODO: swap return values
+
 func (cmd *ScanCmd) Val() (int64, []string) {
 	return cmd.cursor, cmd.keys
 }
@@ -726,23 +713,13 @@ func (cmd *ScanCmd) String() string {
 }
 
 func (cmd *ScanCmd) readReply(cn *conn) error {
-	vi, err := readReply(cn, sliceParser)
+	keys, cursor, err := readScanReply(cn)
 	if err != nil {
 		cmd.err = err
 		return cmd.err
 	}
-	v := vi.([]interface{})
-
-	cmd.cursor, cmd.err = strconv.ParseInt(v[0].(string), 10, 64)
-	if cmd.err != nil {
-		return cmd.err
-	}
-
-	keys := v[1].([]interface{})
-	for _, keyi := range keys {
-		cmd.keys = append(cmd.keys, keyi.(string))
-	}
-
+	cmd.keys = keys
+	cmd.cursor = cursor
 	return nil
 }
 
@@ -782,7 +759,7 @@ func (cmd *ClusterSlotCmd) reset() {
 }
 
 func (cmd *ClusterSlotCmd) readReply(cn *conn) error {
-	v, err := readReply(cn, clusterSlotInfoSliceParser)
+	v, err := readArrayReply(cn, clusterSlotInfoSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -844,7 +821,7 @@ func (cmd *GeoLocationCmd) String() string {
 }
 
 func (cmd *GeoLocationCmd) readReply(cn *conn) error {
-	reply, err := readReply(cn, geoLocationSliceParser)
+	reply, err := readArrayReply(cn, geoLocationSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
