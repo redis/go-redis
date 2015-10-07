@@ -97,7 +97,7 @@ func execCmds(cn *conn, cmds []Cmder) ([]Cmder, error) {
 	var firstCmdErr error
 	var failedCmds []Cmder
 	for _, cmd := range cmds {
-		err := cmd.parseReply(cn)
+		err := cmd.readReply(cn)
 		if err == nil {
 			continue
 		}

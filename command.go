@@ -28,7 +28,7 @@ var (
 
 type Cmder interface {
 	args() []interface{}
-	parseReply(*conn) error
+	readReply(*conn) error
 	setErr(error)
 	reset()
 
@@ -152,14 +152,20 @@ func (cmd *Cmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *Cmd) parseReply(cn *conn) error {
-	cmd.val, cmd.err = parseReply(cn, parseSlice)
-	// Convert to string to preserve old behaviour.
-	// TODO: remove in v4
-	if v, ok := cmd.val.([]byte); ok {
-		cmd.val = string(v)
+func (cmd *Cmd) readReply(cn *conn) error {
+	val, err := readReply(cn, sliceParser)
+	if err != nil {
+		cmd.err = err
+		return cmd.err
 	}
-	return cmd.err
+	if v, ok := val.([]byte); ok {
+		// Convert to string to preserve old behaviour.
+		// TODO: remove in v4
+		cmd.val = string(v)
+	} else {
+		cmd.val = val
+	}
+	return nil
 }
 
 //------------------------------------------------------------------------------
@@ -191,8 +197,8 @@ func (cmd *SliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *SliceCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, parseSlice)
+func (cmd *SliceCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, sliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -234,8 +240,8 @@ func (cmd *StatusCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StatusCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, nil)
+func (cmd *StatusCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, nil)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -273,8 +279,8 @@ func (cmd *IntCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *IntCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, nil)
+func (cmd *IntCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, nil)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -316,8 +322,8 @@ func (cmd *DurationCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *DurationCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, nil)
+func (cmd *DurationCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, nil)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -357,8 +363,8 @@ func (cmd *BoolCmd) String() string {
 
 var ok = []byte("OK")
 
-func (cmd *BoolCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, nil)
+func (cmd *BoolCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, nil)
 	// `SET key value NX` returns nil when key already exists, which
 	// is inconsistent with `SETNX key value`.
 	// TODO: is this okay?
@@ -443,8 +449,8 @@ func (cmd *StringCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, nil)
+func (cmd *StringCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, nil)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -482,8 +488,8 @@ func (cmd *FloatCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *FloatCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, nil)
+func (cmd *FloatCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, nil)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -522,8 +528,8 @@ func (cmd *StringSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringSliceCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, parseStringSlice)
+func (cmd *StringSliceCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, stringSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -561,8 +567,8 @@ func (cmd *BoolSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *BoolSliceCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, parseBoolSlice)
+func (cmd *BoolSliceCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, boolSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -600,8 +606,8 @@ func (cmd *StringStringMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringStringMapCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, parseStringStringMap)
+func (cmd *StringStringMapCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, stringStringMapParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -639,8 +645,8 @@ func (cmd *StringIntMapCmd) reset() {
 	cmd.err = nil
 }
 
-func (cmd *StringIntMapCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, parseStringIntMap)
+func (cmd *StringIntMapCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, stringIntMapParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -678,8 +684,8 @@ func (cmd *ZSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ZSliceCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, parseZSlice)
+func (cmd *ZSliceCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, zSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -719,8 +725,8 @@ func (cmd *ScanCmd) String() string {
 	return cmdString(cmd, cmd.keys)
 }
 
-func (cmd *ScanCmd) parseReply(cn *conn) error {
-	vi, err := parseReply(cn, parseSlice)
+func (cmd *ScanCmd) readReply(cn *conn) error {
+	vi, err := readReply(cn, sliceParser)
 	if err != nil {
 		cmd.err = err
 		return cmd.err
@@ -743,8 +749,9 @@ func (cmd *ScanCmd) parseReply(cn *conn) error {
 //------------------------------------------------------------------------------
 
 type ClusterSlotInfo struct {
-	Start, End int
-	Addrs      []string
+	Start int
+	End   int
+	Addrs []string
 }
 
 type ClusterSlotCmd struct {
@@ -774,12 +781,74 @@ func (cmd *ClusterSlotCmd) reset() {
 	cmd.err = nil
 }
 
-func (cmd *ClusterSlotCmd) parseReply(cn *conn) error {
-	v, err := parseReply(cn, parseClusterSlotInfoSlice)
+func (cmd *ClusterSlotCmd) readReply(cn *conn) error {
+	v, err := readReply(cn, clusterSlotInfoSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
 	}
 	cmd.val = v.([]ClusterSlotInfo)
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+// GeoLocation is used with GeoAdd to add geospatial location.
+type GeoLocation struct {
+	Name                          string
+	Longitude, Latitude, Distance float64
+	GeoHash                       int64
+}
+
+// GeoRadiusQuery is used with GeoRadius to query geospatial index.
+type GeoRadiusQuery struct {
+	Key       string
+	Longitude float64
+	Latitude  float64
+	Radius    float64
+	// Can be m, km, ft, or mi. Default is km.
+	Unit            string
+	WithCoordinates bool
+	WithDistance    bool
+	WithGeoHash     bool
+	Count           int
+	// Can be ASC or DESC. Default is no sort order.
+	Sort string
+}
+
+type GeoLocationCmd struct {
+	baseCmd
+
+	locations []GeoLocation
+}
+
+func NewGeoLocationCmd(args ...interface{}) *GeoLocationCmd {
+	return &GeoLocationCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *GeoLocationCmd) reset() {
+	cmd.locations = nil
+	cmd.err = nil
+}
+
+func (cmd *GeoLocationCmd) Val() []GeoLocation {
+	return cmd.locations
+}
+
+func (cmd *GeoLocationCmd) Result() ([]GeoLocation, error) {
+	return cmd.locations, cmd.err
+}
+
+func (cmd *GeoLocationCmd) String() string {
+	return cmdString(cmd, cmd.locations)
+}
+
+func (cmd *GeoLocationCmd) readReply(cn *conn) error {
+	reply, err := readReply(cn, geoLocationSliceParser)
+	if err != nil {
+		cmd.err = err
+		return err
+	}
+	cmd.locations = reply.([]GeoLocation)
 	return nil
 }

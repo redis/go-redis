@@ -1671,3 +1671,52 @@ func (c *commandable) ClusterAddSlotsRange(min, max int) *StatusCmd {
 	}
 	return c.ClusterAddSlots(slots...)
 }
+
+//------------------------------------------------------------------------------
+
+func (c *commandable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
+	args := make([]interface{}, 2+3*len(geoLocation))
+	args[0] = "GEOADD"
+	args[1] = key
+	for i, eachLoc := range geoLocation {
+		args[2+3*i] = eachLoc.Longitude
+		args[2+3*i+1] = eachLoc.Latitude
+		args[2+3*i+2] = eachLoc.Name
+	}
+	cmd := NewIntCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoLocationCmd {
+	args := make([]interface{}, 6)
+	args[0] = "GEORADIUS"
+	args[1] = query.Key
+	args[2] = query.Longitude
+	args[3] = query.Latitude
+	args[4] = query.Radius
+	if query.Unit != "" {
+		args[5] = query.Unit
+	} else {
+		args[5] = "km"
+	}
+	if query.WithCoordinates {
+		args = append(args, "WITHCOORD")
+	}
+	if query.WithDistance {
+		args = append(args, "WITHDIST")
+	}
+	if query.WithGeoHash {
+		args = append(args, "WITHHASH")
+	}
+	if query.Count > 0 {
+		args = append(args, "COUNT", query.Count)
+	}
+	if query.Sort != "" {
+		args = append(args, query.Sort)
+	}
+
+	cmd := NewGeoLocationCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
