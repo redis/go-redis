@@ -251,6 +251,21 @@ func parseErrorReply(cn *conn, line []byte) error {
 	return errorf(string(line[1:]))
 }
 
+func isNilReply(b []byte) bool {
+	return len(b) == 3 && b[1] == '-' && b[2] == '1'
+}
+
+func parseNilReply(cn *conn, line []byte) error {
+	if isNilReply(line) {
+		return Nil
+	}
+	return fmt.Errorf("redis: can't parse nil reply: %.100", line)
+}
+
+func parseStatusReply(cn *conn, line []byte) ([]byte, error) {
+	return line[1:], nil
+}
+
 func parseIntReply(cn *conn, line []byte) (int64, error) {
 	n, err := strconv.ParseInt(bytesToString(line[1:]), 10, 64)
 	if err != nil {
@@ -267,15 +282,17 @@ func readIntReply(cn *conn) (int64, error) {
 	switch line[0] {
 	case errorReply:
 		return 0, parseErrorReply(cn, line)
+	case stringReply:
+		return 0, parseNilReply(cn, line)
 	case intReply:
 		return parseIntReply(cn, line)
 	default:
-		return 0, fmt.Errorf("readIntReply: can't parse %.100q", line)
+		return 0, fmt.Errorf("redis: can't parse int reply: %.100q", line)
 	}
 }
 
 func parseBytesReply(cn *conn, line []byte) ([]byte, error) {
-	if len(line) == 3 && line[1] == '-' && line[2] == '1' {
+	if isNilReply(line) {
 		return nil, Nil
 	}
 
@@ -302,8 +319,10 @@ func readBytesReply(cn *conn) ([]byte, error) {
 		return nil, parseErrorReply(cn, line)
 	case stringReply:
 		return parseBytesReply(cn, line)
+	case statusReply:
+		return parseStatusReply(cn, line)
 	default:
-		return nil, fmt.Errorf("readBytesReply: can't parse %.100q", line)
+		return nil, fmt.Errorf("redis: can't parse string reply: %.100q", line)
 	}
 }
 
@@ -354,7 +373,7 @@ func readArrayHeader(cn *conn) (int64, error) {
 	case arrayReply:
 		return parseArrayHeader(cn, line)
 	default:
-		return 0, fmt.Errorf("readArrayReply: can't parse %.100q", line)
+		return 0, fmt.Errorf("redis: can't parse array reply: %.100q", line)
 	}
 }
 
@@ -369,7 +388,7 @@ func readArrayReply(cn *conn, p multiBulkParser) (interface{}, error) {
 	case arrayReply:
 		return parseArrayReply(cn, p, line)
 	default:
-		return nil, fmt.Errorf("readArrayReply: can't parse %.100q", line)
+		return nil, fmt.Errorf("redis: can't parse array reply: %.100q", line)
 	}
 }
 
@@ -383,7 +402,7 @@ func readReply(cn *conn, p multiBulkParser) (interface{}, error) {
 	case errorReply:
 		return nil, parseErrorReply(cn, line)
 	case statusReply:
-		return line[1:], nil
+		return parseStatusReply(cn, line)
 	case intReply:
 		return parseIntReply(cn, line)
 	case stringReply:
@@ -391,7 +410,43 @@ func readReply(cn *conn, p multiBulkParser) (interface{}, error) {
 	case arrayReply:
 		return parseArrayReply(cn, p, line)
 	}
-	return nil, fmt.Errorf("redis: can't parse %q", line)
+	return nil, fmt.Errorf("redis: can't parse %.100q", line)
+}
+
+func readScanReply(cn *conn) ([]string, int64, error) {
+	n, err := readArrayHeader(cn)
+	if err != nil {
+		return nil, 0, err
+	}
+	if n != 2 {
+		return nil, 0, fmt.Errorf("redis: got %d elements in scan reply, expected 2")
+	}
+
+	b, err := readBytesReply(cn)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	cursor, err := strconv.ParseInt(bytesToString(b), 10, 64)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	n, err = readArrayHeader(cn)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	keys := make([]string, n)
+	for i := int64(0); i < n; i++ {
+		key, err := readStringReply(cn)
+		if err != nil {
+			return nil, 0, err
+		}
+		keys[i] = key
+	}
+
+	return keys, cursor, err
 }
 
 func sliceParser(cn *conn, n int64) (interface{}, error) {
@@ -526,7 +581,8 @@ func clusterSlotInfoSliceParser(cn *conn, n int64) (interface{}, error) {
 			return nil, err
 		}
 		if n < 2 {
-			return nil, fmt.Errorf("got %d elements in cluster info, expected at least 2", n)
+			err := fmt.Errorf("redis: got %d elements in cluster info, expected at least 2", n)
+			return nil, err
 		}
 
 		start, err := readIntReply(cn)
