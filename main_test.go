@@ -232,7 +232,15 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 
 //------------------------------------------------------------------------------
 
-var errTimeout = syscall.ETIMEDOUT
+var (
+	errTimeout = syscall.ETIMEDOUT
+)
+
+type badConnError string
+
+func (e badConnError) Error() string   { return string(e) }
+func (e badConnError) Timeout() bool   { return false }
+func (e badConnError) Temporary() bool { return false }
 
 type badConn struct {
 	net.TCPConn
@@ -250,7 +258,7 @@ func (cn *badConn) Read([]byte) (int, error) {
 	if cn.readErr != nil {
 		return 0, cn.readErr
 	}
-	return 0, net.UnknownNetworkError("badConn")
+	return 0, badConnError("bad connection")
 }
 
 func (cn *badConn) Write([]byte) (int, error) {
@@ -260,5 +268,5 @@ func (cn *badConn) Write([]byte) (int, error) {
 	if cn.writeErr != nil {
 		return 0, cn.writeErr
 	}
-	return 0, net.UnknownNetworkError("badConn")
+	return 0, badConnError("bad connection")
 }

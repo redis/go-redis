@@ -43,11 +43,8 @@ func (cn *conn) init(opt *Options) error {
 		return nil
 	}
 
-	// Use connection to connect to Redis.
-	pool := newSingleConnPoolConn(cn)
-
-	// Client is not closed because we want to reuse underlying connection.
-	client := newClient(opt, pool)
+	// Temp client for Auth and Select.
+	client := newClient(opt, newSingleConnPool(cn))
 
 	if opt.Password != "" {
 		if err := client.Auth(opt.Password).Err(); err != nil {

@@ -11,7 +11,7 @@ import (
 	"gopkg.in/redis.v3"
 )
 
-var _ = Describe("Pool", func() {
+var _ = Describe("pool", func() {
 	var client *redis.Client
 
 	var perform = func(n int, cb func()) {
