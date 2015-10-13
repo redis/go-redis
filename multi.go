@@ -22,7 +22,7 @@ func (c *Client) Multi() *Multi {
 	multi := &Multi{
 		base: &baseClient{
 			opt:      c.opt,
-			connPool: newSingleConnPool(c.connPool, true),
+			connPool: newStickyConnPool(c.connPool, true),
 		},
 	}
 	multi.commandable.process = multi.process

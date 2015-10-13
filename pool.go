@@ -314,6 +314,52 @@ func (p *connPool) reaper() {
 //------------------------------------------------------------------------------
 
 type singleConnPool struct {
+	cn *conn
+}
+
+func newSingleConnPool(cn *conn) *singleConnPool {
+	return &singleConnPool{
+		cn: cn,
+	}
+}
+
+func (p *singleConnPool) First() *conn {
+	return p.cn
+}
+
+func (p *singleConnPool) Get() (*conn, error) {
+	return p.cn, nil
+}
+
+func (p *singleConnPool) Put(cn *conn) error {
+	if p.cn != cn {
+		panic("p.cn != cn")
+	}
+	return nil
+}
+
+func (p *singleConnPool) Remove(cn *conn) error {
+	if p.cn != cn {
+		panic("p.cn != cn")
+	}
+	return nil
+}
+
+func (p *singleConnPool) Len() int {
+	return 1
+}
+
+func (p *singleConnPool) FreeLen() int {
+	return 0
+}
+
+func (p *singleConnPool) Close() error {
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type stickyConnPool struct {
 	pool     pool
 	reusable bool
 
@@ -322,27 +368,21 @@ type singleConnPool struct {
 	mx     sync.Mutex
 }
 
-func newSingleConnPool(pool pool, reusable bool) *singleConnPool {
-	return &singleConnPool{
+func newStickyConnPool(pool pool, reusable bool) *stickyConnPool {
+	return &stickyConnPool{
 		pool:     pool,
 		reusable: reusable,
 	}
 }
 
-func newSingleConnPoolConn(cn *conn) *singleConnPool {
-	return &singleConnPool{
-		cn: cn,
-	}
-}
-
-func (p *singleConnPool) First() *conn {
+func (p *stickyConnPool) First() *conn {
 	p.mx.Lock()
 	cn := p.cn
 	p.mx.Unlock()
 	return cn
 }
 
-func (p *singleConnPool) Get() (*conn, error) {
+func (p *stickyConnPool) Get() (*conn, error) {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 
@@ -362,15 +402,13 @@ func (p *singleConnPool) Get() (*conn, error) {
 	return p.cn, nil
 }
 
-func (p *singleConnPool) put() (err error) {
-	if p.pool != nil {
-		err = p.pool.Put(p.cn)
-	}
+func (p *stickyConnPool) put() (err error) {
+	err = p.pool.Put(p.cn)
 	p.cn = nil
 	return err
 }
 
-func (p *singleConnPool) Put(cn *conn) error {
+func (p *stickyConnPool) Put(cn *conn) error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 	if p.cn != cn {
@@ -382,30 +420,32 @@ func (p *singleConnPool) Put(cn *conn) error {
 	return nil
 }
 
-func (p *singleConnPool) remove() (err error) {
-	if p.pool != nil {
-		err = p.pool.Remove(p.cn)
-	}
+func (p *stickyConnPool) remove() (err error) {
+	err = p.pool.Remove(p.cn)
 	p.cn = nil
 	return err
 }
 
-func (p *singleConnPool) Remove(cn *conn) error {
+func (p *stickyConnPool) Remove(cn *conn) error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 	if p.cn == nil {
 		panic("p.cn == nil")
 	}
-	if cn != nil && cn != p.cn {
-		panic("cn != p.cn")
+	if cn != nil && p.cn != cn {
+		panic("p.cn != cn")
 	}
 	if p.closed {
 		return errClosed
 	}
-	return p.remove()
+	if cn == nil {
+		return p.remove()
+	} else {
+		return nil
+	}
 }
 
-func (p *singleConnPool) Len() int {
+func (p *stickyConnPool) Len() int {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 	if p.cn == nil {
@@ -414,7 +454,7 @@ func (p *singleConnPool) Len() int {
 	return 1
 }
 
-func (p *singleConnPool) FreeLen() int {
+func (p *stickyConnPool) FreeLen() int {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 	if p.cn == nil {
@@ -423,7 +463,7 @@ func (p *singleConnPool) FreeLen() int {
 	return 0
 }
 
-func (p *singleConnPool) Close() error {
+func (p *stickyConnPool) Close() error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 	if p.closed {
