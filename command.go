@@ -780,6 +780,7 @@ type GeoLocation struct {
 // GeoRadiusQuery is used with GeoRadius to query geospatial index.
 type GeoRadiusQuery struct {
 	Key       string
+	Name      string
 	Longitude float64
 	Latitude  float64
 	Radius    float64

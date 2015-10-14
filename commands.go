@@ -1677,16 +1677,22 @@ func (c *commandable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 }
 
 func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoLocationCmd {
-	args := make([]interface{}, 6)
-	args[0] = "GEORADIUS"
+	args := make([]interface{}, 2)
 	args[1] = query.Key
-	args[2] = query.Longitude
-	args[3] = query.Latitude
-	args[4] = query.Radius
-	if query.Unit != "" {
-		args[5] = query.Unit
+	if query.Name != "" {
+		args[0] = "GEORADIUSBYMEMBER"
+		args = append(args, query.Name)
 	} else {
-		args[5] = "km"
+		args[0] = "GEORADIUS"
+		args = append(args, query.Longitude)
+		args = append(args, query.Latitude)
+	}
+	args = append(args, query.Radius)
+
+	if query.Unit != "" {
+		args = append(args, query.Unit)
+	} else {
+		args = append(args, "km")
 	}
 	if query.WithCoordinates {
 		args = append(args, "WITHCOORD")
