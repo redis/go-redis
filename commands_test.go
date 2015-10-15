@@ -2601,6 +2601,43 @@ var _ = Describe("Commands", func() {
 			Expect(geoRadius.Err()).NotTo(HaveOccurred())
 			Expect(len(geoRadius.Val())).To(Equal(0))
 		})
+
+		It("should get geo distance with unit options", func() {
+			// From Redis CLI, note the difference in rounding in m vs km on Redis itself.
+//			GEOADD Sicily 13.361389 38.115556 "Palermo" 15.087269 37.502669 "Catania"
+//			GEODIST Sicily Palermo Catania m
+//			"166274.15156960033"
+//			GEODIST Sicily Palermo Catania km
+//			"166.27415156960032"
+			locations := []*redis.GeoLocation{&redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Name: "Palermo"},
+				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Name: "Catania"}}
+
+			geoAdd := client.GeoAdd("Sicily", locations...)
+			Expect(geoAdd.Err()).NotTo(HaveOccurred())
+			Expect(geoAdd.Val()).To(Equal(int64(2)))
+
+			geoDist := client.GeoDist("Sicily", &redis.GeoLocation{Name: "Palermo"}, &redis.GeoLocation{Name: "Catania"}, "km")
+			Expect(geoDist.Err()).NotTo(HaveOccurred())
+			Expect(geoDist.Val()).To(Equal(166.27415156960032))
+
+			geoDist = client.GeoDist("Sicily", &redis.GeoLocation{Name: "Palermo"}, &redis.GeoLocation{Name: "Catania"}, "m")
+			Expect(geoDist.Err()).NotTo(HaveOccurred())
+			Expect(geoDist.Val()).To(Equal(166274.15156960033))
+		})
+
+		It("should get geo hash in string representation", func() {
+			locations := []*redis.GeoLocation{&redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Name: "Palermo"},
+				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Name: "Catania"}}
+
+			geoAdd := client.GeoAdd("Sicily", locations...)
+			Expect(geoAdd.Err()).NotTo(HaveOccurred())
+			Expect(geoAdd.Val()).To(Equal(int64(2)))
+
+			geoDist := client.GeoHash("Sicily", &redis.GeoLocation{Name: "Palermo"}, &redis.GeoLocation{Name: "Catania"})
+			Expect(geoDist.Err()).NotTo(HaveOccurred())
+			Expect(geoDist.Val()[0]).To(Equal("sqc8b49rny0"))
+			Expect(geoDist.Val()[1]).To(Equal("sqdtr74hyu0"))
+		})
 	})
 
 	Describe("marshaling/unmarshaling", func() {

@@ -1714,3 +1714,31 @@ func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoLocationCmd {
 	c.Process(cmd)
 	return cmd
 }
+
+func (c *commandable) GeoDist(key string, geo1, geo2 *GeoLocation, unit string) *FloatCmd {
+	if unit == "" {
+		unit = "km"
+	}
+	args := make([]interface{}, 5)
+	args[0] = "GEODIST"
+	args[1] = key
+	args[2] = geo1.Name
+	args[3] = geo2.Name
+	args[4] = unit
+
+	cmd := NewFloatCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) GeoHash(key string, geo1, geo2 *GeoLocation) *StringSliceCmd {
+	args := make([]interface{}, 4)
+	args[0] = "GEOHASH"
+	args[1] = key
+	args[2] = geo1.Name
+	args[3] = geo2.Name
+
+	cmd := NewStringSliceCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
