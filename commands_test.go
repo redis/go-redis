@@ -2523,46 +2523,46 @@ var _ = Describe("Commands", func() {
 
 	Describe("Geo add and radius search", func() {
 		It("should add one geo location", func() {
-			geoAdd := client.GeoAdd("Sicily", &redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Name: "Palermo"})
+			geoAdd := client.GeoAdd("Sicily", &redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Member: "Palermo"})
 			Expect(geoAdd.Err()).NotTo(HaveOccurred())
 			Expect(geoAdd.Val()).To(Equal(int64(1)))
 		})
 
 		It("should add multiple geo locations", func() {
-			geoAdd := client.GeoAdd("Sicily", &redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Name: "Palermo"},
-				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Name: "Catania"})
+			geoAdd := client.GeoAdd("Sicily", &redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Member: "Palermo"},
+				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Member: "Catania"})
 			Expect(geoAdd.Err()).NotTo(HaveOccurred())
 			Expect(geoAdd.Val()).To(Equal(int64(2)))
 		})
 
 		It("should search geo radius", func() {
-			geoAdd := client.GeoAdd("Sicily", &redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Name: "Palermo"},
-				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Name: "Catania"})
+			geoAdd := client.GeoAdd("Sicily", &redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Member: "Palermo"},
+				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Member: "Catania"})
 			Expect(geoAdd.Err()).NotTo(HaveOccurred())
 			Expect(geoAdd.Val()).To(Equal(int64(2)))
 
 			geoRadius := client.GeoRadius(&redis.GeoRadiusQuery{Key: "Sicily", Longitude: 15, Latitude: 37, Radius: 200})
 			Expect(geoRadius.Err()).NotTo(HaveOccurred())
-			Expect(geoRadius.Val()[0].Name).To(Equal("Palermo"))
-			Expect(geoRadius.Val()[1].Name).To(Equal("Catania"))
+			Expect(geoRadius.Val()[0].Member).To(Equal("Palermo"))
+			Expect(geoRadius.Val()[1].Member).To(Equal("Catania"))
 		})
 
 		It("should search geo radius with options", func() {
-			locations := []*redis.GeoLocation{&redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Name: "Palermo"},
-				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Name: "Catania"}}
+			locations := []*redis.GeoLocation{&redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Member: "Palermo"},
+				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Member: "Catania"}}
 
 			geoAdd := client.GeoAdd("Sicily", locations...)
 			Expect(geoAdd.Err()).NotTo(HaveOccurred())
 			Expect(geoAdd.Val()).To(Equal(int64(2)))
 
-			geoRadius := client.GeoRadius(&redis.GeoRadiusQuery{Key: "Sicily", Longitude: 15, Latitude: 37, Radius: 200, Unit: "km", WithGeoHash: true, WithCoordinates: true, WithDistance: true, Count: 2, Sort: "ASC"})
+			geoRadius := client.GeoRadius(&redis.GeoRadiusQuery{Key: "Sicily", Longitude: 15, Latitude: 37, Radius: 200, Unit: "km", WithGeoHash: true, WithCoordinates: true, WithDist: true, Count: 2, Sort: "ASC"})
 			Expect(geoRadius.Err()).NotTo(HaveOccurred())
-			Expect(geoRadius.Val()[1].Name).To(Equal("Palermo"))
+			Expect(geoRadius.Val()[1].Member).To(Equal("Palermo"))
 			Expect(geoRadius.Val()[1].Distance).To(Equal(190.4424))
 			Expect(geoRadius.Val()[1].GeoHash).To(Equal(int64(3479099956230698)))
 			Expect(geoRadius.Val()[1].Longitude).To(Equal(13.361389338970184))
 			Expect(geoRadius.Val()[1].Latitude).To(Equal(38.115556395496299))
-			Expect(geoRadius.Val()[0].Name).To(Equal("Catania"))
+			Expect(geoRadius.Val()[0].Member).To(Equal("Catania"))
 			Expect(geoRadius.Val()[0].Distance).To(Equal(56.4413))
 			Expect(geoRadius.Val()[0].GeoHash).To(Equal(int64(3479447370796909)))
 			Expect(geoRadius.Val()[0].Longitude).To(Equal(15.087267458438873))
@@ -2570,21 +2570,21 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should search geo radius by member with options", func() {
-			locations := []*redis.GeoLocation{&redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Name: "Palermo"},
-				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Name: "Catania"}}
+			locations := []*redis.GeoLocation{&redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Member: "Palermo"},
+				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Member: "Catania"}}
 
 			geoAdd := client.GeoAdd("Sicily", locations...)
 			Expect(geoAdd.Err()).NotTo(HaveOccurred())
 			Expect(geoAdd.Val()).To(Equal(int64(2)))
 
-			geoRadius := client.GeoRadius(&redis.GeoRadiusQuery{Key: "Sicily", Name: "Catania", Radius: 200, Unit: "km", WithGeoHash: true, WithCoordinates: true, WithDistance: true, Count: 2, Sort: "ASC"})
+			geoRadius := client.GeoRadius(&redis.GeoRadiusQuery{Key: "Sicily", Member: "Catania", Radius: 200, Unit: "km", WithGeoHash: true, WithCoordinates: true, WithDist: true, Count: 2, Sort: "ASC"})
 			Expect(geoRadius.Err()).NotTo(HaveOccurred())
-			Expect(geoRadius.Val()[0].Name).To(Equal("Catania"))
+			Expect(geoRadius.Val()[0].Member).To(Equal("Catania"))
 			Expect(geoRadius.Val()[0].Distance).To(Equal(0.0))
 			Expect(geoRadius.Val()[0].GeoHash).To(Equal(int64(3479447370796909)))
 			Expect(geoRadius.Val()[0].Longitude).To(Equal(15.087267458438873))
 			Expect(geoRadius.Val()[0].Latitude).To(Equal(37.50266842333162))
-			Expect(geoRadius.Val()[1].Name).To(Equal("Palermo"))
+			Expect(geoRadius.Val()[1].Member).To(Equal("Palermo"))
 			Expect(geoRadius.Val()[1].Distance).To(Equal(166.2742))
 			Expect(geoRadius.Val()[1].GeoHash).To(Equal(int64(3479099956230698)))
 			Expect(geoRadius.Val()[1].Longitude).To(Equal(13.361389338970184))
@@ -2592,12 +2592,12 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should search geo radius with no results", func() {
-			geoAdd := client.GeoAdd("Sicily", &redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Name: "Palermo"},
-				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Name: "Catania"})
+			geoAdd := client.GeoAdd("Sicily", &redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Member: "Palermo"},
+				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Member: "Catania"})
 			Expect(geoAdd.Err()).NotTo(HaveOccurred())
 			Expect(geoAdd.Val()).To(Equal(int64(2)))
 
-			geoRadius := client.GeoRadius(&redis.GeoRadiusQuery{Key: "Sicily", Longitude: 99, Latitude: 37, Radius: 200, Unit: "km", WithGeoHash: true, WithCoordinates: true, WithDistance: true})
+			geoRadius := client.GeoRadius(&redis.GeoRadiusQuery{Key: "Sicily", Longitude: 99, Latitude: 37, Radius: 200, Unit: "km", WithGeoHash: true, WithCoordinates: true, WithDist: true})
 			Expect(geoRadius.Err()).NotTo(HaveOccurred())
 			Expect(len(geoRadius.Val())).To(Equal(0))
 		})
@@ -2609,31 +2609,31 @@ var _ = Describe("Commands", func() {
 //			"166274.15156960033"
 //			GEODIST Sicily Palermo Catania km
 //			"166.27415156960032"
-			locations := []*redis.GeoLocation{&redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Name: "Palermo"},
-				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Name: "Catania"}}
+			locations := []*redis.GeoLocation{&redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Member: "Palermo"},
+				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Member: "Catania"}}
 
 			geoAdd := client.GeoAdd("Sicily", locations...)
 			Expect(geoAdd.Err()).NotTo(HaveOccurred())
 			Expect(geoAdd.Val()).To(Equal(int64(2)))
 
-			geoDist := client.GeoDist("Sicily", &redis.GeoLocation{Name: "Palermo"}, &redis.GeoLocation{Name: "Catania"}, "km")
+			geoDist := client.GeoDist("Sicily", "Palermo", "Catania", "km")
 			Expect(geoDist.Err()).NotTo(HaveOccurred())
 			Expect(geoDist.Val()).To(Equal(166.27415156960032))
 
-			geoDist = client.GeoDist("Sicily", &redis.GeoLocation{Name: "Palermo"}, &redis.GeoLocation{Name: "Catania"}, "m")
+			geoDist = client.GeoDist("Sicily", "Palermo", "Catania", "m")
 			Expect(geoDist.Err()).NotTo(HaveOccurred())
 			Expect(geoDist.Val()).To(Equal(166274.15156960033))
 		})
 
 		It("should get geo hash in string representation", func() {
-			locations := []*redis.GeoLocation{&redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Name: "Palermo"},
-				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Name: "Catania"}}
+			locations := []*redis.GeoLocation{&redis.GeoLocation{Longitude: 13.361389, Latitude: 38.115556, Member: "Palermo"},
+				&redis.GeoLocation{Longitude: 15.087269, Latitude: 37.502669, Member: "Catania"}}
 
 			geoAdd := client.GeoAdd("Sicily", locations...)
 			Expect(geoAdd.Err()).NotTo(HaveOccurred())
 			Expect(geoAdd.Val()).To(Equal(int64(2)))
 
-			geoDist := client.GeoHash("Sicily", &redis.GeoLocation{Name: "Palermo"}, &redis.GeoLocation{Name: "Catania"})
+			geoDist := client.GeoHash("Sicily", "Palermo", "Catania")
 			Expect(geoDist.Err()).NotTo(HaveOccurred())
 			Expect(geoDist.Val()[0]).To(Equal("sqc8b49rny0"))
 			Expect(geoDist.Val()[1]).To(Equal("sqdtr74hyu0"))

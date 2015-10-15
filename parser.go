@@ -633,7 +633,7 @@ func geoLocationParser(cn *conn, n int64) (interface{}, error) {
 	loc := &GeoLocation{}
 
 	var err error
-	loc.Name, err = readStringReply(cn)
+	loc.Member, err = readStringReply(cn)
 	if err != nil {
 		return nil, err
 	}
@@ -681,7 +681,7 @@ func geoLocationSliceParser(cn *conn, n int64) (interface{}, error) {
 		switch vv := v.(type) {
 		case []byte:
 			locs = append(locs, GeoLocation{
-				Name: string(vv),
+				Member: string(vv),
 			})
 		case *GeoLocation:
 			locs = append(locs, *vv)

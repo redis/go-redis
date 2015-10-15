@@ -485,45 +485,6 @@ func (cmd *FloatCmd) readReply(cn *conn) error {
 
 //------------------------------------------------------------------------------
 
-type FloatSliceCmd struct {
-	baseCmd
-
-	val []float64
-}
-
-func NewFloatSliceCmd(args ...interface{}) *FloatSliceCmd {
-	return &FloatSliceCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
-}
-
-func (cmd *FloatSliceCmd) reset() {
-	cmd.val = nil
-	cmd.err = nil
-}
-
-func (cmd *FloatSliceCmd) Val() []float64 {
-	return cmd.val
-}
-
-func (cmd *FloatSliceCmd) Result() ([]float64, error) {
-	return cmd.Val(), cmd.Err()
-}
-
-func (cmd *FloatSliceCmd) String() string {
-	return cmdString(cmd, cmd.val)
-}
-
-func (cmd *FloatSliceCmd) readReply(cn *conn) error {
-	v, err := readArrayReply(cn, floatSliceParser)
-	if err != nil {
-		cmd.err = err
-		return err
-	}
-	cmd.val = v.([]float64)
-	return nil
-}
-
-//------------------------------------------------------------------------------
-
 type StringSliceCmd struct {
 	baseCmd
 
@@ -811,7 +772,7 @@ func (cmd *ClusterSlotCmd) readReply(cn *conn) error {
 
 // GeoLocation is used with GeoAdd to add geospatial location.
 type GeoLocation struct {
-	Name                          string
+	Member string
 	Longitude, Latitude, Distance float64
 	GeoHash                       int64
 }
@@ -819,14 +780,14 @@ type GeoLocation struct {
 // GeoRadiusQuery is used with GeoRadius to query geospatial index.
 type GeoRadiusQuery struct {
 	Key       string
-	Name      string
+	Member    string
 	Longitude float64
 	Latitude  float64
 	Radius    float64
 	// Can be m, km, ft, or mi. Default is km.
 	Unit            string
 	WithCoordinates bool
-	WithDistance    bool
+	WithDist bool
 	WithGeoHash     bool
 	Count           int
 	// Can be ASC or DESC. Default is no sort order.

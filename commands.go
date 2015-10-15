@@ -1669,7 +1669,7 @@ func (c *commandable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 	for i, eachLoc := range geoLocation {
 		args[2+3*i] = eachLoc.Longitude
 		args[2+3*i+1] = eachLoc.Latitude
-		args[2+3*i+2] = eachLoc.Name
+		args[2+3*i+2] = eachLoc.Member
 	}
 	cmd := NewIntCmd(args...)
 	c.Process(cmd)
@@ -1677,11 +1677,19 @@ func (c *commandable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 }
 
 func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoLocationCmd {
+	return c.geoRadiusCmdProcessor(query)
+}
+
+func (c *commandable) GeoRadiusByMember(query *GeoRadiusQuery) *GeoLocationCmd {
+	return c.geoRadiusCmdProcessor(query)
+}
+
+func (c *commandable) geoRadiusCmdProcessor(query *GeoRadiusQuery) *GeoLocationCmd {
 	args := make([]interface{}, 2)
 	args[1] = query.Key
-	if query.Name != "" {
+	if query.Member != "" {
 		args[0] = "GEORADIUSBYMEMBER"
-		args = append(args, query.Name)
+		args = append(args, query.Member)
 	} else {
 		args[0] = "GEORADIUS"
 		args = append(args, query.Longitude)
@@ -1697,7 +1705,7 @@ func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoLocationCmd {
 	if query.WithCoordinates {
 		args = append(args, "WITHCOORD")
 	}
-	if query.WithDistance {
+	if query.WithDist {
 		args = append(args, "WITHDIST")
 	}
 	if query.WithGeoHash {
@@ -1715,29 +1723,22 @@ func (c *commandable) GeoRadius(query *GeoRadiusQuery) *GeoLocationCmd {
 	return cmd
 }
 
-func (c *commandable) GeoDist(key string, geo1, geo2 *GeoLocation, unit string) *FloatCmd {
+func (c *commandable) GeoDist(key, member1, member2, unit string) *FloatCmd {
 	if unit == "" {
 		unit = "km"
 	}
-	args := make([]interface{}, 5)
-	args[0] = "GEODIST"
-	args[1] = key
-	args[2] = geo1.Name
-	args[3] = geo2.Name
-	args[4] = unit
-
-	cmd := NewFloatCmd(args...)
+	cmd := NewFloatCmd("GEODIST", key, member1, member2, unit)
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) GeoHash(key string, geo1, geo2 *GeoLocation) *StringSliceCmd {
-	args := make([]interface{}, 4)
+func (c *commandable) GeoHash(key string, members ...string) *StringSliceCmd {
+	args := make([]interface{}, 2+len(members))
 	args[0] = "GEOHASH"
 	args[1] = key
-	args[2] = geo1.Name
-	args[3] = geo2.Name
-
+	for i, mem := range members {
+		args[2+i] = mem
+	}
 	cmd := NewStringSliceCmd(args...)
 	c.Process(cmd)
 	return cmd
