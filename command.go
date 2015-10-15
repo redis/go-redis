@@ -485,6 +485,45 @@ func (cmd *FloatCmd) readReply(cn *conn) error {
 
 //------------------------------------------------------------------------------
 
+type FloatSliceCmd struct {
+	baseCmd
+
+	val []float64
+}
+
+func NewFloatSliceCmd(args ...interface{}) *FloatSliceCmd {
+	return &FloatSliceCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+}
+
+func (cmd *FloatSliceCmd) reset() {
+	cmd.val = nil
+	cmd.err = nil
+}
+
+func (cmd *FloatSliceCmd) Val() []float64 {
+	return cmd.val
+}
+
+func (cmd *FloatSliceCmd) Result() ([]float64, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *FloatSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FloatSliceCmd) readReply(cn *conn) error {
+	v, err := readArrayReply(cn, floatSliceParser)
+	if err != nil {
+		cmd.err = err
+		return err
+	}
+	cmd.val = v.([]float64)
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
 type StringSliceCmd struct {
 	baseCmd
 
