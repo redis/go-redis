@@ -772,7 +772,7 @@ func (cmd *ClusterSlotCmd) readReply(cn *conn) error {
 
 // GeoLocation is used with GeoAdd to add geospatial location.
 type GeoLocation struct {
-	Name                          string
+	Member string
 	Longitude, Latitude, Distance float64
 	GeoHash                       int64
 }
@@ -780,13 +780,14 @@ type GeoLocation struct {
 // GeoRadiusQuery is used with GeoRadius to query geospatial index.
 type GeoRadiusQuery struct {
 	Key       string
+	Member    string
 	Longitude float64
 	Latitude  float64
 	Radius    float64
 	// Can be m, km, ft, or mi. Default is km.
 	Unit            string
 	WithCoordinates bool
-	WithDistance    bool
+	WithDist bool
 	WithGeoHash     bool
 	Count           int
 	// Can be ASC or DESC. Default is no sort order.
