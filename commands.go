@@ -1367,6 +1367,18 @@ func (c *commandable) ClientPause(dur time.Duration) *BoolCmd {
 	return cmd
 }
 
+func (c *commandable) SetName(name string) *StatusCmd {
+	cmd := NewStatusCmd("CLIENT", "SETNAME", name)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *Client) GetName() *StringCmd {
+	cmd := NewStringCmd("CLIENT", "GETNAME")
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *commandable) ConfigGet(parameter string) *SliceCmd {
 	cmd := NewSliceCmd("CONFIG", "GET", parameter)
 	cmd._clusterKeyPos = 0
