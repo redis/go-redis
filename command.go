@@ -779,16 +779,13 @@ type GeoLocation struct {
 
 // GeoRadiusQuery is used with GeoRadius to query geospatial index.
 type GeoRadiusQuery struct {
-	Key       string
-	Longitude float64
-	Latitude  float64
-	Radius    float64
+	Radius float64
 	// Can be m, km, ft, or mi. Default is km.
-	Unit            string
-	WithCoordinates bool
-	WithDistance    bool
-	WithGeoHash     bool
-	Count           int
+	Unit        string
+	WithCoord   bool
+	WithDist    bool
+	WithGeoHash bool
+	Count       int
 	// Can be ASC or DESC. Default is no sort order.
 	Sort string
 }
