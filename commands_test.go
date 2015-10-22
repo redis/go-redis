@@ -90,12 +90,12 @@ var _ = Describe("Commands", func() {
 			}, "1s").ShouldNot(HaveOccurred())
 		})
 
-		It("should SetName", func() {
-			isSet, err := client.SetName("theclientname").Result()
+		It("should ClientSetName and ClientGetName", func() {
+			isSet, err := client.ClientSetName("theclientname").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(isSet).To(Equal("OK"))
+			Expect(isSet).To(BeTrue())
 
-			val, err := client.GetName().Result()
+			val, err := client.ClientGetName().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("theclientname"))
 		})

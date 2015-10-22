@@ -1367,13 +1367,15 @@ func (c *commandable) ClientPause(dur time.Duration) *BoolCmd {
 	return cmd
 }
 
-func (c *commandable) SetName(name string) *StatusCmd {
-	cmd := NewStatusCmd("CLIENT", "SETNAME", name)
+// ClientSetName assigns a name to the one of many connections in the pool.
+func (c *commandable) ClientSetName(name string) *BoolCmd {
+	cmd := NewBoolCmd("CLIENT", "SETNAME", name)
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *Client) GetName() *StringCmd {
+// ClientGetName returns the name of the one of many connections in the pool.
+func (c *Client) ClientGetName() *StringCmd {
 	cmd := NewStringCmd("CLIENT", "GETNAME")
 	c.Process(cmd)
 	return cmd
