@@ -1332,6 +1332,38 @@ func (c *commandable) ZUnionStore(dest string, store ZStore, keys ...string) *In
 
 //------------------------------------------------------------------------------
 
+func (c *commandable) PFAdd(key string, fields ...string) *IntCmd {
+	args := make([]interface{}, 2+len(fields))
+	args[0] = "PFADD"
+	args[1] = key
+	for i, field := range fields {
+		args[2+i] = field
+	}
+	cmd := NewIntCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) PFCount(key string) *IntCmd {
+	cmd := NewIntCmd("PFCOUNT", key)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) PFMerge(dest string, keys ...string) *StatusCmd {
+	args := make([]interface{}, 2+len(keys))
+	args[0] = "PFMERGE"
+	args[1] = dest
+	for i, key := range keys {
+		args[2+i] = key
+	}
+	cmd := NewStatusCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
+//------------------------------------------------------------------------------
+
 func (c *commandable) BgRewriteAOF() *StatusCmd {
 	cmd := NewStatusCmd("BGREWRITEAOF")
 	cmd._clusterKeyPos = 0
