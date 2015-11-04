@@ -150,4 +150,25 @@ var _ = Describe("Pipelining", func() {
 		wg.Wait()
 	})
 
+	It("should be thread-safe", func() {
+		const N = 1000
+
+		pipeline := client.Pipeline()
+		wg := &sync.WaitGroup{}
+		wg.Add(N)
+		for i := 0; i < N; i++ {
+			go func() {
+				pipeline.Ping()
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+
+		cmds, err := pipeline.Exec()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cmds).To(HaveLen(N))
+
+		Expect(pipeline.Close()).NotTo(HaveOccurred())
+	})
+
 })

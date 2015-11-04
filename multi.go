@@ -9,13 +9,18 @@ import (
 var errDiscard = errors.New("redis: Discard can be used only inside Exec")
 
 // Multi implements Redis transactions as described in
-// http://redis.io/topics/transactions. It's NOT safe for concurrent
-// use by multiple goroutines.
+// http://redis.io/topics/transactions. It's NOT safe for concurrent use
+// by multiple goroutines, because Exec resets connection state.
+// If you don't need WATCH it is better to use Pipeline.
+//
+// TODO(vmihailenco): rename to Tx
 type Multi struct {
 	commandable
 
 	base *baseClient
-	cmds []Cmder
+
+	cmds   []Cmder
+	closed bool
 }
 
 func (c *Client) Multi() *Multi {
@@ -37,13 +42,17 @@ func (c *Multi) process(cmd Cmder) {
 	}
 }
 
+// Close closes the client, releasing any open resources.
 func (c *Multi) Close() error {
+	c.closed = true
 	if err := c.Unwatch().Err(); err != nil {
 		log.Printf("redis: Unwatch failed: %s", err)
 	}
 	return c.base.Close()
 }
 
+// Watch marks the keys to be watched for conditional execution
+// of a transaction.
 func (c *Multi) Watch(keys ...string) *StatusCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "WATCH"
@@ -55,6 +64,7 @@ func (c *Multi) Watch(keys ...string) *StatusCmd {
 	return cmd
 }
 
+// Unwatch flushes all the previously watched keys for a transaction.
 func (c *Multi) Unwatch(keys ...string) *StatusCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "UNWATCH"
@@ -66,6 +76,7 @@ func (c *Multi) Unwatch(keys ...string) *StatusCmd {
 	return cmd
 }
 
+// Discard discards queued commands.
 func (c *Multi) Discard() error {
 	if c.cmds == nil {
 		return errDiscard
@@ -74,10 +85,20 @@ func (c *Multi) Discard() error {
 	return nil
 }
 
+// Exec executes all previously queued commands in a transaction
+// and restores the connection state to normal.
+//
+// When using WATCH, EXEC will execute commands only if the watched keys
+// were not modified, allowing for a check-and-set mechanism.
+//
 // Exec always returns list of commands. If transaction fails
 // TxFailedErr is returned. Otherwise Exec returns error of the first
 // failed command or nil.
 func (c *Multi) Exec(f func() error) ([]Cmder, error) {
+	if c.closed {
+		return nil, errClosed
+	}
+
 	c.cmds = []Cmder{NewStatusCmd("MULTI")}
 	if err := f(); err != nil {
 		return nil, err
