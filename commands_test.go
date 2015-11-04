@@ -1190,6 +1190,27 @@ var _ = Describe("Commands", func() {
 
 	})
 
+	Describe("hyperloglog", func() {
+		It("should PFMerge", func() {
+			pfAdd := client.PFAdd("hll1", "1", "2", "3", "4", "5")
+			Expect(pfAdd.Err()).NotTo(HaveOccurred())
+
+			pfCount := client.PFCount("hll1")
+			Expect(pfCount.Err()).NotTo(HaveOccurred())
+			Expect(pfCount.Val()).To(Equal(int64(5)))
+
+			pfAdd = client.PFAdd("hll2", "a", "b", "c", "d", "e")
+			Expect(pfAdd.Err()).NotTo(HaveOccurred())
+
+			pfMerge := client.PFMerge("hllMerged", "hll1", "hll2")
+			Expect(pfMerge.Err()).NotTo(HaveOccurred())
+
+			pfCount = client.PFCount("hllMerged")
+			Expect(pfCount.Err()).NotTo(HaveOccurred())
+			Expect(pfCount.Val()).To(Equal(int64(10)))
+		})
+	})
+
 	Describe("lists", func() {
 
 		It("should BLPop", func() {
