@@ -1,15 +1,22 @@
 package redis
 
+import (
+	"sync"
+	"sync/atomic"
+)
+
 // Pipeline implements pipelining as described in
-// http://redis.io/topics/pipelining. It's NOT safe for concurrent use
+// http://redis.io/topics/pipelining. It's safe for concurrent use
 // by multiple goroutines.
 type Pipeline struct {
 	commandable
 
 	client *baseClient
 
-	cmds   []Cmder
-	closed bool
+	mu   sync.Mutex // protects cmds
+	cmds []Cmder
+
+	closed int32
 }
 
 func (c *Client) Pipeline() *Pipeline {
@@ -27,36 +34,51 @@ func (c *Client) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
 		return nil, err
 	}
 	cmds, err := pipe.Exec()
-	pipe.Close()
+	_ = pipe.Close()
 	return cmds, err
 }
 
 func (pipe *Pipeline) process(cmd Cmder) {
+	pipe.mu.Lock()
 	pipe.cmds = append(pipe.cmds, cmd)
+	pipe.mu.Unlock()
 }
 
 // Close closes the pipeline, releasing any open resources.
 func (pipe *Pipeline) Close() error {
+	atomic.StoreInt32(&pipe.closed, 1)
 	pipe.Discard()
-	pipe.closed = true
 	return nil
+}
+
+func (pipe *Pipeline) isClosed() bool {
+	return atomic.LoadInt32(&pipe.closed) == 1
 }
 
 // Discard resets the pipeline and discards queued commands.
 func (pipe *Pipeline) Discard() error {
-	if pipe.closed {
+	defer pipe.mu.Unlock()
+	pipe.mu.Lock()
+	if pipe.isClosed() {
 		return errClosed
 	}
 	pipe.cmds = pipe.cmds[:0]
 	return nil
 }
 
+// Exec executes all previously queued commands using one
+// client-server roundtrip.
+//
 // Exec always returns list of commands and error of the first failed
 // command if any.
 func (pipe *Pipeline) Exec() (cmds []Cmder, retErr error) {
-	if pipe.closed {
+	if pipe.isClosed() {
 		return nil, errClosed
 	}
+
+	defer pipe.mu.Unlock()
+	pipe.mu.Lock()
+
 	if len(pipe.cmds) == 0 {
 		return pipe.cmds, nil
 	}
