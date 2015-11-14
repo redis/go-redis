@@ -88,7 +88,7 @@ func (pipe *Pipeline) Exec() (cmds []Cmder, retErr error) {
 
 	failedCmds := cmds
 	for i := 0; i <= pipe.client.opt.MaxRetries; i++ {
-		cn, err := pipe.client.conn()
+		cn, _, err := pipe.client.conn()
 		if err != nil {
 			setCmdsErr(failedCmds, err)
 			return cmds, err

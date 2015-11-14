@@ -1,12 +1,10 @@
 package redis_test
 
 import (
-	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -100,17 +98,14 @@ func TestGinkgoSuite(t *testing.T) {
 
 //------------------------------------------------------------------------------
 
-// Replaces ginkgo's Eventually.
-func waitForSubstring(fn func() string, substr string, timeout time.Duration) error {
-	var s string
-
-	found := make(chan struct{})
+func eventually(fn func() error, timeout time.Duration) (err error) {
+	done := make(chan struct{})
 	var exit int32
 	go func() {
 		for atomic.LoadInt32(&exit) == 0 {
-			s = fn()
-			if strings.Contains(s, substr) {
-				found <- struct{}{}
+			err = fn()
+			if err == nil {
+				close(done)
 				return
 			}
 			time.Sleep(timeout / 100)
@@ -118,12 +113,12 @@ func waitForSubstring(fn func() string, substr string, timeout time.Duration) er
 	}()
 
 	select {
-	case <-found:
+	case <-done:
 		return nil
 	case <-time.After(timeout):
 		atomic.StoreInt32(&exit, 1)
+		return err
 	}
-	return fmt.Errorf("%q does not contain %q", s, substr)
 }
 
 func execCmd(name string, args ...string) (*os.Process, error) {

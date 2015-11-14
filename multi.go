@@ -10,10 +10,10 @@ var errDiscard = errors.New("redis: Discard can be used only inside Exec")
 
 // Multi implements Redis transactions as described in
 // http://redis.io/topics/transactions. It's NOT safe for concurrent use
-// by multiple goroutines, because Exec resets connection state.
+// by multiple goroutines, because Exec resets list of watched keys.
 // If you don't need WATCH it is better to use Pipeline.
 //
-// TODO(vmihailenco): rename to Tx
+// TODO(vmihailenco): rename to Tx and rework API
 type Multi struct {
 	commandable
 
@@ -32,6 +32,18 @@ func (c *Client) Multi() *Multi {
 	}
 	multi.commandable.process = multi.process
 	return multi
+}
+
+func (c *Multi) putConn(cn *conn, ei error) {
+	var err error
+	if isBadConn(cn, ei) {
+		err = c.base.connPool.Remove(nil) // nil to force removal
+	} else {
+		err = c.base.connPool.Put(cn)
+	}
+	if err != nil {
+		log.Printf("redis: putConn failed: %s", err)
+	}
 }
 
 func (c *Multi) process(cmd Cmder) {
@@ -112,15 +124,18 @@ func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 		return []Cmder{}, nil
 	}
 
-	cn, err := c.base.conn()
+	// Strip MULTI and EXEC commands.
+	retCmds := cmds[1 : len(cmds)-1]
+
+	cn, _, err := c.base.conn()
 	if err != nil {
-		setCmdsErr(cmds[1:len(cmds)-1], err)
-		return cmds[1 : len(cmds)-1], err
+		setCmdsErr(retCmds, err)
+		return retCmds, err
 	}
 
 	err = c.execCmds(cn, cmds)
-	c.base.putConn(cn, err)
-	return cmds[1 : len(cmds)-1], err
+	c.putConn(cn, err)
+	return retCmds, err
 }
 
 func (c *Multi) execCmds(cn *conn, cmds []Cmder) error {

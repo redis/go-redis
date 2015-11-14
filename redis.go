@@ -16,20 +16,16 @@ func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.opt.Addr, c.opt.DB)
 }
 
-func (c *baseClient) conn() (*conn, error) {
+func (c *baseClient) conn() (*conn, bool, error) {
 	return c.connPool.Get()
 }
 
 func (c *baseClient) putConn(cn *conn, ei error) {
 	var err error
-	if cn.rd.Buffered() > 0 {
+	if isBadConn(cn, ei) {
 		err = c.connPool.Remove(cn)
-	} else if ei == nil {
-		err = c.connPool.Put(cn)
-	} else if _, ok := ei.(redisError); ok {
-		err = c.connPool.Put(cn)
 	} else {
-		err = c.connPool.Remove(cn)
+		err = c.connPool.Put(cn)
 	}
 	if err != nil {
 		log.Printf("redis: putConn failed: %s", err)
@@ -42,7 +38,7 @@ func (c *baseClient) process(cmd Cmder) {
 			cmd.reset()
 		}
 
-		cn, err := c.conn()
+		cn, _, err := c.conn()
 		if err != nil {
 			cmd.setErr(err)
 			return
