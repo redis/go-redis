@@ -1722,41 +1722,16 @@ func (c *commandable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 	return cmd
 }
 
-func (c *commandable) geoRadius(args []interface{}, query *GeoRadiusQuery) *GeoLocationCmd {
-	args = append(args, query.Radius)
-	if query.Unit != "" {
-		args = append(args, query.Unit)
-	} else {
-		args = append(args, "km")
-	}
-	if query.WithCoord {
-		args = append(args, "WITHCOORD")
-	}
-	if query.WithDist {
-		args = append(args, "WITHDIST")
-	}
-	if query.WithGeoHash {
-		args = append(args, "WITHHASH")
-	}
-	if query.Count > 0 {
-		args = append(args, "COUNT", query.Count)
-	}
-	if query.Sort != "" {
-		args = append(args, query.Sort)
-	}
-	cmd := NewGeoLocationCmd(args...)
+func (c *commandable) GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
+	cmd := NewGeoLocationCmd(query, "GEORADIUS", key, longitude, latitude)
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
-	args := []interface{}{"GEORADIUS", key, longitude, latitude}
-	return c.geoRadius(args, query)
-}
-
 func (c *commandable) GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
-	args := []interface{}{"GEORADIUSBYMEMBER", key, member}
-	return c.geoRadius(args, query)
+	cmd := NewGeoLocationCmd(query, "GEORADIUSBYMEMBER", key, member)
+	c.Process(cmd)
+	return cmd
 }
 
 func (c *commandable) GeoDist(key string, member1, member2, unit string) *FloatCmd {
