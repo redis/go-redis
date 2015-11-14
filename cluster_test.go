@@ -1,8 +1,10 @@
 package redis_test
 
 import (
+	"fmt"
 	"math/rand"
 	"net"
+	"strings"
 
 	"testing"
 	"time"
@@ -53,7 +55,7 @@ func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.Cluste
 }
 
 func startCluster(scenario *clusterScenario) error {
-	// Start processes, connect individual clients
+	// Start processes and collect node ids
 	for pos, port := range scenario.ports {
 		process, err := startRedis(port, "--cluster-enabled", "yes")
 		if err != nil {
@@ -81,44 +83,48 @@ func startCluster(scenario *clusterScenario) error {
 
 	// Bootstrap masters
 	slots := []int{0, 5000, 10000, 16384}
-	for pos, client := range scenario.masters() {
-		err := client.ClusterAddSlotsRange(slots[pos], slots[pos+1]-1).Err()
+	for pos, master := range scenario.masters() {
+		err := master.ClusterAddSlotsRange(slots[pos], slots[pos+1]-1).Err()
 		if err != nil {
 			return err
 		}
 	}
 
 	// Bootstrap slaves
-	for pos, client := range scenario.slaves() {
-		masterId := scenario.nodeIds[pos]
+	for idx, slave := range scenario.slaves() {
+		masterId := scenario.nodeIds[idx]
 
-		// Wait for masters
-		err := waitForSubstring(func() string {
-			return client.ClusterNodes().Val()
-		}, masterId, 10*time.Second)
+		// Wait until master is available
+		err := eventually(func() error {
+			s := slave.ClusterNodes().Val()
+			wanted := masterId
+			if !strings.Contains(s, wanted) {
+				return fmt.Errorf("%q does not contain %q", s, wanted)
+			}
+			return nil
+		}, 10*time.Second)
 		if err != nil {
 			return err
 		}
 
-		err = client.ClusterReplicate(masterId).Err()
-		if err != nil {
-			return err
-		}
-
-		// Wait for slaves
-		err = waitForSubstring(func() string {
-			return scenario.primary().ClusterNodes().Val()
-		}, "slave "+masterId, 10*time.Second)
+		err = slave.ClusterReplicate(masterId).Err()
 		if err != nil {
 			return err
 		}
 	}
 
-	// Wait for cluster state to turn OK
+	// Wait until all nodes have consistent info
 	for _, client := range scenario.clients {
-		err := waitForSubstring(func() string {
-			return client.ClusterInfo().Val()
-		}, "cluster_state:ok", 10*time.Second)
+		err := eventually(func() error {
+			for _, masterId := range scenario.nodeIds[:3] {
+				s := client.ClusterNodes().Val()
+				wanted := "slave " + masterId
+				if !strings.Contains(s, wanted) {
+					return fmt.Errorf("%q does not contain %q", s, wanted)
+				}
+			}
+			return nil
+		}, 10*time.Second)
 		if err != nil {
 			return err
 		}
@@ -260,7 +266,6 @@ var _ = Describe("Cluster", func() {
 
 		It("should perform multi-pipelines", func() {
 			slot := redis.HashSlot("A")
-			Expect(client.SlotAddrs(slot)).To(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
 			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			pipe := client.Pipeline()
@@ -288,6 +293,7 @@ var _ = Describe("Cluster", func() {
 		})
 
 		It("should return error when there are no attempts left", func() {
+			Expect(client.Close()).NotTo(HaveOccurred())
 			client = cluster.clusterClient(&redis.ClusterOptions{
 				MaxRedirects: -1,
 			})
