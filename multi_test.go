@@ -119,4 +119,30 @@ var _ = Describe("Multi", func() {
 		Expect(get.Val()).To(Equal("20000"))
 	})
 
+	It("should recover from bad connection", func() {
+		// Put bad connection in the pool.
+		cn, _, err := client.Pool().Get()
+		Expect(err).NotTo(HaveOccurred())
+
+		cn.SetNetConn(&badConn{})
+		err = client.Pool().Put(cn)
+		Expect(err).NotTo(HaveOccurred())
+
+		multi := client.Multi()
+		defer func() {
+			Expect(multi.Close()).NotTo(HaveOccurred())
+		}()
+
+		_, err = multi.Exec(func() error {
+			multi.Ping()
+			return nil
+		})
+		Expect(err).To(MatchError("bad connection"))
+
+		_, err = multi.Exec(func() error {
+			multi.Ping()
+			return nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

@@ -47,7 +47,7 @@ func (c *Client) PSubscribe(channels ...string) (*PubSub, error) {
 }
 
 func (c *PubSub) subscribe(cmd string, channels ...string) error {
-	cn, err := c.conn()
+	cn, _, err := c.conn()
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func (c *PubSub) PUnsubscribe(patterns ...string) error {
 }
 
 func (c *PubSub) Ping(payload string) error {
-	cn, err := c.conn()
+	cn, _, err := c.conn()
 	if err != nil {
 		return err
 	}
@@ -208,14 +208,16 @@ func newMessage(reply []interface{}) (interface{}, error) {
 // is not received in time. This is low-level API and most clients
 // should use ReceiveMessage.
 func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
-	cn, err := c.conn()
+	cn, _, err := c.conn()
 	if err != nil {
 		return nil, err
 	}
 	cn.ReadTimeout = timeout
 
 	cmd := NewSliceCmd()
-	if err := cmd.readReply(cn); err != nil {
+	err = cmd.readReply(cn)
+	c.putConn(cn, err)
+	if err != nil {
 		return nil, err
 	}
 	return newMessage(cmd.Val())
@@ -229,7 +231,7 @@ func (c *PubSub) Receive() (interface{}, error) {
 }
 
 func (c *PubSub) reconnect() {
-	c.connPool.Remove(nil) // close current connection
+	c.connPool.Remove(nil) // nil to force removal
 	if len(c.channels) > 0 {
 		if err := c.Subscribe(c.channels...); err != nil {
 			log.Printf("redis: Subscribe failed: %s", err)

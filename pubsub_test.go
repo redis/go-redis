@@ -254,7 +254,7 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer pubsub.Close()
 
-		cn, err := pubsub.Pool().Get()
+		cn, _, err := pubsub.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		cn.SetNetConn(&badConn{
 			readErr:  errTimeout,

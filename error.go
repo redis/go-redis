@@ -26,10 +26,24 @@ func (err redisError) Error() string {
 }
 
 func isNetworkError(err error) bool {
-	if _, ok := err.(net.Error); ok || err == io.EOF {
+	if err == io.EOF {
 		return true
 	}
-	return false
+	_, ok := err.(net.Error)
+	return ok
+}
+
+func isBadConn(cn *conn, ei error) bool {
+	if cn.rd.Buffered() > 0 {
+		return true
+	}
+	if ei == nil {
+		return false
+	}
+	if _, ok := ei.(redisError); ok {
+		return false
+	}
+	return true
 }
 
 func isMovedError(err error) (moved bool, ask bool, addr string) {

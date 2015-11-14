@@ -313,7 +313,7 @@ func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
 
 		for name, cmds := range cmdsMap {
 			client := pipe.ring.shards[name].Client
-			cn, err := client.conn()
+			cn, _, err := client.conn()
 			if err != nil {
 				setCmdsErr(cmds, err)
 				if retErr == nil {

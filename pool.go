@@ -18,7 +18,7 @@ var (
 
 type pool interface {
 	First() *conn
-	Get() (*conn, error)
+	Get() (*conn, bool, error)
 	Put(*conn) error
 	Remove(*conn) error
 	Len() int
@@ -212,33 +212,36 @@ func (p *connPool) new() (*conn, error) {
 }
 
 // Get returns existed connection from the pool or creates a new one.
-func (p *connPool) Get() (*conn, error) {
+func (p *connPool) Get() (cn *conn, isNew bool, err error) {
 	if p.closed() {
-		return nil, errClosed
+		err = errClosed
+		return
 	}
 
 	// Fetch first non-idle connection, if available.
-	if cn := p.First(); cn != nil {
-		return cn, nil
+	if cn = p.First(); cn != nil {
+		return
 	}
 
 	// Try to create a new one.
 	if p.conns.Reserve() {
-		cn, err := p.new()
+		cn, err = p.new()
 		if err != nil {
 			p.conns.Remove(nil)
-			return nil, err
+			return
 		}
 		p.conns.Add(cn)
-		return cn, nil
+		isNew = true
+		return
 	}
 
 	// Otherwise, wait for the available connection.
-	if cn := p.wait(); cn != nil {
-		return cn, nil
+	if cn = p.wait(); cn != nil {
+		return
 	}
 
-	return nil, errPoolTimeout
+	err = errPoolTimeout
+	return
 }
 
 func (p *connPool) Put(cn *conn) error {
@@ -327,8 +330,8 @@ func (p *singleConnPool) First() *conn {
 	return p.cn
 }
 
-func (p *singleConnPool) Get() (*conn, error) {
-	return p.cn, nil
+func (p *singleConnPool) Get() (*conn, bool, error) {
+	return p.cn, false, nil
 }
 
 func (p *singleConnPool) Put(cn *conn) error {
@@ -382,24 +385,25 @@ func (p *stickyConnPool) First() *conn {
 	return cn
 }
 
-func (p *stickyConnPool) Get() (*conn, error) {
+func (p *stickyConnPool) Get() (cn *conn, isNew bool, err error) {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 
 	if p.closed {
-		return nil, errClosed
+		err = errClosed
+		return
 	}
 	if p.cn != nil {
-		return p.cn, nil
+		cn = p.cn
+		return
 	}
 
-	cn, err := p.pool.Get()
+	cn, isNew, err = p.pool.Get()
 	if err != nil {
-		return nil, err
+		return
 	}
 	p.cn = cn
-
-	return p.cn, nil
+	return
 }
 
 func (p *stickyConnPool) put() (err error) {
