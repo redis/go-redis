@@ -772,9 +772,9 @@ func (cmd *ClusterSlotCmd) readReply(cn *conn) error {
 
 // GeoLocation is used with GeoAdd to add geospatial location.
 type GeoLocation struct {
-	Name                          string
-	Longitude, Latitude, Distance float64
-	GeoHash                       int64
+	Name                      string
+	Longitude, Latitude, Dist float64
+	GeoHash                   int64
 }
 
 // GeoRadiusQuery is used with GeoRadius to query geospatial index.
@@ -793,11 +793,39 @@ type GeoRadiusQuery struct {
 type GeoLocationCmd struct {
 	baseCmd
 
+	q         *GeoRadiusQuery
 	locations []GeoLocation
 }
 
-func NewGeoLocationCmd(args ...interface{}) *GeoLocationCmd {
-	return &GeoLocationCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+func NewGeoLocationCmd(q *GeoRadiusQuery, args ...interface{}) *GeoLocationCmd {
+	args = append(args, q.Radius)
+	if q.Unit != "" {
+		args = append(args, q.Unit)
+	} else {
+		args = append(args, "km")
+	}
+	if q.WithCoord {
+		args = append(args, "WITHCOORD")
+	}
+	if q.WithDist {
+		args = append(args, "WITHDIST")
+	}
+	if q.WithGeoHash {
+		args = append(args, "WITHHASH")
+	}
+	if q.Count > 0 {
+		args = append(args, "COUNT", q.Count)
+	}
+	if q.Sort != "" {
+		args = append(args, q.Sort)
+	}
+	return &GeoLocationCmd{
+		baseCmd: baseCmd{
+			_args:          args,
+			_clusterKeyPos: 1,
+		},
+		q: q,
+	}
 }
 
 func (cmd *GeoLocationCmd) reset() {
@@ -818,7 +846,7 @@ func (cmd *GeoLocationCmd) String() string {
 }
 
 func (cmd *GeoLocationCmd) readReply(cn *conn) error {
-	reply, err := readArrayReply(cn, geoLocationSliceParser)
+	reply, err := readArrayReply(cn, newGeoLocationSliceParser(cmd.q))
 	if err != nil {
 		cmd.err = err
 		return err
