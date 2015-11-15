@@ -23,6 +23,18 @@ type Multi struct {
 	closed bool
 }
 
+// Watch marks the keys to be watched for conditional execution
+// of a transaction.
+func (c *Client) Watch(keys ...string) (*Multi, error) {
+	tx := c.Multi()
+	if err := tx.Watch(keys...).Err(); err != nil {
+		tx.Close()
+		return nil, err
+	}
+	return tx, nil
+}
+
+// Deprecated. Use Watch instead.
 func (c *Client) Multi() *Multi {
 	multi := &Multi{
 		base: &baseClient{
