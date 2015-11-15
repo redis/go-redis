@@ -159,13 +159,16 @@ func ExamplePipeline() {
 	// Output: 1 <nil>
 }
 
-func ExampleMulti() {
+func ExampleWatch() {
+	var incr func(string) error
+
 	// Transactionally increments key using GET and SET commands.
-	incr := func(tx *redis.Multi, key string) error {
-		err := tx.Watch(key).Err()
+	incr = func(key string) error {
+		tx, err := client.Watch(key)
 		if err != nil {
 			return err
 		}
+		defer tx.Close()
 
 		n, err := tx.Get(key).Int64()
 		if err != nil && err != redis.Nil {
@@ -176,27 +179,21 @@ func ExampleMulti() {
 			tx.Set(key, strconv.FormatInt(n+1, 10), 0)
 			return nil
 		})
+		if err == redis.TxFailedErr {
+			return incr(key)
+		}
 		return err
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
-			tx := client.Multi()
-			defer tx.Close()
-
-			for {
-				err := incr(tx, "counter3")
-				if err == redis.TxFailedErr {
-					// Retry.
-					continue
-				} else if err != nil {
-					panic(err)
-				}
-				break
+			err := incr("counter3")
+			if err != nil {
+				panic(err)
 			}
 		}()
 	}
@@ -204,7 +201,7 @@ func ExampleMulti() {
 
 	n, err := client.Get("counter3").Int64()
 	fmt.Println(n, err)
-	// Output: 10 <nil>
+	// Output: 100 <nil>
 }
 
 func ExamplePubSub() {
