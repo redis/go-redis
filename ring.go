@@ -95,7 +95,7 @@ func (shard *ringShard) Vote(up bool) bool {
 // keys across multiple Redis servers (shards). It's safe for
 // concurrent use by multiple goroutines.
 //
-// It monitors the state of each shard and removes dead shards from
+// Ring monitors the state of each shard and removes dead shards from
 // the ring. When shard comes online it is added back to the ring. This
 // gives you maximum availability and partition tolerance, but no
 // consistency between different shards or even clients. Each client
