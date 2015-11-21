@@ -116,11 +116,22 @@ func startCluster(scenario *clusterScenario) error {
 	// Wait until all nodes have consistent info
 	for _, client := range scenario.clients {
 		err := eventually(func() error {
-			for _, masterId := range scenario.nodeIds[:3] {
-				s := client.ClusterNodes().Val()
-				wanted := "slave " + masterId
-				if !strings.Contains(s, wanted) {
-					return fmt.Errorf("%q does not contain %q", s, wanted)
+			s := client.ClusterNodes().Val()
+			nodes := strings.Split(s, "\n")
+			if len(nodes) < 6 {
+				return fmt.Errorf("got %d nodes, wanted 6", len(nodes))
+			}
+			for _, node := range nodes {
+				if node == "" {
+					continue
+				}
+				parts := strings.Split(node, " ")
+				var flags string
+				if len(parts) >= 3 {
+					flags = parts[2]
+				}
+				if !strings.Contains(flags, "master") && !strings.Contains(flags, "slave") {
+					return fmt.Errorf("node flags are %q", flags)
 				}
 			}
 			return nil
