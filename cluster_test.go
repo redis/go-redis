@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"reflect"
 	"strings"
 
 	"testing"
@@ -116,23 +117,23 @@ func startCluster(scenario *clusterScenario) error {
 	// Wait until all nodes have consistent info
 	for _, client := range scenario.clients {
 		err := eventually(func() error {
-			s := client.ClusterNodes().Val()
-			nodes := strings.Split(s, "\n")
-			if len(nodes) < 6 {
-				return fmt.Errorf("got %d nodes, wanted 6", len(nodes))
+			res, err := client.ClusterSlots().Result()
+			if err != nil {
+				return err
 			}
-			for _, node := range nodes {
-				if node == "" {
-					continue
+			wanted := []redis.ClusterSlotInfo{
+				{0, 4999, []string{"127.0.0.1:8220", "127.0.0.1:8223"}},
+				{5000, 9999, []string{"127.0.0.1:8221", "127.0.0.1:8224"}},
+				{10000, 16383, []string{"127.0.0.1:8222", "127.0.0.1:8225"}},
+			}
+		loop:
+			for _, info := range res {
+				for _, info2 := range wanted {
+					if reflect.DeepEqual(info, info2) {
+						continue loop
+					}
 				}
-				parts := strings.Split(node, " ")
-				var flags string
-				if len(parts) >= 3 {
-					flags = parts[2]
-				}
-				if !strings.Contains(flags, "master") && !strings.Contains(flags, "slave") {
-					return fmt.Errorf("node flags are %q", flags)
-				}
+				return fmt.Errorf("cluster did not reach consistent state (%v)", res)
 			}
 			return nil
 		}, 10*time.Second)

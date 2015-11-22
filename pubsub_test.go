@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"net"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -261,19 +262,23 @@ var _ = Describe("PubSub", func() {
 			writeErr: errTimeout,
 		})
 
+		var wg sync.WaitGroup
+		wg.Add(1)
 		go func() {
 			defer GinkgoRecover()
+			defer wg.Done()
 
 			time.Sleep(100 * time.Millisecond)
-			n, err := client.Publish("mychannel", "hello").Result()
+			err := client.Publish("mychannel", "hello").Err()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(2)))
 		}()
 
 		msg, err := pubsub.ReceiveMessage()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal("hello"))
+
+		wg.Wait()
 	})
 
 })
