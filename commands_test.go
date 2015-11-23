@@ -20,10 +20,8 @@ var _ = Describe("Commands", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(&redis.Options{
-			Addr:         redisAddr,
-			ReadTimeout:  500 * time.Millisecond,
-			WriteTimeout: 500 * time.Millisecond,
-			PoolTimeout:  30 * time.Second,
+			Addr:        redisAddr,
+			PoolTimeout: 30 * time.Second,
 		})
 	})
 
@@ -81,13 +79,10 @@ var _ = Describe("Commands", func() {
 			err := client.ClientPause(time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			Consistently(func() error {
-				return client.Ping().Err()
-			}, "400ms").Should(HaveOccurred()) // pause time - read timeout
-
-			Eventually(func() error {
-				return client.Ping().Err()
-			}, "1s").ShouldNot(HaveOccurred())
+			start := time.Now()
+			err = client.Ping().Err()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(time.Now()).To(BeTemporally("~", start.Add(time.Second), 800*time.Millisecond))
 		})
 
 		It("should ClientSetName and ClientGetName", func() {

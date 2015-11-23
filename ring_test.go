@@ -56,7 +56,7 @@ var _ = Describe("Redis ring", func() {
 		// Ring needs 5 * heartbeat time to detect that node is down.
 		// Give it more to be sure.
 		heartbeat := 100 * time.Millisecond
-		time.Sleep(5*heartbeat + heartbeat)
+		time.Sleep(2 * 5 * heartbeat)
 
 		setRingKeys()
 

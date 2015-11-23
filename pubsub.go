@@ -80,6 +80,9 @@ func (c *PubSub) PSubscribe(patterns ...string) error {
 }
 
 func remove(ss []string, es ...string) []string {
+	if len(es) == 0 {
+		return ss[:0]
+	}
 	for _, e := range es {
 		for i, s := range ss {
 			if s == e {
@@ -231,7 +234,9 @@ func (c *PubSub) Receive() (interface{}, error) {
 }
 
 func (c *PubSub) reconnect() {
+	// Close current connection.
 	c.connPool.Remove(nil) // nil to force removal
+
 	if len(c.channels) > 0 {
 		if err := c.Subscribe(c.channels...); err != nil {
 			log.Printf("redis: Subscribe failed: %s", err)

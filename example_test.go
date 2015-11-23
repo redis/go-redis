@@ -238,6 +238,7 @@ func ExamplePubSub_Receive() {
 	}
 
 	for i := 0; i < 2; i++ {
+		// ReceiveTimeout is a low level API. Use ReceiveMessage instead.
 		msgi, err := pubsub.ReceiveTimeout(100 * time.Millisecond)
 		if err != nil {
 			panic(err)
