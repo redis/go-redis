@@ -109,6 +109,21 @@ func ExampleClient_Incr() {
 	// Output: 1 <nil>
 }
 
+func ExampleClient_BLPop() {
+	if err := client.RPush("queue", "message").Err(); err != nil {
+		panic(err)
+	}
+
+	// use `client.BLPop(0, "queue")` for infinite waiting time
+	result, err := client.BLPop(1*time.Second, "queue").Result()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(result[0], result[1])
+	// Output: queue message
+}
+
 func ExampleClient_Scan() {
 	client.FlushDb()
 	for i := 0; i < 33; i++ {
