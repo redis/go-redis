@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	errClosed      = errors.New("redis: client is closed")
-	errPoolTimeout = errors.New("redis: connection pool timeout")
+	ErrClientClosed = errors.New("redis: client is closed")
+	errPoolTimeout  = errors.New("redis: connection pool timeout")
 )
 
 type pool interface {
@@ -214,7 +214,7 @@ func (p *connPool) new() (*conn, error) {
 // Get returns existed connection from the pool or creates a new one.
 func (p *connPool) Get() (cn *conn, isNew bool, err error) {
 	if p.closed() {
-		err = errClosed
+		err = ErrClientClosed
 		return
 	}
 
@@ -281,7 +281,7 @@ func (p *connPool) FreeLen() int {
 
 func (p *connPool) Close() (retErr error) {
 	if !atomic.CompareAndSwapInt32(&p._closed, 0, 1) {
-		return errClosed
+		return ErrClientClosed
 	}
 	// Wait for app to free connections, but don't close them immediately.
 	for i := 0; i < p.Len(); i++ {
@@ -300,7 +300,7 @@ func (p *connPool) reaper() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
-	for _ = range ticker.C {
+	for range ticker.C {
 		if p.closed() {
 			break
 		}
@@ -390,7 +390,7 @@ func (p *stickyConnPool) Get() (cn *conn, isNew bool, err error) {
 	p.mx.Lock()
 
 	if p.closed {
-		err = errClosed
+		err = ErrClientClosed
 		return
 	}
 	if p.cn != nil {
@@ -419,7 +419,7 @@ func (p *stickyConnPool) Put(cn *conn) error {
 		panic("p.cn != cn")
 	}
 	if p.closed {
-		return errClosed
+		return ErrClientClosed
 	}
 	return nil
 }
@@ -433,14 +433,14 @@ func (p *stickyConnPool) remove() (err error) {
 func (p *stickyConnPool) Remove(cn *conn) error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
+	if p.closed {
+		return ErrClientClosed
+	}
 	if p.cn == nil {
 		panic("p.cn == nil")
 	}
 	if cn != nil && p.cn != cn {
 		panic("p.cn != cn")
-	}
-	if p.closed {
-		return errClosed
 	}
 	if cn == nil {
 		return p.remove()
@@ -471,7 +471,7 @@ func (p *stickyConnPool) Close() error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 	if p.closed {
-		return errClosed
+		return ErrClientClosed
 	}
 	p.closed = true
 	var err error
