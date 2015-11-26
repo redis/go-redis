@@ -78,7 +78,7 @@ func (c *ClusterClient) getClient(addr string) (*Client, error) {
 	c.clientsMx.Lock()
 	if c.closed {
 		c.clientsMx.Unlock()
-		return nil, errClosed
+		return nil, ErrClientClosed
 	}
 
 	client, ok = c.clients[addr]
