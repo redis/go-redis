@@ -235,8 +235,11 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer pubsub.Close()
 
+		var wg sync.WaitGroup
+		wg.Add(1)
 		go func() {
 			defer GinkgoRecover()
+			defer wg.Done()
 
 			time.Sleep(readTimeout + 100*time.Millisecond)
 			n, err := client.Publish("mychannel", "hello").Result()
@@ -248,6 +251,8 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal("hello"))
+
+		wg.Wait()
 	})
 
 	It("should reconnect on ReceiveMessage error", func() {
@@ -279,6 +284,26 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Payload).To(Equal("hello"))
 
 		wg.Wait()
+	})
+
+	It("should not panic on Close", func() {
+		pubsub, err := client.Subscribe("mychannel")
+		Expect(err).NotTo(HaveOccurred())
+		defer pubsub.Close()
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer GinkgoRecover()
+
+			wg.Done()
+			_, err := pubsub.ReceiveMessage()
+			Expect(err).To(MatchError("redis: client is closed"))
+		}()
+		wg.Wait()
+
+		err = pubsub.Close()
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 })

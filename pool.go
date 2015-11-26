@@ -415,11 +415,11 @@ func (p *stickyConnPool) put() (err error) {
 func (p *stickyConnPool) Put(cn *conn) error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
-	if p.cn != cn {
-		panic("p.cn != cn")
-	}
 	if p.closed {
 		return errClosed
+	}
+	if p.cn != cn {
+		panic("p.cn != cn")
 	}
 	return nil
 }
@@ -433,14 +433,14 @@ func (p *stickyConnPool) remove() (err error) {
 func (p *stickyConnPool) Remove(cn *conn) error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
+	if p.closed {
+		return errClosed
+	}
 	if p.cn == nil {
 		panic("p.cn == nil")
 	}
 	if cn != nil && p.cn != cn {
 		panic("p.cn != cn")
-	}
-	if p.closed {
-		return errClosed
 	}
 	if cn == nil {
 		return p.remove()
