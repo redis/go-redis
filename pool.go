@@ -163,8 +163,12 @@ func (p *connPool) First() *conn {
 		select {
 		case cn := <-p.freeConns:
 			if p.isIdle(cn) {
-				p.conns.Remove(cn)
-				continue
+				var err error
+				cn, err = p.replace(cn)
+				if err != nil {
+					log.Printf("redis: replace failed: %s", err)
+					continue
+				}
 			}
 			return cn
 		default:
@@ -181,8 +185,12 @@ func (p *connPool) wait() *conn {
 		select {
 		case cn := <-p.freeConns:
 			if p.isIdle(cn) {
-				p.Remove(cn)
-				continue
+				var err error
+				cn, err = p.replace(cn)
+				if err != nil {
+					log.Printf("redis: replace failed: %s", err)
+					continue
+				}
 			}
 			return cn
 		case <-deadline:
@@ -257,16 +265,24 @@ func (p *connPool) Put(cn *conn) error {
 	return nil
 }
 
-func (p *connPool) Remove(cn *conn) error {
-	// Replace existing connection with new one and unblock waiter.
+func (p *connPool) replace(cn *conn) (*conn, error) {
 	newcn, err := p.new()
 	if err != nil {
-		log.Printf("redis: new failed: %s", err)
-		return p.conns.Remove(cn)
+		_ = p.conns.Remove(cn)
+		return nil, err
 	}
-	err = p.conns.Replace(cn, newcn)
+	_ = p.conns.Replace(cn, newcn)
+	return newcn, nil
+}
+
+func (p *connPool) Remove(cn *conn) error {
+	// Replace existing connection with new one and unblock waiter.
+	newcn, err := p.replace(cn)
+	if err != nil {
+		return err
+	}
 	p.freeConns <- newcn
-	return err
+	return nil
 }
 
 // Len returns total number of connections.

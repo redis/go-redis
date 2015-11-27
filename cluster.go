@@ -146,6 +146,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 			pipe.Process(NewCmd("ASKING"))
 			pipe.Process(cmd)
 			_, _ = pipe.Exec()
+			pipe.Close()
 			ask = false
 		} else {
 			client.Process(cmd)
