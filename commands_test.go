@@ -2082,7 +2082,7 @@ var _ = Describe("Commands", func() {
 			Expect(zAdd.Err()).NotTo(HaveOccurred())
 
 			zInterStore := client.ZInterStore(
-				"out", redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
+				"out", redis.ZStore{Weights: []float64{2, 3}}, "zset1", "zset2")
 			Expect(zInterStore.Err()).NotTo(HaveOccurred())
 			Expect(zInterStore.Val()).To(Equal(int64(2)))
 
@@ -2479,7 +2479,7 @@ var _ = Describe("Commands", func() {
 			Expect(zAdd.Err()).NotTo(HaveOccurred())
 
 			zUnionStore := client.ZUnionStore(
-				"out", redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2")
+				"out", redis.ZStore{Weights: []float64{2, 3}}, "zset1", "zset2")
 			Expect(zUnionStore.Err()).NotTo(HaveOccurred())
 			Expect(zUnionStore.Val()).To(Equal(int64(3)))
 

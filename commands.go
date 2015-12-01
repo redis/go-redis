@@ -990,15 +990,15 @@ func (c *commandable) SUnionStore(destination string, keys ...string) *IntCmd {
 
 //------------------------------------------------------------------------------
 
-// Sorted set member.
+// Z represents sorted set member.
 type Z struct {
 	Score  float64
 	Member interface{}
 }
 
-// Sorted set store operation.
+// ZStore is used as an arg to ZInterStore and ZUnionStore.
 type ZStore struct {
-	Weights []int64
+	Weights []float64
 	// Can be SUM, MIN or MAX.
 	Aggregate string
 }
@@ -1113,11 +1113,7 @@ func (c *commandable) ZIncrBy(key string, increment float64, member string) *Flo
 	return cmd
 }
 
-func (c *commandable) ZInterStore(
-	destination string,
-	store ZStore,
-	keys ...string,
-) *IntCmd {
+func (c *commandable) ZInterStore(destination string, store ZStore, keys ...string) *IntCmd {
 	args := make([]interface{}, 3+len(keys))
 	args[0] = "ZINTERSTORE"
 	args[1] = destination
