@@ -235,7 +235,7 @@ func (c *PubSub) Receive() (interface{}, error) {
 
 func (c *PubSub) reconnect() {
 	// Close current connection.
-	c.connPool.Remove(nil) // nil to force removal
+	c.connPool.(*stickyConnPool).Reset()
 
 	if len(c.channels) > 0 {
 		if err := c.Subscribe(c.channels...); err != nil {
@@ -252,39 +252,41 @@ func (c *PubSub) reconnect() {
 // ReceiveMessage returns a message or error. It automatically
 // reconnects to Redis in case of network errors.
 func (c *PubSub) ReceiveMessage() (*Message, error) {
-	var badConn bool
+	var errNum int
 	for {
 		msgi, err := c.ReceiveTimeout(5 * time.Second)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				if badConn {
-					c.reconnect()
-					badConn = false
-					continue
-				}
-
-				err := c.Ping("")
-				if err != nil {
-					c.reconnect()
-				} else {
-					badConn = true
-				}
-				continue
+			if !isNetworkError(err) {
+				return nil, err
 			}
 
-			if isNetworkError(err) {
-				c.reconnect()
-				continue
+			goodConn := errNum == 0
+			errNum++
+
+			if goodConn {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					err := c.Ping("")
+					if err == nil {
+						continue
+					}
+					log.Printf("redis: PubSub.Ping failed: %s", err)
+				}
 			}
 
-			return nil, err
+			if errNum > 2 {
+				time.Sleep(time.Second)
+			}
+			c.reconnect()
+			continue
 		}
+
+		// Reset error number.
+		errNum = 0
 
 		switch msg := msgi.(type) {
 		case *Subscription:
 			// Ignore.
 		case *Pong:
-			badConn = false
 			// Ignore.
 		case *Message:
 			return msg, nil
