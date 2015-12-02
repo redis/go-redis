@@ -260,9 +260,9 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer pubsub.Close()
 
-		cn, _, err := pubsub.Pool().Get()
+		cn1, _, err := pubsub.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
-		cn.SetNetConn(&badConn{
+		cn1.SetNetConn(&badConn{
 			readErr:  errTimeout,
 			writeErr: errTimeout,
 		})
@@ -286,7 +286,7 @@ var _ = Describe("PubSub", func() {
 		wg.Wait()
 	})
 
-	It("should not panic on Close", func() {
+	It("should return on Close", func() {
 		pubsub, err := client.Subscribe("mychannel")
 		Expect(err).NotTo(HaveOccurred())
 		defer pubsub.Close()
@@ -297,13 +297,20 @@ var _ = Describe("PubSub", func() {
 			defer GinkgoRecover()
 
 			wg.Done()
+
 			_, err := pubsub.ReceiveMessage()
 			Expect(err).To(MatchError("redis: client is closed"))
+
+			wg.Done()
 		}()
+
 		wg.Wait()
+		wg.Add(1)
 
 		err = pubsub.Close()
 		Expect(err).NotTo(HaveOccurred())
+
+		wg.Wait()
 	})
 
 })

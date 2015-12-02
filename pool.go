@@ -137,7 +137,7 @@ func newConnPool(opt *Options) *connPool {
 	p := &connPool{
 		dialer: newConnDialer(opt),
 
-		rl:        ratelimit.New(2*opt.getPoolSize(), time.Second),
+		rl:        ratelimit.New(3*opt.getPoolSize(), time.Second),
 		opt:       opt,
 		conns:     newConnList(opt.getPoolSize()),
 		freeConns: make(chan *conn, opt.getPoolSize()),
@@ -458,11 +458,7 @@ func (p *stickyConnPool) Remove(cn *conn) error {
 	if cn != nil && p.cn != cn {
 		panic("p.cn != cn")
 	}
-	if cn == nil {
-		return p.remove()
-	} else {
-		return nil
-	}
+	return nil
 }
 
 func (p *stickyConnPool) Len() int {
@@ -481,6 +477,15 @@ func (p *stickyConnPool) FreeLen() int {
 		return 1
 	}
 	return 0
+}
+
+func (p *stickyConnPool) Reset() (err error) {
+	p.mx.Lock()
+	if p.cn != nil {
+		err = p.remove()
+	}
+	p.mx.Unlock()
+	return err
 }
 
 func (p *stickyConnPool) Close() error {

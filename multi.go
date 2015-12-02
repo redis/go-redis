@@ -49,7 +49,8 @@ func (c *Client) Multi() *Multi {
 func (c *Multi) putConn(cn *conn, ei error) {
 	var err error
 	if isBadConn(cn, ei) {
-		err = c.base.connPool.Remove(nil) // nil to force removal
+		// Close current connection.
+		c.base.connPool.(*stickyConnPool).Reset()
 	} else {
 		err = c.base.connPool.Put(cn)
 	}
