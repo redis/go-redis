@@ -1662,6 +1662,12 @@ func (c *commandable) ClusterMeet(host, port string) *StatusCmd {
 	return cmd
 }
 
+func (c *commandable) ClusterForget(nodeID string) *StatusCmd {
+	cmd := newKeylessStatusCmd("CLUSTER", "forget", nodeID)
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *commandable) ClusterReplicate(nodeID string) *StatusCmd {
 	cmd := newKeylessStatusCmd("CLUSTER", "replicate", nodeID)
 	c.Process(cmd)
