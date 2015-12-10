@@ -767,19 +767,17 @@ func (c *commandable) LPop(key string) *StringCmd {
 	return cmd
 }
 
-func (c *commandable) LPush(key string, values ...string) *IntCmd {
-	args := make([]interface{}, 2+len(values))
+func (c *commandable) LPush(key string, values ...interface{}) *IntCmd {
+	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "LPUSH"
 	args[1] = key
-	for i, value := range values {
-		args[2+i] = value
-	}
+	args = append(args, values...)
 	cmd := NewIntCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) LPushX(key, value string) *IntCmd {
+func (c *commandable) LPushX(key, value interface{}) *IntCmd {
 	cmd := NewIntCmd("LPUSHX", key, value)
 	c.Process(cmd)
 	return cmd
@@ -796,13 +794,13 @@ func (c *commandable) LRange(key string, start, stop int64) *StringSliceCmd {
 	return cmd
 }
 
-func (c *commandable) LRem(key string, count int64, value string) *IntCmd {
+func (c *commandable) LRem(key string, count int64, value interface{}) *IntCmd {
 	cmd := NewIntCmd("LREM", key, count, value)
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) LSet(key string, index int64, value string) *StatusCmd {
+func (c *commandable) LSet(key string, index int64, value interface{}) *StatusCmd {
 	cmd := NewStatusCmd("LSET", key, index, value)
 	c.Process(cmd)
 	return cmd
@@ -831,19 +829,17 @@ func (c *commandable) RPopLPush(source, destination string) *StringCmd {
 	return cmd
 }
 
-func (c *commandable) RPush(key string, values ...string) *IntCmd {
-	args := make([]interface{}, 2+len(values))
+func (c *commandable) RPush(key string, values ...interface{}) *IntCmd {
+	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "RPUSH"
 	args[1] = key
-	for i, value := range values {
-		args[2+i] = value
-	}
+	args = append(args, values...)
 	cmd := NewIntCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) RPushX(key string, value string) *IntCmd {
+func (c *commandable) RPushX(key string, value interface{}) *IntCmd {
 	cmd := NewIntCmd("RPUSHX", key, value)
 	c.Process(cmd)
 	return cmd
@@ -851,13 +847,11 @@ func (c *commandable) RPushX(key string, value string) *IntCmd {
 
 //------------------------------------------------------------------------------
 
-func (c *commandable) SAdd(key string, members ...string) *IntCmd {
-	args := make([]interface{}, 2+len(members))
+func (c *commandable) SAdd(key string, members ...interface{}) *IntCmd {
+	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "SADD"
 	args[1] = key
-	for i, member := range members {
-		args[2+i] = member
-	}
+	args = append(args, members...)
 	cmd := NewIntCmd(args...)
 	c.Process(cmd)
 	return cmd
@@ -915,7 +909,7 @@ func (c *commandable) SInterStore(destination string, keys ...string) *IntCmd {
 	return cmd
 }
 
-func (c *commandable) SIsMember(key, member string) *BoolCmd {
+func (c *commandable) SIsMember(key string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd("SISMEMBER", key, member)
 	c.Process(cmd)
 	return cmd
@@ -927,7 +921,7 @@ func (c *commandable) SMembers(key string) *StringSliceCmd {
 	return cmd
 }
 
-func (c *commandable) SMove(source, destination, member string) *BoolCmd {
+func (c *commandable) SMove(source, destination string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd("SMOVE", source, destination, member)
 	c.Process(cmd)
 	return cmd
@@ -953,13 +947,11 @@ func (c *commandable) SRandMemberN(key string, count int64) *StringSliceCmd {
 	return cmd
 }
 
-func (c *commandable) SRem(key string, members ...string) *IntCmd {
-	args := make([]interface{}, 2+len(members))
+func (c *commandable) SRem(key string, members ...interface{}) *IntCmd {
+	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "SREM"
 	args[1] = key
-	for i, member := range members {
-		args[2+i] = member
-	}
+	args = append(args, members...)
 	cmd := NewIntCmd(args...)
 	c.Process(cmd)
 	return cmd

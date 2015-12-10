@@ -1379,6 +1379,17 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Val()).To(Equal([]string{"Hello", "World"}))
 		})
 
+		It("should LPush bytes", func() {
+			lPush := client.LPush("list", []byte("World"))
+			Expect(lPush.Err()).NotTo(HaveOccurred())
+			lPush = client.LPush("list", []byte("Hello"))
+			Expect(lPush.Err()).NotTo(HaveOccurred())
+
+			lRange := client.LRange("list", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"Hello", "World"}))
+		})
+
 		It("should LPushX", func() {
 			lPush := client.LPush("list", "World")
 			Expect(lPush.Err()).NotTo(HaveOccurred())
@@ -1570,6 +1581,24 @@ var _ = Describe("Commands", func() {
 			Expect(sAdd.Val()).To(Equal(int64(1)))
 
 			sAdd = client.SAdd("set", "World")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			Expect(sAdd.Val()).To(Equal(int64(0)))
+
+			sMembers := client.SMembers("set")
+			Expect(sMembers.Err()).NotTo(HaveOccurred())
+			Expect(sMembers.Val()).To(ConsistOf([]string{"Hello", "World"}))
+		})
+
+		It("should SAdd bytes", func() {
+			sAdd := client.SAdd("set", []byte("Hello"))
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			Expect(sAdd.Val()).To(Equal(int64(1)))
+
+			sAdd = client.SAdd("set", []byte("World"))
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			Expect(sAdd.Val()).To(Equal(int64(1)))
+
+			sAdd = client.SAdd("set", []byte("World"))
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			Expect(sAdd.Val()).To(Equal(int64(0)))
 
