@@ -779,7 +779,7 @@ func (c *commandable) LPush(key string, values ...string) *IntCmd {
 	return cmd
 }
 
-func (c *commandable) LPushX(key, value string) *IntCmd {
+func (c *commandable) LPushX(key, value interface{}) *IntCmd {
 	cmd := NewIntCmd("LPUSHX", key, value)
 	c.Process(cmd)
 	return cmd
@@ -796,13 +796,13 @@ func (c *commandable) LRange(key string, start, stop int64) *StringSliceCmd {
 	return cmd
 }
 
-func (c *commandable) LRem(key string, count int64, value string) *IntCmd {
+func (c *commandable) LRem(key string, count int64, value interface{}) *IntCmd {
 	cmd := NewIntCmd("LREM", key, count, value)
 	c.Process(cmd)
 	return cmd
 }
 
-func (c *commandable) LSet(key string, index int64, value string) *StatusCmd {
+func (c *commandable) LSet(key string, index int64, value interface{}) *StatusCmd {
 	cmd := NewStatusCmd("LSET", key, index, value)
 	c.Process(cmd)
 	return cmd
@@ -843,7 +843,7 @@ func (c *commandable) RPush(key string, values ...string) *IntCmd {
 	return cmd
 }
 
-func (c *commandable) RPushX(key string, value string) *IntCmd {
+func (c *commandable) RPushX(key string, value interface{}) *IntCmd {
 	cmd := NewIntCmd("RPUSHX", key, value)
 	c.Process(cmd)
 	return cmd
@@ -915,7 +915,7 @@ func (c *commandable) SInterStore(destination string, keys ...string) *IntCmd {
 	return cmd
 }
 
-func (c *commandable) SIsMember(key, member string) *BoolCmd {
+func (c *commandable) SIsMember(key string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd("SISMEMBER", key, member)
 	c.Process(cmd)
 	return cmd
@@ -927,7 +927,7 @@ func (c *commandable) SMembers(key string) *StringSliceCmd {
 	return cmd
 }
 
-func (c *commandable) SMove(source, destination, member string) *BoolCmd {
+func (c *commandable) SMove(source, destination string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd("SMOVE", source, destination, member)
 	c.Process(cmd)
 	return cmd
