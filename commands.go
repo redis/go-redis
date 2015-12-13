@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"strconv"
@@ -838,6 +839,28 @@ func (c *commandable) RPush(key string, values ...string) *IntCmd {
 	for i, value := range values {
 		args[2+i] = value
 	}
+	cmd := NewIntCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) RPushSlice(key string, value interface{}) *IntCmd {
+	args := []interface{}{"RPUSH", key}
+
+	switch value := value.(type) {
+	case []string:
+		for _, s := range value {
+			args = append(args, s)
+		}
+	case [][]byte:
+		for _, b := range value {
+			args = append(args, b)
+		}
+	default:
+		msg, _ := fmt.Printf("unexpected type %T\n", value)
+		panic(msg)
+	}
+
 	cmd := NewIntCmd(args...)
 	c.Process(cmd)
 	return cmd

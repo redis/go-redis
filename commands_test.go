@@ -1534,6 +1534,29 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Val()).To(Equal([]string{"Hello", "World"}))
 		})
 
+		It("should RPushSlice of strings", func() {
+			rPushSlice := client.RPushSlice("list", []string{"one", "two"})
+			Expect(rPushSlice.Err()).NotTo(HaveOccurred())
+			Expect(rPushSlice.Val()).To(Equal(int64(2)))
+
+			lRange := client.LRange("list", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"one", "two"}))
+		})
+
+		It("should RPushSlice of byte slices", func() {
+			rPushSlice := client.RPushSlice("list", [][]byte{
+				[]byte("Hello"),
+				[]byte("World"),
+			})
+			Expect(rPushSlice.Err()).NotTo(HaveOccurred())
+			Expect(rPushSlice.Val()).To(Equal(int64(2)))
+
+			lRange := client.LRange("list", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"Hello", "World"}))
+		})
+
 		It("should RPushX", func() {
 			rPush := client.RPush("list", "Hello")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
