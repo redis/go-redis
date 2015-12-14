@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"strings"
@@ -42,6 +43,16 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	client.reloadSlots()
 	go client.reaper()
 	return client
+}
+
+// Get a single client connection for a specified key. Support Multi with
+// cluster client.
+func (c *ClusterClient) ClientForKey(key string) (*Client, error) {
+	addr := c.slotMasterAddr(hashSlot(key))
+	if addr == "" {
+		return nil, fmt.Errorf("client for `key` %s not found")
+	}
+	return c.getClient(addr)
 }
 
 // Close closes the cluster client, releasing any open resources.
