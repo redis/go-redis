@@ -321,6 +321,10 @@ var _ = Describe("Cluster", func() {
 		It("should return a client for specify key", func() {
 			client.ClientForKey("test_key")
 		})
+
+		It("should get all active nodes", func() {
+			client.AllClients()
+		})
 	})
 })
 

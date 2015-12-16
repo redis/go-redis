@@ -72,6 +72,15 @@ func (c *ClusterClient) Close() error {
 	return nil
 }
 
+// Get all clients for some special operate like send FLUSHDB to all nodes
+func (c *ClusterClient) AllClients() []*Client {
+	clients := []*Client{}
+	for _, cli := range c.clients {
+		clients = append(clients, cli)
+	}
+	return clients
+}
+
 // getClient returns a Client for a given address.
 func (c *ClusterClient) getClient(addr string) (*Client, error) {
 	if addr == "" {
