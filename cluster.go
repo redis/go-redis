@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"strings"
@@ -44,6 +45,16 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return client
 }
 
+// Get a single client connection for a specified key. Support Multi with
+// cluster client.
+func (c *ClusterClient) ClientForKey(key string) (*Client, error) {
+	addr := c.slotMasterAddr(hashSlot(key))
+	if addr == "" {
+		return nil, fmt.Errorf("client for `key` %s not found")
+	}
+	return c.getClient(addr)
+}
+
 // Close closes the cluster client, releasing any open resources.
 //
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
@@ -59,6 +70,15 @@ func (c *ClusterClient) Close() error {
 	c.resetClients()
 	c.setSlots(nil)
 	return nil
+}
+
+// Get all clients for some special operate like send FLUSHDB to all nodes
+func (c *ClusterClient) AllClients() []*Client {
+	clients := []*Client{}
+	for _, cli := range c.clients {
+		clients = append(clients, cli)
+	}
+	return clients
 }
 
 // getClient returns a Client for a given address.

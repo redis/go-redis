@@ -317,6 +317,14 @@ var _ = Describe("Cluster", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("MOVED"))
 		})
+
+		It("should return a client for specify key", func() {
+			client.ClientForKey("test_key")
+		})
+
+		It("should get all active nodes", func() {
+			client.AllClients()
+		})
 	})
 })
 
