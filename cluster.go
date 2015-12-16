@@ -44,6 +44,17 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return client
 }
 
+// Watch creates new transaction and marks the keys to be watched
+// for conditional execution of a transaction.
+func (c *ClusterClient) Watch(keys ...string) (*Multi, error) {
+	addr := c.slotMasterAddr(hashSlot(keys[0]))
+	client, err := c.getClient(addr)
+	if err != nil {
+		return nil, err
+	}
+	return client.Watch(keys...)
+}
+
 // Close closes the cluster client, releasing any open resources.
 //
 // It is rare to Close a ClusterClient, as the ClusterClient is meant

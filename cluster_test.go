@@ -5,7 +5,9 @@ import (
 	"math/rand"
 	"net"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 
 	"testing"
 	"time"
@@ -316,6 +318,49 @@ var _ = Describe("Cluster", func() {
 			err := client.Get("A").Err()
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("MOVED"))
+		})
+
+		It("should Watch", func() {
+			var incr func(string) error
+
+			// Transactionally increments key using GET and SET commands.
+			incr = func(key string) error {
+				tx, err := client.Watch(key)
+				if err != nil {
+					return err
+				}
+				defer tx.Close()
+
+				n, err := tx.Get(key).Int64()
+				if err != nil && err != redis.Nil {
+					return err
+				}
+
+				_, err = tx.Exec(func() error {
+					tx.Set(key, strconv.FormatInt(n+1, 10), 0)
+					return nil
+				})
+				if err == redis.TxFailedErr {
+					return incr(key)
+				}
+				return err
+			}
+
+			var wg sync.WaitGroup
+			for i := 0; i < 100; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+
+					err := incr("key")
+					Expect(err).NotTo(HaveOccurred())
+				}()
+			}
+			wg.Wait()
+
+			n, err := client.Get("key").Int64()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(100)))
 		})
 	})
 })
