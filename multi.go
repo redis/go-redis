@@ -23,8 +23,8 @@ type Multi struct {
 	closed bool
 }
 
-// Watch marks the keys to be watched for conditional execution
-// of a transaction.
+// Watch creates new transaction and marks the keys to be watched
+// for conditional execution of a transaction.
 func (c *Client) Watch(keys ...string) (*Multi, error) {
 	tx := c.Multi()
 	if err := tx.Watch(keys...).Err(); err != nil {

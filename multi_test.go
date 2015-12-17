@@ -1,6 +1,9 @@
 package redis_test
 
 import (
+	"strconv"
+	"sync"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
@@ -21,29 +24,47 @@ var _ = Describe("Multi", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should exec", func() {
-		multi := client.Multi()
-		defer func() {
-			Expect(multi.Close()).NotTo(HaveOccurred())
-		}()
+	It("should Watch", func() {
+		var incr func(string) error
 
-		var (
-			set *redis.StatusCmd
-			get *redis.StringCmd
-		)
-		cmds, err := multi.Exec(func() error {
-			set = multi.Set("key", "hello", 0)
-			get = multi.Get("key")
-			return nil
-		})
+		// Transactionally increments key using GET and SET commands.
+		incr = func(key string) error {
+			tx, err := client.Watch(key)
+			if err != nil {
+				return err
+			}
+			defer tx.Close()
+
+			n, err := tx.Get(key).Int64()
+			if err != nil && err != redis.Nil {
+				return err
+			}
+
+			_, err = tx.Exec(func() error {
+				tx.Set(key, strconv.FormatInt(n+1, 10), 0)
+				return nil
+			})
+			if err == redis.TxFailedErr {
+				return incr(key)
+			}
+			return err
+		}
+
+		var wg sync.WaitGroup
+		for i := 0; i < 100; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				err := incr("key")
+				Expect(err).NotTo(HaveOccurred())
+			}()
+		}
+		wg.Wait()
+
+		n, err := client.Get("key").Int64()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(cmds).To(HaveLen(2))
-
-		Expect(set.Err()).NotTo(HaveOccurred())
-		Expect(set.Val()).To(Equal("OK"))
-
-		Expect(get.Err()).NotTo(HaveOccurred())
-		Expect(get.Val()).To(Equal("hello"))
+		Expect(n).To(Equal(int64(100)))
 	})
 
 	It("should discard", func() {

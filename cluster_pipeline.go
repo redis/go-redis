@@ -4,9 +4,10 @@ package redis
 type ClusterPipeline struct {
 	commandable
 
-	cmds    []Cmder
 	cluster *ClusterClient
-	closed  bool
+
+	cmds   []Cmder
+	closed bool
 }
 
 // Pipeline creates a new pipeline which is able to execute commands
