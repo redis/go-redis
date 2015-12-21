@@ -1666,6 +1666,18 @@ func (c *commandable) ClusterReplicate(nodeID string) *StatusCmd {
 	return cmd
 }
 
+func (c *commandable) ClusterResetSoft() *StatusCmd {
+	cmd := newKeylessStatusCmd("CLUSTER", "reset", "soft")
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) ClusterResetHard() *StatusCmd {
+	cmd := newKeylessStatusCmd("CLUSTER", "reset", "hard")
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *commandable) ClusterInfo() *StringCmd {
 	cmd := NewStringCmd("CLUSTER", "info")
 	cmd._clusterKeyPos = 0
