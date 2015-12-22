@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -130,20 +131,19 @@ func execCmd(name string, args ...string) (*os.Process, error) {
 	return cmd.Process, cmd.Start()
 }
 
-func connectTo(port string) (client *redis.Client, err error) {
-	client = redis.NewClient(&redis.Options{
+func connectTo(port string) (*redis.Client, error) {
+	client := redis.NewClient(&redis.Options{
 		Addr: ":" + port,
 	})
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if err = client.Ping().Err(); err == nil {
-			return client, nil
-		}
-		time.Sleep(250 * time.Millisecond)
+	err := eventually(func() error {
+		return client.Ping().Err()
+	}, 10*time.Second)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, err
+	return client, nil
 }
 
 type redisProcess struct {
@@ -152,8 +152,22 @@ type redisProcess struct {
 }
 
 func (p *redisProcess) Close() error {
+	if err := p.Kill(); err != nil {
+		return err
+	}
+
+	err := eventually(func() error {
+		if err := p.Client.Ping().Err(); err != nil {
+			return nil
+		}
+		return errors.New("client is not shutdown")
+	}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+
 	p.Client.Close()
-	return p.Kill()
+	return nil
 }
 
 var (
@@ -165,9 +179,11 @@ func redisDir(port string) (string, error) {
 	dir, err := filepath.Abs(filepath.Join(".test", "instances", port))
 	if err != nil {
 		return "", err
-	} else if err = os.RemoveAll(dir); err != nil {
+	}
+	if err := os.RemoveAll(dir); err != nil {
 		return "", err
-	} else if err = os.MkdirAll(dir, 0775); err != nil {
+	}
+	if err := os.MkdirAll(dir, 0775); err != nil {
 		return "", err
 	}
 	return dir, nil

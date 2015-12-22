@@ -64,7 +64,7 @@ func (c *ClusterClient) Close() error {
 	c.clientsMx.Lock()
 
 	if c.closed {
-		return nil
+		return errClosed
 	}
 	c.closed = true
 	c.resetClients()
@@ -197,14 +197,14 @@ func (c *ClusterClient) process(cmd Cmder) {
 }
 
 // Closes all clients and returns last error if there are any.
-func (c *ClusterClient) resetClients() (err error) {
+func (c *ClusterClient) resetClients() (retErr error) {
 	for addr, client := range c.clients {
-		if e := client.Close(); e != nil {
-			err = e
+		if err := client.Close(); err != nil && retErr == nil {
+			retErr = err
 		}
 		delete(c.clients, addr)
 	}
-	return err
+	return retErr
 }
 
 func (c *ClusterClient) setSlots(slots []ClusterSlotInfo) {

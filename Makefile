@@ -1,6 +1,5 @@
 all: testdeps
 	go test ./... -test.v -test.cpu=1,2,4
-	sleep 3 # give Redis time to exit
 	go test ./... -test.v -test.short -test.race
 
 testdeps: .test/redis/src/redis-server

@@ -37,7 +37,7 @@ var _ = Describe("ClusterClient", func() {
 	})
 
 	AfterEach(func() {
-		subject.Close()
+		_ = subject.Close()
 	})
 
 	It("should initialize", func() {
