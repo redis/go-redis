@@ -1298,12 +1298,15 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BRPopLPush", func() {
-			rPush := client.RPush("list1", "a", "b", "c")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
+			_, err := client.BRPopLPush("list1", "list2", time.Second).Result()
+			Expect(err).To(Equal(redis.Nil))
 
-			bRPopLPush := client.BRPopLPush("list1", "list2", 0)
-			Expect(bRPopLPush.Err()).NotTo(HaveOccurred())
-			Expect(bRPopLPush.Val()).To(Equal("c"))
+			err = client.RPush("list1", "a", "b", "c").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			v, err := client.BRPopLPush("list1", "list2", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal("c"))
 		})
 
 		It("should LIndex", func() {
