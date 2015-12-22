@@ -49,7 +49,7 @@ var _ = Describe("Redis ring", func() {
 		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
 	})
 
-	It("uses one shard when other shard is down", func() {
+	It("uses single shard when one of the shards is down", func() {
 		// Stop ringShard2.
 		Expect(ringShard2.Close()).NotTo(HaveOccurred())
 
