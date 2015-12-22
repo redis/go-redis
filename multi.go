@@ -174,6 +174,9 @@ func (c *Multi) execCmds(cn *conn, cmds []Cmder) error {
 	// Parse number of replies.
 	line, err := readLine(cn)
 	if err != nil {
+		if err == Nil {
+			err = TxFailedErr
+		}
 		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
 	}
@@ -181,10 +184,6 @@ func (c *Multi) execCmds(cn *conn, cmds []Cmder) error {
 		err := fmt.Errorf("redis: expected '*', but got line %q", line)
 		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
-	}
-	if len(line) == 3 && line[1] == '-' && line[2] == '1' {
-		setCmdsErr(cmds[1:len(cmds)-1], TxFailedErr)
-		return TxFailedErr
 	}
 
 	var firstCmdErr error

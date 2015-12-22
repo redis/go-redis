@@ -231,7 +231,14 @@ func readLine(cn *conn) ([]byte, error) {
 	if isPrefix {
 		return line, errReaderTooSmall
 	}
+	if isNilReply(line) {
+		return nil, Nil
+	}
 	return line, nil
+}
+
+func isNilReply(b []byte) bool {
+	return len(b) == 3 && (b[0] == '$' || b[0] == '*') && b[1] == '-' && b[2] == '1'
 }
 
 func readN(cn *conn, n int) ([]byte, error) {
@@ -249,17 +256,6 @@ func readN(cn *conn, n int) ([]byte, error) {
 
 func parseErrorReply(cn *conn, line []byte) error {
 	return errorf(string(line[1:]))
-}
-
-func isNilReply(b []byte) bool {
-	return len(b) == 3 && b[1] == '-' && b[2] == '1'
-}
-
-func parseNilReply(cn *conn, line []byte) error {
-	if isNilReply(line) {
-		return Nil
-	}
-	return fmt.Errorf("redis: can't parse nil reply: %.100", line)
 }
 
 func parseStatusReply(cn *conn, line []byte) ([]byte, error) {
@@ -282,8 +278,6 @@ func readIntReply(cn *conn) (int64, error) {
 	switch line[0] {
 	case errorReply:
 		return 0, parseErrorReply(cn, line)
-	case stringReply:
-		return 0, parseNilReply(cn, line)
 	case intReply:
 		return parseIntReply(cn, line)
 	default:
