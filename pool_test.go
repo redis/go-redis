@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -36,7 +37,6 @@ var _ = Describe("pool", func() {
 	})
 
 	AfterEach(func() {
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
@@ -141,12 +141,12 @@ var _ = Describe("pool", func() {
 		pool := client.Pool()
 
 		// Reserve one connection.
-		cn, _, err := client.Pool().Get()
+		cn, _, err := pool.Get()
 		Expect(err).NotTo(HaveOccurred())
 
 		// Reserve the rest of connections.
 		for i := 0; i < 9; i++ {
-			_, _, err := client.Pool().Get()
+			_, _, err := pool.Get()
 			Expect(err).NotTo(HaveOccurred())
 		}
 
@@ -168,7 +168,8 @@ var _ = Describe("pool", func() {
 			// ok
 		}
 
-		Expect(pool.Remove(cn)).NotTo(HaveOccurred())
+		err = pool.Remove(cn, errors.New("test"))
+		Expect(err).NotTo(HaveOccurred())
 
 		// Check that Ping is unblocked.
 		select {
@@ -178,6 +179,23 @@ var _ = Describe("pool", func() {
 			panic("Ping is not unblocked")
 		}
 		Expect(ping.Err()).NotTo(HaveOccurred())
+	})
+
+	It("should rate limit dial", func() {
+		pool := client.Pool()
+
+		var rateErr error
+		for i := 0; i < 1000; i++ {
+			cn, _, err := pool.Get()
+			if err != nil {
+				rateErr = err
+				break
+			}
+
+			_ = pool.Remove(cn, errors.New("test"))
+		}
+
+		Expect(rateErr).To(MatchError(`redis: you open connections too fast (last_error="test")`))
 	})
 })
 
