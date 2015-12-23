@@ -1340,8 +1340,13 @@ func (c *commandable) PFAdd(key string, fields ...string) *IntCmd {
 	return cmd
 }
 
-func (c *commandable) PFCount(key string) *IntCmd {
-	cmd := NewIntCmd("PFCOUNT", key)
+func (c *commandable) PFCount(keys ...string) *IntCmd {
+	args := make([]interface{}, 1+len(keys))
+	args[0] = "PFCOUNT"
+	for i, key := range keys {
+		args[1+i] = key
+	}
+	cmd := NewIntCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
