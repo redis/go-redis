@@ -20,10 +20,9 @@ func (c *baseClient) conn() (*conn, bool, error) {
 	return c.connPool.Get()
 }
 
-func (c *baseClient) putConn(cn *conn, ei error) {
-	var err error
-	if isBadConn(cn, ei) {
-		err = c.connPool.Remove(cn)
+func (c *baseClient) putConn(cn *conn, err error) {
+	if isBadConn(cn, err) {
+		err = c.connPool.Remove(cn, err)
 	} else {
 		err = c.connPool.Put(cn)
 	}
