@@ -1698,6 +1698,13 @@ func (c *commandable) ClusterInfo() *StringCmd {
 	return cmd
 }
 
+func (c *commandable) ClusterKeySlot(key string) *IntCmd {
+	cmd := NewIntCmd("CLUSTER", "keyslot", key)
+	cmd._clusterKeyPos = 2
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *commandable) ClusterFailover() *StatusCmd {
 	cmd := newKeylessStatusCmd("CLUSTER", "failover")
 	c.Process(cmd)
