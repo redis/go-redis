@@ -230,9 +230,53 @@ var _ = Describe("Cluster", func() {
 		})
 
 		It("should CLUSTER KEYSLOT", func() {
-			res, err := cluster.primary().ClusterKeySlot("somekey").Result()
+			hashSlot, err := cluster.primary().ClusterKeySlot("somekey").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal(int64(11058)))
+			Expect(hashSlot).To(Equal(int64(11058)))
+		})
+
+		It("should CLUSTER COUNT-FAILURE-REPORTS", func() {
+			n, err := cluster.primary().ClusterCountFailureReports(cluster.nodeIds[0]).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
+		})
+
+		It("should CLUSTER COUNTKEYSINSLOT", func() {
+			n, err := cluster.primary().ClusterCountKeysInSlot(10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
+		})
+
+		It("should CLUSTER DELSLOTS", func() {
+			res, err := cluster.primary().ClusterDelSlotsRange(16000, 16384-1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal("OK"))
+			cluster.primary().ClusterAddSlotsRange(16000, 16384-1)
+		})
+
+		It("should CLUSTER SAVECONFIG", func() {
+			res, err := cluster.primary().ClusterSaveConfig().Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal("OK"))
+		})
+
+		It("should CLUSTER SLAVES", func() {
+			nodesList, err := cluster.primary().ClusterSlaves(cluster.nodeIds[0]).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nodesList).Should(ContainElement(ContainSubstring("slave")))
+			Expect(nodesList).Should(HaveLen(1))
+		})
+
+		It("should CLUSTER READONLY", func() {
+			res, err := cluster.primary().Readonly().Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal("OK"))
+		})
+
+		It("should CLUSTER READWRITE", func() {
+			res, err := cluster.primary().ReadWrite().Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal("OK"))
 		})
 	})
 
