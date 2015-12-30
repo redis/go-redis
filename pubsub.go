@@ -74,7 +74,7 @@ func (c *PubSub) Subscribe(channels ...string) error {
 func (c *PubSub) PSubscribe(patterns ...string) error {
 	err := c.subscribe("PSUBSCRIBE", patterns...)
 	if err == nil {
-		c.channels = append(c.channels, patterns...)
+		c.patterns = append(c.patterns, patterns...)
 	}
 	return err
 }
