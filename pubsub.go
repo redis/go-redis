@@ -233,9 +233,9 @@ func (c *PubSub) Receive() (interface{}, error) {
 	return c.ReceiveTimeout(0)
 }
 
-func (c *PubSub) reconnect() {
+func (c *PubSub) reconnect(reason error) {
 	// Close current connection.
-	c.connPool.(*stickyConnPool).Reset()
+	c.connPool.(*stickyConnPool).Reset(reason)
 
 	if len(c.channels) > 0 {
 		if err := c.Subscribe(c.channels...); err != nil {
@@ -276,7 +276,7 @@ func (c *PubSub) ReceiveMessage() (*Message, error) {
 			if errNum > 2 {
 				time.Sleep(time.Second)
 			}
-			c.reconnect()
+			c.reconnect(err)
 			continue
 		}
 

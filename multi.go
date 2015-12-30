@@ -46,16 +46,15 @@ func (c *Client) Multi() *Multi {
 	return multi
 }
 
-func (c *Multi) putConn(cn *conn, ei error) {
-	var err error
-	if isBadConn(cn, ei) {
+func (c *Multi) putConn(cn *conn, err error) {
+	if isBadConn(cn, err) {
 		// Close current connection.
-		c.base.connPool.(*stickyConnPool).Reset()
+		c.base.connPool.(*stickyConnPool).Reset(err)
 	} else {
-		err = c.base.connPool.Put(cn)
-	}
-	if err != nil {
-		log.Printf("redis: putConn failed: %s", err)
+		err := c.base.connPool.Put(cn)
+		if err != nil {
+			log.Printf("redis: putConn failed: %s", err)
+		}
 	}
 }
 

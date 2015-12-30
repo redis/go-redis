@@ -1340,8 +1340,13 @@ func (c *commandable) PFAdd(key string, fields ...string) *IntCmd {
 	return cmd
 }
 
-func (c *commandable) PFCount(key string) *IntCmd {
-	cmd := NewIntCmd("PFCOUNT", key)
+func (c *commandable) PFCount(keys ...string) *IntCmd {
+	args := make([]interface{}, 1+len(keys))
+	args[0] = "PFCOUNT"
+	for i, key := range keys {
+		args[1+i] = key
+	}
+	cmd := NewIntCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
@@ -1688,6 +1693,75 @@ func (c *commandable) ClusterResetHard() *StatusCmd {
 
 func (c *commandable) ClusterInfo() *StringCmd {
 	cmd := NewStringCmd("CLUSTER", "info")
+	cmd._clusterKeyPos = 0
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) ClusterKeySlot(key string) *IntCmd {
+	cmd := NewIntCmd("CLUSTER", "keyslot", key)
+	cmd._clusterKeyPos = 2
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) ClusterCountFailureReports(nodeID string) *IntCmd {
+	cmd := NewIntCmd("CLUSTER", "count-failure-reports", nodeID)
+	cmd._clusterKeyPos = 2
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) ClusterCountKeysInSlot(slot int) *IntCmd {
+	cmd := NewIntCmd("CLUSTER", "countkeysinslot", slot)
+	cmd._clusterKeyPos = 2
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) ClusterDelSlots(slots ...int) *StatusCmd {
+	args := make([]interface{}, 2+len(slots))
+	args[0] = "CLUSTER"
+	args[1] = "DELSLOTS"
+	for i, slot := range slots {
+		args[2+i] = slot
+	}
+	cmd := newKeylessStatusCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) ClusterDelSlotsRange(min, max int) *StatusCmd {
+	size := max - min + 1
+	slots := make([]int, size)
+	for i := 0; i < size; i++ {
+		slots[i] = min + i
+	}
+	return c.ClusterDelSlots(slots...)
+}
+
+func (c *commandable) ClusterSaveConfig() *StatusCmd {
+	cmd := newKeylessStatusCmd("CLUSTER", "saveconfig")
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) ClusterSlaves(nodeID string) *StringSliceCmd {
+	cmd := NewStringSliceCmd("CLUSTER", "SLAVES", nodeID)
+	cmd._clusterKeyPos = 2
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) Readonly() *StatusCmd {
+	cmd := newKeylessStatusCmd("READONLY")
+	cmd._clusterKeyPos = 0
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) ReadWrite() *StatusCmd {
+	cmd := newKeylessStatusCmd("READWRITE")
 	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd

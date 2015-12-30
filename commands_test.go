@@ -1203,6 +1203,10 @@ var _ = Describe("Commands", func() {
 			pfCount = client.PFCount("hllMerged")
 			Expect(pfCount.Err()).NotTo(HaveOccurred())
 			Expect(pfCount.Val()).To(Equal(int64(10)))
+
+			pfCount = client.PFCount("hll1", "hll2")
+			Expect(pfCount.Err()).NotTo(HaveOccurred())
+			Expect(pfCount.Val()).To(Equal(int64(10)))
 		})
 	})
 
