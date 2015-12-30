@@ -229,6 +229,11 @@ var _ = Describe("Cluster", func() {
 			Expect(res).To(ContainSubstring("cluster_known_nodes:6"))
 		})
 
+		It("should CLUSTER KEYSLOT", func() {
+			res, err := cluster.primary().ClusterKeySlot("somekey").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(11058)))
+		})
 	})
 
 	Describe("Client", func() {
