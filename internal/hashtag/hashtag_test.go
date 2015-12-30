@@ -1,4 +1,4 @@
-package redis
+package hashtag
 
 import (
 	. "github.com/onsi/ginkgo"

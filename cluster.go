@@ -3,10 +3,11 @@ package redis
 import (
 	"log"
 	"math/rand"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"gopkg.in/redis.v3/internal/hashtag"
 )
 
 // ClusterClient is a Redis Cluster client representing a pool of zero
@@ -34,7 +35,7 @@ type ClusterClient struct {
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	client := &ClusterClient{
 		addrs:   opt.Addrs,
-		slots:   make([][]string, hashSlots),
+		slots:   make([][]string, hashtag.SlotNumber),
 		clients: make(map[string]*Client),
 		opt:     opt,
 	}
@@ -47,7 +48,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 // Watch creates new transaction and marks the keys to be watched
 // for conditional execution of a transaction.
 func (c *ClusterClient) Watch(keys ...string) (*Multi, error) {
-	addr := c.slotMasterAddr(hashSlot(keys[0]))
+	addr := c.slotMasterAddr(hashtag.Slot(keys[0]))
 	client, err := c.getClient(addr)
 	if err != nil {
 		return nil, err
@@ -138,7 +139,7 @@ func (c *ClusterClient) randomClient() (client *Client, err error) {
 func (c *ClusterClient) process(cmd Cmder) {
 	var ask bool
 
-	slot := hashSlot(cmd.clusterKey())
+	slot := hashtag.Slot(cmd.clusterKey())
 
 	addr := c.slotMasterAddr(slot)
 	client, err := c.getClient(addr)
@@ -215,7 +216,7 @@ func (c *ClusterClient) setSlots(slots []ClusterSlotInfo) {
 		seen[addr] = struct{}{}
 	}
 
-	for i := 0; i < hashSlots; i++ {
+	for i := 0; i < hashtag.SlotNumber; i++ {
 		c.slots[i] = c.slots[i][:0]
 	}
 	for _, info := range slots {
@@ -332,27 +333,4 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PoolTimeout: opt.PoolTimeout,
 		IdleTimeout: opt.IdleTimeout,
 	}
-}
-
-//------------------------------------------------------------------------------
-
-const hashSlots = 16384
-
-func hashKey(key string) string {
-	if s := strings.IndexByte(key, '{'); s > -1 {
-		if e := strings.IndexByte(key[s+1:], '}'); e > 0 {
-			return key[s+1 : s+e+1]
-		}
-	}
-	return key
-}
-
-// hashSlot returns a consistent slot number between 0 and 16383
-// for any given string key.
-func hashSlot(key string) int {
-	key = hashKey(key)
-	if key == "" {
-		return rand.Intn(hashSlots)
-	}
-	return int(crc16sum(key)) % hashSlots
 }
