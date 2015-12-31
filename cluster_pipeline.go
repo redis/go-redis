@@ -1,5 +1,9 @@
 package redis
 
+import (
+	"gopkg.in/redis.v3/internal/hashtag"
+)
+
 // ClusterPipeline is not thread-safe.
 type ClusterPipeline struct {
 	commandable
@@ -48,7 +52,7 @@ func (pipe *ClusterPipeline) Exec() (cmds []Cmder, retErr error) {
 
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
-		slot := hashSlot(cmd.clusterKey())
+		slot := hashtag.Slot(cmd.clusterKey())
 		addr := pipe.cluster.slotMasterAddr(slot)
 		cmdsMap[addr] = append(cmdsMap[addr], cmd)
 	}

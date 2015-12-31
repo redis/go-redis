@@ -1,4 +1,11 @@
-package redis
+package hashtag
+
+import (
+	"math/rand"
+	"strings"
+)
+
+const SlotNumber = 16384
 
 // CRC16 implementation according to CCITT standards.
 // Copyright 2001-2010 Georges Menie (www.menie.org)
@@ -37,6 +44,25 @@ var crc16tab = [256]uint16{
 	0x7c26, 0x6c07, 0x5c64, 0x4c45, 0x3ca2, 0x2c83, 0x1ce0, 0x0cc1,
 	0xef1f, 0xff3e, 0xcf5d, 0xdf7c, 0xaf9b, 0xbfba, 0x8fd9, 0x9ff8,
 	0x6e17, 0x7e36, 0x4e55, 0x5e74, 0x2e93, 0x3eb2, 0x0ed1, 0x1ef0,
+}
+
+func Key(key string) string {
+	if s := strings.IndexByte(key, '{'); s > -1 {
+		if e := strings.IndexByte(key[s+1:], '}'); e > 0 {
+			return key[s+1 : s+e+1]
+		}
+	}
+	return key
+}
+
+// hashSlot returns a consistent slot number between 0 and 16383
+// for any given string key.
+func Slot(key string) int {
+	key = Key(key)
+	if key == "" {
+		return rand.Intn(SlotNumber)
+	}
+	return int(crc16sum(key)) % SlotNumber
 }
 
 func crc16sum(key string) (crc uint16) {

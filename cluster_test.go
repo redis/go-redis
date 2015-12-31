@@ -16,6 +16,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"gopkg.in/redis.v3"
+	"gopkg.in/redis.v3/internal/hashtag"
 )
 
 type clusterScenario struct {
@@ -182,7 +183,7 @@ var _ = Describe("Cluster", func() {
 			rand.Seed(100)
 
 			for _, test := range tests {
-				Expect(redis.HashSlot(test.key)).To(Equal(test.slot), "for %s", test.key)
+				Expect(hashtag.Slot(test.key)).To(Equal(test.slot), "for %s", test.key)
 			}
 		})
 
@@ -198,7 +199,7 @@ var _ = Describe("Cluster", func() {
 			}
 
 			for _, test := range tests {
-				Expect(redis.HashSlot(test.one)).To(Equal(redis.HashSlot(test.two)), "for %s <-> %s", test.one, test.two)
+				Expect(hashtag.Slot(test.one)).To(Equal(hashtag.Slot(test.two)), "for %s <-> %s", test.one, test.two)
 			}
 		})
 
@@ -232,7 +233,7 @@ var _ = Describe("Cluster", func() {
 		It("should CLUSTER KEYSLOT", func() {
 			hashSlot, err := cluster.primary().ClusterKeySlot("somekey").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hashSlot).To(Equal(int64(11058)))
+			Expect(hashSlot).To(Equal(int64(hashtag.Slot("somekey"))))
 		})
 
 		It("should CLUSTER COUNT-FAILURE-REPORTS", func() {
@@ -315,7 +316,7 @@ var _ = Describe("Cluster", func() {
 		It("should follow redirects", func() {
 			Expect(client.Set("A", "VALUE", 0).Err()).NotTo(HaveOccurred())
 
-			slot := redis.HashSlot("A")
+			slot := hashtag.Slot("A")
 			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			val, err := client.Get("A").Result()
@@ -328,7 +329,7 @@ var _ = Describe("Cluster", func() {
 		})
 
 		It("should perform multi-pipelines", func() {
-			slot := redis.HashSlot("A")
+			slot := hashtag.Slot("A")
 			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			pipe := client.Pipeline()
@@ -361,7 +362,7 @@ var _ = Describe("Cluster", func() {
 				MaxRedirects: -1,
 			})
 
-			slot := redis.HashSlot("A")
+			slot := hashtag.Slot("A")
 			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			err := client.Get("A").Err()
