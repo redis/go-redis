@@ -244,7 +244,7 @@ func (c *PubSub) reconnect(reason error) {
 	}
 	if len(c.patterns) > 0 {
 		if err := c.PSubscribe(c.patterns...); err != nil {
-			log.Printf("redis: Subscribe failed: %s", err)
+			log.Printf("redis: PSubscribe failed: %s", err)
 		}
 	}
 }
