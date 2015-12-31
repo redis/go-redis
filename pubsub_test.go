@@ -255,11 +255,7 @@ var _ = Describe("PubSub", func() {
 		wg.Wait()
 	})
 
-	It("should reconnect on ReceiveMessage error", func() {
-		pubsub, err := client.Subscribe("mychannel")
-		Expect(err).NotTo(HaveOccurred())
-		defer pubsub.Close()
-
+	expectReceiveMessage := func(pubsub *redis.PubSub) {
 		cn1, _, err := pubsub.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		cn1.SetNetConn(&badConn{
@@ -284,6 +280,22 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Payload).To(Equal("hello"))
 
 		wg.Wait()
+	}
+
+	It("Subscribe should reconnect on ReceiveMessage error", func() {
+		pubsub, err := client.Subscribe("mychannel")
+		Expect(err).NotTo(HaveOccurred())
+		defer pubsub.Close()
+
+		expectReceiveMessage(pubsub)
+	})
+
+	It("PSubscribe should reconnect on ReceiveMessage error", func() {
+		pubsub, err := client.PSubscribe("mychannel")
+		Expect(err).NotTo(HaveOccurred())
+		defer pubsub.Close()
+
+		expectReceiveMessage(pubsub)
 	})
 
 	It("should return on Close", func() {
