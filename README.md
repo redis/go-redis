@@ -13,6 +13,7 @@ Supports:
 - [Ring](http://godoc.org/gopkg.in/redis.v3#NewRing).
 - [Cache friendly](https://github.com/go-redis/cache).
 - [Rate limiting](https://github.com/go-redis/rate).
+- [Distributed Locks](https://github.com/bsm/redis-lock).
 
 API docs: http://godoc.org/gopkg.in/redis.v3.
 Examples: http://godoc.org/gopkg.in/redis.v3#pkg-examples.
