@@ -73,6 +73,20 @@ func (c *ClusterClient) Close() error {
 	return nil
 }
 
+// PoolLen returns the number of active connections in the pool, for instrumentation
+func (c *ClusterClient) PoolLen() int {
+	var max int
+
+	c.clientsMx.RLock()
+	for _, client := range c.clients {
+		if plen := client.PoolLen(); plen > max {
+			max = plen
+		}
+	}
+	c.clientsMx.RUnlock()
+	return max
+}
+
 // getClient returns a Client for a given address.
 func (c *ClusterClient) getClient(addr string) (*Client, error) {
 	if addr == "" {
