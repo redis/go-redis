@@ -193,7 +193,7 @@ func NewClient(opt *Options) *Client {
 	return newClient(opt, pool)
 }
 
-// PoolLen returns the number of active connections in the pool, for instrumentation
+// PoolLen returns the number of allocated connections in the connection pool.
 func (c *Client) PoolLen() int {
 	return c.connPool.Len()
 }

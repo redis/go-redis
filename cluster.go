@@ -73,7 +73,8 @@ func (c *ClusterClient) Close() error {
 	return nil
 }
 
-// PoolLen returns the number of active connections in the pool, for instrumentation
+// PoolLen returns the number of allocated connections in the connection pool.
+// Since ClusterOptions.PoolSize setting is applied per node, PoolLen will return the number of connections of the largest pool in the cluster.
 func (c *ClusterClient) PoolLen() int {
 	var max int
 
@@ -320,6 +321,7 @@ type ClusterOptions struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
+	// PoolSize applies per redis node and not for the whole cluster.
 	PoolSize    int
 	PoolTimeout time.Duration
 	IdleTimeout time.Duration
