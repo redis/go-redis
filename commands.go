@@ -1454,9 +1454,12 @@ func (c *commandable) FlushDb() *StatusCmd {
 	return cmd
 }
 
-func (c *commandable) Info() *StringCmd {
-	cmd := NewStringCmd("INFO")
-	cmd._clusterKeyPos = 0
+func (c *commandable) Info(section ...string) *StringCmd {
+	args := []interface{}{"INFO"}
+	if len(section) > 0 {
+		args = append(args, section[0])
+	}
+	cmd := NewStringCmd(args...)
 	c.Process(cmd)
 	return cmd
 }
