@@ -73,6 +73,21 @@ func (c *ClusterClient) Close() error {
 	return nil
 }
 
+// PoolLen returns the number of allocated connections in the connection pool.
+// Since ClusterOptions.PoolSize setting is applied per node, PoolLen will return the number of connections of the largest pool in the cluster.
+func (c *ClusterClient) PoolLen() int {
+	var max int
+
+	c.clientsMx.RLock()
+	for _, client := range c.clients {
+		if plen := client.PoolLen(); plen > max {
+			max = plen
+		}
+	}
+	c.clientsMx.RUnlock()
+	return max
+}
+
 // getClient returns a Client for a given address.
 func (c *ClusterClient) getClient(addr string) (*Client, error) {
 	if addr == "" {
@@ -306,6 +321,7 @@ type ClusterOptions struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
+	// PoolSize applies per redis node and not for the whole cluster.
 	PoolSize    int
 	PoolTimeout time.Duration
 	IdleTimeout time.Duration

@@ -313,6 +313,10 @@ var _ = Describe("Cluster", func() {
 			Expect(cnt).To(Equal(int64(1)))
 		})
 
+		It("should return pool length", func() {
+			Expect(client.PoolLen()).To(Equal(1))
+		})
+
 		It("should follow redirects", func() {
 			Expect(client.Set("A", "VALUE", 0).Err()).NotTo(HaveOccurred())
 

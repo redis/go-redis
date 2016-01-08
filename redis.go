@@ -192,3 +192,8 @@ func NewClient(opt *Options) *Client {
 	pool := newConnPool(opt)
 	return newClient(opt, pool)
 }
+
+// PoolLen returns the number of allocated connections in the connection pool.
+func (c *Client) PoolLen() int {
+	return c.connPool.Len()
+}
