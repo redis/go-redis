@@ -56,6 +56,22 @@ func (c *ClusterClient) Watch(keys ...string) (*Multi, error) {
 	return client.Watch(keys...)
 }
 
+// PoolMetrics returns accumulated connection pool metrics
+func (c *ClusterClient) PoolMetrics() *PoolMetrics {
+	acc := PoolMetrics{}
+	c.clientsMx.RLock()
+	for _, client := range c.clients {
+		m := client.PoolMetrics()
+		acc.Conns.Open += m.Conns.Open
+		acc.Conns.Free += m.Conns.Free
+		acc.Counts.Requests += m.Counts.Requests
+		acc.Counts.Waits += m.Counts.Waits
+		acc.Counts.Timeouts += m.Counts.Timeouts
+	}
+	c.clientsMx.RUnlock()
+	return &acc
+}
+
 // Close closes the cluster client, releasing any open resources.
 //
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
@@ -306,6 +322,7 @@ type ClusterOptions struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
+	// PoolSize applies per redis node and not for the whole cluster.
 	PoolSize    int
 	PoolTimeout time.Duration
 	IdleTimeout time.Duration

@@ -35,6 +35,10 @@ var _ = Describe("Client", func() {
 		Expect(val).To(Equal("PONG"))
 	})
 
+	It("should return pool metrics", func() {
+		Expect(client.PoolMetrics()).To(BeAssignableToTypeOf(&redis.PoolMetrics{}))
+	})
+
 	It("should support custom dialers", func() {
 		custom := redis.NewClient(&redis.Options{
 			Dialer: func() (net.Conn, error) {
