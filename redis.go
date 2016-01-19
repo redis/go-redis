@@ -192,3 +192,9 @@ func NewClient(opt *Options) *Client {
 	pool := newConnPool(opt)
 	return newClient(opt, pool)
 }
+
+// PoolStats returns connection pool stats
+func (c *Client) PoolStats() *PoolStats {
+	stats := c.baseClient.connPool.Stats()
+	return &stats
+}
