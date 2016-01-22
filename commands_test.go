@@ -500,19 +500,58 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Sort", func() {
-			lPush := client.LPush("list", "1")
-			Expect(lPush.Err()).NotTo(HaveOccurred())
-			Expect(lPush.Val()).To(Equal(int64(1)))
-			lPush = client.LPush("list", "3")
-			Expect(lPush.Err()).NotTo(HaveOccurred())
-			Expect(lPush.Val()).To(Equal(int64(2)))
-			lPush = client.LPush("list", "2")
-			Expect(lPush.Err()).NotTo(HaveOccurred())
-			Expect(lPush.Val()).To(Equal(int64(3)))
+			size, err := client.LPush("list", "1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(1)))
 
-			sort := client.Sort("list", redis.Sort{Offset: 0, Count: 2, Order: "ASC"})
-			Expect(sort.Err()).NotTo(HaveOccurred())
-			Expect(sort.Val()).To(Equal([]string{"1", "2"}))
+			size, err = client.LPush("list", "3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(2)))
+
+			size, err = client.LPush("list", "2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(3)))
+
+			els, err := client.Sort("list", redis.Sort{
+				Offset: 0,
+				Count:  2,
+				Order:  "ASC",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(els).To(Equal([]string{"1", "2"}))
+		})
+
+		It("should Sort and Get", func() {
+			size, err := client.LPush("list", "1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(1)))
+
+			size, err = client.LPush("list", "3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(2)))
+
+			size, err = client.LPush("list", "2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(3)))
+
+			err = client.Set("object_2", "value2", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			{
+				els, err := client.Sort("list", redis.Sort{
+					Get: []string{"object_*"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(els).To(Equal([]string{"", "value2", ""}))
+			}
+
+			{
+				els, err := client.SortInterfaces("list", redis.Sort{
+					Get: []string{"object_*"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(els).To(Equal([]interface{}{nil, "value2", nil}))
+			}
 		})
 
 		It("should TTL", func() {
