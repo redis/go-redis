@@ -270,7 +270,7 @@ type Sort struct {
 	Store         string
 }
 
-func (c *commandable) Sort(key string, sort Sort) *StringSliceCmd {
+func (sort *Sort) args(key string) []interface{} {
 	args := []interface{}{"SORT", key}
 	if sort.By != "" {
 		args = append(args, "BY", sort.By)
@@ -290,7 +290,17 @@ func (c *commandable) Sort(key string, sort Sort) *StringSliceCmd {
 	if sort.Store != "" {
 		args = append(args, "STORE", sort.Store)
 	}
-	cmd := NewStringSliceCmd(args...)
+	return args
+}
+
+func (c *commandable) Sort(key string, sort Sort) *StringSliceCmd {
+	cmd := NewStringSliceCmd(sort.args(key)...)
+	c.Process(cmd)
+	return cmd
+}
+
+func (c *commandable) SortInterfaces(key string, sort Sort) *SliceCmd {
+	cmd := NewSliceCmd(sort.args(key)...)
 	c.Process(cmd)
 	return cmd
 }

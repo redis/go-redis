@@ -491,10 +491,13 @@ func stringSliceParser(cn *conn, n int64) (interface{}, error) {
 	ss := make([]string, 0, n)
 	for i := int64(0); i < n; i++ {
 		s, err := readStringReply(cn)
-		if err != nil {
+		if err == Nil {
+			ss = append(ss, "")
+		} else if err != nil {
 			return nil, err
+		} else {
+			ss = append(ss, s)
 		}
-		ss = append(ss, s)
 	}
 	return ss, nil
 }
