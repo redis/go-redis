@@ -192,3 +192,15 @@ func NewClient(opt *Options) *Client {
 	pool := newConnPool(opt)
 	return newClient(opt, pool)
 }
+
+// PoolMetrics returns connection pool metrics
+func (c *Client) PoolMetrics() *PoolMetrics {
+	open, free, stats := c.connPool.Len(), c.connPool.FreeLen(), c.connPool.Stats()
+	m := PoolMetrics{}
+	m.Conns.Open = open
+	m.Conns.Free = free
+	m.Counts.Requests = stats.Requests
+	m.Counts.Waits = stats.Waits
+	m.Counts.Timeouts = stats.Timeouts
+	return &m
+}

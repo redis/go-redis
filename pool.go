@@ -16,6 +16,19 @@ var (
 	errPoolTimeout = errors.New("redis: connection pool timeout")
 )
 
+// PoolMetrics contains pool state information and accumulated stats
+type PoolMetrics struct {
+	Conns struct {
+		Free int // the number of free connections in the pool
+		Open int // the number of open connections in the pool
+	}
+	Counts struct {
+		Requests int64 // number of times a connection was requested by the pool
+		Waits    int64 // number of times our pool had to wait for a connection to avail
+		Timeouts int64 // number of times a wait timeout occurred
+	}
+}
+
 type pool interface {
 	First() *conn
 	Get() (*conn, bool, error)
@@ -24,7 +37,10 @@ type pool interface {
 	Len() int
 	FreeLen() int
 	Close() error
+	Stats() poolStats
 }
+
+type poolStats struct{ Requests, Waits, Timeouts int64 }
 
 type connList struct {
 	cns  []*conn
@@ -127,6 +143,7 @@ type connPool struct {
 	opt       *Options
 	conns     *connList
 	freeConns chan *conn
+	stats     poolStats
 
 	_closed int32
 
@@ -226,6 +243,8 @@ func (p *connPool) Get() (cn *conn, isNew bool, err error) {
 		return
 	}
 
+	atomic.AddInt64(&p.stats.Requests, 1)
+
 	// Fetch first non-idle connection, if available.
 	if cn = p.First(); cn != nil {
 		return
@@ -244,10 +263,12 @@ func (p *connPool) Get() (cn *conn, isNew bool, err error) {
 	}
 
 	// Otherwise, wait for the available connection.
+	atomic.AddInt64(&p.stats.Waits, 1)
 	if cn = p.wait(); cn != nil {
 		return
 	}
 
+	atomic.AddInt64(&p.stats.Timeouts, 1)
 	err = errPoolTimeout
 	return
 }
@@ -296,6 +317,14 @@ func (p *connPool) Len() int {
 // FreeLen returns number of free connections.
 func (p *connPool) FreeLen() int {
 	return len(p.freeConns)
+}
+
+func (p *connPool) Stats() poolStats {
+	return poolStats{
+		Requests: atomic.LoadInt64(&p.stats.Requests),
+		Waits:    atomic.LoadInt64(&p.stats.Waits),
+		Timeouts: atomic.LoadInt64(&p.stats.Timeouts),
+	}
 }
 
 func (p *connPool) Close() (retErr error) {
@@ -385,6 +414,8 @@ func (p *singleConnPool) Len() int {
 func (p *singleConnPool) FreeLen() int {
 	return 0
 }
+
+func (p *singleConnPool) Stats() poolStats { return poolStats{} }
 
 func (p *singleConnPool) Close() error {
 	return nil
@@ -492,6 +523,8 @@ func (p *stickyConnPool) FreeLen() int {
 	}
 	return 0
 }
+
+func (p *stickyConnPool) Stats() poolStats { return poolStats{} }
 
 func (p *stickyConnPool) Reset(reason error) (err error) {
 	p.mx.Lock()
