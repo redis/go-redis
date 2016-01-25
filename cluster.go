@@ -17,11 +17,11 @@ type ClusterClient struct {
 
 	addrs   []string
 	slots   [][]string
-	slotsMx sync.RWMutex // Protects slots and addrs.
+	slotsMx sync.RWMutex // protects slots and addrs
 
 	clients   map[string]*Client
 	closed    bool
-	clientsMx sync.RWMutex // Protects clients and closed.
+	clientsMx sync.RWMutex // protects clients and closed
 
 	opt *ClusterOptions
 
@@ -44,6 +44,19 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return client
 }
 
+// Clients returns a snapshot of clients for cluster nodes
+// this ClusterClient has been working with recently.
+// Note that snapshot can contain closed clients.
+func (c *ClusterClient) getClients() map[string]*Client {
+	c.clientsMx.RLock()
+	clients := make(map[string]*Client, len(c.clients))
+	for addr, client := range c.clients {
+		clients[addr] = client
+	}
+	c.clientsMx.RUnlock()
+	return clients
+}
+
 // Watch creates new transaction and marks the keys to be watched
 // for conditional execution of a transaction.
 func (c *ClusterClient) Watch(keys ...string) (*Multi, error) {
@@ -58,8 +71,7 @@ func (c *ClusterClient) Watch(keys ...string) (*Multi, error) {
 // PoolStats returns accumulated connection pool stats.
 func (c *ClusterClient) PoolStats() *PoolStats {
 	acc := PoolStats{}
-	c.clientsMx.RLock()
-	for _, client := range c.clients {
+	for _, client := range c.getClients() {
 		m := client.PoolStats()
 		acc.Requests += m.Requests
 		acc.Waits += m.Waits
@@ -67,7 +79,6 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.TotalConns += m.TotalConns
 		acc.FreeConns += m.FreeConns
 	}
-	c.clientsMx.RUnlock()
 	return &acc
 }
 
