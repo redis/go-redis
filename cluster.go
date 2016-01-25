@@ -56,17 +56,17 @@ func (c *ClusterClient) Watch(keys ...string) (*Multi, error) {
 	return client.Watch(keys...)
 }
 
-// PoolStats returns accumulated connection pool stats
+// PoolStats returns accumulated connection pool stats.
 func (c *ClusterClient) PoolStats() *PoolStats {
 	acc := PoolStats{}
 	c.clientsMx.RLock()
 	for _, client := range c.clients {
 		m := client.PoolStats()
-		acc.TotalConns += m.TotalConns
-		acc.FreeConns += m.FreeConns
 		acc.Requests += m.Requests
 		acc.Waits += m.Waits
 		acc.Timeouts += m.Timeouts
+		acc.TotalConns += m.TotalConns
+		acc.FreeConns += m.FreeConns
 	}
 	c.clientsMx.RUnlock()
 	return &acc
@@ -322,7 +322,7 @@ type ClusterOptions struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
-	// PoolSize applies per redis node and not for the whole cluster.
+	// PoolSize applies per cluster node and not for the whole cluster.
 	PoolSize    int
 	PoolTimeout time.Duration
 	IdleTimeout time.Duration

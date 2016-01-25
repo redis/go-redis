@@ -16,10 +16,10 @@ var (
 	errPoolTimeout = errors.New("redis: connection pool timeout")
 )
 
-// PoolStats contains pool state information and accumulated stats
+// PoolStats contains pool state information and accumulated stats.
 type PoolStats struct {
 	Requests uint64 // number of times a connection was requested by the pool
-	Waits    uint64 // number of times our pool had to wait for a connection to avail
+	Waits    uint64 // number of times our pool had to wait for a connection
 	Timeouts uint64 // number of times a wait timeout occurred
 
 	TotalConns uint64 // the number of total connections in the pool
@@ -34,7 +34,7 @@ type pool interface {
 	Len() int
 	FreeLen() int
 	Close() error
-	Stats() PoolStats
+	Stats() *PoolStats
 }
 
 type connList struct {
@@ -314,10 +314,14 @@ func (p *connPool) FreeLen() int {
 	return len(p.freeConns)
 }
 
-func (p *connPool) Stats() PoolStats {
-	p.stats.TotalConns = uint64(p.Len())
-	p.stats.FreeConns = uint64(p.FreeLen())
-	return p.stats
+func (p *connPool) Stats() *PoolStats {
+	stats := p.stats
+	stats.Requests = atomic.LoadUint64(&p.stats.Requests)
+	stats.Waits = atomic.LoadUint64(&p.stats.Waits)
+	stats.Timeouts = atomic.LoadUint64(&p.stats.Timeouts)
+	stats.TotalConns = uint64(p.Len())
+	stats.FreeConns = uint64(p.FreeLen())
+	return &stats
 }
 
 func (p *connPool) Close() (retErr error) {
@@ -408,7 +412,7 @@ func (p *singleConnPool) FreeLen() int {
 	return 0
 }
 
-func (p *singleConnPool) Stats() PoolStats { return PoolStats{} }
+func (p *singleConnPool) Stats() *PoolStats { return nil }
 
 func (p *singleConnPool) Close() error {
 	return nil
@@ -517,7 +521,7 @@ func (p *stickyConnPool) FreeLen() int {
 	return 0
 }
 
-func (p *stickyConnPool) Stats() PoolStats { return PoolStats{} }
+func (p *stickyConnPool) Stats() *PoolStats { return nil }
 
 func (p *stickyConnPool) Reset(reason error) (err error) {
 	p.mx.Lock()
