@@ -3,7 +3,6 @@ package redis
 import (
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -178,7 +177,7 @@ func (p *connPool) First() *conn {
 				var err error
 				cn, err = p.replace(cn)
 				if err != nil {
-					log.Printf("redis: replace failed: %s", err)
+					Logger.Printf("redis: replace failed: %s", err)
 					continue
 				}
 			}
@@ -200,7 +199,7 @@ func (p *connPool) wait() *conn {
 				var err error
 				cn, err = p.replace(cn)
 				if err != nil {
-					log.Printf("redis: replace failed: %s", err)
+					Logger.Printf("redis: replace failed: %s", err)
 					continue
 				}
 			}
@@ -272,7 +271,7 @@ func (p *connPool) Put(cn *conn) error {
 	if cn.rd.Buffered() != 0 {
 		b, _ := cn.rd.Peek(cn.rd.Buffered())
 		err := fmt.Errorf("redis: connection has unread data: %q", b)
-		log.Print(err)
+		Logger.Print(err)
 		return p.Remove(cn, err)
 	}
 	if p.opt.getIdleTimeout() > 0 {
