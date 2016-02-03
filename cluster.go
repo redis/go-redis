@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -153,7 +154,21 @@ func (c *ClusterClient) randomClient() (client *Client, err error) {
 }
 
 func (c *ClusterClient) process(cmd Cmder) {
-	var ask bool
+	var ask, processAll bool
+
+	if arg := fmt.Sprint(cmd.args()[0]); arg == "FLUSHALL" || arg == "FLUSHDB" {
+		processAll = true
+	}
+	if processAll {
+		for _, addrs := range c.slots {
+			if len(addrs) > 0 {
+				if masterClient, err := c.getClient(addrs[0]); err != nil {
+					masterClient.Process(cmd)
+				}
+			}
+		}
+		return
+	}
 
 	slot := hashtag.Slot(cmd.clusterKey())
 
