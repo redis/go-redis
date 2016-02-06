@@ -52,7 +52,7 @@ func (c *Multi) putConn(cn *conn, err error) {
 	} else {
 		err := c.base.connPool.Put(cn)
 		if err != nil {
-			Logger.Printf("redis: putConn failed: %s", err)
+			Logger.Printf("pool.Put failed: %s", err)
 		}
 	}
 }
@@ -69,7 +69,7 @@ func (c *Multi) process(cmd Cmder) {
 func (c *Multi) Close() error {
 	c.closed = true
 	if err := c.Unwatch().Err(); err != nil {
-		Logger.Printf("redis: Unwatch failed: %s", err)
+		Logger.Printf("Unwatch failed: %s", err)
 	}
 	return c.base.Close()
 }

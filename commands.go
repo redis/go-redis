@@ -32,7 +32,7 @@ func usePrecise(dur time.Duration) bool {
 func formatMs(dur time.Duration) string {
 	if dur > 0 && dur < time.Millisecond {
 		Logger.Printf(
-			"redis: specified duration is %s, but minimal supported value is %s",
+			"specified duration is %s, but minimal supported value is %s",
 			dur, time.Millisecond,
 		)
 	}
@@ -42,7 +42,7 @@ func formatMs(dur time.Duration) string {
 func formatSec(dur time.Duration) string {
 	if dur > 0 && dur < time.Second {
 		Logger.Printf(
-			"redis: specified duration is %s, but minimal supported value is %s",
+			"specified duration is %s, but minimal supported value is %s",
 			dur, time.Second,
 		)
 	}

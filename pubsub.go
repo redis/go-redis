@@ -238,12 +238,12 @@ func (c *PubSub) reconnect(reason error) {
 
 	if len(c.channels) > 0 {
 		if err := c.Subscribe(c.channels...); err != nil {
-			Logger.Printf("redis: Subscribe failed: %s", err)
+			Logger.Printf("Subscribe failed: %s", err)
 		}
 	}
 	if len(c.patterns) > 0 {
 		if err := c.PSubscribe(c.patterns...); err != nil {
-			Logger.Printf("redis: PSubscribe failed: %s", err)
+			Logger.Printf("PSubscribe failed: %s", err)
 		}
 	}
 }
@@ -268,7 +268,7 @@ func (c *PubSub) ReceiveMessage() (*Message, error) {
 					if err == nil {
 						continue
 					}
-					Logger.Printf("redis: PubSub.Ping failed: %s", err)
+					Logger.Printf("PubSub.Ping failed: %s", err)
 				}
 			}
 
