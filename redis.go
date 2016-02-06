@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"time"
 )
+
+var Logger = log.New(os.Stderr, "", log.LstdFlags)
 
 type baseClient struct {
 	connPool pool
@@ -27,7 +30,7 @@ func (c *baseClient) putConn(cn *conn, err error) {
 		err = c.connPool.Put(cn)
 	}
 	if err != nil {
-		log.Printf("redis: putConn failed: %s", err)
+		Logger.Printf("redis: putConn failed: %s", err)
 	}
 }
 

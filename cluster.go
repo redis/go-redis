@@ -1,7 +1,6 @@
 package redis
 
 import (
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -256,13 +255,13 @@ func (c *ClusterClient) reloadSlots() {
 
 	client, err := c.randomClient()
 	if err != nil {
-		log.Printf("redis: randomClient failed: %s", err)
+		Logger.Printf("redis: randomClient failed: %s", err)
 		return
 	}
 
 	slots, err := client.ClusterSlots().Result()
 	if err != nil {
-		log.Printf("redis: ClusterSlots failed: %s", err)
+		Logger.Printf("redis: ClusterSlots failed: %s", err)
 		return
 	}
 	c.setSlots(slots)

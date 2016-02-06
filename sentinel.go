@@ -3,7 +3,6 @@ package redis
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -145,11 +144,11 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 	if d._sentinel != nil {
 		addr, err := d._sentinel.GetMasterAddrByName(d.masterName).Result()
 		if err != nil {
-			log.Printf("redis-sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
+			Logger.Printf("redis-sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
 			d.resetSentinel()
 		} else {
 			addr := net.JoinHostPort(addr[0], addr[1])
-			log.Printf("redis-sentinel: %q addr is %s", d.masterName, addr)
+			Logger.Printf("redis-sentinel: %q addr is %s", d.masterName, addr)
 			return addr, nil
 		}
 	}
@@ -168,7 +167,7 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 		})
 		masterAddr, err := sentinel.GetMasterAddrByName(d.masterName).Result()
 		if err != nil {
-			log.Printf("redis-sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
+			Logger.Printf("redis-sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
 			sentinel.Close()
 			continue
 		}
@@ -178,7 +177,7 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 
 		d.setSentinel(sentinel)
 		addr := net.JoinHostPort(masterAddr[0], masterAddr[1])
-		log.Printf("redis-sentinel: %q addr is %s", d.masterName, addr)
+		Logger.Printf("redis-sentinel: %q addr is %s", d.masterName, addr)
 		return addr, nil
 	}
 
@@ -194,7 +193,7 @@ func (d *sentinelFailover) setSentinel(sentinel *sentinelClient) {
 func (d *sentinelFailover) discoverSentinels(sentinel *sentinelClient) {
 	sentinels, err := sentinel.Sentinels(d.masterName).Result()
 	if err != nil {
-		log.Printf("redis-sentinel: Sentinels %q failed: %s", d.masterName, err)
+		Logger.Printf("redis-sentinel: Sentinels %q failed: %s", d.masterName, err)
 		return
 	}
 	for _, sentinel := range sentinels {
@@ -204,7 +203,7 @@ func (d *sentinelFailover) discoverSentinels(sentinel *sentinelClient) {
 			if key == "name" {
 				sentinelAddr := vals[i+1].(string)
 				if !contains(d.sentinelAddrs, sentinelAddr) {
-					log.Printf(
+					Logger.Printf(
 						"redis-sentinel: discovered new %q sentinel: %s",
 						d.masterName, sentinelAddr,
 					)
@@ -232,7 +231,7 @@ func (d *sentinelFailover) closeOldConns(newMaster string) {
 				"redis-sentinel: closing connection to the old master %s",
 				cn.RemoteAddr(),
 			)
-			log.Print(err)
+			Logger.Print(err)
 			d.pool.Remove(cn, err)
 		} else {
 			cnsToPut = append(cnsToPut, cn)
@@ -250,7 +249,7 @@ func (d *sentinelFailover) listen() {
 		if pubsub == nil {
 			pubsub = d._sentinel.PubSub()
 			if err := pubsub.Subscribe("+switch-master"); err != nil {
-				log.Printf("redis-sentinel: Subscribe failed: %s", err)
+				Logger.Printf("redis-sentinel: Subscribe failed: %s", err)
 				d.lock.Lock()
 				d.resetSentinel()
 				d.lock.Unlock()
@@ -260,7 +259,7 @@ func (d *sentinelFailover) listen() {
 
 		msgIface, err := pubsub.Receive()
 		if err != nil {
-			log.Printf("redis-sentinel: Receive failed: %s", err)
+			Logger.Printf("redis-sentinel: Receive failed: %s", err)
 			pubsub.Close()
 			return
 		}
@@ -271,23 +270,23 @@ func (d *sentinelFailover) listen() {
 			case "+switch-master":
 				parts := strings.Split(msg.Payload, " ")
 				if parts[0] != d.masterName {
-					log.Printf("redis-sentinel: ignore new %s addr", parts[0])
+					Logger.Printf("redis-sentinel: ignore new %s addr", parts[0])
 					continue
 				}
 				addr := net.JoinHostPort(parts[3], parts[4])
-				log.Printf(
+				Logger.Printf(
 					"redis-sentinel: new %q addr is %s",
 					d.masterName, addr,
 				)
 
 				d.closeOldConns(addr)
 			default:
-				log.Printf("redis-sentinel: unsupported message: %s", msg)
+				Logger.Printf("redis-sentinel: unsupported message: %s", msg)
 			}
 		case *Subscription:
 			// Ignore.
 		default:
-			log.Printf("redis-sentinel: unsupported message: %s", msgIface)
+			Logger.Printf("redis-sentinel: unsupported message: %s", msgIface)
 		}
 	}
 }

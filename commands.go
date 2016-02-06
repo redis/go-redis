@@ -2,7 +2,6 @@ package redis
 
 import (
 	"io"
-	"log"
 	"strconv"
 	"time"
 )
@@ -32,7 +31,7 @@ func usePrecise(dur time.Duration) bool {
 
 func formatMs(dur time.Duration) string {
 	if dur > 0 && dur < time.Millisecond {
-		log.Printf(
+		Logger.Printf(
 			"redis: specified duration is %s, but minimal supported value is %s",
 			dur, time.Millisecond,
 		)
@@ -42,7 +41,7 @@ func formatMs(dur time.Duration) string {
 
 func formatSec(dur time.Duration) string {
 	if dur > 0 && dur < time.Second {
-		log.Printf(
+		Logger.Printf(
 			"redis: specified duration is %s, but minimal supported value is %s",
 			dur, time.Second,
 		)

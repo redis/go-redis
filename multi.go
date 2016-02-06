@@ -3,7 +3,6 @@ package redis
 import (
 	"errors"
 	"fmt"
-	"log"
 )
 
 var errDiscard = errors.New("redis: Discard can be used only inside Exec")
@@ -53,7 +52,7 @@ func (c *Multi) putConn(cn *conn, err error) {
 	} else {
 		err := c.base.connPool.Put(cn)
 		if err != nil {
-			log.Printf("redis: putConn failed: %s", err)
+			Logger.Printf("redis: putConn failed: %s", err)
 		}
 	}
 }
@@ -70,7 +69,7 @@ func (c *Multi) process(cmd Cmder) {
 func (c *Multi) Close() error {
 	c.closed = true
 	if err := c.Unwatch().Err(); err != nil {
-		log.Printf("redis: Unwatch failed: %s", err)
+		Logger.Printf("redis: Unwatch failed: %s", err)
 	}
 	return c.base.Close()
 }
