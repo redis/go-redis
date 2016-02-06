@@ -177,7 +177,7 @@ func (p *connPool) First() *conn {
 				var err error
 				cn, err = p.replace(cn)
 				if err != nil {
-					Logger.Printf("redis: replace failed: %s", err)
+					Logger.Printf("pool.replace failed: %s", err)
 					continue
 				}
 			}
@@ -199,7 +199,7 @@ func (p *connPool) wait() *conn {
 				var err error
 				cn, err = p.replace(cn)
 				if err != nil {
-					Logger.Printf("redis: replace failed: %s", err)
+					Logger.Printf("pool.replace failed: %s", err)
 					continue
 				}
 			}
@@ -270,7 +270,7 @@ func (p *connPool) Get() (cn *conn, isNew bool, err error) {
 func (p *connPool) Put(cn *conn) error {
 	if cn.rd.Buffered() != 0 {
 		b, _ := cn.rd.Peek(cn.rd.Buffered())
-		err := fmt.Errorf("redis: connection has unread data: %q", b)
+		err := fmt.Errorf("connection has unread data: %q", b)
 		Logger.Print(err)
 		return p.Remove(cn, err)
 	}

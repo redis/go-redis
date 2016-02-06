@@ -144,11 +144,11 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 	if d._sentinel != nil {
 		addr, err := d._sentinel.GetMasterAddrByName(d.masterName).Result()
 		if err != nil {
-			Logger.Printf("redis-sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
+			Logger.Printf("sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
 			d.resetSentinel()
 		} else {
 			addr := net.JoinHostPort(addr[0], addr[1])
-			Logger.Printf("redis-sentinel: %q addr is %s", d.masterName, addr)
+			Logger.Printf("sentinel: %q addr is %s", d.masterName, addr)
 			return addr, nil
 		}
 	}
@@ -167,7 +167,7 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 		})
 		masterAddr, err := sentinel.GetMasterAddrByName(d.masterName).Result()
 		if err != nil {
-			Logger.Printf("redis-sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
+			Logger.Printf("sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
 			sentinel.Close()
 			continue
 		}
@@ -177,7 +177,7 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 
 		d.setSentinel(sentinel)
 		addr := net.JoinHostPort(masterAddr[0], masterAddr[1])
-		Logger.Printf("redis-sentinel: %q addr is %s", d.masterName, addr)
+		Logger.Printf("sentinel: %q addr is %s", d.masterName, addr)
 		return addr, nil
 	}
 
@@ -193,7 +193,7 @@ func (d *sentinelFailover) setSentinel(sentinel *sentinelClient) {
 func (d *sentinelFailover) discoverSentinels(sentinel *sentinelClient) {
 	sentinels, err := sentinel.Sentinels(d.masterName).Result()
 	if err != nil {
-		Logger.Printf("redis-sentinel: Sentinels %q failed: %s", d.masterName, err)
+		Logger.Printf("sentinel: Sentinels %q failed: %s", d.masterName, err)
 		return
 	}
 	for _, sentinel := range sentinels {
@@ -204,7 +204,7 @@ func (d *sentinelFailover) discoverSentinels(sentinel *sentinelClient) {
 				sentinelAddr := vals[i+1].(string)
 				if !contains(d.sentinelAddrs, sentinelAddr) {
 					Logger.Printf(
-						"redis-sentinel: discovered new %q sentinel: %s",
+						"sentinel: discovered new %q sentinel: %s",
 						d.masterName, sentinelAddr,
 					)
 					d.sentinelAddrs = append(d.sentinelAddrs, sentinelAddr)
@@ -228,7 +228,7 @@ func (d *sentinelFailover) closeOldConns(newMaster string) {
 		}
 		if cn.RemoteAddr().String() != newMaster {
 			err := fmt.Errorf(
-				"redis-sentinel: closing connection to the old master %s",
+				"sentinel: closing connection to the old master %s",
 				cn.RemoteAddr(),
 			)
 			Logger.Print(err)
@@ -249,7 +249,7 @@ func (d *sentinelFailover) listen() {
 		if pubsub == nil {
 			pubsub = d._sentinel.PubSub()
 			if err := pubsub.Subscribe("+switch-master"); err != nil {
-				Logger.Printf("redis-sentinel: Subscribe failed: %s", err)
+				Logger.Printf("sentinel: Subscribe failed: %s", err)
 				d.lock.Lock()
 				d.resetSentinel()
 				d.lock.Unlock()
@@ -257,36 +257,36 @@ func (d *sentinelFailover) listen() {
 			}
 		}
 
-		msgIface, err := pubsub.Receive()
+		msg, err := pubsub.Receive()
 		if err != nil {
-			Logger.Printf("redis-sentinel: Receive failed: %s", err)
+			Logger.Printf("sentinel: Receive failed: %s", err)
 			pubsub.Close()
 			return
 		}
 
-		switch msg := msgIface.(type) {
+		switch msg := msg.(type) {
 		case *Message:
 			switch msg.Channel {
 			case "+switch-master":
 				parts := strings.Split(msg.Payload, " ")
 				if parts[0] != d.masterName {
-					Logger.Printf("redis-sentinel: ignore new %s addr", parts[0])
+					Logger.Printf("sentinel: ignore new %s addr", parts[0])
 					continue
 				}
 				addr := net.JoinHostPort(parts[3], parts[4])
 				Logger.Printf(
-					"redis-sentinel: new %q addr is %s",
+					"sentinel: new %q addr is %s",
 					d.masterName, addr,
 				)
 
 				d.closeOldConns(addr)
 			default:
-				Logger.Printf("redis-sentinel: unsupported message: %s", msg)
+				Logger.Printf("sentinel: unsupported message: %s", msg)
 			}
 		case *Subscription:
 			// Ignore.
 		default:
-			Logger.Printf("redis-sentinel: unsupported message: %s", msgIface)
+			Logger.Printf("sentinel: unsupported message: %s", msg)
 		}
 	}
 }

@@ -255,13 +255,13 @@ func (c *ClusterClient) reloadSlots() {
 
 	client, err := c.randomClient()
 	if err != nil {
-		Logger.Printf("redis: randomClient failed: %s", err)
+		Logger.Printf("randomClient failed: %s", err)
 		return
 	}
 
 	slots, err := client.ClusterSlots().Result()
 	if err != nil {
-		Logger.Printf("redis: ClusterSlots failed: %s", err)
+		Logger.Printf("ClusterSlots failed: %s", err)
 		return
 	}
 	c.setSlots(slots)

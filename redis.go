@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var Logger = log.New(os.Stderr, "", log.LstdFlags)
+var Logger = log.New(os.Stderr, "redis: ", log.LstdFlags)
 
 type baseClient struct {
 	connPool pool
@@ -30,7 +30,7 @@ func (c *baseClient) putConn(cn *conn, err error) {
 		err = c.connPool.Put(cn)
 	}
 	if err != nil {
-		Logger.Printf("redis: putConn failed: %s", err)
+		Logger.Printf("pool.Put failed: %s", err)
 	}
 }
 
