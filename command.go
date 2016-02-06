@@ -725,12 +725,14 @@ func (cmd *ScanCmd) readReply(cn *conn) error {
 
 //------------------------------------------------------------------------------
 
+// TODO: rename to ClusterSlot
 type ClusterSlotInfo struct {
 	Start int
 	End   int
 	Addrs []string
 }
 
+// TODO: rename to ClusterSlotsCmd
 type ClusterSlotCmd struct {
 	baseCmd
 

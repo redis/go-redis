@@ -107,7 +107,7 @@ func appendArg(b []byte, val interface{}) ([]byte, error) {
 }
 
 func appendArgs(b []byte, args []interface{}) ([]byte, error) {
-	b = append(b, '*')
+	b = append(b, arrayReply)
 	b = strconv.AppendUint(b, uint64(len(args)), 10)
 	b = append(b, '\r', '\n')
 	for _, arg := range args {
@@ -238,7 +238,9 @@ func readLine(cn *conn) ([]byte, error) {
 }
 
 func isNilReply(b []byte) bool {
-	return len(b) == 3 && (b[0] == '$' || b[0] == '*') && b[1] == '-' && b[2] == '1'
+	return len(b) == 3 &&
+		(b[0] == stringReply || b[0] == arrayReply) &&
+		b[1] == '-' && b[2] == '1'
 }
 
 func readN(cn *conn, n int) ([]byte, error) {
@@ -337,7 +339,7 @@ func readFloatReply(cn *conn) (float64, error) {
 }
 
 func parseArrayHeader(cn *conn, line []byte) (int64, error) {
-	if len(line) == 3 && line[1] == '-' && line[2] == '1' {
+	if isNilReply(line) {
 		return 0, Nil
 	}
 
@@ -604,8 +606,9 @@ func clusterSlotInfoSliceParser(cn *conn, n int64) (interface{}, error) {
 			if err != nil {
 				return nil, err
 			}
-			if n != 2 {
-				return nil, fmt.Errorf("got %d elements in cluster info address, expected 2", n)
+			if n != 2 && n != 3 {
+				err := fmt.Errorf("got %d elements in cluster info address, expected 2 or 3", n)
+				return nil, err
 			}
 
 			ip, err := readStringReply(cn)
@@ -616,6 +619,14 @@ func clusterSlotInfoSliceParser(cn *conn, n int64) (interface{}, error) {
 			port, err := readIntReply(cn)
 			if err != nil {
 				return nil, err
+			}
+
+			if n == 3 {
+				// TODO: expose id in ClusterSlotInfo
+				_, err := readStringReply(cn)
+				if err != nil {
+					return nil, err
+				}
 			}
 
 			info.Addrs[i] = net.JoinHostPort(ip, strconv.FormatInt(port, 10))
