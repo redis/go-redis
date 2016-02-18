@@ -17,12 +17,12 @@ var (
 
 // PoolStats contains pool state information and accumulated stats.
 type PoolStats struct {
-	Requests uint64 // number of times a connection was requested by the pool
-	Waits    uint64 // number of times our pool had to wait for a connection
-	Timeouts uint64 // number of times a wait timeout occurred
+	Requests uint32 // number of times a connection was requested by the pool
+	Waits    uint32 // number of times our pool had to wait for a connection
+	Timeouts uint32 // number of times a wait timeout occurred
 
-	TotalConns uint64 // the number of total connections in the pool
-	FreeConns  uint64 // the number of free connections in the pool
+	TotalConns uint32 // the number of total connections in the pool
+	FreeConns  uint32 // the number of free connections in the pool
 }
 
 type pool interface {
@@ -237,7 +237,7 @@ func (p *connPool) Get() (cn *conn, isNew bool, err error) {
 		return
 	}
 
-	atomic.AddUint64(&p.stats.Requests, 1)
+	atomic.AddUint32(&p.stats.Requests, 1)
 
 	// Fetch first non-idle connection, if available.
 	if cn = p.First(); cn != nil {
@@ -257,12 +257,12 @@ func (p *connPool) Get() (cn *conn, isNew bool, err error) {
 	}
 
 	// Otherwise, wait for the available connection.
-	atomic.AddUint64(&p.stats.Waits, 1)
+	atomic.AddUint32(&p.stats.Waits, 1)
 	if cn = p.wait(); cn != nil {
 		return
 	}
 
-	atomic.AddUint64(&p.stats.Timeouts, 1)
+	atomic.AddUint32(&p.stats.Timeouts, 1)
 	err = errPoolTimeout
 	return
 }
@@ -315,11 +315,11 @@ func (p *connPool) FreeLen() int {
 
 func (p *connPool) Stats() *PoolStats {
 	stats := p.stats
-	stats.Requests = atomic.LoadUint64(&p.stats.Requests)
-	stats.Waits = atomic.LoadUint64(&p.stats.Waits)
-	stats.Timeouts = atomic.LoadUint64(&p.stats.Timeouts)
-	stats.TotalConns = uint64(p.Len())
-	stats.FreeConns = uint64(p.FreeLen())
+	stats.Requests = atomic.LoadUint32(&p.stats.Requests)
+	stats.Waits = atomic.LoadUint32(&p.stats.Waits)
+	stats.Timeouts = atomic.LoadUint32(&p.stats.Timeouts)
+	stats.TotalConns = uint32(p.Len())
+	stats.FreeConns = uint32(p.FreeLen())
 	return &stats
 }
 
