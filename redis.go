@@ -23,15 +23,20 @@ func (c *baseClient) conn() (*conn, bool, error) {
 	return c.connPool.Get()
 }
 
-func (c *baseClient) putConn(cn *conn, err error) {
-	if isBadConn(cn, err) {
+func (c *baseClient) putConn(cn *conn, err error) bool {
+	if isBadConn(err) {
 		err = c.connPool.Remove(cn, err)
-	} else {
-		err = c.connPool.Put(cn)
+		if err != nil {
+			log.Printf("pool.Remove failed: %s", err)
+		}
+		return false
 	}
+
+	err = c.connPool.Put(cn)
 	if err != nil {
-		Logger.Printf("pool.Put failed: %s", err)
+		log.Printf("pool.Put failed: %s", err)
 	}
+	return true
 }
 
 func (c *baseClient) process(cmd Cmder) {

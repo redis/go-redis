@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -242,10 +241,6 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 }
 
 //------------------------------------------------------------------------------
-
-var (
-	errTimeout = syscall.ETIMEDOUT
-)
 
 type badConnError string
 
