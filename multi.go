@@ -45,18 +45,6 @@ func (c *Client) Multi() *Multi {
 	return multi
 }
 
-func (c *Multi) putConn(cn *conn, err error) {
-	if isBadConn(cn, err) {
-		// Close current connection.
-		c.base.connPool.(*stickyConnPool).Reset(err)
-	} else {
-		err := c.base.connPool.Put(cn)
-		if err != nil {
-			Logger.Printf("pool.Put failed: %s", err)
-		}
-	}
-}
-
 func (c *Multi) process(cmd Cmder) {
 	if c.cmds == nil {
 		c.base.process(cmd)
@@ -145,7 +133,7 @@ func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 	}
 
 	err = c.execCmds(cn, cmds)
-	c.putConn(cn, err)
+	c.base.putConn(cn, err)
 	return retCmds, err
 }
 

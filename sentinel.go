@@ -88,7 +88,7 @@ func newSentinel(opt *Options) *sentinelClient {
 
 func (c *sentinelClient) PubSub() *PubSub {
 	return &PubSub{
-		baseClient: &baseClient{
+		base: &baseClient{
 			opt:      c.opt,
 			connPool: newStickyConnPool(c.connPool, false),
 		},

@@ -166,4 +166,31 @@ var _ = Describe("Multi", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("should recover from bad connection when there are no commands", func() {
+		// Put bad connection in the pool.
+		cn, _, err := client.Pool().Get()
+		Expect(err).NotTo(HaveOccurred())
+
+		cn.SetNetConn(&badConn{})
+		err = client.Pool().Put(cn)
+		Expect(err).NotTo(HaveOccurred())
+
+		{
+			tx, err := client.Watch("key")
+			Expect(err).To(MatchError("bad connection"))
+			Expect(tx).To(BeNil())
+		}
+
+		{
+			tx, err := client.Watch("key")
+			Expect(err).NotTo(HaveOccurred())
+
+			err = tx.Ping().Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = tx.Close()
+			Expect(err).NotTo(HaveOccurred())
+		}
+	})
 })
