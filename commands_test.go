@@ -2724,11 +2724,11 @@ var _ = Describe("Commands", func() {
 			// "166.27415156960032"
 			geoDist := client.GeoDist("Sicily", "Palermo", "Catania", "km")
 			Expect(geoDist.Err()).NotTo(HaveOccurred())
-			Expect(geoDist.Val()).To(Equal(166.27415156960032))
+			Expect(geoDist.Val()).To(BeNumerically("~", 166.27, 0.01))
 
 			geoDist = client.GeoDist("Sicily", "Palermo", "Catania", "m")
 			Expect(geoDist.Err()).NotTo(HaveOccurred())
-			Expect(geoDist.Val()).To(Equal(166274.15156960033))
+			Expect(geoDist.Val()).To(BeNumerically("~", 166274.15, 0.01))
 		})
 
 		It("should get geo hash in string representation", func() {
