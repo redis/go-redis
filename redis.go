@@ -27,14 +27,14 @@ func (c *baseClient) putConn(cn *conn, err error) bool {
 	if isBadConn(err) {
 		err = c.connPool.Remove(cn, err)
 		if err != nil {
-			log.Printf("pool.Remove failed: %s", err)
+			Logger.Printf("pool.Remove failed: %s", err)
 		}
 		return false
 	}
 
 	err = c.connPool.Put(cn)
 	if err != nil {
-		log.Printf("pool.Put failed: %s", err)
+		Logger.Printf("pool.Put failed: %s", err)
 	}
 	return true
 }

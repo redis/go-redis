@@ -9,7 +9,7 @@ import (
 const defaultBufSize = 4096
 
 var (
-	zeroTime = time.Time{}
+	noTimeout = time.Time{}
 )
 
 type conn struct {
@@ -17,7 +17,7 @@ type conn struct {
 	rd    *bufio.Reader
 	buf   []byte
 
-	usedAt       time.Time
+	UsedAt       time.Time
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 }
@@ -76,19 +76,21 @@ func (cn *conn) writeCmds(cmds ...Cmder) error {
 }
 
 func (cn *conn) Read(b []byte) (int, error) {
+	cn.UsedAt = time.Now()
 	if cn.ReadTimeout != 0 {
-		cn.netcn.SetReadDeadline(time.Now().Add(cn.ReadTimeout))
+		cn.netcn.SetReadDeadline(cn.UsedAt.Add(cn.ReadTimeout))
 	} else {
-		cn.netcn.SetReadDeadline(zeroTime)
+		cn.netcn.SetReadDeadline(noTimeout)
 	}
 	return cn.netcn.Read(b)
 }
 
 func (cn *conn) Write(b []byte) (int, error) {
+	cn.UsedAt = time.Now()
 	if cn.WriteTimeout != 0 {
-		cn.netcn.SetWriteDeadline(time.Now().Add(cn.WriteTimeout))
+		cn.netcn.SetWriteDeadline(cn.UsedAt.Add(cn.WriteTimeout))
 	} else {
-		cn.netcn.SetWriteDeadline(zeroTime)
+		cn.netcn.SetWriteDeadline(noTimeout)
 	}
 	return cn.netcn.Write(b)
 }
