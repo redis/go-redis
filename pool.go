@@ -164,7 +164,7 @@ func (p *connPool) closed() bool {
 }
 
 func (p *connPool) isIdle(cn *conn) bool {
-	return p.opt.getIdleTimeout() > 0 && time.Since(cn.usedAt) > p.opt.getIdleTimeout()
+	return p.opt.getIdleTimeout() > 0 && time.Since(cn.UsedAt) > p.opt.getIdleTimeout()
 }
 
 // First returns first non-idle connection from the pool or nil if
@@ -274,9 +274,6 @@ func (p *connPool) Put(cn *conn) error {
 		err := fmt.Errorf("connection has unread data: %q", b)
 		Logger.Print(err)
 		return p.Remove(cn, err)
-	}
-	if p.opt.getIdleTimeout() > 0 {
-		cn.usedAt = time.Now()
 	}
 	p.freeConns <- cn
 	return nil

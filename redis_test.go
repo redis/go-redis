@@ -55,21 +55,19 @@ var _ = Describe("Client", func() {
 	It("should close", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 		err := client.Ping().Err()
-		Expect(err).To(HaveOccurred())
 		Expect(err).To(MatchError("redis: client is closed"))
 	})
 
-	It("should close pubsub without closing the connection", func() {
+	It("should close pubsub without closing the client", func() {
 		pubsub := client.PubSub()
 		Expect(pubsub.Close()).NotTo(HaveOccurred())
 
 		_, err := pubsub.Receive()
-		Expect(err).To(HaveOccurred())
 		Expect(err).To(MatchError("redis: client is closed"))
 		Expect(client.Ping().Err()).NotTo(HaveOccurred())
 	})
 
-	It("should close multi without closing the connection", func() {
+	It("should close multi without closing the client", func() {
 		multi := client.Multi()
 		Expect(multi.Close()).NotTo(HaveOccurred())
 
@@ -77,19 +75,19 @@ var _ = Describe("Client", func() {
 			multi.Ping()
 			return nil
 		})
-		Expect(err).To(HaveOccurred())
 		Expect(err).To(MatchError("redis: client is closed"))
+
 		Expect(client.Ping().Err()).NotTo(HaveOccurred())
 	})
 
-	It("should close pipeline without closing the connection", func() {
+	It("should close pipeline without closing the client", func() {
 		pipeline := client.Pipeline()
 		Expect(pipeline.Close()).NotTo(HaveOccurred())
 
 		pipeline.Ping()
 		_, err := pipeline.Exec()
-		Expect(err).To(HaveOccurred())
 		Expect(err).To(MatchError("redis: client is closed"))
+
 		Expect(client.Ping().Err()).NotTo(HaveOccurred())
 	})
 
@@ -170,6 +168,23 @@ var _ = Describe("Client", func() {
 
 		err = client.Ping().Err()
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should maintain conn.UsedAt", func() {
+		cn, _, err := client.Pool().Get()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cn.UsedAt).To(BeZero())
+
+		err = client.Pool().Put(cn)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cn.UsedAt).To(BeZero())
+
+		err = client.Ping().Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		cn = client.Pool().First()
+		Expect(cn).NotTo(BeNil())
+		Expect(cn.UsedAt).To(BeTemporally("~", time.Now()))
 	})
 })
 
