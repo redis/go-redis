@@ -173,18 +173,23 @@ var _ = Describe("Client", func() {
 	It("should maintain conn.UsedAt", func() {
 		cn, _, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(cn.UsedAt).To(BeZero())
+		Expect(cn.UsedAt).NotTo(BeZero())
+		createdAt := cn.UsedAt
+
+		future := time.Now().Add(time.Hour)
+		redis.SetTime(future)
+		defer redis.RestoreTime()
 
 		err = client.Pool().Put(cn)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(cn.UsedAt).To(BeZero())
+		Expect(cn.UsedAt.Equal(createdAt)).To(BeTrue())
 
 		err = client.Ping().Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		cn = client.Pool().First()
 		Expect(cn).NotTo(BeNil())
-		Expect(cn.UsedAt).To(BeTemporally("~", time.Now()))
+		Expect(cn.UsedAt.Equal(future)).To(BeTrue())
 	})
 })
 
