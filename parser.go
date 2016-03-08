@@ -415,7 +415,7 @@ func readScanReply(cn *conn) ([]string, int64, error) {
 		return nil, 0, err
 	}
 	if n != 2 {
-		return nil, 0, fmt.Errorf("redis: got %d elements in scan reply, expected 2")
+		return nil, 0, fmt.Errorf("redis: got %d elements in scan reply, expected 2", n)
 	}
 
 	b, err := readBytesReply(cn)
