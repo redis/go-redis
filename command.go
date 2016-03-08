@@ -32,7 +32,6 @@ type Cmder interface {
 	setErr(error)
 	reset()
 
-	writeTimeout() *time.Duration
 	readTimeout() *time.Duration
 	clusterKey() string
 
@@ -82,7 +81,7 @@ type baseCmd struct {
 
 	_clusterKeyPos int
 
-	_writeTimeout, _readTimeout *time.Duration
+	_readTimeout *time.Duration
 }
 
 func (cmd *baseCmd) Err() error {
@@ -104,19 +103,11 @@ func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 	cmd._readTimeout = &d
 }
 
-func (cmd *baseCmd) writeTimeout() *time.Duration {
-	return cmd._writeTimeout
-}
-
 func (cmd *baseCmd) clusterKey() string {
 	if cmd._clusterKeyPos > 0 && cmd._clusterKeyPos < len(cmd._args) {
 		return fmt.Sprint(cmd._args[cmd._clusterKeyPos])
 	}
 	return ""
-}
-
-func (cmd *baseCmd) setWriteTimeout(d time.Duration) {
-	cmd._writeTimeout = &d
 }
 
 func (cmd *baseCmd) setErr(e error) {

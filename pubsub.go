@@ -297,7 +297,7 @@ func (c *PubSub) ReceiveMessage() (*Message, error) {
 }
 
 func (c *PubSub) putConn(cn *conn, err error) {
-	if !c.base.putConn(cn, err) {
+	if !c.base.putConn(cn, err, true) {
 		c.nsub = 0
 	}
 }

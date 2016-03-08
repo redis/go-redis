@@ -23,8 +23,8 @@ func (c *baseClient) conn() (*conn, bool, error) {
 	return c.connPool.Get()
 }
 
-func (c *baseClient) putConn(cn *conn, err error) bool {
-	if isBadConn(err) {
+func (c *baseClient) putConn(cn *conn, err error, allowTimeout bool) bool {
+	if isBadConn(err, allowTimeout) {
 		err = c.connPool.Remove(cn, err)
 		if err != nil {
 			Logger.Printf("pool.Remove failed: %s", err)
@@ -51,20 +51,16 @@ func (c *baseClient) process(cmd Cmder) {
 			return
 		}
 
-		if timeout := cmd.writeTimeout(); timeout != nil {
-			cn.WriteTimeout = *timeout
-		} else {
-			cn.WriteTimeout = c.opt.WriteTimeout
-		}
-
-		if timeout := cmd.readTimeout(); timeout != nil {
-			cn.ReadTimeout = *timeout
+		readTimeout := cmd.readTimeout()
+		if readTimeout != nil {
+			cn.ReadTimeout = *readTimeout
 		} else {
 			cn.ReadTimeout = c.opt.ReadTimeout
 		}
+		cn.WriteTimeout = c.opt.WriteTimeout
 
 		if err := cn.writeCmds(cmd); err != nil {
-			c.putConn(cn, err)
+			c.putConn(cn, err, false)
 			cmd.setErr(err)
 			if shouldRetry(err) {
 				continue
@@ -73,7 +69,7 @@ func (c *baseClient) process(cmd Cmder) {
 		}
 
 		err = cmd.readReply(cn)
-		c.putConn(cn, err)
+		c.putConn(cn, err, readTimeout != nil)
 		if shouldRetry(err) {
 			continue
 		}
