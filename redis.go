@@ -183,12 +183,12 @@ func (opt *Options) getIdleTimeout() time.Duration {
 // underlying connections. It's safe for concurrent use by multiple
 // goroutines.
 type Client struct {
-	*baseClient
+	baseClient
 	commandable
 }
 
 func newClient(opt *Options, pool pool) *Client {
-	base := &baseClient{opt: opt, connPool: pool}
+	base := baseClient{opt: opt, connPool: pool}
 	return &Client{
 		baseClient:  base,
 		commandable: commandable{process: base.process},
