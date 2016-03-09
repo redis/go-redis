@@ -1303,6 +1303,9 @@ var _ = Describe("Commands", func() {
 			bLPop := client.BLPop(time.Second, "list1")
 			Expect(bLPop.Val()).To(BeNil())
 			Expect(bLPop.Err()).To(Equal(redis.Nil))
+
+			stats := client.Pool().Stats()
+			Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(1)))
 		})
 
 		It("should BRPop", func() {

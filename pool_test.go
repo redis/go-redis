@@ -123,6 +123,12 @@ var _ = Describe("pool", func() {
 		pool := client.Pool()
 		Expect(pool.Len()).To(Equal(1))
 		Expect(pool.FreeLen()).To(Equal(1))
+
+		stats := pool.Stats()
+		Expect(stats.Requests).To(Equal(uint32(3)))
+		Expect(stats.Hits).To(Equal(uint32(2)))
+		Expect(stats.Waits).To(Equal(uint32(0)))
+		Expect(stats.Timeouts).To(Equal(uint32(0)))
 	})
 
 	It("should reuse connections", func() {
@@ -135,6 +141,12 @@ var _ = Describe("pool", func() {
 		pool := client.Pool()
 		Expect(pool.Len()).To(Equal(1))
 		Expect(pool.FreeLen()).To(Equal(1))
+
+		stats := pool.Stats()
+		Expect(stats.Requests).To(Equal(uint32(100)))
+		Expect(stats.Hits).To(Equal(uint32(99)))
+		Expect(stats.Waits).To(Equal(uint32(0)))
+		Expect(stats.Timeouts).To(Equal(uint32(0)))
 	})
 
 	It("should unblock client when connection is removed", func() {

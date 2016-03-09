@@ -98,7 +98,7 @@ func (pipe *Pipeline) Exec() (cmds []Cmder, retErr error) {
 			resetCmds(failedCmds)
 		}
 		failedCmds, err = execCmds(cn, failedCmds)
-		pipe.client.putConn(cn, err)
+		pipe.client.putConn(cn, err, false)
 		if err != nil && retErr == nil {
 			retErr = err
 		}

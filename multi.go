@@ -133,7 +133,7 @@ func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 	}
 
 	err = c.execCmds(cn, cmds)
-	c.base.putConn(cn, err)
+	c.base.putConn(cn, err, false)
 	return retCmds, err
 }
 

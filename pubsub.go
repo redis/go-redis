@@ -245,10 +245,11 @@ func (c *PubSub) Receive() (interface{}, error) {
 	return c.ReceiveTimeout(0)
 }
 
-// ReceiveMessage returns a message or error. It automatically
-// reconnects to Redis in case of network errors.
+// ReceiveMessage returns a Message or error ignoring Subscription or Pong
+// messages. It automatically reconnects to Redis Server and resubscribes
+// to channels in case of network errors.
 func (c *PubSub) ReceiveMessage() (*Message, error) {
-	var errNum int
+	var errNum uint
 	for {
 		msgi, err := c.ReceiveTimeout(5 * time.Second)
 		if err != nil {
@@ -260,10 +261,9 @@ func (c *PubSub) ReceiveMessage() (*Message, error) {
 			if errNum < 3 {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					err := c.Ping("")
-					if err == nil {
-						continue
+					if err != nil {
+						Logger.Printf("PubSub.Ping failed: %s", err)
 					}
-					Logger.Printf("PubSub.Ping failed: %s", err)
 				}
 			} else {
 				// 3 consequent errors - connection is bad
@@ -297,7 +297,7 @@ func (c *PubSub) ReceiveMessage() (*Message, error) {
 }
 
 func (c *PubSub) putConn(cn *conn, err error) {
-	if !c.base.putConn(cn, err) {
+	if !c.base.putConn(cn, err, true) {
 		c.nsub = 0
 	}
 }

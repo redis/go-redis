@@ -326,7 +326,7 @@ func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
 				resetCmds(cmds)
 			}
 			failedCmds, err := execCmds(cn, cmds)
-			client.putConn(cn, err)
+			client.putConn(cn, err, false)
 			if err != nil && retErr == nil {
 				retErr = err
 			}

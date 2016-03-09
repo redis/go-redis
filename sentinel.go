@@ -65,18 +65,31 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 		opt: opt,
 	}
-	return newClient(opt, failover.Pool())
+	base := baseClient{
+		opt:      opt,
+		connPool: failover.Pool(),
+
+		onClose: func() error {
+			return failover.Close()
+		},
+	}
+	return &Client{
+		baseClient: base,
+		commandable: commandable{
+			process: base.process,
+		},
+	}
 }
 
 //------------------------------------------------------------------------------
 
 type sentinelClient struct {
+	baseClient
 	commandable
-	*baseClient
 }
 
 func newSentinel(opt *Options) *sentinelClient {
-	base := &baseClient{
+	base := baseClient{
 		opt:      opt,
 		connPool: newConnPool(opt),
 	}
@@ -116,8 +129,12 @@ type sentinelFailover struct {
 	pool     pool
 	poolOnce sync.Once
 
-	lock      sync.RWMutex
-	_sentinel *sentinelClient
+	mu       sync.RWMutex
+	sentinel *sentinelClient
+}
+
+func (d *sentinelFailover) Close() error {
+	return d.resetSentinel()
 }
 
 func (d *sentinelFailover) dial() (net.Conn, error) {
@@ -137,15 +154,15 @@ func (d *sentinelFailover) Pool() pool {
 }
 
 func (d *sentinelFailover) MasterAddr() (string, error) {
-	defer d.lock.Unlock()
-	d.lock.Lock()
+	defer d.mu.Unlock()
+	d.mu.Lock()
 
 	// Try last working sentinel.
-	if d._sentinel != nil {
-		addr, err := d._sentinel.GetMasterAddrByName(d.masterName).Result()
+	if d.sentinel != nil {
+		addr, err := d.sentinel.GetMasterAddrByName(d.masterName).Result()
 		if err != nil {
 			Logger.Printf("sentinel: GetMasterAddrByName %q failed: %s", d.masterName, err)
-			d.resetSentinel()
+			d._resetSentinel()
 		} else {
 			addr := net.JoinHostPort(addr[0], addr[1])
 			Logger.Printf("sentinel: %q addr is %s", d.masterName, addr)
@@ -186,8 +203,24 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 
 func (d *sentinelFailover) setSentinel(sentinel *sentinelClient) {
 	d.discoverSentinels(sentinel)
-	d._sentinel = sentinel
+	d.sentinel = sentinel
 	go d.listen()
+}
+
+func (d *sentinelFailover) resetSentinel() error {
+	d.mu.Lock()
+	err := d._resetSentinel()
+	d.mu.Unlock()
+	return err
+}
+
+func (d *sentinelFailover) _resetSentinel() error {
+	var err error
+	if d.sentinel != nil {
+		err = d.sentinel.Close()
+		d.sentinel = nil
+	}
+	return err
 }
 
 func (d *sentinelFailover) discoverSentinels(sentinel *sentinelClient) {
@@ -247,53 +280,39 @@ func (d *sentinelFailover) listen() {
 	var pubsub *PubSub
 	for {
 		if pubsub == nil {
-			pubsub = d._sentinel.PubSub()
+			pubsub = d.sentinel.PubSub()
 			if err := pubsub.Subscribe("+switch-master"); err != nil {
 				Logger.Printf("sentinel: Subscribe failed: %s", err)
-				d.lock.Lock()
 				d.resetSentinel()
-				d.lock.Unlock()
 				return
 			}
 		}
 
-		msg, err := pubsub.Receive()
+		msg, err := pubsub.ReceiveMessage()
 		if err != nil {
-			Logger.Printf("sentinel: Receive failed: %s", err)
+			Logger.Printf("sentinel: ReceiveMessage failed: %s", err)
 			pubsub.Close()
+			d.resetSentinel()
 			return
 		}
 
-		switch msg := msg.(type) {
-		case *Message:
-			switch msg.Channel {
-			case "+switch-master":
-				parts := strings.Split(msg.Payload, " ")
-				if parts[0] != d.masterName {
-					Logger.Printf("sentinel: ignore new %s addr", parts[0])
-					continue
-				}
-				addr := net.JoinHostPort(parts[3], parts[4])
-				Logger.Printf(
-					"sentinel: new %q addr is %s",
-					d.masterName, addr,
-				)
-
-				d.closeOldConns(addr)
-			default:
-				Logger.Printf("sentinel: unsupported message: %s", msg)
+		switch msg.Channel {
+		case "+switch-master":
+			parts := strings.Split(msg.Payload, " ")
+			if parts[0] != d.masterName {
+				Logger.Printf("sentinel: ignore new %s addr", parts[0])
+				continue
 			}
-		case *Subscription:
-			// Ignore.
-		default:
-			Logger.Printf("sentinel: unsupported message: %s", msg)
+
+			addr := net.JoinHostPort(parts[3], parts[4])
+			Logger.Printf(
+				"sentinel: new %q addr is %s",
+				d.masterName, addr,
+			)
+
+			d.closeOldConns(addr)
 		}
 	}
-}
-
-func (d *sentinelFailover) resetSentinel() {
-	d._sentinel.Close()
-	d._sentinel = nil
 }
 
 func contains(slice []string, str string) bool {

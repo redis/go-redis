@@ -33,12 +33,6 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer pubsub.Close()
 
-		n, err := client.Publish("mychannel1", "hello").Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(Equal(int64(1)))
-
-		Expect(pubsub.PUnsubscribe("mychannel*")).NotTo(HaveOccurred())
-
 		{
 			msgi, err := pubsub.ReceiveTimeout(time.Second)
 			Expect(err).NotTo(HaveOccurred())
@@ -47,6 +41,18 @@ var _ = Describe("PubSub", func() {
 			Expect(subscr.Channel).To(Equal("mychannel*"))
 			Expect(subscr.Count).To(Equal(1))
 		}
+
+		{
+			msgi, err := pubsub.ReceiveTimeout(time.Second)
+			Expect(err.(net.Error).Timeout()).To(Equal(true))
+			Expect(msgi).To(BeNil())
+		}
+
+		n, err := client.Publish("mychannel1", "hello").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(1)))
+
+		Expect(pubsub.PUnsubscribe("mychannel*")).NotTo(HaveOccurred())
 
 		{
 			msgi, err := pubsub.ReceiveTimeout(time.Second)
@@ -66,11 +72,8 @@ var _ = Describe("PubSub", func() {
 			Expect(subscr.Count).To(Equal(0))
 		}
 
-		{
-			msgi, err := pubsub.ReceiveTimeout(time.Second)
-			Expect(err.(net.Error).Timeout()).To(Equal(true))
-			Expect(msgi).NotTo(HaveOccurred())
-		}
+		stats := client.Pool().Stats()
+		Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(2)))
 	})
 
 	It("should pub/sub channels", func() {
@@ -128,16 +131,6 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer pubsub.Close()
 
-		n, err := client.Publish("mychannel", "hello").Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(Equal(int64(1)))
-
-		n, err = client.Publish("mychannel2", "hello2").Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(Equal(int64(1)))
-
-		Expect(pubsub.Unsubscribe("mychannel", "mychannel2")).NotTo(HaveOccurred())
-
 		{
 			msgi, err := pubsub.ReceiveTimeout(time.Second)
 			Expect(err).NotTo(HaveOccurred())
@@ -155,6 +148,22 @@ var _ = Describe("PubSub", func() {
 			Expect(subscr.Channel).To(Equal("mychannel2"))
 			Expect(subscr.Count).To(Equal(2))
 		}
+
+		{
+			msgi, err := pubsub.ReceiveTimeout(time.Second)
+			Expect(err.(net.Error).Timeout()).To(Equal(true))
+			Expect(msgi).NotTo(HaveOccurred())
+		}
+
+		n, err := client.Publish("mychannel", "hello").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(1)))
+
+		n, err = client.Publish("mychannel2", "hello2").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(1)))
+
+		Expect(pubsub.Unsubscribe("mychannel", "mychannel2")).NotTo(HaveOccurred())
 
 		{
 			msgi, err := pubsub.ReceiveTimeout(time.Second)
@@ -190,11 +199,8 @@ var _ = Describe("PubSub", func() {
 			Expect(subscr.Count).To(Equal(0))
 		}
 
-		{
-			msgi, err := pubsub.ReceiveTimeout(time.Second)
-			Expect(err.(net.Error).Timeout()).To(Equal(true))
-			Expect(msgi).NotTo(HaveOccurred())
-		}
+		stats := client.Pool().Stats()
+		Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(2)))
 	})
 
 	It("should ping/pong", func() {
@@ -277,6 +283,9 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Payload).To(Equal("hello"))
 
 		Eventually(done).Should(Receive())
+
+		stats := client.Pool().Stats()
+		Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(2)))
 	})
 
 	expectReceiveMessageOnError := func(pubsub *redis.PubSub) {
@@ -305,6 +314,9 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Payload).To(Equal("hello"))
 
 		Eventually(done).Should(Receive())
+
+		stats := client.Pool().Stats()
+		Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(2)))
 	}
 
 	It("Subscribe should reconnect on ReceiveMessage error", func() {
