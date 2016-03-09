@@ -18,7 +18,8 @@ var (
 // PoolStats contains pool state information and accumulated stats.
 type PoolStats struct {
 	Requests uint32 // number of times a connection was requested by the pool
-	Waits    uint32 // number of times our pool had to wait for a connection
+	Hits     uint32 // number of times free connection was found in the pool
+	Waits    uint32 // number of times the pool had to wait for a connection
 	Timeouts uint32 // number of times a wait timeout occurred
 
 	TotalConns uint32 // the number of total connections in the pool
@@ -241,6 +242,7 @@ func (p *connPool) Get() (cn *conn, isNew bool, err error) {
 
 	// Fetch first non-idle connection, if available.
 	if cn = p.First(); cn != nil {
+		atomic.AddUint32(&p.stats.Hits, 1)
 		return
 	}
 
