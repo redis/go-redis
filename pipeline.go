@@ -11,7 +11,7 @@ import (
 type Pipeline struct {
 	commandable
 
-	client *baseClient
+	client baseClient
 
 	mu   sync.Mutex // protects cmds
 	cmds []Cmder

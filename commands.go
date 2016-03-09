@@ -583,7 +583,7 @@ func (c *commandable) SetNX(key string, value interface{}, expiration time.Durat
 // Redis `SET key value [expiration] XX` command.
 //
 // Zero expiration means the key has no expiration time.
-func (c *Client) SetXX(key string, value interface{}, expiration time.Duration) *BoolCmd {
+func (c *commandable) SetXX(key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	if usePrecise(expiration) {
 		cmd = NewBoolCmd("SET", key, value, "PX", formatMs(expiration), "XX")
@@ -1282,7 +1282,7 @@ func (c *commandable) ZRevRangeByScore(key string, opt ZRangeByScore) *StringSli
 	return c.zRevRangeBy("ZREVRANGEBYSCORE", key, opt)
 }
 
-func (c commandable) ZRevRangeByLex(key string, opt ZRangeByScore) *StringSliceCmd {
+func (c *commandable) ZRevRangeByLex(key string, opt ZRangeByScore) *StringSliceCmd {
 	return c.zRevRangeBy("ZREVRANGEBYLEX", key, opt)
 }
 
