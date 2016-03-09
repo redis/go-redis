@@ -13,6 +13,8 @@ var Logger = log.New(os.Stderr, "redis: ", log.LstdFlags)
 type baseClient struct {
 	connPool pool
 	opt      *Options
+
+	onClose func() error // hook called when client is closed
 }
 
 func (c *baseClient) String() string {
@@ -83,7 +85,16 @@ func (c *baseClient) process(cmd Cmder) {
 // It is rare to Close a Client, as the Client is meant to be
 // long-lived and shared between many goroutines.
 func (c *baseClient) Close() error {
-	return c.connPool.Close()
+	var retErr error
+	if c.onClose != nil {
+		if err := c.onClose(); err != nil && retErr == nil {
+			retErr = err
+		}
+	}
+	if err := c.connPool.Close(); err != nil && retErr == nil {
+		retErr = err
+	}
+	return retErr
 }
 
 //------------------------------------------------------------------------------
@@ -186,8 +197,10 @@ type Client struct {
 func newClient(opt *Options, pool pool) *Client {
 	base := baseClient{opt: opt, connPool: pool}
 	return &Client{
-		baseClient:  base,
-		commandable: commandable{process: base.process},
+		baseClient: base,
+		commandable: commandable{
+			process: base.process,
+		},
 	}
 }
 

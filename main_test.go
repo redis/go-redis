@@ -98,9 +98,10 @@ func TestGinkgoSuite(t *testing.T) {
 
 //------------------------------------------------------------------------------
 
-func eventually(fn func() error, timeout time.Duration) (err error) {
+func eventually(fn func() error, timeout time.Duration) error {
 	done := make(chan struct{})
 	var exit int32
+	var err error
 	go func() {
 		for atomic.LoadInt32(&exit) == 0 {
 			err = fn()

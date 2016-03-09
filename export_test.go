@@ -2,7 +2,6 @@ package redis
 
 import (
 	"net"
-	"sync"
 	"time"
 )
 
@@ -20,18 +19,12 @@ func (cn *conn) SetNetConn(netcn net.Conn) {
 	cn.netcn = netcn
 }
 
-var timeMu sync.Mutex
-
 func SetTime(tm time.Time) {
-	timeMu.Lock()
 	now = func() time.Time {
 		return tm
 	}
-	timeMu.Unlock()
 }
 
 func RestoreTime() {
-	timeMu.Lock()
 	now = time.Now
-	timeMu.Unlock()
 }
