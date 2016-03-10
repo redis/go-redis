@@ -3,7 +3,6 @@ package redis_test
 import (
 	"errors"
 	"sync"
-	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -210,24 +209,3 @@ var _ = Describe("pool", func() {
 		Expect(rateErr).To(MatchError(`redis: you open connections too fast (last_error="test")`))
 	})
 })
-
-func BenchmarkPool(b *testing.B) {
-	client := benchRedisClient()
-	defer client.Close()
-
-	pool := client.Pool()
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			conn, _, err := pool.Get()
-			if err != nil {
-				b.Fatalf("no error expected on pool.Get but received: %s", err.Error())
-			}
-			if err = pool.Put(conn); err != nil {
-				b.Fatalf("no error expected on pool.Put but received: %s", err.Error())
-			}
-		}
-	})
-}
