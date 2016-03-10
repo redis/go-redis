@@ -92,6 +92,27 @@ Some corner cases:
     EVAL "return {KEYS[1],ARGV[1]}" 1 "key" "hello"
     vals, err := client.Eval("return {KEYS[1],ARGV[1]}", []string{"key"}, []string{"hello"}).Result()
 
+## Benchmark
+
+```
+BenchmarkSetGoRedis10Conns64Bytes-4 	  200000	      7184 ns/op	     210 B/op	       6 allocs/op
+BenchmarkSetGoRedis100Conns64Bytes-4	  200000	      7174 ns/op	     210 B/op	       6 allocs/op
+BenchmarkSetGoRedis10Conns1KB-4     	  200000	      7341 ns/op	     210 B/op	       6 allocs/op
+BenchmarkSetGoRedis100Conns1KB-4    	  200000	      7425 ns/op	     210 B/op	       6 allocs/op
+BenchmarkSetGoRedis10Conns10KB-4    	  200000	      9480 ns/op	     210 B/op	       6 allocs/op
+BenchmarkSetGoRedis100Conns10KB-4   	  200000	      9301 ns/op	     210 B/op	       6 allocs/op
+BenchmarkSetGoRedis10Conns1MB-4     	    2000	    590321 ns/op	    2337 B/op	       6 allocs/op
+BenchmarkSetGoRedis100Conns1MB-4    	    2000	    588935 ns/op	    2337 B/op	       6 allocs/op
+BenchmarkSetRedigo10Conns64Bytes-4  	  200000	      7238 ns/op	     208 B/op	       7 allocs/op
+BenchmarkSetRedigo100Conns64Bytes-4 	  200000	      7435 ns/op	     208 B/op	       7 allocs/op
+BenchmarkSetRedigo10Conns1KB-4      	  200000	      7635 ns/op	     208 B/op	       7 allocs/op
+BenchmarkSetRedigo100Conns1KB-4     	  200000	      7597 ns/op	     208 B/op	       7 allocs/op
+BenchmarkSetRedigo10Conns10KB-4     	  100000	     17126 ns/op	     208 B/op	       7 allocs/op
+BenchmarkSetRedigo100Conns10KB-4    	  100000	     17030 ns/op	     208 B/op	       7 allocs/op
+BenchmarkSetRedigo10Conns1MB-4      	    2000	    675397 ns/op	     226 B/op	       7 allocs/op
+BenchmarkSetRedigo100Conns1MB-4     	    2000	    669053 ns/op	     226 B/op	       7 allocs/op
+```
+
 ## Shameless plug
 
 Check my [PostgreSQL client for Go](https://github.com/go-pg/pg).
