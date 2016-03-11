@@ -37,31 +37,32 @@ type pool interface {
 	Stats() *PoolStats
 }
 
+// connList stores all known connections, usable or not
 type connList struct {
-	cns  []*conn
+	cns  map[*conn]struct{}
 	mx   sync.Mutex
-	len  int32 // atomic
-	size int32
+	size int32 // atomic
+	max  int32
 }
 
-func newConnList(size int) *connList {
+func newConnList(max int) *connList {
 	return &connList{
-		cns:  make([]*conn, 0, size),
-		size: int32(size),
+		cns: make(map[*conn]struct{}, max),
+		max: int32(max),
 	}
 }
 
 func (l *connList) Len() int {
-	return int(atomic.LoadInt32(&l.len))
+	return int(atomic.LoadInt32(&l.size))
 }
 
 // Reserve reserves place in the list and returns true on success. The
 // caller must add or remove connection if place was reserved.
 func (l *connList) Reserve() bool {
-	len := atomic.AddInt32(&l.len, 1)
-	reserved := len <= l.size
+	size := atomic.AddInt32(&l.size, 1)
+	reserved := size <= l.max
 	if !reserved {
-		atomic.AddInt32(&l.len, -1)
+		atomic.AddInt32(&l.size, -1)
 	}
 	return reserved
 }
@@ -69,26 +70,24 @@ func (l *connList) Reserve() bool {
 // Add adds connection to the list. The caller must reserve place first.
 func (l *connList) Add(cn *conn) {
 	l.mx.Lock()
-	l.cns = append(l.cns, cn)
+	l.cns[cn] = struct{}{}
 	l.mx.Unlock()
 }
 
 // Remove closes connection and removes it from the list.
 func (l *connList) Remove(cn *conn) error {
-	defer l.mx.Unlock()
-	l.mx.Lock()
-
 	if cn == nil {
-		atomic.AddInt32(&l.len, -1)
+		atomic.AddInt32(&l.size, -1)
 		return nil
 	}
 
-	for i, c := range l.cns {
-		if c == cn {
-			l.cns = append(l.cns[:i], l.cns[i+1:]...)
-			atomic.AddInt32(&l.len, -1)
-			return cn.Close()
-		}
+	l.mx.Lock()
+	defer l.mx.Unlock()
+
+	if _, ok := l.cns[cn]; ok {
+		delete(l.cns, cn)
+		atomic.AddInt32(&l.size, -1)
+		return cn.Close()
 	}
 
 	if l.closed() {
@@ -97,15 +96,15 @@ func (l *connList) Remove(cn *conn) error {
 	panic("conn not found in the list")
 }
 
+// Replace a connection with an old connection with a new one
 func (l *connList) Replace(cn, newcn *conn) error {
-	defer l.mx.Unlock()
 	l.mx.Lock()
+	defer l.mx.Unlock()
 
-	for i, c := range l.cns {
-		if c == cn {
-			l.cns[i] = newcn
-			return cn.Close()
-		}
+	if _, ok := l.cns[cn]; ok {
+		delete(l.cns, cn)
+		l.cns[newcn] = struct{}{}
+		return cn.Close()
 	}
 
 	if l.closed() {
@@ -116,17 +115,20 @@ func (l *connList) Replace(cn, newcn *conn) error {
 
 func (l *connList) Close() (retErr error) {
 	l.mx.Lock()
-	for _, c := range l.cns {
-		if err := c.Close(); err != nil {
+	defer l.mx.Unlock()
+
+	for cn := range l.cns {
+		if err := cn.Close(); err != nil {
 			retErr = err
 		}
+		delete(l.cns, cn)
 	}
 	l.cns = nil
-	atomic.StoreInt32(&l.len, 0)
-	l.mx.Unlock()
+	atomic.StoreInt32(&l.size, 0)
 	return retErr
 }
 
+// Checks if closed, must be protected by mutex
 func (l *connList) closed() bool {
 	return l.cns == nil
 }
@@ -138,7 +140,8 @@ type connPool struct {
 	opt       *Options
 	conns     *connList
 	freeConns chan *conn
-	stats     PoolStats
+	// freeConns *connStack
+	stats PoolStats
 
 	_closed int32
 
@@ -146,13 +149,15 @@ type connPool struct {
 }
 
 func newConnPool(opt *Options) *connPool {
+	poolSize := opt.getPoolSize()
 	p := &connPool{
 		dialer: newConnDialer(opt),
 
-		rl:        ratelimit.New(3*opt.getPoolSize(), time.Second),
+		rl:        ratelimit.New(3*poolSize, time.Second),
 		opt:       opt,
-		conns:     newConnList(opt.getPoolSize()),
-		freeConns: make(chan *conn, opt.getPoolSize()),
+		conns:     newConnList(poolSize),
+		freeConns: make(chan *conn, poolSize),
+		// freeConns: newConnStack(poolSize),
 	}
 	if p.opt.getIdleTimeout() > 0 {
 		go p.reaper()
@@ -252,7 +257,7 @@ func (p *connPool) Get() (cn *conn, isNew bool, err error) {
 
 		cn, err = p.new()
 		if err != nil {
-			p.conns.Remove(nil)
+			p.conns.Remove(nil) // decrease pool size
 			return
 		}
 		p.conns.Add(cn)
@@ -443,8 +448,8 @@ func (p *stickyConnPool) First() *conn {
 }
 
 func (p *stickyConnPool) Get() (cn *conn, isNew bool, err error) {
-	defer p.mx.Unlock()
 	p.mx.Lock()
+	defer p.mx.Unlock()
 
 	if p.closed {
 		err = errClosed
@@ -470,8 +475,9 @@ func (p *stickyConnPool) put() (err error) {
 }
 
 func (p *stickyConnPool) Put(cn *conn) error {
-	defer p.mx.Unlock()
 	p.mx.Lock()
+	defer p.mx.Unlock()
+
 	if p.closed {
 		return errClosed
 	}
@@ -488,8 +494,9 @@ func (p *stickyConnPool) remove(reason error) error {
 }
 
 func (p *stickyConnPool) Remove(cn *conn, reason error) error {
-	defer p.mx.Unlock()
 	p.mx.Lock()
+	defer p.mx.Unlock()
+
 	if p.closed {
 		return errClosed
 	}
@@ -503,8 +510,9 @@ func (p *stickyConnPool) Remove(cn *conn, reason error) error {
 }
 
 func (p *stickyConnPool) Len() int {
-	defer p.mx.Unlock()
 	p.mx.Lock()
+	defer p.mx.Unlock()
+
 	if p.cn == nil {
 		return 0
 	}
@@ -512,8 +520,9 @@ func (p *stickyConnPool) Len() int {
 }
 
 func (p *stickyConnPool) FreeLen() int {
-	defer p.mx.Unlock()
 	p.mx.Lock()
+	defer p.mx.Unlock()
+
 	if p.cn == nil {
 		return 1
 	}
@@ -523,8 +532,9 @@ func (p *stickyConnPool) FreeLen() int {
 func (p *stickyConnPool) Stats() *PoolStats { return nil }
 
 func (p *stickyConnPool) Close() error {
-	defer p.mx.Unlock()
 	p.mx.Lock()
+	defer p.mx.Unlock()
+
 	if p.closed {
 		return errClosed
 	}
