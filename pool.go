@@ -37,6 +37,55 @@ type pool interface {
 	Stats() *PoolStats
 }
 
+// connStack is used as a LIFO to maintain free connection
+type connStack struct {
+	cns  []*conn
+	free chan struct{}
+	mx   sync.Mutex
+}
+
+func newConnStack(max int) *connStack {
+	return &connStack{
+		cns:  make([]*conn, 0, max),
+		free: make(chan struct{}, max),
+	}
+}
+
+func (s *connStack) Len() int { return len(s.free) }
+
+func (s *connStack) Push(cn *conn) {
+	s.mx.Lock()
+	s.cns = append(s.cns, cn)
+	s.mx.Unlock()
+	s.free <- struct{}{}
+}
+
+func (s *connStack) Pop() *conn {
+	select {
+	case <-s.free:
+		return s.pop()
+	default:
+		return nil
+	}
+}
+
+func (s *connStack) PopWithTimeout(d time.Duration) *conn {
+	select {
+	case <-s.free:
+		return s.pop()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+func (s *connStack) pop() (cn *conn) {
+	s.mx.Lock()
+	ci := len(s.cns) - 1
+	cn, s.cns = s.cns[ci], s.cns[:ci]
+	s.mx.Unlock()
+	return
+}
+
 // connList stores all known connections, usable or not
 type connList struct {
 	cns  map[*conn]struct{}
@@ -139,9 +188,8 @@ type connPool struct {
 	rl        *ratelimit.RateLimiter
 	opt       *Options
 	conns     *connList
-	freeConns chan *conn
-	// freeConns *connStack
-	stats PoolStats
+	freeConns *connStack
+	stats     PoolStats
 
 	_closed int32
 
@@ -156,8 +204,7 @@ func newConnPool(opt *Options) *connPool {
 		rl:        ratelimit.New(3*poolSize, time.Second),
 		opt:       opt,
 		conns:     newConnList(poolSize),
-		freeConns: make(chan *conn, poolSize),
-		// freeConns: newConnStack(poolSize),
+		freeConns: newConnStack(poolSize),
 	}
 	if p.opt.getIdleTimeout() > 0 {
 		go p.reaper()
@@ -177,42 +224,33 @@ func (p *connPool) isIdle(cn *conn) bool {
 // there are no connections.
 func (p *connPool) First() *conn {
 	for {
-		select {
-		case cn := <-p.freeConns:
-			if p.isIdle(cn) {
-				var err error
-				cn, err = p.replace(cn)
-				if err != nil {
-					Logger.Printf("pool.replace failed: %s", err)
-					continue
-				}
+		cn := p.freeConns.Pop()
+		if cn != nil && p.isIdle(cn) {
+			var err error
+			cn, err = p.replace(cn)
+			if err != nil {
+				Logger.Printf("pool.replace failed: %s", err)
+				continue
 			}
-			return cn
-		default:
-			return nil
 		}
+		return cn
 	}
 	panic("not reached")
 }
 
 // wait waits for free non-idle connection. It returns nil on timeout.
 func (p *connPool) wait() *conn {
-	deadline := time.After(p.opt.getPoolTimeout())
 	for {
-		select {
-		case cn := <-p.freeConns:
-			if p.isIdle(cn) {
-				var err error
-				cn, err = p.replace(cn)
-				if err != nil {
-					Logger.Printf("pool.replace failed: %s", err)
-					continue
-				}
+		cn := p.freeConns.PopWithTimeout(p.opt.getPoolTimeout())
+		if cn != nil && p.isIdle(cn) {
+			var err error
+			cn, err = p.replace(cn)
+			if err != nil {
+				Logger.Printf("pool.replace failed: %s", err)
+				continue
 			}
-			return cn
-		case <-deadline:
-			return nil
 		}
+		return cn
 	}
 	panic("not reached")
 }
@@ -282,7 +320,7 @@ func (p *connPool) Put(cn *conn) error {
 		Logger.Print(err)
 		return p.Remove(cn, err)
 	}
-	p.freeConns <- cn
+	p.freeConns.Push(cn)
 	return nil
 }
 
@@ -304,7 +342,7 @@ func (p *connPool) Remove(cn *conn, reason error) error {
 	if err != nil {
 		return err
 	}
-	p.freeConns <- newcn
+	p.freeConns.Push(newcn)
 	return nil
 }
 
@@ -315,7 +353,7 @@ func (p *connPool) Len() int {
 
 // FreeLen returns number of free connections.
 func (p *connPool) FreeLen() int {
-	return len(p.freeConns)
+	return p.freeConns.Len()
 }
 
 func (p *connPool) Stats() *PoolStats {
