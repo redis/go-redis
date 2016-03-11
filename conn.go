@@ -64,6 +64,10 @@ func (cn *conn) init(opt *Options) error {
 	return nil
 }
 
+func (cn *conn) IsStale(timeout time.Duration) bool {
+	return timeout > 0 && time.Since(cn.UsedAt) > timeout
+}
+
 func (cn *conn) writeCmds(cmds ...Cmder) error {
 	buf := cn.buf[:0]
 	for _, cmd := range cmds {

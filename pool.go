@@ -60,6 +60,22 @@ func (s *connStack) Push(cn *conn) {
 	s.free <- struct{}{}
 }
 
+func (s *connStack) ShiftStale(timeout time.Duration) *conn {
+	select {
+	case <-s.free:
+		s.mx.Lock()
+		defer s.mx.Unlock()
+
+		if cn := s.cns[0]; cn.IsStale(timeout) {
+			s.cns = s.cns[1:]
+			return cn
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
 func (s *connStack) Pop() *conn {
 	select {
 	case <-s.free:
@@ -216,16 +232,12 @@ func (p *connPool) closed() bool {
 	return atomic.LoadInt32(&p._closed) == 1
 }
 
-func (p *connPool) isIdle(cn *conn) bool {
-	return p.opt.getIdleTimeout() > 0 && time.Since(cn.UsedAt) > p.opt.getIdleTimeout()
-}
-
 // First returns first non-idle connection from the pool or nil if
 // there are no connections.
 func (p *connPool) First() *conn {
 	for {
 		cn := p.freeConns.Pop()
-		if cn != nil && p.isIdle(cn) {
+		if cn != nil && cn.IsStale(p.opt.getIdleTimeout()) {
 			var err error
 			cn, err = p.replace(cn)
 			if err != nil {
@@ -242,7 +254,7 @@ func (p *connPool) First() *conn {
 func (p *connPool) wait() *conn {
 	for {
 		cn := p.freeConns.PopWithTimeout(p.opt.getPoolTimeout())
-		if cn != nil && p.isIdle(cn) {
+		if cn != nil && cn.IsStale(p.opt.getIdleTimeout()) {
 			var err error
 			cn, err = p.replace(cn)
 			if err != nil {
@@ -392,11 +404,12 @@ func (p *connPool) reaper() {
 			break
 		}
 
-		// pool.First removes idle connections from the pool and
-		// returns first non-idle connection. So just put returned
-		// connection back.
-		if cn := p.First(); cn != nil {
-			p.Put(cn)
+		for {
+			cn := p.freeConns.ShiftStale(p.opt.getIdleTimeout())
+			if cn == nil {
+				break
+			}
+			_ = p.conns.Remove(cn)
 		}
 	}
 }
