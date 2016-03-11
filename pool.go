@@ -147,14 +147,15 @@ func (l *connList) Remove(cn *conn) error {
 	}
 
 	l.mx.Lock()
-	defer l.mx.Unlock()
 
 	if _, ok := l.cns[cn]; ok {
 		delete(l.cns, cn)
+		l.mx.Unlock()
 		atomic.AddInt32(&l.size, -1)
 		return cn.Close()
 	}
 
+	l.mx.Unlock()
 	if l.closed() {
 		return nil
 	}
@@ -164,13 +165,14 @@ func (l *connList) Remove(cn *conn) error {
 // Replace a connection with an old connection with a new one
 func (l *connList) Replace(cn, newcn *conn) error {
 	l.mx.Lock()
-	defer l.mx.Unlock()
 
 	if _, ok := l.cns[cn]; ok {
 		delete(l.cns, cn)
 		l.cns[newcn] = struct{}{}
+		l.mx.Unlock()
 		return cn.Close()
 	}
+	l.mx.Unlock()
 
 	if l.closed() {
 		return newcn.Close()
