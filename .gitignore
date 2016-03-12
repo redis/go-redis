@@ -1,2 +1,2 @@
 *.rdb
-.test/
+testdata/*/
