@@ -4,7 +4,10 @@ all: testdeps
 
 testdeps: testdata/redis/src/redis-server
 
-.PHONY: all test testdeps
+bench: testdeps
+	go test ./... -test.run=NONE -test.bench=. -test.benchmem
+
+.PHONY: all test testdeps bench
 
 testdata/redis:
 	mkdir -p $@
