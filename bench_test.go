@@ -278,8 +278,8 @@ func BenchmarkZAdd(b *testing.B) {
 }
 
 func benchmarkPoolGetPut(b *testing.B, poolSize int) {
-	dial := func() (*pool.Conn, error) {
-		return pool.NewConn(&net.TCPConn{}), nil
+	dial := func() (net.Conn, error) {
+		return &net.TCPConn{}, nil
 	}
 	pool := pool.NewConnPool(dial, poolSize, time.Second, 0)
 
@@ -311,8 +311,8 @@ func BenchmarkPoolGetPut1000Conns(b *testing.B) {
 }
 
 func benchmarkPoolGetRemove(b *testing.B, poolSize int) {
-	dial := func() (*pool.Conn, error) {
-		return pool.NewConn(&net.TCPConn{}), nil
+	dial := func() (net.Conn, error) {
+		return &net.TCPConn{}, nil
 	}
 	pool := pool.NewConnPool(dial, poolSize, time.Second, 0)
 	removeReason := errors.New("benchmark")
@@ -325,7 +325,7 @@ func benchmarkPoolGetRemove(b *testing.B, poolSize int) {
 			if err != nil {
 				b.Fatalf("no error expected on pool.Get but received: %s", err.Error())
 			}
-			if err = pool.Remove(conn, removeReason); err != nil {
+			if err = pool.Replace(conn, removeReason); err != nil {
 				b.Fatalf("no error expected on pool.Remove but received: %s", err.Error())
 			}
 		}

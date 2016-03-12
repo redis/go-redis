@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"sync/atomic"
 	"time"
 
@@ -32,17 +33,17 @@ type Pooler interface {
 	First() *Conn
 	Get() (*Conn, bool, error)
 	Put(*Conn) error
-	Remove(*Conn, error) error
+	Replace(*Conn, error) error
 	Len() int
 	FreeLen() int
 	Close() error
 	Stats() *PoolStats
 }
 
-type dialer func() (*Conn, error)
+type dialer func() (net.Conn, error)
 
 type ConnPool struct {
-	dial dialer
+	_dial dialer
 
 	poolTimeout time.Duration
 	idleTimeout time.Duration
@@ -59,7 +60,7 @@ type ConnPool struct {
 
 func NewConnPool(dial dialer, poolSize int, poolTimeout, idleTimeout time.Duration) *ConnPool {
 	p := &ConnPool{
-		dial: dial,
+		_dial: dial,
 
 		poolTimeout: poolTimeout,
 		idleTimeout: idleTimeout,
@@ -126,8 +127,7 @@ func (p *ConnPool) wait() *Conn {
 	panic("not reached")
 }
 
-// Establish a new connection
-func (p *ConnPool) new() (*Conn, error) {
+func (p *ConnPool) dial() (net.Conn, error) {
 	if p.rl.Limit() {
 		err := fmt.Errorf(
 			"redis: you open connections too fast (last_error=%q)",
@@ -136,13 +136,20 @@ func (p *ConnPool) new() (*Conn, error) {
 		return nil, err
 	}
 
-	cn, err := p.dial()
+	cn, err := p._dial()
 	if err != nil {
 		p.storeLastErr(err.Error())
 		return nil, err
 	}
-
 	return cn, nil
+}
+
+func (p *ConnPool) newConn() (*Conn, error) {
+	netConn, err := p.dial()
+	if err != nil {
+		return nil, err
+	}
+	return NewConn(netConn), nil
 }
 
 // Get returns existed connection from the pool or creates a new one.
@@ -164,7 +171,7 @@ func (p *ConnPool) Get() (cn *Conn, isNew bool, err error) {
 	if p.conns.Reserve() {
 		isNew = true
 
-		cn, err = p.new()
+		cn, err = p.newConn()
 		if err != nil {
 			p.conns.Remove(nil)
 			return
@@ -189,23 +196,26 @@ func (p *ConnPool) Put(cn *Conn) error {
 		b, _ := cn.Rd.Peek(cn.Rd.Buffered())
 		err := fmt.Errorf("connection has unread data: %q", b)
 		Logger.Print(err)
-		return p.Remove(cn, err)
+		return p.Replace(cn, err)
 	}
 	p.freeConns <- cn
 	return nil
 }
 
 func (p *ConnPool) replace(cn *Conn) (*Conn, error) {
-	newcn, err := p.new()
+	_ = cn.Close()
+
+	netConn, err := p.dial()
 	if err != nil {
 		_ = p.conns.Remove(cn)
 		return nil, err
 	}
-	_ = p.conns.Replace(cn, newcn)
-	return newcn, nil
+	cn.SetNetConn(netConn)
+
+	return cn, nil
 }
 
-func (p *ConnPool) Remove(cn *Conn, reason error) error {
+func (p *ConnPool) Replace(cn *Conn, reason error) error {
 	p.storeLastErr(reason.Error())
 
 	// Replace existing connection with new one and unblock waiter.

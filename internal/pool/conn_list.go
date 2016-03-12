@@ -7,14 +7,14 @@ import (
 
 type connList struct {
 	cns  []*Conn
-	mx   sync.Mutex
+	mu   sync.Mutex
 	len  int32 // atomic
 	size int32
 }
 
 func newConnList(size int) *connList {
 	return &connList{
-		cns:  make([]*Conn, 0, size),
+		cns:  make([]*Conn, size),
 		size: int32(size),
 	}
 }
@@ -23,8 +23,8 @@ func (l *connList) Len() int {
 	return int(atomic.LoadInt32(&l.len))
 }
 
-// Reserve reserves place in the list and returns true on success. The
-// caller must add or remove connection if place was reserved.
+// Reserve reserves place in the list and returns true on success.
+// The caller must add or remove connection if place was reserved.
 func (l *connList) Reserve() bool {
 	len := atomic.AddInt32(&l.len, 1)
 	reserved := len <= l.size
@@ -36,65 +36,49 @@ func (l *connList) Reserve() bool {
 
 // Add adds connection to the list. The caller must reserve place first.
 func (l *connList) Add(cn *Conn) {
-	l.mx.Lock()
-	l.cns = append(l.cns, cn)
-	l.mx.Unlock()
+	l.mu.Lock()
+	for i, c := range l.cns {
+		if c == nil {
+			cn.idx = i
+			l.cns[i] = cn
+			l.mu.Unlock()
+			return
+		}
+	}
+	panic("not reached")
 }
 
 // Remove closes connection and removes it from the list.
 func (l *connList) Remove(cn *Conn) error {
-	defer l.mx.Unlock()
-	l.mx.Lock()
+	atomic.AddInt32(&l.len, -1)
 
-	if cn == nil {
-		atomic.AddInt32(&l.len, -1)
+	if cn == nil { // free reserved place
 		return nil
 	}
 
-	for i, c := range l.cns {
-		if c == cn {
-			l.cns = append(l.cns[:i], l.cns[i+1:]...)
-			atomic.AddInt32(&l.len, -1)
-			return cn.Close()
-		}
+	l.mu.Lock()
+	if l.cns != nil {
+		l.cns[cn.idx] = nil
+		cn.idx = -1
 	}
+	l.mu.Unlock()
 
-	if l.closed() {
-		return nil
-	}
-	panic("conn not found in the list")
+	return nil
 }
 
-func (l *connList) Replace(cn, newcn *Conn) error {
-	defer l.mx.Unlock()
-	l.mx.Lock()
-
-	for i, c := range l.cns {
-		if c == cn {
-			l.cns[i] = newcn
-			return cn.Close()
-		}
-	}
-
-	if l.closed() {
-		return newcn.Close()
-	}
-	panic("conn not found in the list")
-}
-
-func (l *connList) Close() (retErr error) {
-	l.mx.Lock()
+func (l *connList) Close() error {
+	var retErr error
+	l.mu.Lock()
 	for _, c := range l.cns {
-		if err := c.Close(); err != nil {
+		if c == nil {
+			continue
+		}
+		if err := c.Close(); err != nil && retErr == nil {
 			retErr = err
 		}
 	}
 	l.cns = nil
 	atomic.StoreInt32(&l.len, 0)
-	l.mx.Unlock()
+	l.mu.Unlock()
 	return retErr
-}
-
-func (l *connList) closed() bool {
-	return l.cns == nil
 }

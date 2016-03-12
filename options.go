@@ -67,18 +67,6 @@ func (opt *Options) getDialer() func() (net.Conn, error) {
 	return opt.Dialer
 }
 
-func (opt *Options) getPoolDialer() func() (*pool.Conn, error) {
-	dial := opt.getDialer()
-	return func() (*pool.Conn, error) {
-		netcn, err := dial()
-		if err != nil {
-			return nil, err
-		}
-		cn := pool.NewConn(netcn)
-		return cn, opt.initConn(cn)
-	}
-}
-
 func (opt *Options) getPoolSize() int {
 	if opt.PoolSize == 0 {
 		return 10
@@ -104,32 +92,9 @@ func (opt *Options) getIdleTimeout() time.Duration {
 	return opt.IdleTimeout
 }
 
-func (opt *Options) initConn(cn *pool.Conn) error {
-	if opt.Password == "" && opt.DB == 0 {
-		return nil
-	}
-
-	// Temp client for Auth and Select.
-	client := newClient(opt, pool.NewSingleConnPool(cn))
-
-	if opt.Password != "" {
-		if err := client.Auth(opt.Password).Err(); err != nil {
-			return err
-		}
-	}
-
-	if opt.DB > 0 {
-		if err := client.Select(opt.DB).Err(); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(
-		opt.getPoolDialer(), opt.getPoolSize(), opt.getPoolTimeout(), opt.getIdleTimeout())
+		opt.getDialer(), opt.getPoolSize(), opt.getPoolTimeout(), opt.getIdleTimeout())
 }
 
 // PoolStats contains pool state information and accumulated stats.
