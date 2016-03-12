@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 //------------------------------------------------------------------------------
@@ -103,7 +105,7 @@ func (c *sentinelClient) PubSub() *PubSub {
 	return &PubSub{
 		base: &baseClient{
 			opt:      c.opt,
-			connPool: newStickyConnPool(c.connPool, false),
+			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), false),
 		},
 	}
 }
@@ -126,7 +128,7 @@ type sentinelFailover struct {
 
 	opt *Options
 
-	pool     pool
+	pool     *pool.ConnPool
 	poolOnce sync.Once
 
 	mu       sync.RWMutex
@@ -145,7 +147,7 @@ func (d *sentinelFailover) dial() (net.Conn, error) {
 	return net.DialTimeout("tcp", addr, d.opt.DialTimeout)
 }
 
-func (d *sentinelFailover) Pool() pool {
+func (d *sentinelFailover) Pool() *pool.ConnPool {
 	d.poolOnce.Do(func() {
 		d.opt.Dialer = d.dial
 		d.pool = newConnPool(d.opt)
@@ -252,7 +254,7 @@ func (d *sentinelFailover) closeOldConns(newMaster string) {
 	// Good connections that should be put back to the pool. They
 	// can't be put immediately, because pool.First will return them
 	// again on next iteration.
-	cnsToPut := make([]*conn, 0)
+	cnsToPut := make([]*pool.Conn, 0)
 
 	for {
 		cn := d.pool.First()

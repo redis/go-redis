@@ -1,11 +1,14 @@
 package redis
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strings"
 )
+
+var errClosed = errors.New("redis: client is closed")
 
 // Redis nil reply, .e.g. when key does not exist.
 var Nil = errorf("redis: nil")

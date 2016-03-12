@@ -8,6 +8,7 @@ import (
 
 	"gopkg.in/redis.v3/internal/consistenthash"
 	"gopkg.in/redis.v3/internal/hashtag"
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 var (
@@ -200,7 +201,7 @@ func (ring *Ring) heartbeat() {
 
 		for _, shard := range ring.shards {
 			err := shard.Client.Ping().Err()
-			if shard.Vote(err == nil || err == errPoolTimeout) {
+			if shard.Vote(err == nil || err == pool.ErrPoolTimeout) {
 				Logger.Printf("ring shard state changed: %s", shard)
 				rebalance = true
 			}
