@@ -267,7 +267,7 @@ func (d *sentinelFailover) closeOldConns(newMaster string) {
 				cn.RemoteAddr(),
 			)
 			Logger.Print(err)
-			d.pool.Remove(cn, err)
+			d.pool.Replace(cn, err)
 		} else {
 			cnsToPut = append(cnsToPut, cn)
 		}

@@ -8,10 +8,12 @@ import (
 
 const defaultBufSize = 4096
 
-var noTimeout = time.Time{}
+var noDeadline = time.Time{}
 
 type Conn struct {
-	NetConn net.Conn
+	idx int
+
+	netConn net.Conn
 	Rd      *bufio.Reader
 	Buf     []byte
 
@@ -22,7 +24,9 @@ type Conn struct {
 
 func NewConn(netConn net.Conn) *Conn {
 	cn := &Conn{
-		NetConn: netConn,
+		idx: -1,
+
+		netConn: netConn,
 		Buf:     make([]byte, defaultBufSize),
 
 		UsedAt: time.Now(),
@@ -31,30 +35,35 @@ func NewConn(netConn net.Conn) *Conn {
 	return cn
 }
 
+func (cn *Conn) SetNetConn(netConn net.Conn) {
+	cn.netConn = netConn
+	cn.UsedAt = time.Now()
+}
+
 func (cn *Conn) Read(b []byte) (int, error) {
 	cn.UsedAt = time.Now()
 	if cn.ReadTimeout != 0 {
-		cn.NetConn.SetReadDeadline(cn.UsedAt.Add(cn.ReadTimeout))
+		cn.netConn.SetReadDeadline(cn.UsedAt.Add(cn.ReadTimeout))
 	} else {
-		cn.NetConn.SetReadDeadline(noTimeout)
+		cn.netConn.SetReadDeadline(noDeadline)
 	}
-	return cn.NetConn.Read(b)
+	return cn.netConn.Read(b)
 }
 
 func (cn *Conn) Write(b []byte) (int, error) {
 	cn.UsedAt = time.Now()
 	if cn.WriteTimeout != 0 {
-		cn.NetConn.SetWriteDeadline(cn.UsedAt.Add(cn.WriteTimeout))
+		cn.netConn.SetWriteDeadline(cn.UsedAt.Add(cn.WriteTimeout))
 	} else {
-		cn.NetConn.SetWriteDeadline(noTimeout)
+		cn.netConn.SetWriteDeadline(noDeadline)
 	}
-	return cn.NetConn.Write(b)
+	return cn.netConn.Write(b)
 }
 
 func (cn *Conn) RemoteAddr() net.Addr {
-	return cn.NetConn.RemoteAddr()
+	return cn.netConn.RemoteAddr()
 }
 
 func (cn *Conn) Close() error {
-	return cn.NetConn.Close()
+	return cn.netConn.Close()
 }

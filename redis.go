@@ -33,12 +33,19 @@ func (c *baseClient) String() string {
 }
 
 func (c *baseClient) conn() (*pool.Conn, bool, error) {
-	return c.connPool.Get()
+	cn, isNew, err := c.connPool.Get()
+	if err == nil && isNew {
+		err = c.initConn(cn)
+		if err != nil {
+			c.putConn(cn, err, false)
+		}
+	}
+	return cn, isNew, err
 }
 
 func (c *baseClient) putConn(cn *pool.Conn, err error, allowTimeout bool) bool {
 	if isBadConn(err, allowTimeout) {
-		err = c.connPool.Remove(cn, err)
+		err = c.connPool.Replace(cn, err)
 		if err != nil {
 			Logger.Printf("pool.Remove failed: %s", err)
 		}
@@ -50,6 +57,29 @@ func (c *baseClient) putConn(cn *pool.Conn, err error, allowTimeout bool) bool {
 		Logger.Printf("pool.Put failed: %s", err)
 	}
 	return true
+}
+
+func (c *baseClient) initConn(cn *pool.Conn) error {
+	if c.opt.Password == "" && c.opt.DB == 0 {
+		return nil
+	}
+
+	// Temp client for Auth and Select.
+	client := newClient(c.opt, pool.NewSingleConnPool(cn))
+
+	if c.opt.Password != "" {
+		if err := client.Auth(c.opt.Password).Err(); err != nil {
+			return err
+		}
+	}
+
+	if c.opt.DB > 0 {
+		if err := client.Select(c.opt.DB).Err(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (c *baseClient) process(cmd Cmder) {

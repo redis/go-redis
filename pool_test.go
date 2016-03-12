@@ -179,7 +179,7 @@ var _ = Describe("pool", func() {
 			// ok
 		}
 
-		err = pool.Remove(cn, errors.New("test"))
+		err = pool.Replace(cn, errors.New("test"))
 		Expect(err).NotTo(HaveOccurred())
 
 		// Check that Ping is unblocked.
@@ -203,7 +203,7 @@ var _ = Describe("pool", func() {
 				break
 			}
 
-			_ = pool.Remove(cn, errors.New("test"))
+			_ = pool.Replace(cn, errors.New("test"))
 		}
 
 		Expect(rateErr).To(MatchError(`redis: you open connections too fast (last_error="test")`))
