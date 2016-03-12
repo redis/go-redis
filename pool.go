@@ -37,7 +37,7 @@ type pool interface {
 	Stats() *PoolStats
 }
 
-// connStack is used as a LIFO to maintain free connection
+// connStack is used as a LIFO to maintain free connections
 type connStack struct {
 	cns  []*conn
 	free chan struct{}
@@ -67,7 +67,8 @@ func (s *connStack) ShiftStale(timeout time.Duration) *conn {
 		defer s.mx.Unlock()
 
 		if cn := s.cns[0]; cn.IsStale(timeout) {
-			s.cns = s.cns[1:]
+			copy(s.cns, s.cns[1:])
+			s.cns = s.cns[:len(s.cns)-1]
 			return cn
 		}
 		return nil
