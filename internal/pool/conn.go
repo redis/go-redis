@@ -35,6 +35,10 @@ func NewConn(netConn net.Conn) *Conn {
 	return cn
 }
 
+func (cn *Conn) IsStale(timeout time.Duration) bool {
+	return timeout > 0 && time.Since(cn.UsedAt) > timeout
+}
+
 func (cn *Conn) SetNetConn(netConn net.Conn) {
 	cn.netConn = netConn
 	cn.UsedAt = time.Now()
