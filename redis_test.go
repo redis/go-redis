@@ -160,7 +160,7 @@ var _ = Describe("Client", func() {
 		cn, _, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 
-		cn.SetNetConn(&badConn{})
+		cn.NetConn = &badConn{}
 		err = client.Pool().Put(cn)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -174,10 +174,6 @@ var _ = Describe("Client", func() {
 		Expect(cn.UsedAt).NotTo(BeZero())
 		createdAt := cn.UsedAt
 
-		future := time.Now().Add(time.Hour)
-		redis.SetTime(future)
-		defer redis.RestoreTime()
-
 		err = client.Pool().Put(cn)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn.UsedAt.Equal(createdAt)).To(BeTrue())
@@ -187,6 +183,6 @@ var _ = Describe("Client", func() {
 
 		cn = client.Pool().First()
 		Expect(cn).NotTo(BeNil())
-		Expect(cn.UsedAt.Equal(future)).To(BeTrue())
+		Expect(cn.UsedAt.After(createdAt)).To(BeTrue())
 	})
 })

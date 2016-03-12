@@ -3,6 +3,8 @@ package redis
 import (
 	"sync"
 	"sync/atomic"
+
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 // Pipeline implements pipelining as described in
@@ -110,8 +112,8 @@ func (pipe *Pipeline) Exec() (cmds []Cmder, retErr error) {
 	return cmds, retErr
 }
 
-func execCmds(cn *conn, cmds []Cmder) ([]Cmder, error) {
-	if err := cn.writeCmds(cmds...); err != nil {
+func execCmds(cn *pool.Conn, cmds []Cmder) ([]Cmder, error) {
+	if err := writeCmd(cn, cmds...); err != nil {
 		setCmdsErr(cmds, err)
 		return cmds, err
 	}

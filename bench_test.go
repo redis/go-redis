@@ -2,12 +2,15 @@ package redis_test
 
 import (
 	"bytes"
+	"errors"
+	"net"
 	"testing"
 	"time"
 
 	redigo "github.com/garyburd/redigo/redis"
 
 	"gopkg.in/redis.v3"
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 func benchmarkRedisClient(poolSize int) *redis.Client {
@@ -274,11 +277,11 @@ func BenchmarkZAdd(b *testing.B) {
 	})
 }
 
-func BenchmarkPool(b *testing.B) {
-	client := benchmarkRedisClient(10)
-	defer client.Close()
-
-	pool := client.Pool()
+func benchmarkPoolGetPut(b *testing.B, poolSize int) {
+	dial := func() (*pool.Conn, error) {
+		return pool.NewConn(&net.TCPConn{}), nil
+	}
+	pool := pool.NewConnPool(dial, poolSize, time.Second, 0)
 
 	b.ResetTimer()
 
@@ -293,4 +296,50 @@ func BenchmarkPool(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkPoolGetPut10Conns(b *testing.B) {
+	benchmarkPoolGetPut(b, 10)
+}
+
+func BenchmarkPoolGetPut100Conns(b *testing.B) {
+	benchmarkPoolGetPut(b, 100)
+}
+
+func BenchmarkPoolGetPut1000Conns(b *testing.B) {
+	benchmarkPoolGetPut(b, 1000)
+}
+
+func benchmarkPoolGetRemove(b *testing.B, poolSize int) {
+	dial := func() (*pool.Conn, error) {
+		return pool.NewConn(&net.TCPConn{}), nil
+	}
+	pool := pool.NewConnPool(dial, poolSize, time.Second, 0)
+	removeReason := errors.New("benchmark")
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			conn, _, err := pool.Get()
+			if err != nil {
+				b.Fatalf("no error expected on pool.Get but received: %s", err.Error())
+			}
+			if err = pool.Remove(conn, removeReason); err != nil {
+				b.Fatalf("no error expected on pool.Remove but received: %s", err.Error())
+			}
+		}
+	})
+}
+
+func BenchmarkPoolGetRemove10Conns(b *testing.B) {
+	benchmarkPoolGetRemove(b, 10)
+}
+
+func BenchmarkPoolGetRemove100Conns(b *testing.B) {
+	benchmarkPoolGetRemove(b, 100)
+}
+
+func BenchmarkPoolGetRemove1000Conns(b *testing.B) {
+	benchmarkPoolGetRemove(b, 1000)
 }

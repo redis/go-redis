@@ -2,6 +2,7 @@ package redis
 
 import (
 	"gopkg.in/redis.v3/internal/hashtag"
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 // ClusterPipeline is not thread-safe.
@@ -96,9 +97,9 @@ func (pipe *ClusterPipeline) Close() error {
 }
 
 func (pipe *ClusterPipeline) execClusterCmds(
-	cn *conn, cmds []Cmder, failedCmds map[string][]Cmder,
+	cn *pool.Conn, cmds []Cmder, failedCmds map[string][]Cmder,
 ) (map[string][]Cmder, error) {
-	if err := cn.writeCmds(cmds...); err != nil {
+	if err := writeCmd(cn, cmds...); err != nil {
 		setCmdsErr(cmds, err)
 		return failedCmds, err
 	}

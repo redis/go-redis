@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"testing"
+
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 func BenchmarkParseReplyStatus(b *testing.B) {
@@ -31,9 +33,9 @@ func benchmarkParseReply(b *testing.B, reply string, p multiBulkParser, wanterr 
 	for i := 0; i < b.N; i++ {
 		buf.WriteString(reply)
 	}
-	cn := &conn{
-		rd:  bufio.NewReader(buf),
-		buf: make([]byte, 0, defaultBufSize),
+	cn := &pool.Conn{
+		Rd:  bufio.NewReader(buf),
+		Buf: make([]byte, 4096),
 	}
 
 	b.ResetTimer()

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"time"
+
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 // Posts a message to the given channel.
@@ -30,7 +32,7 @@ func (c *Client) PubSub() *PubSub {
 	return &PubSub{
 		base: &baseClient{
 			opt:      c.opt,
-			connPool: newStickyConnPool(c.connPool, false),
+			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), false),
 		},
 	}
 }
@@ -47,19 +49,20 @@ func (c *Client) PSubscribe(channels ...string) (*PubSub, error) {
 	return pubsub, pubsub.PSubscribe(channels...)
 }
 
-func (c *PubSub) subscribe(cmd string, channels ...string) error {
+func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
 	cn, _, err := c.base.conn()
 	if err != nil {
 		return err
 	}
 
 	args := make([]interface{}, 1+len(channels))
-	args[0] = cmd
+	args[0] = redisCmd
 	for i, channel := range channels {
 		args[1+i] = channel
 	}
-	req := NewSliceCmd(args...)
-	return cn.writeCmds(req)
+	cmd := NewSliceCmd(args...)
+
+	return writeCmd(cn, cmd)
 }
 
 // Subscribes the client to the specified channels.
@@ -132,7 +135,7 @@ func (c *PubSub) Ping(payload string) error {
 		args = append(args, payload)
 	}
 	cmd := NewCmd(args...)
-	return cn.writeCmds(cmd)
+	return writeCmd(cn, cmd)
 }
 
 // Message received after a successful subscription to channel.
@@ -296,7 +299,7 @@ func (c *PubSub) ReceiveMessage() (*Message, error) {
 	}
 }
 
-func (c *PubSub) putConn(cn *conn, err error) {
+func (c *PubSub) putConn(cn *pool.Conn, err error) {
 	if !c.base.putConn(cn, err, true) {
 		c.nsub = 0
 	}

@@ -3,6 +3,8 @@ package redis
 import (
 	"errors"
 	"fmt"
+
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 var errDiscard = errors.New("redis: Discard can be used only inside Exec")
@@ -38,7 +40,7 @@ func (c *Client) Multi() *Multi {
 	multi := &Multi{
 		base: &baseClient{
 			opt:      c.opt,
-			connPool: newStickyConnPool(c.connPool, true),
+			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), true),
 		},
 	}
 	multi.commandable.process = multi.process
@@ -137,8 +139,8 @@ func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 	return retCmds, err
 }
 
-func (c *Multi) execCmds(cn *conn, cmds []Cmder) error {
-	err := cn.writeCmds(cmds...)
+func (c *Multi) execCmds(cn *pool.Conn, cmds []Cmder) error {
+	err := writeCmd(cn, cmds...)
 	if err != nil {
 		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
