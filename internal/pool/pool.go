@@ -50,7 +50,7 @@ type ConnPool struct {
 	idleTimeout time.Duration
 
 	conns     *connList
-	freeConns chan *Conn
+	freeConns *connStack
 	stats     PoolStats
 
 	_closed int32
@@ -67,7 +67,7 @@ func NewConnPool(dial dialer, poolSize int, poolTimeout, idleTimeout time.Durati
 		idleTimeout: idleTimeout,
 
 		conns:     newConnList(poolSize),
-		freeConns: make(chan *Conn, poolSize),
+		freeConns: newConnStack(poolSize),
 	}
 	if idleTimeout > 0 {
 		go p.reaper()
@@ -83,48 +83,46 @@ func (p *ConnPool) isIdle(cn *Conn) bool {
 	return p.idleTimeout > 0 && time.Since(cn.UsedAt) > p.idleTimeout
 }
 
+func (p *ConnPool) Add(cn *Conn) bool {
+	if !p.conns.Reserve() {
+		return false
+	}
+	p.conns.Add(cn)
+	p.Put(cn)
+	return true
+}
+
 // First returns first non-idle connection from the pool or nil if
 // there are no connections.
 func (p *ConnPool) First() *Conn {
 	for {
-		select {
-		case cn := <-p.freeConns:
-			if p.isIdle(cn) {
-				var err error
-				cn, err = p.replace(cn)
-				if err != nil {
-					Logger.Printf("pool.replace failed: %s", err)
-					continue
-				}
+		cn := p.freeConns.Pop()
+		if cn != nil && cn.IsStale(p.idleTimeout) {
+			var err error
+			cn, err = p.replace(cn)
+			if err != nil {
+				Logger.Printf("pool.replace failed: %s", err)
+				continue
 			}
-			return cn
-		default:
-			return nil
 		}
+		return cn
 	}
-	panic("not reached")
 }
 
 // wait waits for free non-idle connection. It returns nil on timeout.
 func (p *ConnPool) wait() *Conn {
-	deadline := time.After(p.poolTimeout)
 	for {
-		select {
-		case cn := <-p.freeConns:
-			if p.isIdle(cn) {
-				var err error
-				cn, err = p.replace(cn)
-				if err != nil {
-					Logger.Printf("pool.replace failed: %s", err)
-					continue
-				}
+		cn := p.freeConns.PopWithTimeout(p.poolTimeout)
+		if cn != nil && cn.IsStale(p.idleTimeout) {
+			var err error
+			cn, err = p.replace(cn)
+			if err != nil {
+				Logger.Printf("pool.replace failed: %s", err)
+				continue
 			}
-			return cn
-		case <-deadline:
-			return nil
 		}
+		return cn
 	}
-	panic("not reached")
 }
 
 func (p *ConnPool) dial() (net.Conn, error) {
@@ -198,7 +196,7 @@ func (p *ConnPool) Put(cn *Conn) error {
 		Logger.Print(err)
 		return p.Replace(cn, err)
 	}
-	p.freeConns <- cn
+	p.freeConns.Push(cn)
 	return nil
 }
 
@@ -223,8 +221,14 @@ func (p *ConnPool) Replace(cn *Conn, reason error) error {
 	if err != nil {
 		return err
 	}
-	p.freeConns <- newcn
+	p.freeConns.Push(newcn)
 	return nil
+}
+
+func (p *ConnPool) Remove(cn *Conn, reason error) error {
+	p.storeLastErr(reason.Error())
+	_ = cn.Close()
+	return p.conns.Remove(cn)
 }
 
 // Len returns total number of connections.
@@ -234,7 +238,7 @@ func (p *ConnPool) Len() int {
 
 // FreeLen returns number of free connections.
 func (p *ConnPool) FreeLen() int {
-	return len(p.freeConns)
+	return p.freeConns.Len()
 }
 
 func (p *ConnPool) Stats() *PoolStats {
@@ -264,6 +268,20 @@ func (p *ConnPool) Close() (retErr error) {
 	return retErr
 }
 
+func (p *ConnPool) ReapStaleConns() (n int, err error) {
+	for {
+		cn := p.freeConns.ShiftStale(p.idleTimeout)
+		if cn == nil {
+			break
+		}
+		if err = p.Remove(cn, errors.New("connection is stale")); err != nil {
+			return
+		}
+		n++
+	}
+	return
+}
+
 func (p *ConnPool) reaper() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -272,12 +290,11 @@ func (p *ConnPool) reaper() {
 		if p.closed() {
 			break
 		}
-
-		// pool.First removes idle connections from the pool and
-		// returns first non-idle connection. So just put returned
-		// connection back.
-		if cn := p.First(); cn != nil {
-			p.Put(cn)
+		n, err := p.ReapStaleConns()
+		if err != nil {
+			Logger.Printf("ReapStaleConns failed: %s", err)
+		} else if n > 0 {
+			Logger.Printf("removed %d stale connections", n)
 		}
 	}
 }
