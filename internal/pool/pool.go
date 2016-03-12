@@ -43,12 +43,12 @@ type Pooler interface {
 type dialer func() (net.Conn, error)
 
 type ConnPool struct {
-	_dial dialer
+	_dial       dialer
+	DialLimiter *ratelimit.RateLimiter
 
 	poolTimeout time.Duration
 	idleTimeout time.Duration
 
-	rl        *ratelimit.RateLimiter
 	conns     *connList
 	freeConns chan *Conn
 	stats     PoolStats
@@ -60,12 +60,12 @@ type ConnPool struct {
 
 func NewConnPool(dial dialer, poolSize int, poolTimeout, idleTimeout time.Duration) *ConnPool {
 	p := &ConnPool{
-		_dial: dial,
+		_dial:       dial,
+		DialLimiter: ratelimit.New(3*poolSize, time.Second),
 
 		poolTimeout: poolTimeout,
 		idleTimeout: idleTimeout,
 
-		rl:        ratelimit.New(3*poolSize, time.Second),
 		conns:     newConnList(poolSize),
 		freeConns: make(chan *Conn, poolSize),
 	}
@@ -128,7 +128,7 @@ func (p *ConnPool) wait() *Conn {
 }
 
 func (p *ConnPool) dial() (net.Conn, error) {
-	if p.rl.Limit() {
+	if p.DialLimiter != nil && p.DialLimiter.Limit() {
 		err := fmt.Errorf(
 			"redis: you open connections too fast (last_error=%q)",
 			p.loadLastErr(),
