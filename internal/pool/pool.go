@@ -83,6 +83,15 @@ func (p *ConnPool) isIdle(cn *Conn) bool {
 	return p.idleTimeout > 0 && time.Since(cn.UsedAt) > p.idleTimeout
 }
 
+func (p *ConnPool) Add(cn *Conn) bool {
+	if !p.conns.Reserve() {
+		return false
+	}
+	p.conns.Add(cn)
+	p.Put(cn)
+	return true
+}
+
 // First returns first non-idle connection from the pool or nil if
 // there are no connections.
 func (p *ConnPool) First() *Conn {
@@ -216,6 +225,12 @@ func (p *ConnPool) Replace(cn *Conn, reason error) error {
 	return nil
 }
 
+func (p *ConnPool) Remove(cn *Conn, reason error) error {
+	p.storeLastErr(reason.Error())
+	_ = cn.Close()
+	return p.conns.Remove(cn)
+}
+
 // Len returns total number of connections.
 func (p *ConnPool) Len() int {
 	return p.conns.Len()
@@ -253,6 +268,20 @@ func (p *ConnPool) Close() (retErr error) {
 	return retErr
 }
 
+func (p *ConnPool) ReapStaleConns() (n int, err error) {
+	for {
+		cn := p.freeConns.ShiftStale(p.idleTimeout)
+		if cn == nil {
+			break
+		}
+		if err = p.Remove(cn, errors.New("connection is stale")); err != nil {
+			return
+		}
+		n++
+	}
+	return
+}
+
 func (p *ConnPool) reaper() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -261,13 +290,11 @@ func (p *ConnPool) reaper() {
 		if p.closed() {
 			break
 		}
-
-		for {
-			cn := p.freeConns.ShiftStale(p.idleTimeout)
-			if cn == nil {
-				break
-			}
-			_ = p.conns.Remove(cn)
+		n, err := p.ReapStaleConns()
+		if err != nil {
+			Logger.Printf("ReapStaleConns failed: %s", err)
+		} else if n > 0 {
+			Logger.Printf("removed %d stale connections", n)
 		}
 	}
 }

@@ -28,17 +28,19 @@ func (s *connStack) Push(cn *Conn) {
 	s.free <- struct{}{}
 }
 
-func (s *connStack) ShiftStale(timeout time.Duration) *Conn {
+func (s *connStack) ShiftStale(idleTimeout time.Duration) *Conn {
 	select {
 	case <-s.free:
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		if cn := s.cns[0]; cn.IsStale(timeout) {
+		if cn := s.cns[0]; cn.IsStale(idleTimeout) {
 			copy(s.cns, s.cns[1:])
 			s.cns = s.cns[:len(s.cns)-1]
 			return cn
 		}
+
+		s.free <- struct{}{}
 		return nil
 	default:
 		return nil
