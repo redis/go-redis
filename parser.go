@@ -247,6 +247,7 @@ func isNilReply(b []byte) bool {
 
 func readN(cn *pool.Conn, n int) ([]byte, error) {
 	if d := n - cap(cn.Buf); d > 0 {
+		cn.Buf = cn.Buf[:cap(cn.Buf)]
 		cn.Buf = append(cn.Buf, make([]byte, d)...)
 	} else {
 		cn.Buf = cn.Buf[:n]

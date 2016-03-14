@@ -15,10 +15,14 @@ import (
 var _ = Describe("Command", func() {
 	var client *redis.Client
 
-	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
+	connect := func() *redis.Client {
+		return redis.NewClient(&redis.Options{
 			Addr: redisAddr,
 		})
+	}
+
+	BeforeEach(func() {
+		client = connect()
 	})
 
 	AfterEach(func() {
@@ -63,8 +67,13 @@ var _ = Describe("Command", func() {
 		Expect(set.Err()).NotTo(HaveOccurred())
 		Expect(set.Val()).To(Equal("OK"))
 
+		// Reconnect to get new connection.
+		Expect(client.Close()).To(BeNil())
+		client = connect()
+
 		get := client.Get("key")
 		Expect(get.Err()).NotTo(HaveOccurred())
+		Expect(len(get.Val())).To(Equal(len(val)))
 		Expect(get.Val()).To(Equal(val))
 	})
 
