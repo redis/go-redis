@@ -139,6 +139,7 @@ var _ = Describe("Command", func() {
 	Describe("races", func() {
 		var C, N = 10, 1000
 		if testing.Short() {
+			C = 3
 			N = 100
 		}
 

@@ -30,6 +30,7 @@ type Options struct {
 
 	// Sets the deadline for establishing new connections. If reached,
 	// dial will fail with a timeout.
+	// Default is 5 seconds.
 	DialTimeout time.Duration
 	// Sets the deadline for socket reads. If reached, commands will
 	// fail with a timeout instead of blocking.
@@ -43,7 +44,7 @@ type Options struct {
 	PoolSize int
 	// Specifies amount of time client waits for connection if all
 	// connections are busy before returning an error.
-	// Default is 1 seconds.
+	// Default is 1 second.
 	PoolTimeout time.Duration
 	// Specifies amount of time after which client closes idle
 	// connections. Should be less than server's timeout.
