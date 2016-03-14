@@ -45,17 +45,11 @@ func (c *baseClient) conn() (*pool.Conn, bool, error) {
 
 func (c *baseClient) putConn(cn *pool.Conn, err error, allowTimeout bool) bool {
 	if isBadConn(err, allowTimeout) {
-		err = c.connPool.Replace(cn, err)
-		if err != nil {
-			Logger.Printf("pool.Remove failed: %s", err)
-		}
+		_ = c.connPool.Replace(cn, err)
 		return false
 	}
 
-	err = c.connPool.Put(cn)
-	if err != nil {
-		Logger.Printf("pool.Put failed: %s", err)
-	}
+	_ = c.connPool.Put(cn)
 	return true
 }
 
@@ -119,6 +113,10 @@ func (c *baseClient) process(cmd Cmder) {
 
 		return
 	}
+}
+
+func (c *baseClient) closed() bool {
+	return c.connPool.Closed()
 }
 
 // Close closes the client, releasing any open resources.

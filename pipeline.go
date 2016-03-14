@@ -62,7 +62,7 @@ func (pipe *Pipeline) Discard() error {
 	defer pipe.mu.Unlock()
 	pipe.mu.Lock()
 	if pipe.isClosed() {
-		return errClosed
+		return pool.ErrClosed
 	}
 	pipe.cmds = pipe.cmds[:0]
 	return nil
@@ -75,7 +75,7 @@ func (pipe *Pipeline) Discard() error {
 // command if any.
 func (pipe *Pipeline) Exec() (cmds []Cmder, retErr error) {
 	if pipe.isClosed() {
-		return nil, errClosed
+		return nil, pool.ErrClosed
 	}
 
 	defer pipe.mu.Unlock()

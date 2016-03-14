@@ -31,12 +31,14 @@ var _ = Describe("conns reapser", func() {
 			cn := pool.NewConn(&net.TCPConn{})
 			cn.UsedAt = time.Now().Add(-2 * time.Minute)
 			Expect(connPool.Add(cn)).To(BeTrue())
+			Expect(cn.Index()).To(Equal(i))
 		}
 
 		// add fresh connections
 		for i := 0; i < 3; i++ {
 			cn := pool.NewConn(&net.TCPConn{})
 			Expect(connPool.Add(cn)).To(BeTrue())
+			Expect(cn.Index()).To(Equal(3 + i))
 		}
 
 		Expect(connPool.Len()).To(Equal(6))

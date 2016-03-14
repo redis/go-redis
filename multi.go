@@ -109,7 +109,7 @@ func (c *Multi) Discard() error {
 // failed command or nil.
 func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 	if c.closed {
-		return nil, errClosed
+		return nil, pool.ErrClosed
 	}
 
 	c.cmds = []Cmder{NewStatusCmd("MULTI")}

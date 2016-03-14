@@ -24,7 +24,7 @@ func (l *connList) Len() int {
 }
 
 // Reserve reserves place in the list and returns true on success.
-// The caller must add or remove connection if place was reserved.
+// The caller must add connection or cancel reservation if it was reserved.
 func (l *connList) Reserve() bool {
 	len := atomic.AddInt32(&l.len, 1)
 	reserved := len <= l.size
@@ -34,12 +34,16 @@ func (l *connList) Reserve() bool {
 	return reserved
 }
 
+func (l *connList) CancelReservation() {
+	atomic.AddInt32(&l.len, -1)
+}
+
 // Add adds connection to the list. The caller must reserve place first.
 func (l *connList) Add(cn *Conn) {
 	l.mu.Lock()
 	for i, c := range l.cns {
 		if c == nil {
-			cn.idx = i
+			cn.SetIndex(i)
 			l.cns[i] = cn
 			l.mu.Unlock()
 			return
@@ -48,37 +52,34 @@ func (l *connList) Add(cn *Conn) {
 	panic("not reached")
 }
 
-// Remove closes connection and removes it from the list.
-func (l *connList) Remove(cn *Conn) error {
-	atomic.AddInt32(&l.len, -1)
-
-	if cn == nil { // free reserved place
-		return nil
-	}
-
+func (l *connList) Replace(cn *Conn) {
 	l.mu.Lock()
 	if l.cns != nil {
-		l.cns[cn.idx] = nil
-		cn.idx = -1
+		l.cns[cn.idx] = cn
 	}
 	l.mu.Unlock()
+}
 
-	return nil
+// Remove closes connection and removes it from the list.
+func (l *connList) Remove(idx int) {
+	l.mu.Lock()
+	if l.cns != nil {
+		l.cns[idx] = nil
+		l.len -= 1
+	}
+	l.mu.Unlock()
 }
 
 func (l *connList) Close() error {
-	var retErr error
 	l.mu.Lock()
 	for _, c := range l.cns {
 		if c == nil {
 			continue
 		}
-		if err := c.Close(); err != nil && retErr == nil {
-			retErr = err
-		}
+		c.Close()
 	}
 	l.cns = nil
-	atomic.StoreInt32(&l.len, 0)
+	l.len = 0
 	l.mu.Unlock()
-	return retErr
+	return nil
 }

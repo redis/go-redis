@@ -220,13 +220,13 @@ func ExampleClient_Watch() {
 }
 
 func ExamplePubSub() {
-	pubsub, err := client.Subscribe("mychannel")
+	pubsub, err := client.Subscribe("mychannel1")
 	if err != nil {
 		panic(err)
 	}
 	defer pubsub.Close()
 
-	err = client.Publish("mychannel", "hello").Err()
+	err = client.Publish("mychannel1", "hello").Err()
 	if err != nil {
 		panic(err)
 	}
@@ -237,17 +237,17 @@ func ExamplePubSub() {
 	}
 
 	fmt.Println(msg.Channel, msg.Payload)
-	// Output: mychannel hello
+	// Output: mychannel1 hello
 }
 
 func ExamplePubSub_Receive() {
-	pubsub, err := client.Subscribe("mychannel")
+	pubsub, err := client.Subscribe("mychannel2")
 	if err != nil {
 		panic(err)
 	}
 	defer pubsub.Close()
 
-	err = client.Publish("mychannel", "hello").Err()
+	err = client.Publish("mychannel2", "hello").Err()
 	if err != nil {
 		panic(err)
 	}
@@ -269,8 +269,8 @@ func ExamplePubSub_Receive() {
 		}
 	}
 
-	// Output: subscribe mychannel
-	// mychannel hello
+	// Output: subscribe mychannel2
+	// mychannel2 hello
 }
 
 func ExampleScript() {

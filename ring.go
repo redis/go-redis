@@ -149,7 +149,7 @@ func (ring *Ring) getClient(key string) (*Client, error) {
 	ring.mx.RLock()
 
 	if ring.closed {
-		return nil, errClosed
+		return nil, pool.ErrClosed
 	}
 
 	name := ring.hash.Get(hashtag.Key(key))
@@ -277,7 +277,7 @@ func (pipe *RingPipeline) process(cmd Cmder) {
 // Discard resets the pipeline and discards queued commands.
 func (pipe *RingPipeline) Discard() error {
 	if pipe.closed {
-		return errClosed
+		return pool.ErrClosed
 	}
 	pipe.cmds = pipe.cmds[:0]
 	return nil
@@ -287,7 +287,7 @@ func (pipe *RingPipeline) Discard() error {
 // command if any.
 func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
 	if pipe.closed {
-		return nil, errClosed
+		return nil, pool.ErrClosed
 	}
 	if len(pipe.cmds) == 0 {
 		return pipe.cmds, nil

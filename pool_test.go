@@ -2,7 +2,6 @@ package redis_test
 
 import (
 	"errors"
-	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -13,20 +12,6 @@ import (
 
 var _ = Describe("pool", func() {
 	var client *redis.Client
-
-	var perform = func(n int, cb func()) {
-		wg := &sync.WaitGroup{}
-		for i := 0; i < n; i++ {
-			wg.Add(1)
-			go func() {
-				defer GinkgoRecover()
-				defer wg.Done()
-
-				cb()
-			}()
-		}
-		wg.Wait()
-	}
 
 	BeforeEach(func() {
 		client = redis.NewClient(&redis.Options{
@@ -108,12 +93,11 @@ var _ = Describe("pool", func() {
 	It("should remove broken connections", func() {
 		cn, _, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(cn.Close()).NotTo(HaveOccurred())
+		cn.NetConn = &badConn{}
 		Expect(client.Pool().Put(cn)).NotTo(HaveOccurred())
 
 		err = client.Ping().Err()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("use of closed network connection"))
+		Expect(err).To(MatchError("bad connection"))
 
 		val, err := client.Ping().Result()
 		Expect(err).NotTo(HaveOccurred())

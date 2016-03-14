@@ -3,6 +3,7 @@ package pool
 import (
 	"bufio"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
@@ -11,9 +12,9 @@ const defaultBufSize = 4096
 var noDeadline = time.Time{}
 
 type Conn struct {
-	idx int
+	idx int32
 
-	netConn net.Conn
+	NetConn net.Conn
 	Rd      *bufio.Reader
 	Buf     []byte
 
@@ -26,7 +27,7 @@ func NewConn(netConn net.Conn) *Conn {
 	cn := &Conn{
 		idx: -1,
 
-		netConn: netConn,
+		NetConn: netConn,
 		Buf:     make([]byte, defaultBufSize),
 
 		UsedAt: time.Now(),
@@ -35,39 +36,47 @@ func NewConn(netConn net.Conn) *Conn {
 	return cn
 }
 
-func (cn *Conn) IsStale(timeout time.Duration) bool {
-	return timeout > 0 && time.Since(cn.UsedAt) > timeout
+func (cn *Conn) Index() int {
+	return int(atomic.LoadInt32(&cn.idx))
 }
 
-func (cn *Conn) SetNetConn(netConn net.Conn) {
-	cn.netConn = netConn
-	cn.UsedAt = time.Now()
+func (cn *Conn) SetIndex(idx int) {
+	atomic.StoreInt32(&cn.idx, int32(idx))
+}
+
+func (cn *Conn) IsStale(timeout time.Duration) bool {
+	return timeout > 0 && time.Since(cn.UsedAt) > timeout
 }
 
 func (cn *Conn) Read(b []byte) (int, error) {
 	cn.UsedAt = time.Now()
 	if cn.ReadTimeout != 0 {
-		cn.netConn.SetReadDeadline(cn.UsedAt.Add(cn.ReadTimeout))
+		cn.NetConn.SetReadDeadline(cn.UsedAt.Add(cn.ReadTimeout))
 	} else {
-		cn.netConn.SetReadDeadline(noDeadline)
+		cn.NetConn.SetReadDeadline(noDeadline)
 	}
-	return cn.netConn.Read(b)
+	return cn.NetConn.Read(b)
 }
 
 func (cn *Conn) Write(b []byte) (int, error) {
 	cn.UsedAt = time.Now()
 	if cn.WriteTimeout != 0 {
-		cn.netConn.SetWriteDeadline(cn.UsedAt.Add(cn.WriteTimeout))
+		cn.NetConn.SetWriteDeadline(cn.UsedAt.Add(cn.WriteTimeout))
 	} else {
-		cn.netConn.SetWriteDeadline(noDeadline)
+		cn.NetConn.SetWriteDeadline(noDeadline)
 	}
-	return cn.netConn.Write(b)
+	return cn.NetConn.Write(b)
 }
 
 func (cn *Conn) RemoteAddr() net.Addr {
-	return cn.netConn.RemoteAddr()
+	return cn.NetConn.RemoteAddr()
 }
 
-func (cn *Conn) Close() error {
-	return cn.netConn.Close()
+func (cn *Conn) Close() int {
+	idx := cn.Index()
+	if !atomic.CompareAndSwapInt32(&cn.idx, int32(idx), -1) {
+		return -1
+	}
+	_ = cn.NetConn.Close()
+	return idx
 }

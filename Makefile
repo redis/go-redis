@@ -1,6 +1,6 @@
 all: testdeps
-	go test ./... -test.v -test.cpu=1,2,4
-	go test ./... -test.v -test.short -test.race
+	go test ./... -test.cpu=1,2,4
+	go test ./... -test.short -test.race
 
 testdeps: testdata/redis/src/redis-server
 

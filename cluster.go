@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gopkg.in/redis.v3/internal/hashtag"
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 // ClusterClient is a Redis Cluster client representing a pool of zero
@@ -80,7 +81,7 @@ func (c *ClusterClient) Close() error {
 	c.clientsMx.Lock()
 
 	if c.closed {
-		return errClosed
+		return pool.ErrClosed
 	}
 	c.closed = true
 	c.resetClients()
@@ -105,7 +106,7 @@ func (c *ClusterClient) getClient(addr string) (*Client, error) {
 	c.clientsMx.Lock()
 	if c.closed {
 		c.clientsMx.Unlock()
-		return nil, errClosed
+		return nil, pool.ErrClosed
 	}
 
 	client, ok = c.clients[addr]

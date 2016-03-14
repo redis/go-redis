@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,6 +99,20 @@ func TestGinkgoSuite(t *testing.T) {
 
 //------------------------------------------------------------------------------
 
+func perform(n int, cb func()) {
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer GinkgoRecover()
+			defer wg.Done()
+
+			cb()
+		}()
+	}
+	wg.Wait()
+}
+
 func eventually(fn func() error, timeout time.Duration) error {
 	done := make(chan struct{})
 	var exit int32
@@ -138,7 +153,7 @@ func connectTo(port string) (*redis.Client, error) {
 
 	err := eventually(func() error {
 		return client.Ping().Err()
-	}, 10*time.Second)
+	}, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}

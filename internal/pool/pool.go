@@ -14,7 +14,8 @@ import (
 var Logger *log.Logger
 
 var (
-	errClosed      = errors.New("redis: client is closed")
+	ErrClosed      = errors.New("redis: client is closed")
+	errConnClosed  = errors.New("redis: connection is closed")
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
 )
 
@@ -36,8 +37,9 @@ type Pooler interface {
 	Replace(*Conn, error) error
 	Len() int
 	FreeLen() int
-	Close() error
 	Stats() *PoolStats
+	Close() error
+	Closed() bool
 }
 
 type dialer func() (net.Conn, error)
@@ -58,6 +60,8 @@ type ConnPool struct {
 	lastErr atomic.Value
 }
 
+var _ Pooler = (*ConnPool)(nil)
+
 func NewConnPool(dial dialer, poolSize int, poolTimeout, idleTimeout time.Duration) *ConnPool {
 	p := &ConnPool{
 		_dial:       dial,
@@ -75,7 +79,7 @@ func NewConnPool(dial dialer, poolSize int, poolTimeout, idleTimeout time.Durati
 	return p
 }
 
-func (p *ConnPool) closed() bool {
+func (p *ConnPool) Closed() bool {
 	return atomic.LoadInt32(&p._closed) == 1
 }
 
@@ -152,8 +156,8 @@ func (p *ConnPool) newConn() (*Conn, error) {
 
 // Get returns existed connection from the pool or creates a new one.
 func (p *ConnPool) Get() (cn *Conn, isNew bool, err error) {
-	if p.closed() {
-		err = errClosed
+	if p.Closed() {
+		err = ErrClosed
 		return
 	}
 
@@ -171,7 +175,7 @@ func (p *ConnPool) Get() (cn *Conn, isNew bool, err error) {
 
 		cn, err = p.newConn()
 		if err != nil {
-			p.conns.Remove(nil)
+			p.conns.CancelReservation()
 			return
 		}
 		p.conns.Add(cn)
@@ -201,14 +205,20 @@ func (p *ConnPool) Put(cn *Conn) error {
 }
 
 func (p *ConnPool) replace(cn *Conn) (*Conn, error) {
-	_ = cn.Close()
+	idx := cn.Close()
+	if idx == -1 {
+		return nil, errConnClosed
+	}
 
 	netConn, err := p.dial()
 	if err != nil {
-		_ = p.conns.Remove(cn)
+		p.conns.Remove(idx)
 		return nil, err
 	}
-	cn.SetNetConn(netConn)
+
+	cn = NewConn(netConn)
+	cn.SetIndex(idx)
+	p.conns.Replace(cn)
 
 	return cn, nil
 }
@@ -226,9 +236,14 @@ func (p *ConnPool) Replace(cn *Conn, reason error) error {
 }
 
 func (p *ConnPool) Remove(cn *Conn, reason error) error {
+	idx := cn.Close()
+	if idx == -1 {
+		return errConnClosed
+	}
+
 	p.storeLastErr(reason.Error())
-	_ = cn.Close()
-	return p.conns.Remove(cn)
+	p.conns.Remove(idx)
+	return nil
 }
 
 // Len returns total number of connections.
@@ -253,7 +268,7 @@ func (p *ConnPool) Stats() *PoolStats {
 
 func (p *ConnPool) Close() (retErr error) {
 	if !atomic.CompareAndSwapInt32(&p._closed, 0, 1) {
-		return errClosed
+		return ErrClosed
 	}
 	// Wait for app to free connections, but don't close them immediately.
 	for i := 0; i < p.Len(); i++ {
@@ -287,7 +302,7 @@ func (p *ConnPool) reaper() {
 	defer ticker.Stop()
 
 	for _ = range ticker.C {
-		if p.closed() {
+		if p.Closed() {
 			break
 		}
 		n, err := p.ReapStaleConns()
