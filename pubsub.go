@@ -54,6 +54,7 @@ func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
 	if err != nil {
 		return err
 	}
+	c.putConn(cn, err)
 
 	args := make([]interface{}, 1+len(channels))
 	args[0] = redisCmd
@@ -306,6 +307,9 @@ func (c *PubSub) putConn(cn *pool.Conn, err error) {
 }
 
 func (c *PubSub) resubscribe() {
+	if c.base.closed() {
+		return
+	}
 	if len(c.channels) > 0 {
 		if err := c.Subscribe(c.channels...); err != nil {
 			Logger.Printf("Subscribe failed: %s", err)

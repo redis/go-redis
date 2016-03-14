@@ -34,7 +34,7 @@ func (pipe *ClusterPipeline) process(cmd Cmder) {
 // Discard resets the pipeline and discards queued commands.
 func (pipe *ClusterPipeline) Discard() error {
 	if pipe.closed {
-		return errClosed
+		return pool.ErrClosed
 	}
 	pipe.cmds = pipe.cmds[:0]
 	return nil
@@ -42,7 +42,7 @@ func (pipe *ClusterPipeline) Discard() error {
 
 func (pipe *ClusterPipeline) Exec() (cmds []Cmder, retErr error) {
 	if pipe.closed {
-		return nil, errClosed
+		return nil, pool.ErrClosed
 	}
 	if len(pipe.cmds) == 0 {
 		return []Cmder{}, nil

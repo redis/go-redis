@@ -5,11 +5,13 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
 	"gopkg.in/redis.v3"
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 var _ = Describe("Command", func() {
@@ -17,7 +19,8 @@ var _ = Describe("Command", func() {
 
 	connect := func() *redis.Client {
 		return redis.NewClient(&redis.Options{
-			Addr: redisAddr,
+			Addr:        redisAddr,
+			PoolTimeout: time.Minute,
 		})
 	}
 
@@ -62,19 +65,19 @@ var _ = Describe("Command", func() {
 	})
 
 	It("should handle big vals", func() {
-		val := string(bytes.Repeat([]byte{'*'}, 1<<16))
-		set := client.Set("key", val, 0)
-		Expect(set.Err()).NotTo(HaveOccurred())
-		Expect(set.Val()).To(Equal("OK"))
+		bigVal := string(bytes.Repeat([]byte{'*'}, 1<<16))
+
+		err := client.Set("key", bigVal, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
 
 		// Reconnect to get new connection.
 		Expect(client.Close()).To(BeNil())
 		client = connect()
 
-		get := client.Get("key")
-		Expect(get.Err()).NotTo(HaveOccurred())
-		Expect(len(get.Val())).To(Equal(len(val)))
-		Expect(get.Val()).To(Equal(val))
+		got, err := client.Get("key").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(got)).To(Equal(len(bigVal)))
+		Expect(got).To(Equal(bigVal))
 	})
 
 	It("should handle many keys #1", func() {
@@ -136,52 +139,116 @@ var _ = Describe("Command", func() {
 	Describe("races", func() {
 		var C, N = 10, 1000
 		if testing.Short() {
+			C = 3
 			N = 100
 		}
 
 		It("should echo", func() {
-			wg := &sync.WaitGroup{}
-			for i := 0; i < C; i++ {
-				wg.Add(1)
-
-				go func(i int) {
-					defer GinkgoRecover()
-					defer wg.Done()
-
-					for j := 0; j < N; j++ {
-						msg := "echo" + strconv.Itoa(i)
-						echo := client.Echo(msg)
-						Expect(echo.Err()).NotTo(HaveOccurred())
-						Expect(echo.Val()).To(Equal(msg))
-					}
-				}(i)
-			}
-			wg.Wait()
+			perform(C, func() {
+				for i := 0; i < N; i++ {
+					msg := "echo" + strconv.Itoa(i)
+					echo, err := client.Echo(msg).Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(echo).To(Equal(msg))
+				}
+			})
 		})
 
 		It("should incr", func() {
 			key := "TestIncrFromGoroutines"
-			wg := &sync.WaitGroup{}
-			for i := 0; i < C; i++ {
-				wg.Add(1)
 
-				go func() {
-					defer GinkgoRecover()
-					defer wg.Done()
-
-					for j := 0; j < N; j++ {
-						err := client.Incr(key).Err()
-						Expect(err).NotTo(HaveOccurred())
-					}
-				}()
-			}
-			wg.Wait()
+			perform(C, func() {
+				for i := 0; i < N; i++ {
+					err := client.Incr(key).Err()
+					Expect(err).NotTo(HaveOccurred())
+				}
+			})
 
 			val, err := client.Get(key).Int64()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(C * N)))
 		})
 
+		It("should handle big vals", func() {
+			client2 := connect()
+			defer client2.Close()
+
+			bigVal := string(bytes.Repeat([]byte{'*'}, 1<<16))
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			go func() {
+				defer wg.Done()
+				perform(C, func() {
+					for i := 0; i < N; i++ {
+						got, err := client.Get("key").Result()
+						if err == redis.Nil {
+							continue
+						}
+						Expect(got).To(Equal(bigVal))
+					}
+				})
+			}()
+
+			go func() {
+				defer wg.Done()
+				perform(C, func() {
+					for i := 0; i < N; i++ {
+						err := client2.Set("key", bigVal, 0).Err()
+						Expect(err).NotTo(HaveOccurred())
+					}
+				})
+			}()
+
+			wg.Wait()
+		})
+
+		It("should PubSub", func() {
+			connPool := client.Pool()
+			connPool.(*pool.ConnPool).DialLimiter = nil
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			go func() {
+				defer wg.Done()
+				perform(C, func() {
+					for i := 0; i < N; i++ {
+						pubsub, err := client.Subscribe("mychannel")
+						Expect(err).NotTo(HaveOccurred())
+
+						go func() {
+							defer GinkgoRecover()
+
+							time.Sleep(time.Millisecond)
+							err := pubsub.Close()
+							Expect(err).NotTo(HaveOccurred())
+						}()
+
+						_, err = pubsub.ReceiveMessage()
+						Expect(err.Error()).To(ContainSubstring("closed"))
+					}
+				})
+			}()
+
+			go func() {
+				defer wg.Done()
+				perform(C, func() {
+					for i := 0; i < N; i++ {
+						val := "echo" + strconv.Itoa(i)
+						echo, err := client.Echo(val).Result()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(echo).To(Equal(val))
+					}
+				})
+			}()
+
+			wg.Wait()
+
+			Expect(connPool.Len()).To(Equal(connPool.FreeLen()))
+			Expect(connPool.Len()).To(BeNumerically("<=", 10))
+		})
 	})
 
 })

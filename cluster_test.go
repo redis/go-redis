@@ -139,7 +139,7 @@ func startCluster(scenario *clusterScenario) error {
 				return fmt.Errorf("cluster did not reach consistent state (%v)", res)
 			}
 			return nil
-		}, 10*time.Second)
+		}, 30*time.Second)
 		if err != nil {
 			return err
 		}

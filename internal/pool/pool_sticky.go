@@ -14,6 +14,8 @@ type StickyConnPool struct {
 	mx     sync.Mutex
 }
 
+var _ Pooler = (*StickyConnPool)(nil)
+
 func NewStickyConnPool(pool *ConnPool, reusable bool) *StickyConnPool {
 	return &StickyConnPool{
 		pool:     pool,
@@ -33,7 +35,7 @@ func (p *StickyConnPool) Get() (cn *Conn, isNew bool, err error) {
 	p.mx.Lock()
 
 	if p.closed {
-		err = errClosed
+		err = ErrClosed
 		return
 	}
 	if p.cn != nil {
@@ -59,7 +61,7 @@ func (p *StickyConnPool) Put(cn *Conn) error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 	if p.closed {
-		return errClosed
+		return ErrClosed
 	}
 	if p.cn != cn {
 		panic("p.cn != cn")
@@ -77,7 +79,7 @@ func (p *StickyConnPool) Replace(cn *Conn, reason error) error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 	if p.closed {
-		return errClosed
+		return nil
 	}
 	if p.cn == nil {
 		panic("p.cn == nil")
@@ -112,7 +114,7 @@ func (p *StickyConnPool) Close() error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 	if p.closed {
-		return errClosed
+		return ErrClosed
 	}
 	p.closed = true
 	var err error
@@ -125,4 +127,11 @@ func (p *StickyConnPool) Close() error {
 		}
 	}
 	return err
+}
+
+func (p *StickyConnPool) Closed() bool {
+	p.mx.Lock()
+	closed := p.closed
+	p.mx.Unlock()
+	return closed
 }
