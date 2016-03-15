@@ -69,9 +69,8 @@ var _ = Describe("conns reapser", func() {
 			cn := connPool.First()
 			Expect(cn).To(BeNil())
 
-			cn, isNew, err := connPool.Get()
+			cn, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(isNew).To(BeTrue())
 			Expect(cn).NotTo(BeNil())
 
 			Expect(connPool.Len()).To(Equal(4))

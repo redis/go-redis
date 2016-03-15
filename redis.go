@@ -32,15 +32,18 @@ func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.opt.Addr, c.opt.DB)
 }
 
-func (c *baseClient) conn() (*pool.Conn, bool, error) {
-	cn, isNew, err := c.connPool.Get()
-	if err == nil && isNew {
-		err = c.initConn(cn)
-		if err != nil {
-			c.putConn(cn, err, false)
+func (c *baseClient) conn() (*pool.Conn, error) {
+	cn, err := c.connPool.Get()
+	if err != nil {
+		return nil, err
+	}
+	if !cn.Inited {
+		if err := c.initConn(cn); err != nil {
+			_ = c.connPool.Replace(cn, err)
+			return nil, err
 		}
 	}
-	return cn, isNew, err
+	return cn, err
 }
 
 func (c *baseClient) putConn(cn *pool.Conn, err error, allowTimeout bool) bool {
@@ -54,6 +57,8 @@ func (c *baseClient) putConn(cn *pool.Conn, err error, allowTimeout bool) bool {
 }
 
 func (c *baseClient) initConn(cn *pool.Conn) error {
+	cn.Inited = true
+
 	if c.opt.Password == "" && c.opt.DB == 0 {
 		return nil
 	}
@@ -82,7 +87,7 @@ func (c *baseClient) process(cmd Cmder) {
 			cmd.reset()
 		}
 
-		cn, _, err := c.conn()
+		cn, err := c.conn()
 		if err != nil {
 			cmd.setErr(err)
 			return

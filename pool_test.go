@@ -91,7 +91,7 @@ var _ = Describe("pool", func() {
 	})
 
 	It("should remove broken connections", func() {
-		cn, _, err := client.Pool().Get()
+		cn, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		cn.NetConn = &badConn{}
 		Expect(client.Pool().Put(cn)).NotTo(HaveOccurred())
@@ -136,12 +136,12 @@ var _ = Describe("pool", func() {
 		pool := client.Pool()
 
 		// Reserve one connection.
-		cn, _, err := pool.Get()
+		cn, err := pool.Get()
 		Expect(err).NotTo(HaveOccurred())
 
 		// Reserve the rest of connections.
 		for i := 0; i < 9; i++ {
-			_, _, err := pool.Get()
+			_, err := pool.Get()
 			Expect(err).NotTo(HaveOccurred())
 		}
 
@@ -181,7 +181,7 @@ var _ = Describe("pool", func() {
 
 		var rateErr error
 		for i := 0; i < 1000; i++ {
-			cn, _, err := pool.Get()
+			cn, err := pool.Get()
 			if err != nil {
 				rateErr = err
 				break

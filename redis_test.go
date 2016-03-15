@@ -157,7 +157,7 @@ var _ = Describe("Client", func() {
 		})
 
 		// Put bad connection in the pool.
-		cn, _, err := client.Pool().Get()
+		cn, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 
 		cn.NetConn = &badConn{}
@@ -169,7 +169,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should maintain conn.UsedAt", func() {
-		cn, _, err := client.Pool().Get()
+		cn, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn.UsedAt).NotTo(BeZero())
 		createdAt := cn.UsedAt

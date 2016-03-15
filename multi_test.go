@@ -142,7 +142,7 @@ var _ = Describe("Multi", func() {
 
 	It("should recover from bad connection", func() {
 		// Put bad connection in the pool.
-		cn, _, err := client.Pool().Get()
+		cn, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 
 		cn.NetConn = &badConn{}
@@ -169,7 +169,7 @@ var _ = Describe("Multi", func() {
 
 	It("should recover from bad connection when there are no commands", func() {
 		// Put bad connection in the pool.
-		cn, _, err := client.Pool().Get()
+		cn, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 
 		cn.NetConn = &badConn{}

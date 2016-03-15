@@ -32,7 +32,7 @@ type PoolStats struct {
 
 type Pooler interface {
 	First() *Conn
-	Get() (*Conn, bool, error)
+	Get() (*Conn, error)
 	Put(*Conn) error
 	Replace(*Conn, error) error
 	Len() int
@@ -146,7 +146,7 @@ func (p *ConnPool) dial() (net.Conn, error) {
 	return cn, nil
 }
 
-func (p *ConnPool) newConn() (*Conn, error) {
+func (p *ConnPool) NewConn() (*Conn, error) {
 	netConn, err := p.dial()
 	if err != nil {
 		return nil, err
@@ -155,42 +155,38 @@ func (p *ConnPool) newConn() (*Conn, error) {
 }
 
 // Get returns existed connection from the pool or creates a new one.
-func (p *ConnPool) Get() (cn *Conn, isNew bool, err error) {
+func (p *ConnPool) Get() (*Conn, error) {
 	if p.Closed() {
-		err = ErrClosed
-		return
+		return nil, ErrClosed
 	}
 
 	atomic.AddUint32(&p.stats.Requests, 1)
 
 	// Fetch first non-idle connection, if available.
-	if cn = p.First(); cn != nil {
+	if cn := p.First(); cn != nil {
 		atomic.AddUint32(&p.stats.Hits, 1)
-		return
+		return cn, nil
 	}
 
 	// Try to create a new one.
 	if p.conns.Reserve() {
-		isNew = true
-
-		cn, err = p.newConn()
+		cn, err := p.NewConn()
 		if err != nil {
 			p.conns.CancelReservation()
-			return
+			return nil, err
 		}
 		p.conns.Add(cn)
-		return
+		return cn, nil
 	}
 
 	// Otherwise, wait for the available connection.
 	atomic.AddUint32(&p.stats.Waits, 1)
-	if cn = p.wait(); cn != nil {
-		return
+	if cn := p.wait(); cn != nil {
+		return cn, nil
 	}
 
 	atomic.AddUint32(&p.stats.Timeouts, 1)
-	err = ErrPoolTimeout
-	return
+	return nil, ErrPoolTimeout
 }
 
 func (p *ConnPool) Put(cn *Conn) error {
@@ -205,7 +201,9 @@ func (p *ConnPool) Put(cn *Conn) error {
 }
 
 func (p *ConnPool) replace(cn *Conn) (*Conn, error) {
-	idx := cn.Close()
+	_ = cn.Close()
+
+	idx := cn.SetIndex(-1)
 	if idx == -1 {
 		return nil, errConnClosed
 	}
@@ -236,7 +234,9 @@ func (p *ConnPool) Replace(cn *Conn, reason error) error {
 }
 
 func (p *ConnPool) Remove(cn *Conn, reason error) error {
-	idx := cn.Close()
+	_ = cn.Close()
+
+	idx := cn.SetIndex(-1)
 	if idx == -1 {
 		return errConnClosed
 	}
