@@ -20,7 +20,7 @@ func benchmarkPoolGetPut(b *testing.B, poolSize int) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			conn, _, err := pool.Get()
+			conn, err := pool.Get()
 			if err != nil {
 				b.Fatalf("no error expected on pool.Get but received: %s", err.Error())
 			}
@@ -56,7 +56,7 @@ func benchmarkPoolGetReplace(b *testing.B, poolSize int) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			conn, _, err := pool.Get()
+			conn, err := pool.Get()
 			if err != nil {
 				b.Fatalf("no error expected on pool.Get but received: %s", err.Error())
 			}

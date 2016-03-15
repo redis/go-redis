@@ -128,7 +128,7 @@ func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 	// Strip MULTI and EXEC commands.
 	retCmds := cmds[1 : len(cmds)-1]
 
-	cn, _, err := c.base.conn()
+	cn, err := c.base.conn()
 	if err != nil {
 		setCmdsErr(retCmds, err)
 		return retCmds, err

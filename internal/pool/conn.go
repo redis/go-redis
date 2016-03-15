@@ -18,7 +18,9 @@ type Conn struct {
 	Rd      *bufio.Reader
 	Buf     []byte
 
-	UsedAt       time.Time
+	Inited bool
+	UsedAt time.Time
+
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 }
@@ -40,8 +42,12 @@ func (cn *Conn) Index() int {
 	return int(atomic.LoadInt32(&cn.idx))
 }
 
-func (cn *Conn) SetIndex(idx int) {
-	atomic.StoreInt32(&cn.idx, int32(idx))
+func (cn *Conn) SetIndex(newIdx int) int {
+	oldIdx := cn.Index()
+	if !atomic.CompareAndSwapInt32(&cn.idx, int32(oldIdx), int32(newIdx)) {
+		return -1
+	}
+	return oldIdx
 }
 
 func (cn *Conn) IsStale(timeout time.Duration) bool {
@@ -72,11 +78,6 @@ func (cn *Conn) RemoteAddr() net.Addr {
 	return cn.NetConn.RemoteAddr()
 }
 
-func (cn *Conn) Close() int {
-	idx := cn.Index()
-	if !atomic.CompareAndSwapInt32(&cn.idx, int32(idx), -1) {
-		return -1
-	}
-	_ = cn.NetConn.Close()
-	return idx
+func (cn *Conn) Close() error {
+	return cn.NetConn.Close()
 }

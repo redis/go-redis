@@ -50,7 +50,7 @@ func (c *Client) PSubscribe(channels ...string) (*PubSub, error) {
 }
 
 func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
-	cn, _, err := c.base.conn()
+	cn, err := c.base.conn()
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ func (c *PubSub) Close() error {
 }
 
 func (c *PubSub) Ping(payload string) error {
-	cn, _, err := c.base.conn()
+	cn, err := c.base.conn()
 	if err != nil {
 		return err
 	}
@@ -226,7 +226,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 		c.resubscribe()
 	}
 
-	cn, _, err := c.base.conn()
+	cn, err := c.base.conn()
 	if err != nil {
 		return nil, err
 	}

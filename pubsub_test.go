@@ -289,7 +289,7 @@ var _ = Describe("PubSub", func() {
 	})
 
 	expectReceiveMessageOnError := func(pubsub *redis.PubSub) {
-		cn1, _, err := pubsub.Pool().Get()
+		cn1, err := pubsub.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		cn1.NetConn = &badConn{
 			readErr:  io.EOF,

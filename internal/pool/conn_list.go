@@ -43,7 +43,7 @@ func (l *connList) Add(cn *Conn) {
 	l.mu.Lock()
 	for i, c := range l.cns {
 		if c == nil {
-			cn.SetIndex(i)
+			cn.idx = int32(i)
 			l.cns[i] = cn
 			l.mu.Unlock()
 			return
@@ -76,6 +76,7 @@ func (l *connList) Close() error {
 		if c == nil {
 			continue
 		}
+		c.idx = -1
 		c.Close()
 	}
 	l.cns = nil

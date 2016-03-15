@@ -69,7 +69,7 @@ func (pipe *ClusterPipeline) Exec() (cmds []Cmder, retErr error) {
 				continue
 			}
 
-			cn, _, err := client.conn()
+			cn, err := client.conn()
 			if err != nil {
 				setCmdsErr(cmds, err)
 				retErr = err
