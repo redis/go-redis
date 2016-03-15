@@ -254,9 +254,9 @@ func ExamplePubSub_Receive() {
 	}
 	fmt.Println(n, "clients received message")
 
-	for {
+	for i := 0; i < 2; i++ {
 		// ReceiveTimeout is a low level API. Use ReceiveMessage instead.
-		msgi, err := pubsub.ReceiveTimeout(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(5 * time.Second)
 		if err != nil {
 			break
 		}
