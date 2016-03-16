@@ -206,7 +206,7 @@ func (d *sentinelFailover) MasterAddr() (string, error) {
 func (d *sentinelFailover) setSentinel(sentinel *sentinelClient) {
 	d.discoverSentinels(sentinel)
 	d.sentinel = sentinel
-	go d.listen()
+	go d.listen(sentinel)
 }
 
 func (d *sentinelFailover) resetSentinel() error {
@@ -278,11 +278,11 @@ func (d *sentinelFailover) closeOldConns(newMaster string) {
 	}
 }
 
-func (d *sentinelFailover) listen() {
+func (d *sentinelFailover) listen(sentinel *sentinelClient) {
 	var pubsub *PubSub
 	for {
 		if pubsub == nil {
-			pubsub = d.sentinel.PubSub()
+			pubsub = sentinel.PubSub()
 			if err := pubsub.Subscribe("+switch-master"); err != nil {
 				Logger.Printf("sentinel: Subscribe failed: %s", err)
 				d.resetSentinel()

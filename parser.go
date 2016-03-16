@@ -3,7 +3,6 @@ package redis
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 
@@ -245,17 +244,6 @@ func isNilReply(b []byte) bool {
 		b[1] == '-' && b[2] == '1'
 }
 
-func readN(cn *pool.Conn, n int) ([]byte, error) {
-	if d := n - cap(cn.Buf); d > 0 {
-		cn.Buf = cn.Buf[:cap(cn.Buf)]
-		cn.Buf = append(cn.Buf, make([]byte, d)...)
-	} else {
-		cn.Buf = cn.Buf[:n]
-	}
-	_, err := io.ReadFull(cn.Rd, cn.Buf)
-	return cn.Buf, err
-}
-
 //------------------------------------------------------------------------------
 
 func parseErrorReply(cn *pool.Conn, line []byte) error {
@@ -299,7 +287,7 @@ func parseBytesReply(cn *pool.Conn, line []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	b, err := readN(cn, replyLen+2)
+	b, err := cn.ReadN(replyLen + 2)
 	if err != nil {
 		return nil, err
 	}

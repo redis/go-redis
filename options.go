@@ -60,12 +60,12 @@ func (opt *Options) getNetwork() string {
 }
 
 func (opt *Options) getDialer() func() (net.Conn, error) {
-	if opt.Dialer == nil {
-		opt.Dialer = func() (net.Conn, error) {
-			return net.DialTimeout(opt.getNetwork(), opt.Addr, opt.getDialTimeout())
-		}
+	if opt.Dialer != nil {
+		return opt.Dialer
 	}
-	return opt.Dialer
+	return func() (net.Conn, error) {
+		return net.DialTimeout(opt.getNetwork(), opt.Addr, opt.getDialTimeout())
+	}
 }
 
 func (opt *Options) getPoolSize() int {

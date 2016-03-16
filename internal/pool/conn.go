@@ -2,6 +2,7 @@ package pool
 
 import (
 	"bufio"
+	"io"
 	"net"
 	"sync/atomic"
 	"time"
@@ -76,6 +77,17 @@ func (cn *Conn) Write(b []byte) (int, error) {
 
 func (cn *Conn) RemoteAddr() net.Addr {
 	return cn.NetConn.RemoteAddr()
+}
+
+func (cn *Conn) ReadN(n int) ([]byte, error) {
+	if d := n - cap(cn.Buf); d > 0 {
+		cn.Buf = cn.Buf[:cap(cn.Buf)]
+		cn.Buf = append(cn.Buf, make([]byte, d)...)
+	} else {
+		cn.Buf = cn.Buf[:n]
+	}
+	_, err := io.ReadFull(cn.Rd, cn.Buf)
+	return cn.Buf, err
 }
 
 func (cn *Conn) Close() error {

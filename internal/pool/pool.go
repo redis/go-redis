@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"sync/atomic"
 	"time"
 
 	"gopkg.in/bsm/ratelimit.v1"
 )
 
-var Logger *log.Logger
+var Logger = log.New(os.Stderr, "pg: ", log.LstdFlags)
 
 var (
 	ErrClosed      = errors.New("redis: client is closed")
@@ -47,6 +48,7 @@ type dialer func() (net.Conn, error)
 type ConnPool struct {
 	_dial       dialer
 	DialLimiter *ratelimit.RateLimiter
+	OnClose     func(*Conn) error
 
 	poolTimeout time.Duration
 	idleTimeout time.Duration
@@ -74,17 +76,9 @@ func NewConnPool(dial dialer, poolSize int, poolTimeout, idleTimeout time.Durati
 		freeConns: newConnStack(poolSize),
 	}
 	if idleTimeout > 0 {
-		go p.reaper()
+		go p.reaper(getIdleCheckFrequency())
 	}
 	return p
-}
-
-func (p *ConnPool) Closed() bool {
-	return atomic.LoadInt32(&p._closed) == 1
-}
-
-func (p *ConnPool) isIdle(cn *Conn) bool {
-	return p.idleTimeout > 0 && time.Since(cn.UsedAt) > p.idleTimeout
 }
 
 func (p *ConnPool) Add(cn *Conn) bool {
@@ -266,21 +260,41 @@ func (p *ConnPool) Stats() *PoolStats {
 	return &stats
 }
 
+func (p *ConnPool) Closed() bool {
+	return atomic.LoadInt32(&p._closed) == 1
+}
+
 func (p *ConnPool) Close() (retErr error) {
 	if !atomic.CompareAndSwapInt32(&p._closed, 0, 1) {
 		return ErrClosed
 	}
+
 	// Wait for app to free connections, but don't close them immediately.
 	for i := 0; i < p.Len(); i++ {
 		if cn := p.wait(); cn == nil {
 			break
 		}
 	}
+
 	// Close all connections.
-	if err := p.conns.Close(); err != nil {
-		retErr = err
+	cns := p.conns.Reset()
+	for _, cn := range cns {
+		if cn == nil {
+			continue
+		}
+		if err := p.closeConn(cn); err != nil && retErr == nil {
+			retErr = err
+		}
 	}
+
 	return retErr
+}
+
+func (p *ConnPool) closeConn(cn *Conn) error {
+	if p.OnClose != nil {
+		_ = p.OnClose(cn)
+	}
+	return cn.Close()
 }
 
 func (p *ConnPool) ReapStaleConns() (n int, err error) {
@@ -297,8 +311,8 @@ func (p *ConnPool) ReapStaleConns() (n int, err error) {
 	return
 }
 
-func (p *ConnPool) reaper() {
-	ticker := time.NewTicker(time.Minute)
+func (p *ConnPool) reaper(frequency time.Duration) {
+	ticker := time.NewTicker(frequency)
 	defer ticker.Stop()
 
 	for _ = range ticker.C {
@@ -323,4 +337,20 @@ func (p *ConnPool) loadLastErr() string {
 		return v.(string)
 	}
 	return ""
+}
+
+//------------------------------------------------------------------------------
+
+var idleCheckFrequency atomic.Value
+
+func SetIdleCheckFrequency(d time.Duration) {
+	idleCheckFrequency.Store(d)
+}
+
+func getIdleCheckFrequency() time.Duration {
+	v := idleCheckFrequency.Load()
+	if v == nil {
+		return time.Minute
+	}
+	return v.(time.Duration)
 }

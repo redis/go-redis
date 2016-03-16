@@ -1,8 +1,8 @@
 package redis_test
 
 import (
+	"bytes"
 	"net"
-	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -14,9 +14,8 @@ var _ = Describe("Client", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr: redisAddr,
-		})
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDb().Err()).To(BeNil())
 	})
 
 	AfterEach(func() {
@@ -24,7 +23,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should Stringer", func() {
-		Expect(client.String()).To(Equal("Redis<:6380 db:0>"))
+		Expect(client.String()).To(Equal("Redis<:6380 db:15>"))
 	})
 
 	It("should ping", func() {
@@ -39,6 +38,7 @@ var _ = Describe("Client", func() {
 
 	It("should support custom dialers", func() {
 		custom := redis.NewClient(&redis.Options{
+			Addr: ":1234",
 			Dialer: func() (net.Conn, error) {
 				return net.Dial("tcp", redisAddr)
 			},
@@ -107,45 +107,30 @@ var _ = Describe("Client", func() {
 		Expect(pipeline.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should support idle-timeouts", func() {
-		idle := redis.NewClient(&redis.Options{
-			Addr:        redisAddr,
-			IdleTimeout: 100 * time.Microsecond,
-		})
-		defer idle.Close()
-
-		Expect(idle.Ping().Err()).NotTo(HaveOccurred())
-		time.Sleep(time.Millisecond)
-		Expect(idle.Ping().Err()).NotTo(HaveOccurred())
-	})
-
-	It("should support DB selection", func() {
-		db1 := redis.NewClient(&redis.Options{
+	It("should select DB", func() {
+		db2 := redis.NewClient(&redis.Options{
 			Addr: redisAddr,
-			DB:   1,
+			DB:   2,
 		})
-		defer db1.Close()
+		Expect(db2.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(db2.Get("db").Err()).To(Equal(redis.Nil))
+		Expect(db2.Set("db", 2, 0).Err()).NotTo(HaveOccurred())
 
-		Expect(db1.Get("key").Err()).To(Equal(redis.Nil))
-		Expect(db1.Set("key", "value", 0).Err()).NotTo(HaveOccurred())
+		n, err := db2.Get("db").Int64()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(2)))
 
-		Expect(client.Get("key").Err()).To(Equal(redis.Nil))
-		Expect(db1.Get("key").Val()).To(Equal("value"))
-		Expect(db1.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(client.Get("db").Err()).To(Equal(redis.Nil))
+
+		Expect(db2.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(db2.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should support DB selection with read timeout (issue #135)", func() {
-		for i := 0; i < 100; i++ {
-			db1 := redis.NewClient(&redis.Options{
-				Addr:        redisAddr,
-				DB:          1,
-				ReadTimeout: time.Nanosecond,
-			})
-
-			err := db1.Ping().Err()
-			Expect(err).To(HaveOccurred())
-			Expect(err.(net.Error).Timeout()).To(BeTrue())
-		}
+	It("should process custom commands", func() {
+		cmd := redis.NewCmd("PING")
+		client.Process(cmd)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+		Expect(cmd.Val()).To(Equal("PONG"))
 	})
 
 	It("should retry command on network error", func() {
@@ -168,7 +153,7 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should maintain conn.UsedAt", func() {
+	It("should update conn.UsedAt on read/write", func() {
 		cn, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn.UsedAt).NotTo(BeZero())
@@ -185,4 +170,31 @@ var _ = Describe("Client", func() {
 		Expect(cn).NotTo(BeNil())
 		Expect(cn.UsedAt.After(createdAt)).To(BeTrue())
 	})
+
+	It("should escape special chars", func() {
+		set := client.Set("key", "hello1\r\nhello2\r\n", 0)
+		Expect(set.Err()).NotTo(HaveOccurred())
+		Expect(set.Val()).To(Equal("OK"))
+
+		get := client.Get("key")
+		Expect(get.Err()).NotTo(HaveOccurred())
+		Expect(get.Val()).To(Equal("hello1\r\nhello2\r\n"))
+	})
+
+	It("should handle big vals", func() {
+		bigVal := string(bytes.Repeat([]byte{'*'}, 1<<17)) // 128kb
+
+		err := client.Set("key", bigVal, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Reconnect to get new connection.
+		Expect(client.Close()).To(BeNil())
+		client = redis.NewClient(redisOptions())
+
+		got, err := client.Get("key").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(got)).To(Equal(len(bigVal)))
+		Expect(got).To(Equal(bigVal))
+	})
+
 })
