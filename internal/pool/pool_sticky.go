@@ -67,13 +67,13 @@ func (p *StickyConnPool) Put(cn *Conn) error {
 	return nil
 }
 
-func (p *StickyConnPool) replace(reason error) error {
-	err := p.pool.Replace(p.cn, reason)
+func (p *StickyConnPool) remove(reason error) error {
+	err := p.pool.Remove(p.cn, reason)
 	p.cn = nil
 	return err
 }
 
-func (p *StickyConnPool) Replace(cn *Conn, reason error) error {
+func (p *StickyConnPool) Remove(cn *Conn, reason error) error {
 	defer p.mx.Unlock()
 	p.mx.Lock()
 	if p.closed {
@@ -85,7 +85,7 @@ func (p *StickyConnPool) Replace(cn *Conn, reason error) error {
 	if cn != nil && p.cn != cn {
 		panic("p.cn != cn")
 	}
-	return p.replace(reason)
+	return p.remove(reason)
 }
 
 func (p *StickyConnPool) Len() int {
@@ -121,7 +121,7 @@ func (p *StickyConnPool) Close() error {
 			err = p.put()
 		} else {
 			reason := errors.New("redis: sticky not reusable connection")
-			err = p.replace(reason)
+			err = p.remove(reason)
 		}
 	}
 	return err

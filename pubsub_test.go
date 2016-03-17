@@ -68,7 +68,7 @@ var _ = Describe("PubSub", func() {
 			Expect(subscr.Count).To(Equal(0))
 		}
 
-		stats := client.Pool().Stats()
+		stats := client.PoolStats()
 		Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(2)))
 	})
 
@@ -195,7 +195,7 @@ var _ = Describe("PubSub", func() {
 			Expect(subscr.Count).To(Equal(0))
 		}
 
-		stats := client.Pool().Stats()
+		stats := client.PoolStats()
 		Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(2)))
 	})
 
@@ -256,6 +256,9 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should ReceiveMessage after timeout", func() {
+		timeout := time.Second
+		redis.SetReceiveMessageTimeout(timeout)
+
 		pubsub, err := client.Subscribe("mychannel")
 		Expect(err).NotTo(HaveOccurred())
 		defer pubsub.Close()
@@ -267,7 +270,7 @@ var _ = Describe("PubSub", func() {
 				done <- true
 			}()
 
-			time.Sleep(5*time.Second + 100*time.Millisecond)
+			time.Sleep(timeout + 100*time.Millisecond)
 			n, err := client.Publish("mychannel", "hello").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(1)))
@@ -280,8 +283,9 @@ var _ = Describe("PubSub", func() {
 
 		Eventually(done).Should(Receive())
 
-		stats := client.Pool().Stats()
-		Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(2)))
+		stats := client.PoolStats()
+		Expect(stats.Requests).To(Equal(uint32(3)))
+		Expect(stats.Hits).To(Equal(uint32(1)))
 	})
 
 	expectReceiveMessageOnError := func(pubsub *redis.PubSub) {
@@ -311,8 +315,9 @@ var _ = Describe("PubSub", func() {
 
 		Eventually(done).Should(Receive())
 
-		stats := client.Pool().Stats()
-		Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(2)))
+		stats := client.PoolStats()
+		Expect(stats.Requests).To(Equal(uint32(4)))
+		Expect(stats.Hits).To(Equal(uint32(1)))
 	}
 
 	It("Subscribe should reconnect on ReceiveMessage error", func() {

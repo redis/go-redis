@@ -27,7 +27,7 @@ func (p *SingleConnPool) Put(cn *Conn) error {
 	return nil
 }
 
-func (p *SingleConnPool) Replace(cn *Conn, _ error) error {
+func (p *SingleConnPool) Remove(cn *Conn, _ error) error {
 	if p.cn != cn {
 		panic("p.cn != cn")
 	}

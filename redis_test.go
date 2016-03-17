@@ -166,7 +166,8 @@ var _ = Describe("Client", func() {
 		err = client.Ping().Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		cn = client.Pool().First()
+		cn, err = client.Pool().Get()
+		Expect(err).NotTo(HaveOccurred())
 		Expect(cn).NotTo(BeNil())
 		Expect(cn.UsedAt.After(createdAt)).To(BeTrue())
 	})

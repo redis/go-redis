@@ -17,16 +17,17 @@ import (
 
 var _ = Describe("races", func() {
 	var client *redis.Client
-
-	var C, N = 10, 1000
-	if testing.Short() {
-		C = 4
-		N = 100
-	}
+	var C, N int
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDb().Err()).To(BeNil())
+
+		C, N = 10, 1000
+		if testing.Short() {
+			C = 4
+			N = 100
+		}
 	})
 
 	AfterEach(func() {
@@ -123,16 +124,13 @@ var _ = Describe("races", func() {
 	})
 
 	It("should handle big vals in Set", func() {
+		C, N = 4, 100
 		bigVal := string(bytes.Repeat([]byte{'*'}, 1<<17)) // 128kb
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
 				err := client.Set("key", bigVal, 0).Err()
 				Expect(err).NotTo(HaveOccurred())
-
-				got, err := client.Get("key").Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(got).To(Equal(bigVal))
 			}
 		})
 	})

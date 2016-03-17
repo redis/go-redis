@@ -32,9 +32,10 @@ type RingOptions struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
-	PoolSize    int
-	PoolTimeout time.Duration
-	IdleTimeout time.Duration
+	PoolSize           int
+	PoolTimeout        time.Duration
+	IdleTimeout        time.Duration
+	IdleCheckFrequency time.Duration
 }
 
 func (opt *RingOptions) clientOptions() *Options {
@@ -46,9 +47,10 @@ func (opt *RingOptions) clientOptions() *Options {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolSize:    opt.PoolSize,
-		PoolTimeout: opt.PoolTimeout,
-		IdleTimeout: opt.IdleTimeout,
+		PoolSize:           opt.PoolSize,
+		PoolTimeout:        opt.PoolTimeout,
+		IdleTimeout:        opt.IdleTimeout,
+		IdleCheckFrequency: opt.IdleCheckFrequency,
 	}
 }
 

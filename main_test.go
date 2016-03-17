@@ -15,7 +15,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"gopkg.in/redis.v3"
-	"gopkg.in/redis.v3/internal/pool"
 )
 
 const (
@@ -52,8 +51,6 @@ var cluster = &clusterScenario{
 
 var _ = BeforeSuite(func() {
 	var err error
-
-	pool.SetIdleCheckFrequency(time.Second) // be aggressive in tests
 
 	redisMain, err = startRedis(redisPort)
 	Expect(err).NotTo(HaveOccurred())
@@ -104,27 +101,30 @@ func TestGinkgoSuite(t *testing.T) {
 
 func redisOptions() *redis.Options {
 	return &redis.Options{
-		Addr:         redisAddr,
-		DB:           15,
-		DialTimeout:  10 * time.Second,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		PoolSize:     10,
-		PoolTimeout:  30 * time.Second,
-		IdleTimeout:  time.Second, // be aggressive in tests
+		Addr:               redisAddr,
+		DB:                 15,
+		DialTimeout:        10 * time.Second,
+		ReadTimeout:        30 * time.Second,
+		WriteTimeout:       30 * time.Second,
+		PoolSize:           10,
+		PoolTimeout:        30 * time.Second,
+		IdleTimeout:        time.Second,
+		IdleCheckFrequency: time.Second,
 	}
 }
 
-func perform(n int, cb func(int)) {
+func perform(n int, cbs ...func(int)) {
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer GinkgoRecover()
-			defer wg.Done()
+	for _, cb := range cbs {
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(cb func(int), i int) {
+				defer GinkgoRecover()
+				defer wg.Done()
 
-			cb(i)
-		}(i)
+				cb(i)
+			}(cb, i)
+		}
 	}
 	wg.Wait()
 }

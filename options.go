@@ -50,6 +50,9 @@ type Options struct {
 	// connections. Should be less than server's timeout.
 	// Default is to not close idle connections.
 	IdleTimeout time.Duration
+	// The frequency of idle checks.
+	// Default is 1 minute.
+	IdleCheckFrequency time.Duration
 }
 
 func (opt *Options) getNetwork() string {
@@ -93,9 +96,21 @@ func (opt *Options) getIdleTimeout() time.Duration {
 	return opt.IdleTimeout
 }
 
+func (opt *Options) getIdleCheckFrequency() time.Duration {
+	if opt.IdleCheckFrequency == 0 {
+		return time.Minute
+	}
+	return opt.IdleCheckFrequency
+}
+
 func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(
-		opt.getDialer(), opt.getPoolSize(), opt.getPoolTimeout(), opt.getIdleTimeout())
+		opt.getDialer(),
+		opt.getPoolSize(),
+		opt.getPoolTimeout(),
+		opt.getIdleTimeout(),
+		opt.getIdleCheckFrequency(),
+	)
 }
 
 // PoolStats contains pool state information and accumulated stats.

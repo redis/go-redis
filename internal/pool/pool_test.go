@@ -16,8 +16,8 @@ var _ = Describe("ConnPool", func() {
 	var connPool *pool.ConnPool
 
 	BeforeEach(func() {
-		pool.SetIdleCheckFrequency(time.Second)
-		connPool = pool.NewConnPool(dummyDialer, 10, time.Hour, time.Second)
+		connPool = pool.NewConnPool(
+			dummyDialer, 10, time.Hour, time.Millisecond, time.Millisecond)
 	})
 
 	AfterEach(func() {
@@ -33,7 +33,7 @@ var _ = Describe("ConnPool", func() {
 				break
 			}
 
-			_ = connPool.Replace(cn, errors.New("test"))
+			_ = connPool.Remove(cn, errors.New("test"))
 		}
 
 		Expect(rateErr).To(MatchError(`redis: you open connections too fast (last_error="test")`))
@@ -75,7 +75,7 @@ var _ = Describe("ConnPool", func() {
 			// ok
 		}
 
-		err = connPool.Replace(cn, errors.New("test"))
+		err = connPool.Remove(cn, errors.New("test"))
 		Expect(err).NotTo(HaveOccurred())
 
 		// Check that Ping is unblocked.
@@ -93,26 +93,33 @@ var _ = Describe("ConnPool", func() {
 	})
 })
 
-var _ = Describe("conns reapser", func() {
+var _ = Describe("conns reaper", func() {
 	var connPool *pool.ConnPool
 
 	BeforeEach(func() {
-		pool.SetIdleCheckFrequency(time.Hour)
-		connPool = pool.NewConnPool(dummyDialer, 10, 0, time.Minute)
+		connPool = pool.NewConnPool(
+			dummyDialer, 10, time.Second, time.Millisecond, time.Hour)
+
+		var cns []*pool.Conn
 
 		// add stale connections
 		for i := 0; i < 3; i++ {
-			cn := pool.NewConn(&net.TCPConn{})
+			cn, err := connPool.Get()
+			Expect(err).NotTo(HaveOccurred())
 			cn.UsedAt = time.Now().Add(-2 * time.Minute)
-			Expect(connPool.Add(cn)).To(BeTrue())
-			Expect(cn.Index()).To(Equal(i))
+			cns = append(cns, cn)
 		}
 
 		// add fresh connections
 		for i := 0; i < 3; i++ {
 			cn := pool.NewConn(&net.TCPConn{})
-			Expect(connPool.Add(cn)).To(BeTrue())
-			Expect(cn.Index()).To(Equal(3 + i))
+			cn, err := connPool.Get()
+			Expect(err).NotTo(HaveOccurred())
+			cns = append(cns, cn)
+		}
+
+		for _, cn := range cns {
+			Expect(connPool.Put(cn)).NotTo(HaveOccurred())
 		}
 
 		Expect(connPool.Len()).To(Equal(6))
@@ -136,16 +143,14 @@ var _ = Describe("conns reapser", func() {
 		for j := 0; j < 3; j++ {
 			var freeCns []*pool.Conn
 			for i := 0; i < 3; i++ {
-				cn := connPool.First()
+				cn, err := connPool.Get()
+				Expect(err).NotTo(HaveOccurred())
 				Expect(cn).NotTo(BeNil())
 				freeCns = append(freeCns, cn)
 			}
 
 			Expect(connPool.Len()).To(Equal(3))
 			Expect(connPool.FreeLen()).To(Equal(0))
-
-			cn := connPool.First()
-			Expect(cn).To(BeNil())
 
 			cn, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
@@ -173,42 +178,60 @@ var _ = Describe("conns reapser", func() {
 
 var _ = Describe("race", func() {
 	var connPool *pool.ConnPool
-
-	var C, N = 10, 1000
-	if testing.Short() {
-		C = 4
-		N = 100
-	}
+	var C, N int
 
 	BeforeEach(func() {
-		pool.SetIdleCheckFrequency(time.Second)
-		connPool = pool.NewConnPool(dummyDialer, 10, time.Second, time.Second)
+		C, N = 10, 1000
+		if testing.Short() {
+			C = 4
+			N = 100
+		}
 	})
 
 	AfterEach(func() {
 		connPool.Close()
 	})
 
-	It("does not happend", func() {
+	It("does not happen on Get, Put, and Remove", func() {
+		connPool = pool.NewConnPool(
+			dummyDialer, 10, time.Minute, time.Millisecond, time.Millisecond)
+		connPool.DialLimiter = nil
+
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
 				cn, err := connPool.Get()
+				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
-					connPool.Put(cn)
+					Expect(connPool.Put(cn)).NotTo(HaveOccurred())
 				}
 			}
 		}, func(id int) {
 			for i := 0; i < N; i++ {
 				cn, err := connPool.Get()
+				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
-					connPool.Replace(cn, errors.New("test"))
+					Expect(connPool.Remove(cn, errors.New("test"))).NotTo(HaveOccurred())
 				}
 			}
-		}, func(id int) {
+		})
+	})
+
+	It("does not happen on Get and PopFree", func() {
+		connPool = pool.NewConnPool(
+			dummyDialer, 10, time.Minute, time.Second, time.Millisecond)
+		connPool.DialLimiter = nil
+
+		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
 				cn, err := connPool.Get()
+				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
-					connPool.Remove(cn, errors.New("test"))
+					Expect(connPool.Put(cn)).NotTo(HaveOccurred())
+				}
+
+				cn = connPool.PopFree()
+				if cn != nil {
+					Expect(connPool.Put(cn)).NotTo(HaveOccurred())
 				}
 			}
 		})

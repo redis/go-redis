@@ -52,7 +52,15 @@ func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.Cluste
 		addrs[i] = net.JoinHostPort("127.0.0.1", port)
 	}
 	if opt == nil {
-		opt = &redis.ClusterOptions{}
+		opt = &redis.ClusterOptions{
+			DialTimeout:        10 * time.Second,
+			ReadTimeout:        30 * time.Second,
+			WriteTimeout:       30 * time.Second,
+			PoolSize:           10,
+			PoolTimeout:        30 * time.Second,
+			IdleTimeout:        time.Second,
+			IdleCheckFrequency: time.Second,
+		}
 	}
 	opt.Addrs = addrs
 	return redis.NewClusterClient(opt)

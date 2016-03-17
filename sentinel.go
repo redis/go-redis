@@ -26,15 +26,16 @@ type FailoverOptions struct {
 	Password string
 	DB       int64
 
+	MaxRetries int
+
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
-	PoolSize    int
-	PoolTimeout time.Duration
-	IdleTimeout time.Duration
-
-	MaxRetries int
+	PoolSize           int
+	PoolTimeout        time.Duration
+	IdleTimeout        time.Duration
+	IdleCheckFrequency time.Duration
 }
 
 func (opt *FailoverOptions) options() *Options {
@@ -44,15 +45,16 @@ func (opt *FailoverOptions) options() *Options {
 		DB:       opt.DB,
 		Password: opt.Password,
 
+		MaxRetries: opt.MaxRetries,
+
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolSize:    opt.PoolSize,
-		PoolTimeout: opt.PoolTimeout,
-		IdleTimeout: opt.IdleTimeout,
-
-		MaxRetries: opt.MaxRetries,
+		PoolSize:           opt.PoolSize,
+		PoolTimeout:        opt.PoolTimeout,
+		IdleTimeout:        opt.IdleTimeout,
+		IdleCheckFrequency: opt.IdleCheckFrequency,
 	}
 }
 
@@ -257,7 +259,7 @@ func (d *sentinelFailover) closeOldConns(newMaster string) {
 	cnsToPut := make([]*pool.Conn, 0)
 
 	for {
-		cn := d.pool.First()
+		cn := d.pool.PopFree()
 		if cn == nil {
 			break
 		}
@@ -267,7 +269,7 @@ func (d *sentinelFailover) closeOldConns(newMaster string) {
 				cn.RemoteAddr(),
 			)
 			Logger.Print(err)
-			d.pool.Replace(cn, err)
+			d.pool.Remove(cn, err)
 		} else {
 			cnsToPut = append(cnsToPut, cn)
 		}

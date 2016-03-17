@@ -16,15 +16,16 @@ import (
 type ClusterClient struct {
 	commandable
 
+	opt *ClusterOptions
+
+	slotsMx sync.RWMutex // protects slots and addrs
 	addrs   []string
 	slots   [][]string
-	slotsMx sync.RWMutex // Protects slots and addrs.
 
+	clientsMx sync.RWMutex // protects clients and closed
 	clients   map[string]*Client
-	closed    bool
-	clientsMx sync.RWMutex // Protects clients and closed.
 
-	opt *ClusterOptions
+	_closed int32 // atomic
 
 	// Reports where slots reloading is in progress.
 	reloading uint32
@@ -34,15 +35,27 @@ type ClusterClient struct {
 // http://redis.io/topics/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	client := &ClusterClient{
+		opt:     opt,
 		addrs:   opt.Addrs,
 		slots:   make([][]string, hashtag.SlotNumber),
 		clients: make(map[string]*Client),
-		opt:     opt,
 	}
 	client.commandable.process = client.process
 	client.reloadSlots()
-	go client.reaper()
 	return client
+}
+
+// getClients returns a snapshot of clients for cluster nodes
+// this ClusterClient has been working with recently.
+// Note that snapshot can contain closed clients.
+func (c *ClusterClient) getClients() map[string]*Client {
+	c.clientsMx.RLock()
+	clients := make(map[string]*Client, len(c.clients))
+	for addr, client := range c.clients {
+		clients[addr] = client
+	}
+	c.clientsMx.RUnlock()
+	return clients
 }
 
 // Watch creates new transaction and marks the keys to be watched
@@ -59,17 +72,20 @@ func (c *ClusterClient) Watch(keys ...string) (*Multi, error) {
 // PoolStats returns accumulated connection pool stats.
 func (c *ClusterClient) PoolStats() *PoolStats {
 	acc := PoolStats{}
-	c.clientsMx.RLock()
-	for _, client := range c.clients {
-		m := client.PoolStats()
-		acc.Requests += m.Requests
-		acc.Waits += m.Waits
-		acc.Timeouts += m.Timeouts
-		acc.TotalConns += m.TotalConns
-		acc.FreeConns += m.FreeConns
+	for _, client := range c.getClients() {
+		s := client.connPool.Stats()
+		acc.Requests += s.Requests
+		acc.Hits += s.Hits
+		acc.Waits += s.Waits
+		acc.Timeouts += s.Timeouts
+		acc.TotalConns += s.TotalConns
+		acc.FreeConns += s.FreeConns
 	}
-	c.clientsMx.RUnlock()
 	return &acc
+}
+
+func (c *ClusterClient) closed() bool {
+	return atomic.LoadInt32(&c._closed) == 1
 }
 
 // Close closes the cluster client, releasing any open resources.
@@ -77,38 +93,35 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
 // to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
-	defer c.clientsMx.Unlock()
-	c.clientsMx.Lock()
-
-	if c.closed {
+	if !atomic.CompareAndSwapInt32(&c._closed, 0, 1) {
 		return pool.ErrClosed
 	}
-	c.closed = true
+
+	c.clientsMx.Lock()
 	c.resetClients()
+	c.clientsMx.Unlock()
 	c.setSlots(nil)
 	return nil
 }
 
 // getClient returns a Client for a given address.
 func (c *ClusterClient) getClient(addr string) (*Client, error) {
+	if c.closed() {
+		return nil, pool.ErrClosed
+	}
+
 	if addr == "" {
 		return c.randomClient()
 	}
 
 	c.clientsMx.RLock()
 	client, ok := c.clients[addr]
+	c.clientsMx.RUnlock()
 	if ok {
-		c.clientsMx.RUnlock()
 		return client, nil
 	}
-	c.clientsMx.RUnlock()
 
 	c.clientsMx.Lock()
-	if c.closed {
-		c.clientsMx.Unlock()
-		return nil, pool.ErrClosed
-	}
-
 	client, ok = c.clients[addr]
 	if !ok {
 		opt := c.opt.clientOptions()
@@ -276,28 +289,30 @@ func (c *ClusterClient) lazyReloadSlots() {
 }
 
 // reaper closes idle connections to the cluster.
-func (c *ClusterClient) reaper() {
-	ticker := time.NewTicker(time.Minute)
+func (c *ClusterClient) reaper(frequency time.Duration) {
+	ticker := time.NewTicker(frequency)
 	defer ticker.Stop()
-	for _ = range ticker.C {
-		c.clientsMx.RLock()
 
-		if c.closed {
-			c.clientsMx.RUnlock()
+	for _ = range ticker.C {
+		if c.closed() {
 			break
 		}
 
-		for _, client := range c.clients {
-			pool := client.connPool
-			// pool.First removes idle connections from the pool and
-			// returns first non-idle connection. So just put returned
-			// connection back.
-			if cn := pool.First(); cn != nil {
-				pool.Put(cn)
+		var n int
+		for _, client := range c.getClients() {
+			nn, err := client.connPool.(*pool.ConnPool).ReapStaleConns()
+			if err != nil {
+				Logger.Printf("ReapStaleConns failed: %s", err)
+			} else {
+				n += nn
 			}
 		}
 
-		c.clientsMx.RUnlock()
+		s := c.PoolStats()
+		Logger.Printf(
+			"reaper: removed %d stale conns (TotalConns=%d FreeConns=%d Requests=%d Hits=%d Timeouts=%d)",
+			n, s.TotalConns, s.FreeConns, s.Requests, s.Hits, s.Timeouts,
+		)
 	}
 }
 
@@ -309,8 +324,7 @@ type ClusterOptions struct {
 	// A seed list of host:port addresses of cluster nodes.
 	Addrs []string
 
-	// The maximum number of MOVED/ASK redirects to follow before
-	// giving up.
+	// The maximum number of MOVED/ASK redirects to follow before giving up.
 	// Default is 16
 	MaxRedirects int
 
@@ -323,9 +337,10 @@ type ClusterOptions struct {
 	WriteTimeout time.Duration
 
 	// PoolSize applies per cluster node and not for the whole cluster.
-	PoolSize    int
-	PoolTimeout time.Duration
-	IdleTimeout time.Duration
+	PoolSize           int
+	PoolTimeout        time.Duration
+	IdleTimeout        time.Duration
+	IdleCheckFrequency time.Duration
 }
 
 func (opt *ClusterOptions) getMaxRedirects() int {
@@ -349,5 +364,6 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PoolSize:    opt.PoolSize,
 		PoolTimeout: opt.PoolTimeout,
 		IdleTimeout: opt.IdleTimeout,
+		// IdleCheckFrequency is not copied to disable reaper
 	}
 }
