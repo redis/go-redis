@@ -12,7 +12,7 @@ import (
 	"gopkg.in/bsm/ratelimit.v1"
 )
 
-var Logger = log.New(os.Stderr, "pg: ", log.LstdFlags)
+var Logger = log.New(os.Stderr, "redis: ", log.LstdFlags)
 
 var (
 	ErrClosed      = errors.New("redis: client is closed")
@@ -108,9 +108,9 @@ func (p *ConnPool) First() *Conn {
 }
 
 // wait waits for free non-idle connection. It returns nil on timeout.
-func (p *ConnPool) wait() *Conn {
+func (p *ConnPool) wait(timeout time.Duration) *Conn {
 	for {
-		cn := p.freeConns.PopWithTimeout(p.poolTimeout)
+		cn := p.freeConns.PopWithTimeout(timeout)
 		if cn != nil && cn.IsStale(p.idleTimeout) {
 			var err error
 			cn, err = p.replace(cn)
@@ -175,7 +175,7 @@ func (p *ConnPool) Get() (*Conn, error) {
 
 	// Otherwise, wait for the available connection.
 	atomic.AddUint32(&p.stats.Waits, 1)
-	if cn := p.wait(); cn != nil {
+	if cn := p.wait(p.poolTimeout); cn != nil {
 		return cn, nil
 	}
 
@@ -270,8 +270,8 @@ func (p *ConnPool) Close() (retErr error) {
 	}
 
 	// Wait for app to free connections, but don't close them immediately.
-	for i := 0; i < p.Len(); i++ {
-		if cn := p.wait(); cn == nil {
+	for i := 0; i < p.Len()-p.FreeLen(); i++ {
+		if cn := p.wait(3 * time.Second); cn == nil {
 			break
 		}
 	}

@@ -1,9 +1,6 @@
 package redis_test
 
 import (
-	"errors"
-	"time"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
@@ -130,66 +127,5 @@ var _ = Describe("pool", func() {
 		Expect(stats.Hits).To(Equal(uint32(100)))
 		Expect(stats.Waits).To(Equal(uint32(0)))
 		Expect(stats.Timeouts).To(Equal(uint32(0)))
-	})
-
-	It("should unblock client when connection is removed", func() {
-		pool := client.Pool()
-
-		// Reserve one connection.
-		cn, err := pool.Get()
-		Expect(err).NotTo(HaveOccurred())
-
-		// Reserve the rest of connections.
-		for i := 0; i < 9; i++ {
-			_, err := pool.Get()
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		var ping *redis.StatusCmd
-		started := make(chan bool, 1)
-		done := make(chan bool, 1)
-		go func() {
-			started <- true
-			ping = client.Ping()
-			done <- true
-		}()
-		<-started
-
-		// Check that Ping is blocked.
-		select {
-		case <-done:
-			panic("Ping is not blocked")
-		default:
-			// ok
-		}
-
-		err = pool.Replace(cn, errors.New("test"))
-		Expect(err).NotTo(HaveOccurred())
-
-		// Check that Ping is unblocked.
-		select {
-		case <-done:
-			// ok
-		case <-time.After(time.Second):
-			panic("Ping is not unblocked")
-		}
-		Expect(ping.Err()).NotTo(HaveOccurred())
-	})
-
-	It("should rate limit dial", func() {
-		pool := client.Pool()
-
-		var rateErr error
-		for i := 0; i < 1000; i++ {
-			cn, err := pool.Get()
-			if err != nil {
-				rateErr = err
-				break
-			}
-
-			_ = pool.Replace(cn, errors.New("test"))
-		}
-
-		Expect(rateErr).To(MatchError(`redis: you open connections too fast (last_error="test")`))
 	})
 })

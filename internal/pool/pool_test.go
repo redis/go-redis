@@ -12,19 +12,93 @@ import (
 	"gopkg.in/redis.v3/internal/pool"
 )
 
-func TestGinkgoSuite(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "pool")
-}
+var _ = Describe("ConnPool", func() {
+	var connPool *pool.ConnPool
+
+	BeforeEach(func() {
+		pool.SetIdleCheckFrequency(time.Second)
+		connPool = pool.NewConnPool(dummyDialer, 10, time.Hour, time.Second)
+	})
+
+	AfterEach(func() {
+		connPool.Close()
+	})
+
+	It("rate limits dial", func() {
+		var rateErr error
+		for i := 0; i < 1000; i++ {
+			cn, err := connPool.Get()
+			if err != nil {
+				rateErr = err
+				break
+			}
+
+			_ = connPool.Replace(cn, errors.New("test"))
+		}
+
+		Expect(rateErr).To(MatchError(`redis: you open connections too fast (last_error="test")`))
+	})
+
+	It("should unblock client when conn is removed", func() {
+		// Reserve one connection.
+		cn, err := connPool.Get()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Reserve all other connections.
+		var cns []*pool.Conn
+		for i := 0; i < 9; i++ {
+			cn, err := connPool.Get()
+			Expect(err).NotTo(HaveOccurred())
+			cns = append(cns, cn)
+		}
+
+		started := make(chan bool, 1)
+		done := make(chan bool, 1)
+		go func() {
+			defer GinkgoRecover()
+
+			started <- true
+			_, err := connPool.Get()
+			Expect(err).NotTo(HaveOccurred())
+			done <- true
+
+			err = connPool.Put(cn)
+			Expect(err).NotTo(HaveOccurred())
+		}()
+		<-started
+
+		// Check that Get is blocked.
+		select {
+		case <-done:
+			Fail("Get is not blocked")
+		default:
+			// ok
+		}
+
+		err = connPool.Replace(cn, errors.New("test"))
+		Expect(err).NotTo(HaveOccurred())
+
+		// Check that Ping is unblocked.
+		select {
+		case <-done:
+			// ok
+		case <-time.After(time.Second):
+			Fail("Get is not unblocked")
+		}
+
+		for _, cn := range cns {
+			err = connPool.Put(cn)
+			Expect(err).NotTo(HaveOccurred())
+		}
+	})
+})
 
 var _ = Describe("conns reapser", func() {
 	var connPool *pool.ConnPool
 
 	BeforeEach(func() {
-		dial := func() (net.Conn, error) {
-			return &net.TCPConn{}, nil
-		}
-		connPool = pool.NewConnPool(dial, 10, 0, time.Minute)
+		pool.SetIdleCheckFrequency(time.Hour)
+		connPool = pool.NewConnPool(dummyDialer, 10, 0, time.Minute)
 
 		// add stale connections
 		for i := 0; i < 3; i++ {
@@ -47,6 +121,10 @@ var _ = Describe("conns reapser", func() {
 		n, err := connPool.ReapStaleConns()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(3))
+	})
+
+	AfterEach(func() {
+		connPool.Close()
 	})
 
 	It("reaps stale connections", func() {
@@ -90,5 +168,49 @@ var _ = Describe("conns reapser", func() {
 			Expect(connPool.Len()).To(Equal(3))
 			Expect(connPool.FreeLen()).To(Equal(3))
 		}
+	})
+})
+
+var _ = Describe("race", func() {
+	var connPool *pool.ConnPool
+
+	var C, N = 10, 1000
+	if testing.Short() {
+		C = 4
+		N = 100
+	}
+
+	BeforeEach(func() {
+		pool.SetIdleCheckFrequency(time.Second)
+		connPool = pool.NewConnPool(dummyDialer, 10, time.Second, time.Second)
+	})
+
+	AfterEach(func() {
+		connPool.Close()
+	})
+
+	It("does not happend", func() {
+		perform(C, func(id int) {
+			for i := 0; i < N; i++ {
+				cn, err := connPool.Get()
+				if err == nil {
+					connPool.Put(cn)
+				}
+			}
+		}, func(id int) {
+			for i := 0; i < N; i++ {
+				cn, err := connPool.Get()
+				if err == nil {
+					connPool.Replace(cn, errors.New("test"))
+				}
+			}
+		}, func(id int) {
+			for i := 0; i < N; i++ {
+				cn, err := connPool.Get()
+				if err == nil {
+					connPool.Remove(cn, errors.New("test"))
+				}
+			}
+		})
 	})
 })
