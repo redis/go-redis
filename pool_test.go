@@ -8,16 +8,15 @@ import (
 	. "github.com/onsi/gomega"
 
 	"gopkg.in/redis.v3"
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 var _ = Describe("pool", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr:     redisAddr,
-			PoolSize: 10,
-		})
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -25,7 +24,7 @@ var _ = Describe("pool", func() {
 	})
 
 	It("should respect max size", func() {
-		perform(1000, func() {
+		perform(1000, func(id int) {
 			val, err := client.Ping().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("PONG"))
@@ -38,7 +37,7 @@ var _ = Describe("pool", func() {
 	})
 
 	It("should respect max on multi", func() {
-		perform(1000, func() {
+		perform(1000, func(id int) {
 			var ping *redis.StatusCmd
 
 			multi := client.Multi()
@@ -60,7 +59,7 @@ var _ = Describe("pool", func() {
 	})
 
 	It("should respect max on pipelines", func() {
-		perform(1000, func() {
+		perform(1000, func(id int) {
 			pipe := client.Pipeline()
 			ping := pipe.Ping()
 			cmds, err := pipe.Exec()
@@ -78,16 +77,17 @@ var _ = Describe("pool", func() {
 	})
 
 	It("should respect max on pubsub", func() {
-		perform(10, func() {
+		connPool := client.Pool()
+		connPool.(*pool.ConnPool).DialLimiter = nil
+
+		perform(1000, func(id int) {
 			pubsub := client.PubSub()
 			Expect(pubsub.Subscribe()).NotTo(HaveOccurred())
 			Expect(pubsub.Close()).NotTo(HaveOccurred())
 		})
 
-		pool := client.Pool()
-		Expect(pool.Len()).To(BeNumerically("<=", 10))
-		Expect(pool.FreeLen()).To(BeNumerically("<=", 10))
-		Expect(pool.Len()).To(Equal(pool.FreeLen()))
+		Expect(connPool.Len()).To(Equal(connPool.FreeLen()))
+		Expect(connPool.Len()).To(BeNumerically("<=", 10))
 	})
 
 	It("should remove broken connections", func() {
@@ -108,8 +108,8 @@ var _ = Describe("pool", func() {
 		Expect(pool.FreeLen()).To(Equal(1))
 
 		stats := pool.Stats()
-		Expect(stats.Requests).To(Equal(uint32(3)))
-		Expect(stats.Hits).To(Equal(uint32(2)))
+		Expect(stats.Requests).To(Equal(uint32(4)))
+		Expect(stats.Hits).To(Equal(uint32(3)))
 		Expect(stats.Waits).To(Equal(uint32(0)))
 		Expect(stats.Timeouts).To(Equal(uint32(0)))
 	})
@@ -126,8 +126,8 @@ var _ = Describe("pool", func() {
 		Expect(pool.FreeLen()).To(Equal(1))
 
 		stats := pool.Stats()
-		Expect(stats.Requests).To(Equal(uint32(100)))
-		Expect(stats.Hits).To(Equal(uint32(99)))
+		Expect(stats.Requests).To(Equal(uint32(101)))
+		Expect(stats.Hits).To(Equal(uint32(100)))
 		Expect(stats.Waits).To(Equal(uint32(0)))
 		Expect(stats.Timeouts).To(Equal(uint32(0)))
 	})

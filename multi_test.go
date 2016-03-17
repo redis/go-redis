@@ -14,13 +14,11 @@ var _ = Describe("Multi", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr: redisAddr,
-		})
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
@@ -54,6 +52,7 @@ var _ = Describe("Multi", func() {
 		for i := 0; i < 100; i++ {
 			wg.Add(1)
 			go func() {
+				defer GinkgoRecover()
 				defer wg.Done()
 
 				err := incr("key")

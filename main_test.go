@@ -15,6 +15,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"gopkg.in/redis.v3"
+	"gopkg.in/redis.v3/internal/pool"
 )
 
 const (
@@ -51,6 +52,8 @@ var cluster = &clusterScenario{
 
 var _ = BeforeSuite(func() {
 	var err error
+
+	pool.SetIdleCheckFrequency(time.Second) // be aggressive in tests
 
 	redisMain, err = startRedis(redisPort)
 	Expect(err).NotTo(HaveOccurred())
@@ -99,31 +102,49 @@ func TestGinkgoSuite(t *testing.T) {
 
 //------------------------------------------------------------------------------
 
-func perform(n int, cb func()) {
+func redisOptions() *redis.Options {
+	return &redis.Options{
+		Addr:         redisAddr,
+		DB:           15,
+		DialTimeout:  10 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		PoolSize:     10,
+		PoolTimeout:  30 * time.Second,
+		IdleTimeout:  time.Second, // be aggressive in tests
+	}
+}
+
+func perform(n int, cb func(int)) {
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer GinkgoRecover()
 			defer wg.Done()
 
-			cb()
-		}()
+			cb(i)
+		}(i)
 	}
 	wg.Wait()
 }
 
 func eventually(fn func() error, timeout time.Duration) error {
-	done := make(chan struct{})
 	var exit int32
-	var err error
+	var retErr error
+	var mu sync.Mutex
+	done := make(chan struct{})
+
 	go func() {
 		for atomic.LoadInt32(&exit) == 0 {
-			err = fn()
+			err := fn()
 			if err == nil {
 				close(done)
 				return
 			}
+			mu.Lock()
+			retErr = err
+			mu.Unlock()
 			time.Sleep(timeout / 100)
 		}
 	}()
@@ -133,6 +154,9 @@ func eventually(fn func() error, timeout time.Duration) error {
 		return nil
 	case <-time.After(timeout):
 		atomic.StoreInt32(&exit, 1)
+		mu.Lock()
+		err := retErr
+		mu.Unlock()
 		return err
 	}
 }

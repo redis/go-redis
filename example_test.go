@@ -12,10 +12,9 @@ import (
 var client *redis.Client
 
 func init() {
-	client = redis.NewClient(&redis.Options{
-		Addr:        ":6379",
-		DialTimeout: 10 * time.Second,
-	})
+	opt := redisOptions()
+	opt.Addr = ":6379"
+	client = redis.NewClient(opt)
 	client.FlushDb()
 }
 

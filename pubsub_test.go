@@ -14,13 +14,9 @@ import (
 
 var _ = Describe("PubSub", func() {
 	var client *redis.Client
-	readTimeout := 3 * time.Second
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr:        redisAddr,
-			ReadTimeout: readTimeout,
-		})
+		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 	})
 

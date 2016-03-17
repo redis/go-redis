@@ -66,7 +66,10 @@ func startCluster(scenario *clusterScenario) error {
 			return err
 		}
 
-		client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:" + port})
+		client := redis.NewClient(&redis.Options{
+			Addr: ":" + port,
+		})
+
 		info, err := client.ClusterNodes().Result()
 		if err != nil {
 			return err

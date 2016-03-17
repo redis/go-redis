@@ -19,14 +19,11 @@ var _ = Describe("Commands", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr:        redisAddr,
-			PoolTimeout: 30 * time.Second,
-		})
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
@@ -299,7 +296,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Move", func() {
-			move := client.Move("key", 1)
+			move := client.Move("key", 2)
 			Expect(move.Err()).NotTo(HaveOccurred())
 			Expect(move.Val()).To(Equal(false))
 
@@ -307,7 +304,7 @@ var _ = Describe("Commands", func() {
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
 
-			move = client.Move("key", 1)
+			move = client.Move("key", 2)
 			Expect(move.Err()).NotTo(HaveOccurred())
 			Expect(move.Val()).To(Equal(true))
 
@@ -315,7 +312,7 @@ var _ = Describe("Commands", func() {
 			Expect(get.Err()).To(Equal(redis.Nil))
 			Expect(get.Val()).To(Equal(""))
 
-			sel := client.Select(1)
+			sel := client.Select(2)
 			Expect(sel.Err()).NotTo(HaveOccurred())
 			Expect(sel.Val()).To(Equal("OK"))
 
@@ -323,7 +320,7 @@ var _ = Describe("Commands", func() {
 			Expect(get.Err()).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("hello"))
 			Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
-			Expect(client.Select(0).Err()).NotTo(HaveOccurred())
+			Expect(client.Select(1).Err()).NotTo(HaveOccurred())
 		})
 
 		It("should Object", func() {

@@ -43,7 +43,7 @@ func (l *connList) Add(cn *Conn) {
 	l.mu.Lock()
 	for i, c := range l.cns {
 		if c == nil {
-			cn.idx = int32(i)
+			cn.SetIndex(i)
 			l.cns[i] = cn
 			l.mu.Unlock()
 			return
@@ -65,22 +65,25 @@ func (l *connList) Remove(idx int) {
 	l.mu.Lock()
 	if l.cns != nil {
 		l.cns[idx] = nil
-		l.len -= 1
+		atomic.AddInt32(&l.len, -1)
 	}
 	l.mu.Unlock()
 }
 
-func (l *connList) Close() error {
+func (l *connList) Reset() []*Conn {
 	l.mu.Lock()
-	for _, c := range l.cns {
-		if c == nil {
+
+	for _, cn := range l.cns {
+		if cn == nil {
 			continue
 		}
-		c.idx = -1
-		c.Close()
+		cn.SetIndex(-1)
 	}
+
+	cns := l.cns
 	l.cns = nil
 	l.len = 0
+
 	l.mu.Unlock()
-	return nil
+	return cns
 }
