@@ -8,6 +8,8 @@ import (
 	"gopkg.in/redis.v3/internal/pool"
 )
 
+var receiveMessageTimeout = 5 * time.Second
+
 // Posts a message to the given channel.
 func (c *Client) Publish(channel, message string) *IntCmd {
 	req := NewIntCmd("PUBLISH", channel, message)
@@ -255,7 +257,7 @@ func (c *PubSub) Receive() (interface{}, error) {
 func (c *PubSub) ReceiveMessage() (*Message, error) {
 	var errNum uint
 	for {
-		msgi, err := c.ReceiveTimeout(5 * time.Second)
+		msgi, err := c.ReceiveTimeout(receiveMessageTimeout)
 		if err != nil {
 			if !isNetworkError(err) {
 				return nil, err

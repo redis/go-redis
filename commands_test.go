@@ -1301,12 +1301,16 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BLPop timeout", func() {
-			bLPop := client.BLPop(time.Second, "list1")
-			Expect(bLPop.Val()).To(BeNil())
-			Expect(bLPop.Err()).To(Equal(redis.Nil))
+			val, err := client.BLPop(time.Second, "list1").Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(BeNil())
 
-			stats := client.Pool().Stats()
-			Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(1)))
+			Expect(client.Ping().Err()).NotTo(HaveOccurred())
+
+			stats := client.PoolStats()
+			Expect(stats.Requests).To(Equal(uint32(3)))
+			Expect(stats.Hits).To(Equal(uint32(2)))
+			Expect(stats.Timeouts).To(Equal(uint32(0)))
 		})
 
 		It("should BRPop", func() {

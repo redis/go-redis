@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"io"
 	"net"
-	"sync/atomic"
 	"time"
 )
 
@@ -13,8 +12,6 @@ const defaultBufSize = 4096
 var noDeadline = time.Time{}
 
 type Conn struct {
-	idx int32
-
 	NetConn net.Conn
 	Rd      *bufio.Reader
 	Buf     []byte
@@ -28,8 +25,6 @@ type Conn struct {
 
 func NewConn(netConn net.Conn) *Conn {
 	cn := &Conn{
-		idx: -1,
-
 		NetConn: netConn,
 		Buf:     make([]byte, defaultBufSize),
 
@@ -37,18 +32,6 @@ func NewConn(netConn net.Conn) *Conn {
 	}
 	cn.Rd = bufio.NewReader(cn)
 	return cn
-}
-
-func (cn *Conn) Index() int {
-	return int(atomic.LoadInt32(&cn.idx))
-}
-
-func (cn *Conn) SetIndex(newIdx int) int {
-	oldIdx := cn.Index()
-	if !atomic.CompareAndSwapInt32(&cn.idx, int32(oldIdx), int32(newIdx)) {
-		return -1
-	}
-	return oldIdx
 }
 
 func (cn *Conn) IsStale(timeout time.Duration) bool {

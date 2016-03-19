@@ -39,7 +39,7 @@ func (c *baseClient) conn() (*pool.Conn, error) {
 	}
 	if !cn.Inited {
 		if err := c.initConn(cn); err != nil {
-			_ = c.connPool.Replace(cn, err)
+			_ = c.connPool.Remove(cn, err)
 			return nil, err
 		}
 	}
@@ -48,7 +48,7 @@ func (c *baseClient) conn() (*pool.Conn, error) {
 
 func (c *baseClient) putConn(cn *pool.Conn, err error, allowTimeout bool) bool {
 	if isBadConn(err, allowTimeout) {
-		_ = c.connPool.Replace(cn, err)
+		_ = c.connPool.Remove(cn, err)
 		return false
 	}
 
