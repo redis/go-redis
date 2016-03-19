@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sync/atomic"
 
 	"gopkg.in/redis.v3/internal/pool"
 )
@@ -170,12 +169,12 @@ func NewClient(opt *Options) *Client {
 func (c *Client) PoolStats() *PoolStats {
 	s := c.connPool.Stats()
 	return &PoolStats{
-		Requests: atomic.LoadUint32(&s.Requests),
-		Hits:     atomic.LoadUint32(&s.Hits),
-		Waits:    atomic.LoadUint32(&s.Waits),
-		Timeouts: atomic.LoadUint32(&s.Timeouts),
+		Requests: s.Requests,
+		Hits:     s.Hits,
+		Waits:    s.Waits,
+		Timeouts: s.Timeouts,
 
-		TotalConns: atomic.LoadUint32(&s.TotalConns),
-		FreeConns:  atomic.LoadUint32(&s.FreeConns),
+		TotalConns: s.TotalConns,
+		FreeConns:  s.FreeConns,
 	}
 }
