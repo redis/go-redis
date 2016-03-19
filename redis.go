@@ -104,7 +104,7 @@ func (c *baseClient) process(cmd Cmder) {
 		if err := writeCmd(cn, cmd); err != nil {
 			c.putConn(cn, err, false)
 			cmd.setErr(err)
-			if shouldRetry(err) {
+			if err != nil && shouldRetry(err) {
 				continue
 			}
 			return
@@ -112,7 +112,7 @@ func (c *baseClient) process(cmd Cmder) {
 
 		err = cmd.readReply(cn)
 		c.putConn(cn, err, readTimeout != nil)
-		if shouldRetry(err) {
+		if err != nil && shouldRetry(err) {
 			continue
 		}
 

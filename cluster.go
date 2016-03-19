@@ -195,12 +195,12 @@ func (c *ClusterClient) process(cmd Cmder) {
 
 		// If there is no (real) error, we are done!
 		err := cmd.Err()
-		if err == nil || err == Nil || err == TxFailedErr {
+		if err == nil {
 			return
 		}
 
 		// On network errors try random node.
-		if isNetworkError(err) {
+		if shouldRetry(err) {
 			client, err = c.randomClient()
 			if err != nil {
 				return
