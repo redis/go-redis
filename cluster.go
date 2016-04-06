@@ -324,8 +324,9 @@ type ClusterOptions struct {
 	// A seed list of host:port addresses of cluster nodes.
 	Addrs []string
 
-	// The maximum number of MOVED/ASK redirects to follow before giving up.
-	// Default is 16
+	// The maximum number of retries before giving up. Command is retried
+	// on network errors and MOVED/ASK redirects.
+	// Default is 16.
 	MaxRedirects int
 
 	// Following options are copied from Options struct.

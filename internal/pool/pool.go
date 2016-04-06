@@ -18,9 +18,7 @@ var Logger = log.New(ioutil.Discard, "redis: ", log.LstdFlags)
 var (
 	ErrClosed      = errors.New("redis: client is closed")
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
-
-	errConnClosed = errors.New("connection is closed")
-	errConnStale  = errors.New("connection is stale")
+	errConnStale   = errors.New("connection is stale")
 )
 
 var timers = sync.Pool{
