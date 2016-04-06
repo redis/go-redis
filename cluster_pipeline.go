@@ -27,6 +27,16 @@ func (c *ClusterClient) Pipeline() *ClusterPipeline {
 	return pipe
 }
 
+func (c *ClusterClient) Pipelined(fn func(*ClusterPipeline) error) ([]Cmder, error) {
+	pipe := c.Pipeline()
+	if err := fn(pipe); err != nil {
+		return nil, err
+	}
+	cmds, err := pipe.Exec()
+	_ = pipe.Close()
+	return cmds, err
+}
+
 func (pipe *ClusterPipeline) process(cmd Cmder) {
 	pipe.cmds = append(pipe.cmds, cmd)
 }
