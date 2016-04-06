@@ -2,18 +2,14 @@ package redis // import "gopkg.in/redis.v3"
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
-	"os"
 
 	"gopkg.in/redis.v3/internal/pool"
 )
 
 // Deprecated. Use SetLogger instead.
-var Logger *log.Logger
-
-func init() {
-	SetLogger(log.New(os.Stderr, "redis: ", log.LstdFlags))
-}
+var Logger = log.New(ioutil.Discard, "redis: ", log.LstdFlags)
 
 func SetLogger(logger *log.Logger) {
 	Logger = logger
