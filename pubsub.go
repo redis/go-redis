@@ -8,8 +8,6 @@ import (
 	"gopkg.in/redis.v3/internal/pool"
 )
 
-var receiveMessageTimeout = 5 * time.Second
-
 // Posts a message to the given channel.
 func (c *Client) Publish(channel, message string) *IntCmd {
 	req := NewIntCmd("PUBLISH", channel, message)
@@ -255,9 +253,13 @@ func (c *PubSub) Receive() (interface{}, error) {
 // messages. It automatically reconnects to Redis Server and resubscribes
 // to channels in case of network errors.
 func (c *PubSub) ReceiveMessage() (*Message, error) {
+	return c.receiveMessage(5 * time.Second)
+}
+
+func (c *PubSub) receiveMessage(timeout time.Duration) (*Message, error) {
 	var errNum uint
 	for {
-		msgi, err := c.ReceiveTimeout(receiveMessageTimeout)
+		msgi, err := c.ReceiveTimeout(timeout)
 		if err != nil {
 			if !isNetworkError(err) {
 				return nil, err
