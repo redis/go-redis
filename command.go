@@ -25,7 +25,7 @@ var (
 	_ Cmder = (*StringIntMapCmd)(nil)
 	_ Cmder = (*ZSliceCmd)(nil)
 	_ Cmder = (*ScanCmd)(nil)
-	_ Cmder = (*ClusterSlotCmd)(nil)
+	_ Cmder = (*ClusterSlotsCmd)(nil)
 )
 
 type Cmder interface {
@@ -730,48 +730,51 @@ func (cmd *ScanCmd) readReply(cn *pool.Conn) error {
 
 //------------------------------------------------------------------------------
 
-// TODO: rename to ClusterSlot
-type ClusterSlotInfo struct {
+type ClusterNode struct {
+	Id   string
+	Addr string
+}
+
+type ClusterSlot struct {
 	Start int
 	End   int
-	Addrs []string
+	Nodes []ClusterNode
 }
 
-// TODO: rename to ClusterSlotsCmd
-type ClusterSlotCmd struct {
+type ClusterSlotsCmd struct {
 	baseCmd
 
-	val []ClusterSlotInfo
+	val []ClusterSlot
 }
 
-func NewClusterSlotCmd(args ...interface{}) *ClusterSlotCmd {
-	return &ClusterSlotCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+func NewClusterSlotsCmd(args ...interface{}) *ClusterSlotsCmd {
+	return &ClusterSlotsCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
 }
 
-func (cmd *ClusterSlotCmd) Val() []ClusterSlotInfo {
+func (cmd *ClusterSlotsCmd) Val() []ClusterSlot {
 	return cmd.val
 }
 
-func (cmd *ClusterSlotCmd) Result() ([]ClusterSlotInfo, error) {
+func (cmd *ClusterSlotsCmd) Result() ([]ClusterSlot, error) {
 	return cmd.Val(), cmd.Err()
 }
 
-func (cmd *ClusterSlotCmd) String() string {
+func (cmd *ClusterSlotsCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ClusterSlotCmd) reset() {
+func (cmd *ClusterSlotsCmd) reset() {
 	cmd.val = nil
 	cmd.err = nil
 }
 
-func (cmd *ClusterSlotCmd) readReply(cn *pool.Conn) error {
-	v, err := readArrayReply(cn, clusterSlotInfoSliceParser)
+func (cmd *ClusterSlotsCmd) readReply(cn *pool.Conn) error {
+	v, err := readArrayReply(cn, clusterSlotsParser)
 	if err != nil {
 		cmd.err = err
 		return err
 	}
-	cmd.val = v.([]ClusterSlotInfo)
+	cmd.val = v.([]ClusterSlot)
 	return nil
 }
 

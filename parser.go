@@ -562,9 +562,9 @@ func zSliceParser(cn *pool.Conn, n int64) (interface{}, error) {
 	return zz, nil
 }
 
-func clusterSlotInfoSliceParser(cn *pool.Conn, n int64) (interface{}, error) {
-	infos := make([]ClusterSlotInfo, 0, n)
-	for i := int64(0); i < n; i++ {
+func clusterSlotsParser(cn *pool.Conn, slotNum int64) (interface{}, error) {
+	slots := make([]ClusterSlot, slotNum)
+	for slotInd := 0; slotInd < len(slots); slotInd++ {
 		n, err := readArrayHeader(cn)
 		if err != nil {
 			return nil, err
@@ -584,14 +584,8 @@ func clusterSlotInfoSliceParser(cn *pool.Conn, n int64) (interface{}, error) {
 			return nil, err
 		}
 
-		addrsn := n - 2
-		info := ClusterSlotInfo{
-			Start: int(start),
-			End:   int(end),
-			Addrs: make([]string, addrsn),
-		}
-
-		for i := int64(0); i < addrsn; i++ {
+		nodes := make([]ClusterNode, n-2)
+		for nodeInd := 0; nodeInd < len(nodes); nodeInd++ {
 			n, err := readArrayHeader(cn)
 			if err != nil {
 				return nil, err
@@ -610,21 +604,24 @@ func clusterSlotInfoSliceParser(cn *pool.Conn, n int64) (interface{}, error) {
 			if err != nil {
 				return nil, err
 			}
+			nodes[nodeInd].Addr = net.JoinHostPort(ip, strconv.FormatInt(port, 10))
 
 			if n == 3 {
-				// TODO: expose id in ClusterSlotInfo
-				_, err := readStringReply(cn)
+				id, err := readStringReply(cn)
 				if err != nil {
 					return nil, err
 				}
+				nodes[nodeInd].Id = id
 			}
-
-			info.Addrs[i] = net.JoinHostPort(ip, strconv.FormatInt(port, 10))
 		}
 
-		infos = append(infos, info)
+		slots[slotInd] = ClusterSlot{
+			Start: int(start),
+			End:   int(end),
+			Nodes: nodes,
+		}
 	}
-	return infos, nil
+	return slots, nil
 }
 
 func newGeoLocationParser(q *GeoRadiusQuery) multiBulkParser {

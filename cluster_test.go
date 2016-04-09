@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -135,21 +134,12 @@ func startCluster(scenario *clusterScenario) error {
 			if err != nil {
 				return err
 			}
-			wanted := []redis.ClusterSlotInfo{
-				{0, 4999, []string{"127.0.0.1:8220", "127.0.0.1:8223"}},
-				{5000, 9999, []string{"127.0.0.1:8221", "127.0.0.1:8224"}},
-				{10000, 16383, []string{"127.0.0.1:8222", "127.0.0.1:8225"}},
+			wanted := []redis.ClusterSlot{
+				{0, 4999, []redis.ClusterNode{{"", "127.0.0.1:8220"}, {"", "127.0.0.1:8223"}}},
+				{5000, 9999, []redis.ClusterNode{{"", "127.0.0.1:8221"}, {"", "127.0.0.1:8224"}}},
+				{10000, 16383, []redis.ClusterNode{{"", "127.0.0.1:8222"}, {"", "127.0.0.1:8225"}}},
 			}
-		loop:
-			for _, info := range res {
-				for _, info2 := range wanted {
-					if reflect.DeepEqual(info, info2) {
-						continue loop
-					}
-				}
-				return fmt.Errorf("cluster did not reach consistent state (%v)", res)
-			}
-			return nil
+			return assertSlotsEqual(res, wanted)
 		}, 30*time.Second)
 		if err != nil {
 			return err
@@ -157,6 +147,34 @@ func startCluster(scenario *clusterScenario) error {
 	}
 
 	return nil
+}
+
+func assertSlotsEqual(slots, wanted []redis.ClusterSlot) error {
+outer_loop:
+	for _, s2 := range wanted {
+		for _, s1 := range slots {
+			if slotEqual(s1, s2) {
+				continue outer_loop
+			}
+		}
+		return fmt.Errorf("%v not found in %v", s2, slots)
+	}
+	return nil
+}
+
+func slotEqual(s1, s2 redis.ClusterSlot) bool {
+	if s1.Start != s2.Start {
+		return false
+	}
+	if s1.End != s2.End {
+		return false
+	}
+	for i, n1 := range s1.Nodes {
+		if n1.Addr != s2.Nodes[i].Addr {
+			return false
+		}
+	}
+	return true
 }
 
 func stopCluster(scenario *clusterScenario) error {
@@ -223,11 +241,13 @@ var _ = Describe("Cluster", func() {
 			res, err := cluster.primary().ClusterSlots().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(HaveLen(3))
-			Expect(res).To(ConsistOf([]redis.ClusterSlotInfo{
-				{0, 4999, []string{"127.0.0.1:8220", "127.0.0.1:8223"}},
-				{5000, 9999, []string{"127.0.0.1:8221", "127.0.0.1:8224"}},
-				{10000, 16383, []string{"127.0.0.1:8222", "127.0.0.1:8225"}},
-			}))
+
+			wanted := []redis.ClusterSlot{
+				{0, 4999, []redis.ClusterNode{{"", "127.0.0.1:8220"}, {"", "127.0.0.1:8223"}}},
+				{5000, 9999, []redis.ClusterNode{{"", "127.0.0.1:8221"}, {"", "127.0.0.1:8224"}}},
+				{10000, 16383, []redis.ClusterNode{{"", "127.0.0.1:8222"}, {"", "127.0.0.1:8225"}}},
+			}
+			Expect(assertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
 		})
 
 		It("should CLUSTER NODES", func() {
