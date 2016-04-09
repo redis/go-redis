@@ -590,10 +590,10 @@ var _ = Describe("Commands", func() {
 				Expect(set.Err()).NotTo(HaveOccurred())
 			}
 
-			cursor, keys, err := client.Scan(0, "", 0).Result()
+			keys, cursor, err := client.Scan(0, "", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cursor > 0).To(Equal(true))
-			Expect(len(keys) > 0).To(Equal(true))
+			Expect(keys).NotTo(BeEmpty())
+			Expect(cursor).NotTo(BeZero())
 		})
 
 		It("should SScan", func() {
@@ -602,10 +602,10 @@ var _ = Describe("Commands", func() {
 				Expect(sadd.Err()).NotTo(HaveOccurred())
 			}
 
-			cursor, keys, err := client.SScan("myset", 0, "", 0).Result()
+			keys, cursor, err := client.SScan("myset", 0, "", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cursor > 0).To(Equal(true))
-			Expect(len(keys) > 0).To(Equal(true))
+			Expect(keys).NotTo(BeEmpty())
+			Expect(cursor).NotTo(BeZero())
 		})
 
 		It("should HScan", func() {
@@ -614,10 +614,10 @@ var _ = Describe("Commands", func() {
 				Expect(sadd.Err()).NotTo(HaveOccurred())
 			}
 
-			cursor, keys, err := client.HScan("myhash", 0, "", 0).Result()
+			keys, cursor, err := client.HScan("myhash", 0, "", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cursor > 0).To(Equal(true))
-			Expect(len(keys) > 0).To(Equal(true))
+			Expect(keys).NotTo(BeEmpty())
+			Expect(cursor).NotTo(BeZero())
 		})
 
 		It("should ZScan", func() {
@@ -626,10 +626,10 @@ var _ = Describe("Commands", func() {
 				Expect(sadd.Err()).NotTo(HaveOccurred())
 			}
 
-			cursor, keys, err := client.ZScan("myset", 0, "", 0).Result()
+			keys, cursor, err := client.ZScan("myset", 0, "", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cursor > 0).To(Equal(true))
-			Expect(len(keys) > 0).To(Equal(true))
+			Expect(keys).NotTo(BeEmpty())
+			Expect(cursor).NotTo(BeZero())
 		})
 
 	})

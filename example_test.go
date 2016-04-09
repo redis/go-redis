@@ -138,12 +138,12 @@ func ExampleClient_Scan() {
 		}
 	}
 
-	var cursor int64
+	var cursor uint64
 	var n int
 	for {
 		var keys []string
 		var err error
-		cursor, keys, err = client.Scan(cursor, "", 10).Result()
+		keys, cursor, err = client.Scan(cursor, "", 10).Result()
 		if err != nil {
 			panic(err)
 		}
