@@ -14,6 +14,6 @@ func (c *PubSub) Pool() pool.Pooler {
 	return c.base.connPool
 }
 
-func SetReceiveMessageTimeout(d time.Duration) {
-	receiveMessageTimeout = d
+func (c *PubSub) ReceiveMessageTimeout(timeout time.Duration) (*Message, error) {
+	return c.receiveMessage(timeout)
 }

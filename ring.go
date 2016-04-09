@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"gopkg.in/redis.v4/internal"
 	"gopkg.in/redis.v4/internal/consistenthash"
 	"gopkg.in/redis.v4/internal/hashtag"
 	"gopkg.in/redis.v4/internal/pool"
@@ -204,7 +205,7 @@ func (ring *Ring) heartbeat() {
 		for _, shard := range ring.shards {
 			err := shard.Client.Ping().Err()
 			if shard.Vote(err == nil || err == pool.ErrPoolTimeout) {
-				Logger.Printf("ring shard state changed: %s", shard)
+				internal.Logf("ring shard state changed: %s", shard)
 				rebalance = true
 			}
 		}
