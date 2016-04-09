@@ -5,6 +5,7 @@ import (
 	"net"
 	"time"
 
+	"gopkg.in/redis.v3/internal"
 	"gopkg.in/redis.v3/internal/pool"
 )
 
@@ -270,7 +271,7 @@ func (c *PubSub) receiveMessage(timeout time.Duration) (*Message, error) {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					err := c.Ping("")
 					if err != nil {
-						Logger.Printf("PubSub.Ping failed: %s", err)
+						internal.Logf("PubSub.Ping failed: %s", err)
 					}
 				}
 			} else {
@@ -316,12 +317,12 @@ func (c *PubSub) resubscribe() {
 	}
 	if len(c.channels) > 0 {
 		if err := c.Subscribe(c.channels...); err != nil {
-			Logger.Printf("Subscribe failed: %s", err)
+			internal.Logf("Subscribe failed: %s", err)
 		}
 	}
 	if len(c.patterns) > 0 {
 		if err := c.PSubscribe(c.patterns...); err != nil {
-			Logger.Printf("PSubscribe failed: %s", err)
+			internal.Logf("PSubscribe failed: %s", err)
 		}
 	}
 }

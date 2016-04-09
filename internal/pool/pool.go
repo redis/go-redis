@@ -3,17 +3,15 @@ package pool
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"gopkg.in/bsm/ratelimit.v1"
-)
 
-var Logger = log.New(ioutil.Discard, "redis: ", log.LstdFlags)
+	"gopkg.in/redis.v3/internal"
+)
 
 var (
 	ErrClosed      = errors.New("redis: client is closed")
@@ -212,7 +210,7 @@ func (p *ConnPool) Put(cn *Conn) error {
 	if cn.Rd.Buffered() != 0 {
 		b, _ := cn.Rd.Peek(cn.Rd.Buffered())
 		err := fmt.Errorf("connection has unread data: %q", b)
-		Logger.Print(err)
+		internal.Logf(err.Error())
 		return p.Remove(cn, err)
 	}
 	p.freeConnsMu.Lock()
@@ -345,11 +343,11 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 		}
 		n, err := p.ReapStaleConns()
 		if err != nil {
-			Logger.Printf("ReapStaleConns failed: %s", err)
+			internal.Logf("ReapStaleConns failed: %s", err)
 			continue
 		}
 		s := p.Stats()
-		Logger.Printf(
+		internal.Logf(
 			"reaper: removed %d stale conns (TotalConns=%d FreeConns=%d Requests=%d Hits=%d Timeouts=%d)",
 			n, s.TotalConns, s.FreeConns, s.Requests, s.Hits, s.Timeouts,
 		)

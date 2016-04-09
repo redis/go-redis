@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"gopkg.in/redis.v3/internal"
 	"gopkg.in/redis.v3/internal/pool"
 )
 
@@ -59,7 +60,7 @@ func (c *Multi) process(cmd Cmder) {
 func (c *Multi) Close() error {
 	c.closed = true
 	if err := c.Unwatch().Err(); err != nil {
-		Logger.Printf("Unwatch failed: %s", err)
+		internal.Logf("Unwatch failed: %s", err)
 	}
 	return c.base.Close()
 }
