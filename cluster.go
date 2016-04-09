@@ -76,7 +76,6 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		s := client.connPool.Stats()
 		acc.Requests += s.Requests
 		acc.Hits += s.Hits
-		acc.Waits += s.Waits
 		acc.Timeouts += s.Timeouts
 		acc.TotalConns += s.TotalConns
 		acc.FreeConns += s.FreeConns

@@ -166,20 +166,6 @@ func (m *Message) String() string {
 	return fmt.Sprintf("Message<%s: %s>", m.Channel, m.Payload)
 }
 
-// TODO: remove PMessage if favor of Message
-
-// Message matching a pattern-matching subscription received as result
-// of a PUBLISH command issued by another client.
-type PMessage struct {
-	Channel string
-	Pattern string
-	Payload string
-}
-
-func (m *PMessage) String() string {
-	return fmt.Sprintf("PMessage<%s: %s>", m.Channel, m.Payload)
-}
-
 // Pong received as result of a PING command issued by another client.
 type Pong struct {
 	Payload string
@@ -206,7 +192,7 @@ func (c *PubSub) newMessage(reply []interface{}) (interface{}, error) {
 			Payload: reply[2].(string),
 		}, nil
 	case "pmessage":
-		return &PMessage{
+		return &Message{
 			Pattern: reply[1].(string),
 			Channel: reply[2].(string),
 			Payload: reply[3].(string),
@@ -244,9 +230,9 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	return c.newMessage(cmd.Val())
 }
 
-// Receive returns a message as a Subscription, Message, PMessage,
-// Pong or error. See PubSub example for details. This is low-level
-// API and most clients should use ReceiveMessage.
+// Receive returns a message as a Subscription, Message, Pong or error.
+// See PubSub example for details. This is low-level API and most clients
+// should use ReceiveMessage.
 func (c *PubSub) Receive() (interface{}, error) {
 	return c.ReceiveTimeout(0)
 }
@@ -290,12 +276,6 @@ func (c *PubSub) ReceiveMessage() (*Message, error) {
 			// Ignore.
 		case *Message:
 			return msg, nil
-		case *PMessage:
-			return &Message{
-				Channel: msg.Channel,
-				Pattern: msg.Pattern,
-				Payload: msg.Payload,
-			}, nil
 		default:
 			return nil, fmt.Errorf("redis: unknown message: %T", msgi)
 		}

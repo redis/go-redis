@@ -117,7 +117,6 @@ func newConnPool(opt *Options) *pool.ConnPool {
 type PoolStats struct {
 	Requests uint32 // number of times a connection was requested by the pool
 	Hits     uint32 // number of times free connection was found in the pool
-	Waits    uint32 // number of times the pool had to wait for a connection
 	Timeouts uint32 // number of times a wait timeout occurred
 
 	TotalConns uint32 // the number of total connections in the pool
