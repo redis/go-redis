@@ -132,7 +132,7 @@ var _ = Describe("Client", func() {
 		cmd := redis.NewCmd("PING")
 		client.Process(cmd)
 		Expect(cmd.Err()).NotTo(HaveOccurred())
-		Expect(cmd.Val()).To(Equal("PONG"))
+		Expect(cmd.Val()).To(Equal([]byte("PONG")))
 	})
 
 	It("should retry command on network error", func() {
