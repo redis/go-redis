@@ -288,7 +288,7 @@ func ExampleScript() {
 		return false
 	`)
 
-	n, err := IncrByXX.Run(client, []string{"xx_counter"}, []string{"2"}).Result()
+	n, err := IncrByXX.Run(client, []string{"xx_counter"}, 2).Result()
 	fmt.Println(n, err)
 
 	err = client.Set("xx_counter", "40", 0).Err()
@@ -296,7 +296,7 @@ func ExampleScript() {
 		panic(err)
 	}
 
-	n, err = IncrByXX.Run(client, []string{"xx_counter"}, []string{"2"}).Result()
+	n, err = IncrByXX.Run(client, []string{"xx_counter"}, 2).Result()
 	fmt.Println(n, err)
 
 	// Output: <nil> redis: nil
