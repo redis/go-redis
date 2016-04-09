@@ -109,7 +109,6 @@ var _ = Describe("pool", func() {
 		stats := pool.Stats()
 		Expect(stats.Requests).To(Equal(uint32(4)))
 		Expect(stats.Hits).To(Equal(uint32(2)))
-		Expect(stats.Waits).To(Equal(uint32(0)))
 		Expect(stats.Timeouts).To(Equal(uint32(0)))
 	})
 
@@ -127,7 +126,6 @@ var _ = Describe("pool", func() {
 		stats := pool.Stats()
 		Expect(stats.Requests).To(Equal(uint32(101)))
 		Expect(stats.Hits).To(Equal(uint32(100)))
-		Expect(stats.Waits).To(Equal(uint32(0)))
 		Expect(stats.Timeouts).To(Equal(uint32(0)))
 	})
 })

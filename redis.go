@@ -167,7 +167,6 @@ func (c *Client) PoolStats() *PoolStats {
 	return &PoolStats{
 		Requests: s.Requests,
 		Hits:     s.Hits,
-		Waits:    s.Waits,
 		Timeouts: s.Timeouts,
 
 		TotalConns: s.TotalConns,

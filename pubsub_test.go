@@ -53,7 +53,7 @@ var _ = Describe("PubSub", func() {
 		{
 			msgi, err := pubsub.ReceiveTimeout(time.Second)
 			Expect(err).NotTo(HaveOccurred())
-			subscr := msgi.(*redis.PMessage)
+			subscr := msgi.(*redis.Message)
 			Expect(subscr.Channel).To(Equal("mychannel1"))
 			Expect(subscr.Pattern).To(Equal("mychannel*"))
 			Expect(subscr.Payload).To(Equal("hello"))
@@ -69,7 +69,7 @@ var _ = Describe("PubSub", func() {
 		}
 
 		stats := client.PoolStats()
-		Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(2)))
+		Expect(stats.Requests - stats.Hits).To(Equal(uint32(2)))
 	})
 
 	It("should pub/sub channels", func() {
@@ -196,7 +196,7 @@ var _ = Describe("PubSub", func() {
 		}
 
 		stats := client.PoolStats()
-		Expect(stats.Requests - stats.Hits - stats.Waits).To(Equal(uint32(2)))
+		Expect(stats.Requests - stats.Hits).To(Equal(uint32(2)))
 	})
 
 	It("should ping/pong", func() {
