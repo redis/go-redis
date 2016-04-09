@@ -9,13 +9,11 @@ import (
 
 var errDiscard = errors.New("redis: Discard can be used only inside Exec")
 
-// Multi implements Redis transactions as described in
+// Tx implements Redis transactions as described in
 // http://redis.io/topics/transactions. It's NOT safe for concurrent use
 // by multiple goroutines, because Exec resets list of watched keys.
 // If you don't need WATCH it is better to use Pipeline.
-//
-// TODO(vmihailenco): rename to Tx and rework API
-type Multi struct {
+type Tx struct {
 	commandable
 
 	base *baseClient
@@ -24,77 +22,78 @@ type Multi struct {
 	closed bool
 }
 
-// Watch creates new transaction and marks the keys to be watched
-// for conditional execution of a transaction.
-func (c *Client) Watch(keys ...string) (*Multi, error) {
-	tx := c.Multi()
-	if err := tx.Watch(keys...).Err(); err != nil {
-		tx.Close()
-		return nil, err
-	}
-	return tx, nil
-}
-
-// Deprecated. Use Watch instead.
-func (c *Client) Multi() *Multi {
-	multi := &Multi{
+func (c *Client) newTx() *Tx {
+	tx := &Tx{
 		base: &baseClient{
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), true),
 		},
 	}
-	multi.commandable.process = multi.process
-	return multi
+	tx.commandable.process = tx.process
+	return tx
 }
 
-func (c *Multi) process(cmd Cmder) {
-	if c.cmds == nil {
-		c.base.process(cmd)
+// Watch creates new transaction and marks the keys to be watched
+// for conditional execution of a transaction.
+func (c *Client) Watch(keys ...string) (*Tx, error) {
+	tx := c.newTx()
+	if len(keys) > 0 {
+		if err := tx.Watch(keys...).Err(); err != nil {
+			tx.Close()
+			return nil, err
+		}
+	}
+	return tx, nil
+}
+
+func (tx *Tx) process(cmd Cmder) {
+	if tx.cmds == nil {
+		tx.base.process(cmd)
 	} else {
-		c.cmds = append(c.cmds, cmd)
+		tx.cmds = append(tx.cmds, cmd)
 	}
 }
 
-// Close closes the client, releasing any open resources.
-func (c *Multi) Close() error {
-	c.closed = true
-	if err := c.Unwatch().Err(); err != nil {
+// Close closes the transaction, releasing any open resources.
+func (tx *Tx) Close() error {
+	tx.closed = true
+	if err := tx.Unwatch().Err(); err != nil {
 		Logger.Printf("Unwatch failed: %s", err)
 	}
-	return c.base.Close()
+	return tx.base.Close()
 }
 
 // Watch marks the keys to be watched for conditional execution
 // of a transaction.
-func (c *Multi) Watch(keys ...string) *StatusCmd {
+func (tx *Tx) Watch(keys ...string) *StatusCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "WATCH"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewStatusCmd(args...)
-	c.Process(cmd)
+	tx.Process(cmd)
 	return cmd
 }
 
 // Unwatch flushes all the previously watched keys for a transaction.
-func (c *Multi) Unwatch(keys ...string) *StatusCmd {
+func (tx *Tx) Unwatch(keys ...string) *StatusCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "UNWATCH"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewStatusCmd(args...)
-	c.Process(cmd)
+	tx.Process(cmd)
 	return cmd
 }
 
 // Discard discards queued commands.
-func (c *Multi) Discard() error {
-	if c.cmds == nil {
+func (tx *Tx) Discard() error {
+	if tx.cmds == nil {
 		return errDiscard
 	}
-	c.cmds = c.cmds[:1]
+	tx.cmds = tx.cmds[:1]
 	return nil
 }
 
@@ -107,19 +106,19 @@ func (c *Multi) Discard() error {
 // Exec always returns list of commands. If transaction fails
 // TxFailedErr is returned. Otherwise Exec returns error of the first
 // failed command or nil.
-func (c *Multi) Exec(f func() error) ([]Cmder, error) {
-	if c.closed {
+func (tx *Tx) Exec(f func() error) ([]Cmder, error) {
+	if tx.closed {
 		return nil, pool.ErrClosed
 	}
 
-	c.cmds = []Cmder{NewStatusCmd("MULTI")}
+	tx.cmds = []Cmder{NewStatusCmd("MULTI")}
 	if err := f(); err != nil {
 		return nil, err
 	}
-	c.cmds = append(c.cmds, NewSliceCmd("EXEC"))
+	tx.cmds = append(tx.cmds, NewSliceCmd("EXEC"))
 
-	cmds := c.cmds
-	c.cmds = nil
+	cmds := tx.cmds
+	tx.cmds = nil
 
 	if len(cmds) == 2 {
 		return []Cmder{}, nil
@@ -128,18 +127,18 @@ func (c *Multi) Exec(f func() error) ([]Cmder, error) {
 	// Strip MULTI and EXEC commands.
 	retCmds := cmds[1 : len(cmds)-1]
 
-	cn, err := c.base.conn()
+	cn, err := tx.base.conn()
 	if err != nil {
 		setCmdsErr(retCmds, err)
 		return retCmds, err
 	}
 
-	err = c.execCmds(cn, cmds)
-	c.base.putConn(cn, err, false)
+	err = tx.execCmds(cn, cmds)
+	tx.base.putConn(cn, err, false)
 	return retCmds, err
 }
 
-func (c *Multi) execCmds(cn *pool.Conn, cmds []Cmder) error {
+func (tx *Tx) execCmds(cn *pool.Conn, cmds []Cmder) error {
 	err := writeCmd(cn, cmds...)
 	if err != nil {
 		setCmdsErr(cmds[1:len(cmds)-1], err)

@@ -4,9 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strconv"
-	"sync"
-	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -2547,63 +2544,6 @@ var _ = Describe("Commands", func() {
 			val, err := client.ZRangeWithScores("out", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]redis.Z{{5, "one"}, {9, "three"}, {10, "two"}}))
-		})
-
-	})
-
-	Describe("watch/unwatch", func() {
-
-		It("should WatchUnwatch", func() {
-			var C, N = 10, 1000
-			if testing.Short() {
-				N = 100
-			}
-
-			err := client.Set("key", "0", 0).Err()
-			Expect(err).NotTo(HaveOccurred())
-
-			wg := &sync.WaitGroup{}
-			for i := 0; i < C; i++ {
-				wg.Add(1)
-
-				go func() {
-					defer GinkgoRecover()
-					defer wg.Done()
-
-					multi := client.Multi()
-					defer multi.Close()
-
-					for j := 0; j < N; j++ {
-						val, err := multi.Watch("key").Result()
-						Expect(err).NotTo(HaveOccurred())
-						Expect(val).To(Equal("OK"))
-
-						val, err = multi.Get("key").Result()
-						Expect(err).NotTo(HaveOccurred())
-						Expect(val).NotTo(Equal(redis.Nil))
-
-						num, err := strconv.ParseInt(val, 10, 64)
-						Expect(err).NotTo(HaveOccurred())
-
-						cmds, err := multi.Exec(func() error {
-							multi.Set("key", strconv.FormatInt(num+1, 10), 0)
-							return nil
-						})
-						if err == redis.TxFailedErr {
-							j--
-							continue
-						}
-						Expect(err).NotTo(HaveOccurred())
-						Expect(cmds).To(HaveLen(1))
-						Expect(cmds[0].Err()).NotTo(HaveOccurred())
-					}
-				}()
-			}
-			wg.Wait()
-
-			val, err := client.Get("key").Int64()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(val).To(Equal(int64(C * N)))
 		})
 
 	})
