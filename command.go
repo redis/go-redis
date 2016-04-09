@@ -165,13 +165,7 @@ func (cmd *Cmd) readReply(cn *pool.Conn) error {
 		cmd.err = err
 		return cmd.err
 	}
-	if v, ok := val.([]byte); ok {
-		// Convert to string to preserve old behaviour.
-		// TODO: remove in v4
-		cmd.val = string(v)
-	} else {
-		cmd.val = val
-	}
+	cmd.val = val
 	return nil
 }
 
