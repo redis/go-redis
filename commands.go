@@ -1543,7 +1543,7 @@ func (c *commandable) Time() *StringSliceCmd {
 
 //------------------------------------------------------------------------------
 
-func (c *commandable) Eval(script string, keys []string, args []string) *Cmd {
+func (c *commandable) Eval(script string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := make([]interface{}, 3+len(keys)+len(args))
 	cmdArgs[0] = "EVAL"
 	cmdArgs[1] = script
@@ -1563,7 +1563,7 @@ func (c *commandable) Eval(script string, keys []string, args []string) *Cmd {
 	return cmd
 }
 
-func (c *commandable) EvalSha(sha1 string, keys []string, args []string) *Cmd {
+func (c *commandable) EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := make([]interface{}, 3+len(keys)+len(args))
 	cmdArgs[0] = "EVALSHA"
 	cmdArgs[1] = sha1
