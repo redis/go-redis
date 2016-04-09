@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"testing"
 
-	"gopkg.in/redis.v3/internal/pool"
+	"gopkg.in/redis.v4/internal/pool"
 )
 
 func BenchmarkParseReplyStatus(b *testing.B) {

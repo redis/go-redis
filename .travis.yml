@@ -19,5 +19,5 @@ install:
   - go get github.com/onsi/gomega
   - go get github.com/garyburd/redigo/redis
   - mkdir -p $HOME/gopath/src/gopkg.in
-  - mv $HOME/gopath/src/github.com/go-redis/redis $HOME/gopath/src/gopkg.in/redis.v3
-  - cd $HOME/gopath/src/gopkg.in/redis.v3
+  - mv $HOME/gopath/src/github.com/go-redis/redis $HOME/gopath/src/gopkg.in/redis.v4
+  - cd $HOME/gopath/src/gopkg.in/redis.v4

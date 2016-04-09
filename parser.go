@@ -6,7 +6,7 @@ import (
 	"net"
 	"strconv"
 
-	"gopkg.in/redis.v3/internal/pool"
+	"gopkg.in/redis.v4/internal/pool"
 )
 
 const (
