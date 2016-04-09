@@ -256,8 +256,7 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should ReceiveMessage after timeout", func() {
-		timeout := time.Second
-		redis.SetReceiveMessageTimeout(timeout)
+		timeout := 100 * time.Millisecond
 
 		pubsub, err := client.Subscribe("mychannel")
 		Expect(err).NotTo(HaveOccurred())
@@ -276,7 +275,7 @@ var _ = Describe("PubSub", func() {
 			Expect(n).To(Equal(int64(1)))
 		}()
 
-		msg, err := pubsub.ReceiveMessage()
+		msg, err := pubsub.ReceiveMessageTimeout(timeout)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal("hello"))
