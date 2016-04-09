@@ -449,7 +449,7 @@ var _ = Describe("Cluster", func() {
 			Expect(client.Set("C", "C_value", 0).Err()).NotTo(HaveOccurred())
 
 			var a, b, c *redis.StringCmd
-			cmds, err := client.Pipelined(func(pipe *redis.ClusterPipeline) error {
+			cmds, err := client.Pipelined(func(pipe *redis.Pipeline) error {
 				a = pipe.Get("A")
 				b = pipe.Get("B")
 				c = pipe.Get("C")

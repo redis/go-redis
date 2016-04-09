@@ -241,66 +241,24 @@ func (ring *Ring) Close() (retErr error) {
 	return retErr
 }
 
-// RingPipeline creates a new pipeline which is able to execute commands
-// against multiple shards. It's NOT safe for concurrent use by
-// multiple goroutines.
-type RingPipeline struct {
-	commandable
-
-	ring *Ring
-
-	cmds   []Cmder
-	closed bool
-}
-
-func (ring *Ring) Pipeline() *RingPipeline {
-	pipe := &RingPipeline{
-		ring: ring,
-		cmds: make([]Cmder, 0, 10),
+func (ring *Ring) Pipeline() *Pipeline {
+	pipe := &Pipeline{
+		exec: ring.pipelineExec,
 	}
 	pipe.commandable.process = pipe.process
 	return pipe
 }
 
-func (ring *Ring) Pipelined(fn func(*RingPipeline) error) ([]Cmder, error) {
-	pipe := ring.Pipeline()
-	if err := fn(pipe); err != nil {
-		return nil, err
-	}
-	cmds, err := pipe.Exec()
-	pipe.Close()
-	return cmds, err
+func (ring *Ring) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+	return ring.Pipeline().pipelined(fn)
 }
 
-func (pipe *RingPipeline) process(cmd Cmder) {
-	pipe.cmds = append(pipe.cmds, cmd)
-}
-
-// Discard resets the pipeline and discards queued commands.
-func (pipe *RingPipeline) Discard() error {
-	if pipe.closed {
-		return pool.ErrClosed
-	}
-	pipe.cmds = pipe.cmds[:0]
-	return nil
-}
-
-// Exec always returns list of commands and error of the first failed
-// command if any.
-func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
-	if pipe.closed {
-		return nil, pool.ErrClosed
-	}
-	if len(pipe.cmds) == 0 {
-		return pipe.cmds, nil
-	}
-
-	cmds = pipe.cmds
-	pipe.cmds = make([]Cmder, 0, 10)
+func (ring *Ring) pipelineExec(cmds []Cmder) error {
+	var retErr error
 
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
-		name := pipe.ring.hash.Get(hashtag.Key(cmd.clusterKey()))
+		name := ring.hash.Get(hashtag.Key(cmd.clusterKey()))
 		if name == "" {
 			cmd.setErr(errRingShardsDown)
 			if retErr == nil {
@@ -311,11 +269,11 @@ func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
 		cmdsMap[name] = append(cmdsMap[name], cmd)
 	}
 
-	for i := 0; i <= pipe.ring.opt.MaxRetries; i++ {
+	for i := 0; i <= ring.opt.MaxRetries; i++ {
 		failedCmdsMap := make(map[string][]Cmder)
 
 		for name, cmds := range cmdsMap {
-			client := pipe.ring.shards[name].Client
+			client := ring.shards[name].Client
 			cn, err := client.conn()
 			if err != nil {
 				setCmdsErr(cmds, err)
@@ -344,12 +302,5 @@ func (pipe *RingPipeline) Exec() (cmds []Cmder, retErr error) {
 		cmdsMap = failedCmdsMap
 	}
 
-	return cmds, retErr
-}
-
-// Close closes the pipeline, releasing any open resources.
-func (pipe *RingPipeline) Close() error {
-	pipe.Discard()
-	pipe.closed = true
-	return nil
+	return retErr
 }

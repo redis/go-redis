@@ -8,8 +8,8 @@ import (
 )
 
 type scripter interface {
-	Eval(script string, keys []string, args []string) *Cmd
-	EvalSha(sha1 string, keys []string, args []string) *Cmd
+	Eval(script string, keys []string, args ...interface{}) *Cmd
+	EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd
 	ScriptExists(scripts ...string) *BoolSliceCmd
 	ScriptLoad(script string) *StringCmd
 }
@@ -35,18 +35,18 @@ func (s *Script) Exists(c scripter) *BoolSliceCmd {
 	return c.ScriptExists(s.src)
 }
 
-func (s *Script) Eval(c scripter, keys []string, args []string) *Cmd {
-	return c.Eval(s.src, keys, args)
+func (s *Script) Eval(c scripter, keys []string, args ...interface{}) *Cmd {
+	return c.Eval(s.src, keys, args...)
 }
 
-func (s *Script) EvalSha(c scripter, keys []string, args []string) *Cmd {
-	return c.EvalSha(s.hash, keys, args)
+func (s *Script) EvalSha(c scripter, keys []string, args ...interface{}) *Cmd {
+	return c.EvalSha(s.hash, keys, args...)
 }
 
-func (s *Script) Run(c scripter, keys []string, args []string) *Cmd {
-	r := s.EvalSha(c, keys, args)
+func (s *Script) Run(c scripter, keys []string, args ...interface{}) *Cmd {
+	r := s.EvalSha(c, keys, args...)
 	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
-		return s.Eval(c, keys, args)
+		return s.Eval(c, keys, args...)
 	}
 	return r
 }
