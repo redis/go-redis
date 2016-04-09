@@ -237,7 +237,7 @@ func (c *ClusterClient) resetClients() (retErr error) {
 	return retErr
 }
 
-func (c *ClusterClient) setSlots(slots []ClusterSlotInfo) {
+func (c *ClusterClient) setSlots(slots []ClusterSlot) {
 	c.slotsMx.Lock()
 
 	seen := make(map[string]struct{})
@@ -248,15 +248,20 @@ func (c *ClusterClient) setSlots(slots []ClusterSlotInfo) {
 	for i := 0; i < hashtag.SlotNumber; i++ {
 		c.slots[i] = c.slots[i][:0]
 	}
-	for _, info := range slots {
-		for slot := info.Start; slot <= info.End; slot++ {
-			c.slots[slot] = info.Addrs
+	for _, slot := range slots {
+		var addrs []string
+		for _, node := range slot.Nodes {
+			addrs = append(addrs, node.Addr)
 		}
 
-		for _, addr := range info.Addrs {
-			if _, ok := seen[addr]; !ok {
-				c.addrs = append(c.addrs, addr)
-				seen[addr] = struct{}{}
+		for i := slot.Start; i <= slot.End; i++ {
+			c.slots[i] = addrs
+		}
+
+		for _, node := range slot.Nodes {
+			if _, ok := seen[node.Addr]; !ok {
+				c.addrs = append(c.addrs, node.Addr)
+				seen[node.Addr] = struct{}{}
 			}
 		}
 	}

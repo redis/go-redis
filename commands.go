@@ -1659,8 +1659,8 @@ func (c *commandable) PubSubNumPat() *IntCmd {
 
 //------------------------------------------------------------------------------
 
-func (c *commandable) ClusterSlots() *ClusterSlotCmd {
-	cmd := NewClusterSlotCmd("CLUSTER", "slots")
+func (c *commandable) ClusterSlots() *ClusterSlotsCmd {
+	cmd := NewClusterSlotsCmd("CLUSTER", "slots")
 	cmd._clusterKeyPos = 0
 	c.Process(cmd)
 	return cmd
