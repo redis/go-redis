@@ -10,7 +10,7 @@ import (
 	"gopkg.in/redis.v3"
 )
 
-var _ = Describe("Multi", func() {
+var _ = Describe("Tx", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
@@ -67,15 +67,16 @@ var _ = Describe("Multi", func() {
 	})
 
 	It("should discard", func() {
-		multi := client.Multi()
+		tx, err := client.Watch("key1", "key2")
+		Expect(err).NotTo(HaveOccurred())
 		defer func() {
-			Expect(multi.Close()).NotTo(HaveOccurred())
+			Expect(tx.Close()).NotTo(HaveOccurred())
 		}()
 
-		cmds, err := multi.Exec(func() error {
-			multi.Set("key1", "hello1", 0)
-			multi.Discard()
-			multi.Set("key2", "hello2", 0)
+		cmds, err := tx.Exec(func() error {
+			tx.Set("key1", "hello1", 0)
+			tx.Discard()
+			tx.Set("key2", "hello2", 0)
 			return nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -91,40 +92,31 @@ var _ = Describe("Multi", func() {
 	})
 
 	It("should exec empty", func() {
-		multi := client.Multi()
+		tx, err := client.Watch()
+		Expect(err).NotTo(HaveOccurred())
 		defer func() {
-			Expect(multi.Close()).NotTo(HaveOccurred())
+			Expect(tx.Close()).NotTo(HaveOccurred())
 		}()
 
-		cmds, err := multi.Exec(func() error { return nil })
+		cmds, err := tx.Exec(func() error { return nil })
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cmds).To(HaveLen(0))
 
-		ping := multi.Ping()
+		ping := tx.Ping()
 		Expect(ping.Err()).NotTo(HaveOccurred())
 		Expect(ping.Val()).To(Equal("PONG"))
 	})
 
-	It("should exec empty queue", func() {
-		multi := client.Multi()
-		defer func() {
-			Expect(multi.Close()).NotTo(HaveOccurred())
-		}()
-
-		cmds, err := multi.Exec(func() error { return nil })
-		Expect(err).NotTo(HaveOccurred())
-		Expect(cmds).To(HaveLen(0))
-	})
-
 	It("should exec bulks", func() {
-		multi := client.Multi()
+		tx, err := client.Watch()
+		Expect(err).NotTo(HaveOccurred())
 		defer func() {
-			Expect(multi.Close()).NotTo(HaveOccurred())
+			Expect(tx.Close()).NotTo(HaveOccurred())
 		}()
 
-		cmds, err := multi.Exec(func() error {
+		cmds, err := tx.Exec(func() error {
 			for i := int64(0); i < 20000; i++ {
-				multi.Incr("key")
+				tx.Incr("key")
 			}
 			return nil
 		})
@@ -148,19 +140,20 @@ var _ = Describe("Multi", func() {
 		err = client.Pool().Put(cn)
 		Expect(err).NotTo(HaveOccurred())
 
-		multi := client.Multi()
+		tx, err := client.Watch()
+		Expect(err).NotTo(HaveOccurred())
 		defer func() {
-			Expect(multi.Close()).NotTo(HaveOccurred())
+			Expect(tx.Close()).NotTo(HaveOccurred())
 		}()
 
-		_, err = multi.Exec(func() error {
-			multi.Ping()
+		_, err = tx.Exec(func() error {
+			tx.Ping()
 			return nil
 		})
 		Expect(err).To(MatchError("bad connection"))
 
-		_, err = multi.Exec(func() error {
-			multi.Ping()
+		_, err = tx.Exec(func() error {
+			tx.Ping()
 			return nil
 		})
 		Expect(err).NotTo(HaveOccurred())

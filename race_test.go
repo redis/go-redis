@@ -208,4 +208,43 @@ var _ = Describe("races", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	It("should Watch/Unwatch", func() {
+		err := client.Set("key", "0", 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		perform(C, func(id int) {
+			for i := 0; i < N; i++ {
+				tx, err := client.Watch("key")
+				Expect(err).NotTo(HaveOccurred())
+
+				val, err := tx.Get("key").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(Equal(redis.Nil))
+
+				num, err := strconv.ParseInt(val, 10, 64)
+				Expect(err).NotTo(HaveOccurred())
+
+				cmds, err := tx.Exec(func() error {
+					tx.Set("key", strconv.FormatInt(num+1, 10), 0)
+					return nil
+				})
+				if err == redis.TxFailedErr {
+					i--
+					continue
+				}
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cmds).To(HaveLen(1))
+				Expect(cmds[0].Err()).NotTo(HaveOccurred())
+
+				err = tx.Close()
+				Expect(err).NotTo(HaveOccurred())
+			}
+		})
+
+		val, err := client.Get("key").Int64()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal(int64(C * N)))
+	})
+
 })

@@ -37,16 +37,18 @@ var _ = Describe("pool", func() {
 		perform(1000, func(id int) {
 			var ping *redis.StatusCmd
 
-			multi := client.Multi()
-			cmds, err := multi.Exec(func() error {
-				ping = multi.Ping()
+			tx, err := client.Watch()
+			Expect(err).NotTo(HaveOccurred())
+
+			cmds, err := tx.Exec(func() error {
+				ping = tx.Ping()
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(1))
 			Expect(ping.Err()).NotTo(HaveOccurred())
 			Expect(ping.Val()).To(Equal("PONG"))
-			Expect(multi.Close()).NotTo(HaveOccurred())
+			Expect(tx.Close()).NotTo(HaveOccurred())
 		})
 
 		pool := client.Pool()
