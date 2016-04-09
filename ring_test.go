@@ -96,7 +96,7 @@ var _ = Describe("Redis ring", func() {
 	Describe("pipelining", func() {
 		It("returns an error when all shards are down", func() {
 			ring := redis.NewRing(&redis.RingOptions{})
-			_, err := ring.Pipelined(func(pipe *redis.RingPipeline) error {
+			_, err := ring.Pipelined(func(pipe *redis.Pipeline) error {
 				pipe.Ping()
 				return nil
 			})
@@ -133,7 +133,7 @@ var _ = Describe("Redis ring", func() {
 				keys = append(keys, string(key))
 			}
 
-			_, err := ring.Pipelined(func(pipe *redis.RingPipeline) error {
+			_, err := ring.Pipelined(func(pipe *redis.Pipeline) error {
 				for _, key := range keys {
 					pipe.Set(key, "value", 0).Err()
 				}
@@ -149,7 +149,7 @@ var _ = Describe("Redis ring", func() {
 		})
 
 		It("supports hash tags", func() {
-			_, err := ring.Pipelined(func(pipe *redis.RingPipeline) error {
+			_, err := ring.Pipelined(func(pipe *redis.Pipeline) error {
 				for i := 0; i < 100; i++ {
 					pipe.Set(fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
 				}

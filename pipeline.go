@@ -13,31 +13,12 @@ import (
 type Pipeline struct {
 	commandable
 
-	client baseClient
+	exec func([]Cmder) error
 
 	mu   sync.Mutex // protects cmds
 	cmds []Cmder
 
 	closed int32
-}
-
-func (c *Client) Pipeline() *Pipeline {
-	pipe := &Pipeline{
-		client: c.baseClient,
-		cmds:   make([]Cmder, 0, 10),
-	}
-	pipe.commandable.process = pipe.process
-	return pipe
-}
-
-func (c *Client) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
-	pipe := c.Pipeline()
-	if err := fn(pipe); err != nil {
-		return nil, err
-	}
-	cmds, err := pipe.Exec()
-	_ = pipe.Close()
-	return cmds, err
 }
 
 func (pipe *Pipeline) process(cmd Cmder) {
@@ -73,7 +54,7 @@ func (pipe *Pipeline) Discard() error {
 //
 // Exec always returns list of commands and error of the first failed
 // command if any.
-func (pipe *Pipeline) Exec() (cmds []Cmder, retErr error) {
+func (pipe *Pipeline) Exec() ([]Cmder, error) {
 	if pipe.isClosed() {
 		return nil, pool.ErrClosed
 	}
@@ -85,31 +66,19 @@ func (pipe *Pipeline) Exec() (cmds []Cmder, retErr error) {
 		return pipe.cmds, nil
 	}
 
-	cmds = pipe.cmds
-	pipe.cmds = make([]Cmder, 0, 10)
+	cmds := pipe.cmds
+	pipe.cmds = nil
 
-	failedCmds := cmds
-	for i := 0; i <= pipe.client.opt.MaxRetries; i++ {
-		cn, err := pipe.client.conn()
-		if err != nil {
-			setCmdsErr(failedCmds, err)
-			return cmds, err
-		}
+	return cmds, pipe.exec(cmds)
+}
 
-		if i > 0 {
-			resetCmds(failedCmds)
-		}
-		failedCmds, err = execCmds(cn, failedCmds)
-		pipe.client.putConn(cn, err, false)
-		if err != nil && retErr == nil {
-			retErr = err
-		}
-		if len(failedCmds) == 0 {
-			break
-		}
+func (pipe *Pipeline) pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+	if err := fn(pipe); err != nil {
+		return nil, err
 	}
-
-	return cmds, retErr
+	cmds, err := pipe.Exec()
+	_ = pipe.Close()
+	return cmds, err
 }
 
 func execCmds(cn *pool.Conn, cmds []Cmder) ([]Cmder, error) {
