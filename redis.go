@@ -174,3 +174,40 @@ func (c *Client) PoolStats() *PoolStats {
 		FreeConns:  s.FreeConns,
 	}
 }
+
+func (c *Client) Pipeline() *Pipeline {
+	pipe := &Pipeline{
+		exec: c.pipelineExec,
+	}
+	pipe.commandable.process = pipe.process
+	return pipe
+}
+
+func (c *Client) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+	return c.Pipeline().pipelined(fn)
+}
+
+func (c *Client) pipelineExec(cmds []Cmder) error {
+	var retErr error
+	failedCmds := cmds
+	for i := 0; i <= c.opt.MaxRetries; i++ {
+		cn, err := c.conn()
+		if err != nil {
+			setCmdsErr(failedCmds, err)
+			return err
+		}
+
+		if i > 0 {
+			resetCmds(failedCmds)
+		}
+		failedCmds, err = execCmds(cn, failedCmds)
+		c.putConn(cn, err, false)
+		if err != nil && retErr == nil {
+			retErr = err
+		}
+		if len(failedCmds) == 0 {
+			break
+		}
+	}
+	return retErr
+}
