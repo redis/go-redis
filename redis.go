@@ -1,11 +1,11 @@
-package redis // import "gopkg.in/redis.v3"
+package redis // import "gopkg.in/redis.v4"
 
 import (
 	"fmt"
 	"io/ioutil"
 	"log"
 
-	"gopkg.in/redis.v3/internal/pool"
+	"gopkg.in/redis.v4/internal/pool"
 )
 
 // Deprecated. Use SetLogger instead.

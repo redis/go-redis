@@ -7,7 +7,7 @@ import (
 
 	redigo "github.com/garyburd/redigo/redis"
 
-	"gopkg.in/redis.v3"
+	"gopkg.in/redis.v4"
 )
 
 func benchmarkRedisClient(poolSize int) *redis.Client {

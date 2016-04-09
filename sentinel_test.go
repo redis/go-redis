@@ -4,7 +4,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"gopkg.in/redis.v3"
+	"gopkg.in/redis.v4"
 )
 
 var _ = Describe("Sentinel", func() {
