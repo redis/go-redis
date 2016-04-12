@@ -128,11 +128,15 @@ var _ = Describe("Client", func() {
 		Expect(db2.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should process custom commands", func() {
+	It("processes custom commands", func() {
 		cmd := redis.NewCmd("PING")
 		client.Process(cmd)
+
+		// Flush buffers.
+		Expect(client.Echo("hello").Err()).NotTo(HaveOccurred())
+
 		Expect(cmd.Err()).NotTo(HaveOccurred())
-		Expect(cmd.Val()).To(Equal([]byte("PONG")))
+		Expect(cmd.Val()).To(Equal("PONG"))
 	})
 
 	It("should retry command on network error", func() {

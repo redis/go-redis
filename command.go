@@ -165,7 +165,12 @@ func (cmd *Cmd) readReply(cn *pool.Conn) error {
 		cmd.err = err
 		return cmd.err
 	}
-	cmd.val = val
+	if b, ok := val.([]byte); ok {
+		// Bytes must be copied, because underlying memory is reused.
+		cmd.val = string(b)
+	} else {
+		cmd.val = val
+	}
 	return nil
 }
 
