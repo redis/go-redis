@@ -689,41 +689,42 @@ type ScanCmd struct {
 	baseCmd
 
 	cursor int64
-	keys   []string
+	page   []string
 }
 
 func NewScanCmd(args ...interface{}) *ScanCmd {
-	return &ScanCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	return &ScanCmd{
+		baseCmd: baseCmd{_args: args, _clusterKeyPos: 1},
+	}
 }
 
 func (cmd *ScanCmd) reset() {
 	cmd.cursor = 0
-	cmd.keys = nil
+	cmd.page = nil
 	cmd.err = nil
 }
 
-// TODO: cursor should be string to match redis type
 // TODO: swap return values
 
 func (cmd *ScanCmd) Val() (int64, []string) {
-	return cmd.cursor, cmd.keys
+	return cmd.cursor, cmd.page
 }
 
 func (cmd *ScanCmd) Result() (int64, []string, error) {
-	return cmd.cursor, cmd.keys, cmd.err
+	return cmd.cursor, cmd.page, cmd.err
 }
 
 func (cmd *ScanCmd) String() string {
-	return cmdString(cmd, cmd.keys)
+	return cmdString(cmd, cmd.page)
 }
 
 func (cmd *ScanCmd) readReply(cn *pool.Conn) error {
-	keys, cursor, err := readScanReply(cn)
+	page, cursor, err := readScanReply(cn)
 	if err != nil {
 		cmd.err = err
 		return cmd.err
 	}
-	cmd.keys = keys
+	cmd.page = page
 	cmd.cursor = cursor
 	return nil
 }

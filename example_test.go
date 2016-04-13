@@ -314,3 +314,23 @@ func Example_customCommand() {
 	fmt.Printf("%q %s", v, err)
 	// Output: "" redis: nil
 }
+
+func ExampleScanIterator() {
+	iter := client.Scan(0, "", 0).Iterator()
+	for iter.Next() {
+		fmt.Println(iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		panic(err)
+	}
+}
+
+func ExampleScanCmd_Iterator() {
+	iter := client.Scan(0, "", 0).Iterator()
+	for iter.Next() {
+		fmt.Println(iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		panic(err)
+	}
+}
