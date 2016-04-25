@@ -7,7 +7,7 @@ import (
 	"gopkg.in/redis.v4"
 )
 
-var _ = Describe("Command", func() {
+var _ = Describe("Cmd", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
@@ -19,7 +19,7 @@ var _ = Describe("Command", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should implement Stringer", func() {
+	It("implements Stringer", func() {
 		set := client.Set("foo", "bar", 0)
 		Expect(set.String()).To(Equal("SET foo bar: OK"))
 
@@ -27,7 +27,7 @@ var _ = Describe("Command", func() {
 		Expect(get.String()).To(Equal("GET foo: bar"))
 	})
 
-	It("should have correct val/err states", func() {
+	It("has val/err", func() {
 		set := client.Set("key", "hello", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 		Expect(set.Val()).To(Equal("OK"))
@@ -40,7 +40,7 @@ var _ = Describe("Command", func() {
 		Expect(set.Val()).To(Equal("OK"))
 	})
 
-	It("should convert strings via helpers", func() {
+	It("has helpers", func() {
 		set := client.Set("key", "10", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 
