@@ -693,8 +693,8 @@ func (cmd *ZSliceCmd) readReply(cn *pool.Conn) error {
 type ScanCmd struct {
 	baseCmd
 
-	cursor int64
 	page   []string
+	cursor uint64
 }
 
 func NewScanCmd(args ...interface{}) *ScanCmd {
@@ -709,14 +709,12 @@ func (cmd *ScanCmd) reset() {
 	cmd.err = nil
 }
 
-// TODO: swap return values
-
-func (cmd *ScanCmd) Val() (int64, []string) {
-	return cmd.cursor, cmd.page
+func (cmd *ScanCmd) Val() (keys []string, cursor uint64) {
+	return cmd.page, cmd.cursor
 }
 
-func (cmd *ScanCmd) Result() (int64, []string, error) {
-	return cmd.cursor, cmd.page, cmd.err
+func (cmd *ScanCmd) Result() (keys []string, cursor uint64, err error) {
+	return cmd.page, cmd.cursor, cmd.err
 }
 
 func (cmd *ScanCmd) String() string {

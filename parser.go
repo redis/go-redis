@@ -399,7 +399,7 @@ func readReply(cn *pool.Conn, p multiBulkParser) (interface{}, error) {
 	return nil, fmt.Errorf("redis: can't parse %.100q", line)
 }
 
-func readScanReply(cn *pool.Conn) ([]string, int64, error) {
+func readScanReply(cn *pool.Conn) ([]string, uint64, error) {
 	n, err := readArrayHeader(cn)
 	if err != nil {
 		return nil, 0, err
@@ -413,7 +413,7 @@ func readScanReply(cn *pool.Conn) ([]string, int64, error) {
 		return nil, 0, err
 	}
 
-	cursor, err := strconv.ParseInt(bytesToString(b), 10, 64)
+	cursor, err := strconv.ParseUint(bytesToString(b), 10, 64)
 	if err != nil {
 		return nil, 0, err
 	}
