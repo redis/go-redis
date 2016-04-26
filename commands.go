@@ -318,7 +318,7 @@ func (c *commandable) Type(key string) *StatusCmd {
 	return cmd
 }
 
-func (c *commandable) Scan(cursor int64, match string, count int64) *ScanCmd {
+func (c *commandable) Scan(cursor int64, match string, count int64) Scanner {
 	args := []interface{}{"SCAN", cursor}
 	if match != "" {
 		args = append(args, "MATCH", match)
@@ -328,10 +328,13 @@ func (c *commandable) Scan(cursor int64, match string, count int64) *ScanCmd {
 	}
 	cmd := NewScanCmd(args...)
 	c.Process(cmd)
-	return cmd
+	return Scanner{
+		client:  c,
+		ScanCmd: cmd,
+	}
 }
 
-func (c *commandable) SScan(key string, cursor int64, match string, count int64) *ScanCmd {
+func (c *commandable) SScan(key string, cursor int64, match string, count int64) Scanner {
 	args := []interface{}{"SSCAN", key, cursor}
 	if match != "" {
 		args = append(args, "MATCH", match)
@@ -341,10 +344,13 @@ func (c *commandable) SScan(key string, cursor int64, match string, count int64)
 	}
 	cmd := NewScanCmd(args...)
 	c.Process(cmd)
-	return cmd
+	return Scanner{
+		client:  c,
+		ScanCmd: cmd,
+	}
 }
 
-func (c *commandable) HScan(key string, cursor int64, match string, count int64) *ScanCmd {
+func (c *commandable) HScan(key string, cursor int64, match string, count int64) Scanner {
 	args := []interface{}{"HSCAN", key, cursor}
 	if match != "" {
 		args = append(args, "MATCH", match)
@@ -354,10 +360,13 @@ func (c *commandable) HScan(key string, cursor int64, match string, count int64)
 	}
 	cmd := NewScanCmd(args...)
 	c.Process(cmd)
-	return cmd
+	return Scanner{
+		client:  c,
+		ScanCmd: cmd,
+	}
 }
 
-func (c *commandable) ZScan(key string, cursor int64, match string, count int64) *ScanCmd {
+func (c *commandable) ZScan(key string, cursor int64, match string, count int64) Scanner {
 	args := []interface{}{"ZSCAN", key, cursor}
 	if match != "" {
 		args = append(args, "MATCH", match)
@@ -367,7 +376,10 @@ func (c *commandable) ZScan(key string, cursor int64, match string, count int64)
 	}
 	cmd := NewScanCmd(args...)
 	c.Process(cmd)
-	return cmd
+	return Scanner{
+		client:  c,
+		ScanCmd: cmd,
+	}
 }
 
 //------------------------------------------------------------------------------

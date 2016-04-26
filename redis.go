@@ -146,12 +146,13 @@ type Client struct {
 
 func newClient(opt *Options, pool pool.Pooler) *Client {
 	base := baseClient{opt: opt, connPool: pool}
-	return &Client{
+	client := &Client{
 		baseClient: base,
 		commandable: commandable{
 			process: base.process,
 		},
 	}
+	return client
 }
 
 // NewClient returns a client to the Redis Server specified by Options.

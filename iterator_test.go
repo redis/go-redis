@@ -1,0 +1,89 @@
+package redis_test
+
+import (
+	"fmt"
+
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
+
+	"gopkg.in/redis.v4"
+)
+
+var _ = Describe("ScanIterator", func() {
+	var client *redis.Client
+
+	var seed = func(n int) error {
+		pipe := client.Pipeline()
+		for i := 1; i <= n; i++ {
+			pipe.Set(fmt.Sprintf("K%02d", i), "x", 0).Err()
+		}
+		_, err := pipe.Exec()
+		return err
+	}
+
+	BeforeEach(func() {
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should scan across empty DBs", func() {
+		iter := client.Scan(0, "", 10).Iterator()
+		Expect(iter.Next()).To(BeFalse())
+		Expect(iter.Err()).NotTo(HaveOccurred())
+	})
+
+	It("should scan across one page", func() {
+		Expect(seed(7)).NotTo(HaveOccurred())
+
+		var vals []string
+		iter := client.Scan(0, "", 0).Iterator()
+		for iter.Next() {
+			vals = append(vals, iter.Val())
+		}
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(ConsistOf([]string{"K01", "K02", "K03", "K04", "K05", "K06", "K07"}))
+	})
+
+	It("should scan across multiple pages", func() {
+		Expect(seed(71)).NotTo(HaveOccurred())
+
+		var vals []string
+		iter := client.Scan(0, "", 10).Iterator()
+		for iter.Next() {
+			vals = append(vals, iter.Val())
+		}
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(71))
+		Expect(vals).To(ContainElement("K01"))
+		Expect(vals).To(ContainElement("K71"))
+	})
+
+	It("should scan to page borders", func() {
+		Expect(seed(20)).NotTo(HaveOccurred())
+
+		var vals []string
+		iter := client.Scan(0, "", 10).Iterator()
+		for iter.Next() {
+			vals = append(vals, iter.Val())
+		}
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(20))
+	})
+
+	It("should scan with match", func() {
+		Expect(seed(33)).NotTo(HaveOccurred())
+
+		var vals []string
+		iter := client.Scan(0, "K*2*", 10).Iterator()
+		for iter.Next() {
+			vals = append(vals, iter.Val())
+		}
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(13))
+	})
+
+})
