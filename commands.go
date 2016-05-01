@@ -696,12 +696,12 @@ func (c *commandable) HMSet(key, field, value string, pairs ...string) *StatusCm
 	return cmd
 }
 
-func (c *commandable) HMSetMap(key string, slice map[string]string) *StatusCmd {
+func (c *commandable) HMSetMap(key string, fields map[string]string) *StatusCmd {
 	args := make([]interface{}, 2+len(slice)*2)
 	args[0] = "HMSET"
 	args[1] = key
 	i := 2
-	for k, v := range slice {
+	for k, v := range fields {
 		args[i] = k
 		args[i+1] = v
 		i += 2

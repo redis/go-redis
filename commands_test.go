@@ -1196,11 +1196,10 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HMSetMap", func() {
-			slice := map[string]string{
+			hMSetMap := client.HMSetMap("hash", map[string]string{
 				"key3": "hello3",
 				"key4": "hello4",
-			}
-			hMSetMap := client.HMSetMap("hash", slice)
+			})
 			Expect(hMSetMap.Err()).NotTo(HaveOccurred())
 			Expect(hMSetMap.Val()).To(Equal("OK"))
 
