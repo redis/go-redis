@@ -1195,6 +1195,24 @@ var _ = Describe("Commands", func() {
 			Expect(hGet.Val()).To(Equal("hello2"))
 		})
 
+		It("should HMSetMap", func() {
+			slice := map[string]string{
+				"key3": "hello3",
+				"key4": "hello4",
+			}
+			hMSetMap := client.HMSetMap("hash", slice)
+			Expect(hMSetMap.Err()).NotTo(HaveOccurred())
+			Expect(hMSetMap.Val()).To(Equal("OK"))
+
+			hGet := client.HGet("hash", "key3")
+			Expect(hGet.Err()).NotTo(HaveOccurred())
+			Expect(hGet.Val()).To(Equal("hello3"))
+
+			hGet = client.HGet("hash", "key4")
+			Expect(hGet.Err()).NotTo(HaveOccurred())
+			Expect(hGet.Val()).To(Equal("hello4"))
+		})
+
 		It("should HSet", func() {
 			hSet := client.HSet("hash", "key", "hello")
 			Expect(hSet.Err()).NotTo(HaveOccurred())
