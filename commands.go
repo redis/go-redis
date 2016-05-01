@@ -700,8 +700,11 @@ func (c *commandable) HMSetMap(key, slice map[string]string) *StatusCmd {
 	args := make([]interface{}, 2+len(slice)*2)
 	args[0] = "HMSET"
 	args[1] = key
+	i := 2
 	for k, v := range slice {
-		append(args, k, v)
+		args[i] = k
+		args[i+1] = v
+		i += 2
 	}
 	cmd := NewStatusCmd(args...)
 	c.Process(cmd)
