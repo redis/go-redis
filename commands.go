@@ -696,6 +696,21 @@ func (c *commandable) HMSet(key, field, value string, pairs ...string) *StatusCm
 	return cmd
 }
 
+func (c *commandable) HMSetMap(key string, fields map[string]string) *StatusCmd {
+	args := make([]interface{}, 2+len(fields)*2)
+	args[0] = "HMSET"
+	args[1] = key
+	i := 2
+	for k, v := range fields {
+		args[i] = k
+		args[i+1] = v
+		i += 2
+	}
+	cmd := NewStatusCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *commandable) HSet(key, field, value string) *BoolCmd {
 	cmd := NewBoolCmd("HSET", key, field, value)
 	c.Process(cmd)
