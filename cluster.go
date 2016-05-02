@@ -59,15 +59,13 @@ func (c *ClusterClient) getClients() map[string]*Client {
 	return clients
 }
 
-// Watch creates new transaction and marks the keys to be watched
-// for conditional execution of a transaction.
-func (c *ClusterClient) Watch(keys ...string) (*Tx, error) {
+func (c *ClusterClient) Watch(fn func(*Tx) error, keys ...string) error {
 	addr := c.slotMasterAddr(hashtag.Slot(keys[0]))
 	client, err := c.getClient(addr)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return client.Watch(keys...)
+	return client.Watch(fn, keys...)
 }
 
 // PoolStats returns accumulated connection pool stats.

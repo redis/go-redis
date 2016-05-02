@@ -215,29 +215,25 @@ var _ = Describe("races", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				tx, err := client.Watch("key")
-				Expect(err).NotTo(HaveOccurred())
+				err := client.Watch(func(tx *redis.Tx) error {
+					val, err := tx.Get("key").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(val).NotTo(Equal(redis.Nil))
 
-				val, err := tx.Get("key").Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(val).NotTo(Equal(redis.Nil))
+					num, err := strconv.ParseInt(val, 10, 64)
+					Expect(err).NotTo(HaveOccurred())
 
-				num, err := strconv.ParseInt(val, 10, 64)
-				Expect(err).NotTo(HaveOccurred())
-
-				cmds, err := tx.Exec(func() error {
-					tx.Set("key", strconv.FormatInt(num+1, 10), 0)
-					return nil
-				})
+					cmds, err := tx.MultiExec(func() error {
+						tx.Set("key", strconv.FormatInt(num+1, 10), 0)
+						return nil
+					})
+					Expect(cmds).To(HaveLen(1))
+					return err
+				}, "key")
 				if err == redis.TxFailedErr {
 					i--
 					continue
 				}
-				Expect(err).NotTo(HaveOccurred())
-				Expect(cmds).To(HaveLen(1))
-				Expect(cmds[0].Err()).NotTo(HaveOccurred())
-
-				err = tx.Close()
 				Expect(err).NotTo(HaveOccurred())
 			}
 		})

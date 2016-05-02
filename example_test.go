@@ -184,21 +184,18 @@ func ExampleClient_Watch() {
 
 	// Transactionally increments key using GET and SET commands.
 	incr = func(key string) error {
-		tx, err := client.Watch(key)
-		if err != nil {
-			return err
-		}
-		defer tx.Close()
+		err := client.Watch(func(tx *redis.Tx) error {
+			n, err := tx.Get(key).Int64()
+			if err != nil && err != redis.Nil {
+				return err
+			}
 
-		n, err := tx.Get(key).Int64()
-		if err != nil && err != redis.Nil {
+			_, err = tx.MultiExec(func() error {
+				tx.Set(key, strconv.FormatInt(n+1, 10), 0)
+				return nil
+			})
 			return err
-		}
-
-		_, err = tx.Exec(func() error {
-			tx.Set(key, strconv.FormatInt(n+1, 10), 0)
-			return nil
-		})
+		}, key)
 		if err == redis.TxFailedErr {
 			return incr(key)
 		}
