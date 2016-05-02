@@ -1085,25 +1085,14 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HGetAll", func() {
-			hSet := client.HSet("hash", "key1", "hello1")
-			Expect(hSet.Err()).NotTo(HaveOccurred())
-			hSet = client.HSet("hash", "key2", "hello2")
-			Expect(hSet.Err()).NotTo(HaveOccurred())
+			err := client.HSet("hash", "key1", "hello1").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.HSet("hash", "key2", "hello2").Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			hGetAll := client.HGetAll("hash")
-			Expect(hGetAll.Err()).NotTo(HaveOccurred())
-			Expect(hGetAll.Val()).To(Equal([]string{"key1", "hello1", "key2", "hello2"}))
-		})
-
-		It("should HGetAllMap", func() {
-			hSet := client.HSet("hash", "key1", "hello1")
-			Expect(hSet.Err()).NotTo(HaveOccurred())
-			hSet = client.HSet("hash", "key2", "hello2")
-			Expect(hSet.Err()).NotTo(HaveOccurred())
-
-			hGetAll := client.HGetAllMap("hash")
-			Expect(hGetAll.Err()).NotTo(HaveOccurred())
-			Expect(hGetAll.Val()).To(Equal(map[string]string{"key1": "hello1", "key2": "hello2"}))
+			m, err := client.HGetAll("hash").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(m).To(Equal(map[string]string{"key1": "hello1", "key2": "hello2"}))
 		})
 
 		It("should HIncrBy", func() {
@@ -1168,28 +1157,31 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HMGet", func() {
-			hSet := client.HSet("hash", "key1", "hello1")
-			Expect(hSet.Err()).NotTo(HaveOccurred())
-			hSet = client.HSet("hash", "key2", "hello2")
-			Expect(hSet.Err()).NotTo(HaveOccurred())
+			err := client.HSet("hash", "key1", "hello1").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.HSet("hash", "key2", "hello2").Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			hMGet := client.HMGet("hash", "key1", "key2", "_")
-			Expect(hMGet.Err()).NotTo(HaveOccurred())
-			Expect(hMGet.Val()).To(Equal([]interface{}{"hello1", "hello2", nil}))
+			vals, err := client.HMGet("hash", "key1", "key2", "_").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]interface{}{"hello1", "hello2", nil}))
 		})
 
 		It("should HMSet", func() {
-			hMSet := client.HMSet("hash", "key1", "hello1", "key2", "hello2")
-			Expect(hMSet.Err()).NotTo(HaveOccurred())
-			Expect(hMSet.Val()).To(Equal("OK"))
+			ok, err := client.HMSet("hash", map[string]string{
+				"key1": "hello1",
+				"key2": "hello2",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(Equal("OK"))
 
-			hGet := client.HGet("hash", "key1")
-			Expect(hGet.Err()).NotTo(HaveOccurred())
-			Expect(hGet.Val()).To(Equal("hello1"))
+			v, err := client.HGet("hash", "key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal("hello1"))
 
-			hGet = client.HGet("hash", "key2")
-			Expect(hGet.Err()).NotTo(HaveOccurred())
-			Expect(hGet.Val()).To(Equal("hello2"))
+			v, err = client.HGet("hash", "key2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal("hello2"))
 		})
 
 		It("should HSet", func() {
