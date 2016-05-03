@@ -34,17 +34,19 @@ func (c *Client) newTx() *Tx {
 	return tx
 }
 
-// Watch creates new transaction and marks the keys to be watched
-// for conditional execution of a transaction.
-func (c *Client) Watch(keys ...string) (*Tx, error) {
+func (c *Client) Watch(fn func(*Tx) error, keys ...string) error {
 	tx := c.newTx()
 	if len(keys) > 0 {
 		if err := tx.Watch(keys...).Err(); err != nil {
-			tx.Close()
-			return nil, err
+			tx.close()
+			return err
 		}
 	}
-	return tx, nil
+	retErr := fn(tx)
+	if err := tx.close(); err != nil && retErr == nil {
+		retErr = err
+	}
+	return retErr
 }
 
 func (tx *Tx) process(cmd Cmder) {
@@ -55,8 +57,11 @@ func (tx *Tx) process(cmd Cmder) {
 	}
 }
 
-// Close closes the transaction, releasing any open resources.
-func (tx *Tx) Close() error {
+// close closes the transaction, releasing any open resources.
+func (tx *Tx) close() error {
+	if tx.closed {
+		return nil
+	}
 	tx.closed = true
 	if err := tx.Unwatch().Err(); err != nil {
 		internal.Logf("Unwatch failed: %s", err)
@@ -98,7 +103,7 @@ func (tx *Tx) Discard() error {
 	return nil
 }
 
-// Exec executes all previously queued commands in a transaction
+// MultiExec executes all previously queued commands in a transaction
 // and restores the connection state to normal.
 //
 // When using WATCH, EXEC will execute commands only if the watched keys
@@ -107,13 +112,13 @@ func (tx *Tx) Discard() error {
 // Exec always returns list of commands. If transaction fails
 // TxFailedErr is returned. Otherwise Exec returns error of the first
 // failed command or nil.
-func (tx *Tx) Exec(f func() error) ([]Cmder, error) {
+func (tx *Tx) MultiExec(fn func() error) ([]Cmder, error) {
 	if tx.closed {
 		return nil, pool.ErrClosed
 	}
 
 	tx.cmds = []Cmder{NewStatusCmd("MULTI")}
-	if err := f(); err != nil {
+	if err := fn(); err != nil {
 		return nil, err
 	}
 	tx.cmds = append(tx.cmds, NewSliceCmd("EXEC"))

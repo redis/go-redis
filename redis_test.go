@@ -65,16 +65,15 @@ var _ = Describe("Client", func() {
 		Expect(client.Ping().Err()).NotTo(HaveOccurred())
 	})
 
-	It("should close multi without closing the client", func() {
-		tx, err := client.Watch()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(tx.Close()).NotTo(HaveOccurred())
-
-		_, err = tx.Exec(func() error {
-			tx.Ping()
-			return nil
+	It("should close Tx without closing the client", func() {
+		err := client.Watch(func(tx *redis.Tx) error {
+			_, err := tx.MultiExec(func() error {
+				tx.Ping()
+				return nil
+			})
+			return err
 		})
-		Expect(err).To(MatchError("redis: client is closed"))
+		Expect(err).NotTo(HaveOccurred())
 
 		Expect(client.Ping().Err()).NotTo(HaveOccurred())
 	})
@@ -94,13 +93,6 @@ var _ = Describe("Client", func() {
 		pubsub := client.PubSub()
 		Expect(client.Close()).NotTo(HaveOccurred())
 		Expect(pubsub.Close()).NotTo(HaveOccurred())
-	})
-
-	It("should close multi when client is closed", func() {
-		tx, err := client.Watch()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(client.Close()).NotTo(HaveOccurred())
-		Expect(tx.Close()).NotTo(HaveOccurred())
 	})
 
 	It("should close pipeline when client is closed", func() {
