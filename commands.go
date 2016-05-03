@@ -646,13 +646,7 @@ func (c *commandable) HGet(key, field string) *StringCmd {
 	return cmd
 }
 
-func (c *commandable) HGetAll(key string) *StringSliceCmd {
-	cmd := NewStringSliceCmd("HGETALL", key)
-	c.Process(cmd)
-	return cmd
-}
-
-func (c *commandable) HGetAllMap(key string) *StringStringMapCmd {
+func (c *commandable) HGetAll(key string) *StringStringMapCmd {
 	cmd := NewStringStringMapCmd("HGETALL", key)
 	c.Process(cmd)
 	return cmd
@@ -694,14 +688,15 @@ func (c *commandable) HMGet(key string, fields ...string) *SliceCmd {
 	return cmd
 }
 
-func (c *commandable) HMSet(key, field, value string, pairs ...string) *StatusCmd {
-	args := make([]interface{}, 4+len(pairs))
+func (c *commandable) HMSet(key string, fields map[string]string) *StatusCmd {
+	args := make([]interface{}, 2+len(fields)*2)
 	args[0] = "HMSET"
 	args[1] = key
-	args[2] = field
-	args[3] = value
-	for i, pair := range pairs {
-		args[4+i] = pair
+	i := 2
+	for k, v := range fields {
+		args[i] = k
+		args[i+1] = v
+		i += 2
 	}
 	cmd := NewStatusCmd(args...)
 	c.Process(cmd)
