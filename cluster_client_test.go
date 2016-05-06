@@ -6,16 +6,21 @@ import (
 )
 
 func (c *ClusterClient) SlotAddrs(slot int) []string {
-	return c.slotAddrs(slot)
+	var addrs []string
+	for _, n := range c.slotNodes(slot) {
+		addrs = append(addrs, n.Addr)
+	}
+	return addrs
 }
 
 // SwapSlot swaps a slot's master/slave address
 // for testing MOVED redirects
-func (c *ClusterClient) SwapSlot(pos int) []string {
-	c.slotsMx.Lock()
-	defer c.slotsMx.Unlock()
-	c.slots[pos][0], c.slots[pos][1] = c.slots[pos][1], c.slots[pos][0]
-	return c.slots[pos]
+func (c *ClusterClient) SwapSlotNodes(slot int) []string {
+	c.mu.Lock()
+	nodes := c.slots[slot]
+	nodes[0], nodes[1] = nodes[1], nodes[0]
+	c.mu.Unlock()
+	return c.SlotAddrs(slot)
 }
 
 var _ = Describe("ClusterClient", func() {
@@ -42,19 +47,26 @@ var _ = Describe("ClusterClient", func() {
 
 	It("should initialize", func() {
 		Expect(subject.addrs).To(HaveLen(3))
-		Expect(subject.slots).To(HaveLen(16384))
 	})
 
 	It("should update slots cache", func() {
 		populate()
-		Expect(subject.slots[0]).To(Equal([]string{"127.0.0.1:7000", "127.0.0.1:7004"}))
-		Expect(subject.slots[4095]).To(Equal([]string{"127.0.0.1:7000", "127.0.0.1:7004"}))
-		Expect(subject.slots[4096]).To(Equal([]string{"127.0.0.1:7001", "127.0.0.1:7005"}))
-		Expect(subject.slots[8191]).To(Equal([]string{"127.0.0.1:7001", "127.0.0.1:7005"}))
-		Expect(subject.slots[8192]).To(Equal([]string{"127.0.0.1:7002", "127.0.0.1:7006"}))
-		Expect(subject.slots[12287]).To(Equal([]string{"127.0.0.1:7002", "127.0.0.1:7006"}))
-		Expect(subject.slots[12288]).To(Equal([]string{"127.0.0.1:7003", "127.0.0.1:7007"}))
-		Expect(subject.slots[16383]).To(Equal([]string{"127.0.0.1:7003", "127.0.0.1:7007"}))
+		Expect(subject.slots[0][0].Addr).To(Equal("127.0.0.1:7000"))
+		Expect(subject.slots[0][1].Addr).To(Equal("127.0.0.1:7004"))
+		Expect(subject.slots[4095][0].Addr).To(Equal("127.0.0.1:7000"))
+		Expect(subject.slots[4095][1].Addr).To(Equal("127.0.0.1:7004"))
+		Expect(subject.slots[4096][0].Addr).To(Equal("127.0.0.1:7001"))
+		Expect(subject.slots[4096][1].Addr).To(Equal("127.0.0.1:7005"))
+		Expect(subject.slots[8191][0].Addr).To(Equal("127.0.0.1:7001"))
+		Expect(subject.slots[8191][1].Addr).To(Equal("127.0.0.1:7005"))
+		Expect(subject.slots[8192][0].Addr).To(Equal("127.0.0.1:7002"))
+		Expect(subject.slots[8192][1].Addr).To(Equal("127.0.0.1:7006"))
+		Expect(subject.slots[12287][0].Addr).To(Equal("127.0.0.1:7002"))
+		Expect(subject.slots[12287][1].Addr).To(Equal("127.0.0.1:7006"))
+		Expect(subject.slots[12288][0].Addr).To(Equal("127.0.0.1:7003"))
+		Expect(subject.slots[12288][1].Addr).To(Equal("127.0.0.1:7007"))
+		Expect(subject.slots[16383][0].Addr).To(Equal("127.0.0.1:7003"))
+		Expect(subject.slots[16383][1].Addr).To(Equal("127.0.0.1:7007"))
 		Expect(subject.addrs).To(Equal([]string{
 			"127.0.0.1:6379",
 			"127.0.0.1:7003",
@@ -71,11 +83,9 @@ var _ = Describe("ClusterClient", func() {
 	It("should close", func() {
 		populate()
 		Expect(subject.Close()).NotTo(HaveOccurred())
-		Expect(subject.clients).To(BeEmpty())
-		Expect(subject.slots[0]).To(BeEmpty())
-		Expect(subject.slots[8191]).To(BeEmpty())
-		Expect(subject.slots[8192]).To(BeEmpty())
-		Expect(subject.slots[16383]).To(BeEmpty())
+		Expect(subject.addrs).To(BeEmpty())
+		Expect(subject.nodes).To(BeEmpty())
+		Expect(subject.slots).To(BeEmpty())
 		Expect(subject.Ping().Err().Error()).To(Equal("redis: client is closed"))
 	})
 })

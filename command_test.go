@@ -21,10 +21,10 @@ var _ = Describe("Cmd", func() {
 
 	It("implements Stringer", func() {
 		set := client.Set("foo", "bar", 0)
-		Expect(set.String()).To(Equal("SET foo bar: OK"))
+		Expect(set.String()).To(Equal("set foo bar: OK"))
 
 		get := client.Get("foo")
-		Expect(get.String()).To(Equal("GET foo: bar"))
+		Expect(get.String()).To(Equal("get foo: bar"))
 	})
 
 	It("has val/err", func() {

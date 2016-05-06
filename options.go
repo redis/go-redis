@@ -53,6 +53,9 @@ type Options struct {
 	// The frequency of idle checks.
 	// Default is 1 minute.
 	IdleCheckFrequency time.Duration
+
+	// Enables read queries for a connection to a Redis Cluster slave node.
+	ReadOnly bool
 }
 
 func (opt *Options) getNetwork() string {
