@@ -883,6 +883,7 @@ func NewGeoLocationCmd(q *GeoRadiusQuery, args ...interface{}) *GeoLocationCmd {
 	if q.Sort != "" {
 		args = append(args, q.Sort)
 	}
+	args = append(args, isReadOnly)
 	cmd := NewBaseCmd(args)
 	cmd._clusterKeyPos = 1
 	return &GeoLocationCmd{

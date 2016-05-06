@@ -47,14 +47,14 @@ var _ = Describe("ClusterClient", func() {
 
 	It("should update slots cache", func() {
 		populate()
-		Expect(subject.slots[0]).To(Equal([]string{"127.0.0.1:7000", "127.0.0.1:7004"}))
-		Expect(subject.slots[4095]).To(Equal([]string{"127.0.0.1:7000", "127.0.0.1:7004"}))
-		Expect(subject.slots[4096]).To(Equal([]string{"127.0.0.1:7001", "127.0.0.1:7005"}))
-		Expect(subject.slots[8191]).To(Equal([]string{"127.0.0.1:7001", "127.0.0.1:7005"}))
-		Expect(subject.slots[8192]).To(Equal([]string{"127.0.0.1:7002", "127.0.0.1:7006"}))
-		Expect(subject.slots[12287]).To(Equal([]string{"127.0.0.1:7002", "127.0.0.1:7006"}))
-		Expect(subject.slots[12288]).To(Equal([]string{"127.0.0.1:7003", "127.0.0.1:7007"}))
-		Expect(subject.slots[16383]).To(Equal([]string{"127.0.0.1:7003", "127.0.0.1:7007"}))
+		Expect(subject.slots[0]).To(Equal([]*Node{{Addr: "127.0.0.1:7000"}, {Addr: "127.0.0.1:7004"}}))
+		Expect(subject.slots[4095]).To(Equal([]*Node{{Addr: "127.0.0.1:7000"}, {Addr: "127.0.0.1:7004"}}))
+		Expect(subject.slots[4096]).To(Equal([]*Node{{Addr: "127.0.0.1:7001"}, {Addr: "127.0.0.1:7005"}}))
+		Expect(subject.slots[8191]).To(Equal([]*Node{{Addr: "127.0.0.1:7001"}, {Addr: "127.0.0.1:7005"}}))
+		Expect(subject.slots[8192]).To(Equal([]*Node{{Addr: "127.0.0.1:7002"}, {Addr: "127.0.0.1:7006"}}))
+		Expect(subject.slots[12287]).To(Equal([]*Node{{Addr: "127.0.0.1:7002"}, {Addr: "127.0.0.1:7006"}}))
+		Expect(subject.slots[12288]).To(Equal([]*Node{{Addr: "127.0.0.1:7003"}, {Addr: "127.0.0.1:7007"}}))
+		Expect(subject.slots[16383]).To(Equal([]*Node{{Addr: "127.0.0.1:7003"}, {Addr: "127.0.0.1:7007"}}))
 		Expect(subject.addrs).To(Equal([]string{
 			"127.0.0.1:6379",
 			"127.0.0.1:7003",
@@ -76,6 +76,6 @@ var _ = Describe("ClusterClient", func() {
 		Expect(subject.slots[8191]).To(BeEmpty())
 		Expect(subject.slots[8192]).To(BeEmpty())
 		Expect(subject.slots[16383]).To(BeEmpty())
-		Expect(subject.Ping().Err().Error()).To(Equal("redis: client is closed"))
+		Expect(subject.Ping().Err().Error()).To(Equal(" client is closed"))
 	})
 })

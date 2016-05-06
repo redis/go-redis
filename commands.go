@@ -726,7 +726,7 @@ func (c *commandable) HMSet(key string, fields map[string]string) *StatusCmd {
 		args[i+1] = v
 		i += 2
 	}
-	args[len(fields)+2] = isWriter
+	args[len(fields)*2+2] = isWriter
 	cmd := NewStatusCmd(args...)
 	c.Process(cmd)
 	return cmd
@@ -1897,13 +1897,13 @@ func (c *commandable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 }
 
 func (c *commandable) GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
-	cmd := NewGeoLocationCmd(query, "GEORADIUS", key, longitude, latitude, isReadOnly)
+	cmd := NewGeoLocationCmd(query, "GEORADIUS", key, longitude, latitude)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *commandable) GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
-	cmd := NewGeoLocationCmd(query, "GEORADIUSBYMEMBER", key, member, isReadOnly)
+	cmd := NewGeoLocationCmd(query, "GEORADIUSBYMEMBER", key, member)
 	c.Process(cmd)
 	return cmd
 }
