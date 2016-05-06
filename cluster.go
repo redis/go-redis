@@ -189,7 +189,7 @@ func (c *ClusterClient) process(cmd Cmder) {
 	slot := hashtag.Slot(cmd.clusterKey())
 
 	var addr string
-	if c.opt.LatencyBased {
+	if c.opt.LatencyBased && !cmd.IsWriter() {
 		addr = c.slotCloserNodeAddr(slot)
 	} else {
 		addr = c.slotMasterAddr(slot)
