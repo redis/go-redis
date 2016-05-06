@@ -359,9 +359,9 @@ var _ = Describe("Cluster", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("VALUE"))
 
-			Eventually(func() []string {
-				return client.SlotAddrs(slot)
-			}, "5s").Should(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
+			Eventually(func() []*redis.Node {
+				return client.SlotNodes(slot)
+			}, "5s").Should(Equal([]*redis.Node{{Addr: "127.0.0.1:8221"}, {Addr: "127.0.0.1:8224"}}))
 		})
 
 		It("should return error when there are no attempts left", func() {

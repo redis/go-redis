@@ -5,13 +5,13 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func (c *ClusterClient) SlotAddrs(slot int) []string {
-	return c.slotAddrs(slot)
+func (c *ClusterClient) SlotNodes(slot int) []*Node {
+	return c.slotNodes(slot)
 }
 
 // SwapSlot swaps a slot's master/slave address
 // for testing MOVED redirects
-func (c *ClusterClient) SwapSlot(pos int) []string {
+func (c *ClusterClient) SwapSlot(pos int) []*Node {
 	c.slotsMx.Lock()
 	defer c.slotsMx.Unlock()
 	c.slots[pos][0], c.slots[pos][1] = c.slots[pos][1], c.slots[pos][0]
