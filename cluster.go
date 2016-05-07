@@ -312,7 +312,7 @@ func (c *ClusterClient) setNodesLatency() {
 					client.Ping()
 					node.Latency += int(time.Now().Sub(t1).Nanoseconds())
 				}
-				if c.opt.LatencyBased {
+				if c.opt.ReadOnly {
 					client.Readonly()
 				}
 				node.Latency = node.Latency / 10 / (1000 * 1000)
@@ -493,6 +493,7 @@ type ClusterOptions struct {
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
+	ReadOnly           bool
 	LatencyBased       bool
 }
 
@@ -517,6 +518,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PoolSize:    opt.PoolSize,
 		PoolTimeout: opt.PoolTimeout,
 		IdleTimeout: opt.IdleTimeout,
+
+		ReadOnly: opt.ReadOnly,
 		// IdleCheckFrequency is not copied to disable reaper
 	}
 }

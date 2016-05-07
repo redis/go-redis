@@ -35,6 +35,18 @@ func (c *baseClient) conn() (*pool.Conn, error) {
 			_ = c.connPool.Remove(cn, err)
 			return nil, err
 		}
+		// If readonly then send readonly command for the connection
+		if c.opt.ReadOnly {
+			cmd := newKeylessStatusCmd("READONLY", isReadOnly)
+			cmd._clusterKeyPos = 0
+			if err := writeCmd(cn, cmd); err != nil {
+				internal.Logf("writeCmd failed: %s (Set ReadOnly for new conn)", err)
+			} else {
+				if err = cmd.readReply(cn); err != nil {
+					internal.Logf("readReply failed: %s (Set ReadOnly for new conn)", err)
+				}
+			}
+		}
 	}
 	return cn, err
 }
