@@ -21,7 +21,9 @@ type ClusterClient struct {
 
 	slotsMx sync.RWMutex // protects slots and addrs
 	addrs   []string
-	slots   [][]string
+	slots   [][]*Node
+
+	nodes map[string]*Node
 
 	clientsMx sync.RWMutex // protects clients and closed
 	clients   map[string]*Client
@@ -32,13 +34,18 @@ type ClusterClient struct {
 	reloading uint32
 }
 
+type Node struct {
+	Addr    string
+	Latency int
+}
+
 // NewClusterClient returns a Redis Cluster client as described in
 // http://redis.io/topics/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	client := &ClusterClient{
 		opt:     opt,
 		addrs:   opt.Addrs,
-		slots:   make([][]string, hashtag.SlotNumber),
+		slots:   make([][]*Node, hashtag.SlotNumber),
 		clients: make(map[string]*Client),
 	}
 	client.commandable.process = client.process
@@ -132,19 +139,32 @@ func (c *ClusterClient) getClient(addr string) (*Client, error) {
 	return client, nil
 }
 
-func (c *ClusterClient) slotAddrs(slot int) []string {
+func (c *ClusterClient) slotNodes(slot int) []*Node {
 	c.slotsMx.RLock()
-	addrs := c.slots[slot]
+	nodes := c.slots[slot]
 	c.slotsMx.RUnlock()
-	return addrs
+	return nodes
 }
 
 func (c *ClusterClient) slotMasterAddr(slot int) string {
-	addrs := c.slotAddrs(slot)
-	if len(addrs) > 0 {
-		return addrs[0]
+	nodes := c.slotNodes(slot)
+	if len(nodes) > 0 {
+		return nodes[0].Addr
 	}
 	return ""
+}
+
+func (c *ClusterClient) slotCloserNodeAddr(slot int) string {
+	nodes := c.slotNodes(slot)
+	var addr string
+	var minLat int
+	for _, node := range nodes {
+		if node.Latency < minLat || minLat <= 0 {
+			minLat = node.Latency
+			addr = node.Addr
+		}
+	}
+	return addr
 }
 
 // randomClient returns a Client for the first live node.
@@ -168,7 +188,12 @@ func (c *ClusterClient) process(cmd Cmder) {
 
 	slot := hashtag.Slot(cmd.clusterKey())
 
-	addr := c.slotMasterAddr(slot)
+	var addr string
+	if c.opt.LatencyBased && !cmd.IsWriter() {
+		addr = c.slotCloserNodeAddr(slot)
+	} else {
+		addr = c.slotMasterAddr(slot)
+	}
 	client, err := c.getClient(addr)
 	if err != nil {
 		cmd.setErr(err)
@@ -238,31 +263,65 @@ func (c *ClusterClient) resetClients() (retErr error) {
 func (c *ClusterClient) setSlots(slots []ClusterSlot) {
 	c.slotsMx.Lock()
 
-	seen := make(map[string]struct{})
+	c.nodes = make(map[string]*Node)
 	for _, addr := range c.addrs {
-		seen[addr] = struct{}{}
+		c.nodes[addr] = &Node{
+			Addr: addr,
+		}
 	}
 
 	for i := 0; i < hashtag.SlotNumber; i++ {
 		c.slots[i] = c.slots[i][:0]
 	}
 	for _, slot := range slots {
-		var addrs []string
+		var nodes []*Node
 		for _, node := range slot.Nodes {
-			addrs = append(addrs, node.Addr)
+			n, ok := c.nodes[node.Addr]
+			if !ok {
+				n = &Node{
+					Addr: node.Addr,
+				}
+				c.nodes[node.Addr] = n
+				c.addrs = append(c.addrs, node.Addr)
+			}
+			nodes = append(nodes, n)
 		}
 
 		for i := slot.Start; i <= slot.End; i++ {
-			c.slots[i] = addrs
-		}
-
-		for _, node := range slot.Nodes {
-			if _, ok := seen[node.Addr]; !ok {
-				c.addrs = append(c.addrs, node.Addr)
-				seen[node.Addr] = struct{}{}
-			}
+			c.slots[i] = nodes
 		}
 	}
+
+	c.slotsMx.Unlock()
+}
+
+func (c *ClusterClient) setNodesLatency() {
+	c.slotsMx.Lock()
+
+	wg := sync.WaitGroup{}
+	for i, node := range c.nodes {
+		wg.Add(1)
+		go func(key string, node *Node) {
+			defer wg.Done()
+			if client, err := c.getClient(node.Addr); err != nil {
+				internal.Logf("getClient failed: %s (addr=%s)", err, node.Addr)
+			} else {
+				node.Latency = 0
+				for retries := 0; retries <= 10; retries++ {
+					t1 := time.Now()
+					client.Ping()
+					node.Latency += int(time.Now().Sub(t1).Nanoseconds())
+				}
+				if c.opt.ReadOnly {
+					client.Readonly()
+				}
+				node.Latency = node.Latency / 10 / (1000 * 1000)
+				c.nodes[key].Latency = node.Latency
+			}
+		}(i, node)
+	}
+
+	wg.Wait()
 
 	c.slotsMx.Unlock()
 }
@@ -282,6 +341,9 @@ func (c *ClusterClient) reloadSlots() {
 		return
 	}
 	c.setSlots(slots)
+	if c.opt.LatencyBased {
+		c.setNodesLatency()
+	}
 }
 
 func (c *ClusterClient) lazyReloadSlots() {
@@ -431,6 +493,8 @@ type ClusterOptions struct {
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
+	ReadOnly           bool
+	LatencyBased       bool
 }
 
 func (opt *ClusterOptions) getMaxRedirects() int {
@@ -454,6 +518,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PoolSize:    opt.PoolSize,
 		PoolTimeout: opt.PoolTimeout,
 		IdleTimeout: opt.IdleTimeout,
+
+		ReadOnly: opt.ReadOnly,
 		// IdleCheckFrequency is not copied to disable reaper
 	}
 }

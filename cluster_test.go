@@ -353,15 +353,15 @@ var _ = Describe("Cluster", func() {
 			Expect(client.Set("A", "VALUE", 0).Err()).NotTo(HaveOccurred())
 
 			slot := hashtag.Slot("A")
-			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+			Expect(client.SwapSlot(slot)).To(Equal([]*redis.Node{{Addr: "127.0.0.1:8224"}, {Addr: "127.0.0.1:8221"}}))
 
 			val, err := client.Get("A").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("VALUE"))
 
-			Eventually(func() []string {
-				return client.SlotAddrs(slot)
-			}, "5s").Should(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
+			Eventually(func() []*redis.Node {
+				return client.SlotNodes(slot)
+			}, "5s").Should(Equal([]*redis.Node{{Addr: "127.0.0.1:8221"}, {Addr: "127.0.0.1:8224"}}))
 		})
 
 		It("should return error when there are no attempts left", func() {
@@ -371,7 +371,7 @@ var _ = Describe("Cluster", func() {
 			})
 
 			slot := hashtag.Slot("A")
-			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+			Expect(client.SwapSlot(slot)).To(Equal([]*redis.Node{{Addr: "127.0.0.1:8224"}, {Addr: "127.0.0.1:8221"}}))
 
 			err := client.Get("A").Err()
 			Expect(err).To(HaveOccurred())
@@ -435,7 +435,7 @@ var _ = Describe("Cluster", func() {
 
 		It("performs multi-pipelines", func() {
 			slot := hashtag.Slot("A")
-			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+			Expect(client.SwapSlot(slot)).To(Equal([]*redis.Node{{Addr: "127.0.0.1:8224"}, {Addr: "127.0.0.1:8221"}}))
 
 			pipe := client.Pipeline()
 			defer pipe.Close()
