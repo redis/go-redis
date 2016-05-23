@@ -52,7 +52,7 @@ func (c *baseClient) putConn(cn *pool.Conn, err error, allowTimeout bool) bool {
 func (c *baseClient) initConn(cn *pool.Conn) error {
 	cn.Inited = true
 
-	if c.opt.Password == "" && c.opt.DB == 0 {
+	if c.opt.Password == "" && c.opt.DB == 0 && !c.opt.ReadOnly {
 		return nil
 	}
 
@@ -67,6 +67,12 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 
 	if c.opt.DB > 0 {
 		if err := client.Select(c.opt.DB).Err(); err != nil {
+			return err
+		}
+	}
+
+	if c.opt.ReadOnly {
+		if err := client.ReadOnly().Err(); err != nil {
 			return err
 		}
 	}

@@ -2729,6 +2729,7 @@ var _ = Describe("Commands", func() {
 	})
 
 	Describe("json marshaling/unmarshaling", func() {
+
 		BeforeEach(func() {
 			value := &numberStruct{Number: 42}
 			err := client.Set("key", value, 0).Err()
@@ -2744,8 +2745,26 @@ var _ = Describe("Commands", func() {
 		It("should scan custom values using json", func() {
 			value := &numberStruct{}
 			err := client.Get("key").Scan(value)
-			Expect(err).To(BeNil())
+			Expect(err).NotTo(HaveOccurred())
 			Expect(value.Number).To(Equal(42))
+		})
+
+	})
+
+	Describe("Command", func() {
+
+		It("returns map of commands", func() {
+			cmds, err := client.Command().Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(cmds)).To(BeNumerically("~", 173, 5))
+
+			cmd := cmds["mget"]
+			Expect(cmd.Name).To(Equal("mget"))
+			Expect(cmd.Arity).To(Equal(int8(-2)))
+			Expect(cmd.Flags).To(Equal([]string{"readonly"}))
+			Expect(cmd.FirstKeyPos).To(Equal(int8(1)))
+			Expect(cmd.LastKeyPos).To(Equal(int8(-1)))
+			Expect(cmd.StepCount).To(Equal(int8(1)))
 		})
 
 	})

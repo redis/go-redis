@@ -627,8 +627,8 @@ func clusterSlotsParser(cn *pool.Conn, slotNum int64) (interface{}, error) {
 func newGeoLocationParser(q *GeoRadiusQuery) multiBulkParser {
 	return func(cn *pool.Conn, n int64) (interface{}, error) {
 		var loc GeoLocation
-
 		var err error
+
 		loc.Name, err = readStringReply(cn)
 		if err != nil {
 			return nil, err
@@ -689,4 +689,71 @@ func newGeoLocationSliceParser(q *GeoRadiusQuery) multiBulkParser {
 		}
 		return locs, nil
 	}
+}
+
+func commandInfoParser(cn *pool.Conn, n int64) (interface{}, error) {
+	var cmd CommandInfo
+	var err error
+
+	if n != 6 {
+		return nil, fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6")
+	}
+
+	cmd.Name, err = readStringReply(cn)
+	if err != nil {
+		return nil, err
+	}
+
+	arity, err := readIntReply(cn)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Arity = int8(arity)
+
+	flags, err := readReply(cn, stringSliceParser)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Flags = flags.([]string)
+
+	firstKeyPos, err := readIntReply(cn)
+	if err != nil {
+		return nil, err
+	}
+	cmd.FirstKeyPos = int8(firstKeyPos)
+
+	lastKeyPos, err := readIntReply(cn)
+	if err != nil {
+		return nil, err
+	}
+	cmd.LastKeyPos = int8(lastKeyPos)
+
+	stepCount, err := readIntReply(cn)
+	if err != nil {
+		return nil, err
+	}
+	cmd.StepCount = int8(stepCount)
+
+	for _, flag := range cmd.Flags {
+		if flag == "readonly" {
+			cmd.ReadOnly = true
+			break
+		}
+	}
+
+	return &cmd, nil
+}
+
+func commandInfoSliceParser(cn *pool.Conn, n int64) (interface{}, error) {
+	m := make(map[string]*CommandInfo, n)
+	for i := int64(0); i < n; i++ {
+		v, err := readReply(cn, commandInfoParser)
+		if err != nil {
+			return nil, err
+		}
+		vv := v.(*CommandInfo)
+		m[vv.Name] = vv
+
+	}
+	return m, nil
 }

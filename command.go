@@ -30,12 +30,12 @@ var (
 
 type Cmder interface {
 	args() []interface{}
+	arg(int) string
 	readReply(*pool.Conn) error
 	setErr(error)
 	reset()
 
 	readTimeout() *time.Duration
-	clusterKey() string
 
 	Err() error
 	fmt.Stringer
@@ -92,10 +92,7 @@ func cmdString(cmd Cmder, val interface{}) string {
 
 type baseCmd struct {
 	_args []interface{}
-
-	err error
-
-	_clusterKeyPos int
+	err   error
 
 	_readTimeout *time.Duration
 }
@@ -111,6 +108,15 @@ func (cmd *baseCmd) args() []interface{} {
 	return cmd._args
 }
 
+func (cmd *baseCmd) arg(pos int) string {
+	if len(cmd._args) > pos {
+		if s, ok := cmd._args[pos].(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 func (cmd *baseCmd) readTimeout() *time.Duration {
 	return cmd._readTimeout
 }
@@ -119,15 +125,12 @@ func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 	cmd._readTimeout = &d
 }
 
-func (cmd *baseCmd) clusterKey() string {
-	if cmd._clusterKeyPos > 0 && cmd._clusterKeyPos < len(cmd._args) {
-		return fmt.Sprint(cmd._args[cmd._clusterKeyPos])
-	}
-	return ""
-}
-
 func (cmd *baseCmd) setErr(e error) {
 	cmd.err = e
+}
+
+func newBaseCmd(args []interface{}) baseCmd {
+	return baseCmd{_args: args}
 }
 
 //------------------------------------------------------------------------------
@@ -139,7 +142,7 @@ type Cmd struct {
 }
 
 func NewCmd(args ...interface{}) *Cmd {
-	return &Cmd{baseCmd: baseCmd{_args: args}}
+	return &Cmd{baseCmd: newBaseCmd(args)}
 }
 
 func (cmd *Cmd) reset() {
@@ -183,7 +186,8 @@ type SliceCmd struct {
 }
 
 func NewSliceCmd(args ...interface{}) *SliceCmd {
-	return &SliceCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &SliceCmd{baseCmd: cmd}
 }
 
 func (cmd *SliceCmd) reset() {
@@ -222,11 +226,8 @@ type StatusCmd struct {
 }
 
 func NewStatusCmd(args ...interface{}) *StatusCmd {
-	return &StatusCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
-}
-
-func newKeylessStatusCmd(args ...interface{}) *StatusCmd {
-	return &StatusCmd{baseCmd: baseCmd{_args: args}}
+	cmd := newBaseCmd(args)
+	return &StatusCmd{baseCmd: cmd}
 }
 
 func (cmd *StatusCmd) reset() {
@@ -260,7 +261,8 @@ type IntCmd struct {
 }
 
 func NewIntCmd(args ...interface{}) *IntCmd {
-	return &IntCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &IntCmd{baseCmd: cmd}
 }
 
 func (cmd *IntCmd) reset() {
@@ -295,9 +297,10 @@ type DurationCmd struct {
 }
 
 func NewDurationCmd(precision time.Duration, args ...interface{}) *DurationCmd {
+	cmd := newBaseCmd(args)
 	return &DurationCmd{
 		precision: precision,
-		baseCmd:   baseCmd{_args: args, _clusterKeyPos: 1},
+		baseCmd:   cmd,
 	}
 }
 
@@ -337,7 +340,8 @@ type BoolCmd struct {
 }
 
 func NewBoolCmd(args ...interface{}) *BoolCmd {
-	return &BoolCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &BoolCmd{baseCmd: cmd}
 }
 
 func (cmd *BoolCmd) reset() {
@@ -393,7 +397,8 @@ type StringCmd struct {
 }
 
 func NewStringCmd(args ...interface{}) *StringCmd {
-	return &StringCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &StringCmd{baseCmd: cmd}
 }
 
 func (cmd *StringCmd) reset() {
@@ -468,7 +473,8 @@ type FloatCmd struct {
 }
 
 func NewFloatCmd(args ...interface{}) *FloatCmd {
-	return &FloatCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &FloatCmd{baseCmd: cmd}
 }
 
 func (cmd *FloatCmd) reset() {
@@ -502,7 +508,8 @@ type StringSliceCmd struct {
 }
 
 func NewStringSliceCmd(args ...interface{}) *StringSliceCmd {
-	return &StringSliceCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &StringSliceCmd{baseCmd: cmd}
 }
 
 func (cmd *StringSliceCmd) reset() {
@@ -541,7 +548,8 @@ type BoolSliceCmd struct {
 }
 
 func NewBoolSliceCmd(args ...interface{}) *BoolSliceCmd {
-	return &BoolSliceCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &BoolSliceCmd{baseCmd: cmd}
 }
 
 func (cmd *BoolSliceCmd) reset() {
@@ -580,7 +588,8 @@ type StringStringMapCmd struct {
 }
 
 func NewStringStringMapCmd(args ...interface{}) *StringStringMapCmd {
-	return &StringStringMapCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &StringStringMapCmd{baseCmd: cmd}
 }
 
 func (cmd *StringStringMapCmd) reset() {
@@ -619,7 +628,8 @@ type StringIntMapCmd struct {
 }
 
 func NewStringIntMapCmd(args ...interface{}) *StringIntMapCmd {
-	return &StringIntMapCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &StringIntMapCmd{baseCmd: cmd}
 }
 
 func (cmd *StringIntMapCmd) Val() map[string]int64 {
@@ -658,7 +668,8 @@ type ZSliceCmd struct {
 }
 
 func NewZSliceCmd(args ...interface{}) *ZSliceCmd {
-	return &ZSliceCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &ZSliceCmd{baseCmd: cmd}
 }
 
 func (cmd *ZSliceCmd) reset() {
@@ -698,8 +709,9 @@ type ScanCmd struct {
 }
 
 func NewScanCmd(args ...interface{}) *ScanCmd {
+	cmd := newBaseCmd(args)
 	return &ScanCmd{
-		baseCmd: baseCmd{_args: args, _clusterKeyPos: 1},
+		baseCmd: cmd,
 	}
 }
 
@@ -752,7 +764,8 @@ type ClusterSlotsCmd struct {
 }
 
 func NewClusterSlotsCmd(args ...interface{}) *ClusterSlotsCmd {
-	return &ClusterSlotsCmd{baseCmd: baseCmd{_args: args, _clusterKeyPos: 1}}
+	cmd := newBaseCmd(args)
+	return &ClusterSlotsCmd{baseCmd: cmd}
 }
 
 func (cmd *ClusterSlotsCmd) Val() []ClusterSlot {
@@ -833,12 +846,10 @@ func NewGeoLocationCmd(q *GeoRadiusQuery, args ...interface{}) *GeoLocationCmd {
 	if q.Sort != "" {
 		args = append(args, q.Sort)
 	}
+	cmd := newBaseCmd(args)
 	return &GeoLocationCmd{
-		baseCmd: baseCmd{
-			_args:          args,
-			_clusterKeyPos: 1,
-		},
-		q: q,
+		baseCmd: cmd,
+		q:       q,
 	}
 }
 
@@ -866,5 +877,55 @@ func (cmd *GeoLocationCmd) readReply(cn *pool.Conn) error {
 		return err
 	}
 	cmd.locations = reply.([]GeoLocation)
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type CommandInfo struct {
+	Name        string
+	Arity       int8
+	Flags       []string
+	FirstKeyPos int8
+	LastKeyPos  int8
+	StepCount   int8
+	ReadOnly    bool
+}
+
+type CommandsInfoCmd struct {
+	baseCmd
+
+	val map[string]*CommandInfo
+}
+
+func NewCommandsInfoCmd(args ...interface{}) *CommandsInfoCmd {
+	cmd := newBaseCmd(args)
+	return &CommandsInfoCmd{baseCmd: cmd}
+}
+
+func (cmd *CommandsInfoCmd) Val() map[string]*CommandInfo {
+	return cmd.val
+}
+
+func (cmd *CommandsInfoCmd) Result() (map[string]*CommandInfo, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *CommandsInfoCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *CommandsInfoCmd) reset() {
+	cmd.val = nil
+	cmd.err = nil
+}
+
+func (cmd *CommandsInfoCmd) readReply(cn *pool.Conn) error {
+	v, err := readArrayReply(cn, commandInfoSliceParser)
+	if err != nil {
+		cmd.err = err
+		return err
+	}
+	cmd.val = v.(map[string]*CommandInfo)
 	return nil
 }

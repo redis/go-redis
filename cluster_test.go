@@ -301,7 +301,7 @@ var _ = Describe("Cluster", func() {
 		})
 
 		It("should CLUSTER READONLY", func() {
-			res, err := cluster.primary().Readonly().Result()
+			res, err := cluster.primary().ReadOnly().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal("OK"))
 		})
@@ -353,7 +353,7 @@ var _ = Describe("Cluster", func() {
 			Expect(client.Set("A", "VALUE", 0).Err()).NotTo(HaveOccurred())
 
 			slot := hashtag.Slot("A")
-			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+			Expect(client.SwapSlotNodes(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			val, err := client.Get("A").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -361,7 +361,7 @@ var _ = Describe("Cluster", func() {
 
 			Eventually(func() []string {
 				return client.SlotAddrs(slot)
-			}, "5s").Should(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
+			}, "10s").Should(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
 		})
 
 		It("should return error when there are no attempts left", func() {
@@ -371,7 +371,7 @@ var _ = Describe("Cluster", func() {
 			})
 
 			slot := hashtag.Slot("A")
-			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+			Expect(client.SwapSlotNodes(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			err := client.Get("A").Err()
 			Expect(err).To(HaveOccurred())
@@ -435,7 +435,7 @@ var _ = Describe("Cluster", func() {
 
 		It("performs multi-pipelines", func() {
 			slot := hashtag.Slot("A")
-			Expect(client.SwapSlot(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+			Expect(client.SwapSlotNodes(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
 			pipe := client.Pipeline()
 			defer pipe.Close()
