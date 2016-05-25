@@ -3,26 +3,26 @@
 Supports:
 
 - Redis 3 commands except QUIT, MONITOR, SLOWLOG and SYNC.
-- [Pub/Sub](http://godoc.org/gopkg.in/redis.v3#PubSub).
-- [Transactions](http://godoc.org/gopkg.in/redis.v3#Multi).
-- [Pipelining](http://godoc.org/gopkg.in/redis.v3#Client.Pipeline).
-- [Scripting](http://godoc.org/gopkg.in/redis.v3#Script).
-- [Timeouts](http://godoc.org/gopkg.in/redis.v3#Options).
-- [Redis Sentinel](http://godoc.org/gopkg.in/redis.v3#NewFailoverClient).
-- [Redis Cluster](http://godoc.org/gopkg.in/redis.v3#NewClusterClient).
-- [Ring](http://godoc.org/gopkg.in/redis.v3#NewRing).
+- [Pub/Sub](http://godoc.org/gopkg.in/redis.v4#PubSub).
+- [Transactions](http://godoc.org/gopkg.in/redis.v4#Multi).
+- [Pipelining](http://godoc.org/gopkg.in/redis.v4#Client.Pipeline).
+- [Scripting](http://godoc.org/gopkg.in/redis.v4#Script).
+- [Timeouts](http://godoc.org/gopkg.in/redis.v4#Options).
+- [Redis Sentinel](http://godoc.org/gopkg.in/redis.v4#NewFailoverClient).
+- [Redis Cluster](http://godoc.org/gopkg.in/redis.v4#NewClusterClient).
+- [Ring](http://godoc.org/gopkg.in/redis.v4#NewRing).
 - [Cache friendly](https://github.com/go-redis/cache).
 - [Rate limiting](https://github.com/go-redis/rate).
 - [Distributed Locks](https://github.com/bsm/redis-lock).
 
-API docs: http://godoc.org/gopkg.in/redis.v3.
-Examples: http://godoc.org/gopkg.in/redis.v3#pkg-examples.
+API docs: http://godoc.org/gopkg.in/redis.v4.
+Examples: http://godoc.org/gopkg.in/redis.v4#pkg-examples.
 
 ## Installation
 
 Install:
 
-    go get gopkg.in/redis.v3
+    go get gopkg.in/redis.v4
 
 ## Quickstart
 
@@ -66,7 +66,7 @@ func ExampleClient() {
 
 ## Howto
 
-Please go through [examples](http://godoc.org/gopkg.in/redis.v3#pkg-examples) to get an idea how to use this package.
+Please go through [examples](http://godoc.org/gopkg.in/redis.v4#pkg-examples) to get an idea how to use this package.
 
 ## Look and feel
 
