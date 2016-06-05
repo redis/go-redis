@@ -56,29 +56,25 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 
 	// Temp client for Auth and Select.
 	client := newClient(c.opt, pool.NewSingleConnPool(cn))
-
-	if c.opt.Password != "" {
-		if err := client.Auth(c.opt.Password).Err(); err != nil {
-			return err
+	_, err := client.Pipelined(func(pipe *Pipeline) error {
+		if c.opt.Password != "" {
+			pipe.Auth(c.opt.Password)
 		}
-	}
 
-	if c.opt.DB > 0 {
-		if err := client.Select(c.opt.DB).Err(); err != nil {
-			return err
+		if c.opt.DB > 0 {
+			pipe.Select(c.opt.DB)
 		}
-	}
 
-	if c.opt.ReadOnly {
-		if err := client.ReadOnly().Err(); err != nil {
-			return err
+		if c.opt.ReadOnly {
+			pipe.ReadOnly()
 		}
-	}
 
-	return nil
+		return nil
+	})
+	return err
 }
 
-func (c *baseClient) process(cmd Cmder) {
+func (c *baseClient) Process(cmd Cmder) {
 	for i := 0; i <= c.opt.MaxRetries; i++ {
 		if i > 0 {
 			cmd.reset()
@@ -145,16 +141,14 @@ func (c *baseClient) Close() error {
 // goroutines.
 type Client struct {
 	baseClient
-	commandable
+	cmdable
 }
 
 func newClient(opt *Options, pool pool.Pooler) *Client {
 	base := baseClient{opt: opt, connPool: pool}
 	client := &Client{
 		baseClient: base,
-		commandable: commandable{
-			process: base.process,
-		},
+		cmdable:    cmdable{base.Process},
 	}
 	return client
 }
@@ -178,11 +172,12 @@ func (c *Client) PoolStats() *PoolStats {
 }
 
 func (c *Client) Pipeline() *Pipeline {
-	pipe := &Pipeline{
+	pipe := Pipeline{
 		exec: c.pipelineExec,
 	}
-	pipe.commandable.process = pipe.process
-	return pipe
+	pipe.cmdable.process = pipe.Process
+	pipe.statefulCmdable.process = pipe.Process
+	return &pipe
 }
 
 func (c *Client) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {

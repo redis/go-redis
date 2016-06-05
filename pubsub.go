@@ -20,7 +20,7 @@ func (c *Client) Publish(channel, message string) *IntCmd {
 // http://redis.io/topics/pubsub. It's NOT safe for concurrent use by
 // multiple goroutines.
 type PubSub struct {
-	base *baseClient
+	base baseClient
 
 	channels []string
 	patterns []string
@@ -31,7 +31,7 @@ type PubSub struct {
 // Deprecated. Use Subscribe/PSubscribe instead.
 func (c *Client) PubSub() *PubSub {
 	return &PubSub{
-		base: &baseClient{
+		base: baseClient{
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), false),
 		},

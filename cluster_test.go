@@ -300,17 +300,17 @@ var _ = Describe("Cluster", func() {
 			Expect(nodesList).Should(HaveLen(1))
 		})
 
-		It("should CLUSTER READONLY", func() {
-			res, err := cluster.primary().ReadOnly().Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal("OK"))
-		})
+		// It("should CLUSTER READONLY", func() {
+		// 	res, err := cluster.primary().ReadOnly().Result()
+		// 	Expect(err).NotTo(HaveOccurred())
+		// 	Expect(res).To(Equal("OK"))
+		// })
 
-		It("should CLUSTER READWRITE", func() {
-			res, err := cluster.primary().ReadWrite().Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal("OK"))
-		})
+		// It("should CLUSTER READWRITE", func() {
+		// 	res, err := cluster.primary().ReadWrite().Result()
+		// 	Expect(err).NotTo(HaveOccurred())
+		// 	Expect(res).To(Equal("OK"))
+		// })
 	})
 
 	Describe("Client", func() {

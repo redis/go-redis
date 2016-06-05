@@ -22,7 +22,7 @@ type Options struct {
 	// requirepass server configuration option.
 	Password string
 	// A database to be selected after connecting to server.
-	DB int64
+	DB int
 
 	// The maximum number of retries before giving up.
 	// Default is to not retry failed commands.

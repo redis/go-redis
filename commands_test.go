@@ -26,11 +26,11 @@ var _ = Describe("Commands", func() {
 
 	Describe("server", func() {
 
-		It("should Auth", func() {
-			auth := client.Auth("password")
-			Expect(auth.Err()).To(MatchError("ERR Client sent AUTH, but no password is set"))
-			Expect(auth.Val()).To(Equal(""))
-		})
+		// It("should Auth", func() {
+		// 	auth := client.Auth("password")
+		// 	Expect(auth.Err()).To(MatchError("ERR Client sent AUTH, but no password is set"))
+		// 	Expect(auth.Val()).To(Equal(""))
+		// })
 
 		It("should Echo", func() {
 			echo := client.Echo("hello")
@@ -44,11 +44,11 @@ var _ = Describe("Commands", func() {
 			Expect(ping.Val()).To(Equal("PONG"))
 		})
 
-		It("should Select", func() {
-			sel := client.Select(1)
-			Expect(sel.Err()).NotTo(HaveOccurred())
-			Expect(sel.Val()).To(Equal("OK"))
-		})
+		// It("should Select", func() {
+		// 	sel := client.Select(1)
+		// 	Expect(sel.Err()).NotTo(HaveOccurred())
+		// 	Expect(sel.Val()).To(Equal("OK"))
+		// })
 
 		It("should BgRewriteAOF", func() {
 			Skip("flaky test")
@@ -309,15 +309,14 @@ var _ = Describe("Commands", func() {
 			Expect(get.Err()).To(Equal(redis.Nil))
 			Expect(get.Val()).To(Equal(""))
 
-			sel := client.Select(2)
-			Expect(sel.Err()).NotTo(HaveOccurred())
-			Expect(sel.Val()).To(Equal("OK"))
+			pipe := client.Pipeline()
+			pipe.Select(2)
+			get = pipe.Get("key")
+			pipe.FlushDb()
 
-			get = client.Get("key")
-			Expect(get.Err()).NotTo(HaveOccurred())
+			_, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("hello"))
-			Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
-			Expect(client.Select(1).Err()).NotTo(HaveOccurred())
 		})
 
 		It("should Object", func() {

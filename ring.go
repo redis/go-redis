@@ -24,7 +24,7 @@ type RingOptions struct {
 
 	// Following options are copied from Options struct.
 
-	DB       int64
+	DB       int
 	Password string
 
 	MaxRetries int
@@ -110,7 +110,7 @@ func (shard *ringShard) Vote(up bool) bool {
 // and can tolerate losing data when one of the servers dies.
 // Otherwise you should use Redis Cluster.
 type Ring struct {
-	commandable
+	cmdable
 
 	opt       *RingOptions
 	nreplicas int
@@ -136,7 +136,7 @@ func NewRing(opt *RingOptions) *Ring {
 
 		cmdsInfoOnce: new(sync.Once),
 	}
-	ring.commandable.process = ring.process
+	ring.cmdable.process = ring.Process
 	for name, addr := range opt.Addrs {
 		clopt := opt.clientOptions()
 		clopt.Addr = addr
@@ -196,13 +196,13 @@ func (ring *Ring) getClient(key string) (*Client, error) {
 	return cl, nil
 }
 
-func (ring *Ring) process(cmd Cmder) {
+func (ring *Ring) Process(cmd Cmder) {
 	cl, err := ring.getClient(ring.cmdFirstKey(cmd))
 	if err != nil {
 		cmd.setErr(err)
 		return
 	}
-	cl.baseClient.process(cmd)
+	cl.baseClient.Process(cmd)
 }
 
 // rebalance removes dead shards from the ring.
@@ -273,11 +273,12 @@ func (ring *Ring) Close() (retErr error) {
 }
 
 func (ring *Ring) Pipeline() *Pipeline {
-	pipe := &Pipeline{
+	pipe := Pipeline{
 		exec: ring.pipelineExec,
 	}
-	pipe.commandable.process = pipe.process
-	return pipe
+	pipe.cmdable.process = pipe.Process
+	pipe.statefulCmdable.process = pipe.Process
+	return &pipe
 }
 
 func (ring *Ring) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {

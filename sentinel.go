@@ -25,7 +25,7 @@ type FailoverOptions struct {
 	// Following options are copied from Options struct.
 
 	Password string
-	DB       int64
+	DB       int
 
 	MaxRetries int
 
@@ -70,43 +70,41 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 		opt: opt,
 	}
-	base := baseClient{
-		opt:      opt,
-		connPool: failover.Pool(),
+	client := Client{
+		baseClient: baseClient{
+			opt:      opt,
+			connPool: failover.Pool(),
 
-		onClose: func() error {
-			return failover.Close()
+			onClose: func() error {
+				return failover.Close()
+			},
 		},
 	}
-	return &Client{
-		baseClient: base,
-		commandable: commandable{
-			process: base.process,
-		},
-	}
+	client.cmdable.process = client.Process
+	return &client
 }
 
 //------------------------------------------------------------------------------
 
 type sentinelClient struct {
+	cmdable
 	baseClient
-	commandable
 }
 
 func newSentinel(opt *Options) *sentinelClient {
-	base := baseClient{
-		opt:      opt,
-		connPool: newConnPool(opt),
+	client := sentinelClient{
+		baseClient: baseClient{
+			opt:      opt,
+			connPool: newConnPool(opt),
+		},
 	}
-	return &sentinelClient{
-		baseClient:  base,
-		commandable: commandable{process: base.process},
-	}
+	client.cmdable = cmdable{client.Process}
+	return &client
 }
 
 func (c *sentinelClient) PubSub() *PubSub {
 	return &PubSub{
-		base: &baseClient{
+		base: baseClient{
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), false),
 		},

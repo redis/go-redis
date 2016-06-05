@@ -3,7 +3,7 @@ package redis
 import "sync"
 
 type Scanner struct {
-	client *commandable
+	client cmdable
 	*ScanCmd
 }
 
@@ -54,7 +54,7 @@ func (it *ScanIterator) Next() bool {
 	// Fetch next page.
 	it.ScanCmd._args[1] = it.ScanCmd.cursor
 	it.ScanCmd.reset()
-	it.client.Process(it.ScanCmd)
+	it.client.process(it.ScanCmd)
 	if it.ScanCmd.Err() != nil {
 		return false
 	}
