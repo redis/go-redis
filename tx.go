@@ -15,23 +15,24 @@ var errDiscard = errors.New("redis: Discard can be used only inside Exec")
 // by multiple goroutines, because Exec resets list of watched keys.
 // If you don't need WATCH it is better to use Pipeline.
 type Tx struct {
-	commandable
-
-	base *baseClient
+	cmdable
+	statefulCmdable
+	baseClient
 
 	cmds   []Cmder
 	closed bool
 }
 
 func (c *Client) newTx() *Tx {
-	tx := &Tx{
-		base: &baseClient{
+	tx := Tx{
+		baseClient: baseClient{
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), true),
 		},
 	}
-	tx.commandable.process = tx.process
-	return tx
+	tx.cmdable.process = tx.Process
+	tx.statefulCmdable.process = tx.Process
+	return &tx
 }
 
 func (c *Client) Watch(fn func(*Tx) error, keys ...string) error {
@@ -49,9 +50,9 @@ func (c *Client) Watch(fn func(*Tx) error, keys ...string) error {
 	return retErr
 }
 
-func (tx *Tx) process(cmd Cmder) {
+func (tx *Tx) Process(cmd Cmder) {
 	if tx.cmds == nil {
-		tx.base.process(cmd)
+		tx.baseClient.Process(cmd)
 	} else {
 		tx.cmds = append(tx.cmds, cmd)
 	}
@@ -66,7 +67,7 @@ func (tx *Tx) close() error {
 	if err := tx.Unwatch().Err(); err != nil {
 		internal.Logf("Unwatch failed: %s", err)
 	}
-	return tx.base.Close()
+	return tx.baseClient.Close()
 }
 
 // Watch marks the keys to be watched for conditional execution
@@ -133,14 +134,14 @@ func (tx *Tx) MultiExec(fn func() error) ([]Cmder, error) {
 	// Strip MULTI and EXEC commands.
 	retCmds := cmds[1 : len(cmds)-1]
 
-	cn, err := tx.base.conn()
+	cn, err := tx.conn()
 	if err != nil {
 		setCmdsErr(retCmds, err)
 		return retCmds, err
 	}
 
 	err = tx.execCmds(cn, cmds)
-	tx.base.putConn(cn, err, false)
+	tx.putConn(cn, err, false)
 	return retCmds, err
 }
 

@@ -172,7 +172,7 @@ var _ = Describe("races", func() {
 
 		perform(C, func(id int) {
 			opt := redisOptions()
-			opt.DB = int64(id)
+			opt.DB = id
 			client := redis.NewClient(opt)
 			for i := 0; i < N; i++ {
 				err := client.Set("db", id, 0).Err()
@@ -194,7 +194,7 @@ var _ = Describe("races", func() {
 	It("should select DB with read timeout", func() {
 		perform(C, func(id int) {
 			opt := redisOptions()
-			opt.DB = int64(id)
+			opt.DB = id
 			opt.ReadTimeout = time.Nanosecond
 			client := redis.NewClient(opt)
 

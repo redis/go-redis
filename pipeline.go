@@ -11,7 +11,8 @@ import (
 // http://redis.io/topics/pipelining. It's safe for concurrent use
 // by multiple goroutines.
 type Pipeline struct {
-	commandable
+	cmdable
+	statefulCmdable
 
 	exec func([]Cmder) error
 
@@ -21,7 +22,7 @@ type Pipeline struct {
 	closed int32
 }
 
-func (pipe *Pipeline) process(cmd Cmder) {
+func (pipe *Pipeline) Process(cmd Cmder) {
 	pipe.mu.Lock()
 	pipe.cmds = append(pipe.cmds, cmd)
 	pipe.mu.Unlock()

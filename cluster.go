@@ -21,7 +21,7 @@ type clusterNode struct {
 // or more underlying connections. It's safe for concurrent use by
 // multiple goroutines.
 type ClusterClient struct {
-	commandable
+	cmdable
 
 	opt *ClusterOptions
 
@@ -51,7 +51,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 
 		cmdsInfoOnce: new(sync.Once),
 	}
-	client.commandable.process = client.process
+	client.cmdable.process = client.Process
 
 	for _, addr := range opt.Addrs {
 		_ = client.nodeByAddr(addr)
@@ -242,7 +242,7 @@ func (c *ClusterClient) cmdSlotAndNode(cmd Cmder) (int, *clusterNode) {
 	return slot, c.slotMasterNode(slot)
 }
 
-func (c *ClusterClient) process(cmd Cmder) {
+func (c *ClusterClient) Process(cmd Cmder) {
 	var ask bool
 	slot, node := c.cmdSlotAndNode(cmd)
 
@@ -398,11 +398,12 @@ func (c *ClusterClient) reaper(frequency time.Duration) {
 }
 
 func (c *ClusterClient) Pipeline() *Pipeline {
-	pipe := &Pipeline{
+	pipe := Pipeline{
 		exec: c.pipelineExec,
 	}
-	pipe.commandable.process = pipe.process
-	return pipe
+	pipe.cmdable.process = pipe.Process
+	pipe.statefulCmdable.process = pipe.Process
+	return &pipe
 }
 
 func (c *ClusterClient) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
