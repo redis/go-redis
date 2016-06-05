@@ -8,8 +8,6 @@ import (
 	"gopkg.in/redis.v4/internal/pool"
 )
 
-var Logger *log.Logger
-
 func SetLogger(logger *log.Logger) {
 	internal.Logger = logger
 }
