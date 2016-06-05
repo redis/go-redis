@@ -2,21 +2,14 @@ package internal
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 )
 
-var Debug bool
-
-var Logger = log.New(ioutil.Discard, "redis: ", log.LstdFlags)
-
-func Debugf(s string, args ...interface{}) {
-	if !Debug {
-		return
-	}
-	Logger.Output(2, fmt.Sprintf(s, args...))
-}
+var Logger *log.Logger
 
 func Logf(s string, args ...interface{}) {
+	if Logger == nil {
+		return
+	}
 	Logger.Output(2, fmt.Sprintf(s, args...))
 }
