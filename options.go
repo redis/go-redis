@@ -58,61 +58,36 @@ type Options struct {
 	ReadOnly bool
 }
 
-func (opt *Options) getNetwork() string {
+func (opt *Options) init() {
 	if opt.Network == "" {
-		return "tcp"
+		opt.Network = "tcp"
 	}
-	return opt.Network
-}
-
-func (opt *Options) getDialer() func() (net.Conn, error) {
-	if opt.Dialer != nil {
-		return opt.Dialer
+	if opt.Dialer == nil {
+		opt.Dialer = func() (net.Conn, error) {
+			return net.DialTimeout(opt.Network, opt.Addr, opt.DialTimeout)
+		}
 	}
-	return func() (net.Conn, error) {
-		return net.DialTimeout(opt.getNetwork(), opt.Addr, opt.getDialTimeout())
-	}
-}
-
-func (opt *Options) getPoolSize() int {
 	if opt.PoolSize == 0 {
-		return 10
+		opt.PoolSize = 10
 	}
-	return opt.PoolSize
-}
-
-func (opt *Options) getDialTimeout() time.Duration {
 	if opt.DialTimeout == 0 {
-		return 5 * time.Second
+		opt.DialTimeout = 5 * time.Second
 	}
-	return opt.DialTimeout
-}
-
-func (opt *Options) getPoolTimeout() time.Duration {
 	if opt.PoolTimeout == 0 {
-		return 1 * time.Second
+		opt.PoolTimeout = 1 * time.Second
 	}
-	return opt.PoolTimeout
-}
-
-func (opt *Options) getIdleTimeout() time.Duration {
-	return opt.IdleTimeout
-}
-
-func (opt *Options) getIdleCheckFrequency() time.Duration {
 	if opt.IdleCheckFrequency == 0 {
-		return time.Minute
+		opt.IdleCheckFrequency = time.Minute
 	}
-	return opt.IdleCheckFrequency
 }
 
 func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(
-		opt.getDialer(),
-		opt.getPoolSize(),
-		opt.getPoolTimeout(),
-		opt.getIdleTimeout(),
-		opt.getIdleCheckFrequency(),
+		opt.Dialer,
+		opt.PoolSize,
+		opt.PoolTimeout,
+		opt.IdleTimeout,
+		opt.IdleCheckFrequency,
 	)
 }
 

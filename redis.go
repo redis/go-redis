@@ -155,6 +155,7 @@ func newClient(opt *Options, pool pool.Pooler) *Client {
 
 // NewClient returns a client to the Redis Server specified by Options.
 func NewClient(opt *Options) *Client {
+	opt.init()
 	return newClient(opt, newConnPool(opt))
 }
 

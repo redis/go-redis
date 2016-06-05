@@ -39,6 +39,8 @@ type RingOptions struct {
 	IdleCheckFrequency time.Duration
 }
 
+func (opt *RingOptions) init() {}
+
 func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
 		DB:       opt.DB,
@@ -127,6 +129,7 @@ type Ring struct {
 
 func NewRing(opt *RingOptions) *Ring {
 	const nreplicas = 100
+	opt.init()
 	ring := &Ring{
 		opt:       opt,
 		nreplicas: nreplicas,
