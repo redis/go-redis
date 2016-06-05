@@ -64,12 +64,15 @@ func (opt *FailoverOptions) options() *Options {
 // goroutines.
 func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	opt := failoverOpt.options()
+	opt.init()
+
 	failover := &sentinelFailover{
 		masterName:    failoverOpt.MasterName,
 		sentinelAddrs: failoverOpt.SentinelAddrs,
 
 		opt: opt,
 	}
+
 	client := Client{
 		baseClient: baseClient{
 			opt:      opt,
@@ -81,6 +84,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		},
 	}
 	client.cmdable.process = client.Process
+
 	return &client
 }
 
@@ -92,6 +96,7 @@ type sentinelClient struct {
 }
 
 func newSentinel(opt *Options) *sentinelClient {
+	opt.init()
 	client := sentinelClient{
 		baseClient: baseClient{
 			opt:      opt,

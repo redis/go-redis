@@ -41,10 +41,7 @@ type ClusterClient struct {
 // NewClusterClient returns a Redis Cluster client as described in
 // http://redis.io/topics/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
-	if opt.RouteByLatency {
-		opt.ReadOnly = true
-	}
-
+	opt.init()
 	client := &ClusterClient{
 		opt:   opt,
 		nodes: make(map[string]*clusterNode),
@@ -246,7 +243,7 @@ func (c *ClusterClient) Process(cmd Cmder) {
 	var ask bool
 	slot, node := c.cmdSlotAndNode(cmd)
 
-	for attempt := 0; attempt <= c.opt.getMaxRedirects(); attempt++ {
+	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
 			cmd.reset()
 		}
@@ -419,7 +416,7 @@ func (c *ClusterClient) pipelineExec(cmds []Cmder) error {
 		cmdsMap[node] = append(cmdsMap[node], cmd)
 	}
 
-	for attempt := 0; attempt <= c.opt.getMaxRedirects(); attempt++ {
+	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		failedCmds := make(map[*clusterNode][]Cmder)
 
 		for node, cmds := range cmdsMap {
@@ -516,14 +513,16 @@ type ClusterOptions struct {
 	IdleCheckFrequency time.Duration
 }
 
-func (opt *ClusterOptions) getMaxRedirects() int {
+func (opt *ClusterOptions) init() {
 	if opt.MaxRedirects == -1 {
-		return 0
+		opt.MaxRedirects = 0
+	} else if opt.MaxRedirects == 0 {
+		opt.MaxRedirects = 16
 	}
-	if opt.MaxRedirects == 0 {
-		return 16
+
+	if opt.RouteByLatency {
+		opt.ReadOnly = true
 	}
-	return opt.MaxRedirects
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
