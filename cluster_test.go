@@ -312,21 +312,12 @@ var _ = Describe("Cluster", func() {
 		// 	Expect(res).To(Equal("OK"))
 		// })
 	})
+})
 
-	Describe("Client", func() {
-		var client *redis.ClusterClient
+var _ = Describe("ClusterClient", func() {
+	var client *redis.ClusterClient
 
-		BeforeEach(func() {
-			client = cluster.clusterClient(nil)
-		})
-
-		AfterEach(func() {
-			for _, client := range cluster.masters() {
-				Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
-			}
-			Expect(client.Close()).NotTo(HaveOccurred())
-		})
-
+	describeClusterClient := func() {
 		It("should GET/SET/DEL", func() {
 			val, err := client.Get("A").Result()
 			Expect(err).To(Equal(redis.Nil))
@@ -358,15 +349,10 @@ var _ = Describe("Cluster", func() {
 			val, err := client.Get("A").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("VALUE"))
-
-			Eventually(func() []string {
-				return client.SlotAddrs(slot)
-			}, "10s").Should(Equal([]string{"127.0.0.1:8221", "127.0.0.1:8224"}))
 		})
 
 		It("should return error when there are no attempts left", func() {
-			Expect(client.Close()).NotTo(HaveOccurred())
-			client = cluster.clusterClient(&redis.ClusterOptions{
+			client := cluster.clusterClient(&redis.ClusterOptions{
 				MaxRedirects: -1,
 			})
 
@@ -376,6 +362,8 @@ var _ = Describe("Cluster", func() {
 			err := client.Get("A").Err()
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("MOVED"))
+
+			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
 		It("should Watch", func() {
@@ -417,23 +405,8 @@ var _ = Describe("Cluster", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(100)))
 		})
-	})
 
-	Describe("pipeline", func() {
-		var client *redis.ClusterClient
-
-		BeforeEach(func() {
-			client = cluster.clusterClient(nil)
-		})
-
-		AfterEach(func() {
-			for _, client := range cluster.masters() {
-				Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
-			}
-			Expect(client.Close()).NotTo(HaveOccurred())
-		})
-
-		It("performs multi-pipelines", func() {
+		It("supports pipeline", func() {
 			slot := hashtag.Slot("A")
 			Expect(client.SwapSlotNodes(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
@@ -441,27 +414,31 @@ var _ = Describe("Cluster", func() {
 			defer pipe.Close()
 
 			keys := []string{"A", "B", "C", "D", "E", "F", "G"}
+
 			for i, key := range keys {
 				pipe.Set(key, key+"_value", 0)
 				pipe.Expire(key, time.Duration(i+1)*time.Hour)
 			}
+			cmds, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmds).To(HaveLen(14))
+
 			for _, key := range keys {
 				pipe.Get(key)
 				pipe.TTL(key)
 			}
-
-			cmds, err := pipe.Exec()
+			cmds, err = pipe.Exec()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cmds).To(HaveLen(28))
-			Expect(cmds[14].(*redis.StringCmd).Val()).To(Equal("A_value"))
-			Expect(cmds[15].(*redis.DurationCmd).Val()).To(BeNumerically("~", 1*time.Hour, time.Second))
-			Expect(cmds[20].(*redis.StringCmd).Val()).To(Equal("D_value"))
-			Expect(cmds[21].(*redis.DurationCmd).Val()).To(BeNumerically("~", 4*time.Hour, time.Second))
-			Expect(cmds[26].(*redis.StringCmd).Val()).To(Equal("G_value"))
-			Expect(cmds[27].(*redis.DurationCmd).Val()).To(BeNumerically("~", 7*time.Hour, time.Second))
+			Expect(cmds).To(HaveLen(14))
+			Expect(cmds[0].(*redis.StringCmd).Val()).To(Equal("A_value"))
+			Expect(cmds[1].(*redis.DurationCmd).Val()).To(BeNumerically("~", 1*time.Hour, time.Second))
+			Expect(cmds[6].(*redis.StringCmd).Val()).To(Equal("D_value"))
+			Expect(cmds[7].(*redis.DurationCmd).Val()).To(BeNumerically("~", 4*time.Hour, time.Second))
+			Expect(cmds[12].(*redis.StringCmd).Val()).To(Equal("G_value"))
+			Expect(cmds[13].(*redis.DurationCmd).Val()).To(BeNumerically("~", 7*time.Hour, time.Second))
 		})
 
-		It("works with missing keys", func() {
+		It("supports pipeline with missing keys", func() {
 			Expect(client.Set("A", "A_value", 0).Err()).NotTo(HaveOccurred())
 			Expect(client.Set("C", "C_value", 0).Err()).NotTo(HaveOccurred())
 
@@ -484,6 +461,38 @@ var _ = Describe("Cluster", func() {
 			Expect(c.Err()).NotTo(HaveOccurred())
 			Expect(c.Val()).To(Equal("C_value"))
 		})
+	}
+
+	Describe("default ClusterClient", func() {
+		BeforeEach(func() {
+			client = cluster.clusterClient(nil)
+		})
+
+		AfterEach(func() {
+			for _, client := range cluster.masters() {
+				Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+			}
+			Expect(client.Close()).NotTo(HaveOccurred())
+		})
+
+		describeClusterClient()
+	})
+
+	Describe("ClusterClient with RouteByLatency", func() {
+		BeforeEach(func() {
+			client = cluster.clusterClient(&redis.ClusterOptions{
+				RouteByLatency: true,
+			})
+		})
+
+		AfterEach(func() {
+			for _, client := range cluster.masters() {
+				Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+			}
+			Expect(client.Close()).NotTo(HaveOccurred())
+		})
+
+		describeClusterClient()
 	})
 })
 
