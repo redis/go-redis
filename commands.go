@@ -946,8 +946,16 @@ func (c cmdable) SMove(source, destination string, member interface{}) *BoolCmd 
 	return cmd
 }
 
+// Redis `SPOP key` command.
 func (c cmdable) SPop(key string) *StringCmd {
 	cmd := NewStringCmd("spop", key)
+	c.process(cmd)
+	return cmd
+}
+
+// Redis `SPOP key count` command.
+func (c cmdable) SPopN(key string, count int64) *StringSliceCmd {
+	cmd := NewStringSliceCmd("spop", key, count)
 	c.process(cmd)
 	return cmd
 }

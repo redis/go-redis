@@ -1790,6 +1790,34 @@ var _ = Describe("Commands", func() {
 			sMembers := client.SMembers("set")
 			Expect(sMembers.Err()).NotTo(HaveOccurred())
 			Expect(sMembers.Val()).To(HaveLen(2))
+
+		})
+
+		It("should SPopN", func() {
+			sAdd := client.SAdd("set", "one")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd("set", "two")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd("set", "three")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd("set", "four")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+
+			sPopN := client.SPopN("set", 1)
+			Expect(sPopN.Err()).NotTo(HaveOccurred())
+			Expect(sPopN.Val()).NotTo(Equal([]string{""}))
+
+			sMembers := client.SMembers("set")
+			Expect(sMembers.Err()).NotTo(HaveOccurred())
+			Expect(sMembers.Val()).To(HaveLen(3))
+
+			sPopN = client.SPopN("set", 4)
+			Expect(sPopN.Err()).NotTo(HaveOccurred())
+			Expect(sPopN.Val()).To(HaveLen(3))
+
+			sMembers = client.SMembers("set")
+			Expect(sMembers.Err()).NotTo(HaveOccurred())
+			Expect(sMembers.Val()).To(HaveLen(0))
 		})
 
 		It("should SRandMember and SRandMemberN", func() {
