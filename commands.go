@@ -67,7 +67,7 @@ func (c statefulCmdable) Auth(password string) *StatusCmd {
 	return cmd
 }
 
-func (c *cmdable) Echo(message string) *StringCmd {
+func (c *cmdable) Echo(message interface{}) *StringCmd {
 	cmd := NewStringCmd("echo", message)
 	c.process(cmd)
 	return cmd
@@ -517,7 +517,7 @@ func (c cmdable) MGet(keys ...string) *SliceCmd {
 	return cmd
 }
 
-func (c cmdable) MSet(pairs ...string) *StatusCmd {
+func (c cmdable) MSet(pairs ...interface{}) *StatusCmd {
 	args := make([]interface{}, 1+len(pairs))
 	args[0] = "mset"
 	for i, pair := range pairs {
@@ -528,7 +528,7 @@ func (c cmdable) MSet(pairs ...string) *StatusCmd {
 	return cmd
 }
 
-func (c cmdable) MSetNX(pairs ...string) *BoolCmd {
+func (c cmdable) MSetNX(pairs ...interface{}) *BoolCmd {
 	args := make([]interface{}, 1+len(pairs))
 	args[0] = "msetnx"
 	for i, pair := range pairs {
@@ -762,8 +762,20 @@ func (c cmdable) LIndex(key string, index int64) *StringCmd {
 	return cmd
 }
 
-func (c cmdable) LInsert(key, op, pivot, value string) *IntCmd {
+func (c cmdable) LInsert(key, op string, pivot, value interface{}) *IntCmd {
 	cmd := NewIntCmd("linsert", key, op, pivot, value)
+	c.process(cmd)
+	return cmd
+}
+
+func (c cmdable) LInsertBefore(key string, pivot, value interface{}) *IntCmd {
+	cmd := NewIntCmd("linsert", key, "before", pivot, value)
+	c.process(cmd)
+	return cmd
+}
+
+func (c cmdable) LInsertAfter(key string, pivot, value interface{}) *IntCmd {
+	cmd := NewIntCmd("linsert", key, "after", pivot, value)
 	c.process(cmd)
 	return cmd
 }
@@ -780,7 +792,7 @@ func (c cmdable) LPop(key string) *StringCmd {
 	return cmd
 }
 
-func (c cmdable) LPush(key string, values ...string) *IntCmd {
+func (c cmdable) LPush(key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2+len(values))
 	args[0] = "lpush"
 	args[1] = key
@@ -792,7 +804,7 @@ func (c cmdable) LPush(key string, values ...string) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) LPushX(key, value interface{}) *IntCmd {
+func (c cmdable) LPushX(key string, value interface{}) *IntCmd {
 	cmd := NewIntCmd("lpushx", key, value)
 	c.process(cmd)
 	return cmd
@@ -844,7 +856,7 @@ func (c cmdable) RPopLPush(source, destination string) *StringCmd {
 	return cmd
 }
 
-func (c cmdable) RPush(key string, values ...string) *IntCmd {
+func (c cmdable) RPush(key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2+len(values))
 	args[0] = "rpush"
 	args[1] = key
@@ -864,7 +876,7 @@ func (c cmdable) RPushX(key string, value interface{}) *IntCmd {
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) SAdd(key string, members ...string) *IntCmd {
+func (c cmdable) SAdd(key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2+len(members))
 	args[0] = "sadd"
 	args[1] = key
@@ -974,7 +986,7 @@ func (c cmdable) SRandMemberN(key string, count int64) *StringSliceCmd {
 	return cmd
 }
 
-func (c cmdable) SRem(key string, members ...string) *IntCmd {
+func (c cmdable) SRem(key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2+len(members))
 	args[0] = "srem"
 	args[1] = key
@@ -1233,7 +1245,7 @@ func (c cmdable) ZRank(key, member string) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) ZRem(key string, members ...string) *IntCmd {
+func (c cmdable) ZRem(key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2+len(members))
 	args[0] = "zrem"
 	args[1] = key
@@ -1348,12 +1360,12 @@ func (c cmdable) ZUnionStore(dest string, store ZStore, keys ...string) *IntCmd 
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) PFAdd(key string, fields ...string) *IntCmd {
-	args := make([]interface{}, 2+len(fields))
+func (c cmdable) PFAdd(key string, els ...interface{}) *IntCmd {
+	args := make([]interface{}, 2+len(els))
 	args[0] = "pfadd"
 	args[1] = key
-	for i, field := range fields {
-		args[2+i] = field
+	for i, el := range els {
+		args[2+i] = el
 	}
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
