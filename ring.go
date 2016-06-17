@@ -199,13 +199,13 @@ func (ring *Ring) getClient(key string) (*Client, error) {
 	return cl, nil
 }
 
-func (ring *Ring) Process(cmd Cmder) {
+func (ring *Ring) Process(cmd Cmder) error {
 	cl, err := ring.getClient(ring.cmdFirstKey(cmd))
 	if err != nil {
 		cmd.setErr(err)
-		return
+		return err
 	}
-	cl.baseClient.Process(cmd)
+	return cl.baseClient.Process(cmd)
 }
 
 // rebalance removes dead shards from the ring.

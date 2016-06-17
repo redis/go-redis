@@ -22,10 +22,11 @@ type Pipeline struct {
 	closed int32
 }
 
-func (pipe *Pipeline) Process(cmd Cmder) {
+func (pipe *Pipeline) Process(cmd Cmder) error {
 	pipe.mu.Lock()
 	pipe.cmds = append(pipe.cmds, cmd)
 	pipe.mu.Unlock()
+	return nil
 }
 
 // Close closes the pipeline, releasing any open resources.

@@ -52,11 +52,11 @@ func formatSec(dur time.Duration) string {
 }
 
 type cmdable struct {
-	process func(cmd Cmder)
+	process func(cmd Cmder) error
 }
 
 type statefulCmdable struct {
-	process func(cmd Cmder)
+	process func(cmd Cmder) error
 }
 
 //------------------------------------------------------------------------------
