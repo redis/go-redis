@@ -75,42 +75,59 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 }
 
 func (c *baseClient) process(cmd Cmder) {
-	for i := 0; i <= c.opt.MaxRetries; i++ {
-		if i > 0 {
-			cmd.reset()
-		}
-
-		cn, err := c.conn()
-		if err != nil {
-			cmd.setErr(err)
-			return
-		}
-
-		readTimeout := cmd.readTimeout()
-		if readTimeout != nil {
-			cn.ReadTimeout = *readTimeout
-		} else {
-			cn.ReadTimeout = c.opt.ReadTimeout
-		}
-		cn.WriteTimeout = c.opt.WriteTimeout
-
-		if err := writeCmd(cn, cmd); err != nil {
-			c.putConn(cn, err, false)
-			cmd.setErr(err)
-			if err != nil && shouldRetry(err) {
-				continue
+	retry := false
+	if c.opt.MaxRetries < 0 {
+		for {
+			if err := c.processSingle(cmd, retry); err == nil {
+				return
 			}
-			return
+			retry = true
 		}
-
-		err = cmd.readReply(cn)
-		c.putConn(cn, err, readTimeout != nil)
-		if err != nil && shouldRetry(err) {
-			continue
+	} else {
+		for i := 0; i <= c.opt.MaxRetries; i++ {
+			if err := c.processSingle(cmd, retry); err == nil {
+				return
+			}
+			retry = true
 		}
-
-		return
 	}
+}
+
+func (c *baseClient) processSingle(cmd Cmder, retry bool) error {
+	if retry {
+		cmd.reset()
+	}
+
+	cn, err := c.conn()
+	if err != nil {
+		cmd.setErr(err)
+		return nil
+	}
+
+	readTimeout := cmd.readTimeout()
+	if readTimeout != nil {
+		cn.ReadTimeout = *readTimeout
+	} else {
+		cn.ReadTimeout = c.opt.ReadTimeout
+	}
+	cn.WriteTimeout = c.opt.WriteTimeout
+
+	if err := writeCmd(cn, cmd); err != nil {
+		c.putConn(cn, err, false)
+		cmd.setErr(err)
+		if err != nil && shouldRetry(err) {
+			return err
+		}
+		return nil
+	}
+
+	err = cmd.readReply(cn)
+	c.putConn(cn, err, readTimeout != nil)
+	if err != nil && shouldRetry(err) {
+		return err
+	}
+
+	return nil
 }
 
 func (c *baseClient) closed() bool {

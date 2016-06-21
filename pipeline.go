@@ -1,6 +1,8 @@
 package redis
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -69,8 +71,6 @@ func (pipe *Pipeline) Discard() error {
 }
 
 // Exec executes all previously queued commands using one
-// client-server roundtrip.
-//
 // Exec always returns list of commands and error of the first failed
 // command if any.
 func (pipe *Pipeline) Exec() (cmds []Cmder, retErr error) {
@@ -89,27 +89,47 @@ func (pipe *Pipeline) Exec() (cmds []Cmder, retErr error) {
 	pipe.cmds = make([]Cmder, 0, 10)
 
 	failedCmds := cmds
-	for i := 0; i <= pipe.client.opt.MaxRetries; i++ {
-		cn, err := pipe.client.conn()
-		if err != nil {
-			setCmdsErr(failedCmds, err)
-			return cmds, err
+	if pipe.client.opt.MaxRetries < 0 {
+		retry := false
+		for {
+			if err := pipe.tryExec(cmds, failedCmds, &retErr, retry); err == nil {
+				break
+			}
+			retry = true
 		}
-
-		if i > 0 {
-			resetCmds(failedCmds)
-		}
-		failedCmds, err = execCmds(cn, failedCmds)
-		pipe.client.putConn(cn, err, false)
-		if err != nil && retErr == nil {
-			retErr = err
-		}
-		if len(failedCmds) == 0 {
-			break
+	} else {
+		for i := 0; i <= pipe.client.opt.MaxRetries; i++ {
+			retry := false
+			if err := pipe.tryExec(cmds, failedCmds, &retErr, retry); err == nil {
+				break
+			}
+			retry = true
 		}
 	}
-
 	return cmds, retErr
+}
+
+func (pipe *Pipeline) tryExec(
+	cmds, failedCmds []Cmder,
+	retErr *error,
+	retry bool) error {
+	cn, err := pipe.client.conn()
+	if err != nil {
+		setCmdsErr(failedCmds, err)
+		return err
+	}
+	if retry {
+		resetCmds(failedCmds)
+	}
+	failedCmds, err = execCmds(cn, failedCmds)
+	pipe.client.putConn(cn, err, false)
+	if err != nil && retErr == nil {
+		*retErr = err
+	}
+	if len(failedCmds) == 0 {
+		return nil
+	}
+	return errors.New(fmt.Sprintf("%d commands failed", len(failedCmds)))
 }
 
 func execCmds(cn *pool.Conn, cmds []Cmder) ([]Cmder, error) {
