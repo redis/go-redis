@@ -120,7 +120,6 @@ var _ = Describe("races", func() {
 				Expect(got).To(Equal(bigVal))
 			}
 		})
-
 	})
 
 	It("should handle big vals in Set", func() {
