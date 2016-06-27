@@ -31,6 +31,7 @@ var (
 type Cmder interface {
 	args() []interface{}
 	arg(int) string
+
 	readReply(*pool.Conn) error
 	setErr(error)
 	reset()
@@ -142,7 +143,9 @@ type Cmd struct {
 }
 
 func NewCmd(args ...interface{}) *Cmd {
-	return &Cmd{baseCmd: newBaseCmd(args)}
+	return &Cmd{
+		baseCmd: newBaseCmd(args),
+	}
 }
 
 func (cmd *Cmd) reset() {

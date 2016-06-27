@@ -336,11 +336,11 @@ var _ = Describe("ClusterClient", func() {
 			Expect(cnt).To(Equal(int64(1)))
 		})
 
-		It("should return pool stats", func() {
+		It("returns pool stats", func() {
 			Expect(client.PoolStats()).To(BeAssignableToTypeOf(&redis.PoolStats{}))
 		})
 
-		It("should follow redirects", func() {
+		It("follows redirects", func() {
 			Expect(client.Set("A", "VALUE", 0).Err()).NotTo(HaveOccurred())
 
 			slot := hashtag.Slot("A")
@@ -351,7 +351,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(val).To(Equal("VALUE"))
 		})
 
-		It("should return error when there are no attempts left", func() {
+		It("returns an error when there are no attempts left", func() {
 			client := cluster.clusterClient(&redis.ClusterOptions{
 				MaxRedirects: -1,
 			})
@@ -366,7 +366,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
-		It("should Watch", func() {
+		It("supports Watch", func() {
 			var incr func(string) error
 
 			// Transactionally increments key using GET and SET commands.
@@ -461,17 +461,35 @@ var _ = Describe("ClusterClient", func() {
 			Expect(c.Err()).NotTo(HaveOccurred())
 			Expect(c.Val()).To(Equal("C_value"))
 		})
+
+		It("calls fn for every master node", func() {
+			for i := 0; i < 10; i++ {
+				Expect(client.Set(strconv.Itoa(i), "", 0).Err()).NotTo(HaveOccurred())
+			}
+
+			err := client.ForEachMaster(func(master *redis.Client) error {
+				return master.FlushDb().Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, client := range cluster.masters() {
+				keys, err := client.Keys("*").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(keys).To(HaveLen(0))
+			}
+		})
 	}
 
 	Describe("default ClusterClient", func() {
 		BeforeEach(func() {
 			client = cluster.clusterClient(nil)
+
+			_ = client.ForEachMaster(func(master *redis.Client) error {
+				return master.FlushDb().Err()
+			})
 		})
 
 		AfterEach(func() {
-			for _, client := range cluster.masters() {
-				Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
-			}
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
@@ -483,12 +501,14 @@ var _ = Describe("ClusterClient", func() {
 			client = cluster.clusterClient(&redis.ClusterOptions{
 				RouteByLatency: true,
 			})
+
+			_ = client.ForEachMaster(func(master *redis.Client) error {
+				return master.FlushDb().Err()
+			})
 		})
 
 		AfterEach(func() {
-			for _, client := range cluster.masters() {
-				Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
-			}
+			client.FlushDb()
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 

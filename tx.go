@@ -50,12 +50,12 @@ func (c *Client) Watch(fn func(*Tx) error, keys ...string) error {
 	return retErr
 }
 
-func (tx *Tx) Process(cmd Cmder) {
+func (tx *Tx) Process(cmd Cmder) error {
 	if tx.cmds == nil {
-		tx.baseClient.Process(cmd)
-	} else {
-		tx.cmds = append(tx.cmds, cmd)
+		return tx.baseClient.Process(cmd)
 	}
+	tx.cmds = append(tx.cmds, cmd)
+	return nil
 }
 
 // close closes the transaction, releasing any open resources.

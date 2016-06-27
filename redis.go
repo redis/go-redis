@@ -74,7 +74,7 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 	return err
 }
 
-func (c *baseClient) Process(cmd Cmder) {
+func (c *baseClient) Process(cmd Cmder) error {
 	for i := 0; i <= c.opt.MaxRetries; i++ {
 		if i > 0 {
 			cmd.reset()
@@ -83,7 +83,7 @@ func (c *baseClient) Process(cmd Cmder) {
 		cn, err := c.conn()
 		if err != nil {
 			cmd.setErr(err)
-			return
+			return err
 		}
 
 		readTimeout := cmd.readTimeout()
@@ -100,7 +100,7 @@ func (c *baseClient) Process(cmd Cmder) {
 			if err != nil && shouldRetry(err) {
 				continue
 			}
-			return
+			return err
 		}
 
 		err = cmd.readReply(cn)
@@ -109,8 +109,10 @@ func (c *baseClient) Process(cmd Cmder) {
 			continue
 		}
 
-		return
+		return err
 	}
+
+	return cmd.Err()
 }
 
 func (c *baseClient) closed() bool {
