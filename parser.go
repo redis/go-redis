@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"net"
@@ -19,9 +20,7 @@ const (
 
 type multiBulkParser func(cn *pool.Conn, n int64) (interface{}, error)
 
-var (
-	errReaderTooSmall = errors.New("redis: reader is too small")
-)
+var errEmptyReply = errors.New("redis: reply is empty")
 
 //------------------------------------------------------------------------------
 
@@ -227,10 +226,13 @@ func scan(b []byte, val interface{}) error {
 func readLine(cn *pool.Conn) ([]byte, error) {
 	line, isPrefix, err := cn.Rd.ReadLine()
 	if err != nil {
-		return line, err
+		return nil, err
 	}
 	if isPrefix {
-		return line, errReaderTooSmall
+		return nil, bufio.ErrBufferFull
+	}
+	if len(line) == 0 {
+		return nil, errEmptyReply
 	}
 	if isNilReply(line) {
 		return nil, Nil
