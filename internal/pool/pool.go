@@ -8,9 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gopkg.in/bsm/ratelimit.v1"
-
 	"gopkg.in/redis.v4/internal"
+	"gopkg.in/redis.v4/internal/ratelimit"
 )
 
 var (
