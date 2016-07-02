@@ -5,8 +5,13 @@ import (
 	"fmt"
 
 	"gopkg.in/redis.v4/internal"
+	ierrors "gopkg.in/redis.v4/internal/errors"
 	"gopkg.in/redis.v4/internal/pool"
+	"gopkg.in/redis.v4/internal/proto"
 )
+
+// Redis transaction failed.
+const TxFailedErr = ierrors.RedisError("redis: transaction failed")
 
 var errDiscard = errors.New("redis: Discard can be used only inside Exec")
 
@@ -166,7 +171,7 @@ func (c *Tx) execCmds(cn *pool.Conn, cmds []Cmder) error {
 	}
 
 	// Parse number of replies.
-	line, err := readLine(cn)
+	line, err := cn.Rd.ReadLine()
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr
@@ -174,7 +179,7 @@ func (c *Tx) execCmds(cn *pool.Conn, cmds []Cmder) error {
 		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
 	}
-	if line[0] != '*' {
+	if line[0] != proto.ArrayReply {
 		err := fmt.Errorf("redis: expected '*', but got line %q", line)
 		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err

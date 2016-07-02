@@ -205,9 +205,8 @@ func (p *ConnPool) Get() (*Conn, error) {
 }
 
 func (p *ConnPool) Put(cn *Conn) error {
-	if cn.Rd.Buffered() != 0 {
-		b, _ := cn.Rd.Peek(cn.Rd.Buffered())
-		err := fmt.Errorf("connection has unread data: %q", b)
+	if data := cn.Rd.PeekBuffered(); data != nil {
+		err := fmt.Errorf("connection has unread data: %q", data)
 		internal.Logf(err.Error())
 		return p.Remove(cn, err)
 	}

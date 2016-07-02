@@ -156,6 +156,8 @@ var _ = Describe("Pipelining", func() {
 		wg.Add(N)
 		for i := 0; i < N; i++ {
 			go func() {
+				defer GinkgoRecover()
+
 				pipeline.Ping()
 				wg.Done()
 			}()

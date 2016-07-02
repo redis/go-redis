@@ -136,6 +136,8 @@ func eventually(fn func() error, timeout time.Duration) error {
 	done := make(chan struct{})
 
 	go func() {
+		defer GinkgoRecover()
+
 		for atomic.LoadInt32(&exit) == 0 {
 			err := fn()
 			if err == nil {

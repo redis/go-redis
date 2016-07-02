@@ -6,19 +6,8 @@ import (
 	"time"
 
 	"gopkg.in/redis.v4/internal"
+	"gopkg.in/redis.v4/internal/errors"
 )
-
-func formatInt(i int64) string {
-	return strconv.FormatInt(i, 10)
-}
-
-func formatUint(i uint64) string {
-	return strconv.FormatUint(i, 10)
-}
-
-func formatFloat(f float64) string {
-	return strconv.FormatFloat(f, 'f', -1, 64)
-}
 
 func readTimeout(timeout time.Duration) time.Duration {
 	if timeout == 0 {
@@ -38,7 +27,7 @@ func formatMs(dur time.Duration) string {
 			dur, time.Millisecond,
 		)
 	}
-	return formatInt(int64(dur / time.Millisecond))
+	return strconv.FormatInt(int64(dur/time.Millisecond), 10)
 }
 
 func formatSec(dur time.Duration) string {
@@ -48,7 +37,7 @@ func formatSec(dur time.Duration) string {
 			dur, time.Second,
 		)
 	}
-	return formatInt(int64(dur / time.Second))
+	return strconv.FormatInt(int64(dur/time.Second), 10)
 }
 
 type cmdable struct {
@@ -1515,7 +1504,7 @@ func (c *cmdable) shutdown(modifier string) *StatusCmd {
 		}
 	} else {
 		// Server did not quit. String reply contains the reason.
-		cmd.err = errorf(cmd.val)
+		cmd.err = errors.RedisError(cmd.val)
 		cmd.val = ""
 	}
 	return cmd

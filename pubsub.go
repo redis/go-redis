@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gopkg.in/redis.v4/internal"
+	"gopkg.in/redis.v4/internal/errors"
 	"gopkg.in/redis.v4/internal/pool"
 )
 
@@ -248,7 +249,7 @@ func (c *PubSub) receiveMessage(timeout time.Duration) (*Message, error) {
 	for {
 		msgi, err := c.ReceiveTimeout(timeout)
 		if err != nil {
-			if !isNetworkError(err) {
+			if !errors.IsNetwork(err) {
 				return nil, err
 			}
 
