@@ -393,6 +393,7 @@ var _ = Describe("ClusterClient", func() {
 			for i := 0; i < 100; i++ {
 				wg.Add(1)
 				go func() {
+					defer GinkgoRecover()
 					defer wg.Done()
 
 					err := incr("key")

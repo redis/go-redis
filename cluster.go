@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gopkg.in/redis.v4/internal"
+	"gopkg.in/redis.v4/internal/errors"
 	"gopkg.in/redis.v4/internal/hashtag"
 	"gopkg.in/redis.v4/internal/pool"
 )
@@ -291,14 +292,14 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 		}
 
 		// On network errors try random node.
-		if shouldRetry(err) {
+		if errors.IsRetryable(err) {
 			node, err = c.randomNode()
 			continue
 		}
 
 		var moved bool
 		var addr string
-		moved, ask, addr = isMovedError(err)
+		moved, ask, addr = errors.IsMoved(err)
 		if moved || ask {
 			master, _ := c.slotMasterNode(slot)
 			if moved && (master == nil || master.Addr != addr) {
@@ -549,11 +550,11 @@ func (c *ClusterClient) execClusterCmds(
 		if err == nil {
 			continue
 		}
-		if isNetworkError(err) {
+		if errors.IsNetwork(err) {
 			cmd.reset()
 			failedCmds[nil] = append(failedCmds[nil], cmds[i:]...)
 			break
-		} else if moved, ask, addr := isMovedError(err); moved {
+		} else if moved, ask, addr := errors.IsMoved(err); moved {
 			c.lazyReloadSlots()
 			cmd.reset()
 			node, err := c.nodeByAddr(addr)

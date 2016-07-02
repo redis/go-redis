@@ -1,10 +1,10 @@
 package pool
 
 import (
-	"bufio"
-	"io"
 	"net"
 	"time"
+
+	"gopkg.in/redis.v4/internal/proto"
 )
 
 const defaultBufSize = 4096
@@ -13,8 +13,8 @@ var noDeadline = time.Time{}
 
 type Conn struct {
 	NetConn net.Conn
-	Rd      *bufio.Reader
-	Buf     []byte
+	Rd      *proto.Reader
+	Wb      *proto.WriteBuffer
 
 	Inited bool
 	UsedAt time.Time
@@ -26,11 +26,11 @@ type Conn struct {
 func NewConn(netConn net.Conn) *Conn {
 	cn := &Conn{
 		NetConn: netConn,
-		Buf:     make([]byte, defaultBufSize),
+		Wb:      proto.NewWriteBuffer(),
 
 		UsedAt: time.Now(),
 	}
-	cn.Rd = bufio.NewReader(cn)
+	cn.Rd = proto.NewReader(cn)
 	return cn
 }
 
@@ -60,17 +60,6 @@ func (cn *Conn) Write(b []byte) (int, error) {
 
 func (cn *Conn) RemoteAddr() net.Addr {
 	return cn.NetConn.RemoteAddr()
-}
-
-func (cn *Conn) ReadN(n int) ([]byte, error) {
-	if d := n - cap(cn.Buf); d > 0 {
-		cn.Buf = cn.Buf[:cap(cn.Buf)]
-		cn.Buf = append(cn.Buf, make([]byte, d)...)
-	} else {
-		cn.Buf = cn.Buf[:n]
-	}
-	_, err := io.ReadFull(cn.Rd, cn.Buf)
-	return cn.Buf, err
 }
 
 func (cn *Conn) Close() error {

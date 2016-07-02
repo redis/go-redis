@@ -4,6 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"gopkg.in/redis.v4/internal/errors"
 	"gopkg.in/redis.v4/internal/pool"
 )
 
@@ -99,7 +100,7 @@ func execCmds(cn *pool.Conn, cmds []Cmder) ([]Cmder, error) {
 		if firstCmdErr == nil {
 			firstCmdErr = err
 		}
-		if shouldRetry(err) {
+		if errors.IsRetryable(err) {
 			failedCmds = append(failedCmds, cmd)
 		}
 	}

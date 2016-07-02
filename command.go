@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gopkg.in/redis.v4/internal/pool"
+	"gopkg.in/redis.v4/internal/proto"
 )
 
 var (
@@ -55,16 +56,14 @@ func resetCmds(cmds []Cmder) {
 }
 
 func writeCmd(cn *pool.Conn, cmds ...Cmder) error {
-	cn.Buf = cn.Buf[:0]
+	cn.Wb.Reset()
 	for _, cmd := range cmds {
-		var err error
-		cn.Buf, err = appendArgs(cn.Buf, cmd.args())
-		if err != nil {
+		if err := cn.Wb.Append(cmd.args()); err != nil {
 			return err
 		}
 	}
 
-	_, err := cn.Write(cn.Buf)
+	_, err := cn.Write(cn.Wb.Bytes())
 	return err
 }
 
@@ -166,7 +165,7 @@ func (cmd *Cmd) String() string {
 }
 
 func (cmd *Cmd) readReply(cn *pool.Conn) error {
-	val, err := readReply(cn, sliceParser)
+	val, err := cn.Rd.ReadReply(sliceParser)
 	if err != nil {
 		cmd.err = err
 		return cmd.err
@@ -211,7 +210,7 @@ func (cmd *SliceCmd) String() string {
 }
 
 func (cmd *SliceCmd) readReply(cn *pool.Conn) error {
-	v, err := readArrayReply(cn, sliceParser)
+	v, err := cn.Rd.ReadArrayReply(sliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -251,7 +250,7 @@ func (cmd *StatusCmd) String() string {
 }
 
 func (cmd *StatusCmd) readReply(cn *pool.Conn) error {
-	cmd.val, cmd.err = readStringReply(cn)
+	cmd.val, cmd.err = cn.Rd.ReadStringReply()
 	return cmd.err
 }
 
@@ -286,7 +285,7 @@ func (cmd *IntCmd) String() string {
 }
 
 func (cmd *IntCmd) readReply(cn *pool.Conn) error {
-	cmd.val, cmd.err = readIntReply(cn)
+	cmd.val, cmd.err = cn.Rd.ReadIntReply()
 	return cmd.err
 }
 
@@ -325,7 +324,7 @@ func (cmd *DurationCmd) String() string {
 }
 
 func (cmd *DurationCmd) readReply(cn *pool.Conn) error {
-	n, err := readIntReply(cn)
+	n, err := cn.Rd.ReadIntReply()
 	if err != nil {
 		cmd.err = err
 		return err
@@ -367,7 +366,7 @@ func (cmd *BoolCmd) String() string {
 var ok = []byte("OK")
 
 func (cmd *BoolCmd) readReply(cn *pool.Conn) error {
-	v, err := readReply(cn, nil)
+	v, err := cn.Rd.ReadReply(nil)
 	// `SET key value NX` returns nil when key already exists. But
 	// `SETNX key value` returns bool (0/1). So convert nil to bool.
 	// TODO: is this okay?
@@ -410,7 +409,7 @@ func (cmd *StringCmd) reset() {
 }
 
 func (cmd *StringCmd) Val() string {
-	return bytesToString(cmd.val)
+	return string(cmd.val)
 }
 
 func (cmd *StringCmd) Result() (string, error) {
@@ -446,7 +445,7 @@ func (cmd *StringCmd) Scan(val interface{}) error {
 	if cmd.err != nil {
 		return cmd.err
 	}
-	return scan(cmd.val, val)
+	return proto.Scan(cmd.val, val)
 }
 
 func (cmd *StringCmd) String() string {
@@ -454,7 +453,7 @@ func (cmd *StringCmd) String() string {
 }
 
 func (cmd *StringCmd) readReply(cn *pool.Conn) error {
-	b, err := readBytesReply(cn)
+	b, err := cn.Rd.ReadBytesReply()
 	if err != nil {
 		cmd.err = err
 		return err
@@ -498,7 +497,7 @@ func (cmd *FloatCmd) String() string {
 }
 
 func (cmd *FloatCmd) readReply(cn *pool.Conn) error {
-	cmd.val, cmd.err = readFloatReply(cn)
+	cmd.val, cmd.err = cn.Rd.ReadFloatReply()
 	return cmd.err
 }
 
@@ -533,7 +532,7 @@ func (cmd *StringSliceCmd) String() string {
 }
 
 func (cmd *StringSliceCmd) readReply(cn *pool.Conn) error {
-	v, err := readArrayReply(cn, stringSliceParser)
+	v, err := cn.Rd.ReadArrayReply(stringSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -573,7 +572,7 @@ func (cmd *BoolSliceCmd) String() string {
 }
 
 func (cmd *BoolSliceCmd) readReply(cn *pool.Conn) error {
-	v, err := readArrayReply(cn, boolSliceParser)
+	v, err := cn.Rd.ReadArrayReply(boolSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -613,7 +612,7 @@ func (cmd *StringStringMapCmd) String() string {
 }
 
 func (cmd *StringStringMapCmd) readReply(cn *pool.Conn) error {
-	v, err := readArrayReply(cn, stringStringMapParser)
+	v, err := cn.Rd.ReadArrayReply(stringStringMapParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -653,7 +652,7 @@ func (cmd *StringIntMapCmd) reset() {
 }
 
 func (cmd *StringIntMapCmd) readReply(cn *pool.Conn) error {
-	v, err := readArrayReply(cn, stringIntMapParser)
+	v, err := cn.Rd.ReadArrayReply(stringIntMapParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -693,7 +692,7 @@ func (cmd *ZSliceCmd) String() string {
 }
 
 func (cmd *ZSliceCmd) readReply(cn *pool.Conn) error {
-	v, err := readArrayReply(cn, zSliceParser)
+	v, err := cn.Rd.ReadArrayReply(zSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -737,7 +736,7 @@ func (cmd *ScanCmd) String() string {
 }
 
 func (cmd *ScanCmd) readReply(cn *pool.Conn) error {
-	page, cursor, err := readScanReply(cn)
+	page, cursor, err := cn.Rd.ReadScanReply()
 	if err != nil {
 		cmd.err = err
 		return cmd.err
@@ -789,7 +788,7 @@ func (cmd *ClusterSlotsCmd) reset() {
 }
 
 func (cmd *ClusterSlotsCmd) readReply(cn *pool.Conn) error {
-	v, err := readArrayReply(cn, clusterSlotsParser)
+	v, err := cn.Rd.ReadArrayReply(clusterSlotsParser)
 	if err != nil {
 		cmd.err = err
 		return err
@@ -874,7 +873,7 @@ func (cmd *GeoLocationCmd) String() string {
 }
 
 func (cmd *GeoLocationCmd) readReply(cn *pool.Conn) error {
-	reply, err := readArrayReply(cn, newGeoLocationSliceParser(cmd.q))
+	reply, err := cn.Rd.ReadArrayReply(newGeoLocationSliceParser(cmd.q))
 	if err != nil {
 		cmd.err = err
 		return err
@@ -924,7 +923,7 @@ func (cmd *CommandsInfoCmd) reset() {
 }
 
 func (cmd *CommandsInfoCmd) readReply(cn *pool.Conn) error {
-	v, err := readArrayReply(cn, commandInfoSliceParser)
+	v, err := cn.Rd.ReadArrayReply(commandInfoSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
