@@ -22,32 +22,32 @@ type Pipeline struct {
 	closed int32
 }
 
-func (pipe *Pipeline) Process(cmd Cmder) error {
-	pipe.mu.Lock()
-	pipe.cmds = append(pipe.cmds, cmd)
-	pipe.mu.Unlock()
+func (c *Pipeline) Process(cmd Cmder) error {
+	c.mu.Lock()
+	c.cmds = append(c.cmds, cmd)
+	c.mu.Unlock()
 	return nil
 }
 
 // Close closes the pipeline, releasing any open resources.
-func (pipe *Pipeline) Close() error {
-	atomic.StoreInt32(&pipe.closed, 1)
-	pipe.Discard()
+func (c *Pipeline) Close() error {
+	atomic.StoreInt32(&c.closed, 1)
+	c.Discard()
 	return nil
 }
 
-func (pipe *Pipeline) isClosed() bool {
-	return atomic.LoadInt32(&pipe.closed) == 1
+func (c *Pipeline) isClosed() bool {
+	return atomic.LoadInt32(&c.closed) == 1
 }
 
 // Discard resets the pipeline and discards queued commands.
-func (pipe *Pipeline) Discard() error {
-	defer pipe.mu.Unlock()
-	pipe.mu.Lock()
-	if pipe.isClosed() {
+func (c *Pipeline) Discard() error {
+	defer c.mu.Unlock()
+	c.mu.Lock()
+	if c.isClosed() {
 		return pool.ErrClosed
 	}
-	pipe.cmds = pipe.cmds[:0]
+	c.cmds = c.cmds[:0]
 	return nil
 }
 
@@ -56,30 +56,30 @@ func (pipe *Pipeline) Discard() error {
 //
 // Exec always returns list of commands and error of the first failed
 // command if any.
-func (pipe *Pipeline) Exec() ([]Cmder, error) {
-	if pipe.isClosed() {
+func (c *Pipeline) Exec() ([]Cmder, error) {
+	if c.isClosed() {
 		return nil, pool.ErrClosed
 	}
 
-	defer pipe.mu.Unlock()
-	pipe.mu.Lock()
+	defer c.mu.Unlock()
+	c.mu.Lock()
 
-	if len(pipe.cmds) == 0 {
-		return pipe.cmds, nil
+	if len(c.cmds) == 0 {
+		return c.cmds, nil
 	}
 
-	cmds := pipe.cmds
-	pipe.cmds = nil
+	cmds := c.cmds
+	c.cmds = nil
 
-	return cmds, pipe.exec(cmds)
+	return cmds, c.exec(cmds)
 }
 
-func (pipe *Pipeline) pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
-	if err := fn(pipe); err != nil {
+func (c *Pipeline) pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+	if err := fn(c); err != nil {
 		return nil, err
 	}
-	cmds, err := pipe.Exec()
-	_ = pipe.Close()
+	cmds, err := c.Exec()
+	_ = c.Close()
 	return cmds, err
 }
 

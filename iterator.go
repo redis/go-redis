@@ -3,7 +3,7 @@ package redis
 import "sync"
 
 type Scanner struct {
-	client cmdable
+	client *cmdable
 	*ScanCmd
 }
 
