@@ -235,6 +235,7 @@ func (c *ClusterClient) slotClosestNode(slot int) (*clusterNode, error) {
 func (c *ClusterClient) cmdSlotAndNode(cmd Cmder) (int, *clusterNode, error) {
 	cmdInfo := c.cmdInfo(cmd.arg(0))
 	if cmdInfo == nil {
+		internal.Logf("info for cmd=%s not found", cmd.arg(0))
 		node, err := c.randomNode()
 		return 0, node, err
 	}

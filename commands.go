@@ -550,7 +550,7 @@ func (c *cmdable) Set(key string, value interface{}, expiration time.Duration) *
 
 func (c *cmdable) SetBit(key string, offset int64, value int) *IntCmd {
 	cmd := NewIntCmd(
-		"SETBIT",
+		"setbit",
 		key,
 		offset,
 		value,
