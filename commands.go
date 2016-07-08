@@ -82,7 +82,7 @@ func (c *statefulCmdable) Select(index int) *StatusCmd {
 
 func (c *cmdable) Del(keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
-	args[0] = "DEL"
+	args[0] = "del"
 	for i, key := range keys {
 		args[1+i] = key
 	}
@@ -550,7 +550,7 @@ func (c *cmdable) Set(key string, value interface{}, expiration time.Duration) *
 
 func (c *cmdable) SetBit(key string, offset int64, value int) *IntCmd {
 	cmd := NewIntCmd(
-		"SETBIT",
+		"setbit",
 		key,
 		offset,
 		value,

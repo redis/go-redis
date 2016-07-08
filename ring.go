@@ -169,6 +169,7 @@ func (c *Ring) cmdInfo(name string) *CommandInfo {
 func (c *Ring) cmdFirstKey(cmd Cmder) string {
 	cmdInfo := c.cmdInfo(cmd.arg(0))
 	if cmdInfo == nil {
+		internal.Logf("info for cmd=%s not found", cmd.arg(0))
 		return ""
 	}
 	return cmd.arg(int(cmdInfo.FirstKeyPos))
