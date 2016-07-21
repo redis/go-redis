@@ -40,11 +40,7 @@ func formatSec(dur time.Duration) string {
 	return strconv.FormatInt(int64(dur/time.Second), 10)
 }
 
-type cmdable struct {
-	process func(cmd Cmder) error
-}
-
-type Commander interface {
+type Cmdable interface {
 	Echo(message interface{}) *StringCmd
 	Ping() *StatusCmd
 	Quit() *StatusCmd
@@ -208,8 +204,6 @@ type Commander interface {
 	ShutdownSave() *StatusCmd
 	ShutdownNoSave() *StatusCmd
 	SlaveOf(host, port string) *StatusCmd
-	SlowLog()
-	Sync()
 	Time() *StringSliceCmd
 	Eval(script string, keys []string, args ...interface{}) *Cmd
 	EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd
@@ -246,6 +240,12 @@ type Commander interface {
 	GeoHash(key string, members ...string) *StringSliceCmd
 	Command() *CommandsInfoCmd
 }
+
+type cmdable struct {
+	process func(cmd Cmder) error
+}
+
+var _ Cmdable = (*cmdable)(nil)
 
 type statefulCmdable struct {
 	process func(cmd Cmder) error
@@ -1739,6 +1739,7 @@ func (c *cmdable) Sync() {
 	panic("not implemented")
 }
 
+// TODO: add TimeCmd and use it here
 func (c *cmdable) Time() *StringSliceCmd {
 	cmd := NewStringSliceCmd("time")
 	c.process(cmd)
