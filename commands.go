@@ -1618,6 +1618,13 @@ func (c *cmdable) DebugObject(key string) *StringCmd {
 
 //------------------------------------------------------------------------------
 
+// Publish posts the message to the channel.
+func (c *cmdable) Publish(channel, message string) *IntCmd {
+	cmd := NewIntCmd("PUBLISH", channel, message)
+	c.process(cmd)
+	return cmd
+}
+
 func (c *cmdable) PubSubChannels(pattern string) *StringSliceCmd {
 	args := []interface{}{"pubsub", "channels"}
 	if pattern != "*" {

@@ -215,3 +215,24 @@ func (c *Client) pipelineExec(cmds []Cmder) error {
 	}
 	return retErr
 }
+
+func (c *Client) pubSub() *PubSub {
+	return &PubSub{
+		base: baseClient{
+			opt:      c.opt,
+			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), false),
+		},
+	}
+}
+
+// Subscribe subscribes the client to the specified channels.
+func (c *Client) Subscribe(channels ...string) (*PubSub, error) {
+	pubsub := c.pubSub()
+	return pubsub, pubsub.Subscribe(channels...)
+}
+
+// PSubscribe subscribes the client to the given patterns.
+func (c *Client) PSubscribe(channels ...string) (*PubSub, error) {
+	pubsub := c.pubSub()
+	return pubsub, pubsub.PSubscribe(channels...)
+}
