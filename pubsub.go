@@ -10,13 +10,6 @@ import (
 	"gopkg.in/redis.v4/internal/pool"
 )
 
-// Posts a message to the given channel.
-func (c *Client) Publish(channel, message string) *IntCmd {
-	req := NewIntCmd("PUBLISH", channel, message)
-	c.Process(req)
-	return req
-}
-
 // PubSub implements Pub/Sub commands as described in
 // http://redis.io/topics/pubsub. It's NOT safe for concurrent use by
 // multiple goroutines.
@@ -27,28 +20,6 @@ type PubSub struct {
 	patterns []string
 
 	nsub int // number of active subscriptions
-}
-
-// Deprecated. Use Subscribe/PSubscribe instead.
-func (c *Client) PubSub() *PubSub {
-	return &PubSub{
-		base: baseClient{
-			opt:      c.opt,
-			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), false),
-		},
-	}
-}
-
-// Subscribes the client to the specified channels.
-func (c *Client) Subscribe(channels ...string) (*PubSub, error) {
-	pubsub := c.PubSub()
-	return pubsub, pubsub.Subscribe(channels...)
-}
-
-// Subscribes the client to the given patterns.
-func (c *Client) PSubscribe(channels ...string) (*PubSub, error) {
-	pubsub := c.PubSub()
-	return pubsub, pubsub.PSubscribe(channels...)
 }
 
 func (c *PubSub) subscribe(redisCmd string, channels ...string) error {

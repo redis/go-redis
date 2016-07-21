@@ -81,8 +81,8 @@ var _ = Describe("pool", func() {
 		connPool.(*pool.ConnPool).DialLimiter = nil
 
 		perform(1000, func(id int) {
-			pubsub := client.PubSub()
-			Expect(pubsub.Subscribe()).NotTo(HaveOccurred())
+			pubsub, err := client.Subscribe()
+			Expect(err).NotTo(HaveOccurred())
 			Expect(pubsub.Close()).NotTo(HaveOccurred())
 		})
 
