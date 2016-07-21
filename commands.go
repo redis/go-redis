@@ -44,6 +44,209 @@ type cmdable struct {
 	process func(cmd Cmder) error
 }
 
+type Commander interface {
+	Echo(message interface{}) *StringCmd
+	Ping() *StatusCmd
+	Quit() *StatusCmd
+	Del(keys ...string) *IntCmd
+	Dump(key string) *StringCmd
+	Exists(key string) *BoolCmd
+	Expire(key string, expiration time.Duration) *BoolCmd
+	ExpireAt(key string, tm time.Time) *BoolCmd
+	Keys(pattern string) *StringSliceCmd
+	Migrate(host, port, key string, db int64, timeout time.Duration) *StatusCmd
+	Move(key string, db int64) *BoolCmd
+	ObjectRefCount(keys ...string) *IntCmd
+	ObjectEncoding(keys ...string) *StringCmd
+	ObjectIdleTime(keys ...string) *DurationCmd
+	Persist(key string) *BoolCmd
+	PExpire(key string, expiration time.Duration) *BoolCmd
+	PExpireAt(key string, tm time.Time) *BoolCmd
+	PTTL(key string) *DurationCmd
+	RandomKey() *StringCmd
+	Rename(key, newkey string) *StatusCmd
+	RenameNX(key, newkey string) *BoolCmd
+	Restore(key string, ttl time.Duration, value string) *StatusCmd
+	RestoreReplace(key string, ttl time.Duration, value string) *StatusCmd
+	Sort(key string, sort Sort) *StringSliceCmd
+	SortInterfaces(key string, sort Sort) *SliceCmd
+	TTL(key string) *DurationCmd
+	Type(key string) *StatusCmd
+	Scan(cursor uint64, match string, count int64) Scanner
+	SScan(key string, cursor uint64, match string, count int64) Scanner
+	HScan(key string, cursor uint64, match string, count int64) Scanner
+	ZScan(key string, cursor uint64, match string, count int64) Scanner
+	Append(key, value string) *IntCmd
+	BitCount(key string, bitCount *BitCount) *IntCmd
+	bitOp(op, destKey string, keys ...string) *IntCmd
+	BitOpAnd(destKey string, keys ...string) *IntCmd
+	BitOpOr(destKey string, keys ...string) *IntCmd
+	BitOpXor(destKey string, keys ...string) *IntCmd
+	BitOpNot(destKey string, key string) *IntCmd
+	BitPos(key string, bit int64, pos ...int64) *IntCmd
+	Decr(key string) *IntCmd
+	DecrBy(key string, decrement int64) *IntCmd
+	Get(key string) *StringCmd
+	GetBit(key string, offset int64) *IntCmd
+	GetRange(key string, start, end int64) *StringCmd
+	GetSet(key string, value interface{}) *StringCmd
+	Incr(key string) *IntCmd
+	IncrBy(key string, value int64) *IntCmd
+	IncrByFloat(key string, value float64) *FloatCmd
+	MGet(keys ...string) *SliceCmd
+	MSet(pairs ...interface{}) *StatusCmd
+	MSetNX(pairs ...interface{}) *BoolCmd
+	Set(key string, value interface{}, expiration time.Duration) *StatusCmd
+	SetBit(key string, offset int64, value int) *IntCmd
+	SetNX(key string, value interface{}, expiration time.Duration) *BoolCmd
+	SetXX(key string, value interface{}, expiration time.Duration) *BoolCmd
+	SetRange(key string, offset int64, value string) *IntCmd
+	StrLen(key string) *IntCmd
+	HDel(key string, fields ...string) *IntCmd
+	HExists(key, field string) *BoolCmd
+	HGet(key, field string) *StringCmd
+	HGetAll(key string) *StringStringMapCmd
+	HIncrBy(key, field string, incr int64) *IntCmd
+	HIncrByFloat(key, field string, incr float64) *FloatCmd
+	HKeys(key string) *StringSliceCmd
+	HLen(key string) *IntCmd
+	HMGet(key string, fields ...string) *SliceCmd
+	HMSet(key string, fields map[string]string) *StatusCmd
+	HSet(key, field, value string) *BoolCmd
+	HSetNX(key, field, value string) *BoolCmd
+	HVals(key string) *StringSliceCmd
+	BLPop(timeout time.Duration, keys ...string) *StringSliceCmd
+	BRPop(timeout time.Duration, keys ...string) *StringSliceCmd
+	BRPopLPush(source, destination string, timeout time.Duration) *StringCmd
+	LIndex(key string, index int64) *StringCmd
+	LInsert(key, op string, pivot, value interface{}) *IntCmd
+	LInsertBefore(key string, pivot, value interface{}) *IntCmd
+	LInsertAfter(key string, pivot, value interface{}) *IntCmd
+	LLen(key string) *IntCmd
+	LPop(key string) *StringCmd
+	LPush(key string, values ...interface{}) *IntCmd
+	LPushX(key string, value interface{}) *IntCmd
+	LRange(key string, start, stop int64) *StringSliceCmd
+	LRem(key string, count int64, value interface{}) *IntCmd
+	LSet(key string, index int64, value interface{}) *StatusCmd
+	LTrim(key string, start, stop int64) *StatusCmd
+	RPop(key string) *StringCmd
+	RPopLPush(source, destination string) *StringCmd
+	RPush(key string, values ...interface{}) *IntCmd
+	RPushX(key string, value interface{}) *IntCmd
+	SAdd(key string, members ...interface{}) *IntCmd
+	SCard(key string) *IntCmd
+	SDiff(keys ...string) *StringSliceCmd
+	SDiffStore(destination string, keys ...string) *IntCmd
+	SInter(keys ...string) *StringSliceCmd
+	SInterStore(destination string, keys ...string) *IntCmd
+	SIsMember(key string, member interface{}) *BoolCmd
+	SMembers(key string) *StringSliceCmd
+	SMove(source, destination string, member interface{}) *BoolCmd
+	SPop(key string) *StringCmd
+	SPopN(key string, count int64) *StringSliceCmd
+	SRandMember(key string) *StringCmd
+	SRandMemberN(key string, count int64) *StringSliceCmd
+	SRem(key string, members ...interface{}) *IntCmd
+	SUnion(keys ...string) *StringSliceCmd
+	SUnionStore(destination string, keys ...string) *IntCmd
+	zAdd(a []interface{}, n int, members ...Z) *IntCmd
+	ZAdd(key string, members ...Z) *IntCmd
+	ZAddNX(key string, members ...Z) *IntCmd
+	ZAddXX(key string, members ...Z) *IntCmd
+	ZAddCh(key string, members ...Z) *IntCmd
+	ZAddNXCh(key string, members ...Z) *IntCmd
+	ZAddXXCh(key string, members ...Z) *IntCmd
+	zIncr(a []interface{}, n int, members ...Z) *FloatCmd
+	ZIncr(key string, member Z) *FloatCmd
+	ZIncrNX(key string, member Z) *FloatCmd
+	ZIncrXX(key string, member Z) *FloatCmd
+	ZCard(key string) *IntCmd
+	ZCount(key, min, max string) *IntCmd
+	ZIncrBy(key string, increment float64, member string) *FloatCmd
+	ZInterStore(destination string, store ZStore, keys ...string) *IntCmd
+	zRange(key string, start, stop int64, withScores bool) *StringSliceCmd
+	ZRange(key string, start, stop int64) *StringSliceCmd
+	ZRangeWithScores(key string, start, stop int64) *ZSliceCmd
+	zRangeBy(zcmd, key string, opt ZRangeBy, withScores bool) *StringSliceCmd
+	ZRangeByScore(key string, opt ZRangeBy) *StringSliceCmd
+	ZRangeByLex(key string, opt ZRangeBy) *StringSliceCmd
+	ZRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd
+	ZRank(key, member string) *IntCmd
+	ZRem(key string, members ...interface{}) *IntCmd
+	ZRemRangeByRank(key string, start, stop int64) *IntCmd
+	ZRemRangeByScore(key, min, max string) *IntCmd
+	ZRevRange(key string, start, stop int64) *StringSliceCmd
+	ZRevRangeWithScores(key string, start, stop int64) *ZSliceCmd
+	zRevRangeBy(zcmd, key string, opt ZRangeBy) *StringSliceCmd
+	ZRevRangeByScore(key string, opt ZRangeBy) *StringSliceCmd
+	ZRevRangeByLex(key string, opt ZRangeBy) *StringSliceCmd
+	ZRevRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd
+	ZRevRank(key, member string) *IntCmd
+	ZScore(key, member string) *FloatCmd
+	ZUnionStore(dest string, store ZStore, keys ...string) *IntCmd
+	PFAdd(key string, els ...interface{}) *IntCmd
+	PFCount(keys ...string) *IntCmd
+	PFMerge(dest string, keys ...string) *StatusCmd
+	BgRewriteAOF() *StatusCmd
+	BgSave() *StatusCmd
+	ClientKill(ipPort string) *StatusCmd
+	ClientList() *StringCmd
+	ClientPause(dur time.Duration) *BoolCmd
+	ClientSetName(name string) *BoolCmd
+	ConfigGet(parameter string) *SliceCmd
+	ConfigResetStat() *StatusCmd
+	ConfigSet(parameter, value string) *StatusCmd
+	DbSize() *IntCmd
+	FlushAll() *StatusCmd
+	FlushDb() *StatusCmd
+	Info(section ...string) *StringCmd
+	LastSave() *IntCmd
+	Save() *StatusCmd
+	shutdown(modifier string) *StatusCmd
+	Shutdown() *StatusCmd
+	ShutdownSave() *StatusCmd
+	ShutdownNoSave() *StatusCmd
+	SlaveOf(host, port string) *StatusCmd
+	SlowLog()
+	Sync()
+	Time() *StringSliceCmd
+	Eval(script string, keys []string, args ...interface{}) *Cmd
+	EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd
+	ScriptExists(scripts ...string) *BoolSliceCmd
+	ScriptFlush() *StatusCmd
+	ScriptKill() *StatusCmd
+	ScriptLoad(script string) *StringCmd
+	DebugObject(key string) *StringCmd
+	PubSubChannels(pattern string) *StringSliceCmd
+	PubSubNumSub(channels ...string) *StringIntMapCmd
+	PubSubNumPat() *IntCmd
+	ClusterSlots() *ClusterSlotsCmd
+	ClusterNodes() *StringCmd
+	ClusterMeet(host, port string) *StatusCmd
+	ClusterForget(nodeID string) *StatusCmd
+	ClusterReplicate(nodeID string) *StatusCmd
+	ClusterResetSoft() *StatusCmd
+	ClusterResetHard() *StatusCmd
+	ClusterInfo() *StringCmd
+	ClusterKeySlot(key string) *IntCmd
+	ClusterCountFailureReports(nodeID string) *IntCmd
+	ClusterCountKeysInSlot(slot int) *IntCmd
+	ClusterDelSlots(slots ...int) *StatusCmd
+	ClusterDelSlotsRange(min, max int) *StatusCmd
+	ClusterSaveConfig() *StatusCmd
+	ClusterSlaves(nodeID string) *StringSliceCmd
+	ClusterFailover() *StatusCmd
+	ClusterAddSlots(slots ...int) *StatusCmd
+	ClusterAddSlotsRange(min, max int) *StatusCmd
+	GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd
+	GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd
+	GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
+	GeoDist(key string, member1, member2, unit string) *FloatCmd
+	GeoHash(key string, members ...string) *StringSliceCmd
+	Command() *CommandsInfoCmd
+}
+
 type statefulCmdable struct {
 	process func(cmd Cmder) error
 }
