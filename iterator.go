@@ -52,7 +52,11 @@ func (it *ScanIterator) Next() bool {
 	}
 
 	// Fetch next page.
-	it.ScanCmd._args[1] = it.ScanCmd.cursor
+	if it.ScanCmd._args[0] == "scan" {
+		it.ScanCmd._args[1] = it.ScanCmd.cursor
+	} else {
+		it.ScanCmd._args[2] = it.ScanCmd.cursor
+	}
 	it.ScanCmd.reset()
 	it.client.process(it.ScanCmd)
 	if it.ScanCmd.Err() != nil {

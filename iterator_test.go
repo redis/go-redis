@@ -21,6 +21,16 @@ var _ = Describe("ScanIterator", func() {
 		return err
 	}
 
+	var hashKey = "K_HASHTEST"
+	var hashSeed = func(n int) error {
+		pipe := client.Pipeline()
+		for i := 1; i <= n; i++ {
+			pipe.HSet(hashKey, fmt.Sprintf("K%02d", i), "x").Err()
+		}
+		_, err := pipe.Exec()
+		return err
+	}
+
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
@@ -58,6 +68,20 @@ var _ = Describe("ScanIterator", func() {
 		}
 		Expect(iter.Err()).NotTo(HaveOccurred())
 		Expect(vals).To(HaveLen(71))
+		Expect(vals).To(ContainElement("K01"))
+		Expect(vals).To(ContainElement("K71"))
+	})
+
+	It("should hscan across multiple pages", func() {
+		Expect(hashSeed(71)).NotTo(HaveOccurred())
+
+		var vals []string
+		iter := client.HScan(hashKey, 0, "", 10).Iterator()
+		for iter.Next() {
+			vals = append(vals, iter.Val())
+		}
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(71 * 2))
 		Expect(vals).To(ContainElement("K01"))
 		Expect(vals).To(ContainElement("K71"))
 	})
