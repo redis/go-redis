@@ -12,15 +12,17 @@ import (
 	"gopkg.in/redis.v4/internal/pool"
 )
 
-var (
-	errRingShardsDown = errors.New("redis: all ring shards are down")
-)
+var errRingShardsDown = errors.New("redis: all ring shards are down")
 
 // RingOptions are used to configure a ring client and should be
 // passed to NewRing.
 type RingOptions struct {
-	// A map of name => host:port addresses of ring shards.
+	// Map of name => host:port addresses of ring shards.
 	Addrs map[string]string
+
+	// Frequency of PING commands sent to check shards availability.
+	// Shard is considered down after 3 subsequent failed checks.
+	HeartbeatFrequency time.Duration
 
 	// Following options are copied from Options struct.
 
@@ -39,7 +41,11 @@ type RingOptions struct {
 	IdleCheckFrequency time.Duration
 }
 
-func (opt *RingOptions) init() {}
+func (opt *RingOptions) init() {
+	if opt.HeartbeatFrequency == 0 {
+		opt.HeartbeatFrequency = 500 * time.Millisecond
+	}
+}
 
 func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
@@ -73,7 +79,7 @@ func (shard *ringShard) String() string {
 }
 
 func (shard *ringShard) IsDown() bool {
-	const threshold = 5
+	const threshold = 3
 	return shard.down >= threshold
 }
 
@@ -108,7 +114,7 @@ func (shard *ringShard) Vote(up bool) bool {
 // uses shards that are available to the client and does not do any
 // coordination when shard state is changed.
 //
-// Ring should be used when you use multiple Redis servers for caching
+// Ring should be used when you need multiple Redis servers for caching
 // and can tolerate losing data when one of the servers dies.
 // Otherwise you should use Redis Cluster.
 type Ring struct {
@@ -224,7 +230,7 @@ func (c *Ring) rebalance() {
 
 // heartbeat monitors state of each shard in the ring.
 func (c *Ring) heartbeat() {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(c.opt.HeartbeatFrequency)
 	defer ticker.Stop()
 	for _ = range ticker.C {
 		var rebalance bool

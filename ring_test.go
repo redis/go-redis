@@ -12,6 +12,7 @@ import (
 )
 
 var _ = Describe("Redis ring", func() {
+	const heartbeat = 100 * time.Millisecond
 	var ring *redis.Ring
 
 	setRingKeys := func() {
@@ -27,6 +28,7 @@ var _ = Describe("Redis ring", func() {
 				"ringShardOne": ":" + ringShard1Port,
 				"ringShardTwo": ":" + ringShard2Port,
 			},
+			HeartbeatFrequency: heartbeat,
 		})
 
 		// Shards should not have any keys.
@@ -53,10 +55,9 @@ var _ = Describe("Redis ring", func() {
 		// Stop ringShard2.
 		Expect(ringShard2.Close()).NotTo(HaveOccurred())
 
-		// Ring needs 5 * heartbeat time to detect that node is down.
+		// Ring needs 3 * heartbeat time to detect that node is down.
 		// Give it more to be sure.
-		heartbeat := 100 * time.Millisecond
-		time.Sleep(2 * 5 * heartbeat)
+		time.Sleep(2 * 3 * heartbeat)
 
 		setRingKeys()
 
