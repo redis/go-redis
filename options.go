@@ -18,43 +18,42 @@ type Options struct {
 	// Network and Addr options.
 	Dialer func() (net.Conn, error)
 
-	// An optional password. Must match the password specified in the
+	// Optional password. Must match the password specified in the
 	// requirepass server configuration option.
 	Password string
-	// A database to be selected after connecting to server.
+	// Database to be selected after connecting to the server.
 	DB int
 
-	// The maximum number of retries before giving up.
+	// Maximum number of retries before giving up.
 	// Default is to not retry failed commands.
 	MaxRetries int
 
-	// Sets the deadline for establishing new connections. If reached,
-	// dial will fail with a timeout.
+	// Dial timeout for establishing new connections.
 	// Default is 5 seconds.
 	DialTimeout time.Duration
-	// Sets the deadline for socket reads. If reached, commands will
-	// fail with a timeout instead of blocking.
+	// Timeout for socket reads. If reached, commands will fail
+	// with a timeout instead of blocking.
 	ReadTimeout time.Duration
-	// Sets the deadline for socket writes. If reached, commands will
-	// fail with a timeout instead of blocking.
+	// Timeout for socket writes. If reached, commands will fail
+	// with a timeout instead of blocking.
 	WriteTimeout time.Duration
 
-	// The maximum number of socket connections.
+	// Maximum number of socket connections.
 	// Default is 10 connections.
 	PoolSize int
-	// Specifies amount of time client waits for connection if all
-	// connections are busy before returning an error.
+	// Amount of time client waits for connection if all connections
+	// are busy before returning an error.
 	// Default is 1 second.
 	PoolTimeout time.Duration
-	// Specifies amount of time after which client closes idle
-	// connections. Should be less than server's timeout.
+	// Amount of time after which client closes idle connections.
+	// Should be less than server's timeout.
 	// Default is to not close idle connections.
 	IdleTimeout time.Duration
-	// The frequency of idle checks.
+	// Frequency of idle checks.
 	// Default is 1 minute.
 	IdleCheckFrequency time.Duration
 
-	// Enables read queries for a connection to a Redis Cluster slave node.
+	// Enables read only queries on slave nodes.
 	ReadOnly bool
 }
 
