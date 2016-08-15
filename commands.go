@@ -245,6 +245,14 @@ type cmdable struct {
 	process func(cmd Cmder) error
 }
 
+// WrapProcess replaces the process func. It takes a function createWrapper
+// which is supplied by the user. createWrapper takes the old process func as
+// an input and returns the new wrapper process func. createWrapper should
+// use call the old process func within the new process func.
+func (c *cmdable) WrapProcess(createWrapper func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error) {
+	c.process = createWrapper(c.process)
+}
+
 var _ Cmdable = (*cmdable)(nil)
 
 type statefulCmdable struct {
