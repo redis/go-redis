@@ -234,6 +234,7 @@ type Cmdable interface {
 	ClusterAddSlots(slots ...int) *StatusCmd
 	ClusterAddSlotsRange(min, max int) *StatusCmd
 	GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd
+	GeoPos(key string, name ...string) *GeoPosCmd
 	GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd
 	GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
 	GeoDist(key string, member1, member2, unit string) *FloatCmd
@@ -2050,6 +2051,18 @@ func (c *cmdable) GeoHash(key string, members ...string) *StringSliceCmd {
 		args[2+i] = member
 	}
 	cmd := NewStringSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) GeoPos(key string, names ...string) *GeoPosCmd {
+	args := make([]interface{}, 2+len(names))
+	args[0] = "geopos"
+	args[1] = key
+	for i, name := range names {
+		args[2+i] = name
+	}
+	cmd := NewGeoPosCmd(args...)
 	c.process(cmd)
 	return cmd
 }

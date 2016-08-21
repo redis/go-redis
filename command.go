@@ -806,6 +806,10 @@ type GeoLocation struct {
 	GeoHash                   int64
 }
 
+type GeoPosition struct {
+	Longitude, Latitude float64
+}
+
 // GeoRadiusQuery is used with GeoRadius to query geospatial index.
 type GeoRadiusQuery struct {
 	Radius float64
@@ -879,6 +883,44 @@ func (cmd *GeoLocationCmd) readReply(cn *pool.Conn) error {
 		return err
 	}
 	cmd.locations = reply.([]GeoLocation)
+	return nil
+}
+
+type GeoPosCmd struct {
+	baseCmd
+
+	positions []*GeoPosition
+}
+
+func NewGeoPosCmd(args ...interface{}) *GeoPosCmd {
+	cmd := newBaseCmd(args)
+	return &GeoPosCmd{baseCmd: cmd}
+}
+
+func (cmd *GeoPosCmd) Val() []*GeoPosition {
+	return cmd.positions
+}
+
+func (cmd *GeoPosCmd) Result() ([]*GeoPosition, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *GeoPosCmd) String() string {
+	return cmdString(cmd, cmd.positions)
+}
+
+func (cmd *GeoPosCmd) reset() {
+	cmd.positions = nil
+	cmd.err = nil
+}
+
+func (cmd *GeoPosCmd) readReply(cn *pool.Conn) error {
+	reply, err := cn.Rd.ReadArrayReply(newGeoPositionSliceParser())
+	if err != nil {
+		cmd.err = err
+		return err
+	}
+	cmd.positions = reply.([]*GeoPosition)
 	return nil
 }
 
