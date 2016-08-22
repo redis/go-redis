@@ -273,46 +273,42 @@ func newGeoLocationSliceParser(q *GeoRadiusQuery) proto.MultiBulkParse {
 	}
 }
 
-func newGeoPositionParser() proto.MultiBulkParse {
-	return func(rd *proto.Reader, n int64) (interface{}, error) {
-		var pos GeoPosition
-		var err error
+func geoPosParser(rd *proto.Reader, n int64) (interface{}, error) {
+	var pos GeoPos
+	var err error
 
-		pos.Longitude, err = rd.ReadFloatReply()
-		if err != nil {
-			return nil, err
-		}
-		pos.Latitude, err = rd.ReadFloatReply()
-		if err != nil {
-			return nil, err
-		}
-
-		return &pos, nil
+	pos.Longitude, err = rd.ReadFloatReply()
+	if err != nil {
+		return nil, err
 	}
+
+	pos.Latitude, err = rd.ReadFloatReply()
+	if err != nil {
+		return nil, err
+	}
+
+	return &pos, nil
 }
 
-func newGeoPositionSliceParser() proto.MultiBulkParse {
-	return func(rd *proto.Reader, n int64) (interface{}, error) {
-		positions := make([]*GeoPosition, 0, n)
-		for i := int64(0); i < n; i++ {
-			v, err := rd.ReadReply(newGeoPositionParser())
-			if err != nil {
-				// response may contain nil results
-				if err == Nil {
-					positions = append(positions, nil)
-					continue
-				}
-				return nil, err
+func geoPosSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
+	positions := make([]*GeoPos, 0, n)
+	for i := int64(0); i < n; i++ {
+		v, err := rd.ReadReply(geoPosParser)
+		if err != nil {
+			if err == Nil {
+				positions = append(positions, nil)
+				continue
 			}
-			switch vv := v.(type) {
-			case *GeoPosition:
-				positions = append(positions, vv)
-			default:
-				return nil, fmt.Errorf("got %T, expected *GeoPosition", v)
-			}
+			return nil, err
 		}
-		return positions, nil
+		switch v := v.(type) {
+		case *GeoPos:
+			positions = append(positions, v)
+		default:
+			return nil, fmt.Errorf("got %T, expected *GeoPos", v)
+		}
 	}
+	return positions, nil
 }
 
 func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {

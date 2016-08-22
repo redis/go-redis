@@ -806,10 +806,6 @@ type GeoLocation struct {
 	GeoHash                   int64
 }
 
-type GeoPosition struct {
-	Longitude, Latitude float64
-}
-
 // GeoRadiusQuery is used with GeoRadius to query geospatial index.
 type GeoRadiusQuery struct {
 	Radius float64
@@ -886,10 +882,16 @@ func (cmd *GeoLocationCmd) readReply(cn *pool.Conn) error {
 	return nil
 }
 
+//------------------------------------------------------------------------------
+
+type GeoPos struct {
+	Longitude, Latitude float64
+}
+
 type GeoPosCmd struct {
 	baseCmd
 
-	positions []*GeoPosition
+	positions []*GeoPos
 }
 
 func NewGeoPosCmd(args ...interface{}) *GeoPosCmd {
@@ -897,11 +899,11 @@ func NewGeoPosCmd(args ...interface{}) *GeoPosCmd {
 	return &GeoPosCmd{baseCmd: cmd}
 }
 
-func (cmd *GeoPosCmd) Val() []*GeoPosition {
+func (cmd *GeoPosCmd) Val() []*GeoPos {
 	return cmd.positions
 }
 
-func (cmd *GeoPosCmd) Result() ([]*GeoPosition, error) {
+func (cmd *GeoPosCmd) Result() ([]*GeoPos, error) {
 	return cmd.Val(), cmd.Err()
 }
 
@@ -915,12 +917,12 @@ func (cmd *GeoPosCmd) reset() {
 }
 
 func (cmd *GeoPosCmd) readReply(cn *pool.Conn) error {
-	reply, err := cn.Rd.ReadArrayReply(newGeoPositionSliceParser())
+	reply, err := cn.Rd.ReadArrayReply(geoPosSliceParser)
 	if err != nil {
 		cmd.err = err
 		return err
 	}
-	cmd.positions = reply.([]*GeoPosition)
+	cmd.positions = reply.([]*GeoPos)
 	return nil
 }
 
