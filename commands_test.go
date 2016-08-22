@@ -2689,20 +2689,35 @@ var _ = Describe("Commands", func() {
 			// "166274.15156960033"
 			// GEODIST Sicily Palermo Catania km
 			// "166.27415156960032"
-			geoDist := client.GeoDist("Sicily", "Palermo", "Catania", "km")
-			Expect(geoDist.Err()).NotTo(HaveOccurred())
-			Expect(geoDist.Val()).To(BeNumerically("~", 166.27, 0.01))
+			dist, err := client.GeoDist("Sicily", "Palermo", "Catania", "km").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dist).To(BeNumerically("~", 166.27, 0.01))
 
-			geoDist = client.GeoDist("Sicily", "Palermo", "Catania", "m")
-			Expect(geoDist.Err()).NotTo(HaveOccurred())
-			Expect(geoDist.Val()).To(BeNumerically("~", 166274.15, 0.01))
+			dist, err = client.GeoDist("Sicily", "Palermo", "Catania", "m").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dist).To(BeNumerically("~", 166274.15, 0.01))
 		})
 
 		It("should get geo hash in string representation", func() {
-			res, err := client.GeoHash("Sicily", "Palermo", "Catania").Result()
+			hashes, err := client.GeoHash("Sicily", "Palermo", "Catania").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res[0]).To(Equal("sqc8b49rny0"))
-			Expect(res[1]).To(Equal("sqdtr74hyu0"))
+			Expect(hashes).To(ConsistOf([]string{"sqc8b49rny0", "sqdtr74hyu0"}))
+		})
+
+		It("should return geo position", func() {
+			pos, err := client.GeoPos("Sicily", "Palermo", "Catania", "NonExisting").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(ConsistOf([]*redis.GeoPos{
+				{
+					Longitude: 13.361389338970184,
+					Latitude:  38.1155563954963,
+				},
+				{
+					Longitude: 15.087267458438873,
+					Latitude:  37.50266842333162,
+				},
+				nil,
+			}))
 		})
 	})
 
