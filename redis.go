@@ -6,6 +6,7 @@ import (
 
 	"gopkg.in/redis.v3/internal"
 	"gopkg.in/redis.v3/internal/pool"
+	"time"
 )
 
 var Logger *log.Logger
@@ -75,6 +76,7 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 }
 
 func (c *baseClient) process(cmd Cmder) {
+	now := time.Now()
 	for i := 0; i <= c.opt.MaxRetries; i++ {
 		if i > 0 {
 			cmd.reset()
@@ -83,6 +85,9 @@ func (c *baseClient) process(cmd Cmder) {
 		cn, err := c.conn()
 		if err != nil {
 			cmd.setErr(err)
+			if c.opt.Logger != nil {
+				c.opt.Logger("%s (%s)", cmd.String(), time.Now().Sub(now).String())
+			}
 			return
 		}
 
@@ -100,6 +105,9 @@ func (c *baseClient) process(cmd Cmder) {
 			if err != nil && shouldRetry(err) {
 				continue
 			}
+			if c.opt.Logger != nil {
+				c.opt.Logger("%s (%s)", cmd.String(), time.Now().Sub(now).String())
+			}
 			return
 		}
 
@@ -108,7 +116,9 @@ func (c *baseClient) process(cmd Cmder) {
 		if err != nil && shouldRetry(err) {
 			continue
 		}
-
+		if c.opt.Logger != nil {
+			c.opt.Logger("%s (%s)", cmd.String(), time.Now().Sub(now).String())
+		}
 		return
 	}
 }

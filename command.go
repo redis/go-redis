@@ -74,14 +74,14 @@ func cmdString(cmd Cmder, val interface{}) string {
 	}
 	s := strings.Join(ss, " ")
 	if err := cmd.Err(); err != nil {
-		return s + ": " + err.Error()
+		return s + " : " + err.Error()
 	}
 	if val != nil {
 		switch vv := val.(type) {
 		case []byte:
-			return s + ": " + string(vv)
+			return s + " : " + string(vv)
 		default:
-			return s + ": " + fmt.Sprint(val)
+			return s + " : " + fmt.Sprint(val)
 		}
 	}
 	return s

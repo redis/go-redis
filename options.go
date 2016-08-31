@@ -53,6 +53,8 @@ type Options struct {
 	// The frequency of idle checks.
 	// Default is 1 minute.
 	IdleCheckFrequency time.Duration
+
+	Logger func(string, ...interface{})
 }
 
 func (opt *Options) getNetwork() string {
