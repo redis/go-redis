@@ -53,6 +53,15 @@ func isBadConn(err error, allowTimeout bool) bool {
 	return true
 }
 
+func lastIndexByte(s string, c byte) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
 func isMovedError(err error) (moved bool, ask bool, addr string) {
 	if _, ok := err.(redisError); !ok {
 		return
@@ -67,7 +76,7 @@ func isMovedError(err error) (moved bool, ask bool, addr string) {
 		return
 	}
 
-	ind := strings.LastIndexByte(s, ' ')
+	ind := lastIndexByte(s, ' ')
 	if ind == -1 {
 		return false, false, ""
 	}
