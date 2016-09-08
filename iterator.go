@@ -47,7 +47,7 @@ func (it *ScanIterator) Next() bool {
 	}
 
 	for {
-		// Return if there is more data to fetch.
+		// Return if there is no more data to fetch.
 		if it.ScanCmd.cursor == 0 {
 			return false
 		}
@@ -65,6 +65,8 @@ func (it *ScanIterator) Next() bool {
 		}
 
 		it.pos = 1
+
+		// Redis can occasionally return empty page
 		if len(it.ScanCmd.page) > 0 {
 			return true
 		}
