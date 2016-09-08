@@ -46,25 +46,32 @@ func (it *ScanIterator) Next() bool {
 		return true
 	}
 
-	// Return if there is more data to fetch.
-	if it.ScanCmd.cursor == 0 {
-		return false
-	}
+	for {
+		// Return if there is no more data to fetch.
+		if it.ScanCmd.cursor == 0 {
+			return false
+		}
 
-	// Fetch next page.
-	if it.ScanCmd._args[0] == "scan" {
-		it.ScanCmd._args[1] = it.ScanCmd.cursor
-	} else {
-		it.ScanCmd._args[2] = it.ScanCmd.cursor
-	}
-	it.ScanCmd.reset()
-	it.client.process(it.ScanCmd)
-	if it.ScanCmd.Err() != nil {
-		return false
-	}
+		// Fetch next page.
+		if it.ScanCmd._args[0] == "scan" {
+			it.ScanCmd._args[1] = it.ScanCmd.cursor
+		} else {
+			it.ScanCmd._args[2] = it.ScanCmd.cursor
+		}
+		it.ScanCmd.reset()
+		it.client.process(it.ScanCmd)
+		if it.ScanCmd.Err() != nil {
+			return false
+		}
 
-	it.pos = 1
-	return len(it.ScanCmd.page) > 0
+		it.pos = 1
+
+		// Redis can occasionally return empty page
+		if len(it.ScanCmd.page) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Val returns the key/field at the current cursor position.
