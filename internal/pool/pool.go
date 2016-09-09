@@ -222,6 +222,7 @@ func (p *ConnPool) Remove(cn *Conn, reason error) error {
 	p.connsMu.Lock()
 	p.remove(cn, reason)
 	p.connsMu.Unlock()
+	cn.Close()
 	p.queue <- struct{}{}
 	return nil
 }
@@ -318,6 +319,7 @@ func (p *ConnPool) ReapStaleConns() (n int, err error) {
 		p.connsMu.Lock()
 		p.remove(cn, errConnStale)
 		p.connsMu.Unlock()
+		cn.Close()
 		n++
 	}
 	if idx > 0 {
