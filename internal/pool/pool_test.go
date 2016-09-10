@@ -2,7 +2,6 @@ package pool_test
 
 import (
 	"errors"
-	"net"
 	"testing"
 	"time"
 
@@ -97,7 +96,7 @@ var _ = Describe("conns reaper", func() {
 	const idleTimeout = time.Minute
 
 	var connPool *pool.ConnPool
-	var idleConns, closedConns []*pool.Conn
+	var conns, idleConns, closedConns []*pool.Conn
 
 	BeforeEach(func() {
 		connPool = pool.NewConnPool(
@@ -109,7 +108,7 @@ var _ = Describe("conns reaper", func() {
 			return nil
 		}
 
-		var cns []*pool.Conn
+		conns = nil
 
 		// add stale connections
 		idleConns = nil
@@ -117,19 +116,18 @@ var _ = Describe("conns reaper", func() {
 			cn, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
 			cn.UsedAt = time.Now().Add(-2 * idleTimeout)
-			cns = append(cns, cn)
+			conns = append(conns, cn)
 			idleConns = append(idleConns, cn)
 		}
 
 		// add fresh connections
 		for i := 0; i < 3; i++ {
-			cn := pool.NewConn(&net.TCPConn{})
 			cn, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
-			cns = append(cns, cn)
+			conns = append(conns, cn)
 		}
 
-		for _, cn := range cns {
+		for _, cn := range conns {
 			Expect(connPool.Put(cn)).NotTo(HaveOccurred())
 		}
 
@@ -142,7 +140,11 @@ var _ = Describe("conns reaper", func() {
 	})
 
 	AfterEach(func() {
-		connPool.Close()
+		_ = connPool.Close()
+		Expect(connPool.Len()).To(Equal(0))
+		Expect(connPool.FreeLen()).To(Equal(0))
+		Expect(len(closedConns)).To(Equal(len(conns)))
+		Expect(closedConns).To(ConsistOf(conns))
 	})
 
 	It("reaps stale connections", func() {
@@ -157,7 +159,7 @@ var _ = Describe("conns reaper", func() {
 	})
 
 	It("stale connections are closed", func() {
-		Expect(closedConns).To(HaveLen(3))
+		Expect(len(closedConns)).To(Equal(len(idleConns)))
 		Expect(closedConns).To(ConsistOf(idleConns))
 	})
 
@@ -177,6 +179,7 @@ var _ = Describe("conns reaper", func() {
 			cn, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cn).NotTo(BeNil())
+			conns = append(conns, cn)
 
 			Expect(connPool.Len()).To(Equal(4))
 			Expect(connPool.FreeLen()).To(Equal(0))
