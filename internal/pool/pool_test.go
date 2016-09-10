@@ -94,20 +94,31 @@ var _ = Describe("ConnPool", func() {
 })
 
 var _ = Describe("conns reaper", func() {
+	const idleTimeout = time.Minute
+
 	var connPool *pool.ConnPool
+	var idleConns, closedConns []*pool.Conn
 
 	BeforeEach(func() {
 		connPool = pool.NewConnPool(
-			dummyDialer, 10, time.Second, time.Millisecond, time.Hour)
+			dummyDialer, 10, time.Second, idleTimeout, time.Hour)
+
+		closedConns = nil
+		connPool.OnClose = func(cn *pool.Conn) error {
+			closedConns = append(closedConns, cn)
+			return nil
+		}
 
 		var cns []*pool.Conn
 
 		// add stale connections
+		idleConns = nil
 		for i := 0; i < 3; i++ {
 			cn, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
-			cn.UsedAt = time.Now().Add(-2 * time.Minute)
+			cn.UsedAt = time.Now().Add(-2 * idleTimeout)
 			cns = append(cns, cn)
+			idleConns = append(idleConns, cn)
 		}
 
 		// add fresh connections
@@ -137,6 +148,17 @@ var _ = Describe("conns reaper", func() {
 	It("reaps stale connections", func() {
 		Expect(connPool.Len()).To(Equal(3))
 		Expect(connPool.FreeLen()).To(Equal(3))
+	})
+
+	It("does not reap fresh connections", func() {
+		n, err := connPool.ReapStaleConns()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(0))
+	})
+
+	It("stale connections are closed", func() {
+		Expect(closedConns).To(HaveLen(3))
+		Expect(closedConns).To(ConsistOf(idleConns))
 	})
 
 	It("pool is functional", func() {
