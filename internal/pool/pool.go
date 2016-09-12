@@ -84,9 +84,6 @@ func NewConnPool(dial dialer, poolSize int, poolTimeout, idleTimeout, idleCheckF
 		conns:     make([]*Conn, 0, poolSize),
 		freeConns: make([]*Conn, 0, poolSize),
 	}
-	for i := 0; i < poolSize; i++ {
-		p.queue <- struct{}{}
-	}
 	if idleTimeout > 0 && idleCheckFrequency > 0 {
 		go p.reaper(idleCheckFrequency)
 	}
@@ -125,7 +122,7 @@ func (p *ConnPool) PopFree() *Conn {
 	}
 
 	select {
-	case <-p.queue:
+	case p.queue <- struct{}{}:
 		timers.Put(timer)
 	case <-timer.C:
 		timers.Put(timer)
@@ -138,7 +135,7 @@ func (p *ConnPool) PopFree() *Conn {
 	p.freeConnsMu.Unlock()
 
 	if cn == nil {
-		p.queue <- struct{}{}
+		<-p.queue
 	}
 	return cn
 }
@@ -168,7 +165,7 @@ func (p *ConnPool) Get() (*Conn, error) {
 	}
 
 	select {
-	case <-p.queue:
+	case p.queue <- struct{}{}:
 		timers.Put(timer)
 	case <-timer.C:
 		timers.Put(timer)
@@ -190,7 +187,7 @@ func (p *ConnPool) Get() (*Conn, error) {
 
 	newcn, err := p.NewConn()
 	if err != nil {
-		p.queue <- struct{}{}
+		<-p.queue
 		return nil, err
 	}
 
@@ -213,13 +210,13 @@ func (p *ConnPool) Put(cn *Conn) error {
 	p.freeConnsMu.Lock()
 	p.freeConns = append(p.freeConns, cn)
 	p.freeConnsMu.Unlock()
-	p.queue <- struct{}{}
+	<-p.queue
 	return nil
 }
 
 func (p *ConnPool) Remove(cn *Conn, reason error) error {
 	p.remove(cn, reason)
-	p.queue <- struct{}{}
+	<-p.queue
 	return nil
 }
 
@@ -322,13 +319,13 @@ func (p *ConnPool) reapStaleConn() bool {
 func (p *ConnPool) ReapStaleConns() (int, error) {
 	var n int
 	for {
-		<-p.queue
+		p.queue <- struct{}{}
 		p.freeConnsMu.Lock()
 
 		reaped := p.reapStaleConn()
 
 		p.freeConnsMu.Unlock()
-		p.queue <- struct{}{}
+		<-p.queue
 
 		if reaped {
 			n++
