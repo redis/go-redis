@@ -33,9 +33,11 @@ type Options struct {
 	DialTimeout time.Duration
 	// Timeout for socket reads. If reached, commands will fail
 	// with a timeout instead of blocking.
+	// Default is 3 seconds.
 	ReadTimeout time.Duration
 	// Timeout for socket writes. If reached, commands will fail
 	// with a timeout instead of blocking.
+	// Default is 3 seconds.
 	WriteTimeout time.Duration
 
 	// Maximum number of socket connections.
@@ -43,7 +45,7 @@ type Options struct {
 	PoolSize int
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
-	// Default is 1 second.
+	// Default is ReadTimeout + 1 second.
 	PoolTimeout time.Duration
 	// Amount of time after which client closes idle connections.
 	// Should be less than server's timeout.
@@ -72,8 +74,17 @@ func (opt *Options) init() {
 	if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second
 	}
+	if opt.ReadTimeout == 0 {
+		opt.ReadTimeout = 3 * time.Second
+	}
+	if opt.WriteTimeout == 0 {
+		opt.WriteTimeout = opt.ReadTimeout
+	}
 	if opt.PoolTimeout == 0 {
-		opt.PoolTimeout = 1 * time.Second
+		opt.PoolTimeout = opt.ReadTimeout + time.Second
+	}
+	if opt.IdleTimeout == 0 {
+		opt.IdleTimeout = 5 * time.Minute
 	}
 	if opt.IdleCheckFrequency == 0 {
 		opt.IdleCheckFrequency = time.Minute
