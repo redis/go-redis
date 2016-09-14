@@ -145,7 +145,6 @@ type Cmdable interface {
 	SRem(key string, members ...interface{}) *IntCmd
 	SUnion(keys ...string) *StringSliceCmd
 	SUnionStore(destination string, keys ...string) *IntCmd
-	zAdd(a []interface{}, n int, members ...Z) *IntCmd
 	ZAdd(key string, members ...Z) *IntCmd
 	ZAddNX(key string, members ...Z) *IntCmd
 	ZAddXX(key string, members ...Z) *IntCmd
@@ -159,10 +158,8 @@ type Cmdable interface {
 	ZCount(key, min, max string) *IntCmd
 	ZIncrBy(key string, increment float64, member string) *FloatCmd
 	ZInterStore(destination string, store ZStore, keys ...string) *IntCmd
-	zRange(key string, start, stop int64, withScores bool) *StringSliceCmd
 	ZRange(key string, start, stop int64) *StringSliceCmd
 	ZRangeWithScores(key string, start, stop int64) *ZSliceCmd
-	zRangeBy(zcmd, key string, opt ZRangeBy, withScores bool) *StringSliceCmd
 	ZRangeByScore(key string, opt ZRangeBy) *StringSliceCmd
 	ZRangeByLex(key string, opt ZRangeBy) *StringSliceCmd
 	ZRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd
@@ -172,7 +169,6 @@ type Cmdable interface {
 	ZRemRangeByScore(key, min, max string) *IntCmd
 	ZRevRange(key string, start, stop int64) *StringSliceCmd
 	ZRevRangeWithScores(key string, start, stop int64) *ZSliceCmd
-	zRevRangeBy(zcmd, key string, opt ZRangeBy) *StringSliceCmd
 	ZRevRangeByScore(key string, opt ZRangeBy) *StringSliceCmd
 	ZRevRangeByLex(key string, opt ZRangeBy) *StringSliceCmd
 	ZRevRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd
@@ -197,7 +193,6 @@ type Cmdable interface {
 	Info(section ...string) *StringCmd
 	LastSave() *IntCmd
 	Save() *StatusCmd
-	shutdown(modifier string) *StatusCmd
 	Shutdown() *StatusCmd
 	ShutdownSave() *StatusCmd
 	ShutdownNoSave() *StatusCmd
