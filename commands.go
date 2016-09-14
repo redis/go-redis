@@ -74,7 +74,6 @@ type Cmdable interface {
 	ZScan(key string, cursor uint64, match string, count int64) Scanner
 	Append(key, value string) *IntCmd
 	BitCount(key string, bitCount *BitCount) *IntCmd
-	bitOp(op, destKey string, keys ...string) *IntCmd
 	BitOpAnd(destKey string, keys ...string) *IntCmd
 	BitOpOr(destKey string, keys ...string) *IntCmd
 	BitOpXor(destKey string, keys ...string) *IntCmd
@@ -153,7 +152,6 @@ type Cmdable interface {
 	ZAddCh(key string, members ...Z) *IntCmd
 	ZAddNXCh(key string, members ...Z) *IntCmd
 	ZAddXXCh(key string, members ...Z) *IntCmd
-	zIncr(a []interface{}, n int, members ...Z) *FloatCmd
 	ZIncr(key string, member Z) *FloatCmd
 	ZIncrNX(key string, member Z) *FloatCmd
 	ZIncrXX(key string, member Z) *FloatCmd
