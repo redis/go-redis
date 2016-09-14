@@ -58,7 +58,7 @@ func IsMoved(err error) (moved bool, ask bool, addr string) {
 		return
 	}
 
-	ind := strings.LastIndexByte(s, ' ')
+	ind := strings.LastIndex(s, " ")
 	if ind == -1 {
 		return false, false, ""
 	}
