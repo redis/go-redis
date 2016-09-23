@@ -160,17 +160,18 @@ func (c *ClusterClient) newNode(addr string) *clusterNode {
 	}
 }
 
-func (c *ClusterClient) slotNodes(slot int) []*clusterNode {
+func (c *ClusterClient) slotNodes(slot int) (nodes []*clusterNode) {
 	c.mu.RLock()
-	nodes := c.slots[slot]
+	if slot < len(c.slots) {
+		nodes = c.slots[slot]
+	}
 	c.mu.RUnlock()
 	return nodes
 }
 
 // randomNode returns random live node.
 func (c *ClusterClient) randomNode() (*clusterNode, error) {
-	var node *clusterNode
-	var err error
+	var nodeErr error
 	for i := 0; i < 10; i++ {
 		c.mu.RLock()
 		closed := c.closed
@@ -182,16 +183,18 @@ func (c *ClusterClient) randomNode() (*clusterNode, error) {
 		}
 
 		n := rand.Intn(len(addrs))
-		node, err = c.nodeByAddr(addrs[n])
+
+		node, err := c.nodeByAddr(addrs[n])
 		if err != nil {
 			return nil, err
 		}
 
-		if node.Client.ClusterInfo().Err() == nil {
-			break
+		nodeErr = node.Client.ClusterInfo().Err()
+		if nodeErr == nil {
+			return node, nil
 		}
 	}
-	return node, nil
+	return nil, nodeErr
 }
 
 func (c *ClusterClient) slotMasterNode(slot int) (*clusterNode, error) {

@@ -515,6 +515,19 @@ var _ = Describe("ClusterClient", func() {
 
 		describeClusterClient()
 	})
+
+	Describe("ClusterClient without valid nodes", func() {
+		BeforeEach(func() {
+			client = redis.NewClusterClient(&redis.ClusterOptions{
+				Addrs: []string{redisAddr},
+			})
+		})
+
+		It("returns an error", func() {
+			err := client.Ping().Err()
+			Expect(err).To(MatchError("ERR This instance has cluster support disabled"))
+		})
+	})
 })
 
 //------------------------------------------------------------------------------
