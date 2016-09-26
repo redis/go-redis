@@ -627,6 +627,8 @@ func (opt *ClusterOptions) init() {
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
+	const disableIdleCheck = -1
+
 	return &Options{
 		Password: opt.Password,
 		ReadOnly: opt.ReadOnly,
@@ -640,5 +642,6 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		IdleTimeout: opt.IdleTimeout,
 
 		// IdleCheckFrequency is not copied to disable reaper
+		IdleCheckFrequency: disableIdleCheck,
 	}
 }
