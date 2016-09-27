@@ -133,6 +133,8 @@ type Ring struct {
 	closed bool
 }
 
+var _ Cmdable = (*Ring)(nil)
+
 func NewRing(opt *RingOptions) *Ring {
 	const nreplicas = 100
 	opt.init()
