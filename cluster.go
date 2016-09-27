@@ -39,6 +39,8 @@ type ClusterClient struct {
 	reloading uint32
 }
 
+var _ Cmdable = (*ClusterClient)(nil)
+
 // NewClusterClient returns a Redis Cluster client as described in
 // http://redis.io/topics/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {

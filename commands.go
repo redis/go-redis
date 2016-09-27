@@ -41,6 +41,9 @@ func formatSec(dur time.Duration) string {
 }
 
 type Cmdable interface {
+	Pipeline() *Pipeline
+	Pipelined(fn func(*Pipeline) error) ([]Cmder, error)
+
 	Echo(message interface{}) *StringCmd
 	Ping() *StatusCmd
 	Quit() *StatusCmd
@@ -246,8 +249,6 @@ type cmdable struct {
 func (c *cmdable) WrapProcess(createWrapper func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error) {
 	c.process = createWrapper(c.process)
 }
-
-var _ Cmdable = (*cmdable)(nil)
 
 type statefulCmdable struct {
 	process func(cmd Cmder) error
