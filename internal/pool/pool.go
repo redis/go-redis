@@ -36,7 +36,7 @@ type PoolStats struct {
 }
 
 type Pooler interface {
-	Get() (*Conn, error)
+	Get() (*Conn, bool, error)
 	Put(*Conn) error
 	Remove(*Conn, error) error
 	Len() int
@@ -152,9 +152,9 @@ func (p *ConnPool) popFree() *Conn {
 }
 
 // Get returns existed connection from the pool or creates a new one.
-func (p *ConnPool) Get() (*Conn, error) {
+func (p *ConnPool) Get() (*Conn, bool, error) {
 	if p.Closed() {
-		return nil, ErrClosed
+		return nil, false, ErrClosed
 	}
 
 	atomic.AddUint32(&p.stats.Requests, 1)
@@ -170,7 +170,7 @@ func (p *ConnPool) Get() (*Conn, error) {
 	case <-timer.C:
 		timers.Put(timer)
 		atomic.AddUint32(&p.stats.Timeouts, 1)
-		return nil, ErrPoolTimeout
+		return nil, false, ErrPoolTimeout
 	}
 
 	p.freeConnsMu.Lock()
@@ -180,7 +180,7 @@ func (p *ConnPool) Get() (*Conn, error) {
 	if cn != nil {
 		atomic.AddUint32(&p.stats.Hits, 1)
 		if !cn.IsStale(p.idleTimeout) {
-			return cn, nil
+			return cn, false, nil
 		}
 		_ = p.closeConn(cn, errConnStale)
 	}
@@ -188,7 +188,7 @@ func (p *ConnPool) Get() (*Conn, error) {
 	newcn, err := p.NewConn()
 	if err != nil {
 		<-p.queue
-		return nil, err
+		return nil, false, err
 	}
 
 	p.connsMu.Lock()
@@ -198,7 +198,7 @@ func (p *ConnPool) Get() (*Conn, error) {
 	p.conns = append(p.conns, newcn)
 	p.connsMu.Unlock()
 
-	return newcn, nil
+	return newcn, true, nil
 }
 
 func (p *ConnPool) Put(cn *Conn) error {

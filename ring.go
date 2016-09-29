@@ -318,7 +318,7 @@ func (c *Ring) pipelineExec(cmds []Cmder) error {
 
 		for name, cmds := range cmdsMap {
 			client := c.shards[name].Client
-			cn, err := client.conn()
+			cn, _, err := client.conn()
 			if err != nil {
 				setCmdsErr(cmds, err)
 				if retErr == nil {

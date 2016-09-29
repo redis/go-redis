@@ -27,18 +27,18 @@ func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.opt.Addr, c.opt.DB)
 }
 
-func (c *baseClient) conn() (*pool.Conn, error) {
-	cn, err := c.connPool.Get()
+func (c *baseClient) conn() (*pool.Conn, bool, error) {
+	cn, isNew, err := c.connPool.Get()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !cn.Inited {
 		if err := c.initConn(cn); err != nil {
 			_ = c.connPool.Remove(cn, err)
-			return nil, err
+			return nil, false, err
 		}
 	}
-	return cn, err
+	return cn, isNew, nil
 }
 
 func (c *baseClient) putConn(cn *pool.Conn, err error, allowTimeout bool) bool {
@@ -84,7 +84,7 @@ func (c *baseClient) Process(cmd Cmder) error {
 			cmd.reset()
 		}
 
-		cn, err := c.conn()
+		cn, _, err := c.conn()
 		if err != nil {
 			cmd.setErr(err)
 			return err
@@ -197,7 +197,7 @@ func (c *Client) pipelineExec(cmds []Cmder) error {
 	var retErr error
 	failedCmds := cmds
 	for i := 0; i <= c.opt.MaxRetries; i++ {
-		cn, err := c.conn()
+		cn, _, err := c.conn()
 		if err != nil {
 			setCmdsErr(failedCmds, err)
 			return err
