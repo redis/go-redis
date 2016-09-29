@@ -26,7 +26,7 @@ var _ = Describe("ConnPool", func() {
 	It("rate limits dial", func() {
 		var rateErr error
 		for i := 0; i < 1000; i++ {
-			cn, err := connPool.Get()
+			cn, _, err := connPool.Get()
 			if err != nil {
 				rateErr = err
 				break
@@ -40,13 +40,13 @@ var _ = Describe("ConnPool", func() {
 
 	It("should unblock client when conn is removed", func() {
 		// Reserve one connection.
-		cn, err := connPool.Get()
+		cn, _, err := connPool.Get()
 		Expect(err).NotTo(HaveOccurred())
 
 		// Reserve all other connections.
 		var cns []*pool.Conn
 		for i := 0; i < 9; i++ {
-			cn, err := connPool.Get()
+			cn, _, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
 			cns = append(cns, cn)
 		}
@@ -57,7 +57,7 @@ var _ = Describe("ConnPool", func() {
 			defer GinkgoRecover()
 
 			started <- true
-			_, err := connPool.Get()
+			_, _, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
 			done <- true
 
@@ -113,7 +113,7 @@ var _ = Describe("conns reaper", func() {
 		// add stale connections
 		idleConns = nil
 		for i := 0; i < 3; i++ {
-			cn, err := connPool.Get()
+			cn, _, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
 			cn.UsedAt = time.Now().Add(-2 * idleTimeout)
 			conns = append(conns, cn)
@@ -122,7 +122,7 @@ var _ = Describe("conns reaper", func() {
 
 		// add fresh connections
 		for i := 0; i < 3; i++ {
-			cn, err := connPool.Get()
+			cn, _, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
 			conns = append(conns, cn)
 		}
@@ -167,7 +167,7 @@ var _ = Describe("conns reaper", func() {
 		for j := 0; j < 3; j++ {
 			var freeCns []*pool.Conn
 			for i := 0; i < 3; i++ {
-				cn, err := connPool.Get()
+				cn, _, err := connPool.Get()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(cn).NotTo(BeNil())
 				freeCns = append(freeCns, cn)
@@ -176,7 +176,7 @@ var _ = Describe("conns reaper", func() {
 			Expect(connPool.Len()).To(Equal(3))
 			Expect(connPool.FreeLen()).To(Equal(0))
 
-			cn, err := connPool.Get()
+			cn, _, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cn).NotTo(BeNil())
 			conns = append(conns, cn)
@@ -224,7 +224,7 @@ var _ = Describe("race", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				cn, err := connPool.Get()
+				cn, _, err := connPool.Get()
 				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
 					Expect(connPool.Put(cn)).NotTo(HaveOccurred())
@@ -232,7 +232,7 @@ var _ = Describe("race", func() {
 			}
 		}, func(id int) {
 			for i := 0; i < N; i++ {
-				cn, err := connPool.Get()
+				cn, _, err := connPool.Get()
 				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
 					Expect(connPool.Remove(cn, errors.New("test"))).NotTo(HaveOccurred())
@@ -248,7 +248,7 @@ var _ = Describe("race", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				cn, err := connPool.Get()
+				cn, _, err := connPool.Get()
 				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
 					Expect(connPool.Put(cn)).NotTo(HaveOccurred())

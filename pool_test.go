@@ -91,7 +91,7 @@ var _ = Describe("pool", func() {
 	})
 
 	It("should remove broken connections", func() {
-		cn, err := client.Pool().Get()
+		cn, _, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		cn.NetConn = &badConn{}
 		Expect(client.Pool().Put(cn)).NotTo(HaveOccurred())

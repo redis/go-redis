@@ -516,7 +516,7 @@ func (c *ClusterClient) pipelineExec(cmds []Cmder) error {
 				}
 			}
 
-			cn, err := node.Client.conn()
+			cn, _, err := node.Client.conn()
 			if err != nil {
 				setCmdsErr(cmds, err)
 				setRetErr(err)
