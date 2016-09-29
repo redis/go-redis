@@ -43,7 +43,7 @@ func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
 func (c *PubSub) Subscribe(channels ...string) error {
 	err := c.subscribe("SUBSCRIBE", channels...)
 	if err == nil {
-		c.channels = append(c.channels, channels...)
+		c.channels = appendIfNotExists(c.channels, channels...)
 		c.nsub += len(channels)
 	}
 	return err
@@ -53,7 +53,7 @@ func (c *PubSub) Subscribe(channels ...string) error {
 func (c *PubSub) PSubscribe(patterns ...string) error {
 	err := c.subscribe("PSUBSCRIBE", patterns...)
 	if err == nil {
-		c.patterns = append(c.patterns, patterns...)
+		c.patterns = appendIfNotExists(c.patterns, patterns...)
 		c.nsub += len(patterns)
 	}
 	return err
@@ -69,6 +69,23 @@ func remove(ss []string, es ...string) []string {
 				ss = append(ss[:i], ss[i+1:]...)
 				break
 			}
+		}
+	}
+	return ss
+}
+
+func appendIfNotExists(ss []string, es ...string) []string { 
+	for _, e := range es {
+		found := false
+		for _, s := range ss {
+			if s == e {
+				found = true
+				break
+			}
+		}	
+		
+		if !found {
+			ss = append(ss, e)
 		}
 	}
 	return ss
