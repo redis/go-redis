@@ -106,7 +106,9 @@ func (p *StickyConnPool) FreeLen() int {
 	return 0
 }
 
-func (p *StickyConnPool) Stats() *PoolStats { return nil }
+func (p *StickyConnPool) Stats() *Stats {
+	return nil
+}
 
 func (p *StickyConnPool) Close() error {
 	defer p.mx.Unlock()

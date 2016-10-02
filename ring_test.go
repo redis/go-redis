@@ -11,8 +11,9 @@ import (
 	"gopkg.in/redis.v4"
 )
 
-var _ = Describe("Redis ring", func() {
+var _ = Describe("Redis Ring", func() {
 	const heartbeat = 100 * time.Millisecond
+
 	var ring *redis.Ring
 
 	setRingKeys := func() {
@@ -23,20 +24,14 @@ var _ = Describe("Redis ring", func() {
 	}
 
 	BeforeEach(func() {
-		ring = redis.NewRing(&redis.RingOptions{
-			Addrs: map[string]string{
-				"ringShardOne": ":" + ringShard1Port,
-				"ringShardTwo": ":" + ringShard2Port,
-			},
-			HeartbeatFrequency: heartbeat,
+		opt := redisRingOptions()
+		opt.HeartbeatFrequency = heartbeat
+		ring = redis.NewRing(opt)
+
+		err := ring.ForEachShard(func(cl *redis.Client) error {
+			return cl.FlushDb().Err()
 		})
-
-		// Shards should not have any keys.
-		Expect(ringShard1.FlushDb().Err()).NotTo(HaveOccurred())
-		Expect(ringShard1.Info().Val()).NotTo(ContainSubstring("keys="))
-
-		Expect(ringShard2.FlushDb().Err()).NotTo(HaveOccurred())
-		Expect(ringShard2.Info().Val()).NotTo(ContainSubstring("keys="))
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {

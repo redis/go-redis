@@ -108,8 +108,36 @@ func redisOptions() *redis.Options {
 		WriteTimeout:       30 * time.Second,
 		PoolSize:           10,
 		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        time.Second,
-		IdleCheckFrequency: time.Second,
+		IdleTimeout:        500 * time.Millisecond,
+		IdleCheckFrequency: 500 * time.Millisecond,
+	}
+}
+
+func redisClusterOptions() *redis.ClusterOptions {
+	return &redis.ClusterOptions{
+		DialTimeout:        10 * time.Second,
+		ReadTimeout:        30 * time.Second,
+		WriteTimeout:       30 * time.Second,
+		PoolSize:           10,
+		PoolTimeout:        30 * time.Second,
+		IdleTimeout:        500 * time.Millisecond,
+		IdleCheckFrequency: 500 * time.Millisecond,
+	}
+}
+
+func redisRingOptions() *redis.RingOptions {
+	return &redis.RingOptions{
+		Addrs: map[string]string{
+			"ringShardOne": ":" + ringShard1Port,
+			"ringShardTwo": ":" + ringShard2Port,
+		},
+		DialTimeout:        10 * time.Second,
+		ReadTimeout:        30 * time.Second,
+		WriteTimeout:       30 * time.Second,
+		PoolSize:           10,
+		PoolTimeout:        30 * time.Second,
+		IdleTimeout:        500 * time.Millisecond,
+		IdleCheckFrequency: 500 * time.Millisecond,
 	}
 }
 

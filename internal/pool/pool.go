@@ -25,8 +25,8 @@ var timers = sync.Pool{
 	},
 }
 
-// PoolStats contains pool state information and accumulated stats.
-type PoolStats struct {
+// Stats contains pool state information and accumulated stats.
+type Stats struct {
 	Requests uint32 // number of times a connection was requested by the pool
 	Hits     uint32 // number of times free connection was found in the pool
 	Timeouts uint32 // number of times a wait timeout occurred
@@ -41,7 +41,7 @@ type Pooler interface {
 	Remove(*Conn, error) error
 	Len() int
 	FreeLen() int
-	Stats() *PoolStats
+	Stats() *Stats
 	Close() error
 	Closed() bool
 }
@@ -64,7 +64,7 @@ type ConnPool struct {
 	freeConnsMu sync.Mutex
 	freeConns   []*Conn
 
-	stats PoolStats
+	stats Stats
 
 	_closed int32 // atomic
 	lastErr atomic.Value
@@ -173,16 +173,22 @@ func (p *ConnPool) Get() (*Conn, bool, error) {
 		return nil, false, ErrPoolTimeout
 	}
 
-	p.freeConnsMu.Lock()
-	cn := p.popFree()
-	p.freeConnsMu.Unlock()
+	for {
+		p.freeConnsMu.Lock()
+		cn := p.popFree()
+		p.freeConnsMu.Unlock()
 
-	if cn != nil {
-		atomic.AddUint32(&p.stats.Hits, 1)
-		if !cn.IsStale(p.idleTimeout) {
-			return cn, false, nil
+		if cn == nil {
+			break
 		}
-		_ = p.closeConn(cn, errConnStale)
+
+		if cn.IsStale(p.idleTimeout) {
+			p.remove(cn, errConnStale)
+			continue
+		}
+
+		atomic.AddUint32(&p.stats.Hits, 1)
+		return cn, false, nil
 	}
 
 	newcn, err := p.NewConn()
@@ -192,9 +198,6 @@ func (p *ConnPool) Get() (*Conn, bool, error) {
 	}
 
 	p.connsMu.Lock()
-	if cn != nil {
-		p.removeConn(cn)
-	}
 	p.conns = append(p.conns, newcn)
 	p.connsMu.Unlock()
 
@@ -224,17 +227,13 @@ func (p *ConnPool) remove(cn *Conn, reason error) {
 	_ = p.closeConn(cn, reason)
 
 	p.connsMu.Lock()
-	p.removeConn(cn)
-	p.connsMu.Unlock()
-}
-
-func (p *ConnPool) removeConn(cn *Conn) {
 	for i, c := range p.conns {
 		if c == cn {
 			p.conns = append(p.conns[:i], p.conns[i+1:]...)
 			break
 		}
 	}
+	p.connsMu.Unlock()
 }
 
 // Len returns total number of connections.
@@ -253,14 +252,14 @@ func (p *ConnPool) FreeLen() int {
 	return l
 }
 
-func (p *ConnPool) Stats() *PoolStats {
-	stats := PoolStats{}
-	stats.Requests = atomic.LoadUint32(&p.stats.Requests)
-	stats.Hits = atomic.LoadUint32(&p.stats.Hits)
-	stats.Timeouts = atomic.LoadUint32(&p.stats.Timeouts)
-	stats.TotalConns = uint32(p.Len())
-	stats.FreeConns = uint32(p.FreeLen())
-	return &stats
+func (p *ConnPool) Stats() *Stats {
+	return &Stats{
+		Requests:   atomic.LoadUint32(&p.stats.Requests),
+		Hits:       atomic.LoadUint32(&p.stats.Hits),
+		Timeouts:   atomic.LoadUint32(&p.stats.Timeouts),
+		TotalConns: uint32(p.Len()),
+		FreeConns:  uint32(p.FreeLen()),
+	}
 }
 
 func (p *ConnPool) Closed() bool {
