@@ -1,6 +1,8 @@
 package redis_test
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
@@ -20,7 +22,7 @@ var _ = Describe("pool", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should respect max size", func() {
+	It("respects max size", func() {
 		perform(1000, func(id int) {
 			val, err := client.Ping().Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -33,7 +35,7 @@ var _ = Describe("pool", func() {
 		Expect(pool.Len()).To(Equal(pool.FreeLen()))
 	})
 
-	It("should respect max on multi", func() {
+	It("srespect max size on multi", func() {
 		perform(1000, func(id int) {
 			var ping *redis.StatusCmd
 
@@ -58,7 +60,7 @@ var _ = Describe("pool", func() {
 		Expect(pool.Len()).To(Equal(pool.FreeLen()))
 	})
 
-	It("should respect max on pipelines", func() {
+	It("respects max size on pipelines", func() {
 		perform(1000, func(id int) {
 			pipe := client.Pipeline()
 			ping := pipe.Ping()
@@ -76,7 +78,7 @@ var _ = Describe("pool", func() {
 		Expect(pool.Len()).To(Equal(pool.FreeLen()))
 	})
 
-	It("should respect max on pubsub", func() {
+	It("respects max size on pubsub", func() {
 		connPool := client.Pool()
 		connPool.(*pool.ConnPool).DialLimiter = nil
 
@@ -90,7 +92,7 @@ var _ = Describe("pool", func() {
 		Expect(connPool.Len()).To(BeNumerically("<=", 10))
 	})
 
-	It("should remove broken connections", func() {
+	It("removes broken connections", func() {
 		cn, _, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		cn.NetConn = &badConn{}
@@ -113,7 +115,7 @@ var _ = Describe("pool", func() {
 		Expect(stats.Timeouts).To(Equal(uint32(0)))
 	})
 
-	It("should reuse connections", func() {
+	It("reuses connections", func() {
 		for i := 0; i < 100; i++ {
 			val, err := client.Ping().Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -128,5 +130,27 @@ var _ = Describe("pool", func() {
 		Expect(stats.Requests).To(Equal(uint32(101)))
 		Expect(stats.Hits).To(Equal(uint32(100)))
 		Expect(stats.Timeouts).To(Equal(uint32(0)))
+	})
+
+	It("removes idle connections", func() {
+		stats := client.PoolStats()
+		Expect(stats).To(Equal(&redis.PoolStats{
+			Requests:   1,
+			Hits:       0,
+			Timeouts:   0,
+			TotalConns: 1,
+			FreeConns:  1,
+		}))
+
+		time.Sleep(2 * time.Second)
+
+		stats = client.PoolStats()
+		Expect(stats).To(Equal(&redis.PoolStats{
+			Requests:   1,
+			Hits:       0,
+			Timeouts:   0,
+			TotalConns: 0,
+			FreeConns:  0,
+		}))
 	})
 })

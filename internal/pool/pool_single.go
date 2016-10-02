@@ -42,7 +42,7 @@ func (p *SingleConnPool) FreeLen() int {
 	return 0
 }
 
-func (p *SingleConnPool) Stats() *PoolStats {
+func (p *SingleConnPool) Stats() *Stats {
 	return nil
 }
 

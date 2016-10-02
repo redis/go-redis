@@ -1297,7 +1297,7 @@ var _ = Describe("Commands", func() {
 
 			stats := client.PoolStats()
 			Expect(stats.Requests).To(Equal(uint32(3)))
-			Expect(stats.Hits).To(Equal(uint32(2)))
+			Expect(stats.Hits).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
 		})
 

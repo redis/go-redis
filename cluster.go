@@ -45,20 +45,25 @@ var _ Cmdable = (*ClusterClient)(nil)
 // http://redis.io/topics/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
-	client := &ClusterClient{
+
+	c := &ClusterClient{
 		opt:   opt,
 		nodes: make(map[string]*clusterNode),
 
 		cmdsInfoOnce: new(sync.Once),
 	}
-	client.cmdable.process = client.Process
+	c.cmdable.process = c.Process
 
 	for _, addr := range opt.Addrs {
-		_, _ = client.nodeByAddr(addr)
+		_, _ = c.nodeByAddr(addr)
 	}
-	client.reloadSlots()
+	c.reloadSlots()
 
-	return client
+	if opt.IdleCheckFrequency > 0 {
+		go c.reaper(opt.IdleCheckFrequency)
+	}
+
+	return c
 }
 
 func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
@@ -333,11 +338,9 @@ func (c *ClusterClient) ForEachMaster(fn func(client *Client) error) error {
 	slots := c.slots
 	c.mu.RUnlock()
 
-	var retErr error
-	var mu sync.Mutex
-
 	var wg sync.WaitGroup
 	visited := make(map[*clusterNode]struct{})
+	errCh := make(chan error, 1)
 	for _, nodes := range slots {
 		if len(nodes) == 0 {
 			continue
@@ -351,20 +354,24 @@ func (c *ClusterClient) ForEachMaster(fn func(client *Client) error) error {
 
 		wg.Add(1)
 		go func(node *clusterNode) {
+			defer wg.Done()
 			err := fn(node.Client)
 			if err != nil {
-				mu.Lock()
-				if retErr == nil {
-					retErr = err
+				select {
+				case errCh <- err:
+				default:
 				}
-				mu.Unlock()
 			}
-			wg.Done()
 		}(master)
 	}
 	wg.Wait()
 
-	return retErr
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
 }
 
 // closeClients closes all clients and returns the first error if there are any.
@@ -442,8 +449,8 @@ func (c *ClusterClient) setNodesLatency() {
 }
 
 // reaper closes idle connections to the cluster.
-func (c *ClusterClient) reaper(frequency time.Duration) {
-	ticker := time.NewTicker(frequency)
+func (c *ClusterClient) reaper(idleCheckFrequency time.Duration) {
+	ticker := time.NewTicker(idleCheckFrequency)
 	defer ticker.Stop()
 
 	for _ = range ticker.C {
