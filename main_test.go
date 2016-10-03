@@ -138,6 +138,7 @@ func redisRingOptions() *redis.RingOptions {
 		PoolTimeout:        30 * time.Second,
 		IdleTimeout:        500 * time.Millisecond,
 		IdleCheckFrequency: 500 * time.Millisecond,
+		RouteByEvalKeys:    true,
 	}
 }
 

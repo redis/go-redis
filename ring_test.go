@@ -89,6 +89,23 @@ var _ = Describe("Redis Ring", func() {
 		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=100"))
 	})
 
+	It("supports eval key search", func() {
+		script := redis.NewScript(`
+			local r = redis.call('SET', KEYS[1], ARGV[1])
+			return r
+		`)
+
+		var key string
+		for i := 0; i < 100; i++ {
+			key = fmt.Sprintf("key{%d}", i)
+			err := script.Run(ring, []string{key}, "value").Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=52"))
+		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=48"))
+	})
+
 	Describe("pipelining", func() {
 		It("returns an error when all shards are down", func() {
 			ring := redis.NewRing(&redis.RingOptions{})
