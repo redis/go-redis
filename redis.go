@@ -24,7 +24,7 @@ type baseClient struct {
 }
 
 func (c *baseClient) String() string {
-	return fmt.Sprintf("Redis<%s db:%d>", c.opt.Addr, c.opt.DB)
+	return fmt.Sprintf("Redis<%s db:%d>", c.getAddr(), c.opt.DB)
 }
 
 func (c *baseClient) conn() (*pool.Conn, bool, error) {
@@ -138,6 +138,10 @@ func (c *baseClient) Close() error {
 		retErr = err
 	}
 	return retErr
+}
+
+func (c *baseClient) getAddr() string {
+	return c.opt.Addr
 }
 
 //------------------------------------------------------------------------------

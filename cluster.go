@@ -13,7 +13,6 @@ import (
 )
 
 type clusterNode struct {
-	Addr    string
 	Client  *Client
 	Latency time.Duration
 }
@@ -152,7 +151,7 @@ func (c *ClusterClient) nodeByAddr(addr string) (*clusterNode, error) {
 	if !ok {
 		node = c.newNode(addr)
 		c.nodes[addr] = node
-		c.addrs = append(c.addrs, node.Addr)
+		c.addrs = append(c.addrs, addr)
 	}
 
 	return node, nil
@@ -162,7 +161,6 @@ func (c *ClusterClient) newNode(addr string) *clusterNode {
 	opt := c.opt.clientOptions()
 	opt.Addr = addr
 	return &clusterNode{
-		Addr:   addr,
 		Client: NewClient(opt),
 	}
 }
@@ -313,7 +311,7 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 		moved, ask, addr = errors.IsMoved(err)
 		if moved || ask {
 			master, _ := c.slotMasterNode(slot)
-			if moved && (master == nil || master.Addr != addr) {
+			if moved && (master == nil || master.Client.getAddr() != addr) {
 				c.lazyReloadSlots()
 			}
 
@@ -425,7 +423,7 @@ func (c *ClusterClient) reloadSlots() {
 
 	slots, err := node.Client.ClusterSlots().Result()
 	if err != nil {
-		internal.Logf("ClusterSlots on addr=%q failed: %s", node.Addr, err)
+		internal.Logf("ClusterSlots on addr=%q failed: %s", node.Client.getAddr(), err)
 		return
 	}
 
