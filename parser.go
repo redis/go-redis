@@ -316,7 +316,7 @@ func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 	var err error
 
 	if n != 6 {
-		return nil, fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6")
+		return nil, fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6", n)
 	}
 
 	cmd.Name, err = rd.ReadStringReply()
