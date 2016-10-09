@@ -69,5 +69,5 @@ func IsMoved(err error) (moved bool, ask bool, addr string) {
 }
 
 func IsLoading(err error) bool {
-	return err.Error() == string(LastIndexoadingError)
+	return err.Error() == string(LoadingError)
 }
