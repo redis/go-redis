@@ -300,6 +300,17 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 			return nil
 		}
 
+		// If slave is loading, read from master
+		if errors.IsLoading(cmd.Err()) && c.opt.ReadOnly {
+			trynode, err := c.slotMasterNode(slot)
+			if err == nil && trynode != node {
+				node = trynode
+				continue
+			} else {
+				break
+			}
+		}
+
 		// On network errors try random node.
 		if errors.IsRetryable(err) {
 			node, err = c.randomNode()
