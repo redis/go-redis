@@ -40,6 +40,9 @@ type RingOptions struct {
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
+
+	// RouteByEvalKeys flag to enable eval and evalsha key position parsing for sharding
+	RouteByEvalKeys bool
 }
 
 func (opt *RingOptions) init() {
@@ -132,6 +135,8 @@ type Ring struct {
 	cmdsInfoOnce *sync.Once
 
 	closed bool
+
+	routeByEvalKeys bool
 }
 
 var _ Cmdable = (*Ring)(nil)
@@ -154,6 +159,7 @@ func NewRing(opt *RingOptions) *Ring {
 		clopt.Addr = addr
 		ring.addClient(name, NewClient(clopt))
 	}
+	ring.routeByEvalKeys = opt.RouteByEvalKeys
 	go ring.heartbeat()
 	return ring
 }
@@ -221,7 +227,22 @@ func (c *Ring) cmdInfo(name string) *CommandInfo {
 	return c.cmdsInfo[name]
 }
 
+func (c *Ring) getEvalFirstKey(cmd Cmder) string {
+	if c.routeByEvalKeys && cmd.arg(2) != "0" {
+		return cmd.arg(3)
+	} else {
+		return cmd.arg(0)
+	}
+}
+
 func (c *Ring) cmdFirstKey(cmd Cmder) string {
+	switch cmd.arg(0) {
+	case "eval":
+		return c.getEvalFirstKey(cmd)
+	case "evalsha":
+		return c.getEvalFirstKey(cmd)
+	}
+
 	cmdInfo := c.cmdInfo(cmd.arg(0))
 	if cmdInfo == nil {
 		internal.Logf("info for cmd=%s not found", cmd.arg(0))
