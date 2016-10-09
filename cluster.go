@@ -12,6 +12,8 @@ import (
 	"gopkg.in/redis.v5/internal/pool"
 )
 
+var errClusterNoNodes = errors.RedisError("redis: cluster has no nodes")
+
 // ClusterOptions are used to configure a cluster client and should be
 // passed to NewClusterClient.
 type ClusterOptions struct {
@@ -155,14 +157,14 @@ func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
 
 func (c *ClusterClient) getNodes() map[string]*clusterNode {
 	var nodes map[string]*clusterNode
+	c.mu.RLock()
 	if !c.closed {
 		nodes = make(map[string]*clusterNode, len(c.nodes))
-		c.mu.RLock()
 		for addr, node := range c.nodes {
 			nodes[addr] = node
 		}
-		c.mu.RUnlock()
 	}
+	c.mu.RUnlock()
 	return nodes
 }
 
@@ -261,6 +263,9 @@ func (c *ClusterClient) randomNode() (*clusterNode, error) {
 			return nil, pool.ErrClosed
 		}
 
+		if len(addrs) == 0 {
+			return nil, errClusterNoNodes
+		}
 		n := rand.Intn(len(addrs))
 
 		node, err := c.nodeByAddr(addrs[n])
