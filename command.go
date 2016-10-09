@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-redis/redis/internal"
+
 	"gopkg.in/redis.v4/internal/pool"
 	"gopkg.in/redis.v4/internal/proto"
 )
@@ -88,6 +90,22 @@ func cmdString(cmd Cmder, val interface{}) string {
 
 }
 
+func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
+	switch cmd.arg(0) {
+	case "eval", "evalsha":
+		if cmd.arg(2) != "0" {
+			return 3
+		} else {
+			return 0
+		}
+	}
+	if info == nil {
+		internal.Logf("info for cmd=%s not found", cmd.arg(0))
+		return -1
+	}
+	return int(info.FirstKeyPos)
+}
+
 //------------------------------------------------------------------------------
 
 type baseCmd struct {
@@ -109,12 +127,11 @@ func (cmd *baseCmd) args() []interface{} {
 }
 
 func (cmd *baseCmd) arg(pos int) string {
-	if len(cmd._args) > pos {
-		if s, ok := cmd._args[pos].(string); ok {
-			return s
-		}
+	if pos < 0 || pos >= len(cmd._args) {
+		return ""
 	}
-	return ""
+	s, _ := cmd._args[pos].(string)
+	return s
 }
 
 func (cmd *baseCmd) readTimeout() *time.Duration {
