@@ -10,7 +10,7 @@ import (
 
 	"gopkg.in/bsm/ratelimit.v1"
 
-	"gopkg.in/redis.v4/internal"
+	"gopkg.in/redis.v5/internal"
 )
 
 var (

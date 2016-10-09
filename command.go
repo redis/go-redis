@@ -7,10 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis/internal"
-
-	"gopkg.in/redis.v4/internal/pool"
-	"gopkg.in/redis.v4/internal/proto"
+	"gopkg.in/redis.v5/internal"
+	"gopkg.in/redis.v5/internal/pool"
+	"gopkg.in/redis.v5/internal/proto"
 )
 
 var (

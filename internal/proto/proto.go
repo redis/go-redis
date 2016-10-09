@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"gopkg.in/redis.v4/internal/errors"
+	"gopkg.in/redis.v5/internal/errors"
 )
 
 const (

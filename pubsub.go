@@ -5,9 +5,9 @@ import (
 	"net"
 	"time"
 
-	"gopkg.in/redis.v4/internal"
-	"gopkg.in/redis.v4/internal/errors"
-	"gopkg.in/redis.v4/internal/pool"
+	"gopkg.in/redis.v5/internal"
+	"gopkg.in/redis.v5/internal/errors"
+	"gopkg.in/redis.v5/internal/pool"
 )
 
 // PubSub implements Pub/Sub commands as described in

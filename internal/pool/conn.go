@@ -4,7 +4,7 @@ import (
 	"net"
 	"time"
 
-	"gopkg.in/redis.v4/internal/proto"
+	"gopkg.in/redis.v5/internal/proto"
 )
 
 const defaultBufSize = 4096
