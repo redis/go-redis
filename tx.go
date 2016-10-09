@@ -1,19 +1,17 @@
 package redis
 
 import (
-	"errors"
 	"fmt"
 
 	"gopkg.in/redis.v5/internal"
-	ierrors "gopkg.in/redis.v5/internal/errors"
 	"gopkg.in/redis.v5/internal/pool"
 	"gopkg.in/redis.v5/internal/proto"
 )
 
 // Redis transaction failed.
-const TxFailedErr = ierrors.RedisError("redis: transaction failed")
+const TxFailedErr = internal.RedisError("redis: transaction failed")
 
-var errDiscard = errors.New("redis: Discard can be used only inside Exec")
+var errDiscard = internal.RedisError("redis: Discard can be used only inside Exec")
 
 // Tx implements Redis transactions as described in
 // http://redis.io/topics/transactions. It's NOT safe for concurrent use

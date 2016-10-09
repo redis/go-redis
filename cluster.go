@@ -7,12 +7,11 @@ import (
 	"time"
 
 	"gopkg.in/redis.v5/internal"
-	"gopkg.in/redis.v5/internal/errors"
 	"gopkg.in/redis.v5/internal/hashtag"
 	"gopkg.in/redis.v5/internal/pool"
 )
 
-var errClusterNoNodes = errors.RedisError("redis: cluster has no nodes")
+var errClusterNoNodes = internal.RedisError("redis: cluster has no nodes")
 
 // ClusterOptions are used to configure a cluster client and should be
 // passed to NewClusterClient.
@@ -382,20 +381,20 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 		}
 
 		// If slave is loading - read from master.
-		if c.opt.ReadOnly && errors.IsLoading(err) {
+		if c.opt.ReadOnly && internal.IsLoadingError(err) {
 			node.loading = time.Now()
 			continue
 		}
 
 		// On network errors try random node.
-		if errors.IsRetryable(err) {
+		if internal.IsRetryableError(err) {
 			node, err = c.randomNode()
 			continue
 		}
 
 		var moved bool
 		var addr string
-		moved, ask, addr = errors.IsMoved(err)
+		moved, ask, addr = internal.IsMovedError(err)
 		if moved || ask {
 			if slot >= 0 {
 				master, _ := c.slotMasterNode(slot)
@@ -650,11 +649,11 @@ func (c *ClusterClient) execClusterCmds(
 		if err == nil {
 			continue
 		}
-		if errors.IsNetwork(err) {
+		if internal.IsNetworkError(err) {
 			cmd.reset()
 			failedCmds[nil] = append(failedCmds[nil], cmds[i:]...)
 			break
-		} else if moved, ask, addr := errors.IsMoved(err); moved {
+		} else if moved, ask, addr := internal.IsMovedError(err); moved {
 			c.lazyReloadSlots()
 			cmd.reset()
 			node, err := c.nodeByAddr(addr)
