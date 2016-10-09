@@ -10,8 +10,6 @@ const Nil = RedisError("redis: nil")
 
 type RedisError string
 
-var LoadingError RedisError = "LOADING Redis is loading the dataset in memory"
-
 func (e RedisError) Error() string { return string(e) }
 
 func IsRetryable(err error) bool {
@@ -69,5 +67,5 @@ func IsMoved(err error) (moved bool, ask bool, addr string) {
 }
 
 func IsLoading(err error) bool {
-	return err.Error() == string(LoadingError)
+	return strings.HasPrefix(err.Error(), "LOADING")
 }
