@@ -4,7 +4,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"gopkg.in/redis.v4"
+	"gopkg.in/redis.v5"
 )
 
 var _ = Describe("Cmd", func() {

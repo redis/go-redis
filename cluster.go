@@ -6,10 +6,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gopkg.in/redis.v4/internal"
-	"gopkg.in/redis.v4/internal/errors"
-	"gopkg.in/redis.v4/internal/hashtag"
-	"gopkg.in/redis.v4/internal/pool"
+	"gopkg.in/redis.v5/internal"
+	"gopkg.in/redis.v5/internal/errors"
+	"gopkg.in/redis.v5/internal/hashtag"
+	"gopkg.in/redis.v5/internal/pool"
 )
 
 // ClusterOptions are used to configure a cluster client and should be

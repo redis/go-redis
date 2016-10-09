@@ -7,7 +7,7 @@ import (
 	"io"
 	"strconv"
 
-	ierrors "gopkg.in/redis.v4/internal/errors"
+	ierrors "gopkg.in/redis.v5/internal/errors"
 )
 
 type MultiBulkParse func(*Reader, int64) (interface{}, error)
