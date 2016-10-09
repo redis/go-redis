@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"gopkg.in/redis.v5/internal"
-	"gopkg.in/redis.v5/internal/errors"
 )
 
 func readTimeout(timeout time.Duration) time.Duration {
@@ -1710,7 +1709,7 @@ func (c *cmdable) shutdown(modifier string) *StatusCmd {
 		}
 	} else {
 		// Server did not quit. String reply contains the reason.
-		cmd.err = errors.RedisError(cmd.val)
+		cmd.err = internal.RedisError(cmd.val)
 		cmd.val = ""
 	}
 	return cmd

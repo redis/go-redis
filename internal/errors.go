@@ -1,4 +1,4 @@
-package errors
+package internal
 
 import (
 	"io"
@@ -12,16 +12,16 @@ type RedisError string
 
 func (e RedisError) Error() string { return string(e) }
 
-func IsRetryable(err error) bool {
-	return IsNetwork(err)
+func IsRetryableError(err error) bool {
+	return IsNetworkError(err)
 }
 
-func IsInternal(err error) bool {
+func IsInternalError(err error) bool {
 	_, ok := err.(RedisError)
 	return ok
 }
 
-func IsNetwork(err error) bool {
+func IsNetworkError(err error) bool {
 	if err == io.EOF {
 		return true
 	}
@@ -33,7 +33,7 @@ func IsBadConn(err error, allowTimeout bool) bool {
 	if err == nil {
 		return false
 	}
-	if IsInternal(err) {
+	if IsInternalError(err) {
 		return false
 	}
 	if allowTimeout {
@@ -44,8 +44,8 @@ func IsBadConn(err error, allowTimeout bool) bool {
 	return true
 }
 
-func IsMoved(err error) (moved bool, ask bool, addr string) {
-	if !IsInternal(err) {
+func IsMovedError(err error) (moved bool, ask bool, addr string) {
+	if !IsInternalError(err) {
 		return
 	}
 
@@ -66,6 +66,6 @@ func IsMoved(err error) (moved bool, ask bool, addr string) {
 	return
 }
 
-func IsLoading(err error) bool {
+func IsLoadingError(err error) bool {
 	return strings.HasPrefix(err.Error(), "LOADING")
 }

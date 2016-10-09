@@ -5,12 +5,11 @@ import (
 	"log"
 
 	"gopkg.in/redis.v5/internal"
-	"gopkg.in/redis.v5/internal/errors"
 	"gopkg.in/redis.v5/internal/pool"
 )
 
 // Redis nil reply, .e.g. when key does not exist.
-const Nil = errors.Nil
+const Nil = internal.Nil
 
 func SetLogger(logger *log.Logger) {
 	internal.Logger = logger
@@ -42,7 +41,7 @@ func (c *baseClient) conn() (*pool.Conn, bool, error) {
 }
 
 func (c *baseClient) putConn(cn *pool.Conn, err error, allowTimeout bool) bool {
-	if errors.IsBadConn(err, allowTimeout) {
+	if internal.IsBadConn(err, allowTimeout) {
 		_ = c.connPool.Remove(cn, err)
 		return false
 	}
@@ -101,7 +100,7 @@ func (c *baseClient) Process(cmd Cmder) error {
 		if err := writeCmd(cn, cmd); err != nil {
 			c.putConn(cn, err, false)
 			cmd.setErr(err)
-			if err != nil && errors.IsRetryable(err) {
+			if err != nil && internal.IsRetryableError(err) {
 				continue
 			}
 			return err
@@ -109,7 +108,7 @@ func (c *baseClient) Process(cmd Cmder) error {
 
 		err = cmd.readReply(cn)
 		c.putConn(cn, err, readTimeout != nil)
-		if err != nil && errors.IsRetryable(err) {
+		if err != nil && internal.IsRetryableError(err) {
 			continue
 		}
 
