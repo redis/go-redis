@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"gopkg.in/redis.v4/internal/errors"
+	"gopkg.in/redis.v5/internal"
 )
 
 const (
@@ -18,7 +18,7 @@ const (
 
 const defaultBufSize = 4096
 
-var errScanNil = errors.RedisError("redis: Scan(nil)")
+const errScanNil = internal.RedisError("redis: Scan(nil)")
 
 func Scan(b []byte, val interface{}) error {
 	switch v := val.(type) {

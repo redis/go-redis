@@ -6,15 +6,87 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gopkg.in/redis.v4/internal"
-	"gopkg.in/redis.v4/internal/errors"
-	"gopkg.in/redis.v4/internal/hashtag"
-	"gopkg.in/redis.v4/internal/pool"
+	"gopkg.in/redis.v5/internal"
+	"gopkg.in/redis.v5/internal/hashtag"
+	"gopkg.in/redis.v5/internal/pool"
 )
+
+var errClusterNoNodes = internal.RedisError("redis: cluster has no nodes")
+
+// ClusterOptions are used to configure a cluster client and should be
+// passed to NewClusterClient.
+type ClusterOptions struct {
+	// A seed list of host:port addresses of cluster nodes.
+	Addrs []string
+
+	// The maximum number of retries before giving up. Command is retried
+	// on network errors and MOVED/ASK redirects.
+	// Default is 16.
+	MaxRedirects int
+
+	// Enables read queries for a connection to a Redis Cluster slave node.
+	ReadOnly bool
+
+	// Enables routing read-only queries to the closest master or slave node.
+	RouteByLatency bool
+
+	// Following options are copied from Options struct.
+
+	Password string
+
+	DialTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+
+	// PoolSize applies per cluster node and not for the whole cluster.
+	PoolSize           int
+	PoolTimeout        time.Duration
+	IdleTimeout        time.Duration
+	IdleCheckFrequency time.Duration
+}
+
+func (opt *ClusterOptions) init() {
+	if opt.MaxRedirects == -1 {
+		opt.MaxRedirects = 0
+	} else if opt.MaxRedirects == 0 {
+		opt.MaxRedirects = 16
+	}
+
+	if opt.RouteByLatency {
+		opt.ReadOnly = true
+	}
+}
+
+func (opt *ClusterOptions) clientOptions() *Options {
+	const disableIdleCheck = -1
+
+	return &Options{
+		Password: opt.Password,
+		ReadOnly: opt.ReadOnly,
+
+		DialTimeout:  opt.DialTimeout,
+		ReadTimeout:  opt.ReadTimeout,
+		WriteTimeout: opt.WriteTimeout,
+
+		PoolSize:    opt.PoolSize,
+		PoolTimeout: opt.PoolTimeout,
+		IdleTimeout: opt.IdleTimeout,
+
+		// IdleCheckFrequency is not copied to disable reaper
+		IdleCheckFrequency: disableIdleCheck,
+	}
+}
+
+//------------------------------------------------------------------------------
 
 type clusterNode struct {
 	Client  *Client
 	Latency time.Duration
+	loading time.Time
+}
+
+func (n *clusterNode) Loading() bool {
+	return !n.loading.IsZero() && time.Since(n.loading) < time.Minute
 }
 
 // ClusterClient is a Redis Cluster client representing a pool of zero
@@ -31,8 +103,8 @@ type ClusterClient struct {
 	slots  [][]*clusterNode
 	closed bool
 
-	cmdsInfo     map[string]*CommandInfo
 	cmdsInfoOnce *sync.Once
+	cmdsInfo     map[string]*CommandInfo
 
 	// Reports where slots reloading is in progress.
 	reloading uint32
@@ -76,6 +148,9 @@ func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
 		}
 		c.cmdsInfoOnce = &sync.Once{}
 	})
+	if c.cmdsInfo == nil {
+		return nil
+	}
 	return c.cmdsInfo[name]
 }
 
@@ -187,6 +262,9 @@ func (c *ClusterClient) randomNode() (*clusterNode, error) {
 			return nil, pool.ErrClosed
 		}
 
+		if len(addrs) == 0 {
+			return nil, errClusterNoNodes
+		}
 		n := rand.Intn(len(addrs))
 
 		node, err := c.nodeByAddr(addrs[n])
@@ -218,10 +296,20 @@ func (c *ClusterClient) slotSlaveNode(slot int) (*clusterNode, error) {
 	case 1:
 		return nodes[0], nil
 	case 2:
-		return nodes[1], nil
+		if slave := nodes[1]; !slave.Loading() {
+			return slave, nil
+		}
+		return nodes[0], nil
 	default:
-		n := rand.Intn(len(nodes)-1) + 1
-		return nodes[n], nil
+		var slave *clusterNode
+		for i := 0; i < 10; i++ {
+			n := rand.Intn(len(nodes)-1) + 1
+			slave = nodes[n]
+			if !slave.Loading() {
+				break
+			}
+		}
+		return slave, nil
 	}
 }
 
@@ -242,18 +330,11 @@ func (c *ClusterClient) slotClosestNode(slot int) (*clusterNode, error) {
 
 func (c *ClusterClient) cmdSlotAndNode(cmd Cmder) (int, *clusterNode, error) {
 	cmdInfo := c.cmdInfo(cmd.arg(0))
-	if cmdInfo == nil {
-		internal.Logf("info for cmd=%s not found", cmd.arg(0))
+	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
+	if firstKey == "" {
 		node, err := c.randomNode()
-		return 0, node, err
+		return -1, node, err
 	}
-
-	if cmdInfo.FirstKeyPos == -1 {
-		node, err := c.randomNode()
-		return 0, node, err
-	}
-
-	firstKey := cmd.arg(int(cmdInfo.FirstKeyPos))
 	slot := hashtag.Slot(firstKey)
 
 	if cmdInfo.ReadOnly && c.opt.ReadOnly {
@@ -287,32 +368,39 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 			pipe := node.Client.Pipeline()
 			pipe.Process(NewCmd("ASKING"))
 			pipe.Process(cmd)
-			_, _ = pipe.Exec()
+			_, err = pipe.Exec()
 			pipe.Close()
 			ask = false
 		} else {
-			node.Client.Process(cmd)
+			err = node.Client.Process(cmd)
 		}
 
-		// If there is no (real) error, we are done!
-		err := cmd.Err()
+		// If there is no (real) error - we are done.
 		if err == nil {
 			return nil
 		}
 
+		// If slave is loading - read from master.
+		if c.opt.ReadOnly && internal.IsLoadingError(err) {
+			node.loading = time.Now()
+			continue
+		}
+
 		// On network errors try random node.
-		if errors.IsRetryable(err) {
+		if internal.IsRetryableError(err) {
 			node, err = c.randomNode()
 			continue
 		}
 
 		var moved bool
 		var addr string
-		moved, ask, addr = errors.IsMoved(err)
+		moved, ask, addr = internal.IsMovedError(err)
 		if moved || ask {
-			master, _ := c.slotMasterNode(slot)
-			if moved && (master == nil || master.Client.getAddr() != addr) {
-				c.lazyReloadSlots()
+			if slot >= 0 {
+				master, _ := c.slotMasterNode(slot)
+				if moved && (master == nil || master.Client.getAddr() != addr) {
+					c.lazyReloadSlots()
+				}
 			}
 
 			node, err = c.nodeByAddr(addr)
@@ -561,11 +649,11 @@ func (c *ClusterClient) execClusterCmds(
 		if err == nil {
 			continue
 		}
-		if errors.IsNetwork(err) {
+		if internal.IsNetworkError(err) {
 			cmd.reset()
 			failedCmds[nil] = append(failedCmds[nil], cmds[i:]...)
 			break
-		} else if moved, ask, addr := errors.IsMoved(err); moved {
+		} else if moved, ask, addr := internal.IsMovedError(err); moved {
 			c.lazyReloadSlots()
 			cmd.reset()
 			node, err := c.nodeByAddr(addr)
@@ -588,70 +676,4 @@ func (c *ClusterClient) execClusterCmds(
 	}
 
 	return failedCmds, retErr
-}
-
-//------------------------------------------------------------------------------
-
-// ClusterOptions are used to configure a cluster client and should be
-// passed to NewClusterClient.
-type ClusterOptions struct {
-	// A seed list of host:port addresses of cluster nodes.
-	Addrs []string
-
-	// The maximum number of retries before giving up. Command is retried
-	// on network errors and MOVED/ASK redirects.
-	// Default is 16.
-	MaxRedirects int
-
-	// Enables read queries for a connection to a Redis Cluster slave node.
-	ReadOnly bool
-
-	// Enables routing read-only queries to the closest master or slave node.
-	RouteByLatency bool
-
-	// Following options are copied from Options struct.
-
-	Password string
-
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-
-	// PoolSize applies per cluster node and not for the whole cluster.
-	PoolSize           int
-	PoolTimeout        time.Duration
-	IdleTimeout        time.Duration
-	IdleCheckFrequency time.Duration
-}
-
-func (opt *ClusterOptions) init() {
-	if opt.MaxRedirects == -1 {
-		opt.MaxRedirects = 0
-	} else if opt.MaxRedirects == 0 {
-		opt.MaxRedirects = 16
-	}
-
-	if opt.RouteByLatency {
-		opt.ReadOnly = true
-	}
-}
-
-func (opt *ClusterOptions) clientOptions() *Options {
-	const disableIdleCheck = -1
-
-	return &Options{
-		Password: opt.Password,
-		ReadOnly: opt.ReadOnly,
-
-		DialTimeout:  opt.DialTimeout,
-		ReadTimeout:  opt.ReadTimeout,
-		WriteTimeout: opt.WriteTimeout,
-
-		PoolSize:    opt.PoolSize,
-		PoolTimeout: opt.PoolTimeout,
-		IdleTimeout: opt.IdleTimeout,
-
-		// IdleCheckFrequency is not copied to disable reaper
-		IdleCheckFrequency: disableIdleCheck,
-	}
 }

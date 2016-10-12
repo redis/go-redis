@@ -3,14 +3,16 @@ package redis
 import (
 	"errors"
 	"fmt"
+	"math/rand"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"gopkg.in/redis.v4/internal"
-	"gopkg.in/redis.v4/internal/consistenthash"
-	"gopkg.in/redis.v4/internal/hashtag"
-	"gopkg.in/redis.v4/internal/pool"
+	"gopkg.in/redis.v5/internal"
+	"gopkg.in/redis.v5/internal/consistenthash"
+	"gopkg.in/redis.v5/internal/hashtag"
+	"gopkg.in/redis.v5/internal/pool"
 )
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
@@ -128,8 +130,8 @@ type Ring struct {
 	hash   *consistenthash.Map
 	shards map[string]*ringShard
 
-	cmdsInfo     map[string]*CommandInfo
 	cmdsInfoOnce *sync.Once
+	cmdsInfo     map[string]*CommandInfo
 
 	closed bool
 }
@@ -221,15 +223,6 @@ func (c *Ring) cmdInfo(name string) *CommandInfo {
 	return c.cmdsInfo[name]
 }
 
-func (c *Ring) cmdFirstKey(cmd Cmder) string {
-	cmdInfo := c.cmdInfo(cmd.arg(0))
-	if cmdInfo == nil {
-		internal.Logf("info for cmd=%s not found", cmd.arg(0))
-		return ""
-	}
-	return cmd.arg(int(cmdInfo.FirstKeyPos))
-}
-
 func (c *Ring) addClient(name string, cl *Client) {
 	c.mu.Lock()
 	c.hash.Add(name)
@@ -237,14 +230,17 @@ func (c *Ring) addClient(name string, cl *Client) {
 	c.mu.Unlock()
 }
 
-func (c *Ring) getClient(key string) (*Client, error) {
+func (c *Ring) shardByKey(key string) (*Client, error) {
+	key = hashtag.Key(key)
+
 	c.mu.RLock()
 
 	if c.closed {
+		c.mu.RUnlock()
 		return nil, pool.ErrClosed
 	}
 
-	name := c.hash.Get(hashtag.Key(key))
+	name := c.hash.Get(key)
 	if name == "" {
 		c.mu.RUnlock()
 		return nil, errRingShardsDown
@@ -255,8 +251,32 @@ func (c *Ring) getClient(key string) (*Client, error) {
 	return cl, nil
 }
 
+func (c *Ring) randomShard() (*Client, error) {
+	return c.shardByKey(strconv.Itoa(rand.Int()))
+}
+
+func (c *Ring) shardByName(name string) (*Client, error) {
+	if name == "" {
+		return c.randomShard()
+	}
+
+	c.mu.RLock()
+	cl := c.shards[name].Client
+	c.mu.RUnlock()
+	return cl, nil
+}
+
+func (c *Ring) cmdShard(cmd Cmder) (*Client, error) {
+	cmdInfo := c.cmdInfo(cmd.arg(0))
+	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
+	if firstKey == "" {
+		return c.randomShard()
+	}
+	return c.shardByKey(firstKey)
+}
+
 func (c *Ring) Process(cmd Cmder) error {
-	cl, err := c.getClient(c.cmdFirstKey(cmd))
+	cl, err := c.cmdShard(cmd)
 	if err != nil {
 		cmd.setErr(err)
 		return err
@@ -264,17 +284,18 @@ func (c *Ring) Process(cmd Cmder) error {
 	return cl.baseClient.Process(cmd)
 }
 
-// rebalance removes dead shards from the c.
+// rebalance removes dead shards from the Ring.
 func (c *Ring) rebalance() {
-	defer c.mu.Unlock()
-	c.mu.Lock()
-
-	c.hash = consistenthash.New(c.nreplicas, nil)
+	hash := consistenthash.New(c.nreplicas, nil)
 	for name, shard := range c.shards {
 		if shard.IsUp() {
-			c.hash.Add(name)
+			hash.Add(name)
 		}
 	}
+
+	c.mu.Lock()
+	c.hash = hash
+	c.mu.Unlock()
 }
 
 // heartbeat monitors state of each shard in the ring.
@@ -349,13 +370,10 @@ func (c *Ring) pipelineExec(cmds []Cmder) error {
 
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
-		name := c.hash.Get(hashtag.Key(c.cmdFirstKey(cmd)))
-		if name == "" {
-			cmd.setErr(errRingShardsDown)
-			if retErr == nil {
-				retErr = errRingShardsDown
-			}
-			continue
+		cmdInfo := c.cmdInfo(cmd.arg(0))
+		name := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
+		if name != "" {
+			name = c.hash.Get(hashtag.Key(name))
 		}
 		cmdsMap[name] = append(cmdsMap[name], cmd)
 	}
@@ -364,7 +382,15 @@ func (c *Ring) pipelineExec(cmds []Cmder) error {
 		failedCmdsMap := make(map[string][]Cmder)
 
 		for name, cmds := range cmdsMap {
-			client := c.shards[name].Client
+			client, err := c.shardByName(name)
+			if err != nil {
+				setCmdsErr(cmds, err)
+				if retErr == nil {
+					retErr = err
+				}
+				continue
+			}
+
 			cn, _, err := client.conn()
 			if err != nil {
 				setCmdsErr(cmds, err)

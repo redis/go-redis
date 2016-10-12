@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"gopkg.in/redis.v4"
+	"gopkg.in/redis.v5"
 )
 
 var _ = Describe("Redis Ring", func() {
@@ -38,10 +38,27 @@ var _ = Describe("Redis Ring", func() {
 		Expect(ring.Close()).NotTo(HaveOccurred())
 	})
 
-	It("uses both shards", func() {
+	It("distributes keys", func() {
 		setRingKeys()
 
 		// Both shards should have some keys now.
+		Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=57"))
+		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
+	})
+
+	It("distributes keys when using EVAL", func() {
+		script := redis.NewScript(`
+			local r = redis.call('SET', KEYS[1], ARGV[1])
+			return r
+		`)
+
+		var key string
+		for i := 0; i < 100; i++ {
+			key = fmt.Sprintf("key%d", i)
+			err := script.Run(ring, []string{key}, "value").Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
 		Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=57"))
 		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
 	})
@@ -89,17 +106,8 @@ var _ = Describe("Redis Ring", func() {
 		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=100"))
 	})
 
-	Describe("pipelining", func() {
-		It("returns an error when all shards are down", func() {
-			ring := redis.NewRing(&redis.RingOptions{})
-			_, err := ring.Pipelined(func(pipe *redis.Pipeline) error {
-				pipe.Ping()
-				return nil
-			})
-			Expect(err).To(MatchError("redis: all ring shards are down"))
-		})
-
-		It("uses both shards", func() {
+	Describe("pipeline", func() {
+		It("distributes keys", func() {
 			pipe := ring.Pipeline()
 			for i := 0; i < 100; i++ {
 				err := pipe.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
@@ -156,5 +164,30 @@ var _ = Describe("Redis Ring", func() {
 			Expect(ringShard1.Info().Val()).ToNot(ContainSubstring("keys="))
 			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=100"))
 		})
+	})
+})
+
+var _ = Describe("empty Redis Ring", func() {
+	var ring *redis.Ring
+
+	BeforeEach(func() {
+		ring = redis.NewRing(&redis.RingOptions{})
+	})
+
+	AfterEach(func() {
+		Expect(ring.Close()).NotTo(HaveOccurred())
+	})
+
+	It("returns an error", func() {
+		err := ring.Ping().Err()
+		Expect(err).To(MatchError("redis: all ring shards are down"))
+	})
+
+	It("pipeline returns an error", func() {
+		_, err := ring.Pipelined(func(pipe *redis.Pipeline) error {
+			pipe.Ping()
+			return nil
+		})
+		Expect(err).To(MatchError("redis: all ring shards are down"))
 	})
 })

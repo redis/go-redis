@@ -4,8 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"gopkg.in/redis.v4/internal/errors"
-	"gopkg.in/redis.v4/internal/pool"
+	"gopkg.in/redis.v5/internal"
+	"gopkg.in/redis.v5/internal/pool"
 )
 
 // Pipeline implements pipelining as described in
@@ -100,7 +100,7 @@ func execCmds(cn *pool.Conn, cmds []Cmder) ([]Cmder, error) {
 		if firstCmdErr == nil {
 			firstCmdErr = err
 		}
-		if errors.IsRetryable(err) {
+		if internal.IsRetryableError(err) {
 			failedCmds = append(failedCmds, cmd)
 		}
 	}
