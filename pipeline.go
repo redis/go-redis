@@ -85,26 +85,23 @@ func (c *Pipeline) pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
 	return cmds, err
 }
 
-func execCmds(cn *pool.Conn, cmds []Cmder) ([]Cmder, error) {
+func execCmds(cn *pool.Conn, cmds []Cmder) (retry bool, firstErr error) {
 	if err := writeCmd(cn, cmds...); err != nil {
 		setCmdsErr(cmds, err)
-		return cmds, err
+		return true, err
 	}
 
-	var firstCmdErr error
-	var failedCmds []Cmder
-	for _, cmd := range cmds {
+	for i, cmd := range cmds {
 		err := cmd.readReply(cn)
 		if err == nil {
 			continue
 		}
-		if firstCmdErr == nil {
-			firstCmdErr = err
+		if i == 0 && internal.IsNetworkError(err) {
+			return true, err
 		}
-		if internal.IsRetryableError(err) {
-			failedCmds = append(failedCmds, cmd)
+		if firstErr == nil {
+			firstErr = err
 		}
 	}
-
-	return failedCmds, firstCmdErr
+	return false, firstErr
 }

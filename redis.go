@@ -197,28 +197,31 @@ func (c *Client) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
 }
 
 func (c *Client) pipelineExec(cmds []Cmder) error {
-	var retErr error
-	failedCmds := cmds
+	var firstErr error
 	for i := 0; i <= c.opt.MaxRetries; i++ {
+		if i > 0 {
+			resetCmds(cmds)
+		}
+
 		cn, _, err := c.conn()
 		if err != nil {
-			setCmdsErr(failedCmds, err)
+			setCmdsErr(cmds, err)
 			return err
 		}
 
-		if i > 0 {
-			resetCmds(failedCmds)
-		}
-		failedCmds, err = execCmds(cn, failedCmds)
+		retry, err := execCmds(cn, cmds)
 		c.putConn(cn, err, false)
-		if err != nil && retErr == nil {
-			retErr = err
+		if err == nil {
+			return nil
 		}
-		if len(failedCmds) == 0 {
+		if firstErr == nil {
+			firstErr = err
+		}
+		if !retry {
 			break
 		}
 	}
-	return retErr
+	return firstErr
 }
 
 func (c *Client) pubSub() *PubSub {
