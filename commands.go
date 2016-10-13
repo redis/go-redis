@@ -40,10 +40,7 @@ func formatSec(dur time.Duration) string {
 	return strconv.FormatInt(int64(dur/time.Second), 10)
 }
 
-type Cmdable interface {
-	Pipeline() *Pipeline
-	Pipelined(fn func(*Pipeline) error) ([]Cmder, error)
-
+type BaseCmdable interface {
 	Echo(message interface{}) *StringCmd
 	Ping() *StatusCmd
 	Quit() *StatusCmd
@@ -236,6 +233,12 @@ type Cmdable interface {
 	GeoDist(key string, member1, member2, unit string) *FloatCmd
 	GeoHash(key string, members ...string) *StringSliceCmd
 	Command() *CommandsInfoCmd
+}
+
+type Cmdable interface {
+	Pipeline() *Pipeline
+	Pipelined(fn func(*Pipeline) error) ([]Cmder, error)
+	BaseCmdable
 }
 
 type cmdable struct {
