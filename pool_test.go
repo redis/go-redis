@@ -35,13 +35,13 @@ var _ = Describe("pool", func() {
 		Expect(pool.Len()).To(Equal(pool.FreeLen()))
 	})
 
-	It("srespect max size on multi", func() {
+	It("respects max size on multi", func() {
 		perform(1000, func(id int) {
 			var ping *redis.StatusCmd
 
 			err := client.Watch(func(tx *redis.Tx) error {
-				cmds, err := tx.MultiExec(func() error {
-					ping = tx.Ping()
+				cmds, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+					ping = pipe.Ping()
 					return nil
 				})
 				Expect(err).NotTo(HaveOccurred())

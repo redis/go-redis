@@ -190,8 +190,8 @@ func ExampleClient_Watch() {
 				return err
 			}
 
-			_, err = tx.MultiExec(func() error {
-				tx.Set(key, strconv.FormatInt(n+1, 10), 0)
+			_, err = tx.Pipelined(func(pipe *redis.Pipeline) error {
+				pipe.Set(key, strconv.FormatInt(n+1, 10), 0)
 				return nil
 			})
 			return err

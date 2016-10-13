@@ -67,8 +67,8 @@ var _ = Describe("Client", func() {
 
 	It("should close Tx without closing the client", func() {
 		err := client.Watch(func(tx *redis.Tx) error {
-			_, err := tx.MultiExec(func() error {
-				tx.Ping()
+			_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+				pipe.Ping()
 				return nil
 			})
 			return err
