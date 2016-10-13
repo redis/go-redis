@@ -33,8 +33,8 @@ var _ = Describe("Tx", func() {
 					return err
 				}
 
-				_, err = tx.MultiExec(func() error {
-					tx.Set(key, strconv.FormatInt(n+1, 10), 0)
+				_, err = tx.Pipelined(func(pipe *redis.Pipeline) error {
+					pipe.Set(key, strconv.FormatInt(n+1, 10), 0)
 					return nil
 				})
 				return err
@@ -65,10 +65,10 @@ var _ = Describe("Tx", func() {
 
 	It("should discard", func() {
 		err := client.Watch(func(tx *redis.Tx) error {
-			cmds, err := tx.MultiExec(func() error {
-				tx.Set("key1", "hello1", 0)
-				tx.Discard()
-				tx.Set("key2", "hello2", 0)
+			cmds, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+				pipe.Set("key1", "hello1", 0)
+				pipe.Discard()
+				pipe.Set("key2", "hello2", 0)
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -88,7 +88,7 @@ var _ = Describe("Tx", func() {
 
 	It("should exec empty", func() {
 		err := client.Watch(func(tx *redis.Tx) error {
-			cmds, err := tx.MultiExec(func() error { return nil })
+			cmds, err := tx.Pipelined(func(*redis.Pipeline) error { return nil })
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(0))
 			return err
@@ -104,9 +104,9 @@ var _ = Describe("Tx", func() {
 		const N = 20000
 
 		err := client.Watch(func(tx *redis.Tx) error {
-			cmds, err := tx.MultiExec(func() error {
+			cmds, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
 				for i := 0; i < N; i++ {
-					tx.Incr("key")
+					pipe.Incr("key")
 				}
 				return nil
 			})
@@ -135,8 +135,8 @@ var _ = Describe("Tx", func() {
 
 		do := func() error {
 			err := client.Watch(func(tx *redis.Tx) error {
-				_, err := tx.MultiExec(func() error {
-					tx.Ping()
+				_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+					pipe.Ping()
 					return nil
 				})
 				return err
@@ -162,7 +162,7 @@ var _ = Describe("Tx", func() {
 
 		do := func() error {
 			err := client.Watch(func(tx *redis.Tx) error {
-				_, err := tx.MultiExec(func() error {
+				_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
 					return nil
 				})
 				return err

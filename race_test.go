@@ -222,8 +222,8 @@ var _ = Describe("races", func() {
 					num, err := strconv.ParseInt(val, 10, 64)
 					Expect(err).NotTo(HaveOccurred())
 
-					cmds, err := tx.MultiExec(func() error {
-						tx.Set("key", strconv.FormatInt(num+1, 10), 0)
+					cmds, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+						pipe.Set("key", strconv.FormatInt(num+1, 10), 0)
 						return nil
 					})
 					Expect(cmds).To(HaveLen(1))

@@ -11,8 +11,6 @@ import (
 // Redis transaction failed.
 const TxFailedErr = internal.RedisError("redis: transaction failed")
 
-var errDiscard = internal.RedisError("redis: Discard can be used only inside Exec")
-
 // Tx implements Redis transactions as described in
 // http://redis.io/topics/transactions. It's NOT safe for concurrent use
 // by multiple goroutines, because Exec resets list of watched keys.
@@ -22,9 +20,10 @@ type Tx struct {
 	statefulCmdable
 	baseClient
 
-	cmds   []Cmder
 	closed bool
 }
+
+var _ Cmdable = (*Tx)(nil)
 
 func (c *Client) newTx() *Tx {
 	tx := Tx{
@@ -51,14 +50,6 @@ func (c *Client) Watch(fn func(*Tx) error, keys ...string) error {
 		retErr = err
 	}
 	return retErr
-}
-
-func (c *Tx) Process(cmd Cmder) error {
-	if c.cmds == nil {
-		return c.baseClient.Process(cmd)
-	}
-	c.cmds = append(c.cmds, cmd)
-	return nil
 }
 
 // close closes the transaction, releasing any open resources.
@@ -98,16 +89,16 @@ func (c *Tx) Unwatch(keys ...string) *StatusCmd {
 	return cmd
 }
 
-// Discard discards queued commands.
-func (c *Tx) Discard() error {
-	if c.cmds == nil {
-		return errDiscard
+func (c *Tx) Pipeline() *Pipeline {
+	pipe := Pipeline{
+		exec: c.exec,
 	}
-	c.cmds = c.cmds[:1]
-	return nil
+	pipe.cmdable.process = pipe.Process
+	pipe.statefulCmdable.process = pipe.Process
+	return &pipe
 }
 
-// MultiExec executes all previously queued commands in a transaction
+// Pipelined executes commands queued in the fn in a transaction
 // and restores the connection state to normal.
 //
 // When using WATCH, EXEC will execute commands only if the watched keys
@@ -116,36 +107,29 @@ func (c *Tx) Discard() error {
 // Exec always returns list of commands. If transaction fails
 // TxFailedErr is returned. Otherwise Exec returns error of the first
 // failed command or nil.
-func (c *Tx) MultiExec(fn func() error) ([]Cmder, error) {
+func (c *Tx) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+	return c.Pipeline().pipelined(fn)
+}
+
+func (c *Tx) exec(cmds []Cmder) error {
 	if c.closed {
-		return nil, pool.ErrClosed
+		return pool.ErrClosed
 	}
-
-	c.cmds = []Cmder{NewStatusCmd("MULTI")}
-	if err := fn(); err != nil {
-		return nil, err
-	}
-	c.cmds = append(c.cmds, NewSliceCmd("EXEC"))
-
-	cmds := c.cmds
-	c.cmds = nil
-
-	if len(cmds) == 2 {
-		return []Cmder{}, nil
-	}
-
-	// Strip MULTI and EXEC commands.
-	retCmds := cmds[1 : len(cmds)-1]
 
 	cn, _, err := c.conn()
 	if err != nil {
-		setCmdsErr(retCmds, err)
-		return retCmds, err
+		setCmdsErr(cmds, err)
+		return err
 	}
 
-	err = c.execCmds(cn, cmds)
+	multiExec := make([]Cmder, 0, len(cmds)+2)
+	multiExec = append(multiExec, NewStatusCmd("MULTI"))
+	multiExec = append(multiExec, cmds...)
+	multiExec = append(multiExec, NewSliceCmd("EXEC"))
+
+	err = c.execCmds(cn, multiExec)
 	c.putConn(cn, err, false)
-	return retCmds, err
+	return err
 }
 
 func (c *Tx) execCmds(cn *pool.Conn, cmds []Cmder) error {
@@ -155,12 +139,11 @@ func (c *Tx) execCmds(cn *pool.Conn, cmds []Cmder) error {
 		return err
 	}
 
-	statusCmd := NewStatusCmd()
-
 	// Omit last command (EXEC).
 	cmdsLen := len(cmds) - 1
 
 	// Parse queued replies.
+	statusCmd := cmds[0]
 	for i := 0; i < cmdsLen; i++ {
 		if err := statusCmd.readReply(cn); err != nil {
 			setCmdsErr(cmds[1:len(cmds)-1], err)
@@ -183,18 +166,18 @@ func (c *Tx) execCmds(cn *pool.Conn, cmds []Cmder) error {
 		return err
 	}
 
-	var firstCmdErr error
+	var firstErr error
 
 	// Parse replies.
 	// Loop starts from 1 to omit MULTI cmd.
 	for i := 1; i < cmdsLen; i++ {
 		cmd := cmds[i]
 		if err := cmd.readReply(cn); err != nil {
-			if firstCmdErr == nil {
-				firstCmdErr = err
+			if firstErr == nil {
+				firstErr = err
 			}
 		}
 	}
 
-	return firstCmdErr
+	return firstErr
 }
