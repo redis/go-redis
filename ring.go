@@ -365,9 +365,7 @@ func (c *Ring) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
 	return c.Pipeline().pipelined(fn)
 }
 
-func (c *Ring) pipelineExec(cmds []Cmder) error {
-	var retErr error
-
+func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
 		cmdInfo := c.cmdInfo(cmd.arg(0))
@@ -379,14 +377,18 @@ func (c *Ring) pipelineExec(cmds []Cmder) error {
 	}
 
 	for i := 0; i <= c.opt.MaxRetries; i++ {
-		failedCmdsMap := make(map[string][]Cmder)
+		var failedCmdsMap map[string][]Cmder
 
 		for name, cmds := range cmdsMap {
+			if i > 0 {
+				resetCmds(cmds)
+			}
+
 			client, err := c.shardByName(name)
 			if err != nil {
 				setCmdsErr(cmds, err)
-				if retErr == nil {
-					retErr = err
+				if firstErr == nil {
+					firstErr = err
 				}
 				continue
 			}
@@ -394,22 +396,25 @@ func (c *Ring) pipelineExec(cmds []Cmder) error {
 			cn, _, err := client.conn()
 			if err != nil {
 				setCmdsErr(cmds, err)
-				if retErr == nil {
-					retErr = err
+				if firstErr == nil {
+					firstErr = err
 				}
 				continue
 			}
 
-			if i > 0 {
-				resetCmds(cmds)
-			}
-			failedCmds, err := execCmds(cn, cmds)
+			retry, err := execCmds(cn, cmds)
 			client.putConn(cn, err, false)
-			if err != nil && retErr == nil {
-				retErr = err
+			if err == nil {
+				continue
 			}
-			if len(failedCmds) > 0 {
-				failedCmdsMap[name] = failedCmds
+			if firstErr == nil {
+				firstErr = err
+			}
+			if retry {
+				if failedCmdsMap == nil {
+					failedCmdsMap = make(map[string][]Cmder)
+				}
+				failedCmdsMap[name] = cmds
 			}
 		}
 
@@ -419,5 +424,5 @@ func (c *Ring) pipelineExec(cmds []Cmder) error {
 		cmdsMap = failedCmdsMap
 	}
 
-	return retErr
+	return firstErr
 }
