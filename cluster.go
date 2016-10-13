@@ -653,7 +653,9 @@ func (c *ClusterClient) execClusterCmds(
 			cmd.reset()
 			failedCmds[nil] = append(failedCmds[nil], cmds[i:]...)
 			break
-		} else if moved, ask, addr := internal.IsMovedError(err); moved {
+		}
+		moved, ask, addr := internal.IsMovedError(err)
+		if moved {
 			c.lazyReloadSlots()
 			cmd.reset()
 			node, err := c.nodeByAddr(addr)
