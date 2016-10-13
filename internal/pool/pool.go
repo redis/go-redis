@@ -58,10 +58,10 @@ type ConnPool struct {
 
 	queue chan struct{}
 
-	connsMu sync.Mutex
+	connsMu sync.RWMutex
 	conns   []*Conn
 
-	freeConnsMu sync.Mutex
+	freeConnsMu sync.RWMutex
 	freeConns   []*Conn
 
 	stats Stats
@@ -238,17 +238,17 @@ func (p *ConnPool) remove(cn *Conn, reason error) {
 
 // Len returns total number of connections.
 func (p *ConnPool) Len() int {
-	p.connsMu.Lock()
+	p.connsMu.RLock()
 	l := len(p.conns)
-	p.connsMu.Unlock()
+	p.connsMu.RUnlock()
 	return l
 }
 
 // FreeLen returns number of free connections.
 func (p *ConnPool) FreeLen() int {
-	p.freeConnsMu.Lock()
+	p.freeConnsMu.RLock()
 	l := len(p.freeConns)
-	p.freeConnsMu.Unlock()
+	p.freeConnsMu.RUnlock()
 	return l
 }
 
