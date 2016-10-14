@@ -77,7 +77,7 @@ func (p *Reader) ReadReply(m MultiBulkParse) (interface{}, error) {
 	case IntReply:
 		return parseIntValue(line)
 	case StringReply:
-		return p.parseBytesValue(line)
+		return p.readBytesValue(line)
 	case ArrayReply:
 		n, err := parseArrayLen(line)
 		if err != nil {
@@ -112,7 +112,7 @@ func (p *Reader) ReadBytesReply() ([]byte, error) {
 	case ErrorReply:
 		return nil, parseErrorValue(line)
 	case StringReply:
-		return p.parseBytesValue(line)
+		return p.readBytesValue(line)
 	case StatusReply:
 		return parseStatusValue(line)
 	default:
@@ -206,7 +206,7 @@ func (p *Reader) ReadScanReply() ([]string, uint64, error) {
 	return keys, cursor, err
 }
 
-func (p *Reader) parseBytesValue(line []byte) ([]byte, error) {
+func (p *Reader) readBytesValue(line []byte) ([]byte, error) {
 	if isNilReply(line) {
 		return nil, internal.Nil
 	}

@@ -406,5 +406,5 @@ func timeParser(rd *proto.Reader, n int64) (interface{}, error) {
 		return nil, err
 	}
 
-	return time.Unix(sec, microsec*100), nil
+	return time.Unix(sec, microsec*1000), nil
 }
