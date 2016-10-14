@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/redis.v4/internal"
 	"gopkg.in/redis.v4/internal/pool"
 	"gopkg.in/redis.v4/internal/proto"
 )
@@ -130,6 +131,10 @@ func (cmd *baseCmd) setErr(e error) {
 }
 
 func newBaseCmd(args []interface{}) baseCmd {
+	if len(args) > 0 {
+		// Cmd name is expected to be in lower case.
+		args[0] = internal.ToLower(args[0].(string))
+	}
 	return baseCmd{_args: args}
 }
 
