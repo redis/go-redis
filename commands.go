@@ -199,7 +199,7 @@ type Cmdable interface {
 	ShutdownSave() *StatusCmd
 	ShutdownNoSave() *StatusCmd
 	SlaveOf(host, port string) *StatusCmd
-	Time() *StringSliceCmd
+	Time() *TimeCmd
 	Eval(script string, keys []string, args ...interface{}) *Cmd
 	EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd
 	ScriptExists(scripts ...string) *BoolSliceCmd
@@ -1741,9 +1741,8 @@ func (c *cmdable) Sync() {
 	panic("not implemented")
 }
 
-// TODO: add TimeCmd and use it here
-func (c *cmdable) Time() *StringSliceCmd {
-	cmd := NewStringSliceCmd("time")
+func (c *cmdable) Time() *TimeCmd {
+	cmd := NewTimeCmd("time")
 	c.process(cmd)
 	return cmd
 }

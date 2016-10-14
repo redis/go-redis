@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 
 	"gopkg.in/redis.v5/internal/proto"
 )
@@ -364,6 +365,7 @@ func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 	return &cmd, nil
 }
 
+// Implements proto.MultiBulkParse
 func commandInfoSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 	m := make(map[string]*CommandInfo, n)
 	for i := int64(0); i < n; i++ {
@@ -376,4 +378,33 @@ func commandInfoSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 
 	}
 	return m, nil
+}
+
+// Implements proto.MultiBulkParse
+func timeParser(rd *proto.Reader, n int64) (interface{}, error) {
+	if n != 2 {
+		fmt.Errorf("got %d elements, expected 2", n)
+	}
+
+	secStr, err := rd.ReadStringReply()
+	if err != nil {
+		return nil, err
+	}
+
+	microsecStr, err := rd.ReadStringReply()
+	if err != nil {
+		return nil, err
+	}
+
+	sec, err := strconv.ParseInt(secStr, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	microsec, err := strconv.ParseInt(microsecStr, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	return time.Unix(sec, microsec*100), nil
 }

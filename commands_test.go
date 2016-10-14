@@ -159,9 +159,9 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Time", func() {
-			time := client.Time()
-			Expect(time.Err()).NotTo(HaveOccurred())
-			Expect(time.Val()).To(HaveLen(2))
+			tm, err := client.Time().Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tm).To(BeTemporally("~", time.Now(), 3*time.Second))
 		})
 
 	})

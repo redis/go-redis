@@ -355,6 +355,48 @@ func (cmd *DurationCmd) readReply(cn *pool.Conn) error {
 
 //------------------------------------------------------------------------------
 
+type TimeCmd struct {
+	baseCmd
+
+	val time.Time
+}
+
+func NewTimeCmd(args ...interface{}) *TimeCmd {
+	cmd := newBaseCmd(args)
+	return &TimeCmd{
+		baseCmd: cmd,
+	}
+}
+
+func (cmd *TimeCmd) reset() {
+	cmd.val = time.Time{}
+	cmd.err = nil
+}
+
+func (cmd *TimeCmd) Val() time.Time {
+	return cmd.val
+}
+
+func (cmd *TimeCmd) Result() (time.Time, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *TimeCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *TimeCmd) readReply(cn *pool.Conn) error {
+	v, err := cn.Rd.ReadArrayReply(timeParser)
+	if err != nil {
+		cmd.err = err
+		return err
+	}
+	cmd.val = v.(time.Time)
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
 type BoolCmd struct {
 	baseCmd
 
