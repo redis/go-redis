@@ -28,6 +28,8 @@ type Tx struct {
 	closed bool
 }
 
+var _ BaseCmdable = (*Tx)(nil)
+
 func (c *Client) newTx() *Tx {
 	tx := Tx{
 		baseClient: baseClient{
