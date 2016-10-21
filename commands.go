@@ -788,10 +788,14 @@ func (c *cmdable) SetNX(key string, value interface{}, expiration time.Duration)
 // Zero expiration means the key has no expiration time.
 func (c *cmdable) SetXX(key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
-	if usePrecise(expiration) {
-		cmd = NewBoolCmd("set", key, value, "px", formatMs(expiration), "xx")
+	if expiration == 0 {
+		cmd = NewBoolCmd("set", key, value, "xx")
 	} else {
-		cmd = NewBoolCmd("set", key, value, "ex", formatSec(expiration), "xx")
+		if usePrecise(expiration) {
+			cmd = NewBoolCmd("set", key, value, "px", formatMs(expiration), "xx")
+		} else {
+			cmd = NewBoolCmd("set", key, value, "ex", formatSec(expiration), "xx")
+		}
 	}
 	c.process(cmd)
 	return cmd
