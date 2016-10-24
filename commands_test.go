@@ -996,6 +996,23 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetXX", func() {
+			isSet, err := client.SetXX("key", "hello2", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(isSet).To(Equal(false))
+
+			err = client.Set("key", "hello", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			isSet, err = client.SetXX("key", "hello2", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(isSet).To(Equal(true))
+
+			val, err := client.Get("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello2"))
+		})
+
+		It("should SetXX with expiration", func() {
 			isSet, err := client.SetXX("key", "hello2", time.Second).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(isSet).To(Equal(false))
