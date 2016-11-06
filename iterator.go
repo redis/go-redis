@@ -71,7 +71,6 @@ func (it *ScanIterator) Next() bool {
 			return true
 		}
 	}
-	return false
 }
 
 // Val returns the key/field at the current cursor position.
