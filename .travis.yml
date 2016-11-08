@@ -12,6 +12,7 @@ go:
 
 matrix:
   allow_failures:
+    - go: 1.4
     - go: tip
 
 install:

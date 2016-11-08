@@ -383,7 +383,7 @@ func commandInfoSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 // Implements proto.MultiBulkParse
 func timeParser(rd *proto.Reader, n int64) (interface{}, error) {
 	if n != 2 {
-		fmt.Errorf("got %d elements, expected 2", n)
+		return nil, fmt.Errorf("got %d elements, expected 2", n)
 	}
 
 	secStr, err := rd.ReadStringReply()

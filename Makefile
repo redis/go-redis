@@ -1,6 +1,7 @@
 all: testdeps
 	go test ./...
 	go test ./... -short -race
+	go vet
 
 testdeps: testdata/redis/src/redis-server
 
