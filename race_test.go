@@ -104,7 +104,9 @@ var _ = Describe("races", func() {
 	})
 
 	It("should handle big vals in Get", func() {
-		bigVal := string(bytes.Repeat([]byte{'*'}, 1<<17)) // 128kb
+		C, N = 4, 100
+
+		bigVal := bytes.Repeat([]byte{'*'}, 1<<17) // 128kb
 
 		err := client.Set("key", bigVal, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
@@ -115,7 +117,7 @@ var _ = Describe("races", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				got, err := client.Get("key").Result()
+				got, err := client.Get("key").Bytes()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(got).To(Equal(bigVal))
 			}
@@ -124,7 +126,8 @@ var _ = Describe("races", func() {
 
 	It("should handle big vals in Set", func() {
 		C, N = 4, 100
-		bigVal := string(bytes.Repeat([]byte{'*'}, 1<<17)) // 128kb
+
+		bigVal := bytes.Repeat([]byte{'*'}, 1<<17) // 128kb
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {

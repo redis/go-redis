@@ -9,6 +9,8 @@ import (
 	"gopkg.in/redis.v5/internal"
 )
 
+const bytesAllocLimit = 1024 * 1024 // 1mb
+
 const errEmptyReply = internal.RedisError("redis: reply is empty")
 
 type MultiBulkParse func(*Reader, int64) (interface{}, error)
@@ -34,16 +36,7 @@ func (p *Reader) PeekBuffered() []byte {
 }
 
 func (p *Reader) ReadN(n int) ([]byte, error) {
-	// grow internal buffer, if necessary
-	if d := n - cap(p.buf); d > 0 {
-		p.buf = p.buf[:cap(p.buf)]
-		p.buf = append(p.buf, make([]byte, d)...)
-	} else {
-		p.buf = p.buf[:n]
-	}
-
-	_, err := io.ReadFull(p.src, p.buf)
-	return p.buf, err
+	return readN(p.src, p.buf, n)
 }
 
 func (p *Reader) ReadLine() ([]byte, error) {
@@ -224,6 +217,36 @@ func (p *Reader) readBytesValue(line []byte) ([]byte, error) {
 }
 
 // --------------------------------------------------------------------
+
+func readN(r io.Reader, b []byte, n int) ([]byte, error) {
+	if n == 0 && b == nil {
+		return make([]byte, 0), nil
+	}
+
+	if cap(b) >= n {
+		b = b[:n]
+		_, err := io.ReadFull(r, b)
+		return b, err
+	}
+	b = b[:cap(b)]
+
+	pos := 0
+	for pos < n {
+		diff := n - len(b)
+		if diff > bytesAllocLimit {
+			diff = bytesAllocLimit
+		}
+		b = append(b, make([]byte, diff)...)
+
+		nn, err := io.ReadFull(r, b[pos:])
+		if err != nil {
+			return nil, err
+		}
+		pos += nn
+	}
+
+	return b, nil
+}
 
 func formatInt(n int64) string {
 	return strconv.FormatInt(n, 10)

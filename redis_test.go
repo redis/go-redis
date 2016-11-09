@@ -185,7 +185,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should handle big vals", func() {
-		bigVal := string(bytes.Repeat([]byte{'*'}, 1<<17)) // 128kb
+		bigVal := bytes.Repeat([]byte{'*'}, 2e6)
 
 		err := client.Set("key", bigVal, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
@@ -194,9 +194,8 @@ var _ = Describe("Client", func() {
 		Expect(client.Close()).To(BeNil())
 		client = redis.NewClient(redisOptions())
 
-		got, err := client.Get("key").Result()
+		got, err := client.Get("key").Bytes()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(len(got)).To(Equal(len(bigVal)))
 		Expect(got).To(Equal(bigVal))
 	})
 
