@@ -1,7 +1,12 @@
 package redis
 
 import (
+	"crypto/tls"
+	"errors"
 	"net"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/redis.v5/internal/pool"
@@ -58,6 +63,9 @@ type Options struct {
 
 	// Enables read only queries on slave nodes.
 	ReadOnly bool
+
+	// Config to use when connecting via TLS
+	TLSConfig *tls.Config
 }
 
 func (opt *Options) init() {
@@ -90,6 +98,70 @@ func (opt *Options) init() {
 	if opt.IdleCheckFrequency == 0 {
 		opt.IdleCheckFrequency = time.Minute
 	}
+}
+
+// ParseURL parses a redis URL into options that can be used to connect to redis
+func ParseURL(redisURL string) (*Options, error) {
+	o := &Options{Network: "tcp"}
+	u, err := url.Parse(redisURL)
+	if err != nil {
+		return nil, err
+	}
+
+	if u.Scheme != "redis" && u.Scheme != "rediss" {
+		return nil, errors.New("invalid redis URL scheme: " + u.Scheme)
+	}
+
+	if u.User != nil {
+		if p, ok := u.User.Password(); ok {
+			o.Password = p
+		}
+	}
+
+	if len(u.Query()) > 0 {
+		return nil, errors.New("no options supported")
+	}
+
+	h, p, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		h = u.Host
+	}
+	if h == "" {
+		h = "localhost"
+	}
+	if p == "" {
+		p = "6379"
+	}
+	o.Addr = net.JoinHostPort(h, p)
+
+	f := strings.FieldsFunc(u.Path, func(r rune) bool {
+		return r == '/'
+	})
+	switch len(f) {
+	case 0:
+		o.DB = 0
+	case 1:
+		if o.DB, err = strconv.Atoi(f[0]); err != nil {
+			return nil, errors.New("Invalid redis database number: " + err.Error())
+		}
+	default:
+		return nil, errors.New("invalid redis URL path: " + u.Path)
+	}
+
+	if u.Scheme == "rediss" {
+		o.Dialer = func() (net.Conn, error) {
+			conn, err := net.DialTimeout(o.Network, o.Addr, o.DialTimeout)
+			if err != nil {
+				return nil, err
+			}
+			if o.TLSConfig == nil {
+				o.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+			}
+			t := tls.Client(conn, o.TLSConfig)
+			return t, t.Handshake()
+		}
+	}
+	return o, nil
 }
 
 func newConnPool(opt *Options) *pool.ConnPool {
