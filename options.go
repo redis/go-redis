@@ -64,7 +64,7 @@ type Options struct {
 	// Enables read only queries on slave nodes.
 	ReadOnly bool
 
-	// Config to use when connecting via TLS
+	// TLS Config to use. When set TLS will be negotiated.
 	TLSConfig *tls.Config
 }
 
@@ -74,7 +74,12 @@ func (opt *Options) init() {
 	}
 	if opt.Dialer == nil {
 		opt.Dialer = func() (net.Conn, error) {
-			return net.DialTimeout(opt.Network, opt.Addr, opt.DialTimeout)
+			conn, err := net.DialTimeout(opt.Network, opt.Addr, opt.DialTimeout)
+			if opt.TLSConfig == nil || err != nil {
+				return conn, err
+			}
+			t := tls.Client(conn, opt.TLSConfig)
+			return t, t.Handshake()
 		}
 	}
 	if opt.PoolSize == 0 {
@@ -142,24 +147,14 @@ func ParseURL(redisURL string) (*Options, error) {
 		o.DB = 0
 	case 1:
 		if o.DB, err = strconv.Atoi(f[0]); err != nil {
-			return nil, errors.New("Invalid redis database number: " + err.Error())
+			return nil, errors.New("invalid redis database number: " + err.Error())
 		}
 	default:
 		return nil, errors.New("invalid redis URL path: " + u.Path)
 	}
 
 	if u.Scheme == "rediss" {
-		o.Dialer = func() (net.Conn, error) {
-			conn, err := net.DialTimeout(o.Network, o.Addr, o.DialTimeout)
-			if err != nil {
-				return nil, err
-			}
-			if o.TLSConfig == nil {
-				o.TLSConfig = &tls.Config{InsecureSkipVerify: true}
-			}
-			t := tls.Client(conn, o.TLSConfig)
-			return t, t.Handshake()
-		}
+		o.TLSConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 	return o, nil
 }

@@ -9,11 +9,11 @@ import (
 
 func TestParseURL(t *testing.T) {
 	cases := []struct {
-		u      string
-		addr   string
-		db     int
-		dialer bool
-		err    error
+		u    string
+		addr string
+		db   int
+		tls  bool
+		err  error
 	}{
 		{
 			"redis://localhost:123/1",
@@ -63,7 +63,7 @@ func TestParseURL(t *testing.T) {
 		{
 			"redis://localhost/iamadatabase",
 			"",
-			0, false, errors.New("Invalid redis database number: strconv.ParseInt: parsing \"iamadatabase\": invalid syntax"),
+			0, false, errors.New("invalid redis database number: strconv.ParseInt: parsing \"iamadatabase\": invalid syntax"),
 		},
 	}
 
@@ -71,23 +71,23 @@ func TestParseURL(t *testing.T) {
 		t.Run(c.u, func(t *testing.T) {
 			o, err := ParseURL(c.u)
 			if c.err == nil && err != nil {
-				t.Fatalf("Expected err to be nil, but got: '%q'", err)
+				t.Fatalf("unexpected error: '%q'", err)
 				return
 			}
 			if c.err != nil && err != nil {
 				if c.err.Error() != err.Error() {
-					t.Fatalf("Expected err to be '%q', but got '%q'", c.err, err)
+					t.Fatalf("got %q, expected %q", err, c.err)
 				}
 				return
 			}
 			if o.Addr != c.addr {
-				t.Errorf("Expected Addr to be '%s', but got '%s'", c.addr, o.Addr)
+				t.Errorf("got %q, want %q", o.Addr, c.addr)
 			}
 			if o.DB != c.db {
-				t.Errorf("Expecdted DB to be '%d', but got '%d'", c.db, o.DB)
+				t.Errorf("got %q, expected %q", o.DB, c.db)
 			}
-			if c.dialer && o.Dialer == nil {
-				t.Errorf("Expected a Dialer to be set, but isn't")
+			if c.tls && o.TLSConfig == nil {
+				t.Errorf("got nil TLSConfig, expected a TLSConfig")
 			}
 		})
 	}
