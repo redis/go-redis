@@ -154,7 +154,7 @@ func ParseURL(redisURL string) (*Options, error) {
 	}
 
 	if u.Scheme == "rediss" {
-		o.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+		o.TLSConfig = &tls.Config{ServerName: h}
 	}
 	return o, nil
 }
