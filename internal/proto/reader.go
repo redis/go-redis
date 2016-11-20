@@ -11,7 +11,13 @@ import (
 
 const bytesAllocLimit = 1024 * 1024 // 1mb
 
-const errEmptyReply = internal.RedisError("redis: reply is empty")
+const (
+	ErrorReply  = '-'
+	StatusReply = '+'
+	IntReply    = ':'
+	StringReply = '$'
+	ArrayReply  = '*'
+)
 
 type MultiBulkParse func(*Reader, int64) (interface{}, error)
 
@@ -23,7 +29,7 @@ type Reader struct {
 func NewReader(rd io.Reader) *Reader {
 	return &Reader{
 		src: bufio.NewReader(rd),
-		buf: make([]byte, 0, defaultBufSize),
+		buf: make([]byte, 0, bufferSize),
 	}
 }
 
@@ -48,7 +54,7 @@ func (p *Reader) ReadLine() ([]byte, error) {
 		return nil, bufio.ErrBufferFull
 	}
 	if len(line) == 0 {
-		return nil, errEmptyReply
+		return nil, internal.RedisError("redis: reply is empty")
 	}
 	if isNilReply(line) {
 		return nil, internal.Nil

@@ -457,7 +457,7 @@ func (cmd *BoolCmd) readReply(cn *pool.Conn) error {
 type StringCmd struct {
 	baseCmd
 
-	val []byte
+	val string
 }
 
 func NewStringCmd(args ...interface{}) *StringCmd {
@@ -466,12 +466,12 @@ func NewStringCmd(args ...interface{}) *StringCmd {
 }
 
 func (cmd *StringCmd) reset() {
-	cmd.val = nil
+	cmd.val = ""
 	cmd.err = nil
 }
 
 func (cmd *StringCmd) Val() string {
-	return string(cmd.val)
+	return cmd.val
 }
 
 func (cmd *StringCmd) Result() (string, error) {
@@ -479,7 +479,7 @@ func (cmd *StringCmd) Result() (string, error) {
 }
 
 func (cmd *StringCmd) Bytes() ([]byte, error) {
-	return cmd.val, cmd.err
+	return []byte(cmd.val), cmd.err
 }
 
 func (cmd *StringCmd) Int64() (int64, error) {
@@ -520,11 +520,7 @@ func (cmd *StringCmd) readReply(cn *pool.Conn) error {
 		cmd.err = err
 		return err
 	}
-
-	new := make([]byte, len(b))
-	copy(new, b)
-	cmd.val = new
-
+	cmd.val = string(b)
 	return nil
 }
 

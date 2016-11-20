@@ -8,97 +8,85 @@ import (
 	"gopkg.in/redis.v5/internal"
 )
 
-const (
-	ErrorReply  = '-'
-	StatusReply = '+'
-	IntReply    = ':'
-	StringReply = '$'
-	ArrayReply  = '*'
-)
-
-const defaultBufSize = 4096
-
-const errScanNil = internal.RedisError("redis: Scan(nil)")
-
-func Scan(b []byte, val interface{}) error {
+func Scan(s string, val interface{}) error {
 	switch v := val.(type) {
 	case nil:
-		return errScanNil
+		return internal.RedisError("redis: Scan(nil)")
 	case *string:
-		*v = string(b)
+		*v = s
 		return nil
 	case *[]byte:
-		*v = b
+		*v = []byte(s)
 		return nil
 	case *int:
 		var err error
-		*v, err = strconv.Atoi(string(b))
+		*v, err = strconv.Atoi(s)
 		return err
 	case *int8:
-		n, err := strconv.ParseInt(string(b), 10, 8)
+		n, err := strconv.ParseInt(s, 10, 8)
 		if err != nil {
 			return err
 		}
 		*v = int8(n)
 		return nil
 	case *int16:
-		n, err := strconv.ParseInt(string(b), 10, 16)
+		n, err := strconv.ParseInt(s, 10, 16)
 		if err != nil {
 			return err
 		}
 		*v = int16(n)
 		return nil
 	case *int32:
-		n, err := strconv.ParseInt(string(b), 10, 32)
+		n, err := strconv.ParseInt(s, 10, 32)
 		if err != nil {
 			return err
 		}
 		*v = int32(n)
 		return nil
 	case *int64:
-		n, err := strconv.ParseInt(string(b), 10, 64)
+		n, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
 			return err
 		}
 		*v = n
 		return nil
 	case *uint:
-		n, err := strconv.ParseUint(string(b), 10, 64)
+		n, err := strconv.ParseUint(s, 10, 64)
 		if err != nil {
 			return err
 		}
 		*v = uint(n)
 		return nil
 	case *uint8:
-		n, err := strconv.ParseUint(string(b), 10, 8)
+		n, err := strconv.ParseUint(s, 10, 8)
 		if err != nil {
 			return err
 		}
 		*v = uint8(n)
 		return nil
 	case *uint16:
-		n, err := strconv.ParseUint(string(b), 10, 16)
+		n, err := strconv.ParseUint(s, 10, 16)
 		if err != nil {
 			return err
 		}
 		*v = uint16(n)
 		return nil
 	case *uint32:
-		n, err := strconv.ParseUint(string(b), 10, 32)
+		n, err := strconv.ParseUint(s, 10, 32)
 		if err != nil {
 			return err
 		}
 		*v = uint32(n)
 		return nil
 	case *uint64:
-		n, err := strconv.ParseUint(string(b), 10, 64)
+		n, err := strconv.ParseUint(s, 10, 64)
 		if err != nil {
 			return err
 		}
 		*v = n
 		return nil
 	case *float32:
-		n, err := strconv.ParseFloat(string(b), 32)
+		n, err := strconv.ParseFloat(s, 32)
 		if err != nil {
 			return err
 		}
@@ -106,14 +94,14 @@ func Scan(b []byte, val interface{}) error {
 		return err
 	case *float64:
 		var err error
-		*v, err = strconv.ParseFloat(string(b), 64)
+		*v, err = strconv.ParseFloat(s, 64)
 		return err
 	case *bool:
-		*v = len(b) == 1 && b[0] == '1'
+		*v = len(s) == 1 && s[0] == '1'
 		return nil
 	default:
 		if bu, ok := val.(encoding.BinaryUnmarshaler); ok {
-			return bu.UnmarshalBinary(b)
+			return bu.UnmarshalBinary([]byte(s))
 		}
 		err := fmt.Errorf(
 			"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)", val)
