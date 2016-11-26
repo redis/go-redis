@@ -1,4 +1,4 @@
-package redis
+package redis // import "gopkg.in/redis.v5"
 
 import (
 	"fmt"

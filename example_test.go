@@ -331,3 +331,21 @@ func ExampleScanCmd_Iterator() {
 		panic(err)
 	}
 }
+
+func ExampleClient_instrumentation() {
+	client := redis.NewClient(&redis.Options{
+		Addr: ":6379",
+	})
+	client.WrapProcess(func(oldProcess func(cmd redis.Cmder) error) func(cmd redis.Cmder) error {
+		return func(cmd redis.Cmder) error {
+			start := time.Now()
+			err := oldProcess(cmd)
+			if err != nil {
+				fmt.Printf("command %s failed: %s", cmd, err)
+			} else {
+				fmt.Printf("command %q took %s", cmd, time.Since(start))
+			}
+			return err
+		}
+	})
+}
