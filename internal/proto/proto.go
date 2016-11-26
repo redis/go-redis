@@ -8,8 +8,8 @@ import (
 	"gopkg.in/redis.v5/internal"
 )
 
-func Scan(s string, val interface{}) error {
-	switch v := val.(type) {
+func Scan(s string, v interface{}) error {
+	switch v := v.(type) {
 	case nil:
 		return internal.RedisError("redis: Scan(nil)")
 	case *string:
@@ -99,12 +99,10 @@ func Scan(s string, val interface{}) error {
 	case *bool:
 		*v = len(s) == 1 && s[0] == '1'
 		return nil
+	case encoding.BinaryUnmarshaler:
+		return v.UnmarshalBinary([]byte(s))
 	default:
-		if bu, ok := val.(encoding.BinaryUnmarshaler); ok {
-			return bu.UnmarshalBinary([]byte(s))
-		}
-		err := fmt.Errorf(
-			"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)", val)
-		return err
+		return fmt.Errorf(
+			"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)", v)
 	}
 }
