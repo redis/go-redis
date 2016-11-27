@@ -87,7 +87,7 @@ Some corner cases:
     vals, err := client.Sort("list", redis.Sort{Offset: 0, Count: 2, Order: "ASC"}).Result()
 
     ZRANGEBYSCORE zset -inf +inf WITHSCORES LIMIT 0 2
-    vals, err := client.ZRangeByScoreWithScores("zset", redis.ZRangeByScore{
+    vals, err := client.ZRangeByScoreWithScores("zset", redis.ZRangeBy{
         Min: "-inf",
         Max: "+inf",
         Offset: 0,
