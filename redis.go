@@ -19,6 +19,7 @@ type baseClient struct {
 	connPool pool.Pooler
 	opt      *Options
 
+	process func(Cmder) error
 	onClose func() error // hook called when client is closed
 }
 
@@ -78,6 +79,21 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 }
 
 func (c *baseClient) Process(cmd Cmder) error {
+	if c.process != nil {
+		return c.process(cmd)
+	}
+	return c.defaultProcess(cmd)
+}
+
+// WrapProcess replaces the process func. It takes a function createWrapper
+// which is supplied by the user. createWrapper takes the old process func as
+// an input and returns the new wrapper process func. createWrapper should
+// use call the old process func within the new process func.
+func (c *baseClient) WrapProcess(fn func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error) {
+	c.process = fn(c.defaultProcess)
+}
+
+func (c *baseClient) defaultProcess(cmd Cmder) error {
 	for i := 0; i <= c.opt.MaxRetries; i++ {
 		if i > 0 {
 			cmd.reset()

@@ -185,7 +185,6 @@ type Cmdable interface {
 	ClientKill(ipPort string) *StatusCmd
 	ClientList() *StringCmd
 	ClientPause(dur time.Duration) *BoolCmd
-	ClientSetName(name string) *BoolCmd
 	ConfigGet(parameter string) *SliceCmd
 	ConfigResetStat() *StatusCmd
 	ConfigSet(parameter, value string) *StatusCmd
@@ -239,14 +238,6 @@ type Cmdable interface {
 
 type cmdable struct {
 	process func(cmd Cmder) error
-}
-
-// WrapProcess replaces the process func. It takes a function createWrapper
-// which is supplied by the user. createWrapper takes the old process func as
-// an input and returns the new wrapper process func. createWrapper should
-// use call the old process func within the new process func.
-func (c *cmdable) WrapProcess(createWrapper func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error) {
-	c.process = createWrapper(c.process)
 }
 
 type statefulCmdable struct {
@@ -1625,15 +1616,15 @@ func (c *cmdable) ClientPause(dur time.Duration) *BoolCmd {
 	return cmd
 }
 
-// ClientSetName assigns a name to the one of many connections in the pool.
-func (c *cmdable) ClientSetName(name string) *BoolCmd {
+// ClientSetName assigns a name to the connection.
+func (c *statefulCmdable) ClientSetName(name string) *BoolCmd {
 	cmd := NewBoolCmd("client", "setname", name)
 	c.process(cmd)
 	return cmd
 }
 
-// ClientGetName returns the name of the one of many connections in the pool.
-func (c *Client) ClientGetName() *StringCmd {
+// ClientGetName returns the name of the connection.
+func (c *statefulCmdable) ClientGetName() *StringCmd {
 	cmd := NewStringCmd("client", "getname")
 	c.process(cmd)
 	return cmd

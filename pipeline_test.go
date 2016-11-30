@@ -152,7 +152,7 @@ var _ = Describe("Pipelining", func() {
 		const N = 1000
 
 		pipeline := client.Pipeline()
-		wg := &sync.WaitGroup{}
+		var wg sync.WaitGroup
 		wg.Add(N)
 		for i := 0; i < N; i++ {
 			go func() {
