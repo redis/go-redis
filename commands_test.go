@@ -26,14 +26,20 @@ var _ = Describe("Commands", func() {
 
 	Describe("server", func() {
 
-		// It("should Auth", func() {
-		// 	auth := client.Auth("password")
-		// 	Expect(auth.Err()).To(MatchError("ERR Client sent AUTH, but no password is set"))
-		// 	Expect(auth.Val()).To(Equal(""))
-		// })
+		It("should Auth", func() {
+			_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+				pipe.Auth("password")
+				return nil
+			})
+			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
+		})
 
 		It("should Echo", func() {
-			echo := client.Echo("hello")
+			pipe := client.Pipeline()
+			echo := pipe.Echo("hello")
+			_, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+
 			Expect(echo.Err()).NotTo(HaveOccurred())
 			Expect(echo.Val()).To(Equal("hello"))
 		})
@@ -44,11 +50,15 @@ var _ = Describe("Commands", func() {
 			Expect(ping.Val()).To(Equal("PONG"))
 		})
 
-		// It("should Select", func() {
-		// 	sel := client.Select(1)
-		// 	Expect(sel.Err()).NotTo(HaveOccurred())
-		// 	Expect(sel.Val()).To(Equal("OK"))
-		// })
+		It("should Select", func() {
+			pipe := client.Pipeline()
+			sel := pipe.Select(1)
+			_, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(sel.Err()).NotTo(HaveOccurred())
+			Expect(sel.Val()).To(Equal("OK"))
+		})
 
 		It("should BgRewriteAOF", func() {
 			Skip("flaky test")
@@ -84,13 +94,18 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ClientSetName and ClientGetName", func() {
-			isSet, err := client.ClientSetName("theclientname").Result()
+			pipe := client.Pipeline()
+			set := pipe.ClientSetName("theclientname")
+			get := pipe.ClientGetName()
+			_, err := pipe.Exec()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(isSet).To(BeTrue())
 
-			val, err := client.ClientGetName().Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(val).To(Equal("theclientname"))
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(BeTrue())
+
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("theclientname"))
+
 		})
 
 		It("should ConfigGet", func() {
