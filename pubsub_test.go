@@ -315,7 +315,7 @@ var _ = Describe("PubSub", func() {
 		Eventually(done).Should(Receive())
 
 		stats := client.PoolStats()
-		Expect(stats.Requests).To(Equal(uint32(4)))
+		Expect(stats.Requests).To(Equal(uint32(3)))
 		Expect(stats.Hits).To(Equal(uint32(1)))
 	}
 

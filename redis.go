@@ -3,6 +3,7 @@ package redis // import "gopkg.in/redis.v5"
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"gopkg.in/redis.v5/internal"
 	"gopkg.in/redis.v5/internal/pool"
@@ -105,14 +106,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 			return err
 		}
 
-		readTimeout := cmd.readTimeout()
-		if readTimeout != nil {
-			cn.ReadTimeout = *readTimeout
-		} else {
-			cn.ReadTimeout = c.opt.ReadTimeout
-		}
-		cn.WriteTimeout = c.opt.WriteTimeout
-
+		cn.SetWriteTimeout(c.opt.WriteTimeout)
 		if err := writeCmd(cn, cmd); err != nil {
 			c.putConn(cn, err, false)
 			cmd.setErr(err)
@@ -122,8 +116,9 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 			return err
 		}
 
+		cn.SetReadTimeout(c.cmdTimeout(cmd))
 		err = cmd.readReply(cn)
-		c.putConn(cn, err, readTimeout != nil)
+		c.putConn(cn, err, false)
 		if err != nil && internal.IsRetryableError(err) {
 			continue
 		}
@@ -132,6 +127,14 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 	}
 
 	return cmd.Err()
+}
+
+func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
+	if timeout := cmd.readTimeout(); timeout != nil {
+		return *timeout
+	} else {
+		return c.opt.ReadTimeout
+	}
 }
 
 func (c *baseClient) closed() bool {
@@ -143,16 +146,16 @@ func (c *baseClient) closed() bool {
 // It is rare to Close a Client, as the Client is meant to be
 // long-lived and shared between many goroutines.
 func (c *baseClient) Close() error {
-	var retErr error
+	var firstErr error
 	if c.onClose != nil {
-		if err := c.onClose(); err != nil && retErr == nil {
-			retErr = err
+		if err := c.onClose(); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	if err := c.connPool.Close(); err != nil && retErr == nil {
-		retErr = err
+	if err := c.connPool.Close(); err != nil && firstErr == nil {
+		firstErr = err
 	}
-	return retErr
+	return firstErr
 }
 
 func (c *baseClient) getAddr() string {
@@ -225,7 +228,7 @@ func (c *Client) pipelineExec(cmds []Cmder) error {
 			return err
 		}
 
-		retry, err := execCmds(cn, cmds)
+		retry, err := c.execCmds(cn, cmds)
 		c.putConn(cn, err, false)
 		if err == nil {
 			return nil
@@ -238,6 +241,31 @@ func (c *Client) pipelineExec(cmds []Cmder) error {
 		}
 	}
 	return firstErr
+}
+
+func (c *Client) execCmds(cn *pool.Conn, cmds []Cmder) (retry bool, firstErr error) {
+	cn.SetWriteTimeout(c.opt.WriteTimeout)
+	if err := writeCmd(cn, cmds...); err != nil {
+		setCmdsErr(cmds, err)
+		return true, err
+	}
+
+	// Set read timeout for all commands.
+	cn.SetReadTimeout(c.opt.ReadTimeout)
+
+	for i, cmd := range cmds {
+		err := cmd.readReply(cn)
+		if err == nil {
+			continue
+		}
+		if i == 0 && internal.IsNetworkError(err) {
+			return true, err
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return false, firstErr
 }
 
 func (c *Client) pubSub() *PubSub {

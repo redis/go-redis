@@ -90,9 +90,13 @@ func (opt *Options) init() {
 	}
 	if opt.ReadTimeout == 0 {
 		opt.ReadTimeout = 3 * time.Second
+	} else if opt.ReadTimeout == -1 {
+		opt.ReadTimeout = 0
 	}
 	if opt.WriteTimeout == 0 {
 		opt.WriteTimeout = opt.ReadTimeout
+	} else if opt.WriteTimeout == -1 {
+		opt.WriteTimeout = 0
 	}
 	if opt.PoolTimeout == 0 {
 		opt.PoolTimeout = opt.ReadTimeout + time.Second

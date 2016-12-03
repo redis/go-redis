@@ -35,12 +35,6 @@ func (c *PubSub) putConn(cn *pool.Conn, err error) {
 }
 
 func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
-	cn, _, err := c.conn()
-	if err != nil {
-		return err
-	}
-	c.putConn(cn, err)
-
 	args := make([]interface{}, 1+len(channels))
 	args[0] = redisCmd
 	for i, channel := range channels {
@@ -48,7 +42,15 @@ func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
 	}
 	cmd := NewSliceCmd(args...)
 
-	return writeCmd(cn, cmd)
+	cn, _, err := c.conn()
+	if err != nil {
+		return err
+	}
+
+	cn.SetWriteTimeout(c.base.opt.WriteTimeout)
+	err = writeCmd(cn, cmd)
+	c.putConn(cn, err)
+	return err
 }
 
 // Subscribes the client to the specified channels.
@@ -94,17 +96,21 @@ func (c *PubSub) Close() error {
 }
 
 func (c *PubSub) Ping(payload string) error {
-	cn, _, err := c.conn()
-	if err != nil {
-		return err
-	}
-
 	args := []interface{}{"PING"}
 	if payload != "" {
 		args = append(args, payload)
 	}
 	cmd := NewCmd(args...)
-	return writeCmd(cn, cmd)
+
+	cn, _, err := c.conn()
+	if err != nil {
+		return err
+	}
+
+	cn.SetWriteTimeout(c.base.opt.WriteTimeout)
+	err = writeCmd(cn, cmd)
+	c.putConn(cn, err)
+	return err
 }
 
 // Message received after a successful subscription to channel.
@@ -176,13 +182,14 @@ func (c *PubSub) newMessage(reply []interface{}) (interface{}, error) {
 // is not received in time. This is low-level API and most clients
 // should use ReceiveMessage.
 func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
+	cmd := NewSliceCmd()
+
 	cn, _, err := c.conn()
 	if err != nil {
 		return nil, err
 	}
-	cn.ReadTimeout = timeout
 
-	cmd := NewSliceCmd()
+	cn.SetReadTimeout(timeout)
 	err = cmd.readReply(cn)
 	c.putConn(cn, err)
 	if err != nil {
