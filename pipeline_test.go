@@ -4,13 +4,13 @@ import (
 	"strconv"
 	"sync"
 
+	"gopkg.in/redis.v5"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-
-	"gopkg.in/redis.v5"
 )
 
-var _ = Describe("Pipelining", func() {
+var _ = Describe("Pipeline", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
@@ -51,15 +51,12 @@ var _ = Describe("Pipelining", func() {
 		Expect(getNil.Val()).To(Equal(""))
 	})
 
-	It("should discard", func() {
+	It("discards queued commands", func() {
 		pipeline := client.Pipeline()
-
 		pipeline.Get("key")
 		pipeline.Discard()
-		cmds, err := pipeline.Exec()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(cmds).To(HaveLen(0))
-		Expect(pipeline.Close()).NotTo(HaveOccurred())
+		_, err := pipeline.Exec()
+		Expect(err).To(MatchError("redis: pipeline is empty"))
 	})
 
 	It("should support block style", func() {
@@ -84,12 +81,10 @@ var _ = Describe("Pipelining", func() {
 		Expect(pipeline.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should pipeline with empty queue", func() {
+	It("returns an error when there are no commands", func() {
 		pipeline := client.Pipeline()
-		cmds, err := pipeline.Exec()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(cmds).To(HaveLen(0))
-		Expect(pipeline.Close()).NotTo(HaveOccurred())
+		_, err := pipeline.Exec()
+		Expect(err).To(MatchError("redis: pipeline is empty"))
 	})
 
 	It("should increment correctly", func() {

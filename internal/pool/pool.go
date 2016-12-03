@@ -266,19 +266,19 @@ func (p *ConnPool) Closed() bool {
 	return atomic.LoadInt32(&p._closed) == 1
 }
 
-func (p *ConnPool) Close() (retErr error) {
+func (p *ConnPool) Close() error {
 	if !atomic.CompareAndSwapInt32(&p._closed, 0, 1) {
 		return ErrClosed
 	}
 
 	p.connsMu.Lock()
-	// Close all connections.
+	var firstErr error
 	for _, cn := range p.conns {
 		if cn == nil {
 			continue
 		}
-		if err := p.closeConn(cn, ErrClosed); err != nil && retErr == nil {
-			retErr = err
+		if err := p.closeConn(cn, ErrClosed); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	p.conns = nil
@@ -288,7 +288,7 @@ func (p *ConnPool) Close() (retErr error) {
 	p.freeConns = nil
 	p.freeConnsMu.Unlock()
 
-	return retErr
+	return firstErr
 }
 
 func (p *ConnPool) closeConn(cn *Conn, reason error) error {

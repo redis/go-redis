@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -159,8 +160,7 @@ func perform(n int, cbs ...func(int)) {
 
 func eventually(fn func() error, timeout time.Duration) error {
 	var exit int32
-	var retErr error
-	var mu sync.Mutex
+	errCh := make(chan error)
 	done := make(chan struct{})
 
 	go func() {
@@ -172,9 +172,10 @@ func eventually(fn func() error, timeout time.Duration) error {
 				close(done)
 				return
 			}
-			mu.Lock()
-			retErr = err
-			mu.Unlock()
+			select {
+			case errCh <- err:
+			default:
+			}
 			time.Sleep(timeout / 100)
 		}
 	}()
@@ -184,10 +185,12 @@ func eventually(fn func() error, timeout time.Duration) error {
 		return nil
 	case <-time.After(timeout):
 		atomic.StoreInt32(&exit, 1)
-		mu.Lock()
-		err := retErr
-		mu.Unlock()
-		return err
+		select {
+		case err := <-errCh:
+			return err
+		default:
+			return fmt.Errorf("timeout after %s", timeout)
+		}
 	}
 }
 

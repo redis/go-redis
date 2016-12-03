@@ -332,7 +332,7 @@ func (c *Ring) heartbeat() {
 //
 // It is rare to Close a Ring, as the Ring is meant to be long-lived
 // and shared between many goroutines.
-func (c *Ring) Close() (retErr error) {
+func (c *Ring) Close() error {
 	defer c.mu.Unlock()
 	c.mu.Lock()
 
@@ -341,15 +341,16 @@ func (c *Ring) Close() (retErr error) {
 	}
 	c.closed = true
 
+	var firstErr error
 	for _, shard := range c.shards {
-		if err := shard.Client.Close(); err != nil {
-			retErr = err
+		if err := shard.Client.Close(); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	c.hash = nil
 	c.shards = nil
 
-	return retErr
+	return firstErr
 }
 
 func (c *Ring) Pipeline() *Pipeline {
@@ -402,7 +403,7 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 				continue
 			}
 
-			retry, err := execCmds(cn, cmds)
+			retry, err := shard.Client.execCmds(cn, cmds)
 			shard.Client.putConn(cn, err, false)
 			if err == nil {
 				continue

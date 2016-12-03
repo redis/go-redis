@@ -267,10 +267,10 @@ func (d *sentinelFailover) closeOldConns(newMaster string) {
 		if cn == nil {
 			break
 		}
-		if cn.RemoteAddr().String() != newMaster {
+		if cn.NetConn.RemoteAddr().String() != newMaster {
 			err := fmt.Errorf(
 				"sentinel: closing connection to the old master %s",
-				cn.RemoteAddr(),
+				cn.NetConn.RemoteAddr(),
 			)
 			internal.Logf(err.Error())
 			d.pool.Remove(cn, err)

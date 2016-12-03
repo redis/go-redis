@@ -45,11 +45,11 @@ func (c *Client) Watch(fn func(*Tx) error, keys ...string) error {
 			return err
 		}
 	}
-	retErr := fn(tx)
-	if err := tx.close(); err != nil && retErr == nil {
-		retErr = err
+	firstErr := fn(tx)
+	if err := tx.close(); err != nil && firstErr == nil {
+		firstErr = err
 	}
-	return retErr
+	return firstErr
 }
 
 // close closes the transaction, releasing any open resources.
@@ -133,11 +133,15 @@ func (c *Tx) exec(cmds []Cmder) error {
 }
 
 func (c *Tx) execCmds(cn *pool.Conn, cmds []Cmder) error {
+	cn.SetWriteTimeout(c.opt.WriteTimeout)
 	err := writeCmd(cn, cmds...)
 	if err != nil {
 		setCmdsErr(cmds[1:len(cmds)-1], err)
 		return err
 	}
+
+	// Set read timeout for all commands.
+	cn.SetReadTimeout(c.opt.ReadTimeout)
 
 	// Omit last command (EXEC).
 	cmdsLen := len(cmds) - 1

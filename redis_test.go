@@ -3,11 +3,12 @@ package redis_test
 import (
 	"bytes"
 	"net"
+	"time"
+
+	"gopkg.in/redis.v5"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-
-	"gopkg.in/redis.v5"
 )
 
 var _ = Describe("Client", func() {
@@ -15,7 +16,7 @@ var _ = Describe("Client", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).To(BeNil())
+		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -174,7 +175,7 @@ var _ = Describe("Client", func() {
 		Expect(cn.UsedAt.After(createdAt)).To(BeTrue())
 	})
 
-	It("should escape special chars", func() {
+	It("should process command with special chars", func() {
 		set := client.Set("key", "hello1\r\nhello2\r\n", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 		Expect(set.Val()).To(Equal("OK"))
@@ -191,12 +192,84 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Reconnect to get new connection.
-		Expect(client.Close()).To(BeNil())
+		Expect(client.Close()).NotTo(HaveOccurred())
 		client = redis.NewClient(redisOptions())
 
 		got, err := client.Get("key").Bytes()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got).To(Equal(bigVal))
 	})
+})
 
+var _ = Describe("Client timeout", func() {
+	var client *redis.Client
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	testTimeout := func() {
+		It("Ping timeouts", func() {
+			err := client.Ping().Err()
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
+		})
+
+		It("Pipeline timeouts", func() {
+			_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+				pipe.Ping()
+				return nil
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
+		})
+
+		It("Subscribe timeouts", func() {
+			_, err := client.Subscribe("_")
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
+		})
+
+		It("Tx timeouts", func() {
+			err := client.Watch(func(tx *redis.Tx) error {
+				return tx.Ping().Err()
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
+		})
+
+		It("Tx Pipeline timeouts", func() {
+			err := client.Watch(func(tx *redis.Tx) error {
+				_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+					pipe.Ping()
+					return nil
+				})
+				return err
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
+		})
+	}
+
+	Context("read timeout", func() {
+		BeforeEach(func() {
+			opt := redisOptions()
+			opt.ReadTimeout = time.Nanosecond
+			opt.WriteTimeout = -1
+			client = redis.NewClient(opt)
+		})
+
+		testTimeout()
+	})
+
+	Context("write timeout", func() {
+		BeforeEach(func() {
+			opt := redisOptions()
+			opt.ReadTimeout = -1
+			opt.WriteTimeout = time.Nanosecond
+			client = redis.NewClient(opt)
+		})
+
+		testTimeout()
+	})
 })

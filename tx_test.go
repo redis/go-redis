@@ -86,14 +86,12 @@ var _ = Describe("Tx", func() {
 		Expect(get.Val()).To(Equal("hello2"))
 	})
 
-	It("should exec empty", func() {
+	It("returns an error when there are no commands", func() {
 		err := client.Watch(func(tx *redis.Tx) error {
-			cmds, err := tx.Pipelined(func(*redis.Pipeline) error { return nil })
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cmds).To(HaveLen(0))
+			_, err := tx.Pipelined(func(*redis.Pipeline) error { return nil })
 			return err
 		})
-		Expect(err).NotTo(HaveOccurred())
+		Expect(err).To(MatchError("redis: pipeline is empty"))
 
 		v, err := client.Ping().Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -141,32 +139,6 @@ var _ = Describe("Tx", func() {
 				})
 				return err
 			})
-			return err
-		}
-
-		err = do()
-		Expect(err).To(MatchError("bad connection"))
-
-		err = do()
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	It("should recover from bad connection when there are no commands", func() {
-		// Put bad connection in the pool.
-		cn, _, err := client.Pool().Get()
-		Expect(err).NotTo(HaveOccurred())
-
-		cn.NetConn = &badConn{}
-		err = client.Pool().Put(cn)
-		Expect(err).NotTo(HaveOccurred())
-
-		do := func() error {
-			err := client.Watch(func(tx *redis.Tx) error {
-				_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
-					return nil
-				})
-				return err
-			}, "key")
 			return err
 		}
 

@@ -49,7 +49,7 @@ func (p *StickyConnPool) Get() (*Conn, bool, error) {
 	return cn, true, nil
 }
 
-func (p *StickyConnPool) put() (err error) {
+func (p *StickyConnPool) putUpstream() (err error) {
 	err = p.pool.Put(p.cn)
 	p.cn = nil
 	return err
@@ -67,7 +67,7 @@ func (p *StickyConnPool) Put(cn *Conn) error {
 	return nil
 }
 
-func (p *StickyConnPool) remove(reason error) error {
+func (p *StickyConnPool) removeUpstream(reason error) error {
 	err := p.pool.Remove(p.cn, reason)
 	p.cn = nil
 	return err
@@ -85,7 +85,7 @@ func (p *StickyConnPool) Remove(cn *Conn, reason error) error {
 	if cn != nil && p.cn != cn {
 		panic("p.cn != cn")
 	}
-	return p.remove(reason)
+	return p.removeUpstream(reason)
 }
 
 func (p *StickyConnPool) Len() int {
@@ -120,10 +120,10 @@ func (p *StickyConnPool) Close() error {
 	var err error
 	if p.cn != nil {
 		if p.reusable {
-			err = p.put()
+			err = p.putUpstream()
 		} else {
-			reason := errors.New("redis: sticky not reusable connection")
-			err = p.remove(reason)
+			reason := errors.New("redis: unreusable sticky connection")
+			err = p.removeUpstream(reason)
 		}
 	}
 	return err

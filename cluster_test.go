@@ -483,45 +483,124 @@ var _ = Describe("ClusterClient", func() {
 
 		describeClusterClient()
 	})
+})
 
-	Describe("ClusterClient without nodes", func() {
-		BeforeEach(func() {
-			client = redis.NewClusterClient(&redis.ClusterOptions{})
+var _ = Describe("ClusterClient without nodes", func() {
+	var client *redis.ClusterClient
+
+	BeforeEach(func() {
+		client = redis.NewClusterClient(&redis.ClusterOptions{})
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("returns an error", func() {
+		err := client.Ping().Err()
+		Expect(err).To(MatchError("redis: cluster has no nodes"))
+	})
+
+	It("pipeline returns an error", func() {
+		_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+			pipe.Ping()
+			return nil
 		})
+		Expect(err).To(MatchError("redis: cluster has no nodes"))
+	})
+})
 
-		It("returns an error", func() {
-			err := client.Ping().Err()
-			Expect(err).To(MatchError("redis: cluster has no nodes"))
-		})
+var _ = Describe("ClusterClient without valid nodes", func() {
+	var client *redis.ClusterClient
 
-		It("pipeline returns an error", func() {
-			_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
-				pipe.Ping()
-				return nil
-			})
-			Expect(err).To(MatchError("redis: cluster has no nodes"))
+	BeforeEach(func() {
+		client = redis.NewClusterClient(&redis.ClusterOptions{
+			Addrs: []string{redisAddr},
 		})
 	})
 
-	Describe("ClusterClient without valid nodes", func() {
-		BeforeEach(func() {
-			client = redis.NewClusterClient(&redis.ClusterOptions{
-				Addrs: []string{redisAddr},
-			})
-		})
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
 
-		It("returns an error", func() {
+	It("returns an error", func() {
+		err := client.Ping().Err()
+		Expect(err).To(MatchError("ERR This instance has cluster support disabled"))
+	})
+
+	It("pipeline returns an error", func() {
+		_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+			pipe.Ping()
+			return nil
+		})
+		Expect(err).To(MatchError("ERR This instance has cluster support disabled"))
+	})
+})
+
+var _ = Describe("ClusterClient timeout", func() {
+	var client *redis.ClusterClient
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	testTimeout := func() {
+		It("Ping timeouts", func() {
 			err := client.Ping().Err()
-			Expect(err).To(MatchError("ERR This instance has cluster support disabled"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
 		})
 
-		It("pipeline returns an error", func() {
+		It("Pipeline timeouts", func() {
 			_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
 				pipe.Ping()
 				return nil
 			})
-			Expect(err).To(MatchError("ERR This instance has cluster support disabled"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
 		})
+
+		It("Tx timeouts", func() {
+			err := client.Watch(func(tx *redis.Tx) error {
+				return tx.Ping().Err()
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
+		})
+
+		It("Tx Pipeline timeouts", func() {
+			err := client.Watch(func(tx *redis.Tx) error {
+				_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+					pipe.Ping()
+					return nil
+				})
+				return err
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
+		})
+	}
+
+	Context("read timeout", func() {
+		BeforeEach(func() {
+			opt := redisClusterOptions()
+			opt.ReadTimeout = time.Nanosecond
+			opt.WriteTimeout = -1
+			client = cluster.clusterClient(opt)
+		})
+
+		testTimeout()
+	})
+
+	Context("write timeout", func() {
+		BeforeEach(func() {
+			opt := redisClusterOptions()
+			opt.ReadTimeout = time.Nanosecond
+			opt.WriteTimeout = -1
+			client = cluster.clusterClient(opt)
+		})
+
+		testTimeout()
 	})
 })
 
