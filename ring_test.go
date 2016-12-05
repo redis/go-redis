@@ -165,6 +165,22 @@ var _ = Describe("Redis Ring", func() {
 			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=100"))
 		})
 	})
+
+	Describe("mget", func() {
+		It("distributes keys", func() {
+			setRingKeys()
+			keys := []string{}
+			values := []interface{}{}
+			for i := 0; i < 100; i++ {
+				keys = append(keys, fmt.Sprintf("key%d", i))
+				values = append(values, "value")
+			}
+			mGet := ring.MGet(keys...)
+			Expect(mGet.Val()).To(HaveLen(100))
+			Expect(mGet.Err()).NotTo(HaveOccurred())
+			Expect(mGet.Val()).To(Equal(values))
+		})
+	})
 })
 
 var _ = Describe("empty Redis Ring", func() {

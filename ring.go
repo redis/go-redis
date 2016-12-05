@@ -427,3 +427,39 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 
 	return firstErr
 }
+
+func (c *Ring) MGet(keys ...string) *SliceCmd {
+	allValues := make([]interface{}, len(keys))
+	keysByShard := map[*ringShard][]string{}
+	shards := []*ringShard{}
+	for _, key := range keys {
+		shard, _ := c.shardByKey(key)
+		if _, exist := keysByShard[shard]; !exist {
+			shards = append(shards, shard)
+		}
+		keysByShard[shard] = append(keysByShard[shard], key)
+	}
+	k := 0
+	for _, shard := range shards {
+		keysForShard := keysByShard[shard]
+		args := make([]interface{}, 1+len(keysForShard))
+		args[0] = "mget"
+		for i, key := range keysForShard {
+			args[1+i] = key
+		}
+		cmd := NewSliceCmd(args...)
+		shard.Client.Process(cmd)
+		for _, val := range cmd.val {
+			allValues[k] = val
+			k++
+		}
+	}
+	args := make([]interface{}, 1+len(keys))
+	args[0] = "mget"
+	for i, key := range keys {
+		args[1+i] = key
+	}
+	fullCmd := NewSliceCmd(args...)
+	fullCmd.val = allValues
+	return fullCmd
+}
