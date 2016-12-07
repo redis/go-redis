@@ -95,7 +95,7 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		if cmd.arg(2) != "0" {
 			return 3
 		} else {
-			return 0
+			return -1
 		}
 	}
 	if info == nil {
