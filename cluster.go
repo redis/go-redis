@@ -1,7 +1,6 @@
 package redis
 
 import (
-	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -367,14 +366,12 @@ func (c *ClusterClient) state() *clusterState {
 func (c *ClusterClient) cmdSlotAndNode(state *clusterState, cmd Cmder) (int, *clusterNode, error) {
 	cmdInfo := c.cmds[cmd.arg(0)]
 	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
-	if firstKey == "" {
+	if firstKey == "" || cmdInfo == nil {
 		node, err := c.nodes.Random()
 		return -1, node, err
 	}
 	slot := hashtag.Slot(firstKey)
-	if cmdInfo == nil {
-		return -1, nil, internal.RedisError(fmt.Sprintf("cmdInfo of %s is nil", cmd.arg(0)))
-	}
+
 	if cmdInfo.ReadOnly && c.opt.ReadOnly {
 		if c.opt.RouteByLatency {
 			node, err := state.slotClosestNode(slot)
