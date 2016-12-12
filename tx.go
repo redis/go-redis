@@ -176,10 +176,8 @@ func (c *Tx) execCmds(cn *pool.Conn, cmds []Cmder) error {
 	// Loop starts from 1 to omit MULTI cmd.
 	for i := 1; i < cmdsLen; i++ {
 		cmd := cmds[i]
-		if err := cmd.readReply(cn); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+		if err := cmd.readReply(cn); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 
