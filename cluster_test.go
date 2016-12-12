@@ -602,6 +602,33 @@ var _ = Describe("ClusterClient timeout", func() {
 
 		testTimeout()
 	})
+
+	Context("network timeout", func() {
+		const pause = time.Second
+
+		BeforeEach(func() {
+			opt := redisClusterOptions()
+			opt.ReadTimeout = 100 * time.Millisecond
+			opt.WriteTimeout = 100 * time.Millisecond
+			opt.MaxRedirects = 1
+			client = cluster.clusterClient(opt)
+
+			err := client.ForEachNode(func(client *redis.Client) error {
+				return client.ClientPause(pause).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			Eventually(func() error {
+				return client.ForEachNode(func(client *redis.Client) error {
+					return client.Ping().Err()
+				})
+			}, pause).ShouldNot(HaveOccurred())
+		})
+
+		testTimeout()
+	})
 })
 
 //------------------------------------------------------------------------------

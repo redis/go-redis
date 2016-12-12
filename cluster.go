@@ -156,7 +156,7 @@ func (c *clusterNodes) All() ([]*clusterNode, error) {
 		return nil, pool.ErrClosed
 	}
 
-	var nodes []*clusterNode
+	nodes := make([]*clusterNode, 0, len(c.nodes))
 	for _, node := range c.nodes {
 		nodes = append(nodes, node)
 	}
@@ -208,7 +208,7 @@ func (c *clusterNodes) Random() (*clusterNode, error) {
 	}
 
 	var nodeErr error
-	for i := 0; i < 10; i++ {
+	for i := 0; i <= c.opt.MaxRedirects; i++ {
 		n := rand.Intn(len(addrs))
 		node, err := c.Get(addrs[n])
 		if err != nil {
@@ -446,6 +446,10 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 		// On network errors try random node.
 		if internal.IsRetryableError(err) {
 			node, err = c.nodes.Random()
+			if err != nil {
+				cmd.setErr(err)
+				return err
+			}
 			continue
 		}
 
@@ -473,6 +477,39 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 	}
 
 	return cmd.Err()
+}
+
+// ForEachNode concurrently calls the fn on each ever known node in the cluster.
+// It returns the first error if any.
+func (c *ClusterClient) ForEachNode(fn func(client *Client) error) error {
+	nodes, err := c.nodes.All()
+	if err != nil {
+		return err
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+	for _, node := range nodes {
+		wg.Add(1)
+		go func(node *clusterNode) {
+			defer wg.Done()
+			err := fn(node.Client)
+			if err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+			}
+		}(node)
+	}
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
 }
 
 // ForEachMaster concurrently calls the fn on each master node in the cluster.
@@ -649,10 +686,10 @@ func (c *ClusterClient) pipelineExec(cmds []Cmder) error {
 			}
 
 			failedCmds, err = c.execClusterCmds(cn, cmds, failedCmds)
+			node.Client.putConn(cn, err, false)
 			if err != nil {
 				setFirstErr(err)
 			}
-			node.Client.putConn(cn, err, false)
 		}
 
 		cmdsMap = failedCmds
@@ -686,9 +723,15 @@ func (c *ClusterClient) execClusterCmds(
 			continue
 		}
 
-		if i == 0 && internal.IsNetworkError(err) {
+		if i == 0 && internal.IsRetryableError(err) {
+			node, err := c.nodes.Random()
+			if err != nil {
+				setFirstErr(err)
+				continue
+			}
+
 			cmd.reset()
-			failedCmds[nil] = append(failedCmds[nil], cmds...)
+			failedCmds[node] = append(failedCmds[node], cmds...)
 			break
 		}
 
