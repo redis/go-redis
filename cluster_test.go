@@ -373,61 +373,86 @@ var _ = Describe("ClusterClient", func() {
 			Expect(n).To(Equal(int64(100)))
 		})
 
-		Describe("pipeline", func() {
-			It("follows redirects", func() {
-				slot := hashtag.Slot("A")
-				Expect(client.SwapSlotNodes(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
+		Describe("pipelining", func() {
+			var pipe *redis.Pipeline
 
-				pipe := client.Pipeline()
-				defer pipe.Close()
+			assertPipeline := func() {
+				It("follows redirects", func() {
+					slot := hashtag.Slot("A")
+					Expect(client.SwapSlotNodes(slot)).To(Equal([]string{"127.0.0.1:8224", "127.0.0.1:8221"}))
 
-				keys := []string{"A", "B", "C", "D", "E", "F", "G"}
+					keys := []string{"A", "B", "C", "D", "E", "F", "G"}
 
-				for i, key := range keys {
-					pipe.Set(key, key+"_value", 0)
-					pipe.Expire(key, time.Duration(i+1)*time.Hour)
-				}
-				cmds, err := pipe.Exec()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(cmds).To(HaveLen(14))
+					for i, key := range keys {
+						pipe.Set(key, key+"_value", 0)
+						pipe.Expire(key, time.Duration(i+1)*time.Hour)
+					}
+					cmds, err := pipe.Exec()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(cmds).To(HaveLen(14))
 
-				for _, key := range keys {
-					pipe.Get(key)
-					pipe.TTL(key)
-				}
-				cmds, err = pipe.Exec()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(cmds).To(HaveLen(14))
-				Expect(cmds[0].(*redis.StringCmd).Val()).To(Equal("A_value"))
-				Expect(cmds[1].(*redis.DurationCmd).Val()).To(BeNumerically("~", 1*time.Hour, time.Second))
-				Expect(cmds[6].(*redis.StringCmd).Val()).To(Equal("D_value"))
-				Expect(cmds[7].(*redis.DurationCmd).Val()).To(BeNumerically("~", 4*time.Hour, time.Second))
-				Expect(cmds[12].(*redis.StringCmd).Val()).To(Equal("G_value"))
-				Expect(cmds[13].(*redis.DurationCmd).Val()).To(BeNumerically("~", 7*time.Hour, time.Second))
+					for _, key := range keys {
+						pipe.Get(key)
+						pipe.TTL(key)
+					}
+					cmds, err = pipe.Exec()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(cmds).To(HaveLen(14))
+					Expect(cmds[0].(*redis.StringCmd).Val()).To(Equal("A_value"))
+					Expect(cmds[1].(*redis.DurationCmd).Val()).To(BeNumerically("~", 1*time.Hour, time.Second))
+					Expect(cmds[6].(*redis.StringCmd).Val()).To(Equal("D_value"))
+					Expect(cmds[7].(*redis.DurationCmd).Val()).To(BeNumerically("~", 4*time.Hour, time.Second))
+					Expect(cmds[12].(*redis.StringCmd).Val()).To(Equal("G_value"))
+					Expect(cmds[13].(*redis.DurationCmd).Val()).To(BeNumerically("~", 7*time.Hour, time.Second))
+				})
+
+				It("works with missing keys", func() {
+					Expect(client.Set("A", "A_value", 0).Err()).NotTo(HaveOccurred())
+					Expect(client.Set("C", "C_value", 0).Err()).NotTo(HaveOccurred())
+
+					var a, b, c *redis.StringCmd
+					cmds, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+						a = pipe.Get("A")
+						b = pipe.Get("B")
+						c = pipe.Get("C")
+						return nil
+					})
+					Expect(err).To(Equal(redis.Nil))
+					Expect(cmds).To(HaveLen(3))
+
+					Expect(a.Err()).NotTo(HaveOccurred())
+					Expect(a.Val()).To(Equal("A_value"))
+
+					Expect(b.Err()).To(Equal(redis.Nil))
+					Expect(b.Val()).To(Equal(""))
+
+					Expect(c.Err()).NotTo(HaveOccurred())
+					Expect(c.Val()).To(Equal("C_value"))
+				})
+			}
+
+			Describe("Pipeline", func() {
+				BeforeEach(func() {
+					pipe = client.Pipeline()
+				})
+
+				AfterEach(func() {
+					Expect(pipe.Close()).NotTo(HaveOccurred())
+				})
+
+				assertPipeline()
 			})
 
-			It("works with missing keys", func() {
-				Expect(client.Set("A", "A_value", 0).Err()).NotTo(HaveOccurred())
-				Expect(client.Set("C", "C_value", 0).Err()).NotTo(HaveOccurred())
-
-				var a, b, c *redis.StringCmd
-				cmds, err := client.Pipelined(func(pipe *redis.Pipeline) error {
-					a = pipe.Get("A")
-					b = pipe.Get("B")
-					c = pipe.Get("C")
-					return nil
+			Describe("TxPipeline", func() {
+				BeforeEach(func() {
+					pipe = client.TxPipeline()
 				})
-				Expect(err).To(Equal(redis.Nil))
-				Expect(cmds).To(HaveLen(3))
 
-				Expect(a.Err()).NotTo(HaveOccurred())
-				Expect(a.Val()).To(Equal("A_value"))
+				AfterEach(func() {
+					Expect(pipe.Close()).NotTo(HaveOccurred())
+				})
 
-				Expect(b.Err()).To(Equal(redis.Nil))
-				Expect(b.Val()).To(Equal(""))
-
-				Expect(c.Err()).NotTo(HaveOccurred())
-				Expect(c.Val()).To(Equal("C_value"))
+				assertPipeline()
 			})
 		})
 
@@ -624,7 +649,7 @@ var _ = Describe("ClusterClient timeout", func() {
 				return client.ForEachNode(func(client *redis.Client) error {
 					return client.Ping().Err()
 				})
-			}, pause).ShouldNot(HaveOccurred())
+			}, 2*pause).ShouldNot(HaveOccurred())
 		})
 
 		testTimeout()

@@ -70,7 +70,7 @@ func (p *Reader) ReadReply(m MultiBulkParse) (interface{}, error) {
 
 	switch line[0] {
 	case ErrorReply:
-		return nil, parseErrorValue(line)
+		return nil, ParseErrorReply(line)
 	case StatusReply:
 		return parseStatusValue(line)
 	case IntReply:
@@ -94,7 +94,7 @@ func (p *Reader) ReadIntReply() (int64, error) {
 	}
 	switch line[0] {
 	case ErrorReply:
-		return 0, parseErrorValue(line)
+		return 0, ParseErrorReply(line)
 	case IntReply:
 		return parseIntValue(line)
 	default:
@@ -109,7 +109,7 @@ func (p *Reader) ReadBytesReply() ([]byte, error) {
 	}
 	switch line[0] {
 	case ErrorReply:
-		return nil, parseErrorValue(line)
+		return nil, ParseErrorReply(line)
 	case StringReply:
 		return p.readBytesValue(line)
 	case StatusReply:
@@ -142,7 +142,7 @@ func (p *Reader) ReadArrayReply(m MultiBulkParse) (interface{}, error) {
 	}
 	switch line[0] {
 	case ErrorReply:
-		return nil, parseErrorValue(line)
+		return nil, ParseErrorReply(line)
 	case ArrayReply:
 		n, err := parseArrayLen(line)
 		if err != nil {
@@ -161,7 +161,7 @@ func (p *Reader) ReadArrayLen() (int64, error) {
 	}
 	switch line[0] {
 	case ErrorReply:
-		return 0, parseErrorValue(line)
+		return 0, ParseErrorReply(line)
 	case ArrayReply:
 		return parseArrayLen(line)
 	default:
@@ -272,7 +272,7 @@ func isNilReply(b []byte) bool {
 		b[1] == '-' && b[2] == '1'
 }
 
-func parseErrorValue(line []byte) error {
+func ParseErrorReply(line []byte) error {
 	return internal.RedisError(string(line[1:]))
 }
 
