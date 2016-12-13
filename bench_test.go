@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"gopkg.in/redis.v5"
+	"github.com/go-redis/redis"
 )
 
 func benchmarkRedisClient(poolSize int) *redis.Client {
