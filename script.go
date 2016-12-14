@@ -14,6 +14,10 @@ type scripter interface {
 	ScriptLoad(script string) *StringCmd
 }
 
+var _ scripter = (*Client)(nil)
+var _ scripter = (*Ring)(nil)
+var _ scripter = (*ClusterClient)(nil)
+
 type Script struct {
 	src, hash string
 }

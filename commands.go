@@ -236,6 +236,11 @@ type Cmdable interface {
 	Command() *CommandsInfoCmd
 }
 
+var _ Cmdable = (*Client)(nil)
+var _ Cmdable = (*Tx)(nil)
+var _ Cmdable = (*Ring)(nil)
+var _ Cmdable = (*ClusterClient)(nil)
+
 type cmdable struct {
 	process func(cmd Cmder) error
 }
