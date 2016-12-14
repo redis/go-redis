@@ -1,12 +1,12 @@
-package redis // import "gopkg.in/redis.v5"
+package redis
 
 import (
 	"fmt"
 	"log"
 	"time"
 
-	"gopkg.in/redis.v5/internal"
-	"gopkg.in/redis.v5/internal/pool"
+	"github.com/go-redis/redis/internal"
+	"github.com/go-redis/redis/internal/pool"
 )
 
 // Redis nil reply, .e.g. when key does not exist.

@@ -6,8 +6,8 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"gopkg.in/redis.v5"
-	"gopkg.in/redis.v5/internal/pool"
+	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/internal/pool"
 )
 
 var _ = Describe("pool", func() {

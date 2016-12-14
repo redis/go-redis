@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"gopkg.in/redis.v5/internal/proto"
+	"github.com/go-redis/redis/internal/proto"
 )
 
 var _ = Describe("WriteBuffer", func() {

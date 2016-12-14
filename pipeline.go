@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"gopkg.in/redis.v5/internal/pool"
+	"github.com/go-redis/redis/internal/pool"
 )
 
 // Pipeline implements pipelining as described in

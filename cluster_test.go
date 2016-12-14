@@ -13,8 +13,8 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"gopkg.in/redis.v5"
-	"gopkg.in/redis.v5/internal/hashtag"
+	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/internal/hashtag"
 )
 
 type clusterScenario struct {
