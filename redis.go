@@ -172,8 +172,6 @@ type Client struct {
 	cmdable
 }
 
-var _ Cmdable = (*Client)(nil)
-
 func newClient(opt *Options, pool pool.Pooler) *Client {
 	base := baseClient{opt: opt, connPool: pool}
 	client := &Client{
