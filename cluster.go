@@ -435,15 +435,21 @@ func (c *ClusterClient) reloadSlots() {
 
 func (c *ClusterClient) setNodesLatency() {
 	const n = 10
+	wg := &sync.WaitGroup{}
 	for _, node := range c.getNodes() {
-		var latency time.Duration
-		for i := 0; i < n; i++ {
-			t1 := time.Now()
-			node.Client.Ping()
-			latency += time.Since(t1)
-		}
-		node.Latency = latency / n
+		wg.Add(1)
+		go func(node *clusterNode) {
+			defer wg.Done()
+			var latency time.Duration
+			for i := 0; i < n; i++ {
+				t1 := time.Now()
+				node.Client.Ping()
+				latency += time.Since(t1)
+			}
+			node.Latency = latency / n
+		}(node)
 	}
+	wg.Wait()
 }
 
 // reaper closes idle connections to the cluster.
