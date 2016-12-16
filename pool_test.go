@@ -7,7 +7,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"gopkg.in/redis.v5"
-	"gopkg.in/redis.v5/internal/pool"
 )
 
 var _ = Describe("pool", func() {
@@ -80,7 +79,6 @@ var _ = Describe("pool", func() {
 
 	It("respects max size on pubsub", func() {
 		connPool := client.Pool()
-		connPool.(*pool.ConnPool).DialLimiter = nil
 
 		perform(1000, func(id int) {
 			pubsub, err := client.Subscribe()
