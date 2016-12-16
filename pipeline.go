@@ -7,6 +7,8 @@ import (
 	"gopkg.in/redis.v5/internal/pool"
 )
 
+type pipelineExecer func([]Cmder) error
+
 // Pipeline implements pipelining as described in
 // http://redis.io/topics/pipelining. It's safe for concurrent use
 // by multiple goroutines.
@@ -14,7 +16,7 @@ type Pipeline struct {
 	cmdable
 	statefulCmdable
 
-	exec func([]Cmder) error
+	exec pipelineExecer
 
 	mu     sync.Mutex
 	cmds   []Cmder

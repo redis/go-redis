@@ -1,11 +1,8 @@
 package redis
 
 import (
-	"fmt"
-
 	"gopkg.in/redis.v5/internal"
 	"gopkg.in/redis.v5/internal/pool"
-	"gopkg.in/redis.v5/internal/proto"
 )
 
 // Redis transaction failed.
@@ -19,8 +16,6 @@ type Tx struct {
 	cmdable
 	statefulCmdable
 	baseClient
-
-	closed bool
 }
 
 func (c *Client) newTx() *Tx {
@@ -39,26 +34,20 @@ func (c *Client) Watch(fn func(*Tx) error, keys ...string) error {
 	tx := c.newTx()
 	if len(keys) > 0 {
 		if err := tx.Watch(keys...).Err(); err != nil {
-			_ = tx.close()
+			_ = tx.Close()
 			return err
 		}
 	}
 	firstErr := fn(tx)
-	if err := tx.close(); err != nil && firstErr == nil {
+	if err := tx.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr
 }
 
 // close closes the transaction, releasing any open resources.
-func (c *Tx) close() error {
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	if err := c.Unwatch().Err(); err != nil {
-		internal.Logf("Unwatch failed: %s", err)
-	}
+func (c *Tx) Close() error {
+	_ = c.Unwatch().Err()
 	return c.baseClient.Close()
 }
 
@@ -89,7 +78,7 @@ func (c *Tx) Unwatch(keys ...string) *StatusCmd {
 
 func (c *Tx) Pipeline() *Pipeline {
 	pipe := Pipeline{
-		exec: c.exec,
+		exec: c.pipelineExecer(c.txPipelineProcessCmds),
 	}
 	pipe.cmdable.process = pipe.Process
 	pipe.statefulCmdable.process = pipe.Process
@@ -107,77 +96,4 @@ func (c *Tx) Pipeline() *Pipeline {
 // failed command or nil.
 func (c *Tx) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
 	return c.Pipeline().pipelined(fn)
-}
-
-func (c *Tx) exec(cmds []Cmder) error {
-	if c.closed {
-		return pool.ErrClosed
-	}
-
-	cn, _, err := c.conn()
-	if err != nil {
-		setCmdsErr(cmds, err)
-		return err
-	}
-
-	multiExec := make([]Cmder, 0, len(cmds)+2)
-	multiExec = append(multiExec, NewStatusCmd("MULTI"))
-	multiExec = append(multiExec, cmds...)
-	multiExec = append(multiExec, NewSliceCmd("EXEC"))
-
-	err = c.execCmds(cn, multiExec)
-	c.putConn(cn, err, false)
-	return err
-}
-
-func (c *Tx) execCmds(cn *pool.Conn, cmds []Cmder) error {
-	cn.SetWriteTimeout(c.opt.WriteTimeout)
-	err := writeCmd(cn, cmds...)
-	if err != nil {
-		setCmdsErr(cmds[1:len(cmds)-1], err)
-		return err
-	}
-
-	// Set read timeout for all commands.
-	cn.SetReadTimeout(c.opt.ReadTimeout)
-
-	// Omit last command (EXEC).
-	cmdsLen := len(cmds) - 1
-
-	// Parse queued replies.
-	statusCmd := cmds[0]
-	for i := 0; i < cmdsLen; i++ {
-		if err := statusCmd.readReply(cn); err != nil {
-			setCmdsErr(cmds[1:len(cmds)-1], err)
-			return err
-		}
-	}
-
-	// Parse number of replies.
-	line, err := cn.Rd.ReadLine()
-	if err != nil {
-		if err == Nil {
-			err = TxFailedErr
-		}
-		setCmdsErr(cmds[1:len(cmds)-1], err)
-		return err
-	}
-	if line[0] != proto.ArrayReply {
-		err := fmt.Errorf("redis: expected '*', but got line %q", line)
-		setCmdsErr(cmds[1:len(cmds)-1], err)
-		return err
-	}
-
-	var firstErr error
-
-	// Parse replies.
-	// Loop starts from 1 to omit MULTI cmd.
-	for i := 1; i < cmdsLen; i++ {
-		cmd := cmds[i]
-		if err := cmd.readReply(cn); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-
-	return firstErr
 }

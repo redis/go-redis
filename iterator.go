@@ -58,7 +58,6 @@ func (it *ScanIterator) Next() bool {
 		} else {
 			it.ScanCmd._args[2] = it.ScanCmd.cursor
 		}
-		it.ScanCmd.reset()
 		it.client.process(it.ScanCmd)
 		if it.ScanCmd.Err() != nil {
 			return false

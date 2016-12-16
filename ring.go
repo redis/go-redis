@@ -379,10 +379,6 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 		var failedCmdsMap map[string][]Cmder
 
 		for name, cmds := range cmdsMap {
-			if i > 0 {
-				resetCmds(cmds)
-			}
-
 			shard, err := c.shardByName(name)
 			if err != nil {
 				setCmdsErr(cmds, err)
@@ -401,7 +397,7 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 				continue
 			}
 
-			retry, err := shard.Client.execCmds(cn, cmds)
+			canRetry, err := shard.Client.pipelineProcessCmds(cn, cmds)
 			shard.Client.putConn(cn, err, false)
 			if err == nil {
 				continue
@@ -409,7 +405,7 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 			if firstErr == nil {
 				firstErr = err
 			}
-			if retry {
+			if canRetry && internal.IsRetryableError(err) {
 				if failedCmdsMap == nil {
 					failedCmdsMap = make(map[string][]Cmder)
 				}

@@ -245,4 +245,35 @@ var _ = Describe("races", func() {
 		Expect(val).To(Equal(int64(C * N)))
 	})
 
+	It("should Pipeline", func() {
+		perform(C, func(id int) {
+			pipe := client.Pipeline()
+			for i := 0; i < N; i++ {
+				pipe.Echo(fmt.Sprint(i))
+			}
+
+			cmds, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmds).To(HaveLen(N))
+
+			for i := 0; i < N; i++ {
+				Expect(cmds[i].(*redis.StringCmd).Val()).To(Equal(fmt.Sprint(i)))
+			}
+		})
+	})
+
+	It("should Pipeline", func() {
+		pipe := client.Pipeline()
+		perform(N, func(id int) {
+			pipe.Incr("key")
+		})
+
+		cmds, err := pipe.Exec()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cmds).To(HaveLen(N))
+
+		n, err := client.Get("key").Int64()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(N)))
+	})
 })
