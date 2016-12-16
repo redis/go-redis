@@ -258,10 +258,10 @@ func newClusterState(nodes *clusterNodes, slots []ClusterSlot) (*clusterState, e
 
 func (c *clusterState) slotMasterNode(slot int) (*clusterNode, error) {
 	nodes := c.slotNodes(slot)
-	if len(nodes) == 0 {
-		return c.nodes.Random()
+	if len(nodes) > 0 {
+		return nodes[0], nil
 	}
-	return nodes[0], nil
+	return c.nodes.Random()
 }
 
 func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
@@ -364,15 +364,16 @@ func (c *ClusterClient) state() *clusterState {
 }
 
 func (c *ClusterClient) cmdSlotAndNode(state *clusterState, cmd Cmder) (int, *clusterNode, error) {
+	if state == nil {
+		node, err := c.nodes.Random()
+		return 0, node, err
+	}
+
 	cmdInfo := c.cmds[cmd.arg(0)]
 	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
-	if firstKey == "" || cmdInfo == nil {
-		node, err := c.nodes.Random()
-		return -1, node, err
-	}
 	slot := hashtag.Slot(firstKey)
 
-	if cmdInfo.ReadOnly && c.opt.ReadOnly {
+	if cmdInfo != nil && cmdInfo.ReadOnly && c.opt.ReadOnly {
 		if c.opt.RouteByLatency {
 			node, err := state.slotClosestNode(slot)
 			return slot, node, err

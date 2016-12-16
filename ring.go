@@ -267,9 +267,6 @@ func (c *Ring) shardByName(name string) (*ringShard, error) {
 func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 	cmdInfo := c.cmdInfo(cmd.arg(0))
 	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
-	if firstKey == "" {
-		return c.randomShard()
-	}
 	return c.shardByKey(firstKey)
 }
 
