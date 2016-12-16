@@ -759,6 +759,7 @@ func (c *ClusterClient) checkMovedErr(cmd Cmder, failedCmds map[*clusterNode][]C
 	return nil
 }
 
+// TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *ClusterClient) TxPipeline() *Pipeline {
 	pipe := Pipeline{
 		exec: c.txPipelineExec,
