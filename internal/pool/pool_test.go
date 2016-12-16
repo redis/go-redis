@@ -23,21 +23,6 @@ var _ = Describe("ConnPool", func() {
 		connPool.Close()
 	})
 
-	It("rate limits dial", func() {
-		var rateErr error
-		for i := 0; i < 1000; i++ {
-			cn, _, err := connPool.Get()
-			if err != nil {
-				rateErr = err
-				break
-			}
-
-			_ = connPool.Remove(cn, errors.New("test"))
-		}
-
-		Expect(rateErr).To(MatchError(`redis: you open connections too fast (last_error="test")`))
-	})
-
 	It("should unblock client when conn is removed", func() {
 		// Reserve one connection.
 		cn, _, err := connPool.Get()
@@ -220,7 +205,6 @@ var _ = Describe("race", func() {
 	It("does not happen on Get, Put, and Remove", func() {
 		connPool = pool.NewConnPool(
 			dummyDialer, 10, time.Minute, time.Millisecond, time.Millisecond)
-		connPool.DialLimiter = nil
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
@@ -244,7 +228,6 @@ var _ = Describe("race", func() {
 	It("does not happen on Get and PopFree", func() {
 		connPool = pool.NewConnPool(
 			dummyDialer, 10, time.Minute, time.Second, time.Millisecond)
-		connPool.DialLimiter = nil
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {

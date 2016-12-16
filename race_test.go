@@ -12,7 +12,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"gopkg.in/redis.v5"
-	"gopkg.in/redis.v5/internal/pool"
 )
 
 var _ = Describe("races", func() {
@@ -139,7 +138,6 @@ var _ = Describe("races", func() {
 
 	It("should PubSub", func() {
 		connPool := client.Pool()
-		connPool.(*pool.ConnPool).DialLimiter = nil
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
