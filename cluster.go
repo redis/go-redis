@@ -95,16 +95,20 @@ func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
 	}
 
 	if clOpt.RouteByLatency {
-		const probes = 10
-		for i := 0; i < probes; i++ {
-			t1 := time.Now()
-			node.Client.Ping()
-			node.Latency += time.Since(t1)
-		}
-		node.Latency = node.Latency / probes
+		node.updateLatency()
 	}
 
 	return &node
+}
+
+func (n *clusterNode) updateLatency() {
+	const probes = 10
+	for i := 0; i < probes; i++ {
+		start := time.Now()
+		n.Client.Ping()
+		n.Latency += time.Since(start)
+	}
+	n.Latency = n.Latency / probes
 }
 
 func (n *clusterNode) Loading() bool {
@@ -290,6 +294,8 @@ func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
 }
 
 func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
+	const threshold = time.Millisecond
+
 	nodes := c.slotNodes(slot)
 	if len(nodes) == 0 {
 		return c.nodes.Random()
@@ -297,7 +303,10 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 
 	var node *clusterNode
 	for _, n := range nodes {
-		if node == nil || n.Latency < node.Latency {
+		if n.Loading() {
+			continue
+		}
+		if node == nil || node.Latency-n.Latency > threshold {
 			node = n
 		}
 	}
