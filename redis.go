@@ -359,11 +359,23 @@ func (c *Client) pubSub() *PubSub {
 // Subscribe subscribes the client to the specified channels.
 func (c *Client) Subscribe(channels ...string) (*PubSub, error) {
 	pubsub := c.pubSub()
-	return pubsub, pubsub.Subscribe(channels...)
+	if len(channels) > 0 {
+		if err := pubsub.Subscribe(channels...); err != nil {
+			pubsub.Close()
+			return nil, err
+		}
+	}
+	return pubsub, nil
 }
 
 // PSubscribe subscribes the client to the given patterns.
 func (c *Client) PSubscribe(channels ...string) (*PubSub, error) {
 	pubsub := c.pubSub()
-	return pubsub, pubsub.PSubscribe(channels...)
+	if len(channels) > 0 {
+		if err := pubsub.PSubscribe(channels...); err != nil {
+			pubsub.Close()
+			return nil, err
+		}
+	}
+	return pubsub, nil
 }
