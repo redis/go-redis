@@ -47,6 +47,7 @@ type Cmdable interface {
 	Ping() *StatusCmd
 	Quit() *StatusCmd
 	Del(keys ...string) *IntCmd
+	Unlink(keys ...string) *IntCmd
 	Dump(key string) *StringCmd
 	Exists(key string) *BoolCmd
 	Expire(key string, expiration time.Duration) *BoolCmd
@@ -284,6 +285,17 @@ func (c *statefulCmdable) Select(index int) *StatusCmd {
 func (c *cmdable) Del(keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "del"
+	for i, key := range keys {
+		args[1+i] = key
+	}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) Unlink(keys ...string) *IntCmd {
+	args := make([]interface{}, 1+len(keys))
+	args[0] = "unlink"
 	for i, key := range keys {
 		args[1+i] = key
 	}
