@@ -199,16 +199,25 @@ var _ = Describe("Commands", func() {
 	Describe("keys", func() {
 
 		It("should Del", func() {
-			set := client.Set("key1", "Hello", 0)
-			Expect(set.Err()).NotTo(HaveOccurred())
-			Expect(set.Val()).To(Equal("OK"))
-			set = client.Set("key2", "World", 0)
-			Expect(set.Err()).NotTo(HaveOccurred())
-			Expect(set.Val()).To(Equal("OK"))
+			err := client.Set("key1", "Hello", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.Set("key2", "World", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			del := client.Del("key1", "key2", "key3")
-			Expect(del.Err()).NotTo(HaveOccurred())
-			Expect(del.Val()).To(Equal(int64(2)))
+			n, err := client.Del("key1", "key2", "key3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
+		})
+
+		It("should Unlink", func() {
+			err := client.Set("key1", "Hello", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.Set("key2", "World", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			n, err := client.Unlink("key1", "key2", "key3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
 		})
 
 		It("should Dump", func() {
