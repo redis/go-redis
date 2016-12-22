@@ -160,20 +160,56 @@ func ExampleClient_Scan() {
 func ExampleClient_Pipelined() {
 	var incr *redis.IntCmd
 	_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
-		incr = pipe.Incr("counter1")
-		pipe.Expire("counter1", time.Hour)
+		incr = pipe.Incr("pipelined_counter")
+		pipe.Expire("pipelined_counter", time.Hour)
 		return nil
 	})
 	fmt.Println(incr.Val(), err)
 	// Output: 1 <nil>
 }
 
-func ExamplePipeline() {
+func ExampleClient_Pipeline() {
 	pipe := client.Pipeline()
-	defer pipe.Close()
 
-	incr := pipe.Incr("counter2")
-	pipe.Expire("counter2", time.Hour)
+	incr := pipe.Incr("pipeline_counter")
+	pipe.Expire("pipeline_counter", time.Hour)
+
+	// Execute
+	//
+	//     INCR pipeline_counter
+	//     EXPIRE pipeline_counts 3600
+	//
+	// using one client-server roundtrip.
+	_, err := pipe.Exec()
+	fmt.Println(incr.Val(), err)
+	// Output: 1 <nil>
+}
+
+func ExampleClient_TxPipelined() {
+	var incr *redis.IntCmd
+	_, err := client.TxPipelined(func(pipe *redis.Pipeline) error {
+		incr = pipe.Incr("tx_pipelined_counter")
+		pipe.Expire("tx_pipelined_counter", time.Hour)
+		return nil
+	})
+	fmt.Println(incr.Val(), err)
+	// Output: 1 <nil>
+}
+
+func ExampleClient_TxPipeline() {
+	pipe := client.TxPipeline()
+
+	incr := pipe.Incr("tx_pipeline_counter")
+	pipe.Expire("tx_pipeline_counter", time.Hour)
+
+	// Execute
+	//
+	//     MULTI
+	//     INCR pipeline_counter
+	//     EXPIRE pipeline_counts 3600
+	//     EXEC
+	//
+	// using one client-server roundtrip.
 	_, err := pipe.Exec()
 	fmt.Println(incr.Val(), err)
 	// Output: 1 <nil>
