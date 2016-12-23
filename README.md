@@ -5,7 +5,7 @@ Supports:
 - Redis 3 commands except QUIT, MONITOR, SLOWLOG and SYNC.
 - [Pub/Sub](http://godoc.org/gopkg.in/redis.v5#PubSub).
 - [Transactions](http://godoc.org/gopkg.in/redis.v5#Multi).
-- [Pipelining](http://godoc.org/gopkg.in/redis.v5#Client.Pipeline).
+- [Pipeline](https://godoc.org/gopkg.in/redis.v5#example-Client-Pipeline) and [TxPipeline](https://godoc.org/gopkg.in/redis.v5#example-Client-TxPipeline).
 - [Scripting](http://godoc.org/gopkg.in/redis.v5#Script).
 - [Timeouts](http://godoc.org/gopkg.in/redis.v5#Options).
 - [Redis Sentinel](http://godoc.org/gopkg.in/redis.v5#NewFailoverClient).
