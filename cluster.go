@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"crypto/tls"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -18,6 +19,10 @@ var errClusterNoNodes = internal.RedisError("redis: cluster has no nodes")
 // ClusterOptions are used to configure a cluster client and should be
 // passed to NewClusterClient.
 type ClusterOptions struct {
+	// The network type, either tcp or unix.
+	// Default is tcp.
+	Network string
+
 	// A seed list of host:port addresses of cluster nodes.
 	Addrs []string
 
@@ -45,6 +50,12 @@ type ClusterOptions struct {
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
+
+	// Enables read only queries on slave nodes.
+	ReadOnly bool
+
+	// TLS Config to use. When set TLS will be negotiated.
+	TLSConfig *tls.Config
 }
 
 func (opt *ClusterOptions) init() {
@@ -76,6 +87,10 @@ func (opt *ClusterOptions) clientOptions() *Options {
 
 		// IdleCheckFrequency is not copied to disable reaper
 		IdleCheckFrequency: disableIdleCheck,
+
+		Network:   opt.Network,
+		TLSConfig: opt.TLSConfig,
+		ReadOnly:  opt.ReadOnly,
 	}
 }
 

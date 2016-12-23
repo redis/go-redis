@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -17,6 +18,10 @@ import (
 // FailoverOptions are used to configure a failover client and should
 // be passed to NewFailoverClient.
 type FailoverOptions struct {
+	// The network type, either tcp or unix.
+	// Default is tcp.
+	Network string
+
 	// The master name.
 	MasterName string
 	// A seed list of host:port addresses of sentinel nodes.
@@ -37,6 +42,12 @@ type FailoverOptions struct {
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
+
+	// Enables read only queries on slave nodes.
+	ReadOnly bool
+
+	// TLS Config to use. When set TLS will be negotiated.
+	TLSConfig *tls.Config
 }
 
 func (opt *FailoverOptions) options() *Options {
@@ -56,6 +67,10 @@ func (opt *FailoverOptions) options() *Options {
 		PoolTimeout:        opt.PoolTimeout,
 		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: opt.IdleCheckFrequency,
+
+		Network: opt.Network,
+		TLSConfig: opt.TLSConfig,
+		ReadOnly: opt.ReadOnly
 	}
 }
 
