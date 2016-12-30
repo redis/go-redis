@@ -1,22 +1,23 @@
-# Redis client for Golang [![Build Status](https://travis-ci.org/go-redis/redis.png?branch=master)](https://travis-ci.org/go-redis/redis)
+# Redis client for Golang [![Build Status](https://travis-ci.org/go-redis/redis.png?branch=v5)](https://travis-ci.org/go-redis/redis)
 
 Supports:
 
 - Redis 3 commands except QUIT, MONITOR, SLOWLOG and SYNC.
-- [Pub/Sub](http://godoc.org/gopkg.in/redis.v5#PubSub).
-- [Transactions](http://godoc.org/gopkg.in/redis.v5#Multi).
+- [Pub/Sub](https://godoc.org/gopkg.in/redis.v5#PubSub).
+- [Transactions](https://godoc.org/gopkg.in/redis.v5#Multi).
 - [Pipeline](https://godoc.org/gopkg.in/redis.v5#example-Client-Pipeline) and [TxPipeline](https://godoc.org/gopkg.in/redis.v5#example-Client-TxPipeline).
-- [Scripting](http://godoc.org/gopkg.in/redis.v5#Script).
-- [Timeouts](http://godoc.org/gopkg.in/redis.v5#Options).
-- [Redis Sentinel](http://godoc.org/gopkg.in/redis.v5#NewFailoverClient).
-- [Redis Cluster](http://godoc.org/gopkg.in/redis.v5#NewClusterClient).
-- [Ring](http://godoc.org/gopkg.in/redis.v5#NewRing).
+- [Scripting](https://godoc.org/gopkg.in/redis.v5#Script).
+- [Timeouts](https://godoc.org/gopkg.in/redis.v5#Options).
+- [Redis Sentinel](https://godoc.org/gopkg.in/redis.v5#NewFailoverClient).
+- [Redis Cluster](https://godoc.org/gopkg.in/redis.v5#NewClusterClient).
+- [Ring](https://godoc.org/gopkg.in/redis.v5#NewRing).
+- [Instrumentation](https://godoc.org/gopkg.in/redis.v5#ex-package--Instrumentation).
 - [Cache friendly](https://github.com/go-redis/cache).
 - [Rate limiting](https://github.com/go-redis/rate).
 - [Distributed Locks](https://github.com/bsm/redis-lock).
 
-API docs: http://godoc.org/gopkg.in/redis.v5.
-Examples: http://godoc.org/gopkg.in/redis.v5#pkg-examples.
+API docs: https://godoc.org/gopkg.in/redis.v5.
+Examples: https://godoc.org/gopkg.in/redis.v5#pkg-examples.
 
 ## Installation
 
@@ -74,7 +75,7 @@ func ExampleClient() {
 
 ## Howto
 
-Please go through [examples](http://godoc.org/gopkg.in/redis.v5#pkg-examples) to get an idea how to use this package.
+Please go through [examples](https://godoc.org/gopkg.in/redis.v5#pkg-examples) to get an idea how to use this package.
 
 ## Look and feel
 
