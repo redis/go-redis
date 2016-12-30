@@ -7,6 +7,17 @@ type Scanner struct {
 	*ScanCmd
 }
 
+// NewTestScanner creates a scanner whose internal process function is
+// hijacked by the provided processor.
+func NewScanner(cmd *ScanCmd, process func(cmd Cmder) error) Scanner {
+	return Scanner{
+		client: &cmdable{
+			process: process,
+		},
+		ScanCmd: cmd,
+	}
+}
+
 // Iterator creates a new ScanIterator.
 func (s Scanner) Iterator() *ScanIterator {
 	return &ScanIterator{
