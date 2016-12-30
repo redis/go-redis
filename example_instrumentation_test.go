@@ -5,9 +5,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-
 	redis "gopkg.in/redis.v5"
 )
 
@@ -60,35 +57,3 @@ func wrapRedisProcess(client *redis.Client) {
 		}
 	})
 }
-
-var _ = Describe("Instrumentation", func() {
-	var client *redis.Client
-
-	BeforeEach(func() {
-		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
-	})
-
-	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
-	})
-
-	Describe("WrapProcess", func() {
-
-		It("should call for client", func() {
-			wrapperFnCalled := false
-
-			client.WrapProcess(func(oldProcess func(redis.Cmder) error) func(redis.Cmder) error {
-				return func(cmd redis.Cmder) error {
-					wrapperFnCalled = true
-					return oldProcess(cmd)
-				}
-			})
-
-			client.Ping()
-
-			Expect(wrapperFnCalled).To(Equal(true))
-		})
-
-	})
-})

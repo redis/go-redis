@@ -199,6 +199,21 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got).To(Equal(bigVal))
 	})
+
+	It("should call WrapProcess", func() {
+		var wrapperFnCalled bool
+
+		client.WrapProcess(func(oldProcess func(redis.Cmder) error) func(redis.Cmder) error {
+			return func(cmd redis.Cmder) error {
+				wrapperFnCalled = true
+				return oldProcess(cmd)
+			}
+		})
+
+		Expect(client.Ping().Err()).NotTo(HaveOccurred())
+
+		Expect(wrapperFnCalled).To(BeTrue())
+	})
 })
 
 var _ = Describe("Client timeout", func() {
