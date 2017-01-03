@@ -71,10 +71,10 @@ type Cmdable interface {
 	SortInterfaces(key string, sort Sort) *SliceCmd
 	TTL(key string) *DurationCmd
 	Type(key string) *StatusCmd
-	Scan(cursor uint64, match string, count int64) Scanner
-	SScan(key string, cursor uint64, match string, count int64) Scanner
-	HScan(key string, cursor uint64, match string, count int64) Scanner
-	ZScan(key string, cursor uint64, match string, count int64) Scanner
+	Scan(cursor uint64, match string, count int64) *ScanCmd
+	SScan(key string, cursor uint64, match string, count int64) *ScanCmd
+	HScan(key string, cursor uint64, match string, count int64) *ScanCmd
+	ZScan(key string, cursor uint64, match string, count int64) *ScanCmd
 	Append(key, value string) *IntCmd
 	BitCount(key string, bitCount *BitCount) *IntCmd
 	BitOpAnd(destKey string, keys ...string) *IntCmd
@@ -515,7 +515,7 @@ func (c *cmdable) Type(key string) *StatusCmd {
 	return cmd
 }
 
-func (c *cmdable) Scan(cursor uint64, match string, count int64) Scanner {
+func (c *cmdable) Scan(cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"scan", cursor}
 	if match != "" {
 		args = append(args, "match", match)
@@ -523,15 +523,12 @@ func (c *cmdable) Scan(cursor uint64, match string, count int64) Scanner {
 	if count > 0 {
 		args = append(args, "count", count)
 	}
-	cmd := NewScanCmd(args...)
+	cmd := NewScanCmd(c.process, args...)
 	c.process(cmd)
-	return Scanner{
-		client:  c,
-		ScanCmd: cmd,
-	}
+	return cmd
 }
 
-func (c *cmdable) SScan(key string, cursor uint64, match string, count int64) Scanner {
+func (c *cmdable) SScan(key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"sscan", key, cursor}
 	if match != "" {
 		args = append(args, "match", match)
@@ -539,15 +536,12 @@ func (c *cmdable) SScan(key string, cursor uint64, match string, count int64) Sc
 	if count > 0 {
 		args = append(args, "count", count)
 	}
-	cmd := NewScanCmd(args...)
+	cmd := NewScanCmd(c.process, args...)
 	c.process(cmd)
-	return Scanner{
-		client:  c,
-		ScanCmd: cmd,
-	}
+	return cmd
 }
 
-func (c *cmdable) HScan(key string, cursor uint64, match string, count int64) Scanner {
+func (c *cmdable) HScan(key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"hscan", key, cursor}
 	if match != "" {
 		args = append(args, "match", match)
@@ -555,15 +549,12 @@ func (c *cmdable) HScan(key string, cursor uint64, match string, count int64) Sc
 	if count > 0 {
 		args = append(args, "count", count)
 	}
-	cmd := NewScanCmd(args...)
+	cmd := NewScanCmd(c.process, args...)
 	c.process(cmd)
-	return Scanner{
-		client:  c,
-		ScanCmd: cmd,
-	}
+	return cmd
 }
 
-func (c *cmdable) ZScan(key string, cursor uint64, match string, count int64) Scanner {
+func (c *cmdable) ZScan(key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"zscan", key, cursor}
 	if match != "" {
 		args = append(args, "match", match)
@@ -571,12 +562,9 @@ func (c *cmdable) ZScan(key string, cursor uint64, match string, count int64) Sc
 	if count > 0 {
 		args = append(args, "count", count)
 	}
-	cmd := NewScanCmd(args...)
+	cmd := NewScanCmd(c.process, args...)
 	c.process(cmd)
-	return Scanner{
-		client:  c,
-		ScanCmd: cmd,
-	}
+	return cmd
 }
 
 //------------------------------------------------------------------------------

@@ -683,12 +683,14 @@ type ScanCmd struct {
 
 	page   []string
 	cursor uint64
+
+	process func(cmd Cmder) error
 }
 
-func NewScanCmd(args ...interface{}) *ScanCmd {
-	cmd := newBaseCmd(args)
+func NewScanCmd(process func(cmd Cmder) error, args ...interface{}) *ScanCmd {
 	return &ScanCmd{
-		baseCmd: cmd,
+		baseCmd: newBaseCmd(args),
+		process: process,
 	}
 }
 
@@ -707,6 +709,13 @@ func (cmd *ScanCmd) String() string {
 func (cmd *ScanCmd) readReply(cn *pool.Conn) error {
 	cmd.page, cmd.cursor, cmd.err = cn.Rd.ReadScanReply()
 	return cmd.err
+}
+
+// Iterator creates a new ScanIterator.
+func (cmd *ScanCmd) Iterator() *ScanIterator {
+	return &ScanIterator{
+		cmd: cmd,
+	}
 }
 
 //------------------------------------------------------------------------------
