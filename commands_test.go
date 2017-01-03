@@ -2852,6 +2852,20 @@ var _ = Describe("Commands", func() {
 
 	})
 
+	Describe("Eval", func() {
+
+		It("returns keys and values", func() {
+			vals, err := client.Eval(
+				"return {KEYS[1],ARGV[1]}",
+				[]string{"key"},
+				"hello",
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]interface{}{"key", "hello"}))
+		})
+
+	})
+
 })
 
 type numberStruct struct {
