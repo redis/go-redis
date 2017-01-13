@@ -1,7 +1,6 @@
 package redis // import "gopkg.in/redis.v5"
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"time"
@@ -16,16 +15,6 @@ const Nil = internal.Nil
 
 func SetLogger(logger *log.Logger) {
 	internal.Logger = logger
-}
-
-type baseClient struct {
-	connPool pool.Pooler
-	opt      *Options
-
-	process func(Cmder) error
-	onClose func() error // hook called when client is closed
-
-	ctx context.Context
 }
 
 func (c *baseClient) String() string {
@@ -312,26 +301,10 @@ func NewClient(opt *Options) *Client {
 	return newClient(opt, newConnPool(opt))
 }
 
-func (c *Client) Clone() *Client {
+func (c *Client) copy() *Client {
 	c2 := new(Client)
 	*c2 = *c
 	c2.cmdable.process = c2.Process
-	return c2
-}
-
-func (c *Client) Context() context.Context {
-	if c.ctx != nil {
-		return c.ctx
-	}
-	return context.Background()
-}
-
-func (c *Client) WithContext(ctx context.Context) *Client {
-	if ctx == nil {
-		panic("nil context")
-	}
-	c2 := c.Clone()
-	c2.ctx = ctx
 	return c2
 }
 
