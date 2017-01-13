@@ -33,6 +33,7 @@ var (
 type Cmder interface {
 	args() []interface{}
 	arg(int) string
+	name() string
 
 	readReply(*pool.Conn) error
 	setErr(error)
@@ -83,7 +84,7 @@ func cmdString(cmd Cmder, val interface{}) string {
 }
 
 func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
-	switch cmd.arg(0) {
+	switch cmd.name() {
 	case "eval", "evalsha":
 		if cmd.arg(2) != "0" {
 			return 3
@@ -92,7 +93,7 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		}
 	}
 	if info == nil {
-		internal.Logf("info for cmd=%s not found", cmd.arg(0))
+		internal.Logf("info for cmd=%s not found", cmd.name())
 		return -1
 	}
 	return int(info.FirstKeyPos)
@@ -126,6 +127,16 @@ func (cmd *baseCmd) arg(pos int) string {
 	return s
 }
 
+func (cmd *baseCmd) name() string {
+	if len(cmd._args) > 0 {
+		// Cmd name must be lower cased.
+		s := internal.ToLower(cmd.arg(0))
+		cmd._args[0] = s
+		return s
+	}
+	return ""
+}
+
 func (cmd *baseCmd) readTimeout() *time.Duration {
 	return cmd._readTimeout
 }
@@ -156,7 +167,7 @@ type Cmd struct {
 
 func NewCmd(args ...interface{}) *Cmd {
 	return &Cmd{
-		baseCmd: newBaseCmd(args),
+		baseCmd: baseCmd{_args: args},
 	}
 }
 
@@ -193,8 +204,9 @@ type SliceCmd struct {
 }
 
 func NewSliceCmd(args ...interface{}) *SliceCmd {
-	cmd := newBaseCmd(args)
-	return &SliceCmd{baseCmd: cmd}
+	return &SliceCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *SliceCmd) Val() []interface{} {
@@ -228,8 +240,9 @@ type StatusCmd struct {
 }
 
 func NewStatusCmd(args ...interface{}) *StatusCmd {
-	cmd := newBaseCmd(args)
-	return &StatusCmd{baseCmd: cmd}
+	return &StatusCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *StatusCmd) Val() string {
@@ -258,8 +271,9 @@ type IntCmd struct {
 }
 
 func NewIntCmd(args ...interface{}) *IntCmd {
-	cmd := newBaseCmd(args)
-	return &IntCmd{baseCmd: cmd}
+	return &IntCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *IntCmd) Val() int64 {
@@ -289,10 +303,9 @@ type DurationCmd struct {
 }
 
 func NewDurationCmd(precision time.Duration, args ...interface{}) *DurationCmd {
-	cmd := newBaseCmd(args)
 	return &DurationCmd{
+		baseCmd:   baseCmd{_args: args},
 		precision: precision,
-		baseCmd:   cmd,
 	}
 }
 
@@ -327,9 +340,8 @@ type TimeCmd struct {
 }
 
 func NewTimeCmd(args ...interface{}) *TimeCmd {
-	cmd := newBaseCmd(args)
 	return &TimeCmd{
-		baseCmd: cmd,
+		baseCmd: baseCmd{_args: args},
 	}
 }
 
@@ -364,8 +376,9 @@ type BoolCmd struct {
 }
 
 func NewBoolCmd(args ...interface{}) *BoolCmd {
-	cmd := newBaseCmd(args)
-	return &BoolCmd{baseCmd: cmd}
+	return &BoolCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *BoolCmd) Val() bool {
@@ -414,16 +427,17 @@ func (cmd *BoolCmd) readReply(cn *pool.Conn) error {
 type StringCmd struct {
 	baseCmd
 
-	val string
+	val []byte
 }
 
 func NewStringCmd(args ...interface{}) *StringCmd {
-	cmd := newBaseCmd(args)
-	return &StringCmd{baseCmd: cmd}
+	return &StringCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *StringCmd) Val() string {
-	return cmd.val
+	return internal.BytesToString(cmd.val)
 }
 
 func (cmd *StringCmd) Result() (string, error) {
@@ -467,7 +481,7 @@ func (cmd *StringCmd) String() string {
 }
 
 func (cmd *StringCmd) readReply(cn *pool.Conn) error {
-	cmd.val, cmd.err = cn.Rd.ReadStringReply()
+	cmd.val, cmd.err = cn.Rd.ReadBytesReply()
 	return cmd.err
 }
 
@@ -480,8 +494,9 @@ type FloatCmd struct {
 }
 
 func NewFloatCmd(args ...interface{}) *FloatCmd {
-	cmd := newBaseCmd(args)
-	return &FloatCmd{baseCmd: cmd}
+	return &FloatCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *FloatCmd) Val() float64 {
@@ -510,8 +525,9 @@ type StringSliceCmd struct {
 }
 
 func NewStringSliceCmd(args ...interface{}) *StringSliceCmd {
-	cmd := newBaseCmd(args)
-	return &StringSliceCmd{baseCmd: cmd}
+	return &StringSliceCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *StringSliceCmd) Val() []string {
@@ -545,8 +561,9 @@ type BoolSliceCmd struct {
 }
 
 func NewBoolSliceCmd(args ...interface{}) *BoolSliceCmd {
-	cmd := newBaseCmd(args)
-	return &BoolSliceCmd{baseCmd: cmd}
+	return &BoolSliceCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *BoolSliceCmd) Val() []bool {
@@ -580,8 +597,9 @@ type StringStringMapCmd struct {
 }
 
 func NewStringStringMapCmd(args ...interface{}) *StringStringMapCmd {
-	cmd := newBaseCmd(args)
-	return &StringStringMapCmd{baseCmd: cmd}
+	return &StringStringMapCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *StringStringMapCmd) Val() map[string]string {
@@ -615,8 +633,9 @@ type StringIntMapCmd struct {
 }
 
 func NewStringIntMapCmd(args ...interface{}) *StringIntMapCmd {
-	cmd := newBaseCmd(args)
-	return &StringIntMapCmd{baseCmd: cmd}
+	return &StringIntMapCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *StringIntMapCmd) Val() map[string]int64 {
@@ -650,8 +669,9 @@ type ZSliceCmd struct {
 }
 
 func NewZSliceCmd(args ...interface{}) *ZSliceCmd {
-	cmd := newBaseCmd(args)
-	return &ZSliceCmd{baseCmd: cmd}
+	return &ZSliceCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *ZSliceCmd) Val() []Z {
@@ -689,7 +709,7 @@ type ScanCmd struct {
 
 func NewScanCmd(process func(cmd Cmder) error, args ...interface{}) *ScanCmd {
 	return &ScanCmd{
-		baseCmd: newBaseCmd(args),
+		baseCmd: baseCmd{_args: args},
 		process: process,
 	}
 }
@@ -738,8 +758,9 @@ type ClusterSlotsCmd struct {
 }
 
 func NewClusterSlotsCmd(args ...interface{}) *ClusterSlotsCmd {
-	cmd := newBaseCmd(args)
-	return &ClusterSlotsCmd{baseCmd: cmd}
+	return &ClusterSlotsCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *ClusterSlotsCmd) Val() []ClusterSlot {
@@ -857,8 +878,9 @@ type GeoPosCmd struct {
 }
 
 func NewGeoPosCmd(args ...interface{}) *GeoPosCmd {
-	cmd := newBaseCmd(args)
-	return &GeoPosCmd{baseCmd: cmd}
+	return &GeoPosCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *GeoPosCmd) Val() []*GeoPos {
@@ -902,8 +924,9 @@ type CommandsInfoCmd struct {
 }
 
 func NewCommandsInfoCmd(args ...interface{}) *CommandsInfoCmd {
-	cmd := newBaseCmd(args)
-	return &CommandsInfoCmd{baseCmd: cmd}
+	return &CommandsInfoCmd{
+		baseCmd: baseCmd{_args: args},
+	}
 }
 
 func (cmd *CommandsInfoCmd) Val() map[string]*CommandInfo {
