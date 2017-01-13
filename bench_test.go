@@ -37,7 +37,7 @@ func BenchmarkRedisPing(b *testing.B) {
 	})
 }
 
-func BenchmarkRedisSet(b *testing.B) {
+func BenchmarkRedisSetString(b *testing.B) {
 	client := benchmarkRedisClient(10)
 	defer client.Close()
 
