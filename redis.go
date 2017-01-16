@@ -17,14 +17,6 @@ func SetLogger(logger *log.Logger) {
 	internal.Logger = logger
 }
 
-type baseClient struct {
-	connPool pool.Pooler
-	opt      *Options
-
-	process func(Cmder) error
-	onClose func() error // hook called when client is closed
-}
-
 func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.getAddr(), c.opt.DB)
 }
@@ -307,6 +299,13 @@ func newClient(opt *Options, pool pool.Pooler) *Client {
 func NewClient(opt *Options) *Client {
 	opt.init()
 	return newClient(opt, newConnPool(opt))
+}
+
+func (c *Client) copy() *Client {
+	c2 := new(Client)
+	*c2 = *c
+	c2.cmdable.process = c2.Process
+	return c2
 }
 
 // PoolStats returns connection pool stats.
