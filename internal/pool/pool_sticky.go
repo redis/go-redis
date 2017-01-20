@@ -11,7 +11,7 @@ type StickyConnPool struct {
 
 	cn     *Conn
 	closed bool
-	mx     sync.Mutex
+	mx     sync.RWMutex
 }
 
 var _ Pooler = (*StickyConnPool)(nil)
@@ -89,8 +89,8 @@ func (p *StickyConnPool) Remove(cn *Conn, reason error) error {
 }
 
 func (p *StickyConnPool) Len() int {
-	defer p.mx.Unlock()
-	p.mx.Lock()
+	defer p.mx.RUnlock()
+	p.mx.RLock()
 	if p.cn == nil {
 		return 0
 	}
@@ -98,8 +98,8 @@ func (p *StickyConnPool) Len() int {
 }
 
 func (p *StickyConnPool) FreeLen() int {
-	defer p.mx.Unlock()
-	p.mx.Lock()
+	defer p.mx.RUnlock()
+	p.mx.RLock()
 	if p.cn == nil {
 		return 1
 	}
@@ -130,8 +130,8 @@ func (p *StickyConnPool) Close() error {
 }
 
 func (p *StickyConnPool) Closed() bool {
-	p.mx.Lock()
+	p.mx.RLock()
 	closed := p.closed
-	p.mx.Unlock()
+	p.mx.RUnlock()
 	return closed
 }
