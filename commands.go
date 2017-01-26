@@ -57,7 +57,7 @@ type Cmdable interface {
 	Move(key string, db int64) *BoolCmd
 	ObjectRefCount(keys ...string) *IntCmd
 	ObjectEncoding(keys ...string) *StringCmd
-	ObjectIdleTime(keys ...string) *DurationCmd
+	ObjectIdleTime(key string) *DurationCmd
 	Persist(key string) *BoolCmd
 	PExpire(key string, expiration time.Duration) *BoolCmd
 	PExpireAt(key string, tm time.Time) *BoolCmd
@@ -378,14 +378,8 @@ func (c *cmdable) ObjectEncoding(keys ...string) *StringCmd {
 	return cmd
 }
 
-func (c *cmdable) ObjectIdleTime(keys ...string) *DurationCmd {
-	args := make([]interface{}, 2+len(keys))
-	args[0] = "object"
-	args[1] = "idletime"
-	for i, key := range keys {
-		args[2+i] = key
-	}
-	cmd := NewDurationCmd(time.Second, args...)
+func (c *cmdable) ObjectIdleTime(key string) *DurationCmd {
+	cmd := NewDurationCmd(time.Second, "object", "idletime", key)
 	c.process(cmd)
 	return cmd
 }
