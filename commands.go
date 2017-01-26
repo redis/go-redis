@@ -170,6 +170,7 @@ type Cmdable interface {
 	ZRem(key string, members ...interface{}) *IntCmd
 	ZRemRangeByRank(key string, start, stop int64) *IntCmd
 	ZRemRangeByScore(key, min, max string) *IntCmd
+	ZRemRangeByLex(key, min, max string) *IntCmd
 	ZRevRange(key string, start, stop int64) *StringSliceCmd
 	ZRevRangeWithScores(key string, start, stop int64) *ZSliceCmd
 	ZRevRangeByScore(key string, opt ZRangeBy) *StringSliceCmd
@@ -1464,6 +1465,12 @@ func (c *cmdable) ZRemRangeByRank(key string, start, stop int64) *IntCmd {
 
 func (c *cmdable) ZRemRangeByScore(key, min, max string) *IntCmd {
 	cmd := NewIntCmd("zremrangebyscore", key, min, max)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ZRemRangeByLex(key, min, max string) *IntCmd {
+	cmd := NewIntCmd("zremrangebylex", key, min, max)
 	c.process(cmd)
 	return cmd
 }

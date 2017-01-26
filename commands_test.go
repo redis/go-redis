@@ -2429,6 +2429,33 @@ var _ = Describe("Commands", func() {
 			Expect(val).To(Equal([]redis.Z{{2, "two"}, {3, "three"}}))
 		})
 
+		It("should ZRemRangeByLex", func() {
+			zz := []redis.Z{
+				{0, "aaaa"},
+				{0, "b"},
+				{0, "c"},
+				{0, "d"},
+				{0, "e"},
+				{0, "foo"},
+				{0, "zap"},
+				{0, "zip"},
+				{0, "ALPHA"},
+				{0, "alpha"},
+			}
+			for _, z := range zz {
+				err := client.ZAdd("zset", z).Err()
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			n, err := client.ZRemRangeByLex("zset", "[alpha", "[omega").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(6)))
+
+			vals, err := client.ZRange("zset", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]string{"ALPHA", "aaaa", "zap", "zip"}))
+		})
+
 		It("should ZRevRange", func() {
 			zAdd := client.ZAdd("zset", redis.Z{1, "one"})
 			Expect(zAdd.Err()).NotTo(HaveOccurred())
