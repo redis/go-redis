@@ -63,7 +63,7 @@ func TestParseURL(t *testing.T) {
 		{
 			"redis://localhost/iamadatabase",
 			"",
-			0, false, errors.New("invalid redis database number: strconv.ParseInt: parsing \"iamadatabase\": invalid syntax"),
+			0, false, errors.New(`invalid redis database number: "iamadatabase"`),
 		},
 	}
 
