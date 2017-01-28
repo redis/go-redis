@@ -11,7 +11,7 @@ type StickyConnPool struct {
 
 	cn     *Conn
 	closed bool
-	mx     sync.Mutex
+	mu     sync.Mutex
 }
 
 var _ Pooler = (*StickyConnPool)(nil)
@@ -24,15 +24,15 @@ func NewStickyConnPool(pool *ConnPool, reusable bool) *StickyConnPool {
 }
 
 func (p *StickyConnPool) First() *Conn {
-	p.mx.Lock()
+	p.mu.Lock()
 	cn := p.cn
-	p.mx.Unlock()
+	p.mu.Unlock()
 	return cn
 }
 
 func (p *StickyConnPool) Get() (*Conn, bool, error) {
-	defer p.mx.Unlock()
-	p.mx.Lock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	if p.closed {
 		return nil, false, ErrClosed
@@ -56,8 +56,9 @@ func (p *StickyConnPool) putUpstream() (err error) {
 }
 
 func (p *StickyConnPool) Put(cn *Conn) error {
-	defer p.mx.Unlock()
-	p.mx.Lock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.closed {
 		return ErrClosed
 	}
@@ -74,8 +75,9 @@ func (p *StickyConnPool) removeUpstream(reason error) error {
 }
 
 func (p *StickyConnPool) Remove(cn *Conn, reason error) error {
-	defer p.mx.Unlock()
-	p.mx.Lock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.closed {
 		return nil
 	}
@@ -89,8 +91,9 @@ func (p *StickyConnPool) Remove(cn *Conn, reason error) error {
 }
 
 func (p *StickyConnPool) Len() int {
-	defer p.mx.Unlock()
-	p.mx.Lock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.cn == nil {
 		return 0
 	}
@@ -98,8 +101,9 @@ func (p *StickyConnPool) Len() int {
 }
 
 func (p *StickyConnPool) FreeLen() int {
-	defer p.mx.Unlock()
-	p.mx.Lock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.cn == nil {
 		return 1
 	}
@@ -111,8 +115,9 @@ func (p *StickyConnPool) Stats() *Stats {
 }
 
 func (p *StickyConnPool) Close() error {
-	defer p.mx.Unlock()
-	p.mx.Lock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.closed {
 		return ErrClosed
 	}
@@ -130,8 +135,8 @@ func (p *StickyConnPool) Close() error {
 }
 
 func (p *StickyConnPool) Closed() bool {
-	p.mx.Lock()
+	p.mu.Lock()
 	closed := p.closed
-	p.mx.Unlock()
+	p.mu.Unlock()
 	return closed
 }

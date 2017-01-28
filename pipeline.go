@@ -61,8 +61,8 @@ func (c *Pipeline) discard() error {
 // Exec always returns list of commands and error of the first failed
 // command if any.
 func (c *Pipeline) Exec() ([]Cmder, error) {
-	defer c.mu.Unlock()
 	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if c.closed {
 		return nil, pool.ErrClosed

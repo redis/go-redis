@@ -162,8 +162,8 @@ func (d *sentinelFailover) Pool() *pool.ConnPool {
 }
 
 func (d *sentinelFailover) MasterAddr() (string, error) {
-	defer d.mu.Unlock()
 	d.mu.Lock()
+	defer d.mu.Unlock()
 
 	// Try last working sentinel.
 	if d.sentinel != nil {
