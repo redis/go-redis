@@ -542,6 +542,10 @@ func (cmd *StringSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
+func (cmd *StringSliceCmd) ScanSlice(container interface{}) error {
+	return proto.ScanSlice(cmd.Val(), container)
+}
+
 func (cmd *StringSliceCmd) readReply(cn *pool.Conn) error {
 	var v interface{}
 	v, cmd.err = cn.Rd.ReadArrayReply(stringSliceParser)
