@@ -127,7 +127,7 @@ var _ = Describe("Tx", func() {
 		cn, _, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 
-		cn.NetConn = &badConn{}
+		cn.SetNetConn(&badConn{})
 		err = client.Pool().Put(cn)
 		Expect(err).NotTo(HaveOccurred())
 

@@ -12,10 +12,6 @@ func NewSingleConnPool(cn *Conn) *SingleConnPool {
 	}
 }
 
-func (p *SingleConnPool) First() *Conn {
-	return p.cn
-}
-
 func (p *SingleConnPool) Get() (*Conn, bool, error) {
 	return p.cn, false, nil
 }
@@ -48,8 +44,4 @@ func (p *SingleConnPool) Stats() *Stats {
 
 func (p *SingleConnPool) Close() error {
 	return nil
-}
-
-func (p *SingleConnPool) Closed() bool {
-	return false
 }

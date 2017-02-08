@@ -3,6 +3,7 @@ package redis
 import (
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"gopkg.in/redis.v5/internal"
@@ -14,7 +15,9 @@ import (
 // multiple goroutines.
 type PubSub struct {
 	base baseClient
+	cmd  *Cmd
 
+	mu       sync.Mutex
 	channels []string
 	patterns []string
 }
@@ -150,31 +153,40 @@ func (p *Pong) String() string {
 	return "Pong"
 }
 
-func (c *PubSub) newMessage(reply []interface{}) (interface{}, error) {
-	switch kind := reply[0].(string); kind {
-	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
-		return &Subscription{
-			Kind:    kind,
-			Channel: reply[1].(string),
-			Count:   int(reply[2].(int64)),
-		}, nil
-	case "message":
-		return &Message{
-			Channel: reply[1].(string),
-			Payload: reply[2].(string),
-		}, nil
-	case "pmessage":
-		return &Message{
-			Pattern: reply[1].(string),
-			Channel: reply[2].(string),
-			Payload: reply[3].(string),
-		}, nil
-	case "pong":
+func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
+	switch reply := reply.(type) {
+	case string:
 		return &Pong{
-			Payload: reply[1].(string),
+			Payload: reply,
 		}, nil
+	case []interface{}:
+		switch kind := reply[0].(string); kind {
+		case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
+			return &Subscription{
+				Kind:    kind,
+				Channel: reply[1].(string),
+				Count:   int(reply[2].(int64)),
+			}, nil
+		case "message":
+			return &Message{
+				Channel: reply[1].(string),
+				Payload: reply[2].(string),
+			}, nil
+		case "pmessage":
+			return &Message{
+				Pattern: reply[1].(string),
+				Channel: reply[2].(string),
+				Payload: reply[3].(string),
+			}, nil
+		case "pong":
+			return &Pong{
+				Payload: reply[1].(string),
+			}, nil
+		default:
+			return nil, fmt.Errorf("redis: unsupported pubsub message: %q", kind)
+		}
 	default:
-		return nil, fmt.Errorf("redis: unsupported pubsub notification: %q", kind)
+		return nil, fmt.Errorf("redis: unsupported pubsub message: %#v", reply)
 	}
 }
 
@@ -182,7 +194,9 @@ func (c *PubSub) newMessage(reply []interface{}) (interface{}, error) {
 // is not received in time. This is low-level API and most clients
 // should use ReceiveMessage.
 func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
-	cmd := NewSliceCmd()
+	if c.cmd == nil {
+		c.cmd = NewCmd()
+	}
 
 	cn, _, err := c.conn()
 	if err != nil {
@@ -190,13 +204,13 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	}
 
 	cn.SetReadTimeout(timeout)
-	err = cmd.readReply(cn)
+	err = c.cmd.readReply(cn)
 	c.putConn(cn, err)
 	if err != nil {
 		return nil, err
 	}
 
-	return c.newMessage(cmd.Val())
+	return c.newMessage(c.cmd.Val())
 }
 
 // Receive returns a message as a Subscription, Message, Pong or error.
@@ -225,14 +239,14 @@ func (c *PubSub) receiveMessage(timeout time.Duration) (*Message, error) {
 			errNum++
 			if errNum < 3 {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					err := c.Ping("")
+					err := c.Ping("hello")
 					if err != nil {
 						internal.Logf("PubSub.Ping failed: %s", err)
 					}
 				}
 			} else {
-				// 3 consequent errors - connection is bad
-				// and/or Redis Server is down.
+				// 3 consequent errors - connection is broken or
+				// Redis Server is down.
 				// Sleep to not exceed max number of open connections.
 				time.Sleep(time.Second)
 			}
@@ -256,9 +270,6 @@ func (c *PubSub) receiveMessage(timeout time.Duration) (*Message, error) {
 }
 
 func (c *PubSub) resubscribe() {
-	if c.base.closed() {
-		return
-	}
 	if len(c.channels) > 0 {
 		if err := c.Subscribe(c.channels...); err != nil {
 			internal.Logf("Subscribe failed: %s", err)

@@ -148,7 +148,7 @@ var _ = Describe("Client", func() {
 		cn, _, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 
-		cn.NetConn = &badConn{}
+		cn.SetNetConn(&badConn{})
 		err = client.Pool().Put(cn)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -160,11 +160,11 @@ var _ = Describe("Client", func() {
 		cn, _, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn.UsedAt).NotTo(BeZero())
-		createdAt := cn.UsedAt
+		createdAt := cn.UsedAt()
 
 		err = client.Pool().Put(cn)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(cn.UsedAt.Equal(createdAt)).To(BeTrue())
+		Expect(cn.UsedAt().Equal(createdAt)).To(BeTrue())
 
 		err = client.Ping().Err()
 		Expect(err).NotTo(HaveOccurred())
@@ -172,7 +172,7 @@ var _ = Describe("Client", func() {
 		cn, _, err = client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn).NotTo(BeNil())
-		Expect(cn.UsedAt.After(createdAt)).To(BeTrue())
+		Expect(cn.UsedAt().After(createdAt)).To(BeTrue())
 	})
 
 	It("should process command with special chars", func() {

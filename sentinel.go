@@ -258,7 +258,7 @@ func (d *sentinelFailover) discoverSentinels(sentinel *sentinelClient) {
 // closeOldConns closes connections to the old master after failover switch.
 func (d *sentinelFailover) closeOldConns(newMaster string) {
 	// Good connections that should be put back to the pool. They
-	// can't be put immediately, because pool.First will return them
+	// can't be put immediately, because pool.PopFree will return them
 	// again on next iteration.
 	cnsToPut := make([]*pool.Conn, 0)
 
@@ -267,10 +267,10 @@ func (d *sentinelFailover) closeOldConns(newMaster string) {
 		if cn == nil {
 			break
 		}
-		if cn.NetConn.RemoteAddr().String() != newMaster {
+		if cn.RemoteAddr().String() != newMaster {
 			err := fmt.Errorf(
 				"sentinel: closing connection to the old master %s",
-				cn.NetConn.RemoteAddr(),
+				cn.RemoteAddr(),
 			)
 			internal.Logf(err.Error())
 			d.pool.Remove(cn, err)
@@ -289,8 +289,10 @@ func (d *sentinelFailover) listen(sentinel *sentinelClient) {
 	for {
 		if pubsub == nil {
 			pubsub = sentinel.PubSub()
+
 			if err := pubsub.Subscribe("+switch-master"); err != nil {
 				internal.Logf("sentinel: Subscribe failed: %s", err)
+				pubsub.Close()
 				d.resetSentinel()
 				return
 			}
