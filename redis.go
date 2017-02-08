@@ -126,10 +126,6 @@ func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
 	}
 }
 
-func (c *baseClient) closed() bool {
-	return c.connPool.Closed()
-}
-
 // Close closes the client, releasing any open resources.
 //
 // It is rare to Close a Client, as the Client is meant to be

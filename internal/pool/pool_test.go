@@ -100,7 +100,7 @@ var _ = Describe("conns reaper", func() {
 		for i := 0; i < 3; i++ {
 			cn, _, err := connPool.Get()
 			Expect(err).NotTo(HaveOccurred())
-			cn.UsedAt = time.Now().Add(-2 * idleTimeout)
+			cn.SetUsedAt(time.Now().Add(-2 * idleTimeout))
 			conns = append(conns, cn)
 			idleConns = append(idleConns, cn)
 		}
