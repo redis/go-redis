@@ -55,8 +55,8 @@ type Cmdable interface {
 	Keys(pattern string) *StringSliceCmd
 	Migrate(host, port, key string, db int64, timeout time.Duration) *StatusCmd
 	Move(key string, db int64) *BoolCmd
-	ObjectRefCount(keys ...string) *IntCmd
-	ObjectEncoding(keys ...string) *StringCmd
+	ObjectRefCount(key string) *IntCmd
+	ObjectEncoding(key string) *StringCmd
 	ObjectIdleTime(key string) *DurationCmd
 	Persist(key string) *BoolCmd
 	PExpire(key string, expiration time.Duration) *BoolCmd
@@ -355,26 +355,14 @@ func (c *cmdable) Move(key string, db int64) *BoolCmd {
 	return cmd
 }
 
-func (c *cmdable) ObjectRefCount(keys ...string) *IntCmd {
-	args := make([]interface{}, 2+len(keys))
-	args[0] = "object"
-	args[1] = "refcount"
-	for i, key := range keys {
-		args[2+i] = key
-	}
-	cmd := NewIntCmd(args...)
+func (c *cmdable) ObjectRefCount(key string) *IntCmd {
+	cmd := NewIntCmd("object", "refcount", key)
 	c.process(cmd)
 	return cmd
 }
 
-func (c *cmdable) ObjectEncoding(keys ...string) *StringCmd {
-	args := make([]interface{}, 2+len(keys))
-	args[0] = "object"
-	args[1] = "encoding"
-	for i, key := range keys {
-		args[2+i] = key
-	}
-	cmd := NewStringCmd(args...)
+func (c *cmdable) ObjectEncoding(key string) *StringCmd {
+	cmd := NewStringCmd("object", "encoding", key)
 	c.process(cmd)
 	return cmd
 }
