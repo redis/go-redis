@@ -30,13 +30,6 @@ var (
 	_ Cmder = (*ClusterSlotsCmd)(nil)
 )
 
-var ringAggregationSupport = map[string]bool {
-	"mget": true,
-	"mset": true,
-	"del": true,
-	"exists": true,
-}
-
 type Cmder interface {
 	args() []interface{}
 	arg(int) string

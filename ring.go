@@ -266,7 +266,6 @@ func (c *Ring) shardByName(name string) (*ringShard, error) {
 
 func (c *Ring) validateAllKeysFromSameShard(cmd Cmder, cmdInfo *CommandInfo, shard *ringShard) bool {
 	lastKeyPos := cmdLastKeyPos(cmd, cmdInfo)
-	//Check that all keys are from the same shard
 	keyPos := cmdFirstKeyPos(cmd, cmdInfo) + int(cmdInfo.StepCount)
 	for ; keyPos <= lastKeyPos; keyPos += int(cmdInfo.StepCount) {
 		nextShard, _ := c.shardByKey(cmd.arg(keyPos))
@@ -275,6 +274,12 @@ func (c *Ring) validateAllKeysFromSameShard(cmd Cmder, cmdInfo *CommandInfo, sha
 		}
 	}
 	return true
+}
+
+func (c *Ring) cmdHasSingleKey(cmd Cmder, cmdInfo *CommandInfo) bool {
+	firstKeyPos := cmdFirstKeyPos(cmd, cmdInfo)
+	lastKeyPos := cmdLastKeyPos(cmd, cmdInfo)
+	return firstKeyPos == lastKeyPos
 }
 
 func (c *Ring) cmdShard(cmd Cmder, cmdInfo *CommandInfo) (*ringShard, error) {
@@ -292,7 +297,7 @@ func (c *Ring) cmdShard(cmd Cmder, cmdInfo *CommandInfo) (*ringShard, error) {
 
 func (c *Ring) Process(cmd Cmder) error {
 	cmdInfo := c.cmdInfo(cmd.name())
-	if cmdInfo.ringSupport != MULTI_AGGREGATE {
+	if cmdInfo.ringSupport != MULTI_AGGREGATE || c.cmdHasSingleKey(cmd, cmdInfo) {
 		shard, err := c.cmdShard(cmd, cmdInfo)
 		if err != nil {
 			cmd.setErr(err)
@@ -300,15 +305,22 @@ func (c *Ring) Process(cmd Cmder) error {
 		}
 		return shard.Client.Process(cmd)
 	} else {
-		
-		//shard, err := c.cmdShard(cmd)
-		//if err != nil {
-		//	cmd.setErr(err)
-		//	return err
-		//}
-		//return shard.Client.Process(cmd)
-		return nil
+		cmdAggregateable := cmd.(cmdAggregateable)
+		agg := cmdAggregateable.createAggregator(cmdInfo)
+		cmds, err := agg.partition(cmd, func(key string)(interface{},error) {
+			return c.shardByKey(key)
+		})
+		if err != nil {
+			cmd.setErr(err)
+			return err
+		}
+		c.runCommandsByShard(cmds);
+		return agg.aggregate(cmds, cmd)
 	}
+}
+
+func (c *Ring) runCommandsByShard(cmds map[interface{}]Cmder) {
+//TODO: Implement	
 }
 
 // rebalance removes dead shards from the Ring.
