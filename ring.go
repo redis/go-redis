@@ -297,7 +297,8 @@ func (c *Ring) cmdShard(cmd Cmder, cmdInfo *CommandInfo) (*ringShard, error) {
 
 func (c *Ring) Process(cmd Cmder) error {
 	cmdInfo := c.cmdInfo(cmd.name())
-	if cmdInfo.ringSupport != MULTI_AGGREGATE || c.cmdHasSingleKey(cmd, cmdInfo) {
+	if cmdInfo.ringSupport != MULTI_PARTITION_AGGREGATE || c.cmdHasSingleKey(cmd, cmdInfo) {
+		//Run the default way - single shard
 		shard, err := c.cmdShard(cmd, cmdInfo)
 		if err != nil {
 			cmd.setErr(err)
@@ -305,9 +306,10 @@ func (c *Ring) Process(cmd Cmder) error {
 		}
 		return shard.Client.Process(cmd)
 	} else {
-		cmdAggregateable := cmd.(cmdAggregateable)
-		agg := cmdAggregateable.createAggregator(cmdInfo)
-		cmds, err := agg.partition(cmd, func(key string)(interface{},error) {
+		//Partition the commands to different shards and then aggregate the results
+		cmdPartitionable := cmd.(cmdPartitionable)
+		partitioner := cmdPartitionable.createPartitioner(cmdInfo)
+		cmds, err := partitioner.partition(func(key string) (interface{}, error) {
 			return c.shardByKey(key)
 		})
 		if err != nil {
@@ -315,12 +317,25 @@ func (c *Ring) Process(cmd Cmder) error {
 			return err
 		}
 		c.runCommandsByShard(cmds);
-		return agg.aggregate(cmds, cmd)
+		return partitioner.aggregate(cmds, cmd)
 	}
 }
 
-func (c *Ring) runCommandsByShard(cmds map[interface{}]Cmder) {
-//TODO: Implement	
+func (c *Ring) runCommandsByShard(parts []partition) {
+	if len(parts) == 1 { //No need for parallel execution if only 1 shard
+		part := parts[0]
+		part.shard.(*ringShard).Client.Process(part.cmd)
+	} else {
+		var wg sync.WaitGroup
+		for _, part := range parts {
+			wg.Add(1)
+			go func(shard *ringShard, cmd Cmder) {
+				defer wg.Done()
+
+			}(part.shard.(*ringShard), part.cmd)
+		}
+		wg.Wait()
+	}
 }
 
 // rebalance removes dead shards from the Ring.

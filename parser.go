@@ -367,8 +367,8 @@ func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 	} else if cmd.FirstKeyPos == cmd.LastKeyPos {
 		cmd.ringSupport = SINGLE_KEY
 	} else {
-		if cmdAggregationSupport[cmd.Name] {
-			cmd.ringSupport = MULTI_AGGREGATE
+		if cmdPartitionSupport[cmd.Name] {
+			cmd.ringSupport = MULTI_PARTITION_AGGREGATE
 		} else {
 			cmd.ringSupport = MULTI_SAME_SHARD
 		}

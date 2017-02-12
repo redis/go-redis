@@ -920,14 +920,6 @@ func (cmd *GeoPosCmd) readReply(cn *pool.Conn) error {
 }
 
 //------------------------------------------------------------------------------
-type ringSupport int
-
-const (
-	NO_KEY ringSupport = iota
-	SINGLE_KEY
-	MULTI_SAME_SHARD
-	MULTI_AGGREGATE
-)
 
 type CommandInfo struct {
 	Name        string
