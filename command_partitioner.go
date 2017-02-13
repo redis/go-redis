@@ -1,5 +1,9 @@
 package redis
 
+import (
+	"strings"
+)
+
 var cmdPartitionSupport = map[string]bool{
 	"mget":   true,
 	"mset":   true,
@@ -10,7 +14,7 @@ var cmdPartitionSupport = map[string]bool{
 type ringSupport int
 
 const (
-	NO_KEY ringSupport = iota
+	NO_KEY                    ringSupport = iota
 	SINGLE_KEY
 	MULTI_SAME_SHARD
 	MULTI_PARTITION_AGGREGATE
@@ -21,6 +25,7 @@ type cmdPartitionable interface {
 }
 
 type keyPartitioner func(key string) (interface{}, error)
+type cmderFactory func(args []interface{}) Cmder
 
 type partition struct {
 	shard interface{}
@@ -36,9 +41,8 @@ type cmdPartitioner interface {
 // basePartitioner
 
 type baseCmdPartitioner struct {
-	cmdInfo  *CommandInfo
-	cmd      Cmder
-	sortInfo []interface{}
+	cmdInfo *CommandInfo
+	cmd     Cmder
 }
 
 //This is a generic function that takes a Cmder that has few "key" arguments and creates a
@@ -53,15 +57,15 @@ type baseCmdPartitioner struct {
 //BLPOP has a variable number of key arguments but a fixed last argument which doesn't affect sharding (we use lastKeyPo to detect that)
 //The code below also detects that and will copy the additional arguments to each new command. So, for example, BLPOP key1 key2 timeout
 //will be converted to BLPOP key1 timeout, BLPOP key2 timeout
-func (cmdPart baseCmdPartitioner) partition(kp keyPartitioner) ([]partition, error) {
+func partitionImpl(kp keyPartitioner, originalCmd Cmder, cmdInfo *CommandInfo, createCmd cmderFactory) ([]partition, []interface{}, error) {
 	argsPerShard := map[interface{}][]interface{}{}
-	originalCmd := cmdPart.cmd
 	cmdArgs := originalCmd.args()
 
-	firstKeyPos := cmdFirstKeyPos(originalCmd, cmdPart.cmdInfo)
-	lastKeyPos := cmdLastKeyPos(originalCmd, cmdPart.cmdInfo)
-	step := int(cmdPart.cmdInfo.StepCount)
+	firstKeyPos := cmdFirstKeyPos(originalCmd, cmdInfo)
+	lastKeyPos := cmdLastKeyPos(originalCmd, cmdInfo)
+	step := int(cmdInfo.StepCount)
 
+	//sortInfo is saved for later use in aggregateResults. It basically allows to re-order results according to the original request
 	sortInfo := make([]interface{}, 0, (lastKeyPos+1-firstKeyPos)/step)
 
 	//Iterate over all the keys in the command
@@ -70,7 +74,7 @@ func (cmdPart baseCmdPartitioner) partition(kp keyPartitioner) ([]partition, err
 		arg := cmdArgs[i]
 		shard, err := kp(arg.(string))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		sortInfo = append(sortInfo, shard)
 
@@ -90,9 +94,6 @@ func (cmdPart baseCmdPartitioner) partition(kp keyPartitioner) ([]partition, err
 		argsPerShard[shard] = args
 	}
 
-	//sortInfo is saved for later use in aggregateResults
-	cmdPart.sortInfo = sortInfo
-
 	//now that we have all arguments liged up, lets create new commands for them and return as array
 	result := make([]partition, 0, len(argsPerShard))
 	for shard, args := range argsPerShard {
@@ -104,29 +105,25 @@ func (cmdPart baseCmdPartitioner) partition(kp keyPartitioner) ([]partition, err
 		for i := lastKeyPos + 1; i < len(cmdArgs); i++ {
 			args[i] = cmdArgs[i]
 		}
-		newCmd := cmdPart.newCmder(args)
+		newCmd := createCmd(args)
 		result = append(result, partition{shard, newCmd})
 	}
-	return result, nil
-}
-
-func (cmdPart baseCmdPartitioner) newCmder(args ...interface{}) Cmder {
-	panic("Not implemented")
+	return result, sortInfo, nil
 }
 
 //------------------------------------------------------------------------------
 // Partitioner factories
 
 func (cmd *IntCmd) createPartitioner(cmdInfo *CommandInfo) cmdPartitioner {
-	return intCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd, nil}}
+	return intCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd}}
 }
 
 func (cmd *SliceCmd) createPartitioner(cmdInfo *CommandInfo) cmdPartitioner {
-	return sliceCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd, nil}}
+	return sliceCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd}}
 }
 
 func (cmd *StatusCmd) createPartitioner(cmdInfo *CommandInfo) cmdPartitioner {
-	return statusCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd, nil}}
+	return statusCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd}}
 }
 
 //------------------------------------------------------------------------------
@@ -136,8 +133,11 @@ type intCmdPartitioner struct {
 	baseCmdPartitioner
 }
 
-func (cmdPart intCmdPartitioner) newCmder(args ...interface{}) Cmder {
-	return NewIntCmd(args)
+func (cmdPart intCmdPartitioner) partition(kp keyPartitioner) ([]partition, error) {
+	p, _, err := partitionImpl(kp, cmdPart.cmd, cmdPart.cmdInfo, func(args []interface{}) Cmder {
+		return NewIntCmd(args...)
+	})
+	return p, err
 }
 
 func (cmdPart intCmdPartitioner) aggregate(results []partition, cmd Cmder) error {
@@ -158,10 +158,15 @@ func (cmdPart intCmdPartitioner) aggregate(results []partition, cmd Cmder) error
 
 type sliceCmdPartitioner struct {
 	baseCmdPartitioner
+	sortInfo []interface{}
 }
 
-func (cmdPart sliceCmdPartitioner) newCmder(args ...interface{}) Cmder {
-	return NewSliceCmd(args)
+func (cmdPart sliceCmdPartitioner) partition(kp keyPartitioner) ([]partition, error) {
+	p, sortInfo, err := partitionImpl(kp, cmdPart.cmd, cmdPart.cmdInfo, func(args []interface{}) Cmder {
+		return NewSliceCmd(args...)
+	})
+	cmdPart.sortInfo = sortInfo
+	return p, err
 }
 
 func (cmdPart sliceCmdPartitioner) aggregate(results []partition, cmd Cmder) error {
@@ -175,12 +180,26 @@ type statusCmdPartitioner struct {
 	baseCmdPartitioner
 }
 
-func (cmdPart statusCmdPartitioner) newCmder(args ...interface{}) Cmder {
-	return NewStatusCmd(args)
+func (cmdPart statusCmdPartitioner) partition(kp keyPartitioner) ([]partition, error) {
+	p, _, err := partitionImpl(kp, cmdPart.cmd, cmdPart.cmdInfo, func(args []interface{}) Cmder {
+		return NewStatusCmd(args...)
+	})
+	return p, err
 }
 
 func (cmdPart statusCmdPartitioner) aggregate(results []partition, cmd Cmder) error {
-	//TODO: Implement
+	result := cmd.(*StatusCmd)
+
+	stats := []string{}
+	for _, part := range results {
+		if err := part.cmd.Err(); err != nil {
+			cmd.setErr(err)
+			return err
+		}
+		statCmd := part.cmd.(*StatusCmd)
+		stats = append(stats, statCmd.Val())
+	}
+	result.val = strings.Join(stats, " ")
 	return nil
 }
 

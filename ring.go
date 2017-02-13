@@ -306,9 +306,9 @@ func (c *Ring) Process(cmd Cmder) error {
 		}
 		return shard.Client.Process(cmd)
 	} else {
-		//Partition the commands to different shards and then aggregate the results
-		cmdPartitionable := cmd.(cmdPartitionable)
-		partitioner := cmdPartitionable.createPartitioner(cmdInfo)
+		//Partition the command to multiple commands, send to different shards,
+		//and aggregate the results
+		partitioner := cmd.(cmdPartitionable).createPartitioner(cmdInfo)
 		cmds, err := partitioner.partition(func(key string) (interface{}, error) {
 			return c.shardByKey(key)
 		})
@@ -331,7 +331,9 @@ func (c *Ring) runCommandsByShard(parts []partition) {
 			wg.Add(1)
 			go func(shard *ringShard, cmd Cmder) {
 				defer wg.Done()
-
+				//fmt.Println(shard)
+				shard.Client.Process(cmd)
+				fmt.Println(cmd)
 			}(part.shard.(*ringShard), part.cmd)
 		}
 		wg.Wait()
