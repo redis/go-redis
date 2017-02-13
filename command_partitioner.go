@@ -115,15 +115,15 @@ func partitionImpl(kp keyPartitioner, originalCmd Cmder, cmdInfo *CommandInfo, c
 // Partitioner factories
 
 func (cmd *IntCmd) createPartitioner(cmdInfo *CommandInfo) cmdPartitioner {
-	return intCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd}}
+	return &intCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd}}
 }
 
 func (cmd *SliceCmd) createPartitioner(cmdInfo *CommandInfo) cmdPartitioner {
-	return sliceCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd}}
+	return &sliceCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd}}
 }
 
 func (cmd *StatusCmd) createPartitioner(cmdInfo *CommandInfo) cmdPartitioner {
-	return statusCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd}}
+	return &statusCmdPartitioner{baseCmdPartitioner: baseCmdPartitioner{cmdInfo, cmd}}
 }
 
 //------------------------------------------------------------------------------
@@ -161,7 +161,7 @@ type sliceCmdPartitioner struct {
 	sortInfo []interface{}
 }
 
-func (cmdPart sliceCmdPartitioner) partition(kp keyPartitioner) ([]partition, error) {
+func (cmdPart *sliceCmdPartitioner) partition(kp keyPartitioner) ([]partition, error) {
 	p, sortInfo, err := partitionImpl(kp, cmdPart.cmd, cmdPart.cmdInfo, func(args []interface{}) Cmder {
 		return NewSliceCmd(args...)
 	})
@@ -170,7 +170,29 @@ func (cmdPart sliceCmdPartitioner) partition(kp keyPartitioner) ([]partition, er
 }
 
 func (cmdPart sliceCmdPartitioner) aggregate(results []partition, cmd Cmder) error {
-	//TODO: Implement
+	result := cmd.(*SliceCmd)
+
+	valuesByShard := make(map[interface{}][]interface{}) // command result by shard
+
+	for _, part := range results {
+		if err := part.cmd.Err(); err != nil {
+			cmd.setErr(err)
+			return err
+		}
+		statCmd := part.cmd.(*SliceCmd)
+		valuesByShard[part.shard] = statCmd.Val()
+	}
+
+	//build result list according to the order in sortInfo
+	resultValues := make([]interface{}, 0, len(cmdPart.sortInfo))
+	for _, shard := range cmdPart.sortInfo {
+		//take the values from the correct shard and slice that shard
+		value := valuesByShard[shard][0]
+		valuesByShard[shard] = valuesByShard[shard][1:]
+		resultValues = append(resultValues, value)
+	}
+
+	result.val = resultValues
 	return nil
 }
 

@@ -331,9 +331,7 @@ func (c *Ring) runCommandsByShard(parts []partition) {
 			wg.Add(1)
 			go func(shard *ringShard, cmd Cmder) {
 				defer wg.Done()
-				//fmt.Println(shard)
 				shard.Client.Process(cmd)
-				fmt.Println(cmd)
 			}(part.shard.(*ringShard), part.cmd)
 		}
 		wg.Wait()
