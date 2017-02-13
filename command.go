@@ -101,7 +101,7 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 }
 
 func cmdLastKeyPos(cmd Cmder, info *CommandInfo) int {
-	if info.LastKeyPos>0 {
+	if info.LastKeyPos > 0 {
 		return int(info.LastKeyPos)
 	} else {
 		//When LastKeyPos is negative, it means offset from last args
@@ -129,7 +129,7 @@ func (cmd *baseCmd) args() []interface{} {
 	return cmd._args
 }
 
-func (cmd *baseCmd) argsLen() int  {
+func (cmd *baseCmd) argsLen() int {
 	return len(cmd._args)
 }
 
