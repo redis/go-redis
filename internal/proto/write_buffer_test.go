@@ -4,17 +4,17 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/redis.v5/internal/proto"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-
-	"gopkg.in/redis.v5/internal/proto"
 )
 
 var _ = Describe("WriteBuffer", func() {
 	var buf *proto.WriteBuffer
 
 	BeforeEach(func() {
-		buf = proto.NewWriteBuffer()
+		buf = proto.NewWriteBuffer(nil)
 	})
 
 	It("should reset", func() {
@@ -53,7 +53,7 @@ var _ = Describe("WriteBuffer", func() {
 })
 
 func BenchmarkWriteBuffer_Append(b *testing.B) {
-	buf := proto.NewWriteBuffer()
+	buf := proto.NewWriteBuffer(nil)
 	args := []interface{}{"hello", "world", "foo", "bar"}
 
 	for i := 0; i < b.N; i++ {

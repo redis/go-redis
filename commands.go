@@ -50,13 +50,15 @@ type Cmdable interface {
 	Unlink(keys ...string) *IntCmd
 	Dump(key string) *StringCmd
 	Exists(key string) *BoolCmd
+	// TODO: merge with Exists in v6
+	ExistsMulti(keys ...string) *IntCmd
 	Expire(key string, expiration time.Duration) *BoolCmd
 	ExpireAt(key string, tm time.Time) *BoolCmd
 	Keys(pattern string) *StringSliceCmd
 	Migrate(host, port, key string, db int64, timeout time.Duration) *StatusCmd
 	Move(key string, db int64) *BoolCmd
-	ObjectRefCount(keys ...string) *IntCmd
-	ObjectEncoding(keys ...string) *StringCmd
+	ObjectRefCount(key string) *IntCmd
+	ObjectEncoding(key string) *StringCmd
 	ObjectIdleTime(key string) *DurationCmd
 	Persist(key string) *BoolCmd
 	PExpire(key string, expiration time.Duration) *BoolCmd
@@ -317,6 +319,17 @@ func (c *cmdable) Exists(key string) *BoolCmd {
 	return cmd
 }
 
+func (c *cmdable) ExistsMulti(keys ...string) *IntCmd {
+	args := make([]interface{}, 1+len(keys))
+	args[0] = "exists"
+	for i, key := range keys {
+		args[1+i] = key
+	}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
 func (c *cmdable) Expire(key string, expiration time.Duration) *BoolCmd {
 	cmd := NewBoolCmd("expire", key, formatSec(expiration))
 	c.process(cmd)
@@ -355,26 +368,14 @@ func (c *cmdable) Move(key string, db int64) *BoolCmd {
 	return cmd
 }
 
-func (c *cmdable) ObjectRefCount(keys ...string) *IntCmd {
-	args := make([]interface{}, 2+len(keys))
-	args[0] = "object"
-	args[1] = "refcount"
-	for i, key := range keys {
-		args[2+i] = key
-	}
-	cmd := NewIntCmd(args...)
+func (c *cmdable) ObjectRefCount(key string) *IntCmd {
+	cmd := NewIntCmd("object", "refcount", key)
 	c.process(cmd)
 	return cmd
 }
 
-func (c *cmdable) ObjectEncoding(keys ...string) *StringCmd {
-	args := make([]interface{}, 2+len(keys))
-	args[0] = "object"
-	args[1] = "encoding"
-	for i, key := range keys {
-		args[2+i] = key
-	}
-	cmd := NewStringCmd(args...)
+func (c *cmdable) ObjectEncoding(key string) *StringCmd {
+	cmd := NewStringCmd("object", "encoding", key)
 	c.process(cmd)
 	return cmd
 }

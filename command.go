@@ -58,7 +58,7 @@ func writeCmd(cn *pool.Conn, cmds ...Cmder) error {
 		}
 	}
 
-	_, err := cn.NetConn.Write(cn.Wb.Bytes())
+	_, err := cn.Write(cn.Wb.Bytes())
 	return err
 }
 

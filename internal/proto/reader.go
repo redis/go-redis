@@ -26,11 +26,15 @@ type Reader struct {
 	buf []byte
 }
 
-func NewReader(rd io.Reader) *Reader {
+func NewReader(rd io.Reader, buf []byte) *Reader {
 	return &Reader{
 		src: bufio.NewReader(rd),
-		buf: make([]byte, 0, bufferSize),
+		buf: buf,
 	}
+}
+
+func (r *Reader) Reset(rd io.Reader) {
+	r.src.Reset(rd)
 }
 
 func (p *Reader) PeekBuffered() []byte {
@@ -42,7 +46,12 @@ func (p *Reader) PeekBuffered() []byte {
 }
 
 func (p *Reader) ReadN(n int) ([]byte, error) {
-	return readN(p.src, p.buf, n)
+	b, err := readN(p.src, p.buf, n)
+	if err != nil {
+		return nil, err
+	}
+	p.buf = b
+	return b, nil
 }
 
 func (p *Reader) ReadLine() ([]byte, error) {
@@ -72,11 +81,11 @@ func (p *Reader) ReadReply(m MultiBulkParse) (interface{}, error) {
 	case ErrorReply:
 		return nil, ParseErrorReply(line)
 	case StatusReply:
-		return parseStatusValue(line)
+		return parseStatusValue(line), nil
 	case IntReply:
 		return parseInt(line[1:], 10, 64)
 	case StringReply:
-		return p.readBytesValue(line)
+		return p.readTmpBytesValue(line)
 	case ArrayReply:
 		n, err := parseArrayLen(line)
 		if err != nil {
@@ -111,9 +120,9 @@ func (p *Reader) ReadTmpBytesReply() ([]byte, error) {
 	case ErrorReply:
 		return nil, ParseErrorReply(line)
 	case StringReply:
-		return p.readBytesValue(line)
+		return p.readTmpBytesValue(line)
 	case StatusReply:
-		return parseStatusValue(line)
+		return parseStatusValue(line), nil
 	default:
 		return nil, fmt.Errorf("redis: can't parse string reply: %.100q", line)
 	}
@@ -210,7 +219,7 @@ func (p *Reader) ReadScanReply() ([]string, uint64, error) {
 	return keys, cursor, err
 }
 
-func (p *Reader) readBytesValue(line []byte) ([]byte, error) {
+func (p *Reader) readTmpBytesValue(line []byte) ([]byte, error) {
 	if isNilReply(line) {
 		return nil, internal.Nil
 	}
@@ -297,8 +306,8 @@ func ParseErrorReply(line []byte) error {
 	return internal.RedisError(string(line[1:]))
 }
 
-func parseStatusValue(line []byte) ([]byte, error) {
-	return line[1:], nil
+func parseStatusValue(line []byte) []byte {
+	return line[1:]
 }
 
 func parseArrayLen(line []byte) (int64, error) {

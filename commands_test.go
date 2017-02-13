@@ -242,6 +242,14 @@ var _ = Describe("Commands", func() {
 			exists = client.Exists("key2")
 			Expect(exists.Err()).NotTo(HaveOccurred())
 			Expect(exists.Val()).To(Equal(false))
+
+			existsMul  := client.ExistsMulti("key1", "key2")
+			Expect(existsMul.Err()).NotTo(HaveOccurred())
+			Expect(existsMul.Val()).To(Equal(int64(1)))
+
+			existsMul  = client.ExistsMulti("key1", "key1")
+			Expect(existsMul.Err()).NotTo(HaveOccurred())
+			Expect(existsMul.Val()).To(Equal(int64(2)))
 		})
 
 		It("should Expire", func() {

@@ -23,13 +23,6 @@ func NewStickyConnPool(pool *ConnPool, reusable bool) *StickyConnPool {
 	}
 }
 
-func (p *StickyConnPool) First() *Conn {
-	p.mu.Lock()
-	cn := p.cn
-	p.mu.Unlock()
-	return cn
-}
-
 func (p *StickyConnPool) Get() (*Conn, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -62,9 +55,6 @@ func (p *StickyConnPool) Put(cn *Conn) error {
 	if p.closed {
 		return ErrClosed
 	}
-	if p.cn != cn {
-		panic("p.cn != cn")
-	}
 	return nil
 }
 
@@ -80,12 +70,6 @@ func (p *StickyConnPool) Remove(cn *Conn, reason error) error {
 
 	if p.closed {
 		return nil
-	}
-	if p.cn == nil {
-		panic("p.cn == nil")
-	}
-	if cn != nil && p.cn != cn {
-		panic("p.cn != cn")
 	}
 	return p.removeUpstream(reason)
 }
@@ -132,11 +116,4 @@ func (p *StickyConnPool) Close() error {
 		}
 	}
 	return err
-}
-
-func (p *StickyConnPool) Closed() bool {
-	p.mu.Lock()
-	closed := p.closed
-	p.mu.Unlock()
-	return closed
 }
