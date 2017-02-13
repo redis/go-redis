@@ -83,10 +83,18 @@ var _ = Describe("Redis Ring", func() {
 		Expect(intVal).To(Equal(int64(0)))
 	})
 
-	It("fails when rnning single shard command on keys from different shards", func() {
+	It("runs 'MULTI_SAME_SHARD' commands only on single shards", func() {
+
+		//MSetNX does not support partitioning commands to different shards because of atomicity
 		mSetNX := ring.MSetNX( "key75", "value75", "key80", "value80")
 		Expect(mSetNX.Err()).To(HaveOccurred())
-		Expect(mSetNX.Err().Error()).To(Equal("bla bla bla"))
+		Expect(mSetNX.Err().Error()).To(Equal("redis: All keys must be from same shard in command: msetnx"))
+
+		//But runs correctly when all keys are from the same shard
+		boolVal, err := ring.MSetNX( "key75", "value75", "key32", "value32", "key25", "value25").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(boolVal).To(Equal(true))
+
 	})
 
 	It("distributes keys when using EVAL", func() {

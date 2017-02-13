@@ -288,7 +288,7 @@ func (c *Ring) cmdShard(cmd Cmder, cmdInfo *CommandInfo) (*ringShard, error) {
 	if err == nil {
 		if cmdInfo.ringSupport == MULTI_SAME_SHARD {
 			if !c.validateAllKeysFromSameShard(cmd, cmdInfo, shard) {
-				return nil, internal.RedisError(" redis: All keys must be from same shard in command: " + cmd.name())
+				return nil, internal.RedisError("redis: All keys must be from same shard in command: " + cmd.name())
 			}
 		}
 	}
@@ -297,7 +297,7 @@ func (c *Ring) cmdShard(cmd Cmder, cmdInfo *CommandInfo) (*ringShard, error) {
 
 func (c *Ring) Process(cmd Cmder) error {
 	cmdInfo := c.cmdInfo(cmd.name())
-	if cmdInfo.ringSupport != MULTI_PARTITION_AGGREGATE || c.cmdHasSingleKey(cmd, cmdInfo) {
+	if cmdInfo == nil || cmdInfo.ringSupport != MULTI_PARTITION_AGGREGATE || c.cmdHasSingleKey(cmd, cmdInfo) {
 		//Run the default way - single shard
 		shard, err := c.cmdShard(cmd, cmdInfo)
 		if err != nil {
