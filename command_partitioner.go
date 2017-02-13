@@ -169,7 +169,7 @@ func (cmdPart *sliceCmdPartitioner) partition(kp keyPartitioner) ([]partition, e
 	return p, err
 }
 
-func (cmdPart sliceCmdPartitioner) aggregate(results []partition, cmd Cmder) error {
+func (cmdPart *sliceCmdPartitioner) aggregate(results []partition, cmd Cmder) error {
 	result := cmd.(*SliceCmd)
 
 	valuesByShard := make(map[interface{}][]interface{}) // command result by shard
