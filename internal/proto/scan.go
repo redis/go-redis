@@ -123,33 +123,17 @@ func ScanSlice(sSlice []string, container interface{}) error {
 		return fmt.Errorf("redis: ScanSlice(non-pointer %T)", container)
 	}
 
-	// Is a valid value
+	// slice of the Ptr
 	val = val.Elem()
-	if !val.IsValid() {
-		return fmt.Errorf("redis: ScanSlice(non-pointer %T)", container)
-	}
-
 	// if the container is slice
 	if val.Kind() != reflect.Slice {
 		return fmt.Errorf("redis: Wrong object type `%T` for ScanSlice(), need *[]*Type or *[]Type", container)
 	}
 
-	elemType := val.Type().Elem()
-	if elemType.Kind() == reflect.Ptr {
-		// is container of ptr
-		for index, s := range sSlice {
-			elem := internal.SliceNextElem(val)
-			if err := Scan([]byte(s), elem.Addr().Interface()); err != nil {
-				return fmt.Errorf("redis: ScanSlice failed at index of %d => %s, %s", index, s, err.Error())
-			}
-		}
-	} else {
-		// is container of object
-		for index, s := range sSlice {
-			elem := internal.SliceNextElem(val)
-			if err := Scan([]byte(s), elem.Addr().Interface()); err != nil {
-				return fmt.Errorf("redis: ScanSlice failed at index of %d => %s, %s", index, s, err.Error())
-			}
+	for index, s := range sSlice {
+		elem := internal.SliceNextElem(val)
+		if err := Scan([]byte(s), elem.Addr().Interface()); err != nil {
+			return fmt.Errorf("redis: ScanSlice failed at index of %d => %s, %s", index, s, err.Error())
 		}
 	}
 	return nil
