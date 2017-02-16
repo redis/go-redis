@@ -347,11 +347,11 @@ var _ = Describe("PubSub", func() {
 			defer GinkgoRecover()
 
 			wg.Done()
-
+			defer wg.Done()
+			
 			_, err := pubsub.ReceiveMessage()
 			Expect(err).To(MatchError("redis: client is closed"))
 
-			wg.Done()
 		}()
 
 		wg.Wait()
