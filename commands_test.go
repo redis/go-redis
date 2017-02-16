@@ -51,10 +51,10 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Wait", func() {
-			// requires a cluster setup with 1 slave
-			wait := client.Wait(1, 0)
+			// assume testing on single redis instance
+			wait := client.Wait(0, 0)
 			Expect(wait.Err()).NotTo(HaveOccurred())
-			Expect(wait.Val()).To(Equal("1"))
+			Expect(wait.Val()).To(Equal("0"))
 		})
 
 		It("should Select", func() {
