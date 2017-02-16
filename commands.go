@@ -271,6 +271,13 @@ func (c *cmdable) Ping() *StatusCmd {
 	return cmd
 }
 
+func (c *cmdable) Wait(n_slaves uint, n_seconds uint) *IntCmd {
+
+	cmd := NewIntCmd("wait", n_slaves, n_seconds)
+	c.process(cmd)
+	return cmd
+}
+
 func (c *cmdable) Quit() *StatusCmd {
 	panic("not implemented")
 }

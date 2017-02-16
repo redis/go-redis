@@ -50,6 +50,13 @@ var _ = Describe("Commands", func() {
 			Expect(ping.Val()).To(Equal("PONG"))
 		})
 
+		It("should Wait", func() {
+			// requires a cluster setup with 1 slave
+			wait := client.Wait(1, 0)
+			Expect(wait.Err()).NotTo(HaveOccurred())
+			Expect(wait.Val()).To(Equal("1"))
+		})
+
 		It("should Select", func() {
 			pipe := client.Pipeline()
 			sel := pipe.Select(1)
