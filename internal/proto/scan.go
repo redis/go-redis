@@ -3,6 +3,7 @@ package proto
 import (
 	"encoding"
 	"fmt"
+	"reflect"
 
 	"gopkg.in/redis.v5/internal"
 )
@@ -104,4 +105,52 @@ func Scan(b []byte, v interface{}) error {
 		return fmt.Errorf(
 			"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)", v)
 	}
+}
+
+// Scan a string slice into a custom container
+// Example:
+// var container []YourStruct; ScanSlice([]string{""},&container)
+// var container []*YourStruct; ScanSlice([]string{""},&container)
+func ScanSlice(sSlice []string, container interface{}) error {
+	val := reflect.ValueOf(container)
+
+	if !val.IsValid() {
+		return fmt.Errorf("redis: ScanSlice(nil)")
+	}
+
+	// Check the if the container is pointer
+	if val.Kind() != reflect.Ptr {
+		return fmt.Errorf("redis: ScanSlice(non-pointer %T)", container)
+	}
+
+	// Is a valid value
+	val = val.Elem()
+	if !val.IsValid() {
+		return fmt.Errorf("redis: ScanSlice(non-pointer %T)", container)
+	}
+
+	// if the container is slice
+	if val.Kind() != reflect.Slice {
+		return fmt.Errorf("redis: Wrong object type `%T` for ScanSlice(), need *[]*Type or *[]Type", container)
+	}
+
+	elemType := val.Type().Elem()
+	if elemType.Kind() == reflect.Ptr {
+		// is container of ptr
+		for index, s := range sSlice {
+			elem := internal.SliceNextElem(val)
+			if err := Scan([]byte(s), elem.Addr().Interface()); err != nil {
+				return fmt.Errorf("redis: ScanSlice failed at index of %d => %s, %s", index, s, err.Error())
+			}
+		}
+	} else {
+		// is container of object
+		for index, s := range sSlice {
+			elem := internal.SliceNextElem(val)
+			if err := Scan([]byte(s), elem.Addr().Interface()); err != nil {
+				return fmt.Errorf("redis: ScanSlice failed at index of %d => %s, %s", index, s, err.Error())
+			}
+		}
+	}
+	return nil
 }
