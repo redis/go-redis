@@ -367,3 +367,31 @@ func ExampleScanCmd_Iterator() {
 		panic(err)
 	}
 }
+
+func ExampleNewUniversalClient_simple() {
+	client := redis.NewUniversalClient(&redis.UniversalOptions{
+		Addrs: []string{":6379"},
+	})
+	defer client.Close()
+
+	client.Ping()
+}
+
+func ExampleNewUniversalClient_failover() {
+	client := redis.NewUniversalClient(&redis.UniversalOptions{
+		MasterName: "master",
+		Addrs:      []string{":26379"},
+	})
+	defer client.Close()
+
+	client.Ping()
+}
+
+func ExampleNewUniversalClient_cluster() {
+	client := redis.NewUniversalClient(&redis.UniversalOptions{
+		Addrs: []string{":7000", ":7001", ":7002", ":7003", ":7004", ":7005"},
+	})
+	defer client.Close()
+
+	client.Ping()
+}
