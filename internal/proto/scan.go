@@ -3,7 +3,8 @@ package proto
 import (
 	"encoding"
 	"fmt"
-
+	"strconv"
+	"reflect"
 	"gopkg.in/redis.v5/internal"
 )
 
@@ -105,3 +106,63 @@ func Scan(b []byte, v interface{}) error {
 			"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)", v)
 	}
 }
+
+
+// Scan a string slice into a custom container
+// Example:
+// var container []YourStruct; ScanSlice([]string{""},&container)
+// var container []*YourStruct; ScanSlice([]string{""},&container)
+func ScanSlice(sSlice []string, container interface{}) error {
+	val := reflect.ValueOf(container)
+	ind := reflect.Indirect(val)
+	elemType := ind.Type().Elem()
+
+	// Check the if the container is pointer to slice
+	errTyp := true
+	isElemPtr := true
+	if val.Kind() == reflect.Ptr {
+		if ind.Kind() == reflect.Slice {
+			errTyp = false
+			isElemPtr = elemType.Kind() == reflect.Ptr
+		}
+	}
+	if errTyp {
+		return fmt.Errorf("wrong object type `%s` for rows scan, need *[]*Type or *[]Type", val.Type())
+	}
+
+	slice := ind
+	if isElemPtr {
+		for index, s := range sSlice {
+			elem := reflect.New(elemType)
+			mind := reflect.Indirect(elem)
+
+			if err := Scan(s, mind.Addr().Interface()); err != nil {
+				return fmt.Errorf("scan slice failed at index of %d: %s", index, err.Error())
+			}
+			// If elem is ptr, append with addr
+			slice = reflect.Append(slice, mind.Addr())
+		}
+	} else {
+		for index, s := range sSlice {
+			elem := reflect.New(elemType)
+			mind := reflect.Indirect(elem)
+
+			if err := Scan(s, mind.Addr().Interface()); err != nil {
+				return fmt.Errorf("scan slice failed at index of %d: %s", index, err.Error())
+			}
+			// If elem is ptr, append with value
+			slice = reflect.Append(slice, mind)
+		}
+	}
+	if slice.Len() > 0 {
+		ind.Set(slice)
+	} else {
+		// when a result is empty and container is nil
+		// to set a empty container
+		if ind.IsNil() {
+			ind.Set(reflect.MakeSlice(ind.Type(), 0, 0))
+		}
+	}
+	return nil
+}
+
