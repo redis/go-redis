@@ -273,7 +273,7 @@ func (c *cmdable) Ping() *StatusCmd {
 
 func (c *cmdable) Wait(numSlaves int, timeout time.Duration) *IntCmd {
 
-	cmd := NewIntCmd("wait", numSlaves, timeout/time.Second)
+	cmd := NewIntCmd("wait", numSlaves, int(timeout/time.Second))
 	c.process(cmd)
 	return cmd
 }
