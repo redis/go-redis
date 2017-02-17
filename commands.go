@@ -271,9 +271,9 @@ func (c *cmdable) Ping() *StatusCmd {
 	return cmd
 }
 
-func (c *cmdable) Wait(n_slaves uint, n_seconds uint) *IntCmd {
+func (c *cmdable) Wait(numSlaves int, timeout time.Duration) *IntCmd {
 
-	cmd := NewIntCmd("wait", n_slaves, n_seconds)
+	cmd := NewIntCmd("wait", numSlaves, timeout/time.Second)
 	c.process(cmd)
 	return cmd
 }

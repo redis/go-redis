@@ -52,7 +52,7 @@ var _ = Describe("Commands", func() {
 
 		It("should Wait", func() {
 			// assume testing on single redis instance
-			wait := client.Wait(0, 0)
+			wait := client.Wait(0, time.Minute)
 			Expect(wait.Err()).NotTo(HaveOccurred())
 			Expect(wait.Val()).To(Equal(int64(0)))
 		})
