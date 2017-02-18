@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"gopkg.in/redis.v5/internal/proto"
+	"github.com/go-redis/redis/internal/proto"
 )
 
 // Implements proto.MultiBulkParse

@@ -1,7 +1,7 @@
 package redis_test
 
 import (
-	"gopkg.in/redis.v5"
+	"github.com/go-redis/redis"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"

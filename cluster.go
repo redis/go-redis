@@ -7,10 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gopkg.in/redis.v5/internal"
-	"gopkg.in/redis.v5/internal/hashtag"
-	"gopkg.in/redis.v5/internal/pool"
-	"gopkg.in/redis.v5/internal/proto"
+	"github.com/go-redis/redis/internal"
+	"github.com/go-redis/redis/internal/hashtag"
+	"github.com/go-redis/redis/internal/pool"
+	"github.com/go-redis/redis/internal/proto"
 )
 
 var errClusterNoNodes = internal.RedisError("redis: cluster has no nodes")
