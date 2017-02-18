@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/redis.v5/internal/pool"
+	"github.com/go-redis/redis/internal/pool"
 )
 
 type Options struct {

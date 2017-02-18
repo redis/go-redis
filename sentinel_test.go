@@ -1,10 +1,10 @@
 package redis_test
 
 import (
+	"github.com/go-redis/redis"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-
-	"gopkg.in/redis.v5"
 )
 
 var _ = Describe("Sentinel", func() {

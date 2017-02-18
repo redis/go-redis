@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"gopkg.in/redis.v5/internal/pool"
+	"github.com/go-redis/redis/internal/pool"
 )
 
 type pipelineExecer func([]Cmder) error

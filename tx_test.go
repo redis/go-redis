@@ -4,10 +4,10 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/go-redis/redis"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-
-	"gopkg.in/redis.v5"
 )
 
 var _ = Describe("Tx", func() {
