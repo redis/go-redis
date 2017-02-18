@@ -111,7 +111,7 @@ type Cmdable interface {
 	HKeys(key string) *StringSliceCmd
 	HLen(key string) *IntCmd
 	HMGet(key string, fields ...string) *SliceCmd
-	HMSet(key string, fields map[string]string) *StatusCmd
+	HMSet(key string, fields map[string]interface{}) *StatusCmd
 	HSet(key, field string, value interface{}) *BoolCmd
 	HSetNX(key, field string, value interface{}) *BoolCmd
 	HVals(key string) *StringSliceCmd
@@ -880,7 +880,7 @@ func (c *cmdable) HMGet(key string, fields ...string) *SliceCmd {
 	return cmd
 }
 
-func (c *cmdable) HMSet(key string, fields map[string]string) *StatusCmd {
+func (c *cmdable) HMSet(key string, fields map[string]interface{}) *StatusCmd {
 	args := make([]interface{}, 2+len(fields)*2)
 	args[0] = "hmset"
 	args[1] = key

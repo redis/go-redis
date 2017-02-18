@@ -1223,7 +1223,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HMSet", func() {
-			ok, err := client.HMSet("hash", map[string]string{
+			ok, err := client.HMSet("hash", map[string]interface{}{
 				"key1": "hello1",
 				"key2": "hello2",
 			}).Result()
