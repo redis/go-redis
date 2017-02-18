@@ -12,59 +12,37 @@ type testScanSliceStruct struct {
 	Name string
 }
 
-func (this *testScanSliceStruct) MarshalBinary() (data []byte, err error) {
-	return json.Marshal(data)
+func (s *testScanSliceStruct) MarshalBinary() ([]byte, error) {
+	return json.Marshal(s)
 }
 
-func (this *testScanSliceStruct) UnmarshalBinary(data []byte) error {
-	return json.Unmarshal(data, this)
+func (s *testScanSliceStruct) UnmarshalBinary(b []byte) error {
+	return json.Unmarshal(b, s)
 }
 
 var _ = Describe("ScanSlice", func() {
+	data := []string{
+		`{"ID":-1,"Name":"Back Yu"}`,
+		`{"ID":1,"Name":"szyhf"}`,
+	}
 
-	// Base string array for test.
-	strAry := []string{`{"ID":-1,"Name":"Back Yu"}`, `{"ID":1,"Name":"szyhf"}`}
-	// Validate json bytes of container if ScanSlice success
-	equalJson := Equal([]byte(`[{"ID":-1,"Name":"Back Yu"},{"ID":1,"Name":"szyhf"}]`))
-
-	It("var testContainer []testScanSliceStruct", func() {
-		var testContainer []testScanSliceStruct
-		err := ScanSlice(strAry, &testContainer)
+	It("[]testScanSliceStruct", func() {
+		var slice []testScanSliceStruct
+		err := ScanSlice(data, &slice)
 		Expect(err).NotTo(HaveOccurred())
-
-		jsonBytes, err := json.Marshal(testContainer)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(jsonBytes).Should(equalJson)
-	})
-
-	It("testContainer := new([]testScanSliceStruct)", func() {
-		testContainer := new([]testScanSliceStruct)
-		err := ScanSlice(strAry, testContainer)
-		Expect(err).NotTo(HaveOccurred())
-
-		jsonBytes, err := json.Marshal(testContainer)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(jsonBytes).Should(equalJson)
+		Expect(slice).To(Equal([]testScanSliceStruct{
+			{-1, "Back Yu"},
+			{1, "szyhf"},
+		}))
 	})
 
 	It("var testContainer []*testScanSliceStruct", func() {
-		var testContainer []*testScanSliceStruct
-		err := ScanSlice(strAry, &testContainer)
+		var slice []*testScanSliceStruct
+		err := ScanSlice(data, &slice)
 		Expect(err).NotTo(HaveOccurred())
-
-		jsonBytes, err := json.Marshal(testContainer)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(jsonBytes).Should(equalJson)
+		Expect(slice).To(Equal([]*testScanSliceStruct{
+			{-1, "Back Yu"},
+			{1, "szyhf"},
+		}))
 	})
-
-	It("testContainer := new([]*testScanSliceStruct)", func() {
-		testContainer := new([]*testScanSliceStruct)
-		err := ScanSlice(strAry, testContainer)
-		Expect(err).NotTo(HaveOccurred())
-
-		jsonBytes, err := json.Marshal(testContainer)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(jsonBytes).Should(equalJson)
-	})
-
 })
