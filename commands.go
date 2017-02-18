@@ -49,9 +49,7 @@ type Cmdable interface {
 	Del(keys ...string) *IntCmd
 	Unlink(keys ...string) *IntCmd
 	Dump(key string) *StringCmd
-	Exists(key string) *BoolCmd
-	// TODO: merge with Exists in v6
-	ExistsMulti(keys ...string) *IntCmd
+	Exists(keys ...string) *IntCmd
 	Expire(key string, expiration time.Duration) *BoolCmd
 	ExpireAt(key string, tm time.Time) *BoolCmd
 	Keys(pattern string) *StringSliceCmd
@@ -320,13 +318,7 @@ func (c *cmdable) Dump(key string) *StringCmd {
 	return cmd
 }
 
-func (c *cmdable) Exists(key string) *BoolCmd {
-	cmd := NewBoolCmd("exists", key)
-	c.process(cmd)
-	return cmd
-}
-
-func (c *cmdable) ExistsMulti(keys ...string) *IntCmd {
+func (c *cmdable) Exists(keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "exists"
 	for i, key := range keys {

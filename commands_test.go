@@ -242,21 +242,21 @@ var _ = Describe("Commands", func() {
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
 
-			exists := client.Exists("key1")
-			Expect(exists.Err()).NotTo(HaveOccurred())
-			Expect(exists.Val()).To(Equal(true))
+			n, err := client.Exists("key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
 
-			exists = client.Exists("key2")
-			Expect(exists.Err()).NotTo(HaveOccurred())
-			Expect(exists.Val()).To(Equal(false))
+			n, err = client.Exists("key2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
 
-			existsMul := client.ExistsMulti("key1", "key2")
-			Expect(existsMul.Err()).NotTo(HaveOccurred())
-			Expect(existsMul.Val()).To(Equal(int64(1)))
+			n, err = client.Exists("key1", "key2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
 
-			existsMul = client.ExistsMulti("key1", "key1")
-			Expect(existsMul.Err()).NotTo(HaveOccurred())
-			Expect(existsMul.Val()).To(Equal(int64(2)))
+			n, err = client.Exists("key1", "key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
 		})
 
 		It("should Expire", func() {
@@ -286,17 +286,17 @@ var _ = Describe("Commands", func() {
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
 
-			exists := client.Exists("key")
-			Expect(exists.Err()).NotTo(HaveOccurred())
-			Expect(exists.Val()).To(Equal(true))
+			n, err := client.Exists("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
 
 			expireAt := client.ExpireAt("key", time.Now().Add(-time.Hour))
 			Expect(expireAt.Err()).NotTo(HaveOccurred())
 			Expect(expireAt.Val()).To(Equal(true))
 
-			exists = client.Exists("key")
-			Expect(exists.Err()).NotTo(HaveOccurred())
-			Expect(exists.Val()).To(Equal(false))
+			n, err = client.Exists("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
 		})
 
 		It("should Keys", func() {
@@ -675,9 +675,9 @@ var _ = Describe("Commands", func() {
 	Describe("strings", func() {
 
 		It("should Append", func() {
-			exists := client.Exists("key")
-			Expect(exists.Err()).NotTo(HaveOccurred())
-			Expect(exists.Val()).To(Equal(false))
+			n, err := client.Exists("key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
 
 			append := client.Append("key", "Hello")
 			Expect(append.Err()).NotTo(HaveOccurred())
