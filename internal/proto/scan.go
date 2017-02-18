@@ -3,6 +3,7 @@ package proto
 import (
 	"encoding"
 	"fmt"
+	"reflect"
 
 	"gopkg.in/redis.v5/internal"
 )
@@ -104,4 +105,27 @@ func Scan(b []byte, v interface{}) error {
 		return fmt.Errorf(
 			"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)", v)
 	}
+}
+
+func ScanSlice(data []string, slice interface{}) error {
+	v := reflect.ValueOf(slice)
+	if !v.IsValid() {
+		return fmt.Errorf("redis: ScanSlice(nil)")
+	}
+	if v.Kind() != reflect.Ptr {
+		return fmt.Errorf("redis: ScanSlice(non-pointer %T)", slice)
+	}
+	v = v.Elem()
+	if v.Kind() != reflect.Slice {
+		return fmt.Errorf("redis: ScanSlice(non-slice %T)", slice)
+	}
+
+	for i, s := range data {
+		elem := internal.SliceNextElem(v)
+		if err := Scan([]byte(s), elem.Addr().Interface()); err != nil {
+			return fmt.Errorf("redis: ScanSlice(index=%d value=%q) failed: %s", i, s, err)
+		}
+	}
+
+	return nil
 }
