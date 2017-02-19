@@ -14,7 +14,7 @@ var _ = Describe("WriteBuffer", func() {
 	var buf *proto.WriteBuffer
 
 	BeforeEach(func() {
-		buf = proto.NewWriteBuffer(nil)
+		buf = proto.NewWriteBuffer()
 	})
 
 	It("should reset", func() {
@@ -53,7 +53,7 @@ var _ = Describe("WriteBuffer", func() {
 })
 
 func BenchmarkWriteBuffer_Append(b *testing.B) {
-	buf := proto.NewWriteBuffer(nil)
+	buf := proto.NewWriteBuffer()
 	args := []interface{}{"hello", "world", "foo", "bar"}
 
 	for i := 0; i < b.N; i++ {

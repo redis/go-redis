@@ -26,10 +26,10 @@ type Reader struct {
 	buf []byte
 }
 
-func NewReader(rd io.Reader, buf []byte) *Reader {
+func NewReader(rd io.Reader) *Reader {
 	return &Reader{
 		src: bufio.NewReader(rd),
-		buf: buf,
+		buf: make([]byte, 4096),
 	}
 }
 
