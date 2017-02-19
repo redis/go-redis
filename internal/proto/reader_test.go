@@ -14,18 +14,18 @@ import (
 var _ = Describe("Reader", func() {
 
 	It("should read n bytes", func() {
-		data, err := proto.NewReader(strings.NewReader("ABCDEFGHIJKLMNO"), nil).ReadN(10)
+		data, err := proto.NewReader(strings.NewReader("ABCDEFGHIJKLMNO")).ReadN(10)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(data)).To(Equal(10))
 		Expect(string(data)).To(Equal("ABCDEFGHIJ"))
 
-		data, err = proto.NewReader(strings.NewReader(strings.Repeat("x", 8192)), nil).ReadN(6000)
+		data, err = proto.NewReader(strings.NewReader(strings.Repeat("x", 8192))).ReadN(6000)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(data)).To(Equal(6000))
 	})
 
 	It("should read lines", func() {
-		p := proto.NewReader(strings.NewReader("$5\r\nhello\r\n"), nil)
+		p := proto.NewReader(strings.NewReader("$5\r\nhello\r\n"))
 
 		data, err := p.ReadLine()
 		Expect(err).NotTo(HaveOccurred())
@@ -63,7 +63,7 @@ func benchmarkParseReply(b *testing.B, reply string, m proto.MultiBulkParse, wan
 	for i := 0; i < b.N; i++ {
 		buf.WriteString(reply)
 	}
-	p := proto.NewReader(buf, nil)
+	p := proto.NewReader(buf)
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {

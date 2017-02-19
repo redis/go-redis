@@ -21,12 +21,11 @@ type Conn struct {
 }
 
 func NewConn(netConn net.Conn) *Conn {
-	buf := make([]byte, 4096)
 	cn := &Conn{
 		netConn: netConn,
-		Wb:      proto.NewWriteBuffer(buf),
+		Wb:      proto.NewWriteBuffer(),
 	}
-	cn.Rd = proto.NewReader(cn.netConn, buf)
+	cn.Rd = proto.NewReader(cn.netConn)
 	cn.SetUsedAt(time.Now())
 	return cn
 }

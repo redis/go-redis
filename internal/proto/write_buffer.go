@@ -12,9 +12,9 @@ type WriteBuffer struct {
 	b []byte
 }
 
-func NewWriteBuffer(b []byte) *WriteBuffer {
+func NewWriteBuffer() *WriteBuffer {
 	return &WriteBuffer{
-		b: b,
+		b: make([]byte, 0, 4096),
 	}
 }
 
