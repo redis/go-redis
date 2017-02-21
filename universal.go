@@ -115,6 +115,7 @@ func (o *UniversalOptions) simple() *Options {
 // applications locally.
 type UniversalClient interface {
 	Cmdable
+	Process(cmd Cmder) error
 	Close() error
 }
 
