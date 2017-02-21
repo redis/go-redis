@@ -39,12 +39,16 @@ func (s *clusterScenario) slaves() []*redis.Client {
 	return result
 }
 
-func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
+func (s *clusterScenario) addrs() []string {
 	addrs := make([]string, len(s.ports))
 	for i, port := range s.ports {
 		addrs[i] = net.JoinHostPort("127.0.0.1", port)
 	}
-	opt.Addrs = addrs
+	return addrs
+}
+
+func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
+	opt.Addrs = s.addrs()
 	return redis.NewClusterClient(opt)
 }
 

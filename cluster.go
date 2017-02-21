@@ -34,7 +34,8 @@ type ClusterOptions struct {
 
 	// Following options are copied from Options struct.
 
-	Password string
+	MaxRetries int
+	Password   string
 
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
@@ -63,8 +64,9 @@ func (opt *ClusterOptions) clientOptions() *Options {
 	const disableIdleCheck = -1
 
 	return &Options{
-		Password: opt.Password,
-		ReadOnly: opt.ReadOnly,
+		MaxRetries: opt.MaxRetries,
+		Password:   opt.Password,
+		ReadOnly:   opt.ReadOnly,
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
