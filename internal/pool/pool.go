@@ -332,19 +332,3 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 		)
 	}
 }
-
-//------------------------------------------------------------------------------
-
-var idleCheckFrequency atomic.Value
-
-func SetIdleCheckFrequency(d time.Duration) {
-	idleCheckFrequency.Store(d)
-}
-
-func getIdleCheckFrequency() time.Duration {
-	v := idleCheckFrequency.Load()
-	if v == nil {
-		return time.Minute
-	}
-	return v.(time.Duration)
-}
