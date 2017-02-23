@@ -98,10 +98,10 @@ func (c *PubSub) Close() error {
 	return c.base.Close()
 }
 
-func (c *PubSub) Ping(payload string) error {
+func (c *PubSub) Ping(payload ...string) error {
 	args := []interface{}{"PING"}
-	if payload != "" {
-		args = append(args, payload)
+	if len(payload) == 1 {
+		args = append(args, payload[0])
 	}
 	cmd := NewCmd(args...)
 
@@ -239,7 +239,7 @@ func (c *PubSub) receiveMessage(timeout time.Duration) (*Message, error) {
 			errNum++
 			if errNum < 3 {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					err := c.Ping("hello")
+					err := c.Ping()
 					if err != nil {
 						internal.Logf("PubSub.Ping failed: %s", err)
 					}
