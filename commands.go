@@ -734,6 +734,7 @@ func (c *cmdable) MSetNX(pairs ...interface{}) *BoolCmd {
 
 // Redis `SET key value [expiration]` command.
 //
+// Use expiration for `SETEX`-like behavior.
 // Zero expiration means the key has no expiration time.
 func (c *cmdable) Set(key string, value interface{}, expiration time.Duration) *StatusCmd {
 	args := make([]interface{}, 3, 4)
