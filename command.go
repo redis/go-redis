@@ -445,7 +445,7 @@ func (cmd *StringCmd) Result() (string, error) {
 }
 
 func (cmd *StringCmd) Bytes() ([]byte, error) {
-	return []byte(cmd.val), cmd.err
+	return cmd.val, cmd.err
 }
 
 func (cmd *StringCmd) Int64() (int64, error) {
