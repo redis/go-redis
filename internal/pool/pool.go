@@ -19,7 +19,9 @@ var (
 
 var timers = sync.Pool{
 	New: func() interface{} {
-		return time.NewTimer(0)
+		t := time.NewTimer(time.Hour)
+		t.Stop()
+		return t
 	},
 }
 
@@ -95,12 +97,13 @@ func (p *ConnPool) NewConn() (*Conn, error) {
 
 func (p *ConnPool) PopFree() *Conn {
 	timer := timers.Get().(*time.Timer)
-	if !timer.Reset(p.poolTimeout) {
-		<-timer.C
-	}
+	timer.Reset(p.poolTimeout)
 
 	select {
 	case p.queue <- struct{}{}:
+		if !timer.Stop() {
+			<-timer.C
+		}
 		timers.Put(timer)
 	case <-timer.C:
 		timers.Put(timer)
@@ -138,12 +141,13 @@ func (p *ConnPool) Get() (*Conn, bool, error) {
 	atomic.AddUint32(&p.stats.Requests, 1)
 
 	timer := timers.Get().(*time.Timer)
-	if !timer.Reset(p.poolTimeout) {
-		<-timer.C
-	}
+	timer.Reset(p.poolTimeout)
 
 	select {
 	case p.queue <- struct{}{}:
+		if !timer.Stop() {
+			<-timer.C
+		}
 		timers.Put(timer)
 	case <-timer.C:
 		timers.Put(timer)
