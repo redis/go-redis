@@ -582,7 +582,7 @@ var _ = Describe("ClusterClient timeout", func() {
 	var client *redis.ClusterClient
 
 	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
+		_ = client.Close()
 	})
 
 	testTimeout := func() {
