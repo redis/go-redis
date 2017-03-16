@@ -17,6 +17,10 @@ import (
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
 
+// ShardResetCallback holds logic to reset a recovered shard before adding back
+// to ring.
+type ShardResetCallback func(*Client) (bool, error)
+
 // RingOptions are used to configure a ring client and should be
 // passed to NewRing.
 type RingOptions struct {
@@ -42,6 +46,8 @@ type RingOptions struct {
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
+
+	ShardResetCallback ShardResetCallback
 }
 
 func (opt *RingOptions) init() {
@@ -308,10 +314,26 @@ func (c *Ring) heartbeat() {
 		}
 
 		for _, shard := range c.shards {
+			down := shard.IsDown()
 			err := shard.Client.Ping().Err()
 			if shard.Vote(err == nil || err == pool.ErrPoolTimeout) {
 				internal.Logf("ring shard state changed: %s", shard)
-				rebalance = true
+				if down && c.opt.ShardResetCallback != nil {
+					reset, err2 := c.opt.ShardResetCallback(shard.Client)
+					if err2 == nil {
+						rebalance = true
+
+						if reset {
+							internal.Logf("shard %s reset succeeded and will add back to ring in this heartbeat", shard.Client.getAddr())
+						} else {
+							internal.Logf("shard %s has no need to reset and will add back to ring in this heartbeat", shard.Client.getAddr())
+						}
+					} else {
+						internal.Logf("shard %s reset failed and will NOT add back to ring in this heartbeat", shard.Client.getAddr())
+					}
+				} else {
+					rebalance = true
+				}
 			}
 		}
 
@@ -417,4 +439,39 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 	}
 
 	return firstErr
+}
+
+// FlushShardSafe flushes the current redis DB. This utility function is
+// for usage in a ShardResetCallback function. Redis supports multiple DBs
+// with index 0 to 15, and each shard uses 0 as current by default.
+// In order to be multi-client safe, the implementation depends on a key
+// as a mark recorded on a redis DB of markKeyDbIndex, which is different
+// from the current one. Moreover, the mark key expires after a given duration.
+// Within the duration, only one client could win to flush DB. As a result,
+// markKeyDbIndex must be different from curDbIndex. To avoid potential
+// conflicts, redis DB of markKeyDbIndex should be reserved for markKey.
+func FlushShardSafe(c *Client, curDbIndex, markKeyDbIndex int, markKey string, expiration time.Duration) (bool, error) {
+	var cmd *StringCmd
+
+	// When there are multiple clients connecting to the redis ring,
+	// all clients will notice a failed shard recovered during a short-time
+	// period. To avoid multiple flushes, a transaction wrapping GetSet a key
+	// on a different redis DB with a short expiration time is used to
+	// ensure only one client will win and flush the DB.
+	_, err := c.TxPipelined(func(pipe *Pipeline) error {
+		pipe.Select(markKeyDbIndex)
+		cmd = pipe.GetSet(markKey, "1")
+		pipe.Expire(markKey, expiration)
+		pipe.Select(curDbIndex).Result()
+		return nil
+	})
+
+	if _, err = cmd.Result(); err == internal.Nil {
+		if _, err := c.FlushDb().Result(); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	return false, nil
 }

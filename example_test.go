@@ -65,6 +65,23 @@ func ExampleNewRing() {
 	client.Ping()
 }
 
+func ExampleShardResetCallback(c *redis.Client) (bool, error) {
+	return redis.FlushShardSafe(c, 0, 15, "ShardResetMarkKey", time.Minute)
+}
+
+func ExampleNewRingWithShardResetCallback() {
+	client := redis.NewRing(&redis.RingOptions{
+		Addrs: map[string]string{
+			"shard1": ":7000",
+			"shard2": ":7001",
+			"shard3": ":7002",
+		},
+
+		ShardResetCallback: ExampleShardResetCallback,
+	})
+	client.Ping()
+}
+
 func ExampleClient() {
 	err := client.Set("key", "value", 0).Err()
 	if err != nil {
