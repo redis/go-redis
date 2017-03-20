@@ -362,6 +362,18 @@ func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 		}
 	}
 
+	if cmd.FirstKeyPos == 0 {
+		cmd.ringSupport = NO_KEY
+	} else if cmd.FirstKeyPos == cmd.LastKeyPos {
+		cmd.ringSupport = SINGLE_KEY
+	} else {
+		if cmdPartitionSupport[cmd.Name] {
+			cmd.ringSupport = MULTI_PARTITION_AGGREGATE
+		} else {
+			cmd.ringSupport = MULTI_SAME_SHARD
+		}
+	}
+
 	return &cmd, nil
 }
 

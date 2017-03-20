@@ -269,19 +269,78 @@ func (c *Ring) shardByName(name string) (*ringShard, error) {
 	return shard, nil
 }
 
-func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
-	cmdInfo := c.cmdInfo(cmd.name())
+func (c *Ring) validateAllKeysFromSameShard(cmd Cmder, cmdInfo *CommandInfo, shard *ringShard) bool {
+	lastKeyPos := cmdLastKeyPos(cmd, cmdInfo)
+	keyPos := cmdFirstKeyPos(cmd, cmdInfo) + int(cmdInfo.StepCount)
+	for ; keyPos <= lastKeyPos; keyPos += int(cmdInfo.StepCount) {
+		nextShard, _ := c.shardByKey(cmd.arg(keyPos))
+		if nextShard != shard {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Ring) cmdHasSingleKey(cmd Cmder, cmdInfo *CommandInfo) bool {
+	firstKeyPos := cmdFirstKeyPos(cmd, cmdInfo)
+	lastKeyPos := cmdLastKeyPos(cmd, cmdInfo)
+	return firstKeyPos == lastKeyPos
+}
+
+func (c *Ring) cmdShard(cmd Cmder, cmdInfo *CommandInfo) (*ringShard, error) {
 	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
-	return c.shardByKey(firstKey)
+	shard, err := c.shardByKey(firstKey)
+	if err == nil {
+		if cmdInfo.ringSupport == MULTI_SAME_SHARD {
+			if !c.validateAllKeysFromSameShard(cmd, cmdInfo, shard) {
+				return nil, internal.RedisError("redis: All keys must be from same shard in command: " + cmd.name())
+			}
+		}
+	}
+	return shard, err
 }
 
 func (c *Ring) Process(cmd Cmder) error {
-	shard, err := c.cmdShard(cmd)
-	if err != nil {
-		cmd.setErr(err)
-		return err
+	cmdInfo := c.cmdInfo(cmd.name())
+	if cmdInfo == nil || cmdInfo.ringSupport != MULTI_PARTITION_AGGREGATE || c.cmdHasSingleKey(cmd, cmdInfo) {
+		//Run the default way - single shard
+		shard, err := c.cmdShard(cmd, cmdInfo)
+		if err != nil {
+			cmd.setErr(err)
+			return err
+		}
+		return shard.Client.Process(cmd)
+	} else {
+		//Partition the command to multiple commands, send to different shards,
+		//and aggregate the results
+		partitioner := cmd.(cmdPartitionable).createPartitioner(cmdInfo)
+		cmds, err := partitioner.partition(func(key string) (interface{}, error) {
+			return c.shardByKey(key)
+		})
+		if err != nil {
+			cmd.setErr(err)
+			return err
+		}
+		c.runCommandsByShard(cmds);
+		return partitioner.aggregate(cmds, cmd)
 	}
-	return shard.Client.Process(cmd)
+}
+
+func (c *Ring) runCommandsByShard(parts []partition) {
+	if len(parts) == 1 { //No need for parallel execution if only 1 shard
+		part := parts[0]
+		part.shard.(*ringShard).Client.Process(part.cmd)
+	} else {
+		var wg sync.WaitGroup
+		for _, part := range parts {
+			wg.Add(1)
+			go func(shard *ringShard, cmd Cmder) {
+				defer wg.Done()
+				shard.Client.Process(cmd)
+			}(part.shard.(*ringShard), part.cmd)
+		}
+		wg.Wait()
+	}
 }
 
 // rebalance removes dead shards from the Ring.

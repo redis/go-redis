@@ -46,6 +46,57 @@ var _ = Describe("Redis Ring", func() {
 		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
 	})
 
+	It("Should run multi-shard commands", func() {
+
+		//place 6 keys in 2 different shards
+		sval, err := ring.MSet( "key75", "value75",
+			"key32", "value32",
+			"key25", "value25",
+			"key45", "value45",
+			"key54", "value54",
+			"key80", "value80").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sval).To(Equal("OK OK")) //OK from 2 shards
+
+		//check consistency with single key commands
+		val, err := ringShard1.MGet("key75", "key32", "key25").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal([]interface{}{"value75", "value32", "value25"}))
+
+		val, err = ringShard2.MGet("key45", "key54", "key80").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal([]interface{}{"value45", "value54", "value80"}))
+
+		//check that MGET returns values sorted correctly
+		val, err = ring.MGet("key45", "key75", "key54", "key32", "key80", "key25").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal([]interface{}{"value45", "value75", "value54", "value32", "value80", "value25"}))
+
+		//Check that del removes all keys
+		intVal, err := ring.Del("key45", "key75", "key54", "key32", "key80", "key25").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(intVal).To(Equal(int64(6)))
+
+		//none should exist now
+		intVal, err = ring.ExistsMulti("key45", "key75", "key54", "key32", "key80", "key25").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(intVal).To(Equal(int64(0)))
+	})
+
+	It("runs 'MULTI_SAME_SHARD' commands only on single shards", func() {
+
+		//MSetNX does not support partitioning commands to different shards because of atomicity
+		mSetNX := ring.MSetNX( "key75", "value75", "key80", "value80")
+		Expect(mSetNX.Err()).To(HaveOccurred())
+		Expect(mSetNX.Err().Error()).To(Equal("redis: All keys must be from same shard in command: msetnx"))
+
+		//But runs correctly when all keys are from the same shard
+		boolVal, err := ring.MSetNX( "key75", "value75", "key32", "value32", "key25", "value25").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(boolVal).To(Equal(true))
+
+	})
+
 	It("distributes keys when using EVAL", func() {
 		script := redis.NewScript(`
 			local r = redis.call('SET', KEYS[1], ARGV[1])
