@@ -158,6 +158,11 @@ func NewRing(opt *RingOptions) *Ring {
 	return ring
 }
 
+// Options returns read-only Options that were used to create the client.
+func (c *Ring) Options() *RingOptions {
+	return c.opt
+}
+
 // PoolStats returns accumulated connection pool stats.
 func (c *Ring) PoolStats() *PoolStats {
 	var acc PoolStats

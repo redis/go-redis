@@ -374,6 +374,11 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return c
 }
 
+// Options returns read-only Options that were used to create the client.
+func (c *ClusterClient) Options() *ClusterOptions {
+	return c.opt
+}
+
 func (c *ClusterClient) state() *clusterState {
 	v := c._state.Load()
 	if v != nil {

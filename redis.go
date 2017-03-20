@@ -21,6 +21,11 @@ func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.getAddr(), c.opt.DB)
 }
 
+// Options returns read-only Options that were used to create the client.
+func (c *baseClient) Options() *Options {
+	return c.opt
+}
+
 func (c *baseClient) conn() (*pool.Conn, bool, error) {
 	cn, isNew, err := c.connPool.Get()
 	if err != nil {
