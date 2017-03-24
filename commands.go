@@ -2,7 +2,6 @@ package redis
 
 import (
 	"io"
-	"strconv"
 	"time"
 
 	"github.com/go-redis/redis/internal"
@@ -19,24 +18,24 @@ func usePrecise(dur time.Duration) bool {
 	return dur < time.Second || dur%time.Second != 0
 }
 
-func formatMs(dur time.Duration) string {
+func formatMs(dur time.Duration) int64 {
 	if dur > 0 && dur < time.Millisecond {
 		internal.Logf(
 			"specified duration is %s, but minimal supported value is %s",
 			dur, time.Millisecond,
 		)
 	}
-	return strconv.FormatInt(int64(dur/time.Millisecond), 10)
+	return int64(dur / time.Millisecond)
 }
 
-func formatSec(dur time.Duration) string {
+func formatSec(dur time.Duration) int64 {
 	if dur > 0 && dur < time.Second {
 		internal.Logf(
 			"specified duration is %s, but minimal supported value is %s",
 			dur, time.Second,
 		)
 	}
-	return strconv.FormatInt(int64(dur/time.Second), 10)
+	return int64(dur / time.Second)
 }
 
 type Cmdable interface {
@@ -1340,7 +1339,7 @@ func (c *cmdable) ZInterStore(destination string, store ZStore, keys ...string) 
 	args := make([]interface{}, 3+len(keys))
 	args[0] = "zinterstore"
 	args[1] = destination
-	args[2] = strconv.Itoa(len(keys))
+	args[2] = len(keys)
 	for i, key := range keys {
 		args[3+i] = key
 	}
@@ -1536,7 +1535,7 @@ func (c *cmdable) ZUnionStore(dest string, store ZStore, keys ...string) *IntCmd
 	args := make([]interface{}, 3+len(keys))
 	args[0] = "zunionstore"
 	args[1] = dest
-	args[2] = strconv.Itoa(len(keys))
+	args[2] = len(keys)
 	for i, key := range keys {
 		args[3+i] = key
 	}
@@ -1755,7 +1754,7 @@ func (c *cmdable) Eval(script string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := make([]interface{}, 3+len(keys)+len(args))
 	cmdArgs[0] = "eval"
 	cmdArgs[1] = script
-	cmdArgs[2] = strconv.Itoa(len(keys))
+	cmdArgs[2] = len(keys)
 	for i, key := range keys {
 		cmdArgs[3+i] = key
 	}
@@ -1772,7 +1771,7 @@ func (c *cmdable) EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd 
 	cmdArgs := make([]interface{}, 3+len(keys)+len(args))
 	cmdArgs[0] = "evalsha"
 	cmdArgs[1] = sha1
-	cmdArgs[2] = strconv.Itoa(len(keys))
+	cmdArgs[2] = len(keys)
 	for i, key := range keys {
 		cmdArgs[3+i] = key
 	}
@@ -1984,7 +1983,7 @@ func (c *cmdable) ClusterAddSlots(slots ...int) *StatusCmd {
 	args[0] = "cluster"
 	args[1] = "addslots"
 	for i, num := range slots {
-		args[2+i] = strconv.Itoa(num)
+		args[2+i] = num
 	}
 	cmd := NewStatusCmd(args...)
 	c.process(cmd)

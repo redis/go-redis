@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"strconv"
@@ -699,6 +700,39 @@ func BenchmarkRedisClusterPing(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			if err := client.Ping().Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkRedisClusterSetString(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping in short mode")
+	}
+
+	cluster := &clusterScenario{
+		ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
+		nodeIds:   make([]string, 6),
+		processes: make(map[string]*redisProcess, 6),
+		clients:   make(map[string]*redis.Client, 6),
+	}
+
+	if err := startCluster(cluster); err != nil {
+		b.Fatal(err)
+	}
+	defer stopCluster(cluster)
+
+	client := cluster.clusterClient(redisClusterOptions())
+	defer client.Close()
+
+	value := string(bytes.Repeat([]byte{'1'}, 10000))
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.Set("key", value, 0).Err(); err != nil {
 				b.Fatal(err)
 			}
 		}
