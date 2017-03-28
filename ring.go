@@ -269,19 +269,51 @@ func (c *Ring) shardByName(name string) (*ringShard, error) {
 	return shard, nil
 }
 
-func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
-	cmdInfo := c.cmdInfo(cmd.name())
+func (c *Ring) validateAllKeysFromSameShard(cmd Cmder, cmdInfo *CommandInfo, shard *ringShard) bool {
+	lastKeyPos := cmdLastKeyPos(cmd, cmdInfo)
+	//Check that all keys are from the same shard
+	keyPos := cmdFirstKeyPos(cmd, cmdInfo) + int(cmdInfo.StepCount)
+	for ; keyPos <= lastKeyPos; keyPos += int(cmdInfo.StepCount) {
+		nextShard, _ := c.shardByKey(cmd.arg(keyPos))
+		if nextShard != shard {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Ring) cmdShard(cmd Cmder, cmdInfo *CommandInfo) (*ringShard, error) {
 	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
-	return c.shardByKey(firstKey)
+	shard, err := c.shardByKey(firstKey)
+	if err == nil {
+		if cmdInfo.ringSupport == MULTI_SAME_SHARD {
+			if !c.validateAllKeysFromSameShard(cmd, cmdInfo, shard) {
+				return nil, internal.RedisError(" redis: All keys must be from same shard in command: " + cmd.name())
+			}
+		}
+	}
+	return shard, err
 }
 
 func (c *Ring) Process(cmd Cmder) error {
-	shard, err := c.cmdShard(cmd)
-	if err != nil {
-		cmd.setErr(err)
-		return err
+	cmdInfo := c.cmdInfo(cmd.name())
+	if cmdInfo.ringSupport != MULTI_AGGREGATE {
+		shard, err := c.cmdShard(cmd, cmdInfo)
+		if err != nil {
+			cmd.setErr(err)
+			return err
+		}
+		return shard.Client.Process(cmd)
+	} else {
+		
+		//shard, err := c.cmdShard(cmd)
+		//if err != nil {
+		//	cmd.setErr(err)
+		//	return err
+		//}
+		//return shard.Client.Process(cmd)
+		return nil
 	}
-	return shard.Client.Process(cmd)
 }
 
 // rebalance removes dead shards from the Ring.

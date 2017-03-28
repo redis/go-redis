@@ -30,9 +30,17 @@ var (
 	_ Cmder = (*ClusterSlotsCmd)(nil)
 )
 
+var ringAggregationSupport = map[string]bool {
+	"mget": true,
+	"mset": true,
+	"del": true,
+	"exists": true,
+}
+
 type Cmder interface {
 	args() []interface{}
 	arg(int) string
+	argsLen() int
 	name() string
 
 	readReply(*pool.Conn) error
@@ -99,6 +107,15 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 	return int(info.FirstKeyPos)
 }
 
+func cmdLastKeyPos(cmd Cmder, info *CommandInfo) int {
+	if info.LastKeyPos>0 {
+		return int(info.LastKeyPos)
+	} else {
+		//When LastKeyPos is negative, it means offset from last args
+		return cmd.argsLen() + int(info.LastKeyPos)
+	}
+}
+
 //------------------------------------------------------------------------------
 
 type baseCmd struct {
@@ -117,6 +134,10 @@ func (cmd *baseCmd) Err() error {
 
 func (cmd *baseCmd) args() []interface{} {
 	return cmd._args
+}
+
+func (cmd *baseCmd) argsLen() int  {
+	return len(cmd._args)
 }
 
 func (cmd *baseCmd) arg(pos int) string {
@@ -910,6 +931,14 @@ func (cmd *GeoPosCmd) readReply(cn *pool.Conn) error {
 }
 
 //------------------------------------------------------------------------------
+type ringSupport int
+
+const (
+	NO_KEY ringSupport = iota
+	SINGLE_KEY
+	MULTI_SAME_SHARD
+	MULTI_AGGREGATE
+)
 
 type CommandInfo struct {
 	Name        string
@@ -919,6 +948,7 @@ type CommandInfo struct {
 	LastKeyPos  int8
 	StepCount   int8
 	ReadOnly    bool
+	ringSupport ringSupport
 }
 
 type CommandsInfoCmd struct {
