@@ -65,7 +65,6 @@ type ConnPool struct {
 	stats Stats
 
 	_closed int32 // atomic
-	lastErr atomic.Value
 }
 
 var _ Pooler = (*ConnPool)(nil)

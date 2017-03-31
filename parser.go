@@ -31,19 +31,6 @@ func sliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 }
 
 // Implements proto.MultiBulkParse
-func intSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	ints := make([]int64, 0, n)
-	for i := int64(0); i < n; i++ {
-		n, err := rd.ReadIntReply()
-		if err != nil {
-			return nil, err
-		}
-		ints = append(ints, n)
-	}
-	return ints, nil
-}
-
-// Implements proto.MultiBulkParse
 func boolSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 	bools := make([]bool, 0, n)
 	for i := int64(0); i < n; i++ {
@@ -70,19 +57,6 @@ func stringSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 		}
 	}
 	return ss, nil
-}
-
-// Implements proto.MultiBulkParse
-func floatSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	nn := make([]float64, 0, n)
-	for i := int64(0); i < n; i++ {
-		n, err := rd.ReadFloatReply()
-		if err != nil {
-			return nil, err
-		}
-		nn = append(nn, n)
-	}
-	return nn, nil
 }
 
 // Implements proto.MultiBulkParse

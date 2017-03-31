@@ -59,6 +59,7 @@ var _ = Describe("Client", func() {
 
 	It("should close pubsub without closing the client", func() {
 		pubsub, err := client.Subscribe()
+		Expect(err).NotTo(HaveOccurred())
 		Expect(pubsub.Close()).NotTo(HaveOccurred())
 
 		_, err = pubsub.Receive()
@@ -92,6 +93,7 @@ var _ = Describe("Client", func() {
 
 	It("should close pubsub when client is closed", func() {
 		pubsub, err := client.Subscribe()
+		Expect(err).NotTo(HaveOccurred())
 		Expect(client.Close()).NotTo(HaveOccurred())
 
 		_, err = pubsub.Receive()
