@@ -338,8 +338,6 @@ type ClusterClient struct {
 
 	// Reports where slots reloading is in progress.
 	reloading uint32
-
-	closed bool
 }
 
 // NewClusterClient returns a Redis Cluster client as described in

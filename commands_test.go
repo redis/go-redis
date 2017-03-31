@@ -2316,6 +2316,7 @@ var _ = Describe("Commands", func() {
 			zAdd = client.ZAdd("zset", redis.Z{0, "b"})
 			Expect(zAdd.Err()).NotTo(HaveOccurred())
 			zAdd = client.ZAdd("zset", redis.Z{0, "c"})
+			Expect(zAdd.Err()).NotTo(HaveOccurred())
 
 			zRangeByLex := client.ZRangeByLex("zset", redis.ZRangeBy{
 				Min: "-",
