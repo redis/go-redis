@@ -302,7 +302,7 @@ func (c *Ring) rebalance() {
 func (c *Ring) heartbeat() {
 	ticker := time.NewTicker(c.opt.HeartbeatFrequency)
 	defer ticker.Stop()
-	for _ = range ticker.C {
+	for range ticker.C {
 		var rebalance bool
 
 		c.mu.RLock()
