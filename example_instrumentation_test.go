@@ -29,7 +29,7 @@ func wrapRedisProcess(client *redis.Client) {
 	var count, avgDur uint32
 
 	go func() {
-		for _ = range time.Tick(3 * time.Second) {
+		for range time.Tick(3 * time.Second) {
 			n := atomic.LoadUint32(&count)
 			dur := time.Duration(atomic.LoadUint32(&avgDur)) * precision
 			fmt.Printf("%s: processed=%d avg_dur=%s\n", client, n, dur)
