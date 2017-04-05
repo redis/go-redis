@@ -131,6 +131,8 @@ BenchmarkRedisPing-4                	  200000	      6983 ns/op	     116 B/op	   
 BenchmarkRedisClusterPing-4         	  100000	     11535 ns/op	     117 B/op	       4 allocs/op
 ```
 
-## Shameless plug
+## See also
 
-Check my [PostgreSQL client for Go](https://github.com/go-pg/pg).
+- [Golang PostgreSQL ORM](https://github.com/go-pg/pg)
+- [Golang msgpack](https://github.com/vmihailenco/msgpack)
+- [Golang message task queue](https://github.com/go-msgqueue/msgqueue)
