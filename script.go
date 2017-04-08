@@ -47,6 +47,8 @@ func (s *Script) EvalSha(c scripter, keys []string, args ...interface{}) *Cmd {
 	return c.EvalSha(s.hash, keys, args...)
 }
 
+// Run optimistically uses EVALSHA to run the script. If script does not exist
+// it is retried using EVAL.
 func (s *Script) Run(c scripter, keys []string, args ...interface{}) *Cmd {
 	r := s.EvalSha(c, keys, args...)
 	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
