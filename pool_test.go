@@ -81,8 +81,7 @@ var _ = Describe("pool", func() {
 		connPool := client.Pool()
 
 		perform(1000, func(id int) {
-			pubsub, err := client.Subscribe()
-			Expect(err).NotTo(HaveOccurred())
+			pubsub := client.Subscribe("test")
 			Expect(pubsub.Close()).NotTo(HaveOccurred())
 		})
 

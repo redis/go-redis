@@ -258,13 +258,10 @@ func ExampleClient_Watch() {
 }
 
 func ExamplePubSub() {
-	pubsub, err := client.Subscribe("mychannel1")
-	if err != nil {
-		panic(err)
-	}
+	pubsub := client.Subscribe("mychannel1")
 	defer pubsub.Close()
 
-	err = client.Publish("mychannel1", "hello").Err()
+	err := client.Publish("mychannel1", "hello").Err()
 	if err != nil {
 		panic(err)
 	}
@@ -279,10 +276,7 @@ func ExamplePubSub() {
 }
 
 func ExamplePubSub_Receive() {
-	pubsub, err := client.Subscribe("mychannel2")
-	if err != nil {
-		panic(err)
-	}
+	pubsub := client.Subscribe("mychannel2")
 	defer pubsub.Close()
 
 	n, err := client.Publish("mychannel2", "hello").Result()
