@@ -25,8 +25,7 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should support pattern matching", func() {
-		pubsub, err := client.PSubscribe("mychannel*")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.PSubscribe("mychannel*")
 		defer pubsub.Close()
 
 		{
@@ -77,8 +76,7 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(channels).To(BeEmpty())
 
-		pubsub, err := client.Subscribe("mychannel", "mychannel2")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe("mychannel", "mychannel2")
 		defer pubsub.Close()
 
 		channels, err = client.PubSubChannels("mychannel*").Result()
@@ -95,8 +93,7 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should return the numbers of subscribers", func() {
-		pubsub, err := client.Subscribe("mychannel", "mychannel2")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe("mychannel", "mychannel2")
 		defer pubsub.Close()
 
 		channels, err := client.PubSubNumSub("mychannel", "mychannel2", "mychannel3").Result()
@@ -113,8 +110,7 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(num).To(Equal(int64(0)))
 
-		pubsub, err := client.PSubscribe("*")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.PSubscribe("*")
 		defer pubsub.Close()
 
 		num, err = client.PubSubNumPat().Result()
@@ -123,8 +119,7 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should pub/sub", func() {
-		pubsub, err := client.Subscribe("mychannel", "mychannel2")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe("mychannel", "mychannel2")
 		defer pubsub.Close()
 
 		{
@@ -200,11 +195,10 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should ping/pong", func() {
-		pubsub, err := client.Subscribe("mychannel")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe("mychannel")
 		defer pubsub.Close()
 
-		_, err = pubsub.ReceiveTimeout(time.Second)
+		_, err := pubsub.ReceiveTimeout(time.Second)
 		Expect(err).NotTo(HaveOccurred())
 
 		err = pubsub.Ping("")
@@ -217,11 +211,10 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should ping/pong with payload", func() {
-		pubsub, err := client.Subscribe("mychannel")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe("mychannel")
 		defer pubsub.Close()
 
-		_, err = pubsub.ReceiveTimeout(time.Second)
+		_, err := pubsub.ReceiveTimeout(time.Second)
 		Expect(err).NotTo(HaveOccurred())
 
 		err = pubsub.Ping("hello")
@@ -234,11 +227,10 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should multi-ReceiveMessage", func() {
-		pubsub, err := client.Subscribe("mychannel")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe("mychannel")
 		defer pubsub.Close()
 
-		err = client.Publish("mychannel", "hello").Err()
+		err := client.Publish("mychannel", "hello").Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		err = client.Publish("mychannel", "world").Err()
@@ -258,8 +250,7 @@ var _ = Describe("PubSub", func() {
 	It("should ReceiveMessage after timeout", func() {
 		timeout := 100 * time.Millisecond
 
-		pubsub, err := client.Subscribe("mychannel")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe("mychannel")
 		defer pubsub.Close()
 
 		done := make(chan bool, 1)
@@ -321,24 +312,21 @@ var _ = Describe("PubSub", func() {
 	}
 
 	It("Subscribe should reconnect on ReceiveMessage error", func() {
-		pubsub, err := client.Subscribe("mychannel")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe("mychannel")
 		defer pubsub.Close()
 
 		expectReceiveMessageOnError(pubsub)
 	})
 
 	It("PSubscribe should reconnect on ReceiveMessage error", func() {
-		pubsub, err := client.PSubscribe("mychannel")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.PSubscribe("mychannel")
 		defer pubsub.Close()
 
 		expectReceiveMessageOnError(pubsub)
 	})
 
 	It("should return on Close", func() {
-		pubsub, err := client.Subscribe("mychannel")
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe("mychannel")
 		defer pubsub.Close()
 
 		var wg sync.WaitGroup
@@ -360,8 +348,7 @@ var _ = Describe("PubSub", func() {
 		wg.Wait()
 		wg.Add(1)
 
-		err = pubsub.Close()
-		Expect(err).NotTo(HaveOccurred())
+		Expect(pubsub.Close()).NotTo(HaveOccurred())
 
 		wg.Wait()
 	})
@@ -369,18 +356,17 @@ var _ = Describe("PubSub", func() {
 	It("should ReceiveMessage without a subscription", func() {
 		timeout := 100 * time.Millisecond
 
-		pubsub, err := client.Subscribe()
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe()
 		defer pubsub.Close()
 
 		go func() {
 			defer GinkgoRecover()
 
 			time.Sleep(2 * timeout)
-			err = pubsub.Subscribe("mychannel")
+			err := pubsub.Subscribe("mychannel")
 			Expect(err).NotTo(HaveOccurred())
 
-			err := client.Publish("mychannel", "hello").Err()
+			err = client.Publish("mychannel", "hello").Err()
 			Expect(err).NotTo(HaveOccurred())
 		}()
 

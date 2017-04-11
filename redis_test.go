@@ -58,11 +58,10 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should close pubsub without closing the client", func() {
-		pubsub, err := client.Subscribe()
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe()
 		Expect(pubsub.Close()).NotTo(HaveOccurred())
 
-		_, err = pubsub.Receive()
+		_, err := pubsub.Receive()
 		Expect(err).To(MatchError("redis: client is closed"))
 		Expect(client.Ping().Err()).NotTo(HaveOccurred())
 	})
@@ -92,11 +91,10 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should close pubsub when client is closed", func() {
-		pubsub, err := client.Subscribe()
-		Expect(err).NotTo(HaveOccurred())
+		pubsub := client.Subscribe()
 		Expect(client.Close()).NotTo(HaveOccurred())
 
-		_, err = pubsub.Receive()
+		_, err := pubsub.Receive()
 		Expect(err).To(HaveOccurred())
 
 		Expect(pubsub.Close()).NotTo(HaveOccurred())
@@ -242,7 +240,8 @@ var _ = Describe("Client timeout", func() {
 		})
 
 		It("Subscribe timeouts", func() {
-			_, err := client.Subscribe("_")
+			pubsub := client.Subscribe()
+			err := pubsub.Subscribe("_")
 			Expect(err).To(HaveOccurred())
 			Expect(err.(net.Error).Timeout()).To(BeTrue())
 		})

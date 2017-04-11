@@ -141,8 +141,7 @@ var _ = Describe("races", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				pubsub, err := client.Subscribe(fmt.Sprintf("mychannel%d", id))
-				Expect(err).NotTo(HaveOccurred())
+				pubsub := client.Subscribe(fmt.Sprintf("mychannel%d", id))
 
 				go func() {
 					defer GinkgoRecover()
@@ -152,7 +151,7 @@ var _ = Describe("races", func() {
 					Expect(err).NotTo(HaveOccurred())
 				}()
 
-				_, err = pubsub.ReceiveMessage()
+				_, err := pubsub.ReceiveMessage()
 				Expect(err.Error()).To(ContainSubstring("closed"))
 
 				val := "echo" + strconv.Itoa(i)

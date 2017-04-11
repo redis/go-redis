@@ -57,18 +57,14 @@ func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
 // Subscribes the client to the specified channels.
 func (c *PubSub) Subscribe(channels ...string) error {
 	err := c.subscribe("SUBSCRIBE", channels...)
-	if err == nil {
-		c.channels = appendIfNotExists(c.channels, channels...)
-	}
+	c.channels = appendIfNotExists(c.channels, channels...)
 	return err
 }
 
 // Subscribes the client to the given patterns.
 func (c *PubSub) PSubscribe(patterns ...string) error {
 	err := c.subscribe("PSUBSCRIBE", patterns...)
-	if err == nil {
-		c.patterns = appendIfNotExists(c.patterns, patterns...)
-	}
+	c.patterns = appendIfNotExists(c.patterns, patterns...)
 	return err
 }
 
@@ -76,9 +72,7 @@ func (c *PubSub) PSubscribe(patterns ...string) error {
 // them if none is given.
 func (c *PubSub) Unsubscribe(channels ...string) error {
 	err := c.subscribe("UNSUBSCRIBE", channels...)
-	if err == nil {
-		c.channels = remove(c.channels, channels...)
-	}
+	c.channels = remove(c.channels, channels...)
 	return err
 }
 
@@ -86,9 +80,7 @@ func (c *PubSub) Unsubscribe(channels ...string) error {
 // them if none is given.
 func (c *PubSub) PUnsubscribe(patterns ...string) error {
 	err := c.subscribe("PUNSUBSCRIBE", patterns...)
-	if err == nil {
-		c.patterns = remove(c.patterns, patterns...)
-	}
+	c.patterns = remove(c.patterns, patterns...)
 	return err
 }
 
