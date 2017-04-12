@@ -91,6 +91,8 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		} else {
 			return -1
 		}
+	case "publish":
+		return 1
 	}
 	if info == nil {
 		internal.Logf("info for cmd=%s not found", cmd.name())
