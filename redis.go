@@ -205,7 +205,7 @@ func pipelineReadCmds(cn *pool.Conn, cmds []Cmder) (retry bool, firstErr error) 
 			firstErr = err
 		}
 	}
-	return false, firstErr
+	return
 }
 
 func (c *baseClient) txPipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {
