@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"net"
 	"time"
 
 	"github.com/go-redis/redis/internal/pool"
@@ -10,8 +11,8 @@ func (c *baseClient) Pool() pool.Pooler {
 	return c.connPool
 }
 
-func (c *PubSub) Pool() pool.Pooler {
-	return c.base.connPool
+func (c *PubSub) SetNetConn(netConn net.Conn) {
+	c.cn = pool.NewConn(netConn)
 }
 
 func (c *PubSub) ReceiveMessageTimeout(timeout time.Duration) (*Message, error) {

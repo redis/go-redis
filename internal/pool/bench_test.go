@@ -1,7 +1,6 @@
 package pool_test
 
 import (
-	"errors"
 	"testing"
 	"time"
 
@@ -40,7 +39,6 @@ func BenchmarkPoolGetPut1000Conns(b *testing.B) {
 
 func benchmarkPoolGetRemove(b *testing.B, poolSize int) {
 	connPool := pool.NewConnPool(dummyDialer, poolSize, time.Second, time.Hour, time.Hour)
-	removeReason := errors.New("benchmark")
 
 	b.ResetTimer()
 
@@ -50,7 +48,7 @@ func benchmarkPoolGetRemove(b *testing.B, poolSize int) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			if err := connPool.Remove(cn, removeReason); err != nil {
+			if err := connPool.Remove(cn); err != nil {
 				b.Fatal(err)
 			}
 		}

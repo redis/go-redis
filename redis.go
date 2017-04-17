@@ -31,9 +31,10 @@ func (c *baseClient) conn() (*pool.Conn, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+
 	if !cn.Inited {
 		if err := c.initConn(cn); err != nil {
-			_ = c.connPool.Remove(cn, err)
+			_ = c.connPool.Remove(cn)
 			return nil, false, err
 		}
 	}
@@ -42,7 +43,7 @@ func (c *baseClient) conn() (*pool.Conn, bool, error) {
 
 func (c *baseClient) putConn(cn *pool.Conn, err error, allowTimeout bool) bool {
 	if internal.IsBadConn(err, allowTimeout) {
-		_ = c.connPool.Remove(cn, err)
+		_ = c.connPool.Remove(cn)
 		return false
 	}
 
@@ -353,7 +354,7 @@ func (c *Client) pubSub() *PubSub {
 	return &PubSub{
 		base: baseClient{
 			opt:      c.opt,
-			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), false),
+			connPool: c.connPool,
 		},
 	}
 }

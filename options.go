@@ -47,7 +47,7 @@ type Options struct {
 	WriteTimeout time.Duration
 
 	// Maximum number of socket connections.
-	// Default is 100 connections.
+	// Default is 10 connections.
 	PoolSize int
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
@@ -84,7 +84,7 @@ func (opt *Options) init() {
 		}
 	}
 	if opt.PoolSize == 0 {
-		opt.PoolSize = 100
+		opt.PoolSize = 10
 	}
 	if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second

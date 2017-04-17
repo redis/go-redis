@@ -12,6 +12,14 @@ func NewSingleConnPool(cn *Conn) *SingleConnPool {
 	}
 }
 
+func (p *SingleConnPool) NewConn() (*Conn, error) {
+	panic("not implemented")
+}
+
+func (p *SingleConnPool) CloseConn(*Conn) error {
+	panic("not implemented")
+}
+
 func (p *SingleConnPool) Get() (*Conn, bool, error) {
 	return p.cn, false, nil
 }
@@ -23,7 +31,7 @@ func (p *SingleConnPool) Put(cn *Conn) error {
 	return nil
 }
 
-func (p *SingleConnPool) Remove(cn *Conn, _ error) error {
+func (p *SingleConnPool) Remove(cn *Conn) error {
 	if p.cn != cn {
 		panic("p.cn != cn")
 	}

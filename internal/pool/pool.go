@@ -2,7 +2,6 @@ package pool
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -11,11 +10,8 @@ import (
 	"github.com/go-redis/redis/internal"
 )
 
-var (
-	ErrClosed      = errors.New("redis: client is closed")
-	ErrPoolTimeout = errors.New("redis: connection pool timeout")
-	errConnStale   = errors.New("connection is stale")
-)
+var ErrClosed = errors.New("redis: client is closed")
+var ErrPoolTimeout = errors.New("redis: connection pool timeout")
 
 var timers = sync.Pool{
 	New: func() interface{} {
@@ -36,12 +32,17 @@ type Stats struct {
 }
 
 type Pooler interface {
+	NewConn() (*Conn, error)
+	CloseConn(*Conn) error
+
 	Get() (*Conn, bool, error)
 	Put(*Conn) error
-	Remove(*Conn, error) error
+	Remove(*Conn) error
+
 	Len() int
 	FreeLen() int
 	Stats() *Stats
+
 	Close() error
 }
 
@@ -87,11 +88,21 @@ func NewConnPool(dial dialer, poolSize int, poolTimeout, idleTimeout, idleCheckF
 }
 
 func (p *ConnPool) NewConn() (*Conn, error) {
+	if p.closed() {
+		return nil, ErrClosed
+	}
+
 	netConn, err := p.dial()
 	if err != nil {
 		return nil, err
 	}
-	return NewConn(netConn), nil
+
+	cn := NewConn(netConn)
+	p.connsMu.Lock()
+	p.conns = append(p.conns, cn)
+	p.connsMu.Unlock()
+
+	return cn, nil
 }
 
 func (p *ConnPool) PopFree() *Conn {
@@ -164,7 +175,7 @@ func (p *ConnPool) Get() (*Conn, bool, error) {
 		}
 
 		if cn.IsStale(p.idleTimeout) {
-			p.remove(cn, errConnStale)
+			p.CloseConn(cn)
 			continue
 		}
 
@@ -178,18 +189,13 @@ func (p *ConnPool) Get() (*Conn, bool, error) {
 		return nil, false, err
 	}
 
-	p.connsMu.Lock()
-	p.conns = append(p.conns, newcn)
-	p.connsMu.Unlock()
-
 	return newcn, true, nil
 }
 
 func (p *ConnPool) Put(cn *Conn) error {
 	if data := cn.Rd.PeekBuffered(); data != nil {
-		err := fmt.Errorf("connection has unread data: %q", data)
-		internal.Logf(err.Error())
-		return p.Remove(cn, err)
+		internal.Logf("connection has unread data: %q", data)
+		return p.Remove(cn)
 	}
 	p.freeConnsMu.Lock()
 	p.freeConns = append(p.freeConns, cn)
@@ -198,15 +204,13 @@ func (p *ConnPool) Put(cn *Conn) error {
 	return nil
 }
 
-func (p *ConnPool) Remove(cn *Conn, reason error) error {
-	p.remove(cn, reason)
+func (p *ConnPool) Remove(cn *Conn) error {
+	_ = p.CloseConn(cn)
 	<-p.queue
 	return nil
 }
 
-func (p *ConnPool) remove(cn *Conn, reason error) {
-	_ = p.closeConn(cn, reason)
-
+func (p *ConnPool) CloseConn(cn *Conn) error {
 	p.connsMu.Lock()
 	for i, c := range p.conns {
 		if c == cn {
@@ -215,6 +219,15 @@ func (p *ConnPool) remove(cn *Conn, reason error) {
 		}
 	}
 	p.connsMu.Unlock()
+
+	return p.closeConn(cn)
+}
+
+func (p *ConnPool) closeConn(cn *Conn) error {
+	if p.OnClose != nil {
+		_ = p.OnClose(cn)
+	}
+	return cn.Close()
 }
 
 // Len returns total number of connections.
@@ -258,7 +271,7 @@ func (p *ConnPool) Close() error {
 		if cn == nil {
 			continue
 		}
-		if err := p.closeConn(cn, ErrClosed); err != nil && firstErr == nil {
+		if err := p.closeConn(cn); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -272,13 +285,6 @@ func (p *ConnPool) Close() error {
 	return firstErr
 }
 
-func (p *ConnPool) closeConn(cn *Conn, reason error) error {
-	if p.OnClose != nil {
-		_ = p.OnClose(cn)
-	}
-	return cn.Close()
-}
-
 func (p *ConnPool) reapStaleConn() bool {
 	if len(p.freeConns) == 0 {
 		return false
@@ -289,7 +295,7 @@ func (p *ConnPool) reapStaleConn() bool {
 		return false
 	}
 
-	p.remove(cn, errConnStale)
+	p.CloseConn(cn)
 	p.freeConns = append(p.freeConns[:0], p.freeConns[1:]...)
 
 	return true

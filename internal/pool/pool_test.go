@@ -1,7 +1,6 @@
 package pool_test
 
 import (
-	"errors"
 	"testing"
 	"time"
 
@@ -59,7 +58,7 @@ var _ = Describe("ConnPool", func() {
 			// ok
 		}
 
-		err = connPool.Remove(cn, errors.New("test"))
+		err = connPool.Remove(cn)
 		Expect(err).NotTo(HaveOccurred())
 
 		// Check that Ping is unblocked.
@@ -169,7 +168,7 @@ var _ = Describe("conns reaper", func() {
 			Expect(connPool.Len()).To(Equal(4))
 			Expect(connPool.FreeLen()).To(Equal(0))
 
-			err = connPool.Remove(cn, errors.New("test"))
+			err = connPool.Remove(cn)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(connPool.Len()).To(Equal(3))
@@ -219,7 +218,7 @@ var _ = Describe("race", func() {
 				cn, _, err := connPool.Get()
 				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
-					Expect(connPool.Remove(cn, errors.New("test"))).NotTo(HaveOccurred())
+					Expect(connPool.Remove(cn)).NotTo(HaveOccurred())
 				}
 			}
 		})
