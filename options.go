@@ -47,7 +47,7 @@ type Options struct {
 	WriteTimeout time.Duration
 
 	// Maximum number of socket connections.
-	// Default is 100 connections.
+	// Default is 10 connections.
 	PoolSize int
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
