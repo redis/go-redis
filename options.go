@@ -55,7 +55,7 @@ type Options struct {
 	PoolTimeout time.Duration
 	// Amount of time after which client closes idle connections.
 	// Should be less than server's timeout.
-	// Default is to not close idle connections.
+	// Default is 5 minutes.
 	IdleTimeout time.Duration
 	// Frequency of idle checks.
 	// Default is 1 minute.
