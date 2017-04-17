@@ -84,7 +84,7 @@ func (opt *Options) init() {
 		}
 	}
 	if opt.PoolSize == 0 {
-		opt.PoolSize = 100
+		opt.PoolSize = 10
 	}
 	if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second

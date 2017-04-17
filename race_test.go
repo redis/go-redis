@@ -136,35 +136,6 @@ var _ = Describe("races", func() {
 		})
 	})
 
-	It("should PubSub", func() {
-		connPool := client.Pool()
-
-		perform(C, func(id int) {
-			for i := 0; i < N; i++ {
-				pubsub := client.Subscribe(fmt.Sprintf("mychannel%d", id))
-
-				go func() {
-					defer GinkgoRecover()
-
-					time.Sleep(time.Millisecond)
-					err := pubsub.Close()
-					Expect(err).NotTo(HaveOccurred())
-				}()
-
-				_, err := pubsub.ReceiveMessage()
-				Expect(err.Error()).To(ContainSubstring("closed"))
-
-				val := "echo" + strconv.Itoa(i)
-				echo, err := client.Echo(val).Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(echo).To(Equal(val))
-			}
-		})
-
-		Expect(connPool.Len()).To(Equal(connPool.FreeLen()))
-		Expect(connPool.Len()).To(BeNumerically("<=", 10))
-	})
-
 	It("should select db", func() {
 		err := client.Set("db", 1, 0).Err()
 		Expect(err).NotTo(HaveOccurred())

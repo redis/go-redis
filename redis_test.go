@@ -95,7 +95,7 @@ var _ = Describe("Client", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 
 		_, err := pubsub.Receive()
-		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError("redis: client is closed"))
 
 		Expect(pubsub.Close()).NotTo(HaveOccurred())
 	})
@@ -217,6 +217,7 @@ var _ = Describe("Client", func() {
 })
 
 var _ = Describe("Client timeout", func() {
+	var opt *redis.Options
 	var client *redis.Client
 
 	AfterEach(func() {
@@ -240,7 +241,13 @@ var _ = Describe("Client timeout", func() {
 		})
 
 		It("Subscribe timeouts", func() {
+			if opt.WriteTimeout == 0 {
+				return
+			}
+
 			pubsub := client.Subscribe()
+			defer pubsub.Close()
+
 			err := pubsub.Subscribe("_")
 			Expect(err).To(HaveOccurred())
 			Expect(err.(net.Error).Timeout()).To(BeTrue())
@@ -269,7 +276,7 @@ var _ = Describe("Client timeout", func() {
 
 	Context("read timeout", func() {
 		BeforeEach(func() {
-			opt := redisOptions()
+			opt = redisOptions()
 			opt.ReadTimeout = time.Nanosecond
 			opt.WriteTimeout = -1
 			client = redis.NewClient(opt)
@@ -280,7 +287,7 @@ var _ = Describe("Client timeout", func() {
 
 	Context("write timeout", func() {
 		BeforeEach(func() {
-			opt := redisOptions()
+			opt = redisOptions()
 			opt.ReadTimeout = -1
 			opt.WriteTimeout = time.Nanosecond
 			client = redis.NewClient(opt)

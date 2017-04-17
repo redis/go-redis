@@ -274,18 +274,15 @@ var _ = Describe("PubSub", func() {
 		Eventually(done).Should(Receive())
 
 		stats := client.PoolStats()
-		Expect(stats.Requests).To(Equal(uint32(3)))
+		Expect(stats.Requests).To(Equal(uint32(2)))
 		Expect(stats.Hits).To(Equal(uint32(1)))
 	})
 
 	expectReceiveMessageOnError := func(pubsub *redis.PubSub) {
-		cn, _, err := pubsub.Pool().Get()
-		Expect(err).NotTo(HaveOccurred())
-		cn.SetNetConn(&badConn{
+		pubsub.SetNetConn(&badConn{
 			readErr:  io.EOF,
 			writeErr: io.EOF,
 		})
-		pubsub.Pool().Put(cn)
 
 		done := make(chan bool, 1)
 		go func() {
@@ -305,10 +302,6 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Payload).To(Equal("hello"))
 
 		Eventually(done).Should(Receive())
-
-		stats := client.PoolStats()
-		Expect(stats.Requests).To(Equal(uint32(4)))
-		Expect(stats.Hits).To(Equal(uint32(1)))
 	}
 
 	It("Subscribe should reconnect on ReceiveMessage error", func() {

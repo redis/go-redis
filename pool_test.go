@@ -77,18 +77,6 @@ var _ = Describe("pool", func() {
 		Expect(pool.Len()).To(Equal(pool.FreeLen()))
 	})
 
-	It("respects max size on pubsub", func() {
-		connPool := client.Pool()
-
-		perform(1000, func(id int) {
-			pubsub := client.Subscribe("test")
-			Expect(pubsub.Close()).NotTo(HaveOccurred())
-		})
-
-		Expect(connPool.Len()).To(Equal(connPool.FreeLen()))
-		Expect(connPool.Len()).To(BeNumerically("<=", 10))
-	})
-
 	It("removes broken connections", func() {
 		cn, _, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
