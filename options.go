@@ -43,11 +43,11 @@ type Options struct {
 	ReadTimeout time.Duration
 	// Timeout for socket writes. If reached, commands will fail
 	// with a timeout instead of blocking.
-	// Default is 3 seconds.
+	// Default is ReadTimeout.
 	WriteTimeout time.Duration
 
 	// Maximum number of socket connections.
-	// Default is 10 connections.
+	// Default is 100 connections.
 	PoolSize int
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
