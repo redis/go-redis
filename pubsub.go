@@ -78,8 +78,15 @@ func (c *PubSub) _conn() (*pool.Conn, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	c.cn = cn
 
+	if !cn.Inited {
+		if err := c.base.initConn(cn); err != nil {
+			_ = c.base.connPool.Remove(cn)
+			return nil, false, err
+		}
+	}
+
+	c.cn = cn
 	return cn, true, nil
 }
 
