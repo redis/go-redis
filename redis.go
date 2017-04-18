@@ -38,6 +38,7 @@ func (c *baseClient) conn() (*pool.Conn, bool, error) {
 			return nil, false, err
 		}
 	}
+
 	return cn, isNew, nil
 }
 
