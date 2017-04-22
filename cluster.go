@@ -807,7 +807,7 @@ func (c *ClusterClient) TxPipeline() *Pipeline {
 }
 
 func (c *ClusterClient) TxPipelined(fn func(*Pipeline) error) ([]Cmder, error) {
-	return c.Pipeline().pipelined(fn)
+	return c.TxPipeline().pipelined(fn)
 }
 
 func (c *ClusterClient) txPipelineExec(cmds []Cmder) error {
