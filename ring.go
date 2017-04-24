@@ -428,7 +428,7 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 			}
 
 			canRetry, err := shard.Client.pipelineProcessCmds(cn, cmds)
-			shard.Client.putConn(cn, err, false)
+			shard.Client.putConn(cn, err)
 			if err == nil {
 				continue
 			}

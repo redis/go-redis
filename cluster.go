@@ -704,7 +704,7 @@ func (c *ClusterClient) pipelineExec(cmds []Cmder) error {
 			}
 
 			err = c.pipelineProcessCmds(cn, cmds, failedCmds)
-			node.Client.putConn(cn, err, false)
+			node.Client.putConn(cn, err)
 		}
 
 		if len(failedCmds) == 0 {
@@ -840,7 +840,7 @@ func (c *ClusterClient) txPipelineExec(cmds []Cmder) error {
 				}
 
 				err = c.txPipelineProcessCmds(node, cn, cmds, failedCmds)
-				node.Client.putConn(cn, err, false)
+				node.Client.putConn(cn, err)
 			}
 
 			if len(failedCmds) == 0 {
