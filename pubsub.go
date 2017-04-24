@@ -46,12 +46,13 @@ func (c *PubSub) conn() (*pool.Conn, bool, error) {
 
 	if !cn.Inited {
 		if err := c.base.initConn(cn); err != nil {
-			_ = c.base.connPool.Remove(cn)
+			_ = c.base.connPool.CloseConn(cn)
 			return nil, false, err
 		}
 	}
 
 	if err := c.resubscribe(cn); err != nil {
+		_ = c.base.connPool.CloseConn(cn)
 		return nil, false, err
 	}
 
