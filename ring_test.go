@@ -137,7 +137,7 @@ var _ = Describe("Redis Ring", func() {
 				keys = append(keys, string(key))
 			}
 
-			_, err := ring.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err := ring.Pipelined(func(pipe redis.Pipelineable) error {
 				for _, key := range keys {
 					pipe.Set(key, "value", 0).Err()
 				}
@@ -153,7 +153,7 @@ var _ = Describe("Redis Ring", func() {
 		})
 
 		It("supports hash tags", func() {
-			_, err := ring.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err := ring.Pipelined(func(pipe redis.Pipelineable) error {
 				for i := 0; i < 100; i++ {
 					pipe.Set(fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
 				}
@@ -184,7 +184,7 @@ var _ = Describe("empty Redis Ring", func() {
 	})
 
 	It("pipeline returns an error", func() {
-		_, err := ring.Pipelined(func(pipe *redis.Pipeline) error {
+		_, err := ring.Pipelined(func(pipe redis.Pipelineable) error {
 			pipe.Ping()
 			return nil
 		})

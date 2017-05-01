@@ -159,7 +159,7 @@ func ExampleClient_Scan() {
 
 func ExampleClient_Pipelined() {
 	var incr *redis.IntCmd
-	_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+	_, err := client.Pipelined(func(pipe redis.Pipelineable) error {
 		incr = pipe.Incr("pipelined_counter")
 		pipe.Expire("pipelined_counter", time.Hour)
 		return nil
@@ -187,7 +187,7 @@ func ExampleClient_Pipeline() {
 
 func ExampleClient_TxPipelined() {
 	var incr *redis.IntCmd
-	_, err := client.TxPipelined(func(pipe *redis.Pipeline) error {
+	_, err := client.TxPipelined(func(pipe redis.Pipelineable) error {
 		incr = pipe.Incr("tx_pipelined_counter")
 		pipe.Expire("tx_pipelined_counter", time.Hour)
 		return nil
@@ -226,7 +226,7 @@ func ExampleClient_Watch() {
 				return err
 			}
 
-			_, err = tx.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err = tx.Pipelined(func(pipe redis.Pipelineable) error {
 				pipe.Set(key, strconv.FormatInt(n+1, 10), 0)
 				return nil
 			})

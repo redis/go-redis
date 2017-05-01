@@ -76,7 +76,7 @@ func (c *Tx) Unwatch(keys ...string) *StatusCmd {
 	return cmd
 }
 
-func (c *Tx) Pipeline() *Pipeline {
+func (c *Tx) Pipeline() Pipelineable {
 	pipe := Pipeline{
 		exec: c.pipelineExecer(c.txPipelineProcessCmds),
 	}
@@ -94,6 +94,6 @@ func (c *Tx) Pipeline() *Pipeline {
 // Exec always returns list of commands. If transaction fails
 // TxFailedErr is returned. Otherwise Exec returns error of the first
 // failed command or nil.
-func (c *Tx) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+func (c *Tx) Pipelined(fn func(Pipelineable) error) ([]Cmder, error) {
 	return c.Pipeline().pipelined(fn)
 }

@@ -33,7 +33,7 @@ var _ = Describe("Tx", func() {
 					return err
 				}
 
-				_, err = tx.Pipelined(func(pipe *redis.Pipeline) error {
+				_, err = tx.Pipelined(func(pipe redis.Pipelineable) error {
 					pipe.Set(key, strconv.FormatInt(n+1, 10), 0)
 					return nil
 				})
@@ -65,7 +65,7 @@ var _ = Describe("Tx", func() {
 
 	It("should discard", func() {
 		err := client.Watch(func(tx *redis.Tx) error {
-			cmds, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+			cmds, err := tx.Pipelined(func(pipe redis.Pipelineable) error {
 				pipe.Set("key1", "hello1", 0)
 				pipe.Discard()
 				pipe.Set("key2", "hello2", 0)
@@ -88,7 +88,7 @@ var _ = Describe("Tx", func() {
 
 	It("returns an error when there are no commands", func() {
 		err := client.Watch(func(tx *redis.Tx) error {
-			_, err := tx.Pipelined(func(*redis.Pipeline) error { return nil })
+			_, err := tx.Pipelined(func(redis.Pipelineable) error { return nil })
 			return err
 		})
 		Expect(err).To(MatchError("redis: pipeline is empty"))
@@ -102,7 +102,7 @@ var _ = Describe("Tx", func() {
 		const N = 20000
 
 		err := client.Watch(func(tx *redis.Tx) error {
-			cmds, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+			cmds, err := tx.Pipelined(func(pipe redis.Pipelineable) error {
 				for i := 0; i < N; i++ {
 					pipe.Incr("key")
 				}
@@ -133,7 +133,7 @@ var _ = Describe("Tx", func() {
 
 		do := func() error {
 			err := client.Watch(func(tx *redis.Tx) error {
-				_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+				_, err := tx.Pipelined(func(pipe redis.Pipelineable) error {
 					pipe.Ping()
 					return nil
 				})
