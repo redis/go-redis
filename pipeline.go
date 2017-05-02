@@ -20,6 +20,8 @@ type Pipeliner interface {
 	pipelined(fn func(Pipeliner) error) ([]Cmder, error)
 }
 
+var _ Pipeliner = (*Pipeline)(nil)
+
 // Pipeline implements pipelining as described in
 // http://redis.io/topics/pipelining. It's safe for concurrent use
 // by multiple goroutines.
