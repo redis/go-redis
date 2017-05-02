@@ -9,7 +9,7 @@ import (
 
 type pipelineExecer func([]Cmder) error
 
-type Pipelineable interface {
+type Pipeliner interface {
 	Cmdable
 	StatefulCmdable
 	Process(cmd Cmder) error
@@ -17,7 +17,7 @@ type Pipelineable interface {
 	Discard() error
 	discard() error
 	Exec() ([]Cmder, error)
-	pipelined(fn func(Pipelineable) error) ([]Cmder, error)
+	pipelined(fn func(Pipeliner) error) ([]Cmder, error)
 }
 
 // Pipeline implements pipelining as described in
@@ -89,7 +89,7 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 	return cmds, c.exec(cmds)
 }
 
-func (c *Pipeline) pipelined(fn func(Pipelineable) error) ([]Cmder, error) {
+func (c *Pipeline) pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	if err := fn(c); err != nil {
 		return nil, err
 	}
@@ -98,10 +98,10 @@ func (c *Pipeline) pipelined(fn func(Pipelineable) error) ([]Cmder, error) {
 	return cmds, err
 }
 
-func (c *Pipeline) Pipelined(fn func(Pipelineable) error) ([]Cmder, error) {
+func (c *Pipeline) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.pipelined(fn)
 }
 
-func (c *Pipeline) Pipeline() Pipelineable {
+func (c *Pipeline) Pipeline() Pipeliner {
 	return c
 }

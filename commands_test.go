@@ -27,7 +27,7 @@ var _ = Describe("Commands", func() {
 	Describe("server", func() {
 
 		It("should Auth", func() {
-			_, err := client.Pipelined(func(pipe redis.Pipelineable) error {
+			_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Auth("password")
 				return nil
 			})

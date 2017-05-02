@@ -22,7 +22,7 @@ var _ = Describe("pipelining", func() {
 
 	It("supports block style", func() {
 		var get *redis.StringCmd
-		cmds, err := client.Pipelined(func(pipe redis.Pipelineable) error {
+		cmds, err := client.Pipelined(func(pipe redis.Pipeliner) error {
 			get = pipe.Get("foo")
 			return nil
 		})

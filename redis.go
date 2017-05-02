@@ -61,7 +61,7 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 
 	// Temp client for Auth and Select.
 	client := newClient(c.opt, pool.NewSingleConnPool(cn))
-	_, err := client.Pipelined(func(pipe Pipelineable) error {
+	_, err := client.Pipelined(func(pipe Pipeliner) error {
 		if c.opt.Password != "" {
 			pipe.Auth(c.opt.Password)
 		}
@@ -324,11 +324,11 @@ func (c *Client) PoolStats() *PoolStats {
 	}
 }
 
-func (c *Client) Pipelined(fn func(Pipelineable) error) ([]Cmder, error) {
+func (c *Client) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().pipelined(fn)
 }
 
-func (c *Client) Pipeline() Pipelineable {
+func (c *Client) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.pipelineExecer(c.pipelineProcessCmds),
 	}
@@ -337,7 +337,7 @@ func (c *Client) Pipeline() Pipelineable {
 	return &pipe
 }
 
-func (c *Client) TxPipelined(fn func(Pipelineable) error) ([]Cmder, error) {
+func (c *Client) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.TxPipeline().pipelined(fn)
 }
 
