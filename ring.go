@@ -381,7 +381,7 @@ func (c *Ring) Close() error {
 	return firstErr
 }
 
-func (c *Ring) Pipeline() *Pipeline {
+func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.pipelineExec,
 	}
@@ -390,7 +390,7 @@ func (c *Ring) Pipeline() *Pipeline {
 	return &pipe
 }
 
-func (c *Ring) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+func (c *Ring) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().pipelined(fn)
 }
 

@@ -188,7 +188,7 @@ func BenchmarkPipeline(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Set("key", "hello", 0)
 				pipe.Expire("key", time.Second)
 				return nil

@@ -674,7 +674,7 @@ func (c *ClusterClient) reaper(idleCheckFrequency time.Duration) {
 	}
 }
 
-func (c *ClusterClient) Pipeline() *Pipeline {
+func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.pipelineExec,
 	}
@@ -683,7 +683,7 @@ func (c *ClusterClient) Pipeline() *Pipeline {
 	return &pipe
 }
 
-func (c *ClusterClient) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+func (c *ClusterClient) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().pipelined(fn)
 }
 
@@ -797,7 +797,7 @@ func (c *ClusterClient) checkMovedErr(cmd Cmder, failedCmds map[*clusterNode][]C
 }
 
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
-func (c *ClusterClient) TxPipeline() *Pipeline {
+func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.txPipelineExec,
 	}
@@ -806,7 +806,7 @@ func (c *ClusterClient) TxPipeline() *Pipeline {
 	return &pipe
 }
 
-func (c *ClusterClient) TxPipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+func (c *ClusterClient) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.TxPipeline().pipelined(fn)
 }
 
