@@ -71,7 +71,7 @@ var _ = Describe("pipelining", func() {
 
 	Describe("TxPipeline", func() {
 		BeforeEach(func() {
-			pipe = client.TxPipeline()
+			pipe = client.TxPipeline().(*redis.Pipeline)
 		})
 
 		assertPipeline()
