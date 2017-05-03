@@ -342,7 +342,7 @@ func (c *Client) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 }
 
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
-func (c *Client) TxPipeline() *Pipeline {
+func (c *Client) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.pipelineExecer(c.txPipelineProcessCmds),
 	}
