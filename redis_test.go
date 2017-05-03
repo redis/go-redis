@@ -68,7 +68,7 @@ var _ = Describe("Client", func() {
 
 	It("should close Tx without closing the client", func() {
 		err := client.Watch(func(tx *redis.Tx) error {
-			_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Ping()
 				return nil
 			})
@@ -232,7 +232,7 @@ var _ = Describe("Client timeout", func() {
 		})
 
 		It("Pipeline timeouts", func() {
-			_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Ping()
 				return nil
 			})
@@ -263,7 +263,7 @@ var _ = Describe("Client timeout", func() {
 
 		It("Tx Pipeline timeouts", func() {
 			err := client.Watch(func(tx *redis.Tx) error {
-				_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+				_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
 					pipe.Ping()
 					return nil
 				})

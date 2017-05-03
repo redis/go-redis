@@ -39,8 +39,8 @@ func formatSec(dur time.Duration) int64 {
 }
 
 type Cmdable interface {
-	Pipeline() *Pipeline
-	Pipelined(fn func(*Pipeline) error) ([]Cmder, error)
+	Pipeline() Pipeliner
+	Pipelined(fn func(Pipeliner) error) ([]Cmder, error)
 
 	Echo(message interface{}) *StringCmd
 	Ping() *StatusCmd
@@ -235,6 +235,15 @@ type Cmdable interface {
 	GeoDist(key string, member1, member2, unit string) *FloatCmd
 	GeoHash(key string, members ...string) *StringSliceCmd
 	Command() *CommandsInfoCmd
+}
+
+type StatefulCmdable interface {
+	Auth(password string) *StatusCmd
+	Select(index int) *StatusCmd
+	ClientSetName(name string) *BoolCmd
+	ClientGetName() *StringCmd
+	ReadOnly() *StatusCmd
+	ReadWrite() *StatusCmd
 }
 
 var _ Cmdable = (*Client)(nil)
