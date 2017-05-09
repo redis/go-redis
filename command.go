@@ -33,7 +33,7 @@ var (
 type Cmder interface {
 	args() []interface{}
 	arg(int) string
-	name() string
+	Name() string
 
 	readReply(*pool.Conn) error
 	setErr(error)
@@ -84,7 +84,7 @@ func cmdString(cmd Cmder, val interface{}) string {
 }
 
 func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
-	switch cmd.name() {
+	switch cmd.Name() {
 	case "eval", "evalsha":
 		if cmd.arg(2) != "0" {
 			return 3
@@ -95,7 +95,7 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		return 1
 	}
 	if info == nil {
-		internal.Logf("info for cmd=%s not found", cmd.name())
+		internal.Logf("info for cmd=%s not found", cmd.Name())
 		return -1
 	}
 	return int(info.FirstKeyPos)
@@ -126,7 +126,7 @@ func (cmd *baseCmd) arg(pos int) string {
 	return s
 }
 
-func (cmd *baseCmd) name() string {
+func (cmd *baseCmd) Name() string {
 	if len(cmd._args) > 0 {
 		// Cmd name must be lower cased.
 		s := internal.ToLower(cmd.arg(0))

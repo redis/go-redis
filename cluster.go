@@ -392,7 +392,7 @@ func (c *ClusterClient) cmdSlotAndNode(state *clusterState, cmd Cmder) (int, *cl
 		return 0, node, err
 	}
 
-	cmdInfo := c.cmds[cmd.name()]
+	cmdInfo := c.cmds[cmd.Name()]
 	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
 	slot := hashtag.Slot(firstKey)
 
