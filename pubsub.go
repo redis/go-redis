@@ -13,6 +13,9 @@ import (
 // PubSub implements Pub/Sub commands as described in
 // http://redis.io/topics/pubsub. It's NOT safe for concurrent use by
 // multiple goroutines.
+//
+// PubSub automatically resubscribes to the channels and patterns
+// when Redis becomes unavailable.
 type PubSub struct {
 	base baseClient
 
@@ -138,7 +141,8 @@ func (c *PubSub) _subscribe(cn *pool.Conn, redisCmd string, channels ...string) 
 	return writeCmd(cn, cmd)
 }
 
-// Subscribes the client to the specified channels.
+// Subscribes the client to the specified channels. It returns
+// empty subscription if there are no channels.
 func (c *PubSub) Subscribe(channels ...string) error {
 	c.subMu.Lock()
 	c.channels = appendIfNotExists(c.channels, channels...)
@@ -146,7 +150,8 @@ func (c *PubSub) Subscribe(channels ...string) error {
 	return c.subscribe("subscribe", channels...)
 }
 
-// Subscribes the client to the given patterns.
+// Subscribes the client to the given patterns. It returns
+// empty subscription if there are no patterns.
 func (c *PubSub) PSubscribe(patterns ...string) error {
 	c.subMu.Lock()
 	c.patterns = appendIfNotExists(c.patterns, patterns...)
