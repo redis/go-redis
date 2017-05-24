@@ -114,13 +114,12 @@ var _ = Describe("Commands", func() {
 
 			Expect(get.Err()).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("theclientname"))
-
 		})
 
 		It("should ConfigGet", func() {
-			r := client.ConfigGet("*")
-			Expect(r.Err()).NotTo(HaveOccurred())
-			Expect(r.Val()).NotTo(BeEmpty())
+			val, err := client.ConfigGet("*").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).NotTo(BeEmpty())
 		})
 
 		It("should ConfigResetStat", func() {
