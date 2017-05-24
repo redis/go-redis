@@ -31,6 +31,10 @@ func NewScript(src string) *Script {
 	}
 }
 
+func (s *Script) Hash() string {
+	return s.hash
+}
+
 func (s *Script) Load(c scripter) *StringCmd {
 	return c.ScriptLoad(s.src)
 }
