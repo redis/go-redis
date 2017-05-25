@@ -296,3 +296,26 @@ var _ = Describe("Client timeout", func() {
 		testTimeout()
 	})
 })
+
+var _ = Describe("Client OnConnect", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		opt := redisOptions()
+		opt.OnConnect = func(cn *redis.Conn) error {
+			return cn.ClientSetName("on_connect").Err()
+		}
+
+		client = redis.NewClient(opt)
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("calls OnConnect", func() {
+		name, err := client.ClientGetName().Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(name).To(Equal("on_connect"))
+	})
+})

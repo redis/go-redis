@@ -29,6 +29,8 @@ type RingOptions struct {
 
 	// Following options are copied from Options struct.
 
+	OnConnect func(*Conn) error
+
 	DB       int
 	Password string
 
@@ -52,6 +54,8 @@ func (opt *RingOptions) init() {
 
 func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
+		OnConnect: opt.OnConnect,
+
 		DB:       opt.DB,
 		Password: opt.Password,
 

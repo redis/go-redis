@@ -42,6 +42,7 @@ type Cmdable interface {
 	Pipeline() Pipeliner
 	Pipelined(fn func(Pipeliner) error) ([]Cmder, error)
 
+	ClientGetName() *StringCmd
 	Echo(message interface{}) *StringCmd
 	Ping() *StatusCmd
 	Quit() *StatusCmd
@@ -242,7 +243,6 @@ type StatefulCmdable interface {
 	Auth(password string) *StatusCmd
 	Select(index int) *StatusCmd
 	ClientSetName(name string) *BoolCmd
-	ClientGetName() *StringCmd
 	ReadOnly() *StatusCmd
 	ReadWrite() *StatusCmd
 }
@@ -1649,7 +1649,7 @@ func (c *statefulCmdable) ClientSetName(name string) *BoolCmd {
 }
 
 // ClientGetName returns the name of the connection.
-func (c *statefulCmdable) ClientGetName() *StringCmd {
+func (c *cmdable) ClientGetName() *StringCmd {
 	cmd := NewStringCmd("client", "getname")
 	c.process(cmd)
 	return cmd

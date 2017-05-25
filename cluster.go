@@ -35,6 +35,8 @@ type ClusterOptions struct {
 
 	// Following options are copied from Options struct.
 
+	OnConnect func(*Conn) error
+
 	MaxRetries int
 	Password   string
 
@@ -65,6 +67,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 	const disableIdleCheck = -1
 
 	return &Options{
+		OnConnect: opt.OnConnect,
+
 		MaxRetries: opt.MaxRetries,
 		Password:   opt.Password,
 		ReadOnly:   opt.ReadOnly,
@@ -77,7 +81,6 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PoolTimeout: opt.PoolTimeout,
 		IdleTimeout: opt.IdleTimeout,
 
-		// IdleCheckFrequency is not copied to disable reaper
 		IdleCheckFrequency: disableIdleCheck,
 	}
 }
