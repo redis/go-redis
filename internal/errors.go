@@ -13,7 +13,7 @@ type RedisError string
 func (e RedisError) Error() string { return string(e) }
 
 func IsRetryableError(err error) bool {
-	return IsNetworkError(err)
+	return IsNetworkError(err) || err.Error() == "ERR max number of clients reached"
 }
 
 func IsInternalError(err error) bool {
