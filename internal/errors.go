@@ -1,10 +1,15 @@
 package internal
 
 import (
+	"errors"
 	"io"
 	"net"
 	"strings"
 )
+
+
+var ErrClosed = errors.New("redis: client is closed")
+var ErrPoolTimeout = errors.New("redis: connection pool timeout")
 
 const Nil = RedisError("redis: nil")
 
@@ -13,7 +18,7 @@ type RedisError string
 func (e RedisError) Error() string { return string(e) }
 
 func IsRetryableError(err error) bool {
-	return IsNetworkError(err)
+	return IsNetworkError(err) || err == ErrPoolTimeout || err == RedisError("ERR max number of clients reached")
 }
 
 func IsInternalError(err error) bool {

@@ -96,9 +96,17 @@ func (c *baseClient) WrapProcess(fn func(oldProcess func(cmd Cmder) error) func(
 
 func (c *baseClient) defaultProcess(cmd Cmder) error {
 	for i := 0; i <= c.opt.MaxRetries; i++ {
+		if i > 0 {
+			time.Sleep(internal.RetryBackoff(i, c.opt.MaxBackoffRetryTimeout))
+		}
+
 		cn, _, err := c.conn()
 		if err != nil {
 			cmd.setErr(err)
+
+			if err != nil && internal.IsRetryableError(err) {
+				continue
+			}
 			return err
 		}
 

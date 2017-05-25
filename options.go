@@ -34,6 +34,10 @@ type Options struct {
 	// Default is to not retry failed commands.
 	MaxRetries int
 
+	// Retry using exponential backoff wait algorithm between each retry
+	// Default is 512 milliseconds; set to -1 to disable
+	MaxBackoffRetryTimeout time.Duration
+
 	// Dial timeout for establishing new connections.
 	// Default is 5 seconds.
 	DialTimeout time.Duration
@@ -107,6 +111,11 @@ func (opt *Options) init() {
 	}
 	if opt.IdleCheckFrequency == 0 {
 		opt.IdleCheckFrequency = time.Minute
+	}
+	if opt.MaxBackoffRetryTimeout == 0 {
+		opt.MaxBackoffRetryTimeout = 512 * time.Millisecond
+	} else if opt.MaxBackoffRetryTimeout == -1 {
+		opt.MaxBackoffRetryTimeout = 0
 	}
 }
 
