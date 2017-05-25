@@ -148,7 +148,7 @@ func NewRing(opt *RingOptions) *Ring {
 
 		cmdsInfoOnce: new(sync.Once),
 	}
-	ring.cmdable.process = ring.Process
+	ring.setProcessor(ring.Process)
 	for name, addr := range opt.Addrs {
 		clopt := opt.clientOptions()
 		clopt.Addr = addr
@@ -385,8 +385,7 @@ func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.pipelineExec,
 	}
-	pipe.cmdable.process = pipe.Process
-	pipe.statefulCmdable.process = pipe.Process
+	pipe.setProcessor(pipe.Process)
 	return &pipe
 }
 

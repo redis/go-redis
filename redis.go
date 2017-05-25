@@ -294,7 +294,7 @@ func newClient(opt *Options, pool pool.Pooler) *Client {
 			connPool: pool,
 		},
 	}
-	client.cmdable.process = client.Process
+	client.setProcessor(client.Process)
 	return &client
 }
 
@@ -307,7 +307,7 @@ func NewClient(opt *Options) *Client {
 func (c *Client) copy() *Client {
 	c2 := new(Client)
 	*c2 = *c
-	c2.cmdable.process = c2.Process
+	c2.setProcessor(c2.Process)
 	return c2
 }
 
@@ -332,8 +332,7 @@ func (c *Client) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.pipelineExecer(c.pipelineProcessCmds),
 	}
-	pipe.cmdable.process = pipe.Process
-	pipe.statefulCmdable.process = pipe.Process
+	pipe.setProcessor(pipe.Process)
 	return &pipe
 }
 
@@ -346,8 +345,7 @@ func (c *Client) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.pipelineExecer(c.txPipelineProcessCmds),
 	}
-	pipe.cmdable.process = pipe.Process
-	pipe.statefulCmdable.process = pipe.Process
+	pipe.setProcessor(pipe.Process)
 	return &pipe
 }
 

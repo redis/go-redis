@@ -82,7 +82,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 			},
 		},
 	}
-	client.cmdable.process = client.Process
+	client.setProcessor(client.Process)
 
 	return &client
 }

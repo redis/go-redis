@@ -349,7 +349,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		opt:   opt,
 		nodes: newClusterNodes(opt),
 	}
-	c.cmdable.process = c.Process
+	c.setProcessor(c.Process)
 
 	// Add initial nodes.
 	for _, addr := range opt.Addrs {
@@ -678,8 +678,7 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.pipelineExec,
 	}
-	pipe.cmdable.process = pipe.Process
-	pipe.statefulCmdable.process = pipe.Process
+	pipe.setProcessor(pipe.Process)
 	return &pipe
 }
 
@@ -801,8 +800,7 @@ func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.txPipelineExec,
 	}
-	pipe.cmdable.process = pipe.Process
-	pipe.statefulCmdable.process = pipe.Process
+	pipe.setProcessor(pipe.Process)
 	return &pipe
 }
 
