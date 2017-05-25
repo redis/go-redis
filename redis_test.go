@@ -165,23 +165,26 @@ var _ = Describe("Client", func() {
 			Addr:       redisAddr,
 			MaxRetries: 1,
 		})
+		defer connectionHogClient.Close()
 
 		for i := 0; i <= 1002; i++ {
 			connectionHogClient.Pool().NewConn()
 		}
 
 		clientNoRetry := redis.NewClient(&redis.Options{
-			Addr:       redisAddr,
-			PoolSize:   1,
-			MaxBackoffRetryTimeout: -1,
+			Addr:            redisAddr,
+			PoolSize:        1,
+			MaxRetryBackoff: -1,
 		})
+		defer clientNoRetry.Close()
 
 		clientRetry := redis.NewClient(&redis.Options{
-			Addr:       redisAddr,
-			MaxRetries: 5,
-			PoolSize:   1,
-			MaxBackoffRetryTimeout: 128 * time.Millisecond,
+			Addr:            redisAddr,
+			MaxRetries:      5,
+			PoolSize:        1,
+			MaxRetryBackoff: 128 * time.Millisecond,
 		})
+		defer clientRetry.Close()
 
 		startNoRetry := time.Now()
 		err := clientNoRetry.Ping().Err()
@@ -196,9 +199,7 @@ var _ = Describe("Client", func() {
 
 		Expect(elapseRetry > elapseNoRetry).To(BeTrue())
 
-		clientRetry.Close()
-		clientNoRetry.Close()
-		connectionHogClient.Close()
+
 	})
 
 	It("should update conn.UsedAt on read/write", func() {
