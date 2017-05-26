@@ -35,6 +35,8 @@ type ClusterOptions struct {
 
 	// Following options are copied from Options struct.
 
+	OnConnect func(*Conn) error
+
 	MaxRetries int
 	Password   string
 
@@ -65,6 +67,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 	const disableIdleCheck = -1
 
 	return &Options{
+		OnConnect: opt.OnConnect,
+
 		MaxRetries: opt.MaxRetries,
 		Password:   opt.Password,
 		ReadOnly:   opt.ReadOnly,
@@ -77,7 +81,6 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PoolTimeout: opt.PoolTimeout,
 		IdleTimeout: opt.IdleTimeout,
 
-		// IdleCheckFrequency is not copied to disable reaper
 		IdleCheckFrequency: disableIdleCheck,
 	}
 }
@@ -349,7 +352,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		opt:   opt,
 		nodes: newClusterNodes(opt),
 	}
-	c.cmdable.process = c.Process
+	c.setProcessor(c.Process)
 
 	// Add initial nodes.
 	for _, addr := range opt.Addrs {
@@ -678,8 +681,7 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.pipelineExec,
 	}
-	pipe.cmdable.process = pipe.Process
-	pipe.statefulCmdable.process = pipe.Process
+	pipe.setProcessor(pipe.Process)
 	return &pipe
 }
 
@@ -801,8 +803,7 @@ func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.txPipelineExec,
 	}
-	pipe.cmdable.process = pipe.Process
-	pipe.statefulCmdable.process = pipe.Process
+	pipe.setProcessor(pipe.Process)
 	return &pipe
 }
 

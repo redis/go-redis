@@ -10,7 +10,6 @@ import (
 type pipelineExecer func([]Cmder) error
 
 type Pipeliner interface {
-	Cmdable
 	StatefulCmdable
 	Process(cmd Cmder) error
 	Close() error
@@ -26,7 +25,6 @@ var _ Pipeliner = (*Pipeline)(nil)
 // http://redis.io/topics/pipelining. It's safe for concurrent use
 // by multiple goroutines.
 type Pipeline struct {
-	cmdable
 	statefulCmdable
 
 	exec pipelineExecer

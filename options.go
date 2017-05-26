@@ -24,6 +24,9 @@ type Options struct {
 	// Network and Addr options.
 	Dialer func() (net.Conn, error)
 
+	// Hook that is called when new connection is established.
+	OnConnect func(*Conn) error
+
 	// Optional password. Must match the password specified in the
 	// requirepass server configuration option.
 	Password string

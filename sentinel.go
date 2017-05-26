@@ -23,6 +23,8 @@ type FailoverOptions struct {
 
 	// Following options are copied from Options struct.
 
+	OnConnect func(*Conn) error
+
 	Password string
 	DB       int
 
@@ -41,6 +43,8 @@ type FailoverOptions struct {
 func (opt *FailoverOptions) options() *Options {
 	return &Options{
 		Addr: "FailoverClient",
+
+		OnConnect: opt.OnConnect,
 
 		DB:       opt.DB,
 		Password: opt.Password,
@@ -82,7 +86,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 			},
 		},
 	}
-	client.cmdable.process = client.Process
+	client.setProcessor(client.Process)
 
 	return &client
 }
