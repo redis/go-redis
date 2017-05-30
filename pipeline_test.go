@@ -34,16 +34,17 @@ var _ = Describe("pipelining", func() {
 	})
 
 	assertPipeline := func() {
-		It("returns an error when there are no commands", func() {
+		It("returns no errors when there are no commands", func() {
 			_, err := pipe.Exec()
-			Expect(err).To(MatchError("redis: pipeline is empty"))
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("discards queued commands", func() {
 			pipe.Get("key")
 			pipe.Discard()
-			_, err := pipe.Exec()
-			Expect(err).To(MatchError("redis: pipeline is empty"))
+			cmds, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmds).To(BeNil())
 		})
 
 		It("handles val/err", func() {

@@ -86,12 +86,12 @@ var _ = Describe("Tx", func() {
 		Expect(get.Val()).To(Equal("hello2"))
 	})
 
-	It("returns an error when there are no commands", func() {
+	It("returns no error when there are no commands", func() {
 		err := client.Watch(func(tx *redis.Tx) error {
 			_, err := tx.Pipelined(func(redis.Pipeliner) error { return nil })
 			return err
 		})
-		Expect(err).To(MatchError("redis: pipeline is empty"))
+		Expect(err).NotTo(HaveOccurred())
 
 		v, err := client.Ping().Result()
 		Expect(err).NotTo(HaveOccurred())
