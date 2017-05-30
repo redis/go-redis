@@ -1,7 +1,6 @@
 package redis
 
 import (
-	"errors"
 	"sync"
 
 	"github.com/go-redis/redis/internal/pool"
@@ -80,7 +79,7 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 	}
 
 	if len(c.cmds) == 0 {
-		return nil, errors.New("redis: pipeline is empty")
+		return nil, nil
 	}
 
 	cmds := c.cmds
