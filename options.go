@@ -37,8 +37,8 @@ type Options struct {
 	// Default is to not retry failed commands.
 	MaxRetries int
 
-	// Retry using exponential backoff wait algorithm between each retry
-	// Default is 512 milliseconds; set to -1 to disable any backoff sleep
+	// Maximum backoff between each retry.
+	// Default is 512 seconds; -1 disables backoff.
 	MaxRetryBackoff time.Duration
 
 	// Dial timeout for establishing new connections.
