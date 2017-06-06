@@ -34,6 +34,13 @@ func TestHashing(t *testing.T) {
 		return uint32(i)
 	})
 
+	// Get a value before any key is added to the hash
+	// Should yield an empty string
+	empty_value := hash.Get("empty key")
+	if empty_value != "" {
+		t.Errorf("Expecting empty string, got %s", empty_value)
+	}
+
 	// Given the above hash function, this will give replicas with "hashes":
 	// 2, 4, 6, 12, 14, 16, 22, 24, 26
 	hash.Add("6", "4", "2")
