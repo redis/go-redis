@@ -35,6 +35,23 @@ func ExampleNewClient() {
 	// Output: PONG <nil>
 }
 
+func ExampleParseURL() {
+	opt, err := redis.ParseURL("redis://:qwerty@localhost:6379/1")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("addr is", opt.Addr)
+	fmt.Println("db is", opt.DB)
+	fmt.Println("password is", opt.Password)
+
+	// Create client as usually.
+	_ = redis.NewClient(opt)
+
+	// Output: addr is localhost:6379
+	// db is 1
+	// password is qwerty
+}
+
 func ExampleNewFailoverClient() {
 	// See http://redis.io/topics/sentinel for instructions how to
 	// setup Redis Sentinel.

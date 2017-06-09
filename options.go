@@ -125,7 +125,7 @@ func (opt *Options) init() {
 	}
 }
 
-// ParseURL parses a redis URL into options that can be used to connect to redis
+// ParseURL parses an URL into Options that can be used to connect to Redis.
 func ParseURL(redisURL string) (*Options, error) {
 	o := &Options{Network: "tcp"}
 	u, err := url.Parse(redisURL)
