@@ -17,7 +17,7 @@ var _ = Describe("Commands", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -352,7 +352,7 @@ var _ = Describe("Commands", func() {
 			pipe := client.Pipeline()
 			pipe.Select(2)
 			get = pipe.Get("key")
-			pipe.FlushDb()
+			pipe.FlushDB()
 
 			_, err := pipe.Exec()
 			Expect(err).NotTo(HaveOccurred())

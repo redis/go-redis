@@ -29,7 +29,7 @@ var _ = Describe("Redis Ring", func() {
 		ring = redis.NewRing(opt)
 
 		err := ring.ForEachShard(func(cl *redis.Client) error {
-			return cl.FlushDb().Err()
+			return cl.FlushDB().Err()
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})

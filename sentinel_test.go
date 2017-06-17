@@ -15,7 +15,7 @@ var _ = Describe("Sentinel", func() {
 			MasterName:    sentinelName,
 			SentinelAddrs: []string{":" + sentinelPort},
 		})
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {

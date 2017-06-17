@@ -16,7 +16,7 @@ func benchmarkRedisClient(poolSize int) *redis.Client {
 		WriteTimeout: time.Second,
 		PoolSize:     poolSize,
 	})
-	if err := client.FlushDb().Err(); err != nil {
+	if err := client.FlushDB().Err(); err != nil {
 		panic(err)
 	}
 	return client
