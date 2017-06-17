@@ -14,7 +14,7 @@ var _ = Describe("pool", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {

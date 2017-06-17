@@ -20,7 +20,7 @@ func init() {
 		PoolSize:     10,
 		PoolTimeout:  30 * time.Second,
 	})
-	client.FlushDb()
+	client.FlushDB()
 }
 
 func ExampleNewClient() {
@@ -147,7 +147,7 @@ func ExampleClient_BLPop() {
 }
 
 func ExampleClient_Scan() {
-	client.FlushDb()
+	client.FlushDB()
 	for i := 0; i < 33; i++ {
 		err := client.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
 		if err != nil {

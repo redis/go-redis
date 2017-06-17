@@ -478,7 +478,7 @@ var _ = Describe("ClusterClient", func() {
 			}
 
 			err := client.ForEachMaster(func(master *redis.Client) error {
-				return master.FlushDb().Err()
+				return master.FlushDB().Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -496,7 +496,7 @@ var _ = Describe("ClusterClient", func() {
 			client = cluster.clusterClient(opt)
 
 			_ = client.ForEachMaster(func(master *redis.Client) error {
-				return master.FlushDb().Err()
+				return master.FlushDB().Err()
 			})
 		})
 
@@ -514,12 +514,12 @@ var _ = Describe("ClusterClient", func() {
 			client = cluster.clusterClient(opt)
 
 			_ = client.ForEachMaster(func(master *redis.Client) error {
-				return master.FlushDb().Err()
+				return master.FlushDB().Err()
 			})
 		})
 
 		AfterEach(func() {
-			client.FlushDb()
+			client.FlushDB()
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 

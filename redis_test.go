@@ -16,7 +16,7 @@ var _ = Describe("Client", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -111,7 +111,7 @@ var _ = Describe("Client", func() {
 			Addr: redisAddr,
 			DB:   2,
 		})
-		Expect(db2.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(db2.FlushDB().Err()).NotTo(HaveOccurred())
 		Expect(db2.Get("db").Err()).To(Equal(redis.Nil))
 		Expect(db2.Set("db", 2, 0).Err()).NotTo(HaveOccurred())
 
@@ -121,7 +121,7 @@ var _ = Describe("Client", func() {
 
 		Expect(client.Get("db").Err()).To(Equal(redis.Nil))
 
-		Expect(db2.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(db2.FlushDB().Err()).NotTo(HaveOccurred())
 		Expect(db2.Close()).NotTo(HaveOccurred())
 	})
 

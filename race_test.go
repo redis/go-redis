@@ -20,7 +20,7 @@ var _ = Describe("races", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).To(BeNil())
+		Expect(client.FlushDB().Err()).To(BeNil())
 
 		C, N = 10, 1000
 		if testing.Short() {

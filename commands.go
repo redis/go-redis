@@ -192,7 +192,9 @@ type Cmdable interface {
 	ConfigSet(parameter, value string) *StatusCmd
 	DbSize() *IntCmd
 	FlushAll() *StatusCmd
-	FlushDb() *StatusCmd
+	FlushAllAsync() *StatusCmd
+	FlushDB() *StatusCmd
+	FlushDBAsync() *StatusCmd
 	Info(section ...string) *StringCmd
 	LastSave() *IntCmd
 	Save() *StatusCmd
@@ -1685,8 +1687,27 @@ func (c *cmdable) FlushAll() *StatusCmd {
 	return cmd
 }
 
+func (c *cmdable) FlushAllAsync() *StatusCmd {
+	cmd := NewStatusCmd("flushall", "async")
+	c.process(cmd)
+	return cmd
+}
+
+// Deprecated. Use FlushDB instead.
 func (c *cmdable) FlushDb() *StatusCmd {
 	cmd := NewStatusCmd("flushdb")
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) FlushDB() *StatusCmd {
+	cmd := NewStatusCmd("flushdb")
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) FlushDBAsync() *StatusCmd {
+	cmd := NewStatusCmd("flushdb", "async")
 	c.process(cmd)
 	return cmd
 }
