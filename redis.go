@@ -383,6 +383,7 @@ func (c *Client) pubSub() *PubSub {
 }
 
 // Subscribe subscribes the client to the specified channels.
+// Channels can be omitted to create empty subscription.
 func (c *Client) Subscribe(channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
@@ -392,6 +393,7 @@ func (c *Client) Subscribe(channels ...string) *PubSub {
 }
 
 // PSubscribe subscribes the client to the given patterns.
+// Patterns can be omitted to create empty subscription.
 func (c *Client) PSubscribe(channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
