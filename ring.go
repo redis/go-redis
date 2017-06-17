@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go4.org/syncutil"
+
 	"github.com/go-redis/redis/internal"
 	"github.com/go-redis/redis/internal/consistenthash"
 	"github.com/go-redis/redis/internal/hashtag"
@@ -134,7 +136,7 @@ type Ring struct {
 	hash   *consistenthash.Map
 	shards map[string]*ringShard
 
-	cmdsInfoOnce *sync.Once
+	cmdsInfoOnce syncutil.Once
 	cmdsInfo     map[string]*CommandInfo
 
 	closed bool
@@ -149,8 +151,6 @@ func NewRing(opt *RingOptions) *Ring {
 
 		hash:   consistenthash.New(nreplicas, nil),
 		shards: make(map[string]*ringShard),
-
-		cmdsInfoOnce: new(sync.Once),
 	}
 	ring.setProcessor(ring.Process)
 	for name, addr := range opt.Addrs {
@@ -242,17 +242,21 @@ func (c *Ring) ForEachShard(fn func(client *Client) error) error {
 }
 
 func (c *Ring) cmdInfo(name string) *CommandInfo {
-	c.cmdsInfoOnce.Do(func() {
+	err := c.cmdsInfoOnce.Do(func() error {
+		var firstErr error
 		for _, shard := range c.shards {
 			cmdsInfo, err := shard.Client.Command().Result()
 			if err == nil {
 				c.cmdsInfo = cmdsInfo
-				return
+				return nil
+			}
+			if firstErr == nil {
+				firstErr = err
 			}
 		}
-		c.cmdsInfoOnce = &sync.Once{}
+		return firstErr
 	})
-	if c.cmdsInfo == nil {
+	if err != nil {
 		return nil
 	}
 	return c.cmdsInfo[name]

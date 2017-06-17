@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go4.org/syncutil"
+
 	"github.com/go-redis/redis/internal"
 	"github.com/go-redis/redis/internal/hashtag"
 	"github.com/go-redis/redis/internal/pool"
@@ -335,9 +337,11 @@ type ClusterClient struct {
 	cmdable
 
 	opt    *ClusterOptions
-	cmds   map[string]*CommandInfo
 	nodes  *clusterNodes
 	_state atomic.Value
+
+	cmdsInfoOnce syncutil.Once
+	cmdsInfo     map[string]*CommandInfo
 
 	// Reports where slots reloading is in progress.
 	reloading uint32
@@ -389,13 +393,34 @@ func (c *ClusterClient) state() *clusterState {
 	return nil
 }
 
+func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
+	err := c.cmdsInfoOnce.Do(func() error {
+		node, err := c.nodes.Random()
+		if err != nil {
+			return err
+		}
+
+		cmdsInfo, err := node.Client.Command().Result()
+		if err != nil {
+			return err
+		}
+
+		c.cmdsInfo = cmdsInfo
+		return nil
+	})
+	if err != nil {
+		return nil
+	}
+	return c.cmdsInfo[name]
+}
+
 func (c *ClusterClient) cmdSlotAndNode(state *clusterState, cmd Cmder) (int, *clusterNode, error) {
 	if state == nil {
 		node, err := c.nodes.Random()
 		return 0, node, err
 	}
 
-	cmdInfo := c.cmds[cmd.Name()]
+	cmdInfo := c.cmdInfo(cmd.Name())
 	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
 	slot := hashtag.Slot(firstKey)
 
@@ -629,15 +654,6 @@ func (c *ClusterClient) reloadSlots() (*clusterState, error) {
 	node, err := c.nodes.Random()
 	if err != nil {
 		return nil, err
-	}
-
-	// TODO: fix race
-	if c.cmds == nil {
-		cmds, err := node.Client.Command().Result()
-		if err != nil {
-			return nil, err
-		}
-		c.cmds = cmds
 	}
 
 	slots, err := node.Client.ClusterSlots().Result()
