@@ -106,19 +106,23 @@ func (p *ConnPool) NewConn() (*Conn, error) {
 }
 
 func (p *ConnPool) PopFree() *Conn {
-	timer := timers.Get().(*time.Timer)
-	timer.Reset(p.poolTimeout)
-
 	select {
 	case p.queue <- struct{}{}:
-		if !timer.Stop() {
-			<-timer.C
+	default:
+		timer := timers.Get().(*time.Timer)
+		timer.Reset(p.poolTimeout)
+
+		select {
+		case p.queue <- struct{}{}:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			timers.Put(timer)
+		case <-timer.C:
+			timers.Put(timer)
+			atomic.AddUint32(&p.stats.Timeouts, 1)
+			return nil
 		}
-		timers.Put(timer)
-	case <-timer.C:
-		timers.Put(timer)
-		atomic.AddUint32(&p.stats.Timeouts, 1)
-		return nil
 	}
 
 	p.freeConnsMu.Lock()
@@ -150,19 +154,23 @@ func (p *ConnPool) Get() (*Conn, bool, error) {
 
 	atomic.AddUint32(&p.stats.Requests, 1)
 
-	timer := timers.Get().(*time.Timer)
-	timer.Reset(p.poolTimeout)
-
 	select {
 	case p.queue <- struct{}{}:
-		if !timer.Stop() {
-			<-timer.C
+	default:
+		timer := timers.Get().(*time.Timer)
+		timer.Reset(p.poolTimeout)
+
+		select {
+		case p.queue <- struct{}{}:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			timers.Put(timer)
+		case <-timer.C:
+			timers.Put(timer)
+			atomic.AddUint32(&p.stats.Timeouts, 1)
+			return nil, false, ErrPoolTimeout
 		}
-		timers.Put(timer)
-	case <-timer.C:
-		timers.Put(timer)
-		atomic.AddUint32(&p.stats.Timeouts, 1)
-		return nil, false, ErrPoolTimeout
 	}
 
 	for {
