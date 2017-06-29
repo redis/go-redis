@@ -140,47 +140,6 @@ func (p *ConnPool) lastDialError() error {
 	return p._lastDialError.Load().(error)
 }
 
-func (p *ConnPool) PopFree() *Conn {
-	select {
-	case p.queue <- struct{}{}:
-	default:
-		timer := timers.Get().(*time.Timer)
-		timer.Reset(p.opt.PoolTimeout)
-
-		select {
-		case p.queue <- struct{}{}:
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timers.Put(timer)
-		case <-timer.C:
-			timers.Put(timer)
-			atomic.AddUint32(&p.stats.Timeouts, 1)
-			return nil
-		}
-	}
-
-	p.freeConnsMu.Lock()
-	cn := p.popFree()
-	p.freeConnsMu.Unlock()
-
-	if cn == nil {
-		<-p.queue
-	}
-	return cn
-}
-
-func (p *ConnPool) popFree() *Conn {
-	if len(p.freeConns) == 0 {
-		return nil
-	}
-
-	idx := len(p.freeConns) - 1
-	cn := p.freeConns[idx]
-	p.freeConns = p.freeConns[:idx]
-	return cn
-}
-
 // Get returns existed connection from the pool or creates a new one.
 func (p *ConnPool) Get() (*Conn, bool, error) {
 	if p.closed() {
@@ -233,6 +192,17 @@ func (p *ConnPool) Get() (*Conn, bool, error) {
 	}
 
 	return newcn, true, nil
+}
+
+func (p *ConnPool) popFree() *Conn {
+	if len(p.freeConns) == 0 {
+		return nil
+	}
+
+	idx := len(p.freeConns) - 1
+	cn := p.freeConns[idx]
+	p.freeConns = p.freeConns[:idx]
+	return cn
 }
 
 func (p *ConnPool) Put(cn *Conn) error {
@@ -303,17 +273,28 @@ func (p *ConnPool) closed() bool {
 	return atomic.LoadUint32(&p._closed) == 1
 }
 
+func (p *ConnPool) Filter(fn func(*Conn) bool) error {
+	var firstErr error
+	p.connsMu.Lock()
+	for _, cn := range p.conns {
+		if fn(cn) {
+			if err := p.closeConn(cn); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	p.connsMu.Unlock()
+	return firstErr
+}
+
 func (p *ConnPool) Close() error {
 	if !atomic.CompareAndSwapUint32(&p._closed, 0, 1) {
 		return ErrClosed
 	}
 
-	p.connsMu.Lock()
 	var firstErr error
+	p.connsMu.Lock()
 	for _, cn := range p.conns {
-		if cn == nil {
-			continue
-		}
 		if err := p.closeConn(cn); err != nil && firstErr == nil {
 			firstErr = err
 		}

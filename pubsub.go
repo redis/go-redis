@@ -19,54 +19,53 @@ import (
 type PubSub struct {
 	base baseClient
 
-	mu     sync.Mutex
-	cn     *pool.Conn
-	closed bool
-
-	subMu    sync.Mutex
+	mu       sync.Mutex
+	cn       *pool.Conn
 	channels []string
 	patterns []string
+	closed   bool
 
 	cmd *Cmd
 }
 
-func (c *PubSub) conn() (*pool.Conn, bool, error) {
+func (c *PubSub) conn() (*pool.Conn, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	cn, err := c._conn()
+	c.mu.Unlock()
+	return cn, err
+}
 
+func (c *PubSub) _conn() (*pool.Conn, error) {
 	if c.closed {
-		return nil, false, pool.ErrClosed
+		return nil, pool.ErrClosed
 	}
 
 	if c.cn != nil {
-		return c.cn, false, nil
+		return c.cn, nil
 	}
 
 	cn, err := c.base.connPool.NewConn()
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	if !cn.Inited {
 		if err := c.base.initConn(cn); err != nil {
 			_ = c.base.connPool.CloseConn(cn)
-			return nil, false, err
+			return nil, err
 		}
 	}
 
 	if err := c.resubscribe(cn); err != nil {
 		_ = c.base.connPool.CloseConn(cn)
-		return nil, false, err
+		return nil, err
 	}
 
 	c.cn = cn
-	return cn, true, nil
+	return cn, nil
 }
 
 func (c *PubSub) resubscribe(cn *pool.Conn) error {
-	c.subMu.Lock()
-	defer c.subMu.Unlock()
-
 	var firstErr error
 	if len(c.channels) > 0 {
 		if err := c._subscribe(cn, "subscribe", c.channels...); err != nil && firstErr == nil {
@@ -79,6 +78,18 @@ func (c *PubSub) resubscribe(cn *pool.Conn) error {
 		}
 	}
 	return firstErr
+}
+
+func (c *PubSub) _subscribe(cn *pool.Conn, redisCmd string, channels ...string) error {
+	args := make([]interface{}, 1+len(channels))
+	args[0] = redisCmd
+	for i, channel := range channels {
+		args[1+i] = channel
+	}
+	cmd := NewSliceCmd(args...)
+
+	cn.SetWriteTimeout(c.base.opt.WriteTimeout)
+	return writeCmd(cn, cmd)
 }
 
 func (c *PubSub) putConn(cn *pool.Conn, err error) {
@@ -114,67 +125,55 @@ func (c *PubSub) Close() error {
 	return nil
 }
 
-func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
-	cn, isNew, err := c.conn()
-	if err != nil {
-		return err
-	}
-
-	if isNew {
-		return nil
-	}
-
-	err = c._subscribe(cn, redisCmd, channels...)
-	c.putConn(cn, err)
-	return err
-}
-
-func (c *PubSub) _subscribe(cn *pool.Conn, redisCmd string, channels ...string) error {
-	args := make([]interface{}, 1+len(channels))
-	args[0] = redisCmd
-	for i, channel := range channels {
-		args[1+i] = channel
-	}
-	cmd := NewSliceCmd(args...)
-
-	cn.SetWriteTimeout(c.base.opt.WriteTimeout)
-	return writeCmd(cn, cmd)
-}
-
 // Subscribes the client to the specified channels. It returns
 // empty subscription if there are no channels.
 func (c *PubSub) Subscribe(channels ...string) error {
-	c.subMu.Lock()
+	c.mu.Lock()
+	err := c.subscribe("subscribe", channels...)
 	c.channels = appendIfNotExists(c.channels, channels...)
-	c.subMu.Unlock()
-	return c.subscribe("subscribe", channels...)
+	c.mu.Unlock()
+	return err
 }
 
 // Subscribes the client to the given patterns. It returns
 // empty subscription if there are no patterns.
 func (c *PubSub) PSubscribe(patterns ...string) error {
-	c.subMu.Lock()
+	c.mu.Lock()
+	err := c.subscribe("psubscribe", patterns...)
 	c.patterns = appendIfNotExists(c.patterns, patterns...)
-	c.subMu.Unlock()
-	return c.subscribe("psubscribe", patterns...)
+	c.mu.Unlock()
+	return err
 }
 
 // Unsubscribes the client from the given channels, or from all of
 // them if none is given.
 func (c *PubSub) Unsubscribe(channels ...string) error {
-	c.subMu.Lock()
+	c.mu.Lock()
+	err := c.subscribe("unsubscribe", channels...)
 	c.channels = remove(c.channels, channels...)
-	c.subMu.Unlock()
-	return c.subscribe("unsubscribe", channels...)
+	c.mu.Unlock()
+	return err
 }
 
 // Unsubscribes the client from the given patterns, or from all of
 // them if none is given.
 func (c *PubSub) PUnsubscribe(patterns ...string) error {
-	c.subMu.Lock()
+	c.mu.Lock()
+	err := c.subscribe("punsubscribe", patterns...)
 	c.patterns = remove(c.patterns, patterns...)
-	c.subMu.Unlock()
-	return c.subscribe("punsubscribe", patterns...)
+	c.mu.Unlock()
+	return err
+}
+
+func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
+	cn, err := c._conn()
+	if err != nil {
+		return err
+	}
+
+	err = c._subscribe(cn, redisCmd, channels...)
+	c.putConn(cn, err)
+	return err
 }
 
 func (c *PubSub) Ping(payload ...string) error {
@@ -184,7 +183,7 @@ func (c *PubSub) Ping(payload ...string) error {
 	}
 	cmd := NewCmd(args...)
 
-	cn, _, err := c.conn()
+	cn, err := c.conn()
 	if err != nil {
 		return err
 	}
@@ -277,7 +276,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 		c.cmd = NewCmd()
 	}
 
-	cn, _, err := c.conn()
+	cn, err := c.conn()
 	if err != nil {
 		return nil, err
 	}

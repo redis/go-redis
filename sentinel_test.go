@@ -23,15 +23,19 @@ var _ = Describe("Sentinel", func() {
 	})
 
 	It("should facilitate failover", func() {
-		// Set value on master, verify
+		// Set value on master.
 		err := client.Set("foo", "master", 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
+		// Verify.
 		val, err := sentinelMaster.Get("foo").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal("master"))
 
-		// Wait until replicated
+		// Create subscription.
+		ch := client.Subscribe("foo").Channel()
+
+		// Wait until replicated.
 		Eventually(func() string {
 			return sentinelSlave1.Get("foo").Val()
 		}, "1s", "100ms").Should(Equal("master"))
@@ -59,6 +63,15 @@ var _ = Describe("Sentinel", func() {
 		Eventually(func() error {
 			return client.Get("foo").Err()
 		}, "5s", "100ms").ShouldNot(HaveOccurred())
+
+		// Publish message to check if subscription is renewed.
+		err = client.Publish("foo", "hello").Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		var msg *redis.Message
+		Eventually(ch).Should(Receive(&msg))
+		Expect(msg.Channel).To(Equal("foo"))
+		Expect(msg.Payload).To(Equal("hello"))
 	})
 
 	It("supports DB selection", func() {
