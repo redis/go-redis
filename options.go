@@ -181,13 +181,13 @@ func ParseURL(redisURL string) (*Options, error) {
 }
 
 func newConnPool(opt *Options) *pool.ConnPool {
-	return pool.NewConnPool(
-		opt.Dialer,
-		opt.PoolSize,
-		opt.PoolTimeout,
-		opt.IdleTimeout,
-		opt.IdleCheckFrequency,
-	)
+	return pool.NewConnPool(&pool.Options{
+		Dialer:             opt.Dialer,
+		PoolSize:           opt.PoolSize,
+		PoolTimeout:        opt.PoolTimeout,
+		IdleTimeout:        opt.IdleTimeout,
+		IdleCheckFrequency: opt.IdleCheckFrequency,
+	})
 }
 
 // PoolStats contains pool state information and accumulated stats.
