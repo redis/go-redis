@@ -19,13 +19,11 @@ import (
 type PubSub struct {
 	base baseClient
 
-	mu     sync.Mutex
-	cn     *pool.Conn
-	closed bool
-
-	subMu    sync.Mutex
+	mu       sync.Mutex
+	cn       *pool.Conn
 	channels []string
 	patterns []string
+	closed   bool
 
 	cmd *Cmd
 }
@@ -64,9 +62,6 @@ func (c *PubSub) conn() (*pool.Conn, bool, error) {
 }
 
 func (c *PubSub) resubscribe(cn *pool.Conn) error {
-	c.subMu.Lock()
-	defer c.subMu.Unlock()
-
 	var firstErr error
 	if len(c.channels) > 0 {
 		if err := c._subscribe(cn, "subscribe", c.channels...); err != nil && firstErr == nil {
@@ -79,6 +74,18 @@ func (c *PubSub) resubscribe(cn *pool.Conn) error {
 		}
 	}
 	return firstErr
+}
+
+func (c *PubSub) _subscribe(cn *pool.Conn, redisCmd string, channels ...string) error {
+	args := make([]interface{}, 1+len(channels))
+	args[0] = redisCmd
+	for i, channel := range channels {
+		args[1+i] = channel
+	}
+	cmd := NewSliceCmd(args...)
+
+	cn.SetWriteTimeout(c.base.opt.WriteTimeout)
+	return writeCmd(cn, cmd)
 }
 
 func (c *PubSub) putConn(cn *pool.Conn, err error) {
@@ -114,6 +121,42 @@ func (c *PubSub) Close() error {
 	return nil
 }
 
+// Subscribes the client to the specified channels. It returns
+// empty subscription if there are no channels.
+func (c *PubSub) Subscribe(channels ...string) error {
+	c.mu.Lock()
+	c.channels = appendIfNotExists(c.channels, channels...)
+	c.mu.Unlock()
+	return c.subscribe("subscribe", channels...)
+}
+
+// Subscribes the client to the given patterns. It returns
+// empty subscription if there are no patterns.
+func (c *PubSub) PSubscribe(patterns ...string) error {
+	c.mu.Lock()
+	c.patterns = appendIfNotExists(c.patterns, patterns...)
+	c.mu.Unlock()
+	return c.subscribe("psubscribe", patterns...)
+}
+
+// Unsubscribes the client from the given channels, or from all of
+// them if none is given.
+func (c *PubSub) Unsubscribe(channels ...string) error {
+	c.mu.Lock()
+	c.channels = remove(c.channels, channels...)
+	c.mu.Unlock()
+	return c.subscribe("unsubscribe", channels...)
+}
+
+// Unsubscribes the client from the given patterns, or from all of
+// them if none is given.
+func (c *PubSub) PUnsubscribe(patterns ...string) error {
+	c.mu.Lock()
+	c.patterns = remove(c.patterns, patterns...)
+	c.mu.Unlock()
+	return c.subscribe("punsubscribe", patterns...)
+}
+
 func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
 	cn, isNew, err := c.conn()
 	if err != nil {
@@ -127,54 +170,6 @@ func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
 	err = c._subscribe(cn, redisCmd, channels...)
 	c.putConn(cn, err)
 	return err
-}
-
-func (c *PubSub) _subscribe(cn *pool.Conn, redisCmd string, channels ...string) error {
-	args := make([]interface{}, 1+len(channels))
-	args[0] = redisCmd
-	for i, channel := range channels {
-		args[1+i] = channel
-	}
-	cmd := NewSliceCmd(args...)
-
-	cn.SetWriteTimeout(c.base.opt.WriteTimeout)
-	return writeCmd(cn, cmd)
-}
-
-// Subscribes the client to the specified channels. It returns
-// empty subscription if there are no channels.
-func (c *PubSub) Subscribe(channels ...string) error {
-	c.subMu.Lock()
-	c.channels = appendIfNotExists(c.channels, channels...)
-	c.subMu.Unlock()
-	return c.subscribe("subscribe", channels...)
-}
-
-// Subscribes the client to the given patterns. It returns
-// empty subscription if there are no patterns.
-func (c *PubSub) PSubscribe(patterns ...string) error {
-	c.subMu.Lock()
-	c.patterns = appendIfNotExists(c.patterns, patterns...)
-	c.subMu.Unlock()
-	return c.subscribe("psubscribe", patterns...)
-}
-
-// Unsubscribes the client from the given channels, or from all of
-// them if none is given.
-func (c *PubSub) Unsubscribe(channels ...string) error {
-	c.subMu.Lock()
-	c.channels = remove(c.channels, channels...)
-	c.subMu.Unlock()
-	return c.subscribe("unsubscribe", channels...)
-}
-
-// Unsubscribes the client from the given patterns, or from all of
-// them if none is given.
-func (c *PubSub) PUnsubscribe(patterns ...string) error {
-	c.subMu.Lock()
-	c.patterns = remove(c.patterns, patterns...)
-	c.subMu.Unlock()
-	return c.subscribe("punsubscribe", patterns...)
 }
 
 func (c *PubSub) Ping(payload ...string) error {
