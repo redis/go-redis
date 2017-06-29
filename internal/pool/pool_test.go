@@ -238,30 +238,4 @@ var _ = Describe("race", func() {
 			}
 		})
 	})
-
-	It("does not happen on Get and PopFree", func() {
-		connPool = pool.NewConnPool(
-			&pool.Options{
-				Dialer:             dummyDialer,
-				PoolSize:           10,
-				PoolTimeout:        time.Minute,
-				IdleTimeout:        time.Second,
-				IdleCheckFrequency: time.Millisecond,
-			})
-
-		perform(C, func(id int) {
-			for i := 0; i < N; i++ {
-				cn, _, err := connPool.Get()
-				Expect(err).NotTo(HaveOccurred())
-				if err == nil {
-					Expect(connPool.Put(cn)).NotTo(HaveOccurred())
-				}
-
-				cn = connPool.PopFree()
-				if cn != nil {
-					Expect(connPool.Put(cn)).NotTo(HaveOccurred())
-				}
-			}
-		})
-	})
 })

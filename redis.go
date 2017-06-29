@@ -387,10 +387,7 @@ func (c *Client) pubSub() *PubSub {
 func (c *Client) Subscribe(channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
-		err := pubsub.Subscribe(channels...)
-		if err != nil {
-			panic(err)
-		}
+		_ = pubsub.Subscribe(channels...)
 	}
 	return pubsub
 }
