@@ -2888,12 +2888,12 @@ var _ = Describe("Commands", func() {
 		It("returns map of commands", func() {
 			cmds, err := client.Command().Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(cmds)).To(BeNumerically("~", 173, 5))
+			Expect(len(cmds)).To(BeNumerically("~", 180, 10))
 
 			cmd := cmds["mget"]
 			Expect(cmd.Name).To(Equal("mget"))
 			Expect(cmd.Arity).To(Equal(int8(-2)))
-			Expect(cmd.Flags).To(Equal([]string{"readonly"}))
+			Expect(cmd.Flags).To(ContainElement("readonly"))
 			Expect(cmd.FirstKeyPos).To(Equal(int8(1)))
 			Expect(cmd.LastKeyPos).To(Equal(int8(-1)))
 			Expect(cmd.StepCount).To(Equal(int8(1)))
