@@ -8,8 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go4.org/syncutil"
-
 	"github.com/go-redis/redis/internal"
 	"github.com/go-redis/redis/internal/hashtag"
 	"github.com/go-redis/redis/internal/pool"
@@ -347,7 +345,7 @@ type ClusterClient struct {
 	nodes  *clusterNodes
 	_state atomic.Value
 
-	cmdsInfoOnce syncutil.Once
+	cmdsInfoOnce internal.Once
 	cmdsInfo     map[string]*CommandInfo
 
 	// Reports where slots reloading is in progress.

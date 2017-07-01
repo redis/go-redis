@@ -16,6 +16,5 @@ matrix:
     - go: tip
 
 install:
-  - go get go4.org/syncutil
   - go get github.com/onsi/ginkgo
   - go get github.com/onsi/gomega
