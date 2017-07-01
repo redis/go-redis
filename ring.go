@@ -9,8 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go4.org/syncutil"
-
 	"github.com/go-redis/redis/internal"
 	"github.com/go-redis/redis/internal/consistenthash"
 	"github.com/go-redis/redis/internal/hashtag"
@@ -136,7 +134,7 @@ type Ring struct {
 	hash   *consistenthash.Map
 	shards map[string]*ringShard
 
-	cmdsInfoOnce syncutil.Once
+	cmdsInfoOnce internal.Once
 	cmdsInfo     map[string]*CommandInfo
 
 	closed bool
