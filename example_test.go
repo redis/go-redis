@@ -278,7 +278,14 @@ func ExamplePubSub() {
 	pubsub := client.Subscribe("mychannel1")
 	defer pubsub.Close()
 
-	err := client.Publish("mychannel1", "hello").Err()
+	// Wait for subscription to be created before publishing message.
+	subscr, err := pubsub.ReceiveTimeout(time.Second)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(subscr)
+
+	err = client.Publish("mychannel1", "hello").Err()
 	if err != nil {
 		panic(err)
 	}
@@ -289,22 +296,17 @@ func ExamplePubSub() {
 	}
 
 	fmt.Println(msg.Channel, msg.Payload)
-	// Output: mychannel1 hello
+	// Output: subscribe: mychannel1
+	// mychannel1 hello
 }
 
 func ExamplePubSub_Receive() {
 	pubsub := client.Subscribe("mychannel2")
 	defer pubsub.Close()
 
-	n, err := client.Publish("mychannel2", "hello").Result()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(n, "clients received message")
-
 	for i := 0; i < 2; i++ {
 		// ReceiveTimeout is a low level API. Use ReceiveMessage instead.
-		msgi, err := pubsub.ReceiveTimeout(5 * time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		if err != nil {
 			break
 		}
@@ -312,15 +314,19 @@ func ExamplePubSub_Receive() {
 		switch msg := msgi.(type) {
 		case *redis.Subscription:
 			fmt.Println("subscribed to", msg.Channel)
+
+			_, err := client.Publish("mychannel2", "hello").Result()
+			if err != nil {
+				panic(err)
+			}
 		case *redis.Message:
 			fmt.Println("received", msg.Payload, "from", msg.Channel)
 		default:
-			panic(fmt.Errorf("unknown message: %#v", msgi))
+			panic("unreached")
 		}
 	}
 
-	// Output: 1 clients received message
-	// subscribed to mychannel2
+	// sent message to 1 client
 	// received hello from mychannel2
 }
 
