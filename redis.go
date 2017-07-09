@@ -107,13 +107,6 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 	return nil
 }
 
-func (c *baseClient) Process(cmd Cmder) error {
-	if c.process != nil {
-		return c.process(cmd)
-	}
-	return c.defaultProcess(cmd)
-}
-
 // WrapProcess replaces the process func. It takes a function createWrapper
 // which is supplied by the user. createWrapper takes the old process func as
 // an input and returns the new wrapper process func. createWrapper should
@@ -122,10 +115,17 @@ func (c *baseClient) WrapProcess(fn func(oldProcess func(cmd Cmder) error) func(
 	c.process = fn(c.defaultProcess)
 }
 
+func (c *baseClient) Process(cmd Cmder) error {
+	if c.process != nil {
+		return c.process(cmd)
+	}
+	return c.defaultProcess(cmd)
+}
+
 func (c *baseClient) defaultProcess(cmd Cmder) error {
-	for i := 0; i <= c.opt.MaxRetries; i++ {
-		if i > 0 {
-			time.Sleep(internal.RetryBackoff(i, c.opt.MaxRetryBackoff))
+	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(c.retryBackoff(attempt))
 		}
 
 		cn, _, err := c.getConn()
@@ -158,6 +158,10 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 	}
 
 	return cmd.Err()
+}
+
+func (c *baseClient) retryBackoff(attempt int) time.Duration {
+	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
 }
 
 func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
