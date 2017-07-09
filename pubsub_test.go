@@ -159,9 +159,9 @@ var _ = Describe("PubSub", func() {
 		{
 			msgi, err := pubsub.ReceiveTimeout(time.Second)
 			Expect(err).NotTo(HaveOccurred())
-			subscr := msgi.(*redis.Message)
-			Expect(subscr.Channel).To(Equal("mychannel"))
-			Expect(subscr.Payload).To(Equal("hello"))
+			msg := msgi.(*redis.Message)
+			Expect(msg.Channel).To(Equal("mychannel"))
+			Expect(msg.Payload).To(Equal("hello"))
 		}
 
 		{

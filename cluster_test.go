@@ -472,6 +472,28 @@ var _ = Describe("ClusterClient", func() {
 			})
 		})
 
+		It("supports PubSub", func() {
+			pubsub := client.Subscribe("mychannel")
+			defer pubsub.Close()
+
+			msgi, err := pubsub.ReceiveTimeout(time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			subscr := msgi.(*redis.Subscription)
+			Expect(subscr.Kind).To(Equal("subscribe"))
+			Expect(subscr.Channel).To(Equal("mychannel"))
+			Expect(subscr.Count).To(Equal(1))
+
+			n, err := client.Publish("mychannel", "hello").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			msgi, err = pubsub.ReceiveTimeout(time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			msg := msgi.(*redis.Message)
+			Expect(msg.Channel).To(Equal("mychannel"))
+			Expect(msg.Payload).To(Equal("hello"))
+		})
+
 		It("calls fn for every master node", func() {
 			for i := 0; i < 10; i++ {
 				Expect(client.Set(strconv.Itoa(i), "", 0).Err()).NotTo(HaveOccurred())

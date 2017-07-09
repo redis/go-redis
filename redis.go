@@ -21,7 +21,23 @@ func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.getAddr(), c.opt.DB)
 }
 
-func (c *baseClient) conn() (*pool.Conn, bool, error) {
+func (c *baseClient) newConn() (*pool.Conn, error) {
+	cn, err := c.connPool.NewConn()
+	if err != nil {
+		return nil, err
+	}
+
+	if !cn.Inited {
+		if err := c.initConn(cn); err != nil {
+			_ = c.connPool.CloseConn(cn)
+			return nil, err
+		}
+	}
+
+	return cn, nil
+}
+
+func (c *baseClient) getConn() (*pool.Conn, bool, error) {
 	cn, isNew, err := c.connPool.Get()
 	if err != nil {
 		return nil, false, err
@@ -37,7 +53,7 @@ func (c *baseClient) conn() (*pool.Conn, bool, error) {
 	return cn, isNew, nil
 }
 
-func (c *baseClient) putConn(cn *pool.Conn, err error) bool {
+func (c *baseClient) releaseConn(cn *pool.Conn, err error) bool {
 	if internal.IsBadConn(err, false) {
 		_ = c.connPool.Remove(cn)
 		return false
@@ -112,7 +128,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 			time.Sleep(internal.RetryBackoff(i, c.opt.MaxRetryBackoff))
 		}
 
-		cn, _, err := c.conn()
+		cn, _, err := c.getConn()
 		if err != nil {
 			cmd.setErr(err)
 			if internal.IsRetryableError(err) {
@@ -123,7 +139,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 
 		cn.SetWriteTimeout(c.opt.WriteTimeout)
 		if err := writeCmd(cn, cmd); err != nil {
-			c.putConn(cn, err)
+			c.releaseConn(cn, err)
 			cmd.setErr(err)
 			if internal.IsRetryableError(err) {
 				continue
@@ -133,7 +149,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 
 		cn.SetReadTimeout(c.cmdTimeout(cmd))
 		err = cmd.readReply(cn)
-		c.putConn(cn, err)
+		c.releaseConn(cn, err)
 		if err != nil && internal.IsRetryableError(err) {
 			continue
 		}
@@ -179,14 +195,14 @@ func (c *baseClient) pipelineExecer(p pipelineProcessor) pipelineExecer {
 	return func(cmds []Cmder) error {
 		var firstErr error
 		for i := 0; i <= c.opt.MaxRetries; i++ {
-			cn, _, err := c.conn()
+			cn, _, err := c.getConn()
 			if err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
 
 			canRetry, err := p(cn, cmds)
-			c.putConn(cn, err)
+			c.releaseConn(cn, err)
 			if err == nil {
 				return nil
 			}
@@ -375,10 +391,12 @@ func (c *Client) TxPipeline() Pipeliner {
 
 func (c *Client) pubSub() *PubSub {
 	return &PubSub{
-		base: baseClient{
-			opt:      c.opt,
-			connPool: c.connPool,
+		opt: c.opt,
+
+		newConn: func(channels []string) (*pool.Conn, error) {
+			return c.newConn()
 		},
+		closeConn: c.connPool.CloseConn,
 	}
 }
 
