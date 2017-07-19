@@ -234,7 +234,9 @@ type Cmdable interface {
 	GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd
 	GeoPos(key string, members ...string) *GeoPosCmd
 	GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd
+	GeoRadiusRO(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd
 	GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
+	GeoRadiusByMemberRO(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
 	GeoDist(key string, member1, member2, unit string) *FloatCmd
 	GeoHash(key string, members ...string) *StringSliceCmd
 	Command() *CommandsInfoCmd
@@ -2061,8 +2063,20 @@ func (c *cmdable) GeoRadius(key string, longitude, latitude float64, query *GeoR
 	return cmd
 }
 
+func (c *cmdable) GeoRadiusRO(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
+	cmd := NewGeoLocationCmd(query, "georadius_ro", key, longitude, latitude)
+	c.process(cmd)
+	return cmd
+}
+
 func (c *cmdable) GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadiusbymember", key, member)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) GeoRadiusByMemberRO(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
+	cmd := NewGeoLocationCmd(query, "georadiusbymember_ro", key, member)
 	c.process(cmd)
 	return cmd
 }
