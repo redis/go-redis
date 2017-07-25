@@ -73,7 +73,7 @@ type Options struct {
 	IdleCheckFrequency time.Duration
 
 	// Enables read only queries on slave nodes.
-	ReadOnly bool
+	readOnly bool
 
 	// TLS Config to use. When set TLS will be negotiated.
 	TLSConfig *tls.Config

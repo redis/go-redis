@@ -68,7 +68,7 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 
 	if c.opt.Password == "" &&
 		c.opt.DB == 0 &&
-		!c.opt.ReadOnly &&
+		!c.opt.readOnly &&
 		c.opt.OnConnect == nil {
 		return nil
 	}
@@ -91,7 +91,7 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 			pipe.Select(c.opt.DB)
 		}
 
-		if c.opt.ReadOnly {
+		if c.opt.readOnly {
 			pipe.ReadOnly()
 		}
 
