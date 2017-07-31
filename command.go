@@ -252,8 +252,18 @@ func (cmd *StatusCmd) String() string {
 }
 
 func (cmd *StatusCmd) readReply(cn *pool.Conn) error {
-	cmd.val, cmd.err = cn.Rd.ReadStringReply()
-	return cmd.err
+	//fix connect to ssdb
+	//cmd.val, cmd.err = cn.Rd.ReadStringReply()
+	//return cmd.err
+	val, err := cn.Rd.ReadReply(sliceParser)
+	if err != nil {
+		return err
+	}
+	if b, ok := val.([]byte); ok {
+		// Bytes must be copied, because underlying memory is reused.
+		cmd.val = string(b)
+	}
+	return nil
 }
 
 //------------------------------------------------------------------------------
