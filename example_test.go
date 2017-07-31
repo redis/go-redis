@@ -20,7 +20,7 @@ func init() {
 		PoolSize:     10,
 		PoolTimeout:  30 * time.Second,
 	})
-	client.FlushDb()
+	client.FlushDB()
 }
 
 func ExampleNewClient() {
@@ -33,6 +33,23 @@ func ExampleNewClient() {
 	pong, err := client.Ping().Result()
 	fmt.Println(pong, err)
 	// Output: PONG <nil>
+}
+
+func ExampleParseURL() {
+	opt, err := redis.ParseURL("redis://:qwerty@localhost:6379/1")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("addr is", opt.Addr)
+	fmt.Println("db is", opt.DB)
+	fmt.Println("password is", opt.Password)
+
+	// Create client as usually.
+	_ = redis.NewClient(opt)
+
+	// Output: addr is localhost:6379
+	// db is 1
+	// password is qwerty
 }
 
 func ExampleNewFailoverClient() {
@@ -130,7 +147,7 @@ func ExampleClient_BLPop() {
 }
 
 func ExampleClient_Scan() {
-	client.FlushDb()
+	client.FlushDB()
 	for i := 0; i < 33; i++ {
 		err := client.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
 		if err != nil {
@@ -159,7 +176,7 @@ func ExampleClient_Scan() {
 
 func ExampleClient_Pipelined() {
 	var incr *redis.IntCmd
-	_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+	_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
 		incr = pipe.Incr("pipelined_counter")
 		pipe.Expire("pipelined_counter", time.Hour)
 		return nil
@@ -187,7 +204,7 @@ func ExampleClient_Pipeline() {
 
 func ExampleClient_TxPipelined() {
 	var incr *redis.IntCmd
-	_, err := client.TxPipelined(func(pipe *redis.Pipeline) error {
+	_, err := client.TxPipelined(func(pipe redis.Pipeliner) error {
 		incr = pipe.Incr("tx_pipelined_counter")
 		pipe.Expire("tx_pipelined_counter", time.Hour)
 		return nil
@@ -226,7 +243,7 @@ func ExampleClient_Watch() {
 				return err
 			}
 
-			_, err = tx.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err = tx.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Set(key, strconv.FormatInt(n+1, 10), 0)
 				return nil
 			})
@@ -261,7 +278,14 @@ func ExamplePubSub() {
 	pubsub := client.Subscribe("mychannel1")
 	defer pubsub.Close()
 
-	err := client.Publish("mychannel1", "hello").Err()
+	// Wait for subscription to be created before publishing message.
+	subscr, err := pubsub.ReceiveTimeout(time.Second)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(subscr)
+
+	err = client.Publish("mychannel1", "hello").Err()
 	if err != nil {
 		panic(err)
 	}
@@ -272,22 +296,17 @@ func ExamplePubSub() {
 	}
 
 	fmt.Println(msg.Channel, msg.Payload)
-	// Output: mychannel1 hello
+	// Output: subscribe: mychannel1
+	// mychannel1 hello
 }
 
 func ExamplePubSub_Receive() {
 	pubsub := client.Subscribe("mychannel2")
 	defer pubsub.Close()
 
-	n, err := client.Publish("mychannel2", "hello").Result()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(n, "clients received message")
-
 	for i := 0; i < 2; i++ {
 		// ReceiveTimeout is a low level API. Use ReceiveMessage instead.
-		msgi, err := pubsub.ReceiveTimeout(5 * time.Second)
+		msgi, err := pubsub.ReceiveTimeout(time.Second)
 		if err != nil {
 			break
 		}
@@ -295,15 +314,19 @@ func ExamplePubSub_Receive() {
 		switch msg := msgi.(type) {
 		case *redis.Subscription:
 			fmt.Println("subscribed to", msg.Channel)
+
+			_, err := client.Publish("mychannel2", "hello").Result()
+			if err != nil {
+				panic(err)
+			}
 		case *redis.Message:
 			fmt.Println("received", msg.Payload, "from", msg.Channel)
 		default:
-			panic(fmt.Errorf("unknown message: %#v", msgi))
+			panic("unreached")
 		}
 	}
 
-	// Output: 1 clients received message
-	// subscribed to mychannel2
+	// sent message to 1 client
 	// received hello from mychannel2
 }
 

@@ -1,7 +1,6 @@
 package redis
 
 import (
-	"errors"
 	"sync"
 
 	"github.com/go-redis/redis/internal/pool"
@@ -9,11 +8,22 @@ import (
 
 type pipelineExecer func([]Cmder) error
 
+type Pipeliner interface {
+	StatefulCmdable
+	Process(cmd Cmder) error
+	Close() error
+	Discard() error
+	discard() error
+	Exec() ([]Cmder, error)
+	pipelined(fn func(Pipeliner) error) ([]Cmder, error)
+}
+
+var _ Pipeliner = (*Pipeline)(nil)
+
 // Pipeline implements pipelining as described in
 // http://redis.io/topics/pipelining. It's safe for concurrent use
 // by multiple goroutines.
 type Pipeline struct {
-	cmdable
 	statefulCmdable
 
 	exec pipelineExecer
@@ -69,7 +79,7 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 	}
 
 	if len(c.cmds) == 0 {
-		return nil, errors.New("redis: pipeline is empty")
+		return nil, nil
 	}
 
 	cmds := c.cmds
@@ -78,11 +88,19 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 	return cmds, c.exec(cmds)
 }
 
-func (c *Pipeline) pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+func (c *Pipeline) pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	if err := fn(c); err != nil {
 		return nil, err
 	}
 	cmds, err := c.Exec()
 	_ = c.Close()
 	return cmds, err
+}
+
+func (c *Pipeline) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.pipelined(fn)
+}
+
+func (c *Pipeline) Pipeline() Pipeliner {
+	return c
 }

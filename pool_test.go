@@ -14,7 +14,7 @@ var _ = Describe("pool", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -39,7 +39,7 @@ var _ = Describe("pool", func() {
 			var ping *redis.StatusCmd
 
 			err := client.Watch(func(tx *redis.Tx) error {
-				cmds, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+				cmds, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
 					ping = pipe.Ping()
 					return nil
 				})

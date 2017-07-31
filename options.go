@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,9 @@ type Options struct {
 	// Network and Addr options.
 	Dialer func() (net.Conn, error)
 
+	// Hook that is called when new connection is established.
+	OnConnect func(*Conn) error
+
 	// Optional password. Must match the password specified in the
 	// requirepass server configuration option.
 	Password string
@@ -33,6 +37,12 @@ type Options struct {
 	// Maximum number of retries before giving up.
 	// Default is to not retry failed commands.
 	MaxRetries int
+	// Minimum backoff between each retry.
+	// Default is 8 milliseconds; -1 disables backoff.
+	MinRetryBackoff time.Duration
+	// Maximum backoff between each retry.
+	// Default is 512 milliseconds; -1 disables backoff.
+	MaxRetryBackoff time.Duration
 
 	// Dial timeout for establishing new connections.
 	// Default is 5 seconds.
@@ -47,7 +57,7 @@ type Options struct {
 	WriteTimeout time.Duration
 
 	// Maximum number of socket connections.
-	// Default is 10 connections.
+	// Default is 10 connections per every CPU as reported by runtime.NumCPU.
 	PoolSize int
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
@@ -63,7 +73,7 @@ type Options struct {
 	IdleCheckFrequency time.Duration
 
 	// Enables read only queries on slave nodes.
-	ReadOnly bool
+	readOnly bool
 
 	// TLS Config to use. When set TLS will be negotiated.
 	TLSConfig *tls.Config
@@ -84,20 +94,22 @@ func (opt *Options) init() {
 		}
 	}
 	if opt.PoolSize == 0 {
-		opt.PoolSize = 10
+		opt.PoolSize = 10 * runtime.NumCPU()
 	}
 	if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second
 	}
-	if opt.ReadTimeout == 0 {
-		opt.ReadTimeout = 3 * time.Second
-	} else if opt.ReadTimeout == -1 {
+	switch opt.ReadTimeout {
+	case -1:
 		opt.ReadTimeout = 0
+	case 0:
+		opt.ReadTimeout = 3 * time.Second
 	}
-	if opt.WriteTimeout == 0 {
-		opt.WriteTimeout = opt.ReadTimeout
-	} else if opt.WriteTimeout == -1 {
+	switch opt.WriteTimeout {
+	case -1:
 		opt.WriteTimeout = 0
+	case 0:
+		opt.WriteTimeout = opt.ReadTimeout
 	}
 	if opt.PoolTimeout == 0 {
 		opt.PoolTimeout = opt.ReadTimeout + time.Second
@@ -108,9 +120,22 @@ func (opt *Options) init() {
 	if opt.IdleCheckFrequency == 0 {
 		opt.IdleCheckFrequency = time.Minute
 	}
+
+	switch opt.MinRetryBackoff {
+	case -1:
+		opt.MinRetryBackoff = 0
+	case 0:
+		opt.MinRetryBackoff = 8 * time.Millisecond
+	}
+	switch opt.MaxRetryBackoff {
+	case -1:
+		opt.MaxRetryBackoff = 0
+	case 0:
+		opt.MaxRetryBackoff = 512 * time.Millisecond
+	}
 }
 
-// ParseURL parses a redis URL into options that can be used to connect to redis
+// ParseURL parses an URL into Options that can be used to connect to Redis.
 func ParseURL(redisURL string) (*Options, error) {
 	o := &Options{Network: "tcp"}
 	u, err := url.Parse(redisURL)
@@ -165,13 +190,13 @@ func ParseURL(redisURL string) (*Options, error) {
 }
 
 func newConnPool(opt *Options) *pool.ConnPool {
-	return pool.NewConnPool(
-		opt.Dialer,
-		opt.PoolSize,
-		opt.PoolTimeout,
-		opt.IdleTimeout,
-		opt.IdleCheckFrequency,
-	)
+	return pool.NewConnPool(&pool.Options{
+		Dialer:             opt.Dialer,
+		PoolSize:           opt.PoolSize,
+		PoolTimeout:        opt.PoolTimeout,
+		IdleTimeout:        opt.IdleTimeout,
+		IdleCheckFrequency: opt.IdleCheckFrequency,
+	})
 }
 
 // PoolStats contains pool state information and accumulated stats.

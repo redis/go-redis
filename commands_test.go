@@ -17,7 +17,7 @@ var _ = Describe("Commands", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -27,7 +27,7 @@ var _ = Describe("Commands", func() {
 	Describe("server", func() {
 
 		It("should Auth", func() {
-			_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Auth("password")
 				return nil
 			})
@@ -114,13 +114,12 @@ var _ = Describe("Commands", func() {
 
 			Expect(get.Err()).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("theclientname"))
-
 		})
 
 		It("should ConfigGet", func() {
-			r := client.ConfigGet("*")
-			Expect(r.Err()).NotTo(HaveOccurred())
-			Expect(r.Val()).NotTo(BeEmpty())
+			val, err := client.ConfigGet("*").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).NotTo(BeEmpty())
 		})
 
 		It("should ConfigResetStat", func() {
@@ -353,7 +352,7 @@ var _ = Describe("Commands", func() {
 			pipe := client.Pipeline()
 			pipe.Select(2)
 			get = pipe.Get("key")
-			pipe.FlushDb()
+			pipe.FlushDB()
 
 			_, err := pipe.Exec()
 			Expect(err).NotTo(HaveOccurred())
@@ -2889,12 +2888,12 @@ var _ = Describe("Commands", func() {
 		It("returns map of commands", func() {
 			cmds, err := client.Command().Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(cmds)).To(BeNumerically("~", 173, 5))
+			Expect(len(cmds)).To(BeNumerically("~", 180, 10))
 
 			cmd := cmds["mget"]
 			Expect(cmd.Name).To(Equal("mget"))
 			Expect(cmd.Arity).To(Equal(int8(-2)))
-			Expect(cmd.Flags).To(Equal([]string{"readonly"}))
+			Expect(cmd.Flags).To(ContainElement("readonly"))
 			Expect(cmd.FirstKeyPos).To(Equal(int8(1)))
 			Expect(cmd.LastKeyPos).To(Equal(int8(-1)))
 			Expect(cmd.StepCount).To(Equal(int8(1)))

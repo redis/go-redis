@@ -33,7 +33,7 @@ var (
 type Cmder interface {
 	args() []interface{}
 	arg(int) string
-	name() string
+	Name() string
 
 	readReply(*pool.Conn) error
 	setErr(error)
@@ -84,7 +84,7 @@ func cmdString(cmd Cmder, val interface{}) string {
 }
 
 func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
-	switch cmd.name() {
+	switch cmd.Name() {
 	case "eval", "evalsha":
 		if cmd.arg(2) != "0" {
 			return 3
@@ -95,7 +95,7 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		return 1
 	}
 	if info == nil {
-		internal.Logf("info for cmd=%s not found", cmd.name())
+		internal.Logf("info for cmd=%s not found", cmd.Name())
 		return -1
 	}
 	return int(info.FirstKeyPos)
@@ -111,10 +111,7 @@ type baseCmd struct {
 }
 
 func (cmd *baseCmd) Err() error {
-	if cmd.err != nil {
-		return cmd.err
-	}
-	return nil
+	return cmd.err
 }
 
 func (cmd *baseCmd) args() []interface{} {
@@ -129,7 +126,7 @@ func (cmd *baseCmd) arg(pos int) string {
 	return s
 }
 
-func (cmd *baseCmd) name() string {
+func (cmd *baseCmd) Name() string {
 	if len(cmd._args) > 0 {
 		// Cmd name must be lower cased.
 		s := internal.ToLower(cmd.arg(0))
@@ -812,7 +809,9 @@ type GeoRadiusQuery struct {
 	WithGeoHash bool
 	Count       int
 	// Can be ASC or DESC. Default is no sort order.
-	Sort string
+	Sort      string
+	Store     string
+	StoreDist string
 }
 
 type GeoLocationCmd struct {
@@ -830,19 +829,27 @@ func NewGeoLocationCmd(q *GeoRadiusQuery, args ...interface{}) *GeoLocationCmd {
 		args = append(args, "km")
 	}
 	if q.WithCoord {
-		args = append(args, "WITHCOORD")
+		args = append(args, "withcoord")
 	}
 	if q.WithDist {
-		args = append(args, "WITHDIST")
+		args = append(args, "withdist")
 	}
 	if q.WithGeoHash {
-		args = append(args, "WITHHASH")
+		args = append(args, "withhash")
 	}
 	if q.Count > 0 {
-		args = append(args, "COUNT", q.Count)
+		args = append(args, "count", q.Count)
 	}
 	if q.Sort != "" {
 		args = append(args, q.Sort)
+	}
+	if q.Store != "" {
+		args = append(args, "store")
+		args = append(args, q.Store)
+	}
+	if q.StoreDist != "" {
+		args = append(args, "storedist")
+		args = append(args, q.StoreDist)
 	}
 	return &GeoLocationCmd{
 		baseCmd: baseCmd{_args: args},

@@ -29,6 +29,8 @@ type RingOptions struct {
 
 	// Following options are copied from Options struct.
 
+	OnConnect func(*Conn) error
+
 	DB       int
 	Password string
 
@@ -52,6 +54,8 @@ func (opt *RingOptions) init() {
 
 func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
+		OnConnect: opt.OnConnect,
+
 		DB:       opt.DB,
 		Password: opt.Password,
 
@@ -130,7 +134,7 @@ type Ring struct {
 	hash   *consistenthash.Map
 	shards map[string]*ringShard
 
-	cmdsInfoOnce *sync.Once
+	cmdsInfoOnce internal.Once
 	cmdsInfo     map[string]*CommandInfo
 
 	closed bool
@@ -145,10 +149,8 @@ func NewRing(opt *RingOptions) *Ring {
 
 		hash:   consistenthash.New(nreplicas, nil),
 		shards: make(map[string]*ringShard),
-
-		cmdsInfoOnce: new(sync.Once),
 	}
-	ring.cmdable.process = ring.Process
+	ring.setProcessor(ring.Process)
 	for name, addr := range opt.Addrs {
 		clopt := opt.clientOptions()
 		clopt.Addr = addr
@@ -238,17 +240,21 @@ func (c *Ring) ForEachShard(fn func(client *Client) error) error {
 }
 
 func (c *Ring) cmdInfo(name string) *CommandInfo {
-	c.cmdsInfoOnce.Do(func() {
+	err := c.cmdsInfoOnce.Do(func() error {
+		var firstErr error
 		for _, shard := range c.shards {
 			cmdsInfo, err := shard.Client.Command().Result()
 			if err == nil {
 				c.cmdsInfo = cmdsInfo
-				return
+				return nil
+			}
+			if firstErr == nil {
+				firstErr = err
 			}
 		}
-		c.cmdsInfoOnce = &sync.Once{}
+		return firstErr
 	})
-	if c.cmdsInfo == nil {
+	if err != nil {
 		return nil
 	}
 	return c.cmdsInfo[name]
@@ -298,7 +304,7 @@ func (c *Ring) shardByName(name string) (*ringShard, error) {
 }
 
 func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
-	cmdInfo := c.cmdInfo(cmd.name())
+	cmdInfo := c.cmdInfo(cmd.Name())
 	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
 	return c.shardByKey(firstKey)
 }
@@ -381,23 +387,22 @@ func (c *Ring) Close() error {
 	return firstErr
 }
 
-func (c *Ring) Pipeline() *Pipeline {
+func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.pipelineExec,
 	}
-	pipe.cmdable.process = pipe.Process
-	pipe.statefulCmdable.process = pipe.Process
+	pipe.setProcessor(pipe.Process)
 	return &pipe
 }
 
-func (c *Ring) Pipelined(fn func(*Pipeline) error) ([]Cmder, error) {
+func (c *Ring) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().pipelined(fn)
 }
 
 func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
-		cmdInfo := c.cmdInfo(cmd.name())
+		cmdInfo := c.cmdInfo(cmd.Name())
 		name := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
 		if name != "" {
 			name = c.hash.Get(hashtag.Key(name))
@@ -418,7 +423,7 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 				continue
 			}
 
-			cn, _, err := shard.Client.conn()
+			cn, _, err := shard.Client.getConn()
 			if err != nil {
 				setCmdsErr(cmds, err)
 				if firstErr == nil {
@@ -428,7 +433,7 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 			}
 
 			canRetry, err := shard.Client.pipelineProcessCmds(cn, cmds)
-			shard.Client.putConn(cn, err, false)
+			shard.Client.releaseConn(cn, err)
 			if err == nil {
 				continue
 			}

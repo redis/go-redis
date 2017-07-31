@@ -16,7 +16,7 @@ func benchmarkRedisClient(poolSize int) *redis.Client {
 		WriteTimeout: time.Second,
 		PoolSize:     poolSize,
 	})
-	if err := client.FlushDb().Err(); err != nil {
+	if err := client.FlushDB().Err(); err != nil {
 		panic(err)
 	}
 	return client
@@ -188,7 +188,7 @@ func BenchmarkPipeline(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Set("key", "hello", 0)
 				pipe.Expire("key", time.Second)
 				return nil

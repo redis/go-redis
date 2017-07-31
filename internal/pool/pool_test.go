@@ -14,8 +14,13 @@ var _ = Describe("ConnPool", func() {
 	var connPool *pool.ConnPool
 
 	BeforeEach(func() {
-		connPool = pool.NewConnPool(
-			dummyDialer, 10, time.Hour, time.Millisecond, time.Millisecond)
+		connPool = pool.NewConnPool(&pool.Options{
+			Dialer:             dummyDialer,
+			PoolSize:           10,
+			PoolTimeout:        time.Hour,
+			IdleTimeout:        time.Millisecond,
+			IdleCheckFrequency: time.Millisecond,
+		})
 	})
 
 	AfterEach(func() {
@@ -83,16 +88,21 @@ var _ = Describe("conns reaper", func() {
 	var conns, idleConns, closedConns []*pool.Conn
 
 	BeforeEach(func() {
-		connPool = pool.NewConnPool(
-			dummyDialer, 10, time.Second, idleTimeout, time.Hour)
-
-		closedConns = nil
-		connPool.OnClose = func(cn *pool.Conn) error {
-			closedConns = append(closedConns, cn)
-			return nil
-		}
-
 		conns = nil
+		closedConns = nil
+
+		connPool = pool.NewConnPool(&pool.Options{
+			Dialer:             dummyDialer,
+			PoolSize:           10,
+			PoolTimeout:        time.Second,
+			IdleTimeout:        idleTimeout,
+			IdleCheckFrequency: time.Hour,
+
+			OnClose: func(cn *pool.Conn) error {
+				closedConns = append(closedConns, cn)
+				return nil
+			},
+		})
 
 		// add stale connections
 		idleConns = nil
@@ -202,8 +212,13 @@ var _ = Describe("race", func() {
 	})
 
 	It("does not happen on Get, Put, and Remove", func() {
-		connPool = pool.NewConnPool(
-			dummyDialer, 10, time.Minute, time.Millisecond, time.Millisecond)
+		connPool = pool.NewConnPool(&pool.Options{
+			Dialer:             dummyDialer,
+			PoolSize:           10,
+			PoolTimeout:        time.Minute,
+			IdleTimeout:        time.Millisecond,
+			IdleCheckFrequency: time.Millisecond,
+		})
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
@@ -219,26 +234,6 @@ var _ = Describe("race", func() {
 				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
 					Expect(connPool.Remove(cn)).NotTo(HaveOccurred())
-				}
-			}
-		})
-	})
-
-	It("does not happen on Get and PopFree", func() {
-		connPool = pool.NewConnPool(
-			dummyDialer, 10, time.Minute, time.Second, time.Millisecond)
-
-		perform(C, func(id int) {
-			for i := 0; i < N; i++ {
-				cn, _, err := connPool.Get()
-				Expect(err).NotTo(HaveOccurred())
-				if err == nil {
-					Expect(connPool.Put(cn)).NotTo(HaveOccurred())
-				}
-
-				cn = connPool.PopFree()
-				if cn != nil {
-					Expect(connPool.Put(cn)).NotTo(HaveOccurred())
 				}
 			}
 		})

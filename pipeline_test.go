@@ -13,7 +13,7 @@ var _ = Describe("pipelining", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -22,7 +22,7 @@ var _ = Describe("pipelining", func() {
 
 	It("supports block style", func() {
 		var get *redis.StringCmd
-		cmds, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+		cmds, err := client.Pipelined(func(pipe redis.Pipeliner) error {
 			get = pipe.Get("foo")
 			return nil
 		})
@@ -34,16 +34,17 @@ var _ = Describe("pipelining", func() {
 	})
 
 	assertPipeline := func() {
-		It("returns an error when there are no commands", func() {
+		It("returns no errors when there are no commands", func() {
 			_, err := pipe.Exec()
-			Expect(err).To(MatchError("redis: pipeline is empty"))
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("discards queued commands", func() {
 			pipe.Get("key")
 			pipe.Discard()
-			_, err := pipe.Exec()
-			Expect(err).To(MatchError("redis: pipeline is empty"))
+			cmds, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmds).To(BeNil())
 		})
 
 		It("handles val/err", func() {
@@ -63,7 +64,7 @@ var _ = Describe("pipelining", func() {
 
 	Describe("Pipeline", func() {
 		BeforeEach(func() {
-			pipe = client.Pipeline()
+			pipe = client.Pipeline().(*redis.Pipeline)
 		})
 
 		assertPipeline()
@@ -71,7 +72,7 @@ var _ = Describe("pipelining", func() {
 
 	Describe("TxPipeline", func() {
 		BeforeEach(func() {
-			pipe = client.TxPipeline()
+			pipe = client.TxPipeline().(*redis.Pipeline)
 		})
 
 		assertPipeline()

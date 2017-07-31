@@ -20,7 +20,7 @@ var _ = Describe("races", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).To(BeNil())
+		Expect(client.FlushDB().Err()).To(BeNil())
 
 		C, N = 10, 1000
 		if testing.Short() {
@@ -193,7 +193,7 @@ var _ = Describe("races", func() {
 					num, err := strconv.ParseInt(val, 10, 64)
 					Expect(err).NotTo(HaveOccurred())
 
-					cmds, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+					cmds, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
 						pipe.Set("key", strconv.FormatInt(num+1, 10), 0)
 						return nil
 					})

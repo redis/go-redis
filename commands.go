@@ -39,9 +39,10 @@ func formatSec(dur time.Duration) int64 {
 }
 
 type Cmdable interface {
-	Pipeline() *Pipeline
-	Pipelined(fn func(*Pipeline) error) ([]Cmder, error)
+	Pipeline() Pipeliner
+	Pipelined(fn func(Pipeliner) error) ([]Cmder, error)
 
+	ClientGetName() *StringCmd
 	Echo(message interface{}) *StringCmd
 	Ping() *StatusCmd
 	Quit() *StatusCmd
@@ -191,7 +192,9 @@ type Cmdable interface {
 	ConfigSet(parameter, value string) *StatusCmd
 	DbSize() *IntCmd
 	FlushAll() *StatusCmd
-	FlushDb() *StatusCmd
+	FlushAllAsync() *StatusCmd
+	FlushDB() *StatusCmd
+	FlushDBAsync() *StatusCmd
 	Info(section ...string) *StringCmd
 	LastSave() *IntCmd
 	Save() *StatusCmd
@@ -231,10 +234,21 @@ type Cmdable interface {
 	GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd
 	GeoPos(key string, members ...string) *GeoPosCmd
 	GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd
+	GeoRadiusRO(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd
 	GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
+	GeoRadiusByMemberRO(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
 	GeoDist(key string, member1, member2, unit string) *FloatCmd
 	GeoHash(key string, members ...string) *StringSliceCmd
 	Command() *CommandsInfoCmd
+}
+
+type StatefulCmdable interface {
+	Cmdable
+	Auth(password string) *StatusCmd
+	Select(index int) *StatusCmd
+	ClientSetName(name string) *BoolCmd
+	ReadOnly() *StatusCmd
+	ReadWrite() *StatusCmd
 }
 
 var _ Cmdable = (*Client)(nil)
@@ -246,8 +260,18 @@ type cmdable struct {
 	process func(cmd Cmder) error
 }
 
+func (c *cmdable) setProcessor(fn func(Cmder) error) {
+	c.process = fn
+}
+
 type statefulCmdable struct {
+	cmdable
 	process func(cmd Cmder) error
+}
+
+func (c *statefulCmdable) setProcessor(fn func(Cmder) error) {
+	c.process = fn
+	c.cmdable.setProcessor(fn)
 }
 
 //------------------------------------------------------------------------------
@@ -271,7 +295,6 @@ func (c *cmdable) Ping() *StatusCmd {
 }
 
 func (c *cmdable) Wait(numSlaves int, timeout time.Duration) *IntCmd {
-
 	cmd := NewIntCmd("wait", numSlaves, int(timeout/time.Millisecond))
 	c.process(cmd)
 	return cmd
@@ -1630,7 +1653,7 @@ func (c *statefulCmdable) ClientSetName(name string) *BoolCmd {
 }
 
 // ClientGetName returns the name of the connection.
-func (c *statefulCmdable) ClientGetName() *StringCmd {
+func (c *cmdable) ClientGetName() *StringCmd {
 	cmd := NewStringCmd("client", "getname")
 	c.process(cmd)
 	return cmd
@@ -1666,8 +1689,27 @@ func (c *cmdable) FlushAll() *StatusCmd {
 	return cmd
 }
 
+func (c *cmdable) FlushAllAsync() *StatusCmd {
+	cmd := NewStatusCmd("flushall", "async")
+	c.process(cmd)
+	return cmd
+}
+
+// Deprecated. Use FlushDB instead.
 func (c *cmdable) FlushDb() *StatusCmd {
 	cmd := NewStatusCmd("flushdb")
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) FlushDB() *StatusCmd {
+	cmd := NewStatusCmd("flushdb")
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) FlushDBAsync() *StatusCmd {
+	cmd := NewStatusCmd("flushdb", "async")
 	c.process(cmd)
 	return cmd
 }
@@ -2021,8 +2063,20 @@ func (c *cmdable) GeoRadius(key string, longitude, latitude float64, query *GeoR
 	return cmd
 }
 
+func (c *cmdable) GeoRadiusRO(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
+	cmd := NewGeoLocationCmd(query, "georadius_ro", key, longitude, latitude)
+	c.process(cmd)
+	return cmd
+}
+
 func (c *cmdable) GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadiusbymember", key, member)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) GeoRadiusByMemberRO(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
+	cmd := NewGeoLocationCmd(query, "georadiusbymember_ro", key, member)
 	c.process(cmd)
 	return cmd
 }

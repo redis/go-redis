@@ -16,7 +16,7 @@ var _ = Describe("Client", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -68,7 +68,7 @@ var _ = Describe("Client", func() {
 
 	It("should close Tx without closing the client", func() {
 		err := client.Watch(func(tx *redis.Tx) error {
-			_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Ping()
 				return nil
 			})
@@ -111,7 +111,7 @@ var _ = Describe("Client", func() {
 			Addr: redisAddr,
 			DB:   2,
 		})
-		Expect(db2.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(db2.FlushDB().Err()).NotTo(HaveOccurred())
 		Expect(db2.Get("db").Err()).To(Equal(redis.Nil))
 		Expect(db2.Set("db", 2, 0).Err()).NotTo(HaveOccurred())
 
@@ -121,7 +121,7 @@ var _ = Describe("Client", func() {
 
 		Expect(client.Get("db").Err()).To(Equal(redis.Nil))
 
-		Expect(db2.FlushDb().Err()).NotTo(HaveOccurred())
+		Expect(db2.FlushDB().Err()).NotTo(HaveOccurred())
 		Expect(db2.Close()).NotTo(HaveOccurred())
 	})
 
@@ -154,6 +154,48 @@ var _ = Describe("Client", func() {
 
 		err = client.Ping().Err()
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should retry with backoff", func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+
+		// use up all the available connections to force a fail
+		connectionHogClient := redis.NewClient(&redis.Options{
+			Addr:       redisAddr,
+			MaxRetries: 1,
+		})
+		defer connectionHogClient.Close()
+
+		for i := 0; i <= 1002; i++ {
+			connectionHogClient.Pool().NewConn()
+		}
+
+		clientNoRetry := redis.NewClient(&redis.Options{
+			Addr:            redisAddr,
+			PoolSize:        1,
+			MaxRetryBackoff: -1,
+		})
+		defer clientNoRetry.Close()
+
+		clientRetry := redis.NewClient(&redis.Options{
+			Addr:            redisAddr,
+			MaxRetries:      5,
+			PoolSize:        1,
+			MaxRetryBackoff: 128 * time.Millisecond,
+		})
+		defer clientRetry.Close()
+
+		startNoRetry := time.Now()
+		err := clientNoRetry.Ping().Err()
+		Expect(err).To(HaveOccurred())
+		elapseNoRetry := time.Since(startNoRetry)
+
+		startRetry := time.Now()
+		err = clientRetry.Ping().Err()
+		Expect(err).To(HaveOccurred())
+		elapseRetry := time.Since(startRetry)
+
+		Expect(elapseRetry > elapseNoRetry).To(BeTrue())
 	})
 
 	It("should update conn.UsedAt on read/write", func() {
@@ -232,7 +274,7 @@ var _ = Describe("Client timeout", func() {
 		})
 
 		It("Pipeline timeouts", func() {
-			_, err := client.Pipelined(func(pipe *redis.Pipeline) error {
+			_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Ping()
 				return nil
 			})
@@ -263,7 +305,7 @@ var _ = Describe("Client timeout", func() {
 
 		It("Tx Pipeline timeouts", func() {
 			err := client.Watch(func(tx *redis.Tx) error {
-				_, err := tx.Pipelined(func(pipe *redis.Pipeline) error {
+				_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
 					pipe.Ping()
 					return nil
 				})
@@ -294,5 +336,29 @@ var _ = Describe("Client timeout", func() {
 		})
 
 		testTimeout()
+	})
+})
+
+var _ = Describe("Client OnConnect", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		opt := redisOptions()
+		opt.DB = 0
+		opt.OnConnect = func(cn *redis.Conn) error {
+			return cn.ClientSetName("on_connect").Err()
+		}
+
+		client = redis.NewClient(opt)
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("calls OnConnect", func() {
+		name, err := client.ClientGetName().Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(name).To(Equal("on_connect"))
 	})
 })
