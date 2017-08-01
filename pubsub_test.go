@@ -294,6 +294,22 @@ var _ = Describe("PubSub", func() {
 		Expect(stats.Hits).To(Equal(uint32(1)))
 	})
 
+	It("returns an error when subscribe fails", func() {
+		pubsub := client.Subscribe()
+		defer pubsub.Close()
+
+		pubsub.SetNetConn(&badConn{
+			readErr:  io.EOF,
+			writeErr: io.EOF,
+		})
+
+		err := pubsub.Subscribe("mychannel")
+		Expect(err).To(MatchError("EOF"))
+
+		err = pubsub.Subscribe("mychannel")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	expectReceiveMessageOnError := func(pubsub *redis.PubSub) {
 		pubsub.SetNetConn(&badConn{
 			readErr:  io.EOF,
