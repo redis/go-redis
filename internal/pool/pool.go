@@ -119,6 +119,9 @@ func (p *ConnPool) NewConn() (*Conn, error) {
 
 func (p *ConnPool) tryDial() {
 	for {
+		if p.closed() {
+			return
+		}
 		conn, err := p.opt.Dialer()
 		if err != nil {
 			p.setLastDialError(err)
