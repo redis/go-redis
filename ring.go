@@ -240,24 +240,26 @@ func (c *Ring) ForEachShard(fn func(client *Client) error) error {
 }
 
 func (c *Ring) cmdInfo(name string) *CommandInfo {
-	err := c.cmdsInfoOnce.Do(func() error {
-		var firstErr error
-		for _, shard := range c.shards {
-			cmdsInfo, err := shard.Client.Command().Result()
-			if err == nil {
-				c.cmdsInfo = cmdsInfo
-				return nil
-			}
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-		return firstErr
-	})
-	if err != nil {
-		return nil
-	}
-	return c.cmdsInfo[name]
+	return nil
+
+	// err := c.cmdsInfoOnce.Do(func() error {
+	// 	var firstErr error
+	// 	for _, shard := range c.shards {
+	// 		cmdsInfo, err := shard.Client.Command().Result()
+	// 		if err == nil {
+	// 			c.cmdsInfo = cmdsInfo
+	// 			return nil
+	// 		}
+	// 		if firstErr == nil {
+	// 			firstErr = err
+	// 		}
+	// 	}
+	// 	return firstErr
+	// })
+	// if err != nil {
+	// 	return nil
+	// }
+	// return c.cmdsInfo[name]
 }
 
 func (c *Ring) addClient(name string, cl *Client) {
