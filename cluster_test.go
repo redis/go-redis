@@ -700,14 +700,14 @@ var _ = Describe("ClusterClient timeout", func() {
 		testTimeout()
 	})
 
-	Context("network timeout", func() {
+	Context("ClientPause timeout", func() {
 		const pause = time.Second
 
 		BeforeEach(func() {
 			opt := redisClusterOptions()
-			opt.ReadTimeout = 100 * time.Millisecond
-			opt.WriteTimeout = 100 * time.Millisecond
-			opt.MaxRedirects = 1
+			opt.ReadTimeout = pause / 10
+			opt.WriteTimeout = pause / 10
+			opt.MaxRedirects = -1
 			client = cluster.clusterClient(opt)
 
 			err := client.ForEachNode(func(client *redis.Client) error {
