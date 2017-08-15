@@ -400,8 +400,11 @@ var _ = Describe("PubSub", func() {
 		pubsub := client.Subscribe()
 		defer pubsub.Close()
 
+		var wg sync.WaitGroup
+		wg.Add(1)
 		go func() {
 			defer GinkgoRecover()
+			defer wg.Done()
 
 			time.Sleep(2 * timeout)
 
@@ -418,5 +421,7 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal("hello"))
+
+		wg.Wait()
 	})
 })

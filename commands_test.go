@@ -139,10 +139,10 @@ var _ = Describe("Commands", func() {
 			Expect(configSet.Val()).To(Equal("OK"))
 		})
 
-		It("should DbSize", func() {
-			dbSize := client.DbSize()
-			Expect(dbSize.Err()).NotTo(HaveOccurred())
-			Expect(dbSize.Val()).To(Equal(int64(0)))
+		It("should DBSize", func() {
+			size, err := client.DBSize().Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(0)))
 		})
 
 		It("should Info", func() {

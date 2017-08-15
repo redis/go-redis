@@ -342,7 +342,8 @@ var _ = Describe("ClusterClient", func() {
 						Expect(get.Val()).To(Equal(key + "_value"))
 
 						ttl := cmds[(i*2)+1].(*redis.DurationCmd)
-						Expect(ttl.Val()).To(BeNumerically("~", time.Duration(i+1)*time.Hour, time.Second))
+						dur := time.Duration(i+1) * time.Hour
+						Expect(ttl.Val()).To(BeNumerically("~", dur, 5*time.Second))
 					}
 				})
 
@@ -476,9 +477,9 @@ var _ = Describe("ClusterClient", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, client := range cluster.masters() {
-				keys, err := client.Keys("*").Result()
+				size, err := client.DBSize().Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(keys).To(HaveLen(0))
+				Expect(size).To(Equal(int64(0)))
 			}
 		})
 
@@ -551,6 +552,9 @@ var _ = Describe("ClusterClient", func() {
 			})
 
 			_ = client.ForEachSlave(func(slave *redis.Client) error {
+				Eventually(func() int64 {
+					return client.DBSize().Val()
+				}, 30*time.Second).Should(Equal(int64(0)))
 				return slave.ClusterFailover().Err()
 			})
 		})
@@ -717,11 +721,12 @@ var _ = Describe("ClusterClient timeout", func() {
 		})
 
 		AfterEach(func() {
-			Eventually(func() error {
-				return client.ForEachNode(func(client *redis.Client) error {
+			client.ForEachNode(func(client *redis.Client) error {
+				Eventually(func() error {
 					return client.Ping().Err()
-				})
-			}, 2*pause).ShouldNot(HaveOccurred())
+				}, 2*pause).ShouldNot(HaveOccurred())
+				return nil
+			})
 		})
 
 		testTimeout()
