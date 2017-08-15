@@ -159,6 +159,7 @@ type Cmdable interface {
 	ZIncrXX(key string, member Z) *FloatCmd
 	ZCard(key string) *IntCmd
 	ZCount(key, min, max string) *IntCmd
+	ZLexCount(key, min, max string) *IntCmd
 	ZIncrBy(key string, increment float64, member string) *FloatCmd
 	ZInterStore(destination string, store ZStore, keys ...string) *IntCmd
 	ZRange(key string, start, stop int64) *StringSliceCmd
@@ -190,7 +191,7 @@ type Cmdable interface {
 	ConfigGet(parameter string) *SliceCmd
 	ConfigResetStat() *StatusCmd
 	ConfigSet(parameter, value string) *StatusCmd
-	DbSize() *IntCmd
+	DBSize() *IntCmd
 	FlushAll() *StatusCmd
 	FlushAllAsync() *StatusCmd
 	FlushDB() *StatusCmd
@@ -1352,6 +1353,12 @@ func (c *cmdable) ZCount(key, min, max string) *IntCmd {
 	return cmd
 }
 
+func (c *cmdable) ZLexCount(key, min, max string) *IntCmd {
+	cmd := NewIntCmd("zlexcount", key, min, max)
+	c.process(cmd)
+	return cmd
+}
+
 func (c *cmdable) ZIncrBy(key string, increment float64, member string) *FloatCmd {
 	cmd := NewFloatCmd("zincrby", key, increment, member)
 	c.process(cmd)
@@ -1677,7 +1684,12 @@ func (c *cmdable) ConfigSet(parameter, value string) *StatusCmd {
 	return cmd
 }
 
+// Deperecated. Use DBSize instead.
 func (c *cmdable) DbSize() *IntCmd {
+	return c.DBSize()
+}
+
+func (c *cmdable) DBSize() *IntCmd {
 	cmd := NewIntCmd("dbsize")
 	c.process(cmd)
 	return cmd
@@ -1697,9 +1709,7 @@ func (c *cmdable) FlushAllAsync() *StatusCmd {
 
 // Deprecated. Use FlushDB instead.
 func (c *cmdable) FlushDb() *StatusCmd {
-	cmd := NewStatusCmd("flushdb")
-	c.process(cmd)
-	return cmd
+	return c.FlushDB()
 }
 
 func (c *cmdable) FlushDB() *StatusCmd {

@@ -583,7 +583,7 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 		}
 
 		// On network errors try random node.
-		if internal.IsRetryableError(err) {
+		if internal.IsRetryableError(err) || internal.IsClusterDownError(err) {
 			node, err = c.nodes.Random()
 			if err != nil {
 				cmd.setErr(err)
