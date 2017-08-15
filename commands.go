@@ -159,6 +159,7 @@ type Cmdable interface {
 	ZIncrXX(key string, member Z) *FloatCmd
 	ZCard(key string) *IntCmd
 	ZCount(key, min, max string) *IntCmd
+	ZLexCount(key, min, max string) *IntCmd
 	ZIncrBy(key string, increment float64, member string) *FloatCmd
 	ZInterStore(destination string, store ZStore, keys ...string) *IntCmd
 	ZRange(key string, start, stop int64) *StringSliceCmd
@@ -1348,6 +1349,12 @@ func (c *cmdable) ZCard(key string) *IntCmd {
 
 func (c *cmdable) ZCount(key, min, max string) *IntCmd {
 	cmd := NewIntCmd("zcount", key, min, max)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ZLexCount(key, min, max string) *IntCmd {
+	cmd := NewIntCmd("zlexcount", key, min, max)
 	c.process(cmd)
 	return cmd
 }
