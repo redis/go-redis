@@ -197,8 +197,11 @@ type pipelineProcessor func(*pool.Conn, []Cmder) (bool, error)
 
 func (c *baseClient) pipelineExecer(p pipelineProcessor) pipelineExecer {
 	return func(cmds []Cmder) error {
-		var firstErr error
-		for i := 0; i <= c.opt.MaxRetries; i++ {
+		for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+			if attempt > 0 {
+				time.Sleep(c.retryBackoff(attempt))
+			}
+
 			cn, _, err := c.getConn()
 			if err != nil {
 				setCmdsErr(cmds, err)
@@ -206,18 +209,18 @@ func (c *baseClient) pipelineExecer(p pipelineProcessor) pipelineExecer {
 			}
 
 			canRetry, err := p(cn, cmds)
-			c.releaseConn(cn, err)
-			if err == nil {
-				return nil
+
+			if err == nil || internal.IsRedisError(err) {
+				_ = c.connPool.Put(cn)
+				break
 			}
-			if firstErr == nil {
-				firstErr = err
-			}
+			_ = c.connPool.Remove(cn)
+
 			if !canRetry || !internal.IsRetryableError(err) {
 				break
 			}
 		}
-		return firstErr
+		return firstCmdsErr(cmds)
 	}
 }
 
@@ -230,23 +233,17 @@ func (c *baseClient) pipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, err
 
 	// Set read timeout for all commands.
 	cn.SetReadTimeout(c.opt.ReadTimeout)
-	return pipelineReadCmds(cn, cmds)
+	return true, pipelineReadCmds(cn, cmds)
 }
 
-func pipelineReadCmds(cn *pool.Conn, cmds []Cmder) (retry bool, firstErr error) {
-	for i, cmd := range cmds {
+func pipelineReadCmds(cn *pool.Conn, cmds []Cmder) error {
+	for _, cmd := range cmds {
 		err := cmd.readReply(cn)
-		if err == nil {
-			continue
-		}
-		if i == 0 {
-			retry = true
-		}
-		if firstErr == nil {
-			firstErr = err
+		if err != nil && !internal.IsRedisError(err) {
+			return err
 		}
 	}
-	return
+	return nil
 }
 
 func (c *baseClient) txPipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {
@@ -260,11 +257,11 @@ func (c *baseClient) txPipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, e
 	cn.SetReadTimeout(c.opt.ReadTimeout)
 
 	if err := c.txPipelineReadQueued(cn, cmds); err != nil {
+		setCmdsErr(cmds, err)
 		return false, err
 	}
 
-	_, err := pipelineReadCmds(cn, cmds)
-	return false, err
+	return false, pipelineReadCmds(cn, cmds)
 }
 
 func txPipelineWriteMulti(cn *pool.Conn, cmds []Cmder) error {
@@ -276,21 +273,16 @@ func txPipelineWriteMulti(cn *pool.Conn, cmds []Cmder) error {
 }
 
 func (c *baseClient) txPipelineReadQueued(cn *pool.Conn, cmds []Cmder) error {
-	var firstErr error
-
 	// Parse queued replies.
 	var statusCmd StatusCmd
-	if err := statusCmd.readReply(cn); err != nil && firstErr == nil {
-		firstErr = err
+	if err := statusCmd.readReply(cn); err != nil {
+		return err
 	}
 
-	for _, cmd := range cmds {
+	for _ = range cmds {
 		err := statusCmd.readReply(cn)
-		if err != nil {
-			cmd.setErr(err)
-			if firstErr == nil {
-				firstErr = err
-			}
+		if err != nil && !internal.IsRedisError(err) {
+			return err
 		}
 	}
 

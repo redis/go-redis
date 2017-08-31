@@ -34,7 +34,9 @@ type RingOptions struct {
 	DB       int
 	Password string
 
-	MaxRetries int
+	MaxRetries      int
+	MinRetryBackoff time.Duration
+	MaxRetryBackoff time.Duration
 
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
@@ -49,6 +51,19 @@ type RingOptions struct {
 func (opt *RingOptions) init() {
 	if opt.HeartbeatFrequency == 0 {
 		opt.HeartbeatFrequency = 500 * time.Millisecond
+	}
+
+	switch opt.MinRetryBackoff {
+	case -1:
+		opt.MinRetryBackoff = 0
+	case 0:
+		opt.MinRetryBackoff = 8 * time.Millisecond
+	}
+	switch opt.MaxRetryBackoff {
+	case -1:
+		opt.MaxRetryBackoff = 0
+	case 0:
+		opt.MaxRetryBackoff = 512 * time.Millisecond
 	}
 }
 
@@ -165,6 +180,10 @@ func (c *Ring) Options() *RingOptions {
 	return c.opt
 }
 
+func (c *Ring) retryBackoff(attempt int) time.Duration {
+	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
+}
+
 // PoolStats returns accumulated connection pool stats.
 func (c *Ring) PoolStats() *PoolStats {
 	var acc PoolStats
@@ -241,6 +260,9 @@ func (c *Ring) ForEachShard(fn func(client *Client) error) error {
 
 func (c *Ring) cmdInfo(name string) *CommandInfo {
 	err := c.cmdsInfoOnce.Do(func() error {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+
 		var firstErr error
 		for _, shard := range c.shards {
 			cmdsInfo, err := shard.Client.Command().Result()
@@ -257,7 +279,11 @@ func (c *Ring) cmdInfo(name string) *CommandInfo {
 	if err != nil {
 		return nil
 	}
-	return c.cmdsInfo[name]
+	info := c.cmdsInfo[name]
+	if info == nil {
+		internal.Logf("info for cmd=%s not found", name)
+	}
+	return info
 }
 
 func (c *Ring) addClient(name string, cl *Client) {
@@ -399,7 +425,7 @@ func (c *Ring) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().pipelined(fn)
 }
 
-func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
+func (c *Ring) pipelineExec(cmds []Cmder) error {
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
 		cmdInfo := c.cmdInfo(cmd.Name())
@@ -410,36 +436,33 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 		cmdsMap[name] = append(cmdsMap[name], cmd)
 	}
 
-	for i := 0; i <= c.opt.MaxRetries; i++ {
+	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(c.retryBackoff(attempt))
+		}
+
 		var failedCmdsMap map[string][]Cmder
 
 		for name, cmds := range cmdsMap {
 			shard, err := c.shardByName(name)
 			if err != nil {
 				setCmdsErr(cmds, err)
-				if firstErr == nil {
-					firstErr = err
-				}
 				continue
 			}
 
 			cn, _, err := shard.Client.getConn()
 			if err != nil {
 				setCmdsErr(cmds, err)
-				if firstErr == nil {
-					firstErr = err
-				}
 				continue
 			}
 
 			canRetry, err := shard.Client.pipelineProcessCmds(cn, cmds)
-			shard.Client.releaseConn(cn, err)
-			if err == nil {
+			if err == nil || internal.IsRedisError(err) {
+				_ = shard.Client.connPool.Put(cn)
 				continue
 			}
-			if firstErr == nil {
-				firstErr = err
-			}
+			_ = shard.Client.connPool.Remove(cn)
+
 			if canRetry && internal.IsRetryableError(err) {
 				if failedCmdsMap == nil {
 					failedCmdsMap = make(map[string][]Cmder)
@@ -454,5 +477,5 @@ func (c *Ring) pipelineExec(cmds []Cmder) (firstErr error) {
 		cmdsMap = failedCmdsMap
 	}
 
-	return firstErr
+	return firstCmdsErr(cmds)
 }

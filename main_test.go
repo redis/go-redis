@@ -3,6 +3,7 @@ package redis_test
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -51,7 +52,7 @@ var cluster = &clusterScenario{
 }
 
 func init() {
-	//redis.SetLogger(log.New(os.Stderr, "redis: ", log.LstdFlags|log.Lshortfile))
+	redis.SetLogger(log.New(os.Stderr, "redis: ", log.LstdFlags|log.Lshortfile))
 }
 
 var _ = BeforeSuite(func() {
