@@ -46,8 +46,19 @@ type Cmder interface {
 
 func setCmdsErr(cmds []Cmder, e error) {
 	for _, cmd := range cmds {
-		cmd.setErr(e)
+		if cmd.Err() == nil {
+			cmd.setErr(e)
+		}
 	}
+}
+
+func firstCmdsErr(cmds []Cmder) error {
+	for _, cmd := range cmds {
+		if err := cmd.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeCmd(cn *pool.Conn, cmds ...Cmder) error {
@@ -95,7 +106,6 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		return 1
 	}
 	if info == nil {
-		internal.Logf("info for cmd=%s not found", cmd.Name())
 		return -1
 	}
 	return int(info.FirstKeyPos)
