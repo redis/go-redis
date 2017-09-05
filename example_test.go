@@ -412,3 +412,26 @@ func ExampleNewUniversalClient_cluster() {
 
 	client.Ping()
 }
+
+func ExampleReplay() {
+	replay := redis.NewReplay()
+
+	cmd := redis.NewStringCmd("get", "foo")
+	cmd.SetVal("bar")
+	replay.Add(cmd)
+
+	cmd = redis.NewStringCmd("get", "hello")
+	cmd.SetErr(redis.Nil)
+	replay.Add(cmd)
+
+	client := redis.NewClient(&redis.Options{})
+	replay.WrapClient(client)
+
+	foo := client.Get("foo")
+	fmt.Println(foo)
+
+	hello := client.Get("hello")
+	fmt.Println(hello)
+	// Output: get foo: bar
+	// get hello: redis: nil
+}

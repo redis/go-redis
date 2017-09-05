@@ -36,18 +36,18 @@ type Cmder interface {
 	Name() string
 
 	readReply(*pool.Conn) error
-	setErr(error)
 
 	readTimeout() *time.Duration
 
 	Err() error
+	SetErr(error)
 	fmt.Stringer
 }
 
 func setCmdsErr(cmds []Cmder, e error) {
 	for _, cmd := range cmds {
 		if cmd.Err() == nil {
-			cmd.setErr(e)
+			cmd.SetErr(e)
 		}
 	}
 }
@@ -154,7 +154,7 @@ func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 	cmd._readTimeout = &d
 }
 
-func (cmd *baseCmd) setErr(e error) {
+func (cmd *baseCmd) SetErr(e error) {
 	cmd.err = e
 }
 
@@ -435,6 +435,10 @@ func NewStringCmd(args ...interface{}) *StringCmd {
 	return &StringCmd{
 		baseCmd: baseCmd{_args: args},
 	}
+}
+
+func (cmd *StringCmd) SetVal(val string) {
+	cmd.val = []byte(val)
 }
 
 func (cmd *StringCmd) Val() string {

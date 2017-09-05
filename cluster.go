@@ -621,13 +621,13 @@ func (c *ClusterClient) Close() error {
 func (c *ClusterClient) Process(cmd Cmder) error {
 	state, err := c.state()
 	if err != nil {
-		cmd.setErr(err)
+		cmd.SetErr(err)
 		return err
 	}
 
 	_, node, err := c.cmdSlotAndNode(state, cmd)
 	if err != nil {
-		cmd.setErr(err)
+		cmd.SetErr(err)
 		return err
 	}
 

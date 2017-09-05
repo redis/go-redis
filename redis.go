@@ -130,7 +130,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 
 		cn, _, err := c.getConn()
 		if err != nil {
-			cmd.setErr(err)
+			cmd.SetErr(err)
 			if internal.IsRetryableError(err) {
 				continue
 			}
@@ -140,7 +140,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 		cn.SetWriteTimeout(c.opt.WriteTimeout)
 		if err := writeCmd(cn, cmd); err != nil {
 			c.releaseConn(cn, err)
-			cmd.setErr(err)
+			cmd.SetErr(err)
 			if internal.IsRetryableError(err) {
 				continue
 			}

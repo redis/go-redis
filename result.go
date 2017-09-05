@@ -6,7 +6,7 @@ import "time"
 func NewCmdResult(val interface{}, err error) *Cmd {
 	var cmd Cmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -14,7 +14,7 @@ func NewCmdResult(val interface{}, err error) *Cmd {
 func NewSliceResult(val []interface{}, err error) *SliceCmd {
 	var cmd SliceCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -22,7 +22,7 @@ func NewSliceResult(val []interface{}, err error) *SliceCmd {
 func NewStatusResult(val string, err error) *StatusCmd {
 	var cmd StatusCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -30,7 +30,7 @@ func NewStatusResult(val string, err error) *StatusCmd {
 func NewIntResult(val int64, err error) *IntCmd {
 	var cmd IntCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -38,7 +38,7 @@ func NewIntResult(val int64, err error) *IntCmd {
 func NewDurationResult(val time.Duration, err error) *DurationCmd {
 	var cmd DurationCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -46,7 +46,7 @@ func NewDurationResult(val time.Duration, err error) *DurationCmd {
 func NewBoolResult(val bool, err error) *BoolCmd {
 	var cmd BoolCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -54,7 +54,7 @@ func NewBoolResult(val bool, err error) *BoolCmd {
 func NewStringResult(val string, err error) *StringCmd {
 	var cmd StringCmd
 	cmd.val = []byte(val)
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -62,7 +62,7 @@ func NewStringResult(val string, err error) *StringCmd {
 func NewFloatResult(val float64, err error) *FloatCmd {
 	var cmd FloatCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -70,7 +70,7 @@ func NewFloatResult(val float64, err error) *FloatCmd {
 func NewStringSliceResult(val []string, err error) *StringSliceCmd {
 	var cmd StringSliceCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -78,7 +78,7 @@ func NewStringSliceResult(val []string, err error) *StringSliceCmd {
 func NewBoolSliceResult(val []bool, err error) *BoolSliceCmd {
 	var cmd BoolSliceCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -86,7 +86,7 @@ func NewBoolSliceResult(val []bool, err error) *BoolSliceCmd {
 func NewStringStringMapResult(val map[string]string, err error) *StringStringMapCmd {
 	var cmd StringStringMapCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -94,7 +94,7 @@ func NewStringStringMapResult(val map[string]string, err error) *StringStringMap
 func NewStringIntMapCmdResult(val map[string]int64, err error) *StringIntMapCmd {
 	var cmd StringIntMapCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -102,7 +102,7 @@ func NewStringIntMapCmdResult(val map[string]int64, err error) *StringIntMapCmd 
 func NewZSliceCmdResult(val []Z, err error) *ZSliceCmd {
 	var cmd ZSliceCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -111,7 +111,7 @@ func NewScanCmdResult(keys []string, cursor uint64, err error) *ScanCmd {
 	var cmd ScanCmd
 	cmd.page = keys
 	cmd.cursor = cursor
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -119,7 +119,7 @@ func NewScanCmdResult(keys []string, cursor uint64, err error) *ScanCmd {
 func NewClusterSlotsCmdResult(val []ClusterSlot, err error) *ClusterSlotsCmd {
 	var cmd ClusterSlotsCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -127,7 +127,7 @@ func NewClusterSlotsCmdResult(val []ClusterSlot, err error) *ClusterSlotsCmd {
 func NewGeoLocationCmdResult(val []GeoLocation, err error) *GeoLocationCmd {
 	var cmd GeoLocationCmd
 	cmd.locations = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
@@ -135,6 +135,6 @@ func NewGeoLocationCmdResult(val []GeoLocation, err error) *GeoLocationCmd {
 func NewCommandsInfoCmdResult(val map[string]*CommandInfo, err error) *CommandsInfoCmd {
 	var cmd CommandsInfoCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
