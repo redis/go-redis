@@ -804,8 +804,10 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Requests += s.Requests
 		acc.Hits += s.Hits
 		acc.Timeouts += s.Timeouts
+
 		acc.TotalConns += s.TotalConns
 		acc.FreeConns += s.FreeConns
+		acc.StaleConns += s.StaleConns
 	}
 
 	for _, node := range state.slaves {
@@ -813,8 +815,10 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Requests += s.Requests
 		acc.Hits += s.Hits
 		acc.Timeouts += s.Timeouts
+
 		acc.TotalConns += s.TotalConns
 		acc.FreeConns += s.FreeConns
+		acc.StaleConns += s.StaleConns
 	}
 
 	return &acc
@@ -873,21 +877,12 @@ func (c *ClusterClient) reaper(idleCheckFrequency time.Duration) {
 			break
 		}
 
-		var n int
 		for _, node := range nodes {
-			nn, err := node.Client.connPool.(*pool.ConnPool).ReapStaleConns()
+			_, err := node.Client.connPool.(*pool.ConnPool).ReapStaleConns()
 			if err != nil {
 				internal.Logf("ReapStaleConns failed: %s", err)
-			} else {
-				n += nn
 			}
 		}
-
-		s := c.PoolStats()
-		internal.Logf(
-			"reaper: removed %d stale conns (TotalConns=%d FreeConns=%d Requests=%d Hits=%d Timeouts=%d)",
-			n, s.TotalConns, s.FreeConns, s.Requests, s.Hits, s.Timeouts,
-		)
 	}
 }
 
