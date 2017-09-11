@@ -352,17 +352,12 @@ func (c *Client) Options() *Options {
 	return c.opt
 }
 
+type PoolStats pool.Stats
+
 // PoolStats returns connection pool stats.
 func (c *Client) PoolStats() *PoolStats {
-	s := c.connPool.Stats()
-	return &PoolStats{
-		Requests: s.Requests,
-		Hits:     s.Hits,
-		Timeouts: s.Timeouts,
-
-		TotalConns: s.TotalConns,
-		FreeConns:  s.FreeConns,
-	}
+	stats := c.connPool.Stats()
+	return (*PoolStats)(stats)
 }
 
 func (c *Client) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {

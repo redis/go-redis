@@ -125,6 +125,7 @@ var _ = Describe("pool", func() {
 			Timeouts:   0,
 			TotalConns: 1,
 			FreeConns:  1,
+			StaleConns: 0,
 		}))
 
 		time.Sleep(2 * time.Second)
@@ -136,6 +137,7 @@ var _ = Describe("pool", func() {
 			Timeouts:   0,
 			TotalConns: 0,
 			FreeConns:  0,
+			StaleConns: 1,
 		}))
 	})
 })
