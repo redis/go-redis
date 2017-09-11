@@ -475,11 +475,9 @@ var _ = Describe("ClusterClient", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			for _, client := range cluster.masters() {
-				size, err := client.DBSize().Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(size).To(Equal(int64(0)))
-			}
+			size, err := client.DBSize().Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(0)))
 		})
 
 		It("should CLUSTER SLOTS", func() {
