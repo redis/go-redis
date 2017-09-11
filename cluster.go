@@ -205,17 +205,19 @@ func (c *clusterNodes) Close() error {
 	return firstErr
 }
 
-func (c *clusterNodes) Err() error {
+func (c *clusterNodes) Addrs() ([]string, error) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	closed := c.closed
+	addrs := c.addrs
+	c.mu.RUnlock()
 
-	if c.closed {
-		return pool.ErrClosed
+	if closed {
+		return nil, pool.ErrClosed
 	}
-	if len(c.addrs) == 0 {
-		return errClusterNoNodes
+	if len(addrs) == 0 {
+		return nil, errClusterNoNodes
 	}
-	return nil
+	return addrs, nil
 }
 
 func (c *clusterNodes) NextGeneration() uint32 {
@@ -298,16 +300,9 @@ func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
 }
 
 func (c *clusterNodes) Random() (*clusterNode, error) {
-	c.mu.RLock()
-	closed := c.closed
-	addrs := c.addrs
-	c.mu.RUnlock()
-
-	if closed {
-		return nil, pool.ErrClosed
-	}
-	if len(addrs) == 0 {
-		return nil, errClusterNoNodes
+	addrs, err := c.Addrs()
+	if err != nil {
+		return nil, err
 	}
 
 	var nodeErr error
@@ -504,7 +499,8 @@ func (c *ClusterClient) state() (*clusterState, error) {
 		return v.(*clusterState), nil
 	}
 
-	if err := c.nodes.Err(); err != nil {
+	_, err := c.nodes.Addrs()
+	if err != nil {
 		return nil, err
 	}
 
