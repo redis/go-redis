@@ -801,8 +801,8 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 
 	for _, node := range state.masters {
 		s := node.Client.connPool.Stats()
-		acc.Requests += s.Requests
 		acc.Hits += s.Hits
+		acc.Misses += s.Misses
 		acc.Timeouts += s.Timeouts
 
 		acc.TotalConns += s.TotalConns
@@ -812,8 +812,8 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 
 	for _, node := range state.slaves {
 		s := node.Client.connPool.Stats()
-		acc.Requests += s.Requests
 		acc.Hits += s.Hits
+		acc.Misses += s.Misses
 		acc.Timeouts += s.Timeouts
 
 		acc.TotalConns += s.TotalConns
