@@ -91,5 +91,13 @@ func (c *Tx) Pipeline() Pipeliner {
 // TxFailedErr is returned. Otherwise Exec returns error of the first
 // failed command or nil.
 func (c *Tx) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipeline().pipelined(fn)
+	return c.Pipeline().Pipelined(fn)
+}
+
+func (c *Tx) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.Pipelined(fn)
+}
+
+func (c *Tx) TxPipeline() Pipeliner {
+	return c.Pipeline()
 }
