@@ -436,7 +436,7 @@ func (c *Ring) Pipeline() Pipeliner {
 }
 
 func (c *Ring) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipeline().pipelined(fn)
+	return c.Pipeline().Pipelined(fn)
 }
 
 func (c *Ring) pipelineExec(cmds []Cmder) error {
@@ -492,4 +492,12 @@ func (c *Ring) pipelineExec(cmds []Cmder) error {
 	}
 
 	return firstCmdsErr(cmds)
+}
+
+func (c *Ring) TxPipeline() Pipeliner {
+	panic("not implemented")
+}
+
+func (c *Ring) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
+	panic("not implemented")
 }

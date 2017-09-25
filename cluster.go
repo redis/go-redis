@@ -895,7 +895,7 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 }
 
 func (c *ClusterClient) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipeline().pipelined(fn)
+	return c.Pipeline().Pipelined(fn)
 }
 
 func (c *ClusterClient) pipelineExec(cmds []Cmder) error {
@@ -1033,7 +1033,7 @@ func (c *ClusterClient) TxPipeline() Pipeliner {
 }
 
 func (c *ClusterClient) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.TxPipeline().pipelined(fn)
+	return c.TxPipeline().Pipelined(fn)
 }
 
 func (c *ClusterClient) txPipelineExec(cmds []Cmder) error {

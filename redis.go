@@ -361,7 +361,7 @@ func (c *Client) PoolStats() *PoolStats {
 }
 
 func (c *Client) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipeline().pipelined(fn)
+	return c.Pipeline().Pipelined(fn)
 }
 
 func (c *Client) Pipeline() Pipeliner {
@@ -373,7 +373,7 @@ func (c *Client) Pipeline() Pipeliner {
 }
 
 func (c *Client) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.TxPipeline().pipelined(fn)
+	return c.TxPipeline().Pipelined(fn)
 }
 
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
@@ -425,7 +425,7 @@ type Conn struct {
 }
 
 func (c *Conn) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipeline().pipelined(fn)
+	return c.Pipeline().Pipelined(fn)
 }
 
 func (c *Conn) Pipeline() Pipeliner {
@@ -437,7 +437,7 @@ func (c *Conn) Pipeline() Pipeliner {
 }
 
 func (c *Conn) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.TxPipeline().pipelined(fn)
+	return c.TxPipeline().Pipelined(fn)
 }
 
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
