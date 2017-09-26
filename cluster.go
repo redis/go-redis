@@ -535,13 +535,13 @@ func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
 
 func (c *ClusterClient) cmdSlot(cmd Cmder) int {
 	cmdInfo := c.cmdInfo(cmd.Name())
-	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
+	firstKey := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
 	return hashtag.Slot(firstKey)
 }
 
 func (c *ClusterClient) cmdSlotAndNode(state *clusterState, cmd Cmder) (int, *clusterNode, error) {
 	cmdInfo := c.cmdInfo(cmd.Name())
-	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
+	firstKey := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
 	slot := hashtag.Slot(firstKey)
 
 	if cmdInfo != nil && cmdInfo.ReadOnly && c.opt.ReadOnly {
