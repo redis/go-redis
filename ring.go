@@ -343,7 +343,7 @@ func (c *Ring) shardByName(name string) (*ringShard, error) {
 
 func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 	cmdInfo := c.cmdInfo(cmd.Name())
-	firstKey := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
+	firstKey := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
 	return c.shardByKey(firstKey)
 }
 
@@ -443,7 +443,7 @@ func (c *Ring) pipelineExec(cmds []Cmder) error {
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
 		cmdInfo := c.cmdInfo(cmd.Name())
-		name := cmd.arg(cmdFirstKeyPos(cmd, cmdInfo))
+		name := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
 		if name != "" {
 			name = c.hash.Get(hashtag.Key(name))
 		}
