@@ -477,7 +477,7 @@ func (c *Ring) pipelineExec(cmds []Cmder) error {
 			}
 			_ = shard.Client.connPool.Remove(cn)
 
-			if canRetry && internal.IsRetryableError(err) {
+			if canRetry && internal.IsRetryableError(err, true) {
 				if failedCmdsMap == nil {
 					failedCmdsMap = make(map[string][]Cmder)
 				}

@@ -656,7 +656,7 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 			continue
 		}
 
-		if internal.IsRetryableError(err) {
+		if internal.IsRetryableError(err, true) {
 			var nodeErr error
 			node, nodeErr = c.nodes.Random()
 			if nodeErr != nil {
