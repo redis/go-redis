@@ -136,7 +136,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 		cn, _, err := c.getConn()
 		if err != nil {
 			cmd.setErr(err)
-			if internal.IsRetryableError(err) {
+			if internal.IsRetryableError(err, true) {
 				continue
 			}
 			return err
@@ -146,7 +146,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 		if err := writeCmd(cn, cmd); err != nil {
 			c.releaseConn(cn, err)
 			cmd.setErr(err)
-			if internal.IsRetryableError(err) {
+			if internal.IsRetryableError(err, true) {
 				continue
 			}
 			return err
@@ -155,7 +155,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 		cn.SetReadTimeout(c.cmdTimeout(cmd))
 		err = cmd.readReply(cn)
 		c.releaseConn(cn, err)
-		if err != nil && internal.IsRetryableError(err) {
+		if err != nil && internal.IsRetryableError(err, cmd.readTimeout() == nil) {
 			continue
 		}
 
@@ -221,7 +221,7 @@ func (c *baseClient) pipelineExecer(p pipelineProcessor) pipelineExecer {
 			}
 			_ = c.connPool.Remove(cn)
 
-			if !canRetry || !internal.IsRetryableError(err) {
+			if !canRetry || !internal.IsRetryableError(err, true) {
 				break
 			}
 		}
