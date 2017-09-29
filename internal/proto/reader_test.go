@@ -1,6 +1,7 @@
 package proto_test
 
 import (
+	"bufio"
 	"bytes"
 	"strings"
 	"testing"
@@ -9,6 +10,10 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+)
+
+const (
+	bufioDefaultBufSize = 4096
 )
 
 var _ = Describe("Reader", func() {
@@ -34,6 +39,26 @@ var _ = Describe("Reader", func() {
 		data, err = p.ReadLine()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(data)).To(Equal("hello"))
+	})
+
+	It("should read line (overflowing the buffer)", func() {
+
+		/*
+			Generate a string which doesn't fit in the bufio internal default
+			buffer
+		*/
+		bytes := make([]byte, bufioDefaultBufSize+1)
+		for i := range bytes {
+			bytes[i] = 'x'
+		}
+
+		str := string(bytes)
+
+		p := proto.NewReader(strings.NewReader(str + "\r\n"))
+
+		data, err := p.ReadLine()
+		Expect(err).NotTo(Equal(bufio.ErrBufferFull))
+		Expect(string(data)).To(Equal(str))
 	})
 
 })
