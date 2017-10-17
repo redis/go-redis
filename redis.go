@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -89,15 +90,15 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 
 	_, err := conn.Pipelined(func(pipe Pipeliner) error {
 		if c.opt.Password != "" {
-			pipe.Auth(c.opt.Password)
+			pipe.Auth(context.Background(), c.opt.Password)
 		}
 
 		if c.opt.DB > 0 {
-			pipe.Select(c.opt.DB)
+			pipe.Select(context.Background(), c.opt.DB)
 		}
 
 		if c.opt.readOnly {
-			pipe.ReadOnly()
+			pipe.ReadOnly(context.Background())
 		}
 
 		return nil

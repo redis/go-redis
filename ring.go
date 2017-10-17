@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -284,7 +285,7 @@ func (c *Ring) cmdInfo(name string) *CommandInfo {
 
 		var firstErr error
 		for _, shard := range shards {
-			cmdsInfo, err := shard.Client.Command().Result()
+			cmdsInfo, err := shard.Client.Command(context.Background()).Result()
 			if err == nil {
 				c.cmdsInfo = cmdsInfo
 				return nil
@@ -388,7 +389,7 @@ func (c *Ring) heartbeat() {
 		c.mu.RUnlock()
 
 		for _, shard := range shards {
-			err := shard.Client.Ping().Err()
+			err := shard.Client.Ping(context.Background()).Err()
 			if shard.Vote(err == nil || err == pool.ErrPoolTimeout) {
 				internal.Logf("ring shard state changed: %s", shard)
 				rebalance = true

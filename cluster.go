@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"net"
@@ -143,7 +144,7 @@ func (n *clusterNode) updateLatency() {
 	const probes = 10
 	for i := 0; i < probes; i++ {
 		start := time.Now()
-		n.Client.Ping()
+		n.Client.Ping(context.Background())
 		n.Latency += time.Since(start)
 	}
 	n.Latency = n.Latency / probes
@@ -313,7 +314,7 @@ func (c *clusterNodes) Random() (*clusterNode, error) {
 			return nil, err
 		}
 
-		nodeErr = node.Client.ClusterInfo().Err()
+		nodeErr = node.Client.ClusterInfo(context.Background()).Err()
 		if nodeErr == nil {
 			return node, nil
 		}
@@ -515,7 +516,7 @@ func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
 			return err
 		}
 
-		cmdsInfo, err := node.Client.Command().Result()
+		cmdsInfo, err := node.Client.Command(context.Background()).Result()
 		if err != nil {
 			return err
 		}
@@ -858,7 +859,7 @@ func (c *ClusterClient) reloadState() (*clusterState, error) {
 		return nil, err
 	}
 
-	slots, err := node.Client.ClusterSlots().Result()
+	slots, err := node.Client.ClusterSlots(context.Background()).Result()
 	if err != nil {
 		return nil, err
 	}
