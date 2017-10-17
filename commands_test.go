@@ -9,7 +9,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/go-redis/redis"
+	"github.com/kirk91/redis"
 )
 
 var _ = Describe("Commands", func() {

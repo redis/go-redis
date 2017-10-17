@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
-	"github.com/go-redis/redis/internal/hashtag"
+	"github.com/kirk91/redis/internal/hashtag"
+	"github.com/kirk91/redis"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
