@@ -2577,7 +2577,7 @@ var _ = Describe("Commands", func() {
 				context.Background(),
 				"zset", redis.ZRangeBy{Max: "1", Min: "(1"}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]string{"two"}))
+			Expect(vals).To(Equal([]string{}))
 
 			vals, err = client.ZRevRangeByScore(
 				context.Background(),
