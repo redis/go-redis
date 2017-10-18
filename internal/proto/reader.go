@@ -6,7 +6,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/go-redis/redis/internal"
+	"github.com/kirk91/redis/internal"
 )
 
 const bytesAllocLimit = 1024 * 1024 // 1mb

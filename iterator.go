@@ -1,6 +1,9 @@
 package redis
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 // ScanIterator is used to incrementally iterate over a collection of elements.
 // It's safe for concurrent use by multiple goroutines.
@@ -47,7 +50,7 @@ func (it *ScanIterator) Next() bool {
 			it.cmd._args[2] = it.cmd.cursor
 		}
 
-		err := it.cmd.process(it.cmd)
+		err := it.cmd.process(context.Background(), it.cmd)
 		if err != nil {
 			return false
 		}

@@ -1,14 +1,15 @@
 package redis
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
-	"github.com/go-redis/redis/internal"
-	"github.com/go-redis/redis/internal/pool"
-	"github.com/go-redis/redis/internal/proto"
+	"github.com/kirk91/redis/internal"
+	"github.com/kirk91/redis/internal/pool"
+	"github.com/kirk91/redis/internal/proto"
 )
 
 // Redis nil reply, .e.g. when key does not exist.
@@ -89,15 +90,15 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 
 	_, err := conn.Pipelined(func(pipe Pipeliner) error {
 		if c.opt.Password != "" {
-			pipe.Auth(c.opt.Password)
+			pipe.Auth(context.Background(), c.opt.Password)
 		}
 
 		if c.opt.DB > 0 {
-			pipe.Select(c.opt.DB)
+			pipe.Select(context.Background(), c.opt.DB)
 		}
 
 		if c.opt.readOnly {
-			pipe.ReadOnly()
+			pipe.ReadOnly(context.Background())
 		}
 
 		return nil
@@ -116,18 +117,18 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 // which is supplied by the user. createWrapper takes the old process func as
 // an input and returns the new wrapper process func. createWrapper should
 // use call the old process func within the new process func.
-func (c *baseClient) WrapProcess(fn func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error) {
+func (c *baseClient) WrapProcess(fn func(oldProcess func(ctx context.Context, cmd Cmder) error) func(ctx context.Context, cmd Cmder) error) {
 	c.process = fn(c.defaultProcess)
 }
 
-func (c *baseClient) Process(cmd Cmder) error {
+func (c *baseClient) Process(ctx context.Context, cmd Cmder) error {
 	if c.process != nil {
-		return c.process(cmd)
+		return c.process(ctx, cmd)
 	}
-	return c.defaultProcess(cmd)
+	return c.defaultProcess(ctx, cmd)
 }
 
-func (c *baseClient) defaultProcess(cmd Cmder) error {
+func (c *baseClient) defaultProcess(ctx context.Context, cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			time.Sleep(c.retryBackoff(attempt))

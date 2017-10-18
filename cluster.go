@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"net"
@@ -8,10 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-redis/redis/internal"
-	"github.com/go-redis/redis/internal/hashtag"
-	"github.com/go-redis/redis/internal/pool"
-	"github.com/go-redis/redis/internal/proto"
+	"github.com/kirk91/redis/internal"
+	"github.com/kirk91/redis/internal/hashtag"
+	"github.com/kirk91/redis/internal/pool"
+	"github.com/kirk91/redis/internal/proto"
 )
 
 var errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
@@ -143,7 +144,7 @@ func (n *clusterNode) updateLatency() {
 	const probes = 10
 	for i := 0; i < probes; i++ {
 		start := time.Now()
-		n.Client.Ping()
+		n.Client.Ping(context.Background())
 		n.Latency += time.Since(start)
 	}
 	n.Latency = n.Latency / probes
@@ -313,7 +314,7 @@ func (c *clusterNodes) Random() (*clusterNode, error) {
 			return nil, err
 		}
 
-		nodeErr = node.Client.ClusterInfo().Err()
+		nodeErr = node.Client.ClusterInfo(context.Background()).Err()
 		if nodeErr == nil {
 			return node, nil
 		}
@@ -515,7 +516,7 @@ func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
 			return err
 		}
 
-		cmdsInfo, err := node.Client.Command().Result()
+		cmdsInfo, err := node.Client.Command(context.Background()).Result()
 		if err != nil {
 			return err
 		}
@@ -614,7 +615,7 @@ func (c *ClusterClient) Close() error {
 	return c.nodes.Close()
 }
 
-func (c *ClusterClient) Process(cmd Cmder) error {
+func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 	state, err := c.state()
 	if err != nil {
 		cmd.setErr(err)
@@ -635,13 +636,13 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 
 		if ask {
 			pipe := node.Client.Pipeline()
-			pipe.Process(NewCmd("ASKING"))
-			pipe.Process(cmd)
+			pipe.Process(ctx, NewCmd("ASKING"))
+			pipe.Process(ctx, cmd)
 			_, err = pipe.Exec()
 			pipe.Close()
 			ask = false
 		} else {
-			err = node.Client.Process(cmd)
+			err = node.Client.Process(ctx, cmd)
 		}
 
 		// If there is no error - we are done.
@@ -858,7 +859,7 @@ func (c *ClusterClient) reloadState() (*clusterState, error) {
 		return nil, err
 	}
 
-	slots, err := node.Client.ClusterSlots().Result()
+	slots, err := node.Client.ClusterSlots(context.Background()).Result()
 	if err != nil {
 		return nil, err
 	}

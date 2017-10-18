@@ -1,14 +1,15 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/internal"
-	"github.com/go-redis/redis/internal/pool"
+	"github.com/kirk91/redis/internal"
+	"github.com/kirk91/redis/internal/pool"
 )
 
 //------------------------------------------------------------------------------
@@ -123,13 +124,13 @@ func (c *sentinelClient) PubSub() *PubSub {
 
 func (c *sentinelClient) GetMasterAddrByName(name string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("SENTINEL", "get-master-addr-by-name", name)
-	c.Process(cmd)
+	c.Process(context.Background(), cmd)
 	return cmd
 }
 
 func (c *sentinelClient) Sentinels(name string) *SliceCmd {
 	cmd := NewSliceCmd("SENTINEL", "sentinels", name)
-	c.Process(cmd)
+	c.Process(context.Background(), cmd)
 	return cmd
 }
 

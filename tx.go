@@ -1,8 +1,10 @@
 package redis
 
 import (
-	"github.com/go-redis/redis/internal"
-	"github.com/go-redis/redis/internal/pool"
+	"context"
+
+	"github.com/kirk91/redis/internal"
+	"github.com/kirk91/redis/internal/pool"
 )
 
 // Redis transaction failed.
@@ -57,7 +59,7 @@ func (c *Tx) Watch(keys ...string) *StatusCmd {
 		args[1+i] = key
 	}
 	cmd := NewStatusCmd(args...)
-	c.Process(cmd)
+	c.Process(context.Background(), cmd)
 	return cmd
 }
 
@@ -69,7 +71,7 @@ func (c *Tx) Unwatch(keys ...string) *StatusCmd {
 		args[1+i] = key
 	}
 	cmd := NewStatusCmd(args...)
-	c.Process(cmd)
+	c.Process(context.Background(), cmd)
 	return cmd
 }
 

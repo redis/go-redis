@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -9,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-redis/redis/internal"
-	"github.com/go-redis/redis/internal/consistenthash"
-	"github.com/go-redis/redis/internal/hashtag"
-	"github.com/go-redis/redis/internal/pool"
+	"github.com/kirk91/redis/internal"
+	"github.com/kirk91/redis/internal/consistenthash"
+	"github.com/kirk91/redis/internal/hashtag"
+	"github.com/kirk91/redis/internal/pool"
 )
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
@@ -284,7 +285,7 @@ func (c *Ring) cmdInfo(name string) *CommandInfo {
 
 		var firstErr error
 		for _, shard := range shards {
-			cmdsInfo, err := shard.Client.Command().Result()
+			cmdsInfo, err := shard.Client.Command(context.Background()).Result()
 			if err == nil {
 				c.cmdsInfo = cmdsInfo
 				return nil
@@ -347,13 +348,13 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 	return c.shardByKey(firstKey)
 }
 
-func (c *Ring) Process(cmd Cmder) error {
+func (c *Ring) Process(ctx context.Context, cmd Cmder) error {
 	shard, err := c.cmdShard(cmd)
 	if err != nil {
 		cmd.setErr(err)
 		return err
 	}
-	return shard.Client.Process(cmd)
+	return shard.Client.Process(ctx, cmd)
 }
 
 // rebalance removes dead shards from the Ring.
@@ -388,7 +389,7 @@ func (c *Ring) heartbeat() {
 		c.mu.RUnlock()
 
 		for _, shard := range shards {
-			err := shard.Client.Ping().Err()
+			err := shard.Client.Ping(context.Background()).Err()
 			if shard.Vote(err == nil || err == pool.ErrPoolTimeout) {
 				internal.Logf("ring shard state changed: %s", shard)
 				rebalance = true

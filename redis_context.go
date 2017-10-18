@@ -5,14 +5,14 @@ package redis
 import (
 	"context"
 
-	"github.com/go-redis/redis/internal/pool"
+	"github.com/kirk91/redis/internal/pool"
 )
 
 type baseClient struct {
 	connPool pool.Pooler
 	opt      *Options
 
-	process func(Cmder) error
+	process func(context.Context, Cmder) error
 	onClose func() error // hook called when client is closed
 
 	ctx context.Context
