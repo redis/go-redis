@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"sync"
 
 	"github.com/kirk91/redis/internal/pool"
@@ -10,7 +11,7 @@ type pipelineExecer func([]Cmder) error
 
 type Pipeliner interface {
 	StatefulCmdable
-	Process(cmd Cmder) error
+	Process(ctx context.Context, cmd Cmder) error
 	Close() error
 	Discard() error
 	Exec() ([]Cmder, error)
@@ -31,7 +32,7 @@ type Pipeline struct {
 	closed bool
 }
 
-func (c *Pipeline) Process(cmd Cmder) error {
+func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 	c.mu.Lock()
 	c.cmds = append(c.cmds, cmd)
 	c.mu.Unlock()

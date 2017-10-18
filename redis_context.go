@@ -12,7 +12,7 @@ type baseClient struct {
 	connPool pool.Pooler
 	opt      *Options
 
-	process func(Cmder) error
+	process func(context.Context, Cmder) error
 	onClose func() error // hook called when client is closed
 
 	ctx context.Context

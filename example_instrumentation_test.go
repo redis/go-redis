@@ -37,10 +37,10 @@ func wrapRedisProcess(client *redis.Client) {
 		}
 	}()
 
-	client.WrapProcess(func(oldProcess func(redis.Cmder) error) func(redis.Cmder) error {
-		return func(cmd redis.Cmder) error {
+	client.WrapProcess(func(oldProcess func(context.Context, redis.Cmder) error) func(context.Context, redis.Cmder) error {
+		return func(ctx context.Context, cmd redis.Cmder) error {
 			start := time.Now()
-			err := oldProcess(cmd)
+			err := oldProcess(ctx, cmd)
 			dur := time.Since(start)
 
 			const decay = float64(1) / 100

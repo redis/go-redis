@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strings"
@@ -123,13 +124,13 @@ func (c *sentinelClient) PubSub() *PubSub {
 
 func (c *sentinelClient) GetMasterAddrByName(name string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("SENTINEL", "get-master-addr-by-name", name)
-	c.Process(cmd)
+	c.Process(context.Background(), cmd)
 	return cmd
 }
 
 func (c *sentinelClient) Sentinels(name string) *SliceCmd {
 	cmd := NewSliceCmd("SENTINEL", "sentinels", name)
-	c.Process(cmd)
+	c.Process(context.Background(), cmd)
 	return cmd
 }
 

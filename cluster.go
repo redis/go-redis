@@ -615,7 +615,7 @@ func (c *ClusterClient) Close() error {
 	return c.nodes.Close()
 }
 
-func (c *ClusterClient) Process(cmd Cmder) error {
+func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 	state, err := c.state()
 	if err != nil {
 		cmd.setErr(err)
@@ -636,13 +636,13 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 
 		if ask {
 			pipe := node.Client.Pipeline()
-			pipe.Process(NewCmd("ASKING"))
-			pipe.Process(cmd)
+			pipe.Process(ctx, NewCmd("ASKING"))
+			pipe.Process(ctx, cmd)
 			_, err = pipe.Exec()
 			pipe.Close()
 			ask = false
 		} else {
-			err = node.Client.Process(cmd)
+			err = node.Client.Process(ctx, cmd)
 		}
 
 		// If there is no error - we are done.

@@ -357,7 +357,7 @@ func ExampleScript() {
 func Example_customCommand() {
 	Get := func(client *redis.Client, key string) *redis.StringCmd {
 		cmd := redis.NewStringCmd("get", key)
-		client.Process(cmd)
+		client.Process(context.Background(), cmd)
 		return cmd
 	}
 

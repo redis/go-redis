@@ -305,7 +305,7 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 		redis.NewStatusCmd("SENTINEL", "SET", masterName, "failover-timeout", "1000"),
 		redis.NewStatusCmd("SENTINEL", "SET", masterName, "parallel-syncs", "1"),
 	} {
-		client.Process(cmd)
+		client.Process(context.TODO(), cmd)
 		if err := cmd.Err(); err != nil {
 			process.Kill()
 			return nil, err

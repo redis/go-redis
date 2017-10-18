@@ -263,19 +263,19 @@ var _ Cmdable = (*Ring)(nil)
 var _ Cmdable = (*ClusterClient)(nil)
 
 type cmdable struct {
-	process func(cmd Cmder) error
+	process func(ctx context.Context, cmd Cmder) error
 }
 
-func (c *cmdable) setProcessor(fn func(Cmder) error) {
+func (c *cmdable) setProcessor(fn func(context.Context, Cmder) error) {
 	c.process = fn
 }
 
 type statefulCmdable struct {
 	cmdable
-	process func(cmd Cmder) error
+	process func(ctx context.Context, cmd Cmder) error
 }
 
-func (c *statefulCmdable) setProcessor(fn func(Cmder) error) {
+func (c *statefulCmdable) setProcessor(fn func(context.Context, Cmder) error) {
 	c.process = fn
 	c.cmdable.setProcessor(fn)
 }
@@ -284,25 +284,25 @@ func (c *statefulCmdable) setProcessor(fn func(Cmder) error) {
 
 func (c *statefulCmdable) Auth(ctx context.Context, password string) *StatusCmd {
 	cmd := NewStatusCmd("auth", password)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Echo(ctx context.Context, message interface{}) *StringCmd {
 	cmd := NewStringCmd("echo", message)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Ping(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("ping")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Wait(ctx context.Context, numSlaves int, timeout time.Duration) *IntCmd {
 	cmd := NewIntCmd("wait", numSlaves, int(timeout/time.Millisecond))
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -312,7 +312,7 @@ func (c *cmdable) Quit(ctx context.Context) *StatusCmd {
 
 func (c *statefulCmdable) Select(ctx context.Context, index int) *StatusCmd {
 	cmd := NewStatusCmd("select", index)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -325,7 +325,7 @@ func (c *cmdable) Del(ctx context.Context, keys ...string) *IntCmd {
 		args[1+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -336,13 +336,13 @@ func (c *cmdable) Unlink(ctx context.Context, keys ...string) *IntCmd {
 		args[1+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Dump(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd("dump", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -353,25 +353,25 @@ func (c *cmdable) Exists(ctx context.Context, keys ...string) *IntCmd {
 		args[1+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
 	cmd := NewBoolCmd("expire", key, formatSec(expiration))
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd {
 	cmd := NewBoolCmd("expireat", key, tm.Unix())
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Keys(ctx context.Context, pattern string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("keys", pattern)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -385,43 +385,43 @@ func (c *cmdable) Migrate(ctx context.Context, host, port, key string, db int64,
 		formatMs(timeout),
 	)
 	cmd.setReadTimeout(readTimeout(timeout))
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Move(ctx context.Context, key string, db int64) *BoolCmd {
 	cmd := NewBoolCmd("move", key, db)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ObjectRefCount(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd("object", "refcount", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ObjectEncoding(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd("object", "encoding", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ObjectIdleTime(ctx context.Context, key string) *DurationCmd {
 	cmd := NewDurationCmd(time.Second, "object", "idletime", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Persist(ctx context.Context, key string) *BoolCmd {
 	cmd := NewBoolCmd("persist", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) PExpire(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
 	cmd := NewBoolCmd("pexpire", key, formatMs(expiration))
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -431,31 +431,31 @@ func (c *cmdable) PExpireAt(ctx context.Context, key string, tm time.Time) *Bool
 		key,
 		tm.UnixNano()/int64(time.Millisecond),
 	)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) PTTL(ctx context.Context, key string) *DurationCmd {
 	cmd := NewDurationCmd(time.Millisecond, "pttl", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) RandomKey(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd("randomkey")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Rename(ctx context.Context, key, newkey string) *StatusCmd {
 	cmd := NewStatusCmd("rename", key, newkey)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) RenameNX(ctx context.Context, key, newkey string) *BoolCmd {
 	cmd := NewBoolCmd("renamenx", key, newkey)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -466,7 +466,7 @@ func (c *cmdable) Restore(ctx context.Context, key string, ttl time.Duration, va
 		formatMs(ttl),
 		value,
 	)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -478,7 +478,7 @@ func (c *cmdable) RestoreReplace(ctx context.Context, key string, ttl time.Durat
 		value,
 		"replace",
 	)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -516,25 +516,25 @@ func (sort *Sort) args(key string) []interface{} {
 
 func (c *cmdable) Sort(ctx context.Context, key string, sort Sort) *StringSliceCmd {
 	cmd := NewStringSliceCmd(sort.args(key)...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) SortInterfaces(ctx context.Context, key string, sort Sort) *SliceCmd {
 	cmd := NewSliceCmd(sort.args(key)...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) TTL(ctx context.Context, key string) *DurationCmd {
 	cmd := NewDurationCmd(time.Second, "ttl", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Type(ctx context.Context, key string) *StatusCmd {
 	cmd := NewStatusCmd("type", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -547,7 +547,7 @@ func (c *cmdable) Scan(ctx context.Context, cursor uint64, match string, count i
 		args = append(args, "count", count)
 	}
 	cmd := NewScanCmd(c.process, args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -560,7 +560,7 @@ func (c *cmdable) SScan(ctx context.Context, key string, cursor uint64, match st
 		args = append(args, "count", count)
 	}
 	cmd := NewScanCmd(c.process, args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -573,7 +573,7 @@ func (c *cmdable) HScan(ctx context.Context, key string, cursor uint64, match st
 		args = append(args, "count", count)
 	}
 	cmd := NewScanCmd(c.process, args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -586,7 +586,7 @@ func (c *cmdable) ZScan(ctx context.Context, key string, cursor uint64, match st
 		args = append(args, "count", count)
 	}
 	cmd := NewScanCmd(c.process, args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -594,7 +594,7 @@ func (c *cmdable) ZScan(ctx context.Context, key string, cursor uint64, match st
 
 func (c *cmdable) Append(ctx context.Context, key, value string) *IntCmd {
 	cmd := NewIntCmd("append", key, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -612,7 +612,7 @@ func (c *cmdable) BitCount(ctx context.Context, key string, bitCount *BitCount) 
 		)
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -625,7 +625,7 @@ func (c *cmdable) bitOp(ctx context.Context, op, destKey string, keys ...string)
 		args[3+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -661,61 +661,61 @@ func (c *cmdable) BitPos(ctx context.Context, key string, bit int64, pos ...int6
 		panic("too many arguments")
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Decr(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd("decr", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) DecrBy(ctx context.Context, key string, decrement int64) *IntCmd {
 	cmd := NewIntCmd("decrby", key, decrement)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Get(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd("get", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) GetBit(ctx context.Context, key string, offset int64) *IntCmd {
 	cmd := NewIntCmd("getbit", key, offset)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) GetRange(ctx context.Context, key string, start, end int64) *StringCmd {
 	cmd := NewStringCmd("getrange", key, start, end)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) GetSet(ctx context.Context, key string, value interface{}) *StringCmd {
 	cmd := NewStringCmd("getset", key, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Incr(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd("incr", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) IncrBy(ctx context.Context, key string, value int64) *IntCmd {
 	cmd := NewIntCmd("incrby", key, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) IncrByFloat(ctx context.Context, key string, value float64) *FloatCmd {
 	cmd := NewFloatCmd("incrbyfloat", key, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -726,7 +726,7 @@ func (c *cmdable) MGet(ctx context.Context, keys ...string) *SliceCmd {
 		args[1+i] = key
 	}
 	cmd := NewSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -737,7 +737,7 @@ func (c *cmdable) MSet(ctx context.Context, pairs ...interface{}) *StatusCmd {
 		args[1+i] = pair
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -748,7 +748,7 @@ func (c *cmdable) MSetNX(ctx context.Context, pairs ...interface{}) *BoolCmd {
 		args[1+i] = pair
 	}
 	cmd := NewBoolCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -769,7 +769,7 @@ func (c *cmdable) Set(ctx context.Context, key string, value interface{}, expira
 		}
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -780,7 +780,7 @@ func (c *cmdable) SetBit(ctx context.Context, key string, offset int64, value in
 		offset,
 		value,
 	)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -799,7 +799,7 @@ func (c *cmdable) SetNX(ctx context.Context, key string, value interface{}, expi
 			cmd = NewBoolCmd("set", key, value, "ex", formatSec(expiration), "nx")
 		}
 	}
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -817,19 +817,19 @@ func (c *cmdable) SetXX(ctx context.Context, key string, value interface{}, expi
 			cmd = NewBoolCmd("set", key, value, "ex", formatSec(expiration), "xx")
 		}
 	}
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd {
 	cmd := NewIntCmd("setrange", key, offset, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) StrLen(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd("strlen", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -843,49 +843,49 @@ func (c *cmdable) HDel(ctx context.Context, key string, fields ...string) *IntCm
 		args[2+i] = field
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) HExists(ctx context.Context, key, field string) *BoolCmd {
 	cmd := NewBoolCmd("hexists", key, field)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) HGet(ctx context.Context, key, field string) *StringCmd {
 	cmd := NewStringCmd("hget", key, field)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) HGetAll(ctx context.Context, key string) *StringStringMapCmd {
 	cmd := NewStringStringMapCmd("hgetall", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) HIncrBy(ctx context.Context, key, field string, incr int64) *IntCmd {
 	cmd := NewIntCmd("hincrby", key, field, incr)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) HIncrByFloat(ctx context.Context, key, field string, incr float64) *FloatCmd {
 	cmd := NewFloatCmd("hincrbyfloat", key, field, incr)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) HKeys(ctx context.Context, key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("hkeys", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) HLen(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd("hlen", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -897,7 +897,7 @@ func (c *cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slic
 		args[2+i] = field
 	}
 	cmd := NewSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -912,25 +912,25 @@ func (c *cmdable) HMSet(ctx context.Context, key string, fields map[string]inter
 		i += 2
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) HSet(ctx context.Context, key, field string, value interface{}) *BoolCmd {
 	cmd := NewBoolCmd("hset", key, field, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd {
 	cmd := NewBoolCmd("hsetnx", key, field, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) HVals(ctx context.Context, key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("hvals", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -945,7 +945,7 @@ func (c *cmdable) BLPop(ctx context.Context, timeout time.Duration, keys ...stri
 	args[len(args)-1] = formatSec(timeout)
 	cmd := NewStringSliceCmd(args...)
 	cmd.setReadTimeout(readTimeout(timeout))
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -958,7 +958,7 @@ func (c *cmdable) BRPop(ctx context.Context, timeout time.Duration, keys ...stri
 	args[len(keys)+1] = formatSec(timeout)
 	cmd := NewStringSliceCmd(args...)
 	cmd.setReadTimeout(readTimeout(timeout))
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -970,43 +970,43 @@ func (c *cmdable) BRPopLPush(ctx context.Context, source, destination string, ti
 		formatSec(timeout),
 	)
 	cmd.setReadTimeout(readTimeout(timeout))
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) LIndex(ctx context.Context, key string, index int64) *StringCmd {
 	cmd := NewStringCmd("lindex", key, index)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) LInsert(ctx context.Context, key, op string, pivot, value interface{}) *IntCmd {
 	cmd := NewIntCmd("linsert", key, op, pivot, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd {
 	cmd := NewIntCmd("linsert", key, "before", pivot, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd {
 	cmd := NewIntCmd("linsert", key, "after", pivot, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) LLen(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd("llen", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) LPop(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd("lpop", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1018,13 +1018,13 @@ func (c *cmdable) LPush(ctx context.Context, key string, values ...interface{}) 
 		args[2+i] = value
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) LPushX(ctx context.Context, key string, value interface{}) *IntCmd {
 	cmd := NewIntCmd("lpushx", key, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1035,19 +1035,19 @@ func (c *cmdable) LRange(ctx context.Context, key string, start, stop int64) *St
 		start,
 		stop,
 	)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) LRem(ctx context.Context, key string, count int64, value interface{}) *IntCmd {
 	cmd := NewIntCmd("lrem", key, count, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) LSet(ctx context.Context, key string, index int64, value interface{}) *StatusCmd {
 	cmd := NewStatusCmd("lset", key, index, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1058,19 +1058,19 @@ func (c *cmdable) LTrim(ctx context.Context, key string, start, stop int64) *Sta
 		start,
 		stop,
 	)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) RPop(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd("rpop", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) RPopLPush(ctx context.Context, source, destination string) *StringCmd {
 	cmd := NewStringCmd("rpoplpush", source, destination)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1082,13 +1082,13 @@ func (c *cmdable) RPush(ctx context.Context, key string, values ...interface{}) 
 		args[2+i] = value
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) RPushX(ctx context.Context, key string, value interface{}) *IntCmd {
 	cmd := NewIntCmd("rpushx", key, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1102,13 +1102,13 @@ func (c *cmdable) SAdd(ctx context.Context, key string, members ...interface{}) 
 		args[2+i] = member
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) SCard(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd("scard", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1119,7 +1119,7 @@ func (c *cmdable) SDiff(ctx context.Context, keys ...string) *StringSliceCmd {
 		args[1+i] = key
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1131,7 +1131,7 @@ func (c *cmdable) SDiffStore(ctx context.Context, destination string, keys ...st
 		args[2+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1142,7 +1142,7 @@ func (c *cmdable) SInter(ctx context.Context, keys ...string) *StringSliceCmd {
 		args[1+i] = key
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1154,53 +1154,53 @@ func (c *cmdable) SInterStore(ctx context.Context, destination string, keys ...s
 		args[2+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) SIsMember(ctx context.Context, key string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd("sismember", key, member)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) SMembers(ctx context.Context, key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("smembers", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) SMove(ctx context.Context, source, destination string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd("smove", source, destination, member)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 // Redis `SPOP key` command.
 func (c *cmdable) SPop(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd("spop", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 // Redis `SPOP key count` command.
 func (c *cmdable) SPopN(ctx context.Context, key string, count int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd("spop", key, count)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 // Redis `SRANDMEMBER key` command.
 func (c *cmdable) SRandMember(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd("srandmember", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 // Redis `SRANDMEMBER key count` command.
 func (c *cmdable) SRandMemberN(ctx context.Context, key string, count int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd("srandmember", key, count)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1212,7 +1212,7 @@ func (c *cmdable) SRem(ctx context.Context, key string, members ...interface{}) 
 		args[2+i] = member
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1223,7 +1223,7 @@ func (c *cmdable) SUnion(ctx context.Context, keys ...string) *StringSliceCmd {
 		args[1+i] = key
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1235,7 +1235,7 @@ func (c *cmdable) SUnionStore(ctx context.Context, destination string, keys ...s
 		args[2+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1260,7 +1260,7 @@ func (c *cmdable) zAdd(ctx context.Context, a []interface{}, n int, members ...Z
 		a[n+2*i+1] = m.Member
 	}
 	cmd := NewIntCmd(a...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1318,7 +1318,7 @@ func (c *cmdable) zIncr(ctx context.Context, a []interface{}, n int, members ...
 		a[n+2*i+1] = m.Member
 	}
 	cmd := NewFloatCmd(a...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1348,25 +1348,25 @@ func (c *cmdable) ZIncrXX(ctx context.Context, key string, member Z) *FloatCmd {
 
 func (c *cmdable) ZCard(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd("zcard", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ZCount(ctx context.Context, key, min, max string) *IntCmd {
 	cmd := NewIntCmd("zcount", key, min, max)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ZLexCount(ctx context.Context, key, min, max string) *IntCmd {
 	cmd := NewIntCmd("zlexcount", key, min, max)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ZIncrBy(ctx context.Context, key string, increment float64, member string) *FloatCmd {
 	cmd := NewFloatCmd("zincrby", key, increment, member)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1388,7 +1388,7 @@ func (c *cmdable) ZInterStore(ctx context.Context, destination string, store ZSt
 		args = append(args, "aggregate", store.Aggregate)
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1403,7 +1403,7 @@ func (c *cmdable) zRange(ctx context.Context, key string, start, stop int64, wit
 		args = append(args, "withscores")
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1413,7 +1413,7 @@ func (c *cmdable) ZRange(ctx context.Context, key string, start, stop int64) *St
 
 func (c *cmdable) ZRangeWithScores(ctx context.Context, key string, start, stop int64) *ZSliceCmd {
 	cmd := NewZSliceCmd("zrange", key, start, stop, "withscores")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1436,7 +1436,7 @@ func (c *cmdable) zRangeBy(ctx context.Context, zcmd, key string, opt ZRangeBy, 
 		)
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1459,13 +1459,13 @@ func (c *cmdable) ZRangeByScoreWithScores(ctx context.Context, key string, opt Z
 		)
 	}
 	cmd := NewZSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ZRank(ctx context.Context, key, member string) *IntCmd {
 	cmd := NewIntCmd("zrank", key, member)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1477,7 +1477,7 @@ func (c *cmdable) ZRem(ctx context.Context, key string, members ...interface{}) 
 		args[2+i] = member
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1488,31 +1488,31 @@ func (c *cmdable) ZRemRangeByRank(ctx context.Context, key string, start, stop i
 		start,
 		stop,
 	)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ZRemRangeByScore(ctx context.Context, key, min, max string) *IntCmd {
 	cmd := NewIntCmd("zremrangebyscore", key, min, max)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ZRemRangeByLex(ctx context.Context, key, min, max string) *IntCmd {
 	cmd := NewIntCmd("zremrangebylex", key, min, max)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ZRevRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd("zrevrange", key, start, stop)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ZRevRangeWithScores(ctx context.Context, key string, start, stop int64) *ZSliceCmd {
 	cmd := NewZSliceCmd("zrevrange", key, start, stop, "withscores")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1527,7 +1527,7 @@ func (c *cmdable) zRevRangeBy(ctx context.Context, zcmd, key string, opt ZRangeB
 		)
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1550,19 +1550,19 @@ func (c *cmdable) ZRevRangeByScoreWithScores(ctx context.Context, key string, op
 		)
 	}
 	cmd := NewZSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ZRevRank(ctx context.Context, key, member string) *IntCmd {
 	cmd := NewIntCmd("zrevrank", key, member)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ZScore(ctx context.Context, key, member string) *FloatCmd {
 	cmd := NewFloatCmd("zscore", key, member)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1584,7 +1584,7 @@ func (c *cmdable) ZUnionStore(ctx context.Context, dest string, store ZStore, ke
 		args = append(args, "aggregate", store.Aggregate)
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1598,7 +1598,7 @@ func (c *cmdable) PFAdd(ctx context.Context, key string, els ...interface{}) *In
 		args[2+i] = el
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1609,7 +1609,7 @@ func (c *cmdable) PFCount(ctx context.Context, keys ...string) *IntCmd {
 		args[1+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1621,7 +1621,7 @@ func (c *cmdable) PFMerge(ctx context.Context, dest string, keys ...string) *Sta
 		args[2+i] = key
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1629,63 +1629,63 @@ func (c *cmdable) PFMerge(ctx context.Context, dest string, keys ...string) *Sta
 
 func (c *cmdable) BgRewriteAOF(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("bgrewriteaof")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) BgSave(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("bgsave")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClientKill(ctx context.Context, ipPort string) *StatusCmd {
 	cmd := NewStatusCmd("client", "kill", ipPort)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClientList(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd("client", "list")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClientPause(ctx context.Context, dur time.Duration) *BoolCmd {
 	cmd := NewBoolCmd("client", "pause", formatMs(dur))
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 // ClientSetName assigns a name to the connection.
 func (c *statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCmd {
 	cmd := NewBoolCmd("client", "setname", name)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 // ClientGetName returns the name of the connection.
 func (c *cmdable) ClientGetName(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd("client", "getname")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ConfigGet(ctx context.Context, parameter string) *SliceCmd {
 	cmd := NewSliceCmd("config", "get", parameter)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ConfigResetStat(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("config", "resetstat")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ConfigSet(ctx context.Context, parameter, value string) *StatusCmd {
 	cmd := NewStatusCmd("config", "set", parameter, value)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1696,19 +1696,19 @@ func (c *cmdable) DbSize(ctx context.Context) *IntCmd {
 
 func (c *cmdable) DBSize(ctx context.Context) *IntCmd {
 	cmd := NewIntCmd("dbsize")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) FlushAll(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("flushall")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) FlushAllAsync(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("flushall", "async")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1719,13 +1719,13 @@ func (c *cmdable) FlushDb(ctx context.Context) *StatusCmd {
 
 func (c *cmdable) FlushDB(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("flushdb")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) FlushDBAsync(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("flushdb", "async")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1735,19 +1735,19 @@ func (c *cmdable) Info(ctx context.Context, section ...string) *StringCmd {
 		args = append(args, section[0])
 	}
 	cmd := NewStringCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) LastSave(ctx context.Context) *IntCmd {
 	cmd := NewIntCmd("lastsave")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) Save(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("save")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1759,7 +1759,7 @@ func (c *cmdable) shutdown(ctx context.Context, modifier string) *StatusCmd {
 		args = []interface{}{"shutdown", modifier}
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	if err := cmd.Err(); err != nil {
 		if err == io.EOF {
 			// Server quit as expected.
@@ -1787,7 +1787,7 @@ func (c *cmdable) ShutdownNoSave(ctx context.Context) *StatusCmd {
 
 func (c *cmdable) SlaveOf(ctx context.Context, host, port string) *StatusCmd {
 	cmd := NewStatusCmd("slaveof", host, port)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1801,7 +1801,7 @@ func (c *cmdable) Sync(ctx context.Context) {
 
 func (c *cmdable) Time(ctx context.Context) *TimeCmd {
 	cmd := NewTimeCmd("time")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1820,7 +1820,7 @@ func (c *cmdable) Eval(ctx context.Context, script string, keys []string, args .
 		cmdArgs[pos+i] = arg
 	}
 	cmd := NewCmd(cmdArgs...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1837,7 +1837,7 @@ func (c *cmdable) EvalSha(ctx context.Context, sha1 string, keys []string, args 
 		cmdArgs[pos+i] = arg
 	}
 	cmd := NewCmd(cmdArgs...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1849,25 +1849,25 @@ func (c *cmdable) ScriptExists(ctx context.Context, scripts ...string) *BoolSlic
 		args[2+i] = script
 	}
 	cmd := NewBoolSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ScriptFlush(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("script", "flush")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ScriptKill(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("script", "kill")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ScriptLoad(ctx context.Context, script string) *StringCmd {
 	cmd := NewStringCmd("script", "load", script)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1875,7 +1875,7 @@ func (c *cmdable) ScriptLoad(ctx context.Context, script string) *StringCmd {
 
 func (c *cmdable) DebugObject(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd("debug", "object", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1884,7 +1884,7 @@ func (c *cmdable) DebugObject(ctx context.Context, key string) *StringCmd {
 // Publish posts the message to the channel.
 func (c *cmdable) Publish(ctx context.Context, channel string, message interface{}) *IntCmd {
 	cmd := NewIntCmd("publish", channel, message)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1894,7 +1894,7 @@ func (c *cmdable) PubSubChannels(ctx context.Context, pattern string) *StringSli
 		args = append(args, pattern)
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1906,13 +1906,13 @@ func (c *cmdable) PubSubNumSub(ctx context.Context, channels ...string) *StringI
 		args[2+i] = channel
 	}
 	cmd := NewStringIntMapCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) PubSubNumPat(ctx context.Context) *IntCmd {
 	cmd := NewIntCmd("pubsub", "numpat")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1920,67 +1920,67 @@ func (c *cmdable) PubSubNumPat(ctx context.Context) *IntCmd {
 
 func (c *cmdable) ClusterSlots(ctx context.Context) *ClusterSlotsCmd {
 	cmd := NewClusterSlotsCmd("cluster", "slots")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterNodes(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd("cluster", "nodes")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterMeet(ctx context.Context, host, port string) *StatusCmd {
 	cmd := NewStatusCmd("cluster", "meet", host, port)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterForget(ctx context.Context, nodeID string) *StatusCmd {
 	cmd := NewStatusCmd("cluster", "forget", nodeID)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterReplicate(ctx context.Context, nodeID string) *StatusCmd {
 	cmd := NewStatusCmd("cluster", "replicate", nodeID)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterResetSoft(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("cluster", "reset", "soft")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterResetHard(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("cluster", "reset", "hard")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterInfo(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd("cluster", "info")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterKeySlot(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd("cluster", "keyslot", key)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterCountFailureReports(ctx context.Context, nodeID string) *IntCmd {
 	cmd := NewIntCmd("cluster", "count-failure-reports", nodeID)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterCountKeysInSlot(ctx context.Context, slot int) *IntCmd {
 	cmd := NewIntCmd("cluster", "countkeysinslot", slot)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -1992,7 +1992,7 @@ func (c *cmdable) ClusterDelSlots(ctx context.Context, slots ...int) *StatusCmd 
 		args[2+i] = slot
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -2007,31 +2007,31 @@ func (c *cmdable) ClusterDelSlotsRange(ctx context.Context, min, max int) *Statu
 
 func (c *cmdable) ClusterSaveConfig(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("cluster", "saveconfig")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterSlaves(ctx context.Context, nodeID string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("cluster", "slaves", nodeID)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *statefulCmdable) ReadOnly(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("readonly")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *statefulCmdable) ReadWrite(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("readwrite")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) ClusterFailover(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd("cluster", "failover")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -2043,7 +2043,7 @@ func (c *cmdable) ClusterAddSlots(ctx context.Context, slots ...int) *StatusCmd 
 		args[2+i] = num
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -2068,31 +2068,31 @@ func (c *cmdable) GeoAdd(ctx context.Context, key string, geoLocation ...*GeoLoc
 		args[2+3*i+2] = eachLoc.Name
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) GeoRadius(ctx context.Context, key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadius", key, longitude, latitude)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) GeoRadiusRO(ctx context.Context, key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadius_ro", key, longitude, latitude)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) GeoRadiusByMember(ctx context.Context, key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadiusbymember", key, member)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
 func (c *cmdable) GeoRadiusByMemberRO(ctx context.Context, key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadiusbymember_ro", key, member)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -2101,7 +2101,7 @@ func (c *cmdable) GeoDist(ctx context.Context, key string, member1, member2, uni
 		unit = "km"
 	}
 	cmd := NewFloatCmd("geodist", key, member1, member2, unit)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -2113,7 +2113,7 @@ func (c *cmdable) GeoHash(ctx context.Context, key string, members ...string) *S
 		args[2+i] = member
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -2125,7 +2125,7 @@ func (c *cmdable) GeoPos(ctx context.Context, key string, members ...string) *Ge
 		args[2+i] = member
 	}
 	cmd := NewGeoPosCmd(args...)
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }
 
@@ -2133,6 +2133,6 @@ func (c *cmdable) GeoPos(ctx context.Context, key string, members ...string) *Ge
 
 func (c *cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 	cmd := NewCommandsInfoCmd("command")
-	c.process(cmd)
+	c.process(ctx, cmd)
 	return cmd
 }

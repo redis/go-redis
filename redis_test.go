@@ -128,7 +128,7 @@ var _ = Describe("Client", func() {
 
 	It("processes custom commands", func() {
 		cmd := redis.NewCmd("PING")
-		client.Process(cmd)
+		client.Process(context.TODO(), cmd)
 
 		// Flush buffers.
 		Expect(client.Echo(context.Background(), "hello").Err()).NotTo(HaveOccurred())
@@ -246,10 +246,10 @@ var _ = Describe("Client", func() {
 	It("should call WrapProcess", func() {
 		var wrapperFnCalled bool
 
-		client.WrapProcess(func(oldProcess func(redis.Cmder) error) func(redis.Cmder) error {
-			return func(cmd redis.Cmder) error {
+		client.WrapProcess(func(oldProcess func(context.Context, redis.Cmder) error) func(context.Context, redis.Cmder) error {
+			return func(ctx context.Context, cmd redis.Cmder) error {
 				wrapperFnCalled = true
-				return oldProcess(cmd)
+				return oldProcess(ctx, cmd)
 			}
 		})
 

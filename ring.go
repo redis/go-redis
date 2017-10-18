@@ -348,13 +348,13 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 	return c.shardByKey(firstKey)
 }
 
-func (c *Ring) Process(cmd Cmder) error {
+func (c *Ring) Process(ctx context.Context, cmd Cmder) error {
 	shard, err := c.cmdShard(cmd)
 	if err != nil {
 		cmd.setErr(err)
 		return err
 	}
-	return shard.Client.Process(cmd)
+	return shard.Client.Process(ctx, cmd)
 }
 
 // rebalance removes dead shards from the Ring.

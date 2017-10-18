@@ -1,6 +1,9 @@
 package redis
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // UniversalOptions information is required by UniversalClient to establish
 // connections.
@@ -113,7 +116,7 @@ func (o *UniversalOptions) simple() *Options {
 // applications locally.
 type UniversalClient interface {
 	Cmdable
-	Process(cmd Cmder) error
+	Process(ctx context.Context, cmd Cmder) error
 	Close() error
 }
 

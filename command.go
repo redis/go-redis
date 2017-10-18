@@ -2,6 +2,7 @@ package redis
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -719,12 +720,12 @@ type ScanCmd struct {
 	page   []string
 	cursor uint64
 
-	process func(cmd Cmder) error
+	process func(ctx context.Context, cmd Cmder) error
 }
 
 var _ Cmder = (*ScanCmd)(nil)
 
-func NewScanCmd(process func(cmd Cmder) error, args ...interface{}) *ScanCmd {
+func NewScanCmd(process func(ctx context.Context, cmd Cmder) error, args ...interface{}) *ScanCmd {
 	return &ScanCmd{
 		baseCmd: baseCmd{_args: args},
 		process: process,
