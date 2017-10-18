@@ -1,12 +1,13 @@
 # Redis client for Golang
 
-[![Build Status](https://travis-ci.org/go-redis/redis.png?branch=master)](https://travis-ci.org/go-redis/redis)
+[![Build Status](https://travis-ci.org/kirk91/redis.png?branch=master)](https://travis-ci.org/go-redis/redis)
 [![GoDoc](https://godoc.org/github.com/go-redis/redis?status.svg)](https://godoc.org/github.com/go-redis/redis)
 
 Supports:
 
 - Redis 3 commands except QUIT, MONITOR, SLOWLOG and SYNC.
 - Automatic connection pooling with [circuit breaker](https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern) support.
+- Context support.
 - [Pub/Sub](https://godoc.org/github.com/go-redis/redis#PubSub).
 - [Transactions](https://godoc.org/github.com/go-redis/redis#Multi).
 - [Pipeline](https://godoc.org/github.com/go-redis/redis#example-Client-Pipeline) and [TxPipeline](https://godoc.org/github.com/go-redis/redis#example-Client-TxPipeline).
@@ -47,24 +48,24 @@ func ExampleNewClient() {
 		DB:       0,  // use default DB
 	})
 
-	pong, err := client.Ping().Result()
+	pong, err := client.Ping(context.Background()).Result()
 	fmt.Println(pong, err)
 	// Output: PONG <nil>
 }
 
 func ExampleClient() {
-	err := client.Set("key", "value", 0).Err()
+	err := client.Set(context.Background(), "key", "value", 0).Err()
 	if err != nil {
 		panic(err)
 	}
 
-	val, err := client.Get("key").Result()
+	val, err := client.Get(context.Background(), "key").Result()
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("key", val)
 
-	val2, err := client.Get("key2").Result()
+	val2, err := client.Get(context.Background(), "key2").Result()
 	if err == redis.Nil {
 		fmt.Println("key2 does not exists")
 	} else if err != nil {
