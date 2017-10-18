@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"time"
 
 	"github.com/kirk91/redis"
@@ -14,7 +15,7 @@ var _ = Describe("pool", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB(context.Background()).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -23,7 +24,7 @@ var _ = Describe("pool", func() {
 
 	It("respects max size", func() {
 		perform(1000, func(id int) {
-			val, err := client.Ping().Result()
+			val, err := client.Ping(context.Background()).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("PONG"))
 		})
@@ -40,7 +41,7 @@ var _ = Describe("pool", func() {
 
 			err := client.Watch(func(tx *redis.Tx) error {
 				cmds, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
-					ping = pipe.Ping()
+					ping = pipe.Ping(context.Background())
 					return nil
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -62,7 +63,7 @@ var _ = Describe("pool", func() {
 	It("respects max size on pipelines", func() {
 		perform(1000, func(id int) {
 			pipe := client.Pipeline()
-			ping := pipe.Ping()
+			ping := pipe.Ping(context.Background())
 			cmds, err := pipe.Exec()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(1))
@@ -83,10 +84,10 @@ var _ = Describe("pool", func() {
 		cn.SetNetConn(&badConn{})
 		Expect(client.Pool().Put(cn)).NotTo(HaveOccurred())
 
-		err = client.Ping().Err()
+		err = client.Ping(context.Background()).Err()
 		Expect(err).To(MatchError("bad connection"))
 
-		val, err := client.Ping().Result()
+		val, err := client.Ping(context.Background()).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal("PONG"))
 
@@ -102,7 +103,7 @@ var _ = Describe("pool", func() {
 
 	It("reuses connections", func() {
 		for i := 0; i < 100; i++ {
-			val, err := client.Ping().Result()
+			val, err := client.Ping(context.Background()).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("PONG"))
 		}

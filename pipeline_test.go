@@ -1,6 +1,8 @@
 package redis_test
 
 import (
+	"context"
+
 	"github.com/kirk91/redis"
 
 	. "github.com/onsi/ginkgo"
@@ -13,7 +15,7 @@ var _ = Describe("pipelining", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB(context.Background()).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -23,7 +25,7 @@ var _ = Describe("pipelining", func() {
 	It("supports block style", func() {
 		var get *redis.StringCmd
 		cmds, err := client.Pipelined(func(pipe redis.Pipeliner) error {
-			get = pipe.Get("foo")
+			get = pipe.Get(context.Background(), "foo")
 			return nil
 		})
 		Expect(err).To(Equal(redis.Nil))
@@ -40,7 +42,7 @@ var _ = Describe("pipelining", func() {
 		})
 
 		It("discards queued commands", func() {
-			pipe.Get("key")
+			pipe.Get(context.Background(), "key")
 			pipe.Discard()
 			cmds, err := pipe.Exec()
 			Expect(err).NotTo(HaveOccurred())
@@ -48,10 +50,10 @@ var _ = Describe("pipelining", func() {
 		})
 
 		It("handles val/err", func() {
-			err := client.Set("key", "value", 0).Err()
+			err := client.Set(context.Background(), "key", "value", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			get := pipe.Get("key")
+			get := pipe.Get(context.Background(), "key")
 			cmds, err := pipe.Exec()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(1))

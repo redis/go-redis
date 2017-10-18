@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -20,7 +21,7 @@ func Example_instrumentation() {
 	})
 
 	for {
-		ring.Ping()
+		ring.Ping(context.Background())
 	}
 }
 

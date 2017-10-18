@@ -1,6 +1,8 @@
 package redis_test
 
 import (
+	"context"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
@@ -21,21 +23,21 @@ var _ = Describe("UniversalClient", func() {
 			MasterName: sentinelName,
 			Addrs:      []string{":" + sentinelPort},
 		})
-		Expect(client.Ping().Err()).NotTo(HaveOccurred())
+		Expect(client.Ping(context.Background()).Err()).NotTo(HaveOccurred())
 	})
 
 	It("should connect to simple servers", func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs: []string{redisAddr},
 		})
-		Expect(client.Ping().Err()).NotTo(HaveOccurred())
+		Expect(client.Ping(context.Background()).Err()).NotTo(HaveOccurred())
 	})
 
 	It("should connect to clusters", func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs: cluster.addrs(),
 		})
-		Expect(client.Ping().Err()).NotTo(HaveOccurred())
+		Expect(client.Ping(context.Background()).Err()).NotTo(HaveOccurred())
 	})
 
 })

@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"sync"
@@ -20,7 +21,7 @@ func init() {
 		PoolSize:     10,
 		PoolTimeout:  30 * time.Second,
 	})
-	client.FlushDB()
+	client.FlushDB(context.Background())
 }
 
 func ExampleNewClient() {
@@ -30,7 +31,7 @@ func ExampleNewClient() {
 		DB:       0,  // use default DB
 	})
 
-	pong, err := client.Ping().Result()
+	pong, err := client.Ping(context.Background()).Result()
 	fmt.Println(pong, err)
 	// Output: PONG <nil>
 }
@@ -59,7 +60,7 @@ func ExampleNewFailoverClient() {
 		MasterName:    "master",
 		SentinelAddrs: []string{":26379"},
 	})
-	client.Ping()
+	client.Ping(context.Background())
 }
 
 func ExampleNewClusterClient() {
@@ -68,7 +69,7 @@ func ExampleNewClusterClient() {
 	client := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs: []string{":7000", ":7001", ":7002", ":7003", ":7004", ":7005"},
 	})
-	client.Ping()
+	client.Ping(context.Background())
 }
 
 func ExampleNewRing() {
@@ -79,22 +80,22 @@ func ExampleNewRing() {
 			"shard3": ":7002",
 		},
 	})
-	client.Ping()
+	client.Ping(context.Background())
 }
 
 func ExampleClient() {
-	err := client.Set("key", "value", 0).Err()
+	err := client.Set(context.Background(), "key", "value", 0).Err()
 	if err != nil {
 		panic(err)
 	}
 
-	val, err := client.Get("key").Result()
+	val, err := client.Get(context.Background(), "key").Result()
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("key", val)
 
-	val2, err := client.Get("key2").Result()
+	val2, err := client.Get(context.Background(), "key2").Result()
 	if err == redis.Nil {
 		fmt.Println("key2 does not exists")
 	} else if err != nil {
@@ -109,20 +110,20 @@ func ExampleClient() {
 func ExampleClient_Set() {
 	// Last argument is expiration. Zero means the key has no
 	// expiration time.
-	err := client.Set("key", "value", 0).Err()
+	err := client.Set(context.Background(), "key", "value", 0).Err()
 	if err != nil {
 		panic(err)
 	}
 
 	// key2 will expire in an hour.
-	err = client.Set("key2", "value", time.Hour).Err()
+	err = client.Set(context.Background(), "key2", "value", time.Hour).Err()
 	if err != nil {
 		panic(err)
 	}
 }
 
 func ExampleClient_Incr() {
-	result, err := client.Incr("counter").Result()
+	result, err := client.Incr(context.Background(), "counter").Result()
 	if err != nil {
 		panic(err)
 	}
@@ -132,12 +133,12 @@ func ExampleClient_Incr() {
 }
 
 func ExampleClient_BLPop() {
-	if err := client.RPush("queue", "message").Err(); err != nil {
+	if err := client.RPush(context.Background(), "queue", "message").Err(); err != nil {
 		panic(err)
 	}
 
 	// use `client.BLPop(0, "queue")` for infinite waiting time
-	result, err := client.BLPop(1*time.Second, "queue").Result()
+	result, err := client.BLPop(context.Background(), 1*time.Second, "queue").Result()
 	if err != nil {
 		panic(err)
 	}
@@ -147,9 +148,9 @@ func ExampleClient_BLPop() {
 }
 
 func ExampleClient_Scan() {
-	client.FlushDB()
+	client.FlushDB(context.Background())
 	for i := 0; i < 33; i++ {
-		err := client.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
+		err := client.Set(context.Background(), fmt.Sprintf("key%d", i), "value", 0).Err()
 		if err != nil {
 			panic(err)
 		}
@@ -160,7 +161,7 @@ func ExampleClient_Scan() {
 	for {
 		var keys []string
 		var err error
-		keys, cursor, err = client.Scan(cursor, "", 10).Result()
+		keys, cursor, err = client.Scan(context.Background(), cursor, "", 10).Result()
 		if err != nil {
 			panic(err)
 		}
@@ -177,8 +178,8 @@ func ExampleClient_Scan() {
 func ExampleClient_Pipelined() {
 	var incr *redis.IntCmd
 	_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
-		incr = pipe.Incr("pipelined_counter")
-		pipe.Expire("pipelined_counter", time.Hour)
+		incr = pipe.Incr(context.Background(), "pipelined_counter")
+		pipe.Expire(context.Background(), "pipelined_counter", time.Hour)
 		return nil
 	})
 	fmt.Println(incr.Val(), err)
@@ -188,8 +189,8 @@ func ExampleClient_Pipelined() {
 func ExampleClient_Pipeline() {
 	pipe := client.Pipeline()
 
-	incr := pipe.Incr("pipeline_counter")
-	pipe.Expire("pipeline_counter", time.Hour)
+	incr := pipe.Incr(context.Background(), "pipeline_counter")
+	pipe.Expire(context.Background(), "pipeline_counter", time.Hour)
 
 	// Execute
 	//
@@ -205,8 +206,8 @@ func ExampleClient_Pipeline() {
 func ExampleClient_TxPipelined() {
 	var incr *redis.IntCmd
 	_, err := client.TxPipelined(func(pipe redis.Pipeliner) error {
-		incr = pipe.Incr("tx_pipelined_counter")
-		pipe.Expire("tx_pipelined_counter", time.Hour)
+		incr = pipe.Incr(context.Background(), "tx_pipelined_counter")
+		pipe.Expire(context.Background(), "tx_pipelined_counter", time.Hour)
 		return nil
 	})
 	fmt.Println(incr.Val(), err)
@@ -216,8 +217,8 @@ func ExampleClient_TxPipelined() {
 func ExampleClient_TxPipeline() {
 	pipe := client.TxPipeline()
 
-	incr := pipe.Incr("tx_pipeline_counter")
-	pipe.Expire("tx_pipeline_counter", time.Hour)
+	incr := pipe.Incr(context.Background(), "tx_pipeline_counter")
+	pipe.Expire(context.Background(), "tx_pipeline_counter", time.Hour)
 
 	// Execute
 	//
@@ -238,13 +239,13 @@ func ExampleClient_Watch() {
 	// Transactionally increments key using GET and SET commands.
 	incr = func(key string) error {
 		err := client.Watch(func(tx *redis.Tx) error {
-			n, err := tx.Get(key).Int64()
+			n, err := tx.Get(context.Background(), key).Int64()
 			if err != nil && err != redis.Nil {
 				return err
 			}
 
 			_, err = tx.Pipelined(func(pipe redis.Pipeliner) error {
-				pipe.Set(key, strconv.FormatInt(n+1, 10), 0)
+				pipe.Set(context.Background(), key, strconv.FormatInt(n+1, 10), 0)
 				return nil
 			})
 			return err
@@ -269,7 +270,7 @@ func ExampleClient_Watch() {
 	}
 	wg.Wait()
 
-	n, err := client.Get("counter3").Int64()
+	n, err := client.Get(context.Background(), "counter3").Int64()
 	fmt.Println(n, err)
 	// Output: 100 <nil>
 }
@@ -285,7 +286,7 @@ func ExamplePubSub() {
 	}
 	fmt.Println(subscr)
 
-	err = client.Publish("mychannel1", "hello").Err()
+	err = client.Publish(context.Background(), "mychannel1", "hello").Err()
 	if err != nil {
 		panic(err)
 	}
@@ -315,7 +316,7 @@ func ExamplePubSub_Receive() {
 		case *redis.Subscription:
 			fmt.Println("subscribed to", msg.Channel)
 
-			_, err := client.Publish("mychannel2", "hello").Result()
+			_, err := client.Publish(context.Background(), "mychannel2", "hello").Result()
 			if err != nil {
 				panic(err)
 			}
@@ -338,15 +339,15 @@ func ExampleScript() {
 		return false
 	`)
 
-	n, err := IncrByXX.Run(client, []string{"xx_counter"}, 2).Result()
+	n, err := IncrByXX.Run(context.Background(), client, []string{"xx_counter"}, 2).Result()
 	fmt.Println(n, err)
 
-	err = client.Set("xx_counter", "40", 0).Err()
+	err = client.Set(context.Background(), "xx_counter", "40", 0).Err()
 	if err != nil {
 		panic(err)
 	}
 
-	n, err = IncrByXX.Run(client, []string{"xx_counter"}, 2).Result()
+	n, err = IncrByXX.Run(context.Background(), client, []string{"xx_counter"}, 2).Result()
 	fmt.Println(n, err)
 
 	// Output: <nil> redis: nil
@@ -366,7 +367,7 @@ func Example_customCommand() {
 }
 
 func ExampleScanIterator() {
-	iter := client.Scan(0, "", 0).Iterator()
+	iter := client.Scan(context.Background(), 0, "", 0).Iterator()
 	for iter.Next() {
 		fmt.Println(iter.Val())
 	}
@@ -376,7 +377,7 @@ func ExampleScanIterator() {
 }
 
 func ExampleScanCmd_Iterator() {
-	iter := client.Scan(0, "", 0).Iterator()
+	iter := client.Scan(context.Background(), 0, "", 0).Iterator()
 	for iter.Next() {
 		fmt.Println(iter.Val())
 	}
@@ -391,7 +392,7 @@ func ExampleNewUniversalClient_simple() {
 	})
 	defer client.Close()
 
-	client.Ping()
+	client.Ping(context.Background())
 }
 
 func ExampleNewUniversalClient_failover() {
@@ -401,7 +402,7 @@ func ExampleNewUniversalClient_failover() {
 	})
 	defer client.Close()
 
-	client.Ping()
+	client.Ping(context.Background())
 }
 
 func ExampleNewUniversalClient_cluster() {
@@ -410,5 +411,5 @@ func ExampleNewUniversalClient_cluster() {
 	})
 	defer client.Close()
 
-	client.Ping()
+	client.Ping(context.Background())
 }

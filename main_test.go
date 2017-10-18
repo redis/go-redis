@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -209,7 +210,7 @@ func connectTo(port string) (*redis.Client, error) {
 	})
 
 	err := eventually(func() error {
-		return client.Ping().Err()
+		return client.Ping(context.Background()).Err()
 	}, 30*time.Second)
 	if err != nil {
 		return nil, err
@@ -229,7 +230,7 @@ func (p *redisProcess) Close() error {
 	}
 
 	err := eventually(func() error {
-		if err := p.Client.Ping().Err(); err != nil {
+		if err := p.Client.Ping(context.Background()).Err(); err != nil {
 			return nil
 		}
 		return errors.New("client is not shutdown")

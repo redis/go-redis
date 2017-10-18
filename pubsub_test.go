@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"io"
 	"net"
 	"sync"
@@ -17,7 +18,7 @@ var _ = Describe("PubSub", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB(context.Background()).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -43,7 +44,7 @@ var _ = Describe("PubSub", func() {
 			Expect(msgi).To(BeNil())
 		}
 
-		n, err := client.Publish("mychannel1", "hello").Result()
+		n, err := client.Publish(context.Background(), "mychannel1", "hello").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(1)))
 
@@ -72,22 +73,22 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should pub/sub channels", func() {
-		channels, err := client.PubSubChannels("mychannel*").Result()
+		channels, err := client.PubSubChannels(context.Background(), "mychannel*").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(channels).To(BeEmpty())
 
 		pubsub := client.Subscribe("mychannel", "mychannel2")
 		defer pubsub.Close()
 
-		channels, err = client.PubSubChannels("mychannel*").Result()
+		channels, err = client.PubSubChannels(context.Background(), "mychannel*").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(channels).To(ConsistOf([]string{"mychannel", "mychannel2"}))
 
-		channels, err = client.PubSubChannels("").Result()
+		channels, err = client.PubSubChannels(context.Background(), "").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(channels).To(BeEmpty())
 
-		channels, err = client.PubSubChannels("*").Result()
+		channels, err = client.PubSubChannels(context.Background(), "*").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(channels)).To(BeNumerically(">=", 2))
 	})
@@ -96,7 +97,7 @@ var _ = Describe("PubSub", func() {
 		pubsub := client.Subscribe("mychannel", "mychannel2")
 		defer pubsub.Close()
 
-		channels, err := client.PubSubNumSub("mychannel", "mychannel2", "mychannel3").Result()
+		channels, err := client.PubSubNumSub(context.Background(), "mychannel", "mychannel2", "mychannel3").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(channels).To(Equal(map[string]int64{
 			"mychannel":  1,
@@ -106,14 +107,14 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should return the numbers of subscribers by pattern", func() {
-		num, err := client.PubSubNumPat().Result()
+		num, err := client.PubSubNumPat(context.Background()).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(num).To(Equal(int64(0)))
 
 		pubsub := client.PSubscribe("*")
 		defer pubsub.Close()
 
-		num, err = client.PubSubNumPat().Result()
+		num, err = client.PubSubNumPat(context.Background()).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(num).To(Equal(int64(1)))
 	})
@@ -146,11 +147,11 @@ var _ = Describe("PubSub", func() {
 			Expect(msgi).NotTo(HaveOccurred())
 		}
 
-		n, err := client.Publish("mychannel", "hello").Result()
+		n, err := client.Publish(context.Background(), "mychannel", "hello").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(1)))
 
-		n, err = client.Publish("mychannel2", "hello2").Result()
+		n, err = client.Publish(context.Background(), "mychannel2", "hello2").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(1)))
 
@@ -238,10 +239,10 @@ var _ = Describe("PubSub", func() {
 			Count:   1,
 		}))
 
-		err = client.Publish("mychannel", "hello").Err()
+		err = client.Publish(context.Background(), "mychannel", "hello").Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		err = client.Publish("mychannel", "world").Err()
+		err = client.Publish(context.Background(), "mychannel", "world").Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		msg, err := pubsub.ReceiveMessage()
@@ -277,7 +278,7 @@ var _ = Describe("PubSub", func() {
 			}()
 
 			time.Sleep(timeout + 100*time.Millisecond)
-			n, err := client.Publish("mychannel", "hello").Result()
+			n, err := client.Publish(context.Background(), "mychannel", "hello").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(1)))
 		}()
@@ -324,7 +325,7 @@ var _ = Describe("PubSub", func() {
 			}()
 
 			time.Sleep(100 * time.Millisecond)
-			err := client.Publish("mychannel", "hello").Err()
+			err := client.Publish(context.Background(), "mychannel", "hello").Err()
 			Expect(err).NotTo(HaveOccurred())
 		}()
 
@@ -413,7 +414,7 @@ var _ = Describe("PubSub", func() {
 
 			time.Sleep(timeout)
 
-			err = client.Publish("mychannel", "hello").Err()
+			err = client.Publish(context.Background(), "mychannel", "hello").Err()
 			Expect(err).NotTo(HaveOccurred())
 		}()
 
@@ -432,7 +433,7 @@ var _ = Describe("PubSub", func() {
 		ch := pubsub.Channel()
 
 		bigVal := bigVal()
-		err := client.Publish("mychannel", bigVal).Err()
+		err := client.Publish(context.Background(), "mychannel", bigVal).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		var msg *redis.Message

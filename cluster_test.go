@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -10,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kirk91/redis/internal/hashtag"
 	"github.com/kirk91/redis"
+	"github.com/kirk91/redis/internal/hashtag"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -65,7 +66,7 @@ func startCluster(scenario *clusterScenario) error {
 			Addr: ":" + port,
 		})
 
-		info, err := client.ClusterNodes().Result()
+		info, err := client.ClusterNodes(context.Background()).Result()
 		if err != nil {
 			return err
 		}
@@ -77,7 +78,7 @@ func startCluster(scenario *clusterScenario) error {
 
 	// Meet cluster nodes.
 	for _, client := range scenario.clients {
-		err := client.ClusterMeet("127.0.0.1", scenario.ports[0]).Err()
+		err := client.ClusterMeet(context.Background(), "127.0.0.1", scenario.ports[0]).Err()
 		if err != nil {
 			return err
 		}
@@ -86,7 +87,7 @@ func startCluster(scenario *clusterScenario) error {
 	// Bootstrap masters.
 	slots := []int{0, 5000, 10000, 16384}
 	for pos, master := range scenario.masters() {
-		err := master.ClusterAddSlotsRange(slots[pos], slots[pos+1]-1).Err()
+		err := master.ClusterAddSlotsRange(context.Background(), slots[pos], slots[pos+1]-1).Err()
 		if err != nil {
 			return err
 		}
@@ -98,7 +99,7 @@ func startCluster(scenario *clusterScenario) error {
 
 		// Wait until master is available
 		err := eventually(func() error {
-			s := slave.ClusterNodes().Val()
+			s := slave.ClusterNodes(context.Background()).Val()
 			wanted := masterId
 			if !strings.Contains(s, wanted) {
 				return fmt.Errorf("%q does not contain %q", s, wanted)
@@ -109,7 +110,7 @@ func startCluster(scenario *clusterScenario) error {
 			return err
 		}
 
-		err = slave.ClusterReplicate(masterId).Err()
+		err = slave.ClusterReplicate(context.Background(), masterId).Err()
 		if err != nil {
 			return err
 		}
@@ -118,7 +119,7 @@ func startCluster(scenario *clusterScenario) error {
 	// Wait until all nodes have consistent info.
 	for _, client := range scenario.clients {
 		err := eventually(func() error {
-			res, err := client.ClusterSlots().Result()
+			res, err := client.ClusterSlots(context.Background()).Result()
 			if err != nil {
 				return err
 			}
@@ -190,43 +191,43 @@ var _ = Describe("ClusterClient", func() {
 
 	assertClusterClient := func() {
 		It("should GET/SET/DEL", func() {
-			val, err := client.Get("A").Result()
+			val, err := client.Get(context.Background(), "A").Result()
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(Equal(""))
 
-			val, err = client.Set("A", "VALUE", 0).Result()
+			val, err = client.Set(context.Background(), "A", "VALUE", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("OK"))
 
 			Eventually(func() string {
-				return client.Get("A").Val()
+				return client.Get(context.Background(), "A").Val()
 			}, 30*time.Second).Should(Equal("VALUE"))
 
-			cnt, err := client.Del("A").Result()
+			cnt, err := client.Del(context.Background(), "A").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cnt).To(Equal(int64(1)))
 		})
 
 		It("follows redirects", func() {
-			Expect(client.Set("A", "VALUE", 0).Err()).NotTo(HaveOccurred())
+			Expect(client.Set(context.Background(), "A", "VALUE", 0).Err()).NotTo(HaveOccurred())
 
 			slot := hashtag.Slot("A")
 			client.SwapSlotNodes(slot)
 
 			Eventually(func() string {
-				return client.Get("A").Val()
+				return client.Get(context.Background(), "A").Val()
 			}, 30*time.Second).Should(Equal("VALUE"))
 		})
 
 		It("distributes keys", func() {
 			for i := 0; i < 100; i++ {
-				err := client.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
+				err := client.Set(context.Background(), fmt.Sprintf("key%d", i), "value", 0).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 
 			for _, master := range cluster.masters() {
 				Eventually(func() string {
-					return master.Info("keyspace").Val()
+					return master.Info(context.Background(), "keyspace").Val()
 				}, 30*time.Second).Should(Or(
 					ContainSubstring("keys=31"),
 					ContainSubstring("keys=29"),
@@ -244,13 +245,13 @@ var _ = Describe("ClusterClient", func() {
 			var key string
 			for i := 0; i < 100; i++ {
 				key = fmt.Sprintf("key%d", i)
-				err := script.Run(client, []string{key}, "value").Err()
+				err := script.Run(context.Background(), client, []string{key}, "value").Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 
 			for _, master := range cluster.masters() {
 				Eventually(func() string {
-					return master.Info("keyspace").Val()
+					return master.Info(context.Background(), "keyspace").Val()
 				}, 30*time.Second).Should(Or(
 					ContainSubstring("keys=31"),
 					ContainSubstring("keys=29"),
@@ -265,13 +266,13 @@ var _ = Describe("ClusterClient", func() {
 			// Transactionally increments key using GET and SET commands.
 			incr = func(key string) error {
 				err := client.Watch(func(tx *redis.Tx) error {
-					n, err := tx.Get(key).Int64()
+					n, err := tx.Get(context.Background(), key).Int64()
 					if err != nil && err != redis.Nil {
 						return err
 					}
 
 					_, err = tx.Pipelined(func(pipe redis.Pipeliner) error {
-						pipe.Set(key, strconv.FormatInt(n+1, 10), 0)
+						pipe.Set(context.Background(), key, strconv.FormatInt(n+1, 10), 0)
 						return nil
 					})
 					return err
@@ -295,7 +296,7 @@ var _ = Describe("ClusterClient", func() {
 			}
 			wg.Wait()
 
-			n, err := client.Get("key").Int64()
+			n, err := client.Get(context.Background(), "key").Int64()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(100)))
 		})
@@ -313,8 +314,8 @@ var _ = Describe("ClusterClient", func() {
 					}
 
 					for i, key := range keys {
-						pipe.Set(key, key+"_value", 0)
-						pipe.Expire(key, time.Duration(i+1)*time.Hour)
+						pipe.Set(context.Background(), key, key+"_value", 0)
+						pipe.Expire(context.Background(), key, time.Duration(i+1)*time.Hour)
 					}
 					cmds, err := pipe.Exec()
 					Expect(err).NotTo(HaveOccurred())
@@ -326,8 +327,8 @@ var _ = Describe("ClusterClient", func() {
 					}
 
 					for _, key := range keys {
-						pipe.Get(key)
-						pipe.TTL(key)
+						pipe.Get(context.Background(), key)
+						pipe.TTL(context.Background(), key)
 					}
 					cmds, err = pipe.Exec()
 					Expect(err).NotTo(HaveOccurred())
@@ -344,14 +345,14 @@ var _ = Describe("ClusterClient", func() {
 				})
 
 				It("works with missing keys", func() {
-					pipe.Set("A", "A_value", 0)
-					pipe.Set("C", "C_value", 0)
+					pipe.Set(context.Background(), "A", "A_value", 0)
+					pipe.Set(context.Background(), "C", "C_value", 0)
 					_, err := pipe.Exec()
 					Expect(err).NotTo(HaveOccurred())
 
-					a := pipe.Get("A")
-					b := pipe.Get("B")
-					c := pipe.Get("C")
+					a := pipe.Get(context.Background(), "A")
+					b := pipe.Get(context.Background(), "B")
+					c := pipe.Get(context.Background(), "C")
 					cmds, err := pipe.Exec()
 					Expect(err).To(Equal(redis.Nil))
 					Expect(cmds).To(HaveLen(3))
@@ -397,7 +398,7 @@ var _ = Describe("ClusterClient", func() {
 			defer pubsub.Close()
 
 			Eventually(func() error {
-				_, err := client.Publish("mychannel", "hello").Result()
+				_, err := client.Publish(context.Background(), "mychannel", "hello").Result()
 				if err != nil {
 					return err
 				}
@@ -423,13 +424,13 @@ var _ = Describe("ClusterClient", func() {
 			client = cluster.clusterClient(opt)
 
 			_ = client.ForEachMaster(func(master *redis.Client) error {
-				return master.FlushDB().Err()
+				return master.FlushDB(context.Background()).Err()
 			})
 		})
 
 		AfterEach(func() {
 			_ = client.ForEachMaster(func(master *redis.Client) error {
-				return master.FlushDB().Err()
+				return master.FlushDB(context.Background()).Err()
 			})
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
@@ -458,7 +459,7 @@ var _ = Describe("ClusterClient", func() {
 			slot := hashtag.Slot("A")
 			client.SwapSlotNodes(slot)
 
-			err := client.Get("A").Err()
+			err := client.Get(context.Background(), "A").Err()
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("MOVED"))
 
@@ -467,21 +468,21 @@ var _ = Describe("ClusterClient", func() {
 
 		It("calls fn for every master node", func() {
 			for i := 0; i < 10; i++ {
-				Expect(client.Set(strconv.Itoa(i), "", 0).Err()).NotTo(HaveOccurred())
+				Expect(client.Set(context.Background(), strconv.Itoa(i), "", 0).Err()).NotTo(HaveOccurred())
 			}
 
 			err := client.ForEachMaster(func(master *redis.Client) error {
-				return master.FlushDB().Err()
+				return master.FlushDB(context.Background()).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			size, err := client.DBSize().Result()
+			size, err := client.DBSize(context.Background()).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(Equal(int64(0)))
 		})
 
 		It("should CLUSTER SLOTS", func() {
-			res, err := client.ClusterSlots().Result()
+			res, err := client.ClusterSlots(context.Background()).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(HaveLen(3))
 
@@ -494,43 +495,43 @@ var _ = Describe("ClusterClient", func() {
 		})
 
 		It("should CLUSTER NODES", func() {
-			res, err := client.ClusterNodes().Result()
+			res, err := client.ClusterNodes(context.Background()).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(res)).To(BeNumerically(">", 400))
 		})
 
 		It("should CLUSTER INFO", func() {
-			res, err := client.ClusterInfo().Result()
+			res, err := client.ClusterInfo(context.Background()).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(ContainSubstring("cluster_known_nodes:6"))
 		})
 
 		It("should CLUSTER KEYSLOT", func() {
-			hashSlot, err := client.ClusterKeySlot("somekey").Result()
+			hashSlot, err := client.ClusterKeySlot(context.Background(), "somekey").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(hashSlot).To(Equal(int64(hashtag.Slot("somekey"))))
 		})
 
 		It("should CLUSTER COUNT-FAILURE-REPORTS", func() {
-			n, err := client.ClusterCountFailureReports(cluster.nodeIds[0]).Result()
+			n, err := client.ClusterCountFailureReports(context.Background(), cluster.nodeIds[0]).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(0)))
 		})
 
 		It("should CLUSTER COUNTKEYSINSLOT", func() {
-			n, err := client.ClusterCountKeysInSlot(10).Result()
+			n, err := client.ClusterCountKeysInSlot(context.Background(), 10).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(0)))
 		})
 
 		It("should CLUSTER SAVECONFIG", func() {
-			res, err := client.ClusterSaveConfig().Result()
+			res, err := client.ClusterSaveConfig(context.Background()).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal("OK"))
 		})
 
 		It("should CLUSTER SLAVES", func() {
-			nodesList, err := client.ClusterSlaves(cluster.nodeIds[0]).Result()
+			nodesList, err := client.ClusterSlaves(context.Background(), cluster.nodeIds[0]).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodesList).Should(ContainElement(ContainSubstring("slave")))
 			Expect(nodesList).Should(HaveLen(1))
@@ -545,20 +546,20 @@ var _ = Describe("ClusterClient", func() {
 			client = cluster.clusterClient(opt)
 
 			_ = client.ForEachMaster(func(master *redis.Client) error {
-				return master.FlushDB().Err()
+				return master.FlushDB(context.Background()).Err()
 			})
 
 			_ = client.ForEachSlave(func(slave *redis.Client) error {
 				Eventually(func() int64 {
-					return client.DBSize().Val()
+					return client.DBSize(context.Background()).Val()
 				}, 30*time.Second).Should(Equal(int64(0)))
-				return slave.ClusterFailover().Err()
+				return slave.ClusterFailover(context.Background()).Err()
 			})
 		})
 
 		AfterEach(func() {
 			_ = client.ForEachMaster(func(master *redis.Client) error {
-				return master.FlushDB().Err()
+				return master.FlushDB(context.Background()).Err()
 			})
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
@@ -573,12 +574,12 @@ var _ = Describe("ClusterClient", func() {
 			client = cluster.clusterClient(opt)
 
 			_ = client.ForEachMaster(func(master *redis.Client) error {
-				return master.FlushDB().Err()
+				return master.FlushDB(context.Background()).Err()
 			})
 
 			_ = client.ForEachSlave(func(slave *redis.Client) error {
 				Eventually(func() int64 {
-					return client.DBSize().Val()
+					return client.DBSize(context.Background()).Val()
 				}, 30*time.Second).Should(Equal(int64(0)))
 				return nil
 			})
@@ -586,7 +587,7 @@ var _ = Describe("ClusterClient", func() {
 
 		AfterEach(func() {
 			_ = client.ForEachMaster(func(master *redis.Client) error {
-				return master.FlushDB().Err()
+				return master.FlushDB(context.Background()).Err()
 			})
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
@@ -607,13 +608,13 @@ var _ = Describe("ClusterClient without nodes", func() {
 	})
 
 	It("Ping returns an error", func() {
-		err := client.Ping().Err()
+		err := client.Ping(context.Background()).Err()
 		Expect(err).To(MatchError("redis: cluster has no nodes"))
 	})
 
 	It("pipeline returns an error", func() {
 		_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
-			pipe.Ping()
+			pipe.Ping(context.Background())
 			return nil
 		})
 		Expect(err).To(MatchError("redis: cluster has no nodes"))
@@ -634,13 +635,13 @@ var _ = Describe("ClusterClient without valid nodes", func() {
 	})
 
 	It("returns an error", func() {
-		err := client.Ping().Err()
+		err := client.Ping(context.Background()).Err()
 		Expect(err).To(MatchError("redis: cannot load cluster slots"))
 	})
 
 	It("pipeline returns an error", func() {
 		_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
-			pipe.Ping()
+			pipe.Ping(context.Background())
 			return nil
 		})
 		Expect(err).To(MatchError("redis: cannot load cluster slots"))
@@ -656,14 +657,14 @@ var _ = Describe("ClusterClient timeout", func() {
 
 	testTimeout := func() {
 		It("Ping timeouts", func() {
-			err := client.Ping().Err()
+			err := client.Ping(context.Background()).Err()
 			Expect(err).To(HaveOccurred())
 			Expect(err.(net.Error).Timeout()).To(BeTrue())
 		})
 
 		It("Pipeline timeouts", func() {
 			_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
-				pipe.Ping()
+				pipe.Ping(context.Background())
 				return nil
 			})
 			Expect(err).To(HaveOccurred())
@@ -672,7 +673,7 @@ var _ = Describe("ClusterClient timeout", func() {
 
 		It("Tx timeouts", func() {
 			err := client.Watch(func(tx *redis.Tx) error {
-				return tx.Ping().Err()
+				return tx.Ping(context.Background()).Err()
 			}, "foo")
 			Expect(err).To(HaveOccurred())
 			Expect(err.(net.Error).Timeout()).To(BeTrue())
@@ -681,7 +682,7 @@ var _ = Describe("ClusterClient timeout", func() {
 		It("Tx Pipeline timeouts", func() {
 			err := client.Watch(func(tx *redis.Tx) error {
 				_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
-					pipe.Ping()
+					pipe.Ping(context.Background())
 					return nil
 				})
 				return err
@@ -702,7 +703,7 @@ var _ = Describe("ClusterClient timeout", func() {
 			client = cluster.clusterClient(opt)
 
 			err := client.ForEachNode(func(client *redis.Client) error {
-				return client.ClientPause(pause).Err()
+				return client.ClientPause(context.Background(), pause).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -710,7 +711,7 @@ var _ = Describe("ClusterClient timeout", func() {
 		AfterEach(func() {
 			client.ForEachNode(func(client *redis.Client) error {
 				Eventually(func() error {
-					return client.Ping().Err()
+					return client.Ping(context.Background()).Err()
 				}, 2*pause).ShouldNot(HaveOccurred())
 				return nil
 			})
@@ -746,7 +747,7 @@ func BenchmarkRedisClusterPing(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := client.Ping().Err(); err != nil {
+			if err := client.Ping(context.Background()).Err(); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -779,7 +780,7 @@ func BenchmarkRedisClusterSetString(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := client.Set("key", value, 0).Err(); err != nil {
+			if err := client.Set(context.Background(), "key", value, 0).Err(); err != nil {
 				b.Fatal(err)
 			}
 		}

@@ -1,6 +1,8 @@
 package redis_test
 
 import (
+	"context"
+
 	"github.com/kirk91/redis"
 
 	. "github.com/onsi/ginkgo"
@@ -12,7 +14,7 @@ var _ = Describe("Cmd", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB(context.Background()).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -20,19 +22,19 @@ var _ = Describe("Cmd", func() {
 	})
 
 	It("implements Stringer", func() {
-		set := client.Set("foo", "bar", 0)
+		set := client.Set(context.Background(), "foo", "bar", 0)
 		Expect(set.String()).To(Equal("set foo bar: OK"))
 
-		get := client.Get("foo")
+		get := client.Get(context.Background(), "foo")
 		Expect(get.String()).To(Equal("get foo: bar"))
 	})
 
 	It("has val/err", func() {
-		set := client.Set("key", "hello", 0)
+		set := client.Set(context.Background(), "key", "hello", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 		Expect(set.Val()).To(Equal("OK"))
 
-		get := client.Get("key")
+		get := client.Get(context.Background(), "key")
 		Expect(get.Err()).NotTo(HaveOccurred())
 		Expect(get.Val()).To(Equal("hello"))
 
@@ -41,18 +43,18 @@ var _ = Describe("Cmd", func() {
 	})
 
 	It("has helpers", func() {
-		set := client.Set("key", "10", 0)
+		set := client.Set(context.Background(), "key", "10", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 
-		n, err := client.Get("key").Int64()
+		n, err := client.Get(context.Background(), "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(10)))
 
-		un, err := client.Get("key").Uint64()
+		un, err := client.Get(context.Background(), "key").Uint64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(un).To(Equal(uint64(10)))
 
-		f, err := client.Get("key").Float64()
+		f, err := client.Get(context.Background(), "key").Float64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(f).To(Equal(float64(10)))
 	})

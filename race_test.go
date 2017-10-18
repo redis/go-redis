@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -20,7 +21,7 @@ var _ = Describe("races", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB().Err()).To(BeNil())
+		Expect(client.FlushDB(context.Background()).Err()).To(BeNil())
 
 		C, N = 10, 1000
 		if testing.Short() {
@@ -38,7 +39,7 @@ var _ = Describe("races", func() {
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
 				msg := fmt.Sprintf("echo %d %d", id, i)
-				echo, err := client.Echo(msg).Result()
+				echo, err := client.Echo(context.Background(), msg).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(echo).To(Equal(msg))
 			}
@@ -50,12 +51,12 @@ var _ = Describe("races", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				err := client.Incr(key).Err()
+				err := client.Incr(context.Background(), key).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 		})
 
-		val, err := client.Get(key).Int64()
+		val, err := client.Get(context.Background(), key).Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(int64(C * N)))
 	})
@@ -64,6 +65,7 @@ var _ = Describe("races", func() {
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
 				err := client.Set(
+					context.Background(),
 					fmt.Sprintf("keys.key-%d-%d", id, i),
 					fmt.Sprintf("hello-%d-%d", id, i),
 					0,
@@ -72,7 +74,7 @@ var _ = Describe("races", func() {
 			}
 		})
 
-		keys := client.Keys("keys.*")
+		keys := client.Keys(context.Background(), "keys.*")
 		Expect(keys.Err()).NotTo(HaveOccurred())
 		Expect(len(keys.Val())).To(Equal(C * N))
 	})
@@ -84,12 +86,12 @@ var _ = Describe("races", func() {
 				key := fmt.Sprintf("keys.key-%d", i)
 				keys = append(keys, key)
 
-				err := client.Set(key, fmt.Sprintf("hello-%d", i), 0).Err()
+				err := client.Set(context.Background(), key, fmt.Sprintf("hello-%d", i), 0).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 			keys = append(keys, "non-existent-key")
 
-			vals, err := client.MGet(keys...).Result()
+			vals, err := client.MGet(context.Background(), keys...).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(vals)).To(Equal(N + 2))
 
@@ -107,7 +109,7 @@ var _ = Describe("races", func() {
 
 		bigVal := bigVal()
 
-		err := client.Set("key", bigVal, 0).Err()
+		err := client.Set(context.Background(), "key", bigVal, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		// Reconnect to get new connection.
@@ -116,7 +118,7 @@ var _ = Describe("races", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				got, err := client.Get("key").Bytes()
+				got, err := client.Get(context.Background(), "key").Bytes()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(got).To(Equal(bigVal))
 			}
@@ -129,14 +131,14 @@ var _ = Describe("races", func() {
 		bigVal := bigVal()
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				err := client.Set("key", bigVal, 0).Err()
+				err := client.Set(context.Background(), "key", bigVal, 0).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 		})
 	})
 
 	It("should select db", func() {
-		err := client.Set("db", 1, 0).Err()
+		err := client.Set(context.Background(), "db", 1, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		perform(C, func(id int) {
@@ -144,10 +146,10 @@ var _ = Describe("races", func() {
 			opt.DB = id
 			client := redis.NewClient(opt)
 			for i := 0; i < N; i++ {
-				err := client.Set("db", id, 0).Err()
+				err := client.Set(context.Background(), "db", id, 0).Err()
 				Expect(err).NotTo(HaveOccurred())
 
-				n, err := client.Get("db").Int64()
+				n, err := client.Get(context.Background(), "db").Int64()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(n).To(Equal(int64(id)))
 			}
@@ -155,7 +157,7 @@ var _ = Describe("races", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		n, err := client.Get("db").Int64()
+		n, err := client.Get(context.Background(), "db").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(1)))
 	})
@@ -168,7 +170,7 @@ var _ = Describe("races", func() {
 			client := redis.NewClient(opt)
 
 			perform(C, func(id int) {
-				err := client.Ping().Err()
+				err := client.Ping(context.Background()).Err()
 				Expect(err).To(HaveOccurred())
 				Expect(err.(net.Error).Timeout()).To(BeTrue())
 			})
@@ -179,13 +181,13 @@ var _ = Describe("races", func() {
 	})
 
 	It("should Watch/Unwatch", func() {
-		err := client.Set("key", "0", 0).Err()
+		err := client.Set(context.Background(), "key", "0", 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
 				err := client.Watch(func(tx *redis.Tx) error {
-					val, err := tx.Get("key").Result()
+					val, err := tx.Get(context.Background(), "key").Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(val).NotTo(Equal(redis.Nil))
 
@@ -193,7 +195,7 @@ var _ = Describe("races", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					cmds, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
-						pipe.Set("key", strconv.FormatInt(num+1, 10), 0)
+						pipe.Set(context.Background(), "key", strconv.FormatInt(num+1, 10), 0)
 						return nil
 					})
 					Expect(cmds).To(HaveLen(1))
@@ -207,7 +209,7 @@ var _ = Describe("races", func() {
 			}
 		})
 
-		val, err := client.Get("key").Int64()
+		val, err := client.Get(context.Background(), "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(int64(C * N)))
 	})
@@ -216,7 +218,7 @@ var _ = Describe("races", func() {
 		perform(C, func(id int) {
 			pipe := client.Pipeline()
 			for i := 0; i < N; i++ {
-				pipe.Echo(fmt.Sprint(i))
+				pipe.Echo(context.Background(), fmt.Sprint(i))
 			}
 
 			cmds, err := pipe.Exec()
@@ -232,14 +234,14 @@ var _ = Describe("races", func() {
 	It("should Pipeline", func() {
 		pipe := client.Pipeline()
 		perform(N, func(id int) {
-			pipe.Incr("key")
+			pipe.Incr(context.Background(), "key")
 		})
 
 		cmds, err := pipe.Exec()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cmds).To(HaveLen(N))
 
-		n, err := client.Get("key").Int64()
+		n, err := client.Get(context.Background(), "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(N)))
 	})

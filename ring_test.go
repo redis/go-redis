@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"time"
@@ -18,7 +19,7 @@ var _ = Describe("Redis Ring", func() {
 
 	setRingKeys := func() {
 		for i := 0; i < 100; i++ {
-			err := ring.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
+			err := ring.Set(context.Background(), fmt.Sprintf("key%d", i), "value", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 		}
 	}
@@ -29,7 +30,7 @@ var _ = Describe("Redis Ring", func() {
 		ring = redis.NewRing(opt)
 
 		err := ring.ForEachShard(func(cl *redis.Client) error {
-			return cl.FlushDB().Err()
+			return cl.FlushDB(context.Background()).Err()
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -42,8 +43,8 @@ var _ = Describe("Redis Ring", func() {
 		setRingKeys()
 
 		// Both shards should have some keys now.
-		Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=57"))
-		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard1.Info(context.Background()).Val()).To(ContainSubstring("keys=57"))
+		Expect(ringShard2.Info(context.Background()).Val()).To(ContainSubstring("keys=43"))
 	})
 
 	It("distributes keys when using EVAL", func() {
@@ -55,12 +56,12 @@ var _ = Describe("Redis Ring", func() {
 		var key string
 		for i := 0; i < 100; i++ {
 			key = fmt.Sprintf("key%d", i)
-			err := script.Run(ring, []string{key}, "value").Err()
+			err := script.Run(context.Background(), ring, []string{key}, "value").Err()
 			Expect(err).NotTo(HaveOccurred())
 		}
 
-		Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=57"))
-		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard1.Info(context.Background()).Val()).To(ContainSubstring("keys=57"))
+		Expect(ringShard2.Info(context.Background()).Val()).To(ContainSubstring("keys=43"))
 	})
 
 	It("uses single shard when one of the shards is down", func() {
@@ -74,7 +75,7 @@ var _ = Describe("Redis Ring", func() {
 		setRingKeys()
 
 		// RingShard1 should have all keys.
-		Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=100"))
+		Expect(ringShard1.Info(context.Background()).Val()).To(ContainSubstring("keys=100"))
 
 		// Start ringShard2.
 		var err error
@@ -83,7 +84,7 @@ var _ = Describe("Redis Ring", func() {
 
 		// Wait for ringShard2 to come up.
 		Eventually(func() error {
-			return ringShard2.Ping().Err()
+			return ringShard2.Ping(context.Background()).Err()
 		}, "1s").ShouldNot(HaveOccurred())
 
 		// Ring needs heartbeat time to detect that node is up.
@@ -93,24 +94,24 @@ var _ = Describe("Redis Ring", func() {
 		setRingKeys()
 
 		// RingShard2 should have its keys.
-		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard2.Info(context.Background()).Val()).To(ContainSubstring("keys=43"))
 	})
 
 	It("supports hash tags", func() {
 		for i := 0; i < 100; i++ {
-			err := ring.Set(fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
+			err := ring.Set(context.Background(), fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 		}
 
-		Expect(ringShard1.Info().Val()).ToNot(ContainSubstring("keys="))
-		Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=100"))
+		Expect(ringShard1.Info(context.Background()).Val()).ToNot(ContainSubstring("keys="))
+		Expect(ringShard2.Info(context.Background()).Val()).To(ContainSubstring("keys=100"))
 	})
 
 	Describe("pipeline", func() {
 		It("distributes keys", func() {
 			pipe := ring.Pipeline()
 			for i := 0; i < 100; i++ {
-				err := pipe.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
+				err := pipe.Set(context.Background(), fmt.Sprintf("key%d", i), "value", 0).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 			cmds, err := pipe.Exec()
@@ -124,8 +125,8 @@ var _ = Describe("Redis Ring", func() {
 			}
 
 			// Both shards should have some keys now.
-			Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=57"))
-			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
+			Expect(ringShard1.Info(context.Background()).Val()).To(ContainSubstring("keys=57"))
+			Expect(ringShard2.Info(context.Background()).Val()).To(ContainSubstring("keys=43"))
 		})
 
 		It("is consistent with ring", func() {
@@ -139,14 +140,14 @@ var _ = Describe("Redis Ring", func() {
 
 			_, err := ring.Pipelined(func(pipe redis.Pipeliner) error {
 				for _, key := range keys {
-					pipe.Set(key, "value", 0).Err()
+					pipe.Set(context.Background(), key, "value", 0).Err()
 				}
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, key := range keys {
-				val, err := ring.Get(key).Result()
+				val, err := ring.Get(context.Background(), key).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(val).To(Equal("value"))
 			}
@@ -155,14 +156,14 @@ var _ = Describe("Redis Ring", func() {
 		It("supports hash tags", func() {
 			_, err := ring.Pipelined(func(pipe redis.Pipeliner) error {
 				for i := 0; i < 100; i++ {
-					pipe.Set(fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
+					pipe.Set(context.Background(), fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
 				}
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(ringShard1.Info().Val()).ToNot(ContainSubstring("keys="))
-			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=100"))
+			Expect(ringShard1.Info(context.Background()).Val()).ToNot(ContainSubstring("keys="))
+			Expect(ringShard2.Info(context.Background()).Val()).To(ContainSubstring("keys=100"))
 		})
 	})
 })
@@ -179,13 +180,13 @@ var _ = Describe("empty Redis Ring", func() {
 	})
 
 	It("returns an error", func() {
-		err := ring.Ping().Err()
+		err := ring.Ping(context.Background()).Err()
 		Expect(err).To(MatchError("redis: all ring shards are down"))
 	})
 
 	It("pipeline returns an error", func() {
 		_, err := ring.Pipelined(func(pipe redis.Pipeliner) error {
-			pipe.Ping()
+			pipe.Ping(context.Background())
 			return nil
 		})
 		Expect(err).To(MatchError("redis: all ring shards are down"))
