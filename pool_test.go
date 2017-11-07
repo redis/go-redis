@@ -3,7 +3,7 @@ package redis_test
 import (
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/pusher/redis"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
