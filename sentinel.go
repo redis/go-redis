@@ -133,7 +133,7 @@ func (c *sentinelClient) Sentinels(name string) *SliceCmd {
 	return cmd
 }
 
-func NewSentinelFailover(failoverOpt *FailoverOptions) *sentinelFailover {
+func NewSentinel(failoverOpt *FailoverOptions) Sentinel {
 	opt := failoverOpt.options()
 	opt.init()
 
@@ -145,6 +145,11 @@ func NewSentinelFailover(failoverOpt *FailoverOptions) *sentinelFailover {
 	}
 
 	return failover
+}
+
+type Sentinel interface {
+	MasterAddr() (string, error)
+	Close() error
 }
 
 type sentinelFailover struct {
