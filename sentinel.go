@@ -140,6 +140,7 @@ func NewSentinel(failoverOpt *FailoverOptions) Sentinel {
 	failover := &sentinelFailover{
 		masterName:    failoverOpt.MasterName,
 		sentinelAddrs: failoverOpt.SentinelAddrs,
+		masterChanged: make(chan interface{}),
 
 		opt: opt,
 	}
@@ -149,6 +150,7 @@ func NewSentinel(failoverOpt *FailoverOptions) Sentinel {
 
 type Sentinel interface {
 	MasterAddr() (string, error)
+	MasterChangeChan() <-chan interface{}
 	Close() error
 }
 
@@ -160,10 +162,11 @@ type sentinelFailover struct {
 	pool     *pool.ConnPool
 	poolOnce sync.Once
 
-	mu          sync.RWMutex
-	masterName  string
-	_masterAddr string
-	sentinel    *sentinelClient
+	mu            sync.RWMutex
+	masterChanged chan interface{}
+	masterName    string
+	_masterAddr   string
+	sentinel      *sentinelClient
 }
 
 func (d *sentinelFailover) Close() error {
@@ -247,15 +250,23 @@ func (d *sentinelFailover) masterAddr() (string, error) {
 	return "", errors.New("redis: all sentinels are unreachable")
 }
 
+func (d *sentinelFailover) MasterChangeChan() <-chan interface{} {
+	return d.masterChanged
+}
+
 func (d *sentinelFailover) switchMaster(masterAddr string) {
 	internal.Logf(
 		"sentinel: new master=%q addr=%q",
 		d.masterName, masterAddr,
 	)
+
+	close(d.masterChanged)
+	d.masterChanged = make(chan interface{})
+	d._masterAddr = masterAddr
+
 	_ = d.Pool().Filter(func(cn *pool.Conn) bool {
 		return cn.RemoteAddr().String() != masterAddr
 	})
-	d._masterAddr = masterAddr
 }
 
 func (d *sentinelFailover) setSentinel(sentinel *sentinelClient) {
