@@ -1164,12 +1164,14 @@ func (c *cmdable) SIsMember(key string, member interface{}) *BoolCmd {
 	return cmd
 }
 
+// Redis `SMEMBERS key` command output as a slice
 func (c *cmdable) SMembers(key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("smembers", key)
 	c.process(cmd)
 	return cmd
 }
 
+// Redis `SMEMBERS key` command output as a map
 func (c *cmdable) SMembersMap(key string) *StringStructMapCmd {
 	cmd := NewStringStructMapCmd("smembers", key)
 	c.process(cmd)
