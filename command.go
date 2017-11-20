@@ -675,6 +675,44 @@ func (cmd *StringIntMapCmd) readReply(cn *pool.Conn) error {
 
 //------------------------------------------------------------------------------
 
+type StringStructMapCmd struct {
+	baseCmd
+
+	val map[string]struct{}
+}
+
+var _ Cmder = (*StringStructMapCmd)(nil)
+
+func NewStringStructMapCmd(args ...interface{}) *StringStructMapCmd {
+	return &StringStructMapCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *StringStructMapCmd) Val() map[string]struct{} {
+	return cmd.val
+}
+
+func (cmd *StringStructMapCmd) Result() (map[string]struct{}, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *StringStructMapCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *StringStructMapCmd) readReply(cn *pool.Conn) error {
+	var v interface{}
+	v, cmd.err = cn.Rd.ReadArrayReply(stringStructMapParser)
+	if cmd.err != nil {
+		return cmd.err
+	}
+	cmd.val = v.(map[string]struct{})
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
 type ZSliceCmd struct {
 	baseCmd
 

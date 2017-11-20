@@ -143,6 +143,7 @@ type Cmdable interface {
 	SInterStore(destination string, keys ...string) *IntCmd
 	SIsMember(key string, member interface{}) *BoolCmd
 	SMembers(key string) *StringSliceCmd
+	SMembersMap(key string) *StringStructMapCmd
 	SMove(source, destination string, member interface{}) *BoolCmd
 	SPop(key string) *StringCmd
 	SPopN(key string, count int64) *StringSliceCmd
@@ -1163,8 +1164,16 @@ func (c *cmdable) SIsMember(key string, member interface{}) *BoolCmd {
 	return cmd
 }
 
+// Redis `SMEMBERS key` command output as a slice
 func (c *cmdable) SMembers(key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("smembers", key)
+	c.process(cmd)
+	return cmd
+}
+
+// Redis `SMEMBERS key` command output as a map
+func (c *cmdable) SMembersMap(key string) *StringStructMapCmd {
+	cmd := NewStringStructMapCmd("smembers", key)
 	c.process(cmd)
 	return cmd
 }
