@@ -2705,6 +2705,159 @@ var _ = Describe("Commands", func() {
 
 	})
 
+	Describe("streams", func() {
+		It("should XAdd", func() {
+			added, err := client.XAdd("stream", "1", "uno", "un").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal("1-0"))
+
+			added, err = client.XAdd("stream", "2", "dos", "deux").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal("2-0"))
+
+			added, err = client.XAdd("stream", "3", "tres", "troix").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal("3-0"))
+
+			vals, err := client.XRange("stream", "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]redis.XMessage{
+				{"1-0", map[string]interface{}{"uno": "un"}},
+				{"2-0", map[string]interface{}{"dos": "duex"}},
+				{"3-0", map[string]interface{}{"tres": "troix"}},
+			}))
+		})
+
+		It("should XAddMaxLen", func() {
+			added, err := client.XAddMaxLen("stream", "1", 1, false, "uno", "un").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal("1-0"))
+
+			added, err = client.XAddMaxLen("stream", "2", 1, false, "dos", "deux").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal("2-0"))
+
+			added, err = client.XAddMaxLen("stream", "3", 1, false, "tres", "troix").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal("3-0"))
+
+			vals, err := client.XRange("stream", "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]redis.XMessage{
+				{"3-0", map[string]interface{}{"tres": "troix"}},
+			}))
+		})
+
+		It("should XLen", func() {
+			xAdd := client.XAdd("stream", "1", "uno", "un")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+
+			xLen := client.XLen("stream")
+			Expect(xLen.Err()).NotTo(HaveOccurred())
+			Expect(xLen.Val()).To(Equal(int64(1)))
+		})
+
+		It("should XRange", func() {
+			xAdd := client.XAdd("stream", "1", "uno", "un")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+			xAdd = client.XAdd("stream", "2", "dos", "deux")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+			xAdd = client.XAdd("stream", "3", "tres", "troix")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+
+			xRange := client.XRange("stream", "-", "+")
+			Expect(xRange.Err()).NotTo(HaveOccurred())
+			Expect(xRange.Val()).To(Equal([]redis.XMessage{
+				{"1-0", map[string]interface{}{"uno": "un"}},
+				{"2-0", map[string]interface{}{"dos": "deux"}},
+				{"3-0", map[string]interface{}{"tres": "troix"}},
+			}))
+
+			xRange = client.XRange("stream", "2", "+")
+			Expect(xRange.Err()).NotTo(HaveOccurred())
+			Expect(xRange.Val()).To(Equal([]redis.XMessage{
+				{"2-0", map[string]interface{}{"dos": "deux"}},
+				{"3-0", map[string]interface{}{"tres": "troix"}},
+			}))
+
+			xRange = client.XRange("stream", "-", "2")
+			Expect(xRange.Err()).NotTo(HaveOccurred())
+			Expect(xRange.Val()).To(Equal([]redis.XMessage{
+				{"1-0", map[string]interface{}{"uno": "un"}},
+				{"2-0", map[string]interface{}{"dos": "deux"}},
+			}))
+		})
+
+		It("should XRangeN", func() {
+			xAdd := client.XAdd("stream", "1", "uno", "un")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+			xAdd = client.XAdd("stream", "2", "dos", "deux")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+			xAdd = client.XAdd("stream", "3", "tres", "troix")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+
+			xRange := client.XRangeN("stream", "-", "+", 2)
+			Expect(xRange.Err()).NotTo(HaveOccurred())
+			Expect(xRange.Val()).To(Equal([]redis.XMessage{
+				{"1-0", map[string]interface{}{"uno": "un"}},
+				{"2-0", map[string]interface{}{"dos": "deux"}},
+			}))
+
+			xRange = client.XRangeN("stream", "2", "+", 1)
+			Expect(xRange.Err()).NotTo(HaveOccurred())
+			Expect(xRange.Val()).To(Equal([]redis.XMessage{
+				{"2-0", map[string]interface{}{"dos": "deux"}},
+			}))
+
+			xRange = client.XRangeN("stream", "-", "2", 1)
+			Expect(xRange.Err()).NotTo(HaveOccurred())
+			Expect(xRange.Val()).To(Equal([]redis.XMessage{
+				{"1-0", map[string]interface{}{"uno": "un"}},
+			}))
+		})
+
+		It("should XRead", func() {
+			xAdd := client.XAdd("stream", "1", "uno", "un")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+			xAdd = client.XAdd("stream", "2", "dos", "deux")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+			xAdd = client.XAdd("stream", "3", "tres", "troix")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+
+			xRead := client.XRead(100, []redis.XStreamCheckpoint{{"stream", "0"}})
+			Expect(xRead.Err()).NotTo(HaveOccurred())
+			Expect(xRead.Val()).To(Equal([]redis.XMessage{
+				{"1-0", map[string]interface{}{"uno": "un"}},
+				{"2-0", map[string]interface{}{"dos": "deux"}},
+				{"3-0", map[string]interface{}{"tres": "troix"}},
+			}))
+
+			xRead = client.XRead(100, []redis.XStreamCheckpoint{{"stream", "3"}})
+			Expect(xRead.Err()).NotTo(HaveOccurred())
+			Expect(xRead.Val()).To(Equal(nil))
+		})
+
+		It("should XReadN", func() {
+			xAdd := client.XAdd("stream", "1", "uno", "un")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+			xAdd = client.XAdd("stream", "2", "dos", "deux")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+			xAdd = client.XAdd("stream", "3", "tres", "troix")
+			Expect(xAdd.Err()).NotTo(HaveOccurred())
+
+			xRead := client.XReadN(100, 2, []redis.XStreamCheckpoint{{"stream", "0"}})
+			Expect(xRead.Err()).NotTo(HaveOccurred())
+			Expect(xRead.Val()).To(Equal([]redis.XMessage{
+				{"1-0", map[string]interface{}{"uno": "un"}},
+				{"2-0", map[string]interface{}{"dos": "deux"}},
+			}))
+
+			xRead = client.XReadN(100, 1, []redis.XStreamCheckpoint{{"stream", "3"}})
+			Expect(xRead.Err()).NotTo(HaveOccurred())
+			Expect(xRead.Val()).To(Equal(nil))
+		})
+	})
+
 	Describe("Geo add and radius search", func() {
 		BeforeEach(func() {
 			geoAdd := client.GeoAdd(

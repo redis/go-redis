@@ -112,6 +112,108 @@ func stringStructMapParser(rd *proto.Reader, n int64) (interface{}, error) {
 }
 
 // Implements proto.MultiBulkParse
+func xSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
+	xx := make([]X, n)
+	for i := int64(0); i < n; i++ {
+		var err error
+
+		var v interface{}
+		v, err = rd.ReadArrayReply(xStreamParser)
+		if err != nil {
+			return nil, err
+		}
+
+		xx[i] = v.(X)
+	}
+	return xx, nil
+}
+
+// Implements proto.MultiBulkParse
+func xStreamParser(rd *proto.Reader, n int64) (interface{}, error) {
+	x := X{}
+	for i := int64(0); i < n; i += 2 {
+		var err error
+
+		x.Key, err = rd.ReadStringReply()
+		if err != nil {
+			return nil, err
+		}
+
+		var v interface{}
+		v, err = rd.ReadArrayReply(xMessageSliceParser)
+		if err != nil {
+			return nil, err
+		}
+
+		x.Messages = v.([]XMessage)
+	}
+	return x, nil
+}
+
+// Implements proto.MultiBulkParse
+func xMessageSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
+	xx := make([]XMessage, n)
+	for i := int64(0); i < n; i++ {
+		var err error
+
+		var v interface{}
+		v, err = rd.ReadArrayReply(xMessageParser)
+		if err != nil {
+			return nil, err
+		}
+
+		xx[i] = v.(XMessage)
+	}
+
+	return xx, nil
+}
+
+// Implements proto.MultiBulkParse
+func xMessageParser(rd *proto.Reader, n int64) (interface{}, error) {
+	// n/2 because these are [id, [items]]
+	x := XMessage{}
+	for i := int64(0); i < n; i += 2 {
+		var err error
+
+		x.ID, err = rd.ReadStringReply()
+		if err != nil {
+			return nil, err
+		}
+
+		var v interface{}
+		v, err = rd.ReadArrayReply(xKeyValueParser)
+		if err != nil {
+			return nil, err
+		}
+
+		x.Values = v.(map[string]interface{})
+	}
+	return x, nil
+}
+
+// Implements proto.MultiBulkParse
+func xKeyValueParser(rd *proto.Reader, n int64) (interface{}, error) {
+	xMap := make(map[string]interface{})
+	for i := int64(0); i < n; i += 2 {
+		var err error
+
+		key, err := rd.ReadStringReply()
+		if err != nil {
+			return nil, err
+		}
+
+		value, err := rd.ReadStringReply()
+		if err != nil {
+			return nil, err
+		}
+
+		xMap[key] = value
+	}
+
+	return xMap, nil
+}
+
+// Implements proto.MultiBulkParse
 func zSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 	zz := make([]Z, n/2)
 	for i := int64(0); i < n; i += 2 {

@@ -152,6 +152,13 @@ type Cmdable interface {
 	SRem(key string, members ...interface{}) *IntCmd
 	SUnion(keys ...string) *StringSliceCmd
 	SUnionStore(destination string, keys ...string) *IntCmd
+	XAdd(key string, id string, els ...interface{}) *StringCmd
+	XAddMaxLen(key string, id string, maxLen int64, approximate bool, els ...interface{}) *StringCmd
+	XLen(key string) *IntCmd
+	XRange(key string, start, stop string) *XMessageSliceCmd
+	XRangeN(key string, start, stop string, count int64) *XMessageSliceCmd
+	XRead(block int64, streams []XStreamCheckpoint) *XStreamSliceCmd
+	XReadN(block, count int64, streams []XStreamCheckpoint) *XStreamSliceCmd
 	ZAdd(key string, members ...Z) *IntCmd
 	ZAddNX(key string, members ...Z) *IntCmd
 	ZAddXX(key string, members ...Z) *IntCmd
@@ -1243,6 +1250,139 @@ func (c *cmdable) SUnionStore(destination string, keys ...string) *IntCmd {
 		args[2+i] = key
 	}
 	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+//------------------------------------------------------------------------------
+
+// X represents stream message response.
+type X struct {
+	Key  string
+	Messages []XMessage
+}
+
+// XStreamCheckpoint represents a query into a stream
+type XStreamCheckpoint struct {
+	Key string
+	Checkpoint string
+}
+
+// XMessage represents messages within the stream response
+type XMessage struct {
+	ID string
+	Values map[string]interface{}
+}
+
+func (c *cmdable) XAdd(key string, id string, els ...interface{}) *StringCmd {
+	args := make([]interface{}, 3+len(els))
+	args[0], args[1], args[2] = "xadd", key, id
+	for i, el := range els {
+		args[3+i] = el
+	}
+	cmd := NewStringCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XAddMaxLen(
+	key string,
+	id string,
+	maxLen int64,
+	approximate bool,
+	els ...interface{},
+) *StringCmd {
+	var args []interface{}
+	var offset int
+	if approximate {
+		offset = 6
+		args = make([]interface{}, offset+len(els))
+		args[0] = "xadd"
+		args[1] = key
+		args[2] = "maxlen"
+		args[3] = "~"
+		args[4] = maxLen
+		args[5] = id
+	} else {
+		offset = 5
+		args = make([]interface{}, offset+len(els))
+		args[0] = "xadd"
+		args[1] = key
+		args[2] = "maxlen"
+		args[3] = maxLen
+		args[4] = id
+	}
+	for i, el := range els {
+		args[offset+i] = el
+	}
+	cmd := NewStringCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XLen(key string) *IntCmd {
+	args := make([]interface{}, 2)
+	args[0], args[1] = "xlen", key
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRange(key string, start, stop string) *XMessageSliceCmd {
+	args := make([]interface{}, 4)
+	args[0], args[1], args[2], args[3] = "xrange", key, start, stop
+	cmd := NewXMessageSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRangeN(
+	key string,
+	start, stop string,
+	count int64,
+) *XMessageSliceCmd {
+	args := make([]interface{}, 6)
+	args[0] = "xrange"
+	args[1] = key
+	args[2] = start
+	args[3] = stop
+	args[4] = "count"
+	args[5] = count
+	cmd := NewXMessageSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRead(block int64, streams []XStreamCheckpoint) *XStreamSliceCmd {
+	numStreams := len(streams)
+	args := make([]interface{}, 4+(2*numStreams))
+	args[0] = "xread"
+	args[1] = "block"
+	args[2] = block
+	args[5] = "streams"
+	for i, stream := range streams {
+		args[4+i] = stream.Key
+		args[4+numStreams+i] = stream.Checkpoint
+	}
+	cmd := NewXStreamSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XReadN(block, count int64, streams []XStreamCheckpoint) *XStreamSliceCmd {
+	numStreams := len(streams)
+	args := make([]interface{}, 6+(2*numStreams))
+	args[0] = "xread"
+	args[1] = "block"
+	args[2] = block
+	args[3] = "count"
+	args[4] = count
+	args[5] = "streams"
+	for i, stream := range streams {
+		args[6+i] = stream.Key
+		args[6+numStreams+i] = stream.Checkpoint
+	}
+	cmd := NewXStreamSliceCmd(args...)
 	c.process(cmd)
 	return cmd
 }
