@@ -716,7 +716,7 @@ func (cmd *StringStructMapCmd) readReply(cn *pool.Conn) error {
 type XStreamSliceCmd struct {
 	baseCmd
 
-	val []X
+	val []XStream
 }
 
 var _ Cmder = (*XStreamSliceCmd)(nil)
@@ -727,11 +727,11 @@ func NewXStreamSliceCmd(args ...interface{}) *XStreamSliceCmd {
 	}
 }
 
-func (cmd *XStreamSliceCmd) Val() []X {
+func (cmd *XStreamSliceCmd) Val() []XStream {
 	return cmd.val
 }
 
-func (cmd *XStreamSliceCmd) Result() ([]X, error) {
+func (cmd *XStreamSliceCmd) Result() ([]XStream, error) {
 	return cmd.val, cmd.err
 }
 
@@ -741,11 +741,11 @@ func (cmd *XStreamSliceCmd) String() string {
 
 func (cmd *XStreamSliceCmd) readReply(cn *pool.Conn) error {
 	var v interface{}
-	v, cmd.err = cn.Rd.ReadArrayReply(xSliceParser)
+	v, cmd.err = cn.Rd.ReadArrayReply(xStreamSliceParser)
 	if cmd.err != nil {
 		return cmd.err
 	}
-	cmd.val = v.([]X)
+	cmd.val = v.([]XStream)
 	return nil
 }
 
@@ -784,6 +784,56 @@ func (cmd *XMessageSliceCmd) readReply(cn *pool.Conn) error {
 		return cmd.err
 	}
 	cmd.val = v.([]XMessage)
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type XMessageIDCmd struct {
+	baseCmd
+
+	val XMessageID
+}
+
+var _ Cmder = (*XMessageIDCmd)(nil)
+
+func NewXMessageIDCmd(args ...interface{}) *XMessageIDCmd {
+	return &XMessageIDCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *XMessageIDCmd) Val() XMessageID {
+	return cmd.val
+}
+
+func (cmd *XMessageIDCmd) Result() (XMessageID, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *XMessageIDCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XMessageIDCmd) readReply(cn *pool.Conn) error {
+	var id string
+	var err error
+	id, cmd.err = cn.Rd.ReadStringReply()
+	if cmd.err != nil {
+		return cmd.err
+	}
+
+	split := strings.Split(id, "-")
+	cmd.val.ID, err = strconv.ParseInt(split[0], 10, 64)
+	if err != nil {
+		return err
+	}
+
+	cmd.val.SeqID, err = strconv.Atoi(split[1])
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 

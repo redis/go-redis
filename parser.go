@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/internal/proto"
@@ -112,8 +113,8 @@ func stringStructMapParser(rd *proto.Reader, n int64) (interface{}, error) {
 }
 
 // Implements proto.MultiBulkParse
-func xSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	xx := make([]X, n)
+func xStreamSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
+	xx := make([]XStream, n)
 	for i := int64(0); i < n; i++ {
 		var err error
 
@@ -123,18 +124,18 @@ func xSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 			return nil, err
 		}
 
-		xx[i] = v.(X)
+		xx[i] = v.(XStream)
 	}
 	return xx, nil
 }
 
 // Implements proto.MultiBulkParse
 func xStreamParser(rd *proto.Reader, n int64) (interface{}, error) {
-	x := X{}
+	x := XStream{}
 	for i := int64(0); i < n; i += 2 {
 		var err error
 
-		x.Key, err = rd.ReadStringReply()
+		x.Stream, err = rd.ReadStringReply()
 		if err != nil {
 			return nil, err
 		}
@@ -170,24 +171,31 @@ func xMessageSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 
 // Implements proto.MultiBulkParse
 func xMessageParser(rd *proto.Reader, n int64) (interface{}, error) {
-	// n/2 because these are [id, [items]]
 	x := XMessage{}
-	for i := int64(0); i < n; i += 2 {
-		var err error
-
-		x.ID, err = rd.ReadStringReply()
-		if err != nil {
-			return nil, err
-		}
-
-		var v interface{}
-		v, err = rd.ReadArrayReply(xKeyValueParser)
-		if err != nil {
-			return nil, err
-		}
-
-		x.Values = v.(map[string]interface{})
+	var err error
+	var v interface{}
+	id, err := rd.ReadStringReply()
+	if err != nil {
+		return nil, err
 	}
+
+	split := strings.Split(id, "-")
+	x.ID.ID, err = strconv.ParseInt(split[0], 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	x.ID.SeqID, err = strconv.Atoi(split[1])
+	if err != nil {
+		return nil, err
+	}
+
+	v, err = rd.ReadArrayReply(xKeyValueParser)
+	if err != nil {
+		return nil, err
+	}
+
+	x.Values = v.(map[string]interface{})
 	return x, nil
 }
 

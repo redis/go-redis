@@ -3,6 +3,7 @@ package redis
 import (
 	"io"
 	"time"
+	"fmt"
 
 	"github.com/go-redis/redis/internal"
 )
@@ -152,13 +153,13 @@ type Cmdable interface {
 	SRem(key string, members ...interface{}) *IntCmd
 	SUnion(keys ...string) *StringSliceCmd
 	SUnionStore(destination string, keys ...string) *IntCmd
-	XAdd(key string, id string, els ...interface{}) *StringCmd
-	XAddMaxLen(key string, id string, maxLen int64, approximate bool, els ...interface{}) *StringCmd
+	XAdd(key string, id *XMessageID, els map[string]interface{}) *XMessageIDCmd
+	XAddExt(key string, id XMessageID, opts XAdd, els map[string]interface{}) *XMessageIDCmd
 	XLen(key string) *IntCmd
 	XRange(key string, start, stop string) *XMessageSliceCmd
 	XRangeN(key string, start, stop string, count int64) *XMessageSliceCmd
-	XRead(block int64, streams []XStreamCheckpoint) *XStreamSliceCmd
-	XReadN(block, count int64, streams []XStreamCheckpoint) *XStreamSliceCmd
+	XRead(firstKey string, firstCheckpoint XMessageID, block time.Duration, extraStreams ...XStreamCheckpoint) *XStreamSliceCmd
+	XReadN(firstKey string, firstCheckpoint XMessageID, block time.Duration, count int64, extraStreams ...XStreamCheckpoint) *XStreamSliceCmd
 	ZAdd(key string, members ...Z) *IntCmd
 	ZAddNX(key string, members ...Z) *IntCmd
 	ZAddXX(key string, members ...Z) *IntCmd
@@ -1257,67 +1258,88 @@ func (c *cmdable) SUnionStore(destination string, keys ...string) *IntCmd {
 //------------------------------------------------------------------------------
 
 // X represents stream message response.
-type X struct {
-	Key  string
+type XStream struct {
+	Stream  string
 	Messages []XMessage
 }
 
 // XStreamCheckpoint represents a query into a stream
 type XStreamCheckpoint struct {
-	Key string
-	Checkpoint string
+	Stream string
+	Checkpoint XMessageID
 }
 
 // XMessage represents messages within the stream response
 type XMessage struct {
-	ID string
+	ID XMessageID
 	Values map[string]interface{}
 }
 
-func (c *cmdable) XAdd(key string, id string, els ...interface{}) *StringCmd {
-	args := make([]interface{}, 3+len(els))
-	args[0], args[1], args[2] = "xadd", key, id
-	for i, el := range els {
-		args[3+i] = el
+// XMessageID represents a message's ID within a stream.
+// It is composed of an ID (current timestamp if auto-assigned)
+// and a sequence ID. E.g. 1511833543298-0
+type XMessageID struct {
+	ID int64
+	SeqID int
+	End bool
+}
+
+// XAdd represents additional options to the XAdd command
+type XAdd struct {
+	Approximate bool
+	AutoAssignID bool
+	MaxLen int64
+}
+
+func (c *cmdable) xAdd(a []interface{}, n int, els map[string]interface{}) *XMessageIDCmd {
+	i := 0
+	for k, v := range els {
+		a[n+i] = k
+		a[n+i+1] = v
+		i += 2
 	}
-	cmd := NewStringCmd(args...)
+	cmd := NewXMessageIDCmd(a...)
 	c.process(cmd)
 	return cmd
 }
 
-func (c *cmdable) XAddMaxLen(
-	key string,
-	id string,
-	maxLen int64,
-	approximate bool,
-	els ...interface{},
-) *StringCmd {
-	var args []interface{}
-	var offset int
-	if approximate {
-		offset = 6
-		args = make([]interface{}, offset+len(els))
-		args[0] = "xadd"
-		args[1] = key
-		args[2] = "maxlen"
-		args[3] = "~"
-		args[4] = maxLen
-		args[5] = id
+// Redis `XADD key id arg arg ...options...` command.
+// Leave id nil to auto-assign ID
+func (c *cmdable) XAdd(key string, id *XMessageID, els map[string]interface{}) *XMessageIDCmd {
+	const n = 3
+	a := make([]interface{}, n+2*len(els))
+	a[0], a[1] = "xadd", key
+	if id == nil {
+		a[2] = "*"
 	} else {
-		offset = 5
-		args = make([]interface{}, offset+len(els))
-		args[0] = "xadd"
-		args[1] = key
-		args[2] = "maxlen"
-		args[3] = maxLen
-		args[4] = id
+		a[2] = fmt.Sprintf("%d-%d", id.ID, id.SeqID)
 	}
-	for i, el := range els {
-		args[offset+i] = el
+	return c.xAdd(a, n, els)
+}
+
+func (c *cmdable) XAddExt(key string, id XMessageID, opts XAdd, els map[string]interface{}) *XMessageIDCmd {
+	n := 6
+	a := make([]interface{}, n+2*len(els))
+	a[0] = "xadd"
+	a[1] = key
+	a[2] = "maxlen"
+	a[3] = "~"
+	a[4] = opts.MaxLen
+	if opts.AutoAssignID {
+		a[2] = "*"
+	} else {
+		a[2] = fmt.Sprintf("%d-%d", id.ID, id.SeqID)
 	}
-	cmd := NewStringCmd(args...)
-	c.process(cmd)
-	return cmd
+
+	if opts.MaxLen == 0 {
+		a = append(a[:2], a[:5])
+		n = 3
+	} else if !opts.Approximate {
+		a = append(a[:3], a[:4])
+		n = 5
+	}
+
+	return c.xAdd(a, n, els)
 }
 
 func (c *cmdable) XLen(key string) *IntCmd {
@@ -1353,38 +1375,55 @@ func (c *cmdable) XRangeN(
 	return cmd
 }
 
-func (c *cmdable) XRead(block int64, streams []XStreamCheckpoint) *XStreamSliceCmd {
+func (c *cmdable) xRead(a []interface{}, n int, streams []XStreamCheckpoint) *XStreamSliceCmd {
 	numStreams := len(streams)
-	args := make([]interface{}, 4+(2*numStreams))
-	args[0] = "xread"
-	args[1] = "block"
-	args[2] = block
-	args[5] = "streams"
-	for i, stream := range streams {
-		args[4+i] = stream.Key
-		args[4+numStreams+i] = stream.Checkpoint
+	for i, s := range streams {
+		a[n+i] = s.Stream
+		if s.Checkpoint.End {
+			a[n+numStreams+i] = "$"
+		} else {
+			a[n+numStreams+i] = fmt.Sprintf("%d-%d", s.Checkpoint.ID, s.Checkpoint.SeqID)
+		}
 	}
-	cmd := NewXStreamSliceCmd(args...)
+
+	cmd := NewXStreamSliceCmd(a...)
 	c.process(cmd)
 	return cmd
 }
 
-func (c *cmdable) XReadN(block, count int64, streams []XStreamCheckpoint) *XStreamSliceCmd {
-	numStreams := len(streams)
-	args := make([]interface{}, 6+(2*numStreams))
+func (c *cmdable) XRead(
+	firstKey string,
+	firstCheckpoint XMessageID,
+	block time.Duration,
+	extraStreams ...XStreamCheckpoint,
+) *XStreamSliceCmd {
+	n := 6+2*len(extraStreams)
+	args := make([]interface{}, n)
 	args[0] = "xread"
 	args[1] = "block"
-	args[2] = block
+	args[2] = int64(block / time.Millisecond)
+	args[3] = "streams"
+
+	return c.xRead(args, 4, append([]XStreamCheckpoint{{firstKey, firstCheckpoint}}, extraStreams...))
+}
+
+func (c *cmdable) XReadN(
+	firstKey string,
+	firstCheckpoint XMessageID,
+	block time.Duration,
+	count int64,
+	extraStreams ...XStreamCheckpoint,
+) *XStreamSliceCmd {
+	n := 8+2*len(extraStreams)
+	args := make([]interface{}, n)
+	args[0] = "xread"
+	args[1] = "block"
+	args[2] = int64(block / time.Millisecond)
 	args[3] = "count"
 	args[4] = count
 	args[5] = "streams"
-	for i, stream := range streams {
-		args[6+i] = stream.Key
-		args[6+numStreams+i] = stream.Checkpoint
-	}
-	cmd := NewXStreamSliceCmd(args...)
-	c.process(cmd)
-	return cmd
+
+	return c.xRead(args, 6, append([]XStreamCheckpoint{{firstKey, firstCheckpoint}}, extraStreams...))
 }
 
 //------------------------------------------------------------------------------
