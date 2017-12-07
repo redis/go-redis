@@ -829,7 +829,7 @@ func (cmd *XMessageIDCmd) readReply(cn *pool.Conn) error {
 		return err
 	}
 
-	cmd.val.SeqID, err = strconv.Atoi(split[1])
+	cmd.val.Seq, err = strconv.ParseInt(split[1], 10, 64)
 	if err != nil {
 		return err
 	}

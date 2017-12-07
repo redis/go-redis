@@ -185,7 +185,7 @@ func xMessageParser(rd *proto.Reader, n int64) (interface{}, error) {
 		return nil, err
 	}
 
-	x.ID.SeqID, err = strconv.Atoi(split[1])
+	x.ID.Seq, err = strconv.ParseInt(split[1], 10, 64)
 	if err != nil {
 		return nil, err
 	}
