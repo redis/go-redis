@@ -158,6 +158,8 @@ type Cmdable interface {
 	XLen(key string) *IntCmd
 	XRange(key string, start, stop string) *XMessageSliceCmd
 	XRangeN(key string, start, stop string, count int64) *XMessageSliceCmd
+	XRevRange(key string, start, stop string) *XMessageSliceCmd
+	XRevRangeN(key string, start, stop string, count int64) *XMessageSliceCmd
 	XRead(firstKey string, firstCheckpoint *XMessageID, block time.Duration, extraStreams ...XStreamCheckpoint) *XStreamSliceCmd
 	XReadN(firstKey string, firstCheckpoint *XMessageID, block time.Duration, count int64, extraStreams ...XStreamCheckpoint) *XStreamSliceCmd
 	ZAdd(key string, members ...Z) *IntCmd
@@ -1364,6 +1366,31 @@ func (c *cmdable) XRangeN(
 ) *XMessageSliceCmd {
 	args := make([]interface{}, 6)
 	args[0] = "xrange"
+	args[1] = key
+	args[2] = start
+	args[3] = stop
+	args[4] = "count"
+	args[5] = count
+	cmd := NewXMessageSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRevRange(key string, start, stop string) *XMessageSliceCmd {
+	args := make([]interface{}, 4)
+	args[0], args[1], args[2], args[3] = "xrevrange", key, start, stop
+	cmd := NewXMessageSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRevRangeN(
+	key string,
+	start, stop string,
+	count int64,
+) *XMessageSliceCmd {
+	args := make([]interface{}, 6)
+	args[0] = "xrevrange"
 	args[1] = key
 	args[2] = start
 	args[3] = stop
