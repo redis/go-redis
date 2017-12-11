@@ -41,8 +41,8 @@ import "github.com/go-redis/redis"
 
 ```go
 func ExampleNewClient() {
-	client := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
+	client := redis.NewUniversalClient(&redis.UniversalOptions{
+		Addrs:     []string{"localhost:6379"},
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
