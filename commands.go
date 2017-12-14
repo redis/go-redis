@@ -257,6 +257,11 @@ type StatefulCmdable interface {
 	ReadWrite() *StatusCmd
 }
 
+type Subscribable interface {
+	Subscribe(channels ...string) *PubSub
+	PSubscribe(channels ...string) *PubSub
+}
+
 var _ Cmdable = (*Client)(nil)
 var _ Cmdable = (*Tx)(nil)
 var _ Cmdable = (*Ring)(nil)
