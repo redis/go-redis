@@ -1283,7 +1283,6 @@ type XMessage struct {
 type XMessageID struct {
 	ID int64
 	Seq int64
-	End bool
 }
 
 // XAdd represents additional options to the XAdd command
@@ -1319,26 +1318,37 @@ func (c *cmdable) XAdd(key string, id *XMessageID, els map[string]interface{}) *
 }
 
 func (c *cmdable) XAddExt(key string, id *XMessageID, opt XAdd, els map[string]interface{}) *XMessageIDCmd {
-	n := 6
-	a := make([]interface{}, n+2*len(els))
-	a[0] = "xadd"
-	a[1] = key
-	a[2] = "maxlen"
-	a[3] = "~"
-	a[4] = opt.MaxLen
-	if id == nil {
-		a[2] = "*"
+	var a []interface{}
+	var n int
+	if opt.MaxLen == 0 {
+		return c.XAdd(key, id, els)
+	} else if !opt.Approximate {
+		n = 5
+		a = make([]interface{}, n+2*len(els))
+		a[0] = "xadd"
+		a[1] = key
+		a[2] = "maxlen"
+		a[3] = opt.MaxLen
+		if id == nil {
+			a[4] = "*"
+		} else {
+			a[4] = fmt.Sprintf("%d-%d", id.ID, id.Seq)
+		}
 	} else {
-		a[2] = fmt.Sprintf("%d-%d", id.ID, id.Seq)
+		n = 6
+		a = make([]interface{}, n+2*len(els))
+		a[0] = "xadd"
+		a[1] = key
+		a[2] = "maxlen"
+		a[3] = "~"
+		a[4] = opt.MaxLen
+		if id == nil {
+			a[5] = "*"
+		} else {
+			a[5] = fmt.Sprintf("%d-%d", id.ID, id.Seq)
+		}
 	}
 
-	if opt.MaxLen == 0 {
-		a = append(a[:2], a[:5])
-		n = 3
-	} else if !opt.Approximate {
-		a = append(a[:3], a[:4])
-		n = 5
-	}
 
 	return c.xAdd(a, n, els)
 }
