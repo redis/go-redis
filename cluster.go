@@ -533,16 +533,22 @@ func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
 	return info
 }
 
+func cmdSlot(cmd Cmder, pos int) int {
+	if pos == 0 {
+		return hashtag.RandomSlot()
+	}
+	firstKey := cmd.stringArg(pos)
+	return hashtag.Slot(firstKey)
+}
+
 func (c *ClusterClient) cmdSlot(cmd Cmder) int {
 	cmdInfo := c.cmdInfo(cmd.Name())
-	firstKey := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
-	return hashtag.Slot(firstKey)
+	return cmdSlot(cmd, cmdFirstKeyPos(cmd, cmdInfo))
 }
 
 func (c *ClusterClient) cmdSlotAndNode(state *clusterState, cmd Cmder) (int, *clusterNode, error) {
 	cmdInfo := c.cmdInfo(cmd.Name())
-	firstKey := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
-	slot := hashtag.Slot(firstKey)
+	slot := cmdSlot(cmd, cmdFirstKeyPos(cmd, cmdInfo))
 
 	if cmdInfo != nil && cmdInfo.ReadOnly && c.opt.ReadOnly {
 		if c.opt.RouteByLatency {

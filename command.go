@@ -82,13 +82,13 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(2) != "0" {
 			return 3
 		} else {
-			return -1
+			return 0
 		}
 	case "publish":
 		return 1
 	}
 	if info == nil {
-		return -1
+		return 0
 	}
 	return int(info.FirstKeyPos)
 }
