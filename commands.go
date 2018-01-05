@@ -238,6 +238,7 @@ type Cmdable interface {
 	GeoDist(key string, member1, member2, unit string) *FloatCmd
 	GeoHash(key string, members ...string) *StringSliceCmd
 	Command() *CommandsInfoCmd
+	Process(cmd Cmder) error
 }
 
 var _ Cmdable = (*Client)(nil)
