@@ -198,10 +198,14 @@ func (c *baseClient) getAddr() string {
 	return c.opt.Addr
 }
 
+func (c *baseClient) WrapPipelineExecer(fn func(func([]Cmder) error) func([]Cmder) error) {
+	c.wrapPipelineExecer = fn
+}
+
 type pipelineProcessor func(*pool.Conn, []Cmder) (bool, error)
 
 func (c *baseClient) pipelineExecer(p pipelineProcessor) pipelineExecer {
-	return func(cmds []Cmder) error {
+	defaultExecer := func(cmds []Cmder) error {
 		for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 			if attempt > 0 {
 				time.Sleep(c.retryBackoff(attempt))
@@ -227,6 +231,12 @@ func (c *baseClient) pipelineExecer(p pipelineProcessor) pipelineExecer {
 		}
 		return firstCmdsErr(cmds)
 	}
+
+	if c.wrapPipelineExecer != nil {
+		return c.wrapPipelineExecer(defaultExecer)
+	}
+
+	return defaultExecer
 }
 
 func (c *baseClient) pipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {

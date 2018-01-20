@@ -15,6 +15,8 @@ type baseClient struct {
 	process func(Cmder) error
 	onClose func() error // hook called when client is closed
 
+	wrapPipelineExecer func(func([]Cmder) error) func([]Cmder) error
+
 	ctx context.Context
 }
 
