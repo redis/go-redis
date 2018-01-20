@@ -24,7 +24,8 @@ func (c *Client) newTx() *Tx {
 			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), true),
 		},
 	}
-	tx.setProcessor(tx.Process)
+	tx.baseClient.init()
+	tx.statefulCmdable.setProcessor(tx.Process)
 	return &tx
 }
 
@@ -75,9 +76,9 @@ func (c *Tx) Unwatch(keys ...string) *StatusCmd {
 
 func (c *Tx) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.pipelineExecer(c.txPipelineProcessCmds),
+		exec: c.processTxPipeline,
 	}
-	pipe.setProcessor(pipe.Process)
+	pipe.statefulCmdable.setProcessor(pipe.Process)
 	return &pipe
 }
 
