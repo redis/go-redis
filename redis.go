@@ -11,7 +11,7 @@ import (
 	"github.com/go-redis/redis/internal/proto"
 )
 
-// Redis nil reply returned when key does not exist.
+// Nil reply redis returned when key does not exist.
 const Nil = internal.Nil
 
 func init() {
@@ -172,9 +172,9 @@ func (c *baseClient) retryBackoff(attempt int) time.Duration {
 func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
 	if timeout := cmd.readTimeout(); timeout != nil {
 		return *timeout
-	} else {
-		return c.opt.ReadTimeout
 	}
+
+	return c.opt.ReadTimeout
 }
 
 // Close closes the client, releasing any open resources.

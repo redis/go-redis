@@ -5,7 +5,7 @@ import (
 	"github.com/go-redis/redis/internal/pool"
 )
 
-// Redis transaction failed.
+// TxFailedErr transaction redis failed.
 const TxFailedErr = internal.RedisError("redis: transaction failed")
 
 // Tx implements Redis transactions as described in
@@ -42,7 +42,7 @@ func (c *Client) Watch(fn func(*Tx) error, keys ...string) error {
 	return err
 }
 
-// close closes the transaction, releasing any open resources.
+// Close closes the transaction, releasing any open resources.
 func (c *Tx) Close() error {
 	_ = c.Unwatch().Err()
 	return c.baseClient.Close()
