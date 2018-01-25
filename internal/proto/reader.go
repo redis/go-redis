@@ -197,7 +197,7 @@ func (r *Reader) ReadScanReply() ([]string, uint64, error) {
 		return nil, 0, fmt.Errorf("redis: got %d elements in scan reply, expected 2", n)
 	}
 
-	cursor, err := p.ReadUint()
+	cursor, err := r.ReadUint()
 	if err != nil {
 		return nil, 0, err
 	}
