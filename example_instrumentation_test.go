@@ -75,5 +75,6 @@ func Example_Pipeline_instrumentation() {
 	client.Pipelined(func(pipe redis.Pipeliner) error {
 		pipe.Ping()
 		pipe.Ping()
+		return nil
 	})
 }
