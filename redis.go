@@ -198,8 +198,8 @@ func (c *baseClient) getAddr() string {
 	return c.opt.Addr
 }
 
-func (c *baseClient) WrapPipelineExecer(fn func(func([]Cmder) error) func([]Cmder) error) {
-	c.wrapPipelineExecer = fn
+func (c *baseClient) WrapPipelineProcess(fn func(func([]Cmder) error) func([]Cmder) error) {
+	c.wrapPipelineProcess = fn
 }
 
 type pipelineProcessor func(*pool.Conn, []Cmder) (bool, error)
@@ -232,8 +232,8 @@ func (c *baseClient) pipelineExecer(p pipelineProcessor) pipelineExecer {
 		return firstCmdsErr(cmds)
 	}
 
-	if c.wrapPipelineExecer != nil {
-		return c.wrapPipelineExecer(defaultExecer)
+	if c.wrapPipelineProcess != nil {
+		return c.wrapPipelineProcess(defaultExecer)
 	}
 
 	return defaultExecer

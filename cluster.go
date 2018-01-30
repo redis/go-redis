@@ -445,8 +445,8 @@ type ClusterClient struct {
 	cmdsInfoOnce internal.Once
 	cmdsInfo     map[string]*CommandInfo
 
-	process            func(Cmder) error
-	wrapPipelineExecer func(func([]Cmder) error) func([]Cmder) error
+	process             func(Cmder) error
+	wrapPipelineProcess func(func([]Cmder) error) func([]Cmder) error
 
 	// Reports whether slots reloading is in progress.
 	reloading uint32
@@ -922,14 +922,14 @@ func (c *ClusterClient) reaper(idleCheckFrequency time.Duration) {
 	}
 }
 
-func (c *ClusterClient) WrapPipelineExecer(fn func(func([]Cmder) error) func([]Cmder) error) {
-	c.wrapPipelineExecer = fn
+func (c *ClusterClient) WrapPipelineProcess(fn func(func([]Cmder) error) func([]Cmder) error) {
+	c.wrapPipelineProcess = fn
 }
 
 func (c *ClusterClient) Pipeline() Pipeliner {
 	pipelineExec := c.pipelineExec
-	if c.wrapPipelineExecer != nil {
-		pipelineExec = c.wrapPipelineExecer(pipelineExec)
+	if c.wrapPipelineProcess != nil {
+		pipelineExec = c.wrapPipelineProcess(pipelineExec)
 	}
 	pipe := Pipeline{
 		exec: pipelineExec,
@@ -1086,8 +1086,8 @@ func (c *ClusterClient) checkMovedErr(
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *ClusterClient) TxPipeline() Pipeliner {
 	txPipelineExec := c.txPipelineExec
-	if c.wrapPipelineExecer != nil {
-		txPipelineExec = c.wrapPipelineExecer(txPipelineExec)
+	if c.wrapPipelineProcess != nil {
+		txPipelineExec = c.wrapPipelineProcess(txPipelineExec)
 	}
 	pipe := Pipeline{
 		exec: txPipelineExec,

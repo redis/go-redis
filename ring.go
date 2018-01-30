@@ -150,7 +150,7 @@ type Ring struct {
 	shards     map[string]*ringShard
 	shardsList []*ringShard
 
-	wrapPipelineExecer func(func([]Cmder) error) func([]Cmder) error
+	wrapPipelineProcess func(func([]Cmder) error) func([]Cmder) error
 
 	cmdsInfoOnce internal.Once
 	cmdsInfo     map[string]*CommandInfo
@@ -445,8 +445,8 @@ func (c *Ring) Close() error {
 
 func (c *Ring) Pipeline() Pipeliner {
 	pipelineExec := c.pipelineExec
-	if c.wrapPipelineExecer != nil {
-		pipelineExec = c.wrapPipelineExecer(pipelineExec)
+	if c.wrapPipelineProcess != nil {
+		pipelineExec = c.wrapPipelineProcess(pipelineExec)
 	}
 	pipe := Pipeline{
 		exec: pipelineExec,
@@ -459,8 +459,8 @@ func (c *Ring) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().Pipelined(fn)
 }
 
-func (c *Ring) WrapPipelineExecer(fn func(func([]Cmder) error) func([]Cmder) error) {
-	c.wrapPipelineExecer = fn
+func (c *Ring) WrapPipelineProcess(fn func(func([]Cmder) error) func([]Cmder) error) {
+	c.wrapPipelineProcess = fn
 }
 
 func (c *Ring) pipelineExec(cmds []Cmder) error {

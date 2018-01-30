@@ -63,7 +63,7 @@ func Example_Pipeline_instrumentation() {
 		Addr: ":6379",
 	})
 
-	client.WrapPipelineExecer(func(pe func([]redis.Cmder) error) func([]redis.Cmder) error {
+	client.WrapPipelineProcess(func(pe func([]redis.Cmder) error) func([]redis.Cmder) error {
 		return func(cmds []redis.Cmder) error {
 			fmt.Printf("pipeline starting process: %v", cmds)
 			err := pe(cmds)
