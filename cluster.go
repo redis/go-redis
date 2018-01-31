@@ -816,11 +816,7 @@ func (c *ClusterClient) ForEachNode(fn func(client *Client) error) error {
 		}
 	}
 
-	for _, node := range state.masters {
-		wg.Add(1)
-		go worker(node)
-	}
-	for _, node := range state.slaves {
+	for _, node := range state.nodes.nodes {
 		wg.Add(1)
 		go worker(node)
 	}
