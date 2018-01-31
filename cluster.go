@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"net"
@@ -438,6 +439,8 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 type ClusterClient struct {
 	cmdable
 
+	ctx context.Context
+
 	opt    *ClusterOptions
 	nodes  *clusterNodes
 	_state atomic.Value
@@ -568,6 +571,23 @@ func (c *ClusterClient) cmdSlotAndNode(state *clusterState, cmd Cmder) (int, *cl
 
 	node, err := state.slotMasterNode(slot)
 	return slot, node, err
+}
+
+func (c *ClusterClient) Context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+// WithContext changes the ClusterClient's context to ctx and returns
+// a reference to the ClusterClient.
+func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
+	if ctx == nil {
+		panic("nil context")
+	}
+	c.ctx = ctx
+	return c
 }
 
 func (c *ClusterClient) Watch(fn func(*Tx) error, keys ...string) error {
