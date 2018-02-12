@@ -320,6 +320,14 @@ var _ = Describe("ClusterClient", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(cmds).To(HaveLen(14))
 
+					_ = client.ForEachNode(func(node *redis.Client) error {
+						defer GinkgoRecover()
+						Eventually(func() int64 {
+							return node.DBSize().Val()
+						}, 30*time.Second).ShouldNot(BeZero())
+						return nil
+					})
+
 					for _, key := range keys {
 						slot := hashtag.Slot(key)
 						client.SwapSlotNodes(slot)
@@ -576,7 +584,7 @@ var _ = Describe("ClusterClient", func() {
 
 			_ = client.ForEachSlave(func(slave *redis.Client) error {
 				Eventually(func() int64 {
-					return client.DBSize().Val()
+					return slave.DBSize().Val()
 				}, 30*time.Second).Should(Equal(int64(0)))
 				return slave.ClusterFailover().Err()
 			})
@@ -717,7 +725,7 @@ var _ = Describe("ClusterClient timeout", func() {
 		})
 	}
 
-	const pause = time.Second
+	const pause = 2 * time.Second
 
 	Context("read/write timeout", func() {
 		BeforeEach(func() {
