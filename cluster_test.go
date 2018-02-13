@@ -583,6 +583,7 @@ var _ = Describe("ClusterClient", func() {
 			})
 
 			_ = client.ForEachSlave(func(slave *redis.Client) error {
+				defer GinkgoRecover()
 				Eventually(func() int64 {
 					return slave.DBSize().Val()
 				}, 30*time.Second).Should(Equal(int64(0)))
