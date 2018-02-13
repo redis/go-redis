@@ -70,8 +70,9 @@ type Cmdable interface {
 	RenameNX(key, newkey string) *BoolCmd
 	Restore(key string, ttl time.Duration, value string) *StatusCmd
 	RestoreReplace(key string, ttl time.Duration, value string) *StatusCmd
-	Sort(key string, sort Sort) *StringSliceCmd
-	SortInterfaces(key string, sort Sort) *SliceCmd
+	Sort(key string, sort *Sort) *StringSliceCmd
+	SortStore(key, store string, sort *Sort) *IntCmd
+	SortInterfaces(key string, sort *Sort) *SliceCmd
 	TTL(key string) *DurationCmd
 	Type(key string) *StatusCmd
 	Scan(cursor uint64, match string, count int64) *ScanCmd
@@ -484,11 +485,10 @@ func (c *cmdable) RestoreReplace(key string, ttl time.Duration, value string) *S
 
 type Sort struct {
 	By            string
-	Offset, Count float64
+	Offset, Count int64
 	Get           []string
 	Order         string
-	IsAlpha       bool
-	Store         string
+	Alpha         bool
 }
 
 func (sort *Sort) args(key string) []interface{} {
@@ -505,22 +505,29 @@ func (sort *Sort) args(key string) []interface{} {
 	if sort.Order != "" {
 		args = append(args, sort.Order)
 	}
-	if sort.IsAlpha {
+	if sort.Alpha {
 		args = append(args, "alpha")
-	}
-	if sort.Store != "" {
-		args = append(args, "store", sort.Store)
 	}
 	return args
 }
 
-func (c *cmdable) Sort(key string, sort Sort) *StringSliceCmd {
+func (c *cmdable) Sort(key string, sort *Sort) *StringSliceCmd {
 	cmd := NewStringSliceCmd(sort.args(key)...)
 	c.process(cmd)
 	return cmd
 }
 
-func (c *cmdable) SortInterfaces(key string, sort Sort) *SliceCmd {
+func (c *cmdable) SortStore(key, store string, sort *Sort) *IntCmd {
+	args := sort.args(key)
+	if store != "" {
+		args = append(args, "store", store)
+	}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) SortInterfaces(key string, sort *Sort) *SliceCmd {
 	cmd := NewSliceCmd(sort.args(key)...)
 	c.process(cmd)
 	return cmd

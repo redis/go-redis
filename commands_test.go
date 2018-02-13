@@ -582,7 +582,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(Equal(int64(3)))
 
-			els, err := client.Sort("list", redis.Sort{
+			els, err := client.Sort("list", &redis.Sort{
 				Offset: 0,
 				Count:  2,
 				Order:  "ASC",
@@ -608,7 +608,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			{
-				els, err := client.Sort("list", redis.Sort{
+				els, err := client.Sort("list", &redis.Sort{
 					Get: []string{"object_*"},
 				}).Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -616,12 +616,38 @@ var _ = Describe("Commands", func() {
 			}
 
 			{
-				els, err := client.SortInterfaces("list", redis.Sort{
+				els, err := client.SortInterfaces("list", &redis.Sort{
 					Get: []string{"object_*"},
 				}).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(els).To(Equal([]interface{}{nil, "value2", nil}))
 			}
+		})
+
+		It("should Sort and Store", func() {
+			size, err := client.LPush("list", "1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(1)))
+
+			size, err = client.LPush("list", "3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(2)))
+
+			size, err = client.LPush("list", "2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(3)))
+
+			n, err := client.SortStore("list", "list2", &redis.Sort{
+				Offset: 0,
+				Count:  2,
+				Order:  "ASC",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
+
+			els, err := client.LRange("list2", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(els).To(Equal([]string{"1", "2"}))
 		})
 
 		It("should TTL", func() {
