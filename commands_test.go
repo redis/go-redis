@@ -79,6 +79,16 @@ var _ = Describe("Commands", func() {
 			Expect(sel.Val()).To(Equal("OK"))
 		})
 
+		It("should SwapDB", func() {
+			pipe := client.Pipeline()
+			sel := pipe.SwapDB(1, 2)
+			_, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(sel.Err()).NotTo(HaveOccurred())
+			Expect(sel.Val()).To(Equal("OK"))
+		})
+
 		It("should BgRewriteAOF", func() {
 			Skip("flaky test")
 
@@ -648,6 +658,20 @@ var _ = Describe("Commands", func() {
 			els, err := client.LRange("list2", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(els).To(Equal([]string{"1", "2"}))
+		})
+
+		It("should Touch", func() {
+			set1 := client.Set("touch1", "hello", 0)
+			Expect(set1.Err()).NotTo(HaveOccurred())
+			Expect(set1.Val()).To(Equal("OK"))
+
+			set2 := client.Set("touch2", "hello", 0)
+			Expect(set2.Err()).NotTo(HaveOccurred())
+			Expect(set2.Val()).To(Equal("OK"))
+
+			touch := client.Touch("touch1", "touch2", "touch3")
+			Expect(touch.Err()).NotTo(HaveOccurred())
+			Expect(touch.Val()).To(Equal(2))
 		})
 
 		It("should TTL", func() {
