@@ -73,6 +73,7 @@ type Cmdable interface {
 	Sort(key string, sort *Sort) *StringSliceCmd
 	SortStore(key, store string, sort *Sort) *IntCmd
 	SortInterfaces(key string, sort *Sort) *SliceCmd
+	Touch(keys ...string) *IntCmd
 	TTL(key string) *DurationCmd
 	Type(key string) *StatusCmd
 	Scan(cursor uint64, match string, count int64) *ScanCmd
@@ -253,6 +254,7 @@ type StatefulCmdable interface {
 	Cmdable
 	Auth(password string) *StatusCmd
 	Select(index int) *StatusCmd
+	SwapDB(index1, index2 int) *StatusCmd
 	ClientSetName(name string) *BoolCmd
 	ReadOnly() *StatusCmd
 	ReadWrite() *StatusCmd
@@ -313,6 +315,12 @@ func (c *cmdable) Quit() *StatusCmd {
 
 func (c *statefulCmdable) Select(index int) *StatusCmd {
 	cmd := NewStatusCmd("select", index)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *statefulCmdable) SwapDB(index1, index2 int) *StatusCmd {
+	cmd := NewStatusCmd("swapdb", index1, index2)
 	c.process(cmd)
 	return cmd
 }
@@ -529,6 +537,17 @@ func (c *cmdable) SortStore(key, store string, sort *Sort) *IntCmd {
 
 func (c *cmdable) SortInterfaces(key string, sort *Sort) *SliceCmd {
 	cmd := NewSliceCmd(sort.args(key)...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) Touch(keys ...string) *IntCmd {
+	args := make([]interface{}, len(keys)+1)
+	args[0] = "touch"
+	for i, key := range keys {
+		args[i+1] = key
+	}
+	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
 }
