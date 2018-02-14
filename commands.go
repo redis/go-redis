@@ -545,7 +545,7 @@ func (c *cmdable) Touch(keys ...string) *IntCmd {
 	args := make([]interface{}, len(keys)+1)
 	args[0] = "touch"
 	for i, key := range keys {
-		args[i+1] + key
+		args[i+1] = key
 	}
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
