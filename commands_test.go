@@ -671,7 +671,7 @@ var _ = Describe("Commands", func() {
 
 			touch := client.Touch("touch1", "touch2", "touch3")
 			Expect(touch.Err()).NotTo(HaveOccurred())
-			Expect(touch.Val()).To(Equal(2))
+			Expect(touch.Val()).To(Equal(int64(2)))
 		})
 
 		It("should TTL", func() {
