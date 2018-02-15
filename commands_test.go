@@ -2,7 +2,6 @@ package redis_test
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -11,6 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/internal"
 )
 
 var _ = Describe("Commands", func() {
@@ -2976,7 +2976,7 @@ var _ = Describe("Commands", func() {
 				nil,
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]interface{}{12, errors.New("error"), "abc"}))
+			Expect(vals).To(BeEquivalentTo([]interface{}{12, internal.RedisError("error"), "abc"}))
 		})
 
 	})
