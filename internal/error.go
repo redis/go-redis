@@ -42,6 +42,10 @@ func IsNetworkError(err error) bool {
 	return ok
 }
 
+func IsReadOnlyError(err error) bool {
+	return strings.HasPrefix(err.Error(), "READONLY ")
+}
+
 func IsBadConn(err error, allowTimeout bool) bool {
 	if err == nil {
 		return false
