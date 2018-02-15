@@ -2976,7 +2976,7 @@ var _ = Describe("Commands", func() {
 				nil,
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(BeEquivalentTo([]interface{}{12, internal.RedisError("error"), "abc"}))
+			Expect(vals).To(Equal([]interface{}{int64(12), internal.RedisError("error"), "abc"}))
 		})
 
 	})
