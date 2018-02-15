@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -142,6 +143,8 @@ func (shard *ringShard) Vote(up bool) bool {
 type Ring struct {
 	cmdable
 
+	ctx context.Context
+
 	opt       *RingOptions
 	nreplicas int
 
@@ -200,6 +203,23 @@ func (c *Ring) Options() *RingOptions {
 
 func (c *Ring) retryBackoff(attempt int) time.Duration {
 	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
+}
+
+func (c *Ring) Context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+// WithContext changes the Ring's context to ctx and returns
+// a reference to the Ring.
+func (c *Ring) WithContext(ctx context.Context) *Ring {
+	if ctx == nil {
+		panic("nil context")
+	}
+	c.ctx = ctx
+	return c
 }
 
 // PoolStats returns accumulated connection pool stats.
