@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -2967,6 +2968,15 @@ var _ = Describe("Commands", func() {
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]interface{}{"key", "hello"}))
+		})
+
+		It("returns all values after an error", func() {
+			vals, err := client.Eval(
+				`return {12, {err="error"}, "abc"}`,
+				nil,
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]interface{}{12, errors.New("hello"), "abc"}))
 		})
 
 	})
