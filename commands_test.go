@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/internal"
 )
 
 var _ = Describe("Commands", func() {
@@ -2991,6 +2992,15 @@ var _ = Describe("Commands", func() {
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]interface{}{"key", "hello"}))
+		})
+
+		It("returns all values after an error", func() {
+			vals, err := client.Eval(
+				`return {12, {err="error"}, "abc"}`,
+				nil,
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]interface{}{int64(12), internal.RedisError("error"), "abc"}))
 		})
 
 	})
