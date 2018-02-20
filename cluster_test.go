@@ -574,6 +574,8 @@ var _ = Describe("ClusterClient", func() {
 	Describe("ClusterClient failover", func() {
 		BeforeEach(func() {
 			opt = redisClusterOptions()
+			opt.MinRetryBackoff = 100 * time.Millisecond
+			opt.MaxRetryBackoff = 3 * time.Second
 			client = cluster.clusterClient(opt)
 
 			_ = client.ForEachSlave(func(slave *redis.Client) error {
