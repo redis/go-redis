@@ -243,6 +243,21 @@ var _ = Describe("races", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(N)))
 	})
+
+	It("should TxPipeline", func() {
+		pipe := client.TxPipeline()
+		perform(N, func(id int) {
+			pipe.Incr("key")
+		})
+
+		cmds, err := pipe.Exec()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cmds).To(HaveLen(N))
+
+		n, err := client.Get("key").Int64()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(N)))
+	})
 })
 
 func bigVal() []byte {
