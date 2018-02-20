@@ -727,13 +727,13 @@ var _ = Describe("ClusterClient timeout", func() {
 		})
 	}
 
-	const pause = 2 * time.Second
+	const pause = 3 * time.Second
 
 	Context("read/write timeout", func() {
 		BeforeEach(func() {
 			opt := redisClusterOptions()
-			opt.ReadTimeout = 100 * time.Millisecond
-			opt.WriteTimeout = 100 * time.Millisecond
+			opt.ReadTimeout = 200 * time.Millisecond
+			opt.WriteTimeout = 200 * time.Millisecond
 			opt.MaxRedirects = 1
 			client = cluster.clusterClient(opt)
 
