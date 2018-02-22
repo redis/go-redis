@@ -62,12 +62,14 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Wait", func() {
+			const wait = 3 * time.Second
+
 			// assume testing on single redis instance
 			start := time.Now()
-			wait := client.Wait(1, time.Second)
-			Expect(wait.Err()).NotTo(HaveOccurred())
-			Expect(wait.Val()).To(Equal(int64(0)))
-			Expect(time.Now()).To(BeTemporally("~", start.Add(time.Second), 800*time.Millisecond))
+			val, err := client.Wait(1, wait).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(0)))
+			Expect(time.Now()).To(BeTemporally("~", start.Add(wait), time.Second))
 		})
 
 		It("should Select", func() {
