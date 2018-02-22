@@ -1,6 +1,6 @@
 // +build !appengine
 
-package internal
+package util
 
 import (
 	"unsafe"

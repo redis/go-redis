@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"errors"
 	"io"
 	"time"
 
@@ -1802,7 +1803,7 @@ func (c *cmdable) shutdown(modifier string) *StatusCmd {
 		}
 	} else {
 		// Server did not quit. String reply contains the reason.
-		cmd.err = internal.RedisError(cmd.val)
+		cmd.err = errors.New(cmd.val)
 		cmd.val = ""
 	}
 	return cmd

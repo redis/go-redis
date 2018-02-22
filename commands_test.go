@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/go-redis/redis"
-	"github.com/go-redis/redis/internal"
+	"github.com/go-redis/redis/internal/proto"
 )
 
 var _ = Describe("Commands", func() {
@@ -3000,7 +3000,7 @@ var _ = Describe("Commands", func() {
 				nil,
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]interface{}{int64(12), internal.RedisError("error"), "abc"}))
+			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
 		})
 
 	})

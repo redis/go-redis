@@ -12,7 +12,7 @@ import (
 )
 
 // Nil reply redis returned when key does not exist.
-const Nil = internal.Nil
+const Nil = proto.Nil
 
 func init() {
 	SetLogger(log.New(os.Stderr, "redis: ", log.LstdFlags|log.Lshortfile))
