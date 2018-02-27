@@ -58,7 +58,7 @@ func (opt *ClusterOptions) init() {
 	if opt.MaxRedirects == -1 {
 		opt.MaxRedirects = 0
 	} else if opt.MaxRedirects == 0 {
-		opt.MaxRedirects = 16
+		opt.MaxRedirects = 8
 	}
 
 	if opt.RouteByLatency {
