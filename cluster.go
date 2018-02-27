@@ -26,7 +26,7 @@ type ClusterOptions struct {
 
 	// The maximum number of retries before giving up. Command is retried
 	// on network errors and MOVED/ASK redirects.
-	// Default is 16.
+	// Default is 8.
 	MaxRedirects int
 
 	// Enables read-only commands on slave nodes.
