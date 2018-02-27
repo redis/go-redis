@@ -682,18 +682,23 @@ func (c *ClusterClient) Process(cmd Cmder) error {
 }
 
 func (c *ClusterClient) defaultProcess(cmd Cmder) error {
-	_, node, err := c.cmdSlotAndNode(cmd)
-	if err != nil {
-		cmd.setErr(err)
-		return err
-	}
-
+	var node *clusterNode
 	var ask bool
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
 			time.Sleep(c.retryBackoff(attempt))
 		}
 
+		if node == nil {
+			var err error
+			_, node, err = c.cmdSlotAndNode(cmd)
+			if err != nil {
+				cmd.setErr(err)
+				break
+			}
+		}
+
+		var err error
 		if ask {
 			pipe := node.Client.Pipeline()
 			_ = pipe.Process(NewCmd("ASKING"))
@@ -717,9 +722,8 @@ func (c *ClusterClient) defaultProcess(cmd Cmder) error {
 		}
 
 		if internal.IsRetryableError(err, true) {
-			var nodeErr error
-			node, nodeErr = c.nodes.Random()
-			if nodeErr != nil {
+			node, err = c.nodes.Random()
+			if err != nil {
 				break
 			}
 			continue
@@ -731,20 +735,15 @@ func (c *ClusterClient) defaultProcess(cmd Cmder) error {
 		if moved || ask {
 			c.lazyReloadState()
 
-			var nodeErr error
-			node, nodeErr = c.nodes.GetOrCreate(addr)
-			if nodeErr != nil {
+			node, err = c.nodes.GetOrCreate(addr)
+			if err != nil {
 				break
 			}
 			continue
 		}
 
 		if err == pool.ErrClosed {
-			_, node, err = c.cmdSlotAndNode(cmd)
-			if err != nil {
-				cmd.setErr(err)
-				break
-			}
+			node = nil
 			continue
 		}
 
