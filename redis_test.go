@@ -157,30 +157,15 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should retry with backoff", func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
-
-		// use up all the available connections to force a fail
-		connectionHogClient := redis.NewClient(&redis.Options{
-			Addr:       redisAddr,
-			MaxRetries: 1,
-		})
-		defer connectionHogClient.Close()
-
-		for i := 0; i <= 1002; i++ {
-			connectionHogClient.Pool().NewConn()
-		}
-
 		clientNoRetry := redis.NewClient(&redis.Options{
-			Addr:            redisAddr,
-			PoolSize:        1,
-			MaxRetryBackoff: -1,
+			Addr:       ":1234",
+			MaxRetries: 0,
 		})
 		defer clientNoRetry.Close()
 
 		clientRetry := redis.NewClient(&redis.Options{
-			Addr:            redisAddr,
+			Addr:            ":1234",
 			MaxRetries:      5,
-			PoolSize:        1,
 			MaxRetryBackoff: 128 * time.Millisecond,
 		})
 		defer clientRetry.Close()
@@ -195,7 +180,7 @@ var _ = Describe("Client", func() {
 		Expect(err).To(HaveOccurred())
 		elapseRetry := time.Since(startRetry)
 
-		Expect(elapseRetry > elapseNoRetry).To(BeTrue())
+		Expect(elapseRetry).To(BeNumerically(">", elapseNoRetry, 10*time.Millisecond))
 	})
 
 	It("should update conn.UsedAt on read/write", func() {
