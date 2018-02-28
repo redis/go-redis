@@ -198,6 +198,7 @@ type Cmdable interface {
 	ConfigGet(parameter string) *SliceCmd
 	ConfigResetStat() *StatusCmd
 	ConfigSet(parameter, value string) *StatusCmd
+	ConfigRewrite() *StatusCmd
 	DBSize() *IntCmd
 	FlushAll() *StatusCmd
 	FlushAllAsync() *StatusCmd
@@ -1721,6 +1722,12 @@ func (c *cmdable) ConfigResetStat() *StatusCmd {
 
 func (c *cmdable) ConfigSet(parameter, value string) *StatusCmd {
 	cmd := NewStatusCmd("config", "set", parameter, value)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ConfigRewrite() *StatusCmd {
+	cmd := NewStatusCmd("config", "rewrite")
 	c.process(cmd)
 	return cmd
 }

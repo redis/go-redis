@@ -162,6 +162,12 @@ var _ = Describe("Commands", func() {
 			Expect(configSet.Val()).To(Equal("OK"))
 		})
 
+		It("should ConfigRewrite", func() {
+			configRewrite := client.ConfigRewrite()
+			Expect(configRewrite.Err()).NotTo(HaveOccurred())
+			Expect(configRewrite.Val()).To(Equal("OK"))
+		})
+
 		It("should DBSize", func() {
 			size, err := client.DBSize().Result()
 			Expect(err).NotTo(HaveOccurred())
