@@ -37,6 +37,8 @@ type FailoverOptions struct {
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
+
+	OnProcess func() error
 }
 
 func (opt *FailoverOptions) options() *Options {
@@ -67,8 +69,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	failover := &sentinelFailover{
 		masterName:    failoverOpt.MasterName,
 		sentinelAddrs: failoverOpt.SentinelAddrs,
-
-		opt: opt,
+		opt:           opt,
 	}
 	base := baseClient{
 		opt:      opt,
@@ -77,6 +78,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		onClose: func() error {
 			return failover.Close()
 		},
+		onProcess: failoverOpt.OnProcess,
 	}
 	return &Client{
 		baseClient: base,

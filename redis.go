@@ -18,7 +18,8 @@ type baseClient struct {
 	connPool pool.Pooler
 	opt      *Options
 
-	onClose func() error // hook called when client is closed
+	onClose   func() error // hook called when client is closed
+	onProcess func() error // hook called when client is processing cmds
 }
 
 func (c *baseClient) String() string {
@@ -75,6 +76,9 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 }
 
 func (c *baseClient) process(cmd Cmder) {
+	if c.onProcess != nil {
+		defer c.onProcess()
+	}
 	for i := 0; i <= c.opt.MaxRetries; i++ {
 		if i > 0 {
 			cmd.reset()
