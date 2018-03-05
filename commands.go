@@ -214,7 +214,7 @@ type Cmdable interface {
 	Time() *TimeCmd
 	Eval(script string, keys []string, args ...interface{}) *Cmd
 	EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd
-	ScriptExists(scripts ...string) *BoolSliceCmd
+	ScriptExists(hashes ...string) *BoolSliceCmd
 	ScriptFlush() *StatusCmd
 	ScriptKill() *StatusCmd
 	ScriptLoad(script string) *StringCmd
@@ -1884,12 +1884,12 @@ func (c *cmdable) EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd 
 	return cmd
 }
 
-func (c *cmdable) ScriptExists(scripts ...string) *BoolSliceCmd {
-	args := make([]interface{}, 2+len(scripts))
+func (c *cmdable) ScriptExists(hashes ...string) *BoolSliceCmd {
+	args := make([]interface{}, 2+len(hashes))
 	args[0] = "script"
 	args[1] = "exists"
-	for i, script := range scripts {
-		args[2+i] = script
+	for i, hash := range hashes {
+		args[2+i] = hash
 	}
 	cmd := NewBoolSliceCmd(args...)
 	c.process(cmd)
