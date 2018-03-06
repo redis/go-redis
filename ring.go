@@ -15,6 +15,8 @@ import (
 	"github.com/go-redis/redis/internal/pool"
 )
 
+const nreplicas = 100
+
 var errRingShardsDown = errors.New("redis: all ring shards are down")
 
 // RingOptions are used to configure a ring client and should be
@@ -142,30 +144,25 @@ func (shard *ringShard) Vote(up bool) bool {
 type Ring struct {
 	cmdable
 
-	opt       *RingOptions
-	nreplicas int
+	opt           *RingOptions
+	cmdsInfoCache *cmdsInfoCache
 
 	mu         sync.RWMutex
 	hash       *consistenthash.Map
-	shards     map[string]*ringShard
-	shardsList []*ringShard
+	shards     map[string]*ringShard // read only
+	shardsList []*ringShard          // read only
 
 	processPipeline func([]Cmder) error
-
-	cmdsInfoOnce internal.Once
-	cmdsInfo     map[string]*CommandInfo
 
 	closed bool
 }
 
 func NewRing(opt *RingOptions) *Ring {
-	const nreplicas = 100
-
 	opt.init()
 
 	ring := &Ring{
-		opt:       opt,
-		nreplicas: nreplicas,
+		opt:           opt,
+		cmdsInfoCache: newCmdsInfoCache(),
 
 		hash:   consistenthash.New(nreplicas, nil),
 		shards: make(map[string]*ringShard),
@@ -186,11 +183,9 @@ func NewRing(opt *RingOptions) *Ring {
 
 func (c *Ring) addShard(name string, cl *Client) {
 	shard := &ringShard{Client: cl}
-	c.mu.Lock()
 	c.hash.Add(name)
 	c.shards[name] = shard
 	c.shardsList = append(c.shardsList, shard)
-	c.mu.Unlock()
 }
 
 // Options returns read-only Options that were used to create the client.
@@ -285,31 +280,27 @@ func (c *Ring) ForEachShard(fn func(client *Client) error) error {
 }
 
 func (c *Ring) cmdInfo(name string) *CommandInfo {
-	err := c.cmdsInfoOnce.Do(func() error {
+	cmdsInfo, err := c.cmdsInfoCache.Do(func() (map[string]*CommandInfo, error) {
 		c.mu.RLock()
 		shards := c.shardsList
 		c.mu.RUnlock()
 
-		var firstErr error
+		firstErr := errRingShardsDown
 		for _, shard := range shards {
 			cmdsInfo, err := shard.Client.Command().Result()
 			if err == nil {
-				c.cmdsInfo = cmdsInfo
-				return nil
+				return cmdsInfo, nil
 			}
 			if firstErr == nil {
 				firstErr = err
 			}
 		}
-		return firstErr
+		return nil, firstErr
 	})
 	if err != nil {
 		return nil
 	}
-	if c.cmdsInfo == nil {
-		return nil
-	}
-	info := c.cmdsInfo[name]
+	info := cmdsInfo[name]
 	if info == nil {
 		internal.Logf("info for cmd=%s not found", name)
 	}
@@ -380,7 +371,7 @@ func (c *Ring) Process(cmd Cmder) error {
 
 // rebalance removes dead shards from the Ring.
 func (c *Ring) rebalance() {
-	hash := consistenthash.New(c.nreplicas, nil)
+	hash := consistenthash.New(nreplicas, nil)
 	for name, shard := range c.shards {
 		if shard.IsUp() {
 			hash.Add(name)

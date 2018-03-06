@@ -483,22 +483,20 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 type ClusterClient struct {
 	cmdable
 
-	opt   *ClusterOptions
-	nodes *clusterNodes
+	opt           *ClusterOptions
+	nodes         *clusterNodes
+	cmdsInfoCache *cmdsInfoCache
 
 	_state     atomic.Value
 	stateErrMu sync.RWMutex
 	stateErr   error
-
-	cmdsInfoOnce internal.Once
-	cmdsInfo     map[string]*CommandInfo
 
 	process           func(Cmder) error
 	processPipeline   func([]Cmder) error
 	processTxPipeline func([]Cmder) error
 
 	// Reports whether slots reloading is in progress.
-	reloading uint32
+	reloading uint32 // atomic
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -507,8 +505,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
 
 	c := &ClusterClient{
-		opt:   opt,
-		nodes: newClusterNodes(opt),
+		opt:           opt,
+		nodes:         newClusterNodes(opt),
+		cmdsInfoCache: newCmdsInfoCache(),
 	}
 
 	c.process = c.defaultProcess
@@ -535,24 +534,17 @@ func (c *ClusterClient) retryBackoff(attempt int) time.Duration {
 }
 
 func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
-	err := c.cmdsInfoOnce.Do(func() error {
+	cmdsInfo, err := c.cmdsInfoCache.Do(func() (map[string]*CommandInfo, error) {
 		node, err := c.nodes.Random()
 		if err != nil {
-			return err
+			return nil, err
 		}
-
-		cmdsInfo, err := node.Client.Command().Result()
-		if err != nil {
-			return err
-		}
-
-		c.cmdsInfo = cmdsInfo
-		return nil
+		return node.Client.Command().Result()
 	})
 	if err != nil {
 		return nil
 	}
-	info := c.cmdsInfo[name]
+	info := cmdsInfo[name]
 	if info == nil {
 		internal.Logf("info for cmd=%s not found", name)
 	}

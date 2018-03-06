@@ -1023,3 +1023,26 @@ func (cmd *CommandsInfoCmd) readReply(cn *pool.Conn) error {
 	cmd.val = v.(map[string]*CommandInfo)
 	return nil
 }
+
+//------------------------------------------------------------------------------
+
+type cmdsInfoCache struct {
+	once internal.Once
+	cmds map[string]*CommandInfo
+}
+
+func newCmdsInfoCache() *cmdsInfoCache {
+	return &cmdsInfoCache{}
+}
+
+func (c *cmdsInfoCache) Do(fn func() (map[string]*CommandInfo, error)) (map[string]*CommandInfo, error) {
+	err := c.once.Do(func() error {
+		cmds, err := fn()
+		if err != nil {
+			return err
+		}
+		c.cmds = cmds
+		return nil
+	})
+	return c.cmds, err
+}
