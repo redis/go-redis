@@ -20,7 +20,7 @@ func (c *PubSub) ReceiveMessageTimeout(timeout time.Duration) (*Message, error) 
 }
 
 func (c *ClusterClient) SlotAddrs(slot int) []string {
-	state, err := c.state()
+	state, err := c.state.Get()
 	if err != nil {
 		panic(err)
 	}
@@ -34,7 +34,7 @@ func (c *ClusterClient) SlotAddrs(slot int) []string {
 
 // SwapSlot swaps a slot's master/slave address for testing MOVED redirects.
 func (c *ClusterClient) SwapSlotNodes(slot int) {
-	state, err := c.state()
+	state, err := c.state.Get()
 	if err != nil {
 		panic(err)
 	}
