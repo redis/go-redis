@@ -11,7 +11,7 @@ import (
 	"github.com/go-redis/redis/internal/proto"
 )
 
-// Nil reply redis returned when key does not exist.
+// Nil reply Redis returns when key does not exist.
 const Nil = proto.Nil
 
 func init() {
@@ -119,10 +119,7 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 	return nil
 }
 
-// WrapProcess replaces the process func. It takes a function createWrapper
-// which is supplied by the user. createWrapper takes the old process func as
-// an input and returns the new wrapper process func. createWrapper should
-// use call the old process func within the new process func.
+// WrapProcess wraps function that processes Redis commands.
 func (c *baseClient) WrapProcess(fn func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error) {
 	c.process = fn(c.process)
 }
