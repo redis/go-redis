@@ -34,6 +34,8 @@ type ClusterOptions struct {
 	ReadOnly bool
 	// Allows routing read-only commands to the closest master or slave node.
 	RouteByLatency bool
+	// Allows routing read-only commands to the random master or slave node.
+	RouteRandomly bool
 
 	// Following options are copied from Options struct.
 
@@ -473,6 +475,12 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 	return node, nil
 }
 
+func (c *clusterState) slotRandomNode(slot int) *clusterNode {
+	nodes := c.slotNodes(slot)
+	n := rand.Intn(len(nodes))
+	return nodes[n]
+}
+
 func (c *clusterState) slotNodes(slot int) []*clusterNode {
 	if slot >= 0 && slot < len(c.slots) {
 		return c.slots[slot]
@@ -637,6 +645,11 @@ func (c *ClusterClient) cmdSlotAndNode(cmd Cmder) (int, *clusterNode, error) {
 		if c.opt.RouteByLatency {
 			node, err := state.slotClosestNode(slot)
 			return slot, node, err
+		}
+
+		if c.opt.RouteRandomly {
+			node := state.slotRandomNode(slot)
+			return slot, node, nil
 		}
 
 		node, err := state.slotSlaveNode(slot)
