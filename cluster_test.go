@@ -123,9 +123,37 @@ func startCluster(scenario *clusterScenario) error {
 				return err
 			}
 			wanted := []redis.ClusterSlot{
-				{0, 4999, []redis.ClusterNode{{"", "127.0.0.1:8220"}, {"", "127.0.0.1:8223"}}},
-				{5000, 9999, []redis.ClusterNode{{"", "127.0.0.1:8221"}, {"", "127.0.0.1:8224"}}},
-				{10000, 16383, []redis.ClusterNode{{"", "127.0.0.1:8222"}, {"", "127.0.0.1:8225"}}},
+				{
+					Start: 0,
+					End:   4999,
+					Nodes: []redis.ClusterNode{{
+						Id:   "",
+						Addr: "127.0.0.1:8220",
+					}, {
+						Id:   "",
+						Addr: "127.0.0.1:8223",
+					}},
+				}, {
+					Start: 5000,
+					End:   9999,
+					Nodes: []redis.ClusterNode{{
+						Id:   "",
+						Addr: "127.0.0.1:8221",
+					}, {
+						Id:   "",
+						Addr: "127.0.0.1:8224",
+					}},
+				}, {
+					Start: 10000,
+					End:   16383,
+					Nodes: []redis.ClusterNode{{
+						Id:   "",
+						Addr: "127.0.0.1:8222",
+					}, {
+						Id:   "",
+						Addr: "127.0.0.1:8225",
+					}},
+				},
 			}
 			return assertSlotsEqual(res, wanted)
 		}, 30*time.Second)
@@ -492,9 +520,37 @@ var _ = Describe("ClusterClient", func() {
 			Expect(res).To(HaveLen(3))
 
 			wanted := []redis.ClusterSlot{
-				{0, 4999, []redis.ClusterNode{{"", "127.0.0.1:8220"}, {"", "127.0.0.1:8223"}}},
-				{5000, 9999, []redis.ClusterNode{{"", "127.0.0.1:8221"}, {"", "127.0.0.1:8224"}}},
-				{10000, 16383, []redis.ClusterNode{{"", "127.0.0.1:8222"}, {"", "127.0.0.1:8225"}}},
+				{
+					Start: 0,
+					End:   4999,
+					Nodes: []redis.ClusterNode{{
+						Id:   "",
+						Addr: "127.0.0.1:8220",
+					}, {
+						Id:   "",
+						Addr: "127.0.0.1:8223",
+					}},
+				}, {
+					Start: 5000,
+					End:   9999,
+					Nodes: []redis.ClusterNode{{
+						Id:   "",
+						Addr: "127.0.0.1:8221",
+					}, {
+						Id:   "",
+						Addr: "127.0.0.1:8224",
+					}},
+				}, {
+					Start: 10000,
+					End:   16383,
+					Nodes: []redis.ClusterNode{{
+						Id:   "",
+						Addr: "127.0.0.1:8222",
+					}, {
+						Id:   "",
+						Addr: "127.0.0.1:8225",
+					}},
+				},
 			}
 			Expect(assertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
 		})

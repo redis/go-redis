@@ -24,7 +24,7 @@ func Example_instrumentation() {
 	// finished processing: <ping: PONG>
 }
 
-func Example_Pipeline_instrumentation() {
+func ExamplePipeline_instrumentation() {
 	client := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
