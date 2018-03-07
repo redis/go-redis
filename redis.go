@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -20,6 +21,19 @@ func init() {
 
 func SetLogger(logger *log.Logger) {
 	internal.Logger = logger
+}
+
+type baseClient struct {
+	connPool pool.Pooler
+	opt      *Options
+
+	process           func(Cmder) error
+	processPipeline   func([]Cmder) error
+	processTxPipeline func([]Cmder) error
+
+	onClose func() error // hook called when client is closed
+
+	ctx context.Context
 }
 
 func (c *baseClient) init() {
@@ -353,6 +367,22 @@ func newClient(opt *Options, pool pool.Pooler) *Client {
 func NewClient(opt *Options) *Client {
 	opt.init()
 	return newClient(opt, newConnPool(opt))
+}
+
+func (c *Client) Context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+func (c *Client) WithContext(ctx context.Context) *Client {
+	if ctx == nil {
+		panic("nil context")
+	}
+	c2 := c.copy()
+	c2.ctx = ctx
+	return c2
 }
 
 func (c *Client) copy() *Client {
