@@ -24,16 +24,14 @@ func SetLogger(logger *log.Logger) {
 }
 
 type baseClient struct {
-	connPool pool.Pooler
 	opt      *Options
+	connPool pool.Pooler
 
 	process           func(Cmder) error
 	processPipeline   func([]Cmder) error
 	processTxPipeline func([]Cmder) error
 
 	onClose func() error // hook called when client is closed
-
-	ctx context.Context
 }
 
 func (c *baseClient) init() {
@@ -349,6 +347,8 @@ func (c *baseClient) txPipelineReadQueued(cn *pool.Conn, cmds []Cmder) error {
 type Client struct {
 	baseClient
 	cmdable
+
+	ctx context.Context
 }
 
 func newClient(opt *Options, pool pool.Pooler) *Client {
@@ -386,10 +386,8 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 }
 
 func (c *Client) copy() *Client {
-	c2 := new(Client)
-	*c2 = *c
-	c2.cmdable.setProcessor(c2.Process)
-	return c2
+	cp := *c
+	return &cp
 }
 
 // Options returns read-only Options that were used to create the client.
