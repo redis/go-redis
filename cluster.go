@@ -491,13 +491,14 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 //------------------------------------------------------------------------------
 
 type clusterStateHolder struct {
-	load      func() (*clusterState, error)
-	reloading uint32 // atomic
+	load func() (*clusterState, error)
 
 	state atomic.Value
 
 	lastErrMu sync.RWMutex
 	lastErr   error
+
+	reloading uint32 // atomic
 }
 
 func newClusterStateHolder(fn func() (*clusterState, error)) *clusterStateHolder {
