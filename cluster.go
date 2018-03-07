@@ -592,6 +592,11 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return c
 }
 
+func (c *ClusterClient) copy() *ClusterClient {
+	cp := *c
+	return &cp
+}
+
 // Options returns read-only Options that were used to create the client.
 func (c *ClusterClient) Options() *ClusterOptions {
 	return c.opt
