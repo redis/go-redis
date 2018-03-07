@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -289,6 +290,9 @@ func (c *ringShards) Close() error {
 // Otherwise you should use Redis Cluster.
 type Ring struct {
 	cmdable
+
+	ctx context.Context
+
 	opt           *RingOptions
 	shards        *ringShards
 	cmdsInfoCache *cmdsInfoCache
@@ -316,6 +320,22 @@ func NewRing(opt *RingOptions) *Ring {
 	go ring.shards.Heartbeat(opt.HeartbeatFrequency)
 
 	return ring
+}
+
+func (c *Ring) Context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+func (c *Ring) WithContext(ctx context.Context) *Ring {
+	if ctx == nil {
+		panic("nil context")
+	}
+	c2 := c.copy()
+	c2.ctx = ctx
+	return c2
 }
 
 func (c *Ring) copy() *Ring {

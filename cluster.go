@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -557,6 +558,8 @@ func (c *clusterStateHolder) Get() (*clusterState, error) {
 type ClusterClient struct {
 	cmdable
 
+	ctx context.Context
+
 	opt           *ClusterOptions
 	nodes         *clusterNodes
 	state         *clusterStateHolder
@@ -591,6 +594,22 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	}
 
 	return c
+}
+
+func (c *ClusterClient) Context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
+	if ctx == nil {
+		panic("nil context")
+	}
+	c2 := c.copy()
+	c2.ctx = ctx
+	return c2
 }
 
 func (c *ClusterClient) copy() *ClusterClient {
