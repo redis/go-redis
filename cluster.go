@@ -124,7 +124,7 @@ type clusterNode struct {
 
 	latency    uint32 // atomic
 	generation uint32 // atomic
-	loading    int64  // atomic
+	loading    uint32 // atomic
 }
 
 func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
@@ -169,20 +169,20 @@ func (n *clusterNode) Latency() time.Duration {
 }
 
 func (n *clusterNode) MarkAsLoading() {
-	atomic.StoreInt64(&n.loading, time.Now().Unix())
+	atomic.StoreUint32(&n.loading, uint32(time.Now().Unix()))
 }
 
 func (n *clusterNode) Loading() bool {
 	const minute = int64(time.Minute / time.Second)
 
-	loading := atomic.LoadInt64(&n.loading)
+	loading := atomic.LoadUint32(&n.loading)
 	if loading == 0 {
 		return false
 	}
-	if time.Now().Unix()-loading < minute {
+	if time.Now().Unix()-int64(loading) < minute {
 		return true
 	}
-	atomic.StoreInt64(&n.loading, 0)
+	atomic.StoreUint32(&n.loading, 0)
 	return false
 }
 
