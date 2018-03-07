@@ -1,6 +1,7 @@
 all: testdeps
 	go test ./...
 	go test ./... -short -race
+	env GOOS=linux GOARCH=386 go test ./...
 	go vet
 
 testdeps: testdata/redis/src/redis-server
