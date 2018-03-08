@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -257,6 +258,30 @@ var _ = Describe("races", func() {
 		n, err := client.Get("key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(N)))
+	})
+
+	It("should BLPop", func() {
+		var received uint32
+		wg := performAsync(C, func(id int) {
+			for {
+				v, err := client.BLPop(3*time.Second, "list").Result()
+				if err != nil {
+					break
+				}
+				Expect(v).To(Equal([]string{"list", "hello"}))
+				atomic.AddUint32(&received, 1)
+			}
+		})
+
+		perform(C, func(id int) {
+			for i := 0; i < N; i++ {
+				err := client.LPush("list", "hello").Err()
+				Expect(err).NotTo(HaveOccurred())
+			}
+		})
+
+		wg.Wait()
+		Expect(received).To(Equal(uint32(C * N)))
 	})
 })
 
