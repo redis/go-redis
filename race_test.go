@@ -285,6 +285,53 @@ var _ = Describe("races", func() {
 	})
 })
 
+var _ = Describe("cluster races", func() {
+	var client *redis.ClusterClient
+	var C, N int
+
+	BeforeEach(func() {
+		opt := redisClusterOptions()
+		client = cluster.clusterClient(opt)
+
+		C, N = 10, 1000
+		if testing.Short() {
+			C = 4
+			N = 100
+		}
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should echo", func() {
+		perform(C, func(id int) {
+			for i := 0; i < N; i++ {
+				msg := fmt.Sprintf("echo %d %d", id, i)
+				echo, err := client.Echo(msg).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(echo).To(Equal(msg))
+			}
+		})
+	})
+
+	It("should incr", func() {
+		key := "TestIncrFromGoroutines"
+
+		perform(C, func(id int) {
+			for i := 0; i < N; i++ {
+				err := client.Incr(key).Err()
+				Expect(err).NotTo(HaveOccurred())
+			}
+		})
+
+		val, err := client.Get(key).Int64()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal(int64(C * N)))
+	})
+})
+
 func bigVal() []byte {
 	return bytes.Repeat([]byte{'*'}, 1<<17) // 128kb
 }
