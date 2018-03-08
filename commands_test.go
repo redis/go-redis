@@ -1790,6 +1790,17 @@ var _ = Describe("Commands", func() {
 			Expect(sMembers.Val()).To(ConsistOf([]string{"Hello", "World"}))
 		})
 
+		It("should SAdd strings", func() {
+			set := []string{"Hello", "World", "World"}
+			sAdd := client.SAdd("set", set)
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			Expect(sAdd.Val()).To(Equal(int64(2)))
+
+			sMembers := client.SMembers("set")
+			Expect(sMembers.Err()).NotTo(HaveOccurred())
+			Expect(sMembers.Val()).To(ConsistOf([]string{"Hello", "World"}))
+		})
+
 		It("should SCard", func() {
 			sAdd := client.SAdd("set", "Hello")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
