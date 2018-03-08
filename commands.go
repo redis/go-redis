@@ -39,6 +39,22 @@ func formatSec(dur time.Duration) int64 {
 	return int64(dur / time.Second)
 }
 
+func appendArgs(dst, src []interface{}) []interface{} {
+	if len(src) == 1 {
+		if ss, ok := src[0].([]string); ok {
+			for _, s := range ss {
+				dst = append(dst, s)
+			}
+			return dst
+		}
+	}
+
+	for _, v := range src {
+		dst = append(dst, v)
+	}
+	return dst
+}
+
 type Cmdable interface {
 	Pipeline() Pipeliner
 	Pipelined(fn func(Pipeliner) error) ([]Cmder, error)
@@ -760,22 +776,18 @@ func (c *cmdable) MGet(keys ...string) *SliceCmd {
 }
 
 func (c *cmdable) MSet(pairs ...interface{}) *StatusCmd {
-	args := make([]interface{}, 1+len(pairs))
+	args := make([]interface{}, 1, 1+len(pairs))
 	args[0] = "mset"
-	for i, pair := range pairs {
-		args[1+i] = pair
-	}
+	args = appendArgs(args, pairs)
 	cmd := NewStatusCmd(args...)
 	c.process(cmd)
 	return cmd
 }
 
 func (c *cmdable) MSetNX(pairs ...interface{}) *BoolCmd {
-	args := make([]interface{}, 1+len(pairs))
+	args := make([]interface{}, 1, 1+len(pairs))
 	args[0] = "msetnx"
-	for i, pair := range pairs {
-		args[1+i] = pair
-	}
+	args = appendArgs(args, pairs)
 	cmd := NewBoolCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1040,12 +1052,10 @@ func (c *cmdable) LPop(key string) *StringCmd {
 }
 
 func (c *cmdable) LPush(key string, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(values))
+	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "lpush"
 	args[1] = key
-	for i, value := range values {
-		args[2+i] = value
-	}
+	args = appendArgs(args, values)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1104,12 +1114,10 @@ func (c *cmdable) RPopLPush(source, destination string) *StringCmd {
 }
 
 func (c *cmdable) RPush(key string, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(values))
+	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "rpush"
 	args[1] = key
-	for i, value := range values {
-		args[2+i] = value
-	}
+	args = appendArgs(args, values)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1124,12 +1132,10 @@ func (c *cmdable) RPushX(key string, value interface{}) *IntCmd {
 //------------------------------------------------------------------------------
 
 func (c *cmdable) SAdd(key string, members ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(members))
+	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "sadd"
 	args[1] = key
-	for i, member := range members {
-		args[2+i] = member
-	}
+	args = appendArgs(args, members)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1242,12 +1248,10 @@ func (c *cmdable) SRandMemberN(key string, count int64) *StringSliceCmd {
 }
 
 func (c *cmdable) SRem(key string, members ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(members))
+	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "srem"
 	args[1] = key
-	for i, member := range members {
-		args[2+i] = member
-	}
+	args = appendArgs(args, members)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1507,12 +1511,10 @@ func (c *cmdable) ZRank(key, member string) *IntCmd {
 }
 
 func (c *cmdable) ZRem(key string, members ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(members))
+	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "zrem"
 	args[1] = key
-	for i, member := range members {
-		args[2+i] = member
-	}
+	args = appendArgs(args, members)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1628,12 +1630,10 @@ func (c *cmdable) ZUnionStore(dest string, store ZStore, keys ...string) *IntCmd
 //------------------------------------------------------------------------------
 
 func (c *cmdable) PFAdd(key string, els ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(els))
+	args := make([]interface{}, 2, 2+len(els))
 	args[0] = "pfadd"
 	args[1] = key
-	for i, el := range els {
-		args[2+i] = el
-	}
+	args = appendArgs(args, els)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1851,34 +1851,28 @@ func (c *cmdable) Time() *TimeCmd {
 //------------------------------------------------------------------------------
 
 func (c *cmdable) Eval(script string, keys []string, args ...interface{}) *Cmd {
-	cmdArgs := make([]interface{}, 3+len(keys)+len(args))
+	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = "eval"
 	cmdArgs[1] = script
 	cmdArgs[2] = len(keys)
 	for i, key := range keys {
 		cmdArgs[3+i] = key
 	}
-	pos := 3 + len(keys)
-	for i, arg := range args {
-		cmdArgs[pos+i] = arg
-	}
+	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(cmdArgs...)
 	c.process(cmd)
 	return cmd
 }
 
 func (c *cmdable) EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd {
-	cmdArgs := make([]interface{}, 3+len(keys)+len(args))
+	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = "evalsha"
 	cmdArgs[1] = sha1
 	cmdArgs[2] = len(keys)
 	for i, key := range keys {
 		cmdArgs[3+i] = key
 	}
-	pos := 3 + len(keys)
-	for i, arg := range args {
-		cmdArgs[pos+i] = arg
-	}
+	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(cmdArgs...)
 	c.process(cmd)
 	return cmd
