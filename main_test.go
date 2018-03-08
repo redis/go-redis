@@ -142,7 +142,7 @@ func redisRingOptions() *redis.RingOptions {
 	}
 }
 
-func perform(n int, cbs ...func(int)) {
+func performAsync(n int, cbs ...func(int)) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for _, cb := range cbs {
 		for i := 0; i < n; i++ {
@@ -155,6 +155,11 @@ func perform(n int, cbs ...func(int)) {
 			}(cb, i)
 		}
 	}
+	return &wg
+}
+
+func perform(n int, cbs ...func(int)) {
+	wg := performAsync(n, cbs...)
 	wg.Wait()
 }
 
