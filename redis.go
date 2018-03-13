@@ -96,16 +96,7 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 		return nil
 	}
 
-	// Temp client to initialize connection.
-	conn := &Conn{
-		baseClient: baseClient{
-			opt:      c.opt,
-			connPool: pool.NewSingleConnPool(cn),
-		},
-	}
-	conn.baseClient.init()
-	conn.statefulCmdable.setProcessor(conn.Process)
-
+	conn := newConn(c.opt, cn)
 	_, err := conn.Pipelined(func(pipe Pipeliner) error {
 		if c.opt.Password != "" {
 			pipe.Auth(c.opt.Password)
@@ -351,22 +342,24 @@ type Client struct {
 	ctx context.Context
 }
 
-func newClient(opt *Options, pool pool.Pooler) *Client {
-	c := Client{
-		baseClient: baseClient{
-			opt:      opt,
-			connPool: pool,
-		},
-	}
-	c.baseClient.init()
-	c.cmdable.setProcessor(c.Process)
-	return &c
-}
-
 // NewClient returns a client to the Redis Server specified by Options.
 func NewClient(opt *Options) *Client {
 	opt.init()
-	return newClient(opt, newConnPool(opt))
+
+	c := Client{
+		baseClient: baseClient{
+			opt:      opt,
+			connPool: newConnPool(opt),
+		},
+	}
+	c.baseClient.init()
+	c.init()
+
+	return &c
+}
+
+func (c *Client) init() {
+	c.cmdable.setProcessor(c.Process)
 }
 
 func (c *Client) Context() context.Context {
@@ -387,6 +380,7 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 
 func (c *Client) copy() *Client {
 	cp := *c
+	cp.init()
 	return &cp
 }
 
@@ -465,6 +459,18 @@ func (c *Client) PSubscribe(channels ...string) *PubSub {
 type Conn struct {
 	baseClient
 	statefulCmdable
+}
+
+func newConn(opt *Options, cn *pool.Conn) *Conn {
+	c := Conn{
+		baseClient: baseClient{
+			opt:      opt,
+			connPool: pool.NewSingleConnPool(cn),
+		},
+	}
+	c.baseClient.init()
+	c.statefulCmdable.setProcessor(c.Process)
+	return &c
 }
 
 func (c *Conn) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
