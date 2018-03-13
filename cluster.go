@@ -1409,3 +1409,31 @@ func appendNode(nodes []*clusterNode, node *clusterNode) []*clusterNode {
 	}
 	return append(nodes, node)
 }
+
+func appendIfNotExists(ss []string, es ...string) []string {
+loop:
+	for _, e := range es {
+		for _, s := range ss {
+			if s == e {
+				continue loop
+			}
+		}
+		ss = append(ss, e)
+	}
+	return ss
+}
+
+func remove(ss []string, es ...string) []string {
+	if len(es) == 0 {
+		return ss[:0]
+	}
+	for _, e := range es {
+		for i, s := range ss {
+			if s == e {
+				ss = append(ss[:i], ss[i+1:]...)
+				break
+			}
+		}
+	}
+	return ss
+}
