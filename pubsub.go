@@ -67,7 +67,7 @@ func (c *PubSub) _conn(channels []string) (*pool.Conn, error) {
 func (c *PubSub) resubscribe(cn *pool.Conn) error {
 	var firstErr error
 	if len(c.channels) > 0 {
-		channels := make([]string, len(c.channels), 0)
+		channels := make([]string, len(c.channels))
 		i := 0
 		for channel := range c.channels {
 			channels[i] = channel
@@ -78,7 +78,7 @@ func (c *PubSub) resubscribe(cn *pool.Conn) error {
 		}
 	}
 	if len(c.patterns) > 0 {
-		patterns := make([]string, len(c.patterns), 0)
+		patterns := make([]string, len(c.patterns))
 		i := 0
 		for pattern := range c.patterns {
 			patterns[i] = pattern
