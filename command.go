@@ -817,23 +817,12 @@ func (cmd *XMessageIDCmd) String() string {
 
 func (cmd *XMessageIDCmd) readReply(cn *pool.Conn) error {
 	var id string
-	var err error
 	id, cmd.err = cn.Rd.ReadStringReply()
 	if cmd.err != nil {
 		return cmd.err
 	}
 
-	split := strings.Split(id, "-")
-	cmd.val.ID, err = strconv.ParseInt(split[0], 10, 64)
-	if err != nil {
-		return err
-	}
-
-	cmd.val.Seq, err = strconv.ParseInt(split[1], 10, 64)
-	if err != nil {
-		return err
-	}
-
+	cmd.val = XMessageID{id}
 	return nil
 }
 

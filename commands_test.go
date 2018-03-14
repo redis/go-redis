@@ -2709,85 +2709,87 @@ var _ = Describe("Commands", func() {
 		It("should XAdd", func() {
 			added, err := client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(1), Seq: int64(0)},
+				redis.XMessageID{String: "1-0"},
 				map[string]interface{}{"uno": "un"},
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(added).To(Equal(redis.XMessageID{ID: int64(1), Seq: int64(0)}))
+			Expect(added).To(Equal(redis.XMessageID{String: "1-0"}))
 
 			added, err = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(2), Seq: int64(0)},
+				redis.XMessageID{String: "2-0"},
 				map[string]interface{}{"dos": "deux"},
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(added).To(Equal(redis.XMessageID{ID: int64(2), Seq: int64(0)}))
+			Expect(added).To(Equal(redis.XMessageID{String: "2-0"}))
 
 			added, err = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(3), Seq: int64(0)},
+				redis.XMessageID{String: "3-0"},
 				map[string]interface{}{"tres": "troix"},
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(added).To(Equal(redis.XMessageID{ID: int64(3), Seq: int64(0)}))
+			Expect(added).To(Equal(redis.XMessageID{String: "3-0"}))
 
 			added, err = client.XAdd(
 				"stream",
-				nil,
+				redis.XMessageID{String: "*"},
 				map[string]interface{}{"quatro": "quatre"},
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(added.ID).To(BeNumerically("<=", time.Now().UnixNano() / int64(time.Millisecond)))
+			id, _, err := added.IDSeq()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(BeNumerically("<=", time.Now().UnixNano() / int64(time.Millisecond)))
 
 			vals, err := client.XRange("stream", "-", "+").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(1), Seq: int64(0)}, map[string]interface{}{"uno": "un"}},
-				{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
-				{redis.XMessageID{ID: int64(3), Seq: int64(0)}, map[string]interface{}{"tres": "troix"}},
-				{added, map[string]interface{}{"quatro": "quatre"}},
+				{ID: redis.XMessageID{String: "1-0"}, Values: map[string]interface{}{"uno": "un"}},
+				{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
+				{ID: redis.XMessageID{String: "3-0"}, Values: map[string]interface{}{"tres": "troix"}},
+				{ID: added, Values: map[string]interface{}{"quatro": "quatre"}},
 			}))
 		})
 
 		It("should XAddExt", func() {
 			added, err := client.XAddExt(
 				"stream",
-				&redis.XMessageID{ID: int64(1)},
+				redis.XMessageID{String: "1"},
 				redis.XAdd{Approximate: false, MaxLen: 1},
 				map[string]interface{}{"uno": "un"},
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(added).To(Equal(redis.XMessageID{ID: int64(1), Seq: int64(0)}))
+			Expect(added).To(Equal(redis.XMessageID{String: "1-0"}))
 
 			added, err = client.XAddExt(
 				"stream",
-				&redis.XMessageID{ID: int64(2)},
+				redis.XMessageID{String: "2"},
 				redis.XAdd{Approximate: false, MaxLen: 1},
 				map[string]interface{}{"dos": "deux"},
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(added).To(Equal(redis.XMessageID{ID: int64(2), Seq: int64(0)}))
+			Expect(added).To(Equal(redis.XMessageID{String: "2-0"}))
 
 			added, err = client.XAddExt(
 				"stream",
-				&redis.XMessageID{ID: int64(3)},
+				redis.XMessageID{String: "3"},
 				redis.XAdd{Approximate: false, MaxLen: 1},
 				map[string]interface{}{"tres": "troix"},
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(added).To(Equal(redis.XMessageID{ID: int64(3), Seq: int64(0)}))
+			Expect(added).To(Equal(redis.XMessageID{String: "3-0"}))
 
 			vals, err := client.XRange("stream", "-", "+").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(3), Seq: int64(0)}, map[string]interface{}{"tres": "troix"}},
+				{ID: redis.XMessageID{String: "3-0"}, Values: map[string]interface{}{"tres": "troix"}},
 			}))
 		})
 
 		It("should XLen", func() {
 			xAdd := client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(1), Seq: int64(0)},
+				redis.XMessageID{String: "1-0"},
 				map[string]interface{}{"uno": "un"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
@@ -2800,19 +2802,19 @@ var _ = Describe("Commands", func() {
 		It("should XRange", func() {
 			xAdd := client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(1), Seq: int64(0)},
+				redis.XMessageID{String: "1-0"},
 				map[string]interface{}{"uno": "un"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(2), Seq: int64(0)},
+				redis.XMessageID{String: "2-0"},
 				map[string]interface{}{"dos": "deux"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(3), Seq: int64(0)},
+				redis.XMessageID{String: "3-0"},
 				map[string]interface{}{"tres": "troix"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
@@ -2820,42 +2822,42 @@ var _ = Describe("Commands", func() {
 			xRange := client.XRange("stream", "-", "+")
 			Expect(xRange.Err()).NotTo(HaveOccurred())
 			Expect(xRange.Val()).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(1), Seq: int64(0)}, map[string]interface{}{"uno": "un"}},
-				{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
-				{redis.XMessageID{ID: int64(3), Seq: int64(0)}, map[string]interface{}{"tres": "troix"}},
+				{ID: redis.XMessageID{String: "1-0"}, Values: map[string]interface{}{"uno": "un"}},
+				{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
+				{ID: redis.XMessageID{String: "3-0"}, Values: map[string]interface{}{"tres": "troix"}},
 			}))
 
 			xRange = client.XRange("stream", "2", "+")
 			Expect(xRange.Err()).NotTo(HaveOccurred())
 			Expect(xRange.Val()).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
-				{redis.XMessageID{ID: int64(3), Seq: int64(0)}, map[string]interface{}{"tres": "troix"}},
+				{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
+				{ID: redis.XMessageID{String: "3-0"}, Values: map[string]interface{}{"tres": "troix"}},
 			}))
 
 			xRange = client.XRange("stream", "-", "2")
 			Expect(xRange.Err()).NotTo(HaveOccurred())
 			Expect(xRange.Val()).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(1), Seq: int64(0)}, map[string]interface{}{"uno": "un"}},
-				{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
+				{ID: redis.XMessageID{String: "1-0"}, Values: map[string]interface{}{"uno": "un"}},
+				{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
 			}))
 		})
 
 		It("should XRangeN", func() {
 			xAdd := client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(1), Seq: int64(0)},
+				redis.XMessageID{String: "1-0"},
 				map[string]interface{}{"uno": "un"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(2), Seq: int64(0)},
+				redis.XMessageID{String: "2-0"},
 				map[string]interface{}{"dos": "deux"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(3), Seq: int64(0)},
+				redis.XMessageID{String: "3-0"},
 				map[string]interface{}{"tres": "troix"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
@@ -2863,39 +2865,39 @@ var _ = Describe("Commands", func() {
 			xRange := client.XRangeN("stream", "-", "+", 2)
 			Expect(xRange.Err()).NotTo(HaveOccurred())
 			Expect(xRange.Val()).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(1), Seq: int64(0)}, map[string]interface{}{"uno": "un"}},
-				{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
+				{ID: redis.XMessageID{String: "1-0"}, Values: map[string]interface{}{"uno": "un"}},
+				{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
 			}))
 
 			xRange = client.XRangeN("stream", "2", "+", 1)
 			Expect(xRange.Err()).NotTo(HaveOccurred())
 			Expect(xRange.Val()).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
+				{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
 			}))
 
 			xRange = client.XRangeN("stream", "-", "2", 1)
 			Expect(xRange.Err()).NotTo(HaveOccurred())
 			Expect(xRange.Val()).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(1), Seq: int64(0)}, map[string]interface{}{"uno": "un"}},
+				{ID: redis.XMessageID{String: "1-0"}, Values: map[string]interface{}{"uno": "un"}},
 			}))
 		})
 
 		It("should XRevRange", func() {
 			xAdd := client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(1), Seq: int64(0)},
+				redis.XMessageID{String: "1-0"},
 				map[string]interface{}{"uno": "un"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(2), Seq: int64(0)},
+				redis.XMessageID{String: "2-0"},
 				map[string]interface{}{"dos": "deux"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(3), Seq: int64(0)},
+				redis.XMessageID{String: "3-0"},
 				map[string]interface{}{"tres": "troix"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
@@ -2903,35 +2905,35 @@ var _ = Describe("Commands", func() {
 			xRevRange := client.XRevRange("stream", "+", "-")
 			Expect(xRevRange.Err()).NotTo(HaveOccurred())
 			Expect(xRevRange.Val()).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(3), Seq: int64(0)}, map[string]interface{}{"tres": "troix"}},
-				{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
-				{redis.XMessageID{ID: int64(1), Seq: int64(0)}, map[string]interface{}{"uno": "un"}},
+				{ID: redis.XMessageID{String: "3-0"}, Values: map[string]interface{}{"tres": "troix"}},
+				{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
+				{ID: redis.XMessageID{String: "1-0"}, Values: map[string]interface{}{"uno": "un"}},
 			}))
 
 			xRevRange = client.XRevRange("stream", "+", "2")
 			Expect(xRevRange.Err()).NotTo(HaveOccurred())
 			Expect(xRevRange.Val()).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(3), Seq: int64(0)}, map[string]interface{}{"tres": "troix"}},
-				{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
+				{ID: redis.XMessageID{String: "3-0"}, Values: map[string]interface{}{"tres": "troix"}},
+				{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
 			}))
 		})
 
 		It("should XRevRangeN", func() {
 			xAdd := client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(1), Seq: int64(0)},
+				redis.XMessageID{String: "1-0"},
 				map[string]interface{}{"uno": "un"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(2), Seq: int64(0)},
+				redis.XMessageID{String: "2-0"},
 				map[string]interface{}{"dos": "deux"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(3), Seq: int64(0)},
+				redis.XMessageID{String: "3-0"},
 				map[string]interface{}{"tres": "troix"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
@@ -2939,87 +2941,87 @@ var _ = Describe("Commands", func() {
 			xRevRangeN := client.XRevRangeN("stream", "+", "-", 2)
 			Expect(xRevRangeN.Err()).NotTo(HaveOccurred())
 			Expect(xRevRangeN.Val()).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(3), Seq: int64(0)}, map[string]interface{}{"tres": "troix"}},
-				{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
+				{ID: redis.XMessageID{String: "3-0"}, Values: map[string]interface{}{"tres": "troix"}},
+				{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
 			}))
 
 			xRevRangeN = client.XRevRangeN("stream", "+", "2", 1)
 			Expect(xRevRangeN.Err()).NotTo(HaveOccurred())
 			Expect(xRevRangeN.Val()).To(Equal([]redis.XMessage{
-				{redis.XMessageID{ID: int64(3), Seq: int64(0)}, map[string]interface{}{"tres": "troix"}},
+				{ID: redis.XMessageID{String: "3-0"}, Values: map[string]interface{}{"tres": "troix"}},
 			}))
 		})
 
 		It("should XRead", func() {
 			xAdd := client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(1), Seq: int64(0)},
+				redis.XMessageID{String: "1-0"},
 				map[string]interface{}{"uno": "un"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(2), Seq: int64(0)},
+				redis.XMessageID{String: "2-0"},
 				map[string]interface{}{"dos": "deux"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(3), Seq: int64(0)},
+				redis.XMessageID{String: "3-0"},
 				map[string]interface{}{"tres": "troix"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 
-			xRead := client.XRead("stream", &redis.XMessageID{ID: int64(0)}, time.Duration(100 * time.Millisecond))
+			xRead := client.XRead("stream", redis.XMessageID{String: "0"}, time.Duration(100 * time.Millisecond))
 			Expect(xRead.Err()).NotTo(HaveOccurred())
 			Expect(xRead.Val()).To(Equal([]redis.XStream{
 				{
 					Stream: "stream",
 					Messages: []redis.XMessage{
-						{redis.XMessageID{ID: int64(1), Seq: int64(0)}, map[string]interface{}{"uno": "un"}},
-						{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
-						{redis.XMessageID{ID: int64(3), Seq: int64(0)}, map[string]interface{}{"tres": "troix"}},
+						{ID: redis.XMessageID{String: "1-0"}, Values: map[string]interface{}{"uno": "un"}},
+						{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
+						{ID: redis.XMessageID{String: "3-0"}, Values: map[string]interface{}{"tres": "troix"}},
 					},
 				},
 			}))
 
-			xRead = client.XRead("stream", &redis.XMessageID{ID: int64(3)}, time.Duration(100 * time.Millisecond))
+			xRead = client.XRead("stream", redis.XMessageID{String: "3"}, time.Duration(100 * time.Millisecond))
 			Expect(xRead.Err()).To(Equal(redis.Nil))
 		})
 
 		It("should XReadN", func() {
 			xAdd := client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(1), Seq: int64(0)},
+				redis.XMessageID{String: "1-0"},
 				map[string]interface{}{"uno": "un"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(2), Seq: int64(0)},
+				redis.XMessageID{String: "2-0"},
 				map[string]interface{}{"dos": "deux"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 			xAdd = client.XAdd(
 				"stream",
-				&redis.XMessageID{ID: int64(3), Seq: int64(0)},
+				redis.XMessageID{String: "3-0"},
 				map[string]interface{}{"tres": "troix"},
 			)
 			Expect(xAdd.Err()).NotTo(HaveOccurred())
 
-			xRead := client.XReadN("stream", &redis.XMessageID{ID: int64(0)}, time.Duration(100 * time.Millisecond), 2)
+			xRead := client.XReadN("stream", redis.XMessageID{String: "0"}, time.Duration(100 * time.Millisecond), 2)
 			Expect(xRead.Err()).NotTo(HaveOccurred())
 			Expect(xRead.Val()).To(Equal([]redis.XStream{
 				{
 					Stream: "stream",
 					Messages: []redis.XMessage{
-						{redis.XMessageID{ID: int64(1), Seq: int64(0)}, map[string]interface{}{"uno": "un"}},
-						{redis.XMessageID{ID: int64(2), Seq: int64(0)}, map[string]interface{}{"dos": "deux"}},
+						{ID: redis.XMessageID{String: "1-0"}, Values: map[string]interface{}{"uno": "un"}},
+						{ID: redis.XMessageID{String: "2-0"}, Values: map[string]interface{}{"dos": "deux"}},
 					},
 				},
 			}))
 
-			xRead = client.XReadN("stream", &redis.XMessageID{ID: int64(3)}, time.Duration(100 * time.Millisecond), 1)
+			xRead = client.XReadN("stream", redis.XMessageID{String: "3"}, time.Duration(100 * time.Millisecond), 1)
 			Expect(xRead.Err()).To(Equal(redis.Nil))
 		})
 	})

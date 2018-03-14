@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-redis/redis/internal/proto"
@@ -171,7 +170,6 @@ func xMessageSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 
 // Implements proto.MultiBulkParse
 func xMessageParser(rd *proto.Reader, n int64) (interface{}, error) {
-	x := XMessage{}
 	var err error
 	var v interface{}
 	id, err := rd.ReadStringReply()
@@ -179,16 +177,7 @@ func xMessageParser(rd *proto.Reader, n int64) (interface{}, error) {
 		return nil, err
 	}
 
-	split := strings.Split(id, "-")
-	x.ID.ID, err = strconv.ParseInt(split[0], 10, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	x.ID.Seq, err = strconv.ParseInt(split[1], 10, 64)
-	if err != nil {
-		return nil, err
-	}
+	x := XMessage{ID: XMessageID{id}}
 
 	v, err = rd.ReadArrayReply(xKeyValueParser)
 	if err != nil {
