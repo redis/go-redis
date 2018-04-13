@@ -8,25 +8,25 @@ type UniversalOptions struct {
 	// Either a single address or a seed list of host:port addresses
 	// of cluster/sentinel nodes.
 	Addrs []string
-	
+
 	// The sentinel master name.
 	// Only failover clients.
 	MasterName string
-	
+
 	// Database to be selected after connecting to the server.
 	// Only single-node and failover clients.
 	DB int
-	
+
 	// Only cluster clients.
-	
+
 	// Enables read only queries on slave nodes.
 	ReadOnly bool
-	
+
 	MaxRedirects   int
 	RouteByLatency bool
-	
+
 	// Common options
-	
+
 	OnConnect          func(*Conn) error
 	MaxRetries         int
 	Password           string
@@ -43,13 +43,13 @@ func (o *UniversalOptions) cluster() *ClusterOptions {
 	if len(o.Addrs) == 0 {
 		o.Addrs = []string{"127.0.0.1:6379"}
 	}
-	
+
 	return &ClusterOptions{
 		Addrs:          o.Addrs,
 		MaxRedirects:   o.MaxRedirects,
 		RouteByLatency: o.RouteByLatency,
 		ReadOnly:       o.ReadOnly,
-		
+
 		OnConnect:          o.OnConnect,
 		MaxRetries:         o.MaxRetries,
 		Password:           o.Password,
@@ -67,12 +67,12 @@ func (o *UniversalOptions) failover() *FailoverOptions {
 	if len(o.Addrs) == 0 {
 		o.Addrs = []string{"127.0.0.1:26379"}
 	}
-	
+
 	return &FailoverOptions{
 		SentinelAddrs: o.Addrs,
 		MasterName:    o.MasterName,
 		DB:            o.DB,
-		
+
 		OnConnect:          o.OnConnect,
 		MaxRetries:         o.MaxRetries,
 		Password:           o.Password,
@@ -91,11 +91,11 @@ func (o *UniversalOptions) simple() *Options {
 	if len(o.Addrs) > 0 {
 		addr = o.Addrs[0]
 	}
-	
+
 	return &Options{
 		Addr: addr,
 		DB:   o.DB,
-		
+
 		OnConnect:          o.OnConnect,
 		MaxRetries:         o.MaxRetries,
 		Password:           o.Password,
