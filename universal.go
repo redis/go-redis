@@ -27,6 +27,7 @@ type UniversalOptions struct {
 
 	// Common options
 
+	OnConnect          func(*Conn) error
 	MaxRetries         int
 	Password           string
 	DialTimeout        time.Duration
@@ -49,6 +50,7 @@ func (o *UniversalOptions) cluster() *ClusterOptions {
 		RouteByLatency: o.RouteByLatency,
 		ReadOnly:       o.ReadOnly,
 
+		OnConnect:          o.OnConnect,
 		MaxRetries:         o.MaxRetries,
 		Password:           o.Password,
 		DialTimeout:        o.DialTimeout,
@@ -71,6 +73,7 @@ func (o *UniversalOptions) failover() *FailoverOptions {
 		MasterName:    o.MasterName,
 		DB:            o.DB,
 
+		OnConnect:          o.OnConnect,
 		MaxRetries:         o.MaxRetries,
 		Password:           o.Password,
 		DialTimeout:        o.DialTimeout,
@@ -93,6 +96,7 @@ func (o *UniversalOptions) simple() *Options {
 		Addr: addr,
 		DB:   o.DB,
 
+		OnConnect:          o.OnConnect,
 		MaxRetries:         o.MaxRetries,
 		Password:           o.Password,
 		DialTimeout:        o.DialTimeout,
