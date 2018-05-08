@@ -117,6 +117,7 @@ func (o *UniversalOptions) simple() *Options {
 // applications locally.
 type UniversalClient interface {
 	Cmdable
+	Watch(fn func(*Tx) error, keys ...string) error
 	Process(cmd Cmder) error
 	WrapProcess(fn func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error)
 	Subscribe(channels ...string) *PubSub
