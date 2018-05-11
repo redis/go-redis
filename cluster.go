@@ -601,6 +601,10 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return c
 }
 
+func (c *ClusterClient) Reload() {
+	c.state.Load()
+}
+
 func (c *ClusterClient) Context() context.Context {
 	if c.ctx != nil {
 		return c.ctx
