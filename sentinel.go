@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"crypto/tls"
 	"errors"
 	"net"
 	"strings"
@@ -38,6 +39,8 @@ type FailoverOptions struct {
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
+
+	TLSConfig *tls.Config
 }
 
 func (opt *FailoverOptions) options() *Options {
@@ -59,6 +62,8 @@ func (opt *FailoverOptions) options() *Options {
 		PoolTimeout:        opt.PoolTimeout,
 		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: opt.IdleCheckFrequency,
+
+		TLSConfig: opt.TLSConfig,
 	}
 }
 
