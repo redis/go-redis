@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"math"
@@ -56,6 +57,8 @@ type ClusterOptions struct {
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
+
+	TLSConfig *tls.Config
 }
 
 func (opt *ClusterOptions) init() {
@@ -117,6 +120,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		IdleTimeout: opt.IdleTimeout,
 
 		IdleCheckFrequency: disableIdleCheck,
+
+		TLSConfig: opt.TLSConfig,
 	}
 }
 

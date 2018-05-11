@@ -1,6 +1,9 @@
 package redis
 
-import "time"
+import (
+	"crypto/tls"
+	"time"
+)
 
 // UniversalOptions information is required by UniversalClient to establish
 // connections.
@@ -37,6 +40,7 @@ type UniversalOptions struct {
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
+	TLSConfig          *tls.Config
 }
 
 func (o *UniversalOptions) cluster() *ClusterOptions {
@@ -60,6 +64,7 @@ func (o *UniversalOptions) cluster() *ClusterOptions {
 		PoolTimeout:        o.PoolTimeout,
 		IdleTimeout:        o.IdleTimeout,
 		IdleCheckFrequency: o.IdleCheckFrequency,
+		TLSConfig:          o.TLSConfig,
 	}
 }
 
@@ -83,6 +88,7 @@ func (o *UniversalOptions) failover() *FailoverOptions {
 		PoolTimeout:        o.PoolTimeout,
 		IdleTimeout:        o.IdleTimeout,
 		IdleCheckFrequency: o.IdleCheckFrequency,
+		TLSConfig:          o.TLSConfig,
 	}
 }
 
@@ -106,6 +112,7 @@ func (o *UniversalOptions) simple() *Options {
 		PoolTimeout:        o.PoolTimeout,
 		IdleTimeout:        o.IdleTimeout,
 		IdleCheckFrequency: o.IdleCheckFrequency,
+		TLSConfig:          o.TLSConfig,
 	}
 }
 
