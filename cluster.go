@@ -277,6 +277,8 @@ func (c *clusterNodes) Addrs() ([]string, error) {
 }
 
 func (c *clusterNodes) NextGeneration() uint32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.generation++
 	return c.generation
 }
