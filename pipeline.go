@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"sync"
 
 	"github.com/go-redis/redis/internal/pool"
@@ -23,6 +24,8 @@ var _ Pipeliner = (*Pipeline)(nil)
 // by multiple goroutines.
 type Pipeline struct {
 	statefulCmdable
+
+	ctx context.Context
 
 	exec pipelineExecer
 
@@ -109,4 +112,25 @@ func (c *Pipeline) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 
 func (c *Pipeline) TxPipeline() Pipeliner {
 	return c
+}
+
+func (c *Pipeline) copy() *Pipeline {
+	cp := *c
+	return &cp
+}
+
+func (c *Pipeline) Context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+func (c *Pipeline) WithContext(ctx context.Context) *Pipeline {
+	if ctx == nil {
+		panic("nil context")
+	}
+	c2 := c.copy()
+	c2.ctx = ctx
+	return c2
 }
