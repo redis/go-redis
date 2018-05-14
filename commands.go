@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"io"
 	"time"
@@ -266,6 +267,8 @@ type Cmdable interface {
 	GeoDist(key string, member1, member2, unit string) *FloatCmd
 	GeoHash(key string, members ...string) *StringSliceCmd
 	Command() *CommandsInfoCmd
+	WithContext(ctx context.Context) Cmdable
+	Context() context.Context
 }
 
 type StatefulCmdable interface {
