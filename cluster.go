@@ -300,10 +300,9 @@ func (c *clusterNodes) GC(generation uint32) {
 	}
 }
 
-func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
+func (c *clusterNodes) Get(addr string) (*clusterNode, error) {
 	var node *clusterNode
 	var err error
-
 	c.mu.RLock()
 	if c.closed {
 		err = pool.ErrClosed
@@ -311,6 +310,11 @@ func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
 		node = c.allNodes[addr]
 	}
 	c.mu.RUnlock()
+	return node, err
+}
+
+func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
+	node, err := c.Get(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -580,11 +584,11 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
 
 	c := &ClusterClient{
-		opt:           opt,
-		nodes:         newClusterNodes(opt),
-		cmdsInfoCache: newCmdsInfoCache(),
+		opt:   opt,
+		nodes: newClusterNodes(opt),
 	}
 	c.state = newClusterStateHolder(c.loadState)
+	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 
 	c.process = c.defaultProcess
 	c.processPipeline = c.defaultProcessPipeline
@@ -630,17 +634,39 @@ func (c *ClusterClient) retryBackoff(attempt int) time.Duration {
 	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
 }
 
-func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
-	cmdsInfo, err := c.cmdsInfoCache.Do(func() (map[string]*CommandInfo, error) {
-		node, err := c.nodes.Random()
+func (c *ClusterClient) cmdsInfo() (map[string]*CommandInfo, error) {
+	addrs, err := c.nodes.Addrs()
+	if err != nil {
+		return nil, err
+	}
+
+	var firstErr error
+	for _, addr := range addrs {
+		node, err := c.nodes.Get(addr)
 		if err != nil {
 			return nil, err
 		}
-		return node.Client.Command().Result()
-	})
+		if node == nil {
+			continue
+		}
+
+		info, err := node.Client.Command().Result()
+		if err == nil {
+			return info, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
+}
+
+func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
+	cmdsInfo, err := c.cmdsInfoCache.Get()
 	if err != nil {
 		return nil
 	}
+
 	info := cmdsInfo[name]
 	if info == nil {
 		internal.Logf("info for cmd=%s not found", name)
@@ -704,13 +730,14 @@ func (c *ClusterClient) slotMasterNode(slot int) (*clusterNode, error) {
 
 func (c *ClusterClient) Watch(fn func(*Tx) error, keys ...string) error {
 	if len(keys) == 0 {
-		return fmt.Errorf("redis: keys don't hash to the same slot")
+		return fmt.Errorf("redis: Watch requires at least one key")
 	}
 
 	slot := hashtag.Slot(keys[0])
 	for _, key := range keys[1:] {
 		if hashtag.Slot(key) != slot {
-			return fmt.Errorf("redis: Watch requires all keys to be in the same slot")
+			err := fmt.Errorf("redis: Watch requires all keys to be in the same slot")
+			return err
 		}
 	}
 

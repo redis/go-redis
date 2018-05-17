@@ -304,10 +304,11 @@ func NewRing(opt *RingOptions) *Ring {
 	opt.init()
 
 	ring := &Ring{
-		opt:           opt,
-		shards:        newRingShards(),
-		cmdsInfoCache: newCmdsInfoCache(),
+		opt:    opt,
+		shards: newRingShards(),
 	}
+	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
+
 	ring.processPipeline = ring.defaultProcessPipeline
 	ring.cmdable.setProcessor(ring.Process)
 
@@ -428,21 +429,23 @@ func (c *Ring) ForEachShard(fn func(client *Client) error) error {
 	}
 }
 
-func (c *Ring) cmdInfo(name string) *CommandInfo {
-	cmdsInfo, err := c.cmdsInfoCache.Do(func() (map[string]*CommandInfo, error) {
-		shards := c.shards.List()
-		firstErr := errRingShardsDown
-		for _, shard := range shards {
-			cmdsInfo, err := shard.Client.Command().Result()
-			if err == nil {
-				return cmdsInfo, nil
-			}
-			if firstErr == nil {
-				firstErr = err
-			}
+func (c *Ring) cmdsInfo() (map[string]*CommandInfo, error) {
+	shards := c.shards.List()
+	firstErr := errRingShardsDown
+	for _, shard := range shards {
+		cmdsInfo, err := shard.Client.Command().Result()
+		if err == nil {
+			return cmdsInfo, nil
 		}
-		return nil, firstErr
-	})
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
+}
+
+func (c *Ring) cmdInfo(name string) *CommandInfo {
+	cmdsInfo, err := c.cmdsInfoCache.Get()
 	if err != nil {
 		return nil
 	}
