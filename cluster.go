@@ -816,6 +816,12 @@ func (c *ClusterClient) defaultProcess(cmd Cmder) error {
 		}
 
 		if internal.IsRetryableError(err, true) {
+			// Firstly retry the same node.
+			if attempt == 0 {
+				continue
+			}
+
+			// Secondly try random node.
 			node, err = c.nodes.Random()
 			if err != nil {
 				break
