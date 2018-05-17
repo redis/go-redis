@@ -519,39 +519,37 @@ var _ = Describe("ClusterClient", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(HaveLen(3))
 
-			wanted := []redis.ClusterSlot{
-				{
-					Start: 0,
-					End:   4999,
-					Nodes: []redis.ClusterNode{{
-						Id:   "",
-						Addr: "127.0.0.1:8220",
-					}, {
-						Id:   "",
-						Addr: "127.0.0.1:8223",
-					}},
+			wanted := []redis.ClusterSlot{{
+				Start: 0,
+				End:   4999,
+				Nodes: []redis.ClusterNode{{
+					Id:   "",
+					Addr: "127.0.0.1:8220",
 				}, {
-					Start: 5000,
-					End:   9999,
-					Nodes: []redis.ClusterNode{{
-						Id:   "",
-						Addr: "127.0.0.1:8221",
-					}, {
-						Id:   "",
-						Addr: "127.0.0.1:8224",
-					}},
+					Id:   "",
+					Addr: "127.0.0.1:8223",
+				}},
+			}, {
+				Start: 5000,
+				End:   9999,
+				Nodes: []redis.ClusterNode{{
+					Id:   "",
+					Addr: "127.0.0.1:8221",
 				}, {
-					Start: 10000,
-					End:   16383,
-					Nodes: []redis.ClusterNode{{
-						Id:   "",
-						Addr: "127.0.0.1:8222",
-					}, {
-						Id:   "",
-						Addr: "127.0.0.1:8225",
-					}},
-				},
-			}
+					Id:   "",
+					Addr: "127.0.0.1:8224",
+				}},
+			}, {
+				Start: 10000,
+				End:   16383,
+				Nodes: []redis.ClusterNode{{
+					Id:   "",
+					Addr: "127.0.0.1:8222",
+				}, {
+					Id:   "",
+					Addr: "127.0.0.1:8225",
+				}},
+			}}
 			Expect(assertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
 		})
 
@@ -634,16 +632,18 @@ var _ = Describe("ClusterClient", func() {
 			opt.MaxRetryBackoff = time.Second
 			client = cluster.clusterClient(opt)
 
+			err := client.ForEachMaster(func(master *redis.Client) error {
+				return master.FlushDB().Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
 			_ = client.ForEachSlave(func(slave *redis.Client) error {
 				defer GinkgoRecover()
-
-				_ = client.ForEachMaster(func(master *redis.Client) error {
-					return master.FlushDB().Err()
-				})
 
 				Eventually(func() int64 {
 					return slave.DBSize().Val()
 				}, 30*time.Second).Should(Equal(int64(0)))
+
 				return slave.ClusterFailover().Err()
 			})
 		})

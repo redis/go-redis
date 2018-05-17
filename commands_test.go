@@ -219,7 +219,7 @@ var _ = Describe("Commands", func() {
 		It("Should Command", func() {
 			cmds, err := client.Command().Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(cmds)).To(BeNumerically("~", 185, 10))
+			Expect(len(cmds)).To(BeNumerically("~", 200, 20))
 
 			cmd := cmds["mget"]
 			Expect(cmd.Name).To(Equal("mget"))
