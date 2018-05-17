@@ -316,6 +316,16 @@ var _ = Describe("cluster races", func() {
 		})
 	})
 
+	It("should get", func() {
+		perform(C, func(id int) {
+			for i := 0; i < N; i++ {
+				key := fmt.Sprintf("key_%d_%d", id, i)
+				_, err := client.Get(key).Result()
+				Expect(err).To(Equal(redis.Nil))
+			}
+		})
+	})
+
 	It("should incr", func() {
 		key := "TestIncrFromGoroutines"
 

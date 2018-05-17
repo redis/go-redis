@@ -220,7 +220,7 @@ type clusterNodes struct {
 
 	nodeCreateGroup singleflight.Group
 
-	generation uint32
+	_generation uint32 // atomic
 }
 
 func newClusterNodes(opt *ClusterOptions) *clusterNodes {
@@ -277,8 +277,7 @@ func (c *clusterNodes) Addrs() ([]string, error) {
 }
 
 func (c *clusterNodes) NextGeneration() uint32 {
-	c.generation++
-	return c.generation
+	return atomic.AddUint32(&c._generation, 1)
 }
 
 // GC removes unused nodes.
