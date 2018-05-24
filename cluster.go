@@ -650,7 +650,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.processPipeline = c.defaultProcessPipeline
 	c.processTxPipeline = c.defaultProcessTxPipeline
 
-	c.cmdable.setProcessor(c.Process)
+	c.init()
 
 	_, _ = c.state.Reload()
 	if opt.IdleCheckFrequency > 0 {
@@ -658,6 +658,10 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	}
 
 	return c
+}
+
+func (c *ClusterClient) init() {
+	c.cmdable.setProcessor(c.Process)
 }
 
 func (c *ClusterClient) Context() context.Context {
@@ -678,6 +682,7 @@ func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
 
 func (c *ClusterClient) copy() *ClusterClient {
 	cp := *c
+	cp.init()
 	return &cp
 }
 
