@@ -53,6 +53,7 @@ type Options struct {
 	OnClose func(*Conn) error
 
 	PoolSize           int
+	MinIdleConns       int
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
@@ -68,8 +69,9 @@ type ConnPool struct {
 
 	queue chan struct{}
 
-	connsMu sync.Mutex
-	conns   []*Conn
+	connsMu  sync.Mutex
+	conns    []*Conn
+	poolSize int32 // atomic
 
 	idleConnsMu sync.RWMutex
 	idleConns   []*Conn
@@ -90,6 +92,10 @@ func NewConnPool(opt *Options) *ConnPool {
 		idleConns: make([]*Conn, 0, opt.PoolSize),
 	}
 
+	for i := 0; i < opt.MinIdleConns; i++ {
+		p.addIdleConn()
+	}
+
 	if opt.IdleTimeout > 0 && opt.IdleCheckFrequency > 0 {
 		go p.reaper(opt.IdleCheckFrequency)
 	}
@@ -97,19 +103,65 @@ func NewConnPool(opt *Options) *ConnPool {
 	return p
 }
 
+func (p *ConnPool) addIdleConn() {
+	cn, err := p.newConn(true)
+	if err != nil {
+		return
+	}
+
+	err = p.waitTurn()
+	if err != nil {
+		p.closeConn(cn)
+		return
+	}
+
+	p.connsMu.Lock()
+	p.idleConnsMu.Lock()
+
+	hasSpace := int(atomic.LoadInt32(&p.poolSize)) < p.opt.PoolSize &&
+		len(p.idleConns) < p.opt.MinIdleConns
+	if hasSpace {
+		p.conns = append(p.conns, cn)
+		p.idleConns = append(p.idleConns, cn)
+		if cn.pooled {
+			atomic.AddInt32(&p.poolSize, 1)
+		}
+	}
+
+	p.idleConnsMu.Unlock()
+	p.connsMu.Unlock()
+
+	if !hasSpace {
+		p.closeConn(cn)
+	}
+
+	p.freeTurn()
+}
+
 func (p *ConnPool) NewConn() (*Conn, error) {
-	cn, err := p.newConn()
+	return p._NewConn(false)
+}
+
+func (p *ConnPool) _NewConn(pooled bool) (*Conn, error) {
+	cn, err := p.newConn(pooled)
 	if err != nil {
 		return nil, err
 	}
 
 	p.connsMu.Lock()
 	p.conns = append(p.conns, cn)
+	if cn.pooled {
+		if int(atomic.LoadInt32(&p.poolSize)) < p.opt.PoolSize {
+			atomic.AddInt32(&p.poolSize, 1)
+		} else {
+			cn.pooled = false
+		}
+	}
 	p.connsMu.Unlock()
 	return cn, nil
 }
 
-func (p *ConnPool) newConn() (*Conn, error) {
+func (p *ConnPool) newConn(pooled bool) (*Conn, error) {
 	if p.closed() {
 		return nil, ErrClosed
 	}
@@ -127,7 +179,9 @@ func (p *ConnPool) newConn() (*Conn, error) {
 		return nil, err
 	}
 
-	return NewConn(netConn), nil
+	cn := NewConn(netConn)
+	cn.pooled = pooled
+	return cn, nil
 }
 
 func (p *ConnPool) tryDial() {
@@ -193,7 +247,7 @@ func (p *ConnPool) Get() (*Conn, error) {
 
 	atomic.AddUint32(&p.stats.Misses, 1)
 
-	newcn, err := p.NewConn()
+	newcn, err := p._NewConn(true)
 	if err != nil {
 		p.freeTurn()
 		return nil, err
@@ -241,7 +295,7 @@ func (p *ConnPool) popIdle() *Conn {
 	idx := len(p.idleConns) - 1
 	cn := p.idleConns[idx]
 	p.idleConns = p.idleConns[:idx]
-
+	p.checkMinIdleConns()
 	return cn
 }
 
@@ -249,6 +303,11 @@ func (p *ConnPool) Put(cn *Conn) {
 	buf := cn.Rd.Bytes()
 	if len(buf) > 0 {
 		internal.Logf("connection has unread data: %.100q", buf)
+		p.Remove(cn)
+		return
+	}
+
+	if !cn.pooled {
 		p.Remove(cn)
 		return
 	}
@@ -263,6 +322,11 @@ func (p *ConnPool) Remove(cn *Conn) {
 	p.removeConn(cn)
 	p.freeTurn()
 	_ = p.closeConn(cn)
+	if p.opt.MinIdleConns > 0 {
+		p.idleConnsMu.RLock()
+		p.checkMinIdleConns()
+		p.idleConnsMu.RUnlock()
+	}
 }
 
 func (p *ConnPool) CloseConn(cn *Conn) error {
@@ -275,6 +339,9 @@ func (p *ConnPool) removeConn(cn *Conn) {
 	for i, c := range p.conns {
 		if c == cn {
 			p.conns = append(p.conns[:i], p.conns[i+1:]...)
+			if cn.pooled {
+				atomic.AddInt32(&p.poolSize, -1)
+			}
 			break
 		}
 	}
@@ -290,10 +357,7 @@ func (p *ConnPool) closeConn(cn *Conn) error {
 
 // Len returns total number of connections.
 func (p *ConnPool) Len() int {
-	p.connsMu.Lock()
-	l := len(p.conns)
-	p.connsMu.Unlock()
-	return l
+	return int(atomic.LoadInt32(&p.poolSize))
 }
 
 // FreeLen returns number of idle connections.
@@ -349,6 +413,7 @@ func (p *ConnPool) Close() error {
 		}
 	}
 	p.conns = nil
+	atomic.StoreInt32(&p.poolSize, 0)
 	p.connsMu.Unlock()
 
 	p.idleConnsMu.Lock()
@@ -369,6 +434,9 @@ func (p *ConnPool) reapStaleConn() *Conn {
 	}
 
 	p.idleConns = append(p.idleConns[:0], p.idleConns[1:]...)
+	if p.opt.MinIdleConns > 0 {
+		p.checkMinIdleConns()
+	}
 
 	return cn
 }
@@ -412,5 +480,11 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 			continue
 		}
 		atomic.AddUint32(&p.stats.StaleConns, uint32(n))
+	}
+}
+
+func (p *ConnPool) checkMinIdleConns() {
+	if len(p.idleConns) < p.opt.MinIdleConns {
+		go p.addIdleConn()
 	}
 }

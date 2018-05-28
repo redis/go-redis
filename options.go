@@ -58,7 +58,8 @@ type Options struct {
 
 	// Maximum number of socket connections.
 	// Default is 10 connections per every CPU as reported by runtime.NumCPU.
-	PoolSize int
+	PoolSize     int
+	MinIdleConns int
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
 	// Default is ReadTimeout + 1 second.
@@ -196,6 +197,7 @@ func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
 		Dialer:             opt.Dialer,
 		PoolSize:           opt.PoolSize,
+		MinIdleConns:       opt.MinIdleConns,
 		PoolTimeout:        opt.PoolTimeout,
 		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: opt.IdleCheckFrequency,
