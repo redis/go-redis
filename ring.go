@@ -525,7 +525,7 @@ func (c *Ring) defaultProcessPipeline(cmds []Cmder) error {
 				continue
 			}
 
-			cn, _, err := shard.Client.getConn()
+			cn, err := shard.Client.getConn()
 			if err != nil {
 				setCmdsErr(cmds, err)
 				continue
@@ -533,10 +533,10 @@ func (c *Ring) defaultProcessPipeline(cmds []Cmder) error {
 
 			canRetry, err := shard.Client.pipelineProcessCmds(cn, cmds)
 			if err == nil || internal.IsRedisError(err) {
-				_ = shard.Client.connPool.Put(cn)
+				shard.Client.connPool.Put(cn)
 				continue
 			}
-			_ = shard.Client.connPool.Remove(cn)
+			shard.Client.connPool.Remove(cn)
 
 			if canRetry && internal.IsRetryableError(err, true) {
 				if failedCmdsMap == nil {
