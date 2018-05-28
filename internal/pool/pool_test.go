@@ -1,6 +1,7 @@
 package pool_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -75,6 +76,173 @@ var _ = Describe("ConnPool", func() {
 		for _, cn := range cns {
 			connPool.Put(cn)
 		}
+	})
+})
+
+var _ = Describe("MinIdleConns", func() {
+	const poolSize = 100
+	var minIdleConns int
+	var connPool *pool.ConnPool
+
+	newConnPool := func() *pool.ConnPool {
+		connPool := pool.NewConnPool(&pool.Options{
+			Dialer:             dummyDialer,
+			PoolSize:           poolSize,
+			MinIdleConns:       minIdleConns,
+			PoolTimeout:        100 * time.Millisecond,
+			IdleTimeout:        -1,
+			IdleCheckFrequency: -1,
+		})
+		Eventually(func() int {
+			return connPool.Len()
+		}).Should(Equal(minIdleConns))
+		return connPool
+	}
+
+	assert := func() {
+		It("has idle connections when created", func() {
+			Expect(connPool.Len()).To(Equal(minIdleConns))
+			Expect(connPool.IdleLen()).To(Equal(minIdleConns))
+		})
+
+		Context("after Get", func() {
+			var cn *pool.Conn
+
+			BeforeEach(func() {
+				var err error
+				cn, err = connPool.Get()
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func() int {
+					return connPool.Len()
+				}).Should(Equal(minIdleConns + 1))
+			})
+
+			It("has idle connections", func() {
+				Expect(connPool.Len()).To(Equal(minIdleConns + 1))
+				Expect(connPool.IdleLen()).To(Equal(minIdleConns))
+			})
+
+			Context("after Remove", func() {
+				BeforeEach(func() {
+					connPool.Remove(cn)
+				})
+
+				It("has idle connections", func() {
+					Expect(connPool.Len()).To(Equal(minIdleConns))
+					Expect(connPool.IdleLen()).To(Equal(minIdleConns))
+				})
+			})
+		})
+
+		Describe("Get does not exceed pool size", func() {
+			var mu sync.RWMutex
+			var cns []*pool.Conn
+
+			BeforeEach(func() {
+				cns = make([]*pool.Conn, 0)
+
+				perform(poolSize, func(_ int) {
+					defer GinkgoRecover()
+
+					cn, err := connPool.Get()
+					Expect(err).NotTo(HaveOccurred())
+					mu.Lock()
+					cns = append(cns, cn)
+					mu.Unlock()
+				})
+
+				Eventually(func() int {
+					return connPool.Len()
+				}).Should(BeNumerically(">=", poolSize))
+			})
+
+			It("Get is blocked", func() {
+				done := make(chan struct{})
+				go func() {
+					connPool.Get()
+					close(done)
+				}()
+
+				select {
+				case <-done:
+					Fail("Get is not blocked")
+				case <-time.After(time.Millisecond):
+					// ok
+				}
+
+				select {
+				case <-done:
+					// ok
+				case <-time.After(time.Second):
+					Fail("Get is not unblocked")
+				}
+			})
+
+			Context("after Put", func() {
+				BeforeEach(func() {
+					perform(len(cns), func(i int) {
+						mu.RLock()
+						connPool.Put(cns[i])
+						mu.RUnlock()
+					})
+
+					Eventually(func() int {
+						return connPool.Len()
+					}).Should(Equal(poolSize))
+				})
+
+				It("pool.Len is back to normal", func() {
+					Expect(connPool.Len()).To(Equal(poolSize))
+					Expect(connPool.IdleLen()).To(Equal(poolSize))
+				})
+			})
+
+			Context("after Remove", func() {
+				BeforeEach(func() {
+					perform(len(cns), func(i int) {
+						mu.RLock()
+						connPool.Remove(cns[i])
+						mu.RUnlock()
+					})
+
+					Eventually(func() int {
+						return connPool.Len()
+					}).Should(Equal(minIdleConns))
+				})
+
+				It("has idle connections", func() {
+					Expect(connPool.Len()).To(Equal(minIdleConns))
+					Expect(connPool.IdleLen()).To(Equal(minIdleConns))
+				})
+			})
+		})
+	}
+
+	Context("minIdleConns = 1", func() {
+		BeforeEach(func() {
+			minIdleConns = 1
+			connPool = newConnPool()
+		})
+
+		AfterEach(func() {
+			connPool.Close()
+		})
+
+		assert()
+	})
+
+	Context("minIdleConns = 32", func() {
+		BeforeEach(func() {
+			minIdleConns = 32
+			connPool = newConnPool()
+		})
+
+		AfterEach(func() {
+			connPool.Close()
+		})
+
+		assert()
 	})
 })
 
