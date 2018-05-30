@@ -20,13 +20,11 @@ func benchmarkPoolGetPut(b *testing.B, poolSize int) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			cn, _, err := connPool.Get()
+			cn, err := connPool.Get()
 			if err != nil {
 				b.Fatal(err)
 			}
-			if err = connPool.Put(cn); err != nil {
-				b.Fatal(err)
-			}
+			connPool.Put(cn)
 		}
 	})
 }
@@ -56,13 +54,11 @@ func benchmarkPoolGetRemove(b *testing.B, poolSize int) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			cn, _, err := connPool.Get()
+			cn, err := connPool.Get()
 			if err != nil {
 				b.Fatal(err)
 			}
-			if err := connPool.Remove(cn); err != nil {
-				b.Fatal(err)
-			}
+			connPool.Remove(cn)
 		}
 	})
 }

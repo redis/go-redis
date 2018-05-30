@@ -1172,7 +1172,7 @@ func (c *ClusterClient) defaultProcessPipeline(cmds []Cmder) error {
 		failedCmds := make(map[*clusterNode][]Cmder)
 
 		for node, cmds := range cmdsMap {
-			cn, _, err := node.Client.getConn()
+			cn, err := node.Client.getConn()
 			if err != nil {
 				if err == pool.ErrClosed {
 					c.remapCmds(cmds, failedCmds)
@@ -1184,9 +1184,9 @@ func (c *ClusterClient) defaultProcessPipeline(cmds []Cmder) error {
 
 			err = c.pipelineProcessCmds(node, cn, cmds, failedCmds)
 			if err == nil || internal.IsRedisError(err) {
-				_ = node.Client.connPool.Put(cn)
+				node.Client.connPool.Put(cn)
 			} else {
-				_ = node.Client.connPool.Remove(cn)
+				node.Client.connPool.Remove(cn)
 			}
 		}
 
@@ -1336,7 +1336,7 @@ func (c *ClusterClient) defaultProcessTxPipeline(cmds []Cmder) error {
 			failedCmds := make(map[*clusterNode][]Cmder)
 
 			for node, cmds := range cmdsMap {
-				cn, _, err := node.Client.getConn()
+				cn, err := node.Client.getConn()
 				if err != nil {
 					if err == pool.ErrClosed {
 						c.remapCmds(cmds, failedCmds)
@@ -1348,9 +1348,9 @@ func (c *ClusterClient) defaultProcessTxPipeline(cmds []Cmder) error {
 
 				err = c.txPipelineProcessCmds(node, cn, cmds, failedCmds)
 				if err == nil || internal.IsRedisError(err) {
-					_ = node.Client.connPool.Put(cn)
+					node.Client.connPool.Put(cn)
 				} else {
-					_ = node.Client.connPool.Remove(cn)
+					node.Client.connPool.Remove(cn)
 				}
 			}
 

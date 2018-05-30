@@ -30,8 +30,8 @@ var _ = Describe("pool", func() {
 
 		pool := client.Pool()
 		Expect(pool.Len()).To(BeNumerically("<=", 10))
-		Expect(pool.FreeLen()).To(BeNumerically("<=", 10))
-		Expect(pool.Len()).To(Equal(pool.FreeLen()))
+		Expect(pool.IdleLen()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(Equal(pool.IdleLen()))
 	})
 
 	It("respects max size on multi", func() {
@@ -55,8 +55,8 @@ var _ = Describe("pool", func() {
 
 		pool := client.Pool()
 		Expect(pool.Len()).To(BeNumerically("<=", 10))
-		Expect(pool.FreeLen()).To(BeNumerically("<=", 10))
-		Expect(pool.Len()).To(Equal(pool.FreeLen()))
+		Expect(pool.IdleLen()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(Equal(pool.IdleLen()))
 	})
 
 	It("respects max size on pipelines", func() {
@@ -73,15 +73,15 @@ var _ = Describe("pool", func() {
 
 		pool := client.Pool()
 		Expect(pool.Len()).To(BeNumerically("<=", 10))
-		Expect(pool.FreeLen()).To(BeNumerically("<=", 10))
-		Expect(pool.Len()).To(Equal(pool.FreeLen()))
+		Expect(pool.IdleLen()).To(BeNumerically("<=", 10))
+		Expect(pool.Len()).To(Equal(pool.IdleLen()))
 	})
 
 	It("removes broken connections", func() {
-		cn, _, err := client.Pool().Get()
+		cn, err := client.Pool().Get()
 		Expect(err).NotTo(HaveOccurred())
 		cn.SetNetConn(&badConn{})
-		Expect(client.Pool().Put(cn)).NotTo(HaveOccurred())
+		client.Pool().Put(cn)
 
 		err = client.Ping().Err()
 		Expect(err).To(MatchError("bad connection"))
@@ -92,7 +92,7 @@ var _ = Describe("pool", func() {
 
 		pool := client.Pool()
 		Expect(pool.Len()).To(Equal(1))
-		Expect(pool.FreeLen()).To(Equal(1))
+		Expect(pool.IdleLen()).To(Equal(1))
 
 		stats := pool.Stats()
 		Expect(stats.Hits).To(Equal(uint32(2)))
@@ -109,7 +109,7 @@ var _ = Describe("pool", func() {
 
 		pool := client.Pool()
 		Expect(pool.Len()).To(Equal(1))
-		Expect(pool.FreeLen()).To(Equal(1))
+		Expect(pool.IdleLen()).To(Equal(1))
 
 		stats := pool.Stats()
 		Expect(stats.Hits).To(Equal(uint32(100)))
@@ -125,6 +125,7 @@ var _ = Describe("pool", func() {
 			Timeouts:   0,
 			TotalConns: 1,
 			FreeConns:  1,
+			IdleConns:  1,
 			StaleConns: 0,
 		}))
 
