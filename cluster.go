@@ -1207,15 +1207,32 @@ func (c *ClusterClient) mapCmdsByNode(cmds []Cmder) (map[*clusterNode][]Cmder, e
 	}
 
 	cmdsMap := make(map[*clusterNode][]Cmder)
+	cmdsAreReadOnly := c.cmdsAreReadOnly(cmds)
 	for _, cmd := range cmds {
-		slot := c.cmdSlot(cmd)
-		node, err := state.slotMasterNode(slot)
+		var node *clusterNode
+		var err error
+		if cmdsAreReadOnly {
+			_, node, err = c.cmdSlotAndNode(cmd)
+		} else {
+			slot := c.cmdSlot(cmd)
+			node, err = state.slotMasterNode(slot)
+		}
 		if err != nil {
 			return nil, err
 		}
 		cmdsMap[node] = append(cmdsMap[node], cmd)
 	}
 	return cmdsMap, nil
+}
+
+func (c *ClusterClient) cmdsAreReadOnly(cmds []Cmder) bool {
+	for _, cmd := range cmds {
+		cmdInfo := c.cmdInfo(cmd.Name())
+		if cmdInfo == nil || !cmdInfo.ReadOnly {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *ClusterClient) remapCmds(cmds []Cmder, failedCmds map[*clusterNode][]Cmder) {
