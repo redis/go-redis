@@ -411,7 +411,7 @@ func newClusterState(
 		var nodes []*clusterNode
 		for i, slotNode := range slot.Nodes {
 			addr := slotNode.Addr
-			if !isLoopbackOrigin && isLoopbackAddr(addr) {
+			if !isLoopbackOrigin && useOriginAddr(origin, addr) {
 				addr = origin
 			}
 
@@ -1492,6 +1492,29 @@ func (c *ClusterClient) PSubscribe(channels ...string) *PubSub {
 		_ = pubsub.PSubscribe(channels...)
 	}
 	return pubsub
+}
+
+func useOriginAddr(originAddr, nodeAddr string) bool {
+	nodeHost, nodePort, err := net.SplitHostPort(nodeAddr)
+	if err != nil {
+		return false
+	}
+
+	nodeIP := net.ParseIP(nodeHost)
+	if nodeIP == nil {
+		return false
+	}
+
+	if !nodeIP.IsLoopback() {
+		return false
+	}
+
+	_, originPort, err := net.SplitHostPort(originAddr)
+	if err != nil {
+		return false
+	}
+
+	return nodePort == originPort
 }
 
 func isLoopbackAddr(addr string) bool {
