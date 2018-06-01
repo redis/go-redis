@@ -857,6 +857,7 @@ var _ = Describe("ClusterClient timeout", func() {
 			opt.WriteTimeout = 300 * time.Millisecond
 			opt.MaxRedirects = 1
 			client = cluster.clusterClient(opt)
+			client.Ping() // Load cmdsInfoCache before issuing client pause
 
 			err := client.ForEachNode(func(client *redis.Client) error {
 				return client.ClientPause(pause).Err()
