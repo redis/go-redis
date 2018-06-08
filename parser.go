@@ -84,6 +84,138 @@ func stringStringMapParser(rd *proto.Reader, n int64) (interface{}, error) {
 	return m, nil
 }
 
+func streamEntrySliceMapParser(rd *proto.Reader, n int64) (interface{}, error) {
+	ret := map[string][]StreamEntry{}
+	for i := int64(0); i < n; i++ {
+		entry, err := rd.ReadArrayReply(streamEntrySliceWithKeyParser)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range entry.(map[string][]StreamEntry) {
+			ret[k] = v
+		}
+	}
+	return ret, nil
+}
+
+func streamEntrySliceWithKeyParser(rd *proto.Reader, n int64) (interface{}, error) {
+	var key string
+	key, err := rd.ReadStringReply()
+	if err != nil {
+		return nil, err
+	}
+	entry_arr, err := rd.ReadArrayReply(streamEntrySliceParser)
+	if err != nil {
+		return nil, err
+	}
+	return map[string][]StreamEntry{
+		key: entry_arr.([]StreamEntry),
+	}, nil
+}
+
+func streamEntrySliceParser(rd *proto.Reader, n int64) (interface{}, error) {
+	var ret []StreamEntry
+	for i := int64(0); i < n; i++ {
+		entry, err := rd.ReadArrayReply(streamEntryParser)
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, entry.(StreamEntry))
+	}
+	return ret, nil
+}
+
+func streamEntryParser(rd *proto.Reader, n int64) (interface{}, error) {
+	si, err := rd.ReadTmpBytesReply()
+	if err != nil {
+		return nil, err
+	}
+	m, err := rd.ReadArrayReply(stringStringMapParser)
+	if err != nil {
+		return nil, err
+	}
+	return StreamEntry{
+		Id:     string(si),
+		Fields: m.(map[string]string),
+	}, nil
+}
+
+func xPendingInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
+	count, err := rd.ReadIntReply()
+	if err != nil {
+		return nil, err
+	}
+	lower, err := rd.ReadStringReply()
+	if err != nil && err != Nil {
+		return nil, err
+	}
+	higher, err := rd.ReadStringReply()
+	if err != nil && err != Nil {
+		return nil, err
+	}
+	ret := XPendingInfo{
+		Count:  count,
+		Lower:  lower,
+		Higher: higher,
+	}
+	info, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		ret := make(map[string]string)
+		for i := int64(0); i < n; i++ {
+			info, err := rd.ReadArrayReply(stringStringMapParser)
+			if err != nil {
+				return nil, err
+			}
+			for k, v := range info.(map[string]string) {
+				ret[k] = v
+			}
+		}
+		return ret, nil
+	})
+	if err != nil && err != Nil {
+		return nil, err
+	} else if err == nil {
+		ret.ConsumerInfo = info.(map[string]string)
+	}
+	return ret, nil
+}
+
+func xPendingConsumerInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
+	id, err := rd.ReadStringReply()
+	if err != nil {
+		return nil, err
+	}
+	consumer, err := rd.ReadStringReply()
+	if err != nil && err != Nil {
+		return nil, err
+	}
+	idle, err := rd.ReadIntReply()
+	if err != nil && err != Nil {
+		return nil, err
+	}
+	retry_count, err := rd.ReadIntReply()
+	if err != nil && err != Nil {
+		return nil, err
+	}
+	return XPendingConsumerInfo{
+		Id:         id,
+		Consumer:   consumer,
+		Idle:       idle,
+		RetryCount: retry_count,
+	}, nil
+}
+
+func xPendingConsumerInfoSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
+	var ret []XPendingConsumerInfo
+	for i := int64(0); i < n; i++ {
+		entry, err := rd.ReadArrayReply(xPendingConsumerInfoParser)
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, entry.(XPendingConsumerInfo))
+	}
+	return ret, nil
+}
+
 // Implements proto.MultiBulkParse
 func stringIntMapParser(rd *proto.Reader, n int64) (interface{}, error) {
 	m := make(map[string]int64, n/2)

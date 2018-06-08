@@ -638,6 +638,85 @@ func (cmd *StringStringMapCmd) readReply(cn *pool.Conn) error {
 
 //------------------------------------------------------------------------------
 
+type StreamEntry struct {
+	Id     string
+	Fields map[string]string
+}
+
+type StreamEntrySliceCmd struct {
+	baseCmd
+
+	val []StreamEntry
+}
+
+var _ Cmder = (*StreamEntrySliceCmd)(nil)
+
+func NewStreamEntrySliceCmd(args ...interface{}) *StreamEntrySliceCmd {
+	return &StreamEntrySliceCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *StreamEntrySliceCmd) Val() []StreamEntry {
+	return cmd.val
+}
+
+func (cmd *StreamEntrySliceCmd) Result() ([]StreamEntry, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *StreamEntrySliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *StreamEntrySliceCmd) readReply(cn *pool.Conn) error {
+	var v interface{}
+	v, cmd.err = cn.Rd.ReadArrayReply(streamEntrySliceParser)
+	if cmd.err != nil {
+		return cmd.err
+	}
+	cmd.val = v.([]StreamEntry)
+	return nil
+}
+
+type StreamEntrySliceMapCmd struct {
+	baseCmd
+
+	val map[string][]StreamEntry
+}
+
+var _ Cmder = (*StreamEntrySliceMapCmd)(nil)
+
+func NewStreamEntrySliceMapCmd(args ...interface{}) *StreamEntrySliceMapCmd {
+	return &StreamEntrySliceMapCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *StreamEntrySliceMapCmd) Val() map[string][]StreamEntry {
+	return cmd.val
+}
+
+func (cmd *StreamEntrySliceMapCmd) Result() (map[string][]StreamEntry, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *StreamEntrySliceMapCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *StreamEntrySliceMapCmd) readReply(cn *pool.Conn) error {
+	var v interface{}
+	v, cmd.err = cn.Rd.ReadArrayReply(streamEntrySliceMapParser)
+	if cmd.err != nil {
+		return cmd.err
+	}
+	cmd.val = v.(map[string][]StreamEntry)
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
 type StringIntMapCmd struct {
 	baseCmd
 
@@ -1049,4 +1128,90 @@ func (c *cmdsInfoCache) Get() (map[string]*CommandInfo, error) {
 		return nil
 	})
 	return c.cmds, err
+}
+
+//------------------------------------------------------------------------------
+
+type XPendingInfo struct {
+	Count        int64
+	Lower        string
+	Higher       string
+	ConsumerInfo map[string]string
+}
+
+type XPendingInfoCmd struct {
+	baseCmd
+	val XPendingInfo
+}
+
+var _ Cmder = (*XPendingInfoCmd)(nil)
+
+func NewXPendingInfoCmd(args ...interface{}) *XPendingInfoCmd {
+	return &XPendingInfoCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *XPendingInfoCmd) Val() XPendingInfo {
+	return cmd.val
+}
+
+func (cmd *XPendingInfoCmd) Result() (XPendingInfo, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *XPendingInfoCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XPendingInfoCmd) readReply(cn *pool.Conn) error {
+	var info interface{}
+	info, cmd.err = cn.Rd.ReadArrayReply(xPendingInfoParser)
+	if cmd.err != nil {
+		return cmd.err
+	}
+	cmd.val = info.(XPendingInfo)
+	return nil
+}
+
+type XPendingConsumerInfo struct {
+	Id         string
+	Consumer   string
+	Idle       int64
+	RetryCount int64
+}
+
+type XPendingConsumerInfoSliceCmd struct {
+	baseCmd
+	val []XPendingConsumerInfo
+}
+
+var _ Cmder = (*XPendingInfoCmd)(nil)
+
+func NewXPendingConsumerInfoSliceCmd(args ...interface{}) *XPendingConsumerInfoSliceCmd {
+	return &XPendingConsumerInfoSliceCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *XPendingConsumerInfoSliceCmd) Val() []XPendingConsumerInfo {
+	return cmd.val
+}
+
+func (cmd *XPendingConsumerInfoSliceCmd) Result() ([]XPendingConsumerInfo, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *XPendingConsumerInfoSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XPendingConsumerInfoSliceCmd) readReply(cn *pool.Conn) error {
+	var info interface{}
+	info, cmd.err = cn.Rd.ReadArrayReply(xPendingConsumerInfoSliceParser)
+	if cmd.err != nil {
+		return cmd.err
+	}
+	cmd.val = info.([]XPendingConsumerInfo)
+	return nil
 }
