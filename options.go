@@ -65,10 +65,11 @@ type Options struct {
 	PoolTimeout time.Duration
 	// Amount of time after which client closes idle connections.
 	// Should be less than server's timeout.
-	// Default is 5 minutes.
+	// Default is 5 minutes. -1 disables idle timeout check.
 	IdleTimeout time.Duration
-	// Frequency of idle checks.
-	// Default is 1 minute. -1 disables idle check.
+	// Frequency of idle checks made by idle connections reaper.
+	// Default is 1 minute. -1 disables idle connections reaper,
+	// but idle connections are still discarded by the client.
 	IdleCheckFrequency time.Duration
 
 	// Enables read only queries on slave nodes.
