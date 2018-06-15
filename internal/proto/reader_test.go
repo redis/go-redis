@@ -41,7 +41,7 @@ var _ = Describe("Reader", func() {
 
 		data, err := p.ReadLine()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(string(data)).To(Equal(strings.Repeat("x", 4097))) // + "\r\n"))
+		Expect(string(data)).To(Equal(strings.Repeat("x", 4097)))
 	})
 
 })
