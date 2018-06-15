@@ -36,6 +36,14 @@ var _ = Describe("Reader", func() {
 		Expect(string(data)).To(Equal("hello"))
 	})
 
+	It("should read very long lines", func() {
+		p := proto.NewReader(strings.NewReader(strings.Repeat("x", 4097) + "\r\n"))
+
+		data, err := p.ReadLine()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(Equal(strings.Repeat("x", 4097))) // + "\r\n"))
+	})
+
 })
 
 func BenchmarkReader_ParseReply_Status(b *testing.B) {
