@@ -19,6 +19,9 @@ func IsRetryableError(err error, retryNetError bool) bool {
 	if strings.HasPrefix(s, "LOADING ") {
 		return true
 	}
+	if strings.HasPrefix(s, "READONLY ") {
+		return true
+	}
 	if strings.HasPrefix(s, "CLUSTERDOWN ") {
 		return true
 	}
@@ -38,16 +41,12 @@ func IsNetworkError(err error) bool {
 	return ok
 }
 
-func IsReadOnlyError(err error) bool {
-	return strings.HasPrefix(err.Error(), "READONLY ")
-}
-
 func IsBadConn(err error, allowTimeout bool) bool {
 	if err == nil {
 		return false
 	}
 	if IsRedisError(err) {
-		return false
+		return strings.HasPrefix(err.Error(), "READONLY ")
 	}
 	if allowTimeout {
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
