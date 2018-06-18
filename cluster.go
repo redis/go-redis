@@ -653,6 +653,8 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.init()
 
 	_, _ = c.state.Reload()
+	_, _ = c.cmdsInfoCache.Get()
+
 	if opt.IdleCheckFrequency > 0 {
 		go c.reaper(opt.IdleCheckFrequency)
 	}
