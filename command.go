@@ -714,6 +714,121 @@ func (cmd *StringStructMapCmd) readReply(cn *pool.Conn) error {
 
 //------------------------------------------------------------------------------
 
+type XStreamSliceCmd struct {
+	baseCmd
+
+	val []XStream
+}
+
+var _ Cmder = (*XStreamSliceCmd)(nil)
+
+func NewXStreamSliceCmd(args ...interface{}) *XStreamSliceCmd {
+	return &XStreamSliceCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *XStreamSliceCmd) Val() []XStream {
+	return cmd.val
+}
+
+func (cmd *XStreamSliceCmd) Result() ([]XStream, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *XStreamSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XStreamSliceCmd) readReply(cn *pool.Conn) error {
+	var v interface{}
+	v, cmd.err = cn.Rd.ReadArrayReply(xStreamSliceParser)
+	if cmd.err != nil {
+		return cmd.err
+	}
+	cmd.val = v.([]XStream)
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type XMessageSliceCmd struct {
+	baseCmd
+
+	val []XMessage
+}
+
+var _ Cmder = (*XMessageSliceCmd)(nil)
+
+func NewXMessageSliceCmd(args ...interface{}) *XMessageSliceCmd {
+	return &XMessageSliceCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *XMessageSliceCmd) Val() []XMessage {
+	return cmd.val
+}
+
+func (cmd *XMessageSliceCmd) Result() ([]XMessage, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *XMessageSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XMessageSliceCmd) readReply(cn *pool.Conn) error {
+	var v interface{}
+	v, cmd.err = cn.Rd.ReadArrayReply(xMessageSliceParser)
+	if cmd.err != nil {
+		return cmd.err
+	}
+	cmd.val = v.([]XMessage)
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type XMessageIDCmd struct {
+	baseCmd
+
+	val XMessageID
+}
+
+var _ Cmder = (*XMessageIDCmd)(nil)
+
+func NewXMessageIDCmd(args ...interface{}) *XMessageIDCmd {
+	return &XMessageIDCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *XMessageIDCmd) Val() XMessageID {
+	return cmd.val
+}
+
+func (cmd *XMessageIDCmd) Result() (XMessageID, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *XMessageIDCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XMessageIDCmd) readReply(cn *pool.Conn) error {
+	var id string
+	id, cmd.err = cn.Rd.ReadStringReply()
+	if cmd.err != nil {
+		return cmd.err
+	}
+
+	cmd.val = XMessageID{id}
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
 type ZSliceCmd struct {
 	baseCmd
 

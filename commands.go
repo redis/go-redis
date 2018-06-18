@@ -4,8 +4,11 @@ import (
 	"errors"
 	"io"
 	"time"
+	"fmt"
 
 	"github.com/go-redis/redis/internal"
+	"strings"
+	"strconv"
 )
 
 func readTimeout(timeout time.Duration) time.Duration {
@@ -171,6 +174,15 @@ type Cmdable interface {
 	SRem(key string, members ...interface{}) *IntCmd
 	SUnion(keys ...string) *StringSliceCmd
 	SUnionStore(destination string, keys ...string) *IntCmd
+	XAdd(key string, id XMessageID, els map[string]interface{}) *XMessageIDCmd
+	XAddExt(key string, id XMessageID, opt XAdd, els map[string]interface{}) *XMessageIDCmd
+	XLen(key string) *IntCmd
+	XRange(key string, start, stop string) *XMessageSliceCmd
+	XRangeN(key string, start, stop string, count int64) *XMessageSliceCmd
+	XRevRange(key string, start, stop string) *XMessageSliceCmd
+	XRevRangeN(key string, start, stop string, count int64) *XMessageSliceCmd
+	XRead(firstKey string, firstCheckpoint XMessageID, block time.Duration, extraStreams ...XStreamCheckpoint) *XStreamSliceCmd
+	XReadN(firstKey string, firstCheckpoint XMessageID, block time.Duration, count int64, extraStreams ...XStreamCheckpoint) *XStreamSliceCmd
 	ZAdd(key string, members ...Z) *IntCmd
 	ZAddNX(key string, members ...Z) *IntCmd
 	ZAddXX(key string, members ...Z) *IntCmd
@@ -1278,6 +1290,188 @@ func (c *cmdable) SUnionStore(destination string, keys ...string) *IntCmd {
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
+}
+
+//------------------------------------------------------------------------------
+
+// X represents stream message response.
+type XStream struct {
+	Stream  string
+	Messages []XMessage
+}
+
+// XStreamCheckpoint represents a query into a stream
+type XStreamCheckpoint struct {
+	Stream string
+	Checkpoint XMessageID
+}
+
+// XMessage represents messages within the stream response
+type XMessage struct {
+	ID XMessageID
+	Values map[string]interface{}
+}
+
+// XMessageID represents a message's ID within a stream.
+// It is composed of an ID (current timestamp if auto-assigned)
+// and a sequence ID. E.g. 1511833543298-0
+type XMessageID struct {
+	String string
+}
+
+func (xMessageID XMessageID) IDSeq() (id int64, seq int64, err error) {
+	split := strings.Split(fmt.Sprintf("%v", xMessageID.String), "-")
+	id, err = strconv.ParseInt(split[0], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	seq, err = strconv.ParseInt(split[1], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return id, seq, nil
+}
+
+// XAdd represents additional options to the XAdd command
+type XAdd struct {
+	Approximate bool
+	MaxLen int64
+}
+
+func (c *cmdable) xAdd(a []interface{}, n int, els map[string]interface{}) *XMessageIDCmd {
+	i := 0
+	for k, v := range els {
+		a[n+i] = k
+		a[n+i+1] = v
+		i += 2
+	}
+	cmd := NewXMessageIDCmd(a...)
+	c.process(cmd)
+	return cmd
+}
+
+// Redis `XADD key id arg arg ...options...` command.
+// Leave id nil to auto-assign ID
+func (c *cmdable) XAdd(key string, id XMessageID, els map[string]interface{}) *XMessageIDCmd {
+	const n = 3
+	a := make([]interface{}, n+2*len(els))
+	a[0], a[1], a[2] = "xadd", key, id.String
+	return c.xAdd(a, n, els)
+}
+
+func (c *cmdable) XAddExt(key string, id XMessageID, opt XAdd, els map[string]interface{}) *XMessageIDCmd {
+	var a []interface{}
+	var n int
+	if opt.MaxLen == 0 {
+		return c.XAdd(key, id, els)
+	} else if !opt.Approximate {
+		n = 5
+		a = make([]interface{}, n+2*len(els))
+		a[0] = "xadd"
+		a[1] = key
+		a[2] = "maxlen"
+		a[3] = opt.MaxLen
+		a[4] = id.String
+	} else {
+		n = 6
+		a = make([]interface{}, n+2*len(els))
+		a[0] = "xadd"
+		a[1] = key
+		a[2] = "maxlen"
+		a[3] = "~"
+		a[4] = opt.MaxLen
+		a[5] = id.String
+	}
+
+
+	return c.xAdd(a, n, els)
+}
+
+func (c *cmdable) XLen(key string) *IntCmd {
+	cmd := NewIntCmd("xlen", key)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRange(key string, start, stop string) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd("xrange", key, start, stop)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRangeN(
+	key string,
+	start, stop string,
+	count int64,
+) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd("xrange", key, start, stop, "count", count)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRevRange(key string, start, stop string) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd("xrevrange", key, start, stop)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRevRangeN(
+	key string,
+	start, stop string,
+	count int64,
+) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd("xrevrange", key, start, stop, "count", count)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) xRead(a []interface{}, n int, streams []XStreamCheckpoint) *XStreamSliceCmd {
+	numStreams := len(streams)
+	for i, s := range streams {
+		a[n+i] = s.Stream
+		a[n+numStreams+i] = s.Checkpoint.String
+	}
+
+	cmd := NewXStreamSliceCmd(a...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRead(
+	firstKey string,
+	firstCheckpoint XMessageID,
+	block time.Duration,
+	extraStreams ...XStreamCheckpoint,
+) *XStreamSliceCmd {
+	n := 6+2*len(extraStreams)
+	args := make([]interface{}, n)
+	args[0] = "xread"
+	args[1] = "block"
+	args[2] = int64(block / time.Millisecond)
+	args[3] = "streams"
+
+	return c.xRead(args, 4, append([]XStreamCheckpoint{{firstKey, firstCheckpoint}}, extraStreams...))
+}
+
+func (c *cmdable) XReadN(
+	firstKey string,
+	firstCheckpoint XMessageID,
+	block time.Duration,
+	count int64,
+	extraStreams ...XStreamCheckpoint,
+) *XStreamSliceCmd {
+	n := 8+2*len(extraStreams)
+	args := make([]interface{}, n)
+	args[0] = "xread"
+	args[1] = "block"
+	args[2] = int64(block / time.Millisecond)
+	args[3] = "count"
+	args[4] = count
+	args[5] = "streams"
+
+	return c.xRead(args, 6, append([]XStreamCheckpoint{{firstKey, firstCheckpoint}}, extraStreams...))
 }
 
 //------------------------------------------------------------------------------
