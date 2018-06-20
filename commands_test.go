@@ -2092,6 +2092,231 @@ var _ = Describe("Commands", func() {
 		})
 
 	})
+	Describe("stream", func() {
+
+		It("should XAdd* and XDel", func() {
+			id1, err := client.XAdd("xstream", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			id2, err := client.XAddMax("xstream", "*", 1, map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			id3, err := client.XAddMaxApprox("xstream", "*", 1, map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			n, err := client.XDel("xstream", id1, id2, id3).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically("<=", int64(2)))
+			Expect(n).To(BeNumerically(">=", int64(1)))
+		})
+
+		It("should XRange*", func() {
+			id1, err := client.XAdd("xstream", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			id2, err := client.XAdd("xstream", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			entries, err := client.XRange("xstream", "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(entries)).To(Equal(2))
+			entries, err = client.XRevRange("xstream", "+", "-").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(entries)).To(Equal(2))
+			entries, err = client.XRangeN("xstream", "-", "+", 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(entries)).To(Equal(1))
+			entries, err = client.XRevRangeN("xstream", "+", "-", 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(entries)).To(Equal(1))
+			_, err = client.XDel("xstream", id1, id2).Result()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should XRead*", func() {
+			_, err := client.XAdd("xstream", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.XAdd("xstream", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.XAdd("xstream2", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			maps, err := client.XRead("xstream", "xstream2", "0", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps)).To(Equal(2))
+			Expect(len(maps["xstream"])).To(Equal(2))
+			Expect(len(maps["xstream2"])).To(Equal(1))
+			maps, err = client.XReadBlock(10, "xstream", "xstream2", "0", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps)).To(Equal(2))
+			Expect(len(maps["xstream"])).To(Equal(2))
+			Expect(len(maps["xstream2"])).To(Equal(1))
+			maps, err = client.XReadN(1, "xstream", "xstream2", "0", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps)).To(Equal(2))
+			Expect(len(maps["xstream"])).To(Equal(1))
+			Expect(len(maps["xstream2"])).To(Equal(1))
+			maps, err = client.XReadBlockN(10, 1, "xstream", "xstream2", "0", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps)).To(Equal(2))
+			Expect(len(maps["xstream"])).To(Equal(1))
+			Expect(len(maps["xstream2"])).To(Equal(1))
+		})
+
+		It("should XGroup*", func() {
+			_, err := client.XAdd("xstream", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.XAdd("xstream", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.XAdd("xstream2", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = client.XGroupCreate("xstream", "xgroup", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.XGroupCreate("xstream2", "xgroup", "$").Result()
+			Expect(err).NotTo(HaveOccurred())
+			maps, err := client.XReadGroup("xgroup", "Alice", "xstream", "xstream2", "0", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps)).To(Equal(2))
+			Expect(len(maps["xstream"])).To(Equal(2))
+			Expect(len(maps["xstream2"])).To(Equal(0))
+			_, err = client.XGroupSetID("xstream2", "xgroup", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			maps, err = client.XReadGroup("xgroup", "Alice", "xstream", "xstream2", "0", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps)).To(Equal(2))
+			Expect(len(maps["xstream"])).To(Equal(2))
+			Expect(len(maps["xstream2"])).To(Equal(1))
+			maps, err = client.XReadGroupN("xgroup", "Alice", 1, "xstream", "xstream2", "0", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps)).To(Equal(2))
+			Expect(len(maps["xstream"])).To(Equal(1))
+			Expect(len(maps["xstream2"])).To(Equal(1))
+			maps, err = client.XReadGroupBlock("xgroup", "Alice", 10, "xstream", "xstream2", "0", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps)).To(Equal(2))
+			Expect(len(maps["xstream"])).To(Equal(2))
+			Expect(len(maps["xstream2"])).To(Equal(1))
+			maps, err = client.XReadGroupBlockN("xgroup", "Alice", 10, 1, "xstream", "xstream2", "0", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps)).To(Equal(2))
+			Expect(len(maps["xstream"])).To(Equal(1))
+			Expect(len(maps["xstream2"])).To(Equal(1))
+			n, err := client.XGroupDestroy("xstream2", "xgroup").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+			_, err = client.XReadGroup("xgroup", "Alice", "xstream", "xstream2", "0", "0").Result()
+			Expect(err).To(MatchError("NOGROUP No such key 'xstream2' or consumer group 'xgroup' in XREADGROUP with GROUP option"))
+		})
+
+		It("should XClaim and XAck", func() {
+			_, err := client.XAdd("xstream", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.XAdd("xstream", "*", map[string]interface{}{
+				"a": 1,
+				"b": 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = client.XGroupCreate("xstream", "xgroup1", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			maps1, err := client.XReadGroupN("xgroup1", "Alice", 1, "xstream", ">").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps1["xstream"])).To(Equal(1))
+
+			maps2, err := client.XReadGroupN("xgroup1", "Bob", 1, "xstream", ">").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(maps2["xstream"])).To(Equal(1))
+
+			result, err := client.XPending("xstream", "xgroup1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Count).To(Equal(int64(2)))
+			Expect(result.ConsumerInfo["Alice"]).To(Equal("1"))
+			Expect(result.ConsumerInfo["Bob"]).To(Equal("1"))
+
+			consumer_infos, err := client.XPendingLimit("xstream", "xgroup1", "-", "+", 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(consumer_infos)).To(Equal(1))
+			consumer_infos, err = client.XPendingLimit("xstream", "xgroup1", "-", "+", 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(consumer_infos)).To(Equal(2))
+			consumer_infos, err = client.XPendingLimitConsumer("xstream", "xgroup1", "-", "+", 2, "Alice").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(consumer_infos)).To(Equal(1))
+
+			n, err := client.XAck("xstream", "xgroup1", maps1["xstream"][0].Id).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			result, err = client.XPending("xstream", "xgroup1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Count).To(Equal(int64(1)))
+			Expect(result.ConsumerInfo["Alice"]).To(Equal(""))
+			Expect(result.ConsumerInfo["Bob"]).To(Equal("1"))
+
+			entries, err := client.XClaim("xstream", "xgroup1", "Alice", 0, redis.XClaim{}, maps2["xstream"][0].Id).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(entries)).To(Equal(1))
+
+			result, err = client.XPending("xstream", "xgroup1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Count).To(Equal(int64(1)))
+			Expect(result.ConsumerInfo["Alice"]).To(Equal("1"))
+			Expect(result.ConsumerInfo["Bob"]).To(Equal(""))
+
+			ids, err := client.XClaimJustID("xstream", "xgroup1", "Alice", 0, redis.XClaim{
+				Idle:       100,
+				RetryCount: 10,
+				Force:      true,
+			}, maps2["xstream"][0].Id).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(ids)).To(Equal(1))
+			consumer_infos, err = client.XPendingLimitConsumer("xstream", "xgroup1", "-", "+", 2, "Alice").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(consumer_infos)).To(Equal(1))
+			Expect(consumer_infos[0].Idle).To(BeNumerically(">=", 100))
+			Expect(consumer_infos[0].Idle).To(BeNumerically("<", 110))
+			Expect(consumer_infos[0].RetryCount).To(Equal(int64(10)))
+
+			_, err = client.XGroupDeleteConsumer("xstream", "xgroup1", "Alice").Result()
+			Expect(err).NotTo(HaveOccurred())
+			result, err = client.XPending("xstream", "xgroup1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Count).To(Equal(int64(0)))
+		})
+	})
 
 	Describe("sorted sets", func() {
 

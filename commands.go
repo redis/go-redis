@@ -171,6 +171,35 @@ type Cmdable interface {
 	SRem(key string, members ...interface{}) *IntCmd
 	SUnion(keys ...string) *StringSliceCmd
 	SUnionStore(destination string, keys ...string) *IntCmd
+	XAdd(key string, stream_id string, fields map[string]interface{}) *StringCmd
+	XAddMax(key string, stream_id string, max int64, fields map[string]interface{}) *StringCmd
+	XAddMaxApprox(key string, stream_id string, max int64, fields map[string]interface{}) *StringCmd
+	XRange(key string, start, end string) *StreamEntrySliceCmd
+	XRangeN(key string, start, end string, count int) *StreamEntrySliceCmd
+	XRevRange(key string, start, end string) *StreamEntrySliceCmd
+	XRevRangeN(key string, start, end string, count int) *StreamEntrySliceCmd
+	XRead(keys ...string) *StreamEntrySliceMapCmd
+	XReadBlock(time_ms int64, keys ...string) *StreamEntrySliceMapCmd
+	XReadN(count int64, keys ...string) *StreamEntrySliceMapCmd
+	XReadBlockN(time_ms, count int64, keys ...string) *StreamEntrySliceMapCmd
+	XGroupCreate(key string, group_name, start string) *StatusCmd
+	XGroupSetID(key string, group_name, start string) *StatusCmd
+	XGroupDestroy(key string, group_name string) *IntCmd
+	XGroupDeleteConsumer(key string, group_name, consumer_name string) *IntCmd
+	XReadGroup(group_name, consumer_name string, keys ...string) *StreamEntrySliceMapCmd
+	XReadGroupN(group_name, consumer_name string, count int64, keys ...string) *StreamEntrySliceMapCmd
+	XReadGroupBlock(group_name, consumer_name string, time_ms int64, keys ...string) *StreamEntrySliceMapCmd
+	XReadGroupBlockN(group_name, consumer_name string, time_ms, count int64, keys ...string) *StreamEntrySliceMapCmd
+	XAck(key, group_name string, stream_ids ...string) *IntCmd
+	XPending(key, group_name string) *XPendingInfoCmd
+	XPendingLimit(key, group_name string, start, end string, count int64) *XPendingConsumerInfoSliceCmd
+	XPendingLimitConsumer(key, group_name string, start, end string, count int64, consumer_name string) *XPendingConsumerInfoSliceCmd
+	XClaim(key, group_name, consumer_name string, idle_ms int64, opt XClaim, stream_ids ...string) *StreamEntrySliceCmd
+	XClaimJustID(key, group_name, consumer_name string, idle_ms int64, opt XClaim, stream_ids ...string) *StringSliceCmd
+	XLen(key string) *IntCmd
+	XTrim(key string, max int64) *IntCmd
+	XTrimApprox(key string, max int64) *IntCmd
+	XDel(key string, stream_ids ...string) *IntCmd
 	ZAdd(key string, members ...Z) *IntCmd
 	ZAddNX(key string, members ...Z) *IntCmd
 	ZAddXX(key string, members ...Z) *IntCmd
@@ -1274,6 +1303,298 @@ func (c *cmdable) SUnionStore(destination string, keys ...string) *IntCmd {
 	args[1] = destination
 	for i, key := range keys {
 		args[2+i] = key
+	}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+//------------------------------------------------------------------------------
+
+// X represents stream
+func (c *cmdable) XAdd(key string, stream_id string, fields map[string]interface{}) *StringCmd {
+	args := make([]interface{}, 3+len(fields)*2)
+	args[0] = "xadd"
+	args[1] = key
+	args[2] = stream_id
+	i := 3
+	for k, v := range fields {
+		args[i] = k
+		args[i+1] = v
+		i += 2
+	}
+	cmd := NewStringCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XAddMax(key string, stream_id string, max int64, fields map[string]interface{}) *StringCmd {
+	args := make([]interface{}, 5+len(fields)*2)
+	copy(args, []interface{}{"xadd", key, "maxlen", max, stream_id})
+	i := 5
+	for k, v := range fields {
+		args[i] = k
+		args[i+1] = v
+		i += 2
+	}
+	cmd := NewStringCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XAddMaxApprox(key string, stream_id string, max int64, fields map[string]interface{}) *StringCmd {
+	args := make([]interface{}, 6+len(fields)*2)
+	copy(args, []interface{}{"xadd", key, "maxlen", "~", max, stream_id})
+	i := 6
+	for k, v := range fields {
+		args[i] = k
+		args[i+1] = v
+		i += 2
+	}
+	cmd := NewStringCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRange(key string, start, end string) *StreamEntrySliceCmd {
+	args := []interface{}{"xrange", key, start, end}
+	cmd := NewStreamEntrySliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRangeN(key string, start, end string, count int) *StreamEntrySliceCmd {
+	args := []interface{}{"xrange", key, start, end, "count", count}
+	cmd := NewStreamEntrySliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRevRange(key string, start, end string) *StreamEntrySliceCmd {
+	args := []interface{}{"xrevrange", key, start, end}
+	cmd := NewStreamEntrySliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRevRangeN(key string, start, end string, count int) *StreamEntrySliceCmd {
+	args := []interface{}{"xrevrange", key, start, end, "count", count}
+	cmd := NewStreamEntrySliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRead(keys ...string) *StreamEntrySliceMapCmd {
+	args := []interface{}{"xread", "streams"}
+	for _, v := range keys {
+		args = append(args, v)
+	}
+	cmd := NewStreamEntrySliceMapCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XReadBlock(time_ms int64, keys ...string) *StreamEntrySliceMapCmd {
+	args := []interface{}{"xread", "block", time_ms, "streams"}
+	for _, v := range keys {
+		args = append(args, v)
+	}
+	cmd := NewStreamEntrySliceMapCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XReadN(count int64, keys ...string) *StreamEntrySliceMapCmd {
+	args := []interface{}{"xread", "count", count, "streams"}
+	for _, v := range keys {
+		args = append(args, v)
+	}
+	cmd := NewStreamEntrySliceMapCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XReadBlockN(time_ms, count int64, keys ...string) *StreamEntrySliceMapCmd {
+	args := []interface{}{"xread", "block", time_ms, "count", count, "streams"}
+	for _, v := range keys {
+		args = append(args, v)
+	}
+	cmd := NewStreamEntrySliceMapCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XGroupCreate(key, group_name, start string) *StatusCmd {
+	args := []interface{}{"xgroup", "create", key, group_name, start}
+	cmd := NewStatusCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XGroupSetID(key, group_name, start string) *StatusCmd {
+	args := []interface{}{"xgroup", "setid", key, group_name, start}
+	cmd := NewStatusCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XGroupDestroy(key, group_name string) *IntCmd {
+	args := []interface{}{"xgroup", "destroy", key, group_name}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XGroupDeleteConsumer(key, group_name, consumer_name string) *IntCmd {
+	args := []interface{}{"xgroup", "delconsumer", key, group_name, consumer_name}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XReadGroup(group_name, consumer_name string, keys ...string) *StreamEntrySliceMapCmd {
+	args := []interface{}{"xreadgroup", "group", group_name, consumer_name, "streams"}
+	for _, v := range keys {
+		args = append(args, v)
+	}
+	cmd := NewStreamEntrySliceMapCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XReadGroupBlock(group_name, consumer_name string, time_ms int64, keys ...string) *StreamEntrySliceMapCmd {
+	args := []interface{}{"xreadgroup", "group", group_name, consumer_name, "block", time_ms, "streams"}
+	for _, v := range keys {
+		args = append(args, v)
+	}
+	cmd := NewStreamEntrySliceMapCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XReadGroupBlockN(group_name, consumer_name string, time_ms, count int64, keys ...string) *StreamEntrySliceMapCmd {
+	args := []interface{}{"xreadgroup", "group", group_name, consumer_name, "block", time_ms, "count", count, "streams"}
+	for _, v := range keys {
+		args = append(args, v)
+	}
+	cmd := NewStreamEntrySliceMapCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XReadGroupN(group_name, consumer_name string, count int64, keys ...string) *StreamEntrySliceMapCmd {
+	args := []interface{}{"xreadgroup", "group", group_name, consumer_name, "count", count, "streams"}
+	for _, v := range keys {
+		args = append(args, v)
+	}
+	cmd := NewStreamEntrySliceMapCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XAck(key, group_name string, stream_ids ...string) *IntCmd {
+	args := []interface{}{"xack", key, group_name}
+	for _, v := range stream_ids {
+		args = append(args, v)
+	}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XPending(key, group_name string) *XPendingInfoCmd {
+	args := []interface{}{"xpending", key, group_name}
+	cmd := NewXPendingInfoCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XPendingLimit(key, group_name string, start, stop string, count int64) *XPendingConsumerInfoSliceCmd {
+	args := []interface{}{"xpending", key, group_name, start, stop, count}
+	cmd := NewXPendingConsumerInfoSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XPendingLimitConsumer(key, group_name string, start, stop string, count int64, consumer_name string) *XPendingConsumerInfoSliceCmd {
+	args := []interface{}{"xpending", key, group_name, start, stop, count, consumer_name}
+	cmd := NewXPendingConsumerInfoSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+type XClaim struct {
+	Idle, Time, RetryCount int64
+	Force                  bool
+}
+
+func xClaimOpt(opt XClaim) []interface{} {
+	args := []interface{}{}
+	if opt.Idle > 0 {
+		args = append(args, "idle", opt.Idle)
+	}
+	if opt.Time > 0 {
+		args = append(args, "time", opt.Time)
+	}
+	if opt.RetryCount > 0 {
+		args = append(args, "retrycount", opt.RetryCount)
+	}
+	if opt.Force {
+		args = append(args, "force")
+	}
+	return args
+}
+
+func (c *cmdable) XClaimJustID(key, group_name, consumer_name string, idle_ms int64, opt XClaim, stream_ids ...string) *StringSliceCmd {
+	args := []interface{}{"xclaim", key, group_name, consumer_name, idle_ms}
+	opt_args := xClaimOpt(opt)
+	for _, v := range stream_ids {
+		args = append(args, v)
+	}
+	args = append(args, opt_args...)
+	args = append(args, "justid")
+	cmd := NewStringSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XClaim(key, group_name, consumer_name string, idle_ms int64, opt XClaim, stream_ids ...string) *StreamEntrySliceCmd {
+	args := []interface{}{"xclaim", key, group_name, consumer_name, idle_ms}
+	opt_args := xClaimOpt(opt)
+	for _, v := range stream_ids {
+		args = append(args, v)
+	}
+	args = append(args, opt_args...)
+	cmd := NewStreamEntrySliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XLen(key string) *IntCmd {
+	args := []interface{}{"xlen", key}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XTrim(key string, max int64) *IntCmd {
+	args := []interface{}{"xtrim", key, "maxlen", max}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XTrimApprox(key string, max int64) *IntCmd {
+	args := []interface{}{"xtrim", key, "maxlen", "~", max}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XDel(key string, stream_ids ...string) *IntCmd {
+	args := []interface{}{"xdel", key}
+	for _, v := range stream_ids {
+		args = append(args, v)
 	}
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
