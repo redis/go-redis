@@ -65,12 +65,15 @@ func (r *Reader) ReadN(n int) ([]byte, error) {
 }
 
 func (r *Reader) ReadLine() ([]byte, error) {
-	line, isPrefix, err := r.src.ReadLine()
-	if err != nil {
-		return nil, err
-	}
-	if isPrefix {
-		return nil, bufio.ErrBufferFull
+	line := make([]byte, 0)
+	for isPrefix := true; isPrefix; {
+		var lineSegment []byte
+		var err error
+		lineSegment, isPrefix, err = r.src.ReadLine()
+		if err != nil {
+			return nil, err
+		}
+		line = append(line, lineSegment...)
 	}
 	if len(line) == 0 {
 		return nil, fmt.Errorf("redis: reply is empty")
