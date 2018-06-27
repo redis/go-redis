@@ -85,12 +85,12 @@ func (opt *Options) init() {
 	}
 	if opt.Dialer == nil {
 		opt.Dialer = func() (net.Conn, error) {
-			conn, err := net.DialTimeout(opt.Network, opt.Addr, opt.DialTimeout)
-			if opt.TLSConfig == nil || err != nil {
-				return conn, err
+			netDialer := &net.Dialer{Timeout: opt.DialTimeout}
+			if opt.TLSConfig == nil {
+				return netDialer.Dial(opt.Network, opt.Addr)
+			} else {
+				return tls.DialWithDialer(netDialer, opt.Network, opt.Addr, opt.TLSConfig)
 			}
-			t := tls.Client(conn, opt.TLSConfig)
-			return t, t.Handshake()
 		}
 	}
 	if opt.PoolSize == 0 {
