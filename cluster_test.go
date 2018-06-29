@@ -310,7 +310,8 @@ var _ = Describe("ClusterClient", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			for _, master := range cluster.masters() {
+			client.ForEachMaster(func(master *redis.Client) error {
+				defer GinkgoRecover()
 				Eventually(func() string {
 					return master.Info("keyspace").Val()
 				}, 30*time.Second).Should(Or(
@@ -318,7 +319,8 @@ var _ = Describe("ClusterClient", func() {
 					ContainSubstring("keys=29"),
 					ContainSubstring("keys=40"),
 				))
-			}
+				return nil
+			})
 		})
 
 		It("supports Watch", func() {
@@ -745,6 +747,59 @@ var _ = Describe("ClusterClient", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			err = client.Close()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		assertClusterClient()
+	})
+
+	Describe("ClusterClient with ClusterSlots", func() {
+		BeforeEach(func() {
+			failover = true
+
+			opt = redisClusterOptions()
+			opt.ClusterSlots = func() ([]redis.ClusterSlot, error) {
+				slots := []redis.ClusterSlot{{
+					Start: 0,
+					End:   4999,
+					Nodes: []redis.ClusterNode{{
+						Addr: ":" + ringShard1Port,
+					}},
+				}, {
+					Start: 5000,
+					End:   9999,
+					Nodes: []redis.ClusterNode{{
+						Addr: ":" + ringShard2Port,
+					}},
+				}, {
+					Start: 10000,
+					End:   16383,
+					Nodes: []redis.ClusterNode{{
+						Addr: ":" + ringShard3Port,
+					}},
+				}}
+				return slots, nil
+			}
+			client = cluster.clusterClient(opt)
+
+			err := client.ForEachMaster(func(master *redis.Client) error {
+				return master.FlushDB().Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.ForEachSlave(func(slave *redis.Client) error {
+				Eventually(func() int64 {
+					return client.DBSize().Val()
+				}, 30*time.Second).Should(Equal(int64(0)))
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			failover = false
+
+			err := client.Close()
 			Expect(err).NotTo(HaveOccurred())
 		})
 

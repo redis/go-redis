@@ -71,6 +71,48 @@ func ExampleNewClusterClient() {
 	client.Ping()
 }
 
+// Following example creates a cluster from 2 master nodes and 2 slave nodes
+// without using cluster mode or Redis Sentinel.
+func ExampleNewClusterClient_manualSetup() {
+	loadClusterSlots := func() ([]redis.ClusterSlot, error) {
+		slots := []redis.ClusterSlot{
+			// First node with 1 master and 1 slave.
+			{
+				Start: 0,
+				End:   8191,
+				Nodes: []redis.ClusterNode{{
+					Addr: ":7000", // master
+				}, {
+					Addr: ":8000", // 1st slave
+				}},
+			},
+			// Second node with 1 master and 1 slave.
+			{
+				Start: 8192,
+				End:   16383,
+				Nodes: []redis.ClusterNode{{
+					Addr: ":7001", // master
+				}, {
+					Addr: ":8001", // 1st slave
+				}},
+			},
+		}
+		return slots, nil
+	}
+
+	client := redis.NewClusterClient(&redis.ClusterOptions{
+		ClusterSlots:  loadClusterSlots,
+		RouteRandomly: true,
+	})
+	client.Ping()
+
+	// ReloadState can be used to update cluster topography.
+	err := client.ReloadState()
+	if err != nil {
+		panic(err)
+	}
+}
+
 func ExampleNewRing() {
 	client := redis.NewRing(&redis.RingOptions{
 		Addrs: map[string]string{

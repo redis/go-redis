@@ -27,6 +27,7 @@ const (
 const (
 	ringShard1Port = "6390"
 	ringShard2Port = "6391"
+	ringShard3Port = "6392"
 )
 
 const (
@@ -39,7 +40,7 @@ const (
 
 var (
 	redisMain                                                *redisProcess
-	ringShard1, ringShard2                                   *redisProcess
+	ringShard1, ringShard2, ringShard3                       *redisProcess
 	sentinelMaster, sentinelSlave1, sentinelSlave2, sentinel *redisProcess
 )
 
@@ -60,6 +61,9 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	ringShard2, err = startRedis(ringShard2Port)
+	Expect(err).NotTo(HaveOccurred())
+
+	ringShard3, err = startRedis(ringShard3Port)
 	Expect(err).NotTo(HaveOccurred())
 
 	sentinelMaster, err = startRedis(sentinelMasterPort)
@@ -84,6 +88,7 @@ var _ = AfterSuite(func() {
 
 	Expect(ringShard1.Close()).NotTo(HaveOccurred())
 	Expect(ringShard2.Close()).NotTo(HaveOccurred())
+	Expect(ringShard3.Close()).NotTo(HaveOccurred())
 
 	Expect(sentinel.Close()).NotTo(HaveOccurred())
 	Expect(sentinelSlave1.Close()).NotTo(HaveOccurred())
