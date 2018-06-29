@@ -15,6 +15,7 @@ Supports:
 - [Timeouts](https://godoc.org/github.com/go-redis/redis#Options).
 - [Redis Sentinel](https://godoc.org/github.com/go-redis/redis#NewFailoverClient).
 - [Redis Cluster](https://godoc.org/github.com/go-redis/redis#NewClusterClient).
+- [Cluster of Redis Servers](https://godoc.org/github.com/go-redis/redis#example-NewClusterClient--ManualSetup) without using cluster mode and Redis Sentinel.
 - [Ring](https://godoc.org/github.com/go-redis/redis#NewRing).
 - [Instrumentation](https://godoc.org/github.com/go-redis/redis#ex-package--Instrumentation).
 - [Cache friendly](https://github.com/go-redis/cache).
