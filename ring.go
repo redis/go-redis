@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-redis/redis/internal"
-	"github.com/go-redis/redis/internal/consistenthash"
-	"github.com/go-redis/redis/internal/hashtag"
-	"github.com/go-redis/redis/internal/pool"
+	"github.com/bukalapak/redis/internal"
+	"github.com/bukalapak/redis/internal/consistenthash"
+	"github.com/bukalapak/redis/internal/hashtag"
+	"github.com/bukalapak/redis/internal/pool"
 )
 
 const nreplicas = 100
