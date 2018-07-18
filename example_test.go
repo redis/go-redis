@@ -74,7 +74,10 @@ func ExampleNewClusterClient() {
 // Following example creates a cluster from 2 master nodes and 2 slave nodes
 // without using cluster mode or Redis Sentinel.
 func ExampleNewClusterClient_manualSetup() {
-	loadClusterSlots := func() ([]redis.ClusterSlot, error) {
+	// clusterSlots returns cluster slots information.
+	// It can use service like ZooKeeper to maintain configuration information
+	// and Cluster.ReloadState to manually trigger state reloading.
+	clusterSlots := func() ([]redis.ClusterSlot, error) {
 		slots := []redis.ClusterSlot{
 			// First node with 1 master and 1 slave.
 			{
@@ -101,12 +104,13 @@ func ExampleNewClusterClient_manualSetup() {
 	}
 
 	client := redis.NewClusterClient(&redis.ClusterOptions{
-		ClusterSlots:  loadClusterSlots,
+		ClusterSlots:  clusterSlots,
 		RouteRandomly: true,
 	})
 	client.Ping()
 
-	// ReloadState can be used to update cluster topography.
+	// ReloadState reloads cluster state. It calls ClusterSlots func
+	// to get cluster slots information.
 	err := client.ReloadState()
 	if err != nil {
 		panic(err)

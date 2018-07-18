@@ -42,9 +42,11 @@ type ClusterOptions struct {
 	// It automatically enables ReadOnly.
 	RouteRandomly bool
 
-	// Optional function that is used to load cluster slots information.
+	// Optional function that returns cluster slots information.
 	// It is useful to manually create cluster of standalone Redis servers
-	// or load-balance read/write operations between master and slaves.
+	// and load-balance read/write operations between master and slaves.
+	// It can use service like ZooKeeper to maintain configuration information
+	// and Cluster.ReloadState to manually trigger state reloading.
 	ClusterSlots func() ([]ClusterSlot, error)
 
 	// Following options are copied from Options struct.
@@ -676,7 +678,8 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return c
 }
 
-// ReloadState loads cluster slots information to update cluster topography.
+// ReloadState reloads cluster state. It calls ClusterSlots func
+// to get cluster slots information.
 func (c *ClusterClient) ReloadState() error {
 	_, err := c.state.Reload()
 	return err
