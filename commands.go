@@ -1376,7 +1376,7 @@ func (c *cmdable) XReadExt(opt *XReadExt) *XStreamSliceCmd {
 			a = append(a, "count")
 			a = append(a, opt.Count)
 		}
-		if opt.Block > 0 {
+		if opt.Block >= 0 {
 			a = append(a, "block")
 			a = append(a, int64(opt.Block/time.Millisecond))
 		}
@@ -1394,6 +1394,7 @@ func (c *cmdable) XReadExt(opt *XReadExt) *XStreamSliceCmd {
 func (c *cmdable) XRead(streams ...string) *XStreamSliceCmd {
 	return c.XReadExt(&XReadExt{
 		Streams: streams,
+		Block:   -1,
 	})
 }
 
@@ -1401,6 +1402,7 @@ func (c *cmdable) XReadN(count int64, streams ...string) *XStreamSliceCmd {
 	return c.XReadExt(&XReadExt{
 		Streams: streams,
 		Count:   count,
+		Block:   -1,
 	})
 }
 
