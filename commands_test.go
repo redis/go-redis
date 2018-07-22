@@ -244,14 +244,31 @@ var _ = Describe("Commands", func() {
 	Describe("debugging", func() {
 
 		It("should DebugObject", func() {
-			debug := client.DebugObject("foo")
-			Expect(debug.Err()).To(HaveOccurred())
-			Expect(debug.Err().Error()).To(Equal("ERR no such key"))
+			err := client.DebugObject("foo").Err()
+			Expect(err).To(MatchError("ERR no such key"))
 
-			client.Set("foo", "bar", 0)
-			debug = client.DebugObject("foo")
-			Expect(debug.Err()).NotTo(HaveOccurred())
-			Expect(debug.Val()).To(ContainSubstring(`serializedlength:4`))
+			err = client.Set("foo", "bar", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			s, err := client.DebugObject("foo").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s).To(ContainSubstring("serializedlength:4"))
+		})
+
+		It("should MemoryUsage", func() {
+			err := client.MemoryUsage("foo").Err()
+			Expect(err).To(Equal(redis.Nil))
+
+			err = client.Set("foo", "bar", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			n, err := client.MemoryUsage("foo").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(52)))
+
+			n, err = client.MemoryUsage("foo", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(52)))
 		})
 
 	})

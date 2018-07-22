@@ -62,6 +62,7 @@ type Cmdable interface {
 	TxPipelined(fn func(Pipeliner) error) ([]Cmder, error)
 	TxPipeline() Pipeliner
 
+	Command() *CommandsInfoCmd
 	ClientGetName() *StringCmd
 	Echo(message interface{}) *StringCmd
 	Ping() *StatusCmd
@@ -275,9 +276,9 @@ type Cmdable interface {
 	GeoRadiusByMemberRO(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
 	GeoDist(key string, member1, member2, unit string) *FloatCmd
 	GeoHash(key string, members ...string) *StringSliceCmd
-	Command() *CommandsInfoCmd
 	ReadOnly() *StatusCmd
 	ReadWrite() *StatusCmd
+	MemoryUsage(key string, samples ...int) *IntCmd
 }
 
 type StatefulCmdable interface {
@@ -354,6 +355,12 @@ func (c *statefulCmdable) SwapDB(index1, index2 int) *StatusCmd {
 }
 
 //------------------------------------------------------------------------------
+
+func (c *cmdable) Command() *CommandsInfoCmd {
+	cmd := NewCommandsInfoCmd("command")
+	c.process(cmd)
+	return cmd
+}
 
 func (c *cmdable) Del(keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
@@ -2301,8 +2308,15 @@ func (c *cmdable) GeoPos(key string, members ...string) *GeoPosCmd {
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) Command() *CommandsInfoCmd {
-	cmd := NewCommandsInfoCmd("command")
+func (c *cmdable) MemoryUsage(key string, samples ...int) *IntCmd {
+	args := []interface{}{"memory", "usage", key}
+	if len(samples) > 0 {
+		if len(samples) != 1 {
+			panic("MemoryUsage expects single sample count")
+		}
+		args = append(args, "SAMPLES", samples[0])
+	}
+	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
 }
