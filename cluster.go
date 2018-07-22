@@ -1274,7 +1274,7 @@ func (c *ClusterClient) remapCmds(cmds []Cmder, failedCmds map[*clusterNode][]Cm
 func (c *ClusterClient) pipelineProcessCmds(
 	node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
 ) error {
-	_ = cn.SetWriteTimeout(c.opt.WriteTimeout)
+	cn.SetWriteTimeout(c.opt.WriteTimeout)
 
 	err := writeCmd(cn, cmds...)
 	if err != nil {
@@ -1284,7 +1284,7 @@ func (c *ClusterClient) pipelineProcessCmds(
 	}
 
 	// Set read timeout for all commands.
-	_ = cn.SetReadTimeout(c.opt.ReadTimeout)
+	cn.SetReadTimeout(c.opt.ReadTimeout)
 
 	return c.pipelineReadCmds(cn, cmds, failedCmds)
 }
