@@ -51,13 +51,19 @@ func (s *clusterScenario) addrs() []string {
 func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
 	opt.Addrs = s.addrs()
 	client := redis.NewClusterClient(opt)
-	Eventually(func() bool {
+	err := eventually(func() error {
 		state, err := client.GetState()
 		if err != nil {
-			return false
+			return err
 		}
-		return state.IsConsistent()
-	}, 30*time.Second).Should(BeTrue())
+		if !state.IsConsistent() {
+			return fmt.Errorf("cluster state is not conistent")
+		}
+		return nil
+	}, 30*time.Second)
+	if err != nil {
+		panic(err)
+	}
 	return client
 }
 
@@ -935,18 +941,21 @@ var _ = Describe("ClusterClient timeout", func() {
 
 //------------------------------------------------------------------------------
 
-func BenchmarkRedisClusterPing(b *testing.B) {
-	if testing.Short() {
-		b.Skip("skipping in short mode")
-	}
-
-	cluster := &clusterScenario{
+func newClusterScenario() *clusterScenario {
+	return &clusterScenario{
 		ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
 		nodeIds:   make([]string, 6),
 		processes: make(map[string]*redisProcess, 6),
 		clients:   make(map[string]*redis.Client, 6),
 	}
+}
 
+func BenchmarkRedisClusterPing(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping in short mode")
+	}
+
+	cluster := newClusterScenario()
 	if err := startCluster(cluster); err != nil {
 		b.Fatal(err)
 	}
@@ -959,7 +968,8 @@ func BenchmarkRedisClusterPing(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := client.Ping().Err(); err != nil {
+			err := client.Ping().Err()
+			if err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -971,13 +981,7 @@ func BenchmarkRedisClusterSetString(b *testing.B) {
 		b.Skip("skipping in short mode")
 	}
 
-	cluster := &clusterScenario{
-		ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
-		nodeIds:   make([]string, 6),
-		processes: make(map[string]*redisProcess, 6),
-		clients:   make(map[string]*redis.Client, 6),
-	}
-
+	cluster := newClusterScenario()
 	if err := startCluster(cluster); err != nil {
 		b.Fatal(err)
 	}
@@ -992,9 +996,34 @@ func BenchmarkRedisClusterSetString(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := client.Set("key", value, 0).Err(); err != nil {
+			err := client.Set("key", value, 0).Err()
+			if err != nil {
 				b.Fatal(err)
 			}
 		}
 	})
+}
+
+func BenchmarkRedisClusterReloadState(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping in short mode")
+	}
+
+	cluster := newClusterScenario()
+	if err := startCluster(cluster); err != nil {
+		b.Fatal(err)
+	}
+	defer stopCluster(cluster)
+
+	client := cluster.clusterClient(redisClusterOptions())
+	defer client.Close()
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		err := client.ReloadState()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
 }

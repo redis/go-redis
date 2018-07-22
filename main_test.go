@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -169,24 +168,28 @@ func perform(n int, cbs ...func(int)) {
 }
 
 func eventually(fn func() error, timeout time.Duration) error {
-	var exit int32
 	errCh := make(chan error)
 	done := make(chan struct{})
+	exit := make(chan struct{})
 
 	go func() {
-		defer GinkgoRecover()
-
-		for atomic.LoadInt32(&exit) == 0 {
+		for {
 			err := fn()
 			if err == nil {
 				close(done)
 				return
 			}
+
 			select {
 			case errCh <- err:
 			default:
 			}
-			time.Sleep(timeout / 100)
+
+			select {
+			case <-exit:
+				return
+			case <-time.After(timeout / 100):
+			}
 		}
 	}()
 
@@ -194,7 +197,7 @@ func eventually(fn func() error, timeout time.Duration) error {
 	case <-done:
 		return nil
 	case <-time.After(timeout):
-		atomic.StoreInt32(&exit, 1)
+		close(exit)
 		select {
 		case err := <-errCh:
 			return err

@@ -170,6 +170,8 @@ type ringShards struct {
 
 func newRingShards(opt *RingOptions) *ringShards {
 	return &ringShards{
+		opt: opt,
+
 		hash:   newConsistentHash(opt),
 		shards: make(map[string]*ringShard),
 	}

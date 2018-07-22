@@ -49,7 +49,7 @@ func (c *ClusterClient) Nodes(key string) ([]*clusterNode, error) {
 	}
 
 	slot := hashtag.Slot(key)
-	nodes := state.slots[slot]
+	nodes := state.slotNodes(slot)
 	if len(nodes) != 2 {
 		return nil, fmt.Errorf("slot=%d does not have enough nodes: %v", slot, nodes)
 	}
