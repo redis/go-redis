@@ -99,3 +99,15 @@ func (w *WriteBuffer) AppendBytes(p []byte) {
 	w.b = append(w.b, p...)
 	w.b = append(w.b, '\r', '\n')
 }
+
+func formatInt(n int64) string {
+	return strconv.FormatInt(n, 10)
+}
+
+func formatUint(u uint64) string {
+	return strconv.FormatUint(u, 10)
+}
+
+func formatFloat(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}

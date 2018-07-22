@@ -47,22 +47,24 @@ func (cn *Conn) IsStale(timeout time.Duration) bool {
 	return timeout > 0 && time.Since(cn.UsedAt()) > timeout
 }
 
-func (cn *Conn) SetReadTimeout(timeout time.Duration) error {
+func (cn *Conn) SetReadTimeout(timeout time.Duration) {
 	now := time.Now()
 	cn.SetUsedAt(now)
 	if timeout > 0 {
-		return cn.netConn.SetReadDeadline(now.Add(timeout))
+		cn.netConn.SetReadDeadline(now.Add(timeout))
+	} else {
+		cn.netConn.SetReadDeadline(noDeadline)
 	}
-	return cn.netConn.SetReadDeadline(noDeadline)
 }
 
-func (cn *Conn) SetWriteTimeout(timeout time.Duration) error {
+func (cn *Conn) SetWriteTimeout(timeout time.Duration) {
 	now := time.Now()
 	cn.SetUsedAt(now)
 	if timeout > 0 {
-		return cn.netConn.SetWriteDeadline(now.Add(timeout))
+		cn.netConn.SetWriteDeadline(now.Add(timeout))
+	} else {
+		cn.netConn.SetWriteDeadline(noDeadline)
 	}
-	return cn.netConn.SetWriteDeadline(noDeadline)
 }
 
 func (cn *Conn) Write(b []byte) (int, error) {

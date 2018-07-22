@@ -91,11 +91,11 @@ func (r *Reader) ReadReply(m MultiBulkParse) (interface{}, error) {
 	case ErrorReply:
 		return nil, ParseErrorReply(line)
 	case StatusReply:
-		return parseStatusValue(line), nil
+		return parseTmpStatusReply(line), nil
 	case IntReply:
 		return util.ParseInt(line[1:], 10, 64)
 	case StringReply:
-		return r.readTmpBytesValue(line)
+		return r.readTmpBytesReply(line)
 	case ArrayReply:
 		n, err := parseArrayLen(line)
 		if err != nil {
@@ -130,9 +130,9 @@ func (r *Reader) ReadTmpBytesReply() ([]byte, error) {
 	case ErrorReply:
 		return nil, ParseErrorReply(line)
 	case StringReply:
-		return r.readTmpBytesValue(line)
+		return r.readTmpBytesReply(line)
 	case StatusReply:
-		return parseStatusValue(line), nil
+		return parseTmpStatusReply(line), nil
 	default:
 		return nil, fmt.Errorf("redis: can't parse string reply: %.100q", line)
 	}
@@ -229,7 +229,7 @@ func (r *Reader) ReadScanReply() ([]string, uint64, error) {
 	return keys, cursor, err
 }
 
-func (r *Reader) readTmpBytesValue(line []byte) ([]byte, error) {
+func (r *Reader) readTmpBytesReply(line []byte) ([]byte, error) {
 	if isNilReply(line) {
 		return nil, Nil
 	}
@@ -294,18 +294,6 @@ func readN(r io.Reader, b []byte, n int) ([]byte, error) {
 	return b, nil
 }
 
-func formatInt(n int64) string {
-	return strconv.FormatInt(n, 10)
-}
-
-func formatUint(u uint64) string {
-	return strconv.FormatUint(u, 10)
-}
-
-func formatFloat(f float64) string {
-	return strconv.FormatFloat(f, 'f', -1, 64)
-}
-
 func isNilReply(b []byte) bool {
 	return len(b) == 3 &&
 		(b[0] == StringReply || b[0] == ArrayReply) &&
@@ -316,7 +304,7 @@ func ParseErrorReply(line []byte) error {
 	return RedisError(string(line[1:]))
 }
 
-func parseStatusValue(line []byte) []byte {
+func parseTmpStatusReply(line []byte) []byte {
 	return line[1:]
 }
 
