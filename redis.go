@@ -176,9 +176,8 @@ func (c *baseClient) retryBackoff(attempt int) time.Duration {
 
 func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
 	if timeout := cmd.readTimeout(); timeout != nil {
-		return *timeout
+		return readTimeout(*timeout)
 	}
-
 	return c.opt.ReadTimeout
 }
 
