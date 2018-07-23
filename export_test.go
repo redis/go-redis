@@ -3,7 +3,6 @@ package redis
 import (
 	"fmt"
 	"net"
-	"time"
 
 	"github.com/go-redis/redis/internal/hashtag"
 	"github.com/go-redis/redis/internal/pool"
@@ -15,10 +14,6 @@ func (c *baseClient) Pool() pool.Pooler {
 
 func (c *PubSub) SetNetConn(netConn net.Conn) {
 	c.cn = pool.NewConn(netConn)
-}
-
-func (c *PubSub) ReceiveMessageTimeout(timeout time.Duration) (*Message, error) {
-	return c.receiveMessage(timeout)
 }
 
 func (c *ClusterClient) LoadState() (*clusterState, error) {

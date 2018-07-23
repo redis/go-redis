@@ -1500,11 +1500,9 @@ func (c *ClusterClient) txPipelineReadQueued(
 }
 
 func (c *ClusterClient) pubSub(channels []string) *PubSub {
-	opt := c.opt.clientOptions()
-
 	var node *clusterNode
-	return &PubSub{
-		opt: opt,
+	pubsub := &PubSub{
+		opt: c.opt.clientOptions(),
 
 		newConn: func(channels []string) (*pool.Conn, error) {
 			if node == nil {
@@ -1527,6 +1525,8 @@ func (c *ClusterClient) pubSub(channels []string) *PubSub {
 			return node.Client.connPool.CloseConn(cn)
 		},
 	}
+	pubsub.init()
+	return pubsub
 }
 
 // Subscribe subscribes the client to the specified channels.
