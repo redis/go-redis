@@ -21,10 +21,6 @@ func (c *PubSub) ReceiveMessageTimeout(timeout time.Duration) (*Message, error) 
 	return c.receiveMessage(timeout)
 }
 
-func (c *ClusterClient) GetState() (*clusterState, error) {
-	return c.state.Get()
-}
-
 func (c *ClusterClient) LoadState() (*clusterState, error) {
 	return c.loadState()
 }
