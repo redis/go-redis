@@ -49,21 +49,51 @@ func (s *clusterScenario) addrs() []string {
 }
 
 func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
+	var errBadState = fmt.Errorf("cluster state is not consistent")
+
 	opt.Addrs = s.addrs()
 	client := redis.NewClusterClient(opt)
+
 	err := eventually(func() error {
-		state, err := client.GetState()
+		if opt.ClusterSlots != nil {
+			return nil
+		}
+
+		state, err := client.LoadState()
 		if err != nil {
 			return err
 		}
+
 		if !state.IsConsistent() {
-			return fmt.Errorf("cluster state is not conistent")
+			return errBadState
 		}
+
+		if len(state.Masters) < 3 {
+			return errBadState
+		}
+		for _, master := range state.Masters {
+			s := master.Client.Info("replication").Val()
+			if !strings.Contains(s, "role:master") {
+				return errBadState
+			}
+		}
+
+		if len(state.Slaves) < 3 {
+			return errBadState
+		}
+		for _, slave := range state.Slaves {
+			s := slave.Client.Info("replication").Val()
+			if !strings.Contains(s, "role:slave") {
+				return errBadState
+			}
+		}
+
 		return nil
 	}, 30*time.Second)
 	if err != nil {
 		panic(err)
 	}
+
 	return client
 }
 
@@ -703,7 +733,7 @@ var _ = Describe("ClusterClient", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			state, err := client.GetState()
+			state, err := client.LoadState()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state.IsConsistent()).To(BeTrue())
 
