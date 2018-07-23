@@ -220,6 +220,7 @@ type Cmdable interface {
 	BgRewriteAOF() *StatusCmd
 	BgSave() *StatusCmd
 	ClientKill(ipPort string) *StatusCmd
+	ClientKillByFilter(keys ...string) *IntCmd
 	ClientList() *StringCmd
 	ClientPause(dur time.Duration) *BoolCmd
 	ConfigGet(parameter string) *SliceCmd
@@ -1818,6 +1819,20 @@ func (c *cmdable) BgSave() *StatusCmd {
 
 func (c *cmdable) ClientKill(ipPort string) *StatusCmd {
 	cmd := NewStatusCmd("client", "kill", ipPort)
+	c.process(cmd)
+	return cmd
+}
+
+// ClientKillByFilter is new style synx, while the ClientKill is old
+// CLIENT KILL <option> [value] ... <option> [value]
+func (c *cmdable) ClientKillByFilter(keys ...string) *IntCmd {
+	args := make([]interface{}, 2+len(keys))
+	args[0] = "client"
+	args[1] = "kill"
+	for i, key := range keys {
+		args[2+i] = key
+	}
+	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
 }

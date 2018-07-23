@@ -115,6 +115,12 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(""))
 		})
 
+		It("should ClientKillByFilter", func() {
+			r := client.ClientKillByFilter("TYPE", "test")
+			Expect(r.Err()).To(MatchError("ERR Unknown client type 'test'"))
+			Expect(r.Val()).To(Equal(int64(0)))
+		})
+
 		It("should ClientPause", func() {
 			err := client.ClientPause(time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())
