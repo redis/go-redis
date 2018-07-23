@@ -255,45 +255,6 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Payload).To(Equal("world"))
 	})
 
-	It("should ReceiveMessage after timeout", func() {
-		timeout := 100 * time.Millisecond
-
-		pubsub := client.Subscribe("mychannel")
-		defer pubsub.Close()
-
-		subscr, err := pubsub.ReceiveTimeout(time.Second)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(subscr).To(Equal(&redis.Subscription{
-			Kind:    "subscribe",
-			Channel: "mychannel",
-			Count:   1,
-		}))
-
-		done := make(chan bool, 1)
-		go func() {
-			defer GinkgoRecover()
-			defer func() {
-				done <- true
-			}()
-
-			time.Sleep(timeout + 100*time.Millisecond)
-			n, err := client.Publish("mychannel", "hello").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(1)))
-		}()
-
-		msg, err := pubsub.ReceiveMessageTimeout(timeout)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(msg.Channel).To(Equal("mychannel"))
-		Expect(msg.Payload).To(Equal("hello"))
-
-		Eventually(done).Should(Receive())
-
-		stats := client.PoolStats()
-		Expect(stats.Hits).To(Equal(uint32(1)))
-		Expect(stats.Misses).To(Equal(uint32(1)))
-	})
-
 	It("returns an error when subscribe fails", func() {
 		pubsub := client.Subscribe()
 		defer pubsub.Close()
@@ -316,24 +277,27 @@ var _ = Describe("PubSub", func() {
 			writeErr: io.EOF,
 		})
 
-		done := make(chan bool, 1)
+		step := make(chan struct{}, 3)
+
 		go func() {
 			defer GinkgoRecover()
-			defer func() {
-				done <- true
-			}()
 
-			time.Sleep(100 * time.Millisecond)
+			Eventually(step).Should(Receive())
 			err := client.Publish("mychannel", "hello").Err()
 			Expect(err).NotTo(HaveOccurred())
+			step <- struct{}{}
 		}()
+
+		_, err := pubsub.ReceiveMessage()
+		Expect(err).To(Equal(io.EOF))
+		step <- struct{}{}
 
 		msg, err := pubsub.ReceiveMessage()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal("hello"))
 
-		Eventually(done).Should(Receive())
+		Eventually(step).Should(Receive())
 	}
 
 	It("Subscribe should reconnect on ReceiveMessage error", func() {
@@ -380,9 +344,9 @@ var _ = Describe("PubSub", func() {
 
 			_, err := pubsub.ReceiveMessage()
 			Expect(err).To(HaveOccurred())
-			Expect(err).To(SatisfyAny(
-				MatchError("redis: client is closed"),
-				MatchError("use of closed network connection"), // Go 1.4
+			Expect(err.Error()).To(SatisfyAny(
+				Equal("redis: client is closed"),
+				ContainSubstring("use of closed network connection"),
 			))
 		}()
 
@@ -406,7 +370,7 @@ var _ = Describe("PubSub", func() {
 			defer GinkgoRecover()
 			defer wg.Done()
 
-			time.Sleep(2 * timeout)
+			time.Sleep(timeout)
 
 			err := pubsub.Subscribe("mychannel")
 			Expect(err).NotTo(HaveOccurred())
@@ -417,7 +381,7 @@ var _ = Describe("PubSub", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}()
 
-		msg, err := pubsub.ReceiveMessageTimeout(timeout)
+		msg, err := pubsub.ReceiveMessage()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal("hello"))

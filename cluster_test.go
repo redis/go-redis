@@ -453,7 +453,7 @@ var _ = Describe("ClusterClient", func() {
 
 						ttl := cmds[(i*2)+1].(*redis.DurationCmd)
 						dur := time.Duration(i+1) * time.Hour
-						Expect(ttl.Val()).To(BeNumerically("~", dur, 10*time.Second))
+						Expect(ttl.Val()).To(BeNumerically("~", dur, 30*time.Second))
 					}
 				})
 

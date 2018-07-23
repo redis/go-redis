@@ -165,6 +165,7 @@ type ringShards struct {
 	hash   *consistenthash.Map
 	shards map[string]*ringShard // read only
 	list   []*ringShard          // read only
+	len    int
 	closed bool
 }
 
@@ -269,15 +270,25 @@ func (c *ringShards) Heartbeat(frequency time.Duration) {
 // rebalance removes dead shards from the Ring.
 func (c *ringShards) rebalance() {
 	hash := newConsistentHash(c.opt)
+	var shardsNum int
 	for name, shard := range c.shards {
 		if shard.IsUp() {
 			hash.Add(name)
+			shardsNum++
 		}
 	}
 
 	c.mu.Lock()
 	c.hash = hash
+	c.len = shardsNum
 	c.mu.Unlock()
+}
+
+func (c *ringShards) Len() int {
+	c.mu.RLock()
+	l := c.len
+	c.mu.RUnlock()
+	return l
 }
 
 func (c *ringShards) Close() error {
@@ -396,6 +407,11 @@ func (c *Ring) PoolStats() *PoolStats {
 		acc.FreeConns += s.FreeConns
 	}
 	return &acc
+}
+
+// Len returns the current number of shards in the ring.
+func (c *Ring) Len() int {
+	return c.shards.Len()
 }
 
 // Subscribe subscribes the client to the specified channels.
