@@ -85,7 +85,10 @@ func (opt *Options) init() {
 	}
 	if opt.Dialer == nil {
 		opt.Dialer = func() (net.Conn, error) {
-			netDialer := &net.Dialer{Timeout: opt.DialTimeout}
+			netDialer := &net.Dialer{
+				Timeout:   opt.DialTimeout,
+				KeepAlive: 5 * time.Minute,
+			}
 			if opt.TLSConfig == nil {
 				return netDialer.Dial(opt.Network, opt.Addr)
 			} else {
