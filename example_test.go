@@ -324,26 +324,18 @@ func ExamplePubSub() {
 	pubsub := client.Subscribe("mychannel1")
 	defer pubsub.Close()
 
-	// Wait for subscription to be created before publishing message.
-	subscr, err := pubsub.ReceiveTimeout(time.Second)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(subscr)
+	// Go channel which receives messages.
+	ch := pubsub.Channel()
 
-	err = client.Publish("mychannel1", "hello").Err()
-	if err != nil {
-		panic(err)
-	}
-
-	msg, err := pubsub.ReceiveMessage()
+	// Publish a message.
+	err := client.Publish("mychannel1", "hello").Err()
 	if err != nil {
 		panic(err)
 	}
 
+	msg := <-ch
 	fmt.Println(msg.Channel, msg.Payload)
-	// Output: subscribe: mychannel1
-	// mychannel1 hello
+	// Output: mychannel1 hello
 }
 
 func ExamplePubSub_Receive() {
