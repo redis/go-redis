@@ -46,14 +46,15 @@ func firstCmdsErr(cmds []Cmder) error {
 }
 
 func writeCmd(cn *pool.Conn, cmds ...Cmder) error {
-	cn.Wb.Reset()
+	cn.WB.Reset()
 	for _, cmd := range cmds {
-		if err := cn.Wb.Append(cmd.Args()); err != nil {
+		err := cn.WB.Append(cmd.Args())
+		if err != nil {
 			return err
 		}
 	}
 
-	_, err := cn.Write(cn.Wb.Bytes())
+	_, err := cn.Write(cn.WB.Flush())
 	return err
 }
 
