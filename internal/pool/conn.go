@@ -14,7 +14,7 @@ type Conn struct {
 	netConn net.Conn
 
 	Rd *proto.Reader
-	Wb *proto.WriteBuffer
+	WB *proto.WriteBuffer
 
 	Inited bool
 	usedAt atomic.Value
@@ -23,9 +23,10 @@ type Conn struct {
 func NewConn(netConn net.Conn) *Conn {
 	cn := &Conn{
 		netConn: netConn,
-		Wb:      proto.NewWriteBuffer(),
 	}
-	cn.Rd = proto.NewReader(cn.netConn)
+	buf := proto.NewBufioReader(netConn)
+	cn.Rd = proto.NewReader(buf)
+	cn.WB = proto.NewWriteBuffer(buf)
 	cn.SetUsedAt(time.Now())
 	return cn
 }

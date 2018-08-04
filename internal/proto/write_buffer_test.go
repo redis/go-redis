@@ -1,6 +1,7 @@
 package proto_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ var _ = Describe("WriteBuffer", func() {
 	var buf *proto.WriteBuffer
 
 	BeforeEach(func() {
-		buf = proto.NewWriteBuffer()
+		buf = proto.NewWriteBuffer(proto.NewBufioReader(strings.NewReader("")))
 	})
 
 	It("should reset", func() {
@@ -53,7 +54,7 @@ var _ = Describe("WriteBuffer", func() {
 })
 
 func BenchmarkWriteBuffer_Append(b *testing.B) {
-	buf := proto.NewWriteBuffer()
+	buf := proto.NewWriteBuffer(proto.NewBufioReader(strings.NewReader("")))
 	args := []interface{}{"hello", "world", "foo", "bar"}
 
 	for i := 0; i < b.N; i++ {

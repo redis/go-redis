@@ -404,4 +404,33 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal(string(bigVal)))
 	})
+
+	It("supports concurrent Ping and Receive", func() {
+		const N = 100
+
+		pubsub := client.Subscribe("mychannel")
+		defer pubsub.Close()
+
+		done := make(chan struct{})
+		go func() {
+			defer GinkgoRecover()
+
+			for i := 0; i < N; i++ {
+				_, err := pubsub.ReceiveTimeout(5 * time.Second)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			close(done)
+		}()
+
+		for i := 0; i < N; i++ {
+			err := pubsub.Ping()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			Fail("timeout")
+		}
+	})
 })

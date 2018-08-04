@@ -32,14 +32,12 @@ func (e RedisError) Error() string { return string(e) }
 type MultiBulkParse func(*Reader, int64) (interface{}, error)
 
 type Reader struct {
-	src *bufio.Reader
-	buf []byte
+	src *BufioReader
 }
 
-func NewReader(rd io.Reader) *Reader {
+func NewReader(src *BufioReader) *Reader {
 	return &Reader{
-		src: bufio.NewReader(rd),
-		buf: make([]byte, 4096),
+		src: src,
 	}
 }
 
@@ -47,21 +45,12 @@ func (r *Reader) Reset(rd io.Reader) {
 	r.src.Reset(rd)
 }
 
-func (r *Reader) PeekBuffered() []byte {
-	if n := r.src.Buffered(); n != 0 {
-		b, _ := r.src.Peek(n)
-		return b
-	}
-	return nil
+func (r *Reader) Bytes() []byte {
+	return r.src.Bytes()
 }
 
 func (r *Reader) ReadN(n int) ([]byte, error) {
-	b, err := readN(r.src, r.buf, n)
-	if err != nil {
-		return nil, err
-	}
-	r.buf = b
-	return b, nil
+	return r.src.ReadN(n)
 }
 
 func (r *Reader) ReadLine() ([]byte, error) {
@@ -260,38 +249,6 @@ func (r *Reader) ReadUint() (uint64, error) {
 		return 0, err
 	}
 	return util.ParseUint(b, 10, 64)
-}
-
-// --------------------------------------------------------------------
-
-func readN(r io.Reader, b []byte, n int) ([]byte, error) {
-	if n == 0 && b == nil {
-		return make([]byte, 0), nil
-	}
-
-	if cap(b) >= n {
-		b = b[:n]
-		_, err := io.ReadFull(r, b)
-		return b, err
-	}
-	b = b[:cap(b)]
-
-	pos := 0
-	for pos < n {
-		diff := n - len(b)
-		if diff > bytesAllocLimit {
-			diff = bytesAllocLimit
-		}
-		b = append(b, make([]byte, diff)...)
-
-		nn, err := io.ReadFull(r, b[pos:])
-		if err != nil {
-			return nil, err
-		}
-		pos += nn
-	}
-
-	return b, nil
 }
 
 func isNilReply(b []byte) bool {

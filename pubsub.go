@@ -46,7 +46,7 @@ func (c *PubSub) conn() (*pool.Conn, error) {
 	return cn, err
 }
 
-func (c *PubSub) _conn(channels []string) (*pool.Conn, error) {
+func (c *PubSub) _conn(newChannels []string) (*pool.Conn, error) {
 	if c.closed {
 		return nil, pool.ErrClosed
 	}
@@ -55,10 +55,14 @@ func (c *PubSub) _conn(channels []string) (*pool.Conn, error) {
 		return c.cn, nil
 	}
 
+	channels := mapKeys(c.channels)
+	channels = append(channels, newChannels...)
+
 	cn, err := c.newConn(channels)
 	if err != nil {
 		return nil, err
 	}
+	cn.WB.AllocBuffer()
 
 	if err := c.resubscribe(cn); err != nil {
 		_ = c.closeConn(cn)
@@ -69,20 +73,23 @@ func (c *PubSub) _conn(channels []string) (*pool.Conn, error) {
 	return cn, nil
 }
 
+func (c *PubSub) writeCmd(cn *pool.Conn, cmd Cmder) error {
+	cn.SetWriteTimeout(c.opt.WriteTimeout)
+	return writeCmd(cn, cmd)
+}
+
 func (c *PubSub) resubscribe(cn *pool.Conn) error {
 	var firstErr error
 
 	if len(c.channels) > 0 {
-		channels := mapKeys(c.channels)
-		err := c._subscribe(cn, "subscribe", channels...)
+		err := c._subscribe(cn, "subscribe", mapKeys(c.channels))
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 
 	if len(c.patterns) > 0 {
-		patterns := mapKeys(c.patterns)
-		err := c._subscribe(cn, "psubscribe", patterns...)
+		err := c._subscribe(cn, "psubscribe", mapKeys(c.patterns))
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -101,16 +108,16 @@ func mapKeys(m map[string]struct{}) []string {
 	return s
 }
 
-func (c *PubSub) _subscribe(cn *pool.Conn, redisCmd string, channels ...string) error {
-	args := make([]interface{}, 1+len(channels))
-	args[0] = redisCmd
-	for i, channel := range channels {
-		args[1+i] = channel
+func (c *PubSub) _subscribe(
+	cn *pool.Conn, redisCmd string, channels []string,
+) error {
+	args := make([]interface{}, 0, 1+len(channels))
+	args = append(args, redisCmd)
+	for _, channel := range channels {
+		args = append(args, channel)
 	}
 	cmd := NewSliceCmd(args...)
-
-	cn.SetWriteTimeout(c.opt.WriteTimeout)
-	return writeCmd(cn, cmd)
+	return c.writeCmd(cn, cmd)
 }
 
 func (c *PubSub) releaseConn(cn *pool.Conn, err error, allowTimeout bool) {
@@ -166,8 +173,8 @@ func (c *PubSub) Subscribe(channels ...string) error {
 	if c.channels == nil {
 		c.channels = make(map[string]struct{})
 	}
-	for _, channel := range channels {
-		c.channels[channel] = struct{}{}
+	for _, s := range channels {
+		c.channels[s] = struct{}{}
 	}
 	return err
 }
@@ -182,8 +189,8 @@ func (c *PubSub) PSubscribe(patterns ...string) error {
 	if c.patterns == nil {
 		c.patterns = make(map[string]struct{})
 	}
-	for _, pattern := range patterns {
-		c.patterns[pattern] = struct{}{}
+	for _, s := range patterns {
+		c.patterns[s] = struct{}{}
 	}
 	return err
 }
@@ -194,10 +201,10 @@ func (c *PubSub) Unsubscribe(channels ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	err := c.subscribe("unsubscribe", channels...)
 	for _, channel := range channels {
 		delete(c.channels, channel)
 	}
+	err := c.subscribe("unsubscribe", channels...)
 	return err
 }
 
@@ -207,10 +214,10 @@ func (c *PubSub) PUnsubscribe(patterns ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	err := c.subscribe("punsubscribe", patterns...)
 	for _, pattern := range patterns {
 		delete(c.patterns, pattern)
 	}
+	err := c.subscribe("punsubscribe", patterns...)
 	return err
 }
 
@@ -220,7 +227,7 @@ func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
 		return err
 	}
 
-	err = c._subscribe(cn, redisCmd, channels...)
+	err = c._subscribe(cn, redisCmd, channels)
 	c._releaseConn(cn, err, false)
 	return err
 }
@@ -237,8 +244,7 @@ func (c *PubSub) Ping(payload ...string) error {
 		return err
 	}
 
-	cn.SetWriteTimeout(c.opt.WriteTimeout)
-	err = writeCmd(cn, cmd)
+	err = c.writeCmd(cn, cmd)
 	c.releaseConn(cn, err, false)
 	return err
 }
