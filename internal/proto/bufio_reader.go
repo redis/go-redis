@@ -1,7 +1,6 @@
 package proto
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -145,10 +144,7 @@ func (b *BufioReader) ReadSlice(delim byte) (line []byte, err error) {
 
 		// Buffer full?
 		if b.Buffered() >= len(b.buf) {
-			b.r = b.w
-			line = b.buf
-			err = bufio.ErrBufferFull
-			break
+			b.grow(len(b.buf) + defaultBufSize)
 		}
 
 		b.fill() // buffer is not full
@@ -157,23 +153,8 @@ func (b *BufioReader) ReadSlice(delim byte) (line []byte, err error) {
 	return
 }
 
-func (b *BufioReader) ReadLine() (line []byte, isPrefix bool, err error) {
+func (b *BufioReader) ReadLine() (line []byte, err error) {
 	line, err = b.ReadSlice('\n')
-	if err == bufio.ErrBufferFull {
-		// Handle the case where "\r\n" straddles the buffer.
-		if len(line) > 0 && line[len(line)-1] == '\r' {
-			// Put the '\r' back on buf and drop it from line.
-			// Let the next call to ReadLine check for "\r\n".
-			if b.r == 0 {
-				// should be unreachable
-				panic("bufio: tried to rewind past start of buffer")
-			}
-			b.r--
-			line = line[:len(line)-1]
-		}
-		return line, true, nil
-	}
-
 	if len(line) == 0 {
 		if err != nil {
 			line = nil
@@ -192,6 +173,18 @@ func (b *BufioReader) ReadLine() (line []byte, isPrefix bool, err error) {
 	return
 }
 
+func (b *BufioReader) ReadByte() (byte, error) {
+	for b.r == b.w {
+		if b.err != nil {
+			return 0, b.readErr()
+		}
+		b.fill() // buffer is empty
+	}
+	c := b.buf[b.r]
+	b.r++
+	return c, nil
+}
+
 func (b *BufioReader) ReadN(n int) ([]byte, error) {
 	b.grow(n)
 	for b.Buffered() < n {
@@ -200,12 +193,6 @@ func (b *BufioReader) ReadN(n int) ([]byte, error) {
 			buf := b.buf[b.r:b.w]
 			b.r = b.w
 			return buf, b.readErr()
-		}
-
-		// Buffer is full?
-		if b.Buffered() >= len(b.buf) {
-			b.r = b.w
-			return b.buf, bufio.ErrBufferFull
 		}
 
 		b.fill()
