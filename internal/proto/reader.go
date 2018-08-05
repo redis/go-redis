@@ -1,7 +1,6 @@
 package proto
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"strconv"
@@ -54,12 +53,9 @@ func (r *Reader) ReadN(n int) ([]byte, error) {
 }
 
 func (r *Reader) ReadLine() ([]byte, error) {
-	line, isPrefix, err := r.src.ReadLine()
+	line, err := r.src.ReadLine()
 	if err != nil {
 		return nil, err
-	}
-	if isPrefix {
-		return nil, bufio.ErrBufferFull
 	}
 	if len(line) == 0 {
 		return nil, fmt.Errorf("redis: reply is empty")
