@@ -31,10 +31,10 @@ func (e RedisError) Error() string { return string(e) }
 type MultiBulkParse func(*Reader, int64) (interface{}, error)
 
 type Reader struct {
-	src *BufioReader
+	src *ElasticBufReader
 }
 
-func NewReader(src *BufioReader) *Reader {
+func NewReader(src *ElasticBufReader) *Reader {
 	return &Reader{
 		src: src,
 	}

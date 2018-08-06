@@ -8,49 +8,56 @@ import (
 
 const defaultBufSize = 4096
 
-type BufioReader struct {
+// ElasticBufReader is like bufio.Reader but instead of returning ErrBufferFull
+// it automatically grows the buffer.
+type ElasticBufReader struct {
 	buf  []byte
 	rd   io.Reader // reader provided by the client
 	r, w int       // buf read and write positions
 	err  error
 }
 
-func NewBufioReader(rd io.Reader) *BufioReader {
-	r := new(BufioReader)
-	r.reset(make([]byte, defaultBufSize), rd)
-	return r
+func NewElasticBufReader(rd io.Reader) *ElasticBufReader {
+	return &ElasticBufReader{
+		buf: make([]byte, defaultBufSize),
+		rd:  rd,
+	}
 }
 
-func (b *BufioReader) Reset(rd io.Reader) {
-	b.reset(b.buf, rd)
+func (b *ElasticBufReader) Reset(rd io.Reader) {
+	b.rd = rd
+	b.r, b.w = 0, 0
+	b.err = nil
 }
 
-func (b *BufioReader) Buffer() []byte {
+func (b *ElasticBufReader) Buffer() []byte {
 	return b.buf
 }
 
-func (b *BufioReader) ResetBuffer(buf []byte) {
-	b.reset(buf, b.rd)
+func (b *ElasticBufReader) ResetBuffer(buf []byte) {
+	b.buf = buf
+	b.r, b.w = 0, 0
+	b.err = nil
 }
 
-func (b *BufioReader) reset(buf []byte, rd io.Reader) {
-	*b = BufioReader{
+func (b *ElasticBufReader) reset(buf []byte, rd io.Reader) {
+	*b = ElasticBufReader{
 		buf: buf,
 		rd:  rd,
 	}
 }
 
 // Buffered returns the number of bytes that can be read from the current buffer.
-func (b *BufioReader) Buffered() int { return b.w - b.r }
+func (b *ElasticBufReader) Buffered() int { return b.w - b.r }
 
-func (b *BufioReader) Bytes() []byte {
+func (b *ElasticBufReader) Bytes() []byte {
 	return b.buf[b.r:b.w]
 }
 
 var errNegativeRead = errors.New("bufio: reader returned negative count from Read")
 
 // fill reads a new chunk into the buffer.
-func (b *BufioReader) fill() {
+func (b *ElasticBufReader) fill() {
 	// Slide existing data to beginning.
 	if b.r > 0 {
 		copy(b.buf, b.buf[b.r:b.w])
@@ -81,13 +88,13 @@ func (b *BufioReader) fill() {
 	b.err = io.ErrNoProgress
 }
 
-func (b *BufioReader) readErr() error {
+func (b *ElasticBufReader) readErr() error {
 	err := b.err
 	b.err = nil
 	return err
 }
 
-func (b *BufioReader) Read(p []byte) (n int, err error) {
+func (b *ElasticBufReader) Read(p []byte) (n int, err error) {
 	n = len(p)
 	if n == 0 {
 		return 0, b.readErr()
@@ -125,7 +132,7 @@ func (b *BufioReader) Read(p []byte) (n int, err error) {
 	return n, nil
 }
 
-func (b *BufioReader) ReadSlice(delim byte) (line []byte, err error) {
+func (b *ElasticBufReader) ReadSlice(delim byte) (line []byte, err error) {
 	for {
 		// Search buffer.
 		if i := bytes.IndexByte(b.buf[b.r:b.w], delim); i >= 0 {
@@ -153,7 +160,7 @@ func (b *BufioReader) ReadSlice(delim byte) (line []byte, err error) {
 	return
 }
 
-func (b *BufioReader) ReadLine() (line []byte, err error) {
+func (b *ElasticBufReader) ReadLine() (line []byte, err error) {
 	line, err = b.ReadSlice('\n')
 	if len(line) == 0 {
 		if err != nil {
@@ -173,7 +180,7 @@ func (b *BufioReader) ReadLine() (line []byte, err error) {
 	return
 }
 
-func (b *BufioReader) ReadByte() (byte, error) {
+func (b *ElasticBufReader) ReadByte() (byte, error) {
 	for b.r == b.w {
 		if b.err != nil {
 			return 0, b.readErr()
@@ -185,7 +192,7 @@ func (b *BufioReader) ReadByte() (byte, error) {
 	return c, nil
 }
 
-func (b *BufioReader) ReadN(n int) ([]byte, error) {
+func (b *ElasticBufReader) ReadN(n int) ([]byte, error) {
 	b.grow(n)
 	for b.Buffered() < n {
 		// Pending error?
@@ -203,7 +210,7 @@ func (b *BufioReader) ReadN(n int) ([]byte, error) {
 	return buf, nil
 }
 
-func (b *BufioReader) grow(n int) {
+func (b *ElasticBufReader) grow(n int) {
 	// Slide existing data to beginning.
 	if b.r > 0 {
 		copy(b.buf, b.buf[b.r:b.w])

@@ -24,7 +24,7 @@ func NewConn(netConn net.Conn) *Conn {
 	cn := &Conn{
 		netConn: netConn,
 	}
-	buf := proto.NewBufioReader(netConn)
+	buf := proto.NewElasticBufReader(netConn)
 	cn.Rd = proto.NewReader(buf)
 	cn.WB = proto.NewWriteBuffer(buf)
 	cn.SetUsedAt(time.Now())

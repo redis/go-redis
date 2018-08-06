@@ -7,11 +7,11 @@ import (
 )
 
 type WriteBuffer struct {
-	rb  *BufioReader
+	rb  *ElasticBufReader
 	buf []byte
 }
 
-func NewWriteBuffer(rb *BufioReader) *WriteBuffer {
+func NewWriteBuffer(rb *ElasticBufReader) *WriteBuffer {
 	return &WriteBuffer{
 		rb: rb,
 	}

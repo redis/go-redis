@@ -15,7 +15,7 @@ var _ = Describe("WriteBuffer", func() {
 	var buf *proto.WriteBuffer
 
 	BeforeEach(func() {
-		buf = proto.NewWriteBuffer(proto.NewBufioReader(strings.NewReader("")))
+		buf = proto.NewWriteBuffer(proto.NewElasticBufReader(strings.NewReader("")))
 	})
 
 	It("should reset", func() {
@@ -54,7 +54,7 @@ var _ = Describe("WriteBuffer", func() {
 })
 
 func BenchmarkWriteBuffer_Append(b *testing.B) {
-	buf := proto.NewWriteBuffer(proto.NewBufioReader(strings.NewReader("")))
+	buf := proto.NewWriteBuffer(proto.NewElasticBufReader(strings.NewReader("")))
 	args := []interface{}{"hello", "world", "foo", "bar"}
 
 	for i := 0; i < b.N; i++ {

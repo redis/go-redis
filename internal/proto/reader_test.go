@@ -12,7 +12,7 @@ import (
 )
 
 func newReader(s string) *proto.Reader {
-	return proto.NewReader(proto.NewBufioReader(strings.NewReader(s)))
+	return proto.NewReader(proto.NewElasticBufReader(strings.NewReader(s)))
 }
 
 var _ = Describe("Reader", func() {
@@ -67,7 +67,7 @@ func benchmarkParseReply(b *testing.B, reply string, m proto.MultiBulkParse, wan
 	for i := 0; i < b.N; i++ {
 		buf.WriteString(reply)
 	}
-	p := proto.NewReader(proto.NewBufioReader(buf))
+	p := proto.NewReader(proto.NewElasticBufReader(buf))
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
