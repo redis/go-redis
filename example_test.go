@@ -140,16 +140,16 @@ func ExampleClient() {
 	}
 	fmt.Println("key", val)
 
-	val2, err := client.Get("key2").Result()
+	val2, err := client.Get("missing_key").Result()
 	if err == redis.Nil {
-		fmt.Println("key2 does not exist")
+		fmt.Println("missing_key does not exist")
 	} else if err != nil {
 		panic(err)
 	} else {
-		fmt.Println("key2", val2)
+		fmt.Println("missing_key", val2)
 	}
 	// Output: key value
-	// key2 does not exist
+	// missing_key does not exist
 }
 
 func ExampleClient_Set() {

@@ -44,6 +44,14 @@ func (r *Reader) Reset(rd io.Reader) {
 	r.src.Reset(rd)
 }
 
+func (r *Reader) Buffer() []byte {
+	return r.src.Buffer()
+}
+
+func (r *Reader) ResetBuffer(buf []byte) {
+	r.src.ResetBuffer(buf)
+}
+
 func (r *Reader) Bytes() []byte {
 	return r.src.Bytes()
 }

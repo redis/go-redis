@@ -62,7 +62,7 @@ func (c *PubSub) _conn(newChannels []string) (*pool.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	cn.WB.AllocBuffer()
+	cn.EnableConcurrentReadWrite()
 
 	if err := c.resubscribe(cn); err != nil {
 		_ = c.closeConn(cn)

@@ -7,14 +7,11 @@ import (
 )
 
 type WriteBuffer struct {
-	rb  *ElasticBufReader
 	buf []byte
 }
 
-func NewWriteBuffer(rb *ElasticBufReader) *WriteBuffer {
-	return &WriteBuffer{
-		rb: rb,
-	}
+func NewWriteBuffer() *WriteBuffer {
+	return &WriteBuffer{}
 }
 
 func (w *WriteBuffer) Len() int {
@@ -25,26 +22,16 @@ func (w *WriteBuffer) Bytes() []byte {
 	return w.buf
 }
 
-func (w *WriteBuffer) AllocBuffer() {
-	w.rb = nil
-	w.buf = make([]byte, defaultBufSize)
-}
-
 func (w *WriteBuffer) Reset() {
-	if w.rb != nil {
-		w.buf = w.rb.Buffer()[:0]
-	} else {
-		w.buf = w.buf[:0]
-	}
+	w.buf = w.buf[:0]
 }
 
-func (w *WriteBuffer) Flush() []byte {
-	b := w.buf
-	if w.rb != nil {
-		w.rb.ResetBuffer(w.buf[:cap(w.buf)])
-		w.buf = nil
-	}
-	return b
+func (w *WriteBuffer) Buffer() []byte {
+	return w.buf[:cap(w.buf)]
+}
+
+func (w *WriteBuffer) ResetBuffer(buf []byte) {
+	w.buf = buf[:0]
 }
 
 func (w *WriteBuffer) Append(args []interface{}) error {
