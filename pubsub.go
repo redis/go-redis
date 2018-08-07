@@ -435,7 +435,7 @@ func (c *PubSub) initChannel() {
 		timer := time.NewTimer(timeout)
 		timer.Stop()
 
-		var healthy bool
+		healthy := true
 		var pingErr error
 		for {
 			timer.Reset(timeout)
@@ -446,9 +446,9 @@ func (c *PubSub) initChannel() {
 					<-timer.C
 				}
 			case <-timer.C:
+				pingErr = c.Ping()
 				if healthy {
 					healthy = false
-					pingErr = c.Ping()
 				} else {
 					c.mu.Lock()
 					c._reconnect(pingErr)
