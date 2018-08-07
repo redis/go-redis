@@ -48,7 +48,9 @@ func (b *ElasticBufReader) reset(buf []byte, rd io.Reader) {
 }
 
 // Buffered returns the number of bytes that can be read from the current buffer.
-func (b *ElasticBufReader) Buffered() int { return b.w - b.r }
+func (b *ElasticBufReader) Buffered() int {
+	return b.w - b.r
+}
 
 func (b *ElasticBufReader) Bytes() []byte {
 	return b.buf[b.r:b.w]
@@ -211,6 +213,10 @@ func (b *ElasticBufReader) ReadN(n int) ([]byte, error) {
 }
 
 func (b *ElasticBufReader) grow(n int) {
+	if b.w-b.r >= n {
+		return
+	}
+
 	// Slide existing data to beginning.
 	if b.r > 0 {
 		copy(b.buf, b.buf[b.r:b.w])
