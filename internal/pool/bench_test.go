@@ -1,76 +1,93 @@
 package pool_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/go-redis/redis/internal/pool"
 )
 
-func benchmarkPoolGetPut(b *testing.B, poolSize int) {
-	connPool := pool.NewConnPool(&pool.Options{
-		Dialer:             dummyDialer,
-		PoolSize:           poolSize,
-		PoolTimeout:        time.Second,
-		IdleTimeout:        time.Hour,
-		IdleCheckFrequency: time.Hour,
-	})
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			cn, err := connPool.Get()
-			if err != nil {
-				b.Fatal(err)
-			}
-			connPool.Put(cn)
-		}
-	})
+type poolGetPutBenchmark struct {
+	poolSize int
 }
 
-func BenchmarkPoolGetPut10Conns(b *testing.B) {
-	benchmarkPoolGetPut(b, 10)
+func (bm poolGetPutBenchmark) String() string {
+	return fmt.Sprintf("pool=%d", bm.poolSize)
 }
 
-func BenchmarkPoolGetPut100Conns(b *testing.B) {
-	benchmarkPoolGetPut(b, 100)
+func BenchmarkPoolGetPut(b *testing.B) {
+	benchmarks := []poolGetPutBenchmark{
+		{1},
+		{2},
+		{8},
+		{32},
+		{64},
+		{128},
+	}
+	for _, bm := range benchmarks {
+		b.Run(bm.String(), func(b *testing.B) {
+			connPool := pool.NewConnPool(&pool.Options{
+				Dialer:             dummyDialer,
+				PoolSize:           bm.poolSize,
+				PoolTimeout:        time.Second,
+				IdleTimeout:        time.Hour,
+				IdleCheckFrequency: time.Hour,
+			})
+
+			b.ResetTimer()
+
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					cn, err := connPool.Get()
+					if err != nil {
+						b.Fatal(err)
+					}
+					connPool.Put(cn)
+				}
+			})
+		})
+	}
 }
 
-func BenchmarkPoolGetPut1000Conns(b *testing.B) {
-	benchmarkPoolGetPut(b, 1000)
+type poolGetRemoveBenchmark struct {
+	poolSize int
 }
 
-func benchmarkPoolGetRemove(b *testing.B, poolSize int) {
-	connPool := pool.NewConnPool(&pool.Options{
-		Dialer:             dummyDialer,
-		PoolSize:           poolSize,
-		PoolTimeout:        time.Second,
-		IdleTimeout:        time.Hour,
-		IdleCheckFrequency: time.Hour,
-	})
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			cn, err := connPool.Get()
-			if err != nil {
-				b.Fatal(err)
-			}
-			connPool.Remove(cn)
-		}
-	})
+func (bm poolGetRemoveBenchmark) String() string {
+	return fmt.Sprintf("pool=%d", bm.poolSize)
 }
 
-func BenchmarkPoolGetRemove10Conns(b *testing.B) {
-	benchmarkPoolGetRemove(b, 10)
-}
+func BenchmarkPoolGetRemove(b *testing.B) {
+	benchmarks := []poolGetRemoveBenchmark{
+		{1},
+		{2},
+		{8},
+		{32},
+		{64},
+		{128},
+	}
+	for _, bm := range benchmarks {
+		b.Run(bm.String(), func(b *testing.B) {
+			connPool := pool.NewConnPool(&pool.Options{
+				Dialer:             dummyDialer,
+				PoolSize:           bm.poolSize,
+				PoolTimeout:        time.Second,
+				IdleTimeout:        time.Hour,
+				IdleCheckFrequency: time.Hour,
+			})
 
-func BenchmarkPoolGetRemove100Conns(b *testing.B) {
-	benchmarkPoolGetRemove(b, 100)
-}
+			b.ResetTimer()
 
-func BenchmarkPoolGetRemove1000Conns(b *testing.B) {
-	benchmarkPoolGetRemove(b, 1000)
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					cn, err := connPool.Get()
+					if err != nil {
+						b.Fatal(err)
+					}
+					connPool.Remove(cn)
+				}
+			})
+		})
+	}
 }
