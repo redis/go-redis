@@ -19,6 +19,7 @@ type Conn struct {
 	concurrentReadWrite bool
 
 	Inited bool
+	pooled bool
 	usedAt atomic.Value
 }
 
