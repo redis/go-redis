@@ -59,6 +59,9 @@ type Options struct {
 	// Maximum number of socket connections.
 	// Default is 10 connections per every CPU as reported by runtime.NumCPU.
 	PoolSize int
+	// Minimum number of idle connections which is useful when establishing
+	// new connection is slow.
+	MinIdleConns int
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
 	// Default is ReadTimeout + 1 second.
@@ -69,7 +72,8 @@ type Options struct {
 	IdleTimeout time.Duration
 	// Frequency of idle checks made by idle connections reaper.
 	// Default is 1 minute. -1 disables idle connections reaper,
-	// but idle connections are still discarded by the client.
+	// but idle connections are still discarded by the client
+	// if IdleTimeout is set.
 	IdleCheckFrequency time.Duration
 
 	// Enables read only queries on slave nodes.
@@ -196,6 +200,7 @@ func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
 		Dialer:             opt.Dialer,
 		PoolSize:           opt.PoolSize,
+		MinIdleConns:       opt.MinIdleConns,
 		PoolTimeout:        opt.PoolTimeout,
 		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: opt.IdleCheckFrequency,
