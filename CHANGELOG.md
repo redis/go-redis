@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- New option MinIdleConns.
-- New option MaxConnAge.
+- Added Options.MinIdleConns.
+- Added Options.MaxConnAge.
 - PoolStats.FreeConns is renamed to PoolStats.IdleConns.
 
 ## v6.13
