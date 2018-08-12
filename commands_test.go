@@ -42,7 +42,7 @@ var _ = Describe("Commands", func() {
 			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
 			Expect(stats.TotalConns).To(Equal(uint32(1)))
-			Expect(stats.FreeConns).To(Equal(uint32(1)))
+			Expect(stats.IdleConns).To(Equal(uint32(1)))
 		})
 
 		It("should Echo", func() {

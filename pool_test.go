@@ -13,7 +13,10 @@ var _ = Describe("pool", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(redisOptions())
+		opt := redisOptions()
+		opt.MinIdleConns = 0
+		opt.MaxConnAge = 0
+		client = redis.NewClient(opt)
 		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 
@@ -124,7 +127,6 @@ var _ = Describe("pool", func() {
 			Misses:     1,
 			Timeouts:   0,
 			TotalConns: 1,
-			FreeConns:  1,
 			IdleConns:  1,
 			StaleConns: 0,
 		}))
@@ -137,7 +139,7 @@ var _ = Describe("pool", func() {
 			Misses:     1,
 			Timeouts:   0,
 			TotalConns: 0,
-			FreeConns:  0,
+			IdleConns:  0,
 			StaleConns: 1,
 		}))
 	})

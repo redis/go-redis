@@ -16,7 +16,10 @@ var _ = Describe("PubSub", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(redisOptions())
+		opt := redisOptions()
+		opt.MinIdleConns = 0
+		opt.MaxConnAge = 0
+		client = redis.NewClient(opt)
 		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 

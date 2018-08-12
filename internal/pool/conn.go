@@ -18,9 +18,9 @@ type Conn struct {
 
 	concurrentReadWrite bool
 
-	Inited bool
-	pooled bool
-	usedAt atomic.Value
+	InitedAt time.Time
+	pooled   bool
+	usedAt   atomic.Value
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -45,10 +45,6 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 func (cn *Conn) SetNetConn(netConn net.Conn) {
 	cn.netConn = netConn
 	cn.Rd.Reset(netConn)
-}
-
-func (cn *Conn) IsStale(timeout time.Duration) bool {
-	return timeout > 0 && time.Since(cn.UsedAt()) > timeout
 }
 
 func (cn *Conn) SetReadTimeout(timeout time.Duration) {

@@ -28,7 +28,6 @@ type Stats struct {
 	Timeouts uint32 // number of times a wait timeout occurred
 
 	TotalConns uint32 // number of total connections in the pool
-	FreeConns  uint32 // deprecated - use IdleConns
 	IdleConns  uint32 // number of idle connections in the pool
 	StaleConns uint32 // number of stale connections removed from the pool
 }
@@ -54,6 +53,7 @@ type Options struct {
 
 	PoolSize           int
 	MinIdleConns       int
+	MaxConnAge         time.Duration
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
@@ -223,8 +223,8 @@ func (p *ConnPool) Get() (*Conn, error) {
 			break
 		}
 
-		if cn.IsStale(p.opt.IdleTimeout) {
-			p.CloseConn(cn)
+		if p.isStaleConn(cn) {
+			_ = p.CloseConn(cn)
 			continue
 		}
 
@@ -343,12 +343,12 @@ func (p *ConnPool) closeConn(cn *Conn) error {
 // Len returns total number of connections.
 func (p *ConnPool) Len() int {
 	p.connsMu.Lock()
-	n := p.poolSize
+	n := len(p.conns)
 	p.connsMu.Unlock()
 	return n
 }
 
-// FreeLen returns number of idle connections.
+// IdleLen returns number of idle connections.
 func (p *ConnPool) IdleLen() int {
 	p.connsMu.Lock()
 	n := p.idleConnsLen
@@ -364,7 +364,6 @@ func (p *ConnPool) Stats() *Stats {
 		Timeouts: atomic.LoadUint32(&p.stats.Timeouts),
 
 		TotalConns: uint32(p.Len()),
-		FreeConns:  uint32(idleLen),
 		IdleConns:  uint32(idleLen),
 		StaleConns: atomic.LoadUint32(&p.stats.StaleConns),
 	}
@@ -415,7 +414,7 @@ func (p *ConnPool) reapStaleConn() *Conn {
 	}
 
 	cn := p.idleConns[0]
-	if !cn.IsStale(p.opt.IdleTimeout) {
+	if !p.isStaleConn(cn) {
 		return nil
 	}
 
@@ -465,4 +464,20 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 		}
 		atomic.AddUint32(&p.stats.StaleConns, uint32(n))
 	}
+}
+
+func (p *ConnPool) isStaleConn(cn *Conn) bool {
+	if p.opt.IdleTimeout == 0 && p.opt.MaxConnAge == 0 {
+		return false
+	}
+
+	now := time.Now()
+	if p.opt.IdleTimeout > 0 && now.Sub(cn.UsedAt()) >= p.opt.IdleTimeout {
+		return true
+	}
+	if p.opt.MaxConnAge > 0 && now.Sub(cn.InitedAt) >= p.opt.MaxConnAge {
+		return true
+	}
+
+	return false
 }
