@@ -25,7 +25,6 @@ type Cmder interface {
 	readTimeout() *time.Duration
 
 	Err() error
-	//	fmt.Stringer
 }
 
 func setCmdsErr(cmds []Cmder, e error) {

@@ -7,10 +7,10 @@ import (
 )
 
 func Example_instrumentation() {
-	cl := redis.NewClient(&redis.Options{
+	redisdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
-	cl.WrapProcess(func(old func(cmd redis.Cmder) error) func(cmd redis.Cmder) error {
+	redisdb.WrapProcess(func(old func(cmd redis.Cmder) error) func(cmd redis.Cmder) error {
 		return func(cmd redis.Cmder) error {
 			fmt.Printf("starting processing: <%s>\n", cmd)
 			err := old(cmd)
@@ -19,17 +19,17 @@ func Example_instrumentation() {
 		}
 	})
 
-	cl.Ping()
+	redisdb.Ping()
 	// Output: starting processing: <ping: >
 	// finished processing: <ping: PONG>
 }
 
 func ExamplePipeline_instrumentation() {
-	client := redis.NewClient(&redis.Options{
+	redisdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
 
-	client.WrapProcessPipeline(func(old func([]redis.Cmder) error) func([]redis.Cmder) error {
+	redisdb.WrapProcessPipeline(func(old func([]redis.Cmder) error) func([]redis.Cmder) error {
 		return func(cmds []redis.Cmder) error {
 			fmt.Printf("pipeline starting processing: %v\n", cmds)
 			err := old(cmds)
@@ -38,7 +38,7 @@ func ExamplePipeline_instrumentation() {
 		}
 	})
 
-	client.Pipelined(func(pipe redis.Pipeliner) error {
+	redisdb.Pipelined(func(pipe redis.Pipeliner) error {
 		pipe.Ping()
 		pipe.Ping()
 		return nil
