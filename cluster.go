@@ -65,6 +65,8 @@ type ClusterOptions struct {
 
 	// PoolSize applies per cluster node and not for the whole cluster.
 	PoolSize           int
+	MinIdleConns       int
+	MaxConnAge         time.Duration
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
@@ -130,10 +132,11 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolSize:    opt.PoolSize,
-		PoolTimeout: opt.PoolTimeout,
-		IdleTimeout: opt.IdleTimeout,
-
+		PoolSize:           opt.PoolSize,
+		MinIdleConns:       opt.MinIdleConns,
+		MaxConnAge:         opt.MaxConnAge,
+		PoolTimeout:        opt.PoolTimeout,
+		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: disableIdleCheck,
 
 		TLSConfig: opt.TLSConfig,
@@ -1106,7 +1109,7 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Timeouts += s.Timeouts
 
 		acc.TotalConns += s.TotalConns
-		acc.FreeConns += s.FreeConns
+		acc.IdleConns += s.IdleConns
 		acc.StaleConns += s.StaleConns
 	}
 
@@ -1117,7 +1120,7 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Timeouts += s.Timeouts
 
 		acc.TotalConns += s.TotalConns
-		acc.FreeConns += s.FreeConns
+		acc.IdleConns += s.IdleConns
 		acc.StaleConns += s.StaleConns
 	}
 

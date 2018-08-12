@@ -68,6 +68,8 @@ type RingOptions struct {
 	WriteTimeout time.Duration
 
 	PoolSize           int
+	MinIdleConns       int
+	MaxConnAge         time.Duration
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
@@ -108,6 +110,8 @@ func (opt *RingOptions) clientOptions() *Options {
 		WriteTimeout: opt.WriteTimeout,
 
 		PoolSize:           opt.PoolSize,
+		MinIdleConns:       opt.MinIdleConns,
+		MaxConnAge:         opt.MaxConnAge,
 		PoolTimeout:        opt.PoolTimeout,
 		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: opt.IdleCheckFrequency,
@@ -404,7 +408,7 @@ func (c *Ring) PoolStats() *PoolStats {
 		acc.Misses += s.Misses
 		acc.Timeouts += s.Timeouts
 		acc.TotalConns += s.TotalConns
-		acc.FreeConns += s.FreeConns
+		acc.IdleConns += s.IdleConns
 	}
 	return &acc
 }
