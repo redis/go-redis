@@ -898,6 +898,13 @@ func (c *ClusterClient) Close() error {
 	return c.nodes.Close()
 }
 
+// Do creates a Cmd from the args and processes the cmd.
+func (c *ClusterClient) Do(args ...interface{}) *Cmd {
+	cmd := NewCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *ClusterClient) WrapProcess(
 	fn func(oldProcess func(Cmder) error) func(Cmder) error,
 ) {
@@ -1242,7 +1249,7 @@ func (c *ClusterClient) defaultProcessPipeline(cmds []Cmder) error {
 		cmdsMap = failedCmds
 	}
 
-	return firstCmdsErr(cmds)
+	return cmdsFirstErr(cmds)
 }
 
 func (c *ClusterClient) mapCmdsByNode(cmds []Cmder) (map[*clusterNode][]Cmder, error) {
@@ -1424,7 +1431,7 @@ func (c *ClusterClient) defaultProcessTxPipeline(cmds []Cmder) error {
 		}
 	}
 
-	return firstCmdsErr(cmds)
+	return cmdsFirstErr(cmds)
 }
 
 func (c *ClusterClient) mapCmdsBySlot(cmds []Cmder) map[int][]Cmder {

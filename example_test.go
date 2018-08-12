@@ -420,6 +420,12 @@ func Example_customCommand() {
 	// Output: "" redis: nil
 }
 
+func Example_customCommand2() {
+	v, err := client.Do("get", "key_does_not_exist").String()
+	fmt.Printf("%q %s", v, err)
+	// Output: "" redis: nil
+}
+
 func ExampleScanIterator() {
 	iter := client.Scan(0, "", 0).Iterator()
 	for iter.Next() {

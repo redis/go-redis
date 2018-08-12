@@ -5,6 +5,7 @@
 - Added Options.MinIdleConns.
 - Added Options.MaxConnAge.
 - PoolStats.FreeConns is renamed to PoolStats.IdleConns.
+- Add Client.Do to simplify creating custom commands.
 
 ## v6.13
 

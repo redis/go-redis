@@ -92,7 +92,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		},
 	}
 	c.baseClient.init()
-	c.setProcessor(c.Process)
+	c.cmdable.setProcessor(c.Process)
 
 	return &c
 }
