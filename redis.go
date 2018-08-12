@@ -123,8 +123,17 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 	return nil
 }
 
+// Do creates a Cmd from the args and processes the cmd.
+func (c *baseClient) Do(args ...interface{}) *Cmd {
+	cmd := NewCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
+
 // WrapProcess wraps function that processes Redis commands.
-func (c *baseClient) WrapProcess(fn func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error) {
+func (c *baseClient) WrapProcess(
+	fn func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error,
+) {
 	c.process = fn(c.process)
 }
 
@@ -243,7 +252,7 @@ func (c *baseClient) generalProcessPipeline(cmds []Cmder, p pipelineProcessor) e
 			break
 		}
 	}
-	return firstCmdsErr(cmds)
+	return cmdsFirstErr(cmds)
 }
 
 func (c *baseClient) pipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {

@@ -9,10 +9,10 @@ import (
 	"github.com/go-redis/redis"
 )
 
-var client *redis.Client
+var redisdb *redis.Client
 
 func init() {
-	client = redis.NewClient(&redis.Options{
+	redisdb = redis.NewClient(&redis.Options{
 		Addr:         ":6379",
 		DialTimeout:  10 * time.Second,
 		ReadTimeout:  30 * time.Second,
@@ -20,17 +20,17 @@ func init() {
 		PoolSize:     10,
 		PoolTimeout:  30 * time.Second,
 	})
-	client.FlushDB()
+	redisdb.FlushDB()
 }
 
 func ExampleNewClient() {
-	client := redis.NewClient(&redis.Options{
+	redisdb := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
 
-	pong, err := client.Ping().Result()
+	pong, err := redisdb.Ping().Result()
 	fmt.Println(pong, err)
 	// Output: PONG <nil>
 }
@@ -55,20 +55,20 @@ func ExampleParseURL() {
 func ExampleNewFailoverClient() {
 	// See http://redis.io/topics/sentinel for instructions how to
 	// setup Redis Sentinel.
-	client := redis.NewFailoverClient(&redis.FailoverOptions{
+	redisdb := redis.NewFailoverClient(&redis.FailoverOptions{
 		MasterName:    "master",
 		SentinelAddrs: []string{":26379"},
 	})
-	client.Ping()
+	redisdb.Ping()
 }
 
 func ExampleNewClusterClient() {
 	// See http://redis.io/topics/cluster-tutorial for instructions
 	// how to setup Redis Cluster.
-	client := redis.NewClusterClient(&redis.ClusterOptions{
+	redisdb := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs: []string{":7000", ":7001", ":7002", ":7003", ":7004", ":7005"},
 	})
-	client.Ping()
+	redisdb.Ping()
 }
 
 // Following example creates a cluster from 2 master nodes and 2 slave nodes
@@ -103,44 +103,44 @@ func ExampleNewClusterClient_manualSetup() {
 		return slots, nil
 	}
 
-	client := redis.NewClusterClient(&redis.ClusterOptions{
+	redisdb := redis.NewClusterClient(&redis.ClusterOptions{
 		ClusterSlots:  clusterSlots,
 		RouteRandomly: true,
 	})
-	client.Ping()
+	redisdb.Ping()
 
 	// ReloadState reloads cluster state. It calls ClusterSlots func
 	// to get cluster slots information.
-	err := client.ReloadState()
+	err := redisdb.ReloadState()
 	if err != nil {
 		panic(err)
 	}
 }
 
 func ExampleNewRing() {
-	client := redis.NewRing(&redis.RingOptions{
+	redisdb := redis.NewRing(&redis.RingOptions{
 		Addrs: map[string]string{
 			"shard1": ":7000",
 			"shard2": ":7001",
 			"shard3": ":7002",
 		},
 	})
-	client.Ping()
+	redisdb.Ping()
 }
 
 func ExampleClient() {
-	err := client.Set("key", "value", 0).Err()
+	err := redisdb.Set("key", "value", 0).Err()
 	if err != nil {
 		panic(err)
 	}
 
-	val, err := client.Get("key").Result()
+	val, err := redisdb.Get("key").Result()
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("key", val)
 
-	val2, err := client.Get("missing_key").Result()
+	val2, err := redisdb.Get("missing_key").Result()
 	if err == redis.Nil {
 		fmt.Println("missing_key does not exist")
 	} else if err != nil {
@@ -155,20 +155,20 @@ func ExampleClient() {
 func ExampleClient_Set() {
 	// Last argument is expiration. Zero means the key has no
 	// expiration time.
-	err := client.Set("key", "value", 0).Err()
+	err := redisdb.Set("key", "value", 0).Err()
 	if err != nil {
 		panic(err)
 	}
 
 	// key2 will expire in an hour.
-	err = client.Set("key2", "value", time.Hour).Err()
+	err = redisdb.Set("key2", "value", time.Hour).Err()
 	if err != nil {
 		panic(err)
 	}
 }
 
 func ExampleClient_Incr() {
-	result, err := client.Incr("counter").Result()
+	result, err := redisdb.Incr("counter").Result()
 	if err != nil {
 		panic(err)
 	}
@@ -178,12 +178,12 @@ func ExampleClient_Incr() {
 }
 
 func ExampleClient_BLPop() {
-	if err := client.RPush("queue", "message").Err(); err != nil {
+	if err := redisdb.RPush("queue", "message").Err(); err != nil {
 		panic(err)
 	}
 
-	// use `client.BLPop(0, "queue")` for infinite waiting time
-	result, err := client.BLPop(1*time.Second, "queue").Result()
+	// use `redisdb.BLPop(0, "queue")` for infinite waiting time
+	result, err := redisdb.BLPop(1*time.Second, "queue").Result()
 	if err != nil {
 		panic(err)
 	}
@@ -193,9 +193,9 @@ func ExampleClient_BLPop() {
 }
 
 func ExampleClient_Scan() {
-	client.FlushDB()
+	redisdb.FlushDB()
 	for i := 0; i < 33; i++ {
-		err := client.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
+		err := redisdb.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
 		if err != nil {
 			panic(err)
 		}
@@ -206,7 +206,7 @@ func ExampleClient_Scan() {
 	for {
 		var keys []string
 		var err error
-		keys, cursor, err = client.Scan(cursor, "", 10).Result()
+		keys, cursor, err = redisdb.Scan(cursor, "", 10).Result()
 		if err != nil {
 			panic(err)
 		}
@@ -222,7 +222,7 @@ func ExampleClient_Scan() {
 
 func ExampleClient_Pipelined() {
 	var incr *redis.IntCmd
-	_, err := client.Pipelined(func(pipe redis.Pipeliner) error {
+	_, err := redisdb.Pipelined(func(pipe redis.Pipeliner) error {
 		incr = pipe.Incr("pipelined_counter")
 		pipe.Expire("pipelined_counter", time.Hour)
 		return nil
@@ -232,7 +232,7 @@ func ExampleClient_Pipelined() {
 }
 
 func ExampleClient_Pipeline() {
-	pipe := client.Pipeline()
+	pipe := redisdb.Pipeline()
 
 	incr := pipe.Incr("pipeline_counter")
 	pipe.Expire("pipeline_counter", time.Hour)
@@ -242,7 +242,7 @@ func ExampleClient_Pipeline() {
 	//     INCR pipeline_counter
 	//     EXPIRE pipeline_counts 3600
 	//
-	// using one client-server roundtrip.
+	// using one redisdb-server roundtrip.
 	_, err := pipe.Exec()
 	fmt.Println(incr.Val(), err)
 	// Output: 1 <nil>
@@ -250,7 +250,7 @@ func ExampleClient_Pipeline() {
 
 func ExampleClient_TxPipelined() {
 	var incr *redis.IntCmd
-	_, err := client.TxPipelined(func(pipe redis.Pipeliner) error {
+	_, err := redisdb.TxPipelined(func(pipe redis.Pipeliner) error {
 		incr = pipe.Incr("tx_pipelined_counter")
 		pipe.Expire("tx_pipelined_counter", time.Hour)
 		return nil
@@ -260,7 +260,7 @@ func ExampleClient_TxPipelined() {
 }
 
 func ExampleClient_TxPipeline() {
-	pipe := client.TxPipeline()
+	pipe := redisdb.TxPipeline()
 
 	incr := pipe.Incr("tx_pipeline_counter")
 	pipe.Expire("tx_pipeline_counter", time.Hour)
@@ -272,7 +272,7 @@ func ExampleClient_TxPipeline() {
 	//     EXPIRE pipeline_counts 3600
 	//     EXEC
 	//
-	// using one client-server roundtrip.
+	// using one redisdb-server roundtrip.
 	_, err := pipe.Exec()
 	fmt.Println(incr.Val(), err)
 	// Output: 1 <nil>
@@ -283,7 +283,7 @@ func ExampleClient_Watch() {
 
 	// Transactionally increments key using GET and SET commands.
 	incr = func(key string) error {
-		err := client.Watch(func(tx *redis.Tx) error {
+		err := redisdb.Watch(func(tx *redis.Tx) error {
 			n, err := tx.Get(key).Int64()
 			if err != nil && err != redis.Nil {
 				return err
@@ -315,13 +315,13 @@ func ExampleClient_Watch() {
 	}
 	wg.Wait()
 
-	n, err := client.Get("counter3").Int64()
+	n, err := redisdb.Get("counter3").Int64()
 	fmt.Println(n, err)
 	// Output: 100 <nil>
 }
 
 func ExamplePubSub() {
-	pubsub := client.Subscribe("mychannel1")
+	pubsub := redisdb.Subscribe("mychannel1")
 
 	// Wait for confirmation that subscription is created before publishing anything.
 	_, err := pubsub.Receive()
@@ -333,7 +333,7 @@ func ExamplePubSub() {
 	ch := pubsub.Channel()
 
 	// Publish a message.
-	err = client.Publish("mychannel1", "hello").Err()
+	err = redisdb.Publish("mychannel1", "hello").Err()
 	if err != nil {
 		panic(err)
 	}
@@ -356,7 +356,7 @@ func ExamplePubSub() {
 }
 
 func ExamplePubSub_Receive() {
-	pubsub := client.Subscribe("mychannel2")
+	pubsub := redisdb.Subscribe("mychannel2")
 	defer pubsub.Close()
 
 	for i := 0; i < 2; i++ {
@@ -370,7 +370,7 @@ func ExamplePubSub_Receive() {
 		case *redis.Subscription:
 			fmt.Println("subscribed to", msg.Channel)
 
-			_, err := client.Publish("mychannel2", "hello").Result()
+			_, err := redisdb.Publish("mychannel2", "hello").Result()
 			if err != nil {
 				panic(err)
 			}
@@ -381,7 +381,7 @@ func ExamplePubSub_Receive() {
 		}
 	}
 
-	// sent message to 1 client
+	// sent message to 1 redisdb
 	// received hello from mychannel2
 }
 
@@ -393,15 +393,15 @@ func ExampleScript() {
 		return false
 	`)
 
-	n, err := IncrByXX.Run(client, []string{"xx_counter"}, 2).Result()
+	n, err := IncrByXX.Run(redisdb, []string{"xx_counter"}, 2).Result()
 	fmt.Println(n, err)
 
-	err = client.Set("xx_counter", "40", 0).Err()
+	err = redisdb.Set("xx_counter", "40", 0).Err()
 	if err != nil {
 		panic(err)
 	}
 
-	n, err = IncrByXX.Run(client, []string{"xx_counter"}, 2).Result()
+	n, err = IncrByXX.Run(redisdb, []string{"xx_counter"}, 2).Result()
 	fmt.Println(n, err)
 
 	// Output: <nil> redis: nil
@@ -409,19 +409,25 @@ func ExampleScript() {
 }
 
 func Example_customCommand() {
-	Get := func(client *redis.Client, key string) *redis.StringCmd {
+	Get := func(redisdb *redis.Client, key string) *redis.StringCmd {
 		cmd := redis.NewStringCmd("get", key)
-		client.Process(cmd)
+		redisdb.Process(cmd)
 		return cmd
 	}
 
-	v, err := Get(client, "key_does_not_exist").Result()
+	v, err := Get(redisdb, "key_does_not_exist").Result()
+	fmt.Printf("%q %s", v, err)
+	// Output: "" redis: nil
+}
+
+func Example_customCommand2() {
+	v, err := redisdb.Do("get", "key_does_not_exist").String()
 	fmt.Printf("%q %s", v, err)
 	// Output: "" redis: nil
 }
 
 func ExampleScanIterator() {
-	iter := client.Scan(0, "", 0).Iterator()
+	iter := redisdb.Scan(0, "", 0).Iterator()
 	for iter.Next() {
 		fmt.Println(iter.Val())
 	}
@@ -431,7 +437,7 @@ func ExampleScanIterator() {
 }
 
 func ExampleScanCmd_Iterator() {
-	iter := client.Scan(0, "", 0).Iterator()
+	iter := redisdb.Scan(0, "", 0).Iterator()
 	for iter.Next() {
 		fmt.Println(iter.Val())
 	}
@@ -441,29 +447,29 @@ func ExampleScanCmd_Iterator() {
 }
 
 func ExampleNewUniversalClient_simple() {
-	client := redis.NewUniversalClient(&redis.UniversalOptions{
+	redisdb := redis.NewUniversalClient(&redis.UniversalOptions{
 		Addrs: []string{":6379"},
 	})
-	defer client.Close()
+	defer redisdb.Close()
 
-	client.Ping()
+	redisdb.Ping()
 }
 
 func ExampleNewUniversalClient_failover() {
-	client := redis.NewUniversalClient(&redis.UniversalOptions{
+	redisdb := redis.NewUniversalClient(&redis.UniversalOptions{
 		MasterName: "master",
 		Addrs:      []string{":26379"},
 	})
-	defer client.Close()
+	defer redisdb.Close()
 
-	client.Ping()
+	redisdb.Ping()
 }
 
 func ExampleNewUniversalClient_cluster() {
-	client := redis.NewUniversalClient(&redis.UniversalOptions{
+	redisdb := redis.NewUniversalClient(&redis.UniversalOptions{
 		Addrs: []string{":7000", ":7001", ":7002", ":7003", ":7004", ":7005"},
 	})
-	defer client.Close()
+	defer redisdb.Close()
 
-	client.Ping()
+	redisdb.Ping()
 }

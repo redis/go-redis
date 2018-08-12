@@ -25,7 +25,6 @@ type Cmder interface {
 	readTimeout() *time.Duration
 
 	Err() error
-	fmt.Stringer
 }
 
 func setCmdsErr(cmds []Cmder, e error) {
@@ -36,7 +35,7 @@ func setCmdsErr(cmds []Cmder, e error) {
 	}
 }
 
-func firstCmdsErr(cmds []Cmder) error {
+func cmdsFirstErr(cmds []Cmder) error {
 	for _, cmd := range cmds {
 		if err := cmd.Err(); err != nil {
 			return err
@@ -167,8 +166,77 @@ func (cmd *Cmd) Result() (interface{}, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *Cmd) String() string {
-	return cmdString(cmd, cmd.val)
+func (cmd *Cmd) String() (string, error) {
+	if cmd.err != nil {
+		return "", cmd.err
+	}
+	switch val := cmd.val.(type) {
+	case string:
+		return val, nil
+	default:
+		err := fmt.Errorf("redis: unexpected type=%T for String", val)
+		return "", err
+	}
+}
+
+func (cmd *Cmd) Int64() (int64, error) {
+	if cmd.err != nil {
+		return 0, cmd.err
+	}
+	switch val := cmd.val.(type) {
+	case int64:
+		return val, nil
+	case string:
+		return strconv.ParseInt(val, 10, 64)
+	default:
+		err := fmt.Errorf("redis: unexpected type=%T for Int64", val)
+		return 0, err
+	}
+}
+
+func (cmd *Cmd) Uint64() (uint64, error) {
+	if cmd.err != nil {
+		return 0, cmd.err
+	}
+	switch val := cmd.val.(type) {
+	case int64:
+		return uint64(val), nil
+	case string:
+		return strconv.ParseUint(val, 10, 64)
+	default:
+		err := fmt.Errorf("redis: unexpected type=%T for Uint64", val)
+		return 0, err
+	}
+}
+
+func (cmd *Cmd) Float64() (float64, error) {
+	if cmd.err != nil {
+		return 0, cmd.err
+	}
+	switch val := cmd.val.(type) {
+	case int64:
+		return float64(val), nil
+	case string:
+		return strconv.ParseFloat(val, 64)
+	default:
+		err := fmt.Errorf("redis: unexpected type=%T for Float64", val)
+		return 0, err
+	}
+}
+
+func (cmd *Cmd) Bool() (bool, error) {
+	if cmd.err != nil {
+		return false, cmd.err
+	}
+	switch val := cmd.val.(type) {
+	case int64:
+		return val != 0, nil
+	case string:
+		return strconv.ParseBool(val)
+	default:
+		err := fmt.Errorf("redis: unexpected type=%T for Bool", val)
+		return false, err
+	}
 }
 
 func (cmd *Cmd) readReply(cn *pool.Conn) error {
