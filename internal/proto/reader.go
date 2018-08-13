@@ -8,8 +8,6 @@ import (
 	"github.com/go-redis/redis/internal/util"
 )
 
-const bytesAllocLimit = 1024 * 1024 // 1mb
-
 const (
 	ErrorReply  = '-'
 	StatusReply = '+'

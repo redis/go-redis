@@ -40,13 +40,6 @@ func (b *ElasticBufReader) ResetBuffer(buf []byte) {
 	b.err = nil
 }
 
-func (b *ElasticBufReader) reset(buf []byte, rd io.Reader) {
-	*b = ElasticBufReader{
-		buf: buf,
-		rd:  rd,
-	}
-}
-
 // Buffered returns the number of bytes that can be read from the current buffer.
 func (b *ElasticBufReader) Buffered() int {
 	return b.w - b.r
