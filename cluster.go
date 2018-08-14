@@ -437,13 +437,15 @@ func newClusterState(
 		createdAt:  time.Now(),
 	}
 
-	isLoopbackOrigin := isLoopbackAddr(origin)
+	originHost, _, _ := net.SplitHostPort(origin)
+	isLoopbackOrigin := isLoopback(originHost)
+
 	for _, slot := range slots {
 		var nodes []*clusterNode
 		for i, slotNode := range slot.Nodes {
 			addr := slotNode.Addr
-			if !isLoopbackOrigin && useOriginAddr(origin, addr) {
-				addr = origin
+			if !isLoopbackOrigin {
+				addr = replaceLoopbackHost(addr, originHost)
 			}
 
 			node, err := c.nodes.GetOrCreate(addr)
@@ -475,6 +477,33 @@ func newClusterState(
 	})
 
 	return &c, nil
+}
+
+func replaceLoopbackHost(nodeAddr, originHost string) string {
+	nodeHost, nodePort, err := net.SplitHostPort(nodeAddr)
+	if err != nil {
+		return nodeAddr
+	}
+
+	nodeIP := net.ParseIP(nodeHost)
+	if nodeIP == nil {
+		return nodeAddr
+	}
+
+	if !nodeIP.IsLoopback() {
+		return nodeAddr
+	}
+
+	// Use origin host which is not loopback and node port.
+	return net.JoinHostPort(originHost, nodePort)
+}
+
+func isLoopback(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback()
 }
 
 func (c *clusterState) slotMasterNode(slot int) (*clusterNode, error) {
@@ -1562,43 +1591,6 @@ func (c *ClusterClient) PSubscribe(channels ...string) *PubSub {
 		_ = pubsub.PSubscribe(channels...)
 	}
 	return pubsub
-}
-
-func useOriginAddr(originAddr, nodeAddr string) bool {
-	nodeHost, nodePort, err := net.SplitHostPort(nodeAddr)
-	if err != nil {
-		return false
-	}
-
-	nodeIP := net.ParseIP(nodeHost)
-	if nodeIP == nil {
-		return false
-	}
-
-	if !nodeIP.IsLoopback() {
-		return false
-	}
-
-	_, originPort, err := net.SplitHostPort(originAddr)
-	if err != nil {
-		return false
-	}
-
-	return nodePort == originPort
-}
-
-func isLoopbackAddr(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
-	}
-
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-
-	return ip.IsLoopback()
 }
 
 func appendUniqueNode(nodes []*clusterNode, node *clusterNode) []*clusterNode {
