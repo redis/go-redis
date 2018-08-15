@@ -13,7 +13,7 @@ var noDeadline = time.Time{}
 type Conn struct {
 	netConn net.Conn
 
-	Rd *proto.Reader
+	Rd proto.Reader
 	wb *proto.WriteBuffer
 
 	concurrentReadWrite bool

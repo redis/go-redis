@@ -167,7 +167,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 		}
 
 		cn.SetReadTimeout(c.cmdTimeout(cmd))
-		err = cmd.readReply(cn)
+		err = cmd.readReply(cn.Rd)
 		c.releaseConn(cn, err)
 		if err != nil && internal.IsRetryableError(err, cmd.readTimeout() == nil) {
 			continue
@@ -264,12 +264,12 @@ func (c *baseClient) pipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, err
 
 	// Set read timeout for all commands.
 	cn.SetReadTimeout(c.opt.ReadTimeout)
-	return true, pipelineReadCmds(cn, cmds)
+	return true, pipelineReadCmds(cn.Rd, cmds)
 }
 
-func pipelineReadCmds(cn *pool.Conn, cmds []Cmder) error {
+func pipelineReadCmds(rd proto.Reader, cmds []Cmder) error {
 	for _, cmd := range cmds {
-		err := cmd.readReply(cn)
+		err := cmd.readReply(rd)
 		if err != nil && !internal.IsRedisError(err) {
 			return err
 		}
@@ -279,7 +279,8 @@ func pipelineReadCmds(cn *pool.Conn, cmds []Cmder) error {
 
 func (c *baseClient) txPipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {
 	cn.SetWriteTimeout(c.opt.WriteTimeout)
-	if err := txPipelineWriteMulti(cn, cmds); err != nil {
+	err := txPipelineWriteMulti(cn, cmds)
+	if err != nil {
 		setCmdsErr(cmds, err)
 		return true, err
 	}
@@ -287,12 +288,13 @@ func (c *baseClient) txPipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, e
 	// Set read timeout for all commands.
 	cn.SetReadTimeout(c.opt.ReadTimeout)
 
-	if err := c.txPipelineReadQueued(cn, cmds); err != nil {
+	err = c.txPipelineReadQueued(cn.Rd, cmds)
+	if err != nil {
 		setCmdsErr(cmds, err)
 		return false, err
 	}
 
-	return false, pipelineReadCmds(cn, cmds)
+	return false, pipelineReadCmds(cn.Rd, cmds)
 }
 
 func txPipelineWriteMulti(cn *pool.Conn, cmds []Cmder) error {
@@ -303,22 +305,23 @@ func txPipelineWriteMulti(cn *pool.Conn, cmds []Cmder) error {
 	return writeCmd(cn, multiExec...)
 }
 
-func (c *baseClient) txPipelineReadQueued(cn *pool.Conn, cmds []Cmder) error {
+func (c *baseClient) txPipelineReadQueued(rd proto.Reader, cmds []Cmder) error {
 	// Parse queued replies.
 	var statusCmd StatusCmd
-	if err := statusCmd.readReply(cn); err != nil {
+	err := statusCmd.readReply(rd)
+	if err != nil {
 		return err
 	}
 
 	for _ = range cmds {
-		err := statusCmd.readReply(cn)
+		err = statusCmd.readReply(rd)
 		if err != nil && !internal.IsRedisError(err) {
 			return err
 		}
 	}
 
 	// Parse number of replies.
-	line, err := cn.Rd.ReadLine()
+	line, err := rd.ReadLine()
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr

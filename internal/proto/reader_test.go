@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func newReader(s string) *proto.Reader {
+func newReader(s string) proto.Reader {
 	return proto.NewReader(proto.NewElasticBufReader(strings.NewReader(s)))
 }
 
@@ -78,7 +78,7 @@ func benchmarkParseReply(b *testing.B, reply string, m proto.MultiBulkParse, wan
 	}
 }
 
-func multiBulkParse(p *proto.Reader, n int64) (interface{}, error) {
+func multiBulkParse(p proto.Reader, n int64) (interface{}, error) {
 	vv := make([]interface{}, 0, n)
 	for i := int64(0); i < n; i++ {
 		v, err := p.ReadReply(multiBulkParse)

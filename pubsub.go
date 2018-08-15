@@ -340,7 +340,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 	}
 
 	cn.SetReadTimeout(timeout)
-	err = c.cmd.readReply(cn)
+	err = c.cmd.readReply(cn.Rd)
 	c.releaseConn(cn, err, timeout > 0)
 	if err != nil {
 		return nil, err

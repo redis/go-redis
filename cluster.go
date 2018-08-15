@@ -1345,14 +1345,14 @@ func (c *ClusterClient) pipelineProcessCmds(
 	// Set read timeout for all commands.
 	cn.SetReadTimeout(c.opt.ReadTimeout)
 
-	return c.pipelineReadCmds(cn, cmds, failedCmds)
+	return c.pipelineReadCmds(cn.Rd, cmds, failedCmds)
 }
 
 func (c *ClusterClient) pipelineReadCmds(
-	cn *pool.Conn, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
+	rd proto.Reader, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
 ) error {
 	for _, cmd := range cmds {
-		err := cmd.readReply(cn)
+		err := cmd.readReply(rd)
 		if err == nil {
 			continue
 		}
@@ -1486,25 +1486,26 @@ func (c *ClusterClient) txPipelineProcessCmds(
 	// Set read timeout for all commands.
 	cn.SetReadTimeout(c.opt.ReadTimeout)
 
-	if err := c.txPipelineReadQueued(cn, cmds, failedCmds); err != nil {
+	err := c.txPipelineReadQueued(cn.Rd, cmds, failedCmds)
+	if err != nil {
 		setCmdsErr(cmds, err)
 		return err
 	}
 
-	return pipelineReadCmds(cn, cmds)
+	return pipelineReadCmds(cn.Rd, cmds)
 }
 
 func (c *ClusterClient) txPipelineReadQueued(
-	cn *pool.Conn, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
+	rd proto.Reader, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
 ) error {
 	// Parse queued replies.
 	var statusCmd StatusCmd
-	if err := statusCmd.readReply(cn); err != nil {
+	if err := statusCmd.readReply(rd); err != nil {
 		return err
 	}
 
 	for _, cmd := range cmds {
-		err := statusCmd.readReply(cn)
+		err := statusCmd.readReply(rd)
 		if err == nil {
 			continue
 		}
@@ -1517,7 +1518,7 @@ func (c *ClusterClient) txPipelineReadQueued(
 	}
 
 	// Parse number of replies.
-	line, err := cn.Rd.ReadLine()
+	line, err := rd.ReadLine()
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr
