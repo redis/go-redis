@@ -19,8 +19,7 @@ type ElasticBufReader struct {
 
 func NewElasticBufReader(rd io.Reader) *ElasticBufReader {
 	return &ElasticBufReader{
-		buf: make([]byte, defaultBufSize),
-		rd:  rd,
+		rd: rd,
 	}
 }
 
@@ -87,44 +86,6 @@ func (b *ElasticBufReader) readErr() error {
 	err := b.err
 	b.err = nil
 	return err
-}
-
-func (b *ElasticBufReader) Read(p []byte) (n int, err error) {
-	n = len(p)
-	if n == 0 {
-		return 0, b.readErr()
-	}
-	if b.r == b.w {
-		if b.err != nil {
-			return 0, b.readErr()
-		}
-		if len(p) >= len(b.buf) {
-			// Large read, empty buffer.
-			// Read directly into p to avoid copy.
-			n, b.err = b.rd.Read(p)
-			if n < 0 {
-				panic(errNegativeRead)
-			}
-			return n, b.readErr()
-		}
-		// One read.
-		// Do not use b.fill, which will loop.
-		b.r = 0
-		b.w = 0
-		n, b.err = b.rd.Read(b.buf)
-		if n < 0 {
-			panic(errNegativeRead)
-		}
-		if n == 0 {
-			return 0, b.readErr()
-		}
-		b.w += n
-	}
-
-	// copy as much as we can
-	n = copy(p, b.buf[b.r:b.w])
-	b.r += n
-	return n, nil
 }
 
 func (b *ElasticBufReader) ReadSlice(delim byte) (line []byte, err error) {

@@ -288,13 +288,6 @@ func (p *ConnPool) popIdle() *Conn {
 }
 
 func (p *ConnPool) Put(cn *Conn) {
-	buf := cn.Rd.Bytes()
-	if len(buf) > 0 {
-		internal.Logf("connection has unread data: %.100q", buf)
-		p.Remove(cn)
-		return
-	}
-
 	if !cn.pooled {
 		p.Remove(cn)
 		return
