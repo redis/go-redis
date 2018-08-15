@@ -81,10 +81,11 @@ func (cn *Conn) EnableConcurrentReadWrite() {
 }
 
 func (cn *Conn) PrepareWriteBuffer() *proto.WriteBuffer {
-	if !cn.concurrentReadWrite {
+	if cn.concurrentReadWrite {
+		cn.wb.Reset()
+	} else {
 		cn.wb.ResetBuffer(cn.Rd.Buffer())
 	}
-	cn.wb.Reset()
 	return cn.wb
 }
 

@@ -69,11 +69,13 @@ func BenchmarkRedisSetString(b *testing.B) {
 		{10, 1024},
 		{10, 64 * 1024},
 		{10, 1024 * 1024},
+		{10, 10 * 1024 * 1024},
 
 		{100, 64},
 		{100, 1024},
 		{100, 64 * 1024},
 		{100, 1024 * 1024},
+		{100, 10 * 1024 * 1024},
 	}
 	for _, bm := range benchmarks {
 		b.Run(bm.String(), func(b *testing.B) {
