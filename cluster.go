@@ -54,10 +54,11 @@ type ClusterOptions struct {
 
 	OnConnect func(*Conn) error
 
+	Password string
+
 	MaxRetries      int
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
-	Password        string
 
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
