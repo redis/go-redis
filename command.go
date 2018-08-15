@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/internal"
-	"github.com/go-redis/redis/internal/pool"
 	"github.com/go-redis/redis/internal/proto"
 	"github.com/go-redis/redis/internal/util"
 )
@@ -44,17 +43,14 @@ func cmdsFirstErr(cmds []Cmder) error {
 	return nil
 }
 
-func writeCmd(cn *pool.Conn, cmds ...Cmder) error {
-	wb := cn.PrepareWriteBuffer()
+func writeCmd(wb *proto.WriteBuffer, cmds ...Cmder) error {
 	for _, cmd := range cmds {
 		err := wb.Append(cmd.Args())
 		if err != nil {
 			return err
 		}
 	}
-
-	err := cn.FlushWriteBuffer(wb)
-	return err
+	return nil
 }
 
 func cmdString(cmd Cmder, val interface{}) string {

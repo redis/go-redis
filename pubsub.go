@@ -7,9 +7,10 @@ import (
 
 	"github.com/go-redis/redis/internal"
 	"github.com/go-redis/redis/internal/pool"
+	"github.com/go-redis/redis/internal/proto"
 )
 
-// PubSub implements Pub/Sub commands as described in
+// PubSub implements Pub/Sub commands bas described in
 // http://redis.io/topics/pubsub. Message receiving is NOT safe
 // for concurrent use by multiple goroutines.
 //
@@ -62,7 +63,7 @@ func (c *PubSub) _conn(newChannels []string) (*pool.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	cn.EnableConcurrentReadWrite()
+	cn.LockReaderBuffer()
 
 	if err := c.resubscribe(cn); err != nil {
 		_ = c.closeConn(cn)
@@ -74,8 +75,9 @@ func (c *PubSub) _conn(newChannels []string) (*pool.Conn, error) {
 }
 
 func (c *PubSub) writeCmd(cn *pool.Conn, cmd Cmder) error {
-	cn.SetWriteTimeout(c.opt.WriteTimeout)
-	return writeCmd(cn, cmd)
+	return cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
+		return writeCmd(wb, cmd)
+	})
 }
 
 func (c *PubSub) resubscribe(cn *pool.Conn) error {
@@ -339,8 +341,10 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 		return nil, err
 	}
 
-	cn.SetReadTimeout(timeout)
-	err = c.cmd.readReply(cn.Rd)
+	err = cn.WithReader(timeout, func(rd proto.Reader) error {
+		return c.cmd.readReply(rd)
+	})
+
 	c.releaseConn(cn, err, timeout > 0)
 	if err != nil {
 		return nil, err

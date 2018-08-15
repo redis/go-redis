@@ -156,8 +156,10 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 			return err
 		}
 
-		cn.SetWriteTimeout(c.opt.WriteTimeout)
-		if err := writeCmd(cn, cmd); err != nil {
+		err = cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
+			return writeCmd(wb, cmd)
+		})
+		if err != nil {
 			c.releaseConn(cn, err)
 			cmd.setErr(err)
 			if internal.IsRetryableError(err, true) {
@@ -166,8 +168,9 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 			return err
 		}
 
-		cn.SetReadTimeout(c.cmdTimeout(cmd))
-		err = cmd.readReply(cn.Rd)
+		err = cn.WithReader(c.cmdTimeout(cmd), func(rd proto.Reader) error {
+			return cmd.readReply(rd)
+		})
 		c.releaseConn(cn, err)
 		if err != nil && internal.IsRetryableError(err, cmd.readTimeout() == nil) {
 			continue
@@ -256,15 +259,18 @@ func (c *baseClient) generalProcessPipeline(cmds []Cmder, p pipelineProcessor) e
 }
 
 func (c *baseClient) pipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {
-	cn.SetWriteTimeout(c.opt.WriteTimeout)
-	if err := writeCmd(cn, cmds...); err != nil {
+	err := cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
+		return writeCmd(wb, cmds...)
+	})
+	if err != nil {
 		setCmdsErr(cmds, err)
 		return true, err
 	}
 
-	// Set read timeout for all commands.
-	cn.SetReadTimeout(c.opt.ReadTimeout)
-	return true, pipelineReadCmds(cn.Rd, cmds)
+	err = cn.WithReader(c.opt.ReadTimeout, func(rd proto.Reader) error {
+		return pipelineReadCmds(rd, cmds)
+	})
+	return true, err
 }
 
 func pipelineReadCmds(rd proto.Reader, cmds []Cmder) error {
@@ -278,34 +284,34 @@ func pipelineReadCmds(rd proto.Reader, cmds []Cmder) error {
 }
 
 func (c *baseClient) txPipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {
-	cn.SetWriteTimeout(c.opt.WriteTimeout)
-	err := txPipelineWriteMulti(cn, cmds)
+	err := cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
+		return txPipelineWriteMulti(wb, cmds)
+	})
 	if err != nil {
 		setCmdsErr(cmds, err)
 		return true, err
 	}
 
-	// Set read timeout for all commands.
-	cn.SetReadTimeout(c.opt.ReadTimeout)
-
-	err = c.txPipelineReadQueued(cn.Rd, cmds)
-	if err != nil {
-		setCmdsErr(cmds, err)
-		return false, err
-	}
-
-	return false, pipelineReadCmds(cn.Rd, cmds)
+	err = cn.WithReader(c.opt.ReadTimeout, func(rd proto.Reader) error {
+		err := txPipelineReadQueued(rd, cmds)
+		if err != nil {
+			setCmdsErr(cmds, err)
+			return err
+		}
+		return pipelineReadCmds(rd, cmds)
+	})
+	return false, err
 }
 
-func txPipelineWriteMulti(cn *pool.Conn, cmds []Cmder) error {
+func txPipelineWriteMulti(wb *proto.WriteBuffer, cmds []Cmder) error {
 	multiExec := make([]Cmder, 0, len(cmds)+2)
 	multiExec = append(multiExec, NewStatusCmd("MULTI"))
 	multiExec = append(multiExec, cmds...)
 	multiExec = append(multiExec, NewSliceCmd("EXEC"))
-	return writeCmd(cn, multiExec...)
+	return writeCmd(wb, multiExec...)
 }
 
-func (c *baseClient) txPipelineReadQueued(rd proto.Reader, cmds []Cmder) error {
+func txPipelineReadQueued(rd proto.Reader, cmds []Cmder) error {
 	// Parse queued replies.
 	var statusCmd StatusCmd
 	err := statusCmd.readReply(rd)

@@ -1333,19 +1333,19 @@ func (c *ClusterClient) remapCmds(cmds []Cmder, failedCmds map[*clusterNode][]Cm
 func (c *ClusterClient) pipelineProcessCmds(
 	node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
 ) error {
-	cn.SetWriteTimeout(c.opt.WriteTimeout)
-
-	err := writeCmd(cn, cmds...)
+	err := cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
+		return writeCmd(wb, cmds...)
+	})
 	if err != nil {
 		setCmdsErr(cmds, err)
 		failedCmds[node] = cmds
 		return err
 	}
 
-	// Set read timeout for all commands.
-	cn.SetReadTimeout(c.opt.ReadTimeout)
-
-	return c.pipelineReadCmds(cn.Rd, cmds, failedCmds)
+	err = cn.WithReader(c.opt.ReadTimeout, func(rd proto.Reader) error {
+		return c.pipelineReadCmds(rd, cmds, failedCmds)
+	})
+	return err
 }
 
 func (c *ClusterClient) pipelineReadCmds(
@@ -1476,23 +1476,24 @@ func (c *ClusterClient) mapCmdsBySlot(cmds []Cmder) map[int][]Cmder {
 func (c *ClusterClient) txPipelineProcessCmds(
 	node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
 ) error {
-	cn.SetWriteTimeout(c.opt.WriteTimeout)
-	if err := txPipelineWriteMulti(cn, cmds); err != nil {
+	err := cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
+		return txPipelineWriteMulti(wb, cmds)
+	})
+	if err != nil {
 		setCmdsErr(cmds, err)
 		failedCmds[node] = cmds
 		return err
 	}
 
-	// Set read timeout for all commands.
-	cn.SetReadTimeout(c.opt.ReadTimeout)
-
-	err := c.txPipelineReadQueued(cn.Rd, cmds, failedCmds)
-	if err != nil {
-		setCmdsErr(cmds, err)
-		return err
-	}
-
-	return pipelineReadCmds(cn.Rd, cmds)
+	err = cn.WithReader(c.opt.ReadTimeout, func(rd proto.Reader) error {
+		err := c.txPipelineReadQueued(rd, cmds, failedCmds)
+		if err != nil {
+			setCmdsErr(cmds, err)
+			return err
+		}
+		return pipelineReadCmds(rd, cmds)
+	})
+	return err
 }
 
 func (c *ClusterClient) txPipelineReadQueued(
