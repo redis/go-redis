@@ -2,11 +2,18 @@ package pool
 
 import (
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/go-redis/redis/internal/proto"
 )
+
+var buffers = sync.Pool{
+	New: func() interface{} {
+		return makeBuffer()
+	},
+}
 
 func makeBuffer() []byte {
 	const defaulBufSize = 4096
@@ -18,7 +25,6 @@ var noDeadline = time.Time{}
 type Conn struct {
 	netConn net.Conn
 
-	buf      []byte
 	rd       proto.Reader
 	rdLocked bool
 	wb       *proto.WriteBuffer
@@ -31,7 +37,6 @@ type Conn struct {
 func NewConn(netConn net.Conn) *Conn {
 	cn := &Conn{
 		netConn: netConn,
-		buf:     makeBuffer(),
 	}
 	cn.rd = proto.NewReader(proto.NewElasticBufReader(netConn))
 	cn.wb = proto.NewWriteBuffer()
@@ -87,13 +92,14 @@ func (cn *Conn) WithReader(timeout time.Duration, fn func(rd proto.Reader) error
 	_ = cn.setReadTimeout(timeout)
 
 	if !cn.rdLocked {
-		cn.rd.ResetBuffer(cn.buf)
+		buf := buffers.Get().([]byte)
+		cn.rd.ResetBuffer(buf)
 	}
 
 	err := fn(cn.rd)
 
 	if !cn.rdLocked {
-		cn.buf = cn.rd.Buffer()
+		buffers.Put(cn.rd.Buffer())
 	}
 
 	return err
@@ -102,12 +108,13 @@ func (cn *Conn) WithReader(timeout time.Duration, fn func(rd proto.Reader) error
 func (cn *Conn) WithWriter(timeout time.Duration, fn func(wb *proto.WriteBuffer) error) error {
 	_ = cn.setWriteTimeout(timeout)
 
-	cn.wb.ResetBuffer(cn.buf)
+	buf := buffers.Get().([]byte)
+	cn.wb.ResetBuffer(buf)
 
 	firstErr := fn(cn.wb)
 
 	_, err := cn.netConn.Write(cn.wb.Bytes())
-	cn.buf = cn.wb.Buffer()
+	buffers.Put(cn.wb.Buffer())
 	if err != nil && firstErr == nil {
 		firstErr = err
 	}
