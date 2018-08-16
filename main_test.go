@@ -168,7 +168,7 @@ func perform(n int, cbs ...func(int)) {
 }
 
 func eventually(fn func() error, timeout time.Duration) error {
-	errCh := make(chan error)
+	errCh := make(chan error, 1)
 	done := make(chan struct{})
 	exit := make(chan struct{})
 
@@ -202,7 +202,7 @@ func eventually(fn func() error, timeout time.Duration) error {
 		case err := <-errCh:
 			return err
 		default:
-			return fmt.Errorf("timeout after %s", timeout)
+			return fmt.Errorf("timeout after %s without an error", timeout)
 		}
 	}
 }

@@ -6,41 +6,11 @@ import (
 	"testing"
 
 	"github.com/go-redis/redis/internal/proto"
-
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
 )
 
 func newReader(s string) proto.Reader {
 	return proto.NewReader(proto.NewElasticBufReader(strings.NewReader(s)))
 }
-
-var _ = Describe("Reader", func() {
-
-	It("should read n bytes", func() {
-		data, err := newReader("ABCDEFGHIJKLMNO").ReadN(10)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(len(data)).To(Equal(10))
-		Expect(string(data)).To(Equal("ABCDEFGHIJ"))
-
-		data, err = newReader(strings.Repeat("x", 8192)).ReadN(6000)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(len(data)).To(Equal(6000))
-	})
-
-	It("should read lines", func() {
-		r := newReader("$5\r\nhello\r\n")
-
-		data, err := r.ReadLine()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(string(data)).To(Equal("$5"))
-
-		data, err = r.ReadLine()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(string(data)).To(Equal("hello"))
-	})
-
-})
 
 func BenchmarkReader_ParseReply_Status(b *testing.B) {
 	benchmarkParseReply(b, "+OK\r\n", nil, false)
