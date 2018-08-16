@@ -183,3 +183,23 @@ func (b *ElasticBufReader) grow(n int) {
 		b.buf = append(b.buf, make([]byte, d)...)
 	}
 }
+
+func (b *ElasticBufReader) Read(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, b.readErr()
+	}
+
+	if b.r != b.w {
+		// copy as much as we can
+		n = copy(p, b.buf[b.r:b.w])
+		b.r += n
+		return n, nil
+	}
+
+	if b.err != nil {
+		return 0, b.readErr()
+	}
+
+	n, b.err = b.rd.Read(p)
+	return n, b.readErr()
+}

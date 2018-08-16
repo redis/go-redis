@@ -1,7 +1,6 @@
 package redis
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"strconv"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/go-redis/redis/internal"
 	"github.com/go-redis/redis/internal/proto"
-	"github.com/go-redis/redis/internal/util"
 )
 
 type Cmder interface {
@@ -237,14 +235,7 @@ func (cmd *Cmd) Bool() (bool, error) {
 
 func (cmd *Cmd) readReply(rd proto.Reader) error {
 	cmd.val, cmd.err = rd.ReadReply(sliceParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	if b, ok := cmd.val.([]byte); ok {
-		// Bytes must be copied, because underlying memory is reused.
-		cmd.val = string(b)
-	}
-	return nil
+	return cmd.err
 }
 
 // Implements proto.MultiBulkParse
@@ -265,8 +256,8 @@ func sliceParser(rd proto.Reader, n int64) (interface{}, error) {
 		}
 
 		switch v := v.(type) {
-		case []byte:
-			vals = append(vals, string(v))
+		case string:
+			vals = append(vals, v)
 		default:
 			vals = append(vals, v)
 		}
@@ -341,7 +332,7 @@ func (cmd *StatusCmd) String() string {
 }
 
 func (cmd *StatusCmd) readReply(rd proto.Reader) error {
-	cmd.val, cmd.err = rd.ReadStringReply()
+	cmd.val, cmd.err = rd.ReadString()
 	return cmd.err
 }
 
@@ -503,8 +494,6 @@ func (cmd *BoolCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-var ok = []byte("OK")
-
 func (cmd *BoolCmd) readReply(rd proto.Reader) error {
 	var v interface{}
 	v, cmd.err = rd.ReadReply(nil)
@@ -523,8 +512,8 @@ func (cmd *BoolCmd) readReply(rd proto.Reader) error {
 	case int64:
 		cmd.val = v == 1
 		return nil
-	case []byte:
-		cmd.val = bytes.Equal(v, ok)
+	case string:
+		cmd.val = v == "OK"
 		return nil
 	default:
 		cmd.err = fmt.Errorf("got %T, wanted int64 or string", v)
@@ -537,7 +526,7 @@ func (cmd *BoolCmd) readReply(rd proto.Reader) error {
 type StringCmd struct {
 	baseCmd
 
-	val []byte
+	val string
 }
 
 var _ Cmder = (*StringCmd)(nil)
@@ -549,7 +538,7 @@ func NewStringCmd(args ...interface{}) *StringCmd {
 }
 
 func (cmd *StringCmd) Val() string {
-	return util.BytesToString(cmd.val)
+	return cmd.val
 }
 
 func (cmd *StringCmd) Result() (string, error) {
@@ -557,7 +546,7 @@ func (cmd *StringCmd) Result() (string, error) {
 }
 
 func (cmd *StringCmd) Bytes() ([]byte, error) {
-	return cmd.val, cmd.err
+	return []byte(cmd.val), cmd.err
 }
 
 func (cmd *StringCmd) Int64() (int64, error) {
@@ -585,7 +574,7 @@ func (cmd *StringCmd) Scan(val interface{}) error {
 	if cmd.err != nil {
 		return cmd.err
 	}
-	return proto.Scan(cmd.val, val)
+	return proto.Scan([]byte(cmd.val), val)
 }
 
 func (cmd *StringCmd) String() string {
@@ -593,7 +582,7 @@ func (cmd *StringCmd) String() string {
 }
 
 func (cmd *StringCmd) readReply(rd proto.Reader) error {
-	cmd.val, cmd.err = rd.ReadBytesReply()
+	cmd.val, cmd.err = rd.ReadString()
 	return cmd.err
 }
 
@@ -676,7 +665,7 @@ func (cmd *StringSliceCmd) readReply(rd proto.Reader) error {
 func stringSliceParser(rd proto.Reader, n int64) (interface{}, error) {
 	ss := make([]string, 0, n)
 	for i := int64(0); i < n; i++ {
-		s, err := rd.ReadStringReply()
+		s, err := rd.ReadString()
 		if err == Nil {
 			ss = append(ss, "")
 		} else if err != nil {
@@ -781,12 +770,12 @@ func (cmd *StringStringMapCmd) readReply(rd proto.Reader) error {
 func stringStringMapParser(rd proto.Reader, n int64) (interface{}, error) {
 	m := make(map[string]string, n/2)
 	for i := int64(0); i < n; i += 2 {
-		key, err := rd.ReadStringReply()
+		key, err := rd.ReadString()
 		if err != nil {
 			return nil, err
 		}
 
-		value, err := rd.ReadStringReply()
+		value, err := rd.ReadString()
 		if err != nil {
 			return nil, err
 		}
@@ -838,7 +827,7 @@ func (cmd *StringIntMapCmd) readReply(rd proto.Reader) error {
 func stringIntMapParser(rd proto.Reader, n int64) (interface{}, error) {
 	m := make(map[string]int64, n/2)
 	for i := int64(0); i < n; i += 2 {
-		key, err := rd.ReadStringReply()
+		key, err := rd.ReadString()
 		if err != nil {
 			return nil, err
 		}
@@ -895,7 +884,7 @@ func (cmd *StringStructMapCmd) readReply(rd proto.Reader) error {
 func stringStructMapParser(rd proto.Reader, n int64) (interface{}, error) {
 	m := make(map[string]struct{}, n)
 	for i := int64(0); i < n; i++ {
-		key, err := rd.ReadStringReply()
+		key, err := rd.ReadString()
 		if err != nil {
 			return nil, err
 		}
@@ -953,7 +942,7 @@ func xMessageSliceParser(rd proto.Reader, n int64) (interface{}, error) {
 	msgs := make([]XMessage, 0, n)
 	for i := int64(0); i < n; i++ {
 		_, err := rd.ReadArrayReply(func(rd proto.Reader, n int64) (interface{}, error) {
-			id, err := rd.ReadStringReply()
+			id, err := rd.ReadString()
 			if err != nil {
 				return nil, err
 			}
@@ -980,12 +969,12 @@ func xMessageSliceParser(rd proto.Reader, n int64) (interface{}, error) {
 func stringInterfaceMapParser(rd proto.Reader, n int64) (interface{}, error) {
 	m := make(map[string]interface{}, n/2)
 	for i := int64(0); i < n; i += 2 {
-		key, err := rd.ReadStringReply()
+		key, err := rd.ReadString()
 		if err != nil {
 			return nil, err
 		}
 
-		value, err := rd.ReadStringReply()
+		value, err := rd.ReadString()
 		if err != nil {
 			return nil, err
 		}
@@ -1047,7 +1036,7 @@ func xStreamSliceParser(rd proto.Reader, n int64) (interface{}, error) {
 				return nil, fmt.Errorf("got %d, wanted 2", n)
 			}
 
-			stream, err := rd.ReadStringReply()
+			stream, err := rd.ReadString()
 			if err != nil {
 				return nil, err
 			}
@@ -1124,12 +1113,12 @@ func xPendingParser(rd proto.Reader, n int64) (interface{}, error) {
 		return nil, err
 	}
 
-	lower, err := rd.ReadStringReply()
+	lower, err := rd.ReadString()
 	if err != nil && err != Nil {
 		return nil, err
 	}
 
-	higher, err := rd.ReadStringReply()
+	higher, err := rd.ReadString()
 	if err != nil && err != Nil {
 		return nil, err
 	}
@@ -1146,17 +1135,12 @@ func xPendingParser(rd proto.Reader, n int64) (interface{}, error) {
 					return nil, fmt.Errorf("got %d, wanted 2", n)
 				}
 
-				consumerName, err := rd.ReadStringReply()
+				consumerName, err := rd.ReadString()
 				if err != nil {
 					return nil, err
 				}
 
-				consumerPendingStr, err := rd.ReadStringReply()
-				if err != nil {
-					return nil, err
-				}
-
-				consumerPending, err := strconv.ParseInt(consumerPendingStr, 10, 64)
+				consumerPending, err := rd.ReadInt()
 				if err != nil {
 					return nil, err
 				}
@@ -1233,12 +1217,12 @@ func xPendingExtSliceParser(rd proto.Reader, n int64) (interface{}, error) {
 				return nil, fmt.Errorf("got %d, wanted 4", n)
 			}
 
-			id, err := rd.ReadStringReply()
+			id, err := rd.ReadString()
 			if err != nil {
 				return nil, err
 			}
 
-			consumer, err := rd.ReadStringReply()
+			consumer, err := rd.ReadString()
 			if err != nil && err != Nil {
 				return nil, err
 			}
@@ -1316,7 +1300,7 @@ func zSliceParser(rd proto.Reader, n int64) (interface{}, error) {
 
 		z := &zz[i/2]
 
-		z.Member, err = rd.ReadStringReply()
+		z.Member, err = rd.ReadString()
 		if err != nil {
 			return nil, err
 		}
@@ -1456,19 +1440,20 @@ func clusterSlotsParser(rd proto.Reader, n int64) (interface{}, error) {
 				return nil, err
 			}
 
-			ip, err := rd.ReadStringReply()
+			ip, err := rd.ReadString()
 			if err != nil {
 				return nil, err
 			}
 
-			port, err := rd.ReadIntReply()
+			port, err := rd.ReadString()
 			if err != nil {
 				return nil, err
 			}
-			nodes[j].Addr = net.JoinHostPort(ip, strconv.FormatInt(port, 10))
+
+			nodes[j].Addr = net.JoinHostPort(ip, port)
 
 			if n == 3 {
-				id, err := rd.ReadStringReply()
+				id, err := rd.ReadString()
 				if err != nil {
 					return nil, err
 				}
@@ -1581,7 +1566,7 @@ func newGeoLocationParser(q *GeoRadiusQuery) proto.MultiBulkParse {
 		var loc GeoLocation
 		var err error
 
-		loc.Name, err = rd.ReadStringReply()
+		loc.Name, err = rd.ReadString()
 		if err != nil {
 			return nil, err
 		}
@@ -1629,9 +1614,9 @@ func newGeoLocationSliceParser(q *GeoRadiusQuery) proto.MultiBulkParse {
 				return nil, err
 			}
 			switch vv := v.(type) {
-			case []byte:
+			case string:
 				locs = append(locs, GeoLocation{
-					Name: string(vv),
+					Name: vv,
 				})
 			case *GeoLocation:
 				locs = append(locs, *vv)
@@ -1794,7 +1779,7 @@ func commandInfoParser(rd proto.Reader, n int64) (interface{}, error) {
 		return nil, fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6", n)
 	}
 
-	cmd.Name, err = rd.ReadStringReply()
+	cmd.Name, err = rd.ReadString()
 	if err != nil {
 		return nil, err
 	}
