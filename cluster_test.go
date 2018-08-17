@@ -985,7 +985,7 @@ func newClusterScenario() *clusterScenario {
 	}
 }
 
-func BenchmarkRedisClusterPing(b *testing.B) {
+func BenchmarkClusterPing(b *testing.B) {
 	if testing.Short() {
 		b.Skip("skipping in short mode")
 	}
@@ -1011,7 +1011,7 @@ func BenchmarkRedisClusterPing(b *testing.B) {
 	})
 }
 
-func BenchmarkRedisClusterSetString(b *testing.B) {
+func BenchmarkClusterSetString(b *testing.B) {
 	if testing.Short() {
 		b.Skip("skipping in short mode")
 	}
@@ -1039,7 +1039,7 @@ func BenchmarkRedisClusterSetString(b *testing.B) {
 	})
 }
 
-func BenchmarkRedisClusterReloadState(b *testing.B) {
+func BenchmarkClusterReloadState(b *testing.B) {
 	if testing.Short() {
 		b.Skip("skipping in short mode")
 	}

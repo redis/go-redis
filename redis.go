@@ -156,8 +156,8 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 			return err
 		}
 
-		err = cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
-			return writeCmd(wb, cmd)
+		err = cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+			return writeCmd(wr, cmd)
 		})
 		if err != nil {
 			c.releaseConn(cn, err)
@@ -168,7 +168,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 			return err
 		}
 
-		err = cn.WithReader(c.cmdTimeout(cmd), func(rd proto.Reader) error {
+		err = cn.WithReader(c.cmdTimeout(cmd), func(rd *proto.Reader) error {
 			return cmd.readReply(rd)
 		})
 		c.releaseConn(cn, err)
@@ -259,21 +259,21 @@ func (c *baseClient) generalProcessPipeline(cmds []Cmder, p pipelineProcessor) e
 }
 
 func (c *baseClient) pipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {
-	err := cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
-		return writeCmd(wb, cmds...)
+	err := cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		return writeCmd(wr, cmds...)
 	})
 	if err != nil {
 		setCmdsErr(cmds, err)
 		return true, err
 	}
 
-	err = cn.WithReader(c.opt.ReadTimeout, func(rd proto.Reader) error {
+	err = cn.WithReader(c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		return pipelineReadCmds(rd, cmds)
 	})
 	return true, err
 }
 
-func pipelineReadCmds(rd proto.Reader, cmds []Cmder) error {
+func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
 	for _, cmd := range cmds {
 		err := cmd.readReply(rd)
 		if err != nil && !internal.IsRedisError(err) {
@@ -284,15 +284,15 @@ func pipelineReadCmds(rd proto.Reader, cmds []Cmder) error {
 }
 
 func (c *baseClient) txPipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {
-	err := cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
-		return txPipelineWriteMulti(wb, cmds)
+	err := cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		return txPipelineWriteMulti(wr, cmds)
 	})
 	if err != nil {
 		setCmdsErr(cmds, err)
 		return true, err
 	}
 
-	err = cn.WithReader(c.opt.ReadTimeout, func(rd proto.Reader) error {
+	err = cn.WithReader(c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		err := txPipelineReadQueued(rd, cmds)
 		if err != nil {
 			setCmdsErr(cmds, err)
@@ -303,15 +303,15 @@ func (c *baseClient) txPipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, e
 	return false, err
 }
 
-func txPipelineWriteMulti(wb *proto.WriteBuffer, cmds []Cmder) error {
+func txPipelineWriteMulti(wr *proto.Writer, cmds []Cmder) error {
 	multiExec := make([]Cmder, 0, len(cmds)+2)
 	multiExec = append(multiExec, NewStatusCmd("MULTI"))
 	multiExec = append(multiExec, cmds...)
 	multiExec = append(multiExec, NewSliceCmd("EXEC"))
-	return writeCmd(wb, multiExec...)
+	return writeCmd(wr, multiExec...)
 }
 
-func txPipelineReadQueued(rd proto.Reader, cmds []Cmder) error {
+func txPipelineReadQueued(rd *proto.Reader, cmds []Cmder) error {
 	// Parse queued replies.
 	var statusCmd StatusCmd
 	err := statusCmd.readReply(rd)

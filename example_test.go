@@ -20,7 +20,7 @@ func init() {
 		PoolSize:     10,
 		PoolTimeout:  30 * time.Second,
 	})
-	redisdb.FlushDB()
+	//	redisdb.FlushDB()
 }
 
 func ExampleNewClient() {
@@ -206,7 +206,7 @@ func ExampleClient_Scan() {
 	for {
 		var keys []string
 		var err error
-		keys, cursor, err = redisdb.Scan(cursor, "", 10).Result()
+		keys, cursor, err = redisdb.Scan(cursor, "key*", 10).Result()
 		if err != nil {
 			panic(err)
 		}
