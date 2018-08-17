@@ -63,7 +63,6 @@ func (c *PubSub) _conn(newChannels []string) (*pool.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	cn.LockReaderBuffer()
 
 	if err := c.resubscribe(cn); err != nil {
 		_ = c.closeConn(cn)
@@ -75,8 +74,8 @@ func (c *PubSub) _conn(newChannels []string) (*pool.Conn, error) {
 }
 
 func (c *PubSub) writeCmd(cn *pool.Conn, cmd Cmder) error {
-	return cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
-		return writeCmd(wb, cmd)
+	return cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		return writeCmd(wr, cmd)
 	})
 }
 
@@ -341,7 +340,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 		return nil, err
 	}
 
-	err = cn.WithReader(timeout, func(rd proto.Reader) error {
+	err = cn.WithReader(timeout, func(rd *proto.Reader) error {
 		return c.cmd.readReply(rd)
 	})
 

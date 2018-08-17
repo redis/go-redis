@@ -8,8 +8,8 @@ import (
 	"github.com/go-redis/redis/internal/proto"
 )
 
-func newReader(s string) proto.Reader {
-	return proto.NewReader(proto.NewElasticBufReader(strings.NewReader(s)))
+func newReader(s string) *proto.Reader {
+	return proto.NewReader(strings.NewReader(s))
 }
 
 func BenchmarkReader_ParseReply_Status(b *testing.B) {
@@ -37,7 +37,7 @@ func benchmarkParseReply(b *testing.B, reply string, m proto.MultiBulkParse, wan
 	for i := 0; i < b.N; i++ {
 		buf.WriteString(reply)
 	}
-	p := proto.NewReader(proto.NewElasticBufReader(buf))
+	p := proto.NewReader(buf)
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -48,7 +48,7 @@ func benchmarkParseReply(b *testing.B, reply string, m proto.MultiBulkParse, wan
 	}
 }
 
-func multiBulkParse(p proto.Reader, n int64) (interface{}, error) {
+func multiBulkParse(p *proto.Reader, n int64) (interface{}, error) {
 	vv := make([]interface{}, 0, n)
 	for i := int64(0); i < n; i++ {
 		v, err := p.ReadReply(multiBulkParse)

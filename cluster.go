@@ -1333,8 +1333,8 @@ func (c *ClusterClient) remapCmds(cmds []Cmder, failedCmds map[*clusterNode][]Cm
 func (c *ClusterClient) pipelineProcessCmds(
 	node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
 ) error {
-	err := cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
-		return writeCmd(wb, cmds...)
+	err := cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		return writeCmd(wr, cmds...)
 	})
 	if err != nil {
 		setCmdsErr(cmds, err)
@@ -1342,14 +1342,14 @@ func (c *ClusterClient) pipelineProcessCmds(
 		return err
 	}
 
-	err = cn.WithReader(c.opt.ReadTimeout, func(rd proto.Reader) error {
+	err = cn.WithReader(c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		return c.pipelineReadCmds(rd, cmds, failedCmds)
 	})
 	return err
 }
 
 func (c *ClusterClient) pipelineReadCmds(
-	rd proto.Reader, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
+	rd *proto.Reader, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
 ) error {
 	for _, cmd := range cmds {
 		err := cmd.readReply(rd)
@@ -1476,8 +1476,8 @@ func (c *ClusterClient) mapCmdsBySlot(cmds []Cmder) map[int][]Cmder {
 func (c *ClusterClient) txPipelineProcessCmds(
 	node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
 ) error {
-	err := cn.WithWriter(c.opt.WriteTimeout, func(wb *proto.WriteBuffer) error {
-		return txPipelineWriteMulti(wb, cmds)
+	err := cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		return txPipelineWriteMulti(wr, cmds)
 	})
 	if err != nil {
 		setCmdsErr(cmds, err)
@@ -1485,7 +1485,7 @@ func (c *ClusterClient) txPipelineProcessCmds(
 		return err
 	}
 
-	err = cn.WithReader(c.opt.ReadTimeout, func(rd proto.Reader) error {
+	err = cn.WithReader(c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		err := c.txPipelineReadQueued(rd, cmds, failedCmds)
 		if err != nil {
 			setCmdsErr(cmds, err)
@@ -1497,7 +1497,7 @@ func (c *ClusterClient) txPipelineProcessCmds(
 }
 
 func (c *ClusterClient) txPipelineReadQueued(
-	rd proto.Reader, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
+	rd *proto.Reader, cmds []Cmder, failedCmds map[*clusterNode][]Cmder,
 ) error {
 	// Parse queued replies.
 	var statusCmd StatusCmd
