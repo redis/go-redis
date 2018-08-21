@@ -173,6 +173,21 @@ func (cmd *Cmd) String() (string, error) {
 	}
 }
 
+func (cmd *Cmd) Int() (int, error) {
+	if cmd.err != nil {
+		return 0, cmd.err
+	}
+	switch val := cmd.val.(type) {
+	case int64:
+		return int(val), nil
+	case string:
+		return strconv.Atoi(val)
+	default:
+		err := fmt.Errorf("redis: unexpected type=%T for Int64", val)
+		return 0, err
+	}
+}
+
 func (cmd *Cmd) Int64() (int64, error) {
 	if cmd.err != nil {
 		return 0, cmd.err
@@ -547,6 +562,13 @@ func (cmd *StringCmd) Result() (string, error) {
 
 func (cmd *StringCmd) Bytes() ([]byte, error) {
 	return []byte(cmd.val), cmd.err
+}
+
+func (cmd *StringCmd) Int() (int, error) {
+	if cmd.err != nil {
+		return 0, cmd.err
+	}
+	return strconv.Atoi(cmd.Val())
 }
 
 func (cmd *StringCmd) Int64() (int64, error) {
