@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-redis/redis/internal"
+	"github.com/go-redis/redis/v6/internal"
 )
 
 var ErrClosed = errors.New("redis: client is closed")

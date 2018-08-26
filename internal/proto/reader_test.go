@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-redis/redis/internal/proto"
+	"github.com/go-redis/redis/v6/internal/proto"
 )
 
 func newReader(s string) *proto.Reader {

@@ -7,9 +7,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-redis/redis/internal"
-	"github.com/go-redis/redis/internal/pool"
-	"github.com/go-redis/redis/internal/proto"
+	"github.com/go-redis/redis/v6/internal"
+	"github.com/go-redis/redis/v6/internal/pool"
+	"github.com/go-redis/redis/v6/internal/proto"
 )
 
 // Nil reply Redis returns when key does not exist.

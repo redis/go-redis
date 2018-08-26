@@ -7,7 +7,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/go-redis/redis/internal/util"
+	"github.com/go-redis/redis/v6/internal/util"
 )
 
 type Writer struct {

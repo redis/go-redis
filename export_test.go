@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/go-redis/redis/internal/hashtag"
-	"github.com/go-redis/redis/internal/pool"
+	"github.com/go-redis/redis/v6/internal/hashtag"
+	"github.com/go-redis/redis/v6/internal/pool"
 )
 
 func (c *baseClient) Pool() pool.Pooler {
