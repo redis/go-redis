@@ -2518,6 +2518,135 @@ var _ = Describe("Commands", func() {
 			}}))
 		})
 
+		It("should ZPopMax", func() {
+			err := client.ZAdd("zset", redis.Z{
+				Score:  1,
+				Member: "one",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd("zset", redis.Z{
+				Score:  2,
+				Member: "two",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd("zset", redis.Z{
+				Score:  3,
+				Member: "three",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			members, err := client.ZPopMax("zset", 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(members).To(Equal([]redis.Z{{
+				Score:  3,
+				Member: "three",
+			}}))
+
+			// adding back 3
+			err = client.ZAdd("zset", redis.Z{
+				Score:  3,
+				Member: "three",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			members, err = client.ZPopMax("zset", 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(members).To(Equal([]redis.Z{{
+				Score:  3,
+				Member: "three",
+			}, {
+				Score:  2,
+				Member: "two",
+			}}))
+
+			// adding back 2 & 3
+			err = client.ZAdd("zset", redis.Z{
+				Score:  3,
+				Member: "three",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd("zset", redis.Z{
+				Score:  2,
+				Member: "two",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			members, err = client.ZPopMax("zset", 10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(members).To(Equal([]redis.Z{{
+				Score:  3,
+				Member: "three",
+			}, {
+				Score:  2,
+				Member: "two",
+			}, {
+				Score:  1,
+				Member: "one",
+			}}))
+		})
+
+		It("should ZPopMin", func() {
+			err := client.ZAdd("zset", redis.Z{
+				Score:  1,
+				Member: "one",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd("zset", redis.Z{
+				Score:  2,
+				Member: "two",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd("zset", redis.Z{
+				Score:  3,
+				Member: "three",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			members, err := client.ZPopMin("zset", 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(members).To(Equal([]redis.Z{{
+				Score:  1,
+				Member: "one",
+			}}))
+
+			// adding back 1
+			err = client.ZAdd("zset", redis.Z{
+				Score:  1,
+				Member: "one",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			members, err = client.ZPopMin("zset", 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(members).To(Equal([]redis.Z{{
+				Score:  1,
+				Member: "one",
+			}, {
+				Score:  2,
+				Member: "two",
+			}}))
+
+			// adding back 1 & 2
+			err = client.ZAdd("zset", redis.Z{
+				Score:  1,
+				Member: "one",
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd("zset", redis.Z{
+				Score:  2,
+				Member: "two",
+			}).Err()
+			members, err = client.ZPopMin("zset", 10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(members).To(Equal([]redis.Z{{
+				Score:  1,
+				Member: "one",
+			}, {
+				Score:  2,
+				Member: "two",
+			}, {
+				Score:  3,
+				Member: "three",
+			}}))
+		})
+
 		It("should ZRange", func() {
 			err := client.ZAdd("zset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
