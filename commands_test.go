@@ -2535,7 +2535,7 @@ var _ = Describe("Commands", func() {
 			}).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			members, err := client.ZPopMax("zset", 1).Result()
+			members, err := client.ZPopMax("zset").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(members).To(Equal([]redis.Z{{
 				Score:  3,
@@ -2600,7 +2600,7 @@ var _ = Describe("Commands", func() {
 			}).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			members, err := client.ZPopMin("zset", 1).Result()
+			members, err := client.ZPopMin("zset").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(members).To(Equal([]redis.Z{{
 				Score:  1,
