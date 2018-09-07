@@ -27,6 +27,7 @@ import (
 // and is re-armed on failure.
 type Once struct {
 	m    sync.Mutex
+	err  error
 	done uint32
 }
 
@@ -44,17 +45,14 @@ type Once struct {
 // 	err := config.once.Do(func() error { return config.init(filename) })
 func (o *Once) Do(f func() error) error {
 	if atomic.LoadUint32(&o.done) == 1 {
-		return nil
+		return o.err
 	}
 	// Slow-path.
 	o.m.Lock()
 	defer o.m.Unlock()
-	var err error
 	if o.done == 0 {
-		err = f()
-		if err == nil {
-			atomic.StoreUint32(&o.done, 1)
-		}
+		o.err = f()
+		atomic.StoreUint32(&o.done, 1)
 	}
-	return err
+	return o.err
 }
