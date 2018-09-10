@@ -1257,21 +1257,21 @@ func (c *ClusterClient) defaultProcessPipeline(cmds []Cmder) error {
 		var wg sync.WaitGroup
 		var lock sync.RWMutex
 		for node, cmds := range cmdsMap {
-		    wg.Add(1)
-		    go func(node *clusterNode, cmds []Cmder) {
+			wg.Add(1)
+			go func(node *clusterNode, cmds []Cmder) {
 				defer wg.Done()
 
 				failedCmdsTmp := make(map[*clusterNode][]Cmder)
 
-		        cn, err := node.Client.getConn()
-                if err != nil {
-                    if err == pool.ErrClosed {
+				cn, err := node.Client.getConn()
+				if err != nil {
+					if err == pool.ErrClosed {
 						c.remapCmds(cmds, failedCmdsTmp)
-                    } else {
-                        setCmdsErr(cmds, err)
-                    }
+					} else {
+						setCmdsErr(cmds, err)
+					}
 
-                } else {
+				} else {
 					err = c.pipelineProcessCmds(node, cn, cmds, failedCmdsTmp)
 					if err == nil || internal.IsRedisError(err) {
 						node.Client.connPool.Put(cn)
@@ -1283,7 +1283,7 @@ func (c *ClusterClient) defaultProcessPipeline(cmds []Cmder) error {
 				if len(failedCmdsTmp) > 0 {
 					for node, cs := range failedCmdsTmp {
 						lock.Lock()
-						if _, ok:= failedCmds[node]; ok {
+						if _, ok := failedCmds[node]; ok {
 							failedCmds[node] = append(failedCmds[node], cs...)
 						} else {
 							failedCmds[node] = cs
@@ -1292,7 +1292,7 @@ func (c *ClusterClient) defaultProcessPipeline(cmds []Cmder) error {
 					}
 				}
 
-            }(node, cmds)
+			}(node, cmds)
 		}
 		wg.Wait()
 
