@@ -592,36 +592,46 @@ func (c *Ring) defaultProcessPipeline(cmds []Cmder) error {
 			time.Sleep(c.retryBackoff(attempt))
 		}
 
+		var mu sync.Mutex
 		var failedCmdsMap map[string][]Cmder
+		var wg sync.WaitGroup
 
 		for hash, cmds := range cmdsMap {
-			shard, err := c.shards.GetByHash(hash)
-			if err != nil {
-				setCmdsErr(cmds, err)
-				continue
-			}
+			wg.Add(1)
+			go func(hash string, cmds []Cmder) {
+				defer wg.Done()
 
-			cn, err := shard.Client.getConn()
-			if err != nil {
-				setCmdsErr(cmds, err)
-				continue
-			}
-
-			canRetry, err := shard.Client.pipelineProcessCmds(cn, cmds)
-			if err == nil || internal.IsRedisError(err) {
-				shard.Client.connPool.Put(cn)
-				continue
-			}
-			shard.Client.connPool.Remove(cn)
-
-			if canRetry && internal.IsRetryableError(err, true) {
-				if failedCmdsMap == nil {
-					failedCmdsMap = make(map[string][]Cmder)
+				shard, err := c.shards.GetByHash(hash)
+				if err != nil {
+					setCmdsErr(cmds, err)
+					return
 				}
-				failedCmdsMap[hash] = cmds
-			}
+
+				cn, err := shard.Client.getConn()
+				if err != nil {
+					setCmdsErr(cmds, err)
+					return
+				}
+
+				canRetry, err := shard.Client.pipelineProcessCmds(cn, cmds)
+				if err == nil || internal.IsRedisError(err) {
+					shard.Client.connPool.Put(cn)
+					return
+				}
+				shard.Client.connPool.Remove(cn)
+
+				if canRetry && internal.IsRetryableError(err, true) {
+					mu.Lock()
+					if failedCmdsMap == nil {
+						failedCmdsMap = make(map[string][]Cmder)
+					}
+					failedCmdsMap[hash] = cmds
+					mu.Unlock()
+				}
+			}(hash, cmds)
 		}
 
+		wg.Wait()
 		if len(failedCmdsMap) == 0 {
 			break
 		}
