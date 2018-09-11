@@ -1254,24 +1254,47 @@ func (c *ClusterClient) defaultProcessPipeline(cmds []Cmder) error {
 
 		failedCmds := make(map[*clusterNode][]Cmder)
 
+		var wg sync.WaitGroup
+		var lock sync.RWMutex
 		for node, cmds := range cmdsMap {
-			cn, err := node.Client.getConn()
-			if err != nil {
-				if err == pool.ErrClosed {
-					c.remapCmds(cmds, failedCmds)
-				} else {
-					setCmdsErr(cmds, err)
-				}
-				continue
-			}
+			wg.Add(1)
+			go func(node *clusterNode, cmds []Cmder) {
+				defer wg.Done()
 
-			err = c.pipelineProcessCmds(node, cn, cmds, failedCmds)
-			if err == nil || internal.IsRedisError(err) {
-				node.Client.connPool.Put(cn)
-			} else {
-				node.Client.connPool.Remove(cn)
-			}
+				failedCmdsTmp := make(map[*clusterNode][]Cmder)
+
+				cn, err := node.Client.getConn()
+				if err != nil {
+					if err == pool.ErrClosed {
+						c.remapCmds(cmds, failedCmdsTmp)
+					} else {
+						setCmdsErr(cmds, err)
+					}
+
+				} else {
+					err = c.pipelineProcessCmds(node, cn, cmds, failedCmdsTmp)
+					if err == nil || internal.IsRedisError(err) {
+						node.Client.connPool.Put(cn)
+					} else {
+						node.Client.connPool.Remove(cn)
+					}
+				}
+
+				if len(failedCmdsTmp) > 0 {
+					for node, cs := range failedCmdsTmp {
+						lock.Lock()
+						if _, ok := failedCmds[node]; ok {
+							failedCmds[node] = append(failedCmds[node], cs...)
+						} else {
+							failedCmds[node] = cs
+						}
+						lock.Unlock()
+					}
+				}
+
+			}(node, cmds)
 		}
+		wg.Wait()
 
 		if len(failedCmds) == 0 {
 			break
