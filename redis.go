@@ -188,7 +188,11 @@ func (c *baseClient) retryBackoff(attempt int) time.Duration {
 
 func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
 	if timeout := cmd.readTimeout(); timeout != nil {
-		return readTimeout(*timeout)
+		t := *timeout
+		if t == 0 {
+			return 0
+		}
+		return t + 10*time.Second
 	}
 	return c.opt.ReadTimeout
 }
