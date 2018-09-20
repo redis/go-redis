@@ -82,7 +82,7 @@ func (opt *ClusterOptions) init() {
 		opt.MaxRedirects = 8
 	}
 
-	if opt.RouteByLatency || opt.RouteRandomly {
+	if (opt.RouteByLatency || opt.RouteRandomly) && opt.ClusterSlots == nil {
 		opt.ReadOnly = true
 	}
 
@@ -831,7 +831,7 @@ func (c *ClusterClient) cmdSlotAndNode(cmd Cmder) (int, *clusterNode, error) {
 	cmdInfo := c.cmdInfo(cmd.Name())
 	slot := cmdSlot(cmd, cmdFirstKeyPos(cmd, cmdInfo))
 
-	if cmdInfo != nil && cmdInfo.ReadOnly && c.opt.ReadOnly {
+	if c.opt.ReadOnly && cmdInfo != nil && cmdInfo.ReadOnly {
 		if c.opt.RouteByLatency {
 			node, err := state.slotClosestNode(slot)
 			return slot, node, err
