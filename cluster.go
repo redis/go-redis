@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/go-redis/redis/flowtoken"
 	"math"
 	"math/rand"
 	"net"
@@ -73,6 +74,8 @@ type ClusterOptions struct {
 	IdleCheckFrequency time.Duration
 
 	TLSConfig *tls.Config
+
+	FlowtokenConf *flowtoken.Config
 }
 
 func (opt *ClusterOptions) init() {
@@ -141,6 +144,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		IdleCheckFrequency: disableIdleCheck,
 
 		TLSConfig: opt.TLSConfig,
+
+		FlowtokenConfig: opt.FlowtokenConf,
 	}
 }
 

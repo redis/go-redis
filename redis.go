@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"github.com/go-redis/redis/flowtoken"
 	"log"
 	"os"
 	"time"
@@ -32,12 +33,18 @@ type baseClient struct {
 	processTxPipeline func([]Cmder) error
 
 	onClose func() error // hook called when client is closed
+
+	flowtoken *flowtoken.FlowToken
 }
 
 func (c *baseClient) init() {
 	c.process = c.defaultProcess
 	c.processPipeline = c.defaultProcessPipeline
 	c.processTxPipeline = c.defaultProcessTxPipeline
+
+	if c.opt.FlowtokenConfig != nil {
+		c.flowtoken = flowtoken.NewFlowToken(c.opt.Addr, c.opt.FlowtokenConfig)
+	}
 }
 
 func (c *baseClient) String() string {
@@ -61,6 +68,26 @@ func (c *baseClient) newConn() (*pool.Conn, error) {
 }
 
 func (c *baseClient) getConn() (*pool.Conn, error) {
+	if c.flowtoken == nil {
+		return c._getConn()
+	}
+
+	token, err := c.flowtoken.GetToken()
+	if err != nil {
+		return nil, err
+	}
+
+	cn, err := c._getConn()
+	if err != nil {
+		token.Fail()
+		return nil, err
+	}
+
+	cn.SetToken(token)
+	return cn, nil
+}
+
+func (c *baseClient) _getConn() (*pool.Conn, error) {
 	cn, err := c.connPool.Get()
 	if err != nil {
 		return nil, err
@@ -78,6 +105,20 @@ func (c *baseClient) getConn() (*pool.Conn, error) {
 }
 
 func (c *baseClient) releaseConn(cn *pool.Conn, err error) bool {
+	ret := c._releaseConn(cn, err)
+
+	if cn.Token != nil {
+		if internal.IsNetErr(err) {
+			cn.Token.Fail()
+		} else {
+			cn.Token.Succ()
+		}
+	}
+
+	return ret
+}
+
+func (c *baseClient) _releaseConn(cn *pool.Conn, err error) bool {
 	if internal.IsBadConn(err, false) {
 		c.connPool.Remove(cn)
 		return false
@@ -251,9 +292,22 @@ func (c *baseClient) generalProcessPipeline(cmds []Cmder, p pipelineProcessor) e
 
 		if err == nil || internal.IsRedisError(err) {
 			c.connPool.Put(cn)
+
+			if cn.Token != nil {
+				cn.Token.Succ()
+			}
+
 			break
 		}
 		c.connPool.Remove(cn)
+
+		if cn.Token != nil {
+			if internal.IsNetErr(err) {
+				cn.Token.Fail()
+			} else {
+				cn.Token.Succ()
+			}
+		}
 
 		if !canRetry || !internal.IsRetryableError(err, true) {
 			break

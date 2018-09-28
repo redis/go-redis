@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-redis/redis/flowtoken"
 	"github.com/go-redis/redis/internal/proto"
 )
 
@@ -20,6 +21,8 @@ type Conn struct {
 	InitedAt time.Time
 	pooled   bool
 	usedAt   atomic.Value
+
+	Token *flowtoken.Token
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -62,6 +65,10 @@ func (cn *Conn) setWriteTimeout(timeout time.Duration) error {
 		return cn.netConn.SetWriteDeadline(now.Add(timeout))
 	}
 	return cn.netConn.SetWriteDeadline(noDeadline)
+}
+
+func (cn *Conn) SetToken(token *flowtoken.Token) {
+	cn.Token = token
 }
 
 func (cn *Conn) Write(b []byte) (int, error) {

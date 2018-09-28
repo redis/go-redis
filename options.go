@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/go-redis/redis/flowtoken"
 	"net"
 	"net/url"
 	"runtime"
@@ -84,6 +85,10 @@ type Options struct {
 
 	// TLS Config to use. When set TLS will be negotiated.
 	TLSConfig *tls.Config
+
+	// Flottoken Config.
+	// Default is nil, means not enable flowtoken.
+	FlowtokenConfig *flowtoken.Config
 }
 
 func (opt *Options) init() {
@@ -142,6 +147,20 @@ func (opt *Options) init() {
 		opt.MaxRetryBackoff = 0
 	case 0:
 		opt.MaxRetryBackoff = 512 * time.Millisecond
+	}
+
+	if opt.FlowtokenConfig != nil {
+		if opt.FlowtokenConfig.InitCwnd <= 0 {
+			opt.FlowtokenConfig.InitCwnd = 1000
+		}
+
+		if opt.FlowtokenConfig.MinCwnd <= 0 {
+			opt.FlowtokenConfig.MinCwnd = 10
+		}
+
+		if opt.FlowtokenConfig.MaxCwnd <= 0 {
+			opt.FlowtokenConfig.MaxCwnd = 0
+		}
 	}
 }
 
