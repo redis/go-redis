@@ -3,21 +3,24 @@
 package flowtoken
 
 import (
-	"encoding/json"
+	"fmt"
 	"math"
 	"sync"
 	"time"
 )
 
-// FlowTokenConf is the conf of flowtoken
-type FlowTokenConf struct {
-	ServId   string // server identity, like ip:port
-	InitCwnd int64  // the initial size of window, default value is 1000.
-	// the min size of window. When the window need to be reduced, its size will not be smaller than this setting.
-	// This setting should not be smaller than 1, because it is necessary to have some requests to detect
-	// whether the service have recovered. Default value is 10.
+// Config for FlowToken.
+type Config struct {
+	// The initial size of window, means the available number of token in flowtoken at beginning.
+	// Default is 1000.
+	InitCwnd int64
+	// The min size of window. When requests on-going failed, the window will continue to shrink until MinCwnd.
+	// This value should not smaller than 1, as we need few requests to detect whether the service has recovered.
+	// Default is 10.
 	MinCwnd int64
-	MaxCwnd int64 // the max size of window, default value is 0, means no limit.
+	// The max size of window.
+	// Default is 0, means no limit.
+	MaxCwnd int64
 }
 
 // FlowToken represents a token dispenser.
@@ -62,9 +65,9 @@ type Snapshot struct {
 }
 
 // NewFlowToken create a new flowtoken.
-func NewFlowToken(conf *FlowTokenConf) *FlowToken {
+func NewFlowToken(servId string, conf *Config) *FlowToken {
 	ft := &FlowToken{
-		servId: conf.ServId,
+		servId: servId,
 		l:      &sync.Mutex{},
 	}
 
@@ -291,20 +294,20 @@ func (t *Token) Fail() {
 	t.ft.reportFail()
 }
 
+func (s *Snapshot) String() string {
+	return fmt.Sprintf("ServId:%s, TokenNum:%d, Cwnd:%d, Ssthresh:%d, LastReinitTime:%d, TotalCount:%d, SuccCount:%d, FailCount:%d, ExhaustCount:%d",
+		s.ServId, s.TokenNum, s.Cwnd, s.Ssthresh, s.LastReinitTime, s.TotalCount, s.SuccCount, s.FailCount, s.ExhaustCount)
+}
+
 // TokenExhaustedError represents there is no available token.
 type TokenExhaustedError struct {
-	Snapshot *Snapshot
 	Msg      string
+	Snapshot *Snapshot
 }
 
 // Error return the string format of TokenExhaustedError.
 func (e *TokenExhaustedError) Error() string {
-	sb, err := json.Marshal(e)
-	if err != nil && sb != nil {
-		return string(sb)
-	}
-
-	return ""
+	return fmt.Sprintf("flowtoken shutdown, %s, snapshot:[%s]", e.Msg, e.Snapshot)
 }
 
 // IsTokenExhaustedError judge whether the error is TokenExhaustedError

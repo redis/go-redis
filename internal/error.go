@@ -79,3 +79,12 @@ func IsMovedError(err error) (moved bool, ask bool, addr string) {
 func IsLoadingError(err error) bool {
 	return strings.HasPrefix(err.Error(), "LOADING ")
 }
+
+func IsNetErr(err error) bool {
+	_, ok := err.(net.Error)
+	if ok {
+		return true
+	}
+
+	return false
+}

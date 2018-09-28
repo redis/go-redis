@@ -11,13 +11,12 @@ import (
 func TestFlowtoken(t *testing.T) {
 	Convey("test flowtoken", t, func() {
 		Convey("all fail, success rate less than 0.02", func() {
-			conf := &FlowTokenConf{
-				ServId:   "127.0.0.1:13000",
+			conf := &Config{
 				InitCwnd: 400,
 				MinCwnd:  3,
 				MaxCwnd:  40000,
 			}
-			ft := NewFlowToken(conf)
+			ft := NewFlowToken("127.0.0.1:13000", conf)
 
 			exaustCount := 0
 			lock := &sync.Mutex{}
@@ -69,13 +68,12 @@ func TestFlowtoken(t *testing.T) {
 		})
 
 		Convey("all succ, success rate more than 0.98", func() {
-			conf := &FlowTokenConf{
-				ServId:   "127.0.0.1:13000",
+			conf := &Config{
 				InitCwnd: 400,
 				MinCwnd:  3,
 				MaxCwnd:  40000,
 			}
-			ft := NewFlowToken(conf)
+			ft := NewFlowToken("127.0.0.1:13000", conf)
 
 			exaustCount := 0
 			lock := &sync.Mutex{}
@@ -135,12 +133,11 @@ func TestFlowtoken(t *testing.T) {
 		})
 
 		Convey("partial fail, success rate between 0.02 and 0.98", func() {
-			conf := &FlowTokenConf{
-				ServId:   "127.0.0.1:13000",
+			conf := &Config{
 				InitCwnd: 100000,
 				MinCwnd:  3,
 			}
-			ft := NewFlowToken(conf)
+			ft := NewFlowToken("127.0.0.1:13000", conf)
 
 			t, err := ft.GetToken()
 			So(err, ShouldBeNil)
@@ -184,13 +181,12 @@ func TestFlowtoken(t *testing.T) {
 		})
 
 		Convey("shut down and recover", func() {
-			conf := &FlowTokenConf{
-				ServId:   "127.0.0.1:13000",
+			conf := &Config{
 				InitCwnd: 400,
 				MinCwnd:  3,
 				MaxCwnd:  40000,
 			}
-			ft := NewFlowToken(conf)
+			ft := NewFlowToken("127.0.0.1:13000", conf)
 
 			wg := &sync.WaitGroup{}
 			for l := 0; l <= 10; l++ {
