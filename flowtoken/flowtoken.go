@@ -90,8 +90,8 @@ func NewFlowToken(servId string, conf *Config) *FlowToken {
 	return ft
 }
 
-// GetToken return an available token from flowtoken if there have available token,
-// otherwise return TokenExhaustedError, which indicate that have reached the traffic threshold.
+// GetToken return a token from flowtoken if there have available tokens,
+// otherwise return a TokenExhaustedError, which indicates that have reached the traffic threshold.
 func (ft *FlowToken) GetToken() (*Token, error) {
 	ft.l.Lock()
 	defer ft.l.Unlock()
@@ -117,8 +117,8 @@ func (ft *FlowToken) GetToken() (*Token, error) {
 		}
 
 		return nil, &TokenExhaustedError{
-			Snapshot: snapshot,
 			Msg:      ft.servId + " token exhausted",
+			Snapshot: snapshot,
 		}
 	}
 
@@ -131,7 +131,7 @@ func (ft *FlowToken) GetToken() (*Token, error) {
 	return token, nil
 }
 
-// GetSnapshot return current state of flowtoken.
+// GetSnapshot return a copy of current flowtoken state.
 func (ft *FlowToken) GetSnapshot() *Snapshot {
 	ft.l.Lock()
 	defer ft.l.Unlock()
@@ -149,7 +149,7 @@ func (ft *FlowToken) GetSnapshot() *Snapshot {
 	}
 }
 
-// reInit reinitialize the flowtoken, and adjusts the flow threshold based on success rate of call.
+// reInit reinitialize the flowtoken, and adjusts the flow threshold based on success rate of requests.
 func (ft *FlowToken) reInit(currSec int64) {
 	succ := ft.succCount
 	fail := ft.failCount
@@ -214,8 +214,7 @@ func (ft *FlowToken) reInit(currSec int64) {
 	return
 }
 
-// allFail estimate whether all requests fail.
-// If the success rate is less than 0.02, we think that is all fail.
+// allFail estimate whether requests are all fail.
 func (ft *FlowToken) allFail(succ, fail int64) bool {
 	total := succ + fail
 	if total < 200 {
@@ -235,8 +234,7 @@ func (ft *FlowToken) allFail(succ, fail int64) bool {
 	}
 }
 
-// allSucc estimate whether all requests success.
-// If the success rate is more than 0.98, we think that is all success.
+// allSucc estimate whether requests are all success.
 func (ft *FlowToken) allSucc(succ, fail int64) bool {
 	total := succ + fail
 	if total < 200 {
@@ -267,7 +265,7 @@ func (ft *FlowToken) partFail(succ, fail int64) bool {
 	}
 }
 
-// reportSucc report request status to flowtoken.
+// reportSucc report result of a request to flowtoken.
 func (ft *FlowToken) reportSucc() {
 	ft.l.Lock()
 	defer ft.l.Unlock()
@@ -276,7 +274,7 @@ func (ft *FlowToken) reportSucc() {
 	ft.tokenNum++
 }
 
-// reportFail report request status to flowtoken.
+// reportFail report result of a request to flowtoken.
 func (ft *FlowToken) reportFail() {
 	ft.l.Lock()
 	defer ft.l.Unlock()
@@ -284,12 +282,12 @@ func (ft *FlowToken) reportFail() {
 	ft.failCount++
 }
 
-// Succ report request status to flowtoken.
+// Succ report result of a request to flowtoken.
 func (t *Token) Succ() {
 	t.ft.reportSucc()
 }
 
-// Fail report request status to flowtoken.
+// Fail report result of a request to flowtoken.
 func (t *Token) Fail() {
 	t.ft.reportFail()
 }

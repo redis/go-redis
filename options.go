@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/go-redis/redis/flowtoken"
 	"net"
 	"net/url"
 	"runtime"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-redis/redis/flowtoken"
 	"github.com/go-redis/redis/internal/pool"
 )
 
