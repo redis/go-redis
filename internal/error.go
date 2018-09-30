@@ -81,10 +81,10 @@ func IsLoadingError(err error) bool {
 }
 
 func IsNetErr(err error) bool {
-	_, ok := err.(net.Error)
-	if ok {
-		return true
+	if err == nil {
+		return false
 	}
 
-	return false
+	_, ok := err.(net.Error)
+	return ok
 }

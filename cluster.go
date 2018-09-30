@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/go-redis/redis/flowtoken"
 	"math"
 	"math/rand"
 	"net"
@@ -20,6 +19,8 @@ import (
 	"github.com/go-redis/redis/internal/pool"
 	"github.com/go-redis/redis/internal/proto"
 	"github.com/go-redis/redis/internal/singleflight"
+
+	"github.com/go-redis/redis/flowtoken"
 )
 
 var errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
@@ -75,7 +76,7 @@ type ClusterOptions struct {
 
 	TLSConfig *tls.Config
 
-	FlowtokenConf *flowtoken.Config
+	FlowtokenConfig *flowtoken.Config
 }
 
 func (opt *ClusterOptions) init() {
@@ -145,7 +146,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 
 		TLSConfig: opt.TLSConfig,
 
-		FlowtokenConfig: opt.FlowtokenConf,
+		FlowtokenConfig: opt.FlowtokenConfig,
 	}
 }
 
@@ -1169,6 +1170,32 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 	return &acc
 }
 
+// GetFlowtokenStates returns all flowtoken status.
+func (c *ClusterClient) GetFlowtokenStates() []*flowtoken.Snapshot {
+	state, _ := c.state.Get()
+	if state == nil {
+		return nil
+	}
+
+	snapshots := make([]*flowtoken.Snapshot, 0, len(state.Masters)+len(state.Slaves))
+
+	for _, node := range state.Masters {
+		snapshot := node.Client.GetFlowtokenState()
+		if snapshot != nil {
+			snapshots = append(snapshots, snapshot)
+		}
+	}
+
+	for _, node := range state.Slaves {
+		snapshot := node.Client.GetFlowtokenState()
+		if snapshot != nil {
+			snapshots = append(snapshots, snapshot)
+		}
+	}
+
+	return snapshots
+}
+
 func (c *ClusterClient) loadState() (*clusterState, error) {
 	if c.opt.ClusterSlots != nil {
 		slots, err := c.opt.ClusterSlots()
@@ -1281,6 +1308,14 @@ func (c *ClusterClient) defaultProcessPipeline(cmds []Cmder) error {
 					node.Client.connPool.Put(cn)
 				} else {
 					node.Client.connPool.Remove(cn)
+				}
+
+				if cn.Token != nil {
+					if internal.IsNetErr(err) {
+						cn.Token.Fail()
+					} else {
+						cn.Token.Succ()
+					}
 				}
 			}(node, cmds)
 		}
@@ -1475,6 +1510,14 @@ func (c *ClusterClient) defaultProcessTxPipeline(cmds []Cmder) error {
 						node.Client.connPool.Put(cn)
 					} else {
 						node.Client.connPool.Remove(cn)
+					}
+
+					if cn.Token != nil {
+						if internal.IsNetErr(err) {
+							cn.Token.Fail()
+						} else {
+							cn.Token.Succ()
+						}
 					}
 				}(node, cmds)
 			}

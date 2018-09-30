@@ -620,6 +620,14 @@ func (c *Ring) defaultProcessPipeline(cmds []Cmder) error {
 				}
 				shard.Client.connPool.Remove(cn)
 
+				if cn.Token != nil {
+					if internal.IsNetErr(err) {
+						cn.Token.Fail()
+					} else {
+						cn.Token.Succ()
+					}
+				}
+
 				if canRetry && internal.IsRetryableError(err, true) {
 					mu.Lock()
 					if failedCmdsMap == nil {

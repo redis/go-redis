@@ -3,11 +3,11 @@ package redis
 import (
 	"context"
 	"fmt"
-	"github.com/go-redis/redis/flowtoken"
 	"log"
 	"os"
 	"time"
 
+	"github.com/go-redis/redis/flowtoken"
 	"github.com/go-redis/redis/internal"
 	"github.com/go-redis/redis/internal/pool"
 	"github.com/go-redis/redis/internal/proto"
@@ -79,7 +79,12 @@ func (c *baseClient) getConn() (*pool.Conn, error) {
 
 	cn, err := c._getConn()
 	if err != nil {
-		token.Fail()
+		if internal.IsNetErr(err) {
+			token.Fail()
+		} else {
+			token.Succ()
+		}
+
 		return nil, err
 	}
 
@@ -529,6 +534,14 @@ func (c *Client) PSubscribe(channels ...string) *PubSub {
 		_ = pubsub.PSubscribe(channels...)
 	}
 	return pubsub
+}
+
+func (c *Client) GetFlowtokenState() *flowtoken.Snapshot {
+	if c.flowtoken != nil {
+		return c.flowtoken.GetSnapshot()
+	}
+
+	return nil
 }
 
 //------------------------------------------------------------------------------
