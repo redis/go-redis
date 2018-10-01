@@ -51,7 +51,6 @@ func (c *PubSub) _conn(newChannels []string) (*pool.Conn, error) {
 	if c.closed {
 		return nil, pool.ErrClosed
 	}
-
 	if c.cn != nil {
 		return c.cn, nil
 	}

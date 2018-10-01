@@ -20,7 +20,6 @@ func init() {
 		PoolSize:     10,
 		PoolTimeout:  30 * time.Second,
 	})
-	//	redisdb.FlushDB()
 }
 
 func ExampleNewClient() {
