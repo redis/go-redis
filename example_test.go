@@ -343,11 +343,7 @@ func ExamplePubSub() {
 	})
 
 	// Consume messages.
-	for {
-		msg, ok := <-ch
-		if !ok {
-			break
-		}
+	for msg := range ch {
 		fmt.Println(msg.Channel, msg.Payload)
 	}
 
