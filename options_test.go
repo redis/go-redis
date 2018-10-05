@@ -5,6 +5,7 @@ package redis
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestParseURL(t *testing.T) {
@@ -90,5 +91,29 @@ func TestParseURL(t *testing.T) {
 				t.Errorf("got nil TLSConfig, expected a TLSConfig")
 			}
 		})
+	}
+}
+
+// Test ReadTimeout option initialization, including special values -1 and 0.
+// And also test behaviour of WriteTimeout option, when it is not explicitly set and use
+// ReadTimeout value.
+func TestReadTimeoutOptions(t *testing.T) {
+	testDataInputOutputMap := map[time.Duration]time.Duration{
+		-1: 0 * time.Second,
+		0:  3 * time.Second,
+		1:  1 * time.Nanosecond,
+		3:  3 * time.Nanosecond,
+	}
+
+	for in, out := range testDataInputOutputMap {
+		o := &Options{ReadTimeout: in}
+		o.init()
+		if o.ReadTimeout != out {
+			t.Errorf("got %d instead of %d as ReadTimeout option", o.ReadTimeout, out)
+		}
+
+		if o.WriteTimeout != o.ReadTimeout {
+			t.Errorf("got %d instead of %d as WriteTimeout option", o.WriteTimeout, o.ReadTimeout)
+		}
 	}
 }
