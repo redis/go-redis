@@ -153,13 +153,13 @@ func (c *SentinelClient) PSubscribe(channels ...string) *PubSub {
 }
 
 func (c *SentinelClient) GetMasterAddrByName(name string) *StringSliceCmd {
-	cmd := NewStringSliceCmd("SENTINEL", "get-master-addr-by-name", name)
+	cmd := NewStringSliceCmd("sentinel", "get-master-addr-by-name", name)
 	c.Process(cmd)
 	return cmd
 }
 
 func (c *SentinelClient) Sentinels(name string) *SliceCmd {
-	cmd := NewSliceCmd("SENTINEL", "sentinels", name)
+	cmd := NewSliceCmd("sentinel", "sentinels", name)
 	c.Process(cmd)
 	return cmd
 }
