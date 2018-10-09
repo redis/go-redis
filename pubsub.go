@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -9,6 +10,8 @@ import (
 	"github.com/go-redis/redis/internal/pool"
 	"github.com/go-redis/redis/internal/proto"
 )
+
+var errPingTimeout = errors.New("redis: ping timeout")
 
 // PubSub implements Pub/Sub commands bas described in
 // http://redis.io/topics/pubsub. Message receiving is NOT safe
@@ -438,7 +441,6 @@ func (c *PubSub) initChannel() {
 		timer.Stop()
 
 		healthy := true
-		var pingErr error
 		for {
 			timer.Reset(timeout)
 			select {
@@ -448,10 +450,13 @@ func (c *PubSub) initChannel() {
 					<-timer.C
 				}
 			case <-timer.C:
-				pingErr = c.Ping()
+				pingErr := c.Ping()
 				if healthy {
 					healthy = false
 				} else {
+					if pingErr == nil {
+						pingErr = errPingTimeout
+					}
 					c.mu.Lock()
 					c._reconnect(pingErr)
 					c.mu.Unlock()
