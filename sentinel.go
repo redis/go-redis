@@ -222,13 +222,18 @@ func (c *sentinelFailover) masterAddr() (string, error) {
 		sentinel := NewSentinelClient(&Options{
 			Addr: sentinelAddr,
 
+			MaxRetries: c.opt.MaxRetries,
+
 			DialTimeout:  c.opt.DialTimeout,
 			ReadTimeout:  c.opt.ReadTimeout,
 			WriteTimeout: c.opt.WriteTimeout,
 
-			PoolSize:    c.opt.PoolSize,
-			PoolTimeout: c.opt.PoolTimeout,
-			IdleTimeout: c.opt.IdleTimeout,
+			PoolSize:           c.opt.PoolSize,
+			PoolTimeout:        c.opt.PoolTimeout,
+			IdleTimeout:        c.opt.IdleTimeout,
+			IdleCheckFrequency: c.opt.IdleCheckFrequency,
+
+			TLSConfig: c.opt.TLSConfig,
 		})
 
 		masterAddr, err := sentinel.GetMasterAddrByName(c.masterName).Result()
