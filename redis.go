@@ -323,7 +323,7 @@ func txPipelineReadQueued(rd *proto.Reader, cmds []Cmder) error {
 		return err
 	}
 
-	for _ = range cmds {
+	for range cmds {
 		err = statusCmd.readReply(rd)
 		if err != nil && !internal.IsRedisError(err) {
 			return err
