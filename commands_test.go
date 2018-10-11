@@ -1958,7 +1958,7 @@ var _ = Describe("Commands", func() {
 
 			sMembersMap := client.SMembersMap("set")
 			Expect(sMembersMap.Err()).NotTo(HaveOccurred())
-			Expect(sMembersMap.Val()).To(Equal(map[string]struct{}{"Hello": struct{}{}, "World": struct{}{}}))
+			Expect(sMembersMap.Val()).To(Equal(map[string]struct{}{"Hello": {}, "World": {}}))
 		})
 
 		It("should SMove", func() {

@@ -2,15 +2,10 @@ package proto_test
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 
 	"github.com/go-redis/redis/internal/proto"
 )
-
-func newReader(s string) *proto.Reader {
-	return proto.NewReader(strings.NewReader(s))
-}
 
 func BenchmarkReader_ParseReply_Status(b *testing.B) {
 	benchmarkParseReply(b, "+OK\r\n", nil, false)
