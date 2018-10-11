@@ -208,11 +208,11 @@ func startCluster(scenario *clusterScenario) error {
 }
 
 func assertSlotsEqual(slots, wanted []redis.ClusterSlot) error {
-outer_loop:
+outerLoop:
 	for _, s2 := range wanted {
 		for _, s1 := range slots {
 			if slotEqual(s1, s2) {
-				continue outer_loop
+				continue outerLoop
 			}
 		}
 		return fmt.Errorf("%v not found in %v", s2, slots)
