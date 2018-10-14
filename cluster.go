@@ -50,6 +50,9 @@ type ClusterOptions struct {
 	// and Cluster.ReloadState to manually trigger state reloading.
 	ClusterSlots func() ([]ClusterSlot, error)
 
+	// Optional hook that is called when a new node is created.
+	OnNewNode func(*Client)
+
 	// Following options are copied from Options struct.
 
 	OnConnect func(*Conn) error
@@ -164,6 +167,10 @@ func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
 	node.latency = math.MaxUint32
 	if clOpt.RouteByLatency {
 		go node.updateLatency()
+	}
+
+	if clOpt.OnNewNode != nil {
+		clOpt.OnNewNode(node.Client)
 	}
 
 	return &node
