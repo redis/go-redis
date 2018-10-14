@@ -77,14 +77,20 @@ func (c *baseClient) getConn() (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) releaseConn(cn *pool.Conn, err error) bool {
+func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
 	if internal.IsBadConn(err, false) {
 		c.connPool.Remove(cn)
-		return false
+	} else {
+		c.connPool.Put(cn)
 	}
+}
 
-	c.connPool.Put(cn)
-	return true
+func (c *baseClient) releaseConnStrict(cn *pool.Conn, err error) {
+	if err == nil || internal.IsRedisError(err) {
+		c.connPool.Put(cn)
+	} else {
+		c.connPool.Remove(cn)
+	}
 }
 
 func (c *baseClient) initConn(cn *pool.Conn) error {
@@ -248,12 +254,7 @@ func (c *baseClient) generalProcessPipeline(cmds []Cmder, p pipelineProcessor) e
 		}
 
 		canRetry, err := p(cn, cmds)
-
-		if err == nil || internal.IsRedisError(err) {
-			c.connPool.Put(cn)
-			break
-		}
-		c.connPool.Remove(cn)
+		c.releaseConnStrict(cn, err)
 
 		if !canRetry || !internal.IsRetryableError(err, true) {
 			break
