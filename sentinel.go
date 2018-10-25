@@ -181,7 +181,10 @@ type sentinelFailover struct {
 func (c *sentinelFailover) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.closeSentinel()
+	if c.sentinel != nil {
+		return c.closeSentinel()
+	}
+	return nil
 }
 
 func (c *sentinelFailover) Pool() *pool.ConnPool {
@@ -240,7 +243,7 @@ func (c *sentinelFailover) masterAddr() (string, error) {
 		if err != nil {
 			internal.Logf("sentinel: GetMasterAddrByName master=%q failed: %s",
 				c.masterName, err)
-			sentinel.Close()
+			_ = sentinel.Close()
 			continue
 		}
 
