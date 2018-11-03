@@ -1554,9 +1554,8 @@ type Z struct {
 
 // ZWithKey represents sorted set member including the name of the key where it was popped.
 type ZWithKey struct {
-	Score  float64
-	Member interface{}
-	Key    string
+	Z
+	Key string
 }
 
 // ZStore is used as an arg to ZInterStore and ZUnionStore.

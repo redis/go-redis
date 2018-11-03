@@ -2138,9 +2138,11 @@ var _ = Describe("Commands", func() {
 			member, err := client.BZPopMax(0, "zset1", "zset2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(member).To(Equal(redis.ZWithKey{
-				Score:  3,
-				Member: "three",
-				Key:    "zset1",
+				Z: redis.Z{
+					Score:  3,
+					Member: "three",
+				},
+				Key: "zset1",
 			}))
 		})
 
@@ -2154,9 +2156,11 @@ var _ = Describe("Commands", func() {
 				bZPopMax := client.BZPopMax(0, "zset")
 				Expect(bZPopMax.Err()).NotTo(HaveOccurred())
 				Expect(bZPopMax.Val()).To(Equal(redis.ZWithKey{
-					Member: "a",
-					Score:  1,
-					Key:    "zset",
+					Z: redis.Z{
+						Member: "a",
+						Score:  1,
+					},
+					Key: "zset",
 				}))
 				done <- true
 			}()
@@ -2216,9 +2220,11 @@ var _ = Describe("Commands", func() {
 			member, err := client.BZPopMin(0, "zset1", "zset2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(member).To(Equal(redis.ZWithKey{
-				Score:  1,
-				Member: "one",
-				Key:    "zset1",
+				Z: redis.Z{
+					Score:  1,
+					Member: "one",
+				},
+				Key: "zset1",
 			}))
 		})
 
@@ -2232,9 +2238,11 @@ var _ = Describe("Commands", func() {
 				bZPopMin := client.BZPopMin(0, "zset")
 				Expect(bZPopMin.Err()).NotTo(HaveOccurred())
 				Expect(bZPopMin.Val()).To(Equal(redis.ZWithKey{
-					Member: "a",
-					Score:  1,
-					Key:    "zset",
+					Z: redis.Z{
+						Member: "a",
+						Score:  1,
+					},
+					Key: "zset",
 				}))
 				done <- true
 			}()
