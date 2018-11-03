@@ -185,6 +185,8 @@ type Cmdable interface {
 	XClaimJustID(a *XClaimArgs) *StringSliceCmd
 	XTrim(key string, maxLen int64) *IntCmd
 	XTrimApprox(key string, maxLen int64) *IntCmd
+	BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd
+	BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd
 	ZAdd(key string, members ...Z) *IntCmd
 	ZAddNX(key string, members ...Z) *IntCmd
 	ZAddXX(key string, members ...Z) *IntCmd
@@ -1550,11 +1552,46 @@ type Z struct {
 	Member interface{}
 }
 
+// ZWithKey represents sorted set member including the name of the key where it was popped.
+type ZWithKey struct {
+	Score  float64
+	Member interface{}
+	Key    string
+}
+
 // ZStore is used as an arg to ZInterStore and ZUnionStore.
 type ZStore struct {
 	Weights []float64
 	// Can be SUM, MIN or MAX.
 	Aggregate string
+}
+
+// Redis `BZPOPMAX key [key ...] timeout` command.
+func (c *cmdable) BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd {
+	args := make([]interface{}, 1+len(keys)+1)
+	args[0] = "bzpopmax"
+	for i, key := range keys {
+		args[1+i] = key
+	}
+	args[len(args)-1] = formatSec(timeout)
+	cmd := NewZWithKeyCmd(args...)
+	cmd.setReadTimeout(timeout)
+	c.process(cmd)
+	return cmd
+}
+
+// Redis `BZPOPMIN key [key ...] timeout` command.
+func (c *cmdable) BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd {
+	args := make([]interface{}, 1+len(keys)+1)
+	args[0] = "bzpopmin"
+	for i, key := range keys {
+		args[1+i] = key
+	}
+	args[len(args)-1] = formatSec(timeout)
+	cmd := NewZWithKeyCmd(args...)
+	cmd.setReadTimeout(timeout)
+	c.process(cmd)
+	return cmd
 }
 
 func (c *cmdable) zAdd(a []interface{}, n int, members ...Z) *IntCmd {
