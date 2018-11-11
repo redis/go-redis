@@ -305,16 +305,27 @@ func (c *sentinelFailover) switchMaster(addr string) {
 func (c *sentinelFailover) setSentinel(sentinel *SentinelClient) {
 	c.discoverSentinels(sentinel)
 	c.sentinel = sentinel
-	go c.listen(sentinel)
+
+	c.pubsub = sentinel.Subscribe("+switch-master")
+	go c.listen(c.pubsub)
 }
 
 func (c *sentinelFailover) closeSentinel() error {
-	if err := c.pubsub.Close(); err != nil {
-		return err
+	var firstErr error
+
+	err := c.pubsub.Close()
+	if err != nil && firstErr == err {
+		firstErr = err
 	}
-	err := c.sentinel.Close()
+	c.pubsub = nil
+
+	err = c.sentinel.Close()
+	if err != nil && firstErr == err {
+		firstErr = err
+	}
 	c.sentinel = nil
-	return err
+
+	return firstErr
 }
 
 func (c *sentinelFailover) discoverSentinels(sentinel *SentinelClient) {
@@ -339,9 +350,8 @@ func (c *sentinelFailover) discoverSentinels(sentinel *SentinelClient) {
 	}
 }
 
-func (c *sentinelFailover) listen(sentinel *SentinelClient) {
-	c.pubsub = sentinel.Subscribe("+switch-master")
-	ch := c.pubsub.Channel()
+func (c *sentinelFailover) listen(pubsub *PubSub) {
+	ch := pubsub.Channel()
 	for {
 		msg, ok := <-ch
 		if !ok {
