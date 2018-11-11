@@ -176,6 +176,7 @@ type sentinelFailover struct {
 	masterName  string
 	_masterAddr string
 	sentinel    *SentinelClient
+	pubsub      *PubSub
 }
 
 func (c *sentinelFailover) Close() error {
@@ -308,6 +309,9 @@ func (c *sentinelFailover) setSentinel(sentinel *SentinelClient) {
 }
 
 func (c *sentinelFailover) closeSentinel() error {
+	if err := c.pubsub.Close(); err != nil {
+		return err
+	}
 	err := c.sentinel.Close()
 	c.sentinel = nil
 	return err
@@ -336,10 +340,8 @@ func (c *sentinelFailover) discoverSentinels(sentinel *SentinelClient) {
 }
 
 func (c *sentinelFailover) listen(sentinel *SentinelClient) {
-	pubsub := sentinel.Subscribe("+switch-master")
-	defer pubsub.Close()
-
-	ch := pubsub.Channel()
+	c.pubsub = sentinel.Subscribe("+switch-master")
+	ch := c.pubsub.Channel()
 	for {
 		msg, ok := <-ch
 		if !ok {
