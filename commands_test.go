@@ -3405,6 +3405,12 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
+		It("should XDel", func() {
+			n, err := client.XDel("stream", "1-0", "2-0", "3-0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(3)))
+		})
+
 		It("should XLen", func() {
 			n, err := client.XLen("stream").Result()
 			Expect(err).NotTo(HaveOccurred())
