@@ -166,6 +166,7 @@ type Cmdable interface {
 	SUnion(keys ...string) *StringSliceCmd
 	SUnionStore(destination string, keys ...string) *IntCmd
 	XAdd(a *XAddArgs) *StringCmd
+	XDel(stream string, ids ...string) *IntCmd
 	XLen(stream string) *IntCmd
 	XRange(stream, start, stop string) *XMessageSliceCmd
 	XRangeN(stream, start, stop string, count int64) *XMessageSliceCmd
@@ -1335,6 +1336,16 @@ func (c *cmdable) XAdd(a *XAddArgs) *StringCmd {
 	}
 
 	cmd := NewStringCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XDel(stream string, ids ...string) *IntCmd {
+	args := []interface{}{"xdel", stream}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
 }
