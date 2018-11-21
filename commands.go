@@ -1447,6 +1447,7 @@ type XReadGroupArgs struct {
 	Streams  []string
 	Count    int64
 	Block    time.Duration
+	NoAck    bool
 }
 
 func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
@@ -1457,6 +1458,9 @@ func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
 	}
 	if a.Block >= 0 {
 		args = append(args, "block", int64(a.Block/time.Millisecond))
+	}
+	if a.NoAck {
+		args = append(args, "noack")
 	}
 	args = append(args, "streams")
 	for _, s := range a.Streams {

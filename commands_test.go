@@ -69,7 +69,7 @@ var _ = Describe("Commands", func() {
 			val, err := client.Wait(1, wait).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(0)))
-			Expect(time.Now()).To(BeTemporally("~", start.Add(wait), time.Second))
+			Expect(time.Now()).To(BeTemporally("~", start.Add(wait), 3*time.Second))
 		})
 
 		It("should Select", func() {
@@ -2793,10 +2793,13 @@ var _ = Describe("Commands", func() {
 				Member: "one",
 			}).Err()
 			Expect(err).NotTo(HaveOccurred())
+
 			err = client.ZAdd("zset", redis.Z{
 				Score:  2,
 				Member: "two",
 			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
 			members, err = client.ZPopMin("zset", 10).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(members).To(Equal([]redis.Z{{
@@ -3541,8 +3544,9 @@ var _ = Describe("Commands", func() {
 				res, err := client.XReadGroup(&redis.XReadGroupArgs{
 					Group:    "group",
 					Consumer: "consumer",
-					Streams:  []string{"stream", "0"},
+					Streams:  []string{"stream", ">"},
 				}).Result()
+				Expect(err).NotTo(HaveOccurred())
 				Expect(res).To(Equal([]redis.XStream{{
 					Stream: "stream",
 					Messages: []redis.XMessage{
