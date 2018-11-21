@@ -533,10 +533,12 @@ func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
 			n := rand.Intn(len(nodes)-1) + 1
 			slave = nodes[n]
 			if !slave.Loading() {
-				break
+				return slave, nil
 			}
 		}
-		return slave, nil
+
+		// All slaves are loading - use master.
+		return nodes[0], nil
 	}
 }
 
@@ -979,9 +981,10 @@ func (c *ClusterClient) defaultProcess(cmd Cmder) error {
 			break
 		}
 
-		// If slave is loading - read from master.
+		// If slave is loading - pick another node.
 		if c.opt.ReadOnly && internal.IsLoadingError(err) {
 			node.MarkAsLoading()
+			node = nil
 			continue
 		}
 
