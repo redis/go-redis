@@ -49,8 +49,6 @@ func (s *clusterScenario) addrs() []string {
 }
 
 func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
-	var errBadState = fmt.Errorf("cluster state is not consistent")
-
 	opt.Addrs = s.addrs()
 	client := redis.NewClusterClient(opt)
 
@@ -65,27 +63,7 @@ func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.Cluste
 		}
 
 		if !state.IsConsistent() {
-			return errBadState
-		}
-
-		if len(state.Masters) < 3 {
-			return errBadState
-		}
-		for _, master := range state.Masters {
-			s := master.Client.Info("replication").Val()
-			if !strings.Contains(s, "role:master") {
-				return errBadState
-			}
-		}
-
-		if len(state.Slaves) < 3 {
-			return errBadState
-		}
-		for _, slave := range state.Slaves {
-			s := slave.Client.Info("replication").Val()
-			if !strings.Contains(s, "role:slave") {
-				return errBadState
-			}
+			return fmt.Errorf("cluster state is not consistent")
 		}
 
 		return nil
