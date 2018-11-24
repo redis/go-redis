@@ -3,6 +3,7 @@ package redis
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/go-redis/redis/internal/hashtag"
 	"github.com/go-redis/redis/internal/pool"
@@ -54,4 +55,28 @@ func (c *ClusterClient) SwapNodes(key string) error {
 	}
 	nodes[0], nodes[1] = nodes[1], nodes[0]
 	return nil
+}
+
+func (state *clusterState) IsConsistent() bool {
+	if len(state.Masters) < 3 {
+		return false
+	}
+	for _, master := range state.Masters {
+		s := master.Client.Info("replication").Val()
+		if !strings.Contains(s, "role:master") {
+			return false
+		}
+	}
+
+	if len(state.Slaves) < 3 {
+		return false
+	}
+	for _, slave := range state.Slaves {
+		s := slave.Client.Info("replication").Val()
+		if !strings.Contains(s, "role:slave") {
+			return false
+		}
+	}
+
+	return true
 }

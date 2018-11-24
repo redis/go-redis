@@ -582,13 +582,6 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 	return nil
 }
 
-func (c *clusterState) IsConsistent() bool {
-	if c.nodes.opt.ClusterSlots != nil {
-		return true
-	}
-	return len(c.Masters) <= len(c.Slaves)
-}
-
 //------------------------------------------------------------------------------
 
 type clusterStateHolder struct {
@@ -612,9 +605,6 @@ func (c *clusterStateHolder) Reload() (*clusterState, error) {
 	state, err := c.reload()
 	if err != nil {
 		return nil, err
-	}
-	if !state.IsConsistent() {
-		time.AfterFunc(time.Second, c.LazyReload)
 	}
 	return state, nil
 }
@@ -640,16 +630,11 @@ func (c *clusterStateHolder) LazyReload() {
 	go func() {
 		defer atomic.StoreUint32(&c.reloading, 0)
 
-		for {
-			state, err := c.reload()
-			if err != nil {
-				return
-			}
-			time.Sleep(100 * time.Millisecond)
-			if state.IsConsistent() {
-				return
-			}
+		_, err := c.reload()
+		if err != nil {
+			return
 		}
+		time.Sleep(100 * time.Millisecond)
 	}()
 }
 
