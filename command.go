@@ -690,10 +690,7 @@ func commandSlowLogParser(rd *proto.Reader, n int64) (interface{}, error) {
 }
 
 func slowLogParse(rd *proto.Reader, n int64) (interface{}, error) {
-
 	var slowLog SlowLog
-	var err error
-
 	idStr, err := rd.ReadString()
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
