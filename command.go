@@ -640,6 +640,89 @@ func (cmd *FloatCmd) readReply(rd *proto.Reader) error {
 	cmd.val, cmd.err = rd.ReadFloatReply()
 	return cmd.err
 }
+//------------------------------------------------------------------------------
+type SlowLog struct {
+	Id       int64
+	ExecTime int64
+	Time     int64
+	Args     []string
+}
+
+type SlowLogCmd struct {
+	baseCmd
+	val []*SlowLog
+}
+
+var _ Cmder = (*SlowLogCmd)(nil)
+
+func NewSlowLogCmd(args ...interface{}) *SlowLogCmd {
+	return &SlowLogCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
+	var v interface{}
+	v, cmd.err = rd.ReadArrayReply(commandSlowLogParser)
+	if cmd.err != nil {
+		return cmd.err
+	}
+	cmd.val = v.([]*SlowLog)
+	return nil
+}
+
+func (cmd *SlowLogCmd) Result() ([]*SlowLog, error) {
+	return cmd.val, cmd.err
+}
+
+// Implements proto.MultiBulkParse
+func commandSlowLogParser(rd *proto.Reader, n int64) (interface{}, error) {
+	logs := make([]*SlowLog, 0, n)
+	for i := int64(0); i < n; i++ {
+		v, err := rd.ReadReply(slowLogParse)
+		if err != nil {
+			return nil, err
+		}
+		vv := v.(*SlowLog)
+		logs =  append(logs, vv)
+	}
+	return logs, nil
+}
+
+func slowLogParse(rd *proto.Reader, n int64) (interface{}, error) {
+
+	var slowLog SlowLog
+	var err error
+
+	idStr, err := rd.ReadString()
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+	slowLog.Id = id
+
+	timeStr, err := rd.ReadString()
+	t, err := strconv.ParseInt(timeStr, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+	slowLog.Time = t
+
+	execStr, err := rd.ReadString()
+	execTime, err := strconv.ParseInt(execStr, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+	slowLog.ExecTime = execTime
+
+	args, err := rd.ReadArrayReply(stringSliceParser)
+	if err != nil {
+		return nil, err
+	}
+	slowLog.Args = args.([]string)
+	return &slowLog, nil
+}
+
 
 //------------------------------------------------------------------------------
 

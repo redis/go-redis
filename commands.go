@@ -241,6 +241,9 @@ type Cmdable interface {
 	FlushDB() *StatusCmd
 	FlushDBAsync() *StatusCmd
 	Info(section ...string) *StringCmd
+	SlowLogLen() *IntCmd
+	SlowLogReset() *BoolCmd
+	SlowLogGet(num int) *SlowLogCmd
 	LastSave() *IntCmd
 	Save() *StatusCmd
 	Shutdown() *StatusCmd
@@ -2145,6 +2148,24 @@ func (c *cmdable) Info(section ...string) *StringCmd {
 		args = append(args, section[0])
 	}
 	cmd := NewStringCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) SlowLogLen() *IntCmd {
+	cmd := NewIntCmd("slowlog", "len")
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) SlowLogReset() *BoolCmd {
+	cmd := NewBoolCmd("slowlog", "reset")
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable)SlowLogGet(num int) *SlowLogCmd{
+	cmd := NewSlowLogCmd("slowlog", "get", num)
 	c.process(cmd)
 	return cmd
 }
