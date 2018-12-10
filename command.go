@@ -691,22 +691,19 @@ func commandSlowLogParser(rd *proto.Reader, n int64) (interface{}, error) {
 
 func slowLogParse(rd *proto.Reader, n int64) (interface{}, error) {
 	var slowLog SlowLog
-	idStr, err := rd.ReadString()
-	id, err := strconv.ParseInt(idStr, 10, 64)
+	id, err := readString2Int(rd)
 	if err != nil {
 		return nil, err
 	}
 	slowLog.Id = id
 
-	timeStr, err := rd.ReadString()
-	t, err := strconv.ParseInt(timeStr, 10, 64)
+	t, err := readString2Int(rd)
 	if err != nil {
 		return nil, err
 	}
 	slowLog.Time = t
 
-	execStr, err := rd.ReadString()
-	execTime, err := strconv.ParseInt(execStr, 10, 64)
+	execTime, err := readString2Int(rd)
 	if err != nil {
 		return nil, err
 	}
@@ -718,6 +715,18 @@ func slowLogParse(rd *proto.Reader, n int64) (interface{}, error) {
 	}
 	slowLog.Args = args.([]string)
 	return &slowLog, nil
+}
+
+func readString2Int(rd *proto.Reader) (int64, error) {
+	intStr, err := rd.ReadString()
+	if err != nil {
+		return 0, err
+	}
+	id, err := strconv.ParseInt(intStr, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 
