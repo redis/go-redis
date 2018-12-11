@@ -1344,13 +1344,13 @@ func (c *ClusterClient) pipelineProcessCmds(
 	}
 
 	err = cn.WithReader(c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		return c.pipelineReadCmds(rd, cmds, failedCmds)
+		return c.pipelineReadCmds(node, rd, cmds, failedCmds)
 	})
 	return err
 }
 
 func (c *ClusterClient) pipelineReadCmds(
-	rd *proto.Reader, cmds []Cmder, failedCmds *cmdsMap,
+	node *clusterNode, rd *proto.Reader, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
 	for _, cmd := range cmds {
 		err := cmd.readReply(rd)
@@ -1366,9 +1366,12 @@ func (c *ClusterClient) pipelineReadCmds(
 			continue
 		}
 
-		return err
+		cmd.setErr(err)
+		failedCmds.mu.Lock()
+		failedCmds.m[node] = append(failedCmds.m[node], cmd)
+		failedCmds.mu.Unlock()
 	}
-	return nil
+	return cmdsFirstErr(cmds)
 }
 
 func (c *ClusterClient) checkMovedErr(
