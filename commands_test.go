@@ -121,6 +121,12 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(int64(0)))
 		})
 
+		It("should ClientId", func() {
+			err := client.ClientId().Err()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(client.ClientId().Val()).To(BeNumerically(">=", 0))
+		})
+
 		It("should ClientPause", func() {
 			err := client.ClientPause(time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -222,7 +228,7 @@ var _ = Describe("Commands", func() {
 			Expect(tm).To(BeTemporally("~", time.Now(), 3*time.Second))
 		})
 
-		It("Should Command", func() {
+		It("should Command", func() {
 			cmds, err := client.Command().Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(cmds)).To(BeNumerically("~", 200, 20))
