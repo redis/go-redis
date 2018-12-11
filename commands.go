@@ -175,6 +175,7 @@ type Cmdable interface {
 	XRead(a *XReadArgs) *XStreamSliceCmd
 	XReadStreams(streams ...string) *XStreamSliceCmd
 	XGroupCreate(stream, group, start string) *StatusCmd
+	XGroupCreateMkStream(stream, group, start string) *StatusCmd
 	XGroupSetID(stream, group, start string) *StatusCmd
 	XGroupDestroy(stream, group string) *IntCmd
 	XGroupDelConsumer(stream, group, consumer string) *IntCmd
@@ -1420,6 +1421,12 @@ func (c *cmdable) XReadStreams(streams ...string) *XStreamSliceCmd {
 
 func (c *cmdable) XGroupCreate(stream, group, start string) *StatusCmd {
 	cmd := NewStatusCmd("xgroup", "create", stream, group, start)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XGroupCreateMkStream(stream, group, start string) *StatusCmd {
+	cmd := NewStatusCmd("xgroup", "create", stream, group, start, "mkstream")
 	c.process(cmd)
 	return cmd
 }

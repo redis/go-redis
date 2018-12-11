@@ -3569,6 +3569,22 @@ var _ = Describe("Commands", func() {
 				Expect(n).To(Equal(int64(1)))
 			})
 
+			It("should XGroupCreateMkStream", func() {
+				err := client.XGroupCreateMkStream("stream2", "group", "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				err = client.XGroupCreateMkStream("stream2", "group", "0").Err()
+				Expect(err).To(Equal(proto.RedisError("BUSYGROUP Consumer Group name already exists")))
+
+				n, err := client.XGroupDestroy("stream2", "group").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				n, err = client.Del("stream2").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+			})
+
 			It("should XPending", func() {
 				info, err := client.XPending("stream", "group").Result()
 				Expect(err).NotTo(HaveOccurred())
