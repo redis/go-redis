@@ -683,6 +683,40 @@ var _ = Describe("ClusterClient", func() {
 			Expect(len(keys)).To(BeNumerically("~", nkeys, nkeys/10))
 		})
 
+		It("retries pipeline network errors", func() {
+			optNoRetry := redisClusterOptions()
+			optNoRetry.MaxRedirects = 1
+			clientNoRetry := cluster.clusterClient(optNoRetry)
+			defer clientNoRetry.Close()
+			// Set the read timeout after initializing the nodes
+			optNoRetry.ReadTimeout = time.Nanosecond
+
+			optRetry := redisClusterOptions()
+			optRetry.MaxRedirects = 5
+			optRetry.MaxRetryBackoff = 128 * time.Millisecond
+			clientRetry := cluster.clusterClient(optRetry)
+			defer clientRetry.Close()
+			optRetry.ReadTimeout = time.Nanosecond
+
+			startNoRetry := time.Now()
+			_, err := clientNoRetry.Pipelined(func(pipe redis.Pipeliner) error {
+				pipe.Ping()
+				return nil
+			})
+			Expect(err).To(HaveOccurred())
+			elapseNoRetry := time.Since(startNoRetry)
+
+			startRetry := time.Now()
+			_, err = clientRetry.Pipelined(func(pipe redis.Pipeliner) error {
+				pipe.Ping()
+				return nil
+			})
+			Expect(err).To(HaveOccurred())
+			elapseRetry := time.Since(startRetry)
+
+			Expect(elapseRetry).To(BeNumerically(">", elapseNoRetry, 10*time.Millisecond))
+		})
+
 		assertClusterClient()
 	})
 
