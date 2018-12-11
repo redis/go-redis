@@ -127,6 +127,13 @@ var _ = Describe("Commands", func() {
 			Expect(client.ClientID().Val()).To(BeNumerically(">=", 0))
 		})
 
+		It("should ClientUnblock", func() {
+			id := client.ClientID().Val()
+			r, err := client.ClientUnblock(id, true).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).To(Equal(int64(0)))
+		})
+
 		It("should ClientPause", func() {
 			err := client.ClientPause(time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())
