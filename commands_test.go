@@ -121,10 +121,10 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(int64(0)))
 		})
 
-		It("should ClientId", func() {
-			err := client.ClientId().Err()
+		It("should ClientID", func() {
+			err := client.ClientID().Err()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(client.ClientId().Val()).To(BeNumerically(">=", 0))
+			Expect(client.ClientID().Val()).To(BeNumerically(">=", 0))
 		})
 
 		It("should ClientPause", func() {
