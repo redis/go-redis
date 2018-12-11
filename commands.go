@@ -231,6 +231,7 @@ type Cmdable interface {
 	ClientKillByFilter(keys ...string) *IntCmd
 	ClientList() *StringCmd
 	ClientPause(dur time.Duration) *BoolCmd
+	ClientId() *IntCmd
 	ConfigGet(parameter string) *SliceCmd
 	ConfigResetStat() *StatusCmd
 	ConfigSet(parameter, value string) *StatusCmd
@@ -2057,6 +2058,12 @@ func (c *cmdable) ClientList() *StringCmd {
 
 func (c *cmdable) ClientPause(dur time.Duration) *BoolCmd {
 	cmd := NewBoolCmd("client", "pause", formatMs(dur))
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ClientId() *IntCmd {
+	cmd := NewIntCmd("client", "id")
 	c.process(cmd)
 	return cmd
 }
