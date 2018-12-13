@@ -48,9 +48,14 @@ func (s *clusterScenario) addrs() []string {
 	return addrs
 }
 
-func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
+func (s *clusterScenario) clusterClientUnsafe(opt *redis.ClusterOptions) *redis.ClusterClient {
 	opt.Addrs = s.addrs()
-	client := redis.NewClusterClient(opt)
+	return redis.NewClusterClient(opt)
+
+}
+
+func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
+	client := s.clusterClientUnsafe(opt)
 
 	err := eventually(func() error {
 		if opt.ClusterSlots != nil {
@@ -932,6 +937,36 @@ var _ = Describe("ClusterClient without valid nodes", func() {
 	})
 })
 
+var _ = Describe("ClusterClient with unavailable Cluster", func() {
+	var client *redis.ClusterClient
+
+	BeforeEach(func() {
+		for _, node := range cluster.clients {
+			err := node.ClientPause(5 * time.Second).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		opt := redisClusterOptions()
+		opt.ReadTimeout = 250 * time.Millisecond
+		opt.WriteTimeout = 250 * time.Millisecond
+		opt.MaxRedirects = 1
+		client = cluster.clusterClientUnsafe(opt)
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("recovers when Cluster recovers", func() {
+		err := client.Ping().Err()
+		Expect(err).To(HaveOccurred())
+
+		Eventually(func() error {
+			return client.Ping().Err()
+		}, "30s").ShouldNot(HaveOccurred())
+	})
+})
+
 var _ = Describe("ClusterClient timeout", func() {
 	var client *redis.ClusterClient
 
@@ -976,7 +1011,7 @@ var _ = Describe("ClusterClient timeout", func() {
 		})
 	}
 
-	const pause = 3 * time.Second
+	const pause = 5 * time.Second
 
 	Context("read/write timeout", func() {
 		BeforeEach(func() {
