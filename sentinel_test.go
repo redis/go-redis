@@ -69,7 +69,7 @@ var _ = Describe("Sentinel", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		var msg *redis.Message
-		Eventually(ch).Should(Receive(&msg))
+		Eventually(ch, "5s").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
 	})
