@@ -389,8 +389,7 @@ type Client struct {
 	baseClient
 	cmdable
 
-	limiter Limiter
-	ctx     context.Context
+	ctx context.Context
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -502,7 +501,7 @@ func (c *Client) pubSub() *PubSub {
 //    if err != nil {
 //        // handle error
 //    }
-//    
+//
 //    // Should be *Subscription, but others are possible if other actions have been
 //    // taken on sub since it was created.
 //    switch iface.(type) {
