@@ -2068,12 +2068,14 @@ func (c *cmdable) ClientID() *IntCmd {
 	return cmd
 }
 
-func (c *cmdable) ClientUnblock(id int64, isError bool) *IntCmd {
-	args := []interface{}{"client", "unblock", id}
-	if isError {
-		args = append(args, "error")
-	}
-	cmd := NewIntCmd(args...)
+func (c *cmdable) ClientUnblock(id int64) *IntCmd {
+	cmd := NewIntCmd("client", "unblock", id)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ClientUnblockWithError(id int64) *IntCmd {
+	cmd := NewIntCmd("client", "unblock", id, "error")
 	c.process(cmd)
 	return cmd
 }

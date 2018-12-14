@@ -129,7 +129,14 @@ var _ = Describe("Commands", func() {
 
 		It("should ClientUnblock", func() {
 			id := client.ClientID().Val()
-			r, err := client.ClientUnblock(id, true).Result()
+			r, err := client.ClientUnblock(id).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).To(Equal(int64(0)))
+		})
+
+		It("should ClientUnblockWithError", func() {
+			id := client.ClientID().Val()
+			r, err := client.ClientUnblockWithError(id).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(r).To(Equal(int64(0)))
 		})
