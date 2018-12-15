@@ -2075,6 +2075,18 @@ func (c *cmdable) ClientID() *IntCmd {
 	return cmd
 }
 
+func (c *cmdable) ClientUnblock(id int64) *IntCmd {
+	cmd := NewIntCmd("client", "unblock", id)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ClientUnblockWithError(id int64) *IntCmd {
+	cmd := NewIntCmd("client", "unblock", id, "error")
+	c.process(cmd)
+	return cmd
+}
+
 // ClientSetName assigns a name to the connection.
 func (c *statefulCmdable) ClientSetName(name string) *BoolCmd {
 	cmd := NewBoolCmd("client", "setname", name)
