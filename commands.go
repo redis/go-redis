@@ -1450,12 +1450,13 @@ func (c *cmdable) XGroupDelConsumer(stream, group, consumer string) *IntCmd {
 }
 
 type XReadGroupArgs struct {
-	Group    string
-	Consumer string
-	Streams  map[string]string
-	Count    int64
-	Block    time.Duration
-	NoAck    bool
+	Group      string
+	Consumer   string
+	Streams    []string
+	MessageIDs []string
+	Count      int64
+	Block      time.Duration
+	NoAck      bool
 }
 
 func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
@@ -1472,12 +1473,13 @@ func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
 	}
 
 	args = append(args, "streams")
-	messageIds := make([]interface{}, 0, len(a.Streams))
-	for stream, id := range a.Streams {
-		args = append(args, stream)
-		messageIds = append(messageIds, id)
+
+	for _, s := range a.Streams {
+		args = append(args, s)
 	}
-	args = append(args, messageIds...)
+	for _, m := range a.MessageIDs {
+		args = append(args, m)
+	}
 
 	cmd := NewXStreamSliceCmd(args...)
 	if a.Block >= 0 {
