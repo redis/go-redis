@@ -3564,7 +3564,7 @@ var _ = Describe("Commands", func() {
 				res, err := client.XReadGroup(&redis.XReadGroupArgs{
 					Group:    "group",
 					Consumer: "consumer",
-					Streams:  []string{"stream", ">"},
+					Streams:  map[string]string{"stream": ">"},
 				}).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res).To(Equal([]redis.XStream{{
