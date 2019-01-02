@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/sp0n-7/redis"
 )
 
 var redisdb *redis.Client

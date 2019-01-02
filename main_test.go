@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/sp0n-7/redis"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -99,7 +99,7 @@ var _ = AfterSuite(func() {
 
 func TestGinkgoSuite(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "go-redis")
+	RunSpecs(t, "sp0n-7")
 }
 
 //------------------------------------------------------------------------------
