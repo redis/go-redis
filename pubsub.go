@@ -459,6 +459,7 @@ func (c *PubSub) initChannel() {
 					}
 					c.mu.Lock()
 					c._reconnect(pingErr)
+					healthy = true
 					c.mu.Unlock()
 				}
 			case <-c.exit:
