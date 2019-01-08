@@ -347,7 +347,7 @@ func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
 		return node, nil
 	}
 
-	v, err := c.nodeCreateGroup.Do(addr, func() (interface{}, error) {
+	v, _ := c.nodeCreateGroup.Do(addr, func() (interface{}, error) {
 		node := newClusterNode(c.opt, addr)
 		return node, nil
 	})
@@ -361,15 +361,16 @@ func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
 
 	node, ok := c.allNodes[addr]
 	if ok {
-		_ = v.(*clusterNode).Close()
+		node2 := v.(*clusterNode)
+		if node2 != node {
+			_ = node2.Close()
+		}
 		return node, err
 	}
-	node = v.(*clusterNode)
 
+	node = v.(*clusterNode)
 	c.allAddrs = appendIfNotExists(c.allAddrs, addr)
-	if err == nil {
-		c.clusterAddrs = append(c.clusterAddrs, addr)
-	}
+	c.clusterAddrs = append(c.clusterAddrs, addr)
 	c.allNodes[addr] = node
 
 	return node, err
