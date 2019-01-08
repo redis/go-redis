@@ -359,9 +359,7 @@ func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
 	node = newClusterNode(c.opt, addr)
 
 	c.allAddrs = appendIfNotExists(c.allAddrs, addr)
-	if err == nil {
-		c.clusterAddrs = append(c.clusterAddrs, addr)
-	}
+	c.clusterAddrs = append(c.clusterAddrs, addr)
 	c.allNodes[addr] = node
 
 	return node, err
