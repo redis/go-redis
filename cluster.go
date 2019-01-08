@@ -844,15 +844,12 @@ func (c *ClusterClient) Watch(fn func(*Tx) error, keys ...string) error {
 		if err == nil {
 			break
 		}
-
-		if internal.IsRetryableError(err, true) {
+		if err != Nil {
 			c.state.LazyReload()
-			continue
 		}
 
 		moved, ask, addr := internal.IsMovedError(err)
 		if moved || ask {
-			c.state.LazyReload()
 			node, err = c.nodes.GetOrCreate(addr)
 			if err != nil {
 				return err
@@ -865,6 +862,10 @@ func (c *ClusterClient) Watch(fn func(*Tx) error, keys ...string) error {
 			if err != nil {
 				return err
 			}
+			continue
+		}
+
+		if internal.IsRetryableError(err, true) {
 			continue
 		}
 
@@ -932,6 +933,9 @@ func (c *ClusterClient) defaultProcess(cmd Cmder) error {
 		if err == nil {
 			break
 		}
+		if err != Nil {
+			c.state.LazyReload()
+		}
 
 		// If slave is loading - pick another node.
 		if c.opt.ReadOnly && internal.IsLoadingError(err) {
@@ -940,9 +944,23 @@ func (c *ClusterClient) defaultProcess(cmd Cmder) error {
 			continue
 		}
 
-		if internal.IsRetryableError(err, true) {
-			c.state.LazyReload()
+		var moved bool
+		var addr string
+		moved, ask, addr = internal.IsMovedError(err)
+		if moved || ask {
+			node, err = c.nodes.GetOrCreate(addr)
+			if err != nil {
+				break
+			}
+			continue
+		}
 
+		if err == pool.ErrClosed {
+			node = nil
+			continue
+		}
+
+		if internal.IsRetryableError(err, true) {
 			// First retry the same node.
 			if attempt == 0 {
 				continue
@@ -953,24 +971,6 @@ func (c *ClusterClient) defaultProcess(cmd Cmder) error {
 			if err != nil {
 				break
 			}
-			continue
-		}
-
-		var moved bool
-		var addr string
-		moved, ask, addr = internal.IsMovedError(err)
-		if moved || ask {
-			c.state.LazyReload()
-
-			node, err = c.nodes.GetOrCreate(addr)
-			if err != nil {
-				break
-			}
-			continue
-		}
-
-		if err == pool.ErrClosed {
-			node = nil
 			continue
 		}
 
