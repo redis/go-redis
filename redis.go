@@ -481,9 +481,7 @@ func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
 
-		newConn: func(channels []string) (*pool.Conn, error) {
-			return c.newConn()
-		},
+		newConn:   c.newConn,
 		closeConn: c.connPool.CloseConn,
 	}
 	pubsub.init()

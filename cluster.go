@@ -397,6 +397,10 @@ type clusterSlot struct {
 	nodes      []*clusterNode
 }
 
+func (c *clusterSlot) between(slot int) bool {
+	return slot >= c.start && slot <= c.end
+}
+
 type clusterSlotSlice []*clusterSlot
 
 func (p clusterSlotSlice) Len() int {
@@ -572,7 +576,7 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 		return nil
 	}
 	x := c.slots[i]
-	if slot >= x.start && slot <= x.end {
+	if x.between(slot) {
 		return x.nodes
 	}
 	return nil
@@ -1527,20 +1531,14 @@ func (c *ClusterClient) pubSub(channels []string) *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt.clientOptions(),
 
-		newConn: func(channels []string) (*pool.Conn, error) {
-			if node == nil {
-				var slot int
-				if len(channels) > 0 {
-					slot = hashtag.Slot(channels[0])
-				} else {
-					slot = -1
-				}
-
-				masterNode, err := c.slotMasterNode(slot)
-				if err != nil {
-					return nil, err
-				}
-				node = masterNode
+		newConn: func() (conn *pool.Conn, err error) {
+			slot := -1
+			if len(channels) > 0 {
+				slot = hashtag.Slot(channels[0])
+			}
+			node, err = c.slotMasterNode(slot)
+			if err != nil {
+				return nil, err
 			}
 			return node.Client.newConn()
 		},

@@ -510,7 +510,7 @@ var _ = Describe("ClusterClient", func() {
 				}
 
 				return nil
-			}, 30*time.Second).ShouldNot(HaveOccurred())
+			}, "30s").ShouldNot(HaveOccurred())
 		})
 	}
 
@@ -758,7 +758,7 @@ var _ = Describe("ClusterClient", func() {
 			err = client.ForEachSlave(func(slave *redis.Client) error {
 				Eventually(func() int64 {
 					return client.DBSize().Val()
-				}, 30*time.Second).Should(Equal(int64(0)))
+				}, "30s").Should(Equal(int64(0)))
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -770,8 +770,7 @@ var _ = Describe("ClusterClient", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = client.Close()
-			Expect(err).NotTo(HaveOccurred())
+			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
 		assertClusterClient()
@@ -810,21 +809,12 @@ var _ = Describe("ClusterClient", func() {
 				return master.FlushDB().Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
-
-			err = client.ForEachSlave(func(slave *redis.Client) error {
-				Eventually(func() int64 {
-					return client.DBSize().Val()
-				}, 30*time.Second).Should(Equal(int64(0)))
-				return nil
-			})
-			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {
 			failover = false
 
-			err := client.Close()
-			Expect(err).NotTo(HaveOccurred())
+			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
 		assertClusterClient()
@@ -864,21 +854,12 @@ var _ = Describe("ClusterClient", func() {
 				return master.FlushDB().Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
-
-			err = client.ForEachSlave(func(slave *redis.Client) error {
-				Eventually(func() int64 {
-					return client.DBSize().Val()
-				}, 30*time.Second).Should(Equal(int64(0)))
-				return nil
-			})
-			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {
 			failover = false
 
-			err := client.Close()
-			Expect(err).NotTo(HaveOccurred())
+			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
 		assertClusterClient()

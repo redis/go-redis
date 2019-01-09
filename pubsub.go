@@ -22,7 +22,7 @@ var errPingTimeout = errors.New("redis: ping timeout")
 type PubSub struct {
 	opt *Options
 
-	newConn   func([]string) (*pool.Conn, error)
+	newConn   func() (*pool.Conn, error)
 	closeConn func(*pool.Conn) error
 
 	mu       sync.Mutex
@@ -45,12 +45,12 @@ func (c *PubSub) init() {
 
 func (c *PubSub) conn() (*pool.Conn, error) {
 	c.mu.Lock()
-	cn, err := c._conn(nil)
+	cn, err := c._conn()
 	c.mu.Unlock()
 	return cn, err
 }
 
-func (c *PubSub) _conn(newChannels []string) (*pool.Conn, error) {
+func (c *PubSub) _conn() (*pool.Conn, error) {
 	if c.closed {
 		return nil, pool.ErrClosed
 	}
@@ -58,10 +58,7 @@ func (c *PubSub) _conn(newChannels []string) (*pool.Conn, error) {
 		return c.cn, nil
 	}
 
-	channels := mapKeys(c.channels)
-	channels = append(channels, newChannels...)
-
-	cn, err := c.newConn(channels)
+	cn, err := c.newConn()
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +137,7 @@ func (c *PubSub) _releaseConn(cn *pool.Conn, err error, allowTimeout bool) {
 
 func (c *PubSub) _reconnect(reason error) {
 	_ = c._closeTheCn(reason)
-	_, _ = c._conn(nil)
+	_, _ = c._conn()
 }
 
 func (c *PubSub) _closeTheCn(reason error) error {
@@ -165,8 +162,7 @@ func (c *PubSub) Close() error {
 	c.closed = true
 	close(c.exit)
 
-	err := c._closeTheCn(pool.ErrClosed)
-	return err
+	return c._closeTheCn(pool.ErrClosed)
 }
 
 // Subscribe the client to the specified channels. It returns
@@ -210,8 +206,7 @@ func (c *PubSub) Unsubscribe(channels ...string) error {
 	for _, channel := range channels {
 		delete(c.channels, channel)
 	}
-	err := c.subscribe("unsubscribe", channels...)
-	return err
+	return c.subscribe("unsubscribe", channels...)
 }
 
 // PUnsubscribe the client from the given patterns, or from all of
@@ -228,11 +223,10 @@ func (c *PubSub) PUnsubscribe(patterns ...string) error {
 }
 
 func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
-	cn, err := c._conn(channels)
+	cn, err := c._conn()
 	if err != nil {
 		return err
 	}
-
 	err = c._subscribe(cn, redisCmd, channels)
 	c._releaseConn(cn, err, false)
 	return err

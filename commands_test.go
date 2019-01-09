@@ -1333,7 +1333,7 @@ var _ = Describe("Commands", func() {
 		It("should HKeys", func() {
 			hkeys := client.HKeys("hash")
 			Expect(hkeys.Err()).NotTo(HaveOccurred())
-			Expect(hkeys.Val()).To(Equal([]string{}))
+			Expect(hkeys.Val()).To(BeEmpty())
 
 			hset := client.HSet("hash", "key1", "hello1")
 			Expect(hset.Err()).NotTo(HaveOccurred())
@@ -1652,7 +1652,7 @@ var _ = Describe("Commands", func() {
 
 			lRange = client.LRange("list2", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
-			Expect(lRange.Val()).To(Equal([]string{}))
+			Expect(lRange.Val()).To(BeEmpty())
 		})
 
 		It("should LRange", func() {
@@ -1677,7 +1677,7 @@ var _ = Describe("Commands", func() {
 
 			lRange = client.LRange("list", 5, 10)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
-			Expect(lRange.Val()).To(Equal([]string{}))
+			Expect(lRange.Val()).To(BeEmpty())
 		})
 
 		It("should LRem", func() {
@@ -1808,7 +1808,7 @@ var _ = Describe("Commands", func() {
 
 			lRange = client.LRange("list2", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
-			Expect(lRange.Val()).To(Equal([]string{}))
+			Expect(lRange.Val()).To(BeEmpty())
 		})
 
 	})
@@ -2045,7 +2045,7 @@ var _ = Describe("Commands", func() {
 
 			sMembers = client.SMembers("set")
 			Expect(sMembers.Err()).NotTo(HaveOccurred())
-			Expect(sMembers.Val()).To(HaveLen(0))
+			Expect(sMembers.Val()).To(BeEmpty())
 		})
 
 		It("should SRandMember and SRandMemberN", func() {
@@ -2925,7 +2925,7 @@ var _ = Describe("Commands", func() {
 				Max: "(2",
 			})
 			Expect(zRangeByScore.Err()).NotTo(HaveOccurred())
-			Expect(zRangeByScore.Val()).To(Equal([]string{}))
+			Expect(zRangeByScore.Val()).To(BeEmpty())
 		})
 
 		It("should ZRangeByLex", func() {
@@ -2971,7 +2971,7 @@ var _ = Describe("Commands", func() {
 				Max: "(b",
 			})
 			Expect(zRangeByLex.Err()).NotTo(HaveOccurred())
-			Expect(zRangeByLex.Val()).To(Equal([]string{}))
+			Expect(zRangeByLex.Val()).To(BeEmpty())
 		})
 
 		It("should ZRangeByScoreWithScoresMap", func() {
@@ -3023,7 +3023,7 @@ var _ = Describe("Commands", func() {
 				Max: "(2",
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]redis.Z{}))
+			Expect(vals).To(BeEmpty())
 		})
 
 		It("should ZRank", func() {
@@ -3214,7 +3214,7 @@ var _ = Describe("Commands", func() {
 			vals, err = client.ZRevRangeByScore(
 				"zset", redis.ZRangeBy{Max: "(2", Min: "(1"}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]string{}))
+			Expect(vals).To(BeEmpty())
 		})
 
 		It("should ZRevRangeByLex", func() {
@@ -3238,7 +3238,7 @@ var _ = Describe("Commands", func() {
 			vals, err = client.ZRevRangeByLex(
 				"zset", redis.ZRangeBy{Max: "(b", Min: "(a"}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]string{}))
+			Expect(vals).To(BeEmpty())
 		})
 
 		It("should ZRevRangeByScoreWithScores", func() {
@@ -3294,7 +3294,7 @@ var _ = Describe("Commands", func() {
 			vals, err = client.ZRevRangeByScoreWithScores(
 				"zset", redis.ZRangeBy{Max: "(2", Min: "(1"}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]redis.Z{}))
+			Expect(vals).To(BeEmpty())
 		})
 
 		It("should ZRevRank", func() {
@@ -3779,7 +3779,7 @@ var _ = Describe("Commands", func() {
 				WithDist:    true,
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(HaveLen(0))
+			Expect(res).To(BeEmpty())
 		})
 
 		It("should get geo distance with unit options", func() {
