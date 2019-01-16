@@ -2175,6 +2175,18 @@ func (c *cmdable) Info(section ...string) *StringCmd {
 	return cmd
 }
 
+func (c *cmdable) InfoReplication() *StringCmd {
+	cmd := NewStringCmd("info", "replication")
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) InfoServer() *StringCmd {
+	cmd := NewStringCmd("info", "server")
+	c.process(cmd)
+	return cmd
+}
+
 func (c *cmdable) LastSave() *IntCmd {
 	cmd := NewIntCmd("lastsave")
 	c.process(cmd)
