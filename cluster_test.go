@@ -637,6 +637,12 @@ var _ = Describe("ClusterClient", func() {
 			Expect(hashSlot).To(Equal(int64(hashtag.Slot("somekey"))))
 		})
 
+		It("should CLUSTER GETKEYSINSLOT", func() {
+			keys, err := client.ClusterGetKeysInSlot(hashtag.Slot("somekey"), 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(keys)).To(Equal(0))
+		})
+
 		It("should CLUSTER COUNT-FAILURE-REPORTS", func() {
 			n, err := client.ClusterCountFailureReports(cluster.nodeIds[0]).Result()
 			Expect(err).NotTo(HaveOccurred())
