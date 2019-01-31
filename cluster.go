@@ -767,8 +767,11 @@ func cmdSlot(cmd Cmder, pos int) int {
 	if pos == 0 {
 		return hashtag.RandomSlot()
 	}
-	firstKey := cmd.stringArg(pos)
-	return hashtag.Slot(firstKey)
+	val, ok := cmd.Args()[pos].(int)
+	if ok {
+		return val
+	}
+	return hashtag.Slot(cmd.stringArg(pos))
 }
 
 func (c *ClusterClient) cmdSlot(cmd Cmder) int {
