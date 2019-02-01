@@ -74,11 +74,6 @@ func cmdString(cmd Cmder, val interface{}) string {
 
 func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 	switch cmd.Name() {
-	case "cluster":
-		switch cmd.stringArg(1) {
-		case "getkeysinslot":
-			return 2
-		}
 	case "eval", "evalsha":
 		if cmd.stringArg(2) != "0" {
 			return 3
