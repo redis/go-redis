@@ -60,6 +60,13 @@ var _ = Describe("pipelining", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("value"))
 		})
+
+		It("supports custom command", func() {
+			pipe.Do("ping")
+			cmds, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmds).To(HaveLen(1))
+		})
 	}
 
 	Describe("Pipeline", func() {
