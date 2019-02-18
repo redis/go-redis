@@ -1457,10 +1457,11 @@ type XReadGroupArgs struct {
 	Count    int64
 	Block    time.Duration
 	NoAck    bool
+	ID       []string
 }
 
 func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
-	args := make([]interface{}, 0, 8+len(a.Streams))
+	args := make([]interface{}, 0, 10+len(a.Streams)+len(a.ID))
 	args = append(args, "xreadgroup", "group", a.Group, a.Consumer)
 	if a.Count > 0 {
 		args = append(args, "count", a.Count)
@@ -1474,6 +1475,9 @@ func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
 	args = append(args, "streams")
 	for _, s := range a.Streams {
 		args = append(args, s)
+	}
+	for _, v := range a.ID {
+		args = append(args, v)
 	}
 
 	cmd := NewXStreamSliceCmd(args...)
