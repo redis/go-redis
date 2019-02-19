@@ -1453,10 +1453,11 @@ func (c *cmdable) XGroupDelConsumer(stream, group, consumer string) *IntCmd {
 type XReadGroupArgs struct {
 	Group    string
 	Consumer string
-	Streams  []string
-	Count    int64
-	Block    time.Duration
-	NoAck    bool
+	// List of streams and ids.
+	Streams []string
+	Count   int64
+	Block   time.Duration
+	NoAck   bool
 }
 
 func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
