@@ -1,2 +1,6 @@
 *.rdb
 testdata/*/
+
+# IntelliJ Idea files
+.idea
+redis.iml
