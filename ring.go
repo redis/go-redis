@@ -339,7 +339,7 @@ type Ring struct {
 	ctx context.Context
 
 	opt           *RingOptions
-	shards        *ringShards
+	Shards        *ringShards
 	cmdsInfoCache *cmdsInfoCache
 
 	process         func(Cmder) error
@@ -351,7 +351,7 @@ func NewRing(opt *RingOptions) *Ring {
 
 	ring := &Ring{
 		opt:    opt,
-		shards: newRingShards(opt),
+		Shards: newRingShards(opt),
 	}
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 
@@ -362,10 +362,10 @@ func NewRing(opt *RingOptions) *Ring {
 	for name, addr := range opt.Addrs {
 		clopt := opt.clientOptions()
 		clopt.Addr = addr
-		ring.shards.Add(name, NewClient(clopt))
+		ring.Shards.Add(name, NewClient(clopt))
 	}
 
-	go ring.shards.Heartbeat(opt.HeartbeatFrequency)
+	go ring.Shards.Heartbeat(opt.HeartbeatFrequency)
 
 	return ring
 }
@@ -402,7 +402,7 @@ func (c *Ring) retryBackoff(attempt int) time.Duration {
 
 // PoolStats returns accumulated connection pool stats.
 func (c *Ring) PoolStats() *PoolStats {
-	shards := c.shards.List()
+	shards := c.Shards.List()
 	var acc PoolStats
 	for _, shard := range shards {
 		s := shard.Client.connPool.Stats()
@@ -417,7 +417,7 @@ func (c *Ring) PoolStats() *PoolStats {
 
 // Len returns the current number of shards in the ring.
 func (c *Ring) Len() int {
-	return c.shards.Len()
+	return c.Shards.Len()
 }
 
 // Subscribe subscribes the client to the specified channels.
@@ -426,7 +426,7 @@ func (c *Ring) Subscribe(channels ...string) *PubSub {
 		panic("at least one channel is required")
 	}
 
-	shard, err := c.shards.GetByKey(channels[0])
+	shard, err := c.Shards.GetByKey(channels[0])
 	if err != nil {
 		// TODO: return PubSub with sticky error
 		panic(err)
@@ -440,7 +440,7 @@ func (c *Ring) PSubscribe(channels ...string) *PubSub {
 		panic("at least one channel is required")
 	}
 
-	shard, err := c.shards.GetByKey(channels[0])
+	shard, err := c.Shards.GetByKey(channels[0])
 	if err != nil {
 		// TODO: return PubSub with sticky error
 		panic(err)
@@ -451,7 +451,7 @@ func (c *Ring) PSubscribe(channels ...string) *PubSub {
 // ForEachShard concurrently calls the fn on each live shard in the ring.
 // It returns the first error if any.
 func (c *Ring) ForEachShard(fn func(client *Client) error) error {
-	shards := c.shards.List()
+	shards := c.Shards.List()
 	var wg sync.WaitGroup
 	errCh := make(chan error, 1)
 	for _, shard := range shards {
@@ -482,7 +482,7 @@ func (c *Ring) ForEachShard(fn func(client *Client) error) error {
 }
 
 func (c *Ring) cmdsInfo() (map[string]*CommandInfo, error) {
-	shards := c.shards.List()
+	shards := c.Shards.List()
 	firstErr := errRingShardsDown
 	for _, shard := range shards {
 		cmdsInfo, err := shard.Client.Command().Result()
@@ -512,10 +512,10 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 	cmdInfo := c.cmdInfo(cmd.Name())
 	pos := cmdFirstKeyPos(cmd, cmdInfo)
 	if pos == 0 {
-		return c.shards.Random()
+		return c.Shards.Random()
 	}
 	firstKey := cmd.stringArg(pos)
-	return c.shards.GetByKey(firstKey)
+	return c.Shards.GetByKey(firstKey)
 }
 
 // Do creates a Cmd from the args and processes the cmd.
@@ -582,7 +582,7 @@ func (c *Ring) defaultProcessPipeline(cmds []Cmder) error {
 		cmdInfo := c.cmdInfo(cmd.Name())
 		hash := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
 		if hash != "" {
-			hash = c.shards.Hash(hashtag.Key(hash))
+			hash = c.Shards.Hash(hashtag.Key(hash))
 		}
 		cmdsMap[hash] = append(cmdsMap[hash], cmd)
 	}
@@ -601,7 +601,7 @@ func (c *Ring) defaultProcessPipeline(cmds []Cmder) error {
 			go func(hash string, cmds []Cmder) {
 				defer wg.Done()
 
-				shard, err := c.shards.GetByHash(hash)
+				shard, err := c.Shards.GetByHash(hash)
 				if err != nil {
 					setCmdsErr(cmds, err)
 					return
@@ -650,7 +650,7 @@ func (c *Ring) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 // It is rare to Close a Ring, as the Ring is meant to be long-lived
 // and shared between many goroutines.
 func (c *Ring) Close() error {
-	return c.shards.Close()
+	return c.Shards.Close()
 }
 
 func newConsistentHash(opt *RingOptions) *consistenthash.Map {
