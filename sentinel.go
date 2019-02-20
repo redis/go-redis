@@ -164,6 +164,14 @@ func (c *SentinelClient) Sentinels(name string) *SliceCmd {
 	return cmd
 }
 
+// Failover forces a failover as if the master was not reachable, and without
+// asking for agreement to other Sentinels.
+func (c *SentinelClient) Failover(name string) *StatusCmd {
+	cmd := NewStatusCmd("sentinel", "failover", name)
+	c.Process(cmd)
+	return cmd
+}
+
 type sentinelFailover struct {
 	sentinelAddrs []string
 
