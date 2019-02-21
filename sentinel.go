@@ -190,6 +190,13 @@ func (c *SentinelClient) FlushConfig() *StatusCmd {
 	return cmd
 }
 
+// Master shows the state and info of the specified master.
+func (c *SentinelClient) Master(name string) *StringStringMapCmd {
+	cmd := NewStringStringMapCmd("sentinel", "master", name)
+	c.Process(cmd)
+	return cmd
+}
+
 type sentinelFailover struct {
 	sentinelAddrs []string
 
