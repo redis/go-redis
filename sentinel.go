@@ -182,6 +182,14 @@ func (c *SentinelClient) Reset(pattern string) *IntCmd {
 	return cmd
 }
 
+// FlushConfig forces Sentinel to rewrite its configuration on disk, including
+// the current Sentinel state.
+func (c *SentinelClient) FlushConfig() *StatusCmd {
+	cmd := NewStatusCmd("sentinel", "flushconfig")
+	c.Process(cmd)
+	return cmd
+}
+
 type sentinelFailover struct {
 	sentinelAddrs []string
 
