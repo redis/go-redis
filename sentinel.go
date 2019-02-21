@@ -172,6 +172,16 @@ func (c *SentinelClient) Failover(name string) *StatusCmd {
 	return cmd
 }
 
+// Reset resets all the masters with matching name. The pattern argument is a
+// glob-style pattern. The reset process clears any previous state in a master
+// (including a failover in progress), and removes every slave and sentinel
+// already discovered and associated with the master.
+func (c *SentinelClient) Reset(pattern string) *IntCmd {
+	cmd := NewIntCmd("sentinel", "reset", pattern)
+	c.Process(cmd)
+	return cmd
+}
+
 type sentinelFailover struct {
 	sentinelAddrs []string
 
