@@ -862,7 +862,7 @@ func (c *ClusterClient) Watch(fn func(*Tx) error, keys ...string) error {
 			continue
 		}
 
-		if err == pool.ErrClosed {
+		if err == pool.ErrClosed || internal.IsReadOnlyError(err) {
 			node, err = c.slotMasterNode(slot)
 			if err != nil {
 				return err
@@ -960,7 +960,7 @@ func (c *ClusterClient) defaultProcess(cmd Cmder) error {
 			continue
 		}
 
-		if err == pool.ErrClosed {
+		if err == pool.ErrClosed || internal.IsReadOnlyError(err) {
 			node = nil
 			continue
 		}
