@@ -381,12 +381,12 @@ func (c *Ring) WithContext(ctx context.Context) *Ring {
 	if ctx == nil {
 		panic("nil context")
 	}
-	c2 := c.copy()
+	c2 := c.clone()
 	c2.ctx = ctx
 	return c2
 }
 
-func (c *Ring) copy() *Ring {
+func (c *Ring) clone() *Ring {
 	cp := *c
 	return &cp
 }

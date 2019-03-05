@@ -703,12 +703,12 @@ func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
 	if ctx == nil {
 		panic("nil context")
 	}
-	c2 := c.copy()
+	c2 := c.clone()
 	c2.ctx = ctx
 	return c2
 }
 
-func (c *ClusterClient) copy() *ClusterClient {
+func (c *ClusterClient) clone() *ClusterClient {
 	cp := *c
 	cp.init()
 	return &cp
