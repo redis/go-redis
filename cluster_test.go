@@ -512,6 +512,14 @@ var _ = Describe("ClusterClient", func() {
 				return nil
 			}, 30*time.Second).ShouldNot(HaveOccurred())
 		})
+
+		It("supports PubSub.Ping without channels", func() {
+			pubsub := client.Subscribe()
+			defer pubsub.Close()
+
+			err := pubsub.Ping()
+			Expect(err).NotTo(HaveOccurred())
+		})
 	}
 
 	Describe("ClusterClient", func() {

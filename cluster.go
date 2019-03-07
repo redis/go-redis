@@ -1537,10 +1537,13 @@ func (c *ClusterClient) pubSub() *PubSub {
 				panic("node != nil")
 			}
 
-			slot := hashtag.Slot(channels[0])
-
 			var err error
-			node, err = c.slotMasterNode(slot)
+			if len(channels) > 0 {
+				slot := hashtag.Slot(channels[0])
+				node, err = c.slotMasterNode(slot)
+			} else {
+				node, err = c.nodes.Random()
+			}
 			if err != nil {
 				return nil, err
 			}
