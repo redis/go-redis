@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	"sync/atomic"
 
 	"github.com/go-redis/redis/internal"
 	"github.com/go-redis/redis/internal/pool"
@@ -38,7 +37,6 @@ type PubSub struct {
 	chOnce sync.Once
 	ch     chan *Message
 	ping   chan struct{}
-	entering  int32
 }
 
 func (c *PubSub) init() {
@@ -397,7 +395,8 @@ func (c *PubSub) Channel() <-chan *Message {
 }
 
 func (c *PubSub) initChannel() {
-	c.ch = make(chan *Message, 100)
+	chSize := 100
+	c.ch = make(chan *Message, chSize)
 	c.ping = make(chan struct{}, 10)
 
 	go func() {
@@ -429,9 +428,7 @@ func (c *PubSub) initChannel() {
 			case *Pong:
 				// Ignore.
 			case *Message:
-				atomic.StoreInt32(&c.entering, 1)
 				c.ch <- msg
-				atomic.StoreInt32(&c.entering, 0)
 			default:
 				internal.Logf("redis: unknown message: %T", msg)
 			}
@@ -454,7 +451,7 @@ func (c *PubSub) initChannel() {
 					<-timer.C
 				}
 			case <-timer.C:
-				if atomic.LoadInt32(&c.entering) != 0 {
+				if len(c.ch) == chSize{
 					continue
 				}
 				pingErr := c.Ping()
