@@ -27,6 +27,13 @@ var _ = Describe("PubSub", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
+	It("implements Stringer", func() {
+		pubsub := client.PSubscribe("mychannel*")
+		defer pubsub.Close()
+
+		Expect(pubsub.String()).To(Equal("PubSub(mychannel*)"))
+	})
+
 	It("should support pattern matching", func() {
 		pubsub := client.PSubscribe("mychannel*")
 		defer pubsub.Close()
