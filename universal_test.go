@@ -24,6 +24,15 @@ var _ = Describe("UniversalClient", func() {
 		Expect(client.Ping().Err()).NotTo(HaveOccurred())
 	})
 
+	It("should connect to failover readonly servers", func() {
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			MasterName: sentinelName,
+			Addrs:      []string{":" + sentinelPort},
+			ReadOnly:   true,
+		})
+		Expect(client.Ping().Err()).NotTo(HaveOccurred())
+	})
+
 	It("should connect to simple servers", func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs: []string{redisAddr},

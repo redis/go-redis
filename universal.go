@@ -112,6 +112,41 @@ func (o *UniversalOptions) failover() *FailoverOptions {
 	}
 }
 
+func (o *UniversalOptions) failoverReadOnly() *FailoverReadOnlyOptions {
+	if len(o.Addrs) == 0 {
+		o.Addrs = []string{"127.0.0.1:26379"}
+	}
+
+	return &FailoverReadOnlyOptions{
+		SentinelAddrs: o.Addrs,
+		MasterName:    o.MasterName,
+		OnConnect:     o.OnConnect,
+
+		DB:       o.DB,
+		Password: o.Password,
+
+		RouteByLatency: o.RouteByLatency,
+		RouteRandomly:  o.RouteRandomly,
+
+		MaxRetries:      o.MaxRetries,
+		MinRetryBackoff: o.MinRetryBackoff,
+		MaxRetryBackoff: o.MaxRetryBackoff,
+
+		DialTimeout:  o.DialTimeout,
+		ReadTimeout:  o.ReadTimeout,
+		WriteTimeout: o.WriteTimeout,
+
+		PoolSize:           o.PoolSize,
+		MinIdleConns:       o.MinIdleConns,
+		MaxConnAge:         o.MaxConnAge,
+		PoolTimeout:        o.PoolTimeout,
+		IdleTimeout:        o.IdleTimeout,
+		IdleCheckFrequency: o.IdleCheckFrequency,
+
+		TLSConfig: o.TLSConfig,
+	}
+}
+
 func (o *UniversalOptions) simple() *Options {
 	addr := "127.0.0.1:6379"
 	if len(o.Addrs) > 0 {
@@ -171,6 +206,9 @@ var _ UniversalClient = (*ClusterClient)(nil)
 // 3. otherwise, a single-node redis Client will be returned.
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
 	if opts.MasterName != "" {
+		if opts.ReadOnly || opts.RouteByLatency || opts.RouteRandomly {
+			return NewFailoverReadOnlyClient(opts.failoverReadOnly())
+		}
 		return NewFailoverClient(opts.failover())
 	} else if len(opts.Addrs) > 1 {
 		return NewClusterClient(opts.cluster())

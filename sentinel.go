@@ -85,10 +85,26 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		opt: opt,
 	}
 
+	opt.Dialer = func() (net.Conn, error) {
+		addr, err := failover.MasterAddr()
+		if err != nil {
+			return nil, err
+		}
+		return net.DialTimeout("tcp", addr, opt.DialTimeout)
+	}
+
+	connPool := newConnPool(opt)
+
+	failover.onFailover = func(addr string) {
+		_ = connPool.Filter(func(cn *pool.Conn) bool {
+			return cn.RemoteAddr().String() != addr
+		})
+	}
+
 	c := Client{
 		baseClient: baseClient{
 			opt:      opt,
-			connPool: failover.Pool(),
+			connPool: connPool,
 
 			onClose: func() error {
 				return failover.Close()
@@ -99,6 +115,141 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	c.cmdable.setProcessor(c.Process)
 
 	return &c
+}
+
+//------------------------------------------------------------------------------
+
+// FailoverReadOnlyOptions are used to configure a failover client and should
+// be passed to NewFailoverReadOnlyClient.
+type FailoverReadOnlyOptions struct {
+	// The master name.
+	MasterName string
+	// A seed list of host:port addresses of sentinel nodes.
+	SentinelAddrs []string
+
+	RouteByLatency bool
+	RouteRandomly  bool
+
+	// Following options are copied from Options struct.
+
+	OnConnect func(*Conn) error
+
+	Password string
+	DB       int
+
+	MaxRetries      int
+	MinRetryBackoff time.Duration
+	MaxRetryBackoff time.Duration
+
+	DialTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+
+	PoolSize           int
+	MinIdleConns       int
+	MaxConnAge         time.Duration
+	PoolTimeout        time.Duration
+	IdleTimeout        time.Duration
+	IdleCheckFrequency time.Duration
+
+	TLSConfig *tls.Config
+}
+
+func (opt *FailoverReadOnlyOptions) options() *Options {
+	return &Options{
+		OnConnect: opt.OnConnect,
+
+		Password: opt.Password,
+
+		MaxRetries: opt.MaxRetries,
+
+		DialTimeout:  opt.DialTimeout,
+		ReadTimeout:  opt.ReadTimeout,
+		WriteTimeout: opt.WriteTimeout,
+
+		PoolSize:           opt.PoolSize,
+		PoolTimeout:        opt.PoolTimeout,
+		IdleTimeout:        opt.IdleTimeout,
+		IdleCheckFrequency: opt.IdleCheckFrequency,
+
+		TLSConfig: opt.TLSConfig,
+	}
+}
+
+func (opt *FailoverReadOnlyOptions) clusterOptions() *ClusterOptions {
+	return &ClusterOptions{
+		OnConnect: opt.OnConnect,
+
+		Password: opt.Password,
+
+		MaxRetries: opt.MaxRetries,
+
+		ReadOnly:       true,
+		RouteByLatency: opt.RouteByLatency,
+		RouteRandomly:  opt.RouteByLatency,
+
+		DialTimeout:  opt.DialTimeout,
+		ReadTimeout:  opt.ReadTimeout,
+		WriteTimeout: opt.WriteTimeout,
+
+		PoolSize:           opt.PoolSize,
+		PoolTimeout:        opt.PoolTimeout,
+		IdleTimeout:        opt.IdleTimeout,
+		IdleCheckFrequency: opt.IdleCheckFrequency,
+
+		TLSConfig: opt.TLSConfig,
+	}
+}
+
+// NewFailoverReadOnlyClient returns a Redis Cluster client that uses Redis Sentinel
+// for automatic failover. It's safe for concurrent use by multiple
+// goroutines.
+func NewFailoverReadOnlyClient(failoverOpt *FailoverReadOnlyOptions) *ClusterClient {
+	failover := &sentinelFailover{
+		masterName:    failoverOpt.MasterName,
+		sentinelAddrs: failoverOpt.SentinelAddrs,
+
+		opt: failoverOpt.options(),
+	}
+
+	opt := failoverOpt.clusterOptions()
+
+	opt.ClusterSlots = func() ([]ClusterSlot, error) {
+		masterAddr, err := failover.MasterAddr()
+		if err != nil {
+			return nil, err
+		}
+
+		nodes := []ClusterNode{{
+			Addr: masterAddr,
+		}}
+
+		slaveAddrs, err := failover.SlaveAddrs()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, slaveAddr := range slaveAddrs {
+			nodes = append(nodes, ClusterNode{
+				Addr: slaveAddr,
+			})
+		}
+
+		slots := []ClusterSlot{
+			{
+				Start: 0,
+				End:   16383,
+				Nodes: nodes,
+			},
+		}
+		return slots, nil
+	}
+	c := NewClusterClient(opt)
+	failover.onFailover = func(addr string) {
+		c.ReloadState()
+	}
+
+	return c
 }
 
 //------------------------------------------------------------------------------
@@ -158,6 +309,12 @@ func (c *SentinelClient) GetMasterAddrByName(name string) *StringSliceCmd {
 	return cmd
 }
 
+func (c *SentinelClient) Slaves(name string) *SliceCmd {
+	cmd := NewSliceCmd("sentinel", "slaves", name)
+	c.Process(cmd)
+	return cmd
+}
+
 func (c *SentinelClient) Sentinels(name string) *SliceCmd {
 	cmd := NewSliceCmd("sentinel", "sentinels", name)
 	c.Process(cmd)
@@ -202,8 +359,7 @@ type sentinelFailover struct {
 
 	opt *Options
 
-	pool     *pool.ConnPool
-	poolOnce sync.Once
+	onFailover func(string)
 
 	mu          sync.RWMutex
 	masterName  string
@@ -219,22 +375,6 @@ func (c *sentinelFailover) Close() error {
 		return c.closeSentinel()
 	}
 	return nil
-}
-
-func (c *sentinelFailover) Pool() *pool.ConnPool {
-	c.poolOnce.Do(func() {
-		c.opt.Dialer = c.dial
-		c.pool = newConnPool(c.opt)
-	})
-	return c.pool
-}
-
-func (c *sentinelFailover) dial() (net.Conn, error) {
-	addr, err := c.MasterAddr()
-	if err != nil {
-		return nil, err
-	}
-	return net.DialTimeout("tcp", addr, c.opt.DialTimeout)
 }
 
 func (c *sentinelFailover) MasterAddr() (string, error) {
@@ -329,9 +469,7 @@ func (c *sentinelFailover) switchMaster(addr string) {
 
 	internal.Logf("sentinel: new master=%q addr=%q",
 		c.masterName, addr)
-	_ = c.Pool().Filter(func(cn *pool.Conn) bool {
-		return cn.RemoteAddr().String() != addr
-	})
+	c.onFailover(addr)
 	c._masterAddr = addr
 }
 
@@ -381,6 +519,29 @@ func (c *sentinelFailover) discoverSentinels(sentinel *SentinelClient) {
 			}
 		}
 	}
+}
+
+func (c *sentinelFailover) SlaveAddrs() ([]string, error) {
+	c.mu.RLock()
+	sentinel := c.sentinel
+	c.mu.RUnlock()
+
+	slaves, err := sentinel.Slaves(c.masterName).Result()
+	if err != nil {
+		internal.Logf("sentinel: Slaves master=%q failed: %s", c.masterName, err)
+		return nil, err
+	}
+	var slaveAddrs []string
+	for _, slave := range slaves {
+		vals := slave.([]interface{})
+		for i := 0; i < len(vals); i += 2 {
+			key := vals[i].(string)
+			if key == "name" {
+				slaveAddrs = append(slaveAddrs, vals[i+1].(string))
+			}
+		}
+	}
+	return slaveAddrs, nil
 }
 
 func (c *sentinelFailover) listen(pubsub *PubSub) {
