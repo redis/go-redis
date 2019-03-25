@@ -51,11 +51,10 @@ func (c *baseClient) newConn() (*pool.Conn, error) {
 		return nil, err
 	}
 
-	if cn.InitedAt.IsZero() {
-		if err := c.initConn(cn); err != nil {
-			_ = c.connPool.CloseConn(cn)
-			return nil, err
-		}
+	err = c.initConn(cn)
+	if err != nil {
+		_ = c.connPool.CloseConn(cn)
+		return nil, err
 	}
 
 	return cn, nil
@@ -85,12 +84,10 @@ func (c *baseClient) _getConn() (*pool.Conn, error) {
 		return nil, err
 	}
 
-	if cn.InitedAt.IsZero() {
-		err := c.initConn(cn)
-		if err != nil {
-			c.connPool.Remove(cn)
-			return nil, err
-		}
+	err = c.initConn(cn)
+	if err != nil {
+		c.connPool.Remove(cn)
+		return nil, err
 	}
 
 	return cn, nil
@@ -121,7 +118,10 @@ func (c *baseClient) releaseConnStrict(cn *pool.Conn, err error) {
 }
 
 func (c *baseClient) initConn(cn *pool.Conn) error {
-	cn.InitedAt = time.Now()
+	if cn.Inited {
+		return nil
+	}
+	cn.Inited = true
 
 	if c.opt.Password == "" &&
 		c.opt.DB == 0 &&
