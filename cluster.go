@@ -822,8 +822,8 @@ func (c *ClusterClient) slotMasterNode(slot int) (*clusterNode, error) {
 	return c.nodes.Random()
 }
 
-func (c *ClusterClient) tryAnotherNode(cmdName string) *clusterNode {
-	cmdInfo := c.cmdInfo(cmdName)
+func (c *ClusterClient) tryAnotherNode(cmd Cmder) *clusterNode {
+	cmdInfo := c.cmdInfo(cmd.Name())
 	slot := c.cmdSlot(cmd)
 
 	state, err := c.state.Get()
@@ -1007,7 +1007,7 @@ func (c *ClusterClient) defaultProcess(cmd Cmder) error {
 			//
 			// If another node cannot be selected, the current node will be kept for the next
 			// attempts.
-			if otherNode := c.tryAnotherNode(cmd.Name()); otherNode == nil {
+			if otherNode := c.tryAnotherNode(cmd); otherNode == nil {
 				continue
 			} else {
 				node = otherNode
