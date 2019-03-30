@@ -822,6 +822,31 @@ func (c *ClusterClient) slotMasterNode(slot int) (*clusterNode, error) {
 	return c.nodes.Random()
 }
 
+func (c *ClusterClient) tryAnotherNode(cmdName string) *clusterNode {
+	cmdInfo := c.cmdInfo(cmdName)
+	slot := c.cmdSlot(cmd)
+
+	state, err := c.state.Get()
+	if err != nil {
+		return nil
+	}
+
+	// Read only can be retried on another slave.
+	if c.opt.ReadOnly && cmdInfo != nil && cmdInfo.ReadOnly {
+		node, err := state.slotSlaveNode(slot)
+		if err != nil {
+			return nil
+		}
+
+		return node
+	}
+
+	// Cannot try any other node for writes as the prevAddr is the only
+	// acceptable node. Choosing another node will just result in MOVED errors
+	// being produced and wasting round-trip requests.
+	return nil
+}
+
 func (c *ClusterClient) Watch(fn func(*Tx) error, keys ...string) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("redis: Watch requires at least one key")
@@ -971,11 +996,23 @@ func (c *ClusterClient) defaultProcess(cmd Cmder) error {
 				continue
 			}
 
-			// Second try random node.
-			node, err = c.nodes.Random()
-			if err != nil {
-				break
+			// Further attempts try another node, if possible.
+			//
+			// For writes this won't be possible
+			// as any other node will either be the wrong master (for another slot) or a slave that
+			// can't serve writes.
+			//
+			// For reads this may be possible if `ReadOnly` is set to true. A potentially
+			// random slave can be chosen for the next attempt.
+			//
+			// If another node cannot be selected, the current node will be kept for the next
+			// attempts.
+			if otherNode := c.tryAnotherNode(cmd.Name()); otherNode == nil {
+				continue
+			} else {
+				node = otherNode
 			}
+
 			continue
 		}
 
