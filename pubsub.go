@@ -14,7 +14,7 @@ import (
 
 var errPingTimeout = errors.New("redis: ping timeout")
 
-// PubSub implements Pub/Sub commands bas described in
+// PubSub implements Pub/Sub commands as described in
 // http://redis.io/topics/pubsub. Message receiving is NOT safe
 // for concurrent use by multiple goroutines.
 //
