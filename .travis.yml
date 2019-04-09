@@ -18,3 +18,4 @@ matrix:
 install:
   - go get github.com/onsi/ginkgo
   - go get github.com/onsi/gomega
+  - go get github.com/spf13/cast
