@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/go-redis/redis/internal/util"
-	"github.com/spf13/cast"
 )
 
 type Writer struct {
@@ -84,7 +83,14 @@ func (w *Writer) writeArg(v interface{}) error {
 	case uint64:
 		return w.uint(v)
 	case float32:
-		return w.float(cast.ToFloat64(cast.ToString(v)))
+		float32String := strconv.FormatFloat(float64(v), 'E', -1, 32)
+		toFloat64, err := strconv.ParseFloat(float32String, 64)
+		if err != nil{
+			return fmt.Errorf(
+				"redis: can't convert the type of [ %v ] from float32 to float64, err: %s", v, err.Error())
+		}
+
+		return w.float(toFloat64)
 	case float64:
 		return w.float(v)
 	case bool:
