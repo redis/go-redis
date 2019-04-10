@@ -218,6 +218,25 @@ func (cmd *Cmd) Uint64() (uint64, error) {
 	}
 }
 
+func (cmd *Cmd) Float32() (float32, error) {
+	if cmd.err != nil {
+		return 0, cmd.err
+	}
+	switch val := cmd.val.(type) {
+	case int64:
+		return float32(val), nil
+	case string:
+		f, err := strconv.ParseFloat(val, 32)
+		if err != nil {
+			return 0, err
+		}
+		return float32(f), nil
+	default:
+		err := fmt.Errorf("redis: unexpected type=%T for Float32", val)
+		return 0, err
+	}
+}
+
 func (cmd *Cmd) Float64() (float64, error) {
 	if cmd.err != nil {
 		return 0, cmd.err
@@ -583,6 +602,17 @@ func (cmd *StringCmd) Uint64() (uint64, error) {
 		return 0, cmd.err
 	}
 	return strconv.ParseUint(cmd.Val(), 10, 64)
+}
+
+func (cmd *StringCmd) Float32() (float32, error) {
+	if cmd.err != nil {
+		return 0, cmd.err
+	}
+	f, err := strconv.ParseFloat(cmd.Val(), 32)
+	if err != nil {
+		return 0, err
+	}
+	return float32(f), nil
 }
 
 func (cmd *StringCmd) Float64() (float64, error) {
