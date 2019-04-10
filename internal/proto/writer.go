@@ -83,16 +83,9 @@ func (w *Writer) writeArg(v interface{}) error {
 	case uint64:
 		return w.uint(v)
 	case float32:
-		float32String := strconv.FormatFloat(float64(v), 'E', -1, 32)
-		toFloat64, err := strconv.ParseFloat(float32String, 64)
-		if err != nil{
-			return fmt.Errorf(
-				"redis: can't convert the type of [ %v ] from float32 to float64, err: %s", v, err.Error())
-		}
-
-		return w.float(toFloat64)
+		return w.float32(v)
 	case float64:
-		return w.float(v)
+		return w.float64(v)
 	case bool:
 		if v {
 			return w.int(1)
@@ -144,7 +137,18 @@ func (w *Writer) int(n int64) error {
 	return w.bytes(w.numBuf)
 }
 
-func (w *Writer) float(f float64) error {
+func (w *Writer) float32(f float32) error {
+	float32String := strconv.FormatFloat(float64(f), 'E', -1, 32)
+	toFloat64, err := strconv.ParseFloat(float32String, 64)
+	if err != nil{
+		return fmt.Errorf(
+			"redis: can't convert the type of [ %v ] from float32 to float64, err: %s", f, err.Error())
+	}
+
+	return w.float64(toFloat64)
+}
+
+func (w *Writer) float64(f float64) error {
 	w.numBuf = strconv.AppendFloat(w.numBuf[:0], f, 'f', -1, 64)
 	return w.bytes(w.numBuf)
 }

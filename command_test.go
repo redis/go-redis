@@ -58,13 +58,26 @@ var _ = Describe("Cmd", func() {
 	})
 
 	It("safe float32 convert to float64", func() {
-		var f float32 = 66.97
+		var f float32
+		f = 66.97
+
 		set := client.Set("float_key", f, 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 
 		val, err := client.Get("float_key").Float64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(float64(66.97)))
+
+		member := "sam123"
+		mycmd := []interface{}{"Zadd", "zset_float_key", f, member}
+		cmd := redis.NewStatusCmd(mycmd...)
+
+		client.Process(cmd)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+
+		fscore := client.ZScore("zset_float_key", member)
+		Expect(fscore.Err()).NotTo(HaveOccurred())
+		Expect(fscore.Val()).To(Equal(float64(66.97)))
 	})
 
 })
