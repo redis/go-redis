@@ -1198,6 +1198,7 @@ func (c *ClusterClient) WrapProcessPipeline(
 	fn func(oldProcess func([]Cmder) error) func([]Cmder) error,
 ) {
 	c.processPipeline = fn(c.processPipeline)
+	c.processTxPipeline = fn(c.processTxPipeline)
 }
 
 func (c *ClusterClient) defaultProcessPipeline(cmds []Cmder) error {
