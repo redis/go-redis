@@ -90,9 +90,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 			opt:      opt,
 			connPool: failover.Pool(),
 
-			onClose: func() error {
-				return failover.Close()
-			},
+			onClose: failover.Close,
 		},
 	}
 	c.baseClient.init()
@@ -391,8 +389,7 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 			break
 		}
 
-		switch msg.Channel {
-		case "+switch-master":
+		if msg.Channel == "+switch-master" {
 			parts := strings.Split(msg.Payload, " ")
 			if parts[0] != c.masterName {
 				internal.Logf("sentinel: ignore addr for master=%q", parts[0])

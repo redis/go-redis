@@ -201,9 +201,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 			return err
 		}
 
-		err = cn.WithReader(c.cmdTimeout(cmd), func(rd *proto.Reader) error {
-			return cmd.readReply(rd)
-		})
+		err = cn.WithReader(c.cmdTimeout(cmd), cmd.readReply)
 		c.releaseConn(cn, err)
 		if err != nil && internal.IsRetryableError(err, cmd.readTimeout() == nil) {
 			continue
@@ -237,7 +235,7 @@ func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
 func (c *baseClient) Close() error {
 	var firstErr error
 	if c.onClose != nil {
-		if err := c.onClose(); err != nil && firstErr == nil {
+		if err := c.onClose(); err != nil {
 			firstErr = err
 		}
 	}
