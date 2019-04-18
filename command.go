@@ -717,12 +717,12 @@ func (cmd *StringSliceCmd) readReply(rd *proto.Reader) error {
 func stringSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 	ss := make([]string, 0, n)
 	for i := int64(0); i < n; i++ {
-		s, err := rd.ReadString()
-		if err == Nil {
+		switch s, err := rd.ReadString(); {
+		case err == Nil:
 			ss = append(ss, "")
-		} else if err != nil {
+		case err != nil:
 			return nil, err
-		} else {
+		default:
 			ss = append(ss, s)
 		}
 	}
