@@ -653,6 +653,39 @@ func (c *Ring) Close() error {
 	return c.shards.Close()
 }
 
+func (c *Ring) Watch(fn func(*Tx) error, keys ...string) error {
+	if len(keys) == 0 {
+		return fmt.Errorf("redis: Watch requires at least one key")
+	}
+
+	var shards []*ringShard
+	for _, key := range keys {
+		if key != "" {
+			shard, err := c.shards.GetByKey(hashtag.Key(key))
+			if err != nil {
+				return err
+			}
+
+			shards = append(shards, shard)
+		}
+	}
+
+	if len(shards) == 0 {
+		return fmt.Errorf("redis: Watch requires at least one shard")
+	}
+
+	if len(shards) > 1 {
+		for _, shard := range shards[1:] {
+			if shard.Client.String() != shards[0].Client.String() {
+				err := fmt.Errorf("redis: Watch requires all keys to be in the same shard")
+				return err
+			}
+		}
+	}
+
+	return shards[0].Client.Watch(fn, keys...)
+}
+
 func newConsistentHash(opt *RingOptions) *consistenthash.Map {
 	return consistenthash.New(opt.HashReplicas, consistenthash.Hash(opt.Hash))
 }
