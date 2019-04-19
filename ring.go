@@ -676,7 +676,7 @@ func (c *Ring) Watch(fn func(*Tx) error, keys ...string) error {
 
 	if len(shards) > 1 {
 		for _, shard := range shards[1:] {
-			if shard.Client.String() != shards[0].Client.String() {
+			if shard.Client != shards[0].Client {
 				err := fmt.Errorf("redis: Watch requires all keys to be in the same shard")
 				return err
 			}
