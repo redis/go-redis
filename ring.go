@@ -275,6 +275,7 @@ func (c *ringShards) Heartbeat(frequency time.Duration) {
 func (c *ringShards) rebalance() {
 	hash := newConsistentHash(c.opt)
 	var shardsNum int
+	c.mu.Lock()
 	for name, shard := range c.shards {
 		if shard.IsUp() {
 			hash.Add(name)
@@ -282,7 +283,6 @@ func (c *ringShards) rebalance() {
 		}
 	}
 
-	c.mu.Lock()
 	c.hash = hash
 	c.len = shardsNum
 	c.mu.Unlock()
