@@ -1551,6 +1551,8 @@ func (c *ClusterClient) pubSub() *PubSub {
 
 			cn, err := node.Client.newConn()
 			if err != nil {
+				node = nil
+
 				return nil, err
 			}
 
