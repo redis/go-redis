@@ -275,6 +275,7 @@ func (c *ringShards) Heartbeat(frequency time.Duration) {
 func (c *ringShards) rebalance() {
 	hash := newConsistentHash(c.opt)
 	var shardsNum int
+	c.mu.Lock()
 	for name, shard := range c.shards {
 		if shard.IsUp() {
 			hash.Add(name)
@@ -282,7 +283,6 @@ func (c *ringShards) rebalance() {
 		}
 	}
 
-	c.mu.Lock()
 	c.hash = hash
 	c.len = shardsNum
 	c.mu.Unlock()
@@ -651,6 +651,39 @@ func (c *Ring) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 // and shared between many goroutines.
 func (c *Ring) Close() error {
 	return c.shards.Close()
+}
+
+func (c *Ring) Watch(fn func(*Tx) error, keys ...string) error {
+	if len(keys) == 0 {
+		return fmt.Errorf("redis: Watch requires at least one key")
+	}
+
+	var shards []*ringShard
+	for _, key := range keys {
+		if key != "" {
+			shard, err := c.shards.GetByKey(hashtag.Key(key))
+			if err != nil {
+				return err
+			}
+
+			shards = append(shards, shard)
+		}
+	}
+
+	if len(shards) == 0 {
+		return fmt.Errorf("redis: Watch requires at least one shard")
+	}
+
+	if len(shards) > 1 {
+		for _, shard := range shards[1:] {
+			if shard.Client != shards[0].Client {
+				err := fmt.Errorf("redis: Watch requires all keys to be in the same shard")
+				return err
+			}
+		}
+	}
+
+	return shards[0].Client.Watch(fn, keys...)
 }
 
 func newConsistentHash(opt *RingOptions) *consistenthash.Map {
