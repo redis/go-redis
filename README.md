@@ -143,4 +143,4 @@ BenchmarkRedisClusterPing-4         	  100000	     11535 ns/op	     117 B/op	   
 
 - [Golang PostgreSQL ORM](https://github.com/go-pg/pg)
 - [Golang msgpack](https://github.com/vmihailenco/msgpack)
-- [Golang message task queue](https://github.com/go-msgqueue/msgqueue)
+- [Golang message task queue](https://github.com/vmihailenco/taskq)
