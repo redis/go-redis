@@ -387,6 +387,7 @@ func (c *Ring) WithContext(ctx context.Context) *Ring {
 	}
 	c2 := c.clone()
 	c2.ctx = ctx
+	c2.cmdable.setProcessor(c2.Process)
 	return c2
 }
 
