@@ -27,7 +27,7 @@ func (c *Client) newTx() *Tx {
 	tx.baseClient.init()
 	tx.baseClient.process = c.baseClient.process
 	tx.baseClient.processPipeline = c.baseClient.processPipeline
-	tx.statefulCmdable.setProcessor(tx.Process)
+	tx.statefulCmdable.setProcessor(c.Process)
 	return &tx
 }
 
