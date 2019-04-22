@@ -273,16 +273,20 @@ func (c *ringShards) Heartbeat(frequency time.Duration) {
 
 // rebalance removes dead shards from the Ring.
 func (c *ringShards) rebalance() {
+	c.mu.RLock()
+	shards := c.shards
+	c.mu.RUnlock()
+
 	hash := newConsistentHash(c.opt)
 	var shardsNum int
-	c.mu.Lock()
-	for name, shard := range c.shards {
+	for name, shard := range shards {
 		if shard.IsUp() {
 			hash.Add(name)
 			shardsNum++
 		}
 	}
 
+	c.mu.Lock()
 	c.hash = hash
 	c.len = shardsNum
 	c.mu.Unlock()
