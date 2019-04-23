@@ -361,7 +361,8 @@ func NewRing(opt *RingOptions) *Ring {
 
 	ring.process = ring.defaultProcess
 	ring.processPipeline = ring.defaultProcessPipeline
-	ring.cmdable.setProcessor(ring.Process)
+
+	ring.init()
 
 	for name, addr := range opt.Addrs {
 		clopt := opt.clientOptions()
@@ -372,6 +373,10 @@ func NewRing(opt *RingOptions) *Ring {
 	go ring.shards.Heartbeat(opt.HeartbeatFrequency)
 
 	return ring
+}
+
+func (c *Ring) init() {
+	c.cmdable.setProcessor(c.Process)
 }
 
 func (c *Ring) Context() context.Context {
@@ -387,12 +392,13 @@ func (c *Ring) WithContext(ctx context.Context) *Ring {
 	}
 	c2 := c.clone()
 	c2.ctx = ctx
-	c2.cmdable.setProcessor(c2.Process)
 	return c2
 }
 
 func (c *Ring) clone() *Ring {
 	cp := *c
+	cp.init()
+
 	return &cp
 }
 
