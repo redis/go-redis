@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"net"
@@ -102,6 +103,27 @@ var _ = Describe("Redis Ring", func() {
 
 		Expect(ringShard1.Info("keyspace").Val()).ToNot(ContainSubstring("keys="))
 		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=100"))
+	})
+
+	It("propagates process for WithContext", func() {
+		var fromWrap []string
+		wrapper := func(oldProcess func(cmd redis.Cmder) error) func(cmd redis.Cmder) error {
+			return func(cmd redis.Cmder) error {
+				fromWrap = append(fromWrap, cmd.Name())
+
+				return oldProcess(cmd)
+			}
+		}
+
+		ctx := context.Background()
+		ring = ring.WithContext(ctx)
+		ring.WrapProcess(wrapper)
+
+		ring.Ping()
+		Expect(fromWrap).To(Equal([]string{"ping"}))
+
+		ring.Ping()
+		Expect(fromWrap).To(Equal([]string{"ping", "ping"}))
 	})
 
 	Describe("pipeline", func() {
