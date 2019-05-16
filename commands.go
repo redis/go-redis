@@ -189,27 +189,27 @@ type Cmdable interface {
 	XTrimApprox(key string, maxLen int64) *IntCmd
 	BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd
 	BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd
-	ZAdd(key string, members ...Z) *IntCmd
-	ZAddNX(key string, members ...Z) *IntCmd
-	ZAddXX(key string, members ...Z) *IntCmd
-	ZAddCh(key string, members ...Z) *IntCmd
-	ZAddNXCh(key string, members ...Z) *IntCmd
-	ZAddXXCh(key string, members ...Z) *IntCmd
-	ZIncr(key string, member Z) *FloatCmd
-	ZIncrNX(key string, member Z) *FloatCmd
-	ZIncrXX(key string, member Z) *FloatCmd
+	ZAdd(key string, members ...*Z) *IntCmd
+	ZAddNX(key string, members ...*Z) *IntCmd
+	ZAddXX(key string, members ...*Z) *IntCmd
+	ZAddCh(key string, members ...*Z) *IntCmd
+	ZAddNXCh(key string, members ...*Z) *IntCmd
+	ZAddXXCh(key string, members ...*Z) *IntCmd
+	ZIncr(key string, member *Z) *FloatCmd
+	ZIncrNX(key string, member *Z) *FloatCmd
+	ZIncrXX(key string, member *Z) *FloatCmd
 	ZCard(key string) *IntCmd
 	ZCount(key, min, max string) *IntCmd
 	ZLexCount(key, min, max string) *IntCmd
 	ZIncrBy(key string, increment float64, member string) *FloatCmd
-	ZInterStore(destination string, store ZStore, keys ...string) *IntCmd
+	ZInterStore(destination string, store *ZStore, keys ...string) *IntCmd
 	ZPopMax(key string, count ...int64) *ZSliceCmd
 	ZPopMin(key string, count ...int64) *ZSliceCmd
 	ZRange(key string, start, stop int64) *StringSliceCmd
 	ZRangeWithScores(key string, start, stop int64) *ZSliceCmd
-	ZRangeByScore(key string, opt ZRangeBy) *StringSliceCmd
-	ZRangeByLex(key string, opt ZRangeBy) *StringSliceCmd
-	ZRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd
+	ZRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd
+	ZRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd
+	ZRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd
 	ZRank(key, member string) *IntCmd
 	ZRem(key string, members ...interface{}) *IntCmd
 	ZRemRangeByRank(key string, start, stop int64) *IntCmd
@@ -217,12 +217,12 @@ type Cmdable interface {
 	ZRemRangeByLex(key, min, max string) *IntCmd
 	ZRevRange(key string, start, stop int64) *StringSliceCmd
 	ZRevRangeWithScores(key string, start, stop int64) *ZSliceCmd
-	ZRevRangeByScore(key string, opt ZRangeBy) *StringSliceCmd
-	ZRevRangeByLex(key string, opt ZRangeBy) *StringSliceCmd
-	ZRevRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd
+	ZRevRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd
+	ZRevRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd
+	ZRevRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd
 	ZRevRank(key, member string) *IntCmd
 	ZScore(key, member string) *FloatCmd
-	ZUnionStore(dest string, store ZStore, keys ...string) *IntCmd
+	ZUnionStore(dest string, store *ZStore, keys ...string) *IntCmd
 	PFAdd(key string, els ...interface{}) *IntCmd
 	PFCount(keys ...string) *IntCmd
 	PFMerge(dest string, keys ...string) *StatusCmd
@@ -1453,11 +1453,10 @@ func (c *cmdable) XGroupDelConsumer(stream, group, consumer string) *IntCmd {
 type XReadGroupArgs struct {
 	Group    string
 	Consumer string
-	// List of streams and ids.
-	Streams []string
-	Count   int64
-	Block   time.Duration
-	NoAck   bool
+	Streams  []string // list of streams and ids, e.g. stream1 stream2 id1 id2
+	Count    int64
+	Block    time.Duration
+	NoAck    bool
 }
 
 func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
@@ -1618,7 +1617,7 @@ func (c *cmdable) BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd {
 	return cmd
 }
 
-func (c *cmdable) zAdd(a []interface{}, n int, members ...Z) *IntCmd {
+func (c *cmdable) zAdd(a []interface{}, n int, members ...*Z) *IntCmd {
 	for i, m := range members {
 		a[n+2*i] = m.Score
 		a[n+2*i+1] = m.Member
@@ -1629,7 +1628,7 @@ func (c *cmdable) zAdd(a []interface{}, n int, members ...Z) *IntCmd {
 }
 
 // Redis `ZADD key score member [score member ...]` command.
-func (c *cmdable) ZAdd(key string, members ...Z) *IntCmd {
+func (c *cmdable) ZAdd(key string, members ...*Z) *IntCmd {
 	const n = 2
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1] = "zadd", key
@@ -1637,7 +1636,7 @@ func (c *cmdable) ZAdd(key string, members ...Z) *IntCmd {
 }
 
 // Redis `ZADD key NX score member [score member ...]` command.
-func (c *cmdable) ZAddNX(key string, members ...Z) *IntCmd {
+func (c *cmdable) ZAddNX(key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2] = "zadd", key, "nx"
@@ -1645,7 +1644,7 @@ func (c *cmdable) ZAddNX(key string, members ...Z) *IntCmd {
 }
 
 // Redis `ZADD key XX score member [score member ...]` command.
-func (c *cmdable) ZAddXX(key string, members ...Z) *IntCmd {
+func (c *cmdable) ZAddXX(key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2] = "zadd", key, "xx"
@@ -1653,7 +1652,7 @@ func (c *cmdable) ZAddXX(key string, members ...Z) *IntCmd {
 }
 
 // Redis `ZADD key CH score member [score member ...]` command.
-func (c *cmdable) ZAddCh(key string, members ...Z) *IntCmd {
+func (c *cmdable) ZAddCh(key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2] = "zadd", key, "ch"
@@ -1661,7 +1660,7 @@ func (c *cmdable) ZAddCh(key string, members ...Z) *IntCmd {
 }
 
 // Redis `ZADD key NX CH score member [score member ...]` command.
-func (c *cmdable) ZAddNXCh(key string, members ...Z) *IntCmd {
+func (c *cmdable) ZAddNXCh(key string, members ...*Z) *IntCmd {
 	const n = 4
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2], a[3] = "zadd", key, "nx", "ch"
@@ -1669,14 +1668,14 @@ func (c *cmdable) ZAddNXCh(key string, members ...Z) *IntCmd {
 }
 
 // Redis `ZADD key XX CH score member [score member ...]` command.
-func (c *cmdable) ZAddXXCh(key string, members ...Z) *IntCmd {
+func (c *cmdable) ZAddXXCh(key string, members ...*Z) *IntCmd {
 	const n = 4
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2], a[3] = "zadd", key, "xx", "ch"
 	return c.zAdd(a, n, members...)
 }
 
-func (c *cmdable) zIncr(a []interface{}, n int, members ...Z) *FloatCmd {
+func (c *cmdable) zIncr(a []interface{}, n int, members ...*Z) *FloatCmd {
 	for i, m := range members {
 		a[n+2*i] = m.Score
 		a[n+2*i+1] = m.Member
@@ -1687,7 +1686,7 @@ func (c *cmdable) zIncr(a []interface{}, n int, members ...Z) *FloatCmd {
 }
 
 // Redis `ZADD key INCR score member` command.
-func (c *cmdable) ZIncr(key string, member Z) *FloatCmd {
+func (c *cmdable) ZIncr(key string, member *Z) *FloatCmd {
 	const n = 3
 	a := make([]interface{}, n+2)
 	a[0], a[1], a[2] = "zadd", key, "incr"
@@ -1695,7 +1694,7 @@ func (c *cmdable) ZIncr(key string, member Z) *FloatCmd {
 }
 
 // Redis `ZADD key NX INCR score member` command.
-func (c *cmdable) ZIncrNX(key string, member Z) *FloatCmd {
+func (c *cmdable) ZIncrNX(key string, member *Z) *FloatCmd {
 	const n = 4
 	a := make([]interface{}, n+2)
 	a[0], a[1], a[2], a[3] = "zadd", key, "incr", "nx"
@@ -1703,7 +1702,7 @@ func (c *cmdable) ZIncrNX(key string, member Z) *FloatCmd {
 }
 
 // Redis `ZADD key XX INCR score member` command.
-func (c *cmdable) ZIncrXX(key string, member Z) *FloatCmd {
+func (c *cmdable) ZIncrXX(key string, member *Z) *FloatCmd {
 	const n = 4
 	a := make([]interface{}, n+2)
 	a[0], a[1], a[2], a[3] = "zadd", key, "incr", "xx"
@@ -1734,7 +1733,7 @@ func (c *cmdable) ZIncrBy(key string, increment float64, member string) *FloatCm
 	return cmd
 }
 
-func (c *cmdable) ZInterStore(destination string, store ZStore, keys ...string) *IntCmd {
+func (c *cmdable) ZInterStore(destination string, store *ZStore, keys ...string) *IntCmd {
 	args := make([]interface{}, 3+len(keys))
 	args[0] = "zinterstore"
 	args[1] = destination
@@ -1826,7 +1825,7 @@ type ZRangeBy struct {
 	Offset, Count int64
 }
 
-func (c *cmdable) zRangeBy(zcmd, key string, opt ZRangeBy, withScores bool) *StringSliceCmd {
+func (c *cmdable) zRangeBy(zcmd, key string, opt *ZRangeBy, withScores bool) *StringSliceCmd {
 	args := []interface{}{zcmd, key, opt.Min, opt.Max}
 	if withScores {
 		args = append(args, "withscores")
@@ -1844,15 +1843,15 @@ func (c *cmdable) zRangeBy(zcmd, key string, opt ZRangeBy, withScores bool) *Str
 	return cmd
 }
 
-func (c *cmdable) ZRangeByScore(key string, opt ZRangeBy) *StringSliceCmd {
+func (c *cmdable) ZRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRangeBy("zrangebyscore", key, opt, false)
 }
 
-func (c *cmdable) ZRangeByLex(key string, opt ZRangeBy) *StringSliceCmd {
+func (c *cmdable) ZRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRangeBy("zrangebylex", key, opt, false)
 }
 
-func (c *cmdable) ZRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd {
+func (c *cmdable) ZRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd {
 	args := []interface{}{"zrangebyscore", key, opt.Min, opt.Max, "withscores"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1918,7 +1917,7 @@ func (c *cmdable) ZRevRangeWithScores(key string, start, stop int64) *ZSliceCmd 
 	return cmd
 }
 
-func (c *cmdable) zRevRangeBy(zcmd, key string, opt ZRangeBy) *StringSliceCmd {
+func (c *cmdable) zRevRangeBy(zcmd, key string, opt *ZRangeBy) *StringSliceCmd {
 	args := []interface{}{zcmd, key, opt.Max, opt.Min}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1933,15 +1932,15 @@ func (c *cmdable) zRevRangeBy(zcmd, key string, opt ZRangeBy) *StringSliceCmd {
 	return cmd
 }
 
-func (c *cmdable) ZRevRangeByScore(key string, opt ZRangeBy) *StringSliceCmd {
+func (c *cmdable) ZRevRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRevRangeBy("zrevrangebyscore", key, opt)
 }
 
-func (c *cmdable) ZRevRangeByLex(key string, opt ZRangeBy) *StringSliceCmd {
+func (c *cmdable) ZRevRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRevRangeBy("zrevrangebylex", key, opt)
 }
 
-func (c *cmdable) ZRevRangeByScoreWithScores(key string, opt ZRangeBy) *ZSliceCmd {
+func (c *cmdable) ZRevRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd {
 	args := []interface{}{"zrevrangebyscore", key, opt.Max, opt.Min, "withscores"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1968,7 +1967,8 @@ func (c *cmdable) ZScore(key, member string) *FloatCmd {
 	return cmd
 }
 
-func (c *cmdable) ZUnionStore(dest string, store ZStore, keys ...string) *IntCmd {
+// TODO: move keys to ZStore?
+func (c *cmdable) ZUnionStore(dest string, store *ZStore, keys ...string) *IntCmd {
 	args := make([]interface{}, 3+len(keys))
 	args[0] = "zunionstore"
 	args[1] = dest
