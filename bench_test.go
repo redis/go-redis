@@ -188,7 +188,7 @@ func BenchmarkZAdd(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			err := client.ZAdd("key", redis.Z{
+			err := client.ZAdd("key", &redis.Z{
 				Score:  float64(1),
 				Member: "hello",
 			}).Err()
