@@ -67,8 +67,8 @@ type Cmdable interface {
 	Expire(key string, expiration time.Duration) *BoolCmd
 	ExpireAt(key string, tm time.Time) *BoolCmd
 	Keys(pattern string) *StringSliceCmd
-	Migrate(host, port, key string, db int64, timeout time.Duration) *StatusCmd
-	Move(key string, db int64) *BoolCmd
+	Migrate(host, port, key string, db int, timeout time.Duration) *StatusCmd
+	Move(key string, db int) *BoolCmd
 	ObjectRefCount(key string) *IntCmd
 	ObjectEncoding(key string) *StringCmd
 	ObjectIdleTime(key string) *DurationCmd
@@ -431,7 +431,7 @@ func (c *cmdable) Keys(pattern string) *StringSliceCmd {
 	return cmd
 }
 
-func (c *cmdable) Migrate(host, port, key string, db int64, timeout time.Duration) *StatusCmd {
+func (c *cmdable) Migrate(host, port, key string, db int, timeout time.Duration) *StatusCmd {
 	cmd := NewStatusCmd(
 		"migrate",
 		host,
@@ -445,7 +445,7 @@ func (c *cmdable) Migrate(host, port, key string, db int64, timeout time.Duratio
 	return cmd
 }
 
-func (c *cmdable) Move(key string, db int64) *BoolCmd {
+func (c *cmdable) Move(key string, db int) *BoolCmd {
 	cmd := NewBoolCmd("move", key, db)
 	c.process(cmd)
 	return cmd
