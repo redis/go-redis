@@ -53,6 +53,8 @@ type ClusterOptions struct {
 
 	// Following options are copied from Options struct.
 
+	Dialer func(network, addr string) (net.Conn, error)
+
 	OnConnect func(*Conn) error
 
 	Password string
@@ -122,6 +124,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 	const disableIdleCheck = -1
 
 	return &Options{
+		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
 		MaxRetries:      opt.MaxRetries,

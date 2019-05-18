@@ -24,6 +24,7 @@ type FailoverOptions struct {
 
 	// Following options are copied from Options struct.
 
+	Dialer    func(network, addr string) (net.Conn, error)
 	OnConnect func(*Conn) error
 
 	Password string
@@ -49,8 +50,8 @@ type FailoverOptions struct {
 
 func (opt *FailoverOptions) options() *Options {
 	return &Options{
-		Addr: "FailoverClient",
-
+		Addr:      "FailoverClient",
+		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
 		DB:       opt.DB,
@@ -227,7 +228,7 @@ func (c *sentinelFailover) Pool() *pool.ConnPool {
 	return c.pool
 }
 
-func (c *sentinelFailover) dial() (net.Conn, error) {
+func (c *sentinelFailover) dial(network, addr string) (net.Conn, error) {
 	addr, err := c.MasterAddr()
 	if err != nil {
 		return nil, err

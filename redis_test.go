@@ -39,9 +39,10 @@ var _ = Describe("Client", func() {
 
 	It("should support custom dialers", func() {
 		custom := redis.NewClient(&redis.Options{
-			Addr: ":1234",
-			Dialer: func() (net.Conn, error) {
-				return net.Dial("tcp", redisAddr)
+			Network: "tcp",
+			Addr:    redisAddr,
+			Dialer: func(network, addr string) (net.Conn, error) {
+				return net.Dial(network, addr)
 			},
 		})
 

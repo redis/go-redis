@@ -2,6 +2,7 @@ package redis
 
 import (
 	"crypto/tls"
+	"net"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type UniversalOptions struct {
 
 	// Common options.
 
+	Dialer             func(network, addr string) (net.Conn, error)
 	OnConnect          func(*Conn) error
 	Password           string
 	MaxRetries         int
@@ -53,6 +55,7 @@ func (o *UniversalOptions) cluster() *ClusterOptions {
 
 	return &ClusterOptions{
 		Addrs:     o.Addrs,
+		Dialer:    o.Dialer,
 		OnConnect: o.OnConnect,
 
 		Password: o.Password,
@@ -88,7 +91,9 @@ func (o *UniversalOptions) failover() *FailoverOptions {
 	return &FailoverOptions{
 		SentinelAddrs: o.Addrs,
 		MasterName:    o.MasterName,
-		OnConnect:     o.OnConnect,
+
+		Dialer:    o.Dialer,
+		OnConnect: o.OnConnect,
 
 		DB:       o.DB,
 		Password: o.Password,
@@ -120,6 +125,7 @@ func (o *UniversalOptions) simple() *Options {
 
 	return &Options{
 		Addr:      addr,
+		Dialer:    o.Dialer,
 		OnConnect: o.OnConnect,
 
 		DB:       o.DB,
