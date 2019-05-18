@@ -34,7 +34,7 @@ type Options struct {
 
 	// Dialer creates new network connection and has priority over
 	// Network and Addr options.
-	Dialer func() (net.Conn, error)
+	Dialer func(network, addr string) (net.Conn, error)
 
 	// Hook that is called when new connection is established.
 	OnConnect func(*Conn) error
@@ -105,13 +105,13 @@ func (opt *Options) init() {
 		opt.Addr = "localhost:6379"
 	}
 	if opt.Dialer == nil {
-		opt.Dialer = func() (net.Conn, error) {
+		opt.Dialer = func(network, addr string) (net.Conn, error) {
 			netDialer := &net.Dialer{
 				Timeout:   opt.DialTimeout,
 				KeepAlive: 5 * time.Minute,
 			}
 			if opt.TLSConfig == nil {
-				return netDialer.Dial(opt.Network, opt.Addr)
+				return netDialer.Dial(network, addr)
 			} else {
 				return tls.DialWithDialer(netDialer, opt.Network, opt.Addr, opt.TLSConfig)
 			}
@@ -215,7 +215,9 @@ func ParseURL(redisURL string) (*Options, error) {
 
 func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
-		Dialer:             opt.Dialer,
+		Dialer: func() (net.Conn, error) {
+			return opt.Dialer(opt.Network, opt.Addr)
+		},
 		PoolSize:           opt.PoolSize,
 		MinIdleConns:       opt.MinIdleConns,
 		MaxConnAge:         opt.MaxConnAge,
