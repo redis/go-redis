@@ -3,7 +3,7 @@ package redis_test
 import (
 	"fmt"
 
-	"github.com/go-redis/redis"
+	"github.com/pusher/redis"
 )
 
 func Example_instrumentation() {

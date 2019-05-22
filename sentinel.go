@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/internal"
-	"github.com/go-redis/redis/internal/pool"
+	"github.com/pusher/redis/internal"
+	"github.com/pusher/redis/internal/pool"
 )
 
 //------------------------------------------------------------------------------
@@ -195,6 +195,27 @@ func (c *SentinelClient) Master(name string) *StringStringMapCmd {
 	return cmd
 }
 
+func NewSentinel(failoverOpt *FailoverOptions) Sentinel {
+	opt := failoverOpt.options()
+	opt.init()
+
+	failover := &sentinelFailover{
+		masterName:    failoverOpt.MasterName,
+		sentinelAddrs: failoverOpt.SentinelAddrs,
+		masterChanged: make(chan interface{}),
+
+		opt: opt,
+	}
+
+	return failover
+}
+
+type Sentinel interface {
+	MasterAddr() (string, error)
+	MasterChangeChan() <-chan interface{}
+	Close() error
+}
+
 type sentinelFailover struct {
 	sentinelAddrs []string
 
@@ -203,11 +224,12 @@ type sentinelFailover struct {
 	pool     *pool.ConnPool
 	poolOnce sync.Once
 
-	mu          sync.RWMutex
-	masterName  string
-	_masterAddr string
-	sentinel    *SentinelClient
-	pubsub      *PubSub
+	mu            sync.RWMutex
+	masterChanged chan interface{}
+	masterName    string
+	_masterAddr   string
+	sentinel      *SentinelClient
+	pubsub        *PubSub
 }
 
 func (c *sentinelFailover) Close() error {
@@ -314,6 +336,10 @@ func (c *sentinelFailover) getMasterAddr() string {
 	return net.JoinHostPort(addr[0], addr[1])
 }
 
+func (c *sentinelFailover) MasterChangeChan() <-chan interface{} {
+	return c.masterChanged
+}
+
 func (c *sentinelFailover) switchMaster(addr string) {
 	c.mu.RLock()
 	masterAddr := c._masterAddr
@@ -327,10 +353,14 @@ func (c *sentinelFailover) switchMaster(addr string) {
 
 	internal.Logf("sentinel: new master=%q addr=%q",
 		c.masterName, addr)
+
+	close(c.masterChanged)
+	c.masterChanged = make(chan interface{})
+	c._masterAddr = masterAddr
+
 	_ = c.Pool().Filter(func(cn *pool.Conn) bool {
 		return cn.RemoteAddr().String() != addr
 	})
-	c._masterAddr = addr
 }
 
 func (c *sentinelFailover) setSentinel(sentinel *SentinelClient) {
