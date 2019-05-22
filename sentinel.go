@@ -53,8 +53,9 @@ func (opt *FailoverOptions) options() *Options {
 
 		OnConnect: opt.OnConnect,
 
-		DB:       opt.DB,
-		Password: opt.Password,
+		DB:               opt.DB,
+		Password:         opt.Password,
+		SentinelPassword: opt.SentinelPassword,
 
 		MaxRetries: opt.MaxRetries,
 
@@ -258,6 +259,8 @@ func (c *sentinelFailover) masterAddr() (string, error) {
 			Addr: sentinelAddr,
 
 			MaxRetries: c.opt.MaxRetries,
+
+			Password: c.opt.SentinelPassword,
 
 			DialTimeout:  c.opt.DialTimeout,
 			ReadTimeout:  c.opt.ReadTimeout,

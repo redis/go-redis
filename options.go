@@ -42,6 +42,10 @@ type Options struct {
 	// Optional password. Must match the password specified in the
 	// requirepass server configuration option.
 	Password string
+
+	// Optional sentinel password. Sentinel process can also be password protected.
+	SentinelPassword string
+
 	// Database to be selected after connecting to the server.
 	DB int
 
