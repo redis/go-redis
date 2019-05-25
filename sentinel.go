@@ -195,6 +195,30 @@ func (c *SentinelClient) Master(name string) *StringStringMapCmd {
 	return cmd
 }
 
+// Masters shows a list of monitored masters and their state.
+func (c *SentinelClient) Masters() *SliceCmd {
+	cmd := NewSliceCmd("sentinel", "masters")
+	c.Process(cmd)
+	return cmd
+}
+
+// Slaves shows a list of slaves for the specified master and their state.
+func (c *SentinelClient) Slaves(name string) *SliceCmd {
+	cmd := NewSliceCmd("sentinel", "slaves", name)
+	c.Process(cmd)
+	return cmd
+}
+
+// CkQuorum checks if the current Sentinel configuration is able to reach the
+// quorum needed to failover a master, and the majority needed to authorize the
+// failover. This command should be used in monitoring systems to check if a
+// Sentinel deployment is ok.
+func (c *SentinelClient) CkQuorum(name string) *StringCmd {
+	cmd := NewStringCmd("sentinel", "ckquorum", name)
+	c.Process(cmd)
+	return cmd
+}
+
 type sentinelFailover struct {
 	sentinelAddrs []string
 
