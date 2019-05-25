@@ -238,7 +238,7 @@ func (c *SentinelClient) Monitor(name, ip, port, quorum string) *StringCmd {
 }
 
 // Set is used in order to change configuration parameters of a specific master.
-// Multiple option / value pairs can be specified (or none at all). All the 
+// Multiple option / value pairs can be specified (or none at all). All the
 // configuration parameters that can be configured via sentinel.conf are also
 // configurable using the SET command.
 func (c *SentinelClient) Set(name, option, value string) *StringCmd {
