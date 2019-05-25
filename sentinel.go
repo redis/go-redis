@@ -228,9 +228,7 @@ func (c *SentinelClient) CkQuorum(name string) *StringCmd {
 }
 
 // Monitor tells the Sentinel to start monitoring a new master with the specified
-// name, ip, port, and quorum. It is identical to the sentinel monitor configuration
-// directive in sentinel.conf configuration file, with the difference that you can't
-// use an hostname in as ip, but you need to provide an IPv4 or IPv6 address.
+// name, ip, port, and quorum.
 func (c *SentinelClient) Monitor(name, ip, port, quorum string) *StringCmd {
 	cmd := NewStringCmd("sentinel", "monitor", name, ip, port, quorum)
 	c.Process(cmd)
@@ -238,9 +236,6 @@ func (c *SentinelClient) Monitor(name, ip, port, quorum string) *StringCmd {
 }
 
 // Set is used in order to change configuration parameters of a specific master.
-// Multiple option / value pairs can be specified (or none at all). All the
-// configuration parameters that can be configured via sentinel.conf are also
-// configurable using the SET command.
 func (c *SentinelClient) Set(name, option, value string) *StringCmd {
 	cmd := NewStringCmd("sentinel", "set", name, option, value)
 	c.Process(cmd)
@@ -249,7 +244,7 @@ func (c *SentinelClient) Set(name, option, value string) *StringCmd {
 
 // Remove is used in order to remove the specified master: the master will no
 // longer be monitored, and will totally be removed from the internal state of
-// the Sentinel, so it will no longer listed by SENTINEL masters and so forth.
+// the Sentinel.
 func (c *SentinelClient) Remove(name string) *StringCmd {
 	cmd := NewStringCmd("sentinel", "remove", name)
 	c.Process(cmd)
