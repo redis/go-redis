@@ -130,6 +130,14 @@ func (c *SentinelClient) pubSub() *PubSub {
 	return pubsub
 }
 
+// Ping is used to test if a connection is still alive, or to
+// measure latency.
+func (c *SentinelClient) Ping() *StringCmd {
+	cmd := NewStringCmd("ping")
+	c.Process(cmd)
+	return cmd
+}
+
 // Subscribe subscribes the client to the specified channels.
 // Channels can be omitted to create empty subscription.
 func (c *SentinelClient) Subscribe(channels ...string) *PubSub {
@@ -215,6 +223,30 @@ func (c *SentinelClient) Slaves(name string) *SliceCmd {
 // Sentinel deployment is ok.
 func (c *SentinelClient) CkQuorum(name string) *StringCmd {
 	cmd := NewStringCmd("sentinel", "ckquorum", name)
+	c.Process(cmd)
+	return cmd
+}
+
+// Monitor tells the Sentinel to start monitoring a new master with the specified
+// name, ip, port, and quorum.
+func (c *SentinelClient) Monitor(name, ip, port, quorum string) *StringCmd {
+	cmd := NewStringCmd("sentinel", "monitor", name, ip, port, quorum)
+	c.Process(cmd)
+	return cmd
+}
+
+// Set is used in order to change configuration parameters of a specific master.
+func (c *SentinelClient) Set(name, option, value string) *StringCmd {
+	cmd := NewStringCmd("sentinel", "set", name, option, value)
+	c.Process(cmd)
+	return cmd
+}
+
+// Remove is used in order to remove the specified master: the master will no
+// longer be monitored, and will totally be removed from the internal state of
+// the Sentinel.
+func (c *SentinelClient) Remove(name string) *StringCmd {
+	cmd := NewStringCmd("sentinel", "remove", name)
 	c.Process(cmd)
 	return cmd
 }
