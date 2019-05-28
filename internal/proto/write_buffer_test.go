@@ -1,6 +1,8 @@
 package proto_test
 
 import (
+	"bytes"
+	"io/ioutil"
 	"testing"
 	"time"
 
@@ -11,21 +13,16 @@ import (
 )
 
 var _ = Describe("WriteBuffer", func() {
-	var buf *proto.WriteBuffer
+	var buf *bytes.Buffer
+	var wr *proto.Writer
 
 	BeforeEach(func() {
-		buf = proto.NewWriteBuffer()
+		buf = new(bytes.Buffer)
+		wr = proto.NewWriter(buf)
 	})
 
-	It("should reset", func() {
-		buf.AppendString("string")
-		Expect(buf.Len()).To(Equal(12))
-		buf.Reset()
-		Expect(buf.Len()).To(Equal(0))
-	})
-
-	It("should append args", func() {
-		err := buf.Append([]interface{}{
+	It("should write args", func() {
+		err := wr.WriteArgs([]interface{}{
 			"string",
 			12,
 			34.56,
@@ -34,6 +31,10 @@ var _ = Describe("WriteBuffer", func() {
 			nil,
 		})
 		Expect(err).NotTo(HaveOccurred())
+
+		err = wr.Flush()
+		Expect(err).NotTo(HaveOccurred())
+
 		Expect(buf.Bytes()).To(Equal([]byte("*6\r\n" +
 			"$6\r\nstring\r\n" +
 			"$2\r\n12\r\n" +
@@ -45,19 +46,30 @@ var _ = Describe("WriteBuffer", func() {
 	})
 
 	It("should append marshalable args", func() {
-		err := buf.Append([]interface{}{time.Unix(1414141414, 0)})
+		err := wr.WriteArgs([]interface{}{time.Unix(1414141414, 0)})
 		Expect(err).NotTo(HaveOccurred())
+
+		err = wr.Flush()
+		Expect(err).NotTo(HaveOccurred())
+
 		Expect(buf.Len()).To(Equal(26))
 	})
 
 })
 
 func BenchmarkWriteBuffer_Append(b *testing.B) {
-	buf := proto.NewWriteBuffer()
+	buf := proto.NewWriter(ioutil.Discard)
 	args := []interface{}{"hello", "world", "foo", "bar"}
 
 	for i := 0; i < b.N; i++ {
-		buf.Append(args)
-		buf.Reset()
+		err := buf.WriteArgs(args)
+		if err != nil {
+			panic(err)
+		}
+
+		err = buf.Flush()
+		if err != nil {
+			panic(err)
+		}
 	}
 }

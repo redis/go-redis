@@ -2,6 +2,8 @@ package redis_test
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,23 +39,6 @@ func BenchmarkRedisPing(b *testing.B) {
 	})
 }
 
-func BenchmarkRedisSetString(b *testing.B) {
-	client := benchmarkRedisClient(10)
-	defer client.Close()
-
-	value := string(bytes.Repeat([]byte{'1'}, 10000))
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			if err := client.Set("key", value, 0).Err(); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-}
-
 func BenchmarkRedisGetNil(b *testing.B) {
 	client := benchmarkRedisClient(10)
 	defer client.Close()
@@ -69,53 +54,48 @@ func BenchmarkRedisGetNil(b *testing.B) {
 	})
 }
 
-func benchmarkSetRedis(b *testing.B, poolSize, payloadSize int) {
-	client := benchmarkRedisClient(poolSize)
-	defer client.Close()
-
-	value := string(bytes.Repeat([]byte{'1'}, payloadSize))
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			if err := client.Set("key", value, 0).Err(); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
+type setStringBenchmark struct {
+	poolSize  int
+	valueSize int
 }
 
-func BenchmarkSetRedis10Conns64Bytes(b *testing.B) {
-	benchmarkSetRedis(b, 10, 64)
+func (bm setStringBenchmark) String() string {
+	return fmt.Sprintf("pool=%d value=%d", bm.poolSize, bm.valueSize)
 }
 
-func BenchmarkSetRedis100Conns64Bytes(b *testing.B) {
-	benchmarkSetRedis(b, 100, 64)
-}
+func BenchmarkRedisSetString(b *testing.B) {
+	benchmarks := []setStringBenchmark{
+		{10, 64},
+		{10, 1024},
+		{10, 64 * 1024},
+		{10, 1024 * 1024},
+		{10, 10 * 1024 * 1024},
 
-func BenchmarkSetRedis10Conns1KB(b *testing.B) {
-	benchmarkSetRedis(b, 10, 1024)
-}
+		{100, 64},
+		{100, 1024},
+		{100, 64 * 1024},
+		{100, 1024 * 1024},
+		{100, 10 * 1024 * 1024},
+	}
+	for _, bm := range benchmarks {
+		b.Run(bm.String(), func(b *testing.B) {
+			client := benchmarkRedisClient(bm.poolSize)
+			defer client.Close()
 
-func BenchmarkSetRedis100Conns1KB(b *testing.B) {
-	benchmarkSetRedis(b, 100, 1024)
-}
+			value := strings.Repeat("1", bm.valueSize)
 
-func BenchmarkSetRedis10Conns10KB(b *testing.B) {
-	benchmarkSetRedis(b, 10, 10*1024)
-}
+			b.ResetTimer()
 
-func BenchmarkSetRedis100Conns10KB(b *testing.B) {
-	benchmarkSetRedis(b, 100, 10*1024)
-}
-
-func BenchmarkSetRedis10Conns1MB(b *testing.B) {
-	benchmarkSetRedis(b, 10, 1024*1024)
-}
-
-func BenchmarkSetRedis100Conns1MB(b *testing.B) {
-	benchmarkSetRedis(b, 100, 1024*1024)
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					err := client.Set("key", value, 0).Err()
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		})
+	}
 }
 
 func BenchmarkRedisSetGetBytes(b *testing.B) {
@@ -208,7 +188,11 @@ func BenchmarkZAdd(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := client.ZAdd("key", redis.Z{float64(1), "hello"}).Err(); err != nil {
+			err := client.ZAdd("key", redis.Z{
+				Score:  float64(1),
+				Member: "hello",
+			}).Err()
+			if err != nil {
 				b.Fatal(err)
 			}
 		}

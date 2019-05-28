@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -242,6 +243,102 @@ var _ = Describe("races", func() {
 		n, err := client.Get("key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(N)))
+	})
+
+	It("should TxPipeline", func() {
+		pipe := client.TxPipeline()
+		perform(N, func(id int) {
+			pipe.Incr("key")
+		})
+
+		cmds, err := pipe.Exec()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cmds).To(HaveLen(N))
+
+		n, err := client.Get("key").Int64()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(N)))
+	})
+
+	It("should BLPop", func() {
+		var received uint32
+		wg := performAsync(C, func(id int) {
+			for {
+				v, err := client.BLPop(3*time.Second, "list").Result()
+				if err != nil {
+					break
+				}
+				Expect(v).To(Equal([]string{"list", "hello"}))
+				atomic.AddUint32(&received, 1)
+			}
+		})
+
+		perform(C, func(id int) {
+			for i := 0; i < N; i++ {
+				err := client.LPush("list", "hello").Err()
+				Expect(err).NotTo(HaveOccurred())
+			}
+		})
+
+		wg.Wait()
+		Expect(received).To(Equal(uint32(C * N)))
+	})
+})
+
+var _ = Describe("cluster races", func() {
+	var client *redis.ClusterClient
+	var C, N int
+
+	BeforeEach(func() {
+		opt := redisClusterOptions()
+		client = cluster.clusterClient(opt)
+
+		C, N = 10, 1000
+		if testing.Short() {
+			C = 4
+			N = 100
+		}
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should echo", func() {
+		perform(C, func(id int) {
+			for i := 0; i < N; i++ {
+				msg := fmt.Sprintf("echo %d %d", id, i)
+				echo, err := client.Echo(msg).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(echo).To(Equal(msg))
+			}
+		})
+	})
+
+	It("should get", func() {
+		perform(C, func(id int) {
+			for i := 0; i < N; i++ {
+				key := fmt.Sprintf("key_%d_%d", id, i)
+				_, err := client.Get(key).Result()
+				Expect(err).To(Equal(redis.Nil))
+			}
+		})
+	})
+
+	It("should incr", func() {
+		key := "TestIncrFromGoroutines"
+
+		perform(C, func(id int) {
+			for i := 0; i < N; i++ {
+				err := client.Incr(key).Err()
+				Expect(err).NotTo(HaveOccurred())
+			}
+		})
+
+		val, err := client.Get(key).Int64()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal(int64(C * N)))
 	})
 })
 

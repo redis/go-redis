@@ -1,9 +1,11 @@
 package redis
 
 import (
+	"fmt"
 	"net"
-	"time"
+	"strings"
 
+	"github.com/pusher/redis/internal/hashtag"
 	"github.com/pusher/redis/internal/pool"
 )
 
@@ -15,12 +17,12 @@ func (c *PubSub) SetNetConn(netConn net.Conn) {
 	c.cn = pool.NewConn(netConn)
 }
 
-func (c *PubSub) ReceiveMessageTimeout(timeout time.Duration) (*Message, error) {
-	return c.receiveMessage(timeout)
+func (c *ClusterClient) LoadState() (*clusterState, error) {
+	return c.loadState()
 }
 
 func (c *ClusterClient) SlotAddrs(slot int) []string {
-	state, err := c.state()
+	state, err := c.state.Get()
 	if err != nil {
 		panic(err)
 	}
@@ -32,15 +34,49 @@ func (c *ClusterClient) SlotAddrs(slot int) []string {
 	return addrs
 }
 
-// SwapSlot swaps a slot's master/slave address for testing MOVED redirects.
-func (c *ClusterClient) SwapSlotNodes(slot int) {
-	state, err := c.state()
+func (c *ClusterClient) Nodes(key string) ([]*clusterNode, error) {
+	state, err := c.state.Reload()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	nodes := state.slots[slot]
-	if len(nodes) == 2 {
-		nodes[0], nodes[1] = nodes[1], nodes[0]
+	slot := hashtag.Slot(key)
+	nodes := state.slotNodes(slot)
+	if len(nodes) != 2 {
+		return nil, fmt.Errorf("slot=%d does not have enough nodes: %v", slot, nodes)
 	}
+	return nodes, nil
+}
+
+func (c *ClusterClient) SwapNodes(key string) error {
+	nodes, err := c.Nodes(key)
+	if err != nil {
+		return err
+	}
+	nodes[0], nodes[1] = nodes[1], nodes[0]
+	return nil
+}
+
+func (state *clusterState) IsConsistent() bool {
+	if len(state.Masters) < 3 {
+		return false
+	}
+	for _, master := range state.Masters {
+		s := master.Client.Info("replication").Val()
+		if !strings.Contains(s, "role:master") {
+			return false
+		}
+	}
+
+	if len(state.Slaves) < 3 {
+		return false
+	}
+	for _, slave := range state.Slaves {
+		s := slave.Client.Info("replication").Val()
+		if !strings.Contains(s, "role:slave") {
+			return false
+		}
+	}
+
+	return true
 }

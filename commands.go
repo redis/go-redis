@@ -1,18 +1,12 @@
 package redis
 
 import (
+	"errors"
 	"io"
 	"time"
 
 	"github.com/pusher/redis/internal"
 )
-
-func readTimeout(timeout time.Duration) time.Duration {
-	if timeout == 0 {
-		return 0
-	}
-	return timeout + 10*time.Second
-}
 
 func usePrecise(dur time.Duration) bool {
 	return dur < time.Second || dur%time.Second != 0
@@ -38,6 +32,22 @@ func formatSec(dur time.Duration) int64 {
 	return int64(dur / time.Second)
 }
 
+func appendArgs(dst, src []interface{}) []interface{} {
+	if len(src) == 1 {
+		if ss, ok := src[0].([]string); ok {
+			for _, s := range ss {
+				dst = append(dst, s)
+			}
+			return dst
+		}
+	}
+
+	for _, v := range src {
+		dst = append(dst, v)
+	}
+	return dst
+}
+
 type Cmdable interface {
 	Pipeline() Pipeliner
 	Pipelined(fn func(Pipeliner) error) ([]Cmder, error)
@@ -45,6 +55,7 @@ type Cmdable interface {
 	TxPipelined(fn func(Pipeliner) error) ([]Cmder, error)
 	TxPipeline() Pipeliner
 
+	Command() *CommandsInfoCmd
 	ClientGetName() *StringCmd
 	Echo(message interface{}) *StringCmd
 	Ping() *StatusCmd
@@ -70,8 +81,10 @@ type Cmdable interface {
 	RenameNX(key, newkey string) *BoolCmd
 	Restore(key string, ttl time.Duration, value string) *StatusCmd
 	RestoreReplace(key string, ttl time.Duration, value string) *StatusCmd
-	Sort(key string, sort Sort) *StringSliceCmd
-	SortInterfaces(key string, sort Sort) *SliceCmd
+	Sort(key string, sort *Sort) *StringSliceCmd
+	SortStore(key, store string, sort *Sort) *IntCmd
+	SortInterfaces(key string, sort *Sort) *SliceCmd
+	Touch(keys ...string) *IntCmd
 	TTL(key string) *DurationCmd
 	Type(key string) *StatusCmd
 	Scan(cursor uint64, match string, count int64) *ScanCmd
@@ -143,6 +156,7 @@ type Cmdable interface {
 	SInterStore(destination string, keys ...string) *IntCmd
 	SIsMember(key string, member interface{}) *BoolCmd
 	SMembers(key string) *StringSliceCmd
+	SMembersMap(key string) *StringStructMapCmd
 	SMove(source, destination string, member interface{}) *BoolCmd
 	SPop(key string) *StringCmd
 	SPopN(key string, count int64) *StringSliceCmd
@@ -151,6 +165,30 @@ type Cmdable interface {
 	SRem(key string, members ...interface{}) *IntCmd
 	SUnion(keys ...string) *StringSliceCmd
 	SUnionStore(destination string, keys ...string) *IntCmd
+	XAdd(a *XAddArgs) *StringCmd
+	XDel(stream string, ids ...string) *IntCmd
+	XLen(stream string) *IntCmd
+	XRange(stream, start, stop string) *XMessageSliceCmd
+	XRangeN(stream, start, stop string, count int64) *XMessageSliceCmd
+	XRevRange(stream string, start, stop string) *XMessageSliceCmd
+	XRevRangeN(stream string, start, stop string, count int64) *XMessageSliceCmd
+	XRead(a *XReadArgs) *XStreamSliceCmd
+	XReadStreams(streams ...string) *XStreamSliceCmd
+	XGroupCreate(stream, group, start string) *StatusCmd
+	XGroupCreateMkStream(stream, group, start string) *StatusCmd
+	XGroupSetID(stream, group, start string) *StatusCmd
+	XGroupDestroy(stream, group string) *IntCmd
+	XGroupDelConsumer(stream, group, consumer string) *IntCmd
+	XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd
+	XAck(stream, group string, ids ...string) *IntCmd
+	XPending(stream, group string) *XPendingCmd
+	XPendingExt(a *XPendingExtArgs) *XPendingExtCmd
+	XClaim(a *XClaimArgs) *XMessageSliceCmd
+	XClaimJustID(a *XClaimArgs) *StringSliceCmd
+	XTrim(key string, maxLen int64) *IntCmd
+	XTrimApprox(key string, maxLen int64) *IntCmd
+	BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd
+	BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd
 	ZAdd(key string, members ...Z) *IntCmd
 	ZAddNX(key string, members ...Z) *IntCmd
 	ZAddXX(key string, members ...Z) *IntCmd
@@ -165,6 +203,8 @@ type Cmdable interface {
 	ZLexCount(key, min, max string) *IntCmd
 	ZIncrBy(key string, increment float64, member string) *FloatCmd
 	ZInterStore(destination string, store ZStore, keys ...string) *IntCmd
+	ZPopMax(key string, count ...int64) *ZSliceCmd
+	ZPopMin(key string, count ...int64) *ZSliceCmd
 	ZRange(key string, start, stop int64) *StringSliceCmd
 	ZRangeWithScores(key string, start, stop int64) *ZSliceCmd
 	ZRangeByScore(key string, opt ZRangeBy) *StringSliceCmd
@@ -189,11 +229,14 @@ type Cmdable interface {
 	BgRewriteAOF() *StatusCmd
 	BgSave() *StatusCmd
 	ClientKill(ipPort string) *StatusCmd
+	ClientKillByFilter(keys ...string) *IntCmd
 	ClientList() *StringCmd
 	ClientPause(dur time.Duration) *BoolCmd
+	ClientID() *IntCmd
 	ConfigGet(parameter string) *SliceCmd
 	ConfigResetStat() *StatusCmd
 	ConfigSet(parameter, value string) *StatusCmd
+	ConfigRewrite() *StatusCmd
 	DBSize() *IntCmd
 	FlushAll() *StatusCmd
 	FlushAllAsync() *StatusCmd
@@ -209,7 +252,7 @@ type Cmdable interface {
 	Time() *TimeCmd
 	Eval(script string, keys []string, args ...interface{}) *Cmd
 	EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd
-	ScriptExists(scripts ...string) *BoolSliceCmd
+	ScriptExists(hashes ...string) *BoolSliceCmd
 	ScriptFlush() *StatusCmd
 	ScriptKill() *StatusCmd
 	ScriptLoad(script string) *StringCmd
@@ -227,6 +270,7 @@ type Cmdable interface {
 	ClusterResetHard() *StatusCmd
 	ClusterInfo() *StringCmd
 	ClusterKeySlot(key string) *IntCmd
+	ClusterGetKeysInSlot(slot int, count int) *StringSliceCmd
 	ClusterCountFailureReports(nodeID string) *IntCmd
 	ClusterCountKeysInSlot(slot int) *IntCmd
 	ClusterDelSlots(slots ...int) *StatusCmd
@@ -244,16 +288,17 @@ type Cmdable interface {
 	GeoRadiusByMemberRO(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
 	GeoDist(key string, member1, member2, unit string) *FloatCmd
 	GeoHash(key string, members ...string) *StringSliceCmd
-	Command() *CommandsInfoCmd
+	ReadOnly() *StatusCmd
+	ReadWrite() *StatusCmd
+	MemoryUsage(key string, samples ...int) *IntCmd
 }
 
 type StatefulCmdable interface {
 	Cmdable
 	Auth(password string) *StatusCmd
 	Select(index int) *StatusCmd
+	SwapDB(index1, index2 int) *StatusCmd
 	ClientSetName(name string) *BoolCmd
-	ReadOnly() *StatusCmd
-	ReadWrite() *StatusCmd
 }
 
 var _ Cmdable = (*Client)(nil)
@@ -315,7 +360,19 @@ func (c *statefulCmdable) Select(index int) *StatusCmd {
 	return cmd
 }
 
+func (c *statefulCmdable) SwapDB(index1, index2 int) *StatusCmd {
+	cmd := NewStatusCmd("swapdb", index1, index2)
+	c.process(cmd)
+	return cmd
+}
+
 //------------------------------------------------------------------------------
+
+func (c *cmdable) Command() *CommandsInfoCmd {
+	cmd := NewCommandsInfoCmd("command")
+	c.process(cmd)
+	return cmd
+}
 
 func (c *cmdable) Del(keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
@@ -383,7 +440,7 @@ func (c *cmdable) Migrate(host, port, key string, db int64, timeout time.Duratio
 		db,
 		formatMs(timeout),
 	)
-	cmd.setReadTimeout(readTimeout(timeout))
+	cmd.setReadTimeout(timeout)
 	c.process(cmd)
 	return cmd
 }
@@ -483,11 +540,10 @@ func (c *cmdable) RestoreReplace(key string, ttl time.Duration, value string) *S
 
 type Sort struct {
 	By            string
-	Offset, Count float64
+	Offset, Count int64
 	Get           []string
 	Order         string
-	IsAlpha       bool
-	Store         string
+	Alpha         bool
 }
 
 func (sort *Sort) args(key string) []interface{} {
@@ -504,23 +560,41 @@ func (sort *Sort) args(key string) []interface{} {
 	if sort.Order != "" {
 		args = append(args, sort.Order)
 	}
-	if sort.IsAlpha {
+	if sort.Alpha {
 		args = append(args, "alpha")
-	}
-	if sort.Store != "" {
-		args = append(args, "store", sort.Store)
 	}
 	return args
 }
 
-func (c *cmdable) Sort(key string, sort Sort) *StringSliceCmd {
+func (c *cmdable) Sort(key string, sort *Sort) *StringSliceCmd {
 	cmd := NewStringSliceCmd(sort.args(key)...)
 	c.process(cmd)
 	return cmd
 }
 
-func (c *cmdable) SortInterfaces(key string, sort Sort) *SliceCmd {
+func (c *cmdable) SortStore(key, store string, sort *Sort) *IntCmd {
+	args := sort.args(key)
+	if store != "" {
+		args = append(args, "store", store)
+	}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) SortInterfaces(key string, sort *Sort) *SliceCmd {
 	cmd := NewSliceCmd(sort.args(key)...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) Touch(keys ...string) *IntCmd {
+	args := make([]interface{}, len(keys)+1)
+	args[0] = "touch"
+	for i, key := range keys {
+		args[i+1] = key
+	}
+	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
 }
@@ -676,6 +750,7 @@ func (c *cmdable) DecrBy(key string, decrement int64) *IntCmd {
 	return cmd
 }
 
+// Redis `GET key` command. It returns redis.Nil error when key does not exist.
 func (c *cmdable) Get(key string) *StringCmd {
 	cmd := NewStringCmd("get", key)
 	c.process(cmd)
@@ -730,22 +805,18 @@ func (c *cmdable) MGet(keys ...string) *SliceCmd {
 }
 
 func (c *cmdable) MSet(pairs ...interface{}) *StatusCmd {
-	args := make([]interface{}, 1+len(pairs))
+	args := make([]interface{}, 1, 1+len(pairs))
 	args[0] = "mset"
-	for i, pair := range pairs {
-		args[1+i] = pair
-	}
+	args = appendArgs(args, pairs)
 	cmd := NewStatusCmd(args...)
 	c.process(cmd)
 	return cmd
 }
 
 func (c *cmdable) MSetNX(pairs ...interface{}) *BoolCmd {
-	args := make([]interface{}, 1+len(pairs))
+	args := make([]interface{}, 1, 1+len(pairs))
 	args[0] = "msetnx"
-	for i, pair := range pairs {
-		args[1+i] = pair
-	}
+	args = appendArgs(args, pairs)
 	cmd := NewBoolCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -943,7 +1014,7 @@ func (c *cmdable) BLPop(timeout time.Duration, keys ...string) *StringSliceCmd {
 	}
 	args[len(args)-1] = formatSec(timeout)
 	cmd := NewStringSliceCmd(args...)
-	cmd.setReadTimeout(readTimeout(timeout))
+	cmd.setReadTimeout(timeout)
 	c.process(cmd)
 	return cmd
 }
@@ -956,7 +1027,7 @@ func (c *cmdable) BRPop(timeout time.Duration, keys ...string) *StringSliceCmd {
 	}
 	args[len(keys)+1] = formatSec(timeout)
 	cmd := NewStringSliceCmd(args...)
-	cmd.setReadTimeout(readTimeout(timeout))
+	cmd.setReadTimeout(timeout)
 	c.process(cmd)
 	return cmd
 }
@@ -968,7 +1039,7 @@ func (c *cmdable) BRPopLPush(source, destination string, timeout time.Duration) 
 		destination,
 		formatSec(timeout),
 	)
-	cmd.setReadTimeout(readTimeout(timeout))
+	cmd.setReadTimeout(timeout)
 	c.process(cmd)
 	return cmd
 }
@@ -1010,12 +1081,10 @@ func (c *cmdable) LPop(key string) *StringCmd {
 }
 
 func (c *cmdable) LPush(key string, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(values))
+	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "lpush"
 	args[1] = key
-	for i, value := range values {
-		args[2+i] = value
-	}
+	args = appendArgs(args, values)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1074,12 +1143,10 @@ func (c *cmdable) RPopLPush(source, destination string) *StringCmd {
 }
 
 func (c *cmdable) RPush(key string, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(values))
+	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "rpush"
 	args[1] = key
-	for i, value := range values {
-		args[2+i] = value
-	}
+	args = appendArgs(args, values)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1094,12 +1161,10 @@ func (c *cmdable) RPushX(key string, value interface{}) *IntCmd {
 //------------------------------------------------------------------------------
 
 func (c *cmdable) SAdd(key string, members ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(members))
+	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "sadd"
 	args[1] = key
-	for i, member := range members {
-		args[2+i] = member
-	}
+	args = appendArgs(args, members)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1163,8 +1228,16 @@ func (c *cmdable) SIsMember(key string, member interface{}) *BoolCmd {
 	return cmd
 }
 
+// Redis `SMEMBERS key` command output as a slice
 func (c *cmdable) SMembers(key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("smembers", key)
+	c.process(cmd)
+	return cmd
+}
+
+// Redis `SMEMBERS key` command output as a map
+func (c *cmdable) SMembersMap(key string) *StringStructMapCmd {
+	cmd := NewStringStructMapCmd("smembers", key)
 	c.process(cmd)
 	return cmd
 }
@@ -1204,12 +1277,10 @@ func (c *cmdable) SRandMemberN(key string, count int64) *StringSliceCmd {
 }
 
 func (c *cmdable) SRem(key string, members ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(members))
+	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "srem"
 	args[1] = key
-	for i, member := range members {
-		args[2+i] = member
-	}
+	args = appendArgs(args, members)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1240,10 +1311,276 @@ func (c *cmdable) SUnionStore(destination string, keys ...string) *IntCmd {
 
 //------------------------------------------------------------------------------
 
+type XAddArgs struct {
+	Stream       string
+	MaxLen       int64 // MAXLEN N
+	MaxLenApprox int64 // MAXLEN ~ N
+	ID           string
+	Values       map[string]interface{}
+}
+
+func (c *cmdable) XAdd(a *XAddArgs) *StringCmd {
+	args := make([]interface{}, 0, 6+len(a.Values)*2)
+	args = append(args, "xadd")
+	args = append(args, a.Stream)
+	if a.MaxLen > 0 {
+		args = append(args, "maxlen", a.MaxLen)
+	} else if a.MaxLenApprox > 0 {
+		args = append(args, "maxlen", "~", a.MaxLenApprox)
+	}
+	if a.ID != "" {
+		args = append(args, a.ID)
+	} else {
+		args = append(args, "*")
+	}
+	for k, v := range a.Values {
+		args = append(args, k)
+		args = append(args, v)
+	}
+
+	cmd := NewStringCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XDel(stream string, ids ...string) *IntCmd {
+	args := []interface{}{"xdel", stream}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XLen(stream string) *IntCmd {
+	cmd := NewIntCmd("xlen", stream)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRange(stream, start, stop string) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd("xrange", stream, start, stop)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRangeN(stream, start, stop string, count int64) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd("xrange", stream, start, stop, "count", count)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRevRange(stream, start, stop string) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd("xrevrange", stream, start, stop)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XRevRangeN(stream, start, stop string, count int64) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd("xrevrange", stream, start, stop, "count", count)
+	c.process(cmd)
+	return cmd
+}
+
+type XReadArgs struct {
+	Streams []string
+	Count   int64
+	Block   time.Duration
+}
+
+func (c *cmdable) XRead(a *XReadArgs) *XStreamSliceCmd {
+	args := make([]interface{}, 0, 5+len(a.Streams))
+	args = append(args, "xread")
+	if a.Count > 0 {
+		args = append(args, "count")
+		args = append(args, a.Count)
+	}
+	if a.Block >= 0 {
+		args = append(args, "block")
+		args = append(args, int64(a.Block/time.Millisecond))
+	}
+	args = append(args, "streams")
+	for _, s := range a.Streams {
+		args = append(args, s)
+	}
+
+	cmd := NewXStreamSliceCmd(args...)
+	if a.Block >= 0 {
+		cmd.setReadTimeout(a.Block)
+	}
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XReadStreams(streams ...string) *XStreamSliceCmd {
+	return c.XRead(&XReadArgs{
+		Streams: streams,
+		Block:   -1,
+	})
+}
+
+func (c *cmdable) XGroupCreate(stream, group, start string) *StatusCmd {
+	cmd := NewStatusCmd("xgroup", "create", stream, group, start)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XGroupCreateMkStream(stream, group, start string) *StatusCmd {
+	cmd := NewStatusCmd("xgroup", "create", stream, group, start, "mkstream")
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XGroupSetID(stream, group, start string) *StatusCmd {
+	cmd := NewStatusCmd("xgroup", "setid", stream, group, start)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XGroupDestroy(stream, group string) *IntCmd {
+	cmd := NewIntCmd("xgroup", "destroy", stream, group)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XGroupDelConsumer(stream, group, consumer string) *IntCmd {
+	cmd := NewIntCmd("xgroup", "delconsumer", stream, group, consumer)
+	c.process(cmd)
+	return cmd
+}
+
+type XReadGroupArgs struct {
+	Group    string
+	Consumer string
+	// List of streams and ids.
+	Streams []string
+	Count   int64
+	Block   time.Duration
+	NoAck   bool
+}
+
+func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
+	args := make([]interface{}, 0, 8+len(a.Streams))
+	args = append(args, "xreadgroup", "group", a.Group, a.Consumer)
+	if a.Count > 0 {
+		args = append(args, "count", a.Count)
+	}
+	if a.Block >= 0 {
+		args = append(args, "block", int64(a.Block/time.Millisecond))
+	}
+	if a.NoAck {
+		args = append(args, "noack")
+	}
+	args = append(args, "streams")
+	for _, s := range a.Streams {
+		args = append(args, s)
+	}
+
+	cmd := NewXStreamSliceCmd(args...)
+	if a.Block >= 0 {
+		cmd.setReadTimeout(a.Block)
+	}
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XAck(stream, group string, ids ...string) *IntCmd {
+	args := []interface{}{"xack", stream, group}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XPending(stream, group string) *XPendingCmd {
+	cmd := NewXPendingCmd("xpending", stream, group)
+	c.process(cmd)
+	return cmd
+}
+
+type XPendingExtArgs struct {
+	Stream   string
+	Group    string
+	Start    string
+	End      string
+	Count    int64
+	Consumer string
+}
+
+func (c *cmdable) XPendingExt(a *XPendingExtArgs) *XPendingExtCmd {
+	args := make([]interface{}, 0, 7)
+	args = append(args, "xpending", a.Stream, a.Group, a.Start, a.End, a.Count)
+	if a.Consumer != "" {
+		args = append(args, a.Consumer)
+	}
+	cmd := NewXPendingExtCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+type XClaimArgs struct {
+	Stream   string
+	Group    string
+	Consumer string
+	MinIdle  time.Duration
+	Messages []string
+}
+
+func (c *cmdable) XClaim(a *XClaimArgs) *XMessageSliceCmd {
+	args := xClaimArgs(a)
+	cmd := NewXMessageSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XClaimJustID(a *XClaimArgs) *StringSliceCmd {
+	args := xClaimArgs(a)
+	args = append(args, "justid")
+	cmd := NewStringSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func xClaimArgs(a *XClaimArgs) []interface{} {
+	args := make([]interface{}, 0, 4+len(a.Messages))
+	args = append(args,
+		"xclaim",
+		a.Stream,
+		a.Group, a.Consumer,
+		int64(a.MinIdle/time.Millisecond))
+	for _, id := range a.Messages {
+		args = append(args, id)
+	}
+	return args
+}
+
+func (c *cmdable) XTrim(key string, maxLen int64) *IntCmd {
+	cmd := NewIntCmd("xtrim", key, "maxlen", maxLen)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) XTrimApprox(key string, maxLen int64) *IntCmd {
+	cmd := NewIntCmd("xtrim", key, "maxlen", "~", maxLen)
+	c.process(cmd)
+	return cmd
+}
+
+//------------------------------------------------------------------------------
+
 // Z represents sorted set member.
 type Z struct {
 	Score  float64
 	Member interface{}
+}
+
+// ZWithKey represents sorted set member including the name of the key where it was popped.
+type ZWithKey struct {
+	Z
+	Key string
 }
 
 // ZStore is used as an arg to ZInterStore and ZUnionStore.
@@ -1251,6 +1588,34 @@ type ZStore struct {
 	Weights []float64
 	// Can be SUM, MIN or MAX.
 	Aggregate string
+}
+
+// Redis `BZPOPMAX key [key ...] timeout` command.
+func (c *cmdable) BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd {
+	args := make([]interface{}, 1+len(keys)+1)
+	args[0] = "bzpopmax"
+	for i, key := range keys {
+		args[1+i] = key
+	}
+	args[len(args)-1] = formatSec(timeout)
+	cmd := NewZWithKeyCmd(args...)
+	cmd.setReadTimeout(timeout)
+	c.process(cmd)
+	return cmd
+}
+
+// Redis `BZPOPMIN key [key ...] timeout` command.
+func (c *cmdable) BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd {
+	args := make([]interface{}, 1+len(keys)+1)
+	args[0] = "bzpopmin"
+	for i, key := range keys {
+		args[1+i] = key
+	}
+	args[len(args)-1] = formatSec(timeout)
+	cmd := NewZWithKeyCmd(args...)
+	cmd.setReadTimeout(timeout)
+	c.process(cmd)
+	return cmd
 }
 
 func (c *cmdable) zAdd(a []interface{}, n int, members ...Z) *IntCmd {
@@ -1391,6 +1756,46 @@ func (c *cmdable) ZInterStore(destination string, store ZStore, keys ...string) 
 	return cmd
 }
 
+func (c *cmdable) ZPopMax(key string, count ...int64) *ZSliceCmd {
+	args := []interface{}{
+		"zpopmax",
+		key,
+	}
+
+	switch len(count) {
+	case 0:
+		break
+	case 1:
+		args = append(args, count[0])
+	default:
+		panic("too many arguments")
+	}
+
+	cmd := NewZSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ZPopMin(key string, count ...int64) *ZSliceCmd {
+	args := []interface{}{
+		"zpopmin",
+		key,
+	}
+
+	switch len(count) {
+	case 0:
+		break
+	case 1:
+		args = append(args, count[0])
+	default:
+		panic("too many arguments")
+	}
+
+	cmd := NewZSliceCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
 func (c *cmdable) zRange(key string, start, stop int64, withScores bool) *StringSliceCmd {
 	args := []interface{}{
 		"zrange",
@@ -1469,12 +1874,10 @@ func (c *cmdable) ZRank(key, member string) *IntCmd {
 }
 
 func (c *cmdable) ZRem(key string, members ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(members))
+	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "zrem"
 	args[1] = key
-	for i, member := range members {
-		args[2+i] = member
-	}
+	args = appendArgs(args, members)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1590,12 +1993,10 @@ func (c *cmdable) ZUnionStore(dest string, store ZStore, keys ...string) *IntCmd
 //------------------------------------------------------------------------------
 
 func (c *cmdable) PFAdd(key string, els ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+len(els))
+	args := make([]interface{}, 2, 2+len(els))
 	args[0] = "pfadd"
 	args[1] = key
-	for i, el := range els {
-		args[2+i] = el
-	}
+	args = appendArgs(args, els)
 	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
@@ -1644,6 +2045,20 @@ func (c *cmdable) ClientKill(ipPort string) *StatusCmd {
 	return cmd
 }
 
+// ClientKillByFilter is new style synx, while the ClientKill is old
+// CLIENT KILL <option> [value] ... <option> [value]
+func (c *cmdable) ClientKillByFilter(keys ...string) *IntCmd {
+	args := make([]interface{}, 2+len(keys))
+	args[0] = "client"
+	args[1] = "kill"
+	for i, key := range keys {
+		args[2+i] = key
+	}
+	cmd := NewIntCmd(args...)
+	c.process(cmd)
+	return cmd
+}
+
 func (c *cmdable) ClientList() *StringCmd {
 	cmd := NewStringCmd("client", "list")
 	c.process(cmd)
@@ -1652,6 +2067,24 @@ func (c *cmdable) ClientList() *StringCmd {
 
 func (c *cmdable) ClientPause(dur time.Duration) *BoolCmd {
 	cmd := NewBoolCmd("client", "pause", formatMs(dur))
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ClientID() *IntCmd {
+	cmd := NewIntCmd("client", "id")
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ClientUnblock(id int64) *IntCmd {
+	cmd := NewIntCmd("client", "unblock", id)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ClientUnblockWithError(id int64) *IntCmd {
+	cmd := NewIntCmd("client", "unblock", id, "error")
 	c.process(cmd)
 	return cmd
 }
@@ -1684,6 +2117,12 @@ func (c *cmdable) ConfigResetStat() *StatusCmd {
 
 func (c *cmdable) ConfigSet(parameter, value string) *StatusCmd {
 	cmd := NewStatusCmd("config", "set", parameter, value)
+	c.process(cmd)
+	return cmd
+}
+
+func (c *cmdable) ConfigRewrite() *StatusCmd {
+	cmd := NewStatusCmd("config", "rewrite")
 	c.process(cmd)
 	return cmd
 }
@@ -1766,7 +2205,7 @@ func (c *cmdable) shutdown(modifier string) *StatusCmd {
 		}
 	} else {
 		// Server did not quit. String reply contains the reason.
-		cmd.err = internal.RedisError(cmd.val)
+		cmd.err = errors.New(cmd.val)
 		cmd.val = ""
 	}
 	return cmd
@@ -1807,45 +2246,39 @@ func (c *cmdable) Time() *TimeCmd {
 //------------------------------------------------------------------------------
 
 func (c *cmdable) Eval(script string, keys []string, args ...interface{}) *Cmd {
-	cmdArgs := make([]interface{}, 3+len(keys)+len(args))
+	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = "eval"
 	cmdArgs[1] = script
 	cmdArgs[2] = len(keys)
 	for i, key := range keys {
 		cmdArgs[3+i] = key
 	}
-	pos := 3 + len(keys)
-	for i, arg := range args {
-		cmdArgs[pos+i] = arg
-	}
+	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(cmdArgs...)
 	c.process(cmd)
 	return cmd
 }
 
 func (c *cmdable) EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd {
-	cmdArgs := make([]interface{}, 3+len(keys)+len(args))
+	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = "evalsha"
 	cmdArgs[1] = sha1
 	cmdArgs[2] = len(keys)
 	for i, key := range keys {
 		cmdArgs[3+i] = key
 	}
-	pos := 3 + len(keys)
-	for i, arg := range args {
-		cmdArgs[pos+i] = arg
-	}
+	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(cmdArgs...)
 	c.process(cmd)
 	return cmd
 }
 
-func (c *cmdable) ScriptExists(scripts ...string) *BoolSliceCmd {
-	args := make([]interface{}, 2+len(scripts))
+func (c *cmdable) ScriptExists(hashes ...string) *BoolSliceCmd {
+	args := make([]interface{}, 2+len(hashes))
 	args[0] = "script"
 	args[1] = "exists"
-	for i, script := range scripts {
-		args[2+i] = script
+	for i, hash := range hashes {
+		args[2+i] = hash
 	}
 	cmd := NewBoolSliceCmd(args...)
 	c.process(cmd)
@@ -1971,6 +2404,12 @@ func (c *cmdable) ClusterKeySlot(key string) *IntCmd {
 	return cmd
 }
 
+func (c *cmdable) ClusterGetKeysInSlot(slot int, count int) *StringSliceCmd {
+	cmd := NewStringSliceCmd("cluster", "getkeysinslot", slot, count)
+	c.process(cmd)
+	return cmd
+}
+
 func (c *cmdable) ClusterCountFailureReports(nodeID string) *IntCmd {
 	cmd := NewIntCmd("cluster", "count-failure-reports", nodeID)
 	c.process(cmd)
@@ -2016,13 +2455,13 @@ func (c *cmdable) ClusterSlaves(nodeID string) *StringSliceCmd {
 	return cmd
 }
 
-func (c *statefulCmdable) ReadOnly() *StatusCmd {
+func (c *cmdable) ReadOnly() *StatusCmd {
 	cmd := NewStatusCmd("readonly")
 	c.process(cmd)
 	return cmd
 }
 
-func (c *statefulCmdable) ReadWrite() *StatusCmd {
+func (c *cmdable) ReadWrite() *StatusCmd {
 	cmd := NewStatusCmd("readwrite")
 	c.process(cmd)
 	return cmd
@@ -2130,8 +2569,15 @@ func (c *cmdable) GeoPos(key string, members ...string) *GeoPosCmd {
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) Command() *CommandsInfoCmd {
-	cmd := NewCommandsInfoCmd("command")
+func (c *cmdable) MemoryUsage(key string, samples ...int) *IntCmd {
+	args := []interface{}{"memory", "usage", key}
+	if len(samples) > 0 {
+		if len(samples) != 1 {
+			panic("MemoryUsage expects single sample count")
+		}
+		args = append(args, "SAMPLES", samples[0])
+	}
+	cmd := NewIntCmd(args...)
 	c.process(cmd)
 	return cmd
 }
