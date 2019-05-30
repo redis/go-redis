@@ -8,18 +8,18 @@ Supports:
 
 - Redis 3 commands except QUIT, MONITOR, SLOWLOG and SYNC.
 - Automatic connection pooling with [circuit breaker](https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern) support.
-- [Pub/Sub](https://godoc.org/github.com/sp0n-7/redis#PubSub).
-- [Transactions](https://godoc.org/github.com/sp0n-7/redis#Multi).
-- [Pipeline](https://godoc.org/github.com/sp0n-7/redis#example-Client-Pipeline) and [TxPipeline](https://godoc.org/github.com/sp0n-7/redis#example-Client-TxPipeline).
-- [Scripting](https://godoc.org/github.com/sp0n-7/redis#Script).
-- [Timeouts](https://godoc.org/github.com/sp0n-7/redis#Options).
-- [Redis Sentinel](https://godoc.org/github.com/sp0n-7/redis#NewFailoverClient).
-- [Redis Cluster](https://godoc.org/github.com/sp0n-7/redis#NewClusterClient).
-- [Cluster of Redis Servers](https://godoc.org/github.com/sp0n-7/redis#example-NewClusterClient--ManualSetup) without using cluster mode and Redis Sentinel.
-- [Ring](https://godoc.org/github.com/sp0n-7/redis#NewRing).
-- [Instrumentation](https://godoc.org/github.com/sp0n-7/redis#ex-package--Instrumentation).
-- [Cache friendly](https://github.com/sp0n-7/cache).
-- [Rate limiting](https://github.com/sp0n-7/redis_rate).
+- [Pub/Sub](https://godoc.org/github.com/go-redis/redis#PubSub).
+- [Transactions](https://godoc.org/github.com/go-redis/redis#example-Client-TxPipeline).
+- [Pipeline](https://godoc.org/github.com/go-redis/redis#example-Client-Pipeline) and [TxPipeline](https://godoc.org/github.com/go-redis/redis#example-Client-TxPipeline).
+- [Scripting](https://godoc.org/github.com/go-redis/redis#Script).
+- [Timeouts](https://godoc.org/github.com/go-redis/redis#Options).
+- [Redis Sentinel](https://godoc.org/github.com/go-redis/redis#NewFailoverClient).
+- [Redis Cluster](https://godoc.org/github.com/go-redis/redis#NewClusterClient).
+- [Cluster of Redis Servers](https://godoc.org/github.com/go-redis/redis#example-NewClusterClient--ManualSetup) without using cluster mode and Redis Sentinel.
+- [Ring](https://godoc.org/github.com/go-redis/redis#NewRing).
+- [Instrumentation](https://godoc.org/github.com/go-redis/redis#ex-package--Instrumentation).
+- [Cache friendly](https://github.com/go-redis/cache).
+- [Rate limiting](https://github.com/go-redis/redis_rate).
 - [Distributed Locks](https://github.com/bsm/redis-lock).
 
 API docs: https://godoc.org/github.com/sp0n-7/redis.
@@ -143,4 +143,4 @@ BenchmarkRedisClusterPing-4         	  100000	     11535 ns/op	     117 B/op	   
 
 - [Golang PostgreSQL ORM](https://github.com/go-pg/pg)
 - [Golang msgpack](https://github.com/vmihailenco/msgpack)
-- [Golang message task queue](https://github.com/go-msgqueue/msgqueue)
+- [Golang message task queue](https://github.com/vmihailenco/taskq)

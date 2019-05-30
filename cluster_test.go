@@ -512,6 +512,14 @@ var _ = Describe("ClusterClient", func() {
 				return nil
 			}, 30*time.Second).ShouldNot(HaveOccurred())
 		})
+
+		It("supports PubSub.Ping without channels", func() {
+			pubsub := client.Subscribe()
+			defer pubsub.Close()
+
+			err := pubsub.Ping()
+			Expect(err).NotTo(HaveOccurred())
+		})
 	}
 
 	Describe("ClusterClient", func() {
@@ -635,6 +643,12 @@ var _ = Describe("ClusterClient", func() {
 			hashSlot, err := client.ClusterKeySlot("somekey").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(hashSlot).To(Equal(int64(hashtag.Slot("somekey"))))
+		})
+
+		It("should CLUSTER GETKEYSINSLOT", func() {
+			keys, err := client.ClusterGetKeysInSlot(hashtag.Slot("somekey"), 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(keys)).To(Equal(0))
 		})
 
 		It("should CLUSTER COUNT-FAILURE-REPORTS", func() {

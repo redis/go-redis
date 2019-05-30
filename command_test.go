@@ -57,4 +57,14 @@ var _ = Describe("Cmd", func() {
 		Expect(f).To(Equal(float64(10)))
 	})
 
+	It("supports float32", func() {
+		f := float32(66.97)
+
+		err := client.Set("float_key", f, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		val, err := client.Get("float_key").Float32()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal(f))
+	})
 })

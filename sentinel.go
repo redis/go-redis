@@ -90,9 +90,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 			opt:      opt,
 			connPool: failover.Pool(),
 
-			onClose: func() error {
-				return failover.Close()
-			},
+			onClose: failover.Close,
 		},
 	}
 	c.baseClient.init()
@@ -132,6 +130,14 @@ func (c *SentinelClient) pubSub() *PubSub {
 	return pubsub
 }
 
+// Ping is used to test if a connection is still alive, or to
+// measure latency.
+func (c *SentinelClient) Ping() *StringCmd {
+	cmd := NewStringCmd("ping")
+	c.Process(cmd)
+	return cmd
+}
+
 // Subscribe subscribes the client to the specified channels.
 // Channels can be omitted to create empty subscription.
 func (c *SentinelClient) Subscribe(channels ...string) *PubSub {
@@ -160,6 +166,87 @@ func (c *SentinelClient) GetMasterAddrByName(name string) *StringSliceCmd {
 
 func (c *SentinelClient) Sentinels(name string) *SliceCmd {
 	cmd := NewSliceCmd("sentinel", "sentinels", name)
+	c.Process(cmd)
+	return cmd
+}
+
+// Failover forces a failover as if the master was not reachable, and without
+// asking for agreement to other Sentinels.
+func (c *SentinelClient) Failover(name string) *StatusCmd {
+	cmd := NewStatusCmd("sentinel", "failover", name)
+	c.Process(cmd)
+	return cmd
+}
+
+// Reset resets all the masters with matching name. The pattern argument is a
+// glob-style pattern. The reset process clears any previous state in a master
+// (including a failover in progress), and removes every slave and sentinel
+// already discovered and associated with the master.
+func (c *SentinelClient) Reset(pattern string) *IntCmd {
+	cmd := NewIntCmd("sentinel", "reset", pattern)
+	c.Process(cmd)
+	return cmd
+}
+
+// FlushConfig forces Sentinel to rewrite its configuration on disk, including
+// the current Sentinel state.
+func (c *SentinelClient) FlushConfig() *StatusCmd {
+	cmd := NewStatusCmd("sentinel", "flushconfig")
+	c.Process(cmd)
+	return cmd
+}
+
+// Master shows the state and info of the specified master.
+func (c *SentinelClient) Master(name string) *StringStringMapCmd {
+	cmd := NewStringStringMapCmd("sentinel", "master", name)
+	c.Process(cmd)
+	return cmd
+}
+
+// Masters shows a list of monitored masters and their state.
+func (c *SentinelClient) Masters() *SliceCmd {
+	cmd := NewSliceCmd("sentinel", "masters")
+	c.Process(cmd)
+	return cmd
+}
+
+// Slaves shows a list of slaves for the specified master and their state.
+func (c *SentinelClient) Slaves(name string) *SliceCmd {
+	cmd := NewSliceCmd("sentinel", "slaves", name)
+	c.Process(cmd)
+	return cmd
+}
+
+// CkQuorum checks if the current Sentinel configuration is able to reach the
+// quorum needed to failover a master, and the majority needed to authorize the
+// failover. This command should be used in monitoring systems to check if a
+// Sentinel deployment is ok.
+func (c *SentinelClient) CkQuorum(name string) *StringCmd {
+	cmd := NewStringCmd("sentinel", "ckquorum", name)
+	c.Process(cmd)
+	return cmd
+}
+
+// Monitor tells the Sentinel to start monitoring a new master with the specified
+// name, ip, port, and quorum.
+func (c *SentinelClient) Monitor(name, ip, port, quorum string) *StringCmd {
+	cmd := NewStringCmd("sentinel", "monitor", name, ip, port, quorum)
+	c.Process(cmd)
+	return cmd
+}
+
+// Set is used in order to change configuration parameters of a specific master.
+func (c *SentinelClient) Set(name, option, value string) *StringCmd {
+	cmd := NewStringCmd("sentinel", "set", name, option, value)
+	c.Process(cmd)
+	return cmd
+}
+
+// Remove is used in order to remove the specified master: the master will no
+// longer be monitored, and will totally be removed from the internal state of
+// the Sentinel.
+func (c *SentinelClient) Remove(name string) *StringCmd {
+	cmd := NewStringCmd("sentinel", "remove", name)
 	c.Process(cmd)
 	return cmd
 }
@@ -358,8 +445,7 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 			break
 		}
 
-		switch msg.Channel {
-		case "+switch-master":
+		if msg.Channel == "+switch-master" {
 			parts := strings.Split(msg.Payload, " ")
 			if parts[0] != c.masterName {
 				internal.Logf("sentinel: ignore addr for master=%q", parts[0])

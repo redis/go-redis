@@ -24,9 +24,9 @@ func init() {
 
 func ExampleNewClient() {
 	redisdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password set
-		DB:       0,  // use default DB
+		Addr:     "localhost:6379", // use default Addr
+		Password: "",               // no password set
+		DB:       0,                // use default DB
 	})
 
 	pong, err := redisdb.Ping().Result()

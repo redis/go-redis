@@ -280,7 +280,7 @@ var _ = Describe("conns reaper", func() {
 				case "idle":
 					cn.SetUsedAt(time.Now().Add(-2 * idleTimeout))
 				case "aged":
-					cn.InitedAt = time.Now().Add(-2 * maxAge)
+					cn.SetCreatedAt(time.Now().Add(-2 * maxAge))
 				}
 				conns = append(conns, cn)
 				staleConns = append(staleConns, cn)
@@ -294,9 +294,6 @@ var _ = Describe("conns reaper", func() {
 			}
 
 			for _, cn := range conns {
-				if cn.InitedAt.IsZero() {
-					cn.InitedAt = time.Now()
-				}
 				connPool.Put(cn)
 			}
 
