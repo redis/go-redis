@@ -154,6 +154,7 @@ func (o *UniversalOptions) simple() *Options {
 type UniversalClient interface {
 	Cmdable
 	Context() context.Context
+	AddHook(Hook)
 	Watch(fn func(*Tx) error, keys ...string) error
 	Process(cmd Cmder) error
 	Subscribe(channels ...string) *PubSub
@@ -163,6 +164,7 @@ type UniversalClient interface {
 
 var _ UniversalClient = (*Client)(nil)
 var _ UniversalClient = (*ClusterClient)(nil)
+var _ UniversalClient = (*Ring)(nil)
 
 // NewUniversalClient returns a new multi client. The type of client returned depends
 // on the following three conditions:
