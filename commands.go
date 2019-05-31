@@ -306,132 +306,118 @@ var _ Cmdable = (*Tx)(nil)
 var _ Cmdable = (*Ring)(nil)
 var _ Cmdable = (*ClusterClient)(nil)
 
-type cmdable struct {
-	process func(cmd Cmder) error
-}
+type cmdable func(cmd Cmder) error
 
-func (c *cmdable) setProcessor(fn func(Cmder) error) {
-	c.process = fn
-}
-
-type statefulCmdable struct {
-	cmdable
-	process func(cmd Cmder) error
-}
-
-func (c *statefulCmdable) setProcessor(fn func(Cmder) error) {
-	c.process = fn
-	c.cmdable.setProcessor(fn)
-}
+type statefulCmdable func(cmd Cmder) error
 
 //------------------------------------------------------------------------------
 
-func (c *statefulCmdable) Auth(password string) *StatusCmd {
+func (c statefulCmdable) Auth(password string) *StatusCmd {
 	cmd := NewStatusCmd("auth", password)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Echo(message interface{}) *StringCmd {
+func (c cmdable) Echo(message interface{}) *StringCmd {
 	cmd := NewStringCmd("echo", message)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Ping() *StatusCmd {
+func (c cmdable) Ping() *StatusCmd {
 	cmd := NewStatusCmd("ping")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Wait(numSlaves int, timeout time.Duration) *IntCmd {
+func (c cmdable) Wait(numSlaves int, timeout time.Duration) *IntCmd {
 	cmd := NewIntCmd("wait", numSlaves, int(timeout/time.Millisecond))
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Quit() *StatusCmd {
+func (c cmdable) Quit() *StatusCmd {
 	panic("not implemented")
 }
 
-func (c *statefulCmdable) Select(index int) *StatusCmd {
+func (c statefulCmdable) Select(index int) *StatusCmd {
 	cmd := NewStatusCmd("select", index)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *statefulCmdable) SwapDB(index1, index2 int) *StatusCmd {
+func (c statefulCmdable) SwapDB(index1, index2 int) *StatusCmd {
 	cmd := NewStatusCmd("swapdb", index1, index2)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) Command() *CommandsInfoCmd {
+func (c cmdable) Command() *CommandsInfoCmd {
 	cmd := NewCommandsInfoCmd("command")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Del(keys ...string) *IntCmd {
+func (c cmdable) Del(keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "del"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Unlink(keys ...string) *IntCmd {
+func (c cmdable) Unlink(keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "unlink"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Dump(key string) *StringCmd {
+func (c cmdable) Dump(key string) *StringCmd {
 	cmd := NewStringCmd("dump", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Exists(keys ...string) *IntCmd {
+func (c cmdable) Exists(keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "exists"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Expire(key string, expiration time.Duration) *BoolCmd {
+func (c cmdable) Expire(key string, expiration time.Duration) *BoolCmd {
 	cmd := NewBoolCmd("expire", key, formatSec(expiration))
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ExpireAt(key string, tm time.Time) *BoolCmd {
+func (c cmdable) ExpireAt(key string, tm time.Time) *BoolCmd {
 	cmd := NewBoolCmd("expireat", key, tm.Unix())
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Keys(pattern string) *StringSliceCmd {
+func (c cmdable) Keys(pattern string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("keys", pattern)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Migrate(host, port, key string, db int, timeout time.Duration) *StatusCmd {
+func (c cmdable) Migrate(host, port, key string, db int, timeout time.Duration) *StatusCmd {
 	cmd := NewStatusCmd(
 		"migrate",
 		host,
@@ -441,92 +427,92 @@ func (c *cmdable) Migrate(host, port, key string, db int, timeout time.Duration)
 		formatMs(timeout),
 	)
 	cmd.setReadTimeout(timeout)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Move(key string, db int) *BoolCmd {
+func (c cmdable) Move(key string, db int) *BoolCmd {
 	cmd := NewBoolCmd("move", key, db)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ObjectRefCount(key string) *IntCmd {
+func (c cmdable) ObjectRefCount(key string) *IntCmd {
 	cmd := NewIntCmd("object", "refcount", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ObjectEncoding(key string) *StringCmd {
+func (c cmdable) ObjectEncoding(key string) *StringCmd {
 	cmd := NewStringCmd("object", "encoding", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ObjectIdleTime(key string) *DurationCmd {
+func (c cmdable) ObjectIdleTime(key string) *DurationCmd {
 	cmd := NewDurationCmd(time.Second, "object", "idletime", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Persist(key string) *BoolCmd {
+func (c cmdable) Persist(key string) *BoolCmd {
 	cmd := NewBoolCmd("persist", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) PExpire(key string, expiration time.Duration) *BoolCmd {
+func (c cmdable) PExpire(key string, expiration time.Duration) *BoolCmd {
 	cmd := NewBoolCmd("pexpire", key, formatMs(expiration))
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) PExpireAt(key string, tm time.Time) *BoolCmd {
+func (c cmdable) PExpireAt(key string, tm time.Time) *BoolCmd {
 	cmd := NewBoolCmd(
 		"pexpireat",
 		key,
 		tm.UnixNano()/int64(time.Millisecond),
 	)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) PTTL(key string) *DurationCmd {
+func (c cmdable) PTTL(key string) *DurationCmd {
 	cmd := NewDurationCmd(time.Millisecond, "pttl", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) RandomKey() *StringCmd {
+func (c cmdable) RandomKey() *StringCmd {
 	cmd := NewStringCmd("randomkey")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Rename(key, newkey string) *StatusCmd {
+func (c cmdable) Rename(key, newkey string) *StatusCmd {
 	cmd := NewStatusCmd("rename", key, newkey)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) RenameNX(key, newkey string) *BoolCmd {
+func (c cmdable) RenameNX(key, newkey string) *BoolCmd {
 	cmd := NewBoolCmd("renamenx", key, newkey)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Restore(key string, ttl time.Duration, value string) *StatusCmd {
+func (c cmdable) Restore(key string, ttl time.Duration, value string) *StatusCmd {
 	cmd := NewStatusCmd(
 		"restore",
 		key,
 		formatMs(ttl),
 		value,
 	)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) RestoreReplace(key string, ttl time.Duration, value string) *StatusCmd {
+func (c cmdable) RestoreReplace(key string, ttl time.Duration, value string) *StatusCmd {
 	cmd := NewStatusCmd(
 		"restore",
 		key,
@@ -534,7 +520,7 @@ func (c *cmdable) RestoreReplace(key string, ttl time.Duration, value string) *S
 		value,
 		"replace",
 	)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -566,52 +552,52 @@ func (sort *Sort) args(key string) []interface{} {
 	return args
 }
 
-func (c *cmdable) Sort(key string, sort *Sort) *StringSliceCmd {
+func (c cmdable) Sort(key string, sort *Sort) *StringSliceCmd {
 	cmd := NewStringSliceCmd(sort.args(key)...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SortStore(key, store string, sort *Sort) *IntCmd {
+func (c cmdable) SortStore(key, store string, sort *Sort) *IntCmd {
 	args := sort.args(key)
 	if store != "" {
 		args = append(args, "store", store)
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SortInterfaces(key string, sort *Sort) *SliceCmd {
+func (c cmdable) SortInterfaces(key string, sort *Sort) *SliceCmd {
 	cmd := NewSliceCmd(sort.args(key)...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Touch(keys ...string) *IntCmd {
+func (c cmdable) Touch(keys ...string) *IntCmd {
 	args := make([]interface{}, len(keys)+1)
 	args[0] = "touch"
 	for i, key := range keys {
 		args[i+1] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) TTL(key string) *DurationCmd {
+func (c cmdable) TTL(key string) *DurationCmd {
 	cmd := NewDurationCmd(time.Second, "ttl", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Type(key string) *StatusCmd {
+func (c cmdable) Type(key string) *StatusCmd {
 	cmd := NewStatusCmd("type", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Scan(cursor uint64, match string, count int64) *ScanCmd {
+func (c cmdable) Scan(cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"scan", cursor}
 	if match != "" {
 		args = append(args, "match", match)
@@ -619,12 +605,12 @@ func (c *cmdable) Scan(cursor uint64, match string, count int64) *ScanCmd {
 	if count > 0 {
 		args = append(args, "count", count)
 	}
-	cmd := NewScanCmd(c.process, args...)
-	c.process(cmd)
+	cmd := NewScanCmd(c, args...)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SScan(key string, cursor uint64, match string, count int64) *ScanCmd {
+func (c cmdable) SScan(key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"sscan", key, cursor}
 	if match != "" {
 		args = append(args, "match", match)
@@ -632,12 +618,12 @@ func (c *cmdable) SScan(key string, cursor uint64, match string, count int64) *S
 	if count > 0 {
 		args = append(args, "count", count)
 	}
-	cmd := NewScanCmd(c.process, args...)
-	c.process(cmd)
+	cmd := NewScanCmd(c, args...)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HScan(key string, cursor uint64, match string, count int64) *ScanCmd {
+func (c cmdable) HScan(key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"hscan", key, cursor}
 	if match != "" {
 		args = append(args, "match", match)
@@ -645,12 +631,12 @@ func (c *cmdable) HScan(key string, cursor uint64, match string, count int64) *S
 	if count > 0 {
 		args = append(args, "count", count)
 	}
-	cmd := NewScanCmd(c.process, args...)
-	c.process(cmd)
+	cmd := NewScanCmd(c, args...)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZScan(key string, cursor uint64, match string, count int64) *ScanCmd {
+func (c cmdable) ZScan(key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"zscan", key, cursor}
 	if match != "" {
 		args = append(args, "match", match)
@@ -658,16 +644,16 @@ func (c *cmdable) ZScan(key string, cursor uint64, match string, count int64) *S
 	if count > 0 {
 		args = append(args, "count", count)
 	}
-	cmd := NewScanCmd(c.process, args...)
-	c.process(cmd)
+	cmd := NewScanCmd(c, args...)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) Append(key, value string) *IntCmd {
+func (c cmdable) Append(key, value string) *IntCmd {
 	cmd := NewIntCmd("append", key, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -675,7 +661,7 @@ type BitCount struct {
 	Start, End int64
 }
 
-func (c *cmdable) BitCount(key string, bitCount *BitCount) *IntCmd {
+func (c cmdable) BitCount(key string, bitCount *BitCount) *IntCmd {
 	args := []interface{}{"bitcount", key}
 	if bitCount != nil {
 		args = append(
@@ -685,11 +671,11 @@ func (c *cmdable) BitCount(key string, bitCount *BitCount) *IntCmd {
 		)
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) bitOp(op, destKey string, keys ...string) *IntCmd {
+func (c cmdable) bitOp(op, destKey string, keys ...string) *IntCmd {
 	args := make([]interface{}, 3+len(keys))
 	args[0] = "bitop"
 	args[1] = op
@@ -698,27 +684,27 @@ func (c *cmdable) bitOp(op, destKey string, keys ...string) *IntCmd {
 		args[3+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) BitOpAnd(destKey string, keys ...string) *IntCmd {
+func (c cmdable) BitOpAnd(destKey string, keys ...string) *IntCmd {
 	return c.bitOp("and", destKey, keys...)
 }
 
-func (c *cmdable) BitOpOr(destKey string, keys ...string) *IntCmd {
+func (c cmdable) BitOpOr(destKey string, keys ...string) *IntCmd {
 	return c.bitOp("or", destKey, keys...)
 }
 
-func (c *cmdable) BitOpXor(destKey string, keys ...string) *IntCmd {
+func (c cmdable) BitOpXor(destKey string, keys ...string) *IntCmd {
 	return c.bitOp("xor", destKey, keys...)
 }
 
-func (c *cmdable) BitOpNot(destKey string, key string) *IntCmd {
+func (c cmdable) BitOpNot(destKey string, key string) *IntCmd {
 	return c.bitOp("not", destKey, key)
 }
 
-func (c *cmdable) BitPos(key string, bit int64, pos ...int64) *IntCmd {
+func (c cmdable) BitPos(key string, bit int64, pos ...int64) *IntCmd {
 	args := make([]interface{}, 3+len(pos))
 	args[0] = "bitpos"
 	args[1] = key
@@ -734,91 +720,91 @@ func (c *cmdable) BitPos(key string, bit int64, pos ...int64) *IntCmd {
 		panic("too many arguments")
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Decr(key string) *IntCmd {
+func (c cmdable) Decr(key string) *IntCmd {
 	cmd := NewIntCmd("decr", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) DecrBy(key string, decrement int64) *IntCmd {
+func (c cmdable) DecrBy(key string, decrement int64) *IntCmd {
 	cmd := NewIntCmd("decrby", key, decrement)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `GET key` command. It returns redis.Nil error when key does not exist.
-func (c *cmdable) Get(key string) *StringCmd {
+func (c cmdable) Get(key string) *StringCmd {
 	cmd := NewStringCmd("get", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) GetBit(key string, offset int64) *IntCmd {
+func (c cmdable) GetBit(key string, offset int64) *IntCmd {
 	cmd := NewIntCmd("getbit", key, offset)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) GetRange(key string, start, end int64) *StringCmd {
+func (c cmdable) GetRange(key string, start, end int64) *StringCmd {
 	cmd := NewStringCmd("getrange", key, start, end)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) GetSet(key string, value interface{}) *StringCmd {
+func (c cmdable) GetSet(key string, value interface{}) *StringCmd {
 	cmd := NewStringCmd("getset", key, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Incr(key string) *IntCmd {
+func (c cmdable) Incr(key string) *IntCmd {
 	cmd := NewIntCmd("incr", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) IncrBy(key string, value int64) *IntCmd {
+func (c cmdable) IncrBy(key string, value int64) *IntCmd {
 	cmd := NewIntCmd("incrby", key, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) IncrByFloat(key string, value float64) *FloatCmd {
+func (c cmdable) IncrByFloat(key string, value float64) *FloatCmd {
 	cmd := NewFloatCmd("incrbyfloat", key, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) MGet(keys ...string) *SliceCmd {
+func (c cmdable) MGet(keys ...string) *SliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "mget"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) MSet(pairs ...interface{}) *StatusCmd {
+func (c cmdable) MSet(pairs ...interface{}) *StatusCmd {
 	args := make([]interface{}, 1, 1+len(pairs))
 	args[0] = "mset"
 	args = appendArgs(args, pairs)
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) MSetNX(pairs ...interface{}) *BoolCmd {
+func (c cmdable) MSetNX(pairs ...interface{}) *BoolCmd {
 	args := make([]interface{}, 1, 1+len(pairs))
 	args[0] = "msetnx"
 	args = appendArgs(args, pairs)
 	cmd := NewBoolCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -826,7 +812,7 @@ func (c *cmdable) MSetNX(pairs ...interface{}) *BoolCmd {
 //
 // Use expiration for `SETEX`-like behavior.
 // Zero expiration means the key has no expiration time.
-func (c *cmdable) Set(key string, value interface{}, expiration time.Duration) *StatusCmd {
+func (c cmdable) Set(key string, value interface{}, expiration time.Duration) *StatusCmd {
 	args := make([]interface{}, 3, 4)
 	args[0] = "set"
 	args[1] = key
@@ -839,25 +825,25 @@ func (c *cmdable) Set(key string, value interface{}, expiration time.Duration) *
 		}
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SetBit(key string, offset int64, value int) *IntCmd {
+func (c cmdable) SetBit(key string, offset int64, value int) *IntCmd {
 	cmd := NewIntCmd(
 		"setbit",
 		key,
 		offset,
 		value,
 	)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `SET key value [expiration] NX` command.
 //
 // Zero expiration means the key has no expiration time.
-func (c *cmdable) SetNX(key string, value interface{}, expiration time.Duration) *BoolCmd {
+func (c cmdable) SetNX(key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	if expiration == 0 {
 		// Use old `SETNX` to support old Redis versions.
@@ -869,14 +855,14 @@ func (c *cmdable) SetNX(key string, value interface{}, expiration time.Duration)
 			cmd = NewBoolCmd("set", key, value, "ex", formatSec(expiration), "nx")
 		}
 	}
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `SET key value [expiration] XX` command.
 //
 // Zero expiration means the key has no expiration time.
-func (c *cmdable) SetXX(key string, value interface{}, expiration time.Duration) *BoolCmd {
+func (c cmdable) SetXX(key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	if expiration == 0 {
 		cmd = NewBoolCmd("set", key, value, "xx")
@@ -887,25 +873,25 @@ func (c *cmdable) SetXX(key string, value interface{}, expiration time.Duration)
 			cmd = NewBoolCmd("set", key, value, "ex", formatSec(expiration), "xx")
 		}
 	}
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SetRange(key string, offset int64, value string) *IntCmd {
+func (c cmdable) SetRange(key string, offset int64, value string) *IntCmd {
 	cmd := NewIntCmd("setrange", key, offset, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) StrLen(key string) *IntCmd {
+func (c cmdable) StrLen(key string) *IntCmd {
 	cmd := NewIntCmd("strlen", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) HDel(key string, fields ...string) *IntCmd {
+func (c cmdable) HDel(key string, fields ...string) *IntCmd {
 	args := make([]interface{}, 2+len(fields))
 	args[0] = "hdel"
 	args[1] = key
@@ -913,53 +899,53 @@ func (c *cmdable) HDel(key string, fields ...string) *IntCmd {
 		args[2+i] = field
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HExists(key, field string) *BoolCmd {
+func (c cmdable) HExists(key, field string) *BoolCmd {
 	cmd := NewBoolCmd("hexists", key, field)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HGet(key, field string) *StringCmd {
+func (c cmdable) HGet(key, field string) *StringCmd {
 	cmd := NewStringCmd("hget", key, field)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HGetAll(key string) *StringStringMapCmd {
+func (c cmdable) HGetAll(key string) *StringStringMapCmd {
 	cmd := NewStringStringMapCmd("hgetall", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HIncrBy(key, field string, incr int64) *IntCmd {
+func (c cmdable) HIncrBy(key, field string, incr int64) *IntCmd {
 	cmd := NewIntCmd("hincrby", key, field, incr)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HIncrByFloat(key, field string, incr float64) *FloatCmd {
+func (c cmdable) HIncrByFloat(key, field string, incr float64) *FloatCmd {
 	cmd := NewFloatCmd("hincrbyfloat", key, field, incr)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HKeys(key string) *StringSliceCmd {
+func (c cmdable) HKeys(key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("hkeys", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HLen(key string) *IntCmd {
+func (c cmdable) HLen(key string) *IntCmd {
 	cmd := NewIntCmd("hlen", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HMGet(key string, fields ...string) *SliceCmd {
+func (c cmdable) HMGet(key string, fields ...string) *SliceCmd {
 	args := make([]interface{}, 2+len(fields))
 	args[0] = "hmget"
 	args[1] = key
@@ -967,11 +953,11 @@ func (c *cmdable) HMGet(key string, fields ...string) *SliceCmd {
 		args[2+i] = field
 	}
 	cmd := NewSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HMSet(key string, fields map[string]interface{}) *StatusCmd {
+func (c cmdable) HMSet(key string, fields map[string]interface{}) *StatusCmd {
 	args := make([]interface{}, 2+len(fields)*2)
 	args[0] = "hmset"
 	args[1] = key
@@ -982,31 +968,31 @@ func (c *cmdable) HMSet(key string, fields map[string]interface{}) *StatusCmd {
 		i += 2
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HSet(key, field string, value interface{}) *BoolCmd {
+func (c cmdable) HSet(key, field string, value interface{}) *BoolCmd {
 	cmd := NewBoolCmd("hset", key, field, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HSetNX(key, field string, value interface{}) *BoolCmd {
+func (c cmdable) HSetNX(key, field string, value interface{}) *BoolCmd {
 	cmd := NewBoolCmd("hsetnx", key, field, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) HVals(key string) *StringSliceCmd {
+func (c cmdable) HVals(key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("hvals", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) BLPop(timeout time.Duration, keys ...string) *StringSliceCmd {
+func (c cmdable) BLPop(timeout time.Duration, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys)+1)
 	args[0] = "blpop"
 	for i, key := range keys {
@@ -1015,11 +1001,11 @@ func (c *cmdable) BLPop(timeout time.Duration, keys ...string) *StringSliceCmd {
 	args[len(args)-1] = formatSec(timeout)
 	cmd := NewStringSliceCmd(args...)
 	cmd.setReadTimeout(timeout)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) BRPop(timeout time.Duration, keys ...string) *StringSliceCmd {
+func (c cmdable) BRPop(timeout time.Duration, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys)+1)
 	args[0] = "brpop"
 	for i, key := range keys {
@@ -1028,11 +1014,11 @@ func (c *cmdable) BRPop(timeout time.Duration, keys ...string) *StringSliceCmd {
 	args[len(keys)+1] = formatSec(timeout)
 	cmd := NewStringSliceCmd(args...)
 	cmd.setReadTimeout(timeout)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) BRPopLPush(source, destination string, timeout time.Duration) *StringCmd {
+func (c cmdable) BRPopLPush(source, destination string, timeout time.Duration) *StringCmd {
 	cmd := NewStringCmd(
 		"brpoplpush",
 		source,
@@ -1040,154 +1026,154 @@ func (c *cmdable) BRPopLPush(source, destination string, timeout time.Duration) 
 		formatSec(timeout),
 	)
 	cmd.setReadTimeout(timeout)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LIndex(key string, index int64) *StringCmd {
+func (c cmdable) LIndex(key string, index int64) *StringCmd {
 	cmd := NewStringCmd("lindex", key, index)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LInsert(key, op string, pivot, value interface{}) *IntCmd {
+func (c cmdable) LInsert(key, op string, pivot, value interface{}) *IntCmd {
 	cmd := NewIntCmd("linsert", key, op, pivot, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LInsertBefore(key string, pivot, value interface{}) *IntCmd {
+func (c cmdable) LInsertBefore(key string, pivot, value interface{}) *IntCmd {
 	cmd := NewIntCmd("linsert", key, "before", pivot, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LInsertAfter(key string, pivot, value interface{}) *IntCmd {
+func (c cmdable) LInsertAfter(key string, pivot, value interface{}) *IntCmd {
 	cmd := NewIntCmd("linsert", key, "after", pivot, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LLen(key string) *IntCmd {
+func (c cmdable) LLen(key string) *IntCmd {
 	cmd := NewIntCmd("llen", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LPop(key string) *StringCmd {
+func (c cmdable) LPop(key string) *StringCmd {
 	cmd := NewStringCmd("lpop", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LPush(key string, values ...interface{}) *IntCmd {
+func (c cmdable) LPush(key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "lpush"
 	args[1] = key
 	args = appendArgs(args, values)
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LPushX(key string, value interface{}) *IntCmd {
+func (c cmdable) LPushX(key string, value interface{}) *IntCmd {
 	cmd := NewIntCmd("lpushx", key, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LRange(key string, start, stop int64) *StringSliceCmd {
+func (c cmdable) LRange(key string, start, stop int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd(
 		"lrange",
 		key,
 		start,
 		stop,
 	)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LRem(key string, count int64, value interface{}) *IntCmd {
+func (c cmdable) LRem(key string, count int64, value interface{}) *IntCmd {
 	cmd := NewIntCmd("lrem", key, count, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LSet(key string, index int64, value interface{}) *StatusCmd {
+func (c cmdable) LSet(key string, index int64, value interface{}) *StatusCmd {
 	cmd := NewStatusCmd("lset", key, index, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LTrim(key string, start, stop int64) *StatusCmd {
+func (c cmdable) LTrim(key string, start, stop int64) *StatusCmd {
 	cmd := NewStatusCmd(
 		"ltrim",
 		key,
 		start,
 		stop,
 	)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) RPop(key string) *StringCmd {
+func (c cmdable) RPop(key string) *StringCmd {
 	cmd := NewStringCmd("rpop", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) RPopLPush(source, destination string) *StringCmd {
+func (c cmdable) RPopLPush(source, destination string) *StringCmd {
 	cmd := NewStringCmd("rpoplpush", source, destination)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) RPush(key string, values ...interface{}) *IntCmd {
+func (c cmdable) RPush(key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "rpush"
 	args[1] = key
 	args = appendArgs(args, values)
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) RPushX(key string, value interface{}) *IntCmd {
+func (c cmdable) RPushX(key string, value interface{}) *IntCmd {
 	cmd := NewIntCmd("rpushx", key, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) SAdd(key string, members ...interface{}) *IntCmd {
+func (c cmdable) SAdd(key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "sadd"
 	args[1] = key
 	args = appendArgs(args, members)
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SCard(key string) *IntCmd {
+func (c cmdable) SCard(key string) *IntCmd {
 	cmd := NewIntCmd("scard", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SDiff(keys ...string) *StringSliceCmd {
+func (c cmdable) SDiff(keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sdiff"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SDiffStore(destination string, keys ...string) *IntCmd {
+func (c cmdable) SDiffStore(destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sdiffstore"
 	args[1] = destination
@@ -1195,22 +1181,22 @@ func (c *cmdable) SDiffStore(destination string, keys ...string) *IntCmd {
 		args[2+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SInter(keys ...string) *StringSliceCmd {
+func (c cmdable) SInter(keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sinter"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SInterStore(destination string, keys ...string) *IntCmd {
+func (c cmdable) SInterStore(destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sinterstore"
 	args[1] = destination
@@ -1218,86 +1204,86 @@ func (c *cmdable) SInterStore(destination string, keys ...string) *IntCmd {
 		args[2+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SIsMember(key string, member interface{}) *BoolCmd {
+func (c cmdable) SIsMember(key string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd("sismember", key, member)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `SMEMBERS key` command output as a slice
-func (c *cmdable) SMembers(key string) *StringSliceCmd {
+func (c cmdable) SMembers(key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("smembers", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `SMEMBERS key` command output as a map
-func (c *cmdable) SMembersMap(key string) *StringStructMapCmd {
+func (c cmdable) SMembersMap(key string) *StringStructMapCmd {
 	cmd := NewStringStructMapCmd("smembers", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SMove(source, destination string, member interface{}) *BoolCmd {
+func (c cmdable) SMove(source, destination string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd("smove", source, destination, member)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `SPOP key` command.
-func (c *cmdable) SPop(key string) *StringCmd {
+func (c cmdable) SPop(key string) *StringCmd {
 	cmd := NewStringCmd("spop", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `SPOP key count` command.
-func (c *cmdable) SPopN(key string, count int64) *StringSliceCmd {
+func (c cmdable) SPopN(key string, count int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd("spop", key, count)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `SRANDMEMBER key` command.
-func (c *cmdable) SRandMember(key string) *StringCmd {
+func (c cmdable) SRandMember(key string) *StringCmd {
 	cmd := NewStringCmd("srandmember", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `SRANDMEMBER key count` command.
-func (c *cmdable) SRandMemberN(key string, count int64) *StringSliceCmd {
+func (c cmdable) SRandMemberN(key string, count int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd("srandmember", key, count)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SRem(key string, members ...interface{}) *IntCmd {
+func (c cmdable) SRem(key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "srem"
 	args[1] = key
 	args = appendArgs(args, members)
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SUnion(keys ...string) *StringSliceCmd {
+func (c cmdable) SUnion(keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sunion"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SUnionStore(destination string, keys ...string) *IntCmd {
+func (c cmdable) SUnionStore(destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sunionstore"
 	args[1] = destination
@@ -1305,7 +1291,7 @@ func (c *cmdable) SUnionStore(destination string, keys ...string) *IntCmd {
 		args[2+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -1319,7 +1305,7 @@ type XAddArgs struct {
 	Values       map[string]interface{}
 }
 
-func (c *cmdable) XAdd(a *XAddArgs) *StringCmd {
+func (c cmdable) XAdd(a *XAddArgs) *StringCmd {
 	args := make([]interface{}, 0, 6+len(a.Values)*2)
 	args = append(args, "xadd")
 	args = append(args, a.Stream)
@@ -1339,47 +1325,47 @@ func (c *cmdable) XAdd(a *XAddArgs) *StringCmd {
 	}
 
 	cmd := NewStringCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XDel(stream string, ids ...string) *IntCmd {
+func (c cmdable) XDel(stream string, ids ...string) *IntCmd {
 	args := []interface{}{"xdel", stream}
 	for _, id := range ids {
 		args = append(args, id)
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XLen(stream string) *IntCmd {
+func (c cmdable) XLen(stream string) *IntCmd {
 	cmd := NewIntCmd("xlen", stream)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XRange(stream, start, stop string) *XMessageSliceCmd {
+func (c cmdable) XRange(stream, start, stop string) *XMessageSliceCmd {
 	cmd := NewXMessageSliceCmd("xrange", stream, start, stop)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XRangeN(stream, start, stop string, count int64) *XMessageSliceCmd {
+func (c cmdable) XRangeN(stream, start, stop string, count int64) *XMessageSliceCmd {
 	cmd := NewXMessageSliceCmd("xrange", stream, start, stop, "count", count)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XRevRange(stream, start, stop string) *XMessageSliceCmd {
+func (c cmdable) XRevRange(stream, start, stop string) *XMessageSliceCmd {
 	cmd := NewXMessageSliceCmd("xrevrange", stream, start, stop)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XRevRangeN(stream, start, stop string, count int64) *XMessageSliceCmd {
+func (c cmdable) XRevRangeN(stream, start, stop string, count int64) *XMessageSliceCmd {
 	cmd := NewXMessageSliceCmd("xrevrange", stream, start, stop, "count", count)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -1389,7 +1375,7 @@ type XReadArgs struct {
 	Block   time.Duration
 }
 
-func (c *cmdable) XRead(a *XReadArgs) *XStreamSliceCmd {
+func (c cmdable) XRead(a *XReadArgs) *XStreamSliceCmd {
 	args := make([]interface{}, 0, 5+len(a.Streams))
 	args = append(args, "xread")
 	if a.Count > 0 {
@@ -1409,44 +1395,44 @@ func (c *cmdable) XRead(a *XReadArgs) *XStreamSliceCmd {
 	if a.Block >= 0 {
 		cmd.setReadTimeout(a.Block)
 	}
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XReadStreams(streams ...string) *XStreamSliceCmd {
+func (c cmdable) XReadStreams(streams ...string) *XStreamSliceCmd {
 	return c.XRead(&XReadArgs{
 		Streams: streams,
 		Block:   -1,
 	})
 }
 
-func (c *cmdable) XGroupCreate(stream, group, start string) *StatusCmd {
+func (c cmdable) XGroupCreate(stream, group, start string) *StatusCmd {
 	cmd := NewStatusCmd("xgroup", "create", stream, group, start)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XGroupCreateMkStream(stream, group, start string) *StatusCmd {
+func (c cmdable) XGroupCreateMkStream(stream, group, start string) *StatusCmd {
 	cmd := NewStatusCmd("xgroup", "create", stream, group, start, "mkstream")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XGroupSetID(stream, group, start string) *StatusCmd {
+func (c cmdable) XGroupSetID(stream, group, start string) *StatusCmd {
 	cmd := NewStatusCmd("xgroup", "setid", stream, group, start)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XGroupDestroy(stream, group string) *IntCmd {
+func (c cmdable) XGroupDestroy(stream, group string) *IntCmd {
 	cmd := NewIntCmd("xgroup", "destroy", stream, group)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XGroupDelConsumer(stream, group, consumer string) *IntCmd {
+func (c cmdable) XGroupDelConsumer(stream, group, consumer string) *IntCmd {
 	cmd := NewIntCmd("xgroup", "delconsumer", stream, group, consumer)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -1459,7 +1445,7 @@ type XReadGroupArgs struct {
 	NoAck    bool
 }
 
-func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
+func (c cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
 	args := make([]interface{}, 0, 8+len(a.Streams))
 	args = append(args, "xreadgroup", "group", a.Group, a.Consumer)
 	if a.Count > 0 {
@@ -1480,23 +1466,23 @@ func (c *cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
 	if a.Block >= 0 {
 		cmd.setReadTimeout(a.Block)
 	}
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XAck(stream, group string, ids ...string) *IntCmd {
+func (c cmdable) XAck(stream, group string, ids ...string) *IntCmd {
 	args := []interface{}{"xack", stream, group}
 	for _, id := range ids {
 		args = append(args, id)
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XPending(stream, group string) *XPendingCmd {
+func (c cmdable) XPending(stream, group string) *XPendingCmd {
 	cmd := NewXPendingCmd("xpending", stream, group)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -1509,14 +1495,14 @@ type XPendingExtArgs struct {
 	Consumer string
 }
 
-func (c *cmdable) XPendingExt(a *XPendingExtArgs) *XPendingExtCmd {
+func (c cmdable) XPendingExt(a *XPendingExtArgs) *XPendingExtCmd {
 	args := make([]interface{}, 0, 7)
 	args = append(args, "xpending", a.Stream, a.Group, a.Start, a.End, a.Count)
 	if a.Consumer != "" {
 		args = append(args, a.Consumer)
 	}
 	cmd := NewXPendingExtCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -1528,18 +1514,18 @@ type XClaimArgs struct {
 	Messages []string
 }
 
-func (c *cmdable) XClaim(a *XClaimArgs) *XMessageSliceCmd {
+func (c cmdable) XClaim(a *XClaimArgs) *XMessageSliceCmd {
 	args := xClaimArgs(a)
 	cmd := NewXMessageSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XClaimJustID(a *XClaimArgs) *StringSliceCmd {
+func (c cmdable) XClaimJustID(a *XClaimArgs) *StringSliceCmd {
 	args := xClaimArgs(a)
 	args = append(args, "justid")
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -1556,15 +1542,15 @@ func xClaimArgs(a *XClaimArgs) []interface{} {
 	return args
 }
 
-func (c *cmdable) XTrim(key string, maxLen int64) *IntCmd {
+func (c cmdable) XTrim(key string, maxLen int64) *IntCmd {
 	cmd := NewIntCmd("xtrim", key, "maxlen", maxLen)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) XTrimApprox(key string, maxLen int64) *IntCmd {
+func (c cmdable) XTrimApprox(key string, maxLen int64) *IntCmd {
 	cmd := NewIntCmd("xtrim", key, "maxlen", "~", maxLen)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -1590,7 +1576,7 @@ type ZStore struct {
 }
 
 // Redis `BZPOPMAX key [key ...] timeout` command.
-func (c *cmdable) BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd {
+func (c cmdable) BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd {
 	args := make([]interface{}, 1+len(keys)+1)
 	args[0] = "bzpopmax"
 	for i, key := range keys {
@@ -1599,12 +1585,12 @@ func (c *cmdable) BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd {
 	args[len(args)-1] = formatSec(timeout)
 	cmd := NewZWithKeyCmd(args...)
 	cmd.setReadTimeout(timeout)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `BZPOPMIN key [key ...] timeout` command.
-func (c *cmdable) BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd {
+func (c cmdable) BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd {
 	args := make([]interface{}, 1+len(keys)+1)
 	args[0] = "bzpopmin"
 	for i, key := range keys {
@@ -1613,22 +1599,22 @@ func (c *cmdable) BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd {
 	args[len(args)-1] = formatSec(timeout)
 	cmd := NewZWithKeyCmd(args...)
 	cmd.setReadTimeout(timeout)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) zAdd(a []interface{}, n int, members ...*Z) *IntCmd {
+func (c cmdable) zAdd(a []interface{}, n int, members ...*Z) *IntCmd {
 	for i, m := range members {
 		a[n+2*i] = m.Score
 		a[n+2*i+1] = m.Member
 	}
 	cmd := NewIntCmd(a...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `ZADD key score member [score member ...]` command.
-func (c *cmdable) ZAdd(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAdd(key string, members ...*Z) *IntCmd {
 	const n = 2
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1] = "zadd", key
@@ -1636,7 +1622,7 @@ func (c *cmdable) ZAdd(key string, members ...*Z) *IntCmd {
 }
 
 // Redis `ZADD key NX score member [score member ...]` command.
-func (c *cmdable) ZAddNX(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAddNX(key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2] = "zadd", key, "nx"
@@ -1644,7 +1630,7 @@ func (c *cmdable) ZAddNX(key string, members ...*Z) *IntCmd {
 }
 
 // Redis `ZADD key XX score member [score member ...]` command.
-func (c *cmdable) ZAddXX(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAddXX(key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2] = "zadd", key, "xx"
@@ -1652,7 +1638,7 @@ func (c *cmdable) ZAddXX(key string, members ...*Z) *IntCmd {
 }
 
 // Redis `ZADD key CH score member [score member ...]` command.
-func (c *cmdable) ZAddCh(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAddCh(key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2] = "zadd", key, "ch"
@@ -1660,7 +1646,7 @@ func (c *cmdable) ZAddCh(key string, members ...*Z) *IntCmd {
 }
 
 // Redis `ZADD key NX CH score member [score member ...]` command.
-func (c *cmdable) ZAddNXCh(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAddNXCh(key string, members ...*Z) *IntCmd {
 	const n = 4
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2], a[3] = "zadd", key, "nx", "ch"
@@ -1668,25 +1654,25 @@ func (c *cmdable) ZAddNXCh(key string, members ...*Z) *IntCmd {
 }
 
 // Redis `ZADD key XX CH score member [score member ...]` command.
-func (c *cmdable) ZAddXXCh(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAddXXCh(key string, members ...*Z) *IntCmd {
 	const n = 4
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2], a[3] = "zadd", key, "xx", "ch"
 	return c.zAdd(a, n, members...)
 }
 
-func (c *cmdable) zIncr(a []interface{}, n int, members ...*Z) *FloatCmd {
+func (c cmdable) zIncr(a []interface{}, n int, members ...*Z) *FloatCmd {
 	for i, m := range members {
 		a[n+2*i] = m.Score
 		a[n+2*i+1] = m.Member
 	}
 	cmd := NewFloatCmd(a...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Redis `ZADD key INCR score member` command.
-func (c *cmdable) ZIncr(key string, member *Z) *FloatCmd {
+func (c cmdable) ZIncr(key string, member *Z) *FloatCmd {
 	const n = 3
 	a := make([]interface{}, n+2)
 	a[0], a[1], a[2] = "zadd", key, "incr"
@@ -1694,7 +1680,7 @@ func (c *cmdable) ZIncr(key string, member *Z) *FloatCmd {
 }
 
 // Redis `ZADD key NX INCR score member` command.
-func (c *cmdable) ZIncrNX(key string, member *Z) *FloatCmd {
+func (c cmdable) ZIncrNX(key string, member *Z) *FloatCmd {
 	const n = 4
 	a := make([]interface{}, n+2)
 	a[0], a[1], a[2], a[3] = "zadd", key, "incr", "nx"
@@ -1702,38 +1688,38 @@ func (c *cmdable) ZIncrNX(key string, member *Z) *FloatCmd {
 }
 
 // Redis `ZADD key XX INCR score member` command.
-func (c *cmdable) ZIncrXX(key string, member *Z) *FloatCmd {
+func (c cmdable) ZIncrXX(key string, member *Z) *FloatCmd {
 	const n = 4
 	a := make([]interface{}, n+2)
 	a[0], a[1], a[2], a[3] = "zadd", key, "incr", "xx"
 	return c.zIncr(a, n, member)
 }
 
-func (c *cmdable) ZCard(key string) *IntCmd {
+func (c cmdable) ZCard(key string) *IntCmd {
 	cmd := NewIntCmd("zcard", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZCount(key, min, max string) *IntCmd {
+func (c cmdable) ZCount(key, min, max string) *IntCmd {
 	cmd := NewIntCmd("zcount", key, min, max)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZLexCount(key, min, max string) *IntCmd {
+func (c cmdable) ZLexCount(key, min, max string) *IntCmd {
 	cmd := NewIntCmd("zlexcount", key, min, max)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZIncrBy(key string, increment float64, member string) *FloatCmd {
+func (c cmdable) ZIncrBy(key string, increment float64, member string) *FloatCmd {
 	cmd := NewFloatCmd("zincrby", key, increment, member)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZInterStore(destination string, store *ZStore, keys ...string) *IntCmd {
+func (c cmdable) ZInterStore(destination string, store *ZStore, keys ...string) *IntCmd {
 	args := make([]interface{}, 3+len(keys))
 	args[0] = "zinterstore"
 	args[1] = destination
@@ -1751,11 +1737,11 @@ func (c *cmdable) ZInterStore(destination string, store *ZStore, keys ...string)
 		args = append(args, "aggregate", store.Aggregate)
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZPopMax(key string, count ...int64) *ZSliceCmd {
+func (c cmdable) ZPopMax(key string, count ...int64) *ZSliceCmd {
 	args := []interface{}{
 		"zpopmax",
 		key,
@@ -1771,11 +1757,11 @@ func (c *cmdable) ZPopMax(key string, count ...int64) *ZSliceCmd {
 	}
 
 	cmd := NewZSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZPopMin(key string, count ...int64) *ZSliceCmd {
+func (c cmdable) ZPopMin(key string, count ...int64) *ZSliceCmd {
 	args := []interface{}{
 		"zpopmin",
 		key,
@@ -1791,11 +1777,11 @@ func (c *cmdable) ZPopMin(key string, count ...int64) *ZSliceCmd {
 	}
 
 	cmd := NewZSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) zRange(key string, start, stop int64, withScores bool) *StringSliceCmd {
+func (c cmdable) zRange(key string, start, stop int64, withScores bool) *StringSliceCmd {
 	args := []interface{}{
 		"zrange",
 		key,
@@ -1806,17 +1792,17 @@ func (c *cmdable) zRange(key string, start, stop int64, withScores bool) *String
 		args = append(args, "withscores")
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRange(key string, start, stop int64) *StringSliceCmd {
+func (c cmdable) ZRange(key string, start, stop int64) *StringSliceCmd {
 	return c.zRange(key, start, stop, false)
 }
 
-func (c *cmdable) ZRangeWithScores(key string, start, stop int64) *ZSliceCmd {
+func (c cmdable) ZRangeWithScores(key string, start, stop int64) *ZSliceCmd {
 	cmd := NewZSliceCmd("zrange", key, start, stop, "withscores")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
@@ -1825,7 +1811,7 @@ type ZRangeBy struct {
 	Offset, Count int64
 }
 
-func (c *cmdable) zRangeBy(zcmd, key string, opt *ZRangeBy, withScores bool) *StringSliceCmd {
+func (c cmdable) zRangeBy(zcmd, key string, opt *ZRangeBy, withScores bool) *StringSliceCmd {
 	args := []interface{}{zcmd, key, opt.Min, opt.Max}
 	if withScores {
 		args = append(args, "withscores")
@@ -1839,19 +1825,19 @@ func (c *cmdable) zRangeBy(zcmd, key string, opt *ZRangeBy, withScores bool) *St
 		)
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd {
+func (c cmdable) ZRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRangeBy("zrangebyscore", key, opt, false)
 }
 
-func (c *cmdable) ZRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd {
+func (c cmdable) ZRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRangeBy("zrangebylex", key, opt, false)
 }
 
-func (c *cmdable) ZRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd {
+func (c cmdable) ZRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd {
 	args := []interface{}{"zrangebyscore", key, opt.Min, opt.Max, "withscores"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1862,62 +1848,62 @@ func (c *cmdable) ZRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd 
 		)
 	}
 	cmd := NewZSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRank(key, member string) *IntCmd {
+func (c cmdable) ZRank(key, member string) *IntCmd {
 	cmd := NewIntCmd("zrank", key, member)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRem(key string, members ...interface{}) *IntCmd {
+func (c cmdable) ZRem(key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "zrem"
 	args[1] = key
 	args = appendArgs(args, members)
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRemRangeByRank(key string, start, stop int64) *IntCmd {
+func (c cmdable) ZRemRangeByRank(key string, start, stop int64) *IntCmd {
 	cmd := NewIntCmd(
 		"zremrangebyrank",
 		key,
 		start,
 		stop,
 	)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRemRangeByScore(key, min, max string) *IntCmd {
+func (c cmdable) ZRemRangeByScore(key, min, max string) *IntCmd {
 	cmd := NewIntCmd("zremrangebyscore", key, min, max)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRemRangeByLex(key, min, max string) *IntCmd {
+func (c cmdable) ZRemRangeByLex(key, min, max string) *IntCmd {
 	cmd := NewIntCmd("zremrangebylex", key, min, max)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRevRange(key string, start, stop int64) *StringSliceCmd {
+func (c cmdable) ZRevRange(key string, start, stop int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd("zrevrange", key, start, stop)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRevRangeWithScores(key string, start, stop int64) *ZSliceCmd {
+func (c cmdable) ZRevRangeWithScores(key string, start, stop int64) *ZSliceCmd {
 	cmd := NewZSliceCmd("zrevrange", key, start, stop, "withscores")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) zRevRangeBy(zcmd, key string, opt *ZRangeBy) *StringSliceCmd {
+func (c cmdable) zRevRangeBy(zcmd, key string, opt *ZRangeBy) *StringSliceCmd {
 	args := []interface{}{zcmd, key, opt.Max, opt.Min}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1928,19 +1914,19 @@ func (c *cmdable) zRevRangeBy(zcmd, key string, opt *ZRangeBy) *StringSliceCmd {
 		)
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRevRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd {
+func (c cmdable) ZRevRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRevRangeBy("zrevrangebyscore", key, opt)
 }
 
-func (c *cmdable) ZRevRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd {
+func (c cmdable) ZRevRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRevRangeBy("zrevrangebylex", key, opt)
 }
 
-func (c *cmdable) ZRevRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd {
+func (c cmdable) ZRevRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd {
 	args := []interface{}{"zrevrangebyscore", key, opt.Max, opt.Min, "withscores"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1951,24 +1937,24 @@ func (c *cmdable) ZRevRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceC
 		)
 	}
 	cmd := NewZSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZRevRank(key, member string) *IntCmd {
+func (c cmdable) ZRevRank(key, member string) *IntCmd {
 	cmd := NewIntCmd("zrevrank", key, member)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ZScore(key, member string) *FloatCmd {
+func (c cmdable) ZScore(key, member string) *FloatCmd {
 	cmd := NewFloatCmd("zscore", key, member)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // TODO: move keys to ZStore?
-func (c *cmdable) ZUnionStore(dest string, store *ZStore, keys ...string) *IntCmd {
+func (c cmdable) ZUnionStore(dest string, store *ZStore, keys ...string) *IntCmd {
 	args := make([]interface{}, 3+len(keys))
 	args[0] = "zunionstore"
 	args[1] = dest
@@ -1986,34 +1972,34 @@ func (c *cmdable) ZUnionStore(dest string, store *ZStore, keys ...string) *IntCm
 		args = append(args, "aggregate", store.Aggregate)
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) PFAdd(key string, els ...interface{}) *IntCmd {
+func (c cmdable) PFAdd(key string, els ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(els))
 	args[0] = "pfadd"
 	args[1] = key
 	args = appendArgs(args, els)
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) PFCount(keys ...string) *IntCmd {
+func (c cmdable) PFCount(keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "pfcount"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) PFMerge(dest string, keys ...string) *StatusCmd {
+func (c cmdable) PFMerge(dest string, keys ...string) *StatusCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "pfmerge"
 	args[1] = dest
@@ -2021,33 +2007,33 @@ func (c *cmdable) PFMerge(dest string, keys ...string) *StatusCmd {
 		args[2+i] = key
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) BgRewriteAOF() *StatusCmd {
+func (c cmdable) BgRewriteAOF() *StatusCmd {
 	cmd := NewStatusCmd("bgrewriteaof")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) BgSave() *StatusCmd {
+func (c cmdable) BgSave() *StatusCmd {
 	cmd := NewStatusCmd("bgsave")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClientKill(ipPort string) *StatusCmd {
+func (c cmdable) ClientKill(ipPort string) *StatusCmd {
 	cmd := NewStatusCmd("client", "kill", ipPort)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // ClientKillByFilter is new style synx, while the ClientKill is old
 // CLIENT KILL <option> [value] ... <option> [value]
-func (c *cmdable) ClientKillByFilter(keys ...string) *IntCmd {
+func (c cmdable) ClientKillByFilter(keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "client"
 	args[1] = "kill"
@@ -2055,141 +2041,141 @@ func (c *cmdable) ClientKillByFilter(keys ...string) *IntCmd {
 		args[2+i] = key
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClientList() *StringCmd {
+func (c cmdable) ClientList() *StringCmd {
 	cmd := NewStringCmd("client", "list")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClientPause(dur time.Duration) *BoolCmd {
+func (c cmdable) ClientPause(dur time.Duration) *BoolCmd {
 	cmd := NewBoolCmd("client", "pause", formatMs(dur))
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClientID() *IntCmd {
+func (c cmdable) ClientID() *IntCmd {
 	cmd := NewIntCmd("client", "id")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClientUnblock(id int64) *IntCmd {
+func (c cmdable) ClientUnblock(id int64) *IntCmd {
 	cmd := NewIntCmd("client", "unblock", id)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClientUnblockWithError(id int64) *IntCmd {
+func (c cmdable) ClientUnblockWithError(id int64) *IntCmd {
 	cmd := NewIntCmd("client", "unblock", id, "error")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // ClientSetName assigns a name to the connection.
-func (c *statefulCmdable) ClientSetName(name string) *BoolCmd {
+func (c statefulCmdable) ClientSetName(name string) *BoolCmd {
 	cmd := NewBoolCmd("client", "setname", name)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // ClientGetName returns the name of the connection.
-func (c *cmdable) ClientGetName() *StringCmd {
+func (c cmdable) ClientGetName() *StringCmd {
 	cmd := NewStringCmd("client", "getname")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ConfigGet(parameter string) *SliceCmd {
+func (c cmdable) ConfigGet(parameter string) *SliceCmd {
 	cmd := NewSliceCmd("config", "get", parameter)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ConfigResetStat() *StatusCmd {
+func (c cmdable) ConfigResetStat() *StatusCmd {
 	cmd := NewStatusCmd("config", "resetstat")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ConfigSet(parameter, value string) *StatusCmd {
+func (c cmdable) ConfigSet(parameter, value string) *StatusCmd {
 	cmd := NewStatusCmd("config", "set", parameter, value)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ConfigRewrite() *StatusCmd {
+func (c cmdable) ConfigRewrite() *StatusCmd {
 	cmd := NewStatusCmd("config", "rewrite")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Deperecated. Use DBSize instead.
-func (c *cmdable) DbSize() *IntCmd {
+func (c cmdable) DbSize() *IntCmd {
 	return c.DBSize()
 }
 
-func (c *cmdable) DBSize() *IntCmd {
+func (c cmdable) DBSize() *IntCmd {
 	cmd := NewIntCmd("dbsize")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) FlushAll() *StatusCmd {
+func (c cmdable) FlushAll() *StatusCmd {
 	cmd := NewStatusCmd("flushall")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) FlushAllAsync() *StatusCmd {
+func (c cmdable) FlushAllAsync() *StatusCmd {
 	cmd := NewStatusCmd("flushall", "async")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 // Deprecated. Use FlushDB instead.
-func (c *cmdable) FlushDb() *StatusCmd {
+func (c cmdable) FlushDb() *StatusCmd {
 	return c.FlushDB()
 }
 
-func (c *cmdable) FlushDB() *StatusCmd {
+func (c cmdable) FlushDB() *StatusCmd {
 	cmd := NewStatusCmd("flushdb")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) FlushDBAsync() *StatusCmd {
+func (c cmdable) FlushDBAsync() *StatusCmd {
 	cmd := NewStatusCmd("flushdb", "async")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Info(section ...string) *StringCmd {
+func (c cmdable) Info(section ...string) *StringCmd {
 	args := []interface{}{"info"}
 	if len(section) > 0 {
 		args = append(args, section[0])
 	}
 	cmd := NewStringCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) LastSave() *IntCmd {
+func (c cmdable) LastSave() *IntCmd {
 	cmd := NewIntCmd("lastsave")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) Save() *StatusCmd {
+func (c cmdable) Save() *StatusCmd {
 	cmd := NewStatusCmd("save")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) shutdown(modifier string) *StatusCmd {
+func (c cmdable) shutdown(modifier string) *StatusCmd {
 	var args []interface{}
 	if modifier == "" {
 		args = []interface{}{"shutdown"}
@@ -2197,7 +2183,7 @@ func (c *cmdable) shutdown(modifier string) *StatusCmd {
 		args = []interface{}{"shutdown", modifier}
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	if err := cmd.Err(); err != nil {
 		if err == io.EOF {
 			// Server quit as expected.
@@ -2211,41 +2197,41 @@ func (c *cmdable) shutdown(modifier string) *StatusCmd {
 	return cmd
 }
 
-func (c *cmdable) Shutdown() *StatusCmd {
+func (c cmdable) Shutdown() *StatusCmd {
 	return c.shutdown("")
 }
 
-func (c *cmdable) ShutdownSave() *StatusCmd {
+func (c cmdable) ShutdownSave() *StatusCmd {
 	return c.shutdown("save")
 }
 
-func (c *cmdable) ShutdownNoSave() *StatusCmd {
+func (c cmdable) ShutdownNoSave() *StatusCmd {
 	return c.shutdown("nosave")
 }
 
-func (c *cmdable) SlaveOf(host, port string) *StatusCmd {
+func (c cmdable) SlaveOf(host, port string) *StatusCmd {
 	cmd := NewStatusCmd("slaveof", host, port)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) SlowLog() {
+func (c cmdable) SlowLog() {
 	panic("not implemented")
 }
 
-func (c *cmdable) Sync() {
+func (c cmdable) Sync() {
 	panic("not implemented")
 }
 
-func (c *cmdable) Time() *TimeCmd {
+func (c cmdable) Time() *TimeCmd {
 	cmd := NewTimeCmd("time")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) Eval(script string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) Eval(script string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = "eval"
 	cmdArgs[1] = script
@@ -2255,11 +2241,11 @@ func (c *cmdable) Eval(script string, keys []string, args ...interface{}) *Cmd {
 	}
 	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(cmdArgs...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = "evalsha"
 	cmdArgs[1] = sha1
@@ -2269,11 +2255,11 @@ func (c *cmdable) EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd 
 	}
 	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(cmdArgs...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ScriptExists(hashes ...string) *BoolSliceCmd {
+func (c cmdable) ScriptExists(hashes ...string) *BoolSliceCmd {
 	args := make([]interface{}, 2+len(hashes))
 	args[0] = "script"
 	args[1] = "exists"
@@ -2281,56 +2267,56 @@ func (c *cmdable) ScriptExists(hashes ...string) *BoolSliceCmd {
 		args[2+i] = hash
 	}
 	cmd := NewBoolSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ScriptFlush() *StatusCmd {
+func (c cmdable) ScriptFlush() *StatusCmd {
 	cmd := NewStatusCmd("script", "flush")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ScriptKill() *StatusCmd {
+func (c cmdable) ScriptKill() *StatusCmd {
 	cmd := NewStatusCmd("script", "kill")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ScriptLoad(script string) *StringCmd {
+func (c cmdable) ScriptLoad(script string) *StringCmd {
 	cmd := NewStringCmd("script", "load", script)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) DebugObject(key string) *StringCmd {
+func (c cmdable) DebugObject(key string) *StringCmd {
 	cmd := NewStringCmd("debug", "object", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
 // Publish posts the message to the channel.
-func (c *cmdable) Publish(channel string, message interface{}) *IntCmd {
+func (c cmdable) Publish(channel string, message interface{}) *IntCmd {
 	cmd := NewIntCmd("publish", channel, message)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) PubSubChannels(pattern string) *StringSliceCmd {
+func (c cmdable) PubSubChannels(pattern string) *StringSliceCmd {
 	args := []interface{}{"pubsub", "channels"}
 	if pattern != "*" {
 		args = append(args, pattern)
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) PubSubNumSub(channels ...string) *StringIntMapCmd {
+func (c cmdable) PubSubNumSub(channels ...string) *StringIntMapCmd {
 	args := make([]interface{}, 2+len(channels))
 	args[0] = "pubsub"
 	args[1] = "numsub"
@@ -2338,91 +2324,91 @@ func (c *cmdable) PubSubNumSub(channels ...string) *StringIntMapCmd {
 		args[2+i] = channel
 	}
 	cmd := NewStringIntMapCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) PubSubNumPat() *IntCmd {
+func (c cmdable) PubSubNumPat() *IntCmd {
 	cmd := NewIntCmd("pubsub", "numpat")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) ClusterSlots() *ClusterSlotsCmd {
+func (c cmdable) ClusterSlots() *ClusterSlotsCmd {
 	cmd := NewClusterSlotsCmd("cluster", "slots")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterNodes() *StringCmd {
+func (c cmdable) ClusterNodes() *StringCmd {
 	cmd := NewStringCmd("cluster", "nodes")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterMeet(host, port string) *StatusCmd {
+func (c cmdable) ClusterMeet(host, port string) *StatusCmd {
 	cmd := NewStatusCmd("cluster", "meet", host, port)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterForget(nodeID string) *StatusCmd {
+func (c cmdable) ClusterForget(nodeID string) *StatusCmd {
 	cmd := NewStatusCmd("cluster", "forget", nodeID)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterReplicate(nodeID string) *StatusCmd {
+func (c cmdable) ClusterReplicate(nodeID string) *StatusCmd {
 	cmd := NewStatusCmd("cluster", "replicate", nodeID)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterResetSoft() *StatusCmd {
+func (c cmdable) ClusterResetSoft() *StatusCmd {
 	cmd := NewStatusCmd("cluster", "reset", "soft")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterResetHard() *StatusCmd {
+func (c cmdable) ClusterResetHard() *StatusCmd {
 	cmd := NewStatusCmd("cluster", "reset", "hard")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterInfo() *StringCmd {
+func (c cmdable) ClusterInfo() *StringCmd {
 	cmd := NewStringCmd("cluster", "info")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterKeySlot(key string) *IntCmd {
+func (c cmdable) ClusterKeySlot(key string) *IntCmd {
 	cmd := NewIntCmd("cluster", "keyslot", key)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterGetKeysInSlot(slot int, count int) *StringSliceCmd {
+func (c cmdable) ClusterGetKeysInSlot(slot int, count int) *StringSliceCmd {
 	cmd := NewStringSliceCmd("cluster", "getkeysinslot", slot, count)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterCountFailureReports(nodeID string) *IntCmd {
+func (c cmdable) ClusterCountFailureReports(nodeID string) *IntCmd {
 	cmd := NewIntCmd("cluster", "count-failure-reports", nodeID)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterCountKeysInSlot(slot int) *IntCmd {
+func (c cmdable) ClusterCountKeysInSlot(slot int) *IntCmd {
 	cmd := NewIntCmd("cluster", "countkeysinslot", slot)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterDelSlots(slots ...int) *StatusCmd {
+func (c cmdable) ClusterDelSlots(slots ...int) *StatusCmd {
 	args := make([]interface{}, 2+len(slots))
 	args[0] = "cluster"
 	args[1] = "delslots"
@@ -2430,11 +2416,11 @@ func (c *cmdable) ClusterDelSlots(slots ...int) *StatusCmd {
 		args[2+i] = slot
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterDelSlotsRange(min, max int) *StatusCmd {
+func (c cmdable) ClusterDelSlotsRange(min, max int) *StatusCmd {
 	size := max - min + 1
 	slots := make([]int, size)
 	for i := 0; i < size; i++ {
@@ -2443,37 +2429,37 @@ func (c *cmdable) ClusterDelSlotsRange(min, max int) *StatusCmd {
 	return c.ClusterDelSlots(slots...)
 }
 
-func (c *cmdable) ClusterSaveConfig() *StatusCmd {
+func (c cmdable) ClusterSaveConfig() *StatusCmd {
 	cmd := NewStatusCmd("cluster", "saveconfig")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterSlaves(nodeID string) *StringSliceCmd {
+func (c cmdable) ClusterSlaves(nodeID string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("cluster", "slaves", nodeID)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ReadOnly() *StatusCmd {
+func (c cmdable) ReadOnly() *StatusCmd {
 	cmd := NewStatusCmd("readonly")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ReadWrite() *StatusCmd {
+func (c cmdable) ReadWrite() *StatusCmd {
 	cmd := NewStatusCmd("readwrite")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterFailover() *StatusCmd {
+func (c cmdable) ClusterFailover() *StatusCmd {
 	cmd := NewStatusCmd("cluster", "failover")
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterAddSlots(slots ...int) *StatusCmd {
+func (c cmdable) ClusterAddSlots(slots ...int) *StatusCmd {
 	args := make([]interface{}, 2+len(slots))
 	args[0] = "cluster"
 	args[1] = "addslots"
@@ -2481,11 +2467,11 @@ func (c *cmdable) ClusterAddSlots(slots ...int) *StatusCmd {
 		args[2+i] = num
 	}
 	cmd := NewStatusCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) ClusterAddSlotsRange(min, max int) *StatusCmd {
+func (c cmdable) ClusterAddSlotsRange(min, max int) *StatusCmd {
 	size := max - min + 1
 	slots := make([]int, size)
 	for i := 0; i < size; i++ {
@@ -2496,7 +2482,7 @@ func (c *cmdable) ClusterAddSlotsRange(min, max int) *StatusCmd {
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
+func (c cmdable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 	args := make([]interface{}, 2+3*len(geoLocation))
 	args[0] = "geoadd"
 	args[1] = key
@@ -2506,44 +2492,44 @@ func (c *cmdable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 		args[2+3*i+2] = eachLoc.Name
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
+func (c cmdable) GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadius", key, longitude, latitude)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) GeoRadiusRO(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
+func (c cmdable) GeoRadiusRO(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadius_ro", key, longitude, latitude)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
+func (c cmdable) GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadiusbymember", key, member)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) GeoRadiusByMemberRO(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
+func (c cmdable) GeoRadiusByMemberRO(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadiusbymember_ro", key, member)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) GeoDist(key string, member1, member2, unit string) *FloatCmd {
+func (c cmdable) GeoDist(key string, member1, member2, unit string) *FloatCmd {
 	if unit == "" {
 		unit = "km"
 	}
 	cmd := NewFloatCmd("geodist", key, member1, member2, unit)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) GeoHash(key string, members ...string) *StringSliceCmd {
+func (c cmdable) GeoHash(key string, members ...string) *StringSliceCmd {
 	args := make([]interface{}, 2+len(members))
 	args[0] = "geohash"
 	args[1] = key
@@ -2551,11 +2537,11 @@ func (c *cmdable) GeoHash(key string, members ...string) *StringSliceCmd {
 		args[2+i] = member
 	}
 	cmd := NewStringSliceCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
-func (c *cmdable) GeoPos(key string, members ...string) *GeoPosCmd {
+func (c cmdable) GeoPos(key string, members ...string) *GeoPosCmd {
 	args := make([]interface{}, 2+len(members))
 	args[0] = "geopos"
 	args[1] = key
@@ -2563,13 +2549,13 @@ func (c *cmdable) GeoPos(key string, members ...string) *GeoPosCmd {
 		args[2+i] = member
 	}
 	cmd := NewGeoPosCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c *cmdable) MemoryUsage(key string, samples ...int) *IntCmd {
+func (c cmdable) MemoryUsage(key string, samples ...int) *IntCmd {
 	args := []interface{}{"memory", "usage", key}
 	if len(samples) > 0 {
 		if len(samples) != 1 {
@@ -2578,6 +2564,6 @@ func (c *cmdable) MemoryUsage(key string, samples ...int) *IntCmd {
 		args = append(args, "SAMPLES", samples[0])
 	}
 	cmd := NewIntCmd(args...)
-	c.process(cmd)
+	c(cmd)
 	return cmd
 }

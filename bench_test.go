@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -197,4 +198,141 @@ func BenchmarkZAdd(b *testing.B) {
 			}
 		}
 	})
+}
+
+var clientSink *redis.Client
+
+func BenchmarkWithContext(b *testing.B) {
+	rdb := benchmarkRedisClient(10)
+	defer rdb.Close()
+
+	ctx := context.Background()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		clientSink = rdb.WithContext(ctx)
+	}
+}
+
+var ringSink *redis.Ring
+
+func BenchmarkRingWithContext(b *testing.B) {
+	rdb := redis.NewRing(&redis.RingOptions{})
+	defer rdb.Close()
+
+	ctx := context.Background()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		ringSink = rdb.WithContext(ctx)
+	}
+}
+
+//------------------------------------------------------------------------------
+
+func newClusterScenario() *clusterScenario {
+	return &clusterScenario{
+		ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
+		nodeIds:   make([]string, 6),
+		processes: make(map[string]*redisProcess, 6),
+		clients:   make(map[string]*redis.Client, 6),
+	}
+}
+
+func BenchmarkClusterPing(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping in short mode")
+	}
+
+	cluster := newClusterScenario()
+	if err := startCluster(cluster); err != nil {
+		b.Fatal(err)
+	}
+	defer stopCluster(cluster)
+
+	client := cluster.clusterClient(redisClusterOptions())
+	defer client.Close()
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			err := client.Ping().Err()
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkClusterSetString(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping in short mode")
+	}
+
+	cluster := newClusterScenario()
+	if err := startCluster(cluster); err != nil {
+		b.Fatal(err)
+	}
+	defer stopCluster(cluster)
+
+	client := cluster.clusterClient(redisClusterOptions())
+	defer client.Close()
+
+	value := string(bytes.Repeat([]byte{'1'}, 10000))
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			err := client.Set("key", value, 0).Err()
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkClusterReloadState(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping in short mode")
+	}
+
+	cluster := newClusterScenario()
+	if err := startCluster(cluster); err != nil {
+		b.Fatal(err)
+	}
+	defer stopCluster(cluster)
+
+	client := cluster.clusterClient(redisClusterOptions())
+	defer client.Close()
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		err := client.ReloadState()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+var clusterSink *redis.ClusterClient
+
+func BenchmarkClusterWithContext(b *testing.B) {
+	rdb := redis.NewClusterClient(&redis.ClusterOptions{})
+	defer rdb.Close()
+
+	ctx := context.Background()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		clusterSink = rdb.WithContext(ctx)
+	}
 }

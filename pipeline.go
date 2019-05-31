@@ -36,6 +36,7 @@ var _ Pipeliner = (*Pipeline)(nil)
 // http://redis.io/topics/pipelining. It's safe for concurrent use
 // by multiple goroutines.
 type Pipeline struct {
+	cmdable
 	statefulCmdable
 
 	exec pipelineExecer
@@ -43,6 +44,11 @@ type Pipeline struct {
 	mu     sync.Mutex
 	cmds   []Cmder
 	closed bool
+}
+
+func (c *Pipeline) init() {
+	c.cmdable = c.Process
+	c.statefulCmdable = c.Process
 }
 
 func (c *Pipeline) Do(args ...interface{}) *Cmd {

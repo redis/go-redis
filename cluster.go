@@ -639,19 +639,22 @@ func (c *clusterStateHolder) ReloadOrGet() (*clusterState, error) {
 
 //------------------------------------------------------------------------------
 
-// ClusterClient is a Redis Cluster client representing a pool of zero
-// or more underlying connections. It's safe for concurrent use by
-// multiple goroutines.
-type ClusterClient struct {
+type clusterClient struct {
 	cmdable
+	hooks
 
 	opt           *ClusterOptions
 	nodes         *clusterNodes
 	state         *clusterStateHolder
 	cmdsInfoCache *cmdsInfoCache
+}
 
+// ClusterClient is a Redis Cluster client representing a pool of zero
+// or more underlying connections. It's safe for concurrent use by
+// multiple goroutines.
+type ClusterClient struct {
+	*clusterClient
 	ctx context.Context
-	hooks
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -660,8 +663,10 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
 
 	c := &ClusterClient{
-		opt:   opt,
-		nodes: newClusterNodes(opt),
+		clusterClient: &clusterClient{
+			opt:   opt,
+			nodes: newClusterNodes(opt),
+		},
 	}
 	c.state = newClusterStateHolder(c.loadState)
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
@@ -675,7 +680,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 }
 
 func (c *ClusterClient) init() {
-	c.cmdable.setProcessor(c.Process)
+	c.cmdable = c.Process
 }
 
 func (c *ClusterClient) Context() context.Context {
@@ -689,15 +694,8 @@ func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
 	if ctx == nil {
 		panic("nil context")
 	}
-	c2 := c.clone()
-	c2.ctx = ctx
-	return c2
-}
-
-func (c *ClusterClient) clone() *ClusterClient {
 	clone := *c
-	clone.hooks.copy()
-	clone.init()
+	clone.ctx = ctx
 	return &clone
 }
 
@@ -1013,7 +1011,7 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.processPipeline,
 	}
-	pipe.statefulCmdable.setProcessor(pipe.Process)
+	pipe.init()
 	return &pipe
 }
 
@@ -1207,7 +1205,7 @@ func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.processTxPipeline,
 	}
-	pipe.statefulCmdable.setProcessor(pipe.Process)
+	pipe.init()
 	return &pipe
 }
 

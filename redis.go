@@ -37,12 +37,12 @@ type hooks struct {
 	hooks []Hook
 }
 
-func (hs *hooks) AddHook(hook Hook) {
-	hs.hooks = append(hs.hooks, hook)
+func (hs *hooks) lazyCopy() {
+	hs.hooks = hs.hooks[:len(hs.hooks):len(hs.hooks)]
 }
 
-func (hs *hooks) copy() {
-	hs.hooks = hs.hooks[:len(hs.hooks):len(hs.hooks)]
+func (hs *hooks) AddHook(hook Hook) {
+	hs.hooks = append(hs.hooks, hook)
 }
 
 func (hs hooks) process(ctx context.Context, cmd Cmder, fn func(Cmder) error) error {
@@ -452,15 +452,18 @@ func txPipelineReadQueued(rd *proto.Reader, cmds []Cmder) error {
 
 //------------------------------------------------------------------------------
 
+type client struct {
+	baseClient
+	cmdable
+	hooks
+}
+
 // Client is a Redis client representing a pool of zero or more
 // underlying connections. It's safe for concurrent use by multiple
 // goroutines.
 type Client struct {
-	baseClient
-	cmdable
-
+	*client
 	ctx context.Context
-	hooks
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -468,9 +471,11 @@ func NewClient(opt *Options) *Client {
 	opt.init()
 
 	c := Client{
-		baseClient: baseClient{
-			opt:      opt,
-			connPool: newConnPool(opt),
+		client: &client{
+			baseClient: baseClient{
+				opt:      opt,
+				connPool: newConnPool(opt),
+			},
 		},
 	}
 	c.init()
@@ -479,7 +484,7 @@ func NewClient(opt *Options) *Client {
 }
 
 func (c *Client) init() {
-	c.cmdable.setProcessor(c.Process)
+	c.cmdable = c.Process
 }
 
 func (c *Client) Context() context.Context {
@@ -493,15 +498,8 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 	if ctx == nil {
 		panic("nil context")
 	}
-	c2 := c.clone()
-	c2.ctx = ctx
-	return c2
-}
-
-func (c *Client) clone() *Client {
 	clone := *c
-	clone.hooks.copy()
-	clone.init()
+	clone.ctx = ctx
 	return &clone
 }
 
@@ -543,7 +541,7 @@ func (c *Client) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.processPipeline,
 	}
-	pipe.statefulCmdable.setProcessor(pipe.Process)
+	pipe.init()
 	return &pipe
 }
 
@@ -556,7 +554,7 @@ func (c *Client) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.processTxPipeline,
 	}
-	pipe.statefulCmdable.setProcessor(pipe.Process)
+	pipe.init()
 	return &pipe
 }
 
@@ -622,6 +620,7 @@ func (c *Client) PSubscribe(channels ...string) *PubSub {
 // Conn is like Client, but its pool contains single connection.
 type Conn struct {
 	baseClient
+	cmdable
 	statefulCmdable
 }
 
@@ -632,7 +631,8 @@ func newConn(opt *Options, cn *pool.Conn) *Conn {
 			connPool: pool.NewSingleConnPool(cn),
 		},
 	}
-	c.statefulCmdable.setProcessor(c.Process)
+	c.cmdable = c.Process
+	c.statefulCmdable = c.Process
 	return &c
 }
 
@@ -648,7 +648,7 @@ func (c *Conn) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.processPipeline,
 	}
-	pipe.statefulCmdable.setProcessor(pipe.Process)
+	pipe.init()
 	return &pipe
 }
 
@@ -661,6 +661,6 @@ func (c *Conn) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: c.processTxPipeline,
 	}
-	pipe.statefulCmdable.setProcessor(pipe.Process)
+	pipe.init()
 	return &pipe
 }

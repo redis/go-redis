@@ -87,14 +87,15 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 
 	c := Client{
-		baseClient: baseClient{
-			opt:      opt,
-			connPool: failover.Pool(),
-
-			onClose: failover.Close,
+		client: &client{
+			baseClient: baseClient{
+				opt:      opt,
+				connPool: failover.Pool(),
+				onClose:  failover.Close,
+			},
 		},
 	}
-	c.cmdable.setProcessor(c.Process)
+	c.cmdable = c.Process
 
 	return &c
 }
@@ -129,13 +130,8 @@ func (c *SentinelClient) WithContext(ctx context.Context) *SentinelClient {
 	if ctx == nil {
 		panic("nil context")
 	}
-	c2 := c.clone()
-	c2.ctx = ctx
-	return c2
-}
-
-func (c *SentinelClient) clone() *SentinelClient {
 	clone := *c
+	clone.ctx = ctx
 	return &clone
 }
 
