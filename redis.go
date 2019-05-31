@@ -23,22 +23,112 @@ func SetLogger(logger *log.Logger) {
 	internal.Logger = logger
 }
 
+//------------------------------------------------------------------------------
+
+type Hook interface {
+	BeforeProcess(ctx context.Context, cmd Cmder) (context.Context, error)
+	AfterProcess(ctx context.Context, cmd Cmder) (context.Context, error)
+
+	BeforeProcessPipeline(ctx context.Context, cmds []Cmder) (context.Context, error)
+	AfterProcessPipeline(ctx context.Context, cmds []Cmder) (context.Context, error)
+}
+
+type hooks struct {
+	hooks []Hook
+}
+
+func (hs *hooks) AddHook(hook Hook) {
+	hs.hooks = append(hs.hooks, hook)
+}
+
+func (hs *hooks) copy() {
+	hs.hooks = hs.hooks[:len(hs.hooks):len(hs.hooks)]
+}
+
+func (hs hooks) process(ctx context.Context, cmd Cmder, fn func(Cmder) error) error {
+	ctx, err := hs.beforeProcess(ctx, cmd)
+	if err != nil {
+		return err
+	}
+
+	cmdErr := fn(cmd)
+
+	_, err = hs.afterProcess(ctx, cmd)
+	if err != nil {
+		return err
+	}
+
+	return cmdErr
+}
+
+func (hs hooks) beforeProcess(ctx context.Context, cmd Cmder) (context.Context, error) {
+	for _, h := range hs.hooks {
+		var err error
+		ctx, err = h.BeforeProcess(ctx, cmd)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ctx, nil
+}
+
+func (hs hooks) afterProcess(ctx context.Context, cmd Cmder) (context.Context, error) {
+	for _, h := range hs.hooks {
+		var err error
+		ctx, err = h.AfterProcess(ctx, cmd)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ctx, nil
+}
+
+func (hs hooks) processPipeline(ctx context.Context, cmds []Cmder, fn func([]Cmder) error) error {
+	ctx, err := hs.beforeProcessPipeline(ctx, cmds)
+	if err != nil {
+		return err
+	}
+
+	cmdsErr := fn(cmds)
+
+	_, err = hs.afterProcessPipeline(ctx, cmds)
+	if err != nil {
+		return err
+	}
+
+	return cmdsErr
+}
+
+func (hs hooks) beforeProcessPipeline(ctx context.Context, cmds []Cmder) (context.Context, error) {
+	for _, h := range hs.hooks {
+		var err error
+		ctx, err = h.BeforeProcessPipeline(ctx, cmds)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ctx, nil
+}
+
+func (hs hooks) afterProcessPipeline(ctx context.Context, cmds []Cmder) (context.Context, error) {
+	for _, h := range hs.hooks {
+		var err error
+		ctx, err = h.AfterProcessPipeline(ctx, cmds)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ctx, nil
+}
+
+//------------------------------------------------------------------------------
+
 type baseClient struct {
 	opt      *Options
 	connPool pool.Pooler
 	limiter  Limiter
 
-	process           func(Cmder) error
-	processPipeline   func([]Cmder) error
-	processTxPipeline func([]Cmder) error
-
 	onClose func() error // hook called when client is closed
-}
-
-func (c *baseClient) init() {
-	c.process = c.defaultProcess
-	c.processPipeline = c.defaultProcessPipeline
-	c.processTxPipeline = c.defaultProcessTxPipeline
 }
 
 func (c *baseClient) String() string {
@@ -159,22 +249,11 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 // Do creates a Cmd from the args and processes the cmd.
 func (c *baseClient) Do(args ...interface{}) *Cmd {
 	cmd := NewCmd(args...)
-	_ = c.Process(cmd)
+	_ = c.process(cmd)
 	return cmd
 }
 
-// WrapProcess wraps function that processes Redis commands.
-func (c *baseClient) WrapProcess(
-	fn func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error,
-) {
-	c.process = fn(c.process)
-}
-
-func (c *baseClient) Process(cmd Cmder) error {
-	return c.process(cmd)
-}
-
-func (c *baseClient) defaultProcess(cmd Cmder) error {
+func (c *baseClient) process(cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			time.Sleep(c.retryBackoff(attempt))
@@ -249,18 +328,11 @@ func (c *baseClient) getAddr() string {
 	return c.opt.Addr
 }
 
-func (c *baseClient) WrapProcessPipeline(
-	fn func(oldProcess func([]Cmder) error) func([]Cmder) error,
-) {
-	c.processPipeline = fn(c.processPipeline)
-	c.processTxPipeline = fn(c.processTxPipeline)
-}
-
-func (c *baseClient) defaultProcessPipeline(cmds []Cmder) error {
+func (c *baseClient) processPipeline(cmds []Cmder) error {
 	return c.generalProcessPipeline(cmds, c.pipelineProcessCmds)
 }
 
-func (c *baseClient) defaultProcessTxPipeline(cmds []Cmder) error {
+func (c *baseClient) processTxPipeline(cmds []Cmder) error {
 	return c.generalProcessPipeline(cmds, c.txPipelineProcessCmds)
 }
 
@@ -388,6 +460,7 @@ type Client struct {
 	cmdable
 
 	ctx context.Context
+	hooks
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -400,7 +473,6 @@ func NewClient(opt *Options) *Client {
 			connPool: newConnPool(opt),
 		},
 	}
-	c.baseClient.init()
 	c.init()
 
 	return &c
@@ -427,9 +499,22 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 }
 
 func (c *Client) clone() *Client {
-	cp := *c
-	cp.init()
-	return &cp
+	clone := *c
+	clone.hooks.copy()
+	clone.init()
+	return &clone
+}
+
+func (c *Client) Process(cmd Cmder) error {
+	return c.hooks.process(c.ctx, cmd, c.baseClient.process)
+}
+
+func (c *Client) processPipeline(cmds []Cmder) error {
+	return c.hooks.processPipeline(c.ctx, cmds, c.baseClient.processPipeline)
+}
+
+func (c *Client) processTxPipeline(cmds []Cmder) error {
+	return c.hooks.processPipeline(c.ctx, cmds, c.baseClient.processTxPipeline)
 }
 
 // Options returns read-only Options that were used to create the client.
@@ -547,9 +632,12 @@ func newConn(opt *Options, cn *pool.Conn) *Conn {
 			connPool: pool.NewSingleConnPool(cn),
 		},
 	}
-	c.baseClient.init()
 	c.statefulCmdable.setProcessor(c.Process)
 	return &c
+}
+
+func (c *Conn) Process(cmd Cmder) error {
+	return c.baseClient.process(cmd)
 }
 
 func (c *Conn) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {

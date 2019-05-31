@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -93,7 +94,6 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 			onClose: failover.Close,
 		},
 	}
-	c.baseClient.init()
 	c.cmdable.setProcessor(c.Process)
 
 	return &c
@@ -103,6 +103,8 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 type SentinelClient struct {
 	baseClient
+
+	ctx context.Context
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {
@@ -113,8 +115,32 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 			connPool: newConnPool(opt),
 		},
 	}
-	c.baseClient.init()
 	return c
+}
+
+func (c *SentinelClient) Context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+func (c *SentinelClient) WithContext(ctx context.Context) *SentinelClient {
+	if ctx == nil {
+		panic("nil context")
+	}
+	c2 := c.clone()
+	c2.ctx = ctx
+	return c2
+}
+
+func (c *SentinelClient) clone() *SentinelClient {
+	clone := *c
+	return &clone
+}
+
+func (c *SentinelClient) Process(cmd Cmder) error {
+	return c.baseClient.process(cmd)
 }
 
 func (c *SentinelClient) pubSub() *PubSub {

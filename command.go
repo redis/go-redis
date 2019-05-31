@@ -100,8 +100,14 @@ type baseCmd struct {
 
 var _ Cmder = (*Cmd)(nil)
 
-func (cmd *baseCmd) Err() error {
-	return cmd.err
+func (cmd *baseCmd) Name() string {
+	if len(cmd._args) > 0 {
+		// Cmd name must be lower cased.
+		s := internal.ToLower(cmd.stringArg(0))
+		cmd._args[0] = s
+		return s
+	}
+	return ""
 }
 
 func (cmd *baseCmd) Args() []interface{} {
@@ -116,14 +122,8 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	return s
 }
 
-func (cmd *baseCmd) Name() string {
-	if len(cmd._args) > 0 {
-		// Cmd name must be lower cased.
-		s := internal.ToLower(cmd.stringArg(0))
-		cmd._args[0] = s
-		return s
-	}
-	return ""
+func (cmd *baseCmd) Err() error {
+	return cmd.err
 }
 
 func (cmd *baseCmd) readTimeout() *time.Duration {

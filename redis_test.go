@@ -224,43 +224,6 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got).To(Equal(bigVal))
 	})
-
-	It("should call WrapProcess", func() {
-		var fnCalled bool
-
-		client.WrapProcess(func(old func(redis.Cmder) error) func(redis.Cmder) error {
-			return func(cmd redis.Cmder) error {
-				fnCalled = true
-				return old(cmd)
-			}
-		})
-
-		Expect(client.Ping().Err()).NotTo(HaveOccurred())
-		Expect(fnCalled).To(BeTrue())
-	})
-
-	It("should call WrapProcess after WithContext", func() {
-		var fn1Called, fn2Called bool
-
-		client.WrapProcess(func(old func(cmd redis.Cmder) error) func(cmd redis.Cmder) error {
-			return func(cmd redis.Cmder) error {
-				fn1Called = true
-				return old(cmd)
-			}
-		})
-
-		client2 := client.WithContext(client.Context())
-		client2.WrapProcess(func(old func(cmd redis.Cmder) error) func(cmd redis.Cmder) error {
-			return func(cmd redis.Cmder) error {
-				fn2Called = true
-				return old(cmd)
-			}
-		})
-
-		Expect(client2.Ping().Err()).NotTo(HaveOccurred())
-		Expect(fn2Called).To(BeTrue())
-		Expect(fn1Called).To(BeTrue())
-	})
 })
 
 var _ = Describe("Client timeout", func() {

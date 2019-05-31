@@ -1,6 +1,8 @@
 package redis
 
 import (
+	"context"
+
 	"github.com/go-redis/redis/internal/pool"
 	"github.com/go-redis/redis/internal/proto"
 )
@@ -15,6 +17,8 @@ const TxFailedErr = proto.RedisError("redis: transaction failed")
 type Tx struct {
 	statefulCmdable
 	baseClient
+
+	ctx context.Context
 }
 
 func (c *Client) newTx() *Tx {
@@ -23,10 +27,40 @@ func (c *Client) newTx() *Tx {
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), true),
 		},
+		ctx: c.ctx,
 	}
-	tx.baseClient.init()
-	tx.statefulCmdable.setProcessor(tx.Process)
+	tx.init()
 	return &tx
+}
+
+func (c *Tx) init() {
+	c.statefulCmdable.setProcessor(c.Process)
+}
+
+func (c *Tx) Context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+func (c *Tx) WithContext(ctx context.Context) *Tx {
+	if ctx == nil {
+		panic("nil context")
+	}
+	c2 := c.clone()
+	c2.ctx = ctx
+	return c2
+}
+
+func (c *Tx) clone() *Tx {
+	clone := *c
+	clone.init()
+	return &clone
+}
+
+func (c *Tx) Process(cmd Cmder) error {
+	return c.baseClient.process(cmd)
 }
 
 // Watch prepares a transaction and marks the keys to be watched

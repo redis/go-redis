@@ -340,14 +340,12 @@ func (c *ringShards) Close() error {
 type Ring struct {
 	cmdable
 
-	ctx context.Context
-
 	opt           *RingOptions
 	shards        *ringShards
 	cmdsInfoCache *cmdsInfoCache
 
-	process         func(Cmder) error
-	processPipeline func([]Cmder) error
+	ctx context.Context
+	hooks
 }
 
 func NewRing(opt *RingOptions) *Ring {
@@ -358,10 +356,6 @@ func NewRing(opt *RingOptions) *Ring {
 		shards: newRingShards(opt),
 	}
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
-
-	ring.process = ring.defaultProcess
-	ring.processPipeline = ring.defaultProcessPipeline
-
 	ring.init()
 
 	for name, addr := range opt.Addrs {
@@ -536,17 +530,11 @@ func (c *Ring) Do(args ...interface{}) *Cmd {
 	return cmd
 }
 
-func (c *Ring) WrapProcess(
-	fn func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error,
-) {
-	c.process = fn(c.process)
-}
-
 func (c *Ring) Process(cmd Cmder) error {
-	return c.process(cmd)
+	return c.hooks.process(c.ctx, cmd, c.process)
 }
 
-func (c *Ring) defaultProcess(cmd Cmder) error {
+func (c *Ring) process(cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			time.Sleep(c.retryBackoff(attempt))
@@ -581,13 +569,11 @@ func (c *Ring) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().Pipelined(fn)
 }
 
-func (c *Ring) WrapProcessPipeline(
-	fn func(oldProcess func([]Cmder) error) func([]Cmder) error,
-) {
-	c.processPipeline = fn(c.processPipeline)
+func (c *Ring) processPipeline(cmds []Cmder) error {
+	return c.hooks.processPipeline(c.ctx, cmds, c._processPipeline)
 }
 
-func (c *Ring) defaultProcessPipeline(cmds []Cmder) error {
+func (c *Ring) _processPipeline(cmds []Cmder) error {
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
 		cmdInfo := c.cmdInfo(cmd.Name())
