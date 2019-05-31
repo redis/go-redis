@@ -103,15 +103,14 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 //------------------------------------------------------------------------------
 
 type SentinelClient struct {
-	baseClient
-
+	*baseClient
 	ctx context.Context
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {
 	opt.init()
 	c := &SentinelClient{
-		baseClient: baseClient{
+		baseClient: &baseClient{
 			opt:      opt,
 			connPool: newConnPool(opt),
 		},
