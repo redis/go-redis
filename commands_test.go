@@ -1502,8 +1502,8 @@ var _ = Describe("Commands", func() {
 			Expect(client.Ping().Err()).NotTo(HaveOccurred())
 
 			stats := client.PoolStats()
-			Expect(stats.Hits).To(Equal(uint32(1)))
-			Expect(stats.Misses).To(Equal(uint32(2)))
+			Expect(stats.Hits).To(Equal(uint32(2)))
+			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
 		})
 
@@ -2215,8 +2215,8 @@ var _ = Describe("Commands", func() {
 			Expect(client.Ping().Err()).NotTo(HaveOccurred())
 
 			stats := client.PoolStats()
-			Expect(stats.Hits).To(Equal(uint32(1)))
-			Expect(stats.Misses).To(Equal(uint32(2)))
+			Expect(stats.Hits).To(Equal(uint32(2)))
+			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
 		})
 
@@ -2297,8 +2297,8 @@ var _ = Describe("Commands", func() {
 			Expect(client.Ping().Err()).NotTo(HaveOccurred())
 
 			stats := client.PoolStats()
-			Expect(stats.Hits).To(Equal(uint32(1)))
-			Expect(stats.Misses).To(Equal(uint32(2)))
+			Expect(stats.Hits).To(Equal(uint32(2)))
+			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
 		})
 

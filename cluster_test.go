@@ -543,18 +543,6 @@ var _ = Describe("ClusterClient", func() {
 			Expect(stats).To(BeAssignableToTypeOf(&redis.PoolStats{}))
 		})
 
-		It("removes idle connections", func() {
-			stats := client.PoolStats()
-			Expect(stats.TotalConns).NotTo(BeZero())
-			Expect(stats.IdleConns).NotTo(BeZero())
-
-			time.Sleep(2 * time.Second)
-
-			stats = client.PoolStats()
-			Expect(stats.TotalConns).To(BeZero())
-			Expect(stats.IdleConns).To(BeZero())
-		})
-
 		It("returns an error when there are no attempts left", func() {
 			opt := redisClusterOptions()
 			opt.MaxRedirects = -1

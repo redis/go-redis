@@ -191,6 +191,8 @@ var _ = Describe("Client", func() {
 		client.Pool().Put(cn)
 		Expect(cn.UsedAt().Equal(createdAt)).To(BeTrue())
 
+		time.Sleep(time.Second)
+
 		err = client.Ping().Err()
 		Expect(err).NotTo(HaveOccurred())
 
