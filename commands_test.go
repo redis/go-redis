@@ -374,7 +374,11 @@ var _ = Describe("Commands", func() {
 
 			ttl = client.TTL("key")
 			Expect(ttl.Err()).NotTo(HaveOccurred())
-			Expect(ttl.Val() < 0).To(Equal(true))
+			Expect(ttl.Val()).To(Equal(time.Duration(-1)))
+
+			ttl = client.TTL("nonexistent_key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Duration(-2)))
 		})
 
 		It("should ExpireAt", func() {
