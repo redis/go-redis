@@ -1,3 +1,4 @@
+dist: xenial
 sudo: false
 language: go
 
@@ -5,8 +6,6 @@ services:
   - redis-server
 
 go:
-  - 1.9.x
-  - 1.10.x
   - 1.11.x
   - 1.12.x
   - tip
@@ -15,6 +14,7 @@ matrix:
   allow_failures:
     - go: tip
 
-install:
-  - go get github.com/onsi/ginkgo
-  - go get github.com/onsi/gomega
+env:
+  - GO111MODULE=on
+
+go_import_path: github.com/go-redis/redis
