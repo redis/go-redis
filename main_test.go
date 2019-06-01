@@ -113,8 +113,8 @@ func redisOptions() *redis.Options {
 		WriteTimeout:       30 * time.Second,
 		PoolSize:           10,
 		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        500 * time.Millisecond,
-		IdleCheckFrequency: 500 * time.Millisecond,
+		IdleTimeout:        time.Minute,
+		IdleCheckFrequency: 100 * time.Millisecond,
 	}
 }
 
@@ -125,8 +125,8 @@ func redisClusterOptions() *redis.ClusterOptions {
 		WriteTimeout:       30 * time.Second,
 		PoolSize:           10,
 		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        500 * time.Millisecond,
-		IdleCheckFrequency: 500 * time.Millisecond,
+		IdleTimeout:        time.Minute,
+		IdleCheckFrequency: 100 * time.Millisecond,
 	}
 }
 
@@ -141,8 +141,8 @@ func redisRingOptions() *redis.RingOptions {
 		WriteTimeout:       30 * time.Second,
 		PoolSize:           10,
 		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        500 * time.Millisecond,
-		IdleCheckFrequency: 500 * time.Millisecond,
+		IdleTimeout:        time.Minute,
+		IdleCheckFrequency: 100 * time.Millisecond,
 	}
 }
 

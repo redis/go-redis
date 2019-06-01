@@ -13,14 +13,13 @@ var noDeadline = time.Time{}
 type Conn struct {
 	netConn net.Conn
 
-	rd       *proto.Reader
-	rdLocked bool
-	wr       *proto.Writer
+	rd *proto.Reader
+	wr *proto.Writer
 
 	Inited    bool
 	pooled    bool
 	createdAt time.Time
-	usedAt    atomic.Value
+	usedAt    int64 // atomic
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -35,11 +34,12 @@ func NewConn(netConn net.Conn) *Conn {
 }
 
 func (cn *Conn) UsedAt() time.Time {
-	return cn.usedAt.Load().(time.Time)
+	unix := atomic.LoadInt64(&cn.usedAt)
+	return time.Unix(unix, 0)
 }
 
 func (cn *Conn) SetUsedAt(tm time.Time) {
-	cn.usedAt.Store(tm)
+	atomic.StoreInt64(&cn.usedAt, tm.Unix())
 }
 
 func (cn *Conn) SetNetConn(netConn net.Conn) {

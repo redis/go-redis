@@ -16,8 +16,8 @@ var _ = Describe("pool", func() {
 		opt := redisOptions()
 		opt.MinIdleConns = 0
 		opt.MaxConnAge = 0
+		opt.IdleTimeout = time.Second
 		client = redis.NewClient(opt)
-		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -98,7 +98,7 @@ var _ = Describe("pool", func() {
 		Expect(pool.IdleLen()).To(Equal(1))
 
 		stats := pool.Stats()
-		Expect(stats.Hits).To(Equal(uint32(2)))
+		Expect(stats.Hits).To(Equal(uint32(1)))
 		Expect(stats.Misses).To(Equal(uint32(2)))
 		Expect(stats.Timeouts).To(Equal(uint32(0)))
 	})
@@ -115,12 +115,15 @@ var _ = Describe("pool", func() {
 		Expect(pool.IdleLen()).To(Equal(1))
 
 		stats := pool.Stats()
-		Expect(stats.Hits).To(Equal(uint32(100)))
+		Expect(stats.Hits).To(Equal(uint32(99)))
 		Expect(stats.Misses).To(Equal(uint32(1)))
 		Expect(stats.Timeouts).To(Equal(uint32(0)))
 	})
 
 	It("removes idle connections", func() {
+		err := client.Ping().Err()
+		Expect(err).NotTo(HaveOccurred())
+
 		stats := client.PoolStats()
 		Expect(stats).To(Equal(&redis.PoolStats{
 			Hits:       0,

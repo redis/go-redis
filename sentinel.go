@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -86,15 +87,15 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 
 	c := Client{
-		baseClient: baseClient{
-			opt:      opt,
-			connPool: failover.Pool(),
-
-			onClose: failover.Close,
+		client: &client{
+			baseClient: baseClient{
+				opt:      opt,
+				connPool: failover.Pool(),
+				onClose:  failover.Close,
+			},
 		},
 	}
-	c.baseClient.init()
-	c.cmdable.setProcessor(c.Process)
+	c.cmdable = c.Process
 
 	return &c
 }
@@ -102,19 +103,39 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 //------------------------------------------------------------------------------
 
 type SentinelClient struct {
-	baseClient
+	*baseClient
+	ctx context.Context
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {
 	opt.init()
 	c := &SentinelClient{
-		baseClient: baseClient{
+		baseClient: &baseClient{
 			opt:      opt,
 			connPool: newConnPool(opt),
 		},
 	}
-	c.baseClient.init()
 	return c
+}
+
+func (c *SentinelClient) Context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+func (c *SentinelClient) WithContext(ctx context.Context) *SentinelClient {
+	if ctx == nil {
+		panic("nil context")
+	}
+	clone := *c
+	clone.ctx = ctx
+	return &clone
+}
+
+func (c *SentinelClient) Process(cmd Cmder) error {
+	return c.baseClient.process(cmd)
 }
 
 func (c *SentinelClient) pubSub() *PubSub {

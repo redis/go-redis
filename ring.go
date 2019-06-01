@@ -323,6 +323,14 @@ func (c *ringShards) Close() error {
 
 //------------------------------------------------------------------------------
 
+type ring struct {
+	cmdable
+	hooks
+	opt           *RingOptions
+	shards        *ringShards
+	cmdsInfoCache *cmdsInfoCache
+}
+
 // Ring is a Redis client that uses consistent hashing to distribute
 // keys across multiple Redis servers (shards). It's safe for
 // concurrent use by multiple goroutines.
@@ -338,31 +346,22 @@ func (c *ringShards) Close() error {
 // and can tolerate losing data when one of the servers dies.
 // Otherwise you should use Redis Cluster.
 type Ring struct {
-	cmdable
-
+	*ring
 	ctx context.Context
-
-	opt           *RingOptions
-	shards        *ringShards
-	cmdsInfoCache *cmdsInfoCache
-
-	process         func(Cmder) error
-	processPipeline func([]Cmder) error
 }
 
 func NewRing(opt *RingOptions) *Ring {
 	opt.init()
 
-	ring := &Ring{
-		opt:    opt,
-		shards: newRingShards(opt),
+	ring := Ring{
+		ring: &ring{
+			opt:    opt,
+			shards: newRingShards(opt),
+		},
 	}
-	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
-
-	ring.process = ring.defaultProcess
-	ring.processPipeline = ring.defaultProcessPipeline
-
 	ring.init()
+
+	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 
 	for name, addr := range opt.Addrs {
 		clopt := opt.clientOptions()
@@ -372,11 +371,11 @@ func NewRing(opt *RingOptions) *Ring {
 
 	go ring.shards.Heartbeat(opt.HeartbeatFrequency)
 
-	return ring
+	return &ring
 }
 
 func (c *Ring) init() {
-	c.cmdable.setProcessor(c.Process)
+	c.cmdable = c.Process
 }
 
 func (c *Ring) Context() context.Context {
@@ -390,16 +389,20 @@ func (c *Ring) WithContext(ctx context.Context) *Ring {
 	if ctx == nil {
 		panic("nil context")
 	}
-	c2 := c.clone()
-	c2.ctx = ctx
-	return c2
+	clone := *c
+	clone.ctx = ctx
+	return &clone
 }
 
-func (c *Ring) clone() *Ring {
-	cp := *c
-	cp.init()
+// Do creates a Cmd from the args and processes the cmd.
+func (c *Ring) Do(args ...interface{}) *Cmd {
+	cmd := NewCmd(args...)
+	c.Process(cmd)
+	return cmd
+}
 
-	return &cp
+func (c *Ring) Process(cmd Cmder) error {
+	return c.hooks.process(c.ctx, cmd, c.process)
 }
 
 // Options returns read-only Options that were used to create the client.
@@ -529,24 +532,7 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 	return c.shards.GetByKey(firstKey)
 }
 
-// Do creates a Cmd from the args and processes the cmd.
-func (c *Ring) Do(args ...interface{}) *Cmd {
-	cmd := NewCmd(args...)
-	c.Process(cmd)
-	return cmd
-}
-
-func (c *Ring) WrapProcess(
-	fn func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error,
-) {
-	c.process = fn(c.process)
-}
-
-func (c *Ring) Process(cmd Cmder) error {
-	return c.process(cmd)
-}
-
-func (c *Ring) defaultProcess(cmd Cmder) error {
+func (c *Ring) process(cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			time.Sleep(c.retryBackoff(attempt))
@@ -569,25 +555,23 @@ func (c *Ring) defaultProcess(cmd Cmder) error {
 	return cmd.Err()
 }
 
-func (c *Ring) Pipeline() Pipeliner {
-	pipe := Pipeline{
-		exec: c.processPipeline,
-	}
-	pipe.cmdable.setProcessor(pipe.Process)
-	return &pipe
-}
-
 func (c *Ring) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().Pipelined(fn)
 }
 
-func (c *Ring) WrapProcessPipeline(
-	fn func(oldProcess func([]Cmder) error) func([]Cmder) error,
-) {
-	c.processPipeline = fn(c.processPipeline)
+func (c *Ring) Pipeline() Pipeliner {
+	pipe := Pipeline{
+		exec: c.processPipeline,
+	}
+	pipe.init()
+	return &pipe
 }
 
-func (c *Ring) defaultProcessPipeline(cmds []Cmder) error {
+func (c *Ring) processPipeline(cmds []Cmder) error {
+	return c.hooks.processPipeline(c.ctx, cmds, c._processPipeline)
+}
+
+func (c *Ring) _processPipeline(cmds []Cmder) error {
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
 		cmdInfo := c.cmdInfo(cmd.Name())

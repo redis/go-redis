@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"crypto/tls"
 	"time"
 )
@@ -147,15 +148,15 @@ func (o *UniversalOptions) simple() *Options {
 // --------------------------------------------------------------------
 
 // UniversalClient is an abstract client which - based on the provided options -
-// can connect to either clusters, or sentinel-backed failover instances or simple
-// single-instance servers. This can be useful for testing cluster-specific
-// applications locally.
+// can connect to either clusters, or sentinel-backed failover instances
+// or simple single-instance servers. This can be useful for testing
+// cluster-specific applications locally.
 type UniversalClient interface {
 	Cmdable
+	Context() context.Context
+	AddHook(Hook)
 	Watch(fn func(*Tx) error, keys ...string) error
 	Process(cmd Cmder) error
-	WrapProcess(fn func(oldProcess func(cmd Cmder) error) func(cmd Cmder) error)
-	WrapProcessPipeline(fn func(oldProcess func([]Cmder) error) func([]Cmder) error)
 	Subscribe(channels ...string) *PubSub
 	PSubscribe(channels ...string) *PubSub
 	Close() error
@@ -163,6 +164,7 @@ type UniversalClient interface {
 
 var _ UniversalClient = (*Client)(nil)
 var _ UniversalClient = (*ClusterClient)(nil)
+var _ UniversalClient = (*Ring)(nil)
 
 // NewUniversalClient returns a new multi client. The type of client returned depends
 // on the following three conditions:
