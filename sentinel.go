@@ -27,8 +27,9 @@ type FailoverOptions struct {
 
 	OnConnect func(*Conn) error
 
-	Password string
-	DB       int
+	Password         string
+	SentinelPassword string
+	DB               int
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -82,6 +83,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	failover := &sentinelFailover{
 		masterName:    failoverOpt.MasterName,
 		sentinelAddrs: failoverOpt.SentinelAddrs,
+		password:      failoverOpt.SentinelPassword,
 
 		opt: opt,
 	}
@@ -275,7 +277,8 @@ func (c *SentinelClient) Remove(name string) *StringCmd {
 type sentinelFailover struct {
 	sentinelAddrs []string
 
-	opt *Options
+	opt      *Options
+	password string
 
 	pool     *pool.ConnPool
 	poolOnce sync.Once
@@ -333,6 +336,8 @@ func (c *sentinelFailover) masterAddr() (string, error) {
 	for i, sentinelAddr := range c.sentinelAddrs {
 		sentinel := NewSentinelClient(&Options{
 			Addr: sentinelAddr,
+
+			Password: c.password,
 
 			MaxRetries: c.opt.MaxRetries,
 
