@@ -1,12 +1,13 @@
 package redis
 
 import (
+	"context"
 	"sync"
 
 	"github.com/go-redis/redis/internal/pool"
 )
 
-type pipelineExecer func([]Cmder) error
+type pipelineExecer func(context.Context, []Cmder) error
 
 // Pipeliner is an mechanism to realise Redis Pipeline technique.
 //
@@ -28,6 +29,7 @@ type Pipeliner interface {
 	Close() error
 	Discard() error
 	Exec() ([]Cmder, error)
+	ExecContext(ctx context.Context) ([]Cmder, error)
 }
 
 var _ Pipeliner = (*Pipeline)(nil)
@@ -96,6 +98,10 @@ func (c *Pipeline) discard() error {
 // Exec always returns list of commands and error of the first failed
 // command if any.
 func (c *Pipeline) Exec() ([]Cmder, error) {
+	return c.ExecContext(nil)
+}
+
+func (c *Pipeline) ExecContext(ctx context.Context) ([]Cmder, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -110,10 +116,10 @@ func (c *Pipeline) Exec() ([]Cmder, error) {
 	cmds := c.cmds
 	c.cmds = nil
 
-	return cmds, c.exec(cmds)
+	return cmds, c.exec(ctx, cmds)
 }
 
-func (c *Pipeline) pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
+func (c *Pipeline) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	if err := fn(c); err != nil {
 		return nil, err
 	}
@@ -122,16 +128,12 @@ func (c *Pipeline) pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return cmds, err
 }
 
-func (c *Pipeline) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.pipelined(fn)
-}
-
 func (c *Pipeline) Pipeline() Pipeliner {
 	return c
 }
 
 func (c *Pipeline) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.pipelined(fn)
+	return c.Pipelined(fn)
 }
 
 func (c *Pipeline) TxPipeline() Pipeliner {

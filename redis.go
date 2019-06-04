@@ -45,13 +45,15 @@ func (hs *hooks) AddHook(hook Hook) {
 	hs.hooks = append(hs.hooks, hook)
 }
 
-func (hs hooks) process(ctx context.Context, cmd Cmder, fn func(Cmder) error) error {
+func (hs hooks) process(
+	ctx context.Context, cmd Cmder, fn func(context.Context, Cmder) error,
+) error {
 	ctx, err := hs.beforeProcess(ctx, cmd)
 	if err != nil {
 		return err
 	}
 
-	cmdErr := fn(cmd)
+	cmdErr := fn(ctx, cmd)
 
 	_, err = hs.afterProcess(ctx, cmd)
 	if err != nil {
@@ -83,13 +85,15 @@ func (hs hooks) afterProcess(ctx context.Context, cmd Cmder) (context.Context, e
 	return ctx, nil
 }
 
-func (hs hooks) processPipeline(ctx context.Context, cmds []Cmder, fn func([]Cmder) error) error {
+func (hs hooks) processPipeline(
+	ctx context.Context, cmds []Cmder, fn func(context.Context, []Cmder) error,
+) error {
 	ctx, err := hs.beforeProcessPipeline(ctx, cmds)
 	if err != nil {
 		return err
 	}
 
-	cmdsErr := fn(cmds)
+	cmdsErr := fn(ctx, cmds)
 
 	_, err = hs.afterProcessPipeline(ctx, cmds)
 	if err != nil {
@@ -246,14 +250,7 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 	return nil
 }
 
-// Do creates a Cmd from the args and processes the cmd.
-func (c *baseClient) Do(args ...interface{}) *Cmd {
-	cmd := NewCmd(args...)
-	_ = c.process(cmd)
-	return cmd
-}
-
-func (c *baseClient) process(cmd Cmder) error {
+func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			time.Sleep(c.retryBackoff(attempt))
@@ -328,11 +325,11 @@ func (c *baseClient) getAddr() string {
 	return c.opt.Addr
 }
 
-func (c *baseClient) processPipeline(cmds []Cmder) error {
+func (c *baseClient) processPipeline(ctx context.Context, cmds []Cmder) error {
 	return c.generalProcessPipeline(cmds, c.pipelineProcessCmds)
 }
 
-func (c *baseClient) processTxPipeline(cmds []Cmder) error {
+func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
 	return c.generalProcessPipeline(cmds, c.txPipelineProcessCmds)
 }
 
@@ -503,16 +500,31 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 	return &clone
 }
 
+// Do creates a Cmd from the args and processes the cmd.
+func (c *Client) Do(args ...interface{}) *Cmd {
+	return c.DoContext(c.ctx, args...)
+}
+
+func (c *Client) DoContext(ctx context.Context, args ...interface{}) *Cmd {
+	cmd := NewCmd(args...)
+	_ = c.ProcessContext(ctx, cmd)
+	return cmd
+}
+
 func (c *Client) Process(cmd Cmder) error {
-	return c.hooks.process(c.ctx, cmd, c.baseClient.process)
+	return c.ProcessContext(c.ctx, cmd)
 }
 
-func (c *Client) processPipeline(cmds []Cmder) error {
-	return c.hooks.processPipeline(c.ctx, cmds, c.baseClient.processPipeline)
+func (c *Client) ProcessContext(ctx context.Context, cmd Cmder) error {
+	return c.hooks.process(ctx, cmd, c.baseClient.process)
 }
 
-func (c *Client) processTxPipeline(cmds []Cmder) error {
-	return c.hooks.processPipeline(c.ctx, cmds, c.baseClient.processTxPipeline)
+func (c *Client) processPipeline(ctx context.Context, cmds []Cmder) error {
+	return c.hooks.processPipeline(ctx, cmds, c.baseClient.processPipeline)
+}
+
+func (c *Client) processTxPipeline(ctx context.Context, cmds []Cmder) error {
+	return c.hooks.processPipeline(ctx, cmds, c.baseClient.processTxPipeline)
 }
 
 // Options returns read-only Options that were used to create the client.
@@ -637,7 +649,11 @@ func newConn(opt *Options, cn *pool.Conn) *Conn {
 }
 
 func (c *Conn) Process(cmd Cmder) error {
-	return c.baseClient.process(cmd)
+	return c.ProcessContext(context.TODO(), cmd)
+}
+
+func (c *Conn) ProcessContext(ctx context.Context, cmd Cmder) error {
+	return c.baseClient.process(ctx, cmd)
 }
 
 func (c *Conn) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {

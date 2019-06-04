@@ -136,7 +136,11 @@ func (c *SentinelClient) WithContext(ctx context.Context) *SentinelClient {
 }
 
 func (c *SentinelClient) Process(cmd Cmder) error {
-	return c.baseClient.process(cmd)
+	return c.ProcessContext(c.ctx, cmd)
+}
+
+func (c *SentinelClient) ProcessContext(ctx context.Context, cmd Cmder) error {
+	return c.baseClient.process(ctx, cmd)
 }
 
 func (c *SentinelClient) pubSub() *PubSub {

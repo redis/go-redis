@@ -1,6 +1,8 @@
 package redis
 
-import "sync"
+import (
+	"sync"
+)
 
 // ScanIterator is used to incrementally iterate over a collection of elements.
 // It's safe for concurrent use by multiple goroutines.
