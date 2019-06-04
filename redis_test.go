@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"time"
 
@@ -41,7 +42,7 @@ var _ = Describe("Client", func() {
 		custom := redis.NewClient(&redis.Options{
 			Network: "tcp",
 			Addr:    redisAddr,
-			Dialer: func(network, addr string) (net.Conn, error) {
+			Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return net.Dial(network, addr)
 			},
 		})
@@ -146,7 +147,7 @@ var _ = Describe("Client", func() {
 		})
 
 		// Put bad connection in the pool.
-		cn, err := client.Pool().Get()
+		cn, err := client.Pool().Get(nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		cn.SetNetConn(&badConn{})
@@ -184,7 +185,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should update conn.UsedAt on read/write", func() {
-		cn, err := client.Pool().Get()
+		cn, err := client.Pool().Get(nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn.UsedAt).NotTo(BeZero())
 		createdAt := cn.UsedAt()
@@ -197,7 +198,7 @@ var _ = Describe("Client", func() {
 		err = client.Ping().Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		cn, err = client.Pool().Get()
+		cn, err = client.Pool().Get(nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn).NotTo(BeNil())
 		Expect(cn.UsedAt().After(createdAt)).To(BeTrue())

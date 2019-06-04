@@ -39,7 +39,7 @@ func BenchmarkPoolGetPut(b *testing.B) {
 
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					cn, err := connPool.Get()
+					cn, err := connPool.Get(nil)
 					if err != nil {
 						b.Fatal(err)
 					}
@@ -81,7 +81,7 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					cn, err := connPool.Get()
+					cn, err := connPool.Get(nil)
 					if err != nil {
 						b.Fatal(err)
 					}

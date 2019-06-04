@@ -21,16 +21,16 @@ type FailoverOptions struct {
 	// The master name.
 	MasterName string
 	// A seed list of host:port addresses of sentinel nodes.
-	SentinelAddrs []string
+	SentinelAddrs    []string
+	SentinelPassword string
 
 	// Following options are copied from Options struct.
 
-	Dialer    func(network, addr string) (net.Conn, error)
+	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(*Conn) error
 
-	Password         string
-	SentinelPassword string
-	DB               int
+	Password string
+	DB       int
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -312,7 +312,7 @@ func (c *sentinelFailover) Pool() *pool.ConnPool {
 	return c.pool
 }
 
-func (c *sentinelFailover) dial(network, addr string) (net.Conn, error) {
+func (c *sentinelFailover) dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	addr, err := c.MasterAddr()
 	if err != nil {
 		return nil, err

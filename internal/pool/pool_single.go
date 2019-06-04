@@ -1,5 +1,7 @@
 package pool
 
+import "context"
+
 type SingleConnPool struct {
 	cn *Conn
 }
@@ -20,7 +22,7 @@ func (p *SingleConnPool) CloseConn(*Conn) error {
 	panic("not implemented")
 }
 
-func (p *SingleConnPool) Get() (*Conn, error) {
+func (p *SingleConnPool) Get(c context.Context) (*Conn, error) {
 	return p.cn, nil
 }
 

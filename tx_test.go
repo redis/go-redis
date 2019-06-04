@@ -124,7 +124,7 @@ var _ = Describe("Tx", func() {
 
 	It("should recover from bad connection", func() {
 		// Put bad connection in the pool.
-		cn, err := client.Pool().Get()
+		cn, err := client.Pool().Get(nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		cn.SetNetConn(&badConn{})

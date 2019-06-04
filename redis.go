@@ -154,7 +154,7 @@ func (c *baseClient) newConn() (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) getConn() (*pool.Conn, error) {
+func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 	if c.limiter != nil {
 		err := c.limiter.Allow()
 		if err != nil {
@@ -162,7 +162,7 @@ func (c *baseClient) getConn() (*pool.Conn, error) {
 		}
 	}
 
-	cn, err := c._getConn()
+	cn, err := c._getConn(ctx)
 	if err != nil {
 		if c.limiter != nil {
 			c.limiter.ReportResult(err)
@@ -172,8 +172,8 @@ func (c *baseClient) getConn() (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) _getConn() (*pool.Conn, error) {
-	cn, err := c.connPool.Get()
+func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
+	cn, err := c.connPool.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +256,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 			time.Sleep(c.retryBackoff(attempt))
 		}
 
-		cn, err := c.getConn()
+		cn, err := c.getConn(ctx)
 		if err != nil {
 			cmd.setErr(err)
 			if internal.IsRetryableError(err, true) {
@@ -326,22 +326,24 @@ func (c *baseClient) getAddr() string {
 }
 
 func (c *baseClient) processPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.generalProcessPipeline(cmds, c.pipelineProcessCmds)
+	return c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds)
 }
 
 func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.generalProcessPipeline(cmds, c.txPipelineProcessCmds)
+	return c.generalProcessPipeline(ctx, cmds, c.txPipelineProcessCmds)
 }
 
 type pipelineProcessor func(*pool.Conn, []Cmder) (bool, error)
 
-func (c *baseClient) generalProcessPipeline(cmds []Cmder, p pipelineProcessor) error {
+func (c *baseClient) generalProcessPipeline(
+	ctx context.Context, cmds []Cmder, p pipelineProcessor,
+) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			time.Sleep(c.retryBackoff(attempt))
 		}
 
-		cn, err := c.getConn()
+		cn, err := c.getConn(ctx)
 		if err != nil {
 			setCmdsErr(cmds, err)
 			return err
