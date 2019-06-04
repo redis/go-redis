@@ -16,9 +16,9 @@ import (
 
 // Limiter is the interface of a rate limiter or a circuit breaker.
 type Limiter interface {
-	// Allow returns a nil if operation is allowed or an error otherwise.
-	// If operation is allowed client must report the result of operation
-	// whether is a success or a failure.
+	// Allow returns nil if operation is allowed or an error otherwise.
+	// If operation is allowed client must ReportResult of the operation
+	// whether it is a success or a failure.
 	Allow() error
 	// ReportResult reports the result of previously allowed operation.
 	// nil indicates a success, non-nil error indicates a failure.

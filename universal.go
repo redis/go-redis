@@ -162,7 +162,10 @@ type UniversalClient interface {
 	Context() context.Context
 	AddHook(Hook)
 	Watch(fn func(*Tx) error, keys ...string) error
+	Do(args ...interface{}) *Cmd
+	DoContext(ctx context.Context, args ...interface{}) *Cmd
 	Process(cmd Cmder) error
+	ProcessContext(ctx context.Context, cmd Cmder) error
 	Subscribe(channels ...string) *PubSub
 	PSubscribe(channels ...string) *PubSub
 	Close() error

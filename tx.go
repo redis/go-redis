@@ -56,7 +56,11 @@ func (c *Tx) WithContext(ctx context.Context) *Tx {
 }
 
 func (c *Tx) Process(cmd Cmder) error {
-	return c.baseClient.process(cmd)
+	return c.ProcessContext(c.ctx, cmd)
+}
+
+func (c *Tx) ProcessContext(ctx context.Context, cmd Cmder) error {
+	return c.baseClient.process(ctx, cmd)
 }
 
 // Watch prepares a transaction and marks the keys to be watched

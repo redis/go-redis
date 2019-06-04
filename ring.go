@@ -396,13 +396,21 @@ func (c *Ring) WithContext(ctx context.Context) *Ring {
 
 // Do creates a Cmd from the args and processes the cmd.
 func (c *Ring) Do(args ...interface{}) *Cmd {
+	return c.DoContext(c.ctx, args...)
+}
+
+func (c *Ring) DoContext(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(args...)
-	c.Process(cmd)
+	c.ProcessContext(ctx, cmd)
 	return cmd
 }
 
 func (c *Ring) Process(cmd Cmder) error {
-	return c.hooks.process(c.ctx, cmd, c.process)
+	return c.ProcessContext(c.ctx, cmd)
+}
+
+func (c *Ring) ProcessContext(ctx context.Context, cmd Cmder) error {
+	return c.hooks.process(ctx, cmd, c.process)
 }
 
 // Options returns read-only Options that were used to create the client.
@@ -532,7 +540,7 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 	return c.shards.GetByKey(firstKey)
 }
 
-func (c *Ring) process(cmd Cmder) error {
+func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			time.Sleep(c.retryBackoff(attempt))
@@ -544,7 +552,7 @@ func (c *Ring) process(cmd Cmder) error {
 			return err
 		}
 
-		err = shard.Client.Process(cmd)
+		err = shard.Client.ProcessContext(ctx, cmd)
 		if err == nil {
 			return nil
 		}
@@ -567,11 +575,11 @@ func (c *Ring) Pipeline() Pipeliner {
 	return &pipe
 }
 
-func (c *Ring) processPipeline(cmds []Cmder) error {
-	return c.hooks.processPipeline(c.ctx, cmds, c._processPipeline)
+func (c *Ring) processPipeline(ctx context.Context, cmds []Cmder) error {
+	return c.hooks.processPipeline(ctx, cmds, c._processPipeline)
 }
 
-func (c *Ring) _processPipeline(cmds []Cmder) error {
+func (c *Ring) _processPipeline(ctx context.Context, cmds []Cmder) error {
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
 		cmdInfo := c.cmdInfo(cmd.Name())

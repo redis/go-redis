@@ -724,16 +724,24 @@ func (c *ClusterClient) Close() error {
 
 // Do creates a Cmd from the args and processes the cmd.
 func (c *ClusterClient) Do(args ...interface{}) *Cmd {
+	return c.DoContext(c.ctx, args...)
+}
+
+func (c *ClusterClient) DoContext(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(args...)
-	c.Process(cmd)
+	c.ProcessContext(ctx, cmd)
 	return cmd
 }
 
 func (c *ClusterClient) Process(cmd Cmder) error {
-	return c.hooks.process(c.ctx, cmd, c.process)
+	return c.ProcessContext(c.ctx, cmd)
 }
 
-func (c *ClusterClient) process(cmd Cmder) error {
+func (c *ClusterClient) ProcessContext(ctx context.Context, cmd Cmder) error {
+	return c.hooks.process(ctx, cmd, c.process)
+}
+
+func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	var node *clusterNode
 	var ask bool
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
@@ -755,11 +763,11 @@ func (c *ClusterClient) process(cmd Cmder) error {
 			pipe := node.Client.Pipeline()
 			_ = pipe.Process(NewCmd("ASKING"))
 			_ = pipe.Process(cmd)
-			_, err = pipe.Exec()
+			_, err = pipe.ExecContext(ctx)
 			_ = pipe.Close()
 			ask = false
 		} else {
-			err = node.Client.Process(cmd)
+			err = node.Client.ProcessContext(ctx, cmd)
 		}
 
 		// If there is no error - we are done.
@@ -1022,11 +1030,11 @@ func (c *ClusterClient) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().Pipelined(fn)
 }
 
-func (c *ClusterClient) processPipeline(cmds []Cmder) error {
+func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error {
 	return c.hooks.processPipeline(c.ctx, cmds, c._processPipeline)
 }
 
-func (c *ClusterClient) _processPipeline(cmds []Cmder) error {
+func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) error {
 	cmdsMap := newCmdsMap()
 	err := c.mapCmdsByNode(cmds, cmdsMap)
 	if err != nil {
@@ -1216,11 +1224,11 @@ func (c *ClusterClient) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.TxPipeline().Pipelined(fn)
 }
 
-func (c *ClusterClient) processTxPipeline(cmds []Cmder) error {
-	return c.hooks.processPipeline(c.ctx, cmds, c._processTxPipeline)
+func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
+	return c.hooks.processPipeline(ctx, cmds, c._processTxPipeline)
 }
 
-func (c *ClusterClient) _processTxPipeline(cmds []Cmder) error {
+func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) error {
 	state, err := c.state.Get()
 	if err != nil {
 		return err
