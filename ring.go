@@ -616,7 +616,7 @@ func (c *Ring) _processPipeline(ctx context.Context, cmds []Cmder) error {
 					return
 				}
 
-				canRetry, err := shard.Client.pipelineProcessCmds(cn, cmds)
+				canRetry, err := shard.Client.pipelineProcessCmds(ctx, cn, cmds)
 				shard.Client.releaseConnStrict(cn, err)
 
 				if canRetry && internal.IsRetryableError(err, true) {
