@@ -4,6 +4,9 @@
 
 - WrapProcess is replaced with more convenient AddHook that has access to context.Context.
 - WithContext no longer creates shallow copy.
+- New methods ProcessContext, DoContext, and ExecContext.
+- Client respects Context.Deadline when setting net.Conn deadline.
+- Client listens on Context.Done while waiting for a connection from the pool.
 
 ## v6.15
 
