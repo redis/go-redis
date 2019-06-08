@@ -20,7 +20,7 @@ type UniversalOptions struct {
 
 	// Common options.
 
-	Dialer             func(network, addr string) (net.Conn, error)
+	Dialer             func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect          func(*Conn) error
 	Password           string
 	MaxRetries         int

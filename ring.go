@@ -610,7 +610,7 @@ func (c *Ring) _processPipeline(ctx context.Context, cmds []Cmder) error {
 					return
 				}
 
-				cn, err := shard.Client.getConn()
+				cn, err := shard.Client.getConn(ctx)
 				if err != nil {
 					setCmdsErr(cmds, err)
 					return

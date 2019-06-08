@@ -1,6 +1,7 @@
 package pool_test
 
 import (
+	"context"
 	"net"
 	"sync"
 	"testing"
@@ -30,6 +31,6 @@ func perform(n int, cbs ...func(int)) {
 	wg.Wait()
 }
 
-func dummyDialer() (net.Conn, error) {
+func dummyDialer(context.Context) (net.Conn, error) {
 	return &net.TCPConn{}, nil
 }

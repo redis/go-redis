@@ -53,7 +53,7 @@ type ClusterOptions struct {
 
 	// Following options are copied from Options struct.
 
-	Dialer func(network, addr string) (net.Conn, error)
+	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	OnConnect func(*Conn) error
 
@@ -1055,7 +1055,7 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 			go func(node *clusterNode, cmds []Cmder) {
 				defer wg.Done()
 
-				cn, err := node.Client.getConn()
+				cn, err := node.Client.getConn(ctx)
 				if err != nil {
 					if err == pool.ErrClosed {
 						c.mapCmdsByNode(cmds, failedCmds)
@@ -1256,7 +1256,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 				go func(node *clusterNode, cmds []Cmder) {
 					defer wg.Done()
 
-					cn, err := node.Client.getConn()
+					cn, err := node.Client.getConn(ctx)
 					if err != nil {
 						if err == pool.ErrClosed {
 							c.mapCmdsByNode(cmds, failedCmds)

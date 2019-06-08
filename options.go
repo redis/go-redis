@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -34,7 +35,7 @@ type Options struct {
 
 	// Dialer creates new network connection and has priority over
 	// Network and Addr options.
-	Dialer func(network, addr string) (net.Conn, error)
+	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	// Hook that is called when new connection is established.
 	OnConnect func(*Conn) error
@@ -105,7 +106,7 @@ func (opt *Options) init() {
 		opt.Addr = "localhost:6379"
 	}
 	if opt.Dialer == nil {
-		opt.Dialer = func(network, addr string) (net.Conn, error) {
+		opt.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			netDialer := &net.Dialer{
 				Timeout:   opt.DialTimeout,
 				KeepAlive: 5 * time.Minute,
@@ -215,8 +216,8 @@ func ParseURL(redisURL string) (*Options, error) {
 
 func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
-		Dialer: func() (net.Conn, error) {
-			return opt.Dialer(opt.Network, opt.Addr)
+		Dialer: func(c context.Context) (net.Conn, error) {
+			return opt.Dialer(c, opt.Network, opt.Addr)
 		},
 		PoolSize:           opt.PoolSize,
 		MinIdleConns:       opt.MinIdleConns,
