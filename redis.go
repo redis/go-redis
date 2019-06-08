@@ -265,7 +265,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 			return err
 		}
 
-		err = cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		err = cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 			return writeCmd(wr, cmd)
 		})
 		if err != nil {
@@ -277,7 +277,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 			return err
 		}
 
-		err = cn.WithReader(c.cmdTimeout(cmd), cmd.readReply)
+		err = cn.WithReader(ctx, c.cmdTimeout(cmd), cmd.readReply)
 		c.releaseConn(cn, err)
 		if err != nil && internal.IsRetryableError(err, cmd.readTimeout() == nil) {
 			continue
@@ -333,7 +333,7 @@ func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error 
 	return c.generalProcessPipeline(ctx, cmds, c.txPipelineProcessCmds)
 }
 
-type pipelineProcessor func(*pool.Conn, []Cmder) (bool, error)
+type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor,
@@ -349,7 +349,7 @@ func (c *baseClient) generalProcessPipeline(
 			return err
 		}
 
-		canRetry, err := p(cn, cmds)
+		canRetry, err := p(ctx, cn, cmds)
 		c.releaseConnStrict(cn, err)
 
 		if !canRetry || !internal.IsRetryableError(err, true) {
@@ -359,8 +359,10 @@ func (c *baseClient) generalProcessPipeline(
 	return cmdsFirstErr(cmds)
 }
 
-func (c *baseClient) pipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {
-	err := cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+func (c *baseClient) pipelineProcessCmds(
+	ctx context.Context, cn *pool.Conn, cmds []Cmder,
+) (bool, error) {
+	err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmd(wr, cmds...)
 	})
 	if err != nil {
@@ -368,7 +370,7 @@ func (c *baseClient) pipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, err
 		return true, err
 	}
 
-	err = cn.WithReader(c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		return pipelineReadCmds(rd, cmds)
 	})
 	return true, err
@@ -384,8 +386,10 @@ func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
 	return nil
 }
 
-func (c *baseClient) txPipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, error) {
-	err := cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+func (c *baseClient) txPipelineProcessCmds(
+	ctx context.Context, cn *pool.Conn, cmds []Cmder,
+) (bool, error) {
+	err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return txPipelineWriteMulti(wr, cmds)
 	})
 	if err != nil {
@@ -393,7 +397,7 @@ func (c *baseClient) txPipelineProcessCmds(cn *pool.Conn, cmds []Cmder) (bool, e
 		return true, err
 	}
 
-	err = cn.WithReader(c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		err := txPipelineReadQueued(rd, cmds)
 		if err != nil {
 			setCmdsErr(cmds, err)

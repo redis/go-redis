@@ -1065,7 +1065,7 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 					return
 				}
 
-				err = c.pipelineProcessCmds(node, cn, cmds, failedCmds)
+				err = c.pipelineProcessCmds(ctx, node, cn, cmds, failedCmds)
 				node.Client.releaseConnStrict(cn, err)
 			}(node, cmds)
 		}
@@ -1129,9 +1129,9 @@ func (c *ClusterClient) cmdsAreReadOnly(cmds []Cmder) bool {
 }
 
 func (c *ClusterClient) pipelineProcessCmds(
-	node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
+	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
-	err := cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+	err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmd(wr, cmds...)
 	})
 	if err != nil {
@@ -1142,7 +1142,7 @@ func (c *ClusterClient) pipelineProcessCmds(
 		return err
 	}
 
-	return cn.WithReader(c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		return c.pipelineReadCmds(node, rd, cmds, failedCmds)
 	})
 }
@@ -1266,7 +1266,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 						return
 					}
 
-					err = c.txPipelineProcessCmds(node, cn, cmds, failedCmds)
+					err = c.txPipelineProcessCmds(ctx, node, cn, cmds, failedCmds)
 					node.Client.releaseConnStrict(cn, err)
 				}(node, cmds)
 			}
@@ -1292,9 +1292,9 @@ func (c *ClusterClient) mapCmdsBySlot(cmds []Cmder) map[int][]Cmder {
 }
 
 func (c *ClusterClient) txPipelineProcessCmds(
-	node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
+	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
-	err := cn.WithWriter(c.opt.WriteTimeout, func(wr *proto.Writer) error {
+	err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return txPipelineWriteMulti(wr, cmds)
 	})
 	if err != nil {
@@ -1305,7 +1305,7 @@ func (c *ClusterClient) txPipelineProcessCmds(
 		return err
 	}
 
-	err = cn.WithReader(c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		err := c.txPipelineReadQueued(rd, cmds, failedCmds)
 		if err != nil {
 			setCmdsErr(cmds, err)

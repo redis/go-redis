@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"context"
 	"net"
 	"sync/atomic"
 	"time"
@@ -48,24 +49,6 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 	cn.wr.Reset(netConn)
 }
 
-func (cn *Conn) setReadTimeout(timeout time.Duration) error {
-	now := time.Now()
-	cn.SetUsedAt(now)
-	if timeout > 0 {
-		return cn.netConn.SetReadDeadline(now.Add(timeout))
-	}
-	return cn.netConn.SetReadDeadline(noDeadline)
-}
-
-func (cn *Conn) setWriteTimeout(timeout time.Duration) error {
-	now := time.Now()
-	cn.SetUsedAt(now)
-	if timeout > 0 {
-		return cn.netConn.SetWriteDeadline(now.Add(timeout))
-	}
-	return cn.netConn.SetWriteDeadline(noDeadline)
-}
-
 func (cn *Conn) Write(b []byte) (int, error) {
 	return cn.netConn.Write(b)
 }
@@ -74,13 +57,17 @@ func (cn *Conn) RemoteAddr() net.Addr {
 	return cn.netConn.RemoteAddr()
 }
 
-func (cn *Conn) WithReader(timeout time.Duration, fn func(rd *proto.Reader) error) error {
-	_ = cn.setReadTimeout(timeout)
+func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error) error {
+	tm := cn.deadline(ctx, timeout)
+	_ = cn.netConn.SetReadDeadline(tm)
 	return fn(cn.rd)
 }
 
-func (cn *Conn) WithWriter(timeout time.Duration, fn func(wr *proto.Writer) error) error {
-	_ = cn.setWriteTimeout(timeout)
+func (cn *Conn) WithWriter(
+	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
+) error {
+	tm := cn.deadline(ctx, timeout)
+	_ = cn.netConn.SetWriteDeadline(tm)
 
 	firstErr := fn(cn.wr)
 	err := cn.wr.Flush()
@@ -92,4 +79,23 @@ func (cn *Conn) WithWriter(timeout time.Duration, fn func(wr *proto.Writer) erro
 
 func (cn *Conn) Close() error {
 	return cn.netConn.Close()
+}
+
+func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
+	if ctx != nil {
+		tm, ok := ctx.Deadline()
+		if ok {
+			cn.SetUsedAt(tm)
+			return tm
+		}
+	}
+
+	now := time.Now()
+	if timeout > 0 {
+		cn.SetUsedAt(now)
+		return now.Add(timeout)
+	}
+
+	cn.SetUsedAt(now)
+	return noDeadline
 }
