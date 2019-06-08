@@ -22,7 +22,7 @@ func (p *SingleConnPool) CloseConn(*Conn) error {
 	panic("not implemented")
 }
 
-func (p *SingleConnPool) Get(c context.Context) (*Conn, error) {
+func (p *SingleConnPool) Get(ctx context.Context) (*Conn, error) {
 	return p.cn, nil
 }
 

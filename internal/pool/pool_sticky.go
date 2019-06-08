@@ -31,7 +31,7 @@ func (p *StickyConnPool) CloseConn(*Conn) error {
 	panic("not implemented")
 }
 
-func (p *StickyConnPool) Get(c context.Context) (*Conn, error) {
+func (p *StickyConnPool) Get(ctx context.Context) (*Conn, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -42,7 +42,7 @@ func (p *StickyConnPool) Get(c context.Context) (*Conn, error) {
 		return p.cn, nil
 	}
 
-	cn, err := p.pool.Get(c)
+	cn, err := p.pool.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
