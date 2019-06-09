@@ -265,6 +265,10 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 
 		select {
 		case <-done:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			timers.Put(timer)
 			return ctx.Err()
 		case p.queue <- struct{}{}:
 			if !timer.Stop() {
