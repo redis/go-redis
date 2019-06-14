@@ -82,19 +82,36 @@ func (cn *Conn) Close() error {
 }
 
 func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
-	now := time.Now()
-	cn.SetUsedAt(now)
+	tm := time.Now()
+	cn.SetUsedAt(tm)
+
+	if timeout > 0 {
+		tm = tm.Add(timeout)
+	}
 
 	if ctx != nil {
-		tm, ok := ctx.Deadline()
+		deadline, ok := ctx.Deadline()
 		if ok {
-			return tm
+			if timeout == 0 {
+				return deadline
+			}
+			return minNonzeroTime(deadline, tm)
 		}
 	}
 
 	if timeout > 0 {
-		return now.Add(timeout)
+		return tm
 	}
 
 	return noDeadline
+}
+
+func minNonzeroTime(a, b time.Time) time.Time {
+	if a.IsZero() {
+		return b
+	}
+	if b.IsZero() || a.Before(b) {
+		return a
+	}
+	return b
 }
