@@ -434,7 +434,7 @@ func (c *Ring) PoolStats() *PoolStats {
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
 		acc.QueueWaits += s.QueueWaits
-		acc.QueueSize = s.QueueSize
+		acc.QueueSize += s.QueueSize
 	}
 	return &acc
 }
