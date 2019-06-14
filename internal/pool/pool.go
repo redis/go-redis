@@ -31,6 +31,8 @@ type Stats struct {
 	TotalConns uint32 // number of total connections in the pool
 	IdleConns  uint32 // number of idle connections in the pool
 	StaleConns uint32 // number of stale connections removed from the pool
+	QueueSize  uint32 // Size of the outstanding PoolSize queue
+	QueueWaits uint32 // The times we had to sleep waiting our turn on the connection queue
 }
 
 type Pooler interface {
@@ -249,22 +251,23 @@ func (p *ConnPool) getTurn() {
 }
 
 func (p *ConnPool) waitTurn(ctx context.Context) error {
-	var done <-chan struct{}
-	if ctx != nil {
-		done = ctx.Done()
+	if ctx == nil {
+		// The background context's Done is nil by default.
+		ctx = context.Background()
 	}
 
 	select {
-	case <-done:
+	case <-ctx.Done():
 		return ctx.Err()
 	case p.queue <- struct{}{}:
 		return nil
 	default:
+		atomic.AddUint32(&p.stats.QueueWaits, 1)
 		timer := timers.Get().(*time.Timer)
 		timer.Reset(p.opt.PoolTimeout)
 
 		select {
-		case <-done:
+		case <-ctx.Done():
 			if !timer.Stop() {
 				<-timer.C
 			}
@@ -372,6 +375,7 @@ func (p *ConnPool) Stats() *Stats {
 
 		TotalConns: uint32(p.Len()),
 		IdleConns:  uint32(idleLen),
+		QueueSize:  uint32(p.queue),
 		StaleConns: atomic.LoadUint32(&p.stats.StaleConns),
 	}
 }
