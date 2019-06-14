@@ -1445,7 +1445,7 @@ func (c *ClusterClient) pubSub() *PubSub {
 				return nil, err
 			}
 
-			cn, err := node.Client.newConn()
+			cn, err := node.Client.newConn(context.TODO())
 			if err != nil {
 				node = nil
 

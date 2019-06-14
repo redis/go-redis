@@ -14,7 +14,7 @@ func NewSingleConnPool(cn *Conn) *SingleConnPool {
 	}
 }
 
-func (p *SingleConnPool) NewConn() (*Conn, error) {
+func (p *SingleConnPool) NewConn(context.Context) (*Conn, error) {
 	panic("not implemented")
 }
 

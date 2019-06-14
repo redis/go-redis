@@ -139,8 +139,8 @@ func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.getAddr(), c.opt.DB)
 }
 
-func (c *baseClient) newConn() (*pool.Conn, error) {
-	cn, err := c.connPool.NewConn()
+func (c *baseClient) newConn(ctx context.Context) (*pool.Conn, error) {
+	cn, err := c.connPool.NewConn(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -581,7 +581,7 @@ func (c *Client) pubSub() *PubSub {
 		opt: c.opt,
 
 		newConn: func(channels []string) (*pool.Conn, error) {
-			return c.newConn()
+			return c.newConn(context.TODO())
 		},
 		closeConn: c.connPool.CloseConn,
 	}

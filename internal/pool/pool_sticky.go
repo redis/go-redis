@@ -23,7 +23,7 @@ func NewStickyConnPool(pool *ConnPool, reusable bool) *StickyConnPool {
 	}
 }
 
-func (p *StickyConnPool) NewConn() (*Conn, error) {
+func (p *StickyConnPool) NewConn(context.Context) (*Conn, error) {
 	panic("not implemented")
 }
 

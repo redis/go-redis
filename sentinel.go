@@ -150,7 +150,7 @@ func (c *SentinelClient) pubSub() *PubSub {
 		opt: c.opt,
 
 		newConn: func(channels []string) (*pool.Conn, error) {
-			return c.newConn()
+			return c.newConn(context.TODO())
 		},
 		closeConn: c.connPool.CloseConn,
 	}

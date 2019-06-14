@@ -95,7 +95,10 @@ func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 			if timeout == 0 {
 				return deadline
 			}
-			return minNonzeroTime(deadline, tm)
+			if deadline.Before(tm) {
+				return deadline
+			}
+			return tm
 		}
 	}
 
@@ -104,14 +107,4 @@ func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	}
 
 	return noDeadline
-}
-
-func minNonzeroTime(a, b time.Time) time.Time {
-	if a.IsZero() {
-		return b
-	}
-	if b.IsZero() || a.Before(b) {
-		return a
-	}
-	return b
 }
