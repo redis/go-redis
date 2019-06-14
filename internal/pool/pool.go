@@ -34,7 +34,7 @@ type Stats struct {
 }
 
 type Pooler interface {
-	NewConn() (*Conn, error)
+	NewConn(context.Context) (*Conn, error)
 	CloseConn(*Conn) error
 
 	Get(context.Context) (*Conn, error)
@@ -115,7 +115,7 @@ func (p *ConnPool) checkMinIdleConns() {
 }
 
 func (p *ConnPool) addIdleConn() {
-	cn, err := p.newConn(nil, true)
+	cn, err := p.newConn(context.TODO(), true)
 	if err != nil {
 		return
 	}
@@ -126,8 +126,8 @@ func (p *ConnPool) addIdleConn() {
 	p.connsMu.Unlock()
 }
 
-func (p *ConnPool) NewConn() (*Conn, error) {
-	return p._NewConn(nil, false)
+func (p *ConnPool) NewConn(ctx context.Context) (*Conn, error) {
+	return p._NewConn(ctx, false)
 }
 
 func (p *ConnPool) _NewConn(ctx context.Context, pooled bool) (*Conn, error) {
