@@ -944,6 +944,8 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
 		acc.StaleConns += s.StaleConns
+		acc.QueueWaits += s.QueueWaits
+		acc.QueueSize = s.QueueSize
 	}
 
 	for _, node := range state.Slaves {
@@ -955,6 +957,8 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
 		acc.StaleConns += s.StaleConns
+		acc.QueueWaits += s.QueueWaits
+		acc.QueueSize = s.QueueSize
 	}
 
 	return &acc

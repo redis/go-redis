@@ -375,7 +375,8 @@ func (p *ConnPool) Stats() *Stats {
 
 		TotalConns: uint32(p.Len()),
 		IdleConns:  uint32(idleLen),
-		QueueSize:  uint32(p.queue),
+		QueueSize:  uint32(len(p.queue)),
+		QueueWaits: atomic.LoadUint32(&p.stats.QueueWaits),
 		StaleConns: atomic.LoadUint32(&p.stats.StaleConns),
 	}
 }
