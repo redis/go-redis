@@ -178,7 +178,7 @@ func (p *ConnPool) tryDial() {
 			return
 		}
 
-		conn, err := p.opt.Dialer(nil)
+		conn, err := p.opt.Dialer(context.Background())
 		if err != nil {
 			p.setLastDialError(err)
 			time.Sleep(time.Second)
