@@ -465,7 +465,7 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 		if p.closed() {
 			break
 		}
-		n, err := p.ReapStaleConns()
+		_, err := p.ReapStaleConns()
 		if err != nil {
 			internal.Logf("ReapStaleConns failed: %s", err)
 			continue
