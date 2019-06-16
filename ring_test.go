@@ -379,6 +379,8 @@ var _ = Describe("Ring watch", func() {
 		})
 
 		ring.ForEachShard(func(cl *redis.Client) error {
+			defer GinkgoRecover()
+
 			pool := cl.Pool()
 			Expect(pool.Len()).To(BeNumerically("<=", 10))
 			Expect(pool.IdleLen()).To(BeNumerically("<=", 10))
