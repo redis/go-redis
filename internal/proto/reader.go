@@ -82,6 +82,10 @@ func (r *Reader) ReadReply(m MultiBulkParse) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
+		if m == nil {
+			err := fmt.Errorf("redis: got %.100q, but multi bulk parser is nil", line)
+			return nil, err
+		}
 		return m(r, n)
 	}
 	return nil, fmt.Errorf("redis: can't parse %.100q", line)
