@@ -52,14 +52,14 @@ func (c *PubSub) init() {
 	c.exit = make(chan struct{})
 }
 
-func (c *PubSub) conn() (*pool.Conn, error) {
+func (c *PubSub) connWithLock() (*pool.Conn, error) {
 	c.mu.Lock()
-	cn, err := c._conn(nil)
+	cn, err := c.conn(nil)
 	c.mu.Unlock()
 	return cn, err
 }
 
-func (c *PubSub) _conn(newChannels []string) (*pool.Conn, error) {
+func (c *PubSub) conn(newChannels []string) (*pool.Conn, error) {
 	if c.closed {
 		return nil, pool.ErrClosed
 	}
@@ -132,32 +132,32 @@ func (c *PubSub) _subscribe(
 	return c.writeCmd(context.TODO(), cn, cmd)
 }
 
-func (c *PubSub) releaseConn(cn *pool.Conn, err error, allowTimeout bool) {
+func (c *PubSub) releaseConnWithLock(cn *pool.Conn, err error, allowTimeout bool) {
 	c.mu.Lock()
-	c._releaseConn(cn, err, allowTimeout)
+	c.releaseConn(cn, err, allowTimeout)
 	c.mu.Unlock()
 }
 
-func (c *PubSub) _releaseConn(cn *pool.Conn, err error, allowTimeout bool) {
+func (c *PubSub) releaseConn(cn *pool.Conn, err error, allowTimeout bool) {
 	if c.cn != cn {
 		return
 	}
 	if internal.IsBadConn(err, allowTimeout) {
-		c._reconnect(err)
+		c.reconnect(err)
 	}
 }
 
-func (c *PubSub) _reconnect(reason error) {
-	_ = c._closeTheCn(reason)
-	_, _ = c._conn(nil)
+func (c *PubSub) reconnect(reason error) {
+	_ = c.closeTheCn(reason)
+	_, _ = c.conn(nil)
 }
 
-func (c *PubSub) _closeTheCn(reason error) error {
+func (c *PubSub) closeTheCn(reason error) error {
 	if c.cn == nil {
 		return nil
 	}
 	if !c.closed {
-		internal.Logf("redis: discarding bad PubSub connection: %s", reason)
+		internal.Logger.Printf("redis: discarding bad PubSub connection: %s", reason)
 	}
 	err := c.closeConn(c.cn)
 	c.cn = nil
@@ -174,8 +174,7 @@ func (c *PubSub) Close() error {
 	c.closed = true
 	close(c.exit)
 
-	err := c._closeTheCn(pool.ErrClosed)
-	return err
+	return c.closeTheCn(pool.ErrClosed)
 }
 
 // Subscribe the client to the specified channels. It returns
@@ -237,13 +236,13 @@ func (c *PubSub) PUnsubscribe(patterns ...string) error {
 }
 
 func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
-	cn, err := c._conn(channels)
+	cn, err := c.conn(channels)
 	if err != nil {
 		return err
 	}
 
 	err = c._subscribe(cn, redisCmd, channels)
-	c._releaseConn(cn, err, false)
+	c.releaseConn(cn, err, false)
 	return err
 }
 
@@ -254,13 +253,13 @@ func (c *PubSub) Ping(payload ...string) error {
 	}
 	cmd := NewCmd(args...)
 
-	cn, err := c.conn()
+	cn, err := c.connWithLock()
 	if err != nil {
 		return err
 	}
 
 	err = c.writeCmd(context.TODO(), cn, cmd)
-	c.releaseConn(cn, err, false)
+	c.releaseConnWithLock(cn, err, false)
 	return err
 }
 
@@ -346,7 +345,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 		c.cmd = NewCmd()
 	}
 
-	cn, err := c.conn()
+	cn, err := c.connWithLock()
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +354,7 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 		return c.cmd.readReply(rd)
 	})
 
-	c.releaseConn(cn, err, timeout > 0)
+	c.releaseConnWithLock(cn, err, timeout > 0)
 	if err != nil {
 		return nil, err
 	}
@@ -467,12 +466,12 @@ func (c *PubSub) initChannel(size int) {
 						<-timer.C
 					}
 				case <-timer.C:
-					internal.Logf(
+					internal.Logger.Printf(
 						"redis: %s channel is full for %s (message is dropped)",
 						c, timeout)
 				}
 			default:
-				internal.Logf("redis: unknown message type: %T", msg)
+				internal.Logger.Printf("redis: unknown message type: %T", msg)
 			}
 		}
 	}()
@@ -499,7 +498,7 @@ func (c *PubSub) initChannel(size int) {
 						pingErr = errPingTimeout
 					}
 					c.mu.Lock()
-					c._reconnect(pingErr)
+					c.reconnect(pingErr)
 					c.mu.Unlock()
 				}
 			case <-c.exit:
