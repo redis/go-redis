@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"github.com/go-redis/redis/internal"
@@ -14,10 +13,6 @@ import (
 
 // Nil reply Redis returns when key does not exist.
 const Nil = proto.Nil
-
-func init() {
-	SetLogger(log.New(os.Stderr, "redis: ", log.LstdFlags|log.Lshortfile))
-}
 
 func SetLogger(logger *log.Logger) {
 	internal.Logger = logger

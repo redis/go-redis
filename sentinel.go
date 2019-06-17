@@ -360,7 +360,7 @@ func (c *sentinelFailover) masterAddr() (string, error) {
 
 		masterAddr, err := sentinel.GetMasterAddrByName(c.masterName).Result()
 		if err != nil {
-			internal.Logf("sentinel: GetMasterAddrByName master=%q failed: %s",
+			internal.Logger.Printf("sentinel: GetMasterAddrByName master=%q failed: %s",
 				c.masterName, err)
 			_ = sentinel.Close()
 			continue
@@ -388,7 +388,7 @@ func (c *sentinelFailover) getMasterAddr() string {
 
 	addr, err := sentinel.GetMasterAddrByName(c.masterName).Result()
 	if err != nil {
-		internal.Logf("sentinel: GetMasterAddrByName name=%q failed: %s",
+		internal.Logger.Printf("sentinel: GetMasterAddrByName name=%q failed: %s",
 			c.masterName, err)
 		c.mu.Lock()
 		if c.sentinel == sentinel {
@@ -412,7 +412,7 @@ func (c *sentinelFailover) switchMaster(addr string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	internal.Logf("sentinel: new master=%q addr=%q",
+	internal.Logger.Printf("sentinel: new master=%q addr=%q",
 		c.masterName, addr)
 	_ = c.Pool().Filter(func(cn *pool.Conn) bool {
 		return cn.RemoteAddr().String() != addr
@@ -449,7 +449,7 @@ func (c *sentinelFailover) closeSentinel() error {
 func (c *sentinelFailover) discoverSentinels(sentinel *SentinelClient) {
 	sentinels, err := sentinel.Sentinels(c.masterName).Result()
 	if err != nil {
-		internal.Logf("sentinel: Sentinels master=%q failed: %s", c.masterName, err)
+		internal.Logger.Printf("sentinel: Sentinels master=%q failed: %s", c.masterName, err)
 		return
 	}
 	for _, sentinel := range sentinels {
@@ -459,7 +459,7 @@ func (c *sentinelFailover) discoverSentinels(sentinel *SentinelClient) {
 			if key == "name" {
 				sentinelAddr := vals[i+1].(string)
 				if !contains(c.sentinelAddrs, sentinelAddr) {
-					internal.Logf("sentinel: discovered new sentinel=%q for master=%q",
+					internal.Logger.Printf("sentinel: discovered new sentinel=%q for master=%q",
 						sentinelAddr, c.masterName)
 					c.sentinelAddrs = append(c.sentinelAddrs, sentinelAddr)
 				}
@@ -479,7 +479,7 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 		if msg.Channel == "+switch-master" {
 			parts := strings.Split(msg.Payload, " ")
 			if parts[0] != c.masterName {
-				internal.Logf("sentinel: ignore addr for master=%q", parts[0])
+				internal.Logger.Printf("sentinel: ignore addr for master=%q", parts[0])
 				continue
 			}
 			addr := net.JoinHostPort(parts[3], parts[4])
