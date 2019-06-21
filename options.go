@@ -37,6 +37,9 @@ type Options struct {
 	// Network and Addr options.
 	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
+	// For sentinel proxy
+	DumpDialer func(ctx context.Context, network, addr string) (net.Conn, error)
+
 	// Hook that is called when new connection is established.
 	OnConnect func(*Conn) error
 

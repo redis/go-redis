@@ -306,6 +306,7 @@ func (c *sentinelFailover) Close() error {
 
 func (c *sentinelFailover) Pool() *pool.ConnPool {
 	c.poolOnce.Do(func() {
+		c.opt.DumpDialer = c.opt.Dialer
 		c.opt.Dialer = c.dial
 		c.pool = newConnPool(c.opt)
 	})
@@ -316,6 +317,9 @@ func (c *sentinelFailover) dial(ctx context.Context, network, addr string) (net.
 	addr, err := c.MasterAddr()
 	if err != nil {
 		return nil, err
+	}
+	if c.opt.DumpDialer != nil {
+		return c.opt.DumpDialer(nil, "tcp", addr)
 	}
 	return net.DialTimeout("tcp", addr, c.opt.DialTimeout)
 }
@@ -342,6 +346,8 @@ func (c *sentinelFailover) masterAddr() (string, error) {
 		sentinel := NewSentinelClient(&Options{
 			Addr: sentinelAddr,
 
+			Dialer:   c.opt.DumpDialer,
+			
 			Password: c.password,
 
 			MaxRetries: c.opt.MaxRetries,
