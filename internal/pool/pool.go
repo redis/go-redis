@@ -428,12 +428,11 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 		if p.closed() {
 			break
 		}
-		n, err := p.ReapStaleConns()
+		_, err := p.ReapStaleConns()
 		if err != nil {
 			internal.Logger.Printf("ReapStaleConns failed: %s", err)
 			continue
 		}
-		atomic.AddUint32(&p.stats.StaleConns, uint32(n))
 	}
 }
 
@@ -454,6 +453,7 @@ func (p *ConnPool) ReapStaleConns() (int, error) {
 			break
 		}
 	}
+	atomic.AddUint32(&p.stats.StaleConns, uint32(n))
 	return n, nil
 }
 
