@@ -20,7 +20,7 @@ Supports:
 - [Instrumentation](https://godoc.org/github.com/go-redis/redis#ex-package--Instrumentation).
 - [Cache friendly](https://github.com/go-redis/cache).
 - [Rate limiting](https://github.com/go-redis/redis_rate).
-- [Distributed Locks](https://github.com/bsm/redis-lock).
+- [Distributed Locks](https://github.com/bsm/redislock).
 
 API docs: https://godoc.org/github.com/go-redis/redis.
 Examples: https://godoc.org/github.com/go-redis/redis#pkg-examples.
