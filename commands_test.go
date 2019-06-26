@@ -968,6 +968,12 @@ var _ = Describe("Commands", func() {
 			Expect(pos).To(Equal(int64(-1)))
 		})
 
+		It("should BitField", func() {
+			nn, err := client.BitField("mykey", "INCRBY", "i5", 100, 1, "GET", "u4", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nn).To(Equal([]int64{1, 0}))
+		})
+
 		It("should Decr", func() {
 			set := client.Set("key", "10", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
