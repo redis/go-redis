@@ -98,6 +98,7 @@ type Cmdable interface {
 	BitOpXor(destKey string, keys ...string) *IntCmd
 	BitOpNot(destKey string, key string) *IntCmd
 	BitPos(key string, bit int64, pos ...int64) *IntCmd
+	BitField(key string, args ...interface{}) *IntSliceCmd
 	Decr(key string) *IntCmd
 	DecrBy(key string, decrement int64) *IntCmd
 	Get(key string) *StringCmd
@@ -720,6 +721,16 @@ func (c cmdable) BitPos(key string, bit int64, pos ...int64) *IntCmd {
 		panic("too many arguments")
 	}
 	cmd := NewIntCmd(args...)
+	c(cmd)
+	return cmd
+}
+
+func (c cmdable) BitField(key string, args ...interface{}) *IntSliceCmd {
+	a := make([]interface{}, 0, 2+len(args))
+	a = append(a, "bitfield")
+	a = append(a, key)
+	a = append(a, args...)
+	cmd := NewIntSliceCmd(a...)
 	c(cmd)
 	return cmd
 }

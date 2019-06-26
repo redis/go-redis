@@ -274,27 +274,21 @@ func (cmd *Cmd) readReply(rd *proto.Reader) error {
 
 // Implements proto.MultiBulkParse
 func sliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	vals := make([]interface{}, 0, n)
-	for i := int64(0); i < n; i++ {
+	vals := make([]interface{}, n)
+	for i := 0; i < len(vals); i++ {
 		v, err := rd.ReadReply(sliceParser)
 		if err != nil {
 			if err == Nil {
-				vals = append(vals, nil)
+				vals[i] = nil
 				continue
 			}
 			if err, ok := err.(proto.RedisError); ok {
-				vals = append(vals, err)
+				vals[i] = err
 				continue
 			}
 			return nil, err
 		}
-
-		switch v := v.(type) {
-		case string:
-			vals = append(vals, v)
-		default:
-			vals = append(vals, v)
-		}
+		vals[i] = v
 	}
 	return vals, nil
 }
@@ -405,6 +399,49 @@ func (cmd *IntCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
+type IntSliceCmd struct {
+	baseCmd
+
+	val []int64
+}
+
+var _ Cmder = (*IntSliceCmd)(nil)
+
+func NewIntSliceCmd(args ...interface{}) *IntSliceCmd {
+	return &IntSliceCmd{
+		baseCmd: baseCmd{_args: args},
+	}
+}
+
+func (cmd *IntSliceCmd) Val() []int64 {
+	return cmd.val
+}
+
+func (cmd *IntSliceCmd) Result() ([]int64, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *IntSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make([]int64, n)
+		for i := 0; i < len(cmd.val); i++ {
+			num, err := rd.ReadIntReply()
+			if err != nil {
+				return nil, err
+			}
+			cmd.val[i] = num
+		}
+		return nil, nil
+	})
+	return cmd.err
+}
+
+//------------------------------------------------------------------------------
+
 type DurationCmd struct {
 	baseCmd
 
@@ -479,32 +516,25 @@ func (cmd *TimeCmd) String() string {
 }
 
 func (cmd *TimeCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(timeParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.(time.Time)
-	return nil
-}
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		if n != 2 {
+			return nil, fmt.Errorf("got %d elements, expected 2", n)
+		}
 
-// Implements proto.MultiBulkParse
-func timeParser(rd *proto.Reader, n int64) (interface{}, error) {
-	if n != 2 {
-		return nil, fmt.Errorf("got %d elements, expected 2", n)
-	}
+		sec, err := rd.ReadInt()
+		if err != nil {
+			return nil, err
+		}
 
-	sec, err := rd.ReadInt()
-	if err != nil {
-		return nil, err
-	}
+		microsec, err := rd.ReadInt()
+		if err != nil {
+			return nil, err
+		}
 
-	microsec, err := rd.ReadInt()
-	if err != nil {
-		return nil, err
-	}
-
-	return time.Unix(sec, microsec*1000), nil
+		cmd.val = time.Unix(sec, microsec*1000)
+		return nil, nil
+	})
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -711,29 +741,21 @@ func (cmd *StringSliceCmd) ScanSlice(container interface{}) error {
 }
 
 func (cmd *StringSliceCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(stringSliceParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.([]string)
-	return nil
-}
-
-// Implements proto.MultiBulkParse
-func stringSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	ss := make([]string, 0, n)
-	for i := int64(0); i < n; i++ {
-		switch s, err := rd.ReadString(); {
-		case err == Nil:
-			ss = append(ss, "")
-		case err != nil:
-			return nil, err
-		default:
-			ss = append(ss, s)
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make([]string, n)
+		for i := 0; i < len(cmd.val); i++ {
+			switch s, err := rd.ReadString(); {
+			case err == Nil:
+				cmd.val[i] = ""
+			case err != nil:
+				return nil, err
+			default:
+				cmd.val[i] = s
+			}
 		}
-	}
-	return ss, nil
+		return nil, nil
+	})
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -765,26 +787,18 @@ func (cmd *BoolSliceCmd) String() string {
 }
 
 func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(boolSliceParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.([]bool)
-	return nil
-}
-
-// Implements proto.MultiBulkParse
-func boolSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	bools := make([]bool, 0, n)
-	for i := int64(0); i < n; i++ {
-		n, err := rd.ReadIntReply()
-		if err != nil {
-			return nil, err
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make([]bool, n)
+		for i := 0; i < len(cmd.val); i++ {
+			n, err := rd.ReadIntReply()
+			if err != nil {
+				return nil, err
+			}
+			cmd.val[i] = n == 1
 		}
-		bools = append(bools, n == 1)
-	}
-	return bools, nil
+		return nil, nil
+	})
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -816,32 +830,24 @@ func (cmd *StringStringMapCmd) String() string {
 }
 
 func (cmd *StringStringMapCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(stringStringMapParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.(map[string]string)
-	return nil
-}
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make(map[string]string, n/2)
+		for i := int64(0); i < n; i += 2 {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
 
-// Implements proto.MultiBulkParse
-func stringStringMapParser(rd *proto.Reader, n int64) (interface{}, error) {
-	m := make(map[string]string, n/2)
-	for i := int64(0); i < n; i += 2 {
-		key, err := rd.ReadString()
-		if err != nil {
-			return nil, err
+			value, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+
+			cmd.val[key] = value
 		}
-
-		value, err := rd.ReadString()
-		if err != nil {
-			return nil, err
-		}
-
-		m[key] = value
-	}
-	return m, nil
+		return nil, nil
+	})
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -873,32 +879,24 @@ func (cmd *StringIntMapCmd) String() string {
 }
 
 func (cmd *StringIntMapCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(stringIntMapParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.(map[string]int64)
-	return nil
-}
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make(map[string]int64, n/2)
+		for i := int64(0); i < n; i += 2 {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
 
-// Implements proto.MultiBulkParse
-func stringIntMapParser(rd *proto.Reader, n int64) (interface{}, error) {
-	m := make(map[string]int64, n/2)
-	for i := int64(0); i < n; i += 2 {
-		key, err := rd.ReadString()
-		if err != nil {
-			return nil, err
+			n, err := rd.ReadIntReply()
+			if err != nil {
+				return nil, err
+			}
+
+			cmd.val[key] = n
 		}
-
-		n, err := rd.ReadIntReply()
-		if err != nil {
-			return nil, err
-		}
-
-		m[key] = n
-	}
-	return m, nil
+		return nil, nil
+	})
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -930,27 +928,18 @@ func (cmd *StringStructMapCmd) String() string {
 }
 
 func (cmd *StringStructMapCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(stringStructMapParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.(map[string]struct{})
-	return nil
-}
-
-// Implements proto.MultiBulkParse
-func stringStructMapParser(rd *proto.Reader, n int64) (interface{}, error) {
-	m := make(map[string]struct{}, n)
-	for i := int64(0); i < n; i++ {
-		key, err := rd.ReadString()
-		if err != nil {
-			return nil, err
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make(map[string]struct{}, n)
+		for i := int64(0); i < n; i++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+			cmd.val[key] = struct{}{}
 		}
-
-		m[key] = struct{}{}
-	}
-	return m, nil
+		return nil, nil
+	})
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -998,8 +987,8 @@ func (cmd *XMessageSliceCmd) readReply(rd *proto.Reader) error {
 
 // Implements proto.MultiBulkParse
 func xMessageSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	msgs := make([]XMessage, 0, n)
-	for i := int64(0); i < n; i++ {
+	msgs := make([]XMessage, n)
+	for i := 0; i < len(msgs); i++ {
 		_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
 			id, err := rd.ReadString()
 			if err != nil {
@@ -1011,10 +1000,10 @@ func xMessageSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 				return nil, err
 			}
 
-			msgs = append(msgs, XMessage{
+			msgs[i] = XMessage{
 				ID:     id,
 				Values: v.(map[string]interface{}),
-			})
+			}
 			return nil, nil
 		})
 		if err != nil {
@@ -1077,45 +1066,37 @@ func (cmd *XStreamSliceCmd) String() string {
 }
 
 func (cmd *XStreamSliceCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(xStreamSliceParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.([]XStream)
-	return nil
-}
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make([]XStream, n)
+		for i := 0; i < len(cmd.val); i++ {
+			_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+				if n != 2 {
+					return nil, fmt.Errorf("got %d, wanted 2", n)
+				}
 
-// Implements proto.MultiBulkParse
-func xStreamSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	ret := make([]XStream, 0, n)
-	for i := int64(0); i < n; i++ {
-		_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-			if n != 2 {
-				return nil, fmt.Errorf("got %d, wanted 2", n)
-			}
+				stream, err := rd.ReadString()
+				if err != nil {
+					return nil, err
+				}
 
-			stream, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
+				v, err := rd.ReadArrayReply(xMessageSliceParser)
+				if err != nil {
+					return nil, err
+				}
 
-			v, err := rd.ReadArrayReply(xMessageSliceParser)
-			if err != nil {
-				return nil, err
-			}
-
-			ret = append(ret, XStream{
-				Stream:   stream,
-				Messages: v.([]XMessage),
+				cmd.val[i] = XStream{
+					Stream:   stream,
+					Messages: v.([]XMessage),
+				}
+				return nil, nil
 			})
-			return nil, nil
-		})
-		if err != nil {
-			return nil, err
+			if err != nil {
+				return nil, err
+			}
 		}
-	}
-	return ret, nil
+		return nil, nil
+	})
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -1153,75 +1134,68 @@ func (cmd *XPendingCmd) String() string {
 }
 
 func (cmd *XPendingCmd) readReply(rd *proto.Reader) error {
-	var info interface{}
-	info, cmd.err = rd.ReadArrayReply(xPendingParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = info.(*XPending)
-	return nil
-}
-
-func xPendingParser(rd *proto.Reader, n int64) (interface{}, error) {
-	if n != 4 {
-		return nil, fmt.Errorf("got %d, wanted 4", n)
-	}
-
-	count, err := rd.ReadIntReply()
-	if err != nil {
-		return nil, err
-	}
-
-	lower, err := rd.ReadString()
-	if err != nil && err != Nil {
-		return nil, err
-	}
-
-	higher, err := rd.ReadString()
-	if err != nil && err != Nil {
-		return nil, err
-	}
-
-	pending := &XPending{
-		Count:  count,
-		Lower:  lower,
-		Higher: higher,
-	}
-	_, err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		for i := int64(0); i < n; i++ {
-			_, err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-				if n != 2 {
-					return nil, fmt.Errorf("got %d, wanted 2", n)
-				}
-
-				consumerName, err := rd.ReadString()
-				if err != nil {
-					return nil, err
-				}
-
-				consumerPending, err := rd.ReadInt()
-				if err != nil {
-					return nil, err
-				}
-
-				if pending.Consumers == nil {
-					pending.Consumers = make(map[string]int64)
-				}
-				pending.Consumers[consumerName] = consumerPending
-
-				return nil, nil
-			})
-			if err != nil {
-				return nil, err
-			}
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		if n != 4 {
+			return nil, fmt.Errorf("got %d, wanted 4", n)
 		}
+
+		count, err := rd.ReadIntReply()
+		if err != nil {
+			return nil, err
+		}
+
+		lower, err := rd.ReadString()
+		if err != nil && err != Nil {
+			return nil, err
+		}
+
+		higher, err := rd.ReadString()
+		if err != nil && err != Nil {
+			return nil, err
+		}
+
+		cmd.val = &XPending{
+			Count:  count,
+			Lower:  lower,
+			Higher: higher,
+		}
+		_, err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+			for i := int64(0); i < n; i++ {
+				_, err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+					if n != 2 {
+						return nil, fmt.Errorf("got %d, wanted 2", n)
+					}
+
+					consumerName, err := rd.ReadString()
+					if err != nil {
+						return nil, err
+					}
+
+					consumerPending, err := rd.ReadInt()
+					if err != nil {
+						return nil, err
+					}
+
+					if cmd.val.Consumers == nil {
+						cmd.val.Consumers = make(map[string]int64)
+					}
+					cmd.val.Consumers[consumerName] = consumerPending
+
+					return nil, nil
+				})
+				if err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		})
+		if err != nil && err != Nil {
+			return nil, err
+		}
+
 		return nil, nil
 	})
-	if err != nil && err != Nil {
-		return nil, err
-	}
-
-	return pending, nil
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -1259,59 +1233,50 @@ func (cmd *XPendingExtCmd) String() string {
 }
 
 func (cmd *XPendingExtCmd) readReply(rd *proto.Reader) error {
-	var info interface{}
-	info, cmd.err = rd.ReadArrayReply(xPendingExtSliceParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = info.([]XPendingExt)
-	return nil
-}
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make([]XPendingExt, 0, n)
+		for i := int64(0); i < n; i++ {
+			_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+				if n != 4 {
+					return nil, fmt.Errorf("got %d, wanted 4", n)
+				}
 
-func xPendingExtSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	ret := make([]XPendingExt, 0, n)
-	for i := int64(0); i < n; i++ {
-		_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-			if n != 4 {
-				return nil, fmt.Errorf("got %d, wanted 4", n)
-			}
+				id, err := rd.ReadString()
+				if err != nil {
+					return nil, err
+				}
 
-			id, err := rd.ReadString()
+				consumer, err := rd.ReadString()
+				if err != nil && err != Nil {
+					return nil, err
+				}
+
+				idle, err := rd.ReadIntReply()
+				if err != nil && err != Nil {
+					return nil, err
+				}
+
+				retryCount, err := rd.ReadIntReply()
+				if err != nil && err != Nil {
+					return nil, err
+				}
+
+				cmd.val = append(cmd.val, XPendingExt{
+					ID:         id,
+					Consumer:   consumer,
+					Idle:       time.Duration(idle) * time.Millisecond,
+					RetryCount: retryCount,
+				})
+				return nil, nil
+			})
 			if err != nil {
 				return nil, err
 			}
-
-			consumer, err := rd.ReadString()
-			if err != nil && err != Nil {
-				return nil, err
-			}
-
-			idle, err := rd.ReadIntReply()
-			if err != nil && err != Nil {
-				return nil, err
-			}
-
-			retryCount, err := rd.ReadIntReply()
-			if err != nil && err != Nil {
-				return nil, err
-			}
-
-			ret = append(ret, XPendingExt{
-				ID:         id,
-				Consumer:   consumer,
-				Idle:       time.Duration(idle) * time.Millisecond,
-				RetryCount: retryCount,
-			})
-			return nil, nil
-		})
-		if err != nil {
-			return nil, err
 		}
-	}
-	return ret, nil
+		return nil, nil
+	})
+	return cmd.err
 }
-
-//------------------------------------------------------------------------------
 
 //------------------------------------------------------------------------------
 
@@ -1342,34 +1307,27 @@ func (cmd *ZSliceCmd) String() string {
 }
 
 func (cmd *ZSliceCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(zSliceParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.([]Z)
-	return nil
-}
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make([]Z, n/2)
+		for i := 0; i < len(cmd.val); i++ {
+			member, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
 
-// Implements proto.MultiBulkParse
-func zSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	zz := make([]Z, n/2)
-	for i := int64(0); i < n; i += 2 {
-		var err error
+			score, err := rd.ReadFloatReply()
+			if err != nil {
+				return nil, err
+			}
 
-		z := &zz[i/2]
-
-		z.Member, err = rd.ReadString()
-		if err != nil {
-			return nil, err
+			cmd.val[i] = Z{
+				Member: member,
+				Score:  score,
+			}
 		}
-
-		z.Score, err = rd.ReadFloatReply()
-		if err != nil {
-			return nil, err
-		}
-	}
-	return zz, nil
+		return nil, nil
+	})
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -1401,38 +1359,32 @@ func (cmd *ZWithKeyCmd) String() string {
 }
 
 func (cmd *ZWithKeyCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(zWithKeyParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.(*ZWithKey)
-	return nil
-}
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		if n != 3 {
+			return nil, fmt.Errorf("got %d elements, expected 3", n)
+		}
 
-// Implements proto.MultiBulkParse
-func zWithKeyParser(rd *proto.Reader, n int64) (interface{}, error) {
-	if n != 3 {
-		return nil, fmt.Errorf("got %d elements, expected 3", n)
-	}
+		cmd.val = &ZWithKey{}
+		var err error
 
-	var z ZWithKey
-	var err error
+		cmd.val.Key, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
 
-	z.Key, err = rd.ReadString()
-	if err != nil {
-		return nil, err
-	}
-	z.Member, err = rd.ReadString()
-	if err != nil {
-		return nil, err
-	}
-	z.Score, err = rd.ReadFloatReply()
-	if err != nil {
-		return nil, err
-	}
+		cmd.val.Member, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
 
-	return &z, nil
+		cmd.val.Score, err = rd.ReadFloatReply()
+		if err != nil {
+			return nil, err
+		}
+
+		return nil, nil
+	})
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -1519,77 +1471,69 @@ func (cmd *ClusterSlotsCmd) String() string {
 }
 
 func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(clusterSlotsParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.([]ClusterSlot)
-	return nil
-}
-
-// Implements proto.MultiBulkParse
-func clusterSlotsParser(rd *proto.Reader, n int64) (interface{}, error) {
-	slots := make([]ClusterSlot, n)
-	for i := 0; i < len(slots); i++ {
-		n, err := rd.ReadArrayLen()
-		if err != nil {
-			return nil, err
-		}
-		if n < 2 {
-			err := fmt.Errorf("redis: got %d elements in cluster info, expected at least 2", n)
-			return nil, err
-		}
-
-		start, err := rd.ReadIntReply()
-		if err != nil {
-			return nil, err
-		}
-
-		end, err := rd.ReadIntReply()
-		if err != nil {
-			return nil, err
-		}
-
-		nodes := make([]ClusterNode, n-2)
-		for j := 0; j < len(nodes); j++ {
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make([]ClusterSlot, n)
+		for i := 0; i < len(cmd.val); i++ {
 			n, err := rd.ReadArrayLen()
 			if err != nil {
 				return nil, err
 			}
-			if n != 2 && n != 3 {
-				err := fmt.Errorf("got %d elements in cluster info address, expected 2 or 3", n)
+			if n < 2 {
+				err := fmt.Errorf("redis: got %d elements in cluster info, expected at least 2", n)
 				return nil, err
 			}
 
-			ip, err := rd.ReadString()
+			start, err := rd.ReadIntReply()
 			if err != nil {
 				return nil, err
 			}
 
-			port, err := rd.ReadString()
+			end, err := rd.ReadIntReply()
 			if err != nil {
 				return nil, err
 			}
 
-			nodes[j].Addr = net.JoinHostPort(ip, port)
-
-			if n == 3 {
-				id, err := rd.ReadString()
+			nodes := make([]ClusterNode, n-2)
+			for j := 0; j < len(nodes); j++ {
+				n, err := rd.ReadArrayLen()
 				if err != nil {
 					return nil, err
 				}
-				nodes[j].Id = id
+				if n != 2 && n != 3 {
+					err := fmt.Errorf("got %d elements in cluster info address, expected 2 or 3", n)
+					return nil, err
+				}
+
+				ip, err := rd.ReadString()
+				if err != nil {
+					return nil, err
+				}
+
+				port, err := rd.ReadString()
+				if err != nil {
+					return nil, err
+				}
+
+				nodes[j].Addr = net.JoinHostPort(ip, port)
+
+				if n == 3 {
+					id, err := rd.ReadString()
+					if err != nil {
+						return nil, err
+					}
+					nodes[j].Id = id
+				}
+			}
+
+			cmd.val[i] = ClusterSlot{
+				Start: int(start),
+				End:   int(end),
+				Nodes: nodes,
 			}
 		}
-
-		slots[i] = ClusterSlot{
-			Start: int(start),
-			End:   int(end),
-			Nodes: nodes,
-		}
-	}
-	return slots, nil
+		return nil, nil
+	})
+	return cmd.err
 }
 
 //------------------------------------------------------------------------------
@@ -1683,6 +1627,29 @@ func (cmd *GeoLocationCmd) readReply(rd *proto.Reader) error {
 	return nil
 }
 
+func newGeoLocationSliceParser(q *GeoRadiusQuery) proto.MultiBulkParse {
+	return func(rd *proto.Reader, n int64) (interface{}, error) {
+		locs := make([]GeoLocation, 0, n)
+		for i := int64(0); i < n; i++ {
+			v, err := rd.ReadReply(newGeoLocationParser(q))
+			if err != nil {
+				return nil, err
+			}
+			switch vv := v.(type) {
+			case string:
+				locs = append(locs, GeoLocation{
+					Name: vv,
+				})
+			case *GeoLocation:
+				locs = append(locs, *vv)
+			default:
+				return nil, fmt.Errorf("got %T, expected string or *GeoLocation", v)
+			}
+		}
+		return locs, nil
+	}
+}
+
 func newGeoLocationParser(q *GeoRadiusQuery) proto.MultiBulkParse {
 	return func(rd *proto.Reader, n int64) (interface{}, error) {
 		var loc GeoLocation
@@ -1727,29 +1694,6 @@ func newGeoLocationParser(q *GeoRadiusQuery) proto.MultiBulkParse {
 	}
 }
 
-func newGeoLocationSliceParser(q *GeoRadiusQuery) proto.MultiBulkParse {
-	return func(rd *proto.Reader, n int64) (interface{}, error) {
-		locs := make([]GeoLocation, 0, n)
-		for i := int64(0); i < n; i++ {
-			v, err := rd.ReadReply(newGeoLocationParser(q))
-			if err != nil {
-				return nil, err
-			}
-			switch vv := v.(type) {
-			case string:
-				locs = append(locs, GeoLocation{
-					Name: vv,
-				})
-			case *GeoLocation:
-				locs = append(locs, *vv)
-			default:
-				return nil, fmt.Errorf("got %T, expected string or *GeoLocation", v)
-			}
-		}
-		return locs, nil
-	}
-}
-
 //------------------------------------------------------------------------------
 
 type GeoPos struct {
@@ -1759,7 +1703,7 @@ type GeoPos struct {
 type GeoPosCmd struct {
 	baseCmd
 
-	positions []*GeoPos
+	val []*GeoPos
 }
 
 var _ Cmder = (*GeoPosCmd)(nil)
@@ -1771,7 +1715,7 @@ func NewGeoPosCmd(args ...interface{}) *GeoPosCmd {
 }
 
 func (cmd *GeoPosCmd) Val() []*GeoPos {
-	return cmd.positions
+	return cmd.val
 }
 
 func (cmd *GeoPosCmd) Result() ([]*GeoPos, error) {
@@ -1779,48 +1723,42 @@ func (cmd *GeoPosCmd) Result() ([]*GeoPos, error) {
 }
 
 func (cmd *GeoPosCmd) String() string {
-	return cmdString(cmd, cmd.positions)
+	return cmdString(cmd, cmd.val)
 }
 
 func (cmd *GeoPosCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(geoPosSliceParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.positions = v.([]*GeoPos)
-	return nil
-}
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make([]*GeoPos, n)
+		for i := 0; i < len(cmd.val); i++ {
+			_, err := rd.ReadReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+				longitude, err := rd.ReadFloatReply()
+				if err != nil {
+					return nil, err
+				}
 
-func geoPosSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	positions := make([]*GeoPos, 0, n)
-	for i := int64(0); i < n; i++ {
-		_, err := rd.ReadReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-			var pos GeoPos
-			var err error
+				latitude, err := rd.ReadFloatReply()
+				if err != nil {
+					return nil, err
+				}
 
-			pos.Longitude, err = rd.ReadFloatReply()
+				cmd.val[i] = &GeoPos{
+					Longitude: longitude,
+					Latitude:  latitude,
+				}
+				return nil, nil
+			})
 			if err != nil {
+				if err == Nil {
+					cmd.val[i] = nil
+					continue
+				}
 				return nil, err
 			}
-
-			pos.Latitude, err = rd.ReadFloatReply()
-			if err != nil {
-				return nil, err
-			}
-
-			positions = append(positions, &pos)
-			return nil, nil
-		})
-		if err != nil {
-			if err == Nil {
-				positions = append(positions, nil)
-				continue
-			}
-			return nil, err
 		}
-	}
-	return positions, nil
+		return nil, nil
+	})
+	return cmd.err
+
 }
 
 //------------------------------------------------------------------------------
@@ -1862,37 +1800,28 @@ func (cmd *CommandsInfoCmd) String() string {
 }
 
 func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
-	var v interface{}
-	v, cmd.err = rd.ReadArrayReply(commandInfoSliceParser)
-	if cmd.err != nil {
-		return cmd.err
-	}
-	cmd.val = v.(map[string]*CommandInfo)
-	return nil
-}
-
-// Implements proto.MultiBulkParse
-func commandInfoSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	m := make(map[string]*CommandInfo, n)
-	for i := int64(0); i < n; i++ {
-		v, err := rd.ReadReply(commandInfoParser)
-		if err != nil {
-			return nil, err
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make(map[string]*CommandInfo, n)
+		for i := int64(0); i < n; i++ {
+			v, err := rd.ReadReply(commandInfoParser)
+			if err != nil {
+				return nil, err
+			}
+			vv := v.(*CommandInfo)
+			cmd.val[vv.Name] = vv
 		}
-		vv := v.(*CommandInfo)
-		m[vv.Name] = vv
-
-	}
-	return m, nil
+		return nil, nil
+	})
+	return cmd.err
 }
 
 func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
-	var cmd CommandInfo
-	var err error
-
 	if n != 6 {
 		return nil, fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6", n)
 	}
+
+	var cmd CommandInfo
+	var err error
 
 	cmd.Name, err = rd.ReadString()
 	if err != nil {
@@ -1905,11 +1834,23 @@ func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 	}
 	cmd.Arity = int8(arity)
 
-	flags, err := rd.ReadReply(stringSliceParser)
+	_, err = rd.ReadReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.Flags = make([]string, n)
+		for i := 0; i < len(cmd.Flags); i++ {
+			switch s, err := rd.ReadString(); {
+			case err == Nil:
+				cmd.Flags[i] = ""
+			case err != nil:
+				return nil, err
+			default:
+				cmd.Flags[i] = s
+			}
+		}
+		return nil, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	cmd.Flags = flags.([]string)
 
 	firstKeyPos, err := rd.ReadIntReply()
 	if err != nil {
