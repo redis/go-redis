@@ -326,20 +326,7 @@ func (c *clusterNodes) GC(generation uint32) {
 }
 
 func (c *clusterNodes) Get(addr string) (*clusterNode, error) {
-	var node *clusterNode
-	var err error
-	c.mu.RLock()
-	if c.closed {
-		err = pool.ErrClosed
-	} else {
-		node = c.allNodes[addr]
-	}
-	c.mu.RUnlock()
-	return node, err
-}
-
-func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
-	node, err := c.Get(addr)
+	node, err := c.get(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -368,6 +355,19 @@ func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
 	return node, err
 }
 
+func (c *clusterNodes) get(addr string) (*clusterNode, error) {
+	var node *clusterNode
+	var err error
+	c.mu.RLock()
+	if c.closed {
+		err = pool.ErrClosed
+	} else {
+		node = c.allNodes[addr]
+	}
+	c.mu.RUnlock()
+	return node, err
+}
+
 func (c *clusterNodes) All() ([]*clusterNode, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -390,7 +390,7 @@ func (c *clusterNodes) Random() (*clusterNode, error) {
 	}
 
 	n := rand.Intn(len(addrs))
-	return c.GetOrCreate(addrs[n])
+	return c.Get(addrs[n])
 }
 
 //------------------------------------------------------------------------------
@@ -448,7 +448,7 @@ func newClusterState(
 				addr = replaceLoopbackHost(addr, originHost)
 			}
 
-			node, err := c.nodes.GetOrCreate(addr)
+			node, err := c.nodes.Get(addr)
 			if err != nil {
 				return nil, err
 			}
@@ -795,7 +795,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		var addr string
 		moved, ask, addr = internal.IsMovedError(err)
 		if moved || ask {
-			node, err = c.nodes.GetOrCreate(addr)
+			node, err = c.nodes.Get(addr)
 			if err != nil {
 				break
 			}
@@ -980,7 +980,7 @@ func (c *ClusterClient) loadState() (*clusterState, error) {
 
 	var firstErr error
 	for _, addr := range addrs {
-		node, err := c.nodes.GetOrCreate(addr)
+		node, err := c.nodes.Get(addr)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -1192,7 +1192,7 @@ func (c *ClusterClient) checkMovedErr(
 	if moved {
 		c.state.LazyReload()
 
-		node, err := c.nodes.GetOrCreate(addr)
+		node, err := c.nodes.Get(addr)
 		if err != nil {
 			return false
 		}
@@ -1204,7 +1204,7 @@ func (c *ClusterClient) checkMovedErr(
 	}
 
 	if ask {
-		node, err := c.nodes.GetOrCreate(addr)
+		node, err := c.nodes.Get(addr)
 		if err != nil {
 			return false
 		}
@@ -1406,7 +1406,7 @@ func (c *ClusterClient) Watch(fn func(*Tx) error, keys ...string) error {
 
 		moved, ask, addr := internal.IsMovedError(err)
 		if moved || ask {
-			node, err = c.nodes.GetOrCreate(addr)
+			node, err = c.nodes.Get(addr)
 			if err != nil {
 				return err
 			}
