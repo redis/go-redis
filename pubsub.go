@@ -40,6 +40,8 @@ type PubSub struct {
 	chOnce sync.Once
 	ch     chan *Message
 	ping   chan struct{}
+
+	onSubscribed func(*Subscription)
 }
 
 func (c *PubSub) String() string {
@@ -359,7 +361,19 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 		return nil, err
 	}
 
-	return c.newMessage(c.cmd.Val())
+	msg, err := c.newMessage(c.cmd.Val())
+	if err != nil {
+		return nil, err
+	}
+
+	if c.onSubscribed != nil {
+		if msg, ok := msg.(*Subscription); ok &&
+			(msg.Kind == "subscribe" || msg.Kind == "psubscribe") {
+			c.onSubscribed(msg)
+		}
+	}
+
+	return msg, nil
 }
 
 // Receive returns a message as a Subscription, Message, Pong or error.
@@ -510,4 +524,11 @@ func (c *PubSub) initChannel(size int) {
 
 func (c *PubSub) retryBackoff(attempt int) time.Duration {
 	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
+}
+
+// OnSubscribed sets a callback which will be invoked after each successful
+// (re)subscription/(re)psubscription. This method should be called before
+// Receive/ReceiveMessage/Channel.
+func (c *PubSub) OnSubscribed(fn func(*Subscription)) {
+	c.onSubscribed = fn
 }
