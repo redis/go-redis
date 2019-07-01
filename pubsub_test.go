@@ -443,4 +443,42 @@ var _ = Describe("PubSub", func() {
 			Fail("timeout")
 		}
 	})
+
+	It("Emits OnSubscription after each (re)subscribe.", func() {
+		pubsub := client.Subscribe("mychannel")
+		defer pubsub.Close()
+
+		ch := make(chan *redis.Subscription, 10)
+		pubsub.OnSubscription(func(subscr *redis.Subscription) {
+			ch <- subscr
+		})
+
+		{
+			_, err := pubsub.ReceiveTimeout(time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			var subscr *redis.Subscription
+			Eventually(ch).Should(Receive(&subscr))
+			Expect(subscr.Kind).To(Equal("subscribe"))
+			Expect(subscr.Channel).To(Equal("mychannel"))
+		}
+
+		pubsub.SetNetConn(&badConn{
+			readErr:  io.EOF,
+			writeErr: io.EOF,
+		})
+
+		{
+			_, err := pubsub.ReceiveTimeout(time.Second)
+			Expect(err).To(Equal(io.EOF))
+		}
+
+		{
+			_, err := pubsub.ReceiveTimeout(time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			var subscr *redis.Subscription
+			Eventually(ch).Should(Receive(&subscr))
+			Expect(subscr.Kind).To(Equal("subscribe"))
+			Expect(subscr.Channel).To(Equal("mychannel"))
+		}
+	})
 })
