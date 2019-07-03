@@ -533,6 +533,11 @@ func (c *Client) Options() *Options {
 	return c.opt
 }
 
+func (c *Client) SetOnClose(fn func() error) *Client {
+	c.onClose = fn
+	return c
+}
+
 func (c *Client) SetLimiter(l Limiter) *Client {
 	c.limiter = l
 	return c
