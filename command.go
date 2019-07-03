@@ -3,6 +3,7 @@ package redis
 import (
 	"fmt"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -827,6 +828,89 @@ func (cmd *StringStringMapCmd) Result() (map[string]string, error) {
 
 func (cmd *StringStringMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
+}
+func (cmd *StringStringMapCmd) Scan(dest interface{}) error {
+	data := cmd.Val()
+	if len(data) == 0 {
+		return fmt.Errorf("redis data is nil ")
+	}
+	v := reflect.ValueOf(dest).Elem()
+	if !v.CanAddr() {
+		return fmt.Errorf("must be a pointer")
+	}
+	for i := 0; i < v.NumField(); i++ {
+		fieldInfo := v.Type().Field(i)
+		tag := fieldInfo.Tag.Get("json")
+		if tag == "" {
+			tag = strings.ToLower(fieldInfo.Name)
+		}
+		if tag == "-" {
+			continue
+		}
+		if value, ok := data[tag]; ok {
+			fi := v.FieldByName(fieldInfo.Name)
+			kind := fi.Kind()
+			switch {
+			case kind == reflect.Int64, kind == reflect.Int, kind == reflect.Int8,
+				kind == reflect.Int16, kind == reflect.Int32:
+				{
+					val, err := strconv.ParseInt(value, 10, 64)
+					if err != nil {
+						panic(err)
+					}
+					if !fi.CanSet() {
+						return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
+					}
+					fi.SetInt(val)
+				}
+			case kind == reflect.String:
+				{
+					if !fi.CanSet() {
+						return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
+					}
+					fi.SetString(value)
+				}
+			case kind == reflect.Bool:
+				{
+					val, err := strconv.ParseBool(value)
+					if err != nil {
+						panic(err)
+					}
+					if !fi.CanSet() {
+						return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
+					}
+					fi.SetBool(val)
+				}
+			case kind == reflect.Float32, kind == reflect.Float64:
+				{
+					val, err := strconv.ParseFloat(value, 64)
+					if err != nil {
+						panic(err)
+					}
+					if !fi.CanSet() {
+						return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
+					}
+					fi.SetFloat(val)
+				}
+			case kind == reflect.Struct:
+				switch fi.Interface().(type) {
+				case time.Time:
+					t, err := time.Parse("2006-01-02T15:04:05Z", value) //redis time formate
+					if err != nil {
+						return err
+					}
+					if !fi.CanSet() {
+						return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
+					}
+					j := reflect.ValueOf(t)
+					fi.Set(j)
+				}
+			default:
+				continue
+			}
+		}
+	}
+	return nil
 }
 
 func (cmd *StringStringMapCmd) readReply(rd *proto.Reader) error {
