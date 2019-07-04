@@ -849,6 +849,10 @@ func (cmd *StringStringMapCmd) Scan(dest interface{}) error {
 		}
 		if value, ok := data[tag]; ok {
 			fi := v.FieldByName(fieldInfo.Name)
+			if !fi.CanSet() {
+				return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
+			}
+
 			kind := fi.Kind()
 			switch {
 			case kind == reflect.Int64, kind == reflect.Int, kind == reflect.Int8,
@@ -856,28 +860,19 @@ func (cmd *StringStringMapCmd) Scan(dest interface{}) error {
 				{
 					val, err := strconv.ParseInt(value, 10, 64)
 					if err != nil {
-						panic(err)
-					}
-					if !fi.CanSet() {
-						return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
+						return err
 					}
 					fi.SetInt(val)
 				}
 			case kind == reflect.String:
 				{
-					if !fi.CanSet() {
-						return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
-					}
 					fi.SetString(value)
 				}
 			case kind == reflect.Bool:
 				{
 					val, err := strconv.ParseBool(value)
 					if err != nil {
-						panic(err)
-					}
-					if !fi.CanSet() {
-						return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
+						return err
 					}
 					fi.SetBool(val)
 				}
@@ -885,22 +880,16 @@ func (cmd *StringStringMapCmd) Scan(dest interface{}) error {
 				{
 					val, err := strconv.ParseFloat(value, 64)
 					if err != nil {
-						panic(err)
-					}
-					if !fi.CanSet() {
-						return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
+						return err
 					}
 					fi.SetFloat(val)
 				}
 			case kind == reflect.Struct:
 				switch fi.Interface().(type) {
 				case time.Time:
-					t, err := time.Parse("2006-01-02T15:04:05Z", value) //redis time formate
+					t, err := time.Parse("2006-01-02T15:04:05Z", value) //redis time string
 					if err != nil {
 						return err
-					}
-					if !fi.CanSet() {
-						return fmt.Errorf("can't set value of:%s", fieldInfo.Name)
 					}
 					j := reflect.ValueOf(t)
 					fi.Set(j)
