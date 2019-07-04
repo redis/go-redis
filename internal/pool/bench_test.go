@@ -1,6 +1,7 @@
 package pool_test
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func BenchmarkPoolGetPut(b *testing.B) {
 
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					cn, err := connPool.Get(nil)
+					cn, err := connPool.Get(context.Background())
 					if err != nil {
 						b.Fatal(err)
 					}
@@ -81,7 +82,7 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					cn, err := connPool.Get(nil)
+					cn, err := connPool.Get(context.Background())
 					if err != nil {
 						b.Fatal(err)
 					}

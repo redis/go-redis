@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"net"
@@ -39,6 +40,14 @@ var _ = Describe("Redis Ring", func() {
 
 	AfterEach(func() {
 		Expect(ring.Close()).NotTo(HaveOccurred())
+	})
+
+	It("supports WithContext", func() {
+		c, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := ring.WithContext(c).Ping().Err()
+		Expect(err).To(MatchError("context canceled"))
 	})
 
 	It("distributes keys", func() {

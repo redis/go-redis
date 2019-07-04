@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -241,6 +242,14 @@ var _ = Describe("ClusterClient", func() {
 	var client *redis.ClusterClient
 
 	assertClusterClient := func() {
+		It("supports WithContext", func() {
+			c, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			err := client.WithContext(c).Ping().Err()
+			Expect(err).To(MatchError("context canceled"))
+		})
+
 		It("should GET/SET/DEL", func() {
 			err := client.Get("A").Err()
 			Expect(err).To(Equal(redis.Nil))

@@ -40,10 +40,7 @@ func (c *Tx) init() {
 }
 
 func (c *Tx) Context() context.Context {
-	if c.ctx != nil {
-		return c.ctx
-	}
-	return context.Background()
+	return c.ctx
 }
 
 func (c *Tx) WithContext(ctx context.Context) *Tx {
