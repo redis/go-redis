@@ -250,38 +250,38 @@ func (p *ConnPool) getTurn() {
 }
 
 func (p *ConnPool) waitTurn(ctx context.Context) error {
-	var done <-chan struct{}
-	if ctx != nil {
-		done = ctx.Done()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
 	select {
-	case <-done:
-		return ctx.Err()
 	case p.queue <- struct{}{}:
 		return nil
 	default:
-		timer := timers.Get().(*time.Timer)
-		timer.Reset(p.opt.PoolTimeout)
+	}
 
-		select {
-		case <-done:
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timers.Put(timer)
-			return ctx.Err()
-		case p.queue <- struct{}{}:
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timers.Put(timer)
-			return nil
-		case <-timer.C:
-			timers.Put(timer)
-			atomic.AddUint32(&p.stats.Timeouts, 1)
-			return ErrPoolTimeout
+	timer := timers.Get().(*time.Timer)
+	timer.Reset(p.opt.PoolTimeout)
+
+	select {
+	case <-ctx.Done():
+		if !timer.Stop() {
+			<-timer.C
 		}
+		timers.Put(timer)
+		return ctx.Err()
+	case p.queue <- struct{}{}:
+		if !timer.Stop() {
+			<-timer.C
+		}
+		timers.Put(timer)
+		return nil
+	case <-timer.C:
+		timers.Put(timer)
+		atomic.AddUint32(&p.stats.Timeouts, 1)
+		return ErrPoolTimeout
 	}
 }
 

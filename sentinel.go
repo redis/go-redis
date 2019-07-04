@@ -97,8 +97,9 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 				onClose:  failover.Close,
 			},
 		},
+		ctx: context.Background(),
 	}
-	c.cmdable = c.Process
+	c.init()
 
 	return &c
 }
@@ -117,15 +118,13 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 			opt:      opt,
 			connPool: newConnPool(opt),
 		},
+		ctx: context.Background(),
 	}
 	return c
 }
 
 func (c *SentinelClient) Context() context.Context {
-	if c.ctx != nil {
-		return c.ctx
-	}
-	return context.Background()
+	return c.ctx
 }
 
 func (c *SentinelClient) WithContext(ctx context.Context) *SentinelClient {
@@ -162,7 +161,7 @@ func (c *SentinelClient) pubSub() *PubSub {
 // measure latency.
 func (c *SentinelClient) Ping() *StringCmd {
 	cmd := NewStringCmd("ping")
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
@@ -188,13 +187,13 @@ func (c *SentinelClient) PSubscribe(channels ...string) *PubSub {
 
 func (c *SentinelClient) GetMasterAddrByName(name string) *StringSliceCmd {
 	cmd := NewStringSliceCmd("sentinel", "get-master-addr-by-name", name)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
 func (c *SentinelClient) Sentinels(name string) *SliceCmd {
 	cmd := NewSliceCmd("sentinel", "sentinels", name)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
@@ -202,7 +201,7 @@ func (c *SentinelClient) Sentinels(name string) *SliceCmd {
 // asking for agreement to other Sentinels.
 func (c *SentinelClient) Failover(name string) *StatusCmd {
 	cmd := NewStatusCmd("sentinel", "failover", name)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
@@ -212,7 +211,7 @@ func (c *SentinelClient) Failover(name string) *StatusCmd {
 // already discovered and associated with the master.
 func (c *SentinelClient) Reset(pattern string) *IntCmd {
 	cmd := NewIntCmd("sentinel", "reset", pattern)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
@@ -220,28 +219,28 @@ func (c *SentinelClient) Reset(pattern string) *IntCmd {
 // the current Sentinel state.
 func (c *SentinelClient) FlushConfig() *StatusCmd {
 	cmd := NewStatusCmd("sentinel", "flushconfig")
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
 // Master shows the state and info of the specified master.
 func (c *SentinelClient) Master(name string) *StringStringMapCmd {
 	cmd := NewStringStringMapCmd("sentinel", "master", name)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
 // Masters shows a list of monitored masters and their state.
 func (c *SentinelClient) Masters() *SliceCmd {
 	cmd := NewSliceCmd("sentinel", "masters")
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
 // Slaves shows a list of slaves for the specified master and their state.
 func (c *SentinelClient) Slaves(name string) *SliceCmd {
 	cmd := NewSliceCmd("sentinel", "slaves", name)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
@@ -251,7 +250,7 @@ func (c *SentinelClient) Slaves(name string) *SliceCmd {
 // Sentinel deployment is ok.
 func (c *SentinelClient) CkQuorum(name string) *StringCmd {
 	cmd := NewStringCmd("sentinel", "ckquorum", name)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
@@ -259,14 +258,14 @@ func (c *SentinelClient) CkQuorum(name string) *StringCmd {
 // name, ip, port, and quorum.
 func (c *SentinelClient) Monitor(name, ip, port, quorum string) *StringCmd {
 	cmd := NewStringCmd("sentinel", "monitor", name, ip, port, quorum)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
 // Set is used in order to change configuration parameters of a specific master.
 func (c *SentinelClient) Set(name, option, value string) *StringCmd {
 	cmd := NewStringCmd("sentinel", "set", name, option, value)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
@@ -275,7 +274,7 @@ func (c *SentinelClient) Set(name, option, value string) *StringCmd {
 // the Sentinel.
 func (c *SentinelClient) Remove(name string) *StringCmd {
 	cmd := NewStringCmd("sentinel", "remove", name)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
@@ -313,7 +312,7 @@ func (c *sentinelFailover) Pool() *pool.ConnPool {
 	return c.pool
 }
 
-func (c *sentinelFailover) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+func (c *sentinelFailover) dial(ctx context.Context, network, _ string) (net.Conn, error) {
 	addr, err := c.MasterAddr()
 	if err != nil {
 		return nil, err
@@ -396,7 +395,7 @@ func (c *sentinelFailover) getMasterAddr() string {
 			c.masterName, err)
 		c.mu.Lock()
 		if c.sentinel == sentinel {
-			c.closeSentinel()
+			_ = c.closeSentinel()
 		}
 		c.mu.Unlock()
 		return ""
@@ -436,13 +435,13 @@ func (c *sentinelFailover) closeSentinel() error {
 	var firstErr error
 
 	err := c.pubsub.Close()
-	if err != nil && firstErr == err {
+	if err != nil && firstErr == nil {
 		firstErr = err
 	}
 	c.pubsub = nil
 
 	err = c.sentinel.Close()
-	if err != nil && firstErr == err {
+	if err != nil && firstErr == nil {
 		firstErr = err
 	}
 	c.sentinel = nil

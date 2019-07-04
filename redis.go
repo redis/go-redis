@@ -32,10 +32,6 @@ type hooks struct {
 	hooks []Hook
 }
 
-func (hs *hooks) lazyCopy() {
-	hs.hooks = hs.hooks[:len(hs.hooks):len(hs.hooks)]
-}
-
 func (hs *hooks) AddHook(hook Hook) {
 	hs.hooks = append(hs.hooks, hook)
 }
@@ -475,6 +471,7 @@ func NewClient(opt *Options) *Client {
 				connPool: newConnPool(opt),
 			},
 		},
+		ctx: context.Background(),
 	}
 	c.init()
 
@@ -486,10 +483,7 @@ func (c *Client) init() {
 }
 
 func (c *Client) Context() context.Context {
-	if c.ctx != nil {
-		return c.ctx
-	}
-	return context.Background()
+	return c.ctx
 }
 
 func (c *Client) WithContext(ctx context.Context) *Client {
@@ -498,6 +492,7 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 	}
 	clone := *c
 	clone.ctx = ctx
+	clone.init()
 	return &clone
 }
 

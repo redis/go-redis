@@ -358,6 +358,7 @@ func NewRing(opt *RingOptions) *Ring {
 			opt:    opt,
 			shards: newRingShards(opt),
 		},
+		ctx: context.Background(),
 	}
 	ring.init()
 
@@ -379,10 +380,7 @@ func (c *Ring) init() {
 }
 
 func (c *Ring) Context() context.Context {
-	if c.ctx != nil {
-		return c.ctx
-	}
-	return context.Background()
+	return c.ctx
 }
 
 func (c *Ring) WithContext(ctx context.Context) *Ring {
@@ -391,6 +389,7 @@ func (c *Ring) WithContext(ctx context.Context) *Ring {
 	}
 	clone := *c
 	clone.ctx = ctx
+	clone.init()
 	return &clone
 }
 
@@ -401,7 +400,7 @@ func (c *Ring) Do(args ...interface{}) *Cmd {
 
 func (c *Ring) DoContext(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(args...)
-	c.ProcessContext(ctx, cmd)
+	_ = c.ProcessContext(ctx, cmd)
 	return cmd
 }
 

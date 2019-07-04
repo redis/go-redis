@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"strconv"
 	"sync"
 
@@ -124,7 +125,7 @@ var _ = Describe("Tx", func() {
 
 	It("should recover from bad connection", func() {
 		// Put bad connection in the pool.
-		cn, err := client.Pool().Get(nil)
+		cn, err := client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 
 		cn.SetNetConn(&badConn{})

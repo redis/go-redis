@@ -24,6 +24,14 @@ var _ = Describe("Client", func() {
 		client.Close()
 	})
 
+	It("supports WithContext", func() {
+		c, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := client.WithContext(c).Ping().Err()
+		Expect(err).To(MatchError("context canceled"))
+	})
+
 	It("should Stringer", func() {
 		Expect(client.String()).To(Equal("Redis<:6380 db:15>"))
 	})
@@ -129,7 +137,7 @@ var _ = Describe("Client", func() {
 
 	It("processes custom commands", func() {
 		cmd := redis.NewCmd("PING")
-		client.Process(cmd)
+		_ = client.Process(cmd)
 
 		// Flush buffers.
 		Expect(client.Echo("hello").Err()).NotTo(HaveOccurred())
@@ -147,7 +155,7 @@ var _ = Describe("Client", func() {
 		})
 
 		// Put bad connection in the pool.
-		cn, err := client.Pool().Get(nil)
+		cn, err := client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 
 		cn.SetNetConn(&badConn{})
@@ -185,7 +193,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should update conn.UsedAt on read/write", func() {
-		cn, err := client.Pool().Get(nil)
+		cn, err := client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn.UsedAt).NotTo(BeZero())
 		createdAt := cn.UsedAt()
@@ -198,7 +206,7 @@ var _ = Describe("Client", func() {
 		err = client.Ping().Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		cn, err = client.Pool().Get(nil)
+		cn, err = client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn).NotTo(BeNil())
 		Expect(cn.UsedAt().After(createdAt)).To(BeTrue())

@@ -673,6 +673,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 			opt:   opt,
 			nodes: newClusterNodes(opt),
 		},
+		ctx: context.Background(),
 	}
 	c.state = newClusterStateHolder(c.loadState)
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
@@ -690,10 +691,7 @@ func (c *ClusterClient) init() {
 }
 
 func (c *ClusterClient) Context() context.Context {
-	if c.ctx != nil {
-		return c.ctx
-	}
-	return context.Background()
+	return c.ctx
 }
 
 func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
@@ -702,6 +700,7 @@ func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
 	}
 	clone := *c
 	clone.ctx = ctx
+	clone.init()
 	return &clone
 }
 
@@ -732,7 +731,7 @@ func (c *ClusterClient) Do(args ...interface{}) *Cmd {
 
 func (c *ClusterClient) DoContext(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(args...)
-	c.ProcessContext(ctx, cmd)
+	_ = c.ProcessContext(ctx, cmd)
 	return cmd
 }
 
@@ -1035,7 +1034,7 @@ func (c *ClusterClient) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 }
 
 func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.hooks.processPipeline(c.ctx, cmds, c._processPipeline)
+	return c.hooks.processPipeline(ctx, cmds, c._processPipeline)
 }
 
 func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) error {

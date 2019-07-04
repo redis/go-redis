@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -81,7 +82,7 @@ var _ = Describe("pool", func() {
 	})
 
 	It("removes broken connections", func() {
-		cn, err := client.Pool().Get(nil)
+		cn, err := client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		cn.SetNetConn(&badConn{})
 		client.Pool().Put(cn)
