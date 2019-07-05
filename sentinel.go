@@ -356,7 +356,7 @@ func (c *sentinelFailover) switchMaster(addr string) {
 
 	close(c.masterChanged)
 	c.masterChanged = make(chan interface{})
-	c._masterAddr = masterAddr
+	c._masterAddr = addr
 
 	_ = c.Pool().Filter(func(cn *pool.Conn) bool {
 		return cn.RemoteAddr().String() != addr
