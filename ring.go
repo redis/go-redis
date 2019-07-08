@@ -27,6 +27,10 @@ type RingOptions struct {
 	// Map of name => host:port addresses of ring shards.
 	Addrs map[string]string
 
+	// Map of name => password of ring shards, to allow different shards to have
+	// different passwords. It will be ignored if the Password field is set.
+	Passwords map[string]string
+
 	// Frequency of PING commands sent to check shards availability.
 	// Shard is considered down after 3 subsequent failed checks.
 	HeartbeatFrequency time.Duration
@@ -56,8 +60,8 @@ type RingOptions struct {
 
 	OnConnect func(*Conn) error
 
-	DB       int
-	Password string
+	DB        int
+	Password  string
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -76,6 +80,10 @@ type RingOptions struct {
 }
 
 func (opt *RingOptions) init() {
+	if opt.Passwords == nil {
+		opt.Passwords = make(map[string]string)
+	}
+
 	if opt.HeartbeatFrequency == 0 {
 		opt.HeartbeatFrequency = 500 * time.Millisecond
 	}
@@ -98,12 +106,12 @@ func (opt *RingOptions) init() {
 	}
 }
 
-func (opt *RingOptions) clientOptions() *Options {
+func (opt *RingOptions) clientOptions(shard string) *Options {
 	return &Options{
 		OnConnect: opt.OnConnect,
 
 		DB:       opt.DB,
-		Password: opt.Password,
+		Password: opt.getPassword(shard),
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
@@ -116,6 +124,13 @@ func (opt *RingOptions) clientOptions() *Options {
 		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: opt.IdleCheckFrequency,
 	}
+}
+
+func (opt *RingOptions) getPassword(shard string) string {
+	if opt.Password == "" {
+		return opt.Passwords[shard]
+	}
+	return opt.Password
 }
 
 //------------------------------------------------------------------------------
@@ -365,7 +380,7 @@ func NewRing(opt *RingOptions) *Ring {
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 
 	for name, addr := range opt.Addrs {
-		clopt := opt.clientOptions()
+		clopt := opt.clientOptions(name)
 		clopt.Addr = addr
 		ring.shards.Add(name, NewClient(clopt))
 	}
