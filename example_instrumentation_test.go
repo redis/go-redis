@@ -16,9 +16,9 @@ func (redisHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Co
 	return ctx, nil
 }
 
-func (redisHook) AfterProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
+func (redisHook) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
 	fmt.Printf("finished processing: <%s>\n", cmd)
-	return ctx, nil
+	return nil
 }
 
 func (redisHook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
@@ -26,9 +26,9 @@ func (redisHook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder) 
 	return ctx, nil
 }
 
-func (redisHook) AfterProcessPipeline(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
+func (redisHook) AfterProcessPipeline(ctx context.Context, cmds []redis.Cmder) error {
 	fmt.Printf("pipeline finished processing: %v\n", cmds)
-	return ctx, nil
+	return nil
 }
 
 func Example_instrumentation() {
