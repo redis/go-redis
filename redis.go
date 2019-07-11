@@ -22,10 +22,10 @@ func SetLogger(logger *log.Logger) {
 
 type Hook interface {
 	BeforeProcess(ctx context.Context, cmd Cmder) (context.Context, error)
-	AfterProcess(ctx context.Context, cmd Cmder) (context.Context, error)
+	AfterProcess(ctx context.Context, cmd Cmder) error
 
 	BeforeProcessPipeline(ctx context.Context, cmds []Cmder) (context.Context, error)
-	AfterProcessPipeline(ctx context.Context, cmds []Cmder) (context.Context, error)
+	AfterProcessPipeline(ctx context.Context, cmds []Cmder) error
 }
 
 type hooks struct {
@@ -68,8 +68,7 @@ func (hs hooks) beforeProcess(ctx context.Context, cmd Cmder) (context.Context, 
 func (hs hooks) afterProcess(ctx context.Context, cmd Cmder) (context.Context, error) {
 	var firstErr error
 	for _, h := range hs.hooks {
-		var err error
-		ctx, err = h.AfterProcess(ctx, cmd)
+		err := h.AfterProcess(ctx, cmd)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -109,8 +108,7 @@ func (hs hooks) beforeProcessPipeline(ctx context.Context, cmds []Cmder) (contex
 func (hs hooks) afterProcessPipeline(ctx context.Context, cmds []Cmder) (context.Context, error) {
 	var firstErr error
 	for _, h := range hs.hooks {
-		var err error
-		ctx, err = h.AfterProcessPipeline(ctx, cmds)
+		err := h.AfterProcessPipeline(ctx, cmds)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
