@@ -172,6 +172,29 @@ var _ = Describe("Redis Ring", func() {
 			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=100"))
 		})
 	})
+
+	Describe("shard passwords", func() {
+		It("can be initialized with a single password, used for all shards", func() {
+			opts := redisRingOptions()
+			opts.Password = "password"
+			ring = redis.NewRing(opts)
+
+			err := ring.Ping().Err()
+			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
+		})
+
+		It("can be initialized with a passwords map, one for each shard", func() {
+			opts := redisRingOptions()
+			opts.Passwords = map[string]string{
+				"ringShardOne": "password1",
+				"ringShardTwo": "password2",
+			}
+			ring = redis.NewRing(opts)
+
+			err := ring.Ping().Err()
+			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
+		})
+	})
 })
 
 var _ = Describe("empty Redis Ring", func() {
