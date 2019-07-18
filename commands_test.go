@@ -1652,6 +1652,14 @@ var _ = Describe("Commands", func() {
 			Expect(lPushX.Err()).NotTo(HaveOccurred())
 			Expect(lPushX.Val()).To(Equal(int64(2)))
 
+			lPush = client.LPush("list1", "three")
+			Expect(lPush.Err()).NotTo(HaveOccurred())
+			Expect(lPush.Val()).To(Equal(int64(1)))
+
+			lPushX = client.LPushX("list1", "two", "one")
+			Expect(lPushX.Err()).NotTo(HaveOccurred())
+			Expect(lPushX.Val()).To(Equal(int64(3)))
+
 			lPushX = client.LPushX("list2", "Hello")
 			Expect(lPushX.Err()).NotTo(HaveOccurred())
 			Expect(lPushX.Val()).To(Equal(int64(0)))
@@ -1659,6 +1667,10 @@ var _ = Describe("Commands", func() {
 			lRange := client.LRange("list", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
 			Expect(lRange.Val()).To(Equal([]string{"Hello", "World"}))
+
+			lRange = client.LRange("list1", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"one", "two", "three"}))
 
 			lRange = client.LRange("list2", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
@@ -1808,6 +1820,14 @@ var _ = Describe("Commands", func() {
 			Expect(rPushX.Err()).NotTo(HaveOccurred())
 			Expect(rPushX.Val()).To(Equal(int64(2)))
 
+			rPush = client.RPush("list1", "one")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			Expect(rPush.Val()).To(Equal(int64(1)))
+
+			rPushX = client.RPushX("list1", "two", "three")
+			Expect(rPushX.Err()).NotTo(HaveOccurred())
+			Expect(rPushX.Val()).To(Equal(int64(3)))
+
 			rPushX = client.RPushX("list2", "World")
 			Expect(rPushX.Err()).NotTo(HaveOccurred())
 			Expect(rPushX.Val()).To(Equal(int64(0)))
@@ -1815,6 +1835,10 @@ var _ = Describe("Commands", func() {
 			lRange := client.LRange("list", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
 			Expect(lRange.Val()).To(Equal([]string{"Hello", "World"}))
+
+			lRange = client.LRange("list1", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"one", "two", "three"}))
 
 			lRange = client.LRange("list2", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
