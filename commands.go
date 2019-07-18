@@ -140,7 +140,7 @@ type Cmdable interface {
 	LLen(key string) *IntCmd
 	LPop(key string) *StringCmd
 	LPush(key string, values ...interface{}) *IntCmd
-	LPushX(key string, value interface{}, values ...interface{}) *IntCmd
+	LPushX(key string, values ...interface{}) *IntCmd
 	LRange(key string, start, stop int64) *StringSliceCmd
 	LRem(key string, count int64, value interface{}) *IntCmd
 	LSet(key string, index int64, value interface{}) *StatusCmd
@@ -148,7 +148,7 @@ type Cmdable interface {
 	RPop(key string) *StringCmd
 	RPopLPush(source, destination string) *StringCmd
 	RPush(key string, values ...interface{}) *IntCmd
-	RPushX(key string, value interface{}, values ...interface{}) *IntCmd
+	RPushX(key string, values ...interface{}) *IntCmd
 	SAdd(key string, members ...interface{}) *IntCmd
 	SCard(key string) *IntCmd
 	SDiff(keys ...string) *StringSliceCmd
@@ -1087,11 +1087,10 @@ func (c cmdable) LPush(key string, values ...interface{}) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) LPushX(key string, value interface{}, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 3, 3+len(values))
+func (c cmdable) LPushX(key string, values ...interface{}) *IntCmd {
+	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "lpushx"
 	args[1] = key
-	args[2] = value
 	args = appendArgs(args, values)
 	cmd := NewIntCmd(args...)
 	c(cmd)
@@ -1154,11 +1153,10 @@ func (c cmdable) RPush(key string, values ...interface{}) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) RPushX(key string, value interface{}, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 3, 3+len(values))
+func (c cmdable) RPushX(key string, values ...interface{}) *IntCmd {
+	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "rpushx"
 	args[1] = key
-	args[2] = value
 	args = appendArgs(args, values)
 	cmd := NewIntCmd(args...)
 	c(cmd)
