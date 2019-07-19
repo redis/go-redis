@@ -1061,7 +1061,7 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 				cn, err := node.Client.getConn(ctx)
 				if err != nil {
 					if err == pool.ErrClosed {
-						c.mapCmdsByNode(cmds, failedCmds)
+						_ = c.mapCmdsByNode(cmds, failedCmds)
 					} else {
 						setCmdsErr(cmds, err)
 					}
@@ -1265,7 +1265,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 					cn, err := node.Client.getConn(ctx)
 					if err != nil {
 						if err == pool.ErrClosed {
-							c.mapCmdsByNode(cmds, failedCmds)
+							_ = c.mapCmdsByNode(cmds, failedCmds)
 						} else {
 							setCmdsErr(cmds, err)
 						}
