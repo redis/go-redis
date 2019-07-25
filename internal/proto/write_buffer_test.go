@@ -2,6 +2,7 @@ package proto_test
 
 import (
 	"bytes"
+	"encoding"
 	"io/ioutil"
 	"testing"
 	"time"
@@ -11,6 +12,14 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
+
+type MyType struct{}
+
+var _ encoding.BinaryMarshaler = (*MyType)(nil)
+
+func (t *MyType) MarshalBinary() ([]byte, error) {
+	return []byte("hello"), nil
+}
 
 var _ = Describe("WriteBuffer", func() {
 	var buf *bytes.Buffer
@@ -45,16 +54,25 @@ var _ = Describe("WriteBuffer", func() {
 			"\r\n")))
 	})
 
-	It("should append marshalable args", func() {
-		err := wr.WriteArgs([]interface{}{time.Unix(1414141414, 0)})
+	It("should append time", func() {
+		err := wr.WriteArgs([]interface{}{time.Unix(1414141414, 0).UTC()})
 		Expect(err).NotTo(HaveOccurred())
 
 		err = wr.Flush()
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(buf.Len()).To(Equal(26))
+		Expect(buf.Len()).To(Equal(31))
 	})
 
+	It("should append marshalable args", func() {
+		err := wr.WriteArgs([]interface{}{&MyType{}})
+		Expect(err).NotTo(HaveOccurred())
+
+		err = wr.Flush()
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(buf.Len()).To(Equal(15))
+	})
 })
 
 func BenchmarkWriteBuffer_Append(b *testing.B) {
