@@ -659,6 +659,13 @@ func (cmd *StringCmd) Float64() (float64, error) {
 	return strconv.ParseFloat(cmd.Val(), 64)
 }
 
+func (cmd *StringCmd) Time() (time.Time, error) {
+	if cmd.err != nil {
+		return time.Time{}, cmd.err
+	}
+	return time.Parse(time.RFC3339, cmd.Val())
+}
+
 func (cmd *StringCmd) Scan(val interface{}) error {
 	if cmd.err != nil {
 		return cmd.err

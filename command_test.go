@@ -1,6 +1,8 @@
 package redis_test
 
 import (
+	"time"
+
 	"github.com/go-redis/redis"
 
 	. "github.com/onsi/ginkgo"
@@ -66,5 +68,20 @@ var _ = Describe("Cmd", func() {
 		val, err := client.Get("float_key").Float32()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(f))
+	})
+
+	It("supports time.Time", func() {
+		tm := time.Date(2019, 01, 01, 0, 0, 0, 0, time.UTC)
+
+		err := client.Set("time_key", tm, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		s, err := client.Get("time_key").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s).To(Equal("2019-01-01T00:00:00Z"))
+
+		tm2, err := client.Get("time_key").Time()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tm2).To(BeTemporally("==", tm))
 	})
 })

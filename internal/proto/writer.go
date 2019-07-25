@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 
 	"github.com/go-redis/redis/internal/util"
 )
@@ -92,6 +93,8 @@ func (w *Writer) writeArg(v interface{}) error {
 		} else {
 			return w.int(0)
 		}
+	case time.Time:
+		return w.string(v.Format(time.RFC3339))
 	case encoding.BinaryMarshaler:
 		b, err := v.MarshalBinary()
 		if err != nil {
