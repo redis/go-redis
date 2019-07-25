@@ -432,15 +432,10 @@ func (c *sentinelFailover) setSentinel(sentinel *SentinelClient) {
 }
 
 func (c *sentinelFailover) closeSentinel() error {
-	var firstErr error
-
-	err := c.pubsub.Close()
-	if err != nil && firstErr == nil {
-		firstErr = err
-	}
+	firstErr := c.pubsub.Close()
 	c.pubsub = nil
 
-	err = c.sentinel.Close()
+	err := c.sentinel.Close()
 	if err != nil && firstErr == nil {
 		firstErr = err
 	}

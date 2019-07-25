@@ -307,6 +307,7 @@ func (c *clusterNodes) NextGeneration() uint32 {
 
 // GC removes unused nodes.
 func (c *clusterNodes) GC(generation uint32) {
+	//nolint:prealloc
 	var collected []*clusterNode
 	c.mu.Lock()
 	for addr, node := range c.allNodes {
@@ -651,8 +652,8 @@ type clusterClient struct {
 
 	opt           *ClusterOptions
 	nodes         *clusterNodes
-	state         *clusterStateHolder
-	cmdsInfoCache *cmdsInfoCache
+	state         *clusterStateHolder //nolint:structcheck
+	cmdsInfoCache *cmdsInfoCache      //nolint:structcheck
 }
 
 // ClusterClient is a Redis Cluster client representing a pool of zero

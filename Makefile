@@ -6,6 +6,7 @@ all: testdeps
 	go vet
 	go get github.com/gordonklaus/ineffassign
 	ineffassign .
+	golangci-lint run
 
 testdeps: testdata/redis/src/redis-server
 

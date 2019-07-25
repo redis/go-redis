@@ -339,7 +339,7 @@ type ring struct {
 	hooks
 	opt           *RingOptions
 	shards        *ringShards
-	cmdsInfoCache *cmdsInfoCache
+	cmdsInfoCache *cmdsInfoCache //nolint:structcheck
 }
 
 // Ring is a Redis client that uses consistent hashing to distribute
