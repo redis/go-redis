@@ -41,6 +41,7 @@ type Pipeline struct {
 	cmdable
 	statefulCmdable
 
+	ctx  context.Context
 	exec pipelineExecer
 
 	mu     sync.Mutex
@@ -98,7 +99,7 @@ func (c *Pipeline) discard() error {
 // Exec always returns list of commands and error of the first failed
 // command if any.
 func (c *Pipeline) Exec() ([]Cmder, error) {
-	return c.ExecContext(context.Background())
+	return c.ExecContext(c.ctx)
 }
 
 func (c *Pipeline) ExecContext(ctx context.Context) ([]Cmder, error) {

@@ -1023,6 +1023,7 @@ func (c *ClusterClient) reaper(idleCheckFrequency time.Duration) {
 
 func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
+		ctx:  c.ctx,
 		exec: c.processPipeline,
 	}
 	pipe.init()
@@ -1220,6 +1221,7 @@ func (c *ClusterClient) checkMovedErr(
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
+		ctx:  c.ctx,
 		exec: c.processTxPipeline,
 	}
 	pipe.init()

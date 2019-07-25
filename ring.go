@@ -579,6 +579,7 @@ func (c *Ring) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 
 func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
+		ctx:  c.ctx,
 		exec: c.processPipeline,
 	}
 	pipe.init()
@@ -597,6 +598,7 @@ func (c *Ring) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 
 func (c *Ring) TxPipeline() Pipeliner {
 	pipe := Pipeline{
+		ctx:  c.ctx,
 		exec: c.processTxPipeline,
 	}
 	pipe.init()
