@@ -71,7 +71,7 @@ func (c *Pipeline) Process(cmd Cmder) error {
 // Close closes the pipeline, releasing any open resources.
 func (c *Pipeline) Close() error {
 	c.mu.Lock()
-	c.discard()
+	_ = c.discard()
 	c.closed = true
 	c.mu.Unlock()
 	return nil

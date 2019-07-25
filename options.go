@@ -113,9 +113,8 @@ func (opt *Options) init() {
 			}
 			if opt.TLSConfig == nil {
 				return netDialer.Dial(network, addr)
-			} else {
-				return tls.DialWithDialer(netDialer, opt.Network, opt.Addr, opt.TLSConfig)
 			}
+			return tls.DialWithDialer(netDialer, opt.Network, opt.Addr, opt.TLSConfig)
 		}
 	}
 	if opt.PoolSize == 0 {

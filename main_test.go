@@ -45,7 +45,7 @@ var (
 
 var cluster = &clusterScenario{
 	ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
-	nodeIds:   make([]string, 6),
+	nodeIDs:   make([]string, 6),
 	processes: make(map[string]*redisProcess, 6),
 	clients:   make(map[string]*redis.Client, 6),
 }

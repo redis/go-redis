@@ -18,7 +18,7 @@ import (
 
 type clusterScenario struct {
 	ports     []string
-	nodeIds   []string
+	nodeIDs   []string
 	processes map[string]*redisProcess
 	clients   map[string]*redis.Client
 }
@@ -98,7 +98,7 @@ func startCluster(scenario *clusterScenario) error {
 
 		scenario.processes[port] = process
 		scenario.clients[port] = client
-		scenario.nodeIds[pos] = info[:40]
+		scenario.nodeIDs[pos] = info[:40]
 	}
 
 	// Meet cluster nodes.
@@ -120,12 +120,12 @@ func startCluster(scenario *clusterScenario) error {
 
 	// Bootstrap slaves.
 	for idx, slave := range scenario.slaves() {
-		masterId := scenario.nodeIds[idx]
+		masterID := scenario.nodeIDs[idx]
 
 		// Wait until master is available
 		err := eventually(func() error {
 			s := slave.ClusterNodes().Val()
-			wanted := masterId
+			wanted := masterID
 			if !strings.Contains(s, wanted) {
 				return fmt.Errorf("%q does not contain %q", s, wanted)
 			}
@@ -135,7 +135,7 @@ func startCluster(scenario *clusterScenario) error {
 			return err
 		}
 
-		err = slave.ClusterReplicate(masterId).Err()
+		err = slave.ClusterReplicate(masterID).Err()
 		if err != nil {
 			return err
 		}
@@ -146,30 +146,30 @@ func startCluster(scenario *clusterScenario) error {
 		Start: 0,
 		End:   4999,
 		Nodes: []redis.ClusterNode{{
-			Id:   "",
+			ID:   "",
 			Addr: "127.0.0.1:8220",
 		}, {
-			Id:   "",
+			ID:   "",
 			Addr: "127.0.0.1:8223",
 		}},
 	}, {
 		Start: 5000,
 		End:   9999,
 		Nodes: []redis.ClusterNode{{
-			Id:   "",
+			ID:   "",
 			Addr: "127.0.0.1:8221",
 		}, {
-			Id:   "",
+			ID:   "",
 			Addr: "127.0.0.1:8224",
 		}},
 	}, {
 		Start: 10000,
 		End:   16383,
 		Nodes: []redis.ClusterNode{{
-			Id:   "",
+			ID:   "",
 			Addr: "127.0.0.1:8222",
 		}, {
-			Id:   "",
+			ID:   "",
 			Addr: "127.0.0.1:8225",
 		}},
 	}}
@@ -592,30 +592,30 @@ var _ = Describe("ClusterClient", func() {
 				Start: 0,
 				End:   4999,
 				Nodes: []redis.ClusterNode{{
-					Id:   "",
+					ID:   "",
 					Addr: "127.0.0.1:8220",
 				}, {
-					Id:   "",
+					ID:   "",
 					Addr: "127.0.0.1:8223",
 				}},
 			}, {
 				Start: 5000,
 				End:   9999,
 				Nodes: []redis.ClusterNode{{
-					Id:   "",
+					ID:   "",
 					Addr: "127.0.0.1:8221",
 				}, {
-					Id:   "",
+					ID:   "",
 					Addr: "127.0.0.1:8224",
 				}},
 			}, {
 				Start: 10000,
 				End:   16383,
 				Nodes: []redis.ClusterNode{{
-					Id:   "",
+					ID:   "",
 					Addr: "127.0.0.1:8222",
 				}, {
-					Id:   "",
+					ID:   "",
 					Addr: "127.0.0.1:8225",
 				}},
 			}}
@@ -647,7 +647,7 @@ var _ = Describe("ClusterClient", func() {
 		})
 
 		It("should CLUSTER COUNT-FAILURE-REPORTS", func() {
-			n, err := client.ClusterCountFailureReports(cluster.nodeIds[0]).Result()
+			n, err := client.ClusterCountFailureReports(cluster.nodeIDs[0]).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(0)))
 		})
@@ -665,7 +665,7 @@ var _ = Describe("ClusterClient", func() {
 		})
 
 		It("should CLUSTER SLAVES", func() {
-			nodesList, err := client.ClusterSlaves(cluster.nodeIds[0]).Result()
+			nodesList, err := client.ClusterSlaves(cluster.nodeIDs[0]).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodesList).Should(ContainElement(ContainSubstring("slave")))
 			Expect(nodesList).Should(HaveLen(1))

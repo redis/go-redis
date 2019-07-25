@@ -97,10 +97,7 @@ func (c *PubSub) resubscribe(cn *pool.Conn) error {
 	var firstErr error
 
 	if len(c.channels) > 0 {
-		err := c._subscribe(cn, "subscribe", mapKeys(c.channels))
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
+		firstErr = c._subscribe(cn, "subscribe", mapKeys(c.channels))
 	}
 
 	if len(c.patterns) > 0 {

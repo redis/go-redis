@@ -447,7 +447,7 @@ func (p *ConnPool) ReapStaleConns() (int, error) {
 		p.freeTurn()
 
 		if cn != nil {
-			p.closeConn(cn)
+			_ = p.closeConn(cn)
 			n++
 		} else {
 			break

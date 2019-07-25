@@ -52,7 +52,7 @@ func writeCmd(wr *proto.Writer, cmds ...Cmder) error {
 }
 
 func cmdString(cmd Cmder, val interface{}) string {
-	var ss []string
+	ss := make([]string, 0, len(cmd.Args()))
 	for _, arg := range cmd.Args() {
 		ss = append(ss, fmt.Sprint(arg))
 	}
@@ -996,6 +996,7 @@ func (cmd *XMessageSliceCmd) readReply(rd *proto.Reader) error {
 func xMessageSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 	msgs := make([]XMessage, n)
 	for i := 0; i < len(msgs); i++ {
+		i := i
 		_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
 			id, err := rd.ReadString()
 			if err != nil {
@@ -1076,6 +1077,7 @@ func (cmd *XStreamSliceCmd) readReply(rd *proto.Reader) error {
 	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
 		cmd.val = make([]XStream, n)
 		for i := 0; i < len(cmd.val); i++ {
+			i := i
 			_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
 				if n != 2 {
 					return nil, fmt.Errorf("got %d, wanted 2", n)
@@ -1441,7 +1443,7 @@ func (cmd *ScanCmd) Iterator() *ScanIterator {
 //------------------------------------------------------------------------------
 
 type ClusterNode struct {
-	Id   string
+	ID   string
 	Addr string
 }
 
@@ -1528,7 +1530,7 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 					if err != nil {
 						return nil, err
 					}
-					nodes[j].Id = id
+					nodes[j].ID = id
 				}
 			}
 
@@ -1737,6 +1739,7 @@ func (cmd *GeoPosCmd) readReply(rd *proto.Reader) error {
 	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
 		cmd.val = make([]*GeoPos, n)
 		for i := 0; i < len(cmd.val); i++ {
+			i := i
 			_, err := rd.ReadReply(func(rd *proto.Reader, n int64) (interface{}, error) {
 				longitude, err := rd.ReadFloatReply()
 				if err != nil {

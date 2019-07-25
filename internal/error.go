@@ -64,11 +64,12 @@ func IsMovedError(err error) (moved bool, ask bool, addr string) {
 	}
 
 	s := err.Error()
-	if strings.HasPrefix(s, "MOVED ") {
+	switch {
+	case strings.HasPrefix(s, "MOVED "):
 		moved = true
-	} else if strings.HasPrefix(s, "ASK ") {
+	case strings.HasPrefix(s, "ASK "):
 		ask = true
-	} else {
+	default:
 		return
 	}
 
