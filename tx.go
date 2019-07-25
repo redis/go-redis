@@ -93,7 +93,7 @@ func (c *Tx) Watch(keys ...string) *StatusCmd {
 		args[1+i] = key
 	}
 	cmd := NewStatusCmd(args...)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
@@ -105,13 +105,14 @@ func (c *Tx) Unwatch(keys ...string) *StatusCmd {
 		args[1+i] = key
 	}
 	cmd := NewStatusCmd(args...)
-	c.Process(cmd)
+	_ = c.Process(cmd)
 	return cmd
 }
 
 // Pipeline creates a new pipeline. It is more convenient to use Pipelined.
 func (c *Tx) Pipeline() Pipeliner {
 	pipe := Pipeline{
+		ctx:  c.ctx,
 		exec: c.processTxPipeline,
 	}
 	pipe.init()

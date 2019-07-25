@@ -136,7 +136,7 @@ func (c *baseClient) newConn(ctx context.Context) (*pool.Conn, error) {
 		return nil, err
 	}
 
-	err = c.initConn(cn)
+	err = c.initConn(ctx, cn)
 	if err != nil {
 		_ = c.connPool.CloseConn(cn)
 		return nil, err
@@ -169,7 +169,7 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 		return nil, err
 	}
 
-	err = c.initConn(cn)
+	err = c.initConn(ctx, cn)
 	if err != nil {
 		c.connPool.Remove(cn)
 		return nil, err
@@ -202,7 +202,7 @@ func (c *baseClient) releaseConnStrict(cn *pool.Conn, err error) {
 	}
 }
 
-func (c *baseClient) initConn(cn *pool.Conn) error {
+func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if cn.Inited {
 		return nil
 	}
@@ -215,7 +215,7 @@ func (c *baseClient) initConn(cn *pool.Conn) error {
 		return nil
 	}
 
-	conn := newConn(c.opt, cn)
+	conn := newConn(ctx, c.opt, cn)
 	_, err := conn.Pipelined(func(pipe Pipeliner) error {
 		if c.opt.Password != "" {
 			pipe.Auth(c.opt.Password)
@@ -547,6 +547,7 @@ func (c *Client) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 
 func (c *Client) Pipeline() Pipeliner {
 	pipe := Pipeline{
+		ctx:  c.ctx,
 		exec: c.processPipeline,
 	}
 	pipe.init()
@@ -560,6 +561,7 @@ func (c *Client) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *Client) TxPipeline() Pipeliner {
 	pipe := Pipeline{
+		ctx:  c.ctx,
 		exec: c.processTxPipeline,
 	}
 	pipe.init()
@@ -625,19 +627,27 @@ func (c *Client) PSubscribe(channels ...string) *PubSub {
 
 //------------------------------------------------------------------------------
 
-// Conn is like Client, but its pool contains single connection.
-type Conn struct {
+type conn struct {
 	baseClient
 	cmdable
 	statefulCmdable
 }
 
-func newConn(opt *Options, cn *pool.Conn) *Conn {
+// Conn is like Client, but its pool contains single connection.
+type Conn struct {
+	*conn
+	ctx context.Context
+}
+
+func newConn(ctx context.Context, opt *Options, cn *pool.Conn) *Conn {
 	c := Conn{
-		baseClient: baseClient{
-			opt:      opt,
-			connPool: pool.NewSingleConnPool(cn),
+		conn: &conn{
+			baseClient: baseClient{
+				opt:      opt,
+				connPool: pool.NewSingleConnPool(cn),
+			},
 		},
+		ctx: ctx,
 	}
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
@@ -645,7 +655,7 @@ func newConn(opt *Options, cn *pool.Conn) *Conn {
 }
 
 func (c *Conn) Process(cmd Cmder) error {
-	return c.ProcessContext(context.TODO(), cmd)
+	return c.ProcessContext(c.ctx, cmd)
 }
 
 func (c *Conn) ProcessContext(ctx context.Context, cmd Cmder) error {
@@ -658,6 +668,7 @@ func (c *Conn) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 
 func (c *Conn) Pipeline() Pipeliner {
 	pipe := Pipeline{
+		ctx:  c.ctx,
 		exec: c.processPipeline,
 	}
 	pipe.init()
@@ -671,6 +682,7 @@ func (c *Conn) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *Conn) TxPipeline() Pipeliner {
 	pipe := Pipeline{
+		ctx:  c.ctx,
 		exec: c.processTxPipeline,
 	}
 	pipe.init()

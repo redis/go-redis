@@ -42,9 +42,7 @@ func appendArgs(dst, src []interface{}) []interface{} {
 		}
 	}
 
-	for _, v := range src {
-		dst = append(dst, v)
-	}
+	dst = append(dst, src...)
 	return dst
 }
 
