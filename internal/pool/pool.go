@@ -92,9 +92,7 @@ func NewConnPool(opt *Options) *ConnPool {
 		idleConns: make([]*Conn, 0, opt.PoolSize),
 	}
 
-	for i := 0; i < opt.MinIdleConns; i++ {
-		p.checkMinIdleConns()
-	}
+	p.checkMinIdleConns()
 
 	if opt.IdleTimeout > 0 && opt.IdleCheckFrequency > 0 {
 		go p.reaper(opt.IdleCheckFrequency)
@@ -107,10 +105,13 @@ func (p *ConnPool) checkMinIdleConns() {
 	if p.opt.MinIdleConns == 0 {
 		return
 	}
-	if p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns {
-		p.poolSize++
-		p.idleConnsLen++
-		go p.addIdleConn()
+	if p.poolSize < p.opt.PoolSize {
+		balanceLen := p.opt.MinIdleConns - p.idleConnsLen
+		for i := 0; i < balanceLen; i++ {
+			p.poolSize++
+			p.idleConnsLen++
+			go p.addIdleConn()
+		}
 	}
 }
 
