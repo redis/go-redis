@@ -105,21 +105,20 @@ func (p *ConnPool) checkMinIdleConns() {
 	if p.opt.MinIdleConns == 0 {
 		return
 	}
-	if p.poolSize < p.opt.PoolSize {
-		balanceLen := p.opt.MinIdleConns - p.idleConnsLen
-		for i := 0; i < balanceLen; i++ {
-			p.poolSize++
-			p.idleConnsLen++
-			go p.addIdleConn()
-		}
+	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns {
+		p.poolSize++
+		p.idleConnsLen++
+		go p.addIdleConn()
 	}
 }
 
 func (p *ConnPool) addIdleConn() {
 	cn, err := p.newConn(context.TODO(), true)
 	if err != nil {
+		p.connsMu.Lock()
 		p.poolSize--
 		p.idleConnsLen--
+		p.connsMu.Unlock()
 		return
 	}
 
