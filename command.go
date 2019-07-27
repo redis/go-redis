@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-redis/redis/internal"
 	"github.com/go-redis/redis/internal/proto"
+	"github.com/go-redis/redis/internal/util"
 )
 
 type Cmder interface {
@@ -617,7 +618,7 @@ func (cmd *StringCmd) Result() (string, error) {
 }
 
 func (cmd *StringCmd) Bytes() ([]byte, error) {
-	return []byte(cmd.val), cmd.err
+	return util.StringToBytes(cmd.val), cmd.err
 }
 
 func (cmd *StringCmd) Int() (int, error) {
