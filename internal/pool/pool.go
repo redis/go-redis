@@ -108,24 +108,29 @@ func (p *ConnPool) checkMinIdleConns() {
 	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns {
 		p.poolSize++
 		p.idleConnsLen++
-		go p.addIdleConn()
+		go func() {
+			err := p.addIdleConn()
+			if err != nil {
+				p.connsMu.Lock()
+				p.poolSize--
+				p.idleConnsLen--
+				p.connsMu.Unlock()
+			}
+		}()
 	}
 }
 
-func (p *ConnPool) addIdleConn() {
+func (p *ConnPool) addIdleConn() error {
 	cn, err := p.newConn(context.TODO(), true)
 	if err != nil {
-		p.connsMu.Lock()
-		p.poolSize--
-		p.idleConnsLen--
-		p.connsMu.Unlock()
-		return
+		return err
 	}
 
 	p.connsMu.Lock()
 	p.conns = append(p.conns, cn)
 	p.idleConns = append(p.idleConns, cn)
 	p.connsMu.Unlock()
+	return nil
 }
 
 func (p *ConnPool) NewConn(ctx context.Context) (*Conn, error) {
