@@ -22,13 +22,13 @@ type Tx struct {
 	ctx context.Context
 }
 
-func (c *Client) newTx() *Tx {
+func (c *Client) newTx(ctx context.Context) *Tx {
 	tx := Tx{
 		baseClient: baseClient{
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), true),
 		},
-		ctx: c.ctx,
+		ctx: ctx,
 	}
 	tx.init()
 	return &tx
@@ -65,7 +65,11 @@ func (c *Tx) ProcessContext(ctx context.Context, cmd Cmder) error {
 //
 // The transaction is automatically closed when fn exits.
 func (c *Client) Watch(fn func(*Tx) error, keys ...string) error {
-	tx := c.newTx()
+	return c.WatchContext(c.ctx, fn, keys...)
+}
+
+func (c *Client) WatchContext(ctx context.Context, fn func(*Tx) error, keys ...string) error {
+	tx := c.newTx(ctx)
 	if len(keys) > 0 {
 		if err := tx.Watch(keys...).Err(); err != nil {
 			_ = tx.Close()

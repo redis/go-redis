@@ -244,7 +244,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
-			time.Sleep(c.retryBackoff(attempt))
+			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				return err
+			}
 		}
 
 		cn, err := c.getConn(ctx)
@@ -331,7 +333,9 @@ func (c *baseClient) generalProcessPipeline(
 ) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
-			time.Sleep(c.retryBackoff(attempt))
+			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				return err
+			}
 		}
 
 		cn, err := c.getConn(ctx)

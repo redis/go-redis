@@ -754,7 +754,9 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		var err error
 
 		if attempt > 0 {
-			time.Sleep(c.retryBackoff(attempt))
+			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				return err
+			}
 		}
 
 		if node == nil {
@@ -1049,7 +1051,9 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
-			time.Sleep(c.retryBackoff(attempt))
+			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				return err
+			}
 		}
 
 		failedCmds := newCmdsMap()
@@ -1254,7 +1258,9 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 
 		for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 			if attempt > 0 {
-				time.Sleep(c.retryBackoff(attempt))
+				if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+					return err
+				}
 			}
 
 			failedCmds := newCmdsMap()
@@ -1376,6 +1382,10 @@ func (c *ClusterClient) txPipelineReadQueued(
 }
 
 func (c *ClusterClient) Watch(fn func(*Tx) error, keys ...string) error {
+	return c.WatchContext(c.ctx, fn, keys...)
+}
+
+func (c *ClusterClient) WatchContext(ctx context.Context, fn func(*Tx) error, keys ...string) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("redis: Watch requires at least one key")
 	}
@@ -1395,10 +1405,12 @@ func (c *ClusterClient) Watch(fn func(*Tx) error, keys ...string) error {
 
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
-			time.Sleep(c.retryBackoff(attempt))
+			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				return err
+			}
 		}
 
-		err = node.Client.Watch(fn, keys...)
+		err = node.Client.WatchContext(ctx, fn, keys...)
 		if err == nil {
 			break
 		}

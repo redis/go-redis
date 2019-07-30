@@ -553,7 +553,9 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
-			time.Sleep(c.retryBackoff(attempt))
+			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				return err
+			}
 		}
 
 		shard, err := c.cmdShard(cmd)
@@ -626,7 +628,9 @@ func (c *Ring) generalProcessPipeline(
 
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
-			time.Sleep(c.retryBackoff(attempt))
+			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				return err
+			}
 		}
 
 		var mu sync.Mutex
