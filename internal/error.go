@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"io"
 	"net"
 	"strings"
@@ -9,10 +10,10 @@ import (
 )
 
 func IsRetryableError(err error, retryTimeout bool) bool {
-	if err == nil {
+	switch err {
+	case nil, context.Canceled, context.DeadlineExceeded:
 		return false
-	}
-	if err == io.EOF {
+	case io.EOF:
 		return true
 	}
 	if netErr, ok := err.(net.Error); ok {
