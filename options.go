@@ -112,7 +112,7 @@ func (opt *Options) init() {
 				KeepAlive: 5 * time.Minute,
 			}
 			if opt.TLSConfig == nil {
-				return netDialer.Dial(network, addr)
+				return netDialer.DialContext(ctx, network, addr)
 			}
 			return tls.DialWithDialer(netDialer, opt.Network, opt.Addr, opt.TLSConfig)
 		}

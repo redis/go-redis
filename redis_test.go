@@ -51,7 +51,8 @@ var _ = Describe("Client", func() {
 			Network: "tcp",
 			Addr:    redisAddr,
 			Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return net.Dial(network, addr)
+				var d net.Dialer
+				return d.DialContext(ctx, network, addr)
 			},
 		})
 
