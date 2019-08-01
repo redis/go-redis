@@ -2,12 +2,15 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
 
 	"github.com/go-redis/redis/internal/proto"
 )
+
+var ErrSingleConnPoolClosed = errors.New("redis: SingleConnPool is closed")
 
 func IsRetryableError(err error, retryTimeout bool) bool {
 	switch err {
@@ -22,6 +25,10 @@ func IsRetryableError(err error, retryTimeout bool) bool {
 		}
 		return true
 	}
+	if err == ErrSingleConnPoolClosed {
+		return true
+	}
+
 	s := err.Error()
 	if s == "ERR max number of clients reached" {
 		return true
