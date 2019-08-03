@@ -568,7 +568,7 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 		if err == nil {
 			return nil
 		}
-		if !internal.IsRetryableError(err, cmd.readTimeout() == nil) {
+		if !isRetryableError(err, cmd.readTimeout() == nil) {
 			return err
 		}
 	}
@@ -662,7 +662,7 @@ func (c *Ring) generalProcessPipeline(
 				}
 				shard.Client.releaseConnStrict(cn, err)
 
-				if canRetry && internal.IsRetryableError(err, true) {
+				if canRetry && isRetryableError(err, true) {
 					mu.Lock()
 					if failedCmdsMap == nil {
 						failedCmdsMap = make(map[string][]Cmder)

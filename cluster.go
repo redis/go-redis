@@ -787,7 +787,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		// If slave is loading - pick another node.
-		if c.opt.ReadOnly && internal.IsLoadingError(err) {
+		if c.opt.ReadOnly && isLoadingError(err) {
 			node.MarkAsFailing()
 			node = nil
 			continue
@@ -795,7 +795,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 
 		var moved bool
 		var addr string
-		moved, ask, addr = internal.IsMovedError(err)
+		moved, ask, addr = isMovedError(err)
 		if moved || ask {
 			node, err = c.nodes.Get(addr)
 			if err != nil {
@@ -804,12 +804,12 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
-		if err == pool.ErrClosed || internal.IsReadOnlyError(err) {
+		if err == pool.ErrClosed || isReadOnlyError(err) {
 			node = nil
 			continue
 		}
 
-		if internal.IsRetryableError(err, true) {
+		if isRetryableError(err, true) {
 			// First retry the same node.
 			if attempt == 0 {
 				continue
@@ -1173,9 +1173,9 @@ func (c *ClusterClient) pipelineReadCmds(
 			continue
 		}
 
-		if c.opt.ReadOnly && internal.IsLoadingError(err) {
+		if c.opt.ReadOnly && isLoadingError(err) {
 			node.MarkAsFailing()
-		} else if internal.IsRedisError(err) {
+		} else if isRedisError(err) {
 			continue
 		}
 
@@ -1192,7 +1192,7 @@ func (c *ClusterClient) pipelineReadCmds(
 func (c *ClusterClient) checkMovedErr(
 	cmd Cmder, err error, failedCmds *cmdsMap,
 ) bool {
-	moved, ask, addr := internal.IsMovedError(err)
+	moved, ask, addr := isMovedError(err)
 
 	if moved {
 		c.state.LazyReload()
@@ -1346,7 +1346,7 @@ func (c *ClusterClient) txPipelineReadQueued(
 			continue
 		}
 
-		if c.checkMovedErr(cmd, err, failedCmds) || internal.IsRedisError(err) {
+		if c.checkMovedErr(cmd, err, failedCmds) || isRedisError(err) {
 			continue
 		}
 
@@ -1418,7 +1418,7 @@ func (c *ClusterClient) WatchContext(ctx context.Context, fn func(*Tx) error, ke
 			c.state.LazyReload()
 		}
 
-		moved, ask, addr := internal.IsMovedError(err)
+		moved, ask, addr := isMovedError(err)
 		if moved || ask {
 			node, err = c.nodes.Get(addr)
 			if err != nil {
@@ -1427,7 +1427,7 @@ func (c *ClusterClient) WatchContext(ctx context.Context, fn func(*Tx) error, ke
 			continue
 		}
 
-		if err == pool.ErrClosed || internal.IsReadOnlyError(err) {
+		if err == pool.ErrClosed || isReadOnlyError(err) {
 			node, err = c.slotMasterNode(slot)
 			if err != nil {
 				return err
@@ -1435,7 +1435,7 @@ func (c *ClusterClient) WatchContext(ctx context.Context, fn func(*Tx) error, ke
 			continue
 		}
 
-		if internal.IsRetryableError(err, true) {
+		if isRetryableError(err, true) {
 			continue
 		}
 
