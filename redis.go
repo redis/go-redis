@@ -183,7 +183,7 @@ func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
 		c.limiter.ReportResult(err)
 	}
 
-	if internal.IsBadConn(err, false) {
+	if isBadConn(err, false) {
 		c.connPool.Remove(cn)
 	} else {
 		c.connPool.Put(cn)
@@ -195,7 +195,7 @@ func (c *baseClient) releaseConnStrict(cn *pool.Conn, err error) {
 		c.limiter.ReportResult(err)
 	}
 
-	if err == nil || internal.IsRedisError(err) {
+	if err == nil || isRedisError(err) {
 		c.connPool.Put(cn)
 	} else {
 		c.connPool.Remove(cn)
@@ -215,7 +215,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return nil
 	}
 
-	conn := newConn(ctx, c.opt, cn)
+	connPool := pool.NewSingleConnPool(nil)
+	connPool.SetConn(cn)
+	conn := newConn(ctx, c.opt, connPool)
+
 	_, err := conn.Pipelined(func(pipe Pipeliner) error {
 		if c.opt.Password != "" {
 			pipe.Auth(c.opt.Password)
@@ -252,7 +255,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		cn, err := c.getConn(ctx)
 		if err != nil {
 			cmd.setErr(err)
-			if internal.IsRetryableError(err, true) {
+			if isRetryableError(err, true) {
 				continue
 			}
 			return err
@@ -264,7 +267,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		if err != nil {
 			c.releaseConn(cn, err)
 			cmd.setErr(err)
-			if internal.IsRetryableError(err, true) {
+			if isRetryableError(err, true) {
 				continue
 			}
 			return err
@@ -272,7 +275,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 
 		err = cn.WithReader(ctx, c.cmdTimeout(cmd), cmd.readReply)
 		c.releaseConn(cn, err)
-		if err != nil && internal.IsRetryableError(err, cmd.readTimeout() == nil) {
+		if err != nil && isRetryableError(err, cmd.readTimeout() == nil) {
 			continue
 		}
 
@@ -347,7 +350,7 @@ func (c *baseClient) generalProcessPipeline(
 		canRetry, err := p(ctx, cn, cmds)
 		c.releaseConnStrict(cn, err)
 
-		if !canRetry || !internal.IsRetryableError(err, true) {
+		if !canRetry || !isRetryableError(err, true) {
 			break
 		}
 	}
@@ -374,7 +377,7 @@ func (c *baseClient) pipelineProcessCmds(
 func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
 	for _, cmd := range cmds {
 		err := cmd.readReply(rd)
-		if err != nil && !internal.IsRedisError(err) {
+		if err != nil && !isRedisError(err) {
 			return err
 		}
 	}
@@ -421,7 +424,7 @@ func txPipelineReadQueued(rd *proto.Reader, cmds []Cmder) error {
 
 	for range cmds {
 		err = statusCmd.readReply(rd)
-		if err != nil && !internal.IsRedisError(err) {
+		if err != nil && !isRedisError(err) {
 			return err
 		}
 	}
@@ -498,6 +501,10 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 	clone.ctx = ctx
 	clone.init()
 	return &clone
+}
+
+func (c *Client) Conn() *Conn {
+	return newConn(c.ctx, c.opt, pool.NewSingleConnPool(c.connPool))
 }
 
 // Do creates a Cmd from the args and processes the cmd.
@@ -643,12 +650,12 @@ type Conn struct {
 	ctx context.Context
 }
 
-func newConn(ctx context.Context, opt *Options, cn *pool.Conn) *Conn {
+func newConn(ctx context.Context, opt *Options, connPool pool.Pooler) *Conn {
 	c := Conn{
 		conn: &conn{
 			baseClient: baseClient{
 				opt:      opt,
-				connPool: pool.NewSingleConnPool(cn),
+				connPool: connPool,
 			},
 		},
 		ctx: ctx,

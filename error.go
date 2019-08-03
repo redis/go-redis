@@ -1,20 +1,18 @@
-package internal
+package redis
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net"
 	"strings"
 
+	"github.com/go-redis/redis/internal/pool"
 	"github.com/go-redis/redis/internal/proto"
 )
 
-var ErrSingleConnPoolClosed = errors.New("redis: SingleConnPool is closed")
-
-func IsRetryableError(err error, retryTimeout bool) bool {
+func isRetryableError(err error, retryTimeout bool) bool {
 	switch err {
-	case nil, context.Canceled, context.DeadlineExceeded:
+	case nil, context.Canceled, context.DeadlineExceeded, pool.ErrBadConn:
 		return false
 	case io.EOF:
 		return true
@@ -23,9 +21,6 @@ func IsRetryableError(err error, retryTimeout bool) bool {
 		if netErr.Timeout() {
 			return retryTimeout
 		}
-		return true
-	}
-	if err == ErrSingleConnPoolClosed {
 		return true
 	}
 
@@ -45,18 +40,20 @@ func IsRetryableError(err error, retryTimeout bool) bool {
 	return false
 }
 
-func IsRedisError(err error) bool {
+func isRedisError(err error) bool {
 	_, ok := err.(proto.RedisError)
 	return ok
 }
 
-func IsBadConn(err error, allowTimeout bool) bool {
-	if err == nil {
+func isBadConn(err error, allowTimeout bool) bool {
+	switch err {
+	case nil:
 		return false
+	case pool.ErrBadConn:
+		return true
 	}
-	if IsRedisError(err) {
-		// #790
-		return IsReadOnlyError(err)
+	if isRedisError(err) {
+		return isReadOnlyError(err) // #790
 	}
 	if allowTimeout {
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -66,8 +63,8 @@ func IsBadConn(err error, allowTimeout bool) bool {
 	return true
 }
 
-func IsMovedError(err error) (moved bool, ask bool, addr string) {
-	if !IsRedisError(err) {
+func isMovedError(err error) (moved bool, ask bool, addr string) {
+	if !isRedisError(err) {
 		return
 	}
 
@@ -89,10 +86,10 @@ func IsMovedError(err error) (moved bool, ask bool, addr string) {
 	return
 }
 
-func IsLoadingError(err error) bool {
+func isLoadingError(err error) bool {
 	return strings.HasPrefix(err.Error(), "LOADING ")
 }
 
-func IsReadOnlyError(err error) bool {
+func isReadOnlyError(err error) bool {
 	return strings.HasPrefix(err.Error(), "READONLY ")
 }

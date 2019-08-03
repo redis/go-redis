@@ -151,6 +151,27 @@ func ExampleClient() {
 	// missing_key does not exist
 }
 
+func ExampleConn() {
+	conn := redisdb.Conn()
+
+	err := conn.ClientSetName("foobar").Err()
+	if err != nil {
+		panic(err)
+	}
+
+	// Open other connections.
+	for i := 0; i < 10; i++ {
+		go redisdb.Ping()
+	}
+
+	s, err := conn.ClientGetName().Result()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(s)
+	// Output: foobar
+}
+
 func ExampleClient_Set() {
 	// Last argument is expiration. Zero means the key has no
 	// expiration time.
