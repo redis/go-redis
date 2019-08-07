@@ -178,30 +178,6 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
-	if c.limiter != nil {
-		c.limiter.ReportResult(err)
-	}
-
-	if isBadConn(err, false) {
-		c.connPool.Remove(cn)
-	} else {
-		c.connPool.Put(cn)
-	}
-}
-
-func (c *baseClient) releaseConnStrict(cn *pool.Conn, err error) {
-	if c.limiter != nil {
-		c.limiter.ReportResult(err)
-	}
-
-	if err == nil || isRedisError(err) {
-		c.connPool.Put(cn)
-	} else {
-		c.connPool.Remove(cn)
-	}
-}
-
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if cn.Inited {
 		return nil
@@ -242,6 +218,30 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return c.opt.OnConnect(conn)
 	}
 	return nil
+}
+
+func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
+	if c.limiter != nil {
+		c.limiter.ReportResult(err)
+	}
+
+	if isBadConn(err, false) {
+		c.connPool.Remove(cn)
+	} else {
+		c.connPool.Put(cn)
+	}
+}
+
+func (c *baseClient) releaseConnStrict(cn *pool.Conn, err error) {
+	if c.limiter != nil {
+		c.limiter.ReportResult(err)
+	}
+
+	if err == nil || isRedisError(err) {
+		c.connPool.Put(cn)
+	} else {
+		c.connPool.Remove(cn)
+	}
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
