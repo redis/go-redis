@@ -235,18 +235,6 @@ func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
 	}
 }
 
-func (c *baseClient) releaseConnStrict(cn *pool.Conn, err error) {
-	if c.limiter != nil {
-		c.limiter.ReportResult(err)
-	}
-
-	if err == nil || isRedisError(err) {
-		c.connPool.Put(cn)
-	} else {
-		c.connPool.Remove(cn, err)
-	}
-}
-
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -351,7 +339,7 @@ func (c *baseClient) generalProcessPipeline(
 		}
 
 		canRetry, err := p(ctx, cn, cmds)
-		c.releaseConnStrict(cn, err)
+		c.releaseConn(cn, err)
 
 		if !canRetry || !isRetryableError(err, true) {
 			break

@@ -45,12 +45,13 @@ func isRedisError(err error) bool {
 }
 
 func isBadConn(err error, allowTimeout bool) bool {
-	switch err {
-	case nil:
+	if err == nil {
 		return false
 	}
 	if isRedisError(err) {
-		return isReadOnlyError(err) // #790
+		// Close connections in read only state in case domain addr is used
+		// and domain resolves to a different Redis Server. See #790.
+		return isReadOnlyError(err)
 	}
 	if allowTimeout {
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
