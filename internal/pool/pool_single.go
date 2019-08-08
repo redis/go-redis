@@ -16,6 +16,8 @@ type BadConnError struct {
 	wrapped error
 }
 
+var _ error = (*BadConnError)(nil)
+
 func (e BadConnError) Error() string {
 	return "pg: Conn is in a bad state"
 }
@@ -178,7 +180,7 @@ func (p *SingleConnPool) Reset() error {
 			return ErrClosed
 		}
 		p.pool.Remove(cn, ErrClosed)
-		p._badConnError.Store(nil)
+		p._badConnError.Store(BadConnError{wrapped: nil})
 	default:
 		return fmt.Errorf("pg: SingleConnPool does not have a Conn")
 	}
@@ -193,7 +195,10 @@ func (p *SingleConnPool) Reset() error {
 
 func (p *SingleConnPool) badConnError() error {
 	if v := p._badConnError.Load(); v != nil {
-		return v.(BadConnError)
+		err := v.(BadConnError)
+		if err.wrapped != nil {
+			return err
+		}
 	}
 	return nil
 }
