@@ -27,12 +27,12 @@ func (e BadConnError) Unwrap() error {
 }
 
 type SingleConnPool struct {
-	pool Pooler
+	pool  Pooler
+	level int32 // atomic
 
 	state uint32 // atomic
 	ch    chan *Conn
 
-	level         int32 // atomic
 	_badConnError atomic.Value
 }
 
