@@ -6,13 +6,12 @@ import (
 	"net"
 	"strings"
 
-	"github.com/go-redis/redis/internal/pool"
 	"github.com/go-redis/redis/internal/proto"
 )
 
 func isRetryableError(err error, retryTimeout bool) bool {
 	switch err {
-	case nil, context.Canceled, context.DeadlineExceeded, pool.ErrBadConn:
+	case nil, context.Canceled, context.DeadlineExceeded:
 		return false
 	case io.EOF:
 		return true
@@ -46,14 +45,13 @@ func isRedisError(err error) bool {
 }
 
 func isBadConn(err error, allowTimeout bool) bool {
-	switch err {
-	case nil:
+	if err == nil {
 		return false
-	case pool.ErrBadConn:
-		return true
 	}
 	if isRedisError(err) {
-		return isReadOnlyError(err) // #790
+		// Close connections in read only state in case domain addr is used
+		// and domain resolves to a different Redis Server. See #790.
+		return isReadOnlyError(err)
 	}
 	if allowTimeout {
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {

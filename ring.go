@@ -660,7 +660,7 @@ func (c *Ring) generalProcessPipeline(
 				} else {
 					canRetry, err = shard.Client.pipelineProcessCmds(ctx, cn, cmds)
 				}
-				shard.Client.releaseConnStrict(cn, err)
+				shard.Client.releaseConn(cn, err)
 
 				if canRetry && isRetryableError(err, true) {
 					mu.Lock()

@@ -809,7 +809,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
-		if isRetryableError(err, true) {
+		if isRetryableError(err, cmd.readTimeout() == nil) {
 			// First retry the same node.
 			if attempt == 0 {
 				continue
@@ -1075,7 +1075,7 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 				}
 
 				err = c.pipelineProcessCmds(ctx, node, cn, cmds, failedCmds)
-				node.Client.releaseConnStrict(cn, err)
+				node.Client.releaseConn(cn, err)
 			}(node, cmds)
 		}
 
@@ -1282,7 +1282,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 					}
 
 					err = c.txPipelineProcessCmds(ctx, node, cn, cmds, failedCmds)
-					node.Client.releaseConnStrict(cn, err)
+					node.Client.releaseConn(cn, err)
 				}(node, cmds)
 			}
 
