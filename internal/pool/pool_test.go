@@ -65,7 +65,7 @@ var _ = Describe("ConnPool", func() {
 			// ok
 		}
 
-		connPool.Remove(cn)
+		connPool.Remove(cn, nil)
 
 		// Check that Get is unblocked.
 		select {
@@ -128,7 +128,7 @@ var _ = Describe("MinIdleConns", func() {
 
 			Context("after Remove", func() {
 				BeforeEach(func() {
-					connPool.Remove(cn)
+					connPool.Remove(cn, nil)
 				})
 
 				It("has idle connections", func() {
@@ -205,7 +205,7 @@ var _ = Describe("MinIdleConns", func() {
 				BeforeEach(func() {
 					perform(len(cns), func(i int) {
 						mu.RLock()
-						connPool.Remove(cns[i])
+						connPool.Remove(cns[i], nil)
 						mu.RUnlock()
 					})
 
@@ -355,7 +355,7 @@ var _ = Describe("conns reaper", func() {
 				Expect(connPool.Len()).To(Equal(4))
 				Expect(connPool.IdleLen()).To(Equal(0))
 
-				connPool.Remove(cn)
+				connPool.Remove(cn, nil)
 
 				Expect(connPool.Len()).To(Equal(3))
 				Expect(connPool.IdleLen()).To(Equal(0))
@@ -413,7 +413,7 @@ var _ = Describe("race", func() {
 				cn, err := connPool.Get(c)
 				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
-					connPool.Remove(cn)
+					connPool.Remove(cn, nil)
 				}
 			}
 		})

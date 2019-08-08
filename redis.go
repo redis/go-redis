@@ -171,7 +171,10 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 
 	err = c.initConn(ctx, cn)
 	if err != nil {
-		c.connPool.Remove(cn)
+		c.connPool.Remove(cn, err)
+		if err := internal.Unwrap(err); err != nil {
+			return nil, err
+		}
 		return nil, err
 	}
 
@@ -226,7 +229,7 @@ func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
 	}
 
 	if isBadConn(err, false) {
-		c.connPool.Remove(cn)
+		c.connPool.Remove(cn, err)
 	} else {
 		c.connPool.Put(cn)
 	}
@@ -240,7 +243,7 @@ func (c *baseClient) releaseConnStrict(cn *pool.Conn, err error) {
 	if err == nil || isRedisError(err) {
 		c.connPool.Put(cn)
 	} else {
-		c.connPool.Remove(cn)
+		c.connPool.Remove(cn, err)
 	}
 }
 

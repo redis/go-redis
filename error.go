@@ -6,13 +6,12 @@ import (
 	"net"
 	"strings"
 
-	"github.com/go-redis/redis/internal/pool"
 	"github.com/go-redis/redis/internal/proto"
 )
 
 func isRetryableError(err error, retryTimeout bool) bool {
 	switch err {
-	case nil, context.Canceled, context.DeadlineExceeded, pool.ErrBadConn:
+	case nil, context.Canceled, context.DeadlineExceeded:
 		return false
 	case io.EOF:
 		return true
@@ -49,8 +48,6 @@ func isBadConn(err error, allowTimeout bool) bool {
 	switch err {
 	case nil:
 		return false
-	case pool.ErrBadConn:
-		return true
 	}
 	if isRedisError(err) {
 		return isReadOnlyError(err) // #790

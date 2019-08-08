@@ -809,7 +809,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
-		if isRetryableError(err, true) {
+		if isRetryableError(err, cmd.readTimeout() == nil) {
 			// First retry the same node.
 			if attempt == 0 {
 				continue
