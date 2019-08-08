@@ -551,6 +551,16 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 }
 
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
+	err := c._process(ctx, cmd)
+	if err != nil {
+		cmd.setErr(err)
+		return err
+	}
+	return nil
+}
+
+func (c *Ring) _process(ctx context.Context, cmd Cmder) error {
+	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -560,19 +570,15 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 
 		shard, err := c.cmdShard(cmd)
 		if err != nil {
-			cmd.setErr(err)
 			return err
 		}
 
-		err = shard.Client.ProcessContext(ctx, cmd)
-		if err == nil {
-			return nil
-		}
-		if !isRetryableError(err, cmd.readTimeout() == nil) {
-			return err
+		lastErr = shard.Client._process(ctx, cmd)
+		if lastErr == nil || !isRetryableError(lastErr, cmd.readTimeout() == nil) {
+			return lastErr
 		}
 	}
-	return cmd.Err()
+	return lastErr
 }
 
 func (c *Ring) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
@@ -626,61 +632,40 @@ func (c *Ring) generalProcessPipeline(
 		cmdsMap[hash] = append(cmdsMap[hash], cmd)
 	}
 
-	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
-		if attempt > 0 {
-			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
-				return err
+	var wg sync.WaitGroup
+	for hash, cmds := range cmdsMap {
+		wg.Add(1)
+		go func(hash string, cmds []Cmder) {
+			defer wg.Done()
+
+			err := c.processShardPipeline(ctx, hash, cmds, tx)
+			if err != nil {
+				setCmdsErr(cmds, err)
 			}
-		}
-
-		var mu sync.Mutex
-		var failedCmdsMap map[string][]Cmder
-		var wg sync.WaitGroup
-
-		for hash, cmds := range cmdsMap {
-			wg.Add(1)
-			go func(hash string, cmds []Cmder) {
-				defer wg.Done()
-
-				shard, err := c.shards.GetByHash(hash)
-				if err != nil {
-					setCmdsErr(cmds, err)
-					return
-				}
-
-				cn, err := shard.Client.getConn(ctx)
-				if err != nil {
-					setCmdsErr(cmds, err)
-					return
-				}
-
-				var canRetry bool
-				if tx {
-					canRetry, err = shard.Client.txPipelineProcessCmds(ctx, cn, cmds)
-				} else {
-					canRetry, err = shard.Client.pipelineProcessCmds(ctx, cn, cmds)
-				}
-				shard.Client.releaseConn(cn, err)
-
-				if canRetry && isRetryableError(err, true) {
-					mu.Lock()
-					if failedCmdsMap == nil {
-						failedCmdsMap = make(map[string][]Cmder)
-					}
-					failedCmdsMap[hash] = cmds
-					mu.Unlock()
-				}
-			}(hash, cmds)
-		}
-
-		wg.Wait()
-		if len(failedCmdsMap) == 0 {
-			break
-		}
-		cmdsMap = failedCmdsMap
+		}(hash, cmds)
 	}
 
+	wg.Wait()
 	return cmdsFirstErr(cmds)
+}
+
+func (c *Ring) processShardPipeline(
+	ctx context.Context, hash string, cmds []Cmder, tx bool,
+) error {
+	//TODO: retry?
+	shard, err := c.shards.GetByHash(hash)
+	if err != nil {
+		return err
+	}
+
+	if tx {
+		err = shard.Client._generalProcessPipeline(
+			ctx, cmds, shard.Client.txPipelineProcessCmds)
+	} else {
+		err = shard.Client._generalProcessPipeline(
+			ctx, cmds, shard.Client.pipelineProcessCmds)
+	}
+	return err
 }
 
 // Close closes the ring client, releasing any open resources.
