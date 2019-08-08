@@ -1,4 +1,4 @@
-module github.com/go-redis/redis
+module github.com/go-redis/redis/v7
 
 require (
 	github.com/onsi/ginkgo v1.8.0
