@@ -11,7 +11,7 @@ import (
 	"github.com/go-redis/redis/v7/internal/proto"
 )
 
-// Nil reply Redis returns when key does not exist.
+// Nil reply returned by Redis when key does not exist.
 const Nil = proto.Nil
 
 func SetLogger(logger *log.Logger) {

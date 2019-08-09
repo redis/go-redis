@@ -460,7 +460,7 @@ func (c *Ring) Subscribe(channels ...string) *PubSub {
 
 	shard, err := c.shards.GetByKey(channels[0])
 	if err != nil {
-		// TODO: return PubSub with sticky error
+		//TODO: return PubSub with sticky error
 		panic(err)
 	}
 	return shard.Client.Subscribe(channels...)
@@ -474,7 +474,7 @@ func (c *Ring) PSubscribe(channels ...string) *PubSub {
 
 	shard, err := c.shards.GetByKey(channels[0])
 	if err != nil {
-		// TODO: return PubSub with sticky error
+		//TODO: return PubSub with sticky error
 		panic(err)
 	}
 	return shard.Client.PSubscribe(channels...)

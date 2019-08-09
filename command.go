@@ -571,7 +571,6 @@ func (cmd *BoolCmd) readReply(rd *proto.Reader) error {
 	v, cmd.err = rd.ReadReply(nil)
 	// `SET key value NX` returns nil when key already exists. But
 	// `SETNX key value` returns bool (0/1). So convert nil to bool.
-	// TODO: is this okay?
 	if cmd.err == Nil {
 		cmd.val = false
 		cmd.err = nil
@@ -1655,6 +1654,7 @@ func newGeoLocationSliceParser(q *GeoRadiusQuery) proto.MultiBulkParse {
 					Name: vv,
 				})
 			case *GeoLocation:
+				//TODO: avoid copying
 				locs = append(locs, *vv)
 			default:
 				return nil, fmt.Errorf("got %T, expected string or *GeoLocation", v)

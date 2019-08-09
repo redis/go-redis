@@ -201,7 +201,7 @@ type Cmdable interface {
 	ZCount(key, min, max string) *IntCmd
 	ZLexCount(key, min, max string) *IntCmd
 	ZIncrBy(key string, increment float64, member string) *FloatCmd
-	ZInterStore(destination string, store *ZStore, keys ...string) *IntCmd
+	ZInterStore(destination string, store *ZStore) *IntCmd
 	ZPopMax(key string, count ...int64) *ZSliceCmd
 	ZPopMin(key string, count ...int64) *ZSliceCmd
 	ZRange(key string, start, stop int64) *StringSliceCmd
@@ -221,7 +221,7 @@ type Cmdable interface {
 	ZRevRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd
 	ZRevRank(key, member string) *IntCmd
 	ZScore(key, member string) *FloatCmd
-	ZUnionStore(dest string, store *ZStore, keys ...string) *IntCmd
+	ZUnionStore(dest string, store *ZStore) *IntCmd
 	PFAdd(key string, els ...interface{}) *IntCmd
 	PFCount(keys ...string) *IntCmd
 	PFMerge(dest string, keys ...string) *StatusCmd
@@ -1587,6 +1587,7 @@ type ZWithKey struct {
 
 // ZStore is used as an arg to ZInterStore and ZUnionStore.
 type ZStore struct {
+	Keys    []string
 	Weights []float64
 	// Can be SUM, MIN or MAX.
 	Aggregate string
@@ -1736,12 +1737,12 @@ func (c cmdable) ZIncrBy(key string, increment float64, member string) *FloatCmd
 	return cmd
 }
 
-func (c cmdable) ZInterStore(destination string, store *ZStore, keys ...string) *IntCmd {
-	args := make([]interface{}, 3+len(keys))
+func (c cmdable) ZInterStore(destination string, store *ZStore) *IntCmd {
+	args := make([]interface{}, 3+len(store.Keys))
 	args[0] = "zinterstore"
 	args[1] = destination
-	args[2] = len(keys)
-	for i, key := range keys {
+	args[2] = len(store.Keys)
+	for i, key := range store.Keys {
 		args[3+i] = key
 	}
 	if len(store.Weights) > 0 {
@@ -1970,13 +1971,12 @@ func (c cmdable) ZScore(key, member string) *FloatCmd {
 	return cmd
 }
 
-// TODO: move keys to ZStore?
-func (c cmdable) ZUnionStore(dest string, store *ZStore, keys ...string) *IntCmd {
-	args := make([]interface{}, 3+len(keys))
+func (c cmdable) ZUnionStore(dest string, store *ZStore) *IntCmd {
+	args := make([]interface{}, 3+len(store.Keys))
 	args[0] = "zunionstore"
 	args[1] = dest
-	args[2] = len(keys)
-	for i, key := range keys {
+	args[2] = len(store.Keys)
+	for i, key := range store.Keys {
 		args[3+i] = key
 	}
 	if len(store.Weights) > 0 {

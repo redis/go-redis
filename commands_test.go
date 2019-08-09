@@ -2720,10 +2720,12 @@ var _ = Describe("Commands", func() {
 			err = client.ZAdd("zset3", &redis.Z{Score: 3, Member: "two"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			zInterStore := client.ZInterStore(
-				"out", &redis.ZStore{Weights: []float64{2, 3}}, "zset1", "zset2")
-			Expect(zInterStore.Err()).NotTo(HaveOccurred())
-			Expect(zInterStore.Val()).To(Equal(int64(2)))
+			n, err := client.ZInterStore("out", &redis.ZStore{
+				Keys:    []string{"zset1", "zset2"},
+				Weights: []float64{2, 3},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
 
 			vals, err := client.ZRangeWithScores("out", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -3370,10 +3372,12 @@ var _ = Describe("Commands", func() {
 			err = client.ZAdd("zset2", &redis.Z{Score: 3, Member: "three"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			zUnionStore := client.ZUnionStore(
-				"out", &redis.ZStore{Weights: []float64{2, 3}}, "zset1", "zset2")
-			Expect(zUnionStore.Err()).NotTo(HaveOccurred())
-			Expect(zUnionStore.Val()).To(Equal(int64(3)))
+			n, err := client.ZUnionStore("out", &redis.ZStore{
+				Keys:    []string{"zset1", "zset2"},
+				Weights: []float64{2, 3},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(3)))
 
 			val, err := client.ZRangeWithScores("out", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
