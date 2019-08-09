@@ -235,7 +235,32 @@ func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
 	}
 }
 
+func (c *baseClient) withConn(
+	ctx context.Context, fn func(context.Context, *pool.Conn) error,
+) error {
+	cn, err := c.getConn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		c.releaseConn(cn, err)
+	}()
+
+	err = fn(ctx, cn)
+	return err
+}
+
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
+	err := c._process(ctx, cmd)
+	if err != nil {
+		cmd.setErr(err)
+		return err
+	}
+	return nil
+}
+
+func (c *baseClient) _process(ctx context.Context, cmd Cmder) error {
+	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -243,37 +268,29 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
-		cn, err := c.getConn(ctx)
-		if err != nil {
-			cmd.setErr(err)
-			if isRetryableError(err, true) {
-				continue
+		var retryTimeout bool
+		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+				return writeCmd(wr, cmd)
+			})
+			if err != nil {
+				retryTimeout = true
+				return err
 			}
-			return err
-		}
 
-		err = cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-			return writeCmd(wr, cmd)
+			err = cn.WithReader(ctx, c.cmdTimeout(cmd), cmd.readReply)
+			if err != nil {
+				retryTimeout = cmd.readTimeout() == nil
+				return err
+			}
+
+			return nil
 		})
-		if err != nil {
-			c.releaseConn(cn, err)
-			cmd.setErr(err)
-			if isRetryableError(err, true) {
-				continue
-			}
-			return err
+		if lastErr == nil || !isRetryableError(lastErr, retryTimeout) {
+			return lastErr
 		}
-
-		err = cn.WithReader(ctx, c.cmdTimeout(cmd), cmd.readReply)
-		c.releaseConn(cn, err)
-		if err != nil && isRetryableError(err, cmd.readTimeout() == nil) {
-			continue
-		}
-
-		return err
 	}
-
-	return cmd.Err()
+	return lastErr
 }
 
 func (c *baseClient) retryBackoff(attempt int) time.Duration {
@@ -325,6 +342,18 @@ type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor,
 ) error {
+	err := c._generalProcessPipeline(ctx, cmds, p)
+	if err != nil {
+		setCmdsErr(cmds, err)
+		return err
+	}
+	return cmdsFirstErr(cmds)
+}
+
+func (c *baseClient) _generalProcessPipeline(
+	ctx context.Context, cmds []Cmder, p pipelineProcessor,
+) error {
+	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -332,20 +361,17 @@ func (c *baseClient) generalProcessPipeline(
 			}
 		}
 
-		cn, err := c.getConn(ctx)
-		if err != nil {
-			setCmdsErr(cmds, err)
+		var canRetry bool
+		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			var err error
+			canRetry, err = p(ctx, cn, cmds)
 			return err
-		}
-
-		canRetry, err := p(ctx, cn, cmds)
-		c.releaseConn(cn, err)
-
-		if !canRetry || !isRetryableError(err, true) {
-			break
+		})
+		if lastErr == nil || !canRetry || !isRetryableError(lastErr, true) {
+			return lastErr
 		}
 	}
-	return cmdsFirstErr(cmds)
+	return lastErr
 }
 
 func (c *baseClient) pipelineProcessCmds(
@@ -355,7 +381,6 @@ func (c *baseClient) pipelineProcessCmds(
 		return writeCmd(wr, cmds...)
 	})
 	if err != nil {
-		setCmdsErr(cmds, err)
 		return true, err
 	}
 
@@ -382,14 +407,12 @@ func (c *baseClient) txPipelineProcessCmds(
 		return txPipelineWriteMulti(wr, cmds)
 	})
 	if err != nil {
-		setCmdsErr(cmds, err)
 		return true, err
 	}
 
 	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		err := txPipelineReadQueued(rd, cmds)
 		if err != nil {
-			setCmdsErr(cmds, err)
 			return err
 		}
 		return pipelineReadCmds(rd, cmds)

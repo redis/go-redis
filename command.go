@@ -123,6 +123,10 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	return s
 }
 
+func (cmd *baseCmd) setErr(e error) {
+	cmd.err = e
+}
+
 func (cmd *baseCmd) Err() error {
 	return cmd.err
 }
@@ -133,10 +137,6 @@ func (cmd *baseCmd) readTimeout() *time.Duration {
 
 func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 	cmd._readTimeout = &d
-}
-
-func (cmd *baseCmd) setErr(e error) {
-	cmd.err = e
 }
 
 //------------------------------------------------------------------------------
