@@ -282,9 +282,9 @@ type Cmdable interface {
 	GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd
 	GeoPos(key string, members ...string) *GeoPosCmd
 	GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd
-	GeoRadiusRO(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd
+	GeoRadiusStore(key string, longitude, latitude float64, query *GeoRadiusQuery) *IntCmd
 	GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
-	GeoRadiusByMemberRO(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
+	GeoRadiusByMemberStore(key, member string, query *GeoRadiusQuery) *IntCmd
 	GeoDist(key string, member1, member2, unit string) *FloatCmd
 	GeoHash(key string, members ...string) *StringSliceCmd
 	ReadOnly() *StatusCmd
@@ -2513,26 +2513,48 @@ func (c cmdable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 	return cmd
 }
 
+// GeoRadius is a read-only GEORADIUS_RO command.
 func (c cmdable) GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
-	cmd := NewGeoLocationCmd(query, "georadius", key, longitude, latitude)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) GeoRadiusRO(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadius_ro", key, longitude, latitude)
+	if query.Store != "" || query.StoreDist != "" {
+		cmd.setErr(errors.New("GeoRadius does not support Store or StoreDist"))
+		return cmd
+	}
 	_ = c(cmd)
 	return cmd
 }
 
+// GeoRadiusStore is a writing GEORADIUS command.
+func (c cmdable) GeoRadiusStore(key string, longitude, latitude float64, query *GeoRadiusQuery) *IntCmd {
+	args := geoLocationArgs(query, "georadius", key, longitude, latitude)
+	cmd := NewIntCmd(args...)
+	if query.Store == "" && query.StoreDist == "" {
+		cmd.setErr(errors.New("GeoRadiusStore requires Store or StoreDist"))
+		return cmd
+	}
+	_ = c(cmd)
+	return cmd
+}
+
+// GeoRadius is a read-only GEORADIUSBYMEMBER_RO command.
 func (c cmdable) GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
-	cmd := NewGeoLocationCmd(query, "georadiusbymember", key, member)
+	cmd := NewGeoLocationCmd(query, "georadiusbymember_ro", key, member)
+	if query.Store != "" || query.StoreDist != "" {
+		cmd.setErr(errors.New("GeoRadiusByMember does not support Store or StoreDist"))
+		return cmd
+	}
 	_ = c(cmd)
 	return cmd
 }
 
-func (c cmdable) GeoRadiusByMemberRO(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
-	cmd := NewGeoLocationCmd(query, "georadiusbymember_ro", key, member)
+// GeoRadiusByMemberStore is a writing GEORADIUSBYMEMBER command.
+func (c cmdable) GeoRadiusByMemberStore(key, member string, query *GeoRadiusQuery) *IntCmd {
+	args := geoLocationArgs(query, "georadiusbymember", key, member)
+	cmd := NewIntCmd(args...)
+	if query.Store == "" && query.StoreDist == "" {
+		cmd.setErr(errors.New("GeoRadiusByMemberStore requires Store or StoreDist"))
+		return cmd
+	}
 	_ = c(cmd)
 	return cmd
 }
