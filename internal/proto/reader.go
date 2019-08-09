@@ -41,6 +41,10 @@ func NewReader(rd io.Reader) *Reader {
 	}
 }
 
+func (r *Reader) Buffered() int {
+	return r.rd.Buffered()
+}
+
 func (r *Reader) Reset(rd io.Reader) {
 	r.rd.Reset(rd)
 }

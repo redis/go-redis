@@ -310,6 +310,12 @@ func (p *ConnPool) popIdle() *Conn {
 }
 
 func (p *ConnPool) Put(cn *Conn) {
+	if cn.rd.Buffered() > 0 {
+		internal.Logger.Printf("Conn has unread data")
+		p.Remove(cn, BadConnError{})
+		return
+	}
+
 	if !cn.pooled {
 		p.Remove(cn, nil)
 		return
