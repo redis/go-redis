@@ -1580,6 +1580,13 @@ type GeoLocationCmd struct {
 var _ Cmder = (*GeoLocationCmd)(nil)
 
 func NewGeoLocationCmd(q *GeoRadiusQuery, args ...interface{}) *GeoLocationCmd {
+	return &GeoLocationCmd{
+		baseCmd: baseCmd{_args: geoLocationArgs(q, args...)},
+		q:       q,
+	}
+}
+
+func geoLocationArgs(q *GeoRadiusQuery, args ...interface{}) []interface{} {
 	args = append(args, q.Radius)
 	if q.Unit != "" {
 		args = append(args, q.Unit)
@@ -1609,10 +1616,7 @@ func NewGeoLocationCmd(q *GeoRadiusQuery, args ...interface{}) *GeoLocationCmd {
 		args = append(args, "storedist")
 		args = append(args, q.StoreDist)
 	}
-	return &GeoLocationCmd{
-		baseCmd: baseCmd{_args: args},
-		q:       q,
-	}
+	return args
 }
 
 func (cmd *GeoLocationCmd) Val() []GeoLocation {

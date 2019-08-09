@@ -3733,6 +3733,46 @@ var _ = Describe("Commands", func() {
 			Expect(res[1].Name).To(Equal("Catania"))
 		})
 
+		It("should geo radius and store the result", func() {
+			n, err := client.GeoRadiusStore("Sicily", 15, 37, &redis.GeoRadiusQuery{
+				Radius: 200,
+				Store:  "result",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
+
+			res, err := client.ZRangeWithScores("result", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(ContainElement(redis.Z{
+				Score:  3.479099956230698e+15,
+				Member: "Palermo",
+			}))
+			Expect(res).To(ContainElement(redis.Z{
+				Score:  3.479447370796909e+15,
+				Member: "Catania",
+			}))
+		})
+
+		It("should geo radius and store dist", func() {
+			n, err := client.GeoRadiusStore("Sicily", 15, 37, &redis.GeoRadiusQuery{
+				Radius:    200,
+				StoreDist: "result",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
+
+			res, err := client.ZRangeWithScores("result", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(ContainElement(redis.Z{
+				Score:  190.44242984775784,
+				Member: "Palermo",
+			}))
+			Expect(res).To(ContainElement(redis.Z{
+				Score:  56.4412578701582,
+				Member: "Catania",
+			}))
+		})
+
 		It("should search geo radius with options", func() {
 			res, err := client.GeoRadius("Sicily", 15, 37, &redis.GeoRadiusQuery{
 				Radius:      200,
