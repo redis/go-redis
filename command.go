@@ -70,7 +70,6 @@ func cmdString(cmd Cmder, val interface{}) string {
 		}
 	}
 	return s
-
 }
 
 func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
@@ -102,13 +101,11 @@ type baseCmd struct {
 var _ Cmder = (*Cmd)(nil)
 
 func (cmd *baseCmd) Name() string {
-	if len(cmd._args) > 0 {
-		// Cmd name must be lower cased.
-		s := internal.ToLower(cmd.stringArg(0))
-		cmd._args[0] = s
-		return s
+	if len(cmd._args) == 0 {
+		return ""
 	}
-	return ""
+	// Cmd name must be lower cased.
+	return internal.ToLower(cmd.stringArg(0))
 }
 
 func (cmd *baseCmd) Args() []interface{} {
