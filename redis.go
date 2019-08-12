@@ -268,13 +268,12 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
-		var retryTimeout bool
+		retryTimeout := true
 		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 			err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 				return writeCmd(wr, cmd)
 			})
 			if err != nil {
-				retryTimeout = true
 				return err
 			}
 
