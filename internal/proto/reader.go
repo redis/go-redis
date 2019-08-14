@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"strconv"
 
 	"github.com/go-redis/redis/v7/internal/util"
 )
@@ -134,7 +133,7 @@ func (r *Reader) readStringReply(line []byte) (string, error) {
 		return "", Nil
 	}
 
-	replyLen, err := strconv.Atoi(string(line[1:]))
+	replyLen, err := util.Atoi(line[1:])
 	if err != nil {
 		return "", err
 	}
@@ -259,7 +258,7 @@ func (r *Reader) _readTmpBytesReply(line []byte) ([]byte, error) {
 		return nil, Nil
 	}
 
-	replyLen, err := strconv.Atoi(string(line[1:]))
+	replyLen, err := util.Atoi(line[1:])
 	if err != nil {
 		return nil, err
 	}
