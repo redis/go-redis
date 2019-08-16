@@ -58,23 +58,31 @@ func (cn *Conn) RemoteAddr() net.Addr {
 }
 
 func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error) error {
-	tm := cn.deadline(ctx, timeout)
-	_ = cn.netConn.SetReadDeadline(tm)
+	err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout))
+	if err != nil {
+		return err
+	}
 	return fn(cn.rd)
 }
 
 func (cn *Conn) WithWriter(
 	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
 ) error {
-	tm := cn.deadline(ctx, timeout)
-	_ = cn.netConn.SetWriteDeadline(tm)
-
-	firstErr := fn(cn.wr)
-	err := cn.wr.Flush()
-	if err != nil && firstErr == nil {
-		firstErr = err
+	err := cn.netConn.SetWriteDeadline(cn.deadline(ctx, timeout))
+	if err != nil {
+		return err
 	}
-	return firstErr
+
+	if cn.wr.Buffered() > 0 {
+		cn.wr.Reset(cn.netConn)
+	}
+
+	err = fn(cn.wr)
+	if err != nil {
+		return err
+	}
+
+	return cn.wr.Flush()
 }
 
 func (cn *Conn) Close() error {

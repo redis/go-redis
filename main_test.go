@@ -343,6 +343,14 @@ type badConn struct {
 
 var _ net.Conn = &badConn{}
 
+func (cn *badConn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (cn *badConn) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
 func (cn *badConn) Read([]byte) (int, error) {
 	if cn.readDelay != 0 {
 		time.Sleep(cn.readDelay)

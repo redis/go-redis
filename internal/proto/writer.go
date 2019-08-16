@@ -152,6 +152,10 @@ func (w *Writer) crlf() error {
 	return w.wr.WriteByte('\n')
 }
 
+func (w *Writer) Buffered() int {
+	return w.wr.Buffered()
+}
+
 func (w *Writer) Reset(wr io.Writer) {
 	w.wr.Reset(wr)
 }
