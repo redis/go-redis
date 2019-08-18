@@ -215,8 +215,8 @@ func ParseURL(redisURL string) (*Options, error) {
 
 func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
-		Dialer: func(c context.Context) (net.Conn, error) {
-			return opt.Dialer(c, opt.Network, opt.Addr)
+		Dialer: func(ctx context.Context) (net.Conn, error) {
+			return opt.Dialer(ctx, opt.Network, opt.Addr)
 		},
 		PoolSize:           opt.PoolSize,
 		MinIdleConns:       opt.MinIdleConns,

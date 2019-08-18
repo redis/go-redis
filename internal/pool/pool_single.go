@@ -58,20 +58,20 @@ func (p *SingleConnPool) SetConn(cn *Conn) {
 	}
 }
 
-func (p *SingleConnPool) NewConn(c context.Context) (*Conn, error) {
-	return p.pool.NewConn(c)
+func (p *SingleConnPool) NewConn(ctx context.Context) (*Conn, error) {
+	return p.pool.NewConn(ctx)
 }
 
 func (p *SingleConnPool) CloseConn(cn *Conn) error {
 	return p.pool.CloseConn(cn)
 }
 
-func (p *SingleConnPool) Get(c context.Context) (*Conn, error) {
+func (p *SingleConnPool) Get(ctx context.Context) (*Conn, error) {
 	// In worst case this races with Close which is not a very common operation.
 	for i := 0; i < 1000; i++ {
 		switch atomic.LoadUint32(&p.state) {
 		case stateDefault:
-			cn, err := p.pool.Get(c)
+			cn, err := p.pool.Get(ctx)
 			if err != nil {
 				return nil, err
 			}

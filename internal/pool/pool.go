@@ -49,7 +49,7 @@ type Pooler interface {
 }
 
 type Options struct {
-	Dialer  func(c context.Context) (net.Conn, error)
+	Dialer  func(context.Context) (net.Conn, error)
 	OnClose func(*Conn) error
 
 	PoolSize           int
