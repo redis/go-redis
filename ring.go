@@ -56,6 +56,9 @@ type RingOptions struct {
 	//  See https://arxiv.org/abs/1406.2294 for reference
 	HashReplicas int
 
+	// Optional hook that is called when a new shard is created.
+	OnNewShard func(*Client)
+
 	// Following options are copied from Options struct.
 
 	OnConnect func(*Conn) error
@@ -376,14 +379,23 @@ func NewRing(opt *RingOptions) *Ring {
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 
 	for name, addr := range opt.Addrs {
-		clopt := opt.clientOptions(name)
-		clopt.Addr = addr
-		ring.shards.Add(name, NewClient(clopt))
+		shard := newRingShard(opt, name, addr)
+		ring.shards.Add(name, shard)
 	}
 
 	go ring.shards.Heartbeat(opt.HeartbeatFrequency)
 
 	return &ring
+}
+
+func newRingShard(opt *RingOptions, name, addr string) *Client {
+	clopt := opt.clientOptions(name)
+	clopt.Addr = addr
+	shard := NewClient(clopt)
+	if opt.OnNewShard != nil {
+		opt.OnNewShard(shard)
+	}
+	return shard
 }
 
 func (c *Ring) init() {
