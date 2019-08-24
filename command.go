@@ -17,11 +17,10 @@ type Cmder interface {
 	Args() []interface{}
 	stringArg(int) string
 
-	readReply(rd *proto.Reader) error
-	setErr(error)
-
 	readTimeout() *time.Duration
+	readReply(rd *proto.Reader) error
 
+	setErr(error)
 	Err() error
 }
 
@@ -92,8 +91,8 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 //------------------------------------------------------------------------------
 
 type baseCmd struct {
-	_args []interface{}
-	err   error
+	args []interface{}
+	err  error
 
 	_readTimeout *time.Duration
 }
@@ -101,7 +100,7 @@ type baseCmd struct {
 var _ Cmder = (*Cmd)(nil)
 
 func (cmd *baseCmd) Name() string {
-	if len(cmd._args) == 0 {
+	if len(cmd.args) == 0 {
 		return ""
 	}
 	// Cmd name must be lower cased.
@@ -109,14 +108,14 @@ func (cmd *baseCmd) Name() string {
 }
 
 func (cmd *baseCmd) Args() []interface{} {
-	return cmd._args
+	return cmd.args
 }
 
 func (cmd *baseCmd) stringArg(pos int) string {
-	if pos < 0 || pos >= len(cmd._args) {
+	if pos < 0 || pos >= len(cmd.args) {
 		return ""
 	}
-	s, _ := cmd._args[pos].(string)
+	s, _ := cmd.args[pos].(string)
 	return s
 }
 
@@ -146,7 +145,7 @@ type Cmd struct {
 
 func NewCmd(args ...interface{}) *Cmd {
 	return &Cmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -303,7 +302,7 @@ var _ Cmder = (*SliceCmd)(nil)
 
 func NewSliceCmd(args ...interface{}) *SliceCmd {
 	return &SliceCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -341,7 +340,7 @@ var _ Cmder = (*StatusCmd)(nil)
 
 func NewStatusCmd(args ...interface{}) *StatusCmd {
 	return &StatusCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -374,7 +373,7 @@ var _ Cmder = (*IntCmd)(nil)
 
 func NewIntCmd(args ...interface{}) *IntCmd {
 	return &IntCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -407,7 +406,7 @@ var _ Cmder = (*IntSliceCmd)(nil)
 
 func NewIntSliceCmd(args ...interface{}) *IntSliceCmd {
 	return &IntSliceCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -451,7 +450,7 @@ var _ Cmder = (*DurationCmd)(nil)
 
 func NewDurationCmd(precision time.Duration, args ...interface{}) *DurationCmd {
 	return &DurationCmd{
-		baseCmd:   baseCmd{_args: args},
+		baseCmd:   baseCmd{args: args},
 		precision: precision,
 	}
 }
@@ -497,7 +496,7 @@ var _ Cmder = (*TimeCmd)(nil)
 
 func NewTimeCmd(args ...interface{}) *TimeCmd {
 	return &TimeCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -547,7 +546,7 @@ var _ Cmder = (*BoolCmd)(nil)
 
 func NewBoolCmd(args ...interface{}) *BoolCmd {
 	return &BoolCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -601,7 +600,7 @@ var _ Cmder = (*StringCmd)(nil)
 
 func NewStringCmd(args ...interface{}) *StringCmd {
 	return &StringCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -691,7 +690,7 @@ var _ Cmder = (*FloatCmd)(nil)
 
 func NewFloatCmd(args ...interface{}) *FloatCmd {
 	return &FloatCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -724,7 +723,7 @@ var _ Cmder = (*StringSliceCmd)(nil)
 
 func NewStringSliceCmd(args ...interface{}) *StringSliceCmd {
 	return &StringSliceCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -774,7 +773,7 @@ var _ Cmder = (*BoolSliceCmd)(nil)
 
 func NewBoolSliceCmd(args ...interface{}) *BoolSliceCmd {
 	return &BoolSliceCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -817,7 +816,7 @@ var _ Cmder = (*StringStringMapCmd)(nil)
 
 func NewStringStringMapCmd(args ...interface{}) *StringStringMapCmd {
 	return &StringStringMapCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -866,7 +865,7 @@ var _ Cmder = (*StringIntMapCmd)(nil)
 
 func NewStringIntMapCmd(args ...interface{}) *StringIntMapCmd {
 	return &StringIntMapCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -915,7 +914,7 @@ var _ Cmder = (*StringStructMapCmd)(nil)
 
 func NewStringStructMapCmd(args ...interface{}) *StringStructMapCmd {
 	return &StringStructMapCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -963,7 +962,7 @@ var _ Cmder = (*XMessageSliceCmd)(nil)
 
 func NewXMessageSliceCmd(args ...interface{}) *XMessageSliceCmd {
 	return &XMessageSliceCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -1054,7 +1053,7 @@ var _ Cmder = (*XStreamSliceCmd)(nil)
 
 func NewXStreamSliceCmd(args ...interface{}) *XStreamSliceCmd {
 	return &XStreamSliceCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -1123,7 +1122,7 @@ var _ Cmder = (*XPendingCmd)(nil)
 
 func NewXPendingCmd(args ...interface{}) *XPendingCmd {
 	return &XPendingCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -1222,7 +1221,7 @@ var _ Cmder = (*XPendingExtCmd)(nil)
 
 func NewXPendingExtCmd(args ...interface{}) *XPendingExtCmd {
 	return &XPendingExtCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -1296,7 +1295,7 @@ var _ Cmder = (*ZSliceCmd)(nil)
 
 func NewZSliceCmd(args ...interface{}) *ZSliceCmd {
 	return &ZSliceCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -1348,7 +1347,7 @@ var _ Cmder = (*ZWithKeyCmd)(nil)
 
 func NewZWithKeyCmd(args ...interface{}) *ZWithKeyCmd {
 	return &ZWithKeyCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -1408,7 +1407,7 @@ var _ Cmder = (*ScanCmd)(nil)
 
 func NewScanCmd(process func(cmd Cmder) error, args ...interface{}) *ScanCmd {
 	return &ScanCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 		process: process,
 	}
 }
@@ -1460,7 +1459,7 @@ var _ Cmder = (*ClusterSlotsCmd)(nil)
 
 func NewClusterSlotsCmd(args ...interface{}) *ClusterSlotsCmd {
 	return &ClusterSlotsCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -1577,7 +1576,7 @@ var _ Cmder = (*GeoLocationCmd)(nil)
 
 func NewGeoLocationCmd(q *GeoRadiusQuery, args ...interface{}) *GeoLocationCmd {
 	return &GeoLocationCmd{
-		baseCmd: baseCmd{_args: geoLocationArgs(q, args...)},
+		baseCmd: baseCmd{args: geoLocationArgs(q, args...)},
 		q:       q,
 	}
 }
@@ -1721,7 +1720,7 @@ var _ Cmder = (*GeoPosCmd)(nil)
 
 func NewGeoPosCmd(args ...interface{}) *GeoPosCmd {
 	return &GeoPosCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 
@@ -1795,7 +1794,7 @@ var _ Cmder = (*CommandsInfoCmd)(nil)
 
 func NewCommandsInfoCmd(args ...interface{}) *CommandsInfoCmd {
 	return &CommandsInfoCmd{
-		baseCmd: baseCmd{_args: args},
+		baseCmd: baseCmd{args: args},
 	}
 }
 

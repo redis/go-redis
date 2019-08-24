@@ -43,10 +43,10 @@ func (it *ScanIterator) Next() bool {
 		}
 
 		// Fetch next page.
-		if it.cmd._args[0] == "scan" {
-			it.cmd._args[1] = it.cmd.cursor
+		if it.cmd.args[0] == "scan" {
+			it.cmd.args[1] = it.cmd.cursor
 		} else {
-			it.cmd._args[2] = it.cmd.cursor
+			it.cmd.args[2] = it.cmd.cursor
 		}
 
 		err := it.cmd.process(it.cmd)
