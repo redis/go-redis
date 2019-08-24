@@ -338,8 +338,6 @@ func (c *ringShards) Close() error {
 //------------------------------------------------------------------------------
 
 type ring struct {
-	cmdable
-	hooks
 	opt           *RingOptions
 	shards        *ringShards
 	cmdsInfoCache *cmdsInfoCache //nolint:structcheck
@@ -361,6 +359,8 @@ type ring struct {
 // Otherwise you should use Redis Cluster.
 type Ring struct {
 	*ring
+	cmdable
+	hooks
 	ctx context.Context
 }
 
@@ -374,9 +374,8 @@ func NewRing(opt *RingOptions) *Ring {
 		},
 		ctx: context.Background(),
 	}
-	ring.init()
-
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
+	ring.cmdable = ring.Process
 
 	for name, addr := range opt.Addrs {
 		shard := newRingShard(opt, name, addr)
@@ -398,10 +397,6 @@ func newRingShard(opt *RingOptions, name, addr string) *Client {
 	return shard
 }
 
-func (c *Ring) init() {
-	c.cmdable = c.Process
-}
-
 func (c *Ring) Context() context.Context {
 	return c.ctx
 }
@@ -411,8 +406,9 @@ func (c *Ring) WithContext(ctx context.Context) *Ring {
 		panic("nil context")
 	}
 	clone := *c
+	clone.cmdable = clone.Process
+	clone.hooks.Lock()
 	clone.ctx = ctx
-	clone.init()
 	return &clone
 }
 

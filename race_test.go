@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -282,6 +283,13 @@ var _ = Describe("races", func() {
 
 		wg.Wait()
 		Expect(received).To(Equal(uint32(C * N)))
+	})
+
+	It("should WithContext", func() {
+		perform(C, func(_ int) {
+			err := client.WithContext(context.Background()).Ping().Err()
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 })
 

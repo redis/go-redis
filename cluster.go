@@ -647,9 +647,6 @@ func (c *clusterStateHolder) ReloadOrGet() (*clusterState, error) {
 //------------------------------------------------------------------------------
 
 type clusterClient struct {
-	cmdable
-	hooks
-
 	opt           *ClusterOptions
 	nodes         *clusterNodes
 	state         *clusterStateHolder //nolint:structcheck
@@ -661,6 +658,8 @@ type clusterClient struct {
 // multiple goroutines.
 type ClusterClient struct {
 	*clusterClient
+	cmdable
+	hooks
 	ctx context.Context
 }
 
@@ -678,17 +677,13 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	}
 	c.state = newClusterStateHolder(c.loadState)
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
+	c.cmdable = c.Process
 
-	c.init()
 	if opt.IdleCheckFrequency > 0 {
 		go c.reaper(opt.IdleCheckFrequency)
 	}
 
 	return c
-}
-
-func (c *ClusterClient) init() {
-	c.cmdable = c.Process
 }
 
 func (c *ClusterClient) Context() context.Context {
@@ -700,8 +695,9 @@ func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
 		panic("nil context")
 	}
 	clone := *c
+	clone.cmdable = clone.Process
+	clone.hooks.Lock()
 	clone.ctx = ctx
-	clone.init()
 	return &clone
 }
 
