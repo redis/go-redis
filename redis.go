@@ -32,6 +32,10 @@ type hooks struct {
 	hooks []Hook
 }
 
+func (hs hooks) Lock() {
+	hs.hooks = hs.hooks[:len(hs.hooks):len(hs.hooks)]
+}
+
 func (hs *hooks) AddHook(hook Hook) {
 	hs.hooks = append(hs.hooks, hook)
 }
@@ -466,17 +470,13 @@ func txPipelineReadQueued(rd *proto.Reader, cmds []Cmder) error {
 
 //------------------------------------------------------------------------------
 
-type client struct {
-	baseClient
-	cmdable
-	hooks
-}
-
 // Client is a Redis client representing a pool of zero or more
 // underlying connections. It's safe for concurrent use by multiple
 // goroutines.
 type Client struct {
-	*client
+	baseClient
+	cmdable
+	hooks
 	ctx context.Context
 }
 
@@ -485,21 +485,15 @@ func NewClient(opt *Options) *Client {
 	opt.init()
 
 	c := Client{
-		client: &client{
-			baseClient: baseClient{
-				opt:      opt,
-				connPool: newConnPool(opt),
-			},
+		baseClient: baseClient{
+			opt:      opt,
+			connPool: newConnPool(opt),
 		},
 		ctx: context.Background(),
 	}
-	c.init()
+	c.cmdable = c.Process
 
 	return &c
-}
-
-func (c *Client) init() {
-	c.cmdable = c.Process
 }
 
 func (c *Client) Context() context.Context {
@@ -511,8 +505,9 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 		panic("nil context")
 	}
 	clone := *c
+	clone.cmdable = clone.Process
+	clone.hooks.Lock()
 	clone.ctx = ctx
-	clone.init()
 	return &clone
 }
 

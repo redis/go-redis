@@ -15,10 +15,9 @@ const TxFailedErr = proto.RedisError("redis: transaction failed")
 // by multiple goroutines, because Exec resets list of watched keys.
 // If you don't need WATCH it is better to use Pipeline.
 type Tx struct {
+	baseClient
 	cmdable
 	statefulCmdable
-	baseClient
-
 	ctx context.Context
 }
 
@@ -49,6 +48,7 @@ func (c *Tx) WithContext(ctx context.Context) *Tx {
 	}
 	clone := *c
 	clone.ctx = ctx
+	clone.init()
 	return &clone
 }
 
