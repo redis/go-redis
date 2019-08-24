@@ -701,7 +701,6 @@ func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
 	}
 	clone := *c
 	clone.ctx = ctx
-	clone.init()
 	return &clone
 }
 

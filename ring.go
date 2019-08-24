@@ -412,7 +412,6 @@ func (c *Ring) WithContext(ctx context.Context) *Ring {
 	}
 	clone := *c
 	clone.ctx = ctx
-	clone.init()
 	return &clone
 }
 

@@ -46,7 +46,7 @@ func (hs hooks) process(
 
 	cmdErr := fn(ctx, cmd)
 
-	_, err = hs.afterProcess(ctx, cmd)
+	err = hs.afterProcess(ctx, cmd)
 	if err != nil {
 		return err
 	}
@@ -65,7 +65,7 @@ func (hs hooks) beforeProcess(ctx context.Context, cmd Cmder) (context.Context, 
 	return ctx, nil
 }
 
-func (hs hooks) afterProcess(ctx context.Context, cmd Cmder) (context.Context, error) {
+func (hs hooks) afterProcess(ctx context.Context, cmd Cmder) error {
 	var firstErr error
 	for _, h := range hs.hooks {
 		err := h.AfterProcess(ctx, cmd)
@@ -73,7 +73,7 @@ func (hs hooks) afterProcess(ctx context.Context, cmd Cmder) (context.Context, e
 			firstErr = err
 		}
 	}
-	return ctx, firstErr
+	return firstErr
 }
 
 func (hs hooks) processPipeline(
@@ -86,7 +86,7 @@ func (hs hooks) processPipeline(
 
 	cmdsErr := fn(ctx, cmds)
 
-	_, err = hs.afterProcessPipeline(ctx, cmds)
+	err = hs.afterProcessPipeline(ctx, cmds)
 	if err != nil {
 		return err
 	}
@@ -105,7 +105,7 @@ func (hs hooks) beforeProcessPipeline(ctx context.Context, cmds []Cmder) (contex
 	return ctx, nil
 }
 
-func (hs hooks) afterProcessPipeline(ctx context.Context, cmds []Cmder) (context.Context, error) {
+func (hs hooks) afterProcessPipeline(ctx context.Context, cmds []Cmder) error {
 	var firstErr error
 	for _, h := range hs.hooks {
 		err := h.AfterProcessPipeline(ctx, cmds)
@@ -113,7 +113,7 @@ func (hs hooks) afterProcessPipeline(ctx context.Context, cmds []Cmder) (context
 			firstErr = err
 		}
 	}
-	return ctx, firstErr
+	return firstErr
 }
 
 //------------------------------------------------------------------------------
@@ -512,7 +512,6 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 	}
 	clone := *c
 	clone.ctx = ctx
-	clone.init()
 	return &clone
 }
 
