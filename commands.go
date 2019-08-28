@@ -2153,11 +2153,6 @@ func (c cmdable) FlushAllAsync() *StatusCmd {
 	return cmd
 }
 
-// Deprecated. Use FlushDB instead.
-func (c cmdable) FlushDb() *StatusCmd {
-	return c.FlushDB()
-}
-
 func (c cmdable) FlushDB() *StatusCmd {
 	cmd := NewStatusCmd("flushdb")
 	_ = c(cmd)
