@@ -3,6 +3,8 @@ package redis_test
 import (
 	"time"
 
+	"strings"
+
 	"github.com/go-redis/redis/v7"
 
 	. "github.com/onsi/ginkgo"
@@ -27,6 +29,13 @@ var _ = Describe("Cmd", func() {
 
 		get := client.Get("foo")
 		Expect(get.String()).To(Equal("get foo: bar"))
+	})
+
+	It("should be able to get data larger then maxBufioReaderSize (4096)", func() {
+		set := client.Set("foo", strings.Repeat("a", 4097), 0)
+		Expect(set.Val()).To(Equal("OK"))
+		get := client.Get("foo")
+		Expect(get.Val()).To(Equal(strings.Repeat("a", 4097)))
 	})
 
 	It("has val/err", func() {
