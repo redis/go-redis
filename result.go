@@ -146,3 +146,11 @@ func NewCommandsInfoCmdResult(val map[string]*CommandInfo, err error) *CommandsI
 	cmd.setErr(err)
 	return &cmd
 }
+
+// NewXMessageSliceCmdResult returns a XMessageSliceCmd initialised with val and err for testing
+func NewXMessageSliceCmdResult(val []XMessage, err error) *XMessageSliceCmd {
+	var cmd XMessageSliceCmd
+	cmd.val = val
+	cmd.setErr(err)
+	return &cmd
+}
