@@ -154,3 +154,11 @@ func NewXMessageSliceCmdResult(val []XMessage, err error) *XMessageSliceCmd {
 	cmd.setErr(err)
 	return &cmd
 }
+
+// NewXStreamSliceCmdResult returns a XStreamSliceCmd initialised with val and err for testing
+func NewXStreamSliceCmdResult(val []XStream, err error) *XStreamSliceCmd {
+	var cmd XStreamSliceCmd
+	cmd.val = val
+	cmd.setErr(err)
+	return &cmd
+}
