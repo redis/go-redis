@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -437,14 +438,23 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 	ticker := time.NewTicker(frequency)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if p.closed() {
-			break
-		}
-		_, err := p.ReapStaleConns()
-		if err != nil {
-			internal.Logger.Printf("ReapStaleConns failed: %s", err)
-			continue
+	for {
+		select {
+		case <-ticker.C:
+			if p.closed() {
+				break
+			}
+			_, err := p.ReapStaleConns()
+			if err != nil {
+				internal.Logger.Printf("ReapStaleConns failed: %s", err)
+				continue
+			}
+		default:
+			if p.closed() {
+				break
+			}
+			// hand over execution rights to avoid tight loop
+			runtime.Gosched()
 		}
 	}
 }
