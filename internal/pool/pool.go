@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,7 +78,8 @@ type ConnPool struct {
 
 	stats Stats
 
-	_closed uint32 // atomic
+	_closed   uint32 // atomic
+	_closedCh chan struct{}
 }
 
 var _ Pooler = (*ConnPool)(nil)
@@ -91,6 +91,7 @@ func NewConnPool(opt *Options) *ConnPool {
 		queue:     make(chan struct{}, opt.PoolSize),
 		conns:     make([]*Conn, 0, opt.PoolSize),
 		idleConns: make([]*Conn, 0, opt.PoolSize),
+		_closedCh: make(chan struct{}, 1),
 	}
 
 	p.checkMinIdleConns()
@@ -417,6 +418,7 @@ func (p *ConnPool) Close() error {
 	if !atomic.CompareAndSwapUint32(&p._closed, 0, 1) {
 		return ErrClosed
 	}
+	p._closedCh <- struct{}{}
 
 	var firstErr error
 	p.connsMu.Lock()
@@ -441,20 +443,20 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
+			// It is possible that ticker and closedCh arrive together,
+			// and select pseudo-randomly pick ticker case, we double
+			// check here to prevent being executed after closed.
 			if p.closed() {
-				break
+				return
 			}
 			_, err := p.ReapStaleConns()
 			if err != nil {
 				internal.Logger.Printf("ReapStaleConns failed: %s", err)
 				continue
 			}
-		default:
-			if p.closed() {
-				break
-			}
-			// hand over execution rights to avoid tight loop
-			runtime.Gosched()
+		case <-p._closedCh:
+			close(p._closedCh)
+			return
 		}
 	}
 }
