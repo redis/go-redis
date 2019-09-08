@@ -78,8 +78,8 @@ type ConnPool struct {
 
 	stats Stats
 
-	_closed   uint32 // atomic
-	_closedCh chan struct{}
+	_closed  uint32 // atomic
+	closedCh chan struct{}
 }
 
 var _ Pooler = (*ConnPool)(nil)
@@ -91,7 +91,7 @@ func NewConnPool(opt *Options) *ConnPool {
 		queue:     make(chan struct{}, opt.PoolSize),
 		conns:     make([]*Conn, 0, opt.PoolSize),
 		idleConns: make([]*Conn, 0, opt.PoolSize),
-		_closedCh: make(chan struct{}, 1),
+		closedCh:  make(chan struct{}),
 	}
 
 	p.checkMinIdleConns()
@@ -418,7 +418,7 @@ func (p *ConnPool) Close() error {
 	if !atomic.CompareAndSwapUint32(&p._closed, 0, 1) {
 		return ErrClosed
 	}
-	p._closedCh <- struct{}{}
+	close(p.closedCh)
 
 	var firstErr error
 	p.connsMu.Lock()
@@ -454,8 +454,7 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 				internal.Logger.Printf("ReapStaleConns failed: %s", err)
 				continue
 			}
-		case <-p._closedCh:
-			close(p._closedCh)
+		case <-p.closedCh:
 			return
 		}
 	}
