@@ -186,6 +186,7 @@ type Cmdable interface {
 	XClaimJustID(a *XClaimArgs) *StringSliceCmd
 	XTrim(key string, maxLen int64) *IntCmd
 	XTrimApprox(key string, maxLen int64) *IntCmd
+	XInfoGroup(key string) *XInfoGroupsCmd
 	BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd
 	BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd
 	ZAdd(key string, members ...*Z) *IntCmd
@@ -1567,6 +1568,12 @@ func (c cmdable) XTrim(key string, maxLen int64) *IntCmd {
 
 func (c cmdable) XTrimApprox(key string, maxLen int64) *IntCmd {
 	cmd := NewIntCmd("xtrim", key, "maxlen", "~", maxLen)
+	_ = c(cmd)
+	return cmd
+}
+
+func (c cmdable) XInfoGroup(key string) *XInfoGroupsCmd {
+	cmd := NewXInfoGroupsCmd(key)
 	_ = c(cmd)
 	return cmd
 }

@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -943,6 +944,93 @@ func (cmd *StringStructMapCmd) readReply(rd *proto.Reader) error {
 		return nil, nil
 	})
 	return cmd.err
+}
+
+//------------------------------------------------------------------------------
+
+type XGroups struct {
+	Name            string
+	Consumers       int64
+	Pending         int64
+	LastDeliveredId string
+}
+
+type XInfoGroupsCmd struct {
+	baseCmd
+
+	val []XGroups
+}
+
+var _ Cmder = (*XInfoGroupsCmd)(nil)
+
+func NewXInfoGroupsCmd(stream string) *XInfoGroupsCmd {
+	return &XInfoGroupsCmd{
+		baseCmd: baseCmd{args: []interface{}{"xinfo", "groups", stream}},
+	}
+}
+
+func (cmd *XInfoGroupsCmd) Val() []XGroups {
+	return cmd.val
+}
+
+func (cmd *XInfoGroupsCmd) Result() ([]XGroups, error) {
+	return nil, nil
+}
+
+func (cmd *XInfoGroupsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
+	var v interface{}
+	v, cmd.err = rd.ReadArrayReply(xGroupSliceParser)
+	if cmd.err != nil {
+		return cmd.err
+	}
+	cmd.val = v.([]XGroups)
+	return nil
+}
+
+func xGroupSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
+	grps := make([]XGroups, n)
+	for i := 0; i < len(grps); i++ {
+		if _, err := rd.ReadArrayReply(
+			func(rd *proto.Reader, n int64) (interface{}, error) {
+				if n%2 != 0 {
+					return nil, errors.New("unexpected number of fields")
+				}
+				var (
+					v   = &grps[i]
+					val string
+				)
+				for j := 0; j < int(n); j += 2 {
+					name, e := rd.ReadString()
+					if e != nil {
+						return nil, e
+					}
+					switch name {
+					case "name":
+						v.Name, e = rd.ReadString()
+					case "consumers":
+						val, e = rd.ReadString()
+						v.Consumers, e = strconv.ParseInt(val, 0, 64)
+					case "pending":
+						val, e = rd.ReadString()
+						v.Pending, e = strconv.ParseInt(val, 0, 64)
+					case "last-delivered-id":
+						v.Name, e = rd.ReadString()
+					}
+					if e != nil {
+						return nil, e
+					}
+				}
+				return nil, nil
+			},
+		); err != nil {
+			return nil, err
+		}
+	}
+	return grps, nil
 }
 
 //------------------------------------------------------------------------------
