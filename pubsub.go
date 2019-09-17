@@ -467,8 +467,8 @@ func (c *PubSub) initPing() {
 						pingErr = errPingTimeout
 					}
 					c.mu.Lock()
-					healthy = true
 					c.reconnect(pingErr)
+					healthy = true
 					c.mu.Unlock()
 				}
 			case <-c.exit:
