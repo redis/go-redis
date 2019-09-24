@@ -1294,7 +1294,7 @@ type XGroup struct {
 	Name            string
 	Consumers       int64
 	Pending         int64
-	LastDeliveredId string
+	LastDeliveredID string
 }
 
 var _ Cmder = (*XInfoGroupsCmd)(nil)
@@ -1361,7 +1361,7 @@ func xGroupInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 		case "pending":
 			grp.Pending, err = strconv.ParseInt(val, 0, 64)
 		case "last-delivered-id":
-			grp.LastDeliveredId = val
+			grp.LastDeliveredID = val
 		default:
 			return nil, fmt.Errorf("redis: unexpected content %s "+
 				"in XINFO GROUPS reply", key)
