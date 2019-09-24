@@ -1285,6 +1285,96 @@ func (cmd *XPendingExtCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
+type XInfoGroupsCmd struct {
+	baseCmd
+	val []XGroup
+}
+
+type XGroup struct {
+	Name            string
+	Consumers       int64
+	Pending         int64
+	LastDeliveredId string
+}
+
+var _ Cmder = (*XInfoGroupsCmd)(nil)
+
+func NewXInfoGroupsCmd(stream string) *XInfoGroupsCmd {
+	return &XInfoGroupsCmd{
+		baseCmd: baseCmd{args: []interface{}{"xinfo", "groups", stream}},
+	}
+}
+
+func (cmd *XInfoGroupsCmd) Val() []XGroup {
+	return cmd.val
+}
+
+func (cmd *XInfoGroupsCmd) Result() ([]XGroup, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *XInfoGroupsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
+	_, cmd.err = rd.ReadArrayReply(
+		func(rd *proto.Reader, n int64) (interface{}, error) {
+			for i := int64(0); i < n; i++ {
+				v, err := rd.ReadReply(xGroupInfoParser)
+				if err != nil {
+					return nil, err
+				}
+				cmd.val = append(cmd.val, v.(XGroup))
+			}
+			return nil, nil
+		})
+	return nil
+}
+
+func xGroupInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
+	if n != 8 {
+		return nil, fmt.Errorf("redis: got %d elements in XINFO GROUPS reply,"+
+			"wanted 8", n)
+	}
+	var (
+		err error
+		grp XGroup
+		key string
+		val string
+	)
+
+	for i := 0; i < 4; i++ {
+		key, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+		val, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+		switch key {
+		case "name":
+			grp.Name = val
+		case "consumers":
+			grp.Consumers, err = strconv.ParseInt(val, 0, 64)
+		case "pending":
+			grp.Pending, err = strconv.ParseInt(val, 0, 64)
+		case "last-delivered-id":
+			grp.LastDeliveredId = val
+		default:
+			return nil, fmt.Errorf("redis: unexpected content %s "+
+				"in XINFO GROUPS reply", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return grp, err
+}
+
+//------------------------------------------------------------------------------
+
 type ZSliceCmd struct {
 	baseCmd
 
