@@ -385,6 +385,10 @@ func (cmd *IntCmd) Result() (int64, error) {
 	return cmd.val, cmd.err
 }
 
+func (cmd *IntCmd) Uint64() (uint64, error) {
+	return uint64(cmd.val), cmd.err
+}
+
 func (cmd *IntCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
