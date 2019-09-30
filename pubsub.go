@@ -468,6 +468,7 @@ func (c *PubSub) initPing() {
 					}
 					c.mu.Lock()
 					c.reconnect(pingErr)
+					healthy = true
 					c.mu.Unlock()
 				}
 			case <-c.exit:
