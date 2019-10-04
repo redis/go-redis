@@ -253,6 +253,15 @@ func (c *sentinelFailover) masterAddr() (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	addr = c.getMasterAddr()
+	if addr != "" {
+		return addr, nil
+	}
+
+	if c.sentinel != nil {
+		c.closeSentinel()
+	}
+
 	for i, sentinelAddr := range c.sentinelAddrs {
 		sentinel := NewSentinelClient(&Options{
 			Addr: sentinelAddr,
@@ -291,9 +300,7 @@ func (c *sentinelFailover) masterAddr() (string, error) {
 }
 
 func (c *sentinelFailover) getMasterAddr() string {
-	c.mu.RLock()
 	sentinel := c.sentinel
-	c.mu.RUnlock()
 
 	if sentinel == nil {
 		return ""
@@ -303,11 +310,6 @@ func (c *sentinelFailover) getMasterAddr() string {
 	if err != nil {
 		internal.Logf("sentinel: GetMasterAddrByName name=%q failed: %s",
 			c.masterName, err)
-		c.mu.Lock()
-		if c.sentinel == sentinel {
-			c.closeSentinel()
-		}
-		c.mu.Unlock()
 		return ""
 	}
 
