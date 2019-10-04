@@ -335,6 +335,7 @@ func (c *sentinelFailover) switchMaster(addr string) {
 
 func (c *sentinelFailover) setSentinel(sentinel *SentinelClient) {
 	c.discoverSentinels(sentinel)
+	// here goroutes leaks
 	c.sentinel = sentinel
 
 	c.pubsub = sentinel.Subscribe("+switch-master")
