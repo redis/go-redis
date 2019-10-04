@@ -109,7 +109,7 @@ vals, err := client.ZInterStore("out", redis.ZStore{Weights: []int64{2, 3}}, "zs
 vals, err := client.Eval("return {KEYS[1],ARGV[1]}", []string{"key"}, "hello").Result()
 
 // custom command
-res, err := client.Do("set", "key", "value")
+res, err := client.Do("set", "key", "value").Result()
 ```
 
 ## See also
