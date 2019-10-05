@@ -245,7 +245,9 @@ func (c *sentinelFailover) MasterAddr() (string, error) {
 }
 
 func (c *sentinelFailover) masterAddr() (string, error) {
+	c.mu.RLock()
 	addr := c.getMasterAddr()
+	c.mu.RUnlock()
 	if addr != "" {
 		return addr, nil
 	}
