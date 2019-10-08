@@ -1291,10 +1291,10 @@ func (cmd *XPendingExtCmd) readReply(rd *proto.Reader) error {
 
 type XInfoGroupsCmd struct {
 	baseCmd
-	val []XGroup
+	val []XInfoGroups
 }
 
-type XGroup struct {
+type XInfoGroups struct {
 	Name            string
 	Consumers       int64
 	Pending         int64
@@ -1309,11 +1309,11 @@ func NewXInfoGroupsCmd(stream string) *XInfoGroupsCmd {
 	}
 }
 
-func (cmd *XInfoGroupsCmd) Val() []XGroup {
+func (cmd *XInfoGroupsCmd) Val() []XInfoGroups {
 	return cmd.val
 }
 
-func (cmd *XInfoGroupsCmd) Result() ([]XGroup, error) {
+func (cmd *XInfoGroupsCmd) Result() ([]XInfoGroups, error) {
 	return cmd.val, cmd.err
 }
 
@@ -1329,7 +1329,7 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 				if err != nil {
 					return nil, err
 				}
-				cmd.val = append(cmd.val, v.(XGroup))
+				cmd.val = append(cmd.val, v.(XInfoGroups))
 			}
 			return nil, nil
 		})
@@ -1343,7 +1343,7 @@ func xGroupInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 	}
 	var (
 		err error
-		grp XGroup
+		grp XInfoGroups
 		key string
 		val string
 	)
