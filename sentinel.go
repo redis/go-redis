@@ -60,6 +60,8 @@ func (opt *FailoverOptions) options() *Options {
 		Password: opt.Password,
 
 		MaxRetries: opt.MaxRetries,
+		MinRetryBackoff: opt.MinRetryBackoff,
+		MaxRetryBackoff: opt.MaxRetryBackoff,
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
@@ -69,6 +71,8 @@ func (opt *FailoverOptions) options() *Options {
 		PoolTimeout:        opt.PoolTimeout,
 		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: opt.IdleCheckFrequency,
+		MinIdleConns:       opt.MinIdleConns,
+		MaxConnAge:         opt.MaxConnAge,
 
 		TLSConfig: opt.TLSConfig,
 	}
