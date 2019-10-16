@@ -59,7 +59,7 @@ func (opt *FailoverOptions) options() *Options {
 		DB:       opt.DB,
 		Password: opt.Password,
 
-		MaxRetries: opt.MaxRetries,
+		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
 
