@@ -337,6 +337,8 @@ func (c *sentinelFailover) getMasterAddr() string {
 }
 
 func (c *sentinelFailover) MasterChangeChan() <-chan interface{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.masterChanged
 }
 
@@ -354,8 +356,10 @@ func (c *sentinelFailover) switchMaster(addr string) {
 	internal.Logf("sentinel: new master=%q addr=%q",
 		c.masterName, addr)
 
-	close(c.masterChanged)
-	c.masterChanged = make(chan interface{})
+	if masterAddr != "" {
+		close(c.masterChanged)
+		c.masterChanged = make(chan interface{})
+	}
 	c._masterAddr = addr
 
 	_ = c.Pool().Filter(func(cn *pool.Conn) bool {
