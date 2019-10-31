@@ -139,6 +139,14 @@ func NewGeoLocationCmdResult(val []GeoLocation, err error) *GeoLocationCmd {
 	return &cmd
 }
 
+// NewGeoPosCmdResult returns a GeoPosCmd initialised with val and err for testing
+func NewGeoPosCmdResult(val []*GeoPos, err error) *GeoPosCmd {
+	var cmd GeoPosCmd
+	cmd.val = val
+	cmd.setErr(err)
+	return &cmd
+}
+
 // NewCommandsInfoCmdResult returns a CommandsInfoCmd initialised with val and err for testing
 func NewCommandsInfoCmdResult(val map[string]*CommandInfo, err error) *CommandsInfoCmd {
 	var cmd CommandsInfoCmd
