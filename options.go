@@ -99,11 +99,15 @@ type Options struct {
 }
 
 func (opt *Options) init() {
-	if opt.Network == "" {
-		opt.Network = "tcp"
-	}
 	if opt.Addr == "" {
 		opt.Addr = "localhost:6379"
+	}
+	if opt.Network == "" {
+		if strings.HasPrefix(opt.Addr, "/") {
+			opt.Network = "unix"
+		} else {
+			opt.Network = "tcp"
+		}
 	}
 	if opt.Dialer == nil {
 		opt.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {

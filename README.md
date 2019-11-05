@@ -27,16 +27,16 @@ Examples: https://godoc.org/github.com/go-redis/redis#pkg-examples.
 
 ## Installation
 
-Install:
+go-redis requires a Go version with [Modules](https://github.com/golang/go/wiki/Modules) support and uses import versioning. So please make sure to initialize a Go module before installing go-redis:
 
 ```shell
-go get -u github.com/go-redis/redis
+go get -u github.com/go-redis/redis/v7
 ```
 
 Import:
 
 ```go
-import "github.com/go-redis/redis"
+import "github.com/go-redis/redis/v7"
 ```
 
 ## Quickstart
@@ -109,7 +109,7 @@ vals, err := client.ZInterStore("out", redis.ZStore{Weights: []int64{2, 3}}, "zs
 vals, err := client.Eval("return {KEYS[1],ARGV[1]}", []string{"key"}, "hello").Result()
 
 // custom command
-res, err := client.Do("set", "key", "value")
+res, err := client.Do("set", "key", "value").Result()
 ```
 
 ## See also
