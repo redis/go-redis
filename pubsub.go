@@ -39,10 +39,11 @@ type PubSub struct {
 
 	cmd *Cmd
 
-	chOnce sync.Once
-	msgCh  chan *Message
-	allCh  chan interface{}
-	ping   chan struct{}
+	chOnce      sync.Once
+	msgCh       chan *Message
+	allCh       chan interface{}
+	ping        chan struct{}
+	pingTimeout time.Duration
 }
 
 func (c *PubSub) String() string {
@@ -407,8 +408,18 @@ func (c *PubSub) Channel() <-chan *Message {
 // ChannelSize is like Channel, but creates a Go channel
 // with specified buffer size.
 func (c *PubSub) ChannelSize(size int) <-chan *Message {
+	return c.ChannelSizeTimeout(size, pingTimeout)
+}
+
+// ChannelTimeout is like Channel, but allows to customize the timeout.
+func (c *PubSub) ChannelTimeout(timeout time.Duration) <-chan *Message {
+	return c.ChannelSizeTimeout(100, timeout)
+}
+
+// ChannelSizeTimeout is like ChannelSize, but allows to customize the timeout.
+func (c *PubSub) ChannelSizeTimeout(size int, timeout time.Duration) <-chan *Message {
 	c.chOnce.Do(func() {
-		c.initPing()
+		c.initPing(timeout)
 		c.initMsgChan(size)
 	})
 	if c.msgCh == nil {
@@ -428,8 +439,13 @@ func (c *PubSub) ChannelSize(size int) <-chan *Message {
 //
 // ChannelWithSubscriptions can not be used together with Channel or ChannelSize.
 func (c *PubSub) ChannelWithSubscriptions(size int) <-chan interface{} {
+	return c.ChannelWithSubscriptionsTimeout(size, pingTimeout)
+}
+
+// ChannelWithSubscriptionsTimeout is like ChannelWithSubscriptions, but allows to customize the timeout.
+func (c *PubSub) ChannelWithSubscriptionsTimeout(size int, timeout time.Duration) <-chan interface{} {
 	c.chOnce.Do(func() {
-		c.initPing()
+		c.initPing(timeout)
 		c.initAllChan(size)
 	})
 	if c.allCh == nil {
@@ -443,15 +459,16 @@ func (c *PubSub) ChannelWithSubscriptions(size int) <-chan interface{} {
 	return c.allCh
 }
 
-func (c *PubSub) initPing() {
+func (c *PubSub) initPing(timeout time.Duration) {
 	c.ping = make(chan struct{}, 1)
+	c.pingTimeout = timeout
 	go func() {
-		timer := time.NewTimer(pingTimeout)
+		timer := time.NewTimer(c.pingTimeout)
 		timer.Stop()
 
 		healthy := true
 		for {
-			timer.Reset(pingTimeout)
+			timer.Reset(c.pingTimeout)
 			select {
 			case <-c.ping:
 				healthy = true
@@ -482,7 +499,7 @@ func (c *PubSub) initPing() {
 func (c *PubSub) initMsgChan(size int) {
 	c.msgCh = make(chan *Message, size)
 	go func() {
-		timer := time.NewTimer(pingTimeout)
+		timer := time.NewTimer(c.pingTimeout)
 		timer.Stop()
 
 		var errCount int
@@ -514,7 +531,7 @@ func (c *PubSub) initMsgChan(size int) {
 			case *Pong:
 				// Ignore.
 			case *Message:
-				timer.Reset(pingTimeout)
+				timer.Reset(c.pingTimeout)
 				select {
 				case c.msgCh <- msg:
 					if !timer.Stop() {
@@ -522,7 +539,7 @@ func (c *PubSub) initMsgChan(size int) {
 					}
 				case <-timer.C:
 					internal.Logger.Printf(
-						"redis: %s channel is full for %s (message is dropped)", c, pingTimeout)
+						"redis: %s channel is full for %s (message is dropped)", c, c.pingTimeout)
 				}
 			default:
 				internal.Logger.Printf("redis: unknown message type: %T", msg)
@@ -535,7 +552,7 @@ func (c *PubSub) initMsgChan(size int) {
 func (c *PubSub) initAllChan(size int) {
 	c.allCh = make(chan interface{}, size)
 	go func() {
-		timer := time.NewTimer(pingTimeout)
+		timer := time.NewTimer(c.pingTimeout)
 		timer.Stop()
 
 		var errCount int
@@ -576,7 +593,7 @@ func (c *PubSub) initAllChan(size int) {
 }
 
 func (c *PubSub) sendMessage(msg interface{}, timer *time.Timer) {
-	timer.Reset(pingTimeout)
+	timer.Reset(c.pingTimeout)
 	select {
 	case c.allCh <- msg:
 		if !timer.Stop() {
@@ -584,7 +601,7 @@ func (c *PubSub) sendMessage(msg interface{}, timer *time.Timer) {
 		}
 	case <-timer.C:
 		internal.Logger.Printf(
-			"redis: %s channel is full for %s (message is dropped)", c, pingTimeout)
+			"redis: %s channel is full for %s (message is dropped)", c, c.pingTimeout)
 	}
 }
 
