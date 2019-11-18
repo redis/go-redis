@@ -1863,7 +1863,6 @@ func (cmd *GeoPosCmd) readReply(rd *proto.Reader) error {
 		return nil, nil
 	})
 	return cmd.err
-
 }
 
 //------------------------------------------------------------------------------
