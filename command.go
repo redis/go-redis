@@ -2005,6 +2005,12 @@ func (c *cmdsInfoCache) Get() (map[string]*CommandInfo, error) {
 		if err != nil {
 			return err
 		}
+		for key := range cmds {
+			lowerKey := internal.ToLower(key)
+			if key != lowerKey {
+				cmds[lowerKey] = cmds[key]
+			}
+		}
 		c.cmds = cmds
 		return nil
 	})
