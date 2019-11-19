@@ -4,8 +4,6 @@ all: testdeps
 	go test ./... -run=NONE -bench=. -benchmem
 	env GOOS=linux GOARCH=386 go test ./...
 	go vet
-	go get github.com/gordonklaus/ineffassign
-	ineffassign .
 	golangci-lint run
 
 testdeps: testdata/redis/src/redis-server
