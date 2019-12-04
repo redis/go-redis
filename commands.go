@@ -823,7 +823,7 @@ func (c cmdable) MSetNX(pairs ...interface{}) *BoolCmd {
 // Use expiration for `SETEX`-like behavior.
 // Zero expiration means the key has no expiration time.
 func (c cmdable) Set(key string, value interface{}, expiration time.Duration) *StatusCmd {
-	args := make([]interface{}, 3, 4)
+	args := make([]interface{}, 3, 5)
 	args[0] = "set"
 	args[1] = key
 	args[2] = value
