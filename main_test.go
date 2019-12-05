@@ -257,7 +257,7 @@ func (p *redisProcess) Close() error {
 
 var (
 	redisServerBin, _  = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
-	redisServerConf, _ = filepath.Abs(filepath.Join("testdata", "redis.conf"))
+	redisServerConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
 )
 
 func redisDir(port string) (string, error) {
