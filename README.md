@@ -29,19 +29,20 @@ Examples: https://godoc.org/github.com/go-redis/redis#pkg-examples.
 
 go-redis requires a Go version with [Modules](https://github.com/golang/go/wiki/Modules) support and uses import versioning. So please make sure to initialize a Go module before installing go-redis:
 
-```shell
-go get -u github.com/go-redis/redis/v7
+``` shell
+go mod init github.com/my/repo
+go get github.com/go-redis/redis/v7
 ```
 
 Import:
 
-```go
+``` go
 import "github.com/go-redis/redis/v7"
 ```
 
 ## Quickstart
 
-```go
+``` go
 func ExampleNewClient() {
 	client := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
@@ -87,7 +88,7 @@ Please go through [examples](https://godoc.org/github.com/go-redis/redis#pkg-exa
 
 Some corner cases:
 
-```go
+``` go
 // SET key value EX 10 NX
 set, err := client.SetNX("key", "value", 10*time.Second).Result()
 
