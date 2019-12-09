@@ -1010,7 +1010,7 @@ func (c cmdable) BLPop(timeout time.Duration, keys ...string) *StringSliceCmd {
 	}
 	args[len(args)-1] = formatSec(timeout)
 	cmd := NewStringSliceCmd(args...)
-	cmd.setReadTimeout(timeout)
+	cmd.setReadTimeout(timeout + time.Second)
 	_ = c(cmd)
 	return cmd
 }
@@ -1023,7 +1023,7 @@ func (c cmdable) BRPop(timeout time.Duration, keys ...string) *StringSliceCmd {
 	}
 	args[len(keys)+1] = formatSec(timeout)
 	cmd := NewStringSliceCmd(args...)
-	cmd.setReadTimeout(timeout)
+	cmd.setReadTimeout(timeout + time.Second)
 	_ = c(cmd)
 	return cmd
 }
@@ -1035,7 +1035,7 @@ func (c cmdable) BRPopLPush(source, destination string, timeout time.Duration) *
 		destination,
 		formatSec(timeout),
 	)
-	cmd.setReadTimeout(timeout)
+	cmd.setReadTimeout(timeout + time.Second)
 	_ = c(cmd)
 	return cmd
 }
