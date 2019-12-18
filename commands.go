@@ -34,9 +34,15 @@ func formatSec(dur time.Duration) int64 {
 
 func appendArgs(dst, src []interface{}) []interface{} {
 	if len(src) == 1 {
-		if ss, ok := src[0].([]string); ok {
-			for _, s := range ss {
+		switch v := src[0].(type) {
+		case []string:
+			for _, s := range v {
 				dst = append(dst, s)
+			}
+			return dst
+		case map[string]interface{}:
+			for k, v := range v {
+				dst = append(dst, k, v)
 			}
 			return dst
 		}
@@ -107,8 +113,8 @@ type Cmdable interface {
 	IncrBy(key string, value int64) *IntCmd
 	IncrByFloat(key string, value float64) *FloatCmd
 	MGet(keys ...string) *SliceCmd
-	MSet(pairs ...interface{}) *StatusCmd
-	MSetNX(pairs ...interface{}) *BoolCmd
+	MSet(values ...interface{}) *StatusCmd
+	MSetNX(values ...interface{}) *BoolCmd
 	Set(key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetBit(key string, offset int64, value int) *IntCmd
 	SetNX(key string, value interface{}, expiration time.Duration) *BoolCmd
@@ -124,7 +130,7 @@ type Cmdable interface {
 	HKeys(key string) *StringSliceCmd
 	HLen(key string) *IntCmd
 	HMGet(key string, fields ...string) *SliceCmd
-	HMSet(key string, fields map[string]interface{}) *StatusCmd
+	HMSet(key string, values ...interface{}) *IntCmd
 	HSet(key, field string, value interface{}) *BoolCmd
 	HSetNX(key, field string, value interface{}) *BoolCmd
 	HVals(key string) *StringSliceCmd
@@ -800,19 +806,27 @@ func (c cmdable) MGet(keys ...string) *SliceCmd {
 	return cmd
 }
 
-func (c cmdable) MSet(pairs ...interface{}) *StatusCmd {
-	args := make([]interface{}, 1, 1+len(pairs))
+// MSet is like Set but accepts multiple values:
+//   - MSet("key1", "value1", "key2", "value2")
+//   - MSet([]string{"key1", "value1", "key2", "value2"})
+//   - MSet(map[string]interface{}{"key1": "value1", "key2": "value2"})
+func (c cmdable) MSet(values ...interface{}) *StatusCmd {
+	args := make([]interface{}, 1, 1+len(values))
 	args[0] = "mset"
-	args = appendArgs(args, pairs)
+	args = appendArgs(args, values)
 	cmd := NewStatusCmd(args...)
 	_ = c(cmd)
 	return cmd
 }
 
-func (c cmdable) MSetNX(pairs ...interface{}) *BoolCmd {
-	args := make([]interface{}, 1, 1+len(pairs))
+// MSetNX is like SetNX but accepts multiple values:
+//   - MSetNX("key1", "value1", "key2", "value2")
+//   - MSetNX([]string{"key1", "value1", "key2", "value2"})
+//   - MSetNX(map[string]interface{}{"key1": "value1", "key2": "value2"})
+func (c cmdable) MSetNX(values ...interface{}) *BoolCmd {
+	args := make([]interface{}, 1, 1+len(values))
 	args[0] = "msetnx"
-	args = appendArgs(args, pairs)
+	args = appendArgs(args, values)
 	cmd := NewBoolCmd(args...)
 	_ = c(cmd)
 	return cmd
@@ -967,17 +981,18 @@ func (c cmdable) HMGet(key string, fields ...string) *SliceCmd {
 	return cmd
 }
 
-func (c cmdable) HMSet(key string, fields map[string]interface{}) *StatusCmd {
-	args := make([]interface{}, 2+len(fields)*2)
-	args[0] = "hmset"
+// HMSet is like HSet, but accepts multiple values:
+//   - HMSet("key1", "value1", "key2", "value2")
+//   - HMSet([]string{"key1", "value1", "key2", "value2"})
+//   - HMSet(map[string]interface{}{"key1": "value1", "key2": "value2"})
+//
+// Note that it uses HSET Redis command underneath because HMSET is deprecated.
+func (c cmdable) HMSet(key string, values ...interface{}) *IntCmd {
+	args := make([]interface{}, 2+2*len(values))
+	args[0] = "hset"
 	args[1] = key
-	i := 2
-	for k, v := range fields {
-		args[i] = k
-		args[i+1] = v
-		i += 2
-	}
-	cmd := NewStatusCmd(args...)
+	args = appendArgs(args, values)
+	cmd := NewIntCmd(args...)
 	_ = c(cmd)
 	return cmd
 }

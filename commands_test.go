@@ -1383,7 +1383,7 @@ var _ = Describe("Commands", func() {
 				"key2": "hello2",
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(ok).To(Equal("OK"))
+			Expect(ok).To(Equal(int64(3)))
 
 			v, err := client.HGet("hash", "key1").Result()
 			Expect(err).NotTo(HaveOccurred())
