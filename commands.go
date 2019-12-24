@@ -988,7 +988,7 @@ func (c cmdable) HMGet(key string, fields ...string) *SliceCmd {
 //
 // Note that it uses HSET Redis command underneath because HMSET is deprecated.
 func (c cmdable) HMSet(key string, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 2+2*len(values))
+	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "hset"
 	args[1] = key
 	args = appendArgs(args, values)

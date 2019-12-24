@@ -1367,9 +1367,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HMGet", func() {
-			err := client.HSet("hash", "key1", "hello1").Err()
-			Expect(err).NotTo(HaveOccurred())
-			err = client.HSet("hash", "key2", "hello2").Err()
+			err := client.HMSet("hash", "key1", "hello1", "key2", "hello2").Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.HMGet("hash", "key1", "key2", "_").Result()
@@ -1383,7 +1381,7 @@ var _ = Describe("Commands", func() {
 				"key2": "hello2",
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(ok).To(Equal(int64(3)))
+			Expect(ok).To(Equal(int64(2)))
 
 			v, err := client.HGet("hash", "key1").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -1392,6 +1390,10 @@ var _ = Describe("Commands", func() {
 			v, err = client.HGet("hash", "key2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(v).To(Equal("hello2"))
+
+			keys, err := client.HKeys("hash").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(ConsistOf([]string{"key1", "key2"}))
 		})
 
 		It("should HSet", func() {
