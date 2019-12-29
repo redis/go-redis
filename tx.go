@@ -18,6 +18,7 @@ type Tx struct {
 	baseClient
 	cmdable
 	statefulCmdable
+	hooks
 	ctx context.Context
 }
 
@@ -27,7 +28,8 @@ func (c *Client) newTx(ctx context.Context) *Tx {
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), true),
 		},
-		ctx: ctx,
+		hooks: c.hooks.Clone(),
+		ctx:   ctx,
 	}
 	tx.init()
 	return &tx
@@ -47,8 +49,9 @@ func (c *Tx) WithContext(ctx context.Context) *Tx {
 		panic("nil context")
 	}
 	clone := *c
-	clone.ctx = ctx
 	clone.init()
+	clone.hooks.Lock()
+	clone.ctx = ctx
 	return &clone
 }
 
@@ -57,7 +60,7 @@ func (c *Tx) Process(cmd Cmder) error {
 }
 
 func (c *Tx) ProcessContext(ctx context.Context, cmd Cmder) error {
-	return c.baseClient.process(ctx, cmd)
+	return c.hooks.process(ctx, cmd, c.baseClient.process)
 }
 
 // Watch prepares a transaction and marks the keys to be watched
@@ -116,8 +119,10 @@ func (c *Tx) Unwatch(keys ...string) *StatusCmd {
 // Pipeline creates a new pipeline. It is more convenient to use Pipelined.
 func (c *Tx) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
-		exec: c.processTxPipeline,
+		ctx: c.ctx,
+		exec: func(ctx context.Context, cmds []Cmder) error {
+			return c.hooks.processPipeline(ctx, cmds, c.baseClient.processTxPipeline)
+		},
 	}
 	pipe.init()
 	return &pipe

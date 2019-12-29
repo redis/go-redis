@@ -56,3 +56,25 @@ func ExamplePipeline_instrumentation() {
 	// Output: pipeline starting processing: [ping:  ping: ]
 	// pipeline finished processing: [ping: PONG ping: PONG]
 }
+
+func ExampleWatch_instrumentation() {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: ":6379",
+	})
+	rdb.AddHook(redisHook{})
+
+	rdb.Watch(func(tx *redis.Tx) error {
+		tx.Ping()
+		tx.Ping()
+		return nil
+	}, "foo")
+	// Output:
+	// starting processing: <watch foo: >
+	// finished processing: <watch foo: OK>
+	// starting processing: <ping: >
+	// finished processing: <ping: PONG>
+	// starting processing: <ping: >
+	// finished processing: <ping: PONG>
+	// starting processing: <unwatch: >
+	// finished processing: <unwatch: OK>
+}

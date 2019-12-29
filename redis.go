@@ -32,8 +32,14 @@ type hooks struct {
 	hooks []Hook
 }
 
-func (hs hooks) Lock() {
+func (hs *hooks) Lock() {
 	hs.hooks = hs.hooks[:len(hs.hooks):len(hs.hooks)]
+}
+
+func (hs hooks) Clone() hooks {
+	clone := hs
+	clone.Lock()
+	return clone
 }
 
 func (hs *hooks) AddHook(hook Hook) {
