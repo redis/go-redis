@@ -2,6 +2,7 @@
 
 ## v7 WIP
 
+- Tx.Pipeline now returns a non-transactional pipeline. Use Tx.TxPipeline for a transactional pipeline.
 - WrapProcess is replaced with more convenient AddHook that has access to context.Context.
 - WithContext now can not be used to create a shallow copy of the client.
 - New methods ProcessContext, DoContext, and ExecContext.

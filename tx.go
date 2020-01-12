@@ -116,8 +116,35 @@ func (c *Tx) Unwatch(keys ...string) *StatusCmd {
 	return cmd
 }
 
-// Pipeline creates a new pipeline. It is more convenient to use Pipelined.
 func (c *Tx) Pipeline() Pipeliner {
+	pipe := Pipeline{
+		ctx: c.ctx,
+		exec: func(ctx context.Context, cmds []Cmder) error {
+			return c.hooks.processPipeline(ctx, cmds, c.baseClient.processPipeline)
+		},
+	}
+	pipe.init()
+	return &pipe
+}
+
+func (c *Tx) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.Pipeline().Pipelined(fn)
+}
+
+// TxPipelined executes commands queued in the fn in a transaction.
+//
+// When using WATCH, EXEC will execute commands only if the watched keys
+// were not modified, allowing for a check-and-set mechanism.
+//
+// Exec always returns list of commands. If transaction fails
+// TxFailedErr is returned. Otherwise Exec returns an error of the first
+// failed command or nil.
+func (c *Tx) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.TxPipeline().Pipelined(fn)
+}
+
+// TxPipeline creates a new pipeline. Usually it is more convenient to use TxPipelined.
+func (c *Tx) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		ctx: c.ctx,
 		exec: func(ctx context.Context, cmds []Cmder) error {
@@ -126,26 +153,4 @@ func (c *Tx) Pipeline() Pipeliner {
 	}
 	pipe.init()
 	return &pipe
-}
-
-// Pipelined executes commands queued in the fn in a transaction.
-//
-// When using WATCH, EXEC will execute commands only if the watched keys
-// were not modified, allowing for a check-and-set mechanism.
-//
-// Exec always returns list of commands. If transaction fails
-// TxFailedErr is returned. Otherwise Exec returns an error of the first
-// failed command or nil.
-func (c *Tx) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipeline().Pipelined(fn)
-}
-
-// TxPipelined is an alias for Pipelined.
-func (c *Tx) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipelined(fn)
-}
-
-// TxPipeline is an alias for Pipeline.
-func (c *Tx) TxPipeline() Pipeliner {
-	return c.Pipeline()
 }

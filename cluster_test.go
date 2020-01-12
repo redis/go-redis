@@ -360,7 +360,7 @@ var _ = Describe("ClusterClient", func() {
 						return err
 					}
 
-					_, err = tx.Pipelined(func(pipe redis.Pipeliner) error {
+					_, err = tx.TxPipelined(func(pipe redis.Pipeliner) error {
 						pipe.Set(key, strconv.FormatInt(n+1, 10), 0)
 						return nil
 					})
@@ -1009,7 +1009,7 @@ var _ = Describe("ClusterClient timeout", func() {
 
 		It("Tx Pipeline timeouts", func() {
 			err := client.Watch(func(tx *redis.Tx) error {
-				_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
+				_, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
 					pipe.Ping()
 					return nil
 				})
