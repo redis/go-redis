@@ -969,6 +969,8 @@ func (c cmdable) HLen(key string) *IntCmd {
 	return cmd
 }
 
+// HMGet returns the values for the specified fields in the hash stored at key.
+// It returns an interface{} to distinguish between empty string and nil value.
 func (c cmdable) HMGet(key string, fields ...string) *SliceCmd {
 	args := make([]interface{}, 2+len(fields))
 	args[0] = "hmget"
