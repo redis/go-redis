@@ -314,7 +314,7 @@ func ExampleClient_Watch() {
 			n++
 
 			// runs only if the watched keys remain unchanged
-			_, err = tx.Pipelined(func(pipe redis.Pipeliner) error {
+			_, err = tx.TxPipelined(func(pipe redis.Pipeliner) error {
 				// pipe handles the error case
 				pipe.Set(key, n, 0)
 				return nil
