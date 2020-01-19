@@ -93,7 +93,7 @@ Some corner cases:
 set, err := client.SetNX("key", "value", 10*time.Second).Result()
 
 // SORT list LIMIT 0 2 ASC
-vals, err := client.Sort("list", redis.Sort{Offset: 0, Count: 2, Order: "ASC"}).Result()
+vals, err := client.Sort("list", &redis.Sort{Offset: 0, Count: 2, Order: "ASC"}).Result()
 
 // ZRANGEBYSCORE zset -inf +inf WITHSCORES LIMIT 0 2
 vals, err := client.ZRangeByScoreWithScores("zset", redis.ZRangeBy{
