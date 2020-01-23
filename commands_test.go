@@ -1325,7 +1325,7 @@ var _ = Describe("Commands", func() {
 		It("should HIncrByFloat", func() {
 			hSet := client.HSet("hash", "field", "10.50")
 			Expect(hSet.Err()).NotTo(HaveOccurred())
-			Expect(hSet.Val()).To(Equal(1))
+			Expect(hSet.Val()).To(Equal(int64(1)))
 
 			hIncrByFloat := client.HIncrByFloat("hash", "field", 0.1)
 			Expect(hIncrByFloat.Err()).NotTo(HaveOccurred())
@@ -1333,7 +1333,7 @@ var _ = Describe("Commands", func() {
 
 			hSet = client.HSet("hash", "field", "5.0e3")
 			Expect(hSet.Err()).NotTo(HaveOccurred())
-			Expect(hSet.Val()).To(Equal(0))
+			Expect(hSet.Val()).To(Equal(int64(0)))
 
 			hIncrByFloat = client.HIncrByFloat("hash", "field", 2.0e2)
 			Expect(hIncrByFloat.Err()).NotTo(HaveOccurred())
@@ -1399,7 +1399,7 @@ var _ = Describe("Commands", func() {
 		It("should HSet", func() {
 			hSet := client.HSet("hash", "key", "hello")
 			Expect(hSet.Err()).NotTo(HaveOccurred())
-			Expect(hSet.Val()).To(Equal(1))
+			Expect(hSet.Val()).To(Equal(int64(1)))
 
 			hGet := client.HGet("hash", "key")
 			Expect(hGet.Err()).NotTo(HaveOccurred())
@@ -1409,7 +1409,7 @@ var _ = Describe("Commands", func() {
 		It("should HSet with multiple values", func() {
 			hSet := client.HSet("hash", "key1", "hello1", "key2", "hello2")
 			Expect(hSet.Err()).NotTo(HaveOccurred())
-			Expect(hSet.Val()).To(Equal(2))
+			Expect(hSet.Val()).To(Equal(int64(2)))
 
 			hGet := client.HGet("hash", "key1")
 			Expect(hGet.Err()).NotTo(HaveOccurred())
