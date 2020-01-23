@@ -131,7 +131,7 @@ type Cmdable interface {
 	HLen(key string) *IntCmd
 	HMGet(key string, fields ...string) *SliceCmd
 	HMSet(key string, values ...interface{}) *IntCmd
-	HSet(key, field string, value interface{}) *BoolCmd
+	HSet(key, field string, fieldValues ...interface{}) *IntCmd
 	HSetNX(key, field string, value interface{}) *BoolCmd
 	HVals(key string) *StringSliceCmd
 	BLPop(timeout time.Duration, keys ...string) *StringSliceCmd
@@ -999,8 +999,12 @@ func (c cmdable) HMSet(key string, values ...interface{}) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) HSet(key, field string, value interface{}) *BoolCmd {
-	cmd := NewBoolCmd("hset", key, field, value)
+func (c cmdable) HSet(key, field string, fieldValues ...interface{}) *IntCmd {
+	args := make([]interface{}, 2, 2+len(fieldValues))
+	args[0] = "hset"
+	args[1] = key
+	args = appendArgs(args, fieldValues)
+	cmd := NewIntCmd(args...)
 	_ = c(cmd)
 	return cmd
 }
