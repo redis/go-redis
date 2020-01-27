@@ -320,6 +320,37 @@ var _ = Describe("Client timeout", func() {
 	})
 })
 
+var _ = Describe("Client cancel", func() {
+	var opt *redis.Options
+	var client *redis.Client
+
+	BeforeEach(func() {
+		opt = redisOptions()
+		opt.ReadTimeout = -1
+		opt.WriteTimeout = -1
+		client = redis.NewClient(opt)
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("Cancel disconnects", func() {
+		done := make(chan struct{})
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			defer GinkgoRecover()
+			defer close(done)
+			err := client.WithContext(ctx).BLPop(time.Second, "TEST-CANCEL").Err()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(Equal(context.Canceled))
+		}()
+		time.Sleep(time.Millisecond * 50)
+		cancel()
+		<-done
+	})
+})
+
 var _ = Describe("Client OnConnect", func() {
 	var client *redis.Client
 
