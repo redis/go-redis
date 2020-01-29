@@ -49,7 +49,8 @@ type UniversalOptions struct {
 	MasterName string
 }
 
-func (o *UniversalOptions) cluster() *ClusterOptions {
+// Cluster returns cluster options created from the universal options.
+func (o *UniversalOptions) Cluster() *ClusterOptions {
 	if len(o.Addrs) == 0 {
 		o.Addrs = []string{"127.0.0.1:6379"}
 	}
@@ -84,7 +85,8 @@ func (o *UniversalOptions) cluster() *ClusterOptions {
 	}
 }
 
-func (o *UniversalOptions) failover() *FailoverOptions {
+// Failover returns failover options created from the universal options.
+func (o *UniversalOptions) Failover() *FailoverOptions {
 	if len(o.Addrs) == 0 {
 		o.Addrs = []string{"127.0.0.1:26379"}
 	}
@@ -118,7 +120,8 @@ func (o *UniversalOptions) failover() *FailoverOptions {
 	}
 }
 
-func (o *UniversalOptions) simple() *Options {
+// Simple returns basic options created from the universal options.
+func (o *UniversalOptions) Simple() *Options {
 	addr := "127.0.0.1:6379"
 	if len(o.Addrs) > 0 {
 		addr = o.Addrs[0]
@@ -183,9 +186,9 @@ var _ UniversalClient = (*Ring)(nil)
 // 3. otherwise, a single-node redis Client will be returned.
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
 	if opts.MasterName != "" {
-		return NewFailoverClient(opts.failover())
+		return NewFailoverClient(opts.Failover())
 	} else if len(opts.Addrs) > 1 {
-		return NewClusterClient(opts.cluster())
+		return NewClusterClient(opts.Cluster())
 	}
-	return NewClient(opts.simple())
+	return NewClient(opts.Simple())
 }
