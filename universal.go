@@ -49,6 +49,7 @@ type UniversalOptions struct {
 	MasterName string
 }
 
+// Cluster returns cluster options created from the universal options.
 func (o *UniversalOptions) Cluster() *ClusterOptions {
 	if len(o.Addrs) == 0 {
 		o.Addrs = []string{"127.0.0.1:6379"}
@@ -84,6 +85,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 	}
 }
 
+// Failover returns failover options created from the universal options.
 func (o *UniversalOptions) Failover() *FailoverOptions {
 	if len(o.Addrs) == 0 {
 		o.Addrs = []string{"127.0.0.1:26379"}
@@ -118,6 +120,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 	}
 }
 
+// Simple returns basic options created from the universal options.
 func (o *UniversalOptions) Simple() *Options {
 	addr := "127.0.0.1:6379"
 	if len(o.Addrs) > 0 {
