@@ -152,6 +152,9 @@ func (opt *Options) init() {
 		opt.IdleCheckFrequency = time.Minute
 	}
 
+	if opt.MaxRetries == -1 {
+		opt.MaxRetries = 0
+	}
 	switch opt.MinRetryBackoff {
 	case -1:
 		opt.MinRetryBackoff = 0
