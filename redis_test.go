@@ -3,7 +3,9 @@ package redis_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
+	"testing"
 	"time"
 
 	"github.com/go-redis/redis/v7"
@@ -11,6 +13,39 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
+
+type redisHookError struct {
+	redis.Hook
+}
+
+var _ redis.Hook = redisHookError{}
+
+func (redisHookError) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
+	return ctx, nil
+}
+
+func (redisHookError) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
+	return errors.New("hook error")
+}
+
+func TestHookError(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: ":6379",
+	})
+	rdb.AddHook(redisHookError{})
+
+	err := rdb.Ping().Err()
+	if err == nil {
+		t.Fatalf("got nil, expected an error")
+	}
+
+	wanted := "hook error"
+	if err.Error() != wanted {
+		t.Fatalf(`got %q, wanted %q`, err, wanted)
+	}
+}
+
+//------------------------------------------------------------------------------
 
 var _ = Describe("Client", func() {
 	var client *redis.Client
