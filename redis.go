@@ -51,13 +51,14 @@ func (hs hooks) process(
 ) error {
 	ctx, err := hs.beforeProcess(ctx, cmd)
 	if err != nil {
+		cmd.setErr(err)
 		return err
 	}
 
 	cmdErr := fn(ctx, cmd)
 
-	err = hs.afterProcess(ctx, cmd)
-	if err != nil {
+	if err := hs.afterProcess(ctx, cmd); err != nil {
+		cmd.setErr(err)
 		return err
 	}
 
@@ -91,13 +92,14 @@ func (hs hooks) processPipeline(
 ) error {
 	ctx, err := hs.beforeProcessPipeline(ctx, cmds)
 	if err != nil {
+		setCmdsErr(cmds, err)
 		return err
 	}
 
 	cmdsErr := fn(ctx, cmds)
 
-	err = hs.afterProcessPipeline(ctx, cmds)
-	if err != nil {
+	if err := hs.afterProcessPipeline(ctx, cmds); err != nil {
+		setCmdsErr(cmds, err)
 		return err
 	}
 
