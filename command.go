@@ -1003,18 +1003,20 @@ func xMessageSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
 				return nil, err
 			}
 
-			v, err := rd.ReadArrayReply(stringInterfaceMapParser)
-			if err != nil && err != proto.Nil {
-				return nil, err
-			}
+			var values map[string]interface{}
 
-			if v == nil || err == proto.Nil {
-				v = make(map[string]interface{})
+			v, err := rd.ReadArrayReply(stringInterfaceMapParser)
+			if err != nil {
+				if err != proto.Nil {
+					return nil, err
+				}
+			} else {
+				values = v.(map[string]interface{})
 			}
 
 			msgs[i] = XMessage{
 				ID:     id,
-				Values: v.(map[string]interface{}),
+				Values: values,
 			}
 			return nil, nil
 		})

@@ -3638,7 +3638,7 @@ var _ = Describe("Commands", func() {
 					Stream: "stream",
 					Messages: []redis.XMessage{
 						{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
-						{ID: "2-0", Values: map[string]interface{}{}},
+						{ID: "2-0", Values: nil},
 						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
 					}},
 				}))
