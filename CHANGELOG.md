@@ -10,6 +10,7 @@
 - Client listens on Context.Done while waiting for a connection from the pool and returns an error when context context is cancelled.
 - Add PubSub.ChannelWithSubscriptions that sends `*Subscription` in addition to `*Message` to allow detecting reconnections.
 - `time.Time` is now marshalled in RFC3339 format. `rdb.Get("foo").Time()` helper is added to parse time.
+- `SetLimiter` is removed and added `Options.Limiter` instead.
 
 ## v6.15
 

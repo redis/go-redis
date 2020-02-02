@@ -131,7 +131,6 @@ func (hs hooks) afterProcessPipeline(ctx context.Context, cmds []Cmder) error {
 type baseClient struct {
 	opt      *Options
 	connPool pool.Pooler
-	limiter  Limiter
 
 	onClose func() error // hook called when client is closed
 }
@@ -156,8 +155,8 @@ func (c *baseClient) newConn(ctx context.Context) (*pool.Conn, error) {
 }
 
 func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
-	if c.limiter != nil {
-		err := c.limiter.Allow()
+	if c.opt.Limiter != nil {
+		err := c.opt.Limiter.Allow()
 		if err != nil {
 			return nil, err
 		}
@@ -165,8 +164,8 @@ func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 
 	cn, err := c._getConn(ctx)
 	if err != nil {
-		if c.limiter != nil {
-			c.limiter.ReportResult(err)
+		if c.opt.Limiter != nil {
+			c.opt.Limiter.ReportResult(err)
 		}
 		return nil, err
 	}
@@ -234,8 +233,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 }
 
 func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
-	if c.limiter != nil {
-		c.limiter.ReportResult(err)
+	if c.opt.Limiter != nil {
+		c.opt.Limiter.ReportResult(err)
 	}
 
 	if isBadConn(err, false) {
@@ -551,11 +550,6 @@ func (c *Client) processTxPipeline(ctx context.Context, cmds []Cmder) error {
 // Options returns read-only Options that were used to create the client.
 func (c *Client) Options() *Options {
 	return c.opt
-}
-
-func (c *Client) SetLimiter(l Limiter) *Client {
-	c.limiter = l
-	return c
 }
 
 type PoolStats pool.Stats

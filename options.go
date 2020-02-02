@@ -21,8 +21,8 @@ type Limiter interface {
 	// If operation is allowed client must ReportResult of the operation
 	// whether it is a success or a failure.
 	Allow() error
-	// ReportResult reports the result of previously allowed operation.
-	// nil indicates a success, non-nil error indicates a failure.
+	// ReportResult reports the result of the previously allowed operation.
+	// nil indicates a success, non-nil error usually indicates a failure.
 	ReportResult(result error)
 }
 
@@ -96,6 +96,9 @@ type Options struct {
 
 	// TLS Config to use. When set TLS will be negotiated.
 	TLSConfig *tls.Config
+
+	// Limiter interface used to implemented circuit breaker or rate limiter.
+	Limiter Limiter
 }
 
 func (opt *Options) init() {
