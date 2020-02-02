@@ -59,6 +59,10 @@ var _ = Describe("Client", func() {
 		client.Close()
 	})
 
+	It("should Stringer", func() {
+		Expect(client.String()).To(Equal("Redis<:6380 db:15>"))
+	})
+
 	It("supports WithContext", func() {
 		c, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -67,8 +71,15 @@ var _ = Describe("Client", func() {
 		Expect(err).To(MatchError("context canceled"))
 	})
 
-	It("should Stringer", func() {
-		Expect(client.String()).To(Equal("Redis<:6380 db:15>"))
+	It("supports WithTimeout", func() {
+		err := client.ClientPause(time.Second).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		err = client.WithTimeout(10 * time.Millisecond).Ping().Err()
+		Expect(err).To(HaveOccurred())
+
+		err = client.Ping().Err()
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("should ping", func() {

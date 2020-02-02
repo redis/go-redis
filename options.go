@@ -169,6 +169,11 @@ func (opt *Options) init() {
 	}
 }
 
+func (opt *Options) clone() *Options {
+	clone := *opt
+	return &clone
+}
+
 // ParseURL parses an URL into Options that can be used to connect to Redis.
 func ParseURL(redisURL string) (*Options, error) {
 	o := &Options{Network: "tcp"}
