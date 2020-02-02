@@ -137,6 +137,29 @@ type baseClient struct {
 	onClose func() error // hook called when client is closed
 }
 
+func newBaseClient(opt *Options, connPool pool.Pooler) *baseClient {
+	return &baseClient{
+		opt:      opt,
+		connPool: connPool,
+	}
+}
+
+func (c *baseClient) clone() *baseClient {
+	clone := *c
+	return &clone
+}
+
+func (c *baseClient) withTimeout(timeout time.Duration) *baseClient {
+	opt := c.opt.clone()
+	opt.ReadTimeout = timeout
+	opt.WriteTimeout = timeout
+
+	clone := c.clone()
+	clone.opt = opt
+
+	return clone
+}
+
 func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.getAddr(), c.opt.DB)
 }
@@ -481,7 +504,7 @@ func txPipelineReadQueued(rd *proto.Reader, cmds []Cmder) error {
 // underlying connections. It's safe for concurrent use by multiple
 // goroutines.
 type Client struct {
-	baseClient
+	*baseClient
 	cmdable
 	hooks
 	ctx context.Context
@@ -492,15 +515,25 @@ func NewClient(opt *Options) *Client {
 	opt.init()
 
 	c := Client{
-		baseClient: baseClient{
-			opt:      opt,
-			connPool: newConnPool(opt),
-		},
-		ctx: context.Background(),
+		baseClient: newBaseClient(opt, newConnPool(opt)),
+		ctx:        context.Background(),
 	}
 	c.cmdable = c.Process
 
 	return &c
+}
+
+func (c *Client) clone() *Client {
+	clone := *c
+	clone.cmdable = clone.Process
+	clone.hooks.Lock()
+	return &clone
+}
+
+func (c *Client) WithTimeout(timeout time.Duration) *Client {
+	clone := c.clone()
+	clone.baseClient = c.baseClient.withTimeout(timeout)
+	return clone
 }
 
 func (c *Client) Context() context.Context {
@@ -511,11 +544,9 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 	if ctx == nil {
 		panic("nil context")
 	}
-	clone := *c
-	clone.cmdable = clone.Process
-	clone.hooks.Lock()
+	clone := c.clone()
 	clone.ctx = ctx
-	return &clone
+	return clone
 }
 
 func (c *Client) Conn() *Conn {

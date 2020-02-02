@@ -94,14 +94,11 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 
 	c := Client{
-		baseClient: baseClient{
-			opt:      opt,
-			connPool: failover.Pool(),
-			onClose:  failover.Close,
-		},
-		ctx: context.Background(),
+		baseClient: newBaseClient(opt, failover.Pool()),
+		ctx:        context.Background(),
 	}
 	c.cmdable = c.Process
+	c.onClose = failover.Close
 
 	return &c
 }
