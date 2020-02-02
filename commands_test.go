@@ -3623,6 +3623,27 @@ var _ = Describe("Commands", func() {
 				Expect(n).To(Equal(int64(1)))
 			})
 
+			It("should XReadGroup skip empty", func() {
+				n, err := client.XDel("stream", "2-0").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				res, err := client.XReadGroup(&redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer",
+					Streams:  []string{"stream", "0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]redis.XStream{{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+						{ID: "2-0", Values: map[string]interface{}{}},
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					}},
+				}))
+			})
+
 			It("should XGroupCreateMkStream", func() {
 				err := client.XGroupCreateMkStream("stream2", "group", "0").Err()
 				Expect(err).NotTo(HaveOccurred())
