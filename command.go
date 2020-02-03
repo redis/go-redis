@@ -20,14 +20,14 @@ type Cmder interface {
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
 
-	setErr(error)
+	SetErr(error)
 	Err() error
 }
 
 func setCmdsErr(cmds []Cmder, e error) {
 	for _, cmd := range cmds {
 		if cmd.Err() == nil {
-			cmd.setErr(e)
+			cmd.SetErr(e)
 		}
 	}
 }
@@ -119,7 +119,7 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	return s
 }
 
-func (cmd *baseCmd) setErr(e error) {
+func (cmd *baseCmd) SetErr(e error) {
 	cmd.err = e
 }
 
