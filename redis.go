@@ -51,14 +51,14 @@ func (hs hooks) process(
 ) error {
 	ctx, err := hs.beforeProcess(ctx, cmd)
 	if err != nil {
-		cmd.setErr(err)
+		cmd.SetErr(err)
 		return err
 	}
 
 	cmdErr := fn(ctx, cmd)
 
 	if err := hs.afterProcess(ctx, cmd); err != nil {
-		cmd.setErr(err)
+		cmd.SetErr(err)
 		return err
 	}
 
@@ -287,7 +287,7 @@ func (c *baseClient) withConn(
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	err := c._process(ctx, cmd)
 	if err != nil {
-		cmd.setErr(err)
+		cmd.SetErr(err)
 		return err
 	}
 	return nil

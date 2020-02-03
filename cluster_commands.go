@@ -14,7 +14,7 @@ func (c *ClusterClient) DBSize() *IntCmd {
 		return nil
 	})
 	if err != nil {
-		cmd.setErr(err)
+		cmd.SetErr(err)
 		return cmd
 	}
 	cmd.val = size

@@ -2537,7 +2537,7 @@ func (c cmdable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 func (c cmdable) GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadius_ro", key, longitude, latitude)
 	if query.Store != "" || query.StoreDist != "" {
-		cmd.setErr(errors.New("GeoRadius does not support Store or StoreDist"))
+		cmd.SetErr(errors.New("GeoRadius does not support Store or StoreDist"))
 		return cmd
 	}
 	_ = c(cmd)
@@ -2549,7 +2549,7 @@ func (c cmdable) GeoRadiusStore(key string, longitude, latitude float64, query *
 	args := geoLocationArgs(query, "georadius", key, longitude, latitude)
 	cmd := NewIntCmd(args...)
 	if query.Store == "" && query.StoreDist == "" {
-		cmd.setErr(errors.New("GeoRadiusStore requires Store or StoreDist"))
+		cmd.SetErr(errors.New("GeoRadiusStore requires Store or StoreDist"))
 		return cmd
 	}
 	_ = c(cmd)
@@ -2560,7 +2560,7 @@ func (c cmdable) GeoRadiusStore(key string, longitude, latitude float64, query *
 func (c cmdable) GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(query, "georadiusbymember_ro", key, member)
 	if query.Store != "" || query.StoreDist != "" {
-		cmd.setErr(errors.New("GeoRadiusByMember does not support Store or StoreDist"))
+		cmd.SetErr(errors.New("GeoRadiusByMember does not support Store or StoreDist"))
 		return cmd
 	}
 	_ = c(cmd)
@@ -2572,7 +2572,7 @@ func (c cmdable) GeoRadiusByMemberStore(key, member string, query *GeoRadiusQuer
 	args := geoLocationArgs(query, "georadiusbymember", key, member)
 	cmd := NewIntCmd(args...)
 	if query.Store == "" && query.StoreDist == "" {
-		cmd.setErr(errors.New("GeoRadiusByMemberStore requires Store or StoreDist"))
+		cmd.SetErr(errors.New("GeoRadiusByMemberStore requires Store or StoreDist"))
 		return cmd
 	}
 	_ = c(cmd)

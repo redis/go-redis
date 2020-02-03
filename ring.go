@@ -561,7 +561,7 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 	err := c._process(ctx, cmd)
 	if err != nil {
-		cmd.setErr(err)
+		cmd.SetErr(err)
 		return err
 	}
 	return nil

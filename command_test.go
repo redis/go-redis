@@ -1,9 +1,10 @@
 package redis_test
 
 import (
+	"errors"
 	"time"
 
-	"github.com/go-redis/redis/v7"
+	redis "github.com/go-redis/redis/v7"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -83,5 +84,13 @@ var _ = Describe("Cmd", func() {
 		tm2, err := client.Get("time_key").Time()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tm2).To(BeTemporally("==", tm))
+	})
+
+	It("allow to set custom error", func() {
+		e := errors.New("custom error")
+		cmd := redis.Cmd{}
+		cmd.SetErr(e)
+		_, err := cmd.Result()
+		Expect(err).To(Equal(e))
 	})
 })
