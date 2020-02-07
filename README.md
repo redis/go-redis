@@ -23,6 +23,7 @@ Supports:
 - [Distributed Locks](https://github.com/bsm/redislock).
 
 API docs: https://godoc.org/github.com/go-redis/redis.
+
 Examples: https://godoc.org/github.com/go-redis/redis#pkg-examples.
 
 ## Installation
