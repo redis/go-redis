@@ -61,7 +61,6 @@ func ExampleClient() {
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
-
 	err := client.Set("key", "value", 0).Err()
 	if err != nil {
 		panic(err)
