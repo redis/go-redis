@@ -28,7 +28,7 @@ func (c *Client) newTx(ctx context.Context) *Tx {
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), true),
 		},
-		hooks: c.hooks.Clone(),
+		hooks: c.hooks.clone(),
 		ctx:   ctx,
 	}
 	tx.init()
@@ -50,7 +50,7 @@ func (c *Tx) WithContext(ctx context.Context) *Tx {
 	}
 	clone := *c
 	clone.init()
-	clone.hooks.Lock()
+	clone.hooks.lock()
 	clone.ctx = ctx
 	return &clone
 }

@@ -32,13 +32,13 @@ type hooks struct {
 	hooks []Hook
 }
 
-func (hs *hooks) Lock() {
+func (hs *hooks) lock() {
 	hs.hooks = hs.hooks[:len(hs.hooks):len(hs.hooks)]
 }
 
-func (hs hooks) Clone() hooks {
+func (hs hooks) clone() hooks {
 	clone := hs
-	clone.Lock()
+	clone.lock()
 	return clone
 }
 
@@ -526,7 +526,7 @@ func NewClient(opt *Options) *Client {
 func (c *Client) clone() *Client {
 	clone := *c
 	clone.cmdable = clone.Process
-	clone.hooks.Lock()
+	clone.hooks.lock()
 	return &clone
 }
 
