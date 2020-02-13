@@ -1,15 +1,15 @@
 # Changelog
 
-## v7 WIP
+## v7
 
-- Tx.Pipeline now returns a non-transactional pipeline. Use Tx.TxPipeline for a transactional pipeline.
+- *Important*. Tx.Pipeline now returns a non-transactional pipeline. Use Tx.TxPipeline for a transactional pipeline.
 - WrapProcess is replaced with more convenient AddHook that has access to context.Context.
 - WithContext now can not be used to create a shallow copy of the client.
 - New methods ProcessContext, DoContext, and ExecContext.
 - Client respects Context.Deadline when setting net.Conn deadline.
 - Client listens on Context.Done while waiting for a connection from the pool and returns an error when context context is cancelled.
 - Add PubSub.ChannelWithSubscriptions that sends `*Subscription` in addition to `*Message` to allow detecting reconnections.
-- `time.Time` is now marshalled in RFC3339 format. `rdb.Get("foo").Time()` helper is added to parse time.
+- `time.Time` is now marshalled in RFC3339 format. `rdb.Get("foo").Time()` helper is added to parse the time.
 - `SetLimiter` is removed and added `Options.Limiter` instead.
 
 ## v6.15
