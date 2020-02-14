@@ -15,6 +15,7 @@ import (
 type Cmder interface {
 	Name() string
 	Args() []interface{}
+	String() string
 	stringArg(int) string
 
 	readTimeout() *time.Duration
@@ -152,6 +153,10 @@ func NewCmd(args ...interface{}) *Cmd {
 	}
 }
 
+func (cmd *Cmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
 func (cmd *Cmd) Val() interface{} {
 	return cmd.val
 }
@@ -160,7 +165,7 @@ func (cmd *Cmd) Result() (interface{}, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *Cmd) String() (string, error) {
+func (cmd *Cmd) Text() (string, error) {
 	if cmd.err != nil {
 		return "", cmd.err
 	}

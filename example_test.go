@@ -447,7 +447,7 @@ func Example_customCommand() {
 }
 
 func Example_customCommand2() {
-	v, err := rdb.Do("get", "key_does_not_exist").String()
+	v, err := rdb.Do("get", "key_does_not_exist").Text()
 	fmt.Printf("%q %s", v, err)
 	// Output: "" redis: nil
 }

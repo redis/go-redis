@@ -581,7 +581,7 @@ func (c *Ring) _process(ctx context.Context, cmd Cmder) error {
 			return err
 		}
 
-		lastErr = shard.Client._process(ctx, cmd)
+		lastErr = shard.Client.ProcessContext(ctx, cmd)
 		if lastErr == nil || !isRetryableError(lastErr, cmd.readTimeout() == nil) {
 			return lastErr
 		}
@@ -646,10 +646,7 @@ func (c *Ring) generalProcessPipeline(
 		go func(hash string, cmds []Cmder) {
 			defer wg.Done()
 
-			err := c.processShardPipeline(ctx, hash, cmds, tx)
-			if err != nil {
-				setCmdsErr(cmds, err)
-			}
+			_ = c.processShardPipeline(ctx, hash, cmds, tx)
 		}(hash, cmds)
 	}
 
@@ -663,15 +660,14 @@ func (c *Ring) processShardPipeline(
 	//TODO: retry?
 	shard, err := c.shards.GetByHash(hash)
 	if err != nil {
+		setCmdsErr(cmds, err)
 		return err
 	}
 
 	if tx {
-		err = shard.Client._generalProcessPipeline(
-			ctx, cmds, shard.Client.txPipelineProcessCmds)
+		err = shard.Client.processPipeline(ctx, cmds)
 	} else {
-		err = shard.Client._generalProcessPipeline(
-			ctx, cmds, shard.Client.pipelineProcessCmds)
+		err = shard.Client.processTxPipeline(ctx, cmds)
 	}
 	return err
 }
