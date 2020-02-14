@@ -254,7 +254,7 @@ func BenchmarkClusterPing(b *testing.B) {
 	}
 	defer stopCluster(cluster)
 
-	client := cluster.clusterClient(redisClusterOptions())
+	client := cluster.newClusterClient(redisClusterOptions())
 	defer client.Close()
 
 	b.ResetTimer()
@@ -280,7 +280,7 @@ func BenchmarkClusterSetString(b *testing.B) {
 	}
 	defer stopCluster(cluster)
 
-	client := cluster.clusterClient(redisClusterOptions())
+	client := cluster.newClusterClient(redisClusterOptions())
 	defer client.Close()
 
 	value := string(bytes.Repeat([]byte{'1'}, 10000))
@@ -308,7 +308,7 @@ func BenchmarkClusterReloadState(b *testing.B) {
 	}
 	defer stopCluster(cluster)
 
-	client := cluster.clusterClient(redisClusterOptions())
+	client := cluster.newClusterClient(redisClusterOptions())
 	defer client.Close()
 
 	b.ResetTimer()

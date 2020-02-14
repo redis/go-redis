@@ -15,6 +15,7 @@ import (
 type Cmder interface {
 	Name() string
 	Args() []interface{}
+	String() string
 	stringArg(int) string
 
 	readTimeout() *time.Duration
@@ -41,14 +42,17 @@ func cmdsFirstErr(cmds []Cmder) error {
 	return nil
 }
 
-func writeCmd(wr *proto.Writer, cmds ...Cmder) error {
+func writeCmds(wr *proto.Writer, cmds []Cmder) error {
 	for _, cmd := range cmds {
-		err := wr.WriteArgs(cmd.Args())
-		if err != nil {
+		if err := writeCmd(wr, cmd); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func writeCmd(wr *proto.Writer, cmd Cmder) error {
+	return wr.WriteArgs(cmd.Args())
 }
 
 func cmdString(cmd Cmder, val interface{}) string {
@@ -149,6 +153,10 @@ func NewCmd(args ...interface{}) *Cmd {
 	}
 }
 
+func (cmd *Cmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
 func (cmd *Cmd) Val() interface{} {
 	return cmd.val
 }
@@ -157,7 +165,7 @@ func (cmd *Cmd) Result() (interface{}, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *Cmd) String() (string, error) {
+func (cmd *Cmd) Text() (string, error) {
 	if cmd.err != nil {
 		return "", cmd.err
 	}

@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -369,4 +370,42 @@ func (cn *badConn) Write([]byte) (int, error) {
 		return 0, cn.writeErr
 	}
 	return 0, badConnError("bad connection")
+}
+
+//------------------------------------------------------------------------------
+
+type hook struct {
+	beforeProcess func(ctx context.Context, cmd redis.Cmder) (context.Context, error)
+	afterProcess  func(ctx context.Context, cmd redis.Cmder) error
+
+	beforeProcessPipeline func(ctx context.Context, cmds []redis.Cmder) (context.Context, error)
+	afterProcessPipeline  func(ctx context.Context, cmds []redis.Cmder) error
+}
+
+func (h *hook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
+	if h.beforeProcess != nil {
+		return h.beforeProcess(ctx, cmd)
+	}
+	return ctx, nil
+}
+
+func (h *hook) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
+	if h.afterProcess != nil {
+		return h.afterProcess(ctx, cmd)
+	}
+	return nil
+}
+
+func (h *hook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
+	if h.beforeProcessPipeline != nil {
+		return h.beforeProcessPipeline(ctx, cmds)
+	}
+	return ctx, nil
+}
+
+func (h *hook) AfterProcessPipeline(ctx context.Context, cmds []redis.Cmder) error {
+	if h.afterProcessPipeline != nil {
+		return h.afterProcessPipeline(ctx, cmds)
+	}
+	return nil
 }

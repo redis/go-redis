@@ -299,7 +299,7 @@ var _ = Describe("cluster races", func() {
 
 	BeforeEach(func() {
 		opt := redisClusterOptions()
-		client = cluster.clusterClient(opt)
+		client = cluster.newClusterClient(opt)
 
 		C, N = 10, 1000
 		if testing.Short() {
