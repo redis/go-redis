@@ -317,14 +317,14 @@ var _ = Describe("Redis Ring", func() {
 		ring.ForEachShard(func(shard *redis.Client) error {
 			shard.AddHook(&hook{
 				beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
-					Expect(cmds).To(HaveLen(1))
-					Expect(cmds[0].String()).To(Equal("ping: "))
+					Expect(cmds).To(HaveLen(3))
+					Expect(cmds[1].String()).To(Equal("ping: "))
 					stack = append(stack, "shard.BeforeProcessPipeline")
 					return ctx, nil
 				},
 				afterProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) error {
-					Expect(cmds).To(HaveLen(1))
-					Expect(cmds[0].String()).To(Equal("ping: PONG"))
+					Expect(cmds).To(HaveLen(3))
+					Expect(cmds[1].String()).To(Equal("ping: PONG"))
 					stack = append(stack, "shard.AfterProcessPipeline")
 					return nil
 				},

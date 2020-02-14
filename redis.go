@@ -128,6 +128,13 @@ func (hs hooks) afterProcessPipeline(ctx context.Context, cmds []Cmder) error {
 	return firstErr
 }
 
+func (hs hooks) processTxPipeline(
+	ctx context.Context, cmds []Cmder, fn func(context.Context, []Cmder) error,
+) error {
+	cmds = wrapMultiExec(cmds)
+	return hs.processPipeline(ctx, cmds, fn)
+}
+
 //------------------------------------------------------------------------------
 
 type baseClient struct {
@@ -437,51 +444,46 @@ func (c *baseClient) txPipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
 	err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-		return txPipelineWriteMulti(wr, cmds)
+		return writeCmds(wr, cmds)
 	})
 	if err != nil {
 		return true, err
 	}
 
 	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		err := txPipelineReadQueued(rd, cmds)
+		statusCmd := cmds[0].(*StatusCmd)
+		// Trim multi and exec.
+		cmds = cmds[1 : len(cmds)-1]
+
+		err := txPipelineReadQueued(rd, statusCmd, cmds)
 		if err != nil {
 			return err
 		}
+
 		return pipelineReadCmds(rd, cmds)
 	})
 	return false, err
 }
 
-var (
-	multi = NewStatusCmd("multi")
-	exec  = NewSliceCmd("exec")
-)
-
-func txPipelineWriteMulti(wr *proto.Writer, cmds []Cmder) error {
-	if err := writeCmd(wr, multi); err != nil {
-		return err
+func wrapMultiExec(cmds []Cmder) []Cmder {
+	if len(cmds) == 0 {
+		panic("not reached")
 	}
-	if err := writeCmds(wr, cmds); err != nil {
-		return err
-	}
-	if err := writeCmd(wr, exec); err != nil {
-		return err
-	}
-	return nil
+	cmds = append(cmds, make([]Cmder, 2)...)
+	copy(cmds[1:], cmds[:len(cmds)-2])
+	cmds[0] = NewStatusCmd("multi")
+	cmds[len(cmds)-1] = NewSliceCmd("exec")
+	return cmds
 }
 
-func txPipelineReadQueued(rd *proto.Reader, cmds []Cmder) error {
+func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
 	// Parse queued replies.
-	var statusCmd StatusCmd
-	err := statusCmd.readReply(rd)
-	if err != nil {
+	if err := statusCmd.readReply(rd); err != nil {
 		return err
 	}
 
 	for range cmds {
-		err = statusCmd.readReply(rd)
-		if err != nil && !isRedisError(err) {
+		if err := statusCmd.readReply(rd); err != nil && !isRedisError(err) {
 			return err
 		}
 	}
@@ -587,7 +589,7 @@ func (c *Client) processPipeline(ctx context.Context, cmds []Cmder) error {
 }
 
 func (c *Client) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.hooks.processPipeline(ctx, cmds, c.baseClient.processTxPipeline)
+	return c.hooks.processTxPipeline(ctx, cmds, c.baseClient.processTxPipeline)
 }
 
 // Options returns read-only Options that were used to create the client.

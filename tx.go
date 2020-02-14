@@ -151,7 +151,7 @@ func (c *Tx) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		ctx: c.ctx,
 		exec: func(ctx context.Context, cmds []Cmder) error {
-			return c.hooks.processPipeline(ctx, cmds, c.baseClient.processTxPipeline)
+			return c.hooks.processTxPipeline(ctx, cmds, c.baseClient.processTxPipeline)
 		},
 	}
 	pipe.init()

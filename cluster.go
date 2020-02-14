@@ -773,7 +773,7 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 
 		if ask {
 			pipe := node.Client.Pipeline()
-			_ = pipe.Process(NewCmd("ASKING"))
+			_ = pipe.Process(NewCmd("asking"))
 			_ = pipe.Process(cmd)
 			_, lastErr = pipe.ExecContext(ctx)
 			_ = pipe.Close()
@@ -1200,7 +1200,7 @@ func (c *ClusterClient) checkMovedErr(
 	}
 
 	if ask {
-		failedCmds.Add(node, NewCmd("ASKING"), cmd)
+		failedCmds.Add(node, NewCmd("asking"), cmd)
 		return true
 	}
 
@@ -1294,17 +1294,21 @@ func (c *ClusterClient) mapCmdsBySlot(cmds []Cmder) map[int][]Cmder {
 func (c *ClusterClient) _processTxPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
-	return node.Client.hooks.processPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+	return node.Client.hooks.processTxPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 			err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-				return txPipelineWriteMulti(wr, cmds)
+				return writeCmds(wr, cmds)
 			})
 			if err != nil {
 				return err
 			}
 
 			return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
-				err := c.txPipelineReadQueued(rd, cmds, failedCmds)
+				statusCmd := cmds[0].(*StatusCmd)
+				// Trim multi and exec.
+				cmds = cmds[1 : len(cmds)-1]
+
+				err := c.txPipelineReadQueued(rd, statusCmd, cmds, failedCmds)
 				if err != nil {
 					moved, ask, addr := isMovedError(err)
 					if moved || ask {
@@ -1312,6 +1316,7 @@ func (c *ClusterClient) _processTxPipelineNode(
 					}
 					return err
 				}
+
 				return pipelineReadCmds(rd, cmds)
 			})
 		})
@@ -1319,10 +1324,9 @@ func (c *ClusterClient) _processTxPipelineNode(
 }
 
 func (c *ClusterClient) txPipelineReadQueued(
-	rd *proto.Reader, cmds []Cmder, failedCmds *cmdsMap,
+	rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
 	// Parse queued replies.
-	var statusCmd StatusCmd
 	if err := statusCmd.readReply(rd); err != nil {
 		return err
 	}
@@ -1374,7 +1378,7 @@ func (c *ClusterClient) cmdsMoved(
 
 	if ask {
 		for _, cmd := range cmds {
-			failedCmds.Add(node, NewCmd("ASKING"), cmd)
+			failedCmds.Add(node, NewCmd("asking"), cmd)
 		}
 		return nil
 	}

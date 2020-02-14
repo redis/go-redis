@@ -47,14 +47,14 @@ func (s *clusterScenario) addrs() []string {
 	return addrs
 }
 
-func (s *clusterScenario) clusterClientUnsafe(opt *redis.ClusterOptions) *redis.ClusterClient {
+func (s *clusterScenario) newClusterClientUnsafe(opt *redis.ClusterOptions) *redis.ClusterClient {
 	opt.Addrs = s.addrs()
 	return redis.NewClusterClient(opt)
 
 }
 
-func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
-	client := s.clusterClientUnsafe(opt)
+func (s *clusterScenario) newClusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
+	client := s.newClusterClientUnsafe(opt)
 
 	err := eventually(func() error {
 		if opt.ClusterSlots != nil {
@@ -529,14 +529,11 @@ var _ = Describe("ClusterClient", func() {
 		})
 
 		It("supports Process hook", func() {
-			var masters []*redis.Client
-
 			err := client.Ping().Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			err = client.ForEachMaster(func(master *redis.Client) error {
-				masters = append(masters, master)
-				return master.Ping().Err()
+			err = client.ForEachNode(func(node *redis.Client) error {
+				return node.Ping().Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -556,7 +553,7 @@ var _ = Describe("ClusterClient", func() {
 			}
 			client.AddHook(clusterHook)
 
-			masterHook := &hook{
+			nodeHook := &hook{
 				beforeProcess: func(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
 					Expect(cmd.String()).To(Equal("ping: "))
 					stack = append(stack, "shard.BeforeProcess")
@@ -569,9 +566,10 @@ var _ = Describe("ClusterClient", func() {
 				},
 			}
 
-			for _, master := range masters {
-				master.AddHook(masterHook)
-			}
+			_ = client.ForEachNode(func(node *redis.Client) error {
+				node.AddHook(nodeHook)
+				return nil
+			})
 
 			err = client.Ping().Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -584,19 +582,16 @@ var _ = Describe("ClusterClient", func() {
 
 			clusterHook.beforeProcess = nil
 			clusterHook.afterProcess = nil
-			masterHook.beforeProcess = nil
-			masterHook.afterProcess = nil
+			nodeHook.beforeProcess = nil
+			nodeHook.afterProcess = nil
 		})
 
 		It("supports Pipeline hook", func() {
-			var masters []*redis.Client
-
 			err := client.Ping().Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			err = client.ForEachMaster(func(master *redis.Client) error {
-				masters = append(masters, master)
-				return master.Ping().Err()
+			err = client.ForEachNode(func(node *redis.Client) error {
+				return node.Ping().Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -617,8 +612,8 @@ var _ = Describe("ClusterClient", func() {
 				},
 			})
 
-			for _, master := range masters {
-				master.AddHook(&hook{
+			_ = client.ForEachNode(func(node *redis.Client) error {
+				node.AddHook(&hook{
 					beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
 						Expect(cmds).To(HaveLen(1))
 						Expect(cmds[0].String()).To(Equal("ping: "))
@@ -632,7 +627,8 @@ var _ = Describe("ClusterClient", func() {
 						return nil
 					},
 				})
-			}
+				return nil
+			})
 
 			_, err = client.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Ping()
@@ -648,14 +644,11 @@ var _ = Describe("ClusterClient", func() {
 		})
 
 		It("supports TxPipeline hook", func() {
-			var masters []*redis.Client
-
 			err := client.Ping().Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			err = client.ForEachMaster(func(master *redis.Client) error {
-				masters = append(masters, master)
-				return master.Ping().Err()
+			err = client.ForEachNode(func(node *redis.Client) error {
+				return node.Ping().Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -676,22 +669,23 @@ var _ = Describe("ClusterClient", func() {
 				},
 			})
 
-			for _, master := range masters {
-				master.AddHook(&hook{
+			_ = client.ForEachNode(func(node *redis.Client) error {
+				node.AddHook(&hook{
 					beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
-						Expect(cmds).To(HaveLen(1))
-						Expect(cmds[0].String()).To(Equal("ping: "))
+						Expect(cmds).To(HaveLen(3))
+						Expect(cmds[1].String()).To(Equal("ping: "))
 						stack = append(stack, "shard.BeforeProcessPipeline")
 						return ctx, nil
 					},
 					afterProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) error {
-						Expect(cmds).To(HaveLen(1))
-						Expect(cmds[0].String()).To(Equal("ping: PONG"))
+						Expect(cmds).To(HaveLen(3))
+						Expect(cmds[1].String()).To(Equal("ping: PONG"))
 						stack = append(stack, "shard.AfterProcessPipeline")
 						return nil
 					},
 				})
-			}
+				return nil
+			})
 
 			_, err = client.TxPipelined(func(pipe redis.Pipeliner) error {
 				pipe.Ping()
@@ -710,7 +704,7 @@ var _ = Describe("ClusterClient", func() {
 	Describe("ClusterClient", func() {
 		BeforeEach(func() {
 			opt = redisClusterOptions()
-			client = cluster.clusterClient(opt)
+			client = cluster.newClusterClient(opt)
 
 			err := client.ForEachMaster(func(master *redis.Client) error {
 				return master.FlushDB().Err()
@@ -733,7 +727,7 @@ var _ = Describe("ClusterClient", func() {
 		It("returns an error when there are no attempts left", func() {
 			opt := redisClusterOptions()
 			opt.MaxRedirects = -1
-			client := cluster.clusterClient(opt)
+			client := cluster.newClusterClient(opt)
 
 			Eventually(func() error {
 				return client.SwapNodes("A")
@@ -885,7 +879,7 @@ var _ = Describe("ClusterClient", func() {
 			opt = redisClusterOptions()
 			opt.MinRetryBackoff = 250 * time.Millisecond
 			opt.MaxRetryBackoff = time.Second
-			client = cluster.clusterClient(opt)
+			client = cluster.newClusterClient(opt)
 
 			err := client.ForEachMaster(func(master *redis.Client) error {
 				return master.FlushDB().Err()
@@ -935,7 +929,7 @@ var _ = Describe("ClusterClient", func() {
 		BeforeEach(func() {
 			opt = redisClusterOptions()
 			opt.RouteByLatency = true
-			client = cluster.clusterClient(opt)
+			client = cluster.newClusterClient(opt)
 
 			err := client.ForEachMaster(func(master *redis.Client) error {
 				return master.FlushDB().Err()
@@ -991,7 +985,7 @@ var _ = Describe("ClusterClient", func() {
 				}}
 				return slots, nil
 			}
-			client = cluster.clusterClient(opt)
+			client = cluster.newClusterClient(opt)
 
 			err := client.ForEachMaster(func(master *redis.Client) error {
 				return master.FlushDB().Err()
@@ -1045,7 +1039,7 @@ var _ = Describe("ClusterClient", func() {
 				}}
 				return slots, nil
 			}
-			client = cluster.clusterClient(opt)
+			client = cluster.newClusterClient(opt)
 
 			err := client.ForEachMaster(func(master *redis.Client) error {
 				return master.FlushDB().Err()
@@ -1137,7 +1131,7 @@ var _ = Describe("ClusterClient with unavailable Cluster", func() {
 		opt.ReadTimeout = 250 * time.Millisecond
 		opt.WriteTimeout = 250 * time.Millisecond
 		opt.MaxRedirects = 1
-		client = cluster.clusterClientUnsafe(opt)
+		client = cluster.newClusterClientUnsafe(opt)
 	})
 
 	AfterEach(func() {
@@ -1206,7 +1200,7 @@ var _ = Describe("ClusterClient timeout", func() {
 			opt.ReadTimeout = 250 * time.Millisecond
 			opt.WriteTimeout = 250 * time.Millisecond
 			opt.MaxRedirects = 1
-			client = cluster.clusterClient(opt)
+			client = cluster.newClusterClient(opt)
 
 			err := client.ForEachNode(func(client *redis.Client) error {
 				return client.ClientPause(pause).Err()

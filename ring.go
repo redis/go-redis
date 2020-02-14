@@ -665,9 +665,9 @@ func (c *Ring) processShardPipeline(
 	}
 
 	if tx {
-		err = shard.Client.processPipeline(ctx, cmds)
-	} else {
 		err = shard.Client.processTxPipeline(ctx, cmds)
+	} else {
+		err = shard.Client.processPipeline(ctx, cmds)
 	}
 	return err
 }
