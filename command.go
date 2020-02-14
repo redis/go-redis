@@ -41,14 +41,17 @@ func cmdsFirstErr(cmds []Cmder) error {
 	return nil
 }
 
-func writeCmd(wr *proto.Writer, cmds ...Cmder) error {
+func writeCmds(wr *proto.Writer, cmds []Cmder) error {
 	for _, cmd := range cmds {
-		err := wr.WriteArgs(cmd.Args())
-		if err != nil {
+		if err := writeCmd(wr, cmd); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func writeCmd(wr *proto.Writer, cmd Cmder) error {
+	return wr.WriteArgs(cmd.Args())
 }
 
 func cmdString(cmd Cmder, val interface{}) string {

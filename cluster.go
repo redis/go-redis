@@ -1070,7 +1070,7 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 
 				err := node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 					err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-						return writeCmd(wr, cmds...)
+						return writeCmds(wr, cmds)
 					})
 					if err != nil {
 						return err

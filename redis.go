@@ -411,7 +411,7 @@ func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
 	err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-		return writeCmd(wr, cmds...)
+		return writeCmds(wr, cmds)
 	})
 	if err != nil {
 		return true, err
@@ -453,12 +453,22 @@ func (c *baseClient) txPipelineProcessCmds(
 	return false, err
 }
 
+var (
+	multi = NewStatusCmd("multi")
+	exec  = NewSliceCmd("exec")
+)
+
 func txPipelineWriteMulti(wr *proto.Writer, cmds []Cmder) error {
-	multiExec := make([]Cmder, 0, len(cmds)+2)
-	multiExec = append(multiExec, NewStatusCmd("MULTI"))
-	multiExec = append(multiExec, cmds...)
-	multiExec = append(multiExec, NewSliceCmd("EXEC"))
-	return writeCmd(wr, multiExec...)
+	if err := writeCmd(wr, multi); err != nil {
+		return err
+	}
+	if err := writeCmds(wr, cmds); err != nil {
+		return err
+	}
+	if err := writeCmd(wr, exec); err != nil {
+		return err
+	}
+	return nil
 }
 
 func txPipelineReadQueued(rd *proto.Reader, cmds []Cmder) error {
