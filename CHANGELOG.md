@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.2
+
+- Existing `HMSet` is renamed to `HSet` and old deprecated `HMSet` is restored for Redis 3 users.
+
 ## v7
 
 - *Important*. Tx.Pipeline now returns a non-transactional pipeline. Use Tx.TxPipeline for a transactional pipeline.
@@ -11,6 +15,7 @@
 - Add PubSub.ChannelWithSubscriptions that sends `*Subscription` in addition to `*Message` to allow detecting reconnections.
 - `time.Time` is now marshalled in RFC3339 format. `rdb.Get("foo").Time()` helper is added to parse the time.
 - `SetLimiter` is removed and added `Options.Limiter` instead.
+- `HMSet` is deprecated as of Redis v4.
 
 ## v6.15
 

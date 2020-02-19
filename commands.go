@@ -130,8 +130,8 @@ type Cmdable interface {
 	HKeys(key string) *StringSliceCmd
 	HLen(key string) *IntCmd
 	HMGet(key string, fields ...string) *SliceCmd
-	HMSet(key string, values ...interface{}) *IntCmd
-	HSet(key, field string, value interface{}) *BoolCmd
+	HSet(key string, values ...interface{}) *IntCmd
+	HMSet(key string, values ...interface{}) *BoolCmd
 	HSetNX(key, field string, value interface{}) *BoolCmd
 	HVals(key string) *StringSliceCmd
 	BLPop(timeout time.Duration, keys ...string) *StringSliceCmd
@@ -983,13 +983,13 @@ func (c cmdable) HMGet(key string, fields ...string) *SliceCmd {
 	return cmd
 }
 
-// HMSet is like HSet, but accepts multiple values:
+// HSet accepts values in following formats:
 //   - HMSet("myhash", "key1", "value1", "key2", "value2")
 //   - HMSet("myhash", []string{"key1", "value1", "key2", "value2"})
 //   - HMSet("myhash", map[string]interface{}{"key1": "value1", "key2": "value2"})
 //
-// Note that it uses HSET Redis command underneath because HMSET is deprecated.
-func (c cmdable) HMSet(key string, values ...interface{}) *IntCmd {
+// Note that it requires Redis v4 for multiple field/value pairs support.
+func (c cmdable) HSet(key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "hset"
 	args[1] = key
@@ -999,8 +999,13 @@ func (c cmdable) HMSet(key string, values ...interface{}) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) HSet(key, field string, value interface{}) *BoolCmd {
-	cmd := NewBoolCmd("hset", key, field, value)
+// HMSet is a deprecated version of HSet left for compatibility with Redis 3.
+func (c cmdable) HMSet(key string, values ...interface{}) *BoolCmd {
+	args := make([]interface{}, 2, 2+len(values))
+	args[0] = "hmset"
+	args[1] = key
+	args = appendArgs(args, values)
+	cmd := NewBoolCmd(args...)
 	_ = c(cmd)
 	return cmd
 }
