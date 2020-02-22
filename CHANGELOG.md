@@ -4,6 +4,10 @@
 
 - Existing `HMSet` is renamed to `HSet` and old deprecated `HMSet` is restored for Redis 3 users.
 
+## v7.1
+
+- Existing `Cmd.String` is renamed to `Cmd.Text`. New `Cmd.String` implements `fmt.Stringer` interface.
+
 ## v7
 
 - *Important*. Tx.Pipeline now returns a non-transactional pipeline. Use Tx.TxPipeline for a transactional pipeline.
