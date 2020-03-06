@@ -424,6 +424,7 @@ type clusterState struct {
 
 	generation uint32
 	createdAt  time.Time
+	nextNode []int32
 }
 
 func newClusterState(
@@ -436,6 +437,7 @@ func newClusterState(
 
 		generation: nodes.NextGeneration(),
 		createdAt:  time.Now(),
+		nextNode: make([]int32, 16384),
 	}
 
 	originHost, _, _ := net.SplitHostPort(origin)
@@ -562,13 +564,17 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 	return node, nil
 }
 
-func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
+// Select another random (round-robin) node. Node must be differ with prevNode (if possible)
+func (c *clusterState) slotAnotherRandomNode(slot int, prevNode *clusterNode) *clusterNode {
 	nodes := c.slotNodes(slot)
-	if len(nodes) == 0 {
-		return c.nodes.Random()
+	for {
+		value := c.nextNode[slot]
+		to := (int(value) + 1) % len(nodes)
+		skipped := atomic.CompareAndSwapInt32(&c.nextNode[slot], value, int32(to))
+		if skipped && (prevNode == nil || len(nodes) == 1 || nodes[to].String() != prevNode.String()) {
+			return nodes[to]
+		}
 	}
-	n := rand.Intn(len(nodes))
-	return nodes[n], nil
 }
 
 func (c *clusterState) slotNodes(slot int) []*clusterNode {
@@ -754,6 +760,7 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 	slot := c.cmdSlot(cmd)
 
 	var node *clusterNode
+	var prevNode *clusterNode
 	var ask bool
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
@@ -765,8 +772,9 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 
 		if node == nil {
 			var err error
-			node, err = c.cmdNode(cmdInfo, slot)
+			node, err = c.cmdAnotherNode(cmdInfo, slot, prevNode)
 			if err != nil {
+				internal.Logger.Printf("No node for command execute. Cmd : %v", cmd.Name())
 				return err
 			}
 		}
@@ -814,12 +822,7 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 		}
 
 		if isRetryableError(lastErr, cmd.readTimeout() == nil) {
-			// First retry the same node.
-			if attempt == 0 {
-				continue
-			}
-
-			// Second try another node.
+			prevNode = node
 			node.MarkAsFailing()
 			node = nil
 			continue
@@ -1052,11 +1055,7 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 
 func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) error {
 	cmdsMap := newCmdsMap()
-	err := c.mapCmdsByNode(cmdsMap, cmds)
-	if err != nil {
-		setCmdsErr(cmds, err)
-		return err
-	}
+	prevCmdsMap := newCmdsMap()
 
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
@@ -1065,6 +1064,12 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 				return err
 			}
 		}
+		err := c.mapCmdsByAnotherNode(cmds, prevCmdsMap, cmdsMap)
+		if err != nil {
+			setCmdsErr(cmds, err)
+			return err
+		}
+
 
 		failedCmds := newCmdsMap()
 		var wg sync.WaitGroup
@@ -1079,7 +1084,7 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 					return
 				}
 				if attempt < c.opt.MaxRedirects {
-					if err := c.mapCmdsByNode(failedCmds, cmds); err != nil {
+					if err := c.mapCmdsByAnotherNode(cmds, cmdsMap, failedCmds); err != nil {
 						setCmdsErr(cmds, err)
 					}
 				} else {
@@ -1093,21 +1098,29 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 			break
 		}
 		cmdsMap = failedCmds
+		prevCmdsMap = cmdsMap
 	}
 
 	return cmdsFirstErr(cmds)
 }
 
-func (c *ClusterClient) mapCmdsByNode(cmdsMap *cmdsMap, cmds []Cmder) error {
+// Select another nodes for execute cmds. Node must be differ with prevCmdsMap for each cmd (if possible)
+// Select another nodes for execute cmds. Node must be differ with prevCmdsMap for each cmd (if possible)
+func (c *ClusterClient) mapCmdsByAnotherNode(cmds []Cmder, prevCmdsMap *cmdsMap, cmdsMap *cmdsMap) error {
 	state, err := c.state.Get()
 	if err != nil {
 		return err
 	}
 
+	var node *clusterNode
 	if c.opt.ReadOnly && c.cmdsAreReadOnly(cmds) {
 		for _, cmd := range cmds {
 			slot := c.cmdSlot(cmd)
-			node, err := c.slotReadOnlyNode(state, slot)
+			if prevNode, ok := prevCmdsMap.rm[cmd]; ok {
+				node, err = c.slotAnotherReadOnlyNode(state, slot, prevNode)
+			} else {
+				node, err = c.slotAnotherReadOnlyNode(state, slot, nil)
+			}
 			if err != nil {
 				return err
 			}
@@ -1233,6 +1246,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 	}
 
 	cmdsMap := c.mapCmdsBySlot(cmds)
+	prevMap := newCmdsMap()
 	for slot, cmds := range cmdsMap {
 		node, err := state.slotMasterNode(slot)
 		if err != nil {
@@ -1240,7 +1254,8 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 			continue
 		}
 
-		cmdsMap := map[*clusterNode][]Cmder{node: cmds}
+		cmdsMap := newCmdsMap()
+		cmdsMap.Add(node, cmds...)
 		for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 			if attempt > 0 {
 				if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -1252,7 +1267,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 			failedCmds := newCmdsMap()
 			var wg sync.WaitGroup
 
-			for node, cmds := range cmdsMap {
+			for node, cmds := range cmdsMap.m {
 				wg.Add(1)
 				go func(node *clusterNode, cmds []Cmder) {
 					defer wg.Done()
@@ -1262,7 +1277,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 						return
 					}
 					if attempt < c.opt.MaxRedirects {
-						if err := c.mapCmdsByNode(failedCmds, cmds); err != nil {
+						if err := c.mapCmdsByAnotherNode(cmds, prevMap, failedCmds); err != nil {
 							setCmdsErr(cmds, err)
 						}
 					} else {
@@ -1275,7 +1290,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 			if len(failedCmds.m) == 0 {
 				break
 			}
-			cmdsMap = failedCmds.m
+			cmdsMap = failedCmds
 		}
 	}
 
@@ -1573,24 +1588,24 @@ func cmdSlot(cmd Cmder, pos int) int {
 	return hashtag.Slot(firstKey)
 }
 
-func (c *ClusterClient) cmdNode(cmdInfo *CommandInfo, slot int) (*clusterNode, error) {
+func (c *ClusterClient) cmdAnotherNode(cmdInfo *CommandInfo, slot int, prevNode *clusterNode) (*clusterNode, error) {
 	state, err := c.state.Get()
 	if err != nil {
 		return nil, err
 	}
 
 	if c.opt.ReadOnly && cmdInfo != nil && cmdInfo.ReadOnly {
-		return c.slotReadOnlyNode(state, slot)
+		return c.slotAnotherReadOnlyNode(state, slot, prevNode)
 	}
 	return state.slotMasterNode(slot)
 }
 
-func (c *clusterClient) slotReadOnlyNode(state *clusterState, slot int) (*clusterNode, error) {
+func (c *clusterClient) slotAnotherReadOnlyNode(state *clusterState, slot int, prevNode *clusterNode) (*clusterNode, error) {
 	if c.opt.RouteByLatency {
 		return state.slotClosestNode(slot)
 	}
 	if c.opt.RouteRandomly {
-		return state.slotRandomNode(slot)
+		return state.slotAnotherRandomNode(slot, prevNode), nil
 	}
 	return state.slotSlaveNode(slot)
 }
@@ -1645,16 +1660,21 @@ func remove(ss []string, es ...string) []string {
 type cmdsMap struct {
 	mu sync.Mutex
 	m  map[*clusterNode][]Cmder
+	rm  map[Cmder]*clusterNode
 }
 
 func newCmdsMap() *cmdsMap {
 	return &cmdsMap{
 		m: make(map[*clusterNode][]Cmder),
+		rm: make(map[Cmder]*clusterNode),
 	}
 }
 
 func (m *cmdsMap) Add(node *clusterNode, cmds ...Cmder) {
 	m.mu.Lock()
 	m.m[node] = append(m.m[node], cmds...)
+	for _, cmd := range cmds {
+		m.rm[cmd] = node
+	}
 	m.mu.Unlock()
 }
