@@ -290,11 +290,11 @@ var _ = Describe("Commands", func() {
 
 			n, err := client.MemoryUsage("foo").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(50)))
+			Expect(n).NotTo(BeZero())
 
 			n, err = client.MemoryUsage("foo", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(50)))
+			Expect(n).NotTo(BeZero())
 		})
 
 	})
