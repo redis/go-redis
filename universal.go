@@ -164,13 +164,11 @@ type UniversalClient interface {
 	Cmdable
 	Context() context.Context
 	AddHook(Hook)
-	Watch(fn func(*Tx) error, keys ...string) error
-	Do(args ...interface{}) *Cmd
-	DoContext(ctx context.Context, args ...interface{}) *Cmd
-	Process(cmd Cmder) error
-	ProcessContext(ctx context.Context, cmd Cmder) error
-	Subscribe(channels ...string) *PubSub
-	PSubscribe(channels ...string) *PubSub
+	Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error
+	Do(ctx context.Context, args ...interface{}) *Cmd
+	Process(ctx context.Context, cmd Cmder) error
+	Subscribe(ctx context.Context, channels ...string) *PubSub
+	PSubscribe(ctx context.Context, channels ...string) *PubSub
 	Close() error
 }
 

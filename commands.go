@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"io"
 	"time"
@@ -54,257 +55,270 @@ func appendArgs(dst, src []interface{}) []interface{} {
 
 type Cmdable interface {
 	Pipeline() Pipeliner
-	Pipelined(fn func(Pipeliner) error) ([]Cmder, error)
+	Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error)
 
-	TxPipelined(fn func(Pipeliner) error) ([]Cmder, error)
+	TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error)
 	TxPipeline() Pipeliner
 
-	Command() *CommandsInfoCmd
-	ClientGetName() *StringCmd
-	Echo(message interface{}) *StringCmd
-	Ping() *StatusCmd
-	Quit() *StatusCmd
-	Del(keys ...string) *IntCmd
-	Unlink(keys ...string) *IntCmd
-	Dump(key string) *StringCmd
-	Exists(keys ...string) *IntCmd
-	Expire(key string, expiration time.Duration) *BoolCmd
-	ExpireAt(key string, tm time.Time) *BoolCmd
-	Keys(pattern string) *StringSliceCmd
-	Migrate(host, port, key string, db int, timeout time.Duration) *StatusCmd
-	Move(key string, db int) *BoolCmd
-	ObjectRefCount(key string) *IntCmd
-	ObjectEncoding(key string) *StringCmd
-	ObjectIdleTime(key string) *DurationCmd
-	Persist(key string) *BoolCmd
-	PExpire(key string, expiration time.Duration) *BoolCmd
-	PExpireAt(key string, tm time.Time) *BoolCmd
-	PTTL(key string) *DurationCmd
-	RandomKey() *StringCmd
-	Rename(key, newkey string) *StatusCmd
-	RenameNX(key, newkey string) *BoolCmd
-	Restore(key string, ttl time.Duration, value string) *StatusCmd
-	RestoreReplace(key string, ttl time.Duration, value string) *StatusCmd
-	Sort(key string, sort *Sort) *StringSliceCmd
-	SortStore(key, store string, sort *Sort) *IntCmd
-	SortInterfaces(key string, sort *Sort) *SliceCmd
-	Touch(keys ...string) *IntCmd
-	TTL(key string) *DurationCmd
-	Type(key string) *StatusCmd
-	Scan(cursor uint64, match string, count int64) *ScanCmd
-	SScan(key string, cursor uint64, match string, count int64) *ScanCmd
-	HScan(key string, cursor uint64, match string, count int64) *ScanCmd
-	ZScan(key string, cursor uint64, match string, count int64) *ScanCmd
-	Append(key, value string) *IntCmd
-	BitCount(key string, bitCount *BitCount) *IntCmd
-	BitOpAnd(destKey string, keys ...string) *IntCmd
-	BitOpOr(destKey string, keys ...string) *IntCmd
-	BitOpXor(destKey string, keys ...string) *IntCmd
-	BitOpNot(destKey string, key string) *IntCmd
-	BitPos(key string, bit int64, pos ...int64) *IntCmd
-	BitField(key string, args ...interface{}) *IntSliceCmd
-	Decr(key string) *IntCmd
-	DecrBy(key string, decrement int64) *IntCmd
-	Get(key string) *StringCmd
-	GetBit(key string, offset int64) *IntCmd
-	GetRange(key string, start, end int64) *StringCmd
-	GetSet(key string, value interface{}) *StringCmd
-	Incr(key string) *IntCmd
-	IncrBy(key string, value int64) *IntCmd
-	IncrByFloat(key string, value float64) *FloatCmd
-	MGet(keys ...string) *SliceCmd
-	MSet(values ...interface{}) *StatusCmd
-	MSetNX(values ...interface{}) *BoolCmd
-	Set(key string, value interface{}, expiration time.Duration) *StatusCmd
-	SetBit(key string, offset int64, value int) *IntCmd
-	SetNX(key string, value interface{}, expiration time.Duration) *BoolCmd
-	SetXX(key string, value interface{}, expiration time.Duration) *BoolCmd
-	SetRange(key string, offset int64, value string) *IntCmd
-	StrLen(key string) *IntCmd
-	HDel(key string, fields ...string) *IntCmd
-	HExists(key, field string) *BoolCmd
-	HGet(key, field string) *StringCmd
-	HGetAll(key string) *StringStringMapCmd
-	HIncrBy(key, field string, incr int64) *IntCmd
-	HIncrByFloat(key, field string, incr float64) *FloatCmd
-	HKeys(key string) *StringSliceCmd
-	HLen(key string) *IntCmd
-	HMGet(key string, fields ...string) *SliceCmd
-	HSet(key string, values ...interface{}) *IntCmd
-	HMSet(key string, values ...interface{}) *BoolCmd
-	HSetNX(key, field string, value interface{}) *BoolCmd
-	HVals(key string) *StringSliceCmd
-	BLPop(timeout time.Duration, keys ...string) *StringSliceCmd
-	BRPop(timeout time.Duration, keys ...string) *StringSliceCmd
-	BRPopLPush(source, destination string, timeout time.Duration) *StringCmd
-	LIndex(key string, index int64) *StringCmd
-	LInsert(key, op string, pivot, value interface{}) *IntCmd
-	LInsertBefore(key string, pivot, value interface{}) *IntCmd
-	LInsertAfter(key string, pivot, value interface{}) *IntCmd
-	LLen(key string) *IntCmd
-	LPop(key string) *StringCmd
-	LPush(key string, values ...interface{}) *IntCmd
-	LPushX(key string, values ...interface{}) *IntCmd
-	LRange(key string, start, stop int64) *StringSliceCmd
-	LRem(key string, count int64, value interface{}) *IntCmd
-	LSet(key string, index int64, value interface{}) *StatusCmd
-	LTrim(key string, start, stop int64) *StatusCmd
-	RPop(key string) *StringCmd
-	RPopLPush(source, destination string) *StringCmd
-	RPush(key string, values ...interface{}) *IntCmd
-	RPushX(key string, values ...interface{}) *IntCmd
-	SAdd(key string, members ...interface{}) *IntCmd
-	SCard(key string) *IntCmd
-	SDiff(keys ...string) *StringSliceCmd
-	SDiffStore(destination string, keys ...string) *IntCmd
-	SInter(keys ...string) *StringSliceCmd
-	SInterStore(destination string, keys ...string) *IntCmd
-	SIsMember(key string, member interface{}) *BoolCmd
-	SMembers(key string) *StringSliceCmd
-	SMembersMap(key string) *StringStructMapCmd
-	SMove(source, destination string, member interface{}) *BoolCmd
-	SPop(key string) *StringCmd
-	SPopN(key string, count int64) *StringSliceCmd
-	SRandMember(key string) *StringCmd
-	SRandMemberN(key string, count int64) *StringSliceCmd
-	SRem(key string, members ...interface{}) *IntCmd
-	SUnion(keys ...string) *StringSliceCmd
-	SUnionStore(destination string, keys ...string) *IntCmd
-	XAdd(a *XAddArgs) *StringCmd
-	XDel(stream string, ids ...string) *IntCmd
-	XLen(stream string) *IntCmd
-	XRange(stream, start, stop string) *XMessageSliceCmd
-	XRangeN(stream, start, stop string, count int64) *XMessageSliceCmd
-	XRevRange(stream string, start, stop string) *XMessageSliceCmd
-	XRevRangeN(stream string, start, stop string, count int64) *XMessageSliceCmd
-	XRead(a *XReadArgs) *XStreamSliceCmd
-	XReadStreams(streams ...string) *XStreamSliceCmd
-	XGroupCreate(stream, group, start string) *StatusCmd
-	XGroupCreateMkStream(stream, group, start string) *StatusCmd
-	XGroupSetID(stream, group, start string) *StatusCmd
-	XGroupDestroy(stream, group string) *IntCmd
-	XGroupDelConsumer(stream, group, consumer string) *IntCmd
-	XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd
-	XAck(stream, group string, ids ...string) *IntCmd
-	XPending(stream, group string) *XPendingCmd
-	XPendingExt(a *XPendingExtArgs) *XPendingExtCmd
-	XClaim(a *XClaimArgs) *XMessageSliceCmd
-	XClaimJustID(a *XClaimArgs) *StringSliceCmd
-	XTrim(key string, maxLen int64) *IntCmd
-	XTrimApprox(key string, maxLen int64) *IntCmd
-	XInfoGroups(key string) *XInfoGroupsCmd
-	BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd
-	BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd
-	ZAdd(key string, members ...*Z) *IntCmd
-	ZAddNX(key string, members ...*Z) *IntCmd
-	ZAddXX(key string, members ...*Z) *IntCmd
-	ZAddCh(key string, members ...*Z) *IntCmd
-	ZAddNXCh(key string, members ...*Z) *IntCmd
-	ZAddXXCh(key string, members ...*Z) *IntCmd
-	ZIncr(key string, member *Z) *FloatCmd
-	ZIncrNX(key string, member *Z) *FloatCmd
-	ZIncrXX(key string, member *Z) *FloatCmd
-	ZCard(key string) *IntCmd
-	ZCount(key, min, max string) *IntCmd
-	ZLexCount(key, min, max string) *IntCmd
-	ZIncrBy(key string, increment float64, member string) *FloatCmd
-	ZInterStore(destination string, store *ZStore) *IntCmd
-	ZPopMax(key string, count ...int64) *ZSliceCmd
-	ZPopMin(key string, count ...int64) *ZSliceCmd
-	ZRange(key string, start, stop int64) *StringSliceCmd
-	ZRangeWithScores(key string, start, stop int64) *ZSliceCmd
-	ZRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd
-	ZRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd
-	ZRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd
-	ZRank(key, member string) *IntCmd
-	ZRem(key string, members ...interface{}) *IntCmd
-	ZRemRangeByRank(key string, start, stop int64) *IntCmd
-	ZRemRangeByScore(key, min, max string) *IntCmd
-	ZRemRangeByLex(key, min, max string) *IntCmd
-	ZRevRange(key string, start, stop int64) *StringSliceCmd
-	ZRevRangeWithScores(key string, start, stop int64) *ZSliceCmd
-	ZRevRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd
-	ZRevRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd
-	ZRevRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd
-	ZRevRank(key, member string) *IntCmd
-	ZScore(key, member string) *FloatCmd
-	ZUnionStore(dest string, store *ZStore) *IntCmd
-	PFAdd(key string, els ...interface{}) *IntCmd
-	PFCount(keys ...string) *IntCmd
-	PFMerge(dest string, keys ...string) *StatusCmd
-	BgRewriteAOF() *StatusCmd
-	BgSave() *StatusCmd
-	ClientKill(ipPort string) *StatusCmd
-	ClientKillByFilter(keys ...string) *IntCmd
-	ClientList() *StringCmd
-	ClientPause(dur time.Duration) *BoolCmd
-	ClientID() *IntCmd
-	ConfigGet(parameter string) *SliceCmd
-	ConfigResetStat() *StatusCmd
-	ConfigSet(parameter, value string) *StatusCmd
-	ConfigRewrite() *StatusCmd
-	DBSize() *IntCmd
-	FlushAll() *StatusCmd
-	FlushAllAsync() *StatusCmd
-	FlushDB() *StatusCmd
-	FlushDBAsync() *StatusCmd
-	Info(section ...string) *StringCmd
-	LastSave() *IntCmd
-	Save() *StatusCmd
-	Shutdown() *StatusCmd
-	ShutdownSave() *StatusCmd
-	ShutdownNoSave() *StatusCmd
-	SlaveOf(host, port string) *StatusCmd
-	Time() *TimeCmd
-	Eval(script string, keys []string, args ...interface{}) *Cmd
-	EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd
-	ScriptExists(hashes ...string) *BoolSliceCmd
-	ScriptFlush() *StatusCmd
-	ScriptKill() *StatusCmd
-	ScriptLoad(script string) *StringCmd
-	DebugObject(key string) *StringCmd
-	Publish(channel string, message interface{}) *IntCmd
-	PubSubChannels(pattern string) *StringSliceCmd
-	PubSubNumSub(channels ...string) *StringIntMapCmd
-	PubSubNumPat() *IntCmd
-	ClusterSlots() *ClusterSlotsCmd
-	ClusterNodes() *StringCmd
-	ClusterMeet(host, port string) *StatusCmd
-	ClusterForget(nodeID string) *StatusCmd
-	ClusterReplicate(nodeID string) *StatusCmd
-	ClusterResetSoft() *StatusCmd
-	ClusterResetHard() *StatusCmd
-	ClusterInfo() *StringCmd
-	ClusterKeySlot(key string) *IntCmd
-	ClusterGetKeysInSlot(slot int, count int) *StringSliceCmd
-	ClusterCountFailureReports(nodeID string) *IntCmd
-	ClusterCountKeysInSlot(slot int) *IntCmd
-	ClusterDelSlots(slots ...int) *StatusCmd
-	ClusterDelSlotsRange(min, max int) *StatusCmd
-	ClusterSaveConfig() *StatusCmd
-	ClusterSlaves(nodeID string) *StringSliceCmd
-	ClusterFailover() *StatusCmd
-	ClusterAddSlots(slots ...int) *StatusCmd
-	ClusterAddSlotsRange(min, max int) *StatusCmd
-	GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd
-	GeoPos(key string, members ...string) *GeoPosCmd
-	GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd
-	GeoRadiusStore(key string, longitude, latitude float64, query *GeoRadiusQuery) *IntCmd
-	GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd
-	GeoRadiusByMemberStore(key, member string, query *GeoRadiusQuery) *IntCmd
-	GeoDist(key string, member1, member2, unit string) *FloatCmd
-	GeoHash(key string, members ...string) *StringSliceCmd
-	ReadOnly() *StatusCmd
-	ReadWrite() *StatusCmd
-	MemoryUsage(key string, samples ...int) *IntCmd
+	Command(ctx context.Context) *CommandsInfoCmd
+	ClientGetName(ctx context.Context) *StringCmd
+	Echo(ctx context.Context, message interface{}) *StringCmd
+	Ping(ctx context.Context) *StatusCmd
+	Quit(ctx context.Context) *StatusCmd
+	Del(ctx context.Context, keys ...string) *IntCmd
+	Unlink(ctx context.Context, keys ...string) *IntCmd
+	Dump(ctx context.Context, key string) *StringCmd
+	Exists(ctx context.Context, keys ...string) *IntCmd
+	Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	Keys(ctx context.Context, pattern string) *StringSliceCmd
+	Migrate(ctx context.Context, host, port, key string, db int, timeout time.Duration) *StatusCmd
+	Move(ctx context.Context, key string, db int) *BoolCmd
+	ObjectRefCount(ctx context.Context, key string) *IntCmd
+	ObjectEncoding(ctx context.Context, key string) *StringCmd
+	ObjectIdleTime(ctx context.Context, key string) *DurationCmd
+	Persist(ctx context.Context, key string) *BoolCmd
+	PExpire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	PExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PTTL(ctx context.Context, key string) *DurationCmd
+	RandomKey(ctx context.Context) *StringCmd
+	Rename(ctx context.Context, key, newkey string) *StatusCmd
+	RenameNX(ctx context.Context, key, newkey string) *BoolCmd
+	Restore(ctx context.Context, key string, ttl time.Duration, value string) *StatusCmd
+	RestoreReplace(ctx context.Context, key string, ttl time.Duration, value string) *StatusCmd
+	Sort(ctx context.Context, key string, sort *Sort) *StringSliceCmd
+	SortStore(ctx context.Context, key, store string, sort *Sort) *IntCmd
+	SortInterfaces(ctx context.Context, key string, sort *Sort) *SliceCmd
+	Touch(ctx context.Context, keys ...string) *IntCmd
+	TTL(ctx context.Context, key string) *DurationCmd
+	Type(ctx context.Context, key string) *StatusCmd
+	Append(ctx context.Context, key, value string) *IntCmd
+	Decr(ctx context.Context, key string) *IntCmd
+	DecrBy(ctx context.Context, key string, decrement int64) *IntCmd
+	Get(ctx context.Context, key string) *StringCmd
+	GetRange(ctx context.Context, key string, start, end int64) *StringCmd
+	GetSet(ctx context.Context, key string, value interface{}) *StringCmd
+	Incr(ctx context.Context, key string) *IntCmd
+	IncrBy(ctx context.Context, key string, value int64) *IntCmd
+	IncrByFloat(ctx context.Context, key string, value float64) *FloatCmd
+	MGet(ctx context.Context, keys ...string) *SliceCmd
+	MSet(ctx context.Context, values ...interface{}) *StatusCmd
+	MSetNX(ctx context.Context, values ...interface{}) *BoolCmd
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
+	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
+	SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd
+	StrLen(ctx context.Context, key string) *IntCmd
+
+	GetBit(ctx context.Context, key string, offset int64) *IntCmd
+	SetBit(ctx context.Context, key string, offset int64, value int) *IntCmd
+	BitCount(ctx context.Context, key string, bitCount *BitCount) *IntCmd
+	BitOpAnd(ctx context.Context, destKey string, keys ...string) *IntCmd
+	BitOpOr(ctx context.Context, destKey string, keys ...string) *IntCmd
+	BitOpXor(ctx context.Context, destKey string, keys ...string) *IntCmd
+	BitOpNot(ctx context.Context, destKey string, key string) *IntCmd
+	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
+	BitField(ctx context.Context, key string, args ...interface{}) *IntSliceCmd
+
+	Scan(ctx context.Context, cursor uint64, match string, count int64) *ScanCmd
+	SScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
+	HScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
+	ZScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
+
+	HDel(ctx context.Context, key string, fields ...string) *IntCmd
+	HExists(ctx context.Context, key, field string) *BoolCmd
+	HGet(ctx context.Context, key, field string) *StringCmd
+	HGetAll(ctx context.Context, key string) *StringStringMapCmd
+	HIncrBy(ctx context.Context, key, field string, incr int64) *IntCmd
+	HIncrByFloat(ctx context.Context, key, field string, incr float64) *FloatCmd
+	HKeys(ctx context.Context, key string) *StringSliceCmd
+	HLen(ctx context.Context, key string) *IntCmd
+	HMGet(ctx context.Context, key string, fields ...string) *SliceCmd
+	HSet(ctx context.Context, key string, values ...interface{}) *IntCmd
+	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
+	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
+	HVals(ctx context.Context, key string) *StringSliceCmd
+
+	BLPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
+	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
+	BRPopLPush(ctx context.Context, source, destination string, timeout time.Duration) *StringCmd
+	LIndex(ctx context.Context, key string, index int64) *StringCmd
+	LInsert(ctx context.Context, key, op string, pivot, value interface{}) *IntCmd
+	LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd
+	LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd
+	LLen(ctx context.Context, key string) *IntCmd
+	LPop(ctx context.Context, key string) *StringCmd
+	LPush(ctx context.Context, key string, values ...interface{}) *IntCmd
+	LPushX(ctx context.Context, key string, values ...interface{}) *IntCmd
+	LRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd
+	LRem(ctx context.Context, key string, count int64, value interface{}) *IntCmd
+	LSet(ctx context.Context, key string, index int64, value interface{}) *StatusCmd
+	LTrim(ctx context.Context, key string, start, stop int64) *StatusCmd
+	RPop(ctx context.Context, key string) *StringCmd
+	RPopLPush(ctx context.Context, source, destination string) *StringCmd
+	RPush(ctx context.Context, key string, values ...interface{}) *IntCmd
+	RPushX(ctx context.Context, key string, values ...interface{}) *IntCmd
+
+	SAdd(ctx context.Context, key string, members ...interface{}) *IntCmd
+	SCard(ctx context.Context, key string) *IntCmd
+	SDiff(ctx context.Context, keys ...string) *StringSliceCmd
+	SDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd
+	SInter(ctx context.Context, keys ...string) *StringSliceCmd
+	SInterStore(ctx context.Context, destination string, keys ...string) *IntCmd
+	SIsMember(ctx context.Context, key string, member interface{}) *BoolCmd
+	SMembers(ctx context.Context, key string) *StringSliceCmd
+	SMembersMap(ctx context.Context, key string) *StringStructMapCmd
+	SMove(ctx context.Context, source, destination string, member interface{}) *BoolCmd
+	SPop(ctx context.Context, key string) *StringCmd
+	SPopN(ctx context.Context, key string, count int64) *StringSliceCmd
+	SRandMember(ctx context.Context, key string) *StringCmd
+	SRandMemberN(ctx context.Context, key string, count int64) *StringSliceCmd
+	SRem(ctx context.Context, key string, members ...interface{}) *IntCmd
+	SUnion(ctx context.Context, keys ...string) *StringSliceCmd
+	SUnionStore(ctx context.Context, destination string, keys ...string) *IntCmd
+
+	XAdd(ctx context.Context, a *XAddArgs) *StringCmd
+	XDel(ctx context.Context, stream string, ids ...string) *IntCmd
+	XLen(ctx context.Context, stream string) *IntCmd
+	XRange(ctx context.Context, stream, start, stop string) *XMessageSliceCmd
+	XRangeN(ctx context.Context, stream, start, stop string, count int64) *XMessageSliceCmd
+	XRevRange(ctx context.Context, stream string, start, stop string) *XMessageSliceCmd
+	XRevRangeN(ctx context.Context, stream string, start, stop string, count int64) *XMessageSliceCmd
+	XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd
+	XReadStreams(ctx context.Context, streams ...string) *XStreamSliceCmd
+	XGroupCreate(ctx context.Context, stream, group, start string) *StatusCmd
+	XGroupCreateMkStream(ctx context.Context, stream, group, start string) *StatusCmd
+	XGroupSetID(ctx context.Context, stream, group, start string) *StatusCmd
+	XGroupDestroy(ctx context.Context, stream, group string) *IntCmd
+	XGroupDelConsumer(ctx context.Context, stream, group, consumer string) *IntCmd
+	XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSliceCmd
+	XAck(ctx context.Context, stream, group string, ids ...string) *IntCmd
+	XPending(ctx context.Context, stream, group string) *XPendingCmd
+	XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingExtCmd
+	XClaim(ctx context.Context, a *XClaimArgs) *XMessageSliceCmd
+	XClaimJustID(ctx context.Context, a *XClaimArgs) *StringSliceCmd
+	XTrim(ctx context.Context, key string, maxLen int64) *IntCmd
+	XTrimApprox(ctx context.Context, key string, maxLen int64) *IntCmd
+	XInfoGroups(ctx context.Context, key string) *XInfoGroupsCmd
+
+	BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
+	BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
+	ZAdd(ctx context.Context, key string, members ...*Z) *IntCmd
+	ZAddNX(ctx context.Context, key string, members ...*Z) *IntCmd
+	ZAddXX(ctx context.Context, key string, members ...*Z) *IntCmd
+	ZAddCh(ctx context.Context, key string, members ...*Z) *IntCmd
+	ZAddNXCh(ctx context.Context, key string, members ...*Z) *IntCmd
+	ZAddXXCh(ctx context.Context, key string, members ...*Z) *IntCmd
+	ZIncr(ctx context.Context, key string, member *Z) *FloatCmd
+	ZIncrNX(ctx context.Context, key string, member *Z) *FloatCmd
+	ZIncrXX(ctx context.Context, key string, member *Z) *FloatCmd
+	ZCard(ctx context.Context, key string) *IntCmd
+	ZCount(ctx context.Context, key, min, max string) *IntCmd
+	ZLexCount(ctx context.Context, key, min, max string) *IntCmd
+	ZIncrBy(ctx context.Context, key string, increment float64, member string) *FloatCmd
+	ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd
+	ZPopMax(ctx context.Context, key string, count ...int64) *ZSliceCmd
+	ZPopMin(ctx context.Context, key string, count ...int64) *ZSliceCmd
+	ZRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd
+	ZRangeWithScores(ctx context.Context, key string, start, stop int64) *ZSliceCmd
+	ZRangeByScore(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd
+	ZRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd
+	ZRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd
+	ZRank(ctx context.Context, key, member string) *IntCmd
+	ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd
+	ZRemRangeByRank(ctx context.Context, key string, start, stop int64) *IntCmd
+	ZRemRangeByScore(ctx context.Context, key, min, max string) *IntCmd
+	ZRemRangeByLex(ctx context.Context, key, min, max string) *IntCmd
+	ZRevRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd
+	ZRevRangeWithScores(ctx context.Context, key string, start, stop int64) *ZSliceCmd
+	ZRevRangeByScore(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd
+	ZRevRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd
+	ZRevRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd
+	ZRevRank(ctx context.Context, key, member string) *IntCmd
+	ZScore(ctx context.Context, key, member string) *FloatCmd
+	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
+
+	PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd
+	PFCount(ctx context.Context, keys ...string) *IntCmd
+	PFMerge(ctx context.Context, dest string, keys ...string) *StatusCmd
+
+	BgRewriteAOF(ctx context.Context) *StatusCmd
+	BgSave(ctx context.Context) *StatusCmd
+	ClientKill(ctx context.Context, ipPort string) *StatusCmd
+	ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd
+	ClientList(ctx context.Context) *StringCmd
+	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
+	ClientID(ctx context.Context) *IntCmd
+	ConfigGet(ctx context.Context, parameter string) *SliceCmd
+	ConfigResetStat(ctx context.Context) *StatusCmd
+	ConfigSet(ctx context.Context, parameter, value string) *StatusCmd
+	ConfigRewrite(ctx context.Context) *StatusCmd
+	DBSize(ctx context.Context) *IntCmd
+	FlushAll(ctx context.Context) *StatusCmd
+	FlushAllAsync(ctx context.Context) *StatusCmd
+	FlushDB(ctx context.Context) *StatusCmd
+	FlushDBAsync(ctx context.Context) *StatusCmd
+	Info(ctx context.Context, section ...string) *StringCmd
+	LastSave(ctx context.Context) *IntCmd
+	Save(ctx context.Context) *StatusCmd
+	Shutdown(ctx context.Context) *StatusCmd
+	ShutdownSave(ctx context.Context) *StatusCmd
+	ShutdownNoSave(ctx context.Context) *StatusCmd
+	SlaveOf(ctx context.Context, host, port string) *StatusCmd
+	Time(ctx context.Context) *TimeCmd
+	DebugObject(ctx context.Context, key string) *StringCmd
+	ReadOnly(ctx context.Context) *StatusCmd
+	ReadWrite(ctx context.Context) *StatusCmd
+	MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd
+
+	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd
+	EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd
+	ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd
+	ScriptFlush(ctx context.Context) *StatusCmd
+	ScriptKill(ctx context.Context) *StatusCmd
+	ScriptLoad(ctx context.Context, script string) *StringCmd
+
+	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
+	PubSubChannels(ctx context.Context, pattern string) *StringSliceCmd
+	PubSubNumSub(ctx context.Context, channels ...string) *StringIntMapCmd
+	PubSubNumPat(ctx context.Context) *IntCmd
+
+	ClusterSlots(ctx context.Context) *ClusterSlotsCmd
+	ClusterNodes(ctx context.Context) *StringCmd
+	ClusterMeet(ctx context.Context, host, port string) *StatusCmd
+	ClusterForget(ctx context.Context, nodeID string) *StatusCmd
+	ClusterReplicate(ctx context.Context, nodeID string) *StatusCmd
+	ClusterResetSoft(ctx context.Context) *StatusCmd
+	ClusterResetHard(ctx context.Context) *StatusCmd
+	ClusterInfo(ctx context.Context) *StringCmd
+	ClusterKeySlot(ctx context.Context, key string) *IntCmd
+	ClusterGetKeysInSlot(ctx context.Context, slot int, count int) *StringSliceCmd
+	ClusterCountFailureReports(ctx context.Context, nodeID string) *IntCmd
+	ClusterCountKeysInSlot(ctx context.Context, slot int) *IntCmd
+	ClusterDelSlots(ctx context.Context, slots ...int) *StatusCmd
+	ClusterDelSlotsRange(ctx context.Context, min, max int) *StatusCmd
+	ClusterSaveConfig(ctx context.Context) *StatusCmd
+	ClusterSlaves(ctx context.Context, nodeID string) *StringSliceCmd
+	ClusterFailover(ctx context.Context) *StatusCmd
+	ClusterAddSlots(ctx context.Context, slots ...int) *StatusCmd
+	ClusterAddSlotsRange(ctx context.Context, min, max int) *StatusCmd
+
+	GeoAdd(ctx context.Context, key string, geoLocation ...*GeoLocation) *IntCmd
+	GeoPos(ctx context.Context, key string, members ...string) *GeoPosCmd
+	GeoRadius(ctx context.Context, key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd
+	GeoRadiusStore(ctx context.Context, key string, longitude, latitude float64, query *GeoRadiusQuery) *IntCmd
+	GeoRadiusByMember(ctx context.Context, key, member string, query *GeoRadiusQuery) *GeoLocationCmd
+	GeoRadiusByMemberStore(ctx context.Context, key, member string, query *GeoRadiusQuery) *IntCmd
+	GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd
+	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
 }
 
 type StatefulCmdable interface {
 	Cmdable
-	Auth(password string) *StatusCmd
-	Select(index int) *StatusCmd
-	SwapDB(index1, index2 int) *StatusCmd
-	ClientSetName(name string) *BoolCmd
+	Auth(ctx context.Context, password string) *StatusCmd
+	Select(ctx context.Context, index int) *StatusCmd
+	SwapDB(ctx context.Context, index1, index2 int) *StatusCmd
+	ClientSetName(ctx context.Context, name string) *BoolCmd
 }
 
 var _ Cmdable = (*Client)(nil)
@@ -312,119 +326,134 @@ var _ Cmdable = (*Tx)(nil)
 var _ Cmdable = (*Ring)(nil)
 var _ Cmdable = (*ClusterClient)(nil)
 
-type cmdable func(cmd Cmder) error
+type cmdable func(ctx context.Context, cmd Cmder) error
 
-type statefulCmdable func(cmd Cmder) error
+type statefulCmdable func(ctx context.Context, cmd Cmder) error
 
 //------------------------------------------------------------------------------
 
-func (c statefulCmdable) Auth(password string) *StatusCmd {
-	cmd := NewStatusCmd("auth", password)
-	_ = c(cmd)
+func (c statefulCmdable) Auth(ctx context.Context, password string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "auth", password)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Echo(message interface{}) *StringCmd {
-	cmd := NewStringCmd("echo", message)
-	_ = c(cmd)
+func (c cmdable) Wait(ctx context.Context, numSlaves int, timeout time.Duration) *IntCmd {
+	cmd := NewIntCmd(ctx, "wait", numSlaves, int(timeout/time.Millisecond))
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Ping() *StatusCmd {
-	cmd := NewStatusCmd("ping")
-	_ = c(cmd)
+func (c statefulCmdable) Select(ctx context.Context, index int) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "select", index)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Wait(numSlaves int, timeout time.Duration) *IntCmd {
-	cmd := NewIntCmd("wait", numSlaves, int(timeout/time.Millisecond))
-	_ = c(cmd)
+func (c statefulCmdable) SwapDB(ctx context.Context, index1, index2 int) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "swapdb", index1, index2)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Quit() *StatusCmd {
+// ClientSetName assigns a name to the connection.
+func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "client", "setname", name)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+//------------------------------------------------------------------------------
+
+func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
+	cmd := NewCommandsInfoCmd(ctx, "command")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ClientGetName returns the name of the connection.
+func (c cmdable) ClientGetName(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "client", "getname")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) Echo(ctx context.Context, message interface{}) *StringCmd {
+	cmd := NewStringCmd(ctx, "echo", message)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) Ping(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "ping")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) Quit(ctx context.Context) *StatusCmd {
 	panic("not implemented")
 }
 
-func (c statefulCmdable) Select(index int) *StatusCmd {
-	cmd := NewStatusCmd("select", index)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c statefulCmdable) SwapDB(index1, index2 int) *StatusCmd {
-	cmd := NewStatusCmd("swapdb", index1, index2)
-	_ = c(cmd)
-	return cmd
-}
-
-//------------------------------------------------------------------------------
-
-func (c cmdable) Command() *CommandsInfoCmd {
-	cmd := NewCommandsInfoCmd("command")
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) Del(keys ...string) *IntCmd {
+func (c cmdable) Del(ctx context.Context, keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "del"
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Unlink(keys ...string) *IntCmd {
+func (c cmdable) Unlink(ctx context.Context, keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "unlink"
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Dump(key string) *StringCmd {
-	cmd := NewStringCmd("dump", key)
-	_ = c(cmd)
+func (c cmdable) Dump(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "dump", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Exists(keys ...string) *IntCmd {
+func (c cmdable) Exists(ctx context.Context, keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "exists"
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Expire(key string, expiration time.Duration) *BoolCmd {
-	cmd := NewBoolCmd("expire", key, formatSec(expiration))
-	_ = c(cmd)
+func (c cmdable) Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "expire", key, formatSec(expiration))
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ExpireAt(key string, tm time.Time) *BoolCmd {
-	cmd := NewBoolCmd("expireat", key, tm.Unix())
-	_ = c(cmd)
+func (c cmdable) ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "expireat", key, tm.Unix())
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Keys(pattern string) *StringSliceCmd {
-	cmd := NewStringSliceCmd("keys", pattern)
-	_ = c(cmd)
+func (c cmdable) Keys(ctx context.Context, pattern string) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "keys", pattern)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Migrate(host, port, key string, db int, timeout time.Duration) *StatusCmd {
+func (c cmdable) Migrate(ctx context.Context, host, port, key string, db int, timeout time.Duration) *StatusCmd {
 	cmd := NewStatusCmd(
+		ctx,
 		"migrate",
 		host,
 		port,
@@ -433,100 +462,103 @@ func (c cmdable) Migrate(host, port, key string, db int, timeout time.Duration) 
 		formatMs(timeout),
 	)
 	cmd.setReadTimeout(timeout)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Move(key string, db int) *BoolCmd {
-	cmd := NewBoolCmd("move", key, db)
-	_ = c(cmd)
+func (c cmdable) Move(ctx context.Context, key string, db int) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "move", key, db)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ObjectRefCount(key string) *IntCmd {
-	cmd := NewIntCmd("object", "refcount", key)
-	_ = c(cmd)
+func (c cmdable) ObjectRefCount(ctx context.Context, key string) *IntCmd {
+	cmd := NewIntCmd(ctx, "object", "refcount", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ObjectEncoding(key string) *StringCmd {
-	cmd := NewStringCmd("object", "encoding", key)
-	_ = c(cmd)
+func (c cmdable) ObjectEncoding(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "object", "encoding", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ObjectIdleTime(key string) *DurationCmd {
-	cmd := NewDurationCmd(time.Second, "object", "idletime", key)
-	_ = c(cmd)
+func (c cmdable) ObjectIdleTime(ctx context.Context, key string) *DurationCmd {
+	cmd := NewDurationCmd(ctx, time.Second, "object", "idletime", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Persist(key string) *BoolCmd {
-	cmd := NewBoolCmd("persist", key)
-	_ = c(cmd)
+func (c cmdable) Persist(ctx context.Context, key string) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "persist", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) PExpire(key string, expiration time.Duration) *BoolCmd {
-	cmd := NewBoolCmd("pexpire", key, formatMs(expiration))
-	_ = c(cmd)
+func (c cmdable) PExpire(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "pexpire", key, formatMs(expiration))
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) PExpireAt(key string, tm time.Time) *BoolCmd {
+func (c cmdable) PExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd {
 	cmd := NewBoolCmd(
+		ctx,
 		"pexpireat",
 		key,
 		tm.UnixNano()/int64(time.Millisecond),
 	)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) PTTL(key string) *DurationCmd {
-	cmd := NewDurationCmd(time.Millisecond, "pttl", key)
-	_ = c(cmd)
+func (c cmdable) PTTL(ctx context.Context, key string) *DurationCmd {
+	cmd := NewDurationCmd(ctx, time.Millisecond, "pttl", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) RandomKey() *StringCmd {
-	cmd := NewStringCmd("randomkey")
-	_ = c(cmd)
+func (c cmdable) RandomKey(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "randomkey")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Rename(key, newkey string) *StatusCmd {
-	cmd := NewStatusCmd("rename", key, newkey)
-	_ = c(cmd)
+func (c cmdable) Rename(ctx context.Context, key, newkey string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "rename", key, newkey)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) RenameNX(key, newkey string) *BoolCmd {
-	cmd := NewBoolCmd("renamenx", key, newkey)
-	_ = c(cmd)
+func (c cmdable) RenameNX(ctx context.Context, key, newkey string) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "renamenx", key, newkey)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Restore(key string, ttl time.Duration, value string) *StatusCmd {
+func (c cmdable) Restore(ctx context.Context, key string, ttl time.Duration, value string) *StatusCmd {
 	cmd := NewStatusCmd(
+		ctx,
 		"restore",
 		key,
 		formatMs(ttl),
 		value,
 	)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) RestoreReplace(key string, ttl time.Duration, value string) *StatusCmd {
+func (c cmdable) RestoreReplace(ctx context.Context, key string, ttl time.Duration, value string) *StatusCmd {
 	cmd := NewStatusCmd(
+		ctx,
 		"restore",
 		key,
 		formatMs(ttl),
 		value,
 		"replace",
 	)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -558,108 +590,230 @@ func (sort *Sort) args(key string) []interface{} {
 	return args
 }
 
-func (c cmdable) Sort(key string, sort *Sort) *StringSliceCmd {
-	cmd := NewStringSliceCmd(sort.args(key)...)
-	_ = c(cmd)
+func (c cmdable) Sort(ctx context.Context, key string, sort *Sort) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, sort.args(key)...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SortStore(key, store string, sort *Sort) *IntCmd {
+func (c cmdable) SortStore(ctx context.Context, key, store string, sort *Sort) *IntCmd {
 	args := sort.args(key)
 	if store != "" {
 		args = append(args, "store", store)
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SortInterfaces(key string, sort *Sort) *SliceCmd {
-	cmd := NewSliceCmd(sort.args(key)...)
-	_ = c(cmd)
+func (c cmdable) SortInterfaces(ctx context.Context, key string, sort *Sort) *SliceCmd {
+	cmd := NewSliceCmd(ctx, sort.args(key)...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Touch(keys ...string) *IntCmd {
+func (c cmdable) Touch(ctx context.Context, keys ...string) *IntCmd {
 	args := make([]interface{}, len(keys)+1)
 	args[0] = "touch"
 	for i, key := range keys {
 		args[i+1] = key
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) TTL(key string) *DurationCmd {
-	cmd := NewDurationCmd(time.Second, "ttl", key)
-	_ = c(cmd)
+func (c cmdable) TTL(ctx context.Context, key string) *DurationCmd {
+	cmd := NewDurationCmd(ctx, time.Second, "ttl", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Type(key string) *StatusCmd {
-	cmd := NewStatusCmd("type", key)
-	_ = c(cmd)
+func (c cmdable) Type(ctx context.Context, key string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "type", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Scan(cursor uint64, match string, count int64) *ScanCmd {
-	args := []interface{}{"scan", cursor}
-	if match != "" {
-		args = append(args, "match", match)
-	}
-	if count > 0 {
-		args = append(args, "count", count)
-	}
-	cmd := NewScanCmd(c, args...)
-	_ = c(cmd)
+func (c cmdable) Append(ctx context.Context, key, value string) *IntCmd {
+	cmd := NewIntCmd(ctx, "append", key, value)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SScan(key string, cursor uint64, match string, count int64) *ScanCmd {
-	args := []interface{}{"sscan", key, cursor}
-	if match != "" {
-		args = append(args, "match", match)
-	}
-	if count > 0 {
-		args = append(args, "count", count)
-	}
-	cmd := NewScanCmd(c, args...)
-	_ = c(cmd)
+func (c cmdable) Decr(ctx context.Context, key string) *IntCmd {
+	cmd := NewIntCmd(ctx, "decr", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HScan(key string, cursor uint64, match string, count int64) *ScanCmd {
-	args := []interface{}{"hscan", key, cursor}
-	if match != "" {
-		args = append(args, "match", match)
-	}
-	if count > 0 {
-		args = append(args, "count", count)
-	}
-	cmd := NewScanCmd(c, args...)
-	_ = c(cmd)
+func (c cmdable) DecrBy(ctx context.Context, key string, decrement int64) *IntCmd {
+	cmd := NewIntCmd(ctx, "decrby", key, decrement)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZScan(key string, cursor uint64, match string, count int64) *ScanCmd {
-	args := []interface{}{"zscan", key, cursor}
-	if match != "" {
-		args = append(args, "match", match)
+// Redis `GET key` command. It returns redis.Nil error when key does not exist.
+func (c cmdable) Get(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "get", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) GetRange(ctx context.Context, key string, start, end int64) *StringCmd {
+	cmd := NewStringCmd(ctx, "getrange", key, start, end)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) *StringCmd {
+	cmd := NewStringCmd(ctx, "getset", key, value)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) Incr(ctx context.Context, key string) *IntCmd {
+	cmd := NewIntCmd(ctx, "incr", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) IncrBy(ctx context.Context, key string, value int64) *IntCmd {
+	cmd := NewIntCmd(ctx, "incrby", key, value)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) IncrByFloat(ctx context.Context, key string, value float64) *FloatCmd {
+	cmd := NewFloatCmd(ctx, "incrbyfloat", key, value)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) MGet(ctx context.Context, keys ...string) *SliceCmd {
+	args := make([]interface{}, 1+len(keys))
+	args[0] = "mget"
+	for i, key := range keys {
+		args[1+i] = key
 	}
-	if count > 0 {
-		args = append(args, "count", count)
+	cmd := NewSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// MSet is like Set but accepts multiple values:
+//   - MSet("key1", "value1", "key2", "value2")
+//   - MSet([]string{"key1", "value1", "key2", "value2"})
+//   - MSet(map[string]interface{}{"key1": "value1", "key2": "value2"})
+func (c cmdable) MSet(ctx context.Context, values ...interface{}) *StatusCmd {
+	args := make([]interface{}, 1, 1+len(values))
+	args[0] = "mset"
+	args = appendArgs(args, values)
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// MSetNX is like SetNX but accepts multiple values:
+//   - MSetNX("key1", "value1", "key2", "value2")
+//   - MSetNX([]string{"key1", "value1", "key2", "value2"})
+//   - MSetNX(map[string]interface{}{"key1": "value1", "key2": "value2"})
+func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
+	args := make([]interface{}, 1, 1+len(values))
+	args[0] = "msetnx"
+	args = appendArgs(args, values)
+	cmd := NewBoolCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Redis `SET key value [expiration]` command.
+//
+// Use expiration for `SETEX`-like behavior.
+// Zero expiration means the key has no expiration time.
+func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
+	args := make([]interface{}, 3, 5)
+	args[0] = "set"
+	args[1] = key
+	args[2] = value
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(expiration))
+		} else {
+			args = append(args, "ex", formatSec(expiration))
+		}
 	}
-	cmd := NewScanCmd(c, args...)
-	_ = c(cmd)
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Redis `SET key value [expiration] NX` command.
+//
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
+	var cmd *BoolCmd
+	if expiration == 0 {
+		// Use old `SETNX` to support old Redis versions.
+		cmd = NewBoolCmd(ctx, "setnx", key, value)
+	} else {
+		if usePrecise(expiration) {
+			cmd = NewBoolCmd(ctx, "set", key, value, "px", formatMs(expiration), "nx")
+		} else {
+			cmd = NewBoolCmd(ctx, "set", key, value, "ex", formatSec(expiration), "nx")
+		}
+	}
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Redis `SET key value [expiration] XX` command.
+//
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
+	var cmd *BoolCmd
+	if expiration == 0 {
+		cmd = NewBoolCmd(ctx, "set", key, value, "xx")
+	} else {
+		if usePrecise(expiration) {
+			cmd = NewBoolCmd(ctx, "set", key, value, "px", formatMs(expiration), "xx")
+		} else {
+			cmd = NewBoolCmd(ctx, "set", key, value, "ex", formatSec(expiration), "xx")
+		}
+	}
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd {
+	cmd := NewIntCmd(ctx, "setrange", key, offset, value)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) StrLen(ctx context.Context, key string) *IntCmd {
+	cmd := NewIntCmd(ctx, "strlen", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) Append(key, value string) *IntCmd {
-	cmd := NewIntCmd("append", key, value)
-	_ = c(cmd)
+func (c cmdable) GetBit(ctx context.Context, key string, offset int64) *IntCmd {
+	cmd := NewIntCmd(ctx, "getbit", key, offset)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) SetBit(ctx context.Context, key string, offset int64, value int) *IntCmd {
+	cmd := NewIntCmd(
+		ctx,
+		"setbit",
+		key,
+		offset,
+		value,
+	)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -667,7 +821,7 @@ type BitCount struct {
 	Start, End int64
 }
 
-func (c cmdable) BitCount(key string, bitCount *BitCount) *IntCmd {
+func (c cmdable) BitCount(ctx context.Context, key string, bitCount *BitCount) *IntCmd {
 	args := []interface{}{"bitcount", key}
 	if bitCount != nil {
 		args = append(
@@ -676,12 +830,12 @@ func (c cmdable) BitCount(key string, bitCount *BitCount) *IntCmd {
 			bitCount.End,
 		)
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) bitOp(op, destKey string, keys ...string) *IntCmd {
+func (c cmdable) bitOp(ctx context.Context, op, destKey string, keys ...string) *IntCmd {
 	args := make([]interface{}, 3+len(keys))
 	args[0] = "bitop"
 	args[1] = op
@@ -689,28 +843,28 @@ func (c cmdable) bitOp(op, destKey string, keys ...string) *IntCmd {
 	for i, key := range keys {
 		args[3+i] = key
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) BitOpAnd(destKey string, keys ...string) *IntCmd {
-	return c.bitOp("and", destKey, keys...)
+func (c cmdable) BitOpAnd(ctx context.Context, destKey string, keys ...string) *IntCmd {
+	return c.bitOp(ctx, "and", destKey, keys...)
 }
 
-func (c cmdable) BitOpOr(destKey string, keys ...string) *IntCmd {
-	return c.bitOp("or", destKey, keys...)
+func (c cmdable) BitOpOr(ctx context.Context, destKey string, keys ...string) *IntCmd {
+	return c.bitOp(ctx, "or", destKey, keys...)
 }
 
-func (c cmdable) BitOpXor(destKey string, keys ...string) *IntCmd {
-	return c.bitOp("xor", destKey, keys...)
+func (c cmdable) BitOpXor(ctx context.Context, destKey string, keys ...string) *IntCmd {
+	return c.bitOp(ctx, "xor", destKey, keys...)
 }
 
-func (c cmdable) BitOpNot(destKey string, key string) *IntCmd {
-	return c.bitOp("not", destKey, key)
+func (c cmdable) BitOpNot(ctx context.Context, destKey string, key string) *IntCmd {
+	return c.bitOp(ctx, "not", destKey, key)
 }
 
-func (c cmdable) BitPos(key string, bit int64, pos ...int64) *IntCmd {
+func (c cmdable) BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd {
 	args := make([]interface{}, 3+len(pos))
 	args[0] = "bitpos"
 	args[1] = key
@@ -725,261 +879,142 @@ func (c cmdable) BitPos(key string, bit int64, pos ...int64) *IntCmd {
 	default:
 		panic("too many arguments")
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) BitField(key string, args ...interface{}) *IntSliceCmd {
+func (c cmdable) BitField(ctx context.Context, key string, args ...interface{}) *IntSliceCmd {
 	a := make([]interface{}, 0, 2+len(args))
 	a = append(a, "bitfield")
 	a = append(a, key)
 	a = append(a, args...)
-	cmd := NewIntSliceCmd(a...)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) Decr(key string) *IntCmd {
-	cmd := NewIntCmd("decr", key)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) DecrBy(key string, decrement int64) *IntCmd {
-	cmd := NewIntCmd("decrby", key, decrement)
-	_ = c(cmd)
-	return cmd
-}
-
-// Redis `GET key` command. It returns redis.Nil error when key does not exist.
-func (c cmdable) Get(key string) *StringCmd {
-	cmd := NewStringCmd("get", key)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) GetBit(key string, offset int64) *IntCmd {
-	cmd := NewIntCmd("getbit", key, offset)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) GetRange(key string, start, end int64) *StringCmd {
-	cmd := NewStringCmd("getrange", key, start, end)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) GetSet(key string, value interface{}) *StringCmd {
-	cmd := NewStringCmd("getset", key, value)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) Incr(key string) *IntCmd {
-	cmd := NewIntCmd("incr", key)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) IncrBy(key string, value int64) *IntCmd {
-	cmd := NewIntCmd("incrby", key, value)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) IncrByFloat(key string, value float64) *FloatCmd {
-	cmd := NewFloatCmd("incrbyfloat", key, value)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) MGet(keys ...string) *SliceCmd {
-	args := make([]interface{}, 1+len(keys))
-	args[0] = "mget"
-	for i, key := range keys {
-		args[1+i] = key
-	}
-	cmd := NewSliceCmd(args...)
-	_ = c(cmd)
-	return cmd
-}
-
-// MSet is like Set but accepts multiple values:
-//   - MSet("key1", "value1", "key2", "value2")
-//   - MSet([]string{"key1", "value1", "key2", "value2"})
-//   - MSet(map[string]interface{}{"key1": "value1", "key2": "value2"})
-func (c cmdable) MSet(values ...interface{}) *StatusCmd {
-	args := make([]interface{}, 1, 1+len(values))
-	args[0] = "mset"
-	args = appendArgs(args, values)
-	cmd := NewStatusCmd(args...)
-	_ = c(cmd)
-	return cmd
-}
-
-// MSetNX is like SetNX but accepts multiple values:
-//   - MSetNX("key1", "value1", "key2", "value2")
-//   - MSetNX([]string{"key1", "value1", "key2", "value2"})
-//   - MSetNX(map[string]interface{}{"key1": "value1", "key2": "value2"})
-func (c cmdable) MSetNX(values ...interface{}) *BoolCmd {
-	args := make([]interface{}, 1, 1+len(values))
-	args[0] = "msetnx"
-	args = appendArgs(args, values)
-	cmd := NewBoolCmd(args...)
-	_ = c(cmd)
-	return cmd
-}
-
-// Redis `SET key value [expiration]` command.
-//
-// Use expiration for `SETEX`-like behavior.
-// Zero expiration means the key has no expiration time.
-func (c cmdable) Set(key string, value interface{}, expiration time.Duration) *StatusCmd {
-	args := make([]interface{}, 3, 5)
-	args[0] = "set"
-	args[1] = key
-	args[2] = value
-	if expiration > 0 {
-		if usePrecise(expiration) {
-			args = append(args, "px", formatMs(expiration))
-		} else {
-			args = append(args, "ex", formatSec(expiration))
-		}
-	}
-	cmd := NewStatusCmd(args...)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) SetBit(key string, offset int64, value int) *IntCmd {
-	cmd := NewIntCmd(
-		"setbit",
-		key,
-		offset,
-		value,
-	)
-	_ = c(cmd)
-	return cmd
-}
-
-// Redis `SET key value [expiration] NX` command.
-//
-// Zero expiration means the key has no expiration time.
-func (c cmdable) SetNX(key string, value interface{}, expiration time.Duration) *BoolCmd {
-	var cmd *BoolCmd
-	if expiration == 0 {
-		// Use old `SETNX` to support old Redis versions.
-		cmd = NewBoolCmd("setnx", key, value)
-	} else {
-		if usePrecise(expiration) {
-			cmd = NewBoolCmd("set", key, value, "px", formatMs(expiration), "nx")
-		} else {
-			cmd = NewBoolCmd("set", key, value, "ex", formatSec(expiration), "nx")
-		}
-	}
-	_ = c(cmd)
-	return cmd
-}
-
-// Redis `SET key value [expiration] XX` command.
-//
-// Zero expiration means the key has no expiration time.
-func (c cmdable) SetXX(key string, value interface{}, expiration time.Duration) *BoolCmd {
-	var cmd *BoolCmd
-	if expiration == 0 {
-		cmd = NewBoolCmd("set", key, value, "xx")
-	} else {
-		if usePrecise(expiration) {
-			cmd = NewBoolCmd("set", key, value, "px", formatMs(expiration), "xx")
-		} else {
-			cmd = NewBoolCmd("set", key, value, "ex", formatSec(expiration), "xx")
-		}
-	}
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) SetRange(key string, offset int64, value string) *IntCmd {
-	cmd := NewIntCmd("setrange", key, offset, value)
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) StrLen(key string) *IntCmd {
-	cmd := NewIntCmd("strlen", key)
-	_ = c(cmd)
+	cmd := NewIntSliceCmd(ctx, a...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) HDel(key string, fields ...string) *IntCmd {
+func (c cmdable) Scan(ctx context.Context, cursor uint64, match string, count int64) *ScanCmd {
+	args := []interface{}{"scan", cursor}
+	if match != "" {
+		args = append(args, "match", match)
+	}
+	if count > 0 {
+		args = append(args, "count", count)
+	}
+	cmd := NewScanCmd(ctx, c, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) SScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
+	args := []interface{}{"sscan", key, cursor}
+	if match != "" {
+		args = append(args, "match", match)
+	}
+	if count > 0 {
+		args = append(args, "count", count)
+	}
+	cmd := NewScanCmd(ctx, c, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
+	args := []interface{}{"hscan", key, cursor}
+	if match != "" {
+		args = append(args, "match", match)
+	}
+	if count > 0 {
+		args = append(args, "count", count)
+	}
+	cmd := NewScanCmd(ctx, c, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
+	args := []interface{}{"zscan", key, cursor}
+	if match != "" {
+		args = append(args, "match", match)
+	}
+	if count > 0 {
+		args = append(args, "count", count)
+	}
+	cmd := NewScanCmd(ctx, c, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+//------------------------------------------------------------------------------
+
+func (c cmdable) HDel(ctx context.Context, key string, fields ...string) *IntCmd {
 	args := make([]interface{}, 2+len(fields))
 	args[0] = "hdel"
 	args[1] = key
 	for i, field := range fields {
 		args[2+i] = field
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HExists(key, field string) *BoolCmd {
-	cmd := NewBoolCmd("hexists", key, field)
-	_ = c(cmd)
+func (c cmdable) HExists(ctx context.Context, key, field string) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "hexists", key, field)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HGet(key, field string) *StringCmd {
-	cmd := NewStringCmd("hget", key, field)
-	_ = c(cmd)
+func (c cmdable) HGet(ctx context.Context, key, field string) *StringCmd {
+	cmd := NewStringCmd(ctx, "hget", key, field)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HGetAll(key string) *StringStringMapCmd {
-	cmd := NewStringStringMapCmd("hgetall", key)
-	_ = c(cmd)
+func (c cmdable) HGetAll(ctx context.Context, key string) *StringStringMapCmd {
+	cmd := NewStringStringMapCmd(ctx, "hgetall", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HIncrBy(key, field string, incr int64) *IntCmd {
-	cmd := NewIntCmd("hincrby", key, field, incr)
-	_ = c(cmd)
+func (c cmdable) HIncrBy(ctx context.Context, key, field string, incr int64) *IntCmd {
+	cmd := NewIntCmd(ctx, "hincrby", key, field, incr)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HIncrByFloat(key, field string, incr float64) *FloatCmd {
-	cmd := NewFloatCmd("hincrbyfloat", key, field, incr)
-	_ = c(cmd)
+func (c cmdable) HIncrByFloat(ctx context.Context, key, field string, incr float64) *FloatCmd {
+	cmd := NewFloatCmd(ctx, "hincrbyfloat", key, field, incr)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HKeys(key string) *StringSliceCmd {
-	cmd := NewStringSliceCmd("hkeys", key)
-	_ = c(cmd)
+func (c cmdable) HKeys(ctx context.Context, key string) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "hkeys", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HLen(key string) *IntCmd {
-	cmd := NewIntCmd("hlen", key)
-	_ = c(cmd)
+func (c cmdable) HLen(ctx context.Context, key string) *IntCmd {
+	cmd := NewIntCmd(ctx, "hlen", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // HMGet returns the values for the specified fields in the hash stored at key.
 // It returns an interface{} to distinguish between empty string and nil value.
-func (c cmdable) HMGet(key string, fields ...string) *SliceCmd {
+func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *SliceCmd {
 	args := make([]interface{}, 2+len(fields))
 	args[0] = "hmget"
 	args[1] = key
 	for i, field := range fields {
 		args[2+i] = field
 	}
-	cmd := NewSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -989,349 +1024,352 @@ func (c cmdable) HMGet(key string, fields ...string) *SliceCmd {
 //   - HMSet("myhash", map[string]interface{}{"key1": "value1", "key2": "value2"})
 //
 // Note that it requires Redis v4 for multiple field/value pairs support.
-func (c cmdable) HSet(key string, values ...interface{}) *IntCmd {
+func (c cmdable) HSet(ctx context.Context, key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "hset"
 	args[1] = key
 	args = appendArgs(args, values)
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // HMSet is a deprecated version of HSet left for compatibility with Redis 3.
-func (c cmdable) HMSet(key string, values ...interface{}) *BoolCmd {
+func (c cmdable) HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "hmset"
 	args[1] = key
 	args = appendArgs(args, values)
-	cmd := NewBoolCmd(args...)
-	_ = c(cmd)
+	cmd := NewBoolCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HSetNX(key, field string, value interface{}) *BoolCmd {
-	cmd := NewBoolCmd("hsetnx", key, field, value)
-	_ = c(cmd)
+func (c cmdable) HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "hsetnx", key, field, value)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HVals(key string) *StringSliceCmd {
-	cmd := NewStringSliceCmd("hvals", key)
-	_ = c(cmd)
+func (c cmdable) HVals(ctx context.Context, key string) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "hvals", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) BLPop(timeout time.Duration, keys ...string) *StringSliceCmd {
+func (c cmdable) BLPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys)+1)
 	args[0] = "blpop"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	args[len(args)-1] = formatSec(timeout)
-	cmd := NewStringSliceCmd(args...)
+	cmd := NewStringSliceCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) BRPop(timeout time.Duration, keys ...string) *StringSliceCmd {
+func (c cmdable) BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys)+1)
 	args[0] = "brpop"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	args[len(keys)+1] = formatSec(timeout)
-	cmd := NewStringSliceCmd(args...)
+	cmd := NewStringSliceCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) BRPopLPush(source, destination string, timeout time.Duration) *StringCmd {
+func (c cmdable) BRPopLPush(ctx context.Context, source, destination string, timeout time.Duration) *StringCmd {
 	cmd := NewStringCmd(
+		ctx,
 		"brpoplpush",
 		source,
 		destination,
 		formatSec(timeout),
 	)
 	cmd.setReadTimeout(timeout)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LIndex(key string, index int64) *StringCmd {
-	cmd := NewStringCmd("lindex", key, index)
-	_ = c(cmd)
+func (c cmdable) LIndex(ctx context.Context, key string, index int64) *StringCmd {
+	cmd := NewStringCmd(ctx, "lindex", key, index)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LInsert(key, op string, pivot, value interface{}) *IntCmd {
-	cmd := NewIntCmd("linsert", key, op, pivot, value)
-	_ = c(cmd)
+func (c cmdable) LInsert(ctx context.Context, key, op string, pivot, value interface{}) *IntCmd {
+	cmd := NewIntCmd(ctx, "linsert", key, op, pivot, value)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LInsertBefore(key string, pivot, value interface{}) *IntCmd {
-	cmd := NewIntCmd("linsert", key, "before", pivot, value)
-	_ = c(cmd)
+func (c cmdable) LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd {
+	cmd := NewIntCmd(ctx, "linsert", key, "before", pivot, value)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LInsertAfter(key string, pivot, value interface{}) *IntCmd {
-	cmd := NewIntCmd("linsert", key, "after", pivot, value)
-	_ = c(cmd)
+func (c cmdable) LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd {
+	cmd := NewIntCmd(ctx, "linsert", key, "after", pivot, value)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LLen(key string) *IntCmd {
-	cmd := NewIntCmd("llen", key)
-	_ = c(cmd)
+func (c cmdable) LLen(ctx context.Context, key string) *IntCmd {
+	cmd := NewIntCmd(ctx, "llen", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LPop(key string) *StringCmd {
-	cmd := NewStringCmd("lpop", key)
-	_ = c(cmd)
+func (c cmdable) LPop(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "lpop", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LPush(key string, values ...interface{}) *IntCmd {
+func (c cmdable) LPush(ctx context.Context, key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "lpush"
 	args[1] = key
 	args = appendArgs(args, values)
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LPushX(key string, values ...interface{}) *IntCmd {
+func (c cmdable) LPushX(ctx context.Context, key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "lpushx"
 	args[1] = key
 	args = appendArgs(args, values)
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LRange(key string, start, stop int64) *StringSliceCmd {
+func (c cmdable) LRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd(
+		ctx,
 		"lrange",
 		key,
 		start,
 		stop,
 	)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LRem(key string, count int64, value interface{}) *IntCmd {
-	cmd := NewIntCmd("lrem", key, count, value)
-	_ = c(cmd)
+func (c cmdable) LRem(ctx context.Context, key string, count int64, value interface{}) *IntCmd {
+	cmd := NewIntCmd(ctx, "lrem", key, count, value)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LSet(key string, index int64, value interface{}) *StatusCmd {
-	cmd := NewStatusCmd("lset", key, index, value)
-	_ = c(cmd)
+func (c cmdable) LSet(ctx context.Context, key string, index int64, value interface{}) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "lset", key, index, value)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LTrim(key string, start, stop int64) *StatusCmd {
+func (c cmdable) LTrim(ctx context.Context, key string, start, stop int64) *StatusCmd {
 	cmd := NewStatusCmd(
+		ctx,
 		"ltrim",
 		key,
 		start,
 		stop,
 	)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) RPop(key string) *StringCmd {
-	cmd := NewStringCmd("rpop", key)
-	_ = c(cmd)
+func (c cmdable) RPop(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "rpop", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) RPopLPush(source, destination string) *StringCmd {
-	cmd := NewStringCmd("rpoplpush", source, destination)
-	_ = c(cmd)
+func (c cmdable) RPopLPush(ctx context.Context, source, destination string) *StringCmd {
+	cmd := NewStringCmd(ctx, "rpoplpush", source, destination)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) RPush(key string, values ...interface{}) *IntCmd {
+func (c cmdable) RPush(ctx context.Context, key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "rpush"
 	args[1] = key
 	args = appendArgs(args, values)
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) RPushX(key string, values ...interface{}) *IntCmd {
+func (c cmdable) RPushX(ctx context.Context, key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "rpushx"
 	args[1] = key
 	args = appendArgs(args, values)
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) SAdd(key string, members ...interface{}) *IntCmd {
+func (c cmdable) SAdd(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "sadd"
 	args[1] = key
 	args = appendArgs(args, members)
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SCard(key string) *IntCmd {
-	cmd := NewIntCmd("scard", key)
-	_ = c(cmd)
+func (c cmdable) SCard(ctx context.Context, key string) *IntCmd {
+	cmd := NewIntCmd(ctx, "scard", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SDiff(keys ...string) *StringSliceCmd {
+func (c cmdable) SDiff(ctx context.Context, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sdiff"
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	cmd := NewStringSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SDiffStore(destination string, keys ...string) *IntCmd {
+func (c cmdable) SDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sdiffstore"
 	args[1] = destination
 	for i, key := range keys {
 		args[2+i] = key
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SInter(keys ...string) *StringSliceCmd {
+func (c cmdable) SInter(ctx context.Context, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sinter"
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	cmd := NewStringSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SInterStore(destination string, keys ...string) *IntCmd {
+func (c cmdable) SInterStore(ctx context.Context, destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sinterstore"
 	args[1] = destination
 	for i, key := range keys {
 		args[2+i] = key
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SIsMember(key string, member interface{}) *BoolCmd {
-	cmd := NewBoolCmd("sismember", key, member)
-	_ = c(cmd)
+func (c cmdable) SIsMember(ctx context.Context, key string, member interface{}) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "sismember", key, member)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // Redis `SMEMBERS key` command output as a slice
-func (c cmdable) SMembers(key string) *StringSliceCmd {
-	cmd := NewStringSliceCmd("smembers", key)
-	_ = c(cmd)
+func (c cmdable) SMembers(ctx context.Context, key string) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "smembers", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // Redis `SMEMBERS key` command output as a map
-func (c cmdable) SMembersMap(key string) *StringStructMapCmd {
-	cmd := NewStringStructMapCmd("smembers", key)
-	_ = c(cmd)
+func (c cmdable) SMembersMap(ctx context.Context, key string) *StringStructMapCmd {
+	cmd := NewStringStructMapCmd(ctx, "smembers", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SMove(source, destination string, member interface{}) *BoolCmd {
-	cmd := NewBoolCmd("smove", source, destination, member)
-	_ = c(cmd)
+func (c cmdable) SMove(ctx context.Context, source, destination string, member interface{}) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "smove", source, destination, member)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // Redis `SPOP key` command.
-func (c cmdable) SPop(key string) *StringCmd {
-	cmd := NewStringCmd("spop", key)
-	_ = c(cmd)
+func (c cmdable) SPop(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "spop", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // Redis `SPOP key count` command.
-func (c cmdable) SPopN(key string, count int64) *StringSliceCmd {
-	cmd := NewStringSliceCmd("spop", key, count)
-	_ = c(cmd)
+func (c cmdable) SPopN(ctx context.Context, key string, count int64) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "spop", key, count)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // Redis `SRANDMEMBER key` command.
-func (c cmdable) SRandMember(key string) *StringCmd {
-	cmd := NewStringCmd("srandmember", key)
-	_ = c(cmd)
+func (c cmdable) SRandMember(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "srandmember", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // Redis `SRANDMEMBER key count` command.
-func (c cmdable) SRandMemberN(key string, count int64) *StringSliceCmd {
-	cmd := NewStringSliceCmd("srandmember", key, count)
-	_ = c(cmd)
+func (c cmdable) SRandMemberN(ctx context.Context, key string, count int64) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "srandmember", key, count)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SRem(key string, members ...interface{}) *IntCmd {
+func (c cmdable) SRem(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "srem"
 	args[1] = key
 	args = appendArgs(args, members)
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SUnion(keys ...string) *StringSliceCmd {
+func (c cmdable) SUnion(ctx context.Context, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sunion"
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	cmd := NewStringSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SUnionStore(destination string, keys ...string) *IntCmd {
+func (c cmdable) SUnionStore(ctx context.Context, destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sunionstore"
 	args[1] = destination
 	for i, key := range keys {
 		args[2+i] = key
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -1345,7 +1383,7 @@ type XAddArgs struct {
 	Values       map[string]interface{}
 }
 
-func (c cmdable) XAdd(a *XAddArgs) *StringCmd {
+func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
 	args := make([]interface{}, 0, 6+len(a.Values)*2)
 	args = append(args, "xadd")
 	args = append(args, a.Stream)
@@ -1364,48 +1402,48 @@ func (c cmdable) XAdd(a *XAddArgs) *StringCmd {
 		args = append(args, v)
 	}
 
-	cmd := NewStringCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XDel(stream string, ids ...string) *IntCmd {
+func (c cmdable) XDel(ctx context.Context, stream string, ids ...string) *IntCmd {
 	args := []interface{}{"xdel", stream}
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XLen(stream string) *IntCmd {
-	cmd := NewIntCmd("xlen", stream)
-	_ = c(cmd)
+func (c cmdable) XLen(ctx context.Context, stream string) *IntCmd {
+	cmd := NewIntCmd(ctx, "xlen", stream)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XRange(stream, start, stop string) *XMessageSliceCmd {
-	cmd := NewXMessageSliceCmd("xrange", stream, start, stop)
-	_ = c(cmd)
+func (c cmdable) XRange(ctx context.Context, stream, start, stop string) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd(ctx, "xrange", stream, start, stop)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XRangeN(stream, start, stop string, count int64) *XMessageSliceCmd {
-	cmd := NewXMessageSliceCmd("xrange", stream, start, stop, "count", count)
-	_ = c(cmd)
+func (c cmdable) XRangeN(ctx context.Context, stream, start, stop string, count int64) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd(ctx, "xrange", stream, start, stop, "count", count)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XRevRange(stream, start, stop string) *XMessageSliceCmd {
-	cmd := NewXMessageSliceCmd("xrevrange", stream, start, stop)
-	_ = c(cmd)
+func (c cmdable) XRevRange(ctx context.Context, stream, start, stop string) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd(ctx, "xrevrange", stream, start, stop)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XRevRangeN(stream, start, stop string, count int64) *XMessageSliceCmd {
-	cmd := NewXMessageSliceCmd("xrevrange", stream, start, stop, "count", count)
-	_ = c(cmd)
+func (c cmdable) XRevRangeN(ctx context.Context, stream, start, stop string, count int64) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd(ctx, "xrevrange", stream, start, stop, "count", count)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -1415,7 +1453,7 @@ type XReadArgs struct {
 	Block   time.Duration
 }
 
-func (c cmdable) XRead(a *XReadArgs) *XStreamSliceCmd {
+func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	args := make([]interface{}, 0, 5+len(a.Streams))
 	args = append(args, "xread")
 	if a.Count > 0 {
@@ -1432,48 +1470,48 @@ func (c cmdable) XRead(a *XReadArgs) *XStreamSliceCmd {
 		args = append(args, s)
 	}
 
-	cmd := NewXStreamSliceCmd(args...)
+	cmd := NewXStreamSliceCmd(ctx, args...)
 	if a.Block >= 0 {
 		cmd.setReadTimeout(a.Block)
 	}
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XReadStreams(streams ...string) *XStreamSliceCmd {
-	return c.XRead(&XReadArgs{
+func (c cmdable) XReadStreams(ctx context.Context, streams ...string) *XStreamSliceCmd {
+	return c.XRead(ctx, &XReadArgs{
 		Streams: streams,
 		Block:   -1,
 	})
 }
 
-func (c cmdable) XGroupCreate(stream, group, start string) *StatusCmd {
-	cmd := NewStatusCmd("xgroup", "create", stream, group, start)
-	_ = c(cmd)
+func (c cmdable) XGroupCreate(ctx context.Context, stream, group, start string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "xgroup", "create", stream, group, start)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XGroupCreateMkStream(stream, group, start string) *StatusCmd {
-	cmd := NewStatusCmd("xgroup", "create", stream, group, start, "mkstream")
-	_ = c(cmd)
+func (c cmdable) XGroupCreateMkStream(ctx context.Context, stream, group, start string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "xgroup", "create", stream, group, start, "mkstream")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XGroupSetID(stream, group, start string) *StatusCmd {
-	cmd := NewStatusCmd("xgroup", "setid", stream, group, start)
-	_ = c(cmd)
+func (c cmdable) XGroupSetID(ctx context.Context, stream, group, start string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "xgroup", "setid", stream, group, start)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XGroupDestroy(stream, group string) *IntCmd {
-	cmd := NewIntCmd("xgroup", "destroy", stream, group)
-	_ = c(cmd)
+func (c cmdable) XGroupDestroy(ctx context.Context, stream, group string) *IntCmd {
+	cmd := NewIntCmd(ctx, "xgroup", "destroy", stream, group)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XGroupDelConsumer(stream, group, consumer string) *IntCmd {
-	cmd := NewIntCmd("xgroup", "delconsumer", stream, group, consumer)
-	_ = c(cmd)
+func (c cmdable) XGroupDelConsumer(ctx context.Context, stream, group, consumer string) *IntCmd {
+	cmd := NewIntCmd(ctx, "xgroup", "delconsumer", stream, group, consumer)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -1486,7 +1524,7 @@ type XReadGroupArgs struct {
 	NoAck    bool
 }
 
-func (c cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
+func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSliceCmd {
 	args := make([]interface{}, 0, 8+len(a.Streams))
 	args = append(args, "xreadgroup", "group", a.Group, a.Consumer)
 	if a.Count > 0 {
@@ -1503,27 +1541,27 @@ func (c cmdable) XReadGroup(a *XReadGroupArgs) *XStreamSliceCmd {
 		args = append(args, s)
 	}
 
-	cmd := NewXStreamSliceCmd(args...)
+	cmd := NewXStreamSliceCmd(ctx, args...)
 	if a.Block >= 0 {
 		cmd.setReadTimeout(a.Block)
 	}
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XAck(stream, group string, ids ...string) *IntCmd {
+func (c cmdable) XAck(ctx context.Context, stream, group string, ids ...string) *IntCmd {
 	args := []interface{}{"xack", stream, group}
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XPending(stream, group string) *XPendingCmd {
-	cmd := NewXPendingCmd("xpending", stream, group)
-	_ = c(cmd)
+func (c cmdable) XPending(ctx context.Context, stream, group string) *XPendingCmd {
+	cmd := NewXPendingCmd(ctx, "xpending", stream, group)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -1536,14 +1574,14 @@ type XPendingExtArgs struct {
 	Consumer string
 }
 
-func (c cmdable) XPendingExt(a *XPendingExtArgs) *XPendingExtCmd {
+func (c cmdable) XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingExtCmd {
 	args := make([]interface{}, 0, 7)
 	args = append(args, "xpending", a.Stream, a.Group, a.Start, a.End, a.Count)
 	if a.Consumer != "" {
 		args = append(args, a.Consumer)
 	}
-	cmd := NewXPendingExtCmd(args...)
-	_ = c(cmd)
+	cmd := NewXPendingExtCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -1555,18 +1593,18 @@ type XClaimArgs struct {
 	Messages []string
 }
 
-func (c cmdable) XClaim(a *XClaimArgs) *XMessageSliceCmd {
+func (c cmdable) XClaim(ctx context.Context, a *XClaimArgs) *XMessageSliceCmd {
 	args := xClaimArgs(a)
-	cmd := NewXMessageSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewXMessageSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XClaimJustID(a *XClaimArgs) *StringSliceCmd {
+func (c cmdable) XClaimJustID(ctx context.Context, a *XClaimArgs) *StringSliceCmd {
 	args := xClaimArgs(a)
 	args = append(args, "justid")
-	cmd := NewStringSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -1583,21 +1621,21 @@ func xClaimArgs(a *XClaimArgs) []interface{} {
 	return args
 }
 
-func (c cmdable) XTrim(key string, maxLen int64) *IntCmd {
-	cmd := NewIntCmd("xtrim", key, "maxlen", maxLen)
-	_ = c(cmd)
+func (c cmdable) XTrim(ctx context.Context, key string, maxLen int64) *IntCmd {
+	cmd := NewIntCmd(ctx, "xtrim", key, "maxlen", maxLen)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XTrimApprox(key string, maxLen int64) *IntCmd {
-	cmd := NewIntCmd("xtrim", key, "maxlen", "~", maxLen)
-	_ = c(cmd)
+func (c cmdable) XTrimApprox(ctx context.Context, key string, maxLen int64) *IntCmd {
+	cmd := NewIntCmd(ctx, "xtrim", key, "maxlen", "~", maxLen)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XInfoGroups(key string) *XInfoGroupsCmd {
-	cmd := NewXInfoGroupsCmd(key)
-	_ = c(cmd)
+func (c cmdable) XInfoGroups(ctx context.Context, key string) *XInfoGroupsCmd {
+	cmd := NewXInfoGroupsCmd(ctx, key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -1624,150 +1662,150 @@ type ZStore struct {
 }
 
 // Redis `BZPOPMAX key [key ...] timeout` command.
-func (c cmdable) BZPopMax(timeout time.Duration, keys ...string) *ZWithKeyCmd {
+func (c cmdable) BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd {
 	args := make([]interface{}, 1+len(keys)+1)
 	args[0] = "bzpopmax"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	args[len(args)-1] = formatSec(timeout)
-	cmd := NewZWithKeyCmd(args...)
+	cmd := NewZWithKeyCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // Redis `BZPOPMIN key [key ...] timeout` command.
-func (c cmdable) BZPopMin(timeout time.Duration, keys ...string) *ZWithKeyCmd {
+func (c cmdable) BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd {
 	args := make([]interface{}, 1+len(keys)+1)
 	args[0] = "bzpopmin"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	args[len(args)-1] = formatSec(timeout)
-	cmd := NewZWithKeyCmd(args...)
+	cmd := NewZWithKeyCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) zAdd(a []interface{}, n int, members ...*Z) *IntCmd {
+func (c cmdable) zAdd(ctx context.Context, a []interface{}, n int, members ...*Z) *IntCmd {
 	for i, m := range members {
 		a[n+2*i] = m.Score
 		a[n+2*i+1] = m.Member
 	}
-	cmd := NewIntCmd(a...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, a...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // Redis `ZADD key score member [score member ...]` command.
-func (c cmdable) ZAdd(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAdd(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 2
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1] = "zadd", key
-	return c.zAdd(a, n, members...)
+	return c.zAdd(ctx, a, n, members...)
 }
 
 // Redis `ZADD key NX score member [score member ...]` command.
-func (c cmdable) ZAddNX(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAddNX(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2] = "zadd", key, "nx"
-	return c.zAdd(a, n, members...)
+	return c.zAdd(ctx, a, n, members...)
 }
 
 // Redis `ZADD key XX score member [score member ...]` command.
-func (c cmdable) ZAddXX(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAddXX(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2] = "zadd", key, "xx"
-	return c.zAdd(a, n, members...)
+	return c.zAdd(ctx, a, n, members...)
 }
 
 // Redis `ZADD key CH score member [score member ...]` command.
-func (c cmdable) ZAddCh(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAddCh(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2] = "zadd", key, "ch"
-	return c.zAdd(a, n, members...)
+	return c.zAdd(ctx, a, n, members...)
 }
 
 // Redis `ZADD key NX CH score member [score member ...]` command.
-func (c cmdable) ZAddNXCh(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAddNXCh(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 4
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2], a[3] = "zadd", key, "nx", "ch"
-	return c.zAdd(a, n, members...)
+	return c.zAdd(ctx, a, n, members...)
 }
 
 // Redis `ZADD key XX CH score member [score member ...]` command.
-func (c cmdable) ZAddXXCh(key string, members ...*Z) *IntCmd {
+func (c cmdable) ZAddXXCh(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 4
 	a := make([]interface{}, n+2*len(members))
 	a[0], a[1], a[2], a[3] = "zadd", key, "xx", "ch"
-	return c.zAdd(a, n, members...)
+	return c.zAdd(ctx, a, n, members...)
 }
 
-func (c cmdable) zIncr(a []interface{}, n int, members ...*Z) *FloatCmd {
+func (c cmdable) zIncr(ctx context.Context, a []interface{}, n int, members ...*Z) *FloatCmd {
 	for i, m := range members {
 		a[n+2*i] = m.Score
 		a[n+2*i+1] = m.Member
 	}
-	cmd := NewFloatCmd(a...)
-	_ = c(cmd)
+	cmd := NewFloatCmd(ctx, a...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // Redis `ZADD key INCR score member` command.
-func (c cmdable) ZIncr(key string, member *Z) *FloatCmd {
+func (c cmdable) ZIncr(ctx context.Context, key string, member *Z) *FloatCmd {
 	const n = 3
 	a := make([]interface{}, n+2)
 	a[0], a[1], a[2] = "zadd", key, "incr"
-	return c.zIncr(a, n, member)
+	return c.zIncr(ctx, a, n, member)
 }
 
 // Redis `ZADD key NX INCR score member` command.
-func (c cmdable) ZIncrNX(key string, member *Z) *FloatCmd {
+func (c cmdable) ZIncrNX(ctx context.Context, key string, member *Z) *FloatCmd {
 	const n = 4
 	a := make([]interface{}, n+2)
 	a[0], a[1], a[2], a[3] = "zadd", key, "incr", "nx"
-	return c.zIncr(a, n, member)
+	return c.zIncr(ctx, a, n, member)
 }
 
 // Redis `ZADD key XX INCR score member` command.
-func (c cmdable) ZIncrXX(key string, member *Z) *FloatCmd {
+func (c cmdable) ZIncrXX(ctx context.Context, key string, member *Z) *FloatCmd {
 	const n = 4
 	a := make([]interface{}, n+2)
 	a[0], a[1], a[2], a[3] = "zadd", key, "incr", "xx"
-	return c.zIncr(a, n, member)
+	return c.zIncr(ctx, a, n, member)
 }
 
-func (c cmdable) ZCard(key string) *IntCmd {
-	cmd := NewIntCmd("zcard", key)
-	_ = c(cmd)
+func (c cmdable) ZCard(ctx context.Context, key string) *IntCmd {
+	cmd := NewIntCmd(ctx, "zcard", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZCount(key, min, max string) *IntCmd {
-	cmd := NewIntCmd("zcount", key, min, max)
-	_ = c(cmd)
+func (c cmdable) ZCount(ctx context.Context, key, min, max string) *IntCmd {
+	cmd := NewIntCmd(ctx, "zcount", key, min, max)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZLexCount(key, min, max string) *IntCmd {
-	cmd := NewIntCmd("zlexcount", key, min, max)
-	_ = c(cmd)
+func (c cmdable) ZLexCount(ctx context.Context, key, min, max string) *IntCmd {
+	cmd := NewIntCmd(ctx, "zlexcount", key, min, max)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZIncrBy(key string, increment float64, member string) *FloatCmd {
-	cmd := NewFloatCmd("zincrby", key, increment, member)
-	_ = c(cmd)
+func (c cmdable) ZIncrBy(ctx context.Context, key string, increment float64, member string) *FloatCmd {
+	cmd := NewFloatCmd(ctx, "zincrby", key, increment, member)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZInterStore(destination string, store *ZStore) *IntCmd {
+func (c cmdable) ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd {
 	args := make([]interface{}, 3+len(store.Keys))
 	args[0] = "zinterstore"
 	args[1] = destination
@@ -1784,12 +1822,12 @@ func (c cmdable) ZInterStore(destination string, store *ZStore) *IntCmd {
 	if store.Aggregate != "" {
 		args = append(args, "aggregate", store.Aggregate)
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZPopMax(key string, count ...int64) *ZSliceCmd {
+func (c cmdable) ZPopMax(ctx context.Context, key string, count ...int64) *ZSliceCmd {
 	args := []interface{}{
 		"zpopmax",
 		key,
@@ -1804,12 +1842,12 @@ func (c cmdable) ZPopMax(key string, count ...int64) *ZSliceCmd {
 		panic("too many arguments")
 	}
 
-	cmd := NewZSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewZSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZPopMin(key string, count ...int64) *ZSliceCmd {
+func (c cmdable) ZPopMin(ctx context.Context, key string, count ...int64) *ZSliceCmd {
 	args := []interface{}{
 		"zpopmin",
 		key,
@@ -1824,12 +1862,12 @@ func (c cmdable) ZPopMin(key string, count ...int64) *ZSliceCmd {
 		panic("too many arguments")
 	}
 
-	cmd := NewZSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewZSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) zRange(key string, start, stop int64, withScores bool) *StringSliceCmd {
+func (c cmdable) zRange(ctx context.Context, key string, start, stop int64, withScores bool) *StringSliceCmd {
 	args := []interface{}{
 		"zrange",
 		key,
@@ -1839,18 +1877,18 @@ func (c cmdable) zRange(key string, start, stop int64, withScores bool) *StringS
 	if withScores {
 		args = append(args, "withscores")
 	}
-	cmd := NewStringSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRange(key string, start, stop int64) *StringSliceCmd {
-	return c.zRange(key, start, stop, false)
+func (c cmdable) ZRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd {
+	return c.zRange(ctx, key, start, stop, false)
 }
 
-func (c cmdable) ZRangeWithScores(key string, start, stop int64) *ZSliceCmd {
-	cmd := NewZSliceCmd("zrange", key, start, stop, "withscores")
-	_ = c(cmd)
+func (c cmdable) ZRangeWithScores(ctx context.Context, key string, start, stop int64) *ZSliceCmd {
+	cmd := NewZSliceCmd(ctx, "zrange", key, start, stop, "withscores")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -1859,7 +1897,7 @@ type ZRangeBy struct {
 	Offset, Count int64
 }
 
-func (c cmdable) zRangeBy(zcmd, key string, opt *ZRangeBy, withScores bool) *StringSliceCmd {
+func (c cmdable) zRangeBy(ctx context.Context, zcmd, key string, opt *ZRangeBy, withScores bool) *StringSliceCmd {
 	args := []interface{}{zcmd, key, opt.Min, opt.Max}
 	if withScores {
 		args = append(args, "withscores")
@@ -1872,20 +1910,20 @@ func (c cmdable) zRangeBy(zcmd, key string, opt *ZRangeBy, withScores bool) *Str
 			opt.Count,
 		)
 	}
-	cmd := NewStringSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd {
-	return c.zRangeBy("zrangebyscore", key, opt, false)
+func (c cmdable) ZRangeByScore(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd {
+	return c.zRangeBy(ctx, "zrangebyscore", key, opt, false)
 }
 
-func (c cmdable) ZRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd {
-	return c.zRangeBy("zrangebylex", key, opt, false)
+func (c cmdable) ZRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd {
+	return c.zRangeBy(ctx, "zrangebylex", key, opt, false)
 }
 
-func (c cmdable) ZRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd {
+func (c cmdable) ZRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd {
 	args := []interface{}{"zrangebyscore", key, opt.Min, opt.Max, "withscores"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1895,63 +1933,64 @@ func (c cmdable) ZRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd {
 			opt.Count,
 		)
 	}
-	cmd := NewZSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewZSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRank(key, member string) *IntCmd {
-	cmd := NewIntCmd("zrank", key, member)
-	_ = c(cmd)
+func (c cmdable) ZRank(ctx context.Context, key, member string) *IntCmd {
+	cmd := NewIntCmd(ctx, "zrank", key, member)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRem(key string, members ...interface{}) *IntCmd {
+func (c cmdable) ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "zrem"
 	args[1] = key
 	args = appendArgs(args, members)
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRemRangeByRank(key string, start, stop int64) *IntCmd {
+func (c cmdable) ZRemRangeByRank(ctx context.Context, key string, start, stop int64) *IntCmd {
 	cmd := NewIntCmd(
+		ctx,
 		"zremrangebyrank",
 		key,
 		start,
 		stop,
 	)
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRemRangeByScore(key, min, max string) *IntCmd {
-	cmd := NewIntCmd("zremrangebyscore", key, min, max)
-	_ = c(cmd)
+func (c cmdable) ZRemRangeByScore(ctx context.Context, key, min, max string) *IntCmd {
+	cmd := NewIntCmd(ctx, "zremrangebyscore", key, min, max)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRemRangeByLex(key, min, max string) *IntCmd {
-	cmd := NewIntCmd("zremrangebylex", key, min, max)
-	_ = c(cmd)
+func (c cmdable) ZRemRangeByLex(ctx context.Context, key, min, max string) *IntCmd {
+	cmd := NewIntCmd(ctx, "zremrangebylex", key, min, max)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRevRange(key string, start, stop int64) *StringSliceCmd {
-	cmd := NewStringSliceCmd("zrevrange", key, start, stop)
-	_ = c(cmd)
+func (c cmdable) ZRevRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "zrevrange", key, start, stop)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRevRangeWithScores(key string, start, stop int64) *ZSliceCmd {
-	cmd := NewZSliceCmd("zrevrange", key, start, stop, "withscores")
-	_ = c(cmd)
+func (c cmdable) ZRevRangeWithScores(ctx context.Context, key string, start, stop int64) *ZSliceCmd {
+	cmd := NewZSliceCmd(ctx, "zrevrange", key, start, stop, "withscores")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) zRevRangeBy(zcmd, key string, opt *ZRangeBy) *StringSliceCmd {
+func (c cmdable) zRevRangeBy(ctx context.Context, zcmd, key string, opt *ZRangeBy) *StringSliceCmd {
 	args := []interface{}{zcmd, key, opt.Max, opt.Min}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1961,20 +2000,20 @@ func (c cmdable) zRevRangeBy(zcmd, key string, opt *ZRangeBy) *StringSliceCmd {
 			opt.Count,
 		)
 	}
-	cmd := NewStringSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRevRangeByScore(key string, opt *ZRangeBy) *StringSliceCmd {
-	return c.zRevRangeBy("zrevrangebyscore", key, opt)
+func (c cmdable) ZRevRangeByScore(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd {
+	return c.zRevRangeBy(ctx, "zrevrangebyscore", key, opt)
 }
 
-func (c cmdable) ZRevRangeByLex(key string, opt *ZRangeBy) *StringSliceCmd {
-	return c.zRevRangeBy("zrevrangebylex", key, opt)
+func (c cmdable) ZRevRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd {
+	return c.zRevRangeBy(ctx, "zrevrangebylex", key, opt)
 }
 
-func (c cmdable) ZRevRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCmd {
+func (c cmdable) ZRevRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd {
 	args := []interface{}{"zrevrangebyscore", key, opt.Max, opt.Min, "withscores"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
@@ -1984,24 +2023,24 @@ func (c cmdable) ZRevRangeByScoreWithScores(key string, opt *ZRangeBy) *ZSliceCm
 			opt.Count,
 		)
 	}
-	cmd := NewZSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewZSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZRevRank(key, member string) *IntCmd {
-	cmd := NewIntCmd("zrevrank", key, member)
-	_ = c(cmd)
+func (c cmdable) ZRevRank(ctx context.Context, key, member string) *IntCmd {
+	cmd := NewIntCmd(ctx, "zrevrank", key, member)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZScore(key, member string) *FloatCmd {
-	cmd := NewFloatCmd("zscore", key, member)
-	_ = c(cmd)
+func (c cmdable) ZScore(ctx context.Context, key, member string) *FloatCmd {
+	cmd := NewFloatCmd(ctx, "zscore", key, member)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ZUnionStore(dest string, store *ZStore) *IntCmd {
+func (c cmdable) ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd {
 	args := make([]interface{}, 3+len(store.Keys))
 	args[0] = "zunionstore"
 	args[1] = dest
@@ -2018,214 +2057,195 @@ func (c cmdable) ZUnionStore(dest string, store *ZStore) *IntCmd {
 	if store.Aggregate != "" {
 		args = append(args, "aggregate", store.Aggregate)
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) PFAdd(key string, els ...interface{}) *IntCmd {
+func (c cmdable) PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(els))
 	args[0] = "pfadd"
 	args[1] = key
 	args = appendArgs(args, els)
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) PFCount(keys ...string) *IntCmd {
+func (c cmdable) PFCount(ctx context.Context, keys ...string) *IntCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "pfcount"
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) PFMerge(dest string, keys ...string) *StatusCmd {
+func (c cmdable) PFMerge(ctx context.Context, dest string, keys ...string) *StatusCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "pfmerge"
 	args[1] = dest
 	for i, key := range keys {
 		args[2+i] = key
 	}
-	cmd := NewStatusCmd(args...)
-	_ = c(cmd)
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) BgRewriteAOF() *StatusCmd {
-	cmd := NewStatusCmd("bgrewriteaof")
-	_ = c(cmd)
+func (c cmdable) BgRewriteAOF(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "bgrewriteaof")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) BgSave() *StatusCmd {
-	cmd := NewStatusCmd("bgsave")
-	_ = c(cmd)
+func (c cmdable) BgSave(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "bgsave")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClientKill(ipPort string) *StatusCmd {
-	cmd := NewStatusCmd("client", "kill", ipPort)
-	_ = c(cmd)
+func (c cmdable) ClientKill(ctx context.Context, ipPort string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "client", "kill", ipPort)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-// ClientKillByFilter is new style synx, while the ClientKill is old
+// ClientKillByFilter is new style syntax, while the ClientKill is old
 // CLIENT KILL <option> [value] ... <option> [value]
-func (c cmdable) ClientKillByFilter(keys ...string) *IntCmd {
+func (c cmdable) ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "client"
 	args[1] = "kill"
 	for i, key := range keys {
 		args[2+i] = key
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClientList() *StringCmd {
-	cmd := NewStringCmd("client", "list")
-	_ = c(cmd)
+func (c cmdable) ClientList(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "client", "list")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClientPause(dur time.Duration) *BoolCmd {
-	cmd := NewBoolCmd("client", "pause", formatMs(dur))
-	_ = c(cmd)
+func (c cmdable) ClientPause(ctx context.Context, dur time.Duration) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "client", "pause", formatMs(dur))
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClientID() *IntCmd {
-	cmd := NewIntCmd("client", "id")
-	_ = c(cmd)
+func (c cmdable) ClientID(ctx context.Context) *IntCmd {
+	cmd := NewIntCmd(ctx, "client", "id")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClientUnblock(id int64) *IntCmd {
-	cmd := NewIntCmd("client", "unblock", id)
-	_ = c(cmd)
+func (c cmdable) ClientUnblock(ctx context.Context, id int64) *IntCmd {
+	cmd := NewIntCmd(ctx, "client", "unblock", id)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClientUnblockWithError(id int64) *IntCmd {
-	cmd := NewIntCmd("client", "unblock", id, "error")
-	_ = c(cmd)
+func (c cmdable) ClientUnblockWithError(ctx context.Context, id int64) *IntCmd {
+	cmd := NewIntCmd(ctx, "client", "unblock", id, "error")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-// ClientSetName assigns a name to the connection.
-func (c statefulCmdable) ClientSetName(name string) *BoolCmd {
-	cmd := NewBoolCmd("client", "setname", name)
-	_ = c(cmd)
+func (c cmdable) ConfigGet(ctx context.Context, parameter string) *SliceCmd {
+	cmd := NewSliceCmd(ctx, "config", "get", parameter)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-// ClientGetName returns the name of the connection.
-func (c cmdable) ClientGetName() *StringCmd {
-	cmd := NewStringCmd("client", "getname")
-	_ = c(cmd)
+func (c cmdable) ConfigResetStat(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "config", "resetstat")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ConfigGet(parameter string) *SliceCmd {
-	cmd := NewSliceCmd("config", "get", parameter)
-	_ = c(cmd)
+func (c cmdable) ConfigSet(ctx context.Context, parameter, value string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "config", "set", parameter, value)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ConfigResetStat() *StatusCmd {
-	cmd := NewStatusCmd("config", "resetstat")
-	_ = c(cmd)
+func (c cmdable) ConfigRewrite(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "config", "rewrite")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ConfigSet(parameter, value string) *StatusCmd {
-	cmd := NewStatusCmd("config", "set", parameter, value)
-	_ = c(cmd)
+func (c cmdable) DBSize(ctx context.Context) *IntCmd {
+	cmd := NewIntCmd(ctx, "dbsize")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ConfigRewrite() *StatusCmd {
-	cmd := NewStatusCmd("config", "rewrite")
-	_ = c(cmd)
+func (c cmdable) FlushAll(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "flushall")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-// Deperecated. Use DBSize instead.
-func (c cmdable) DbSize() *IntCmd {
-	return c.DBSize()
-}
-
-func (c cmdable) DBSize() *IntCmd {
-	cmd := NewIntCmd("dbsize")
-	_ = c(cmd)
+func (c cmdable) FlushAllAsync(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "flushall", "async")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) FlushAll() *StatusCmd {
-	cmd := NewStatusCmd("flushall")
-	_ = c(cmd)
+func (c cmdable) FlushDB(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "flushdb")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) FlushAllAsync() *StatusCmd {
-	cmd := NewStatusCmd("flushall", "async")
-	_ = c(cmd)
+func (c cmdable) FlushDBAsync(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "flushdb", "async")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) FlushDB() *StatusCmd {
-	cmd := NewStatusCmd("flushdb")
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) FlushDBAsync() *StatusCmd {
-	cmd := NewStatusCmd("flushdb", "async")
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) Info(section ...string) *StringCmd {
+func (c cmdable) Info(ctx context.Context, section ...string) *StringCmd {
 	args := []interface{}{"info"}
 	if len(section) > 0 {
 		args = append(args, section[0])
 	}
-	cmd := NewStringCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LastSave() *IntCmd {
-	cmd := NewIntCmd("lastsave")
-	_ = c(cmd)
+func (c cmdable) LastSave(ctx context.Context) *IntCmd {
+	cmd := NewIntCmd(ctx, "lastsave")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) Save() *StatusCmd {
-	cmd := NewStatusCmd("save")
-	_ = c(cmd)
+func (c cmdable) Save(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "save")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) shutdown(modifier string) *StatusCmd {
+func (c cmdable) shutdown(ctx context.Context, modifier string) *StatusCmd {
 	var args []interface{}
 	if modifier == "" {
 		args = []interface{}{"shutdown"}
 	} else {
 		args = []interface{}{"shutdown", modifier}
 	}
-	cmd := NewStatusCmd(args...)
-	_ = c(cmd)
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	if err := cmd.Err(); err != nil {
 		if err == io.EOF {
 			// Server quit as expected.
@@ -2239,41 +2259,72 @@ func (c cmdable) shutdown(modifier string) *StatusCmd {
 	return cmd
 }
 
-func (c cmdable) Shutdown() *StatusCmd {
-	return c.shutdown("")
+func (c cmdable) Shutdown(ctx context.Context) *StatusCmd {
+	return c.shutdown(ctx, "")
 }
 
-func (c cmdable) ShutdownSave() *StatusCmd {
-	return c.shutdown("save")
+func (c cmdable) ShutdownSave(ctx context.Context) *StatusCmd {
+	return c.shutdown(ctx, "save")
 }
 
-func (c cmdable) ShutdownNoSave() *StatusCmd {
-	return c.shutdown("nosave")
+func (c cmdable) ShutdownNoSave(ctx context.Context) *StatusCmd {
+	return c.shutdown(ctx, "nosave")
 }
 
-func (c cmdable) SlaveOf(host, port string) *StatusCmd {
-	cmd := NewStatusCmd("slaveof", host, port)
-	_ = c(cmd)
+func (c cmdable) SlaveOf(ctx context.Context, host, port string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "slaveof", host, port)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SlowLog() {
+func (c cmdable) SlowLog(ctx context.Context) {
 	panic("not implemented")
 }
 
-func (c cmdable) Sync() {
+func (c cmdable) Sync(ctx context.Context) {
 	panic("not implemented")
 }
 
-func (c cmdable) Time() *TimeCmd {
-	cmd := NewTimeCmd("time")
-	_ = c(cmd)
+func (c cmdable) Time(ctx context.Context) *TimeCmd {
+	cmd := NewTimeCmd(ctx, "time")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) DebugObject(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "debug", "object", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ReadOnly(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "readonly")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ReadWrite(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "readwrite")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd {
+	args := []interface{}{"memory", "usage", key}
+	if len(samples) > 0 {
+		if len(samples) != 1 {
+			panic("MemoryUsage expects single sample count")
+		}
+		args = append(args, "SAMPLES", samples[0])
+	}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) Eval(script string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) Eval(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = "eval"
 	cmdArgs[1] = script
@@ -2282,12 +2333,12 @@ func (c cmdable) Eval(script string, keys []string, args ...interface{}) *Cmd {
 		cmdArgs[3+i] = key
 	}
 	cmdArgs = appendArgs(cmdArgs, args)
-	cmd := NewCmd(cmdArgs...)
-	_ = c(cmd)
+	cmd := NewCmd(ctx, cmdArgs...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = "evalsha"
 	cmdArgs[1] = sha1
@@ -2296,235 +2347,215 @@ func (c cmdable) EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd {
 		cmdArgs[3+i] = key
 	}
 	cmdArgs = appendArgs(cmdArgs, args)
-	cmd := NewCmd(cmdArgs...)
-	_ = c(cmd)
+	cmd := NewCmd(ctx, cmdArgs...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ScriptExists(hashes ...string) *BoolSliceCmd {
+func (c cmdable) ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd {
 	args := make([]interface{}, 2+len(hashes))
 	args[0] = "script"
 	args[1] = "exists"
 	for i, hash := range hashes {
 		args[2+i] = hash
 	}
-	cmd := NewBoolSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewBoolSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ScriptFlush() *StatusCmd {
-	cmd := NewStatusCmd("script", "flush")
-	_ = c(cmd)
+func (c cmdable) ScriptFlush(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "script", "flush")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ScriptKill() *StatusCmd {
-	cmd := NewStatusCmd("script", "kill")
-	_ = c(cmd)
+func (c cmdable) ScriptKill(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "script", "kill")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ScriptLoad(script string) *StringCmd {
-	cmd := NewStringCmd("script", "load", script)
-	_ = c(cmd)
-	return cmd
-}
-
-//------------------------------------------------------------------------------
-
-func (c cmdable) DebugObject(key string) *StringCmd {
-	cmd := NewStringCmd("debug", "object", key)
-	_ = c(cmd)
+func (c cmdable) ScriptLoad(ctx context.Context, script string) *StringCmd {
+	cmd := NewStringCmd(ctx, "script", "load", script)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
 // Publish posts the message to the channel.
-func (c cmdable) Publish(channel string, message interface{}) *IntCmd {
-	cmd := NewIntCmd("publish", channel, message)
-	_ = c(cmd)
+func (c cmdable) Publish(ctx context.Context, channel string, message interface{}) *IntCmd {
+	cmd := NewIntCmd(ctx, "publish", channel, message)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) PubSubChannels(pattern string) *StringSliceCmd {
+func (c cmdable) PubSubChannels(ctx context.Context, pattern string) *StringSliceCmd {
 	args := []interface{}{"pubsub", "channels"}
 	if pattern != "*" {
 		args = append(args, pattern)
 	}
-	cmd := NewStringSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) PubSubNumSub(channels ...string) *StringIntMapCmd {
+func (c cmdable) PubSubNumSub(ctx context.Context, channels ...string) *StringIntMapCmd {
 	args := make([]interface{}, 2+len(channels))
 	args[0] = "pubsub"
 	args[1] = "numsub"
 	for i, channel := range channels {
 		args[2+i] = channel
 	}
-	cmd := NewStringIntMapCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringIntMapCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) PubSubNumPat() *IntCmd {
-	cmd := NewIntCmd("pubsub", "numpat")
-	_ = c(cmd)
+func (c cmdable) PubSubNumPat(ctx context.Context) *IntCmd {
+	cmd := NewIntCmd(ctx, "pubsub", "numpat")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) ClusterSlots() *ClusterSlotsCmd {
-	cmd := NewClusterSlotsCmd("cluster", "slots")
-	_ = c(cmd)
+func (c cmdable) ClusterSlots(ctx context.Context) *ClusterSlotsCmd {
+	cmd := NewClusterSlotsCmd(ctx, "cluster", "slots")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterNodes() *StringCmd {
-	cmd := NewStringCmd("cluster", "nodes")
-	_ = c(cmd)
+func (c cmdable) ClusterNodes(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "cluster", "nodes")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterMeet(host, port string) *StatusCmd {
-	cmd := NewStatusCmd("cluster", "meet", host, port)
-	_ = c(cmd)
+func (c cmdable) ClusterMeet(ctx context.Context, host, port string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "cluster", "meet", host, port)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterForget(nodeID string) *StatusCmd {
-	cmd := NewStatusCmd("cluster", "forget", nodeID)
-	_ = c(cmd)
+func (c cmdable) ClusterForget(ctx context.Context, nodeID string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "cluster", "forget", nodeID)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterReplicate(nodeID string) *StatusCmd {
-	cmd := NewStatusCmd("cluster", "replicate", nodeID)
-	_ = c(cmd)
+func (c cmdable) ClusterReplicate(ctx context.Context, nodeID string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "cluster", "replicate", nodeID)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterResetSoft() *StatusCmd {
-	cmd := NewStatusCmd("cluster", "reset", "soft")
-	_ = c(cmd)
+func (c cmdable) ClusterResetSoft(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "cluster", "reset", "soft")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterResetHard() *StatusCmd {
-	cmd := NewStatusCmd("cluster", "reset", "hard")
-	_ = c(cmd)
+func (c cmdable) ClusterResetHard(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "cluster", "reset", "hard")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterInfo() *StringCmd {
-	cmd := NewStringCmd("cluster", "info")
-	_ = c(cmd)
+func (c cmdable) ClusterInfo(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "cluster", "info")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterKeySlot(key string) *IntCmd {
-	cmd := NewIntCmd("cluster", "keyslot", key)
-	_ = c(cmd)
+func (c cmdable) ClusterKeySlot(ctx context.Context, key string) *IntCmd {
+	cmd := NewIntCmd(ctx, "cluster", "keyslot", key)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterGetKeysInSlot(slot int, count int) *StringSliceCmd {
-	cmd := NewStringSliceCmd("cluster", "getkeysinslot", slot, count)
-	_ = c(cmd)
+func (c cmdable) ClusterGetKeysInSlot(ctx context.Context, slot int, count int) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "cluster", "getkeysinslot", slot, count)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterCountFailureReports(nodeID string) *IntCmd {
-	cmd := NewIntCmd("cluster", "count-failure-reports", nodeID)
-	_ = c(cmd)
+func (c cmdable) ClusterCountFailureReports(ctx context.Context, nodeID string) *IntCmd {
+	cmd := NewIntCmd(ctx, "cluster", "count-failure-reports", nodeID)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterCountKeysInSlot(slot int) *IntCmd {
-	cmd := NewIntCmd("cluster", "countkeysinslot", slot)
-	_ = c(cmd)
+func (c cmdable) ClusterCountKeysInSlot(ctx context.Context, slot int) *IntCmd {
+	cmd := NewIntCmd(ctx, "cluster", "countkeysinslot", slot)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterDelSlots(slots ...int) *StatusCmd {
+func (c cmdable) ClusterDelSlots(ctx context.Context, slots ...int) *StatusCmd {
 	args := make([]interface{}, 2+len(slots))
 	args[0] = "cluster"
 	args[1] = "delslots"
 	for i, slot := range slots {
 		args[2+i] = slot
 	}
-	cmd := NewStatusCmd(args...)
-	_ = c(cmd)
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterDelSlotsRange(min, max int) *StatusCmd {
+func (c cmdable) ClusterDelSlotsRange(ctx context.Context, min, max int) *StatusCmd {
 	size := max - min + 1
 	slots := make([]int, size)
 	for i := 0; i < size; i++ {
 		slots[i] = min + i
 	}
-	return c.ClusterDelSlots(slots...)
+	return c.ClusterDelSlots(ctx, slots...)
 }
 
-func (c cmdable) ClusterSaveConfig() *StatusCmd {
-	cmd := NewStatusCmd("cluster", "saveconfig")
-	_ = c(cmd)
+func (c cmdable) ClusterSaveConfig(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "cluster", "saveconfig")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterSlaves(nodeID string) *StringSliceCmd {
-	cmd := NewStringSliceCmd("cluster", "slaves", nodeID)
-	_ = c(cmd)
+func (c cmdable) ClusterSlaves(ctx context.Context, nodeID string) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "cluster", "slaves", nodeID)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ReadOnly() *StatusCmd {
-	cmd := NewStatusCmd("readonly")
-	_ = c(cmd)
+func (c cmdable) ClusterFailover(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "cluster", "failover")
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ReadWrite() *StatusCmd {
-	cmd := NewStatusCmd("readwrite")
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) ClusterFailover() *StatusCmd {
-	cmd := NewStatusCmd("cluster", "failover")
-	_ = c(cmd)
-	return cmd
-}
-
-func (c cmdable) ClusterAddSlots(slots ...int) *StatusCmd {
+func (c cmdable) ClusterAddSlots(ctx context.Context, slots ...int) *StatusCmd {
 	args := make([]interface{}, 2+len(slots))
 	args[0] = "cluster"
 	args[1] = "addslots"
 	for i, num := range slots {
 		args[2+i] = num
 	}
-	cmd := NewStatusCmd(args...)
-	_ = c(cmd)
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClusterAddSlotsRange(min, max int) *StatusCmd {
+func (c cmdable) ClusterAddSlotsRange(ctx context.Context, min, max int) *StatusCmd {
 	size := max - min + 1
 	slots := make([]int, size)
 	for i := 0; i < size; i++ {
 		slots[i] = min + i
 	}
-	return c.ClusterAddSlots(slots...)
+	return c.ClusterAddSlots(ctx, slots...)
 }
 
 //------------------------------------------------------------------------------
 
-func (c cmdable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
+func (c cmdable) GeoAdd(ctx context.Context, key string, geoLocation ...*GeoLocation) *IntCmd {
 	args := make([]interface{}, 2+3*len(geoLocation))
 	args[0] = "geoadd"
 	args[1] = key
@@ -2533,101 +2564,86 @@ func (c cmdable) GeoAdd(key string, geoLocation ...*GeoLocation) *IntCmd {
 		args[2+3*i+1] = eachLoc.Latitude
 		args[2+3*i+2] = eachLoc.Name
 	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // GeoRadius is a read-only GEORADIUS_RO command.
-func (c cmdable) GeoRadius(key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
-	cmd := NewGeoLocationCmd(query, "georadius_ro", key, longitude, latitude)
+func (c cmdable) GeoRadius(ctx context.Context, key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
+	cmd := NewGeoLocationCmd(ctx, query, "georadius_ro", key, longitude, latitude)
 	if query.Store != "" || query.StoreDist != "" {
 		cmd.SetErr(errors.New("GeoRadius does not support Store or StoreDist"))
 		return cmd
 	}
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // GeoRadiusStore is a writing GEORADIUS command.
-func (c cmdable) GeoRadiusStore(key string, longitude, latitude float64, query *GeoRadiusQuery) *IntCmd {
+func (c cmdable) GeoRadiusStore(ctx context.Context, key string, longitude, latitude float64, query *GeoRadiusQuery) *IntCmd {
 	args := geoLocationArgs(query, "georadius", key, longitude, latitude)
-	cmd := NewIntCmd(args...)
+	cmd := NewIntCmd(ctx, args...)
 	if query.Store == "" && query.StoreDist == "" {
 		cmd.SetErr(errors.New("GeoRadiusStore requires Store or StoreDist"))
 		return cmd
 	}
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // GeoRadius is a read-only GEORADIUSBYMEMBER_RO command.
-func (c cmdable) GeoRadiusByMember(key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
-	cmd := NewGeoLocationCmd(query, "georadiusbymember_ro", key, member)
+func (c cmdable) GeoRadiusByMember(ctx context.Context, key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
+	cmd := NewGeoLocationCmd(ctx, query, "georadiusbymember_ro", key, member)
 	if query.Store != "" || query.StoreDist != "" {
 		cmd.SetErr(errors.New("GeoRadiusByMember does not support Store or StoreDist"))
 		return cmd
 	}
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
 // GeoRadiusByMemberStore is a writing GEORADIUSBYMEMBER command.
-func (c cmdable) GeoRadiusByMemberStore(key, member string, query *GeoRadiusQuery) *IntCmd {
+func (c cmdable) GeoRadiusByMemberStore(ctx context.Context, key, member string, query *GeoRadiusQuery) *IntCmd {
 	args := geoLocationArgs(query, "georadiusbymember", key, member)
-	cmd := NewIntCmd(args...)
+	cmd := NewIntCmd(ctx, args...)
 	if query.Store == "" && query.StoreDist == "" {
 		cmd.SetErr(errors.New("GeoRadiusByMemberStore requires Store or StoreDist"))
 		return cmd
 	}
-	_ = c(cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) GeoDist(key string, member1, member2, unit string) *FloatCmd {
+func (c cmdable) GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd {
 	if unit == "" {
 		unit = "km"
 	}
-	cmd := NewFloatCmd("geodist", key, member1, member2, unit)
-	_ = c(cmd)
+	cmd := NewFloatCmd(ctx, "geodist", key, member1, member2, unit)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) GeoHash(key string, members ...string) *StringSliceCmd {
+func (c cmdable) GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd {
 	args := make([]interface{}, 2+len(members))
 	args[0] = "geohash"
 	args[1] = key
 	for i, member := range members {
 		args[2+i] = member
 	}
-	cmd := NewStringSliceCmd(args...)
-	_ = c(cmd)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) GeoPos(key string, members ...string) *GeoPosCmd {
+func (c cmdable) GeoPos(ctx context.Context, key string, members ...string) *GeoPosCmd {
 	args := make([]interface{}, 2+len(members))
 	args[0] = "geopos"
 	args[1] = key
 	for i, member := range members {
 		args[2+i] = member
 	}
-	cmd := NewGeoPosCmd(args...)
-	_ = c(cmd)
-	return cmd
-}
-
-//------------------------------------------------------------------------------
-
-func (c cmdable) MemoryUsage(key string, samples ...int) *IntCmd {
-	args := []interface{}{"memory", "usage", key}
-	if len(samples) > 0 {
-		if len(samples) != 1 {
-			panic("MemoryUsage expects single sample count")
-		}
-		args = append(args, "SAMPLES", samples[0])
-	}
-	cmd := NewIntCmd(args...)
-	_ = c(cmd)
+	cmd := NewGeoPosCmd(ctx, args...)
+	_ = c(ctx, cmd)
 	return cmd
 }
