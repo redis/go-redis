@@ -1,12 +1,15 @@
 package redis
 
-import "sync/atomic"
+import (
+	"context"
+	"sync/atomic"
+)
 
-func (c *ClusterClient) DBSize() *IntCmd {
-	cmd := NewIntCmd("dbsize")
+func (c *ClusterClient) DBSize(ctx context.Context) *IntCmd {
+	cmd := NewIntCmd(ctx, "dbsize")
 	var size int64
-	err := c.ForEachMaster(func(master *Client) error {
-		n, err := master.DBSize().Result()
+	err := c.ForEachMaster(ctx, func(ctx context.Context, master *Client) error {
+		n, err := master.DBSize(ctx).Result()
 		if err != nil {
 			return err
 		}

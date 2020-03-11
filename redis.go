@@ -131,7 +131,7 @@ func (hs hooks) afterProcessPipeline(ctx context.Context, cmds []Cmder) error {
 func (hs hooks) processTxPipeline(
 	ctx context.Context, cmds []Cmder, fn func(context.Context, []Cmder) error,
 ) error {
-	cmds = wrapMultiExec(cmds)
+	cmds = wrapMultiExec(ctx, cmds)
 	return hs.processPipeline(ctx, cmds, fn)
 }
 
@@ -201,6 +201,7 @@ func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 		}
 		return nil, err
 	}
+
 	return cn, nil
 }
 
@@ -210,7 +211,13 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 		return nil, err
 	}
 
-	err = c.initConn(ctx, cn)
+	if cn.Inited {
+		return cn, nil
+	}
+
+	err = internal.WithSpan(ctx, "init_conn", func(ctx context.Context) error {
+		return c.initConn(ctx, cn)
+	})
 	if err != nil {
 		c.connPool.Remove(cn, err)
 		if err := internal.Unwrap(err); err != nil {
@@ -239,17 +246,17 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	connPool.SetConn(cn)
 	conn := newConn(ctx, c.opt, connPool)
 
-	_, err := conn.Pipelined(func(pipe Pipeliner) error {
+	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.Password != "" {
-			pipe.Auth(c.opt.Password)
+			pipe.Auth(ctx, c.opt.Password)
 		}
 
 		if c.opt.DB > 0 {
-			pipe.Select(c.opt.DB)
+			pipe.Select(ctx, c.opt.DB)
 		}
 
 		if c.opt.readOnly {
-			pipe.ReadOnly()
+			pipe.ReadOnly(ctx)
 		}
 
 		return nil
@@ -279,16 +286,18 @@ func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
 func (c *baseClient) withConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) error {
-	cn, err := c.getConn(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		c.releaseConn(cn, err)
-	}()
+	return internal.WithSpan(ctx, "with_conn", func(ctx context.Context) error {
+		cn, err := c.getConn(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			c.releaseConn(cn, err)
+		}()
 
-	err = fn(ctx, cn)
-	return err
+		err = fn(ctx, cn)
+		return err
+	})
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
@@ -303,32 +312,43 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 func (c *baseClient) _process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
-		if attempt > 0 {
-			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
-				return err
-			}
-		}
+		attempt := attempt
 
-		retryTimeout := true
-		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-			err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-				return writeCmd(wr, cmd)
+		var retry bool
+		err := internal.WithSpan(ctx, "process", func(ctx context.Context) error {
+			if attempt > 0 {
+				if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+					return err
+				}
+			}
+
+			retryTimeout := true
+			err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+				err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+					return writeCmd(wr, cmd)
+				})
+				if err != nil {
+					return err
+				}
+
+				err = cn.WithReader(ctx, c.cmdTimeout(cmd), cmd.readReply)
+				if err != nil {
+					retryTimeout = cmd.readTimeout() == nil
+					return err
+				}
+
+				return nil
 			})
-			if err != nil {
-				return err
+			if err == nil {
+				return nil
 			}
-
-			err = cn.WithReader(ctx, c.cmdTimeout(cmd), cmd.readReply)
-			if err != nil {
-				retryTimeout = cmd.readTimeout() == nil
-				return err
-			}
-
-			return nil
+			retry = isRetryableError(err, retryTimeout)
+			return err
 		})
-		if lastErr == nil || !isRetryableError(lastErr, retryTimeout) {
-			return lastErr
+		if err == nil || !retry {
+			return err
 		}
+		lastErr = err
 	}
 	return lastErr
 }
@@ -465,14 +485,14 @@ func (c *baseClient) txPipelineProcessCmds(
 	return false, err
 }
 
-func wrapMultiExec(cmds []Cmder) []Cmder {
+func wrapMultiExec(ctx context.Context, cmds []Cmder) []Cmder {
 	if len(cmds) == 0 {
 		panic("not reached")
 	}
 	cmds = append(cmds, make([]Cmder, 2)...)
 	copy(cmds[1:], cmds[:len(cmds)-2])
-	cmds[0] = NewStatusCmd("multi")
-	cmds[len(cmds)-1] = NewSliceCmd("exec")
+	cmds[0] = NewStatusCmd(ctx, "multi")
+	cmds[len(cmds)-1] = NewSliceCmd(ctx, "exec")
 	return cmds
 }
 
@@ -561,26 +581,18 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 	return clone
 }
 
-func (c *Client) Conn() *Conn {
-	return newConn(c.ctx, c.opt, pool.NewSingleConnPool(c.connPool))
+func (c *Client) Conn(ctx context.Context) *Conn {
+	return newConn(ctx, c.opt, pool.NewSingleConnPool(c.connPool))
 }
 
 // Do creates a Cmd from the args and processes the cmd.
-func (c *Client) Do(args ...interface{}) *Cmd {
-	return c.DoContext(c.ctx, args...)
-}
-
-func (c *Client) DoContext(ctx context.Context, args ...interface{}) *Cmd {
-	cmd := NewCmd(args...)
-	_ = c.ProcessContext(ctx, cmd)
+func (c *Client) Do(ctx context.Context, args ...interface{}) *Cmd {
+	cmd := NewCmd(ctx, args...)
+	_ = c.Process(ctx, cmd)
 	return cmd
 }
 
-func (c *Client) Process(cmd Cmder) error {
-	return c.ProcessContext(c.ctx, cmd)
-}
-
-func (c *Client) ProcessContext(ctx context.Context, cmd Cmder) error {
+func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 	return c.hooks.process(ctx, cmd, c.baseClient.process)
 }
 
@@ -605,8 +617,8 @@ func (c *Client) PoolStats() *PoolStats {
 	return (*PoolStats)(stats)
 }
 
-func (c *Client) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipeline().Pipelined(fn)
+func (c *Client) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.Pipeline().Pipelined(ctx, fn)
 }
 
 func (c *Client) Pipeline() Pipeliner {
@@ -618,8 +630,8 @@ func (c *Client) Pipeline() Pipeliner {
 	return &pipe
 }
 
-func (c *Client) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.TxPipeline().Pipelined(fn)
+func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.TxPipeline().Pipelined(ctx, fn)
 }
 
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
@@ -636,8 +648,8 @@ func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
 
-		newConn: func(channels []string) (*pool.Conn, error) {
-			return c.newConn(context.TODO())
+		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
+			return c.newConn(ctx)
 		},
 		closeConn: c.connPool.CloseConn,
 	}
@@ -671,20 +683,20 @@ func (c *Client) pubSub() *PubSub {
 //    }
 //
 //    ch := sub.Channel()
-func (c *Client) Subscribe(channels ...string) *PubSub {
+func (c *Client) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
-		_ = pubsub.Subscribe(channels...)
+		_ = pubsub.Subscribe(ctx, channels...)
 	}
 	return pubsub
 }
 
 // PSubscribe subscribes the client to the given patterns.
 // Patterns can be omitted to create empty subscription.
-func (c *Client) PSubscribe(channels ...string) *PubSub {
+func (c *Client) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
-		_ = pubsub.PSubscribe(channels...)
+		_ = pubsub.PSubscribe(ctx, channels...)
 	}
 	return pubsub
 }
@@ -718,16 +730,12 @@ func newConn(ctx context.Context, opt *Options, connPool pool.Pooler) *Conn {
 	return &c
 }
 
-func (c *Conn) Process(cmd Cmder) error {
-	return c.ProcessContext(c.ctx, cmd)
-}
-
-func (c *Conn) ProcessContext(ctx context.Context, cmd Cmder) error {
+func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
 	return c.baseClient.process(ctx, cmd)
 }
 
-func (c *Conn) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipeline().Pipelined(fn)
+func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.Pipeline().Pipelined(ctx, fn)
 }
 
 func (c *Conn) Pipeline() Pipeliner {
@@ -739,8 +747,8 @@ func (c *Conn) Pipeline() Pipeliner {
 	return &pipe
 }
 
-func (c *Conn) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.TxPipeline().Pipelined(fn)
+func (c *Conn) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.TxPipeline().Pipelined(ctx, fn)
 }
 
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
