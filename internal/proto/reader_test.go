@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/go-redis/redis/v7/internal/proto"
+	"github.com/go-redis/redis/v8/internal/proto"
 )
 
 func BenchmarkReader_ParseReply_Status(b *testing.B) {
