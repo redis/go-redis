@@ -55,13 +55,14 @@ var _ = Describe("WriteBuffer", func() {
 	})
 
 	It("should append time", func() {
-		err := wr.WriteArgs([]interface{}{time.Unix(1414141414, 0).UTC()})
+		tm := time.Date(2019, 01, 01, 9, 45, 10, 222125, time.UTC)
+		err := wr.WriteArgs([]interface{}{tm})
 		Expect(err).NotTo(HaveOccurred())
 
 		err = wr.Flush()
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(buf.Len()).To(Equal(31))
+		Expect(buf.Len()).To(Equal(41))
 	})
 
 	It("should append marshalable args", func() {

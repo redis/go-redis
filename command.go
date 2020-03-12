@@ -671,7 +671,7 @@ func (cmd *StringCmd) Time() (time.Time, error) {
 	if cmd.err != nil {
 		return time.Time{}, cmd.err
 	}
-	return time.Parse(time.RFC3339, cmd.Val())
+	return time.Parse(time.RFC3339Nano, cmd.Val())
 }
 
 func (cmd *StringCmd) Scan(val interface{}) error {
