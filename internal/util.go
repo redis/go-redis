@@ -76,7 +76,7 @@ func WithSpan(ctx context.Context, name string, fn func(context.Context) error) 
 	defer span.End()
 
 	if err := fn(ctx); err != nil {
-		span.SetStatus(codes.Internal)
+		span.SetStatus(codes.Internal, err.Error())
 		span.AddEvent(ctx, "error",
 			logTypeKey.String(reflect.TypeOf(err).String()),
 			logMessageKey.String(err.Error()),
