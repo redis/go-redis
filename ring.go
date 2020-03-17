@@ -14,10 +14,24 @@ import (
 	"github.com/go-redis/redis/v7/internal/consistenthash"
 	"github.com/go-redis/redis/v7/internal/hashtag"
 	"github.com/go-redis/redis/v7/internal/pool"
+	"github.com/go-redis/redis/v7/internal/rendezvoushash"
 )
 
-// Hash is type of hash function used in consistent hash.
-type Hash consistenthash.Hash
+// Hash is type of hash function used in hash maps.
+type Hash internal.Hash
+
+type HashAlgorithm int
+
+type HashMap interface {
+	IsEmpty() bool
+	Add(keys ...string)
+	Get(key string) string
+}
+
+const (
+	ConsistentHash HashAlgorithm = iota
+	RendezvousHash
+)
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
 
@@ -35,9 +49,11 @@ type RingOptions struct {
 	// Shard is considered down after 3 subsequent failed checks.
 	HeartbeatFrequency time.Duration
 
-	// Hash function used in consistent hash.
+	// Hash function used in the hash algorithm.
 	// Default is crc32.ChecksumIEEE.
 	Hash Hash
+
+	HashAlgorithm HashAlgorithm
 
 	// Number of replicas in consistent hash.
 	// Default is 100 replicas.
@@ -183,7 +199,7 @@ type ringShards struct {
 	opt *RingOptions
 
 	mu     sync.RWMutex
-	hash   *consistenthash.Map
+	hash   HashMap
 	shards map[string]*ringShard // read only
 	list   []*ringShard          // read only
 	len    int
@@ -194,7 +210,7 @@ func newRingShards(opt *RingOptions) *ringShards {
 	return &ringShards{
 		opt: opt,
 
-		hash:   newConsistentHash(opt),
+		hash:   newHash(opt),
 		shards: make(map[string]*ringShard),
 	}
 }
@@ -294,7 +310,7 @@ func (c *ringShards) rebalance() {
 	shards := c.shards
 	c.mu.RUnlock()
 
-	hash := newConsistentHash(c.opt)
+	hash := newHash(c.opt)
 	var shardsNum int
 	for name, shard := range shards {
 		if shard.IsUp() {
@@ -346,7 +362,7 @@ type ring struct {
 	cmdsInfoCache *cmdsInfoCache //nolint:structcheck
 }
 
-// Ring is a Redis client that uses consistent hashing to distribute
+// Ring is a Redis client that uses hashing to distribute
 // keys across multiple Redis servers (shards). It's safe for
 // concurrent use by multiple goroutines.
 //
@@ -721,6 +737,17 @@ func (c *Ring) Watch(fn func(*Tx) error, keys ...string) error {
 	return shards[0].Client.Watch(fn, keys...)
 }
 
-func newConsistentHash(opt *RingOptions) *consistenthash.Map {
-	return consistenthash.New(opt.HashReplicas, consistenthash.Hash(opt.Hash))
+func newHash(opt *RingOptions) HashMap {
+	if opt.HashAlgorithm == RendezvousHash {
+		return newRendezvousHash(opt)
+	}
+	return newConsistentHash(opt)
+}
+
+func newConsistentHash(opt *RingOptions) HashMap {
+	return consistenthash.New(opt.HashReplicas, internal.Hash(opt.Hash))
+}
+
+func newRendezvousHash(opt *RingOptions) HashMap {
+	return rendezvoushash.New(internal.Hash(opt.Hash))
 }

@@ -21,18 +21,19 @@ import (
 	"hash/crc32"
 	"sort"
 	"strconv"
+
+	"github.com/go-redis/redis/v7/internal"
 )
 
-type Hash func(data []byte) uint32
 
 type Map struct {
-	hash     Hash
+	hash     internal.Hash
 	replicas int
 	keys     []int // Sorted
 	hashMap  map[int]string
 }
 
-func New(replicas int, fn Hash) *Map {
+func New(replicas int, fn internal.Hash) *Map {
 	m := &Map{
 		replicas: replicas,
 		hash:     fn,
