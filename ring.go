@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -30,6 +31,10 @@ type RingOptions struct {
 	// Map of name => password of ring shards, to allow different shards to have
 	// different passwords. It will be ignored if the Password field is set.
 	Passwords map[string]string
+
+	// Map of name => tls configurations of ring shards, to allow shards to have
+	// different TLS configuration. Itwill be ignored if the TLSConfig field is set.
+	TLSConfigs map[string]*tls.Config
 
 	// Frequency of PING commands sent to check shards availability.
 	// Shard is considered down after 3 subsequent failed checks.
@@ -65,6 +70,7 @@ type RingOptions struct {
 
 	DB       int
 	Password string
+	TLSConfig *tls.Config
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -111,6 +117,7 @@ func (opt *RingOptions) clientOptions(shard string) *Options {
 
 		DB:       opt.DB,
 		Password: opt.getPassword(shard),
+		TLSConfig: opt.getTLSConfig(shard),
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
@@ -130,6 +137,13 @@ func (opt *RingOptions) getPassword(shard string) string {
 		return opt.Passwords[shard]
 	}
 	return opt.Password
+}
+
+func (opt *RingOptions) getTLSConfig(shard string) *tls.Config {
+	if opt.TLSConfig != nil {
+		return opt.TLSConfigs[shard]
+	}
+	return opt.TLSConfig
 }
 
 //------------------------------------------------------------------------------

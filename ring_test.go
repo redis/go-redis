@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strconv"
@@ -193,6 +194,29 @@ var _ = Describe("Redis Ring", func() {
 
 			err := ring.Ping().Err()
 			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
+		})
+	})
+
+	Describe("shard tls configuration", func() {
+		It("can be initialized with a single tls configuration, used for all shards", func() {
+			opts := redisRingOptions()
+			opts.TLSConfig = &tls.Config{}
+			ring = redis.NewRing(opts)
+
+			err := ring.Ping().Err()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("can be initialized with a passwords map, one for each shard", func() {
+			opts := redisRingOptions()
+			opts.TLSConfigs = map[string]*tls.Config{
+				"ringShardOne": &tls.Config{},
+				"ringShardTwo": &tls.Config{},
+			}
+			ring = redis.NewRing(opts)
+
+			err := ring.Ping().Err()
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 
