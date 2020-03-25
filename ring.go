@@ -140,7 +140,7 @@ func (opt *RingOptions) getPassword(shard string) string {
 }
 
 func (opt *RingOptions) getTLSConfig(shard string) *tls.Config {
-	if opt.TLSConfig != nil {
+	if opt.TLSConfig == nil {
 		return opt.TLSConfigs[shard]
 	}
 	return opt.TLSConfig
