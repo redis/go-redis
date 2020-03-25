@@ -68,8 +68,8 @@ type RingOptions struct {
 
 	OnConnect func(*Conn) error
 
-	DB       int
-	Password string
+	DB        int
+	Password  string
 	TLSConfig *tls.Config
 
 	MaxRetries      int
@@ -115,8 +115,8 @@ func (opt *RingOptions) clientOptions(shard string) *Options {
 	return &Options{
 		OnConnect: opt.OnConnect,
 
-		DB:       opt.DB,
-		Password: opt.getPassword(shard),
+		DB:        opt.DB,
+		Password:  opt.getPassword(shard),
 		TLSConfig: opt.getTLSConfig(shard),
 
 		DialTimeout:  opt.DialTimeout,
