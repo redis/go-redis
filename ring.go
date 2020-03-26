@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -32,10 +31,6 @@ type RingOptions struct {
 	// different passwords. It will be ignored if the Password field is set.
 	Passwords map[string]string
 
-	// Map of name => tls configurations of ring shards, to allow shards to have
-	// different TLS configuration. Itwill be ignored if the TLSConfig field is set.
-	TLSConfigs map[string]*tls.Config
-
 	// Frequency of PING commands sent to check shards availability.
 	// Shard is considered down after 3 subsequent failed checks.
 	HeartbeatFrequency time.Duration
@@ -61,6 +56,9 @@ type RingOptions struct {
 	//  See https://arxiv.org/abs/1406.2294 for reference
 	HashReplicas int
 
+	// NewClient creates a shard client with provided name and options.
+	NewClient func(name string, opt *Options) *Client
+
 	// Optional hook that is called when a new shard is created.
 	OnNewShard func(*Client)
 
@@ -68,9 +66,8 @@ type RingOptions struct {
 
 	OnConnect func(*Conn) error
 
-	DB        int
-	Password  string
-	TLSConfig *tls.Config
+	DB       int
+	Password string
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -115,9 +112,8 @@ func (opt *RingOptions) clientOptions(shard string) *Options {
 	return &Options{
 		OnConnect: opt.OnConnect,
 
-		DB:        opt.DB,
-		Password:  opt.getPassword(shard),
-		TLSConfig: opt.getTLSConfig(shard),
+		DB:       opt.DB,
+		Password: opt.getPassword(shard),
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
@@ -137,13 +133,6 @@ func (opt *RingOptions) getPassword(shard string) string {
 		return opt.Passwords[shard]
 	}
 	return opt.Password
-}
-
-func (opt *RingOptions) getTLSConfig(shard string) *tls.Config {
-	if opt.TLSConfig == nil {
-		return opt.TLSConfigs[shard]
-	}
-	return opt.TLSConfig
 }
 
 //------------------------------------------------------------------------------
@@ -404,7 +393,12 @@ func NewRing(opt *RingOptions) *Ring {
 func newRingShard(opt *RingOptions, name, addr string) *Client {
 	clopt := opt.clientOptions(name)
 	clopt.Addr = addr
-	shard := NewClient(clopt)
+	var shard *Client
+	if opt.NewClient != nil {
+		shard = opt.NewClient(name, clopt)
+	} else {
+		shard = NewClient(clopt)
+	}
 	if opt.OnNewShard != nil {
 		opt.OnNewShard(shard)
 	}
