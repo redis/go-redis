@@ -56,6 +56,9 @@ type RingOptions struct {
 	//  See https://arxiv.org/abs/1406.2294 for reference
 	HashReplicas int
 
+	// NewClient creates a shard client with provided name and options.
+	NewClient func(name string, opt *Options) *Client
+
 	// Optional hook that is called when a new shard is created.
 	OnNewShard func(*Client)
 
@@ -390,7 +393,12 @@ func NewRing(opt *RingOptions) *Ring {
 func newRingShard(opt *RingOptions, name, addr string) *Client {
 	clopt := opt.clientOptions(name)
 	clopt.Addr = addr
-	shard := NewClient(clopt)
+	var shard *Client
+	if opt.NewClient != nil {
+		shard = opt.NewClient(name, clopt)
+	} else {
+		shard = NewClient(clopt)
+	}
 	if opt.OnNewShard != nil {
 		opt.OnNewShard(shard)
 	}

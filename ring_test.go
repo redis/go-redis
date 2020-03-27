@@ -196,6 +196,20 @@ var _ = Describe("Redis Ring", func() {
 		})
 	})
 
+	Describe("new client callback", func() {
+		It("can be initialized with a new client callback", func() {
+			opts := redisRingOptions()
+			opts.NewClient = func(name string, opt *redis.Options) *redis.Client {
+				opt.Password = "password1"
+				return redis.NewClient(opt)
+			}
+			ring = redis.NewRing(opts)
+
+			err := ring.Ping().Err()
+			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
+		})
+	})
+
 	It("supports Process hook", func() {
 		err := ring.Ping().Err()
 		Expect(err).NotTo(HaveOccurred())
