@@ -3,7 +3,6 @@ package redis
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/go-redis/redis/v7/internal"
@@ -14,7 +13,7 @@ import (
 // Nil reply returned by Redis when key does not exist.
 const Nil = proto.Nil
 
-func SetLogger(logger *log.Logger) {
+func SetLogger(logger internal.Logging) {
 	internal.Logger = logger
 }
 
