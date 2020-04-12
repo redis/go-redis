@@ -101,7 +101,7 @@ set, err := client.SetNX("key", "value", 10*time.Second).Result()
 vals, err := client.Sort("list", &redis.Sort{Offset: 0, Count: 2, Order: "ASC"}).Result()
 
 // ZRANGEBYSCORE zset -inf +inf WITHSCORES LIMIT 0 2
-vals, err := client.ZRangeByScoreWithScores("zset", redis.ZRangeBy{
+vals, err := client.ZRangeByScoreWithScores("zset", &redis.ZRangeBy{
 	Min: "-inf",
 	Max: "+inf",
 	Offset: 0,
@@ -109,7 +109,10 @@ vals, err := client.ZRangeByScoreWithScores("zset", redis.ZRangeBy{
 }).Result()
 
 // ZINTERSTORE out 2 zset1 zset2 WEIGHTS 2 3 AGGREGATE SUM
-vals, err := client.ZInterStore("out", redis.ZStore{Weights: []int64{2, 3}}, "zset1", "zset2").Result()
+vals, err := client.ZInterStore("out", &redis.ZStore{
+	Keys: []string{"zset1", "zset2"},
+	Weights: []int64{2, 3}
+}).Result()
 
 // EVAL "return {KEYS[1],ARGV[1]}" 1 "key" "hello"
 vals, err := client.Eval("return {KEYS[1],ARGV[1]}", []string{"key"}, "hello").Result()
