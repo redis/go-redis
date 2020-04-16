@@ -1172,7 +1172,7 @@ func (c *ClusterClient) pipelineReadCmds(
 			node.MarkAsFailing()
 			return err
 		}
-		if isRedisError(err) {
+		if IsRedisError(err) {
 			continue
 		}
 		return err
@@ -1333,7 +1333,7 @@ func (c *ClusterClient) txPipelineReadQueued(
 
 	for _, cmd := range cmds {
 		err := statusCmd.readReply(rd)
-		if err == nil || c.checkMovedErr(cmd, err, failedCmds) || isRedisError(err) {
+		if err == nil || c.checkMovedErr(cmd, err, failedCmds) || IsRedisError(err) {
 			continue
 		}
 		return err

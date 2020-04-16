@@ -433,7 +433,7 @@ func (c *baseClient) pipelineProcessCmds(
 func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
 	for _, cmd := range cmds {
 		err := cmd.readReply(rd)
-		if err != nil && !isRedisError(err) {
+		if err != nil && !IsRedisError(err) {
 			return err
 		}
 	}
@@ -483,7 +483,7 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 	}
 
 	for range cmds {
-		if err := statusCmd.readReply(rd); err != nil && !isRedisError(err) {
+		if err := statusCmd.readReply(rd); err != nil && !IsRedisError(err) {
 			return err
 		}
 	}

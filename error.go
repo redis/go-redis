@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"github.com/go-redis/redis/v7/internal/pool"
 	"io"
 	"net"
 	"strings"
@@ -39,7 +40,7 @@ func isRetryableError(err error, retryTimeout bool) bool {
 	return false
 }
 
-func isRedisError(err error) bool {
+func IsRedisError(err error) bool {
 	_, ok := err.(proto.RedisError)
 	return ok
 }
@@ -48,7 +49,7 @@ func isBadConn(err error, allowTimeout bool) bool {
 	if err == nil {
 		return false
 	}
-	if isRedisError(err) {
+	if IsRedisError(err) {
 		// Close connections in read only state in case domain addr is used
 		// and domain resolves to a different Redis Server. See #790.
 		return isReadOnlyError(err)
@@ -62,7 +63,7 @@ func isBadConn(err error, allowTimeout bool) bool {
 }
 
 func isMovedError(err error) (moved bool, ask bool, addr string) {
-	if !isRedisError(err) {
+	if !IsRedisError(err) {
 		return
 	}
 
@@ -90,4 +91,8 @@ func isLoadingError(err error) bool {
 
 func isReadOnlyError(err error) bool {
 	return strings.HasPrefix(err.Error(), "READONLY ")
+}
+
+func IsClientClosedError(err error) bool {
+	return err == pool.ErrClosed
 }
