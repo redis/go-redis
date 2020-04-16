@@ -102,7 +102,7 @@ func NewStringIntMapCmdResult(val map[string]int64, err error) *StringIntMapCmd 
 func NewTimeCmdResult(val time.Time, err error) *TimeCmd {
 	var cmd TimeCmd
 	cmd.val = val
-	cmd.setErr(err)
+	cmd.SetErr(err)
 	return &cmd
 }
 
