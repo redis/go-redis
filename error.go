@@ -2,11 +2,11 @@ package redis
 
 import (
 	"context"
-	"github.com/go-redis/redis/v7/internal/pool"
 	"io"
 	"net"
 	"strings"
 
+	"github.com/go-redis/redis/v7/internal/pool"
 	"github.com/go-redis/redis/v7/internal/proto"
 )
 
