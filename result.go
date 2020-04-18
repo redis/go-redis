@@ -98,6 +98,14 @@ func NewStringIntMapCmdResult(val map[string]int64, err error) *StringIntMapCmd 
 	return &cmd
 }
 
+// NewTimeCmdResult returns a TimeCmd initialised with val and err for testing
+func NewTimeCmdResult(val time.Time, err error) *TimeCmd {
+	var cmd TimeCmd
+	cmd.val = val
+	cmd.SetErr(err)
+	return &cmd
+}
+
 // NewZSliceCmdResult returns a ZSliceCmd initialised with val and err for testing
 func NewZSliceCmdResult(val []Z, err error) *ZSliceCmd {
 	var cmd ZSliceCmd
