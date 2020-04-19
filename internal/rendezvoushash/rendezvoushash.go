@@ -1,23 +1,21 @@
 package rendezvoushash
 
 import (
-	"crypto/sha1"
-	"hash/crc32"
-
+	"github.com/cespare/xxhash"
 	"github.com/go-redis/redis/v7/internal"
 )
 
 type Map struct {
-	hash     internal.Hash
-	sites    []string
+	hash  internal.Hash
+	sites []string
 }
 
 func New(fn internal.Hash) *Map {
 	m := &Map{
-		hash:     fn,
+		hash: fn,
 	}
 	if m.hash == nil {
-		m.hash = crc32.ChecksumIEEE
+		m.hash = xxhash.Sum64
 	}
 	return m
 }
@@ -41,12 +39,15 @@ func (m *Map) Get(key string) string {
 	}
 
 	// find the site that, when hashed with the key, yields the largest weight
-	maxWeight := uint32(0)
-	targetSite := ""
+	var targetSite string
+
+	var maxWeight uint64
+	buf := make([]byte, len(key), 2*len(key))
+	copy(buf, key)
 	for _, site := range m.sites {
-		hasher := sha1.New()
-		hasher.Write([]byte(site + key))
-		siteWeight := m.hash(hasher.Sum(nil))
+		buf = buf[:len(key)]
+		buf = append(buf, site...)
+		siteWeight := m.hash(buf)
 
 		if siteWeight > maxWeight {
 			maxWeight = siteWeight

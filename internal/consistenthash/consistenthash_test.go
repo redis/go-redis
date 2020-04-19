@@ -26,12 +26,12 @@ func TestHashing(t *testing.T) {
 
 	// Override the hash function to return easier to reason about values. Assumes
 	// the keys can be converted to an integer.
-	hash := New(3, func(key []byte) uint32 {
-		i, err := strconv.Atoi(string(key))
+	hash := New(3, func(key []byte) uint64 {
+		i, err := strconv.ParseUint(string(key), 10, 64)
 		if err != nil {
 			panic(err)
 		}
-		return uint32(i)
+		return i
 	})
 
 	// Given the above hash function, this will give replicas with "hashes":
@@ -76,6 +76,7 @@ func TestConsistency(t *testing.T) {
 		t.Errorf("Fetching 'Ben' from both hashes should be the same")
 	}
 
+	hash1.Add("Ben", "Becky", "Bobby")
 	hash2.Add("Becky", "Ben", "Bobby")
 
 	if hash1.Get("Ben") != hash2.Get("Ben") ||
@@ -107,4 +108,24 @@ func benchmarkGet(b *testing.B, shards int) {
 	for i := 0; i < b.N; i++ {
 		hash.Get(buckets[i&(shards-1)])
 	}
+}
+
+func TestDistribution(t *testing.T) {
+	hash := New(1000, nil)
+	hash.Add("1", "2", "3", "4", "5", "6")
+
+	results := make(map[string]int, 10)
+
+	for i := 0; i < 1000000; i++ {
+		key := strconv.Itoa(i)
+
+		site := hash.Get(key)
+		if val, ok := results[site]; ok {
+			results[site] = val + 1
+		} else {
+			results[site] = 1
+		}
+	}
+
+	fmt.Println(results)
 }

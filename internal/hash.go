@@ -1,3 +1,3 @@
 package internal
 
-type Hash func(data []byte) uint32
+type Hash func(data []byte) uint64

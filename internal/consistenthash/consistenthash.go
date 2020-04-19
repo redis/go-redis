@@ -18,29 +18,28 @@ limitations under the License.
 package consistenthash
 
 import (
-	"hash/crc32"
 	"sort"
 	"strconv"
 
+	"github.com/cespare/xxhash"
 	"github.com/go-redis/redis/v7/internal"
 )
-
 
 type Map struct {
 	hash     internal.Hash
 	replicas int
-	keys     []int // Sorted
-	hashMap  map[int]string
+	keys     []uint64 // Sorted
+	hashMap  map[uint64]string
 }
 
 func New(replicas int, fn internal.Hash) *Map {
 	m := &Map{
 		replicas: replicas,
 		hash:     fn,
-		hashMap:  make(map[int]string),
+		hashMap:  make(map[uint64]string),
 	}
 	if m.hash == nil {
-		m.hash = crc32.ChecksumIEEE
+		m.hash = xxhash.Sum64
 	}
 	return m
 }
@@ -54,12 +53,14 @@ func (m *Map) IsEmpty() bool {
 func (m *Map) Add(keys ...string) {
 	for _, key := range keys {
 		for i := 0; i < m.replicas; i++ {
-			hash := int(m.hash([]byte(strconv.Itoa(i) + key)))
+			hash := m.hash([]byte(strconv.Itoa(i) + key))
 			m.keys = append(m.keys, hash)
 			m.hashMap[hash] = key
 		}
 	}
-	sort.Ints(m.keys)
+	sort.Slice(m.keys, func(i, j int) bool {
+		return m.keys[i] < m.keys[j]
+	})
 }
 
 // Gets the closest item in the hash to the provided key.
@@ -68,7 +69,7 @@ func (m *Map) Get(key string) string {
 		return ""
 	}
 
-	hash := int(m.hash([]byte(key)))
+	hash := m.hash([]byte(key))
 
 	// Binary search for appropriate replica.
 	idx := sort.Search(len(m.keys), func(i int) bool { return m.keys[i] >= hash })

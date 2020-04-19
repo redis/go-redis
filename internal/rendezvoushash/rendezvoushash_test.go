@@ -2,12 +2,12 @@ package rendezvoushash
 
 import (
 	"fmt"
-	"hash/crc32"
+	"strconv"
 	"testing"
 )
 
 func TestHashing(t *testing.T) {
-	hash := New(crc32.ChecksumIEEE)
+	hash := New(nil)
 	hash.Add("site1", "site2", "site3")
 
 	verifyFn := func(cases map[string]string) {
@@ -20,15 +20,15 @@ func TestHashing(t *testing.T) {
 	}
 
 	testCases := map[string]string{
-		"key1": "site2",
-		"key2": "site1",
-		"key3": "site2",
-		"key4": "site1",
-		"key5": "site2",
-		"key6": "site3",
-		"key7": "site1",
-		"key8": "site1",
-		"key9": "site3",
+		"key1":  "site2",
+		"key2":  "site1",
+		"key3":  "site2",
+		"key4":  "site1",
+		"key5":  "site2",
+		"key6":  "site3",
+		"key7":  "site1",
+		"key8":  "site1",
+		"key9":  "site3",
 		"key10": "site2",
 		"key11": "site3",
 		"key12": "site1",
@@ -83,4 +83,24 @@ func benchmarkGet(b *testing.B, shards int) {
 	for i := 0; i < b.N; i++ {
 		hash.Get(buckets[i&(shards-1)])
 	}
+}
+
+func TestDistribution(t *testing.T) {
+	hash := New(nil)
+	hash.Add("1", "2", "3", "4", "5", "6")
+
+	results := make(map[string]int, 10)
+
+	for i := 0; i < 1000000; i++ {
+		key := strconv.Itoa(i)
+
+		site := hash.Get(key)
+		if val, ok := results[site]; ok {
+			results[site] = val + 1
+		} else {
+			results[site] = 1
+		}
+	}
+
+	fmt.Println(results)
 }
