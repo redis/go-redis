@@ -101,7 +101,7 @@ func (opt *RingOptions) init() {
 	}
 }
 
-func (opt *RingOptions) clientOptions(shard string) *Options {
+func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
 		OnConnect: opt.OnConnect,
 
@@ -378,7 +378,7 @@ func NewRing(opt *RingOptions) *Ring {
 }
 
 func newRingShard(opt *RingOptions, name, addr string) *Client {
-	clopt := opt.clientOptions(name)
+	clopt := opt.clientOptions()
 	clopt.Addr = addr
 
 	if opt.NewClient != nil {

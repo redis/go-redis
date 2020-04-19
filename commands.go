@@ -2570,7 +2570,9 @@ func (c cmdable) GeoAdd(ctx context.Context, key string, geoLocation ...*GeoLoca
 }
 
 // GeoRadius is a read-only GEORADIUS_RO command.
-func (c cmdable) GeoRadius(ctx context.Context, key string, longitude, latitude float64, query *GeoRadiusQuery) *GeoLocationCmd {
+func (c cmdable) GeoRadius(
+	ctx context.Context, key string, longitude, latitude float64, query *GeoRadiusQuery,
+) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(ctx, query, "georadius_ro", key, longitude, latitude)
 	if query.Store != "" || query.StoreDist != "" {
 		cmd.SetErr(errors.New("GeoRadius does not support Store or StoreDist"))
@@ -2581,7 +2583,9 @@ func (c cmdable) GeoRadius(ctx context.Context, key string, longitude, latitude 
 }
 
 // GeoRadiusStore is a writing GEORADIUS command.
-func (c cmdable) GeoRadiusStore(ctx context.Context, key string, longitude, latitude float64, query *GeoRadiusQuery) *IntCmd {
+func (c cmdable) GeoRadiusStore(
+	ctx context.Context, key string, longitude, latitude float64, query *GeoRadiusQuery,
+) *IntCmd {
 	args := geoLocationArgs(query, "georadius", key, longitude, latitude)
 	cmd := NewIntCmd(ctx, args...)
 	if query.Store == "" && query.StoreDist == "" {
@@ -2593,7 +2597,9 @@ func (c cmdable) GeoRadiusStore(ctx context.Context, key string, longitude, lati
 }
 
 // GeoRadius is a read-only GEORADIUSBYMEMBER_RO command.
-func (c cmdable) GeoRadiusByMember(ctx context.Context, key, member string, query *GeoRadiusQuery) *GeoLocationCmd {
+func (c cmdable) GeoRadiusByMember(
+	ctx context.Context, key, member string, query *GeoRadiusQuery,
+) *GeoLocationCmd {
 	cmd := NewGeoLocationCmd(ctx, query, "georadiusbymember_ro", key, member)
 	if query.Store != "" || query.StoreDist != "" {
 		cmd.SetErr(errors.New("GeoRadiusByMember does not support Store or StoreDist"))
@@ -2604,7 +2610,9 @@ func (c cmdable) GeoRadiusByMember(ctx context.Context, key, member string, quer
 }
 
 // GeoRadiusByMemberStore is a writing GEORADIUSBYMEMBER command.
-func (c cmdable) GeoRadiusByMemberStore(ctx context.Context, key, member string, query *GeoRadiusQuery) *IntCmd {
+func (c cmdable) GeoRadiusByMemberStore(
+	ctx context.Context, key, member string, query *GeoRadiusQuery,
+) *IntCmd {
 	args := geoLocationArgs(query, "georadiusbymember", key, member)
 	cmd := NewIntCmd(ctx, args...)
 	if query.Store == "" && query.StoreDist == "" {
@@ -2615,7 +2623,9 @@ func (c cmdable) GeoRadiusByMemberStore(ctx context.Context, key, member string,
 	return cmd
 }
 
-func (c cmdable) GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd {
+func (c cmdable) GeoDist(
+	ctx context.Context, key string, member1, member2, unit string,
+) *FloatCmd {
 	if unit == "" {
 		unit = "km"
 	}
