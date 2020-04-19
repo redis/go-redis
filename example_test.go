@@ -154,7 +154,7 @@ func ExampleClient() {
 }
 
 func ExampleConn() {
-	conn := rdb.Conn()
+	conn := rdb.Conn(context.Background())
 
 	err := conn.ClientSetName(ctx, "foobar").Err()
 	if err != nil {
