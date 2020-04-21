@@ -640,11 +640,11 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(Equal(int64(1)))
 
-			size, err = client.LPush("list", "3").Result()
+			size, err = client.LPush("list", "2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(Equal(int64(2)))
 
-			size, err = client.LPush("list", "2").Result()
+			size, err = client.LPush("list", "3").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(Equal(int64(3)))
 
