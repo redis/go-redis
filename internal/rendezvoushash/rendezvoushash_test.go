@@ -21,20 +21,20 @@ func TestHashing(t *testing.T) {
 
 	testCases := map[string]string{
 		"key1":  "site2",
-		"key2":  "site1",
-		"key3":  "site2",
-		"key4":  "site1",
-		"key5":  "site2",
-		"key6":  "site3",
+		"key2":  "site2",
+		"key3":  "site3",
+		"key4":  "site2",
+		"key5":  "site3",
+		"key6":  "site2",
 		"key7":  "site1",
 		"key8":  "site1",
 		"key9":  "site3",
 		"key10": "site2",
-		"key11": "site3",
-		"key12": "site1",
-		"key13": "site2",
-		"key14": "site2",
-		"key15": "site3",
+		"key11": "site2",
+		"key12": "site2",
+		"key13": "site3",
+		"key14": "site1",
+		"key15": "site2",
 		"key16": "site2",
 	}
 
@@ -43,20 +43,20 @@ func TestHashing(t *testing.T) {
 	hash.Add("site4")
 
 	// remaps existing keys to all sites
-	testCases["key1"] = "site4"
-	testCases["key2"] = "site4"
-	testCases["key9"] = "site4"
+	testCases["key1"] = "site2"
+	testCases["key2"] = "site2"
+	testCases["key3"] = "site4"
+	testCases["key4"] = "site4"
+	testCases["key6"] = "site4"
+	testCases["key8"] = "site4"
 	testCases["key10"] = "site4"
-	testCases["key11"] = "site4"
-	testCases["key12"] = "site4"
-	testCases["key15"] = "site4"
 
 	// add new keys
-	testCases["key17"] = "site1"
+	testCases["key17"] = "site2"
 	testCases["key18"] = "site2"
-	testCases["key19"] = "site4"
-	testCases["key20"] = "site4"
-	testCases["key21"] = "site1"
+	testCases["key19"] = "site1"
+	testCases["key20"] = "site1"
+	testCases["key21"] = "site2"
 	testCases["key22"] = "site2"
 
 	verifyFn(testCases)

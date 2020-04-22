@@ -1,6 +1,7 @@
 module github.com/go-redis/redis/v7
 
 require (
+	github.com/cespare/xxhash v1.1.0
 	github.com/golang/protobuf v1.3.2 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
 	github.com/onsi/ginkgo v1.10.1

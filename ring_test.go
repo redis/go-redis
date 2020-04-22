@@ -54,8 +54,8 @@ var _ = Describe("Redis Ring", func() {
 		setRingKeys()
 
 		// Both shards should have some keys now.
-		Expect(ringShard1.Info("keyspace").Val()).To(ContainSubstring("keys=57"))
-		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard1.Info("keyspace").Val()).To(ContainSubstring("keys=47"))
+		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=53"))
 	})
 
 	It("distributes keys when using EVAL", func() {
@@ -71,8 +71,8 @@ var _ = Describe("Redis Ring", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 
-		Expect(ringShard1.Info("keyspace").Val()).To(ContainSubstring("keys=57"))
-		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard1.Info("keyspace").Val()).To(ContainSubstring("keys=47"))
+		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=53"))
 	})
 
 	It("uses single shard when one of the shards is down", func() {
@@ -100,7 +100,7 @@ var _ = Describe("Redis Ring", func() {
 		setRingKeys()
 
 		// RingShard2 should have its keys.
-		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=53"))
 	})
 
 	It("supports hash tags", func() {
@@ -131,8 +131,8 @@ var _ = Describe("Redis Ring", func() {
 			}
 
 			// Both shards should have some keys now.
-			Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=57"))
-			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
+			Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=47"))
+			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=53"))
 		})
 
 		It("is consistent with ring", func() {

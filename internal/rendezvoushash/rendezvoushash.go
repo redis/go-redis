@@ -27,9 +27,7 @@ func (m *Map) IsEmpty() bool {
 
 // Adds some keys to the hash.
 func (m *Map) Add(sites ...string) {
-	for _, site := range sites {
-		m.sites = append(m.sites, site)
-	}
+	m.sites = append(m.sites, sites...)
 }
 
 // Gets the closest item in the hash to the provided key.
@@ -40,10 +38,11 @@ func (m *Map) Get(key string) string {
 
 	// find the site that, when hashed with the key, yields the largest weight
 	var targetSite string
-
 	var maxWeight uint64
-	buf := make([]byte, len(key), 2*len(key))
+
+	buf := make([]byte, len(key))
 	copy(buf, key)
+
 	for _, site := range m.sites {
 		buf = buf[:len(key)]
 		buf = append(buf, site...)
