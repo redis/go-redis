@@ -1,2 +1,4 @@
 *.rdb
 testdata/*/
+vendor
+.idea/

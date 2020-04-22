@@ -297,6 +297,11 @@ type Cmdable interface {
 	ReadOnly() *StatusCmd
 	ReadWrite() *StatusCmd
 	MemoryUsage(key string, samples ...int) *IntCmd
+	BFReserve(key string, errorRate float64, capacity int, options ...interface{}) *StringCmd
+	BFAdd(key string, value interface{}) *IntCmd
+	BFMAdd(key string, values ...interface{}) *IntSliceCmd
+	BFExists(key string, value interface{}) *IntCmd
+	BFMExists(key string, values ...interface{}) *IntSliceCmd
 }
 
 type StatefulCmdable interface {
@@ -2628,6 +2633,60 @@ func (c cmdable) MemoryUsage(key string, samples ...int) *IntCmd {
 		args = append(args, "SAMPLES", samples[0])
 	}
 	cmd := NewIntCmd(args...)
+	_ = c(cmd)
+	return cmd
+}
+
+// ------------------------------------------------------------------------------
+// Redisbloom commands
+func (c cmdable) BFReserve(key string, errorRate float64, capacity int, options ...interface{}) *StringCmd {
+	args := make([]interface{}, 4+len(options))
+	args[0] = "BF.RESERVE"
+	args[1] = errorRate
+	args[2] = capacity
+	args = append(args, options)
+
+	cmd := NewStringCmd(args)
+	_ = c(cmd)
+	return cmd
+}
+
+func (c cmdable) BFAdd(key string, value interface{}) *IntCmd {
+	args := make([]interface{}, 3)
+	args[0] = "BF.ADD"
+	args[1] = key
+	args[2] = value
+	cmd := NewIntCmd(args...)
+	_ = c(cmd)
+	return cmd
+}
+
+func (c cmdable) BFMAdd(key string, values ...interface{}) *IntSliceCmd {
+	args := make([]interface{}, 2 + len(values))
+	args[0] = "BF.MADD"
+	args[1] = key
+	args = appendArgs(args, values)
+	cmd := NewIntSliceCmd(args...)
+	_ = c(cmd)
+	return cmd
+}
+
+func (c cmdable) BFExists(key string, value interface{}) *IntCmd {
+	args := make([]interface{}, 3)
+	args[0] = "BF.EXISTS"
+	args[1] = key
+	args[2] = value
+	cmd := NewIntCmd(args...)
+	_ = c(cmd)
+	return cmd
+}
+
+func (c cmdable) BFMExists(key string, values ...interface{}) *IntSliceCmd {
+	args := make([]interface{}, 2+len(values))
+	args[0] = "BF.MEXISTS"
+	args[1] = key
+	args = appendArgs(args, values)
+	cmd := NewIntSliceCmd(args...)
 	_ = c(cmd)
 	return cmd
 }

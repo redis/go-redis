@@ -4019,6 +4019,65 @@ var _ = Describe("Commands", func() {
 
 	})
 
+	// RedisBloom command test cases
+	Describe("Redisbloom", func() {
+
+		// BFReserve
+		It("should Reserve Bloomfilter", func() {
+			pipe := client.Pipeline()
+			bfReserve := pipe.BFReserve("bloom", 0.0001, 1000)
+			_, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(bfReserve.Err()).NotTo(HaveOccurred())
+			Expect(bfReserve.Val()).To(Equal("OK"))
+		})
+
+		// BFAdd
+		It("should add value to Bloomfilter", func() {
+			pipe := client.Pipeline()
+			bfReserve := pipe.BFAdd("bloom", "hello1")
+			_, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(bfReserve.Err()).NotTo(HaveOccurred())
+			Expect(bfReserve.Val()).To(Equal(int64(1)))
+		})
+		
+		// BFMAdd
+		It("should add values to Bloomfilter", func() {
+			pipe := client.Pipeline()
+			bfReserve := pipe.BFMAdd("bloom", "hello2", "hello3")
+			_, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(bfReserve.Err()).NotTo(HaveOccurred())
+			Expect(bfReserve.Val()).To(Equal([]int64{1,1}))
+		})
+
+		// BFExists
+		It("should check for value in Bloomfilter", func() {
+			pipe := client.Pipeline()
+			bfReserve := pipe.BFExists("bloom", "hello1")
+			_, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(bfReserve.Err()).NotTo(HaveOccurred())
+			Expect(bfReserve.Val()).To(Equal(int64(1)))
+		})
+
+		// BFMExists
+		It("should check for value in Bloomfilter", func() {
+			pipe := client.Pipeline()
+			bfReserve := pipe.BFMExists("bloom", "hello2", "hello3")
+			_, err := pipe.Exec()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(bfReserve.Err()).NotTo(HaveOccurred())
+			Expect(bfReserve.Val()).To(Equal([]int64{1,1}))
+		})
+	})
+
 })
 
 type numberStruct struct {
