@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"io"
 	"time"
@@ -297,6 +298,8 @@ type Cmdable interface {
 	ReadOnly() *StatusCmd
 	ReadWrite() *StatusCmd
 	MemoryUsage(key string, samples ...int) *IntCmd
+	Do(args ...interface{}) *Cmd
+	DoContext(ctx context.Context, args ...interface{}) *Cmd
 }
 
 type StatefulCmdable interface {
