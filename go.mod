@@ -1,6 +1,8 @@
 module github.com/go-redis/redis/v7
 
 require (
+	github.com/bountylabs/go-metrics v0.0.0-20180126210403-5fcf8f483fd3
+	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a
 	github.com/golang/protobuf v1.3.2 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
 	github.com/onsi/ginkgo v1.10.1

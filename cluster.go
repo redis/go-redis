@@ -161,6 +161,7 @@ type clusterNode struct {
 func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
 	opt := clOpt.clientOptions()
 	opt.Addr = addr
+	opt.Limiter = NewBreaker(2 * time.Second)
 	node := clusterNode{
 		Client: NewClient(opt),
 	}
