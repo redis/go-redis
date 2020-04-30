@@ -93,6 +93,7 @@ func NewConnPool(opt *Options) *ConnPool {
 		idleConns: make([]*Conn, 0, opt.PoolSize),
 		closedCh:  make(chan struct{}),
 	}
+
 	p.connsMu.Lock()
 	p.checkMinIdleConns()
 	p.connsMu.Unlock()
