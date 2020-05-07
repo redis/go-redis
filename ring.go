@@ -508,7 +508,7 @@ func (c *Ring) ForEachShard(
 
 func (c *Ring) cmdsInfo() (map[string]*CommandInfo, error) {
 	shards := c.shards.List()
-	firstErr := errRingShardsDown
+	var firstErr error
 	for _, shard := range shards {
 		cmdsInfo, err := shard.Client.Command(context.TODO()).Result()
 		if err == nil {
@@ -517,6 +517,9 @@ func (c *Ring) cmdsInfo() (map[string]*CommandInfo, error) {
 		if firstErr == nil {
 			firstErr = err
 		}
+	}
+	if firstErr == nil {
+		return nil, errRingShardsDown
 	}
 	return nil, firstErr
 }
