@@ -14,6 +14,7 @@ import (
 
 type Cmder interface {
 	Name() string
+	FullName() string
 	Args() []interface{}
 	String() string
 	stringArg(int) string
@@ -149,6 +150,21 @@ func (cmd *baseCmd) Name() string {
 	}
 	// Cmd name must be lower cased.
 	return internal.ToLower(cmd.stringArg(0))
+}
+
+func (cmd *baseCmd) FullName() string {
+	switch name := cmd.Name(); name {
+	case "cluster", "command":
+		if len(cmd.args) == 1 {
+			return name
+		}
+		if s2, ok := cmd.args[1].(string); ok {
+			return name + " " + s2
+		}
+		return name
+	default:
+		return name
+	}
 }
 
 func (cmd *baseCmd) Args() []interface{} {
