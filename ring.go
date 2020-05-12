@@ -65,6 +65,7 @@ type RingOptions struct {
 
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
+	OnRetry   func(ctx context.Context, cmds []Cmder, lastErr error, attempt int, retryBackoff time.Duration) error
 
 	Username string
 	Password string
@@ -586,7 +587,15 @@ func (c *Ring) _process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
-			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+			retryBackoff := c.retryBackoff(attempt)
+
+			if c.opt.OnRetry != nil {
+				if err := c.opt.OnRetry(ctx, []Cmder{cmd}, lastErr, attempt, retryBackoff); err != nil {
+					return err
+				}
+			}
+
+			if err := internal.Sleep(ctx, retryBackoff); err != nil {
 				return err
 			}
 		}

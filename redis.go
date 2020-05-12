@@ -320,7 +320,15 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder) error {
 		var retry bool
 		err := internal.WithSpan(ctx, "process", func(ctx context.Context) error {
 			if attempt > 0 {
-				if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				retryBackoff := c.retryBackoff(attempt)
+
+				if c.opt.OnRetry != nil {
+					if err := c.opt.OnRetry(ctx, []Cmder{cmd}, lastErr, attempt, retryBackoff); err != nil {
+						return err
+					}
+				}
+
+				if err := internal.Sleep(ctx, retryBackoff); err != nil {
 					return err
 				}
 			}
@@ -419,7 +427,15 @@ func (c *baseClient) _generalProcessPipeline(
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
-			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+			retryBackoff := c.retryBackoff(attempt)
+
+			if c.opt.OnRetry != nil {
+				if err := c.opt.OnRetry(ctx, cmds, lastErr, attempt, retryBackoff); err != nil {
+					return err
+				}
+			}
+
+			if err := internal.Sleep(ctx, retryBackoff); err != nil {
 				return err
 			}
 		}

@@ -41,6 +41,19 @@ type Options struct {
 	// Hook that is called when new connection is established.
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	// OnRetry is called before re-trying a failed command.
+	// If it returns a non-nil error, the failed command won't be re-tried
+	// and the returned error replaces the original command failure reason.
+	//
+	// lastErr is the command failure reason.
+	// attempt is the amount of failed attempts already being made.
+	// retryBackoff is the duration the caller is going to sleep for before actually re-trying.
+	//
+	// Example use cases:
+	// * Logging failures
+	// * Deciding not to re-try on a particular failure reason (by returning lastErr)
+	OnRetry func(ctx context.Context, cmds []Cmder, lastErr error, attempt int, retryBackoff time.Duration) error
+
 	// Use the specified Username to authenticate the current connection
 	// with one of the connections defined in the ACL list when connecting
 	// to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
