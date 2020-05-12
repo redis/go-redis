@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -237,6 +238,52 @@ var _ = Describe("Client", func() {
 		elapseRetry := time.Since(startRetry)
 
 		Expect(elapseRetry).To(BeNumerically(">", elapseNoRetry, 10*time.Millisecond))
+	})
+
+	It("should retry command on network error", func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+
+		client = redis.NewClient(&redis.Options{
+			Addr: redisAddr,
+			OnRetry: func(ctx context.Context, cmds []redis.Cmder, lastErr error, attempt int, retryBackoff time.Duration) error {
+				// ... due to this one:
+				return nil
+			},
+			MaxRetries: 1,
+		})
+
+		// Put bad connection in the pool.
+		cn, err := client.Pool().Get(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+
+		cn.SetNetConn(&badConn{})
+		client.Pool().Put(cn)
+
+		err = client.Ping(ctx).Err()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should not retry command on network error", func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+
+		client = redis.NewClient(&redis.Options{
+			Addr: redisAddr,
+			OnRetry: func(ctx context.Context, cmds []redis.Cmder, lastErr error, attempt int, retryBackoff time.Duration) error {
+				// ... due to this one:
+				return io.EOF
+			},
+			MaxRetries: 1,
+		})
+
+		// Put bad connection in the pool.
+		cn, err := client.Pool().Get(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+
+		cn.SetNetConn(&badConn{})
+		client.Pool().Put(cn)
+
+		err = client.Ping(ctx).Err()
+		Expect(err).To(Equal(io.EOF))
 	})
 
 	It("should update conn.UsedAt on read/write", func() {
