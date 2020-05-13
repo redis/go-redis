@@ -31,6 +31,10 @@ type RingOptions struct {
 	// different passwords. It will be ignored if the Password field is set.
 	Passwords map[string]string
 
+	// Map of name => username of ring shards, to allow different shards to have
+	// different usernames. It will be ignored if the Username field is set.
+	Usernames map[string]string
+
 	// Frequency of PING commands sent to check shards availability.
 	// Shard is considered down after 3 subsequent failed checks.
 	HeartbeatFrequency time.Duration
@@ -67,6 +71,7 @@ type RingOptions struct {
 	OnConnect func(*Conn) error
 
 	DB       int
+	Username string
 	Password string
 
 	MaxRetries      int
@@ -113,6 +118,7 @@ func (opt *RingOptions) clientOptions(shard string) *Options {
 		OnConnect: opt.OnConnect,
 
 		DB:       opt.DB,
+		Username: opt.getUsername(shard),
 		Password: opt.getPassword(shard),
 
 		DialTimeout:  opt.DialTimeout,
@@ -133,6 +139,13 @@ func (opt *RingOptions) getPassword(shard string) string {
 		return opt.Passwords[shard]
 	}
 	return opt.Password
+}
+
+func (opt *RingOptions) getUsername(shard string) string {
+	if opt.Username == "" {
+		return opt.Usernames[shard]
+	}
+	return opt.Username
 }
 
 //------------------------------------------------------------------------------
