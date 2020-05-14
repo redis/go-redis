@@ -91,7 +91,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	failover := &sentinelFailover{
 		masterName:    failoverOpt.MasterName,
 		sentinelAddrs: failoverOpt.SentinelAddrs,
-		username:	   failoverOpt.SentinelUsername,
+		username:      failoverOpt.SentinelUsername,
 		password:      failoverOpt.SentinelPassword,
 
 		opt: opt,

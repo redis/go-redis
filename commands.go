@@ -302,7 +302,7 @@ type Cmdable interface {
 type StatefulCmdable interface {
 	Cmdable
 	Auth(password string) *StatusCmd
-	AuthACL(username,password string) *StatusCmd
+	AuthACL(username, password string) *StatusCmd
 	Select(index int) *StatusCmd
 	SwapDB(index1, index2 int) *StatusCmd
 	ClientSetName(name string) *BoolCmd

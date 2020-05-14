@@ -22,7 +22,7 @@ type UniversalOptions struct {
 
 	Dialer             func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect          func(*Conn) error
-	Username		   string
+	Username           string
 	Password           string
 	MaxRetries         int
 	MinRetryBackoff    time.Duration
