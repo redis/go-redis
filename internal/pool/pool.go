@@ -94,7 +94,9 @@ func NewConnPool(opt *Options) *ConnPool {
 		closedCh:  make(chan struct{}),
 	}
 
+	p.connsMu.Lock()
 	p.checkMinIdleConns()
+	p.connsMu.Unlock()
 
 	if opt.IdleTimeout > 0 && opt.IdleCheckFrequency > 0 {
 		go p.reaper(opt.IdleCheckFrequency)
