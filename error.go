@@ -6,8 +6,23 @@ import (
 	"net"
 	"strings"
 
+	"github.com/go-redis/redis/v7/internal/pool"
 	"github.com/go-redis/redis/v7/internal/proto"
 )
+
+var ErrClosed = pool.ErrClosed
+
+type Error interface {
+	error
+
+	// RedisError is a no-op function but
+	// serves to distinguish types that are Redis
+	// errors from ordinary errors: a type is a
+	// Redis error if it has a RedisError method.
+	RedisError()
+}
+
+var _ Error = proto.RedisError("")
 
 func isRetryableError(err error, retryTimeout bool) bool {
 	switch err {

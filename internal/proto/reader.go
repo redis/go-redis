@@ -24,6 +24,8 @@ type RedisError string
 
 func (e RedisError) Error() string { return string(e) }
 
+func (RedisError) RedisError() {}
+
 //------------------------------------------------------------------------------
 
 type MultiBulkParse func(*Reader, int64) (interface{}, error)
