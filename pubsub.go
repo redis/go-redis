@@ -309,9 +309,11 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 	case []interface{}:
 		switch kind := reply[0].(string); kind {
 		case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
+			// Can be nil in case of "unsubscribe".
+			channel, _ := reply[1].(string)
 			return &Subscription{
 				Kind:    kind,
-				Channel: reply[1].(string),
+				Channel: channel,
 				Count:   int(reply[2].(int64)),
 			}, nil
 		case "message":
