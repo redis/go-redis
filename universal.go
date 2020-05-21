@@ -22,6 +22,7 @@ type UniversalOptions struct {
 
 	Dialer             func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect          func(*Conn) error
+	Username           string
 	Password           string
 	MaxRetries         int
 	MinRetryBackoff    time.Duration
@@ -60,6 +61,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		Dialer:    o.Dialer,
 		OnConnect: o.OnConnect,
 
+		Username: o.Username,
 		Password: o.Password,
 
 		MaxRedirects:   o.MaxRedirects,
@@ -99,6 +101,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		OnConnect: o.OnConnect,
 
 		DB:       o.DB,
+		Username: o.Username,
 		Password: o.Password,
 
 		MaxRetries:      o.MaxRetries,
@@ -133,6 +136,7 @@ func (o *UniversalOptions) Simple() *Options {
 		OnConnect: o.OnConnect,
 
 		DB:       o.DB,
+		Username: o.Username,
 		Password: o.Password,
 
 		MaxRetries:      o.MaxRetries,

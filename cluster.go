@@ -57,6 +57,7 @@ type ClusterOptions struct {
 
 	OnConnect func(*Conn) error
 
+	Username string
 	Password string
 
 	MaxRetries      int
@@ -130,6 +131,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
+		Username:        opt.Username,
 		Password:        opt.Password,
 		readOnly:        opt.ReadOnly,
 

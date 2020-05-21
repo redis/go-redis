@@ -302,6 +302,7 @@ type Cmdable interface {
 type StatefulCmdable interface {
 	Cmdable
 	Auth(password string) *StatusCmd
+	AuthACL(username, password string) *StatusCmd
 	Select(index int) *StatusCmd
 	SwapDB(index1, index2 int) *StatusCmd
 	ClientSetName(name string) *BoolCmd
@@ -320,6 +321,15 @@ type statefulCmdable func(cmd Cmder) error
 
 func (c statefulCmdable) Auth(password string) *StatusCmd {
 	cmd := NewStatusCmd("auth", password)
+	_ = c(cmd)
+	return cmd
+}
+
+// Perform an AUTH command, using the given user and pass.
+// Should be used to authenticate the current connection with one of the connections defined in the ACL list
+// when connecting to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
+func (c statefulCmdable) AuthACL(username, password string) *StatusCmd {
+	cmd := NewStatusCmd("auth", username, password)
 	_ = c(cmd)
 	return cmd
 }

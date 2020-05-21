@@ -22,6 +22,7 @@ type FailoverOptions struct {
 	MasterName string
 	// A seed list of host:port addresses of sentinel nodes.
 	SentinelAddrs    []string
+	SentinelUsername string
 	SentinelPassword string
 
 	// Following options are copied from Options struct.
@@ -29,6 +30,7 @@ type FailoverOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(*Conn) error
 
+	Username string
 	Password string
 	DB       int
 
@@ -57,6 +59,7 @@ func (opt *FailoverOptions) options() *Options {
 		OnConnect: opt.OnConnect,
 
 		DB:       opt.DB,
+		Username: opt.Username,
 		Password: opt.Password,
 
 		MaxRetries:      opt.MaxRetries,
@@ -88,6 +91,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	failover := &sentinelFailover{
 		masterName:    failoverOpt.MasterName,
 		sentinelAddrs: failoverOpt.SentinelAddrs,
+		username:      failoverOpt.SentinelUsername,
 		password:      failoverOpt.SentinelPassword,
 
 		opt: opt,
@@ -281,6 +285,7 @@ type sentinelFailover struct {
 	sentinelAddrs []string
 
 	opt      *Options
+	username string
 	password string
 
 	pool     *pool.ConnPool
@@ -372,6 +377,7 @@ func (c *sentinelFailover) masterAddr() (string, error) {
 			Addr:   sentinelAddr,
 			Dialer: c.opt.Dialer,
 
+			Username: c.username,
 			Password: c.password,
 
 			MaxRetries: c.opt.MaxRetries,

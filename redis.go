@@ -241,7 +241,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	_, err := conn.Pipelined(func(pipe Pipeliner) error {
 		if c.opt.Password != "" {
-			pipe.Auth(c.opt.Password)
+			if c.opt.Username != "" {
+				pipe.AuthACL(c.opt.Username, c.opt.Password)
+			} else {
+				pipe.Auth(c.opt.Password)
+			}
 		}
 
 		if c.opt.DB > 0 {

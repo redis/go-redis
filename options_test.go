@@ -15,56 +15,86 @@ func TestParseURL(t *testing.T) {
 		db   int
 		tls  bool
 		err  error
+		user string
+		pass string
 	}{
 		{
 			"redis://localhost:123/1",
 			"localhost:123",
 			1, false, nil,
+			"", "",
 		},
 		{
 			"redis://localhost:123",
 			"localhost:123",
 			0, false, nil,
+			"", "",
 		},
 		{
 			"redis://localhost/1",
 			"localhost:6379",
 			1, false, nil,
+			"", "",
 		},
 		{
 			"redis://12345",
 			"12345:6379",
 			0, false, nil,
+			"", "",
 		},
 		{
 			"rediss://localhost:123",
 			"localhost:123",
 			0, true, nil,
+			"", "",
+		},
+		{
+			"redis://:bar@localhost:123",
+			"localhost:123",
+			0, false, nil,
+			"", "bar",
+		},
+		{
+			"redis://foo@localhost:123",
+			"localhost:123",
+			0, false, nil,
+			"foo", "",
+		},
+		{
+			"redis://foo:bar@localhost:123",
+			"localhost:123",
+			0, false, nil,
+			"foo", "bar",
 		},
 		{
 			"redis://localhost/?abc=123",
 			"",
 			0, false, errors.New("no options supported"),
+			"", "",
 		},
 		{
 			"http://google.com",
 			"",
 			0, false, errors.New("invalid redis URL scheme: http"),
+			"", "",
 		},
 		{
 			"redis://localhost/1/2/3/4",
 			"",
 			0, false, errors.New("invalid redis URL path: /1/2/3/4"),
+			"", "",
 		},
 		{
 			"12345",
 			"",
 			0, false, errors.New("invalid redis URL scheme: "),
+			"", "",
 		},
 		{
 			"redis://localhost/iamadatabase",
 			"",
 			0, false, errors.New(`invalid redis database number: "iamadatabase"`),
+			"", "",
 		},
 	}
 
@@ -89,6 +119,12 @@ func TestParseURL(t *testing.T) {
 			}
 			if c.tls && o.TLSConfig == nil {
 				t.Errorf("got nil TLSConfig, expected a TLSConfig")
+			}
+			if o.Username != c.user {
+				t.Errorf("got %q, expected %q", o.Username, c.user)
+			}
+			if o.Password != c.pass {
+				t.Errorf("got %q, expected %q", o.Password, c.pass)
 			}
 		})
 	}
