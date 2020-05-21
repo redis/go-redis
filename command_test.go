@@ -72,14 +72,14 @@ var _ = Describe("Cmd", func() {
 	})
 
 	It("supports time.Time", func() {
-		tm := time.Date(2019, 01, 01, 0, 0, 0, 0, time.UTC)
+		tm := time.Date(2019, 01, 01, 9, 45, 10, 222125, time.UTC)
 
 		err := client.Set("time_key", tm, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		s, err := client.Get("time_key").Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(s).To(Equal("2019-01-01T00:00:00Z"))
+		Expect(s).To(Equal("2019-01-01T09:45:10.000222125Z"))
 
 		tm2, err := client.Get("time_key").Time()
 		Expect(err).NotTo(HaveOccurred())

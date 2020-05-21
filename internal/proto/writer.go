@@ -93,7 +93,7 @@ func (w *Writer) writeArg(v interface{}) error {
 		}
 		return w.int(0)
 	case time.Time:
-		return w.string(v.Format(time.RFC3339))
+		return w.string(v.Format(time.RFC3339Nano))
 	case encoding.BinaryMarshaler:
 		b, err := v.MarshalBinary()
 		if err != nil {
