@@ -3,7 +3,7 @@ package redis_test
 import (
 	"fmt"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -15,21 +15,21 @@ var _ = Describe("ScanIterator", func() {
 	var seed = func(n int) error {
 		pipe := client.Pipeline()
 		for i := 1; i <= n; i++ {
-			pipe.Set(fmt.Sprintf("K%02d", i), "x", 0).Err()
+			pipe.Set(ctx, fmt.Sprintf("K%02d", i), "x", 0).Err()
 		}
-		_, err := pipe.Exec()
+		_, err := pipe.Exec(ctx)
 		return err
 	}
 
 	var extraSeed = func(n int, m int) error {
 		pipe := client.Pipeline()
 		for i := 1; i <= m; i++ {
-			pipe.Set(fmt.Sprintf("A%02d", i), "x", 0).Err()
+			pipe.Set(ctx, fmt.Sprintf("A%02d", i), "x", 0).Err()
 		}
 		for i := 1; i <= n; i++ {
-			pipe.Set(fmt.Sprintf("K%02d", i), "x", 0).Err()
+			pipe.Set(ctx, fmt.Sprintf("K%02d", i), "x", 0).Err()
 		}
-		_, err := pipe.Exec()
+		_, err := pipe.Exec(ctx)
 		return err
 	}
 
@@ -37,15 +37,15 @@ var _ = Describe("ScanIterator", func() {
 	var hashSeed = func(n int) error {
 		pipe := client.Pipeline()
 		for i := 1; i <= n; i++ {
-			pipe.HSet(hashKey, fmt.Sprintf("K%02d", i), "x").Err()
+			pipe.HSet(ctx, hashKey, fmt.Sprintf("K%02d", i), "x").Err()
 		}
-		_, err := pipe.Exec()
+		_, err := pipe.Exec(ctx)
 		return err
 	}
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -53,8 +53,8 @@ var _ = Describe("ScanIterator", func() {
 	})
 
 	It("should scan across empty DBs", func() {
-		iter := client.Scan(0, "", 10).Iterator()
-		Expect(iter.Next()).To(BeFalse())
+		iter := client.Scan(ctx, 0, "", 10).Iterator()
+		Expect(iter.Next(ctx)).To(BeFalse())
 		Expect(iter.Err()).NotTo(HaveOccurred())
 	})
 
@@ -62,8 +62,8 @@ var _ = Describe("ScanIterator", func() {
 		Expect(seed(7)).NotTo(HaveOccurred())
 
 		var vals []string
-		iter := client.Scan(0, "", 0).Iterator()
-		for iter.Next() {
+		iter := client.Scan(ctx, 0, "", 0).Iterator()
+		for iter.Next(ctx) {
 			vals = append(vals, iter.Val())
 		}
 		Expect(iter.Err()).NotTo(HaveOccurred())
@@ -74,8 +74,8 @@ var _ = Describe("ScanIterator", func() {
 		Expect(seed(71)).NotTo(HaveOccurred())
 
 		var vals []string
-		iter := client.Scan(0, "", 10).Iterator()
-		for iter.Next() {
+		iter := client.Scan(ctx, 0, "", 10).Iterator()
+		for iter.Next(ctx) {
 			vals = append(vals, iter.Val())
 		}
 		Expect(iter.Err()).NotTo(HaveOccurred())
@@ -88,8 +88,8 @@ var _ = Describe("ScanIterator", func() {
 		Expect(hashSeed(71)).NotTo(HaveOccurred())
 
 		var vals []string
-		iter := client.HScan(hashKey, 0, "", 10).Iterator()
-		for iter.Next() {
+		iter := client.HScan(ctx, hashKey, 0, "", 10).Iterator()
+		for iter.Next(ctx) {
 			vals = append(vals, iter.Val())
 		}
 		Expect(iter.Err()).NotTo(HaveOccurred())
@@ -102,8 +102,8 @@ var _ = Describe("ScanIterator", func() {
 		Expect(seed(20)).NotTo(HaveOccurred())
 
 		var vals []string
-		iter := client.Scan(0, "", 10).Iterator()
-		for iter.Next() {
+		iter := client.Scan(ctx, 0, "", 10).Iterator()
+		for iter.Next(ctx) {
 			vals = append(vals, iter.Val())
 		}
 		Expect(iter.Err()).NotTo(HaveOccurred())
@@ -114,8 +114,8 @@ var _ = Describe("ScanIterator", func() {
 		Expect(seed(33)).NotTo(HaveOccurred())
 
 		var vals []string
-		iter := client.Scan(0, "K*2*", 10).Iterator()
-		for iter.Next() {
+		iter := client.Scan(ctx, 0, "K*2*", 10).Iterator()
+		for iter.Next(ctx) {
 			vals = append(vals, iter.Val())
 		}
 		Expect(iter.Err()).NotTo(HaveOccurred())
@@ -126,8 +126,8 @@ var _ = Describe("ScanIterator", func() {
 		Expect(extraSeed(2, 10)).NotTo(HaveOccurred())
 
 		var vals []string
-		iter := client.Scan(0, "K*", 1).Iterator()
-		for iter.Next() {
+		iter := client.Scan(ctx, 0, "K*", 1).Iterator()
+		for iter.Next(ctx) {
 			vals = append(vals, iter.Val())
 		}
 		Expect(iter.Err()).NotTo(HaveOccurred())

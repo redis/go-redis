@@ -1,48 +1,48 @@
 # Redis client for Golang
 
 [![Build Status](https://travis-ci.org/go-redis/redis.png?branch=master)](https://travis-ci.org/go-redis/redis)
-[![GoDoc](https://godoc.org/github.com/go-redis/redis?status.svg)](https://godoc.org/github.com/go-redis/redis)
+[![GoDoc](https://godoc.org/github.com/go-redis/redis?status.svg)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 [![Airbrake](https://img.shields.io/badge/kudos-airbrake.io-orange.svg)](https://airbrake.io)
 
 Supports:
 
 - Redis 3 commands except QUIT, MONITOR, SLOWLOG and SYNC.
 - Automatic connection pooling with [circuit breaker](https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern) support.
-- [Pub/Sub](https://godoc.org/github.com/go-redis/redis#PubSub).
-- [Transactions](https://godoc.org/github.com/go-redis/redis#example-Client-TxPipeline).
-- [Pipeline](https://godoc.org/github.com/go-redis/redis#example-Client-Pipeline) and [TxPipeline](https://godoc.org/github.com/go-redis/redis#example-Client-TxPipeline).
-- [Scripting](https://godoc.org/github.com/go-redis/redis#Script).
-- [Timeouts](https://godoc.org/github.com/go-redis/redis#Options).
-- [Redis Sentinel](https://godoc.org/github.com/go-redis/redis#NewFailoverClient).
-- [Redis Cluster](https://godoc.org/github.com/go-redis/redis#NewClusterClient).
-- [Cluster of Redis Servers](https://godoc.org/github.com/go-redis/redis#example-NewClusterClient--ManualSetup) without using cluster mode and Redis Sentinel.
-- [Ring](https://godoc.org/github.com/go-redis/redis#NewRing).
-- [Instrumentation](https://godoc.org/github.com/go-redis/redis#ex-package--Instrumentation).
+- [Pub/Sub](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#PubSub).
+- [Transactions](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-Client-TxPipeline).
+- [Pipeline](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-Client-Pipeline) and [TxPipeline](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-Client-TxPipeline).
+- [Scripting](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#Script).
+- [Timeouts](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#Options).
+- [Redis Sentinel](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#NewFailoverClient).
+- [Redis Cluster](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#NewClusterClient).
+- [Cluster of Redis Servers](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-NewClusterClient--ManualSetup) without using cluster mode and Redis Sentinel.
+- [Ring](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#NewRing).
+- [Instrumentation](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#ex-package--Instrumentation).
 - [Cache friendly](https://github.com/go-redis/cache).
 - [Rate limiting](https://github.com/go-redis/redis_rate).
 - [Distributed Locks](https://github.com/bsm/redislock).
 
-API docs: https://godoc.org/github.com/go-redis/redis.
-Examples: https://godoc.org/github.com/go-redis/redis#pkg-examples.
+API docs: https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc.
+Examples: https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples.
 
 ## Installation
 
 go-redis requires a Go version with [Modules](https://github.com/golang/go/wiki/Modules) support and uses import versioning. So please make sure to initialize a Go module before installing go-redis:
 
-``` shell
+```shell
 go mod init github.com/my/repo
-go get github.com/go-redis/redis/v7
+go get github.com/go-redis/redis/v8
 ```
 
 Import:
 
-``` go
-import "github.com/go-redis/redis/v7"
+```go
+import "github.com/go-redis/redis/v8"
 ```
 
 ## Quickstart
 
-``` go
+```go
 func ExampleNewClient() {
 	client := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
@@ -87,13 +87,13 @@ func ExampleClient() {
 
 ## Howto
 
-Please go through [examples](https://godoc.org/github.com/go-redis/redis#pkg-examples) to get an idea how to use this package.
+Please go through [examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples) to get an idea how to use this package.
 
 ## Look and feel
 
 Some corner cases:
 
-``` go
+```go
 // SET key value EX 10 NX
 set, err := client.SetNX("key", "value", 10*time.Second).Result()
 

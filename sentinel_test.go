@@ -1,7 +1,7 @@
 package redis_test
 
 import (
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("Sentinel", func() {
 			MasterName:    sentinelName,
 			SentinelAddrs: []string{":" + sentinelPort},
 		})
-		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -24,48 +24,48 @@ var _ = Describe("Sentinel", func() {
 
 	It("should facilitate failover", func() {
 		// Set value on master.
-		err := client.Set("foo", "master", 0).Err()
+		err := client.Set(ctx, "foo", "master", 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		// Verify.
-		val, err := sentinelMaster.Get("foo").Result()
+		val, err := sentinelMaster.Get(ctx, "foo").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal("master"))
 
 		// Create subscription.
-		ch := client.Subscribe("foo").Channel()
+		ch := client.Subscribe(ctx, "foo").Channel()
 
 		// Wait until replicated.
 		Eventually(func() string {
-			return sentinelSlave1.Get("foo").Val()
+			return sentinelSlave1.Get(ctx, "foo").Val()
 		}, "1s", "100ms").Should(Equal("master"))
 		Eventually(func() string {
-			return sentinelSlave2.Get("foo").Val()
+			return sentinelSlave2.Get(ctx, "foo").Val()
 		}, "1s", "100ms").Should(Equal("master"))
 
 		// Wait until slaves are picked up by sentinel.
 		Eventually(func() string {
-			return sentinel.Info().Val()
+			return sentinel.Info(ctx).Val()
 		}, "10s", "100ms").Should(ContainSubstring("slaves=2"))
 
 		// Kill master.
-		sentinelMaster.Shutdown()
+		sentinelMaster.Shutdown(ctx)
 		Eventually(func() error {
-			return sentinelMaster.Ping().Err()
+			return sentinelMaster.Ping(ctx).Err()
 		}, "5s", "100ms").Should(HaveOccurred())
 
 		// Wait for Redis sentinel to elect new master.
 		Eventually(func() string {
-			return sentinelSlave1.Info().Val() + sentinelSlave2.Info().Val()
+			return sentinelSlave1.Info(ctx).Val() + sentinelSlave2.Info(ctx).Val()
 		}, "30s", "1s").Should(ContainSubstring("role:master"))
 
 		// Check that client picked up new master.
 		Eventually(func() error {
-			return client.Get("foo").Err()
+			return client.Get(ctx, "foo").Err()
 		}, "5s", "100ms").ShouldNot(HaveOccurred())
 
 		// Publish message to check if subscription is renewed.
-		err = client.Publish("foo", "hello").Err()
+		err = client.Publish(ctx, "foo", "hello").Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		var msg *redis.Message
@@ -82,7 +82,7 @@ var _ = Describe("Sentinel", func() {
 			SentinelAddrs: []string{":" + sentinelPort},
 			DB:            1,
 		})
-		err := client.Ping().Err()
+		err := client.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 	})
 })

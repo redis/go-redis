@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 )
 
 type redisHook struct{}
@@ -37,7 +37,7 @@ func Example_instrumentation() {
 	})
 	rdb.AddHook(redisHook{})
 
-	rdb.Ping()
+	rdb.Ping(ctx)
 	// Output: starting processing: <ping: >
 	// finished processing: <ping: PONG>
 }
@@ -48,9 +48,9 @@ func ExamplePipeline_instrumentation() {
 	})
 	rdb.AddHook(redisHook{})
 
-	rdb.Pipelined(func(pipe redis.Pipeliner) error {
-		pipe.Ping()
-		pipe.Ping()
+	rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Ping(ctx)
+		pipe.Ping(ctx)
 		return nil
 	})
 	// Output: pipeline starting processing: [ping:  ping: ]
@@ -63,9 +63,9 @@ func ExampleWatch_instrumentation() {
 	})
 	rdb.AddHook(redisHook{})
 
-	rdb.Watch(func(tx *redis.Tx) error {
-		tx.Ping()
-		tx.Ping()
+	rdb.Watch(ctx, func(tx *redis.Tx) error {
+		tx.Ping(ctx)
+		tx.Ping(ctx)
 		return nil
 	}, "foo")
 	// Output:

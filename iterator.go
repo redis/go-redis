@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"sync"
 )
 
@@ -21,7 +22,7 @@ func (it *ScanIterator) Err() error {
 }
 
 // Next advances the cursor and returns true if more values can be read.
-func (it *ScanIterator) Next() bool {
+func (it *ScanIterator) Next(ctx context.Context) bool {
 	it.mu.Lock()
 	defer it.mu.Unlock()
 
@@ -49,7 +50,7 @@ func (it *ScanIterator) Next() bool {
 			it.cmd.args[2] = it.cmd.cursor
 		}
 
-		err := it.cmd.process(it.cmd)
+		err := it.cmd.process(ctx, it.cmd)
 		if err != nil {
 			return false
 		}

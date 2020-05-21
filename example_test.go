@@ -1,14 +1,16 @@
 package redis_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 )
 
+var ctx = context.Background()
 var rdb *redis.Client
 
 func init() {
@@ -29,7 +31,7 @@ func ExampleNewClient() {
 		DB:       0,                // use default DB
 	})
 
-	pong, err := rdb.Ping().Result()
+	pong, err := rdb.Ping(ctx).Result()
 	fmt.Println(pong, err)
 	// Output: PONG <nil>
 }
@@ -58,7 +60,7 @@ func ExampleNewFailoverClient() {
 		MasterName:    "master",
 		SentinelAddrs: []string{":26379"},
 	})
-	rdb.Ping()
+	rdb.Ping(ctx)
 }
 
 func ExampleNewClusterClient() {
@@ -67,7 +69,7 @@ func ExampleNewClusterClient() {
 	rdb := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs: []string{":7000", ":7001", ":7002", ":7003", ":7004", ":7005"},
 	})
-	rdb.Ping()
+	rdb.Ping(ctx)
 }
 
 // Following example creates a cluster from 2 master nodes and 2 slave nodes
@@ -106,11 +108,11 @@ func ExampleNewClusterClient_manualSetup() {
 		ClusterSlots:  clusterSlots,
 		RouteRandomly: true,
 	})
-	rdb.Ping()
+	rdb.Ping(ctx)
 
 	// ReloadState reloads cluster state. It calls ClusterSlots func
 	// to get cluster slots information.
-	err := rdb.ReloadState()
+	err := rdb.ReloadState(ctx)
 	if err != nil {
 		panic(err)
 	}
@@ -124,22 +126,22 @@ func ExampleNewRing() {
 			"shard3": ":7002",
 		},
 	})
-	rdb.Ping()
+	rdb.Ping(ctx)
 }
 
 func ExampleClient() {
-	err := rdb.Set("key", "value", 0).Err()
+	err := rdb.Set(ctx, "key", "value", 0).Err()
 	if err != nil {
 		panic(err)
 	}
 
-	val, err := rdb.Get("key").Result()
+	val, err := rdb.Get(ctx, "key").Result()
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("key", val)
 
-	val2, err := rdb.Get("missing_key").Result()
+	val2, err := rdb.Get(ctx, "missing_key").Result()
 	if err == redis.Nil {
 		fmt.Println("missing_key does not exist")
 	} else if err != nil {
@@ -152,19 +154,19 @@ func ExampleClient() {
 }
 
 func ExampleConn() {
-	conn := rdb.Conn()
+	conn := rdb.Conn(context.Background())
 
-	err := conn.ClientSetName("foobar").Err()
+	err := conn.ClientSetName(ctx, "foobar").Err()
 	if err != nil {
 		panic(err)
 	}
 
 	// Open other connections.
 	for i := 0; i < 10; i++ {
-		go rdb.Ping()
+		go rdb.Ping(ctx)
 	}
 
-	s, err := conn.ClientGetName().Result()
+	s, err := conn.ClientGetName(ctx).Result()
 	if err != nil {
 		panic(err)
 	}
@@ -175,20 +177,20 @@ func ExampleConn() {
 func ExampleClient_Set() {
 	// Last argument is expiration. Zero means the key has no
 	// expiration time.
-	err := rdb.Set("key", "value", 0).Err()
+	err := rdb.Set(ctx, "key", "value", 0).Err()
 	if err != nil {
 		panic(err)
 	}
 
 	// key2 will expire in an hour.
-	err = rdb.Set("key2", "value", time.Hour).Err()
+	err = rdb.Set(ctx, "key2", "value", time.Hour).Err()
 	if err != nil {
 		panic(err)
 	}
 }
 
 func ExampleClient_Incr() {
-	result, err := rdb.Incr("counter").Result()
+	result, err := rdb.Incr(ctx, "counter").Result()
 	if err != nil {
 		panic(err)
 	}
@@ -198,12 +200,12 @@ func ExampleClient_Incr() {
 }
 
 func ExampleClient_BLPop() {
-	if err := rdb.RPush("queue", "message").Err(); err != nil {
+	if err := rdb.RPush(ctx, "queue", "message").Err(); err != nil {
 		panic(err)
 	}
 
 	// use `rdb.BLPop(0, "queue")` for infinite waiting time
-	result, err := rdb.BLPop(1*time.Second, "queue").Result()
+	result, err := rdb.BLPop(ctx, 1*time.Second, "queue").Result()
 	if err != nil {
 		panic(err)
 	}
@@ -213,9 +215,9 @@ func ExampleClient_BLPop() {
 }
 
 func ExampleClient_Scan() {
-	rdb.FlushDB()
+	rdb.FlushDB(ctx)
 	for i := 0; i < 33; i++ {
-		err := rdb.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
+		err := rdb.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
 		if err != nil {
 			panic(err)
 		}
@@ -226,7 +228,7 @@ func ExampleClient_Scan() {
 	for {
 		var keys []string
 		var err error
-		keys, cursor, err = rdb.Scan(cursor, "key*", 10).Result()
+		keys, cursor, err = rdb.Scan(ctx, cursor, "key*", 10).Result()
 		if err != nil {
 			panic(err)
 		}
@@ -242,9 +244,9 @@ func ExampleClient_Scan() {
 
 func ExampleClient_Pipelined() {
 	var incr *redis.IntCmd
-	_, err := rdb.Pipelined(func(pipe redis.Pipeliner) error {
-		incr = pipe.Incr("pipelined_counter")
-		pipe.Expire("pipelined_counter", time.Hour)
+	_, err := rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		incr = pipe.Incr(ctx, "pipelined_counter")
+		pipe.Expire(ctx, "pipelined_counter", time.Hour)
 		return nil
 	})
 	fmt.Println(incr.Val(), err)
@@ -254,8 +256,8 @@ func ExampleClient_Pipelined() {
 func ExampleClient_Pipeline() {
 	pipe := rdb.Pipeline()
 
-	incr := pipe.Incr("pipeline_counter")
-	pipe.Expire("pipeline_counter", time.Hour)
+	incr := pipe.Incr(ctx, "pipeline_counter")
+	pipe.Expire(ctx, "pipeline_counter", time.Hour)
 
 	// Execute
 	//
@@ -263,16 +265,16 @@ func ExampleClient_Pipeline() {
 	//     EXPIRE pipeline_counts 3600
 	//
 	// using one rdb-server roundtrip.
-	_, err := pipe.Exec()
+	_, err := pipe.Exec(ctx)
 	fmt.Println(incr.Val(), err)
 	// Output: 1 <nil>
 }
 
 func ExampleClient_TxPipelined() {
 	var incr *redis.IntCmd
-	_, err := rdb.TxPipelined(func(pipe redis.Pipeliner) error {
-		incr = pipe.Incr("tx_pipelined_counter")
-		pipe.Expire("tx_pipelined_counter", time.Hour)
+	_, err := rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		incr = pipe.Incr(ctx, "tx_pipelined_counter")
+		pipe.Expire(ctx, "tx_pipelined_counter", time.Hour)
 		return nil
 	})
 	fmt.Println(incr.Val(), err)
@@ -282,8 +284,8 @@ func ExampleClient_TxPipelined() {
 func ExampleClient_TxPipeline() {
 	pipe := rdb.TxPipeline()
 
-	incr := pipe.Incr("tx_pipeline_counter")
-	pipe.Expire("tx_pipeline_counter", time.Hour)
+	incr := pipe.Incr(ctx, "tx_pipeline_counter")
+	pipe.Expire(ctx, "tx_pipeline_counter", time.Hour)
 
 	// Execute
 	//
@@ -293,7 +295,7 @@ func ExampleClient_TxPipeline() {
 	//     EXEC
 	//
 	// using one rdb-server roundtrip.
-	_, err := pipe.Exec()
+	_, err := pipe.Exec(ctx)
 	fmt.Println(incr.Val(), err)
 	// Output: 1 <nil>
 }
@@ -305,7 +307,7 @@ func ExampleClient_Watch() {
 	increment := func(key string) error {
 		txf := func(tx *redis.Tx) error {
 			// get current value or zero
-			n, err := tx.Get(key).Int()
+			n, err := tx.Get(ctx, key).Int()
 			if err != nil && err != redis.Nil {
 				return err
 			}
@@ -314,16 +316,16 @@ func ExampleClient_Watch() {
 			n++
 
 			// runs only if the watched keys remain unchanged
-			_, err = tx.TxPipelined(func(pipe redis.Pipeliner) error {
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				// pipe handles the error case
-				pipe.Set(key, n, 0)
+				pipe.Set(ctx, key, n, 0)
 				return nil
 			})
 			return err
 		}
 
 		for retries := routineCount; retries > 0; retries-- {
-			err := rdb.Watch(txf, key)
+			err := rdb.Watch(ctx, txf, key)
 			if err != redis.TxFailedErr {
 				return err
 			}
@@ -345,16 +347,16 @@ func ExampleClient_Watch() {
 	}
 	wg.Wait()
 
-	n, err := rdb.Get("counter3").Int()
+	n, err := rdb.Get(ctx, "counter3").Int()
 	fmt.Println("ended with", n, err)
 	// Output: ended with 100 <nil>
 }
 
 func ExamplePubSub() {
-	pubsub := rdb.Subscribe("mychannel1")
+	pubsub := rdb.Subscribe(ctx, "mychannel1")
 
 	// Wait for confirmation that subscription is created before publishing anything.
-	_, err := pubsub.Receive()
+	_, err := pubsub.Receive(ctx)
 	if err != nil {
 		panic(err)
 	}
@@ -363,7 +365,7 @@ func ExamplePubSub() {
 	ch := pubsub.Channel()
 
 	// Publish a message.
-	err = rdb.Publish("mychannel1", "hello").Err()
+	err = rdb.Publish(ctx, "mychannel1", "hello").Err()
 	if err != nil {
 		panic(err)
 	}
@@ -382,12 +384,12 @@ func ExamplePubSub() {
 }
 
 func ExamplePubSub_Receive() {
-	pubsub := rdb.Subscribe("mychannel2")
+	pubsub := rdb.Subscribe(ctx, "mychannel2")
 	defer pubsub.Close()
 
 	for i := 0; i < 2; i++ {
 		// ReceiveTimeout is a low level API. Use ReceiveMessage instead.
-		msgi, err := pubsub.ReceiveTimeout(time.Second)
+		msgi, err := pubsub.ReceiveTimeout(ctx, time.Second)
 		if err != nil {
 			break
 		}
@@ -396,7 +398,7 @@ func ExamplePubSub_Receive() {
 		case *redis.Subscription:
 			fmt.Println("subscribed to", msg.Channel)
 
-			_, err := rdb.Publish("mychannel2", "hello").Result()
+			_, err := rdb.Publish(ctx, "mychannel2", "hello").Result()
 			if err != nil {
 				panic(err)
 			}
@@ -419,15 +421,15 @@ func ExampleScript() {
 		return false
 	`)
 
-	n, err := IncrByXX.Run(rdb, []string{"xx_counter"}, 2).Result()
+	n, err := IncrByXX.Run(ctx, rdb, []string{"xx_counter"}, 2).Result()
 	fmt.Println(n, err)
 
-	err = rdb.Set("xx_counter", "40", 0).Err()
+	err = rdb.Set(ctx, "xx_counter", "40", 0).Err()
 	if err != nil {
 		panic(err)
 	}
 
-	n, err = IncrByXX.Run(rdb, []string{"xx_counter"}, 2).Result()
+	n, err = IncrByXX.Run(ctx, rdb, []string{"xx_counter"}, 2).Result()
 	fmt.Println(n, err)
 
 	// Output: <nil> redis: nil
@@ -435,26 +437,26 @@ func ExampleScript() {
 }
 
 func Example_customCommand() {
-	Get := func(rdb *redis.Client, key string) *redis.StringCmd {
-		cmd := redis.NewStringCmd("get", key)
-		rdb.Process(cmd)
+	Get := func(ctx context.Context, rdb *redis.Client, key string) *redis.StringCmd {
+		cmd := redis.NewStringCmd(ctx, "get", key)
+		rdb.Process(ctx, cmd)
 		return cmd
 	}
 
-	v, err := Get(rdb, "key_does_not_exist").Result()
+	v, err := Get(ctx, rdb, "key_does_not_exist").Result()
 	fmt.Printf("%q %s", v, err)
 	// Output: "" redis: nil
 }
 
 func Example_customCommand2() {
-	v, err := rdb.Do("get", "key_does_not_exist").Text()
+	v, err := rdb.Do(ctx, "get", "key_does_not_exist").Text()
 	fmt.Printf("%q %s", v, err)
 	// Output: "" redis: nil
 }
 
 func ExampleScanIterator() {
-	iter := rdb.Scan(0, "", 0).Iterator()
-	for iter.Next() {
+	iter := rdb.Scan(ctx, 0, "", 0).Iterator()
+	for iter.Next(ctx) {
 		fmt.Println(iter.Val())
 	}
 	if err := iter.Err(); err != nil {
@@ -463,8 +465,8 @@ func ExampleScanIterator() {
 }
 
 func ExampleScanCmd_Iterator() {
-	iter := rdb.Scan(0, "", 0).Iterator()
-	for iter.Next() {
+	iter := rdb.Scan(ctx, 0, "", 0).Iterator()
+	for iter.Next(ctx) {
 		fmt.Println(iter.Val())
 	}
 	if err := iter.Err(); err != nil {
@@ -478,7 +480,7 @@ func ExampleNewUniversalClient_simple() {
 	})
 	defer rdb.Close()
 
-	rdb.Ping()
+	rdb.Ping(ctx)
 }
 
 func ExampleNewUniversalClient_failover() {
@@ -488,7 +490,7 @@ func ExampleNewUniversalClient_failover() {
 	})
 	defer rdb.Close()
 
-	rdb.Ping()
+	rdb.Ping(ctx)
 }
 
 func ExampleNewUniversalClient_cluster() {
@@ -497,5 +499,5 @@ func ExampleNewUniversalClient_cluster() {
 	})
 	defer rdb.Close()
 
-	rdb.Ping()
+	rdb.Ping(ctx)
 }

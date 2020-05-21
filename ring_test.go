@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -22,7 +22,7 @@ var _ = Describe("Redis Ring", func() {
 
 	setRingKeys := func() {
 		for i := 0; i < 100; i++ {
-			err := ring.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
+			err := ring.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 		}
 	}
@@ -32,8 +32,8 @@ var _ = Describe("Redis Ring", func() {
 		opt.HeartbeatFrequency = heartbeat
 		ring = redis.NewRing(opt)
 
-		err := ring.ForEachShard(func(cl *redis.Client) error {
-			return cl.FlushDB().Err()
+		err := ring.ForEachShard(ctx, func(ctx context.Context, cl *redis.Client) error {
+			return cl.FlushDB(ctx).Err()
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -42,11 +42,11 @@ var _ = Describe("Redis Ring", func() {
 		Expect(ring.Close()).NotTo(HaveOccurred())
 	})
 
-	It("supports WithContext", func() {
-		c, cancel := context.WithCancel(context.Background())
+	It("supports context", func() {
+		ctx, cancel := context.WithCancel(ctx)
 		cancel()
 
-		err := ring.WithContext(c).Ping().Err()
+		err := ring.Ping(ctx).Err()
 		Expect(err).To(MatchError("context canceled"))
 	})
 
@@ -54,8 +54,8 @@ var _ = Describe("Redis Ring", func() {
 		setRingKeys()
 
 		// Both shards should have some keys now.
-		Expect(ringShard1.Info("keyspace").Val()).To(ContainSubstring("keys=57"))
-		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=57"))
+		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=43"))
 	})
 
 	It("distributes keys when using EVAL", func() {
@@ -67,12 +67,12 @@ var _ = Describe("Redis Ring", func() {
 		var key string
 		for i := 0; i < 100; i++ {
 			key = fmt.Sprintf("key%d", i)
-			err := script.Run(ring, []string{key}, "value").Err()
+			err := script.Run(ctx, ring, []string{key}, "value").Err()
 			Expect(err).NotTo(HaveOccurred())
 		}
 
-		Expect(ringShard1.Info("keyspace").Val()).To(ContainSubstring("keys=57"))
-		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=57"))
+		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=43"))
 	})
 
 	It("uses single shard when one of the shards is down", func() {
@@ -86,7 +86,7 @@ var _ = Describe("Redis Ring", func() {
 		setRingKeys()
 
 		// RingShard1 should have all keys.
-		Expect(ringShard1.Info("keyspace").Val()).To(ContainSubstring("keys=100"))
+		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=100"))
 
 		// Start ringShard2.
 		var err error
@@ -100,27 +100,27 @@ var _ = Describe("Redis Ring", func() {
 		setRingKeys()
 
 		// RingShard2 should have its keys.
-		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=43"))
 	})
 
 	It("supports hash tags", func() {
 		for i := 0; i < 100; i++ {
-			err := ring.Set(fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
+			err := ring.Set(ctx, fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 		}
 
-		Expect(ringShard1.Info("keyspace").Val()).ToNot(ContainSubstring("keys="))
-		Expect(ringShard2.Info("keyspace").Val()).To(ContainSubstring("keys=100"))
+		Expect(ringShard1.Info(ctx, "keyspace").Val()).ToNot(ContainSubstring("keys="))
+		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=100"))
 	})
 
 	Describe("pipeline", func() {
 		It("distributes keys", func() {
 			pipe := ring.Pipeline()
 			for i := 0; i < 100; i++ {
-				err := pipe.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
+				err := pipe.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
-			cmds, err := pipe.Exec()
+			cmds, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(100))
 			Expect(pipe.Close()).NotTo(HaveOccurred())
@@ -131,8 +131,8 @@ var _ = Describe("Redis Ring", func() {
 			}
 
 			// Both shards should have some keys now.
-			Expect(ringShard1.Info().Val()).To(ContainSubstring("keys=57"))
-			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=43"))
+			Expect(ringShard1.Info(ctx).Val()).To(ContainSubstring("keys=57"))
+			Expect(ringShard2.Info(ctx).Val()).To(ContainSubstring("keys=43"))
 		})
 
 		It("is consistent with ring", func() {
@@ -144,55 +144,32 @@ var _ = Describe("Redis Ring", func() {
 				keys = append(keys, string(key))
 			}
 
-			_, err := ring.Pipelined(func(pipe redis.Pipeliner) error {
+			_, err := ring.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 				for _, key := range keys {
-					pipe.Set(key, "value", 0).Err()
+					pipe.Set(ctx, key, "value", 0).Err()
 				}
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, key := range keys {
-				val, err := ring.Get(key).Result()
+				val, err := ring.Get(ctx, key).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(val).To(Equal("value"))
 			}
 		})
 
 		It("supports hash tags", func() {
-			_, err := ring.Pipelined(func(pipe redis.Pipeliner) error {
+			_, err := ring.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 				for i := 0; i < 100; i++ {
-					pipe.Set(fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
+					pipe.Set(ctx, fmt.Sprintf("key%d{tag}", i), "value", 0).Err()
 				}
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(ringShard1.Info().Val()).ToNot(ContainSubstring("keys="))
-			Expect(ringShard2.Info().Val()).To(ContainSubstring("keys=100"))
-		})
-	})
-
-	Describe("shard passwords", func() {
-		It("can be initialized with a single password, used for all shards", func() {
-			opts := redisRingOptions()
-			opts.Password = "password"
-			ring = redis.NewRing(opts)
-
-			err := ring.Ping().Err()
-			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
-		})
-
-		It("can be initialized with a passwords map, one for each shard", func() {
-			opts := redisRingOptions()
-			opts.Passwords = map[string]string{
-				"ringShardOne": "password1",
-				"ringShardTwo": "password2",
-			}
-			ring = redis.NewRing(opts)
-
-			err := ring.Ping().Err()
-			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
+			Expect(ringShard1.Info(ctx).Val()).ToNot(ContainSubstring("keys="))
+			Expect(ringShard2.Info(ctx).Val()).To(ContainSubstring("keys=100"))
 		})
 	})
 
@@ -205,13 +182,13 @@ var _ = Describe("Redis Ring", func() {
 			}
 			ring = redis.NewRing(opts)
 
-			err := ring.Ping().Err()
+			err := ring.Ping(ctx).Err()
 			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
 		})
 	})
 
 	It("supports Process hook", func() {
-		err := ring.Ping().Err()
+		err := ring.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		var stack []string
@@ -229,7 +206,7 @@ var _ = Describe("Redis Ring", func() {
 			},
 		})
 
-		ring.ForEachShard(func(shard *redis.Client) error {
+		ring.ForEachShard(ctx, func(ctx context.Context, shard *redis.Client) error {
 			shard.AddHook(&hook{
 				beforeProcess: func(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
 					Expect(cmd.String()).To(Equal("ping: "))
@@ -245,7 +222,7 @@ var _ = Describe("Redis Ring", func() {
 			return nil
 		})
 
-		err = ring.Ping().Err()
+		err = ring.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(stack).To(Equal([]string{
 			"ring.BeforeProcess",
@@ -256,7 +233,7 @@ var _ = Describe("Redis Ring", func() {
 	})
 
 	It("supports Pipeline hook", func() {
-		err := ring.Ping().Err()
+		err := ring.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		var stack []string
@@ -276,7 +253,7 @@ var _ = Describe("Redis Ring", func() {
 			},
 		})
 
-		ring.ForEachShard(func(shard *redis.Client) error {
+		ring.ForEachShard(ctx, func(ctx context.Context, shard *redis.Client) error {
 			shard.AddHook(&hook{
 				beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
 					Expect(cmds).To(HaveLen(1))
@@ -294,8 +271,8 @@ var _ = Describe("Redis Ring", func() {
 			return nil
 		})
 
-		_, err = ring.Pipelined(func(pipe redis.Pipeliner) error {
-			pipe.Ping()
+		_, err = ring.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Ping(ctx)
 			return nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -308,7 +285,7 @@ var _ = Describe("Redis Ring", func() {
 	})
 
 	It("supports TxPipeline hook", func() {
-		err := ring.Ping().Err()
+		err := ring.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		var stack []string
@@ -328,7 +305,7 @@ var _ = Describe("Redis Ring", func() {
 			},
 		})
 
-		ring.ForEachShard(func(shard *redis.Client) error {
+		ring.ForEachShard(ctx, func(ctx context.Context, shard *redis.Client) error {
 			shard.AddHook(&hook{
 				beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
 					Expect(cmds).To(HaveLen(3))
@@ -346,8 +323,8 @@ var _ = Describe("Redis Ring", func() {
 			return nil
 		})
 
-		_, err = ring.TxPipelined(func(pipe redis.Pipeliner) error {
-			pipe.Ping()
+		_, err = ring.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Ping(ctx)
 			return nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -372,13 +349,13 @@ var _ = Describe("empty Redis Ring", func() {
 	})
 
 	It("returns an error", func() {
-		err := ring.Ping().Err()
+		err := ring.Ping(ctx).Err()
 		Expect(err).To(MatchError("redis: all ring shards are down"))
 	})
 
 	It("pipeline returns an error", func() {
-		_, err := ring.Pipelined(func(pipe redis.Pipeliner) error {
-			pipe.Ping()
+		_, err := ring.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Ping(ctx)
 			return nil
 		})
 		Expect(err).To(MatchError("redis: all ring shards are down"))
@@ -395,8 +372,8 @@ var _ = Describe("Ring watch", func() {
 		opt.HeartbeatFrequency = heartbeat
 		ring = redis.NewRing(opt)
 
-		err := ring.ForEachShard(func(cl *redis.Client) error {
-			return cl.FlushDB().Err()
+		err := ring.ForEachShard(ctx, func(ctx context.Context, cl *redis.Client) error {
+			return cl.FlushDB(ctx).Err()
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -410,14 +387,14 @@ var _ = Describe("Ring watch", func() {
 
 		// Transactionally increments key using GET and SET commands.
 		incr = func(key string) error {
-			err := ring.Watch(func(tx *redis.Tx) error {
-				n, err := tx.Get(key).Int64()
+			err := ring.Watch(ctx, func(tx *redis.Tx) error {
+				n, err := tx.Get(ctx, key).Int64()
 				if err != nil && err != redis.Nil {
 					return err
 				}
 
-				_, err = tx.TxPipelined(func(pipe redis.Pipeliner) error {
-					pipe.Set(key, strconv.FormatInt(n+1, 10), 0)
+				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+					pipe.Set(ctx, key, strconv.FormatInt(n+1, 10), 0)
 					return nil
 				})
 				return err
@@ -441,17 +418,17 @@ var _ = Describe("Ring watch", func() {
 		}
 		wg.Wait()
 
-		n, err := ring.Get("key").Int64()
+		n, err := ring.Get(ctx, "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(100)))
 	})
 
 	It("should discard", func() {
-		err := ring.Watch(func(tx *redis.Tx) error {
-			cmds, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
-				pipe.Set("key1", "hello1", 0)
+		err := ring.Watch(ctx, func(tx *redis.Tx) error {
+			cmds, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, "key1", "hello1", 0)
 				pipe.Discard()
-				pipe.Set("key2", "hello2", 0)
+				pipe.Set(ctx, "key2", "hello2", 0)
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -460,23 +437,23 @@ var _ = Describe("Ring watch", func() {
 		}, "key1", "key2")
 		Expect(err).NotTo(HaveOccurred())
 
-		get := ring.Get("key1")
+		get := ring.Get(ctx, "key1")
 		Expect(get.Err()).To(Equal(redis.Nil))
 		Expect(get.Val()).To(Equal(""))
 
-		get = ring.Get("key2")
+		get = ring.Get(ctx, "key2")
 		Expect(get.Err()).NotTo(HaveOccurred())
 		Expect(get.Val()).To(Equal("hello2"))
 	})
 
 	It("returns no error when there are no commands", func() {
-		err := ring.Watch(func(tx *redis.Tx) error {
-			_, err := tx.TxPipelined(func(redis.Pipeliner) error { return nil })
+		err := ring.Watch(ctx, func(tx *redis.Tx) error {
+			_, err := tx.TxPipelined(ctx, func(redis.Pipeliner) error { return nil })
 			return err
 		}, "key")
 		Expect(err).NotTo(HaveOccurred())
 
-		v, err := ring.Ping().Result()
+		v, err := ring.Ping(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(v).To(Equal("PONG"))
 	})
@@ -484,10 +461,10 @@ var _ = Describe("Ring watch", func() {
 	It("should exec bulks", func() {
 		const N = 20000
 
-		err := ring.Watch(func(tx *redis.Tx) error {
-			cmds, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
+		err := ring.Watch(ctx, func(tx *redis.Tx) error {
+			cmds, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				for i := 0; i < N; i++ {
-					pipe.Incr("key")
+					pipe.Incr(ctx, "key")
 				}
 				return nil
 			})
@@ -500,7 +477,7 @@ var _ = Describe("Ring watch", func() {
 		}, "key")
 		Expect(err).NotTo(HaveOccurred())
 
-		num, err := ring.Get("key").Int64()
+		num, err := ring.Get(ctx, "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(num).To(Equal(int64(N)))
 	})
@@ -508,21 +485,21 @@ var _ = Describe("Ring watch", func() {
 	It("should Watch/Unwatch", func() {
 		var C, N int
 
-		err := ring.Set("key", "0", 0).Err()
+		err := ring.Set(ctx, "key", "0", 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				err := ring.Watch(func(tx *redis.Tx) error {
-					val, err := tx.Get("key").Result()
+				err := ring.Watch(ctx, func(tx *redis.Tx) error {
+					val, err := tx.Get(ctx, "key").Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(val).NotTo(Equal(redis.Nil))
 
 					num, err := strconv.ParseInt(val, 10, 64)
 					Expect(err).NotTo(HaveOccurred())
 
-					cmds, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
-						pipe.Set("key", strconv.FormatInt(num+1, 10), 0)
+					cmds, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+						pipe.Set(ctx, "key", strconv.FormatInt(num+1, 10), 0)
 						return nil
 					})
 					Expect(cmds).To(HaveLen(1))
@@ -536,31 +513,31 @@ var _ = Describe("Ring watch", func() {
 			}
 		})
 
-		val, err := ring.Get("key").Int64()
+		val, err := ring.Get(ctx, "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(int64(C * N)))
 	})
 
 	It("should close Tx without closing the client", func() {
-		err := ring.Watch(func(tx *redis.Tx) error {
-			_, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
-				pipe.Ping()
+		err := ring.Watch(ctx, func(tx *redis.Tx) error {
+			_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Ping(ctx)
 				return nil
 			})
 			return err
 		}, "key")
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(ring.Ping().Err()).NotTo(HaveOccurred())
+		Expect(ring.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	It("respects max size on multi", func() {
 		perform(1000, func(id int) {
 			var ping *redis.StatusCmd
 
-			err := ring.Watch(func(tx *redis.Tx) error {
-				cmds, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
-					ping = pipe.Ping()
+			err := ring.Watch(ctx, func(tx *redis.Tx) error {
+				cmds, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+					ping = pipe.Ping(ctx)
 					return nil
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -573,7 +550,7 @@ var _ = Describe("Ring watch", func() {
 			Expect(ping.Val()).To(Equal("PONG"))
 		})
 
-		ring.ForEachShard(func(cl *redis.Client) error {
+		ring.ForEachShard(ctx, func(ctx context.Context, cl *redis.Client) error {
 			defer GinkgoRecover()
 
 			pool := cl.Pool()
@@ -597,17 +574,17 @@ var _ = Describe("Ring Tx timeout", func() {
 
 	testTimeout := func() {
 		It("Tx timeouts", func() {
-			err := ring.Watch(func(tx *redis.Tx) error {
-				return tx.Ping().Err()
+			err := ring.Watch(ctx, func(tx *redis.Tx) error {
+				return tx.Ping(ctx).Err()
 			}, "foo")
 			Expect(err).To(HaveOccurred())
 			Expect(err.(net.Error).Timeout()).To(BeTrue())
 		})
 
 		It("Tx Pipeline timeouts", func() {
-			err := ring.Watch(func(tx *redis.Tx) error {
-				_, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
-					pipe.Ping()
+			err := ring.Watch(ctx, func(tx *redis.Tx) error {
+				_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+					pipe.Ping(ctx)
 					return nil
 				})
 				return err
@@ -627,17 +604,17 @@ var _ = Describe("Ring Tx timeout", func() {
 			opt.HeartbeatFrequency = heartbeat
 			ring = redis.NewRing(opt)
 
-			err := ring.ForEachShard(func(client *redis.Client) error {
-				return client.ClientPause(pause).Err()
+			err := ring.ForEachShard(ctx, func(ctx context.Context, client *redis.Client) error {
+				return client.ClientPause(ctx, pause).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {
-			_ = ring.ForEachShard(func(client *redis.Client) error {
+			_ = ring.ForEachShard(ctx, func(ctx context.Context, client *redis.Client) error {
 				defer GinkgoRecover()
 				Eventually(func() error {
-					return client.Ping().Err()
+					return client.Ping(ctx).Err()
 				}, 2*pause).ShouldNot(HaveOccurred())
 				return nil
 			})

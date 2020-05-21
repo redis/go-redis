@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-redis/redis/v7/internal/util"
+	"github.com/go-redis/redis/v8/internal/util"
 )
 
 type Writer struct {
@@ -93,7 +93,8 @@ func (w *Writer) writeArg(v interface{}) error {
 		}
 		return w.int(0)
 	case time.Time:
-		return w.string(v.Format(time.RFC3339Nano))
+		w.numBuf = v.AppendFormat(w.numBuf[:0], time.RFC3339Nano)
+		return w.bytes(w.numBuf)
 	case encoding.BinaryMarshaler:
 		b, err := v.MarshalBinary()
 		if err != nil {

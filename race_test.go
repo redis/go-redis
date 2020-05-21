@@ -2,7 +2,6 @@ package redis_test
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -10,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -22,7 +21,7 @@ var _ = Describe("races", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB().Err()).To(BeNil())
+		Expect(client.FlushDB(ctx).Err()).To(BeNil())
 
 		C, N = 10, 1000
 		if testing.Short() {
@@ -40,7 +39,7 @@ var _ = Describe("races", func() {
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
 				msg := fmt.Sprintf("echo %d %d", id, i)
-				echo, err := client.Echo(msg).Result()
+				echo, err := client.Echo(ctx, msg).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(echo).To(Equal(msg))
 			}
@@ -52,12 +51,12 @@ var _ = Describe("races", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				err := client.Incr(key).Err()
+				err := client.Incr(ctx, key).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 		})
 
-		val, err := client.Get(key).Int64()
+		val, err := client.Get(ctx, key).Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(int64(C * N)))
 	})
@@ -66,6 +65,7 @@ var _ = Describe("races", func() {
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
 				err := client.Set(
+					ctx,
 					fmt.Sprintf("keys.key-%d-%d", id, i),
 					fmt.Sprintf("hello-%d-%d", id, i),
 					0,
@@ -74,7 +74,7 @@ var _ = Describe("races", func() {
 			}
 		})
 
-		keys := client.Keys("keys.*")
+		keys := client.Keys(ctx, "keys.*")
 		Expect(keys.Err()).NotTo(HaveOccurred())
 		Expect(len(keys.Val())).To(Equal(C * N))
 	})
@@ -86,12 +86,12 @@ var _ = Describe("races", func() {
 				key := fmt.Sprintf("keys.key-%d", i)
 				keys = append(keys, key)
 
-				err := client.Set(key, fmt.Sprintf("hello-%d", i), 0).Err()
+				err := client.Set(ctx, key, fmt.Sprintf("hello-%d", i), 0).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 			keys = append(keys, "non-existent-key")
 
-			vals, err := client.MGet(keys...).Result()
+			vals, err := client.MGet(ctx, keys...).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(vals)).To(Equal(N + 2))
 
@@ -109,7 +109,7 @@ var _ = Describe("races", func() {
 
 		bigVal := bigVal()
 
-		err := client.Set("key", bigVal, 0).Err()
+		err := client.Set(ctx, "key", bigVal, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		// Reconnect to get new connection.
@@ -118,7 +118,7 @@ var _ = Describe("races", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				got, err := client.Get("key").Bytes()
+				got, err := client.Get(ctx, "key").Bytes()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(got).To(Equal(bigVal))
 			}
@@ -131,14 +131,14 @@ var _ = Describe("races", func() {
 		bigVal := bigVal()
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				err := client.Set("key", bigVal, 0).Err()
+				err := client.Set(ctx, "key", bigVal, 0).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 		})
 	})
 
 	It("should select db", func() {
-		err := client.Set("db", 1, 0).Err()
+		err := client.Set(ctx, "db", 1, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		perform(C, func(id int) {
@@ -146,10 +146,10 @@ var _ = Describe("races", func() {
 			opt.DB = id
 			client := redis.NewClient(opt)
 			for i := 0; i < N; i++ {
-				err := client.Set("db", id, 0).Err()
+				err := client.Set(ctx, "db", id, 0).Err()
 				Expect(err).NotTo(HaveOccurred())
 
-				n, err := client.Get("db").Int64()
+				n, err := client.Get(ctx, "db").Int64()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(n).To(Equal(int64(id)))
 			}
@@ -157,7 +157,7 @@ var _ = Describe("races", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		n, err := client.Get("db").Int64()
+		n, err := client.Get(ctx, "db").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(1)))
 	})
@@ -170,7 +170,7 @@ var _ = Describe("races", func() {
 			client := redis.NewClient(opt)
 
 			perform(C, func(id int) {
-				err := client.Ping().Err()
+				err := client.Ping(ctx).Err()
 				Expect(err).To(HaveOccurred())
 				Expect(err.(net.Error).Timeout()).To(BeTrue())
 			})
@@ -181,21 +181,21 @@ var _ = Describe("races", func() {
 	})
 
 	It("should Watch/Unwatch", func() {
-		err := client.Set("key", "0", 0).Err()
+		err := client.Set(ctx, "key", "0", 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				err := client.Watch(func(tx *redis.Tx) error {
-					val, err := tx.Get("key").Result()
+				err := client.Watch(ctx, func(tx *redis.Tx) error {
+					val, err := tx.Get(ctx, "key").Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(val).NotTo(Equal(redis.Nil))
 
 					num, err := strconv.ParseInt(val, 10, 64)
 					Expect(err).NotTo(HaveOccurred())
 
-					cmds, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
-						pipe.Set("key", strconv.FormatInt(num+1, 10), 0)
+					cmds, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+						pipe.Set(ctx, "key", strconv.FormatInt(num+1, 10), 0)
 						return nil
 					})
 					Expect(cmds).To(HaveLen(1))
@@ -209,7 +209,7 @@ var _ = Describe("races", func() {
 			}
 		})
 
-		val, err := client.Get("key").Int64()
+		val, err := client.Get(ctx, "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(int64(C * N)))
 	})
@@ -218,10 +218,10 @@ var _ = Describe("races", func() {
 		perform(C, func(id int) {
 			pipe := client.Pipeline()
 			for i := 0; i < N; i++ {
-				pipe.Echo(fmt.Sprint(i))
+				pipe.Echo(ctx, fmt.Sprint(i))
 			}
 
-			cmds, err := pipe.Exec()
+			cmds, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(N))
 
@@ -234,14 +234,14 @@ var _ = Describe("races", func() {
 	It("should Pipeline", func() {
 		pipe := client.Pipeline()
 		perform(N, func(id int) {
-			pipe.Incr("key")
+			pipe.Incr(ctx, "key")
 		})
 
-		cmds, err := pipe.Exec()
+		cmds, err := pipe.Exec(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cmds).To(HaveLen(N))
 
-		n, err := client.Get("key").Int64()
+		n, err := client.Get(ctx, "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(N)))
 	})
@@ -249,14 +249,14 @@ var _ = Describe("races", func() {
 	It("should TxPipeline", func() {
 		pipe := client.TxPipeline()
 		perform(N, func(id int) {
-			pipe.Incr("key")
+			pipe.Incr(ctx, "key")
 		})
 
-		cmds, err := pipe.Exec()
+		cmds, err := pipe.Exec(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cmds).To(HaveLen(N))
 
-		n, err := client.Get("key").Int64()
+		n, err := client.Get(ctx, "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(N)))
 	})
@@ -265,7 +265,7 @@ var _ = Describe("races", func() {
 		var received uint32
 		wg := performAsync(C, func(id int) {
 			for {
-				v, err := client.BLPop(3*time.Second, "list").Result()
+				v, err := client.BLPop(ctx, 3*time.Second, "list").Result()
 				if err != nil {
 					break
 				}
@@ -276,7 +276,7 @@ var _ = Describe("races", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				err := client.LPush("list", "hello").Err()
+				err := client.LPush(ctx, "list", "hello").Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 		})
@@ -287,7 +287,7 @@ var _ = Describe("races", func() {
 
 	It("should WithContext", func() {
 		perform(C, func(_ int) {
-			err := client.WithContext(context.Background()).Ping().Err()
+			err := client.WithContext(ctx).Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
@@ -299,7 +299,7 @@ var _ = Describe("cluster races", func() {
 
 	BeforeEach(func() {
 		opt := redisClusterOptions()
-		client = cluster.newClusterClient(opt)
+		client = cluster.newClusterClient(ctx, opt)
 
 		C, N = 10, 1000
 		if testing.Short() {
@@ -317,7 +317,7 @@ var _ = Describe("cluster races", func() {
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
 				msg := fmt.Sprintf("echo %d %d", id, i)
-				echo, err := client.Echo(msg).Result()
+				echo, err := client.Echo(ctx, msg).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(echo).To(Equal(msg))
 			}
@@ -328,7 +328,7 @@ var _ = Describe("cluster races", func() {
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
 				key := fmt.Sprintf("key_%d_%d", id, i)
-				_, err := client.Get(key).Result()
+				_, err := client.Get(ctx, key).Result()
 				Expect(err).To(Equal(redis.Nil))
 			}
 		})
@@ -339,12 +339,12 @@ var _ = Describe("cluster races", func() {
 
 		perform(C, func(id int) {
 			for i := 0; i < N; i++ {
-				err := client.Incr(key).Err()
+				err := client.Incr(ctx, key).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 		})
 
-		val, err := client.Get(key).Int64()
+		val, err := client.Get(ctx, key).Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(int64(C * N)))
 	})

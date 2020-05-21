@@ -1,12 +1,13 @@
 package redis
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
 
-	"github.com/go-redis/redis/v7/internal/hashtag"
-	"github.com/go-redis/redis/v7/internal/pool"
+	"github.com/go-redis/redis/v8/internal/hashtag"
+	"github.com/go-redis/redis/v8/internal/pool"
 )
 
 func (c *baseClient) Pool() pool.Pooler {
@@ -17,12 +18,12 @@ func (c *PubSub) SetNetConn(netConn net.Conn) {
 	c.cn = pool.NewConn(netConn)
 }
 
-func (c *ClusterClient) LoadState() (*clusterState, error) {
-	return c.loadState()
+func (c *ClusterClient) LoadState(ctx context.Context) (*clusterState, error) {
+	return c.loadState(ctx)
 }
 
-func (c *ClusterClient) SlotAddrs(slot int) []string {
-	state, err := c.state.Get()
+func (c *ClusterClient) SlotAddrs(ctx context.Context, slot int) []string {
+	state, err := c.state.Get(ctx)
 	if err != nil {
 		panic(err)
 	}
@@ -34,8 +35,8 @@ func (c *ClusterClient) SlotAddrs(slot int) []string {
 	return addrs
 }
 
-func (c *ClusterClient) Nodes(key string) ([]*clusterNode, error) {
-	state, err := c.state.Reload()
+func (c *ClusterClient) Nodes(ctx context.Context, key string) ([]*clusterNode, error) {
+	state, err := c.state.Reload(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -48,8 +49,8 @@ func (c *ClusterClient) Nodes(key string) ([]*clusterNode, error) {
 	return nodes, nil
 }
 
-func (c *ClusterClient) SwapNodes(key string) error {
-	nodes, err := c.Nodes(key)
+func (c *ClusterClient) SwapNodes(ctx context.Context, key string) error {
+	nodes, err := c.Nodes(ctx, key)
 	if err != nil {
 		return err
 	}
@@ -57,12 +58,12 @@ func (c *ClusterClient) SwapNodes(key string) error {
 	return nil
 }
 
-func (state *clusterState) IsConsistent() bool {
+func (state *clusterState) IsConsistent(ctx context.Context) bool {
 	if len(state.Masters) < 3 {
 		return false
 	}
 	for _, master := range state.Masters {
-		s := master.Client.Info("replication").Val()
+		s := master.Client.Info(ctx, "replication").Val()
 		if !strings.Contains(s, "role:master") {
 			return false
 		}
@@ -72,7 +73,7 @@ func (state *clusterState) IsConsistent() bool {
 		return false
 	}
 	for _, slave := range state.Slaves {
-		s := slave.Client.Info("replication").Val()
+		s := slave.Client.Info(ctx, "replication").Val()
 		if !strings.Contains(s, "role:slave") {
 			return false
 		}

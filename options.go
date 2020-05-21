@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis/v7/internal/pool"
+	"github.com/go-redis/redis/v8/internal"
+	"github.com/go-redis/redis/v8/internal/pool"
 )
 
 // Limiter is the interface of a rate limiter or a circuit breaker.
@@ -237,7 +238,13 @@ func ParseURL(redisURL string) (*Options, error) {
 func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
-			return opt.Dialer(ctx, opt.Network, opt.Addr)
+			var conn net.Conn
+			err := internal.WithSpan(ctx, "dialer", func(ctx context.Context) error {
+				var err error
+				conn, err = opt.Dialer(ctx, opt.Network, opt.Addr)
+				return err
+			})
+			return conn, err
 		},
 		PoolSize:           opt.PoolSize,
 		MinIdleConns:       opt.MinIdleConns,

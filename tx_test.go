@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -16,7 +16,7 @@ var _ = Describe("Tx", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -28,14 +28,14 @@ var _ = Describe("Tx", func() {
 
 		// Transactionally increments key using GET and SET commands.
 		incr = func(key string) error {
-			err := client.Watch(func(tx *redis.Tx) error {
-				n, err := tx.Get(key).Int64()
+			err := client.Watch(ctx, func(tx *redis.Tx) error {
+				n, err := tx.Get(ctx, key).Int64()
 				if err != nil && err != redis.Nil {
 					return err
 				}
 
-				_, err = tx.TxPipelined(func(pipe redis.Pipeliner) error {
-					pipe.Set(key, strconv.FormatInt(n+1, 10), 0)
+				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+					pipe.Set(ctx, key, strconv.FormatInt(n+1, 10), 0)
 					return nil
 				})
 				return err
@@ -59,17 +59,17 @@ var _ = Describe("Tx", func() {
 		}
 		wg.Wait()
 
-		n, err := client.Get("key").Int64()
+		n, err := client.Get(ctx, "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(100)))
 	})
 
 	It("should discard", func() {
-		err := client.Watch(func(tx *redis.Tx) error {
-			cmds, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
-				pipe.Set("key1", "hello1", 0)
+		err := client.Watch(ctx, func(tx *redis.Tx) error {
+			cmds, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, "key1", "hello1", 0)
 				pipe.Discard()
-				pipe.Set("key2", "hello2", 0)
+				pipe.Set(ctx, "key2", "hello2", 0)
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -78,23 +78,23 @@ var _ = Describe("Tx", func() {
 		}, "key1", "key2")
 		Expect(err).NotTo(HaveOccurred())
 
-		get := client.Get("key1")
+		get := client.Get(ctx, "key1")
 		Expect(get.Err()).To(Equal(redis.Nil))
 		Expect(get.Val()).To(Equal(""))
 
-		get = client.Get("key2")
+		get = client.Get(ctx, "key2")
 		Expect(get.Err()).NotTo(HaveOccurred())
 		Expect(get.Val()).To(Equal("hello2"))
 	})
 
 	It("returns no error when there are no commands", func() {
-		err := client.Watch(func(tx *redis.Tx) error {
-			_, err := tx.TxPipelined(func(redis.Pipeliner) error { return nil })
+		err := client.Watch(ctx, func(tx *redis.Tx) error {
+			_, err := tx.TxPipelined(ctx, func(redis.Pipeliner) error { return nil })
 			return err
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		v, err := client.Ping().Result()
+		v, err := client.Ping(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(v).To(Equal("PONG"))
 	})
@@ -102,10 +102,10 @@ var _ = Describe("Tx", func() {
 	It("should exec bulks", func() {
 		const N = 20000
 
-		err := client.Watch(func(tx *redis.Tx) error {
-			cmds, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
+		err := client.Watch(ctx, func(tx *redis.Tx) error {
+			cmds, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				for i := 0; i < N; i++ {
-					pipe.Incr("key")
+					pipe.Incr(ctx, "key")
 				}
 				return nil
 			})
@@ -118,7 +118,7 @@ var _ = Describe("Tx", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		num, err := client.Get("key").Int64()
+		num, err := client.Get(ctx, "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(num).To(Equal(int64(N)))
 	})
@@ -132,9 +132,9 @@ var _ = Describe("Tx", func() {
 		client.Pool().Put(cn)
 
 		do := func() error {
-			err := client.Watch(func(tx *redis.Tx) error {
-				_, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
-					pipe.Ping()
+			err := client.Watch(ctx, func(tx *redis.Tx) error {
+				_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+					pipe.Ping(ctx)
 					return nil
 				})
 				return err

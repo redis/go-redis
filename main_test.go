@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -32,10 +32,10 @@ const (
 
 const (
 	sentinelName       = "mymaster"
-	sentinelMasterPort = "8123"
-	sentinelSlave1Port = "8124"
-	sentinelSlave2Port = "8125"
-	sentinelPort       = "8126"
+	sentinelMasterPort = "9123"
+	sentinelSlave1Port = "9124"
+	sentinelSlave2Port = "9125"
+	sentinelPort       = "9126"
 )
 
 var (
@@ -80,7 +80,7 @@ var _ = BeforeSuite(func() {
 		sentinelSlave2Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
 	Expect(err).NotTo(HaveOccurred())
 
-	Expect(startCluster(cluster)).NotTo(HaveOccurred())
+	Expect(startCluster(ctx, cluster)).NotTo(HaveOccurred())
 })
 
 var _ = AfterSuite(func() {
@@ -223,7 +223,7 @@ func connectTo(port string) (*redis.Client, error) {
 	})
 
 	err := eventually(func() error {
-		return client.Ping().Err()
+		return client.Ping(ctx).Err()
 	}, 30*time.Second)
 	if err != nil {
 		return nil, err
@@ -243,7 +243,7 @@ func (p *redisProcess) Close() error {
 	}
 
 	err := eventually(func() error {
-		if err := p.Client.Ping().Err(); err != nil {
+		if err := p.Client.Ping(ctx).Err(); err != nil {
 			return nil
 		}
 		return errors.New("client is not shutdown")
@@ -313,12 +313,12 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 		return nil, err
 	}
 	for _, cmd := range []*redis.StatusCmd{
-		redis.NewStatusCmd("SENTINEL", "MONITOR", masterName, "127.0.0.1", masterPort, "1"),
-		redis.NewStatusCmd("SENTINEL", "SET", masterName, "down-after-milliseconds", "500"),
-		redis.NewStatusCmd("SENTINEL", "SET", masterName, "failover-timeout", "1000"),
-		redis.NewStatusCmd("SENTINEL", "SET", masterName, "parallel-syncs", "1"),
+		redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", masterName, "127.0.0.1", masterPort, "1"),
+		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "down-after-milliseconds", "500"),
+		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "failover-timeout", "1000"),
+		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "parallel-syncs", "1"),
 	} {
-		client.Process(cmd)
+		client.Process(ctx, cmd)
 		if err := cmd.Err(); err != nil {
 			process.Kill()
 			return nil, err

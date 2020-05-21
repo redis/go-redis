@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -27,7 +27,7 @@ var _ = Describe("pool", func() {
 
 	It("respects max size", func() {
 		perform(1000, func(id int) {
-			val, err := client.Ping().Result()
+			val, err := client.Ping(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("PONG"))
 		})
@@ -42,9 +42,9 @@ var _ = Describe("pool", func() {
 		perform(1000, func(id int) {
 			var ping *redis.StatusCmd
 
-			err := client.Watch(func(tx *redis.Tx) error {
-				cmds, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
-					ping = pipe.Ping()
+			err := client.Watch(ctx, func(tx *redis.Tx) error {
+				cmds, err := tx.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+					ping = pipe.Ping(ctx)
 					return nil
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -66,8 +66,8 @@ var _ = Describe("pool", func() {
 	It("respects max size on pipelines", func() {
 		perform(1000, func(id int) {
 			pipe := client.Pipeline()
-			ping := pipe.Ping()
-			cmds, err := pipe.Exec()
+			ping := pipe.Ping(ctx)
+			cmds, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(1))
 			Expect(ping.Err()).NotTo(HaveOccurred())
@@ -87,10 +87,10 @@ var _ = Describe("pool", func() {
 		cn.SetNetConn(&badConn{})
 		client.Pool().Put(cn)
 
-		err = client.Ping().Err()
+		err = client.Ping(ctx).Err()
 		Expect(err).To(MatchError("bad connection"))
 
-		val, err := client.Ping().Result()
+		val, err := client.Ping(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal("PONG"))
 
@@ -106,7 +106,7 @@ var _ = Describe("pool", func() {
 
 	It("reuses connections", func() {
 		for i := 0; i < 100; i++ {
-			val, err := client.Ping().Result()
+			val, err := client.Ping(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("PONG"))
 		}
@@ -122,7 +122,7 @@ var _ = Describe("pool", func() {
 	})
 
 	It("removes idle connections", func() {
-		err := client.Ping().Err()
+		err := client.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		stats := client.PoolStats()
