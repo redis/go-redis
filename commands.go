@@ -342,9 +342,9 @@ func (c statefulCmdable) Auth(ctx context.Context, password string) *StatusCmd {
 // Perform an AUTH command, using the given user and pass.
 // Should be used to authenticate the current connection with one of the connections defined in the ACL list
 // when connecting to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
-func (c statefulCmdable) AuthACL(username, password string) *StatusCmd {
-	cmd := NewStatusCmd("auth", username, password)
-	_ = c(cmd)
+func (c statefulCmdable) AuthACL(ctx context.Context, username, password string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "auth", username, password)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
