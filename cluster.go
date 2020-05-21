@@ -68,6 +68,9 @@ type ClusterOptions struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
+	// NewClient creates a cluster node client with provided name and options.
+	NewClient func(opt *Options) *Client
+
 	// PoolSize applies per cluster node and not for the whole cluster.
 	PoolSize           int
 	MinIdleConns       int
@@ -77,7 +80,6 @@ type ClusterOptions struct {
 	IdleCheckFrequency time.Duration
 
 	TLSConfig *tls.Config
-	Limiter   Limiter
 }
 
 func (opt *ClusterOptions) init() {
@@ -120,6 +122,10 @@ func (opt *ClusterOptions) init() {
 	case 0:
 		opt.MaxRetryBackoff = 512 * time.Millisecond
 	}
+
+	if opt.NewClient == nil {
+		opt.NewClient = NewClient
+	}
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
@@ -148,7 +154,6 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		IdleCheckFrequency: disableIdleCheck,
 
 		TLSConfig: opt.TLSConfig,
-		Limiter:   opt.Limiter,
 	}
 }
 
@@ -166,7 +171,7 @@ func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
 	opt := clOpt.clientOptions()
 	opt.Addr = addr
 	node := clusterNode{
-		Client: NewClient(opt),
+		Client: clOpt.NewClient(opt),
 	}
 
 	node.latency = math.MaxUint32
