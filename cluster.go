@@ -77,6 +77,7 @@ type ClusterOptions struct {
 	IdleCheckFrequency time.Duration
 
 	TLSConfig *tls.Config
+	Limiter   Limiter
 }
 
 func (opt *ClusterOptions) init() {
@@ -147,6 +148,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		IdleCheckFrequency: disableIdleCheck,
 
 		TLSConfig: opt.TLSConfig,
+		Limiter:   opt.Limiter,
 	}
 }
 
