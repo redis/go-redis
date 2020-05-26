@@ -1,5 +1,14 @@
 # Changelog
 
+## v8 (unreleased)
+
+- All commands accept `context.Context` as first argument.
+- Basic support for OpenTelemetry instrumentation.
+
+## v7.3
+
+- New option `Options.Username` which causes client to use `AuthACL`. Be aware if your connection URL contains username.
+
 ## v7.2
 
 - Existing `HMSet` is renamed to `HSet` and old deprecated `HMSet` is restored for Redis 3 users.
@@ -10,7 +19,7 @@
 
 ## v7
 
-- *Important*. Tx.Pipeline now returns a non-transactional pipeline. Use Tx.TxPipeline for a transactional pipeline.
+- _Important_. Tx.Pipeline now returns a non-transactional pipeline. Use Tx.TxPipeline for a transactional pipeline.
 - WrapProcess is replaced with more convenient AddHook that has access to context.Context.
 - WithContext now can not be used to create a shallow copy of the client.
 - New methods ProcessContext, DoContext, and ExecContext.
