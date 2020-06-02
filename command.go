@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-redis/redis/v8/internal"
-	"github.com/go-redis/redis/v8/internal/proto"
-	"github.com/go-redis/redis/v8/internal/util"
+	"github.com/jay-wlj/redis/internal"
+	"github.com/jay-wlj/redis/internal/pool"
+	"github.com/jay-wlj/redis/internal/proto"
+	"github.com/jay-wlj/redis/internal/util"
 )
 
 type Cmder interface {
@@ -2169,4 +2170,61 @@ func (c *cmdsInfoCache) Get() (map[string]*CommandInfo, error) {
 		return nil
 	})
 	return c.cmds, err
+}
+
+type AgentCmd struct {
+	*Cmd
+	cn  *pool.Conn
+	req *proto.Resp
+	rsp *proto.Resp
+	// replyBuf  []byte
+	// replyErr  error
+}
+
+func NewAgentCmd(conn net.Conn) *AgentCmd {
+	return &AgentCmd{
+		cn: pool.NewConn(conn),
+	}
+}
+
+func (t *AgentCmd) ReadRequest(ctx context.Context, timeout time.Duration) (Cmder, error) {
+	var v interface{}
+	var err error
+	//cmd := NewStringSliceCmd()
+	err = t.cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
+		v, err = rd.ReadReply(sliceParser)
+		// var err error
+		// t.req, err = proto.NewDecoder(t.cn).Decode()
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := v.([]interface{}); !ok {
+		return nil, fmt.Errorf("redis: can't parse array request: %v", v)
+	}
+	t.Cmd = NewCmd(ctx, v.([]interface{})...)
+	return t.Cmd, nil
+}
+
+func (t *AgentCmd) readReply(rd *proto.Reader) error {
+	//cmd.val, cmd.err = rd.ReadReplyEx(sliceBytesParser)
+	var err error
+	t.rsp, err = proto.NewDecoder(rd).Decode()
+	if err != nil {
+		return err
+	}
+	fmt.Println("rsp len=", len(t.rsp.Array))
+	return err
+}
+
+func (t *AgentCmd) WithWriter(ctx context.Context, timeout time.Duration) error {
+	return t.cn.WithWriter(ctx, timeout, func(wr *proto.Writer) error {
+		e := proto.NewEncoder(t.cn).Encode(t.rsp, true)
+		return e
+	})
+}
+
+func (cmd *AgentCmd) Close() {
+	cmd.cn.Close()
 }

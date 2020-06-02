@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/go-redis/redis/v8/internal/util"
+	"github.com/jay-wlj/redis/internal/util"
 )
 
 const (
@@ -311,4 +311,8 @@ func parseArrayLen(line []byte) (int64, error) {
 		return 0, Nil
 	}
 	return util.ParseInt(line[1:], 10, 64)
+}
+
+func (cn *Reader) Read(p []byte) (n int, err error) {
+	return cn.rd.Read(p)
 }
