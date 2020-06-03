@@ -96,6 +96,9 @@ func isMovedError(err error) (moved bool, ask bool, addr string) {
 		return false, false, ""
 	}
 	addr = s[ind+1:]
+	// ind = strings.Index(addr, ":")
+	// port := addr[ind:]
+	// addr = "172.30.85.164" + port
 	return
 }
 

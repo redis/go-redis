@@ -3,12 +3,12 @@ package redis
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"time"
 
 	"github.com/jay-wlj/redis/internal"
-	"github.com/jay-wlj/redis/internal/pool"
 	"github.com/jay-wlj/redis/internal/proto"
 	"github.com/jay-wlj/redis/internal/util"
 )
@@ -2174,57 +2174,23 @@ func (c *cmdsInfoCache) Get() (map[string]*CommandInfo, error) {
 
 type AgentCmd struct {
 	*Cmd
-	cn  *pool.Conn
-	req *proto.Resp
-	rsp *proto.Resp
-	// replyBuf  []byte
-	// replyErr  error
+	reader func(rd io.Reader) error
 }
 
-func NewAgentCmd(conn net.Conn) *AgentCmd {
+func NewAgentCmd(ctx context.Context, reader func(rd io.Reader) error, args ...interface{}) *AgentCmd {
 	return &AgentCmd{
-		cn: pool.NewConn(conn),
+		Cmd:    NewCmd(ctx, args...),
+		reader: reader,
 	}
-}
-
-func (t *AgentCmd) ReadRequest(ctx context.Context, timeout time.Duration) (Cmder, error) {
-	var v interface{}
-	var err error
-	//cmd := NewStringSliceCmd()
-	err = t.cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
-		v, err = rd.ReadReply(sliceParser)
-		// var err error
-		// t.req, err = proto.NewDecoder(t.cn).Decode()
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	if _, ok := v.([]interface{}); !ok {
-		return nil, fmt.Errorf("redis: can't parse array request: %v", v)
-	}
-	t.Cmd = NewCmd(ctx, v.([]interface{})...)
-	return t.Cmd, nil
 }
 
 func (t *AgentCmd) readReply(rd *proto.Reader) error {
-	//cmd.val, cmd.err = rd.ReadReplyEx(sliceBytesParser)
-	var err error
-	t.rsp, err = proto.NewDecoder(rd).Decode()
-	if err != nil {
+	if t.reader != nil {
+		err := t.reader(rd)
+		if err != nil {
+			err = proto.RedisError(err.Error())
+		}
 		return err
 	}
-	fmt.Println("rsp len=", len(t.rsp.Array))
-	return err
-}
-
-func (t *AgentCmd) WithWriter(ctx context.Context, timeout time.Duration) error {
-	return t.cn.WithWriter(ctx, timeout, func(wr *proto.Writer) error {
-		e := proto.NewEncoder(t.cn).Encode(t.rsp, true)
-		return e
-	})
-}
-
-func (cmd *AgentCmd) Close() {
-	cmd.cn.Close()
+	return nil
 }
