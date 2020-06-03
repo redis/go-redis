@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"time"
@@ -2169,4 +2170,27 @@ func (c *cmdsInfoCache) Get() (map[string]*CommandInfo, error) {
 		return nil
 	})
 	return c.cmds, err
+}
+
+type AgentCmd struct {
+	*Cmd
+	reader func(rd io.Reader) error
+}
+
+func NewAgentCmd(ctx context.Context, reader func(rd io.Reader) error, args ...interface{}) *AgentCmd {
+	return &AgentCmd{
+		Cmd:    NewCmd(ctx, args...),
+		reader: reader,
+	}
+}
+
+func (t *AgentCmd) readReply(rd *proto.Reader) error {
+	if t.reader != nil {
+		err := t.reader(rd)
+		if err != nil {
+			err = proto.RedisError(err.Error())
+		}
+		return err
+	}
+	return nil
 }

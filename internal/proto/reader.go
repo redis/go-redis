@@ -312,3 +312,8 @@ func parseArrayLen(line []byte) (int64, error) {
 	}
 	return util.ParseInt(line[1:], 10, 64)
 }
+
+
+func (cn *Reader) Read(p []byte) (n int, err error) {
+	return cn.rd.Read(p)
+}
