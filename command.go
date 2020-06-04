@@ -1885,6 +1885,7 @@ type CommandInfo struct {
 	Name        string
 	Arity       int8
 	Flags       []string
+	ACLFlags    []string
 	FirstKeyPos int8
 	LastKeyPos  int8
 	StepCount   int8
@@ -1934,8 +1935,8 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 }
 
 func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
-	if n != 6 {
-		return nil, fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6", n)
+	if n != 7 {
+		return nil, fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 7", n)
 	}
 
 	var cmd CommandInfo
@@ -1987,6 +1988,24 @@ func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 		return nil, err
 	}
 	cmd.StepCount = int8(stepCount)
+
+	_, err = rd.ReadReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.ACLFlags = make([]string, n)
+		for i := 0; i < len(cmd.Flags); i++ {
+			switch s, err := rd.ReadString(); {
+			case err == Nil:
+				cmd.ACLFlags[i] = ""
+			case err != nil:
+				return nil, err
+			default:
+				cmd.ACLFlags[i] = s
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	for _, flag := range cmd.Flags {
 		if flag == "readonly" {
