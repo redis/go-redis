@@ -32,10 +32,10 @@ const (
 
 const (
 	sentinelName       = "mymaster"
-	sentinelMasterPort = "8123"
-	sentinelSlave1Port = "8124"
-	sentinelSlave2Port = "8125"
-	sentinelPort       = "8126"
+	sentinelMasterPort = "9123"
+	sentinelSlave1Port = "9124"
+	sentinelSlave2Port = "9125"
+	sentinelPort       = "9126"
 )
 
 var (
