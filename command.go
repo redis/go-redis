@@ -2072,8 +2072,8 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 }
 
 func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
-	if n != 7 {
-		return nil, fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 7", n)
+	if n != 6 && n != 7 {
+		return nil, fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6 or 7(Redis 6 or later)", n)
 	}
 
 	var cmd CommandInfo
@@ -2126,22 +2126,24 @@ func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 	}
 	cmd.StepCount = int8(stepCount)
 
-	_, err = rd.ReadReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.ACLFlags = make([]string, n)
-		for i := 0; i < len(cmd.ACLFlags); i++ {
-			switch s, err := rd.ReadString(); {
-			case err == Nil:
-				cmd.ACLFlags[i] = ""
-			case err != nil:
-				return nil, err
-			default:
-				cmd.ACLFlags[i] = s
+	if n == 7 {
+		_, err = rd.ReadReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+			cmd.ACLFlags = make([]string, n)
+			for i := 0; i < len(cmd.ACLFlags); i++ {
+				switch s, err := rd.ReadString(); {
+				case err == Nil:
+					cmd.ACLFlags[i] = ""
+				case err != nil:
+					return nil, err
+				default:
+					cmd.ACLFlags[i] = s
+				}
 			}
+			return nil, nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		return nil, nil
-	})
-	if err != nil {
-		return nil, err
 	}
 
 	for _, flag := range cmd.Flags {
