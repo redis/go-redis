@@ -33,9 +33,10 @@ var _ = Describe("Commands", func() {
 				pipe.Auth("")
 				return nil
 			})
-			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
-			Expect(cmds[0].Err()).To(MatchError("ERR Client sent AUTH, but no password is set"))
-			Expect(cmds[1].Err()).To(MatchError("ERR Client sent AUTH, but no password is set"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ERR AUTH"))
+			Expect(cmds[0].Err().Error()).To(ContainSubstring("ERR AUTH"))
+			Expect(cmds[1].Err().Error()).To(ContainSubstring("ERR AUTH"))
 
 			stats := client.PoolStats()
 			Expect(stats.Hits).To(Equal(uint32(1)))
