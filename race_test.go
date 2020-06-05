@@ -261,13 +261,17 @@ var _ = Describe("races", func() {
 		Expect(n).To(Equal(int64(N)))
 	})
 
-	It("should BLPop", func() {
+	PIt("should BLPop", func() {
 		var received uint32
+
 		wg := performAsync(C, func(id int) {
 			for {
 				v, err := client.BLPop(ctx, 3*time.Second, "list").Result()
 				if err != nil {
-					break
+					if err == redis.Nil {
+						break
+					}
+					Expect(err).NotTo(HaveOccurred())
 				}
 				Expect(v).To(Equal([]string{"list", "hello"}))
 				atomic.AddUint32(&received, 1)
@@ -282,7 +286,7 @@ var _ = Describe("races", func() {
 		})
 
 		wg.Wait()
-		Expect(received).To(Equal(uint32(C * N)))
+		Expect(atomic.LoadUint32(&received)).To(Equal(uint32(C * N)))
 	})
 
 	It("should WithContext", func() {
