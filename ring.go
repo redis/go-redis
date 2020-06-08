@@ -10,16 +10,35 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cespare/xxhash"
+	"github.com/dgryski/go-rendezvous"
+
 	"github.com/go-redis/redis/v8/internal"
-	"github.com/go-redis/redis/v8/internal/consistenthash"
 	"github.com/go-redis/redis/v8/internal/hashtag"
 	"github.com/go-redis/redis/v8/internal/pool"
 )
 
-// Hash is type of hash function used in consistent hash.
-type Hash consistenthash.Hash
-
 var errRingShardsDown = errors.New("redis: all ring shards are down")
+
+//------------------------------------------------------------------------------
+
+type ConsistentHash interface {
+	Get(string) string
+}
+
+type rendezvousWrapper struct {
+	*rendezvous.Rendezvous
+}
+
+func (w rendezvousWrapper) Get(key string) string {
+	return w.Lookup(key)
+}
+
+func newRendezvous(shards []string) ConsistentHash {
+	return rendezvousWrapper{rendezvous.New(shards, xxhash.Sum64String)}
+}
+
+//------------------------------------------------------------------------------
 
 // RingOptions are used to configure a ring client and should be
 // passed to NewRing.
@@ -27,38 +46,25 @@ type RingOptions struct {
 	// Map of name => host:port addresses of ring shards.
 	Addrs map[string]string
 
+	// NewClient creates a shard client with provided name and options.
+	NewClient func(name string, opt *Options) *Client
+
 	// Frequency of PING commands sent to check shards availability.
 	// Shard is considered down after 3 subsequent failed checks.
 	HeartbeatFrequency time.Duration
 
-	// Hash function used in consistent hash.
-	// Default is crc32.ChecksumIEEE.
-	Hash Hash
-
-	// Number of replicas in consistent hash.
-	// Default is 100 replicas.
+	// NewConsistentHash returns a consistent hash that is used
+	// to distribute keys across the shards.
 	//
-	// Higher number of replicas will provide less deviation, that is keys will be
-	// distributed to nodes more evenly.
-	//
-	// Following is deviation for common nreplicas:
-	//  --------------------------------------------------------
-	//  | nreplicas | standard error | 99% confidence interval |
-	//  |     10    |     0.3152     |      (0.37, 1.98)       |
-	//  |    100    |     0.0997     |      (0.76, 1.28)       |
-	//  |   1000    |     0.0316     |      (0.92, 1.09)       |
-	//  --------------------------------------------------------
-	//
-	//  See https://arxiv.org/abs/1406.2294 for reference
-	HashReplicas int
-
-	// NewClient creates a shard client with provided name and options.
-	NewClient func(name string, opt *Options) *Client
+	// See https://medium.com/@dgryski/consistent-hashing-algorithmic-tradeoffs-ef6b8e2fcae8
+	// for consistent hashing algorithmic tradeoffs.
+	NewConsistentHash func(shards []string) ConsistentHash
 
 	// Following options are copied from Options struct.
 
 	OnConnect func(*Conn) error
 
+	Username string
 	DB       int
 	Password string
 
@@ -79,12 +85,18 @@ type RingOptions struct {
 }
 
 func (opt *RingOptions) init() {
+	if opt.NewClient == nil {
+		opt.NewClient = func(name string, opt *Options) *Client {
+			return NewClient(opt)
+		}
+	}
+
 	if opt.HeartbeatFrequency == 0 {
 		opt.HeartbeatFrequency = 500 * time.Millisecond
 	}
 
-	if opt.HashReplicas == 0 {
-		opt.HashReplicas = 100
+	if opt.NewConsistentHash == nil {
+		opt.NewConsistentHash = newRendezvous
 	}
 
 	switch opt.MinRetryBackoff {
@@ -127,6 +139,15 @@ type ringShard struct {
 	down   int32
 }
 
+func newRingShard(opt *RingOptions, name, addr string) *ringShard {
+	clopt := opt.clientOptions()
+	clopt.Addr = addr
+
+	return &ringShard{
+		Client: opt.NewClient(name, clopt),
+	}
+}
+
 func (shard *ringShard) String() string {
 	var state string
 	if shard.IsUp() {
@@ -167,41 +188,59 @@ func (shard *ringShard) Vote(up bool) bool {
 type ringShards struct {
 	opt *RingOptions
 
-	mu     sync.RWMutex
-	hash   *consistenthash.Map
-	shards map[string]*ringShard // read only
-	list   []*ringShard          // read only
-	len    int
-	closed bool
+	mu       sync.RWMutex
+	hash     ConsistentHash
+	shards   map[string]*ringShard // read only
+	list     []*ringShard          // read only
+	numShard int
+	closed   bool
 }
 
 func newRingShards(opt *RingOptions) *ringShards {
-	return &ringShards{
+	shards := make(map[string]*ringShard, len(opt.Addrs))
+	list := make([]*ringShard, 0, len(shards))
+
+	for name, addr := range opt.Addrs {
+		shard := newRingShard(opt, name, addr)
+		shards[name] = shard
+
+		list = append(list, shard)
+	}
+
+	c := &ringShards{
 		opt: opt,
 
-		hash:   newConsistentHash(opt),
-		shards: make(map[string]*ringShard),
+		shards: shards,
+		list:   list,
 	}
-}
+	c.rebalance()
 
-func (c *ringShards) Add(name string, cl *Client) {
-	shard := &ringShard{Client: cl}
-	c.hash.Add(name)
-	c.shards[name] = shard
-	c.list = append(c.list, shard)
+	return c
 }
 
 func (c *ringShards) List() []*ringShard {
+	var list []*ringShard
+
 	c.mu.RLock()
-	list := c.list
+	if !c.closed {
+		list = c.list
+	}
 	c.mu.RUnlock()
+
 	return list
 }
 
 func (c *ringShards) Hash(key string) string {
+	key = hashtag.Key(key)
+
+	var hash string
+
 	c.mu.RLock()
-	hash := c.hash.Get(key)
+	if c.numShard > 0 {
+		hash = c.hash.Get(key)
+	}
 	c.mu.RUnlock()
+
 	return hash
 }
 
@@ -213,6 +252,11 @@ func (c *ringShards) GetByKey(key string) (*ringShard, error) {
 	if c.closed {
 		c.mu.RUnlock()
 		return nil, pool.ErrClosed
+	}
+
+	if c.numShard == 0 {
+		c.mu.RUnlock()
+		return nil, errRingShardsDown
 	}
 
 	hash := c.hash.Get(key)
@@ -227,13 +271,13 @@ func (c *ringShards) GetByKey(key string) (*ringShard, error) {
 	return shard, nil
 }
 
-func (c *ringShards) GetByHash(name string) (*ringShard, error) {
-	if name == "" {
+func (c *ringShards) GetByName(shardName string) (*ringShard, error) {
+	if shardName == "" {
 		return c.Random()
 	}
 
 	c.mu.RLock()
-	shard := c.shards[name]
+	shard := c.shards[shardName]
 	c.mu.RUnlock()
 	return shard, nil
 }
@@ -247,23 +291,14 @@ func (c *ringShards) Heartbeat(frequency time.Duration) {
 	ticker := time.NewTicker(frequency)
 	defer ticker.Stop()
 
-	ctx := context.TODO()
+	ctx := context.Background()
 	for range ticker.C {
 		var rebalance bool
 
-		c.mu.RLock()
-
-		if c.closed {
-			c.mu.RUnlock()
-			break
-		}
-
-		shards := c.list
-		c.mu.RUnlock()
-
-		for _, shard := range shards {
+		for _, shard := range c.List() {
 			err := shard.Client.Ping(ctx).Err()
-			if shard.Vote(err == nil || err == pool.ErrPoolTimeout) {
+			isUp := err == nil || err == pool.ErrPoolTimeout
+			if shard.Vote(isUp) {
 				internal.Logger.Printf("ring shard state changed: %s", shard)
 				rebalance = true
 			}
@@ -281,24 +316,25 @@ func (c *ringShards) rebalance() {
 	shards := c.shards
 	c.mu.RUnlock()
 
-	hash := newConsistentHash(c.opt)
-	var shardsNum int
+	liveShards := make([]string, 0, len(shards))
+
 	for name, shard := range shards {
 		if shard.IsUp() {
-			hash.Add(name)
-			shardsNum++
+			liveShards = append(liveShards, name)
 		}
 	}
 
+	hash := c.opt.NewConsistentHash(liveShards)
+
 	c.mu.Lock()
 	c.hash = hash
-	c.len = shardsNum
+	c.numShard = len(liveShards)
 	c.mu.Unlock()
 }
 
 func (c *ringShards) Len() int {
 	c.mu.RLock()
-	l := c.len
+	l := c.numShard
 	c.mu.RUnlock()
 	return l
 }
@@ -364,27 +400,13 @@ func NewRing(opt *RingOptions) *Ring {
 		},
 		ctx: context.Background(),
 	}
+
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 	ring.cmdable = ring.Process
-
-	for name, addr := range opt.Addrs {
-		shard := newRingShard(opt, name, addr)
-		ring.shards.Add(name, shard)
-	}
 
 	go ring.shards.Heartbeat(opt.HeartbeatFrequency)
 
 	return &ring
-}
-
-func newRingShard(opt *RingOptions, name, addr string) *Client {
-	clopt := opt.clientOptions()
-	clopt.Addr = addr
-
-	if opt.NewClient != nil {
-		return opt.NewClient(name, clopt)
-	}
-	return NewClient(clopt)
 }
 
 func (c *Ring) Context() context.Context {
@@ -623,7 +645,7 @@ func (c *Ring) generalProcessPipeline(
 		cmdInfo := c.cmdInfo(cmd.Name())
 		hash := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
 		if hash != "" {
-			hash = c.shards.Hash(hashtag.Key(hash))
+			hash = c.shards.Hash(hash)
 		}
 		cmdsMap[hash] = append(cmdsMap[hash], cmd)
 	}
@@ -646,7 +668,7 @@ func (c *Ring) processShardPipeline(
 	ctx context.Context, hash string, cmds []Cmder, tx bool,
 ) error {
 	//TODO: retry?
-	shard, err := c.shards.GetByHash(hash)
+	shard, err := c.shards.GetByName(hash)
 	if err != nil {
 		setCmdsErr(cmds, err)
 		return err
@@ -699,8 +721,4 @@ func (c *Ring) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) er
 	}
 
 	return shards[0].Client.Watch(ctx, fn, keys...)
-}
-
-func newConsistentHash(opt *RingOptions) *consistenthash.Map {
-	return consistenthash.New(opt.HashReplicas, consistenthash.Hash(opt.Hash))
 }
