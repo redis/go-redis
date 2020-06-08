@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/go-redis/redis/v8/internal"
+	"github.com/jay-wlj/redis/internal"
 )
 
 func usePrecise(dur time.Duration) bool {

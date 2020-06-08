@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/jay-wlj/redis"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"

@@ -6,8 +6,8 @@ import (
 	"net"
 	"strings"
 
-	"github.com/go-redis/redis/v8/internal/pool"
-	"github.com/go-redis/redis/v8/internal/proto"
+	"github.com/jay-wlj/redis/internal/pool"
+	"github.com/jay-wlj/redis/internal/proto"
 )
 
 var ErrClosed = pool.ErrClosed
@@ -96,6 +96,9 @@ func isMovedError(err error) (moved bool, ask bool, addr string) {
 		return false, false, ""
 	}
 	addr = s[ind+1:]
+	// ind = strings.Index(addr, ":")
+	// port := addr[ind:]
+	// addr = "172.30.85.164" + port
 	return
 }
 
