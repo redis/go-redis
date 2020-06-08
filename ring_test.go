@@ -54,8 +54,8 @@ var _ = Describe("Redis Ring", func() {
 		setRingKeys()
 
 		// Both shards should have some keys now.
-		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=57"))
-		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=56"))
+		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=44"))
 	})
 
 	It("distributes keys when using EVAL", func() {
@@ -71,8 +71,8 @@ var _ = Describe("Redis Ring", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 
-		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=57"))
-		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=56"))
+		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=44"))
 	})
 
 	It("uses single shard when one of the shards is down", func() {
@@ -100,7 +100,7 @@ var _ = Describe("Redis Ring", func() {
 		setRingKeys()
 
 		// RingShard2 should have its keys.
-		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=43"))
+		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=44"))
 	})
 
 	It("supports hash tags", func() {
@@ -131,8 +131,8 @@ var _ = Describe("Redis Ring", func() {
 			}
 
 			// Both shards should have some keys now.
-			Expect(ringShard1.Info(ctx).Val()).To(ContainSubstring("keys=57"))
-			Expect(ringShard2.Info(ctx).Val()).To(ContainSubstring("keys=43"))
+			Expect(ringShard1.Info(ctx).Val()).To(ContainSubstring("keys=56"))
+			Expect(ringShard2.Info(ctx).Val()).To(ContainSubstring("keys=44"))
 		})
 
 		It("is consistent with ring", func() {
@@ -427,22 +427,22 @@ var _ = Describe("Ring watch", func() {
 	It("should discard", func() {
 		err := ring.Watch(ctx, func(tx *redis.Tx) error {
 			cmds, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Set(ctx, "key1", "hello1", 0)
+				pipe.Set(ctx, "{shard}key1", "hello1", 0)
 				pipe.Discard()
-				pipe.Set(ctx, "key2", "hello2", 0)
+				pipe.Set(ctx, "{shard}key2", "hello2", 0)
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(1))
 			return err
-		}, "key1", "key2")
+		}, "{shard}key1", "{shard}key2")
 		Expect(err).NotTo(HaveOccurred())
 
-		get := ring.Get(ctx, "key1")
+		get := ring.Get(ctx, "{shard}key1")
 		Expect(get.Err()).To(Equal(redis.Nil))
 		Expect(get.Val()).To(Equal(""))
 
-		get = ring.Get(ctx, "key2")
+		get = ring.Get(ctx, "{shard}key2")
 		Expect(get.Err()).NotTo(HaveOccurred())
 		Expect(get.Val()).To(Equal("hello2"))
 	})
