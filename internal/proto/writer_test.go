@@ -3,7 +3,6 @@ package proto_test
 import (
 	"bytes"
 	"encoding"
-	"io/ioutil"
 	"testing"
 	"time"
 
@@ -41,9 +40,6 @@ var _ = Describe("WriteBuffer", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		err = wr.Flush()
-		Expect(err).NotTo(HaveOccurred())
-
 		Expect(buf.Bytes()).To(Equal([]byte("*6\r\n" +
 			"$6\r\nstring\r\n" +
 			"$2\r\n12\r\n" +
@@ -59,9 +55,6 @@ var _ = Describe("WriteBuffer", func() {
 		err := wr.WriteArgs([]interface{}{tm})
 		Expect(err).NotTo(HaveOccurred())
 
-		err = wr.Flush()
-		Expect(err).NotTo(HaveOccurred())
-
 		Expect(buf.Len()).To(Equal(41))
 	})
 
@@ -69,26 +62,32 @@ var _ = Describe("WriteBuffer", func() {
 		err := wr.WriteArgs([]interface{}{&MyType{}})
 		Expect(err).NotTo(HaveOccurred())
 
-		err = wr.Flush()
-		Expect(err).NotTo(HaveOccurred())
-
 		Expect(buf.Len()).To(Equal(15))
 	})
 })
 
+type discard struct{}
+
+func (discard) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func (discard) WriteString(s string) (int, error) {
+	return len(s), nil
+}
+
+func (discard) WriteByte(c byte) error {
+	return nil
+}
+
 func BenchmarkWriteBuffer_Append(b *testing.B) {
-	buf := proto.NewWriter(ioutil.Discard)
+	buf := proto.NewWriter(discard{})
 	args := []interface{}{"hello", "world", "foo", "bar"}
 
 	for i := 0; i < b.N; i++ {
 		err := buf.WriteArgs(args)
 		if err != nil {
-			panic(err)
-		}
-
-		err = buf.Flush()
-		if err != nil {
-			panic(err)
+			b.Fatal(err)
 		}
 	}
 }
