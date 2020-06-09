@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"bufio"
 	"context"
 	"net"
 	"sync/atomic"
@@ -13,15 +14,16 @@ import (
 var noDeadline = time.Time{}
 
 type Conn struct {
+	usedAt  int64 // atomic
 	netConn net.Conn
 
 	rd *proto.Reader
+	bw *bufio.Writer
 	wr *proto.Writer
 
 	Inited    bool
 	pooled    bool
 	createdAt time.Time
-	usedAt    int64 // atomic
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -30,7 +32,8 @@ func NewConn(netConn net.Conn) *Conn {
 		createdAt: time.Now(),
 	}
 	cn.rd = proto.NewReader(netConn)
-	cn.wr = proto.NewWriter(netConn)
+	cn.bw = bufio.NewWriter(netConn)
+	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
 	return cn
 }
@@ -47,7 +50,7 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 func (cn *Conn) SetNetConn(netConn net.Conn) {
 	cn.netConn = netConn
 	cn.rd.Reset(netConn)
-	cn.wr.Reset(netConn)
+	cn.bw.Reset(netConn)
 }
 
 func (cn *Conn) Write(b []byte) (int, error) {
@@ -77,8 +80,8 @@ func (cn *Conn) WithWriter(
 			return err
 		}
 
-		if cn.wr.Buffered() > 0 {
-			cn.wr.Reset(cn.netConn)
+		if cn.bw.Buffered() > 0 {
+			cn.bw.Reset(cn.netConn)
 		}
 
 		err = fn(cn.wr)
@@ -86,7 +89,7 @@ func (cn *Conn) WithWriter(
 			return err
 		}
 
-		return cn.wr.Flush()
+		return cn.bw.Flush()
 	})
 }
 

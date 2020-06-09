@@ -74,13 +74,13 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 }
 
 func cmdString(cmd Cmder, val interface{}) string {
-	b := make([]byte, 0, 32)
+	b := make([]byte, 0, 64)
 
 	for i, arg := range cmd.Args() {
 		if i > 0 {
 			b = append(b, ' ')
 		}
-		b = appendArg(b, arg)
+		b = internal.AppendArg(b, arg)
 	}
 
 	if err := cmd.Err(); err != nil {
@@ -88,48 +88,10 @@ func cmdString(cmd Cmder, val interface{}) string {
 		b = append(b, err.Error()...)
 	} else if val != nil {
 		b = append(b, ": "...)
-
-		switch val := val.(type) {
-		case []byte:
-			b = append(b, val...)
-		default:
-			b = appendArg(b, val)
-		}
+		b = internal.AppendArg(b, val)
 	}
 
-	return string(b)
-}
-
-func appendArg(b []byte, v interface{}) []byte {
-	switch v := v.(type) {
-	case nil:
-		return append(b, "<nil>"...)
-	case string:
-		return append(b, v...)
-	case []byte:
-		return append(b, v...)
-	case int:
-		return strconv.AppendInt(b, int64(v), 10)
-	case int32:
-		return strconv.AppendInt(b, int64(v), 10)
-	case int64:
-		return strconv.AppendInt(b, v, 10)
-	case uint:
-		return strconv.AppendUint(b, uint64(v), 10)
-	case uint32:
-		return strconv.AppendUint(b, uint64(v), 10)
-	case uint64:
-		return strconv.AppendUint(b, v, 10)
-	case bool:
-		if v {
-			return append(b, "true"...)
-		}
-		return append(b, "false"...)
-	case time.Time:
-		return v.AppendFormat(b, time.RFC3339Nano)
-	default:
-		return append(b, fmt.Sprint(v)...)
-	}
+	return internal.String(b)
 }
 
 //------------------------------------------------------------------------------
