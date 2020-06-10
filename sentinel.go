@@ -28,7 +28,7 @@ type FailoverOptions struct {
 	// Following options are copied from Options struct.
 
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
-	OnConnect func(*Conn) error
+	OnConnect func(ctx context.Context, cn *Conn) error
 
 	Username string
 	Password string
@@ -54,7 +54,8 @@ type FailoverOptions struct {
 
 func (opt *FailoverOptions) options() *Options {
 	return &Options{
-		Addr:      "FailoverClient",
+		Addr: "FailoverClient",
+
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 

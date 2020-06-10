@@ -269,7 +269,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 
 	if c.opt.OnConnect != nil {
-		return c.opt.OnConnect(conn)
+		return c.opt.OnConnect(ctx, conn)
 	}
 	return nil
 }

@@ -20,23 +20,28 @@ type UniversalOptions struct {
 
 	// Common options.
 
-	Dialer             func(ctx context.Context, network, addr string) (net.Conn, error)
-	OnConnect          func(*Conn) error
-	Username           string
-	Password           string
-	MaxRetries         int
-	MinRetryBackoff    time.Duration
-	MaxRetryBackoff    time.Duration
-	DialTimeout        time.Duration
-	ReadTimeout        time.Duration
-	WriteTimeout       time.Duration
+	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
+	OnConnect func(ctx context.Context, cn *Conn) error
+
+	Username string
+	Password string
+
+	MaxRetries      int
+	MinRetryBackoff time.Duration
+	MaxRetryBackoff time.Duration
+
+	DialTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+
 	PoolSize           int
 	MinIdleConns       int
 	MaxConnAge         time.Duration
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
-	TLSConfig          *tls.Config
+
+	TLSConfig *tls.Config
 
 	// Only cluster clients.
 

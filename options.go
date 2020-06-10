@@ -39,7 +39,7 @@ type Options struct {
 	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	// Hook that is called when new connection is established.
-	OnConnect func(*Conn) error
+	OnConnect func(ctx context.Context, cn *Conn) error
 
 	// Use the specified Username to authenticate the current connection with one of the connections defined in the ACL
 	// list when connecting to a Redis 6.0 instance, or greater, that is using the Redis ACL system.

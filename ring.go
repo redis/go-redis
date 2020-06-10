@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -62,7 +63,8 @@ type RingOptions struct {
 
 	// Following options are copied from Options struct.
 
-	OnConnect func(*Conn) error
+	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
+	OnConnect func(ctx context.Context, cn *Conn) error
 
 	Username string
 	DB       int
@@ -115,6 +117,7 @@ func (opt *RingOptions) init() {
 
 func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
+		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
 		DB: opt.DB,

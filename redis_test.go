@@ -372,7 +372,7 @@ var _ = Describe("Client OnConnect", func() {
 	BeforeEach(func() {
 		opt := redisOptions()
 		opt.DB = 0
-		opt.OnConnect = func(cn *redis.Conn) error {
+		opt.OnConnect = func(ctx context.Context, cn *redis.Conn) error {
 			return cn.ClientSetName(ctx, "on_connect").Err()
 		}
 

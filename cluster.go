@@ -55,7 +55,7 @@ type ClusterOptions struct {
 
 	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
-	OnConnect func(*Conn) error
+	OnConnect func(ctx context.Context, cn *Conn) error
 
 	Username string
 	Password string
