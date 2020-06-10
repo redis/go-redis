@@ -415,7 +415,7 @@ var _ = Describe("ClusterClient", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(cmds).To(HaveLen(14))
 
-					_ = client.ForEachNode(ctx, func(ctx context.Context, node *redis.Client) error {
+					_ = client.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
 						defer GinkgoRecover()
 						Eventually(func() int64 {
 							return node.DBSize(ctx).Val()
@@ -534,7 +534,7 @@ var _ = Describe("ClusterClient", func() {
 			err := client.Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			err = client.ForEachNode(ctx, func(ctx context.Context, node *redis.Client) error {
+			err = client.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
 				return node.Ping(ctx).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -568,7 +568,7 @@ var _ = Describe("ClusterClient", func() {
 				},
 			}
 
-			_ = client.ForEachNode(ctx, func(ctx context.Context, node *redis.Client) error {
+			_ = client.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
 				node.AddHook(nodeHook)
 				return nil
 			})
@@ -592,7 +592,7 @@ var _ = Describe("ClusterClient", func() {
 			err := client.Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			err = client.ForEachNode(ctx, func(ctx context.Context, node *redis.Client) error {
+			err = client.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
 				return node.Ping(ctx).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -614,7 +614,7 @@ var _ = Describe("ClusterClient", func() {
 				},
 			})
 
-			_ = client.ForEachNode(ctx, func(ctx context.Context, node *redis.Client) error {
+			_ = client.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
 				node.AddHook(&hook{
 					beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
 						Expect(cmds).To(HaveLen(1))
@@ -649,7 +649,7 @@ var _ = Describe("ClusterClient", func() {
 			err := client.Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			err = client.ForEachNode(ctx, func(ctx context.Context, node *redis.Client) error {
+			err = client.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
 				return node.Ping(ctx).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -671,7 +671,7 @@ var _ = Describe("ClusterClient", func() {
 				},
 			})
 
-			_ = client.ForEachNode(ctx, func(ctx context.Context, node *redis.Client) error {
+			_ = client.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
 				node.AddHook(&hook{
 					beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
 						Expect(cmds).To(HaveLen(3))
@@ -1204,14 +1204,14 @@ var _ = Describe("ClusterClient timeout", func() {
 			opt.MaxRedirects = 1
 			client = cluster.newClusterClient(ctx, opt)
 
-			err := client.ForEachNode(ctx, func(ctx context.Context, client *redis.Client) error {
+			err := client.ForEachShard(ctx, func(ctx context.Context, client *redis.Client) error {
 				return client.ClientPause(ctx, pause).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {
-			_ = client.ForEachNode(ctx, func(ctx context.Context, client *redis.Client) error {
+			_ = client.ForEachShard(ctx, func(ctx context.Context, client *redis.Client) error {
 				defer GinkgoRecover()
 				Eventually(func() error {
 					return client.Ping(ctx).Err()

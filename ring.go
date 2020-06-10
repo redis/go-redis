@@ -685,14 +685,6 @@ func (c *Ring) processShardPipeline(
 	return err
 }
 
-// Close closes the ring client, releasing any open resources.
-//
-// It is rare to Close a Ring, as the Ring is meant to be long-lived
-// and shared between many goroutines.
-func (c *Ring) Close() error {
-	return c.shards.Close()
-}
-
 func (c *Ring) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("redis: Watch requires at least one key")
@@ -724,4 +716,12 @@ func (c *Ring) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) er
 	}
 
 	return shards[0].Client.Watch(ctx, fn, keys...)
+}
+
+// Close closes the ring client, releasing any open resources.
+//
+// It is rare to Close a Ring, as the Ring is meant to be long-lived
+// and shared between many goroutines.
+func (c *Ring) Close() error {
+	return c.shards.Close()
 }

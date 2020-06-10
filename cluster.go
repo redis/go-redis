@@ -27,6 +27,9 @@ type ClusterOptions struct {
 	// A seed list of host:port addresses of cluster nodes.
 	Addrs []string
 
+	// NewClient creates a cluster node client with provided name and options.
+	NewClient func(opt *Options) *Client
+
 	// The maximum number of retries before giving up. Command is retried
 	// on network errors and MOVED/ASK redirects.
 	// Default is 8 retries.
@@ -48,9 +51,6 @@ type ClusterOptions struct {
 	// and Cluster.ReloadState to manually trigger state reloading.
 	ClusterSlots func() ([]ClusterSlot, error)
 
-	// Optional hook that is called when a new node is created.
-	OnNewNode func(*Client)
-
 	// Following options are copied from Options struct.
 
 	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -67,9 +67,6 @@ type ClusterOptions struct {
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
-
-	// NewClient creates a cluster node client with provided name and options.
-	NewClient func(opt *Options) *Client
 
 	// PoolSize applies per cluster node and not for the whole cluster.
 	PoolSize           int
@@ -177,10 +174,6 @@ func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
 	node.latency = math.MaxUint32
 	if clOpt.RouteByLatency {
 		go node.updateLatency()
-	}
-
-	if clOpt.OnNewNode != nil {
-		clOpt.OnNewNode(node.Client)
 	}
 
 	return &node
@@ -907,9 +900,9 @@ func (c *ClusterClient) ForEachSlave(
 	}
 }
 
-// ForEachNode concurrently calls the fn on each known node in the cluster.
+// ForEachShard concurrently calls the fn on each known node in the cluster.
 // It returns the first error if any.
-func (c *ClusterClient) ForEachNode(
+func (c *ClusterClient) ForEachShard(
 	ctx context.Context,
 	fn func(ctx context.Context, client *Client) error,
 ) error {

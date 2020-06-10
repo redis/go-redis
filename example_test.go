@@ -301,42 +301,49 @@ func ExampleClient_TxPipeline() {
 }
 
 func ExampleClient_Watch() {
-	const routineCount = 100
+	const maxRetries = 1000
 
-	// Transactionally increments key using GET and SET commands.
+	// Increment transactionally increments key using GET and SET commands.
 	increment := func(key string) error {
+		// Transactional function.
 		txf := func(tx *redis.Tx) error {
-			// get current value or zero
+			// Get current value or zero.
 			n, err := tx.Get(ctx, key).Int()
 			if err != nil && err != redis.Nil {
 				return err
 			}
 
-			// actual opperation (local in optimistic lock)
+			// Actual opperation (local in optimistic lock).
 			n++
 
-			// runs only if the watched keys remain unchanged
+			// Operation is commited only if the watched keys remain unchanged.
 			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				// pipe handles the error case
 				pipe.Set(ctx, key, n, 0)
 				return nil
 			})
 			return err
 		}
 
-		for retries := routineCount; retries > 0; retries-- {
+		for i := 0; i < maxRetries; i++ {
 			err := rdb.Watch(ctx, txf, key)
-			if err != redis.TxFailedErr {
-				return err
+			if err == nil {
+				// Success.
+				return nil
 			}
-			// optimistic lock lost
+			if err == redis.TxFailedErr {
+				// Optimistic lock lost. Retry.
+				continue
+			}
+			// Return any other error.
+			return err
 		}
+
 		return errors.New("increment reached maximum number of retries")
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(routineCount)
-	for i := 0; i < routineCount; i++ {
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
