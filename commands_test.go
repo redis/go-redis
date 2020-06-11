@@ -4029,6 +4029,28 @@ var _ = Describe("Commands", func() {
 
 	})
 
+	Describe("SlogLog", func() {
+
+		It("returns slog query result", func() {
+
+			var (
+				CONFIGSLOWKEY string = "slowlog-log-slower-than"
+			)
+			old := client.ConfigGet(ctx, CONFIGSLOWKEY).Val()
+			client.ConfigSet(ctx, CONFIGSLOWKEY, "0")
+			defer client.ConfigSet(ctx, CONFIGSLOWKEY, old[1].(string))
+			_, e := client.Eval(ctx, "redis.call('slowlog','reset')", []string{}).Result()
+			if e != nil && e != redis.Nil {
+				fmt.Println(e)
+				return
+			}
+			client.Set(ctx, "test", "true", 0)
+			result, err := client.SlowLog(ctx, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).To(Equal(3))
+		})
+
+	})
 })
 
 type numberStruct struct {
