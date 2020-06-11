@@ -24,23 +24,6 @@ func init() {
 	})
 }
 
-func ExampleClient_SlowLog() {
-	var (
-		CONFIGSLOWKEY string = "slowlog-log-slower-than"
-	)
-	old := rdb.ConfigGet(ctx, CONFIGSLOWKEY).Val()
-	rdb.ConfigSet(ctx, CONFIGSLOWKEY, "0")
-	defer rdb.ConfigSet(ctx, CONFIGSLOWKEY, old[1].(string))
-	_, e := rdb.Eval(ctx, "redis.call('slowlog','reset')", []string{}).Result()
-	if e != nil && e != redis.Nil {
-		fmt.Println(e)
-		return
-	}
-	rdb.Set(ctx, "test", "true", 0)
-	result, err := rdb.SlowLog(ctx, -1).Result()
-	fmt.Println(len(result), err)
-	// Output: 3 <nil>
-}
 func ExampleNewClient() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379", // use default Addr
@@ -524,4 +507,22 @@ func ExampleNewUniversalClient_cluster() {
 	defer rdb.Close()
 
 	rdb.Ping(ctx)
+}
+
+func ExampleClient_SlowLog() {
+	var (
+		CONFIGSLOWKEY string = "slowlog-log-slower-than"
+	)
+	old := rdb.ConfigGet(ctx, CONFIGSLOWKEY).Val()
+	rdb.ConfigSet(ctx, CONFIGSLOWKEY, "0")
+	defer rdb.ConfigSet(ctx, CONFIGSLOWKEY, old[1].(string))
+	_, e := rdb.Eval(ctx, "redis.call('slowlog','reset')", []string{}).Result()
+	if e != nil && e != redis.Nil {
+		fmt.Println(e)
+		return
+	}
+	rdb.Set(ctx, "test", "true", 0)
+	result, err := rdb.SlowLog(ctx, -1).Result()
+	fmt.Println(len(result), err)
+	// Output: 3 <nil>
 }
