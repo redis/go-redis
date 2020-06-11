@@ -4029,9 +4029,9 @@ var _ = Describe("Commands", func() {
 
 	})
 
-	Describe("SlogLog", func() {
+	Describe("SlowLog", func() {
 
-		It("returns slog query result", func() {
+		It("returns slow query result", func() {
 
 			var (
 				CONFIGSLOWKEY string = "slowlog-log-slower-than"
