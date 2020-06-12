@@ -13,7 +13,8 @@ import (
 type writer interface {
 	io.Writer
 	io.ByteWriter
-	io.StringWriter
+	//io.StringWriter
+	WriteString(s string) (n int, err error)
 }
 
 type Writer struct {
