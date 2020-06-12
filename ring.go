@@ -121,6 +121,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		OnConnect: opt.OnConnect,
 
 		DB: opt.DB,
+		Password: opt.Password,
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
