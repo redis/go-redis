@@ -57,6 +57,13 @@ import "github.com/go-redis/redis/v8"
 ## Quickstart
 
 ```go
+import (
+    "context"
+    "github.com/go-redis/redis/v8"  
+)
+
+var ctx = context.Background()
+
 func ExampleNewClient() {
     rdb := redis.NewClient(&redis.Options{
         Addr:     "localhost:6379",
