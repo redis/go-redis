@@ -11,6 +11,8 @@ require (
 	golang.org/x/sys v0.0.0-20191010194322-b09406accb47 // indirect
 	golang.org/x/text v0.3.2 // indirect
 	gopkg.in/yaml.v2 v2.2.7 // indirect
+	go4.org v0.0.0-20200411211856-f5505b9728dd
+	google.golang.org/grpc v1.29.1 // indirect
 )
 
 go 1.11

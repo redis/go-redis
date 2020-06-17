@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-redis/redis/v8/internal"
 	"github.com/go-redis/redis/v8/internal/pool"
+	"go4.org/syncutil"
 )
 
 // Limiter is the interface of a rate limiter or a circuit breaker.
@@ -107,6 +108,9 @@ type Options struct {
 
 	// Limiter interface used to implemented circuit breaker or rate limiter.
 	Limiter Limiter
+
+	// Limit the number of concurrent connections created
+	gate *syncutil.Gate
 }
 
 func (opt *Options) init() {
@@ -120,8 +124,14 @@ func (opt *Options) init() {
 			opt.Network = "tcp"
 		}
 	}
+	if opt.gate == nil {
+		opt.gate = syncutil.NewGate(1)
+	}
 	if opt.Dialer == nil {
 		opt.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			opt.gate.Start()
+			defer opt.gate.Done()
+
 			netDialer := &net.Dialer{
 				Timeout:   opt.DialTimeout,
 				KeepAlive: 5 * time.Minute,
