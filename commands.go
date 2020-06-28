@@ -43,6 +43,9 @@ func appendArgs(dst, src []interface{}) []interface{} {
 				dst = append(dst, s)
 			}
 			return dst
+		case []interface{}:
+			dst = append(dst, v...)
+			return dst
 		case map[string]interface{}:
 			for k, v := range v {
 				dst = append(dst, k, v)
@@ -1387,16 +1390,25 @@ func (c cmdable) SUnionStore(ctx context.Context, destination string, keys ...st
 
 //------------------------------------------------------------------------------
 
+// XAddArgs accepts values in the following formats:
+//   - XAddArgs.Values = []interface{}{"key1", "value1", "key2", "value2"}
+//   - XAddArgs.Values = []string("key1", "value1", "key2", "value2")
+//   - XAddArgs.Values = map[string]interface{}{"key1": "value1", "key2": "value2"}
+//
+// Note that map will not preserve the order of key-value pairs.
 type XAddArgs struct {
 	Stream       string
 	MaxLen       int64 // MAXLEN N
 	MaxLenApprox int64 // MAXLEN ~ N
 	ID           string
-	Values       map[string]interface{}
+	Values       interface{}
 }
 
 func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
-	args := make([]interface{}, 0, 6+len(a.Values)*2)
+	var values []interface{}
+	values = appendArgs(values, []interface{}{a.Values})
+
+	args := make([]interface{}, 0, 6+len(values))
 	args = append(args, "xadd")
 	args = append(args, a.Stream)
 	if a.MaxLen > 0 {
@@ -1409,10 +1421,7 @@ func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
 	} else {
 		args = append(args, "*")
 	}
-	for k, v := range a.Values {
-		args = append(args, k)
-		args = append(args, v)
-	}
+	args = append(args, values...)
 
 	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
