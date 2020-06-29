@@ -180,7 +180,8 @@ var _ = Describe("Redis Ring", func() {
 			ring = redis.NewRing(opts)
 
 			err := ring.Ping().Err()
-			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ERR AUTH"))
 		})
 
 		It("can be initialized with a passwords map, one for each shard", func() {
@@ -192,7 +193,8 @@ var _ = Describe("Redis Ring", func() {
 			ring = redis.NewRing(opts)
 
 			err := ring.Ping().Err()
-			Expect(err).To(MatchError("ERR Client sent AUTH, but no password is set"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ERR AUTH"))
 		})
 	})
 
