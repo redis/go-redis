@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"math"
-	"math/rand"
 	"net"
 	"runtime"
 	"sort"
@@ -17,6 +16,7 @@ import (
 	"github.com/go-redis/redis/v8/internal/hashtag"
 	"github.com/go-redis/redis/v8/internal/pool"
 	"github.com/go-redis/redis/v8/internal/proto"
+	"golang.org/x/exp/rand"
 )
 
 var errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
@@ -993,7 +993,9 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 	}
 
 	var firstErr error
-	for _, addr := range addrs {
+	for _, idx := range rand.Perm(len(addrs)) {
+		addr := addrs[idx]
+
 		node, err := c.nodes.Get(addr)
 		if err != nil {
 			if firstErr == nil {
