@@ -1,8 +1,9 @@
 package internal
 
 import (
-	"math/rand"
 	"time"
+
+	"golang.org/x/exp/rand"
 )
 
 // Retry backoff with jitter sleep to prevent overloaded conditions during intervals
