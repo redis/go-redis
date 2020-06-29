@@ -37,25 +37,31 @@ func formatSec(dur time.Duration) int64 {
 
 func appendArgs(dst, src []interface{}) []interface{} {
 	if len(src) == 1 {
-		switch v := src[0].(type) {
-		case []string:
-			for _, s := range v {
-				dst = append(dst, s)
-			}
-			return dst
-		case []interface{}:
-			dst = append(dst, v...)
-			return dst
-		case map[string]interface{}:
-			for k, v := range v {
-				dst = append(dst, k, v)
-			}
-			return dst
-		}
+		return appendArg(dst, src[0])
 	}
 
 	dst = append(dst, src...)
 	return dst
+}
+
+func appendArg(dst []interface{}, arg interface{}) []interface{} {
+	switch arg := arg.(type) {
+	case []string:
+		for _, s := range arg {
+			dst = append(dst, s)
+		}
+		return dst
+	case []interface{}:
+		dst = append(dst, arg...)
+		return dst
+	case map[string]interface{}:
+		for k, v := range arg {
+			dst = append(dst, k, v)
+		}
+		return dst
+	default:
+		return append(dst, arg)
+	}
 }
 
 type Cmdable interface {
@@ -1405,10 +1411,7 @@ type XAddArgs struct {
 }
 
 func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
-	var values []interface{}
-	values = appendArgs(values, []interface{}{a.Values})
-
-	args := make([]interface{}, 0, 6+len(values))
+	args := make([]interface{}, 0, 8)
 	args = append(args, "xadd")
 	args = append(args, a.Stream)
 	if a.MaxLen > 0 {
@@ -1421,7 +1424,7 @@ func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
 	} else {
 		args = append(args, "*")
 	}
-	args = append(args, values...)
+	args = appendArg(args, a.Values)
 
 	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
