@@ -3413,18 +3413,20 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(id).To(Equal("1-0"))
 
+			// Values supports []interface{}.
 			id, err = client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
 				ID:     "2-0",
-				Values: map[string]interface{}{"dos": "deux"},
+				Values: []interface{}{"dos", "deux"},
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(id).To(Equal("2-0"))
 
+			// Value supports []string.
 			id, err = client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
 				ID:     "3-0",
-				Values: map[string]interface{}{"tres": "troix"},
+				Values: []string{"tres", "troix"},
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(id).To(Equal("3-0"))
