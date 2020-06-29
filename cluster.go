@@ -622,7 +622,7 @@ func (c *clusterStateHolder) LazyReload(ctx context.Context) {
 		if err != nil {
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 	}()
 }
 
@@ -630,7 +630,7 @@ func (c *clusterStateHolder) Get(ctx context.Context) (*clusterState, error) {
 	v := c.state.Load()
 	if v != nil {
 		state := v.(*clusterState)
-		if time.Since(state.createdAt) > time.Minute {
+		if time.Since(state.createdAt) > 10*time.Second {
 			c.LazyReload(ctx)
 		}
 		return state, nil
@@ -779,9 +779,6 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 		// If there is no error - we are done.
 		if lastErr == nil {
 			return nil
-		}
-		if lastErr != Nil {
-			c.state.LazyReload(ctx)
 		}
 		if lastErr == pool.ErrClosed || isReadOnlyError(lastErr) {
 			node = nil
@@ -1430,9 +1427,6 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		err = node.Client.Watch(ctx, fn, keys...)
 		if err == nil {
 			break
-		}
-		if err != Nil {
-			c.state.LazyReload(ctx)
 		}
 
 		moved, ask, addr := isMovedError(err)
