@@ -780,7 +780,10 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 		if lastErr == nil {
 			return nil
 		}
-		if lastErr == pool.ErrClosed || isReadOnlyError(lastErr) {
+		if isReadOnly := isReadOnlyError(lastErr); isReadOnly || lastErr == pool.ErrClosed {
+			if isReadOnly {
+				c.state.LazyReload(ctx)
+			}
 			node = nil
 			continue
 		}
@@ -1438,7 +1441,10 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			continue
 		}
 
-		if err == pool.ErrClosed || isReadOnlyError(err) {
+		if isReadOnly := isReadOnlyError(err); isReadOnly || err == pool.ErrClosed {
+			if isReadOnly {
+				c.state.LazyReload(ctx)
+			}
 			node, err = c.slotMasterNode(ctx, slot)
 			if err != nil {
 				return err
