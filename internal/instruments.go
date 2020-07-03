@@ -11,6 +11,7 @@ type openTelemetryInstrumentation struct {
 	// Bytes Written Metric
 	WriteCount metric.Int64Counter
 	// Number of new connections
+	// TODO
 	NewConnectionsCount metric.Int64Counter
 }
 
