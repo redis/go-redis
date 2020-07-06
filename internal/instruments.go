@@ -8,14 +8,13 @@ import (
 )
 
 type openTelemetryInstrumentation struct {
-	// Bytes Written Metric
+	// Count of write commands performed
 	WriteCount metric.Int64Counter
-	// Number of new connections
-	// TODO
+	// Count of new connections
 	NewConnectionsCount metric.Int64Counter
 }
 
-var Instruments *openTelemetryInstrumentation = initInstruments()
+var Instruments = initInstruments()
 
 func initInstruments() *openTelemetryInstrumentation {
 	meter := global.Meter("github.com/go-redis/redis")
