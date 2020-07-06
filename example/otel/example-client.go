@@ -10,10 +10,13 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/controller/push"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"log"
+	"sync"
 	"time"
 )
 
 func main() {
+	<-time.After(1 * time.Second)
+
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
@@ -48,17 +51,29 @@ func main() {
 	tracer := global.Tracer("Example tracer")
 	ctx, span := tracer.Start(ctx, "start-test-span")
 
-	rdb.Set(ctx, "First value", "value_1", 10000)
+	rdb.Set(ctx, "First value", "value_1", 0)
 
 	rdb.Set(ctx, "Second value", "value_2", 0)
-	val := rdb.Get(ctx, "Second value").Val()
-	if val != "value_2" {
-		log.Fatalf("val was not set. expected: %s but got: %s", "value_2", val)
-	}
 
+	var group sync.WaitGroup
+
+	for i := 0; i < 20; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			val := rdb.Get(ctx, "Second value").Val()
+			if val != "value_2" {
+				log.Fatalf("val was not set. expected: %s but got: %s", "value_2", val)
+			}
+		}()
+	}
+	group.Wait()
+
+	rdb.Del(ctx, "First value")
 	rdb.Del(ctx, "Second value")
 
 	// Wait some time to allow spans to export
 	<-time.After(5 * time.Second)
 	span.End()
 }
+
