@@ -1,7 +1,7 @@
 module github.com/go-redis/redis/v8
 
 require (
-	github.com/cespare/xxhash v1.1.0
+	github.com/cespare/xxhash/v2 v2.1.1
 	github.com/dgryski/go-rendezvous v0.0.0-20200624174652-8d2f3be8b2d9
 	github.com/onsi/ginkgo v1.10.1
 	github.com/onsi/gomega v1.7.0
