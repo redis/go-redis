@@ -3,8 +3,6 @@ package internal
 import (
 	"go.opentelemetry.io/otel/api/global"
 	"go.opentelemetry.io/otel/api/metric"
-	"go.opentelemetry.io/otel/api/unit"
-	"log"
 )
 
 type openTelemetryInstrumentation struct {
@@ -24,7 +22,7 @@ func initInstruments() *openTelemetryInstrumentation {
 	)
 	if err != nil {
 		// TODO: handle errors
-		log.Printf("failed to create instrument WriteCount")
+		Logger.Printf("failed to create instrument WriteCount")
 	}
 
 	newConnectionsCount, err := meter.NewInt64Counter("redis.connections",
@@ -32,7 +30,7 @@ func initInstruments() *openTelemetryInstrumentation {
 	)
 	if err != nil {
 		// TODO: handle errors
-		log.Printf("failed to create instrument NumNewConnections")
+		Logger.Printf("failed to create instrument NumNewConnections")
 	}
 
 	return &openTelemetryInstrumentation{
