@@ -19,7 +19,7 @@ var Instruments = initInstruments()
 func initInstruments() *openTelemetryInstrumentation {
 	meter := global.Meter("github.com/go-redis/redis")
 
-	writeCount, err := meter.NewInt64Counter("redis.num_writes",
+	writeCount, err := meter.NewInt64Counter("redis.writes",
 		metric.WithDescription("the number of writes initiated"),
 	)
 	if err != nil {
