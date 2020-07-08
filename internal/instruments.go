@@ -21,7 +21,6 @@ func initInstruments() *openTelemetryInstrumentation {
 
 	writeCount, err := meter.NewInt64Counter("redis.num_writes",
 		metric.WithDescription("the number of writes initiated"),
-		metric.WithUnit(unit.Bytes),
 	)
 	if err != nil {
 		// TODO: handle errors
@@ -41,4 +40,3 @@ func initInstruments() *openTelemetryInstrumentation {
 		NewConnectionsCount: newConnectionsCount,
 	}
 }
-
