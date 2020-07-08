@@ -21,7 +21,6 @@ func initInstruments() *openTelemetryInstrumentation {
 		metric.WithDescription("the number of writes initiated"),
 	)
 	if err != nil {
-		// TODO: handle errors
 		Logger.Printf("failed to create instrument WriteCount")
 	}
 
@@ -29,7 +28,6 @@ func initInstruments() *openTelemetryInstrumentation {
 		metric.WithDescription("the number of connections created"),
 	)
 	if err != nil {
-		// TODO: handle errors
 		Logger.Printf("failed to create instrument NumNewConnections")
 	}
 
