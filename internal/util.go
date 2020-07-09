@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/go-redis/redis/v8/internal/proto"
 	"github.com/go-redis/redis/v8/internal/util"
 	"go.opentelemetry.io/otel/api/global"
 	"go.opentelemetry.io/otel/api/trace"
@@ -147,6 +148,8 @@ func WithSpan(ctx context.Context, name string, fn func(context.Context) error) 
 }
 
 func RecordError(ctx context.Context, err error) error {
-	trace.SpanFromContext(ctx).RecordError(ctx, err)
+	if err != proto.Nil {
+		trace.SpanFromContext(ctx).RecordError(ctx, err)
+	}
 	return err
 }
