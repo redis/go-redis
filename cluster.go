@@ -1015,6 +1015,16 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 		return newClusterState(c.nodes, slots, node.Client.opt.Addr)
 	}
 
+	/*
+	 * No node is connectable. It's possible that all nodes' IP has changed.
+	 * Clear clusterAddrs to let client be able to re-connect using the initial
+	 * setting of the addresses (e.g. [redsi-cluster-0:6379, redis-cluster-1:6379]),
+	 * which might have chance to resolve domain name and get updated IP address.
+	 */
+	c.nodes.mu.Lock()
+	c.nodes.clusterAddrs = nil
+	c.nodes.mu.Unlock()
+
 	return nil, firstErr
 }
 
