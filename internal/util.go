@@ -62,17 +62,6 @@ func Unwrap(err error) error {
 	return u.Unwrap()
 }
 
-func WithSpan(ctx context.Context, name string, fn func(context.Context) error) error {
-	if !trace.SpanFromContext(ctx).IsRecording() {
-		return fn(ctx)
-	}
-
-	ctx, span := global.Tracer("go-redis").Start(ctx, name)
-	defer span.End()
-
-	return fn(ctx)
-}
-
 func AppendArg(b []byte, v interface{}) []byte {
 	switch v := v.(type) {
 	case nil:
@@ -142,4 +131,22 @@ func appendRune(b []byte, r rune) []byte {
 	b = b[:l+n]
 
 	return b
+}
+
+//------------------------------------------------------------------------------
+
+func WithSpan(ctx context.Context, name string, fn func(context.Context) error) error {
+	if !trace.SpanFromContext(ctx).IsRecording() {
+		return fn(ctx)
+	}
+
+	ctx, span := global.Tracer("github.com/go-redis/redis").Start(ctx, name)
+	defer span.End()
+
+	return fn(ctx)
+}
+
+func RecordError(ctx context.Context, err error) error {
+	trace.SpanFromContext(ctx).RecordError(ctx, err)
+	return err
 }

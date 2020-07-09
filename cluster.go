@@ -622,7 +622,7 @@ func (c *clusterStateHolder) LazyReload(ctx context.Context) {
 		if err != nil {
 			return
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}()
 }
 
