@@ -67,6 +67,11 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 	case "publish":
 		return 1
 	}
+	case "memory":
+	if cmd.stringArg(1) == "usage" {
+		return 2
+	}
+
 	if info == nil {
 		return 0
 	}
