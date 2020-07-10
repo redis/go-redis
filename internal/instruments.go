@@ -15,21 +15,21 @@ type openTelemetryInstrumentation struct {
 var Instruments = initInstruments()
 
 func initInstruments() *openTelemetryInstrumentation {
-	meter := global.Meter("github.com/go-redis/redis")
+	defer func() {
+		if r := recover(); r != nil {
+			Logger.Printf("Error creating meter github.com/go-redis/redis for Instruments", r)
+		}
+	}()
 
-	writeCount, err := meter.NewInt64Counter("redis.writes",
+	meter := metric.Must(global.Meter("github.com/go-redis/redis"))
+
+	writeCount := meter.NewInt64Counter("redis.writes",
 		metric.WithDescription("the number of writes initiated"),
 	)
-	if err != nil {
-		Logger.Printf("failed to create instrument writeCount")
-	}
 
-	newConnectionsCount, err := meter.NewInt64Counter("redis.new_connections",
+	newConnectionsCount := meter.NewInt64Counter("redis.new_connections",
 		metric.WithDescription("the number of connections created"),
 	)
-	if err != nil {
-		Logger.Printf("failed to create instrument newConnectionsCount")
-	}
 
 	return &openTelemetryInstrumentation{
 		WriteCount:          writeCount,
