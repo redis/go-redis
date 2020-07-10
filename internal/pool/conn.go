@@ -89,6 +89,8 @@ func (cn *Conn) WithWriter(
 			return err
 		}
 
+		internal.Instruments.WriteCount.Add(ctx, 1)
+
 		return cn.bw.Flush()
 	})
 }

@@ -21,14 +21,14 @@ func initInstruments() *openTelemetryInstrumentation {
 		metric.WithDescription("the number of writes initiated"),
 	)
 	if err != nil {
-		Logger.Printf("failed to create instrument WriteCount")
+		Logger.Printf("failed to create instrument writeCount")
 	}
 
-	newConnectionsCount, err := meter.NewInt64Counter("redis.connections",
+	newConnectionsCount, err := meter.NewInt64Counter("redis.new_connections",
 		metric.WithDescription("the number of connections created"),
 	)
 	if err != nil {
-		Logger.Printf("failed to create instrument NumNewConnections")
+		Logger.Printf("failed to create instrument newConnectionsCount")
 	}
 
 	return &openTelemetryInstrumentation{

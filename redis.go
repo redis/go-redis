@@ -328,7 +328,6 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder) error {
 			retryTimeout := true
 			err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 				err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-					internal.Instruments.WriteCount.Add(ctx, 1)
 					return writeCmd(wr, cmd)
 				})
 				if err != nil {
