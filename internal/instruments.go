@@ -5,16 +5,14 @@ import (
 	"go.opentelemetry.io/otel/api/metric"
 )
 
-type openTelemetryInstrumentation struct {
+var (
 	// Count of write commands performed
-	WriteCount metric.Int64Counter
+	WritesCounter metric.Int64Counter
 	// Count of new connections
-	NewConnectionsCount metric.Int64Counter
-}
+	NewConnectionsCounter metric.Int64Counter
+)
 
-var Instruments = initInstruments()
-
-func initInstruments() *openTelemetryInstrumentation {
+func init() {
 	defer func() {
 		if r := recover(); r != nil {
 			Logger.Printf("Error creating meter github.com/go-redis/redis for Instruments", r)
@@ -23,16 +21,12 @@ func initInstruments() *openTelemetryInstrumentation {
 
 	meter := metric.Must(global.Meter("github.com/go-redis/redis"))
 
-	writeCount := meter.NewInt64Counter("redis.writes",
+	WritesCounter = meter.NewInt64Counter("redis.writes",
 		metric.WithDescription("the number of writes initiated"),
 	)
 
-	newConnectionsCount := meter.NewInt64Counter("redis.new_connections",
+	NewConnectionsCounter = meter.NewInt64Counter("redis.new_connections",
 		metric.WithDescription("the number of connections created"),
 	)
-
-	return &openTelemetryInstrumentation{
-		WriteCount:          writeCount,
-		NewConnectionsCount: newConnectionsCount,
-	}
 }
+
