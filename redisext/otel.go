@@ -34,7 +34,11 @@ func (OpenTelemetryHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (co
 }
 
 func (OpenTelemetryHook) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
-	trace.SpanFromContext(ctx).End()
+	span := trace.SpanFromContext(ctx)
+	if err := cmd.Err(); err != nil {
+		internal.RecordError(ctx, err)
+	}
+	span.End()
 	return nil
 }
 
@@ -84,7 +88,11 @@ func (OpenTelemetryHook) BeforeProcessPipeline(ctx context.Context, cmds []redis
 }
 
 func (OpenTelemetryHook) AfterProcessPipeline(ctx context.Context, cmds []redis.Cmder) error {
-	trace.SpanFromContext(ctx).End()
+	span := trace.SpanFromContext(ctx)
+	if err := cmds[0].Err(); err != nil {
+		internal.RecordError(ctx, err)
+	}
+	span.End()
 	return nil
 }
 
