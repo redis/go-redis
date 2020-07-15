@@ -93,6 +93,8 @@ func (cn *Conn) WithWriter(
 			return internal.RecordError(ctx, err)
 		}
 
+		internal.WritesCounter.Add(ctx, 1)
+
 		return nil
 	})
 }
