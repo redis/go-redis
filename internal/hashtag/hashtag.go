@@ -1,9 +1,8 @@
 package hashtag
 
 import (
+	"math/rand"
 	"strings"
-
-	"golang.org/x/exp/rand"
 )
 
 const slotNumber = 16384

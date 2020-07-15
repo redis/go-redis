@@ -1,11 +1,11 @@
 package hashtag
 
 import (
+	"math/rand"
 	"testing"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"golang.org/x/exp/rand"
 )
 
 func TestGinkgoSuite(t *testing.T) {
