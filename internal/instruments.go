@@ -6,9 +6,9 @@ import (
 )
 
 var (
-	// Count of write commands performed
+	// WritesCounter is a count of write commands performed.
 	WritesCounter metric.Int64Counter
-	// Count of new connections
+	// NewConnectionsCounter is a count of new connections.
 	NewConnectionsCounter metric.Int64Counter
 )
 

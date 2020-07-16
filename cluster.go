@@ -1655,21 +1655,6 @@ loop:
 	return ss
 }
 
-func remove(ss []string, es ...string) []string {
-	if len(es) == 0 {
-		return ss[:0]
-	}
-	for _, e := range es {
-		for i, s := range ss {
-			if s == e {
-				ss = append(ss[:i], ss[i+1:]...)
-				break
-			}
-		}
-	}
-	return ss
-}
-
 //------------------------------------------------------------------------------
 
 type cmdsMap struct {

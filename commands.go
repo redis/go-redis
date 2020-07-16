@@ -1315,14 +1315,14 @@ func (c cmdable) SIsMember(ctx context.Context, key string, member interface{}) 
 	return cmd
 }
 
-// Redis `SMEMBERS key` command output as a slice
+// Redis `SMEMBERS key` command output as a slice.
 func (c cmdable) SMembers(ctx context.Context, key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "smembers", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// Redis `SMEMBERS key` command output as a map
+// Redis `SMEMBERS key` command output as a map.
 func (c cmdable) SMembersMap(ctx context.Context, key string) *StringStructMapCmd {
 	cmd := NewStringStructMapCmd(ctx, "smembers", key)
 	_ = c(ctx, cmd)
@@ -2144,7 +2144,8 @@ func (c cmdable) ClientKill(ctx context.Context, ipPort string) *StatusCmd {
 }
 
 // ClientKillByFilter is new style syntax, while the ClientKill is old
-// CLIENT KILL <option> [value] ... <option> [value]
+//
+//   CLIENT KILL <option> [value] ... <option> [value]
 func (c cmdable) ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "client"
