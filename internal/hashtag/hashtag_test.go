@@ -14,7 +14,6 @@ func TestGinkgoSuite(t *testing.T) {
 }
 
 var _ = Describe("CRC16", func() {
-
 	// http://redis.io/topics/cluster-spec#keys-distribution-model
 	It("should calculate CRC16", func() {
 		tests := []struct {
@@ -29,11 +28,9 @@ var _ = Describe("CRC16", func() {
 			Expect(crc16sum(test.s)).To(Equal(test.n), "for %s", test.s)
 		}
 	})
-
 })
 
 var _ = Describe("HashSlot", func() {
-
 	It("should calculate hash slots", func() {
 		tests := []struct {
 			key  string
@@ -70,5 +67,4 @@ var _ = Describe("HashSlot", func() {
 			Expect(Slot(test.one)).To(Equal(Slot(test.two)), "for %s <-> %s", test.one, test.two)
 		}
 	})
-
 })

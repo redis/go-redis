@@ -50,7 +50,6 @@ func (s *clusterScenario) addrs() []string {
 func (s *clusterScenario) newClusterClientUnsafe(opt *redis.ClusterOptions) *redis.ClusterClient {
 	opt.Addrs = s.addrs()
 	return redis.NewClusterClient(opt)
-
 }
 
 func (s *clusterScenario) newClusterClient(

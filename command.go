@@ -1857,7 +1857,7 @@ func newGeoLocationSliceParser(q *GeoRadiusQuery) proto.MultiBulkParse {
 					Name: vv,
 				})
 			case *GeoLocation:
-				//TODO: avoid copying
+				// TODO: avoid copying
 				locs = append(locs, *vv)
 			default:
 				return nil, fmt.Errorf("got %T, expected string or *GeoLocation", v)

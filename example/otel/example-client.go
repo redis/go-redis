@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"log"
+	"sync"
+	"time"
+
 	"github.com/go-redis/redis/v8"
 	"github.com/go-redis/redis/v8/redisext"
 	"go.opentelemetry.io/otel/api/global"
@@ -9,9 +13,6 @@ import (
 	traceStdout "go.opentelemetry.io/otel/exporters/trace/stdout"
 	"go.opentelemetry.io/otel/sdk/metric/controller/push"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"log"
-	"sync"
-	"time"
 )
 
 func main() {
@@ -76,4 +77,3 @@ func main() {
 	<-time.After(5 * time.Second)
 	span.End()
 }
-

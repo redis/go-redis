@@ -181,9 +181,11 @@ type UniversalClient interface {
 	Close() error
 }
 
-var _ UniversalClient = (*Client)(nil)
-var _ UniversalClient = (*ClusterClient)(nil)
-var _ UniversalClient = (*Ring)(nil)
+var (
+	_ UniversalClient = (*Client)(nil)
+	_ UniversalClient = (*ClusterClient)(nil)
+	_ UniversalClient = (*Ring)(nil)
+)
 
 // NewUniversalClient returns a new multi client. The type of client returned depends
 // on the following three conditions:

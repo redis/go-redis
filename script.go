@@ -15,9 +15,11 @@ type scripter interface {
 	ScriptLoad(ctx context.Context, script string) *StringCmd
 }
 
-var _ scripter = (*Client)(nil)
-var _ scripter = (*Ring)(nil)
-var _ scripter = (*ClusterClient)(nil)
+var (
+	_ scripter = (*Client)(nil)
+	_ scripter = (*Ring)(nil)
+	_ scripter = (*ClusterClient)(nil)
+)
 
 type Script struct {
 	src, hash string

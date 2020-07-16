@@ -29,4 +29,3 @@ func init() {
 		metric.WithDescription("the number of connections created"),
 	)
 }
-

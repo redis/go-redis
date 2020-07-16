@@ -11,8 +11,10 @@ import (
 	"github.com/go-redis/redis/v8/internal"
 )
 
-var ErrClosed = errors.New("redis: client is closed")
-var ErrPoolTimeout = errors.New("redis: connection pool timeout")
+var (
+	ErrClosed      = errors.New("redis: client is closed")
+	ErrPoolTimeout = errors.New("redis: connection pool timeout")
+)
 
 var timers = sync.Pool{
 	New: func() interface{} {

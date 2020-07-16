@@ -37,5 +37,4 @@ var _ = Describe("UniversalClient", func() {
 		})
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
-
 })

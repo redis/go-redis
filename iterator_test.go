@@ -12,7 +12,7 @@ import (
 var _ = Describe("ScanIterator", func() {
 	var client *redis.Client
 
-	var seed = func(n int) error {
+	seed := func(n int) error {
 		pipe := client.Pipeline()
 		for i := 1; i <= n; i++ {
 			pipe.Set(ctx, fmt.Sprintf("K%02d", i), "x", 0).Err()
@@ -21,7 +21,7 @@ var _ = Describe("ScanIterator", func() {
 		return err
 	}
 
-	var extraSeed = func(n int, m int) error {
+	extraSeed := func(n int, m int) error {
 		pipe := client.Pipeline()
 		for i := 1; i <= m; i++ {
 			pipe.Set(ctx, fmt.Sprintf("A%02d", i), "x", 0).Err()
@@ -33,8 +33,8 @@ var _ = Describe("ScanIterator", func() {
 		return err
 	}
 
-	var hashKey = "K_HASHTEST"
-	var hashSeed = func(n int) error {
+	hashKey := "K_HASHTEST"
+	hashSeed := func(n int) error {
 		pipe := client.Pipeline()
 		for i := 1; i <= n; i++ {
 			pipe.HSet(ctx, hashKey, fmt.Sprintf("K%02d", i), "x").Err()

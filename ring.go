@@ -477,7 +477,7 @@ func (c *Ring) Subscribe(ctx context.Context, channels ...string) *PubSub {
 
 	shard, err := c.shards.GetByKey(channels[0])
 	if err != nil {
-		//TODO: return PubSub with sticky error
+		// TODO: return PubSub with sticky error
 		panic(err)
 	}
 	return shard.Client.Subscribe(ctx, channels...)
@@ -491,7 +491,7 @@ func (c *Ring) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 
 	shard, err := c.shards.GetByKey(channels[0])
 	if err != nil {
-		//TODO: return PubSub with sticky error
+		// TODO: return PubSub with sticky error
 		panic(err)
 	}
 	return shard.Client.PSubscribe(ctx, channels...)
@@ -672,7 +672,7 @@ func (c *Ring) generalProcessPipeline(
 func (c *Ring) processShardPipeline(
 	ctx context.Context, hash string, cmds []Cmder, tx bool,
 ) error {
-	//TODO: retry?
+	// TODO: retry?
 	shard, err := c.shards.GetByName(hash)
 	if err != nil {
 		setCmdsErr(cmds, err)

@@ -333,10 +333,12 @@ type StatefulCmdable interface {
 	ClientSetName(ctx context.Context, name string) *BoolCmd
 }
 
-var _ Cmdable = (*Client)(nil)
-var _ Cmdable = (*Tx)(nil)
-var _ Cmdable = (*Ring)(nil)
-var _ Cmdable = (*ClusterClient)(nil)
+var (
+	_ Cmdable = (*Client)(nil)
+	_ Cmdable = (*Tx)(nil)
+	_ Cmdable = (*Ring)(nil)
+	_ Cmdable = (*ClusterClient)(nil)
+)
 
 type cmdable func(ctx context.Context, cmd Cmder) error
 
