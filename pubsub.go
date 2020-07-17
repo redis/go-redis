@@ -162,7 +162,7 @@ func (c *PubSub) closeTheCn(reason error) error {
 		return nil
 	}
 	if !c.closed {
-		internal.Logger.Printf("redis: discarding bad PubSub connection: %s", reason)
+		internal.Logger.Printf(c.getContext(), "redis: discarding bad PubSub connection: %s", reason)
 	}
 	err := c.closeConn(c.cn)
 	c.cn = nil
@@ -170,6 +170,7 @@ func (c *PubSub) closeTheCn(reason error) error {
 }
 
 func (c *PubSub) Close() error {
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -450,6 +451,14 @@ func (c *PubSub) ChannelWithSubscriptions(ctx context.Context, size int) <-chan 
 	return c.allCh
 }
 
+func (c *PubSub) getContext() context.Context {
+	if c.cmd != nil {
+		return c.cmd.ctx
+	}
+
+	return context.Background()
+}
+
 func (c *PubSub) initPing() {
 	ctx := context.TODO()
 	c.ping = make(chan struct{}, 1)
@@ -531,10 +540,11 @@ func (c *PubSub) initMsgChan(size int) {
 					}
 				case <-timer.C:
 					internal.Logger.Printf(
+						c.getContext(),
 						"redis: %s channel is full for %s (message is dropped)", c, pingTimeout)
 				}
 			default:
-				internal.Logger.Printf("redis: unknown message type: %T", msg)
+				internal.Logger.Printf(c.getContext(), "redis: unknown message type: %T", msg)
 			}
 		}
 	}()
@@ -579,7 +589,7 @@ func (c *PubSub) initAllChan(size int) {
 			case *Message:
 				c.sendMessage(msg, timer)
 			default:
-				internal.Logger.Printf("redis: unknown message type: %T", msg)
+				internal.Logger.Printf(c.getContext(), "redis: unknown message type: %T", msg)
 			}
 		}
 	}()
@@ -594,6 +604,7 @@ func (c *PubSub) sendMessage(msg interface{}, timer *time.Timer) {
 		}
 	case <-timer.C:
 		internal.Logger.Printf(
+			c.getContext(),
 			"redis: %s channel is full for %s (message is dropped)", c, pingTimeout)
 	}
 }
