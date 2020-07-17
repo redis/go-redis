@@ -16,7 +16,7 @@ type logger struct {
 }
 
 func (l *logger) Printf(ctx context.Context, format string, v ...interface{}) {
-	l.log.Output(2, fmt.Sprintf(format, v...))
+	_ = l.log.Output(2, fmt.Sprintf(format, v...))
 }
 
 var Logger Logging = &logger{

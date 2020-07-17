@@ -170,7 +170,6 @@ func (c *PubSub) closeTheCn(reason error) error {
 }
 
 func (c *PubSub) Close() error {
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
