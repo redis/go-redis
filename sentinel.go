@@ -342,7 +342,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	c.switchMaster(addr)
+	c.switchMaster(ctx, addr)
 	return addr, nil
 }
 
@@ -393,7 +393,7 @@ func (c *sentinelFailover) masterAddr(ctx context.Context) (string, error) {
 
 		masterAddr, err := sentinel.GetMasterAddrByName(ctx, c.masterName).Result()
 		if err != nil {
-			internal.Logger.Printf("sentinel: GetMasterAddrByName master=%q failed: %s",
+			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName master=%q failed: %s",
 				c.masterName, err)
 			_ = sentinel.Close()
 			continue
@@ -413,14 +413,14 @@ func (c *sentinelFailover) masterAddr(ctx context.Context) (string, error) {
 func (c *sentinelFailover) getMasterAddr(ctx context.Context, sentinel *SentinelClient) string {
 	addr, err := sentinel.GetMasterAddrByName(ctx, c.masterName).Result()
 	if err != nil {
-		internal.Logger.Printf("sentinel: GetMasterAddrByName name=%q failed: %s",
+		internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
 			c.masterName, err)
 		return ""
 	}
 	return net.JoinHostPort(addr[0], addr[1])
 }
 
-func (c *sentinelFailover) switchMaster(addr string) {
+func (c *sentinelFailover) switchMaster(ctx context.Context, addr string) {
 	c.mu.RLock()
 	masterAddr := c._masterAddr
 	c.mu.RUnlock()
@@ -435,7 +435,7 @@ func (c *sentinelFailover) switchMaster(addr string) {
 		return
 	}
 
-	internal.Logger.Printf("sentinel: new master=%q addr=%q",
+	internal.Logger.Printf(ctx, "sentinel: new master=%q addr=%q",
 		c.masterName, addr)
 	_ = c.Pool().Filter(func(cn *pool.Conn) bool {
 		return cn.RemoteAddr().String() != addr
@@ -457,7 +457,7 @@ func (c *sentinelFailover) setSentinel(ctx context.Context, sentinel *SentinelCl
 func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 	sentinels, err := c.sentinel.Sentinels(ctx, c.masterName).Result()
 	if err != nil {
-		internal.Logger.Printf("sentinel: Sentinels master=%q failed: %s", c.masterName, err)
+		internal.Logger.Printf(ctx, "sentinel: Sentinels master=%q failed: %s", c.masterName, err)
 		return
 	}
 	for _, sentinel := range sentinels {
@@ -467,7 +467,7 @@ func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 			if key == "name" {
 				sentinelAddr := vals[i+1].(string)
 				if !contains(c.sentinelAddrs, sentinelAddr) {
-					internal.Logger.Printf("sentinel: discovered new sentinel=%q for master=%q",
+					internal.Logger.Printf(ctx, "sentinel: discovered new sentinel=%q for master=%q",
 						sentinelAddr, c.masterName)
 					c.sentinelAddrs = append(c.sentinelAddrs, sentinelAddr)
 				}
@@ -487,11 +487,11 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 		if msg.Channel == "+switch-master" {
 			parts := strings.Split(msg.Payload, " ")
 			if parts[0] != c.masterName {
-				internal.Logger.Printf("sentinel: ignore addr for master=%q", parts[0])
+				internal.Logger.Printf(pubsub.getContext(), "sentinel: ignore addr for master=%q", parts[0])
 				continue
 			}
 			addr := net.JoinHostPort(parts[3], parts[4])
-			c.switchMaster(addr)
+			c.switchMaster(pubsub.getContext(), addr)
 		}
 	}
 }

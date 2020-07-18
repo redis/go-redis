@@ -13,9 +13,10 @@ func usePrecise(dur time.Duration) bool {
 	return dur < time.Second || dur%time.Second != 0
 }
 
-func formatMs(dur time.Duration) int64 {
+func formatMs(ctx context.Context, dur time.Duration) int64 {
 	if dur > 0 && dur < time.Millisecond {
 		internal.Logger.Printf(
+			ctx,
 			"specified duration is %s, but minimal supported value is %s - truncating to 1ms",
 			dur, time.Millisecond,
 		)
@@ -24,9 +25,10 @@ func formatMs(dur time.Duration) int64 {
 	return int64(dur / time.Millisecond)
 }
 
-func formatSec(dur time.Duration) int64 {
+func formatSec(ctx context.Context, dur time.Duration) int64 {
 	if dur > 0 && dur < time.Second {
 		internal.Logger.Printf(
+			ctx,
 			"specified duration is %s, but minimal supported value is %s - truncating to 1s",
 			dur, time.Second,
 		)
@@ -457,7 +459,7 @@ func (c cmdable) Exists(ctx context.Context, keys ...string) *IntCmd {
 }
 
 func (c cmdable) Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "expire", key, formatSec(expiration))
+	cmd := NewBoolCmd(ctx, "expire", key, formatSec(ctx, expiration))
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -482,7 +484,7 @@ func (c cmdable) Migrate(ctx context.Context, host, port, key string, db int, ti
 		port,
 		key,
 		db,
-		formatMs(timeout),
+		formatMs(ctx, timeout),
 	)
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
@@ -520,7 +522,7 @@ func (c cmdable) Persist(ctx context.Context, key string) *BoolCmd {
 }
 
 func (c cmdable) PExpire(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "pexpire", key, formatMs(expiration))
+	cmd := NewBoolCmd(ctx, "pexpire", key, formatMs(ctx, expiration))
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -565,7 +567,7 @@ func (c cmdable) Restore(ctx context.Context, key string, ttl time.Duration, val
 		ctx,
 		"restore",
 		key,
-		formatMs(ttl),
+		formatMs(ctx, ttl),
 		value,
 	)
 	_ = c(ctx, cmd)
@@ -577,7 +579,7 @@ func (c cmdable) RestoreReplace(ctx context.Context, key string, ttl time.Durati
 		ctx,
 		"restore",
 		key,
-		formatMs(ttl),
+		formatMs(ctx, ttl),
 		value,
 		"replace",
 	)
@@ -761,9 +763,9 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 	args[2] = value
 	if expiration > 0 {
 		if usePrecise(expiration) {
-			args = append(args, "px", formatMs(expiration))
+			args = append(args, "px", formatMs(ctx, expiration))
 		} else {
-			args = append(args, "ex", formatSec(expiration))
+			args = append(args, "ex", formatSec(ctx, expiration))
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -781,9 +783,9 @@ func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expir
 		cmd = NewBoolCmd(ctx, "setnx", key, value)
 	} else {
 		if usePrecise(expiration) {
-			cmd = NewBoolCmd(ctx, "set", key, value, "px", formatMs(expiration), "nx")
+			cmd = NewBoolCmd(ctx, "set", key, value, "px", formatMs(ctx, expiration), "nx")
 		} else {
-			cmd = NewBoolCmd(ctx, "set", key, value, "ex", formatSec(expiration), "nx")
+			cmd = NewBoolCmd(ctx, "set", key, value, "ex", formatSec(ctx, expiration), "nx")
 		}
 	}
 	_ = c(ctx, cmd)
@@ -799,9 +801,9 @@ func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expir
 		cmd = NewBoolCmd(ctx, "set", key, value, "xx")
 	} else {
 		if usePrecise(expiration) {
-			cmd = NewBoolCmd(ctx, "set", key, value, "px", formatMs(expiration), "xx")
+			cmd = NewBoolCmd(ctx, "set", key, value, "px", formatMs(ctx, expiration), "xx")
 		} else {
-			cmd = NewBoolCmd(ctx, "set", key, value, "ex", formatSec(expiration), "xx")
+			cmd = NewBoolCmd(ctx, "set", key, value, "ex", formatSec(ctx, expiration), "xx")
 		}
 	}
 	_ = c(ctx, cmd)
@@ -1088,7 +1090,7 @@ func (c cmdable) BLPop(ctx context.Context, timeout time.Duration, keys ...strin
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	args[len(args)-1] = formatSec(timeout)
+	args[len(args)-1] = formatSec(ctx, timeout)
 	cmd := NewStringSliceCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
@@ -1101,7 +1103,7 @@ func (c cmdable) BRPop(ctx context.Context, timeout time.Duration, keys ...strin
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	args[len(keys)+1] = formatSec(timeout)
+	args[len(keys)+1] = formatSec(ctx, timeout)
 	cmd := NewStringSliceCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
@@ -1114,7 +1116,7 @@ func (c cmdable) BRPopLPush(ctx context.Context, source, destination string, tim
 		"brpoplpush",
 		source,
 		destination,
-		formatSec(timeout),
+		formatSec(ctx, timeout),
 	)
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
@@ -1694,7 +1696,7 @@ func (c cmdable) BZPopMax(ctx context.Context, timeout time.Duration, keys ...st
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	args[len(args)-1] = formatSec(timeout)
+	args[len(args)-1] = formatSec(ctx, timeout)
 	cmd := NewZWithKeyCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
@@ -1708,7 +1710,7 @@ func (c cmdable) BZPopMin(ctx context.Context, timeout time.Duration, keys ...st
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	args[len(args)-1] = formatSec(timeout)
+	args[len(args)-1] = formatSec(ctx, timeout)
 	cmd := NewZWithKeyCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
@@ -2165,7 +2167,7 @@ func (c cmdable) ClientList(ctx context.Context) *StringCmd {
 }
 
 func (c cmdable) ClientPause(ctx context.Context, dur time.Duration) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "client", "pause", formatMs(dur))
+	cmd := NewBoolCmd(ctx, "client", "pause", formatMs(ctx, dur))
 	_ = c(ctx, cmd)
 	return cmd
 }
