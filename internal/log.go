@@ -7,7 +7,6 @@ import (
 	"os"
 )
 
-// Logging log interface
 type Logging interface {
 	Printf(ctx context.Context, format string, v ...interface{})
 }
