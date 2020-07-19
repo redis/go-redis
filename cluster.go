@@ -350,7 +350,7 @@ func (c *clusterNodes) Get(addr string) (*clusterNode, error) {
 
 	node, ok := c.nodes[addr]
 	if ok {
-		return node, err
+		return node, nil
 	}
 
 	node = newClusterNode(c.opt, addr)
@@ -358,7 +358,7 @@ func (c *clusterNodes) Get(addr string) (*clusterNode, error) {
 	c.addrs = appendIfNotExists(c.addrs, addr)
 	c.nodes[addr] = node
 
-	return node, err
+	return node, nil
 }
 
 func (c *clusterNodes) get(addr string) (*clusterNode, error) {
@@ -1542,28 +1542,43 @@ func (c *ClusterClient) retryBackoff(attempt int) time.Duration {
 }
 
 func (c *ClusterClient) cmdsInfo() (map[string]*CommandInfo, error) {
+	// Try 3 random nodes.
+	const nodeLimit = 3
+
 	addrs, err := c.nodes.Addrs()
 	if err != nil {
 		return nil, err
 	}
 
 	var firstErr error
-	for _, addr := range addrs {
+
+	perm := rand.Perm(len(addrs))
+	if len(perm) > nodeLimit {
+		perm = perm[:nodeLimit]
+	}
+
+	for _, idx := range perm {
+		addr := addrs[idx]
+
 		node, err := c.nodes.Get(addr)
 		if err != nil {
-			return nil, err
-		}
-		if node == nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 
-		info, err := node.Client.Command(context.TODO()).Result()
+		info, err := node.Client.Command(c.ctx).Result()
 		if err == nil {
 			return info, nil
 		}
 		if firstErr == nil {
 			firstErr = err
 		}
+	}
+
+	if firstErr == nil {
+		panic("not reached")
 	}
 	return nil, firstErr
 }
