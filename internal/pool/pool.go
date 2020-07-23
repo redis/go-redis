@@ -83,7 +83,7 @@ type ConnPool struct {
 	poolSize     int
 	idleConnsLen int
 
-	connsCountMu sync.Mutex
+	connsCountMu sync.RWMutex
 	connsCount   int
 
 	stats Stats
@@ -119,7 +119,7 @@ func (p *ConnPool) checkMinIdleConns() {
 	if p.opt.MinIdleConns == 0 {
 		return
 	}
-	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns && p.connsCount < p.opt.MaxConns {
+	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns && p.readConnsCount() < p.opt.MaxConns {
 		p.poolSize++
 		p.idleConnsLen++
 		go func() {
@@ -189,6 +189,13 @@ func (p *ConnPool) decrementConnsCount() {
 	defer p.connsCountMu.Unlock()
 
 	p.connsCount--
+}
+
+func (p *ConnPool) readConnsCount() int {
+	p.connsCountMu.RLock()
+	defer p.connsCountMu.RUnlock()
+
+	return p.connsCount
 }
 
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
