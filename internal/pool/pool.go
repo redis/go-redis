@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	ErrClosed      = errors.New("redis: client is closed")
-	ErrPoolTimeout = errors.New("redis: connection pool timeout")
+	ErrClosed             = errors.New("redis: client is closed")
+	ErrPoolTimeout        = errors.New("redis: connection pool timeout")
+	ErrTooManyConnections = errors.New("redis: maximum connection limit reached")
 )
 
 var timers = sync.Pool{
@@ -55,6 +56,7 @@ type Options struct {
 	OnClose func(*Conn) error
 
 	PoolSize           int
+	MaxConns           int
 	MinIdleConns       int
 	MaxConnAge         time.Duration
 	PoolTimeout        time.Duration
@@ -80,6 +82,9 @@ type ConnPool struct {
 	idleConns    []*Conn
 	poolSize     int
 	idleConnsLen int
+
+	connsCountMu sync.Mutex
+	connsCount   int
 
 	stats Stats
 
@@ -166,6 +171,26 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	return cn, nil
 }
 
+func (p *ConnPool) incrementConnsCount() error {
+	p.connsCountMu.Lock()
+	defer p.connsCountMu.Unlock()
+
+	if p.connsCount >= p.opt.MaxConns {
+		return ErrTooManyConnections
+	}
+
+	p.connsCount++
+
+	return nil
+}
+
+func (p *ConnPool) decrementConnsCount() {
+	p.connsCountMu.Lock()
+	defer p.connsCountMu.Unlock()
+
+	p.connsCount--
+}
+
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if p.closed() {
 		return nil, ErrClosed
@@ -175,12 +200,18 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, p.getLastDialError()
 	}
 
+	err := p.incrementConnsCount()
+	if err != nil {
+		return nil, err
+	}
+
 	netConn, err := p.opt.Dialer(ctx)
 	if err != nil {
 		p.setLastDialError(err)
 		if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.opt.PoolSize) {
 			go p.tryDial()
 		}
+		p.decrementConnsCount()
 		return nil, err
 	}
 
@@ -357,6 +388,7 @@ func (p *ConnPool) removeConnWithLock(cn *Conn) {
 func (p *ConnPool) removeConn(cn *Conn) {
 	for i, c := range p.conns {
 		if c == cn {
+			p.decrementConnsCount()
 			p.conns = append(p.conns[:i], p.conns[i+1:]...)
 			if cn.pooled {
 				p.poolSize--
@@ -412,7 +444,7 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 	p.connsMu.Lock()
 	for _, cn := range p.conns {
 		if fn(cn) {
-			if err := p.closeConn(cn); err != nil && firstErr == nil {
+			if err := p.CloseConn(cn); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
@@ -439,6 +471,10 @@ func (p *ConnPool) Close() error {
 	p.idleConns = nil
 	p.idleConnsLen = 0
 	p.connsMu.Unlock()
+
+	p.connsCountMu.Lock()
+	p.connsCount = 0
+	p.connsCountMu.Unlock()
 
 	return firstErr
 }

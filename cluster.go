@@ -69,7 +69,9 @@ type ClusterOptions struct {
 	WriteTimeout time.Duration
 
 	// PoolSize applies per cluster node and not for the whole cluster.
-	PoolSize           int
+	PoolSize int
+	// MaxConns applies per cluster node and not for the whole cluster.
+	MaxConns           int
 	MinIdleConns       int
 	MaxConnAge         time.Duration
 	PoolTimeout        time.Duration

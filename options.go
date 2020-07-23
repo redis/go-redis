@@ -76,9 +76,12 @@ type Options struct {
 	// Default is ReadTimeout.
 	WriteTimeout time.Duration
 
-	// Maximum number of socket connections.
+	// Maximum number of pooled socket connections.
 	// Default is 10 connections per every CPU as reported by runtime.NumCPU.
 	PoolSize int
+	// Maximum number of socket connections allowed at any point in time.
+	// Default is unlimited.
+	MaxConns int
 	// Minimum number of idle connections which is useful when establishing
 	// new connection is slow.
 	MinIdleConns int
@@ -249,6 +252,7 @@ func newConnPool(opt *Options) *pool.ConnPool {
 			return conn, err
 		},
 		PoolSize:           opt.PoolSize,
+		MaxConns:           opt.MaxConns,
 		MinIdleConns:       opt.MinIdleConns,
 		MaxConnAge:         opt.MaxConnAge,
 		PoolTimeout:        opt.PoolTimeout,
