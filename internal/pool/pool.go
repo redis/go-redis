@@ -119,7 +119,7 @@ func (p *ConnPool) checkMinIdleConns() {
 	if p.opt.MinIdleConns == 0 {
 		return
 	}
-	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns && p.readConnsCount() < p.opt.MaxConns {
+	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns && p.newConnAllowed() {
 		p.poolSize++
 		p.idleConnsLen++
 		go func() {
@@ -172,6 +172,10 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 }
 
 func (p *ConnPool) incrementConnsCount() error {
+	if p.opt.MaxConns == 0 {
+		return nil
+	}
+
 	p.connsCountMu.Lock()
 	defer p.connsCountMu.Unlock()
 
@@ -185,17 +189,21 @@ func (p *ConnPool) incrementConnsCount() error {
 }
 
 func (p *ConnPool) decrementConnsCount() {
+	if p.opt.MaxConns == 0 {
+		return
+	}
+
 	p.connsCountMu.Lock()
 	defer p.connsCountMu.Unlock()
 
 	p.connsCount--
 }
 
-func (p *ConnPool) readConnsCount() int {
+func (p *ConnPool) newConnAllowed() bool {
 	p.connsCountMu.RLock()
 	defer p.connsCountMu.RUnlock()
 
-	return p.connsCount
+	return p.opt.MaxConns == 0 || p.connsCount < p.opt.MaxConns
 }
 
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
