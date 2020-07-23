@@ -382,21 +382,19 @@ var _ = Describe("max connections", func() {
 	BeforeEach(func() {
 		connPool = pool.NewConnPool(&pool.Options{
 			Dialer:       dummyDialer,
-			PoolSize:     10,
-			MaxConns:     10,
-			MinIdleConns: 5,
+			PoolSize:     2,
+			MaxConns:     2,
+			MinIdleConns: 1,
 			PoolTimeout:  time.Second,
 		})
 
-		conns = make([]*pool.Conn, 10)
+		conns = make([]*pool.Conn, 2)
 
-		for i := 0; i < 5; i++ {
-			var err error
-			conns[2*i], err = connPool.Get(c)
-			Expect(err).NotTo(HaveOccurred())
-			conns[2*i+1], err = connPool.NewConn(c)
-			Expect(err).NotTo(HaveOccurred())
-		}
+		var err error
+		conns[0], err = connPool.NewConn(c)
+		Expect(err).NotTo(HaveOccurred())
+		conns[1], err = connPool.Get(c)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
