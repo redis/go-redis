@@ -9,6 +9,7 @@ import (
 	"net"
 	"runtime"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1576,7 +1577,20 @@ func (c *ClusterClient) cmdSlot(cmd Cmder) int {
 	args := cmd.Args()
 	if len(args) > 2 {
 		if args[0] == "cluster" && args[1] == "getkeysinslot" {
-			return args[2].(int)
+			//return args[2].(int)
+			switch args[2].(type) {
+			case int:
+				return args[2].(int)
+			case string:
+				slot, err := strconv.Atoi(args[2].(string))
+				if err == nil {
+					return slot
+				} else {
+					internal.Logger.Printf("cluster getkeysinslot slot:", slot)
+				}
+			default:
+				//return 0
+			}
 		}
 	}
 
