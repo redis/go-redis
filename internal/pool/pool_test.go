@@ -388,6 +388,8 @@ var _ = Describe("max connections", func() {
 			PoolTimeout:  time.Second,
 		})
 
+		conns = make([]*pool.Conn, 10)
+
 		for i := 0; i < 5; i++ {
 			var err error
 			conns[2*i], err = connPool.Get(c)
