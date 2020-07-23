@@ -374,6 +374,61 @@ var _ = Describe("conns reaper", func() {
 	assert("aged")
 })
 
+var _ = Describe("max connections", func() {
+	c := context.Background()
+
+	var connPool *pool.ConnPool
+	var conns []*pool.Conn
+	BeforeEach(func() {
+		connPool = pool.NewConnPool(&pool.Options{
+			Dialer:       dummyDialer,
+			PoolSize:     10,
+			MaxConns:     10,
+			MinIdleConns: 5,
+			PoolTimeout:  time.Second,
+		})
+
+		for i := 0; i < 5; i++ {
+			var err error
+			conns[2*i], err = connPool.Get(c)
+			Expect(err).NotTo(HaveOccurred())
+			conns[2*i+1], err = connPool.NewConn(c)
+			Expect(err).NotTo(HaveOccurred())
+		}
+	})
+
+	AfterEach(func() {
+		connPool.Close()
+	})
+
+	It("does not allow new pooled connections after the limit", func() {
+		_, err := connPool.Get(c)
+		Expect(err).To(Equal(pool.ErrTooManyConnections))
+	})
+
+	It("does not allow new un-pooled connections after the limit", func() {
+		_, err := connPool.NewConn(c)
+		Expect(err).To(Equal(pool.ErrTooManyConnections))
+	})
+
+	It("allows a new connection after prior ones have been closed", func() {
+		err := connPool.CloseConn(conns[0])
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = connPool.Get(c)
+		Expect(err).NotTo(HaveOccurred())
+
+		// back at saturation
+		_, err = connPool.Get(c)
+		Expect(err).To(Equal(pool.ErrTooManyConnections))
+	})
+
+	It("does not allow idle connections to open above the limit", func() {
+		Expect(connPool.IdleLen()).To(Equal(0))
+	})
+
+})
+
 var _ = Describe("race", func() {
 	c := context.Background()
 	var connPool *pool.ConnPool

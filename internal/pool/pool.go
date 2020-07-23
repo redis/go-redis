@@ -119,7 +119,7 @@ func (p *ConnPool) checkMinIdleConns() {
 	if p.opt.MinIdleConns == 0 {
 		return
 	}
-	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns {
+	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns && p.connsCount < p.opt.MaxConns {
 		p.poolSize++
 		p.idleConnsLen++
 		go func() {
