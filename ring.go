@@ -597,7 +597,7 @@ func (c *Ring) _process(ctx context.Context, cmd Cmder) error {
 		}
 
 		lastErr = shard.Client.Process(ctx, cmd)
-		if lastErr == nil || !isRetryableError(lastErr, cmd.readTimeout() == nil) {
+		if lastErr == nil || !shouldRetry(lastErr, cmd.readTimeout() == nil) {
 			return lastErr
 		}
 	}

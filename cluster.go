@@ -810,7 +810,7 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
-		if isRetryableError(lastErr, cmd.readTimeout() == nil) {
+		if shouldRetry(lastErr, cmd.readTimeout() == nil) {
 			// First retry the same node.
 			if attempt == 0 {
 				continue
@@ -1466,7 +1466,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			continue
 		}
 
-		if isRetryableError(err, true) {
+		if shouldRetry(err, true) {
 			continue
 		}
 

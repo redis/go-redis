@@ -332,7 +332,7 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 type badConnError string
 
 func (e badConnError) Error() string   { return string(e) }
-func (e badConnError) Timeout() bool   { return false }
+func (e badConnError) Timeout() bool   { return true }
 func (e badConnError) Temporary() bool { return false }
 
 type badConn struct {
