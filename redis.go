@@ -345,7 +345,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder) error {
 			if err == nil {
 				return nil
 			}
-			retry = isRetryableError(err, retryTimeout)
+			retry = shouldRetry(err, retryTimeout)
 			return err
 		})
 		if err == nil || !retry {
@@ -430,7 +430,7 @@ func (c *baseClient) _generalProcessPipeline(
 			canRetry, err = p(ctx, cn, cmds)
 			return err
 		})
-		if lastErr == nil || !canRetry || !isRetryableError(lastErr, true) {
+		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) {
 			return lastErr
 		}
 	}
