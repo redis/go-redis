@@ -120,6 +120,9 @@ func (opt *Options) init() {
 			opt.Network = "tcp"
 		}
 	}
+	if opt.DialTimeout == 0 {
+		opt.DialTimeout = 5 * time.Second
+	}
 	if opt.Dialer == nil {
 		opt.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			netDialer := &net.Dialer{
@@ -134,9 +137,6 @@ func (opt *Options) init() {
 	}
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 10 * runtime.NumCPU()
-	}
-	if opt.DialTimeout == 0 {
-		opt.DialTimeout = 5 * time.Second
 	}
 	switch opt.ReadTimeout {
 	case -1:
