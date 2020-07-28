@@ -14,8 +14,8 @@ import (
 var noDeadline = time.Time{}
 
 type Conn struct {
-	usedAt  int64 // atomic
-	netConn net.Conn
+	usedAt  int64    // atomic
+	netConn net.Conn //tcp链接
 
 	rd *proto.Reader
 	bw *bufio.Writer
