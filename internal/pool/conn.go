@@ -14,12 +14,12 @@ import (
 var noDeadline = time.Time{}
 
 type Conn struct {
-	usedAt  int64 // atomic
-	netConn net.Conn
+	usedAt  int64    // atomic
+	netConn net.Conn //tcp链接
 
-	rd *proto.Reader
+	rd *proto.Reader //redis协议读取
 	bw *bufio.Writer
-	wr *proto.Writer
+	wr *proto.Writer //redis协议写入
 
 	Inited    bool
 	pooled    bool
