@@ -8,6 +8,25 @@ import (
 	"github.com/go-redis/redis/v8/internal/util"
 )
 
+/**
+状态响应（status reply）的第一个字节是 "+"
++OK
+错误响应（error reply）的第一个字节是 "-"
+-Error Msg
+整数响应（integer reply）的第一个字节是 ":"
+:10
+主体响应（bulk reply）的第一个字节是 "$"
+例如：
+$3
+abc
+批量主体响应（multi bulk reply）的第一个字节是 "*"
+*2
+$2
+ab
+$3
+abc
+*/
+
 const (
 	ErrorReply  = '-'
 	StatusReply = '+'
@@ -27,7 +46,7 @@ func (e RedisError) Error() string { return string(e) }
 func (RedisError) RedisError() {}
 
 //------------------------------------------------------------------------------
-
+//便于调用方对多命令进行处理，该方法内进行递归调用
 type MultiBulkParse func(*Reader, int64) (interface{}, error)
 
 type Reader struct {
@@ -35,6 +54,7 @@ type Reader struct {
 	_buf []byte
 }
 
+//实例化一个Reader结构体
 func NewReader(rd io.Reader) *Reader {
 	return &Reader{
 		rd:   bufio.NewReader(rd),
@@ -42,10 +62,12 @@ func NewReader(rd io.Reader) *Reader {
 	}
 }
 
+//获取buffer长度
 func (r *Reader) Buffered() int {
 	return r.rd.Buffered()
 }
 
+//获取n个字节
 func (r *Reader) Peek(n int) ([]byte, error) {
 	return r.rd.Peek(n)
 }
@@ -54,6 +76,7 @@ func (r *Reader) Reset(rd io.Reader) {
 	r.rd.Reset(rd)
 }
 
+//读取一行记录
 func (r *Reader) ReadLine() ([]byte, error) {
 	line, err := r.readLine()
 	if err != nil {
@@ -68,6 +91,7 @@ func (r *Reader) ReadLine() ([]byte, error) {
 // readLine that returns an error if:
 //   - there is a pending read error;
 //   - or line does not end with \r\n.
+//获取单行记录  使用\n判断
 func (r *Reader) readLine() ([]byte, error) {
 	b, err := r.rd.ReadSlice('\n')
 	if err != nil {
@@ -80,22 +104,25 @@ func (r *Reader) readLine() ([]byte, error) {
 	return b, nil
 }
 
+//读取redis协议批量响应返回值的入口方法
 func (r *Reader) ReadReply(m MultiBulkParse) (interface{}, error) {
 	line, err := r.ReadLine()
 	if err != nil {
 		return nil, err
 	}
 
+	//确定响应类型
 	switch line[0] {
-	case ErrorReply:
+	case ErrorReply: //错误响应
 		return nil, ParseErrorReply(line)
-	case StatusReply:
-		return string(line[1:]), nil
-	case IntReply:
+	case StatusReply: //状态响应
+		return util.BytesToString(line[1:]), nil //adday by still 0729 高并发下无需重复申请和释放内存
+		//return string(line[1:]), nil
+	case IntReply: //整数响应
 		return util.ParseInt(line[1:], 10, 64)
-	case StringReply:
+	case StringReply: //主体响应
 		return r.readStringReply(line)
-	case ArrayReply:
+	case ArrayReply: //批量响应
 		n, err := parseArrayLen(line)
 		if err != nil {
 			return nil, err
@@ -109,6 +136,7 @@ func (r *Reader) ReadReply(m MultiBulkParse) (interface{}, error) {
 	return nil, fmt.Errorf("redis: can't parse %.100q", line)
 }
 
+//读取int类型返回
 func (r *Reader) ReadIntReply() (int64, error) {
 	line, err := r.ReadLine()
 	if err != nil {
@@ -124,16 +152,18 @@ func (r *Reader) ReadIntReply() (int64, error) {
 	}
 }
 
+//读取string类型返回
 func (r *Reader) ReadString() (string, error) {
-	line, err := r.ReadLine()
+	line, err := r.ReadLine() //先读取单行
 	if err != nil {
 		return "", err
 	}
+	//判断首字符
 	switch line[0] {
 	case ErrorReply:
 		return "", ParseErrorReply(line)
 	case StringReply:
-		return r.readStringReply(line)
+		return r.readStringReply(line) //string类型的需要单独处理 相应数据是多行
 	case StatusReply:
 		return string(line[1:]), nil
 	case IntReply:
@@ -143,22 +173,26 @@ func (r *Reader) ReadString() (string, error) {
 	}
 }
 
+//读取string单行之后的处理
 func (r *Reader) readStringReply(line []byte) (string, error) {
 	if isNilReply(line) {
 		return "", Nil
 	}
-
+	//获取string类型的第一行 字符串长度
 	replyLen, err := util.Atoi(line[1:])
 	if err != nil {
 		return "", err
 	}
 
 	b := make([]byte, replyLen+2)
+
+	//读取剩余全量数据
 	_, err = io.ReadFull(r.rd, b)
 	if err != nil {
 		return "", err
 	}
 
+	//截取\r\n提取真实返回的数据
 	return util.BytesToString(b[:replyLen]), nil
 }
 
@@ -306,6 +340,7 @@ func ParseErrorReply(line []byte) error {
 	return RedisError(string(line[1:]))
 }
 
+//获取长度
 func parseArrayLen(line []byte) (int64, error) {
 	if isNilReply(line) {
 		return 0, Nil
