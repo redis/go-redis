@@ -13,6 +13,11 @@ import (
 
 var noDeadline = time.Time{}
 
+type tracedConn struct{
+	net.Conn
+	ctx context.Context
+}
+
 type Conn struct {
 	usedAt  int64 // atomic
 	netConn net.Conn
@@ -26,13 +31,20 @@ type Conn struct {
 	createdAt time.Time
 }
 
+func newTracedConn(conn net.Conn) net.Conn {
+	return &tracedConn{
+		conn,
+		context.Background(),
+	}
+}
+
 func NewConn(netConn net.Conn) *Conn {
 	cn := &Conn{
 		netConn:   netConn,
 		createdAt: time.Now(),
 	}
-	cn.rd = proto.NewReader(netConn)
-	cn.bw = bufio.NewWriter(netConn)
+	cn.rd = proto.NewReader(newTracedConn(netConn))
+	cn.bw = bufio.NewWriter(newTracedConn(netConn))
 	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
 	return cn
@@ -129,4 +141,10 @@ func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	}
 
 	return noDeadline
+}
+
+func (t *tracedConn) Write(b []byte) (int, error) {
+	n, err := t.Conn.Write(b)
+	internal.BytesWritten.Record(t.ctx, int64(n))
+	return n, err
 }
