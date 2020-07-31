@@ -83,6 +83,9 @@ func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(r
 			internal.CountReadError(ctx, err)
 			return internal.RecordError(ctx, err)
 		}
+
+		internal.ReadsCounter.Add(ctx, 1)
+
 		return nil
 	})
 }

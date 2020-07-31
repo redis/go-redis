@@ -22,6 +22,8 @@ const (
 var (
 	// WritesCounter is a count of write commands performed.
 	WritesCounter metric.Int64Counter
+	// ReadsCounter is a count of reads performed.
+	ReadsCounter metric.Int64Counter
 	// BytesWritten records the number of bytes written to redis.
 	BytesWritten metric.Int64ValueRecorder
 	// BytesRead records the number of bytes read from redis.
@@ -37,12 +39,14 @@ func dbErrorMessage(msg string) kv.KeyValue {
 	return dbErrorMessageKey.String(msg)
 }
 
-// dbErrorSourceWrite returns the write ErrorSource.
+// dbErrorSourceWrite returns a KeyValue pair denoting
+// that the error occurred during a write.
 func dbErrorSourceWrite() kv.KeyValue {
 	return dbErrorSourceKey.String("write")
 }
 
-// dbErrorSourceRead returns the read ErrorSource.
+// dbErrorSourceRead returns a KeyValue pair denoting
+// that the error occurred during a read.
 func dbErrorSourceRead() kv.KeyValue {
 	return dbErrorSourceKey.String("read")
 }
@@ -58,6 +62,10 @@ func init() {
 
 	WritesCounter = meter.NewInt64Counter("redis.writes",
 		metric.WithDescription("the number of writes initiated"),
+	)
+
+	ReadsCounter = meter.NewInt64Counter("redis.reads",
+		metric.WithDescription("the number of reads initiated"),
 	)
 
 	BytesWritten = meter.NewInt64ValueRecorder("redis.writes.bytes",

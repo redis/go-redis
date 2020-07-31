@@ -73,7 +73,6 @@ func main() {
 	rdb.Del(ctx, "First value")
 	rdb.Del(ctx, "Second value")
 
-
 	span.End()
 
 	// wait for spans to export
