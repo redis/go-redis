@@ -13,6 +13,8 @@ var (
 	WritesCounter metric.Int64Counter
 	// BytesWritten records the number of bytes written to redis.
 	BytesWritten metric.Int64ValueRecorder
+	// BytesRead records the number of bytes read from redis.
+	BytesRead metric.Int64ValueRecorder
 	// NewConnectionsCounter is a count of new connections.
 	NewConnectionsCounter metric.Int64Counter
 )
@@ -32,6 +34,11 @@ func init() {
 
 	BytesWritten = meter.NewInt64ValueRecorder("redis.writes.bytes",
 		metric.WithDescription("the number of bytes written to redis"),
+		metric.WithUnit(unit.Bytes),
+	)
+
+	BytesRead = meter.NewInt64ValueRecorder("redis.reads.bytes",
+		metric.WithDescription("the number of bytes read from redis"),
 		metric.WithUnit(unit.Bytes),
 	)
 

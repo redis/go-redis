@@ -13,7 +13,7 @@ import (
 
 var noDeadline = time.Time{}
 
-type tracedConn struct{
+type tracedConn struct {
 	net.Conn
 	ctx context.Context
 }
@@ -146,5 +146,11 @@ func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 func (t *tracedConn) Write(b []byte) (int, error) {
 	n, err := t.Conn.Write(b)
 	internal.BytesWritten.Record(t.ctx, int64(n))
+	return n, err
+}
+
+func (t *tracedConn) Read(b []byte) (int, error) {
+	n, err := t.Conn.Read(b)
+	internal.BytesRead.Record(t.ctx, int64(n))
 	return n, err
 }

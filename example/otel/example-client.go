@@ -73,7 +73,9 @@ func main() {
 	rdb.Del(ctx, "First value")
 	rdb.Del(ctx, "Second value")
 
-	// Wait some time to allow spans to export
-	<-time.After(5 * time.Second)
+
 	span.End()
+
+	// wait for spans to export
+	<-time.After(5 * time.Second)
 }
