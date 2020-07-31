@@ -211,6 +211,8 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	}
 
 	if cn.Inited {
+		internal.ConnectionsTakenCounter.Add(ctx, 1)
+		internal.ConnectionsReusedCounter.Add(ctx, 1)
 		return cn, nil
 	}
 
@@ -224,6 +226,8 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 		}
 		return nil, err
 	}
+
+	internal.ConnectionsTakenCounter.Add(ctx, 1)
 
 	return cn, nil
 }
@@ -274,7 +278,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	return nil
 }
 
-func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
+func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) {
 	if c.opt.Limiter != nil {
 		c.opt.Limiter.ReportResult(err)
 	}
@@ -282,6 +286,7 @@ func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
 	if isBadConn(err, false) {
 		c.connPool.Remove(cn, err)
 	} else {
+		internal.ConnectionsReturnedCounter.Add(ctx, 1)
 		c.connPool.Put(cn)
 	}
 }
@@ -295,7 +300,7 @@ func (c *baseClient) withConn(
 			return err
 		}
 		defer func() {
-			c.releaseConn(cn, err)
+			c.releaseConn(ctx, cn, err)
 		}()
 
 		err = fn(ctx, cn)

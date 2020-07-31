@@ -177,6 +177,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	netConn, err := p.opt.Dialer(ctx)
 	if err != nil {
+		internal.DialErrorCounter.Add(context.TODO(), 1)
 		p.setLastDialError(err)
 		if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.opt.PoolSize) {
 			go p.tryDial()
@@ -198,10 +199,13 @@ func (p *ConnPool) tryDial() {
 
 		conn, err := p.opt.Dialer(context.Background())
 		if err != nil {
+			internal.DialErrorCounter.Add(context.TODO(), 1)
 			p.setLastDialError(err)
 			time.Sleep(time.Second)
 			continue
 		}
+
+		// TODO QUESTION: Should we record this in the metrics as a connection opened + closed?
 
 		atomic.StoreUint32(&p.dialErrorsNum, 0)
 		_ = conn.Close()
@@ -371,6 +375,7 @@ func (p *ConnPool) closeConn(cn *Conn) error {
 	if p.opt.OnClose != nil {
 		_ = p.opt.OnClose(cn)
 	}
+	internal.ConnectionsClosedCounter.Add(context.TODO(), 1)
 	return cn.Close()
 }
 
