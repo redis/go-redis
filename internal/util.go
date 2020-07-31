@@ -153,3 +153,31 @@ func RecordError(ctx context.Context, err error) error {
 	}
 	return err
 }
+
+// CountWriteError increments the redisError instrument
+// adding a write label to the count. The error message
+// is also included as a label.
+func CountWriteError(ctx context.Context, err error) {
+	if err != proto.Nil {
+		redisErrors.Add(
+			ctx,
+			1,
+			dbErrorMessage(err.Error()),
+			dbErrorSourceWrite(),
+		)
+	}
+}
+
+// CountReadError increments the redisError instrument
+// adding a read label to the count. The error message
+// is also included as a label.
+func CountReadError(ctx context.Context, err error) {
+	if err != proto.Nil {
+		redisErrors.Add(
+			ctx,
+			1,
+			dbErrorMessage(err.Error()),
+			dbErrorSourceRead(),
+		)
+	}
+}

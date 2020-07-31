@@ -76,9 +76,11 @@ func (cn *Conn) RemoteAddr() net.Addr {
 func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error) error {
 	return internal.WithSpan(ctx, "with_reader", func(ctx context.Context) error {
 		if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
+			internal.CountReadError(ctx, err)
 			return internal.RecordError(ctx, err)
 		}
 		if err := fn(cn.rd); err != nil {
+			internal.CountReadError(ctx, err)
 			return internal.RecordError(ctx, err)
 		}
 		return nil
@@ -90,6 +92,7 @@ func (cn *Conn) WithWriter(
 ) error {
 	return internal.WithSpan(ctx, "with_writer", func(ctx context.Context) error {
 		if err := cn.netConn.SetWriteDeadline(cn.deadline(ctx, timeout)); err != nil {
+			internal.CountWriteError(ctx, err)
 			return internal.RecordError(ctx, err)
 		}
 
@@ -98,10 +101,12 @@ func (cn *Conn) WithWriter(
 		}
 
 		if err := fn(cn.wr); err != nil {
+			internal.CountWriteError(ctx, err)
 			return internal.RecordError(ctx, err)
 		}
 
 		if err := cn.bw.Flush(); err != nil {
+			internal.CountWriteError(ctx, err)
 			return internal.RecordError(ctx, err)
 		}
 
