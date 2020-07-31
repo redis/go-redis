@@ -14,23 +14,23 @@ var (
 	// NewConnectionsCounter counts the number of new connections.
 	NewConnectionsCounter metric.Int64Counter
 
-	// DialErrorCounter counts the number of errors that have come up
+	// DialErrorCounter counts the number of dial errors that have come up
 	DialErrorCounter metric.Int64Counter
 
 	// ConnectionsTakenCounter counts the number of times connections were taken
 	ConnectionsTakenCounter metric.Int64Counter
 
-	// ConnectionsClosedCounter counts the number of closed connections
+	// ConnectionsClosedCounter counts the number of connections closed
 	ConnectionsClosedCounter metric.Int64Counter
 
-	// ConnectionsReturnedCounter counts the number of connections returned to the pool
+	// ConnectionsReturnedCounter counts the number of times connections have been returned to the pool
 	ConnectionsReturnedCounter metric.Int64Counter
 
 	// ConnectionsReusedCounter counts the number of times connections have been reused
 	ConnectionsReusedCounter metric.Int64Counter
 
 	// TODO impl
-	// ConnectionUsedTimeRecorder records the duration in milliseconds that connections are used
+	// ConnectionUsedTimeRecorder records the duration in milliseconds that connections are being used
 	ConnectionUsedTimeRecorder metric.Int64ValueRecorder
 )
 
