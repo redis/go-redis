@@ -28,9 +28,6 @@ var (
 
 	// ConnectionsReusedCounter counts the number of times connections have been reused
 	ConnectionsReusedCounter metric.Int64Counter
-
-	// ConnectionUsedTimeRecorder records the duration in milliseconds that connections are being used
-	ConnectionUsedTimeRecorder metric.Int64ValueRecorder
 )
 
 func init() {
