@@ -564,7 +564,11 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 			node = n
 		}
 	}
-	return node, nil
+	if node != nil {
+		return node, nil
+	}
+	// If all nodes are failing - return random node
+	return c.nodes.Random()
 }
 
 func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
