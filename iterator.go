@@ -44,9 +44,10 @@ func (it *ScanIterator) Next(ctx context.Context) bool {
 		}
 
 		// Fetch next page.
-		if it.cmd.args[0] == "scan" {
+		switch it.cmd.args[0] {
+		case "scan", "qscan":
 			it.cmd.args[1] = it.cmd.cursor
-		} else {
+		default:
 			it.cmd.args[2] = it.cmd.cursor
 		}
 
