@@ -70,6 +70,18 @@ func main() {
 	}
 	group.Wait()
 
+	for i := 0; i < 20; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			val := rdb.Get(ctx, "Second value").Val()
+			if val != "value_2" {
+				log.Fatalf("val was not set. expected: %s but got: %s", "value_2", val)
+			}
+		}()
+	}
+	group.Wait()
+
 	rdb.Del(ctx, "First value")
 	rdb.Del(ctx, "Second value")
 
