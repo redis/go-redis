@@ -66,8 +66,4 @@ func init() {
 	ConnectionsClosedCounter = meter.NewInt64Counter("redis.connections_closed",
 		metric.WithDescription("the number of connections closed"),
 	)
-
-	ConnectionUsedTimeRecorder = meter.NewInt64ValueRecorder("redis.connection_used_time",
-		metric.WithDescription("the number of milliseconds for which a connection is used"),
-	)
 }
