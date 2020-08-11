@@ -47,23 +47,23 @@ func init() {
 		metric.WithDescription("the number of errors encountered after dialling"),
 	)
 
-	NewConnectionsCounter = meter.NewInt64Counter("redis.new_connections",
+	NewConnectionsCounter = meter.NewInt64Counter("redis.connections.new",
 		metric.WithDescription("the number of connections created"),
 	)
 
-	ConnectionsTakenCounter = meter.NewInt64Counter("redis.connections_taken",
+	ConnectionsTakenCounter = meter.NewInt64Counter("redis.connections.taken",
 		metric.WithDescription("the number of connections taken"),
 	)
 
-	ConnectionsReturnedCounter = meter.NewInt64Counter("redis.connections_returned",
+	ConnectionsReturnedCounter = meter.NewInt64Counter("redis.connections.returned",
 		metric.WithDescription("the number of connections returned to the connection pool"),
 	)
 
-	ConnectionsReusedCounter = meter.NewInt64Counter("redis.connections_reused",
+	ConnectionsReusedCounter = meter.NewInt64Counter("redis.connections.reused",
 		metric.WithDescription("the number of connections that have been reused"),
 	)
 
-	ConnectionsClosedCounter = meter.NewInt64Counter("redis.connections_closed",
+	ConnectionsClosedCounter = meter.NewInt64Counter("redis.connections.closed",
 		metric.WithDescription("the number of connections closed"),
 	)
 }
