@@ -11,8 +11,8 @@ var (
 	// WritesCounter counts the number of write commands performed.
 	WritesCounter metric.Int64Counter
 
-	// NewConnectionsCounter counts the number of new connections.
-	NewConnectionsCounter metric.Int64Counter
+	// ConnectionsNewCounter counts the number of new connections.
+	ConnectionsNewCounter metric.Int64Counter
 
 	// DialErrorCounter counts the number of dial errors that have come up
 	DialErrorCounter metric.Int64Counter
@@ -47,7 +47,7 @@ func init() {
 		metric.WithDescription("the number of errors encountered after dialling"),
 	)
 
-	NewConnectionsCounter = meter.NewInt64Counter("redis.connections.new",
+	ConnectionsNewCounter = meter.NewInt64Counter("redis.connections.new",
 		metric.WithDescription("the number of connections created"),
 	)
 
