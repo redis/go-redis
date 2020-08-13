@@ -781,12 +781,7 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 // Use expiration for `SETEX`-like behavior.
 // Zero expiration means the key has no expiration time.
 func (c cmdable) SetKeepTTL(ctx context.Context, key string, value interface{}) *StatusCmd {
-	args := make([]interface{}, 4, 4)
-	args[0] = "set"
-	args[1] = key
-	args[2] = value
-	args[3] = "keepttl"
-
+	args := []interface{}{"set", key , value, "keepttl"}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
