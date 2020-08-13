@@ -118,6 +118,7 @@ type Cmdable interface {
 	MSet(ctx context.Context, values ...interface{}) *StatusCmd
 	MSetNX(ctx context.Context, values ...interface{}) *BoolCmd
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
+	SetKeepTTL(ctx context.Context, key string, value interface{}) *StatusCmd
 	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd
@@ -768,6 +769,24 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 			args = append(args, "ex", formatSec(ctx, expiration))
 		}
 	}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+
+// Redis `SET key value keepttl` command.
+//
+// Only supported by Redis >= 6.0
+// Use expiration for `SETEX`-like behavior.
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetKeepTTL(ctx context.Context, key string, value interface{}) *StatusCmd {
+	args := make([]interface{}, 4, 4)
+	args[0] = "set"
+	args[1] = key
+	args[2] = value
+	args[3] = "keepttl"
+
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd

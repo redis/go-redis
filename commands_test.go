@@ -1217,6 +1217,21 @@ var _ = Describe("Commands", func() {
 			Expect(val).To(Equal("hello2"))
 		})
 
+		It("should Set KeepTTL", func() {
+			set := client.Set(ctx, "key", "hello", 5 * time.Second)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.SetKeepTTL(ctx, "key", "hello1")
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			// set keepttl will Retain the ttl associated with the key
+			Expect(ttl.Val().Nanoseconds()).NotTo(Equal(-1))
+		})
+
 		It("should SetRange", func() {
 			set := client.Set(ctx, "key", "Hello World", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
