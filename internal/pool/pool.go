@@ -306,6 +306,7 @@ func (p *ConnPool) freeTurn() {
 }
 
 func (p *ConnPool) popIdle() *Conn {
+	defer p.checkMinIdleConns()
 	if len(p.idleConns) == 0 {
 		return nil
 	}
@@ -314,7 +315,6 @@ func (p *ConnPool) popIdle() *Conn {
 	cn := p.idleConns[idx]
 	p.idleConns = p.idleConns[:idx]
 	p.idleConnsLen--
-	p.checkMinIdleConns()
 	return cn
 }
 
