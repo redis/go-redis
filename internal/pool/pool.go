@@ -40,8 +40,8 @@ type Pooler interface {
 	CloseConn(*Conn) error
 
 	Get(context.Context) (*Conn, error)
-	Put(*Conn)
-	Remove(*Conn, error)
+	Put(context.Context, *Conn)
+	Remove(context.Context, *Conn, error)
 
 	Len() int
 	IdleLen() int
@@ -318,15 +318,15 @@ func (p *ConnPool) popIdle() *Conn {
 	return cn
 }
 
-func (p *ConnPool) Put(cn *Conn) {
+func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	if cn.rd.Buffered() > 0 {
-		internal.Logger.Printf(context.Background(), "Conn has unread data")
-		p.Remove(cn, BadConnError{})
+		internal.Logger.Printf(ctx, "Conn has unread data")
+		p.Remove(ctx, cn, BadConnError{})
 		return
 	}
 
 	if !cn.pooled {
-		p.Remove(cn, nil)
+		p.Remove(ctx, cn, nil)
 		return
 	}
 
@@ -337,7 +337,7 @@ func (p *ConnPool) Put(cn *Conn) {
 	p.freeTurn()
 }
 
-func (p *ConnPool) Remove(cn *Conn, reason error) {
+func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
 	p.removeConnWithLock(cn)
 	p.freeTurn()
 	_ = p.closeConn(cn)

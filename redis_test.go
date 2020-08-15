@@ -206,7 +206,7 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		cn.SetNetConn(&badConn{})
-		client.Pool().Put(cn)
+		client.Pool().Put(ctx, cn)
 
 		err = client.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
@@ -245,7 +245,7 @@ var _ = Describe("Client", func() {
 		Expect(cn.UsedAt).NotTo(BeZero())
 		createdAt := cn.UsedAt()
 
-		client.Pool().Put(cn)
+		client.Pool().Put(ctx, cn)
 		Expect(cn.UsedAt().Equal(createdAt)).To(BeTrue())
 
 		time.Sleep(time.Second)

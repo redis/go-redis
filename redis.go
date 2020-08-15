@@ -218,7 +218,7 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 		return c.initConn(ctx, cn)
 	})
 	if err != nil {
-		c.connPool.Remove(cn, err)
+		c.connPool.Remove(ctx, cn, err)
 		if err := internal.Unwrap(err); err != nil {
 			return nil, err
 		}
@@ -241,8 +241,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return nil
 	}
 
-	connPool := pool.NewSingleConnPool(nil)
-	connPool.SetConn(cn)
+	connPool := pool.NewSingleConnPool(c.connPool, cn)
 	conn := newConn(ctx, c.opt, connPool)
 
 	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
@@ -274,15 +273,15 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	return nil
 }
 
-func (c *baseClient) releaseConn(cn *pool.Conn, err error) {
+func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) {
 	if c.opt.Limiter != nil {
 		c.opt.Limiter.ReportResult(err)
 	}
 
 	if isBadConn(err, false) {
-		c.connPool.Remove(cn, err)
+		c.connPool.Remove(ctx, cn, err)
 	} else {
-		c.connPool.Put(cn)
+		c.connPool.Put(ctx, cn)
 	}
 }
 
@@ -295,7 +294,7 @@ func (c *baseClient) withConn(
 			return err
 		}
 		defer func() {
-			c.releaseConn(cn, err)
+			c.releaseConn(ctx, cn, err)
 		}()
 
 		err = fn(ctx, cn)
@@ -585,7 +584,7 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 }
 
 func (c *Client) Conn(ctx context.Context) *Conn {
-	return newConn(ctx, c.opt, pool.NewSingleConnPool(c.connPool))
+	return newConn(ctx, c.opt, pool.NewStickyConnPool(c.connPool))
 }
 
 // Do creates a Cmd from the args and processes the cmd.
