@@ -38,10 +38,10 @@ var _ = Describe("Sentinel", func() {
 		// Wait until replicated.
 		Eventually(func() string {
 			return sentinelSlave1.Get(ctx, "foo").Val()
-		}, "1s", "100ms").Should(Equal("master"))
+		}, "15s", "100ms").Should(Equal("master"))
 		Eventually(func() string {
 			return sentinelSlave2.Get(ctx, "foo").Val()
-		}, "1s", "100ms").Should(Equal("master"))
+		}, "15s", "100ms").Should(Equal("master"))
 
 		// Wait until slaves are picked up by sentinel.
 		Eventually(func() string {
@@ -52,24 +52,24 @@ var _ = Describe("Sentinel", func() {
 		sentinelMaster.Shutdown(ctx)
 		Eventually(func() error {
 			return sentinelMaster.Ping(ctx).Err()
-		}, "5s", "100ms").Should(HaveOccurred())
+		}, "15s", "100ms").Should(HaveOccurred())
 
 		// Wait for Redis sentinel to elect new master.
 		Eventually(func() string {
 			return sentinelSlave1.Info(ctx).Val() + sentinelSlave2.Info(ctx).Val()
-		}, "30s", "1s").Should(ContainSubstring("role:master"))
+		}, "30s", "100ms").Should(ContainSubstring("role:master"))
 
 		// Check that client picked up new master.
 		Eventually(func() error {
 			return client.Get(ctx, "foo").Err()
-		}, "5s", "100ms").ShouldNot(HaveOccurred())
+		}, "15s", "100ms").ShouldNot(HaveOccurred())
 
 		// Publish message to check if subscription is renewed.
 		err = client.Publish(ctx, "foo", "hello").Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		var msg *redis.Message
-		Eventually(ch, "5s").Should(Receive(&msg))
+		Eventually(ch, "15s").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
 	})
