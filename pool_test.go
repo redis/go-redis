@@ -85,7 +85,7 @@ var _ = Describe("pool", func() {
 		cn, err := client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		cn.SetNetConn(&badConn{})
-		client.Pool().Put(cn)
+		client.Pool().Put(ctx, cn)
 
 		err = client.Ping(ctx).Err()
 		Expect(err).To(MatchError("bad connection"))

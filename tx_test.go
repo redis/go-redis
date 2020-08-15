@@ -129,7 +129,7 @@ var _ = Describe("Tx", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		cn.SetNetConn(&badConn{})
-		client.Pool().Put(cn)
+		client.Pool().Put(ctx, cn)
 
 		do := func() error {
 			err := client.Watch(ctx, func(tx *redis.Tx) error {

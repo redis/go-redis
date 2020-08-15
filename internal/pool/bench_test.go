@@ -18,6 +18,7 @@ func (bm poolGetPutBenchmark) String() string {
 }
 
 func BenchmarkPoolGetPut(b *testing.B) {
+	ctx := context.Background()
 	benchmarks := []poolGetPutBenchmark{
 		{1},
 		{2},
@@ -40,11 +41,11 @@ func BenchmarkPoolGetPut(b *testing.B) {
 
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					cn, err := connPool.Get(context.Background())
+					cn, err := connPool.Get(ctx)
 					if err != nil {
 						b.Fatal(err)
 					}
-					connPool.Put(cn)
+					connPool.Put(ctx, cn)
 				}
 			})
 		})
@@ -60,6 +61,7 @@ func (bm poolGetRemoveBenchmark) String() string {
 }
 
 func BenchmarkPoolGetRemove(b *testing.B) {
+	ctx := context.Background()
 	benchmarks := []poolGetRemoveBenchmark{
 		{1},
 		{2},
@@ -68,6 +70,7 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 		{64},
 		{128},
 	}
+
 	for _, bm := range benchmarks {
 		b.Run(bm.String(), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
@@ -82,11 +85,11 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					cn, err := connPool.Get(context.Background())
+					cn, err := connPool.Get(ctx)
 					if err != nil {
 						b.Fatal(err)
 					}
-					connPool.Remove(cn, nil)
+					connPool.Remove(ctx, cn, nil)
 				}
 			})
 		})

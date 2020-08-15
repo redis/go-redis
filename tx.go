@@ -26,7 +26,7 @@ func (c *Client) newTx(ctx context.Context) *Tx {
 	tx := Tx{
 		baseClient: baseClient{
 			opt:      c.opt,
-			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), true),
+			connPool: pool.NewStickyConnPool(c.connPool),
 		},
 		hooks: c.hooks.clone(),
 		ctx:   ctx,
