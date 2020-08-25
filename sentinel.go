@@ -21,9 +21,7 @@ type FailoverOptions struct {
 	// The master name.
 	MasterName string
 	// A seed list of host:port addresses of sentinel nodes.
-	SentinelAddrs    []string
-	SentinelUsername string
-	SentinelPassword string
+	SentinelAddrs []string
 
 	// Following options are copied from Options struct.
 
@@ -92,8 +90,6 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	failover := &sentinelFailover{
 		masterName:    failoverOpt.MasterName,
 		sentinelAddrs: failoverOpt.SentinelAddrs,
-		username:      failoverOpt.SentinelUsername,
-		password:      failoverOpt.SentinelPassword,
 
 		opt: opt,
 	}
@@ -281,9 +277,7 @@ func (c *SentinelClient) Remove(ctx context.Context, name string) *StringCmd {
 type sentinelFailover struct {
 	sentinelAddrs []string
 
-	opt      *Options
-	username string
-	password string
+	opt *Options
 
 	pool     *pool.ConnPool
 	poolOnce sync.Once
@@ -374,8 +368,8 @@ func (c *sentinelFailover) masterAddr(ctx context.Context) (string, error) {
 			Addr:   sentinelAddr,
 			Dialer: c.opt.Dialer,
 
-			Username: c.username,
-			Password: c.password,
+			Username: c.opt.Username,
+			Password: c.opt.Password,
 
 			MaxRetries: c.opt.MaxRetries,
 
