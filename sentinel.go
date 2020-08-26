@@ -22,6 +22,8 @@ type FailoverOptions struct {
 	MasterName string
 	// A seed list of host:port addresses of sentinel nodes.
 	SentinelAddrs []string
+	// Sentinel password from "requirepass <password>" (if enabled) in Sentinel configuration
+	SentinelPassword string
 
 	// Following options are copied from Options struct.
 
@@ -88,8 +90,9 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	opt.init()
 
 	failover := &sentinelFailover{
-		masterName:    failoverOpt.MasterName,
-		sentinelAddrs: failoverOpt.SentinelAddrs,
+		masterName:       failoverOpt.MasterName,
+		sentinelAddrs:    failoverOpt.SentinelAddrs,
+		sentinelPassword: failoverOpt.SentinelPassword,
 
 		opt: opt,
 	}
@@ -275,7 +278,8 @@ func (c *SentinelClient) Remove(ctx context.Context, name string) *StringCmd {
 }
 
 type sentinelFailover struct {
-	sentinelAddrs []string
+	sentinelAddrs    []string
+	sentinelPassword string
 
 	opt *Options
 
