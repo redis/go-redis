@@ -7,8 +7,8 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/go-redis/redis/v8/internal"
 	"go.opentelemetry.io/otel/api/global"
-	"go.opentelemetry.io/otel/api/kv"
 	"go.opentelemetry.io/otel/api/trace"
+	"go.opentelemetry.io/otel/label"
 )
 
 type OpenTelemetryHook struct{}
@@ -26,8 +26,8 @@ func (OpenTelemetryHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (co
 	tracer := global.Tracer("github.com/go-redis/redis")
 	ctx, span := tracer.Start(ctx, cmd.FullName())
 	span.SetAttributes(
-		kv.String("db.system", "redis"),
-		kv.String("redis.cmd", internal.String(b)),
+		label.String("db.system", "redis"),
+		label.String("redis.cmd", internal.String(b)),
 	)
 
 	return ctx, nil
@@ -79,9 +79,9 @@ func (OpenTelemetryHook) BeforeProcessPipeline(ctx context.Context, cmds []redis
 	tracer := global.Tracer("github.com/go-redis/redis")
 	ctx, span := tracer.Start(ctx, "pipeline "+strings.Join(unqNames, " "))
 	span.SetAttributes(
-		kv.String("db.system", "redis"),
-		kv.Int("redis.num_cmd", len(cmds)),
-		kv.String("redis.cmds", internal.String(b)),
+		label.String("db.system", "redis"),
+		label.Int("redis.num_cmd", len(cmds)),
+		label.String("redis.cmds", internal.String(b)),
 	)
 
 	return ctx, nil
