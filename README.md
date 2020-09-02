@@ -1,15 +1,13 @@
 # Redis client for Golang
 
 [![Build Status](https://travis-ci.org/go-redis/redis.png?branch=master)](https://travis-ci.org/go-redis/redis)
-[![GoDoc](https://godoc.org/github.com/go-redis/redis?status.svg)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
+
+> :heart: [**Uptrace.dev** - distributed traces, logs, and errors](https://uptrace.dev)
 
 - [Docs](https://redis.uptrace.dev)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
-
-## Sponsors
-
-- [**Uptrace.dev** - distributed traces and metrics](https://uptrace.dev)
 
 ## Ecosystem
 
@@ -59,7 +57,7 @@ import "github.com/go-redis/redis/v8"
 ```go
 import (
     "context"
-    "github.com/go-redis/redis/v8"  
+    "github.com/go-redis/redis/v8"
 )
 
 var ctx = context.Background()
