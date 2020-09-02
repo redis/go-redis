@@ -3,7 +3,7 @@
 [![Build Status](https://travis-ci.org/go-redis/redis.png?branch=master)](https://travis-ci.org/go-redis/redis)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 
-> :heart: [**Uptrace.dev** - distributed traces, logs, and errors](https://uptrace.dev)
+> :heart: [**Uptrace.dev** - distributed traces, logs, and errors in one place](https://uptrace.dev)
 
 - [Docs](https://redis.uptrace.dev)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
