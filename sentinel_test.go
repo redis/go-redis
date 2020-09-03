@@ -13,7 +13,7 @@ var _ = Describe("Sentinel", func() {
 	BeforeEach(func() {
 		client = redis.NewFailoverClient(&redis.FailoverOptions{
 			MasterName:    sentinelName,
-			SentinelAddrs: []string{":" + sentinelPort},
+			SentinelAddrs: sentinelAddrs,
 		})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
@@ -45,7 +45,13 @@ var _ = Describe("Sentinel", func() {
 
 		// Wait until slaves are picked up by sentinel.
 		Eventually(func() string {
-			return sentinel.Info(ctx).Val()
+			return sentinel1.Info(ctx).Val()
+		}, "10s", "100ms").Should(ContainSubstring("slaves=2"))
+		Eventually(func() string {
+			return sentinel2.Info(ctx).Val()
+		}, "10s", "100ms").Should(ContainSubstring("slaves=2"))
+		Eventually(func() string {
+			return sentinel3.Info(ctx).Val()
 		}, "10s", "100ms").Should(ContainSubstring("slaves=2"))
 
 		// Kill master.
@@ -79,7 +85,7 @@ var _ = Describe("Sentinel", func() {
 
 		client = redis.NewFailoverClient(&redis.FailoverOptions{
 			MasterName:    sentinelName,
-			SentinelAddrs: []string{":" + sentinelPort},
+			SentinelAddrs: sentinelAddrs,
 			DB:            1,
 		})
 		err := client.Ping(ctx).Err()
