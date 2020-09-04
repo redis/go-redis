@@ -35,13 +35,18 @@ const (
 	sentinelMasterPort = "9123"
 	sentinelSlave1Port = "9124"
 	sentinelSlave2Port = "9125"
-	sentinelPort       = "9126"
+	sentinelPort1      = "9126"
+	sentinelPort2      = "9127"
+	sentinelPort3      = "9128"
 )
 
 var (
-	redisMain                                                *redisProcess
-	ringShard1, ringShard2, ringShard3                       *redisProcess
-	sentinelMaster, sentinelSlave1, sentinelSlave2, sentinel *redisProcess
+	redisMain                                      *redisProcess
+	ringShard1, ringShard2, ringShard3             *redisProcess
+	sentinelMaster, sentinelSlave1, sentinelSlave2 *redisProcess
+	sentinel1, sentinel2, sentinel3                *redisProcess
+
+	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
 )
 
 var cluster = &clusterScenario{
@@ -69,7 +74,13 @@ var _ = BeforeSuite(func() {
 	sentinelMaster, err = startRedis(sentinelMasterPort)
 	Expect(err).NotTo(HaveOccurred())
 
-	sentinel, err = startSentinel(sentinelPort, sentinelName, sentinelMasterPort)
+	sentinel1, err = startSentinel(sentinelPort1, sentinelName, sentinelMasterPort)
+	Expect(err).NotTo(HaveOccurred())
+
+	sentinel2, err = startSentinel(sentinelPort2, sentinelName, sentinelMasterPort)
+	Expect(err).NotTo(HaveOccurred())
+
+	sentinel3, err = startSentinel(sentinelPort3, sentinelName, sentinelMasterPort)
 	Expect(err).NotTo(HaveOccurred())
 
 	sentinelSlave1, err = startRedis(
@@ -90,7 +101,9 @@ var _ = AfterSuite(func() {
 	Expect(ringShard2.Close()).NotTo(HaveOccurred())
 	Expect(ringShard3.Close()).NotTo(HaveOccurred())
 
-	Expect(sentinel.Close()).NotTo(HaveOccurred())
+	Expect(sentinel1.Close()).NotTo(HaveOccurred())
+	Expect(sentinel2.Close()).NotTo(HaveOccurred())
+	Expect(sentinel3.Close()).NotTo(HaveOccurred())
 	Expect(sentinelSlave1.Close()).NotTo(HaveOccurred())
 	Expect(sentinelSlave2.Close()).NotTo(HaveOccurred())
 	Expect(sentinelMaster.Close()).NotTo(HaveOccurred())
@@ -313,7 +326,7 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 		return nil, err
 	}
 	for _, cmd := range []*redis.StatusCmd{
-		redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", masterName, "127.0.0.1", masterPort, "1"),
+		redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", masterName, "127.0.0.1", masterPort, "2"),
 		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "down-after-milliseconds", "500"),
 		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "failover-timeout", "1000"),
 		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "parallel-syncs", "1"),
