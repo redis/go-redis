@@ -19,6 +19,7 @@ func (c *PubSub) SetNetConn(netConn net.Conn) {
 }
 
 func (c *ClusterClient) LoadState(ctx context.Context) (*clusterState, error) {
+	// return c.state.Reload(ctx)
 	return c.loadState(ctx)
 }
 

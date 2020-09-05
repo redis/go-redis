@@ -254,7 +254,7 @@ func newConnPool(opt *Options) *pool.ConnPool {
 				)
 				conn, err = opt.Dialer(ctx, opt.Network, opt.Addr)
 				if err != nil {
-					internal.RecordError(ctx, err)
+					_ = internal.RecordError(ctx, err)
 				}
 				return err
 			})
