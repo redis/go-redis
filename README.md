@@ -12,6 +12,7 @@
 
 ## Ecosystem
 
+- [redisext](https://github.com/go-redis/redisext) - tracing using OpenTelemetryHook.
 - [Redis Cache](https://github.com/go-redis/cache).
 - [Rate limiting](https://github.com/go-redis/redis_rate).
 - [Distributed Locks](https://github.com/bsm/redislock).
