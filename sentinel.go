@@ -26,6 +26,9 @@ type FailoverOptions struct {
 	// Sentinel password from "requirepass <password>" (if enabled) in Sentinel configuration
 	SentinelPassword string
 
+	// Enables read-only commands on slave nodes.
+	ReadOnly bool
+
 	// Following options are copied from Options struct.
 
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -51,9 +54,6 @@ type FailoverOptions struct {
 	IdleCheckFrequency time.Duration
 
 	TLSConfig *tls.Config
-
-	// Enables read-only commands on slave nodes.
-	ReadOnly bool
 }
 
 func (opt *FailoverOptions) options() *Options {
