@@ -163,6 +163,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		}
 	}
 	p.connsMu.Unlock()
+
 	return cn, nil
 }
 
@@ -408,8 +409,10 @@ func (p *ConnPool) closed() bool {
 }
 
 func (p *ConnPool) Filter(fn func(*Conn) bool) error {
-	var firstErr error
 	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+
+	var firstErr error
 	for _, cn := range p.conns {
 		if fn(cn) {
 			if err := p.closeConn(cn); err != nil && firstErr == nil {
@@ -417,7 +420,6 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 			}
 		}
 	}
-	p.connsMu.Unlock()
 	return firstErr
 }
 

@@ -70,12 +70,12 @@ var _ = Describe("Sentinel", func() {
 			return client.Get(ctx, "foo").Err()
 		}, "15s", "100ms").ShouldNot(HaveOccurred())
 
-		// Publish message to check if subscription is renewed.
-		err = client.Publish(ctx, "foo", "hello").Err()
-		Expect(err).NotTo(HaveOccurred())
-
+		// Check if subscription is renewed.
 		var msg *redis.Message
-		Eventually(ch, "15s").Should(Receive(&msg))
+		Eventually(func() <-chan *redis.Message {
+			_ = client.Publish(ctx, "foo", "hello").Err()
+			return ch
+		}, "15s").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
 	})
