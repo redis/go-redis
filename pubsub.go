@@ -13,7 +13,10 @@ import (
 	"github.com/go-redis/redis/v8/internal/proto"
 )
 
-const pingTimeout = 30 * time.Second
+const (
+	pingTimeout     = time.Second
+	chanSendTimeout = time.Minute
+)
 
 var errPingTimeout = errors.New("redis: ping timeout")
 
@@ -454,7 +457,6 @@ func (c *PubSub) getContext() context.Context {
 	if c.cmd != nil {
 		return c.cmd.ctx
 	}
-
 	return context.Background()
 }
 
@@ -462,7 +464,7 @@ func (c *PubSub) initPing() {
 	ctx := context.TODO()
 	c.ping = make(chan struct{}, 1)
 	go func() {
-		timer := time.NewTimer(pingTimeout)
+		timer := time.NewTimer(time.Minute)
 		timer.Stop()
 
 		healthy := true
@@ -499,7 +501,7 @@ func (c *PubSub) initMsgChan(size int) {
 	ctx := context.TODO()
 	c.msgCh = make(chan *Message, size)
 	go func() {
-		timer := time.NewTimer(pingTimeout)
+		timer := time.NewTimer(time.Minute)
 		timer.Stop()
 
 		var errCount int
@@ -531,7 +533,7 @@ func (c *PubSub) initMsgChan(size int) {
 			case *Pong:
 				// Ignore.
 			case *Message:
-				timer.Reset(pingTimeout)
+				timer.Reset(chanSendTimeout)
 				select {
 				case c.msgCh <- msg:
 					if !timer.Stop() {
@@ -540,7 +542,10 @@ func (c *PubSub) initMsgChan(size int) {
 				case <-timer.C:
 					internal.Logger.Printf(
 						c.getContext(),
-						"redis: %s channel is full for %s (message is dropped)", c, pingTimeout)
+						"redis: %s channel is full for %s (message is dropped)",
+						c,
+						chanSendTimeout,
+					)
 				}
 			default:
 				internal.Logger.Printf(c.getContext(), "redis: unknown message type: %T", msg)
