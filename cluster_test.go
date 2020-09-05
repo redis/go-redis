@@ -47,7 +47,7 @@ func (s *clusterScenario) addrs() []string {
 	return addrs
 }
 
-func (s *clusterScenario) newClusterClientUnsafe(opt *redis.ClusterOptions) *redis.ClusterClient {
+func (s *clusterScenario) newClusterClientUnstable(opt *redis.ClusterOptions) *redis.ClusterClient {
 	opt.Addrs = s.addrs()
 	return redis.NewClusterClient(opt)
 }
@@ -55,7 +55,7 @@ func (s *clusterScenario) newClusterClientUnsafe(opt *redis.ClusterOptions) *red
 func (s *clusterScenario) newClusterClient(
 	ctx context.Context, opt *redis.ClusterOptions,
 ) *redis.ClusterClient {
-	client := s.newClusterClientUnsafe(opt)
+	client := s.newClusterClientUnstable(opt)
 
 	err := eventually(func() error {
 		if opt.ClusterSlots != nil {
@@ -873,59 +873,6 @@ var _ = Describe("ClusterClient", func() {
 		assertClusterClient()
 	})
 
-	Describe("ClusterClient failover", func() {
-		BeforeEach(func() {
-			failover = true
-
-			opt = redisClusterOptions()
-			opt.MinRetryBackoff = 250 * time.Millisecond
-			opt.MaxRetryBackoff = time.Second
-			client = cluster.newClusterClient(ctx, opt)
-
-			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
-				return master.FlushDB(ctx).Err()
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			err = client.ForEachSlave(ctx, func(ctx context.Context, slave *redis.Client) error {
-				defer GinkgoRecover()
-
-				Eventually(func() int64 {
-					return slave.DBSize(ctx).Val()
-				}, "30s").Should(Equal(int64(0)))
-
-				return nil
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			state, err := client.LoadState(ctx)
-			Eventually(func() bool {
-				state, err = client.LoadState(ctx)
-				if err != nil {
-					return false
-				}
-				return state.IsConsistent(ctx)
-			}, "30s").Should(BeTrue())
-
-			for _, slave := range state.Slaves {
-				err = slave.Client.ClusterFailover(ctx).Err()
-				Expect(err).NotTo(HaveOccurred())
-
-				Eventually(func() bool {
-					state, _ := client.LoadState(ctx)
-					return state.IsConsistent(ctx)
-				}, "30s").Should(BeTrue())
-			}
-		})
-
-		AfterEach(func() {
-			failover = false
-			Expect(client.Close()).NotTo(HaveOccurred())
-		})
-
-		assertClusterClient()
-	})
-
 	Describe("ClusterClient with RouteByLatency", func() {
 		BeforeEach(func() {
 			opt = redisClusterOptions()
@@ -1132,7 +1079,7 @@ var _ = Describe("ClusterClient with unavailable Cluster", func() {
 		opt.ReadTimeout = 250 * time.Millisecond
 		opt.WriteTimeout = 250 * time.Millisecond
 		opt.MaxRedirects = 1
-		client = cluster.newClusterClientUnsafe(opt)
+		client = cluster.newClusterClientUnstable(opt)
 	})
 
 	AfterEach(func() {
