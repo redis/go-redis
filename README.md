@@ -9,6 +9,7 @@
 - [Docs](https://redis.uptrace.dev)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
+- [RealWorld example app](https://github.com/uptrace/go-realworld-example-app)
 
 ## Ecosystem
 
