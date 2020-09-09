@@ -80,7 +80,7 @@ func ExampleNewClusterClient_manualSetup() {
 	// clusterSlots returns cluster slots information.
 	// It can use service like ZooKeeper to maintain configuration information
 	// and Cluster.ReloadState to manually trigger state reloading.
-	clusterSlots := func() ([]redis.ClusterSlot, error) {
+	clusterSlots := func(ctx context.Context) ([]redis.ClusterSlot, error) {
 		slots := []redis.ClusterSlot{
 			// First node with 1 master and 1 slave.
 			{
@@ -511,7 +511,7 @@ func ExampleNewUniversalClient_cluster() {
 	rdb.Ping(ctx)
 }
 
-func ExampleClient_SlowLog() {
+func ExampleClient_SlowLogGet() {
 	const key = "slowlog-log-slower-than"
 
 	old := rdb.ConfigGet(ctx, key).Val()
@@ -524,7 +524,7 @@ func ExampleClient_SlowLog() {
 
 	rdb.Set(ctx, "test", "true", 0)
 
-	result, err := rdb.SlowLog(ctx, -1).Result()
+	result, err := rdb.SlowLogGet(ctx, -1).Result()
 	if err != nil {
 		panic(err)
 	}

@@ -80,6 +80,14 @@ func (s *clusterScenario) newClusterClient(
 	return client
 }
 
+func (s *clusterScenario) Close() error {
+	for _, port := range s.ports {
+		processes[port].Close()
+		delete(processes, port)
+	}
+	return nil
+}
+
 func startCluster(ctx context.Context, scenario *clusterScenario) error {
 	// Start processes and collect node ids
 	for pos, port := range scenario.ports {
@@ -219,20 +227,6 @@ func slotEqual(s1, s2 redis.ClusterSlot) bool {
 		}
 	}
 	return true
-}
-
-func stopCluster(scenario *clusterScenario) error {
-	for _, client := range scenario.clients {
-		if err := client.Close(); err != nil {
-			return err
-		}
-	}
-	for _, process := range scenario.processes {
-		if err := process.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 //------------------------------------------------------------------------------
@@ -911,7 +905,7 @@ var _ = Describe("ClusterClient", func() {
 			failover = true
 
 			opt = redisClusterOptions()
-			opt.ClusterSlots = func() ([]redis.ClusterSlot, error) {
+			opt.ClusterSlots = func(ctx context.Context) ([]redis.ClusterSlot, error) {
 				slots := []redis.ClusterSlot{{
 					Start: 0,
 					End:   4999,
@@ -965,7 +959,7 @@ var _ = Describe("ClusterClient", func() {
 
 			opt = redisClusterOptions()
 			opt.RouteRandomly = true
-			opt.ClusterSlots = func() ([]redis.ClusterSlot, error) {
+			opt.ClusterSlots = func(ctx context.Context) ([]redis.ClusterSlot, error) {
 				slots := []redis.ClusterSlot{{
 					Start: 0,
 					End:   4999,

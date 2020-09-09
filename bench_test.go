@@ -259,7 +259,7 @@ func BenchmarkClusterPing(b *testing.B) {
 	if err := startCluster(ctx, cluster); err != nil {
 		b.Fatal(err)
 	}
-	defer stopCluster(cluster)
+	defer cluster.Close()
 
 	client := cluster.newClusterClient(ctx, redisClusterOptions())
 	defer client.Close()
@@ -286,7 +286,7 @@ func BenchmarkClusterSetString(b *testing.B) {
 	if err := startCluster(ctx, cluster); err != nil {
 		b.Fatal(err)
 	}
-	defer stopCluster(cluster)
+	defer cluster.Close()
 
 	client := cluster.newClusterClient(ctx, redisClusterOptions())
 	defer client.Close()
@@ -315,7 +315,7 @@ func BenchmarkClusterReloadState(b *testing.B) {
 	if err := startCluster(ctx, cluster); err != nil {
 		b.Fatal(err)
 	}
-	defer stopCluster(cluster)
+	defer cluster.Close()
 
 	client := cluster.newClusterClient(ctx, redisClusterOptions())
 	defer client.Close()

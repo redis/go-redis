@@ -49,7 +49,7 @@ type ClusterOptions struct {
 	// and load-balance read/write operations between master and slaves.
 	// It can use service like ZooKeeper to maintain configuration information
 	// and Cluster.ReloadState to manually trigger state reloading.
-	ClusterSlots func() ([]ClusterSlot, error)
+	ClusterSlots func(context.Context) ([]ClusterSlot, error)
 
 	// Following options are copied from Options struct.
 
@@ -987,7 +987,7 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 
 func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 	if c.opt.ClusterSlots != nil {
-		slots, err := c.opt.ClusterSlots()
+		slots, err := c.opt.ClusterSlots(ctx)
 		if err != nil {
 			return nil, err
 		}

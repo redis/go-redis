@@ -41,12 +41,14 @@ const (
 )
 
 var (
+	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
+
+	processes map[string]*redisProcess
+
 	redisMain                                      *redisProcess
 	ringShard1, ringShard2, ringShard3             *redisProcess
 	sentinelMaster, sentinelSlave1, sentinelSlave2 *redisProcess
 	sentinel1, sentinel2, sentinel3                *redisProcess
-
-	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
 )
 
 var cluster = &clusterScenario{
@@ -54,6 +56,13 @@ var cluster = &clusterScenario{
 	nodeIDs:   make([]string, 6),
 	processes: make(map[string]*redisProcess, 6),
 	clients:   make(map[string]*redis.Client, 6),
+}
+
+func registerProcess(port string, p *redisProcess) {
+	if processes == nil {
+		processes = make(map[string]*redisProcess)
+	}
+	processes[port] = p
 }
 
 var _ = BeforeSuite(func() {
@@ -95,20 +104,12 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
-	Expect(redisMain.Close()).NotTo(HaveOccurred())
+	Expect(cluster.Close()).NotTo(HaveOccurred())
 
-	Expect(ringShard1.Close()).NotTo(HaveOccurred())
-	Expect(ringShard2.Close()).NotTo(HaveOccurred())
-	Expect(ringShard3.Close()).NotTo(HaveOccurred())
-
-	Expect(sentinel1.Close()).NotTo(HaveOccurred())
-	Expect(sentinel2.Close()).NotTo(HaveOccurred())
-	Expect(sentinel3.Close()).NotTo(HaveOccurred())
-	Expect(sentinelSlave1.Close()).NotTo(HaveOccurred())
-	Expect(sentinelSlave2.Close()).NotTo(HaveOccurred())
-	Expect(sentinelMaster.Close()).NotTo(HaveOccurred())
-
-	Expect(stopCluster(cluster)).NotTo(HaveOccurred())
+	for _, p := range processes {
+		Expect(p.Close()).NotTo(HaveOccurred())
+	}
+	processes = nil
 })
 
 func TestGinkgoSuite(t *testing.T) {
@@ -308,7 +309,10 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 		process.Kill()
 		return nil, err
 	}
-	return &redisProcess{process, client}, err
+
+	p := &redisProcess{process, client}
+	registerProcess(port, p)
+	return p, err
 }
 
 func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
@@ -316,15 +320,18 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	process, err := execCmd(redisServerBin, os.DevNull, "--sentinel", "--port", port, "--dir", dir)
 	if err != nil {
 		return nil, err
 	}
+
 	client, err := connectTo(port)
 	if err != nil {
 		process.Kill()
 		return nil, err
 	}
+
 	for _, cmd := range []*redis.StatusCmd{
 		redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", masterName, "127.0.0.1", masterPort, "2"),
 		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "down-after-milliseconds", "500"),
@@ -337,7 +344,10 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 			return nil, err
 		}
 	}
-	return &redisProcess{process, client}, nil
+
+	p := &redisProcess{process, client}
+	registerProcess(port, p)
+	return p, nil
 }
 
 //------------------------------------------------------------------------------
