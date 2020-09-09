@@ -28,7 +28,7 @@ var _ = Describe("Sentinel", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Verify.
-		val, err := sentinelMaster.Get(ctx, "foo").Result()
+		val, err := client.Get(ctx, "foo").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal("master"))
 
@@ -78,6 +78,10 @@ var _ = Describe("Sentinel", func() {
 		}, "15s", "100ms").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
+
+		Expect(sentinelMaster.Close()).NotTo(HaveOccurred())
+		sentinelMaster, err = startRedis(sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("supports DB selection", func() {
@@ -114,7 +118,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Verify.
-		val, err := sentinelMaster.Get(ctx, "foo").Result()
+		val, err := client.Get(ctx, "foo").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal("master"))
 
@@ -164,5 +168,9 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		}, "15s", "100ms").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
+
+		Expect(sentinelMaster.Close()).NotTo(HaveOccurred())
+		sentinelMaster, err = startRedis(sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
 	})
 })
