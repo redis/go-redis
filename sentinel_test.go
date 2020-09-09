@@ -1,6 +1,8 @@
 package redis_test
 
 import (
+	"net"
+
 	"github.com/go-redis/redis/v8"
 
 	. "github.com/onsi/ginkgo"
@@ -9,6 +11,8 @@ import (
 
 var _ = Describe("Sentinel", func() {
 	var client *redis.Client
+	var master *redis.Client
+	var masterPort string
 
 	BeforeEach(func() {
 		client = redis.NewFailoverClient(&redis.FailoverOptions{
@@ -16,10 +20,23 @@ var _ = Describe("Sentinel", func() {
 			SentinelAddrs: sentinelAddrs,
 		})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
+		sentinel := redis.NewSentinelClient(&redis.Options{
+			Addr: ":" + sentinelPort1,
+		})
+
+		addr, err := sentinel.GetMasterAddrByName(ctx, sentinelName).Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		master = redis.NewClient(&redis.Options{
+			Addr: net.JoinHostPort(addr[0], addr[1]),
+		})
+		masterPort = addr[1]
 	})
 
 	AfterEach(func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
+		Expect(master.Close()).NotTo(HaveOccurred())
 	})
 
 	It("should facilitate failover", func() {
@@ -55,9 +72,10 @@ var _ = Describe("Sentinel", func() {
 		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 
 		// Kill master.
-		sentinelMaster.Shutdown(ctx)
+		err = master.Shutdown(ctx).Err()
+		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() error {
-			return sentinelMaster.Ping(ctx).Err()
+			return master.Ping(ctx).Err()
 		}, "15s", "100ms").Should(HaveOccurred())
 
 		// Wait for Redis sentinel to elect new master.
@@ -79,8 +97,7 @@ var _ = Describe("Sentinel", func() {
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
 
-		Expect(sentinelMaster.Close()).NotTo(HaveOccurred())
-		sentinelMaster, err = startRedis(sentinelMasterPort)
+		_, err = startRedis(masterPort)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -99,6 +116,8 @@ var _ = Describe("Sentinel", func() {
 
 var _ = Describe("NewFailoverClusterClient", func() {
 	var client *redis.ClusterClient
+	var master *redis.Client
+	var masterPort string
 
 	BeforeEach(func() {
 		client = redis.NewFailoverClusterClient(&redis.FailoverOptions{
@@ -106,14 +125,27 @@ var _ = Describe("NewFailoverClusterClient", func() {
 			SentinelAddrs: sentinelAddrs,
 		})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
+		sentinel := redis.NewSentinelClient(&redis.Options{
+			Addr: ":" + sentinelPort1,
+		})
+
+		addr, err := sentinel.GetMasterAddrByName(ctx, sentinelName).Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		master = redis.NewClient(&redis.Options{
+			Addr: net.JoinHostPort(addr[0], addr[1]),
+		})
+		masterPort = addr[1]
 	})
 
 	AfterEach(func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
+		Expect(master.Close()).NotTo(HaveOccurred())
 	})
 
 	It("should facilitate failover", func() {
-		// Set value on master.
+		// Set value.
 		err := client.Set(ctx, "foo", "master", 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -145,7 +177,8 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 
 		// Kill master.
-		sentinelMaster.Shutdown(ctx)
+		err = master.Shutdown(ctx).Err()
+		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() error {
 			return sentinelMaster.Ping(ctx).Err()
 		}, "15s", "100ms").Should(HaveOccurred())
@@ -169,8 +202,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
 
-		Expect(sentinelMaster.Close()).NotTo(HaveOccurred())
-		sentinelMaster, err = startRedis(sentinelMasterPort)
+		_, err = startRedis(masterPort)
 		Expect(err).NotTo(HaveOccurred())
 	})
 })

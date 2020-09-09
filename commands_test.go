@@ -4029,7 +4029,7 @@ var _ = Describe("Commands", func() {
 
 			result, err := client.SlowLog(ctx, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).To(Equal(2))
+			Expect(len(result)).NotTo(BeZero())
 		})
 	})
 })
