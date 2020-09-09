@@ -911,7 +911,7 @@ var _ = Describe("ClusterClient", func() {
 			failover = true
 
 			opt = redisClusterOptions()
-			opt.ClusterSlots = func() ([]redis.ClusterSlot, error) {
+			opt.ClusterSlots = func(ctx context.Context) ([]redis.ClusterSlot, error) {
 				slots := []redis.ClusterSlot{{
 					Start: 0,
 					End:   4999,
@@ -965,7 +965,7 @@ var _ = Describe("ClusterClient", func() {
 
 			opt = redisClusterOptions()
 			opt.RouteRandomly = true
-			opt.ClusterSlots = func() ([]redis.ClusterSlot, error) {
+			opt.ClusterSlots = func(ctx context.Context) ([]redis.ClusterSlot, error) {
 				slots := []redis.ClusterSlot{{
 					Start: 0,
 					End:   4999,

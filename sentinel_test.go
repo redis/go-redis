@@ -46,13 +46,13 @@ var _ = Describe("Sentinel", func() {
 		// Wait until slaves are picked up by sentinel.
 		Eventually(func() string {
 			return sentinel1.Info(ctx).Val()
-		}, "10s", "100ms").Should(ContainSubstring("slaves=2"))
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 		Eventually(func() string {
 			return sentinel2.Info(ctx).Val()
-		}, "10s", "100ms").Should(ContainSubstring("slaves=2"))
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 		Eventually(func() string {
 			return sentinel3.Info(ctx).Val()
-		}, "10s", "100ms").Should(ContainSubstring("slaves=2"))
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 
 		// Kill master.
 		sentinelMaster.Shutdown(ctx)
@@ -63,7 +63,7 @@ var _ = Describe("Sentinel", func() {
 		// Wait for Redis sentinel to elect new master.
 		Eventually(func() string {
 			return sentinelSlave1.Info(ctx).Val() + sentinelSlave2.Info(ctx).Val()
-		}, "30s", "100ms").Should(ContainSubstring("role:master"))
+		}, "15s", "100ms").Should(ContainSubstring("role:master"))
 
 		// Check that client picked up new master.
 		Eventually(func() error {
@@ -75,7 +75,7 @@ var _ = Describe("Sentinel", func() {
 		Eventually(func() <-chan *redis.Message {
 			_ = client.Publish(ctx, "foo", "hello").Err()
 			return ch
-		}, "15s").Should(Receive(&msg))
+		}, "15s", "100ms").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
 	})
@@ -90,5 +90,79 @@ var _ = Describe("Sentinel", func() {
 		})
 		err := client.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("NewFailoverClusterClient", func() {
+	var client *redis.ClusterClient
+
+	BeforeEach(func() {
+		client = redis.NewFailoverClusterClient(&redis.FailoverOptions{
+			MasterName:    sentinelName,
+			SentinelAddrs: sentinelAddrs,
+		})
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should facilitate failover", func() {
+		// Set value on master.
+		err := client.Set(ctx, "foo", "master", 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify.
+		val, err := sentinelMaster.Get(ctx, "foo").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal("master"))
+
+		// Create subscription.
+		ch := client.Subscribe(ctx, "foo").Channel()
+
+		// Wait until replicated.
+		Eventually(func() string {
+			return sentinelSlave1.Get(ctx, "foo").Val()
+		}, "15s", "100ms").Should(Equal("master"))
+		Eventually(func() string {
+			return sentinelSlave2.Get(ctx, "foo").Val()
+		}, "15s", "100ms").Should(Equal("master"))
+
+		// Wait until slaves are picked up by sentinel.
+		Eventually(func() string {
+			return sentinel1.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		Eventually(func() string {
+			return sentinel2.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		Eventually(func() string {
+			return sentinel3.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+
+		// Kill master.
+		sentinelMaster.Shutdown(ctx)
+		Eventually(func() error {
+			return sentinelMaster.Ping(ctx).Err()
+		}, "15s", "100ms").Should(HaveOccurred())
+
+		// Wait for Redis sentinel to elect new master.
+		Eventually(func() string {
+			return sentinelSlave1.Info(ctx).Val() + sentinelSlave2.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("role:master"))
+
+		// Check that client picked up new master.
+		Eventually(func() error {
+			return client.Get(ctx, "foo").Err()
+		}, "15s", "100ms").ShouldNot(HaveOccurred())
+
+		// Check if subscription is renewed.
+		var msg *redis.Message
+		Eventually(func() <-chan *redis.Message {
+			_ = client.Publish(ctx, "foo", "hello").Err()
+			return ch
+		}, "15s", "100ms").Should(Receive(&msg))
+		Expect(msg.Channel).To(Equal("foo"))
+		Expect(msg.Payload).To(Equal("hello"))
 	})
 })

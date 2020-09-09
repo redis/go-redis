@@ -80,7 +80,7 @@ func ExampleNewClusterClient_manualSetup() {
 	// clusterSlots returns cluster slots information.
 	// It can use service like ZooKeeper to maintain configuration information
 	// and Cluster.ReloadState to manually trigger state reloading.
-	clusterSlots := func() ([]redis.ClusterSlot, error) {
+	clusterSlots := func(ctx context.Context) ([]redis.ClusterSlot, error) {
 		slots := []redis.ClusterSlot{
 			// First node with 1 master and 1 slave.
 			{
