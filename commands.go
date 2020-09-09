@@ -2307,7 +2307,7 @@ func (c cmdable) SlaveOf(ctx context.Context, host, port string) *StatusCmd {
 	return cmd
 }
 
-func (c cmdable) SlowLog(ctx context.Context, num int64) *SlowLogCmd {
+func (c cmdable) SlowLogGet(ctx context.Context, num int64) *SlowLogCmd {
 	n := strconv.FormatInt(num, 10)
 	cmd := NewSlowLogCmd(context.Background(), "slowlog", "get", n)
 	_ = c(ctx, cmd)

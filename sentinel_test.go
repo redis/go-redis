@@ -78,11 +78,6 @@ var _ = Describe("Sentinel", func() {
 			return master.Ping(ctx).Err()
 		}, "15s", "100ms").Should(HaveOccurred())
 
-		// Wait for Redis sentinel to elect new master.
-		Eventually(func() string {
-			return sentinelSlave1.Info(ctx).Val() + sentinelSlave2.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("role:master"))
-
 		// Check that client picked up new master.
 		Eventually(func() error {
 			return client.Get(ctx, "foo").Err()
@@ -182,11 +177,6 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		Eventually(func() error {
 			return sentinelMaster.Ping(ctx).Err()
 		}, "15s", "100ms").Should(HaveOccurred())
-
-		// Wait for Redis sentinel to elect new master.
-		Eventually(func() string {
-			return sentinelSlave1.Info(ctx).Val() + sentinelSlave2.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("role:master"))
 
 		// Check that client picked up new master.
 		Eventually(func() error {

@@ -4014,7 +4014,7 @@ var _ = Describe("Commands", func() {
 		})
 	})
 
-	Describe("SlowLog", func() {
+	Describe("SlowLogGet", func() {
 		It("returns slow query result", func() {
 			const key = "slowlog-log-slower-than"
 
@@ -4027,7 +4027,7 @@ var _ = Describe("Commands", func() {
 
 			client.Set(ctx, "test", "true", 0)
 
-			result, err := client.SlowLog(ctx, -1).Result()
+			result, err := client.SlowLogGet(ctx, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).NotTo(BeZero())
 		})

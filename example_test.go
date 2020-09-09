@@ -511,7 +511,7 @@ func ExampleNewUniversalClient_cluster() {
 	rdb.Ping(ctx)
 }
 
-func ExampleClient_SlowLog() {
+func ExampleClient_SlowLogGet() {
 	const key = "slowlog-log-slower-than"
 
 	old := rdb.ConfigGet(ctx, key).Val()
@@ -524,7 +524,7 @@ func ExampleClient_SlowLog() {
 
 	rdb.Set(ctx, "test", "true", 0)
 
-	result, err := rdb.SlowLog(ctx, -1).Result()
+	result, err := rdb.SlowLogGet(ctx, -1).Result()
 	if err != nil {
 		panic(err)
 	}

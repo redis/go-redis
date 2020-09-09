@@ -104,9 +104,6 @@ type Options struct {
 	// Enables read only queries on slave nodes.
 	readOnly bool
 
-	// Enables read only queries on redis replicas in sentinel mode
-	sentinelReadOnly bool
-
 	// TLS Config to use. When set TLS will be negotiated.
 	TLSConfig *tls.Config
 
