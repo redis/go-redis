@@ -20,7 +20,7 @@
 
 ## Features
 
-- Redis 3 commands except QUIT, MONITOR, SLOWLOG and SYNC.
+- Redis 3 commands except QUIT, MONITOR, and SYNC.
 - Automatic connection pooling with
   [circuit breaker](https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern) support.
 - [Pub/Sub](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#PubSub).
