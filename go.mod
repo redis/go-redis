@@ -8,7 +8,7 @@ require (
 	github.com/onsi/ginkgo v1.14.0
 	github.com/onsi/gomega v1.10.1
 	go.opentelemetry.io/otel v0.11.0
-	golang.org/x/exp v0.0.0-20200821190819-94841d0725da
+	golang.org/x/exp v0.0.0-20200908183739-ae8ad444f925
 	golang.org/x/sys v0.0.0-20200615200032-f1bc736245b1 // indirect
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
 )
