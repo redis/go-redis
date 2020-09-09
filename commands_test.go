@@ -4013,6 +4013,25 @@ var _ = Describe("Commands", func() {
 			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
 		})
 	})
+
+	Describe("SlowLog", func() {
+		It("returns slow query result", func() {
+			const key = "slowlog-log-slower-than"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "0")
+			defer client.ConfigSet(ctx, key, old[1].(string))
+
+			err := rdb.Do(ctx, "slowlog", "reset").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			client.Set(ctx, "test", "true", 0)
+
+			result, err := client.SlowLog(ctx, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).To(Equal(2))
+		})
+	})
 })
 
 type numberStruct struct {

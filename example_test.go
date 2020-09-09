@@ -510,3 +510,24 @@ func ExampleNewUniversalClient_cluster() {
 
 	rdb.Ping(ctx)
 }
+
+func ExampleClient_SlowLog() {
+	const key = "slowlog-log-slower-than"
+
+	old := rdb.ConfigGet(ctx, key).Val()
+	rdb.ConfigSet(ctx, key, "0")
+	defer rdb.ConfigSet(ctx, key, old[1].(string))
+
+	if err := rdb.Do(ctx, "slowlog", "reset").Err(); err != nil {
+		panic(err)
+	}
+
+	rdb.Set(ctx, "test", "true", 0)
+
+	result, err := rdb.SlowLog(ctx, -1).Result()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(len(result))
+	// Output: 2
+}

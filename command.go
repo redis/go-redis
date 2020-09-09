@@ -2167,3 +2167,119 @@ func (c *cmdsInfoCache) Get() (map[string]*CommandInfo, error) {
 	})
 	return c.cmds, err
 }
+
+//------------------------------------------------------------------------------
+
+type SlowLog struct {
+	ID       int64
+	Time     time.Time
+	Duration time.Duration
+	Args     []string
+	// These are also optional fields emitted only by Redis 4.0 or greater:
+	// https://redis.io/commands/slowlog#output-format
+	ClientAddr string
+	ClientName string
+}
+
+type SlowLogCmd struct {
+	baseCmd
+
+	val []SlowLog
+}
+
+var _ Cmder = (*SlowLogCmd)(nil)
+
+func NewSlowLogCmd(ctx context.Context, args ...interface{}) *SlowLogCmd {
+	return &SlowLogCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *SlowLogCmd) Val() []SlowLog {
+	return cmd.val
+}
+
+func (cmd *SlowLogCmd) Result() ([]SlowLog, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *SlowLogCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
+	_, cmd.err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make([]SlowLog, n)
+		for i := 0; i < len(cmd.val); i++ {
+			n, err := rd.ReadArrayLen()
+			if err != nil {
+				return nil, err
+			}
+			if n < 4 {
+				err := fmt.Errorf("redis: got %d elements in slowlog get, expected at least 4", n)
+				return nil, err
+			}
+
+			id, err := rd.ReadIntReply()
+			if err != nil {
+				return nil, err
+			}
+
+			createdAt, err := rd.ReadIntReply()
+			if err != nil {
+				return nil, err
+			}
+			createdAtTime := time.Unix(createdAt, 0)
+
+			costs, err := rd.ReadIntReply()
+			if err != nil {
+				return nil, err
+			}
+			costsDuration := time.Duration(costs) * time.Microsecond
+
+			cmdLen, err := rd.ReadArrayLen()
+			if err != nil {
+				return nil, err
+			}
+			if cmdLen < 1 {
+				err := fmt.Errorf("redis: got %d elements commands reply in slowlog get, expected at least 1", cmdLen)
+				return nil, err
+			}
+
+			cmdString := make([]string, cmdLen)
+			for i := 0; i < int(cmdLen); i++ {
+				cmdString[i], err = rd.ReadString()
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			var address, name string
+			for i := 4; i < int(n); i++ {
+				str, err := rd.ReadString()
+				if err != nil {
+					return nil, err
+				}
+				if i == 4 {
+					address = str
+				} else if i == 5 {
+					name = str
+				}
+			}
+
+			cmd.val[i] = SlowLog{
+				ID:         id,
+				Time:       createdAtTime,
+				Duration:   costsDuration,
+				Args:       cmdString,
+				ClientAddr: address,
+				ClientName: name,
+			}
+		}
+		return nil, nil
+	})
+	return cmd.err
+}
