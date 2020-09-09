@@ -512,19 +512,22 @@ func ExampleNewUniversalClient_cluster() {
 }
 
 func ExampleClient_SlowLog() {
-	var (
-		CONFIGSLOWKEY string = "slowlog-log-slower-than"
-	)
-	old := rdb.ConfigGet(ctx, CONFIGSLOWKEY).Val()
-	rdb.ConfigSet(ctx, CONFIGSLOWKEY, "0")
-	defer rdb.ConfigSet(ctx, CONFIGSLOWKEY, old[1].(string))
-	_, e := rdb.Eval(ctx, "redis.call('slowlog','reset')", []string{}).Result()
-	if e != nil && e != redis.Nil {
-		fmt.Println(e)
-		return
+	const key = "slowlog-log-slower-than"
+
+	old := rdb.ConfigGet(ctx, key).Val()
+	rdb.ConfigSet(ctx, key, "0")
+	defer rdb.ConfigSet(ctx, key, old[1].(string))
+
+	if err := rdb.Do(ctx, "slowlog", "reset").Err(); err != nil {
+		panic(err)
 	}
+
 	rdb.Set(ctx, "test", "true", 0)
+
 	result, err := rdb.SlowLog(ctx, -1).Result()
-	fmt.Println(len(result), err)
-	// Output: 3 <nil>
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(len(result))
+	// Output: 2
 }

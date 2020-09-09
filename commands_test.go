@@ -4016,19 +4016,20 @@ var _ = Describe("Commands", func() {
 
 	Describe("SlowLog", func() {
 		It("returns slow query result", func() {
-			var CONFIGSLOWKEY string = "slowlog-log-slower-than"
-			old := client.ConfigGet(ctx, CONFIGSLOWKEY).Val()
-			client.ConfigSet(ctx, CONFIGSLOWKEY, "0")
-			defer client.ConfigSet(ctx, CONFIGSLOWKEY, old[1].(string))
-			_, e := client.Eval(ctx, "redis.call('slowlog','reset')", []string{}).Result()
-			if e != nil && e != redis.Nil {
-				fmt.Println(e)
-				return
-			}
+			const key = "slowlog-log-slower-than"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "0")
+			defer client.ConfigSet(ctx, key, old[1].(string))
+
+			err := rdb.Do(ctx, "slowlog", "reset").Err()
+			Expect(err).NotTo(HaveOccurred())
+
 			client.Set(ctx, "test", "true", 0)
+
 			result, err := client.SlowLog(ctx, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).To(Equal(3))
+			Expect(len(result)).To(Equal(2))
 		})
 	})
 })

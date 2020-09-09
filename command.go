@@ -2171,16 +2171,14 @@ func (c *cmdsInfoCache) Get() (map[string]*CommandInfo, error) {
 //------------------------------------------------------------------------------
 
 type SlowLog struct {
-	ID        int64
-	CreatedAt time.Time
-	Costs     time.Duration
-	/*
-		ClientAddress,ClientName
-		There are also optional fields emitted only by Redis 4.0 or greater:
-		https://redis.io/commands/slowlog#output-format
-	*/
-	ClientAddress, ClientName string
-	Args                      []string
+	ID       int64
+	Time     time.Time
+	Duration time.Duration
+	Args     []string
+	// These are also optional fields emitted only by Redis 4.0 or greater:
+	// https://redis.io/commands/slowlog#output-format
+	ClientAddr string
+	ClientName string
 }
 
 type SlowLogCmd struct {
@@ -2235,19 +2233,22 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 				return nil, err
 			}
 			createdAtTime := time.Unix(createdAt, 0)
+
 			costs, err := rd.ReadIntReply()
 			if err != nil {
 				return nil, err
 			}
 			costsDuration := time.Duration(costs) * time.Microsecond
+
 			cmdLen, err := rd.ReadArrayLen()
+			if err != nil {
+				return nil, err
+			}
 			if cmdLen < 1 {
 				err := fmt.Errorf("redis: got %d elements commands reply in slowlog get, expected at least 1", cmdLen)
 				return nil, err
 			}
-			if err != nil {
-				return nil, err
-			}
+
 			cmdString := make([]string, cmdLen)
 			for i := 0; i < int(cmdLen); i++ {
 				cmdString[i], err = rd.ReadString()
@@ -2255,6 +2256,7 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 					return nil, err
 				}
 			}
+
 			var address, name string
 			for i := 4; i < int(n); i++ {
 				str, err := rd.ReadString()
@@ -2267,13 +2269,14 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 					name = str
 				}
 			}
+
 			cmd.val[i] = SlowLog{
-				ID:            id,
-				CreatedAt:     createdAtTime,
-				Costs:         costsDuration,
-				Args:          cmdString,
-				ClientAddress: address,
-				ClientName:    name,
+				ID:         id,
+				Time:       createdAtTime,
+				Duration:   costsDuration,
+				Args:       cmdString,
+				ClientAddr: address,
+				ClientName: name,
 			}
 		}
 		return nil, nil
