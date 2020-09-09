@@ -2233,7 +2233,7 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 			if err != nil {
 				return nil, err
 			}
-			costsDuration := time.Duration(costs)
+			costsDuration := time.Duration(costs) * time.Microsecond
 			cmdLen, err := rd.ReadArrayLen()
 			if cmdLen < 1 {
 				err := fmt.Errorf("redis: got %d elements commands reply in slowlog get, expected at least 1", cmdLen)
