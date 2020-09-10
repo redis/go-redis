@@ -707,6 +707,7 @@ func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
 	clone.cmdable = clone.Process
 	clone.hooks.lock()
 	clone.ctx = ctx
+	clone.cmdsInfoCache = newCmdsInfoCache(clone.cmdsInfo)
 	return &clone
 }
 
