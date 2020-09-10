@@ -35,8 +35,8 @@ var _ = Describe("Sentinel", func() {
 	})
 
 	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
-		Expect(master.Close()).NotTo(HaveOccurred())
+		_ = client.Close()
+		_ = master.Close()
 	})
 
 	It("should facilitate failover", func() {
@@ -135,8 +135,8 @@ var _ = Describe("NewFailoverClusterClient", func() {
 	})
 
 	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
-		Expect(master.Close()).NotTo(HaveOccurred())
+		_ = client.Close()
+		_ = master.Close()
 	})
 
 	It("should facilitate failover", func() {
