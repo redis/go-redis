@@ -77,9 +77,9 @@ func (hs hooks) beforeProcess(ctx context.Context, cmd Cmder) (context.Context, 
 
 func (hs hooks) afterProcess(ctx context.Context, cmd Cmder) error {
 	var firstErr error
-	for _, h := range hs.hooks {
-		err := h.AfterProcess(ctx, cmd)
-		if err != nil && firstErr == nil {
+	for i := len(hs.hooks) - 1; i >= 0; i-- {
+		h := hs.hooks[i]
+		if err := h.AfterProcess(ctx, cmd); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -118,9 +118,9 @@ func (hs hooks) beforeProcessPipeline(ctx context.Context, cmds []Cmder) (contex
 
 func (hs hooks) afterProcessPipeline(ctx context.Context, cmds []Cmder) error {
 	var firstErr error
-	for _, h := range hs.hooks {
-		err := h.AfterProcessPipeline(ctx, cmds)
-		if err != nil && firstErr == nil {
+	for i := len(hs.hooks) - 1; i >= 0; i-- {
+		h := hs.hooks[i]
+		if err := h.AfterProcessPipeline(ctx, cmds); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
