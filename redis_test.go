@@ -215,7 +215,7 @@ var _ = Describe("Client", func() {
 	It("should retry with backoff", func() {
 		clientNoRetry := redis.NewClient(&redis.Options{
 			Addr:       ":1234",
-			MaxRetries: 0,
+			MaxRetries: -1,
 		})
 		defer clientNoRetry.Close()
 

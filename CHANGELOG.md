@@ -26,6 +26,9 @@ ring := redis.NewRing(&redis.RingOptions{
 })
 ```
 
+- `ClusterOptions.MaxRedirects` default value is changed from 8 to 3.
+- `Options.MaxRetries` default value is changed from 0 to 3.
+
 - `Cluster.ForEachNode` is renamed to `ForEachShard` for consistency with `Ring`.
 
 ## v7.3
