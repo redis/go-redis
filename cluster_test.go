@@ -522,6 +522,175 @@ var _ = Describe("ClusterClient", func() {
 			err := pubsub.Ping(ctx)
 			Expect(err).NotTo(HaveOccurred())
 		})
+	}
+
+	Describe("ClusterClient", func() {
+		BeforeEach(func() {
+			opt = redisClusterOptions()
+			client = cluster.newClusterClient(ctx, opt)
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				return master.FlushDB(ctx).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			_ = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				return master.FlushDB(ctx).Err()
+			})
+			Expect(client.Close()).NotTo(HaveOccurred())
+		})
+
+		It("returns pool stats", func() {
+			stats := client.PoolStats()
+			Expect(stats).To(BeAssignableToTypeOf(&redis.PoolStats{}))
+		})
+
+		It("returns an error when there are no attempts left", func() {
+			opt := redisClusterOptions()
+			opt.MaxRedirects = -1
+			client := cluster.newClusterClient(ctx, opt)
+
+			Eventually(func() error {
+				return client.SwapNodes(ctx, "A")
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+
+			err := client.Get(ctx, "A").Err()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("MOVED"))
+
+			Expect(client.Close()).NotTo(HaveOccurred())
+		})
+
+		It("calls fn for every master node", func() {
+			for i := 0; i < 10; i++ {
+				Expect(client.Set(ctx, strconv.Itoa(i), "", 0).Err()).NotTo(HaveOccurred())
+			}
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				return master.FlushDB(ctx).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			size, err := client.DBSize(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(0)))
+		})
+
+		It("should CLUSTER SLOTS", func() {
+			res, err := client.ClusterSlots(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(3))
+
+			wanted := []redis.ClusterSlot{{
+				Start: 0,
+				End:   4999,
+				Nodes: []redis.ClusterNode{{
+					ID:   "",
+					Addr: "127.0.0.1:8220",
+				}, {
+					ID:   "",
+					Addr: "127.0.0.1:8223",
+				}},
+			}, {
+				Start: 5000,
+				End:   9999,
+				Nodes: []redis.ClusterNode{{
+					ID:   "",
+					Addr: "127.0.0.1:8221",
+				}, {
+					ID:   "",
+					Addr: "127.0.0.1:8224",
+				}},
+			}, {
+				Start: 10000,
+				End:   16383,
+				Nodes: []redis.ClusterNode{{
+					ID:   "",
+					Addr: "127.0.0.1:8222",
+				}, {
+					ID:   "",
+					Addr: "127.0.0.1:8225",
+				}},
+			}}
+			Expect(assertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
+		})
+
+		It("should CLUSTER NODES", func() {
+			res, err := client.ClusterNodes(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(res)).To(BeNumerically(">", 400))
+		})
+
+		It("should CLUSTER INFO", func() {
+			res, err := client.ClusterInfo(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(ContainSubstring("cluster_known_nodes:6"))
+		})
+
+		It("should CLUSTER KEYSLOT", func() {
+			hashSlot, err := client.ClusterKeySlot(ctx, "somekey").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hashSlot).To(Equal(int64(hashtag.Slot("somekey"))))
+		})
+
+		It("should CLUSTER GETKEYSINSLOT", func() {
+			keys, err := client.ClusterGetKeysInSlot(ctx, hashtag.Slot("somekey"), 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(keys)).To(Equal(0))
+		})
+
+		It("should CLUSTER COUNT-FAILURE-REPORTS", func() {
+			n, err := client.ClusterCountFailureReports(ctx, cluster.nodeIDs[0]).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
+		})
+
+		It("should CLUSTER COUNTKEYSINSLOT", func() {
+			n, err := client.ClusterCountKeysInSlot(ctx, 10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
+		})
+
+		It("should CLUSTER SAVECONFIG", func() {
+			res, err := client.ClusterSaveConfig(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal("OK"))
+		})
+
+		It("should CLUSTER SLAVES", func() {
+			nodesList, err := client.ClusterSlaves(ctx, cluster.nodeIDs[0]).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nodesList).Should(ContainElement(ContainSubstring("slave")))
+			Expect(nodesList).Should(HaveLen(1))
+		})
+
+		It("should RANDOMKEY", func() {
+			const nkeys = 100
+
+			for i := 0; i < nkeys; i++ {
+				err := client.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			var keys []string
+			addKey := func(key string) {
+				for _, k := range keys {
+					if k == key {
+						return
+					}
+				}
+				keys = append(keys, key)
+			}
+
+			for i := 0; i < nkeys*10; i++ {
+				key := client.RandomKey(ctx).Val()
+				addKey(key)
+			}
+
+			Expect(len(keys)).To(BeNumerically("~", nkeys, nkeys/10))
+		})
 
 		It("supports Process hook", func() {
 			err := client.Ping(ctx).Err()
@@ -693,175 +862,6 @@ var _ = Describe("ClusterClient", func() {
 				"shard.AfterProcessPipeline",
 				"cluster.AfterProcessPipeline",
 			}))
-		})
-	}
-
-	Describe("ClusterClient", func() {
-		BeforeEach(func() {
-			opt = redisClusterOptions()
-			client = cluster.newClusterClient(ctx, opt)
-
-			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
-				return master.FlushDB(ctx).Err()
-			})
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			_ = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
-				return master.FlushDB(ctx).Err()
-			})
-			Expect(client.Close()).NotTo(HaveOccurred())
-		})
-
-		It("returns pool stats", func() {
-			stats := client.PoolStats()
-			Expect(stats).To(BeAssignableToTypeOf(&redis.PoolStats{}))
-		})
-
-		It("returns an error when there are no attempts left", func() {
-			opt := redisClusterOptions()
-			opt.MaxRedirects = -1
-			client := cluster.newClusterClient(ctx, opt)
-
-			Eventually(func() error {
-				return client.SwapNodes(ctx, "A")
-			}, 30*time.Second).ShouldNot(HaveOccurred())
-
-			err := client.Get(ctx, "A").Err()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("MOVED"))
-
-			Expect(client.Close()).NotTo(HaveOccurred())
-		})
-
-		It("calls fn for every master node", func() {
-			for i := 0; i < 10; i++ {
-				Expect(client.Set(ctx, strconv.Itoa(i), "", 0).Err()).NotTo(HaveOccurred())
-			}
-
-			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
-				return master.FlushDB(ctx).Err()
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			size, err := client.DBSize(ctx).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(size).To(Equal(int64(0)))
-		})
-
-		It("should CLUSTER SLOTS", func() {
-			res, err := client.ClusterSlots(ctx).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(HaveLen(3))
-
-			wanted := []redis.ClusterSlot{{
-				Start: 0,
-				End:   4999,
-				Nodes: []redis.ClusterNode{{
-					ID:   "",
-					Addr: "127.0.0.1:8220",
-				}, {
-					ID:   "",
-					Addr: "127.0.0.1:8223",
-				}},
-			}, {
-				Start: 5000,
-				End:   9999,
-				Nodes: []redis.ClusterNode{{
-					ID:   "",
-					Addr: "127.0.0.1:8221",
-				}, {
-					ID:   "",
-					Addr: "127.0.0.1:8224",
-				}},
-			}, {
-				Start: 10000,
-				End:   16383,
-				Nodes: []redis.ClusterNode{{
-					ID:   "",
-					Addr: "127.0.0.1:8222",
-				}, {
-					ID:   "",
-					Addr: "127.0.0.1:8225",
-				}},
-			}}
-			Expect(assertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
-		})
-
-		It("should CLUSTER NODES", func() {
-			res, err := client.ClusterNodes(ctx).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(res)).To(BeNumerically(">", 400))
-		})
-
-		It("should CLUSTER INFO", func() {
-			res, err := client.ClusterInfo(ctx).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(ContainSubstring("cluster_known_nodes:6"))
-		})
-
-		It("should CLUSTER KEYSLOT", func() {
-			hashSlot, err := client.ClusterKeySlot(ctx, "somekey").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(hashSlot).To(Equal(int64(hashtag.Slot("somekey"))))
-		})
-
-		It("should CLUSTER GETKEYSINSLOT", func() {
-			keys, err := client.ClusterGetKeysInSlot(ctx, hashtag.Slot("somekey"), 1).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(keys)).To(Equal(0))
-		})
-
-		It("should CLUSTER COUNT-FAILURE-REPORTS", func() {
-			n, err := client.ClusterCountFailureReports(ctx, cluster.nodeIDs[0]).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(0)))
-		})
-
-		It("should CLUSTER COUNTKEYSINSLOT", func() {
-			n, err := client.ClusterCountKeysInSlot(ctx, 10).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(0)))
-		})
-
-		It("should CLUSTER SAVECONFIG", func() {
-			res, err := client.ClusterSaveConfig(ctx).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal("OK"))
-		})
-
-		It("should CLUSTER SLAVES", func() {
-			nodesList, err := client.ClusterSlaves(ctx, cluster.nodeIDs[0]).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(nodesList).Should(ContainElement(ContainSubstring("slave")))
-			Expect(nodesList).Should(HaveLen(1))
-		})
-
-		It("should RANDOMKEY", func() {
-			const nkeys = 100
-
-			for i := 0; i < nkeys; i++ {
-				err := client.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
-				Expect(err).NotTo(HaveOccurred())
-			}
-
-			var keys []string
-			addKey := func(key string) {
-				for _, k := range keys {
-					if k == key {
-						return
-					}
-				}
-				keys = append(keys, key)
-			}
-
-			for i := 0; i < nkeys*10; i++ {
-				key := client.RandomKey(ctx).Val()
-				addKey(key)
-			}
-
-			Expect(len(keys)).To(BeNumerically("~", nkeys, nkeys/10))
 		})
 
 		assertClusterClient()

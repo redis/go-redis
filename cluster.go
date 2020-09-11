@@ -192,11 +192,11 @@ func (n *clusterNode) updateLatency() {
 	var dur uint64
 
 	for i := 0; i < numProbe; i++ {
+		time.Sleep(time.Duration(10+rand.Intn(10)) * time.Millisecond)
+
 		start := time.Now()
 		n.Client.Ping(context.TODO())
 		dur += uint64(time.Since(start) / time.Microsecond)
-
-		time.Sleep(time.Duration(10+rand.Intn(10)) * time.Millisecond)
 	}
 
 	latency := float64(dur) / float64(numProbe)
