@@ -156,9 +156,9 @@ var _ = Describe("NewFailoverClusterClient", func() {
 
 		for i := 0; i < 100; i++ {
 			// Verify.
-			val, err := client.Get(ctx, "foo").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(val).To(Equal("master"))
+			Eventually(func() string {
+				return client.Get(ctx, "foo").Val()
+			}, "15s", "1ms").Should(Equal("master"))
 		}
 
 		// Create subscription.
