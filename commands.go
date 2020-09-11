@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strconv"
 	"time"
 
 	"github.com/go-redis/redis/v8/internal"
@@ -2308,8 +2307,7 @@ func (c cmdable) SlaveOf(ctx context.Context, host, port string) *StatusCmd {
 }
 
 func (c cmdable) SlowLogGet(ctx context.Context, num int64) *SlowLogCmd {
-	n := strconv.FormatInt(num, 10)
-	cmd := NewSlowLogCmd(context.Background(), "slowlog", "get", n)
+	cmd := NewSlowLogCmd(context.Background(), "slowlog", "get", num)
 	_ = c(ctx, cmd)
 	return cmd
 }
