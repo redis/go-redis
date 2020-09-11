@@ -31,7 +31,7 @@ type ClusterOptions struct {
 	NewClient func(opt *Options) *Client
 
 	// The maximum number of retries before giving up. Command is retried
-	// on network errors and MOVED/ASK redirects.
+	// on MOVED/ASK redirects.
 	// Default is 3 retries.
 	MaxRedirects int
 
@@ -60,6 +60,8 @@ type ClusterOptions struct {
 	Username string
 	Password string
 
+	// The maximum number of retries on network errors
+	// Default is 0.
 	MaxRetries      int
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
