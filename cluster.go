@@ -766,9 +766,15 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 	var node *clusterNode
 	var ask bool
 	var lastErr error
-	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
-		if attempt > 0 {
-			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+	var failureAttempt = 0
+	var redirectAttempt = 0
+	for redirectAttempt <= c.opt.MaxRedirects || failureAttempt < c.opt.MaxRetries {
+		if failureAttempt > 0 {
+			if err := internal.Sleep(ctx, c.retryBackoff(failureAttempt)); err != nil {
+				return err
+			}
+		}else if redirectAttempt > 0 {
+			if err := internal.Sleep(ctx, c.retryBackoff(redirectAttempt)); err != nil {
 				return err
 			}
 		}
@@ -801,6 +807,8 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 				c.state.LazyReload(ctx)
 			}
 			node = nil
+			redirectAttempt ++
+			failureAttempt = 0
 			continue
 		}
 
@@ -808,6 +816,8 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 		if c.opt.ReadOnly && isLoadingError(lastErr) {
 			node.MarkAsFailing()
 			node = nil
+			redirectAttempt ++
+			failureAttempt = 0
 			continue
 		}
 
@@ -820,12 +830,15 @@ func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 			if err != nil {
 				return err
 			}
+			redirectAttempt ++
+			failureAttempt = 0
 			continue
 		}
 
-		if shouldRetry(lastErr, cmd.readTimeout() == nil) {
+		if failureAttempt < c.opt.MaxRetries && shouldRetry(lastErr, cmd.readTimeout() == nil) {
+			failureAttempt ++
 			// First retry the same node.
-			if attempt == 0 {
+			if failureAttempt == 1 {
 				continue
 			}
 
