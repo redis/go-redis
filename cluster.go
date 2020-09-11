@@ -32,7 +32,7 @@ type ClusterOptions struct {
 
 	// The maximum number of retries before giving up. Command is retried
 	// on network errors and MOVED/ASK redirects.
-	// Default is 8 retries.
+	// Default is 3 retries.
 	MaxRedirects int
 
 	// Enables read-only commands on slave nodes.
@@ -83,7 +83,7 @@ func (opt *ClusterOptions) init() {
 	if opt.MaxRedirects == -1 {
 		opt.MaxRedirects = 0
 	} else if opt.MaxRedirects == 0 {
-		opt.MaxRedirects = 8
+		opt.MaxRedirects = 3
 	}
 
 	if (opt.RouteByLatency || opt.RouteRandomly) && opt.ClusterSlots == nil {
@@ -107,6 +107,9 @@ func (opt *ClusterOptions) init() {
 		opt.WriteTimeout = opt.ReadTimeout
 	}
 
+	if opt.MaxRetries == 0 {
+		opt.MaxRetries = -1
+	}
 	switch opt.MinRetryBackoff {
 	case -1:
 		opt.MinRetryBackoff = 0
@@ -132,12 +135,12 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
+		Username: opt.Username,
+		Password: opt.Password,
+
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
-		Username:        opt.Username,
-		Password:        opt.Password,
-		readOnly:        opt.ReadOnly,
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
@@ -149,6 +152,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PoolTimeout:        opt.PoolTimeout,
 		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: disableIdleCheck,
+
+		readOnly: opt.ReadOnly,
 
 		TLSConfig: opt.TLSConfig,
 	}

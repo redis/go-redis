@@ -57,7 +57,7 @@ type Options struct {
 	DB int
 
 	// Maximum number of retries before giving up.
-	// Default is to not retry failed commands.
+	// Default is 3 retries.
 	MaxRetries int
 	// Minimum backoff between each retry.
 	// Default is 8 milliseconds; -1 disables backoff.
@@ -164,6 +164,8 @@ func (opt *Options) init() {
 
 	if opt.MaxRetries == -1 {
 		opt.MaxRetries = 0
+	} else if opt.MaxRetries == 0 {
+		opt.MaxRetries = 3
 	}
 	switch opt.MinRetryBackoff {
 	case -1:

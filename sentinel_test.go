@@ -18,20 +18,34 @@ var _ = Describe("Sentinel", func() {
 		client = redis.NewFailoverClient(&redis.FailoverOptions{
 			MasterName:    sentinelName,
 			SentinelAddrs: sentinelAddrs,
+			MaxRetries:    -1,
 		})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		sentinel := redis.NewSentinelClient(&redis.Options{
-			Addr: ":" + sentinelPort1,
+			Addr:       ":" + sentinelPort1,
+			MaxRetries: -1,
 		})
 
 		addr, err := sentinel.GetMasterAddrByName(ctx, sentinelName).Result()
 		Expect(err).NotTo(HaveOccurred())
 
 		master = redis.NewClient(&redis.Options{
-			Addr: net.JoinHostPort(addr[0], addr[1]),
+			Addr:       net.JoinHostPort(addr[0], addr[1]),
+			MaxRetries: -1,
 		})
 		masterPort = addr[1]
+
+		// Wait until slaves are picked up by sentinel.
+		Eventually(func() string {
+			return sentinel1.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		Eventually(func() string {
+			return sentinel2.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		Eventually(func() string {
+			return sentinel3.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 	})
 
 	AfterEach(func() {
@@ -52,25 +66,6 @@ var _ = Describe("Sentinel", func() {
 		// Create subscription.
 		ch := client.Subscribe(ctx, "foo").Channel()
 
-		// Wait until replicated.
-		Eventually(func() string {
-			return sentinelSlave1.Get(ctx, "foo").Val()
-		}, "15s", "100ms").Should(Equal("master"))
-		Eventually(func() string {
-			return sentinelSlave2.Get(ctx, "foo").Val()
-		}, "15s", "100ms").Should(Equal("master"))
-
-		// Wait until slaves are picked up by sentinel.
-		Eventually(func() string {
-			return sentinel1.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
-		Eventually(func() string {
-			return sentinel2.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
-		Eventually(func() string {
-			return sentinel3.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
-
 		// Kill master.
 		err = master.Shutdown(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
@@ -79,9 +74,9 @@ var _ = Describe("Sentinel", func() {
 		}, "15s", "100ms").Should(HaveOccurred())
 
 		// Check that client picked up new master.
-		Eventually(func() error {
-			return client.Get(ctx, "foo").Err()
-		}, "15s", "100ms").ShouldNot(HaveOccurred())
+		Eventually(func() string {
+			return client.Get(ctx, "foo").Val()
+		}, "15s", "100ms").Should(Equal("master"))
 
 		// Check if subscription is renewed.
 		var msg *redis.Message
@@ -122,16 +117,29 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		sentinel := redis.NewSentinelClient(&redis.Options{
-			Addr: ":" + sentinelPort1,
+			Addr:       ":" + sentinelPort1,
+			MaxRetries: -1,
 		})
 
 		addr, err := sentinel.GetMasterAddrByName(ctx, sentinelName).Result()
 		Expect(err).NotTo(HaveOccurred())
 
 		master = redis.NewClient(&redis.Options{
-			Addr: net.JoinHostPort(addr[0], addr[1]),
+			Addr:       net.JoinHostPort(addr[0], addr[1]),
+			MaxRetries: -1,
 		})
 		masterPort = addr[1]
+
+		// Wait until slaves are picked up by sentinel.
+		Eventually(func() string {
+			return sentinel1.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		Eventually(func() string {
+			return sentinel2.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		Eventually(func() string {
+			return sentinel3.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 	})
 
 	AfterEach(func() {
@@ -152,25 +160,6 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		// Create subscription.
 		ch := client.Subscribe(ctx, "foo").Channel()
 
-		// Wait until replicated.
-		Eventually(func() string {
-			return sentinelSlave1.Get(ctx, "foo").Val()
-		}, "15s", "100ms").Should(Equal("master"))
-		Eventually(func() string {
-			return sentinelSlave2.Get(ctx, "foo").Val()
-		}, "15s", "100ms").Should(Equal("master"))
-
-		// Wait until slaves are picked up by sentinel.
-		Eventually(func() string {
-			return sentinel1.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
-		Eventually(func() string {
-			return sentinel2.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
-		Eventually(func() string {
-			return sentinel3.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
-
 		// Kill master.
 		err = master.Shutdown(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
@@ -179,9 +168,9 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		}, "15s", "100ms").Should(HaveOccurred())
 
 		// Check that client picked up new master.
-		Eventually(func() error {
-			return client.Get(ctx, "foo").Err()
-		}, "15s", "100ms").ShouldNot(HaveOccurred())
+		Eventually(func() string {
+			return client.Get(ctx, "foo").Val()
+		}, "15s", "100ms").Should(Equal("master"))
 
 		// Check if subscription is renewed.
 		var msg *redis.Message

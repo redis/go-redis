@@ -121,11 +121,15 @@ func TestGinkgoSuite(t *testing.T) {
 
 func redisOptions() *redis.Options {
 	return &redis.Options{
-		Addr:               redisAddr,
-		DB:                 15,
-		DialTimeout:        10 * time.Second,
-		ReadTimeout:        30 * time.Second,
-		WriteTimeout:       30 * time.Second,
+		Addr: redisAddr,
+		DB:   15,
+
+		DialTimeout:  10 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+
+		MaxRetries: -1,
+
 		PoolSize:           10,
 		PoolTimeout:        30 * time.Second,
 		IdleTimeout:        time.Minute,
@@ -135,9 +139,12 @@ func redisOptions() *redis.Options {
 
 func redisClusterOptions() *redis.ClusterOptions {
 	return &redis.ClusterOptions{
-		DialTimeout:        10 * time.Second,
-		ReadTimeout:        30 * time.Second,
-		WriteTimeout:       30 * time.Second,
+		DialTimeout:  10 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+
+		MaxRedirects: 8,
+
 		PoolSize:           10,
 		PoolTimeout:        30 * time.Second,
 		IdleTimeout:        time.Minute,
@@ -151,9 +158,13 @@ func redisRingOptions() *redis.RingOptions {
 			"ringShardOne": ":" + ringShard1Port,
 			"ringShardTwo": ":" + ringShard2Port,
 		},
-		DialTimeout:        10 * time.Second,
-		ReadTimeout:        30 * time.Second,
-		WriteTimeout:       30 * time.Second,
+
+		DialTimeout:  10 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+
+		MaxRetries: -1,
+
 		PoolSize:           10,
 		PoolTimeout:        30 * time.Second,
 		IdleTimeout:        time.Minute,
@@ -233,7 +244,8 @@ func execCmd(name string, args ...string) (*os.Process, error) {
 
 func connectTo(port string) (*redis.Client, error) {
 	client := redis.NewClient(&redis.Options{
-		Addr: ":" + port,
+		Addr:       ":" + port,
+		MaxRetries: -1,
 	})
 
 	err := eventually(func() error {
