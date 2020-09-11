@@ -4,9 +4,13 @@
 
 ## v8 (unreleased)
 
+- Documentation at https://redis.uptrace.dev/
+
 - All commands require `context.Context` as a first argument, e.g. `rdb.Ping(ctx)`. If you are not
   using `context.Context` yet, the simplest option is to define global package variable
   `var ctx = context.TODO()` and use it when `ctx` is required.
+
+- Added `redis.NewFailoverClusterClient` that supports routing read-only commands to a slave node.
 
 - Added `redisext.OpenTemetryHook` that adds
   [Redis OpenTelemetry instrumentation](https://redis.uptrace.dev/tracing/).

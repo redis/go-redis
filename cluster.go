@@ -727,9 +727,8 @@ func (c *ClusterClient) Options() *ClusterOptions {
 
 // ReloadState reloads cluster state. If available it calls ClusterSlots func
 // to get cluster slots information.
-func (c *ClusterClient) ReloadState(ctx context.Context) error {
-	_, err := c.state.Reload(ctx)
-	return err
+func (c *ClusterClient) ReloadState(ctx context.Context) {
+	c.state.LazyReload(ctx)
 }
 
 // Close closes the cluster client, releasing any open resources.
@@ -1638,7 +1637,7 @@ func (c *ClusterClient) cmdNode(
 		return nil, err
 	}
 
-	if c.opt.ReadOnly && cmdInfo != nil && cmdInfo.ReadOnly {
+	if (c.opt.RouteByLatency || c.opt.RouteRandomly) && cmdInfo != nil && cmdInfo.ReadOnly {
 		return c.slotReadOnlyNode(state, slot)
 	}
 	return state.slotMasterNode(slot)
