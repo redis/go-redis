@@ -113,6 +113,8 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		client = redis.NewFailoverClusterClient(&redis.FailoverOptions{
 			MasterName:    sentinelName,
 			SentinelAddrs: sentinelAddrs,
+
+			RouteRandomly: true,
 		})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
@@ -152,10 +154,12 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		err := client.Set(ctx, "foo", "master", 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		// Verify.
-		val, err := client.Get(ctx, "foo").Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(val).To(Equal("master"))
+		for i := 0; i < 100; i++ {
+			// Verify.
+			val, err := client.Get(ctx, "foo").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("master"))
+		}
 
 		// Create subscription.
 		ch := client.Subscribe(ctx, "foo").Channel()

@@ -114,10 +114,7 @@ func ExampleNewClusterClient_manualSetup() {
 
 	// ReloadState reloads cluster state. It calls ClusterSlots func
 	// to get cluster slots information.
-	err := rdb.ReloadState(ctx)
-	if err != nil {
-		panic(err)
-	}
+	rdb.ReloadState(ctx)
 }
 
 func ExampleNewRing() {
