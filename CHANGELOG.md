@@ -2,7 +2,7 @@
 
 > :heart: [**Uptrace.dev** - distributed traces, logs, and errors in one place](https://uptrace.dev)
 
-## v8 (unreleased)
+## v8
 
 - Documentation at https://redis.uptrace.dev/
 
