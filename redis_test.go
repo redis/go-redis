@@ -389,3 +389,28 @@ var _ = Describe("Client OnConnect", func() {
 		Expect(name).To(Equal("on_connect"))
 	})
 })
+
+var _ = Describe("Client context cancelation", func() {
+	var opt *redis.Options
+	var client *redis.Client
+
+	BeforeEach(func() {
+		opt = redisOptions()
+		opt.ReadTimeout = -1
+		opt.WriteTimeout = -1
+		client = redis.NewClient(opt)
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("Blocking operation cancelation", func() {
+		ctx, cancel := context.WithCancel(ctx)
+		cancel()
+
+		err := client.BLPop(ctx, 1*time.Second, "test").Err()
+		Expect(err).To(HaveOccurred())
+		Expect(err).To(BeIdenticalTo(context.Canceled))
+	})
+})
