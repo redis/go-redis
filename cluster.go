@@ -707,7 +707,6 @@ func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
 	clone.cmdable = clone.Process
 	clone.hooks.lock()
 	clone.ctx = ctx
-	clone.cmdsInfoCache = newCmdsInfoCache(clone.cmdsInfo)
 	return &clone
 }
 
@@ -1546,7 +1545,7 @@ func (c *ClusterClient) retryBackoff(attempt int) time.Duration {
 	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
 }
 
-func (c *ClusterClient) cmdsInfo() (map[string]*CommandInfo, error) {
+func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
 	// Try 3 random nodes.
 	const nodeLimit = 3
 
@@ -1573,7 +1572,7 @@ func (c *ClusterClient) cmdsInfo() (map[string]*CommandInfo, error) {
 			continue
 		}
 
-		info, err := node.Client.Command(c.ctx).Result()
+		info, err := node.Client.Command(ctx).Result()
 		if err == nil {
 			return info, nil
 		}
@@ -1589,7 +1588,7 @@ func (c *ClusterClient) cmdsInfo() (map[string]*CommandInfo, error) {
 }
 
 func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
-	cmdsInfo, err := c.cmdsInfoCache.Get()
+	cmdsInfo, err := c.cmdsInfoCache.Get(c.ctx)
 	if err != nil {
 		return nil
 	}

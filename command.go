@@ -2135,21 +2135,21 @@ func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 //------------------------------------------------------------------------------
 
 type cmdsInfoCache struct {
-	fn func() (map[string]*CommandInfo, error)
+	fn func(ctx context.Context) (map[string]*CommandInfo, error)
 
 	once internal.Once
 	cmds map[string]*CommandInfo
 }
 
-func newCmdsInfoCache(fn func() (map[string]*CommandInfo, error)) *cmdsInfoCache {
+func newCmdsInfoCache(fn func(ctx context.Context) (map[string]*CommandInfo, error)) *cmdsInfoCache {
 	return &cmdsInfoCache{
 		fn: fn,
 	}
 }
 
-func (c *cmdsInfoCache) Get() (map[string]*CommandInfo, error) {
+func (c *cmdsInfoCache) Get(ctx context.Context) (map[string]*CommandInfo, error) {
 	err := c.once.Do(func() error {
-		cmds, err := c.fn()
+		cmds, err := c.fn(ctx)
 		if err != nil {
 			return err
 		}
