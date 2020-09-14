@@ -547,11 +547,11 @@ func (c *Ring) ForEachShard(
 	}
 }
 
-func (c *Ring) cmdsInfo() (map[string]*CommandInfo, error) {
+func (c *Ring) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
 	shards := c.shards.List()
 	var firstErr error
 	for _, shard := range shards {
-		cmdsInfo, err := shard.Client.Command(context.TODO()).Result()
+		cmdsInfo, err := shard.Client.Command(ctx).Result()
 		if err == nil {
 			return cmdsInfo, nil
 		}
@@ -566,7 +566,7 @@ func (c *Ring) cmdsInfo() (map[string]*CommandInfo, error) {
 }
 
 func (c *Ring) cmdInfo(name string) *CommandInfo {
-	cmdsInfo, err := c.cmdsInfoCache.Get()
+	cmdsInfo, err := c.cmdsInfoCache.Get(c.ctx)
 	if err != nil {
 		return nil
 	}
