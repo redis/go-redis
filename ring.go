@@ -565,8 +565,8 @@ func (c *Ring) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
 	return nil, firstErr
 }
 
-func (c *Ring) cmdInfo(name string) *CommandInfo {
-	cmdsInfo, err := c.cmdsInfoCache.Get(c.ctx)
+func (c *Ring) cmdInfo(ctx context.Context, name string) *CommandInfo {
+	cmdsInfo, err := c.cmdsInfoCache.Get(ctx)
 	if err != nil {
 		return nil
 	}
@@ -577,8 +577,8 @@ func (c *Ring) cmdInfo(name string) *CommandInfo {
 	return info
 }
 
-func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
-	cmdInfo := c.cmdInfo(cmd.Name())
+func (c *Ring) cmdShard(ctx context.Context, cmd Cmder) (*ringShard, error) {
+	cmdInfo := c.cmdInfo(ctx, cmd.Name())
 	pos := cmdFirstKeyPos(cmd, cmdInfo)
 	if pos == 0 {
 		return c.shards.Random()
@@ -605,7 +605,7 @@ func (c *Ring) _process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
-		shard, err := c.cmdShard(cmd)
+		shard, err := c.cmdShard(ctx, cmd)
 		if err != nil {
 			return err
 		}
@@ -661,7 +661,7 @@ func (c *Ring) generalProcessPipeline(
 ) error {
 	cmdsMap := make(map[string][]Cmder)
 	for _, cmd := range cmds {
-		cmdInfo := c.cmdInfo(cmd.Name())
+		cmdInfo := c.cmdInfo(ctx, cmd.Name())
 		hash := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
 		if hash != "" {
 			hash = c.shards.Hash(hash)
