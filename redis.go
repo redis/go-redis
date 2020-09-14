@@ -49,7 +49,9 @@ func (hs hooks) process(
 	ctx context.Context, cmd Cmder, fn func(context.Context, Cmder) error,
 ) error {
 	if len(hs.hooks) == 0 {
-		return fn(ctx, cmd)
+		return hs.withContext(ctx, func() error {
+			return fn(ctx, cmd)
+		})
 	}
 
 	var hookIndex int
@@ -63,7 +65,9 @@ func (hs hooks) process(
 	}
 
 	if retErr == nil {
-		retErr = fn(ctx, cmd)
+		retErr = hs.withContext(ctx, func() error {
+			return fn(ctx, cmd)
+		})
 	}
 
 	for hookIndex--; hookIndex >= 0; hookIndex-- {
@@ -80,7 +84,9 @@ func (hs hooks) processPipeline(
 	ctx context.Context, cmds []Cmder, fn func(context.Context, []Cmder) error,
 ) error {
 	if len(hs.hooks) == 0 {
-		return fn(ctx, cmds)
+		return hs.withContext(ctx, func() error {
+			return fn(ctx, cmds)
+		})
 	}
 
 	var hookIndex int
@@ -94,7 +100,9 @@ func (hs hooks) processPipeline(
 	}
 
 	if retErr == nil {
-		retErr = fn(ctx, cmds)
+		retErr = hs.withContext(ctx, func() error {
+			return fn(ctx, cmds)
+		})
 	}
 
 	for hookIndex--; hookIndex >= 0; hookIndex-- {
@@ -112,6 +120,26 @@ func (hs hooks) processTxPipeline(
 ) error {
 	cmds = wrapMultiExec(ctx, cmds)
 	return hs.processPipeline(ctx, cmds, fn)
+}
+
+func (hs hooks) withContext(ctx context.Context, fn func() error) error {
+	if ctx.Done() == nil {
+		return fn()
+	}
+
+	errc := make(chan error, 1)
+	go func() { errc <- fn() }()
+
+	select {
+	case <-ctx.Done():
+		err := ctx.Err()
+		if err == context.Canceled {
+			return err
+		}
+	case err := <-errc:
+		return err
+	}
+	return <-errc
 }
 
 //------------------------------------------------------------------------------
