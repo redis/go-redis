@@ -50,7 +50,11 @@ func (hs hooks) process(
 ) error {
 	if len(hs.hooks) == 0 {
 		return hs.withContext(ctx, func() error {
-			return fn(ctx, cmd)
+			err := fn(ctx, cmd)
+			if err != nil {
+				cmd.SetErr(err)
+			}
+			return err
 		})
 	}
 
@@ -66,7 +70,11 @@ func (hs hooks) process(
 
 	if retErr == nil {
 		retErr = hs.withContext(ctx, func() error {
-			return fn(ctx, cmd)
+			err := fn(ctx, cmd)
+			if err != nil {
+				cmd.SetErr(err)
+			}
+			return err
 		})
 	}
 
@@ -85,7 +93,11 @@ func (hs hooks) processPipeline(
 ) error {
 	if len(hs.hooks) == 0 {
 		return hs.withContext(ctx, func() error {
-			return fn(ctx, cmds)
+			err := fn(ctx, cmds)
+			if err != nil {
+				setCmdsErr(cmds, err)
+			}
+			return err
 		})
 	}
 
@@ -101,7 +113,11 @@ func (hs hooks) processPipeline(
 
 	if retErr == nil {
 		retErr = hs.withContext(ctx, func() error {
-			return fn(ctx, cmds)
+			err := fn(ctx, cmds)
+			if err != nil {
+				setCmdsErr(cmds, err)
+			}
+			return err
 		})
 	}
 
@@ -132,14 +148,10 @@ func (hs hooks) withContext(ctx context.Context, fn func() error) error {
 
 	select {
 	case <-ctx.Done():
-		err := ctx.Err()
-		if err == context.Canceled {
-			return err
-		}
+		return ctx.Err()
 	case err := <-errc:
 		return err
 	}
-	return <-errc
 }
 
 //------------------------------------------------------------------------------

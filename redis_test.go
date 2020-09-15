@@ -409,7 +409,7 @@ var _ = Describe("Client context cancelation", func() {
 		ctx, cancel := context.WithCancel(ctx)
 		cancel()
 
-		err := client.BLPop(ctx, 1*time.Second, "test")
+		err := client.BLPop(ctx, 1*time.Second, "test").Err()
 		Expect(err).To(HaveOccurred())
 		Expect(err).To(BeIdenticalTo(context.Canceled))
 	})
