@@ -751,15 +751,6 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
-	err := c._process(ctx, cmd)
-	if err != nil {
-		cmd.SetErr(err)
-		return err
-	}
-	return nil
-}
-
-func (c *ClusterClient) _process(ctx context.Context, cmd Cmder) error {
 	cmdInfo := c.cmdInfo(cmd.Name())
 	slot := c.cmdSlot(cmd)
 
@@ -1197,9 +1188,12 @@ func (c *ClusterClient) pipelineReadCmds(
 ) error {
 	for _, cmd := range cmds {
 		err := cmd.readReply(rd)
+		cmd.SetErr(err)
+
 		if err == nil {
 			continue
 		}
+
 		if c.checkMovedErr(ctx, cmd, err, failedCmds) {
 			continue
 		}

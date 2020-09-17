@@ -588,15 +588,6 @@ func (c *Ring) cmdShard(ctx context.Context, cmd Cmder) (*ringShard, error) {
 }
 
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
-	err := c._process(ctx, cmd)
-	if err != nil {
-		cmd.SetErr(err)
-		return err
-	}
-	return nil
-}
-
-func (c *Ring) _process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -694,11 +685,9 @@ func (c *Ring) processShardPipeline(
 	}
 
 	if tx {
-		err = shard.Client.processTxPipeline(ctx, cmds)
-	} else {
-		err = shard.Client.processPipeline(ctx, cmds)
+		return shard.Client.processTxPipeline(ctx, cmds)
 	}
-	return err
+	return shard.Client.processPipeline(ctx, cmds)
 }
 
 func (c *Ring) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
