@@ -49,7 +49,11 @@ func (hs hooks) process(
 	ctx context.Context, cmd Cmder, fn func(context.Context, Cmder) error,
 ) error {
 	if len(hs.hooks) == 0 {
-		return fn(ctx, cmd)
+		err := hs.withContext(ctx, func() error {
+			return fn(ctx, cmd)
+		})
+		cmd.SetErr(err)
+		return err
 	}
 
 	var hookIndex int
@@ -63,7 +67,10 @@ func (hs hooks) process(
 	}
 
 	if retErr == nil {
-		retErr = fn(ctx, cmd)
+		retErr = hs.withContext(ctx, func() error {
+			return fn(ctx, cmd)
+		})
+		cmd.SetErr(retErr)
 	}
 
 	for hookIndex--; hookIndex >= 0; hookIndex-- {
@@ -80,7 +87,10 @@ func (hs hooks) processPipeline(
 	ctx context.Context, cmds []Cmder, fn func(context.Context, []Cmder) error,
 ) error {
 	if len(hs.hooks) == 0 {
-		return fn(ctx, cmds)
+		err := hs.withContext(ctx, func() error {
+			return fn(ctx, cmds)
+		})
+		return err
 	}
 
 	var hookIndex int
@@ -94,7 +104,9 @@ func (hs hooks) processPipeline(
 	}
 
 	if retErr == nil {
-		retErr = fn(ctx, cmds)
+		retErr = hs.withContext(ctx, func() error {
+			return fn(ctx, cmds)
+		})
 	}
 
 	for hookIndex--; hookIndex >= 0; hookIndex-- {
@@ -112,6 +124,23 @@ func (hs hooks) processTxPipeline(
 ) error {
 	cmds = wrapMultiExec(ctx, cmds)
 	return hs.processPipeline(ctx, cmds, fn)
+}
+
+func (hs hooks) withContext(ctx context.Context, fn func() error) error {
+	done := ctx.Done()
+	if done == nil {
+		return fn()
+	}
+
+	errc := make(chan error, 1)
+	go func() { errc <- fn() }()
+
+	select {
+	case <-done:
+		return ctx.Err()
+	case err := <-errc:
+		return err
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -283,15 +312,6 @@ func (c *baseClient) withConn(
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
-	err := c._process(ctx, cmd)
-	if err != nil {
-		cmd.SetErr(err)
-		return err
-	}
-	return nil
-}
-
-func (c *baseClient) _process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		attempt := attempt
@@ -435,6 +455,7 @@ func (c *baseClient) pipelineProcessCmds(
 func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
 	for _, cmd := range cmds {
 		err := cmd.readReply(rd)
+		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
 			return err
 		}

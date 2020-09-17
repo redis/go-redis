@@ -224,6 +224,7 @@ func masterSlaveDialer(
 // SentinelClient is a client for a Redis Sentinel.
 type SentinelClient struct {
 	*baseClient
+	hooks
 	ctx context.Context
 }
 
@@ -253,7 +254,7 @@ func (c *SentinelClient) WithContext(ctx context.Context) *SentinelClient {
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
-	return c.baseClient.process(ctx, cmd)
+	return c.hooks.process(ctx, cmd, c.baseClient.process)
 }
 
 func (c *SentinelClient) pubSub() *PubSub {

@@ -86,7 +86,7 @@ var _ = Describe("Cmd", func() {
 		Expect(tm2).To(BeTemporally("==", tm))
 	})
 
-	It("allow to set custom error", func() {
+	It("allows to set custom error", func() {
 		e := errors.New("custom error")
 		cmd := redis.Cmd{}
 		cmd.SetErr(e)
