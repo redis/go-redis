@@ -4,8 +4,6 @@
 
 ## v8
 
-### v8.0
-
 - Documentation at https://redis.uptrace.dev/
 
 - All commands require `context.Context` as a first argument, e.g. `rdb.Ping(ctx)`. If you are not
