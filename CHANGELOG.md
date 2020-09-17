@@ -4,11 +4,15 @@
 
 ## v8
 
+### v8.0
+
 - Documentation at https://redis.uptrace.dev/
 
 - All commands require `context.Context` as a first argument, e.g. `rdb.Ping(ctx)`. If you are not
   using `context.Context` yet, the simplest option is to define global package variable
   `var ctx = context.TODO()` and use it when `ctx` is required.
+
+- Full support for `context.Context` canceling.
 
 - Added `redis.NewFailoverClusterClient` that supports routing read-only commands to a slave node.
 
