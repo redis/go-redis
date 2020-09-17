@@ -3,9 +3,10 @@ package hashtag
 import (
 	"testing"
 
+	"github.com/go-redis/redis/v8/internal/rand"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"golang.org/x/exp/rand"
 )
 
 func TestGinkgoSuite(t *testing.T) {
@@ -40,8 +41,8 @@ var _ = Describe("HashSlot", func() {
 			{"{}foo", 9500},
 			{"foo{}", 5542},
 			{"foo{}{bar}", 8363},
-			{"", 7404},
-			{"", 4403},
+			{"", 10503},
+			{"", 5176},
 			{string([]byte{83, 153, 134, 118, 229, 214, 244, 75, 140, 37, 215, 215}), 5463},
 		}
 		// Empty keys receive random slot.
