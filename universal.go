@@ -173,7 +173,6 @@ func (o *UniversalOptions) Simple() *Options {
 // cluster-specific applications locally.
 type UniversalClient interface {
 	Cmdable
-	Context() context.Context
 	AddHook(Hook)
 	Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error
 	Do(ctx context.Context, args ...interface{}) *Cmd

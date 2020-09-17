@@ -40,7 +40,6 @@ type Pipeline struct {
 	cmdable
 	statefulCmdable
 
-	ctx  context.Context
 	exec pipelineExecer
 
 	mu     sync.Mutex

@@ -208,36 +208,6 @@ func BenchmarkZAdd(b *testing.B) {
 	})
 }
 
-var clientSink *redis.Client
-
-func BenchmarkWithContext(b *testing.B) {
-	ctx := context.Background()
-	rdb := benchmarkRedisClient(ctx, 10)
-	defer rdb.Close()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		clientSink = rdb.WithContext(ctx)
-	}
-}
-
-var ringSink *redis.Ring
-
-func BenchmarkRingWithContext(b *testing.B) {
-	ctx := context.Background()
-	rdb := redis.NewRing(&redis.RingOptions{})
-	defer rdb.Close()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		ringSink = rdb.WithContext(ctx)
-	}
-}
-
 //------------------------------------------------------------------------------
 
 func newClusterScenario() *clusterScenario {

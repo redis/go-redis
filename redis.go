@@ -542,7 +542,6 @@ type Client struct {
 	*baseClient
 	cmdable
 	hooks
-	ctx context.Context
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -551,7 +550,6 @@ func NewClient(opt *Options) *Client {
 
 	c := Client{
 		baseClient: newBaseClient(opt, newConnPool(opt)),
-		ctx:        context.Background(),
 	}
 	c.cmdable = c.Process
 
@@ -568,19 +566,6 @@ func (c *Client) clone() *Client {
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	clone := c.clone()
 	clone.baseClient = c.baseClient.withTimeout(timeout)
-	return clone
-}
-
-func (c *Client) Context() context.Context {
-	return c.ctx
-}
-
-func (c *Client) WithContext(ctx context.Context) *Client {
-	if ctx == nil {
-		panic("nil context")
-	}
-	clone := c.clone()
-	clone.ctx = ctx
 	return clone
 }
 
@@ -626,7 +611,6 @@ func (c *Client) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 
 func (c *Client) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
 		exec: c.processPipeline,
 	}
 	pipe.init()
@@ -640,7 +624,6 @@ func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]C
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *Client) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
 		exec: c.processTxPipeline,
 	}
 	pipe.init()
@@ -743,7 +726,6 @@ func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Conn) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
 		exec: c.processPipeline,
 	}
 	pipe.init()
@@ -757,7 +739,6 @@ func (c *Conn) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *Conn) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
 		exec: c.processTxPipeline,
 	}
 	pipe.init()

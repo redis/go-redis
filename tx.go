@@ -111,7 +111,6 @@ func (c *Tx) Unwatch(ctx context.Context, keys ...string) *StatusCmd {
 // Pipeline creates a pipeline. Usually it is more convenient to use Pipelined.
 func (c *Tx) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx: c.ctx,
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			return c.hooks.processPipeline(ctx, cmds, c.baseClient.processPipeline)
 		},
@@ -141,7 +140,6 @@ func (c *Tx) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 // TxPipeline creates a pipeline. Usually it is more convenient to use TxPipelined.
 func (c *Tx) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx: c.ctx,
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			return c.hooks.processTxPipeline(ctx, cmds, c.baseClient.processTxPipeline)
 		},
