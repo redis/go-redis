@@ -57,7 +57,7 @@ func ExamplePipeline_instrumentation() {
 	// pipeline finished processing: [ping: PONG ping: PONG]
 }
 
-func ExampleWatch_instrumentation() {
+func ExampleClient_Watch_instrumentation() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
