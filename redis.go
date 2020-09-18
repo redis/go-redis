@@ -492,11 +492,11 @@ func wrapMultiExec(ctx context.Context, cmds []Cmder) []Cmder {
 	if len(cmds) == 0 {
 		panic("not reached")
 	}
-	cmds = append(cmds, make([]Cmder, 2)...)
-	copy(cmds[1:], cmds[:len(cmds)-2])
-	cmds[0] = NewStatusCmd(ctx, "multi")
-	cmds[len(cmds)-1] = NewSliceCmd(ctx, "exec")
-	return cmds
+	cmdCopy := make([]Cmder, len(cmds)+2)
+	cmdCopy[0] = NewStatusCmd(ctx, "multi")
+	copy(cmdCopy[1:], cmds)
+	cmdCopy[len(cmdCopy)-1] = NewSliceCmd(ctx, "exec")
+	return cmdCopy
 }
 
 func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
