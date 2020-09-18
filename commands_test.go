@@ -1207,7 +1207,7 @@ var _ = Describe("Commands", func() {
 
 			ttl := client.TTL(ctx, "key")
 			Expect(ttl.Err()).NotTo(HaveOccurred())
-			Expect(ttl.Val().Nanoseconds()).To(Equal(-1))
+			Expect(ttl.Val().Nanoseconds()).To(Equal(int64(-1)))
 		})
 
 		It("should SetXX", func() {
