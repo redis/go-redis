@@ -120,6 +120,9 @@ Some corner cases:
 // SET key value EX 10 NX
 set, err := rdb.SetNX(ctx, "key", "value", 10*time.Second).Result()
 
+// SET key value keepttl NX
+set, err := rdb.SetNX(ctx, "key", "value", redis.KeepTTL).Result()
+
 // SORT list LIMIT 0 2 ASC
 vals, err := rdb.Sort(ctx, "list", &redis.Sort{Offset: 0, Count: 2, Order: "ASC"}).Result()
 
