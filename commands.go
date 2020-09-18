@@ -9,8 +9,10 @@ import (
 	"github.com/go-redis/redis/v8/internal"
 )
 
-// KeepTTL used when set with keepttl option
-// Example: Set(ctx, key, value, redis.KeepTTL).
+// KeepTTL is an option for Set command to keep key's existing TTL.
+// For example:
+//
+//    rdb.Set(ctx, key, value, redis.KeepTTL)
 const KeepTTL = -1
 
 func usePrecise(dur time.Duration) bool {
@@ -757,10 +759,10 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 }
 
 // Redis `SET key value [expiration]` command.
-//
 // Use expiration for `SETEX`-like behavior.
+//
 // Zero expiration means the key has no expiration time.
-// KeepTTL(-1) expiration means command set adds keepttl option.
+// KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
 func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
 	args := make([]interface{}, 3, 5)
 	args[0] = "set"
@@ -784,14 +786,14 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 // Redis `SET key value [expiration] NX` command.
 //
 // Zero expiration means the key has no expiration time.
-// KeepTTL(-1) expiration means set command adds keepttl option.
+// KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
 func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
-	switch {
-	case expiration == 0:
+	switch expiration {
+	case 0:
 		// Use old `SETNX` to support old Redis versions.
 		cmd = NewBoolCmd(ctx, "setnx", key, value)
-	case expiration == KeepTTL:
+	case KeepTTL:
 		cmd = NewBoolCmd(ctx, "set", key, value, "keepttl", "nx")
 	default:
 		if usePrecise(expiration) {
@@ -808,13 +810,13 @@ func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expir
 // Redis `SET key value [expiration] XX` command.
 //
 // Zero expiration means the key has no expiration time.
-// KeepTTL(-1) expiration means set command adds keepttl option.
+// KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
 func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
-	switch {
-	case expiration == 0:
+	switch expiration {
+	case 0:
 		cmd = NewBoolCmd(ctx, "set", key, value, "xx")
-	case expiration == KeepTTL:
+	case KeepTTL:
 		cmd = NewBoolCmd(ctx, "set", key, value, "keepttl", "xx")
 	default:
 		if usePrecise(expiration) {
