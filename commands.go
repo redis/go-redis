@@ -10,7 +10,7 @@ import (
 )
 
 // KeepTTL used when set with keepttl option
-// Exmaple: `Set(ctx, key, value, redis.KeepTTL)`
+// Example: Set(ctx, key, value, redis.KeepTTL).
 const KeepTTL = -1
 
 func usePrecise(dur time.Duration) bool {
@@ -760,7 +760,7 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 //
 // Use expiration for `SETEX`-like behavior.
 // Zero expiration means the key has no expiration time.
-// KeepTTL(-1) expiration means command set adds keepttl option
+// KeepTTL(-1) expiration means command set adds keepttl option.
 func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
 	args := make([]interface{}, 3, 5)
 	args[0] = "set"
@@ -784,21 +784,23 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 // Redis `SET key value [expiration] NX` command.
 //
 // Zero expiration means the key has no expiration time.
-// KeepTTL(-1) expiration means set command adds keepttl option
+// KeepTTL(-1) expiration means set command adds keepttl option.
 func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
-	if expiration == 0 {
+	switch {
+	case expiration == 0:
 		// Use old `SETNX` to support old Redis versions.
 		cmd = NewBoolCmd(ctx, "setnx", key, value)
-	} else if expiration == KeepTTL {
+	case expiration == KeepTTL:
 		cmd = NewBoolCmd(ctx, "set", key, value, "keepttl", "nx")
-	} else {
+	default:
 		if usePrecise(expiration) {
 			cmd = NewBoolCmd(ctx, "set", key, value, "px", formatMs(ctx, expiration), "nx")
 		} else {
 			cmd = NewBoolCmd(ctx, "set", key, value, "ex", formatSec(ctx, expiration), "nx")
 		}
 	}
+
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -806,20 +808,22 @@ func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expir
 // Redis `SET key value [expiration] XX` command.
 //
 // Zero expiration means the key has no expiration time.
-// KeepTTL(-1) expiration means set command adds keepttl option
+// KeepTTL(-1) expiration means set command adds keepttl option.
 func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
-	if expiration == 0 {
+	switch {
+	case expiration == 0:
 		cmd = NewBoolCmd(ctx, "set", key, value, "xx")
-	} else if expiration == KeepTTL {
+	case expiration == KeepTTL:
 		cmd = NewBoolCmd(ctx, "set", key, value, "keepttl", "xx")
-	} else {
+	default:
 		if usePrecise(expiration) {
 			cmd = NewBoolCmd(ctx, "set", key, value, "px", formatMs(ctx, expiration), "xx")
 		} else {
 			cmd = NewBoolCmd(ctx, "set", key, value, "ex", formatSec(ctx, expiration), "xx")
 		}
 	}
+
 	_ = c(ctx, cmd)
 	return cmd
 }
