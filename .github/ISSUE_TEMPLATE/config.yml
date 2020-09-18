@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Discord
+    url: https://discord.gg/ZQJDR3R
+    about: Ask a question at Discord
   - name: stackoverflow
     url: https://stackoverflow.com/
     about: Ask a question at stackoverflow
