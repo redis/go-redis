@@ -1504,16 +1504,20 @@ type XReadArgs struct {
 func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	args := make([]interface{}, 0, 5+len(a.Streams))
 	args = append(args, "xread")
+
+	offset := 0
 	if a.Count > 0 {
 		args = append(args, "count")
 		args = append(args, a.Count)
+		offset += 2
 	}
 	if a.Block >= 0 {
 		args = append(args, "block")
 		args = append(args, int64(a.Block/time.Millisecond))
+		offset += 2
 	}
-
 	args = append(args, "streams")
+	offset += 1
 	for _, s := range a.Streams {
 		args = append(args, s)
 	}
@@ -1522,6 +1526,7 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	if a.Block >= 0 {
 		cmd.setReadTimeout(a.Block)
 	}
+	cmd.addOffset(offset)
 	_ = c(ctx, cmd)
 	return cmd
 }

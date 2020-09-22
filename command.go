@@ -18,6 +18,7 @@ type Cmder interface {
 	Args() []interface{}
 	String() string
 	stringArg(int) string
+	firstKeyOffset() int
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
@@ -106,6 +107,7 @@ type baseCmd struct {
 	ctx  context.Context
 	args []interface{}
 	err  error
+	keyOffset int
 
 	_readTimeout *time.Duration
 }
@@ -145,6 +147,10 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	}
 	s, _ := cmd.args[pos].(string)
 	return s
+}
+
+func (cmd *baseCmd) firstKeyOffset() int {
+	return cmd.keyOffset
 }
 
 func (cmd *baseCmd) SetErr(e error) {
@@ -1154,6 +1160,10 @@ func (cmd *XStreamSliceCmd) Result() ([]XStream, error) {
 
 func (cmd *XStreamSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XStreamSliceCmd) addOffset(n int)  {
+	cmd.keyOffset += n
 }
 
 func (cmd *XStreamSliceCmd) readReply(rd *proto.Reader) error {
