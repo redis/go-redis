@@ -78,6 +78,9 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return pos
 	}
+	if info == nil {
+		return 0
+	}
 	return int(info.FirstKeyPos)
 }
 
