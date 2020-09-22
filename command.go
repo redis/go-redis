@@ -18,8 +18,8 @@ type Cmder interface {
 	Args() []interface{}
 	String() string
 	stringArg(int) string
-	firstKeyOffset() int
-	addKeyOffset(int)
+	firstKeyPos() int
+	addKeyPos(int)
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
@@ -75,10 +75,10 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		}
 	}
 
-	if info == nil {
-		return 0
+	if pos := cmd.firstKeyPos(); pos != 0 {
+		return pos
 	}
-	return int(info.FirstKeyBase) + cmd.firstKeyOffset()
+	return int(info.FirstKeyPos)
 }
 
 func cmdString(cmd Cmder, val interface{}) string {
@@ -108,7 +108,7 @@ type baseCmd struct {
 	ctx  context.Context
 	args []interface{}
 	err  error
-	keyOffset int
+	keyPos int
 
 	_readTimeout *time.Duration
 }
@@ -150,12 +150,12 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	return s
 }
 
-func (cmd *baseCmd) firstKeyOffset() int {
-	return cmd.keyOffset
+func (cmd *baseCmd) firstKeyPos() int {
+	return cmd.keyPos
 }
 
-func (cmd *baseCmd) addKeyOffset(n int)  {
-	cmd.keyOffset += n
+func (cmd *baseCmd) addKeyPos(offset int)  {
+	cmd.keyPos += offset
 }
 
 func (cmd *baseCmd) SetErr(e error) {
@@ -1987,14 +1987,14 @@ func (cmd *GeoPosCmd) readReply(rd *proto.Reader) error {
 //------------------------------------------------------------------------------
 
 type CommandInfo struct {
-	Name         string
-	Arity        int8
-	Flags        []string
-	ACLFlags     []string
-	FirstKeyBase int8
-	LastKeyBase  int8
-	StepCount    int8
-	ReadOnly     bool
+	Name        string
+	Arity       int8
+	Flags       []string
+	ACLFlags    []string
+	FirstKeyPos int8
+	LastKeyPos  int8
+	StepCount   int8
+	ReadOnly    bool
 }
 
 type CommandsInfoCmd struct {
@@ -2089,13 +2089,13 @@ func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd.FirstKeyBase = int8(firstKeyPos)
+	cmd.FirstKeyPos = int8(firstKeyPos)
 
 	lastKeyPos, err := rd.ReadIntReply()
 	if err != nil {
 		return nil, err
 	}
-	cmd.LastKeyBase = int8(lastKeyPos)
+	cmd.LastKeyPos = int8(lastKeyPos)
 
 	stepCount, err := rd.ReadIntReply()
 	if err != nil {

@@ -1526,8 +1526,7 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	if a.Block >= 0 {
 		cmd.setReadTimeout(a.Block)
 	}
-	// base is 1
-	cmd.addKeyOffset(offset)
+	cmd.addKeyPos(offset)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1605,8 +1604,7 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	if a.Block >= 0 {
 		cmd.setReadTimeout(a.Block)
 	}
-	// base is 1
-	cmd.addKeyOffset(offset)
+	cmd.addKeyPos(offset)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1885,8 +1883,7 @@ func (c cmdable) ZInterStore(ctx context.Context, destination string, store *ZSt
 		args = append(args, "aggregate", store.Aggregate)
 	}
 	cmd := NewIntCmd(ctx, args...)
-	// base is 0
-	cmd.addKeyOffset(3)
+	cmd.addKeyPos(3)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2122,8 +2119,7 @@ func (c cmdable) ZUnionStore(ctx context.Context, dest string, store *ZStore) *I
 		args = append(args, "aggregate", store.Aggregate)
 	}
 	cmd := NewIntCmd(ctx, args...)
-	// base is 0
-	cmd.addKeyOffset(3)
+	cmd.addKeyPos(3)
 	_ = c(ctx, cmd)
 	return cmd
 }
