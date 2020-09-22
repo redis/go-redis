@@ -1505,7 +1505,7 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	args := make([]interface{}, 0, 5+len(a.Streams))
 	args = append(args, "xread")
 
-	offset := 0
+	offset := 1
 	if a.Count > 0 {
 		args = append(args, "count")
 		args = append(args, a.Count)
@@ -1581,7 +1581,7 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	args := make([]interface{}, 0, 8+len(a.Streams))
 	args = append(args, "xreadgroup", "group", a.Group, a.Consumer)
 
-	offset := 0
+	offset := 1
 	if a.Count > 0 {
 		args = append(args, "count", a.Count)
 		offset += 2
