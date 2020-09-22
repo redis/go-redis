@@ -219,6 +219,7 @@ type Cmdable interface {
 	XTrim(ctx context.Context, key string, maxLen int64) *IntCmd
 	XTrimApprox(ctx context.Context, key string, maxLen int64) *IntCmd
 	XInfoGroups(ctx context.Context, key string) *XInfoGroupsCmd
+	XInfoStream(ctx context.Context, key string) *XInfoStreamCmd
 
 	BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
 	BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
@@ -1695,6 +1696,12 @@ func (c cmdable) XTrimApprox(ctx context.Context, key string, maxLen int64) *Int
 
 func (c cmdable) XInfoGroups(ctx context.Context, key string) *XInfoGroupsCmd {
 	cmd := NewXInfoGroupsCmd(ctx, key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) XInfoStream(ctx context.Context, key string) *XInfoStreamCmd {
+	cmd := NewXInfoStreamCmd(ctx, key)
 	_ = c(ctx, cmd)
 	return cmd
 }
