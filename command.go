@@ -19,6 +19,7 @@ type Cmder interface {
 	String() string
 	stringArg(int) string
 	firstKeyOffset() int
+	addKeyOffset(int)
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
@@ -77,7 +78,7 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 	if info == nil {
 		return 0
 	}
-	return int(info.FirstKeyPos)
+	return int(info.FirstKeyBase) + cmd.firstKeyOffset()
 }
 
 func cmdString(cmd Cmder, val interface{}) string {
@@ -151,6 +152,10 @@ func (cmd *baseCmd) stringArg(pos int) string {
 
 func (cmd *baseCmd) firstKeyOffset() int {
 	return cmd.keyOffset
+}
+
+func (cmd *baseCmd) addKeyOffset(n int)  {
+	cmd.keyOffset += n
 }
 
 func (cmd *baseCmd) SetErr(e error) {
@@ -1162,10 +1167,6 @@ func (cmd *XStreamSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *XStreamSliceCmd) addOffset(n int)  {
-	cmd.keyOffset += n
-}
-
 func (cmd *XStreamSliceCmd) readReply(rd *proto.Reader) error {
 	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
 		cmd.val = make([]XStream, n)
@@ -1986,14 +1987,14 @@ func (cmd *GeoPosCmd) readReply(rd *proto.Reader) error {
 //------------------------------------------------------------------------------
 
 type CommandInfo struct {
-	Name        string
-	Arity       int8
-	Flags       []string
-	ACLFlags    []string
-	FirstKeyPos int8
-	LastKeyPos  int8
-	StepCount   int8
-	ReadOnly    bool
+	Name         string
+	Arity        int8
+	Flags        []string
+	ACLFlags     []string
+	FirstKeyBase int8
+	LastKeyBase  int8
+	StepCount    int8
+	ReadOnly     bool
 }
 
 type CommandsInfoCmd struct {
@@ -2088,13 +2089,13 @@ func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd.FirstKeyPos = int8(firstKeyPos)
+	cmd.FirstKeyBase = int8(firstKeyPos)
 
 	lastKeyPos, err := rd.ReadIntReply()
 	if err != nil {
 		return nil, err
 	}
-	cmd.LastKeyPos = int8(lastKeyPos)
+	cmd.LastKeyBase = int8(lastKeyPos)
 
 	stepCount, err := rd.ReadIntReply()
 	if err != nil {

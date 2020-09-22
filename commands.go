@@ -1526,7 +1526,7 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	if a.Block >= 0 {
 		cmd.setReadTimeout(a.Block)
 	}
-	cmd.addOffset(offset)
+	cmd.addKeyOffset(offset)
 	_ = c(ctx, cmd)
 	return cmd
 }

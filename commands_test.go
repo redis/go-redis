@@ -253,8 +253,8 @@ var _ = Describe("Commands", func() {
 			Expect(cmd.Name).To(Equal("mget"))
 			Expect(cmd.Arity).To(Equal(int8(-2)))
 			Expect(cmd.Flags).To(ContainElement("readonly"))
-			Expect(cmd.FirstKeyPos).To(Equal(int8(1)))
-			Expect(cmd.LastKeyPos).To(Equal(int8(-1)))
+			Expect(cmd.FirstKeyBase).To(Equal(int8(1)))
+			Expect(cmd.LastKeyBase).To(Equal(int8(-1)))
 			Expect(cmd.StepCount).To(Equal(int8(1)))
 
 			cmd = cmds["ping"]
@@ -262,8 +262,8 @@ var _ = Describe("Commands", func() {
 			Expect(cmd.Arity).To(Equal(int8(-1)))
 			Expect(cmd.Flags).To(ContainElement("stale"))
 			Expect(cmd.Flags).To(ContainElement("fast"))
-			Expect(cmd.FirstKeyPos).To(Equal(int8(0)))
-			Expect(cmd.LastKeyPos).To(Equal(int8(0)))
+			Expect(cmd.FirstKeyBase).To(Equal(int8(0)))
+			Expect(cmd.LastKeyBase).To(Equal(int8(0)))
 			Expect(cmd.StepCount).To(Equal(int8(0)))
 		})
 	})

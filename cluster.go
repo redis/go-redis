@@ -1610,7 +1610,7 @@ func (c *ClusterClient) cmdSlot(cmd Cmder) int {
 	}
 
 	cmdInfo := c.cmdInfo(cmd.Name())
-	return cmdSlot(cmd, cmdFirstKeyPos(cmd, cmdInfo)+cmd.firstKeyOffset())
+	return cmdSlot(cmd, cmdFirstKeyPos(cmd, cmdInfo))
 }
 
 func cmdSlot(cmd Cmder, pos int) int {
