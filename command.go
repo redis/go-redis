@@ -18,8 +18,8 @@ type Cmder interface {
 	Args() []interface{}
 	String() string
 	stringArg(int) string
-	firstKeyPos() int
-	addKeyPos(int)
+	firstKeyPos() int8
+	setFirstKeyPos(int8)
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
@@ -59,6 +59,10 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 }
 
 func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
+	if pos := cmd.firstKeyPos(); pos != 0 {
+		return int(pos)
+	}
+
 	switch cmd.Name() {
 	case "eval", "evalsha":
 		if cmd.stringArg(2) != "0" {
@@ -75,13 +79,10 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		}
 	}
 
-	if pos := cmd.firstKeyPos(); pos != 0 {
-		return pos
+	if info != nil {
+		return int(info.FirstKeyPos)
 	}
-	if info == nil {
-		return 0
-	}
-	return int(info.FirstKeyPos)
+	return 0
 }
 
 func cmdString(cmd Cmder, val interface{}) string {
@@ -108,10 +109,10 @@ func cmdString(cmd Cmder, val interface{}) string {
 //------------------------------------------------------------------------------
 
 type baseCmd struct {
-	ctx  context.Context
-	args []interface{}
-	err  error
-	keyPos int
+	ctx    context.Context
+	args   []interface{}
+	err    error
+	keyPos int8
 
 	_readTimeout *time.Duration
 }
@@ -153,12 +154,12 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	return s
 }
 
-func (cmd *baseCmd) firstKeyPos() int {
+func (cmd *baseCmd) firstKeyPos() int8 {
 	return cmd.keyPos
 }
 
-func (cmd *baseCmd) addKeyPos(offset int)  {
-	cmd.keyPos += offset
+func (cmd *baseCmd) setFirstKeyPos(keyPos int8) {
+	cmd.keyPos = keyPos
 }
 
 func (cmd *baseCmd) SetErr(e error) {
