@@ -1517,7 +1517,7 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 		keyPos += 2
 	}
 	args = append(args, "streams")
-	keyPos += 1
+	keyPos++
 	for _, s := range a.Streams {
 		args = append(args, s)
 	}
@@ -1592,10 +1592,10 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	}
 	if a.NoAck {
 		args = append(args, "noack")
-		keyPos += 1
+		keyPos++
 	}
 	args = append(args, "streams")
-	keyPos += 1
+	keyPos++
 	for _, s := range a.Streams {
 		args = append(args, s)
 	}
