@@ -18,6 +18,8 @@ type Cmder interface {
 	Args() []interface{}
 	String() string
 	stringArg(int) string
+	firstKeyPos() int
+	addKeyPos(int)
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
@@ -73,6 +75,9 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		}
 	}
 
+	if pos := cmd.firstKeyPos(); pos != 0 {
+		return pos
+	}
 	if info == nil {
 		return 0
 	}
@@ -106,6 +111,7 @@ type baseCmd struct {
 	ctx  context.Context
 	args []interface{}
 	err  error
+	keyPos int
 
 	_readTimeout *time.Duration
 }
@@ -145,6 +151,14 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	}
 	s, _ := cmd.args[pos].(string)
 	return s
+}
+
+func (cmd *baseCmd) firstKeyPos() int {
+	return cmd.keyPos
+}
+
+func (cmd *baseCmd) addKeyPos(offset int)  {
+	cmd.keyPos += offset
 }
 
 func (cmd *baseCmd) SetErr(e error) {
