@@ -1073,12 +1073,26 @@ func (cmd *XMessageSliceCmd) String() string {
 }
 
 func (cmd *XMessageSliceCmd) readReply(rd *proto.Reader) error {
-	v, err := rd.ReadArrayReply(xMessageSliceParser)
+	var err error
+	cmd.val, err = readXMessageSlice(rd)
+	return err
+}
+
+func readXMessageSlice(rd *proto.Reader) ([]XMessage, error) {
+	n, err := rd.ReadArrayLen()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	cmd.val = v.([]XMessage)
-	return nil
+
+	msgs := make([]XMessage, n)
+	for i := 0; i < n; i++ {
+		var err error
+		msgs[i], err = readXMessage(rd)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return msgs, nil
 }
 
 func readXMessage(rd *proto.Reader) (XMessage, error) {
@@ -1110,19 +1124,6 @@ func readXMessage(rd *proto.Reader) (XMessage, error) {
 		ID:     id,
 		Values: values,
 	}, nil
-}
-
-// xMessageSliceParser implements proto.MultiBulkParse.
-func xMessageSliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	msgs := make([]XMessage, n)
-	for i := int64(0); i < n; i++ {
-		var err error
-		msgs[i], err = readXMessage(rd)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return msgs, nil
 }
 
 // stringInterfaceMapParser implements proto.MultiBulkParse.
@@ -1195,14 +1196,14 @@ func (cmd *XStreamSliceCmd) readReply(rd *proto.Reader) error {
 					return nil, err
 				}
 
-				v, err := rd.ReadArrayReply(xMessageSliceParser)
+				msgs, err := readXMessageSlice(rd)
 				if err != nil {
 					return nil, err
 				}
 
 				cmd.val[i] = XStream{
 					Stream:   stream,
-					Messages: v.([]XMessage),
+					Messages: msgs,
 				}
 				return nil, nil
 			})
