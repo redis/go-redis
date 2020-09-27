@@ -210,33 +210,6 @@ func ParseURL(redisURL string) (*Options, error) {
 	}
 }
 
-func newConnPool(opt *Options) *pool.ConnPool {
-	return pool.NewConnPool(&pool.Options{
-		Dialer: func(ctx context.Context) (net.Conn, error) {
-			var conn net.Conn
-			err := internal.WithSpan(ctx, "dialer", func(ctx context.Context) error {
-				var err error
-				trace.SpanFromContext(ctx).SetAttributes(
-					label.String("redis.network", opt.Network),
-					label.String("redis.addr", opt.Addr),
-				)
-				conn, err = opt.Dialer(ctx, opt.Network, opt.Addr)
-				if err != nil {
-					_ = internal.RecordError(ctx, err)
-				}
-				return err
-			})
-			return conn, err
-		},
-		PoolSize:           opt.PoolSize,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: opt.IdleCheckFrequency,
-	})
-}
-
 func setupTCPConn(u *url.URL) (*Options, error) {
 	o := &Options{Network: "tcp"}
 
@@ -312,4 +285,31 @@ func setupUnixConn(u *url.URL) (*Options, error) {
 	o.DB = db
 
 	return o, nil
+}
+
+func newConnPool(opt *Options) *pool.ConnPool {
+	return pool.NewConnPool(&pool.Options{
+		Dialer: func(ctx context.Context) (net.Conn, error) {
+			var conn net.Conn
+			err := internal.WithSpan(ctx, "dialer", func(ctx context.Context) error {
+				var err error
+				trace.SpanFromContext(ctx).SetAttributes(
+					label.String("redis.network", opt.Network),
+					label.String("redis.addr", opt.Addr),
+				)
+				conn, err = opt.Dialer(ctx, opt.Network, opt.Addr)
+				if err != nil {
+					_ = internal.RecordError(ctx, err)
+				}
+				return err
+			})
+			return conn, err
+		},
+		PoolSize:           opt.PoolSize,
+		MinIdleConns:       opt.MinIdleConns,
+		MaxConnAge:         opt.MaxConnAge,
+		PoolTimeout:        opt.PoolTimeout,
+		IdleTimeout:        opt.IdleTimeout,
+		IdleCheckFrequency: opt.IdleCheckFrequency,
+	})
 }
