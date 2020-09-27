@@ -67,6 +67,30 @@ func TestParseURL(t *testing.T) {
 			"foo", "bar",
 		},
 		{
+			"unix:///tmp/redis.sock",
+			"/tmp/redis.sock",
+			0, false, nil,
+			"", "",
+		},
+		{
+			"unix://foo:bar@/tmp/redis.sock",
+			"/tmp/redis.sock",
+			0, false, nil,
+			"foo", "bar",
+		},
+		{
+			"unix://foo:bar@/tmp/redis.sock?db=3",
+			"/tmp/redis.sock",
+			3, false, nil,
+			"foo", "bar",
+		},
+		{
+			"unix://foo:bar@/tmp/redis.sock?db=test",
+			"/tmp/redis.sock",
+			0, false, errors.New("invalid reids database number: strconv.Atoi: parsing \"test\": invalid syntax"),
+			"", "",
+		},
+		{
 			"redis://localhost/?abc=123",
 			"",
 			0, false, errors.New("no options supported"),

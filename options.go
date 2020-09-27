@@ -29,6 +29,7 @@ type Limiter interface {
 	ReportResult(result error)
 }
 
+// Options keeps the settings to setup redis connection.
 type Options struct {
 	// The network type, either tcp or unix.
 	// Default is tcp.
@@ -187,16 +188,57 @@ func (opt *Options) clone() *Options {
 }
 
 // ParseURL parses an URL into Options that can be used to connect to Redis.
+// Scheme is required.
+// There are two connection types: by tcp socket and by unix socket.
+// Tcp connection:
+// 		redis://<user>:<password>@<host>:<port>/<db_number>
+// Unix connection:
+//		unix://<user>:<password>@</path/to/redis.sock>?db=<db_number>
 func ParseURL(redisURL string) (*Options, error) {
-	o := &Options{Network: "tcp"}
 	u, err := url.Parse(redisURL)
 	if err != nil {
 		return nil, err
 	}
 
-	if u.Scheme != "redis" && u.Scheme != "rediss" {
-		return nil, errors.New("invalid redis URL scheme: " + u.Scheme)
+	switch u.Scheme {
+	case "redis", "rediss":
+		return setupTCPConn(u)
+	case "unix":
+		return setupUnixConn(u)
+	default:
+		return nil, fmt.Errorf("invalid redis URL scheme: %s", u.Scheme)
 	}
+}
+
+func newConnPool(opt *Options) *pool.ConnPool {
+	return pool.NewConnPool(&pool.Options{
+		Dialer: func(ctx context.Context) (net.Conn, error) {
+			var conn net.Conn
+			err := internal.WithSpan(ctx, "dialer", func(ctx context.Context) error {
+				var err error
+				trace.SpanFromContext(ctx).SetAttributes(
+					label.String("redis.network", opt.Network),
+					label.String("redis.addr", opt.Addr),
+				)
+				conn, err = opt.Dialer(ctx, opt.Network, opt.Addr)
+				if err != nil {
+					_ = internal.RecordError(ctx, err)
+				}
+				return err
+			})
+			return conn, err
+		},
+		PoolSize:           opt.PoolSize,
+		MinIdleConns:       opt.MinIdleConns,
+		MaxConnAge:         opt.MaxConnAge,
+		PoolTimeout:        opt.PoolTimeout,
+		IdleTimeout:        opt.IdleTimeout,
+		IdleCheckFrequency: opt.IdleCheckFrequency,
+	})
+}
+
+func setupTCPConn(u *url.URL) (*Options, error) {
+	o := &Options{Network: "tcp"}
 
 	if u.User != nil {
 		o.Username = u.User.Username()
@@ -232,38 +274,42 @@ func ParseURL(redisURL string) (*Options, error) {
 			return nil, fmt.Errorf("invalid redis database number: %q", f[0])
 		}
 	default:
-		return nil, errors.New("invalid redis URL path: " + u.Path)
+		return nil, fmt.Errorf("invalid redis URL path: %s", u.Path)
 	}
 
 	if u.Scheme == "rediss" {
 		o.TLSConfig = &tls.Config{ServerName: h}
 	}
+
 	return o, nil
 }
 
-func newConnPool(opt *Options) *pool.ConnPool {
-	return pool.NewConnPool(&pool.Options{
-		Dialer: func(ctx context.Context) (net.Conn, error) {
-			var conn net.Conn
-			err := internal.WithSpan(ctx, "dialer", func(ctx context.Context) error {
-				var err error
-				trace.SpanFromContext(ctx).SetAttributes(
-					label.String("redis.network", opt.Network),
-					label.String("redis.addr", opt.Addr),
-				)
-				conn, err = opt.Dialer(ctx, opt.Network, opt.Addr)
-				if err != nil {
-					_ = internal.RecordError(ctx, err)
-				}
-				return err
-			})
-			return conn, err
-		},
-		PoolSize:           opt.PoolSize,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: opt.IdleCheckFrequency,
-	})
+func setupUnixConn(u *url.URL) (*Options, error) {
+	o := &Options{
+		Network: "unix",
+	}
+
+	if strings.TrimSpace(u.Path) == "" { // path is required with unix connection
+		return nil, errors.New("empty redis unix socket path")
+	}
+	o.Addr = u.Path
+
+	if u.User != nil {
+		o.Username = u.User.Username()
+		if p, ok := u.User.Password(); ok {
+			o.Password = p
+		}
+	}
+
+	dbStr := u.Query().Get("db")
+	if dbStr == "" {
+		return o, nil // if database is not set, connect to 0 db.
+	}
+	db, err := strconv.Atoi(dbStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid reids database number: %s", err)
+	}
+	o.DB = db
+
+	return o, nil
 }
