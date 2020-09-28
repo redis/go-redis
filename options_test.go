@@ -87,37 +87,37 @@ func TestParseURL(t *testing.T) {
 		{
 			"unix://foo:bar@/tmp/redis.sock?db=test",
 			"/tmp/redis.sock",
-			0, false, errors.New("invalid reids database number: strconv.Atoi: parsing \"test\": invalid syntax"),
+			0, false, errors.New("redis: invalid database number: strconv.Atoi: parsing \"test\": invalid syntax"),
 			"", "",
 		},
 		{
 			"redis://localhost/?abc=123",
 			"",
-			0, false, errors.New("no options supported"),
+			0, false, errors.New("redis: no options supported"),
 			"", "",
 		},
 		{
 			"http://google.com",
 			"",
-			0, false, errors.New("invalid redis URL scheme: http"),
+			0, false, errors.New("redis: invalid URL scheme: http"),
 			"", "",
 		},
 		{
 			"redis://localhost/1/2/3/4",
 			"",
-			0, false, errors.New("invalid redis URL path: /1/2/3/4"),
+			0, false, errors.New("redis: invalid URL path: /1/2/3/4"),
 			"", "",
 		},
 		{
 			"12345",
 			"",
-			0, false, errors.New("invalid redis URL scheme: "),
+			0, false, errors.New("redis: invalid URL scheme: "),
 			"", "",
 		},
 		{
 			"redis://localhost/iamadatabase",
 			"",
-			0, false, errors.New(`invalid redis database number: "iamadatabase"`),
+			0, false, errors.New(`redis: invalid database number: "iamadatabase"`),
 			"", "",
 		},
 	}

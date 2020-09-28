@@ -206,7 +206,7 @@ func ParseURL(redisURL string) (*Options, error) {
 	case "unix":
 		return setupUnixConn(u)
 	default:
-		return nil, fmt.Errorf("invalid redis URL scheme: %s", u.Scheme)
+		return nil, fmt.Errorf("redis: invalid URL scheme: %s", u.Scheme)
 	}
 }
 
@@ -216,7 +216,7 @@ func setupTCPConn(u *url.URL) (*Options, error) {
 	o.Username, o.Password = getUserPassword(u)
 
 	if len(u.Query()) > 0 {
-		return nil, errors.New("no options supported")
+		return nil, errors.New("redis: no options supported")
 	}
 
 	h, p, err := net.SplitHostPort(u.Host)
@@ -239,10 +239,10 @@ func setupTCPConn(u *url.URL) (*Options, error) {
 		o.DB = 0
 	case 1:
 		if o.DB, err = strconv.Atoi(f[0]); err != nil {
-			return nil, fmt.Errorf("invalid redis database number: %q", f[0])
+			return nil, fmt.Errorf("redis: invalid database number: %q", f[0])
 		}
 	default:
-		return nil, fmt.Errorf("invalid redis URL path: %s", u.Path)
+		return nil, fmt.Errorf("redis: invalid URL path: %s", u.Path)
 	}
 
 	if u.Scheme == "rediss" {
@@ -258,7 +258,7 @@ func setupUnixConn(u *url.URL) (*Options, error) {
 	}
 
 	if strings.TrimSpace(u.Path) == "" { // path is required with unix connection
-		return nil, errors.New("empty redis unix socket path")
+		return nil, errors.New("redis: empty unix socket path")
 	}
 	o.Addr = u.Path
 
@@ -268,9 +268,10 @@ func setupUnixConn(u *url.URL) (*Options, error) {
 	if dbStr == "" {
 		return o, nil // if database is not set, connect to 0 db.
 	}
+
 	db, err := strconv.Atoi(dbStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid reids database number: %s", err)
+		return nil, fmt.Errorf("redis: invalid database number: %s", err)
 	}
 	o.DB = db
 
