@@ -213,12 +213,7 @@ func ParseURL(redisURL string) (*Options, error) {
 func setupTCPConn(u *url.URL) (*Options, error) {
 	o := &Options{Network: "tcp"}
 
-	if u.User != nil {
-		o.Username = u.User.Username()
-		if p, ok := u.User.Password(); ok {
-			o.Password = p
-		}
-	}
+	o.Username, o.Password = getUserPassword(u)
 
 	if len(u.Query()) > 0 {
 		return nil, errors.New("no options supported")
@@ -267,12 +262,7 @@ func setupUnixConn(u *url.URL) (*Options, error) {
 	}
 	o.Addr = u.Path
 
-	if u.User != nil {
-		o.Username = u.User.Username()
-		if p, ok := u.User.Password(); ok {
-			o.Password = p
-		}
-	}
+	o.Username, o.Password = getUserPassword(u)
 
 	dbStr := u.Query().Get("db")
 	if dbStr == "" {
@@ -285,6 +275,17 @@ func setupUnixConn(u *url.URL) (*Options, error) {
 	o.DB = db
 
 	return o, nil
+}
+
+func getUserPassword(u *url.URL) (string, string) {
+	var user, password string
+	if u.User != nil {
+		user = u.User.Username()
+		if p, ok := u.User.Password(); ok {
+			password = p
+		}
+	}
+	return user, password
 }
 
 func newConnPool(opt *Options) *pool.ConnPool {
