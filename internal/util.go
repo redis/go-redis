@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"go.opentelemetry.io/otel/label"
 	"time"
 
 	"github.com/go-redis/redis/v8/internal/proto"
@@ -62,12 +63,15 @@ func Unwrap(err error) error {
 
 //------------------------------------------------------------------------------
 
-func WithSpan(ctx context.Context, name string, fn func(context.Context) error) error {
+func WithSpan(ctx context.Context, name string, fn func(context.Context) error, attributes ...label.KeyValue) error {
 	if !trace.SpanFromContext(ctx).IsRecording() {
 		return fn(ctx)
 	}
 
 	ctx, span := global.Tracer("github.com/go-redis/redis").Start(ctx, name)
+	if len(attributes) > 0 {
+		span.SetAttributes(attributes...)
+	}
 	defer span.End()
 
 	return fn(ctx)
