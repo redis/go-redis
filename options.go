@@ -293,9 +293,9 @@ func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			var conn net.Conn
-			err := internal.WithSpan(ctx, "dialer", func(ctx context.Context) error {
+			err := internal.WithSpan(ctx, "dialer", func(ctx context.Context, span trace.Span) error {
 				var err error
-				trace.SpanFromContext(ctx).SetAttributes(
+				span.SetAttributes(
 					label.String("redis.network", opt.Network),
 					label.String("redis.addr", opt.Addr),
 				)
