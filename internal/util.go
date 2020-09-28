@@ -2,13 +2,13 @@ package internal
 
 import (
 	"context"
-	"go.opentelemetry.io/otel/label"
 	"time"
 
 	"github.com/go-redis/redis/v8/internal/proto"
 	"github.com/go-redis/redis/v8/internal/util"
 	"go.opentelemetry.io/otel/api/global"
 	"go.opentelemetry.io/otel/api/trace"
+	"go.opentelemetry.io/otel/label"
 )
 
 func Sleep(ctx context.Context, dur time.Duration) error {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel/label"
+
 	"github.com/go-redis/redis/v8/internal"
 	"github.com/go-redis/redis/v8/internal/pool"
 	"github.com/go-redis/redis/v8/internal/proto"
@@ -323,23 +325,25 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 					return err
 				}
 			}
-
 			retryTimeout := true
 			err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-				err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-					return writeCmd(wr, cmd)
-				})
-				if err != nil {
-					return err
-				}
+				return internal.WithSpan(ctx, "query", func(ctx context.Context) error {
+					err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+						return writeCmd(wr, cmd)
+					})
+					if err != nil {
+						return err
+					}
 
-				err = cn.WithReader(ctx, c.cmdTimeout(cmd), cmd.readReply)
-				if err != nil {
-					retryTimeout = cmd.readTimeout() == nil
-					return err
-				}
+					err = cn.WithReader(ctx, c.cmdTimeout(cmd), cmd.readReply)
+					if err != nil {
+						retryTimeout = cmd.readTimeout() == nil
+						return err
+					}
 
-				return nil
+					return nil
+				}, label.String("remote_addr", cn.RemoteAddrString()),
+					label.String("command", cmd.Name()))
 			})
 			if err == nil {
 				return nil
@@ -439,16 +443,19 @@ func (c *baseClient) _generalProcessPipeline(
 func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
-	err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-		return writeCmds(wr, cmds)
-	})
-	if err != nil {
-		return true, err
-	}
+	err := internal.WithSpan(ctx, "pipeline_query", func(ctx context.Context) error {
+		err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+			return writeCmds(wr, cmds)
+		})
+		if err != nil {
+			return err
+		}
 
-	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		return pipelineReadCmds(rd, cmds)
-	})
+		return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
+			return pipelineReadCmds(rd, cmds)
+		})
+	}, label.String("remote_addr", cn.RemoteAddrString()),
+		label.String("command", "pipeline"))
 	return true, err
 }
 

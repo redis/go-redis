@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/label"
+
 	"github.com/go-redis/redis/v8/internal"
 	"github.com/go-redis/redis/v8/internal/proto"
 )
@@ -61,6 +63,13 @@ func (cn *Conn) RemoteAddr() net.Addr {
 	return cn.netConn.RemoteAddr()
 }
 
+func (cn *Conn) RemoteAddrString() string {
+	if cn.netConn != nil && cn.netConn.RemoteAddr() != nil {
+		return cn.netConn.RemoteAddr().String()
+	}
+	return "unknown"
+}
+
 func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error) error {
 	return internal.WithSpan(ctx, "with_reader", func(ctx context.Context) error {
 		if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
@@ -70,7 +79,7 @@ func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(r
 			return internal.RecordError(ctx, err)
 		}
 		return nil
-	})
+	}, label.String("remote_addr", cn.RemoteAddrString()))
 }
 
 func (cn *Conn) WithWriter(
@@ -96,7 +105,7 @@ func (cn *Conn) WithWriter(
 		internal.WritesCounter.Add(ctx, 1)
 
 		return nil
-	})
+	}, label.String("remote_addr", cn.RemoteAddrString()))
 }
 
 func (cn *Conn) Close() error {
