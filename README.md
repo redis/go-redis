@@ -3,7 +3,7 @@
 [![Build Status](https://travis-ci.org/go-redis/redis.png?branch=master)](https://travis-ci.org/go-redis/redis)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
-[![Chat](https://discordapp.com/api/guilds/756530933771010068/widget.png)](https://discord.gg/ZQJDR3R)
+[![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
 > :heart: [**Uptrace.dev** - distributed traces, logs, and errors in one place](https://uptrace.dev)
 
@@ -11,7 +11,7 @@
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
 - [RealWorld example app](https://github.com/uptrace/go-realworld-example-app)
-- Use [Discord](https://discord.gg/ZQJDR3R) or [stackoverflow](https://stackoverflow.com/) to ask
+- Use [Discord](https://discord.gg/rWtp5Aj) or [stackoverflow](https://stackoverflow.com/) to ask
   questions.
 
 ## Ecosystem
