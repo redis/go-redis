@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -257,8 +258,9 @@ func setupUnixConn(u *url.URL) (*Options, error) {
 		Network: "unix",
 	}
 
-	if strings.TrimSpace(u.Path) == "" { // path is required with unix connection
-		return nil, errors.New("redis: empty unix socket path")
+	_, err := os.Stat(u.Path) // path is required with unix connection
+	if err != nil {
+		return nil, fmt.Errorf("invalid redis socket path: %v", err)
 	}
 	o.Addr = u.Path
 

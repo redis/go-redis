@@ -4,11 +4,24 @@ package redis
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestParseURL(t *testing.T) {
+	// It's supposed that path to the redis socket looks like `/tmp/redis.sock`
+	// but we have to use existing file just in order do not create a new one
+	// during tests. Thus we use `options.go`, file we are testing.
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("unexpected error: %q", err)
+		return
+	}
+	redisSocketPath := filepath.Join(dir, "options.go")
+
 	cases := []struct {
 		u    string
 		addr string
@@ -67,26 +80,33 @@ func TestParseURL(t *testing.T) {
 			"foo", "bar",
 		},
 		{
-			"unix:///tmp/redis.sock",
-			"/tmp/redis.sock",
+			fmt.Sprintf("unix://%s", redisSocketPath),
+			redisSocketPath,
 			0, false, nil,
 			"", "",
 		},
 		{
-			"unix://foo:bar@/tmp/redis.sock",
-			"/tmp/redis.sock",
+			fmt.Sprintf("unix://%s", "/this/file/does/not/exist.oops"),
+			"",
+			0, false, fmt.Errorf("invalid redis socket path: %s",
+				"stat /this/file/does/not/exist.oops: no such file or directory"),
+			"", "",
+		},
+		{
+			fmt.Sprintf("unix://foo:bar@%s", redisSocketPath),
+			redisSocketPath,
 			0, false, nil,
 			"foo", "bar",
 		},
 		{
-			"unix://foo:bar@/tmp/redis.sock?db=3",
-			"/tmp/redis.sock",
+			fmt.Sprintf("unix://foo:bar@%s?db=3", redisSocketPath),
+			redisSocketPath,
 			3, false, nil,
 			"foo", "bar",
 		},
 		{
-			"unix://foo:bar@/tmp/redis.sock?db=test",
-			"/tmp/redis.sock",
+			fmt.Sprintf("unix://foo:bar@%s?db=test", redisSocketPath),
+			redisSocketPath,
 			0, false, errors.New("redis: invalid database number: strconv.Atoi: parsing \"test\": invalid syntax"),
 			"", "",
 		},
