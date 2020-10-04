@@ -11,8 +11,7 @@
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
 - [RealWorld example app](https://github.com/uptrace/go-realworld-example-app)
-- Use [Discord](https://discord.gg/rWtp5Aj) or [stackoverflow](https://stackoverflow.com/) to ask
-  questions.
+- Join [Discord](https://discord.gg/rWtp5Aj) to ask questions.
 
 ## Ecosystem
 
@@ -38,9 +37,6 @@
   without using cluster mode and Redis Sentinel.
 - [Ring](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#NewRing).
 - [Instrumentation](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#ex-package--Instrumentation).
-
-API docs: https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc. Examples:
-https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples.
 
 ## Installation
 
