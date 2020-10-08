@@ -69,7 +69,7 @@ func (r *Reader) ReadLine() ([]byte, error) {
 //   - there is a pending read error;
 //   - or line does not end with \r\n.
 func (r *Reader) readLine() ([]byte, error) {
-	b, err := r.rd.ReadSlice('\n')
+	b, err := r.rd.ReadBytes('\n')
 	if err != nil {
 		return nil, err
 	}
