@@ -3,7 +3,7 @@ package redis_test
 import (
 	"net"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/beVietnam/go-redis/v8"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"

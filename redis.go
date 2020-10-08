@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-redis/redis/v8/internal"
-	"github.com/go-redis/redis/v8/internal/pool"
-	"github.com/go-redis/redis/v8/internal/proto"
+	"github.com/beVietnam/go-redis/v8/internal"
+	"github.com/beVietnam/go-redis/v8/internal/pool"
+	"github.com/beVietnam/go-redis/v8/internal/proto"
 	"go.opentelemetry.io/otel/api/trace"
 	"go.opentelemetry.io/otel/label"
 )
