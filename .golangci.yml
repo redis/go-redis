@@ -5,7 +5,17 @@ run:
 linters:
   enable-all: true
   disable:
+    - funlen
     - gochecknoglobals
+    - gochecknoinits
+    - gocognit
     - goconst
+    - godox
     - gosec
     - maligned
+    - wsl
+    - gomnd
+    - goerr113
+    - exhaustive
+    - gofumpt
+    - nestif

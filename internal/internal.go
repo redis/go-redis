@@ -1,24 +1,25 @@
 package internal
 
 import (
-	"math/rand"
 	"time"
+
+	"github.com/go-redis/redis/v8/internal/rand"
 )
 
-// Retry backoff with jitter sleep to prevent overloaded conditions during intervals
-// https://www.awsarchitectureblog.com/2015/03/backoff.html
 func RetryBackoff(retry int, minBackoff, maxBackoff time.Duration) time.Duration {
 	if retry < 0 {
-		retry = 0
+		panic("not reached")
 	}
-
-	backoff := minBackoff << uint(retry)
-	if backoff > maxBackoff || backoff < minBackoff {
-		backoff = maxBackoff
-	}
-
-	if backoff == 0 {
+	if minBackoff == 0 {
 		return 0
 	}
-	return time.Duration(rand.Int63n(int64(backoff)))
+
+	d := minBackoff << uint(retry)
+	d = minBackoff + time.Duration(rand.Int63n(int64(d)))
+
+	if d > maxBackoff || d < minBackoff {
+		d = maxBackoff
+	}
+
+	return d
 }

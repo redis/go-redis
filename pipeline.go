@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/go-redis/redis/v7/internal/pool"
+	"github.com/go-redis/redis/v8/internal/pool"
 )
 
 type pipelineExecer func(context.Context, []Cmder) error
@@ -24,12 +24,11 @@ type pipelineExecer func(context.Context, []Cmder) error
 // depends of your batch size and/or use TxPipeline.
 type Pipeliner interface {
 	StatefulCmdable
-	Do(args ...interface{}) *Cmd
-	Process(cmd Cmder) error
+	Do(ctx context.Context, args ...interface{}) *Cmd
+	Process(ctx context.Context, cmd Cmder) error
 	Close() error
 	Discard() error
-	Exec() ([]Cmder, error)
-	ExecContext(ctx context.Context) ([]Cmder, error)
+	Exec(ctx context.Context) ([]Cmder, error)
 }
 
 var _ Pipeliner = (*Pipeline)(nil)
@@ -54,14 +53,14 @@ func (c *Pipeline) init() {
 	c.statefulCmdable = c.Process
 }
 
-func (c *Pipeline) Do(args ...interface{}) *Cmd {
-	cmd := NewCmd(args...)
-	_ = c.Process(cmd)
+func (c *Pipeline) Do(ctx context.Context, args ...interface{}) *Cmd {
+	cmd := NewCmd(ctx, args...)
+	_ = c.Process(ctx, cmd)
 	return cmd
 }
 
 // Process queues the cmd for later execution.
-func (c *Pipeline) Process(cmd Cmder) error {
+func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 	c.mu.Lock()
 	c.cmds = append(c.cmds, cmd)
 	c.mu.Unlock()
@@ -98,11 +97,7 @@ func (c *Pipeline) discard() error {
 //
 // Exec always returns list of commands and error of the first failed
 // command if any.
-func (c *Pipeline) Exec() ([]Cmder, error) {
-	return c.ExecContext(c.ctx)
-}
-
-func (c *Pipeline) ExecContext(ctx context.Context) ([]Cmder, error) {
+func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -120,11 +115,11 @@ func (c *Pipeline) ExecContext(ctx context.Context) ([]Cmder, error) {
 	return cmds, c.exec(ctx, cmds)
 }
 
-func (c *Pipeline) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
+func (c *Pipeline) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	if err := fn(c); err != nil {
 		return nil, err
 	}
-	cmds, err := c.Exec()
+	cmds, err := c.Exec(ctx)
 	_ = c.Close()
 	return cmds, err
 }
@@ -133,8 +128,8 @@ func (c *Pipeline) Pipeline() Pipeliner {
 	return c
 }
 
-func (c *Pipeline) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipelined(fn)
+func (c *Pipeline) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.Pipelined(ctx, fn)
 }
 
 func (c *Pipeline) TxPipeline() Pipeliner {

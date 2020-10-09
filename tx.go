@@ -3,8 +3,8 @@ package redis
 import (
 	"context"
 
-	"github.com/go-redis/redis/v7/internal/pool"
-	"github.com/go-redis/redis/v7/internal/proto"
+	"github.com/go-redis/redis/v8/internal/pool"
+	"github.com/go-redis/redis/v8/internal/proto"
 )
 
 // TxFailedErr transaction redis failed.
@@ -18,6 +18,7 @@ type Tx struct {
 	baseClient
 	cmdable
 	statefulCmdable
+	hooks
 	ctx context.Context
 }
 
@@ -25,9 +26,10 @@ func (c *Client) newTx(ctx context.Context) *Tx {
 	tx := Tx{
 		baseClient: baseClient{
 			opt:      c.opt,
-			connPool: pool.NewStickyConnPool(c.connPool.(*pool.ConnPool), true),
+			connPool: pool.NewStickyConnPool(c.connPool),
 		},
-		ctx: ctx,
+		hooks: c.hooks.clone(),
+		ctx:   ctx,
 	}
 	tx.init()
 	return &tx
@@ -47,83 +49,84 @@ func (c *Tx) WithContext(ctx context.Context) *Tx {
 		panic("nil context")
 	}
 	clone := *c
-	clone.ctx = ctx
 	clone.init()
+	clone.hooks.lock()
+	clone.ctx = ctx
 	return &clone
 }
 
-func (c *Tx) Process(cmd Cmder) error {
-	return c.ProcessContext(c.ctx, cmd)
-}
-
-func (c *Tx) ProcessContext(ctx context.Context, cmd Cmder) error {
-	return c.baseClient.process(ctx, cmd)
+func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
+	return c.hooks.process(ctx, cmd, c.baseClient.process)
 }
 
 // Watch prepares a transaction and marks the keys to be watched
 // for conditional execution if there are any keys.
 //
 // The transaction is automatically closed when fn exits.
-func (c *Client) Watch(fn func(*Tx) error, keys ...string) error {
-	return c.WatchContext(c.ctx, fn, keys...)
-}
-
-func (c *Client) WatchContext(ctx context.Context, fn func(*Tx) error, keys ...string) error {
+func (c *Client) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
 	tx := c.newTx(ctx)
 	if len(keys) > 0 {
-		if err := tx.Watch(keys...).Err(); err != nil {
-			_ = tx.Close()
+		if err := tx.Watch(ctx, keys...).Err(); err != nil {
+			_ = tx.Close(ctx)
 			return err
 		}
 	}
 
 	err := fn(tx)
-	_ = tx.Close()
+	_ = tx.Close(ctx)
 	return err
 }
 
 // Close closes the transaction, releasing any open resources.
-func (c *Tx) Close() error {
-	_ = c.Unwatch().Err()
+func (c *Tx) Close(ctx context.Context) error {
+	_ = c.Unwatch(ctx).Err()
 	return c.baseClient.Close()
 }
 
 // Watch marks the keys to be watched for conditional execution
 // of a transaction.
-func (c *Tx) Watch(keys ...string) *StatusCmd {
+func (c *Tx) Watch(ctx context.Context, keys ...string) *StatusCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "watch"
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	cmd := NewStatusCmd(args...)
-	_ = c.Process(cmd)
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c.Process(ctx, cmd)
 	return cmd
 }
 
 // Unwatch flushes all the previously watched keys for a transaction.
-func (c *Tx) Unwatch(keys ...string) *StatusCmd {
+func (c *Tx) Unwatch(ctx context.Context, keys ...string) *StatusCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "unwatch"
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	cmd := NewStatusCmd(args...)
-	_ = c.Process(cmd)
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c.Process(ctx, cmd)
 	return cmd
 }
 
-// Pipeline creates a new pipeline. It is more convenient to use Pipelined.
+// Pipeline creates a pipeline. Usually it is more convenient to use Pipelined.
 func (c *Tx) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
-		exec: c.processTxPipeline,
+		ctx: c.ctx,
+		exec: func(ctx context.Context, cmds []Cmder) error {
+			return c.hooks.processPipeline(ctx, cmds, c.baseClient.processPipeline)
+		},
 	}
 	pipe.init()
 	return &pipe
 }
 
-// Pipelined executes commands queued in the fn in a transaction.
+// Pipelined executes commands queued in the fn outside of the transaction.
+// Use TxPipelined if you need transactional behavior.
+func (c *Tx) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.Pipeline().Pipelined(ctx, fn)
+}
+
+// TxPipelined executes commands queued in the fn in the transaction.
 //
 // When using WATCH, EXEC will execute commands only if the watched keys
 // were not modified, allowing for a check-and-set mechanism.
@@ -131,16 +134,18 @@ func (c *Tx) Pipeline() Pipeliner {
 // Exec always returns list of commands. If transaction fails
 // TxFailedErr is returned. Otherwise Exec returns an error of the first
 // failed command or nil.
-func (c *Tx) Pipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipeline().Pipelined(fn)
+func (c *Tx) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
+	return c.TxPipeline().Pipelined(ctx, fn)
 }
 
-// TxPipelined is an alias for Pipelined.
-func (c *Tx) TxPipelined(fn func(Pipeliner) error) ([]Cmder, error) {
-	return c.Pipelined(fn)
-}
-
-// TxPipeline is an alias for Pipeline.
+// TxPipeline creates a pipeline. Usually it is more convenient to use TxPipelined.
 func (c *Tx) TxPipeline() Pipeliner {
-	return c.Pipeline()
+	pipe := Pipeline{
+		ctx: c.ctx,
+		exec: func(ctx context.Context, cmds []Cmder) error {
+			return c.hooks.processTxPipeline(ctx, cmds, c.baseClient.processTxPipeline)
+		},
+	}
+	pipe.init()
+	return &pipe
 }

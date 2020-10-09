@@ -1,7 +1,9 @@
 package redis_test
 
 import (
-	"github.com/go-redis/redis/v7"
+	"strconv"
+
+	"github.com/go-redis/redis/v8"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -13,7 +15,7 @@ var _ = Describe("pipelining", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -22,8 +24,8 @@ var _ = Describe("pipelining", func() {
 
 	It("supports block style", func() {
 		var get *redis.StringCmd
-		cmds, err := client.Pipelined(func(pipe redis.Pipeliner) error {
-			get = pipe.Get("foo")
+		cmds, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+			get = pipe.Get(ctx, "foo")
 			return nil
 		})
 		Expect(err).To(Equal(redis.Nil))
@@ -35,24 +37,24 @@ var _ = Describe("pipelining", func() {
 
 	assertPipeline := func() {
 		It("returns no errors when there are no commands", func() {
-			_, err := pipe.Exec()
+			_, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("discards queued commands", func() {
-			pipe.Get("key")
+			pipe.Get(ctx, "key")
 			pipe.Discard()
-			cmds, err := pipe.Exec()
+			cmds, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(BeNil())
 		})
 
 		It("handles val/err", func() {
-			err := client.Set("key", "value", 0).Err()
+			err := client.Set(ctx, "key", "value", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			get := pipe.Get("key")
-			cmds, err := pipe.Exec()
+			get := pipe.Get(ctx, "key")
+			cmds, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(1))
 
@@ -62,10 +64,25 @@ var _ = Describe("pipelining", func() {
 		})
 
 		It("supports custom command", func() {
-			pipe.Do("ping")
-			cmds, err := pipe.Exec()
+			pipe.Do(ctx, "ping")
+			cmds, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(1))
+		})
+
+		It("handles large pipelines", func() {
+			for callCount := 1; callCount < 16; callCount++ {
+				for i := 1; i <= callCount; i++ {
+					pipe.SetNX(ctx, strconv.Itoa(i)+"_key", strconv.Itoa(i)+"_value", 0)
+				}
+
+				cmds, err := pipe.Exec(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cmds).To(HaveLen(callCount))
+				for _, cmd := range cmds {
+					Expect(cmd).To(BeAssignableToTypeOf(&redis.BoolCmd{}))
+				}
+			}
 		})
 	}
 

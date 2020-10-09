@@ -8,12 +8,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v7/internal"
-	"github.com/go-redis/redis/v7/internal/pool"
-	"github.com/go-redis/redis/v7/internal/proto"
+	"github.com/go-redis/redis/v8/internal"
+	"github.com/go-redis/redis/v8/internal/pool"
+	"github.com/go-redis/redis/v8/internal/proto"
 )
 
-const pingTimeout = 30 * time.Second
+const (
+	pingTimeout     = time.Second
+	chanSendTimeout = time.Minute
+)
 
 var errPingTimeout = errors.New("redis: ping timeout")
 
@@ -26,7 +29,7 @@ var errPingTimeout = errors.New("redis: ping timeout")
 type PubSub struct {
 	opt *Options
 
-	newConn   func([]string) (*pool.Conn, error)
+	newConn   func(ctx context.Context, channels []string) (*pool.Conn, error)
 	closeConn func(*pool.Conn) error
 
 	mu       sync.Mutex
@@ -55,14 +58,14 @@ func (c *PubSub) init() {
 	c.exit = make(chan struct{})
 }
 
-func (c *PubSub) connWithLock() (*pool.Conn, error) {
+func (c *PubSub) connWithLock(ctx context.Context) (*pool.Conn, error) {
 	c.mu.Lock()
-	cn, err := c.conn(nil)
+	cn, err := c.conn(ctx, nil)
 	c.mu.Unlock()
 	return cn, err
 }
 
-func (c *PubSub) conn(newChannels []string) (*pool.Conn, error) {
+func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, error) {
 	if c.closed {
 		return nil, pool.ErrClosed
 	}
@@ -73,12 +76,12 @@ func (c *PubSub) conn(newChannels []string) (*pool.Conn, error) {
 	channels := mapKeys(c.channels)
 	channels = append(channels, newChannels...)
 
-	cn, err := c.newConn(channels)
+	cn, err := c.newConn(ctx, channels)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := c.resubscribe(cn); err != nil {
+	if err := c.resubscribe(ctx, cn); err != nil {
 		_ = c.closeConn(cn)
 		return nil, err
 	}
@@ -93,15 +96,15 @@ func (c *PubSub) writeCmd(ctx context.Context, cn *pool.Conn, cmd Cmder) error {
 	})
 }
 
-func (c *PubSub) resubscribe(cn *pool.Conn) error {
+func (c *PubSub) resubscribe(ctx context.Context, cn *pool.Conn) error {
 	var firstErr error
 
 	if len(c.channels) > 0 {
-		firstErr = c._subscribe(cn, "subscribe", mapKeys(c.channels))
+		firstErr = c._subscribe(ctx, cn, "subscribe", mapKeys(c.channels))
 	}
 
 	if len(c.patterns) > 0 {
-		err := c._subscribe(cn, "psubscribe", mapKeys(c.patterns))
+		err := c._subscribe(ctx, cn, "psubscribe", mapKeys(c.patterns))
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -121,35 +124,40 @@ func mapKeys(m map[string]struct{}) []string {
 }
 
 func (c *PubSub) _subscribe(
-	cn *pool.Conn, redisCmd string, channels []string,
+	ctx context.Context, cn *pool.Conn, redisCmd string, channels []string,
 ) error {
 	args := make([]interface{}, 0, 1+len(channels))
 	args = append(args, redisCmd)
 	for _, channel := range channels {
 		args = append(args, channel)
 	}
-	cmd := NewSliceCmd(args...)
-	return c.writeCmd(context.TODO(), cn, cmd)
+	cmd := NewSliceCmd(ctx, args...)
+	return c.writeCmd(ctx, cn, cmd)
 }
 
-func (c *PubSub) releaseConnWithLock(cn *pool.Conn, err error, allowTimeout bool) {
+func (c *PubSub) releaseConnWithLock(
+	ctx context.Context,
+	cn *pool.Conn,
+	err error,
+	allowTimeout bool,
+) {
 	c.mu.Lock()
-	c.releaseConn(cn, err, allowTimeout)
+	c.releaseConn(ctx, cn, err, allowTimeout)
 	c.mu.Unlock()
 }
 
-func (c *PubSub) releaseConn(cn *pool.Conn, err error, allowTimeout bool) {
+func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allowTimeout bool) {
 	if c.cn != cn {
 		return
 	}
 	if isBadConn(err, allowTimeout) {
-		c.reconnect(err)
+		c.reconnect(ctx, err)
 	}
 }
 
-func (c *PubSub) reconnect(reason error) {
+func (c *PubSub) reconnect(ctx context.Context, reason error) {
 	_ = c.closeTheCn(reason)
-	_, _ = c.conn(nil)
+	_, _ = c.conn(ctx, nil)
 }
 
 func (c *PubSub) closeTheCn(reason error) error {
@@ -157,7 +165,7 @@ func (c *PubSub) closeTheCn(reason error) error {
 		return nil
 	}
 	if !c.closed {
-		internal.Logger.Printf("redis: discarding bad PubSub connection: %s", reason)
+		internal.Logger.Printf(c.getContext(), "redis: discarding bad PubSub connection: %s", reason)
 	}
 	err := c.closeConn(c.cn)
 	c.cn = nil
@@ -179,11 +187,11 @@ func (c *PubSub) Close() error {
 
 // Subscribe the client to the specified channels. It returns
 // empty subscription if there are no channels.
-func (c *PubSub) Subscribe(channels ...string) error {
+func (c *PubSub) Subscribe(ctx context.Context, channels ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	err := c.subscribe("subscribe", channels...)
+	err := c.subscribe(ctx, "subscribe", channels...)
 	if c.channels == nil {
 		c.channels = make(map[string]struct{})
 	}
@@ -195,11 +203,11 @@ func (c *PubSub) Subscribe(channels ...string) error {
 
 // PSubscribe the client to the given patterns. It returns
 // empty subscription if there are no patterns.
-func (c *PubSub) PSubscribe(patterns ...string) error {
+func (c *PubSub) PSubscribe(ctx context.Context, patterns ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	err := c.subscribe("psubscribe", patterns...)
+	err := c.subscribe(ctx, "psubscribe", patterns...)
 	if c.patterns == nil {
 		c.patterns = make(map[string]struct{})
 	}
@@ -211,55 +219,55 @@ func (c *PubSub) PSubscribe(patterns ...string) error {
 
 // Unsubscribe the client from the given channels, or from all of
 // them if none is given.
-func (c *PubSub) Unsubscribe(channels ...string) error {
+func (c *PubSub) Unsubscribe(ctx context.Context, channels ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	for _, channel := range channels {
 		delete(c.channels, channel)
 	}
-	err := c.subscribe("unsubscribe", channels...)
+	err := c.subscribe(ctx, "unsubscribe", channels...)
 	return err
 }
 
 // PUnsubscribe the client from the given patterns, or from all of
 // them if none is given.
-func (c *PubSub) PUnsubscribe(patterns ...string) error {
+func (c *PubSub) PUnsubscribe(ctx context.Context, patterns ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	for _, pattern := range patterns {
 		delete(c.patterns, pattern)
 	}
-	err := c.subscribe("punsubscribe", patterns...)
+	err := c.subscribe(ctx, "punsubscribe", patterns...)
 	return err
 }
 
-func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
-	cn, err := c.conn(channels)
+func (c *PubSub) subscribe(ctx context.Context, redisCmd string, channels ...string) error {
+	cn, err := c.conn(ctx, channels)
 	if err != nil {
 		return err
 	}
 
-	err = c._subscribe(cn, redisCmd, channels)
-	c.releaseConn(cn, err, false)
+	err = c._subscribe(ctx, cn, redisCmd, channels)
+	c.releaseConn(ctx, cn, err, false)
 	return err
 }
 
-func (c *PubSub) Ping(payload ...string) error {
+func (c *PubSub) Ping(ctx context.Context, payload ...string) error {
 	args := []interface{}{"ping"}
 	if len(payload) == 1 {
 		args = append(args, payload[0])
 	}
-	cmd := NewCmd(args...)
+	cmd := NewCmd(ctx, args...)
 
-	cn, err := c.connWithLock()
+	cn, err := c.connWithLock(ctx)
 	if err != nil {
 		return err
 	}
 
-	err = c.writeCmd(context.TODO(), cn, cmd)
-	c.releaseConnWithLock(cn, err, false)
+	err = c.writeCmd(ctx, cn, cmd)
+	c.releaseConnWithLock(ctx, cn, err, false)
 	return err
 }
 
@@ -279,9 +287,10 @@ func (m *Subscription) String() string {
 
 // Message received as result of a PUBLISH command issued by another client.
 type Message struct {
-	Channel string
-	Pattern string
-	Payload string
+	Channel      string
+	Pattern      string
+	Payload      string
+	PayloadSlice []string
 }
 
 func (m *Message) String() string {
@@ -309,16 +318,32 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 	case []interface{}:
 		switch kind := reply[0].(string); kind {
 		case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
+			// Can be nil in case of "unsubscribe".
+			channel, _ := reply[1].(string)
 			return &Subscription{
 				Kind:    kind,
-				Channel: reply[1].(string),
+				Channel: channel,
 				Count:   int(reply[2].(int64)),
 			}, nil
 		case "message":
-			return &Message{
-				Channel: reply[1].(string),
-				Payload: reply[2].(string),
-			}, nil
+			switch payload := reply[2].(type) {
+			case string:
+				return &Message{
+					Channel: reply[1].(string),
+					Payload: payload,
+				}, nil
+			case []interface{}:
+				ss := make([]string, len(payload))
+				for i, s := range payload {
+					ss[i] = s.(string)
+				}
+				return &Message{
+					Channel:      reply[1].(string),
+					PayloadSlice: ss,
+				}, nil
+			default:
+				return nil, fmt.Errorf("redis: unsupported pubsub message payload: %T", payload)
+			}
 		case "pmessage":
 			return &Message{
 				Pattern: reply[1].(string),
@@ -340,21 +365,21 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 // ReceiveTimeout acts like Receive but returns an error if message
 // is not received in time. This is low-level API and in most cases
 // Channel should be used instead.
-func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
+func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (interface{}, error) {
 	if c.cmd == nil {
-		c.cmd = NewCmd()
+		c.cmd = NewCmd(ctx)
 	}
 
-	cn, err := c.connWithLock()
+	cn, err := c.connWithLock(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	err = cn.WithReader(context.TODO(), timeout, func(rd *proto.Reader) error {
+	err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
 		return c.cmd.readReply(rd)
 	})
 
-	c.releaseConnWithLock(cn, err, timeout > 0)
+	c.releaseConnWithLock(ctx, cn, err, timeout > 0)
 	if err != nil {
 		return nil, err
 	}
@@ -365,16 +390,16 @@ func (c *PubSub) ReceiveTimeout(timeout time.Duration) (interface{}, error) {
 // Receive returns a message as a Subscription, Message, Pong or error.
 // See PubSub example for details. This is low-level API and in most cases
 // Channel should be used instead.
-func (c *PubSub) Receive() (interface{}, error) {
-	return c.ReceiveTimeout(0)
+func (c *PubSub) Receive(ctx context.Context) (interface{}, error) {
+	return c.ReceiveTimeout(ctx, 0)
 }
 
 // ReceiveMessage returns a Message or error ignoring Subscription and Pong
 // messages. This is low-level API and in most cases Channel should be used
 // instead.
-func (c *PubSub) ReceiveMessage() (*Message, error) {
+func (c *PubSub) ReceiveMessage(ctx context.Context) (*Message, error) {
 	for {
-		msg, err := c.Receive()
+		msg, err := c.Receive(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -427,7 +452,7 @@ func (c *PubSub) ChannelSize(size int) <-chan *Message {
 // reconnections.
 //
 // ChannelWithSubscriptions can not be used together with Channel or ChannelSize.
-func (c *PubSub) ChannelWithSubscriptions(size int) <-chan interface{} {
+func (c *PubSub) ChannelWithSubscriptions(ctx context.Context, size int) <-chan interface{} {
 	c.chOnce.Do(func() {
 		c.initPing()
 		c.initAllChan(size)
@@ -443,10 +468,18 @@ func (c *PubSub) ChannelWithSubscriptions(size int) <-chan interface{} {
 	return c.allCh
 }
 
+func (c *PubSub) getContext() context.Context {
+	if c.cmd != nil {
+		return c.cmd.ctx
+	}
+	return context.Background()
+}
+
 func (c *PubSub) initPing() {
+	ctx := context.TODO()
 	c.ping = make(chan struct{}, 1)
 	go func() {
-		timer := time.NewTimer(pingTimeout)
+		timer := time.NewTimer(time.Minute)
 		timer.Stop()
 
 		healthy := true
@@ -459,7 +492,7 @@ func (c *PubSub) initPing() {
 					<-timer.C
 				}
 			case <-timer.C:
-				pingErr := c.Ping()
+				pingErr := c.Ping(ctx)
 				if healthy {
 					healthy = false
 				} else {
@@ -467,7 +500,7 @@ func (c *PubSub) initPing() {
 						pingErr = errPingTimeout
 					}
 					c.mu.Lock()
-					c.reconnect(pingErr)
+					c.reconnect(ctx, pingErr)
 					healthy = true
 					c.mu.Unlock()
 				}
@@ -480,21 +513,22 @@ func (c *PubSub) initPing() {
 
 // initMsgChan must be in sync with initAllChan.
 func (c *PubSub) initMsgChan(size int) {
+	ctx := context.TODO()
 	c.msgCh = make(chan *Message, size)
 	go func() {
-		timer := time.NewTimer(pingTimeout)
+		timer := time.NewTimer(time.Minute)
 		timer.Stop()
 
 		var errCount int
 		for {
-			msg, err := c.Receive()
+			msg, err := c.Receive(ctx)
 			if err != nil {
 				if err == pool.ErrClosed {
 					close(c.msgCh)
 					return
 				}
 				if errCount > 0 {
-					time.Sleep(c.retryBackoff(errCount))
+					time.Sleep(100 * time.Millisecond)
 				}
 				errCount++
 				continue
@@ -514,7 +548,7 @@ func (c *PubSub) initMsgChan(size int) {
 			case *Pong:
 				// Ignore.
 			case *Message:
-				timer.Reset(pingTimeout)
+				timer.Reset(chanSendTimeout)
 				select {
 				case c.msgCh <- msg:
 					if !timer.Stop() {
@@ -522,10 +556,14 @@ func (c *PubSub) initMsgChan(size int) {
 					}
 				case <-timer.C:
 					internal.Logger.Printf(
-						"redis: %s channel is full for %s (message is dropped)", c, pingTimeout)
+						c.getContext(),
+						"redis: %s channel is full for %s (message is dropped)",
+						c,
+						chanSendTimeout,
+					)
 				}
 			default:
-				internal.Logger.Printf("redis: unknown message type: %T", msg)
+				internal.Logger.Printf(c.getContext(), "redis: unknown message type: %T", msg)
 			}
 		}
 	}()
@@ -533,6 +571,7 @@ func (c *PubSub) initMsgChan(size int) {
 
 // initAllChan must be in sync with initMsgChan.
 func (c *PubSub) initAllChan(size int) {
+	ctx := context.TODO()
 	c.allCh = make(chan interface{}, size)
 	go func() {
 		timer := time.NewTimer(pingTimeout)
@@ -540,14 +579,14 @@ func (c *PubSub) initAllChan(size int) {
 
 		var errCount int
 		for {
-			msg, err := c.Receive()
+			msg, err := c.Receive(ctx)
 			if err != nil {
 				if err == pool.ErrClosed {
 					close(c.allCh)
 					return
 				}
 				if errCount > 0 {
-					time.Sleep(c.retryBackoff(errCount))
+					time.Sleep(100 * time.Millisecond)
 				}
 				errCount++
 				continue
@@ -569,7 +608,7 @@ func (c *PubSub) initAllChan(size int) {
 			case *Message:
 				c.sendMessage(msg, timer)
 			default:
-				internal.Logger.Printf("redis: unknown message type: %T", msg)
+				internal.Logger.Printf(c.getContext(), "redis: unknown message type: %T", msg)
 			}
 		}
 	}()
@@ -584,10 +623,7 @@ func (c *PubSub) sendMessage(msg interface{}, timer *time.Timer) {
 		}
 	case <-timer.C:
 		internal.Logger.Printf(
+			c.getContext(),
 			"redis: %s channel is full for %s (message is dropped)", c, pingTimeout)
 	}
-}
-
-func (c *PubSub) retryBackoff(attempt int) time.Duration {
-	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
 }

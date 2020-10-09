@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"io"
@@ -8,15 +9,17 @@ import (
 )
 
 type scripter interface {
-	Eval(script string, keys []string, args ...interface{}) *Cmd
-	EvalSha(sha1 string, keys []string, args ...interface{}) *Cmd
-	ScriptExists(hashes ...string) *BoolSliceCmd
-	ScriptLoad(script string) *StringCmd
+	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd
+	EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd
+	ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd
+	ScriptLoad(ctx context.Context, script string) *StringCmd
 }
 
-var _ scripter = (*Client)(nil)
-var _ scripter = (*Ring)(nil)
-var _ scripter = (*ClusterClient)(nil)
+var (
+	_ scripter = (*Client)(nil)
+	_ scripter = (*Ring)(nil)
+	_ scripter = (*ClusterClient)(nil)
+)
 
 type Script struct {
 	src, hash string
@@ -35,28 +38,28 @@ func (s *Script) Hash() string {
 	return s.hash
 }
 
-func (s *Script) Load(c scripter) *StringCmd {
-	return c.ScriptLoad(s.src)
+func (s *Script) Load(ctx context.Context, c scripter) *StringCmd {
+	return c.ScriptLoad(ctx, s.src)
 }
 
-func (s *Script) Exists(c scripter) *BoolSliceCmd {
-	return c.ScriptExists(s.hash)
+func (s *Script) Exists(ctx context.Context, c scripter) *BoolSliceCmd {
+	return c.ScriptExists(ctx, s.hash)
 }
 
-func (s *Script) Eval(c scripter, keys []string, args ...interface{}) *Cmd {
-	return c.Eval(s.src, keys, args...)
+func (s *Script) Eval(ctx context.Context, c scripter, keys []string, args ...interface{}) *Cmd {
+	return c.Eval(ctx, s.src, keys, args...)
 }
 
-func (s *Script) EvalSha(c scripter, keys []string, args ...interface{}) *Cmd {
-	return c.EvalSha(s.hash, keys, args...)
+func (s *Script) EvalSha(ctx context.Context, c scripter, keys []string, args ...interface{}) *Cmd {
+	return c.EvalSha(ctx, s.hash, keys, args...)
 }
 
 // Run optimistically uses EVALSHA to run the script. If script does not exist
 // it is retried using EVAL.
-func (s *Script) Run(c scripter, keys []string, args ...interface{}) *Cmd {
-	r := s.EvalSha(c, keys, args...)
+func (s *Script) Run(ctx context.Context, c scripter, keys []string, args ...interface{}) *Cmd {
+	r := s.EvalSha(ctx, c, keys, args...)
 	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
-		return s.Eval(c, keys, args...)
+		return s.Eval(ctx, c, keys, args...)
 	}
 	return r
 }

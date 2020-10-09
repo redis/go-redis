@@ -1,26 +1,32 @@
 package proto
 
 import (
-	"bufio"
 	"encoding"
 	"fmt"
 	"io"
 	"strconv"
 	"time"
 
-	"github.com/go-redis/redis/v7/internal/util"
+	"github.com/go-redis/redis/v8/internal/util"
 )
 
+type writer interface {
+	io.Writer
+	io.ByteWriter
+	// io.StringWriter
+	WriteString(s string) (n int, err error)
+}
+
 type Writer struct {
-	wr *bufio.Writer
+	writer
 
 	lenBuf []byte
 	numBuf []byte
 }
 
-func NewWriter(wr io.Writer) *Writer {
+func NewWriter(wr writer) *Writer {
 	return &Writer{
-		wr: bufio.NewWriter(wr),
+		writer: wr,
 
 		lenBuf: make([]byte, 64),
 		numBuf: make([]byte, 64),
@@ -28,19 +34,16 @@ func NewWriter(wr io.Writer) *Writer {
 }
 
 func (w *Writer) WriteArgs(args []interface{}) error {
-	err := w.wr.WriteByte(ArrayReply)
-	if err != nil {
+	if err := w.WriteByte(ArrayReply); err != nil {
 		return err
 	}
 
-	err = w.writeLen(len(args))
-	if err != nil {
+	if err := w.writeLen(len(args)); err != nil {
 		return err
 	}
 
 	for _, arg := range args {
-		err := w.writeArg(arg)
-		if err != nil {
+		if err := w.WriteArg(arg); err != nil {
 			return err
 		}
 	}
@@ -51,11 +54,11 @@ func (w *Writer) WriteArgs(args []interface{}) error {
 func (w *Writer) writeLen(n int) error {
 	w.lenBuf = strconv.AppendUint(w.lenBuf[:0], uint64(n), 10)
 	w.lenBuf = append(w.lenBuf, '\r', '\n')
-	_, err := w.wr.Write(w.lenBuf)
+	_, err := w.Write(w.lenBuf)
 	return err
 }
 
-func (w *Writer) writeArg(v interface{}) error {
+func (w *Writer) WriteArg(v interface{}) error {
 	switch v := v.(type) {
 	case nil:
 		return w.string("")
@@ -93,7 +96,8 @@ func (w *Writer) writeArg(v interface{}) error {
 		}
 		return w.int(0)
 	case time.Time:
-		return w.string(v.Format(time.RFC3339))
+		w.numBuf = v.AppendFormat(w.numBuf[:0], time.RFC3339Nano)
+		return w.bytes(w.numBuf)
 	case encoding.BinaryMarshaler:
 		b, err := v.MarshalBinary()
 		if err != nil {
@@ -107,18 +111,15 @@ func (w *Writer) writeArg(v interface{}) error {
 }
 
 func (w *Writer) bytes(b []byte) error {
-	err := w.wr.WriteByte(StringReply)
-	if err != nil {
+	if err := w.WriteByte(StringReply); err != nil {
 		return err
 	}
 
-	err = w.writeLen(len(b))
-	if err != nil {
+	if err := w.writeLen(len(b)); err != nil {
 		return err
 	}
 
-	_, err = w.wr.Write(b)
-	if err != nil {
+	if _, err := w.Write(b); err != nil {
 		return err
 	}
 
@@ -145,21 +146,8 @@ func (w *Writer) float(f float64) error {
 }
 
 func (w *Writer) crlf() error {
-	err := w.wr.WriteByte('\r')
-	if err != nil {
+	if err := w.WriteByte('\r'); err != nil {
 		return err
 	}
-	return w.wr.WriteByte('\n')
-}
-
-func (w *Writer) Buffered() int {
-	return w.wr.Buffered()
-}
-
-func (w *Writer) Reset(wr io.Writer) {
-	w.wr.Reset(wr)
-}
-
-func (w *Writer) Flush() error {
-	return w.wr.Flush()
+	return w.WriteByte('\n')
 }

@@ -9,7 +9,9 @@ var _ = Describe("newClusterState", func() {
 	var state *clusterState
 
 	createClusterState := func(slots []ClusterSlot) *clusterState {
-		nodes := newClusterNodes(&ClusterOptions{})
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
 		state, err := newClusterState(nodes, slots, "10.10.10.10:1234")
 		Expect(err).NotTo(HaveOccurred())
 		return state

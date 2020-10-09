@@ -1,11 +1,11 @@
 package redis_test
 
 import (
+	"errors"
+	"strings"
 	"time"
 
-	"strings"
-
-	"github.com/go-redis/redis/v7"
+	redis "github.com/go-redis/redis/v8"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -16,7 +16,7 @@ var _ = Describe("Cmd", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -24,10 +24,10 @@ var _ = Describe("Cmd", func() {
 	})
 
 	It("implements Stringer", func() {
-		set := client.Set("foo", "bar", 0)
+		set := client.Set(ctx, "foo", "bar", 0)
 		Expect(set.String()).To(Equal("set foo bar: OK"))
 
-		get := client.Get("foo")
+		get := client.Get(ctx, "foo")
 		Expect(get.String()).To(Equal("get foo: bar"))
 	})
 
@@ -39,11 +39,11 @@ var _ = Describe("Cmd", func() {
 	})
 
 	It("has val/err", func() {
-		set := client.Set("key", "hello", 0)
+		set := client.Set(ctx, "key", "hello", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 		Expect(set.Val()).To(Equal("OK"))
 
-		get := client.Get("key")
+		get := client.Get(ctx, "key")
 		Expect(get.Err()).NotTo(HaveOccurred())
 		Expect(get.Val()).To(Equal("hello"))
 
@@ -52,18 +52,18 @@ var _ = Describe("Cmd", func() {
 	})
 
 	It("has helpers", func() {
-		set := client.Set("key", "10", 0)
+		set := client.Set(ctx, "key", "10", 0)
 		Expect(set.Err()).NotTo(HaveOccurred())
 
-		n, err := client.Get("key").Int64()
+		n, err := client.Get(ctx, "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(10)))
 
-		un, err := client.Get("key").Uint64()
+		un, err := client.Get(ctx, "key").Uint64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(un).To(Equal(uint64(10)))
 
-		f, err := client.Get("key").Float64()
+		f, err := client.Get(ctx, "key").Float64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(f).To(Equal(float64(10)))
 	})
@@ -71,26 +71,34 @@ var _ = Describe("Cmd", func() {
 	It("supports float32", func() {
 		f := float32(66.97)
 
-		err := client.Set("float_key", f, 0).Err()
+		err := client.Set(ctx, "float_key", f, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		val, err := client.Get("float_key").Float32()
+		val, err := client.Get(ctx, "float_key").Float32()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(f))
 	})
 
 	It("supports time.Time", func() {
-		tm := time.Date(2019, 01, 01, 0, 0, 0, 0, time.UTC)
+		tm := time.Date(2019, 01, 01, 9, 45, 10, 222125, time.UTC)
 
-		err := client.Set("time_key", tm, 0).Err()
+		err := client.Set(ctx, "time_key", tm, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		s, err := client.Get("time_key").Result()
+		s, err := client.Get(ctx, "time_key").Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(s).To(Equal("2019-01-01T00:00:00Z"))
+		Expect(s).To(Equal("2019-01-01T09:45:10.000222125Z"))
 
-		tm2, err := client.Get("time_key").Time()
+		tm2, err := client.Get(ctx, "time_key").Time()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tm2).To(BeTemporally("==", tm))
+	})
+
+	It("allows to set custom error", func() {
+		e := errors.New("custom error")
+		cmd := redis.Cmd{}
+		cmd.SetErr(e)
+		_, err := cmd.Result()
+		Expect(err).To(Equal(e))
 	})
 })

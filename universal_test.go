@@ -4,7 +4,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 )
 
 var _ = Describe("UniversalClient", func() {
@@ -19,23 +19,22 @@ var _ = Describe("UniversalClient", func() {
 	It("should connect to failover servers", func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			MasterName: sentinelName,
-			Addrs:      []string{":" + sentinelPort},
+			Addrs:      sentinelAddrs,
 		})
-		Expect(client.Ping().Err()).NotTo(HaveOccurred())
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	It("should connect to simple servers", func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs: []string{redisAddr},
 		})
-		Expect(client.Ping().Err()).NotTo(HaveOccurred())
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	It("should connect to clusters", func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs: cluster.addrs(),
 		})
-		Expect(client.Ping().Err()).NotTo(HaveOccurred())
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
-
 })
