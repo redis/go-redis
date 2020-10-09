@@ -27,6 +27,19 @@ func BenchmarkReader_ParseReply_Slice(b *testing.B) {
 	benchmarkParseReply(b, "*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n", multiBulkParse, false)
 }
 
+func TestReader_ReadLine(t *testing.T) {
+	original := bytes.Repeat([]byte("a"), 8192)
+	r := proto.NewReader(bytes.NewReader(original))
+	read, err := r.ReadLine()
+	if err != nil {
+		t.Errorf("Should be able to read the full buffer: %v", err)
+	}
+
+	if bytes.Compare(read, original) != 0 {
+		t.Errorf("Values must be equal: %q", read)
+	}
+}
+
 func benchmarkParseReply(b *testing.B, reply string, m proto.MultiBulkParse, wanterr bool) {
 	buf := new(bytes.Buffer)
 	for i := 0; i < b.N; i++ {

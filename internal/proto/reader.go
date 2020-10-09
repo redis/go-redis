@@ -55,9 +55,12 @@ func (r *Reader) Reset(rd io.Reader) {
 }
 
 func (r *Reader) ReadLine() ([]byte, error) {
-	line, err := r.readLine()
-	if err != nil {
+	line, err := r.rd.ReadBytes('\n')
+	if err != nil && err != io.EOF {
 		return nil, err
+	}
+	if len(line) == 0 {
+		return nil, fmt.Errorf("redis: reply is empty")
 	}
 	if isNilReply(line) {
 		return nil, Nil
