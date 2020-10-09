@@ -43,6 +43,19 @@ func benchmarkParseReply(b *testing.B, reply string, m proto.MultiBulkParse, wan
 	}
 }
 
+func TestReader_ReadLine(t *testing.T) {
+	original := bytes.Repeat([]byte("a"), 8192)
+	r := proto.NewReader(bytes.NewReader(original))
+	read, err := r.ReadLine()
+	if err != nil {
+		t.Errorf("Should be able to read the full buffer: %v", err)
+	}
+
+	if bytes.Compare(read, original) != 0 {
+		t.Errorf("Values must be equal: %q", read)
+	}
+}
+
 func multiBulkParse(p *proto.Reader, n int64) (interface{}, error) {
 	vv := make([]interface{}, 0, n)
 	for i := int64(0); i < n; i++ {
