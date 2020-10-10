@@ -10,7 +10,7 @@
 - [Docs](https://redis.uptrace.dev)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
-- [RealWorld example app](https://github.com/uptrace/go-realworld-example-app)
+- [RealWorld example app](https://github.com/uptrace/go-treemux-realworld-example-app)
 - Join [Discord](https://discord.gg/rWtp5Aj) to ask questions.
 
 ## Ecosystem
