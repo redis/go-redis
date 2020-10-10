@@ -69,29 +69,27 @@ func (r *Reader) ReadLine() ([]byte, error) {
 //   - there is a pending read error;
 //   - or line does not end with \r\n.
 func (r *Reader) readLine() ([]byte, error) {
-	var s []byte
-	multi := false
-	for {
-		b, err := r.rd.ReadSlice('\n')
+	b, err := r.rd.ReadSlice('\n')
+	if err != nil {
+		if err != bufio.ErrBufferFull {
+			return nil, err
+		}
+
+		full := make([]byte, len(b))
+		copy(full, b)
+
+		b, err = r.rd.ReadBytes('\n')
 		if err != nil {
-			// in case the end of the buffer is not reached
-			if err == bufio.ErrBufferFull {
-				s = append(s, b...)
-				multi = true
-				continue
-			} else {
-				return nil, err
-			}
+			return nil, err
 		}
-		if len(b) <= 2 || b[len(b)-1] != '\n' || b[len(b)-2] != '\r' {
-			return nil, fmt.Errorf("redis: invalid reply: %q", b)
-		}
-		if multi {
-			b = append(s, b...)
-		}
-		b = b[:len(b)-2]
-		return b, nil
+
+		full = append(full, b...)
+		b = full
 	}
+	if len(b) <= 2 || b[len(b)-1] != '\n' || b[len(b)-2] != '\r' {
+		return nil, fmt.Errorf("redis: invalid reply: %q", b)
+	}
+	return b[:len(b)-2], nil
 }
 
 func (r *Reader) ReadReply(m MultiBulkParse) (interface{}, error) {
