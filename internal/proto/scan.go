@@ -9,7 +9,6 @@ import (
 	"github.com/go-redis/redis/v8/internal/util"
 )
 
-// Scan parses bytes `b` to `v` with appropriate type.
 func Scan(b []byte, v interface{}) error {
 	switch v := v.(type) {
 	case nil:
