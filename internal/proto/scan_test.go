@@ -3,6 +3,7 @@ package proto
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -78,7 +79,7 @@ func TestScan(t *testing.T) {
 		}
 
 		if !toWrite.Equal(toScan) {
-			t.Fatal(err)
+			t.Fatal(errors.New("toWrite and toScan is not equal"))
 		}
 	})
 
