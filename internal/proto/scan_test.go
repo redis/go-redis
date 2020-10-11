@@ -1,7 +1,10 @@
 package proto
 
 import (
+	"bytes"
 	"encoding/json"
+	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -46,3 +49,37 @@ var _ = Describe("ScanSlice", func() {
 		}))
 	})
 })
+
+func TestScan(t *testing.T) {
+	t.Parallel()
+
+	t.Run("time", func(t *testing.T) {
+		t.Parallel()
+
+		toWrite := time.Now()
+		var toScan time.Time
+
+		buf := new(bytes.Buffer)
+		wr := NewWriter(buf)
+		err := wr.WriteArg(toWrite)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		r := NewReader(buf)
+		b, err := r.readTmpBytesReply()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = Scan(b, &toScan)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !toWrite.Equal(toScan) {
+			t.Fatal(err)
+		}
+	})
+
+}

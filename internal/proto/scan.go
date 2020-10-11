@@ -4,10 +4,12 @@ import (
 	"encoding"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/go-redis/redis/v8/internal/util"
 )
 
+// Scan parses bytes `b` to 'v' with appropriate type.
 func Scan(b []byte, v interface{}) error {
 	switch v := v.(type) {
 	case nil:
@@ -99,6 +101,10 @@ func Scan(b []byte, v interface{}) error {
 	case *bool:
 		*v = len(b) == 1 && b[0] == '1'
 		return nil
+	case *time.Time:
+		var err error
+		*v, err = time.Parse(time.RFC3339, util.BytesToString(b))
+		return err
 	case encoding.BinaryUnmarshaler:
 		return v.UnmarshalBinary(b)
 	default:
