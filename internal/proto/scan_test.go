@@ -1,12 +1,14 @@
-package proto
+package proto_test
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v8/internal/proto"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -32,7 +34,7 @@ var _ = Describe("ScanSlice", func() {
 
 	It("[]testScanSliceStruct", func() {
 		var slice []testScanSliceStruct
-		err := ScanSlice(data, &slice)
+		err := proto.ScanSlice(data, &slice)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(slice).To(Equal([]testScanSliceStruct{
 			{-1, "Back Yu"},
@@ -42,7 +44,7 @@ var _ = Describe("ScanSlice", func() {
 
 	It("var testContainer []*testScanSliceStruct", func() {
 		var slice []*testScanSliceStruct
-		err := ScanSlice(data, &slice)
+		err := proto.ScanSlice(data, &slice)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(slice).To(Equal([]*testScanSliceStruct{
 			{-1, "Back Yu"},
@@ -57,29 +59,20 @@ func TestScan(t *testing.T) {
 	t.Run("time", func(t *testing.T) {
 		t.Parallel()
 
-		toWrite := time.Now()
-		var toScan time.Time
+		ctx := context.Background()
 
-		buf := new(bytes.Buffer)
-		wr := NewWriter(buf)
-		err := wr.WriteArg(toWrite)
-		if err != nil {
-			t.Fatal(err)
-		}
+		rdb := redis.NewClient(&redis.Options{
+			Addr: ":6379",
+		})
 
-		r := NewReader(buf)
-		b, err := r.readTmpBytesReply()
-		if err != nil {
-			t.Fatal(err)
-		}
+		tm := time.Now()
+		rdb.Set(ctx, "now", tm, 0)
 
-		err = Scan(b, &toScan)
-		if err != nil {
-			t.Fatal(err)
-		}
+		var tm2 time.Time
+		rdb.Get(ctx, "now").Scan(&tm2)
 
-		if !toWrite.Equal(toScan) {
-			t.Fatal(errors.New("toWrite and toScan is not equal"))
+		if !tm2.Equal(tm) {
+			t.Fatal(errors.New("tm2 and tm are not equal"))
 		}
 	})
 

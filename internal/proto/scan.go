@@ -104,7 +104,7 @@ func Scan(b []byte, v interface{}) error {
 		return nil
 	case *time.Time:
 		var err error
-		*v, err = time.Parse(time.RFC3339, util.BytesToString(b))
+		*v, err = time.Parse(time.RFC3339Nano, util.BytesToString(b))
 		return err
 	case encoding.BinaryUnmarshaler:
 		return v.UnmarshalBinary(b)
