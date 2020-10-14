@@ -1147,7 +1147,7 @@ var _ = Describe("Commands", func() {
 
 		It("should Set with keepttl", func() {
 			// set with ttl
-			set := client.Set(ctx, "key", "hello", 5 * time.Second)
+			set := client.Set(ctx, "key", "hello", 5*time.Second)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
 

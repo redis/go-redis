@@ -14,7 +14,7 @@ import (
 
 	"github.com/go-redis/redis/v8/internal"
 	"github.com/go-redis/redis/v8/internal/pool"
-	"go.opentelemetry.io/otel/api/trace"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/label"
 )
 
@@ -293,7 +293,7 @@ func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			var conn net.Conn
-			err := internal.WithSpan(ctx, "dialer", func(ctx context.Context, span trace.Span) error {
+			err := internal.WithSpan(ctx, "dialer", func(ctx context.Context, span otel.Span) error {
 				var err error
 				span.SetAttributes(
 					label.String("redis.network", opt.Network),
