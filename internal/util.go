@@ -7,11 +7,11 @@ import (
 	"github.com/go-redis/redis/v8/internal/proto"
 	"github.com/go-redis/redis/v8/internal/util"
 	"go.opentelemetry.io/otel/api/global"
-	"go.opentelemetry.io/otel/api/trace"
+	"go.opentelemetry.io/otel"
 )
 
 func Sleep(ctx context.Context, dur time.Duration) error {
-	return WithSpan(ctx, "sleep", func(ctx context.Context, span trace.Span) error {
+	return WithSpan(ctx, "sleep", func(ctx context.Context, span otel.Span) error {
 		t := time.NewTimer(dur)
 		defer t.Stop()
 
@@ -62,8 +62,8 @@ func Unwrap(err error) error {
 
 //------------------------------------------------------------------------------
 
-func WithSpan(ctx context.Context, name string, fn func(context.Context, trace.Span) error) error {
-	if span := trace.SpanFromContext(ctx); !span.IsRecording() {
+func WithSpan(ctx context.Context, name string, fn func(context.Context, otel.Span) error) error {
+	if span := otel.SpanFromContext(ctx); !span.IsRecording() {
 		return fn(ctx, span)
 	}
 
@@ -75,7 +75,7 @@ func WithSpan(ctx context.Context, name string, fn func(context.Context, trace.S
 
 func RecordError(ctx context.Context, err error) error {
 	if err != proto.Nil {
-		trace.SpanFromContext(ctx).RecordError(ctx, err)
+		otel.SpanFromContext(ctx).RecordError(ctx, err)
 	}
 	return err
 }
