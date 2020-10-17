@@ -719,6 +719,7 @@ type conn struct {
 	baseClient
 	cmdable
 	statefulCmdable
+	hooks // TODO: inherit hooks
 }
 
 // Conn is like Client, but its pool contains single connection.
@@ -743,7 +744,15 @@ func newConn(ctx context.Context, opt *Options, connPool pool.Pooler) *Conn {
 }
 
 func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
-	return c.baseClient.process(ctx, cmd)
+	return c.hooks.process(ctx, cmd, c.baseClient.process)
+}
+
+func (c *Conn) processPipeline(ctx context.Context, cmds []Cmder) error {
+	return c.hooks.processPipeline(ctx, cmds, c.baseClient.processPipeline)
+}
+
+func (c *Conn) processTxPipeline(ctx context.Context, cmds []Cmder) error {
+	return c.hooks.processTxPipeline(ctx, cmds, c.baseClient.processTxPipeline)
 }
 
 func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
