@@ -295,6 +295,11 @@ var _ = Describe("Client", func() {
 
 		Expect(tm2).To(BeTemporally("==", tm))
 	})
+
+	It("should Conn", func() {
+		err := rdb.Conn(ctx).Get(ctx, "this-key-does-not-exist").Err()
+		Expect(err).To(Equal(redis.Nil))
+	})
 })
 
 var _ = Describe("Client timeout", func() {
