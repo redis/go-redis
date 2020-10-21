@@ -283,6 +283,23 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got).To(Equal(bigVal))
 	})
+
+	It("should set and scan time", func() {
+		tm := time.Now()
+		err := rdb.Set(ctx, "now", tm, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		var tm2 time.Time
+		err = rdb.Get(ctx, "now").Scan(&tm2)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(tm2).To(BeTemporally("==", tm))
+	})
+
+	It("should Conn", func() {
+		err := rdb.Conn(ctx).Get(ctx, "this-key-does-not-exist").Err()
+		Expect(err).To(Equal(redis.Nil))
+	})
 })
 
 var _ = Describe("Client timeout", func() {

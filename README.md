@@ -7,18 +7,17 @@
 
 > :heart: [**Uptrace.dev** - distributed traces, logs, and errors in one place](https://uptrace.dev)
 
-- [Docs](https://redis.uptrace.dev)
+- Join [Discord](https://discord.gg/rWtp5Aj) to ask questions.
+- [Documentation](https://redis.uptrace.dev)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
 - [RealWorld example app](https://github.com/uptrace/go-treemux-realworld-example-app)
-- Join [Discord](https://discord.gg/rWtp5Aj) to ask questions.
 
 ## Ecosystem
 
-- [redisext](https://github.com/go-redis/redisext) - tracing using OpenTelemetryHook.
+- [Distributed Locks](https://github.com/bsm/redislock).
 - [Redis Cache](https://github.com/go-redis/cache).
 - [Rate limiting](https://github.com/go-redis/redis_rate).
-- [Distributed Locks](https://github.com/bsm/redislock).
 
 ## Features
 
@@ -40,18 +39,18 @@
 
 ## Installation
 
-go-redis requires a Go version with [Modules](https://github.com/golang/go/wiki/Modules) support and
-uses import versioning. So please make sure to initialize a Go module before installing go-redis:
+go-redis supports 2 last Go versions and requires a Go version with
+[modules](https://github.com/golang/go/wiki/Modules) support. So make sure to initialize a Go
+module:
 
 ```shell
 go mod init github.com/my/repo
-go get github.com/go-redis/redis/v8
 ```
 
-Import:
+And then install go-redis (note _v8_ in the import; omitting it is a popular mistake):
 
-```go
-import "github.com/go-redis/redis/v8"
+```shell
+go get github.com/go-redis/redis/v8
 ```
 
 ## Quickstart
@@ -64,24 +63,13 @@ import (
 
 var ctx = context.Background()
 
-func ExampleNewClient() {
-    rdb := redis.NewClient(&redis.Options{
-        Addr:     "localhost:6379",
-        Password: "", // no password set
-        DB:       0,  // use default DB
-    })
-
-    pong, err := rdb.Ping(ctx).Result()
-    fmt.Println(pong, err)
-    // Output: PONG <nil>
-}
-
 func ExampleClient() {
     rdb := redis.NewClient(&redis.Options{
         Addr:     "localhost:6379",
         Password: "", // no password set
         DB:       0,  // use default DB
     })
+
     err := rdb.Set(ctx, "key", "value", 0).Err()
     if err != nil {
         panic(err)
@@ -105,11 +93,6 @@ func ExampleClient() {
     // key2 does not exist
 }
 ```
-
-## Howto
-
-Please go through [examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
-to get an idea how to use this package.
 
 ## Look and feel
 

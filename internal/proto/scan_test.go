@@ -1,8 +1,9 @@
-package proto
+package proto_test
 
 import (
 	"encoding/json"
 
+	"github.com/go-redis/redis/v8/internal/proto"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -28,7 +29,7 @@ var _ = Describe("ScanSlice", func() {
 
 	It("[]testScanSliceStruct", func() {
 		var slice []testScanSliceStruct
-		err := ScanSlice(data, &slice)
+		err := proto.ScanSlice(data, &slice)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(slice).To(Equal([]testScanSliceStruct{
 			{-1, "Back Yu"},
@@ -38,7 +39,7 @@ var _ = Describe("ScanSlice", func() {
 
 	It("var testContainer []*testScanSliceStruct", func() {
 		var slice []*testScanSliceStruct
-		err := ScanSlice(data, &slice)
+		err := proto.ScanSlice(data, &slice)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(slice).To(Equal([]*testScanSliceStruct{
 			{-1, "Back Yu"},
