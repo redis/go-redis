@@ -18,3 +18,4 @@ linters:
     - goerr113
     - exhaustive
     - nestif
+    - nlreturn
