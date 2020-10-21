@@ -1,4 +1,4 @@
-module github.com/go-redis/redis/extra/rediscensus
+module github.com/go-redis/redis/extra/redisotel
 
 go 1.15
 
