@@ -787,13 +787,7 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 
 // Redis `SETEX key expiration value` command.
 func (c cmdable) SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
-	args := make([]interface{}, 4)
-	args[0] = "setex"
-	args[1] = key
-	args[2] = formatSec(ctx, expiration)
-	args[3] = value
-
-	cmd := NewStatusCmd(ctx, args...)
+	cmd := NewStatusCmd(ctx, "setex", key, formatSec(ctx, expiration), value)
 	_ = c(ctx, cmd)
 	return cmd
 }
