@@ -124,6 +124,7 @@ type Cmdable interface {
 	MSet(ctx context.Context, values ...interface{}) *StatusCmd
 	MSetNX(ctx context.Context, values ...interface{}) *BoolCmd
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
+	SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd
@@ -780,6 +781,13 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 	}
 
 	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Redis `SETEX key expiration value` command.
+func (c cmdable) SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "setex", key, formatSec(ctx, expiration), value)
 	_ = c(ctx, cmd)
 	return cmd
 }

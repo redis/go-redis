@@ -1147,7 +1147,7 @@ var _ = Describe("Commands", func() {
 
 		It("should Set with keepttl", func() {
 			// set with ttl
-			set := client.Set(ctx, "key", "hello", 5 * time.Second)
+			set := client.Set(ctx, "key", "hello", 5*time.Second)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
 
@@ -1170,6 +1170,19 @@ var _ = Describe("Commands", func() {
 			get := client.Get(ctx, "key")
 			Expect(get.Err()).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("hello"))
+		})
+
+		It("should SetEX", func() {
+			err := client.SetEX(ctx, "key", "hello", 100*time.Millisecond).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+
+			Eventually(func() error {
+				return client.Get(ctx, "foo").Err()
+			}, "1s", "100ms").Should(Equal(redis.Nil))
 		})
 
 		It("should SetNX", func() {
