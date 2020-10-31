@@ -15,6 +15,8 @@ import (
 // Nil reply returned by Redis when key does not exist.
 const Nil = proto.Nil
 
+var dummyPipelineCommand = NewStatusCmd(context.Background(), "pipeline")
+
 func SetLogger(logger internal.Logging) {
 	internal.Logger = logger
 }
@@ -353,7 +355,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 			if err == nil {
 				return nil
 			}
-			retry = shouldRetry(err, retryTimeout)
+			retry = c.opt.shouldRetry(cmd, err, retryTimeout)
 			return err
 		})
 		if err == nil || !retry {
@@ -438,7 +440,8 @@ func (c *baseClient) _generalProcessPipeline(
 			canRetry, err = p(ctx, cn, cmds)
 			return err
 		})
-		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) {
+		if lastErr == nil || !canRetry ||
+			!c.opt.shouldRetry(dummyPipelineCommand, lastErr, true) {
 			return lastErr
 		}
 	}

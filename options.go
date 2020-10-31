@@ -110,6 +110,9 @@ type Options struct {
 
 	// Limiter interface used to implemented circuit breaker or rate limiter.
 	Limiter Limiter
+
+	// RetryConditionFunc allows user to define whether to retry or not
+	RetryConditionFunc func(cmd Cmder, err error, retryTimeout bool) bool
 }
 
 func (opt *Options) init() {
@@ -185,6 +188,13 @@ func (opt *Options) init() {
 func (opt *Options) clone() *Options {
 	clone := *opt
 	return &clone
+}
+
+func (opt *Options) shouldRetry(cmd Cmder, err error, retryTimeout bool) bool {
+	if opt.RetryConditionFunc == nil {
+		return ShouldRetry(err, retryTimeout)
+	}
+	return opt.RetryConditionFunc(cmd, err, retryTimeout)
 }
 
 // ParseURL parses an URL into Options that can be used to connect to Redis.

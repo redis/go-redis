@@ -24,7 +24,7 @@ type Error interface {
 
 var _ Error = proto.RedisError("")
 
-func shouldRetry(err error, retryTimeout bool) bool {
+func ShouldRetry(err error, retryTimeout bool) bool {
 	switch err {
 	case io.EOF, io.ErrUnexpectedEOF:
 		return true

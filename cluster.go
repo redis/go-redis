@@ -19,7 +19,11 @@ import (
 	"github.com/go-redis/redis/v8/internal/rand"
 )
 
-var errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
+var (
+	errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
+
+	dummyWatchCommand = NewStatusCmd(context.Background(), "watch")
+)
 
 // ClusterOptions are used to configure a cluster client and should be
 // passed to NewClusterClient.
@@ -76,7 +80,8 @@ type ClusterOptions struct {
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
 
-	TLSConfig *tls.Config
+	TLSConfig          *tls.Config
+	RetryConditionFunc func(cmd Cmder, err error, retryTimeout bool) bool
 }
 
 func (opt *ClusterOptions) init() {
@@ -128,6 +133,13 @@ func (opt *ClusterOptions) init() {
 	}
 }
 
+func (opt *ClusterOptions) shouldRetry(cmd Cmder, err error, retryTimeout bool) bool {
+	if opt.RetryConditionFunc == nil {
+		return ShouldRetry(err, retryTimeout)
+	}
+	return opt.RetryConditionFunc(cmd, err, retryTimeout)
+}
+
 func (opt *ClusterOptions) clientOptions() *Options {
 	const disableIdleCheck = -1
 
@@ -155,7 +167,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 
 		readOnly: opt.ReadOnly,
 
-		TLSConfig: opt.TLSConfig,
+		TLSConfig:          opt.TLSConfig,
+		RetryConditionFunc: opt.RetryConditionFunc,
 	}
 }
 
@@ -814,7 +827,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
-		if shouldRetry(lastErr, cmd.readTimeout() == nil) {
+		if c.opt.shouldRetry(cmd, lastErr, cmd.readTimeout() == nil) {
 			// First retry the same node.
 			if attempt == 0 {
 				continue
@@ -1473,7 +1486,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			continue
 		}
 
-		if shouldRetry(err, true) {
+		if c.opt.shouldRetry(dummyWatchCommand, err, true) {
 			continue
 		}
 

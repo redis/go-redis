@@ -85,8 +85,9 @@ type RingOptions struct {
 	IdleTimeout        time.Duration
 	IdleCheckFrequency time.Duration
 
-	TLSConfig *tls.Config
-	Limiter   Limiter
+	TLSConfig          *tls.Config
+	Limiter            Limiter
+	RetryConditionFunc func(cmd Cmder, err error, retryTimeout bool) bool
 }
 
 func (opt *RingOptions) init() {
@@ -123,6 +124,13 @@ func (opt *RingOptions) init() {
 	}
 }
 
+func (opt *RingOptions) shouldRetry(cmd Cmder, err error, retryTimeout bool) bool {
+	if opt.RetryConditionFunc == nil {
+		return ShouldRetry(err, retryTimeout)
+	}
+	return opt.RetryConditionFunc(cmd, err, retryTimeout)
+}
+
 func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
 		Dialer:    opt.Dialer,
@@ -145,8 +153,9 @@ func (opt *RingOptions) clientOptions() *Options {
 		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: opt.IdleCheckFrequency,
 
-		TLSConfig: opt.TLSConfig,
-		Limiter:   opt.Limiter,
+		TLSConfig:          opt.TLSConfig,
+		Limiter:            opt.Limiter,
+		RetryConditionFunc: opt.RetryConditionFunc,
 	}
 }
 
@@ -601,7 +610,7 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		lastErr = shard.Client.Process(ctx, cmd)
-		if lastErr == nil || !shouldRetry(lastErr, cmd.readTimeout() == nil) {
+		if lastErr == nil || !c.opt.shouldRetry(cmd, lastErr, cmd.readTimeout() == nil) {
 			return lastErr
 		}
 	}
