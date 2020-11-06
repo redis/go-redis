@@ -1691,6 +1691,35 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Val()).To(Equal([]string{"two", "three"}))
 		})
 
+        It("should LPos", func() {
+            rPush := client.RPush(ctx, "list", "a")
+            Expect(rPush.Err()).NotTo(HaveOccurred())
+            rPush = client.RPush(ctx, "list", "b")
+            Expect(rPush.Err()).NotTo(HaveOccurred())
+            rPush = client.RPush(ctx, "list", "c")
+            Expect(rPush.Err()).NotTo(HaveOccurred())
+            rPush = client.RPush(ctx, "list", "b")
+            Expect(rPush.Err()).NotTo(HaveOccurred())
+
+            lPop := client.LPos(ctx, "list", "b", 1)
+            Expect(lPop.Err()).NotTo(HaveOccurred())
+            Expect(lPop.Val()).To(Equal(1))
+
+            lPop = client.LPos(ctx, "list", "b", 2)
+            Expect(lPop.Err()).NotTo(HaveOccurred())
+            Expect(lPop.Val()).To(Equal(3))
+
+            lPop = client.LPos(ctx, "list", "b", -2)
+            Expect(lPop.Err()).NotTo(HaveOccurred())
+            Expect(lPop.Val()).To(Equal(2))
+
+            lPop = client.LPos(ctx, "list", "z", 1)
+            Expect(lPop.Err()).To(Equal(redis.Nil))
+
+            lPop = client.LPos(ctx, "list", "b", 0)
+            Expect(lPop.Err()).To(HaveOccurred())
+        })
+
 		It("should LPush", func() {
 			lPush := client.LPush(ctx, "list", "World")
 			Expect(lPush.Err()).NotTo(HaveOccurred())

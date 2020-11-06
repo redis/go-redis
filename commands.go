@@ -168,6 +168,7 @@ type Cmdable interface {
 	LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd
 	LLen(ctx context.Context, key string) *IntCmd
 	LPop(ctx context.Context, key string) *StringCmd
+	LPos(ctx context.Context, key string, value string, rank int64) *IntCmd
 	LPush(ctx context.Context, key string, values ...interface{}) *IntCmd
 	LPushX(ctx context.Context, key string, values ...interface{}) *IntCmd
 	LRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd
@@ -1184,6 +1185,12 @@ func (c cmdable) LLen(ctx context.Context, key string) *IntCmd {
 
 func (c cmdable) LPop(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "lpop", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) LPos(ctx context.Context, key string, value string, rank int64) *IntCmd {
+	cmd := NewIntCmd(ctx, "lpos", key, value, "rank", rank)
 	_ = c(ctx, cmd)
 	return cmd
 }
