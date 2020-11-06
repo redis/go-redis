@@ -1703,15 +1703,15 @@ var _ = Describe("Commands", func() {
 
             lPop := client.LPos(ctx, "list", "b", 1)
             Expect(lPop.Err()).NotTo(HaveOccurred())
-            Expect(lPop.Val()).To(Equal(1))
+            Expect(lPop.Val()).To(Equal(int64(1)))
 
             lPop = client.LPos(ctx, "list", "b", 2)
             Expect(lPop.Err()).NotTo(HaveOccurred())
-            Expect(lPop.Val()).To(Equal(3))
+            Expect(lPop.Val()).To(Equal(int64(3)))
 
             lPop = client.LPos(ctx, "list", "b", -2)
             Expect(lPop.Err()).NotTo(HaveOccurred())
-            Expect(lPop.Val()).To(Equal(2))
+            Expect(lPop.Val()).To(Equal(int64(1)))
 
             lPop = client.LPos(ctx, "list", "z", 1)
             Expect(lPop.Err()).To(Equal(redis.Nil))
