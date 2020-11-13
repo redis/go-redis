@@ -2,7 +2,7 @@ name: Go
 
 on:
   push:
-    branches: [ master, feature/lpos-command ]
+    branches: [ master ]
   pull_request:
     branches: [ master ]
 
