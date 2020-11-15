@@ -1,7 +1,7 @@
 all: testdeps
-	go test ./...
-	go test ./... -short -race
-	go test ./... -run=NONE -bench=. -benchmem
+	go test ./... -coverprofile=coverage-1.txt -covermode=atomic
+	go test ./... -short -race -coverprofile=coverage-2.txt -covermode=atomic
+	go test ./... -run=NONE -bench=. -benchmem -coverprofile=coverage-3.txt -covermode=atomic
 	env GOOS=linux GOARCH=386 go test ./...
 	go vet
 	golangci-lint run
@@ -9,7 +9,7 @@ all: testdeps
 testdeps: testdata/redis/src/redis-server
 
 bench: testdeps
-	go test ./... -test.run=NONE -test.bench=. -test.benchmem
+	go test ./... -test.run=NONE -test.bench=. -test.benchmem -coverprofile=coverage.txt -covermode=atomic
 
 .PHONY: all test testdeps bench
 
