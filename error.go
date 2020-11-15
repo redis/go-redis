@@ -52,6 +52,9 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	if strings.HasPrefix(s, "CLUSTERDOWN ") {
 		return true
 	}
+	if strings.HasPrefix(s, "TRYAGAIN ") {
+		return true
+	}
 
 	return false
 }
