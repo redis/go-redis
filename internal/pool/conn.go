@@ -66,7 +66,7 @@ func (cn *Conn) RemoteAddr() net.Addr {
 }
 
 func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error) error {
-	return internal.WithSpan(ctx, "with_reader", func(ctx context.Context, span trace.Span) error {
+	return internal.WithSpan(ctx, "redis.with_reader", func(ctx context.Context, span trace.Span) error {
 		if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
 			return internal.RecordError(ctx, err)
 		}
@@ -80,7 +80,7 @@ func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(r
 func (cn *Conn) WithWriter(
 	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
 ) error {
-	return internal.WithSpan(ctx, "with_writer", func(ctx context.Context, span trace.Span) error {
+	return internal.WithSpan(ctx, "redis.with_writer", func(ctx context.Context, span trace.Span) error {
 		if err := cn.netConn.SetWriteDeadline(cn.deadline(ctx, timeout)); err != nil {
 			return internal.RecordError(ctx, err)
 		}

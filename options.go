@@ -293,11 +293,10 @@ func newConnPool(opt *Options) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			var conn net.Conn
-			err := internal.WithSpan(ctx, "dialer", func(ctx context.Context, span trace.Span) error {
+			err := internal.WithSpan(ctx, "redis.dialer", func(ctx context.Context, span trace.Span) error {
 				var err error
 				span.SetAttributes(
-					label.String("redis.network", opt.Network),
-					label.String("redis.addr", opt.Addr),
+					label.String("db.connection_string", opt.Addr),
 				)
 				conn, err = opt.Dialer(ctx, opt.Network, opt.Addr)
 				if err != nil {

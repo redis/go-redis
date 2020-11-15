@@ -11,7 +11,7 @@ import (
 )
 
 func Sleep(ctx context.Context, dur time.Duration) error {
-	return WithSpan(ctx, "sleep", func(ctx context.Context, span trace.Span) error {
+	return WithSpan(ctx, "time.Sleep", func(ctx context.Context, span trace.Span) error {
 		t := time.NewTimer(dur)
 		defer t.Stop()
 

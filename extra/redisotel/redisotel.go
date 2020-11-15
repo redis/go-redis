@@ -24,7 +24,7 @@ func (TracingHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.
 	ctx, span := tracer.Start(ctx, cmd.FullName())
 	span.SetAttributes(
 		label.String("db.system", "redis"),
-		label.String("redis.cmd", rediscmd.CmdString(cmd)),
+		label.String("db.statement", rediscmd.CmdString(cmd)),
 	)
 
 	return ctx, nil
@@ -49,8 +49,8 @@ func (TracingHook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder
 	ctx, span := tracer.Start(ctx, "pipeline "+summary)
 	span.SetAttributes(
 		label.String("db.system", "redis"),
-		label.Int("redis.num_cmd", len(cmds)),
-		label.String("redis.cmds", cmdsString),
+		label.Int("db.redis.num_cmd", len(cmds)),
+		label.String("db.statement", cmdsString),
 	)
 
 	return ctx, nil
