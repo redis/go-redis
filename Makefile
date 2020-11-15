@@ -2,7 +2,7 @@ all: testdeps
 	go test ./... -coverprofile=coverage-1.txt -covermode=atomic
 	go test ./... -short -race -coverprofile=coverage-2.txt -covermode=atomic
 	go test ./... -run=NONE -bench=. -benchmem -coverprofile=coverage-3.txt -covermode=atomic
-	env GOOS=linux GOARCH=386 go test ./...
+	env GOOS=linux GOARCH=386 go test ./... -coverprofile=coverage-4.txt -covermode=atomic
 	go vet
 	golangci-lint run
 
