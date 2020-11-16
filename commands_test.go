@@ -1701,26 +1701,23 @@ var _ = Describe("Commands", func() {
 			rPush = client.RPush(ctx, "list", "b")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
 
-			lPos := client.LPos(ctx, "list", "b", nil)
+			lPos := client.LPos(ctx, "list", "b", redis.LPosArgs{})
 			Expect(lPos.Err()).NotTo(HaveOccurred())
 			Expect(lPos.Val()).To(Equal(int64(1)))
 
-			lPos = client.LPos(ctx, "list", "b", &redis.LPosArgs{Rank: 2})
+			lPos = client.LPos(ctx, "list", "b", redis.LPosArgs{Rank: 2})
 			Expect(lPos.Err()).NotTo(HaveOccurred())
 			Expect(lPos.Val()).To(Equal(int64(3)))
 
-			lPos = client.LPos(ctx, "list", "b", &redis.LPosArgs{Rank: -2})
+			lPos = client.LPos(ctx, "list", "b", redis.LPosArgs{Rank: -2})
 			Expect(lPos.Err()).NotTo(HaveOccurred())
 			Expect(lPos.Val()).To(Equal(int64(1)))
 
-			lPos = client.LPos(ctx, "list", "b", &redis.LPosArgs{Rank: 2, MaxLen: 1})
+			lPos = client.LPos(ctx, "list", "b", redis.LPosArgs{Rank: 2, MaxLen: 1})
 			Expect(lPos.Err()).To(Equal(redis.Nil))
 
-			lPos = client.LPos(ctx, "list", "z", nil)
+			lPos = client.LPos(ctx, "list", "z", redis.LPosArgs{})
 			Expect(lPos.Err()).To(Equal(redis.Nil))
-
-			lPos = client.LPos(ctx, "list", "b", &redis.LPosArgs{Rank: 0})
-			Expect(lPos.Err()).To(HaveOccurred())
 		})
 
 		It("should LPosCount", func() {
@@ -1733,19 +1730,19 @@ var _ = Describe("Commands", func() {
 			rPush = client.RPush(ctx, "list", "b")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
 
-			lPos := client.LPosCount(ctx, "list", "b", 2, nil)
+			lPos := client.LPosCount(ctx, "list", "b", 2, redis.LPosArgs{})
 			Expect(lPos.Err()).NotTo(HaveOccurred())
 			Expect(lPos.Val()).To(Equal([]int64{1, 3}))
 
-			lPos = client.LPosCount(ctx, "list", "b", 2, &redis.LPosArgs{Rank: 2})
+			lPos = client.LPosCount(ctx, "list", "b", 2, redis.LPosArgs{Rank: 2})
 			Expect(lPos.Err()).NotTo(HaveOccurred())
 			Expect(lPos.Val()).To(Equal([]int64{3}))
 
-			lPos = client.LPosCount(ctx, "list", "b", 1, &redis.LPosArgs{Rank: 1, MaxLen: 1})
+			lPos = client.LPosCount(ctx, "list", "b", 1, redis.LPosArgs{Rank: 1, MaxLen: 1})
 			Expect(lPos.Err()).NotTo(HaveOccurred())
 			Expect(lPos.Val()).To(Equal([]int64{}))
 
-			lPos = client.LPosCount(ctx, "list", "b", 1, &redis.LPosArgs{Rank: 1, MaxLen: 0})
+			lPos = client.LPosCount(ctx, "list", "b", 1, redis.LPosArgs{Rank: 1, MaxLen: 0})
 			Expect(lPos.Err()).NotTo(HaveOccurred())
 			Expect(lPos.Val()).To(Equal([]int64{1}))
 		})
