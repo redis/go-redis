@@ -168,6 +168,8 @@ type Cmdable interface {
 	LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd
 	LLen(ctx context.Context, key string) *IntCmd
 	LPop(ctx context.Context, key string) *StringCmd
+	LPos(ctx context.Context, key string, value string, args LPosArgs) *IntCmd
+	LPosCount(ctx context.Context, key string, value string, count int64, args LPosArgs) *IntSliceCmd
 	LPush(ctx context.Context, key string, values ...interface{}) *IntCmd
 	LPushX(ctx context.Context, key string, values ...interface{}) *IntCmd
 	LRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd
@@ -1184,6 +1186,37 @@ func (c cmdable) LLen(ctx context.Context, key string) *IntCmd {
 
 func (c cmdable) LPop(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "lpop", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type LPosArgs struct {
+	Rank, MaxLen int64
+}
+
+func (c cmdable) LPos(ctx context.Context, key string, value string, a LPosArgs) *IntCmd {
+	args := []interface{}{"lpos", key, value}
+	if a.Rank != 0 {
+		args = append(args, "rank", a.Rank)
+	}
+	if a.MaxLen != 0 {
+		args = append(args, "maxlen", a.MaxLen)
+	}
+
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) LPosCount(ctx context.Context, key string, value string, count int64, a LPosArgs) *IntSliceCmd {
+	args := []interface{}{"lpos", key, value, "count", count}
+	if a.Rank != 0 {
+		args = append(args, "rank", a.Rank)
+	}
+	if a.MaxLen != 0 {
+		args = append(args, "maxlen", a.MaxLen)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
