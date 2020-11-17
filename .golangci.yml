@@ -19,3 +19,6 @@ linters:
     - exhaustive
     - nestif
     - nlreturn
+    - exhaustivestruct
+    - wrapcheck
+    - errorlint

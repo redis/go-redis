@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -230,7 +231,7 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	})
 	if err != nil {
 		c.connPool.Remove(ctx, cn, err)
-		if err := internal.Unwrap(err); err != nil {
+		if err := errors.Unwrap(err); err != nil {
 			return nil, err
 		}
 		return nil, err
