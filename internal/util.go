@@ -50,16 +50,6 @@ func isLower(s string) bool {
 	return true
 }
 
-func Unwrap(err error) error {
-	u, ok := err.(interface {
-		Unwrap() error
-	})
-	if !ok {
-		return nil
-	}
-	return u.Unwrap()
-}
-
 //------------------------------------------------------------------------------
 
 func WithSpan(ctx context.Context, name string, fn func(context.Context, trace.Span) error) error {

@@ -131,7 +131,7 @@ func ScanSlice(data []string, slice interface{}) error {
 	for i, s := range data {
 		elem := next()
 		if err := Scan([]byte(s), elem.Addr().Interface()); err != nil {
-			err = fmt.Errorf("redis: ScanSlice index=%d value=%q failed: %s", i, s, err)
+			err = fmt.Errorf("redis: ScanSlice index=%d value=%q failed: %w", i, s, err)
 			return err
 		}
 	}

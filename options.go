@@ -271,7 +271,7 @@ func setupUnixConn(u *url.URL) (*Options, error) {
 
 	db, err := strconv.Atoi(dbStr)
 	if err != nil {
-		return nil, fmt.Errorf("redis: invalid database number: %s", err)
+		return nil, fmt.Errorf("redis: invalid database number: %w", err)
 	}
 	o.DB = db
 
