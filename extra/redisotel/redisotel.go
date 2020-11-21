@@ -5,12 +5,13 @@ import (
 
 	"github.com/go-redis/redis/extra/rediscmd"
 	"github.com/go-redis/redis/v8"
-	"go.opentelemetry.io/otel/api/global"
-	"go.opentelemetry.io/otel/api/trace"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/label"
+	"go.opentelemetry.io/otel/trace"
 )
 
-var tracer = global.Tracer("github.com/go-redis/redis")
+var tracer = otel.Tracer("github.com/go-redis/redis")
 
 type TracingHook struct{}
 
@@ -67,6 +68,7 @@ func (TracingHook) AfterProcessPipeline(ctx context.Context, cmds []redis.Cmder)
 
 func recordError(ctx context.Context, span trace.Span, err error) {
 	if err != redis.Nil {
-		span.RecordError(ctx, err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 	}
 }

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/go-redis/redis/v8/redisext"
-	"go.opentelemetry.io/otel/api/global"
+	"github.com/go-redis/redis/v8/extra/redisotel"
+	"go.opentelemetry.io/otel"
 	meterStdout "go.opentelemetry.io/otel/exporters/metric/stdout"
 	traceStdout "go.opentelemetry.io/otel/exporters/trace/stdout"
 	"go.opentelemetry.io/otel/sdk/metric/controller/push"
@@ -27,7 +27,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err.Error())
 	} else {
-		global.SetMeterProvider(meterExporter.Provider())
+		otel.SetMeterProvider(meterExporter.Provider())
 	}
 
 	traceExporter, err := traceStdout.NewExporter(traceStdout.Options{
@@ -43,13 +43,13 @@ func main() {
 	); err != nil {
 		log.Fatal(err.Error())
 	} else {
-		global.SetTraceProvider(tp)
+		otel.SetTraceProvider(tp)
 	}
 
-	rdb.AddHook(redisext.OpenTelemetryHook{})
+	rdb.AddHook(redisotel.TracingHook{})
 
 	ctx := context.Background()
-	tracer := global.Tracer("Example tracer")
+	tracer := otel.Tracer("Example tracer")
 	ctx, span := tracer.Start(ctx, "start-test-span")
 
 	rdb.Set(ctx, "First value", "value_1", 0)
