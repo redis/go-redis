@@ -6,8 +6,8 @@ import (
 
 	"github.com/go-redis/redis/v8/internal/proto"
 	"github.com/go-redis/redis/v8/internal/util"
-	"go.opentelemetry.io/otel/api/global"
-	"go.opentelemetry.io/otel/api/trace"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func Sleep(ctx context.Context, dur time.Duration) error {
@@ -52,20 +52,22 @@ func isLower(s string) bool {
 
 //------------------------------------------------------------------------------
 
+var tracer = otel.Tracer("github.com/go-redis/redis")
+
 func WithSpan(ctx context.Context, name string, fn func(context.Context, trace.Span) error) error {
 	if span := trace.SpanFromContext(ctx); !span.IsRecording() {
 		return fn(ctx, span)
 	}
 
-	ctx, span := global.Tracer("github.com/go-redis/redis").Start(ctx, name)
+	ctx, span := tracer.Start(ctx, name)
 	defer span.End()
 
 	return fn(ctx, span)
 }
 
-func RecordError(ctx context.Context, err error) error {
+func RecordError(ctx context.Context, span trace.Span, err error) error {
 	if err != proto.Nil {
-		trace.SpanFromContext(ctx).RecordError(ctx, err)
+		span.RecordError(err)
 	}
 	return err
 }
