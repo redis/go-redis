@@ -1,7 +1,6 @@
 package proto
 
 import (
-	"encoding"
 	"fmt"
 	"io"
 	"strconv"
@@ -98,7 +97,7 @@ func (w *Writer) WriteArg(v interface{}) error {
 	case time.Time:
 		w.numBuf = v.AppendFormat(w.numBuf[:0], time.RFC3339Nano)
 		return w.bytes(w.numBuf)
-	case encoding.BinaryMarshaler:
+	case BinaryMarshaler:
 		b, err := v.MarshalBinary()
 		if err != nil {
 			return err
@@ -106,7 +105,7 @@ func (w *Writer) WriteArg(v interface{}) error {
 		return w.bytes(b)
 	default:
 		return fmt.Errorf(
-			"redis: can't marshal %T (implement encoding.BinaryMarshaler)", v)
+			"redis: can't marshal %T (implement proto.BinaryMarshaler)", v)
 	}
 }
 

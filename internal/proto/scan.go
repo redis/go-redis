@@ -1,7 +1,6 @@
 package proto
 
 import (
-	"encoding"
 	"fmt"
 	"reflect"
 	"time"
@@ -106,11 +105,11 @@ func Scan(b []byte, v interface{}) error {
 		var err error
 		*v, err = time.Parse(time.RFC3339Nano, util.BytesToString(b))
 		return err
-	case encoding.BinaryUnmarshaler:
+	case BinaryUnmarshaler:
 		return v.UnmarshalBinary(b)
 	default:
 		return fmt.Errorf(
-			"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)", v)
+			"redis: can't unmarshal %T (consider implementing proto.BinaryUnmarshaler)", v)
 	}
 }
 
