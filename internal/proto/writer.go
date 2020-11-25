@@ -97,15 +97,15 @@ func (w *Writer) WriteArg(v interface{}) error {
 	case time.Time:
 		w.numBuf = v.AppendFormat(w.numBuf[:0], time.RFC3339Nano)
 		return w.bytes(w.numBuf)
-	case BinaryMarshaler:
-		b, err := v.MarshalBinary()
+	case RedisBinaryMarshaler:
+		b, err := v.RedisMarshalBinary()
 		if err != nil {
 			return err
 		}
 		return w.bytes(b)
 	default:
 		return fmt.Errorf(
-			"redis: can't marshal %T (implement proto.BinaryMarshaler)", v)
+			"redis: can't marshal %T (implement proto.RedisBinaryMarshaler)", v)
 	}
 }
 

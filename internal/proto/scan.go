@@ -105,11 +105,11 @@ func Scan(b []byte, v interface{}) error {
 		var err error
 		*v, err = time.Parse(time.RFC3339Nano, util.BytesToString(b))
 		return err
-	case BinaryUnmarshaler:
-		return v.UnmarshalBinary(b)
+	case RedisBinaryUnmarshaler:
+		return v.RedisUnmarshalBinary(b)
 	default:
 		return fmt.Errorf(
-			"redis: can't unmarshal %T (consider implementing proto.BinaryUnmarshaler)", v)
+			"redis: can't unmarshal %T (consider implementing proto.RedisBinaryUnmarshaler)", v)
 	}
 }
 
