@@ -109,6 +109,9 @@ type Options struct {
 
 	// Limiter interface used to implemented circuit breaker or rate limiter.
 	Limiter Limiter
+
+	// A function to call during updateLatency instead of the default (ping) to optionally do a more in depth health check
+	LatencyHealthFunc func(c *Client) bool
 }
 
 func (opt *Options) init() {
