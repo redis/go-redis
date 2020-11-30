@@ -1,3 +1,5 @@
+// +build gofuzz
+
 package redis
 
 import (
@@ -22,13 +24,13 @@ func init() {
 }
 
 func Fuzz(data []byte) int {
-	array_len := len(data)
-	if array_len < 4 {
+	arrayLen := len(data)
+	if arrayLen < 4 {
 		return -1
 	}
-	max_iter := int(uint(data[0]))
-	for i := 0; i < max_iter && i < array_len; i++ {
-		n := i % array_len
+	maxIter := int(uint(data[0]))
+	for i := 0; i < maxIter && i < arrayLen; i++ {
+		n := i % arrayLen
 		if n == 0 {
 			_ = rdb.Set(ctx, string(data[i:]), string(data[i:]), 0).Err()
 		} else if n == 1 {
