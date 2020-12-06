@@ -316,6 +316,8 @@ func (c *baseClient) withConn(
 		select {
 		case <-done:
 			_ = cn.Close()
+			// Wait for the goroutine to finish and send something.
+			<-errc
 
 			err = ctx.Err()
 			return err
