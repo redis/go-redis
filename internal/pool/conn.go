@@ -16,7 +16,7 @@ var noDeadline = time.Time{}
 
 type Conn struct {
 	usedAt  int64 // atomic
-	netConn net.Conn
+	netConn *netConn
 
 	rd *proto.Reader
 	bw *bufio.Writer
@@ -27,13 +27,13 @@ type Conn struct {
 	createdAt time.Time
 }
 
-func NewConn(netConn net.Conn) *Conn {
+func NewConn(c net.Conn) *Conn {
 	cn := &Conn{
-		netConn:   netConn,
+		netConn:   newNetConn(c),
 		createdAt: time.Now(),
 	}
-	cn.rd = proto.NewReader(netConn)
-	cn.bw = bufio.NewWriter(netConn)
+	cn.rd = proto.NewReader(cn.netConn)
+	cn.bw = bufio.NewWriter(cn.netConn)
 	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
 	return cn
@@ -48,10 +48,10 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 	atomic.StoreInt64(&cn.usedAt, tm.Unix())
 }
 
-func (cn *Conn) SetNetConn(netConn net.Conn) {
-	cn.netConn = netConn
-	cn.rd.Reset(netConn)
-	cn.bw.Reset(netConn)
+func (cn *Conn) SetNetConn(c net.Conn) {
+	cn.netConn = newNetConn(c)
+	cn.rd.Reset(cn.netConn)
+	cn.bw.Reset(cn.netConn)
 }
 
 func (cn *Conn) Write(b []byte) (int, error) {
@@ -67,9 +67,13 @@ func (cn *Conn) RemoteAddr() net.Addr {
 
 func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error) error {
 	return internal.WithSpan(ctx, "redis.with_reader", func(ctx context.Context, span trace.Span) error {
-		if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
-			return internal.RecordError(ctx, span, err)
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			_ = cancel
 		}
+		cn.netConn.SetReadContext(ctx)
+
 		if err := fn(cn.rd); err != nil {
 			return internal.RecordError(ctx, span, err)
 		}
@@ -77,13 +81,14 @@ func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(r
 	})
 }
 
-func (cn *Conn) WithWriter(
-	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
-) error {
+func (cn *Conn) WithWriter(ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error) error {
 	return internal.WithSpan(ctx, "redis.with_writer", func(ctx context.Context, span trace.Span) error {
-		if err := cn.netConn.SetWriteDeadline(cn.deadline(ctx, timeout)); err != nil {
-			return internal.RecordError(ctx, span, err)
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			_ = cancel
 		}
+		cn.netConn.SetWriteContext(ctx)
 
 		if cn.bw.Buffered() > 0 {
 			cn.bw.Reset(cn.netConn)
@@ -105,32 +110,4 @@ func (cn *Conn) WithWriter(
 
 func (cn *Conn) Close() error {
 	return cn.netConn.Close()
-}
-
-func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
-	tm := time.Now()
-	cn.SetUsedAt(tm)
-
-	if timeout > 0 {
-		tm = tm.Add(timeout)
-	}
-
-	if ctx != nil {
-		deadline, ok := ctx.Deadline()
-		if ok {
-			if timeout == 0 {
-				return deadline
-			}
-			if deadline.Before(tm) {
-				return deadline
-			}
-			return tm
-		}
-	}
-
-	if timeout > 0 {
-		return tm
-	}
-
-	return noDeadline
 }

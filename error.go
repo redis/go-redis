@@ -68,7 +68,7 @@ func isBadConn(err error, allowTimeout bool) bool {
 	switch err {
 	case nil:
 		return false
-	case context.Canceled, context.DeadlineExceeded:
+	case context.Canceled:
 		return true
 	}
 
