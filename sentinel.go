@@ -177,11 +177,13 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	opt.init()
 
 	connPool := newConnPool(opt)
+	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
 		_ = connPool.Filter(func(cn *pool.Conn) bool {
 			return cn.RemoteAddr().String() != addr
 		})
 	}
+	failover.mu.Unlock()
 
 	c := Client{
 		baseClient: newBaseClient(opt, connPool),
