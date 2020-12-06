@@ -175,8 +175,8 @@ func redisRingOptions() *redis.RingOptions {
 func performAsync(n int, cbs ...func(int)) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for _, cb := range cbs {
+		wg.Add(n)
 		for i := 0; i < n; i++ {
-			wg.Add(1)
 			go func(cb func(int), i int) {
 				defer GinkgoRecover()
 				defer wg.Done()
