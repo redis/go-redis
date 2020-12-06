@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -294,6 +295,25 @@ var _ = Describe("races", func() {
 			err := client.WithContext(ctx).Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 		})
+	})
+
+	It("should abort on context timeout", func() {
+		opt := redisClusterOptions()
+		client := cluster.newClusterClient(ctx, opt)
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		wg := performAsync(C, func(_ int) {
+			_, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"test", "$"},
+				Block:   1 * time.Second,
+			}).Result()
+			Expect(err).To(Equal(context.Canceled))
+		})
+
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+		wg.Wait()
 	})
 })
 
