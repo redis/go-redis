@@ -864,6 +864,20 @@ var _ = Describe("ClusterClient", func() {
 			}))
 		})
 
+		It("should return correct replica for key", func() {
+			client, err := client.ReplicaForKey(ctx, "test")
+			Expect(err).ToNot(HaveOccurred())
+			info := client.Info(ctx, "server")
+			Expect(info.Val()).Should(ContainSubstring("tcp_port:8224"))
+		})
+
+		It("should return correct master for key", func() {
+			client, err := client.MasterForKey(ctx, "test")
+			Expect(err).ToNot(HaveOccurred())
+			info := client.Info(ctx, "server")
+			Expect(info.Val()).Should(ContainSubstring("tcp_port:8221"))
+		})
+
 		assertClusterClient()
 	})
 
