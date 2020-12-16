@@ -485,7 +485,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		return addr, nil
 	}
 
-	return "", errors.New("redis: all sentinels are unreachable")
+	return "", errors.New("redis: all sentinels specified in configuration are unreachable")
 }
 
 func (c *sentinelFailover) slaveAddrs(ctx context.Context) ([]string, error) {
@@ -530,7 +530,7 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context) ([]string, error) {
 		return addrs, nil
 	}
 
-	return []string{}, errors.New("redis: all sentinels are unreachable")
+	return []string{}, errors.New("redis: all sentinels specified in configuration are unreachable")
 }
 
 func (c *sentinelFailover) getMasterAddr(ctx context.Context, sentinel *SentinelClient) string {
