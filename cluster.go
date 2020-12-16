@@ -1655,13 +1655,13 @@ func (c *ClusterClient) slotMasterNode(ctx context.Context, slot int) (*clusterN
 	return state.slotMasterNode(slot)
 }
 
-// ReplicaForKey gets a client for a replica node to run any command on it.
+// SlaveForKey gets a client for a replica node to run any command on it.
 // This is especially useful if we want to run a particular lua script which has
 // only read only commands on the replica.
 // This is because other redis commands generally have a flag that points that
 // they are read only and automatically run on the replica nodes
 // if ClusterOptions.ReadOnly flag is set to true.
-func (c *ClusterClient) ReplicaForKey(ctx context.Context, key string) (*Client, error) {
+func (c *ClusterClient) SlaveForKey(ctx context.Context, key string) (*Client, error) {
 	state, err := c.state.Get(ctx)
 	if err != nil {
 		return nil, err
