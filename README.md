@@ -132,7 +132,7 @@ res, err := rdb.Do(ctx, "set", "key", "value").Result()
 ## Run the test
 go-redis will start a redis-server and run the test cases. 
 
-The paths of redis-server bin file and redis config file is definded in `main_test.go`:
+The paths of redis-server bin file and redis config file are definded in `main_test.go`:
 ```
 var (
 	redisServerBin, _  = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
