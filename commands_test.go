@@ -770,6 +770,18 @@ var _ = Describe("Commands", func() {
 			Expect(cursor).NotTo(BeZero())
 		})
 
+		It("should ScanType", func() {
+			for i := 0; i < 1000; i++ {
+				set := client.Set(ctx, fmt.Sprintf("key%d", i), "hello", 0)
+				Expect(set.Err()).NotTo(HaveOccurred())
+			}
+
+			keys, cursor, err := client.ScanType(ctx, 0, "", 0, "string").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).NotTo(BeEmpty())
+			Expect(cursor).NotTo(BeZero())
+		})
+
 		It("should SScan", func() {
 			for i := 0; i < 1000; i++ {
 				sadd := client.SAdd(ctx, "myset", fmt.Sprintf("member%d", i))
