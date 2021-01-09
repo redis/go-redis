@@ -248,6 +248,34 @@ func ExampleClient_Scan() {
 	// Output: found 33 keys
 }
 
+func ExampleClient_ScanType() {
+	rdb.FlushDB(ctx)
+	for i := 0; i < 33; i++ {
+		err := rdb.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	var cursor uint64
+	var n int
+	for {
+		var keys []string
+		var err error
+		keys, cursor, err = rdb.ScanType(ctx, cursor, "key*", 10, "string").Result()
+		if err != nil {
+			panic(err)
+		}
+		n += len(keys)
+		if cursor == 0 {
+			break
+		}
+	}
+
+	fmt.Printf("found %d keys\n", n)
+	// Output: found 33 keys
+}
+
 func ExampleClient_Pipelined() {
 	var incr *redis.IntCmd
 	_, err := rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
