@@ -1256,10 +1256,13 @@ func (c *ClusterClient) TxPipelined(ctx context.Context, fn func(Pipeliner) erro
 }
 
 func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.hooks.processPipeline(ctx, cmds, c._processTxPipeline)
+	return c.hooks.processTxPipeline(ctx, cmds, c._processTxPipeline)
 }
 
 func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) error {
+	// Trim multi .. exec.
+	cmds = cmds[1 : len(cmds)-1]
+
 	state, err := c.state.Get(ctx)
 	if err != nil {
 		setCmdsErr(cmds, err)
@@ -1295,6 +1298,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 					if err == nil {
 						return
 					}
+
 					if attempt < c.opt.MaxRedirects {
 						if err := c.mapCmdsByNode(ctx, failedCmds, cmds); err != nil {
 							setCmdsErr(cmds, err)
