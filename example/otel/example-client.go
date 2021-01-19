@@ -9,42 +9,20 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/go-redis/redis/v8/extra/redisotel"
 	"go.opentelemetry.io/otel"
-	meterStdout "go.opentelemetry.io/otel/exporters/metric/stdout"
-	traceStdout "go.opentelemetry.io/otel/exporters/trace/stdout"
+	"go.opentelemetry.io/otel/exporters/stdout"
 	"go.opentelemetry.io/otel/sdk/metric/controller/push"
+	"go.opentelemetry.io/otel/sdk/metric/processor/basic"
+	"go.opentelemetry.io/otel/sdk/metric/selector/simple"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func main() {
-	<-time.After(1 * time.Second)
+	stop := runExporter()
+	defer stop()
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
-
-	meterExporter, err := meterStdout.NewExportPipeline(meterStdout.Config{PrettyPrint: true},
-		push.WithPeriod(1*time.Second))
-	if err != nil {
-		log.Fatal(err.Error())
-	} else {
-		otel.SetMeterProvider(meterExporter.Provider())
-	}
-
-	traceExporter, err := traceStdout.NewExporter(traceStdout.Options{
-		PrettyPrint: true,
-	})
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	if tp, err := sdktrace.NewProvider(
-		sdktrace.WithSyncer(traceExporter),
-		sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
-	); err != nil {
-		log.Fatal(err.Error())
-	} else {
-		otel.SetTraceProvider(tp)
-	}
 
 	rdb.AddHook(redisotel.TracingHook{})
 
@@ -76,4 +54,28 @@ func main() {
 	// Wait some time to allow spans to export
 	<-time.After(5 * time.Second)
 	span.End()
+}
+
+func runExporter() func() {
+	exporter, err := stdout.NewExporter(stdout.WithPrettyPrint())
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exporter),
+		sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
+	)
+	otel.SetTracerProvider(tp)
+
+	pusher := push.New(
+		basic.New(
+			simple.NewWithExactDistribution(),
+			exporter,
+		),
+		exporter,
+		push.WithPeriod(1*time.Second),
+	)
+	pusher.Start()
+	return pusher.Stop
 }
