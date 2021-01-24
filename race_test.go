@@ -267,7 +267,7 @@ var _ = Describe("races", func() {
 
 		wg := performAsync(C, func(id int) {
 			for {
-				v, err := client.BLPop(ctx, 3*time.Second, "list").Result()
+				v, err := client.BLPop(ctx, 5*time.Second, "list").Result()
 				if err != nil {
 					if err == redis.Nil {
 						break
