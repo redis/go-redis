@@ -262,7 +262,7 @@ var _ = Describe("races", func() {
 		Expect(n).To(Equal(int64(N)))
 	})
 
-	PIt("should BLPop", func() {
+	It("should BLPop", func() {
 		var received uint32
 
 		wg := performAsync(C, func(id int) {
