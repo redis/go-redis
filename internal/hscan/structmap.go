@@ -24,22 +24,17 @@ type structMap struct {
 }
 
 func newStructMap() *structMap {
-	return &structMap{
-		m: sync.Map{},
-	}
+	return new(structMap)
 }
 
-func (s *structMap) get(t reflect.Type) (*structFields, bool) {
-	m, ok := s.m.Load(t)
-	if !ok {
-		return nil, ok
+func (s *structMap) get(t reflect.Type) *structFields {
+	if v, ok := s.m.Load(t); ok {
+		return m.(*structFields), ok
 	}
 
-	return m.(*structFields), true
-}
-
-func (s *structMap) set(t reflect.Type, sf *structFields) {
-	s.m.Store(t, sf)
+	fMap := getStructFields(v, "redis")
+	s.m.Store(t, fMap)
+	return fmap, true
 }
 
 func newStructFields() *structFields {
@@ -57,7 +52,7 @@ func (s *structFields) get(tag string) (*structField, bool) {
 	return f, ok
 }
 
-func makeStructSpecs(ob reflect.Value, fieldTag string) *structFields {
+func getStructFields(ob reflect.Value, fieldTag string) *structFields {
 	var (
 		num = ob.NumField()
 		out = newStructFields()

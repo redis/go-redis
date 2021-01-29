@@ -34,7 +34,7 @@ var (
 		reflect.Interface:     decodeUnsupported,
 		reflect.Map:           decodeUnsupported,
 		reflect.Ptr:           decodeUnsupported,
-		reflect.Slice:         decodeStringSlice,
+		reflect.Slice:         decodeSlice,
 		reflect.String:        decodeString,
 		reflect.Struct:        decodeUnsupported,
 		reflect.UnsafePointer: decodeUnsupported,
@@ -69,12 +69,7 @@ func Scan(vals []interface{}, dest interface{}) error {
 	// iterating through the fields of a struct type every time values are
 	// scanned into it.
 	typ := v.Type()
-	fMap, ok := structSpecs.get(typ)
-
-	if !ok {
-		fMap = makeStructSpecs(v, "redis")
-		structSpecs.set(typ, fMap)
-	}
+	fMap := structSpecs.get(typ)
 
 	// Iterate through the (key, value) sequence.
 	for i := 0; i < len(vals); i += 2 {
@@ -143,7 +138,7 @@ func decodeString(f reflect.Value, s string) error {
 	return nil
 }
 
-func decodeStringSlice(f reflect.Value, s string) error {
+func decodeSlice(f reflect.Value, s string) error {
 	// []byte slice ([]uint8).
 	if f.Type().Elem().Kind() == reflect.Uint8 {
 		f.SetBytes([]byte(s))
@@ -151,6 +146,6 @@ func decodeStringSlice(f reflect.Value, s string) error {
 	return nil
 }
 
-func decodeUnsupported(f reflect.Value, s string) error {
-	return fmt.Errorf("redis.Scan(unsupported type %v)", f)
+func decodeUnsupported(v reflect.Value, s string) error {
+	return fmt.Errorf("redis.Scan(unsupported %s)", v.Type())
 }
