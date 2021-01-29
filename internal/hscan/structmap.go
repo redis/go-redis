@@ -29,12 +29,12 @@ func newStructMap() *structMap {
 
 func (s *structMap) get(t reflect.Type) *structFields {
 	if v, ok := s.m.Load(t); ok {
-		return m.(*structFields), ok
+		return v.(*structFields)
 	}
 
-	fMap := getStructFields(v, "redis")
+	fMap := getStructFields(t, "redis")
 	s.m.Store(t, fMap)
-	return fmap, true
+	return fMap
 }
 
 func newStructFields() *structFields {
@@ -52,19 +52,16 @@ func (s *structFields) get(tag string) (*structField, bool) {
 	return f, ok
 }
 
-func getStructFields(ob reflect.Value, fieldTag string) *structFields {
+func getStructFields(t reflect.Type, fieldTag string) *structFields {
 	var (
-		num = ob.NumField()
+		num = t.NumField()
 		out = newStructFields()
 	)
 
 	for i := 0; i < num; i++ {
-		f := ob.Field(i)
-		if !f.IsValid() || !f.CanSet() {
-			continue
-		}
+		f := t.Field(i)
 
-		tag := ob.Type().Field(i).Tag.Get(fieldTag)
+		tag := t.Field(i).Tag.Get(fieldTag)
 		if tag == "" || tag == "-" {
 			continue
 		}
@@ -75,7 +72,7 @@ func getStructFields(ob reflect.Value, fieldTag string) *structFields {
 		}
 
 		// Use the built-in decoder.
-		out.set(tag, &structField{index: i, fn: decoders[f.Kind()]})
+		out.set(tag, &structField{index: i, fn: decoders[f.Type.Kind()]})
 	}
 
 	return out
