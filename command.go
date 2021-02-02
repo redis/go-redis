@@ -372,11 +372,12 @@ func (cmd *SliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-// Scan scans the results from a key-value Redis map result set ([]interface{})
-// like HMGET and HGETALL to a destination struct.
-// The Redis keys are matched to the struct's field with the `redis` tag.
-func (cmd *SliceCmd) Scan(val interface{}) error {
-	return hscan.Scan(cmd.val, val)
+// Scan scans the results from the map into a destination struct. The map keys
+// are matched in the Redis struct fields by the `redis:"field"` tag.
+func (cmd *SliceCmd) Scan(dest interface{}) error {
+	// Pass the list of keys and values. Skip the first to args (command, key),
+	// eg: HMGET map.
+	return hscan.Scan(cmd.args[2:], cmd.val, dest)
 }
 
 func (cmd *SliceCmd) readReply(rd *proto.Reader) error {
@@ -923,6 +924,23 @@ func (cmd *StringStringMapCmd) Result() (map[string]string, error) {
 
 func (cmd *StringStringMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
+}
+
+// Scan scans the results from the map into a destination struct. The map keys
+// are matched in the Redis struct fields by the `redis:"field"` tag.
+func (cmd *StringStringMapCmd) Scan(dest interface{}) error {
+	// Pass the list of keys and values. Skip the first to args (command, key),
+	// eg: HGETALL map.
+	var (
+		keys = make([]interface{}, 0, len(cmd.val))
+		vals = make([]interface{}, 0, len(cmd.val))
+	)
+	for k, v := range cmd.val {
+		keys = append(keys, k)
+		vals = append(vals, v)
+	}
+
+	return hscan.Scan(keys, vals, dest)
 }
 
 func (cmd *StringStringMapCmd) readReply(rd *proto.Reader) error {

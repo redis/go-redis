@@ -19,6 +19,8 @@ type data struct {
 	Bool   bool    `redis:"bool"`
 }
 
+type i []interface{}
+
 func TestGinkgoSuite(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "hscan")
@@ -26,35 +28,33 @@ func TestGinkgoSuite(t *testing.T) {
 
 var _ = Describe("Scan", func() {
 	It("catches bad args", func() {
-		var d data
+		var (
+			d data
+		)
 
-		Expect(Scan([]interface{}{}, &d)).NotTo(HaveOccurred())
+		Expect(Scan(i{}, i{}, &d)).NotTo(HaveOccurred())
 		Expect(d).To(Equal(data{}))
 
-		Expect(Scan([]interface{}{"key"}, &d)).To(HaveOccurred())
-		Expect(Scan([]interface{}{"key", "1", "2"}, &d)).To(HaveOccurred())
-		Expect(Scan([]interface{}{"key", "1"}, nil)).To(HaveOccurred())
+		Expect(Scan(i{"key"}, i{}, &d)).To(HaveOccurred())
+		Expect(Scan(i{"key"}, i{"1", "2"}, &d)).To(HaveOccurred())
+		Expect(Scan(i{"key", "1"}, i{}, nil)).To(HaveOccurred())
 
-		var i map[string]interface{}
-		Expect(Scan([]interface{}{"key", "1"}, &i)).To(HaveOccurred())
-		Expect(Scan([]interface{}{"key", "1"}, data{})).To(HaveOccurred())
-		Expect(Scan([]interface{}{"key", nil, "string", nil}, data{})).To(HaveOccurred())
+		var m map[string]interface{}
+		Expect(Scan(i{"key"}, i{"1"}, &m)).To(HaveOccurred())
+		Expect(Scan(i{"key"}, i{"1"}, data{})).To(HaveOccurred())
+		Expect(Scan(i{"key", "string"}, i{nil, nil}, data{})).To(HaveOccurred())
 	})
 
 	It("scans good values", func() {
 		var d data
 
 		// non-tagged fields.
-		Expect(Scan([]interface{}{"key", "value"}, &d)).NotTo(HaveOccurred())
+		Expect(Scan(i{"key"}, i{"value"}, &d)).NotTo(HaveOccurred())
 		Expect(d).To(Equal(data{}))
 
-		res := []interface{}{"string", "str!",
-			"byte", "bytes!",
-			"int", "123",
-			"uint", "456",
-			"float", "123.456",
-			"bool", "1"}
-		Expect(Scan(res, &d)).NotTo(HaveOccurred())
+		keys := i{"string", "byte", "int", "uint", "float", "bool"}
+		vals := i{"str!", "bytes!", "123", "456", "123.456", "1"}
+		Expect(Scan(keys, vals, &d)).NotTo(HaveOccurred())
 		Expect(d).To(Equal(data{
 			String: "str!",
 			Bytes:  []byte("bytes!"),
@@ -75,7 +75,7 @@ var _ = Describe("Scan", func() {
 			Bool   bool    `redis:"bool"`
 		}
 		var d2 data2
-		Expect(Scan(res, &d2)).NotTo(HaveOccurred())
+		Expect(Scan(keys, vals, &d2)).NotTo(HaveOccurred())
 		Expect(d2).To(Equal(data2{
 			String: "str!",
 			Bytes:  []byte("bytes!"),
@@ -85,10 +85,7 @@ var _ = Describe("Scan", func() {
 			Bool:   true,
 		}))
 
-		Expect(Scan([]interface{}{
-			"string", "",
-			"float", "1",
-			"bool", "t"}, &d)).NotTo(HaveOccurred())
+		Expect(Scan(i{"string", "float", "bool"}, i{"", "1", "t"}, &d)).NotTo(HaveOccurred())
 		Expect(d).To(Equal(data{
 			String: "",
 			Bytes:  []byte("bytes!"),
@@ -102,10 +99,7 @@ var _ = Describe("Scan", func() {
 	It("omits untagged fields", func() {
 		var d data
 
-		Expect(Scan([]interface{}{
-			"empty", "value",
-			"omit", "value",
-			"string", "str!"}, &d)).NotTo(HaveOccurred())
+		Expect(Scan(i{"empty", "omit", "string"}, i{"value", "value", "str!"}, &d)).NotTo(HaveOccurred())
 		Expect(d).To(Equal(data{
 			String: "str!",
 		}))
@@ -114,12 +108,12 @@ var _ = Describe("Scan", func() {
 	It("catches bad values", func() {
 		var d data
 
-		Expect(Scan([]interface{}{"int", "a"}, &d)).To(HaveOccurred())
-		Expect(Scan([]interface{}{"uint", "a"}, &d)).To(HaveOccurred())
-		Expect(Scan([]interface{}{"uint", ""}, &d)).To(HaveOccurred())
-		Expect(Scan([]interface{}{"float", "b"}, &d)).To(HaveOccurred())
-		Expect(Scan([]interface{}{"bool", "-1"}, &d)).To(HaveOccurred())
-		Expect(Scan([]interface{}{"bool", ""}, &d)).To(HaveOccurred())
-		Expect(Scan([]interface{}{"bool", "123"}, &d)).To(HaveOccurred())
+		Expect(Scan(i{"int"}, i{"a"}, &d)).To(HaveOccurred())
+		Expect(Scan(i{"uint"}, i{"a"}, &d)).To(HaveOccurred())
+		Expect(Scan(i{"uint"}, i{""}, &d)).To(HaveOccurred())
+		Expect(Scan(i{"float"}, i{"b"}, &d)).To(HaveOccurred())
+		Expect(Scan(i{"bool"}, i{"-1"}, &d)).To(HaveOccurred())
+		Expect(Scan(i{"bool"}, i{""}, &d)).To(HaveOccurred())
+		Expect(Scan(i{"bool"}, i{"123"}, &d)).To(HaveOccurred())
 	})
 })

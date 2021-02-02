@@ -1375,6 +1375,22 @@ var _ = Describe("Commands", func() {
 			Expect(m).To(Equal(map[string]string{"key1": "hello1", "key2": "hello2"}))
 		})
 
+		It("should scan", func() {
+			err := client.HMSet(ctx, "hash", "key1", "hello1", "key2", 123).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			res := client.HGetAll(ctx, "hash")
+			Expect(res.Err()).NotTo(HaveOccurred())
+
+			type data struct {
+				Key1 string `redis:"key1"`
+				Key2 int    `redis:"key2"`
+			}
+			var d data
+			Expect(res.Scan(&d)).NotTo(HaveOccurred())
+			Expect(d).To(Equal(data{Key1: "hello1", Key2: 123}))
+		})
+
 		It("should HIncrBy", func() {
 			hSet := client.HSet(ctx, "hash", "key", "5")
 			Expect(hSet.Err()).NotTo(HaveOccurred())

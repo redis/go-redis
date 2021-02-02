@@ -46,12 +46,11 @@ var (
 	structSpecs = newStructMap()
 )
 
-// Scan scans the results from a key-value Redis map result set ([]interface{})
-// to a destination struct. The Redis keys are matched to the struct's field
-// with the `redis` tag.
-func Scan(vals []interface{}, dest interface{}) error {
-	if len(vals)%2 != 0 {
-		return errors.New("args should have an even number of items (key-val)")
+// Scan scans the results from a key-value Redis map result set to a destination struct.
+// The Redis keys are matched to the struct's field with the `redis` tag.
+func Scan(keys []interface{}, vals []interface{}, dest interface{}) error {
+	if len(keys) != len(vals) {
+		return errors.New("args should have the same number of keys and vals")
 	}
 
 	// The destination to scan into should be a struct pointer.
@@ -72,13 +71,13 @@ func Scan(vals []interface{}, dest interface{}) error {
 	fMap := structSpecs.get(typ)
 
 	// Iterate through the (key, value) sequence.
-	for i := 0; i < len(vals); i += 2 {
-		key, ok := vals[i].(string)
+	for i := 0; i < len(vals); i++ {
+		key, ok := keys[i].(string)
 		if !ok {
 			continue
 		}
 
-		val, ok := vals[i+1].(string)
+		val, ok := vals[i].(string)
 		if !ok {
 			continue
 		}
