@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8/internal"
+	"github.com/go-redis/redis/v8/internal/hscan"
 	"github.com/go-redis/redis/v8/internal/proto"
 	"github.com/go-redis/redis/v8/internal/util"
 )
@@ -369,6 +370,13 @@ func (cmd *SliceCmd) Result() ([]interface{}, error) {
 
 func (cmd *SliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
+}
+
+// Scan scans the results from a key-value Redis map result set ([]interface{})
+// like HMGET and HGETALL to a destination struct.
+// The Redis keys are matched to the struct's field with the `redis` tag.
+func (cmd *SliceCmd) Scan(val interface{}) error {
+	return hscan.Scan(cmd.val, val)
 }
 
 func (cmd *SliceCmd) readReply(rd *proto.Reader) error {

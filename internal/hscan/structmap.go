@@ -61,7 +61,7 @@ func getStructFields(t reflect.Type, fieldTag string) *structFields {
 	for i := 0; i < num; i++ {
 		f := t.Field(i)
 
-		tag := t.Field(i).Tag.Get(fieldTag)
+		tag := f.Tag.Get(fieldTag)
 		if tag == "" || tag == "-" {
 			continue
 		}
