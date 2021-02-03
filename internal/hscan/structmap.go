@@ -6,17 +6,6 @@ import (
 	"sync"
 )
 
-// structField represents a single field in a target struct.
-type structField struct {
-	index int
-	fn    decoderFunc
-}
-
-// structFields contains the list of all fields in a target struct.
-type structFields struct {
-	m map[string]*structField
-}
-
 // structMap contains the map of struct fields for target structs
 // indexed by the struct type.
 type structMap struct {
@@ -27,37 +16,38 @@ func newStructMap() *structMap {
 	return new(structMap)
 }
 
-func (s *structMap) get(t reflect.Type) *structFields {
+func (s *structMap) get(t reflect.Type) *structSpec {
 	if v, ok := s.m.Load(t); ok {
-		return v.(*structFields)
+		return v.(*structSpec)
 	}
 
-	fMap := getStructFields(t, "redis")
-	s.m.Store(t, fMap)
-	return fMap
+	spec := newStructSpec(t, "redis")
+	s.m.Store(t, spec)
+	return spec
 }
 
-func newStructFields() *structFields {
-	return &structFields{
-		m: make(map[string]*structField),
-	}
+//------------------------------------------------------------------------------
+
+// structSpec contains the list of all fields in a target struct.
+type structSpec struct {
+	m map[string]*structField
 }
 
-func (s *structFields) set(tag string, sf *structField) {
+func (s *structSpec) set(tag string, sf *structField) {
 	s.m[tag] = sf
 }
 
-func (s *structFields) get(tag string) (*structField, bool) {
+func (s *structSpec) get(tag string) (*structField, bool) {
 	f, ok := s.m[tag]
 	return f, ok
 }
 
-func getStructFields(t reflect.Type, fieldTag string) *structFields {
-	var (
-		num = t.NumField()
-		out = newStructFields()
-	)
+func newStructSpec(t reflect.Type, fieldTag string) *structSpec {
+	out := &structSpec{
+		m: make(map[string]*structField),
+	}
 
+	num := t.NumField()
 	for i := 0; i < num; i++ {
 		f := t.Field(i)
 
@@ -76,4 +66,27 @@ func getStructFields(t reflect.Type, fieldTag string) *structFields {
 	}
 
 	return out
+}
+
+//------------------------------------------------------------------------------
+
+// structField represents a single field in a target struct.
+type structField struct {
+	index int
+	fn    decoderFunc
+}
+
+//------------------------------------------------------------------------------
+
+type StructValue struct {
+	spec  *structSpec
+	value reflect.Value
+}
+
+func (s StructValue) Scan(key string, value string) error {
+	field, ok := s.spec.m[key]
+	if !ok {
+		return nil
+	}
+	return field.fn(s.value.Field(field.index), value)
 }

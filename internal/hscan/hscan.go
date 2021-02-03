@@ -43,32 +43,39 @@ var (
 	// Global map of struct field specs that is populated once for every new
 	// struct type that is scanned. This caches the field types and the corresponding
 	// decoder functions to avoid iterating through struct fields on subsequent scans.
-	structSpecs = newStructMap()
+	globalStructMap = newStructMap()
 )
+
+func Struct(dst interface{}) (StructValue, error) {
+	v := reflect.ValueOf(dst)
+
+	// The dstination to scan into should be a struct pointer.
+	if v.Kind() != reflect.Ptr || v.IsNil() {
+		return StructValue{}, fmt.Errorf("redis.Scan(non-pointer %T)", dst)
+	}
+
+	v = v.Elem()
+	if v.Kind() != reflect.Struct {
+		return StructValue{}, fmt.Errorf("redis.Scan(non-struct %T)", dst)
+	}
+
+	return StructValue{
+		spec:  globalStructMap.get(v.Type()),
+		value: v,
+	}, nil
+}
 
 // Scan scans the results from a key-value Redis map result set to a destination struct.
 // The Redis keys are matched to the struct's field with the `redis` tag.
-func Scan(keys []interface{}, vals []interface{}, dest interface{}) error {
+func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 	if len(keys) != len(vals) {
 		return errors.New("args should have the same number of keys and vals")
 	}
 
-	// The destination to scan into should be a struct pointer.
-	v := reflect.ValueOf(dest)
-	if v.Kind() != reflect.Ptr || v.IsNil() {
-		return fmt.Errorf("redis.Scan(non-pointer %T)", dest)
+	strct, err := Struct(dst)
+	if err != nil {
+		return err
 	}
-	v = v.Elem()
-
-	if v.Kind() != reflect.Struct {
-		return fmt.Errorf("redis.Scan(non-struct %T)", dest)
-	}
-
-	// If the struct field spec is not cached, build and cache it to avoid
-	// iterating through the fields of a struct type every time values are
-	// scanned into it.
-	typ := v.Type()
-	fMap := structSpecs.get(typ)
 
 	// Iterate through the (key, value) sequence.
 	for i := 0; i < len(vals); i++ {
@@ -82,13 +89,7 @@ func Scan(keys []interface{}, vals []interface{}, dest interface{}) error {
 			continue
 		}
 
-		// Check if the field name is in the field spec map.
-		field, ok := fMap.get(key)
-		if !ok {
-			continue
-		}
-
-		if err := field.fn(v.Field(field.index), val); err != nil {
+		if err := strct.Scan(key, val); err != nil {
 			return err
 		}
 	}
