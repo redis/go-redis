@@ -1752,6 +1752,12 @@ func (c cmdable) XTrimApprox(ctx context.Context, key string, maxLen int64) *Int
 	return cmd
 }
 
+func (c cmdable) XInfoConsumers(ctx context.Context, key string, group string) *XInfoConsumersCmd {
+	cmd := NewXInfoConsumersCmd(ctx, key, group)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) XInfoGroups(ctx context.Context, key string) *XInfoGroupsCmd {
 	cmd := NewXInfoGroupsCmd(ctx, key)
 	_ = c(ctx, cmd)
