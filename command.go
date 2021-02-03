@@ -375,9 +375,21 @@ func (cmd *SliceCmd) String() string {
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag.
 func (cmd *SliceCmd) Scan(dest interface{}) error {
-	// Pass the list of keys and values. Skip the first to args (command, key),
-	// eg: HMGET map.
-	return hscan.Scan(cmd.args[2:], cmd.val, dest)
+	if cmd.err != nil {
+		return cmd.err
+	}
+
+	// Pass the list of keys and values.
+	// Skip the first two args for: HMGET key
+	var args []interface{}
+	if cmd.args[0] == "hmget" {
+		args = cmd.args[2:]
+	} else {
+		// Otherwise, it's: MGET field field ...
+		args = cmd.args[1:]
+	}
+
+	return hscan.Scan(args, cmd.val, dest)
 }
 
 func (cmd *SliceCmd) readReply(rd *proto.Reader) error {
@@ -929,6 +941,10 @@ func (cmd *StringStringMapCmd) String() string {
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag.
 func (cmd *StringStringMapCmd) Scan(dest interface{}) error {
+	if cmd.err != nil {
+		return cmd.err
+	}
+
 	// Pass the list of keys and values. Skip the first to args (command, key),
 	// eg: HGETALL map.
 	var (
