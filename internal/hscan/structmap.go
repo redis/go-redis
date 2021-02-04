@@ -37,11 +37,6 @@ func (s *structSpec) set(tag string, sf *structField) {
 	s.m[tag] = sf
 }
 
-func (s *structSpec) get(tag string) (*structField, bool) {
-	f, ok := s.m[tag]
-	return f, ok
-}
-
 func newStructSpec(t reflect.Type, fieldTag string) *structSpec {
 	out := &structSpec{
 		m: make(map[string]*structField),
