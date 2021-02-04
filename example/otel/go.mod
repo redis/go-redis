@@ -7,7 +7,7 @@ require (
 	github.com/go-redis/redis/v8/extra/redisotel v0.0.0-00010101000000-000000000000
 	go.opentelemetry.io/otel v0.15.0
 	go.opentelemetry.io/otel/exporters/stdout v0.16.0
-	go.opentelemetry.io/otel/sdk v0.15.0
+	go.opentelemetry.io/otel/sdk v0.16.0
 )
 
 replace github.com/go-redis/redis/v8 => ../../
