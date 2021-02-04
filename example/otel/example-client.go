@@ -10,15 +10,17 @@ import (
 	"github.com/go-redis/redis/v8/extra/redisotel"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout"
-	"go.opentelemetry.io/otel/sdk/metric/controller/push"
-	"go.opentelemetry.io/otel/sdk/metric/processor/basic"
+	controller "go.opentelemetry.io/otel/sdk/metric/controller/basic"
+	processor "go.opentelemetry.io/otel/sdk/metric/processor/basic"
 	"go.opentelemetry.io/otel/sdk/metric/selector/simple"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func main() {
-	stop := runExporter()
-	defer stop()
+	ctx := context.Background()
+
+	stop := runExporter(ctx)
+	defer stop(ctx)
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
@@ -26,7 +28,6 @@ func main() {
 
 	rdb.AddHook(redisotel.TracingHook{})
 
-	ctx := context.Background()
 	tracer := otel.Tracer("Example tracer")
 	ctx, span := tracer.Start(ctx, "start-test-span")
 
@@ -56,10 +57,10 @@ func main() {
 	span.End()
 }
 
-func runExporter() func() {
+func runExporter(ctx context.Context) func(context.Context) error {
 	exporter, err := stdout.NewExporter(stdout.WithPrettyPrint())
 	if err != nil {
-		log.Fatal(err.Error())
+		log.Fatal(err)
 	}
 
 	tp := sdktrace.NewTracerProvider(
@@ -68,14 +69,17 @@ func runExporter() func() {
 	)
 	otel.SetTracerProvider(tp)
 
-	pusher := push.New(
-		basic.New(
+	ctrl := controller.New(
+		processor.New(
 			simple.NewWithExactDistribution(),
 			exporter,
 		),
-		exporter,
-		push.WithPeriod(1*time.Second),
+		controller.WithPusher(exporter),
+		controller.WithCollectPeriod(1*time.Second),
 	)
-	pusher.Start()
-	return pusher.Stop
+	if err := ctrl.Start(ctx); err != nil {
+		log.Fatal(err)
+	}
+
+	return ctrl.Stop
 }
