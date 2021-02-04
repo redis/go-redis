@@ -18,14 +18,14 @@ var (
 		reflect.Int8:          decodeInt,
 		reflect.Int16:         decodeInt,
 		reflect.Int32:         decodeInt,
-		reflect.Int64:         decodeInt,
+		reflect.Int64:         decodeInt64,
 		reflect.Uint:          decodeUint,
 		reflect.Uint8:         decodeUint,
 		reflect.Uint16:        decodeUint,
 		reflect.Uint32:        decodeUint,
-		reflect.Uint64:        decodeUint,
-		reflect.Float32:       decodeFloat,
-		reflect.Float64:       decodeFloat,
+		reflect.Uint64:        decodeUint64,
+		reflect.Float32:       decodeFloat32,
+		reflect.Float64:       decodeFloat64,
 		reflect.Complex64:     decodeUnsupported,
 		reflect.Complex128:    decodeUnsupported,
 		reflect.Array:         decodeUnsupported,
@@ -115,6 +115,15 @@ func decodeInt(f reflect.Value, s string) error {
 	return nil
 }
 
+func decodeInt64(f reflect.Value, s string) error {
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return err
+	}
+	f.SetInt(v)
+	return nil
+}
+
 func decodeUint(f reflect.Value, s string) error {
 	v, err := strconv.ParseUint(s, 10, 0)
 	if err != nil {
@@ -124,8 +133,27 @@ func decodeUint(f reflect.Value, s string) error {
 	return nil
 }
 
-func decodeFloat(f reflect.Value, s string) error {
-	v, err := strconv.ParseFloat(s, 0)
+func decodeUint64(f reflect.Value, s string) error {
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return err
+	}
+	f.SetUint(v)
+	return nil
+}
+
+func decodeFloat32(f reflect.Value, s string) error {
+	v, err := strconv.ParseFloat(s, 32)
+	if err != nil {
+		return err
+	}
+	f.SetFloat(v)
+	return nil
+}
+
+// although the default is float64, but we better define it.
+func decodeFloat64(f reflect.Value, s string) error {
+	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return err
 	}
