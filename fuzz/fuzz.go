@@ -1,6 +1,6 @@
 // +build gofuzz
 
-package redis
+package fuzz
 
 import (
 	"context"
