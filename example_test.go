@@ -276,6 +276,73 @@ func ExampleClient_ScanType() {
 	// Output: found 33 keys
 }
 
+// ExampleStringStringMapCmd_Scan shows how to scan the results of a map fetch
+// into a struct.
+func ExampleStringStringMapCmd_Scan() {
+	rdb.FlushDB(ctx)
+	err := rdb.HMSet(ctx, "map",
+		"name", "hello",
+		"count", 123,
+		"correct", true).Err()
+	if err != nil {
+		panic(err)
+	}
+
+	// Get the map. The same approach works for HmGet().
+	res := rdb.HGetAll(ctx, "map")
+	if res.Err() != nil {
+		panic(err)
+	}
+
+	type data struct {
+		Name    string `redis:"name"`
+		Count   int    `redis:"count"`
+		Correct bool   `redis:"correct"`
+	}
+
+	// Scan the results into the struct.
+	var d data
+	if err := res.Scan(&d); err != nil {
+		panic(err)
+	}
+
+	fmt.Println(d)
+	// Output: {hello 123 true}
+}
+
+// ExampleSliceCmd_Scan shows how to scan the results of a multi key fetch
+// into a struct.
+func ExampleSliceCmd_Scan() {
+	rdb.FlushDB(ctx)
+	err := rdb.MSet(ctx,
+		"name", "hello",
+		"count", 123,
+		"correct", true).Err()
+	if err != nil {
+		panic(err)
+	}
+
+	res := rdb.MGet(ctx, "name", "count", "empty", "correct")
+	if res.Err() != nil {
+		panic(err)
+	}
+
+	type data struct {
+		Name    string `redis:"name"`
+		Count   int    `redis:"count"`
+		Correct bool   `redis:"correct"`
+	}
+
+	// Scan the results into the struct.
+	var d data
+	if err := res.Scan(&d); err != nil {
+		panic(err)
+	}
+
+	fmt.Println(d)
+	// Output: {hello 123 true}
+}
+
 func ExampleClient_Pipelined() {
 	var incr *redis.IntCmd
 	_, err := rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {

@@ -1134,6 +1134,22 @@ var _ = Describe("Commands", func() {
 			Expect(mGet.Val()).To(Equal([]interface{}{"hello1", "hello2", nil}))
 		})
 
+		It("should scan Mget", func() {
+			err := client.MSet(ctx, "key1", "hello1", "key2", 123).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			res := client.MGet(ctx, "key1", "key2", "_")
+			Expect(res.Err()).NotTo(HaveOccurred())
+
+			type data struct {
+				Key1 string `redis:"key1"`
+				Key2 int    `redis:"key2"`
+			}
+			var d data
+			Expect(res.Scan(&d)).NotTo(HaveOccurred())
+			Expect(d).To(Equal(data{Key1: "hello1", Key2: 123}))
+		})
+
 		It("should MSetNX", func() {
 			mSetNX := client.MSetNX(ctx, "key1", "hello1", "key2", "hello2")
 			Expect(mSetNX.Err()).NotTo(HaveOccurred())
@@ -1373,6 +1389,22 @@ var _ = Describe("Commands", func() {
 			m, err := client.HGetAll(ctx, "hash").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(m).To(Equal(map[string]string{"key1": "hello1", "key2": "hello2"}))
+		})
+
+		It("should scan", func() {
+			err := client.HMSet(ctx, "hash", "key1", "hello1", "key2", 123).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			res := client.HGetAll(ctx, "hash")
+			Expect(res.Err()).NotTo(HaveOccurred())
+
+			type data struct {
+				Key1 string `redis:"key1"`
+				Key2 int    `redis:"key2"`
+			}
+			var d data
+			Expect(res.Scan(&d)).NotTo(HaveOccurred())
+			Expect(d).To(Equal(data{Key1: "hello1", Key2: 123}))
 		})
 
 		It("should HIncrBy", func() {
