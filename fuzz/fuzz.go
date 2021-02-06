@@ -4,16 +4,17 @@ package fuzz
 
 import (
 	"context"
+	"github.com/go-redis/redis"
 	"time"
 )
 
 var (
 	ctx = context.Background()
-	rdb *Client
+	rdb *redis.Client
 )
 
 func init() {
-	rdb = NewClient(&Options{
+	rdb = redis.NewClient(&redis.Options{
 		Addr:         ":6379",
 		DialTimeout:  10 * time.Second,
 		ReadTimeout:  10 * time.Second,
