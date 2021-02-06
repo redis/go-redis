@@ -8,7 +8,7 @@ import (
 )
 
 // decoderFunc represents decoding functions for default built-in types.
-type decoderFunc func(reflect.Value, string) error
+type decoderFunc func(reflect.Value, string) bool
 
 var (
 	// List of built-in decoders indexed by their numeric constant values (eg: reflect.Bool = 1).
@@ -18,14 +18,14 @@ var (
 		reflect.Int8:          decodeInt,
 		reflect.Int16:         decodeInt,
 		reflect.Int32:         decodeInt,
-		reflect.Int64:         decodeInt64,
+		reflect.Int64:         decodeInt,
 		reflect.Uint:          decodeUint,
 		reflect.Uint8:         decodeUint,
 		reflect.Uint16:        decodeUint,
 		reflect.Uint32:        decodeUint,
-		reflect.Uint64:        decodeUint64,
-		reflect.Float32:       decodeFloat32,
-		reflect.Float64:       decodeFloat64,
+		reflect.Uint64:        decodeUint,
+		reflect.Float32:       decodeFloat,
+		reflect.Float64:       decodeFloat,
 		reflect.Complex64:     decodeUnsupported,
 		reflect.Complex128:    decodeUnsupported,
 		reflect.Array:         decodeUnsupported,
@@ -97,83 +97,56 @@ func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 	return nil
 }
 
-func decodeBool(f reflect.Value, s string) error {
+func decodeBool(f reflect.Value, s string) bool {
 	b, err := strconv.ParseBool(s)
 	if err != nil {
-		return err
+		return false
 	}
 	f.SetBool(b)
-	return nil
+	return true
 }
 
-func decodeInt(f reflect.Value, s string) error {
-	v, err := strconv.ParseInt(s, 10, 0)
-	if err != nil {
-		return err
-	}
-	f.SetInt(v)
-	return nil
-}
-
-func decodeInt64(f reflect.Value, s string) error {
+func decodeInt(f reflect.Value, s string) bool {
 	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return err
+	if err != nil || f.OverflowInt(v) {
+		return false
 	}
 	f.SetInt(v)
-	return nil
+	return true
 }
 
-func decodeUint(f reflect.Value, s string) error {
-	v, err := strconv.ParseUint(s, 10, 0)
-	if err != nil {
-		return err
-	}
-	f.SetUint(v)
-	return nil
-}
-
-func decodeUint64(f reflect.Value, s string) error {
+func decodeUint(f reflect.Value, s string) bool {
 	v, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return err
+	if err != nil || f.OverflowUint(v) {
+		return false
 	}
 	f.SetUint(v)
-	return nil
-}
-
-func decodeFloat32(f reflect.Value, s string) error {
-	v, err := strconv.ParseFloat(s, 32)
-	if err != nil {
-		return err
-	}
-	f.SetFloat(v)
-	return nil
+	return true
 }
 
 // although the default is float64, but we better define it.
-func decodeFloat64(f reflect.Value, s string) error {
+func decodeFloat(f reflect.Value, s string) bool {
 	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return err
+	if err != nil || f.OverflowFloat(v) {
+		return false
 	}
 	f.SetFloat(v)
-	return nil
+	return true
 }
 
-func decodeString(f reflect.Value, s string) error {
+func decodeString(f reflect.Value, s string) bool {
 	f.SetString(s)
-	return nil
+	return true
 }
 
-func decodeSlice(f reflect.Value, s string) error {
+func decodeSlice(f reflect.Value, s string) bool {
 	// []byte slice ([]uint8).
 	if f.Type().Elem().Kind() == reflect.Uint8 {
 		f.SetBytes([]byte(s))
 	}
-	return nil
+	return true
 }
 
-func decodeUnsupported(v reflect.Value, s string) error {
-	return fmt.Errorf("redis.Scan(unsupported %s)", v.Type())
+func decodeUnsupported(v reflect.Value, s string) bool {
+	panic(fmt.Sprintf("redis.Scan(unsupported %s)", v.Type()))
 }

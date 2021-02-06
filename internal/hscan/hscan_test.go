@@ -1,6 +1,9 @@
 package hscan
 
 import (
+	"fmt"
+	"math"
+	"strconv"
 	"testing"
 
 	. "github.com/onsi/ginkgo"
@@ -13,8 +16,10 @@ type data struct {
 
 	String  string  `redis:"string"`
 	Bytes   []byte  `redis:"byte"`
+	Int8    int8    `redis:"int8"`
 	Int     int     `redis:"int"`
 	Int64   int64   `redis:"int64"`
+	Uint8   uint8   `redis:"uint8"`
 	Uint    uint    `redis:"uint"`
 	Uint64  uint64  `redis:"uint64"`
 	Float   float32 `redis:"float"`
@@ -44,6 +49,30 @@ var _ = Describe("Scan", func() {
 		Expect(Scan(&m, i{"key"}, i{"1"})).To(HaveOccurred())
 		Expect(Scan(data{}, i{"key"}, i{"1"})).To(HaveOccurred())
 		Expect(Scan(data{}, i{"key", "string"}, i{nil, nil})).To(HaveOccurred())
+	})
+
+	It("number out of range", func() {
+		fields := i{"Int8", "Uint8", "Float"}
+		types := i{"int8", "uint8", "float32"}
+		keys := i{"int8", "uint8", "float"}
+		vals := i{"128", "256", strconv.FormatFloat(math.MaxFloat64, 'g', -1, 64)}
+
+		for k, v := range keys {
+			err := fmt.Errorf("cannot scan redis.result %s into struct field data.%s of type %s", vals[k], fields[k], types[k])
+			var d data
+			Expect(Scan(&d, i{v}, i{vals[k]})).To(Equal(err))
+		}
+
+		//success
+		keys = i{"int8", "uint8", "float"}
+		vals = i{"127", "255", strconv.FormatFloat(math.MaxFloat32, 'g', -1, 64)}
+		var d data
+		Expect(Scan(&d, keys, vals)).NotTo(HaveOccurred())
+		Expect(d).To(Equal(data{
+			Int8:  127,
+			Uint8: 255,
+			Float: math.MaxFloat32,
+		}))
 	})
 
 	It("scans good values", func() {
