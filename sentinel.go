@@ -534,6 +534,11 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context, allowDisconnected boo
 		rand.Shuffle(len(c.sentinelAddrs), func(i, j int) { c.sentinelAddrs[i], c.sentinelAddrs[j] = c.sentinelAddrs[j], c.sentinelAddrs[i] })
 	}
 
+	allowedFlags := make([]string, 0)
+	if allowDisconnected {
+		allowedFlags = append(allowedFlags, "disconnected")
+	}
+
 	var sentinelReachable bool
 
 	for i, sentinelAddr := range c.sentinelAddrs {
@@ -547,7 +552,7 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context, allowDisconnected boo
 			continue
 		}
 		sentinelReachable = true
-		addrs := parseSlaveAddrs(slaves)
+		addrs := parseSlaveAddrs(slaves, allowedFlags...)
 		if len(addrs) == 0 {
 			continue
 		}
