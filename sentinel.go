@@ -531,7 +531,9 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context, allowDisconnected boo
 		_ = c.closeSentinel()
 	} else {
 		// shuffle the sentinelAddrs to make the load more balanced
-		rand.Shuffle(len(c.sentinelAddrs), func(i, j int) { c.sentinelAddrs[i], c.sentinelAddrs[j] = c.sentinelAddrs[j], c.sentinelAddrs[i] })
+		rand.Shuffle(len(c.sentinelAddrs), func(i, j int) {
+			c.sentinelAddrs[i], c.sentinelAddrs[j] = c.sentinelAddrs[j], c.sentinelAddrs[i]
+		})
 	}
 
 	allowedFlags := make([]string, 0)
