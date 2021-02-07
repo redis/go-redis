@@ -560,9 +560,8 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context, allowDisconnected boo
 
 	if sentinelReachable {
 		return []string{}, nil
-	} else {
-		return []string{}, errors.New("redis: all sentinels specified in configuration are unreachable")
 	}
+	return []string{}, errors.New("redis: all sentinels specified in configuration are unreachable")
 }
 
 func (c *sentinelFailover) getMasterAddr(ctx context.Context, sentinel *SentinelClient) string {
