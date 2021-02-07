@@ -81,10 +81,12 @@ type StructValue struct {
 
 func (s StructValue) Scan(key string, value string) (err error) {
 	field, ok := s.spec.m[key]
-	if ok && !field.fn(s.value.Field(field.index), value) {
-		t := s.value.Type()
-		err = fmt.Errorf("cannot scan redis.result %s into struct field %s.%s of type %s",
-			value, t.Name(), t.Field(field.index).Name, t.Field(field.index).Type)
+	if ok {
+		if err = field.fn(s.value.Field(field.index), value); err != nil {
+			t := s.value.Type()
+			err = fmt.Errorf("cannot scan redis.result %s into struct field %s.%s of type %s, error-%s",
+				value, t.Name(), t.Field(field.index).Name, t.Field(field.index).Type, err.Error())
+		}
 	}
 	return
 }

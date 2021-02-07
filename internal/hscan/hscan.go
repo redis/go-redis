@@ -8,7 +8,7 @@ import (
 )
 
 // decoderFunc represents decoding functions for default built-in types.
-type decoderFunc func(reflect.Value, string) bool
+type decoderFunc func(reflect.Value, string) error
 
 var (
 	// List of built-in decoders indexed by their numeric constant values (eg: reflect.Bool = 1).
@@ -97,56 +97,65 @@ func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 	return nil
 }
 
-func decodeBool(f reflect.Value, s string) bool {
+func decodeBool(f reflect.Value, s string) error {
 	b, err := strconv.ParseBool(s)
 	if err != nil {
-		return false
+		return err
 	}
 	f.SetBool(b)
-	return true
+	return nil
 }
 
-func decodeInt(f reflect.Value, s string) bool {
+func decodeInt(f reflect.Value, s string) error {
 	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || f.OverflowInt(v) {
-		return false
+	if err != nil {
+		return err
+	}
+	if f.OverflowInt(v) {
+		return errors.New("int overflows")
 	}
 	f.SetInt(v)
-	return true
+	return nil
 }
 
-func decodeUint(f reflect.Value, s string) bool {
+func decodeUint(f reflect.Value, s string) error {
 	v, err := strconv.ParseUint(s, 10, 64)
-	if err != nil || f.OverflowUint(v) {
-		return false
+	if err != nil {
+		return err
+	}
+	if f.OverflowUint(v) {
+		return errors.New("uint overflows")
 	}
 	f.SetUint(v)
-	return true
+	return nil
 }
 
 // although the default is float64, but we better define it.
-func decodeFloat(f reflect.Value, s string) bool {
+func decodeFloat(f reflect.Value, s string) error {
 	v, err := strconv.ParseFloat(s, 64)
-	if err != nil || f.OverflowFloat(v) {
-		return false
+	if err != nil {
+		return err
+	}
+	if f.OverflowFloat(v) {
+		return errors.New("float overflows")
 	}
 	f.SetFloat(v)
-	return true
+	return nil
 }
 
-func decodeString(f reflect.Value, s string) bool {
+func decodeString(f reflect.Value, s string) error {
 	f.SetString(s)
-	return true
+	return nil
 }
 
-func decodeSlice(f reflect.Value, s string) bool {
+func decodeSlice(f reflect.Value, s string) error {
 	// []byte slice ([]uint8).
 	if f.Type().Elem().Kind() == reflect.Uint8 {
 		f.SetBytes([]byte(s))
 	}
-	return true
+	return nil
 }
 
-func decodeUnsupported(v reflect.Value, s string) bool {
-	panic(fmt.Sprintf("redis.Scan(unsupported %s)", v.Type()))
+func decodeUnsupported(v reflect.Value, s string) error {
+	return fmt.Errorf("redis.Scan(unsupported %s)", v.Type())
 }

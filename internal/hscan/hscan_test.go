@@ -52,20 +52,27 @@ var _ = Describe("Scan", func() {
 	})
 
 	It("number out of range", func() {
-		fields := i{"Int8", "Uint8", "Float"}
-		types := i{"int8", "uint8", "float32"}
-		keys := i{"int8", "uint8", "float"}
-		vals := i{"128", "256", strconv.FormatFloat(math.MaxFloat64, 'g', -1, 64)}
-
-		for k, v := range keys {
-			err := fmt.Errorf("cannot scan redis.result %s into struct field data.%s of type %s", vals[k], fields[k], types[k])
+		out := []struct {
+			field  string
+			types  string
+			key    string
+			val    interface{}
+			decode string
+		}{
+			{field: "Int8", types: "int8", key: "int8", val: "128", decode: "int"},
+			{field: "Uint8", types: "uint8", key: "uint8", val: "256", decode: "uint"},
+			{field: "Float", types: "float32", key: "float", val: strconv.FormatFloat(math.MaxFloat64, 'g', -1, 64), decode: "float"},
+		}
+		for _, v := range out {
+			err := fmt.Errorf("cannot scan redis.result %s into struct field data.%s of type %s, error-%s",
+				v.val, v.field, v.types, fmt.Sprintf("%s overflows", v.decode))
 			var d data
-			Expect(Scan(&d, i{v}, i{vals[k]})).To(Equal(err))
+			Expect(Scan(&d, i{v.key}, i{v.val})).To(Equal(err))
 		}
 
 		//success
-		keys = i{"int8", "uint8", "float"}
-		vals = i{"127", "255", strconv.FormatFloat(math.MaxFloat32, 'g', -1, 64)}
+		keys := i{"int8", "uint8", "float"}
+		vals := i{"127", "255", strconv.FormatFloat(math.MaxFloat32, 'g', -1, 64)}
 		var d data
 		Expect(Scan(&d, keys, vals)).NotTo(HaveOccurred())
 		Expect(d).To(Equal(data{
