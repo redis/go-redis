@@ -43,3 +43,5 @@ func (s *source) Seed(seed int64) {
 	s.src.Seed(seed)
 	s.mu.Unlock()
 }
+
+func Shuffle(n int, swap func(i, j int)) { pseudo.Shuffle(n, swap) }
