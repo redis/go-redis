@@ -16,11 +16,15 @@ type data struct {
 
 	String  string  `redis:"string"`
 	Bytes   []byte  `redis:"byte"`
-	Int8    int8    `redis:"int8"`
 	Int     int     `redis:"int"`
+	Int8    int8    `redis:"int8"`
+	Int16   int16   `redis:"int16"`
+	Int32   int32   `redis:"int32"`
 	Int64   int64   `redis:"int64"`
-	Uint8   uint8   `redis:"uint8"`
 	Uint    uint    `redis:"uint"`
+	Uint8   uint8   `redis:"uint8"`
+	Uint16  uint16  `redis:"uint16"`
+	Uint32  uint32  `redis:"uint32"`
 	Uint64  uint64  `redis:"uint64"`
 	Float   float32 `redis:"float"`
 	Float64 float64 `redis:"float64"`
@@ -52,33 +56,43 @@ var _ = Describe("Scan", func() {
 	})
 
 	It("number out of range", func() {
-		out := []struct {
-			field  string
-			types  string
-			key    string
-			val    interface{}
-			decode string
-		}{
-			{field: "Int8", types: "int8", key: "int8", val: "128", decode: "int"},
-			{field: "Uint8", types: "uint8", key: "uint8", val: "256", decode: "uint"},
-			{field: "Float", types: "float32", key: "float", val: strconv.FormatFloat(math.MaxFloat64, 'g', -1, 64), decode: "float"},
+		f := func(v interface{}) string {
+			return fmt.Sprintf("%v1", v)
 		}
-		for _, v := range out {
-			err := fmt.Errorf("cannot scan redis.result %s into struct field data.%s of type %s, error-%s",
-				v.val, v.field, v.types, fmt.Sprintf("%s overflows", v.decode))
+		keys := i{"int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float", "float64"}
+		vals := i{
+			f(math.MaxInt8), f(math.MaxInt16), f(math.MaxInt32), f(math.MaxInt64),
+			f(math.MaxUint8), f(math.MaxUint16), f(math.MaxUint32), strconv.FormatUint(math.MaxUint64, 10) + "1",
+			"13.4028234663852886e+38", "11.79769313486231570e+308",
+		}
+		for k, v := range keys {
 			var d data
-			Expect(Scan(&d, i{v.key}, i{v.val})).To(Equal(err))
+			Expect(Scan(&d, i{v}, i{vals[k]})).To(HaveOccurred())
 		}
 
 		//success
-		keys := i{"int8", "uint8", "float"}
-		vals := i{"127", "255", strconv.FormatFloat(math.MaxFloat32, 'g', -1, 64)}
+		f = func(v interface{}) string {
+			return fmt.Sprintf("%d", v)
+		}
+		keys = i{"int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float", "float64"}
+		vals = i{
+			f(math.MaxInt8), f(math.MaxInt16), f(math.MaxInt32), f(math.MaxInt64),
+			f(math.MaxUint8), f(math.MaxUint16), f(math.MaxUint32), strconv.FormatUint(math.MaxUint64, 10),
+			"3.40282346638528859811704183484516925440e+38", "1.797693134862315708145274237317043567981e+308",
+		}
 		var d data
 		Expect(Scan(&d, keys, vals)).NotTo(HaveOccurred())
 		Expect(d).To(Equal(data{
-			Int8:  127,
-			Uint8: 255,
-			Float: math.MaxFloat32,
+			Int8:    math.MaxInt8,
+			Int16:   math.MaxInt16,
+			Int32:   math.MaxInt32,
+			Int64:   math.MaxInt64,
+			Uint8:   math.MaxUint8,
+			Uint16:  math.MaxUint16,
+			Uint32:  math.MaxUint32,
+			Uint64:  math.MaxUint64,
+			Float:   math.MaxFloat32,
+			Float64: math.MaxFloat64,
 		}))
 	})
 
