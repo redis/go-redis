@@ -1,7 +1,6 @@
 package hscan
 
 import (
-	"fmt"
 	"math"
 	"strconv"
 	"testing"
@@ -56,8 +55,8 @@ var _ = Describe("Scan", func() {
 	})
 
 	It("number out of range", func() {
-		f := func(v interface{}) string {
-			return fmt.Sprintf("%v1", v)
+		f := func(v uint64) string {
+			return strconv.FormatUint(v, 10) + "1"
 		}
 		keys := i{"int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float", "float64"}
 		vals := i{
@@ -71,8 +70,8 @@ var _ = Describe("Scan", func() {
 		}
 
 		//success
-		f = func(v interface{}) string {
-			return fmt.Sprintf("%d", v)
+		f = func(v uint64) string {
+			return strconv.FormatUint(v, 10)
 		}
 		keys = i{"int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float", "float64"}
 		vals = i{
