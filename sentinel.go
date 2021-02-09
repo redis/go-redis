@@ -483,6 +483,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		}
 		_ = c.closeSentinel()
 	}
+
 	if c.opt.QuerySentinelRandomly {
 		rand.Shuffle(len(c.sentinelAddrs), func(i, j int) {
 			c.sentinelAddrs[i], c.sentinelAddrs[j] = c.sentinelAddrs[j], c.sentinelAddrs[i]
