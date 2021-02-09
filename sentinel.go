@@ -36,10 +36,12 @@ type FailoverOptions struct {
 	// Route all commands to slave read-only nodes.
 	SlaveOnly bool
 
-	// Allow to access slaves disconnected with master when cannot get connected slaves
+	// Use slaves disconnected with master when cannot get connected slaves
 	// Now, this option only works in RandomSlaveAddr function.
-	AllowDisconnectedSlaves bool
+	UseDisconnectedSlaves bool
 
+	// Client queries sentinels in a random order
+	QuerySentinelRandomly bool
 	// Following options are copied from Options struct.
 
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -441,19 +443,15 @@ func (c *sentinelFailover) RandomSlaveAddr(ctx context.Context) (string, error) 
 		return "", errors.New("opt is nil")
 	}
 
-	var addresses []string
-	var err error
+	addresses, err := c.slaveAddrs(ctx, false)
+	if err != nil {
+		return "", err
+	}
 
-	for _, allowDisconnected := range []bool{false, true} {
-		if allowDisconnected && !c.opt.AllowDisconnectedSlaves {
-			continue
-		}
-		addresses, err = c.slaveAddrs(ctx, allowDisconnected)
+	if len(addresses) == 0 && c.opt.UseDisconnectedSlaves {
+		addresses, err = c.slaveAddrs(ctx, true)
 		if err != nil {
 			return "", err
-		}
-		if len(addresses) > 0 {
-			break
 		}
 	}
 
@@ -485,7 +483,11 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		}
 		_ = c.closeSentinel()
 	}
-
+	if c.opt.QuerySentinelRandomly {
+		rand.Shuffle(len(c.sentinelAddrs), func(i, j int) {
+			c.sentinelAddrs[i], c.sentinelAddrs[j] = c.sentinelAddrs[j], c.sentinelAddrs[i]
+		})
+	}
 	for i, sentinelAddr := range c.sentinelAddrs {
 		sentinel := NewSentinelClient(c.opt.sentinelOptions(sentinelAddr))
 
@@ -508,7 +510,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	return "", errors.New("redis: all sentinels specified in configuration are unreachable")
 }
 
-func (c *sentinelFailover) slaveAddrs(ctx context.Context, allowDisconnected bool) ([]string, error) {
+func (c *sentinelFailover) slaveAddrs(ctx context.Context, useDisconnected bool) ([]string, error) {
 	c.mu.RLock()
 	sentinel := c.sentinel
 	c.mu.RUnlock()
@@ -529,16 +531,11 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context, allowDisconnected boo
 			return addrs, nil
 		}
 		_ = c.closeSentinel()
-	} else {
-		// shuffle the sentinelAddrs to make the load more balanced
+	}
+	if c.opt.QuerySentinelRandomly {
 		rand.Shuffle(len(c.sentinelAddrs), func(i, j int) {
 			c.sentinelAddrs[i], c.sentinelAddrs[j] = c.sentinelAddrs[j], c.sentinelAddrs[i]
 		})
-	}
-
-	allowedFlags := make([]string, 0)
-	if allowDisconnected {
-		allowedFlags = append(allowedFlags, "disconnected")
 	}
 
 	var sentinelReachable bool
@@ -554,7 +551,7 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context, allowDisconnected boo
 			continue
 		}
 		sentinelReachable = true
-		addrs := parseSlaveAddrs(slaves, allowedFlags...)
+		addrs := parseSlaveAddrs(slaves, useDisconnected)
 		if len(addrs) == 0 {
 			continue
 		}
@@ -588,11 +585,10 @@ func (c *sentinelFailover) getSlaveAddrs(ctx context.Context, sentinel *Sentinel
 			c.opt.MasterName, err)
 		return []string{}
 	}
-	return parseSlaveAddrs(addrs)
+	return parseSlaveAddrs(addrs, false)
 }
 
-func parseSlaveAddrs(addrs []interface{}, allowedFlags ...string) []string {
-	downFlags := []string{"s_down", "o_down", "disconnected"}
+func parseSlaveAddrs(addrs []interface{}, keepDisconnected bool) []string {
 	nodes := make([]string, 0, len(addrs))
 	for _, node := range addrs {
 		ip := ""
@@ -614,11 +610,13 @@ func parseSlaveAddrs(addrs []interface{}, allowedFlags ...string) []string {
 		}
 
 		for _, flag := range flags {
-			switch {
-			case contains(allowedFlags, flag):
-				continue
-			case contains(downFlags, flag):
+			switch flag {
+			case "s_down", "o_down":
 				isDown = true
+			case "disconnected":
+				if !keepDisconnected {
+					isDown = true
+				}
 			}
 		}
 
