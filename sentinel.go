@@ -173,6 +173,10 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	sentinelAddrs := make([]string, len(failoverOpt.SentinelAddrs))
 	copy(sentinelAddrs, failoverOpt.SentinelAddrs)
 
+	rand.Shuffle(len(sentinelAddrs), func(i, j int) {
+		sentinelAddrs[i], sentinelAddrs[j] = sentinelAddrs[j], sentinelAddrs[i]
+	})
+
 	failover := &sentinelFailover{
 		opt:           failoverOpt,
 		sentinelAddrs: sentinelAddrs,
@@ -484,11 +488,6 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		_ = c.closeSentinel()
 	}
 
-	if c.opt.QuerySentinelRandomly {
-		rand.Shuffle(len(c.sentinelAddrs), func(i, j int) {
-			c.sentinelAddrs[i], c.sentinelAddrs[j] = c.sentinelAddrs[j], c.sentinelAddrs[i]
-		})
-	}
 	for i, sentinelAddr := range c.sentinelAddrs {
 		sentinel := NewSentinelClient(c.opt.sentinelOptions(sentinelAddr))
 
@@ -532,11 +531,6 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context, useDisconnected bool)
 			return addrs, nil
 		}
 		_ = c.closeSentinel()
-	}
-	if c.opt.QuerySentinelRandomly {
-		rand.Shuffle(len(c.sentinelAddrs), func(i, j int) {
-			c.sentinelAddrs[i], c.sentinelAddrs[j] = c.sentinelAddrs[j], c.sentinelAddrs[i]
-		})
 	}
 
 	var sentinelReachable bool
