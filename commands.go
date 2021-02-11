@@ -1687,6 +1687,7 @@ func (c cmdable) XPending(ctx context.Context, stream, group string) *XPendingCm
 type XPendingExtArgs struct {
 	Stream   string
 	Group    string
+	Idle     time.Duration
 	Start    string
 	End      string
 	Count    int64
@@ -1694,8 +1695,12 @@ type XPendingExtArgs struct {
 }
 
 func (c cmdable) XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingExtCmd {
-	args := make([]interface{}, 0, 7)
-	args = append(args, "xpending", a.Stream, a.Group, a.Start, a.End, a.Count)
+	args := make([]interface{}, 0, 9)
+	args = append(args, "xpending", a.Stream, a.Group)
+	if a.Idle > 0 {
+		args = append(args, "idle", int64(a.Idle/time.Millisecond))
+	}
+	args = append(args, a.Start, a.End, a.Count)
 	if a.Consumer != "" {
 		args = append(args, a.Consumer)
 	}
