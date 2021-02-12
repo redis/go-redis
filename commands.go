@@ -1715,6 +1715,7 @@ type XClaimArgs struct {
 	Consumer string
 	MinIdle  time.Duration
 	Messages []string
+	Idle     time.Duration
 }
 
 func (c cmdable) XClaim(ctx context.Context, a *XClaimArgs) *XMessageSliceCmd {
@@ -1733,7 +1734,7 @@ func (c cmdable) XClaimJustID(ctx context.Context, a *XClaimArgs) *StringSliceCm
 }
 
 func xClaimArgs(a *XClaimArgs) []interface{} {
-	args := make([]interface{}, 0, 4+len(a.Messages))
+	args := make([]interface{}, 0, 6+len(a.Messages))
 	args = append(args,
 		"xclaim",
 		a.Stream,
@@ -1741,6 +1742,9 @@ func xClaimArgs(a *XClaimArgs) []interface{} {
 		int64(a.MinIdle/time.Millisecond))
 	for _, id := range a.Messages {
 		args = append(args, id)
+	}
+	if a.Idle > 0 {
+		args = append(args, "idle", int64(a.Idle/time.Millisecond))
 	}
 	return args
 }

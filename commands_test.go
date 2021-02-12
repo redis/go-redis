@@ -3851,6 +3851,34 @@ var _ = Describe("Commands", func() {
 					{ID: "3-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
 				}))
 
+				// Claim two messages to test XPending idle option
+				err = client.XClaimJustID(ctx, &redis.XClaimArgs{
+					Stream:   "stream",
+					Group:    "group",
+					Consumer: "consumer",
+					Messages: []string{"1-0", "2-0"},
+					Idle:     time.Hour * 3,
+				}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				infoExt, err = client.XPendingExt(ctx, &redis.XPendingExtArgs{
+					Stream:   "stream",
+					Group:    "group",
+					Start:    "-",
+					End:      "+",
+					Count:    10,
+					Consumer: "consumer",
+					Idle:     time.Hour * 1,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				for i := range infoExt {
+					infoExt[i].Idle = 0
+				}
+				Expect(infoExt).To(Equal([]redis.XPendingExt{
+					{ID: "1-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
+					{ID: "2-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
+				}))
+
 				n, err := client.XGroupDelConsumer(ctx, "stream", "group", "consumer").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(n).To(Equal(int64(3)))
