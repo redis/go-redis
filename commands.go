@@ -788,6 +788,50 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 	return cmd
 }
 
+// SetArgs provides arguments for the SetWithArgs command.
+//
+// Mode can be `NX` or `XX` or empty.
+//
+// Zero expiration means the key has no expiration time.
+// KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
+//
+// When Get is true, the command returns the old value stored at key, or nil when key did not exist.
+type SetArgs struct {
+	Mode     string
+	ExpireAt time.Duration
+	Get      bool
+}
+
+// Redis `SET key value [EX seconds|PX milliseconds|EXAT timestamp|PXAT milliseconds-timestamp|KEEPTTL] [NX|XX] [GET]` command.
+func (c cmdable) SetWithArgs(ctx context.Context, key string, value interface{}, a *SetArgs) *StatusCmd {
+	args := []interface{}{"set", key, value}
+
+	// We set a rule to only use EX & PX options for expire time.
+	// We only need to support one of the two format (EX, PX) OR (EXAT, PXAT)
+	// because it is transparent to the user what we use here.
+	if a.ExpireAt > 0 {
+		if usePrecise(a.ExpireAt) {
+			args = append(args, "px", formatMs(ctx, a.ExpireAt))
+		} else {
+			args = append(args, "ex", formatSec(ctx, a.ExpireAt))
+		}
+	} else if a.ExpireAt == KeepTTL {
+		args = append(args, "keepttl")
+	}
+
+	if a.Mode != "" {
+		args = append(args, a.Mode)
+	}
+
+	if a.Get {
+		args = append(args, "get")
+	}
+
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 // Redis `SETEX key expiration value` command.
 func (c cmdable) SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "setex", key, formatSec(ctx, expiration), value)
