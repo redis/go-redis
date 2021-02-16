@@ -1178,16 +1178,18 @@ var _ = Describe("Commands", func() {
 
 		It("should SetWithArgs with keepttl", func() {
 			// Set with ttl
-			args := &redis.SetArgs{
+			argsWithTTL := &redis.SetArgs{
 				TTL: 5 * time.Second,
 			}
-			set := client.SetArgs(ctx, "key", "hello", args)
+			set := client.SetArgs(ctx, "key", "hello", argsWithTTL)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Result()).To(Equal("OK"))
 
 			// Set with keepttl
-			args.TTL = redis.KeepTTL
-			set = client.SetArgs(ctx, "key", "hello", args)
+			argsWithKeepTTL := &redis.SetArgs{
+				KeepTTL: true,
+			}
+			set = client.SetArgs(ctx, "key", "hello", argsWithKeepTTL)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Result()).To(Equal("OK"))
 

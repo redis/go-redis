@@ -797,9 +797,10 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 //
 // When Get is true, the command returns the old value stored at key, or nil when key did not exist.
 type SetArgs struct {
-	Mode string
-	TTL  time.Duration
-	Get  bool
+	Mode    string
+	TTL     time.Duration
+	Get     bool
+	KeepTTL bool
 }
 
 // SetArgs provides a way to call the SET command with SetArgs arguments.
@@ -815,7 +816,7 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a *
 		} else {
 			args = append(args, "ex", formatSec(ctx, a.TTL))
 		}
-	} else if a.TTL == KeepTTL {
+	} else if a.KeepTTL {
 		args = append(args, "keepttl")
 	}
 
