@@ -1164,7 +1164,7 @@ var _ = Describe("Commands", func() {
 			args := &redis.SetArgs{
 				ExpireAt: 500 * time.Millisecond,
 			}
-			err := client.SetWithArgs(ctx, "key", "hello", args).Err()
+			err := client.SetArgs(ctx, "key", "hello", args).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			val, err := client.Get(ctx, "key").Result()
@@ -1181,13 +1181,13 @@ var _ = Describe("Commands", func() {
 			args := &redis.SetArgs{
 				ExpireAt: 5 * time.Second,
 			}
-			set := client.SetWithArgs(ctx, "key", "hello", args)
+			set := client.SetArgs(ctx, "key", "hello", args)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Result()).To(Equal("OK"))
 
 			// Set with keepttl
 			args.ExpireAt = redis.KeepTTL
-			set = client.SetWithArgs(ctx, "key", "hello", args)
+			set = client.SetArgs(ctx, "key", "hello", args)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Result()).To(Equal("OK"))
 
@@ -1204,7 +1204,7 @@ var _ = Describe("Commands", func() {
 			args := &redis.SetArgs{
 				Mode: "nx",
 			}
-			val, err := client.SetWithArgs(ctx, "key", "hello", args).Result()
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(Equal(""))
 		})
@@ -1213,7 +1213,7 @@ var _ = Describe("Commands", func() {
 			args := &redis.SetArgs{
 				Mode: "nx",
 			}
-			val, err := client.SetWithArgs(ctx, "key", "hello", args).Result()
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("OK"))
 		})
@@ -1223,7 +1223,7 @@ var _ = Describe("Commands", func() {
 				Mode: "nx",
 				Get:  true,
 			}
-			val, err := client.SetWithArgs(ctx, "key", "hello", args).Result()
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
 			Expect(err).To(Equal(proto.RedisError("ERR syntax error")))
 			Expect(val).To(Equal(""))
 		})
@@ -1233,7 +1233,7 @@ var _ = Describe("Commands", func() {
 				ExpireAt: 500 * time.Millisecond,
 				Mode:     "nx",
 			}
-			val, err := client.SetWithArgs(ctx, "key", "hello", args).Result()
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("OK"))
 
@@ -1250,7 +1250,7 @@ var _ = Describe("Commands", func() {
 				ExpireAt: 500 * time.Millisecond,
 				Mode:     "nx",
 			}
-			val, err := client.SetWithArgs(ctx, "key", "world", args).Result()
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(Equal(""))
 		})
@@ -1261,7 +1261,7 @@ var _ = Describe("Commands", func() {
 				Mode:     "nx",
 				Get:      true,
 			}
-			val, err := client.SetWithArgs(ctx, "key", "hello", args).Result()
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
 			Expect(err).To(Equal(proto.RedisError("ERR syntax error")))
 			Expect(val).To(Equal(""))
 		})
@@ -1270,7 +1270,7 @@ var _ = Describe("Commands", func() {
 			args := &redis.SetArgs{
 				Mode: "xx",
 			}
-			val, err := client.SetWithArgs(ctx, "key", "world", args).Result()
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(Equal(""))
 		})
@@ -1282,7 +1282,7 @@ var _ = Describe("Commands", func() {
 			args := &redis.SetArgs{
 				Mode: "xx",
 			}
-			val, err := client.SetWithArgs(ctx, "key", "world", args).Result()
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("OK"))
 		})
@@ -1295,7 +1295,7 @@ var _ = Describe("Commands", func() {
 				Mode: "xx",
 				Get:  true,
 			}
-			val, err := client.SetWithArgs(ctx, "key", "world", args).Result()
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("hello"))
 		})
@@ -1306,7 +1306,7 @@ var _ = Describe("Commands", func() {
 				Get:  true,
 			}
 
-			val, err := client.SetWithArgs(ctx, "key", "world", args).Result()
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(Equal(""))
 		})
@@ -1318,7 +1318,7 @@ var _ = Describe("Commands", func() {
 				Get:      true,
 			}
 
-			val, err := client.SetWithArgs(ctx, "key", "world", args).Result()
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(Equal(""))
 		})
@@ -1333,7 +1333,7 @@ var _ = Describe("Commands", func() {
 				Get:      true,
 			}
 
-			val, err := client.SetWithArgs(ctx, "key", "world", args).Result()
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("hello"))
 
@@ -1347,7 +1347,7 @@ var _ = Describe("Commands", func() {
 				Get: true,
 			}
 
-			val, err := client.SetWithArgs(ctx, "key", "hello", args).Result()
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(Equal(""))
 		})
@@ -1360,7 +1360,7 @@ var _ = Describe("Commands", func() {
 				Get: true,
 			}
 
-			val, err := client.SetWithArgs(ctx, "key", "world", args).Result()
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("hello"))
 		})

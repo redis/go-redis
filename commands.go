@@ -802,8 +802,8 @@ type SetArgs struct {
 	Get      bool
 }
 
-// SetWithArgs provides a way to call the SET command with SetArgs arguments.
-func (c cmdable) SetWithArgs(ctx context.Context, key string, value interface{}, a *SetArgs) *StatusCmd {
+// SetArgs provides a way to call the SET command with SetArgs arguments.
+func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a *SetArgs) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
 	// We set a rule to only use EX & PX options for expire time.
