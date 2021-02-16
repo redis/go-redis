@@ -802,7 +802,7 @@ type SetArgs struct {
 	Get      bool
 }
 
-// Redis `SET key value [EX seconds|PX milliseconds|EXAT timestamp|PXAT milliseconds-timestamp|KEEPTTL] [NX|XX] [GET]` command.
+// SetWithArgs provides a way to call the SET command with SetArgs arguments.
 func (c cmdable) SetWithArgs(ctx context.Context, key string, value interface{}, a *SetArgs) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
