@@ -793,20 +793,20 @@ type SetArgs struct {
 	// Mode can be `NX` or `XX` or empty
 	Mode string
 
-	// Zero `TTL` or `Expiration` means that the key has no expiration time.
+	// Zero `TTL` or `Expiration` means that the key has no expiration time
 	TTL      time.Duration
 	ExpireAt time.Time
 
 	// When Get is true, the command returns the old value stored at key, or nil when key did not exist.
 	Get bool
 
-	// KeepTTL is a Redis KEEPTTL option to keep existing TTL
+	// KeepTTL is a Redis KEEPTTL option to keep existing TTL.
 	KeepTTL bool
 }
 
 // SetArgs supports all the options that the SET command supports.
-// It is the granular alternative to use when you want
-// to have more control over the SET command.
+// It is the alternative to the Set function when you want
+// to have more control over the options.
 func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a *SetArgs) *StatusCmd {
 	args := []interface{}{"set", key, value}
 

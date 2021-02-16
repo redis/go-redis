@@ -1187,6 +1187,26 @@ var _ = Describe("Commands", func() {
 			val, err := client.Get(ctx, "key").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal("hello"))
+
+			// check the key has an expiration date
+			// (so a TTL value different of -1)
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).ToNot(Equal(-1))
+		})
+
+		It("should SetWithArgs with negative expiration date", func() {
+			args := &redis.SetArgs{
+				ExpireAt: time.Now().AddDate(-3, 1, 1),
+			}
+			// redis accepts a timestamp less than the current date
+			// but returns nil when trying to get the key
+			err := client.SetArgs(ctx, "key", "hello", args).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
 		})
 
 		It("should SetWithArgs with keepttl", func() {
