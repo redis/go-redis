@@ -1160,7 +1160,7 @@ var _ = Describe("Commands", func() {
 			Expect(mSetNX.Val()).To(Equal(false))
 		})
 
-		It("should SetWithArgs with expiration", func() {
+		It("should SetWithArgs with TTL", func() {
 			args := &redis.SetArgs{
 				TTL: 500 * time.Millisecond,
 			}
@@ -1174,6 +1174,19 @@ var _ = Describe("Commands", func() {
 			Eventually(func() error {
 				return client.Get(ctx, "key").Err()
 			}, "2s", "100ms").Should(Equal(redis.Nil))
+		})
+
+		It("should SetWithArgs with expiration date", func() {
+			expireAt := time.Now().AddDate(1, 1, 1)
+			args := &redis.SetArgs{
+				ExpireAt: expireAt,
+			}
+			err := client.SetArgs(ctx, "key", "hello", args).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
 		})
 
 		It("should SetWithArgs with keepttl", func() {

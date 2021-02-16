@@ -797,20 +797,20 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 //
 // When Get is true, the command returns the old value stored at key, or nil when key did not exist.
 type SetArgs struct {
-	Mode    string
-	TTL     time.Duration
-	Get     bool
-	KeepTTL bool
+	Mode     string
+	TTL      time.Duration
+	ExpireAt time.Time
+	Get      bool
+	KeepTTL  bool
 }
 
 // SetArgs provides a way to call the SET command with SetArgs arguments.
 func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a *SetArgs) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
-	// We set a rule to only use EX & PX options for expire time.
-	// We only need to support one of the two format (EX, PX) OR (EXAT, PXAT)
-	// because it is transparent to the user what we use here.
-	if a.TTL > 0 {
+	if !a.ExpireAt.IsZero() {
+		args = append(args, "exat", a.ExpireAt.Unix())
+	} else if a.TTL > 0 {
 		if usePrecise(a.TTL) {
 			args = append(args, "px", formatMs(ctx, a.TTL))
 		} else {
