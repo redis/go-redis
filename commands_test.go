@@ -247,7 +247,7 @@ var _ = Describe("Commands", func() {
 		It("should Command", func() {
 			cmds, err := client.Command(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(cmds)).To(BeNumerically("~", 200, 20))
+			Expect(len(cmds)).To(BeNumerically("~", 200, 25))
 
 			cmd := cmds["mget"]
 			Expect(cmd.Name).To(Equal("mget"))
@@ -1160,6 +1160,246 @@ var _ = Describe("Commands", func() {
 			Expect(mSetNX.Val()).To(Equal(false))
 		})
 
+		It("should SetWithArgs with TTL", func() {
+			args := &redis.SetArgs{
+				TTL: 500 * time.Millisecond,
+			}
+			err := client.SetArgs(ctx, "key", "hello", args).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+
+			Eventually(func() error {
+				return client.Get(ctx, "key").Err()
+			}, "2s", "100ms").Should(Equal(redis.Nil))
+		})
+
+		It("should SetWithArgs with expiration date", func() {
+			expireAt := time.Now().AddDate(1, 1, 1)
+			args := &redis.SetArgs{
+				ExpireAt: expireAt,
+			}
+			err := client.SetArgs(ctx, "key", "hello", args).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+
+			// check the key has an expiration date
+			// (so a TTL value different of -1)
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).ToNot(Equal(-1))
+		})
+
+		It("should SetWithArgs with negative expiration date", func() {
+			args := &redis.SetArgs{
+				ExpireAt: time.Now().AddDate(-3, 1, 1),
+			}
+			// redis accepts a timestamp less than the current date
+			// but returns nil when trying to get the key
+			err := client.SetArgs(ctx, "key", "hello", args).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with keepttl", func() {
+			// Set with ttl
+			argsWithTTL := &redis.SetArgs{
+				TTL: 5 * time.Second,
+			}
+			set := client.SetArgs(ctx, "key", "hello", argsWithTTL)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Result()).To(Equal("OK"))
+
+			// Set with keepttl
+			argsWithKeepTTL := &redis.SetArgs{
+				KeepTTL: true,
+			}
+			set = client.SetArgs(ctx, "key", "hello", argsWithKeepTTL)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Result()).To(Equal("OK"))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			// set keepttl will Retain the ttl associated with the key
+			Expect(ttl.Val().Nanoseconds()).NotTo(Equal(-1))
+		})
+
+		It("should SetWithArgs with NX mode and key exists", func() {
+			err := client.Set(ctx, "key", "hello", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			args := &redis.SetArgs{
+				Mode: "nx",
+			}
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with NX mode and key does not exist", func() {
+			args := &redis.SetArgs{
+				Mode: "nx",
+			}
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+		})
+
+		It("should SetWithArgs with NX mode and GET option", func() {
+			args := &redis.SetArgs{
+				Mode: "nx",
+				Get:  true,
+			}
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).To(Equal(proto.RedisError("ERR syntax error")))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with expiration, NX mode, and key does not exist", func() {
+			args := &redis.SetArgs{
+				TTL:  500 * time.Millisecond,
+				Mode: "nx",
+			}
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+
+			Eventually(func() error {
+				return client.Get(ctx, "key").Err()
+			}, "1s", "100ms").Should(Equal(redis.Nil))
+		})
+
+		It("should SetWithArgs with expiration, NX mode, and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0)
+			Expect(e.Err()).NotTo(HaveOccurred())
+
+			args := &redis.SetArgs{
+				TTL:  500 * time.Millisecond,
+				Mode: "nx",
+			}
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with expiration, NX mode, and GET option", func() {
+			args := &redis.SetArgs{
+				TTL:  500 * time.Millisecond,
+				Mode: "nx",
+				Get:  true,
+			}
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).To(Equal(proto.RedisError("ERR syntax error")))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with XX mode and key does not exist", func() {
+			args := &redis.SetArgs{
+				Mode: "xx",
+			}
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with XX mode and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0).Err()
+			Expect(e).NotTo(HaveOccurred())
+
+			args := &redis.SetArgs{
+				Mode: "xx",
+			}
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+		})
+
+		It("should SetWithArgs with XX mode and GET option, and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0).Err()
+			Expect(e).NotTo(HaveOccurred())
+
+			args := &redis.SetArgs{
+				Mode: "xx",
+				Get:  true,
+			}
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+		})
+
+		It("should SetWithArgs with XX mode and GET option, and key does not exist", func() {
+			args := &redis.SetArgs{
+				Mode: "xx",
+				Get:  true,
+			}
+
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with expiration, XX mode, GET option, and key does not exist", func() {
+			args := &redis.SetArgs{
+				TTL:  500 * time.Millisecond,
+				Mode: "xx",
+				Get:  true,
+			}
+
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with expiration, XX mode, GET option, and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0)
+			Expect(e.Err()).NotTo(HaveOccurred())
+
+			args := &redis.SetArgs{
+				TTL:  500 * time.Millisecond,
+				Mode: "xx",
+				Get:  true,
+			}
+
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+
+			Eventually(func() error {
+				return client.Get(ctx, "key").Err()
+			}, "1s", "100ms").Should(Equal(redis.Nil))
+		})
+
+		It("should SetWithArgs with Get and key does not exist yet", func() {
+			args := &redis.SetArgs{
+				Get: true,
+			}
+
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with Get and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0)
+			Expect(e.Err()).NotTo(HaveOccurred())
+
+			args := &redis.SetArgs{
+				Get: true,
+			}
+
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+		})
+
 		It("should Set with expiration", func() {
 			err := client.Set(ctx, "key", "hello", 100*time.Millisecond).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -1169,7 +1409,7 @@ var _ = Describe("Commands", func() {
 			Expect(val).To(Equal("hello"))
 
 			Eventually(func() error {
-				return client.Get(ctx, "foo").Err()
+				return client.Get(ctx, "key").Err()
 			}, "1s", "100ms").Should(Equal(redis.Nil))
 		})
 
