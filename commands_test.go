@@ -1161,7 +1161,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetWithArgs with TTL", func() {
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				TTL: 500 * time.Millisecond,
 			}
 			err := client.SetArgs(ctx, "key", "hello", args).Err()
@@ -1178,7 +1178,7 @@ var _ = Describe("Commands", func() {
 
 		It("should SetWithArgs with expiration date", func() {
 			expireAt := time.Now().AddDate(1, 1, 1)
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				ExpireAt: expireAt,
 			}
 			err := client.SetArgs(ctx, "key", "hello", args).Err()
@@ -1196,7 +1196,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetWithArgs with negative expiration date", func() {
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				ExpireAt: time.Now().AddDate(-3, 1, 1),
 			}
 			// redis accepts a timestamp less than the current date
@@ -1211,7 +1211,7 @@ var _ = Describe("Commands", func() {
 
 		It("should SetWithArgs with keepttl", func() {
 			// Set with ttl
-			argsWithTTL := &redis.SetArgs{
+			argsWithTTL := redis.SetArgs{
 				TTL: 5 * time.Second,
 			}
 			set := client.SetArgs(ctx, "key", "hello", argsWithTTL)
@@ -1219,7 +1219,7 @@ var _ = Describe("Commands", func() {
 			Expect(set.Result()).To(Equal("OK"))
 
 			// Set with keepttl
-			argsWithKeepTTL := &redis.SetArgs{
+			argsWithKeepTTL := redis.SetArgs{
 				KeepTTL: true,
 			}
 			set = client.SetArgs(ctx, "key", "hello", argsWithKeepTTL)
@@ -1236,7 +1236,7 @@ var _ = Describe("Commands", func() {
 			err := client.Set(ctx, "key", "hello", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				Mode: "nx",
 			}
 			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
@@ -1245,7 +1245,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetWithArgs with NX mode and key does not exist", func() {
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				Mode: "nx",
 			}
 			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
@@ -1254,7 +1254,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetWithArgs with NX mode and GET option", func() {
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				Mode: "nx",
 				Get:  true,
 			}
@@ -1264,7 +1264,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetWithArgs with expiration, NX mode, and key does not exist", func() {
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				TTL:  500 * time.Millisecond,
 				Mode: "nx",
 			}
@@ -1281,7 +1281,7 @@ var _ = Describe("Commands", func() {
 			e := client.Set(ctx, "key", "hello", 0)
 			Expect(e.Err()).NotTo(HaveOccurred())
 
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				TTL:  500 * time.Millisecond,
 				Mode: "nx",
 			}
@@ -1291,7 +1291,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetWithArgs with expiration, NX mode, and GET option", func() {
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				TTL:  500 * time.Millisecond,
 				Mode: "nx",
 				Get:  true,
@@ -1302,7 +1302,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetWithArgs with XX mode and key does not exist", func() {
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				Mode: "xx",
 			}
 			val, err := client.SetArgs(ctx, "key", "world", args).Result()
@@ -1314,7 +1314,7 @@ var _ = Describe("Commands", func() {
 			e := client.Set(ctx, "key", "hello", 0).Err()
 			Expect(e).NotTo(HaveOccurred())
 
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				Mode: "xx",
 			}
 			val, err := client.SetArgs(ctx, "key", "world", args).Result()
@@ -1326,7 +1326,7 @@ var _ = Describe("Commands", func() {
 			e := client.Set(ctx, "key", "hello", 0).Err()
 			Expect(e).NotTo(HaveOccurred())
 
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				Mode: "xx",
 				Get:  true,
 			}
@@ -1336,7 +1336,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetWithArgs with XX mode and GET option, and key does not exist", func() {
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				Mode: "xx",
 				Get:  true,
 			}
@@ -1347,7 +1347,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetWithArgs with expiration, XX mode, GET option, and key does not exist", func() {
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				TTL:  500 * time.Millisecond,
 				Mode: "xx",
 				Get:  true,
@@ -1362,7 +1362,7 @@ var _ = Describe("Commands", func() {
 			e := client.Set(ctx, "key", "hello", 0)
 			Expect(e.Err()).NotTo(HaveOccurred())
 
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				TTL:  500 * time.Millisecond,
 				Mode: "xx",
 				Get:  true,
@@ -1378,7 +1378,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetWithArgs with Get and key does not exist yet", func() {
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				Get: true,
 			}
 
@@ -1391,7 +1391,7 @@ var _ = Describe("Commands", func() {
 			e := client.Set(ctx, "key", "hello", 0)
 			Expect(e.Err()).NotTo(HaveOccurred())
 
-			args := &redis.SetArgs{
+			args := redis.SetArgs{
 				Get: true,
 			}
 

@@ -807,16 +807,17 @@ type SetArgs struct {
 // SetArgs supports all the options that the SET command supports.
 // It is the alternative to the Set function when you want
 // to have more control over the options.
-func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a *SetArgs) *StatusCmd {
+func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
 	if a.KeepTTL {
 		args = append(args, "keepttl")
 	}
 
-	if !a.ExpireAt.IsZero() && !a.KeepTTL {
+	if !a.ExpireAt.IsZero() {
 		args = append(args, "exat", a.ExpireAt.Unix())
-	} else if a.TTL > 0 && !a.KeepTTL {
+	}
+	if a.TTL > 0 {
 		if usePrecise(a.TTL) {
 			args = append(args, "px", formatMs(ctx, a.TTL))
 		} else {
