@@ -790,10 +790,10 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 
 // SetArgs provides arguments for the SetArgs function.
 type SetArgs struct {
-	// Mode can be `NX` or `XX` or empty
+	// Mode can be `NX` or `XX` or empty.
 	Mode string
 
-	// Zero `TTL` or `Expiration` means that the key has no expiration time
+	// Zero `TTL` or `Expiration` means that the key has no expiration time.
 	TTL      time.Duration
 	ExpireAt time.Time
 
