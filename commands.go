@@ -810,16 +810,18 @@ type SetArgs struct {
 func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a *SetArgs) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
-	if !a.ExpireAt.IsZero() {
+	if a.KeepTTL {
+		args = append(args, "keepttl")
+	}
+
+	if !a.ExpireAt.IsZero() && !a.KeepTTL {
 		args = append(args, "exat", a.ExpireAt.Unix())
-	} else if a.TTL > 0 {
+	} else if a.TTL > 0 && !a.KeepTTL {
 		if usePrecise(a.TTL) {
 			args = append(args, "px", formatMs(ctx, a.TTL))
 		} else {
 			args = append(args, "ex", formatSec(ctx, a.TTL))
 		}
-	} else if a.KeepTTL {
-		args = append(args, "keepttl")
 	}
 
 	if a.Mode != "" {
