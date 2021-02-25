@@ -424,7 +424,7 @@ func (c *PubSub) ReceiveMessage(ctx context.Context) (*Message, error) {
 // Receive* APIs can not be used after channel is created.
 //
 // go-redis periodically sends ping messages to test connection health
-// and re-subscribes if ping can not not received for 30 seconds.
+// and re-subscribes if ping can not not received for 1 minutes.
 func (c *PubSub) Channel() <-chan *Message {
 	return c.ChannelSize(100)
 }
@@ -479,18 +479,16 @@ func (c *PubSub) initPing() {
 	ctx := context.TODO()
 	c.ping = make(chan struct{}, 1)
 	go func() {
-		timer := time.NewTimer(time.Minute)
-		timer.Stop()
-
+		timer := time.NewTimer(pingTimeout)
 		healthy := true
 		for {
-			timer.Reset(pingTimeout)
 			select {
 			case <-c.ping:
 				healthy = true
 				if !timer.Stop() {
 					<-timer.C
 				}
+				timer.Reset(time.Minute)
 			case <-timer.C:
 				pingErr := c.Ping(ctx)
 				if healthy {
@@ -504,6 +502,7 @@ func (c *PubSub) initPing() {
 					healthy = true
 					c.mu.Unlock()
 				}
+				timer.Reset(pingTimeout)
 			case <-c.exit:
 				return
 			}
