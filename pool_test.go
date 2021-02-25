@@ -17,7 +17,7 @@ var _ = Describe("pool", func() {
 		opt := redisOptions()
 		opt.MinIdleConns = 0
 		opt.MaxConnAge = 0
-		opt.IdleTimeout = time.Second
+		opt.IdleTimeout = 2 * time.Second
 		client = redis.NewClient(opt)
 	})
 
@@ -135,7 +135,7 @@ var _ = Describe("pool", func() {
 			StaleConns: 0,
 		}))
 
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
 
 		stats = client.PoolStats()
 		Expect(stats).To(Equal(&redis.PoolStats{
