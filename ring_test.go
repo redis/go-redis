@@ -533,6 +533,16 @@ var _ = Describe("Ring watch", func() {
 	})
 
 	It("respects max size on multi", func() {
+		//this test checks the number of "pool.conn"
+		//if the health check is performed at the same time
+		//conn will be used, resulting in an abnormal number of "pool.conn".
+		//
+		//redis.NewRing() does not have an option to prohibit health checks.
+		//set a relatively large time here to avoid health checks.
+		opt := redisRingOptions()
+		opt.HeartbeatFrequency = 72 * time.Hour
+		ring = redis.NewRing(opt)
+
 		perform(1000, func(id int) {
 			var ping *redis.StatusCmd
 
