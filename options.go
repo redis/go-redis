@@ -29,6 +29,18 @@ type Limiter interface {
 	ReportResult(result error)
 }
 
+// SubscriptionPingStrategy is the interface of ping frequency strategy.
+type SubscriptionPingStrategy interface {
+	// Frequency of subscription ping frequnecy.
+	Frequency() time.Duration
+	// Report ping event to strategy to change frequency dynamically.
+	ReportPing()
+	// Report pong event to strategy to change frequency dynamically.
+	ReportPong()
+	// Report timeout event to strategy to change Frequency dynamically.
+	ReportTimeout()
+}
+
 // Options keeps the settings to setup redis connection.
 type Options struct {
 	// The network type, either tcp or unix.
@@ -110,6 +122,10 @@ type Options struct {
 
 	// Limiter interface used to implemented circuit breaker or rate limiter.
 	Limiter Limiter
+
+	// SubscriptionPingStrategy interface used to implemented ping strategy for subscription.
+	// Default strategy frequency is 1 second.
+	SubscriptionPingStrategy SubscriptionPingStrategy
 }
 
 func (opt *Options) init() {
@@ -179,6 +195,10 @@ func (opt *Options) init() {
 		opt.MaxRetryBackoff = 0
 	case 0:
 		opt.MaxRetryBackoff = 512 * time.Millisecond
+	}
+
+	if opt.SubscriptionPingStrategy == nil {
+		opt.SubscriptionPingStrategy = &defaultSubscriptionPingStrategy{}
 	}
 }
 
@@ -315,3 +335,10 @@ func newConnPool(opt *Options) *pool.ConnPool {
 		IdleCheckFrequency: opt.IdleCheckFrequency,
 	})
 }
+
+type defaultSubscriptionPingStrategy struct{}
+
+func (*defaultSubscriptionPingStrategy) Frequency() time.Duration { return time.Second }
+func (*defaultSubscriptionPingStrategy) ReportPing()              {}
+func (*defaultSubscriptionPingStrategy) ReportPong()              {}
+func (*defaultSubscriptionPingStrategy) ReportTimeout()           {}
