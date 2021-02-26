@@ -479,24 +479,32 @@ func (c *PubSub) initPing() {
 	ctx := context.TODO()
 	c.ping = make(chan struct{}, 1)
 	go func() {
-		timer := time.NewTimer(pingTimeout)
+		freq := pingTimeout
+		timer := time.NewTimer(freq)
 		timer.Stop()
 
 		healthy := true
 		for {
-			timer.Reset(c.opt.SubscriptionPingStrategy.Frequency())
+			if c.opt.SubscriptionPingStrategy != nil {
+				freq = c.opt.SubscriptionPingStrategy.Frequency()
+			}
+			timer.Reset(freq)
 			select {
 			case <-c.ping:
 				healthy = true
 				if !timer.Stop() {
 					<-timer.C
 				}
-				c.opt.SubscriptionPingStrategy.ReportPong()
+				if c.opt.SubscriptionPingStrategy != nil {
+					c.opt.SubscriptionPingStrategy.ReportPong()
+				}
 			case <-timer.C:
 				pingErr := c.Ping(ctx)
 				if healthy {
 					healthy = false
-					c.opt.SubscriptionPingStrategy.ReportPing()
+					if c.opt.SubscriptionPingStrategy != nil {
+						c.opt.SubscriptionPingStrategy.ReportPing()
+					}
 				} else {
 					if pingErr == nil {
 						pingErr = errPingTimeout
@@ -505,7 +513,9 @@ func (c *PubSub) initPing() {
 					c.reconnect(ctx, pingErr)
 					healthy = true
 					c.mu.Unlock()
-					c.opt.SubscriptionPingStrategy.ReportTimeout()
+					if c.opt.SubscriptionPingStrategy != nil {
+						c.opt.SubscriptionPingStrategy.ReportTimeout()
+					}
 				}
 			case <-c.exit:
 				return

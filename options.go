@@ -196,10 +196,6 @@ func (opt *Options) init() {
 	case 0:
 		opt.MaxRetryBackoff = 512 * time.Millisecond
 	}
-
-	if opt.SubscriptionPingStrategy == nil {
-		opt.SubscriptionPingStrategy = &defaultSubscriptionPingStrategy{}
-	}
 }
 
 func (opt *Options) clone() *Options {
@@ -335,10 +331,3 @@ func newConnPool(opt *Options) *pool.ConnPool {
 		IdleCheckFrequency: opt.IdleCheckFrequency,
 	})
 }
-
-type defaultSubscriptionPingStrategy struct{}
-
-func (*defaultSubscriptionPingStrategy) Frequency() time.Duration { return time.Second }
-func (*defaultSubscriptionPingStrategy) ReportPing()              {}
-func (*defaultSubscriptionPingStrategy) ReportPong()              {}
-func (*defaultSubscriptionPingStrategy) ReportTimeout()           {}
