@@ -17,7 +17,7 @@ var _ = Describe("pool", func() {
 		opt := redisOptions()
 		opt.MinIdleConns = 0
 		opt.MaxConnAge = 0
-		opt.IdleTimeout = 2 * time.Second
+		opt.IdleTimeout = time.Second
 		client = redis.NewClient(opt)
 	})
 
@@ -105,6 +105,13 @@ var _ = Describe("pool", func() {
 	})
 
 	It("reuses connections", func() {
+		// explain: https://github.com/go-redis/redis/pull/1675
+		opt := redisOptions()
+		opt.MinIdleConns = 0
+		opt.MaxConnAge = 0
+		opt.IdleTimeout = 2 * time.Second
+		client = redis.NewClient(opt)
+
 		for i := 0; i < 100; i++ {
 			val, err := client.Ping(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -135,7 +142,7 @@ var _ = Describe("pool", func() {
 			StaleConns: 0,
 		}))
 
-		time.Sleep(3 * time.Second)
+		time.Sleep(2 * time.Second)
 
 		stats = client.PoolStats()
 		Expect(stats).To(Equal(&redis.PoolStats{
