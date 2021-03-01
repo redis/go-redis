@@ -1,12 +1,15 @@
+<p align="center">
+  <a href="https://uptrace.dev/?utm_source=gh-redis&utm_campaign=gh-redis-banner1">
+    <img src="https://raw.githubusercontent.com/uptrace/roadmap/master/banner1.png">
+  </a>
+</p>
+
 # Redis client for Golang
 
 [![Build Status](https://travis-ci.org/go-redis/redis.png?branch=master)](https://travis-ci.org/go-redis/redis)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
-
-> :heart:
-> [**Uptrace.dev** - distributed traces, logs, and errors in one place](https://uptrace.dev?utm_source=gh-redis&utm_campaign=gh-redis-var1)
 
 - Join [Discord](https://discord.gg/rWtp5Aj) to ask questions.
 - [Documentation](https://redis.uptrace.dev)
