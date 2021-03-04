@@ -6,8 +6,8 @@ import (
 	"github.com/go-redis/redis/extra/rediscmd"
 	"github.com/go-redis/redis/v8"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/label"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -24,8 +24,8 @@ func (TracingHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.
 
 	ctx, span := tracer.Start(ctx, cmd.FullName())
 	span.SetAttributes(
-		label.String("db.system", "redis"),
-		label.String("db.statement", rediscmd.CmdString(cmd)),
+		attribute.String("db.system", "redis"),
+		attribute.String("db.statement", rediscmd.CmdString(cmd)),
 	)
 
 	return ctx, nil
@@ -49,9 +49,9 @@ func (TracingHook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder
 
 	ctx, span := tracer.Start(ctx, "pipeline "+summary)
 	span.SetAttributes(
-		label.String("db.system", "redis"),
-		label.Int("db.redis.num_cmd", len(cmds)),
-		label.String("db.statement", cmdsString),
+		attribute.String("db.system", "redis"),
+		attribute.Int("db.redis.num_cmd", len(cmds)),
+		attribute.String("db.statement", cmdsString),
 	)
 
 	return ctx, nil
