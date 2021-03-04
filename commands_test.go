@@ -1400,6 +1400,23 @@ var _ = Describe("Commands", func() {
 			Expect(val).To(Equal("hello"))
 		})
 
+		It("should Pipelined SetArgs with Get and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0)
+			Expect(e.Err()).NotTo(HaveOccurred())
+
+			args := redis.SetArgs{
+				Get: true,
+			}
+
+			pipe := client.Pipeline()
+			setArgs := pipe.SetArgs(ctx, "key", "world", args)
+			_, err := pipe.Exec(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(setArgs.Err()).NotTo(HaveOccurred())
+			Expect(setArgs.Val()).To(Equal("hello"))
+		})
+
 		It("should Set with expiration", func() {
 			err := client.Set(ctx, "key", "hello", 100*time.Millisecond).Err()
 			Expect(err).NotTo(HaveOccurred())
