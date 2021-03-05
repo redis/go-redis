@@ -615,11 +615,13 @@ type clusterStateHolder struct {
 
 	state     atomic.Value
 	reloading uint32 // atomic
+	ctx       context.Context
 }
 
-func newClusterStateHolder(fn func(ctx context.Context) (*clusterState, error)) *clusterStateHolder {
+func newClusterStateHolder(ctx context.Context, fn func(ctx context.Context) (*clusterState, error)) *clusterStateHolder {
 	return &clusterStateHolder{
 		load: fn,
+		ctx:  ctx,
 	}
 }
 
@@ -652,7 +654,7 @@ func (c *clusterStateHolder) Get(ctx context.Context) (*clusterState, error) {
 	if v != nil {
 		state := v.(*clusterState)
 		if time.Since(state.createdAt) > 10*time.Second {
-			c.LazyReload(ctx)
+			c.LazyReload(c.ctx)
 		}
 		return state, nil
 	}
@@ -698,7 +700,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		},
 		ctx: context.Background(),
 	}
-	c.state = newClusterStateHolder(c.loadState)
+	c.state = newClusterStateHolder(c.Context(), c.loadState)
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
 
@@ -793,7 +795,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 		if isReadOnly := isReadOnlyError(lastErr); isReadOnly || lastErr == pool.ErrClosed {
 			if isReadOnly {
-				c.state.LazyReload(ctx)
+				c.state.LazyReload(c.Context())
 			}
 			node = nil
 			continue
@@ -1228,7 +1230,7 @@ func (c *ClusterClient) checkMovedErr(
 	}
 
 	if moved {
-		c.state.LazyReload(ctx)
+		c.state.LazyReload(c.Context())
 		failedCmds.Add(node, cmd)
 		return true
 	}
@@ -1414,7 +1416,7 @@ func (c *ClusterClient) cmdsMoved(
 	}
 
 	if moved {
-		c.state.LazyReload(ctx)
+		c.state.LazyReload(c.Context())
 		for _, cmd := range cmds {
 			failedCmds.Add(node, cmd)
 		}
@@ -1472,7 +1474,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 		if isReadOnly := isReadOnlyError(err); isReadOnly || err == pool.ErrClosed {
 			if isReadOnly {
-				c.state.LazyReload(ctx)
+				c.state.LazyReload(c.Context())
 			}
 			node, err = c.slotMasterNode(ctx, slot)
 			if err != nil {
