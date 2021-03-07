@@ -189,6 +189,12 @@ var _ = Describe("Redis Ring", func() {
 	})
 
 	It("supports Process hook", func() {
+		//the health check leads to data race for variable "stack []string".
+		//here, the health check time is set to 72 hours to avoid health check
+		opt := redisRingOptions()
+		opt.HeartbeatFrequency = 72 * time.Hour
+		ring = redis.NewRing(opt)
+
 		err := ring.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 
