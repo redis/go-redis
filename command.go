@@ -810,6 +810,55 @@ func (cmd *FloatCmd) readReply(rd *proto.Reader) (err error) {
 
 //------------------------------------------------------------------------------
 
+type FloatSliceCmd struct {
+	baseCmd
+
+	val []float64
+}
+
+var _ Cmder = (*FloatSliceCmd)(nil)
+
+func NewFloatSliceCmd(ctx context.Context, args ...interface{}) *FloatSliceCmd {
+	return &FloatSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *FloatSliceCmd) Val() []float64 {
+	return cmd.val
+}
+
+func (cmd *FloatSliceCmd) Result() ([]float64, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FloatSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FloatSliceCmd) readReply(rd *proto.Reader) error {
+	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		cmd.val = make([]float64, n)
+		for i := 0; i < len(cmd.val); i++ {
+			switch num, err := rd.ReadFloatReply(); {
+			case err == Nil:
+				cmd.val[i] = 0
+			case err != nil:
+				return nil, err
+			default:
+				cmd.val[i] = num
+			}
+		}
+		return nil, nil
+	})
+	return err
+}
+
+//------------------------------------------------------------------------------
+
 type StringSliceCmd struct {
 	baseCmd
 

@@ -242,6 +242,7 @@ type Cmdable interface {
 	ZLexCount(ctx context.Context, key, min, max string) *IntCmd
 	ZIncrBy(ctx context.Context, key string, increment float64, member string) *FloatCmd
 	ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd
+	ZMScore(ctx context.Context, key string, members ...string) *FloatSliceCmd
 	ZPopMax(ctx context.Context, key string, count ...int64) *ZSliceCmd
 	ZPopMin(ctx context.Context, key string, count ...int64) *ZSliceCmd
 	ZRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd
@@ -2006,6 +2007,18 @@ func (c cmdable) ZInterStore(ctx context.Context, destination string, store *ZSt
 	}
 	cmd := NewIntCmd(ctx, args...)
 	cmd.setFirstKeyPos(3)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZMScore(ctx context.Context, key string, members ...string) *FloatSliceCmd {
+	args := make([]interface{}, 2+len(members))
+	args[0] = "zmscore"
+	args[1] = key
+	for i, member := range members {
+		args[2+i] = member
+	}
+	cmd := NewFloatSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

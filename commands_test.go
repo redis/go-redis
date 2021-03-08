@@ -3151,6 +3151,33 @@ var _ = Describe("Commands", func() {
 			}}))
 		})
 
+		It("should ZMScore", func() {
+			zmScore := client.ZMScore(ctx, "zset", "one", "three")
+			Expect(zmScore.Err()).NotTo(HaveOccurred())
+			Expect(zmScore.Val()).To(HaveLen(2))
+			Expect(zmScore.Val()[0]).To(Equal(float64(0)))
+
+			err := client.ZAdd(ctx, "zset", &redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", &redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", &redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			zmScore = client.ZMScore(ctx, "zset", "one", "three")
+			Expect(zmScore.Err()).NotTo(HaveOccurred())
+			Expect(zmScore.Val()).To(HaveLen(2))
+			Expect(zmScore.Val()[0]).To(Equal(float64(1)))
+
+			zmScore = client.ZMScore(ctx, "zset", "four")
+			Expect(zmScore.Err()).NotTo(HaveOccurred())
+			Expect(zmScore.Val()).To(HaveLen(1))
+
+			zmScore = client.ZMScore(ctx, "zset", "four", "one")
+			Expect(zmScore.Err()).NotTo(HaveOccurred())
+			Expect(zmScore.Val()).To(HaveLen(2))
+		})
+
 		It("should ZPopMax", func() {
 			err := client.ZAdd(ctx, "zset", &redis.Z{
 				Score:  1,
