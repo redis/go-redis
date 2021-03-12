@@ -13,6 +13,7 @@ var _ = Describe("Sentinel", func() {
 	var client *redis.Client
 	var master *redis.Client
 	var masterPort string
+	var sentinel *redis.SentinelClient
 
 	BeforeEach(func() {
 		client = redis.NewFailoverClient(&redis.FailoverOptions{
@@ -22,7 +23,7 @@ var _ = Describe("Sentinel", func() {
 		})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
-		sentinel := redis.NewSentinelClient(&redis.Options{
+		sentinel = redis.NewSentinelClient(&redis.Options{
 			Addr:       ":" + sentinelPort1,
 			MaxRetries: -1,
 		})
@@ -51,6 +52,7 @@ var _ = Describe("Sentinel", func() {
 	AfterEach(func() {
 		_ = client.Close()
 		_ = master.Close()
+		_ = sentinel.Close()
 	})
 
 	It("should facilitate failover", func() {
@@ -63,8 +65,28 @@ var _ = Describe("Sentinel", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal("master"))
 
+		// Verify master->slaves sync.
+		var slavesAddr []string
+		Eventually(func() []string {
+			slavesAddr = sentinel.GetSlavesAddrByName(ctx, sentinelName)
+			return slavesAddr
+		}, "15s", "100ms").Should(HaveLen(2))
+		Eventually(func() bool {
+			sync := true
+			for _, addr := range slavesAddr {
+				slave := redis.NewClient(&redis.Options{
+					Addr:       addr,
+					MaxRetries: -1,
+				})
+				sync = slave.Get(ctx, "foo").Val() == "master"
+				_ = slave.Close()
+			}
+			return sync
+		}, "15s", "100ms").Should(BeTrue())
+
 		// Create subscription.
-		ch := client.Subscribe(ctx, "foo").Channel()
+		pub := client.Subscribe(ctx, "foo")
+		ch := pub.Channel()
 
 		// Kill master.
 		err = master.Shutdown(ctx).Err()
@@ -86,6 +108,7 @@ var _ = Describe("Sentinel", func() {
 		}, "15s", "100ms").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
+		Expect(pub.Close()).NotTo(HaveOccurred())
 
 		_, err = startRedis(masterPort)
 		Expect(err).NotTo(HaveOccurred())

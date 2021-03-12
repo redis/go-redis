@@ -308,7 +308,8 @@ var _ = Describe("races", func() {
 				Streams: []string{"test", "$"},
 				Block:   1 * time.Second,
 			}).Result()
-			Expect(err).To(Equal(context.Canceled))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(Or(Equal(context.Canceled.Error()), ContainSubstring("operation was canceled")))
 		})
 
 		time.Sleep(10 * time.Millisecond)
