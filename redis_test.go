@@ -243,12 +243,16 @@ var _ = Describe("Client", func() {
 		cn, err := client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn.UsedAt).NotTo(BeZero())
+
+		// set cn.SetUsedAt(time) or time.Sleep(>1*time.Second)
+		// simulate the last time Conn was used
+		// time.Sleep() is not the standard sleep time
+		// link: https://go-review.googlesource.com/c/go/+/232298
+		cn.SetUsedAt(time.Now().Add(-1 * time.Second))
 		createdAt := cn.UsedAt()
 
 		client.Pool().Put(ctx, cn)
 		Expect(cn.UsedAt().Equal(createdAt)).To(BeTrue())
-
-		time.Sleep(time.Second)
 
 		err = client.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
