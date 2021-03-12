@@ -317,16 +317,6 @@ func (c *SentinelClient) GetMasterAddrByName(ctx context.Context, name string) *
 	return cmd
 }
 
-func (c *SentinelClient) GetSlavesAddrByName(ctx context.Context, name string) []string {
-	addrs, err := c.Slaves(ctx, name).Result()
-	if err != nil {
-		internal.Logger.Printf(ctx, "sentinel: Slaves name=%q failed: %s",
-			name, err)
-		return []string{}
-	}
-	return parseSlaveAddrs(addrs, false)
-}
-
 func (c *SentinelClient) Sentinels(ctx context.Context, name string) *SliceCmd {
 	cmd := NewSliceCmd(ctx, "sentinel", "sentinels", name)
 	_ = c.Process(ctx, cmd)

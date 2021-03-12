@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/go-redis/redis/v8/internal"
 	"github.com/go-redis/redis/v8/internal/hashtag"
 	"github.com/go-redis/redis/v8/internal/pool"
 )
@@ -81,4 +82,14 @@ func (state *clusterState) IsConsistent(ctx context.Context) bool {
 	}
 
 	return true
+}
+
+func GetSlavesAddrByName(ctx context.Context, c *SentinelClient, name string) []string {
+	addrs, err := c.Slaves(ctx, name).Result()
+	if err != nil {
+		internal.Logger.Printf(ctx, "sentinel: Slaves name=%q failed: %s",
+			name, err)
+		return []string{}
+	}
+	return parseSlaveAddrs(addrs, false)
 }

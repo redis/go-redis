@@ -68,7 +68,7 @@ var _ = Describe("Sentinel", func() {
 		// Verify master->slaves sync.
 		var slavesAddr []string
 		Eventually(func() []string {
-			slavesAddr = sentinel.GetSlavesAddrByName(ctx, sentinelName)
+			slavesAddr = redis.GetSlavesAddrByName(ctx, sentinel, sentinelName)
 			return slavesAddr
 		}, "15s", "100ms").Should(HaveLen(2))
 		Eventually(func() bool {
