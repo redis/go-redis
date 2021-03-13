@@ -1465,7 +1465,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetEX", func() {
-			err := client.SetEX(ctx, "key", "hello", 100*time.Millisecond).Err()
+			err := client.SetEX(ctx, "key", "hello", 1*time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			val, err := client.Get(ctx, "key").Result()
@@ -1474,7 +1474,7 @@ var _ = Describe("Commands", func() {
 
 			Eventually(func() error {
 				return client.Get(ctx, "foo").Err()
-			}, "1s", "100ms").Should(Equal(redis.Nil))
+			}, "2s", "100ms").Should(Equal(redis.Nil))
 		})
 
 		It("should SetNX", func() {
