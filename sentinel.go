@@ -666,15 +666,22 @@ func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 	}
 	for _, sentinel := range sentinels {
 		vals := sentinel.([]interface{})
+		var ip, port string
 		for i := 0; i < len(vals); i += 2 {
 			key := vals[i].(string)
-			if key == "name" {
-				sentinelAddr := vals[i+1].(string)
-				if !contains(c.sentinelAddrs, sentinelAddr) {
-					internal.Logger.Printf(ctx, "sentinel: discovered new sentinel=%q for master=%q",
-						sentinelAddr, c.opt.MasterName)
-					c.sentinelAddrs = append(c.sentinelAddrs, sentinelAddr)
-				}
+			switch key {
+			case "ip":
+				ip = vals[i+1].(string)
+			case "port":
+				port = vals[i+1].(string)
+			}
+		}
+		if ip != "" && port != "" {
+			sentinelAddr := net.JoinHostPort(ip, port)
+			if !contains(c.sentinelAddrs, sentinelAddr) {
+				internal.Logger.Printf(ctx, "sentinel: discovered new sentinel=%q for master=%q",
+					sentinelAddr, c.opt.MasterName)
+				c.sentinelAddrs = append(c.sentinelAddrs, sentinelAddr)
 			}
 		}
 	}
