@@ -710,6 +710,13 @@ func (cmd *StringCmd) Bytes() ([]byte, error) {
 	return util.StringToBytes(cmd.val), cmd.err
 }
 
+func (cmd *StringCmd) Bool() (bool, error) {
+	if cmd.err != nil {
+		return false, cmd.err
+	}
+	return strconv.ParseBool(cmd.val)
+}
+
 func (cmd *StringCmd) Int() (int, error) {
 	if cmd.err != nil {
 		return 0, cmd.err
