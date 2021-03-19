@@ -10,8 +10,6 @@ import (
 	"github.com/go-redis/redis/v8/internal"
 	"github.com/go-redis/redis/v8/internal/pool"
 	"github.com/go-redis/redis/v8/internal/proto"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // Nil reply returned by Redis when key does not exist.
@@ -214,9 +212,7 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 		return cn, nil
 	}
 
-	err = internal.WithSpan(ctx, "redis.init_conn", func(ctx context.Context, span trace.Span) error {
-		return c.initConn(ctx, cn)
-	})
+	err = c.initConn(ctx, cn)
 	if err != nil {
 		c.connPool.Remove(ctx, cn, err)
 		if err := errors.Unwrap(err); err != nil {
@@ -288,43 +284,35 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 func (c *baseClient) withConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) error {
-	return internal.WithSpan(ctx, "redis.with_conn", func(ctx context.Context, span trace.Span) error {
-		cn, err := c.getConn(ctx)
-		if err != nil {
-			return err
-		}
+	cn, err := c.getConn(ctx)
+	if err != nil {
+		return err
+	}
 
-		if span.IsRecording() {
-			if remoteAddr := cn.RemoteAddr(); remoteAddr != nil {
-				span.SetAttributes(attribute.String("net.peer.ip", remoteAddr.String()))
-			}
-		}
+	defer func() {
+		c.releaseConn(ctx, cn, err)
+	}()
 
-		defer func() {
-			c.releaseConn(ctx, cn, err)
-		}()
+	done := ctx.Done()
+	if done == nil {
+		err = fn(ctx, cn)
+		return err
+	}
 
-		done := ctx.Done()
-		if done == nil {
-			err = fn(ctx, cn)
-			return err
-		}
+	errc := make(chan error, 1)
+	go func() { errc <- fn(ctx, cn) }()
 
-		errc := make(chan error, 1)
-		go func() { errc <- fn(ctx, cn) }()
+	select {
+	case <-done:
+		_ = cn.Close()
+		// Wait for the goroutine to finish and send something.
+		<-errc
 
-		select {
-		case <-done:
-			_ = cn.Close()
-			// Wait for the goroutine to finish and send something.
-			<-errc
-
-			err = ctx.Err()
-			return err
-		case err = <-errc:
-			return err
-		}
-	})
+		err = ctx.Err()
+		return err
+	case err = <-errc:
+		return err
+	}
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
@@ -333,7 +321,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		attempt := attempt
 
 		var retry bool
-		err := internal.WithSpan(ctx, "redis.process", func(ctx context.Context, span trace.Span) error {
+		err := func() error {
 			if attempt > 0 {
 				if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 					return err
@@ -364,7 +352,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 			}
 			retry = shouldRetry(err, atomic.LoadUint32(&retryTimeout) == 1)
 			return err
-		})
+		}()
 		if err == nil || !retry {
 			return err
 		}
