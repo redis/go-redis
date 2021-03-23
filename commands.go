@@ -1989,12 +1989,10 @@ func (c cmdable) ZIncrBy(ctx context.Context, key string, increment float64, mem
 }
 
 func (c cmdable) ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd {
-	args := make([]interface{}, 3+len(store.Keys))
-	args[0] = "zinterstore"
-	args[1] = destination
-	args[2] = len(store.Keys)
-	for i, key := range store.Keys {
-		args[3+i] = key
+	args := make([]interface{}, 0, 3+len(store.Keys))
+	args = append(args, "zinterstore", destination, len(store.Keys))
+	for _, key := range store.Keys {
+		args = append(args, key)
 	}
 	if len(store.Weights) > 0 {
 		args = append(args, "weights")
@@ -2237,12 +2235,10 @@ func (c cmdable) ZScore(ctx context.Context, key, member string) *FloatCmd {
 }
 
 func (c cmdable) ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd {
-	args := make([]interface{}, 3+len(store.Keys))
-	args[0] = "zunionstore"
-	args[1] = dest
-	args[2] = len(store.Keys)
-	for i, key := range store.Keys {
-		args[3+i] = key
+	args := make([]interface{}, 0, 3+len(store.Keys))
+	args = append(args, "zunionstore", dest, len(store.Keys))
+	for _, key := range store.Keys {
+		args = append(args, key)
 	}
 	if len(store.Weights) > 0 {
 		args = append(args, "weights")
