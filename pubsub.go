@@ -118,7 +118,7 @@ func mapKeys(m map[string]struct{}) []string {
 	i := 0
 	for k := range m {
 		s[i] = k
-		i++
+		i++ // nolint:wastedassign
 	}
 	return s
 }

@@ -625,7 +625,7 @@ func parseSlaveAddrs(addrs []interface{}, keepDisconnected bool) []string {
 
 func (c *sentinelFailover) trySwitchMaster(ctx context.Context, addr string) {
 	c.mu.RLock()
-	currentAddr := c._masterAddr
+	currentAddr := c._masterAddr //nolint:ifshort
 	c.mu.RUnlock()
 
 	if addr == currentAddr {

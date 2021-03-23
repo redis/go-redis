@@ -305,7 +305,8 @@ func (c *baseClient) withConn(
 		c.releaseConn(ctx, cn, err)
 	}()
 
-	done := ctx.Done()
+	done := ctx.Done() //nolint:ifshort
+
 	if done == nil {
 		err = fn(ctx, cn)
 		return err
