@@ -477,7 +477,7 @@ var _ = Describe("Commands", func() {
 			//if too much time (>1s) is used during command execution, it may also cause the test to fail.
 			//so the ObjectIdleTime result should be <=now-start+1s
 			//link: https://github.com/redis/redis/blob/5b48d900498c85bbf4772c1d466c214439888115/src/object.c#L1265-L1272
-			Expect(idleTime.Val()).To(BeNumerically("<=", time.Now().Sub(start) + time.Second))
+			Expect(idleTime.Val()).To(BeNumerically("<=", time.Now().Sub(start)+time.Second))
 		})
 
 		It("should Persist", func() {
@@ -1081,6 +1081,37 @@ var _ = Describe("Commands", func() {
 			get := client.Get(ctx, "key")
 			Expect(get.Err()).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("0"))
+		})
+
+		It("should GetEX", func() {
+			set := client.Set(ctx, "key", "value", 100*time.Second)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(BeNumerically("~", 100*time.Second, 3*time.Second))
+
+			getEX := client.GetEX(ctx, "key", &redis.SetTTL{Expire: 200 * time.Second})
+			Expect(getEX.Err()).NotTo(HaveOccurred())
+			Expect(getEX.Val()).To(Equal("value"))
+
+			ttl = client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(BeNumerically("~", 200*time.Second, 3*time.Second))
+		})
+
+		It("should GetDel", func() {
+			set := client.Set(ctx, "key", "value", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			getDel := client.GetDel(ctx, "key")
+			Expect(getDel.Err()).NotTo(HaveOccurred())
+			Expect(getDel.Val()).To(Equal("value"))
+
+			get := client.Get(ctx, "key")
+			Expect(get.Err()).To(Equal(redis.Nil))
 		})
 
 		It("should Incr", func() {

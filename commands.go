@@ -117,6 +117,8 @@ type Cmdable interface {
 	Get(ctx context.Context, key string) *StringCmd
 	GetRange(ctx context.Context, key string, start, end int64) *StringCmd
 	GetSet(ctx context.Context, key string, value interface{}) *StringCmd
+	GetEX(ctx context.Context, key string, ttl *SetTTL) *StringCmd
+	GetDel(ctx context.Context, key string) *StringCmd
 	Incr(ctx context.Context, key string) *IntCmd
 	IncrBy(ctx context.Context, key string, value int64) *IntCmd
 	IncrByFloat(ctx context.Context, key string, value float64) *FloatCmd
@@ -360,6 +362,58 @@ type cmdable func(ctx context.Context, cmd Cmder) error
 type statefulCmdable func(ctx context.Context, cmd Cmder) error
 
 //------------------------------------------------------------------------------
+
+type ttlAttr int
+
+const (
+	TExpire ttlAttr = 1 << iota
+	TExpireAT
+	TKeepTTL
+	TPersist
+)
+
+// TTL related parameters, not all commands support all ttl attributes.
+// priority: Expire > ExpireAt > KeepTTL > Persist
+type SetTTL struct {
+	// set the specified expire time.
+	// Expire > time.Second AND Expire % time.Second == 0: set key EX Expire/time.Second
+	// Expire < time.Second OR Expire % time.Second != 0: set key PX Expire/time.Millisecond
+	Expire time.Duration
+
+	// set the specified Unix time at which the key will expire.
+	// Example: set key EXAT ExpireAt.Unix()
+	// Don't consider milliseconds for now(PXAT)
+	ExpireAt time.Time
+
+	// Retain the time to live associated with the key.
+	KeepTTL bool
+
+	// Remove the time to live associated with the key, Change to never expire
+	Persist bool
+}
+
+func appendTTL(ctx context.Context, args []interface{}, t *SetTTL, attr ttlAttr) []interface{} {
+	if t == nil {
+		return args
+	}
+
+	switch {
+	case attr&TExpire == 1 && t.Expire > 0:
+		if usePrecise(t.Expire) {
+			args = append(args, "px", formatMs(ctx, t.Expire))
+		} else {
+			args = append(args, "ex", formatSec(ctx, t.Expire))
+		}
+	case attr&TExpireAT == 1 && !t.ExpireAt.IsZero():
+		args = append(args, "exat", t.ExpireAt.Unix())
+	case attr&TKeepTTL == 1 && t.KeepTTL:
+		args = append(args, "keepttl")
+	case attr&TPersist == 1 && t.Persist:
+		args = append(args, "persist")
+	}
+
+	return args
+}
 
 func (c statefulCmdable) Auth(ctx context.Context, password string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "auth", password)
@@ -706,6 +760,23 @@ func (c cmdable) GetRange(ctx context.Context, key string, start, end int64) *St
 
 func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) *StringCmd {
 	cmd := NewStringCmd(ctx, "getset", key, value)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >= 6.2.0
+func (c cmdable) GetEX(ctx context.Context, key string, ttl *SetTTL) *StringCmd {
+	args := make([]interface{}, 2, 4)
+	args = append(args, "getex", key)
+	args = appendTTL(ctx, args, ttl, TExpire|TExpireAT|TPersist)
+	cmd := NewStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >= 6.2.0
+func (c cmdable) GetDel(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "getdel", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
