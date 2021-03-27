@@ -9,18 +9,11 @@ import (
 	"github.com/go-redis/redis/v8/internal"
 )
 
-const (
-	// KeepTTL is an option for Set command to keep key's existing TTL.
-	// For example:
-	//
-	//    rdb.Set(ctx, key, value, redis.KeepTTL)
-	KeepTTL = -1
-
-	// Persist is remove the time to live associated with the key.
-	// For example:
-	//		rdb.GetEX(ctx, key, redis.Persist)
-	Persist = -2
-)
+// KeepTTL is an option for Set command to keep key's existing TTL.
+// For example:
+//
+//    rdb.Set(ctx, key, value, redis.KeepTTL)
+const KeepTTL = -1
 
 func usePrecise(dur time.Duration) bool {
 	return dur < time.Second || dur%time.Second != 0
@@ -722,9 +715,7 @@ func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) *Str
 }
 
 // redis-server version >= 6.2.0.
-//
-// A value of zero means that the expiration time will not be changed.
-// Persist(-2) Remove the time to live associated with the key.
+// A expiration of zero remove the time to live associated with the key(GetEX key persist).
 func (c cmdable) GetEX(ctx context.Context, key string, expiration time.Duration) *StringCmd {
 	args := make([]interface{}, 0, 4)
 	args = append(args, "getex", key)
@@ -734,7 +725,7 @@ func (c cmdable) GetEX(ctx context.Context, key string, expiration time.Duration
 		} else {
 			args = append(args, "ex", formatSec(ctx, expiration))
 		}
-	} else if expiration == Persist {
+	} else if expiration == 0 {
 		args = append(args, "persist")
 	}
 
@@ -1222,6 +1213,7 @@ func (c cmdable) HVals(ctx context.Context, key string) *StringSliceCmd {
 	return cmd
 }
 
+// redis-server version >= 6.2.0.
 func (c cmdable) HRandField(ctx context.Context, key string, count int, withValues bool) *StringSliceCmd {
 	args := make([]interface{}, 0, 4)
 
@@ -2310,8 +2302,11 @@ func (c cmdable) ZUnionStore(ctx context.Context, dest string, store *ZStore) *I
 	return cmd
 }
 
+// redis-server version >= 6.2.0.
 func (c cmdable) ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd {
 	args := make([]interface{}, 0, 4)
+
+	// Although count=0 is meaningless, redis accepts count=0.
 	args = append(args, "zrandmember", key, count)
 	if withScores {
 		args = append(args, "withscores")

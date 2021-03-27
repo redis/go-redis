@@ -1841,7 +1841,11 @@ var _ = Describe("Commands", func() {
 
 			v := client.HRandField(ctx, "hash", 1, false)
 			Expect(v.Err()).NotTo(HaveOccurred())
-			Expect(v.Result()).To(Or(Equal([]string{"key1"}), Equal([]string{"key2"})))
+			Expect(v.Val()).To(Or(Equal([]string{"key1"}), Equal([]string{"key2"})))
+
+			v = client.HRandField(ctx, "hash", 0, false)
+			Expect(v.Err()).NotTo(HaveOccurred())
+			Expect(v.Val()).To(HaveLen(0))
 
 			var slice []string
 			err = client.HRandField(ctx, "hash", 1, true).ScanSlice(&slice)
@@ -3896,6 +3900,10 @@ var _ = Describe("Commands", func() {
 			v := client.ZRandMember(ctx, "zset", 1, false)
 			Expect(v.Err()).NotTo(HaveOccurred())
 			Expect(v.Val()).To(Or(Equal([]string{"one"}), Equal([]string{"two"})))
+
+			v = client.ZRandMember(ctx, "zset", 0, false)
+			Expect(v.Err()).NotTo(HaveOccurred())
+			Expect(v.Val()).To(HaveLen(0))
 
 			var slice []string
 			err = client.ZRandMember(ctx, "zset", 1, true).ScanSlice(&slice)
