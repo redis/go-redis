@@ -117,6 +117,8 @@ type Cmdable interface {
 	Get(ctx context.Context, key string) *StringCmd
 	GetRange(ctx context.Context, key string, start, end int64) *StringCmd
 	GetSet(ctx context.Context, key string, value interface{}) *StringCmd
+	GetEX(ctx context.Context, key string, expiration time.Duration) *StringCmd
+	GetDel(ctx context.Context, key string) *StringCmd
 	Incr(ctx context.Context, key string) *IntCmd
 	IncrBy(ctx context.Context, key string, value int64) *IntCmd
 	IncrByFloat(ctx context.Context, key string, value float64) *FloatCmd
@@ -160,6 +162,7 @@ type Cmdable interface {
 	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
 	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
 	HVals(ctx context.Context, key string) *StringSliceCmd
+	HRandField(ctx context.Context, key string, count int, withValues bool) *StringSliceCmd
 
 	BLPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
@@ -263,6 +266,7 @@ type Cmdable interface {
 	ZRevRank(ctx context.Context, key, member string) *IntCmd
 	ZScore(ctx context.Context, key, member string) *FloatCmd
 	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
+	ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd
 
 	PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd
 	PFCount(ctx context.Context, keys ...string) *IntCmd
@@ -706,6 +710,33 @@ func (c cmdable) GetRange(ctx context.Context, key string, start, end int64) *St
 
 func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) *StringCmd {
 	cmd := NewStringCmd(ctx, "getset", key, value)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >= 6.2.0.
+// A expiration of zero remove the time to live associated with the key(GetEX key persist).
+func (c cmdable) GetEX(ctx context.Context, key string, expiration time.Duration) *StringCmd {
+	args := make([]interface{}, 0, 4)
+	args = append(args, "getex", key)
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(ctx, expiration))
+		} else {
+			args = append(args, "ex", formatSec(ctx, expiration))
+		}
+	} else if expiration == 0 {
+		args = append(args, "persist")
+	}
+
+	cmd := NewStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >= 6.2.0.
+func (c cmdable) GetDel(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "getdel", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1178,6 +1209,21 @@ func (c cmdable) HSetNX(ctx context.Context, key, field string, value interface{
 
 func (c cmdable) HVals(ctx context.Context, key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "hvals", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >= 6.2.0.
+func (c cmdable) HRandField(ctx context.Context, key string, count int, withValues bool) *StringSliceCmd {
+	args := make([]interface{}, 0, 4)
+
+	// Although count=0 is meaningless, redis accepts count=0.
+	args = append(args, "hrandfield", key, count)
+	if withValues {
+		args = append(args, "withvalues")
+	}
+
+	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2252,6 +2298,21 @@ func (c cmdable) ZUnionStore(ctx context.Context, dest string, store *ZStore) *I
 
 	cmd := NewIntCmd(ctx, args...)
 	cmd.setFirstKeyPos(3)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >= 6.2.0.
+func (c cmdable) ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd {
+	args := make([]interface{}, 0, 4)
+
+	// Although count=0 is meaningless, redis accepts count=0.
+	args = append(args, "zrandmember", key, count)
+	if withScores {
+		args = append(args, "withscores")
+	}
+
+	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
