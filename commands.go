@@ -9,11 +9,18 @@ import (
 	"github.com/go-redis/redis/v8/internal"
 )
 
-// KeepTTL is an option for Set command to keep key's existing TTL.
-// For example:
-//
-//    rdb.Set(ctx, key, value, redis.KeepTTL)
-const KeepTTL = -1
+const (
+	// KeepTTL is an option for Set command to keep key's existing TTL.
+	// For example:
+	//
+	//    rdb.Set(ctx, key, value, redis.KeepTTL)
+	KeepTTL = -1
+
+	// Persist is remove the time to live associated with the key.
+	// For example:
+	//		rdb.GetEX(ctx, key, redis.Persist)
+	Persist = -2
+)
 
 func usePrecise(dur time.Duration) bool {
 	return dur < time.Second || dur%time.Second != 0
@@ -117,7 +124,7 @@ type Cmdable interface {
 	Get(ctx context.Context, key string) *StringCmd
 	GetRange(ctx context.Context, key string, start, end int64) *StringCmd
 	GetSet(ctx context.Context, key string, value interface{}) *StringCmd
-	GetEX(ctx context.Context, key string, ttl *SetTTL) *StringCmd
+	GetEX(ctx context.Context, key string, expiration time.Duration) *StringCmd
 	GetDel(ctx context.Context, key string) *StringCmd
 	Incr(ctx context.Context, key string) *IntCmd
 	IncrBy(ctx context.Context, key string, value int64) *IntCmd
@@ -162,6 +169,7 @@ type Cmdable interface {
 	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
 	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
 	HVals(ctx context.Context, key string) *StringSliceCmd
+	HRandField(ctx context.Context, key string, count int, withValues bool) *StringSliceCmd
 
 	BLPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
@@ -265,6 +273,7 @@ type Cmdable interface {
 	ZRevRank(ctx context.Context, key, member string) *IntCmd
 	ZScore(ctx context.Context, key, member string) *FloatCmd
 	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
+	ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd
 
 	PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd
 	PFCount(ctx context.Context, keys ...string) *IntCmd
@@ -362,58 +371,6 @@ type cmdable func(ctx context.Context, cmd Cmder) error
 type statefulCmdable func(ctx context.Context, cmd Cmder) error
 
 //------------------------------------------------------------------------------
-
-type ttlAttr int
-
-const (
-	TExpire ttlAttr = 1 << iota
-	TExpireAT
-	TKeepTTL
-	TPersist
-)
-
-// TTL related parameters, not all commands support all ttl attributes.
-// priority: Expire > ExpireAt > KeepTTL > Persist
-type SetTTL struct {
-	// set the specified expire time.
-	// Expire > time.Second AND Expire % time.Second == 0: set key EX Expire/time.Second
-	// Expire < time.Second OR Expire % time.Second != 0: set key PX Expire/time.Millisecond
-	Expire time.Duration
-
-	// set the specified Unix time at which the key will expire.
-	// Example: set key EXAT ExpireAt.Unix()
-	// Don't consider milliseconds for now(PXAT)
-	ExpireAt time.Time
-
-	// Retain the time to live associated with the key.
-	KeepTTL bool
-
-	// Remove the time to live associated with the key, Change to never expire
-	Persist bool
-}
-
-func appendTTL(ctx context.Context, args []interface{}, t *SetTTL, attr ttlAttr) []interface{} {
-	if t == nil {
-		return args
-	}
-
-	switch {
-	case attr&TExpire == 1 && t.Expire > 0:
-		if usePrecise(t.Expire) {
-			args = append(args, "px", formatMs(ctx, t.Expire))
-		} else {
-			args = append(args, "ex", formatSec(ctx, t.Expire))
-		}
-	case attr&TExpireAT == 1 && !t.ExpireAt.IsZero():
-		args = append(args, "exat", t.ExpireAt.Unix())
-	case attr&TKeepTTL == 1 && t.KeepTTL:
-		args = append(args, "keepttl")
-	case attr&TPersist == 1 && t.Persist:
-		args = append(args, "persist")
-	}
-
-	return args
-}
 
 func (c statefulCmdable) Auth(ctx context.Context, password string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "auth", password)
@@ -764,17 +721,29 @@ func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) *Str
 	return cmd
 }
 
-// redis-server version >= 6.2.0
-func (c cmdable) GetEX(ctx context.Context, key string, ttl *SetTTL) *StringCmd {
-	args := make([]interface{}, 2, 4)
+// redis-server version >= 6.2.0.
+//
+// A value of zero means that the expiration time will not be changed.
+// Persist(-2) Remove the time to live associated with the key.
+func (c cmdable) GetEX(ctx context.Context, key string, expiration time.Duration) *StringCmd {
+	args := make([]interface{}, 0, 4)
 	args = append(args, "getex", key)
-	args = appendTTL(ctx, args, ttl, TExpire|TExpireAT|TPersist)
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(ctx, expiration))
+		} else {
+			args = append(args, "ex", formatSec(ctx, expiration))
+		}
+	} else if expiration == Persist {
+		args = append(args, "persist")
+	}
+
 	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// redis-server version >= 6.2.0
+// redis-server version >= 6.2.0.
 func (c cmdable) GetDel(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "getdel", key)
 	_ = c(ctx, cmd)
@@ -1249,6 +1218,20 @@ func (c cmdable) HSetNX(ctx context.Context, key, field string, value interface{
 
 func (c cmdable) HVals(ctx context.Context, key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "hvals", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HRandField(ctx context.Context, key string, count int, withValues bool) *StringSliceCmd {
+	args := make([]interface{}, 0, 4)
+
+	// Although count=0 is meaningless, redis accepts count=0.
+	args = append(args, "hrandfield", key, count)
+	if withValues {
+		args = append(args, "withvalues")
+	}
+
+	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2323,6 +2306,18 @@ func (c cmdable) ZUnionStore(ctx context.Context, dest string, store *ZStore) *I
 
 	cmd := NewIntCmd(ctx, args...)
 	cmd.setFirstKeyPos(3)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd {
+	args := make([]interface{}, 0, 4)
+	args = append(args, "zrandmember", key, count)
+	if withScores {
+		args = append(args, "withscores")
+	}
+
+	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

@@ -1092,7 +1092,7 @@ var _ = Describe("Commands", func() {
 			Expect(ttl.Err()).NotTo(HaveOccurred())
 			Expect(ttl.Val()).To(BeNumerically("~", 100*time.Second, 3*time.Second))
 
-			getEX := client.GetEX(ctx, "key", &redis.SetTTL{Expire: 200 * time.Second})
+			getEX := client.GetEX(ctx, "key", 200*time.Second)
 			Expect(getEX.Err()).NotTo(HaveOccurred())
 			Expect(getEX.Val()).To(Equal("value"))
 
@@ -1831,6 +1831,22 @@ var _ = Describe("Commands", func() {
 			err = client.HVals(ctx, "hash").ScanSlice(&slice)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(slice).To(Equal([]string{"hello1", "hello2"}))
+		})
+
+		It("should HRandField", func() {
+			err := client.HSet(ctx, "hash", "key1", "hello1").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.HSet(ctx, "hash", "key2", "hello2").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			v := client.HRandField(ctx, "hash", 1, false)
+			Expect(v.Err()).NotTo(HaveOccurred())
+			Expect(v.Result()).To(Or(Equal([]string{"key1"}), Equal([]string{"key2"})))
+
+			var slice []string
+			err = client.HRandField(ctx, "hash", 1, true).ScanSlice(&slice)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(slice).To(Or(Equal([]string{"key1", "hello1"}), Equal([]string{"key2", "hello2"})))
 		})
 	})
 
@@ -3869,6 +3885,22 @@ var _ = Describe("Commands", func() {
 				Score:  10,
 				Member: "two",
 			}}))
+		})
+
+		It("should ZRandMember", func() {
+			err := client.ZAdd(ctx, "zset", &redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", &redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			v := client.ZRandMember(ctx, "zset", 1, false)
+			Expect(v.Err()).NotTo(HaveOccurred())
+			Expect(v.Val()).To(Or(Equal([]string{"one"}), Equal([]string{"two"})))
+
+			var slice []string
+			err = client.ZRandMember(ctx, "zset", 1, true).ScanSlice(&slice)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(slice).To(Or(Equal([]string{"one", "1"}), Equal([]string{"two", "2"})))
 		})
 	})
 
