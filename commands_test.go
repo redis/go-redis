@@ -1092,7 +1092,7 @@ var _ = Describe("Commands", func() {
 			Expect(ttl.Err()).NotTo(HaveOccurred())
 			Expect(ttl.Val()).To(BeNumerically("~", 100*time.Second, 3*time.Second))
 
-			getEX := client.GetEX(ctx, "key", 200*time.Second)
+			getEX := client.GetEx(ctx, "key", 200*time.Second)
 			Expect(getEX.Err()).NotTo(HaveOccurred())
 			Expect(getEX.Val()).To(Equal("value"))
 

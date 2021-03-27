@@ -117,7 +117,7 @@ type Cmdable interface {
 	Get(ctx context.Context, key string) *StringCmd
 	GetRange(ctx context.Context, key string, start, end int64) *StringCmd
 	GetSet(ctx context.Context, key string, value interface{}) *StringCmd
-	GetEX(ctx context.Context, key string, expiration time.Duration) *StringCmd
+	GetEx(ctx context.Context, key string, expiration time.Duration) *StringCmd
 	GetDel(ctx context.Context, key string) *StringCmd
 	Incr(ctx context.Context, key string) *IntCmd
 	IncrBy(ctx context.Context, key string, value int64) *IntCmd
@@ -127,6 +127,7 @@ type Cmdable interface {
 	MSetNX(ctx context.Context, values ...interface{}) *BoolCmd
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd
+	// TODO: rename to SetEx
 	SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
@@ -714,9 +715,9 @@ func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) *Str
 	return cmd
 }
 
-// redis-server version >= 6.2.0.
-// A expiration of zero remove the time to live associated with the key(GetEX key persist).
-func (c cmdable) GetEX(ctx context.Context, key string, expiration time.Duration) *StringCmd {
+// An expiration of zero removes the TTL associated with the key (i.e. GETEX key persist).
+// Requires Redis >= 6.2.0.
+func (c cmdable) GetEx(ctx context.Context, key string, expiration time.Duration) *StringCmd {
 	args := make([]interface{}, 0, 4)
 	args = append(args, "getex", key)
 	if expiration > 0 {
