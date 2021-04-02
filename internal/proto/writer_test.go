@@ -3,7 +3,6 @@ package proto_test
 import (
 	"bytes"
 	"encoding"
-	"testing"
 	"time"
 
 	"github.com/go-redis/redis/v8/internal/proto"
@@ -80,14 +79,14 @@ func (discard) WriteByte(c byte) error {
 	return nil
 }
 
-func BenchmarkWriteBuffer_Append(b *testing.B) {
-	buf := proto.NewWriter(discard{})
-	args := []interface{}{"hello", "world", "foo", "bar"}
-
-	for i := 0; i < b.N; i++ {
-		err := buf.WriteArgs(args)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
+//func BenchmarkWriteBuffer_Append(b *testing.B) {
+//	buf := proto.NewWriter(discard{})
+//	args := []interface{}{"hello", "world", "foo", "bar"}
+//
+//	for i := 0; i < b.N; i++ {
+//		err := buf.WriteArgs(args)
+//		if err != nil {
+//			b.Fatal(err)
+//		}
+//	}
+//}

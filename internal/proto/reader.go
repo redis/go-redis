@@ -28,33 +28,33 @@ func (RedisError) RedisError() {}
 
 //------------------------------------------------------------------------------
 
-type MultiBulkParse func(*Reader, int64) (interface{}, error)
+type MultiBulkParse func(*Reader2, int64) (interface{}, error)
 
-type Reader struct {
+type Reader2 struct {
 	rd   *bufio.Reader
 	_buf []byte
 }
 
-func NewReader(rd io.Reader) *Reader {
-	return &Reader{
+func NewReader(rd io.Reader) *Reader2 {
+	return &Reader2{
 		rd:   bufio.NewReader(rd),
 		_buf: make([]byte, 64),
 	}
 }
 
-func (r *Reader) Buffered() int {
+func (r *Reader2) Buffered() int {
 	return r.rd.Buffered()
 }
 
-func (r *Reader) Peek(n int) ([]byte, error) {
+func (r *Reader2) Peek(n int) ([]byte, error) {
 	return r.rd.Peek(n)
 }
 
-func (r *Reader) Reset(rd io.Reader) {
+func (r *Reader2) Reset(rd io.Reader) {
 	r.rd.Reset(rd)
 }
 
-func (r *Reader) ReadLine() ([]byte, error) {
+func (r *Reader2) ReadLine() ([]byte, error) {
 	line, err := r.readLine()
 	if err != nil {
 		return nil, err
@@ -68,7 +68,7 @@ func (r *Reader) ReadLine() ([]byte, error) {
 // readLine that returns an error if:
 //   - there is a pending read error;
 //   - or line does not end with \r\n.
-func (r *Reader) readLine() ([]byte, error) {
+func (r *Reader2) readLine() ([]byte, error) {
 	b, err := r.rd.ReadSlice('\n')
 	if err != nil {
 		if err != bufio.ErrBufferFull {
@@ -92,7 +92,7 @@ func (r *Reader) readLine() ([]byte, error) {
 	return b[:len(b)-2], nil
 }
 
-func (r *Reader) ReadReply(m MultiBulkParse) (interface{}, error) {
+func (r *Reader2) ReadReply(m MultiBulkParse) (interface{}, error) {
 	line, err := r.ReadLine()
 	if err != nil {
 		return nil, err
@@ -121,7 +121,7 @@ func (r *Reader) ReadReply(m MultiBulkParse) (interface{}, error) {
 	return nil, fmt.Errorf("redis: can't parse %.100q", line)
 }
 
-func (r *Reader) ReadIntReply() (int64, error) {
+func (r *Reader2) ReadIntReply() (int64, error) {
 	line, err := r.ReadLine()
 	if err != nil {
 		return 0, err
@@ -136,7 +136,7 @@ func (r *Reader) ReadIntReply() (int64, error) {
 	}
 }
 
-func (r *Reader) ReadString() (string, error) {
+func (r *Reader2) ReadString() (string, error) {
 	line, err := r.ReadLine()
 	if err != nil {
 		return "", err
@@ -155,7 +155,7 @@ func (r *Reader) ReadString() (string, error) {
 	}
 }
 
-func (r *Reader) readStringReply(line []byte) (string, error) {
+func (r *Reader2) readStringReply(line []byte) (string, error) {
 	if isNilReply(line) {
 		return "", Nil
 	}
@@ -174,7 +174,7 @@ func (r *Reader) readStringReply(line []byte) (string, error) {
 	return util.BytesToString(b[:replyLen]), nil
 }
 
-func (r *Reader) ReadArrayReply(m MultiBulkParse) (interface{}, error) {
+func (r *Reader2) ReadArrayReply(m MultiBulkParse) (interface{}, error) {
 	line, err := r.ReadLine()
 	if err != nil {
 		return nil, err
@@ -193,7 +193,7 @@ func (r *Reader) ReadArrayReply(m MultiBulkParse) (interface{}, error) {
 	}
 }
 
-func (r *Reader) ReadArrayLen() (int, error) {
+func (r *Reader2) ReadArrayLen() (int, error) {
 	line, err := r.ReadLine()
 	if err != nil {
 		return 0, err
@@ -212,7 +212,7 @@ func (r *Reader) ReadArrayLen() (int, error) {
 	}
 }
 
-func (r *Reader) ReadScanReply() ([]string, uint64, error) {
+func (r *Reader2) ReadScanReply() ([]string, uint64, error) {
 	n, err := r.ReadArrayLen()
 	if err != nil {
 		return nil, 0, err
@@ -244,7 +244,7 @@ func (r *Reader) ReadScanReply() ([]string, uint64, error) {
 	return keys, cursor, err
 }
 
-func (r *Reader) ReadInt() (int64, error) {
+func (r *Reader2) ReadInt() (int64, error) {
 	b, err := r.readTmpBytesReply()
 	if err != nil {
 		return 0, err
@@ -252,7 +252,7 @@ func (r *Reader) ReadInt() (int64, error) {
 	return util.ParseInt(b, 10, 64)
 }
 
-func (r *Reader) ReadUint() (uint64, error) {
+func (r *Reader2) ReadUint() (uint64, error) {
 	b, err := r.readTmpBytesReply()
 	if err != nil {
 		return 0, err
@@ -260,7 +260,7 @@ func (r *Reader) ReadUint() (uint64, error) {
 	return util.ParseUint(b, 10, 64)
 }
 
-func (r *Reader) ReadFloatReply() (float64, error) {
+func (r *Reader2) ReadFloatReply() (float64, error) {
 	b, err := r.readTmpBytesReply()
 	if err != nil {
 		return 0, err
@@ -268,7 +268,7 @@ func (r *Reader) ReadFloatReply() (float64, error) {
 	return util.ParseFloat(b, 64)
 }
 
-func (r *Reader) readTmpBytesReply() ([]byte, error) {
+func (r *Reader2) readTmpBytesReply() ([]byte, error) {
 	line, err := r.ReadLine()
 	if err != nil {
 		return nil, err
@@ -285,7 +285,7 @@ func (r *Reader) readTmpBytesReply() ([]byte, error) {
 	}
 }
 
-func (r *Reader) _readTmpBytesReply(line []byte) ([]byte, error) {
+func (r *Reader2) _readTmpBytesReply(line []byte) ([]byte, error) {
 	if isNilReply(line) {
 		return nil, Nil
 	}
@@ -304,7 +304,7 @@ func (r *Reader) _readTmpBytesReply(line []byte) ([]byte, error) {
 	return buf[:replyLen], nil
 }
 
-func (r *Reader) buf(n int) []byte {
+func (r *Reader2) buf(n int) []byte {
 	if n <= cap(r._buf) {
 		return r._buf[:n]
 	}
