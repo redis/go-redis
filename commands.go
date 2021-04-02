@@ -342,6 +342,8 @@ type Cmdable interface {
 	GeoRadiusByMemberStore(ctx context.Context, key, member string, query *GeoRadiusQuery) *IntCmd
 	GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
+
+	RowCount(ctx context.Context, key string) *StringCmd
 }
 
 type StatefulCmdable interface {
@@ -2913,6 +2915,13 @@ func (c cmdable) GeoPos(ctx context.Context, key string, members ...string) *Geo
 		args[2+i] = member
 	}
 	cmd := NewGeoPosCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) RowCount(ctx context.Context, key string) *StringCmd {
+	args := []interface{}{"GETROWCOUNT", key}
+	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
