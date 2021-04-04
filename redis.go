@@ -468,20 +468,23 @@ func (c *baseClient) pipelineProcessCmds(
 		return true, err
 	}
 
-	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(pv *proto.Value) error {
-		return pipelineReadCmds(pv, cmds)
+	err = cn.WithReaders(ctx, c.opt.ReadTimeout, len(cmds), func(pvs []*proto.Value) error {
+		return pipelineReadCmds(pvs, cmds)
 	})
 	return true, err
 }
 
-func pipelineReadCmds(pv *proto.Value, cmds []Cmder) error {
-	for _, cmd := range cmds {
-		err := cmd.readReply(pv)
-		cmd.SetErr(err)
-		if err != nil && !isRedisError(err) {
-			return err
+func pipelineReadCmds(pvs []*proto.Value, cmds []Cmder) error {
+	if len(pvs) == len(cmds) {
+		for key, cmd := range cmds {
+			err := cmd.readReply(pvs[key])
+			cmd.SetErr(err)
+			if err != nil && !isRedisError(err) {
+				return err
+			}
 		}
 	}
+
 	return nil
 }
 
@@ -495,17 +498,35 @@ func (c *baseClient) txPipelineProcessCmds(
 		return true, err
 	}
 
-	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(pv *proto.Value) error {
+	err = cn.WithReaders(ctx, c.opt.ReadTimeout, len(cmds), func(pvs []*proto.Value) error {
 		statusCmd := cmds[0].(*StatusCmd)
-		// Trim multi and exec.
-		cmds = cmds[1 : len(cmds)-1]
-
-		err := txPipelineReadQueued(pv, statusCmd, cmds)
-		if err != nil {
+		if err := statusCmd.readReply(pvs[0]); err != nil {
 			return err
 		}
 
-		return pipelineReadCmds(pv, cmds)
+		// Trim multi and exec.
+		cmds = cmds[1 : len(cmds)-1]
+
+		for key := range cmds {
+			if err := statusCmd.readReply(pvs[key+1]); err != nil && !isRedisError(err) {
+				return err
+			}
+		}
+
+		pv := pvs[len(pvs)-1]
+		n, err := pv.SliceLen()
+		switch err {
+		case nil:
+		case Nil:
+			return TxFailedErr
+		default:
+			return err
+		}
+		if n != len(cmds) {
+			return fmt.Errorf("redis: expected %d, but got %d", len(cmds), n)
+		}
+
+		return pipelineReadCmds(pv.Slice, cmds)
 	})
 	return false, err
 }
@@ -519,32 +540,6 @@ func wrapMultiExec(ctx context.Context, cmds []Cmder) []Cmder {
 	copy(cmdCopy[1:], cmds)
 	cmdCopy[len(cmdCopy)-1] = NewSliceCmd(ctx, "exec")
 	return cmdCopy
-}
-
-func txPipelineReadQueued(pv *proto.Value, statusCmd *StatusCmd, cmds []Cmder) error {
-	// Parse queued replies.
-	if err := statusCmd.readReply(pv); err != nil {
-		return err
-	}
-
-	for range cmds {
-		if err := statusCmd.readReply(pv); err != nil && !isRedisError(err) {
-			return err
-		}
-	}
-
-	if err := pv.RedisError; err != nil {
-		if err == Nil {
-			err = TxFailedErr
-		}
-		return err
-	}
-
-	if !pv.IsSlice() {
-		return fmt.Errorf("redis: expected '*', but got line %q", pv.Typ)
-	}
-
-	return nil
 }
 
 //------------------------------------------------------------------------------

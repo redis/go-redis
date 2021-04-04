@@ -201,10 +201,16 @@ func (cmd *Cmd) String() string {
 }
 
 func (cmd *Cmd) Val() interface{} {
-	return cmd.val.Interface()
+	if cmd.val != nil {
+		return cmd.val.Interface()
+	}
+	return nil
 }
 
 func (cmd *Cmd) Result() (interface{}, error) {
+	if cmd.err != nil {
+		return nil, cmd.err
+	}
 	return cmd.val.Interface(), cmd.err
 }
 
@@ -270,8 +276,10 @@ func (cmd *Cmd) Bool() (bool, error) {
 }
 
 func (cmd *Cmd) readReply(pv *proto.Value) error {
-	cmd.val = pv
-	return nil
+	if pv.RedisError == nil {
+		cmd.val = pv
+	}
+	return pv.RedisError
 }
 
 //------------------------------------------------------------------------------

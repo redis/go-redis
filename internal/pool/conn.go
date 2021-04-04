@@ -81,6 +81,29 @@ func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(p
 	return nil
 }
 
+func (cn *Conn) WithReaders(ctx context.Context, timeout time.Duration, n int,
+	fn func(pvs []*proto.Value) error) error {
+	ctx, span := internal.StartSpan(ctx, "redis.with_readers")
+	defer span.End()
+
+	if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
+		return internal.RecordError(ctx, span, err)
+	}
+
+	var err error
+	pvs := make([]*proto.Value, n)
+	for i := 0; i < n; i++ {
+		pvs[i], err = cn.rd.ReadReply()
+		if err != nil {
+			return internal.RecordError(ctx, span, err)
+		}
+	}
+	if err := fn(pvs); err != nil {
+		return internal.RecordError(ctx, span, err)
+	}
+	return nil
+}
+
 func (cn *Conn) WithWriter(
 	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
 ) error {
