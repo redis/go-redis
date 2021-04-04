@@ -1862,11 +1862,11 @@ func (cmd *ClusterSlotsCmd) readReply(pv *proto.Value) error {
 		nodes := make([]ClusterNode, n-2)
 		for i := 0; i < (n - 2); i++ {
 			nodeVal = item.Slice[i+2]
-			n, err = nodeVal.SliceLen()
+			nx, err := nodeVal.SliceLen()
 			if err != nil {
 				return err
 			}
-			if n != 2 && n != 3 {
+			if nx != 2 && nx != 3 {
 				return fmt.Errorf("got %d elements in cluster info address, expected 2 or 3", n)
 			}
 
@@ -1882,7 +1882,7 @@ func (cmd *ClusterSlotsCmd) readReply(pv *proto.Value) error {
 			nodes[i].Addr = net.JoinHostPort(ip, port)
 
 			// new version.
-			if n == 3 {
+			if nx == 3 {
 				id, err := nodeVal.Slice[2].String()
 				if err != nil {
 					return err
