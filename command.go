@@ -1299,7 +1299,7 @@ func (cmd *XPendingExtCmd) readReply(pv *proto.Value) error {
 			return err
 		}
 
-		retryCount, err := pv.Slice[3].Int64()
+		retryCount, err := item.Slice[3].Int64()
 		if err != nil && err != Nil {
 			return err
 		}

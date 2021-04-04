@@ -1178,8 +1178,8 @@ func (c *ClusterClient) _processPipelineNode(
 				return err
 			}
 
-			return cn.WithReader(ctx, c.opt.ReadTimeout, func(pv *proto.Value) error {
-				return c.pipelineReadCmds(ctx, node, pv, cmds, failedCmds)
+			return cn.WithReaders(ctx, c.opt.ReadTimeout, len(cmds), func(pvs []*proto.Value) error {
+				return c.pipelineReadCmds(ctx, node, pvs, cmds, failedCmds)
 			})
 		})
 	})
@@ -1188,12 +1188,15 @@ func (c *ClusterClient) _processPipelineNode(
 func (c *ClusterClient) pipelineReadCmds(
 	ctx context.Context,
 	node *clusterNode,
-	pv *proto.Value,
+	pvs []*proto.Value,
 	cmds []Cmder,
 	failedCmds *cmdsMap,
 ) error {
-	for _, cmd := range cmds {
-		err := cmd.readReply(pv)
+	if len(pvs) != len(cmds) {
+		return fmt.Errorf("value len(%d), cmds len(%d)", len(pvs), len(cmds))
+	}
+	for key, cmd := range cmds {
+		err := cmd.readReply(pvs[key])
 		cmd.SetErr(err)
 
 		if err == nil {
