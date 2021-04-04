@@ -365,7 +365,11 @@ func (v *Value) SliceInterface() ([]interface{}, error) {
 	case redisArray, redisSet, redisPush:
 		si := make([]interface{}, 0, len(v.Slice))
 		for _, val := range v.Slice {
-			si = append(si, val.Interface())
+			iv := val.Interface()
+			if iv == Nil {
+				iv = nil
+			}
+			si = append(si, iv)
 		}
 		return si, nil
 	}

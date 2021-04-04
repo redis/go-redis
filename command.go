@@ -1045,17 +1045,21 @@ func readXMessage(item *proto.Value) (XMessage, error) {
 		return XMessage{}, err
 	}
 	n = len(ss)
-	if n%2 != 0 {
-		return XMessage{}, fmt.Errorf("got %d, wanted multiple of 2", n)
-	}
-	m := make(map[string]interface{}, n/2)
-	for i := 0; i < n; i += 2 {
-		m[ss[i]] = ss[i+1]
+
+	var value map[string]interface{}
+	if n > 0 {
+		if n%2 != 0 {
+			return XMessage{}, fmt.Errorf("got %d, wanted multiple of 2", n)
+		}
+		value = make(map[string]interface{}, n/2)
+		for i := 0; i < n; i += 2 {
+			value[ss[i]] = ss[i+1]
+		}
 	}
 
 	return XMessage{
 		ID:     id,
-		Values: m,
+		Values: value,
 	}, nil
 }
 
@@ -1632,9 +1636,6 @@ func (cmd *ZSliceCmd) readReply(pv *proto.Value) error {
 	n, err := pv.SliceLen()
 	if err != nil {
 		return err
-	}
-	if n == 0 {
-		return nil
 	}
 	if n%2 != 0 {
 		return fmt.Errorf("got %d, wanted multiple of 2", n)
