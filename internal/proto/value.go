@@ -117,7 +117,7 @@ func (v *Value) Status() (bool, error) {
 		return v.Boolean, nil
 	case redisInteger:
 		return v.Integer == 1, nil
-	case redisString:
+	case redisString, redisStatus, redisVerb:
 		return v.Str == "OK", nil
 	}
 

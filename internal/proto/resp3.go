@@ -40,10 +40,6 @@ func (e RedisError) Error() string { return string(e) }
 
 func (RedisError) RedisError() {}
 
-func ParseErrorReply(line []byte) error {
-	return RedisError(string(line[1:]))
-}
-
 type Reader struct {
 	rd *bufio.Reader
 }
