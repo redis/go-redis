@@ -1178,8 +1178,8 @@ func (c *ClusterClient) _processPipelineNode(
 				return err
 			}
 
-			return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
-				return c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
+			return cn.WithReader(ctx, c.opt.ReadTimeout, func(pv *proto.Value) error {
+				return c.pipelineReadCmds(ctx, node, pv, cmds, failedCmds)
 			})
 		})
 	})
@@ -1188,12 +1188,12 @@ func (c *ClusterClient) _processPipelineNode(
 func (c *ClusterClient) pipelineReadCmds(
 	ctx context.Context,
 	node *clusterNode,
-	rd *proto.Reader,
+	pv *proto.Value,
 	cmds []Cmder,
 	failedCmds *cmdsMap,
 ) error {
 	for _, cmd := range cmds {
-		err := cmd.readReply(rd)
+		err := cmd.readReply(pv)
 		cmd.SetErr(err)
 
 		if err == nil {
@@ -1343,12 +1343,12 @@ func (c *ClusterClient) _processTxPipelineNode(
 				return err
 			}
 
-			return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
+			return cn.WithReader(ctx, c.opt.ReadTimeout, func(pv *proto.Value) error {
 				statusCmd := cmds[0].(*StatusCmd)
 				// Trim multi and exec.
 				cmds = cmds[1 : len(cmds)-1]
 
-				err := c.txPipelineReadQueued(ctx, rd, statusCmd, cmds, failedCmds)
+				err := c.txPipelineReadQueued(ctx, pv, statusCmd, cmds, failedCmds)
 				if err != nil {
 					moved, ask, addr := isMovedError(err)
 					if moved || ask {
@@ -1357,7 +1357,7 @@ func (c *ClusterClient) _processTxPipelineNode(
 					return err
 				}
 
-				return pipelineReadCmds(rd, cmds)
+				return pipelineReadCmds(pv, cmds)
 			})
 		})
 	})
@@ -1365,18 +1365,18 @@ func (c *ClusterClient) _processTxPipelineNode(
 
 func (c *ClusterClient) txPipelineReadQueued(
 	ctx context.Context,
-	rd *proto.Reader,
+	pv *proto.Value,
 	statusCmd *StatusCmd,
 	cmds []Cmder,
 	failedCmds *cmdsMap,
 ) error {
 	// Parse queued replies.
-	if err := statusCmd.readReply(rd); err != nil {
+	if err := statusCmd.readReply(pv); err != nil {
 		return err
 	}
 
 	for _, cmd := range cmds {
-		err := statusCmd.readReply(rd)
+		err := statusCmd.readReply(pv)
 		if err == nil || c.checkMovedErr(ctx, cmd, err, failedCmds) || isRedisError(err) {
 			continue
 		}
@@ -1384,21 +1384,15 @@ func (c *ClusterClient) txPipelineReadQueued(
 	}
 
 	// Parse number of replies.
-	line, err := rd.ReadLine()
-	if err != nil {
+	if err := pv.RedisError; err != nil {
 		if err == Nil {
 			err = TxFailedErr
 		}
 		return err
 	}
 
-	switch line[0] {
-	case proto.ErrorReply:
-		return proto.ParseErrorReply(line)
-	case proto.ArrayReply:
-		// ok
-	default:
-		return fmt.Errorf("redis: expected '*', but got line %q", line)
+	if !pv.IsSlice() {
+		return fmt.Errorf("redis: expected '*', but got line %q", pv.Typ)
 	}
 
 	return nil

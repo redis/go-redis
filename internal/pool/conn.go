@@ -64,14 +64,18 @@ func (cn *Conn) RemoteAddr() net.Addr {
 	return nil
 }
 
-func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error) error {
+func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(pv *proto.Value) error) error {
 	ctx, span := internal.StartSpan(ctx, "redis.with_reader")
 	defer span.End()
 
 	if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
 		return internal.RecordError(ctx, span, err)
 	}
-	if err := fn(cn.rd); err != nil {
+	v, err := cn.rd.ReadReply()
+	if err != nil {
+		return internal.RecordError(ctx, span, err)
+	}
+	if err := fn(v); err != nil {
 		return internal.RecordError(ctx, span, err)
 	}
 	return nil

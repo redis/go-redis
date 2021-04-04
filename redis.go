@@ -468,15 +468,15 @@ func (c *baseClient) pipelineProcessCmds(
 		return true, err
 	}
 
-	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		return pipelineReadCmds(rd, cmds)
+	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(pv *proto.Value) error {
+		return pipelineReadCmds(pv, cmds)
 	})
 	return true, err
 }
 
-func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
+func pipelineReadCmds(pv *proto.Value, cmds []Cmder) error {
 	for _, cmd := range cmds {
-		err := cmd.readReply(rd)
+		err := cmd.readReply(pv)
 		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
 			return err
@@ -495,17 +495,17 @@ func (c *baseClient) txPipelineProcessCmds(
 		return true, err
 	}
 
-	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(pv *proto.Value) error {
 		statusCmd := cmds[0].(*StatusCmd)
 		// Trim multi and exec.
 		cmds = cmds[1 : len(cmds)-1]
 
-		err := txPipelineReadQueued(rd, statusCmd, cmds)
+		err := txPipelineReadQueued(pv, statusCmd, cmds)
 		if err != nil {
 			return err
 		}
 
-		return pipelineReadCmds(rd, cmds)
+		return pipelineReadCmds(pv, cmds)
 	})
 	return false, err
 }
@@ -521,35 +521,27 @@ func wrapMultiExec(ctx context.Context, cmds []Cmder) []Cmder {
 	return cmdCopy
 }
 
-func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
+func txPipelineReadQueued(pv *proto.Value, statusCmd *StatusCmd, cmds []Cmder) error {
 	// Parse queued replies.
-	if err := statusCmd.readReply(rd); err != nil {
+	if err := statusCmd.readReply(pv); err != nil {
 		return err
 	}
 
 	for range cmds {
-		if err := statusCmd.readReply(rd); err != nil && !isRedisError(err) {
+		if err := statusCmd.readReply(pv); err != nil && !isRedisError(err) {
 			return err
 		}
 	}
 
-	// Parse number of replies.
-	line, err := rd.ReadLine()
-	if err != nil {
+	if err := pv.RedisError; err != nil {
 		if err == Nil {
 			err = TxFailedErr
 		}
 		return err
 	}
 
-	switch line[0] {
-	case proto.ErrorReply:
-		return proto.ParseErrorReply(line)
-	case proto.ArrayReply:
-		// ok
-	default:
-		err := fmt.Errorf("redis: expected '*', but got line %q", line)
-		return err
+	if !pv.IsSlice() {
+		return fmt.Errorf("redis: expected '*', but got line %q", pv.Typ)
 	}
 
 	return nil

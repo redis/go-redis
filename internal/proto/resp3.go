@@ -12,34 +12,58 @@ import (
 )
 
 const (
-	ReplyStatus    = '+' // +<string>\r\n
-	ReplyError     = '-' // -<string>\r\n
-	ReplyString    = '$' // $<length>\r\n<bytes>\r\n
-	ReplyInteger   = ':' // :<number>\r\n
-	ReplyNil       = '_' // _\r\n
-	ReplyFloat     = ',' // ,<floating-point-number>\r\n (golang float)
-	ReplyBool      = '#' // true: #t\r\n false: #f\r\n
-	ReplyBlobError = '!' // !<length>\r\n<bytes>\r\n
-	ReplyVerb      = '=' // =<length>\r\nFORMAT:<bytes>\r\n
-	ReplyBigInt    = '(' // (<big number>\r\n
-	ReplyArray     = '*' // *<len>\r\n... (same as resp2)
-	ReplyMap       = '%' // %<len>\r\n(key)\r\n(value)\r\n... (golang map)
-	ReplySet       = '~'
-	ReplyAttr      = '|'
-	ReplyPush      = '>'
+	redisStatus    = '+' // +<string>\r\n
+	redisError     = '-' // -<string>\r\n
+	redisString    = '$' // $<length>\r\n<bytes>\r\n
+	redisInteger   = ':' // :<number>\r\n
+	redisNil       = '_' // _\r\n
+	redisFloat     = ',' // ,<floating-point-number>\r\n (golang float)
+	redisBool      = '#' // true: #t\r\n false: #f\r\n
+	redisBlobError = '!' // !<length>\r\n<bytes>\r\n
+	redisVerb      = '=' // =<length>\r\nFORMAT:<bytes>\r\n
+	redisBigInt    = '(' // (<big number>\r\n
+	redisArray     = '*' // *<len>\r\n... (same as resp2)
+	redisMap       = '%' // %<len>\r\n(key)\r\n(value)\r\n... (golang map)
+	redisSet       = '~'
+	redisAttr      = '|'
+	redisPush      = '>'
 )
 
 // Streamed           = "EOF:"
 // StreamedAggregated = '?'
 
+const Nil = RedisError("redis: nil")
+
+type RedisError string
+
+func (e RedisError) Error() string { return string(e) }
+
+func (RedisError) RedisError() {}
+
+func ParseErrorReply(line []byte) error {
+	return RedisError(string(line[1:]))
+}
+
 type Reader struct {
 	rd *bufio.Reader
 }
 
-func NewRespReader(rd io.Reader) *Reader {
+func NewReader(rd io.Reader) *Reader {
 	return &Reader{
 		rd: bufio.NewReader(rd),
 	}
+}
+
+func (r *Reader) Buffered() int {
+	return r.rd.Buffered()
+}
+
+func (r *Reader) Peek(n int) ([]byte, error) {
+	return r.rd.Peek(n)
+}
+
+func (r *Reader) Reset(rd io.Reader) {
+	r.rd.Reset(rd)
 }
 
 func (r *Reader) ReadReply() (*Value, error) {
@@ -52,30 +76,30 @@ func (r *Reader) ReadReply() (*Value, error) {
 	v.Typ = line[0]
 
 	switch line[0] {
-	case ReplyStatus:
+	case redisStatus:
 		v.Str = string(line[1:])
-	case ReplyError:
+	case redisError:
 		v.RedisError = RedisError(line[1:])
-	case ReplyInteger:
+	case redisInteger:
 		v.Integer, err = util.ParseInt(line[1:], 10, 64)
-	case ReplyNil:
+	case redisNil:
 		v.RedisError = Nil
-	case ReplyFloat:
+	case redisFloat:
 		v.Float, err = r.readFloat(line)
-	case ReplyBool:
+	case redisBool:
 		v.Boolean, err = r.readBool(line)
-	case ReplyBigInt:
+	case redisBigInt:
 		v.BigInt, err = r.readBigInt(line)
 
-	case ReplyBlobError:
+	case redisBlobError:
 		var blobErr string
 		blobErr, err = r.readString(line)
 		if err == nil {
 			v.RedisError = RedisError(blobErr)
 		}
-	case ReplyString:
+	case redisString:
 		v.Str, err = r.readString(line)
-	case ReplyVerb:
+	case redisVerb:
 		var s string
 		s, err = r.readString(line)
 		if err == nil {
@@ -87,11 +111,11 @@ func (r *Reader) ReadReply() (*Value, error) {
 			}
 		}
 
-	case ReplyArray, ReplySet, ReplyPush:
+	case redisArray, redisSet, redisPush:
 		v.Slice, err = r.readArraySetPush(line)
-	case ReplyMap:
+	case redisMap:
 		v.Map, err = r.readMap(line)
-	case ReplyAttr:
+	case redisAttr:
 		var (
 			attr map[*Value]*Value
 			val  *Value
@@ -254,8 +278,8 @@ func replyLen(line []byte) (n int, err error) {
 	}
 
 	switch line[0] {
-	case ReplyString, ReplyVerb, ReplyBlobError,
-		ReplyArray, ReplySet, ReplyPush, ReplyMap, ReplyAttr:
+	case redisString, redisVerb, redisBlobError,
+		redisArray, redisSet, redisPush, redisMap, redisAttr:
 		if n == -1 {
 			return 0, Nil
 		}

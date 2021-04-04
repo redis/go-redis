@@ -1,11 +1,15 @@
 package redis
 
-import "time"
+import (
+	"time"
+
+	"github.com/go-redis/redis/v8/internal/proto"
+)
 
 // NewCmdResult returns a Cmd initialised with val and err for testing.
-func NewCmdResult(val interface{}, err error) *Cmd {
+func NewCmdResult(pv *proto.Value, err error) *Cmd {
 	var cmd Cmd
-	cmd.val = val
+	cmd.val = pv
 	cmd.SetErr(err)
 	return &cmd
 }

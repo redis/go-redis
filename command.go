@@ -23,7 +23,7 @@ type Cmder interface {
 	setFirstKeyPos(int8)
 
 	readTimeout() *time.Duration
-	readReply(rd *proto.Reader) error
+	readReply(pv *proto.Value) error
 
 	SetErr(error)
 	Err() error
@@ -197,15 +197,15 @@ func NewCmd(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (cmd *Cmd) String() string {
-	return cmdString(cmd, cmd.val)
+	return cmdString(cmd, cmd.val.Interface())
 }
 
 func (cmd *Cmd) Val() interface{} {
-	return cmd.val
+	return cmd.val.Interface()
 }
 
 func (cmd *Cmd) Result() (interface{}, error) {
-	return cmd.val, cmd.err
+	return cmd.val.Interface(), cmd.err
 }
 
 func (cmd *Cmd) Text() (string, error) {
@@ -213,13 +213,6 @@ func (cmd *Cmd) Text() (string, error) {
 		return "", cmd.err
 	}
 	return cmd.val.String()
-	//switch val := cmd.val.(type) {
-	//case string:
-	//	return val, nil
-	//default:
-	//	err := fmt.Errorf("redis: unexpected type=%T for String", val)
-	//	return "", err
-	//}
 }
 
 func (cmd *Cmd) Int() (int, error) {
@@ -231,15 +224,6 @@ func (cmd *Cmd) Int() (int, error) {
 		return 0, err
 	}
 	return int(i), nil
-	//switch val := cmd.val.(type) {
-	//case int64:
-	//	return int(val), nil
-	//case string:
-	//	return strconv.Atoi(val)
-	//default:
-	//	err := fmt.Errorf("redis: unexpected type=%T for Int", val)
-	//	return 0, err
-	//}
 }
 
 func (cmd *Cmd) Int64() (int64, error) {
@@ -247,15 +231,6 @@ func (cmd *Cmd) Int64() (int64, error) {
 		return 0, cmd.err
 	}
 	return cmd.val.Int64()
-	//switch val := cmd.val.(type) {
-	//case int64:
-	//	return val, nil
-	//case string:
-	//	return strconv.ParseInt(val, 10, 64)
-	//default:
-	//	err := fmt.Errorf("redis: unexpected type=%T for Int64", val)
-	//	return 0, err
-	//}
 }
 
 func (cmd *Cmd) Uint64() (uint64, error) {
@@ -267,16 +242,6 @@ func (cmd *Cmd) Uint64() (uint64, error) {
 		return 0, err
 	}
 	return uint64(i), nil
-
-	//switch val := cmd.val.(type) {
-	//case int64:
-	//	return uint64(val), nil
-	//case string:
-	//	return strconv.ParseUint(val, 10, 64)
-	//default:
-	//	err := fmt.Errorf("redis: unexpected type=%T for Uint64", val)
-	//	return 0, err
-	//}
 }
 
 func (cmd *Cmd) Float32() (float32, error) {
@@ -288,20 +253,6 @@ func (cmd *Cmd) Float32() (float32, error) {
 		return 0, err
 	}
 	return float32(f), nil
-
-	//switch val := cmd.val.(type) {
-	//case int64:
-	//	return float32(val), nil
-	//case string:
-	//	f, err := strconv.ParseFloat(val, 32)
-	//	if err != nil {
-	//		return 0, err
-	//	}
-	//	return float32(f), nil
-	//default:
-	//	err := fmt.Errorf("redis: unexpected type=%T for Float32", val)
-	//	return 0, err
-	//}
 }
 
 func (cmd *Cmd) Float64() (float64, error) {
@@ -309,16 +260,6 @@ func (cmd *Cmd) Float64() (float64, error) {
 		return 0, cmd.err
 	}
 	return cmd.val.Float64()
-
-	//switch val := cmd.val.(type) {
-	//case int64:
-	//	return float64(val), nil
-	//case string:
-	//	return strconv.ParseFloat(val, 64)
-	//default:
-	//	err := fmt.Errorf("redis: unexpected type=%T for Float64", val)
-	//	return 0, err
-	//}
 }
 
 func (cmd *Cmd) Bool() (bool, error) {
@@ -326,45 +267,11 @@ func (cmd *Cmd) Bool() (bool, error) {
 		return false, cmd.err
 	}
 	return cmd.val.Bool()
-	//switch val := cmd.val.(type) {
-	//case int64:
-	//	return val != 0, nil
-	//case string:
-	//	return strconv.ParseBool(val)
-	//default:
-	//	err := fmt.Errorf("redis: unexpected type=%T for Bool", val)
-	//	return false, err
-	//}
 }
 
-func (cmd *Cmd) readReply(rd *proto.Reader) (err error) {
-	cmd.val, err = rd.ReadReply()
-	if err == nil {
-		err = cmd.val.RedisError
-	}
-	return err
-}
-
-// sliceParser implements proto.MultiBulkParse.
-// TODO delete?
-func sliceParser(rd *proto.Reader, n int64) (interface{}, error) {
-	vals := make([]interface{}, n)
-	for i := 0; i < len(vals); i++ {
-		v, err := rd.ReadReply(sliceParser)
-		if err != nil {
-			if err == Nil {
-				vals[i] = nil
-				continue
-			}
-			if err, ok := err.(proto.RedisError); ok {
-				vals[i] = err
-				continue
-			}
-			return nil, err
-		}
-		vals[i] = v
-	}
-	return vals, nil
+func (cmd *Cmd) readReply(pv *proto.Value) error {
+	cmd.val = pv
+	return nil
 }
 
 //------------------------------------------------------------------------------
@@ -418,13 +325,9 @@ func (cmd *SliceCmd) Scan(dst interface{}) error {
 	return hscan.Scan(dst, args, cmd.val)
 }
 
-func (cmd *SliceCmd) readReply(rd *proto.Reader) error {
-	v, err := rd.ReadArrayReply(sliceParser)
-	if err != nil {
-		return err
-	}
-	cmd.val = v.([]interface{})
-	return nil
+func (cmd *SliceCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.SliceInterface()
+	return err
 }
 
 //------------------------------------------------------------------------------
@@ -458,8 +361,8 @@ func (cmd *StatusCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StatusCmd) readReply(rd *proto.Reader) (err error) {
-	cmd.val, err = rd.ReadString()
+func (cmd *StatusCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.String()
 	return err
 }
 
@@ -498,8 +401,8 @@ func (cmd *IntCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *IntCmd) readReply(rd *proto.Reader) (err error) {
-	cmd.val, err = rd.ReadIntReply()
+func (cmd *IntCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.Int64()
 	return err
 }
 
@@ -534,18 +437,8 @@ func (cmd *IntSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make([]int64, n)
-		for i := 0; i < len(cmd.val); i++ {
-			num, err := rd.ReadIntReply()
-			if err != nil {
-				return nil, err
-			}
-			cmd.val[i] = num
-		}
-		return nil, nil
-	})
+func (cmd *IntSliceCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.SliceInt64()
 	return err
 }
 
@@ -582,8 +475,8 @@ func (cmd *DurationCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *DurationCmd) readReply(rd *proto.Reader) error {
-	n, err := rd.ReadIntReply()
+func (cmd *DurationCmd) readReply(pv *proto.Value) error {
+	n, err := pv.Int64()
 	if err != nil {
 		return err
 	}
@@ -629,26 +522,16 @@ func (cmd *TimeCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *TimeCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		if n != 2 {
-			return nil, fmt.Errorf("got %d elements, expected 2", n)
-		}
-
-		sec, err := rd.ReadInt()
-		if err != nil {
-			return nil, err
-		}
-
-		microsec, err := rd.ReadInt()
-		if err != nil {
-			return nil, err
-		}
-
-		cmd.val = time.Unix(sec, microsec*1000)
-		return nil, nil
-	})
-	return err
+func (cmd *TimeCmd) readReply(pv *proto.Value) error {
+	times, err := pv.SliceInt64()
+	if err != nil {
+		return err
+	}
+	if len(times) != 2 {
+		return fmt.Errorf("got %d elements, expected 2", len(times))
+	}
+	cmd.val = time.Unix(times[0], times[1]*1000)
+	return nil
 }
 
 //------------------------------------------------------------------------------
@@ -682,27 +565,9 @@ func (cmd *BoolCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *BoolCmd) readReply(rd *proto.Reader) error {
-	v, err := rd.ReadReply(nil)
-	// `SET key value NX` returns nil when key already exists. But
-	// `SETNX key value` returns bool (0/1). So convert nil to bool.
-	if err == Nil {
-		cmd.val = false
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	switch v := v.(type) {
-	case int64:
-		cmd.val = v == 1
-		return nil
-	case string:
-		cmd.val = v == "OK"
-		return nil
-	default:
-		return fmt.Errorf("got %T, wanted int64 or string", v)
-	}
+func (cmd *BoolCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.Status()
+	return err
 }
 
 //------------------------------------------------------------------------------
@@ -800,8 +665,8 @@ func (cmd *StringCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringCmd) readReply(rd *proto.Reader) (err error) {
-	cmd.val, err = rd.ReadString()
+func (cmd *StringCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.String()
 	return err
 }
 
@@ -836,8 +701,8 @@ func (cmd *FloatCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *FloatCmd) readReply(rd *proto.Reader) (err error) {
-	cmd.val, err = rd.ReadFloatReply()
+func (cmd *FloatCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.Float64()
 	return err
 }
 
@@ -872,21 +737,8 @@ func (cmd *FloatSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *FloatSliceCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make([]float64, n)
-		for i := 0; i < len(cmd.val); i++ {
-			switch num, err := rd.ReadFloatReply(); {
-			case err == Nil:
-				cmd.val[i] = 0
-			case err != nil:
-				return nil, err
-			default:
-				cmd.val[i] = num
-			}
-		}
-		return nil, nil
-	})
+func (cmd *FloatSliceCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.SliceFloat64()
 	return err
 }
 
@@ -925,21 +777,8 @@ func (cmd *StringSliceCmd) ScanSlice(container interface{}) error {
 	return proto.ScanSlice(cmd.Val(), container)
 }
 
-func (cmd *StringSliceCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make([]string, n)
-		for i := 0; i < len(cmd.val); i++ {
-			switch s, err := rd.ReadString(); {
-			case err == Nil:
-				cmd.val[i] = ""
-			case err != nil:
-				return nil, err
-			default:
-				cmd.val[i] = s
-			}
-		}
-		return nil, nil
-	})
+func (cmd *StringSliceCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.SliceString()
 	return err
 }
 
@@ -974,18 +813,8 @@ func (cmd *BoolSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make([]bool, n)
-		for i := 0; i < len(cmd.val); i++ {
-			n, err := rd.ReadIntReply()
-			if err != nil {
-				return nil, err
-			}
-			cmd.val[i] = n == 1
-		}
-		return nil, nil
-	})
+func (cmd *BoolSliceCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.SliceStatus()
 	return err
 }
 
@@ -1041,24 +870,8 @@ func (cmd *StringStringMapCmd) Scan(dst interface{}) error {
 	return nil
 }
 
-func (cmd *StringStringMapCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make(map[string]string, n/2)
-		for i := int64(0); i < n; i += 2 {
-			key, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
-
-			value, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
-
-			cmd.val[key] = value
-		}
-		return nil, nil
-	})
+func (cmd *StringStringMapCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.MapStringString()
 	return err
 }
 
@@ -1093,24 +906,8 @@ func (cmd *StringIntMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringIntMapCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make(map[string]int64, n/2)
-		for i := int64(0); i < n; i += 2 {
-			key, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
-
-			n, err := rd.ReadIntReply()
-			if err != nil {
-				return nil, err
-			}
-
-			cmd.val[key] = n
-		}
-		return nil, nil
-	})
+func (cmd *StringIntMapCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = pv.MapStringInt64()
 	return err
 }
 
@@ -1145,19 +942,17 @@ func (cmd *StringStructMapCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringStructMapCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make(map[string]struct{}, n)
-		for i := int64(0); i < n; i++ {
-			key, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
-			cmd.val[key] = struct{}{}
-		}
-		return nil, nil
-	})
-	return err
+func (cmd *StringStructMapCmd) readReply(pv *proto.Value) (err error) {
+	ss, err := pv.SliceString()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make(map[string]struct{}, len(ss))
+	for _, val := range ss {
+		cmd.val[val] = struct{}{}
+	}
+	return nil
 }
 
 //------------------------------------------------------------------------------
@@ -1196,77 +991,64 @@ func (cmd *XMessageSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *XMessageSliceCmd) readReply(rd *proto.Reader) error {
-	var err error
-	cmd.val, err = readXMessageSlice(rd)
+func (cmd *XMessageSliceCmd) readReply(pv *proto.Value) (err error) {
+	cmd.val, err = readXMessages(pv)
 	return err
 }
 
-func readXMessageSlice(rd *proto.Reader) ([]XMessage, error) {
-	n, err := rd.ReadArrayLen()
+func readXMessages(pv *proto.Value) ([]XMessage, error) {
+	n, err := pv.SliceLen()
 	if err != nil {
 		return nil, err
 	}
 
-	msgs := make([]XMessage, n)
-	for i := 0; i < n; i++ {
-		var err error
-		msgs[i], err = readXMessage(rd)
-		if err != nil {
-			return nil, err
-		}
+	if n == 0 {
+		return nil, nil
 	}
-	return msgs, nil
+
+	xMsgs := make([]XMessage, 0, n)
+	err = pv.SliceScan(func(item *proto.Value) error {
+		xMsg, err := readXMessage(item)
+		if err != nil {
+			return err
+		}
+		xMsgs = append(xMsgs, xMsg)
+		return nil
+	})
+	return xMsgs, err
 }
 
-func readXMessage(rd *proto.Reader) (XMessage, error) {
-	n, err := rd.ReadArrayLen()
-	if err != nil {
+func readXMessage(item *proto.Value) (XMessage, error) {
+	n, err := item.SliceLen()
+	if err != nil && err != Nil {
 		return XMessage{}, err
 	}
 	if n != 2 {
 		return XMessage{}, fmt.Errorf("got %d, wanted 2", n)
 	}
 
-	id, err := rd.ReadString()
-	if err != nil {
+	id, err := item.Slice[0].String()
+	if err != nil && err != Nil {
 		return XMessage{}, err
 	}
 
-	var values map[string]interface{}
-
-	v, err := rd.ReadArrayReply(stringInterfaceMapParser)
-	if err != nil {
-		if err != proto.Nil {
-			return XMessage{}, err
-		}
-	} else {
-		values = v.(map[string]interface{})
+	ss, err := item.Slice[1].SliceString()
+	if err != nil && err != Nil {
+		return XMessage{}, err
+	}
+	n = len(ss)
+	if n%2 != 0 {
+		return XMessage{}, fmt.Errorf("got %d, wanted multiple of 2", n)
+	}
+	m := make(map[string]interface{}, n/2)
+	for i := 0; i < n; i += 2 {
+		m[ss[i]] = ss[i+1]
 	}
 
 	return XMessage{
 		ID:     id,
-		Values: values,
+		Values: m,
 	}, nil
-}
-
-// stringInterfaceMapParser implements proto.MultiBulkParse.
-func stringInterfaceMapParser(rd *proto.Reader, n int64) (interface{}, error) {
-	m := make(map[string]interface{}, n/2)
-	for i := int64(0); i < n; i += 2 {
-		key, err := rd.ReadString()
-		if err != nil {
-			return nil, err
-		}
-
-		value, err := rd.ReadString()
-		if err != nil {
-			return nil, err
-		}
-
-		m[key] = value
-	}
-	return m, nil
 }
 
 //------------------------------------------------------------------------------
@@ -1305,38 +1087,42 @@ func (cmd *XStreamSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *XStreamSliceCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make([]XStream, n)
-		for i := 0; i < len(cmd.val); i++ {
-			i := i
-			_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-				if n != 2 {
-					return nil, fmt.Errorf("got %d, wanted 2", n)
-				}
+func (cmd *XStreamSliceCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
+	if err != nil {
+		return err
+	}
 
-				stream, err := rd.ReadString()
-				if err != nil {
-					return nil, err
-				}
+	if n == 0 {
+		return nil
+	}
 
-				msgs, err := readXMessageSlice(rd)
-				if err != nil {
-					return nil, err
-				}
-
-				cmd.val[i] = XStream{
-					Stream:   stream,
-					Messages: msgs,
-				}
-				return nil, nil
-			})
-			if err != nil {
-				return nil, err
-			}
+	cmd.val = make([]XStream, 0, n)
+	err = pv.SliceScan(func(item *proto.Value) error {
+		n, err = item.SliceLen()
+		if err != nil {
+			return err
 		}
-		return nil, nil
+		if n != 2 {
+			return fmt.Errorf("got %d, wanted 2", n)
+		}
+
+		stream, err := item.Slice[0].String()
+		if err != nil {
+			return err
+		}
+
+		xMsgs, err := readXMessages(item.Slice[1])
+		if err != nil {
+			return err
+		}
+		cmd.val = append(cmd.val, XStream{
+			Stream:   stream,
+			Messages: xMsgs,
+		})
+		return nil
 	})
+
 	return err
 }
 
@@ -1377,69 +1163,64 @@ func (cmd *XPendingCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *XPendingCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		if n != 4 {
-			return nil, fmt.Errorf("got %d, wanted 4", n)
-		}
+func (cmd *XPendingCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
+	if err != nil {
+		return err
+	}
+	if n != 4 {
+		return fmt.Errorf("got %d, wanted 4", n)
+	}
 
-		count, err := rd.ReadIntReply()
-		if err != nil {
-			return nil, err
-		}
+	count, err := pv.Slice[0].Int64()
+	if err != nil {
+		return err
+	}
 
-		lower, err := rd.ReadString()
-		if err != nil && err != Nil {
-			return nil, err
-		}
+	lower, err := pv.Slice[1].String()
+	if err != nil {
+		return err
+	}
 
-		higher, err := rd.ReadString()
-		if err != nil && err != Nil {
-			return nil, err
-		}
+	higher, err := pv.Slice[2].String()
+	if err != nil {
+		return err
+	}
+	cmd.val = &XPending{
+		Count:  count,
+		Lower:  lower,
+		Higher: higher,
+	}
 
-		cmd.val = &XPending{
-			Count:  count,
-			Lower:  lower,
-			Higher: higher,
-		}
-		_, err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-			for i := int64(0); i < n; i++ {
-				_, err = rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-					if n != 2 {
-						return nil, fmt.Errorf("got %d, wanted 2", n)
-					}
-
-					consumerName, err := rd.ReadString()
-					if err != nil {
-						return nil, err
-					}
-
-					consumerPending, err := rd.ReadInt()
-					if err != nil {
-						return nil, err
-					}
-
-					if cmd.val.Consumers == nil {
-						cmd.val.Consumers = make(map[string]int64)
-					}
-					cmd.val.Consumers[consumerName] = consumerPending
-
-					return nil, nil
-				})
-				if err != nil {
-					return nil, err
-				}
+	n, err = pv.Slice[3].SliceLen()
+	if err == nil && n > 0 {
+		cmd.val.Consumers = make(map[string]int64, n)
+		err = pv.Slice[3].SliceScan(func(item *proto.Value) error {
+			n, err = item.SliceLen()
+			if err != nil {
+				return err
 			}
-			return nil, nil
-		})
-		if err != nil && err != Nil {
-			return nil, err
-		}
+			if n != 2 {
+				return fmt.Errorf("got %d, wanted 2", n)
+			}
+			name, err := item.Slice[0].String()
+			if err != nil {
+				return err
+			}
+			pending, err := item.Slice[1].Int64()
+			if err != nil {
+				return err
+			}
+			cmd.val.Consumers[name] = pending
 
-		return nil, nil
-	})
-	return err
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 //------------------------------------------------------------------------------
@@ -1479,49 +1260,52 @@ func (cmd *XPendingExtCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *XPendingExtCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make([]XPendingExt, 0, n)
-		for i := int64(0); i < n; i++ {
-			_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-				if n != 4 {
-					return nil, fmt.Errorf("got %d, wanted 4", n)
-				}
+func (cmd *XPendingExtCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
+	if err != nil {
+		return err
+	}
 
-				id, err := rd.ReadString()
-				if err != nil {
-					return nil, err
-				}
-
-				consumer, err := rd.ReadString()
-				if err != nil && err != Nil {
-					return nil, err
-				}
-
-				idle, err := rd.ReadIntReply()
-				if err != nil && err != Nil {
-					return nil, err
-				}
-
-				retryCount, err := rd.ReadIntReply()
-				if err != nil && err != Nil {
-					return nil, err
-				}
-
-				cmd.val = append(cmd.val, XPendingExt{
-					ID:         id,
-					Consumer:   consumer,
-					Idle:       time.Duration(idle) * time.Millisecond,
-					RetryCount: retryCount,
-				})
-				return nil, nil
-			})
-			if err != nil {
-				return nil, err
-			}
+	cmd.val = make([]XPendingExt, 0, n)
+	err = pv.SliceScan(func(item *proto.Value) error {
+		n, err = item.SliceLen()
+		if err != nil {
+			return err
 		}
-		return nil, nil
+		if n != 4 {
+			return fmt.Errorf("got %d, wanted 4", n)
+		}
+
+		id, err := item.Slice[0].String()
+		if err != nil {
+			return err
+		}
+
+		consumer, err := item.Slice[1].String()
+		if err != nil && err != Nil {
+			return err
+		}
+
+		idle, err := item.Slice[2].Int64()
+		if err != nil && err != Nil {
+			return err
+		}
+
+		retryCount, err := pv.Slice[3].Int64()
+		if err != nil && err != Nil {
+			return err
+		}
+
+		cmd.val = append(cmd.val, XPendingExt{
+			ID:         id,
+			Consumer:   consumer,
+			Idle:       time.Duration(idle) * time.Millisecond,
+			RetryCount: retryCount,
+		})
+
+		return nil
 	})
+
 	return err
 }
 
@@ -1561,65 +1345,60 @@ func (cmd *XInfoConsumersCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *XInfoConsumersCmd) readReply(rd *proto.Reader) error {
-	n, err := rd.ReadArrayLen()
+func (cmd *XInfoConsumersCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
 	if err != nil {
 		return err
 	}
+	if n == 0 {
+		return nil
+	}
 
-	cmd.val = make([]XInfoConsumer, n)
-
-	for i := 0; i < n; i++ {
-		cmd.val[i], err = readXConsumerInfo(rd)
+	cmd.val = make([]XInfoConsumer, 0, n)
+	err = pv.SliceScan(func(item *proto.Value) error {
+		n, err = item.SliceLen()
 		if err != nil {
 			return err
 		}
-	}
-
-	return nil
-}
-
-func readXConsumerInfo(rd *proto.Reader) (XInfoConsumer, error) {
-	var consumer XInfoConsumer
-
-	n, err := rd.ReadArrayLen()
-	if err != nil {
-		return consumer, err
-	}
-	if n != 6 {
-		return consumer, fmt.Errorf("redis: got %d elements in XINFO CONSUMERS reply, wanted 6", n)
-	}
-
-	for i := 0; i < 3; i++ {
-		key, err := rd.ReadString()
-		if err != nil {
-			return consumer, err
+		if n != 6 {
+			return fmt.Errorf("redis: got %d elements in XINFO CONSUMERS reply, wanted 6", n)
 		}
 
-		val, err := rd.ReadString()
-		if err != nil {
-			return consumer, err
-		}
-
-		switch key {
-		case "name":
-			consumer.Name = val
-		case "pending":
-			consumer.Pending, err = strconv.ParseInt(val, 0, 64)
+		var consumer XInfoConsumer
+		for i := 0; i < n; i += 2 {
+			key, err := item.Slice[i].String()
 			if err != nil {
-				return consumer, err
+				return err
 			}
-		case "idle":
-			consumer.Idle, err = strconv.ParseInt(val, 0, 64)
-			if err != nil {
-				return consumer, err
-			}
-		default:
-			return consumer, fmt.Errorf("redis: unexpected content %s in XINFO CONSUMERS reply", key)
-		}
-	}
 
-	return consumer, nil
+			switch key {
+			case "name":
+				val, err := item.Slice[i+1].String()
+				if err != nil {
+					return err
+				}
+				consumer.Name = val
+			case "pending":
+				val, err := item.Slice[i+1].Int64()
+				if err != nil {
+					return err
+				}
+				consumer.Pending = val
+			case "idle":
+				val, err := item.Slice[i+1].Int64()
+				if err != nil {
+					return err
+				}
+				consumer.Idle = val
+			default:
+				return fmt.Errorf("redis: unexpected content %s in XINFO CONSUMERS reply", key)
+			}
+		}
+		cmd.val = append(cmd.val, consumer)
+		return nil
+	})
+
+	return err
 }
 
 //------------------------------------------------------------------------------
@@ -1659,67 +1438,66 @@ func (cmd *XInfoGroupsCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
-	n, err := rd.ReadArrayLen()
+func (cmd *XInfoGroupsCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
 	if err != nil {
 		return err
 	}
+	if n == 0 {
+		return nil
+	}
 
-	cmd.val = make([]XInfoGroup, n)
-
-	for i := 0; i < n; i++ {
-		cmd.val[i], err = readXGroupInfo(rd)
+	cmd.val = make([]XInfoGroup, 0, n)
+	err = pv.SliceScan(func(item *proto.Value) error {
+		n, err = item.SliceLen()
 		if err != nil {
 			return err
 		}
-	}
-
-	return nil
-}
-
-func readXGroupInfo(rd *proto.Reader) (XInfoGroup, error) {
-	var group XInfoGroup
-
-	n, err := rd.ReadArrayLen()
-	if err != nil {
-		return group, err
-	}
-	if n != 8 {
-		return group, fmt.Errorf("redis: got %d elements in XINFO GROUPS reply, wanted 8", n)
-	}
-
-	for i := 0; i < 4; i++ {
-		key, err := rd.ReadString()
-		if err != nil {
-			return group, err
+		if n != 8 {
+			return fmt.Errorf("redis: got %d elements in XINFO GROUPS reply, wanted 8", n)
 		}
 
-		val, err := rd.ReadString()
-		if err != nil {
-			return group, err
-		}
-
-		switch key {
-		case "name":
-			group.Name = val
-		case "consumers":
-			group.Consumers, err = strconv.ParseInt(val, 0, 64)
+		var group XInfoGroup
+		for i := 0; i < n; i += 2 {
+			key, err := item.Slice[i].String()
 			if err != nil {
-				return group, err
+				return err
 			}
-		case "pending":
-			group.Pending, err = strconv.ParseInt(val, 0, 64)
-			if err != nil {
-				return group, err
-			}
-		case "last-delivered-id":
-			group.LastDeliveredID = val
-		default:
-			return group, fmt.Errorf("redis: unexpected content %s in XINFO GROUPS reply", key)
-		}
-	}
 
-	return group, nil
+			switch key {
+			case "name":
+				val, err := item.Slice[i+1].String()
+				if err != nil {
+					return err
+				}
+				group.Name = val
+			case "consumers":
+				val, err := item.Slice[i+1].Int64()
+				if err != nil {
+					return err
+				}
+				group.Consumers = val
+			case "pending":
+				val, err := item.Slice[i+1].Int64()
+				if err != nil {
+					return err
+				}
+				group.Pending = val
+			case "last-delivered-id":
+				val, err := item.Slice[i+1].String()
+				if err != nil {
+					return err
+				}
+				group.LastDeliveredID = val
+			default:
+				return fmt.Errorf("redis: unexpected content %s in XINFO GROUPS reply", key)
+			}
+		}
+		cmd.val = append(cmd.val, group)
+		return nil
+	})
+
+	return err
 }
 
 //------------------------------------------------------------------------------
@@ -1762,50 +1540,53 @@ func (cmd *XInfoStreamCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
-	v, err := rd.ReadReply(xStreamInfoParser)
+func (cmd *XInfoStreamCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
 	if err != nil {
 		return err
 	}
-	cmd.val = v.(*XInfoStream)
-	return nil
-}
-
-func xStreamInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
-	if n != 14 {
-		return nil, fmt.Errorf("redis: got %d elements in XINFO STREAM reply,"+
-			"wanted 14", n)
+	if n == 0 {
+		return nil
 	}
-	var info XInfoStream
-	for i := 0; i < 7; i++ {
-		key, err := rd.ReadString()
+
+	// no full.
+	if n != 14 {
+		return fmt.Errorf("redis: got %d elements in XINFO STREAM reply, wanted 14", n)
+	}
+
+	info := &XInfoStream{}
+	for i := 0; i < n; i += 2 {
+		var key string
+		key, err = pv.Slice[i].String()
 		if err != nil {
-			return nil, err
+			return err
 		}
+
 		switch key {
 		case "length":
-			info.Length, err = rd.ReadIntReply()
+			info.Length, err = pv.Slice[i+1].Int64()
 		case "radix-tree-keys":
-			info.RadixTreeKeys, err = rd.ReadIntReply()
+			info.RadixTreeKeys, err = pv.Slice[i+1].Int64()
 		case "radix-tree-nodes":
-			info.RadixTreeNodes, err = rd.ReadIntReply()
+			info.RadixTreeNodes, err = pv.Slice[i+1].Int64()
 		case "groups":
-			info.Groups, err = rd.ReadIntReply()
+			info.Groups, err = pv.Slice[i+1].Int64()
 		case "last-generated-id":
-			info.LastGeneratedID, err = rd.ReadString()
+			info.LastGeneratedID, err = pv.Slice[i+1].String()
 		case "first-entry":
-			info.FirstEntry, err = readXMessage(rd)
+			info.FirstEntry, err = readXMessage(pv.Slice[i+1])
 		case "last-entry":
-			info.LastEntry, err = readXMessage(rd)
+			info.LastEntry, err = readXMessage(pv.Slice[i+1])
 		default:
-			return nil, fmt.Errorf("redis: unexpected content %s "+
+			return fmt.Errorf("redis: unexpected content %s "+
 				"in XINFO STREAM reply", key)
 		}
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return &info, nil
+	cmd.val = info
+	return nil
 }
 
 //------------------------------------------------------------------------------
@@ -1839,28 +1620,37 @@ func (cmd *ZSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ZSliceCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make([]Z, n/2)
-		for i := 0; i < len(cmd.val); i++ {
-			member, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
+func (cmd *ZSliceCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+	if n%2 != 0 {
+		return fmt.Errorf("got %d, wanted multiple of 2", n)
+	}
 
-			score, err := rd.ReadFloatReply()
-			if err != nil {
-				return nil, err
-			}
-
-			cmd.val[i] = Z{
-				Member: member,
-				Score:  score,
-			}
+	cmd.val = make([]Z, 0, n/2)
+	for i := 0; i < n; i += 2 {
+		member, err := pv.Slice[i].String()
+		if err != nil {
+			return err
 		}
-		return nil, nil
-	})
-	return err
+
+		score, err := pv.Slice[i+1].Float64()
+		if err != nil {
+			return err
+		}
+
+		cmd.val = append(cmd.val, Z{
+			Score:  score,
+			Member: member,
+		})
+	}
+
+	return nil
 }
 
 //------------------------------------------------------------------------------
@@ -1894,33 +1684,36 @@ func (cmd *ZWithKeyCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ZWithKeyCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		if n != 3 {
-			return nil, fmt.Errorf("got %d elements, expected 3", n)
-		}
+func (cmd *ZWithKeyCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+	if n != 3 {
+		return fmt.Errorf("got %d elements, expected 3", n)
+	}
 
-		cmd.val = &ZWithKey{}
-		var err error
+	cmd.val = &ZWithKey{}
 
-		cmd.val.Key, err = rd.ReadString()
-		if err != nil {
-			return nil, err
-		}
+	cmd.val.Key, err = pv.Slice[0].String()
+	if err != nil {
+		return err
+	}
 
-		cmd.val.Member, err = rd.ReadString()
-		if err != nil {
-			return nil, err
-		}
+	cmd.val.Member, err = pv.Slice[1].String()
+	if err != nil {
+		return err
+	}
 
-		cmd.val.Score, err = rd.ReadFloatReply()
-		if err != nil {
-			return nil, err
-		}
+	cmd.val.Score, err = pv.Slice[2].Float64()
+	if err != nil {
+		return err
+	}
 
-		return nil, nil
-	})
-	return err
+	return nil
 }
 
 //------------------------------------------------------------------------------
@@ -1958,8 +1751,25 @@ func (cmd *ScanCmd) String() string {
 	return cmdString(cmd, cmd.page)
 }
 
-func (cmd *ScanCmd) readReply(rd *proto.Reader) (err error) {
-	cmd.page, cmd.cursor, err = rd.ReadScanReply()
+func (cmd *ScanCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+	if n != 2 {
+		return fmt.Errorf("redis: got %d elements in scan reply, expected 2", n)
+	}
+
+	cursor, err := pv.Slice[0].Int64()
+	if err != nil {
+		return err
+	}
+	cmd.cursor = uint64(cursor)
+	cmd.page, err = pv.Slice[1].SliceString()
+
 	return err
 }
 
@@ -2012,68 +1822,73 @@ func (cmd *ClusterSlotsCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make([]ClusterSlot, n)
-		for i := 0; i < len(cmd.val); i++ {
-			n, err := rd.ReadArrayLen()
+func (cmd *ClusterSlotsCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+
+	cmd.val = make([]ClusterSlot, 0, n)
+	err = pv.SliceScan(func(item *proto.Value) error {
+		n, err = item.SliceLen()
+		if err != nil {
+			return err
+		}
+		if n < 2 {
+			return fmt.Errorf("redis: got %d elements in cluster info, expected at least 2", n)
+		}
+
+		start, err := item.Slice[0].Int64()
+		if err != nil {
+			return err
+		}
+		end, err := item.Slice[1].Int64()
+		if err != nil {
+			return err
+		}
+
+		var nodeVal *proto.Value
+		nodes := make([]ClusterNode, n-2)
+		for i := 0; i < (n - 2); i++ {
+			nodeVal = item.Slice[i+2]
+			n, err = nodeVal.SliceLen()
 			if err != nil {
-				return nil, err
+				return err
 			}
-			if n < 2 {
-				err := fmt.Errorf("redis: got %d elements in cluster info, expected at least 2", n)
-				return nil, err
+			if n != 2 && n != 3 {
+				return fmt.Errorf("got %d elements in cluster info address, expected 2 or 3", n)
 			}
 
-			start, err := rd.ReadIntReply()
+			ip, err := nodeVal.Slice[0].String()
 			if err != nil {
-				return nil, err
+				return err
 			}
-
-			end, err := rd.ReadIntReply()
+			port, err := nodeVal.Slice[1].String()
 			if err != nil {
-				return nil, err
+				return err
 			}
 
-			nodes := make([]ClusterNode, n-2)
-			for j := 0; j < len(nodes); j++ {
-				n, err := rd.ReadArrayLen()
+			nodes[i].Addr = net.JoinHostPort(ip, port)
+
+			// new version.
+			if n == 3 {
+				id, err := nodeVal.Slice[2].String()
 				if err != nil {
-					return nil, err
+					return err
 				}
-				if n != 2 && n != 3 {
-					err := fmt.Errorf("got %d elements in cluster info address, expected 2 or 3", n)
-					return nil, err
-				}
-
-				ip, err := rd.ReadString()
-				if err != nil {
-					return nil, err
-				}
-
-				port, err := rd.ReadString()
-				if err != nil {
-					return nil, err
-				}
-
-				nodes[j].Addr = net.JoinHostPort(ip, port)
-
-				if n == 3 {
-					id, err := rd.ReadString()
-					if err != nil {
-						return nil, err
-					}
-					nodes[j].ID = id
-				}
-			}
-
-			cmd.val[i] = ClusterSlot{
-				Start: int(start),
-				End:   int(end),
-				Nodes: nodes,
+				nodes[i].ID = id
 			}
 		}
-		return nil, nil
+
+		cmd.val = append(cmd.val, ClusterSlot{
+			Start: int(start),
+			End:   int(end),
+			Nodes: nodes,
+		})
+		return nil
 	})
 	return err
 }
@@ -2166,81 +1981,88 @@ func (cmd *GeoLocationCmd) String() string {
 	return cmdString(cmd, cmd.locations)
 }
 
-func (cmd *GeoLocationCmd) readReply(rd *proto.Reader) error {
-	v, err := rd.ReadArrayReply(newGeoLocationSliceParser(cmd.q))
+func (cmd *GeoLocationCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
 	if err != nil {
 		return err
 	}
-	cmd.locations = v.([]GeoLocation)
-	return nil
-}
-
-func newGeoLocationSliceParser(q *GeoRadiusQuery) proto.MultiBulkParse {
-	return func(rd *proto.Reader, n int64) (interface{}, error) {
-		locs := make([]GeoLocation, 0, n)
-		for i := int64(0); i < n; i++ {
-			v, err := rd.ReadReply(newGeoLocationParser(q))
-			if err != nil {
-				return nil, err
-			}
-			switch vv := v.(type) {
-			case string:
-				locs = append(locs, GeoLocation{
-					Name: vv,
-				})
-			case *GeoLocation:
-				// TODO: avoid copying
-				locs = append(locs, *vv)
-			default:
-				return nil, fmt.Errorf("got %T, expected string or *GeoLocation", v)
-			}
-		}
-		return locs, nil
+	if n == 0 {
+		return nil
 	}
-}
 
-func newGeoLocationParser(q *GeoRadiusQuery) proto.MultiBulkParse {
-	return func(rd *proto.Reader, n int64) (interface{}, error) {
-		var loc GeoLocation
-		var err error
-
-		loc.Name, err = rd.ReadString()
-		if err != nil {
-			return nil, err
-		}
-		if q.WithDist {
-			loc.Dist, err = rd.ReadFloatReply()
+	cmd.locations = make([]GeoLocation, 0, n)
+	err = pv.SliceScan(func(item *proto.Value) error {
+		if item.IsSimpleType() {
+			name, err := item.String()
 			if err != nil {
-				return nil, err
+				return err
 			}
-		}
-		if q.WithGeoHash {
-			loc.GeoHash, err = rd.ReadIntReply()
+			cmd.locations = append(cmd.locations, GeoLocation{
+				Name: name,
+			})
+		} else {
+			n, err = item.SliceLen()
 			if err != nil {
-				return nil, err
+				return err
 			}
-		}
-		if q.WithCoord {
-			n, err := rd.ReadArrayLen()
-			if err != nil {
-				return nil, err
+			expectNum := 1
+			if cmd.q.WithDist {
+				expectNum++
 			}
-			if n != 2 {
-				return nil, fmt.Errorf("got %d coordinates, expected 2", n)
+			if cmd.q.WithGeoHash {
+				expectNum++
+			}
+			if cmd.q.WithCoord {
+				expectNum++
 			}
 
-			loc.Longitude, err = rd.ReadFloatReply()
-			if err != nil {
-				return nil, err
+			if n != expectNum {
+				return fmt.Errorf("got %d, wanted %d", n, expectNum)
 			}
-			loc.Latitude, err = rd.ReadFloatReply()
-			if err != nil {
-				return nil, err
-			}
-		}
 
-		return &loc, nil
-	}
+			var loc GeoLocation
+			var idx int
+
+			loc.Name, err = item.Slice[idx].String()
+			if err != nil {
+				return err
+			}
+			idx++
+
+			if cmd.q.WithDist {
+				loc.Dist, err = item.Slice[idx].Float64()
+				if err != nil {
+					return err
+				}
+				idx++
+			}
+
+			if cmd.q.WithGeoHash {
+				loc.GeoHash, err = item.Slice[idx].Int64()
+				if err != nil {
+					return err
+				}
+				idx++
+			}
+
+			if cmd.q.WithCoord {
+				cd, err := item.Slice[idx].SliceFloat64()
+				if err != nil {
+					return err
+				}
+				if len(cd) != 2 {
+					return fmt.Errorf("got %d coordinates, expected 2", len(cd))
+				}
+
+				loc.Longitude = cd[0]
+				loc.Latitude = cd[1]
+			}
+			cmd.locations = append(cmd.locations, loc)
+		}
+		return nil
+	})
+
+	return err
 }
 
 //------------------------------------------------------------------------------
@@ -2278,38 +2100,36 @@ func (cmd *GeoPosCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *GeoPosCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make([]*GeoPos, n)
-		for i := 0; i < len(cmd.val); i++ {
-			i := i
-			_, err := rd.ReadReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-				longitude, err := rd.ReadFloatReply()
-				if err != nil {
-					return nil, err
-				}
+func (cmd *GeoPosCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
 
-				latitude, err := rd.ReadFloatReply()
-				if err != nil {
-					return nil, err
-				}
-
-				cmd.val[i] = &GeoPos{
-					Longitude: longitude,
-					Latitude:  latitude,
-				}
-				return nil, nil
-			})
-			if err != nil {
-				if err == Nil {
-					cmd.val[i] = nil
-					continue
-				}
-				return nil, err
+	cmd.val = make([]*GeoPos, 0, n)
+	err = pv.SliceScan(func(item *proto.Value) error {
+		var sf []float64
+		sf, err = item.SliceFloat64()
+		switch err {
+		case Nil:
+			cmd.val = append(cmd.val, nil)
+		case nil:
+			if len(sf) != 2 {
+				return fmt.Errorf("got %d, wanted 2", len(sf))
 			}
+			cmd.val = append(cmd.val, &GeoPos{
+				Longitude: sf[0],
+				Latitude:  sf[1],
+			})
+		default:
+			return err
 		}
-		return nil, nil
+		return nil
 	})
+
 	return err
 }
 
@@ -2355,113 +2175,82 @@ func (cmd *CommandsInfoCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make(map[string]*CommandInfo, n)
-		for i := int64(0); i < n; i++ {
-			v, err := rd.ReadReply(commandInfoParser)
-			if err != nil {
-				return nil, err
-			}
-			vv := v.(*CommandInfo)
-			cmd.val[vv.Name] = vv
-		}
-		return nil, nil
-	})
-	return err
-}
-
-func commandInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
+func (cmd *CommandsInfoCmd) readReply(pv *proto.Value) error {
 	const numArgRedis5 = 6
 	const numArgRedis6 = 7
 
-	switch n {
-	case numArgRedis5, numArgRedis6:
-		// continue
-	default:
-		return nil, fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 7", n)
-	}
-
-	var cmd CommandInfo
-	var err error
-
-	cmd.Name, err = rd.ReadString()
+	n, err := pv.SliceLen()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	arity, err := rd.ReadIntReply()
-	if err != nil {
-		return nil, err
-	}
-	cmd.Arity = int8(arity)
+	cmd.val = make(map[string]*CommandInfo, n)
+	err = pv.SliceScan(func(item *proto.Value) error {
+		n, err = item.SliceLen()
+		if err != nil {
+			return err
+		}
+		if n != numArgRedis5 && n != numArgRedis6 {
+			return fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 7", n)
+		}
 
-	_, err = rd.ReadReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.Flags = make([]string, n)
-		for i := 0; i < len(cmd.Flags); i++ {
-			switch s, err := rd.ReadString(); {
-			case err == Nil:
-				cmd.Flags[i] = ""
-			case err != nil:
-				return nil, err
-			default:
-				cmd.Flags[i] = s
+		info := &CommandInfo{}
+
+		info.Name, err = item.Slice[0].String()
+		if err != nil {
+			return err
+		}
+
+		var arity, firstKeyPos, lastKeyPos, stepCount int64
+
+		arity, err = item.Slice[1].Int64()
+		if err != nil {
+			return err
+		}
+		info.Arity = int8(arity)
+
+		info.Flags, err = item.Slice[2].SliceString()
+		if err != nil {
+			return err
+		}
+
+		firstKeyPos, err = item.Slice[3].Int64()
+		if err != nil {
+			return err
+		}
+		info.FirstKeyPos = int8(firstKeyPos)
+
+		lastKeyPos, err = item.Slice[4].Int64()
+		if err != nil {
+			return err
+		}
+		info.LastKeyPos = int8(lastKeyPos)
+
+		stepCount, err = item.Slice[5].Int64()
+		if err != nil {
+			return err
+		}
+		info.StepCount = int8(stepCount)
+
+		for _, flag := range info.Flags {
+			if flag == "readonly" {
+				info.ReadOnly = true
+				break
 			}
 		}
-		return nil, nil
-	})
-	if err != nil {
-		return nil, err
-	}
 
-	firstKeyPos, err := rd.ReadIntReply()
-	if err != nil {
-		return nil, err
-	}
-	cmd.FirstKeyPos = int8(firstKeyPos)
-
-	lastKeyPos, err := rd.ReadIntReply()
-	if err != nil {
-		return nil, err
-	}
-	cmd.LastKeyPos = int8(lastKeyPos)
-
-	stepCount, err := rd.ReadIntReply()
-	if err != nil {
-		return nil, err
-	}
-	cmd.StepCount = int8(stepCount)
-
-	for _, flag := range cmd.Flags {
-		if flag == "readonly" {
-			cmd.ReadOnly = true
-			break
-		}
-	}
-
-	if n == numArgRedis5 {
-		return &cmd, nil
-	}
-
-	_, err = rd.ReadReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.ACLFlags = make([]string, n)
-		for i := 0; i < len(cmd.ACLFlags); i++ {
-			switch s, err := rd.ReadString(); {
-			case err == Nil:
-				cmd.ACLFlags[i] = ""
-			case err != nil:
-				return nil, err
-			default:
-				cmd.ACLFlags[i] = s
+		if n >= numArgRedis6 {
+			info.ACLFlags, err = item.Slice[6].SliceString()
+			if err != nil {
+				return err
 			}
 		}
-		return nil, nil
-	})
-	if err != nil {
-		return nil, err
-	}
 
-	return &cmd, nil
+		cmd.val[info.Name] = info
+		return nil
+	})
+
+	return err
 }
 
 //------------------------------------------------------------------------------
@@ -2542,76 +2331,74 @@ func (cmd *SlowLogCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
-		cmd.val = make([]SlowLog, n)
-		for i := 0; i < len(cmd.val); i++ {
-			n, err := rd.ReadArrayLen()
-			if err != nil {
-				return nil, err
-			}
-			if n < 4 {
-				err := fmt.Errorf("redis: got %d elements in slowlog get, expected at least 4", n)
-				return nil, err
-			}
+func (cmd *SlowLogCmd) readReply(pv *proto.Value) error {
+	n, err := pv.SliceLen()
+	if err != nil {
+		return err
+	}
 
-			id, err := rd.ReadIntReply()
-			if err != nil {
-				return nil, err
+	cmd.val = make([]SlowLog, 0, n)
+	err = pv.SliceScan(func(item *proto.Value) error {
+		n, err = item.SliceLen()
+		if err != nil {
+			if err == Nil {
+				return nil
 			}
+			return err
+		}
+		if n < 4 {
+			return fmt.Errorf("redis: got %d elements in slowlog get, expected at least 4", n)
+		}
 
-			createdAt, err := rd.ReadIntReply()
-			if err != nil {
-				return nil, err
-			}
-			createdAtTime := time.Unix(createdAt, 0)
+		id, err := item.Slice[0].Int64()
+		if err != nil && err != Nil {
+			return err
+		}
 
-			costs, err := rd.ReadIntReply()
-			if err != nil {
-				return nil, err
-			}
-			costsDuration := time.Duration(costs) * time.Microsecond
+		createAt, err := item.Slice[1].Int64()
+		if err != nil && err != Nil {
+			return err
+		}
+		createdAtTime := time.Unix(createAt, 0)
 
-			cmdLen, err := rd.ReadArrayLen()
-			if err != nil {
-				return nil, err
-			}
-			if cmdLen < 1 {
-				err := fmt.Errorf("redis: got %d elements commands reply in slowlog get, expected at least 1", cmdLen)
-				return nil, err
-			}
+		costs, err := item.Slice[2].Int64()
+		if err != nil && err != Nil {
+			return err
+		}
+		costsDuration := time.Duration(costs) * time.Microsecond
 
-			cmdString := make([]string, cmdLen)
-			for i := 0; i < cmdLen; i++ {
-				cmdString[i], err = rd.ReadString()
-				if err != nil {
-					return nil, err
-				}
-			}
+		cmdString, err := item.Slice[3].SliceString()
+		if err != nil {
+			return err
+		}
+		if len(cmdString) < 1 {
+			return fmt.Errorf("redis: got %d elements commands reply in slowlog get, expected at least 1", len(cmdString))
+		}
 
-			var address, name string
-			for i := 4; i < n; i++ {
-				str, err := rd.ReadString()
-				if err != nil {
-					return nil, err
-				}
-				if i == 4 {
-					address = str
-				} else if i == 5 {
-					name = str
-				}
-			}
-
-			cmd.val[i] = SlowLog{
-				ID:         id,
-				Time:       createdAtTime,
-				Duration:   costsDuration,
-				Args:       cmdString,
-				ClientAddr: address,
-				ClientName: name,
+		var address, name string
+		if n > 4 {
+			address, err = item.Slice[4].String()
+			if err != nil && err != Nil {
+				return err
 			}
 		}
-		return nil, nil
+		if n > 5 {
+			name, err = item.Slice[5].String()
+			if err != nil && err != Nil {
+				return err
+			}
+		}
+
+		cmd.val = append(cmd.val, SlowLog{
+			ID:         id,
+			Time:       createdAtTime,
+			Duration:   costsDuration,
+			Args:       cmdString,
+			ClientAddr: address,
+			ClientName: name,
+		})
+		return nil
 	})
+
 	return err
 }
