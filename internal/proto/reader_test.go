@@ -432,12 +432,6 @@ func bigInt(s string) *big.Int {
 	return i
 }
 
-func TestRespProto(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "resp")
-
-}
-
 var _ = Describe("resp proto", func() {
 	It("should format", func() {
 		pp := []byte{
