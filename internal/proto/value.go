@@ -421,7 +421,8 @@ func (v *Value) Interface() interface{} {
 	case redisMap:
 		m := make(map[interface{}]interface{})
 		for key, val := range v.Map {
-			m[key.Interface()] = val.Interface()
+			// panic: runtime error: hash of unhashable type [Type].
+			m[fmt.Sprint(key.Interface())] = val.Interface()
 		}
 		return m
 	case redisAttr:
