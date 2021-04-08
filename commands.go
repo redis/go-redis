@@ -229,6 +229,7 @@ type Cmdable interface {
 	XTrimApprox(ctx context.Context, key string, maxLen int64) *IntCmd
 	XInfoGroups(ctx context.Context, key string) *XInfoGroupsCmd
 	XInfoStream(ctx context.Context, key string) *XInfoStreamCmd
+	XInfoConsumers(ctx context.Context, key string, group string) *XInfoConsumersCmd
 
 	BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
 	BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
