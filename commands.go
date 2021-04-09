@@ -67,6 +67,11 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 			dst = append(dst, k, v)
 		}
 		return dst
+	case map[string]string:
+		for k, v := range arg {
+			dst = append(dst, k, v)
+		}
+		return dst
 	default:
 		return append(dst, arg)
 	}
