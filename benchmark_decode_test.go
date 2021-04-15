@@ -278,7 +278,7 @@ func dynamicGoroutine(b *testing.B, conn *Conn, client redis.Cmdable, concurrenc
 		c <- struct{}{}
 		go func() {
 			if val := client.Get(ctx, "key").Val(); val != "hello" {
-				b.Fatalf("response error, got %q, want hello", val)
+				panic(fmt.Sprintf("response error, got %q, want hello", val))
 			}
 			<-c
 		}()
@@ -300,7 +300,7 @@ func staticGoroutine(b *testing.B, conn *Conn, client redis.Cmdable, concurrency
 					return
 				}
 				if val := client.Get(ctx, "key").Val(); val != "hello" {
-					b.Fatalf("response error, got %q, want hello", val)
+					panic(fmt.Sprintf("response error, got %q, want hello", val))
 				}
 			}
 		}()
