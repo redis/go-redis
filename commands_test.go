@@ -2317,6 +2317,28 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Err()).NotTo(HaveOccurred())
 			Expect(lRange.Val()).To(Equal([]string{}))
 		})
+
+		It("should LMove", func() {
+			rPush := client.RPush(ctx, "lmove1", "ichi")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			Expect(rPush.Val()).To(Equal(int64(1)))
+
+			rPush = client.RPush(ctx, "lmove1", "ni")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			Expect(rPush.Val()).To(Equal(int64(2)))
+
+			rPush = client.RPush(ctx, "lmove1", "san")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			Expect(rPush.Val()).To(Equal(int64(3)))
+
+			lMove := client.LMove(ctx, "lmove1", "lmove2", "RIGHT", "LEFT")
+			Expect(lMove.Err()).NotTo(HaveOccurred())
+			Expect(lMove.Val()).To(Equal("san"))
+
+			lRange := client.LRange(ctx, "lmove2", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"san"}))
+		})
 	})
 
 	Describe("sets", func() {
