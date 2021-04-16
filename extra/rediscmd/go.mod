@@ -1,4 +1,4 @@
-module github.com/go-redis/redis/extra/rediscmd
+module github.com/go-redis/redis/extra/rediscmd/v8
 
 go 1.15
 
