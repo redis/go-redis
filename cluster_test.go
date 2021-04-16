@@ -344,6 +344,50 @@ var _ = Describe("ClusterClient", func() {
 			})
 		})
 
+		It("distributes scripts when using Script Load", func() {
+			client.ScriptFlush(ctx)
+
+			script := redis.NewScript(`return 'Unique script'`)
+
+			script.Load(ctx, client)
+
+			client.ForEachShard(ctx, func(ctx context.Context, shard *redis.Client) error {
+				defer GinkgoRecover()
+
+				val, _ := script.Exists(ctx, shard).Result()
+				Expect(val[0]).To(Equal(true))
+				return nil
+			})
+		})
+
+		It("checks all shards when using Script Exists", func() {
+			client.ScriptFlush(ctx)
+
+			script := redis.NewScript(`return 'First script'`)
+			lostScriptSrc := `return 'Lost script'`
+			lostScript := redis.NewScript(lostScriptSrc)
+
+			script.Load(ctx, client)
+			client.Do(ctx, "script", "load", lostScriptSrc)
+
+			val, _ := client.ScriptExists(ctx, script.Hash(), lostScript.Hash()).Result()
+
+			Expect(val).To(Equal([]bool{true, false}))
+		})
+
+		It("flushes scripts from all shards when using ScriptFlush", func() {
+			script := redis.NewScript(`return 'Unnecessary script'`)
+			script.Load(ctx, client)
+
+			val, _ := client.ScriptExists(ctx, script.Hash()).Result()
+			Expect(val).To(Equal([]bool{true}))
+
+			client.ScriptFlush(ctx)
+
+			val, _ = client.ScriptExists(ctx, script.Hash()).Result()
+			Expect(val).To(Equal([]bool{false}))
+		})
+
 		It("supports Watch", func() {
 			var incr func(string) error
 
