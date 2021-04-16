@@ -11,41 +11,83 @@ import (
 
 var ctx = context.TODO()
 
-type BenchConn struct {
+type ConnStub struct {
 	buff []byte
+	idx  int
 }
 
-func (c *BenchConn) Read(b []byte) (n int, err error)   { return copy(b, c.buff), nil }
-func (c *BenchConn) Write(b []byte) (n int, err error)  { return len(b), nil }
-func (c *BenchConn) Close() error                       { return nil }
-func (c *BenchConn) LocalAddr() net.Addr                { return nil }
-func (c *BenchConn) RemoteAddr() net.Addr               { return nil }
-func (c *BenchConn) SetDeadline(_ time.Time) error      { return nil }
-func (c *BenchConn) SetReadDeadline(_ time.Time) error  { return nil }
-func (c *BenchConn) SetWriteDeadline(_ time.Time) error { return nil }
+func (c *ConnStub) Read(b []byte) (n int, err error) {
+	n = copy(b, c.buff[c.idx:])
+	if len(c.buff) > c.idx+n {
+		c.idx += n
+	} else {
+		c.idx = 0
+	}
+	return n, nil
+}
+func (c *ConnStub) Write(b []byte) (n int, err error)  { return len(b), nil }
+func (c *ConnStub) Close() error                       { return nil }
+func (c *ConnStub) LocalAddr() net.Addr                { return nil }
+func (c *ConnStub) RemoteAddr() net.Addr               { return nil }
+func (c *ConnStub) SetDeadline(_ time.Time) error      { return nil }
+func (c *ConnStub) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *ConnStub) SetWriteDeadline(_ time.Time) error { return nil }
 
-func NewDecodeClient() *RespDecode {
-	conn := &BenchConn{}
-	client := NewClient(&Options{
-		PoolSize: 128,
-		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return conn, nil
-		},
-	})
-	return &RespDecode{
-		name:   "Client",
-		conn:   conn,
-		client: client,
+type ClientStub struct {
+	Cmdable
+	name string
+	buff []byte
+	conn []*ConnStub
+}
+
+func (stub *ClientStub) SetResponse(b []byte) {
+	stub.buff = make([]byte, len(b))
+	copy(stub.buff, b)
+
+	for _, c := range stub.conn {
+		c.buff = make([]byte, len(b))
+		copy(c.buff, b)
 	}
 }
 
-func NewDecodeClusterClient() *RespDecode {
-	conn := &BenchConn{}
+func (stub *ClientStub) AppendConn(c *ConnStub) {
+	if len(stub.buff) > 0 {
+		c.buff = make([]byte, len(stub.buff))
+		copy(c.buff, stub.buff)
+	}
+	stub.conn = append(stub.conn, c)
+}
+
+func (stub *ClientStub) Name() string {
+	return stub.name
+}
+
+func NewDecodeClient() *ClientStub {
+	stub := &ClientStub{
+		name: "Client",
+	}
+	stub.Cmdable = NewClient(&Options{
+		PoolSize: 128,
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn := &ConnStub{}
+			stub.AppendConn(conn)
+			return conn, nil
+		},
+	})
+	return stub
+}
+
+func NewDecodeClusterClient() *ClientStub {
+	stub := &ClientStub{
+		name: "Cluster",
+	}
 	client := NewClusterClient(&ClusterOptions{
 		PoolSize: 128,
 		Addrs:    []string{"127.0.0.1:6379"},
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return conn, nil
+			c := &ConnStub{}
+			stub.AppendConn(c)
+			return c, nil
 		},
 		ClusterSlots: func(_ context.Context) ([]ClusterSlot, error) {
 			return []ClusterSlot{
@@ -65,145 +107,136 @@ func NewDecodeClusterClient() *RespDecode {
 		return cmdCache, err
 	})
 
-	return &RespDecode{
-		name:   "Cluster",
-		conn:   conn,
-		client: client,
-	}
-}
-
-type RespDecode struct {
-	name   string
-	conn   *BenchConn
-	client Cmdable
+	stub.Cmdable = client
+	return stub
 }
 
 func BenchmarkDecode(b *testing.B) {
-	cs := []*RespDecode{
+	stubs := []*ClientStub{
 		NewDecodeClient(),
 		NewDecodeClusterClient(),
 	}
 
-	for _, c := range cs {
-		b.Run(fmt.Sprintf("RespError-%s", c.name), func(b *testing.B) {
-			respError(b, c.conn, c.client)
+	for _, stub := range stubs {
+		b.Run(fmt.Sprintf("RespError-%s", stub.Name()), func(b *testing.B) {
+			respError(b, stub)
 		})
-		b.Run(fmt.Sprintf("RespStatus-%s", c.name), func(b *testing.B) {
-			respStatus(b, c.conn, c.client)
+		b.Run(fmt.Sprintf("RespStatus-%s", stub.Name()), func(b *testing.B) {
+			respStatus(b, stub)
 		})
-		b.Run(fmt.Sprintf("RespInt-%s", c.name), func(b *testing.B) {
-			respInt(b, c.conn, c.client)
+		b.Run(fmt.Sprintf("RespInt-%s", stub.Name()), func(b *testing.B) {
+			respInt(b, stub)
 		})
-		b.Run(fmt.Sprintf("RespString-%s", c.name), func(b *testing.B) {
-			respString(b, c.conn, c.client)
+		b.Run(fmt.Sprintf("RespString-%s", stub.Name()), func(b *testing.B) {
+			respString(b, stub)
 		})
-		b.Run(fmt.Sprintf("RespArray-%s", c.name), func(b *testing.B) {
-			respArray(b, c.conn, c.client)
+		b.Run(fmt.Sprintf("RespArray-%s", stub.Name()), func(b *testing.B) {
+			respArray(b, stub)
 		})
-		b.Run(fmt.Sprintf("RespPipeline-%s", c.name), func(b *testing.B) {
-			respPipeline(b, c.conn, c.client)
+		b.Run(fmt.Sprintf("RespPipeline-%s", stub.Name()), func(b *testing.B) {
+			respPipeline(b, stub)
 		})
-		b.Run(fmt.Sprintf("RespTxPipeline-%s", c.name), func(b *testing.B) {
-			respTxPipeline(b, c.conn, c.client)
+		b.Run(fmt.Sprintf("RespTxPipeline-%s", stub.Name()), func(b *testing.B) {
+			respTxPipeline(b, stub)
 		})
 
 		// goroutine
-		b.Run(fmt.Sprintf("DynamicGoroutine-%s-pool=5", c.name), func(b *testing.B) {
-			dynamicGoroutine(b, c.conn, c.client, 5)
+		b.Run(fmt.Sprintf("DynamicGoroutine-%s-pool=5", stub.Name()), func(b *testing.B) {
+			dynamicGoroutine(b, stub, 5)
 		})
-		b.Run(fmt.Sprintf("DynamicGoroutine-%s-pool=20", c.name), func(b *testing.B) {
-			dynamicGoroutine(b, c.conn, c.client, 20)
+		b.Run(fmt.Sprintf("DynamicGoroutine-%s-pool=20", stub.Name()), func(b *testing.B) {
+			dynamicGoroutine(b, stub, 20)
 		})
-		b.Run(fmt.Sprintf("DynamicGoroutine-%s-pool=50", c.name), func(b *testing.B) {
-			dynamicGoroutine(b, c.conn, c.client, 50)
+		b.Run(fmt.Sprintf("DynamicGoroutine-%s-pool=50", stub.Name()), func(b *testing.B) {
+			dynamicGoroutine(b, stub, 50)
 		})
-		b.Run(fmt.Sprintf("DynamicGoroutine-%s-pool=100", c.name), func(b *testing.B) {
-			dynamicGoroutine(b, c.conn, c.client, 100)
+		b.Run(fmt.Sprintf("DynamicGoroutine-%s-pool=100", stub.Name()), func(b *testing.B) {
+			dynamicGoroutine(b, stub, 100)
 		})
 
-		b.Run(fmt.Sprintf("StaticGoroutine-%s-pool=5", c.name), func(b *testing.B) {
-			staticGoroutine(b, c.conn, c.client, 5)
+		b.Run(fmt.Sprintf("StaticGoroutine-%s-pool=5", stub.Name()), func(b *testing.B) {
+			staticGoroutine(b, stub, 5)
 		})
-		b.Run(fmt.Sprintf("StaticGoroutine-%s-pool=20", c.name), func(b *testing.B) {
-			staticGoroutine(b, c.conn, c.client, 20)
+		b.Run(fmt.Sprintf("StaticGoroutine-%s-pool=20", stub.Name()), func(b *testing.B) {
+			staticGoroutine(b, stub, 20)
 		})
-		b.Run(fmt.Sprintf("StaticGoroutine-%s-pool=50", c.name), func(b *testing.B) {
-			staticGoroutine(b, c.conn, c.client, 50)
+		b.Run(fmt.Sprintf("StaticGoroutine-%s-pool=50", stub.Name()), func(b *testing.B) {
+			staticGoroutine(b, stub, 50)
 		})
-		b.Run(fmt.Sprintf("StaticGoroutine-%s-pool=100", c.name), func(b *testing.B) {
-			staticGoroutine(b, c.conn, c.client, 100)
+		b.Run(fmt.Sprintf("StaticGoroutine-%s-pool=100", stub.Name()), func(b *testing.B) {
+			staticGoroutine(b, stub, 100)
 		})
 	}
 }
 
-func respError(b *testing.B, conn *BenchConn, client Cmdable) {
-	conn.buff = []byte("-ERR test error\r\n")
+func respError(b *testing.B, stub *ClientStub) {
+	stub.SetResponse([]byte("-ERR test error\r\n"))
 	respErr := proto.RedisError("ERR test error")
 	var err error
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err = client.Get(ctx, "key").Err(); err != respErr {
+		if err = stub.Get(ctx, "key").Err(); err != respErr {
 			b.Fatalf("response error, got %q, want %q", err, respErr)
 		}
 	}
 }
 
-func respStatus(b *testing.B, conn *BenchConn, client Cmdable) {
-	conn.buff = []byte("+OK\r\n")
+func respStatus(b *testing.B, stub *ClientStub) {
+	stub.SetResponse([]byte("+OK\r\n"))
 	var val string
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if val = client.Set(ctx, "key", "value", 0).Val(); val != "OK" {
+		if val = stub.Set(ctx, "key", "value", 0).Val(); val != "OK" {
 			b.Fatalf("response error, got %q, want OK", val)
 		}
 	}
 }
 
-func respInt(b *testing.B, conn *BenchConn, client Cmdable) {
-	conn.buff = []byte(":10\r\n")
+func respInt(b *testing.B, stub *ClientStub) {
+	stub.SetResponse([]byte(":10\r\n"))
 	var val int64
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if val = client.Incr(ctx, "key").Val(); val != 10 {
+		if val = stub.Incr(ctx, "key").Val(); val != 10 {
 			b.Fatalf("response error, got %q, want 10", val)
 		}
 	}
 }
 
-func respString(b *testing.B, conn *BenchConn, client Cmdable) {
-	conn.buff = []byte("$5\r\nhello\r\n")
+func respString(b *testing.B, stub *ClientStub) {
+	stub.SetResponse([]byte("$5\r\nhello\r\n"))
 	var val string
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if val = client.Get(ctx, "key").Val(); val != "hello" {
+		if val = stub.Get(ctx, "key").Val(); val != "hello" {
 			b.Fatalf("response error, got %q, want hello", val)
 		}
 	}
 }
 
-func respArray(b *testing.B, conn *BenchConn, client Cmdable) {
-	conn.buff = []byte("*3\r\n$5\r\nhello\r\n:10\r\n+OK\r\n")
+func respArray(b *testing.B, stub *ClientStub) {
+	stub.SetResponse([]byte("*3\r\n$5\r\nhello\r\n:10\r\n+OK\r\n"))
 	var val []interface{}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if val = client.MGet(ctx, "key").Val(); len(val) != 3 {
+		if val = stub.MGet(ctx, "key").Val(); len(val) != 3 {
 			b.Fatalf("response error, got len(%d), want len(3)", len(val))
 		}
 	}
 }
 
-func respPipeline(b *testing.B, conn *BenchConn, client Cmdable) {
-	conn.buff = []byte("+OK\r\n$5\r\nhello\r\n:1\r\n")
+func respPipeline(b *testing.B, stub *ClientStub) {
+	stub.SetResponse([]byte("+OK\r\n$5\r\nhello\r\n:1\r\n"))
 	var pipe Pipeliner
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		pipe = client.Pipeline()
+		pipe = stub.Pipeline()
 		set := pipe.Set(ctx, "key", "value", 0)
 		get := pipe.Get(ctx, "key")
 		del := pipe.Del(ctx, "key")
@@ -217,15 +250,15 @@ func respPipeline(b *testing.B, conn *BenchConn, client Cmdable) {
 	}
 }
 
-func respTxPipeline(b *testing.B, conn *BenchConn, client Cmdable) {
-	conn.buff = []byte("+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n$5\r\nhello\r\n:1\r\n")
+func respTxPipeline(b *testing.B, stub *ClientStub) {
+	stub.SetResponse([]byte("+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n$5\r\nhello\r\n:1\r\n"))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var set *StatusCmd
 		var get *StringCmd
 		var del *IntCmd
-		_, err := client.TxPipelined(ctx, func(pipe Pipeliner) error {
+		_, err := stub.TxPipelined(ctx, func(pipe Pipeliner) error {
 			set = pipe.Set(ctx, "key", "value", 0)
 			get = pipe.Get(ctx, "key")
 			del = pipe.Del(ctx, "key")
@@ -240,25 +273,26 @@ func respTxPipeline(b *testing.B, conn *BenchConn, client Cmdable) {
 	}
 }
 
-func dynamicGoroutine(b *testing.B, conn *BenchConn, client Cmdable, concurrency int) {
-	conn.buff = []byte("$5\r\nhello\r\n")
+func dynamicGoroutine(b *testing.B, stub *ClientStub, concurrency int) {
+	stub.SetResponse([]byte("$5\r\nhello\r\n"))
 	c := make(chan struct{}, concurrency)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		c <- struct{}{}
 		go func() {
-			if val := client.Get(ctx, "key").Val(); val != "hello" {
+			if val := stub.Get(ctx, "key").Val(); val != "hello" {
 				panic(fmt.Sprintf("response error, got %q, want hello", val))
 			}
 			<-c
 		}()
 	}
+	// Here no longer wait for all goroutines to complete, it will not affect the test results.
 	close(c)
 }
 
-func staticGoroutine(b *testing.B, conn *BenchConn, client Cmdable, concurrency int) {
-	conn.buff = []byte("$5\r\nhello\r\n")
+func staticGoroutine(b *testing.B, stub *ClientStub, concurrency int) {
+	stub.SetResponse([]byte("$5\r\nhello\r\n"))
 	c := make(chan struct{}, concurrency)
 
 	b.ResetTimer()
@@ -270,7 +304,7 @@ func staticGoroutine(b *testing.B, conn *BenchConn, client Cmdable, concurrency 
 				if !ok {
 					return
 				}
-				if val := client.Get(ctx, "key").Val(); val != "hello" {
+				if val := stub.Get(ctx, "key").Val(); val != "hello" {
 					panic(fmt.Sprintf("response error, got %q, want hello", val))
 				}
 			}
