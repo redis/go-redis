@@ -67,6 +67,11 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 			dst = append(dst, k, v)
 		}
 		return dst
+	case map[string]string:
+		for k, v := range arg {
+			dst = append(dst, k, v)
+		}
+		return dst
 	default:
 		return append(dst, arg)
 	}
@@ -186,6 +191,7 @@ type Cmdable interface {
 	RPopLPush(ctx context.Context, source, destination string) *StringCmd
 	RPush(ctx context.Context, key string, values ...interface{}) *IntCmd
 	RPushX(ctx context.Context, key string, values ...interface{}) *IntCmd
+	LMove(ctx context.Context, source, destination, srcpos, destpos string) *StringCmd
 
 	SAdd(ctx context.Context, key string, members ...interface{}) *IntCmd
 	SCard(ctx context.Context, key string) *IntCmd
@@ -1422,6 +1428,12 @@ func (c cmdable) RPushX(ctx context.Context, key string, values ...interface{}) 
 	args[1] = key
 	args = appendArgs(args, values)
 	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) LMove(ctx context.Context, source, destination, srcpos, destpos string) *StringCmd {
+	cmd := NewStringCmd(ctx, "lmove", source, destination, srcpos, destpos)
 	_ = c(ctx, cmd)
 	return cmd
 }
