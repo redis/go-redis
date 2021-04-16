@@ -15,7 +15,11 @@ var tracer = otel.Tracer("github.com/go-redis/redis")
 
 type TracingHook struct{}
 
-var _ redis.Hook = TracingHook{}
+var _ redis.Hook = (*TracingHook)(nil)
+
+func NewTracingHook() *TracingHook {
+	return new(TracingHook)
+}
 
 func (TracingHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
 	if !trace.SpanFromContext(ctx).IsRecording() {

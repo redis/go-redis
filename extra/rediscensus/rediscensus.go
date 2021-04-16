@@ -10,7 +10,11 @@ import (
 
 type TracingHook struct{}
 
-var _ redis.Hook = TracingHook{}
+var _ redis.Hook = (*TracingHook)(nil)
+
+func NewTracingHook() *TracingHook {
+	return new(TracingHook)
+}
 
 func (TracingHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
 	ctx, span := trace.StartSpan(ctx, cmd.FullName())
