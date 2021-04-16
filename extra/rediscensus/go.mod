@@ -1,12 +1,11 @@
-module github.com/go-redis/redis/extra/rediscensus
+module github.com/go-redis/redis/extra/rediscensus/v8
 
 go 1.15
 
-replace github.com/go-redis/redis/extra/rediscmd => ../rediscmd
+replace github.com/go-redis/redis/extra/rediscmd/v8 => ../rediscmd
 
 require (
-	github.com/go-redis/redis/extra/rediscmd v0.2.0
+	github.com/go-redis/redis/extra/rediscmd/v8 v8.8.1
 	github.com/go-redis/redis/v8 v8.4.4
-	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
 	go.opencensus.io v0.22.6
 )
