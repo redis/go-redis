@@ -1,32 +1,32 @@
-package redis_test
+package redis
 
 import (
 	"context"
 	"fmt"
-	"github.com/go-redis/redis/v8"
 	"github.com/go-redis/redis/v8/internal/proto"
 	"net"
-	"strings"
 	"testing"
 	"time"
 )
 
-type Conn struct {
+var ctx = context.TODO()
+
+type BenchConn struct {
 	buff []byte
 }
 
-func (c *Conn) Read(b []byte) (n int, err error)   { return copy(b, c.buff), nil }
-func (c *Conn) Write(b []byte) (n int, err error)  { return len(b), nil }
-func (c *Conn) Close() error                       { return nil }
-func (c *Conn) LocalAddr() net.Addr                { return nil }
-func (c *Conn) RemoteAddr() net.Addr               { return nil }
-func (c *Conn) SetDeadline(_ time.Time) error      { return nil }
-func (c *Conn) SetReadDeadline(_ time.Time) error  { return nil }
-func (c *Conn) SetWriteDeadline(_ time.Time) error { return nil }
+func (c *BenchConn) Read(b []byte) (n int, err error)   { return copy(b, c.buff), nil }
+func (c *BenchConn) Write(b []byte) (n int, err error)  { return len(b), nil }
+func (c *BenchConn) Close() error                       { return nil }
+func (c *BenchConn) LocalAddr() net.Addr                { return nil }
+func (c *BenchConn) RemoteAddr() net.Addr               { return nil }
+func (c *BenchConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *BenchConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *BenchConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 func NewDecodeClient() *RespDecode {
-	conn := &Conn{}
-	client := redis.NewClient(&redis.Options{
+	conn := &BenchConn{}
+	client := NewClient(&Options{
 		PoolSize: 128,
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return conn, nil
@@ -40,59 +40,30 @@ func NewDecodeClient() *RespDecode {
 }
 
 func NewDecodeClusterClient() *RespDecode {
-	conn := &Conn{}
-	client := redis.NewClusterClient(&redis.ClusterOptions{
+	conn := &BenchConn{}
+	client := NewClusterClient(&ClusterOptions{
 		PoolSize: 128,
 		Addrs:    []string{"127.0.0.1:6379"},
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return conn, nil
 		},
-		ClusterSlots: func(_ context.Context) ([]redis.ClusterSlot, error) {
-			return []redis.ClusterSlot{
+		ClusterSlots: func(_ context.Context) ([]ClusterSlot, error) {
+			return []ClusterSlot{
 				{
 					Start: 0,
 					End:   16383,
-					Nodes: []redis.ClusterNode{{Addr: "127.0.0.1:6379"}},
+					Nodes: []ClusterNode{{Addr: "127.0.0.1:6379"}},
 				},
 			}, nil
 		},
 	})
 	// init command.
-	cmd := []string{
-		// set
-		"*7\r\n+set\r\n:-3\r\n*2\r\n+write\r\n+denyoom\r\n:1\r\n:1\r\n:1\r\n" +
-			"*3\r\n+@write\r\n+@string\r\n+@slow\r\n",
-
-		// get
-		"*7\r\n+get\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n" +
-			"*3\r\n+@read\r\n+@string\r\n+@fast\r\n",
-
-		// del
-		"*7\r\n+del\r\n:-2\r\n*1\r\n+write\r\n:1\r\n:-1\r\n:1\r\n" +
-			"*3\r\n+@keyspace\r\n+@write\r\n+@slow\r\n",
-
-		// incr
-		"*7\r\n+incr\r\n:2\r\n*3\r\n+write\r\n+denyoom\r\n+fast\r\n:1\r\n:1\r\n:1\r\n" +
-			"*3\r\n+@write\r\n+@string\r\n+@fast\r\n",
-
-		// mget
-		"*7\r\n+mget\r\n:-2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:-1\r\n:1\r\n" +
-			"*3\r\n+@read\r\n+@string\r\n+@fast\r\n",
-
-		// multi
-		"*7\r\n+multi\r\n:1\r\n*4\r\n+noscript\r\n+loading\r\n+stale\r\n+fast\r\n:0\r\n:0\r\n:0\r\n" +
-			"*2\r\n+@fast\r\n+@transaction\r\n",
-
-		// exec
-		"*7\r\n+exec\r\n:1\r\n*5\r\n+noscript\r\n+loading\r\n+stale\r\n+skip_monitor\r\n+skip_slowlog\r\n" +
-			":0\r\n:0\r\n:0\r\n*2\r\n+@slow\r\n+@transaction\r\n",
-
-		// ping
-		"*7\r\n+ping\r\n:-1\r\n*2\r\n+stale\r\n+fast\r\n:0\r\n:0\r\n:0\r\n*2\r\n+@fast\r\n+@connection\r\n",
-	}
-	conn.buff = []byte(fmt.Sprintf("*%d\r\n%s", len(cmd), strings.Join(cmd, "")))
-	client.Ping(ctx)
-	conn.buff = conn.buff[:0]
+	tmpClient := NewClient(&Options{Addr: ":6379"})
+	cmdCache, err := tmpClient.Command(ctx).Result()
+	_ = tmpClient.Close()
+	client.cmdsInfoCache = newCmdsInfoCache(func(_ context.Context) (map[string]*CommandInfo, error) {
+		return cmdCache, err
+	})
 
 	return &RespDecode{
 		name:   "Cluster",
@@ -103,8 +74,8 @@ func NewDecodeClusterClient() *RespDecode {
 
 type RespDecode struct {
 	name   string
-	conn   *Conn
-	client redis.Cmdable
+	conn   *BenchConn
+	client Cmdable
 }
 
 func BenchmarkDecode(b *testing.B) {
@@ -165,7 +136,7 @@ func BenchmarkDecode(b *testing.B) {
 	}
 }
 
-func respError(b *testing.B, conn *Conn, client redis.Cmdable) {
+func respError(b *testing.B, conn *BenchConn, client Cmdable) {
 	conn.buff = []byte("-ERR test error\r\n")
 	respErr := proto.RedisError("ERR test error")
 	var err error
@@ -178,7 +149,7 @@ func respError(b *testing.B, conn *Conn, client redis.Cmdable) {
 	}
 }
 
-func respStatus(b *testing.B, conn *Conn, client redis.Cmdable) {
+func respStatus(b *testing.B, conn *BenchConn, client Cmdable) {
 	conn.buff = []byte("+OK\r\n")
 	var val string
 
@@ -190,7 +161,7 @@ func respStatus(b *testing.B, conn *Conn, client redis.Cmdable) {
 	}
 }
 
-func respInt(b *testing.B, conn *Conn, client redis.Cmdable) {
+func respInt(b *testing.B, conn *BenchConn, client Cmdable) {
 	conn.buff = []byte(":10\r\n")
 	var val int64
 
@@ -202,7 +173,7 @@ func respInt(b *testing.B, conn *Conn, client redis.Cmdable) {
 	}
 }
 
-func respString(b *testing.B, conn *Conn, client redis.Cmdable) {
+func respString(b *testing.B, conn *BenchConn, client Cmdable) {
 	conn.buff = []byte("$5\r\nhello\r\n")
 	var val string
 
@@ -214,7 +185,7 @@ func respString(b *testing.B, conn *Conn, client redis.Cmdable) {
 	}
 }
 
-func respArray(b *testing.B, conn *Conn, client redis.Cmdable) {
+func respArray(b *testing.B, conn *BenchConn, client Cmdable) {
 	conn.buff = []byte("*3\r\n$5\r\nhello\r\n:10\r\n+OK\r\n")
 	var val []interface{}
 
@@ -226,9 +197,9 @@ func respArray(b *testing.B, conn *Conn, client redis.Cmdable) {
 	}
 }
 
-func respPipeline(b *testing.B, conn *Conn, client redis.Cmdable) {
+func respPipeline(b *testing.B, conn *BenchConn, client Cmdable) {
 	conn.buff = []byte("+OK\r\n$5\r\nhello\r\n:1\r\n")
-	var pipe redis.Pipeliner
+	var pipe Pipeliner
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -246,15 +217,15 @@ func respPipeline(b *testing.B, conn *Conn, client redis.Cmdable) {
 	}
 }
 
-func respTxPipeline(b *testing.B, conn *Conn, client redis.Cmdable) {
+func respTxPipeline(b *testing.B, conn *BenchConn, client Cmdable) {
 	conn.buff = []byte("+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n$5\r\nhello\r\n:1\r\n")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var set *redis.StatusCmd
-		var get *redis.StringCmd
-		var del *redis.IntCmd
-		_, err := client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		var set *StatusCmd
+		var get *StringCmd
+		var del *IntCmd
+		_, err := client.TxPipelined(ctx, func(pipe Pipeliner) error {
 			set = pipe.Set(ctx, "key", "value", 0)
 			get = pipe.Get(ctx, "key")
 			del = pipe.Del(ctx, "key")
@@ -269,7 +240,7 @@ func respTxPipeline(b *testing.B, conn *Conn, client redis.Cmdable) {
 	}
 }
 
-func dynamicGoroutine(b *testing.B, conn *Conn, client redis.Cmdable, concurrency int) {
+func dynamicGoroutine(b *testing.B, conn *BenchConn, client Cmdable, concurrency int) {
 	conn.buff = []byte("$5\r\nhello\r\n")
 	c := make(chan struct{}, concurrency)
 
@@ -286,7 +257,7 @@ func dynamicGoroutine(b *testing.B, conn *Conn, client redis.Cmdable, concurrenc
 	close(c)
 }
 
-func staticGoroutine(b *testing.B, conn *Conn, client redis.Cmdable, concurrency int) {
+func staticGoroutine(b *testing.B, conn *BenchConn, client Cmdable, concurrency int) {
 	conn.buff = []byte("$5\r\nhello\r\n")
 	c := make(chan struct{}, concurrency)
 
