@@ -1,0 +1,8 @@
+version: '3.7'
+services:
+  redis-server:
+    image: 'bitnami/redis:latest'
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+    ports:
+      - 6379:6379
