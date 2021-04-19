@@ -40,8 +40,6 @@ type FailoverOptions struct {
 	// Now, this option only works in RandomSlaveAddr function.
 	UseDisconnectedSlaves bool
 
-	// Client queries sentinels in a random order
-	QuerySentinelRandomly bool
 	// Following options are copied from Options struct.
 
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
