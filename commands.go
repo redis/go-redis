@@ -168,7 +168,8 @@ type Cmdable interface {
 	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
 	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
 	HVals(ctx context.Context, key string) *StringSliceCmd
-	HRandField(ctx context.Context, key string, count int, withValues bool) *StringSliceCmd
+	HRandField(ctx context.Context, key string, count int) *StringSliceCmd
+	HRandFieldWithValues(ctx context.Context, key string, count int) *SliceKeyValueCmd
 
 	BLPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
@@ -274,7 +275,8 @@ type Cmdable interface {
 	ZRevRank(ctx context.Context, key, member string) *IntCmd
 	ZScore(ctx context.Context, key, member string) *FloatCmd
 	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
-	ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd
+	ZRandMember(ctx context.Context, key string, count int) *StringSliceCmd
+	ZRandMemberWithScores(ctx context.Context, key string, count int) *ZSliceCmd
 
 	PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd
 	PFCount(ctx context.Context, keys ...string) *IntCmd
@@ -287,7 +289,7 @@ type Cmdable interface {
 	ClientList(ctx context.Context) *StringCmd
 	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
 	ClientID(ctx context.Context) *IntCmd
-	ConfigGet(ctx context.Context, parameter string) *SliceCmd
+	ConfigGet(ctx context.Context, parameter string) *StringStringMapCmd
 	ConfigResetStat(ctx context.Context) *StatusCmd
 	ConfigSet(ctx context.Context, parameter, value string) *StatusCmd
 	ConfigRewrite(ctx context.Context) *StatusCmd
@@ -358,6 +360,7 @@ type StatefulCmdable interface {
 	Select(ctx context.Context, index int) *StatusCmd
 	SwapDB(ctx context.Context, index1, index2 int) *StatusCmd
 	ClientSetName(ctx context.Context, name string) *BoolCmd
+	Hello(ctx context.Context, ver int, username, password, clientName string) *MapStringInterfaceCmd
 }
 
 var (
@@ -413,6 +416,26 @@ func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCm
 	return cmd
 }
 
+// Set the resp protocol used.
+func (c statefulCmdable) Hello(ctx context.Context,
+	ver int, username, password, clientName string) *MapStringInterfaceCmd {
+	args := make([]interface{}, 0, 7)
+	args = append(args, "hello", ver)
+	if password != "" {
+		if username != "" {
+			args = append(args, "auth", username, password)
+		} else {
+			args = append(args, "auth", "default", password)
+		}
+	}
+	if clientName != "" {
+		args = append(args, "setname", clientName)
+	}
+	cmd := NewMapStringInterfaceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 //------------------------------------------------------------------------------
 
 func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
@@ -440,7 +463,7 @@ func (c cmdable) Ping(ctx context.Context) *StatusCmd {
 	return cmd
 }
 
-func (c cmdable) Quit(ctx context.Context) *StatusCmd {
+func (c cmdable) Quit(_ context.Context) *StatusCmd {
 	panic("not implemented")
 }
 
@@ -1222,16 +1245,15 @@ func (c cmdable) HVals(ctx context.Context, key string) *StringSliceCmd {
 }
 
 // redis-server version >= 6.2.0.
-func (c cmdable) HRandField(ctx context.Context, key string, count int, withValues bool) *StringSliceCmd {
-	args := make([]interface{}, 0, 4)
+func (c cmdable) HRandField(ctx context.Context, key string, count int) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "hrandfield", key, count)
+	_ = c(ctx, cmd)
+	return cmd
+}
 
-	// Although count=0 is meaningless, redis accepts count=0.
-	args = append(args, "hrandfield", key, count)
-	if withValues {
-		args = append(args, "withvalues")
-	}
-
-	cmd := NewStringSliceCmd(ctx, args...)
+// redis-server version >= 6.2.0.
+func (c cmdable) HRandFieldWithValues(ctx context.Context, key string, count int) *SliceKeyValueCmd {
+	cmd := NewSliceKeyValueCmd(ctx, "hrandfield", key, count, "withvalues")
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2316,17 +2338,16 @@ func (c cmdable) ZUnionStore(ctx context.Context, dest string, store *ZStore) *I
 	return cmd
 }
 
-// redis-server version >= 6.2.0.
-func (c cmdable) ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd {
-	args := make([]interface{}, 0, 4)
+// ZRandMember redis-server version >= 6.2.0.
+func (c cmdable) ZRandMember(ctx context.Context, key string, count int) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "zrandmember", key, count)
+	_ = c(ctx, cmd)
+	return cmd
+}
 
-	// Although count=0 is meaningless, redis accepts count=0.
-	args = append(args, "zrandmember", key, count)
-	if withScores {
-		args = append(args, "withscores")
-	}
-
-	cmd := NewStringSliceCmd(ctx, args...)
+// ZRandMemberWithScores redis-server version >= 6.2.0.
+func (c cmdable) ZRandMemberWithScores(ctx context.Context, key string, count int) *ZSliceCmd {
+	cmd := NewZSliceCmd(ctx, "zrandmember", key, count, "withscores")
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2431,8 +2452,8 @@ func (c cmdable) ClientUnblockWithError(ctx context.Context, id int64) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) ConfigGet(ctx context.Context, parameter string) *SliceCmd {
-	cmd := NewSliceCmd(ctx, "config", "get", parameter)
+func (c cmdable) ConfigGet(ctx context.Context, parameter string) *StringStringMapCmd {
+	cmd := NewStringStringMapCmd(ctx, "config", "get", parameter)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2553,7 +2574,7 @@ func (c cmdable) SlowLogGet(ctx context.Context, num int64) *SlowLogCmd {
 	return cmd
 }
 
-func (c cmdable) Sync(ctx context.Context) {
+func (c cmdable) Sync(_ context.Context) {
 	panic("not implemented")
 }
 

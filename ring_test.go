@@ -177,6 +177,7 @@ var _ = Describe("Redis Ring", func() {
 		It("can be initialized with a new client callback", func() {
 			opts := redisRingOptions()
 			opts.NewClient = func(name string, opt *redis.Options) *redis.Client {
+				opt.Username = "username1"
 				opt.Password = "password1"
 				return redis.NewClient(opt)
 			}
@@ -184,7 +185,7 @@ var _ = Describe("Redis Ring", func() {
 
 			err := ring.Ping(ctx).Err()
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("ERR AUTH"))
+			Expect(err.Error()).To(ContainSubstring("WRONGPASS"))
 		})
 	})
 

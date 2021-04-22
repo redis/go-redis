@@ -18,14 +18,17 @@ type ClientStub struct {
 	resp []byte
 }
 
+var initHello = []byte("%1\r\n+proto\r\n:3\r\n")
+
 func NewClientStub(resp []byte) *ClientStub {
 	stub := &ClientStub{
 		resp: resp,
 	}
+
 	stub.Cmdable = NewClient(&Options{
 		PoolSize: 128,
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return stub.stubConn(), nil
+			return stub.stubConn(initHello), nil
 		},
 	})
 	return stub
@@ -40,7 +43,7 @@ func NewClusterClientStub(resp []byte) *ClientStub {
 		PoolSize: 128,
 		Addrs:    []string{"127.0.0.1:6379"},
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return stub.stubConn(), nil
+			return stub.stubConn(initHello), nil
 		},
 		ClusterSlots: func(_ context.Context) ([]ClusterSlot, error) {
 			return []ClusterSlot{
@@ -65,18 +68,27 @@ func NewClusterClientStub(resp []byte) *ClientStub {
 	return stub
 }
 
-func (c *ClientStub) stubConn() *ConnStub {
+func (c *ClientStub) stubConn(init []byte) *ConnStub {
 	return &ConnStub{
+		init: init,
 		resp: c.resp,
 	}
 }
 
 type ConnStub struct {
+	init []byte
 	resp []byte
 	pos  int
 }
 
 func (c *ConnStub) Read(b []byte) (n int, err error) {
+	// Return conn.init()
+	if len(c.init) > 0 {
+		n = copy(b, c.init)
+		c.init = c.init[n:]
+		return n, nil
+	}
+
 	if len(c.resp) == 0 {
 		return 0, io.EOF
 	}

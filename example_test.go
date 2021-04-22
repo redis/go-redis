@@ -615,7 +615,7 @@ func ExampleClient_SlowLogGet() {
 
 	old := rdb.ConfigGet(ctx, key).Val()
 	rdb.ConfigSet(ctx, key, "0")
-	defer rdb.ConfigSet(ctx, key, old[1].(string))
+	defer rdb.ConfigSet(ctx, key, old[key])
 
 	if err := rdb.Do(ctx, "slowlog", "reset").Err(); err != nil {
 		panic(err)

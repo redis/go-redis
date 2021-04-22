@@ -1384,7 +1384,7 @@ func (c *ClusterClient) txPipelineReadQueued(
 	}
 
 	// Parse number of replies.
-	line, err := rd.ReadLine()
+	line, err := rd.Pathfinder()
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr
@@ -1392,12 +1392,7 @@ func (c *ClusterClient) txPipelineReadQueued(
 		return err
 	}
 
-	switch line[0] {
-	case proto.ErrorReply:
-		return proto.ParseErrorReply(line)
-	case proto.ArrayReply:
-		// ok
-	default:
+	if line[0] != proto.RespArray {
 		return fmt.Errorf("redis: expected '*', but got line %q", line)
 	}
 

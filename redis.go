@@ -230,21 +230,22 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 	cn.Inited = true
 
-	if c.opt.Password == "" &&
-		c.opt.DB == 0 &&
-		!c.opt.readOnly &&
-		c.opt.OnConnect == nil {
-		return nil
-	}
-
 	ctx, span := internal.StartSpan(ctx, "redis.init_conn")
 	defer span.End()
 
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
 	conn := newConn(ctx, c.opt, connPool)
 
+	var auth bool
+
+	// The low version of redis-server does not support the hello command.
+	if conn.Hello(ctx, 3, c.opt.Username, c.opt.Password, "").Err() == nil {
+		cn.SetResp(3)
+		auth = true
+	}
+
 	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
-		if c.opt.Password != "" {
+		if !auth && c.opt.Password != "" {
 			if c.opt.Username != "" {
 				pipe.AuthACL(ctx, c.opt.Username, c.opt.Password)
 			} else {
@@ -534,7 +535,7 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 	}
 
 	// Parse number of replies.
-	line, err := rd.ReadLine()
+	line, err := rd.Pathfinder()
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr
@@ -542,14 +543,8 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 		return err
 	}
 
-	switch line[0] {
-	case proto.ErrorReply:
-		return proto.ParseErrorReply(line)
-	case proto.ArrayReply:
-		// ok
-	default:
-		err := fmt.Errorf("redis: expected '*', but got line %q", line)
-		return err
+	if line[0] != proto.RespArray {
+		return fmt.Errorf("redis: expected '*', but got line %q", line)
 	}
 
 	return nil
