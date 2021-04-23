@@ -86,6 +86,7 @@ func (r *Reader) Reset(rd io.Reader) {
 	r.rd.Reset(rd)
 }
 
+// ReadLine may return unexpected attribute types, it is best to use Pathfinder.
 func (r *Reader) ReadLine() ([]byte, error) {
 	return r.readLine()
 }
@@ -162,14 +163,6 @@ func (r *Reader) ReadReply(a AggregateBulkParse) (interface{}, error) {
 			return nil, fmt.Errorf("redis: got %.100q, but multi bulk parser is nil", line)
 		}
 		return a(r, line[0], int64(n))
-	case RespAttr:
-		// Ignore the attribute type, it is generally used by redis-cli.
-		if err = r.Discard(line); err != nil {
-			return nil, err
-		}
-
-		// read data
-		return r.ReadReply(a)
 	}
 	return nil, fmt.Errorf("redis: can't parse %.100q", line)
 }
@@ -231,7 +224,7 @@ func (r *Reader) readVerb(line []byte) (string, error) {
 
 // -------------------------------
 
-// Pathfinder find up possible errors in redis responses and discard attr attributes,
+// Pathfinder find up possible errors in redis responses and discard attributes types,
 // `line` that returns the true reply.
 func (r *Reader) Pathfinder() ([]byte, error) {
 	line, err := r.readLine()
