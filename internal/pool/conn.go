@@ -38,10 +38,6 @@ func NewConn(netConn net.Conn) *Conn {
 	return cn
 }
 
-func (cn *Conn) SetResp(v int) {
-	cn.rd.SetResp(v)
-}
-
 func (cn *Conn) UsedAt() time.Time {
 	unix := atomic.LoadInt64(&cn.usedAt)
 	return time.Unix(unix, 0)

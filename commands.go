@@ -169,7 +169,7 @@ type Cmdable interface {
 	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
 	HVals(ctx context.Context, key string) *StringSliceCmd
 	HRandField(ctx context.Context, key string, count int) *StringSliceCmd
-	HRandFieldWithValues(ctx context.Context, key string, count int) *SliceKeyValueCmd
+	HRandFieldWithValues(ctx context.Context, key string, count int) *KeyValueSliceCmd
 
 	BLPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
@@ -1252,8 +1252,8 @@ func (c cmdable) HRandField(ctx context.Context, key string, count int) *StringS
 }
 
 // redis-server version >= 6.2.0.
-func (c cmdable) HRandFieldWithValues(ctx context.Context, key string, count int) *SliceKeyValueCmd {
-	cmd := NewSliceKeyValueCmd(ctx, "hrandfield", key, count, "withvalues")
+func (c cmdable) HRandFieldWithValues(ctx context.Context, key string, count int) *KeyValueSliceCmd {
+	cmd := NewKeyValueSliceCmd(ctx, "hrandfield", key, count, "withvalues")
 	_ = c(ctx, cmd)
 	return cmd
 }

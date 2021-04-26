@@ -317,8 +317,8 @@ func (c *SentinelClient) GetMasterAddrByName(ctx context.Context, name string) *
 	return cmd
 }
 
-func (c *SentinelClient) Sentinels(ctx context.Context, name string) *SliceMapStringStringCmd {
-	cmd := NewSliceMapStringStringCmd(ctx, "sentinel", "sentinels", name)
+func (c *SentinelClient) Sentinels(ctx context.Context, name string) *MapStringStringSliceCmd {
+	cmd := NewMapStringStringSliceCmd(ctx, "sentinel", "sentinels", name)
 	_ = c.Process(ctx, cmd)
 	return cmd
 }
@@ -364,8 +364,8 @@ func (c *SentinelClient) Masters(ctx context.Context) *SliceCmd {
 }
 
 // Slaves shows a list of slaves for the specified master and their state.
-func (c *SentinelClient) Slaves(ctx context.Context, name string) *SliceMapStringStringCmd {
-	cmd := NewSliceMapStringStringCmd(ctx, "sentinel", "slaves", name)
+func (c *SentinelClient) Slaves(ctx context.Context, name string) *MapStringStringSliceCmd {
+	cmd := NewMapStringStringSliceCmd(ctx, "sentinel", "slaves", name)
 	_ = c.Process(ctx, cmd)
 	return cmd
 }

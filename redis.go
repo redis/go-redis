@@ -240,7 +240,6 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// The low version of redis-server does not support the hello command.
 	if conn.Hello(ctx, 3, c.opt.Username, c.opt.Password, "").Err() == nil {
-		cn.SetResp(3)
 		auth = true
 	}
 
@@ -535,7 +534,7 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 	}
 
 	// Parse number of replies.
-	line, err := rd.Pathfinder()
+	line, err := rd.ReadLine()
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr

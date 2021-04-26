@@ -2,6 +2,7 @@ package proto
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -15,12 +16,12 @@ const (
 	RespStatus    = '+' // +<string>\r\n
 	RespError     = '-' // -<string>\r\n
 	RespString    = '$' // $<length>\r\n<bytes>\r\n
-	RespInteger   = ':' // :<number>\r\n
+	RespInt       = ':' // :<number>\r\n
 	RespNil       = '_' // _\r\n
 	RespFloat     = ',' // ,<floating-point-number>\r\n (golang float)
 	RespBool      = '#' // true: #t\r\n false: #f\r\n
 	RespBlobError = '!' // !<length>\r\n<bytes>\r\n
-	RespVerb      = '=' // =<length>\r\nFORMAT:<bytes>\r\n
+	RespVerbatim  = '=' // =<length>\r\nFORMAT:<bytes>\r\n
 	RespBigInt    = '(' // (<big number>\r\n
 	RespArray     = '*' // *<len>\r\n... (same as resp2)
 	RespMap       = '%' // %<len>\r\n(key)\r\n(value)\r\n... (golang map)
@@ -44,34 +45,20 @@ func (e RedisError) Error() string { return string(e) }
 
 func (RedisError) RedisError() {}
 
+func ParseErrorReply(line []byte) error {
+	return RedisError(line[1:])
+}
+
 //------------------------------------------------------------------------------
-
-var (
-	uvinf    = math.Inf(1)
-	uvneginf = math.Inf(-1)
-)
-
-type (
-	AggregateBulkParse func(*Reader, byte, int64) (interface{}, error)
-	MultiBulkParse     func(*Reader, int64) (interface{}, error)
-)
 
 type Reader struct {
 	rd *bufio.Reader
-
-	// redis.RESP version
-	Resp int
 }
 
 func NewReader(rd io.Reader) *Reader {
 	return &Reader{
-		rd:   bufio.NewReader(rd),
-		Resp: 2,
+		rd: bufio.NewReader(rd),
 	}
-}
-
-func (r *Reader) SetResp(v int) {
-	r.Resp = v
 }
 
 func (r *Reader) Buffered() int {
@@ -86,18 +73,54 @@ func (r *Reader) Reset(rd io.Reader) {
 	r.rd.Reset(rd)
 }
 
-// ReadLine may return unexpected attribute types, it is best to use Pathfinder.
-func (r *Reader) ReadLine() ([]byte, error) {
-	return r.readLine()
-}
-
-// NextType get the data type of the next row.
-func (r *Reader) NextType() (byte, error) {
+// PeekReplyType returns the data type of the next response without advancing the Reader,
+// and discard the attribute type.
+func (r *Reader) PeekReplyType() (byte, error) {
 	b, err := r.rd.Peek(1)
 	if err != nil {
 		return 0, err
 	}
+	if b[0] == RespAttr {
+		if err = r.DiscardNext(); err != nil {
+			return 0, err
+		}
+		return r.PeekReplyType()
+	}
 	return b[0], nil
+}
+
+// ReadLine Return a valid reply, it will check the protocol or redis error,
+// and discard the attribute type.
+func (r *Reader) ReadLine() ([]byte, error) {
+	line, err := r.readLine()
+	if err != nil {
+		return nil, err
+	}
+	switch line[0] {
+	case RespError:
+		return nil, ParseErrorReply(line)
+	case RespNil:
+		return nil, Nil
+	case RespBlobError:
+		var blobErr string
+		blobErr, err = r.readStringReply(line)
+		if err == nil {
+			err = RedisError(blobErr)
+		}
+		return nil, err
+	case RespAttr:
+		if err = r.Discard(line); err != nil {
+			return nil, err
+		}
+		return r.ReadLine()
+	}
+
+	// Compatible with RESP2
+	if IsNilReply(line) {
+		return nil, Nil
+	}
+
+	return line, nil
 }
 
 // readLine that returns an error if:
@@ -127,8 +150,8 @@ func (r *Reader) readLine() ([]byte, error) {
 	return b[:len(b)-2], nil
 }
 
-func (r *Reader) ReadReply(a AggregateBulkParse) (interface{}, error) {
-	line, err := r.Pathfinder()
+func (r *Reader) ReadReply() (interface{}, error) {
+	line, err := r.ReadLine()
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +159,7 @@ func (r *Reader) ReadReply(a AggregateBulkParse) (interface{}, error) {
 	switch line[0] {
 	case RespStatus:
 		return string(line[1:]), nil
-	case RespInteger:
+	case RespInt:
 		return util.ParseInt(line[1:], 10, 64)
 	case RespFloat:
 		return r.readFloat(line)
@@ -144,25 +167,16 @@ func (r *Reader) ReadReply(a AggregateBulkParse) (interface{}, error) {
 		return r.readBool(line)
 	case RespBigInt:
 		return r.readBigInt(line)
-	//--------
 
 	case RespString:
 		return r.readStringReply(line)
-	case RespVerb:
+	case RespVerbatim:
 		return r.readVerb(line)
 
-	//-----------
-
-	case RespArray, RespSet, RespPush, RespMap:
-		var n int
-		n, err = replyLen(line)
-		if err != nil {
-			return nil, err
-		}
-		if a == nil {
-			return nil, fmt.Errorf("redis: got %.100q, but multi bulk parser is nil", line)
-		}
-		return a(r, line[0], int64(n))
+	case RespArray, RespSet, RespPush:
+		return r.readSlice(line)
+	case RespMap:
+		return r.readMap(line)
 	}
 	return nil, fmt.Errorf("redis: can't parse %.100q", line)
 }
@@ -171,9 +185,9 @@ func (r *Reader) readFloat(line []byte) (float64, error) {
 	v := string(line[1:])
 	switch string(line[1:]) {
 	case "inf":
-		return uvinf, nil
+		return math.Inf(1), nil
 	case "-inf":
-		return uvneginf, nil
+		return math.Inf(-1), nil
 	}
 	return strconv.ParseFloat(v, 64)
 }
@@ -222,49 +236,68 @@ func (r *Reader) readVerb(line []byte) (string, error) {
 	return s[4:], nil
 }
 
-// -------------------------------
-
-// Pathfinder find up possible errors in redis responses and discard attributes types,
-// `line` that returns the true reply.
-func (r *Reader) Pathfinder() ([]byte, error) {
-	line, err := r.readLine()
+func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
+	n, err := replyLen(line)
 	if err != nil {
 		return nil, err
 	}
-	switch line[0] {
-	case RespError:
-		return nil, ParseErrorReply(line)
-	case RespNil:
-		return nil, Nil
-	case RespBlobError:
-		var blobErr string
-		blobErr, err = r.readStringReply(line)
-		if err == nil {
-			err = RedisError(blobErr)
-		}
-		return nil, err
-	case RespAttr:
-		if err = r.Discard(line); err != nil {
+
+	val := make([]interface{}, n)
+	for i := 0; i < len(val); i++ {
+		v, err := r.ReadReply()
+		if err != nil {
+			if err == Nil {
+				val[i] = nil
+				continue
+			}
+			if err, ok := err.(RedisError); ok {
+				val[i] = err
+				continue
+			}
 			return nil, err
 		}
-		return r.Pathfinder()
+		val[i] = v
 	}
-
-	// Compatible with RESP2
-	if IsNilReply(line) {
-		return nil, Nil
-	}
-
-	return line, nil
+	return val, nil
 }
 
+func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
+	n, err := replyLen(line)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[interface{}]interface{}, n)
+	for i := 0; i < n; i++ {
+		k, err := r.ReadReply()
+		if err != nil {
+			return nil, err
+		}
+		v, err := r.ReadReply()
+		if err != nil {
+			if err == Nil {
+				m[k] = nil
+				continue
+			}
+			if err, ok := err.(RedisError); ok {
+				m[k] = err
+				continue
+			}
+			return nil, err
+		}
+		m[k] = v
+	}
+	return m, nil
+}
+
+// -------------------------------
+
 func (r *Reader) ReadInt() (int64, error) {
-	line, err := r.Pathfinder()
+	line, err := r.ReadLine()
 	if err != nil {
 		return 0, err
 	}
 	switch line[0] {
-	case RespInteger, RespStatus:
+	case RespInt, RespStatus:
 		return util.ParseInt(line[1:], 10, 64)
 	case RespString:
 		s, err := r.readStringReply(line)
@@ -286,7 +319,7 @@ func (r *Reader) ReadInt() (int64, error) {
 }
 
 func (r *Reader) ReadFloat() (float64, error) {
-	line, err := r.Pathfinder()
+	line, err := r.ReadLine()
 	if err != nil {
 		return 0, err
 	}
@@ -306,20 +339,20 @@ func (r *Reader) ReadFloat() (float64, error) {
 }
 
 func (r *Reader) ReadString() (string, error) {
-	line, err := r.Pathfinder()
+	line, err := r.ReadLine()
 	if err != nil {
 		return "", err
 	}
 
 	switch line[0] {
-	case RespStatus, RespInteger, RespFloat:
+	case RespStatus, RespInt, RespFloat:
 		return string(line[1:]), nil
 	case RespString:
 		return r.readStringReply(line)
 	case RespBool:
 		b, err := r.readBool(line)
 		return strconv.FormatBool(b), err
-	case RespVerb:
+	case RespVerbatim:
 		return r.readVerb(line)
 	case RespBigInt:
 		b, err := r.readBigInt(line)
@@ -331,96 +364,80 @@ func (r *Reader) ReadString() (string, error) {
 	return "", fmt.Errorf("redis: can't parse reply=%.100q reading string", line)
 }
 
-func (r *Reader) ReadAggregateReply(a AggregateBulkParse) (interface{}, error) {
-	line, err := r.Pathfinder()
+func (r *Reader) ReadBool() (bool, error) {
+	s, err := r.ReadString()
+	if err != nil {
+		return false, err
+	}
+	return s == "OK" || s == "1" || s == "true", nil
+}
+
+func (r *Reader) ReadSlice() ([]interface{}, error) {
+	line, err := r.ReadLine()
 	if err != nil {
 		return nil, err
 	}
-	switch line[0] {
-	case RespArray, RespSet, RespPush, RespMap:
-		n, err := replyLen(line)
-		if err != nil {
-			return nil, err
-		}
-		return a(r, line[0], int64(n))
-	default:
-		return nil, fmt.Errorf("redis: can't parse aggregate(array/set/push/map) reply: %.100q", line)
-	}
+	return r.readSlice(line)
 }
 
-func (r *Reader) ReadArrayReply(m MultiBulkParse) (interface{}, error) {
-	line, err := r.Pathfinder()
+// ReadFixedArrayLen read fixed array length.
+func (r *Reader) ReadFixedArrayLen(fixedLen int) error {
+	n, err := r.ReadArrayLen()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	switch line[0] {
-	case RespArray, RespSet, RespPush:
-		n, err := replyLen(line)
-		if err != nil {
-			return nil, err
-		}
-		return m(r, int64(n))
-	default:
-		return nil, fmt.Errorf("redis: can't parse array(array/set/push) reply: %.100q", line)
+	if n != fixedLen {
+		return fmt.Errorf("redis: got %d elements of array length, wanted %d", n, fixedLen)
 	}
+	return nil
 }
 
-func (r *Reader) ReadMapReply(m MultiBulkParse) (interface{}, error) {
-	line, err := r.Pathfinder()
-	if err != nil {
-		return nil, err
-	}
-	switch line[0] {
-	case RespMap:
-		n, err := replyLen(line)
-		if err != nil {
-			return nil, err
-		}
-		return m(r, int64(n))
-	case RespArray, RespSet, RespPush:
-		n, err := replyLen(line)
-		if err != nil {
-			return nil, err
-		}
-		return m(r, int64(n/2))
-	default:
-		return nil, fmt.Errorf("redis: can't parse map reply: %.100q", line)
-	}
-}
-
+// ReadArrayLen Read and return the length of the array.
 func (r *Reader) ReadArrayLen() (int, error) {
-	line, err := r.Pathfinder()
+	line, err := r.ReadLine()
 	if err != nil {
 		return 0, err
 	}
 	switch line[0] {
 	case RespArray, RespSet, RespPush:
-		n, err := replyLen(line)
-		if err != nil {
-			return 0, err
-		}
-		return n, nil
+		return replyLen(line)
 	default:
 		return 0, fmt.Errorf("redis: can't parse array(array/set/push) reply: %.100q", line)
 	}
 }
 
+// ReadFixedMapLen read fixed map length.
+func (r *Reader) ReadFixedMapLen(fixedLen int) error {
+	n, err := r.ReadMapLen()
+	if err != nil {
+		return err
+	}
+	if n != fixedLen {
+		return fmt.Errorf("redis: got %d elements of map length, wanted %d", n, fixedLen)
+	}
+	return nil
+}
+
+// ReadMapLen read the length of the map type.
+// If responding to the array type (RespArray/RespSet/RespPush),
+// it must be a multiple of 2 and return n/2.
+// Other types will return an error.
 func (r *Reader) ReadMapLen() (int, error) {
-	line, err := r.Pathfinder()
+	line, err := r.ReadLine()
 	if err != nil {
 		return 0, err
 	}
 	switch line[0] {
 	case RespMap:
+		return replyLen(line)
+	case RespArray, RespSet, RespPush:
+		// Some commands and RESP2 protocol may respond to array types.
 		n, err := replyLen(line)
 		if err != nil {
 			return 0, err
 		}
-		return n, nil
-	case RespArray, RespSet, RespPush:
-		n, err := replyLen(line)
-		if err != nil {
-			return 0, err
+		if n%2 != 0 {
+			return 0, fmt.Errorf("redis: the length of the array must be a multiple of 2, got: %d", n)
 		}
 		return n / 2, nil
 	default:
@@ -428,16 +445,13 @@ func (r *Reader) ReadMapLen() (int, error) {
 	}
 }
 
-// Discard the data represented by line, if line is nil, read the next line.
+// Discard the data represented by line.
 func (r *Reader) Discard(line []byte) (err error) {
 	if len(line) == 0 {
-		line, err = r.readLine()
-		if err != nil {
-			return err
-		}
+		return errors.New("redis: invalid line")
 	}
 	switch line[0] {
-	case RespStatus, RespError, RespInteger, RespNil, RespFloat, RespBool, RespBigInt:
+	case RespStatus, RespError, RespInt, RespNil, RespFloat, RespBool, RespBigInt:
 		return nil
 	}
 
@@ -447,13 +461,13 @@ func (r *Reader) Discard(line []byte) (err error) {
 	}
 
 	switch line[0] {
-	case RespBlobError, RespString, RespVerb:
+	case RespBlobError, RespString, RespVerbatim:
 		// +\r\n
 		_, err = r.rd.Discard(n + 2)
 		return err
 	case RespArray, RespSet, RespPush:
 		for i := 0; i < n; i++ {
-			if err = r.Discard(nil); err != nil {
+			if err = r.DiscardNext(); err != nil {
 				return err
 			}
 		}
@@ -461,7 +475,7 @@ func (r *Reader) Discard(line []byte) (err error) {
 	case RespMap, RespAttr:
 		// Read key & value.
 		for i := 0; i < n*2; i++ {
-			if err = r.Discard(nil); err != nil {
+			if err = r.DiscardNext(); err != nil {
 				return err
 			}
 		}
@@ -469,6 +483,15 @@ func (r *Reader) Discard(line []byte) (err error) {
 	}
 
 	return fmt.Errorf("redis: can't parse %.100q", line)
+}
+
+// DiscardNext read and discard the data represented by the next line.
+func (r *Reader) DiscardNext() error {
+	line, err := r.readLine()
+	if err != nil {
+		return err
+	}
+	return r.Discard(line)
 }
 
 func replyLen(line []byte) (n int, err error) {
@@ -482,7 +505,7 @@ func replyLen(line []byte) (n int, err error) {
 	}
 
 	switch line[0] {
-	case RespString, RespVerb, RespBlobError,
+	case RespString, RespVerbatim, RespBlobError,
 		RespArray, RespSet, RespPush, RespMap, RespAttr:
 		if n == -1 {
 			return 0, Nil
@@ -496,8 +519,4 @@ func IsNilReply(line []byte) bool {
 	return len(line) == 3 &&
 		(line[0] == RespString || line[0] == RespArray) &&
 		line[1] == '-' && line[2] == '1'
-}
-
-func ParseErrorReply(line []byte) error {
-	return RedisError(line[1:])
 }

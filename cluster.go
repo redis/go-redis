@@ -1384,7 +1384,7 @@ func (c *ClusterClient) txPipelineReadQueued(
 	}
 
 	// Parse number of replies.
-	line, err := rd.Pathfinder()
+	line, err := rd.ReadLine()
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr
