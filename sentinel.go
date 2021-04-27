@@ -350,8 +350,8 @@ func (c *SentinelClient) FlushConfig(ctx context.Context) *StatusCmd {
 }
 
 // Master shows the state and info of the specified master.
-func (c *SentinelClient) Master(ctx context.Context, name string) *StringStringMapCmd {
-	cmd := NewStringStringMapCmd(ctx, "sentinel", "master", name)
+func (c *SentinelClient) Master(ctx context.Context, name string) *MapStringStringCmd {
+	cmd := NewMapStringStringCmd(ctx, "sentinel", "master", name)
 	_ = c.Process(ctx, cmd)
 	return cmd
 }

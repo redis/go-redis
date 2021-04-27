@@ -276,9 +276,9 @@ func ExampleClient_ScanType() {
 	// Output: found 33 keys
 }
 
-// ExampleStringStringMapCmd_Scan shows how to scan the results of a map fetch
+// ExampleMapStringStringCmd_Scan shows how to scan the results of a map fetch
 // into a struct.
-func ExampleStringStringMapCmd_Scan() {
+func ExampleMapStringStringCmd_Scan() {
 	rdb.FlushDB(ctx)
 	err := rdb.HMSet(ctx, "map",
 		"name", "hello",

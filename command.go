@@ -1013,16 +1013,16 @@ func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
-type StringStringMapCmd struct {
+type MapStringStringCmd struct {
 	baseCmd
 
 	val map[string]string
 }
 
-var _ Cmder = (*StringStringMapCmd)(nil)
+var _ Cmder = (*MapStringStringCmd)(nil)
 
-func NewStringStringMapCmd(ctx context.Context, args ...interface{}) *StringStringMapCmd {
-	return &StringStringMapCmd{
+func NewMapStringStringCmd(ctx context.Context, args ...interface{}) *MapStringStringCmd {
+	return &MapStringStringCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -1030,21 +1030,21 @@ func NewStringStringMapCmd(ctx context.Context, args ...interface{}) *StringStri
 	}
 }
 
-func (cmd *StringStringMapCmd) Val() map[string]string {
+func (cmd *MapStringStringCmd) Val() map[string]string {
 	return cmd.val
 }
 
-func (cmd *StringStringMapCmd) Result() (map[string]string, error) {
+func (cmd *MapStringStringCmd) Result() (map[string]string, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *StringStringMapCmd) String() string {
+func (cmd *MapStringStringCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag.
-func (cmd *StringStringMapCmd) Scan(dst interface{}) error {
+func (cmd *MapStringStringCmd) Scan(dst interface{}) error {
 	if cmd.err != nil {
 		return cmd.err
 	}
@@ -1063,7 +1063,7 @@ func (cmd *StringStringMapCmd) Scan(dst interface{}) error {
 	return nil
 }
 
-func (cmd *StringStringMapCmd) readReply(rd *proto.Reader) error {
+func (cmd *MapStringStringCmd) readReply(rd *proto.Reader) error {
 	n, err := rd.ReadMapLen()
 	if err != nil {
 		return err

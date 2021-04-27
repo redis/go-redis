@@ -158,7 +158,7 @@ type Cmdable interface {
 	HDel(ctx context.Context, key string, fields ...string) *IntCmd
 	HExists(ctx context.Context, key, field string) *BoolCmd
 	HGet(ctx context.Context, key, field string) *StringCmd
-	HGetAll(ctx context.Context, key string) *StringStringMapCmd
+	HGetAll(ctx context.Context, key string) *MapStringStringCmd
 	HIncrBy(ctx context.Context, key, field string, incr int64) *IntCmd
 	HIncrByFloat(ctx context.Context, key, field string, incr float64) *FloatCmd
 	HKeys(ctx context.Context, key string) *StringSliceCmd
@@ -289,7 +289,7 @@ type Cmdable interface {
 	ClientList(ctx context.Context) *StringCmd
 	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
 	ClientID(ctx context.Context) *IntCmd
-	ConfigGet(ctx context.Context, parameter string) *StringStringMapCmd
+	ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd
 	ConfigResetStat(ctx context.Context) *StatusCmd
 	ConfigSet(ctx context.Context, parameter, value string) *StatusCmd
 	ConfigRewrite(ctx context.Context) *StatusCmd
@@ -1161,8 +1161,8 @@ func (c cmdable) HGet(ctx context.Context, key, field string) *StringCmd {
 	return cmd
 }
 
-func (c cmdable) HGetAll(ctx context.Context, key string) *StringStringMapCmd {
-	cmd := NewStringStringMapCmd(ctx, "hgetall", key)
+func (c cmdable) HGetAll(ctx context.Context, key string) *MapStringStringCmd {
+	cmd := NewMapStringStringCmd(ctx, "hgetall", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2452,8 +2452,8 @@ func (c cmdable) ClientUnblockWithError(ctx context.Context, id int64) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) ConfigGet(ctx context.Context, parameter string) *StringStringMapCmd {
-	cmd := NewStringStringMapCmd(ctx, "config", "get", parameter)
+func (c cmdable) ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd {
+	cmd := NewMapStringStringCmd(ctx, "config", "get", parameter)
 	_ = c(ctx, cmd)
 	return cmd
 }
