@@ -276,9 +276,9 @@ func ExampleClient_ScanType() {
 	// Output: found 33 keys
 }
 
-// ExampleStringStringMapCmd_Scan shows how to scan the results of a map fetch
+// ExampleMapStringStringCmd_Scan shows how to scan the results of a map fetch
 // into a struct.
-func ExampleStringStringMapCmd_Scan() {
+func ExampleMapStringStringCmd_Scan() {
 	rdb.FlushDB(ctx)
 	err := rdb.HMSet(ctx, "map",
 		"name", "hello",
@@ -615,7 +615,7 @@ func ExampleClient_SlowLogGet() {
 
 	old := rdb.ConfigGet(ctx, key).Val()
 	rdb.ConfigSet(ctx, key, "0")
-	defer rdb.ConfigSet(ctx, key, old[1].(string))
+	defer rdb.ConfigSet(ctx, key, old[key])
 
 	if err := rdb.Do(ctx, "slowlog", "reset").Err(); err != nil {
 		panic(err)

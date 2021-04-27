@@ -185,7 +185,8 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		}
 
 		// Create subscription.
-		ch := client.Subscribe(ctx, "foo").Channel()
+		sub := client.Subscribe(ctx, "foo")
+		ch := sub.Channel()
 
 		// Kill master.
 		err = master.Shutdown(ctx).Err()
@@ -207,6 +208,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		}, "15s", "100ms").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
+		Expect(sub.Close()).NotTo(HaveOccurred())
 
 		_, err = startRedis(masterPort)
 		Expect(err).NotTo(HaveOccurred())
