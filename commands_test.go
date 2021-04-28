@@ -2486,6 +2486,15 @@ var _ = Describe("Commands", func() {
 			Expect(sIsMember.Val()).To(Equal(false))
 		})
 
+		It("should SMIsMember", func() {
+			sAdd := client.SAdd(ctx, "set", "one")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+
+			sMIsMember := client.SMIsMember(ctx, "set", "one", "two")
+			Expect(sMIsMember.Err()).NotTo(HaveOccurred())
+			Expect(sMIsMember.Val()).To(Equal([]bool{true, false}))
+		})
+
 		It("should SMembers", func() {
 			sAdd := client.SAdd(ctx, "set", "Hello")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
