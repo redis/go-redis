@@ -4702,7 +4702,7 @@ var _ = Describe("Commands", func() {
 			client.ConfigSet(ctx, key, "0")
 			defer client.ConfigSet(ctx, key, old[key])
 
-			err := rdb.Do(ctx, "slowlog", "reset").Err()
+			err := client.Do(ctx, "slowlog", "reset").Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			client.Set(ctx, "test", "true", 0)
