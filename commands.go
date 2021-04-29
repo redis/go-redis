@@ -200,6 +200,7 @@ type Cmdable interface {
 	SInter(ctx context.Context, keys ...string) *StringSliceCmd
 	SInterStore(ctx context.Context, destination string, keys ...string) *IntCmd
 	SIsMember(ctx context.Context, key string, member interface{}) *BoolCmd
+	SMIsMember(ctx context.Context, key string, members ...interface{}) *BoolSliceCmd
 	SMembers(ctx context.Context, key string) *StringSliceCmd
 	SMembersMap(ctx context.Context, key string) *StringStructMapCmd
 	SMove(ctx context.Context, source, destination string, member interface{}) *BoolCmd
@@ -1504,6 +1505,17 @@ func (c cmdable) SInterStore(ctx context.Context, destination string, keys ...st
 
 func (c cmdable) SIsMember(ctx context.Context, key string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd(ctx, "sismember", key, member)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Redis `SMISMEMBER key member [member ...]` command.
+func (c cmdable) SMIsMember(ctx context.Context, key string, members ...interface{}) *BoolSliceCmd {
+	args := make([]interface{}, 2, 2+len(members))
+	args[0] = "smismember"
+	args[1] = key
+	args = appendArgs(args, members)
+	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
