@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,8 +16,6 @@ const (
 	pingTimeout     = time.Second
 	chanSendTimeout = time.Minute
 )
-
-var errPingTimeout = errors.New("redis: ping timeout")
 
 // PubSub implements Pub/Sub commands as described in
 // http://redis.io/topics/pubsub. Message receiving is NOT safe
@@ -482,26 +479,17 @@ func (c *PubSub) initPing() {
 		timer := time.NewTimer(time.Minute)
 		timer.Stop()
 
-		healthy := true
 		for {
 			timer.Reset(pingTimeout)
 			select {
 			case <-c.ping:
-				healthy = true
 				if !timer.Stop() {
 					<-timer.C
 				}
 			case <-timer.C:
-				pingErr := c.Ping(ctx)
-				if healthy {
-					healthy = false
-				} else {
-					if pingErr == nil {
-						pingErr = errPingTimeout
-					}
+				if err := c.Ping(ctx); err != nil {
 					c.mu.Lock()
-					c.reconnect(ctx, pingErr)
-					healthy = true
+					c.reconnect(ctx, fmt.Errorf("redis: ping timeout %w", err))
 					c.mu.Unlock()
 				}
 			case <-c.exit:
