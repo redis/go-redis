@@ -495,6 +495,7 @@ func (c *PubSub) initPing() {
 					if err := c.Ping(ctx); err != nil {
 						c.mu.Lock()
 						c.reconnect(ctx, fmt.Errorf("redis: ping timeout %w", err))
+						healthy = true
 						c.mu.Unlock()
 					}
 				}
