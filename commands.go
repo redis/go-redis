@@ -1815,6 +1815,7 @@ type XPendingExtArgs struct {
 	End      string
 	Count    int64
 	Consumer string
+	Idle     int64
 }
 
 func (c cmdable) XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingExtCmd {
@@ -1822,6 +1823,9 @@ func (c cmdable) XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingE
 	args = append(args, "xpending", a.Stream, a.Group, a.Start, a.End, a.Count)
 	if a.Consumer != "" {
 		args = append(args, a.Consumer)
+	}
+	if a.Idle != 0 {
+		args = append(args, "idle", a.Idle)
 	}
 	cmd := NewXPendingExtCmd(ctx, args...)
 	_ = c(ctx, cmd)
