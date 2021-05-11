@@ -4229,6 +4229,7 @@ var _ = Describe("Commands", func() {
 				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
 					Stream:   "stream",
 					Group:    "group",
+					Idle:     time.Duration(0),
 					Start:    "-",
 					End:      "+",
 					Count:    10,
