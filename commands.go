@@ -1822,7 +1822,7 @@ func (c cmdable) XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingE
 	args := make([]interface{}, 0, 7)
 	args = append(args, "xpending", a.Stream, a.Group)
 	if a.Idle != 0 {
-		args = append(args, "idle", a.Idle)
+		args = append(args, "idle", a.Idle * time.Millisecond)
 	}
 	args = append(args, a.Start, a.End, a.Count)
 	if a.Consumer != "" {
