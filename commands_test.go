@@ -4225,17 +4225,38 @@ var _ = Describe("Commands", func() {
 					Higher:    "3-0",
 					Consumers: map[string]int64{"consumer": 3},
 				}))
-
-				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+				args := &redis.XPendingExtArgs{
 					Stream:   "stream",
 					Group:    "group",
 					Start:    "-",
 					End:      "+",
 					Count:    10,
 					Consumer: "consumer",
-				}).Result()
+				}
+				infoExt, err := client.XPendingExt(ctx, args).Result()
 				Expect(err).NotTo(HaveOccurred())
 				for i := range infoExt {
+					infoExt[i].Idle = 0
+				}
+				Expect(infoExt).To(Equal([]redis.XPendingExt{
+					{ID: "1-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
+					{ID: "2-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
+					{ID: "3-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
+				}))
+
+				// verify empty message array with idle time
+				args.Idle = 500 * time.Millisecond
+				infoExt, err = client.XPendingExt(ctx, args).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(infoExt).To(Equal([]redis.XPendingExt{}))
+
+				// sleeping for 5 millisecond to ensure test for idle time
+				time.Sleep(5 * time.Millisecond)
+				args.Idle = 5 * time.Millisecond
+				infoExt, err = client.XPendingExt(ctx, args).Result()
+				Expect(err).NotTo(HaveOccurred())
+				for i := range infoExt {
+					Expect(infoExt[i].Idle).Should(BeNumerically(">", 5*time.Millisecond))
 					infoExt[i].Idle = 0
 				}
 				Expect(infoExt).To(Equal([]redis.XPendingExt{
