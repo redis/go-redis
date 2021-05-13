@@ -1819,7 +1819,7 @@ type XPendingExtArgs struct {
 }
 
 func (c cmdable) XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingExtCmd {
-	args := make([]interface{}, 0, 7)
+	args := make([]interface{}, 0, 9)
 	args = append(args, "xpending", a.Stream, a.Group)
 	if a.Idle != 0 {
 		args = append(args, "idle", formatMs(ctx, a.Idle))
