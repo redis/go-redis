@@ -4225,15 +4225,15 @@ var _ = Describe("Commands", func() {
 					Higher:    "3-0",
 					Consumers: map[string]int64{"consumer": 3},
 				}))
-
-				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+				args := &redis.XPendingExtArgs{
 					Stream:   "stream",
 					Group:    "group",
 					Start:    "-",
 					End:      "+",
 					Count:    10,
 					Consumer: "consumer",
-				}).Result()
+				}
+				infoExt, err := client.XPendingExt(ctx, args).Result()
 				Expect(err).NotTo(HaveOccurred())
 				for i := range infoExt {
 					infoExt[i].Idle = 0
@@ -4243,6 +4243,11 @@ var _ = Describe("Commands", func() {
 					{ID: "2-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
 					{ID: "3-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
 				}))
+
+				args.Idle = 72 * time.Hour
+				infoExt, err = client.XPendingExt(ctx, args).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(infoExt).To(HaveLen(0))
 
 				n, err := client.XGroupDelConsumer(ctx, "stream", "group", "consumer").Result()
 				Expect(err).NotTo(HaveOccurred())
