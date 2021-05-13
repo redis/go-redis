@@ -733,7 +733,7 @@ type conn struct {
 
 // Conn represents a single Redis connection rather than a pool of database connections.
 // It's safe for concurrent use by multiple goroutines.
-
+//
 // Prefer running commands from Client unless there is a specific need for a continuous
 // single Redis connection.
 type Conn struct {
