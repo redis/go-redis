@@ -551,9 +551,11 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 
 //------------------------------------------------------------------------------
 
-// Client is a Redis client representing a pool of zero or more
-// underlying connections. It's safe for concurrent use by multiple
-// goroutines.
+// Client is a Redis client representing a pool of zero or more underlying connections.
+// It's safe for concurrent use by multiple goroutines.
+//
+// Client creates and frees connections automatically; it also maintains a free pool
+// of idle connections. You can control the pool size with Config.PoolSize option.
 type Client struct {
 	*baseClient
 	cmdable
@@ -729,7 +731,11 @@ type conn struct {
 	hooks // TODO: inherit hooks
 }
 
-// Conn is like Client, but its pool contains single connection.
+// Conn represents a single Redis connection rather than a pool of database connections.
+// It's safe for concurrent use by multiple goroutines.
+
+// Prefer running commands from Client unless there is a specific need for a continuous
+// single Redis connection.
 type Conn struct {
 	*conn
 	ctx context.Context
