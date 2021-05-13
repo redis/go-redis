@@ -12,6 +12,7 @@ import (
 	"github.com/go-redis/redis/v8/internal/util"
 )
 
+// redis resp protocol data type.
 const (
 	RespStatus    = '+' // +<string>\r\n
 	RespError     = '-' // -<string>\r\n
