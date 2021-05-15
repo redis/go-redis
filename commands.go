@@ -179,6 +179,7 @@ type Cmdable interface {
 	LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd
 	LLen(ctx context.Context, key string) *IntCmd
 	LPop(ctx context.Context, key string) *StringCmd
+	LPopCount(ctx context.Context, key string, count int) *StringSliceCmd
 	LPos(ctx context.Context, key string, value string, args LPosArgs) *IntCmd
 	LPosCount(ctx context.Context, key string, value string, count int64, args LPosArgs) *IntSliceCmd
 	LPush(ctx context.Context, key string, values ...interface{}) *IntCmd
@@ -1310,6 +1311,12 @@ func (c cmdable) LLen(ctx context.Context, key string) *IntCmd {
 
 func (c cmdable) LPop(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "lpop", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) LPopCount(ctx context.Context, key string, count int) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "lpop", key, count)
 	_ = c(ctx, cmd)
 	return cmd
 }

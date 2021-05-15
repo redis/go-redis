@@ -2050,6 +2050,25 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Val()).To(Equal([]string{"two", "three"}))
 		})
 
+		It("should LPopCount", func() {
+			rPush := client.RPush(ctx, "list", "one")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "two")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "three")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "four")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+
+			lPopCount := client.LPopCount(ctx, "list", 2)
+			Expect(lPopCount.Err()).NotTo(HaveOccurred())
+			Expect(lPopCount.Val()).To(Equal([]string{"one", "two"}))
+
+			lRange := client.LRange(ctx, "list", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"three", "four"}))
+		})
+
 		It("should LPos", func() {
 			rPush := client.RPush(ctx, "list", "a")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
