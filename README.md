@@ -163,7 +163,5 @@ go test
 
 ## See also
 
-- [Fast and flexible HTTP router](https://github.com/vmihailenco/treemux)
-- [Golang PostgreSQL ORM](https://github.com/go-pg/pg)
-- [Golang msgpack](https://github.com/vmihailenco/msgpack)
-- [Golang message task queue](https://github.com/vmihailenco/taskq)
+- [Fast and flexible ORM](https://github.com/uptrace/bun)
+- [msgpack for Go](https://github.com/vmihailenco/msgpack)
