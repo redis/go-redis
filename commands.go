@@ -1906,6 +1906,19 @@ func (c cmdable) XInfoStream(ctx context.Context, key string) *XInfoStreamCmd {
 	return cmd
 }
 
+// XInfoStreamFull XINFO STREAM FULL [COUNT count]
+// redis-server >= 6.0.
+func (c cmdable) XInfoStreamFull(ctx context.Context, key string, count int) *XInfoStreamFullCmd {
+	args := make([]interface{}, 0, 6)
+	args = append(args, "xinfo", "stream", key, "full")
+	if count > 0 {
+		args = append(args, "count", count)
+	}
+	cmd := NewXInfoStreamFullCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 //------------------------------------------------------------------------------
 
 // Z represents sorted set member.
