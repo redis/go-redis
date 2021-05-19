@@ -4390,6 +4390,26 @@ var _ = Describe("Commands", func() {
 					FirstEntry:      redis.XMessage{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
 					LastEntry:       redis.XMessage{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
 				}))
+
+				// stream is empty
+				n, err := client.XDel(ctx, "stream", "1-0", "2-0", "3-0").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(3)))
+
+				res, err = client.XInfoStream(ctx, "stream").Result()
+				Expect(err).NotTo(HaveOccurred())
+				res.RadixTreeKeys = 0
+				res.RadixTreeNodes = 0
+
+				Expect(res).To(Equal(&redis.XInfoStream{
+					Length:          0,
+					RadixTreeKeys:   0,
+					RadixTreeNodes:  0,
+					Groups:          2,
+					LastGeneratedID: "3-0",
+					FirstEntry:      redis.XMessage{},
+					LastEntry:       redis.XMessage{},
+				}))
 			})
 
 			It("should XINFO STREAM FULL", func() {

@@ -1769,8 +1769,14 @@ func xStreamInfoParser(rd *proto.Reader, n int64) (interface{}, error) {
 			info.LastGeneratedID, err = rd.ReadString()
 		case "first-entry":
 			info.FirstEntry, err = readXMessage(rd)
+			if err == Nil {
+				err = nil
+			}
 		case "last-entry":
 			info.LastEntry, err = readXMessage(rd)
+			if err == Nil {
+				err = nil
+			}
 		default:
 			return nil, fmt.Errorf("redis: unexpected content %s "+
 				"in XINFO STREAM reply", key)
