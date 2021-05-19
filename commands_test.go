@@ -2064,6 +2064,25 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Val()).To(Equal([]string{"two", "three"}))
 		})
 
+		It("should LPopCount", func() {
+			rPush := client.RPush(ctx, "list", "one")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "two")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "three")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "four")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+
+			lPopCount := client.LPopCount(ctx, "list", 2)
+			Expect(lPopCount.Err()).NotTo(HaveOccurred())
+			Expect(lPopCount.Val()).To(Equal([]string{"one", "two"}))
+
+			lRange := client.LRange(ctx, "list", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"three", "four"}))
+		})
+
 		It("should LPos", func() {
 			rPush := client.RPush(ctx, "list", "a")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
@@ -4241,15 +4260,15 @@ var _ = Describe("Commands", func() {
 					Higher:    "3-0",
 					Consumers: map[string]int64{"consumer": 3},
 				}))
-
-				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+				args := &redis.XPendingExtArgs{
 					Stream:   "stream",
 					Group:    "group",
 					Start:    "-",
 					End:      "+",
 					Count:    10,
 					Consumer: "consumer",
-				}).Result()
+				}
+				infoExt, err := client.XPendingExt(ctx, args).Result()
 				Expect(err).NotTo(HaveOccurred())
 				for i := range infoExt {
 					infoExt[i].Idle = 0
@@ -4259,6 +4278,11 @@ var _ = Describe("Commands", func() {
 					{ID: "2-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
 					{ID: "3-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
 				}))
+
+				args.Idle = 72 * time.Hour
+				infoExt, err = client.XPendingExt(ctx, args).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(infoExt).To(HaveLen(0))
 
 				n, err := client.XGroupDelConsumer(ctx, "stream", "group", "consumer").Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -4381,6 +4405,153 @@ var _ = Describe("Commands", func() {
 					LastGeneratedID: "3-0",
 					FirstEntry:      redis.XMessage{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
 					LastEntry:       redis.XMessage{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+				}))
+
+				// stream is empty
+				n, err := client.XDel(ctx, "stream", "1-0", "2-0", "3-0").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(3)))
+
+				res, err = client.XInfoStream(ctx, "stream").Result()
+				Expect(err).NotTo(HaveOccurred())
+				res.RadixTreeKeys = 0
+				res.RadixTreeNodes = 0
+
+				Expect(res).To(Equal(&redis.XInfoStream{
+					Length:          0,
+					RadixTreeKeys:   0,
+					RadixTreeNodes:  0,
+					Groups:          2,
+					LastGeneratedID: "3-0",
+					FirstEntry:      redis.XMessage{},
+					LastEntry:       redis.XMessage{},
+				}))
+			})
+
+			It("should XINFO STREAM FULL", func() {
+				res, err := client.XInfoStreamFull(ctx, "stream", 2).Result()
+				Expect(err).NotTo(HaveOccurred())
+				res.RadixTreeKeys = 0
+				res.RadixTreeNodes = 0
+
+				// Verify DeliveryTime
+				now := time.Now()
+				maxElapsed := 10 * time.Minute
+				for k, g := range res.Groups {
+					for k2, p := range g.Pending {
+						Expect(now.Sub(p.DeliveryTime)).To(BeNumerically("<=", maxElapsed))
+						res.Groups[k].Pending[k2].DeliveryTime = time.Time{}
+					}
+					for k3, c := range g.Consumers {
+						Expect(now.Sub(c.SeenTime)).To(BeNumerically("<=", maxElapsed))
+						res.Groups[k].Consumers[k3].SeenTime = time.Time{}
+
+						for k4, p := range c.Pending {
+							Expect(now.Sub(p.DeliveryTime)).To(BeNumerically("<=", maxElapsed))
+							res.Groups[k].Consumers[k3].Pending[k4].DeliveryTime = time.Time{}
+						}
+					}
+				}
+
+				Expect(res).To(Equal(&redis.XInfoStreamFull{
+					Length:          3,
+					RadixTreeKeys:   0,
+					RadixTreeNodes:  0,
+					LastGeneratedID: "3-0",
+					Entries: []redis.XMessage{
+						{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+						{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+					},
+					Groups: []redis.XInfoStreamGroup{
+						{
+							Name:            "group1",
+							LastDeliveredID: "3-0",
+							PelCount:        3,
+							Pending: []redis.XInfoStreamGroupPending{
+								{
+									ID:            "1-0",
+									Consumer:      "consumer1",
+									DeliveryTime:  time.Time{},
+									DeliveryCount: 1,
+								},
+								{
+									ID:            "2-0",
+									Consumer:      "consumer1",
+									DeliveryTime:  time.Time{},
+									DeliveryCount: 1,
+								},
+							},
+							Consumers: []redis.XInfoStreamConsumer{
+								{
+									Name:     "consumer1",
+									SeenTime: time.Time{},
+									PelCount: 2,
+									Pending: []redis.XInfoStreamConsumerPending{
+										{
+											ID:            "1-0",
+											DeliveryTime:  time.Time{},
+											DeliveryCount: 1,
+										},
+										{
+											ID:            "2-0",
+											DeliveryTime:  time.Time{},
+											DeliveryCount: 1,
+										},
+									},
+								},
+								{
+									Name:     "consumer2",
+									SeenTime: time.Time{},
+									PelCount: 1,
+									Pending: []redis.XInfoStreamConsumerPending{
+										{
+											ID:            "3-0",
+											DeliveryTime:  time.Time{},
+											DeliveryCount: 1,
+										},
+									},
+								},
+							},
+						},
+						{
+							Name:            "group2",
+							LastDeliveredID: "3-0",
+							PelCount:        2,
+							Pending: []redis.XInfoStreamGroupPending{
+								{
+									ID:            "2-0",
+									Consumer:      "consumer1",
+									DeliveryTime:  time.Time{},
+									DeliveryCount: 1,
+								},
+								{
+									ID:            "3-0",
+									Consumer:      "consumer1",
+									DeliveryTime:  time.Time{},
+									DeliveryCount: 1,
+								},
+							},
+							Consumers: []redis.XInfoStreamConsumer{
+								{
+									Name:     "consumer1",
+									SeenTime: time.Time{},
+									PelCount: 2,
+									Pending: []redis.XInfoStreamConsumerPending{
+										{
+											ID:            "2-0",
+											DeliveryTime:  time.Time{},
+											DeliveryCount: 1,
+										},
+										{
+											ID:            "3-0",
+											DeliveryTime:  time.Time{},
+											DeliveryCount: 1,
+										},
+									},
+								},
+							},
+						},
+					},
 				}))
 			})
 

@@ -1520,7 +1520,7 @@ type XInfoConsumer struct {
 	Idle    int64
 }
 
-var _ Cmder = (*XInfoGroupsCmd)(nil)
+var _ Cmder = (*XInfoConsumersCmd)(nil)
 
 func NewXInfoConsumersCmd(ctx context.Context, stream string, group string) *XInfoConsumersCmd {
 	return &XInfoConsumersCmd{
@@ -1722,8 +1722,14 @@ func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
 			cmd.val.LastGeneratedID, err = rd.ReadString()
 		case "first-entry":
 			cmd.val.FirstEntry, err = readXMessage(rd)
+			if err == Nil {
+				err = nil
+			}
 		case "last-entry":
 			cmd.val.LastEntry, err = readXMessage(rd)
+			if err == Nil {
+				err = nil
+			}
 		default:
 			return fmt.Errorf("redis: unexpected content %s "+
 				"in XINFO STREAM reply", key)
@@ -1733,6 +1739,277 @@ func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
 		}
 	}
 	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type XInfoStreamFullCmd struct {
+	baseCmd
+	val *XInfoStreamFull
+}
+
+type XInfoStreamFull struct {
+	Length          int64
+	RadixTreeKeys   int64
+	RadixTreeNodes  int64
+	LastGeneratedID string
+	Entries         []XMessage
+	Groups          []XInfoStreamGroup
+}
+
+type XInfoStreamGroup struct {
+	Name            string
+	LastDeliveredID string
+	PelCount        int64
+	Pending         []XInfoStreamGroupPending
+	Consumers       []XInfoStreamConsumer
+}
+
+type XInfoStreamGroupPending struct {
+	ID            string
+	Consumer      string
+	DeliveryTime  time.Time
+	DeliveryCount int64
+}
+
+type XInfoStreamConsumer struct {
+	Name     string
+	SeenTime time.Time
+	PelCount int64
+	Pending  []XInfoStreamConsumerPending
+}
+
+type XInfoStreamConsumerPending struct {
+	ID            string
+	DeliveryTime  time.Time
+	DeliveryCount int64
+}
+
+var _ Cmder = (*XInfoStreamFullCmd)(nil)
+
+func NewXInfoStreamFullCmd(ctx context.Context, args ...interface{}) *XInfoStreamFullCmd {
+	return &XInfoStreamFullCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *XInfoStreamFullCmd) Val() *XInfoStreamFull {
+	return cmd.val
+}
+
+func (cmd *XInfoStreamFullCmd) Result() (*XInfoStreamFull, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *XInfoStreamFullCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XInfoStreamFullCmd) readReply(rd *proto.Reader) error {
+	if err := rd.ReadFixedMapLen(6); err != nil {
+		return err
+	}
+
+	cmd.val = &XInfoStreamFull{}
+
+	for i := 0; i < 6; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case "length":
+			cmd.val.Length, err = rd.ReadInt()
+		case "radix-tree-keys":
+			cmd.val.RadixTreeKeys, err = rd.ReadInt()
+		case "radix-tree-nodes":
+			cmd.val.RadixTreeNodes, err = rd.ReadInt()
+		case "last-generated-id":
+			cmd.val.LastGeneratedID, err = rd.ReadString()
+		case "entries":
+			cmd.val.Entries, err = readXMessageSlice(rd)
+		case "groups":
+			cmd.val.Groups, err = readStreamGroups(rd)
+		default:
+			return fmt.Errorf("redis: unexpected content %s "+
+				"in XINFO STREAM FULL reply", key)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+	groups := make([]XInfoStreamGroup, 0, n)
+	for i := 0; i < n; i++ {
+		if err = rd.ReadFixedMapLen(5); err != nil {
+			return nil, err
+		}
+
+		group := XInfoStreamGroup{}
+
+		for f := 0; f < 5; f++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+
+			switch key {
+			case "name":
+				group.Name, err = rd.ReadString()
+			case "last-delivered-id":
+				group.LastDeliveredID, err = rd.ReadString()
+			case "pel-count":
+				group.PelCount, err = rd.ReadInt()
+			case "pending":
+				group.Pending, err = readXInfoStreamGroupPending(rd)
+			case "consumers":
+				group.Consumers, err = readXInfoStreamConsumers(rd)
+			default:
+				return nil, fmt.Errorf("redis: unexpected content %s "+
+					"in XINFO STREAM FULL reply", key)
+			}
+
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		groups = append(groups, group)
+	}
+
+	return groups, nil
+}
+
+func readXInfoStreamGroupPending(rd *proto.Reader) ([]XInfoStreamGroupPending, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	pending := make([]XInfoStreamGroupPending, 0, n)
+
+	for i := 0; i < n; i++ {
+		if err = rd.ReadFixedArrayLen(4); err != nil {
+			return nil, err
+		}
+
+		p := XInfoStreamGroupPending{}
+
+		p.ID, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+
+		p.Consumer, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+
+		delivery, err := rd.ReadInt()
+		if err != nil {
+			return nil, err
+		}
+		p.DeliveryTime = time.Unix(delivery/1000, delivery%1000*int64(time.Millisecond))
+
+		p.DeliveryCount, err = rd.ReadInt()
+		if err != nil {
+			return nil, err
+		}
+
+		pending = append(pending, p)
+	}
+
+	return pending, nil
+}
+
+func readXInfoStreamConsumers(rd *proto.Reader) ([]XInfoStreamConsumer, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	consumers := make([]XInfoStreamConsumer, 0, n)
+
+	for i := 0; i < n; i++ {
+		if err = rd.ReadFixedMapLen(4); err != nil {
+			return nil, err
+		}
+
+		c := XInfoStreamConsumer{}
+
+		for f := 0; f < 4; f++ {
+			cKey, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+
+			switch cKey {
+			case "name":
+				c.Name, err = rd.ReadString()
+			case "seen-time":
+				seen, err := rd.ReadInt()
+				if err != nil {
+					return nil, err
+				}
+				c.SeenTime = time.Unix(seen/1000, seen%1000*int64(time.Millisecond))
+			case "pel-count":
+				c.PelCount, err = rd.ReadInt()
+			case "pending":
+				pendingNumber, err := rd.ReadArrayLen()
+				if err != nil {
+					return nil, err
+				}
+
+				c.Pending = make([]XInfoStreamConsumerPending, 0, pendingNumber)
+
+				for pn := 0; pn < pendingNumber; pn++ {
+					if err = rd.ReadFixedArrayLen(3); err != nil {
+						return nil, err
+					}
+
+					p := XInfoStreamConsumerPending{}
+
+					p.ID, err = rd.ReadString()
+					if err != nil {
+						return nil, err
+					}
+
+					delivery, err := rd.ReadInt()
+					if err != nil {
+						return nil, err
+					}
+					p.DeliveryTime = time.Unix(delivery/1000, delivery%1000*int64(time.Millisecond))
+
+					p.DeliveryCount, err = rd.ReadInt()
+					if err != nil {
+						return nil, err
+					}
+
+					c.Pending = append(c.Pending, p)
+				}
+			default:
+				return nil, fmt.Errorf("redis: unexpected content %s "+
+					"in XINFO STREAM FULL reply", cKey)
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+		consumers = append(consumers, c)
+	}
+
+	return consumers, nil
 }
 
 //------------------------------------------------------------------------------
