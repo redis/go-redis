@@ -2040,7 +2040,7 @@ func readXInfoStreamConsumers(rd *proto.Reader) ([]XInfoStreamConsumer, error) {
 
 				c.Pending = make([]XInfoStreamConsumerPending, 0, pendingNumber)
 
-				for f := 0; f < pendingNumber; f++ {
+				for pn := 0; pn < pendingNumber; pn++ {
 					nn, err := rd.ReadArrayLen()
 					if err != nil {
 						return nil, err
