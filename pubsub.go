@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -16,6 +17,8 @@ const (
 	pingTimeout     = time.Second
 	chanSendTimeout = time.Minute
 )
+
+var errPingTimeout = errors.New("redis: ping timeout")
 
 // PubSub implements Pub/Sub commands as described in
 // http://redis.io/topics/pubsub. Message receiving is NOT safe
@@ -43,6 +46,9 @@ type PubSub struct {
 	msgCh  chan *Message
 	allCh  chan interface{}
 	ping   chan struct{}
+
+	// Health check timeout, default 5 second.
+	healthTimeout time.Duration
 }
 
 func (c *PubSub) String() string {
@@ -53,6 +59,9 @@ func (c *PubSub) String() string {
 
 func (c *PubSub) init() {
 	c.exit = make(chan struct{})
+	if c.healthTimeout == 0 {
+		c.healthTimeout = 5 * time.Second
+	}
 }
 
 func (c *PubSub) connWithLock(ctx context.Context) (*pool.Conn, error) {
@@ -268,6 +277,12 @@ func (c *PubSub) Ping(ctx context.Context, payload ...string) error {
 	return err
 }
 
+func (c *PubSub) SetHealthTimeout(t time.Duration) {
+	if t > 0 {
+		c.healthTimeout = t
+	}
+}
+
 // Subscription received after a successful subscription to channel.
 type Subscription struct {
 	// Can be "subscribe", "unsubscribe", "psubscribe" or "punsubscribe".
@@ -480,24 +495,35 @@ func (c *PubSub) initPing() {
 		timer.Stop()
 
 		healthy := true
+		timeout := pingTimeout
 		for {
-			timer.Reset(pingTimeout)
+			timer.Reset(timeout)
 			select {
 			case <-c.ping:
 				healthy = true
+				timeout = pingTimeout
 				if !timer.Stop() {
 					<-timer.C
 				}
 			case <-timer.C:
+				var healthyErr error
+
 				if healthy {
+					healthyErr = c.Ping(ctx)
 					healthy = false
 				} else {
-					if err := c.Ping(ctx); err != nil {
-						c.mu.Lock()
-						c.reconnect(ctx, fmt.Errorf("redis: ping timeout %w", err))
-						c.mu.Unlock()
-					}
+					healthyErr = errPingTimeout
+				}
+
+				if healthyErr != nil {
+					c.mu.Lock()
+					c.reconnect(ctx, healthyErr)
+					c.mu.Unlock()
+
 					healthy = true
+					timeout = pingTimeout
+				} else {
+					timeout = c.healthTimeout
 				}
 			case <-c.exit:
 				return
