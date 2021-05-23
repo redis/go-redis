@@ -179,6 +179,7 @@ type Cmdable interface {
 	LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd
 	LLen(ctx context.Context, key string) *IntCmd
 	LPop(ctx context.Context, key string) *StringCmd
+	LPopCount(ctx context.Context, key string, count int) *StringSliceCmd
 	LPos(ctx context.Context, key string, value string, args LPosArgs) *IntCmd
 	LPosCount(ctx context.Context, key string, value string, count int64, args LPosArgs) *IntSliceCmd
 	LPush(ctx context.Context, key string, values ...interface{}) *IntCmd
@@ -276,6 +277,8 @@ type Cmdable interface {
 	ZScore(ctx context.Context, key, member string) *FloatCmd
 	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
 	ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd
+	ZDiff(ctx context.Context, keys ...string) *StringSliceCmd
+	ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd
 
 	PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd
 	PFCount(ctx context.Context, keys ...string) *IntCmd
@@ -1314,6 +1317,12 @@ func (c cmdable) LPop(ctx context.Context, key string) *StringCmd {
 	return cmd
 }
 
+func (c cmdable) LPopCount(ctx context.Context, key string, count int) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "lpop", key, count)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 type LPosArgs struct {
 	Rank, MaxLen int64
 }
@@ -1811,6 +1820,7 @@ func (c cmdable) XPending(ctx context.Context, stream, group string) *XPendingCm
 type XPendingExtArgs struct {
 	Stream   string
 	Group    string
+	Idle     time.Duration
 	Start    string
 	End      string
 	Count    int64
@@ -1818,8 +1828,12 @@ type XPendingExtArgs struct {
 }
 
 func (c cmdable) XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingExtCmd {
-	args := make([]interface{}, 0, 7)
-	args = append(args, "xpending", a.Stream, a.Group, a.Start, a.End, a.Count)
+	args := make([]interface{}, 0, 9)
+	args = append(args, "xpending", a.Stream, a.Group)
+	if a.Idle != 0 {
+		args = append(args, "idle", formatMs(ctx, a.Idle))
+	}
+	args = append(args, a.Start, a.End, a.Count)
 	if a.Consumer != "" {
 		args = append(args, a.Consumer)
 	}
@@ -1890,6 +1904,19 @@ func (c cmdable) XInfoGroups(ctx context.Context, key string) *XInfoGroupsCmd {
 
 func (c cmdable) XInfoStream(ctx context.Context, key string) *XInfoStreamCmd {
 	cmd := NewXInfoStreamCmd(ctx, key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// XInfoStreamFull XINFO STREAM FULL [COUNT count]
+// redis-server >= 6.0.
+func (c cmdable) XInfoStreamFull(ctx context.Context, key string, count int) *XInfoStreamFullCmd {
+	args := make([]interface{}, 0, 6)
+	args = append(args, "xinfo", "stream", key, "full")
+	if count > 0 {
+		args = append(args, "count", count)
+	}
+	cmd := NewXInfoStreamFullCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2339,6 +2366,35 @@ func (c cmdable) ZRandMember(ctx context.Context, key string, count int, withSco
 	}
 
 	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >= 6.2.0.
+func (c cmdable) ZDiff(ctx context.Context, keys ...string) *StringSliceCmd {
+	args := make([]interface{}, 2+len(keys))
+	args[0] = "zdiff"
+	args[1] = len(keys)
+	for i, key := range keys {
+		args[i+2] = key
+	}
+
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >= 6.2.0.
+func (c cmdable) ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd {
+	args := make([]interface{}, 3+len(keys))
+	args[0] = "zdiff"
+	args[1] = len(keys)
+	for i, key := range keys {
+		args[i+2] = key
+	}
+	args[len(keys)+2] = "withscores"
+
+	cmd := NewZSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
