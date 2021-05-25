@@ -480,8 +480,7 @@ var _ = Describe("PubSub", func() {
 
 		ch := pubsub.Channel(
 			redis.WithChannelSize(10),
-			redis.WithPingTimeout(time.Second),
-			redis.WithHealthTimeout(time.Minute),
+			redis.WithChannelHealthCheckInterval(time.Second),
 		)
 
 		text := "test channel message"

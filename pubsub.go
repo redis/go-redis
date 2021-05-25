@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,8 +11,6 @@ import (
 	"github.com/go-redis/redis/v8/internal/pool"
 	"github.com/go-redis/redis/v8/internal/proto"
 )
-
-var errPingTimeout = errors.New("redis: ping timeout")
 
 // PubSub implements Pub/Sub commands as described in
 // http://redis.io/topics/pubsub. Message receiving is NOT safe
@@ -432,7 +429,6 @@ func (c *PubSub) getContext() context.Context {
 func (c *PubSub) Channel(opts ...ChannelOption) <-chan *Message {
 	c.chOnce.Do(func() {
 		c.msgCh = newChannel(c, opts...)
-		c.msgCh.initPing()
 		c.msgCh.initMsgChan()
 	})
 	if c.msgCh == nil {
@@ -459,7 +455,6 @@ func (c *PubSub) ChannelSize(size int) <-chan *Message {
 func (c *PubSub) ChannelWithSubscriptions(_ context.Context, size int) <-chan interface{} {
 	c.chOnce.Do(func() {
 		c.allCh = newChannel(c, WithChannelSize(size))
-		c.allCh.initPing()
 		c.allCh.initAllChan()
 	})
 	if c.allCh == nil {
@@ -478,18 +473,14 @@ func WithChannelSize(size int) ChannelOption {
 	}
 }
 
-// WithPingTimeout health(ping) check interval(default: 1s).
-func WithPingTimeout(d time.Duration) ChannelOption {
+// WithChannelHealthCheckInterval specifies the health check interval.
+// PubSub will ping Redis Server if it does not receive any messages within the interval.
+// To disable health check, use zero interval.
+//
+// The default is 3 seconds.
+func WithChannelHealthCheckInterval(d time.Duration) ChannelOption {
 	return func(c *channel) {
-		c.pingTimeout = d
-	}
-}
-
-// WithHealthTimeout health check timeout,
-// the maximum time to wait for a response after the ping command(default: 5s).
-func WithHealthTimeout(d time.Duration) ChannelOption {
-	return func(c *channel) {
-		c.healthTimeout = d
+		c.checkInterval = d
 	}
 }
 
@@ -502,8 +493,7 @@ type channel struct {
 
 	chanSize        int
 	chanSendTimeout time.Duration
-	pingTimeout     time.Duration
-	healthTimeout   time.Duration
+	checkInterval   time.Duration
 }
 
 func newChannel(pubSub *PubSub, opts ...ChannelOption) *channel {
@@ -512,16 +502,18 @@ func newChannel(pubSub *PubSub, opts ...ChannelOption) *channel {
 
 		chanSize:        100,
 		chanSendTimeout: time.Minute,
-		pingTimeout:     time.Second,
-		healthTimeout:   5 * time.Second,
+		checkInterval:   3 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
+	if c.checkInterval > 0 {
+		c.initHealthCheck()
+	}
 	return c
 }
 
-func (c *channel) initPing() {
+func (c *channel) initHealthCheck() {
 	ctx := context.TODO()
 	c.ping = make(chan struct{}, 1)
 
@@ -529,36 +521,18 @@ func (c *channel) initPing() {
 		timer := time.NewTimer(time.Minute)
 		timer.Stop()
 
-		healthy := true
-		timeout := c.pingTimeout
 		for {
-			timer.Reset(timeout)
+			timer.Reset(c.checkInterval)
 			select {
 			case <-c.ping:
-				healthy = true
-				timeout = c.pingTimeout
 				if !timer.Stop() {
 					<-timer.C
 				}
 			case <-timer.C:
-				var healthyErr error
-
-				if healthy {
-					healthyErr = c.pubSub.Ping(ctx)
-					healthy = false
-				} else {
-					healthyErr = errPingTimeout
-				}
-
-				if healthyErr != nil {
+				if pingErr := c.pubSub.Ping(ctx); pingErr != nil {
 					c.pubSub.mu.Lock()
-					c.pubSub.reconnect(ctx, healthyErr)
+					c.pubSub.reconnect(ctx, pingErr)
 					c.pubSub.mu.Unlock()
-
-					healthy = true
-					timeout = c.pingTimeout
-				} else {
-					timeout = c.healthTimeout
 				}
 			case <-c.pubSub.exit:
 				return
