@@ -473,4 +473,24 @@ var _ = Describe("PubSub", func() {
 			Fail("timeout")
 		}
 	})
+
+	It("should ChannelMessage", func() {
+		pubsub := client.Subscribe(ctx, "mychannel")
+		defer pubsub.Close()
+
+		ch := pubsub.ChannelMessage(
+			redis.WithChannelSize(10),
+			redis.WithPingTimeout(time.Second),
+			redis.WithHealthTimeout(time.Minute),
+		)
+
+		text := "test channel message"
+		err := client.Publish(ctx, "mychannel", text).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		var msg *redis.Message
+		Eventually(ch).Should(Receive(&msg))
+		Expect(msg.Channel).To(Equal("mychannel"))
+		Expect(msg.Payload).To(Equal(text))
+	})
 })
