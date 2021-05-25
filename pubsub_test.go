@@ -478,7 +478,7 @@ var _ = Describe("PubSub", func() {
 		pubsub := client.Subscribe(ctx, "mychannel")
 		defer pubsub.Close()
 
-		ch := pubsub.ChannelMessage(
+		ch := pubsub.Channel(
 			redis.WithChannelSize(10),
 			redis.WithPingTimeout(time.Second),
 			redis.WithHealthTimeout(time.Minute),
