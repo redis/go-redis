@@ -13,8 +13,6 @@ import (
 	"github.com/go-redis/redis/v8/internal/proto"
 )
 
-const chanSendTimeout = time.Minute
-
 var errPingTimeout = errors.New("redis: ping timeout")
 
 // PubSub implements Pub/Sub commands as described in
@@ -502,18 +500,20 @@ type channel struct {
 	allCh chan interface{}
 	ping  chan struct{}
 
-	chanSize      int
-	pingTimeout   time.Duration
-	healthTimeout time.Duration
+	chanSize        int
+	chanSendTimeout time.Duration
+	pingTimeout     time.Duration
+	healthTimeout   time.Duration
 }
 
 func newChannel(pubSub *PubSub, opts ...ChannelOption) *channel {
 	c := &channel{
 		pubSub: pubSub,
 
-		chanSize:      100,
-		pingTimeout:   time.Second,
-		healthTimeout: 5 * time.Second,
+		chanSize:        100,
+		chanSendTimeout: time.Minute,
+		pingTimeout:     time.Second,
+		healthTimeout:   5 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -605,7 +605,7 @@ func (c *channel) initMsgChan() {
 			case *Pong:
 				// Ignore.
 			case *Message:
-				timer.Reset(chanSendTimeout)
+				timer.Reset(c.chanSendTimeout)
 				select {
 				case c.msgCh <- msg:
 					if !timer.Stop() {
@@ -613,11 +613,8 @@ func (c *channel) initMsgChan() {
 					}
 				case <-timer.C:
 					internal.Logger.Printf(
-						ctx,
-						"redis: %s channel is full for %s (message is dropped)",
-						c,
-						chanSendTimeout,
-					)
+						ctx, "redis: %s channel is full for %s (message is dropped)",
+						c, c.chanSendTimeout)
 				}
 			default:
 				internal.Logger.Printf(ctx, "redis: unknown message type: %T", msg)
@@ -662,7 +659,7 @@ func (c *channel) initAllChan() {
 			case *Pong:
 				// Ignore.
 			case *Subscription, *Message:
-				timer.Reset(chanSendTimeout)
+				timer.Reset(c.chanSendTimeout)
 				select {
 				case c.allCh <- msg:
 					if !timer.Stop() {
@@ -670,10 +667,8 @@ func (c *channel) initAllChan() {
 					}
 				case <-timer.C:
 					internal.Logger.Printf(
-						ctx,
-						"redis: %s channel is full for %s (message is dropped)",
-						c,
-						chanSendTimeout)
+						ctx, "redis: %s channel is full for %s (message is dropped)",
+						c, c.chanSendTimeout)
 				}
 			default:
 				internal.Logger.Printf(ctx, "redis: unknown message type: %T", msg)
