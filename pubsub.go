@@ -466,7 +466,9 @@ func (c *PubSub) ChannelWithSubscriptions(_ context.Context, size int) <-chan in
 
 type ChannelOption func(c *channel)
 
-// WithChannelSize go-chan size(default 100).
+// WithChannelSize specifies the Go chan size that is used to buffer incoming messages.
+//
+// The default is 100 messages.
 func WithChannelSize(size int) ChannelOption {
 	return func(c *channel) {
 		c.chanSize = size
@@ -481,6 +483,16 @@ func WithChannelSize(size int) ChannelOption {
 func WithChannelHealthCheckInterval(d time.Duration) ChannelOption {
 	return func(c *channel) {
 		c.checkInterval = d
+	}
+}
+
+// WithChannelSendTimeout specifies that channel send timeout after which
+// the message is dropped.
+//
+// The default is 30 seconds.
+func WithChannelSendTimeout(d time.Duration) ChannelOption {
+	return func(c *channel) {
+		c.chanSendTimeout = d
 	}
 }
 
