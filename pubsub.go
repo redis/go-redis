@@ -484,7 +484,7 @@ func WithChannelHealthCheckInterval(d time.Duration) ChannelOption {
 	}
 }
 
-// WithChannelSendTimeout specifies that channel send timeout after which
+// WithChannelSendTimeout specifies the channel send timeout after which
 // the message is dropped.
 //
 // The default is 60 seconds.

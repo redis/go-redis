@@ -3,6 +3,11 @@
 > :heart:
 > [**Uptrace.dev** - All-in-one tool to optimize performance and monitor errors & logs](https://uptrace.dev)
 
+## v8.9
+
+- Changed `PubSub.Channel` to only rely on `Ping` result. You can now use `WithChannelSize`,
+  `WithChannelHealthCheckInterval`, and `WithChannelSendTimeout` to override default settings.
+
 ## v8.8
 
 - To make updating easier, extra modules now have the same version as go-redis does. That means that
