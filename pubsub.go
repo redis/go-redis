@@ -425,7 +425,6 @@ func (c *PubSub) getContext() context.Context {
 //
 // go-redis periodically sends ping messages to test connection health
 // and re-subscribes if ping can not not received for 30 seconds.
-// Deprecated: use ChannelMessage(), remove in v9.
 func (c *PubSub) Channel(opts ...ChannelOption) <-chan *Message {
 	c.chOnce.Do(func() {
 		c.msgCh = newChannel(c, opts...)
@@ -451,7 +450,6 @@ func (c *PubSub) ChannelSize(size int) <-chan *Message {
 // reconnections.
 //
 // ChannelWithSubscriptions can not be used together with Channel or ChannelSize.
-// Deprecated: use ChannelSubscriptionMessage(), remove in v9.
 func (c *PubSub) ChannelWithSubscriptions(_ context.Context, size int) <-chan interface{} {
 	c.chOnce.Do(func() {
 		c.allCh = newChannel(c, WithChannelSize(size))
@@ -489,7 +487,7 @@ func WithChannelHealthCheckInterval(d time.Duration) ChannelOption {
 // WithChannelSendTimeout specifies that channel send timeout after which
 // the message is dropped.
 //
-// The default is 30 seconds.
+// The default is 60 seconds.
 func WithChannelSendTimeout(d time.Duration) ChannelOption {
 	return func(c *channel) {
 		c.chanSendTimeout = d
