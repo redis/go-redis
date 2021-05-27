@@ -1773,7 +1773,7 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	args := make([]interface{}, 0, 8+len(a.Streams))
 	args = append(args, "xreadgroup", "group", a.Group, a.Consumer)
 
-	keyPos := int8(1)
+	keyPos := int8(4)
 	if a.Count > 0 {
 		args = append(args, "count", a.Count)
 		keyPos += 2
