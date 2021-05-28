@@ -2120,15 +2120,15 @@ func (c cmdable) ZInterStore(ctx context.Context, destination string, store *ZSt
 	_ = c(ctx, cmd)
 	return cmd
 }
-func (c cmdable) ZInter(ctx context.Context, store *ZStore) *StringSliceCmd{
+func (c cmdable) ZInter(ctx context.Context, store *ZStore) *StringSliceCmd {
 	args := make([]interface{}, 0, 2+store.len())
 	args = append(args, "zinter", len(store.Keys))
-	for _, key := range store.Keys{
+	for _, key := range store.Keys {
 		args = append(args, key)
 	}
-	if len(store.Weights) > 0{
+	if len(store.Weights) > 0 {
 		args = append(args, "weights")
-		for _, weights := range store.Weights{
+		for _, weights := range store.Weights {
 			args = append(args, weights)
 		}
 	}
@@ -2142,22 +2142,22 @@ func (c cmdable) ZInter(ctx context.Context, store *ZStore) *StringSliceCmd{
 	return cmd
 }
 
-func (c cmdable)ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd  {
+func (c cmdable) ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd {
 	args := make([]interface{}, 0, 3+store.len())
 	args = append(args, "zinterwithscores", len(store.Keys))
-	for _, key := range store.Keys{
+	for _, key := range store.Keys {
 		args = append(args, key)
 	}
-	if len(store.Weights) > 0{
+	if len(store.Weights) > 0 {
 		args = append(args, "weights")
-		for _, weights := range store.Weights{
+		for _, weights := range store.Weights {
 			args = append(args, weights)
 		}
 	}
 	if store.Aggregate != "" {
 		args = append(args, "aggregate", store.Aggregate)
 	}
-	args = append(args,  "withscores")
+	args = append(args, "withscores")
 	cmd := NewZSliceCmd(ctx, args...)
 	cmd.setFirstKeyPos(2)
 	_ = c(ctx, cmd)

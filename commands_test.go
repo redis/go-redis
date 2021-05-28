@@ -4032,8 +4032,8 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			v, err := client.ZInterWithScores(ctx, &redis.ZStore{
-				Keys: []string{"zset1", "zset2"},
-				Weights: []float64{2, 3},
+				Keys:      []string{"zset1", "zset2"},
+				Weights:   []float64{2, 3},
 				Aggregate: "Max",
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
