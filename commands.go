@@ -2144,7 +2144,7 @@ func (c cmdable) ZInter(ctx context.Context, store *ZStore) *StringSliceCmd {
 
 func (c cmdable) ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd {
 	args := make([]interface{}, 0, 3+store.len())
-	args = append(args, "zinterwithscores", len(store.Keys))
+	args = append(args, "zinter", len(store.Keys))
 	for _, key := range store.Keys {
 		args = append(args, key)
 	}
