@@ -2120,6 +2120,7 @@ func (c cmdable) ZInterStore(ctx context.Context, destination string, store *ZSt
 	_ = c(ctx, cmd)
 	return cmd
 }
+
 func (c cmdable) ZInter(ctx context.Context, store *ZStore) *StringSliceCmd {
 	args := make([]interface{}, 0, 2+store.len())
 	args = append(args, "zinter", len(store.Keys))
