@@ -279,6 +279,8 @@ type Cmdable interface {
 	ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd
 	ZDiff(ctx context.Context, keys ...string) *StringSliceCmd
 	ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd
+	ZInter(ctx context.Context, keys ...string) *StringSliceCmd
+	ZInterWithScores(ctx context.Context, keys ...string) *ZSliceCmd
 
 	PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd
 	PFCount(ctx context.Context, keys ...string) *IntCmd
@@ -2388,6 +2390,35 @@ func (c cmdable) ZDiff(ctx context.Context, keys ...string) *StringSliceCmd {
 func (c cmdable) ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd {
 	args := make([]interface{}, 3+len(keys))
 	args[0] = "zdiff"
+	args[1] = len(keys)
+	for i, key := range keys {
+		args[i+2] = key
+	}
+	args[len(keys)+2] = "withscores"
+
+	cmd := NewZSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >= 6.2.0.
+func (c cmdable) ZInter(ctx context.Context, keys ...string) *StringSliceCmd {
+	args := make([]interface{}, 2+len(keys))
+	args[0] = "zinter"
+	args[1] = len(keys)
+	for i, key := range keys {
+		args[i+2] = key
+	}
+
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >= 6.2.0.
+func (c cmdable) ZInterWithScores(ctx context.Context, keys ...string) *ZSliceCmd {
+	args := make([]interface{}, 3+len(keys))
+	args[0] = "zinter"
 	args[1] = len(keys)
 	for i, key := range keys {
 		args[i+2] = key
