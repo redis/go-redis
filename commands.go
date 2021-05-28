@@ -2380,6 +2380,7 @@ func (c cmdable) ZDiff(ctx context.Context, keys ...string) *StringSliceCmd {
 	}
 
 	cmd := NewStringSliceCmd(ctx, args...)
+	cmd.setFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2395,6 +2396,7 @@ func (c cmdable) ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd
 	args[len(keys)+2] = "withscores"
 
 	cmd := NewZSliceCmd(ctx, args...)
+	cmd.setFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2658,6 +2660,7 @@ func (c cmdable) MemoryUsage(ctx context.Context, key string, samples ...int) *I
 		args = append(args, "SAMPLES", samples[0])
 	}
 	cmd := NewIntCmd(ctx, args...)
+	cmd.setFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2674,6 +2677,7 @@ func (c cmdable) Eval(ctx context.Context, script string, keys []string, args ..
 	}
 	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(ctx, cmdArgs...)
+	cmd.setFirstKeyPos(3)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2688,6 +2692,7 @@ func (c cmdable) EvalSha(ctx context.Context, sha1 string, keys []string, args .
 	}
 	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(ctx, cmdArgs...)
+	cmd.setFirstKeyPos(3)
 	_ = c(ctx, cmd)
 	return cmd
 }
