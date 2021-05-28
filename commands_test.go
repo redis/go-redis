@@ -3999,6 +3999,55 @@ var _ = Describe("Commands", func() {
 				},
 			}))
 		})
+
+		It("should ZInter", func() {
+			err := client.ZAdd(ctx, "zset1", &redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset1", &redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", &redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", &redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", &redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			v, err := client.ZInter(ctx, &redis.ZStore{
+				Keys: []string{"zset1", "zset2"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal([]string{"one", "two"}))
+		})
+
+		It("should ZInterWithScores", func() {
+			err := client.ZAdd(ctx, "zset1", &redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset1", &redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", &redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", &redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", &redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			v, err := client.ZInterWithScores(ctx, &redis.ZStore{
+				Keys: []string{"zset1", "zset2"},
+				Weights: []float64{2, 3},
+				Aggregate: "Max",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal([]redis.Z{
+				{
+					Member: "one",
+					Score:  3,
+				},
+				{
+					Member: "two",
+					Score:  6,
+				},
+			}))
+		})
 	})
 
 	Describe("streams", func() {
