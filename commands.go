@@ -281,6 +281,7 @@ type Cmdable interface {
 	ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd
 	ZDiff(ctx context.Context, keys ...string) *StringSliceCmd
 	ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd
+	ZDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd
 
 	PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd
 	PFCount(ctx context.Context, keys ...string) *IntCmd
@@ -2454,6 +2455,18 @@ func (c cmdable) ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd
 
 	cmd := NewZSliceCmd(ctx, args...)
 	cmd.setFirstKeyPos(2)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// redis-server version >=6.2.0.
+func (c cmdable) ZDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd {
+	args := make([]interface{}, 0, 2+len(keys))
+	args = append(args, "zdiffstore", destination)
+	for _, key := range keys {
+		args = append(args, key)
+	}
+	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
