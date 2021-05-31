@@ -2461,8 +2461,8 @@ func (c cmdable) ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd
 
 // redis-server version >=6.2.0.
 func (c cmdable) ZDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd {
-	args := make([]interface{}, 0, 2+len(keys))
-	args = append(args, "zdiffstore", destination)
+	args := make([]interface{}, 0, 3+len(keys))
+	args = append(args, "zdiffstore", destination, len(keys))
 	for _, key := range keys {
 		args = append(args, key)
 	}

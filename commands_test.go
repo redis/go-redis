@@ -4066,6 +4066,12 @@ var _ = Describe("Commands", func() {
 			v, err = client.ZDiffStore(ctx, "out1", "zset2", "zset1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(v).To(Equal(int64(1)))
+			vals, err := client.ZRangeWithScores(ctx, "out1", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]redis.Z{{
+				Score:  3,
+				Member: "three",
+			}}))
 		})
 	})
 
