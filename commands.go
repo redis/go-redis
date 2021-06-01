@@ -255,6 +255,8 @@ type Cmdable interface {
 	ZCount(ctx context.Context, key, min, max string) *IntCmd
 	ZLexCount(ctx context.Context, key, min, max string) *IntCmd
 	ZIncrBy(ctx context.Context, key string, increment float64, member string) *FloatCmd
+	ZInter(ctx context.Context, store *ZStore) *StringSliceCmd
+	ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd
 	ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd
 	ZMScore(ctx context.Context, key string, members ...string) *FloatSliceCmd
 	ZPopMax(ctx context.Context, key string, count ...int64) *ZSliceCmd
@@ -279,6 +281,9 @@ type Cmdable interface {
 	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
 	ZRandMember(ctx context.Context, key string, count int) *StringSliceCmd
 	ZRandMemberWithScores(ctx context.Context, key string, count int) *ZSliceCmd
+	ZDiff(ctx context.Context, keys ...string) *StringSliceCmd
+	ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd
+	ZDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd
 
 	PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd
 	PFCount(ctx context.Context, keys ...string) *IntCmd
@@ -384,7 +389,7 @@ func (c statefulCmdable) Auth(ctx context.Context, password string) *StatusCmd {
 	return cmd
 }
 
-// Perform an AUTH command, using the given user and pass.
+// AuthACL Perform an AUTH command, using the given user and pass.
 // Should be used to authenticate the current connection with one of the connections defined in the ACL list
 // when connecting to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
 func (c statefulCmdable) AuthACL(ctx context.Context, username, password string) *StatusCmd {
@@ -418,7 +423,7 @@ func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCm
 	return cmd
 }
 
-// Set the resp protocol used.
+// Hello Set the resp protocol used.
 func (c statefulCmdable) Hello(ctx context.Context,
 	ver int, username, password, clientName string) *MapStringInterfaceCmd {
 	args := make([]interface{}, 0, 7)
@@ -728,7 +733,7 @@ func (c cmdable) DecrBy(ctx context.Context, key string, decrement int64) *IntCm
 	return cmd
 }
 
-// Redis `GET key` command. It returns redis.Nil error when key does not exist.
+// Get redis `GET key` command. It returns redis.Nil error when key does not exist.
 func (c cmdable) Get(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "get", key)
 	_ = c(ctx, cmd)
@@ -747,7 +752,7 @@ func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) *Str
 	return cmd
 }
 
-// An expiration of zero removes the TTL associated with the key (i.e. GETEX key persist).
+// GetEx An expiration of zero removes the TTL associated with the key (i.e. GETEX key persist).
 // Requires Redis >= 6.2.0.
 func (c cmdable) GetEx(ctx context.Context, key string, expiration time.Duration) *StringCmd {
 	args := make([]interface{}, 0, 4)
@@ -767,7 +772,7 @@ func (c cmdable) GetEx(ctx context.Context, key string, expiration time.Duration
 	return cmd
 }
 
-// redis-server version >= 6.2.0.
+// GetDel redis-server version >= 6.2.0.
 func (c cmdable) GetDel(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "getdel", key)
 	_ = c(ctx, cmd)
@@ -829,7 +834,7 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 	return cmd
 }
 
-// Redis `SET key value [expiration]` command.
+// Set Redis `SET key value [expiration]` command.
 // Use expiration for `SETEX`-like behavior.
 //
 // Zero expiration means the key has no expiration time.
@@ -904,14 +909,14 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 	return cmd
 }
 
-// Redis `SETEX key expiration value` command.
+// SetEX Redis `SETEX key expiration value` command.
 func (c cmdable) SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "setex", key, formatSec(ctx, expiration), value)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// Redis `SET key value [expiration] NX` command.
+// SetNX Redis `SET key value [expiration] NX` command.
 //
 // Zero expiration means the key has no expiration time.
 // KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
@@ -935,7 +940,7 @@ func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expir
 	return cmd
 }
 
-// Redis `SET key value [expiration] XX` command.
+// SetXX Redis `SET key value [expiration] XX` command.
 //
 // Zero expiration means the key has no expiration time.
 // KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
@@ -1246,14 +1251,14 @@ func (c cmdable) HVals(ctx context.Context, key string) *StringSliceCmd {
 	return cmd
 }
 
-// redis-server version >= 6.2.0.
+// HRandField redis-server version >= 6.2.0.
 func (c cmdable) HRandField(ctx context.Context, key string, count int) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "hrandfield", key, count)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// redis-server version >= 6.2.0.
+// HRandFieldWithValues redis-server version >= 6.2.0.
 func (c cmdable) HRandFieldWithValues(ctx context.Context, key string, count int) *KeyValueSliceCmd {
 	cmd := NewKeyValueSliceCmd(ctx, "hrandfield", key, count, "withvalues")
 	_ = c(ctx, cmd)
@@ -1538,7 +1543,7 @@ func (c cmdable) SIsMember(ctx context.Context, key string, member interface{}) 
 	return cmd
 }
 
-// Redis `SMISMEMBER key member [member ...]` command.
+// SMIsMember Redis `SMISMEMBER key member [member ...]` command.
 func (c cmdable) SMIsMember(ctx context.Context, key string, members ...interface{}) *BoolSliceCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "smismember"
@@ -1549,14 +1554,14 @@ func (c cmdable) SMIsMember(ctx context.Context, key string, members ...interfac
 	return cmd
 }
 
-// Redis `SMEMBERS key` command output as a slice.
+// SMembers Redis `SMEMBERS key` command output as a slice.
 func (c cmdable) SMembers(ctx context.Context, key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "smembers", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// Redis `SMEMBERS key` command output as a map.
+// SMembersMap Redis `SMEMBERS key` command output as a map.
 func (c cmdable) SMembersMap(ctx context.Context, key string) *StringStructMapCmd {
 	cmd := NewStringStructMapCmd(ctx, "smembers", key)
 	_ = c(ctx, cmd)
@@ -1569,28 +1574,28 @@ func (c cmdable) SMove(ctx context.Context, source, destination string, member i
 	return cmd
 }
 
-// Redis `SPOP key` command.
+// SPop Redis `SPOP key` command.
 func (c cmdable) SPop(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "spop", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// Redis `SPOP key count` command.
+// SPopN Redis `SPOP key count` command.
 func (c cmdable) SPopN(ctx context.Context, key string, count int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "spop", key, count)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// Redis `SRANDMEMBER key` command.
+// SRandMember Redis `SRANDMEMBER key` command.
 func (c cmdable) SRandMember(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "srandmember", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// Redis `SRANDMEMBER key count` command.
+// SRandMemberN Redis `SRANDMEMBER key count` command.
 func (c cmdable) SRandMemberN(ctx context.Context, key string, count int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "srandmember", key, count)
 	_ = c(ctx, cmd)
@@ -1793,7 +1798,7 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	args := make([]interface{}, 0, 8+len(a.Streams))
 	args = append(args, "xreadgroup", "group", a.Group, a.Consumer)
 
-	keyPos := int8(1)
+	keyPos := int8(4)
 	if a.Count > 0 {
 		args = append(args, "count", a.Count)
 		keyPos += 2
@@ -1963,7 +1968,18 @@ type ZStore struct {
 	Aggregate string
 }
 
-// Redis `BZPOPMAX key [key ...] timeout` command.
+func (z *ZStore) len() (n int) {
+	n = len(z.Keys)
+	if len(z.Weights) > 0 {
+		n += 1 + len(z.Weights)
+	}
+	if z.Aggregate != "" {
+		n += 2
+	}
+	return n
+}
+
+// BZPopMax Redis `BZPOPMAX key [key ...] timeout` command.
 func (c cmdable) BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd {
 	args := make([]interface{}, 1+len(keys)+1)
 	args[0] = "bzpopmax"
@@ -1977,7 +1993,7 @@ func (c cmdable) BZPopMax(ctx context.Context, timeout time.Duration, keys ...st
 	return cmd
 }
 
-// Redis `BZPOPMIN key [key ...] timeout` command.
+// BZPopMin Redis `BZPOPMIN key [key ...] timeout` command.
 func (c cmdable) BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd {
 	args := make([]interface{}, 1+len(keys)+1)
 	args[0] = "bzpopmin"
@@ -2001,7 +2017,7 @@ func (c cmdable) zAdd(ctx context.Context, a []interface{}, n int, members ...*Z
 	return cmd
 }
 
-// Redis `ZADD key score member [score member ...]` command.
+// ZAdd Redis `ZADD key score member [score member ...]` command.
 func (c cmdable) ZAdd(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 2
 	a := make([]interface{}, n+2*len(members))
@@ -2009,7 +2025,7 @@ func (c cmdable) ZAdd(ctx context.Context, key string, members ...*Z) *IntCmd {
 	return c.zAdd(ctx, a, n, members...)
 }
 
-// Redis `ZADD key NX score member [score member ...]` command.
+// ZAddNX Redis `ZADD key NX score member [score member ...]` command.
 func (c cmdable) ZAddNX(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
@@ -2017,7 +2033,7 @@ func (c cmdable) ZAddNX(ctx context.Context, key string, members ...*Z) *IntCmd 
 	return c.zAdd(ctx, a, n, members...)
 }
 
-// Redis `ZADD key XX score member [score member ...]` command.
+// ZAddXX Redis `ZADD key XX score member [score member ...]` command.
 func (c cmdable) ZAddXX(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
@@ -2025,7 +2041,7 @@ func (c cmdable) ZAddXX(ctx context.Context, key string, members ...*Z) *IntCmd 
 	return c.zAdd(ctx, a, n, members...)
 }
 
-// Redis `ZADD key CH score member [score member ...]` command.
+// ZAddCh Redis `ZADD key CH score member [score member ...]` command.
 func (c cmdable) ZAddCh(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 3
 	a := make([]interface{}, n+2*len(members))
@@ -2033,7 +2049,7 @@ func (c cmdable) ZAddCh(ctx context.Context, key string, members ...*Z) *IntCmd 
 	return c.zAdd(ctx, a, n, members...)
 }
 
-// Redis `ZADD key NX CH score member [score member ...]` command.
+// ZAddNXCh Redis `ZADD key NX CH score member [score member ...]` command.
 func (c cmdable) ZAddNXCh(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 4
 	a := make([]interface{}, n+2*len(members))
@@ -2041,7 +2057,7 @@ func (c cmdable) ZAddNXCh(ctx context.Context, key string, members ...*Z) *IntCm
 	return c.zAdd(ctx, a, n, members...)
 }
 
-// Redis `ZADD key XX CH score member [score member ...]` command.
+// ZAddXXCh Redis `ZADD key XX CH score member [score member ...]` command.
 func (c cmdable) ZAddXXCh(ctx context.Context, key string, members ...*Z) *IntCmd {
 	const n = 4
 	a := make([]interface{}, n+2*len(members))
@@ -2059,7 +2075,7 @@ func (c cmdable) zIncr(ctx context.Context, a []interface{}, n int, members ...*
 	return cmd
 }
 
-// Redis `ZADD key INCR score member` command.
+// ZIncr Redis `ZADD key INCR score member` command.
 func (c cmdable) ZIncr(ctx context.Context, key string, member *Z) *FloatCmd {
 	const n = 3
 	a := make([]interface{}, n+2)
@@ -2067,7 +2083,7 @@ func (c cmdable) ZIncr(ctx context.Context, key string, member *Z) *FloatCmd {
 	return c.zIncr(ctx, a, n, member)
 }
 
-// Redis `ZADD key NX INCR score member` command.
+// ZIncrNX Redis `ZADD key NX INCR score member` command.
 func (c cmdable) ZIncrNX(ctx context.Context, key string, member *Z) *FloatCmd {
 	const n = 4
 	a := make([]interface{}, n+2)
@@ -2075,7 +2091,7 @@ func (c cmdable) ZIncrNX(ctx context.Context, key string, member *Z) *FloatCmd {
 	return c.zIncr(ctx, a, n, member)
 }
 
-// Redis `ZADD key XX INCR score member` command.
+// ZIncrXX Redis `ZADD key XX INCR score member` command.
 func (c cmdable) ZIncrXX(ctx context.Context, key string, member *Z) *FloatCmd {
 	const n = 4
 	a := make([]interface{}, n+2)
@@ -2108,7 +2124,7 @@ func (c cmdable) ZIncrBy(ctx context.Context, key string, increment float64, mem
 }
 
 func (c cmdable) ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd {
-	args := make([]interface{}, 0, 3+len(store.Keys))
+	args := make([]interface{}, 0, 3+store.len())
 	args = append(args, "zinterstore", destination, len(store.Keys))
 	for _, key := range store.Keys {
 		args = append(args, key)
@@ -2124,6 +2140,50 @@ func (c cmdable) ZInterStore(ctx context.Context, destination string, store *ZSt
 	}
 	cmd := NewIntCmd(ctx, args...)
 	cmd.setFirstKeyPos(3)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZInter(ctx context.Context, store *ZStore) *StringSliceCmd {
+	args := make([]interface{}, 0, 2+store.len())
+	args = append(args, "zinter", len(store.Keys))
+	for _, key := range store.Keys {
+		args = append(args, key)
+	}
+	if len(store.Weights) > 0 {
+		args = append(args, "weights")
+		for _, weights := range store.Weights {
+			args = append(args, weights)
+		}
+	}
+
+	if store.Aggregate != "" {
+		args = append(args, "aggregate", store.Aggregate)
+	}
+	cmd := NewStringSliceCmd(ctx, args...)
+	cmd.setFirstKeyPos(2)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd {
+	args := make([]interface{}, 0, 3+store.len())
+	args = append(args, "zinter", len(store.Keys))
+	for _, key := range store.Keys {
+		args = append(args, key)
+	}
+	if len(store.Weights) > 0 {
+		args = append(args, "weights")
+		for _, weights := range store.Weights {
+			args = append(args, weights)
+		}
+	}
+	if store.Aggregate != "" {
+		args = append(args, "aggregate", store.Aggregate)
+	}
+	args = append(args, "withscores")
+	cmd := NewZSliceCmd(ctx, args...)
+	cmd.setFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2354,7 +2414,7 @@ func (c cmdable) ZScore(ctx context.Context, key, member string) *FloatCmd {
 }
 
 func (c cmdable) ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd {
-	args := make([]interface{}, 0, 3+len(store.Keys))
+	args := make([]interface{}, 0, 3+store.len())
 	args = append(args, "zunionstore", dest, len(store.Keys))
 	for _, key := range store.Keys {
 		args = append(args, key)
@@ -2385,6 +2445,49 @@ func (c cmdable) ZRandMember(ctx context.Context, key string, count int) *String
 // ZRandMemberWithScores redis-server version >= 6.2.0.
 func (c cmdable) ZRandMemberWithScores(ctx context.Context, key string, count int) *ZSliceCmd {
 	cmd := NewZSliceCmd(ctx, "zrandmember", key, count, "withscores")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ZDiff redis-server version >= 6.2.0.
+func (c cmdable) ZDiff(ctx context.Context, keys ...string) *StringSliceCmd {
+	args := make([]interface{}, 2+len(keys))
+	args[0] = "zdiff"
+	args[1] = len(keys)
+	for i, key := range keys {
+		args[i+2] = key
+	}
+
+	cmd := NewStringSliceCmd(ctx, args...)
+	cmd.setFirstKeyPos(2)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ZDiffWithScores redis-server version >= 6.2.0.
+func (c cmdable) ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd {
+	args := make([]interface{}, 3+len(keys))
+	args[0] = "zdiff"
+	args[1] = len(keys)
+	for i, key := range keys {
+		args[i+2] = key
+	}
+	args[len(keys)+2] = "withscores"
+
+	cmd := NewZSliceCmd(ctx, args...)
+	cmd.setFirstKeyPos(2)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ZDiffStore redis-server version >=6.2.0.
+func (c cmdable) ZDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd {
+	args := make([]interface{}, 0, 3+len(keys))
+	args = append(args, "zdiffstore", destination, len(keys))
+	for _, key := range keys {
+		args = append(args, key)
+	}
+	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2648,6 +2751,7 @@ func (c cmdable) MemoryUsage(ctx context.Context, key string, samples ...int) *I
 		args = append(args, "SAMPLES", samples[0])
 	}
 	cmd := NewIntCmd(ctx, args...)
+	cmd.setFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2664,6 +2768,7 @@ func (c cmdable) Eval(ctx context.Context, script string, keys []string, args ..
 	}
 	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(ctx, cmdArgs...)
+	cmd.setFirstKeyPos(3)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2678,6 +2783,7 @@ func (c cmdable) EvalSha(ctx context.Context, sha1 string, keys []string, args .
 	}
 	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(ctx, cmdArgs...)
+	cmd.setFirstKeyPos(3)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2926,7 +3032,7 @@ func (c cmdable) GeoRadiusStore(
 	return cmd
 }
 
-// GeoRadius is a read-only GEORADIUSBYMEMBER_RO command.
+// GeoRadiusByMember is a read-only GEORADIUSBYMEMBER_RO command.
 func (c cmdable) GeoRadiusByMember(
 	ctx context.Context, key, member string, query *GeoRadiusQuery,
 ) *GeoLocationCmd {
