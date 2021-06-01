@@ -4048,6 +4048,31 @@ var _ = Describe("Commands", func() {
 				},
 			}))
 		})
+
+		It("should ZDiffStore", func() {
+			err := client.ZAdd(ctx, "zset1", &redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset1", &redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", &redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", &redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", &redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			v, err := client.ZDiffStore(ctx, "out1", "zset1", "zset2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal(int64(0)))
+			v, err = client.ZDiffStore(ctx, "out1", "zset2", "zset1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal(int64(1)))
+			vals, err := client.ZRangeWithScores(ctx, "out1", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]redis.Z{{
+				Score:  3,
+				Member: "three",
+			}}))
+		})
 	})
 
 	Describe("streams", func() {
