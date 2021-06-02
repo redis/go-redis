@@ -1501,6 +1501,121 @@ func (cmd *XPendingExtCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
+type XAutoClaim struct {
+	ID       string
+	Messages []XMessage
+}
+
+type XAutoClaimCmd struct {
+	baseCmd
+	val XAutoClaim
+}
+
+var _ Cmder = (*XAutoClaimCmd)(nil)
+
+func NewXAutoClaimCmd(ctx context.Context, args ...interface{}) *XAutoClaimCmd {
+	return &XAutoClaimCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *XAutoClaimCmd) Val() XAutoClaim {
+	return cmd.val
+}
+
+func (cmd *XAutoClaimCmd) Result() (XAutoClaim, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *XAutoClaimCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XAutoClaimCmd) readReply(rd *proto.Reader) error {
+	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		var err error
+
+		cmd.val.ID, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+
+		cmd.val.Messages, err = readXMessageSlice(rd)
+		if err != nil {
+			return nil, err
+		}
+
+		return nil, nil
+	})
+	return err
+}
+
+type XAutoClaimJustID struct {
+	ID  string
+	IDs []string
+}
+
+type XAutoClaimJustIDCmd struct {
+	baseCmd
+	val XAutoClaimJustID
+}
+
+var _ Cmder = (*XAutoClaimJustIDCmd)(nil)
+
+func NewXAutoClaimJustIDCmd(ctx context.Context, args ...interface{}) *XAutoClaimJustIDCmd {
+	return &XAutoClaimJustIDCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *XAutoClaimJustIDCmd) Val() XAutoClaimJustID {
+	return cmd.val
+}
+
+func (cmd *XAutoClaimJustIDCmd) Result() (XAutoClaimJustID, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *XAutoClaimJustIDCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XAutoClaimJustIDCmd) readReply(rd *proto.Reader) error {
+	_, err := rd.ReadArrayReply(func(rd *proto.Reader, _ int64) (interface{}, error) {
+		var err error
+
+		cmd.val.ID, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+
+		n, err := rd.ReadArrayLen()
+		if err != nil {
+			return nil, err
+		}
+
+		cmd.val.IDs = make([]string, n)
+		for i := 0; i < n; i++ {
+			var err error
+			cmd.val.IDs[i], err = rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		return nil, nil
+	})
+	return err
+}
+
+//------------------------------------------------------------------------------
+
 type XInfoConsumersCmd struct {
 	baseCmd
 	val []XInfoConsumer
