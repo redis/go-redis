@@ -4386,38 +4386,36 @@ var _ = Describe("Commands", func() {
 				Expect(n).To(Equal(int64(3)))
 			})
 
-			FDescribe("XAutoClaim", func() {
-				It("should XAutoClaim", func() {
-					xca := &redis.XAutoClaimArgs{
-						Stream:   "stream",
-						Group:    "group",
-						Consumer: "consumer",
-						Start:    "-",
-						Count:    2,
-					}
-					msgs, err := client.XAutoClaim(ctx, xca).Result()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(msgs.ID).To(Equal("3-0"))
-					Expect(msgs.Messages).To(Equal([]redis.XMessage{{
-						ID:     "1-0",
-						Values: map[string]interface{}{"uno": "un"},
-					}, {
-						ID:     "2-0",
-						Values: map[string]interface{}{"dos": "deux"},
-					}}))
+			It("should XAutoClaim", func() {
+				xca := &redis.XAutoClaimArgs{
+					Stream:   "stream",
+					Group:    "group",
+					Consumer: "consumer",
+					Start:    "-",
+					Count:    2,
+				}
+				msgs, err := client.XAutoClaim(ctx, xca).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(msgs.ID).To(Equal("3-0"))
+				Expect(msgs.Messages).To(Equal([]redis.XMessage{{
+					ID:     "1-0",
+					Values: map[string]interface{}{"uno": "un"},
+				}, {
+					ID:     "2-0",
+					Values: map[string]interface{}{"dos": "deux"},
+				}}))
 
-					xca.Start = msgs.ID
-					msgs, err = client.XAutoClaim(ctx, xca).Result()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(msgs.Messages).To(Equal([]redis.XMessage{{
-						ID:     "3-0",
-						Values: map[string]interface{}{"tres": "troix"},
-					}}))
+				xca.Start = msgs.ID
+				msgs, err = client.XAutoClaim(ctx, xca).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(msgs.Messages).To(Equal([]redis.XMessage{{
+					ID:     "3-0",
+					Values: map[string]interface{}{"tres": "troix"},
+				}}))
 
-					msg, err := client.XAutoClaimJustID(ctx, xca).Result()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(msg.IDs).To(Equal([]string{"3-0"}))
-				})
+				msg, err := client.XAutoClaimJustID(ctx, xca).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(msg.IDs).To(Equal([]string{"3-0"}))
 			})
 
 			It("should XClaim", func() {
