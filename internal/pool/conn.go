@@ -68,10 +68,7 @@ func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(r
 	if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
 		return err
 	}
-	if err := fn(cn.rd); err != nil {
-		return err
-	}
-	return nil
+	return fn(cn.rd)
 }
 
 func (cn *Conn) WithWriter(
