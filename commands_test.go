@@ -4409,13 +4409,16 @@ var _ = Describe("Commands", func() {
 				msgs, err = client.XAutoClaim(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(msgs.Messages).To(Equal([]redis.XMessage{{
+					ID:     "2-0",
+					Values: map[string]interface{}{"uno": "un"},
+				}, {
 					ID:     "3-0",
-					Values: map[string]interface{}{"tres": "troix"},
+					Values: map[string]interface{}{"dos": "deux"},
 				}}))
 
 				msg, err := client.XAutoClaimJustID(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(msg.IDs).To(Equal([]string{"3-0"}))
+				Expect(msg.IDs).To(Equal([]string{"2-0", "3-0"}))
 			})
 
 			It("should XClaim", func() {
