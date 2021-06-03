@@ -4396,7 +4396,7 @@ var _ = Describe("Commands", func() {
 				}
 				msgs, err := client.XAutoClaim(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(msgs.ID).To(Equal("3-0"))
+				Expect(msgs.ID).To(Equal("2-0"))
 				Expect(msgs.Messages).To(Equal([]redis.XMessage{{
 					ID:     "1-0",
 					Values: map[string]interface{}{"uno": "un"},
