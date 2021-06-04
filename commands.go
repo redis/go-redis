@@ -1845,6 +1845,39 @@ func (c cmdable) XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingE
 	return cmd
 }
 
+type XAutoClaimArgs struct {
+	Stream   string
+	Group    string
+	MinIdle  time.Duration
+	Start    string
+	Count    int64
+	Consumer string
+}
+
+func (c cmdable) XAutoClaim(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimCmd {
+	args := xAutoClaimArgs(ctx, a)
+	cmd := NewXAutoClaimCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) XAutoClaimJustID(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimJustIDCmd {
+	args := xAutoClaimArgs(ctx, a)
+	args = append(args, "justid")
+	cmd := NewXAutoClaimJustIDCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func xAutoClaimArgs(ctx context.Context, a *XAutoClaimArgs) []interface{} {
+	args := make([]interface{}, 0, 9)
+	args = append(args, "xautoclaim", a.Stream, a.Group, a.Consumer, formatMs(ctx, a.MinIdle), a.Start)
+	if a.Count > 0 {
+		args = append(args, "count", a.Count)
+	}
+	return args
+}
+
 type XClaimArgs struct {
 	Stream   string
 	Group    string
