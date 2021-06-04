@@ -1501,14 +1501,11 @@ func (cmd *XPendingExtCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
-type XAutoClaim struct {
-	ID       string
-	Messages []XMessage
-}
-
 type XAutoClaimCmd struct {
 	baseCmd
-	val XAutoClaim
+
+	start string
+	val   []XMessage
 }
 
 var _ Cmder = (*XAutoClaimCmd)(nil)
@@ -1522,12 +1519,12 @@ func NewXAutoClaimCmd(ctx context.Context, args ...interface{}) *XAutoClaimCmd {
 	}
 }
 
-func (cmd *XAutoClaimCmd) Val() XAutoClaim {
-	return cmd.val
+func (cmd *XAutoClaimCmd) Val() (messages []XMessage, start string) {
+	return cmd.val, cmd.start
 }
 
-func (cmd *XAutoClaimCmd) Result() (XAutoClaim, error) {
-	return cmd.val, cmd.err
+func (cmd *XAutoClaimCmd) Result() (messages []XMessage, start string, err error) {
+	return cmd.val, cmd.start, cmd.err
 }
 
 func (cmd *XAutoClaimCmd) String() string {
@@ -1536,14 +1533,17 @@ func (cmd *XAutoClaimCmd) String() string {
 
 func (cmd *XAutoClaimCmd) readReply(rd *proto.Reader) error {
 	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		if n != 2 {
+			return nil, fmt.Errorf("got %d, wanted 2", n)
+		}
 		var err error
 
-		cmd.val.ID, err = rd.ReadString()
+		cmd.start, err = rd.ReadString()
 		if err != nil {
 			return nil, err
 		}
 
-		cmd.val.Messages, err = readXMessageSlice(rd)
+		cmd.val, err = readXMessageSlice(rd)
 		if err != nil {
 			return nil, err
 		}
@@ -1553,14 +1553,13 @@ func (cmd *XAutoClaimCmd) readReply(rd *proto.Reader) error {
 	return err
 }
 
-type XAutoClaimJustID struct {
-	ID  string
-	IDs []string
-}
+//------------------------------------------------------------------------------
 
 type XAutoClaimJustIDCmd struct {
 	baseCmd
-	val XAutoClaimJustID
+
+	start string
+	val   []string
 }
 
 var _ Cmder = (*XAutoClaimJustIDCmd)(nil)
@@ -1574,12 +1573,12 @@ func NewXAutoClaimJustIDCmd(ctx context.Context, args ...interface{}) *XAutoClai
 	}
 }
 
-func (cmd *XAutoClaimJustIDCmd) Val() XAutoClaimJustID {
-	return cmd.val
+func (cmd *XAutoClaimJustIDCmd) Val() (ids []string, start string) {
+	return cmd.val, cmd.start
 }
 
-func (cmd *XAutoClaimJustIDCmd) Result() (XAutoClaimJustID, error) {
-	return cmd.val, cmd.err
+func (cmd *XAutoClaimJustIDCmd) Result() (ids []string, start string, err error) {
+	return cmd.val, cmd.start, cmd.err
 }
 
 func (cmd *XAutoClaimJustIDCmd) String() string {
@@ -1587,23 +1586,25 @@ func (cmd *XAutoClaimJustIDCmd) String() string {
 }
 
 func (cmd *XAutoClaimJustIDCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayReply(func(rd *proto.Reader, _ int64) (interface{}, error) {
+	_, err := rd.ReadArrayReply(func(rd *proto.Reader, n int64) (interface{}, error) {
+		if n != 2 {
+			return nil, fmt.Errorf("got %d, wanted 2", n)
+		}
 		var err error
 
-		cmd.val.ID, err = rd.ReadString()
+		cmd.start, err = rd.ReadString()
 		if err != nil {
 			return nil, err
 		}
 
-		n, err := rd.ReadArrayLen()
+		nn, err := rd.ReadArrayLen()
 		if err != nil {
 			return nil, err
 		}
 
-		cmd.val.IDs = make([]string, n)
-		for i := 0; i < n; i++ {
-			var err error
-			cmd.val.IDs[i], err = rd.ReadString()
+		cmd.val = make([]string, n)
+		for i := 0; i < nn; i++ {
+			cmd.val[i], err = rd.ReadString()
 			if err != nil {
 				return nil, err
 			}

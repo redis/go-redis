@@ -1870,7 +1870,7 @@ func (c cmdable) XAutoClaimJustID(ctx context.Context, a *XAutoClaimArgs) *XAuto
 }
 
 func xAutoClaimArgs(ctx context.Context, a *XAutoClaimArgs) []interface{} {
-	args := make([]interface{}, 0)
+	args := make([]interface{}, 0, 9)
 	args = append(args, "xautoclaim", a.Stream, a.Group, a.Consumer, formatMs(ctx, a.MinIdle), a.Start)
 	if a.Count > 0 {
 		args = append(args, "count", a.Count)
