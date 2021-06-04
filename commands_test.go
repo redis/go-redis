@@ -4411,10 +4411,10 @@ var _ = Describe("Commands", func() {
 				Expect(start).To(Equal("3-0"))
 				Expect(msgs).To(Equal([]redis.XMessage{{
 					ID:     "2-0",
-					Values: map[string]interface{}{"uno": "un"},
+					Values: map[string]interface{}{"dos": "deux"},
 				}, {
 					ID:     "3-0",
-					Values: map[string]interface{}{"dos": "deux"},
+					Values: map[string]interface{}{"tres": "troix"},
 				}}))
 
 				ids, start, err := client.XAutoClaimJustID(ctx, xca).Result()
