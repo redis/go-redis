@@ -1602,7 +1602,7 @@ func (cmd *XAutoClaimJustIDCmd) readReply(rd *proto.Reader) error {
 			return nil, err
 		}
 
-		cmd.val = make([]string, n)
+		cmd.val = make([]string, nn)
 		for i := 0; i < nn; i++ {
 			cmd.val[i], err = rd.ReadString()
 			if err != nil {
