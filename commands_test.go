@@ -4104,14 +4104,43 @@ var _ = Describe("Commands", func() {
 			Expect(id).To(Equal("3-0"))
 		})
 
+		// TODO remove in v9.
 		It("should XTrim", func() {
 			n, err := client.XTrim(ctx, "stream", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(3)))
 		})
 
+		// TODO remove in v9.
 		It("should XTrimApprox", func() {
 			n, err := client.XTrimApprox(ctx, "stream", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(3)))
+		})
+
+		// TODO XTrimMaxLenApprox/XTrimMinIDApprox There is a bug in the limit parameter.
+		// TODO Don't test it for now.
+		// TODO link: https://github.com/redis/redis/issues/9046
+		It("should XTrimMaxLen", func() {
+			n, err := client.XTrimMaxLen(ctx, "stream", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(3)))
+		})
+
+		It("should XTrimMaxLenApprox", func() {
+			n, err := client.XTrimMaxLenApprox(ctx, "stream", 0, 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(3)))
+		})
+
+		It("should XTrimMinID", func() {
+			n, err := client.XTrimMinID(ctx, "stream", "4-0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(3)))
+		})
+
+		It("should XTrimMinIDApprox", func() {
+			n, err := client.XTrimMinIDApprox(ctx, "stream", "4-0", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(3)))
 		})
@@ -4133,6 +4162,9 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
+		// TODO XAdd There is a bug in the limit parameter.
+		// TODO Don't test it for now.
+		// TODO link: https://github.com/redis/redis/issues/9046
 		It("should XAdd with MaxLen", func() {
 			id, err := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
@@ -4146,6 +4178,21 @@ var _ = Describe("Commands", func() {
 			Expect(vals).To(Equal([]redis.XMessage{
 				{ID: id, Values: map[string]interface{}{"quatro": "quatre"}},
 			}))
+		})
+
+		It("should XAdd with MinID", func() {
+			id, err := client.XAdd(ctx, &redis.XAddArgs{
+				Stream: "stream",
+				MinID:  "5-0",
+				ID:     "4-0",
+				Values: map[string]interface{}{"quatro": "quatre"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(Equal("4-0"))
+
+			vals, err := client.XRange(ctx, "stream", "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(HaveLen(0))
 		})
 
 		It("should XDel", func() {
@@ -4380,8 +4427,14 @@ var _ = Describe("Commands", func() {
 				infoExt, err = client.XPendingExt(ctx, args).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(infoExt).To(HaveLen(0))
+			})
 
-				n, err := client.XGroupDelConsumer(ctx, "stream", "group", "consumer").Result()
+			It("should XGroup Create Delete Consumer", func() {
+				n, err := client.XGroupCreateConsumer(ctx, "stream", "group", "c1").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				n, err = client.XGroupDelConsumer(ctx, "stream", "group", "consumer").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(n).To(Equal(int64(3)))
 			})
