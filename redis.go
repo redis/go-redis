@@ -29,8 +29,22 @@ type Hook interface {
 	AfterProcessPipeline(ctx context.Context, cmds []Cmder) error
 }
 
+type ConnectHook interface {
+	BeforeConnect(ctx context.Context, event ConnectEvent) context.Context
+	AfterConnect(ctx context.Context, event ConnectEvent)
+}
+
+type fullHook interface {
+	Hook
+	ConnectHook
+}
+
+type ConnectEvent struct {
+	Err error
+}
+
 type hooks struct {
-	hooks []Hook
+	hooks []fullHook
 }
 
 func (hs *hooks) lock() {
@@ -44,7 +58,11 @@ func (hs hooks) clone() hooks {
 }
 
 func (hs *hooks) AddHook(hook Hook) {
-	hs.hooks = append(hs.hooks, hook)
+	if hook, ok := hook.(fullHook); ok {
+		hs.hooks = append(hs.hooks, hook)
+	} else {
+		hs.hooks = append(hs.hooks, dummyConnectHook{Hook: hook})
+	}
 }
 
 func (hs hooks) process(
@@ -131,6 +149,16 @@ func (hs hooks) processTxPipeline(
 func (hs hooks) withContext(ctx context.Context, fn func() error) error {
 	return fn()
 }
+
+type dummyConnectHook struct {
+	Hook
+}
+
+func (dummyConnectHook) BeforeConnect(ctx context.Context, event ConnectEvent) context.Context {
+	return ctx
+}
+
+func (dummyConnectHook) AfterConnect(ctx context.Context, event ConnectEvent) {}
 
 //------------------------------------------------------------------------------
 
