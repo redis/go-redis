@@ -1637,7 +1637,8 @@ type XAddArgs struct {
 	// Deprecated: use MaxLen+Approx, remove in v9.
 	MaxLenApprox int64 // MAXLEN ~ N
 
-	MinID  string
+	MinID string
+	// Approx causes MaxLen and MinID to use "~" matcher (instead of "=").
 	Approx bool
 	Limit  int64
 	ID     string
