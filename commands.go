@@ -226,6 +226,7 @@ type Cmdable interface {
 	XGroupCreateMkStream(ctx context.Context, stream, group, start string) *StatusCmd
 	XGroupSetID(ctx context.Context, stream, group, start string) *StatusCmd
 	XGroupDestroy(ctx context.Context, stream, group string) *IntCmd
+	XGroupCreateConsumer(ctx context.Context, stream, group, consumer string) *IntCmd
 	XGroupDelConsumer(ctx context.Context, stream, group, consumer string) *IntCmd
 	XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSliceCmd
 	XAck(ctx context.Context, stream, group string, ids ...string) *IntCmd
@@ -233,8 +234,14 @@ type Cmdable interface {
 	XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingExtCmd
 	XClaim(ctx context.Context, a *XClaimArgs) *XMessageSliceCmd
 	XClaimJustID(ctx context.Context, a *XClaimArgs) *StringSliceCmd
+
+	// TODO: XTrim and XTrimApprox remove in v9.
 	XTrim(ctx context.Context, key string, maxLen int64) *IntCmd
 	XTrimApprox(ctx context.Context, key string, maxLen int64) *IntCmd
+	XTrimMaxLen(ctx context.Context, key string, maxLen int64) *IntCmd
+	XTrimMaxLenApprox(ctx context.Context, key string, maxLen, limit int64) *IntCmd
+	XTrimMinID(ctx context.Context, key string, minID string) *IntCmd
+	XTrimMinIDApprox(ctx context.Context, key string, minID string, limit int64) *IntCmd
 	XInfoGroups(ctx context.Context, key string) *XInfoGroupsCmd
 	XInfoStream(ctx context.Context, key string) *XInfoStreamCmd
 	XInfoConsumers(ctx context.Context, key string, group string) *XInfoConsumersCmd
@@ -1621,22 +1628,50 @@ func (c cmdable) SUnionStore(ctx context.Context, destination string, keys ...st
 //   - XAddArgs.Values = map[string]interface{}{"key1": "value1", "key2": "value2"}
 //
 // Note that map will not preserve the order of key-value pairs.
+// MaxLen/MaxLenApprox and MinID are in conflict, only one of them can be used.
 type XAddArgs struct {
-	Stream       string
-	MaxLen       int64 // MAXLEN N
+	Stream     string
+	NoMkStream bool
+	MaxLen     int64 // MAXLEN N
+
+	// Deprecated: use MaxLen+Approx, remove in v9.
 	MaxLenApprox int64 // MAXLEN ~ N
-	ID           string
-	Values       interface{}
+
+	MinID string
+	// Approx causes MaxLen and MinID to use "~" matcher (instead of "=").
+	Approx bool
+	Limit  int64
+	ID     string
+	Values interface{}
 }
 
+// XAdd a.Limit has a bug, please confirm it and use it.
+// issue: https://github.com/redis/redis/issues/9046
 func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
-	args := make([]interface{}, 0, 8)
-	args = append(args, "xadd")
-	args = append(args, a.Stream)
-	if a.MaxLen > 0 {
-		args = append(args, "maxlen", a.MaxLen)
-	} else if a.MaxLenApprox > 0 {
+	args := make([]interface{}, 0, 11)
+	args = append(args, "xadd", a.Stream)
+	if a.NoMkStream {
+		args = append(args, "nomkstream")
+	}
+	switch {
+	case a.MaxLen > 0:
+		if a.Approx {
+			args = append(args, "maxlen", "~", a.MaxLen)
+		} else {
+			args = append(args, "maxlen", a.MaxLen)
+		}
+	case a.MaxLenApprox > 0:
+		// TODO remove in v9.
 		args = append(args, "maxlen", "~", a.MaxLenApprox)
+	case a.MinID != "":
+		if a.Approx {
+			args = append(args, "minid", "~", a.MinID)
+		} else {
+			args = append(args, "minid", a.MinID)
+		}
+	}
+	if a.Limit > 0 {
+		args = append(args, "limit", a.Limit)
 	}
 	if a.ID != "" {
 		args = append(args, a.ID)
@@ -1753,6 +1788,12 @@ func (c cmdable) XGroupSetID(ctx context.Context, stream, group, start string) *
 
 func (c cmdable) XGroupDestroy(ctx context.Context, stream, group string) *IntCmd {
 	cmd := NewIntCmd(ctx, "xgroup", "destroy", stream, group)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) XGroupCreateConsumer(ctx context.Context, stream, group, consumer string) *IntCmd {
+	cmd := NewIntCmd(ctx, "xgroup", "createconsumer", stream, group, consumer)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1914,16 +1955,63 @@ func xClaimArgs(a *XClaimArgs) []interface{} {
 	return args
 }
 
-func (c cmdable) XTrim(ctx context.Context, key string, maxLen int64) *IntCmd {
-	cmd := NewIntCmd(ctx, "xtrim", key, "maxlen", maxLen)
+// xTrim If approx is true, add the "~" parameter, otherwise it is the default "=" (redis default).
+// example:
+//		XTRIM key MAXLEN/MINID threshold LIMIT limit.
+//		XTRIM key MAXLEN/MINID ~ threshold LIMIT limit.
+// The redis-server version is lower than 6.2, please set limit to 0.
+func (c cmdable) xTrim(
+	ctx context.Context, key, strategy string,
+	approx bool, threshold interface{}, limit int64,
+) *IntCmd {
+	args := make([]interface{}, 0, 7)
+	args = append(args, "xtrim", key, strategy)
+	if approx {
+		args = append(args, "~")
+	}
+	args = append(args, threshold)
+	if limit > 0 {
+		args = append(args, "limit", limit)
+	}
+	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
+// Deprecated: use XTrimMaxLen, remove in v9.
+func (c cmdable) XTrim(ctx context.Context, key string, maxLen int64) *IntCmd {
+	return c.xTrim(ctx, key, "maxlen", false, maxLen, 0)
+}
+
+// Deprecated: use XTrimMaxLenApprox, remove in v9.
 func (c cmdable) XTrimApprox(ctx context.Context, key string, maxLen int64) *IntCmd {
-	cmd := NewIntCmd(ctx, "xtrim", key, "maxlen", "~", maxLen)
-	_ = c(ctx, cmd)
-	return cmd
+	return c.xTrim(ctx, key, "maxlen", true, maxLen, 0)
+}
+
+// XTrimMaxLen No `~` rules are used, `limit` cannot be used.
+// cmd: XTRIM key MAXLEN maxLen
+func (c cmdable) XTrimMaxLen(ctx context.Context, key string, maxLen int64) *IntCmd {
+	return c.xTrim(ctx, key, "maxlen", false, maxLen, 0)
+}
+
+// XTrimMaxLenApprox LIMIT has a bug, please confirm it and use it.
+// issue: https://github.com/redis/redis/issues/9046
+// cmd: XTRIM key MAXLEN ~ maxLen LIMIT limit
+func (c cmdable) XTrimMaxLenApprox(ctx context.Context, key string, maxLen, limit int64) *IntCmd {
+	return c.xTrim(ctx, key, "maxlen", true, maxLen, limit)
+}
+
+// XTrimMinID No `~` rules are used, `limit` cannot be used.
+// cmd: XTRIM key MINID minID
+func (c cmdable) XTrimMinID(ctx context.Context, key string, minID string) *IntCmd {
+	return c.xTrim(ctx, key, "minid", false, minID, 0)
+}
+
+// XTrimMinIDApprox LIMIT has a bug, please confirm it and use it.
+// issue: https://github.com/redis/redis/issues/9046
+// cmd: XTRIM key MINID ~ minID LIMIT limit
+func (c cmdable) XTrimMinIDApprox(ctx context.Context, key string, minID string, limit int64) *IntCmd {
+	return c.xTrim(ctx, key, "minid", true, minID, limit)
 }
 
 func (c cmdable) XInfoConsumers(ctx context.Context, key string, group string) *XInfoConsumersCmd {
