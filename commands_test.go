@@ -2976,7 +2976,6 @@ var _ = Describe("Commands", func() {
 			Expect(vals).To(Equal([]redis.Z{{Score: 1, Member: "one"}}))
 		})
 
-		// TODO: remove in v9.
 		It("should ZAddNX", func() {
 			added, err := client.ZAddNX(ctx, "zset", &redis.Z{
 				Score:  1,
@@ -3001,7 +3000,6 @@ var _ = Describe("Commands", func() {
 			Expect(vals).To(Equal([]redis.Z{{Score: 1, Member: "one"}}))
 		})
 
-		// TODO: remove in v9.
 		It("should ZAddXX", func() {
 			added, err := client.ZAddXX(ctx, "zset", &redis.Z{
 				Score:  1,

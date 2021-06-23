@@ -250,8 +250,6 @@ type Cmdable interface {
 	BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
 
 	// TODO: remove
-	// 		ZAddNX
-	//		ZAddXX
 	//		ZAddCh
 	//		ZIncr
 	//		ZAddNXCh
@@ -2211,12 +2209,6 @@ func (c cmdable) ZAdd(ctx context.Context, key string, members ...*Z) *IntCmd {
 }
 
 // ZAddNX Redis `ZADD key NX score member [score member ...]` command.
-// Deprecated: Use
-//		client.ZAddArgs(ctx, ZAddArgs{
-//			NX: true,
-//			Members: []Z,
-//		})
-//	remove in v9.
 func (c cmdable) ZAddNX(ctx context.Context, key string, members ...*Z) *IntCmd {
 	return c.zAdd(ctx, key, ZAddArgs{
 		NX: true,
@@ -2224,12 +2216,6 @@ func (c cmdable) ZAddNX(ctx context.Context, key string, members ...*Z) *IntCmd 
 }
 
 // ZAddXX Redis `ZADD key XX score member [score member ...]` command.
-// Deprecated: Use
-//		client.ZAddArgs(ctx, ZAddArgs{
-//			XX: true,
-//			Members: []Z,
-//		})
-//	remove in v9.
 func (c cmdable) ZAddXX(ctx context.Context, key string, members ...*Z) *IntCmd {
 	return c.zAdd(ctx, key, ZAddArgs{
 		XX: true,
