@@ -9,8 +9,8 @@ import (
 	"github.com/go-redis/redis/v8/internal"
 )
 
-// KeepTTL is an option for Set command to keep key's existing TTL.
-// It requires your redis-server version >= 6.0 (Otherwise you will receive an error: (error) ERR syntax error).
+// KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
+// otherwise you will receive an error: (error) ERR syntax error.
 // For example:
 //
 //    rdb.Set(ctx, key, value, redis.KeepTTL)
@@ -841,8 +841,8 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 // Use expiration for `SETEX`-like behavior.
 //
 // Zero expiration means the key has no expiration time.
-// KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
-// It requires your redis-server version >= 6.0 (Otherwise you will receive an error: (error) ERR syntax error).
+// KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
+// otherwise you will receive an error: (error) ERR syntax error.
 func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
 	args := make([]interface{}, 3, 5)
 	args[0] = "set"
@@ -875,8 +875,8 @@ type SetArgs struct {
 	// When Get is true, the command returns the old value stored at key, or nil when key did not exist.
 	Get bool
 
-	// KeepTTL is a Redis KEEPTTL option to keep existing TTL.
-	// It requires your redis-server version >= 6.0 (Otherwise you will receive an error: (error) ERR syntax error).
+	// KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
+	// otherwise you will receive an error: (error) ERR syntax error.
 	KeepTTL bool
 }
 
@@ -924,8 +924,8 @@ func (c cmdable) SetEX(ctx context.Context, key string, value interface{}, expir
 // SetNX Redis `SET key value [expiration] NX` command.
 //
 // Zero expiration means the key has no expiration time.
-// KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
-// It requires your redis-server version >= 6.0 (Otherwise you will receive an error: (error) ERR syntax error).
+// KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
+// otherwise you will receive an error: (error) ERR syntax error.
 func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	switch expiration {
@@ -949,8 +949,8 @@ func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expir
 // SetXX Redis `SET key value [expiration] XX` command.
 //
 // Zero expiration means the key has no expiration time.
-// KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
-// It requires your redis-server version >= 6.0 (Otherwise you will receive an error: (error) ERR syntax error).
+// KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
+// otherwise you will receive an error: (error) ERR syntax error.
 func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	switch expiration {
