@@ -10,6 +10,7 @@ import (
 )
 
 // KeepTTL is an option for Set command to keep key's existing TTL.
+// It requires your redis-server version >= 6.0 (Otherwise you will receive an error: (error) ERR syntax error).
 // For example:
 //
 //    rdb.Set(ctx, key, value, redis.KeepTTL)
@@ -841,6 +842,7 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 //
 // Zero expiration means the key has no expiration time.
 // KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
+// It requires your redis-server version >= 6.0 (Otherwise you will receive an error: (error) ERR syntax error).
 func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
 	args := make([]interface{}, 3, 5)
 	args[0] = "set"
@@ -874,6 +876,7 @@ type SetArgs struct {
 	Get bool
 
 	// KeepTTL is a Redis KEEPTTL option to keep existing TTL.
+	// It requires your redis-server version >= 6.0 (Otherwise you will receive an error: (error) ERR syntax error).
 	KeepTTL bool
 }
 
@@ -922,6 +925,7 @@ func (c cmdable) SetEX(ctx context.Context, key string, value interface{}, expir
 //
 // Zero expiration means the key has no expiration time.
 // KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
+// It requires your redis-server version >= 6.0 (Otherwise you will receive an error: (error) ERR syntax error).
 func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	switch expiration {
@@ -946,6 +950,7 @@ func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expir
 //
 // Zero expiration means the key has no expiration time.
 // KeepTTL(-1) expiration is a Redis KEEPTTL option to keep existing TTL.
+// It requires your redis-server version >= 6.0 (Otherwise you will receive an error: (error) ERR syntax error).
 func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	switch expiration {
