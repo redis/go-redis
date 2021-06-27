@@ -32,8 +32,8 @@ type ConnectEvent struct {
 }
 
 type PoolHook interface {
-        BeforeConnect(ctx context.Context) (context.Context, error)
-        AfterConnect(ctx context.Context, event ConnectEvent) error
+        BeforeConnect(ctx context.Context) context.Context
+        AfterConnect(ctx context.Context, event ConnectEvent)
 }
 
 type hooks struct  {
@@ -200,18 +200,36 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, p.getLastDialError()
 	}
 
-	netConn, err := p.opt.Dialer(ctx)
+	var netConn net.Conn
+	var cn* Conn
+	var hookIndex int
+	var err error
+
+	for ; hookIndex < len(p.hooks.hooks); hookIndex++ {
+		ctx = p.hooks.hooks[hookIndex].BeforeConnect(ctx)
+	}
+
+	netConn, err = p.opt.Dialer(ctx)
 	if err != nil {
 		p.setLastDialError(err)
 		if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.opt.PoolSize) {
 			go p.tryDial()
 		}
+	} else {
+		internal.NewConnectionsCounter.Add(ctx, 1)
+		cn = NewConn(netConn)
+		cn.pooled = pooled
+	}
+
+	event := ConnectEvent{Err:err}
+	for hookIndex--; hookIndex >= 0; hookIndex-- {
+		p.hooks.hooks[hookIndex].AfterConnect(ctx, event);
+	}
+
+	if err != nil {
 		return nil, err
 	}
 
-	internal.NewConnectionsCounter.Add(ctx, 1)
-	cn := NewConn(netConn)
-	cn.pooled = pooled
 	return cn, nil
 }
 
