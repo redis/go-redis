@@ -3,6 +3,7 @@ package pool
 import "context"
 
 type SingleConnPool struct {
+	hooks
 	pool      Pooler
 	cn        *Conn
 	stickyErr error

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/go-redis/redis/v8/internal"
 	"github.com/go-redis/redis/v8/internal/pool"
@@ -29,6 +30,11 @@ type Hook interface {
 	AfterProcessPipeline(ctx context.Context, cmds []Cmder) error
 }
 
+type fullHook interface {
+	Hook
+	pool.PoolHook
+}
+
 type hooks struct {
 	hooks []Hook
 }
@@ -45,6 +51,10 @@ func (hs hooks) clone() hooks {
 
 func (hs *hooks) AddHook(hook Hook) {
 	hs.hooks = append(hs.hooks, hook)
+	if hook, ok := hook.(fullHook); ok {
+		client := *(*Client)(unsafe.Pointer(hs))
+		client.baseClient.connPool.AddHook(hook)
+	}
 }
 
 func (hs hooks) process(

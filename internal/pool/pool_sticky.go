@@ -34,6 +34,7 @@ func (e BadConnError) Unwrap() error {
 //------------------------------------------------------------------------------
 
 type StickyConnPool struct {
+	hooks
 	pool   Pooler
 	shared int32 // atomic
 

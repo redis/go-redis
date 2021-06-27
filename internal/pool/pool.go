@@ -27,6 +27,23 @@ var timers = sync.Pool{
 	},
 }
 
+type ConnectEvent struct {
+        Err error
+}
+
+type PoolHook interface {
+        BeforeConnect(ctx context.Context) (context.Context, error)
+        AfterConnect(ctx context.Context, event ConnectEvent) error
+}
+
+type hooks struct  {
+	hooks []PoolHook
+}
+
+func (hs *hooks) AddHook(hook PoolHook) {
+	hs.hooks = append(hs.hooks, hook)
+}
+
 // Stats contains pool state information and accumulated stats.
 type Stats struct {
 	Hits     uint32 // number of times free connection was found in the pool
@@ -39,6 +56,8 @@ type Stats struct {
 }
 
 type Pooler interface {
+	AddHook(hook PoolHook)
+
 	NewConn(context.Context) (*Conn, error)
 	CloseConn(*Conn) error
 
@@ -70,6 +89,8 @@ type lastDialErrorWrap struct {
 }
 
 type ConnPool struct {
+	hooks
+
 	opt *Options
 
 	dialErrorsNum uint32 // atomic
