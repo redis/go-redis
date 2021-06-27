@@ -188,8 +188,8 @@ func ExampleClient_Set() {
 	}
 }
 
-func ExampleClient_SetEX() {
-	err := rdb.SetEX(ctx, "key", "value", time.Hour).Err()
+func ExampleClient_SetEx() {
+	err := rdb.SetEx(ctx, "key", "value", time.Hour).Err()
 	if err != nil {
 		panic(err)
 	}
