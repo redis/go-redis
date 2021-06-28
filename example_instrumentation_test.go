@@ -5,11 +5,20 @@ import (
 	"fmt"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v8/internal/pool"
 )
 
+type contextKey string
+
+var key = contextKey("foo")
+
 type redisHook struct{}
+type redisFullHook struct {
+	redisHook
+}
 
 var _ redis.Hook = redisHook{}
+var _ redis.Hook = redisFullHook{}
 
 func (redisHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
 	fmt.Printf("starting processing: <%s>\n", cmd)
@@ -29,6 +38,27 @@ func (redisHook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder) 
 func (redisHook) AfterProcessPipeline(ctx context.Context, cmds []redis.Cmder) error {
 	fmt.Printf("pipeline finished processing: %v\n", cmds)
 	return nil
+}
+
+func (redisFullHook) BeforeConnect(ctx context.Context) context.Context {
+	fmt.Printf("before connect")
+
+	if v := ctx.Value(key); v != nil {
+		fmt.Printf(" %v\n", v)
+	} else {
+		fmt.Printf("\n")
+	}
+
+	return ctx
+}
+
+func (redisFullHook) AfterConnect(ctx context.Context, event pool.ConnectEvent) {
+	fmt.Printf("after connect: %v", event.Err)
+	if v := ctx.Value(key); v != nil {
+		fmt.Printf(" %v\n", v)
+	} else {
+		fmt.Printf("\n")
+	}
 }
 
 func Example_instrumentation() {
@@ -77,4 +107,68 @@ func ExampleClient_Watch_instrumentation() {
 	// finished processing: <ping: PONG>
 	// starting processing: <unwatch: >
 	// finished processing: <unwatch: OK>
+}
+
+func ExamplePool_instrumentation() {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: ":6379",
+	})
+	rdb.AddHook(redisFullHook{})
+
+	rdb.Ping(ctx)
+	// Output:
+	// starting processing: <ping: >
+	// before connect
+	// after connect: <nil>
+	// finished processing: <ping: PONG>
+}
+
+func ExamplePool_instrumentation_connect_error() {
+	invalidAddr := "0.0.0.1:6379"
+	rdb := redis.NewClient(&redis.Options{
+		Addr:       invalidAddr,
+		MaxRetries: -1,
+	})
+	rdb.AddHook(redisFullHook{})
+
+	rdb.Ping(ctx)
+	// Output:
+	// starting processing: <ping: >
+	// before connect
+	// after connect: dial tcp 0.0.0.1:6379: connect: no route to host
+	// finished processing: <ping: dial tcp 0.0.0.1:6379: connect: no route to host>
+}
+
+func ExamplePool_instrumentation_context_wiring() {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: ":6379",
+	})
+	rdb.AddHook(redisFullHook{})
+
+	ctx := context.WithValue(context.Background(), key, "bar")
+	rdb.Ping(ctx)
+	// Output:
+	// starting processing: <ping: >
+	// before connect bar
+	// after connect: <nil> bar
+	// finished processing: <ping: PONG>
+}
+
+func ExamplePool_instrumentation_mulitple_hooks() {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: ":6379",
+	})
+	rdb.AddHook(redisFullHook{})
+	rdb.AddHook(redisFullHook{})
+
+	rdb.Ping(ctx)
+	// Output:
+	// starting processing: <ping: >
+	// starting processing: <ping: >
+	// before connect
+	// before connect
+	// after connect: <nil>
+	// after connect: <nil>
+	// finished processing: <ping: PONG>
+	// finished processing: <ping: PONG>
 }

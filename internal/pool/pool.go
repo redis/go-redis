@@ -220,7 +220,6 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		cn = NewConn(netConn)
 		cn.pooled = pooled
 	}
-
 	event := ConnectEvent{Err:err}
 	for hookIndex--; hookIndex >= 0; hookIndex-- {
 		p.hooks.hooks[hookIndex].AfterConnect(ctx, event);

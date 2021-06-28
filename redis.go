@@ -147,8 +147,7 @@ func (hs hooks) withContext(ctx context.Context, fn func() error) error {
 type baseClient struct {
 	opt      *Options
 	connPool pool.Pooler
-
-	onClose func() error // hook called when client is closed
+	onClose  func() error // hook called when client is closed
 }
 
 func newBaseClient(opt *Options, connPool pool.Pooler) *baseClient {
@@ -558,9 +557,9 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 // underlying connections. It's safe for concurrent use by multiple
 // goroutines.
 type Client struct {
+	hooks
 	*baseClient
 	cmdable
-	hooks
 	ctx context.Context
 }
 
@@ -573,7 +572,6 @@ func NewClient(opt *Options) *Client {
 		ctx:        context.Background(),
 	}
 	c.cmdable = c.Process
-
 	return &c
 }
 
