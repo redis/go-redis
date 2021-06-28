@@ -235,8 +235,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	var auth bool
 
 	// The low version of redis-server does not support the hello command.
-	if conn.Hello(ctx, 3, c.opt.Username, c.opt.Password, "").Err() == nil {
+	// For redis-server (<6.0) that does not support the Hello command,
+	// we continue to provide services with RESP2.
+	if err := conn.Hello(ctx, 3, c.opt.Username, c.opt.Password, "").Err(); err == nil {
 		auth = true
+	} else if err.Error() != "ERR unknown command 'hello'" {
+		return err
 	}
 
 	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
