@@ -17,6 +17,9 @@
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
 - [RealWorld example app](https://github.com/uptrace/go-treemux-realworld-example-app)
 
+> :heart: Please check [Bun](https://bun.uptrace.dev) - fast and simple SQL client for PostgreSQL,
+> MySQL, and SQLite.
+
 ## Ecosystem
 
 - [Redis Mock](https://github.com/go-redis/redismock).
@@ -160,8 +163,3 @@ Lastly, run:
 ```
 go test
 ```
-
-## See also
-
-- [Fast and flexible ORM](https://github.com/uptrace/bun)
-- [msgpack for Go](https://github.com/vmihailenco/msgpack)
