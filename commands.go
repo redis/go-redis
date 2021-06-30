@@ -235,6 +235,8 @@ type Cmdable interface {
 	XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingExtCmd
 	XClaim(ctx context.Context, a *XClaimArgs) *XMessageSliceCmd
 	XClaimJustID(ctx context.Context, a *XClaimArgs) *StringSliceCmd
+	XAutoClaim(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimCmd
+	XAutoClaimJustID(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimJustIDCmd
 
 	// TODO: XTrim and XTrimApprox remove in v9.
 	XTrim(ctx context.Context, key string, maxLen int64) *IntCmd
