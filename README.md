@@ -17,8 +17,11 @@
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
 - [RealWorld example app](https://github.com/uptrace/go-treemux-realworld-example-app)
 
-> :heart: Please check [Bun](https://bun.uptrace.dev) - fast and simple SQL client for PostgreSQL,
-> MySQL, and SQLite.
+My other projects:
+
+- [Bun](https://bun.uptrace.dev) - fast and simple SQL client for PostgreSQL, MySQL, and SQLite.
+- [treemux](https://github.com/vmihailenco/treemux) - high-speed, flexible, tree-based HTTP router
+  for Go.
 
 ## Ecosystem
 

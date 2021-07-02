@@ -128,7 +128,7 @@ func (hs hooks) processTxPipeline(
 	return hs.processPipeline(ctx, cmds, fn)
 }
 
-func (hs hooks) withContext(ctx context.Context, fn func() error) error {
+func (hs hooks) withContext(_ context.Context, fn func() error) error {
 	return fn()
 }
 

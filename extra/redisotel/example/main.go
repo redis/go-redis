@@ -6,14 +6,14 @@ import (
 	"github.com/go-redis/redis/extra/redisotel/v8"
 	"github.com/go-redis/redis/v8"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/stdout"
+	stdoutexporter "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 var tracer = otel.Tracer("app_or_package_name")
 
 func main() {
-	exporter, err := stdout.NewExporter(stdout.WithPrettyPrint())
+	exporter, err := stdoutexporter.New(stdoutexporter.WithPrettyPrint())
 	if err != nil {
 		panic(err)
 	}

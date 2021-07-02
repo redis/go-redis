@@ -3,6 +3,11 @@
 > :heart:
 > [**Uptrace.dev** - All-in-one tool to optimize performance and monitor errors & logs](https://uptrace.dev)
 
+## v8.11
+
+- Remove OpenTelemetry metrics.
+- Supports more redis commands and options.
+
 ## v8.10
 
 - Removed extra OpenTelemetry spans from go-redis core. Now go-redis instrumentation only adds a
