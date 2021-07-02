@@ -235,7 +235,8 @@ type Cmdable interface {
 	XPendingExt(ctx context.Context, a *XPendingExtArgs) *XPendingExtCmd
 	XClaim(ctx context.Context, a *XClaimArgs) *XMessageSliceCmd
 	XClaimJustID(ctx context.Context, a *XClaimArgs) *StringSliceCmd
-
+	XAutoClaim(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimCmd
+	XAutoClaimJustID(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimJustIDCmd
 	XTrimMaxLen(ctx context.Context, key string, maxLen int64) *IntCmd
 	XTrimMaxLenApprox(ctx context.Context, key string, maxLen, limit int64) *IntCmd
 	XTrimMinID(ctx context.Context, key string, minID string) *IntCmd
@@ -1659,7 +1660,6 @@ type XAddArgs struct {
 	NoMkStream bool
 	MaxLen     int64 // MAXLEN N
 	MinID      string
-
 	// Approx causes MaxLen and MinID to use "~" matcher (instead of "=").
 	Approx bool
 	Limit  int64
