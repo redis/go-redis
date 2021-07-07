@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go-redis/redis"
 	"reflect"
 	"time"
 
@@ -2266,6 +2267,25 @@ var _ = Describe("Commands", func() {
 			lRange := client.LRange(ctx, "list", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
 			Expect(lRange.Val()).To(Equal([]string{"one", "two"}))
+		})
+
+		It("should RPopCount", func() {
+			lPush := client.LPush(ctx, "list", "one")
+			Expect(lPush.Err()).NotTo(HaveOccurred())
+			lPush = client.LPush(ctx, "list", "two")
+			Expect(lPush.Err()).NotTo(HaveOccurred())
+			lPush = client.LPush(ctx, "list", "three")
+			Expect(lPush.Err()).NotTo(HaveOccurred())
+			lPush = client.LPush(ctx, "list", "four")
+			Expect(lPush.Err()).NotTo(HaveOccurred())
+
+			rPopCount := client.RPopCount(ctx, "list", 2)
+			Expect(rPopCount.Err()).NotTo(HaveOccurred())
+			Expect(rPopCount.Val()).To(Equal([]string{"one", "two"}))
+
+			rRange := client.RRange(ctx, "list", 0, -1)
+			Expect(rRange.Err()).NotTo(HaveOccurred())
+			Expect(rRange.Val()).To(Equal([]string{"three", "four"}))
 		})
 
 		It("should RPopLPush", func() {
