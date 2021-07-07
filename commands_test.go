@@ -2280,11 +2280,11 @@ var _ = Describe("Commands", func() {
 
 			rPopCount := client.RPopCount(ctx, "list", 2)
 			Expect(rPopCount.Err()).NotTo(HaveOccurred())
-			Expect(rPopCount.Val()).To(Equal([]string{"one", "two"}))
+			Expect(rPopCount.Val()).To(Equal([]string{"two", "one"}))
 
-			rRange := client.RRange(ctx, "list", 0, -1)
-			Expect(rRange.Err()).NotTo(HaveOccurred())
-			Expect(rRange.Val()).To(Equal([]string{"three", "four"}))
+			lRange := client.LRange(ctx, "list", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"four", "three"}))
 		})
 
 		It("should RPopLPush", func() {
