@@ -2280,7 +2280,7 @@ var _ = Describe("Commands", func() {
 
 			rPopCount := client.RPopCount(ctx, "list", 2)
 			Expect(rPopCount.Err()).NotTo(HaveOccurred())
-			Expect(rPopCount.Val()).To(Equal([]string{"two", "one"}))
+			Expect(rPopCount.Val()).To(Equal([]string{"one", "two"}))
 
 			lRange := client.LRange(ctx, "list", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
