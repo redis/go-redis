@@ -11,7 +11,12 @@ import (
 	"github.com/go-redis/redis/v8/internal"
 )
 
+type PoolType string
+
 var (
+	PoolLifo PoolType = ""
+	PoolFifo PoolType = "fifo"
+
 	// ErrClosed performs any operation on the closed client will return this error.
 	ErrClosed = errors.New("redis: client is closed")
 
@@ -57,6 +62,7 @@ type Options struct {
 	Dialer  func(context.Context) (net.Conn, error)
 	OnClose func(*Conn) error
 
+	PoolType		   PoolType
 	PoolSize           int
 	MinIdleConns       int
 	MaxConnAge         time.Duration
@@ -308,13 +314,21 @@ func (p *ConnPool) freeTurn() {
 }
 
 func (p *ConnPool) popIdle() *Conn {
-	if len(p.idleConns) == 0 {
+	n := len(p.idleConns)
+	if n == 0 {
 		return nil
 	}
 
-	idx := len(p.idleConns) - 1
-	cn := p.idleConns[idx]
-	p.idleConns = p.idleConns[:idx]
+	var cn *Conn
+	if p.opt.PoolType == PoolFifo {
+		cn = p.idleConns[0]
+		copy(p.idleConns, p.idleConns[1:])
+		p.idleConns = p.idleConns[:n-1]
+	} else {
+		idx := n - 1
+		cn = p.idleConns[idx]
+		p.idleConns = p.idleConns[:idx]
+	}
 	p.idleConnsLen--
 	p.checkMinIdleConns()
 	return cn

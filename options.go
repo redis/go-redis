@@ -76,6 +76,10 @@ type Options struct {
 	// Default is ReadTimeout.
 	WriteTimeout time.Duration
 
+	// Type of Pool
+	// Default is lifo, supports fifo too
+	// Note that fifo has higher overhead compared to lifo
+	PoolType pool.PoolType
 	// Maximum number of socket connections.
 	// Default is 10 connections per every available CPU as reported by runtime.GOMAXPROCS.
 	PoolSize int
@@ -291,6 +295,7 @@ func newConnPool(opt *Options) *pool.ConnPool {
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return opt.Dialer(ctx, opt.Network, opt.Addr)
 		},
+		PoolType:			opt.PoolType,
 		PoolSize:           opt.PoolSize,
 		MinIdleConns:       opt.MinIdleConns,
 		MaxConnAge:         opt.MaxConnAge,
