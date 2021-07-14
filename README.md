@@ -166,3 +166,11 @@ Lastly, run:
 ```
 go test
 ```
+
+## Contributors
+
+Thanks to all the people who already contributed!
+
+<a href="https://github.com/go-redis/redis/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=go-redis/redis" />
+</a>
