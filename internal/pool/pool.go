@@ -11,8 +11,6 @@ import (
 	"github.com/go-redis/redis/v8/internal"
 )
 
-type PoolFIFO bool
-
 var (
 	// ErrClosed performs any operation on the closed client will return this error.
 	ErrClosed = errors.New("redis: client is closed")
