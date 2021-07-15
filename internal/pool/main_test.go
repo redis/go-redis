@@ -3,13 +3,14 @@ package pool_test
 import (
 	"context"
 	"fmt"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
 	"net"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
 )
 
 func TestGinkgoSuite(t *testing.T) {
