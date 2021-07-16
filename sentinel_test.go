@@ -3,10 +3,10 @@ package redis_test
 import (
 	"net"
 
-	"github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v8"
 )
 
 var _ = Describe("Sentinel", func() {
@@ -188,7 +188,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		ch := client.Subscribe(ctx, "foo").Channel()
 
 		// Kill master.
-		err = master.Shutdown(ctx).Err()
+		err = master.ShutdownNoSave(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() error {
 			return sentinelMaster.Ping(ctx).Err()
