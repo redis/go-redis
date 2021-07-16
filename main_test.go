@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v8"
 )
 
 const (
@@ -117,7 +117,7 @@ func TestGinkgoSuite(t *testing.T) {
 	RunSpecs(t, "go-redis")
 }
 
-//------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------
 
 func redisOptions() *redis.Options {
 	return &redis.Options{
@@ -364,7 +364,7 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 	return p, nil
 }
 
-//------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------
 
 type badConnError string
 
@@ -373,13 +373,27 @@ func (e badConnError) Timeout() bool   { return true }
 func (e badConnError) Temporary() bool { return false }
 
 type badConn struct {
-	net.TCPConn
-
 	readDelay, writeDelay time.Duration
 	readErr, writeErr     error
 }
 
 var _ net.Conn = &badConn{}
+
+func (cn *badConn) Close() error {
+	return nil
+}
+
+func (cn *badConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+func (cn *badConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+func (cn *badConn) SetDeadline(t time.Time) error {
+	return nil
+}
 
 func (cn *badConn) SetReadDeadline(t time.Time) error {
 	return nil
@@ -409,7 +423,7 @@ func (cn *badConn) Write([]byte) (int, error) {
 	return 0, badConnError("bad connection")
 }
 
-//------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------
 
 type hook struct {
 	beforeProcess func(ctx context.Context, cmd redis.Cmder) (context.Context, error)
