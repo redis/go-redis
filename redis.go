@@ -477,7 +477,7 @@ func wrapMultiExec(cmds []Cmder) []Cmder {
 	cmdCopy[0] = NewStatusCmd("multi")
 	copy(cmdCopy[1:], cmds)
 	cmdCopy[len(cmdCopy)-1] = NewSliceCmd("exec")
-	return cmds
+	return cmdCopy
 }
 
 func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
