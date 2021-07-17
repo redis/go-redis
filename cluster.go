@@ -595,8 +595,16 @@ func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
 	if len(nodes) == 0 {
 		return c.nodes.Random()
 	}
-	n := rand.Intn(len(nodes))
-	return nodes[n], nil
+	if len(nodes) == 1 {
+		return nodes[0], nil
+	}
+	randomNodes := rand.Perm(len(nodes))
+	for _, idx := range randomNodes {
+		if node := nodes[idx]; !node.Failing() {
+			return node, nil
+		}
+	}
+	return nodes[randomNodes[0]], nil
 }
 
 func (c *clusterState) slotNodes(slot int) []*clusterNode {
