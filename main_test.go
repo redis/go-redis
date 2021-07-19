@@ -373,27 +373,13 @@ func (e badConnError) Timeout() bool   { return true }
 func (e badConnError) Temporary() bool { return false }
 
 type badConn struct {
+	net.TCPConn
+
 	readDelay, writeDelay time.Duration
 	readErr, writeErr     error
 }
 
 var _ net.Conn = &badConn{}
-
-func (cn *badConn) Close() error {
-	return nil
-}
-
-func (cn *badConn) LocalAddr() net.Addr {
-	return &net.TCPAddr{}
-}
-
-func (cn *badConn) RemoteAddr() net.Addr {
-	return &net.TCPAddr{}
-}
-
-func (cn *badConn) SetDeadline(t time.Time) error {
-	return nil
-}
 
 func (cn *badConn) SetReadDeadline(t time.Time) error {
 	return nil
