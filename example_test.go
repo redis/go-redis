@@ -417,7 +417,7 @@ func ExampleClient_Watch() {
 			// Actual opperation (local in optimistic lock).
 			n++
 
-			// Operation is commited only if the watched keys remain unchanged.
+			// Operation is committed only if the watched keys remain unchanged.
 			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.Set(ctx, key, n, 0)
 				return nil
