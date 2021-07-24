@@ -4635,7 +4635,7 @@ var _ = Describe("Commands", func() {
 				}
 				msgs, start, err := client.XAutoClaim(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(start).To(Equal("2-0"))
+				Expect(start).To(Equal("3-0"))
 				Expect(msgs).To(Equal([]redis.XMessage{{
 					ID:     "1-0",
 					Values: map[string]interface{}{"uno": "un"},
@@ -4647,19 +4647,16 @@ var _ = Describe("Commands", func() {
 				xca.Start = start
 				msgs, start, err = client.XAutoClaim(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(start).To(Equal("3-0"))
+				Expect(start).To(Equal("0-0"))
 				Expect(msgs).To(Equal([]redis.XMessage{{
-					ID:     "2-0",
-					Values: map[string]interface{}{"dos": "deux"},
-				}, {
 					ID:     "3-0",
 					Values: map[string]interface{}{"tres": "troix"},
 				}}))
 
 				ids, start, err := client.XAutoClaimJustID(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(start).To(Equal("3-0"))
-				Expect(ids).To(Equal([]string{"2-0", "3-0"}))
+				Expect(start).To(Equal("0-0"))
+				Expect(ids).To(Equal([]string{"3-0"}))
 			})
 
 			It("should XClaim", func() {
