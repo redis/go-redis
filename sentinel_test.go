@@ -192,7 +192,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		err = master.Shutdown(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() error {
-			return sentinelMaster.Ping(ctx).Err()
+			return master.Ping(ctx).Err()
 		}, "15s", "100ms").Should(HaveOccurred())
 
 		// Check that client picked up new master.

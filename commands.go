@@ -190,6 +190,7 @@ type Cmdable interface {
 	LSet(ctx context.Context, key string, index int64, value interface{}) *StatusCmd
 	LTrim(ctx context.Context, key string, start, stop int64) *StatusCmd
 	RPop(ctx context.Context, key string) *StringCmd
+	RPopCount(ctx context.Context, key string, count int) *StringSliceCmd
 	RPopLPush(ctx context.Context, source, destination string) *StringCmd
 	RPush(ctx context.Context, key string, values ...interface{}) *IntCmd
 	RPushX(ctx context.Context, key string, values ...interface{}) *IntCmd
@@ -1448,6 +1449,12 @@ func (c cmdable) LTrim(ctx context.Context, key string, start, stop int64) *Stat
 
 func (c cmdable) RPop(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "rpop", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) RPopCount(ctx context.Context, key string, count int) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "rpop", key, count)
 	_ = c(ctx, cmd)
 	return cmd
 }
