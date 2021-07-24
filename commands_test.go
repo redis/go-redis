@@ -4127,45 +4127,6 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		It("should ZUnion", func() {
-			err := client.ZAddArgs(ctx, "zset1", redis.ZAddArgs{
-				Members: []redis.Z{
-					{Score: 1, Member: "one"},
-					{Score: 2, Member: "two"},
-				},
-			}).Err()
-			Expect(err).NotTo(HaveOccurred())
-
-			err = client.ZAddArgs(ctx, "zset2", redis.ZAddArgs{
-				Members: []redis.Z{
-					{Score: 1, Member: "one"},
-					{Score: 2, Member: "two"},
-					{Score: 3, Member: "three"},
-				},
-			}).Err()
-			Expect(err).NotTo(HaveOccurred())
-
-			union, err := client.ZUnion(ctx, redis.ZStore{
-				Keys:      []string{"zset1", "zset2"},
-				Weights:   []float64{2, 3},
-				Aggregate: "sum",
-			}).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(union).To(Equal([]string{"one", "three", "two"}))
-
-			unionScores, err := client.ZUnionWithScores(ctx, redis.ZStore{
-				Keys:      []string{"zset1", "zset2"},
-				Weights:   []float64{2, 3},
-				Aggregate: "sum",
-			}).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(unionScores).To(Equal([]redis.Z{
-				{Score: 5, Member: "one"},
-				{Score: 9, Member: "three"},
-				{Score: 10, Member: "two"},
-			}))
-		})
-
 		It("should ZUnionStore", func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -4363,33 +4324,6 @@ var _ = Describe("Commands", func() {
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(id).To(Equal("3-0"))
-		})
-
-		// TODO XTrimMaxLenApprox/XTrimMinIDApprox There is a bug in the limit parameter.
-		// TODO Don't test it for now.
-		// TODO link: https://github.com/redis/redis/issues/9046
-		It("should XTrimMaxLen", func() {
-			n, err := client.XTrimMaxLen(ctx, "stream", 0).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(3)))
-		})
-
-		It("should XTrimMaxLenApprox", func() {
-			n, err := client.XTrimMaxLenApprox(ctx, "stream", 0, 0).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(3)))
-		})
-
-		It("should XTrimMinID", func() {
-			n, err := client.XTrimMinID(ctx, "stream", "4-0").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(3)))
-		})
-
-		It("should XTrimMinIDApprox", func() {
-			n, err := client.XTrimMinIDApprox(ctx, "stream", "4-0", 0).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(3)))
 		})
 
 		// TODO XTrimMaxLenApprox/XTrimMinIDApprox There is a bug in the limit parameter.
