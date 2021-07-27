@@ -5142,6 +5142,204 @@ var _ = Describe("Commands", func() {
 				nil,
 			}))
 		})
+
+		It("should geo search", func() {
+			q := redis.GeoSearchQuery{
+				Member:    "Catania",
+				BoxWidth:  400,
+				BoxHeight: 100,
+				BoxUnit:   "km",
+				Sort:      "asc",
+			}
+			val, err := client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania"}))
+
+			q.BoxHeight = 400
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania", "Palermo"}))
+
+			q.Count = 1
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania"}))
+
+			q.CountAny = true
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Palermo"}))
+
+			q = redis.GeoSearchQuery{
+				Member:     "Catania",
+				Radius:     100,
+				RadiusUnit: "km",
+				Sort:       "asc",
+			}
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania"}))
+
+			q.Radius = 400
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania", "Palermo"}))
+
+			q.Count = 1
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania"}))
+
+			q.CountAny = true
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Palermo"}))
+
+			q = redis.GeoSearchQuery{
+				Longitude: 15,
+				Latitude:  37,
+				BoxWidth:  200,
+				BoxHeight: 200,
+				BoxUnit:   "km",
+				Sort:      "asc",
+			}
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania"}))
+
+			q.BoxWidth, q.BoxHeight = 400, 400
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania", "Palermo"}))
+
+			q.Count = 1
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania"}))
+
+			q.CountAny = true
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Palermo"}))
+
+			q = redis.GeoSearchQuery{
+				Longitude:  15,
+				Latitude:   37,
+				Radius:     100,
+				RadiusUnit: "km",
+				Sort:       "asc",
+			}
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania"}))
+
+			q.Radius = 200
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania", "Palermo"}))
+
+			q.Count = 1
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania"}))
+
+			q.CountAny = true
+			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Palermo"}))
+		})
+
+		It("should geo search with options", func() {
+			q := redis.GeoSearchWithOptionsQuery{
+				GeoSearchQuery: redis.GeoSearchQuery{
+					Longitude:  15,
+					Latitude:   37,
+					Radius:     200,
+					RadiusUnit: "km",
+					Sort:       "asc",
+				},
+				WithHash:  true,
+				WithDist:  true,
+				WithCoord: true,
+			}
+			val, err := client.GeoSearchWithOptions(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]redis.GeoLocation{
+				{
+					Name:      "Catania",
+					Longitude: 15.08726745843887329,
+					Latitude:  37.50266842333162032,
+					Dist:      56.4413,
+					GeoHash:   3479447370796909,
+				},
+				{
+					Name:      "Palermo",
+					Longitude: 13.36138933897018433,
+					Latitude:  38.11555639549629859,
+					Dist:      190.4424,
+					GeoHash:   3479099956230698,
+				},
+			}))
+		})
+
+		It("should geo search store", func() {
+			q := redis.GeoSearchStoreQuery{
+				GeoSearchQuery: redis.GeoSearchQuery{
+					Longitude:  15,
+					Latitude:   37,
+					Radius:     200,
+					RadiusUnit: "km",
+					Sort:       "asc",
+				},
+				StoreDist: false,
+			}
+
+			val, err := client.GeoSearchStore(ctx, "Sicily", "key1", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(2)))
+
+			q.StoreDist = true
+			val, err = client.GeoSearchStore(ctx, "Sicily", "key2", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(2)))
+
+			loc, err := client.GeoSearchWithOptions(ctx, "key1", redis.GeoSearchWithOptionsQuery{
+				GeoSearchQuery: q.GeoSearchQuery,
+				WithCoord:      true,
+				WithDist:       true,
+				WithHash:       true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loc).To(Equal([]redis.GeoLocation{
+				{
+					Name:      "Catania",
+					Longitude: 15.08726745843887329,
+					Latitude:  37.50266842333162032,
+					Dist:      56.4413,
+					GeoHash:   3479447370796909,
+				},
+				{
+					Name:      "Palermo",
+					Longitude: 13.36138933897018433,
+					Latitude:  38.11555639549629859,
+					Dist:      190.4424,
+					GeoHash:   3479099956230698,
+				},
+			}))
+
+			v, err := client.ZRangeWithScores(ctx, "key2", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal([]redis.Z{
+				{
+					Score:  56.441257870158204,
+					Member: "Catania",
+				},
+				{
+					Score:  190.44242984775784,
+					Member: "Palermo",
+				},
+			}))
+		})
 	})
 
 	Describe("marshaling/unmarshaling", func() {
