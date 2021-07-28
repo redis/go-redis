@@ -2637,6 +2637,188 @@ func newGeoLocationParser(q *GeoRadiusQuery) proto.MultiBulkParse {
 
 //------------------------------------------------------------------------------
 
+// GeoSearchQuery is used for GEOSearch/GEOSearchStore command query.
+type GeoSearchQuery struct {
+	Member string
+
+	// Latitude and Longitude when using FromLonLat option.
+	Longitude float64
+	Latitude  float64
+
+	// Distance and unit when using ByRadius option.
+	// Can use m, km, ft, or mi. Default is km.
+	Radius     float64
+	RadiusUnit string
+
+	// Height, width and unit when using ByBox option.
+	// Can be m, km, ft, or mi. Default is km.
+	BoxWidth  float64
+	BoxHeight float64
+	BoxUnit   string
+
+	// Can be ASC or DESC. Default is no sort order.
+	Sort     string
+	Count    int
+	CountAny bool
+}
+
+type GeoSearchLocationQuery struct {
+	GeoSearchQuery
+
+	WithCoord bool
+	WithDist  bool
+	WithHash  bool
+}
+
+type GeoSearchStoreQuery struct {
+	GeoSearchQuery
+
+	// When using the StoreDist option, the command stores the items in a
+	// sorted set populated with their distance from the center of the circle or box,
+	// as a floating-point number, in the same unit specified for that shape.
+	StoreDist bool
+}
+
+func geoSearchLocationArgs(q *GeoSearchLocationQuery, args []interface{}) []interface{} {
+	args = geoSearchArgs(&q.GeoSearchQuery, args)
+
+	if q.WithCoord {
+		args = append(args, "withcoord")
+	}
+	if q.WithDist {
+		args = append(args, "withdist")
+	}
+	if q.WithHash {
+		args = append(args, "withhash")
+	}
+
+	return args
+}
+
+func geoSearchArgs(q *GeoSearchQuery, args []interface{}) []interface{} {
+	if q.Member != "" {
+		args = append(args, "frommember", q.Member)
+	} else {
+		args = append(args, "fromlonlat", q.Longitude, q.Latitude)
+	}
+
+	if q.Radius > 0 {
+		if q.RadiusUnit == "" {
+			q.RadiusUnit = "km"
+		}
+		args = append(args, "byradius", q.Radius, q.RadiusUnit)
+	} else {
+		if q.BoxUnit == "" {
+			q.BoxUnit = "km"
+		}
+		args = append(args, "bybox", q.BoxWidth, q.BoxHeight, q.BoxUnit)
+	}
+
+	if q.Sort != "" {
+		args = append(args, q.Sort)
+	}
+
+	if q.Count > 0 {
+		args = append(args, "count", q.Count)
+		if q.CountAny {
+			args = append(args, "any")
+		}
+	}
+
+	return args
+}
+
+type GeoSearchLocationCmd struct {
+	baseCmd
+
+	opt *GeoSearchLocationQuery
+	val []GeoLocation
+}
+
+var _ Cmder = (*GeoSearchLocationCmd)(nil)
+
+func NewGeoSearchLocationCmd(
+	ctx context.Context, opt *GeoSearchLocationQuery, args ...interface{},
+) *GeoSearchLocationCmd {
+	return &GeoSearchLocationCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+		opt: opt,
+	}
+}
+
+func (cmd *GeoSearchLocationCmd) Val() []GeoLocation {
+	return cmd.val
+}
+
+func (cmd *GeoSearchLocationCmd) Result() ([]GeoLocation, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *GeoSearchLocationCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([]GeoLocation, n)
+	for i := 0; i < n; i++ {
+		_, err = rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+
+		var loc GeoLocation
+
+		loc.Name, err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+		if cmd.opt.WithDist {
+			loc.Dist, err = rd.ReadFloatReply()
+			if err != nil {
+				return err
+			}
+		}
+		if cmd.opt.WithHash {
+			loc.GeoHash, err = rd.ReadIntReply()
+			if err != nil {
+				return err
+			}
+		}
+		if cmd.opt.WithCoord {
+			nn, err := rd.ReadArrayLen()
+			if err != nil {
+				return err
+			}
+			if nn != 2 {
+				return fmt.Errorf("got %d coordinates, expected 2", nn)
+			}
+
+			loc.Longitude, err = rd.ReadFloatReply()
+			if err != nil {
+				return err
+			}
+			loc.Latitude, err = rd.ReadFloatReply()
+			if err != nil {
+				return err
+			}
+		}
+
+		cmd.val[i] = loc
+	}
+
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
 type GeoPos struct {
 	Longitude, Latitude float64
 }
