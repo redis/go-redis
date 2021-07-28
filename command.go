@@ -2662,7 +2662,7 @@ type GeoSearchQuery struct {
 	CountAny bool
 }
 
-type GeoSearchWithOptionsQuery struct {
+type GeoSearchLocationQuery struct {
 	GeoSearchQuery
 
 	WithCoord bool
@@ -2679,8 +2679,8 @@ type GeoSearchStoreQuery struct {
 	StoreDist bool
 }
 
-func geoSearchWithOptionsArgs(q GeoSearchWithOptionsQuery, args []interface{}) []interface{} {
-	args = geoSearchArgs(q.GeoSearchQuery, args)
+func geoSearchLocationArgs(q *GeoSearchLocationQuery, args []interface{}) []interface{} {
+	args = geoSearchArgs(&q.GeoSearchQuery, args)
 
 	if q.WithCoord {
 		args = append(args, "withcoord")
@@ -2695,7 +2695,7 @@ func geoSearchWithOptionsArgs(q GeoSearchWithOptionsQuery, args []interface{}) [
 	return args
 }
 
-func geoSearchArgs(q GeoSearchQuery, args []interface{}) []interface{} {
+func geoSearchArgs(q *GeoSearchQuery, args []interface{}) []interface{} {
 	if q.Member != "" {
 		args = append(args, "frommember", q.Member)
 	} else {
@@ -2731,14 +2731,14 @@ func geoSearchArgs(q GeoSearchQuery, args []interface{}) []interface{} {
 type GeoSearchLocationCmd struct {
 	baseCmd
 
-	opt GeoSearchWithOptionsQuery
+	opt *GeoSearchLocationQuery
 	val []GeoLocation
 }
 
 var _ Cmder = (*GeoSearchLocationCmd)(nil)
 
 func NewGeoSearchLocationCmd(
-	ctx context.Context, opt GeoSearchWithOptionsQuery, args ...interface{},
+	ctx context.Context, opt *GeoSearchLocationQuery, args ...interface{},
 ) *GeoSearchLocationCmd {
 	return &GeoSearchLocationCmd{
 		baseCmd: baseCmd{

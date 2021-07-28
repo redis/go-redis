@@ -5144,7 +5144,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should geo search", func() {
-			q := redis.GeoSearchQuery{
+			q := &redis.GeoSearchQuery{
 				Member:    "Catania",
 				BoxWidth:  400,
 				BoxHeight: 100,
@@ -5170,7 +5170,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]string{"Palermo"}))
 
-			q = redis.GeoSearchQuery{
+			q = &redis.GeoSearchQuery{
 				Member:     "Catania",
 				Radius:     100,
 				RadiusUnit: "km",
@@ -5195,7 +5195,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]string{"Palermo"}))
 
-			q = redis.GeoSearchQuery{
+			q = &redis.GeoSearchQuery{
 				Longitude: 15,
 				Latitude:  37,
 				BoxWidth:  200,
@@ -5222,7 +5222,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]string{"Palermo"}))
 
-			q = redis.GeoSearchQuery{
+			q = &redis.GeoSearchQuery{
 				Longitude:  15,
 				Latitude:   37,
 				Radius:     100,
@@ -5250,7 +5250,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should geo search with options", func() {
-			q := redis.GeoSearchWithOptionsQuery{
+			q := &redis.GeoSearchLocationQuery{
 				GeoSearchQuery: redis.GeoSearchQuery{
 					Longitude:  15,
 					Latitude:   37,
@@ -5262,7 +5262,7 @@ var _ = Describe("Commands", func() {
 				WithDist:  true,
 				WithCoord: true,
 			}
-			val, err := client.GeoSearchWithOptions(ctx, "Sicily", q).Result()
+			val, err := client.GeoSearchLocation(ctx, "Sicily", q).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]redis.GeoLocation{
 				{
@@ -5283,7 +5283,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should geo search store", func() {
-			q := redis.GeoSearchStoreQuery{
+			q := &redis.GeoSearchStoreQuery{
 				GeoSearchQuery: redis.GeoSearchQuery{
 					Longitude:  15,
 					Latitude:   37,
@@ -5303,7 +5303,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(2)))
 
-			loc, err := client.GeoSearchWithOptions(ctx, "key1", redis.GeoSearchWithOptionsQuery{
+			loc, err := client.GeoSearchLocation(ctx, "key1", &redis.GeoSearchLocationQuery{
 				GeoSearchQuery: q.GeoSearchQuery,
 				WithCoord:      true,
 				WithDist:       true,
