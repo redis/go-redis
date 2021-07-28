@@ -12,8 +12,7 @@ import (
 )
 
 // maxBadConnRetries is the maximum number of attempts to obtain a valid connection from the connection pool.
-// When this number is exceeded, a new connection is created directly and
-// no longer obtained from the connection pool.
+// When this number is exceeded, a new connection is created directly.
 const maxBadConnRetries = 2
 
 var (
