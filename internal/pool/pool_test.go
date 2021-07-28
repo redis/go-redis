@@ -2,6 +2,7 @@ package pool_test
 
 import (
 	"context"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ var _ = Describe("ConnPool", func() {
 	})
 
 	AfterEach(func() {
-		connPool.Close()
+		_ = connPool.Close()
 	})
 
 	It("should unblock client when conn is removed", func() {
@@ -78,6 +79,54 @@ var _ = Describe("ConnPool", func() {
 		for _, cn := range cns {
 			connPool.Put(ctx, cn)
 		}
+	})
+})
+
+var _ = Describe("bad conn", func() {
+	ctx := context.Background()
+	var opt *pool.Options
+	var connPool *pool.ConnPool
+
+	BeforeEach(func() {
+		opt = &pool.Options{
+			Dialer:             dummyDialer,
+			PoolSize:           10,
+			PoolTimeout:        time.Hour,
+			IdleTimeout:        time.Millisecond,
+			IdleCheckFrequency: time.Millisecond,
+		}
+		connPool = pool.NewConnPool(opt)
+	})
+
+	AfterEach(func() {
+		_ = connPool.Close()
+	})
+
+	It("should maxBadConnRetries", func() {
+		var err error
+		conns := make([]*pool.Conn, opt.PoolSize)
+		for i := 0; i < opt.PoolSize; i++ {
+			conns[i], err = connPool.Get(ctx)
+			Expect(err).NotTo(HaveOccurred())
+		}
+		for i := 0; i < opt.PoolSize; i++ {
+			connPool.Put(ctx, conns[i])
+		}
+
+		var newConn *net.TCPConn
+		opt.Dialer = func(ctx context.Context) (net.Conn, error) {
+			newConn = &net.TCPConn{}
+			return newConn, nil
+		}
+
+		conn, err := connPool.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(conn.NetConn()).To(Equal(newConn))
+
+		stats := connPool.Stats()
+		Expect(stats.IdleConns).To(Equal(uint32(opt.PoolSize - pool.MaxBadConnRetries())))
+		Expect(stats.Misses).To(Equal(uint32(opt.PoolSize + 1)))
+		Expect(stats.Hits).To(Equal(uint32(0)))
 	})
 })
 

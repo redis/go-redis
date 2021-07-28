@@ -11,6 +11,11 @@ import (
 	"github.com/go-redis/redis/v8/internal"
 )
 
+// maxBadConnRetries is the maximum number of attempts to obtain a valid connection from the connection pool.
+// When this number is exceeded, a new connection is created directly and
+// no longer obtained from the connection pool.
+const maxBadConnRetries = 2
+
 var (
 	// ErrClosed performs any operation on the closed client will return this error.
 	ErrClosed = errors.New("redis: client is closed")
@@ -235,7 +240,7 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 		return nil, err
 	}
 
-	for {
+	for i := 0; i < maxBadConnRetries; i++ {
 		p.connsMu.Lock()
 		cn := p.popIdle()
 		p.connsMu.Unlock()
@@ -252,6 +257,10 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 		atomic.AddUint32(&p.stats.Hits, 1)
 		return cn, nil
 	}
+
+	// After the connection pool is empty or after trying maxBadConnRetries times,
+	// we still get a broken connection.
+	// At this time, we directly create a new connection.
 
 	atomic.AddUint32(&p.stats.Misses, 1)
 
