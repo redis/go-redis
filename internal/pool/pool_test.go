@@ -92,8 +92,8 @@ var _ = Describe("bad conn", func() {
 			Dialer:             dummyDialer,
 			PoolSize:           10,
 			PoolTimeout:        time.Hour,
-			IdleTimeout:        time.Millisecond,
-			IdleCheckFrequency: time.Millisecond,
+			IdleTimeout:        time.Minute,
+			IdleCheckFrequency: 10 * time.Second,
 		}
 		connPool = pool.NewConnPool(opt)
 	})
@@ -110,6 +110,8 @@ var _ = Describe("bad conn", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		for i := 0; i < opt.PoolSize; i++ {
+			// Damage it.
+			_ = conns[i].Close()
 			connPool.Put(ctx, conns[i])
 		}
 
