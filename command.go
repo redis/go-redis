@@ -2708,31 +2708,26 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 			return err
 		}
 		if cmd.opt.WithDist {
-			loc.Dist, err = rd.ReadFloatReply()
+			loc.Dist, err = rd.ReadFloat()
 			if err != nil {
 				return err
 			}
 		}
 		if cmd.opt.WithHash {
-			loc.GeoHash, err = rd.ReadIntReply()
+			loc.GeoHash, err = rd.ReadInt()
 			if err != nil {
 				return err
 			}
 		}
 		if cmd.opt.WithCoord {
-			nn, err := rd.ReadArrayLen()
+			if err = rd.ReadFixedArrayLen(2); err != nil {
+				return err
+			}
+			loc.Longitude, err = rd.ReadFloat()
 			if err != nil {
 				return err
 			}
-			if nn != 2 {
-				return fmt.Errorf("got %d coordinates, expected 2", nn)
-			}
-
-			loc.Longitude, err = rd.ReadFloatReply()
-			if err != nil {
-				return err
-			}
-			loc.Latitude, err = rd.ReadFloatReply()
+			loc.Latitude, err = rd.ReadFloat()
 			if err != nil {
 				return err
 			}

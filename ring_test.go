@@ -123,7 +123,6 @@ var _ = Describe("Redis Ring", func() {
 			cmds, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(100))
-			Expect(pipe.Close()).NotTo(HaveOccurred())
 
 			for _, cmd := range cmds {
 				Expect(cmd.Err()).NotTo(HaveOccurred())

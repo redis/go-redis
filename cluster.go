@@ -795,7 +795,6 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			_ = pipe.Process(ctx, NewCmd(ctx, "asking"))
 			_ = pipe.Process(ctx, cmd)
 			_, lastErr = pipe.Exec(ctx)
-			_ = pipe.Close()
 			ask = false
 		} else {
 			lastErr = node.Client.Process(ctx, cmd)

@@ -60,21 +60,21 @@ func (c *ClusterClient) SwapNodes(ctx context.Context, key string) error {
 	return nil
 }
 
-func (state *clusterState) IsConsistent(ctx context.Context) bool {
-	if len(state.Masters) < 3 {
+func (c *clusterState) IsConsistent(ctx context.Context) bool {
+	if len(c.Masters) < 3 {
 		return false
 	}
-	for _, master := range state.Masters {
+	for _, master := range c.Masters {
 		s := master.Client.Info(ctx, "replication").Val()
 		if !strings.Contains(s, "role:master") {
 			return false
 		}
 	}
 
-	if len(state.Slaves) < 3 {
+	if len(c.Slaves) < 3 {
 		return false
 	}
-	for _, slave := range state.Slaves {
+	for _, slave := range c.Slaves {
 		s := slave.Client.Info(ctx, "replication").Val()
 		if !strings.Contains(s, "role:slave") {
 			return false

@@ -244,6 +244,7 @@ type Cmdable interface {
 	XTrimMinIDApprox(ctx context.Context, key string, minID string, limit int64) *IntCmd
 	XInfoGroups(ctx context.Context, key string) *XInfoGroupsCmd
 	XInfoStream(ctx context.Context, key string) *XInfoStreamCmd
+	XInfoStreamFull(ctx context.Context, key string, count int) *XInfoStreamFullCmd
 	XInfoConsumers(ctx context.Context, key string, group string) *XInfoConsumersCmd
 
 	BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
@@ -304,6 +305,8 @@ type Cmdable interface {
 	ClientList(ctx context.Context) *StringCmd
 	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
 	ClientID(ctx context.Context) *IntCmd
+	ClientUnblock(ctx context.Context, id int64) *IntCmd
+	ClientUnblockWithError(ctx context.Context, id int64) *IntCmd
 	ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd
 	ConfigResetStat(ctx context.Context) *StatusCmd
 	ConfigSet(ctx context.Context, parameter, value string) *StatusCmd
@@ -320,6 +323,7 @@ type Cmdable interface {
 	ShutdownSave(ctx context.Context) *StatusCmd
 	ShutdownNoSave(ctx context.Context) *StatusCmd
 	SlaveOf(ctx context.Context, host, port string) *StatusCmd
+	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
 	Time(ctx context.Context) *TimeCmd
 	DebugObject(ctx context.Context, key string) *StringCmd
 	ReadOnly(ctx context.Context) *StatusCmd
