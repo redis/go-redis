@@ -308,7 +308,7 @@ func (c *ringShards) Random() (*ringShard, error) {
 	return c.GetByKey(strconv.Itoa(rand.Int()))
 }
 
-// heartbeat monitors state of each shard in the ring.
+// Heartbeat monitors state of each shard in the ring.
 func (c *ringShards) Heartbeat(frequency time.Duration) {
 	ticker := time.NewTicker(frequency)
 	defer ticker.Stop()

@@ -515,9 +515,7 @@ var _ = Describe("ClusterClient", func() {
 					pipe = client.Pipeline().(*redis.Pipeline)
 				})
 
-				AfterEach(func() {
-					Expect(pipe.Close()).NotTo(HaveOccurred())
-				})
+				AfterEach(func() {})
 
 				assertPipeline()
 			})
@@ -527,9 +525,7 @@ var _ = Describe("ClusterClient", func() {
 					pipe = client.TxPipeline().(*redis.Pipeline)
 				})
 
-				AfterEach(func() {
-					Expect(pipe.Close()).NotTo(HaveOccurred())
-				})
+				AfterEach(func() {})
 
 				assertPipeline()
 			})
