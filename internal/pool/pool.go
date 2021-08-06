@@ -520,7 +520,7 @@ func (p *ConnPool) reapStaleConn() *Conn {
 
 func (p *ConnPool) isStaleConn(cn *Conn) bool {
 	if p.opt.IdleTimeout == 0 && p.opt.MaxConnAge == 0 {
-		return connCheck(cn.netConn) != nil
+		return false
 	}
 
 	now := time.Now()
@@ -531,5 +531,5 @@ func (p *ConnPool) isStaleConn(cn *Conn) bool {
 		return true
 	}
 
-	return connCheck(cn.netConn) != nil
+	return false
 }

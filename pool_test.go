@@ -87,9 +87,8 @@ var _ = Describe("pool", func() {
 		cn.SetNetConn(&badConn{})
 		client.Pool().Put(ctx, cn)
 
-		// connCheck will automatically remove damaged connections.
 		err = client.Ping(ctx).Err()
-		Expect(err).NotTo(HaveOccurred())
+		Expect(err).To(MatchError("bad connection"))
 
 		val, err := client.Ping(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
