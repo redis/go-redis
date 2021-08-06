@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-redis/redis/v8/internal/pool"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-
-	"github.com/go-redis/redis/v8/internal/pool"
 )
 
 var _ = Describe("ConnPool", func() {
@@ -285,8 +285,6 @@ var _ = Describe("conns reaper", func() {
 					cn.SetUsedAt(time.Now().Add(-2 * idleTimeout))
 				case "aged":
 					cn.SetCreatedAt(time.Now().Add(-2 * maxAge))
-				case "conncheck":
-					cn.Close()
 				}
 				conns = append(conns, cn)
 				staleConns = append(staleConns, cn)
@@ -373,7 +371,6 @@ var _ = Describe("conns reaper", func() {
 
 	assert("idle")
 	assert("aged")
-	assert("conncheck")
 })
 
 var _ = Describe("race", func() {
