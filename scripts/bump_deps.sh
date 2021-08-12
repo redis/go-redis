@@ -4,6 +4,6 @@ PACKAGE_DIRS=$(find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; \
 
 for dir in $PACKAGE_DIRS
 do
-    printf "${dir}: go get -u ./... && go mod tidy\n"
-    (cd ./${dir} && go get -u ./... && go mod tidy)
+    printf "${dir}: go get -d && go mod tidy\n"
+    (cd ./${dir} && go get -d && go mod tidy)
 done

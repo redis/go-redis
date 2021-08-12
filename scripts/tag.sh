@@ -36,5 +36,5 @@ git tag ${TAG}
 for dir in $PACKAGE_DIRS
 do
     printf "tagging ${dir}/${TAG}\n"
-    git tag ${dir}/${TAG}
+    git tag ${dir}/${TAG} -a -m "Version ${TAG}"
 done
