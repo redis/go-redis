@@ -9,10 +9,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/go-redis/redis/v8/extra/redisotel"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/stdout"
-	controller "go.opentelemetry.io/otel/sdk/metric/controller/basic"
-	processor "go.opentelemetry.io/otel/sdk/metric/processor/basic"
-	"go.opentelemetry.io/otel/sdk/metric/selector/simple"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -57,29 +54,21 @@ func main() {
 	span.End()
 }
 
-func runExporter(ctx context.Context) func(context.Context) error {
-	exporter, err := stdout.NewExporter(stdout.WithPrettyPrint())
+func runExporter(ctx context.Context) func(context.Context) {
+	provider := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(provider)
+
+	exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithSyncer(exporter),
-		sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
-	)
-	otel.SetTracerProvider(tp)
+	bsp := sdktrace.NewBatchSpanProcessor(exp)
+	provider.RegisterSpanProcessor(bsp)
 
-	ctrl := controller.New(
-		processor.New(
-			simple.NewWithExactDistribution(),
-			exporter,
-		),
-		controller.WithPusher(exporter),
-		controller.WithCollectPeriod(1*time.Second),
-	)
-	if err := ctrl.Start(ctx); err != nil {
-		log.Fatal(err)
+	return func(ctx context.Context) {
+		if err := provider.Shutdown(ctx); err != nil {
+			log.Printf("Shutdown failed: %s", err)
+		}
 	}
-
-	return ctrl.Stop
 }
