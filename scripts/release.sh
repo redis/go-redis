@@ -61,5 +61,5 @@ sed --in-place "s/\(return \)\"[^\"]*\"/\1\"${TAG#v}\"/" ./version.go
 
 git checkout -b release/${TAG} master
 git add -u
-git commit -m "Release $TAG"
+git commit -m "Release $TAG (release.sh)"
 git push origin release/${TAG}
