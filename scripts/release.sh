@@ -48,7 +48,7 @@ PACKAGE_DIRS=$(find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; \
 for dir in $PACKAGE_DIRS
 do
     sed --in-place \
-      "s/uptrace\/bun\([^ ]*\) v.*/uptrace\/bun\1 ${TAG}/" "${dir}/go.mod"
+      "s/go-redis\/redis\([^ ]*\) v.*/go-redis\/redis\1 ${TAG}/" "${dir}/go.mod"
 done
 
 for dir in $PACKAGE_DIRS
