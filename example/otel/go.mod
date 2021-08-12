@@ -14,3 +14,5 @@ require (
 replace github.com/go-redis/redis/v8 => ../../
 
 replace github.com/go-redis/redis/extra/redisotel/v8 => ../../extra/redisotel
+
+replace github.com/go-redis/redis/extra/rediscmd/v8 => ../../extra/rediscmd
