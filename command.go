@@ -315,6 +315,18 @@ func (cmd *Cmd) Bool() (bool, error) {
 	}
 }
 
+func (cmd *Cmd) Slice() ([]interface{}, error) {
+	if cmd.err != nil {
+		return nil, cmd.err
+	}
+	switch val := cmd.val.(type) {
+	case []interface{}:
+		return val, nil
+	default:
+		return nil, fmt.Errorf("redis: unexpected type=%T for Slice", val)
+	}
+}
+
 func (cmd *Cmd) readReply(rd *proto.Reader) (err error) {
 	cmd.val, err = rd.ReadReply(sliceParser)
 	return err
