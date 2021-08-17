@@ -31,22 +31,6 @@ var _ = Describe("ConnPool", func() {
 		connPool.Close()
 	})
 
-	It("should run goroutine is 0", func() {
-		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:             dummyDialer,
-			PoolSize:           10,
-			MinIdleConns:       10,
-			PoolTimeout:        time.Hour,
-			IdleTimeout:        time.Millisecond,
-			IdleCheckFrequency: time.Millisecond,
-		})
-		connPool.Close()
-
-		Eventually(func() int {
-			return connPool.RunGoroutineNumber()
-		}, "5s", "10ms").Should(Equal(0))
-	})
-
 	It("should safe close", func() {
 		const minIdleConns = 10
 
@@ -71,9 +55,8 @@ var _ = Describe("ConnPool", func() {
 		Expect(connPool.Close()).NotTo(HaveOccurred())
 		close(closedChan)
 
-		Eventually(func() int {
-			return connPool.RunGoroutineNumber()
-		}, "5s", "10ms").Should(Equal(0))
+		// We wait for 1 second and believe that checkMinIdleConns has been executed.
+		time.Sleep(time.Second)
 
 		Expect(connPool.Stats()).To(Equal(&pool.Stats{
 			Hits:       0,
