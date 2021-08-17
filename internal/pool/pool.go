@@ -89,6 +89,11 @@ type ConnPool struct {
 
 	_closed  uint32 // atomic
 	closedCh chan struct{}
+
+	// runGoroutine is the number of goroutines running in the connection pool.
+	// When the connection pool is closed, it should be zero.
+	// It is only for testing.
+	runGoroutine int32 // atomic
 }
 
 var _ Pooler = (*ConnPool)(nil)
@@ -108,6 +113,7 @@ func NewConnPool(opt *Options) *ConnPool {
 	p.connsMu.Unlock()
 
 	if opt.IdleTimeout > 0 && opt.IdleCheckFrequency > 0 {
+		atomic.AddInt32(&p.runGoroutine, 1)
 		go p.reaper(opt.IdleCheckFrequency)
 	}
 
@@ -121,14 +127,17 @@ func (p *ConnPool) checkMinIdleConns() {
 	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns {
 		p.poolSize++
 		p.idleConnsLen++
+
+		atomic.AddInt32(&p.runGoroutine, 1)
 		go func() {
 			err := p.addIdleConn()
-			if err != nil {
+			if err != nil && err != ErrClosed {
 				p.connsMu.Lock()
 				p.poolSize--
 				p.idleConnsLen--
 				p.connsMu.Unlock()
 			}
+			atomic.AddInt32(&p.runGoroutine, -1)
 		}()
 	}
 }
@@ -140,9 +149,16 @@ func (p *ConnPool) addIdleConn() error {
 	}
 
 	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+
+	// It is not allowed to add new connections to the closed connection pool.
+	if p.closed() {
+		_ = cn.Close()
+		return ErrClosed
+	}
+
 	p.conns = append(p.conns, cn)
 	p.idleConns = append(p.idleConns, cn)
-	p.connsMu.Unlock()
 	return nil
 }
 
@@ -157,6 +173,14 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	}
 
 	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+
+	// It is not allowed to add new connections to the closed connection pool.
+	if p.closed() {
+		_ = cn.Close()
+		return nil, ErrClosed
+	}
+
 	p.conns = append(p.conns, cn)
 	if pooled {
 		// If pool is full remove the cn on next Put.
@@ -166,7 +190,6 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 			p.poolSize++
 		}
 	}
-	p.connsMu.Unlock()
 
 	return cn, nil
 }
@@ -184,6 +207,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if err != nil {
 		p.setLastDialError(err)
 		if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.opt.PoolSize) {
+			atomic.AddInt32(&p.runGoroutine, 1)
 			go p.tryDial()
 		}
 		return nil, err
@@ -195,6 +219,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 }
 
 func (p *ConnPool) tryDial() {
+	defer atomic.AddInt32(&p.runGoroutine, -1)
 	for {
 		if p.closed() {
 			return
@@ -458,6 +483,7 @@ func (p *ConnPool) Close() error {
 func (p *ConnPool) reaper(frequency time.Duration) {
 	ticker := time.NewTicker(frequency)
 	defer ticker.Stop()
+	defer atomic.AddInt32(&p.runGoroutine, -1)
 
 	for {
 		select {

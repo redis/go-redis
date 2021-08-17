@@ -2,6 +2,7 @@ package pool_test
 
 import (
 	"context"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,60 @@ var _ = Describe("ConnPool", func() {
 
 	AfterEach(func() {
 		connPool.Close()
+	})
+
+	It("should run goroutine is 0", func() {
+		connPool = pool.NewConnPool(&pool.Options{
+			Dialer:             dummyDialer,
+			PoolSize:           10,
+			MinIdleConns:       10,
+			PoolTimeout:        time.Hour,
+			IdleTimeout:        time.Millisecond,
+			IdleCheckFrequency: time.Millisecond,
+		})
+		connPool.Close()
+
+		Eventually(func() int {
+			return connPool.RunGoroutineNumber()
+		}, "5s", "10ms").Should(Equal(0))
+	})
+
+	It("should safe close", func() {
+		const minIdleConns = 10
+
+		var (
+			wg         sync.WaitGroup
+			closedChan = make(chan struct{})
+		)
+		wg.Add(minIdleConns)
+		connPool = pool.NewConnPool(&pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				wg.Done()
+				<-closedChan
+				return &net.TCPConn{}, nil
+			},
+			PoolSize:           10,
+			PoolTimeout:        time.Hour,
+			IdleTimeout:        time.Millisecond,
+			IdleCheckFrequency: time.Millisecond,
+			MinIdleConns:       minIdleConns,
+		})
+		wg.Wait()
+		Expect(connPool.Close()).NotTo(HaveOccurred())
+		close(closedChan)
+
+		Eventually(func() int {
+			return connPool.RunGoroutineNumber()
+		}, "5s", "10ms").Should(Equal(0))
+
+		Expect(connPool.Stats()).To(Equal(&pool.Stats{
+			Hits:       0,
+			Misses:     0,
+			Timeouts:   0,
+			TotalConns: 0,
+			IdleConns:  0,
+			StaleConns: 0,
+		}))
 	})
 
 	It("should unblock client when conn is removed", func() {
