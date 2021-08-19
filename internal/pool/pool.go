@@ -115,7 +115,7 @@ func NewConnPool(opt *Options) *ConnPool {
 }
 
 func (p *ConnPool) checkMinIdleConns() {
-	if p.opt.MinIdleConns == 0 || p.closed() {
+	if p.opt.MinIdleConns == 0 {
 		return
 	}
 	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns {
@@ -252,8 +252,12 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 
 	for {
 		p.connsMu.Lock()
-		cn := p.popIdle()
+		cn, err := p.popIdle()
 		p.connsMu.Unlock()
+
+		if err != nil {
+			return nil, err
+		}
 
 		if cn == nil {
 			break
@@ -323,10 +327,13 @@ func (p *ConnPool) freeTurn() {
 	<-p.queue
 }
 
-func (p *ConnPool) popIdle() *Conn {
+func (p *ConnPool) popIdle() (*Conn, error) {
+	if p.closed() {
+		return nil, ErrClosed
+	}
 	n := len(p.idleConns)
 	if n == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var cn *Conn
@@ -341,7 +348,7 @@ func (p *ConnPool) popIdle() *Conn {
 	}
 	p.idleConnsLen--
 	p.checkMinIdleConns()
-	return cn
+	return cn, nil
 }
 
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
