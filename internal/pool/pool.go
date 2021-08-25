@@ -51,13 +51,14 @@ type Pooler interface {
 	Stats() *Stats
 
 	Close() error
+
+	Filter(fn func(*Conn) bool) error
 }
 
 type Options struct {
 	Dialer  func(context.Context) (net.Conn, error)
 	OnClose func(*Conn) error
 
-	PoolFIFO           bool
 	PoolSize           int
 	MinIdleConns       int
 	MaxConnAge         time.Duration
@@ -77,7 +78,7 @@ type ConnPool struct {
 
 	lastDialError atomic.Value
 
-	queue chan struct{}
+	waitTurn *Semaphore
 
 	connsMu      sync.Mutex
 	conns        []*Conn
@@ -97,7 +98,7 @@ func NewConnPool(opt *Options) *ConnPool {
 	p := &ConnPool{
 		opt: opt,
 
-		queue:     make(chan struct{}, opt.PoolSize),
+		waitTurn:  NewSemaphore(opt.PoolSize),
 		conns:     make([]*Conn, 0, opt.PoolSize),
 		idleConns: make([]*Conn, 0, opt.PoolSize),
 		closedCh:  make(chan struct{}),
@@ -246,7 +247,10 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 		return nil, ErrClosed
 	}
 
-	if err := p.waitTurn(ctx); err != nil {
+	if err := p.waitTurn.Wait(ctx, p.opt.PoolTimeout); err != nil {
+		if err == ErrPoolTimeout {
+			atomic.AddUint32(&p.stats.Timeouts, 1)
+		}
 		return nil, err
 	}
 
@@ -276,55 +280,11 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 
 	newcn, err := p.newConn(ctx, true)
 	if err != nil {
-		p.freeTurn()
+		p.waitTurn.Release()
 		return nil, err
 	}
 
 	return newcn, nil
-}
-
-func (p *ConnPool) getTurn() {
-	p.queue <- struct{}{}
-}
-
-func (p *ConnPool) waitTurn(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-
-	select {
-	case p.queue <- struct{}{}:
-		return nil
-	default:
-	}
-
-	timer := timers.Get().(*time.Timer)
-	timer.Reset(p.opt.PoolTimeout)
-
-	select {
-	case <-ctx.Done():
-		if !timer.Stop() {
-			<-timer.C
-		}
-		timers.Put(timer)
-		return ctx.Err()
-	case p.queue <- struct{}{}:
-		if !timer.Stop() {
-			<-timer.C
-		}
-		timers.Put(timer)
-		return nil
-	case <-timer.C:
-		timers.Put(timer)
-		atomic.AddUint32(&p.stats.Timeouts, 1)
-		return ErrPoolTimeout
-	}
-}
-
-func (p *ConnPool) freeTurn() {
-	<-p.queue
 }
 
 func (p *ConnPool) popIdle() (*Conn, error) {
@@ -336,16 +296,9 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		return nil, nil
 	}
 
-	var cn *Conn
-	if p.opt.PoolFIFO {
-		cn = p.idleConns[0]
-		copy(p.idleConns, p.idleConns[1:])
-		p.idleConns = p.idleConns[:n-1]
-	} else {
-		idx := n - 1
-		cn = p.idleConns[idx]
-		p.idleConns = p.idleConns[:idx]
-	}
+	idx := n - 1
+	cn := p.idleConns[idx]
+	p.idleConns = p.idleConns[:idx]
 	p.idleConnsLen--
 	p.checkMinIdleConns()
 	return cn, nil
@@ -367,12 +320,12 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	p.idleConns = append(p.idleConns, cn)
 	p.idleConnsLen++
 	p.connsMu.Unlock()
-	p.freeTurn()
+	p.waitTurn.Release()
 }
 
 func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
 	p.removeConnWithLock(cn)
-	p.freeTurn()
+	p.waitTurn.Release()
 	_ = p.closeConn(cn)
 }
 
@@ -504,13 +457,13 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 func (p *ConnPool) ReapStaleConns() (int, error) {
 	var n int
 	for {
-		p.getTurn()
+		p.waitTurn.Acquire()
 
 		p.connsMu.Lock()
 		cn := p.reapStaleConn()
 		p.connsMu.Unlock()
 
-		p.freeTurn()
+		p.waitTurn.Release()
 
 		if cn != nil {
 			_ = p.closeConn(cn)

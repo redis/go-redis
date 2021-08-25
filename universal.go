@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+type PoolType string
+
+const (
+	PoolStack PoolType = ""
+	PoolFifo  PoolType = "fifo"
+)
+
 // UniversalOptions information is required by UniversalClient to establish
 // connections.
 type UniversalOptions struct {
@@ -35,9 +42,10 @@ type UniversalOptions struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
-	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
-	PoolFIFO bool
-
+	// Type of the connection pool
+	// Now we support stack pool and fifo pool
+	// Default is stack pool(lifo)
+	PoolType           PoolType
 	PoolSize           int
 	MinIdleConns       int
 	MaxConnAge         time.Duration
@@ -86,7 +94,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		DialTimeout:        o.DialTimeout,
 		ReadTimeout:        o.ReadTimeout,
 		WriteTimeout:       o.WriteTimeout,
-		PoolFIFO:           o.PoolFIFO,
+		PoolType:           o.PoolType,
 		PoolSize:           o.PoolSize,
 		MinIdleConns:       o.MinIdleConns,
 		MaxConnAge:         o.MaxConnAge,
@@ -124,7 +132,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		ReadTimeout:  o.ReadTimeout,
 		WriteTimeout: o.WriteTimeout,
 
-		PoolFIFO:           o.PoolFIFO,
+		PoolType:           o.PoolType,
 		PoolSize:           o.PoolSize,
 		MinIdleConns:       o.MinIdleConns,
 		MaxConnAge:         o.MaxConnAge,
@@ -160,7 +168,7 @@ func (o *UniversalOptions) Simple() *Options {
 		ReadTimeout:  o.ReadTimeout,
 		WriteTimeout: o.WriteTimeout,
 
-		PoolFIFO:           o.PoolFIFO,
+		PoolType:           o.PoolType,
 		PoolSize:           o.PoolSize,
 		MinIdleConns:       o.MinIdleConns,
 		MaxConnAge:         o.MaxConnAge,

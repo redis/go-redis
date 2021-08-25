@@ -78,9 +78,10 @@ type RingOptions struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
-	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
-	PoolFIFO bool
-
+	// Type of the connection pool
+	// Now we support stack pool and fifo pool
+	// Default is stack pool(lifo)
+	PoolType           PoolType
 	PoolSize           int
 	MinIdleConns       int
 	MaxConnAge         time.Duration
@@ -141,7 +142,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolFIFO:           opt.PoolFIFO,
+		PoolType:           opt.PoolType,
 		PoolSize:           opt.PoolSize,
 		MinIdleConns:       opt.MinIdleConns,
 		MaxConnAge:         opt.MaxConnAge,

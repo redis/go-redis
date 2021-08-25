@@ -146,6 +146,10 @@ func (p *StickyConnPool) Close() error {
 	return errors.New("redis: StickyConnPool.Close: infinite loop")
 }
 
+func (p *StickyConnPool) Filter(fn func(*Conn) bool) error {
+	return nil
+}
+
 func (p *StickyConnPool) Reset(ctx context.Context) error {
 	if p.badConnError() == nil {
 		return nil

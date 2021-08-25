@@ -76,10 +76,10 @@ type Options struct {
 	// Default is ReadTimeout.
 	WriteTimeout time.Duration
 
-	// Type of connection pool.
-	// true for FIFO pool, false for LIFO pool.
-	// Note that fifo has higher overhead compared to lifo.
-	PoolFIFO bool
+	// Type of the connection pool
+	// Now we support stack pool and fifo pool
+	// Default is stack pool(lifo)
+	PoolType PoolType
 	// Maximum number of socket connections.
 	// Default is 10 connections per every available CPU as reported by runtime.GOMAXPROCS.
 	PoolSize int
@@ -138,6 +138,11 @@ func (opt *Options) init() {
 			}
 			return tls.DialWithDialer(netDialer, network, addr, opt.TLSConfig)
 		}
+	}
+	switch opt.PoolType {
+	case PoolFifo, PoolStack:
+	default:
+		opt.PoolType = PoolStack
 	}
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
@@ -290,17 +295,22 @@ func getUserPassword(u *url.URL) (string, string) {
 	return user, password
 }
 
-func newConnPool(opt *Options) *pool.ConnPool {
-	return pool.NewConnPool(&pool.Options{
+func newConnPool(opt *Options) pool.Pooler {
+	poolOpt := &pool.Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return opt.Dialer(ctx, opt.Network, opt.Addr)
 		},
-		PoolFIFO:           opt.PoolFIFO,
 		PoolSize:           opt.PoolSize,
 		MinIdleConns:       opt.MinIdleConns,
 		MaxConnAge:         opt.MaxConnAge,
 		PoolTimeout:        opt.PoolTimeout,
 		IdleTimeout:        opt.IdleTimeout,
 		IdleCheckFrequency: opt.IdleCheckFrequency,
-	})
+	}
+	switch opt.PoolType {
+	case PoolFifo:
+		return pool.NewFifoConnPool(poolOpt)
+	default:
+		return pool.NewConnPool(poolOpt)
+	}
 }

@@ -45,6 +45,10 @@ func (p *SingleConnPool) Close() error {
 	return nil
 }
 
+func (p *SingleConnPool) Filter(fn func(*Conn) bool) error {
+	return nil
+}
+
 func (p *SingleConnPool) Len() int {
 	return 0
 }
