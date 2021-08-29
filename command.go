@@ -1008,12 +1008,12 @@ func (cmd *StringStringMapCmd) String() string {
 
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag.
-func (cmd *StringStringMapCmd) Scan(dst interface{}) error {
+func (cmd *StringStringMapCmd) Scan(dest interface{}) error {
 	if cmd.err != nil {
 		return cmd.err
 	}
 
-	strct, err := hscan.Struct(dst)
+	strct, err := hscan.Struct(dest)
 	if err != nil {
 		return err
 	}
