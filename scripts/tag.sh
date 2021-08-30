@@ -31,7 +31,7 @@ PACKAGE_DIRS=$(find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; \
   | sed 's/^\.\///' \
   | sort)
 
-git tag ${TAG} -m "Version ${TAG}"
+git tag ${TAG}
 
 for dir in $PACKAGE_DIRS
 do
