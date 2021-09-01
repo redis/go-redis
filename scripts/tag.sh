@@ -32,9 +32,11 @@ PACKAGE_DIRS=$(find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; \
   | sort)
 
 git tag ${TAG}
+git push origin ${TAG}
 
 for dir in $PACKAGE_DIRS
 do
     printf "tagging ${dir}/${TAG}\n"
     git tag ${dir}/${TAG}
+    git push origin ${dir}/${TAG}
 done
