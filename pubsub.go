@@ -252,13 +252,16 @@ func (c *PubSub) Ping(ctx context.Context, payload ...string) error {
 	}
 	cmd := NewCmd(ctx, args...)
 
-	cn, err := c.connWithLock(ctx)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cn, err := c.conn(ctx, nil)
 	if err != nil {
 		return err
 	}
 
 	err = c.writeCmd(ctx, cn, cmd)
-	c.releaseConnWithLock(ctx, cn, err, false)
+	c.releaseConn(ctx, cn, err, false)
 	return err
 }
 
