@@ -4,10 +4,10 @@ import (
 	"errors"
 	"time"
 
-	redis "github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	redis "github.com/go-redis/redis/v8"
 )
 
 var _ = Describe("Cmd", func() {
@@ -72,7 +72,7 @@ var _ = Describe("Cmd", func() {
 	})
 
 	It("supports time.Time", func() {
-		tm := time.Date(2019, 01, 01, 9, 45, 10, 222125, time.UTC)
+		tm := time.Date(2019, 1, 1, 9, 45, 10, 222125, time.UTC)
 
 		err := client.Set(ctx, "time_key", tm, 0).Err()
 		Expect(err).NotTo(HaveOccurred())

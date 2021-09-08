@@ -69,7 +69,7 @@ var _ = Describe("Scan", func() {
 			Expect(Scan(&d, i{v}, i{vals[k]})).To(HaveOccurred())
 		}
 
-		//success
+		// success
 		f = func(v uint64) string {
 			return strconv.FormatUint(v, 10)
 		}

@@ -1,11 +1,13 @@
+//go:build gofuzz
 // +build gofuzz
 
 package fuzz
 
 import (
 	"context"
-	"github.com/go-redis/redis/v8"
 	"time"
+
+	"github.com/go-redis/redis/v8"
 )
 
 var (

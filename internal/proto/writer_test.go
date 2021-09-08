@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v8/internal/proto"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v8/internal/proto"
 )
 
 type MyType struct{}
@@ -51,7 +51,7 @@ var _ = Describe("WriteBuffer", func() {
 	})
 
 	It("should append time", func() {
-		tm := time.Date(2019, 01, 01, 9, 45, 10, 222125, time.UTC)
+		tm := time.Date(2019, 1, 1, 9, 45, 10, 222125, time.UTC)
 		err := wr.WriteArgs([]interface{}{tm})
 		Expect(err).NotTo(HaveOccurred())
 
