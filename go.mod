@@ -4,6 +4,7 @@ go 1.13
 
 require (
 	github.com/cespare/xxhash/v2 v2.1.2
+	github.com/daixiang0/gci v0.2.9 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f
 	github.com/google/go-cmp v0.5.6 // indirect
 	github.com/onsi/ginkgo v1.16.4

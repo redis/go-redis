@@ -1,9 +1,16 @@
-### OpenTelemetry Example 
-Prints spans and metrics to the console.
-#### To Run:
-- `docker-compose up -d`
-- `go run .`
+# Example for go-redis OpenTelemetry instrumentation
 
-When you're finished, be sure to run `docker-compose down` to shutdown
-the redis server.
+This example requires running Redis Server. You can start Redis Server using Docker:
 
+```shell
+docker-compose up -d
+```
+
+To run this example:
+
+```shell
+go run .
+```
+
+See [Monitoring performance and errors](https://redis.uptrace.dev/guide/tracing.html) for more
+details.

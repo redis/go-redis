@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v8"
 )
 
 const (
@@ -295,7 +295,7 @@ func redisDir(port string) (string, error) {
 	if err := os.RemoveAll(dir); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0775); err != nil {
+	if err := os.MkdirAll(dir, 0o775); err != nil {
 		return "", err
 	}
 	return dir, nil
