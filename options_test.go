@@ -4,6 +4,7 @@
 package redis
 
 import (
+	"crypto/tls"
 	"errors"
 	"testing"
 	"time"
@@ -11,147 +12,105 @@ import (
 
 func TestParseURL(t *testing.T) {
 	cases := []struct {
-		u    string
-		addr string
-		db   int
-		tls  bool
-		err  error
-		user string
-		pass string
+		url string
+		o   *Options // expected value
+		err error
 	}{
 		{
-			"redis://localhost:123/1",
-			"localhost:123",
-			1, false, nil,
-			"", "",
-		},
-		{
-			"redis://localhost:123",
-			"localhost:123",
-			0, false, nil,
-			"", "",
-		},
-		{
-			"redis://localhost/1",
-			"localhost:6379",
-			1, false, nil,
-			"", "",
-		},
-		{
-			"redis://12345",
-			"12345:6379",
-			0, false, nil,
-			"", "",
-		},
-		{
-			"rediss://localhost:123",
-			"localhost:123",
-			0, true, nil,
-			"", "",
-		},
-		{
-			"redis://:bar@localhost:123",
-			"localhost:123",
-			0, false, nil,
-			"", "bar",
-		},
-		{
-			"redis://foo@localhost:123",
-			"localhost:123",
-			0, false, nil,
-			"foo", "",
-		},
-		{
-			"redis://foo:bar@localhost:123",
-			"localhost:123",
-			0, false, nil,
-			"foo", "bar",
-		},
-		{
-			"unix:///tmp/redis.sock",
-			"/tmp/redis.sock",
-			0, false, nil,
-			"", "",
-		},
-		{
-			"unix://foo:bar@/tmp/redis.sock",
-			"/tmp/redis.sock",
-			0, false, nil,
-			"foo", "bar",
-		},
-		{
-			"unix://foo:bar@/tmp/redis.sock?db=3",
-			"/tmp/redis.sock",
-			3, false, nil,
-			"foo", "bar",
-		},
-		{
-			"unix://foo:bar@/tmp/redis.sock?db=test",
-			"/tmp/redis.sock",
-			0, false, errors.New("redis: invalid database number: strconv.Atoi: parsing \"test\": invalid syntax"),
-			"", "",
-		},
-		{
-			"redis://localhost/?abc=123",
-			"",
-			0, false, errors.New("redis: no options supported"),
-			"", "",
-		},
-		{
-			"http://google.com",
-			"",
-			0, false, errors.New("redis: invalid URL scheme: http"),
-			"", "",
-		},
-		{
-			"redis://localhost/1/2/3/4",
-			"",
-			0, false, errors.New("redis: invalid URL path: /1/2/3/4"),
-			"", "",
-		},
-		{
-			"12345",
-			"",
-			0, false, errors.New("redis: invalid URL scheme: "),
-			"", "",
-		},
-		{
-			"redis://localhost/iamadatabase",
-			"",
-			0, false, errors.New(`redis: invalid database number: "iamadatabase"`),
-			"", "",
+			url: "redis://localhost:123/1",
+			o:   &Options{Addr: "localhost:123", DB: 1},
+		}, {
+			url: "redis://localhost:123",
+			o:   &Options{Addr: "localhost:123"},
+		}, {
+			url: "redis://localhost/1",
+			o:   &Options{Addr: "localhost:6379", DB: 1},
+		}, {
+			url: "redis://12345",
+			o:   &Options{Addr: "12345:6379"},
+		}, {
+			url: "rediss://localhost:123",
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ /* no deep comparison */ }},
+		}, {
+			url: "redis://:bar@localhost:123",
+			o:   &Options{Addr: "localhost:123", Password: "bar"},
+		}, {
+			url: "redis://foo@localhost:123",
+			o:   &Options{Addr: "localhost:123", Username: "foo"},
+		}, {
+			url: "redis://foo:bar@localhost:123",
+			o:   &Options{Addr: "localhost:123", Username: "foo", Password: "bar"},
+		}, {
+			url: "unix:///tmp/redis.sock",
+			o:   &Options{Addr: "/tmp/redis.sock"},
+		}, {
+			url: "unix://foo:bar@/tmp/redis.sock",
+			o:   &Options{Addr: "/tmp/redis.sock", Username: "foo", Password: "bar"},
+		}, {
+			url: "unix://foo:bar@/tmp/redis.sock?db=3",
+			o:   &Options{Addr: "/tmp/redis.sock", Username: "foo", Password: "bar", DB: 3},
+		}, {
+			url: "unix://foo:bar@/tmp/redis.sock?db=test",
+			err: errors.New(`redis: invalid database number: strconv.Atoi: parsing "test": invalid syntax`),
+		}, {
+			url: "redis://localhost/?abc=123",
+			err: errors.New("redis: no options supported"),
+		}, {
+			url: "http://google.com",
+			err: errors.New("redis: invalid URL scheme: http"),
+		}, {
+			url: "redis://localhost/1/2/3/4",
+			err: errors.New("redis: invalid URL path: /1/2/3/4"),
+		}, {
+			url: "12345",
+			err: errors.New("redis: invalid URL scheme: "),
+		}, {
+			url: "redis://localhost/iamadatabase",
+			err: errors.New(`redis: invalid database number: "iamadatabase"`),
 		},
 	}
 
-	for _, c := range cases {
-		t.Run(c.u, func(t *testing.T) {
-			o, err := ParseURL(c.u)
-			if c.err == nil && err != nil {
+	for i := range cases {
+		tc := cases[i]
+		t.Run(tc.url, func(t *testing.T) {
+			t.Parallel()
+
+			actual, err := ParseURL(tc.url)
+			if tc.err == nil && err != nil {
 				t.Fatalf("unexpected error: %q", err)
 				return
 			}
-			if c.err != nil && err != nil {
-				if c.err.Error() != err.Error() {
-					t.Fatalf("got %q, expected %q", err, c.err)
+			if tc.err != nil && err != nil {
+				if tc.err.Error() != err.Error() {
+					t.Fatalf("got %q, expected %q", err, tc.err)
 				}
 				return
 			}
-			if o.Addr != c.addr {
-				t.Errorf("got %q, want %q", o.Addr, c.addr)
-			}
-			if o.DB != c.db {
-				t.Errorf("got %q, expected %q", o.DB, c.db)
-			}
-			if c.tls && o.TLSConfig == nil {
-				t.Errorf("got nil TLSConfig, expected a TLSConfig")
-			}
-			if o.Username != c.user {
-				t.Errorf("got %q, expected %q", o.Username, c.user)
-			}
-			if o.Password != c.pass {
-				t.Errorf("got %q, expected %q", o.Password, c.pass)
-			}
+			comprareOptions(t, actual, tc.o)
 		})
+	}
+}
+
+func comprareOptions(t *testing.T, actual, expected *Options) {
+	t.Helper()
+
+	if actual.Addr != expected.Addr {
+		t.Errorf("got %q, want %q", actual.Addr, expected.Addr)
+	}
+	if actual.DB != expected.DB {
+		t.Errorf("got %q, expected %q", actual.DB, expected.DB)
+	}
+	if actual.TLSConfig == nil && expected.TLSConfig != nil {
+		t.Errorf("got nil TLSConfig, expected a TLSConfig")
+	}
+	if actual.TLSConfig != nil && expected.TLSConfig == nil {
+		t.Errorf("got TLSConfig, expected no TLSConfig")
+	}
+	if actual.Username != expected.Username {
+		t.Errorf("got %q, expected %q", actual.Username, expected.Username)
+	}
+	if actual.Password != expected.Password {
+		t.Errorf("got %q, expected %q", actual.Password, expected.Password)
 	}
 }
 
