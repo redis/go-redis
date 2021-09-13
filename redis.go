@@ -462,24 +462,14 @@ func (c *baseClient) pipelineProcessCmds(
 }
 
 func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
-	var firstErr error
 	for _, cmd := range cmds {
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
-		if err == nil {
-			continue
+		if err != nil && !isRedisError(err) {
+			return err
 		}
-
-		if isRedisError(err) {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-
-		return err
 	}
-	return firstErr
+	return cmds[0].Err()
 }
 
 func (c *baseClient) txPipelineProcessCmds(
