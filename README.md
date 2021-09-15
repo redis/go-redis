@@ -11,7 +11,8 @@
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
-- Join [Discord](https://discord.gg/rWtp5Aj) to ask questions.
+- To ask questions, join [Discord](https://discord.gg/rWtp5Aj) or use [Discussions](/discussions).
+- [Newsletter](https://blog.uptrace.dev/newsletter/) to get latest updates.
 - [Documentation](https://redis.uptrace.dev)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
