@@ -85,7 +85,7 @@ func (hs hooks) processPipeline(
 	ctx context.Context, cmds []Cmder, fn func(context.Context, []Cmder) error,
 ) error {
 	if len(hs.hooks) == 0 {
-		err :=  fn(ctx, cmds)
+		err := fn(ctx, cmds)
 		return err
 	}
 
