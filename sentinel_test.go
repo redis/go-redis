@@ -212,3 +212,62 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+var _ = Describe("SentinelAclAuth", func() {
+	var client *redis.Client
+	var server *redis.Client
+	var sentinel *redis.SentinelClient
+
+	BeforeEach(func() {
+		client = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName: aclSentinelName,
+			SentinelAddrs: aclSentinelAddrs,
+			MaxRetries: -1,
+			SentinelUsername: aclSentinelUsername,
+			SentinelPassword: aclSentinelPassword,
+		})
+
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
+		sentinel = redis.NewSentinelClient(&redis.Options{
+			Addr: aclSentinelAddrs[0],
+			MaxRetries: -1,
+			Username: aclSentinelUsername,
+			Password: aclSentinelPassword,
+		})
+
+		addr, err := sentinel.GetMasterAddrByName(ctx, aclSentinelName).Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		server = redis.NewClient(&redis.Options{
+			Addr:       net.JoinHostPort(addr[0], addr[1]),
+			MaxRetries: -1,
+		})
+
+		// Wait until sentinels are picked up by each other.
+		Eventually(func() string {
+			return aclSentinel1.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("sentinels=3"))
+		Eventually(func() string {
+			return aclSentinel2.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("sentinels=3"))
+		Eventually(func() string {
+			return aclSentinel3.Info(ctx).Val()
+		}, "15s", "100ms").Should(ContainSubstring("sentinels=3"))
+	})
+
+	AfterEach(func() {
+		_ = client.Close()
+		_ = server.Close()
+		_ = sentinel.Close()
+	})
+
+	It("should still facilitate operations", func() {
+		err := client.Set(ctx, "wow", "acl-auth", 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		val, err := client.Get(ctx, "wow").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal("acl-auth"))
+	})
+})
