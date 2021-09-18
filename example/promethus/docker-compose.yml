@@ -1,0 +1,7 @@
+version: '3'
+
+services:
+  redis-server:
+    image: redis
+    ports:
+      - '6379:6379'
