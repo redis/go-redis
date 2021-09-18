@@ -1,8 +1,3 @@
-# Changelog
-
-> :heart:
-> [**Uptrace.dev** - All-in-one tool to optimize performance and monitor errors & logs](https://uptrace.dev)
-
 ## v8.11
 
 - Remove OpenTelemetry metrics.
