@@ -40,27 +40,15 @@ const (
 	sentinelPort3      = "9128"
 )
 
-const (
-	aclSentinelUsername = "sentinel-user"
-	aclSentinelPassword = "sentinel-pass"
-	aclSentinelName     = "my_server"
-	aclServerPort       = "10001"
-	aclSentinelPort1    = "10002"
-	aclSentinelPort2    = "10003"
-	aclSentinelPort3    = "10004"
-)
-
 var (
 	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
-	aclSentinelAddrs = []string {":" + aclSentinelPort1, ":" + aclSentinelPort2, ":" + aclSentinelPort3}
 
 	processes map[string]*redisProcess
 
-	redisMain, aclServer                           *redisProcess
+	redisMain                                      *redisProcess
 	ringShard1, ringShard2, ringShard3             *redisProcess
 	sentinelMaster, sentinelSlave1, sentinelSlave2 *redisProcess
 	sentinel1, sentinel2, sentinel3                *redisProcess
-	aclSentinel1, aclSentinel2, aclSentinel3       *redisProcess
 )
 
 var cluster = &clusterScenario{
@@ -113,18 +101,6 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	Expect(startCluster(ctx, cluster)).NotTo(HaveOccurred())
-
-	aclServer, err = startRedis(aclServerPort)
-	Expect(err).NotTo(HaveOccurred())
-
-	aclSentinel1, err = startSentinelWithAcl(aclSentinelPort1, aclSentinelName, aclServerPort)
-	Expect(err).NotTo(HaveOccurred())
-
-	aclSentinel2, err = startSentinelWithAcl(aclSentinelPort2, aclSentinelName, aclServerPort)
-	Expect(err).NotTo(HaveOccurred())
-
-	aclSentinel3, err = startSentinelWithAcl(aclSentinelPort3, aclSentinelName, aclServerPort)
-	Expect(err).NotTo(HaveOccurred())
 })
 
 var _ = AfterSuite(func() {
@@ -386,28 +362,6 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 	p := &redisProcess{process, client}
 	registerProcess(port, p)
 	return p, nil
-}
-
-func startSentinelWithAcl(port, masterName, masterPort string) (*redisProcess, error) {
-	process, err := startSentinel(port, masterName, masterPort)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, cmd := range []*redis.StatusCmd{
-		redis.NewStatusCmd(ctx, "ACL", "SETUSER", aclSentinelUsername, "ON", ">" + aclSentinelPassword, "-@all",
-			"+auth", "+client|getname", "+client|id", "+client|setname", "+command", "+hello", "+ping", "+role",
-			"+sentinel|get-master-addr-by-name", "+sentinel|master", "+sentinel|myid", "+sentinel|replicas",
-			"+sentinel|sentinels"),
-	} {
-		process.Client.Process(ctx, cmd)
-		if err := cmd.Err(); err != nil {
-			process.Kill()
-			return nil, err
-		}
-	}
-
-	return process, nil
 }
 
 //------------------------------------------------------------------------------
