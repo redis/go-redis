@@ -23,7 +23,13 @@ type FailoverOptions struct {
 	MasterName string
 	// A seed list of host:port addresses of sentinel nodes.
 	SentinelAddrs []string
-	// Sentinel password from "requirepass <password>" (if enabled) in Sentinel configuration
+
+	// If specified with SentinelPassword, enables ACL-based authentication (via
+	// AUTH <user> <pass>).
+	SentinelUsername string
+	// Sentinel password from "requirepass <password>" (if enabled) in Sentinel
+	// configuration, or, if SentinelUsername is also supplied, used for ACL-based
+	// authentication.
 	SentinelPassword string
 
 	// Allows routing read-only commands to the closest master or slave node.
@@ -109,6 +115,7 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		OnConnect: opt.OnConnect,
 
 		DB:       0,
+		Username: opt.SentinelUsername,
 		Password: opt.SentinelPassword,
 
 		MaxRetries:      opt.MaxRetries,
