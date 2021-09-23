@@ -2372,6 +2372,7 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Err()).NotTo(HaveOccurred())
 			Expect(lRange.Val()).To(Equal([]string{"san"}))
 		})
+
 		It("should BLMove", func() {
 			rPush := client.RPush(ctx, "blmove1", "ichi")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
@@ -2385,7 +2386,7 @@ var _ = Describe("Commands", func() {
 			Expect(rPush.Err()).NotTo(HaveOccurred())
 			Expect(rPush.Val()).To(Equal(int64(3)))
 
-			blMove := client.BLMove(ctx, "blmove1", "lmove2", "RIGHT", "LEFT", time.Second)
+			blMove := client.BLMove(ctx, "blmove1", "blmove2", "RIGHT", "LEFT", time.Second)
 			Expect(blMove.Err()).NotTo(HaveOccurred())
 			Expect(blMove.Val()).To(Equal("san"))
 
