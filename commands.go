@@ -195,6 +195,7 @@ type Cmdable interface {
 	RPush(ctx context.Context, key string, values ...interface{}) *IntCmd
 	RPushX(ctx context.Context, key string, values ...interface{}) *IntCmd
 	LMove(ctx context.Context, source, destination, srcpos, destpos string) *StringCmd
+	BLMove(ctx context.Context, source, destination, srcpos, destpos string, timeout time.Duration) *StringCmd
 
 	SAdd(ctx context.Context, key string, members ...interface{}) *IntCmd
 	SCard(ctx context.Context, key string) *IntCmd
@@ -1490,6 +1491,13 @@ func (c cmdable) RPushX(ctx context.Context, key string, values ...interface{}) 
 
 func (c cmdable) LMove(ctx context.Context, source, destination, srcpos, destpos string) *StringCmd {
 	cmd := NewStringCmd(ctx, "lmove", source, destination, srcpos, destpos)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BLMove(ctx context.Context, source, destination, srcpos, destpos string, timeout time.Duration) *StringCmd {
+	cmd := NewStringCmd(ctx, "blmove", source, destination, srcpos, destpos, formatSec(ctx, timeout))
+	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd
 }
