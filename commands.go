@@ -1495,7 +1495,9 @@ func (c cmdable) LMove(ctx context.Context, source, destination, srcpos, destpos
 	return cmd
 }
 
-func (c cmdable) BLMove(ctx context.Context, source, destination, srcpos, destpos string, timeout time.Duration) *StringCmd {
+func (c cmdable) BLMove(
+	ctx context.Context, source, destination, srcpos, destpos string, timeout time.Duration,
+) *StringCmd {
 	cmd := NewStringCmd(ctx, "blmove", source, destination, srcpos, destpos, formatSec(ctx, timeout))
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)

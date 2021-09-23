@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	"go.opentelemetry.io/otel"
@@ -29,13 +30,13 @@ func main() {
 	ctx, span := tracer.Start(ctx, "handleRequest")
 	defer span.End()
 
-	if err := handleRequest(ctx); err != nil {
+	if err := handleRequest(ctx, rdb); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
 }
 
-func handleRequest(ctx context.Context) error {
+func handleRequest(ctx context.Context, rdb *redis.Client) error {
 	if err := rdb.Set(ctx, "First value", "value_1", 0).Err(); err != nil {
 		return err
 	}
@@ -51,7 +52,7 @@ func handleRequest(ctx context.Context) error {
 			defer group.Done()
 			val := rdb.Get(ctx, "Second value").Val()
 			if val != "value_2" {
-				panic(err)
+				log.Printf("%q != %q", val, "value_2")
 			}
 		}()
 	}
@@ -80,7 +81,7 @@ func configureOpentelemetry(ctx context.Context) func() {
 	bsp := sdktrace.NewBatchSpanProcessor(exp)
 	provider.RegisterSpanProcessor(bsp)
 
-	return func(ctx context.Context) {
+	return func() {
 		if err := provider.Shutdown(ctx); err != nil {
 			panic(err)
 		}

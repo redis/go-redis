@@ -222,12 +222,12 @@ var _ = Describe("SentinelAclAuth", func() {
 	var client *redis.Client
 	var sentinel *redis.SentinelClient
 	var sentinels = func() []*redisProcess {
-		return []*redisProcess{ sentinel1, sentinel2, sentinel3 }
+		return []*redisProcess{sentinel1, sentinel2, sentinel3}
 	}
 
 	BeforeEach(func() {
 		authCmd := redis.NewStatusCmd(ctx, "ACL", "SETUSER", aclSentinelUsername, "ON",
-			">" + aclSentinelPassword, "-@all", "+auth", "+client|getname", "+client|id", "+client|setname",
+			">"+aclSentinelPassword, "-@all", "+auth", "+client|getname", "+client|id", "+client|setname",
 			"+command", "+hello", "+ping", "+role", "+sentinel|get-master-addr-by-name", "+sentinel|master",
 			"+sentinel|myid", "+sentinel|replicas", "+sentinel|sentinels")
 
@@ -237,9 +237,9 @@ var _ = Describe("SentinelAclAuth", func() {
 		}
 
 		client = redis.NewFailoverClient(&redis.FailoverOptions{
-			MasterName: sentinelName,
-			SentinelAddrs: sentinelAddrs,
-			MaxRetries: -1,
+			MasterName:       sentinelName,
+			SentinelAddrs:    sentinelAddrs,
+			MaxRetries:       -1,
 			SentinelUsername: aclSentinelUsername,
 			SentinelPassword: aclSentinelPassword,
 		})
@@ -247,10 +247,10 @@ var _ = Describe("SentinelAclAuth", func() {
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		sentinel = redis.NewSentinelClient(&redis.Options{
-			Addr: sentinelAddrs[0],
+			Addr:       sentinelAddrs[0],
 			MaxRetries: -1,
-			Username: aclSentinelUsername,
-			Password: aclSentinelPassword,
+			Username:   aclSentinelUsername,
+			Password:   aclSentinelPassword,
 		})
 
 		_, err := sentinel.GetMasterAddrByName(ctx, sentinelName).Result()
