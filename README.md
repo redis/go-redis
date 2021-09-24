@@ -13,7 +13,7 @@
 
 - To ask questions, join [Discord](https://discord.gg/rWtp5Aj) or use
   [Discussions](https://github.com/go-redis/redis/discussions).
-- [Newsletter](https://blog.uptrace.dev/newsletter/) to get latest updates.
+- [Newsletter](https://blog.uptrace.dev/pages/newsletter.html) to get latest updates.
 - [Documentation](https://redis.uptrace.dev)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
