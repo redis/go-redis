@@ -200,6 +200,10 @@ func (cmd *Cmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
+func (cmd *Cmd) SetVal(val interface{}) {
+	cmd.val = val
+}
+
 func (cmd *Cmd) Val() interface{} {
 	return cmd.val
 }
@@ -372,6 +376,10 @@ func NewSliceCmd(ctx context.Context, args ...interface{}) *SliceCmd {
 	}
 }
 
+func (cmd *SliceCmd) SetVal(val []interface{}) {
+	cmd.val = val
+}
+
 func (cmd *SliceCmd) Val() []interface{} {
 	return cmd.val
 }
@@ -432,6 +440,10 @@ func NewStatusCmd(ctx context.Context, args ...interface{}) *StatusCmd {
 	}
 }
 
+func (cmd *StatusCmd) SetVal(val string) {
+	cmd.val = val
+}
+
 func (cmd *StatusCmd) Val() string {
 	return cmd.val
 }
@@ -466,6 +478,10 @@ func NewIntCmd(ctx context.Context, args ...interface{}) *IntCmd {
 			args: args,
 		},
 	}
+}
+
+func (cmd *IntCmd) SetVal(val int64) {
+	cmd.val = val
 }
 
 func (cmd *IntCmd) Val() int64 {
@@ -506,6 +522,10 @@ func NewIntSliceCmd(ctx context.Context, args ...interface{}) *IntSliceCmd {
 			args: args,
 		},
 	}
+}
+
+func (cmd *IntSliceCmd) SetVal(val []int64) {
+	cmd.val = val
 }
 
 func (cmd *IntSliceCmd) Val() []int64 {
@@ -556,6 +576,10 @@ func NewDurationCmd(ctx context.Context, precision time.Duration, args ...interf
 	}
 }
 
+func (cmd *DurationCmd) SetVal(val time.Duration) {
+	cmd.val = val
+}
+
 func (cmd *DurationCmd) Val() time.Duration {
 	return cmd.val
 }
@@ -601,6 +625,10 @@ func NewTimeCmd(ctx context.Context, args ...interface{}) *TimeCmd {
 			args: args,
 		},
 	}
+}
+
+func (cmd *TimeCmd) SetVal(val time.Time) {
+	cmd.val = val
 }
 
 func (cmd *TimeCmd) Val() time.Time {
@@ -656,6 +684,10 @@ func NewBoolCmd(ctx context.Context, args ...interface{}) *BoolCmd {
 	}
 }
 
+func (cmd *BoolCmd) SetVal(val bool) {
+	cmd.val = val
+}
+
 func (cmd *BoolCmd) Val() bool {
 	return cmd.val
 }
@@ -708,6 +740,10 @@ func NewStringCmd(ctx context.Context, args ...interface{}) *StringCmd {
 			args: args,
 		},
 	}
+}
+
+func (cmd *StringCmd) SetVal(val string) {
+	cmd.val = val
 }
 
 func (cmd *StringCmd) Val() string {
@@ -810,6 +846,10 @@ func NewFloatCmd(ctx context.Context, args ...interface{}) *FloatCmd {
 	}
 }
 
+func (cmd *FloatCmd) SetVal(val float64) {
+	cmd.val = val
+}
+
 func (cmd *FloatCmd) Val() float64 {
 	return cmd.val
 }
@@ -844,6 +884,10 @@ func NewFloatSliceCmd(ctx context.Context, args ...interface{}) *FloatSliceCmd {
 			args: args,
 		},
 	}
+}
+
+func (cmd *FloatSliceCmd) SetVal(val []float64) {
+	cmd.val = val
 }
 
 func (cmd *FloatSliceCmd) Val() []float64 {
@@ -893,6 +937,10 @@ func NewStringSliceCmd(ctx context.Context, args ...interface{}) *StringSliceCmd
 			args: args,
 		},
 	}
+}
+
+func (cmd *StringSliceCmd) SetVal(val []string) {
+	cmd.val = val
 }
 
 func (cmd *StringSliceCmd) Val() []string {
@@ -948,6 +996,10 @@ func NewBoolSliceCmd(ctx context.Context, args ...interface{}) *BoolSliceCmd {
 	}
 }
 
+func (cmd *BoolSliceCmd) SetVal(val []bool) {
+	cmd.val = val
+}
+
 func (cmd *BoolSliceCmd) Val() []bool {
 	return cmd.val
 }
@@ -992,6 +1044,10 @@ func NewStringStringMapCmd(ctx context.Context, args ...interface{}) *StringStri
 			args: args,
 		},
 	}
+}
+
+func (cmd *StringStringMapCmd) SetVal(val map[string]string) {
+	cmd.val = val
 }
 
 func (cmd *StringStringMapCmd) Val() map[string]string {
@@ -1067,6 +1123,10 @@ func NewStringIntMapCmd(ctx context.Context, args ...interface{}) *StringIntMapC
 	}
 }
 
+func (cmd *StringIntMapCmd) SetVal(val map[string]int64) {
+	cmd.val = val
+}
+
 func (cmd *StringIntMapCmd) Val() map[string]int64 {
 	return cmd.val
 }
@@ -1119,6 +1179,10 @@ func NewStringStructMapCmd(ctx context.Context, args ...interface{}) *StringStru
 	}
 }
 
+func (cmd *StringStructMapCmd) SetVal(val map[string]struct{}) {
+	cmd.val = val
+}
+
 func (cmd *StringStructMapCmd) Val() map[string]struct{} {
 	return cmd.val
 }
@@ -1168,6 +1232,10 @@ func NewXMessageSliceCmd(ctx context.Context, args ...interface{}) *XMessageSlic
 			args: args,
 		},
 	}
+}
+
+func (cmd *XMessageSliceCmd) SetVal(val []XMessage) {
+	cmd.val = val
 }
 
 func (cmd *XMessageSliceCmd) Val() []XMessage {
@@ -1279,6 +1347,10 @@ func NewXStreamSliceCmd(ctx context.Context, args ...interface{}) *XStreamSliceC
 	}
 }
 
+func (cmd *XStreamSliceCmd) SetVal(val []XStream) {
+	cmd.val = val
+}
+
 func (cmd *XStreamSliceCmd) Val() []XStream {
 	return cmd.val
 }
@@ -1349,6 +1421,10 @@ func NewXPendingCmd(ctx context.Context, args ...interface{}) *XPendingCmd {
 			args: args,
 		},
 	}
+}
+
+func (cmd *XPendingCmd) SetVal(val *XPending) {
+	cmd.val = val
 }
 
 func (cmd *XPendingCmd) Val() *XPending {
@@ -1453,6 +1529,10 @@ func NewXPendingExtCmd(ctx context.Context, args ...interface{}) *XPendingExtCmd
 	}
 }
 
+func (cmd *XPendingExtCmd) SetVal(val []XPendingExt) {
+	cmd.val = val
+}
+
 func (cmd *XPendingExtCmd) Val() []XPendingExt {
 	return cmd.val
 }
@@ -1531,6 +1611,11 @@ func NewXAutoClaimCmd(ctx context.Context, args ...interface{}) *XAutoClaimCmd {
 	}
 }
 
+func (cmd *XAutoClaimCmd) SetVal(val []XMessage, start string) {
+	cmd.val = val
+	cmd.start = start
+}
+
 func (cmd *XAutoClaimCmd) Val() (messages []XMessage, start string) {
 	return cmd.val, cmd.start
 }
@@ -1583,6 +1668,11 @@ func NewXAutoClaimJustIDCmd(ctx context.Context, args ...interface{}) *XAutoClai
 			args: args,
 		},
 	}
+}
+
+func (cmd *XAutoClaimJustIDCmd) SetVal(val []string, start string) {
+	cmd.val = val
+	cmd.start = start
 }
 
 func (cmd *XAutoClaimJustIDCmd) Val() (ids []string, start string) {
@@ -1649,6 +1739,10 @@ func NewXInfoConsumersCmd(ctx context.Context, stream string, group string) *XIn
 			args: []interface{}{"xinfo", "consumers", stream, group},
 		},
 	}
+}
+
+func (cmd *XInfoConsumersCmd) SetVal(val []XInfoConsumer) {
+	cmd.val = val
 }
 
 func (cmd *XInfoConsumersCmd) Val() []XInfoConsumer {
@@ -1747,6 +1841,10 @@ func NewXInfoGroupsCmd(ctx context.Context, stream string) *XInfoGroupsCmd {
 			args: []interface{}{"xinfo", "groups", stream},
 		},
 	}
+}
+
+func (cmd *XInfoGroupsCmd) SetVal(val []XInfoGroup) {
+	cmd.val = val
 }
 
 func (cmd *XInfoGroupsCmd) Val() []XInfoGroup {
@@ -1850,6 +1948,10 @@ func NewXInfoStreamCmd(ctx context.Context, stream string) *XInfoStreamCmd {
 			args: []interface{}{"xinfo", "stream", stream},
 		},
 	}
+}
+
+func (cmd *XInfoStreamCmd) SetVal(val *XInfoStream) {
+	cmd.val = val
 }
 
 func (cmd *XInfoStreamCmd) Val() *XInfoStream {
@@ -1969,6 +2071,10 @@ func NewXInfoStreamFullCmd(ctx context.Context, args ...interface{}) *XInfoStrea
 			args: args,
 		},
 	}
+}
+
+func (cmd *XInfoStreamFullCmd) SetVal(val *XInfoStreamFull) {
+	cmd.val = val
 }
 
 func (cmd *XInfoStreamFullCmd) Val() *XInfoStreamFull {
@@ -2231,6 +2337,10 @@ func NewZSliceCmd(ctx context.Context, args ...interface{}) *ZSliceCmd {
 	}
 }
 
+func (cmd *ZSliceCmd) SetVal(val []Z) {
+	cmd.val = val
+}
+
 func (cmd *ZSliceCmd) Val() []Z {
 	return cmd.val
 }
@@ -2284,6 +2394,10 @@ func NewZWithKeyCmd(ctx context.Context, args ...interface{}) *ZWithKeyCmd {
 			args: args,
 		},
 	}
+}
+
+func (cmd *ZWithKeyCmd) SetVal(val *ZWithKey) {
+	cmd.val = val
 }
 
 func (cmd *ZWithKeyCmd) Val() *ZWithKey {
@@ -2350,6 +2464,11 @@ func NewScanCmd(ctx context.Context, process cmdable, args ...interface{}) *Scan
 	}
 }
 
+func (cmd *ScanCmd) SetVal(page []string, cursor uint64) {
+	cmd.page = page
+	cmd.cursor = cursor
+}
+
 func (cmd *ScanCmd) Val() (keys []string, cursor uint64) {
 	return cmd.page, cmd.cursor
 }
@@ -2402,6 +2521,10 @@ func NewClusterSlotsCmd(ctx context.Context, args ...interface{}) *ClusterSlotsC
 			args: args,
 		},
 	}
+}
+
+func (cmd *ClusterSlotsCmd) SetVal(val []ClusterSlot) {
+	cmd.val = val
 }
 
 func (cmd *ClusterSlotsCmd) Val() []ClusterSlot {
@@ -2556,6 +2679,10 @@ func geoLocationArgs(q *GeoRadiusQuery, args ...interface{}) []interface{} {
 		args = append(args, q.StoreDist)
 	}
 	return args
+}
+
+func (cmd *GeoLocationCmd) SetVal(locations []GeoLocation) {
+	cmd.locations = locations
 }
 
 func (cmd *GeoLocationCmd) Val() []GeoLocation {
@@ -2761,6 +2888,10 @@ func NewGeoSearchLocationCmd(
 	}
 }
 
+func (cmd *GeoSearchLocationCmd) SetVal(val []GeoLocation) {
+	cmd.val = val
+}
+
 func (cmd *GeoSearchLocationCmd) Val() []GeoLocation {
 	return cmd.val
 }
@@ -2852,6 +2983,10 @@ func NewGeoPosCmd(ctx context.Context, args ...interface{}) *GeoPosCmd {
 	}
 }
 
+func (cmd *GeoPosCmd) SetVal(val []*GeoPos) {
+	cmd.val = val
+}
+
 func (cmd *GeoPosCmd) Val() []*GeoPos {
 	return cmd.val
 }
@@ -2927,6 +3062,10 @@ func NewCommandsInfoCmd(ctx context.Context, args ...interface{}) *CommandsInfoC
 			args: args,
 		},
 	}
+}
+
+func (cmd *CommandsInfoCmd) SetVal(val map[string]*CommandInfo) {
+	cmd.val = val
 }
 
 func (cmd *CommandsInfoCmd) Val() map[string]*CommandInfo {
@@ -3114,6 +3253,10 @@ func NewSlowLogCmd(ctx context.Context, args ...interface{}) *SlowLogCmd {
 			args: args,
 		},
 	}
+}
+
+func (cmd *SlowLogCmd) SetVal(val []SlowLog) {
+	cmd.val = val
 }
 
 func (cmd *SlowLogCmd) Val() []SlowLog {
