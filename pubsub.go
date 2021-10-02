@@ -141,7 +141,7 @@ func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allo
 	if c.cn != cn {
 		return
 	}
-	if isBadConn(err, allowTimeout) {
+	if isBadConn(err, allowTimeout, c.opt.Addr) {
 		c.reconnect(ctx, err)
 	}
 }

@@ -261,7 +261,7 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 		c.opt.Limiter.ReportResult(err)
 	}
 
-	if isBadConn(err, false) {
+	if isBadConn(err, false, c.opt.Addr) {
 		c.connPool.Remove(ctx, cn, err)
 	} else {
 		c.connPool.Put(ctx, cn)
