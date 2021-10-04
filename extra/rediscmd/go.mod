@@ -5,7 +5,7 @@ go 1.15
 replace github.com/go-redis/redis/v8 => ../..
 
 require (
-	github.com/go-redis/redis/v8 v8.11.3
+	github.com/go-redis/redis/v8 v8.11.4
 	github.com/onsi/ginkgo v1.16.4
 	github.com/onsi/gomega v1.16.0
 )
