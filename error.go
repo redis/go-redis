@@ -74,16 +74,17 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 	}
 
 	if isRedisError(err) {
-		if isReadOnlyError(err) {
+		switch {
+		case isReadOnlyError(err):
 			// Close connections in read only state in case domain addr is used
 			// and domain resolves to a different Redis Server. See #790.
 			return true
-		} else if isMovedSameConnAddr(err, addr) {
+		case isMovedSameConnAddr(err, addr):
 			// Close connections when we are asked to move to the same addr
 			// of the connection. Force a DNS resolution when all connections
 			// of the pool are recycled
 			return true
-		} else {
+		default:
 			return false
 		}
 	}
