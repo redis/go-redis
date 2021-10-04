@@ -83,6 +83,8 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 			// of the connection. Force a DNS resolution when all connections
 			// of the pool are recycled
 			return true
+		} else {
+			return false
 		}
 	}
 
