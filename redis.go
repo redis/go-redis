@@ -710,7 +710,9 @@ type conn struct {
 	hooks // TODO: inherit hooks
 }
 
-// Conn is like Client, but its pool contains single connection.
+// Conn represents a single Redis connection rather than a pool of connections.
+// Prefer running commands from Client unless there is a specific need
+// for a continuous single Redis connection.
 type Conn struct {
 	*conn
 	ctx context.Context
