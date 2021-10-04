@@ -64,5 +64,5 @@ conventional-changelog -p angular -i CHANGELOG.md -s
 
 git checkout -b release/${TAG} master
 git add -u
-git commit -m "Release $TAG (release.sh)"
+git commit -m "chore: release $TAG (release.sh)"
 git push origin release/${TAG}
