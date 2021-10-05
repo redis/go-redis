@@ -21,9 +21,8 @@
 
 Other projects you may like:
 
-- [Bun](https://bun.uptrace.dev) - fast and simple SQL client for PostgreSQL, MySQL, and SQLite.
-- [treemux](https://github.com/vmihailenco/treemux) - high-speed, flexible, tree-based HTTP router
-  for Go.
+- [Bun](https://bun.uptrace.dev/) - fast and simple SQL client for PostgreSQL, MySQL, and SQLite.
+- [BunRouter](https://bunrouter.uptrace.dev/) - fast and flexible HTTP router for Go.
 
 ## Ecosystem
 
