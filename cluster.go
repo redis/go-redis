@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/url"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -129,6 +131,143 @@ func (opt *ClusterOptions) init() {
 	if opt.NewClient == nil {
 		opt.NewClient = NewClient
 	}
+}
+
+// ParseClusterURLs parses an array of URLs into ClusterOptions that can be used to connect to Redis.
+// The strings in the array must be in the form:
+//		redis://<user>:<password>@<host>:<port>
+//		or
+//		rediss://<user>:<password>@<host>:<port>
+// All strings in the array must use the same scheme, username, and password.
+//
+// Most Option fields can be set using query parameters, with the following restrictions:
+//	- field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
+//	- only scalar type fields are supported (bool, int, time.Duration)
+//	- for time.Duration fields, values must be a valid input for time.ParseDuration();
+//	  additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//	- to disable a duration field, use value less than or equal to 0; to use the default
+//	  value, leave the value blank or remove the parameter
+//	- only the last value is interpreted if a parameter is given multiple times
+//	- fields "network", "addr", "username" and "password" can only be set using other
+//	  URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//	  names will be treated as unknown parameters
+//	- unknown parameter names will result in an error
+// 	- query parameters must be the same for all urls. If they differ, the URL in the array will define it.
+// Examples:
+//		[
+//			redis://user:password@localhost:6789?dial_timeout=3&read_timeout=6s&max_retries=2,
+//			redis://user:password@localhost:6790?dial_timeout=3&read_timeout=6s&max_retries=2,
+//			redis://user:password@localhost:6791?dial_timeout=3&read_timeout=6s&max_retries=5,
+//		]
+//		is equivalent to:
+//		&ClusterOptions{
+//			Addr:        ["localhost:6789", "localhost:6790", "localhost:6791"]
+//			DialTimeout: 3 * time.Second, // no time unit = seconds
+//			ReadTimeout: 6 * time.Second,
+//			MaxRetries:  5, // last one in the array is used
+//		}
+func ParseClusterURLs(redisURLs []string) (*ClusterOptions, error) {
+	o := &ClusterOptions{}
+	previousScheme := ""
+
+	// loop through all the URLs and retrieve the addresses as well as the
+	// cluster options
+	for _, redisURL := range redisURLs {
+		u, err := url.Parse(redisURL)
+		if err != nil {
+			return nil, err
+		}
+
+		h, p, err := net.SplitHostPort(u.Host)
+		if err != nil {
+			h = u.Host
+		}
+		if h == "" {
+			h = "localhost"
+		}
+		if p == "" {
+			p = "6379"
+		}
+		o.Addrs = append(o.Addrs, net.JoinHostPort(h, p))
+
+		// all URLS must use the same scheme
+		if previousScheme != "" && u.Scheme != previousScheme {
+			return nil, fmt.Errorf("redis: mismatch schemes: %s and %s", previousScheme, u.Scheme)
+		}
+		previousScheme = u.Scheme
+
+		// setup username, password, and other configurations
+		o, err = setupClusterConn(u, h, o)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return o, nil
+}
+
+// setupClusterConn gets the username and password from the URL and the query parameters
+func setupClusterConn(u *url.URL, host string, o *ClusterOptions) (*ClusterOptions, error) {
+	// retrieve the configuration from the query parameters
+	o, err := setupClusterQueryParams(u, o)
+	if err != nil {
+		return nil, err
+	}
+
+	switch u.Scheme {
+	case "rediss":
+		o.TLSConfig = &tls.Config{ServerName: host}
+		fallthrough
+	case "redis":
+		// get the username & password - they must be consistent across urls
+		u, p := getUserPassword(u)
+
+		if o.Username != "" && o.Username != u {
+			return nil, fmt.Errorf("redis: mismatch usernames: %s and %s", o.Username, u)
+		}
+		if o.Password != "" && o.Password != p {
+			return nil, fmt.Errorf("redis: mismatch passwords")
+		}
+
+		o.Username, o.Password = u, p
+
+		return o, nil
+	default:
+		return nil, fmt.Errorf("redis: invalid URL scheme: %s", u.Scheme)
+	}
+}
+
+// setupClusterQueryParams converts query parameters in u to option value in o.
+func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, error) {
+	q := queryOptions{q: u.Query()}
+
+	o.MaxRedirects = q.int("max_redirects")
+	o.ReadOnly = q.bool("read_only")
+	o.RouteByLatency = q.bool("route_by_latency")
+	o.RouteByLatency = q.bool("route_randomly")
+	o.MaxRetries = q.int("max_retries")
+	o.MinRetryBackoff = q.duration("min_retry_backoff")
+	o.MaxRetryBackoff = q.duration("max_retry_backoff")
+	o.DialTimeout = q.duration("dial_timeout")
+	o.ReadTimeout = q.duration("read_timeout")
+	o.WriteTimeout = q.duration("write_timeout")
+	o.PoolFIFO = q.bool("pool_fifo")
+	o.PoolSize = q.int("pool_size")
+	o.MinIdleConns = q.int("min_idle_conns")
+	o.MaxConnAge = q.duration("max_conn_age")
+	o.PoolTimeout = q.duration("pool_timeout")
+	o.IdleTimeout = q.duration("idle_timeout")
+	o.IdleCheckFrequency = q.duration("idle_check_frequency")
+
+	if q.err != nil {
+		return nil, q.err
+	}
+
+	// any parameters left?
+	if r := q.remaining(); len(r) > 0 {
+		return nil, fmt.Errorf("redis: unexpected option: %s", strings.Join(r, ", "))
+	}
+
+	return o, nil
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
