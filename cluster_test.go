@@ -1286,116 +1286,92 @@ var _ = Describe("ClusterClient timeout", func() {
 	})
 })
 
-func TestParseClusterURLs(t *testing.T) {
+func TestParseClusterURL(t *testing.T) {
 	cases := []struct {
 		test string
-		urls []string
+		url  string
 		o    *redis.ClusterOptions // expected value
 		err  error
 	}{
 		{
 			test: "ParseRedisURL",
-			urls: []string{"redis://localhost:123"},
+			url:  "redis://localhost:123",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}},
 		}, {
 			test: "ParseRedissURL",
-			urls: []string{"rediss://localhost:123"},
+			url:  "rediss://localhost:123",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ /* no deep comparison */ }},
 		}, {
 			test: "MissingRedisPort",
-			urls: []string{"redis://localhost"},
+			url:  "redis://localhost",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}},
 		}, {
 			test: "MissingRedissPort",
-			urls: []string{"rediss://localhost"},
+			url:  "rediss://localhost",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ /* no deep comparison */ }},
 		}, {
 			test: "MultipleRedisURLs",
-			urls: []string{"redis://localhost:123", "redis://localhost:1234"},
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}},
+			url:  "redis://localhost:123?addr=localhost:1234&addr=localhost:12345",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:12345", "localhost:1234"}},
 		}, {
 			test: "MultipleRedissURLs",
-			urls: []string{"rediss://localhost:123", "rediss://localhost:1234"},
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, TLSConfig: &tls.Config{ /* no deep comparison */ }},
+			url:  "rediss://localhost:123?addr=localhost:1234&addr=localhost:12345",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:12345", "localhost:1234"}, TLSConfig: &tls.Config{ /* no deep comparison */ }},
 		}, {
 			test: "OnlyPassword",
-			urls: []string{"redis://:bar@localhost:123"},
+			url:  "redis://:bar@localhost:123",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Password: "bar"},
 		}, {
 			test: "OnlyUser",
-			urls: []string{"redis://foo@localhost:123"},
+			url:  "redis://foo@localhost:123",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo"},
 		}, {
 			test: "RedisUsernamePassword",
-			urls: []string{"redis://foo:bar@localhost:123"},
+			url:  "redis://foo:bar@localhost:123",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo", Password: "bar"},
 		}, {
 			test: "RedissUsernamePassword",
-			urls: []string{"rediss://foo:bar@localhost:123", "rediss://foo:bar@localhost:1234"},
+			url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ /* no deep comparison */ }},
 		}, {
 			test: "QueryParameters",
-			urls: []string{"redis://localhost:123?read_timeout=2&pool_fifo=true"},
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ReadTimeout: 2 * time.Second, PoolFIFO: true},
-		}, {
-			test: "UseFinalQueryParameters",
-			urls: []string{"redis://localhost:123?read_timeout=2&pool_fifo=true", "redis://localhost:1234?read_timeout=3&pool_fifo=true"},
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, ReadTimeout: 3 * time.Second, PoolFIFO: true},
+			url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, ReadTimeout: 2 * time.Second, PoolFIFO: true},
 		}, {
 			test: "DisabledTimeout",
-			urls: []string{"redis://localhost:123?idle_timeout=0"},
+			url:  "redis://localhost:123?idle_timeout=0",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, IdleTimeout: -1},
 		}, {
 			test: "DisabledTimeoutNeg",
-			urls: []string{"redis://localhost:123?idle_timeout=-1"},
+			url:  "redis://localhost:123?idle_timeout=-1",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, IdleTimeout: -1},
 		}, {
 			test: "UseDefault",
-			urls: []string{"redis://localhost:123?idle_timeout="},
+			url:  "redis://localhost:123?idle_timeout=",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, IdleTimeout: 0},
 		}, {
 			test: "UseDefaultMissing=",
-			urls: []string{"redis://localhost:123?idle_timeout"},
+			url:  "redis://localhost:123?idle_timeout",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, IdleTimeout: 0},
 		}, {
-			test: "RedisPasswordMismatch",
-			urls: []string{"redis://foo:bar@localhost:123", "redis://foo:barr@localhost:1234"},
-			err:  errors.New(`redis: mismatch passwords`),
-		}, {
-			test: "RedisUsernameMismatch",
-			urls: []string{"redis://fooo:bar@localhost:123", "redis://foo:bar@localhost:1234"},
-			err:  errors.New(`redis: mismatch usernames: fooo and foo`),
-		}, {
-			test: "RedissPasswordMismatch",
-			urls: []string{"rediss://foo:bar@localhost:123", "rediss://foo:barr@localhost:1234"},
-			err:  errors.New(`redis: mismatch passwords`),
-		}, {
-			test: "RedissUsernameMismatch",
-			urls: []string{"rediss://foo:bar@localhost:123", "rediss://fooo:bar@localhost:1234"},
-			err:  errors.New(`redis: mismatch usernames: foo and fooo`),
-		}, {
-			test: "SchemeMismatch",
-			urls: []string{"rediss://foo:bar@localhost:123", "redis://foo:bar@localhost:1234"},
-			err:  errors.New(`redis: mismatch schemes: rediss and redis`),
-		}, {
-			test: "SchemeMismatch",
-			urls: []string{"redis://foo:bar@localhost:123", "localhost:1234"},
-			err:  errors.New(`redis: mismatch schemes: redis and localhost`),
+			test: "InvalidQueryAddr",
+			url:  "rediss://foo:bar@localhost:123?addr=rediss://foo:barr@localhost:1234",
+			err:  errors.New(`redis: unable to parse addr param: rediss://foo:barr@localhost:1234`),
 		}, {
 			test: "InvalidInt",
-			urls: []string{"redis://localhost?pool_size=five"},
+			url:  "redis://localhost?pool_size=five",
 			err:  errors.New(`redis: invalid pool_size number: strconv.Atoi: parsing "five": invalid syntax`),
 		}, {
 			test: "InvalidBool",
-			urls: []string{"redis://localhost?pool_fifo=yes"},
+			url:  "redis://localhost?pool_fifo=yes",
 			err:  errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
 		}, {
 			test: "UnknownParam",
-			urls: []string{"redis://localhost?abc=123"},
+			url:  "redis://localhost?abc=123",
 			err:  errors.New("redis: unexpected option: abc"),
 		}, {
 			test: "InvalidScheme",
-			urls: []string{"https://google.com"},
+			url:  "https://google.com",
 			err:  errors.New("redis: invalid URL scheme: https"),
 		},
 	}
@@ -1405,9 +1381,13 @@ func TestParseClusterURLs(t *testing.T) {
 		t.Run(tc.test, func(t *testing.T) {
 			t.Parallel()
 
-			actual, err := redis.ParseClusterURLs(tc.urls)
+			actual, err := redis.ParseClusterURL(tc.url)
 			if tc.err == nil && err != nil {
 				t.Fatalf("unexpected error: %q", err)
+				return
+			}
+			if tc.err != nil && err == nil {
+				t.Fatalf("expected error: got %+v", actual)
 				return
 			}
 			if tc.err != nil && err != nil {

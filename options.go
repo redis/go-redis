@@ -296,7 +296,14 @@ func (o *queryOptions) string(name string) string {
 	if len(vs) == 0 {
 		return ""
 	}
-	delete(o.q, name) // enable detection of unknown parameters
+
+	// enable detection of unknown parameters
+	if len(vs) > 1 {
+		o.q[name] = o.q[name][:len(vs)-1]
+	} else {
+		delete(o.q, name)
+	}
+
 	return vs[len(vs)-1]
 }
 
