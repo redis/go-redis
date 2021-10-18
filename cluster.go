@@ -156,13 +156,12 @@ func (opt *ClusterOptions) init() {
 //	  names will be treated as unknown parameters
 //	- unknown parameter names will result in an error
 // Example:
-//		redis://user:password@localhost:6789?dial_timeout=3&read_timeout=6s&max_retries=2&addr=localhost:6790&addr=localhost:6791
+//		redis://user:password@localhost:6789?dial_timeout=3&read_timeout=6s&addr=localhost:6790&addr=localhost:6791
 //		is equivalent to:
 //		&ClusterOptions{
 //			Addr:        ["localhost:6789", "localhost:6790", "localhost:6791"]
 //			DialTimeout: 3 * time.Second, // no time unit = seconds
 //			ReadTimeout: 6 * time.Second,
-//			MaxRetries:  2,
 //		}
 func ParseClusterURL(redisURL string) (*ClusterOptions, error) {
 	o := &ClusterOptions{}
