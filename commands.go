@@ -524,10 +524,40 @@ func (c cmdable) Exists(ctx context.Context, keys ...string) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "expire", key, formatSec(ctx, expiration))
+func (c cmdable) expire(ctx context.Context, key string, expiration time.Duration, options ...interface{}) *BoolCmd {
+	args := make([]interface{}, 3+len(options))
+	args[0] = "expire"
+	args[1] = key
+	args[2] = formatSec(ctx, expiration)
+	offset := 2
+
+	for i, option := range options {
+		args[i+offset] = option
+	}
+
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+func (c cmdable) Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.expire(ctx, key, expiration)
+}
+
+func (c cmdable) ExpireNX(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.expire(ctx, key, expiration, "NX")
+}
+
+func (c cmdable) ExpireXX(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.expire(ctx, key, expiration, "XX")
+}
+
+func (c cmdable) ExpireGT(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.expire(ctx, key, expiration, "GT")
+}
+
+func (c cmdable) ExpireLT(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.expire(ctx, key, expiration, "LT")
 }
 
 func (c cmdable) ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd {
