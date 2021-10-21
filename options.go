@@ -267,7 +267,7 @@ func setupTCPConn(u *url.URL) (*Options, error) {
 
 // getHostPortWithDefaults is a helper function that splits the url into
 // a host and a port. If the host is missing, it defaults to localhost
-// and if the port is missing, it defaults to 6379
+// and if the port is missing, it defaults to 6379.
 func getHostPortWithDefaults(u *url.URL) (string, string) {
 	host, port, err := net.SplitHostPort(u.Host)
 	if err != nil {
