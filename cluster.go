@@ -173,17 +173,7 @@ func ParseClusterURL(redisURL string) (*ClusterOptions, error) {
 
 	// add base URL to the array of addresses
 	// more addresses may be added through the URL params
-	h, p, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		h = u.Host
-	}
-	if h == "" {
-		h = "localhost"
-	}
-	if p == "" {
-		p = "6379"
-	}
-
+	h, p := getHostPortWithDefaults(u)
 	o.Addrs = append(o.Addrs, net.JoinHostPort(h, p))
 
 	// setup username, password, and other configurations

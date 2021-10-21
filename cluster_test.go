@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/go-redis/redis/v8/internal/hashtag"
@@ -1300,7 +1300,7 @@ func TestParseClusterURL(t *testing.T) {
 		}, {
 			test: "ParseRedissURL",
 			url:  "rediss://localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ /* no deep comparison */ }},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
 		}, {
 			test: "MissingRedisPort",
 			url:  "redis://localhost",
@@ -1308,15 +1308,15 @@ func TestParseClusterURL(t *testing.T) {
 		}, {
 			test: "MissingRedissPort",
 			url:  "rediss://localhost",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ /* no deep comparison */ }},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
 		}, {
 			test: "MultipleRedisURLs",
 			url:  "redis://localhost:123?addr=localhost:1234&addr=localhost:12345",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:12345", "localhost:1234"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}},
 		}, {
 			test: "MultipleRedissURLs",
 			url:  "rediss://localhost:123?addr=localhost:1234&addr=localhost:12345",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:12345", "localhost:1234"}, TLSConfig: &tls.Config{ /* no deep comparison */ }},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
 		}, {
 			test: "OnlyPassword",
 			url:  "redis://:bar@localhost:123",
@@ -1332,7 +1332,7 @@ func TestParseClusterURL(t *testing.T) {
 		}, {
 			test: "RedissUsernamePassword",
 			url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ /* no deep comparison */ }},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}},
 		}, {
 			test: "QueryParameters",
 			url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
@@ -1403,59 +1403,21 @@ func TestParseClusterURL(t *testing.T) {
 
 func comprareOptions(t *testing.T, actual, expected *redis.ClusterOptions) {
 	t.Helper()
-
-	if !reflect.DeepEqual(actual.Addrs, expected.Addrs) {
-		t.Errorf("got %q, want %q", actual.Addrs, expected.Addrs)
-	}
-	if actual.TLSConfig == nil && expected.TLSConfig != nil {
-		t.Errorf("got nil TLSConfig, expected a TLSConfig")
-	}
-	if actual.TLSConfig != nil && expected.TLSConfig == nil {
-		t.Errorf("got TLSConfig, expected no TLSConfig")
-	}
-	if actual.Username != expected.Username {
-		t.Errorf("Username: got %q, expected %q", actual.Username, expected.Username)
-	}
-	if actual.Password != expected.Password {
-		t.Errorf("Password: got %q, expected %q", actual.Password, expected.Password)
-	}
-	if actual.MaxRetries != expected.MaxRetries {
-		t.Errorf("MaxRetries: got %v, expected %v", actual.MaxRetries, expected.MaxRetries)
-	}
-	if actual.MinRetryBackoff != expected.MinRetryBackoff {
-		t.Errorf("MinRetryBackoff: got %v, expected %v", actual.MinRetryBackoff, expected.MinRetryBackoff)
-	}
-	if actual.MaxRetryBackoff != expected.MaxRetryBackoff {
-		t.Errorf("MaxRetryBackoff: got %v, expected %v", actual.MaxRetryBackoff, expected.MaxRetryBackoff)
-	}
-	if actual.DialTimeout != expected.DialTimeout {
-		t.Errorf("DialTimeout: got %v, expected %v", actual.DialTimeout, expected.DialTimeout)
-	}
-	if actual.ReadTimeout != expected.ReadTimeout {
-		t.Errorf("ReadTimeout: got %v, expected %v", actual.ReadTimeout, expected.ReadTimeout)
-	}
-	if actual.WriteTimeout != expected.WriteTimeout {
-		t.Errorf("WriteTimeout: got %v, expected %v", actual.WriteTimeout, expected.WriteTimeout)
-	}
-	if actual.PoolFIFO != expected.PoolFIFO {
-		t.Errorf("PoolFIFO: got %v, expected %v", actual.PoolFIFO, expected.PoolFIFO)
-	}
-	if actual.PoolSize != expected.PoolSize {
-		t.Errorf("PoolSize: got %v, expected %v", actual.PoolSize, expected.PoolSize)
-	}
-	if actual.MinIdleConns != expected.MinIdleConns {
-		t.Errorf("MinIdleConns: got %v, expected %v", actual.MinIdleConns, expected.MinIdleConns)
-	}
-	if actual.MaxConnAge != expected.MaxConnAge {
-		t.Errorf("MaxConnAge: got %v, expected %v", actual.MaxConnAge, expected.MaxConnAge)
-	}
-	if actual.PoolTimeout != expected.PoolTimeout {
-		t.Errorf("PoolTimeout: got %v, expected %v", actual.PoolTimeout, expected.PoolTimeout)
-	}
-	if actual.IdleTimeout != expected.IdleTimeout {
-		t.Errorf("IdleTimeout: got %v, expected %v", actual.IdleTimeout, expected.IdleTimeout)
-	}
-	if actual.IdleCheckFrequency != expected.IdleCheckFrequency {
-		t.Errorf("IdleCheckFrequency: got %v, expected %v", actual.IdleCheckFrequency, expected.IdleCheckFrequency)
-	}
+	assert.Equal(t, expected.Addrs, actual.Addrs)
+	assert.Equal(t, expected.TLSConfig, actual.TLSConfig)
+	assert.Equal(t, expected.Username, actual.Username)
+	assert.Equal(t, expected.Password, actual.Password)
+	assert.Equal(t, expected.MaxRetries, actual.MaxRetries)
+	assert.Equal(t, expected.MinRetryBackoff, actual.MinRetryBackoff)
+	assert.Equal(t, expected.MaxRetryBackoff, actual.MaxRetryBackoff)
+	assert.Equal(t, expected.DialTimeout, actual.DialTimeout)
+	assert.Equal(t, expected.ReadTimeout, actual.ReadTimeout)
+	assert.Equal(t, expected.WriteTimeout, actual.WriteTimeout)
+	assert.Equal(t, expected.PoolFIFO, actual.PoolFIFO)
+	assert.Equal(t, expected.PoolSize, actual.PoolSize)
+	assert.Equal(t, expected.MinIdleConns, actual.MinIdleConns)
+	assert.Equal(t, expected.MaxConnAge, actual.MaxConnAge)
+	assert.Equal(t, expected.PoolTimeout, actual.PoolTimeout)
+	assert.Equal(t, expected.IdleTimeout, actual.IdleTimeout)
+	assert.Equal(t, expected.IdleCheckFrequency, actual.IdleCheckFrequency)
 }
