@@ -301,20 +301,18 @@ type queryOptions struct {
 }
 
 func (o *queryOptions) string(name string) string {
-	if len(o.q[name]) == 0 {
+	vs := o.q[name]
+	if len(vs) == 0 {
 		return ""
 	}
-	// get the first item from the array to return
-	// and remove it so it isn't processed again
-	param := o.q[name][0]
-	o.q[name] = o.q[name][1:]
+	delete(o.q, name) // enable detection of unknown parameters
+	return vs[len(vs)-1]
+}
 
-	// remove the key to enable detection of unknown params
-	if len(o.q[name]) == 0 {
-		delete(o.q, name)
-	}
-
-	return param
+func (o *queryOptions) strings(name string) []string {
+	vs := o.q[name]
+	delete(o.q, name)
+	return vs
 }
 
 func (o *queryOptions) int(name string) int {

@@ -233,19 +233,14 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	}
 
 	// addr can be specified as many times as needed
-	addr := q.string("addr")
-	for addr != "" {
+	addrs := q.strings("addr")
+	for _, addr := range addrs {
 		h, p, err := net.SplitHostPort(addr)
 		if err != nil || h == "" || p == "" {
 			return nil, fmt.Errorf("redis: unable to parse addr param: %s", addr)
 		}
 
 		o.Addrs = append(o.Addrs, net.JoinHostPort(h, p))
-
-		addr = q.string("addr")
-		if q.err != nil {
-			return nil, q.err
-		}
 	}
 
 	// any parameters left?
