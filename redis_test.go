@@ -300,6 +300,18 @@ var _ = Describe("Client", func() {
 		Expect(tm2).To(BeTemporally("==", tm))
 	})
 
+	It("should set and scan durations", func() {
+		duration := 10 * time.Minute
+		err := client.Set(ctx, "duration", duration, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		var duration2 time.Duration
+		err = client.Get(ctx, "duration").Scan(&duration2)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(duration2).To(Equal(duration))
+	})
+
 	It("should Conn", func() {
 		err := client.Conn(ctx).Get(ctx, "this-key-does-not-exist").Err()
 		Expect(err).To(Equal(redis.Nil))
