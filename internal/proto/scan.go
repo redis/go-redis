@@ -10,6 +10,7 @@ import (
 )
 
 // Scan parses bytes `b` to `v` with appropriate type.
+//nolint:gocyclo
 func Scan(b []byte, v interface{}) error {
 	switch v := v.(type) {
 	case nil:
