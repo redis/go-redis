@@ -27,11 +27,16 @@ func (TracingHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.
 		return ctx, nil
 	}
 
-	ctx, span := tracer.Start(ctx, cmd.FullName())
-	span.SetAttributes(
+	attrs := []attribute.KeyValue{
 		attribute.String("db.system", "redis"),
 		attribute.String("db.statement", rediscmd.CmdString(cmd)),
-	)
+	}
+	opts := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	}
+
+	ctx, _ = tracer.Start(ctx, cmd.FullName(), opts...)
 
 	return ctx, nil
 }
@@ -52,12 +57,17 @@ func (TracingHook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder
 
 	summary, cmdsString := rediscmd.CmdsString(cmds)
 
-	ctx, span := tracer.Start(ctx, "pipeline "+summary)
-	span.SetAttributes(
+	attrs := []attribute.KeyValue{
 		attribute.String("db.system", "redis"),
 		attribute.Int("db.redis.num_cmd", len(cmds)),
 		attribute.String("db.statement", cmdsString),
-	)
+	}
+	opts := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	}
+
+	ctx, _ = tracer.Start(ctx, "pipeline "+summary, opts...)
 
 	return ctx, nil
 }
