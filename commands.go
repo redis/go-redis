@@ -1778,7 +1778,7 @@ type XReadArgs struct {
 }
 
 func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
-	args := make([]interface{}, 0, 5+len(a.Streams))
+	args := make([]interface{}, 0, 6+len(a.Streams))
 	args = append(args, "xread")
 
 	keyPos := int8(1)
@@ -1860,7 +1860,7 @@ type XReadGroupArgs struct {
 }
 
 func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSliceCmd {
-	args := make([]interface{}, 0, 8+len(a.Streams))
+	args := make([]interface{}, 0, 10+len(a.Streams))
 	args = append(args, "xreadgroup", "group", a.Group, a.Consumer)
 
 	keyPos := int8(4)
@@ -1957,7 +1957,7 @@ func (c cmdable) XAutoClaimJustID(ctx context.Context, a *XAutoClaimArgs) *XAuto
 }
 
 func xAutoClaimArgs(ctx context.Context, a *XAutoClaimArgs) []interface{} {
-	args := make([]interface{}, 0, 9)
+	args := make([]interface{}, 0, 8)
 	args = append(args, "xautoclaim", a.Stream, a.Group, a.Consumer, formatMs(ctx, a.MinIdle), a.Start)
 	if a.Count > 0 {
 		args = append(args, "count", a.Count)
@@ -1989,7 +1989,7 @@ func (c cmdable) XClaimJustID(ctx context.Context, a *XClaimArgs) *StringSliceCm
 }
 
 func xClaimArgs(a *XClaimArgs) []interface{} {
-	args := make([]interface{}, 0, 4+len(a.Messages))
+	args := make([]interface{}, 0, 5+len(a.Messages))
 	args = append(args,
 		"xclaim",
 		a.Stream,
