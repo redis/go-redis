@@ -7,11 +7,10 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/go-redis/redis/extra/redisotel/v8"
 	"github.com/go-redis/redis/v8"
+	"github.com/uptrace/opentelemetry-go-extra/otelplay"
 )
 
 var tracer = otel.Tracer("redisexample")
@@ -19,8 +18,8 @@ var tracer = otel.Tracer("redisexample")
 func main() {
 	ctx := context.Background()
 
-	stop := configureOpentelemetry(ctx)
-	defer stop()
+	shutdown := otelplay.ConfigureOpentelemetry(ctx)
+	defer shutdown()
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
@@ -34,6 +33,8 @@ func main() {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
+
+	otelplay.PrintTraceID(ctx)
 }
 
 func handleRequest(ctx context.Context, rdb *redis.Client) error {
@@ -67,23 +68,4 @@ func handleRequest(ctx context.Context, rdb *redis.Client) error {
 	}
 
 	return nil
-}
-
-func configureOpentelemetry(ctx context.Context) func() {
-	provider := sdktrace.NewTracerProvider()
-	otel.SetTracerProvider(provider)
-
-	exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
-	if err != nil {
-		panic(err)
-	}
-
-	bsp := sdktrace.NewBatchSpanProcessor(exp)
-	provider.RegisterSpanProcessor(bsp)
-
-	return func() {
-		if err := provider.Shutdown(ctx); err != nil {
-			panic(err)
-		}
-	}
 }
