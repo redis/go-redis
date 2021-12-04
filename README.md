@@ -1,8 +1,13 @@
+<p align="center">
+  <a href="https://uptrace.dev/?utm_source=gh-redis&utm_campaign=gh-redis-banner1">
+    <img src="https://raw.githubusercontent.com/uptrace/roadmap/master/banner1.png" alt="All-in-one tool to optimize performance and monitor errors & logs">
+  </a>
+</p>
+
 # Redis client for Golang
 
 [![Build Status](https://travis-ci.org/go-redis/redis.png?branch=master)](https://travis-ci.org/go-redis/redis)
 [![GoDoc](https://godoc.org/github.com/go-redis/redis?status.svg)](https://godoc.org/github.com/go-redis/redis)
-[![Airbrake](https://img.shields.io/badge/kudos-airbrake.io-orange.svg)](https://airbrake.io)
 
 Supports:
 
@@ -29,20 +34,20 @@ Examples: https://godoc.org/github.com/go-redis/redis#pkg-examples.
 
 go-redis requires a Go version with [Modules](https://github.com/golang/go/wiki/Modules) support and uses import versioning. So please make sure to initialize a Go module before installing go-redis:
 
-``` shell
+```shell
 go mod init github.com/my/repo
 go get github.com/go-redis/redis/v7
 ```
 
 Import:
 
-``` go
+```go
 import "github.com/go-redis/redis/v7"
 ```
 
 ## Quickstart
 
-``` go
+```go
 func ExampleNewClient() {
 	client := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
@@ -93,7 +98,7 @@ Please go through [examples](https://godoc.org/github.com/go-redis/redis#pkg-exa
 
 Some corner cases:
 
-``` go
+```go
 // SET key value EX 10 NX
 set, err := client.SetNX("key", "value", 10*time.Second).Result()
 
