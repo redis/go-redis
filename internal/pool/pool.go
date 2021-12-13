@@ -36,6 +36,7 @@ type Stats struct {
 	TotalConns uint32 // number of total connections in the pool
 	IdleConns  uint32 // number of idle connections in the pool
 	StaleConns uint32 // number of stale connections removed from the pool
+	DialErrNum uint32 // number of errors occurred dialing connections
 }
 
 type Pooler interface {
@@ -57,13 +58,14 @@ type Options struct {
 	Dialer  func(context.Context) (net.Conn, error)
 	OnClose func(*Conn) error
 
-	PoolFIFO           bool
-	PoolSize           int
-	MinIdleConns       int
-	MaxConnAge         time.Duration
-	PoolTimeout        time.Duration
-	IdleTimeout        time.Duration
-	IdleCheckFrequency time.Duration
+	PoolFIFO                   bool
+	PoolSize                   int
+	MinIdleConns               int
+	MaxConnAge                 time.Duration
+	PoolTimeout                time.Duration
+	IdleTimeout                time.Duration
+	IdleCheckFrequency         time.Duration
+	DialRecoveryCheckFrequency time.Duration
 }
 
 type lastDialErrorWrap struct {
@@ -77,7 +79,8 @@ type ConnPool struct {
 
 	lastDialError atomic.Value
 
-	queue chan struct{}
+	queue             chan struct{}
+	dialRecoveryQueue chan struct{}
 
 	connsMu      sync.Mutex
 	conns        []*Conn
@@ -97,16 +100,17 @@ func NewConnPool(opt *Options) *ConnPool {
 	p := &ConnPool{
 		opt: opt,
 
-		queue:     make(chan struct{}, opt.PoolSize),
-		conns:     make([]*Conn, 0, opt.PoolSize),
-		idleConns: make([]*Conn, 0, opt.PoolSize),
-		closedCh:  make(chan struct{}),
+		queue:             make(chan struct{}, opt.PoolSize),
+		dialRecoveryQueue: make(chan struct{}, opt.PoolSize),
+		conns:             make([]*Conn, 0, opt.PoolSize),
+		idleConns:         make([]*Conn, 0, opt.PoolSize),
+		closedCh:          make(chan struct{}),
 	}
 
 	p.connsMu.Lock()
 	p.checkMinIdleConns()
 	p.connsMu.Unlock()
-
+	p.dialRecovery()
 	if opt.IdleTimeout > 0 && opt.IdleCheckFrequency > 0 {
 		go p.reaper(opt.IdleCheckFrequency)
 	}
@@ -186,6 +190,35 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	return cn, nil
 }
 
+func (p *ConnPool) dialRecovery() {
+	frequency := time.Second * 1
+	if p.opt.DialRecoveryCheckFrequency > 0 {
+		frequency = p.opt.DialRecoveryCheckFrequency
+	}
+	ticker := time.NewTicker(frequency)
+	defer ticker.Stop()
+	go func() {
+		for {
+			select {
+			case <-p.dialRecoveryQueue:
+				if p.isDialCircuitBreakerOpened() {
+					p.tryDial()
+				}
+			case <-ticker.C:
+				if p.isDialCircuitBreakerOpened() {
+					p.tryDial()
+				}
+			case <-p.closedCh:
+				return
+			}
+		}
+	}()
+}
+
+func (p *ConnPool) isDialCircuitBreakerOpened() bool {
+	return atomic.LoadUint32(&p.dialErrorsNum) >= uint32(p.opt.PoolSize)
+}
+
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if p.closed() {
 		return nil, ErrClosed
@@ -198,10 +231,13 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	netConn, err := p.opt.Dialer(ctx)
 	if err != nil {
 		p.setLastDialError(err)
-		if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.opt.PoolSize) {
-			go p.tryDial()
+		atomic.AddUint32(&p.dialErrorsNum, 1)
+		select {
+		case p.dialRecoveryQueue <- struct{}{}:
+			return nil, err
+		default:
+			return nil, err
 		}
-		return nil, err
 	}
 
 	cn := NewConn(netConn)
@@ -433,6 +469,7 @@ func (p *ConnPool) Stats() *Stats {
 		TotalConns: uint32(p.Len()),
 		IdleConns:  uint32(idleLen),
 		StaleConns: atomic.LoadUint32(&p.stats.StaleConns),
+		DialErrNum: atomic.LoadUint32(&p.dialErrorsNum),
 	}
 }
 

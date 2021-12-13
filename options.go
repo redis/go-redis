@@ -104,6 +104,8 @@ type Options struct {
 	// if IdleTimeout is set.
 	IdleCheckFrequency time.Duration
 
+	DialRecoveryCheckFrequency time.Duration
+
 	// Enables read only queries on slave nodes.
 	readOnly bool
 
@@ -164,7 +166,9 @@ func (opt *Options) init() {
 	if opt.IdleCheckFrequency == 0 {
 		opt.IdleCheckFrequency = time.Minute
 	}
-
+	if opt.DialRecoveryCheckFrequency == 0 {
+		opt.DialRecoveryCheckFrequency = time.Second
+	}
 	if opt.MaxRetries == -1 {
 		opt.MaxRetries = 0
 	} else if opt.MaxRetries == 0 {
@@ -418,12 +422,13 @@ func newConnPool(opt *Options) *pool.ConnPool {
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return opt.Dialer(ctx, opt.Network, opt.Addr)
 		},
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: opt.IdleCheckFrequency,
+		PoolFIFO:                   opt.PoolFIFO,
+		PoolSize:                   opt.PoolSize,
+		MinIdleConns:               opt.MinIdleConns,
+		MaxConnAge:                 opt.MaxConnAge,
+		PoolTimeout:                opt.PoolTimeout,
+		IdleTimeout:                opt.IdleTimeout,
+		IdleCheckFrequency:         opt.IdleCheckFrequency,
+		DialRecoveryCheckFrequency: opt.DialRecoveryCheckFrequency,
 	})
 }
