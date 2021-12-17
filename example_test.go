@@ -197,6 +197,20 @@ func ExampleClient_SetEX() {
 	}
 }
 
+func ExampleClient_HSet() {
+	type Items struct {
+		Key1 string `json:"key1"`
+		Key2 string `json:"key2"`
+	}
+	items := Items{"field1", "field2"}
+	// Last argument is expiration. Zero means the key has no
+	// expiration time.
+	err := rdb.HSet(ctx, "key", items).Err()
+	if err != nil {
+		panic(err)
+	}
+}
+
 func ExampleClient_Incr() {
 	result, err := rdb.Incr(ctx, "counter").Result()
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"time"
 
 	"github.com/go-redis/redis/v8/internal"
@@ -76,6 +77,29 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 	default:
 		return append(dst, arg)
 	}
+}
+
+func structToMap(items interface{}) map[string]interface{} {
+	res := map[string]interface{}{}
+	if items == nil {
+		return res
+	}
+	v := reflect.TypeOf(items)
+	reflectValue := reflect.Indirect(reflect.ValueOf(items))
+
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	for i := 0; i < v.NumField(); i++ {
+		tag := v.Field(i).Tag.Get("json")
+
+		if tag != "" && v.Field(i).Type.Kind() != reflect.Struct {
+			field := reflectValue.Field(i).Interface()
+			res[tag] = field
+		}
+	}
+
+	return res
 }
 
 type Cmdable interface {
@@ -1261,9 +1285,15 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 //   - HSet("myhash", "key1", "value1", "key2", "value2")
 //   - HSet("myhash", []string{"key1", "value1", "key2", "value2"})
 //   - HSet("myhash", map[string]interface{}{"key1": "value1", "key2": "value2"})
+//   - HSet("myhash", struct{Key1: "value1"; Key2: "value2"})
 //
 // Note that it requires Redis v4 for multiple field/value pairs support.
 func (c cmdable) HSet(ctx context.Context, key string, values ...interface{}) *IntCmd {
+	if len(values) == 1 {
+		if reflect.ValueOf(values[0]).Kind() == reflect.Struct {
+			values = []interface{}{structToMap(values[0])}
+		}
+	}
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "hset"
 	args[1] = key
