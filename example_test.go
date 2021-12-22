@@ -203,8 +203,7 @@ func ExampleClient_HSet() {
 		Key2 string `json:"key2"`
 	}
 	items := Items{"field1", "field2"}
-	// Last argument is expiration. Zero means the key has no
-	// expiration time.
+	
 	err := rdb.HSet(ctx, "key", items).Err()
 	if err != nil {
 		panic(err)
