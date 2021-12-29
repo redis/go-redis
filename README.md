@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://uptrace.dev/?utm_source=gh-redis&utm_campaign=gh-redis-banner1">
+  <a href="https://github.com/uptrace/uptrace">
     <img src="https://raw.githubusercontent.com/uptrace/roadmap/master/banner1.png" alt="All-in-one tool to optimize performance and monitor errors & logs">
   </a>
 </p>
