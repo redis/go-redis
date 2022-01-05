@@ -201,6 +201,12 @@ func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 		return nil, err
 	}
 
+	if c.opt.OnGetConnect != nil && cn != nil {
+		if err := c.opt.OnGetConnect(ctx, cn.RemoteAddr()); err != nil {
+			return cn, err
+		}
+	}
+
 	return cn, nil
 }
 
