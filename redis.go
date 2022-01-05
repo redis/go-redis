@@ -315,6 +315,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder) error {
 
 		retryTimeout := true
 		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			if cn != nil {
+				cmd.SetRemoteAddr(cn.RemoteAddr())
+			}
 			err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 				return writeCmd(wr, cmd)
 			})
@@ -407,6 +410,11 @@ func (c *baseClient) _generalProcessPipeline(
 
 		var canRetry bool
 		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			if cn != nil {
+				for i, _ := range cmds {
+					cmds[i].SetRemoteAddr(cn.RemoteAddr())
+				}
+			}
 			var err error
 			canRetry, err = p(ctx, cn, cmds)
 			return err
