@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-redis/redis/v8/internal"
@@ -27,6 +28,8 @@ type Cmder interface {
 
 	SetErr(error)
 	Err() error
+	RemoteAddr() net.Addr
+	SetRemoteAddr(addr net.Addr)
 }
 
 func setCmdsErr(cmds []Cmder, e error) {
@@ -116,6 +119,7 @@ type baseCmd struct {
 	keyPos int8
 
 	_readTimeout *time.Duration
+	_addr atomic.Value
 }
 
 var _ Cmder = (*Cmd)(nil)
@@ -177,6 +181,28 @@ func (cmd *baseCmd) readTimeout() *time.Duration {
 
 func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 	cmd._readTimeout = &d
+}
+
+func (cmd *baseCmd) SetRemoteAddr(addr net.Addr) {
+	if cmd == nil || addr == nil {
+		return
+	}
+	cmd._addr.Store(addr)
+}
+
+func (cmd *baseCmd) RemoteAddr() net.Addr {
+	if cmd == nil {
+		return nil
+	}
+	v := cmd._addr.Load()
+	if v == nil {
+		return nil
+	}
+	addr, ok := v.(net.Addr)
+	if ok {
+		return addr
+	}
+	return nil
 }
 
 //------------------------------------------------------------------------------

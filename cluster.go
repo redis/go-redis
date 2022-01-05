@@ -1185,6 +1185,11 @@ func (c *ClusterClient) _processPipelineNode(
 ) error {
 	return node.Client.hooks.processPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			if cn != nil {
+				for i := range cmds {
+					cmds[i].SetRemoteAddr(cn.RemoteAddr())
+				}
+			}
 			err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 				return writeCmds(wr, cmds)
 			})
@@ -1350,6 +1355,11 @@ func (c *ClusterClient) _processTxPipelineNode(
 ) error {
 	return node.Client.hooks.processTxPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			if cn != nil {
+				for i := range cmds {
+					cmds[i].SetRemoteAddr(cn.RemoteAddr())
+				}
+			}
 			err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 				return writeCmds(wr, cmds)
 			})
