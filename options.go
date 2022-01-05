@@ -39,6 +39,8 @@ type Options struct {
 
 	// Hook that is called when new connection is established.
 	OnConnect func(*Conn) error
+	// Hook that is called when single connection is fetched from the connection pool
+	OnGetConnect func(ctx context.Context, conn net.Addr) error
 
 	// Use the specified Username to authenticate the current connection with one of the connections defined in the ACL
 	// list when connecting to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
