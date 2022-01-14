@@ -129,16 +129,7 @@ func (opt *Options) init() {
 		opt.DialTimeout = 5 * time.Second
 	}
 	if opt.Dialer == nil {
-		opt.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			netDialer := &net.Dialer{
-				Timeout:   opt.DialTimeout,
-				KeepAlive: 5 * time.Minute,
-			}
-			if opt.TLSConfig == nil {
-				return netDialer.DialContext(ctx, network, addr)
-			}
-			return tls.DialWithDialer(netDialer, network, addr, opt.TLSConfig)
-		}
+		opt.Dialer = DefaultDialer(opt)
 	}
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
@@ -187,6 +178,21 @@ func (opt *Options) init() {
 func (opt *Options) clone() *Options {
 	clone := *opt
 	return &clone
+}
+
+// DefaultDialer returns a function that will be used as the default dialer
+// when none is specified in Options.Dialer.
+func DefaultDialer(opt *Options) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		netDialer := &net.Dialer{
+			Timeout:   opt.DialTimeout,
+			KeepAlive: 5 * time.Minute,
+		}
+		if opt.TLSConfig == nil {
+			return netDialer.DialContext(ctx, network, addr)
+		}
+		return tls.DialWithDialer(netDialer, network, addr, opt.TLSConfig)
+	}
 }
 
 // ParseURL parses an URL into Options that can be used to connect to Redis.
