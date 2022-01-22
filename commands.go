@@ -96,6 +96,10 @@ type Cmdable interface {
 	Exists(ctx context.Context, keys ...string) *IntCmd
 	Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireNX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	ExpireXX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	ExpireGT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	ExpireLT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	Keys(ctx context.Context, pattern string) *StringSliceCmd
 	Migrate(ctx context.Context, host, port, key string, db int, timeout time.Duration) *StatusCmd
 	Move(ctx context.Context, key string, db int) *BoolCmd
