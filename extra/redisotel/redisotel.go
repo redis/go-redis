@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	// todo: consider using the full module path "github.com/go-redis/redis/extra/redisotel"
-	defaultTracerName = "github.com/go-redis/redis"
+	defaultTracerName = "github.com/go-redis/redis/extra/redisotel"
 )
 
 type TracingHook struct {
@@ -32,8 +31,7 @@ func NewTracingHook(opts ...Option) *TracingHook {
 
 	tracer := cfg.tp.Tracer(
 		defaultTracerName,
-		// todo: consider adding a version
-		// trace.WithInstrumentationVersion("semver:8.11.4"),
+		trace.WithInstrumentationVersion("semver:"+redis.Version()),
 	)
 	return &TracingHook{tracer: tracer}
 }
