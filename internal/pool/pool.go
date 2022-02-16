@@ -288,6 +288,10 @@ func (p *ConnPool) getTurn() {
 }
 
 func (p *ConnPool) waitTurn(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

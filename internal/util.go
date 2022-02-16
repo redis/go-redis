@@ -8,6 +8,10 @@ import (
 )
 
 func Sleep(ctx context.Context, dur time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	t := time.NewTimer(dur)
 	defer t.Stop()
 
