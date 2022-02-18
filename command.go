@@ -151,8 +151,13 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	if pos < 0 || pos >= len(cmd.args) {
 		return ""
 	}
-	s, _ := cmd.args[pos].(string)
-	return s
+	arg := cmd.args[pos]
+	switch v := arg.(type) {
+	case string:
+		return v
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func (cmd *baseCmd) firstKeyPos() int8 {

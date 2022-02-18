@@ -341,6 +341,32 @@ func BenchmarkClusterPing(b *testing.B) {
 	})
 }
 
+func BenchmarkClusterDoInt(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping in short mode")
+	}
+
+	ctx := context.Background()
+	cluster := newClusterScenario()
+	if err := startCluster(ctx, cluster); err != nil {
+		b.Fatal(err)
+	}
+	defer cluster.Close()
+
+	client := cluster.newClusterClient(ctx, redisClusterOptions())
+	defer client.Close()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			err := client.Do(ctx, "SET", 10, 10).Err()
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 func BenchmarkClusterSetString(b *testing.B) {
 	if testing.Short() {
 		b.Skip("skipping in short mode")
