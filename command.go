@@ -156,7 +156,8 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	case string:
 		return v
 	default:
-		return fmt.Sprintf("%v", v)
+		// TODO: consider using appendArg
+		return fmt.Sprint(v)
 	}
 }
 
