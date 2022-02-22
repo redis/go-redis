@@ -42,6 +42,12 @@ type Options struct {
 	// Hook that is called when new connection is established.
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	// Hook that is called when a client is closed
+	OnClose func() error
+
+	// Hook that is called when a connection is closed
+	OnConnectionClose func(*pool.Conn) error
+
 	// Use the specified Username to authenticate the current connection
 	// with one of the connections defined in the ACL list when connecting
 	// to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
@@ -418,6 +424,7 @@ func newConnPool(opt *Options) *pool.ConnPool {
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return opt.Dialer(ctx, opt.Network, opt.Addr)
 		},
+		OnClose:            opt.OnConnectionClose,
 		PoolFIFO:           opt.PoolFIFO,
 		PoolSize:           opt.PoolSize,
 		MinIdleConns:       opt.MinIdleConns,

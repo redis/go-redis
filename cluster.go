@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/deliveroo/apm-go"
+	"go.uber.org/zap"
+
 	"github.com/go-redis/redis/v8/internal"
 	"github.com/go-redis/redis/v8/internal/hashtag"
 	"github.com/go-redis/redis/v8/internal/pool"
@@ -57,6 +60,8 @@ type ClusterOptions struct {
 
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	OnClose func() error
+
 	Username string
 	Password string
 
@@ -80,6 +85,9 @@ type ClusterOptions struct {
 	IdleCheckFrequency time.Duration
 
 	TLSConfig *tls.Config
+
+	// Flag for extra telemetry
+	enableTelemetry bool
 }
 
 func (opt *ClusterOptions) init() {
@@ -137,6 +145,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 	return &Options{
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
+		OnClose:   opt.OnClose,
 
 		Username: opt.Username,
 		Password: opt.Password,
@@ -777,7 +786,11 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
+			if c.opt.enableTelemetry {
+				apm.LoggerFromContext(ctx).Info(fmt.Sprintf("Process: Attempting a redirect. attempt=%d, slot=%d, cmd=%s", attempt, slot, cmd.Name()), zap.Error(lastErr))
+			}
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				apm.LoggerFromContext(ctx).Error(fmt.Sprintf("Process: error while backing off. attempt=%d, slot=%d, cmd=%s", attempt, slot, cmd.Name()), zap.Error(err))
 				return err
 			}
 		}
@@ -1103,7 +1116,11 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
+			if c.opt.enableTelemetry {
+				apm.LoggerFromContext(ctx).Info(fmt.Sprintf("ProcessPipeline: Attempting a redirect. attempt=%d, cmd_length=%d", attempt, len(cmds)))
+			}
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				apm.LoggerFromContext(ctx).Info(fmt.Sprintf("ProcessPipeline: error while backing off. attempt=%d, cmd_length=%d", attempt, len(cmds)), zap.Error(err))
 				setCmdsErr(cmds, err)
 				return err
 			}
@@ -1122,10 +1139,12 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 					return
 				}
 				if attempt < c.opt.MaxRedirects {
+					apm.LoggerFromContext(ctx).Info(fmt.Sprintf("ProcessPipeline: error while processing in a node. attempt=%d, cmd_length=%d, node=%s", attempt, len(cmds), node.String()), zap.Error(err))
 					if err := c.mapCmdsByNode(ctx, failedCmds, cmds); err != nil {
 						setCmdsErr(cmds, err)
 					}
 				} else {
+					apm.LoggerFromContext(ctx).Info(fmt.Sprintf("ProcessPipeline: No redirect attempts left. attempt=%d, cmd_length=%d, node=%s", attempt, len(cmds), node.String()), zap.Error(err))
 					setCmdsErr(cmds, err)
 				}
 			}(node, cmds)

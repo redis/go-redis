@@ -3,10 +3,11 @@ package redisotel_test
 import (
 	"testing"
 
-	"github.com/go-redis/redis/extra/redisotel/v8"
-	"github.com/go-redis/redis/v8"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/go-redis/redis/extra/redisotel/v8"
+	"github.com/go-redis/redis/v8"
 )
 
 func TestNew(t *testing.T) {

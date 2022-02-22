@@ -133,6 +133,7 @@ func newBaseClient(opt *Options, connPool pool.Pooler) *baseClient {
 	return &baseClient{
 		opt:      opt,
 		connPool: connPool,
+		onClose:  opt.OnClose,
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"log"
 	"sync"
 
-
 	"github.com/uptrace/opentelemetry-go-extra/otelplay"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
