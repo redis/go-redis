@@ -1,17 +1,16 @@
-<p align="center">
-  <a href="https://github.com/uptrace/uptrace">
-    <img src="https://raw.githubusercontent.com/uptrace/roadmap/master/banner1.png" alt="All-in-one tool to optimize performance and monitor errors & logs">
-  </a>
-</p>
-
-# Redis client for Golang
+# Redis client for Go
 
 ![build workflow](https://github.com/go-redis/redis/actions/workflows/build.yml/badge.svg)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
 
-- [Discussions](https://github.com/go-redis/redis/discussions).
-- [Newsletter](https://blog.uptrace.dev/pages/newsletter.html) to get latest updates.
+go-redis is brought to you by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
+Uptrace is an open source and blazingly fast **distributed tracing** backend powered by
+OpenTelemetry and ClickHouse. Give it a star as well!
+
+## Resources
+
+- [Discussions](https://github.com/go-redis/redis/discussions)
 - [Documentation](https://redis.uptrace.dev)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
@@ -19,15 +18,15 @@
 
 Other projects you may like:
 
-- [Bun](https://bun.uptrace.dev/) - fast and simple SQL client for PostgreSQL, MySQL, and SQLite.
+- [Bun](https://bun.uptrace.dev) - fast and simple SQL client for PostgreSQL, MySQL, and SQLite.
 - [BunRouter](https://bunrouter.uptrace.dev/) - fast and flexible HTTP router for Go.
 
 ## Ecosystem
 
-- [Redis Mock](https://github.com/go-redis/redismock).
-- [Distributed Locks](https://github.com/bsm/redislock).
-- [Redis Cache](https://github.com/go-redis/cache).
-- [Rate limiting](https://github.com/go-redis/redis_rate).
+- [Redis Mock](https://github.com/go-redis/redismock)
+- [Distributed Locks](https://github.com/bsm/redislock)
+- [Redis Cache](https://github.com/go-redis/cache)
+- [Rate limiting](https://github.com/go-redis/redis_rate)
 
 ## Features
 
