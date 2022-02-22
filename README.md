@@ -4,7 +4,7 @@
   </a>
 </p>
 
-# Redis client for Golang
+# Redis client for Go
 
 ![build workflow](https://github.com/go-redis/redis/actions/workflows/build.yml/badge.svg)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
