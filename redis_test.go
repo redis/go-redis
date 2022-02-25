@@ -304,6 +304,30 @@ var _ = Describe("Client", func() {
 		err := client.Conn(ctx).Get(ctx, "this-key-does-not-exist").Err()
 		Expect(err).To(Equal(redis.Nil))
 	})
+
+	It("should support custom ShouldRetry", func() {
+		opt := redisOptions()
+		opt.ShouldRetry = func(err error, retryTimeout bool) bool {
+			if err.Error() == "attempt 1 should fail" {
+				return true
+			}
+			return redis.DefaultShouldRetry(err, retryTimeout)
+		}
+		opt.MaxRetries = 1
+		client := redis.NewClient(opt)
+		script := redis.NewScript(`
+			local k = KEYS[1]
+			local n = redis.call("incr", k)
+			if n == 1 then
+				return redis.error_reply("attempt 1 should fail")
+			end
+			redis.call("del", k)
+			return true
+		`)
+		script.Load(ctx, client)
+		val, _ := script.Run(ctx, client, []string{"random_key"}).Result()
+		Expect(val).To(Equal(int64(1)))
+	})
 })
 
 var _ = Describe("Client timeout", func() {

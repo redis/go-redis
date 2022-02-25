@@ -211,6 +211,35 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		_, err = startRedis(masterPort)
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("should support custom ShouldRetry", func() {
+		opt := &redis.FailoverOptions{
+			MasterName:    sentinelName,
+			SentinelAddrs: sentinelAddrs,
+
+			RouteRandomly: true,
+			MaxRetries:    1,
+		}
+		opt.ShouldRetry = func(err error, retryTimeout bool) bool {
+			if err.Error() == "attempt 1 should fail" {
+				return true
+			}
+			return redis.DefaultShouldRetry(err, retryTimeout)
+		}
+		client := redis.NewFailoverClusterClient(opt)
+		script := redis.NewScript(`
+			local k = KEYS[1]
+			local n = redis.call("incr", k)
+			if n == 1 then
+				return redis.error_reply("attempt 1 should fail")
+			end
+			redis.call("del", k)
+			return true
+			`)
+		script.Load(ctx, client)
+		val, _ := script.Run(ctx, client, []string{"random_key"}).Result()
+		Expect(val).To(Equal(int64(1)))
+	})
 })
 
 var _ = Describe("SentinelAclAuth", func() {

@@ -12,6 +12,7 @@ import (
 
 // ErrClosed performs any operation on the closed client will return this error.
 var ErrClosed = pool.ErrClosed
+var ErrPoolTimeout = pool.ErrPoolTimeout
 
 type Error interface {
 	error
@@ -25,7 +26,7 @@ type Error interface {
 
 var _ Error = proto.RedisError("")
 
-func shouldRetry(err error, retryTimeout bool) bool {
+func DefaultShouldRetry(err error, retryTimeout bool) bool {
 	switch err {
 	case io.EOF, io.ErrUnexpectedEOF:
 		return true

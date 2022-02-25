@@ -16,6 +16,8 @@ import (
 	"github.com/go-redis/redis/v8/internal/pool"
 )
 
+type ShouldRetryFunc = func(error, bool) bool
+
 // Limiter is the interface of a rate limiter or a circuit breaker.
 type Limiter interface {
 	// Allow returns nil if operation is allowed or an error otherwise.
@@ -64,6 +66,7 @@ type Options struct {
 	// Maximum backoff between each retry.
 	// Default is 512 milliseconds; -1 disables backoff.
 	MaxRetryBackoff time.Duration
+	ShouldRetry     ShouldRetryFunc
 
 	// Dial timeout for establishing new connections.
 	// Default is 5 seconds.
@@ -181,6 +184,9 @@ func (opt *Options) init() {
 		opt.MaxRetryBackoff = 0
 	case 0:
 		opt.MaxRetryBackoff = 512 * time.Millisecond
+	}
+	if opt.ShouldRetry == nil {
+		opt.ShouldRetry = DefaultShouldRetry
 	}
 }
 

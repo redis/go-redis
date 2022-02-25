@@ -922,6 +922,29 @@ var _ = Describe("ClusterClient", func() {
 			Expect(info.Val()).Should(ContainSubstring("tcp_port:8221"))
 		})
 
+		It("should support custom ShouldRetry", func() {
+			script := redis.NewScript(`
+			local k = KEYS[1]
+			local n = redis.call("incr", k)
+			if n == 1 then
+				return redis.error_reply("attempt 1 should fail")
+			end
+			redis.call("del", k)
+			return true
+			`)
+			script.Load(ctx, client)
+			opt := redisClusterOptions()
+			opt.ShouldRetry = func(err error, retryTimeout bool) bool {
+				if err.Error() == "attempt 1 should fail" {
+					return true
+				}
+				return redis.DefaultShouldRetry(err, retryTimeout)
+			}
+			client := cluster.newClusterClient(ctx, opt)
+			val, _ := script.Run(ctx, client, []string{"random_key"}).Result()
+			Expect(val).To(Equal(int64(1)))
+		})
+
 		assertClusterClient()
 	})
 

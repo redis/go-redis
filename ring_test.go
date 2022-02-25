@@ -171,6 +171,30 @@ var _ = Describe("Redis Ring", func() {
 			Expect(ringShard1.Info(ctx).Val()).ToNot(ContainSubstring("keys="))
 			Expect(ringShard2.Info(ctx).Val()).To(ContainSubstring("keys=100"))
 		})
+
+		It("should support custom ShouldRetry", func() {
+			opt := redisRingOptions()
+			opt.ShouldRetry = func(err error, retryTimeout bool) bool {
+				if err.Error() == "attempt 1 should fail" {
+					return true
+				}
+				return redis.DefaultShouldRetry(err, retryTimeout)
+			}
+			opt.MaxRetries = 1
+			ring := redis.NewRing(opt)
+			script := redis.NewScript(`
+				local k = KEYS[1]
+				local n = redis.call("incr", k)
+				if n == 1 then
+					return redis.error_reply("attempt 1 should fail")
+				end
+				redis.call("del", k)
+				return true
+				`)
+			script.Load(ctx, ring)
+			val, _ := script.Run(ctx, ring, []string{"random_key"}).Result()
+			Expect(val).To(Equal(int64(1)))
+		})
 	})
 
 	Describe("new client callback", func() {

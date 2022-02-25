@@ -74,6 +74,7 @@ type RingOptions struct {
 	MaxRetries      int
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
+	ShouldRetry     ShouldRetryFunc
 
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
@@ -124,6 +125,9 @@ func (opt *RingOptions) init() {
 		opt.MaxRetryBackoff = 0
 	case 0:
 		opt.MaxRetryBackoff = 512 * time.Millisecond
+	}
+	if opt.ShouldRetry == nil {
+		opt.ShouldRetry = DefaultShouldRetry
 	}
 }
 
@@ -606,7 +610,7 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		lastErr = shard.Client.Process(ctx, cmd)
-		if lastErr == nil || !shouldRetry(lastErr, cmd.readTimeout() == nil) {
+		if lastErr == nil || !c.opt.ShouldRetry(lastErr, cmd.readTimeout() == nil) {
 			return lastErr
 		}
 	}
