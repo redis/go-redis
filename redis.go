@@ -348,7 +348,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		return false, nil
 	}
 
-	retry := shouldRetry(err, atomic.LoadUint32(&retryTimeout) == 1)
+	retry := c.opt.ShouldRetry(err, atomic.LoadUint32(&retryTimeout) == 1)
 	return retry, err
 }
 
@@ -426,7 +426,7 @@ func (c *baseClient) _generalProcessPipeline(
 			canRetry, err = p(ctx, cn, cmds)
 			return err
 		})
-		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) {
+		if lastErr == nil || !canRetry || !c.opt.ShouldRetry(lastErr, true) {
 			return lastErr
 		}
 	}

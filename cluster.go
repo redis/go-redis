@@ -63,6 +63,7 @@ type ClusterOptions struct {
 	MaxRetries      int
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
+	ShouldRetry     ShouldRetryFunc
 
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
@@ -128,6 +129,10 @@ func (opt *ClusterOptions) init() {
 
 	if opt.NewClient == nil {
 		opt.NewClient = NewClient
+	}
+
+	if opt.ShouldRetry == nil {
+		opt.ShouldRetry = DefaultShouldRetry
 	}
 }
 
@@ -834,7 +839,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
-		if shouldRetry(lastErr, cmd.readTimeout() == nil) {
+		if c.opt.ShouldRetry(lastErr, cmd.readTimeout() == nil) {
 			// First retry the same node.
 			if attempt == 0 {
 				continue
@@ -1497,7 +1502,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			continue
 		}
 
-		if shouldRetry(err, true) {
+		if c.opt.ShouldRetry(err, true) {
 			continue
 		}
 

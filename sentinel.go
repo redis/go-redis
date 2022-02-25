@@ -58,6 +58,7 @@ type FailoverOptions struct {
 	MaxRetries      int
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
+	ShouldRetry     ShouldRetryFunc
 
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
@@ -90,6 +91,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
+		ShouldRetry:     opt.ShouldRetry,
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
@@ -121,6 +123,7 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
+		ShouldRetry:     opt.ShouldRetry,
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
@@ -153,6 +156,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
+		ShouldRetry:     opt.ShouldRetry,
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
