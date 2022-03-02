@@ -114,7 +114,7 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
-		DB:       0,
+		DB:       opt.DB | 0,
 		Username: opt.SentinelUsername,
 		Password: opt.SentinelPassword,
 
