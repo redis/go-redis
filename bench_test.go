@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/go-redis/redis/v8"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/go-redis/redis/v8"
 )
 
 func benchmarkRedisClient(ctx context.Context, poolSize int) *redis.Client {
