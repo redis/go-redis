@@ -1633,6 +1633,32 @@ var _ = Describe("Commands", func() {
 			Expect(strLen.Err()).NotTo(HaveOccurred())
 			Expect(strLen.Val()).To(Equal(int64(0)))
 		})
+
+		It("should Copy", func() {
+			set := client.Set(ctx, "key", "hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			copy := client.Copy(ctx, "key", "newKey", redisOptions().DB, false)
+			Expect(copy.Err()).NotTo(HaveOccurred())
+			Expect(copy.Val()).To(Equal(int64(1)))
+
+			// Value is available by both keys now
+			getOld := client.Get(ctx, "key")
+			Expect(getOld.Err()).NotTo(HaveOccurred())
+			Expect(getOld.Val()).To(Equal("hello"))
+			getNew := client.Get(ctx, "newKey")
+			Expect(getNew.Err()).NotTo(HaveOccurred())
+			Expect(getNew.Val()).To(Equal("hello"))
+
+			// Overwriting an existing key should not succeed
+			overwrite := client.Copy(ctx, "newKey", "key", redisOptions().DB, false)
+			Expect(overwrite.Val()).To(Equal(int64(0)))
+
+			// Overwrite is allowed when replace=rue
+			replace := client.Copy(ctx, "newKey", "key", redisOptions().DB, true)
+			Expect(replace.Val()).To(Equal(int64(1)))
+		})
 	})
 
 	Describe("hashes", func() {

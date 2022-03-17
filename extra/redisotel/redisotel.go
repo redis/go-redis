@@ -19,11 +19,15 @@ const (
 
 type TracingHook struct {
 	tracer trace.Tracer
+	attrs  []attribute.KeyValue
 }
 
 func NewTracingHook(opts ...Option) *TracingHook {
 	cfg := &config{
 		tp: otel.GetTracerProvider(),
+		attrs: []attribute.KeyValue{
+			semconv.DBSystemRedis,
+		},
 	}
 	for _, opt := range opts {
 		opt.apply(cfg)
@@ -33,7 +37,7 @@ func NewTracingHook(opts ...Option) *TracingHook {
 		defaultTracerName,
 		trace.WithInstrumentationVersion("semver:"+redis.Version()),
 	)
-	return &TracingHook{tracer: tracer}
+	return &TracingHook{tracer: tracer, attrs: cfg.attrs}
 }
 
 func (th *TracingHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
@@ -43,8 +47,8 @@ func (th *TracingHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (cont
 
 	opts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(th.attrs...),
 		trace.WithAttributes(
-			semconv.DBSystemRedis,
 			semconv.DBStatementKey.String(rediscmd.CmdString(cmd)),
 		),
 	}
@@ -72,8 +76,8 @@ func (th *TracingHook) BeforeProcessPipeline(ctx context.Context, cmds []redis.C
 
 	opts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(th.attrs...),
 		trace.WithAttributes(
-			semconv.DBSystemRedis,
 			semconv.DBStatementKey.String(cmdsString),
 			attribute.Int("db.redis.num_cmd", len(cmds)),
 		),
@@ -101,7 +105,8 @@ func recordError(ctx context.Context, span trace.Span, err error) {
 }
 
 type config struct {
-	tp trace.TracerProvider
+	tp    trace.TracerProvider
+	attrs []attribute.KeyValue
 }
 
 // Option specifies instrumentation configuration options.
@@ -122,5 +127,12 @@ func WithTracerProvider(provider trace.TracerProvider) Option {
 		if provider != nil {
 			cfg.tp = provider
 		}
+	})
+}
+
+// WithAttributes specifies additional attributes to be added to the span.
+func WithAttributes(attrs ...attribute.KeyValue) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.attrs = append(cfg.attrs, attrs...)
 	})
 }
