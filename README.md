@@ -3,6 +3,7 @@
 ![build workflow](https://github.com/go-redis/redis/actions/workflows/build.yml/badge.svg)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
+[![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
 go-redis is brought to you by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
 Uptrace is an open source and blazingly fast **distributed tracing** backend powered by
