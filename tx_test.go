@@ -143,9 +143,6 @@ var _ = Describe("Tx", func() {
 		}
 
 		err = do()
-		Expect(err).To(MatchError("bad connection"))
-
-		err = do()
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
