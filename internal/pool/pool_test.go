@@ -371,6 +371,8 @@ var _ = Describe("conns reaper", func() {
 					cn.SetUsedAt(time.Now().Add(-2 * idleTimeout))
 				case "aged":
 					cn.SetCreatedAt(time.Now().Add(-2 * maxAge))
+				case "connCheck":
+					_ = cn.Close()
 				}
 				conns = append(conns, cn)
 				staleConns = append(staleConns, cn)
@@ -457,6 +459,7 @@ var _ = Describe("conns reaper", func() {
 
 	assert("idle")
 	assert("aged")
+	assert("connCheck")
 })
 
 var _ = Describe("race", func() {
