@@ -11,8 +11,9 @@ OpenTelemetry and ClickHouse. Give it a star as well!
 
 ## Resources
 
-- [Discussions](https://github.com/go-redis/redis/discussions)
 - [Documentation](https://redis.uptrace.dev)
+- [Discussions](https://github.com/go-redis/redis/discussions)
+- [Chat](https://discord.gg/rWtp5Aj)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
 - [RealWorld example app](https://github.com/uptrace/go-treemux-realworld-example-app)
