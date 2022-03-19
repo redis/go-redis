@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v8"
 )
 
 var _ = Describe("Redis Ring", func() {
@@ -190,8 +190,8 @@ var _ = Describe("Redis Ring", func() {
 
 	Describe("Process hook", func() {
 		BeforeEach(func() {
-			//the health check leads to data race for variable "stack []string".
-			//here, the health check time is set to 72 hours to avoid health check
+			// the health check leads to data race for variable "stack []string".
+			// here, the health check time is set to 72 hours to avoid health check
 			opt := redisRingOptions()
 			opt.HeartbeatFrequency = 72 * time.Hour
 			ring = redis.NewRing(opt)

@@ -39,13 +39,14 @@ func ExampleNewClient() {
 }
 
 func ExampleParseURL() {
-	opt, err := redis.ParseURL("redis://:qwerty@localhost:6379/1")
+	opt, err := redis.ParseURL("redis://:qwerty@localhost:6379/1?dial_timeout=5s")
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("addr is", opt.Addr)
 	fmt.Println("db is", opt.DB)
 	fmt.Println("password is", opt.Password)
+	fmt.Println("dial timeout is", opt.DialTimeout)
 
 	// Create client as usually.
 	_ = redis.NewClient(opt)
@@ -53,6 +54,7 @@ func ExampleParseURL() {
 	// Output: addr is localhost:6379
 	// db is 1
 	// password is qwerty
+	// dial timeout is 5s
 }
 
 func ExampleNewFailoverClient() {
