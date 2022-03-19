@@ -12,7 +12,8 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/dgryski/go-rendezvous"
+	rendezvous "github.com/dgryski/go-rendezvous" //nolint
+
 	"github.com/go-redis/redis/v8/internal"
 	"github.com/go-redis/redis/v8/internal/hashtag"
 	"github.com/go-redis/redis/v8/internal/pool"
@@ -575,7 +576,7 @@ func (c *Ring) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	}
 	info := cmdsInfo[name]
 	if info == nil {
-		internal.Logger.Printf(c.Context(), "info for cmd=%s not found", name)
+		internal.Logger.Printf(ctx, "info for cmd=%s not found", name)
 	}
 	return info
 }

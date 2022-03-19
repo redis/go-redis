@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -233,6 +234,45 @@ func BenchmarkZAdd(b *testing.B) {
 	})
 }
 
+func BenchmarkXRead(b *testing.B) {
+	ctx := context.Background()
+	client := benchmarkRedisClient(ctx, 10)
+	defer client.Close()
+
+	args := redis.XAddArgs{
+		Stream: "1",
+		ID:     "*",
+		Values: map[string]string{"uno": "dos"},
+	}
+
+	lenStreams := 16
+	streams := make([]string, 0, lenStreams)
+	for i := 0; i < lenStreams; i++ {
+		streams = append(streams, strconv.Itoa(i))
+	}
+	for i := 0; i < lenStreams; i++ {
+		streams = append(streams, "0")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			client.XAdd(ctx, &args)
+
+			err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: streams,
+				Count:   1,
+				Block:   time.Second,
+			}).Err()
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 var clientSink *redis.Client
 
 func BenchmarkWithContext(b *testing.B) {
@@ -294,6 +334,32 @@ func BenchmarkClusterPing(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			err := client.Ping(ctx).Err()
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkClusterDoInt(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping in short mode")
+	}
+
+	ctx := context.Background()
+	cluster := newClusterScenario()
+	if err := startCluster(ctx, cluster); err != nil {
+		b.Fatal(err)
+	}
+	defer cluster.Close()
+
+	client := cluster.newClusterClient(ctx, redisClusterOptions())
+	defer client.Close()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			err := client.Do(ctx, "SET", 10, 10).Err()
 			if err != nil {
 				b.Fatal(err)
 			}

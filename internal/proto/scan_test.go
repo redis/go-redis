@@ -3,9 +3,10 @@ package proto_test
 import (
 	"encoding/json"
 
-	"github.com/go-redis/redis/v8/internal/proto"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v8/internal/proto"
 )
 
 type testScanSliceStruct struct {

@@ -484,11 +484,11 @@ var _ = Describe("Commands", func() {
 			idleTime := client.ObjectIdleTime(ctx, "key")
 			Expect(idleTime.Err()).NotTo(HaveOccurred())
 
-			//Redis returned milliseconds/1000, which may cause ObjectIdleTime to be at a critical value,
-			//should be +1s to deal with the critical value problem.
-			//if too much time (>1s) is used during command execution, it may also cause the test to fail.
-			//so the ObjectIdleTime result should be <=now-start+1s
-			//link: https://github.com/redis/redis/blob/5b48d900498c85bbf4772c1d466c214439888115/src/object.c#L1265-L1272
+			// Redis returned milliseconds/1000, which may cause ObjectIdleTime to be at a critical value,
+			// should be +1s to deal with the critical value problem.
+			// if too much time (>1s) is used during command execution, it may also cause the test to fail.
+			// so the ObjectIdleTime result should be <=now-start+1s
+			// link: https://github.com/redis/redis/blob/5b48d900498c85bbf4772c1d466c214439888115/src/object.c#L1265-L1272
 			Expect(idleTime.Val()).To(BeNumerically("<=", time.Now().Sub(start)+time.Second))
 		})
 
@@ -1645,6 +1645,32 @@ var _ = Describe("Commands", func() {
 			Expect(strLen.Err()).NotTo(HaveOccurred())
 			Expect(strLen.Val()).To(Equal(int64(0)))
 		})
+
+		It("should Copy", func() {
+			set := client.Set(ctx, "key", "hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			copy := client.Copy(ctx, "key", "newKey", redisOptions().DB, false)
+			Expect(copy.Err()).NotTo(HaveOccurred())
+			Expect(copy.Val()).To(Equal(int64(1)))
+
+			// Value is available by both keys now
+			getOld := client.Get(ctx, "key")
+			Expect(getOld.Err()).NotTo(HaveOccurred())
+			Expect(getOld.Val()).To(Equal("hello"))
+			getNew := client.Get(ctx, "newKey")
+			Expect(getNew.Err()).NotTo(HaveOccurred())
+			Expect(getNew.Val()).To(Equal("hello"))
+
+			// Overwriting an existing key should not succeed
+			overwrite := client.Copy(ctx, "newKey", "key", redisOptions().DB, false)
+			Expect(overwrite.Val()).To(Equal(int64(0)))
+
+			// Overwrite is allowed when replace=rue
+			replace := client.Copy(ctx, "newKey", "key", redisOptions().DB, true)
+			Expect(replace.Val()).To(Equal(int64(1)))
+		})
 	})
 
 	Describe("hashes", func() {
@@ -2383,6 +2409,28 @@ var _ = Describe("Commands", func() {
 			Expect(lMove.Val()).To(Equal("san"))
 
 			lRange := client.LRange(ctx, "lmove2", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"san"}))
+		})
+
+		It("should BLMove", func() {
+			rPush := client.RPush(ctx, "blmove1", "ichi")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			Expect(rPush.Val()).To(Equal(int64(1)))
+
+			rPush = client.RPush(ctx, "blmove1", "ni")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			Expect(rPush.Val()).To(Equal(int64(2)))
+
+			rPush = client.RPush(ctx, "blmove1", "san")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			Expect(rPush.Val()).To(Equal(int64(3)))
+
+			blMove := client.BLMove(ctx, "blmove1", "blmove2", "RIGHT", "LEFT", time.Second)
+			Expect(blMove.Err()).NotTo(HaveOccurred())
+			Expect(blMove.Val()).To(Equal("san"))
+
+			lRange := client.LRange(ctx, "blmove2", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
 			Expect(lRange.Val()).To(Equal([]string{"san"}))
 		})

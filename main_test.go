@@ -117,7 +117,7 @@ func TestGinkgoSuite(t *testing.T) {
 	RunSpecs(t, "go-redis")
 }
 
-// ------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
 
 func redisOptions() *redis.Options {
 	return &redis.Options{
@@ -295,7 +295,7 @@ func redisDir(port string) (string, error) {
 	if err := os.RemoveAll(dir); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0775); err != nil {
+	if err := os.MkdirAll(dir, 0o775); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -364,7 +364,7 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 	return p, nil
 }
 
-// ------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
 
 type badConnError string
 
@@ -409,7 +409,7 @@ func (cn *badConn) Write([]byte) (int, error) {
 	return 0, badConnError("bad connection")
 }
 
-// ------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
 
 type hook struct {
 	beforeProcess func(ctx context.Context, cmd redis.Cmder) (context.Context, error)

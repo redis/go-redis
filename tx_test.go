@@ -5,10 +5,10 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v8"
 )
 
 var _ = Describe("Tx", func() {
@@ -123,7 +123,7 @@ var _ = Describe("Tx", func() {
 		Expect(num).To(Equal(int64(N)))
 	})
 
-	It("should remove from bad connection", func() {
+	It("should recover from bad connection", func() {
 		// Put bad connection in the pool.
 		cn, err := client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
@@ -134,14 +134,17 @@ var _ = Describe("Tx", func() {
 		do := func() error {
 			err := client.Watch(ctx, func(tx *redis.Tx) error {
 				_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-					return pipe.Ping(ctx).Err()
+					pipe.Ping(ctx)
+					return nil
 				})
 				return err
 			})
 			return err
 		}
 
-		// connCheck will automatically remove damaged connections.
+		err = do()
+		Expect(err).To(MatchError("bad connection"))
+
 		err = do()
 		Expect(err).NotTo(HaveOccurred())
 	})

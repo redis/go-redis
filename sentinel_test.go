@@ -3,10 +3,10 @@ package redis_test
 import (
 	"net"
 
-	"github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v8"
 )
 
 var _ = Describe("Sentinel", func() {
@@ -192,7 +192,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		err = master.Shutdown(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() error {
-			return master.Ping(ctx).Err()
+			return sentinelMaster.Ping(ctx).Err()
 		}, "15s", "100ms").Should(HaveOccurred())
 
 		// Check that client picked up new master.
@@ -212,5 +212,78 @@ var _ = Describe("NewFailoverClusterClient", func() {
 
 		_, err = startRedis(masterPort)
 		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("SentinelAclAuth", func() {
+	const (
+		aclSentinelUsername = "sentinel-user"
+		aclSentinelPassword = "sentinel-pass"
+	)
+
+	var client *redis.Client
+	var sentinel *redis.SentinelClient
+	var sentinels = func() []*redisProcess {
+		return []*redisProcess{sentinel1, sentinel2, sentinel3}
+	}
+
+	BeforeEach(func() {
+		authCmd := redis.NewStatusCmd(ctx, "ACL", "SETUSER", aclSentinelUsername, "ON",
+			">"+aclSentinelPassword, "-@all", "+auth", "+client|getname", "+client|id", "+client|setname",
+			"+command", "+hello", "+ping", "+role", "+sentinel|get-master-addr-by-name", "+sentinel|master",
+			"+sentinel|myid", "+sentinel|replicas", "+sentinel|sentinels")
+
+		for _, process := range sentinels() {
+			err := process.Client.Process(ctx, authCmd)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		client = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:       sentinelName,
+			SentinelAddrs:    sentinelAddrs,
+			MaxRetries:       -1,
+			SentinelUsername: aclSentinelUsername,
+			SentinelPassword: aclSentinelPassword,
+		})
+
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
+		sentinel = redis.NewSentinelClient(&redis.Options{
+			Addr:       sentinelAddrs[0],
+			MaxRetries: -1,
+			Username:   aclSentinelUsername,
+			Password:   aclSentinelPassword,
+		})
+
+		_, err := sentinel.GetMasterAddrByName(ctx, sentinelName).Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Wait until sentinels are picked up by each other.
+		for _, process := range sentinels() {
+			Eventually(func() string {
+				return process.Info(ctx).Val()
+			}, "15s", "100ms").Should(ContainSubstring("sentinels=3"))
+		}
+	})
+
+	AfterEach(func() {
+		unauthCommand := redis.NewStatusCmd(ctx, "ACL", "DELUSER", aclSentinelUsername)
+
+		for _, process := range sentinels() {
+			err := process.Client.Process(ctx, unauthCommand)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		_ = client.Close()
+		_ = sentinel.Close()
+	})
+
+	It("should still facilitate operations", func() {
+		err := client.Set(ctx, "wow", "acl-auth", 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		val, err := client.Get(ctx, "wow").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal("acl-auth"))
 	})
 })

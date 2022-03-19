@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v8"
 )
 
 type redisHookError struct {
@@ -281,6 +281,18 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(tm2).To(BeTemporally("==", tm))
+	})
+
+	It("should set and scan durations", func() {
+		duration := 10 * time.Minute
+		err := client.Set(ctx, "duration", duration, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		var duration2 time.Duration
+		err = client.Get(ctx, "duration").Scan(&duration2)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(duration2).To(Equal(duration))
 	})
 
 	It("should Conn", func() {
