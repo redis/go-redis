@@ -1857,7 +1857,7 @@ type XInfoConsumersCmd struct {
 type XInfoConsumer struct {
 	Name    string
 	Pending int64
-	Idle    int64
+	Idle    time.Duration
 }
 
 var _ Cmder = (*XInfoConsumersCmd)(nil)
@@ -1906,19 +1906,21 @@ func (cmd *XInfoConsumersCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 
+			var idle int64
 			switch key {
 			case "name":
 				cmd.val[i].Name, err = rd.ReadString()
 			case "pending":
 				cmd.val[i].Pending, err = rd.ReadInt()
 			case "idle":
-				cmd.val[i].Idle, err = rd.ReadInt()
+				idle, err = rd.ReadInt()
 			default:
 				return fmt.Errorf("redis: unexpected content %s in XINFO CONSUMERS reply", key)
 			}
 			if err != nil {
 				return err
 			}
+			cmd.val[i].Idle = time.Duration(idle) * time.Millisecond
 		}
 	}
 
