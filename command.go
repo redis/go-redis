@@ -1906,21 +1906,21 @@ func (cmd *XInfoConsumersCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 
-			var idle int64
 			switch key {
 			case "name":
 				cmd.val[i].Name, err = rd.ReadString()
 			case "pending":
 				cmd.val[i].Pending, err = rd.ReadInt()
 			case "idle":
+				var idle int64
 				idle, err = rd.ReadInt()
+				cmd.val[i].Idle = time.Duration(idle) * time.Millisecond
 			default:
 				return fmt.Errorf("redis: unexpected content %s in XINFO CONSUMERS reply", key)
 			}
 			if err != nil {
 				return err
 			}
-			cmd.val[i].Idle = time.Duration(idle) * time.Millisecond
 		}
 	}
 
