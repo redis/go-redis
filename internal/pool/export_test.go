@@ -12,7 +12,3 @@ func (cn *Conn) SetCreatedAt(tm time.Time) {
 func (cn *Conn) NetConn() net.Conn {
 	return cn.netConn
 }
-
-func MaxBadConnRetries() int {
-	return maxBadConnRetries
-}
