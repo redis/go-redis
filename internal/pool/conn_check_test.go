@@ -1,3 +1,4 @@
+//go:build linux || darwin || dragonfly || freebsd || netbsd || openbsd || solaris || illumos
 // +build linux darwin dragonfly freebsd netbsd openbsd solaris illumos
 
 package pool
@@ -13,9 +14,13 @@ import (
 
 var _ = Describe("tests conn_check with real conns", func() {
 	var ts *httptest.Server
+	var conn net.Conn
+	var err error
 
 	BeforeEach(func() {
 		ts = httptest.NewServer(nil)
+		conn, err = net.DialTimeout(ts.Listener.Addr().Network(), ts.Listener.Addr().String(), time.Second)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -23,25 +28,21 @@ var _ = Describe("tests conn_check with real conns", func() {
 	})
 
 	It("good conn check", func() {
-		conn, err := net.DialTimeout(ts.Listener.Addr().Network(), ts.Listener.Addr().String(), time.Second)
-		Expect(err).NotTo(HaveOccurred())
-		defer conn.Close()
+		Expect(connCheck(conn)).NotTo(HaveOccurred())
 
-		err = connCheck(conn)
-		Expect(err).NotTo(HaveOccurred())
-
-		_ = conn.Close()
-		err = connCheck(conn)
-		Expect(err).To(HaveOccurred())
+		Expect(conn.Close()).NotTo(HaveOccurred())
+		Expect(connCheck(conn)).To(HaveOccurred())
 	})
 
 	It("bad conn check", func() {
-		conn, err := net.DialTimeout(ts.Listener.Addr().Network(), ts.Listener.Addr().String(), time.Second)
-		Expect(err).NotTo(HaveOccurred())
-		defer conn.Close()
+		Expect(conn.Close()).NotTo(HaveOccurred())
+		Expect(connCheck(conn)).To(HaveOccurred())
+	})
 
-		ts.Close()
-		err = connCheck(conn)
-		Expect(err).To(HaveOccurred())
+	It("check conn deadline", func() {
+		Expect(conn.SetDeadline(time.Now())).NotTo(HaveOccurred())
+		time.Sleep(time.Millisecond * 10)
+		Expect(connCheck(conn)).NotTo(HaveOccurred())
+		Expect(conn.Close()).NotTo(HaveOccurred())
 	})
 })
