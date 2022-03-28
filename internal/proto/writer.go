@@ -4,6 +4,7 @@ import (
 	"encoding"
 	"fmt"
 	"io"
+	"net"
 	"strconv"
 	"time"
 
@@ -106,6 +107,8 @@ func (w *Writer) WriteArg(v interface{}) error {
 			return err
 		}
 		return w.bytes(b)
+	case net.IP:
+		return w.bytes(v)
 	default:
 		return fmt.Errorf(
 			"redis: can't marshal %T (implement encoding.BinaryMarshaler)", v)

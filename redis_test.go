@@ -316,6 +316,18 @@ var _ = Describe("Client", func() {
 		err := client.Conn(ctx).Get(ctx, "this-key-does-not-exist").Err()
 		Expect(err).To(Equal(redis.Nil))
 	})
+
+	It("should set and scan net.IP", func() {
+		ip := net.ParseIP("192.168.1.1")
+		err := client.Set(ctx, "ip", ip, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		var ip2 net.IP
+		err = client.Get(ctx, "ip").Scan(&ip2)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(ip2).To(Equal(ip))
+	})
 })
 
 var _ = Describe("Client timeout", func() {
