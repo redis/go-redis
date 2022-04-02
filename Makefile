@@ -1,4 +1,5 @@
 PACKAGE_DIRS := $(shell find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; | sort)
+REDIS_VERSION := 6.2.6
 
 test: testdeps
 	go test ./...
@@ -16,7 +17,7 @@ bench: testdeps
 
 testdata/redis:
 	mkdir -p $@
-	wget -qO- https://download.redis.io/releases/redis-6.2.5.tar.gz | tar xvz --strip-components=1 -C $@
+	wget -qO- https://download.redis.io/releases/redis-${REDIS_VERSION}.tar.gz | tar xvz --strip-components=1 -C $@
 
 testdata/redis/src/redis-server: testdata/redis
 	cd $< && make all
