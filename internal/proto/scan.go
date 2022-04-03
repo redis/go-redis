@@ -3,6 +3,7 @@ package proto
 import (
 	"encoding"
 	"fmt"
+	"net"
 	"reflect"
 	"time"
 
@@ -115,6 +116,9 @@ func Scan(b []byte, v interface{}) error {
 		return nil
 	case encoding.BinaryUnmarshaler:
 		return v.UnmarshalBinary(b)
+	case *net.IP:
+		*v = b
+		return nil
 	default:
 		return fmt.Errorf(
 			"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)", v)
