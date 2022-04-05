@@ -19,12 +19,6 @@
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
 - [RealWorld example app](https://github.com/uptrace/go-treemux-realworld-example-app)
 
-Other projects you may like:
-
-- [Golang ORM](https://bun.uptrace.dev) - Lightweight Golang ORM for PostgreSQL, MySQL, MSSQL, and
-  SQLite. SQLite.
-- [Golang HTTP router](https://bunrouter.uptrace.dev/) - fast and flexible HTTP router for Go.
-
 ## Ecosystem
 
 - [Redis Mock](https://github.com/go-redis/redismock)
@@ -169,6 +163,13 @@ Lastly, run:
 ```
 go test
 ```
+
+## See also
+
+- [Golang ORM](https://bun.uptrace.dev) for PostgreSQL, MySQL, MSSQL, and SQLite
+- [Golang PostgreSQL](https://bun.uptrace.dev/postgres/)
+- [Golang HTTP router](https://bunrouter.uptrace.dev/)
+- [Golang ClickHouse ORM](https://github.com/uptrace/go-clickhouse)
 
 ## Contributors
 
