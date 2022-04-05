@@ -6,8 +6,9 @@
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
 > go-redis is brought to you by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
-> Uptrace is an open source and blazingly fast [distributed tracing tool](https://get.uptrace.dev/)
-> powered by OpenTelemetry and ClickHouse. Give it a star as well!
+> Uptrace is an open source and blazingly fast
+> [distributed tracing tool](https://get.uptrace.dev/compare/distributed-tracing-tools.html) powered
+> by OpenTelemetry and ClickHouse. Give it a star as well!
 
 ## Resources
 
@@ -20,8 +21,9 @@
 
 Other projects you may like:
 
-- [Bun](https://bun.uptrace.dev) - fast and simple SQL client for PostgreSQL, MySQL, and SQLite.
-- [BunRouter](https://bunrouter.uptrace.dev/) - fast and flexible HTTP router for Go.
+- [Golang ORM](https://bun.uptrace.dev) - Lightweight Golang ORM for PostgreSQL, MySQL, MSSQL, and
+  SQLite. SQLite.
+- [Golang HTTP router](https://bunrouter.uptrace.dev/) - fast and flexible HTTP router for Go.
 
 ## Ecosystem
 
