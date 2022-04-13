@@ -17,7 +17,6 @@
 - [Chat](https://discord.gg/rWtp5Aj)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
-- [RealWorld example app](https://github.com/uptrace/go-treemux-realworld-example-app)
 
 ## Ecosystem
 
@@ -30,19 +29,13 @@
 
 - Redis 3 commands except QUIT, MONITOR, and SYNC.
 - Automatic connection pooling with
-  [circuit breaker](https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern) support.
-- [Pub/Sub](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#PubSub).
-- [Transactions](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-Client-TxPipeline).
-- [Pipeline](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-Client.Pipeline) and
-  [TxPipeline](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-Client.TxPipeline).
-- [Scripting](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#Script).
-- [Timeouts](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#Options).
-- [Redis Sentinel](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#NewFailoverClient).
-- [Redis Cluster](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#NewClusterClient).
-- [Cluster of Redis Servers](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-NewClusterClient-ManualSetup)
-  without using cluster mode and Redis Sentinel.
-- [Ring](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#NewRing).
-- [Instrumentation](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-package-Instrumentation).
+- [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
+- [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
+- [Scripting](https://redis.uptrace.dev/guide/lua-scripting.html).
+- [Redis Sentinel](https://redis.uptrace.dev/guide/go-redis-sentinel.html).
+- [Redis Cluster](https://redis.uptrace.dev/guide/go-redis-cluster.html).
+- [Redis Ring](https://redis.uptrace.dev/guide/ring.html).
+- [Redis Performance Monitoring](https://redis.uptrace.dev/guide/redis-performance-monitoring.html).
 
 ## Installation
 
@@ -143,7 +136,7 @@ go-redis will start a redis-server and run the test cases.
 
 The paths of redis-server bin file and redis config file are defined in `main_test.go`:
 
-```
+```go
 var (
 	redisServerBin, _  = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
 	redisServerConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
@@ -153,14 +146,14 @@ var (
 For local testing, you can change the variables to refer to your local files, or create a soft link
 to the corresponding folder for redis-server and copy the config file to `testdata/redis/`:
 
-```
+```shell
 ln -s /usr/bin/redis-server ./go-redis/testdata/redis/src
 cp ./go-redis/testdata/redis.conf ./go-redis/testdata/redis/
 ```
 
 Lastly, run:
 
-```
+```shell
 go test
 ```
 
