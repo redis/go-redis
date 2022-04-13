@@ -6,4 +6,5 @@ To run this example:
 go run .
 ```
 
-See [Using HyperLogLog command with go-redis](https://redis.uptrace.dev/guide/hll.html) for details.
+See [Using HyperLogLog command with go-redis](https://redis.uptrace.dev/guide/go-redis-hll.html) for
+details.
