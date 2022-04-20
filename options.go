@@ -390,6 +390,37 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.IdleTimeout = q.duration("idle_timeout")
 	o.IdleCheckFrequency = q.duration("idle_check_frequency")
+
+	if u.Scheme == "rediss" {
+		tlsCertPEMFile := q.string("TLSCertPEMFile")
+		tlsKeyPEMFile := q.string("TLSKeyPEMFile")
+
+		if (tlsCertPEMFile == "") != (tlsKeyPEMFile == "") {
+			return nil, fmt.Errorf("redis: TLSCertPEMFile and TLSKeyPEMFile URL parameters must be both set or both omitted")
+		}
+
+		if tlsCertPEMFile != "" {
+			cert, certLoadErr := tls.LoadX509KeyPair(tlsCertPEMFile, tlsKeyPEMFile)
+			if certLoadErr != nil {
+				return nil, fmt.Errorf("redis: Error loading X509 Key Pair: %w", certLoadErr)
+			}
+
+			o.TLSConfig.Certificates = []tls.Certificate{cert}
+		}
+
+		o.TLSConfig.MinVersion = uint16(q.int("TLSMinVersion"))
+		o.TLSConfig.MaxVersion = uint16(q.int("TLSMaxVersion"))
+		o.TLSConfig.InsecureSkipVerify = q.bool("TLSInsecureSkipVerify")
+
+		serverNameOverride := q.string("ServerName")
+		if serverNameOverride != "" {
+			// we explicitly check for this query parameter, so we don't overwrite
+			// the default server name (the hostname of the Redis server) if it's
+			// not given
+			o.TLSConfig.ServerName = serverNameOverride
+		}
+	}
+
 	if q.err != nil {
 		return nil, q.err
 	}

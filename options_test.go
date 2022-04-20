@@ -11,6 +11,27 @@ import (
 )
 
 func TestParseURL(t *testing.T) {
+	certPem := []byte(`-----BEGIN CERTIFICATE-----
+MIIBhTCCASugAwIBAgIQIRi6zePL6mKjOipn+dNuaTAKBggqhkjOPQQDAjASMRAw
+DgYDVQQKEwdBY21lIENvMB4XDTE3MTAyMDE5NDMwNloXDTE4MTAyMDE5NDMwNlow
+EjEQMA4GA1UEChMHQWNtZSBDbzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABD0d
+7VNhbWvZLWPuj/RtHFjvtJBEwOkhbN/BnnE8rnZR8+sbwnc/KhCk3FhnpHZnQz7B
+5aETbbIgmuvewdjvSBSjYzBhMA4GA1UdDwEB/wQEAwICpDATBgNVHSUEDDAKBggr
+BgEFBQcDATAPBgNVHRMBAf8EBTADAQH/MCkGA1UdEQQiMCCCDmxvY2FsaG9zdDo1
+NDUzgg4xMjcuMC4wLjE6NTQ1MzAKBggqhkjOPQQDAgNIADBFAiEA2zpJEPQyz6/l
+Wf86aX6PepsntZv2GYlA5UpabfT2EZICICpJ5h/iI+i341gBmLiAFQOyTDT+/wQc
+6MF9+Yw1Yy0t
+-----END CERTIFICATE-----`)
+	keyPem := []byte(`-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIIrYSSNQFaA2Hwf1duRSxKtLYX5CB04fSeQ6tF1aY/PuoAoGCCqGSM49
+AwEHoUQDQgAEPR3tU2Fta9ktY+6P9G0cWO+0kETA6SFs38GecTyudlHz6xvCdz8q
+EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
+-----END EC PRIVATE KEY-----`)
+	testCert, err := tls.X509KeyPair(certPem, keyPem)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	cases := []struct {
 		url string
 		o   *Options // expected value
@@ -30,7 +51,24 @@ func TestParseURL(t *testing.T) {
 			o:   &Options{Addr: "12345:6379"},
 		}, {
 			url: "rediss://localhost:123",
-			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ /* no deep comparison */ }},
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost"}},
+		}, {
+			url: "rediss://localhost:123?ServerName=abc&TLSMinVersion=1&TLSMaxVersion=3&TLSInsecureSkipVerify=true",
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "abc", MinVersion: 1, MaxVersion: 3, InsecureSkipVerify: true}},
+		}, {
+			url: "rediss://localhost:123?TLSCertPEMFile=./testdata/testcert.pem&TLSKeyPEMFile=./testdata/testkey.pem",
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", Certificates: []tls.Certificate{testCert}}},
+		}, {
+			url: "rediss://localhost:123?TLSCertPEMFile=./testdata/doesnotexist.pem&TLSKeyPEMFile=./testdata/testkey.pem",
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "abc"}},
+			err: errors.New("redis: Error loading X509 Key Pair: open ./testdata/doesnotexist.pem: no such file or directory"),
+		}, {
+			url: "rediss://localhost:123?TLSCertPEMFile=./testdata/testcert.pem",
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "abc"}},
+			err: errors.New("redis: TLSCertPEMFile and TLSKeyPEMFile URL parameters must be both set or both omitted"),
+		}, {
+			url: "rediss://localhost:123?TLSKeyPEMFile=./testdata/testkey.pem",
+			err: errors.New("redis: TLSCertPEMFile and TLSKeyPEMFile URL parameters must be both set or both omitted"),
 		}, {
 			url: "redis://:bar@localhost:123",
 			o:   &Options{Addr: "localhost:123", Password: "bar"},
@@ -188,6 +226,39 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 	}
 	if actual.IdleCheckFrequency != expected.IdleCheckFrequency {
 		t.Errorf("IdleCheckFrequency: got %v, expected %v", actual.IdleCheckFrequency, expected.IdleCheckFrequency)
+	}
+
+	if (actual.TLSConfig == nil) != (expected.TLSConfig == nil) {
+		t.Errorf("TLSConfig nil: got %v, expected %v", actual.TLSConfig == nil, expected.TLSConfig == nil)
+	}
+
+	if (actual.TLSConfig != nil) && (expected.TLSConfig != nil) {
+		if actual.TLSConfig.MinVersion != expected.TLSConfig.MinVersion {
+			t.Errorf("TLSConfig.MinVersion: got %v, expected %v", actual.TLSConfig.MinVersion, expected.TLSConfig.MinVersion)
+		}
+
+		if actual.TLSConfig.MaxVersion != expected.TLSConfig.MaxVersion {
+			t.Errorf("TLSConfig.MaxVersion: got %v, expected %v", actual.TLSConfig.MaxVersion, expected.TLSConfig.MaxVersion)
+		}
+
+		if actual.TLSConfig.ServerName != expected.TLSConfig.ServerName {
+			t.Errorf("TLSConfig.ServerName: got %v, expected %v", actual.TLSConfig.ServerName, expected.TLSConfig.ServerName)
+		}
+
+		if actual.TLSConfig.InsecureSkipVerify != expected.TLSConfig.InsecureSkipVerify {
+			t.Errorf("TLSConfig.InsecureSkipVerify: got %v, expected %v", actual.TLSConfig.InsecureSkipVerify, expected.TLSConfig.InsecureSkipVerify)
+		}
+
+		if len(actual.TLSConfig.Certificates) != len(expected.TLSConfig.Certificates) {
+			t.Errorf("TLSConfig.Certificates: got %v, expected %v", actual.TLSConfig.Certificates, expected.TLSConfig.Certificates)
+		}
+
+		for i, actualCert := range actual.TLSConfig.Certificates {
+			expectedCert := expected.TLSConfig.Certificates[i]
+			if !actualCert.Leaf.Equal(expectedCert.Leaf) {
+				t.Errorf("TLSConfig.Certificates[%d].Leaf: got %v, expected %v", i, actual.TLSConfig.Certificates, expected.TLSConfig.Certificates)
+			}
+		}
 	}
 }
 
