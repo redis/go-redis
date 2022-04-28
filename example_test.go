@@ -198,13 +198,15 @@ func ExampleClient_SetEX() {
 }
 
 func ExampleClient_HSet() {
-	type Items struct {
-		Key1 string `json:"key1"`
-		Key2 string `json:"key2"`
+	// Set "key" tag for hash key
+	type ExampleUser struct {
+		Name string `key:"name"`
+		Age  int    `key:"age"`
 	}
-	items := Items{"field1", "field2"}
-	
-	err := rdb.HSet(ctx, "key", items).Err()
+
+	items := ExampleUser{"jane", 22}
+
+	err := rdb.HSet(ctx, "user:1", items).Err()
 	if err != nil {
 		panic(err)
 	}
