@@ -91,7 +91,7 @@ func structToMap(items interface{}) map[string]interface{} {
 		v = v.Elem()
 	}
 	for i := 0; i < v.NumField(); i++ {
-		tag := v.Field(i).Tag.Get("json")
+		tag := v.Field(i).Tag.Get("key")
 
 		if tag != "" && v.Field(i).Type.Kind() != reflect.Struct {
 			field := reflectValue.Field(i).Interface()
@@ -1285,7 +1285,10 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 //   - HSet("myhash", "key1", "value1", "key2", "value2")
 //   - HSet("myhash", []string{"key1", "value1", "key2", "value2"})
 //   - HSet("myhash", map[string]interface{}{"key1": "value1", "key2": "value2"})
-//   - HSet("myhash", struct{Key1: "value1"; Key2: "value2"})
+//
+//	 Playing struct With "key" tag
+//   - type MyHash struct { Key1 string `key:"key1"`; Key2 int `key:"key2"` }
+//   - HSet("myhash", MyHash{"value1", "value2"})
 //
 // Note that it requires Redis v4 for multiple field/value pairs support.
 func (c cmdable) HSet(ctx context.Context, key string, values ...interface{}) *IntCmd {
