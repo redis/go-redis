@@ -3,6 +3,7 @@ package pool
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"sync/atomic"
 	"time"
@@ -10,7 +11,12 @@ import (
 	"github.com/go-redis/redis/v8/internal/proto"
 )
 
-var noDeadline = time.Time{}
+var (
+	noDeadline = time.Time{}
+
+	// ErrPoolTimeout happens when the underlying connection is nil.
+	ErrNilConnection = errors.New("nil connection")
+)
 
 type Conn struct {
 	usedAt  int64 // atomic
@@ -56,6 +62,9 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 }
 
 func (cn *Conn) Write(b []byte) (int, error) {
+	if cn.netConn == nil {
+		return 0, ErrNilConnection
+	}
 	return cn.netConn.Write(b)
 }
 
@@ -79,6 +88,10 @@ func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(r
 func (cn *Conn) WithWriter(
 	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
 ) error {
+	if cn.netConn == nil {
+		return ErrNilConnection
+	}
+
 	if timeout != 0 {
 		if err := cn.netConn.SetWriteDeadline(cn.deadline(ctx, timeout)); err != nil {
 			return err
@@ -97,6 +110,9 @@ func (cn *Conn) WithWriter(
 }
 
 func (cn *Conn) Close() error {
+	if cn.netConn == nil {
+		return ErrNilConnection
+	}
 	return cn.netConn.Close()
 }
 
