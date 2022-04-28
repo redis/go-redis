@@ -30,10 +30,13 @@ func NewConn(netConn net.Conn) *Conn {
 		netConn:   netConn,
 		createdAt: time.Now(),
 	}
+
 	cn.rd = proto.NewReader(netConn)
 	cn.bw = bufio.NewWriter(netConn)
 	cn.wr = proto.NewWriter(cn.bw)
+
 	cn.SetUsedAt(time.Now())
+
 	return cn
 }
 
@@ -69,6 +72,7 @@ func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(r
 			return err
 		}
 	}
+
 	return fn(cn.rd)
 }
 

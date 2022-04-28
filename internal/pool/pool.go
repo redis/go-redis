@@ -57,9 +57,10 @@ type Options struct {
 	Dialer  func(context.Context) (net.Conn, error)
 	OnClose func(*Conn) error
 
-	PoolFIFO           bool
-	PoolSize           int
-	MinIdleConns       int
+	PoolFIFO     bool
+	PoolSize     int
+	MinIdleConns int
+
 	MaxConnAge         time.Duration
 	PoolTimeout        time.Duration
 	IdleTimeout        time.Duration
@@ -118,6 +119,7 @@ func (p *ConnPool) checkMinIdleConns() {
 	if p.opt.MinIdleConns == 0 {
 		return
 	}
+
 	for p.poolSize < p.opt.PoolSize && p.idleConnsLen < p.opt.MinIdleConns {
 		p.poolSize++
 		p.idleConnsLen++
@@ -151,6 +153,7 @@ func (p *ConnPool) addIdleConn() error {
 
 	p.conns = append(p.conns, cn)
 	p.idleConns = append(p.idleConns, cn)
+
 	return nil
 }
 
@@ -206,6 +209,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	cn := NewConn(netConn)
 	cn.pooled = pooled
+
 	return cn, nil
 }
 
@@ -346,8 +350,10 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		cn = p.idleConns[idx]
 		p.idleConns = p.idleConns[:idx]
 	}
+
 	p.idleConnsLen--
 	p.checkMinIdleConns()
+
 	return cn, nil
 }
 
@@ -367,6 +373,7 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	p.idleConns = append(p.idleConns, cn)
 	p.idleConnsLen++
 	p.connsMu.Unlock()
+
 	p.freeTurn()
 }
 
@@ -420,6 +427,7 @@ func (p *ConnPool) IdleLen() int {
 	p.connsMu.Lock()
 	n := p.idleConnsLen
 	p.connsMu.Unlock()
+
 	return n
 }
 
@@ -452,6 +460,7 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 			}
 		}
 	}
+
 	return firstErr
 }
 
@@ -519,7 +528,9 @@ func (p *ConnPool) ReapStaleConns() (int, error) {
 			break
 		}
 	}
+
 	atomic.AddUint32(&p.stats.StaleConns, uint32(n))
+
 	return n, nil
 }
 
