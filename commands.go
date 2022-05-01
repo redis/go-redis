@@ -226,8 +226,8 @@ type Cmdable interface {
 	XLen(ctx context.Context, stream string) *IntCmd
 	XRange(ctx context.Context, stream, start, stop string) *XMessageSliceCmd
 	XRangeN(ctx context.Context, stream, start, stop string, count int64) *XMessageSliceCmd
-	XRevRange(ctx context.Context, stream string, start, stop string) *XMessageSliceCmd
-	XRevRangeN(ctx context.Context, stream string, start, stop string, count int64) *XMessageSliceCmd
+	XRevRange(ctx context.Context, stream string, stop, start string) *XMessageSliceCmd
+	XRevRangeN(ctx context.Context, stream string, stop, start string, count int64) *XMessageSliceCmd
 	XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd
 	XReadStreams(ctx context.Context, streams ...string) *XStreamSliceCmd
 	XGroupCreate(ctx context.Context, stream, group, start string) *StatusCmd
@@ -1805,14 +1805,14 @@ func (c cmdable) XRangeN(ctx context.Context, stream, start, stop string, count 
 	return cmd
 }
 
-func (c cmdable) XRevRange(ctx context.Context, stream, start, stop string) *XMessageSliceCmd {
-	cmd := NewXMessageSliceCmd(ctx, "xrevrange", stream, start, stop)
+func (c cmdable) XRevRange(ctx context.Context, stream, stop, start string) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd(ctx, "xrevrange", stream, stop, start)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) XRevRangeN(ctx context.Context, stream, start, stop string, count int64) *XMessageSliceCmd {
-	cmd := NewXMessageSliceCmd(ctx, "xrevrange", stream, start, stop, "count", count)
+func (c cmdable) XRevRangeN(ctx context.Context, stream, stop, start string, count int64) *XMessageSliceCmd {
+	cmd := NewXMessageSliceCmd(ctx, "xrevrange", stream, stop, start, "count", count)
 	_ = c(ctx, cmd)
 	return cmd
 }
