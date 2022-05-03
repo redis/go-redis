@@ -40,6 +40,19 @@ value NoSQL database that uses RocksDB as storage engine and is compatible with 
 - [Redis Ring](https://redis.uptrace.dev/guide/ring.html).
 - [Redis Performance Monitoring](https://redis.uptrace.dev/guide/redis-performance-monitoring.html).
 
+## Sponsors
+
+### Upstash: Serverless Database for Redis
+
+<a href="https://upstash.com/?utm_source=goredis"><img align="right" width="320" src="https://raw.githubusercontent.com/upstash/sponsorship/master/redis.png" alt="Upstash"></a>
+
+Upstash is a Serverless Database with Redis/REST API and durable storage. It is the perfect database
+for your applications thanks to its per request pricing and low latency data.
+
+[Start for free in 30 seconds!](https://upstash.com/?utm_source=goredis)
+
+<br clear="both"/>
+
 ## Installation
 
 go-redis supports 2 last Go versions and requires a Go version with
