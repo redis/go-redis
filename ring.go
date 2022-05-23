@@ -160,6 +160,7 @@ func (opt *RingOptions) clientOptions() *Options {
 type ringShard struct {
 	Client *Client
 	down   int32
+	addr   string
 }
 
 func newRingShard(opt *RingOptions, name, addr string) *ringShard {
@@ -168,6 +169,7 @@ func newRingShard(opt *RingOptions, name, addr string) *ringShard {
 
 	return &ringShard{
 		Client: opt.NewClient(name, clopt),
+		addr:   addr,
 	}
 }
 
@@ -212,33 +214,68 @@ type ringShards struct {
 	opt *RingOptions
 
 	mu       sync.RWMutex
+	muClose  sync.Mutex
 	hash     ConsistentHash
-	shards   map[string]*ringShard // read only
-	list     []*ringShard          // read only
+	shards   map[string]*ringShard // read only, updated by SetAddrs
+	list     []*ringShard          // read only, updated by SetAddrs
 	numShard int
 	closed   bool
 }
 
 func newRingShards(opt *RingOptions) *ringShards {
-	shards := make(map[string]*ringShard, len(opt.Addrs))
+	c := &ringShards{
+		opt: opt,
+	}
+	c.SetAddrs(opt.Addrs)
+
+	return c
+}
+
+// SetAddrs replaces the shards in use, such that you can increase and
+// decrease number of shards, that you use. It will reuse shards that
+// existed before and close the ones that will not be used anymore.
+func (c *ringShards) SetAddrs(addrs map[string]string) {
+	c.muClose.Lock()
+	defer c.muClose.Unlock()
+	if c.closed {
+		return
+	}
+
+	shards := make(map[string]*ringShard)
+	unusedShards := make(map[string]*ringShard)
+
+	for k, shard := range c.shards {
+		if addr, ok := addrs[k]; ok && shard.addr == addr {
+			shards[k] = shard
+		} else {
+			unusedShards[k] = shard
+		}
+	}
+
+	for k, addr := range addrs {
+		if shard, ok := c.shards[k]; !ok || shard.addr != addr {
+			shards[k] = newRingShard(c.opt, k, addr)
+		}
+	}
+
 	list := make([]*ringShard, 0, len(shards))
-
-	for name, addr := range opt.Addrs {
-		shard := newRingShard(opt, name, addr)
-		shards[name] = shard
-
+	for _, shard := range shards {
 		list = append(list, shard)
 	}
 
-	c := &ringShards{
-		opt: opt,
+	c.mu.Lock()
+	c.shards = shards
+	c.list = list
 
-		shards: shards,
-		list:   list,
+	c.rebalanceLocked()
+	c.mu.Unlock()
+
+	for k, shard := range unusedShards {
+		err := shard.Client.Close()
+		if err != nil {
+			internal.Logger.Printf(context.Background(), "Failed to close ring shard client %s %s: %v", k, shard.addr, err)
+		}
 	}
-	c.rebalance()
-
-	return c
 }
 
 func (c *ringShards) List() []*ringShard {
@@ -355,6 +392,23 @@ func (c *ringShards) rebalance() {
 	c.mu.Unlock()
 }
 
+// rebalanceLocked removes dead shards from the Ring and callers need to hold the locl
+func (c *ringShards) rebalanceLocked() {
+	shards := c.shards
+	liveShards := make([]string, 0, len(shards))
+
+	for name, shard := range shards {
+		if shard.IsUp() {
+			liveShards = append(liveShards, name)
+		}
+	}
+
+	hash := c.opt.NewConsistentHash(liveShards)
+
+	c.hash = hash
+	c.numShard = len(liveShards)
+}
+
 func (c *ringShards) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -363,6 +417,8 @@ func (c *ringShards) Len() int {
 }
 
 func (c *ringShards) Close() error {
+	c.muClose.Lock()
+	defer c.muClose.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -434,6 +490,10 @@ func NewRing(opt *RingOptions) *Ring {
 	go ring.shards.Heartbeat(hbCtx, opt.HeartbeatFrequency)
 
 	return &ring
+}
+
+func (c *Ring) SetAddrs(ctx context.Context, addrs map[string]string) {
+	c.shards.SetAddrs(addrs)
 }
 
 // Do creates a Cmd from the args and processes the cmd.

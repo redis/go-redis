@@ -113,6 +113,79 @@ var _ = Describe("Redis Ring", func() {
 		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=100"))
 	})
 
+	Describe("[new] dynamic setting ring shards", func() {
+		It("downscale shard and check reuse shard, upscale shard and check reuse", func() {
+			Expect(ring.Len(), 2)
+
+			wantShard := ring.GetAddr("ringShardOne")
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			ring.SetAddrs(ctx, map[string]string{
+				"ringShardOne": ":" + ringShard1Port,
+			})
+			Expect(ring.Len(), 1)
+			gotShard := ring.GetAddr("ringShardOne")
+			Expect(gotShard).To(Equal(wantShard))
+
+			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			ring.SetAddrs(ctx, map[string]string{
+				"ringShardOne": ":" + ringShard1Port,
+				"ringShardTwo": ":" + ringShard2Port,
+			})
+			Expect(ring.Len(), 2)
+			gotShard = ring.GetAddr("ringShardOne")
+			Expect(gotShard).To(Equal(wantShard))
+
+		})
+
+		It("uses 3 shards after setting it to 3 shards", func() {
+			Expect(ring.Len(), 2)
+
+			// Start ringShard3.
+			var err error
+			ringShard3, err = startRedis(ringShard3Port)
+			Expect(err).NotTo(HaveOccurred())
+
+			shardName1 := "ringShardOne"
+			shardAddr1 := ":" + ringShard1Port
+			wantShard1 := ring.GetAddr(shardName1)
+			shardName2 := "ringShardTwo"
+			shardAddr2 := ":" + ringShard2Port
+			wantShard2 := ring.GetAddr(shardName2)
+			shardName3 := "ringShardThree"
+			shardAddr3 := ":" + ringShard3Port
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			ring.SetAddrs(ctx, map[string]string{
+				shardName1: shardAddr1,
+				shardName2: shardAddr2,
+				shardName3: shardAddr3,
+			})
+			Expect(ring.Len(), 3)
+			gotShard1 := ring.GetAddr(shardName1)
+			gotShard2 := ring.GetAddr(shardName2)
+			gotShard3 := ring.GetAddr(shardName3)
+			Expect(gotShard1).To(Equal(wantShard1))
+			Expect(gotShard2).To(Equal(wantShard2))
+			Expect(gotShard3).ToNot(BeNil())
+
+			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			ring.SetAddrs(ctx, map[string]string{
+				shardName1: shardAddr1,
+				shardName2: shardAddr2,
+			})
+			Expect(ring.Len(), 2)
+			gotShard1 = ring.GetAddr(shardName1)
+			gotShard2 = ring.GetAddr(shardName2)
+			gotShard3 = ring.GetAddr(shardName3)
+			Expect(gotShard1).To(Equal(wantShard1))
+			Expect(gotShard2).To(Equal(wantShard2))
+			Expect(gotShard3).To(BeNil())
+		})
+
+	})
 	Describe("pipeline", func() {
 		It("doesn't panic closed ring, returns error", func() {
 			pipe := ring.Pipeline()
