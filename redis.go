@@ -217,7 +217,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 	cn.Inited = true
 
-	if c.opt.Password == "" &&
+	username, password := c.opt.Username, c.opt.Password
+	if c.opt.CredentialsProvider != nil {
+		username, password = c.opt.CredentialsProvider()
+	}
+
+	if password == "" &&
 		c.opt.DB == 0 &&
 		!c.opt.readOnly &&
 		c.opt.OnConnect == nil {
@@ -228,11 +233,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	conn := newConn(ctx, c.opt, connPool)
 
 	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
-		if c.opt.Password != "" {
-			if c.opt.Username != "" {
-				pipe.AuthACL(ctx, c.opt.Username, c.opt.Password)
+		if password != "" {
+			if username != "" {
+				pipe.AuthACL(ctx, username, password)
 			} else {
-				pipe.Auth(ctx, c.opt.Password)
+				pipe.Auth(ctx, password)
 			}
 		}
 
