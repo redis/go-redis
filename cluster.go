@@ -834,18 +834,6 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
-		if shouldRetry(lastErr, cmd.readTimeout() == nil) {
-			// First retry the same node.
-			if attempt == 0 {
-				continue
-			}
-
-			// Second try another node.
-			node.MarkAsFailing()
-			node = nil
-			continue
-		}
-
 		return lastErr
 	}
 	return lastErr
@@ -1121,13 +1109,7 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 				if err == nil {
 					return
 				}
-				if attempt < c.opt.MaxRedirects {
-					if err := c.mapCmdsByNode(ctx, failedCmds, cmds); err != nil {
-						setCmdsErr(cmds, err)
-					}
-				} else {
-					setCmdsErr(cmds, err)
-				}
+				setCmdsErr(cmds, err)
 			}(node, cmds)
 		}
 
@@ -1217,10 +1199,11 @@ func (c *ClusterClient) pipelineReadCmds(
 		if c.checkMovedErr(ctx, cmd, err, failedCmds) {
 			continue
 		}
-
-		if c.opt.ReadOnly && isLoadingError(err) {
-			node.MarkAsFailing()
-			return err
+		if c.checkReadOnlyErr(ctx, cmd, err, failedCmds) {
+			continue
+		}
+		if c.checkLoadingErr(ctx, cmd, err, failedCmds) {
+			continue
 		}
 		if isRedisError(err) {
 			continue
@@ -1228,6 +1211,40 @@ func (c *ClusterClient) pipelineReadCmds(
 		return err
 	}
 	return nil
+}
+
+func (c *ClusterClient) checkReadOnlyErr(ctx context.Context, cmd Cmder, err error, failedCmds *cmdsMap) bool {
+	isReadOnly := isReadOnlyError(err)
+	if !isReadOnly && err != pool.ErrClosed {
+		return false
+	}
+	if isReadOnly {
+		c.state.LazyReload()
+	}
+	cmdInfo := c.cmdInfo(cmd.Name())
+	slot := c.cmdSlot(cmd)
+	newNode, cerr := c.cmdNode(ctx, cmdInfo, slot)
+	if cerr != nil {
+		return false
+	}
+	failedCmds.Add(newNode, cmd)
+	return true
+
+}
+
+func (c *ClusterClient) checkLoadingErr(ctx context.Context, cmd Cmder, err error, failedCmds *cmdsMap) bool {
+	if !c.opt.ReadOnly || !isLoadingError(err) {
+		return false
+	}
+	cmdInfo := c.cmdInfo(cmd.Name())
+	slot := c.cmdSlot(cmd)
+	newNode, cerr := c.cmdNode(ctx, cmdInfo, slot)
+	if cerr != nil {
+		return false
+	}
+	failedCmds.Add(newNode, cmd)
+	return true
+
 }
 
 func (c *ClusterClient) checkMovedErr(
@@ -1315,13 +1332,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 						return
 					}
 
-					if attempt < c.opt.MaxRedirects {
-						if err := c.mapCmdsByNode(ctx, failedCmds, cmds); err != nil {
-							setCmdsErr(cmds, err)
-						}
-					} else {
-						setCmdsErr(cmds, err)
-					}
+					setCmdsErr(cmds, err)
 				}(node, cmds)
 			}
 

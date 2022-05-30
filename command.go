@@ -590,6 +590,7 @@ func (cmd *StatusCmd) String() string {
 
 func (cmd *StatusCmd) readReply(rd *proto.Reader) (err error) {
 	cmd.val, err = rd.ReadString()
+	fmt.Println(cmd.val)
 	return err
 }
 
