@@ -325,7 +325,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		}
 	}
 
-	retryTimeout := uint32(1)
+	retryTimeout := uint32(0)
 	err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 			return writeCmd(wr, cmd)
