@@ -324,7 +324,7 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 
 	p := &redisProcess{process, client}
 	registerProcess(port, p)
-	return p, err
+	return p, nil
 }
 
 func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
