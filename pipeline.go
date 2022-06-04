@@ -3,8 +3,6 @@ package redis
 import (
 	"context"
 	"sync"
-
-	"github.com/go-redis/redis/v8/internal/pool"
 )
 
 type pipelineExecer func(context.Context, []Cmder) error
@@ -27,8 +25,7 @@ type Pipeliner interface {
 	Len() int
 	Do(ctx context.Context, args ...interface{}) *Cmd
 	Process(ctx context.Context, cmd Cmder) error
-	Close() error
-	Discard() error
+	Discard()
 	Exec(ctx context.Context) ([]Cmder, error)
 }
 
@@ -44,9 +41,8 @@ type Pipeline struct {
 	ctx  context.Context
 	exec pipelineExecer
 
-	mu     sync.Mutex
-	cmds   []Cmder
-	closed bool
+	mu   sync.Mutex
+	cmds []Cmder
 }
 
 func (c *Pipeline) init() {
@@ -77,29 +73,11 @@ func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 	return nil
 }
 
-// Close closes the pipeline, releasing any open resources.
-func (c *Pipeline) Close() error {
-	c.mu.Lock()
-	_ = c.discard()
-	c.closed = true
-	c.mu.Unlock()
-	return nil
-}
-
 // Discard resets the pipeline and discards queued commands.
-func (c *Pipeline) Discard() error {
+func (c *Pipeline) Discard() {
 	c.mu.Lock()
-	err := c.discard()
-	c.mu.Unlock()
-	return err
-}
-
-func (c *Pipeline) discard() error {
-	if c.closed {
-		return pool.ErrClosed
-	}
 	c.cmds = c.cmds[:0]
-	return nil
+	c.mu.Unlock()
 }
 
 // Exec executes all previously queued commands using one
@@ -110,10 +88,6 @@ func (c *Pipeline) discard() error {
 func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	if c.closed {
-		return nil, pool.ErrClosed
-	}
 
 	if len(c.cmds) == 0 {
 		return nil, nil
@@ -129,9 +103,7 @@ func (c *Pipeline) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]C
 	if err := fn(c); err != nil {
 		return nil, err
 	}
-	cmds, err := c.Exec(ctx)
-	_ = c.Close()
-	return cmds, err
+	return c.Exec(ctx)
 }
 
 func (c *Pipeline) Pipeline() Pipeliner {

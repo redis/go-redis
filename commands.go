@@ -137,8 +137,7 @@ type Cmdable interface {
 	MSetNX(ctx context.Context, values ...interface{}) *BoolCmd
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd
-	// TODO: rename to SetEx
-	SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
+	SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd
@@ -164,7 +163,7 @@ type Cmdable interface {
 	HDel(ctx context.Context, key string, fields ...string) *IntCmd
 	HExists(ctx context.Context, key, field string) *BoolCmd
 	HGet(ctx context.Context, key, field string) *StringCmd
-	HGetAll(ctx context.Context, key string) *StringStringMapCmd
+	HGetAll(ctx context.Context, key string) *MapStringStringCmd
 	HIncrBy(ctx context.Context, key, field string, incr int64) *IntCmd
 	HIncrByFloat(ctx context.Context, key, field string, incr float64) *FloatCmd
 	HKeys(ctx context.Context, key string) *StringSliceCmd
@@ -174,7 +173,8 @@ type Cmdable interface {
 	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
 	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
 	HVals(ctx context.Context, key string) *StringSliceCmd
-	HRandField(ctx context.Context, key string, count int, withValues bool) *StringSliceCmd
+	HRandField(ctx context.Context, key string, count int) *StringSliceCmd
+	HRandFieldWithValues(ctx context.Context, key string, count int) *KeyValueSliceCmd
 
 	BLPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
@@ -244,10 +244,6 @@ type Cmdable interface {
 	XClaimJustID(ctx context.Context, a *XClaimArgs) *StringSliceCmd
 	XAutoClaim(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimCmd
 	XAutoClaimJustID(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimJustIDCmd
-
-	// TODO: XTrim and XTrimApprox remove in v9.
-	XTrim(ctx context.Context, key string, maxLen int64) *IntCmd
-	XTrimApprox(ctx context.Context, key string, maxLen int64) *IntCmd
 	XTrimMaxLen(ctx context.Context, key string, maxLen int64) *IntCmd
 	XTrimMaxLenApprox(ctx context.Context, key string, maxLen, limit int64) *IntCmd
 	XTrimMinID(ctx context.Context, key string, minID string) *IntCmd
@@ -260,27 +256,11 @@ type Cmdable interface {
 	BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
 	BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
 
-	// TODO: remove
-	//		ZAddCh
-	//		ZIncr
-	//		ZAddNXCh
-	//		ZAddXXCh
-	//		ZIncrNX
-	//		ZIncrXX
-	// 	in v9.
-	// 	use ZAddArgs and ZAddArgsIncr.
-
-	ZAdd(ctx context.Context, key string, members ...*Z) *IntCmd
-	ZAddNX(ctx context.Context, key string, members ...*Z) *IntCmd
-	ZAddXX(ctx context.Context, key string, members ...*Z) *IntCmd
-	ZAddCh(ctx context.Context, key string, members ...*Z) *IntCmd
-	ZAddNXCh(ctx context.Context, key string, members ...*Z) *IntCmd
-	ZAddXXCh(ctx context.Context, key string, members ...*Z) *IntCmd
+	ZAdd(ctx context.Context, key string, members ...Z) *IntCmd
+	ZAddNX(ctx context.Context, key string, members ...Z) *IntCmd
+	ZAddXX(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddArgs(ctx context.Context, key string, args ZAddArgs) *IntCmd
 	ZAddArgsIncr(ctx context.Context, key string, args ZAddArgs) *FloatCmd
-	ZIncr(ctx context.Context, key string, member *Z) *FloatCmd
-	ZIncrNX(ctx context.Context, key string, member *Z) *FloatCmd
-	ZIncrXX(ctx context.Context, key string, member *Z) *FloatCmd
 	ZCard(ctx context.Context, key string) *IntCmd
 	ZCount(ctx context.Context, key, min, max string) *IntCmd
 	ZLexCount(ctx context.Context, key, min, max string) *IntCmd
@@ -312,9 +292,10 @@ type Cmdable interface {
 	ZRevRank(ctx context.Context, key, member string) *IntCmd
 	ZScore(ctx context.Context, key, member string) *FloatCmd
 	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
+	ZRandMember(ctx context.Context, key string, count int) *StringSliceCmd
+	ZRandMemberWithScores(ctx context.Context, key string, count int) *ZSliceCmd
 	ZUnion(ctx context.Context, store ZStore) *StringSliceCmd
 	ZUnionWithScores(ctx context.Context, store ZStore) *ZSliceCmd
-	ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd
 	ZDiff(ctx context.Context, keys ...string) *StringSliceCmd
 	ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd
 	ZDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd
@@ -330,7 +311,9 @@ type Cmdable interface {
 	ClientList(ctx context.Context) *StringCmd
 	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
 	ClientID(ctx context.Context) *IntCmd
-	ConfigGet(ctx context.Context, parameter string) *SliceCmd
+	ClientUnblock(ctx context.Context, id int64) *IntCmd
+	ClientUnblockWithError(ctx context.Context, id int64) *IntCmd
+	ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd
 	ConfigResetStat(ctx context.Context) *StatusCmd
 	ConfigSet(ctx context.Context, parameter, value string) *StatusCmd
 	ConfigRewrite(ctx context.Context) *StatusCmd
@@ -346,6 +329,7 @@ type Cmdable interface {
 	ShutdownSave(ctx context.Context) *StatusCmd
 	ShutdownNoSave(ctx context.Context) *StatusCmd
 	SlaveOf(ctx context.Context, host, port string) *StatusCmd
+	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
 	Time(ctx context.Context) *TimeCmd
 	DebugObject(ctx context.Context, key string) *StringCmd
 	ReadOnly(ctx context.Context) *StatusCmd
@@ -404,6 +388,7 @@ type StatefulCmdable interface {
 	Select(ctx context.Context, index int) *StatusCmd
 	SwapDB(ctx context.Context, index1, index2 int) *StatusCmd
 	ClientSetName(ctx context.Context, name string) *BoolCmd
+	Hello(ctx context.Context, ver int, username, password, clientName string) *MapStringInterfaceCmd
 }
 
 var (
@@ -456,6 +441,26 @@ func (c statefulCmdable) SwapDB(ctx context.Context, index1, index2 int) *Status
 // ClientSetName assigns a name to the connection.
 func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCmd {
 	cmd := NewBoolCmd(ctx, "client", "setname", name)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Hello Set the resp protocol used.
+func (c statefulCmdable) Hello(ctx context.Context,
+	ver int, username, password, clientName string) *MapStringInterfaceCmd {
+	args := make([]interface{}, 0, 7)
+	args = append(args, "hello", ver)
+	if password != "" {
+		if username != "" {
+			args = append(args, "auth", username, password)
+		} else {
+			args = append(args, "auth", "default", password)
+		}
+	}
+	if clientName != "" {
+		args = append(args, "setname", clientName)
+	}
+	cmd := NewMapStringInterfaceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -882,7 +887,7 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 }
 
 // Set Redis `SET key value [expiration]` command.
-// Use expiration for `SETEX`-like behavior.
+// Use expiration for `SETEx`-like behavior.
 //
 // Zero expiration means the key has no expiration time.
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
@@ -958,8 +963,8 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 	return cmd
 }
 
-// SetEX Redis `SETEX key expiration value` command.
-func (c cmdable) SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
+// SetEx Redis `SETEx key expiration value` command.
+func (c cmdable) SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "setex", key, formatSec(ctx, expiration), value)
 	_ = c(ctx, cmd)
 	return cmd
@@ -1229,8 +1234,8 @@ func (c cmdable) HGet(ctx context.Context, key, field string) *StringCmd {
 	return cmd
 }
 
-func (c cmdable) HGetAll(ctx context.Context, key string) *StringStringMapCmd {
-	cmd := NewStringStringMapCmd(ctx, "hgetall", key)
+func (c cmdable) HGetAll(ctx context.Context, key string) *MapStringStringCmd {
+	cmd := NewMapStringStringCmd(ctx, "hgetall", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1313,16 +1318,15 @@ func (c cmdable) HVals(ctx context.Context, key string) *StringSliceCmd {
 }
 
 // HRandField redis-server version >= 6.2.0.
-func (c cmdable) HRandField(ctx context.Context, key string, count int, withValues bool) *StringSliceCmd {
-	args := make([]interface{}, 0, 4)
+func (c cmdable) HRandField(ctx context.Context, key string, count int) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "hrandfield", key, count)
+	_ = c(ctx, cmd)
+	return cmd
+}
 
-	// Although count=0 is meaningless, redis accepts count=0.
-	args = append(args, "hrandfield", key, count)
-	if withValues {
-		args = append(args, "withvalues")
-	}
-
-	cmd := NewStringSliceCmd(ctx, args...)
+// HRandFieldWithValues redis-server version >= 6.2.0.
+func (c cmdable) HRandFieldWithValues(ctx context.Context, key string, count int) *KeyValueSliceCmd {
+	cmd := NewKeyValueSliceCmd(ctx, "hrandfield", key, count, "withvalues")
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1725,11 +1729,7 @@ type XAddArgs struct {
 	Stream     string
 	NoMkStream bool
 	MaxLen     int64 // MAXLEN N
-
-	// Deprecated: use MaxLen+Approx, remove in v9.
-	MaxLenApprox int64 // MAXLEN ~ N
-
-	MinID string
+	MinID      string
 	// Approx causes MaxLen and MinID to use "~" matcher (instead of "=").
 	Approx bool
 	Limit  int64
@@ -1752,9 +1752,6 @@ func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
 		} else {
 			args = append(args, "maxlen", a.MaxLen)
 		}
-	case a.MaxLenApprox > 0:
-		// TODO remove in v9.
-		args = append(args, "maxlen", "~", a.MaxLenApprox)
 	case a.MinID != "":
 		if a.Approx {
 			args = append(args, "minid", "~", a.MinID)
@@ -2070,16 +2067,6 @@ func (c cmdable) xTrim(
 	return cmd
 }
 
-// Deprecated: use XTrimMaxLen, remove in v9.
-func (c cmdable) XTrim(ctx context.Context, key string, maxLen int64) *IntCmd {
-	return c.xTrim(ctx, key, "maxlen", false, maxLen, 0)
-}
-
-// Deprecated: use XTrimMaxLenApprox, remove in v9.
-func (c cmdable) XTrimApprox(ctx context.Context, key string, maxLen int64) *IntCmd {
-	return c.xTrim(ctx, key, "maxlen", true, maxLen, 0)
-}
-
 // XTrimMaxLen No `~` rules are used, `limit` cannot be used.
 // cmd: XTRIM key MAXLEN maxLen
 func (c cmdable) XTrimMaxLen(ctx context.Context, key string, maxLen int64) *IntCmd {
@@ -2266,116 +2253,26 @@ func (c cmdable) ZAddArgsIncr(ctx context.Context, key string, args ZAddArgs) *F
 	return cmd
 }
 
-// TODO: Compatible with v8 api, will be removed in v9.
-func (c cmdable) zAdd(ctx context.Context, key string, args ZAddArgs, members ...*Z) *IntCmd {
-	args.Members = make([]Z, len(members))
-	for i, m := range members {
-		args.Members[i] = *m
-	}
-	cmd := NewIntCmd(ctx, c.zAddArgs(key, args, false)...)
-	_ = c(ctx, cmd)
-	return cmd
-}
-
 // ZAdd Redis `ZADD key score member [score member ...]` command.
-func (c cmdable) ZAdd(ctx context.Context, key string, members ...*Z) *IntCmd {
-	return c.zAdd(ctx, key, ZAddArgs{}, members...)
+func (c cmdable) ZAdd(ctx context.Context, key string, members ...Z) *IntCmd {
+	return c.ZAddArgs(ctx, key, ZAddArgs{
+		Members: members,
+	})
 }
 
 // ZAddNX Redis `ZADD key NX score member [score member ...]` command.
-func (c cmdable) ZAddNX(ctx context.Context, key string, members ...*Z) *IntCmd {
-	return c.zAdd(ctx, key, ZAddArgs{
-		NX: true,
-	}, members...)
+func (c cmdable) ZAddNX(ctx context.Context, key string, members ...Z) *IntCmd {
+	return c.ZAddArgs(ctx, key, ZAddArgs{
+		NX:      true,
+		Members: members,
+	})
 }
 
 // ZAddXX Redis `ZADD key XX score member [score member ...]` command.
-func (c cmdable) ZAddXX(ctx context.Context, key string, members ...*Z) *IntCmd {
-	return c.zAdd(ctx, key, ZAddArgs{
-		XX: true,
-	}, members...)
-}
-
-// ZAddCh Redis `ZADD key CH score member [score member ...]` command.
-// Deprecated: Use
-//		client.ZAddArgs(ctx, ZAddArgs{
-//			Ch: true,
-//			Members: []Z,
-//		})
-//	remove in v9.
-func (c cmdable) ZAddCh(ctx context.Context, key string, members ...*Z) *IntCmd {
-	return c.zAdd(ctx, key, ZAddArgs{
-		Ch: true,
-	}, members...)
-}
-
-// ZAddNXCh Redis `ZADD key NX CH score member [score member ...]` command.
-// Deprecated: Use
-//		client.ZAddArgs(ctx, ZAddArgs{
-//			NX: true,
-//			Ch: true,
-//			Members: []Z,
-//		})
-//	remove in v9.
-func (c cmdable) ZAddNXCh(ctx context.Context, key string, members ...*Z) *IntCmd {
-	return c.zAdd(ctx, key, ZAddArgs{
-		NX: true,
-		Ch: true,
-	}, members...)
-}
-
-// ZAddXXCh Redis `ZADD key XX CH score member [score member ...]` command.
-// Deprecated: Use
-//		client.ZAddArgs(ctx, ZAddArgs{
-//			XX: true,
-//			Ch: true,
-//			Members: []Z,
-//		})
-//	remove in v9.
-func (c cmdable) ZAddXXCh(ctx context.Context, key string, members ...*Z) *IntCmd {
-	return c.zAdd(ctx, key, ZAddArgs{
-		XX: true,
-		Ch: true,
-	}, members...)
-}
-
-// ZIncr Redis `ZADD key INCR score member` command.
-// Deprecated: Use
-//		client.ZAddArgsIncr(ctx, ZAddArgs{
-//			Members: []Z,
-//		})
-//	remove in v9.
-func (c cmdable) ZIncr(ctx context.Context, key string, member *Z) *FloatCmd {
-	return c.ZAddArgsIncr(ctx, key, ZAddArgs{
-		Members: []Z{*member},
-	})
-}
-
-// ZIncrNX Redis `ZADD key NX INCR score member` command.
-// Deprecated: Use
-//		client.ZAddArgsIncr(ctx, ZAddArgs{
-//			NX: true,
-//			Members: []Z,
-//		})
-//	remove in v9.
-func (c cmdable) ZIncrNX(ctx context.Context, key string, member *Z) *FloatCmd {
-	return c.ZAddArgsIncr(ctx, key, ZAddArgs{
-		NX:      true,
-		Members: []Z{*member},
-	})
-}
-
-// ZIncrXX Redis `ZADD key XX INCR score member` command.
-// Deprecated: Use
-//		client.ZAddArgsIncr(ctx, ZAddArgs{
-//			XX: true,
-//			Members: []Z,
-//		})
-//	remove in v9.
-func (c cmdable) ZIncrXX(ctx context.Context, key string, member *Z) *FloatCmd {
-	return c.ZAddArgsIncr(ctx, key, ZAddArgs{
+func (c cmdable) ZAddXX(ctx context.Context, key string, members ...Z) *IntCmd {
+	return c.ZAddArgs(ctx, key, ZAddArgs{
 		XX:      true,
-		Members: []Z{*member},
+		Members: members,
 	})
 }
 
@@ -2783,16 +2680,15 @@ func (c cmdable) ZUnionStore(ctx context.Context, dest string, store *ZStore) *I
 }
 
 // ZRandMember redis-server version >= 6.2.0.
-func (c cmdable) ZRandMember(ctx context.Context, key string, count int, withScores bool) *StringSliceCmd {
-	args := make([]interface{}, 0, 4)
+func (c cmdable) ZRandMember(ctx context.Context, key string, count int) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "zrandmember", key, count)
+	_ = c(ctx, cmd)
+	return cmd
+}
 
-	// Although count=0 is meaningless, redis accepts count=0.
-	args = append(args, "zrandmember", key, count)
-	if withScores {
-		args = append(args, "withscores")
-	}
-
-	cmd := NewStringSliceCmd(ctx, args...)
+// ZRandMemberWithScores redis-server version >= 6.2.0.
+func (c cmdable) ZRandMemberWithScores(ctx context.Context, key string, count int) *ZSliceCmd {
+	cmd := NewZSliceCmd(ctx, "zrandmember", key, count, "withscores")
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2940,8 +2836,8 @@ func (c cmdable) ClientUnblockWithError(ctx context.Context, id int64) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) ConfigGet(ctx context.Context, parameter string) *SliceCmd {
-	cmd := NewSliceCmd(ctx, "config", "get", parameter)
+func (c cmdable) ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd {
+	cmd := NewMapStringStringCmd(ctx, "config", "get", parameter)
 	_ = c(ctx, cmd)
 	return cmd
 }

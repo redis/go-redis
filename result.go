@@ -83,8 +83,8 @@ func NewBoolSliceResult(val []bool, err error) *BoolSliceCmd {
 }
 
 // NewStringStringMapResult returns a StringStringMapCmd initialised with val and err for testing.
-func NewStringStringMapResult(val map[string]string, err error) *StringStringMapCmd {
-	var cmd StringStringMapCmd
+func NewStringStringMapResult(val map[string]string, err error) *MapStringStringCmd {
+	var cmd MapStringStringCmd
 	cmd.val = val
 	cmd.SetErr(err)
 	return &cmd

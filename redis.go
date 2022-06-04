@@ -15,6 +15,7 @@ import (
 // Nil reply returned by Redis when key does not exist.
 const Nil = proto.Nil
 
+// SetLogger set custom log
 func SetLogger(logger internal.Logging) {
 	internal.Logger = logger
 }
@@ -232,8 +233,19 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
 	conn := newConn(ctx, c.opt, connPool)
 
+	var auth bool
+
+	// The low version of redis-server does not support the hello command.
+	// For redis-server (<6.0) that does not support the Hello command,
+	// we continue to provide services with RESP2.
+	if err := conn.Hello(ctx, 3, c.opt.Username, c.opt.Password, "").Err(); err == nil {
+		auth = true
+	} else if err.Error() != "ERR unknown command 'hello'" {
+		return err
+	}
+
 	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
-		if password != "" {
+		if !auth && password != "" {
 			if username != "" {
 				pipe.AuthACL(ctx, username, password)
 			} else {
@@ -522,14 +534,8 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 		return err
 	}
 
-	switch line[0] {
-	case proto.ErrorReply:
-		return proto.ParseErrorReply(line)
-	case proto.ArrayReply:
-		// ok
-	default:
-		err := fmt.Errorf("redis: expected '*', but got line %q", line)
-		return err
+	if line[0] != proto.RespArray {
+		return fmt.Errorf("redis: expected '*', but got line %q", line)
 	}
 
 	return nil
@@ -537,9 +543,11 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 
 //------------------------------------------------------------------------------
 
-// Client is a Redis client representing a pool of zero or more
-// underlying connections. It's safe for concurrent use by multiple
-// goroutines.
+// Client is a Redis client representing a pool of zero or more underlying connections.
+// It's safe for concurrent use by multiple goroutines.
+//
+// Client creates and frees connections automatically; it also maintains a free pool
+// of idle connections. You can control the pool size with Config.PoolSize option.
 type Client struct {
 	*baseClient
 	cmdable

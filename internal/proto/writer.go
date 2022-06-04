@@ -14,7 +14,7 @@ import (
 type writer interface {
 	io.Writer
 	io.ByteWriter
-	// io.StringWriter
+	// WriteString implement io.StringWriter.
 	WriteString(s string) (n int, err error)
 }
 
@@ -35,7 +35,7 @@ func NewWriter(wr writer) *Writer {
 }
 
 func (w *Writer) WriteArgs(args []interface{}) error {
-	if err := w.WriteByte(ArrayReply); err != nil {
+	if err := w.WriteByte(RespArray); err != nil {
 		return err
 	}
 
@@ -116,7 +116,7 @@ func (w *Writer) WriteArg(v interface{}) error {
 }
 
 func (w *Writer) bytes(b []byte) error {
-	if err := w.WriteByte(StringReply); err != nil {
+	if err := w.WriteByte(RespString); err != nil {
 		return err
 	}
 

@@ -270,7 +270,10 @@ func setupTCPConn(u *url.URL) (*Options, error) {
 	}
 
 	if u.Scheme == "rediss" {
-		o.TLSConfig = &tls.Config{ServerName: h}
+		o.TLSConfig = &tls.Config{
+			ServerName: h,
+			MinVersion: tls.VersionTLS12,
+		}
 	}
 
 	return setupConnParams(u, o)

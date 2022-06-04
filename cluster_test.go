@@ -515,9 +515,7 @@ var _ = Describe("ClusterClient", func() {
 					pipe = client.Pipeline().(*redis.Pipeline)
 				})
 
-				AfterEach(func() {
-					Expect(pipe.Close()).NotTo(HaveOccurred())
-				})
+				AfterEach(func() {})
 
 				assertPipeline()
 			})
@@ -527,9 +525,7 @@ var _ = Describe("ClusterClient", func() {
 					pipe = client.TxPipeline().(*redis.Pipeline)
 				})
 
-				AfterEach(func() {
-					Expect(pipe.Close()).NotTo(HaveOccurred())
-				})
+				AfterEach(func() {})
 
 				assertPipeline()
 			})
@@ -1182,16 +1178,17 @@ var _ = Describe("ClusterClient with unavailable Cluster", func() {
 	var client *redis.ClusterClient
 
 	BeforeEach(func() {
-		for _, node := range cluster.clients {
-			err := node.ClientPause(ctx, 5*time.Second).Err()
-			Expect(err).NotTo(HaveOccurred())
-		}
-
 		opt := redisClusterOptions()
 		opt.ReadTimeout = 250 * time.Millisecond
 		opt.WriteTimeout = 250 * time.Millisecond
 		opt.MaxRedirects = 1
 		client = cluster.newClusterClientUnstable(opt)
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+		for _, node := range cluster.clients {
+			err := node.ClientPause(ctx, 5*time.Second).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
 	})
 
 	AfterEach(func() {

@@ -72,7 +72,6 @@ var _ = Describe("pool", func() {
 			Expect(cmds).To(HaveLen(1))
 			Expect(ping.Err()).NotTo(HaveOccurred())
 			Expect(ping.Val()).To(Equal("PONG"))
-			Expect(pipe.Close()).NotTo(HaveOccurred())
 		})
 
 		pool := client.Pool()

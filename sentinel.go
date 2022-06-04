@@ -335,8 +335,8 @@ func (c *SentinelClient) GetMasterAddrByName(ctx context.Context, name string) *
 	return cmd
 }
 
-func (c *SentinelClient) Sentinels(ctx context.Context, name string) *SliceCmd {
-	cmd := NewSliceCmd(ctx, "sentinel", "sentinels", name)
+func (c *SentinelClient) Sentinels(ctx context.Context, name string) *MapStringStringSliceCmd {
+	cmd := NewMapStringStringSliceCmd(ctx, "sentinel", "sentinels", name)
 	_ = c.Process(ctx, cmd)
 	return cmd
 }
@@ -368,8 +368,8 @@ func (c *SentinelClient) FlushConfig(ctx context.Context) *StatusCmd {
 }
 
 // Master shows the state and info of the specified master.
-func (c *SentinelClient) Master(ctx context.Context, name string) *StringStringMapCmd {
-	cmd := NewStringStringMapCmd(ctx, "sentinel", "master", name)
+func (c *SentinelClient) Master(ctx context.Context, name string) *MapStringStringCmd {
+	cmd := NewMapStringStringCmd(ctx, "sentinel", "master", name)
 	_ = c.Process(ctx, cmd)
 	return cmd
 }
@@ -382,8 +382,8 @@ func (c *SentinelClient) Masters(ctx context.Context) *SliceCmd {
 }
 
 // Slaves shows a list of slaves for the specified master and their state.
-func (c *SentinelClient) Slaves(ctx context.Context, name string) *SliceCmd {
-	cmd := NewSliceCmd(ctx, "sentinel", "slaves", name)
+func (c *SentinelClient) Slaves(ctx context.Context, name string) *MapStringStringSliceCmd {
+	cmd := NewMapStringStringSliceCmd(ctx, "sentinel", "slaves", name)
 	_ = c.Process(ctx, cmd)
 	return cmd
 }
@@ -601,40 +601,24 @@ func (c *sentinelFailover) getSlaveAddrs(ctx context.Context, sentinel *Sentinel
 	return parseSlaveAddrs(addrs, false)
 }
 
-func parseSlaveAddrs(addrs []interface{}, keepDisconnected bool) []string {
+func parseSlaveAddrs(addrs []map[string]string, keepDisconnected bool) []string {
 	nodes := make([]string, 0, len(addrs))
 	for _, node := range addrs {
-		ip := ""
-		port := ""
-		flags := []string{}
-		lastkey := ""
 		isDown := false
-
-		for _, key := range node.([]interface{}) {
-			switch lastkey {
-			case "ip":
-				ip = key.(string)
-			case "port":
-				port = key.(string)
-			case "flags":
-				flags = strings.Split(key.(string), ",")
-			}
-			lastkey = key.(string)
-		}
-
-		for _, flag := range flags {
-			switch flag {
-			case "s_down", "o_down":
-				isDown = true
-			case "disconnected":
-				if !keepDisconnected {
+		if flags, ok := node["flags"]; ok {
+			for _, flag := range strings.Split(flags, ",") {
+				switch flag {
+				case "s_down", "o_down":
 					isDown = true
+				case "disconnected":
+					if !keepDisconnected {
+						isDown = true
+					}
 				}
 			}
 		}
-
-		if !isDown {
-			nodes = append(nodes, net.JoinHostPort(ip, port))
+		if !isDown && node["ip"] != "" && node["port"] != "" {
+			nodes = append(nodes, net.JoinHostPort(node["ip"], node["port"]))
 		}
 	}
 
@@ -683,16 +667,13 @@ func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 		return
 	}
 	for _, sentinel := range sentinels {
-		vals := sentinel.([]interface{})
-		var ip, port string
-		for i := 0; i < len(vals); i += 2 {
-			key := vals[i].(string)
-			switch key {
-			case "ip":
-				ip = vals[i+1].(string)
-			case "port":
-				port = vals[i+1].(string)
-			}
+		ip, ok := sentinel["ip"]
+		if !ok {
+			continue
+		}
+		port, ok := sentinel["port"]
+		if !ok {
+			continue
 		}
 		if ip != "" && port != "" {
 			sentinelAddr := net.JoinHostPort(ip, port)
