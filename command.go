@@ -2700,8 +2700,8 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 				if err != nil {
 					return nil, err
 				}
-				if n != 2 && n != 3 {
-					err := fmt.Errorf("got %d elements in cluster info address, expected 2 or 3", n)
+				if n < 2 {
+					err := fmt.Errorf("got %d elements in cluster info address, at least 2", n)
 					return nil, err
 				}
 
@@ -2717,7 +2717,7 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 
 				nodes[j].Addr = net.JoinHostPort(ip, port)
 
-				if n == 3 {
+				if n >= 3 {
 					id, err := rd.ReadString()
 					if err != nil {
 						return nil, err
