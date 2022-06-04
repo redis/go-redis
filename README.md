@@ -69,6 +69,12 @@ And then install go-redis/v8 (note _v8_ in the import; omitting it is a popular 
 go get github.com/go-redis/redis/v8
 ```
 
+If you need **Redis 7** support, install go-redis/v9:
+
+```shell
+go get github.com/go-redis/redis/v9
+```
+
 ## Quickstart
 
 ```go
