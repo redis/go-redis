@@ -2649,13 +2649,14 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 
 		// subtract start and end.
 		nodes := make([]ClusterNode, n-2)
+
 		for j := 0; j < len(nodes); j++ {
 			nn, err := rd.ReadArrayLen()
 			if err != nil {
 				return err
 			}
-			if nn != 2 && nn != 3 {
-				return fmt.Errorf("got %d elements in cluster info address, expected 2 or 3", nn)
+			if nn < 2 || nn > 4 {
+				return fmt.Errorf("got %d elements in cluster info address, expected 2, 3, or 4", n)
 			}
 
 			ip, err := rd.ReadString()
@@ -2670,14 +2671,43 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 
 			nodes[j].Addr = net.JoinHostPort(ip, port)
 
-			if nn == 3 {
+			if nn >= 3 {
 				id, err := rd.ReadString()
 				if err != nil {
 					return err
 				}
 				nodes[j].ID = id
 			}
+
+			if nn >= 4 {
+				networkingMetadata := make(map[string]string)
+
+				metadataLength, err := rd.ReadArrayLen()
+				if err != nil {
+					return err
+				}
+
+				if metadataLength%2 != 0 {
+					return fmt.Errorf(
+						"got %d elements in metadata, expected an even number", metadataLength)
+				}
+
+				for i := 0; i < metadataLength; i += 2 {
+					key, err := rd.ReadString()
+					if err != nil {
+						return err
+					}
+					value, err := rd.ReadString()
+					if err != nil {
+						return err
+					}
+					networkingMetadata[key] = value
+				}
+
+				nodes[j].NetworkingMetadata = networkingMetadata
+			}
 		}
+
 		cmd.val[i] = ClusterSlot{
 			Start: int(start),
 			End:   int(end),
