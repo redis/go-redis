@@ -91,7 +91,7 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 
 	if allowTimeout {
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			return !netErr.Temporary()
+			return false
 		}
 	}
 
