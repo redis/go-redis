@@ -9,8 +9,8 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/go-redis/redis/extra/rediscmd/v8"
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/extra/rediscmd/v9"
+	"github.com/go-redis/redis/v9"
 )
 
 const (
