@@ -10,8 +10,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 
-	"github.com/go-redis/redis/extra/redisotel/v8"
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/extra/redisotel/v9"
+	"github.com/go-redis/redis/v9"
 )
 
 var tracer = otel.Tracer("redisexample")

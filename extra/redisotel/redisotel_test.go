@@ -10,8 +10,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/go-redis/redis/extra/redisotel/v8"
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/extra/redisotel/v9"
+	"github.com/go-redis/redis/v9"
 )
 
 func TestNew(t *testing.T) {
