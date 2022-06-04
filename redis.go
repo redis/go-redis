@@ -223,13 +223,6 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		username, password = c.opt.CredentialsProvider()
 	}
 
-	if password == "" &&
-		c.opt.DB == 0 &&
-		!c.opt.readOnly &&
-		c.opt.OnConnect == nil {
-		return nil
-	}
-
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
 	conn := newConn(ctx, c.opt, connPool)
 
@@ -238,7 +231,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// The low version of redis-server does not support the hello command.
 	// For redis-server (<6.0) that does not support the Hello command,
 	// we continue to provide services with RESP2.
-	if err := conn.Hello(ctx, 3, c.opt.Username, c.opt.Password, "").Err(); err == nil {
+	if err := conn.Hello(ctx, 3, username, password, "").Err(); err == nil {
 		auth = true
 	} else if err.Error() != "ERR unknown command 'hello'" {
 		return err
@@ -514,11 +507,12 @@ func wrapMultiExec(ctx context.Context, cmds []Cmder) []Cmder {
 }
 
 func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
-	// Parse queued replies.
+	// Parse +OK.
 	if err := statusCmd.readReply(rd); err != nil {
 		return err
 	}
 
+	// Parse +QUEUED.
 	for range cmds {
 		if err := statusCmd.readReply(rd); err != nil && !isRedisError(err) {
 			return err

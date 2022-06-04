@@ -83,7 +83,7 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 	if info != nil {
 		return int(info.FirstKeyPos)
 	}
-	return 0
+	return 1
 }
 
 func cmdString(cmd Cmder, val interface{}) string {
@@ -3166,6 +3166,7 @@ func (cmd *CommandsInfoCmd) String() string {
 func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 	const numArgRedis5 = 6
 	const numArgRedis6 = 7
+	const numArgRedis7 = 10
 
 	n, err := rd.ReadArrayLen()
 	if err != nil {
@@ -3178,8 +3179,12 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 		if err != nil {
 			return err
 		}
-		if nn != numArgRedis5 && nn != numArgRedis6 {
-			return fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6/7", nn)
+
+		switch nn {
+		case numArgRedis5, numArgRedis6, numArgRedis7:
+			// ok
+		default:
+			return fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6/7/10", nn)
 		}
 
 		cmdInfo := &CommandInfo{}
@@ -3230,7 +3235,7 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 		}
 		cmdInfo.StepCount = int8(stepCount)
 
-		if nn == numArgRedis6 {
+		if nn >= numArgRedis6 {
 			aclFlagLen, err := rd.ReadArrayLen()
 			if err != nil {
 				return err
@@ -3245,6 +3250,18 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 				default:
 					cmdInfo.ACLFlags[f] = s
 				}
+			}
+		}
+
+		if nn >= numArgRedis7 {
+			if err := rd.DiscardNext(); err != nil {
+				return err
+			}
+			if err := rd.DiscardNext(); err != nil {
+				return err
+			}
+			if err := rd.DiscardNext(); err != nil {
+				return err
 			}
 		}
 
