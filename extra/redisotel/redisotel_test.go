@@ -2,14 +2,16 @@ package redisotel_test
 
 import (
 	"context"
-	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 	"testing"
 
-	"github.com/go-redis/redis/extra/redisotel/v8"
-	"github.com/go-redis/redis/v8"
+	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
+
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/go-redis/redis/extra/redisotel/v8"
+	"github.com/go-redis/redis/v8"
 )
 
 func TestNew(t *testing.T) {

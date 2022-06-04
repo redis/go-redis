@@ -124,7 +124,7 @@ func (r *Reader) ReadLine() ([]byte, error) {
 	return line, nil
 }
 
-// readLine that returns an error if:
+// readLine returns an error if:
 //   - there is a pending read error;
 //   - or line does not end with \r\n.
 func (r *Reader) readLine() ([]byte, error) {
@@ -403,7 +403,7 @@ func (r *Reader) ReadArrayLen() (int, error) {
 	case RespArray, RespSet, RespPush:
 		return replyLen(line)
 	default:
-		return 0, fmt.Errorf("redis: can't parse array(array/set/push) reply: %.100q", line)
+		return 0, fmt.Errorf("redis: can't parse array/set/push reply: %.100q", line)
 	}
 }
 
@@ -446,6 +446,15 @@ func (r *Reader) ReadMapLen() (int, error) {
 	}
 }
 
+// DiscardNext read and discard the data represented by the next line.
+func (r *Reader) DiscardNext() error {
+	line, err := r.readLine()
+	if err != nil {
+		return err
+	}
+	return r.Discard(line)
+}
+
 // Discard the data represented by line.
 func (r *Reader) Discard(line []byte) (err error) {
 	if len(line) == 0 {
@@ -486,15 +495,6 @@ func (r *Reader) Discard(line []byte) (err error) {
 	return fmt.Errorf("redis: can't parse %.100q", line)
 }
 
-// DiscardNext read and discard the data represented by the next line.
-func (r *Reader) DiscardNext() error {
-	line, err := r.readLine()
-	if err != nil {
-		return err
-	}
-	return r.Discard(line)
-}
-
 func replyLen(line []byte) (n int, err error) {
 	n, err = util.Atoi(line[1:])
 	if err != nil {
@@ -515,7 +515,7 @@ func replyLen(line []byte) (n int, err error) {
 	return n, nil
 }
 
-// IsNilReply detect redis.Nil of RESP2.
+// IsNilReply detects redis.Nil of RESP2.
 func IsNilReply(line []byte) bool {
 	return len(line) == 3 &&
 		(line[0] == RespString || line[0] == RespArray) &&

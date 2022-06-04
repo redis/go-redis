@@ -83,7 +83,7 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 	if info != nil {
 		return int(info.FirstKeyPos)
 	}
-	return 0
+	return 1
 }
 
 func cmdString(cmd Cmder, val interface{}) string {
@@ -2649,13 +2649,14 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 
 		// subtract start and end.
 		nodes := make([]ClusterNode, n-2)
+
 		for j := 0; j < len(nodes); j++ {
 			nn, err := rd.ReadArrayLen()
 			if err != nil {
 				return err
 			}
-			if nn != 2 && nn != 3 {
-				return fmt.Errorf("got %d elements in cluster info address, expected 2 or 3", nn)
+			if nn < 2 || nn > 4 {
+				return fmt.Errorf("got %d elements in cluster info address, expected 2, 3, or 4", n)
 			}
 
 			ip, err := rd.ReadString()
@@ -2670,14 +2671,43 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 
 			nodes[j].Addr = net.JoinHostPort(ip, port)
 
-			if nn == 3 {
+			if nn >= 3 {
 				id, err := rd.ReadString()
 				if err != nil {
 					return err
 				}
 				nodes[j].ID = id
 			}
+
+			if nn >= 4 {
+				networkingMetadata := make(map[string]string)
+
+				metadataLength, err := rd.ReadArrayLen()
+				if err != nil {
+					return err
+				}
+
+				if metadataLength%2 != 0 {
+					return fmt.Errorf(
+						"got %d elements in metadata, expected an even number", metadataLength)
+				}
+
+				for i := 0; i < metadataLength; i += 2 {
+					key, err := rd.ReadString()
+					if err != nil {
+						return err
+					}
+					value, err := rd.ReadString()
+					if err != nil {
+						return err
+					}
+					networkingMetadata[key] = value
+				}
+
+				nodes[j].NetworkingMetadata = networkingMetadata
+			}
 		}
+
 		cmd.val[i] = ClusterSlot{
 			Start: int(start),
 			End:   int(end),
@@ -3136,6 +3166,7 @@ func (cmd *CommandsInfoCmd) String() string {
 func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 	const numArgRedis5 = 6
 	const numArgRedis6 = 7
+	const numArgRedis7 = 10
 
 	n, err := rd.ReadArrayLen()
 	if err != nil {
@@ -3148,8 +3179,12 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 		if err != nil {
 			return err
 		}
-		if nn != numArgRedis5 && nn != numArgRedis6 {
-			return fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6/7", nn)
+
+		switch nn {
+		case numArgRedis5, numArgRedis6, numArgRedis7:
+			// ok
+		default:
+			return fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6/7/10", nn)
 		}
 
 		cmdInfo := &CommandInfo{}
@@ -3200,7 +3235,7 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 		}
 		cmdInfo.StepCount = int8(stepCount)
 
-		if nn == numArgRedis6 {
+		if nn >= numArgRedis6 {
 			aclFlagLen, err := rd.ReadArrayLen()
 			if err != nil {
 				return err
@@ -3215,6 +3250,18 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 				default:
 					cmdInfo.ACLFlags[f] = s
 				}
+			}
+		}
+
+		if nn >= numArgRedis7 {
+			if err := rd.DiscardNext(); err != nil {
+				return err
+			}
+			if err := rd.DiscardNext(); err != nil {
+				return err
+			}
+			if err := rd.DiscardNext(); err != nil {
+				return err
 			}
 		}
 
