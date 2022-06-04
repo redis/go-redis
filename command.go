@@ -2628,8 +2628,9 @@ func (cmd *ScanCmd) Iterator() *ScanIterator {
 //------------------------------------------------------------------------------
 
 type ClusterNode struct {
-	ID   string
-	Addr string
+	ID                 string
+	Addr               string
+	NetworkingMetadata map[string]string
 }
 
 type ClusterSlot struct {
@@ -2700,8 +2701,8 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 				if err != nil {
 					return nil, err
 				}
-				if n != 2 && n != 3 {
-					err := fmt.Errorf("got %d elements in cluster info address, expected 2 or 3", n)
+				if n < 2 || n > 4 {
+					err := fmt.Errorf("got %d elements in cluster info address, shoud be between 2 and 4", n)
 					return nil, err
 				}
 
@@ -2717,12 +2718,35 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 
 				nodes[j].Addr = net.JoinHostPort(ip, port)
 
-				if n == 3 {
+				if n >= 3 {
 					id, err := rd.ReadString()
 					if err != nil {
 						return nil, err
 					}
 					nodes[j].ID = id
+				}
+				if n == 4 {
+					networkingMetadata := make(map[string]string)
+					metadataLength, err := rd.ReadArrayLen()
+					if err != nil {
+						return nil, err
+					}
+					if metadataLength%2 != 0 {
+						err := fmt.Errorf("the array length of metadata must be a even number, current: %d", metadataLength)
+						return nil, err
+					}
+					for i := 0; i < metadataLength; i = i + 2 {
+						key, err := rd.ReadString()
+						if err != nil {
+							return nil, err
+						}
+						value, err := rd.ReadString()
+						if err != nil {
+							return nil, err
+						}
+						networkingMetadata[key] = value
+					}
+					nodes[j].NetworkingMetadata = networkingMetadata
 				}
 			}
 
