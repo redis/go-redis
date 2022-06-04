@@ -26,10 +26,9 @@ fmt:
 	goimports -w  -local github.com/go-redis/redis ./
 
 go_mod_tidy:
-	go get -u && go mod tidy
 	set -e; for dir in $(PACKAGE_DIRS); do \
 	  echo "go mod tidy in $${dir}"; \
 	  (cd "$${dir}" && \
-	    go get -u && \
-	    go mod tidy); \
+	    go get -u ./... && \
+	    go mod tidy -compat=1.17); \
 	done
