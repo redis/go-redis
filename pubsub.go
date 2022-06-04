@@ -456,9 +456,9 @@ func (c *PubSub) ChannelSize(size int) <-chan *Message {
 // reconnections.
 //
 // ChannelWithSubscriptions can not be used together with Channel or ChannelSize.
-func (c *PubSub) ChannelWithSubscriptions(_ context.Context, size int) <-chan interface{} {
+func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interface{} {
 	c.chOnce.Do(func() {
-		c.allCh = newChannel(c, WithChannelSize(size))
+		c.allCh = newChannel(c, opts...)
 		c.allCh.initAllChan()
 	})
 	if c.allCh == nil {
