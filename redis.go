@@ -228,8 +228,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	var auth bool
 
-	// The low version of redis-server does not support the hello command.
-	// For redis-server (<6.0) that does not support the Hello command,
+	// For redis-server <6.0 that does not support the Hello command,
 	// we continue to provide services with RESP2.
 	if err := conn.Hello(ctx, 3, username, password, "").Err(); err == nil {
 		auth = true

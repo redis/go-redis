@@ -85,11 +85,11 @@ func (c *clusterState) IsConsistent(ctx context.Context) bool {
 }
 
 func GetSlavesAddrByName(ctx context.Context, c *SentinelClient, name string) []string {
-	addrs, err := c.Slaves(ctx, name).Result()
+	addrs, err := c.Replicas(ctx, name).Result()
 	if err != nil {
-		internal.Logger.Printf(ctx, "sentinel: Slaves name=%q failed: %s",
+		internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
 			name, err)
 		return []string{}
 	}
-	return parseSlaveAddrs(addrs, false)
+	return parseReplicaAddrs(addrs, false)
 }

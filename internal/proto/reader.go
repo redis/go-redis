@@ -388,7 +388,7 @@ func (r *Reader) ReadFixedArrayLen(fixedLen int) error {
 		return err
 	}
 	if n != fixedLen {
-		return fmt.Errorf("redis: got %d elements of array length, wanted %d", n, fixedLen)
+		return fmt.Errorf("redis: got %d elements in the array, wanted %d", n, fixedLen)
 	}
 	return nil
 }
@@ -407,19 +407,19 @@ func (r *Reader) ReadArrayLen() (int, error) {
 	}
 }
 
-// ReadFixedMapLen read fixed map length.
+// ReadFixedMapLen reads fixed map length.
 func (r *Reader) ReadFixedMapLen(fixedLen int) error {
 	n, err := r.ReadMapLen()
 	if err != nil {
 		return err
 	}
 	if n != fixedLen {
-		return fmt.Errorf("redis: got %d elements of map length, wanted %d", n, fixedLen)
+		return fmt.Errorf("redis: got %d elements in the map, wanted %d", n, fixedLen)
 	}
 	return nil
 }
 
-// ReadMapLen read the length of the map type.
+// ReadMapLen reads the length of the map type.
 // If responding to the array type (RespArray/RespSet/RespPush),
 // it must be a multiple of 2 and return n/2.
 // Other types will return an error.

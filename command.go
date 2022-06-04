@@ -1769,19 +1769,35 @@ func (cmd *XAutoClaimCmd) String() string {
 }
 
 func (cmd *XAutoClaimCmd) readReply(rd *proto.Reader) error {
-	var err error
-	if err = rd.ReadFixedArrayLen(2); err != nil {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
 		return err
+	}
+
+	switch n {
+	case 2, // Redis 6
+		3: // Redis 7:
+		// ok
+	default:
+		return fmt.Errorf("redis: got %d elements in XAutoClaim reply, wanted 2/3", n)
 	}
 
 	cmd.start, err = rd.ReadString()
 	if err != nil {
 		return err
 	}
+
 	cmd.val, err = readXMessageSlice(rd)
 	if err != nil {
 		return err
 	}
+
+	if n >= 3 {
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -1823,27 +1839,43 @@ func (cmd *XAutoClaimJustIDCmd) String() string {
 }
 
 func (cmd *XAutoClaimJustIDCmd) readReply(rd *proto.Reader) error {
-	var err error
-	if err = rd.ReadFixedArrayLen(2); err != nil {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
 		return err
+	}
+
+	switch n {
+	case 2, // Redis 6
+		3: // Redis 7:
+		// ok
+	default:
+		return fmt.Errorf("redis: got %d elements in XAutoClaimJustID reply, wanted 2/3", n)
 	}
 
 	cmd.start, err = rd.ReadString()
 	if err != nil {
 		return err
 	}
-	n, err := rd.ReadArrayLen()
+
+	nn, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
 	}
 
-	cmd.val = make([]string, n)
-	for i := 0; i < n; i++ {
+	cmd.val = make([]string, nn)
+	for i := 0; i < nn; i++ {
 		cmd.val[i], err = rd.ReadString()
 		if err != nil {
 			return err
 		}
 	}
+
+	if n >= 3 {
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -1939,6 +1971,8 @@ type XInfoGroup struct {
 	Consumers       int64
 	Pending         int64
 	LastDeliveredID string
+	EntriesRead     int64
+	Lag             int64
 }
 
 var _ Cmder = (*XInfoGroupsCmd)(nil)
@@ -1976,12 +2010,15 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 	cmd.val = make([]XInfoGroup, n)
 
 	for i := 0; i < len(cmd.val); i++ {
-		if err = rd.ReadFixedMapLen(4); err != nil {
+		group := &cmd.val[i]
+
+		nn, err := rd.ReadMapLen()
+		if err != nil {
 			return err
 		}
 
 		var key string
-		for f := 0; f < 4; f++ {
+		for j := 0; j < nn; j++ {
 			key, err = rd.ReadString()
 			if err != nil {
 				return err
@@ -1989,18 +2026,37 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 
 			switch key {
 			case "name":
-				cmd.val[i].Name, err = rd.ReadString()
+				group.Name, err = rd.ReadString()
+				if err != nil {
+					return err
+				}
 			case "consumers":
-				cmd.val[i].Consumers, err = rd.ReadInt()
+				group.Consumers, err = rd.ReadInt()
+				if err != nil {
+					return err
+				}
 			case "pending":
-				cmd.val[i].Pending, err = rd.ReadInt()
+				group.Pending, err = rd.ReadInt()
+				if err != nil {
+					return err
+				}
 			case "last-delivered-id":
-				cmd.val[i].LastDeliveredID, err = rd.ReadString()
+				group.LastDeliveredID, err = rd.ReadString()
+				if err != nil {
+					return err
+				}
+			case "entries-read":
+				group.EntriesRead, err = rd.ReadInt()
+				if err != nil {
+					return err
+				}
+			case "lag":
+				group.Lag, err = rd.ReadInt()
+				if err != nil {
+					return err
+				}
 			default:
-				return fmt.Errorf("redis: unexpected content %s in XINFO GROUPS reply", key)
-			}
-			if err != nil {
-				return err
+				return fmt.Errorf("redis: unexpected key %q in XINFO GROUPS reply", key)
 			}
 		}
 	}
@@ -2016,13 +2072,16 @@ type XInfoStreamCmd struct {
 }
 
 type XInfoStream struct {
-	Length          int64
-	RadixTreeKeys   int64
-	RadixTreeNodes  int64
-	Groups          int64
-	LastGeneratedID string
-	FirstEntry      XMessage
-	LastEntry       XMessage
+	Length               int64
+	RadixTreeKeys        int64
+	RadixTreeNodes       int64
+	Groups               int64
+	LastGeneratedID      string
+	MaxDeletedEntryID    string
+	EntriesAdded         int64
+	FirstEntry           XMessage
+	LastEntry            XMessage
+	RecordedFirstEntryID string
 }
 
 var _ Cmder = (*XInfoStreamCmd)(nil)
@@ -2053,12 +2112,13 @@ func (cmd *XInfoStreamCmd) String() string {
 }
 
 func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
-	if err := rd.ReadFixedMapLen(7); err != nil {
+	n, err := rd.ReadMapLen()
+	if err != nil {
 		return err
 	}
 	cmd.val = &XInfoStream{}
 
-	for i := 0; i < 7; i++ {
+	for i := 0; i < n; i++ {
 		key, err := rd.ReadString()
 		if err != nil {
 			return err
@@ -2066,30 +2126,56 @@ func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
 		switch key {
 		case "length":
 			cmd.val.Length, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		case "radix-tree-keys":
 			cmd.val.RadixTreeKeys, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		case "radix-tree-nodes":
 			cmd.val.RadixTreeNodes, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		case "groups":
 			cmd.val.Groups, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		case "last-generated-id":
 			cmd.val.LastGeneratedID, err = rd.ReadString()
+			if err != nil {
+				return err
+			}
+		case "max-deleted-entry-id":
+			cmd.val.MaxDeletedEntryID, err = rd.ReadString()
+			if err != nil {
+				return err
+			}
+		case "entries-added":
+			cmd.val.EntriesAdded, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		case "first-entry":
 			cmd.val.FirstEntry, err = readXMessage(rd)
-			if err == Nil {
-				err = nil
+			if err != nil && err != Nil {
+				return err
 			}
 		case "last-entry":
 			cmd.val.LastEntry, err = readXMessage(rd)
-			if err == Nil {
-				err = nil
+			if err != nil && err != Nil {
+				return err
+			}
+		case "recorded-first-entry-id":
+			cmd.val.RecordedFirstEntryID, err = rd.ReadString()
+			if err != nil {
+				return err
 			}
 		default:
-			return fmt.Errorf("redis: unexpected content %s "+
-				"in XINFO STREAM reply", key)
-		}
-		if err != nil {
-			return err
+			return fmt.Errorf("redis: unexpected key %q in XINFO STREAM reply", key)
 		}
 	}
 	return nil
@@ -2103,17 +2189,22 @@ type XInfoStreamFullCmd struct {
 }
 
 type XInfoStreamFull struct {
-	Length          int64
-	RadixTreeKeys   int64
-	RadixTreeNodes  int64
-	LastGeneratedID string
-	Entries         []XMessage
-	Groups          []XInfoStreamGroup
+	Length               int64
+	RadixTreeKeys        int64
+	RadixTreeNodes       int64
+	LastGeneratedID      string
+	MaxDeletedEntryID    string
+	EntriesAdded         int64
+	Entries              []XMessage
+	Groups               []XInfoStreamGroup
+	RecordedFirstEntryID string
 }
 
 type XInfoStreamGroup struct {
 	Name            string
 	LastDeliveredID string
+	EntriesRead     int64
+	Lag             int64
 	PelCount        int64
 	Pending         []XInfoStreamGroupPending
 	Consumers       []XInfoStreamConsumer
@@ -2167,13 +2258,14 @@ func (cmd *XInfoStreamFullCmd) String() string {
 }
 
 func (cmd *XInfoStreamFullCmd) readReply(rd *proto.Reader) error {
-	if err := rd.ReadFixedMapLen(6); err != nil {
+	n, err := rd.ReadMapLen()
+	if err != nil {
 		return err
 	}
 
 	cmd.val = &XInfoStreamFull{}
 
-	for i := 0; i < 6; i++ {
+	for i := 0; i < n; i++ {
 		key, err := rd.ReadString()
 		if err != nil {
 			return err
@@ -2182,22 +2274,51 @@ func (cmd *XInfoStreamFullCmd) readReply(rd *proto.Reader) error {
 		switch key {
 		case "length":
 			cmd.val.Length, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		case "radix-tree-keys":
 			cmd.val.RadixTreeKeys, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		case "radix-tree-nodes":
 			cmd.val.RadixTreeNodes, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		case "last-generated-id":
 			cmd.val.LastGeneratedID, err = rd.ReadString()
+			if err != nil {
+				return err
+			}
+		case "entries-added":
+			cmd.val.EntriesAdded, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		case "entries":
 			cmd.val.Entries, err = readXMessageSlice(rd)
+			if err != nil {
+				return err
+			}
 		case "groups":
 			cmd.val.Groups, err = readStreamGroups(rd)
+			if err != nil {
+				return err
+			}
+		case "max-deleted-entry-id":
+			cmd.val.MaxDeletedEntryID, err = rd.ReadString()
+			if err != nil {
+				return err
+			}
+		case "recorded-first-entry-id":
+			cmd.val.RecordedFirstEntryID, err = rd.ReadString()
+			if err != nil {
+				return err
+			}
 		default:
-			return fmt.Errorf("redis: unexpected content %s "+
-				"in XINFO STREAM FULL reply", key)
-		}
-		if err != nil {
-			return err
+			return fmt.Errorf("redis: unexpected key %q in XINFO STREAM FULL reply", key)
 		}
 	}
 	return nil
@@ -2210,13 +2331,14 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 	}
 	groups := make([]XInfoStreamGroup, 0, n)
 	for i := 0; i < n; i++ {
-		if err = rd.ReadFixedMapLen(5); err != nil {
+		nn, err := rd.ReadMapLen()
+		if err != nil {
 			return nil, err
 		}
 
 		group := XInfoStreamGroup{}
 
-		for f := 0; f < 5; f++ {
+		for j := 0; j < nn; j++ {
 			key, err := rd.ReadString()
 			if err != nil {
 				return nil, err
@@ -2225,21 +2347,41 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 			switch key {
 			case "name":
 				group.Name, err = rd.ReadString()
+				if err != nil {
+					return nil, err
+				}
 			case "last-delivered-id":
 				group.LastDeliveredID, err = rd.ReadString()
+				if err != nil {
+					return nil, err
+				}
+			case "entries-read":
+				group.EntriesRead, err = rd.ReadInt()
+				if err != nil {
+					return nil, err
+				}
+			case "lag":
+				group.Lag, err = rd.ReadInt()
+				if err != nil {
+					return nil, err
+				}
 			case "pel-count":
 				group.PelCount, err = rd.ReadInt()
+				if err != nil {
+					return nil, err
+				}
 			case "pending":
 				group.Pending, err = readXInfoStreamGroupPending(rd)
+				if err != nil {
+					return nil, err
+				}
 			case "consumers":
 				group.Consumers, err = readXInfoStreamConsumers(rd)
+				if err != nil {
+					return nil, err
+				}
 			default:
-				return nil, fmt.Errorf("redis: unexpected content %s "+
-					"in XINFO STREAM FULL reply", key)
-			}
-
-			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("redis: unexpected key %q in XINFO STREAM FULL reply", key)
 			}
 		}
 
@@ -2682,7 +2824,7 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 			if nn >= 4 {
 				networkingMetadata := make(map[string]string)
 
-				metadataLength, err := rd.ReadArrayLen()
+				metadataLength, err := rd.ReadMapLen()
 				if err != nil {
 					return err
 				}
