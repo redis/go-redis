@@ -290,13 +290,6 @@ var _ = Describe("races", func() {
 		Expect(atomic.LoadUint32(&received)).To(Equal(uint32(C * N)))
 	})
 
-	It("should WithContext", func() {
-		perform(C, func(_ int) {
-			err := client.WithContext(ctx).Ping(ctx).Err()
-			Expect(err).NotTo(HaveOccurred())
-		})
-	})
-
 	It("should abort on context timeout", func() {
 		opt := redisClusterOptions()
 		client := cluster.newClusterClient(ctx, opt)

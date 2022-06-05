@@ -256,7 +256,6 @@ func masterReplicaDialer(
 type SentinelClient struct {
 	*baseClient
 	hooks
-	ctx context.Context
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {
@@ -266,22 +265,8 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 			opt:      opt,
 			connPool: newConnPool(opt),
 		},
-		ctx: context.Background(),
 	}
 	return c
-}
-
-func (c *SentinelClient) Context() context.Context {
-	return c.ctx
-}
-
-func (c *SentinelClient) WithContext(ctx context.Context) *SentinelClient {
-	if ctx == nil {
-		panic("nil context")
-	}
-	clone := *c
-	clone.ctx = ctx
-	return &clone
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {

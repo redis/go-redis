@@ -432,21 +432,6 @@ func NewRing(opt *RingOptions) *Ring {
 	return &ring
 }
 
-func (c *Ring) Context() context.Context {
-	return c.ctx
-}
-
-func (c *Ring) WithContext(ctx context.Context) *Ring {
-	if ctx == nil {
-		panic("nil context")
-	}
-	clone := *c
-	clone.cmdable = clone.Process
-	clone.hooks.lock()
-	clone.ctx = ctx
-	return &clone
-}
-
 // Do creates a Cmd from the args and processes the cmd.
 func (c *Ring) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
@@ -619,7 +604,6 @@ func (c *Ring) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
 		exec: c.processPipeline,
 	}
 	pipe.init()
@@ -638,7 +622,6 @@ func (c *Ring) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 
 func (c *Ring) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
 		exec: c.processTxPipeline,
 	}
 	pipe.init()

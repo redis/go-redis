@@ -182,7 +182,6 @@ func (o *UniversalOptions) Simple() *Options {
 // clients in different environments.
 type UniversalClient interface {
 	Cmdable
-	Context() context.Context
 	AddHook(Hook)
 	Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error
 	Do(ctx context.Context, args ...interface{}) *Cmd

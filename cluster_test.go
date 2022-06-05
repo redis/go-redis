@@ -237,14 +237,6 @@ var _ = Describe("ClusterClient", func() {
 	var client *redis.ClusterClient
 
 	assertClusterClient := func() {
-		It("supports WithContext", func() {
-			ctx, cancel := context.WithCancel(ctx)
-			cancel()
-
-			err := client.Ping(ctx).Err()
-			Expect(err).To(MatchError("context canceled"))
-		})
-
 		It("should GET/SET/DEL", func() {
 			err := client.Get(ctx, "A").Err()
 			Expect(err).To(Equal(redis.Nil))

@@ -723,21 +723,6 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return c
 }
 
-func (c *ClusterClient) Context() context.Context {
-	return c.ctx
-}
-
-func (c *ClusterClient) WithContext(ctx context.Context) *ClusterClient {
-	if ctx == nil {
-		panic("nil context")
-	}
-	clone := *c
-	clone.cmdable = clone.Process
-	clone.hooks.lock()
-	clone.ctx = ctx
-	return &clone
-}
-
 // Options returns read-only Options that were used to create the client.
 func (c *ClusterClient) Options() *ClusterOptions {
 	return c.opt
@@ -1069,7 +1054,7 @@ func (c *ClusterClient) reaper(idleCheckFrequency time.Duration) {
 		for _, node := range nodes {
 			_, err := node.Client.connPool.(*pool.ConnPool).ReapStaleConns()
 			if err != nil {
-				internal.Logger.Printf(c.Context(), "ReapStaleConns failed: %s", err)
+				internal.Logger.Printf(context.TODO(), "ReapStaleConns failed: %s", err)
 			}
 		}
 	}
@@ -1077,7 +1062,6 @@ func (c *ClusterClient) reaper(idleCheckFrequency time.Duration) {
 
 func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
 		exec: c.processPipeline,
 	}
 	pipe.init()
@@ -1259,7 +1243,6 @@ func (c *ClusterClient) checkMovedErr(
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
 		exec: c.processTxPipeline,
 	}
 	pipe.init()
@@ -1616,7 +1599,7 @@ func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
 
 	info := cmdsInfo[name]
 	if info == nil {
-		internal.Logger.Printf(c.Context(), "info for cmd=%s not found", name)
+		internal.Logger.Printf(context.TODO(), "info for cmd=%s not found", name)
 	}
 	return info
 }
