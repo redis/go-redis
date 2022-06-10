@@ -3,7 +3,9 @@ package pool
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -64,12 +66,67 @@ func (cn *Conn) RemoteAddr() net.Addr {
 }
 
 func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	cleanupCtx, cancel := context.WithCancel(context.Background())
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+
+	errCh := make(chan error, 1)
+
+	// start cancellation goroutine
+	go func() {
+		defer func() {
+			wg.Done()
+		}()
+
+		select {
+		// catch external context cancellation
+		case <-ctx.Done():
+			// cancel in-flight read of net.Conn
+			errCh <- cn.netConn.SetReadDeadline(time.Unix(1, 0))
+			return
+
+		// clean read, cleanup
+		case <-cleanupCtx.Done():
+			return
+		}
+	}()
+
 	if timeout != 0 {
 		if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
-			return err
+			return fmt.Errorf("SetReadDeadline: %w", err)
 		}
 	}
-	return fn(cn.rd)
+
+	err := fn(cn.rd)
+
+	cancel()
+	wg.Wait()
+
+	defer func() {
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			// We wrap ctx.Err() to check context.Canceled. SetReadDeadline doesn't
+			// produce an error we can check, but it would be good to use something
+			// like uber-go/multierr, so the errors can be combined if some of them
+			// can be checked against the net, io public package errors
+			return fmt.Errorf("SetReadDeadline (background): %s: %w", err.Error(), ctx.Err())
+		}
+		return ctx.Err()
+	default:
+		return err
+	}
 }
 
 func (cn *Conn) WithWriter(

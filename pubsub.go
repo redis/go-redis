@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -156,7 +157,9 @@ func (c *PubSub) closeTheCn(reason error) error {
 		return nil
 	}
 	if !c.closed {
-		internal.Logger.Printf(c.getContext(), "redis: discarding bad PubSub connection: %s", reason)
+		if !errors.Is(reason, context.Canceled) {
+			internal.Logger.Printf(c.getContext(), "redis: discarding bad PubSub connection: %s", reason)
+		}
 	}
 	err := c.closeConn(c.cn)
 	c.cn = nil
