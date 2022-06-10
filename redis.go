@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -228,11 +229,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	var auth bool
 
-	// For redis-server <6.0 that does not support the Hello command,
+	// For redis-server < 6.0 that does not support the Hello command,
 	// we continue to provide services with RESP2.
 	if err := conn.Hello(ctx, 3, username, password, "").Err(); err == nil {
 		auth = true
-	} else if err.Error() != "ERR unknown command 'hello'" {
+	} else if !strings.HasPrefix(err.Error(), "ERR unknown command") {
 		return err
 	}
 
