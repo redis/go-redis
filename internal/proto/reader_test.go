@@ -2,6 +2,7 @@ package proto_test
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"testing"
 
@@ -80,6 +81,29 @@ func TestReader_ReadLine(t *testing.T) {
 
 	if bytes.Compare(read, original[:len(original)-2]) != 0 {
 		t.Errorf("Values must be equal: %d expected %d", len(read), len(original[:len(original)-2]))
+	}
+}
+
+func TestReader_BufferedRead(t *testing.T) {
+	srcStr := "abcdef"
+	readerBuf := []byte(fmt.Sprintf("$%v\r\n%v\r\n", len(srcStr), srcStr))
+	r := proto.NewReader(bytes.NewReader(readerBuf))
+
+	buf := make([]byte, 100)
+	strLen, err := r.ReadStringBuffered(buf)
+	if err != nil {
+		t.Errorf("Should be no error: %v", err)
+		return
+	}
+	if strLen != len(srcStr) {
+		t.Errorf("Resulting string length should be equal to %v, actual %v", len(srcStr), strLen)
+		return
+	}
+
+	resultStr := string(buf[:strLen])
+	if resultStr != srcStr {
+		t.Errorf("Expected string '%v', actual '%v'", srcStr, resultStr)
+		return
 	}
 }
 
