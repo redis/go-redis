@@ -218,7 +218,7 @@ func (r *Reader) readStringReplyBuffered(line []byte, buf []byte) (int, error) {
 	}
 
 	if n+2 > len(buf) {
-		// TODO: worth improving error messaging to notify user about small buffer:q
+		// TODO: worth improving error messaging to notify user about small buffer
 		return -1, errors.New("redis string buffer is too small")
 	}
 
