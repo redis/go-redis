@@ -1209,6 +1209,34 @@ func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
+type CustomCmd struct {
+	baseCmd
+
+	customReader func(*proto.Reader) error
+}
+
+func NewCustomCmd(ctx context.Context, customReader func(reader *proto.Reader) error, args ...interface{}) *CustomCmd {
+	return &CustomCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+		customReader: customReader,
+	}
+}
+
+var _ Cmder = (*CustomCmd)(nil)
+
+func (cmd *CustomCmd) String() string {
+	return cmdString(cmd, cmd.customReader)
+}
+
+func (cmd *CustomCmd) readReply(rd *proto.Reader) error {
+	return cmd.customReader(rd)
+}
+
+//------------------------------------------------------------------------------
+
 type MapStringStringCmd struct {
 	baseCmd
 

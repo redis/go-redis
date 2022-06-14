@@ -211,6 +211,26 @@ func (r *Reader) readBigInt(line []byte) (*big.Int, error) {
 	return nil, fmt.Errorf("redis: can't parse bigInt reply: %q", line)
 }
 
+func (r *Reader) readStringReplyBuffered(line []byte, buf []byte) (int, error) {
+	n, err := replyLen(line)
+	if err != nil {
+		return -1, err
+	}
+
+	if n+2 > len(buf) {
+		// TODO: worth improving error messaging to notify user about small buffer:q
+		return -1, errors.New("redis string buffer is too small")
+	}
+
+	_, err = io.ReadFull(r.rd, buf[:n+2])
+	if err != nil {
+		return -1, err
+	}
+
+	// the last two symbols of a redis string are '\r\n'
+	return n, nil
+}
+
 func (r *Reader) readStringReply(line []byte) (string, error) {
 	n, err := replyLen(line)
 	if err != nil {
@@ -337,6 +357,20 @@ func (r *Reader) ReadFloat() (float64, error) {
 		return strconv.ParseFloat(s, 64)
 	}
 	return 0, fmt.Errorf("redis: can't parse float reply: %.100q", line)
+}
+
+func (r *Reader) ReadStringBuffered(buf []byte) (int, error) {
+	line, err := r.ReadLine()
+	if err != nil {
+		return -1, err
+	}
+
+	switch line[0] {
+	case RespString:
+		return r.readStringReplyBuffered(line, buf)
+	default:
+		return -1, fmt.Errorf("redis: can't parse reply=%.100q reading string", line)
+	}
 }
 
 func (r *Reader) ReadString() (string, error) {
