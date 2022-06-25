@@ -2047,7 +2047,7 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 				}
 			case "entries-read":
 				group.EntriesRead, err = rd.ReadInt()
-				if err != nil {
+				if err != nil && err != Nil {
 					return err
 				}
 			case "lag":
