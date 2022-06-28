@@ -23,6 +23,7 @@ type Cmder interface {
 	SetFirstKeyPos(int8)
 
 	readTimeout() *time.Duration
+	longRunning() bool
 	readReply(rd *proto.Reader) error
 
 	SetErr(error)
@@ -110,10 +111,11 @@ func cmdString(cmd Cmder, val interface{}) string {
 //------------------------------------------------------------------------------
 
 type baseCmd struct {
-	ctx    context.Context
-	args   []interface{}
-	err    error
-	keyPos int8
+	ctx           context.Context
+	args          []interface{}
+	err           error
+	keyPos        int8
+	isLongRunning bool
 
 	_readTimeout *time.Duration
 }
@@ -183,6 +185,14 @@ func (cmd *baseCmd) readTimeout() *time.Duration {
 
 func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 	cmd._readTimeout = &d
+}
+
+func (cmd *baseCmd) longRunning() bool {
+	return cmd.isLongRunning
+}
+
+func (cmd *baseCmd) setLongRunning(b bool) {
+	cmd.isLongRunning = b
 }
 
 //------------------------------------------------------------------------------

@@ -316,33 +316,37 @@ func (c *baseClient) withConn(
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
-		attempt := attempt
-
-		retry, err := c._process(ctx, cmd, attempt)
+		retry, written, err := c._process(ctx, cmd, attempt)
 		if err == nil || !retry {
 			return err
 		}
 
 		lastErr = err
+
+		if written && cmd.longRunning() {
+			attempt = -1
+		}
 	}
 	return lastErr
 }
 
-func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error) {
+func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (retry, written bool, err error) {
 	if attempt > 0 {
-		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
-			return false, err
+		if err = internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+			return
 		}
 	}
 
 	retryTimeout := uint32(1)
-	err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+	err = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 			return writeCmd(wr, cmd)
 		})
 		if err != nil {
 			return err
 		}
+
+		written = true
 
 		err = cn.WithReader(ctx, c.cmdTimeout(cmd), cmd.readReply)
 		if err != nil {
@@ -355,11 +359,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		return nil
 	})
 	if err == nil {
-		return false, nil
+		return
 	}
 
-	retry := shouldRetry(err, atomic.LoadUint32(&retryTimeout) == 1)
-	return retry, err
+	retry = shouldRetry(err, atomic.LoadUint32(&retryTimeout) == 1)
+	return
 }
 
 func (c *baseClient) retryBackoff(attempt int) time.Duration {

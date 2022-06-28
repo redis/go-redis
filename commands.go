@@ -1845,6 +1845,7 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	cmd := NewXStreamSliceCmd(ctx, args...)
 	if a.Block >= 0 {
 		cmd.setReadTimeout(a.Block)
+		cmd.setLongRunning(true)
 	}
 	cmd.SetFirstKeyPos(keyPos)
 	_ = c(ctx, cmd)
