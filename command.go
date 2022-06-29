@@ -3189,6 +3189,11 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 
 type GeoPos struct {
 	Longitude, Latitude float64
+	Err                 error
+}
+
+func (g GeoPos) IsRedisNil() bool {
+	return g.Err == Nil
 }
 
 type GeoPosCmd struct {
@@ -3235,7 +3240,9 @@ func (cmd *GeoPosCmd) readReply(rd *proto.Reader) error {
 		err = rd.ReadFixedArrayLen(2)
 		if err != nil {
 			if err == Nil {
-				cmd.val[i] = nil
+				cmd.val[i] = &GeoPos{
+					Err: Nil,
+				}
 				continue
 			}
 			return err

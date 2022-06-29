@@ -5119,7 +5119,9 @@ var _ = Describe("Commands", func() {
 					Longitude: 15.087267458438873,
 					Latitude:  37.50266842333162,
 				},
-				nil,
+				{
+					Err: redis.Nil,
+				},
 			}))
 		})
 
