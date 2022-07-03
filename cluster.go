@@ -204,15 +204,26 @@ func (n *clusterNode) updateLatency() {
 	const numProbe = 10
 	var dur uint64
 
+	successes := 0
 	for i := 0; i < numProbe; i++ {
 		time.Sleep(time.Duration(10+rand.Intn(10)) * time.Millisecond)
 
 		start := time.Now()
-		n.Client.Ping(context.TODO())
-		dur += uint64(time.Since(start) / time.Microsecond)
+		err := n.Client.Ping(context.TODO()).Err()
+		if err == nil {
+			dur += uint64(time.Since(start) / time.Microsecond)
+			successes++
+		}
 	}
 
-	latency := float64(dur) / float64(numProbe)
+	var latency float64
+	if successes == 0 {
+		// If none of the pings worked, set latency to some arbitrarily high value so this node gets
+		// least priority.
+		latency = float64((1 * time.Minute) / time.Microsecond)
+	} else {
+		latency = float64(dur) / float64(successes)
+	}
 	atomic.StoreUint32(&n.latency, uint32(latency+0.5))
 }
 
