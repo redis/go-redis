@@ -82,8 +82,10 @@ func (s *clusterScenario) newClusterClient(
 
 func (s *clusterScenario) Close() error {
 	for _, port := range s.ports {
-		processes[port].Close()
-		delete(processes, port)
+		if process, ok := processes[port]; ok {
+			process.Close()
+			delete(processes, port)
+		}
 	}
 	return nil
 }
