@@ -1605,6 +1605,7 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
 	cmdsInfo, err := c.cmdsInfoCache.Get(c.ctx)
 	if err != nil {
+		internal.Logger.Printf(context.TODO(), "getting command info: %s", err)
 		return nil
 	}
 
