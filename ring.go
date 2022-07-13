@@ -259,10 +259,11 @@ func (c *ringShards) Hash(key string) string {
 	var hash string
 
 	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	if c.numShard > 0 {
 		hash = c.hash.Get(key)
 	}
-	c.mu.RUnlock()
 
 	return hash
 }
@@ -271,27 +272,22 @@ func (c *ringShards) GetByKey(key string) (*ringShard, error) {
 	key = hashtag.Key(key)
 
 	c.mu.RLock()
+	defer c.mu.RUnlock()
 
 	if c.closed {
-		c.mu.RUnlock()
 		return nil, pool.ErrClosed
 	}
 
 	if c.numShard == 0 {
-		c.mu.RUnlock()
 		return nil, errRingShardsDown
 	}
 
 	hash := c.hash.Get(key)
 	if hash == "" {
-		c.mu.RUnlock()
 		return nil, errRingShardsDown
 	}
 
-	shard := c.shards[hash]
-	c.mu.RUnlock()
-
-	return shard, nil
+	return c.shards[hash], nil
 }
 
 func (c *ringShards) GetByName(shardName string) (*ringShard, error) {
@@ -300,9 +296,9 @@ func (c *ringShards) GetByName(shardName string) (*ringShard, error) {
 	}
 
 	c.mu.RLock()
-	shard := c.shards[shardName]
-	c.mu.RUnlock()
-	return shard, nil
+	defer c.mu.RUnlock()
+
+	return c.shards[shardName], nil
 }
 
 func (c *ringShards) Random() (*ringShard, error) {
@@ -357,9 +353,9 @@ func (c *ringShards) rebalance() {
 
 func (c *ringShards) Len() int {
 	c.mu.RLock()
-	l := c.numShard
-	c.mu.RUnlock()
-	return l
+	defer c.mu.RUnlock()
+
+	return c.numShard
 }
 
 func (c *ringShards) Close() error {
@@ -377,8 +373,10 @@ func (c *ringShards) Close() error {
 			firstErr = err
 		}
 	}
+
 	c.hash = nil
 	c.shards = nil
+	c.numShard = 0
 	c.list = nil
 
 	return firstErr

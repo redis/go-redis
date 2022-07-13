@@ -114,6 +114,21 @@ var _ = Describe("Redis Ring", func() {
 	})
 
 	Describe("pipeline", func() {
+		It("doesn't panic closed ring, returns error", func() {
+			pipe := ring.Pipeline()
+			for i := 0; i < 3; i++ {
+				err := pipe.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			Expect(ring.Close()).NotTo(HaveOccurred())
+
+			Expect(func() {
+				_, execErr := pipe.Exec(ctx)
+				Expect(execErr).To(HaveOccurred())
+			}).NotTo(Panic())
+		})
+
 		It("distributes keys", func() {
 			pipe := ring.Pipeline()
 			for i := 0; i < 100; i++ {
