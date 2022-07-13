@@ -225,7 +225,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
-	conn := newConn(ctx, c.opt, connPool)
+	conn := newConn(c.opt, connPool)
 
 	var auth bool
 
@@ -575,8 +575,8 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	return clone
 }
 
-func (c *Client) Conn(ctx context.Context) *Conn {
-	return newConn(ctx, c.opt, pool.NewStickyConnPool(c.connPool))
+func (c *Client) Conn() *Conn {
+	return newConn(c.opt, pool.NewStickyConnPool(c.connPool))
 }
 
 // Do creates a Cmd from the args and processes the cmd.
@@ -707,10 +707,9 @@ type conn struct {
 // for a continuous single Redis connection.
 type Conn struct {
 	*conn
-	ctx context.Context
 }
 
-func newConn(ctx context.Context, opt *Options, connPool pool.Pooler) *Conn {
+func newConn(opt *Options, connPool pool.Pooler) *Conn {
 	c := Conn{
 		conn: &conn{
 			baseClient: baseClient{
@@ -718,7 +717,6 @@ func newConn(ctx context.Context, opt *Options, connPool pool.Pooler) *Conn {
 				connPool: connPool,
 			},
 		},
-		ctx: ctx,
 	}
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process

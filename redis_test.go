@@ -296,7 +296,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should Conn", func() {
-		err := client.Conn(ctx).Get(ctx, "this-key-does-not-exist").Err()
+		err := client.Conn().Get(ctx, "this-key-does-not-exist").Err()
 		Expect(err).To(Equal(redis.Nil))
 	})
 
