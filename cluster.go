@@ -708,7 +708,6 @@ type ClusterClient struct {
 	*clusterClient
 	cmdable
 	hooks
-	ctx context.Context
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
