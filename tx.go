@@ -20,17 +20,15 @@ type Tx struct {
 	cmdable
 	statefulCmdable
 	hooks
-	ctx context.Context
 }
 
-func (c *Client) newTx(ctx context.Context) *Tx {
+func (c *Client) newTx() *Tx {
 	tx := Tx{
 		baseClient: baseClient{
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool),
 		},
 		hooks: c.hooks.clone(),
-		ctx:   ctx,
 	}
 	tx.init()
 	return &tx
@@ -50,7 +48,7 @@ func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
 //
 // The transaction is automatically closed when fn exits.
 func (c *Client) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
-	tx := c.newTx(ctx)
+	tx := c.newTx()
 	defer tx.Close(ctx)
 	if len(keys) > 0 {
 		if err := tx.Watch(ctx, keys...).Err(); err != nil {

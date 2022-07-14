@@ -546,7 +546,6 @@ type Client struct {
 	*baseClient
 	cmdable
 	hooks
-	ctx context.Context
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -555,7 +554,6 @@ func NewClient(opt *Options) *Client {
 
 	c := Client{
 		baseClient: newBaseClient(opt, newConnPool(opt)),
-		ctx:        context.Background(),
 	}
 	c.cmdable = c.Process
 

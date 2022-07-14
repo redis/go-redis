@@ -708,7 +708,6 @@ type ClusterClient struct {
 	*clusterClient
 	cmdable
 	hooks
-	ctx context.Context
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -721,7 +720,6 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 			opt:   opt,
 			nodes: newClusterNodes(opt),
 		},
-		ctx: context.Background(),
 	}
 	c.state = newClusterStateHolder(c.loadState)
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
@@ -765,8 +763,8 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
-	cmdInfo := c.cmdInfo(cmd.Name())
-	slot := c.cmdSlot(cmd)
+	cmdInfo := c.cmdInfo(ctx, cmd.Name())
+	slot := c.cmdSlot(ctx, cmd)
 
 	var node *clusterNode
 	var ask bool
@@ -1141,9 +1139,9 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 		return err
 	}
 
-	if c.opt.ReadOnly && c.cmdsAreReadOnly(cmds) {
+	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
 		for _, cmd := range cmds {
-			slot := c.cmdSlot(cmd)
+			slot := c.cmdSlot(ctx, cmd)
 			node, err := c.slotReadOnlyNode(state, slot)
 			if err != nil {
 				return err
@@ -1154,7 +1152,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	}
 
 	for _, cmd := range cmds {
-		slot := c.cmdSlot(cmd)
+		slot := c.cmdSlot(ctx, cmd)
 		node, err := state.slotMasterNode(slot)
 		if err != nil {
 			return err
@@ -1164,9 +1162,9 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	return nil
 }
 
-func (c *ClusterClient) cmdsAreReadOnly(cmds []Cmder) bool {
+func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool {
 	for _, cmd := range cmds {
-		cmdInfo := c.cmdInfo(cmd.Name())
+		cmdInfo := c.cmdInfo(ctx, cmd.Name())
 		if cmdInfo == nil || !cmdInfo.ReadOnly {
 			return false
 		}
@@ -1278,7 +1276,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 		return err
 	}
 
-	cmdsMap := c.mapCmdsBySlot(cmds)
+	cmdsMap := c.mapCmdsBySlot(ctx, cmds)
 	for slot, cmds := range cmdsMap {
 		node, err := state.slotMasterNode(slot)
 		if err != nil {
@@ -1329,10 +1327,10 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 	return cmdsFirstErr(cmds)
 }
 
-func (c *ClusterClient) mapCmdsBySlot(cmds []Cmder) map[int][]Cmder {
+func (c *ClusterClient) mapCmdsBySlot(ctx context.Context, cmds []Cmder) map[int][]Cmder {
 	cmdsMap := make(map[int][]Cmder)
 	for _, cmd := range cmds {
-		slot := c.cmdSlot(cmd)
+		slot := c.cmdSlot(ctx, cmd)
 		cmdsMap[slot] = append(cmdsMap[slot], cmd)
 	}
 	return cmdsMap
@@ -1602,8 +1600,8 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 	return nil, firstErr
 }
 
-func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
-	cmdsInfo, err := c.cmdsInfoCache.Get(c.ctx)
+func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
+	cmdsInfo, err := c.cmdsInfoCache.Get(ctx)
 	if err != nil {
 		internal.Logger.Printf(context.TODO(), "getting command info: %s", err)
 		return nil
@@ -1616,13 +1614,13 @@ func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
 	return info
 }
 
-func (c *ClusterClient) cmdSlot(cmd Cmder) int {
+func (c *ClusterClient) cmdSlot(ctx context.Context, cmd Cmder) int {
 	args := cmd.Args()
 	if args[0] == "cluster" && args[1] == "getkeysinslot" {
 		return args[2].(int)
 	}
 
-	cmdInfo := c.cmdInfo(cmd.Name())
+	cmdInfo := c.cmdInfo(ctx, cmd.Name())
 	return cmdSlot(cmd, cmdFirstKeyPos(cmd, cmdInfo))
 }
 

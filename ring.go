@@ -410,7 +410,6 @@ type Ring struct {
 	*ring
 	cmdable
 	hooks
-	ctx context.Context
 }
 
 func NewRing(opt *RingOptions) *Ring {
@@ -421,7 +420,6 @@ func NewRing(opt *RingOptions) *Ring {
 			opt:    opt,
 			shards: newRingShards(opt),
 		},
-		ctx: context.Background(),
 	}
 
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
