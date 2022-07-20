@@ -344,10 +344,12 @@ type Cmdable interface {
 	ScriptKill(ctx context.Context) *StatusCmd
 	ScriptLoad(ctx context.Context, script string) *StringCmd
 
+	PSubscribe(ctx context.Context, channels ...string) *PubSub
 	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
 	PubSubChannels(ctx context.Context, pattern string) *StringSliceCmd
 	PubSubNumSub(ctx context.Context, channels ...string) *StringIntMapCmd
 	PubSubNumPat(ctx context.Context) *IntCmd
+	Subscribe(ctx context.Context, channels ...string) *PubSub
 
 	ClusterSlots(ctx context.Context) *ClusterSlotsCmd
 	ClusterNodes(ctx context.Context) *StringCmd
