@@ -27,7 +27,8 @@ func connCheck(conn net.Conn) error {
 	}
 
 	var sysErr error
-	err = rawConn.Read(func(fd uintptr) bool {
+
+	if err := rawConn.Read(func(fd uintptr) bool {
 		var buf [1]byte
 		n, err := syscall.Read(int(fd), buf[:])
 		switch {
@@ -41,8 +42,7 @@ func connCheck(conn net.Conn) error {
 			sysErr = err
 		}
 		return true
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
 

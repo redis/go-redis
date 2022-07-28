@@ -63,15 +63,14 @@ type FailoverOptions struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
-	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
-	PoolSize           int
-	MinIdleConns       int
-	MaxConnAge         time.Duration
-	PoolTimeout        time.Duration
-	IdleTimeout        time.Duration
-	IdleCheckFrequency time.Duration
+	PoolSize        int
+	PoolTimeout     time.Duration
+	MinIdleConns    int
+	MaxIdleConns    int
+	ConnMaxIdleTime time.Duration
+	ConnMaxLifetime time.Duration
 
 	TLSConfig *tls.Config
 }
@@ -95,13 +94,13 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: opt.IdleCheckFrequency,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
+		PoolFIFO:        opt.PoolFIFO,
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
 	}
@@ -126,13 +125,13 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: opt.IdleCheckFrequency,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
+		PoolFIFO:        opt.PoolFIFO,
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
 	}
@@ -158,13 +157,13 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: opt.IdleCheckFrequency,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
+		PoolFIFO:        opt.PoolFIFO,
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
 	}
@@ -580,7 +579,7 @@ func (c *sentinelFailover) getReplicaAddrs(ctx context.Context, sentinel *Sentin
 	if err != nil {
 		internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
 			c.opt.MasterName, err)
-		return []string{}
+		return nil
 	}
 	return parseReplicaAddrs(addrs, false)
 }
