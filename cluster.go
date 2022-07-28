@@ -1210,7 +1210,7 @@ func (c *ClusterClient) pipelineReadCmds(
 			continue
 		}
 
-		if c.opt.ReadOnly && isLoadingError(err) {
+		if c.opt.ReadOnly && (isLoadingError(err) || !isRedisError(err)) {
 			node.MarkAsFailing()
 			return err
 		}
