@@ -87,25 +87,22 @@ type Options struct {
 	// Maximum number of socket connections.
 	// Default is 10 connections per every available CPU as reported by runtime.GOMAXPROCS.
 	PoolSize int
-	// Minimum number of idle connections which is useful when establishing
-	// new connection is slow.
-	MinIdleConns int
-	// Connection age at which client retires (closes) the connection.
-	// Default is to not close aged connections.
-	MaxConnAge time.Duration
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
 	// Default is ReadTimeout + 1 second.
 	PoolTimeout time.Duration
+	// Minimum number of idle connections which is useful when establishing
+	// new connection is slow.
+	MinIdleConns int
+	// Maximum number of idle connections.
+	MaxIdleConns int
 	// Amount of time after which client closes idle connections.
 	// Should be less than server's timeout.
 	// Default is 5 minutes. -1 disables idle timeout check.
-	IdleTimeout time.Duration
-	// Frequency of idle checks made by idle connections reaper.
-	// Default is 1 minute. -1 disables idle connections reaper,
-	// but idle connections are still discarded by the client
-	// if IdleTimeout is set.
-	IdleCheckFrequency time.Duration
+	ConnMaxIdleTime time.Duration
+	// Connection age at which client retires (closes) the connection.
+	// Default is to not close aged connections.
+	ConnMaxLifetime time.Duration
 
 	// Enables read only queries on slave nodes.
 	readOnly bool
@@ -161,11 +158,8 @@ func (opt *Options) init() {
 	if opt.PoolTimeout == 0 {
 		opt.PoolTimeout = opt.ReadTimeout + time.Second
 	}
-	if opt.IdleTimeout == 0 {
-		opt.IdleTimeout = 5 * time.Minute
-	}
-	if opt.IdleCheckFrequency == 0 {
-		opt.IdleCheckFrequency = time.Minute
+	if opt.ConnMaxIdleTime == 0 {
+		opt.ConnMaxIdleTime = 30 * time.Minute
 	}
 
 	if opt.MaxRetries == -1 {
@@ -297,6 +291,10 @@ type queryOptions struct {
 	err error
 }
 
+func (o *queryOptions) has(name string) bool {
+	return len(o.q[name]) > 0
+}
+
 func (o *queryOptions) string(name string) string {
 	vs := o.q[name]
 	if len(vs) == 0 {
@@ -391,11 +389,19 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.WriteTimeout = q.duration("write_timeout")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
-	o.MinIdleConns = q.int("min_idle_conns")
-	o.MaxConnAge = q.duration("max_conn_age")
 	o.PoolTimeout = q.duration("pool_timeout")
-	o.IdleTimeout = q.duration("idle_timeout")
-	o.IdleCheckFrequency = q.duration("idle_check_frequency")
+	o.MinIdleConns = q.int("min_idle_conns")
+	o.MaxIdleConns = q.int("max_idle_conns")
+	if q.has("conn_max_idle_time") {
+		o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
+	} else {
+		o.ConnMaxIdleTime = q.duration("idle_timeout")
+	}
+	if q.has("conn_max_lifetime") {
+		o.ConnMaxLifetime = q.duration("conn_max_lifetime")
+	} else {
+		o.ConnMaxLifetime = q.duration("max_conn_age")
+	}
 	if q.err != nil {
 		return nil, q.err
 	}
@@ -424,12 +430,12 @@ func newConnPool(opt *Options) *pool.ConnPool {
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return opt.Dialer(ctx, opt.Network, opt.Addr)
 		},
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: opt.IdleCheckFrequency,
+		PoolFIFO:        opt.PoolFIFO,
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
 	})
 }

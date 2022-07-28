@@ -130,10 +130,9 @@ func redisOptions() *redis.Options {
 
 		MaxRetries: -1,
 
-		PoolSize:           10,
-		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        time.Minute,
-		IdleCheckFrequency: 100 * time.Millisecond,
+		PoolSize:        10,
+		PoolTimeout:     30 * time.Second,
+		ConnMaxIdleTime: time.Minute,
 	}
 }
 
@@ -145,10 +144,9 @@ func redisClusterOptions() *redis.ClusterOptions {
 
 		MaxRedirects: 8,
 
-		PoolSize:           10,
-		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        time.Minute,
-		IdleCheckFrequency: 100 * time.Millisecond,
+		PoolSize:        10,
+		PoolTimeout:     30 * time.Second,
+		ConnMaxIdleTime: time.Minute,
 	}
 }
 
@@ -165,10 +163,9 @@ func redisRingOptions() *redis.RingOptions {
 
 		MaxRetries: -1,
 
-		PoolSize:           10,
-		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        time.Minute,
-		IdleCheckFrequency: 100 * time.Millisecond,
+		PoolSize:        10,
+		PoolTimeout:     30 * time.Second,
+		ConnMaxIdleTime: time.Minute,
 	}
 }
 

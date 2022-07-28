@@ -16,8 +16,8 @@ var _ = Describe("pool", func() {
 	BeforeEach(func() {
 		opt := redisOptions()
 		opt.MinIdleConns = 0
-		opt.MaxConnAge = 0
-		opt.IdleTimeout = time.Second
+		opt.ConnMaxLifetime = 0
+		opt.ConnMaxIdleTime = time.Second
 		client = redis.NewClient(opt)
 	})
 
@@ -108,8 +108,8 @@ var _ = Describe("pool", func() {
 		// explain: https://github.com/go-redis/redis/pull/1675
 		opt := redisOptions()
 		opt.MinIdleConns = 0
-		opt.MaxConnAge = 0
-		opt.IdleTimeout = 2 * time.Second
+		opt.ConnMaxLifetime = 0
+		opt.ConnMaxIdleTime = 10 * time.Second
 		client = redis.NewClient(opt)
 
 		for i := 0; i < 100; i++ {
@@ -126,32 +126,5 @@ var _ = Describe("pool", func() {
 		Expect(stats.Hits).To(Equal(uint32(99)))
 		Expect(stats.Misses).To(Equal(uint32(1)))
 		Expect(stats.Timeouts).To(Equal(uint32(0)))
-	})
-
-	It("removes idle connections", func() {
-		err := client.Ping(ctx).Err()
-		Expect(err).NotTo(HaveOccurred())
-
-		stats := client.PoolStats()
-		Expect(stats).To(Equal(&redis.PoolStats{
-			Hits:       0,
-			Misses:     1,
-			Timeouts:   0,
-			TotalConns: 1,
-			IdleConns:  1,
-			StaleConns: 0,
-		}))
-
-		time.Sleep(2 * time.Second)
-
-		stats = client.PoolStats()
-		Expect(stats).To(Equal(&redis.PoolStats{
-			Hits:       0,
-			Misses:     1,
-			Timeouts:   0,
-			TotalConns: 0,
-			IdleConns:  0,
-			StaleConns: 1,
-		}))
 	})
 })

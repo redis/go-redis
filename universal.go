@@ -39,12 +39,12 @@ type UniversalOptions struct {
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
-	PoolSize           int
-	MinIdleConns       int
-	MaxConnAge         time.Duration
-	PoolTimeout        time.Duration
-	IdleTimeout        time.Duration
-	IdleCheckFrequency time.Duration
+	PoolSize        int
+	PoolTimeout     time.Duration
+	MinIdleConns    int
+	MaxIdleConns    int
+	ConnMaxIdleTime time.Duration
+	ConnMaxLifetime time.Duration
 
 	TLSConfig *tls.Config
 
@@ -84,16 +84,18 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		MinRetryBackoff: o.MinRetryBackoff,
 		MaxRetryBackoff: o.MaxRetryBackoff,
 
-		DialTimeout:        o.DialTimeout,
-		ReadTimeout:        o.ReadTimeout,
-		WriteTimeout:       o.WriteTimeout,
-		PoolFIFO:           o.PoolFIFO,
-		PoolSize:           o.PoolSize,
-		MinIdleConns:       o.MinIdleConns,
-		MaxConnAge:         o.MaxConnAge,
-		PoolTimeout:        o.PoolTimeout,
-		IdleTimeout:        o.IdleTimeout,
-		IdleCheckFrequency: o.IdleCheckFrequency,
+		DialTimeout:  o.DialTimeout,
+		ReadTimeout:  o.ReadTimeout,
+		WriteTimeout: o.WriteTimeout,
+
+		PoolFIFO: o.PoolFIFO,
+
+		PoolSize:        o.PoolSize,
+		PoolTimeout:     o.PoolTimeout,
+		MinIdleConns:    o.MinIdleConns,
+		MaxIdleConns:    o.MaxIdleConns,
+		ConnMaxIdleTime: o.ConnMaxIdleTime,
+		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
 	}
@@ -126,13 +128,13 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		ReadTimeout:  o.ReadTimeout,
 		WriteTimeout: o.WriteTimeout,
 
-		PoolFIFO:           o.PoolFIFO,
-		PoolSize:           o.PoolSize,
-		MinIdleConns:       o.MinIdleConns,
-		MaxConnAge:         o.MaxConnAge,
-		PoolTimeout:        o.PoolTimeout,
-		IdleTimeout:        o.IdleTimeout,
-		IdleCheckFrequency: o.IdleCheckFrequency,
+		PoolFIFO:        o.PoolFIFO,
+		PoolSize:        o.PoolSize,
+		PoolTimeout:     o.PoolTimeout,
+		MinIdleConns:    o.MinIdleConns,
+		MaxIdleConns:    o.MaxIdleConns,
+		ConnMaxIdleTime: o.ConnMaxIdleTime,
+		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
 	}
@@ -162,13 +164,13 @@ func (o *UniversalOptions) Simple() *Options {
 		ReadTimeout:  o.ReadTimeout,
 		WriteTimeout: o.WriteTimeout,
 
-		PoolFIFO:           o.PoolFIFO,
-		PoolSize:           o.PoolSize,
-		MinIdleConns:       o.MinIdleConns,
-		MaxConnAge:         o.MaxConnAge,
-		PoolTimeout:        o.PoolTimeout,
-		IdleTimeout:        o.IdleTimeout,
-		IdleCheckFrequency: o.IdleCheckFrequency,
+		PoolFIFO:        o.PoolFIFO,
+		PoolSize:        o.PoolSize,
+		PoolTimeout:     o.PoolTimeout,
+		MinIdleConns:    o.MinIdleConns,
+		MaxIdleConns:    o.MaxIdleConns,
+		ConnMaxIdleTime: o.ConnMaxIdleTime,
+		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
 	}

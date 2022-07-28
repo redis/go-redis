@@ -72,12 +72,12 @@ type ClusterOptions struct {
 	PoolFIFO bool
 
 	// PoolSize applies per cluster node and not for the whole cluster.
-	PoolSize           int
-	MinIdleConns       int
-	MaxConnAge         time.Duration
-	PoolTimeout        time.Duration
-	IdleTimeout        time.Duration
-	IdleCheckFrequency time.Duration
+	PoolSize        int
+	PoolTimeout     time.Duration
+	MinIdleConns    int
+	MaxIdleConns    int
+	ConnMaxIdleTime time.Duration
+	ConnMaxLifetime time.Duration
 
 	TLSConfig *tls.Config
 }
@@ -132,8 +132,6 @@ func (opt *ClusterOptions) init() {
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
-	const disableIdleCheck = -1
-
 	return &Options{
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
@@ -149,13 +147,13 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: disableIdleCheck,
+		PoolFIFO:        opt.PoolFIFO,
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
@@ -725,10 +723,6 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
 
-	if opt.IdleCheckFrequency > 0 {
-		go c.reaper(opt.IdleCheckFrequency)
-	}
-
 	return c
 }
 
@@ -1047,26 +1041,6 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 	c.nodes.mu.Unlock()
 
 	return nil, firstErr
-}
-
-// reaper closes idle connections to the cluster.
-func (c *ClusterClient) reaper(idleCheckFrequency time.Duration) {
-	ticker := time.NewTicker(idleCheckFrequency)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		nodes, err := c.nodes.All()
-		if err != nil {
-			break
-		}
-
-		for _, node := range nodes {
-			_, err := node.Client.connPool.(*pool.ConnPool).ReapStaleConns()
-			if err != nil {
-				internal.Logger.Printf(context.TODO(), "ReapStaleConns failed: %s", err)
-			}
-		}
-	}
 }
 
 func (c *ClusterClient) Pipeline() Pipeliner {
