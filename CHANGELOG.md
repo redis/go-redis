@@ -1,3 +1,21 @@
+# [9.0.0-beta.2](https://github.com/go-redis/redis/compare/v9.0.0-beta.1...v9.0.0-beta.2) (2022-07-28)
+
+
+### Bug Fixes
+
+* [#2114](https://github.com/go-redis/redis/issues/2114) for redis-server not support Hello ([b6d2a92](https://github.com/go-redis/redis/commit/b6d2a925297e3e516eb5c76c114c1c9fcd5b68c5))
+* additional node failures in clustered pipelined reads ([03376a5](https://github.com/go-redis/redis/commit/03376a5d9c7dfd7197b14ce13b24a0431a07a663))
+* disregard failed pings in updateLatency() for cluster nodes ([64f972f](https://github.com/go-redis/redis/commit/64f972fbeae401e52a2c066a0e1c922af617e15c))
+* don't panic when test cannot start ([9e16c79](https://github.com/go-redis/redis/commit/9e16c79951e7769621b7320f1ecdf04baf539b82))
+* handle panic in ringShards Hash function when Ring got closed ([a80b84f](https://github.com/go-redis/redis/commit/a80b84f01f9fc0d3e6f08445ba21f7e07880775e)), closes [#2126](https://github.com/go-redis/redis/issues/2126)
+* ignore Nil error when reading EntriesRead ([89d6dfe](https://github.com/go-redis/redis/commit/89d6dfe09a88321d445858c1c5b24d2757b95a3e))
+* log errors from cmdsInfoCache ([fa4d1ea](https://github.com/go-redis/redis/commit/fa4d1ea8398cd729ad5cbaaff88e4b8805393945))
+* provide a signal channel to end heartbeat goroutine ([f032c12](https://github.com/go-redis/redis/commit/f032c126db3e2c1a239ce1790b0ab81994df75cf))
+* remove conn reaper from the pool and uptrace option names ([f6a8adc](https://github.com/go-redis/redis/commit/f6a8adc50cdaec30527f50d06468f9176ee674fe))
+* replace heartbeat signal channel with context.WithCancel ([20d0ca2](https://github.com/go-redis/redis/commit/20d0ca235efff48ad48cc05b98790b825d4ba979))
+
+
+
 # [9.0.0-beta.1](https://github.com/go-redis/redis/compare/v8.11.5...v9.0.0-beta.1) (2022-06-04)
 
 ### Bug Fixes
