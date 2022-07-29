@@ -2822,19 +2822,14 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 			}
 
 			if nn >= 4 {
-				networkingMetadata := make(map[string]string)
-
 				metadataLength, err := rd.ReadMapLen()
 				if err != nil {
 					return err
 				}
 
-				if metadataLength%2 != 0 {
-					return fmt.Errorf(
-						"got %d elements in metadata, expected an even number", metadataLength)
-				}
+				networkingMetadata := make(map[string]string, metadataLength)
 
-				for i := 0; i < metadataLength; i += 2 {
+				for i := 0; i < metadataLength; i++ {
 					key, err := rd.ReadString()
 					if err != nil {
 						return err
