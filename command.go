@@ -104,7 +104,7 @@ func cmdString(cmd Cmder, val interface{}) string {
 		b = internal.AppendArg(b, val)
 	}
 
-	return internal.String(b)
+	return util.BytesToString(b)
 }
 
 //------------------------------------------------------------------------------

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/go-redis/redis/v9/internal/util"
 )
 
 func AppendArg(b []byte, v interface{}) []byte {
@@ -11,7 +13,7 @@ func AppendArg(b []byte, v interface{}) []byte {
 	case nil:
 		return append(b, "<nil>"...)
 	case string:
-		return appendUTF8String(b, Bytes(v))
+		return appendUTF8String(b, util.StringToBytes(v))
 	case []byte:
 		return appendUTF8String(b, v)
 	case int:
