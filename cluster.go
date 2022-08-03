@@ -1528,6 +1528,16 @@ func (c *ClusterClient) PSubscribe(ctx context.Context, channels ...string) *Pub
 	return pubsub
 }
 
+// SSubscribe Subscribes the client to the specified shard channels.
+func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *PubSub {
+	pubsub := c.pubSub()
+	if len(channels) > 0 {
+		_ = pubsub.SSubscribe(ctx, channels...)
+	}
+	return pubsub
+}
+
+
 func (c *ClusterClient) retryBackoff(attempt int) time.Duration {
 	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
 }

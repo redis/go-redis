@@ -102,6 +102,35 @@ var _ = Describe("PubSub", func() {
 		Expect(len(channels)).To(BeNumerically(">=", 2))
 	})
 
+	It("should sharded pub/sub channels", func() {
+		channels, err := client.PubSubShardChannels(ctx, "mychannel*").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(channels).To(BeEmpty())
+
+		pubsub := client.SSubscribe(ctx, "mychannel", "mychannel2")
+		defer pubsub.Close()
+
+		channels, err = client.PubSubShardChannels(ctx, "mychannel*").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(channels).To(ConsistOf([]string{"mychannel", "mychannel2"}))
+
+		channels, err = client.PubSubShardChannels(ctx, "").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(channels).To(BeEmpty())
+
+		channels, err = client.PubSubShardChannels(ctx, "*").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(channels)).To(BeNumerically(">=", 2))
+
+		nums, err := client.PubSubShardNumSub(ctx, "mychannel", "mychannel2", "mychannel3").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(nums).To(Equal(map[string]int64{
+			"mychannel":  1,
+			"mychannel2": 1,
+			"mychannel3": 0,
+		}))
+	})
+
 	It("should return the numbers of subscribers", func() {
 		pubsub := client.Subscribe(ctx, "mychannel", "mychannel2")
 		defer pubsub.Close()
@@ -196,6 +225,82 @@ var _ = Describe("PubSub", func() {
 			Expect(err).NotTo(HaveOccurred())
 			subscr := msgi.(*redis.Subscription)
 			Expect(subscr.Kind).To(Equal("unsubscribe"))
+			Expect(subscr.Channel).To(Equal("mychannel2"))
+			Expect(subscr.Count).To(Equal(0))
+		}
+
+		stats := client.PoolStats()
+		Expect(stats.Misses).To(Equal(uint32(1)))
+	})
+
+	It("should sharded pub/sub", func() {
+		pubsub := client.SSubscribe(ctx, "mychannel", "mychannel2")
+		defer pubsub.Close()
+
+		{
+			msgi, err := pubsub.ReceiveTimeout(ctx, time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			subscr := msgi.(*redis.Subscription)
+			Expect(subscr.Kind).To(Equal("ssubscribe"))
+			Expect(subscr.Channel).To(Equal("mychannel"))
+			Expect(subscr.Count).To(Equal(1))
+		}
+
+		{
+			msgi, err := pubsub.ReceiveTimeout(ctx, time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			subscr := msgi.(*redis.Subscription)
+			Expect(subscr.Kind).To(Equal("ssubscribe"))
+			Expect(subscr.Channel).To(Equal("mychannel2"))
+			Expect(subscr.Count).To(Equal(2))
+		}
+
+		{
+			msgi, err := pubsub.ReceiveTimeout(ctx, time.Second)
+			Expect(err.(net.Error).Timeout()).To(Equal(true))
+			Expect(msgi).NotTo(HaveOccurred())
+		}
+
+		n, err := client.SPublish(ctx, "mychannel", "hello").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(1)))
+
+		n, err = client.SPublish(ctx, "mychannel2", "hello2").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(1)))
+
+		Expect(pubsub.SUnsubscribe(ctx, "mychannel", "mychannel2")).NotTo(HaveOccurred())
+
+		{
+			msgi, err := pubsub.ReceiveTimeout(ctx, time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			msg := msgi.(*redis.Message)
+			Expect(msg.Channel).To(Equal("mychannel"))
+			Expect(msg.Payload).To(Equal("hello"))
+		}
+
+		{
+			msgi, err := pubsub.ReceiveTimeout(ctx, time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			msg := msgi.(*redis.Message)
+			Expect(msg.Channel).To(Equal("mychannel2"))
+			Expect(msg.Payload).To(Equal("hello2"))
+		}
+
+		{
+			msgi, err := pubsub.ReceiveTimeout(ctx, time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			subscr := msgi.(*redis.Subscription)
+			Expect(subscr.Kind).To(Equal("sunsubscribe"))
+			Expect(subscr.Channel).To(Equal("mychannel"))
+			Expect(subscr.Count).To(Equal(1))
+		}
+
+		{
+			msgi, err := pubsub.ReceiveTimeout(ctx, time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			subscr := msgi.(*redis.Subscription)
+			Expect(subscr.Kind).To(Equal("sunsubscribe"))
 			Expect(subscr.Channel).To(Equal("mychannel2"))
 			Expect(subscr.Count).To(Equal(0))
 		}

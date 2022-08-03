@@ -345,9 +345,12 @@ type Cmdable interface {
 	ScriptLoad(ctx context.Context, script string) *StringCmd
 
 	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
+	SPublish(ctx context.Context, channel string, message interface{}) *IntCmd
 	PubSubChannels(ctx context.Context, pattern string) *StringSliceCmd
 	PubSubNumSub(ctx context.Context, channels ...string) *StringIntMapCmd
 	PubSubNumPat(ctx context.Context) *IntCmd
+	PubSubShardChannels(ctx context.Context, pattern string) *StringSliceCmd
+	PubSubShardNumSub(ctx context.Context, channels ...string) *StringIntMapCmd
 
 	ClusterSlots(ctx context.Context) *ClusterSlotsCmd
 	ClusterNodes(ctx context.Context) *StringCmd
@@ -3078,6 +3081,12 @@ func (c cmdable) Publish(ctx context.Context, channel string, message interface{
 	return cmd
 }
 
+func (c cmdable) SPublish(ctx context.Context, channel string, message interface{}) *IntCmd {
+	cmd := NewIntCmd(ctx, "spublish", channel, message)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) PubSubChannels(ctx context.Context, pattern string) *StringSliceCmd {
 	args := []interface{}{"pubsub", "channels"}
 	if pattern != "*" {
@@ -3092,6 +3101,28 @@ func (c cmdable) PubSubNumSub(ctx context.Context, channels ...string) *StringIn
 	args := make([]interface{}, 2+len(channels))
 	args[0] = "pubsub"
 	args[1] = "numsub"
+	for i, channel := range channels {
+		args[2+i] = channel
+	}
+	cmd := NewStringIntMapCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) PubSubShardChannels(ctx context.Context, pattern string) *StringSliceCmd {
+	args := []interface{}{"pubsub", "shardchannels"}
+	if pattern != "*" {
+		args = append(args, pattern)
+	}
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) PubSubShardNumSub(ctx context.Context, channels ...string) *StringIntMapCmd {
+	args := make([]interface{}, 2+len(channels))
+	args[0] = "pubsub"
+	args[1] = "shardnumsub"
 	for i, channel := range channels {
 		args[2+i] = channel
 	}
