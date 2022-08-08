@@ -1093,6 +1093,10 @@ func NewKeyValueSliceCmd(ctx context.Context, args ...interface{}) *KeyValueSlic
 	}
 }
 
+func (cmd *KeyValueSliceCmd) SetVal(val []KeyValue) {
+	cmd.val = val
+}
+
 func (cmd *KeyValueSliceCmd) Val() []KeyValue {
 	return cmd.val
 }
@@ -3117,6 +3121,10 @@ func NewGeoSearchLocationCmd(
 	}
 }
 
+func (cmd *GeoSearchLocationCmd) SetVal(val []GeoLocation) {
+	cmd.val = val
+}
+
 func (cmd *GeoSearchLocationCmd) Val() []GeoLocation {
 	return cmd.val
 }
@@ -3573,6 +3581,10 @@ func NewMapStringInterfaceCmd(ctx context.Context, args ...interface{}) *MapStri
 	}
 }
 
+func (cmd *MapStringInterfaceCmd) SetVal(val map[string]interface{}) {
+	cmd.val = val
+}
+
 func (cmd *MapStringInterfaceCmd) Val() map[string]interface{} {
 	return cmd.val
 }
@@ -3631,6 +3643,10 @@ func NewMapStringStringSliceCmd(ctx context.Context, args ...interface{}) *MapSt
 			args: args,
 		},
 	}
+}
+
+func (cmd *MapStringStringSliceCmd) SetVal(val []map[string]string) {
+	cmd.val = val
 }
 
 func (cmd *MapStringStringSliceCmd) Val() []map[string]string {
