@@ -1292,16 +1292,16 @@ func (cmd *MapStringStringCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
-type StringIntMapCmd struct {
+type MapStringIntCmd struct {
 	baseCmd
 
 	val map[string]int64
 }
 
-var _ Cmder = (*StringIntMapCmd)(nil)
+var _ Cmder = (*MapStringIntCmd)(nil)
 
-func NewStringIntMapCmd(ctx context.Context, args ...interface{}) *StringIntMapCmd {
-	return &StringIntMapCmd{
+func NewMapStringIntCmd(ctx context.Context, args ...interface{}) *MapStringIntCmd {
+	return &MapStringIntCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -1309,23 +1309,23 @@ func NewStringIntMapCmd(ctx context.Context, args ...interface{}) *StringIntMapC
 	}
 }
 
-func (cmd *StringIntMapCmd) SetVal(val map[string]int64) {
+func (cmd *MapStringIntCmd) SetVal(val map[string]int64) {
 	cmd.val = val
 }
 
-func (cmd *StringIntMapCmd) Val() map[string]int64 {
+func (cmd *MapStringIntCmd) Val() map[string]int64 {
 	return cmd.val
 }
 
-func (cmd *StringIntMapCmd) Result() (map[string]int64, error) {
+func (cmd *MapStringIntCmd) Result() (map[string]int64, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *StringIntMapCmd) String() string {
+func (cmd *MapStringIntCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringIntMapCmd) readReply(rd *proto.Reader) error {
+func (cmd *MapStringIntCmd) readReply(rd *proto.Reader) error {
 	n, err := rd.ReadMapLen()
 	if err != nil {
 		return err
