@@ -6,6 +6,8 @@ test: testdeps
 	go test ./... -run=NONE -bench=. -benchmem
 	env GOOS=linux GOARCH=386 go test ./...
 	go vet
+	cd internal/customvet && go build .
+	go vet -vettool ./internal/customvet/customvet
 
 testdeps: testdata/redis/src/redis-server
 
