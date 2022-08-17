@@ -83,16 +83,16 @@ func NewBoolSliceResult(val []bool, err error) *BoolSliceCmd {
 }
 
 // NewStringStringMapResult returns a StringStringMapCmd initialised with val and err for testing.
-func NewStringStringMapResult(val map[string]string, err error) *MapStringStringCmd {
+func NewMapStringStringResult(val map[string]string, err error) *MapStringStringCmd {
 	var cmd MapStringStringCmd
 	cmd.val = val
 	cmd.SetErr(err)
 	return &cmd
 }
 
-// NewStringIntMapCmdResult returns a StringIntMapCmd initialised with val and err for testing.
-func NewStringIntMapCmdResult(val map[string]int64, err error) *StringIntMapCmd {
-	var cmd StringIntMapCmd
+// NewMapStringIntCmdResult returns a MapStringIntCmd initialised with val and err for testing.
+func NewMapStringIntCmdResult(val map[string]int64, err error) *MapStringIntCmd {
+	var cmd MapStringIntCmd
 	cmd.val = val
 	cmd.SetErr(err)
 	return &cmd
