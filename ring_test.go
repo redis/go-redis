@@ -118,8 +118,6 @@ var _ = Describe("Redis Ring", func() {
 			Expect(ring.Len(), 2)
 
 			wantShard := ring.ShardByName("ringShardOne")
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			ring.SetAddrs(map[string]string{
 				"ringShardOne": ":" + ringShard1Port,
 			})
@@ -127,8 +125,6 @@ var _ = Describe("Redis Ring", func() {
 			gotShard := ring.ShardByName("ringShardOne")
 			Expect(gotShard).To(Equal(wantShard))
 
-			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			ring.SetAddrs(map[string]string{
 				"ringShardOne": ":" + ringShard1Port,
 				"ringShardTwo": ":" + ringShard2Port,
@@ -145,6 +141,7 @@ var _ = Describe("Redis Ring", func() {
 			var err error
 			ringShard3, err = startRedis(ringShard3Port)
 			Expect(err).NotTo(HaveOccurred())
+			defer ringShard3.Close()
 
 			shardName1 := "ringShardOne"
 			shardAddr1 := ":" + ringShard1Port
@@ -154,8 +151,7 @@ var _ = Describe("Redis Ring", func() {
 			wantShard2 := ring.ShardByName(shardName2)
 			shardName3 := "ringShardThree"
 			shardAddr3 := ":" + ringShard3Port
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+
 			ring.SetAddrs(map[string]string{
 				shardName1: shardAddr1,
 				shardName2: shardAddr2,
@@ -169,8 +165,6 @@ var _ = Describe("Redis Ring", func() {
 			Expect(gotShard2).To(Equal(wantShard2))
 			Expect(gotShard3).ToNot(BeNil())
 
-			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			ring.SetAddrs(map[string]string{
 				shardName1: shardAddr1,
 				shardName2: shardAddr2,
