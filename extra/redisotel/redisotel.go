@@ -143,7 +143,7 @@ func WithAttributes(attrs ...attribute.KeyValue) Option {
 	})
 }
 
-// WithIgnoreRawCmd tells the tracer not to log raw redis commands.
+// WithIgnoreRawCmd tells the tracing hook not to log raw redis commands.
 func WithIgnoreRawCmd() Option {
 	return optionFunc(func(cfg *config) {
 		cfg.logRawCmd = false
