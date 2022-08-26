@@ -68,3 +68,30 @@ func TestNewWithAttributes(t *testing.T) {
 		t.Fatalf("expected attrs[2] to be semconv.DBStatementKey.String(\"ping\"), got: %v", attrs[2])
 	}
 }
+
+func TestNewWithIgnoreRawCmd(t *testing.T) {
+	provider := sdktrace.NewTracerProvider()
+	hook := redisotel.NewTracingHook(
+		redisotel.WithTracerProvider(provider),
+		redisotel.WithIgnoreRawCmd(),
+	)
+	ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+	cmd := redis.NewCmd(ctx, "ping")
+	defer span.End()
+
+	ctx, err := hook.BeforeProcess(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = hook.AfterProcess(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attrs := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan).Attributes()
+	for _, attr := range attrs {
+		if attr.Key == semconv.DBStatementKey {
+			t.Fatal("Attribute with db statement should not exist")
+		}
+	}
+}
