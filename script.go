@@ -58,7 +58,7 @@ func (s *Script) EvalSha(ctx context.Context, c Scripter, keys []string, args ..
 // it is retried using EVAL.
 func (s *Script) Run(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
 	r := s.EvalSha(ctx, c, keys, args...)
-	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
+	if err := r.Err(); err != nil && strings.Contains(err.Error(), "NOSCRIPT") {
 		return s.Eval(ctx, c, keys, args...)
 	}
 	return r
