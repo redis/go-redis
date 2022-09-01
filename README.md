@@ -38,7 +38,7 @@ for your applications thanks to its per request pricing and low latency data.
 - [Redis Cache](https://github.com/go-redis/cache)
 - [Rate limiting](https://github.com/go-redis/redis_rate)
 
-This client also works with [kvrocks](https://github.com/KvrocksLabs/kvrocks), a distributed key
+This client also works with [Kvrocks](https://github.com/apache/incubator-kvrocks), a distributed key
 value NoSQL database that uses RocksDB as storage engine and is compatible with Redis protocol.
 
 ## Features
