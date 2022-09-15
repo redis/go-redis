@@ -6,22 +6,9 @@
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
 > go-redis is brought to you by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
-> Uptrace is an open source and blazingly fast
-> [distributed tracing tool](https://get.uptrace.dev/compare/distributed-tracing-tools.html) powered
-> by OpenTelemetry and ClickHouse. Give it a star as well!
-
-## Sponsors
-
-### Upstash: Serverless Database for Redis
-
-<a href="https://upstash.com/?utm_source=goredis"><img align="right" width="320" src="https://raw.githubusercontent.com/upstash/sponsorship/master/redis.png" alt="Upstash"></a>
-
-Upstash is a Serverless Database with Redis/REST API and durable storage. It is the perfect database
-for your applications thanks to its per request pricing and low latency data.
-
-[Start for free in 30 seconds!](https://upstash.com/?utm_source=goredis)
-
-<br clear="both"/>
+> Uptrace is an open-source APM tool that supports distributed tracing, metrics, and logs. You can
+> use it to monitor applications and set up automatic alerts to receive notifications via email,
+> Slack, Telegram, and others. Star it as well!
 
 ## Resources
 
@@ -38,8 +25,8 @@ for your applications thanks to its per request pricing and low latency data.
 - [Redis Cache](https://github.com/go-redis/cache)
 - [Rate limiting](https://github.com/go-redis/redis_rate)
 
-This client also works with [Kvrocks](https://github.com/apache/incubator-kvrocks), a distributed key
-value NoSQL database that uses RocksDB as storage engine and is compatible with Redis protocol.
+This client also works with [Kvrocks](https://github.com/apache/incubator-kvrocks), a distributed
+key value NoSQL database that uses RocksDB as storage engine and is compatible with Redis protocol.
 
 ## Features
 
