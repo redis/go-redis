@@ -305,7 +305,7 @@ func ExampleClient_ScanType_Type_Hash() {
 		}
 	}
 	fmt.Printf("%d keys ready for use\n", len(allKeys))
-	// Output: 33 keys ready for use
+	// Output: 33 keys ready for use\n
 }
 
 // ExampleMapStringStringCmd_Scan shows how to scan the results of a map fetch
