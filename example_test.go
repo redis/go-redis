@@ -278,6 +278,36 @@ func ExampleClient_ScanType() {
 	// Output: found 33 keys
 }
 
+// ExampleClient_ScanType_Type_Hash uses the KeyType "hash"
+// useful to see how you could get loop through lots of "keys" in Redis and get a []string of all the keys
+func ExampleClient_ScanType_Type_Hash() {
+	rdb.FlushDB(ctx)
+	for i := 0; i < 33; i++ {
+		err := rdb.HSet(context.TODO(), fmt.Sprintf("key%d", i), "value", "foo").Err()
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	var allKeys []string
+	var cursor uint64
+	var err error
+
+	for {
+		var keysFromScan []string
+		keysFromScan, cursor, err = rdb.ScanType(context.TODO(), cursor, "key*", 10, "hash").Result()
+		if err != nil {
+			panic(err)
+		}
+		allKeys = append(allKeys, keysFromScan...)
+		if cursor == 0 {
+			break
+		}
+	}
+	fmt.Printf("%d keys ready for use\n", len(allKeys))
+	// Output: 33 keys ready for use
+}
+
 // ExampleMapStringStringCmd_Scan shows how to scan the results of a map fetch
 // into a struct.
 func ExampleMapStringStringCmd_Scan() {
