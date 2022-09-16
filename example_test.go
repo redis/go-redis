@@ -279,7 +279,7 @@ func ExampleClient_ScanType() {
 }
 
 // ExampleClient_ScanType_Type_Hash uses the KeyType "hash"
-// useful to see how you could get loop through lots of "keys" in Redis and get a []string of all the keys
+// Uses ScanType toZZ loop through lots of "keys" in Redis, 10 at a time, and add each key to a []string
 func ExampleClient_ScanType_Type_Hash() {
 	rdb.FlushDB(ctx)
 	for i := 0; i < 33; i++ {
