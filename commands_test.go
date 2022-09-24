@@ -5413,6 +5413,29 @@ var _ = Describe("Commands", func() {
 		})
 	})
 
+	Describe("EvalRO", func() {
+		It("returns keys and values", func() {
+			vals, err := client.EvalRO(
+				ctx,
+				"return {KEYS[1],ARGV[1]}",
+				[]string{"key"},
+				"hello",
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]interface{}{"key", "hello"}))
+		})
+
+		It("returns all values after an error", func() {
+			vals, err := client.EvalRO(
+				ctx,
+				`return {12, {err="error"}, "abc"}`,
+				nil,
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
+		})
+	})
+
 	Describe("SlowLogGet", func() {
 		It("returns slow query result", func() {
 			const key = "slowlog-log-slower-than"

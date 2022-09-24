@@ -339,6 +339,8 @@ type Cmdable interface {
 
 	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd
 	EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd
+	EvalRO(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd
+	EvalShaRO(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd
 	ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd
 	ScriptFlush(ctx context.Context) *StatusCmd
 	ScriptKill(ctx context.Context) *StatusCmd
@@ -3010,24 +3012,25 @@ func (c cmdable) MemoryUsage(ctx context.Context, key string, samples ...int) *I
 //------------------------------------------------------------------------------
 
 func (c cmdable) Eval(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd {
-	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
-	cmdArgs[0] = "eval"
-	cmdArgs[1] = script
-	cmdArgs[2] = len(keys)
-	for i, key := range keys {
-		cmdArgs[3+i] = key
-	}
-	cmdArgs = appendArgs(cmdArgs, args)
-	cmd := NewCmd(ctx, cmdArgs...)
-	cmd.SetFirstKeyPos(3)
-	_ = c(ctx, cmd)
-	return cmd
+	return c.eval(ctx, "eval", script, keys, args...)
+}
+
+func (c cmdable) EvalRO(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd {
+	return c.eval(ctx, "eval_ro", script, keys, args...)
 }
 
 func (c cmdable) EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd {
+	return c.eval(ctx, "evalsha", sha1, keys, args...)
+}
+
+func (c cmdable) EvalShaRO(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd {
+	return c.eval(ctx, "evalsha_ro", sha1, keys, args...)
+}
+
+func (c cmdable) eval(ctx context.Context, name, payload string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
-	cmdArgs[0] = "evalsha"
-	cmdArgs[1] = sha1
+	cmdArgs[0] = name
+	cmdArgs[1] = payload
 	cmdArgs[2] = len(keys)
 	for i, key := range keys {
 		cmdArgs[3+i] = key

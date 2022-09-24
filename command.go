@@ -65,7 +65,7 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 	}
 
 	switch cmd.Name() {
-	case "eval", "evalsha":
+	case "eval", "evalsha", "eval_ro", "evalsha_ro":
 		if cmd.stringArg(2) != "0" {
 			return 3
 		}
