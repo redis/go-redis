@@ -93,3 +93,11 @@ func GetSlavesAddrByName(ctx context.Context, c *SentinelClient, name string) []
 	}
 	return parseReplicaAddrs(addrs, false)
 }
+
+func (c *Ring) ShardByName(name string) *ringShard {
+	return c.sharding.ShardByName(name)
+}
+
+func (c *ringSharding) ShardByName(name string) *ringShard {
+	return c.shards.m[name]
+}

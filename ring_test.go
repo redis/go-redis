@@ -113,6 +113,71 @@ var _ = Describe("Redis Ring", func() {
 		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=100"))
 	})
 
+	Describe("[new] dynamic setting ring shards", func() {
+		It("downscale shard and check reuse shard, upscale shard and check reuse", func() {
+			Expect(ring.Len(), 2)
+
+			wantShard := ring.ShardByName("ringShardOne")
+			ring.SetAddrs(map[string]string{
+				"ringShardOne": ":" + ringShard1Port,
+			})
+			Expect(ring.Len(), 1)
+			gotShard := ring.ShardByName("ringShardOne")
+			Expect(gotShard).To(Equal(wantShard))
+
+			ring.SetAddrs(map[string]string{
+				"ringShardOne": ":" + ringShard1Port,
+				"ringShardTwo": ":" + ringShard2Port,
+			})
+			Expect(ring.Len(), 2)
+			gotShard = ring.ShardByName("ringShardOne")
+			Expect(gotShard).To(Equal(wantShard))
+		})
+
+		It("uses 3 shards after setting it to 3 shards", func() {
+			Expect(ring.Len(), 2)
+
+			// Start ringShard3.
+			var err error
+			ringShard3, err = startRedis(ringShard3Port)
+			Expect(err).NotTo(HaveOccurred())
+			defer ringShard3.Close()
+
+			shardName1 := "ringShardOne"
+			shardAddr1 := ":" + ringShard1Port
+			wantShard1 := ring.ShardByName(shardName1)
+			shardName2 := "ringShardTwo"
+			shardAddr2 := ":" + ringShard2Port
+			wantShard2 := ring.ShardByName(shardName2)
+			shardName3 := "ringShardThree"
+			shardAddr3 := ":" + ringShard3Port
+
+			ring.SetAddrs(map[string]string{
+				shardName1: shardAddr1,
+				shardName2: shardAddr2,
+				shardName3: shardAddr3,
+			})
+			Expect(ring.Len(), 3)
+			gotShard1 := ring.ShardByName(shardName1)
+			gotShard2 := ring.ShardByName(shardName2)
+			gotShard3 := ring.ShardByName(shardName3)
+			Expect(gotShard1).To(Equal(wantShard1))
+			Expect(gotShard2).To(Equal(wantShard2))
+			Expect(gotShard3).ToNot(BeNil())
+
+			ring.SetAddrs(map[string]string{
+				shardName1: shardAddr1,
+				shardName2: shardAddr2,
+			})
+			Expect(ring.Len(), 2)
+			gotShard1 = ring.ShardByName(shardName1)
+			gotShard2 = ring.ShardByName(shardName2)
+			gotShard3 = ring.ShardByName(shardName3)
+			Expect(gotShard1).To(Equal(wantShard1))
+			Expect(gotShard2).To(Equal(wantShard2))
+			Expect(gotShard3).To(BeNil())
+		})
+	})
 	Describe("pipeline", func() {
 		It("doesn't panic closed ring, returns error", func() {
 			pipe := ring.Pipeline()
@@ -190,7 +255,7 @@ var _ = Describe("Redis Ring", func() {
 	Describe("new client callback", func() {
 		It("can be initialized with a new client callback", func() {
 			opts := redisRingOptions()
-			opts.NewClient = func(name string, opt *redis.Options) *redis.Client {
+			opts.NewClient = func(opt *redis.Options) *redis.Client {
 				opt.Username = "username1"
 				opt.Password = "password1"
 				return redis.NewClient(opt)
