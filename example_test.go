@@ -278,9 +278,8 @@ func ExampleClient_ScanType() {
 	// Output: found 33 keys
 }
 
-// ExampleClient_ScanType_Type_Hash uses the KeyType "hash"
-// Uses ScanType toZZ loop through lots of "keys" in Redis, 10 at a time, and add each key to a []string
-func ExampleClient_ScanType_Type_Hash() {
+// ExampleClient_ScanType_hashType uses the keyType "hash".
+func ExampleClient_ScanType_hashType() {
 	rdb.FlushDB(ctx)
 	for i := 0; i < 33; i++ {
 		err := rdb.HSet(context.TODO(), fmt.Sprintf("key%d", i), "value", "foo").Err()
