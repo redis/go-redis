@@ -72,12 +72,16 @@ type Options struct {
 	// Default is 5 seconds.
 	DialTimeout time.Duration
 	// Timeout for socket reads. If reached, commands will fail
-	// with a timeout instead of blocking. Use value -1 for no timeout and 0 for default.
-	// Default is 3 seconds.
+	// with a timeout instead of blocking. Supported values:
+	//   - `0` - default timeout (3 seconds).
+	//   - `-1` - no timeout (block indefinitely).
+	//   - `-2` - disables SetReadDeadline calls completely.
 	ReadTimeout time.Duration
 	// Timeout for socket writes. If reached, commands will fail
-	// with a timeout instead of blocking. Use value -1 for no timeout and 0 for default.
-	// Default is ReadTimeout.
+	// with a timeout instead of blocking.  Supported values:
+	//   - `0` - default timeout (3 seconds).
+	//   - `-1` - no timeout (block indefinitely).
+	//   - `-2` - disables SetWriteDeadline calls completely.
 	WriteTimeout time.Duration
 
 	// Type of connection pool.
@@ -144,19 +148,27 @@ func (opt *Options) init() {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
 	}
 	switch opt.ReadTimeout {
+	case -2:
+		opt.ReadTimeout = -1
 	case -1:
 		opt.ReadTimeout = 0
 	case 0:
 		opt.ReadTimeout = 3 * time.Second
 	}
 	switch opt.WriteTimeout {
+	case -2:
+		opt.WriteTimeout = -1
 	case -1:
 		opt.WriteTimeout = 0
 	case 0:
 		opt.WriteTimeout = opt.ReadTimeout
 	}
 	if opt.PoolTimeout == 0 {
-		opt.PoolTimeout = opt.ReadTimeout + time.Second
+		if opt.ReadTimeout > 0 {
+			opt.PoolTimeout = opt.ReadTimeout + time.Second
+		} else {
+			opt.PoolTimeout = 30 * time.Second
+		}
 	}
 	if opt.ConnMaxIdleTime == 0 {
 		opt.ConnMaxIdleTime = 30 * time.Minute
