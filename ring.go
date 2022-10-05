@@ -560,6 +560,19 @@ func (c *Ring) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 	return shard.Client.PSubscribe(ctx, channels...)
 }
 
+// SSubscribe Subscribes the client to the specified shard channels.
+func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
+	if len(channels) == 0 {
+		panic("at least one channel is required")
+	}
+	shard, err := c.shards.GetByKey(channels[0])
+	if err != nil {
+		// TODO: return PubSub with sticky error
+		panic(err)
+	}
+	return shard.Client.SSubscribe(ctx, channels...)
+}
+
 // ForEachShard concurrently calls the fn on each live shard in the ring.
 // It returns the first error if any.
 func (c *Ring) ForEachShard(

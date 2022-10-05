@@ -549,6 +549,30 @@ var _ = Describe("ClusterClient", func() {
 			}, 30*time.Second).ShouldNot(HaveOccurred())
 		})
 
+		It("supports sharded PubSub", func() {
+			pubsub := client.SSubscribe(ctx, "mychannel")
+			defer pubsub.Close()
+
+			Eventually(func() error {
+				_, err := client.SPublish(ctx, "mychannel", "hello").Result()
+				if err != nil {
+					return err
+				}
+
+				msg, err := pubsub.ReceiveTimeout(ctx, time.Second)
+				if err != nil {
+					return err
+				}
+
+				_, ok := msg.(*redis.Message)
+				if !ok {
+					return fmt.Errorf("got %T, wanted *redis.Message", msg)
+				}
+
+				return nil
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+		})
+
 		It("supports PubSub.Ping without channels", func() {
 			pubsub := client.Subscribe(ctx)
 			defer pubsub.Close()
