@@ -565,7 +565,7 @@ func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	if len(channels) == 0 {
 		panic("at least one channel is required")
 	}
-	shard, err := c.shards.GetByKey(channels[0])
+	shard, err := c.sharding.GetByKey(channels[0])
 	if err != nil {
 		// TODO: return PubSub with sticky error
 		panic(err)
