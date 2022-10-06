@@ -1,6 +1,8 @@
 # Example for go-redis OpenTelemetry instrumentation
 
-See [Monitoring performance and errors](https://redis.uptrace.dev/guide/tracing.html) for details.
+See
+[Redis Monitoring Performance and Errors](https://redis.uptrace.dev/guide/redis-performance-monitoring.html)
+for details.
 
 This example requires Redis Server on port `:6379`. You can start Redis Server using Docker:
 

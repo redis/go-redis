@@ -16,8 +16,8 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/go-redis/redis/v8"
-	"github.com/go-redis/redis/v8/internal/hashtag"
+	"github.com/go-redis/redis/v9"
+	"github.com/go-redis/redis/v9/internal/hashtag"
 )
 
 type clusterScenario struct {
@@ -86,8 +86,10 @@ func (s *clusterScenario) newClusterClient(
 
 func (s *clusterScenario) Close() error {
 	for _, port := range s.ports {
-		processes[port].Close()
-		delete(processes, port)
+		if process, ok := processes[port]; ok {
+			process.Close()
+			delete(processes, port)
+		}
 	}
 	return nil
 }
@@ -241,14 +243,6 @@ var _ = Describe("ClusterClient", func() {
 	var client *redis.ClusterClient
 
 	assertClusterClient := func() {
-		It("supports WithContext", func() {
-			ctx, cancel := context.WithCancel(ctx)
-			cancel()
-
-			err := client.Ping(ctx).Err()
-			Expect(err).To(MatchError("context canceled"))
-		})
-
 		It("should GET/SET/DEL", func() {
 			err := client.Get(ctx, "A").Err()
 			Expect(err).To(Equal(redis.Nil))
@@ -519,9 +513,7 @@ var _ = Describe("ClusterClient", func() {
 					pipe = client.Pipeline().(*redis.Pipeline)
 				})
 
-				AfterEach(func() {
-					Expect(pipe.Close()).NotTo(HaveOccurred())
-				})
+				AfterEach(func() {})
 
 				assertPipeline()
 			})
@@ -531,9 +523,7 @@ var _ = Describe("ClusterClient", func() {
 					pipe = client.TxPipeline().(*redis.Pipeline)
 				})
 
-				AfterEach(func() {
-					Expect(pipe.Close()).NotTo(HaveOccurred())
-				})
+				AfterEach(func() {})
 
 				assertPipeline()
 			})
@@ -545,6 +535,30 @@ var _ = Describe("ClusterClient", func() {
 
 			Eventually(func() error {
 				_, err := client.Publish(ctx, "mychannel", "hello").Result()
+				if err != nil {
+					return err
+				}
+
+				msg, err := pubsub.ReceiveTimeout(ctx, time.Second)
+				if err != nil {
+					return err
+				}
+
+				_, ok := msg.(*redis.Message)
+				if !ok {
+					return fmt.Errorf("got %T, wanted *redis.Message", msg)
+				}
+
+				return nil
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+		})
+
+		It("supports sharded PubSub", func() {
+			pubsub := client.SSubscribe(ctx, "mychannel")
+			defer pubsub.Close()
+
+			Eventually(func() error {
+				_, err := client.SPublish(ctx, "mychannel", "hello").Result()
 				if err != nil {
 					return err
 				}
@@ -1186,16 +1200,17 @@ var _ = Describe("ClusterClient with unavailable Cluster", func() {
 	var client *redis.ClusterClient
 
 	BeforeEach(func() {
-		for _, node := range cluster.clients {
-			err := node.ClientPause(ctx, 5*time.Second).Err()
-			Expect(err).NotTo(HaveOccurred())
-		}
-
 		opt := redisClusterOptions()
 		opt.ReadTimeout = 250 * time.Millisecond
 		opt.WriteTimeout = 250 * time.Millisecond
 		opt.MaxRedirects = 1
 		client = cluster.newClusterClientUnstable(opt)
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+		for _, node := range cluster.clients {
+			err := node.ClientPause(ctx, 5*time.Second).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
 	})
 
 	AfterEach(func() {

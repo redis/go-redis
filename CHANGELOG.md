@@ -1,149 +1,70 @@
-## [8.11.4](https://github.com/go-redis/redis/compare/v8.11.3...v8.11.4) (2021-10-04)
+# [9.0.0-beta.2](https://github.com/go-redis/redis/compare/v9.0.0-beta.1...v9.0.0-beta.2) (2022-07-28)
 
+
+### Bug Fixes
+
+* [#2114](https://github.com/go-redis/redis/issues/2114) for redis-server not support Hello ([b6d2a92](https://github.com/go-redis/redis/commit/b6d2a925297e3e516eb5c76c114c1c9fcd5b68c5))
+* additional node failures in clustered pipelined reads ([03376a5](https://github.com/go-redis/redis/commit/03376a5d9c7dfd7197b14ce13b24a0431a07a663))
+* disregard failed pings in updateLatency() for cluster nodes ([64f972f](https://github.com/go-redis/redis/commit/64f972fbeae401e52a2c066a0e1c922af617e15c))
+* don't panic when test cannot start ([9e16c79](https://github.com/go-redis/redis/commit/9e16c79951e7769621b7320f1ecdf04baf539b82))
+* handle panic in ringShards Hash function when Ring got closed ([a80b84f](https://github.com/go-redis/redis/commit/a80b84f01f9fc0d3e6f08445ba21f7e07880775e)), closes [#2126](https://github.com/go-redis/redis/issues/2126)
+* ignore Nil error when reading EntriesRead ([89d6dfe](https://github.com/go-redis/redis/commit/89d6dfe09a88321d445858c1c5b24d2757b95a3e))
+* log errors from cmdsInfoCache ([fa4d1ea](https://github.com/go-redis/redis/commit/fa4d1ea8398cd729ad5cbaaff88e4b8805393945))
+* provide a signal channel to end heartbeat goroutine ([f032c12](https://github.com/go-redis/redis/commit/f032c126db3e2c1a239ce1790b0ab81994df75cf))
+* remove conn reaper from the pool and uptrace option names ([f6a8adc](https://github.com/go-redis/redis/commit/f6a8adc50cdaec30527f50d06468f9176ee674fe))
+* replace heartbeat signal channel with context.WithCancel ([20d0ca2](https://github.com/go-redis/redis/commit/20d0ca235efff48ad48cc05b98790b825d4ba979))
+
+
+
+# [9.0.0-beta.1](https://github.com/go-redis/redis/compare/v8.11.5...v9.0.0-beta.1) (2022-06-04)
+
+### Bug Fixes
+
+- **#1943:** xInfoConsumer.Idle should be time.Duration instead of int64
+  ([#2052](https://github.com/go-redis/redis/issues/2052))
+  ([997ab5e](https://github.com/go-redis/redis/commit/997ab5e7e3ddf53837917013a4babbded73e944f)),
+  closes [#1943](https://github.com/go-redis/redis/issues/1943)
+- add XInfoConsumers test
+  ([6f1a1ac](https://github.com/go-redis/redis/commit/6f1a1ac284ea3f683eeb3b06a59969e8424b6376))
+- fix tests
+  ([3a722be](https://github.com/go-redis/redis/commit/3a722be81180e4d2a9cf0a29dc9a1ee1421f5859))
+- remove test(XInfoConsumer.idle), not a stable return value when tested.
+  ([f5fbb36](https://github.com/go-redis/redis/commit/f5fbb367e7d9dfd7f391fc535a7387002232fa8a))
+- update ChannelWithSubscriptions to accept options
+  ([c98c5f0](https://github.com/go-redis/redis/commit/c98c5f0eebf8d254307183c2ce702a48256b718d))
+- update COMMAND parser for Redis 7
+  ([b0bb514](https://github.com/go-redis/redis/commit/b0bb514059249e01ed7328c9094e5b8a439dfb12))
+- use redis over ssh channel([#2057](https://github.com/go-redis/redis/issues/2057))
+  ([#2060](https://github.com/go-redis/redis/issues/2060))
+  ([3961b95](https://github.com/go-redis/redis/commit/3961b9577f622a3079fe74f8fc8da12ba67a77ff))
 
 ### Features
 
-* add acl auth support for sentinels ([f66582f](https://github.com/go-redis/redis/commit/f66582f44f3dc3a4705a5260f982043fde4aa634))
-* add Cmd.{String,Int,Float,Bool}Slice helpers and an example ([5d3d293](https://github.com/go-redis/redis/commit/5d3d293cc9c60b90871e2420602001463708ce24))
-* add SetVal method for each command ([168981d](https://github.com/go-redis/redis/commit/168981da2d84ee9e07d15d3e74d738c162e264c4))
+- add ClientUnpause
+  ([91171f5](https://github.com/go-redis/redis/commit/91171f5e19a261dc4cfbf8706626d461b6ba03e4))
+- add NewXPendingResult for unit testing XPending
+  ([#2066](https://github.com/go-redis/redis/issues/2066))
+  ([b7fd09e](https://github.com/go-redis/redis/commit/b7fd09e59479bc6ed5b3b13c4645a3620fd448a3))
+- add WriteArg and Scan net.IP([#2062](https://github.com/go-redis/redis/issues/2062))
+  ([7d5167e](https://github.com/go-redis/redis/commit/7d5167e8624ac1515e146ed183becb97dadb3d1a))
+- **pool:** add check for badConnection
+  ([a8a7665](https://github.com/go-redis/redis/commit/a8a7665ddf8cc657c5226b1826a8ee83dab4b8c1)),
+  closes [#2053](https://github.com/go-redis/redis/issues/2053)
+- provide a username and password callback method, so that the plaintext username and password will
+  not be stored in the memory, and the username and password will only be generated once when the
+  CredentialsProvider is called. After the method is executed, the username and password strings on
+  the stack will be released. ([#2097](https://github.com/go-redis/redis/issues/2097))
+  ([56a3dbc](https://github.com/go-redis/redis/commit/56a3dbc7b656525eb88e0735e239d56e04a23bee))
+- upgrade to Redis 7
+  ([d09c27e](https://github.com/go-redis/redis/commit/d09c27e6046129fd27b1d275e5a13a477bd7f778))
 
+## v9 UNRELEASED
 
-
-## v8.11
-
-- Remove OpenTelemetry metrics.
-- Supports more redis commands and options.
-
-## v8.10
-
-- Removed extra OpenTelemetry spans from go-redis core. Now go-redis instrumentation only adds a
-  single span with a Redis command (instead of 4 spans). There are multiple reasons behind this
-  decision:
-
-  - Traces become smaller and less noisy.
-  - It may be costly to process those 3 extra spans for each query.
-  - go-redis no longer depends on OpenTelemetry.
-
-  Eventually we hope to replace the information that we no longer collect with OpenTelemetry
-  Metrics.
-
-## v8.9
-
-- Changed `PubSub.Channel` to only rely on `Ping` result. You can now use `WithChannelSize`,
-  `WithChannelHealthCheckInterval`, and `WithChannelSendTimeout` to override default settings.
-
-## v8.8
-
-- To make updating easier, extra modules now have the same version as go-redis does. That means that
-  you need to update your imports:
-
-```
-github.com/go-redis/redis/extra/redisotel -> github.com/go-redis/redis/extra/redisotel/v8
-github.com/go-redis/redis/extra/rediscensus -> github.com/go-redis/redis/extra/rediscensus/v8
-```
-
-## v8.5
-
-- [knadh](https://github.com/knadh) contributed long-awaited ability to scan Redis Hash into a
-  struct:
-
-```go
-err := rdb.HGetAll(ctx, "hash").Scan(&data)
-
-err := rdb.MGet(ctx, "key1", "key2").Scan(&data)
-```
-
-- Please check [redismock](https://github.com/go-redis/redismock) by
-  [monkey92t](https://github.com/monkey92t) if you are looking for mocking Redis Client.
-
-## v8
-
-- All commands require `context.Context` as a first argument, e.g. `rdb.Ping(ctx)`. If you are not
-  using `context.Context` yet, the simplest option is to define global package variable
-  `var ctx = context.TODO()` and use it when `ctx` is required.
-
-- Full support for `context.Context` canceling.
-
-- Added `redis.NewFailoverClusterClient` that supports routing read-only commands to a slave node.
-
-- Added `redisext.OpenTemetryHook` that adds
-  [Redis OpenTelemetry instrumentation](https://redis.uptrace.dev/tracing/).
-
-- Redis slow log support.
-
-- Ring uses Rendezvous Hashing by default which provides better distribution. You need to move
-  existing keys to a new location or keys will be inaccessible / lost. To use old hashing scheme:
-
-```go
-import "github.com/golang/groupcache/consistenthash"
-
-ring := redis.NewRing(&redis.RingOptions{
-    NewConsistentHash: func() {
-        return consistenthash.New(100, crc32.ChecksumIEEE)
-    },
-})
-```
-
-- `ClusterOptions.MaxRedirects` default value is changed from 8 to 3.
-- `Options.MaxRetries` default value is changed from 0 to 3.
-
-- `Cluster.ForEachNode` is renamed to `ForEachShard` for consistency with `Ring`.
-
-## v7.3
-
-- New option `Options.Username` which causes client to use `AuthACL`. Be aware if your connection
-  URL contains username.
-
-## v7.2
-
-- Existing `HMSet` is renamed to `HSet` and old deprecated `HMSet` is restored for Redis 3 users.
-
-## v7.1
-
-- Existing `Cmd.String` is renamed to `Cmd.Text`. New `Cmd.String` implements `fmt.Stringer`
-  interface.
-
-## v7
-
-- _Important_. Tx.Pipeline now returns a non-transactional pipeline. Use Tx.TxPipeline for a
-  transactional pipeline.
-- WrapProcess is replaced with more convenient AddHook that has access to context.Context.
-- WithContext now can not be used to create a shallow copy of the client.
-- New methods ProcessContext, DoContext, and ExecContext.
-- Client respects Context.Deadline when setting net.Conn deadline.
-- Client listens on Context.Done while waiting for a connection from the pool and returns an error
-  when context context is cancelled.
-- Add PubSub.ChannelWithSubscriptions that sends `*Subscription` in addition to `*Message` to allow
-  detecting reconnections.
-- `time.Time` is now marshalled in RFC3339 format. `rdb.Get("foo").Time()` helper is added to parse
-  the time.
-- `SetLimiter` is removed and added `Options.Limiter` instead.
-- `HMSet` is deprecated as of Redis v4.
-
-## v6.15
-
-- Cluster and Ring pipelines process commands for each node in its own goroutine.
-
-## 6.14
-
-- Added Options.MinIdleConns.
-- Added Options.MaxConnAge.
-- PoolStats.FreeConns is renamed to PoolStats.IdleConns.
-- Add Client.Do to simplify creating custom commands.
-- Add Cmd.String, Cmd.Int, Cmd.Int64, Cmd.Uint64, Cmd.Float64, and Cmd.Bool helpers.
-- Lower memory usage.
-
-## v6.13
-
-- Ring got new options called `HashReplicas` and `Hash`. It is recommended to set
-  `HashReplicas = 1000` for better keys distribution between shards.
-- Cluster client was optimized to use much less memory when reloading cluster state.
-- PubSub.ReceiveMessage is re-worked to not use ReceiveTimeout so it does not lose data when timeout
-  occurres. In most cases it is recommended to use PubSub.Channel instead.
-- Dialer.KeepAlive is set to 5 minutes by default.
-
-## v6.12
-
-- ClusterClient got new option called `ClusterSlots` which allows to build cluster of normal Redis
-  Servers that don't have cluster mode enabled. See
-  https://godoc.org/github.com/go-redis/redis#example-NewClusterClient--ManualSetup
+- Added support for [RESP3](https://github.com/antirez/RESP3/blob/master/spec.md) protocol.
+- Removed `Pipeline.Close` since there is no real need to explicitly manage pipeline resources.
+  `Pipeline.Discard` is still available if you want to reset commands for some reason.
+- Replaced `*redis.Z` with `redis.Z` since it is small enough to be passed as value.
+- Renamed `MaxConnAge` to `ConnMaxLifetime`.
+- Renamed `IdleTimeout` to `ConnMaxIdleTime`.
+- Removed connection reaper in favor of `MaxIdleConns`.
+- Removed `WithContext`.

@@ -1,53 +1,44 @@
-<p align="center">
-  <a href="https://uptrace.dev/?utm_source=gh-redis&utm_campaign=gh-redis-banner1">
-    <img src="https://raw.githubusercontent.com/uptrace/roadmap/master/banner1.png" alt="All-in-one tool to optimize performance and monitor errors & logs">
-  </a>
-</p>
+# Redis client for Go
 
-# Redis client for Golang
-
-![build workflow](https://github.com/go-redis/redis/actions/workflows/build.yml/badge.svg)
+[![build workflow](https://github.com/go-redis/redis/actions/workflows/build.yml/badge.svg)](https://github.com/go-redis/redis/actions)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
-- To ask questions, join [Discord](https://discord.gg/rWtp5Aj) or use
-  [Discussions](https://github.com/go-redis/redis/discussions).
-- [Newsletter](https://blog.uptrace.dev/pages/newsletter.html) to get latest updates.
+> go-redis is brought to you by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
+> Uptrace is an open-source APM tool that supports distributed tracing, metrics, and logs. You can
+> use it to monitor applications and set up automatic alerts to receive notifications via email,
+> Slack, Telegram, and others. Star it as well!
+
+## Resources
+
 - [Documentation](https://redis.uptrace.dev)
+- [Discussions](https://github.com/go-redis/redis/discussions)
+- [Chat](https://discord.gg/rWtp5Aj)
 - [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
 - [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
-- [RealWorld example app](https://github.com/uptrace/go-treemux-realworld-example-app)
-
-Other projects you may like:
-
-- [Bun](https://bun.uptrace.dev/) - fast and simple SQL client for PostgreSQL, MySQL, and SQLite.
-- [BunRouter](https://bunrouter.uptrace.dev/) - fast and flexible HTTP router for Go.
 
 ## Ecosystem
 
-- [Redis Mock](https://github.com/go-redis/redismock).
-- [Distributed Locks](https://github.com/bsm/redislock).
-- [Redis Cache](https://github.com/go-redis/cache).
-- [Rate limiting](https://github.com/go-redis/redis_rate).
+- [Redis Mock](https://github.com/go-redis/redismock)
+- [Distributed Locks](https://github.com/bsm/redislock)
+- [Redis Cache](https://github.com/go-redis/cache)
+- [Rate limiting](https://github.com/go-redis/redis_rate)
+
+This client also works with [Kvrocks](https://github.com/apache/incubator-kvrocks), a distributed
+key value NoSQL database that uses RocksDB as storage engine and is compatible with Redis protocol.
 
 ## Features
 
 - Redis 3 commands except QUIT, MONITOR, and SYNC.
 - Automatic connection pooling with
-  [circuit breaker](https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern) support.
-- [Pub/Sub](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#PubSub).
-- [Transactions](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-Client-TxPipeline).
-- [Pipeline](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-Client-Pipeline) and
-  [TxPipeline](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-Client-TxPipeline).
-- [Scripting](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#Script).
-- [Timeouts](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#Options).
-- [Redis Sentinel](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#NewFailoverClient).
-- [Redis Cluster](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#NewClusterClient).
-- [Cluster of Redis Servers](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#example-NewClusterClient--ManualSetup)
-  without using cluster mode and Redis Sentinel.
-- [Ring](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#NewRing).
-- [Instrumentation](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#ex-package--Instrumentation).
+- [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
+- [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
+- [Scripting](https://redis.uptrace.dev/guide/lua-scripting.html).
+- [Redis Sentinel](https://redis.uptrace.dev/guide/go-redis-sentinel.html).
+- [Redis Cluster](https://redis.uptrace.dev/guide/go-redis-cluster.html).
+- [Redis Ring](https://redis.uptrace.dev/guide/ring.html).
+- [Redis Performance Monitoring](https://redis.uptrace.dev/guide/redis-performance-monitoring.html).
 
 ## Installation
 
@@ -59,10 +50,16 @@ module:
 go mod init github.com/my/repo
 ```
 
-And then install go-redis/v8 (note _v8_ in the import; omitting it is a popular mistake):
+If you are using **Redis 6**, install go-redis/**v8**:
 
 ```shell
 go get github.com/go-redis/redis/v8
+```
+
+If you are using **Redis 7**, install go-redis/**v9**:
+
+```shell
+go get github.com/go-redis/redis/v9
 ```
 
 ## Quickstart
@@ -71,6 +68,7 @@ go get github.com/go-redis/redis/v8
 import (
     "context"
     "github.com/go-redis/redis/v8"
+    "fmt"
 )
 
 var ctx = context.Background()
@@ -147,7 +145,7 @@ go-redis will start a redis-server and run the test cases.
 
 The paths of redis-server bin file and redis config file are defined in `main_test.go`:
 
-```
+```go
 var (
 	redisServerBin, _  = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
 	redisServerConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
@@ -157,16 +155,23 @@ var (
 For local testing, you can change the variables to refer to your local files, or create a soft link
 to the corresponding folder for redis-server and copy the config file to `testdata/redis/`:
 
-```
+```shell
 ln -s /usr/bin/redis-server ./go-redis/testdata/redis/src
 cp ./go-redis/testdata/redis.conf ./go-redis/testdata/redis/
 ```
 
 Lastly, run:
 
-```
+```shell
 go test
 ```
+
+## See also
+
+- [Golang ORM](https://bun.uptrace.dev) for PostgreSQL, MySQL, MSSQL, and SQLite
+- [Golang PostgreSQL](https://bun.uptrace.dev/postgres/)
+- [Golang HTTP router](https://bunrouter.uptrace.dev/)
+- [Golang ClickHouse ORM](https://github.com/uptrace/go-clickhouse)
 
 ## Contributors
 

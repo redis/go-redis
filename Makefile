@@ -6,6 +6,8 @@ test: testdeps
 	go test ./... -run=NONE -bench=. -benchmem
 	env GOOS=linux GOARCH=386 go test ./...
 	go vet
+	cd internal/customvet && go build .
+	go vet -vettool ./internal/customvet/customvet
 
 testdeps: testdata/redis/src/redis-server
 
@@ -16,7 +18,7 @@ bench: testdeps
 
 testdata/redis:
 	mkdir -p $@
-	wget -qO- https://download.redis.io/releases/redis-6.2.5.tar.gz | tar xvz --strip-components=1 -C $@
+	wget -qO- https://download.redis.io/releases/redis-7.0.0.tar.gz | tar xvz --strip-components=1 -C $@
 
 testdata/redis/src/redis-server: testdata/redis
 	cd $< && make all
@@ -26,10 +28,9 @@ fmt:
 	goimports -w  -local github.com/go-redis/redis ./
 
 go_mod_tidy:
-	go get -u && go mod tidy
 	set -e; for dir in $(PACKAGE_DIRS); do \
 	  echo "go mod tidy in $${dir}"; \
 	  (cd "$${dir}" && \
-	    go get -u && \
-	    go mod tidy); \
+	    go get -u ./... && \
+	    go mod tidy -compat=1.17); \
 	done

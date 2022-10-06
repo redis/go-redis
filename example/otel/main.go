@@ -5,12 +5,13 @@ import (
 	"log"
 	"sync"
 
+	"github.com/uptrace/opentelemetry-go-extra/otelplay"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 
-	"github.com/go-redis/redis/extra/redisotel/v8"
-	"github.com/go-redis/redis/v8"
-	"github.com/uptrace/opentelemetry-go-extra/otelplay"
+	"github.com/go-redis/redis/extra/redisotel/v9"
+	"github.com/go-redis/redis/v9"
 )
 
 var tracer = otel.Tracer("redisexample")
@@ -24,7 +25,7 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
-	rdb.AddHook(redisotel.TracingHook{})
+	rdb.AddHook(redisotel.NewTracingHook(redisotel.WithAttributes(semconv.NetPeerNameKey.String("localhost"), semconv.NetPeerPortKey.String("6379"))))
 
 	ctx, span := tracer.Start(ctx, "handleRequest")
 	defer span.End()

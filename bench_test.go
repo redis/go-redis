@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v9"
 )
 
 func benchmarkRedisClient(ctx context.Context, poolSize int) *redis.Client {
@@ -223,7 +223,7 @@ func BenchmarkZAdd(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			err := client.ZAdd(ctx, "key", &redis.Z{
+			err := client.ZAdd(ctx, "key", redis.Z{
 				Score:  float64(1),
 				Member: "hello",
 			}).Err()
@@ -273,36 +273,6 @@ func BenchmarkXRead(b *testing.B) {
 	})
 }
 
-var clientSink *redis.Client
-
-func BenchmarkWithContext(b *testing.B) {
-	ctx := context.Background()
-	rdb := benchmarkRedisClient(ctx, 10)
-	defer rdb.Close()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		clientSink = rdb.WithContext(ctx)
-	}
-}
-
-var ringSink *redis.Ring
-
-func BenchmarkRingWithContext(b *testing.B) {
-	ctx := context.Background()
-	rdb := redis.NewRing(&redis.RingOptions{})
-	defer rdb.Close()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		ringSink = rdb.WithContext(ctx)
-	}
-}
-
 //------------------------------------------------------------------------------
 
 func newClusterScenario() *clusterScenario {
@@ -341,6 +311,32 @@ func BenchmarkClusterPing(b *testing.B) {
 	})
 }
 
+func BenchmarkClusterDoInt(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping in short mode")
+	}
+
+	ctx := context.Background()
+	cluster := newClusterScenario()
+	if err := startCluster(ctx, cluster); err != nil {
+		b.Fatal(err)
+	}
+	defer cluster.Close()
+
+	client := cluster.newClusterClient(ctx, redisClusterOptions())
+	defer client.Close()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			err := client.Do(ctx, "SET", 10, 10).Err()
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 func BenchmarkClusterSetString(b *testing.B) {
 	if testing.Short() {
 		b.Skip("skipping in short mode")
@@ -368,19 +364,4 @@ func BenchmarkClusterSetString(b *testing.B) {
 			}
 		}
 	})
-}
-
-var clusterSink *redis.ClusterClient
-
-func BenchmarkClusterWithContext(b *testing.B) {
-	ctx := context.Background()
-	rdb := redis.NewClusterClient(&redis.ClusterOptions{})
-	defer rdb.Close()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		clusterSink = rdb.WithContext(ctx)
-	}
 }

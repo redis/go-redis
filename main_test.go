@@ -2,7 +2,6 @@ package redis_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,7 +14,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v9"
 )
 
 const (
@@ -130,10 +129,9 @@ func redisOptions() *redis.Options {
 
 		MaxRetries: -1,
 
-		PoolSize:           10,
-		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        time.Minute,
-		IdleCheckFrequency: 100 * time.Millisecond,
+		PoolSize:        10,
+		PoolTimeout:     30 * time.Second,
+		ConnMaxIdleTime: time.Minute,
 	}
 }
 
@@ -145,10 +143,9 @@ func redisClusterOptions() *redis.ClusterOptions {
 
 		MaxRedirects: 8,
 
-		PoolSize:           10,
-		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        time.Minute,
-		IdleCheckFrequency: 100 * time.Millisecond,
+		PoolSize:        10,
+		PoolTimeout:     30 * time.Second,
+		ConnMaxIdleTime: time.Minute,
 	}
 }
 
@@ -165,10 +162,9 @@ func redisRingOptions() *redis.RingOptions {
 
 		MaxRetries: -1,
 
-		PoolSize:           10,
-		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        time.Minute,
-		IdleCheckFrequency: 100 * time.Millisecond,
+		PoolSize:        10,
+		PoolTimeout:     30 * time.Second,
+		ConnMaxIdleTime: time.Minute,
 	}
 }
 
@@ -272,7 +268,7 @@ func (p *redisProcess) Close() error {
 		if err := p.Client.Ping(ctx).Err(); err != nil {
 			return nil
 		}
-		return errors.New("client is not shutdown")
+		return fmt.Errorf("client %s is not shutdown", p.Options().Addr)
 	}, 10*time.Second)
 	if err != nil {
 		return err
@@ -283,8 +279,9 @@ func (p *redisProcess) Close() error {
 }
 
 var (
-	redisServerBin, _  = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
-	redisServerConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
+	redisServerBin, _    = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
+	redisServerConf, _   = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
+	redisSentinelConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "sentinel.conf"))
 )
 
 func redisDir(port string) (string, error) {
@@ -306,7 +303,8 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = exec.Command("cp", "-f", redisServerConf, dir).Run(); err != nil {
+
+	if err := exec.Command("cp", "-f", redisServerConf, dir).Run(); err != nil {
 		return nil, err
 	}
 
@@ -324,7 +322,7 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 
 	p := &redisProcess{process, client}
 	registerProcess(port, p)
-	return p, err
+	return p, nil
 }
 
 func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
@@ -333,7 +331,12 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 		return nil, err
 	}
 
-	process, err := execCmd(redisServerBin, os.DevNull, "--sentinel", "--port", port, "--dir", dir)
+	sentinelConf := filepath.Join(dir, "sentinel.conf")
+	if err := os.WriteFile(sentinelConf, nil, 0o644); err != nil {
+		return nil, err
+	}
+
+	process, err := execCmd(redisServerBin, sentinelConf, "--sentinel", "--port", port, "--dir", dir)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +358,7 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 		client.Process(ctx, cmd)
 		if err := cmd.Err(); err != nil {
 			process.Kill()
-			return nil, err
+			return nil, fmt.Errorf("%s failed: %w", cmd, err)
 		}
 	}
 

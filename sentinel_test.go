@@ -6,7 +6,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v9"
 )
 
 var _ = Describe("Sentinel", func() {
@@ -185,13 +185,14 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		}
 
 		// Create subscription.
-		ch := client.Subscribe(ctx, "foo").Channel()
+		sub := client.Subscribe(ctx, "foo")
+		ch := sub.Channel()
 
 		// Kill master.
 		err = master.Shutdown(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() error {
-			return sentinelMaster.Ping(ctx).Err()
+			return master.Ping(ctx).Err()
 		}, "15s", "100ms").Should(HaveOccurred())
 
 		// Check that client picked up new master.
@@ -207,6 +208,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		}, "15s", "100ms").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
+		Expect(sub.Close()).NotTo(HaveOccurred())
 
 		_, err = startRedis(masterPort)
 		Expect(err).NotTo(HaveOccurred())
@@ -221,7 +223,7 @@ var _ = Describe("SentinelAclAuth", func() {
 
 	var client *redis.Client
 	var sentinel *redis.SentinelClient
-	var sentinels = func() []*redisProcess {
+	sentinels := func() []*redisProcess {
 		return []*redisProcess{sentinel1, sentinel2, sentinel3}
 	}
 

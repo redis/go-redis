@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v9"
 )
 
 var _ = Describe("races", func() {
@@ -288,13 +288,6 @@ var _ = Describe("races", func() {
 
 		wg.Wait()
 		Expect(atomic.LoadUint32(&received)).To(Equal(uint32(C * N)))
-	})
-
-	It("should WithContext", func() {
-		perform(C, func(_ int) {
-			err := client.WithContext(ctx).Ping(ctx).Err()
-			Expect(err).NotTo(HaveOccurred())
-		})
 	})
 
 	It("should abort on context timeout", func() {

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v9"
 )
 
 var (
@@ -155,7 +155,7 @@ func ExampleClient() {
 }
 
 func ExampleConn() {
-	conn := rdb.Conn(context.Background())
+	conn := rdb.Conn()
 
 	err := conn.ClientSetName(ctx, "foobar").Err()
 	if err != nil {
@@ -190,8 +190,8 @@ func ExampleClient_Set() {
 	}
 }
 
-func ExampleClient_SetEX() {
-	err := rdb.SetEX(ctx, "key", "value", time.Hour).Err()
+func ExampleClient_SetEx() {
+	err := rdb.SetEx(ctx, "key", "value", time.Hour).Err()
 	if err != nil {
 		panic(err)
 	}
@@ -278,9 +278,38 @@ func ExampleClient_ScanType() {
 	// Output: found 33 keys
 }
 
-// ExampleStringStringMapCmd_Scan shows how to scan the results of a map fetch
+// ExampleClient_ScanType_hashType uses the keyType "hash".
+func ExampleClient_ScanType_hashType() {
+	rdb.FlushDB(ctx)
+	for i := 0; i < 33; i++ {
+		err := rdb.HSet(context.TODO(), fmt.Sprintf("key%d", i), "value", "foo").Err()
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	var allKeys []string
+	var cursor uint64
+	var err error
+
+	for {
+		var keysFromScan []string
+		keysFromScan, cursor, err = rdb.ScanType(context.TODO(), cursor, "key*", 10, "hash").Result()
+		if err != nil {
+			panic(err)
+		}
+		allKeys = append(allKeys, keysFromScan...)
+		if cursor == 0 {
+			break
+		}
+	}
+	fmt.Printf("%d keys ready for use", len(allKeys))
+	// Output: 33 keys ready for use
+}
+
+// ExampleMapStringStringCmd_Scan shows how to scan the results of a map fetch
 // into a struct.
-func ExampleStringStringMapCmd_Scan() {
+func ExampleMapStringStringCmd_Scan() {
 	rdb.FlushDB(ctx)
 	err := rdb.HMSet(ctx, "map",
 		"name", "hello",
@@ -617,7 +646,7 @@ func ExampleClient_SlowLogGet() {
 
 	old := rdb.ConfigGet(ctx, key).Val()
 	rdb.ConfigSet(ctx, key, "0")
-	defer rdb.ConfigSet(ctx, key, old[1].(string))
+	defer rdb.ConfigSet(ctx, key, old[key])
 
 	if err := rdb.Do(ctx, "slowlog", "reset").Err(); err != nil {
 		panic(err)
