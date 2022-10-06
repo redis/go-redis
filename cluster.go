@@ -223,10 +223,9 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.MinIdleConns = q.int("min_idle_conns")
-	o.MaxConnAge = q.duration("max_conn_age")
 	o.PoolTimeout = q.duration("pool_timeout")
-	o.IdleTimeout = q.duration("idle_timeout")
-	o.IdleCheckFrequency = q.duration("idle_check_frequency")
+	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
+	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 
 	if q.err != nil {
 		return nil, q.err
@@ -1656,7 +1655,6 @@ func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *Pub
 	}
 	return pubsub
 }
-
 
 func (c *ClusterClient) retryBackoff(attempt int) time.Duration {
 	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)

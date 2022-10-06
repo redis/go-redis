@@ -1355,19 +1355,19 @@ func TestParseClusterURL(t *testing.T) {
 		}, {
 			test: "DisabledTimeout",
 			url:  "redis://localhost:123?idle_timeout=0",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, IdleTimeout: -1},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
 		}, {
 			test: "DisabledTimeoutNeg",
 			url:  "redis://localhost:123?idle_timeout=-1",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, IdleTimeout: -1},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
 		}, {
 			test: "UseDefault",
 			url:  "redis://localhost:123?idle_timeout=",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, IdleTimeout: 0},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
 		}, {
 			test: "UseDefaultMissing=",
 			url:  "redis://localhost:123?idle_timeout",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, IdleTimeout: 0},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
 		}, {
 			test: "InvalidQueryAddr",
 			url:  "rediss://foo:bar@localhost:123?addr=rediss://foo:barr@localhost:1234",
@@ -1431,8 +1431,7 @@ func comprareOptions(t *testing.T, actual, expected *redis.ClusterOptions) {
 	assert.Equal(t, expected.PoolFIFO, actual.PoolFIFO)
 	assert.Equal(t, expected.PoolSize, actual.PoolSize)
 	assert.Equal(t, expected.MinIdleConns, actual.MinIdleConns)
-	assert.Equal(t, expected.MaxConnAge, actual.MaxConnAge)
+	assert.Equal(t, expected.ConnMaxLifetime, actual.ConnMaxLifetime)
+	assert.Equal(t, expected.ConnMaxIdleTime, actual.ConnMaxIdleTime)
 	assert.Equal(t, expected.PoolTimeout, actual.PoolTimeout)
-	assert.Equal(t, expected.IdleTimeout, actual.IdleTimeout)
-	assert.Equal(t, expected.IdleCheckFrequency, actual.IdleCheckFrequency)
 }
