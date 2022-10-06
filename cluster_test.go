@@ -1354,19 +1354,19 @@ func TestParseClusterURL(t *testing.T) {
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, ReadTimeout: 2 * time.Second, PoolFIFO: true},
 		}, {
 			test: "DisabledTimeout",
-			url:  "redis://localhost:123?idle_timeout=0",
+			url:  "redis://localhost:123?conn_max_idle_time=0",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
 		}, {
 			test: "DisabledTimeoutNeg",
-			url:  "redis://localhost:123?idle_timeout=-1",
+			url:  "redis://localhost:123?conn_max_idle_time=-1",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
 		}, {
 			test: "UseDefault",
-			url:  "redis://localhost:123?idle_timeout=",
+			url:  "redis://localhost:123?conn_max_idle_time=",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
 		}, {
 			test: "UseDefaultMissing=",
-			url:  "redis://localhost:123?idle_timeout",
+			url:  "redis://localhost:123?conn_max_idle_time",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
 		}, {
 			test: "InvalidQueryAddr",
