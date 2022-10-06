@@ -416,7 +416,6 @@ func (c *baseClient) generalProcessPipeline(
 ) error {
 	err := c._generalProcessPipeline(ctx, cmds, p)
 	if err != nil {
-		setCmdsErr(cmds, err)
 		return err
 	}
 	return cmdsFirstErr(cmds)
@@ -429,6 +428,7 @@ func (c *baseClient) _generalProcessPipeline(
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				setCmdsErr(cmds, err)
 				return err
 			}
 		}
@@ -449,53 +449,61 @@ func (c *baseClient) _generalProcessPipeline(
 func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
-	err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+	if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
-	})
-	if err != nil {
+	}); err != nil {
+		setCmdsErr(cmds, err)
 		return true, err
 	}
 
-	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	if err := cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		return pipelineReadCmds(rd, cmds)
-	})
-	return true, err
+	}); err != nil {
+		return true, err
+	}
+
+	return false, nil
 }
 
 func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
-	for _, cmd := range cmds {
+	for i, cmd := range cmds {
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
+			setCmdsErr(cmds[i+1:], err)
 			return err
 		}
 	}
-	return nil
+	// Retry errors like "LOADING redis is loading the dataset in memory".
+	return cmds[0].Err()
 }
 
 func (c *baseClient) txPipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
-	err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+	if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
-	})
-	if err != nil {
+	}); err != nil {
+		setCmdsErr(cmds, err)
 		return true, err
 	}
 
-	err = cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	if err := cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		statusCmd := cmds[0].(*StatusCmd)
 		// Trim multi and exec.
-		cmds = cmds[1 : len(cmds)-1]
+		trimmedCmds := cmds[1 : len(cmds)-1]
 
-		err := txPipelineReadQueued(rd, statusCmd, cmds)
-		if err != nil {
+		if err := txPipelineReadQueued(rd, statusCmd, trimmedCmds); err != nil {
+			setCmdsErr(cmds, err)
 			return err
 		}
 
-		return pipelineReadCmds(rd, cmds)
-	})
-	return false, err
+		return pipelineReadCmds(rd, trimmedCmds)
+	}); err != nil {
+		return false, err
+	}
+
+	return false, nil
 }
 
 func wrapMultiExec(ctx context.Context, cmds []Cmder) []Cmder {
