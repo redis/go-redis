@@ -133,7 +133,7 @@ func (opt *Options) init() {
 		opt.DialTimeout = 5 * time.Second
 	}
 	if opt.Dialer == nil {
-		opt.Dialer = DefaultDialer(opt)
+		opt.Dialer = NewDialer(opt)
 	}
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
@@ -189,9 +189,9 @@ func (opt *Options) clone() *Options {
 	return &clone
 }
 
-// DefaultDialer returns a function that will be used as the default dialer
+// NewDialer returns a function that will be used as the default dialer
 // when none is specified in Options.Dialer.
-func DefaultDialer(opt *Options) func(context.Context, string, string) (net.Conn, error) {
+func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		netDialer := &net.Dialer{
 			Timeout:   opt.DialTimeout,
