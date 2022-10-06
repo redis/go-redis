@@ -2,15 +2,19 @@ package redis_test
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/go-redis/redis/v9"
 	"github.com/go-redis/redis/v9/internal/hashtag"
@@ -1296,3 +1300,138 @@ var _ = Describe("ClusterClient timeout", func() {
 		testTimeout()
 	})
 })
+
+func TestParseClusterURL(t *testing.T) {
+	cases := []struct {
+		test string
+		url  string
+		o    *redis.ClusterOptions // expected value
+		err  error
+	}{
+		{
+			test: "ParseRedisURL",
+			url:  "redis://localhost:123",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}},
+		}, {
+			test: "ParseRedissURL",
+			url:  "rediss://localhost:123",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+		}, {
+			test: "MissingRedisPort",
+			url:  "redis://localhost",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}},
+		}, {
+			test: "MissingRedissPort",
+			url:  "rediss://localhost",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+		}, {
+			test: "MultipleRedisURLs",
+			url:  "redis://localhost:123?addr=localhost:1234&addr=localhost:12345",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}},
+		}, {
+			test: "MultipleRedissURLs",
+			url:  "rediss://localhost:123?addr=localhost:1234&addr=localhost:12345",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+		}, {
+			test: "OnlyPassword",
+			url:  "redis://:bar@localhost:123",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Password: "bar"},
+		}, {
+			test: "OnlyUser",
+			url:  "redis://foo@localhost:123",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo"},
+		}, {
+			test: "RedisUsernamePassword",
+			url:  "redis://foo:bar@localhost:123",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo", Password: "bar"},
+		}, {
+			test: "RedissUsernamePassword",
+			url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}},
+		}, {
+			test: "QueryParameters",
+			url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, ReadTimeout: 2 * time.Second, PoolFIFO: true},
+		}, {
+			test: "DisabledTimeout",
+			url:  "redis://localhost:123?conn_max_idle_time=0",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
+		}, {
+			test: "DisabledTimeoutNeg",
+			url:  "redis://localhost:123?conn_max_idle_time=-1",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
+		}, {
+			test: "UseDefault",
+			url:  "redis://localhost:123?conn_max_idle_time=",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
+		}, {
+			test: "UseDefaultMissing=",
+			url:  "redis://localhost:123?conn_max_idle_time",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
+		}, {
+			test: "InvalidQueryAddr",
+			url:  "rediss://foo:bar@localhost:123?addr=rediss://foo:barr@localhost:1234",
+			err:  errors.New(`redis: unable to parse addr param: rediss://foo:barr@localhost:1234`),
+		}, {
+			test: "InvalidInt",
+			url:  "redis://localhost?pool_size=five",
+			err:  errors.New(`redis: invalid pool_size number: strconv.Atoi: parsing "five": invalid syntax`),
+		}, {
+			test: "InvalidBool",
+			url:  "redis://localhost?pool_fifo=yes",
+			err:  errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
+		}, {
+			test: "UnknownParam",
+			url:  "redis://localhost?abc=123",
+			err:  errors.New("redis: unexpected option: abc"),
+		}, {
+			test: "InvalidScheme",
+			url:  "https://google.com",
+			err:  errors.New("redis: invalid URL scheme: https"),
+		},
+	}
+
+	for i := range cases {
+		tc := cases[i]
+		t.Run(tc.test, func(t *testing.T) {
+			t.Parallel()
+
+			actual, err := redis.ParseClusterURL(tc.url)
+			if tc.err == nil && err != nil {
+				t.Fatalf("unexpected error: %q", err)
+				return
+			}
+			if tc.err != nil && err == nil {
+				t.Fatalf("expected error: got %+v", actual)
+				return
+			}
+			if tc.err != nil && err != nil {
+				if tc.err.Error() != err.Error() {
+					t.Fatalf("got %q, expected %q", err, tc.err)
+				}
+				return
+			}
+			comprareOptions(t, actual, tc.o)
+		})
+	}
+}
+
+func comprareOptions(t *testing.T, actual, expected *redis.ClusterOptions) {
+	t.Helper()
+	assert.Equal(t, expected.Addrs, actual.Addrs)
+	assert.Equal(t, expected.TLSConfig, actual.TLSConfig)
+	assert.Equal(t, expected.Username, actual.Username)
+	assert.Equal(t, expected.Password, actual.Password)
+	assert.Equal(t, expected.MaxRetries, actual.MaxRetries)
+	assert.Equal(t, expected.MinRetryBackoff, actual.MinRetryBackoff)
+	assert.Equal(t, expected.MaxRetryBackoff, actual.MaxRetryBackoff)
+	assert.Equal(t, expected.DialTimeout, actual.DialTimeout)
+	assert.Equal(t, expected.ReadTimeout, actual.ReadTimeout)
+	assert.Equal(t, expected.WriteTimeout, actual.WriteTimeout)
+	assert.Equal(t, expected.PoolFIFO, actual.PoolFIFO)
+	assert.Equal(t, expected.PoolSize, actual.PoolSize)
+	assert.Equal(t, expected.MinIdleConns, actual.MinIdleConns)
+	assert.Equal(t, expected.ConnMaxLifetime, actual.ConnMaxLifetime)
+	assert.Equal(t, expected.ConnMaxIdleTime, actual.ConnMaxIdleTime)
+	assert.Equal(t, expected.PoolTimeout, actual.PoolTimeout)
+}

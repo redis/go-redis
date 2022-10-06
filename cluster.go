@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/url"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -129,6 +131,123 @@ func (opt *ClusterOptions) init() {
 	if opt.NewClient == nil {
 		opt.NewClient = NewClient
 	}
+}
+
+// ParseClusterURL parses a URL into ClusterOptions that can be used to connect to Redis.
+// The URL must be in the form:
+//		redis://<user>:<password>@<host>:<port>
+//		or
+//		rediss://<user>:<password>@<host>:<port>
+// To add additional addresses, specify the query parameter, "addr" one or more times. e.g:
+//		redis://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
+//		or
+//		rediss://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
+//
+// Most Option fields can be set using query parameters, with the following restrictions:
+//	- field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
+//	- only scalar type fields are supported (bool, int, time.Duration)
+//	- for time.Duration fields, values must be a valid input for time.ParseDuration();
+//	  additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//	- to disable a duration field, use value less than or equal to 0; to use the default
+//	  value, leave the value blank or remove the parameter
+//	- only the last value is interpreted if a parameter is given multiple times
+//	- fields "network", "addr", "username" and "password" can only be set using other
+//	  URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//	  names will be treated as unknown parameters
+//	- unknown parameter names will result in an error
+// Example:
+//		redis://user:password@localhost:6789?dial_timeout=3&read_timeout=6s&addr=localhost:6790&addr=localhost:6791
+//		is equivalent to:
+//		&ClusterOptions{
+//			Addr:        ["localhost:6789", "localhost:6790", "localhost:6791"]
+//			DialTimeout: 3 * time.Second, // no time unit = seconds
+//			ReadTimeout: 6 * time.Second,
+//		}
+func ParseClusterURL(redisURL string) (*ClusterOptions, error) {
+	o := &ClusterOptions{}
+
+	u, err := url.Parse(redisURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// add base URL to the array of addresses
+	// more addresses may be added through the URL params
+	h, p := getHostPortWithDefaults(u)
+	o.Addrs = append(o.Addrs, net.JoinHostPort(h, p))
+
+	// setup username, password, and other configurations
+	o, err = setupClusterConn(u, h, o)
+	if err != nil {
+		return nil, err
+	}
+
+	return o, nil
+}
+
+// setupClusterConn gets the username and password from the URL and the query parameters.
+func setupClusterConn(u *url.URL, host string, o *ClusterOptions) (*ClusterOptions, error) {
+	switch u.Scheme {
+	case "rediss":
+		o.TLSConfig = &tls.Config{ServerName: host}
+		fallthrough
+	case "redis":
+		o.Username, o.Password = getUserPassword(u)
+	default:
+		return nil, fmt.Errorf("redis: invalid URL scheme: %s", u.Scheme)
+	}
+
+	// retrieve the configuration from the query parameters
+	o, err := setupClusterQueryParams(u, o)
+	if err != nil {
+		return nil, err
+	}
+
+	return o, nil
+}
+
+// setupClusterQueryParams converts query parameters in u to option value in o.
+func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, error) {
+	q := queryOptions{q: u.Query()}
+
+	o.MaxRedirects = q.int("max_redirects")
+	o.ReadOnly = q.bool("read_only")
+	o.RouteByLatency = q.bool("route_by_latency")
+	o.RouteByLatency = q.bool("route_randomly")
+	o.MaxRetries = q.int("max_retries")
+	o.MinRetryBackoff = q.duration("min_retry_backoff")
+	o.MaxRetryBackoff = q.duration("max_retry_backoff")
+	o.DialTimeout = q.duration("dial_timeout")
+	o.ReadTimeout = q.duration("read_timeout")
+	o.WriteTimeout = q.duration("write_timeout")
+	o.PoolFIFO = q.bool("pool_fifo")
+	o.PoolSize = q.int("pool_size")
+	o.MinIdleConns = q.int("min_idle_conns")
+	o.PoolTimeout = q.duration("pool_timeout")
+	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
+	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
+
+	if q.err != nil {
+		return nil, q.err
+	}
+
+	// addr can be specified as many times as needed
+	addrs := q.strings("addr")
+	for _, addr := range addrs {
+		h, p, err := net.SplitHostPort(addr)
+		if err != nil || h == "" || p == "" {
+			return nil, fmt.Errorf("redis: unable to parse addr param: %s", addr)
+		}
+
+		o.Addrs = append(o.Addrs, net.JoinHostPort(h, p))
+	}
+
+	// any parameters left?
+	if r := q.remaining(); len(r) > 0 {
+		return nil, fmt.Errorf("redis: unexpected option: %s", strings.Join(r, ", "))
+	}
+
+	return o, nil
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
@@ -1536,7 +1655,6 @@ func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *Pub
 	}
 	return pubsub
 }
-
 
 func (c *ClusterClient) retryBackoff(attempt int) time.Duration {
 	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)

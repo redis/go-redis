@@ -46,18 +46,18 @@ func TestParseURL(t *testing.T) {
 			o:   &Options{Addr: "localhost:123", DB: 2, ReadTimeout: 2 * time.Second, PoolFIFO: true},
 		}, {
 			// special case handling for disabled timeouts
-			url: "redis://localhost:123/?db=2&idle_timeout=0",
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=0",
 			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
 		}, {
 			// negative values disable timeouts as well
-			url: "redis://localhost:123/?db=2&idle_timeout=-1",
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=-1",
 			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
 		}, {
 			// absent timeout values will use defaults
-			url: "redis://localhost:123/?db=2&idle_timeout=",
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=",
 			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: 0},
 		}, {
-			url: "redis://localhost:123/?db=2&idle_timeout", // missing "=" at the end
+			url: "redis://localhost:123/?db=2&conn_max_idle_time", // missing "=" at the end
 			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: 0},
 		}, {
 			url: "unix:///tmp/redis.sock",
