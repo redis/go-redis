@@ -1180,8 +1180,8 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 
 func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) error {
 	cmdsMap := newCmdsMap()
-	err := c.mapCmdsByNode(ctx, cmdsMap, cmds)
-	if err != nil {
+
+	if err := c.mapCmdsByNode(ctx, cmdsMap, cmds); err != nil {
 		setCmdsErr(cmds, err)
 		return err
 	}
@@ -1201,18 +1201,7 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 			wg.Add(1)
 			go func(node *clusterNode, cmds []Cmder) {
 				defer wg.Done()
-
-				err := c._processPipelineNode(ctx, node, cmds, failedCmds)
-				if err == nil {
-					return
-				}
-				if attempt < c.opt.MaxRedirects {
-					if err := c.mapCmdsByNode(ctx, failedCmds, cmds); err != nil {
-						setCmdsErr(cmds, err)
-					}
-				} else {
-					setCmdsErr(cmds, err)
-				}
+				c._processPipelineNode(ctx, node, cmds, failedCmds)
 			}(node, cmds)
 		}
 
@@ -1267,13 +1256,13 @@ func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool 
 
 func (c *ClusterClient) _processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
-) error {
-	return node.Client.hooks.processPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+) {
+	_ = node.Client.hooks.processPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-			err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+			if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 				return writeCmds(wr, cmds)
-			})
-			if err != nil {
+			}); err != nil {
+				setCmdsErr(cmds, err)
 				return err
 			}
 
@@ -1291,7 +1280,7 @@ func (c *ClusterClient) pipelineReadCmds(
 	cmds []Cmder,
 	failedCmds *cmdsMap,
 ) error {
-	for _, cmd := range cmds {
+	for i, cmd := range cmds {
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
 
@@ -1303,15 +1292,24 @@ func (c *ClusterClient) pipelineReadCmds(
 			continue
 		}
 
-		if c.opt.ReadOnly && (isLoadingError(err) || !isRedisError(err)) {
+		if c.opt.ReadOnly {
 			node.MarkAsFailing()
+		}
+
+		if !isRedisError(err) {
+			if shouldRetry(err, true) {
+				_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
+			}
+			setCmdsErr(cmds[i+1:], err)
 			return err
 		}
-		if isRedisError(err) {
-			continue
-		}
+	}
+
+	if err := cmds[0].Err(); err != nil && shouldRetry(err, true) {
+		_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		return err
 	}
+
 	return nil
 }
 
@@ -1393,19 +1391,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 				wg.Add(1)
 				go func(node *clusterNode, cmds []Cmder) {
 					defer wg.Done()
-
-					err := c._processTxPipelineNode(ctx, node, cmds, failedCmds)
-					if err == nil {
-						return
-					}
-
-					if attempt < c.opt.MaxRedirects {
-						if err := c.mapCmdsByNode(ctx, failedCmds, cmds); err != nil {
-							setCmdsErr(cmds, err)
-						}
-					} else {
-						setCmdsErr(cmds, err)
-					}
+					c._processTxPipelineNode(ctx, node, cmds, failedCmds)
 				}(node, cmds)
 			}
 
@@ -1431,34 +1417,39 @@ func (c *ClusterClient) mapCmdsBySlot(ctx context.Context, cmds []Cmder) map[int
 
 func (c *ClusterClient) _processTxPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
-) error {
-	return node.Client.hooks.processTxPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-			err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-				return writeCmds(wr, cmds)
-			})
-			if err != nil {
-				return err
-			}
-
-			return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
-				statusCmd := cmds[0].(*StatusCmd)
-				// Trim multi and exec.
-				cmds = cmds[1 : len(cmds)-1]
-
-				err := c.txPipelineReadQueued(ctx, rd, statusCmd, cmds, failedCmds)
-				if err != nil {
-					moved, ask, addr := isMovedError(err)
-					if moved || ask {
-						return c.cmdsMoved(ctx, cmds, moved, ask, addr, failedCmds)
-					}
+) {
+	_ = node.Client.hooks.processTxPipeline(
+		ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+			return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+				if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+					return writeCmds(wr, cmds)
+				}); err != nil {
+					setCmdsErr(cmds, err)
 					return err
 				}
 
-				return pipelineReadCmds(rd, cmds)
+				return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
+					statusCmd := cmds[0].(*StatusCmd)
+					// Trim multi and exec.
+					trimmedCmds := cmds[1 : len(cmds)-1]
+
+					if err := c.txPipelineReadQueued(
+						ctx, rd, statusCmd, trimmedCmds, failedCmds,
+					); err != nil {
+						setCmdsErr(cmds, err)
+
+						moved, ask, addr := isMovedError(err)
+						if moved || ask {
+							return c.cmdsMoved(ctx, trimmedCmds, moved, ask, addr, failedCmds)
+						}
+
+						return err
+					}
+
+					return pipelineReadCmds(rd, trimmedCmds)
+				})
 			})
 		})
-	})
 }
 
 func (c *ClusterClient) txPipelineReadQueued(

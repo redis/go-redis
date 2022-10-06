@@ -1276,20 +1276,33 @@ var _ = Describe("ClusterClient timeout", func() {
 	Context("read/write timeout", func() {
 		BeforeEach(func() {
 			opt := redisClusterOptions()
-			opt.ReadTimeout = 250 * time.Millisecond
-			opt.WriteTimeout = 250 * time.Millisecond
-			opt.MaxRedirects = 1
 			client = cluster.newClusterClient(ctx, opt)
 
 			err := client.ForEachShard(ctx, func(ctx context.Context, client *redis.Client) error {
-				return client.ClientPause(ctx, pause).Err()
+				err := client.ClientPause(ctx, pause).Err()
+
+				opt := client.Options()
+				opt.ReadTimeout = time.Nanosecond
+				opt.WriteTimeout = time.Nanosecond
+
+				return err
 			})
 			Expect(err).NotTo(HaveOccurred())
+
+			// Overwrite timeouts after the client is initialized.
+			opt.ReadTimeout = time.Nanosecond
+			opt.WriteTimeout = time.Nanosecond
+			opt.MaxRedirects = 0
 		})
 
 		AfterEach(func() {
 			_ = client.ForEachShard(ctx, func(ctx context.Context, client *redis.Client) error {
 				defer GinkgoRecover()
+
+				opt := client.Options()
+				opt.ReadTimeout = time.Second
+				opt.WriteTimeout = time.Second
+
 				Eventually(func() error {
 					return client.Ping(ctx).Err()
 				}, 2*pause).ShouldNot(HaveOccurred())
