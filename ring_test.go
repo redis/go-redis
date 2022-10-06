@@ -137,12 +137,6 @@ var _ = Describe("Redis Ring", func() {
 		It("uses 3 shards after setting it to 3 shards", func() {
 			Expect(ring.Len(), 2)
 
-			// Start ringShard3.
-			var err error
-			ringShard3, err = startRedis(ringShard3Port)
-			Expect(err).NotTo(HaveOccurred())
-			defer ringShard3.Close()
-
 			shardName1 := "ringShardOne"
 			shardAddr1 := ":" + ringShard1Port
 			wantShard1 := ring.ShardByName(shardName1)

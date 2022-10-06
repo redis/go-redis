@@ -2,7 +2,6 @@ package redis_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -269,7 +268,7 @@ func (p *redisProcess) Close() error {
 		if err := p.Client.Ping(ctx).Err(); err != nil {
 			return nil
 		}
-		return errors.New("client is not shutdown")
+		return fmt.Errorf("client %s is not shutdown", p.Options().Addr)
 	}, 10*time.Second)
 	if err != nil {
 		return err

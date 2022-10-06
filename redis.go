@@ -341,6 +341,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			return writeCmd(wr, cmd)
 		})
 		if err != nil {
+			atomic.StoreUint32(&retryTimeout, 1)
 			return err
 		}
 
@@ -348,6 +349,8 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		if err != nil {
 			if cmd.readTimeout() == nil {
 				atomic.StoreUint32(&retryTimeout, 1)
+			} else {
+				atomic.StoreUint32(&retryTimeout, 0)
 			}
 			return err
 		}
