@@ -1272,15 +1272,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 				wg.Add(1)
 				go func(node *clusterNode, cmds []Cmder) {
 					defer wg.Done()
-
-					err := c._processTxPipelineNode(ctx, node, cmds, failedCmds)
-					if err == nil {
-						return
-					}
-
-					if attempt < c.opt.MaxRedirects {
-						_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
-					}
+					c._processTxPipelineNode(ctx, node, cmds, failedCmds)
 				}(node, cmds)
 			}
 
@@ -1306,8 +1298,8 @@ func (c *ClusterClient) mapCmdsBySlot(ctx context.Context, cmds []Cmder) map[int
 
 func (c *ClusterClient) _processTxPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
-) error {
-	return node.Client.hooks.processTxPipeline(
+) {
+	_ = node.Client.hooks.processTxPipeline(
 		ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 			return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 				if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {

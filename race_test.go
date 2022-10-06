@@ -2,7 +2,6 @@ package redis_test
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -288,26 +287,6 @@ var _ = Describe("races", func() {
 
 		wg.Wait()
 		Expect(atomic.LoadUint32(&received)).To(Equal(uint32(C * N)))
-	})
-
-	It("should abort on context timeout", func() {
-		opt := redisClusterOptions()
-		client := cluster.newClusterClient(ctx, opt)
-
-		ctx, cancel := context.WithCancel(context.Background())
-
-		wg := performAsync(C, func(_ int) {
-			_, err := client.XRead(ctx, &redis.XReadArgs{
-				Streams: []string{"test", "$"},
-				Block:   1 * time.Second,
-			}).Result()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(Or(Equal(context.Canceled.Error()), ContainSubstring("operation was canceled")))
-		})
-
-		time.Sleep(10 * time.Millisecond)
-		cancel()
-		wg.Wait()
 	})
 })
 
