@@ -227,6 +227,14 @@ var _ = Describe("Commands", func() {
 			Expect(info.Val()).To(ContainSubstring(`used_cpu_sys`))
 		})
 
+		It("should Info cpu and memory", func() {
+			info := client.Info(ctx, "cpu", "memory")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).NotTo(Equal(""))
+			Expect(info.Val()).To(ContainSubstring(`used_cpu_sys`))
+			Expect(info.Val()).To(ContainSubstring(`memory`))
+		})
+
 		It("should LastSave", func() {
 			lastSave := client.LastSave(ctx)
 			Expect(lastSave.Err()).NotTo(HaveOccurred())
