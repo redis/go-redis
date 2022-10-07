@@ -1,3 +1,7 @@
+# [9.0.0-beta.4](https://github.com/go-redis/redis/compare/v9.0.0-beta.3...v9.0.0-beta.4) (2022-10-07)
+
+
+
 # [9.0.0-beta.2](https://github.com/go-redis/redis/compare/v9.0.0-beta.1...v9.0.0-beta.2) (2022-07-28)
 
 
