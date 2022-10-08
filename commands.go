@@ -13,7 +13,7 @@ import (
 // otherwise you will receive an error: (error) ERR syntax error.
 // For example:
 //
-//    rdb.Set(ctx, key, value, redis.KeepTTL)
+//	rdb.Set(ctx, key, value, redis.KeepTTL)
 const KeepTTL = -1
 
 func usePrecise(dur time.Duration) bool {
@@ -2052,8 +2052,10 @@ func xClaimArgs(a *XClaimArgs) []interface{} {
 
 // xTrim If approx is true, add the "~" parameter, otherwise it is the default "=" (redis default).
 // example:
-//		XTRIM key MAXLEN/MINID threshold LIMIT limit.
-//		XTRIM key MAXLEN/MINID ~ threshold LIMIT limit.
+//
+//	XTRIM key MAXLEN/MINID threshold LIMIT limit.
+//	XTRIM key MAXLEN/MINID ~ threshold LIMIT limit.
+//
 // The redis-server version is lower than 6.2, please set limit to 0.
 func (c cmdable) xTrim(
 	ctx context.Context, key, strategy string,
@@ -2391,11 +2393,13 @@ func (c cmdable) ZPopMin(ctx context.Context, key string, count ...int64) *ZSlic
 
 // ZRangeArgs is all the options of the ZRange command.
 // In version> 6.2.0, you can replace the(cmd):
-//		ZREVRANGE,
-//		ZRANGEBYSCORE,
-//		ZREVRANGEBYSCORE,
-//		ZRANGEBYLEX,
-//		ZREVRANGEBYLEX.
+//
+//	ZREVRANGE,
+//	ZRANGEBYSCORE,
+//	ZREVRANGEBYSCORE,
+//	ZRANGEBYLEX,
+//	ZREVRANGEBYLEX.
+//
 // Please pay attention to your redis-server version.
 //
 // Rev, ByScore, ByLex and Offset+Count options require redis-server 6.2.0 and higher.
@@ -2799,7 +2803,7 @@ func (c cmdable) ClientKill(ctx context.Context, ipPort string) *StatusCmd {
 
 // ClientKillByFilter is new style syntax, while the ClientKill is old
 //
-//   CLIENT KILL <option> [value] ... <option> [value]
+//	CLIENT KILL <option> [value] ... <option> [value]
 func (c cmdable) ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "client"
@@ -2902,10 +2906,11 @@ func (c cmdable) FlushDBAsync(ctx context.Context) *StatusCmd {
 	return cmd
 }
 
-func (c cmdable) Info(ctx context.Context, section ...string) *StringCmd {
-	args := []interface{}{"info"}
-	if len(section) > 0 {
-		args = append(args, section[0])
+func (c cmdable) Info(ctx context.Context, sections ...string) *StringCmd {
+	args := make([]interface{}, 1+len(sections))
+	args[0] = "info"
+	for i, section := range sections {
+		args[i+1] = section
 	}
 	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
