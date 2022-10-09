@@ -1743,8 +1743,6 @@ type XAddArgs struct {
 	Values interface{}
 }
 
-// XAdd a.Limit has a bug, please confirm it and use it.
-// issue: https://github.com/redis/redis/issues/9046
 func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
 	args := make([]interface{}, 0, 11)
 	args = append(args, "xadd", a.Stream)
@@ -2081,22 +2079,14 @@ func (c cmdable) XTrimMaxLen(ctx context.Context, key string, maxLen int64) *Int
 	return c.xTrim(ctx, key, "maxlen", false, maxLen, 0)
 }
 
-// XTrimMaxLenApprox LIMIT has a bug, please confirm it and use it.
-// issue: https://github.com/redis/redis/issues/9046
-// cmd: XTRIM key MAXLEN ~ maxLen LIMIT limit
 func (c cmdable) XTrimMaxLenApprox(ctx context.Context, key string, maxLen, limit int64) *IntCmd {
 	return c.xTrim(ctx, key, "maxlen", true, maxLen, limit)
 }
 
-// XTrimMinID No `~` rules are used, `limit` cannot be used.
-// cmd: XTRIM key MINID minID
 func (c cmdable) XTrimMinID(ctx context.Context, key string, minID string) *IntCmd {
 	return c.xTrim(ctx, key, "minid", false, minID, 0)
 }
 
-// XTrimMinIDApprox LIMIT has a bug, please confirm it and use it.
-// issue: https://github.com/redis/redis/issues/9046
-// cmd: XTRIM key MINID ~ minID LIMIT limit
 func (c cmdable) XTrimMinIDApprox(ctx context.Context, key string, minID string, limit int64) *IntCmd {
 	return c.xTrim(ctx, key, "minid", true, minID, limit)
 }

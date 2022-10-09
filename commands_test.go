@@ -4381,9 +4381,6 @@ var _ = Describe("Commands", func() {
 			Expect(id).To(Equal("3-0"))
 		})
 
-		// TODO XTrimMaxLenApprox/XTrimMinIDApprox There is a bug in the limit parameter.
-		// TODO Don't test it for now.
-		// TODO link: https://github.com/redis/redis/issues/9046
 		It("should XTrimMaxLen", func() {
 			n, err := client.XTrimMaxLen(ctx, "stream", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -4425,9 +4422,6 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		// TODO XAdd There is a bug in the limit parameter.
-		// TODO Don't test it for now.
-		// TODO link: https://github.com/redis/redis/issues/9046
 		It("should XAdd with MaxLen", func() {
 			id, err := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
