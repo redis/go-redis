@@ -1,7 +1,6 @@
 package redis_test
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
@@ -416,37 +415,28 @@ func (cn *badConn) Write([]byte) (int, error) {
 //------------------------------------------------------------------------------
 
 type hook struct {
-	beforeProcess func(ctx context.Context, cmd redis.Cmder) (context.Context, error)
-	afterProcess  func(ctx context.Context, cmd redis.Cmder) error
-
-	beforeProcessPipeline func(ctx context.Context, cmds []redis.Cmder) (context.Context, error)
-	afterProcessPipeline  func(ctx context.Context, cmds []redis.Cmder) error
+	dialHook            func(hook redis.DialHook) redis.DialHook
+	processHook         func(hook redis.ProcessHook) redis.ProcessHook
+	processPipelineHook func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook
 }
 
-func (h *hook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
-	if h.beforeProcess != nil {
-		return h.beforeProcess(ctx, cmd)
+func (h *hook) DialHook(hook redis.DialHook) redis.DialHook {
+	if h.dialHook != nil {
+		return h.dialHook(hook)
 	}
-	return ctx, nil
+	return hook
 }
 
-func (h *hook) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
-	if h.afterProcess != nil {
-		return h.afterProcess(ctx, cmd)
+func (h *hook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
+	if h.processHook != nil {
+		return h.processHook(hook)
 	}
-	return nil
+	return hook
 }
 
-func (h *hook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
-	if h.beforeProcessPipeline != nil {
-		return h.beforeProcessPipeline(ctx, cmds)
+func (h *hook) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	if h.processPipelineHook != nil {
+		return h.processPipelineHook(hook)
 	}
-	return ctx, nil
-}
-
-func (h *hook) AfterProcessPipeline(ctx context.Context, cmds []redis.Cmder) error {
-	if h.afterProcessPipeline != nil {
-		return h.afterProcessPipeline(ctx, cmds)
-	}
-	return nil
+	return hook
 }

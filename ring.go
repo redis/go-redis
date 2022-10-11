@@ -213,11 +213,12 @@ func (shard *ringShard) Vote(up bool) bool {
 type ringSharding struct {
 	opt *RingOptions
 
-	mu       sync.RWMutex
-	shards   *ringShards
-	closed   bool
-	hash     ConsistentHash
-	numShard int
+	mu        sync.RWMutex
+	shards    *ringShards
+	closed    bool
+	hash      ConsistentHash
+	numShard  int
+	onNewNode []func(rdb *Client)
 }
 
 type ringShards struct {
@@ -234,6 +235,12 @@ func newRingSharding(opt *RingOptions) *ringSharding {
 	return c
 }
 
+func (c *ringSharding) OnNewNode(fn func(rdb *Client)) {
+	c.mu.Lock()
+	c.onNewNode = append(c.onNewNode, fn)
+	c.mu.Unlock()
+}
+
 // SetAddrs replaces the shards in use, such that you can increase and
 // decrease number of shards, that you use. It will reuse shards that
 // existed before and close the ones that will not be used anymore.
@@ -245,7 +252,7 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 		return
 	}
 
-	shards, cleanup := newRingShards(c.opt, addrs, c.shards)
+	shards, cleanup := c.newRingShards(addrs, c.shards)
 	c.shards = shards
 	c.mu.Unlock()
 
@@ -253,8 +260,8 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 	cleanup()
 }
 
-func newRingShards(
-	opt *RingOptions, addrs map[string]string, existingShards *ringShards,
+func (c *ringSharding) newRingShards(
+	addrs map[string]string, existingShards *ringShards,
 ) (*ringShards, func()) {
 	shardMap := make(map[string]*ringShard)     // indexed by addr
 	unusedShards := make(map[string]*ringShard) // indexed by addr
@@ -276,7 +283,12 @@ func newRingShards(
 			shards.m[name] = shard
 			delete(unusedShards, addr)
 		} else {
-			shards.m[name] = newRingShard(opt, addr)
+			shard := newRingShard(c.opt, addr)
+			shards.m[name] = shard
+
+			for _, fn := range c.onNewNode {
+				fn(shard.Client)
+			}
 		}
 	}
 
@@ -460,13 +472,13 @@ func (c *ringSharding) Close() error {
 // and can tolerate losing data when one of the servers dies.
 // Otherwise you should use Redis Cluster.
 type Ring struct {
+	cmdable
+	hooks
+
 	opt               *RingOptions
 	sharding          *ringSharding
 	cmdsInfoCache     *cmdsInfoCache
 	heartbeatCancelFn context.CancelFunc
-
-	cmdable
-	hooks
 }
 
 func NewRing(opt *RingOptions) *Ring {
@@ -482,6 +494,14 @@ func NewRing(opt *RingOptions) *Ring {
 
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 	ring.cmdable = ring.Process
+
+	ring.hooks.process = ring.process
+	ring.hooks.processPipeline = func(ctx context.Context, cmds []Cmder) error {
+		return ring.generalProcessPipeline(ctx, cmds, false)
+	}
+	ring.hooks.processTxPipeline = func(ctx context.Context, cmds []Cmder) error {
+		return ring.generalProcessPipeline(ctx, cmds, true)
+	}
 
 	go ring.sharding.Heartbeat(hbCtx, opt.HeartbeatFrequency)
 
@@ -500,7 +520,9 @@ func (c *Ring) Do(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (c *Ring) Process(ctx context.Context, cmd Cmder) error {
-	return c.hooks.process(ctx, cmd, c.process)
+	err := c.hooks.process(ctx, cmd)
+	cmd.SetErr(err)
+	return err
 }
 
 // Options returns read-only Options that were used to create the client.
@@ -571,6 +593,10 @@ func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 		panic(err)
 	}
 	return shard.Client.SSubscribe(ctx, channels...)
+}
+
+func (c *Ring) OnNewNode(fn func(rdb *Client)) {
+	c.sharding.OnNewNode(fn)
 }
 
 // ForEachShard concurrently calls the fn on each live shard in the ring.
@@ -677,16 +703,10 @@ func (c *Ring) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.processPipeline,
+		exec: pipelineExecer(c.hooks.processPipeline),
 	}
 	pipe.init()
 	return &pipe
-}
-
-func (c *Ring) processPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.hooks.processPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		return c.generalProcessPipeline(ctx, cmds, false)
-	})
 }
 
 func (c *Ring) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
@@ -695,22 +715,25 @@ func (c *Ring) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 
 func (c *Ring) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.processTxPipeline,
+		exec: func(ctx context.Context, cmds []Cmder) error {
+			cmds = wrapMultiExec(ctx, cmds)
+			return c.hooks.processTxPipeline(ctx, cmds)
+		},
 	}
 	pipe.init()
 	return &pipe
 }
 
-func (c *Ring) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.hooks.processPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		return c.generalProcessPipeline(ctx, cmds, true)
-	})
-}
-
 func (c *Ring) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, tx bool,
 ) error {
+	if tx {
+		// Trim multi .. exec.
+		cmds = cmds[1 : len(cmds)-1]
+	}
+
 	cmdsMap := make(map[string][]Cmder)
+
 	for _, cmd := range cmds {
 		cmdInfo := c.cmdInfo(ctx, cmd.Name())
 		hash := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
@@ -726,28 +749,24 @@ func (c *Ring) generalProcessPipeline(
 		go func(hash string, cmds []Cmder) {
 			defer wg.Done()
 
-			_ = c.processShardPipeline(ctx, hash, cmds, tx)
+			// TODO: retry?
+			shard, err := c.sharding.GetByName(hash)
+			if err != nil {
+				setCmdsErr(cmds, err)
+				return
+			}
+
+			if tx {
+				cmds = wrapMultiExec(ctx, cmds)
+				shard.Client.hooks.processTxPipeline(ctx, cmds)
+			} else {
+				shard.Client.hooks.processPipeline(ctx, cmds)
+			}
 		}(hash, cmds)
 	}
 
 	wg.Wait()
 	return cmdsFirstErr(cmds)
-}
-
-func (c *Ring) processShardPipeline(
-	ctx context.Context, hash string, cmds []Cmder, tx bool,
-) error {
-	// TODO: retry?
-	shard, err := c.sharding.GetByName(hash)
-	if err != nil {
-		setCmdsErr(cmds, err)
-		return err
-	}
-
-	if tx {
-		return shard.Client.processTxPipeline(ctx, cmds)
-	}
-	return shard.Client.processPipeline(ctx, cmds)
 }
 
 func (c *Ring) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
@@ -756,6 +775,7 @@ func (c *Ring) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) er
 	}
 
 	var shards []*ringShard
+
 	for _, key := range keys {
 		if key != "" {
 			shard, err := c.sharding.GetByKey(hashtag.Key(key))

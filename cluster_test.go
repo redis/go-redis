@@ -755,6 +755,9 @@ var _ = Describe("ClusterClient", func() {
 		})
 
 		It("supports Process hook", func() {
+			testCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
 			err := client.Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -766,29 +769,47 @@ var _ = Describe("ClusterClient", func() {
 			var stack []string
 
 			clusterHook := &hook{
-				beforeProcess: func(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
-					Expect(cmd.String()).To(Equal("ping: "))
-					stack = append(stack, "cluster.BeforeProcess")
-					return ctx, nil
-				},
-				afterProcess: func(ctx context.Context, cmd redis.Cmder) error {
-					Expect(cmd.String()).To(Equal("ping: PONG"))
-					stack = append(stack, "cluster.AfterProcess")
-					return nil
+				processHook: func(hook redis.ProcessHook) redis.ProcessHook {
+					return func(ctx context.Context, cmd redis.Cmder) error {
+						select {
+						case <-testCtx.Done():
+							return hook(ctx, cmd)
+						default:
+						}
+
+						Expect(cmd.String()).To(Equal("ping: "))
+						stack = append(stack, "cluster.BeforeProcess")
+
+						err := hook(ctx, cmd)
+
+						Expect(cmd.String()).To(Equal("ping: PONG"))
+						stack = append(stack, "cluster.AfterProcess")
+
+						return err
+					}
 				},
 			}
 			client.AddHook(clusterHook)
 
 			nodeHook := &hook{
-				beforeProcess: func(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
-					Expect(cmd.String()).To(Equal("ping: "))
-					stack = append(stack, "shard.BeforeProcess")
-					return ctx, nil
-				},
-				afterProcess: func(ctx context.Context, cmd redis.Cmder) error {
-					Expect(cmd.String()).To(Equal("ping: PONG"))
-					stack = append(stack, "shard.AfterProcess")
-					return nil
+				processHook: func(hook redis.ProcessHook) redis.ProcessHook {
+					return func(ctx context.Context, cmd redis.Cmder) error {
+						select {
+						case <-testCtx.Done():
+							return hook(ctx, cmd)
+						default:
+						}
+
+						Expect(cmd.String()).To(Equal("ping: "))
+						stack = append(stack, "shard.BeforeProcess")
+
+						err := hook(ctx, cmd)
+
+						Expect(cmd.String()).To(Equal("ping: PONG"))
+						stack = append(stack, "shard.AfterProcess")
+
+						return err
+					}
 				},
 			}
 
@@ -805,11 +826,6 @@ var _ = Describe("ClusterClient", func() {
 				"shard.AfterProcess",
 				"cluster.AfterProcess",
 			}))
-
-			clusterHook.beforeProcess = nil
-			clusterHook.afterProcess = nil
-			nodeHook.beforeProcess = nil
-			nodeHook.afterProcess = nil
 		})
 
 		It("supports Pipeline hook", func() {
@@ -824,33 +840,39 @@ var _ = Describe("ClusterClient", func() {
 			var stack []string
 
 			client.AddHook(&hook{
-				beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
-					Expect(cmds).To(HaveLen(1))
-					Expect(cmds[0].String()).To(Equal("ping: "))
-					stack = append(stack, "cluster.BeforeProcessPipeline")
-					return ctx, nil
-				},
-				afterProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) error {
-					Expect(cmds).To(HaveLen(1))
-					Expect(cmds[0].String()).To(Equal("ping: PONG"))
-					stack = append(stack, "cluster.AfterProcessPipeline")
-					return nil
+				processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+					return func(ctx context.Context, cmds []redis.Cmder) error {
+						Expect(cmds).To(HaveLen(1))
+						Expect(cmds[0].String()).To(Equal("ping: "))
+						stack = append(stack, "cluster.BeforeProcessPipeline")
+
+						err := hook(ctx, cmds)
+
+						Expect(cmds).To(HaveLen(1))
+						Expect(cmds[0].String()).To(Equal("ping: PONG"))
+						stack = append(stack, "cluster.AfterProcessPipeline")
+
+						return err
+					}
 				},
 			})
 
 			_ = client.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
 				node.AddHook(&hook{
-					beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
-						Expect(cmds).To(HaveLen(1))
-						Expect(cmds[0].String()).To(Equal("ping: "))
-						stack = append(stack, "shard.BeforeProcessPipeline")
-						return ctx, nil
-					},
-					afterProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) error {
-						Expect(cmds).To(HaveLen(1))
-						Expect(cmds[0].String()).To(Equal("ping: PONG"))
-						stack = append(stack, "shard.AfterProcessPipeline")
-						return nil
+					processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+						return func(ctx context.Context, cmds []redis.Cmder) error {
+							Expect(cmds).To(HaveLen(1))
+							Expect(cmds[0].String()).To(Equal("ping: "))
+							stack = append(stack, "shard.BeforeProcessPipeline")
+
+							err := hook(ctx, cmds)
+
+							Expect(cmds).To(HaveLen(1))
+							Expect(cmds[0].String()).To(Equal("ping: PONG"))
+							stack = append(stack, "shard.AfterProcessPipeline")
+
+							return err
+						}
 					},
 				})
 				return nil
@@ -881,33 +903,39 @@ var _ = Describe("ClusterClient", func() {
 			var stack []string
 
 			client.AddHook(&hook{
-				beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
-					Expect(cmds).To(HaveLen(3))
-					Expect(cmds[1].String()).To(Equal("ping: "))
-					stack = append(stack, "cluster.BeforeProcessPipeline")
-					return ctx, nil
-				},
-				afterProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) error {
-					Expect(cmds).To(HaveLen(3))
-					Expect(cmds[1].String()).To(Equal("ping: PONG"))
-					stack = append(stack, "cluster.AfterProcessPipeline")
-					return nil
+				processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+					return func(ctx context.Context, cmds []redis.Cmder) error {
+						Expect(cmds).To(HaveLen(3))
+						Expect(cmds[1].String()).To(Equal("ping: "))
+						stack = append(stack, "cluster.BeforeProcessPipeline")
+
+						err := hook(ctx, cmds)
+
+						Expect(cmds).To(HaveLen(3))
+						Expect(cmds[1].String()).To(Equal("ping: PONG"))
+						stack = append(stack, "cluster.AfterProcessPipeline")
+
+						return err
+					}
 				},
 			})
 
 			_ = client.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
 				node.AddHook(&hook{
-					beforeProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
-						Expect(cmds).To(HaveLen(3))
-						Expect(cmds[1].String()).To(Equal("ping: "))
-						stack = append(stack, "shard.BeforeProcessPipeline")
-						return ctx, nil
-					},
-					afterProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) error {
-						Expect(cmds).To(HaveLen(3))
-						Expect(cmds[1].String()).To(Equal("ping: PONG"))
-						stack = append(stack, "shard.AfterProcessPipeline")
-						return nil
+					processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+						return func(ctx context.Context, cmds []redis.Cmder) error {
+							Expect(cmds).To(HaveLen(3))
+							Expect(cmds[1].String()).To(Equal("ping: "))
+							stack = append(stack, "shard.BeforeProcessPipeline")
+
+							err := hook(ctx, cmds)
+
+							Expect(cmds).To(HaveLen(3))
+							Expect(cmds[1].String()).To(Equal("ping: PONG"))
+							stack = append(stack, "shard.AfterProcessPipeline")
+
+							return err
+						}
 					},
 				})
 				return nil

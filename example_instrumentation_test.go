@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"fmt"
+	"net"
 
 	"github.com/go-redis/redis/v9"
 )
@@ -11,24 +12,28 @@ type redisHook struct{}
 
 var _ redis.Hook = redisHook{}
 
-func (redisHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
-	fmt.Printf("starting processing: <%s>\n", cmd)
-	return ctx, nil
+func (redisHook) DialHook(hook redis.DialHook) redis.DialHook {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return hook(ctx, network, addr)
+	}
 }
 
-func (redisHook) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
-	fmt.Printf("finished processing: <%s>\n", cmd)
-	return nil
+func (redisHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		fmt.Printf("starting processing: <%s>\n", cmd)
+		err := hook(ctx, cmd)
+		fmt.Printf("finished processing: <%s>\n", cmd)
+		return err
+	}
 }
 
-func (redisHook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
-	fmt.Printf("pipeline starting processing: %v\n", cmds)
-	return ctx, nil
-}
-
-func (redisHook) AfterProcessPipeline(ctx context.Context, cmds []redis.Cmder) error {
-	fmt.Printf("pipeline finished processing: %v\n", cmds)
-	return nil
+func (redisHook) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		fmt.Printf("pipeline starting processing: %v\n", cmds)
+		err := hook(ctx, cmds)
+		fmt.Printf("pipeline finished processing: %v\n", cmds)
+		return err
+	}
 }
 
 func Example_instrumentation() {

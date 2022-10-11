@@ -71,11 +71,8 @@ type ClusterOptions struct {
 	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
 
-	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
-	PoolFIFO bool
-
-	// PoolSize applies per cluster node and not for the whole cluster.
-	PoolSize        int
+	PoolFIFO        bool
+	PoolSize        int // applies per cluster node and not for the whole cluster
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
@@ -391,6 +388,7 @@ type clusterNodes struct {
 	nodes       map[string]*clusterNode
 	activeAddrs []string
 	closed      bool
+	onNewNode   []func(rdb *Client)
 
 	_generation uint32 // atomic
 }
@@ -424,6 +422,12 @@ func (c *clusterNodes) Close() error {
 	c.activeAddrs = nil
 
 	return firstErr
+}
+
+func (c *clusterNodes) OnNewNode(fn func(rdb *Client)) {
+	c.mu.Lock()
+	c.onNewNode = append(c.onNewNode, fn)
+	c.mu.Unlock()
 }
 
 func (c *clusterNodes) Addrs() ([]string, error) {
@@ -503,6 +507,9 @@ func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
 	}
 
 	node = newClusterNode(c.opt, addr)
+	for _, fn := range c.onNewNode {
+		fn(node.Client)
+	}
 
 	c.addrs = appendIfNotExists(c.addrs, addr)
 	c.nodes[addr] = node
@@ -812,18 +819,14 @@ func (c *clusterStateHolder) ReloadOrGet(ctx context.Context) (*clusterState, er
 
 //------------------------------------------------------------------------------
 
-type clusterClient struct {
-	opt           *ClusterOptions
-	nodes         *clusterNodes
-	state         *clusterStateHolder //nolint:structcheck
-	cmdsInfoCache *cmdsInfoCache      //nolint:structcheck
-}
-
 // ClusterClient is a Redis Cluster client representing a pool of zero
 // or more underlying connections. It's safe for concurrent use by
 // multiple goroutines.
 type ClusterClient struct {
-	*clusterClient
+	opt           *ClusterOptions
+	nodes         *clusterNodes
+	state         *clusterStateHolder
+	cmdsInfoCache *cmdsInfoCache
 	cmdable
 	hooks
 }
@@ -834,14 +837,17 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
 
 	c := &ClusterClient{
-		clusterClient: &clusterClient{
-			opt:   opt,
-			nodes: newClusterNodes(opt),
-		},
+		opt:   opt,
+		nodes: newClusterNodes(opt),
 	}
+
 	c.state = newClusterStateHolder(c.loadState)
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
+
+	c.hooks.process = c.process
+	c.hooks.processPipeline = c._processPipeline
+	c.hooks.processTxPipeline = c._processTxPipeline
 
 	return c
 }
@@ -873,13 +879,14 @@ func (c *ClusterClient) Do(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
-	return c.hooks.process(ctx, cmd, c.process)
+	err := c.hooks.process(ctx, cmd)
+	cmd.SetErr(err)
+	return err
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	cmdInfo := c.cmdInfo(ctx, cmd.Name())
 	slot := c.cmdSlot(ctx, cmd)
-
 	var node *clusterNode
 	var ask bool
 	var lastErr error
@@ -899,11 +906,12 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		if ask {
+			ask = false
+
 			pipe := node.Client.Pipeline()
 			_ = pipe.Process(ctx, NewCmd(ctx, "asking"))
 			_ = pipe.Process(ctx, cmd)
 			_, lastErr = pipe.Exec(ctx)
-			ask = false
 		} else {
 			lastErr = node.Client.Process(ctx, cmd)
 		}
@@ -956,6 +964,10 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		return lastErr
 	}
 	return lastErr
+}
+
+func (c *ClusterClient) OnNewNode(fn func(rdb *Client)) {
+	c.nodes.OnNewNode(fn)
 }
 
 // ForEachMaster concurrently calls the fn on each master node in the cluster.
@@ -1165,7 +1177,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 
 func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.processPipeline,
+		exec: pipelineExecer(c.hooks.processPipeline),
 	}
 	pipe.init()
 	return &pipe
@@ -1173,10 +1185,6 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 
 func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().Pipelined(ctx, fn)
-}
-
-func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.hooks.processPipeline(ctx, cmds, c._processPipeline)
 }
 
 func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) error {
@@ -1258,7 +1266,7 @@ func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool 
 func (c *ClusterClient) _processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
-	_ = node.Client.hooks.processPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+	_ = node.Client.hooks.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 			if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 				return writeCmds(wr, cmds)
@@ -1344,7 +1352,10 @@ func (c *ClusterClient) checkMovedErr(
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.processTxPipeline,
+		exec: func(ctx context.Context, cmds []Cmder) error {
+			cmds = wrapMultiExec(ctx, cmds)
+			return c.hooks.processTxPipeline(ctx, cmds)
+		},
 	}
 	pipe.init()
 	return &pipe
@@ -1352,10 +1363,6 @@ func (c *ClusterClient) TxPipeline() Pipeliner {
 
 func (c *ClusterClient) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.TxPipeline().Pipelined(ctx, fn)
-}
-
-func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.hooks.processTxPipeline(ctx, cmds, c._processTxPipeline)
 }
 
 func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) error {
@@ -1419,38 +1426,38 @@ func (c *ClusterClient) mapCmdsBySlot(ctx context.Context, cmds []Cmder) map[int
 func (c *ClusterClient) _processTxPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
-	_ = node.Client.hooks.processTxPipeline(
-		ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-			return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-				if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
-					return writeCmds(wr, cmds)
-				}); err != nil {
+	cmds = wrapMultiExec(ctx, cmds)
+	_ = node.Client.hooks.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+		return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+				return writeCmds(wr, cmds)
+			}); err != nil {
+				setCmdsErr(cmds, err)
+				return err
+			}
+
+			return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+				statusCmd := cmds[0].(*StatusCmd)
+				// Trim multi and exec.
+				trimmedCmds := cmds[1 : len(cmds)-1]
+
+				if err := c.txPipelineReadQueued(
+					ctx, rd, statusCmd, trimmedCmds, failedCmds,
+				); err != nil {
 					setCmdsErr(cmds, err)
+
+					moved, ask, addr := isMovedError(err)
+					if moved || ask {
+						return c.cmdsMoved(ctx, trimmedCmds, moved, ask, addr, failedCmds)
+					}
+
 					return err
 				}
 
-				return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-					statusCmd := cmds[0].(*StatusCmd)
-					// Trim multi and exec.
-					trimmedCmds := cmds[1 : len(cmds)-1]
-
-					if err := c.txPipelineReadQueued(
-						ctx, rd, statusCmd, trimmedCmds, failedCmds,
-					); err != nil {
-						setCmdsErr(cmds, err)
-
-						moved, ask, addr := isMovedError(err)
-						if moved || ask {
-							return c.cmdsMoved(ctx, trimmedCmds, moved, ask, addr, failedCmds)
-						}
-
-						return err
-					}
-
-					return pipelineReadCmds(rd, trimmedCmds)
-				})
+				return pipelineReadCmds(rd, trimmedCmds)
 			})
 		})
+	})
 }
 
 func (c *ClusterClient) txPipelineReadQueued(
@@ -1742,7 +1749,7 @@ func (c *ClusterClient) cmdNode(
 	return state.slotMasterNode(slot)
 }
 
-func (c *clusterClient) slotReadOnlyNode(state *clusterState, slot int) (*clusterNode, error) {
+func (c *ClusterClient) slotReadOnlyNode(state *clusterState, slot int) (*clusterNode, error) {
 	if c.opt.RouteByLatency {
 		return state.slotClosestNode(slot)
 	}
