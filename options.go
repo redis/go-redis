@@ -83,10 +83,14 @@ type Options struct {
 	//   - `-1` - no timeout (block indefinitely).
 	//   - `-2` - disables SetWriteDeadline calls completely.
 	WriteTimeout time.Duration
+	// ContextTimeoutEnabled controls whether the client respects context timeouts and deadlines.
+	// See https://redis.uptrace.dev/guide/go-redis-debugging.html#timeouts
+	ContextTimeoutEnabled bool
 
 	// Type of connection pool.
 	// true for FIFO pool, false for LIFO pool.
-	// Note that fifo has higher overhead compared to lifo.
+	// Note that FIFO has slightly higher overhead compared to LIFO,
+	// but it helps closing idle connections faster reducing the pool size.
 	PoolFIFO bool
 	// Maximum number of socket connections.
 	// Default is 10 connections per every available CPU as reported by runtime.GOMAXPROCS.
@@ -100,22 +104,30 @@ type Options struct {
 	MinIdleConns int
 	// Maximum number of idle connections.
 	MaxIdleConns int
-	// Amount of time after which client closes idle connections.
+	// ConnMaxIdleTime is the maximum amount of time a connection may be idle.
 	// Should be less than server's timeout.
+	//
+	// Expired connections may be closed lazily before reuse.
+	// If d <= 0, connections are not closed due to a connection's idle time.
+	//
 	// Default is 5 minutes. -1 disables idle timeout check.
 	ConnMaxIdleTime time.Duration
-	// Connection age at which client retires (closes) the connection.
-	// Default is to not close aged connections.
+	// ConnMaxLifetime is the maximum amount of time a connection may be reused.
+	//
+	// Expired connections may be closed lazily before reuse.
+	// If <= 0, connections are not closed due to a connection's age.
+	//
+	// Default is to not close idle connections.
 	ConnMaxLifetime time.Duration
 
-	// Enables read only queries on slave nodes.
-	readOnly bool
-
-	// TLS Config to use. When set TLS will be negotiated.
+	// TLS Config to use. When set, TLS will be negotiated.
 	TLSConfig *tls.Config
 
-	// Limiter interface used to implemented circuit breaker or rate limiter.
+	// Limiter interface used to implement circuit breaker or rate limiter.
 	Limiter Limiter
+
+	// Enables read only queries on slave/follower nodes.
+	readOnly bool
 }
 
 func (opt *Options) init() {

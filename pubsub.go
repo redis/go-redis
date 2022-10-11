@@ -24,10 +24,10 @@ type PubSub struct {
 	newConn   func(ctx context.Context, channels []string) (*pool.Conn, error)
 	closeConn func(*pool.Conn) error
 
-	mu       sync.Mutex
-	cn       *pool.Conn
-	channels map[string]struct{}
-	patterns map[string]struct{}
+	mu        sync.Mutex
+	cn        *pool.Conn
+	channels  map[string]struct{}
+	patterns  map[string]struct{}
 	schannels map[string]struct{}
 
 	closed bool
@@ -84,7 +84,7 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 }
 
 func (c *PubSub) writeCmd(ctx context.Context, cn *pool.Conn, cmd Cmder) error {
-	return cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+	return cn.WithWriter(context.Background(), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmd(wr, cmd)
 	})
 }
@@ -408,7 +408,7 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		return nil, err
 	}
 
-	err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
+	err = cn.WithReader(context.Background(), timeout, func(rd *proto.Reader) error {
 		return c.cmd.readReply(rd)
 	})
 

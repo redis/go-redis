@@ -32,9 +32,10 @@ type UniversalOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	DialTimeout           time.Duration
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	ContextTimeoutEnabled bool
 
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
@@ -84,9 +85,10 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		MinRetryBackoff: o.MinRetryBackoff,
 		MaxRetryBackoff: o.MaxRetryBackoff,
 
-		DialTimeout:  o.DialTimeout,
-		ReadTimeout:  o.ReadTimeout,
-		WriteTimeout: o.WriteTimeout,
+		DialTimeout:           o.DialTimeout,
+		ReadTimeout:           o.ReadTimeout,
+		WriteTimeout:          o.WriteTimeout,
+		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
 
 		PoolFIFO: o.PoolFIFO,
 
@@ -124,9 +126,10 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		MinRetryBackoff: o.MinRetryBackoff,
 		MaxRetryBackoff: o.MaxRetryBackoff,
 
-		DialTimeout:  o.DialTimeout,
-		ReadTimeout:  o.ReadTimeout,
-		WriteTimeout: o.WriteTimeout,
+		DialTimeout:           o.DialTimeout,
+		ReadTimeout:           o.ReadTimeout,
+		WriteTimeout:          o.WriteTimeout,
+		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
 
 		PoolFIFO:        o.PoolFIFO,
 		PoolSize:        o.PoolSize,
@@ -160,9 +163,10 @@ func (o *UniversalOptions) Simple() *Options {
 		MinRetryBackoff: o.MinRetryBackoff,
 		MaxRetryBackoff: o.MaxRetryBackoff,
 
-		DialTimeout:  o.DialTimeout,
-		ReadTimeout:  o.ReadTimeout,
-		WriteTimeout: o.WriteTimeout,
+		DialTimeout:           o.DialTimeout,
+		ReadTimeout:           o.ReadTimeout,
+		WriteTimeout:          o.WriteTimeout,
+		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
 
 		PoolFIFO:        o.PoolFIFO,
 		PoolSize:        o.PoolSize,
