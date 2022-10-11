@@ -413,7 +413,8 @@ func (c *baseClient) _generalProcessPipeline(
 			}
 		}
 
-		var canRetry bool
+		// Enable retries by default to retry dial errors returned by withConn.
+		canRetry := true
 		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 			var err error
 			canRetry, err = p(ctx, cn, cmds)
