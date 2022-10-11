@@ -59,9 +59,10 @@ type FailoverOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	DialTimeout           time.Duration
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	ContextTimeoutEnabled bool
 
 	PoolFIFO bool
 
@@ -90,9 +91,10 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
 
-		DialTimeout:  opt.DialTimeout,
-		ReadTimeout:  opt.ReadTimeout,
-		WriteTimeout: opt.WriteTimeout,
+		DialTimeout:           opt.DialTimeout,
+		ReadTimeout:           opt.ReadTimeout,
+		WriteTimeout:          opt.WriteTimeout,
+		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,

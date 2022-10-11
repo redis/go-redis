@@ -63,7 +63,9 @@ func (cn *Conn) RemoteAddr() net.Addr {
 	return nil
 }
 
-func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error) error {
+func (cn *Conn) WithReader(
+	ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error,
+) error {
 	if timeout >= 0 {
 		if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
 			return err

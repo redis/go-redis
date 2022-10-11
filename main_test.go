@@ -123,9 +123,10 @@ func redisOptions() *redis.Options {
 		Addr: redisAddr,
 		DB:   15,
 
-		DialTimeout:  10 * time.Second,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		DialTimeout:           10 * time.Second,
+		ReadTimeout:           30 * time.Second,
+		WriteTimeout:          30 * time.Second,
+		ContextTimeoutEnabled: true,
 
 		MaxRetries: -1,
 

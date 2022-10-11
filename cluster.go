@@ -66,9 +66,10 @@ type ClusterOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	DialTimeout           time.Duration
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	ContextTimeoutEnabled bool
 
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
@@ -1259,14 +1260,14 @@ func (c *ClusterClient) _processPipelineNode(
 ) {
 	_ = node.Client.hooks.processPipeline(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-			if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+			if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 				return writeCmds(wr, cmds)
 			}); err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
 
-			return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
+			return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
 				return c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
 			})
 		})
@@ -1421,14 +1422,14 @@ func (c *ClusterClient) _processTxPipelineNode(
 	_ = node.Client.hooks.processTxPipeline(
 		ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 			return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-				if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+				if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 					return writeCmds(wr, cmds)
 				}); err != nil {
 					setCmdsErr(cmds, err)
 					return err
 				}
 
-				return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
+				return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
 					statusCmd := cmds[0].(*StatusCmd)
 					// Trim multi and exec.
 					trimmedCmds := cmds[1 : len(cmds)-1]
@@ -1786,6 +1787,13 @@ func (c *ClusterClient) MasterForKey(ctx context.Context, key string) (*Client, 
 		return nil, err
 	}
 	return node.Client, err
+}
+
+func (c *ClusterClient) context(ctx context.Context) context.Context {
+	if c.opt.ContextTimeoutEnabled {
+		return ctx
+	}
+	return context.Background()
 }
 
 func appendUniqueNode(nodes []*clusterNode, node *clusterNode) []*clusterNode {
