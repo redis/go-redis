@@ -14,7 +14,10 @@ var _ redis.Hook = redisHook{}
 
 func (redisHook) DialHook(hook redis.DialHook) redis.DialHook {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return hook(ctx, network, addr)
+		fmt.Printf("dialing %s %s\n", network, addr)
+		conn, err := hook(ctx, network, addr)
+		fmt.Printf("finished dialing %s %s\n", network, addr)
+		return conn, err
 	}
 }
 
@@ -44,6 +47,8 @@ func Example_instrumentation() {
 
 	rdb.Ping(ctx)
 	// Output: starting processing: <ping: >
+	// dialing tcp :6379
+	// finished dialing tcp :6379
 	// finished processing: <ping: PONG>
 }
 

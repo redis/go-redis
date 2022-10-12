@@ -21,4 +21,6 @@ rdb := rdb.NewClient(&rdb.Options{...})
 rdb.AddHook(redisotel.NewTracingHook())
 ```
 
-See [example](example) and [documentation](https://redis.uptrace.dev/tracing/) for more details.
+See [example](example) and
+[Monitoring Go Redis Performance and Errors](https://redis.uptrace.dev/guide/go-redis-monitoring.html)
+for details.
