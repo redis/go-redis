@@ -37,29 +37,19 @@ type (
 )
 
 type hooks struct {
-	slice             []Hook
-	dial              DialHook
-	process           ProcessHook
-	processPipeline   ProcessPipelineHook
-	processTxPipeline ProcessPipelineHook
+	slice                 []Hook
+	dialHook              DialHook
+	processHook           ProcessHook
+	processPipelineHook   ProcessPipelineHook
+	processTxPipelineHook ProcessPipelineHook
 }
 
 func (hs *hooks) AddHook(hook Hook) {
-	if hs.process == nil {
-		panic("hs.process == nil")
-	}
-	if hs.processPipeline == nil {
-		panic("hs.processPipeline == nil")
-	}
-	if hs.processTxPipeline == nil {
-		panic("hs.processTxPipeline == nil")
-	}
-
 	hs.slice = append(hs.slice, hook)
-	hs.dial = hook.DialHook(hs.dial)
-	hs.process = hook.ProcessHook(hs.process)
-	hs.processPipeline = hook.ProcessPipelineHook(hs.processPipeline)
-	hs.processTxPipeline = hook.ProcessPipelineHook(hs.processTxPipeline)
+	hs.dialHook = hook.DialHook(hs.dialHook)
+	hs.processHook = hook.ProcessHook(hs.processHook)
+	hs.processPipelineHook = hook.ProcessPipelineHook(hs.processPipelineHook)
+	hs.processTxPipelineHook = hook.ProcessPipelineHook(hs.processTxPipelineHook)
 }
 
 func (hs *hooks) clone() hooks {
@@ -70,37 +60,37 @@ func (hs *hooks) clone() hooks {
 }
 
 func (hs *hooks) setDial(dial DialHook) {
-	hs.dial = dial
+	hs.dialHook = dial
 	for _, h := range hs.slice {
-		if wrapped := h.DialHook(hs.dial); wrapped != nil {
-			hs.dial = wrapped
+		if wrapped := h.DialHook(hs.dialHook); wrapped != nil {
+			hs.dialHook = wrapped
 		}
 	}
 }
 
 func (hs *hooks) setProcess(process ProcessHook) {
-	hs.process = process
+	hs.processHook = process
 	for _, h := range hs.slice {
-		if wrapped := h.ProcessHook(hs.process); wrapped != nil {
-			hs.process = wrapped
+		if wrapped := h.ProcessHook(hs.processHook); wrapped != nil {
+			hs.processHook = wrapped
 		}
 	}
 }
 
 func (hs *hooks) setProcessPipeline(processPipeline ProcessPipelineHook) {
-	hs.processPipeline = processPipeline
+	hs.processPipelineHook = processPipeline
 	for _, h := range hs.slice {
-		if wrapped := h.ProcessPipelineHook(hs.processPipeline); wrapped != nil {
-			hs.processPipeline = wrapped
+		if wrapped := h.ProcessPipelineHook(hs.processPipelineHook); wrapped != nil {
+			hs.processPipelineHook = wrapped
 		}
 	}
 }
 
 func (hs *hooks) setProcessTxPipeline(processTxPipeline ProcessPipelineHook) {
-	hs.processTxPipeline = processTxPipeline
+	hs.processTxPipelineHook = processTxPipeline
 	for _, h := range hs.slice {
-		if wrapped := h.ProcessPipelineHook(hs.processTxPipeline); wrapped != nil {
-			hs.processTxPipeline = wrapped
+		if wrapped := h.ProcessPipelineHook(hs.processTxPipelineHook); wrapped != nil {
+			hs.processTxPipelineHook = wrapped
 		}
 	}
 }
@@ -123,6 +113,22 @@ func (hs *hooks) withProcessPipelineHook(
 		}
 	}
 	return hook(ctx, cmds)
+}
+
+func (hs *hooks) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	return hs.dialHook(ctx, network, addr)
+}
+
+func (hs *hooks) process(ctx context.Context, cmd Cmder) error {
+	return hs.processHook(ctx, cmd)
+}
+
+func (hs *hooks) processPipeline(ctx context.Context, cmds []Cmder) error {
+	return hs.processPipelineHook(ctx, cmds)
+}
+
+func (hs *hooks) processTxPipeline(ctx context.Context, cmds []Cmder) error {
+	return hs.processTxPipelineHook(ctx, cmds)
 }
 
 //------------------------------------------------------------------------------
@@ -538,8 +544,8 @@ func NewClient(opt *Options) *Client {
 			opt: opt,
 		},
 	}
-	c.connPool = newConnPool(opt, c.baseClient.dial)
 	c.init()
+	c.connPool = newConnPool(opt, c.hooks.dial)
 
 	return &c
 }

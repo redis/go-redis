@@ -845,9 +845,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
 
-	c.hooks.process = c.process
-	c.hooks.processPipeline = c._processPipeline
-	c.hooks.processTxPipeline = c._processTxPipeline
+	c.hooks.setProcess(c.process)
+	c.hooks.setProcessPipeline(c._processPipeline)
+	c.hooks.setProcessTxPipeline(c._processTxPipeline)
 
 	return c
 }
