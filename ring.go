@@ -758,9 +758,9 @@ func (c *Ring) generalProcessPipeline(
 
 			if tx {
 				cmds = wrapMultiExec(ctx, cmds)
-				shard.Client.hooks.processTxPipeline(ctx, cmds)
+				_ = shard.Client.hooks.processTxPipeline(ctx, cmds)
 			} else {
-				shard.Client.hooks.processPipeline(ctx, cmds)
+				_ = shard.Client.hooks.processPipeline(ctx, cmds)
 			}
 		}(hash, cmds)
 	}
