@@ -470,10 +470,13 @@ func getUserPassword(u *url.URL) (string, string) {
 	return user, password
 }
 
-func newConnPool(opt *Options) *pool.ConnPool {
+func newConnPool(
+	opt *Options,
+	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
+) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
-			return opt.Dialer(ctx, opt.Network, opt.Addr)
+			return dialer(ctx, opt.Network, opt.Addr)
 		},
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,

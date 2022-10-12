@@ -14,18 +14,22 @@ import (
 	"github.com/go-redis/redis/v9"
 )
 
-type redisHookError struct {
-	redis.Hook
-}
+type redisHookError struct{}
 
 var _ redis.Hook = redisHookError{}
 
-func (redisHookError) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
-	return ctx, nil
+func (redisHookError) DialHook(hook redis.DialHook) redis.DialHook {
+	return hook
 }
 
-func (redisHookError) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
-	return errors.New("hook error")
+func (redisHookError) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		return errors.New("hook error")
+	}
+}
+
+func (redisHookError) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return hook
 }
 
 func TestHookError(t *testing.T) {

@@ -37,10 +37,17 @@ func (c *Client) newTx() *Tx {
 func (c *Tx) init() {
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
+
+	c.hooks.setDial(c.baseClient.dial)
+	c.hooks.setProcess(c.baseClient.process)
+	c.hooks.setProcessPipeline(c.baseClient.processPipeline)
+	c.hooks.setProcessTxPipeline(c.baseClient.processTxPipeline)
 }
 
 func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
-	return c.hooks.process(ctx, cmd, c.baseClient.process)
+	err := c.hooks.process(ctx, cmd)
+	cmd.SetErr(err)
+	return err
 }
 
 // Watch prepares a transaction and marks the keys to be watched
@@ -93,7 +100,7 @@ func (c *Tx) Unwatch(ctx context.Context, keys ...string) *StatusCmd {
 func (c *Tx) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
-			return c.hooks.processPipeline(ctx, cmds, c.baseClient.processPipeline)
+			return c.hooks.processPipeline(ctx, cmds)
 		},
 	}
 	pipe.init()
@@ -122,9 +129,21 @@ func (c *Tx) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 func (c *Tx) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
-			return c.hooks.processTxPipeline(ctx, cmds, c.baseClient.processTxPipeline)
+			cmds = wrapMultiExec(ctx, cmds)
+			return c.hooks.processTxPipeline(ctx, cmds)
 		},
 	}
 	pipe.init()
 	return &pipe
+}
+
+func wrapMultiExec(ctx context.Context, cmds []Cmder) []Cmder {
+	if len(cmds) == 0 {
+		panic("not reached")
+	}
+	cmdsCopy := make([]Cmder, len(cmds)+2)
+	cmdsCopy[0] = NewStatusCmd(ctx, "multi")
+	copy(cmdsCopy[1:], cmds)
+	cmdsCopy[len(cmdsCopy)-1] = NewSliceCmd(ctx, "exec")
+	return cmdsCopy
 }

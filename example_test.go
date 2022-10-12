@@ -433,7 +433,7 @@ func ExampleClient_TxPipeline() {
 }
 
 func ExampleClient_Watch() {
-	const maxRetries = 1000
+	const maxRetries = 10000
 
 	// Increment transactionally increments key using GET and SET commands.
 	increment := func(key string) error {

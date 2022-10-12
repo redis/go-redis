@@ -198,7 +198,17 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	opt.Dialer = masterReplicaDialer(failover)
 	opt.init()
 
-	connPool := newConnPool(opt)
+	var connPool *pool.ConnPool
+
+	rdb := &Client{
+		baseClient: &baseClient{
+			opt: opt,
+		},
+	}
+	connPool = newConnPool(opt, rdb.baseClient.dial)
+	rdb.connPool = connPool
+	rdb.onClose = failover.Close
+	rdb.init()
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
@@ -208,13 +218,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	failover.mu.Unlock()
 
-	c := Client{
-		baseClient: newBaseClient(opt, connPool),
-	}
-	c.cmdable = c.Process
-	c.onClose = failover.Close
-
-	return &c
+	return rdb
 }
 
 func masterReplicaDialer(
@@ -262,15 +266,21 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	opt.init()
 	c := &SentinelClient{
 		baseClient: &baseClient{
-			opt:      opt,
-			connPool: newConnPool(opt),
+			opt: opt,
 		},
 	}
+	c.connPool = newConnPool(opt, c.baseClient.dial)
+
+	c.hooks.setDial(c.baseClient.dial)
+	c.hooks.setProcess(c.baseClient.process)
+
 	return c
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
-	return c.hooks.process(ctx, cmd, c.baseClient.process)
+	err := c.hooks.process(ctx, cmd)
+	cmd.SetErr(err)
+	return err
 }
 
 func (c *SentinelClient) pubSub() *PubSub {
