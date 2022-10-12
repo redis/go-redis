@@ -205,10 +205,11 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 			opt: opt,
 		},
 	}
-	connPool = newConnPool(opt, rdb.baseClient.dial)
+	rdb.init()
+
+	connPool = newConnPool(opt, rdb.hooks.dial)
 	rdb.connPool = connPool
 	rdb.onClose = failover.Close
-	rdb.init()
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
@@ -269,10 +270,10 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 			opt: opt,
 		},
 	}
-	c.connPool = newConnPool(opt, c.baseClient.dial)
 
 	c.hooks.setDial(c.baseClient.dial)
 	c.hooks.setProcess(c.baseClient.process)
+	c.connPool = newConnPool(opt, c.hooks.dial)
 
 	return c
 }

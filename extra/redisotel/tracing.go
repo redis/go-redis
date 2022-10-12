@@ -89,13 +89,7 @@ func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 			return hook(ctx, network, addr)
 		}
 
-		spanOpts := th.spanOpts
-		spanOpts = append(spanOpts, trace.WithAttributes(
-			attribute.String("network", network),
-			attribute.String("addr", addr),
-		))
-
-		ctx, span := th.conf.tracer.Start(ctx, "redis.dial", spanOpts...)
+		ctx, span := th.conf.tracer.Start(ctx, "redis.dial", th.spanOpts...)
 		defer span.End()
 
 		conn, err := hook(ctx, network, addr)
