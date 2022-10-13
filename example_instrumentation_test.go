@@ -64,6 +64,8 @@ func ExamplePipeline_instrumentation() {
 		return nil
 	})
 	// Output: pipeline starting processing: [ping:  ping: ]
+	// dialing tcp :6379
+	// finished dialing tcp :6379
 	// pipeline finished processing: [ping: PONG ping: PONG]
 }
 
@@ -80,6 +82,8 @@ func ExampleClient_Watch_instrumentation() {
 	}, "foo")
 	// Output:
 	// starting processing: <watch foo: >
+	// dialing tcp :6379
+	// finished dialing tcp :6379
 	// finished processing: <watch foo: OK>
 	// starting processing: <ping: >
 	// finished processing: <ping: PONG>
