@@ -1,21 +1,3 @@
-# [9.0.0-rc.1](https://github.com/go-redis/redis/compare/v9.0.0-beta.3...v9.0.0-rc.1) (2022-10-14)
-
-
-### Bug Fixes
-
-* late binding for dial hook ([2ec03d9](https://github.com/go-redis/redis/commit/2ec03d9b370ea6f42b4ce4054121fccf31649b00))
-* reset pubsub state when unsubscribing from all channels ([331e40d](https://github.com/go-redis/redis/commit/331e40dc6ccde2297df3e1b3c6b747dc4c6cc83a))
-* retry dial errors from pipelines ([4bb485d](https://github.com/go-redis/redis/commit/4bb485d04438669b23f93c64c69e5391f961b915))
-* use all provided sections ([28028b3](https://github.com/go-redis/redis/commit/28028b330fc11ea3f23fecd39a85828c4aa91a3e))
-
-
-### Features
-
-* add ContextTimeoutEnabled to respect context timeouts and deadlines ([58f7149](https://github.com/go-redis/redis/commit/58f7149e3802de7b92e8b14516493ab05fc0bf2c))
-* add OpenTelemetry metrics instrumentation ([0dff3d1](https://github.com/go-redis/redis/commit/0dff3d1461793059f6b0349d9138b7a0955c1248))
-
-
-
 ## v9 UNRELEASED
 
 ### Added
