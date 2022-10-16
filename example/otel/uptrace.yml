@@ -124,14 +124,6 @@ alerting:
       for: 1m
       projects: [1]
 
-    - name: Always firing (for fun and testing)
-      metrics:
-        - process.runtime.go.goroutines as $goroutines
-      query:
-        - $goroutines >= 0 group by host.name
-      for: 1m
-      projects: [1]
-
   # Create alerts from error logs and span events.
   create_alerts_from_spans:
     enabled: true

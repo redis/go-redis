@@ -18,8 +18,9 @@ services:
       - '9000:9000'
 
   uptrace:
-    image: 'uptrace/uptrace:latest'
+    image: 'uptrace/uptrace:1.1.0'
     #image: 'uptrace/uptrace-dev:latest'
+    restart: on-failure
     volumes:
       - uptrace_data:/var/lib/uptrace
       - ./uptrace.yml:/etc/uptrace/uptrace.yml
