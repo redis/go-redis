@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
+	"time"
 
-	"github.com/uptrace/opentelemetry-go-extra/otelplay"
+	"github.com/uptrace/uptrace-go/uptrace"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 
@@ -13,13 +15,19 @@ import (
 	"github.com/go-redis/redis/v9"
 )
 
-var tracer = otel.Tracer("redisexample")
+var tracer = otel.Tracer("github.com/go-redis/redis/example/otel")
 
 func main() {
 	ctx := context.Background()
 
-	shutdown := otelplay.ConfigureOpentelemetry(ctx)
-	defer shutdown()
+	uptrace.ConfigureOpentelemetry(
+		// copy your project DSN here or use UPTRACE_DSN env var
+		// uptrace.WithDSN("https://AQDan_E_EPe3QAF9fMP0PiVr5UWOu4q5@uptrace.dev/1"),
+
+		uptrace.WithServiceName("myservice"),
+		uptrace.WithServiceVersion("v1.0.0"),
+	)
+	defer uptrace.Shutdown(ctx)
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
@@ -27,16 +35,26 @@ func main() {
 	if err := redisotel.InstrumentTracing(rdb); err != nil {
 		panic(err)
 	}
-
-	ctx, span := tracer.Start(ctx, "handleRequest")
-	defer span.End()
-
-	if err := handleRequest(ctx, rdb); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	if err := redisotel.InstrumentMetrics(rdb); err != nil {
+		panic(err)
 	}
 
-	otelplay.PrintTraceID(ctx)
+	for i := 0; i < 1e6; i++ {
+		ctx, rootSpan := tracer.Start(ctx, "handleRequest")
+
+		if err := handleRequest(ctx, rdb); err != nil {
+			rootSpan.RecordError(err)
+			rootSpan.SetStatus(codes.Error, err.Error())
+		}
+
+		rootSpan.End()
+
+		if i == 0 {
+			fmt.Printf("view trace: %s\n", uptrace.TraceURL(rootSpan))
+		}
+
+		time.Sleep(time.Second)
+	}
 }
 
 func handleRequest(ctx context.Context, rdb *redis.Client) error {

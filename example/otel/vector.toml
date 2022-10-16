@@ -1,0 +1,39 @@
+[sources.syslog_logs]
+type = "demo_logs"
+format = "syslog"
+interval = 0.1
+
+[sources.apache_common_logs]
+type = "demo_logs"
+format = "apache_common"
+interval = 0.1
+
+[sources.apache_error_logs]
+type = "demo_logs"
+format = "apache_error"
+interval = 0.1
+
+[sources.json_logs]
+type = "demo_logs"
+format = "json"
+interval = 0.1
+
+# Parse Syslog logs
+# See the Vector Remap Language reference for more info: https://vrl.dev
+[transforms.parse_logs]
+type = "remap"
+inputs = ["syslog_logs"]
+source = '''
+. = parse_syslog!(string!(.message))
+'''
+
+# Export data to Uptrace.
+[sinks.uptrace]
+type = "http"
+inputs = ["parse_logs", "apache_common_logs", "apache_error_logs", "json_logs"]
+encoding.codec = "json"
+framing.method = "newline_delimited"
+compression = "gzip"
+uri = "http://uptrace:14318/api/v1/vector/logs"
+#uri = "https://api.uptrace.dev/api/v1/vector/logs"
+headers.uptrace-dsn = "http://project2_secret_token@localhost:14317/2"

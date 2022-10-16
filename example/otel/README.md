@@ -1,40 +1,47 @@
 # Example for go-redis OpenTelemetry instrumentation
 
+This example demonstrates how to monitor Redis using OpenTelemetry and
+[Uptrace](https://github.com/uptrace/uptrace). It requires Docker to start Redis Server and Uptrace.
+
 See
 [Monitoring Go Redis Performance and Errors](https://redis.uptrace.dev/guide/go-redis-monitoring.html)
 for details.
 
-This example requires Redis Server on port `:6379`. You can start Redis Server using Docker:
+**Step 1**. Download the example using Git:
 
 ```shell
+git clone https://github.com/go-redis/redis.git
+cd example/otel
+```
+
+**Step 2**. Start the services using Docker:
+
+```shell
+docker-compose pull
 docker-compose up -d
 ```
 
-You can run this example with different OpenTelemetry exporters by providing environment variables.
-
-**Stdout** exporter (default):
+**Step 3**. Make sure Uptrace is running:
 
 ```shell
-go run .
+docker-compose logs uptrace
 ```
 
-[Uptrace](https://github.com/uptrace/uptrace) exporter:
+**Step 4**. Run the Redis client example:
 
 ```shell
-UPTRACE_DSN="https://<token>@uptrace.dev/<project_id>" go run .
+UPTRACE_DSN=http://project2_secret_token@localhost:14317/2 go run client.go
 ```
 
-**Jaeger** exporter:
+**Step 5**. Follow the link from the CLI to view the trace:
 
 ```shell
-OTEL_EXPORTER_JAEGER_ENDPOINT=http://localhost:14268/api/traces go run .
+UPTRACE_DSN=http://project2_secret_token@localhost:14317/2 go run client.go
+trace: http://localhost:14318/traces/ee029d8782242c8ed38b16d961093b35
 ```
-
-To instrument Redis Cluster client, see
-[go-redis-cluster](https://github.com/uptrace/opentelemetry-go-extra/tree/main/example/go-redis-cluster)
-example.
 
 ## Links
 
+- [Uptrace open-source APM](https://uptrace.dev/get/open-source-apm.html)
 - [OpenTelemetry Go instrumentations](https://uptrace.dev/opentelemetry/instrumentations/?lang=go)
 - [OpenTelemetry Go Tracing API](https://uptrace.dev/opentelemetry/go-tracing.html)

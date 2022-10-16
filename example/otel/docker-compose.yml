@@ -1,9 +1,65 @@
 version: '3'
 
 services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:22.7
+    restart: on-failure
+    environment:
+      CLICKHOUSE_DB: uptrace
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'localhost:8123/ping']
+      interval: 1s
+      timeout: 1s
+      retries: 30
+    volumes:
+      - ch_data:/var/lib/clickhouse
+    ports:
+      - '8123:8123'
+      - '9000:9000'
+
+  uptrace:
+    image: 'uptrace/uptrace:latest'
+    #image: 'uptrace/uptrace-dev:latest'
+    volumes:
+      - uptrace_data:/var/lib/uptrace
+      - ./uptrace.yml:/etc/uptrace/uptrace.yml
+    #environment:
+    #  - DEBUG=2
+    ports:
+      - '14317:14317'
+      - '14318:14318'
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.58.0
+    restart: on-failure
+    user: '0:0' # required for logs
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/log:/var/log:ro
+    ports:
+      - '4317:4317'
+      - '4318:4318'
+
+  vector:
+    image: timberio/vector:0.24.X-alpine
+    volumes:
+      - ./vector.toml:/etc/vector/vector.toml:ro
+
   redis-server:
     image: redis
     ports:
       - '6379:6379'
   redis-cli:
     image: redis
+
+volumes:
+  uptrace_data:
+    driver: local
+  ch_data:
+    driver: local
+  alertmanager_data:
+    driver: local
