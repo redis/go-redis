@@ -14,6 +14,8 @@
 
 ### Changed
 
+- Removed asynchronous cancellation based on the context timeout. It was racy in v8 and is
+  completely gone in v9.
 - Reworked hook interface and added `DialHook`.
 - Replaced `redisotel.NewTracingHook` with `redisotel.InstrumentTracing`. See
   [example](example/otel) and
