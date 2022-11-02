@@ -288,11 +288,9 @@ func (c *baseClient) withConn(
 		return err
 	}
 
-	defer func() {
-		c.releaseConn(ctx, cn, err)
-	}()
-
-	return fn(ctx, cn)
+	err = fn(ctx, cn)
+	c.releaseConn(ctx, cn, err)
+	return err
 }
 
 func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, error) {
