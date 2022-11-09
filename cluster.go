@@ -211,7 +211,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.MaxRedirects = q.int("max_redirects")
 	o.ReadOnly = q.bool("read_only")
 	o.RouteByLatency = q.bool("route_by_latency")
-	o.RouteByLatency = q.bool("route_randomly")
+	o.RouteRandomly = q.bool("route_randomly")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")
