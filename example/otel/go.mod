@@ -11,8 +11,6 @@ replace github.com/go-redis/redis/extra/rediscmd/v9 => ../../extra/rediscmd
 require (
 	github.com/go-redis/redis/extra/redisotel/v9 v9.0.0-rc.1
 	github.com/go-redis/redis/v9 v9.0.0-rc.1
-	github.com/uptrace/opentelemetry-go-extra/otelplay v0.1.15
-	go.opentelemetry.io/otel v1.10.0
-	golang.org/x/net v0.0.0-20220728030405-41545e8bf201 // indirect
-	google.golang.org/genproto v0.0.0-20220725144611-272f38e5d71b // indirect
+	github.com/uptrace/uptrace-go v1.11.4
+	go.opentelemetry.io/otel v1.11.1
 )
