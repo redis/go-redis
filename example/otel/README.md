@@ -40,8 +40,24 @@ UPTRACE_DSN=http://project2_secret_token@localhost:14317/2 go run client.go
 trace: http://localhost:14318/traces/ee029d8782242c8ed38b16d961093b35
 ```
 
+![Redis trace](./image/redis-trace.png)
+
 You can also open Uptrace UI at [http://localhost:14318](http://localhost:14318) to view available
 spans, logs, and metrics.
+
+## Redis monitoring
+
+You can also [monitor Redis performance](https://uptrace.dev/opentelemetry/redis-monitoring.html)
+metrics By installing OpenTelemetry Collector.
+
+[OpenTelemetry Collector](https://uptrace.dev/opentelemetry/collector.html) is an agent that pulls
+telemetry data from systems you want to monitor and sends it to APM tools using the OpenTelemetry
+protocol (OTLP).
+
+When telemetry data reaches Uptrace, it automatically generates a Redis dashboard from a pre-defined
+template.
+
+![Redis dashboard](./image/metrics.png)
 
 ## Links
 
