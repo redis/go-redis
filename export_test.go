@@ -95,9 +95,10 @@ func GetSlavesAddrByName(ctx context.Context, c *SentinelClient, name string) []
 }
 
 func (c *Ring) ShardByName(name string) *ringShard {
-	return c.sharding.ShardByName(name)
+	shard, _ := c.sharding.GetByName(name)
+	return shard
 }
 
-func (c *ringSharding) ShardByName(name string) *ringShard {
-	return c.shards.m[name]
+func (c *Ring) ShardByKey(key string) (*ringShard, error) {
+	return c.sharding.GetByKey(key)
 }
