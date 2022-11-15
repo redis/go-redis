@@ -102,3 +102,7 @@ func (c *Ring) ShardByName(name string) *ringShard {
 func (c *Ring) ShardByKey(key string) (*ringShard, error) {
 	return c.sharding.GetByKey(key)
 }
+
+func (c *Ring) RebalanceLocked() {
+	c.sharding.rebalanceLocked()
+}

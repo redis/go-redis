@@ -808,3 +808,21 @@ func TestRingSetAddrsAndRebalanceRace(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkRingRebalanceLocked(b *testing.B) {
+	opts := &redis.RingOptions{
+		Addrs: make(map[string]string),
+		// Disable heartbeat
+		HeartbeatFrequency: 1 * time.Hour,
+	}
+	for i := 0; i < 100; i++ {
+		opts.Addrs[fmt.Sprintf("shard%d", i)] = fmt.Sprintf(":63%02d", i)
+	}
+
+	ring := redis.NewRing(opts)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ring.RebalanceLocked()
+	}
+}

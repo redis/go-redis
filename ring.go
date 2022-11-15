@@ -254,9 +254,9 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 
 	shards, cleanup := c.newRingShards(addrs, c.shards)
 	c.shards = shards
+	c.rebalanceLocked()
 	c.mu.Unlock()
 
-	c.rebalance()
 	cleanup()
 }
 
@@ -388,7 +388,9 @@ func (c *ringSharding) Heartbeat(ctx context.Context, frequency time.Duration) {
 			}
 
 			if rebalance {
-				c.rebalance()
+				c.mu.Lock()
+				c.rebalanceLocked()
+				c.mu.Unlock()
 			}
 		case <-ctx.Done():
 			return
@@ -396,32 +398,26 @@ func (c *ringSharding) Heartbeat(ctx context.Context, frequency time.Duration) {
 	}
 }
 
-// rebalance removes dead shards from the Ring.
-func (c *ringSharding) rebalance() {
-	c.mu.RLock()
-	shards := c.shards
-	c.mu.RUnlock()
-
-	if shards == nil {
+// rebalanceLocked removes dead shards from the Ring.
+// Requires c.mu locked.
+func (c *ringSharding) rebalanceLocked() {
+	if c.closed {
+		return
+	}
+	if c.shards == nil {
 		return
 	}
 
-	liveShards := make([]string, 0, len(shards.m))
+	liveShards := make([]string, 0, len(c.shards.m))
 
-	for name, shard := range shards.m {
+	for name, shard := range c.shards.m {
 		if shard.IsUp() {
 			liveShards = append(liveShards, name)
 		}
 	}
 
-	hash := c.opt.NewConsistentHash(liveShards)
-
-	c.mu.Lock()
-	if !c.closed {
-		c.hash = hash
-		c.numShard = len(liveShards)
-	}
-	c.mu.Unlock()
+	c.hash = c.opt.NewConsistentHash(liveShards)
+	c.numShard = len(liveShards)
 }
 
 func (c *ringSharding) Len() int {
