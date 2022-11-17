@@ -17,7 +17,6 @@ cd example/otel
 **Step 2**. Start the services using Docker:
 
 ```shell
-docker-compose pull
 docker-compose up -d
 ```
 
@@ -27,16 +26,10 @@ docker-compose up -d
 docker-compose logs uptrace
 ```
 
-**Step 4**. Run the Redis client example:
+**Step 4**. Run the Redis client example and Follow the link to view the trace:
 
 ```shell
-UPTRACE_DSN=http://project2_secret_token@localhost:14317/2 go run client.go
-```
-
-**Step 5**. Follow the link from the CLI to view the trace:
-
-```shell
-UPTRACE_DSN=http://project2_secret_token@localhost:14317/2 go run client.go
+go run client.go
 trace: http://localhost:14318/traces/ee029d8782242c8ed38b16d961093b35
 ```
 

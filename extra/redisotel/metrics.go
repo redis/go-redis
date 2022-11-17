@@ -82,6 +82,30 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 	idleAttrs := append(labels, attribute.String("state", "idle"))
 	usedAttrs := append(labels, attribute.String("state", "used"))
 
+	idleMax, err := conf.meter.AsyncInt64().UpDownCounter(
+		"db.client.connections.idle.max",
+		instrument.WithDescription("The maximum number of idle open connections allowed"),
+	)
+	if err != nil {
+		return err
+	}
+
+	idleMin, err := conf.meter.AsyncInt64().UpDownCounter(
+		"db.client.connections.idle.min",
+		instrument.WithDescription("The minimum number of idle open connections allowed"),
+	)
+	if err != nil {
+		return err
+	}
+
+	connsMax, err := conf.meter.AsyncInt64().UpDownCounter(
+		"db.client.connections.max",
+		instrument.WithDescription("The maximum number of open connections allowed"),
+	)
+	if err != nil {
+		return err
+	}
+
 	usage, err := conf.meter.AsyncInt64().UpDownCounter(
 		"db.client.connections.usage",
 		instrument.WithDescription("The number of connections that are currently in state described by the state attribute"),
@@ -98,13 +122,21 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 		return err
 	}
 
+	redisConf := rdb.Options()
 	return conf.meter.RegisterCallback(
 		[]instrument.Asynchronous{
+			idleMax,
+			idleMin,
+			connsMax,
 			usage,
 			timeouts,
 		},
 		func(ctx context.Context) {
 			stats := rdb.PoolStats()
+
+			idleMax.Observe(ctx, int64(redisConf.MinIdleConns))
+			idleMin.Observe(ctx, int64(redisConf.MaxIdleConns))
+			connsMax.Observe(ctx, int64(redisConf.PoolSize))
 
 			usage.Observe(ctx, int64(stats.IdleConns), idleAttrs...)
 			usage.Observe(ctx, int64(stats.TotalConns-stats.IdleConns), usedAttrs...)

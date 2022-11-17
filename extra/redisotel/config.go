@@ -5,14 +5,15 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/global"
-	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
 type config struct {
 	// Common options.
 
-	attrs []attribute.KeyValue
+	dbSystem string
+	attrs    []attribute.KeyValue
 
 	// Tracing options.
 
@@ -51,17 +52,27 @@ func (fn option) metrics() {}
 
 func newConfig(opts ...baseOption) *config {
 	conf := &config{
-		tp: otel.GetTracerProvider(),
-		mp: global.MeterProvider(),
-		attrs: []attribute.KeyValue{
-			semconv.DBSystemRedis,
-		},
+		dbSystem: "redis",
+		attrs:    []attribute.KeyValue{},
+
+		tp:            otel.GetTracerProvider(),
+		mp:            global.MeterProvider(),
 		dbStmtEnabled: true,
 	}
+
 	for _, opt := range opts {
 		opt.apply(conf)
 	}
+
+	conf.attrs = append(conf.attrs, semconv.DBSystemKey.String(conf.dbSystem))
+
 	return conf
+}
+
+func WithDBSystem(dbSystem string) Option {
+	return option(func(conf *config) {
+		conf.dbSystem = dbSystem
+	})
 }
 
 // WithAttributes specifies additional attributes to be added to the span.

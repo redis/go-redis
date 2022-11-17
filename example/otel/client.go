@@ -22,7 +22,7 @@ func main() {
 
 	uptrace.ConfigureOpentelemetry(
 		// copy your project DSN here or use UPTRACE_DSN env var
-		// uptrace.WithDSN("http://project2_secret_token@localhost:14317/2"),
+		uptrace.WithDSN("http://project2_secret_token@localhost:14317/2"),
 
 		uptrace.WithServiceName("myservice"),
 		uptrace.WithServiceVersion("v1.0.0"),
