@@ -5,7 +5,6 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"io"
-	"strings"
 )
 
 type Scripter interface {
@@ -68,7 +67,7 @@ func (s *Script) EvalShaRO(ctx context.Context, c Scripter, keys []string, args 
 // it is retried using EVAL.
 func (s *Script) Run(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
 	r := s.EvalSha(ctx, c, keys, args...)
-	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
+	if HasErrorPrefix(r.Err(), "NOSCRIPT") {
 		return s.Eval(ctx, c, keys, args...)
 	}
 	return r
@@ -78,7 +77,7 @@ func (s *Script) Run(ctx context.Context, c Scripter, keys []string, args ...int
 // it is retried using EVAL_RO.
 func (s *Script) RunRO(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
 	r := s.EvalShaRO(ctx, c, keys, args...)
-	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
+	if HasErrorPrefix(r.Err(), "NOSCRIPT") {
 		return s.EvalRO(ctx, c, keys, args...)
 	}
 	return r
