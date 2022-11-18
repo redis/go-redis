@@ -430,14 +430,13 @@ func (p *ConnPool) IdleLen() int {
 }
 
 func (p *ConnPool) Stats() *Stats {
-	idleLen := p.IdleLen()
 	return &Stats{
 		Hits:     atomic.LoadUint32(&p.stats.Hits),
 		Misses:   atomic.LoadUint32(&p.stats.Misses),
 		Timeouts: atomic.LoadUint32(&p.stats.Timeouts),
 
 		TotalConns: uint32(p.Len()),
-		IdleConns:  uint32(idleLen),
+		IdleConns:  uint32(p.IdleLen()),
 		StaleConns: atomic.LoadUint32(&p.stats.StaleConns),
 	}
 }

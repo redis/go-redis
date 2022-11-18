@@ -11,7 +11,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/instrument"
-	"go.opentelemetry.io/otel/metric/instrument/syncint64"
+	"go.opentelemetry.io/otel/metric/instrument/syncfloat64"
 )
 
 // InstrumentMetrics starts reporting OpenTelemetry Metrics.
@@ -64,6 +64,12 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 		return nil
 	case *redis.Ring:
 		rdb.OnNewNode(func(rdb *redis.Client) {
+			if conf.poolName == "" {
+				opt := rdb.Options()
+				conf.poolName = opt.Addr
+			}
+			conf.attrs = append(conf.attrs, attribute.String("pool.name", conf.poolName))
+
 			if err := reportPoolStats(rdb, conf); err != nil {
 				otel.Handle(err)
 			}
@@ -134,9 +140,9 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 		func(ctx context.Context) {
 			stats := rdb.PoolStats()
 
-			idleMax.Observe(ctx, int64(redisConf.MinIdleConns))
-			idleMin.Observe(ctx, int64(redisConf.MaxIdleConns))
-			connsMax.Observe(ctx, int64(redisConf.PoolSize))
+			idleMax.Observe(ctx, int64(redisConf.MaxIdleConns), labels...)
+			idleMin.Observe(ctx, int64(redisConf.MinIdleConns), labels...)
+			connsMax.Observe(ctx, int64(redisConf.PoolSize), labels...)
 
 			usage.Observe(ctx, int64(stats.IdleConns), idleAttrs...)
 			usage.Observe(ctx, int64(stats.TotalConns-stats.IdleConns), usedAttrs...)
@@ -147,7 +153,7 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 }
 
 func addMetricsHook(rdb *redis.Client, conf *config) error {
-	createTime, err := conf.meter.SyncInt64().Histogram(
+	createTime, err := conf.meter.SyncFloat64().Histogram(
 		"db.client.connections.create_time",
 		instrument.WithDescription("The time it took to create a new connection."),
 		instrument.WithUnit("ms"),
@@ -156,7 +162,7 @@ func addMetricsHook(rdb *redis.Client, conf *config) error {
 		return err
 	}
 
-	useTime, err := conf.meter.SyncInt64().Histogram(
+	useTime, err := conf.meter.SyncFloat64().Histogram(
 		"db.client.connections.use_time",
 		instrument.WithDescription("The time between borrowing a connection and returning it to the pool."),
 		instrument.WithUnit("ms"),
@@ -168,13 +174,15 @@ func addMetricsHook(rdb *redis.Client, conf *config) error {
 	rdb.AddHook(&metricsHook{
 		createTime: createTime,
 		useTime:    useTime,
+		attrs:      conf.attrs,
 	})
 	return nil
 }
 
 type metricsHook struct {
-	createTime syncint64.Histogram
-	useTime    syncint64.Histogram
+	createTime syncfloat64.Histogram
+	useTime    syncfloat64.Histogram
+	attrs      []attribute.KeyValue
 }
 
 var _ redis.Hook = (*metricsHook)(nil)
@@ -185,7 +193,7 @@ func (mh *metricsHook) DialHook(hook redis.DialHook) redis.DialHook {
 
 		conn, err := hook(ctx, network, addr)
 
-		mh.createTime.Record(ctx, time.Since(start).Milliseconds())
+		mh.createTime.Record(ctx, milliseconds(time.Since(start)), mh.attrs...)
 		return conn, err
 	}
 }
@@ -196,8 +204,14 @@ func (mh *metricsHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 
 		err := hook(ctx, cmd)
 
-		dur := time.Since(start).Milliseconds()
-		mh.useTime.Record(ctx, dur, attribute.String("type", "command"), statusAttr(err))
+		dur := time.Since(start)
+
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
+		attrs = append(attrs, mh.attrs...)
+		attrs = append(attrs, attribute.String("type", "command"))
+		attrs = append(attrs, statusAttr(err))
+
+		mh.useTime.Record(ctx, milliseconds(dur), attrs...)
 
 		return err
 	}
@@ -211,11 +225,21 @@ func (mh *metricsHook) ProcessPipelineHook(
 
 		err := hook(ctx, cmds)
 
-		dur := time.Since(start).Milliseconds()
-		mh.useTime.Record(ctx, dur, attribute.String("type", "pipeline"), statusAttr(err))
+		dur := time.Since(start)
+
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
+		attrs = append(attrs, mh.attrs...)
+		attrs = append(attrs, attribute.String("type", "pipeline"))
+		attrs = append(attrs, statusAttr(err))
+
+		mh.useTime.Record(ctx, milliseconds(dur), attrs...)
 
 		return err
 	}
+}
+
+func milliseconds(d time.Duration) float64 {
+	return float64(d) / float64(time.Millisecond)
 }
 
 func statusAttr(err error) attribute.KeyValue {
