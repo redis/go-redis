@@ -1,6 +1,10 @@
 package redis
 
 import (
+	"fmt"
+	"testing"
+	"time"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -65,3 +69,92 @@ var _ = Describe("newClusterState", func() {
 		})
 	})
 })
+
+type fixedHash string
+
+func (h fixedHash) Get(string) string {
+	return string(h)
+}
+
+func TestRingSetAddrsAndRebalanceRace(t *testing.T) {
+	const (
+		ringShard1Name = "ringShardOne"
+		ringShard2Name = "ringShardTwo"
+
+		ringShard1Port = "6390"
+		ringShard2Port = "6391"
+	)
+
+	ring := NewRing(&RingOptions{
+		Addrs: map[string]string{
+			ringShard1Name: ":" + ringShard1Port,
+		},
+		// Disable heartbeat
+		HeartbeatFrequency: 1 * time.Hour,
+		NewConsistentHash: func(shards []string) ConsistentHash {
+			switch len(shards) {
+			case 1:
+				return fixedHash(ringShard1Name)
+			case 2:
+				return fixedHash(ringShard2Name)
+			default:
+				t.Fatalf("Unexpected number of shards: %v", shards)
+				return nil
+			}
+		},
+	})
+
+	// Continuously update addresses by adding and removing one address
+	updatesDone := make(chan struct{})
+	defer func() { close(updatesDone) }()
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-updatesDone:
+				return
+			default:
+				if i%2 == 0 {
+					ring.SetAddrs(map[string]string{
+						ringShard1Name: ":" + ringShard1Port,
+					})
+				} else {
+					ring.SetAddrs(map[string]string{
+						ringShard1Name: ":" + ringShard1Port,
+						ringShard2Name: ":" + ringShard2Port,
+					})
+				}
+			}
+		}
+	}()
+
+	timer := time.NewTimer(1 * time.Second)
+	for running := true; running; {
+		select {
+		case <-timer.C:
+			running = false
+		default:
+			shard, err := ring.sharding.GetByKey("whatever")
+			if err == nil && shard == nil {
+				t.Fatal("shard is nil")
+			}
+		}
+	}
+}
+
+func BenchmarkRingShardingRebalanceLocked(b *testing.B) {
+	opts := &RingOptions{
+		Addrs: make(map[string]string),
+		// Disable heartbeat
+		HeartbeatFrequency: 1 * time.Hour,
+	}
+	for i := 0; i < 100; i++ {
+		opts.Addrs[fmt.Sprintf("shard%d", i)] = fmt.Sprintf(":63%02d", i)
+	}
+
+	ring := NewRing(opts)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ring.sharding.rebalanceLocked()
+	}
+}
