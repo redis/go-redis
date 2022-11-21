@@ -1336,6 +1336,9 @@ var _ = Describe("ClusterClient timeout", func() {
 				}, 2*pause).ShouldNot(HaveOccurred())
 				return nil
 			})
+
+			err := client.Close()
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		testTimeout()

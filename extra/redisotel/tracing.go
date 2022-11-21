@@ -94,7 +94,7 @@ func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 
 		conn, err := hook(ctx, network, addr)
 		if err != nil {
-			recordError(ctx, span, err)
+			recordError(span, err)
 			return nil, err
 		}
 		return conn, nil
@@ -118,7 +118,7 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		defer span.End()
 
 		if err := hook(ctx, cmd); err != nil {
-			recordError(ctx, span, err)
+			recordError(span, err)
 			return err
 		}
 		return nil
@@ -147,14 +147,14 @@ func (th *tracingHook) ProcessPipelineHook(
 		defer span.End()
 
 		if err := hook(ctx, cmds); err != nil {
-			recordError(ctx, span, err)
+			recordError(span, err)
 			return err
 		}
 		return nil
 	}
 }
 
-func recordError(ctx context.Context, span trace.Span, err error) {
+func recordError(span trace.Span, err error) {
 	if err != redis.Nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
