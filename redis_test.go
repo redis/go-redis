@@ -446,3 +446,25 @@ var _ = Describe("Client context cancelation", func() {
 		Expect(err).To(BeIdenticalTo(context.Canceled))
 	})
 })
+
+var _ = Describe("Conn", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("TxPipeline", func() {
+		tx := client.Conn().TxPipeline()
+		tx.SwapDB(ctx, 0, 2)
+		tx.SwapDB(ctx, 1, 0)
+		_, err := tx.Exec(ctx)
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

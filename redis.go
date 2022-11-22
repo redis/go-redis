@@ -725,21 +725,13 @@ func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
 	return err
 }
 
-func (c *Conn) processPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.hooks.processPipeline(ctx, cmds)
-}
-
-func (c *Conn) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	return c.hooks.processTxPipeline(ctx, cmds)
-}
-
 func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().Pipelined(ctx, fn)
 }
 
 func (c *Conn) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.processPipeline,
+		exec: c.hooks.processPipeline,
 	}
 	pipe.init()
 	return &pipe
@@ -752,7 +744,10 @@ func (c *Conn) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *Conn) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.processTxPipeline,
+		exec: func(ctx context.Context, cmds []Cmder) error {
+			cmds = wrapMultiExec(ctx, cmds)
+			return c.hooks.processTxPipeline(ctx, cmds)
+		},
 	}
 	pipe.init()
 	return &pipe
