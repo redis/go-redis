@@ -772,6 +772,7 @@ func TestRingSetAddrsContention(t *testing.T) {
 			return redis.NewClient(opt)
 		},
 	})
+	defer ring.Close()
 
 	if _, err := ring.Ping(context.Background()).Result(); err != nil {
 		t.Fatal(err)
