@@ -207,6 +207,7 @@ type Cmdable interface {
 	SDiff(ctx context.Context, keys ...string) *StringSliceCmd
 	SDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd
 	SInter(ctx context.Context, keys ...string) *StringSliceCmd
+	SInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd
 	SInterStore(ctx context.Context, destination string, keys ...string) *IntCmd
 	SIsMember(ctx context.Context, key string, member interface{}) *BoolCmd
 	SMIsMember(ctx context.Context, key string, members ...interface{}) *BoolSliceCmd
@@ -1608,6 +1609,22 @@ func (c cmdable) SInter(ctx context.Context, keys ...string) *StringSliceCmd {
 		args[1+i] = key
 	}
 	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) SInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd {
+	args := make([]interface{}, 4+len(keys))
+	args[0] = "sintercard"
+	numkeys := int64(0)
+	for i, key := range keys {
+		args[2+i] = key
+		numkeys++
+	}
+	args[1] = numkeys
+	args[2+numkeys] = "limit"
+	args[3+numkeys] = limit
+	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

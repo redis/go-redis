@@ -2551,6 +2551,36 @@ var _ = Describe("Commands", func() {
 			Expect(sInter.Val()).To(Equal([]string{"c"}))
 		})
 
+		It("should SInterCard", func() {
+			sAdd := client.SAdd(ctx, "set1", "a")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set1", "b")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set1", "c")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+
+			sAdd = client.SAdd(ctx, "set2", "b")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "c")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "d")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "e")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			//limit 0 means no limit,see https://redis.io/commands/sintercard/ for more details
+			sInterCard := client.SInterCard(ctx, 0, "set1", "set2")
+			Expect(sInterCard.Err()).NotTo(HaveOccurred())
+			Expect(sInterCard.Val()).To(Equal(int64(2)))
+
+			sInterCard = client.SInterCard(ctx, 1, "set1", "set2")
+			Expect(sInterCard.Err()).NotTo(HaveOccurred())
+			Expect(sInterCard.Val()).To(Equal(int64(1)))
+
+			sInterCard = client.SInterCard(ctx, 3, "set1", "set2")
+			Expect(sInterCard.Err()).NotTo(HaveOccurred())
+			Expect(sInterCard.Val()).To(Equal(int64(2)))
+		})
+
 		It("should SInterStore", func() {
 			sAdd := client.SAdd(ctx, "set1", "a")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
