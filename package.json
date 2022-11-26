@@ -1,6 +1,6 @@
 {
   "name": "redis",
-  "version": "9.0.0-rc.1",
+  "version": "9.0.0-rc.2",
   "main": "index.js",
   "repository": "git@github.com:go-redis/redis.git",
   "author": "Vladimir Mihailenco <vladimir.webdev@gmail.com>",
