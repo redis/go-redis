@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"time"
 )
 
 // decoderFunc represents decoding functions for default built-in types.
@@ -36,7 +37,7 @@ var (
 		reflect.Ptr:           decodeUnsupported,
 		reflect.Slice:         decodeSlice,
 		reflect.String:        decodeString,
-		reflect.Struct:        decodeUnsupported,
+		reflect.Struct:        decodeTryTimeStruct,
 		reflect.UnsafePointer: decodeUnsupported,
 	}
 
@@ -198,4 +199,17 @@ func decodeSlice(f reflect.Value, s string) error {
 
 func decodeUnsupported(v reflect.Value, s string) error {
 	return fmt.Errorf("redis.Scan(unsupported %s)", v.Type())
+}
+
+func decodeTryTimeStruct(f reflect.Value, s string) error {
+	// time.Time struct
+	if f.Type().Kind() != reflect.TypeOf(time.Time{}).Kind() {
+		return decodeUnsupported(f, s)
+	}
+	tm, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return fmt.Errorf("redis.Scan time.Time error: %w", err)
+	}
+	f.Set(reflect.ValueOf(tm))
+	return nil
 }

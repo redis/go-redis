@@ -4,6 +4,7 @@ import (
 	"math"
 	"strconv"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -13,21 +14,22 @@ type data struct {
 	Omit  string `redis:"-"`
 	Empty string
 
-	String  string  `redis:"string"`
-	Bytes   []byte  `redis:"byte"`
-	Int     int     `redis:"int"`
-	Int8    int8    `redis:"int8"`
-	Int16   int16   `redis:"int16"`
-	Int32   int32   `redis:"int32"`
-	Int64   int64   `redis:"int64"`
-	Uint    uint    `redis:"uint"`
-	Uint8   uint8   `redis:"uint8"`
-	Uint16  uint16  `redis:"uint16"`
-	Uint32  uint32  `redis:"uint32"`
-	Uint64  uint64  `redis:"uint64"`
-	Float   float32 `redis:"float"`
-	Float64 float64 `redis:"float64"`
-	Bool    bool    `redis:"bool"`
+	String  string    `redis:"string"`
+	Bytes   []byte    `redis:"byte"`
+	Int     int       `redis:"int"`
+	Int8    int8      `redis:"int8"`
+	Int16   int16     `redis:"int16"`
+	Int32   int32     `redis:"int32"`
+	Int64   int64     `redis:"int64"`
+	Uint    uint      `redis:"uint"`
+	Uint8   uint8     `redis:"uint8"`
+	Uint16  uint16    `redis:"uint16"`
+	Uint32  uint32    `redis:"uint32"`
+	Uint64  uint64    `redis:"uint64"`
+	Float   float32   `redis:"float"`
+	Float64 float64   `redis:"float64"`
+	Bool    bool      `redis:"bool"`
+	Time    time.Time `redis:"time"`
 }
 
 type i []interface{}
@@ -102,12 +104,19 @@ var _ = Describe("Scan", func() {
 		Expect(Scan(&d, i{"key"}, i{"value"})).NotTo(HaveOccurred())
 		Expect(d).To(Equal(data{}))
 
-		keys := i{"string", "byte", "int", "int64", "uint", "uint64", "float", "float64", "bool"}
+		tmpt := time.Now().Round(time.Second)
+		tmpts := tmpt.Format(time.RFC3339Nano)
+		keys := i{"string", "byte", "int", "int64", "uint", "uint64", "float", "float64", "bool", "time"}
 		vals := i{
 			"str!", "bytes!", "123", "123456789123456789", "456", "987654321987654321",
 			"123.456", "123456789123456789.987654321987654321", "1",
+			tmpts,
 		}
 		Expect(Scan(&d, keys, vals)).NotTo(HaveOccurred())
+
+		Expect(d.Time.Format(time.RFC3339Nano)).To(Equal(tmpts))
+		d.Time = time.Time{}
+		
 		Expect(d).To(Equal(data{
 			String:  "str!",
 			Bytes:   []byte("bytes!"),
