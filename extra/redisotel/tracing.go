@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"runtime"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -107,12 +109,22 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 			return hook(ctx, cmd)
 		}
 
-		opts := th.spanOpts
+		fn, file, line := funcFileLine("github.com/go-redis/redis")
+
+		attrs := make([]attribute.KeyValue, 0, 8)
+		attrs = append(attrs,
+			semconv.CodeFunctionKey.String(fn),
+			semconv.CodeFilepathKey.String(file),
+			semconv.CodeLineNumberKey.Int(line),
+		)
+
 		if th.conf.dbStmtEnabled {
-			opts = append(opts, trace.WithAttributes(
-				semconv.DBStatementKey.String(rediscmd.CmdString(cmd))),
-			)
+			cmdString := rediscmd.CmdString(cmd)
+			attrs = append(attrs, semconv.DBStatementKey.String(cmdString))
 		}
+
+		opts := th.spanOpts
+		opts = append(opts, trace.WithAttributes(attrs...))
 
 		ctx, span := th.conf.tracer.Start(ctx, cmd.FullName(), opts...)
 		defer span.End()
@@ -133,15 +145,23 @@ func (th *tracingHook) ProcessPipelineHook(
 			return hook(ctx, cmds)
 		}
 
-		opts := th.spanOpts
-		opts = append(opts, trace.WithAttributes(
+		fn, file, line := funcFileLine("github.com/go-redis/redis")
+
+		attrs := make([]attribute.KeyValue, 0, 8)
+		attrs = append(attrs,
+			semconv.CodeFunctionKey.String(fn),
+			semconv.CodeFilepathKey.String(file),
+			semconv.CodeLineNumberKey.Int(line),
 			attribute.Int("db.redis.num_cmd", len(cmds)),
-		))
+		)
 
 		summary, cmdsString := rediscmd.CmdsString(cmds)
 		if th.conf.dbStmtEnabled {
-			opts = append(opts, trace.WithAttributes(semconv.DBStatementKey.String(cmdsString)))
+			attrs = append(attrs, semconv.DBStatementKey.String(cmdsString))
 		}
+
+		opts := th.spanOpts
+		opts = append(opts, trace.WithAttributes(attrs...))
 
 		ctx, span := th.conf.tracer.Start(ctx, "redis.pipeline "+summary, opts...)
 		defer span.End()
@@ -166,4 +186,30 @@ func formatDBConnString(network, addr string) string {
 		network = "redis"
 	}
 	return fmt.Sprintf("%s://%s", network, addr)
+}
+
+func funcFileLine(pkg string) (string, string, int) {
+	const depth = 16
+	var pcs [depth]uintptr
+	n := runtime.Callers(3, pcs[:])
+	ff := runtime.CallersFrames(pcs[:n])
+
+	var fn, file string
+	var line int
+	for {
+		f, ok := ff.Next()
+		if !ok {
+			break
+		}
+		fn, file, line = f.Function, f.File, f.Line
+		if !strings.Contains(fn, pkg) {
+			break
+		}
+	}
+
+	if ind := strings.LastIndexByte(fn, '/'); ind != -1 {
+		fn = fn[ind+1:]
+	}
+
+	return fn, file, line
 }
