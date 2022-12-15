@@ -87,6 +87,7 @@ type Cmdable interface {
 
 	Command(ctx context.Context) *CommandsInfoCmd
 	ClientGetName(ctx context.Context) *StringCmd
+	ClientSetName(ctx context.Context, name string) *BoolCmd
 	Echo(ctx context.Context, message interface{}) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
 	Quit(ctx context.Context) *StatusCmd
@@ -403,7 +404,6 @@ type StatefulCmdable interface {
 	AuthACL(ctx context.Context, username, password string) *StatusCmd
 	Select(ctx context.Context, index int) *StatusCmd
 	SwapDB(ctx context.Context, index1, index2 int) *StatusCmd
-	ClientSetName(ctx context.Context, name string) *BoolCmd
 }
 
 var (
@@ -453,13 +453,6 @@ func (c statefulCmdable) SwapDB(ctx context.Context, index1, index2 int) *Status
 	return cmd
 }
 
-// ClientSetName assigns a name to the connection.
-func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "client", "setname", name)
-	_ = c(ctx, cmd)
-	return cmd
-}
-
 //------------------------------------------------------------------------------
 
 func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
@@ -471,6 +464,13 @@ func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 // ClientGetName returns the name of the connection.
 func (c cmdable) ClientGetName(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd(ctx, "client", "getname")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ClientSetName assigns a name to the connection.
+func (c cmdable) ClientSetName(ctx context.Context, name string) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "client", "setname", name)
 	_ = c(ctx, cmd)
 	return cmd
 }
