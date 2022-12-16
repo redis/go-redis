@@ -365,3 +365,78 @@ func BenchmarkClusterSetString(b *testing.B) {
 		}
 	})
 }
+
+func BenchmarkExecRingSetAddrsCmd(b *testing.B) {
+	const (
+		ringShard1Name = "ringShardOne"
+		ringShard2Name = "ringShardTwo"
+	)
+
+	for _, port := range []string{ringShard1Port, ringShard2Port} {
+		if _, err := startRedis(port); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	b.Cleanup(func() {
+		for _, p := range processes {
+			if err := p.Close(); err != nil {
+				b.Errorf("Failed to stop redis process: %v", err)
+			}
+		}
+		processes = nil
+	})
+
+	ring := redis.NewRing(&redis.RingOptions{
+		Addrs: map[string]string{
+			"ringShardOne": ":" + ringShard1Port,
+		},
+		NewClient: func(opt *redis.Options) *redis.Client {
+			// Simulate slow shard creation
+			time.Sleep(100 * time.Millisecond)
+			return redis.NewClient(opt)
+		},
+	})
+	defer ring.Close()
+
+	if _, err := ring.Ping(context.Background()).Result(); err != nil {
+		b.Fatal(err)
+	}
+
+	// Continuously update addresses by adding and removing one address
+	updatesDone := make(chan struct{})
+	defer func() { close(updatesDone) }()
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for i := 0; ; i++ {
+			select {
+			case <-ticker.C:
+				if i%2 == 0 {
+					ring.SetAddrs(map[string]string{
+						ringShard1Name: ":" + ringShard1Port,
+					})
+				} else {
+					ring.SetAddrs(map[string]string{
+						ringShard1Name: ":" + ringShard1Port,
+						ringShard2Name: ":" + ringShard2Port,
+					})
+				}
+			case <-updatesDone:
+				return
+			}
+		}
+	}()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := ring.Ping(context.Background()).Result(); err != nil {
+			if err == redis.ErrClosed {
+				// The shard client could be closed while ping command is in progress
+				continue
+			} else {
+				b.Fatal(err)
+			}
+		}
+	}
+}
