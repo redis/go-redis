@@ -18,7 +18,7 @@ bench: testdeps
 
 testdata/redis:
 	mkdir -p $@
-	wget -qO- https://download.redis.io/releases/redis-7.0.0.tar.gz | tar xvz --strip-components=1 -C $@
+	wget -qO- https://download.redis.io/releases/redis-7.0.6.tar.gz | tar xvz --strip-components=1 -C $@
 
 testdata/redis/src/redis-server: testdata/redis
 	cd $< && make all
