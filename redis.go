@@ -10,9 +10,13 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v9/internal"
+	"github.com/go-redis/redis/v9/internal/hscan"
 	"github.com/go-redis/redis/v9/internal/pool"
 	"github.com/go-redis/redis/v9/internal/proto"
 )
+
+// Scanner internal/hscan.Scanner exposed interface.
+type Scanner = hscan.Scanner
 
 // Nil reply returned by Redis when key does not exist.
 const Nil = proto.Nil

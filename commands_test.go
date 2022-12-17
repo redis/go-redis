@@ -14,6 +14,15 @@ import (
 	"github.com/go-redis/redis/v9/internal/proto"
 )
 
+type TimeValue struct {
+	time.Time
+}
+
+func (t *TimeValue) ScanRedis(s string) (err error) {
+	t.Time, err = time.Parse(time.RFC3339Nano, s)
+	return
+}
+
 var _ = Describe("Commands", func() {
 	ctx := context.TODO()
 	var client *redis.Client
@@ -1192,19 +1201,28 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should scan Mget", func() {
-			err := client.MSet(ctx, "key1", "hello1", "key2", 123).Err()
+			now := time.Now()
+
+			err := client.MSet(ctx, "key1", "hello1", "key2", 123, "time", now.Format(time.RFC3339Nano)).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			res := client.MGet(ctx, "key1", "key2", "_")
+			res := client.MGet(ctx, "key1", "key2", "_", "time")
 			Expect(res.Err()).NotTo(HaveOccurred())
 
 			type data struct {
-				Key1 string `redis:"key1"`
-				Key2 int    `redis:"key2"`
+				Key1 string    `redis:"key1"`
+				Key2 int       `redis:"key2"`
+				Time TimeValue `redis:"time"`
 			}
 			var d data
 			Expect(res.Scan(&d)).NotTo(HaveOccurred())
-			Expect(d).To(Equal(data{Key1: "hello1", Key2: 123}))
+			Expect(d.Time.UnixNano()).To(Equal(now.UnixNano()))
+			d.Time.Time = time.Time{}
+			Expect(d).To(Equal(data{
+				Key1: "hello1",
+				Key2: 123,
+				Time: TimeValue{Time: time.Time{}},
+			}))
 		})
 
 		It("should MSetNX", func() {
@@ -1732,19 +1750,28 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should scan", func() {
-			err := client.HMSet(ctx, "hash", "key1", "hello1", "key2", 123).Err()
+			now := time.Now()
+
+			err := client.HMSet(ctx, "hash", "key1", "hello1", "key2", 123, "time", now.Format(time.RFC3339Nano)).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			res := client.HGetAll(ctx, "hash")
 			Expect(res.Err()).NotTo(HaveOccurred())
 
 			type data struct {
-				Key1 string `redis:"key1"`
-				Key2 int    `redis:"key2"`
+				Key1 string    `redis:"key1"`
+				Key2 int       `redis:"key2"`
+				Time TimeValue `redis:"time"`
 			}
 			var d data
 			Expect(res.Scan(&d)).NotTo(HaveOccurred())
-			Expect(d).To(Equal(data{Key1: "hello1", Key2: 123}))
+			Expect(d.Time.UnixNano()).To(Equal(now.UnixNano()))
+			d.Time.Time = time.Time{}
+			Expect(d).To(Equal(data{
+				Key1: "hello1",
+				Key2: 123,
+				Time: TimeValue{Time: time.Time{}},
+			}))
 		})
 
 		It("should HIncrBy", func() {
