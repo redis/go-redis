@@ -1962,6 +1962,9 @@ type XInfoGroup struct {
 	Consumers       int64
 	Pending         int64
 	LastDeliveredID string
+
+	Lan         int64
+	EntriesRead int64
 }
 
 var _ Cmder = (*XInfoGroupsCmd)(nil)
@@ -2016,11 +2019,11 @@ func readXGroupInfo(rd *proto.Reader) (XInfoGroup, error) {
 	if err != nil {
 		return group, err
 	}
-	if n != 8 {
+	/*if n != 8 {
 		return group, fmt.Errorf("redis: got %d elements in XINFO GROUPS reply, wanted 8", n)
-	}
+	}*/
 
-	for i := 0; i < 4; i++ {
+	for i := 0; i < n/2; i++ {
 		key, err := rd.ReadString()
 		if err != nil {
 			return group, err
@@ -2046,8 +2049,18 @@ func readXGroupInfo(rd *proto.Reader) (XInfoGroup, error) {
 			}
 		case "last-delivered-id":
 			group.LastDeliveredID = val
+		case "entries-read":
+			group.EntriesRead, err = strconv.ParseInt(val, 0, 64)
+			if err != nil {
+				return group, err
+			}
+		case "lag":
+			group.Lan, err = strconv.ParseInt(val, 0, 64)
+			if err != nil {
+				return group, err
+			}
 		default:
-			return group, fmt.Errorf("redis: unexpected content %s in XINFO GROUPS reply", key)
+			return group, fmt.Errorf("redis: unexpected content %s in XINFO GROUPS reply 2050", key)
 		}
 	}
 
