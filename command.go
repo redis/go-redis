@@ -1962,8 +1962,9 @@ type XInfoGroup struct {
 	Consumers       int64
 	Pending         int64
 	LastDeliveredID string
-	EntriesRead     int64
-	Lan             int64
+
+	EntriesRead int64
+	Lan         int64
 }
 
 var _ Cmder = (*XInfoGroupsCmd)(nil)
