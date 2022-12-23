@@ -193,7 +193,11 @@ func (mh *metricsHook) DialHook(hook redis.DialHook) redis.DialHook {
 
 		conn, err := hook(ctx, network, addr)
 
-		mh.createTime.Record(ctx, milliseconds(time.Since(start)), mh.attrs...)
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+1)
+		attrs = append(attrs, mh.attrs...)
+		attrs = append(attrs, statusAttr(err))
+
+		mh.createTime.Record(ctx, milliseconds(time.Since(start)), attrs...)
 		return conn, err
 	}
 }
