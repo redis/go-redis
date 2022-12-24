@@ -84,7 +84,29 @@ func (s StructValue) Scan(key string, value string) error {
 	if !ok {
 		return nil
 	}
-	if err := field.fn(s.value.Field(field.index), value); err != nil {
+
+	v := s.value.Field(field.index)
+	isPtr := v.Kind() == reflect.Pointer
+
+	if isPtr && v.IsNil() {
+		v.Set(reflect.New(v.Type().Elem()))
+	}
+	if !isPtr && v.Type().Name() != "" && v.CanAddr() {
+		v = v.Addr()
+		isPtr = true
+	}
+
+	if isPtr && v.Type().NumMethod() > 0 && v.CanInterface() {
+		if scan, ok := v.Interface().(Scanner); ok {
+			return scan.ScanRedis(value)
+		}
+	}
+
+	if isPtr {
+		v = v.Elem()
+	}
+
+	if err := field.fn(v, value); err != nil {
 		t := s.value.Type()
 		return fmt.Errorf("cannot scan redis.result %s into struct field %s.%s of type %s, error-%s",
 			value, t.Name(), t.Field(field.index).Name, t.Field(field.index).Type, err.Error())

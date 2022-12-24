@@ -4,6 +4,7 @@ import (
 	"math"
 	"strconv"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -28,6 +29,20 @@ type data struct {
 	Float   float32 `redis:"float"`
 	Float64 float64 `redis:"float64"`
 	Bool    bool    `redis:"bool"`
+}
+
+type TimeRFC3339Nano struct {
+	time.Time
+}
+
+func (t *TimeRFC3339Nano) ScanRedis(s string) (err error) {
+	t.Time, err = time.Parse(time.RFC3339Nano, s)
+	return
+}
+
+type TimeData struct {
+	Name string           `redis:"name"`
+	Time *TimeRFC3339Nano `redis:"login"`
 }
 
 type i []interface{}
@@ -174,5 +189,15 @@ var _ = Describe("Scan", func() {
 		Expect(Scan(&d, i{"bool"}, i{"-1"})).To(HaveOccurred())
 		Expect(Scan(&d, i{"bool"}, i{""})).To(HaveOccurred())
 		Expect(Scan(&d, i{"bool"}, i{"123"})).To(HaveOccurred())
+	})
+
+	It("Implements Scanner", func() {
+		var td TimeData
+
+		now := time.Now()
+		Expect(Scan(&td, i{"name", "login"}, i{"hello", now.Format(time.RFC3339Nano)})).NotTo(HaveOccurred())
+		Expect(td.Name).To(Equal("hello"))
+		Expect(td.Time.UnixNano()).To(Equal(now.UnixNano()))
+		Expect(td.Time.Format(time.RFC3339Nano)).To(Equal(now.Format(time.RFC3339Nano)))
 	})
 })
