@@ -60,6 +60,9 @@ func TestParseURL(t *testing.T) {
 			url: "redis://localhost:123/?db=2&conn_max_idle_time", // missing "=" at the end
 			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: 0},
 		}, {
+			url: "redis://localhost:123/?db=2&client_name=hi", // client name
+			o:   &Options{Addr: "localhost:123", DB: 2, ClientName: "hi"},
+		}, {
 			url: "unix:///tmp/redis.sock",
 			o:   &Options{Addr: "/tmp/redis.sock"},
 		}, {

@@ -14,6 +14,9 @@ type UniversalOptions struct {
 	// of cluster/sentinel nodes.
 	Addrs []string
 
+	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
+	ClientName string
+
 	// Database to be selected after connecting to the server.
 	// Only single-node and failover clients.
 	DB int
@@ -69,9 +72,10 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 	}
 
 	return &ClusterOptions{
-		Addrs:     o.Addrs,
-		Dialer:    o.Dialer,
-		OnConnect: o.OnConnect,
+		Addrs:      o.Addrs,
+		ClientName: o.ClientName,
+		Dialer:     o.Dialer,
+		OnConnect:  o.OnConnect,
 
 		Username: o.Username,
 		Password: o.Password,
@@ -112,6 +116,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 	return &FailoverOptions{
 		SentinelAddrs: o.Addrs,
 		MasterName:    o.MasterName,
+		ClientName:    o.ClientName,
 
 		Dialer:    o.Dialer,
 		OnConnect: o.OnConnect,
@@ -151,9 +156,10 @@ func (o *UniversalOptions) Simple() *Options {
 	}
 
 	return &Options{
-		Addr:      addr,
-		Dialer:    o.Dialer,
-		OnConnect: o.OnConnect,
+		Addr:       addr,
+		ClientName: o.ClientName,
+		Dialer:     o.Dialer,
+		OnConnect:  o.OnConnect,
 
 		DB:       o.DB,
 		Username: o.Username,

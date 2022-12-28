@@ -169,6 +169,21 @@ var _ = Describe("Client", func() {
 		Expect(db2.Close()).NotTo(HaveOccurred())
 	})
 
+	It("should client setname", func() {
+		opt := redisOptions()
+		opt.ClientName = "hi"
+		db := redis.NewClient(opt)
+
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		Expect(db.Ping(ctx).Err()).NotTo(HaveOccurred())
+		val, err := db.ClientList(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).Should(ContainSubstring("name=hi"))
+	})
+
 	It("processes custom commands", func() {
 		cmd := redis.NewCmd(ctx, "PING")
 		_ = client.Process(ctx, cmd)

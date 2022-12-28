@@ -29,6 +29,9 @@ type ClusterOptions struct {
 	// A seed list of host:port addresses of cluster nodes.
 	Addrs []string
 
+	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
+	ClientName string
+
 	// NewClient creates a cluster node client with provided name and options.
 	NewClient func(opt *Options) *Client
 
@@ -208,6 +211,7 @@ func setupClusterConn(u *url.URL, host string, o *ClusterOptions) (*ClusterOptio
 func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, error) {
 	q := queryOptions{q: u.Query()}
 
+	o.ClientName = q.string("client_name")
 	o.MaxRedirects = q.int("max_redirects")
 	o.ReadOnly = q.bool("read_only")
 	o.RouteByLatency = q.bool("route_by_latency")
@@ -250,8 +254,9 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 
 func (opt *ClusterOptions) clientOptions() *Options {
 	return &Options{
-		Dialer:    opt.Dialer,
-		OnConnect: opt.OnConnect,
+		ClientName: opt.ClientName,
+		Dialer:     opt.Dialer,
+		OnConnect:  opt.OnConnect,
 
 		Username: opt.Username,
 		Password: opt.Password,
@@ -871,7 +876,7 @@ func (c *ClusterClient) Close() error {
 	return c.nodes.Close()
 }
 
-// Do creates a Cmd from the args and processes the cmd.
+// Do create a Cmd from the args and processes the cmd.
 func (c *ClusterClient) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	_ = c.Process(ctx, cmd)
