@@ -256,6 +256,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			pipe.ReadOnly(ctx)
 		}
 
+		if c.opt.ClientName != "" {
+			pipe.ClientSetName(ctx, c.opt.ClientName)
+		}
+
 		return nil
 	})
 	if err != nil {

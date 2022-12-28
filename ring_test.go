@@ -29,6 +29,7 @@ var _ = Describe("Redis Ring", func() {
 
 	BeforeEach(func() {
 		opt := redisRingOptions()
+		opt.ClientName = "ring_hi"
 		opt.HeartbeatFrequency = heartbeat
 		ring = redis.NewRing(opt)
 
@@ -48,6 +49,20 @@ var _ = Describe("Redis Ring", func() {
 
 		err := ring.Ping(ctx).Err()
 		Expect(err).To(MatchError("context canceled"))
+	})
+
+	It("should ring client setname", func() {
+		err := ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			return c.Ping(ctx).Err()
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_ = ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := c.ClientList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(ContainSubstring("name=ring_hi"))
+			return nil
+		})
 	})
 
 	It("distributes keys", func() {

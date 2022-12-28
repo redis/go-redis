@@ -27,13 +27,16 @@ type Limiter interface {
 	ReportResult(result error)
 }
 
-// Options keeps the settings to setup redis connection.
+// Options keeps the settings to set up redis connection.
 type Options struct {
 	// The network type, either tcp or unix.
 	// Default is tcp.
 	Network string
 	// host:port address.
 	Addr string
+
+	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
+	ClientName string
 
 	// Dialer creates new network connection and has priority over
 	// Network and Addr options.
@@ -426,6 +429,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 		o.DB = db
 	}
 
+	o.ClientName = q.string("client_name")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")

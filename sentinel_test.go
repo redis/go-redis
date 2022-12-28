@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"net"
 
 	. "github.com/onsi/ginkgo"
@@ -17,6 +18,7 @@ var _ = Describe("Sentinel", func() {
 
 	BeforeEach(func() {
 		client = redis.NewFailoverClient(&redis.FailoverOptions{
+			ClientName:    "sentinel_hi",
 			MasterName:    sentinelName,
 			SentinelAddrs: sentinelAddrs,
 			MaxRetries:    -1,
@@ -125,6 +127,13 @@ var _ = Describe("Sentinel", func() {
 		err := client.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("should sentinel client setname", func() {
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+		val, err := client.ClientList(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).Should(ContainSubstring("name=sentinel_hi"))
+	})
 })
 
 var _ = Describe("NewFailoverClusterClient", func() {
@@ -134,6 +143,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 
 	BeforeEach(func() {
 		client = redis.NewFailoverClusterClient(&redis.FailoverOptions{
+			ClientName:    "sentinel_cluster_hi",
 			MasterName:    sentinelName,
 			SentinelAddrs: sentinelAddrs,
 
@@ -212,6 +222,20 @@ var _ = Describe("NewFailoverClusterClient", func() {
 
 		_, err = startRedis(masterPort)
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should sentinel cluster client setname", func() {
+		err := client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			return c.Ping(ctx).Err()
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := c.ClientList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(ContainSubstring("name=sentinel_cluster_hi"))
+			return nil
+		})
 	})
 })
 

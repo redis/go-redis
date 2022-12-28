@@ -51,6 +51,9 @@ type RingOptions struct {
 	// NewClient creates a shard client with provided options.
 	NewClient func(opt *Options) *Client
 
+	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
+	ClientName string
+
 	// Frequency of PING commands sent to check shards availability.
 	// Shard is considered down after 3 subsequent failed checks.
 	HeartbeatFrequency time.Duration
@@ -129,8 +132,9 @@ func (opt *RingOptions) init() {
 
 func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
-		Dialer:    opt.Dialer,
-		OnConnect: opt.OnConnect,
+		ClientName: opt.ClientName,
+		Dialer:     opt.Dialer,
+		OnConnect:  opt.OnConnect,
 
 		Username: opt.Username,
 		Password: opt.Password,
@@ -522,7 +526,7 @@ func (c *Ring) SetAddrs(addrs map[string]string) {
 	c.sharding.SetAddrs(addrs)
 }
 
-// Do creates a Cmd from the args and processes the cmd.
+// Do create a Cmd from the args and processes the cmd.
 func (c *Ring) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	_ = c.Process(ctx, cmd)

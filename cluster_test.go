@@ -589,6 +589,7 @@ var _ = Describe("ClusterClient", func() {
 	Describe("ClusterClient", func() {
 		BeforeEach(func() {
 			opt = redisClusterOptions()
+			opt.ClientName = "cluster_hi"
 			client = cluster.newClusterClient(ctx, opt)
 
 			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
@@ -677,6 +678,20 @@ var _ = Describe("ClusterClient", func() {
 				}},
 			}}
 			Expect(assertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
+		})
+
+		It("should cluster client setname", func() {
+			err := client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+				return c.Ping(ctx).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+				val, err := c.ClientList(ctx).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).Should(ContainSubstring("name=cluster_hi"))
+				return nil
+			})
 		})
 
 		It("should CLUSTER NODES", func() {
@@ -1408,6 +1423,10 @@ func TestParseClusterURL(t *testing.T) {
 			test: "UseDefault",
 			url:  "redis://localhost:123?conn_max_idle_time=",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
+		}, {
+			test: "ClientName",
+			url:  "redis://localhost:123?client_name=cluster_hi",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ClientName: "cluster_hi"},
 		}, {
 			test: "UseDefaultMissing=",
 			url:  "redis://localhost:123?conn_max_idle_time",

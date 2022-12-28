@@ -24,6 +24,9 @@ type FailoverOptions struct {
 	// A seed list of host:port addresses of sentinel nodes.
 	SentinelAddrs []string
 
+	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
+	ClientName string
+
 	// If specified with SentinelPassword, enables ACL-based authentication (via
 	// AUTH <user> <pass>).
 	SentinelUsername string
@@ -78,7 +81,8 @@ type FailoverOptions struct {
 
 func (opt *FailoverOptions) clientOptions() *Options {
 	return &Options{
-		Addr: "FailoverClient",
+		Addr:       "FailoverClient",
+		ClientName: opt.ClientName,
 
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
@@ -110,7 +114,8 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 	return &Options{
-		Addr: addr,
+		Addr:       addr,
+		ClientName: opt.ClientName,
 
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
@@ -141,6 +146,8 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 
 func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 	return &ClusterOptions{
+		ClientName: opt.ClientName,
+
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
