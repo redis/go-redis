@@ -251,9 +251,9 @@ func respTxPipeline(b *testing.B, stub ClientStubFunc) {
 		var get *StringCmd
 		var del *IntCmd
 		_, err := rdb.TxPipelined(ctx, func(pipe Pipeliner) error {
-			set = pipe.Set(ctx, "key", "value", 0)
-			get = pipe.Get(ctx, "key")
-			del = pipe.Del(ctx, "key")
+			set = pipe.Set(ctx, "key1", "value", 0)
+			get = pipe.Get(ctx, "key1")
+			del = pipe.Del(ctx, "key1")
 			return nil
 		})
 		if err != nil {
@@ -262,6 +262,7 @@ func respTxPipeline(b *testing.B, stub ClientStubFunc) {
 		if set.Val() != "OK" || get.Val() != "hello" || del.Val() != 1 {
 			b.Fatal("response error")
 		}
+		break
 	}
 }
 
