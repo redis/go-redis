@@ -1388,9 +1388,12 @@ func (c *ClusterClient) txPipelineReadQueued(
 	if err := statusCmd.readReply(rd); err != nil {
 		return err
 	}
+	fmt.Println("111111111111", "statusCmd.Val", statusCmd.Val())
+	fmt.Println("111111111111", "cmds_len", len(cmds))
 
 	for _, cmd := range cmds {
 		err := statusCmd.readReply(rd)
+		fmt.Println("111111111111", "statusCmd.Val", statusCmd.Val(), "cmd", cmd.String())
 		if err == nil || c.checkMovedErr(ctx, cmd, err, failedCmds) || isRedisError(err) {
 			continue
 		}
@@ -1399,6 +1402,7 @@ func (c *ClusterClient) txPipelineReadQueued(
 
 	// Parse number of replies.
 	line, err := rd.ReadLine()
+	fmt.Println("111111111111", "line", string(line))
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr
