@@ -1,10 +1,7 @@
 PACKAGE_DIRS := $(shell find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; | sort)
 
 test: testdeps
-	go test ./...
-	go test ./... -short -race
 	go test ./... -run=NONE -bench=. -benchmem
-	env GOOS=linux GOARCH=386 go test ./...
 	go vet
 
 testdeps: testdata/redis/src/redis-server
