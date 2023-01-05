@@ -2,9 +2,9 @@ name: Go
 
 on:
   push:
-    branches: [master]
+    branches: [master, v8]
   pull_request:
-    branches: [master]
+    branches: [master, v8]
 
 jobs:
   build:
@@ -13,11 +13,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: [1.17.x, 1.18.x]
+        go-version: [1.18.x, 1.19.x]
 
     services:
       redis:
-        image: redis
+        image: redis:6.2.8
         options: >-
           --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
         ports:
