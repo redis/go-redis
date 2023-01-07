@@ -29,9 +29,9 @@ func SetLogger(logger internal.Logging) {
 //------------------------------------------------------------------------------
 
 type Hook interface {
-	DialHook(hook DialHook) DialHook
-	ProcessHook(hook ProcessHook) ProcessHook
-	ProcessPipelineHook(hook ProcessPipelineHook) ProcessPipelineHook
+	DialHook(next DialHook) DialHook
+	ProcessHook(next ProcessHook) ProcessHook
+	ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook
 }
 
 type (
@@ -48,6 +48,43 @@ type hooks struct {
 	processTxPipelineHook ProcessPipelineHook
 }
 
+// AddHook is to add a hook to the queue.
+// Hook is a function executed during network connection, command execution, and pipeline,
+// it is a first-in-last-out stack queue (FILO).
+// The first to be added to the queue is the execution function of the redis command (the last to be executed).
+// You need to execute the next hook in each hook, unless you want to terminate the execution of the command.
+// For example, you added hook-1, hook-2:
+//
+//	client.AddHook(hook-1, hook-2)
+//
+// hook-1:
+//
+//	func (Hook1) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+//	 	return func(ctx context.Context, cmd Cmder) error {
+//		 	print("hook-1 start")
+//		 	next(ctx, cmd)
+//		 	print("hook-1 end")
+//		 	return nil
+//	 	}
+//	}
+//
+// hook-2:
+//
+//	func (Hook2) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+//		return func(ctx context.Context, cmd redis.Cmder) error {
+//			print("hook-2 start")
+//			next(ctx, cmd)
+//			print("hook-2 end")
+//			return nil
+//		}
+//	}
+//
+// The execution sequence is:
+//
+//	hook-2 start -> hook-1 start -> exec redis cmd -> hook-1 end -> hook-2 end
+//
+// Please note: "next(ctx, cmd)" is very important, it will call the next hook,
+// if "next(ctx, cmd)" is not executed in hook-1, the redis command will not be executed.
 func (hs *hooks) AddHook(hook Hook) {
 	hs.slice = append(hs.slice, hook)
 	hs.dialHook = hook.DialHook(hs.dialHook)
@@ -575,7 +612,7 @@ func (c *Client) Conn() *Conn {
 	return newConn(c.opt, pool.NewStickyConnPool(c.connPool))
 }
 
-// Do creates a Cmd from the args and processes the cmd.
+// Do create a Cmd from the args and processes the cmd.
 func (c *Client) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	_ = c.Process(ctx, cmd)
@@ -648,26 +685,26 @@ func (c *Client) pubSub() *PubSub {
 // subscription may not be active immediately. To force the connection to wait,
 // you may call the Receive() method on the returned *PubSub like so:
 //
-//    sub := client.Subscribe(queryResp)
-//    iface, err := sub.Receive()
-//    if err != nil {
-//        // handle error
-//    }
+//	sub := client.Subscribe(queryResp)
+//	iface, err := sub.Receive()
+//	if err != nil {
+//	    // handle error
+//	}
 //
-//    // Should be *Subscription, but others are possible if other actions have been
-//    // taken on sub since it was created.
-//    switch iface.(type) {
-//    case *Subscription:
-//        // subscribe succeeded
-//    case *Message:
-//        // received first message
-//    case *Pong:
-//        // pong received
-//    default:
-//        // handle error
-//    }
+//	// Should be *Subscription, but others are possible if other actions have been
+//	// taken on sub since it was created.
+//	switch iface.(type) {
+//	case *Subscription:
+//	    // subscribe succeeded
+//	case *Message:
+//	    // received first message
+//	case *Pong:
+//	    // pong received
+//	default:
+//	    // handle error
+//	}
 //
-//    ch := sub.Channel()
+//	ch := sub.Channel()
 func (c *Client) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {

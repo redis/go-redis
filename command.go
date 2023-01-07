@@ -1110,15 +1110,16 @@ func (cmd *KeyValueSliceCmd) String() string {
 }
 
 // Many commands will respond to two formats:
-//  1) 1) "one"
-//     2) (double) 1
-//  2) 1) "two"
-//     2) (double) 2
+//  1. 1) "one"
+//  2. (double) 1
+//  2. 1) "two"
+//  2. (double) 2
+//
 // OR:
-//  1) "two"
-//  2) (double) 2
-//  3) "one"
-//  4) (double) 1
+//  1. "two"
+//  2. (double) 2
+//  3. "one"
+//  4. (double) 1
 func (cmd *KeyValueSliceCmd) readReply(rd *proto.Reader) error { // nolint:dupl
 	n, err := rd.ReadArrayLen()
 	if err != nil {
