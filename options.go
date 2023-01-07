@@ -223,32 +223,38 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 // Scheme is required.
 // There are two connection types: by tcp socket and by unix socket.
 // Tcp connection:
-//		redis://<user>:<password>@<host>:<port>/<db_number>
+//
+//	redis://<user>:<password>@<host>:<port>/<db_number>
+//
 // Unix connection:
-//		unix://<user>:<password>@</path/to/redis.sock>?db=<db_number>
+//
+//	unix://<user>:<password>@</path/to/redis.sock>?db=<db_number>
+//
 // Most Option fields can be set using query parameters, with the following restrictions:
-//	- field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
-//	- only scalar type fields are supported (bool, int, time.Duration)
-//	- for time.Duration fields, values must be a valid input for time.ParseDuration();
-//	  additionally a plain integer as value (i.e. without unit) is intepreted as seconds
-//	- to disable a duration field, use value less than or equal to 0; to use the default
-//	  value, leave the value blank or remove the parameter
-//	- only the last value is interpreted if a parameter is given multiple times
-//	- fields "network", "addr", "username" and "password" can only be set using other
-//	  URL attributes (scheme, host, userinfo, resp.), query paremeters using these
-//	  names will be treated as unknown parameters
-//	- unknown parameter names will result in an error
+//   - field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
+//   - only scalar type fields are supported (bool, int, time.Duration)
+//   - for time.Duration fields, values must be a valid input for time.ParseDuration();
+//     additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//   - to disable a duration field, use value less than or equal to 0; to use the default
+//     value, leave the value blank or remove the parameter
+//   - only the last value is interpreted if a parameter is given multiple times
+//   - fields "network", "addr", "username" and "password" can only be set using other
+//     URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//     names will be treated as unknown parameters
+//   - unknown parameter names will result in an error
+//
 // Examples:
-//		redis://user:password@localhost:6789/3?dial_timeout=3&db=1&read_timeout=6s&max_retries=2
-//		is equivalent to:
-//		&Options{
-//			Network:     "tcp",
-//			Addr:        "localhost:6789",
-//			DB:          1,               // path "/3" was overridden by "&db=1"
-//			DialTimeout: 3 * time.Second, // no time unit = seconds
-//			ReadTimeout: 6 * time.Second,
-//			MaxRetries:  2,
-//		}
+//
+//	redis://user:password@localhost:6789/3?dial_timeout=3&db=1&read_timeout=6s&max_retries=2
+//	is equivalent to:
+//	&Options{
+//		Network:     "tcp",
+//		Addr:        "localhost:6789",
+//		DB:          1,               // path "/3" was overridden by "&db=1"
+//		DialTimeout: 3 * time.Second, // no time unit = seconds
+//		ReadTimeout: 6 * time.Second,
+//		MaxRetries:  2,
+//	}
 func ParseURL(redisURL string) (*Options, error) {
 	u, err := url.Parse(redisURL)
 	if err != nil {
