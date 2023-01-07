@@ -4353,6 +4353,32 @@ var _ = Describe("Commands", func() {
 			Expect(v).To(Equal([]string{"one", "two"}))
 		})
 
+		It("should ZInterCard", func() {
+			err := client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset1", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// limit 0 means no limit
+			sInterCard := client.ZInterCard(ctx, 0, "zset1", "zset2")
+			Expect(sInterCard.Err()).NotTo(HaveOccurred())
+			Expect(sInterCard.Val()).To(Equal(int64(2)))
+
+			sInterCard = client.ZInterCard(ctx, 1, "zset1", "zset2")
+			Expect(sInterCard.Err()).NotTo(HaveOccurred())
+			Expect(sInterCard.Val()).To(Equal(int64(1)))
+
+			sInterCard = client.ZInterCard(ctx, 3, "zset1", "zset2")
+			Expect(sInterCard.Err()).NotTo(HaveOccurred())
+			Expect(sInterCard.Val()).To(Equal(int64(2)))
+		})
+
 		It("should ZInterWithScores", func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
