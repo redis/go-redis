@@ -268,6 +268,7 @@ type Cmdable interface {
 	ZIncrBy(ctx context.Context, key string, increment float64, member string) *FloatCmd
 	ZInter(ctx context.Context, store *ZStore) *StringSliceCmd
 	ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd
+	ZInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd
 	ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd
 	ZMScore(ctx context.Context, key string, members ...string) *FloatSliceCmd
 	ZPopMax(ctx context.Context, key string, count ...int64) *ZSliceCmd
@@ -2342,6 +2343,22 @@ func (c cmdable) ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd
 	args = append(args, "withscores")
 	cmd := NewZSliceCmd(ctx, args...)
 	cmd.SetFirstKeyPos(2)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd {
+	args := make([]interface{}, 4+len(keys))
+	args[0] = "zintercard"
+	numkeys := int64(0)
+	for i, key := range keys {
+		args[2+i] = key
+		numkeys++
+	}
+	args[1] = numkeys
+	args[2+numkeys] = "limit"
+	args[3+numkeys] = limit
+	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
