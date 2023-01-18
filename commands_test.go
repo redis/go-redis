@@ -668,6 +668,28 @@ var _ = Describe("Commands", func() {
 			Expect(val).To(Equal("hello"))
 		})
 
+		It("should Sort RO", func() {
+			size, err := client.LPush(ctx, "list", "1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(1)))
+
+			size, err = client.LPush(ctx, "list", "3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(2)))
+
+			size, err = client.LPush(ctx, "list", "2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(int64(3)))
+
+			els, err := client.SortRO(ctx, "list", &redis.Sort{
+				Offset: 0,
+				Count:  2,
+				Order:  "ASC",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(els).To(Equal([]string{"1", "2"}))
+		})
+
 		It("should Sort", func() {
 			size, err := client.LPush(ctx, "list", "1").Result()
 			Expect(err).NotTo(HaveOccurred())
