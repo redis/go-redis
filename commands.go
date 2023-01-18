@@ -116,6 +116,7 @@ type Cmdable interface {
 	Restore(ctx context.Context, key string, ttl time.Duration, value string) *StatusCmd
 	RestoreReplace(ctx context.Context, key string, ttl time.Duration, value string) *StatusCmd
 	Sort(ctx context.Context, key string, sort *Sort) *StringSliceCmd
+	SortRO(ctx context.Context, key string, sort *Sort) *StringSliceCmd
 	SortStore(ctx context.Context, key, store string, sort *Sort) *IntCmd
 	SortInterfaces(ctx context.Context, key string, sort *Sort) *SliceCmd
 	Touch(ctx context.Context, keys ...string) *IntCmd
@@ -710,8 +711,9 @@ type Sort struct {
 	Alpha         bool
 }
 
-func (sort *Sort) args(key string) []interface{} {
-	args := []interface{}{"sort", key}
+func (sort *Sort) args(command, key string) []interface{} {
+	args := []interface{}{command, key}
+
 	if sort.By != "" {
 		args = append(args, "by", sort.By)
 	}
@@ -730,14 +732,20 @@ func (sort *Sort) args(key string) []interface{} {
 	return args
 }
 
+func (c cmdable) SortRO(ctx context.Context, key string, sort *Sort) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, sort.args("sort_ro", key)...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) Sort(ctx context.Context, key string, sort *Sort) *StringSliceCmd {
-	cmd := NewStringSliceCmd(ctx, sort.args(key)...)
+	cmd := NewStringSliceCmd(ctx, sort.args("sort", key)...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) SortStore(ctx context.Context, key, store string, sort *Sort) *IntCmd {
-	args := sort.args(key)
+	args := sort.args("sort", key)
 	if store != "" {
 		args = append(args, "store", store)
 	}
@@ -747,7 +755,7 @@ func (c cmdable) SortStore(ctx context.Context, key, store string, sort *Sort) *
 }
 
 func (c cmdable) SortInterfaces(ctx context.Context, key string, sort *Sort) *SliceCmd {
-	cmd := NewSliceCmd(ctx, sort.args(key)...)
+	cmd := NewSliceCmd(ctx, sort.args("sort", key)...)
 	_ = c(ctx, cmd)
 	return cmd
 }
