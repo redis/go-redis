@@ -198,10 +198,10 @@ func ExampleClient_SetEX() {
 }
 
 func ExampleClient_HSet() {
-	// Set "key" tag for hash key
+	// Set "redis" tag for hash key
 	type ExampleUser struct {
-		Name string `key:"name"`
-		Age  int    `key:"age"`
+		Name string `redis:"name"`
+		Age  int    `redis:"age"`
 	}
 
 	items := ExampleUser{"jane", 22}
