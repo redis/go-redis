@@ -5,12 +5,13 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"io"
-	"strings"
 )
 
 type Scripter interface {
 	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd
 	EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd
+	EvalRO(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd
+	EvalShaRO(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd
 	ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd
 	ScriptLoad(ctx context.Context, script string) *StringCmd
 }
@@ -50,16 +51,34 @@ func (s *Script) Eval(ctx context.Context, c Scripter, keys []string, args ...in
 	return c.Eval(ctx, s.src, keys, args...)
 }
 
+func (s *Script) EvalRO(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
+	return c.EvalRO(ctx, s.src, keys, args...)
+}
+
 func (s *Script) EvalSha(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
 	return c.EvalSha(ctx, s.hash, keys, args...)
+}
+
+func (s *Script) EvalShaRO(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
+	return c.EvalShaRO(ctx, s.hash, keys, args...)
 }
 
 // Run optimistically uses EVALSHA to run the script. If script does not exist
 // it is retried using EVAL.
 func (s *Script) Run(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
 	r := s.EvalSha(ctx, c, keys, args...)
-	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
+	if HasErrorPrefix(r.Err(), "NOSCRIPT") {
 		return s.Eval(ctx, c, keys, args...)
+	}
+	return r
+}
+
+// RunRO optimistically uses EVALSHA_RO to run the script. If script does not exist
+// it is retried using EVAL_RO.
+func (s *Script) RunRO(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
+	r := s.EvalShaRO(ctx, c, keys, args...)
+	if HasErrorPrefix(r.Err(), "NOSCRIPT") {
+		return s.EvalRO(ctx, c, keys, args...)
 	}
 	return r
 }

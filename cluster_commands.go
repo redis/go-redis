@@ -8,7 +8,7 @@ import (
 
 func (c *ClusterClient) DBSize(ctx context.Context) *IntCmd {
 	cmd := NewIntCmd(ctx, "dbsize")
-	_ = c.hooks.process(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+	_ = c.hooks.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
 		var size int64
 		err := c.ForEachMaster(ctx, func(ctx context.Context, master *Client) error {
 			n, err := master.DBSize(ctx).Result()
@@ -30,7 +30,7 @@ func (c *ClusterClient) DBSize(ctx context.Context) *IntCmd {
 
 func (c *ClusterClient) ScriptLoad(ctx context.Context, script string) *StringCmd {
 	cmd := NewStringCmd(ctx, "script", "load", script)
-	_ = c.hooks.process(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+	_ = c.hooks.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
 		mu := &sync.Mutex{}
 		err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
 			val, err := shard.ScriptLoad(ctx, script).Result()
@@ -56,7 +56,7 @@ func (c *ClusterClient) ScriptLoad(ctx context.Context, script string) *StringCm
 
 func (c *ClusterClient) ScriptFlush(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "script", "flush")
-	_ = c.hooks.process(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+	_ = c.hooks.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
 		err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
 			return shard.ScriptFlush(ctx).Err()
 		})
@@ -82,8 +82,8 @@ func (c *ClusterClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 		result[i] = true
 	}
 
-	_ = c.hooks.process(ctx, cmd, func(ctx context.Context, _ Cmder) error {
-		mu := &sync.Mutex{}
+	_ = c.hooks.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+		var mu sync.Mutex
 		err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
 			val, err := shard.ScriptExists(ctx, hashes...).Result()
 			if err != nil {

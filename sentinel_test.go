@@ -1,12 +1,13 @@
 package redis_test
 
 import (
+	"context"
 	"net"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v9"
 )
 
 var _ = Describe("Sentinel", func() {
@@ -17,6 +18,7 @@ var _ = Describe("Sentinel", func() {
 
 	BeforeEach(func() {
 		client = redis.NewFailoverClient(&redis.FailoverOptions{
+			ClientName:    "sentinel_hi",
 			MasterName:    sentinelName,
 			SentinelAddrs: sentinelAddrs,
 			MaxRetries:    -1,
@@ -125,6 +127,13 @@ var _ = Describe("Sentinel", func() {
 		err := client.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("should sentinel client setname", func() {
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+		val, err := client.ClientList(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).Should(ContainSubstring("name=sentinel_hi"))
+	})
 })
 
 var _ = Describe("NewFailoverClusterClient", func() {
@@ -134,6 +143,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 
 	BeforeEach(func() {
 		client = redis.NewFailoverClusterClient(&redis.FailoverOptions{
+			ClientName:    "sentinel_cluster_hi",
 			MasterName:    sentinelName,
 			SentinelAddrs: sentinelAddrs,
 
@@ -185,13 +195,14 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		}
 
 		// Create subscription.
-		ch := client.Subscribe(ctx, "foo").Channel()
+		sub := client.Subscribe(ctx, "foo")
+		ch := sub.Channel()
 
 		// Kill master.
 		err = master.Shutdown(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() error {
-			return sentinelMaster.Ping(ctx).Err()
+			return master.Ping(ctx).Err()
 		}, "15s", "100ms").Should(HaveOccurred())
 
 		// Check that client picked up new master.
@@ -207,9 +218,24 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		}, "15s", "100ms").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
+		Expect(sub.Close()).NotTo(HaveOccurred())
 
 		_, err = startRedis(masterPort)
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should sentinel cluster client setname", func() {
+		err := client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			return c.Ping(ctx).Err()
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := c.ClientList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(ContainSubstring("name=sentinel_cluster_hi"))
+			return nil
+		})
 	})
 })
 
@@ -221,7 +247,7 @@ var _ = Describe("SentinelAclAuth", func() {
 
 	var client *redis.Client
 	var sentinel *redis.SentinelClient
-	var sentinels = func() []*redisProcess {
+	sentinels := func() []*redisProcess {
 		return []*redisProcess{sentinel1, sentinel2, sentinel3}
 	}
 

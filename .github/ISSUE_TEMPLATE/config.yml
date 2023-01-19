@@ -3,6 +3,3 @@ contact_links:
   - name: Discussions
     url: https://github.com/go-redis/redis/discussions
     about: Ask a question via GitHub Discussions
-  - name: Discord
-    url: https://discord.gg/rWtp5Aj
-    about: Ask a question via Discord

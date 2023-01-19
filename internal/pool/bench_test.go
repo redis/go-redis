@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v8/internal/pool"
+	"github.com/go-redis/redis/v9/internal/pool"
 )
 
 type poolGetPutBenchmark struct {
@@ -30,11 +30,10 @@ func BenchmarkPoolGetPut(b *testing.B) {
 	for _, bm := range benchmarks {
 		b.Run(bm.String(), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
-				Dialer:             dummyDialer,
-				PoolSize:           bm.poolSize,
-				PoolTimeout:        time.Second,
-				IdleTimeout:        time.Hour,
-				IdleCheckFrequency: time.Hour,
+				Dialer:          dummyDialer,
+				PoolSize:        bm.poolSize,
+				PoolTimeout:     time.Second,
+				ConnMaxIdleTime: time.Hour,
 			})
 
 			b.ResetTimer()
@@ -74,11 +73,10 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 	for _, bm := range benchmarks {
 		b.Run(bm.String(), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
-				Dialer:             dummyDialer,
-				PoolSize:           bm.poolSize,
-				PoolTimeout:        time.Second,
-				IdleTimeout:        time.Hour,
-				IdleCheckFrequency: time.Hour,
+				Dialer:          dummyDialer,
+				PoolSize:        bm.poolSize,
+				PoolTimeout:     time.Second,
+				ConnMaxIdleTime: time.Hour,
 			})
 
 			b.ResetTimer()

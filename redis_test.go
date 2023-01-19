@@ -11,21 +11,25 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v9"
 )
 
-type redisHookError struct {
-	redis.Hook
-}
+type redisHookError struct{}
 
 var _ redis.Hook = redisHookError{}
 
-func (redisHookError) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
-	return ctx, nil
+func (redisHookError) DialHook(hook redis.DialHook) redis.DialHook {
+	return hook
 }
 
-func (redisHookError) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
-	return errors.New("hook error")
+func (redisHookError) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		return errors.New("hook error")
+	}
+}
+
+func (redisHookError) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return hook
 }
 
 func TestHookError(t *testing.T) {
@@ -136,17 +140,6 @@ var _ = Describe("Client", func() {
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
 
-	It("should close pipeline without closing the client", func() {
-		pipeline := client.Pipeline()
-		Expect(pipeline.Close()).NotTo(HaveOccurred())
-
-		pipeline.Ping(ctx)
-		_, err := pipeline.Exec(ctx)
-		Expect(err).To(MatchError("redis: client is closed"))
-
-		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
-	})
-
 	It("should close pubsub when client is closed", func() {
 		pubsub := client.Subscribe(ctx)
 		Expect(client.Close()).NotTo(HaveOccurred())
@@ -155,12 +148,6 @@ var _ = Describe("Client", func() {
 		Expect(err).To(MatchError("redis: client is closed"))
 
 		Expect(pubsub.Close()).NotTo(HaveOccurred())
-	})
-
-	It("should close pipeline when client is closed", func() {
-		pipeline := client.Pipeline()
-		Expect(client.Close()).NotTo(HaveOccurred())
-		Expect(pipeline.Close()).NotTo(HaveOccurred())
 	})
 
 	It("should select DB", func() {
@@ -180,6 +167,21 @@ var _ = Describe("Client", func() {
 
 		Expect(db2.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 		Expect(db2.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should client setname", func() {
+		opt := redisOptions()
+		opt.ClientName = "hi"
+		db := redis.NewClient(opt)
+
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		Expect(db.Ping(ctx).Err()).NotTo(HaveOccurred())
+		val, err := db.ClientList(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).Should(ContainSubstring("name=hi"))
 	})
 
 	It("processes custom commands", func() {
@@ -313,8 +315,20 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should Conn", func() {
-		err := client.Conn(ctx).Get(ctx, "this-key-does-not-exist").Err()
+		err := client.Conn().Get(ctx, "this-key-does-not-exist").Err()
 		Expect(err).To(Equal(redis.Nil))
+	})
+
+	It("should set and scan net.IP", func() {
+		ip := net.ParseIP("192.168.1.1")
+		err := client.Set(ctx, "ip", ip, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		var ip2 net.IP
+		err = client.Get(ctx, "ip").Scan(&ip2)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(ip2).To(Equal(ip))
 	})
 })
 
@@ -445,5 +459,27 @@ var _ = Describe("Client context cancelation", func() {
 		err := client.BLPop(ctx, 1*time.Second, "test").Err()
 		Expect(err).To(HaveOccurred())
 		Expect(err).To(BeIdenticalTo(context.Canceled))
+	})
+})
+
+var _ = Describe("Conn", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("TxPipeline", func() {
+		tx := client.Conn().TxPipeline()
+		tx.SwapDB(ctx, 0, 2)
+		tx.SwapDB(ctx, 1, 0)
+		_, err := tx.Exec(ctx)
+		Expect(err).NotTo(HaveOccurred())
 	})
 })

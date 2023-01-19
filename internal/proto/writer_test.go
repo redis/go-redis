@@ -3,13 +3,15 @@ package proto_test
 import (
 	"bytes"
 	"encoding"
+	"fmt"
+	"net"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/go-redis/redis/v8/internal/proto"
+	"github.com/go-redis/redis/v9/internal/proto"
 )
 
 type MyType struct{}
@@ -63,6 +65,13 @@ var _ = Describe("WriteBuffer", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(buf.Len()).To(Equal(15))
+	})
+
+	It("should append net.IP", func() {
+		ip := net.ParseIP("192.168.1.1")
+		err := wr.WriteArgs([]interface{}{ip})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(buf.String()).To(Equal(fmt.Sprintf("*1\r\n$16\r\n%s\r\n", bytes.NewBuffer(ip))))
 	})
 })
 

@@ -3,8 +3,8 @@ package redis
 import (
 	"context"
 
-	"github.com/go-redis/redis/v8/internal/pool"
-	"github.com/go-redis/redis/v8/internal/proto"
+	"github.com/go-redis/redis/v9/internal/pool"
+	"github.com/go-redis/redis/v9/internal/proto"
 )
 
 // TxFailedErr transaction redis failed.
@@ -20,17 +20,15 @@ type Tx struct {
 	cmdable
 	statefulCmdable
 	hooks
-	ctx context.Context
 }
 
-func (c *Client) newTx(ctx context.Context) *Tx {
+func (c *Client) newTx() *Tx {
 	tx := Tx{
 		baseClient: baseClient{
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool),
 		},
 		hooks: c.hooks.clone(),
-		ctx:   ctx,
 	}
 	tx.init()
 	return &tx
@@ -39,25 +37,17 @@ func (c *Client) newTx(ctx context.Context) *Tx {
 func (c *Tx) init() {
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
-}
 
-func (c *Tx) Context() context.Context {
-	return c.ctx
-}
-
-func (c *Tx) WithContext(ctx context.Context) *Tx {
-	if ctx == nil {
-		panic("nil context")
-	}
-	clone := *c
-	clone.init()
-	clone.hooks.lock()
-	clone.ctx = ctx
-	return &clone
+	c.hooks.setDial(c.baseClient.dial)
+	c.hooks.setProcess(c.baseClient.process)
+	c.hooks.setProcessPipeline(c.baseClient.processPipeline)
+	c.hooks.setProcessTxPipeline(c.baseClient.processTxPipeline)
 }
 
 func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
-	return c.hooks.process(ctx, cmd, c.baseClient.process)
+	err := c.hooks.process(ctx, cmd)
+	cmd.SetErr(err)
+	return err
 }
 
 // Watch prepares a transaction and marks the keys to be watched
@@ -65,7 +55,7 @@ func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
 //
 // The transaction is automatically closed when fn exits.
 func (c *Client) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
-	tx := c.newTx(ctx)
+	tx := c.newTx()
 	defer tx.Close(ctx)
 	if len(keys) > 0 {
 		if err := tx.Watch(ctx, keys...).Err(); err != nil {
@@ -109,9 +99,8 @@ func (c *Tx) Unwatch(ctx context.Context, keys ...string) *StatusCmd {
 // Pipeline creates a pipeline. Usually it is more convenient to use Pipelined.
 func (c *Tx) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx: c.ctx,
 		exec: func(ctx context.Context, cmds []Cmder) error {
-			return c.hooks.processPipeline(ctx, cmds, c.baseClient.processPipeline)
+			return c.hooks.processPipeline(ctx, cmds)
 		},
 	}
 	pipe.init()
@@ -139,11 +128,22 @@ func (c *Tx) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 // TxPipeline creates a pipeline. Usually it is more convenient to use TxPipelined.
 func (c *Tx) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx: c.ctx,
 		exec: func(ctx context.Context, cmds []Cmder) error {
-			return c.hooks.processTxPipeline(ctx, cmds, c.baseClient.processTxPipeline)
+			cmds = wrapMultiExec(ctx, cmds)
+			return c.hooks.processTxPipeline(ctx, cmds)
 		},
 	}
 	pipe.init()
 	return &pipe
+}
+
+func wrapMultiExec(ctx context.Context, cmds []Cmder) []Cmder {
+	if len(cmds) == 0 {
+		panic("not reached")
+	}
+	cmdsCopy := make([]Cmder, len(cmds)+2)
+	cmdsCopy[0] = NewStatusCmd(ctx, "multi")
+	copy(cmdsCopy[1:], cmds)
+	cmdsCopy[len(cmdsCopy)-1] = NewSliceCmd(ctx, "exec")
+	return cmdsCopy
 }

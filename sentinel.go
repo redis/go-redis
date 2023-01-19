@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8/internal"
-	"github.com/go-redis/redis/v8/internal/pool"
-	"github.com/go-redis/redis/v8/internal/rand"
+	"github.com/go-redis/redis/v9/internal"
+	"github.com/go-redis/redis/v9/internal/pool"
+	"github.com/go-redis/redis/v9/internal/rand"
 )
 
 //------------------------------------------------------------------------------
@@ -24,6 +24,9 @@ type FailoverOptions struct {
 	// A seed list of host:port addresses of sentinel nodes.
 	SentinelAddrs []string
 
+	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
+	ClientName string
+
 	// If specified with SentinelPassword, enables ACL-based authentication (via
 	// AUTH <user> <pass>).
 	SentinelUsername string
@@ -32,19 +35,19 @@ type FailoverOptions struct {
 	// authentication.
 	SentinelPassword string
 
-	// Allows routing read-only commands to the closest master or slave node.
+	// Allows routing read-only commands to the closest master or replica node.
 	// This option only works with NewFailoverClusterClient.
 	RouteByLatency bool
-	// Allows routing read-only commands to the random master or slave node.
+	// Allows routing read-only commands to the random master or replica node.
 	// This option only works with NewFailoverClusterClient.
 	RouteRandomly bool
 
-	// Route all commands to slave read-only nodes.
-	SlaveOnly bool
+	// Route all commands to replica read-only nodes.
+	ReplicaOnly bool
 
-	// Use slaves disconnected with master when cannot get connected slaves
-	// Now, this option only works in RandomSlaveAddr function.
-	UseDisconnectedSlaves bool
+	// Use replicas disconnected with master when cannot get connected replicas
+	// Now, this option only works in RandomReplicaAddr function.
+	UseDisconnectedReplicas bool
 
 	// Following options are copied from Options struct.
 
@@ -59,26 +62,27 @@ type FailoverOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	DialTimeout           time.Duration
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	ContextTimeoutEnabled bool
 
-	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
-	PoolSize           int
-	MinIdleConns       int
-	MaxConnAge         time.Duration
-	PoolTimeout        time.Duration
-	IdleTimeout        time.Duration
-	IdleCheckFrequency time.Duration
+	PoolSize        int
+	PoolTimeout     time.Duration
+	MinIdleConns    int
+	MaxIdleConns    int
+	ConnMaxIdleTime time.Duration
+	ConnMaxLifetime time.Duration
 
 	TLSConfig *tls.Config
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
 	return &Options{
-		Addr: "FailoverClient",
+		Addr:       "FailoverClient",
+		ClientName: opt.ClientName,
 
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
@@ -91,17 +95,18 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
 
-		DialTimeout:  opt.DialTimeout,
-		ReadTimeout:  opt.ReadTimeout,
-		WriteTimeout: opt.WriteTimeout,
+		DialTimeout:           opt.DialTimeout,
+		ReadTimeout:           opt.ReadTimeout,
+		WriteTimeout:          opt.WriteTimeout,
+		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: opt.IdleCheckFrequency,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
+		PoolFIFO:        opt.PoolFIFO,
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
 	}
@@ -109,7 +114,8 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 	return &Options{
-		Addr: addr,
+		Addr:       addr,
+		ClientName: opt.ClientName,
 
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
@@ -126,13 +132,13 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: opt.IdleCheckFrequency,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
+		PoolFIFO:        opt.PoolFIFO,
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
 	}
@@ -140,6 +146,8 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 
 func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 	return &ClusterOptions{
+		ClientName: opt.ClientName,
+
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
@@ -158,13 +166,13 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		PoolTimeout:        opt.PoolTimeout,
-		IdleTimeout:        opt.IdleTimeout,
-		IdleCheckFrequency: opt.IdleCheckFrequency,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxConnAge:         opt.MaxConnAge,
+		PoolFIFO:        opt.PoolFIFO,
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
 	}
@@ -194,10 +202,21 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 
 	opt := failoverOpt.clientOptions()
-	opt.Dialer = masterSlaveDialer(failover)
+	opt.Dialer = masterReplicaDialer(failover)
 	opt.init()
 
-	connPool := newConnPool(opt)
+	var connPool *pool.ConnPool
+
+	rdb := &Client{
+		baseClient: &baseClient{
+			opt: opt,
+		},
+	}
+	rdb.init()
+
+	connPool = newConnPool(opt, rdb.hooks.dial)
+	rdb.connPool = connPool
+	rdb.onClose = failover.Close
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
@@ -207,25 +226,18 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	failover.mu.Unlock()
 
-	c := Client{
-		baseClient: newBaseClient(opt, connPool),
-		ctx:        context.Background(),
-	}
-	c.cmdable = c.Process
-	c.onClose = failover.Close
-
-	return &c
+	return rdb
 }
 
-func masterSlaveDialer(
+func masterReplicaDialer(
 	failover *sentinelFailover,
 ) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, _ string) (net.Conn, error) {
 		var addr string
 		var err error
 
-		if failover.opt.SlaveOnly {
-			addr, err = failover.RandomSlaveAddr(ctx)
+		if failover.opt.ReplicaOnly {
+			addr, err = failover.RandomReplicaAddr(ctx)
 		} else {
 			addr, err = failover.MasterAddr(ctx)
 			if err == nil {
@@ -256,36 +268,27 @@ func masterSlaveDialer(
 type SentinelClient struct {
 	*baseClient
 	hooks
-	ctx context.Context
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {
 	opt.init()
 	c := &SentinelClient{
 		baseClient: &baseClient{
-			opt:      opt,
-			connPool: newConnPool(opt),
+			opt: opt,
 		},
-		ctx: context.Background(),
 	}
+
+	c.hooks.setDial(c.baseClient.dial)
+	c.hooks.setProcess(c.baseClient.process)
+	c.connPool = newConnPool(opt, c.hooks.dial)
+
 	return c
 }
 
-func (c *SentinelClient) Context() context.Context {
-	return c.ctx
-}
-
-func (c *SentinelClient) WithContext(ctx context.Context) *SentinelClient {
-	if ctx == nil {
-		panic("nil context")
-	}
-	clone := *c
-	clone.ctx = ctx
-	return &clone
-}
-
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
-	return c.hooks.process(ctx, cmd, c.baseClient.process)
+	err := c.hooks.process(ctx, cmd)
+	cmd.SetErr(err)
+	return err
 }
 
 func (c *SentinelClient) pubSub() *PubSub {
@@ -335,8 +338,8 @@ func (c *SentinelClient) GetMasterAddrByName(ctx context.Context, name string) *
 	return cmd
 }
 
-func (c *SentinelClient) Sentinels(ctx context.Context, name string) *SliceCmd {
-	cmd := NewSliceCmd(ctx, "sentinel", "sentinels", name)
+func (c *SentinelClient) Sentinels(ctx context.Context, name string) *MapStringStringSliceCmd {
+	cmd := NewMapStringStringSliceCmd(ctx, "sentinel", "sentinels", name)
 	_ = c.Process(ctx, cmd)
 	return cmd
 }
@@ -351,7 +354,7 @@ func (c *SentinelClient) Failover(ctx context.Context, name string) *StatusCmd {
 
 // Reset resets all the masters with matching name. The pattern argument is a
 // glob-style pattern. The reset process clears any previous state in a master
-// (including a failover in progress), and removes every slave and sentinel
+// (including a failover in progress), and removes every replica and sentinel
 // already discovered and associated with the master.
 func (c *SentinelClient) Reset(ctx context.Context, pattern string) *IntCmd {
 	cmd := NewIntCmd(ctx, "sentinel", "reset", pattern)
@@ -368,8 +371,8 @@ func (c *SentinelClient) FlushConfig(ctx context.Context) *StatusCmd {
 }
 
 // Master shows the state and info of the specified master.
-func (c *SentinelClient) Master(ctx context.Context, name string) *StringStringMapCmd {
-	cmd := NewStringStringMapCmd(ctx, "sentinel", "master", name)
+func (c *SentinelClient) Master(ctx context.Context, name string) *MapStringStringCmd {
+	cmd := NewMapStringStringCmd(ctx, "sentinel", "master", name)
 	_ = c.Process(ctx, cmd)
 	return cmd
 }
@@ -381,9 +384,9 @@ func (c *SentinelClient) Masters(ctx context.Context) *SliceCmd {
 	return cmd
 }
 
-// Slaves shows a list of slaves for the specified master and their state.
-func (c *SentinelClient) Slaves(ctx context.Context, name string) *SliceCmd {
-	cmd := NewSliceCmd(ctx, "sentinel", "slaves", name)
+// Replicas shows a list of replicas for the specified master and their state.
+func (c *SentinelClient) Replicas(ctx context.Context, name string) *MapStringStringSliceCmd {
+	cmd := NewMapStringStringSliceCmd(ctx, "sentinel", "replicas", name)
 	_ = c.Process(ctx, cmd)
 	return cmd
 }
@@ -460,18 +463,18 @@ func (c *sentinelFailover) closeSentinel() error {
 	return firstErr
 }
 
-func (c *sentinelFailover) RandomSlaveAddr(ctx context.Context) (string, error) {
+func (c *sentinelFailover) RandomReplicaAddr(ctx context.Context) (string, error) {
 	if c.opt == nil {
 		return "", errors.New("opt is nil")
 	}
 
-	addresses, err := c.slaveAddrs(ctx, false)
+	addresses, err := c.replicaAddrs(ctx, false)
 	if err != nil {
 		return "", err
 	}
 
-	if len(addresses) == 0 && c.opt.UseDisconnectedSlaves {
-		addresses, err = c.slaveAddrs(ctx, true)
+	if len(addresses) == 0 && c.opt.UseDisconnectedReplicas {
+		addresses, err = c.replicaAddrs(ctx, true)
 		if err != nil {
 			return "", err
 		}
@@ -489,8 +492,15 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	c.mu.RUnlock()
 
 	if sentinel != nil {
-		addr := c.getMasterAddr(ctx, sentinel)
-		if addr != "" {
+		addr, err := c.getMasterAddr(ctx, sentinel)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", err
+			}
+			// Continue on other errors
+			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
+				c.opt.MasterName, err)
+		} else {
 			return addr, nil
 		}
 	}
@@ -499,11 +509,18 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	defer c.mu.Unlock()
 
 	if c.sentinel != nil {
-		addr := c.getMasterAddr(ctx, c.sentinel)
-		if addr != "" {
+		addr, err := c.getMasterAddr(ctx, c.sentinel)
+		if err != nil {
+			_ = c.closeSentinel()
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", err
+			}
+			// Continue on other errors
+			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
+				c.opt.MasterName, err)
+		} else {
 			return addr, nil
 		}
-		_ = c.closeSentinel()
 	}
 
 	for i, sentinelAddr := range c.sentinelAddrs {
@@ -511,9 +528,12 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 
 		masterAddr, err := sentinel.GetMasterAddrByName(ctx, c.opt.MasterName).Result()
 		if err != nil {
+			_ = sentinel.Close()
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", err
+			}
 			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName master=%q failed: %s",
 				c.opt.MasterName, err)
-			_ = sentinel.Close()
 			continue
 		}
 
@@ -528,14 +548,21 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	return "", errors.New("redis: all sentinels specified in configuration are unreachable")
 }
 
-func (c *sentinelFailover) slaveAddrs(ctx context.Context, useDisconnected bool) ([]string, error) {
+func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected bool) ([]string, error) {
 	c.mu.RLock()
 	sentinel := c.sentinel
 	c.mu.RUnlock()
 
 	if sentinel != nil {
-		addrs := c.getSlaveAddrs(ctx, sentinel)
-		if len(addrs) > 0 {
+		addrs, err := c.getReplicaAddrs(ctx, sentinel)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			// Continue on other errors
+			internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
+				c.opt.MasterName, err)
+		} else if len(addrs) > 0 {
 			return addrs, nil
 		}
 	}
@@ -544,11 +571,21 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context, useDisconnected bool)
 	defer c.mu.Unlock()
 
 	if c.sentinel != nil {
-		addrs := c.getSlaveAddrs(ctx, c.sentinel)
-		if len(addrs) > 0 {
+		addrs, err := c.getReplicaAddrs(ctx, c.sentinel)
+		if err != nil {
+			_ = c.closeSentinel()
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			// Continue on other errors
+			internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
+				c.opt.MasterName, err)
+		} else if len(addrs) > 0 {
 			return addrs, nil
+		} else {
+			// No error and no replicas.
+			_ = c.closeSentinel()
 		}
-		_ = c.closeSentinel()
 	}
 
 	var sentinelReachable bool
@@ -556,15 +593,18 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context, useDisconnected bool)
 	for i, sentinelAddr := range c.sentinelAddrs {
 		sentinel := NewSentinelClient(c.opt.sentinelOptions(sentinelAddr))
 
-		slaves, err := sentinel.Slaves(ctx, c.opt.MasterName).Result()
+		replicas, err := sentinel.Replicas(ctx, c.opt.MasterName).Result()
 		if err != nil {
-			internal.Logger.Printf(ctx, "sentinel: Slaves master=%q failed: %s",
-				c.opt.MasterName, err)
 			_ = sentinel.Close()
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			internal.Logger.Printf(ctx, "sentinel: Replicas master=%q failed: %s",
+				c.opt.MasterName, err)
 			continue
 		}
 		sentinelReachable = true
-		addrs := parseSlaveAddrs(slaves, useDisconnected)
+		addrs := parseReplicaAddrs(replicas, useDisconnected)
 		if len(addrs) == 0 {
 			continue
 		}
@@ -581,60 +621,42 @@ func (c *sentinelFailover) slaveAddrs(ctx context.Context, useDisconnected bool)
 	return []string{}, errors.New("redis: all sentinels specified in configuration are unreachable")
 }
 
-func (c *sentinelFailover) getMasterAddr(ctx context.Context, sentinel *SentinelClient) string {
+func (c *sentinelFailover) getMasterAddr(ctx context.Context, sentinel *SentinelClient) (string, error) {
 	addr, err := sentinel.GetMasterAddrByName(ctx, c.opt.MasterName).Result()
 	if err != nil {
-		internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
-			c.opt.MasterName, err)
-		return ""
+		return "", err
 	}
-	return net.JoinHostPort(addr[0], addr[1])
+	return net.JoinHostPort(addr[0], addr[1]), nil
 }
 
-func (c *sentinelFailover) getSlaveAddrs(ctx context.Context, sentinel *SentinelClient) []string {
-	addrs, err := sentinel.Slaves(ctx, c.opt.MasterName).Result()
+func (c *sentinelFailover) getReplicaAddrs(ctx context.Context, sentinel *SentinelClient) ([]string, error) {
+	addrs, err := sentinel.Replicas(ctx, c.opt.MasterName).Result()
 	if err != nil {
-		internal.Logger.Printf(ctx, "sentinel: Slaves name=%q failed: %s",
+		internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
 			c.opt.MasterName, err)
-		return []string{}
+		return nil, err
 	}
-	return parseSlaveAddrs(addrs, false)
+	return parseReplicaAddrs(addrs, false), nil
 }
 
-func parseSlaveAddrs(addrs []interface{}, keepDisconnected bool) []string {
+func parseReplicaAddrs(addrs []map[string]string, keepDisconnected bool) []string {
 	nodes := make([]string, 0, len(addrs))
 	for _, node := range addrs {
-		ip := ""
-		port := ""
-		flags := []string{}
-		lastkey := ""
 		isDown := false
-
-		for _, key := range node.([]interface{}) {
-			switch lastkey {
-			case "ip":
-				ip = key.(string)
-			case "port":
-				port = key.(string)
-			case "flags":
-				flags = strings.Split(key.(string), ",")
-			}
-			lastkey = key.(string)
-		}
-
-		for _, flag := range flags {
-			switch flag {
-			case "s_down", "o_down":
-				isDown = true
-			case "disconnected":
-				if !keepDisconnected {
+		if flags, ok := node["flags"]; ok {
+			for _, flag := range strings.Split(flags, ",") {
+				switch flag {
+				case "s_down", "o_down":
 					isDown = true
+				case "disconnected":
+					if !keepDisconnected {
+						isDown = true
+					}
 				}
 			}
 		}
-
-		if !isDown {
-			nodes = append(nodes, net.JoinHostPort(ip, port))
+		if !isDown && node["ip"] != "" && node["port"] != "" {
+			nodes = append(nodes, net.JoinHostPort(node["ip"], node["port"]))
 		}
 	}
 
@@ -672,7 +694,7 @@ func (c *sentinelFailover) setSentinel(ctx context.Context, sentinel *SentinelCl
 	c.sentinel = sentinel
 	c.discoverSentinels(ctx)
 
-	c.pubsub = sentinel.Subscribe(ctx, "+switch-master", "+slave-reconf-done")
+	c.pubsub = sentinel.Subscribe(ctx, "+switch-master", "+replica-reconf-done")
 	go c.listen(c.pubsub)
 }
 
@@ -683,16 +705,13 @@ func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 		return
 	}
 	for _, sentinel := range sentinels {
-		vals := sentinel.([]interface{})
-		var ip, port string
-		for i := 0; i < len(vals); i += 2 {
-			key := vals[i].(string)
-			switch key {
-			case "ip":
-				ip = vals[i+1].(string)
-			case "port":
-				port = vals[i+1].(string)
-			}
+		ip, ok := sentinel["ip"]
+		if !ok {
+			continue
+		}
+		port, ok := sentinel["port"]
+		if !ok {
+			continue
 		}
 		if ip != "" && port != "" {
 			sentinelAddr := net.JoinHostPort(ip, port)
@@ -742,7 +761,7 @@ func contains(slice []string, str string) bool {
 //------------------------------------------------------------------------------
 
 // NewFailoverClusterClient returns a client that supports routing read-only commands
-// to a slave node.
+// to a replica node.
 func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 	sentinelAddrs := make([]string, len(failoverOpt.SentinelAddrs))
 	copy(sentinelAddrs, failoverOpt.SentinelAddrs)
@@ -763,14 +782,14 @@ func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 			Addr: masterAddr,
 		}}
 
-		slaveAddrs, err := failover.slaveAddrs(ctx, false)
+		replicaAddrs, err := failover.replicaAddrs(ctx, false)
 		if err != nil {
 			return nil, err
 		}
 
-		for _, slaveAddr := range slaveAddrs {
+		for _, replicaAddr := range replicaAddrs {
 			nodes = append(nodes, ClusterNode{
-				Addr: slaveAddr,
+				Addr: replicaAddr,
 			})
 		}
 

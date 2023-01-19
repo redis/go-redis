@@ -6,12 +6,23 @@ import (
 	"net"
 	"strings"
 
-	"github.com/go-redis/redis/v8/internal/pool"
-	"github.com/go-redis/redis/v8/internal/proto"
+	"github.com/go-redis/redis/v9/internal/pool"
+	"github.com/go-redis/redis/v9/internal/proto"
 )
 
 // ErrClosed performs any operation on the closed client will return this error.
 var ErrClosed = pool.ErrClosed
+
+// HasErrorPrefix checks if the err is a Redis error and the message contains a prefix.
+func HasErrorPrefix(err error, prefix string) bool {
+	err, ok := err.(Error)
+	if !ok {
+		return false
+	}
+	msg := err.Error()
+	msg = strings.TrimPrefix(msg, "ERR ") // KVRocks adds such prefix
+	return strings.HasPrefix(msg, prefix)
+}
 
 type Error interface {
 	error
@@ -91,7 +102,7 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 
 	if allowTimeout {
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			return !netErr.Temporary()
+			return false
 		}
 	}
 

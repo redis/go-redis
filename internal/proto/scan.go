@@ -3,13 +3,15 @@ package proto
 import (
 	"encoding"
 	"fmt"
+	"net"
 	"reflect"
 	"time"
 
-	"github.com/go-redis/redis/v8/internal/util"
+	"github.com/go-redis/redis/v9/internal/util"
 )
 
 // Scan parses bytes `b` to `v` with appropriate type.
+//
 //nolint:gocyclo
 func Scan(b []byte, v interface{}) error {
 	switch v := v.(type) {
@@ -115,6 +117,9 @@ func Scan(b []byte, v interface{}) error {
 		return nil
 	case encoding.BinaryUnmarshaler:
 		return v.UnmarshalBinary(b)
+	case *net.IP:
+		*v = b
+		return nil
 	default:
 		return fmt.Errorf(
 			"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)", v)

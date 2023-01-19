@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v9"
 )
 
 var _ = Describe("Tx", func() {
@@ -141,9 +141,6 @@ var _ = Describe("Tx", func() {
 			})
 			return err
 		}
-
-		err = do()
-		Expect(err).To(MatchError("bad connection"))
 
 		err = do()
 		Expect(err).NotTo(HaveOccurred())

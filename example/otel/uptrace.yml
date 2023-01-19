@@ -1,0 +1,297 @@
+##
+## Uptrace configuration file.
+## See https://uptrace.dev/get/config.html for details.
+##
+## You can use environment variables anywhere in this file, for example:
+##
+##   foo: $FOO
+##   bar: ${BAR}
+##   baz: ${BAZ:default}
+##
+## To escape `$`, use `$$`, for example:
+##
+##   foo: $$FOO_BAR
+##
+
+##
+## ClickHouse database credentials.
+##
+ch:
+  # Connection string for ClickHouse database. For example:
+  # clickhouse://<user>:<password>@<host>:<port>/<database>?sslmode=disable
+  #
+  # See https://clickhouse.uptrace.dev/guide/golang-clickhouse.html#options
+  dsn: 'clickhouse://default:@clickhouse:9000/uptrace?sslmode=disable'
+
+##
+## A list of pre-configured projects. Each project is fully isolated.
+##
+projects:
+  # Conventionally, the first project is used to monitor Uptrace itself.
+  - id: 1
+    name: Uptrace
+    # Token grants write access to the project. Keep a secret.
+    token: project1_secret_token
+    pinned_attrs:
+      - service.name
+      - host.name
+      - deployment.environment
+    # Group spans by deployment.environment attribute.
+    group_by_env: false
+    # Group funcs spans by service.name attribute.
+    group_funcs_by_service: false
+
+  # Other projects can be used to monitor your applications.
+  # To monitor micro-services or multiple related services, use a single project.
+  - id: 2
+    name: My project
+    token: project2_secret_token
+    pinned_attrs:
+      - service.name
+      - host.name
+      - deployment.environment
+    # Group spans by deployment.environment attribute.
+    group_by_env: false
+    # Group funcs spans by service.name attribute.
+    group_funcs_by_service: false
+
+##
+## Create metrics from spans and events.
+##
+metrics_from_spans:
+  - name: uptrace.tracing.spans_duration
+    description: Spans duration (excluding events)
+    instrument: histogram
+    unit: microseconds
+    value: span.duration / 1000
+    attrs:
+      - span.system as system
+      - service.name as service
+      - host.name as host
+      - span.status_code as status
+    where: not span.is_event
+
+  - name: uptrace.tracing.spans
+    description: Spans count (excluding events)
+    instrument: counter
+    unit: 1
+    value: span.count
+    attrs:
+      - span.system as system
+      - service.name as service
+      - host.name as host
+      - span.status_code as status
+    where: not span.is_event
+
+  - name: uptrace.tracing.events
+    description: Events count (excluding spans)
+    instrument: counter
+    unit: 1
+    value: span.count
+    attrs:
+      - span.system as system
+      - service.name as service
+      - host.name as host
+    where: span.is_event
+
+##
+## To require authentication, uncomment the following section.
+##
+auth:
+  # users:
+  #   - username: uptrace
+  #     password: uptrace
+  #   - username: admin
+  #     password: admin
+
+  # # Cloudflare user provider: uses Cloudflare Zero Trust Access (Identity)
+  # # See https://developers.cloudflare.com/cloudflare-one/identity/ for more info.
+  # cloudflare:
+  #   # The base URL of the Cloudflare Zero Trust team.
+  #   - team_url: https://myteam.cloudflareaccess.com
+  #     # The Application Audience (AUD) Tag for this application.
+  #     # You can retrieve this from the Cloudflare Zero Trust 'Access' Dashboard.
+  #     audience: bea6df23b944e4a0cd178609ba1bb64dc98dfe1f66ae7b918e563f6cf28b37e0
+
+  # # OpenID Connect (Single Sign-On)
+  # oidc:
+  #   # The ID is used in API endpoints, for example, in redirect URL
+  #   # `http://<uptrace-host>/api/v1/sso/<oidc-id>/callback`.
+  #   - id: keycloak
+  #     # Display name for the button in the login form.
+  #     # Default to 'OpenID Connect'
+  #     display_name: Keycloak
+  #     # The base URL for the OIDC provider.
+  #     issuer_url: http://localhost:8080/realms/uptrace
+  #     # The OAuth 2.0 Client ID
+  #     client_id: uptrace
+  #     # The OAuth 2.0 Client Secret
+  #     client_secret: ogbhd8Q0X0e5AZFGSG3m9oirPvnetqkA
+  #     # Additional OAuth 2.0 scopes to request from the OIDC provider.
+  #     # Defaults to 'profile'. 'openid' is requested by default and need not be specified.
+  #     scopes:
+  #       - profile
+  #     # The OIDC UserInfo claim to use as the user's username.
+  #     # Defaults to 'preferred_username'.
+  #     claim: preferred_username
+
+##
+## Alerting rules for monitoring metrics.
+##
+## See https://uptrace.dev/get/alerting.html for details.
+##
+alerting:
+  rules:
+    - name: Network errors
+      metrics:
+        - system.network.errors as $net_errors
+      query:
+        - $net_errors > 0 group by host.name
+      # for the last 5 minutes
+      for: 5m
+      annotations:
+        summary: '{{ $labels.host_name }} has high number of net errors: {{ $values.net_errors }}'
+
+    - name: Filesystem usage >= 90%
+      metrics:
+        - system.filesystem.usage as $fs_usage
+      query:
+        - group by host.name
+        - group by device
+        - where device !~ "loop"
+        - $fs_usage{state="used"} / $fs_usage >= 0.9
+      for: 5m
+      annotations:
+        summary: '{{ $labels.host_name }} has high FS usage: {{ $values.fs_usage }}'
+
+    - name: Uptrace is dropping spans
+      metrics:
+        - uptrace.projects.spans as $spans
+      query:
+        - $spans{type=dropped} > 0
+      for: 1m
+      annotations:
+        summary: 'Uptrace has dropped {{ $values.spans }} spans'
+
+    - name: Always firing (for fun and testing)
+      metrics:
+        - process.runtime.go.goroutines as $goroutines
+      query:
+        - $goroutines >= 0 group by host.name
+      for: 1m
+      annotations:
+        summary: '{{ $labels.host_name }} has high number of goroutines: {{ $values.goroutines }}'
+
+  # Create alerts from error logs and span events.
+  create_alerts_from_spans:
+    enabled: true
+    labels:
+      alert_kind: error
+
+##
+## AlertManager client configuration.
+## See https://uptrace.dev/get/alerting.html for details.
+##
+## Note that this is NOT an AlertManager config and you need to configure AlertManager separately.
+## See https://prometheus.io/docs/alerting/latest/configuration/ for details.
+##
+alertmanager_client:
+  # AlertManager API endpoints that Uptrace uses to manage alerts.
+  urls:
+    - 'http://alertmanager:9093/api/v2/alerts'
+
+##
+## Various options to tweak ClickHouse schema.
+## For changes to take effect, you need reset the ClickHouse database with `ch reset`.
+##
+ch_schema:
+  # Compression codec, for example, LZ4, ZSTD(3), or Default.
+  compression: ZSTD(3)
+
+  # Whether to use ReplicatedMergeTree instead of MergeTree.
+  replicated: false
+
+  # Cluster name for Distributed tables and ON CLUSTER clause.
+  #cluster: uptrace1
+
+  spans:
+    storage_policy: 'default'
+    # Delete spans data after 30 days.
+    ttl_delete: 30 DAY
+
+  metrics:
+    storage_policy: 'default'
+    # Delete metrics data after 90 days.
+    ttl_delete: 90 DAY
+
+##
+## Addresses on which Uptrace receives gRPC and HTTP requests.
+##
+listen:
+  # OTLP/gRPC API.
+  grpc:
+    addr: ':14317'
+    # tls:
+    #   cert_file: config/tls/uptrace.crt
+    #   key_file: config/tls/uptrace.key
+
+  # OTLP/HTTP API and Uptrace API with UI.
+  http:
+    addr: ':14318'
+    # tls:
+    #   cert_file: config/tls/uptrace.crt
+    #   key_file: config/tls/uptrace.key
+
+##
+## Various options for Uptrace UI.
+##
+site:
+  # Overrides public URL for Vue-powered UI in case you put Uptrace behind a proxy.
+  #addr: 'https://uptrace.mydomain.com'
+
+##
+## Spans processing options.
+##
+spans:
+  # The size of the Go chan used to buffer incoming spans.
+  # If the buffer is full, Uptrace starts to drop spans.
+  #buffer_size: 100000
+
+  # The number of spans to insert in a single query.
+  #batch_size: 10000
+
+##
+## Metrics processing options.
+##
+metrics:
+  # List of attributes to drop for being noisy.
+  drop_attrs:
+    - telemetry.sdk.language
+    - telemetry.sdk.name
+    - telemetry.sdk.version
+
+  # The size of the Go chan used to buffer incoming measures.
+  # If the buffer is full, Uptrace starts to drop measures.
+  #buffer_size: 100000
+
+  # The number of measures to insert in a single query.
+  #batch_size: 10000
+
+##
+## SQLite/PostgreSQL db that is used to store metadata such us metric names, dashboards, alerts,
+## and so on.
+##
+db:
+  # Either sqlite or postgres.
+  driver: sqlite
+  # Database connection string.
+  #
+  # Uptrace automatically creates SQLite database file in the current working directory.
+  # Make sure the directory is writable by Uptrace process.
+  dsn: 'file:uptrace.sqlite3?_pragma=foreign_keys(1)&_pragma=busy_timeout(1000)'
+
+# Secret key that is used to sign JWT tokens etc.
+secret_key: 102c1a557c314fc28198acd017960843
+
+# Enable to log HTTP requests and database queries.
+debug: false

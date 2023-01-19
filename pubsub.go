@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8/internal"
-	"github.com/go-redis/redis/v8/internal/pool"
-	"github.com/go-redis/redis/v8/internal/proto"
+	"github.com/go-redis/redis/v9/internal"
+	"github.com/go-redis/redis/v9/internal/pool"
+	"github.com/go-redis/redis/v9/internal/proto"
 )
 
 // PubSub implements Pub/Sub commands as described in
@@ -24,10 +24,11 @@ type PubSub struct {
 	newConn   func(ctx context.Context, channels []string) (*pool.Conn, error)
 	closeConn func(*pool.Conn) error
 
-	mu       sync.Mutex
-	cn       *pool.Conn
-	channels map[string]struct{}
-	patterns map[string]struct{}
+	mu        sync.Mutex
+	cn        *pool.Conn
+	channels  map[string]struct{}
+	patterns  map[string]struct{}
+	schannels map[string]struct{}
 
 	closed bool
 	exit   chan struct{}
@@ -46,6 +47,7 @@ func (c *PubSub) init() {
 func (c *PubSub) String() string {
 	channels := mapKeys(c.channels)
 	channels = append(channels, mapKeys(c.patterns)...)
+	channels = append(channels, mapKeys(c.schannels)...)
 	return fmt.Sprintf("PubSub(%s)", strings.Join(channels, ", "))
 }
 
@@ -82,7 +84,7 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 }
 
 func (c *PubSub) writeCmd(ctx context.Context, cn *pool.Conn, cmd Cmder) error {
-	return cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+	return cn.WithWriter(context.Background(), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmd(wr, cmd)
 	})
 }
@@ -96,6 +98,13 @@ func (c *PubSub) resubscribe(ctx context.Context, cn *pool.Conn) error {
 
 	if len(c.patterns) > 0 {
 		err := c._subscribe(ctx, cn, "psubscribe", mapKeys(c.patterns))
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	if len(c.schannels) > 0 {
+		err := c._subscribe(ctx, cn, "ssubscribe", mapKeys(c.schannels))
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -208,15 +217,38 @@ func (c *PubSub) PSubscribe(ctx context.Context, patterns ...string) error {
 	return err
 }
 
+// SSubscribe Subscribes the client to the specified shard channels.
+func (c *PubSub) SSubscribe(ctx context.Context, channels ...string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	err := c.subscribe(ctx, "ssubscribe", channels...)
+	if c.schannels == nil {
+		c.schannels = make(map[string]struct{})
+	}
+	for _, s := range channels {
+		c.schannels[s] = struct{}{}
+	}
+	return err
+}
+
 // Unsubscribe the client from the given channels, or from all of
 // them if none is given.
 func (c *PubSub) Unsubscribe(ctx context.Context, channels ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, channel := range channels {
-		delete(c.channels, channel)
+	if len(channels) > 0 {
+		for _, channel := range channels {
+			delete(c.channels, channel)
+		}
+	} else {
+		// Unsubscribe from all channels.
+		for channel := range c.channels {
+			delete(c.channels, channel)
+		}
 	}
+
 	err := c.subscribe(ctx, "unsubscribe", channels...)
 	return err
 }
@@ -227,10 +259,39 @@ func (c *PubSub) PUnsubscribe(ctx context.Context, patterns ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, pattern := range patterns {
-		delete(c.patterns, pattern)
+	if len(patterns) > 0 {
+		for _, pattern := range patterns {
+			delete(c.patterns, pattern)
+		}
+	} else {
+		// Unsubscribe from all patterns.
+		for pattern := range c.patterns {
+			delete(c.patterns, pattern)
+		}
 	}
+
 	err := c.subscribe(ctx, "punsubscribe", patterns...)
+	return err
+}
+
+// SUnsubscribe unsubscribes the client from the given shard channels,
+// or from all of them if none is given.
+func (c *PubSub) SUnsubscribe(ctx context.Context, channels ...string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(channels) > 0 {
+		for _, channel := range channels {
+			delete(c.schannels, channel)
+		}
+	} else {
+		// Unsubscribe from all channels.
+		for channel := range c.schannels {
+			delete(c.schannels, channel)
+		}
+	}
+
+	err := c.subscribe(ctx, "sunsubscribe", channels...)
 	return err
 }
 
@@ -311,7 +372,7 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 		}, nil
 	case []interface{}:
 		switch kind := reply[0].(string); kind {
-		case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
+		case "subscribe", "unsubscribe", "psubscribe", "punsubscribe", "ssubscribe", "sunsubscribe":
 			// Can be nil in case of "unsubscribe".
 			channel, _ := reply[1].(string)
 			return &Subscription{
@@ -319,7 +380,7 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 				Channel: channel,
 				Count:   int(reply[2].(int64)),
 			}, nil
-		case "message":
+		case "message", "smessage":
 			switch payload := reply[2].(type) {
 			case string:
 				return &Message{
@@ -371,7 +432,7 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		return nil, err
 	}
 
-	err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
+	err = cn.WithReader(context.Background(), timeout, func(rd *proto.Reader) error {
 		return c.cmd.readReply(rd)
 	})
 
@@ -456,9 +517,9 @@ func (c *PubSub) ChannelSize(size int) <-chan *Message {
 // reconnections.
 //
 // ChannelWithSubscriptions can not be used together with Channel or ChannelSize.
-func (c *PubSub) ChannelWithSubscriptions(_ context.Context, size int) <-chan interface{} {
+func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interface{} {
 	c.chOnce.Do(func() {
-		c.allCh = newChannel(c, WithChannelSize(size))
+		c.allCh = newChannel(c, opts...)
 		c.allCh.initAllChan()
 	})
 	if c.allCh == nil {

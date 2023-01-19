@@ -83,16 +83,16 @@ func NewBoolSliceResult(val []bool, err error) *BoolSliceCmd {
 }
 
 // NewStringStringMapResult returns a StringStringMapCmd initialised with val and err for testing.
-func NewStringStringMapResult(val map[string]string, err error) *StringStringMapCmd {
-	var cmd StringStringMapCmd
+func NewMapStringStringResult(val map[string]string, err error) *MapStringStringCmd {
+	var cmd MapStringStringCmd
 	cmd.val = val
 	cmd.SetErr(err)
 	return &cmd
 }
 
-// NewStringIntMapCmdResult returns a StringIntMapCmd initialised with val and err for testing.
-func NewStringIntMapCmdResult(val map[string]int64, err error) *StringIntMapCmd {
-	var cmd StringIntMapCmd
+// NewMapStringIntCmdResult returns a MapStringIntCmd initialised with val and err for testing.
+func NewMapStringIntCmdResult(val map[string]int64, err error) *MapStringIntCmd {
+	var cmd MapStringIntCmd
 	cmd.val = val
 	cmd.SetErr(err)
 	return &cmd
@@ -174,6 +174,14 @@ func NewXMessageSliceCmdResult(val []XMessage, err error) *XMessageSliceCmd {
 // NewXStreamSliceCmdResult returns a XStreamSliceCmd initialised with val and err for testing.
 func NewXStreamSliceCmdResult(val []XStream, err error) *XStreamSliceCmd {
 	var cmd XStreamSliceCmd
+	cmd.val = val
+	cmd.SetErr(err)
+	return &cmd
+}
+
+// NewXPendingResult returns a XPendingCmd initialised with val and err for testing.
+func NewXPendingResult(val *XPending, err error) *XPendingCmd {
+	var cmd XPendingCmd
 	cmd.val = val
 	cmd.SetErr(err)
 	return &cmd

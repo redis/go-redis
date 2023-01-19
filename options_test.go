@@ -46,19 +46,22 @@ func TestParseURL(t *testing.T) {
 			o:   &Options{Addr: "localhost:123", DB: 2, ReadTimeout: 2 * time.Second, PoolFIFO: true},
 		}, {
 			// special case handling for disabled timeouts
-			url: "redis://localhost:123/?db=2&idle_timeout=0",
-			o:   &Options{Addr: "localhost:123", DB: 2, IdleTimeout: -1},
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=0",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
 		}, {
 			// negative values disable timeouts as well
-			url: "redis://localhost:123/?db=2&idle_timeout=-1",
-			o:   &Options{Addr: "localhost:123", DB: 2, IdleTimeout: -1},
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=-1",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
 		}, {
 			// absent timeout values will use defaults
-			url: "redis://localhost:123/?db=2&idle_timeout=",
-			o:   &Options{Addr: "localhost:123", DB: 2, IdleTimeout: 0},
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: 0},
 		}, {
-			url: "redis://localhost:123/?db=2&idle_timeout", // missing "=" at the end
-			o:   &Options{Addr: "localhost:123", DB: 2, IdleTimeout: 0},
+			url: "redis://localhost:123/?db=2&conn_max_idle_time", // missing "=" at the end
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: 0},
+		}, {
+			url: "redis://localhost:123/?db=2&client_name=hi", // client name
+			o:   &Options{Addr: "localhost:123", DB: 2, ClientName: "hi"},
 		}, {
 			url: "unix:///tmp/redis.sock",
 			o:   &Options{Addr: "/tmp/redis.sock"},
@@ -174,20 +177,20 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 	if actual.PoolSize != expected.PoolSize {
 		t.Errorf("PoolSize: got %v, expected %v", actual.PoolSize, expected.PoolSize)
 	}
-	if actual.MinIdleConns != expected.MinIdleConns {
-		t.Errorf("MinIdleConns: got %v, expected %v", actual.MinIdleConns, expected.MinIdleConns)
-	}
-	if actual.MaxConnAge != expected.MaxConnAge {
-		t.Errorf("MaxConnAge: got %v, expected %v", actual.MaxConnAge, expected.MaxConnAge)
-	}
 	if actual.PoolTimeout != expected.PoolTimeout {
 		t.Errorf("PoolTimeout: got %v, expected %v", actual.PoolTimeout, expected.PoolTimeout)
 	}
-	if actual.IdleTimeout != expected.IdleTimeout {
-		t.Errorf("IdleTimeout: got %v, expected %v", actual.IdleTimeout, expected.IdleTimeout)
+	if actual.MinIdleConns != expected.MinIdleConns {
+		t.Errorf("MinIdleConns: got %v, expected %v", actual.MinIdleConns, expected.MinIdleConns)
 	}
-	if actual.IdleCheckFrequency != expected.IdleCheckFrequency {
-		t.Errorf("IdleCheckFrequency: got %v, expected %v", actual.IdleCheckFrequency, expected.IdleCheckFrequency)
+	if actual.MaxIdleConns != expected.MaxIdleConns {
+		t.Errorf("MaxIdleConns: got %v, expected %v", actual.MaxIdleConns, expected.MaxIdleConns)
+	}
+	if actual.ConnMaxIdleTime != expected.ConnMaxIdleTime {
+		t.Errorf("ConnMaxIdleTime: got %v, expected %v", actual.ConnMaxIdleTime, expected.ConnMaxIdleTime)
+	}
+	if actual.ConnMaxLifetime != expected.ConnMaxLifetime {
+		t.Errorf("ConnMaxLifetime: got %v, expected %v", actual.ConnMaxLifetime, expected.ConnMaxLifetime)
 	}
 }
 
