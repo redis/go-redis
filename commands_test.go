@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -1220,6 +1221,33 @@ var _ = Describe("Commands", func() {
 			mGet := client.MGet(ctx, "key1", "key2", "_")
 			Expect(mGet.Err()).NotTo(HaveOccurred())
 			Expect(mGet.Val()).To(Equal([]interface{}{"hello1", "hello2", nil}))
+
+			// MSet struct
+			type set struct {
+				Set1 string                 `redis:"set1"`
+				Set2 int16                  `redis:"set2"`
+				Set3 time.Duration          `redis:"set3"`
+				Set4 interface{}            `redis:"set4"`
+				Set5 map[string]interface{} `redis:"-"`
+			}
+			mSet = client.MSet(ctx, &set{
+				Set1: "val1",
+				Set2: 1024,
+				Set3: 2 * time.Minute,
+				Set4: nil,
+				Set5: map[string]interface{}{"k1": 1},
+			})
+			Expect(mSet.Err()).NotTo(HaveOccurred())
+			Expect(mSet.Val()).To(Equal("OK"))
+
+			mGet = client.MGet(ctx, "set1", "set2", "set3", "set4")
+			Expect(mGet.Err()).NotTo(HaveOccurred())
+			Expect(mGet.Val()).To(Equal([]interface{}{
+				"val1",
+				"1024",
+				strconv.Itoa(int(2 * time.Minute.Nanoseconds())),
+				"",
+			}))
 		})
 
 		It("should scan Mget", func() {
@@ -1255,6 +1283,25 @@ var _ = Describe("Commands", func() {
 			mSetNX = client.MSetNX(ctx, "key2", "hello1", "key3", "hello2")
 			Expect(mSetNX.Err()).NotTo(HaveOccurred())
 			Expect(mSetNX.Val()).To(Equal(false))
+
+			// set struct
+			// MSet struct
+			type set struct {
+				Set1 string                 `redis:"set1"`
+				Set2 int16                  `redis:"set2"`
+				Set3 time.Duration          `redis:"set3"`
+				Set4 interface{}            `redis:"set4"`
+				Set5 map[string]interface{} `redis:"-"`
+			}
+			mSetNX = client.MSetNX(ctx, &set{
+				Set1: "val1",
+				Set2: 1024,
+				Set3: 2 * time.Minute,
+				Set4: nil,
+				Set5: map[string]interface{}{"k1": 1},
+			})
+			Expect(mSetNX.Err()).NotTo(HaveOccurred())
+			Expect(mSetNX.Val()).To(Equal(true))
 		})
 
 		It("should SetWithArgs with TTL", func() {
@@ -1895,6 +1942,35 @@ var _ = Describe("Commands", func() {
 			hGet := client.HGet(ctx, "hash", "key")
 			Expect(hGet.Err()).NotTo(HaveOccurred())
 			Expect(hGet.Val()).To(Equal("hello"))
+
+			// set struct
+			// MSet struct
+			type set struct {
+				Set1 string                 `redis:"set1"`
+				Set2 int16                  `redis:"set2"`
+				Set3 time.Duration          `redis:"set3"`
+				Set4 interface{}            `redis:"set4"`
+				Set5 map[string]interface{} `redis:"-"`
+			}
+
+			hSet = client.HSet(ctx, "hash", &set{
+				Set1: "val1",
+				Set2: 1024,
+				Set3: 2 * time.Minute,
+				Set4: nil,
+				Set5: map[string]interface{}{"k1": 1},
+			})
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+			Expect(hSet.Val()).To(Equal(int64(4)))
+
+			hMGet := client.HMGet(ctx, "hash", "set1", "set2", "set3", "set4")
+			Expect(hMGet.Err()).NotTo(HaveOccurred())
+			Expect(hMGet.Val()).To(Equal([]interface{}{
+				"val1",
+				"1024",
+				strconv.Itoa(int(2 * time.Minute.Nanoseconds())),
+				"",
+			}))
 		})
 
 		It("should HSetNX", func() {
