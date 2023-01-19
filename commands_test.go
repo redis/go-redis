@@ -1233,7 +1233,7 @@ var _ = Describe("Commands", func() {
 			mSet = client.MSet(ctx, &set{
 				Set1: "val1",
 				Set2: 1024,
-				Set3: 2 * time.Minute,
+				Set3: 2 * time.Millisecond,
 				Set4: nil,
 				Set5: map[string]interface{}{"k1": 1},
 			})
@@ -1245,7 +1245,7 @@ var _ = Describe("Commands", func() {
 			Expect(mGet.Val()).To(Equal([]interface{}{
 				"val1",
 				"1024",
-				strconv.Itoa(int(2 * time.Minute.Nanoseconds())),
+				strconv.Itoa(int(2 * time.Millisecond.Nanoseconds())),
 				"",
 			}))
 		})
@@ -1296,7 +1296,7 @@ var _ = Describe("Commands", func() {
 			mSetNX = client.MSetNX(ctx, &set{
 				Set1: "val1",
 				Set2: 1024,
-				Set3: 2 * time.Minute,
+				Set3: 2 * time.Millisecond,
 				Set4: nil,
 				Set5: map[string]interface{}{"k1": 1},
 			})
@@ -1956,7 +1956,7 @@ var _ = Describe("Commands", func() {
 			hSet = client.HSet(ctx, "hash", &set{
 				Set1: "val1",
 				Set2: 1024,
-				Set3: 2 * time.Minute,
+				Set3: 2 * time.Millisecond,
 				Set4: nil,
 				Set5: map[string]interface{}{"k1": 1},
 			})
@@ -1968,7 +1968,7 @@ var _ = Describe("Commands", func() {
 			Expect(hMGet.Val()).To(Equal([]interface{}{
 				"val1",
 				"1024",
-				strconv.Itoa(int(2 * time.Minute.Nanoseconds())),
+				strconv.Itoa(int(2 * time.Millisecond.Nanoseconds())),
 				"",
 			}))
 		})
