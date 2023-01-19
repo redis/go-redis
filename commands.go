@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v9/internal"
@@ -74,8 +76,44 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 		}
 		return dst
 	default:
+		// scan struct field
+		v := reflect.ValueOf(arg)
+		if v.Type().Kind() == reflect.Ptr {
+			if v.IsNil() {
+				// error: arg is not a valid object
+				return dst
+			}
+			v = v.Elem()
+		}
+
+		if v.Type().Kind() == reflect.Struct {
+			return appendStructField(dst, v)
+		}
+
 		return append(dst, arg)
 	}
+}
+
+// appendStructField appends the field and value held by the structure v to dst, and returns the appended dst.
+func appendStructField(dst []interface{}, v reflect.Value) []interface{} {
+	typ := v.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		tag := typ.Field(i).Tag.Get("redis")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		tag = strings.Split(tag, ",")[0]
+		if tag == "" {
+			continue
+		}
+
+		field := v.Field(i)
+		if field.CanInterface() {
+			dst = append(dst, tag, field.Interface())
+		}
+	}
+
+	return dst
 }
 
 type Cmdable interface {
@@ -880,6 +918,7 @@ func (c cmdable) MGet(ctx context.Context, keys ...string) *SliceCmd {
 //   - MSet("key1", "value1", "key2", "value2")
 //   - MSet([]string{"key1", "value1", "key2", "value2"})
 //   - MSet(map[string]interface{}{"key1": "value1", "key2": "value2"})
+//   - MSet(struct), For struct types, see HSet description.
 func (c cmdable) MSet(ctx context.Context, values ...interface{}) *StatusCmd {
 	args := make([]interface{}, 1, 1+len(values))
 	args[0] = "mset"
@@ -893,6 +932,7 @@ func (c cmdable) MSet(ctx context.Context, values ...interface{}) *StatusCmd {
 //   - MSetNX("key1", "value1", "key2", "value2")
 //   - MSetNX([]string{"key1", "value1", "key2", "value2"})
 //   - MSetNX(map[string]interface{}{"key1": "value1", "key2": "value2"})
+//   - MSetNX(struct), For struct types, see HSet description.
 func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 	args := make([]interface{}, 1, 1+len(values))
 	args[0] = "msetnx"
@@ -1295,9 +1335,24 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 }
 
 // HSet accepts values in following formats:
+//
 //   - HSet("myhash", "key1", "value1", "key2", "value2")
+//
 //   - HSet("myhash", []string{"key1", "value1", "key2", "value2"})
+//
 //   - HSet("myhash", map[string]interface{}{"key1": "value1", "key2": "value2"})
+//
+//     Playing struct With "redis" tag.
+//     type MyHash struct { Key1 string `redis:"key1"`; Key2 int `redis:"key2"` }
+//
+//   - HSet("myhash", MyHash{"value1", "value2"})
+//
+//     For struct, can be a structure pointer type, we only parse the field whose tag is redis.
+//     if you don't want the field to be read, you can use the `redis:"-"` flag to ignore it,
+//     or you don't need to set the redis tag.
+//     For the type of structure field, we only support simple data types:
+//     string, int/uint(8,16,32,64), float(32,64), time.Time(to RFC3339Nano), time.Duration(to Nanoseconds ),
+//     if you are other more complex or custom data types, please implement the encoding.BinaryMarshaler interface.
 //
 // Note that it requires Redis v4 for multiple field/value pairs support.
 func (c cmdable) HSet(ctx context.Context, key string, values ...interface{}) *IntCmd {
