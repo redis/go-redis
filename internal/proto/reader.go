@@ -319,6 +319,33 @@ func (r *Reader) ReadInt() (int64, error) {
 	return 0, fmt.Errorf("redis: can't parse int reply: %.100q", line)
 }
 
+func (r *Reader) ReadUint() (uint64, error) {
+	line, err := r.ReadLine()
+	if err != nil {
+		return 0, err
+	}
+	switch line[0] {
+	case RespInt, RespStatus:
+		return util.ParseUint(line[1:], 10, 64)
+	case RespString:
+		s, err := r.readStringReply(line)
+		if err != nil {
+			return 0, err
+		}
+		return util.ParseUint([]byte(s), 10, 64)
+	case RespBigInt:
+		b, err := r.readBigInt(line)
+		if err != nil {
+			return 0, err
+		}
+		if !b.IsUint64() {
+			return 0, fmt.Errorf("bigInt(%s) value out of range", b.String())
+		}
+		return b.Uint64(), nil
+	}
+	return 0, fmt.Errorf("redis: can't parse uint reply: %.100q", line)
+}
+
 func (r *Reader) ReadFloat() (float64, error) {
 	line, err := r.ReadLine()
 	if err != nil {

@@ -2693,11 +2693,11 @@ func (cmd *ScanCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
-	cursor, err := rd.ReadInt()
+	cursor, err := rd.ReadUint()
 	if err != nil {
 		return err
 	}
-	cmd.cursor = uint64(cursor)
+	cmd.cursor = cursor
 
 	n, err := rd.ReadArrayLen()
 	if err != nil {
