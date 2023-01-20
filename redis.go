@@ -158,8 +158,8 @@ func (hs *hooks) setDefaultHook(d defaultHook) {
 }
 
 func (hs *hooks) withProcessHook(ctx context.Context, cmd Cmder, hook ProcessHook) error {
-	for _, h := range hs.slice {
-		if wrapped := h.ProcessHook(hook); wrapped != nil {
+	for i := len(hs.slice) - 1; i >= 0; i-- {
+		if wrapped := hs.slice[i].ProcessHook(hook); wrapped != nil {
 			hook = wrapped
 		}
 	}
@@ -169,8 +169,8 @@ func (hs *hooks) withProcessHook(ctx context.Context, cmd Cmder, hook ProcessHoo
 func (hs *hooks) withProcessPipelineHook(
 	ctx context.Context, cmds []Cmder, hook ProcessPipelineHook,
 ) error {
-	for _, h := range hs.slice {
-		if wrapped := h.ProcessPipelineHook(hook); wrapped != nil {
+	for i := len(hs.slice) - 1; i >= 0; i-- {
+		if wrapped := hs.slice[i].ProcessPipelineHook(hook); wrapped != nil {
 			hook = wrapped
 		}
 	}
