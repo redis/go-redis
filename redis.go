@@ -81,8 +81,7 @@ type hooks struct {
 
 // AddHook is to add a hook to the queue.
 // Hook is a function executed during network connection, command execution, and pipeline,
-// it is a first-in-last-out stack queue (FILO).
-// The first to be added to the queue is the execution function of the redis command (the last to be executed).
+// it is a first-in-first-out stack queue (FIFO).
 // You need to execute the next hook in each hook, unless you want to terminate the execution of the command.
 // For example, you added hook-1, hook-2:
 //
@@ -112,10 +111,10 @@ type hooks struct {
 //
 // The execution sequence is:
 //
-//	hook-2 start -> hook-1 start -> exec redis cmd -> hook-1 end -> hook-2 end
+//	hook-1 start -> hook-2 start -> exec redis cmd -> hook-2 end -> hook-1 end
 //
 // Please note: "next(ctx, cmd)" is very important, it will call the next hook,
-// if "next(ctx, cmd)" is not executed in hook-1, the redis command will not be executed.
+// if "next(ctx, cmd)" is not executed, the redis command will not be executed.
 func (hs *hooks) AddHook(hook Hook) {
 	hs.slice = append(hs.slice, hook)
 	hs.chain()
