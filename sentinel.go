@@ -278,8 +278,10 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
-	c.hooks.setDial(c.baseClient.dial)
-	c.hooks.setProcess(c.baseClient.process)
+	c.hooks.setDefaultHook(defaultHook{
+		dial:    c.baseClient.dial,
+		process: c.baseClient.process,
+	})
 	c.connPool = newConnPool(opt, c.hooks.dial)
 
 	return c

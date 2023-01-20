@@ -38,10 +38,12 @@ func (c *Tx) init() {
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
 
-	c.hooks.setDial(c.baseClient.dial)
-	c.hooks.setProcess(c.baseClient.process)
-	c.hooks.setProcessPipeline(c.baseClient.processPipeline)
-	c.hooks.setProcessTxPipeline(c.baseClient.processTxPipeline)
+	c.hooks.setDefaultHook(defaultHook{
+		dial:       c.baseClient.dial,
+		process:    c.baseClient.process,
+		pipeline:   c.baseClient.processPipeline,
+		txPipeline: c.baseClient.processTxPipeline,
+	})
 }
 
 func (c *Tx) Process(ctx context.Context, cmd Cmder) error {

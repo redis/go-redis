@@ -509,12 +509,14 @@ func NewRing(opt *RingOptions) *Ring {
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 	ring.cmdable = ring.Process
 
-	ring.hooks.setProcess(ring.process)
-	ring.hooks.setProcessPipeline(func(ctx context.Context, cmds []Cmder) error {
-		return ring.generalProcessPipeline(ctx, cmds, false)
-	})
-	ring.hooks.setProcessTxPipeline(func(ctx context.Context, cmds []Cmder) error {
-		return ring.generalProcessPipeline(ctx, cmds, true)
+	ring.hooks.setDefaultHook(defaultHook{
+		process: ring.process,
+		pipeline: func(ctx context.Context, cmds []Cmder) error {
+			return ring.generalProcessPipeline(ctx, cmds, false)
+		},
+		txPipeline: func(ctx context.Context, cmds []Cmder) error {
+			return ring.generalProcessPipeline(ctx, cmds, true)
+		},
 	})
 
 	go ring.sharding.Heartbeat(hbCtx, opt.HeartbeatFrequency)

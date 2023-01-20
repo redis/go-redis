@@ -855,9 +855,12 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
 
-	c.hooks.setProcess(c.process)
-	c.hooks.setProcessPipeline(c.processPipeline)
-	c.hooks.setProcessTxPipeline(c.processTxPipeline)
+	c.hooks.setDefaultHook(defaultHook{
+		dial:       nil,
+		process:    c.process,
+		pipeline:   c.processPipeline,
+		txPipeline: c.processTxPipeline,
+	})
 
 	return c
 }
