@@ -40,18 +40,42 @@ type (
 	ProcessPipelineHook func(ctx context.Context, cmds []Cmder) error
 )
 
+type hooksMixin struct {
+	slice   []Hook
+	initial hooks
+	current hooks
+}
+
+func (hs *hooksMixin) initHooks(hooks hooks) {
+	hs.initial = hooks
+	hs.chain()
+}
+
 type hooks struct {
-	slice                 []Hook
-	dialHook              DialHook
-	processHook           ProcessHook
-	processPipelineHook   ProcessPipelineHook
-	processTxPipelineHook ProcessPipelineHook
+	dial       DialHook
+	process    ProcessHook
+	pipeline   ProcessPipelineHook
+	txPipeline ProcessPipelineHook
+}
+
+func (h *hooks) setDefaults() {
+	if h.dial == nil {
+		h.dial = func(ctx context.Context, network, addr string) (net.Conn, error) { return nil, nil }
+	}
+	if h.process == nil {
+		h.process = func(ctx context.Context, cmd Cmder) error { return nil }
+	}
+	if h.pipeline == nil {
+		h.pipeline = func(ctx context.Context, cmds []Cmder) error { return nil }
+	}
+	if h.txPipeline == nil {
+		h.txPipeline = func(ctx context.Context, cmds []Cmder) error { return nil }
+	}
 }
 
 // AddHook is to add a hook to the queue.
 // Hook is a function executed during network connection, command execution, and pipeline,
-// it is a first-in-last-out stack queue (FILO).
-// The first to be added to the queue is the execution function of the redis command (the last to be executed).
+// it is a first-in-first-out stack queue (FIFO).
 // You need to execute the next hook in each hook, unless you want to terminate the execution of the command.
 // For example, you added hook-1, hook-2:
 //
@@ -81,95 +105,80 @@ type hooks struct {
 //
 // The execution sequence is:
 //
-//	hook-2 start -> hook-1 start -> exec redis cmd -> hook-1 end -> hook-2 end
+//	hook-1 start -> hook-2 start -> exec redis cmd -> hook-2 end -> hook-1 end
 //
 // Please note: "next(ctx, cmd)" is very important, it will call the next hook,
-// if "next(ctx, cmd)" is not executed in hook-1, the redis command will not be executed.
-func (hs *hooks) AddHook(hook Hook) {
+// if "next(ctx, cmd)" is not executed, the redis command will not be executed.
+func (hs *hooksMixin) AddHook(hook Hook) {
 	hs.slice = append(hs.slice, hook)
-	hs.dialHook = hook.DialHook(hs.dialHook)
-	hs.processHook = hook.ProcessHook(hs.processHook)
-	hs.processPipelineHook = hook.ProcessPipelineHook(hs.processPipelineHook)
-	hs.processTxPipelineHook = hook.ProcessPipelineHook(hs.processTxPipelineHook)
+	hs.chain()
 }
 
-func (hs *hooks) clone() hooks {
+func (hs *hooksMixin) chain() {
+	hs.initial.setDefaults()
+
+	hs.current.dial = hs.initial.dial
+	hs.current.process = hs.initial.process
+	hs.current.pipeline = hs.initial.pipeline
+	hs.current.txPipeline = hs.initial.txPipeline
+
+	for i := len(hs.slice) - 1; i >= 0; i-- {
+		if wrapped := hs.slice[i].DialHook(hs.current.dial); wrapped != nil {
+			hs.current.dial = wrapped
+		}
+		if wrapped := hs.slice[i].ProcessHook(hs.current.process); wrapped != nil {
+			hs.current.process = wrapped
+		}
+		if wrapped := hs.slice[i].ProcessPipelineHook(hs.current.pipeline); wrapped != nil {
+			hs.current.pipeline = wrapped
+		}
+		if wrapped := hs.slice[i].ProcessPipelineHook(hs.current.txPipeline); wrapped != nil {
+			hs.current.txPipeline = wrapped
+		}
+	}
+}
+
+func (hs *hooksMixin) clone() hooksMixin {
 	clone := *hs
 	l := len(clone.slice)
 	clone.slice = clone.slice[:l:l]
 	return clone
 }
 
-func (hs *hooks) setDial(dial DialHook) {
-	hs.dialHook = dial
-	for _, h := range hs.slice {
-		if wrapped := h.DialHook(hs.dialHook); wrapped != nil {
-			hs.dialHook = wrapped
-		}
-	}
-}
-
-func (hs *hooks) setProcess(process ProcessHook) {
-	hs.processHook = process
-	for _, h := range hs.slice {
-		if wrapped := h.ProcessHook(hs.processHook); wrapped != nil {
-			hs.processHook = wrapped
-		}
-	}
-}
-
-func (hs *hooks) setProcessPipeline(processPipeline ProcessPipelineHook) {
-	hs.processPipelineHook = processPipeline
-	for _, h := range hs.slice {
-		if wrapped := h.ProcessPipelineHook(hs.processPipelineHook); wrapped != nil {
-			hs.processPipelineHook = wrapped
-		}
-	}
-}
-
-func (hs *hooks) setProcessTxPipeline(processTxPipeline ProcessPipelineHook) {
-	hs.processTxPipelineHook = processTxPipeline
-	for _, h := range hs.slice {
-		if wrapped := h.ProcessPipelineHook(hs.processTxPipelineHook); wrapped != nil {
-			hs.processTxPipelineHook = wrapped
-		}
-	}
-}
-
-func (hs *hooks) withProcessHook(ctx context.Context, cmd Cmder, hook ProcessHook) error {
-	for _, h := range hs.slice {
-		if wrapped := h.ProcessHook(hook); wrapped != nil {
+func (hs *hooksMixin) withProcessHook(ctx context.Context, cmd Cmder, hook ProcessHook) error {
+	for i := len(hs.slice) - 1; i >= 0; i-- {
+		if wrapped := hs.slice[i].ProcessHook(hook); wrapped != nil {
 			hook = wrapped
 		}
 	}
 	return hook(ctx, cmd)
 }
 
-func (hs *hooks) withProcessPipelineHook(
+func (hs *hooksMixin) withProcessPipelineHook(
 	ctx context.Context, cmds []Cmder, hook ProcessPipelineHook,
 ) error {
-	for _, h := range hs.slice {
-		if wrapped := h.ProcessPipelineHook(hook); wrapped != nil {
+	for i := len(hs.slice) - 1; i >= 0; i-- {
+		if wrapped := hs.slice[i].ProcessPipelineHook(hook); wrapped != nil {
 			hook = wrapped
 		}
 	}
 	return hook(ctx, cmds)
 }
 
-func (hs *hooks) dial(ctx context.Context, network, addr string) (net.Conn, error) {
-	return hs.dialHook(ctx, network, addr)
+func (hs *hooksMixin) dialHook(ctx context.Context, network, addr string) (net.Conn, error) {
+	return hs.current.dial(ctx, network, addr)
 }
 
-func (hs *hooks) process(ctx context.Context, cmd Cmder) error {
-	return hs.processHook(ctx, cmd)
+func (hs *hooksMixin) processHook(ctx context.Context, cmd Cmder) error {
+	return hs.current.process(ctx, cmd)
 }
 
-func (hs *hooks) processPipeline(ctx context.Context, cmds []Cmder) error {
-	return hs.processPipelineHook(ctx, cmds)
+func (hs *hooksMixin) processPipelineHook(ctx context.Context, cmds []Cmder) error {
+	return hs.current.pipeline(ctx, cmds)
 }
 
-func (hs *hooks) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	return hs.processTxPipelineHook(ctx, cmds)
+func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) error {
+	return hs.current.txPipeline(ctx, cmds)
 }
 
 //------------------------------------------------------------------------------
@@ -575,7 +584,7 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 type Client struct {
 	*baseClient
 	cmdable
-	hooks
+	hooksMixin
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -588,17 +597,19 @@ func NewClient(opt *Options) *Client {
 		},
 	}
 	c.init()
-	c.connPool = newConnPool(opt, c.hooks.dial)
+	c.connPool = newConnPool(opt, c.dialHook)
 
 	return &c
 }
 
 func (c *Client) init() {
 	c.cmdable = c.Process
-	c.hooks.setDial(c.baseClient.dial)
-	c.hooks.setProcess(c.baseClient.process)
-	c.hooks.setProcessPipeline(c.baseClient.processPipeline)
-	c.hooks.setProcessTxPipeline(c.baseClient.processTxPipeline)
+	c.initHooks(hooks{
+		dial:       c.baseClient.dial,
+		process:    c.baseClient.process,
+		pipeline:   c.baseClient.processPipeline,
+		txPipeline: c.baseClient.processTxPipeline,
+	})
 }
 
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
@@ -620,7 +631,7 @@ func (c *Client) Do(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (c *Client) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }
@@ -644,7 +655,7 @@ func (c *Client) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 
 func (c *Client) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: pipelineExecer(c.hooks.processPipeline),
+		exec: pipelineExecer(c.processPipelineHook),
 	}
 	pipe.init()
 	return &pipe
@@ -659,7 +670,7 @@ func (c *Client) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
-			return c.hooks.processTxPipeline(ctx, cmds)
+			return c.processTxPipelineHook(ctx, cmds)
 		},
 	}
 	pipe.init()
@@ -742,7 +753,7 @@ type Conn struct {
 	baseClient
 	cmdable
 	statefulCmdable
-	hooks
+	hooksMixin
 }
 
 func newConn(opt *Options, connPool pool.Pooler) *Conn {
@@ -755,17 +766,18 @@ func newConn(opt *Options, connPool pool.Pooler) *Conn {
 
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
-
-	c.hooks.setDial(c.baseClient.dial)
-	c.hooks.setProcess(c.baseClient.process)
-	c.hooks.setProcessPipeline(c.baseClient.processPipeline)
-	c.hooks.setProcessTxPipeline(c.baseClient.processTxPipeline)
+	c.initHooks(hooks{
+		dial:       c.baseClient.dial,
+		process:    c.baseClient.process,
+		pipeline:   c.baseClient.processPipeline,
+		txPipeline: c.baseClient.processTxPipeline,
+	})
 
 	return &c
 }
 
 func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }
@@ -776,7 +788,7 @@ func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Conn) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.hooks.processPipeline,
+		exec: c.processPipelineHook,
 	}
 	pipe.init()
 	return &pipe
@@ -791,7 +803,7 @@ func (c *Conn) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
-			return c.hooks.processTxPipeline(ctx, cmds)
+			return c.processTxPipelineHook(ctx, cmds)
 		},
 	}
 	pipe.init()
