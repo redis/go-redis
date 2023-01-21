@@ -2,30 +2,21 @@ package redis
 
 import (
 	"context"
-	"sync"
 )
 
 // ScanIterator is used to incrementally iterate over a collection of elements.
-// It's safe for concurrent use by multiple goroutines.
 type ScanIterator struct {
-	mu  sync.Mutex // protects Scanner and pos
 	cmd *ScanCmd
 	pos int
 }
 
 // Err returns the last iterator error, if any.
 func (it *ScanIterator) Err() error {
-	it.mu.Lock()
-	err := it.cmd.Err()
-	it.mu.Unlock()
-	return err
+	return it.cmd.Err()
 }
 
 // Next advances the cursor and returns true if more values can be read.
 func (it *ScanIterator) Next(ctx context.Context) bool {
-	it.mu.Lock()
-	defer it.mu.Unlock()
-
 	// Instantly return on errors.
 	if it.cmd.Err() != nil {
 		return false
@@ -68,10 +59,8 @@ func (it *ScanIterator) Next(ctx context.Context) bool {
 // Val returns the key/field at the current cursor position.
 func (it *ScanIterator) Val() string {
 	var v string
-	it.mu.Lock()
 	if it.cmd.Err() == nil && it.pos > 0 && it.pos <= len(it.cmd.page) {
 		v = it.cmd.page[it.pos-1]
 	}
-	it.mu.Unlock()
 	return v
 }
