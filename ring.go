@@ -487,7 +487,7 @@ func (c *ringSharding) Close() error {
 // Otherwise you should use Redis Cluster.
 type Ring struct {
 	cmdable
-	hooks
+	hooksMixin
 
 	opt               *RingOptions
 	sharding          *ringSharding
@@ -509,7 +509,7 @@ func NewRing(opt *RingOptions) *Ring {
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 	ring.cmdable = ring.Process
 
-	ring.hooks.setDefaultHook(defaultHook{
+	ring.initHooks(hooks{
 		process: ring.process,
 		pipeline: func(ctx context.Context, cmds []Cmder) error {
 			return ring.generalProcessPipeline(ctx, cmds, false)
@@ -536,7 +536,7 @@ func (c *Ring) Do(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (c *Ring) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }
@@ -719,7 +719,7 @@ func (c *Ring) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: pipelineExecer(c.hooks.processPipeline),
+		exec: pipelineExecer(c.processPipelineHook),
 	}
 	pipe.init()
 	return &pipe
@@ -733,7 +733,7 @@ func (c *Ring) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
-			return c.hooks.processTxPipeline(ctx, cmds)
+			return c.processTxPipelineHook(ctx, cmds)
 		},
 	}
 	pipe.init()
@@ -774,9 +774,9 @@ func (c *Ring) generalProcessPipeline(
 
 			if tx {
 				cmds = wrapMultiExec(ctx, cmds)
-				_ = shard.Client.hooks.processTxPipeline(ctx, cmds)
+				_ = shard.Client.processTxPipelineHook(ctx, cmds)
 			} else {
-				_ = shard.Client.hooks.processPipeline(ctx, cmds)
+				_ = shard.Client.processPipelineHook(ctx, cmds)
 			}
 		}(hash, cmds)
 	}

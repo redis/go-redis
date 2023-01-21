@@ -214,7 +214,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
-	connPool = newConnPool(opt, rdb.hooks.dial)
+	connPool = newConnPool(opt, rdb.dialHook)
 	rdb.connPool = connPool
 	rdb.onClose = failover.Close
 
@@ -267,7 +267,7 @@ func masterReplicaDialer(
 // SentinelClient is a client for a Redis Sentinel.
 type SentinelClient struct {
 	*baseClient
-	hooks
+	hooksMixin
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {
@@ -278,17 +278,17 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
-	c.hooks.setDefaultHook(defaultHook{
+	c.initHooks(hooks{
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
 	})
-	c.connPool = newConnPool(opt, c.hooks.dial)
+	c.connPool = newConnPool(opt, c.dialHook)
 
 	return c
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }
