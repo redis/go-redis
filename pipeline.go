@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"sync"
 )
 
 type pipelineExecer func(context.Context, []Cmder) error
@@ -32,15 +31,13 @@ type Pipeliner interface {
 var _ Pipeliner = (*Pipeline)(nil)
 
 // Pipeline implements pipelining as described in
-// http://redis.io/topics/pipelining. It's safe for concurrent use
-// by multiple goroutines.
+// http://redis.io/topics/pipelining.
+// Please note: it is not safe for concurrent use by multiple goroutines.
 type Pipeline struct {
 	cmdable
 	statefulCmdable
 
 	exec pipelineExecer
-
-	mu   sync.Mutex
 	cmds []Cmder
 }
 
@@ -51,10 +48,7 @@ func (c *Pipeline) init() {
 
 // Len returns the number of queued commands.
 func (c *Pipeline) Len() int {
-	c.mu.Lock()
-	ln := len(c.cmds)
-	c.mu.Unlock()
-	return ln
+	return len(c.cmds)
 }
 
 // Do queues the custom command for later execution.
@@ -66,17 +60,13 @@ func (c *Pipeline) Do(ctx context.Context, args ...interface{}) *Cmd {
 
 // Process queues the cmd for later execution.
 func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
-	c.mu.Lock()
 	c.cmds = append(c.cmds, cmd)
-	c.mu.Unlock()
 	return nil
 }
 
 // Discard resets the pipeline and discards queued commands.
 func (c *Pipeline) Discard() {
-	c.mu.Lock()
 	c.cmds = c.cmds[:0]
-	c.mu.Unlock()
 }
 
 // Exec executes all previously queued commands using one
@@ -85,9 +75,6 @@ func (c *Pipeline) Discard() {
 // Exec always returns list of commands and error of the first failed
 // command if any.
 func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if len(c.cmds) == 0 {
 		return nil, nil
 	}
