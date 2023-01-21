@@ -18,8 +18,9 @@ const (
 )
 
 type TracingHook struct {
-	tracer trace.Tracer
-	attrs  []attribute.KeyValue
+	tracer        trace.Tracer
+	attrs         []attribute.KeyValue
+	dbStmtEnabled bool
 }
 
 func NewTracingHook(opts ...Option) *TracingHook {
@@ -28,6 +29,7 @@ func NewTracingHook(opts ...Option) *TracingHook {
 		attrs: []attribute.KeyValue{
 			semconv.DBSystemRedis,
 		},
+		dbStmtEnabled: true,
 	}
 	for _, opt := range opts {
 		opt.apply(cfg)
@@ -37,7 +39,7 @@ func NewTracingHook(opts ...Option) *TracingHook {
 		defaultTracerName,
 		trace.WithInstrumentationVersion("semver:"+redis.Version()),
 	)
-	return &TracingHook{tracer: tracer, attrs: cfg.attrs}
+	return &TracingHook{tracer: tracer, attrs: cfg.attrs, dbStmtEnabled: cfg.dbStmtEnabled}
 }
 
 func (th *TracingHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
@@ -48,9 +50,12 @@ func (th *TracingHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (cont
 	opts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(th.attrs...),
-		trace.WithAttributes(
+	}
+
+	if th.dbStmtEnabled {
+		opts = append(opts, trace.WithAttributes(
 			semconv.DBStatementKey.String(rediscmd.CmdString(cmd)),
-		),
+		))
 	}
 
 	ctx, _ = th.tracer.Start(ctx, cmd.FullName(), opts...)
@@ -78,9 +83,14 @@ func (th *TracingHook) BeforeProcessPipeline(ctx context.Context, cmds []redis.C
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(th.attrs...),
 		trace.WithAttributes(
-			semconv.DBStatementKey.String(cmdsString),
 			attribute.Int("db.redis.num_cmd", len(cmds)),
 		),
+	}
+
+	if th.dbStmtEnabled {
+		opts = append(opts, trace.WithAttributes(
+			semconv.DBStatementKey.String(cmdsString),
+		))
 	}
 
 	ctx, _ = th.tracer.Start(ctx, "pipeline "+summary, opts...)
@@ -105,8 +115,9 @@ func recordError(ctx context.Context, span trace.Span, err error) {
 }
 
 type config struct {
-	tp    trace.TracerProvider
-	attrs []attribute.KeyValue
+	tp            trace.TracerProvider
+	attrs         []attribute.KeyValue
+	dbStmtEnabled bool
 }
 
 // Option specifies instrumentation configuration options.
@@ -134,5 +145,12 @@ func WithTracerProvider(provider trace.TracerProvider) Option {
 func WithAttributes(attrs ...attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.attrs = append(cfg.attrs, attrs...)
+	})
+}
+
+// WithDBStatement tells the tracing hook not to log raw redis commands.
+func WithDBStatement(on bool) Option {
+	return optionFunc(func(conf *config) {
+		conf.dbStmtEnabled = on
 	})
 }

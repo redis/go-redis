@@ -2,8 +2,9 @@ package redisotel_test
 
 import (
 	"context"
-	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 	"testing"
+
+	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 
 	"github.com/go-redis/redis/extra/redisotel/v8"
 	"github.com/go-redis/redis/v8"
@@ -62,7 +63,41 @@ func TestNewWithAttributes(t *testing.T) {
 	if !(attrs[1] == semconv.NetPeerNameKey.String("localhost")) {
 		t.Fatalf("expected attrs[1] to be semconv.NetPeerNameKey.String(\"localhost\"), got: %v", attrs[1])
 	}
+
 	if !(attrs[2] == semconv.DBStatementKey.String("ping")) {
 		t.Fatalf("expected attrs[2] to be semconv.DBStatementKey.String(\"ping\"), got: %v", attrs[2])
+	}
+}
+
+func TestNewWithAttributesWithoutDBStatement(t *testing.T) {
+	provider := sdktrace.NewTracerProvider()
+	hook := redisotel.NewTracingHook(
+		redisotel.WithTracerProvider(provider),
+		redisotel.WithAttributes(semconv.NetPeerNameKey.String("localhost")),
+		redisotel.WithDBStatement(false),
+	)
+	ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+	cmd := redis.NewCmd(ctx, "ping")
+	defer span.End()
+
+	ctx, err := hook.BeforeProcess(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = hook.AfterProcess(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attrs := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan).Attributes()
+	if !(attrs[0] == semconv.DBSystemRedis) {
+		t.Fatalf("expected attrs[0] to be semconv.DBSystemRedis, got: %v", attrs[0])
+	}
+	if !(attrs[1] == semconv.NetPeerNameKey.String("localhost")) {
+		t.Fatalf("expected attrs[1] to be semconv.NetPeerNameKey.String(\"localhost\"), got: %v", attrs[1])
+	}
+
+	if len(attrs) == 3 && (attrs[2] == semconv.DBStatementKey.String("ping")) {
+		t.Fatalf("did not expect attrs[2] to be semconv.DBStatementKey.String(\"ping\"), got: %v", attrs[2])
 	}
 }
