@@ -53,17 +53,18 @@ module:
 go mod init github.com/my/repo
 ```
 
-If you are using **Redis 6**, install go-redis/**v8**:
-
-```shell
-go get github.com/go-redis/redis/v8
-```
-
 If you are using **Redis 7**, install go-redis/**v9**:
 
 ```shell
 go get github.com/go-redis/redis/v9
 ```
+
+You can also use the stable version go-redis/**v8** (v8 does not support redis 7):
+
+```shell
+go get github.com/go-redis/redis/v8
+```
+
 
 ## Quickstart
 
