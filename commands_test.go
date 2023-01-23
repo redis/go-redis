@@ -11,8 +11,8 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/go-redis/redis/v9"
-	"github.com/go-redis/redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 type TimeValue struct {
@@ -2692,7 +2692,7 @@ var _ = Describe("Commands", func() {
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set2", "e")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
-			//limit 0 means no limit,see https://redis.io/commands/sintercard/ for more details
+			// limit 0 means no limit,see https://redis.io/commands/sintercard/ for more details
 			sInterCard := client.SInterCard(ctx, 0, "set1", "set2")
 			Expect(sInterCard.Err()).NotTo(HaveOccurred())
 			Expect(sInterCard.Val()).To(Equal(int64(2)))

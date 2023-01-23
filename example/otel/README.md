@@ -10,7 +10,7 @@ for details.
 **Step 1**. Download the example using Git:
 
 ```shell
-git clone https://github.com/go-redis/redis.git
+git clone https://github.com/redis/go-redis.git
 cd example/otel
 ```
 
