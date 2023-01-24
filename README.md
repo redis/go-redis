@@ -26,7 +26,7 @@
 - [Redis Mock](https://github.com/go-redis/redismock)
 - [Distributed Locks](https://github.com/bsm/redislock)
 - [Redis Cache](https://github.com/go-redis/cache)
-- [Rate limiting](https://github.com/redis/go-redis_rate)
+- [Rate limiting](https://github.com/go-redis/redis_rate)
 
 This client also works with [Kvrocks](https://github.com/apache/incubator-kvrocks), a distributed
 key value NoSQL database that uses RocksDB as storage engine and is compatible with Redis protocol.
