@@ -1,7 +1,7 @@
 # Redis client for Go
 
-[![build workflow](https://github.com/go-redis/redis/actions/workflows/build.yml/badge.svg)](https://github.com/go-redis/redis/actions)
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
+[![build workflow](https://github.com/redis/go-redis/actions/workflows/build.yml/badge.svg)](https://github.com/redis/go-redis/actions)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/redis/go-redis/v9)](https://pkg.go.dev/github.com/redis/go-redis/v9?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
@@ -16,17 +16,17 @@
 ## Resources
 
 - [Documentation](https://redis.uptrace.dev)
-- [Discussions](https://github.com/go-redis/redis/discussions)
+- [Discussions](https://github.com/redis/go-redis/discussions)
 - [Chat](https://discord.gg/rWtp5Aj)
-- [Reference](https://pkg.go.dev/github.com/go-redis/redis/v9)
-- [Examples](https://pkg.go.dev/github.com/go-redis/redis/v9#pkg-examples)
+- [Reference](https://pkg.go.dev/github.com/redis/go-redis/v9)
+- [Examples](https://pkg.go.dev/github.com/redis/go-redis/v9#pkg-examples)
 
 ## Ecosystem
 
 - [Redis Mock](https://github.com/go-redis/redismock)
 - [Distributed Locks](https://github.com/bsm/redislock)
 - [Redis Cache](https://github.com/go-redis/cache)
-- [Rate limiting](https://github.com/go-redis/redis_rate)
+- [Rate limiting](https://github.com/redis/go-redis_rate)
 
 This client also works with [Kvrocks](https://github.com/apache/incubator-kvrocks), a distributed
 key value NoSQL database that uses RocksDB as storage engine and is compatible with Redis protocol.
@@ -53,25 +53,18 @@ module:
 go mod init github.com/my/repo
 ```
 
-If you are using **Redis 7**, install go-redis/**v9**:
+Then install go-redis/**v9**:
 
 ```shell
-go get github.com/go-redis/redis/v9
+go get github.com/redis/go-redis/v9
 ```
-
-You can also use the stable version go-redis/**v8** (v8 does not support redis 7):
-
-```shell
-go get github.com/go-redis/redis/v8
-```
-
 
 ## Quickstart
 
 ```go
 import (
     "context"
-    "github.com/go-redis/redis/v8"
+    "github.com/redis/go-redis/v9"
     "fmt"
 )
 
@@ -181,6 +174,6 @@ go test
 
 Thanks to all the people who already contributed!
 
-<a href="https://github.com/go-redis/redis/graphs/contributors">
-  <img src="https://contributors-img.web.app/image?repo=go-redis/redis" />
+<a href="https://github.com/redis/go-redis/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=redis/go-redis" />
 </a>

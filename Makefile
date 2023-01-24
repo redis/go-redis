@@ -25,12 +25,12 @@ testdata/redis/src/redis-server: testdata/redis
 
 fmt:
 	gofmt -w -s ./
-	goimports -w  -local github.com/go-redis/redis ./
+	goimports -w  -local github.com/redis/go-redis ./
 
 go_mod_tidy:
 	set -e; for dir in $(PACKAGE_DIRS); do \
 	  echo "go mod tidy in $${dir}"; \
 	  (cd "$${dir}" && \
 	    go get -u ./... && \
-	    go mod tidy -compat=1.17); \
+	    go mod tidy -compat=1.18); \
 	done

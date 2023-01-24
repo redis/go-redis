@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/go-redis/redis/internal/customvet/checks/setval"
+	"github.com/redis/go-redis/internal/customvet/checks/setval"
 	"golang.org/x/tools/go/analysis/multichecker"
 )
 
