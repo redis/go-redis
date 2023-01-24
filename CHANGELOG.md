@@ -1,3 +1,7 @@
+# [9.0.0-rc.4](https://github.com/redis/go-redis/compare/v9.0.0-rc.3...v9.0.0-rc.4) (2023-01-24)
+
+
+
 # [9.0.0-rc.3](https://github.com/redis/go-redis/compare/v9.0.0-rc.2...v9.0.0-rc.3) (2023-01-24)
 
 
