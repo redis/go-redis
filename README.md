@@ -23,7 +23,7 @@
 
 ## Ecosystem
 
-- [Redis Mock](https://github.com/redis/go-redismock)
+- [Redis Mock](https://github.com/go-redis/redismock)
 - [Distributed Locks](https://github.com/bsm/redislock)
 - [Redis Cache](https://github.com/go-redis/cache)
 - [Rate limiting](https://github.com/redis/go-redis_rate)
