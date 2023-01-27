@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/gomega"
+	. "github.com/bsm/gomega"
 )
 
 func TestRetryBackoff(t *testing.T) {

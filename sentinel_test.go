@@ -4,8 +4,8 @@ import (
 	"context"
 	"net"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	. "github.com/bsm/ginkgo/v2"
+	. "github.com/bsm/gomega"
 
 	"github.com/redis/go-redis/v9"
 )
