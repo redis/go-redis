@@ -1287,9 +1287,13 @@ func (c *ClusterClient) processPipelineNode(
 			return err
 		}
 
-		err = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
-		node.Client.releaseConn(ctx, cn, err)
-		return err
+		var processErr error
+		defer func() {
+			node.Client.releaseConn(ctx, cn, processErr)
+		}()
+		processErr = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+
+		return processErr
 	})
 }
 
@@ -1464,9 +1468,13 @@ func (c *ClusterClient) processTxPipelineNode(
 			return err
 		}
 
-		err = c.processTxPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
-		node.Client.releaseConn(ctx, cn, err)
-		return err
+		var processErr error
+		defer func() {
+			node.Client.releaseConn(ctx, cn, processErr)
+		}()
+		processErr = c.processTxPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+
+		return processErr
 	})
 }
 
