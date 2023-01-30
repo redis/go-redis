@@ -1,11 +1,15 @@
-PACKAGE_DIRS := $(shell find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; | sort)
+GO_MOD_DIRS := $(shell find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; | sort)
 
 test: testdeps
-	go test ./...
-	go test ./... -short -race
-	go test ./... -run=NONE -bench=. -benchmem
-	env GOOS=linux GOARCH=386 go test ./...
-	go vet
+	set -e; for dir in $(GO_MOD_DIRS); do \
+	  echo "go test in $${dir}"; \
+	  (cd "$${dir}" && \
+	    go test && \
+	    go test ./... -short -race &&
+	    go test ./... -run=NONE -bench=. -benchmem &&
+	    env GOOS=linux GOARCH=386 go test && \
+	    go vet); \
+	done
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet
 
@@ -28,7 +32,7 @@ fmt:
 	goimports -w  -local github.com/redis/go-redis ./
 
 go_mod_tidy:
-	set -e; for dir in $(PACKAGE_DIRS); do \
+	set -e; for dir in $(GO_MOD_DIRS); do \
 	  echo "go mod tidy in $${dir}"; \
 	  (cd "$${dir}" && \
 	    go get -u ./... && \
