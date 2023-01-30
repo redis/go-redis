@@ -599,7 +599,7 @@ func (c *Ring) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 }
 
 // SSubscribe Subscribes the client to the specified shard channels.
-func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
+func (c *Ring) SSubscribe(ctx context.Context, channels ...string) (*PubSub,error) {
 	if len(channels) == 0 {
 		panic("at least one channel is required")
 	}

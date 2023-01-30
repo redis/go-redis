@@ -200,7 +200,7 @@ type UniversalClient interface {
 	Process(ctx context.Context, cmd Cmder) error
 	Subscribe(ctx context.Context, channels ...string) *PubSub
 	PSubscribe(ctx context.Context, channels ...string) *PubSub
-	SSubscribe(ctx context.Context, channels ...string) *PubSub
+	SSubscribe(ctx context.Context, channels ...string) (*PubSub,error)
 	Close() error
 	PoolStats() *PoolStats
 }

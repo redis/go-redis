@@ -554,7 +554,7 @@ var _ = Describe("ClusterClient", func() {
 		})
 
 		It("supports sharded PubSub", func() {
-			pubsub := client.SSubscribe(ctx, "mychannel")
+			pubsub,_ := client.SSubscribe(ctx, "mychannel")
 			defer pubsub.Close()
 
 			Eventually(func() error {

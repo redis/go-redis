@@ -107,7 +107,7 @@ var _ = Describe("PubSub", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(channels).To(BeEmpty())
 
-		pubsub := client.SSubscribe(ctx, "mychannel", "mychannel2")
+		pubsub,_ := client.SSubscribe(ctx, "mychannel", "mychannel2")
 		defer pubsub.Close()
 
 		channels, err = client.PubSubShardChannels(ctx, "mychannel*").Result()
@@ -234,7 +234,7 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should sharded pub/sub", func() {
-		pubsub := client.SSubscribe(ctx, "mychannel", "mychannel2")
+		pubsub,_ := client.SSubscribe(ctx, "mychannel", "mychannel2")
 		defer pubsub.Close()
 
 		{

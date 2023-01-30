@@ -741,12 +741,15 @@ func (c *Client) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 
 // SSubscribe Subscribes the client to the specified shard channels.
 // Channels can be omitted to create empty subscription.
-func (c *Client) SSubscribe(ctx context.Context, channels ...string) *PubSub {
+func (c *Client) SSubscribe(ctx context.Context, channels ...string) (*PubSub,error) {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
-		_ = pubsub.SSubscribe(ctx, channels...)
+		err := pubsub.Subscribe(ctx, channels...)
+		if err != nil {
+		return nil, err
+		}
 	}
-	return pubsub
+	return pubsub,nil
 }
 
 //------------------------------------------------------------------------------
