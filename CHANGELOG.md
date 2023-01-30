@@ -1,3 +1,13 @@
+# [9.0.0](https://github.com/redis/go-redis/compare/v9.0.0-rc.4...v9.0.0) (2023-01-30)
+
+
+### Bug Fixes
+
+* **conn:** releaseConn should be executed correctly ([21e1954](https://github.com/redis/go-redis/commit/21e1954745a12948de5ccdea9f6b335fe169a463))
+* implement `redis.Hook` (v9) for `rediscensus.TracingHook` ([#2367](https://github.com/redis/go-redis/issues/2367)) ([805bfc2](https://github.com/redis/go-redis/commit/805bfc2c60546190e6c1a160a279dd6ebe2d6de4)), closes [#2266](https://github.com/redis/go-redis/issues/2266)
+
+
+
 # [9.0.0-rc.4](https://github.com/redis/go-redis/compare/v9.0.0-rc.3...v9.0.0-rc.4) (2023-01-24)
 
 
