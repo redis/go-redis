@@ -18,7 +18,7 @@ services:
       - '9000:9000'
 
   uptrace:
-    image: 'uptrace/uptrace:1.2.4'
+    image: 'uptrace/uptrace:1.3.0'
     #image: 'uptrace/uptrace-dev:latest'
     restart: on-failure
     volumes:
