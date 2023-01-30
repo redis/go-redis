@@ -342,9 +342,14 @@ func (c *baseClient) withConn(
 		return err
 	}
 
-	err = fn(ctx, cn)
-	c.releaseConn(ctx, cn, err)
-	return err
+	var fnErr error
+	defer func() {
+		c.releaseConn(ctx, cn, fnErr)
+	}()
+
+	fnErr = fn(ctx, cn)
+
+	return fnErr
 }
 
 func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, error) {
