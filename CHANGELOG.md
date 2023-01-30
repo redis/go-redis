@@ -1,3 +1,7 @@
+## [9.0.1](https://github.com/redis/go-redis/compare/v9.0.0...v9.0.1) (2023-01-30)
+
+
+
 ## v9 2023-01-30
 
 ### Added
