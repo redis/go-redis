@@ -17,11 +17,17 @@
 ## ClickHouse database credentials.
 ##
 ch:
-  # Connection string for ClickHouse database. For example:
-  # clickhouse://<user>:<password>@<host>:<port>/<database>?sslmode=disable
-  #
-  # See https://clickhouse.uptrace.dev/guide/golang-clickhouse.html#options
-  dsn: 'clickhouse://default:@clickhouse:9000/uptrace?sslmode=disable'
+  addr: clickhouse:9000
+  user: default
+  password:
+  database: uptrace
+
+  # TLS configuration. Uncomment to enable.
+  # tls:
+  #   insecure_skip_verify: true
+
+  # Maximum query execution time.
+  max_execution_time: 30s
 
 ##
 ## A list of pre-configured projects. Each project is fully isolated.
@@ -59,28 +65,19 @@ projects:
 ## Create metrics from spans and events.
 ##
 metrics_from_spans:
-  - name: uptrace.tracing.spans_duration
+  - name: uptrace.tracing.spans
     description: Spans duration (excluding events)
     instrument: histogram
     unit: microseconds
     value: span.duration / 1000
     attrs:
-      - span.system as system
-      - service.name as service
-      - host.name as host
-      - span.status_code as status
-    where: not span.is_event
-
-  - name: uptrace.tracing.spans
-    description: Spans count (excluding events)
-    instrument: counter
-    unit: 1
-    value: span.count
-    attrs:
-      - span.system as system
-      - service.name as service
-      - host.name as host
-      - span.status_code as status
+      - span.system
+      - span.group_id
+      - service.name
+      - host.name
+      - span.status_code
+    annotations:
+      - span.name
     where: not span.is_event
 
   - name: uptrace.tracing.events
@@ -89,51 +86,13 @@ metrics_from_spans:
     unit: 1
     value: span.count
     attrs:
-      - span.system as system
-      - service.name as service
-      - host.name as host
+      - span.system
+      - span.group_id
+      - service.name
+      - host.name
+    annotations:
+      - span.event_name
     where: span.is_event
-
-##
-## To require authentication, uncomment the following section.
-##
-auth:
-  # users:
-  #   - username: uptrace
-  #     password: uptrace
-  #   - username: admin
-  #     password: admin
-
-  # # Cloudflare user provider: uses Cloudflare Zero Trust Access (Identity)
-  # # See https://developers.cloudflare.com/cloudflare-one/identity/ for more info.
-  # cloudflare:
-  #   # The base URL of the Cloudflare Zero Trust team.
-  #   - team_url: https://myteam.cloudflareaccess.com
-  #     # The Application Audience (AUD) Tag for this application.
-  #     # You can retrieve this from the Cloudflare Zero Trust 'Access' Dashboard.
-  #     audience: bea6df23b944e4a0cd178609ba1bb64dc98dfe1f66ae7b918e563f6cf28b37e0
-
-  # # OpenID Connect (Single Sign-On)
-  # oidc:
-  #   # The ID is used in API endpoints, for example, in redirect URL
-  #   # `http://<uptrace-host>/api/v1/sso/<oidc-id>/callback`.
-  #   - id: keycloak
-  #     # Display name for the button in the login form.
-  #     # Default to 'OpenID Connect'
-  #     display_name: Keycloak
-  #     # The base URL for the OIDC provider.
-  #     issuer_url: http://localhost:8080/realms/uptrace
-  #     # The OAuth 2.0 Client ID
-  #     client_id: uptrace
-  #     # The OAuth 2.0 Client Secret
-  #     client_secret: ogbhd8Q0X0e5AZFGSG3m9oirPvnetqkA
-  #     # Additional OAuth 2.0 scopes to request from the OIDC provider.
-  #     # Defaults to 'profile'. 'openid' is requested by default and need not be specified.
-  #     scopes:
-  #       - profile
-  #     # The OIDC UserInfo claim to use as the user's username.
-  #     # Defaults to 'preferred_username'.
-  #     claim: preferred_username
 
 ##
 ## Alerting rules for monitoring metrics.
@@ -201,6 +160,47 @@ alertmanager_client:
     - 'http://alertmanager:9093/api/v2/alerts'
 
 ##
+## To require authentication, uncomment the following section.
+##
+auth:
+  # users:
+  #   - username: uptrace
+  #     password: uptrace
+  #   - username: admin
+  #     password: admin
+
+  # # Cloudflare user provider: uses Cloudflare Zero Trust Access (Identity)
+  # # See https://developers.cloudflare.com/cloudflare-one/identity/ for more info.
+  # cloudflare:
+  #   # The base URL of the Cloudflare Zero Trust team.
+  #   - team_url: https://myteam.cloudflareaccess.com
+  #     # The Application Audience (AUD) Tag for this application.
+  #     # You can retrieve this from the Cloudflare Zero Trust 'Access' Dashboard.
+  #     audience: bea6df23b944e4a0cd178609ba1bb64dc98dfe1f66ae7b918e563f6cf28b37e0
+
+  # # OpenID Connect (Single Sign-On)
+  # oidc:
+  #   # The ID is used in API endpoints, for example, in redirect URL
+  #   # `http://<uptrace-host>/api/v1/sso/<oidc-id>/callback`.
+  #   - id: keycloak
+  #     # Display name for the button in the login form.
+  #     # Default to 'OpenID Connect'
+  #     display_name: Keycloak
+  #     # The base URL for the OIDC provider.
+  #     issuer_url: http://localhost:8080/realms/uptrace
+  #     # The OAuth 2.0 Client ID
+  #     client_id: uptrace
+  #     # The OAuth 2.0 Client Secret
+  #     client_secret: ogbhd8Q0X0e5AZFGSG3m9oirPvnetqkA
+  #     # Additional OAuth 2.0 scopes to request from the OIDC provider.
+  #     # Defaults to 'profile'. 'openid' is requested by default and need not be specified.
+  #     scopes:
+  #       - profile
+  #     # The OIDC UserInfo claim to use as the user's username.
+  #     # Defaults to 'preferred_username'.
+  #     claim: preferred_username
+
+##
 ## Various options to tweak ClickHouse schema.
 ## For changes to take effect, you need reset the ClickHouse database with `ch reset`.
 ##
@@ -215,14 +215,14 @@ ch_schema:
   #cluster: uptrace1
 
   spans:
-    storage_policy: 'default'
     # Delete spans data after 30 days.
     ttl_delete: 30 DAY
+    storage_policy: 'default'
 
   metrics:
-    storage_policy: 'default'
     # Delete metrics data after 90 days.
     ttl_delete: 90 DAY
+    storage_policy: 'default'
 
 ##
 ## Addresses on which Uptrace receives gRPC and HTTP requests.
@@ -289,6 +289,25 @@ db:
   # Uptrace automatically creates SQLite database file in the current working directory.
   # Make sure the directory is writable by Uptrace process.
   dsn: 'file:uptrace.sqlite3?_pragma=foreign_keys(1)&_pragma=busy_timeout(1000)'
+
+##
+## uptrace-go client configuration.
+## Uptrace sends internal telemetry here. Defaults to listen.grpc.addr.
+##
+uptrace_go:
+  # dsn: http://project1_secret_token@localhost:14317/1
+  # tls:
+  #   cert_file: config/tls/uptrace.crt
+  #   key_file: config/tls/uptrace.key
+  #   insecure_skip_verify: true
+
+##
+## Logging configuration.
+##
+logs:
+  # Zap minimal logging level.
+  # Valid values: DEBUG, INFO, WARN, ERROR, DPANIC, PANIC, FATAL.
+  level: INFO
 
 # Secret key that is used to sign JWT tokens etc.
 secret_key: 102c1a557c314fc28198acd017960843
