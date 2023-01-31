@@ -309,6 +309,7 @@ type Cmdable interface {
 	ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd
 	ZInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd
 	ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd
+	ZMPop(ctx context.Context, numkeys int, keys []string, order string, options ...ZMPopOption) *StringSliceCmd
 	ZMScore(ctx context.Context, key string, members ...string) *FloatSliceCmd
 	ZPopMax(ctx context.Context, key string, count ...int64) *ZSliceCmd
 	ZPopMin(ctx context.Context, key string, count ...int64) *ZSliceCmd
@@ -2424,6 +2425,43 @@ func (c cmdable) ZInterCard(ctx context.Context, limit int64, keys ...string) *I
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+func (c cmdable) ZMPop(ctx context.Context, numkeys int, keys []string, order string, options ...ZMPopOption) *StringSliceCmd {
+	args := make([]interface{}, 2+len(keys))
+	args[0] = "zmpop"
+	args[1] = numkeys
+	for i, key := range keys {
+		args[2+i] = key
+	}
+	args = append(args, order)
+	for _, option := range options {
+		args = append(args, option.Name(), option.Value())
+	}
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type ZMPopOption interface {
+	Name() string
+	Value() interface{}
+}
+
+type zmPopCount struct {
+	count int
+}
+
+func (c *zmPopCount) Name() string {
+	return "COUNT"
+}
+
+func (c *zmPopCount) Value() interface{} {
+	return c.count
+}
+
+func ZMPopCount(count int) ZMPopOption {
+	return &zmPopCount{count}
 }
 
 func (c cmdable) ZMScore(ctx context.Context, key string, members ...string) *FloatSliceCmd {
