@@ -1,4 +1,4 @@
-GO_MOD_DIRS := $(shell find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; | sort)
+GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 
 test: testdeps
 	set -e; for dir in $(GO_MOD_DIRS); do \
