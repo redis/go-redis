@@ -101,15 +101,16 @@ func (w *Writer) WriteArg(v interface{}) error {
 		return w.bytes(w.numBuf)
 	case time.Duration:
 		return w.int(v.Nanoseconds())
-	case encoding.BinaryMarshaler:
-		b, err := v.MarshalBinary()
-		if err != nil {
-			return err
-		}
-		return w.bytes(b)
 	case net.IP:
 		return w.bytes(v)
 	default:
+		if m, ok := v.(encoding.BinaryMarshaler); ok {
+			b, err := m.MarshalBinary()
+			if err != nil {
+				return err
+			}
+			return w.bytes(b)
+		}
 		return fmt.Errorf(
 			"redis: can't marshal %T (implement encoding.BinaryMarshaler)", v)
 	}

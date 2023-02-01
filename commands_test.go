@@ -1841,6 +1841,25 @@ var _ = Describe("Commands", func() {
 				Key2: 123,
 				Time: TimeValue{Time: time.Time{}},
 			}))
+
+			type data2 struct {
+				Key1 string    `redis:"key1"`
+				Key2 int       `redis:"key2"`
+				Time time.Time `redis:"time"`
+			}
+			err = client.HSet(ctx, "hash", &data2{
+				Key1: "hello2",
+				Key2: 200,
+				Time: now,
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			var d2 data2
+			err = client.HMGet(ctx, "hash", "key1", "key2", "time").Scan(&d2)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(d2.Key1).To(Equal("hello2"))
+			Expect(d2.Key2).To(Equal(200))
+			Expect(d2.Time.Unix()).To(Equal(now.Unix()))
 		})
 
 		It("should HIncrBy", func() {
