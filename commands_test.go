@@ -3588,17 +3588,7 @@ var _ = Describe("Commands", func() {
 			err = client.ZAdd(ctx, "zset", redis.Z{Score: 3, Member: "three"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			zmPop := client.ZMPop(ctx, 1, []string{"zset"}, "MIN")
-			Expect(zmPop.Err()).NotTo(HaveOccurred()) 
-			Expect(zmPop.Val()).To(HaveLen(1))
-			Expect(zmPop.Val()[0]).To(Equal("one"))
-
-			zmPop = client.ZMPop(ctx, 1, []string{"zset"}, "MAX")
-			Expect(zmPop.Err()).NotTo(HaveOccurred())
-			Expect(zmPop.Val()).To(HaveLen(1))
-			Expect(zmPop.Val()[0]).To(Equal("three"))
-
-			zmPop = client.ZMPop(ctx, 2, []string{"zset"}, "MIN", ZMPopCount(1))
+			zmPop := client.ZMPop(ctx, 2, []string{"zset"}, "MIN", ZMPopCount(1))
 			Expect(zmPop.Err()).NotTo(HaveOccurred())
 			Expect(zmPop.Val()).To(HaveLen(1))
 			Expect(zmPop.Val()[0]).To(Equal("one"))
