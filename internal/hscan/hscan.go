@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
-	"time"
 )
 
 // decoderFunc represents decoding functions for default built-in types.
@@ -43,7 +42,7 @@ var (
 		reflect.Ptr:           decodeUnsupported,
 		reflect.Slice:         decodeSlice,
 		reflect.String:        decodeString,
-		reflect.Struct:        decodeStruct,
+		reflect.Struct:        decodeUnsupported,
 		reflect.UnsafePointer: decodeUnsupported,
 	}
 
@@ -201,20 +200,6 @@ func decodeSlice(f reflect.Value, s string) error {
 		f.SetBytes([]byte(s))
 	}
 	return nil
-}
-
-func decodeStruct(f reflect.Value, s string) error {
-	// handle time.Time here.
-	// time.Time CanSet() == false
-	if f.CanAddr() {
-		p := f.Addr()
-		if p.CanInterface() {
-			if v, ok := p.Interface().(*time.Time); ok {
-				return v.UnmarshalText([]byte(s))
-			}
-		}
-	}
-	return decodeUnsupported(f, s)
 }
 
 func decodeUnsupported(v reflect.Value, s string) error {
