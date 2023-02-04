@@ -409,21 +409,33 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ExpireAt", func() {
-			set := client.Set(ctx, "key", "Hello", 0)
-			Expect(set.Err()).NotTo(HaveOccurred())
-			Expect(set.Val()).To(Equal("OK"))
+			setCmd := client.Set(ctx, "key", "Hello", 0)
+			Expect(setCmd.Err()).NotTo(HaveOccurred())
+			Expect(setCmd.Val()).To(Equal("OK"))
 
 			n, err := client.Exists(ctx, "key").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(1)))
 
-			expireAt := client.ExpireAt(ctx, "key", time.Now().Add(-time.Hour))
-			Expect(expireAt.Err()).NotTo(HaveOccurred())
-			Expect(expireAt.Val()).To(Equal(true))
+			// Check correct expiration in the past
+			expireAtCmd := client.ExpireAt(ctx, "key", time.Now().Add(-time.Hour))
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
 
 			n, err = client.Exists(ctx, "key").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(0)))
+
+			// Check correct expiration time is set in the future
+			future := time.Now().Add(time.Minute)
+			expireAtCmd = client.ExpireAt(ctx, "key", future)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			t, err := client.ExpireTime(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(t.Seconds()).To(BeNumerically("==", future.Unix()))
+
 		})
 
 		It("should Keys", func() {
@@ -567,6 +579,28 @@ var _ = Describe("Commands", func() {
 			pttl := client.PTTL(ctx, "key")
 			Expect(pttl.Err()).NotTo(HaveOccurred())
 			Expect(pttl.Val()).To(BeNumerically("~", expiration, 100*time.Millisecond))
+		})
+
+		It("should PExpireTime", func() {
+
+			// The command returns -1 if the key exists but has no associated expiration time.
+			// The command returns -2 if the key does not exist.
+			pExpireTime := client.PExpireTime(ctx, "key")
+			Expect(pExpireTime.Err()).NotTo(HaveOccurred())
+			Expect(pExpireTime.Val() < 0).To(Equal(true))
+
+			set := client.Set(ctx, "key", "hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			timestamp := time.Now().Add(time.Minute)
+			expireAt := client.PExpireAt(ctx, "key", timestamp)
+			Expect(expireAt.Err()).NotTo(HaveOccurred())
+			Expect(expireAt.Val()).To(Equal(true))
+
+			pExpireTime = client.PExpireTime(ctx, "key")
+			Expect(pExpireTime.Err()).NotTo(HaveOccurred())
+			Expect(pExpireTime.Val().Milliseconds()).To(BeNumerically("==", timestamp.UnixMilli()))
 		})
 
 		It("should PTTL", func() {
@@ -786,7 +820,32 @@ var _ = Describe("Commands", func() {
 			Expect(touch.Val()).To(Equal(int64(2)))
 		})
 
+		It("should ExpireTime", func() {
+
+			// The command returns -1 if the key exists but has no associated expiration time.
+			// The command returns -2 if the key does not exist.
+			expireTimeCmd := client.ExpireTime(ctx, "key")
+			Expect(expireTimeCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireTimeCmd.Val() < 0).To(Equal(true))
+
+			set := client.Set(ctx, "key", "hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expireAt := time.Now().Add(time.Minute)
+			expireAtCmd := client.ExpireAt(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			expireTimeCmd = client.ExpireTime(ctx, "key")
+			Expect(expireTimeCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireTimeCmd.Val().Seconds()).To(BeNumerically("==", expireAt.Unix()))
+		})
+
 		It("should TTL", func() {
+
+			// The command returns -1 if the key exists but has no associated expire
+			// The command returns -2 if the key does not exist.
 			ttl := client.TTL(ctx, "key")
 			Expect(ttl.Err()).NotTo(HaveOccurred())
 			Expect(ttl.Val() < 0).To(Equal(true))
