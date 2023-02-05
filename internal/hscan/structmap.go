@@ -101,10 +101,10 @@ func (s StructValue) Scan(key string, value string) error {
 
 	if isPtr && v.Type().NumMethod() > 0 && v.CanInterface() {
 		switch scan := v.Interface().(type) {
-		case encoding.TextUnmarshaler:
-			return scan.UnmarshalText(util.StringToBytes(value))
 		case Scanner:
 			return scan.ScanRedis(value)
+		case encoding.TextUnmarshaler:
+			return scan.UnmarshalText(util.StringToBytes(value))
 		}
 	}
 
