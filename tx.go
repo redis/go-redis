@@ -3,8 +3,8 @@ package redis
 import (
 	"context"
 
-	"github.com/go-redis/redis/v9/internal/pool"
-	"github.com/go-redis/redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // TxFailedErr transaction redis failed.
@@ -19,7 +19,7 @@ type Tx struct {
 	baseClient
 	cmdable
 	statefulCmdable
-	hooks
+	hooksMixin
 }
 
 func (c *Client) newTx() *Tx {
@@ -28,7 +28,7 @@ func (c *Client) newTx() *Tx {
 			opt:      c.opt,
 			connPool: pool.NewStickyConnPool(c.connPool),
 		},
-		hooks: c.hooks.clone(),
+		hooksMixin: c.hooksMixin.clone(),
 	}
 	tx.init()
 	return &tx
@@ -38,14 +38,16 @@ func (c *Tx) init() {
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
 
-	c.hooks.setDial(c.baseClient.dial)
-	c.hooks.setProcess(c.baseClient.process)
-	c.hooks.setProcessPipeline(c.baseClient.processPipeline)
-	c.hooks.setProcessTxPipeline(c.baseClient.processTxPipeline)
+	c.initHooks(hooks{
+		dial:       c.baseClient.dial,
+		process:    c.baseClient.process,
+		pipeline:   c.baseClient.processPipeline,
+		txPipeline: c.baseClient.processTxPipeline,
+	})
 }
 
 func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }
@@ -100,7 +102,7 @@ func (c *Tx) Unwatch(ctx context.Context, keys ...string) *StatusCmd {
 func (c *Tx) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
-			return c.hooks.processPipeline(ctx, cmds)
+			return c.processPipelineHook(ctx, cmds)
 		},
 	}
 	pipe.init()
@@ -130,7 +132,7 @@ func (c *Tx) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
-			return c.hooks.processTxPipeline(ctx, cmds)
+			return c.processTxPipelineHook(ctx, cmds)
 		},
 	}
 	pipe.init()

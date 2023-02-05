@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v9/internal"
-	"github.com/go-redis/redis/v9/internal/pool"
-	"github.com/go-redis/redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 //------------------------------------------------------------------------------
@@ -23,6 +23,9 @@ type FailoverOptions struct {
 	MasterName string
 	// A seed list of host:port addresses of sentinel nodes.
 	SentinelAddrs []string
+
+	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
+	ClientName string
 
 	// If specified with SentinelPassword, enables ACL-based authentication (via
 	// AUTH <user> <pass>).
@@ -78,7 +81,8 @@ type FailoverOptions struct {
 
 func (opt *FailoverOptions) clientOptions() *Options {
 	return &Options{
-		Addr: "FailoverClient",
+		Addr:       "FailoverClient",
+		ClientName: opt.ClientName,
 
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
@@ -110,7 +114,8 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 	return &Options{
-		Addr: addr,
+		Addr:       addr,
+		ClientName: opt.ClientName,
 
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
@@ -141,6 +146,8 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 
 func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 	return &ClusterOptions{
+		ClientName: opt.ClientName,
+
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
@@ -207,7 +214,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
-	connPool = newConnPool(opt, rdb.hooks.dial)
+	connPool = newConnPool(opt, rdb.dialHook)
 	rdb.connPool = connPool
 	rdb.onClose = failover.Close
 
@@ -260,7 +267,7 @@ func masterReplicaDialer(
 // SentinelClient is a client for a Redis Sentinel.
 type SentinelClient struct {
 	*baseClient
-	hooks
+	hooksMixin
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {
@@ -271,15 +278,17 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
-	c.hooks.setDial(c.baseClient.dial)
-	c.hooks.setProcess(c.baseClient.process)
-	c.connPool = newConnPool(opt, c.hooks.dial)
+	c.initHooks(hooks{
+		dial:    c.baseClient.dial,
+		process: c.baseClient.process,
+	})
+	c.connPool = newConnPool(opt, c.dialHook)
 
 	return c
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }

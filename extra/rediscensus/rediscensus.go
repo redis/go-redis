@@ -2,11 +2,12 @@ package rediscensus
 
 import (
 	"context"
+	"net"
 
 	"go.opencensus.io/trace"
 
-	"github.com/go-redis/redis/extra/rediscmd/v9"
-	"github.com/go-redis/redis/v9"
+	"github.com/redis/go-redis/extra/rediscmd/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 type TracingHook struct{}
@@ -17,29 +18,54 @@ func NewTracingHook() *TracingHook {
 	return new(TracingHook)
 }
 
-func (TracingHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
-	ctx, span := trace.StartSpan(ctx, cmd.FullName())
-	span.AddAttributes(trace.StringAttribute("db.system", "redis"),
-		trace.StringAttribute("redis.cmd", rediscmd.CmdString(cmd)))
+func (TracingHook) DialHook(next redis.DialHook) redis.DialHook {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		ctx, span := trace.StartSpan(ctx, "dial")
+		defer span.End()
 
-	return ctx, nil
-}
+		span.AddAttributes(
+			trace.StringAttribute("db.system", "redis"),
+			trace.StringAttribute("network", network),
+			trace.StringAttribute("addr", addr),
+		)
 
-func (TracingHook) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
-	span := trace.FromContext(ctx)
-	if err := cmd.Err(); err != nil {
-		recordErrorOnOCSpan(ctx, span, err)
+		conn, err := next(ctx, network, addr)
+		if err != nil {
+			recordErrorOnOCSpan(ctx, span, err)
+
+			return nil, err
+		}
+
+		return conn, nil
 	}
-	span.End()
-	return nil
 }
 
-func (TracingHook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
-	return ctx, nil
+func (TracingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		ctx, span := trace.StartSpan(ctx, cmd.FullName())
+		defer span.End()
+
+		span.AddAttributes(
+			trace.StringAttribute("db.system", "redis"),
+			trace.StringAttribute("redis.cmd", rediscmd.CmdString(cmd)),
+		)
+
+		err := next(ctx, cmd)
+		if err != nil {
+			recordErrorOnOCSpan(ctx, span, err)
+			return err
+		}
+
+		if err = cmd.Err(); err != nil {
+			recordErrorOnOCSpan(ctx, span, err)
+		}
+
+		return nil
+	}
 }
 
-func (TracingHook) AfterProcessPipeline(ctx context.Context, cmds []redis.Cmder) error {
-	return nil
+func (TracingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
 }
 
 func recordErrorOnOCSpan(ctx context.Context, span *trace.Span, err error) {

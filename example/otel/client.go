@@ -11,18 +11,18 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 
-	"github.com/go-redis/redis/extra/redisotel/v9"
-	"github.com/go-redis/redis/v9"
+	"github.com/redis/go-redis/extra/redisotel/v9"
+	"github.com/redis/go-redis/v9"
 )
 
-var tracer = otel.Tracer("github.com/go-redis/redis/example/otel")
+var tracer = otel.Tracer("github.com/redis/go-redis/example/otel")
 
 func main() {
 	ctx := context.Background()
 
 	uptrace.ConfigureOpentelemetry(
 		// copy your project DSN here or use UPTRACE_DSN env var
-		// uptrace.WithDSN("https://AQDan_E_EPe3QAF9fMP0PiVr5UWOu4q5@uptrace.dev/1"),
+		uptrace.WithDSN("http://project2_secret_token@localhost:14317/2"),
 
 		uptrace.WithServiceName("myservice"),
 		uptrace.WithServiceVersion("v1.0.0"),

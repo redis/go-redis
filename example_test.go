@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -192,6 +192,21 @@ func ExampleClient_Set() {
 
 func ExampleClient_SetEx() {
 	err := rdb.SetEx(ctx, "key", "value", time.Hour).Err()
+	if err != nil {
+		panic(err)
+	}
+}
+
+func ExampleClient_HSet() {
+	// Set "redis" tag for hash key
+	type ExampleUser struct {
+		Name string `redis:"name"`
+		Age  int    `redis:"age"`
+	}
+
+	items := ExampleUser{"jane", 22}
+
+	err := rdb.HSet(ctx, "user:1", items).Err()
 	if err != nil {
 		panic(err)
 	}

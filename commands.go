@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
+	"strings"
 	"time"
 
-	"github.com/go-redis/redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal"
 )
 
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
@@ -74,8 +76,44 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 		}
 		return dst
 	default:
+		// scan struct field
+		v := reflect.ValueOf(arg)
+		if v.Type().Kind() == reflect.Ptr {
+			if v.IsNil() {
+				// error: arg is not a valid object
+				return dst
+			}
+			v = v.Elem()
+		}
+
+		if v.Type().Kind() == reflect.Struct {
+			return appendStructField(dst, v)
+		}
+
 		return append(dst, arg)
 	}
+}
+
+// appendStructField appends the field and value held by the structure v to dst, and returns the appended dst.
+func appendStructField(dst []interface{}, v reflect.Value) []interface{} {
+	typ := v.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		tag := typ.Field(i).Tag.Get("redis")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		tag = strings.Split(tag, ",")[0]
+		if tag == "" {
+			continue
+		}
+
+		field := v.Field(i)
+		if field.CanInterface() {
+			dst = append(dst, tag, field.Interface())
+		}
+	}
+
+	return dst
 }
 
 type Cmdable interface {
@@ -116,6 +154,7 @@ type Cmdable interface {
 	Restore(ctx context.Context, key string, ttl time.Duration, value string) *StatusCmd
 	RestoreReplace(ctx context.Context, key string, ttl time.Duration, value string) *StatusCmd
 	Sort(ctx context.Context, key string, sort *Sort) *StringSliceCmd
+	SortRO(ctx context.Context, key string, sort *Sort) *StringSliceCmd
 	SortStore(ctx context.Context, key, store string, sort *Sort) *IntCmd
 	SortInterfaces(ctx context.Context, key string, sort *Sort) *SliceCmd
 	Touch(ctx context.Context, keys ...string) *IntCmd
@@ -207,6 +246,7 @@ type Cmdable interface {
 	SDiff(ctx context.Context, keys ...string) *StringSliceCmd
 	SDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd
 	SInter(ctx context.Context, keys ...string) *StringSliceCmd
+	SInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd
 	SInterStore(ctx context.Context, destination string, keys ...string) *IntCmd
 	SIsMember(ctx context.Context, key string, member interface{}) *BoolCmd
 	SMIsMember(ctx context.Context, key string, members ...interface{}) *BoolSliceCmd
@@ -267,6 +307,7 @@ type Cmdable interface {
 	ZIncrBy(ctx context.Context, key string, increment float64, member string) *FloatCmd
 	ZInter(ctx context.Context, store *ZStore) *StringSliceCmd
 	ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd
+	ZInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd
 	ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd
 	ZMScore(ctx context.Context, key string, members ...string) *FloatSliceCmd
 	ZPopMax(ctx context.Context, key string, count ...int64) *ZSliceCmd
@@ -708,8 +749,9 @@ type Sort struct {
 	Alpha         bool
 }
 
-func (sort *Sort) args(key string) []interface{} {
-	args := []interface{}{"sort", key}
+func (sort *Sort) args(command, key string) []interface{} {
+	args := []interface{}{command, key}
+
 	if sort.By != "" {
 		args = append(args, "by", sort.By)
 	}
@@ -728,14 +770,20 @@ func (sort *Sort) args(key string) []interface{} {
 	return args
 }
 
+func (c cmdable) SortRO(ctx context.Context, key string, sort *Sort) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, sort.args("sort_ro", key)...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) Sort(ctx context.Context, key string, sort *Sort) *StringSliceCmd {
-	cmd := NewStringSliceCmd(ctx, sort.args(key)...)
+	cmd := NewStringSliceCmd(ctx, sort.args("sort", key)...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) SortStore(ctx context.Context, key, store string, sort *Sort) *IntCmd {
-	args := sort.args(key)
+	args := sort.args("sort", key)
 	if store != "" {
 		args = append(args, "store", store)
 	}
@@ -745,7 +793,7 @@ func (c cmdable) SortStore(ctx context.Context, key, store string, sort *Sort) *
 }
 
 func (c cmdable) SortInterfaces(ctx context.Context, key string, sort *Sort) *SliceCmd {
-	cmd := NewSliceCmd(ctx, sort.args(key)...)
+	cmd := NewSliceCmd(ctx, sort.args("sort", key)...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -870,6 +918,7 @@ func (c cmdable) MGet(ctx context.Context, keys ...string) *SliceCmd {
 //   - MSet("key1", "value1", "key2", "value2")
 //   - MSet([]string{"key1", "value1", "key2", "value2"})
 //   - MSet(map[string]interface{}{"key1": "value1", "key2": "value2"})
+//   - MSet(struct), For struct types, see HSet description.
 func (c cmdable) MSet(ctx context.Context, values ...interface{}) *StatusCmd {
 	args := make([]interface{}, 1, 1+len(values))
 	args[0] = "mset"
@@ -883,6 +932,7 @@ func (c cmdable) MSet(ctx context.Context, values ...interface{}) *StatusCmd {
 //   - MSetNX("key1", "value1", "key2", "value2")
 //   - MSetNX([]string{"key1", "value1", "key2", "value2"})
 //   - MSetNX(map[string]interface{}{"key1": "value1", "key2": "value2"})
+//   - MSetNX(struct), For struct types, see HSet description.
 func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 	args := make([]interface{}, 1, 1+len(values))
 	args[0] = "msetnx"
@@ -1285,9 +1335,24 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 }
 
 // HSet accepts values in following formats:
+//
 //   - HSet("myhash", "key1", "value1", "key2", "value2")
+//
 //   - HSet("myhash", []string{"key1", "value1", "key2", "value2"})
+//
 //   - HSet("myhash", map[string]interface{}{"key1": "value1", "key2": "value2"})
+//
+//     Playing struct With "redis" tag.
+//     type MyHash struct { Key1 string `redis:"key1"`; Key2 int `redis:"key2"` }
+//
+//   - HSet("myhash", MyHash{"value1", "value2"})
+//
+//     For struct, can be a structure pointer type, we only parse the field whose tag is redis.
+//     if you don't want the field to be read, you can use the `redis:"-"` flag to ignore it,
+//     or you don't need to set the redis tag.
+//     For the type of structure field, we only support simple data types:
+//     string, int/uint(8,16,32,64), float(32,64), time.Time(to RFC3339Nano), time.Duration(to Nanoseconds ),
+//     if you are other more complex or custom data types, please implement the encoding.BinaryMarshaler interface.
 //
 // Note that it requires Redis v4 for multiple field/value pairs support.
 func (c cmdable) HSet(ctx context.Context, key string, values ...interface{}) *IntCmd {
@@ -1608,6 +1673,22 @@ func (c cmdable) SInter(ctx context.Context, keys ...string) *StringSliceCmd {
 		args[1+i] = key
 	}
 	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) SInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd {
+	args := make([]interface{}, 4+len(keys))
+	args[0] = "sintercard"
+	numkeys := int64(0)
+	for i, key := range keys {
+		args[2+i] = key
+		numkeys++
+	}
+	args[1] = numkeys
+	args[2+numkeys] = "limit"
+	args[3+numkeys] = limit
+	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2325,6 +2406,22 @@ func (c cmdable) ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd
 	args = append(args, "withscores")
 	cmd := NewZSliceCmd(ctx, args...)
 	cmd.SetFirstKeyPos(2)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd {
+	args := make([]interface{}, 4+len(keys))
+	args[0] = "zintercard"
+	numkeys := int64(0)
+	for i, key := range keys {
+		args[2+i] = key
+		numkeys++
+	}
+	args[1] = numkeys
+	args[2+numkeys] = "limit"
+	args[3+numkeys] = limit
+	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

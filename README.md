@@ -1,22 +1,25 @@
 # Redis client for Go
 
-[![build workflow](https://github.com/go-redis/redis/actions/workflows/build.yml/badge.svg)](https://github.com/go-redis/redis/actions)
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
+[![build workflow](https://github.com/redis/go-redis/actions/workflows/build.yml/badge.svg)](https://github.com/redis/go-redis/actions)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/redis/go-redis/v9)](https://pkg.go.dev/github.com/redis/go-redis/v9?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
 > go-redis is brought to you by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
 > Uptrace is an open-source APM tool that supports distributed tracing, metrics, and logs. You can
 > use it to monitor applications and set up automatic alerts to receive notifications via email,
-> Slack, Telegram, and others. Star it as well!
+> Slack, Telegram, and others.
+>
+> See [OpenTelemetry](example/otel) example which demonstrates how you can use Uptrace to monitor
+> go-redis.
 
 ## Resources
 
 - [Documentation](https://redis.uptrace.dev)
-- [Discussions](https://github.com/go-redis/redis/discussions)
+- [Discussions](https://github.com/redis/go-redis/discussions)
 - [Chat](https://discord.gg/rWtp5Aj)
-- [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
-- [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
+- [Reference](https://pkg.go.dev/github.com/redis/go-redis/v9)
+- [Examples](https://pkg.go.dev/github.com/redis/go-redis/v9#pkg-examples)
 
 ## Ecosystem
 
@@ -50,16 +53,10 @@ module:
 go mod init github.com/my/repo
 ```
 
-If you are using **Redis 6**, install go-redis/**v8**:
+Then install go-redis/**v9**:
 
 ```shell
-go get github.com/go-redis/redis/v8
-```
-
-If you are using **Redis 7**, install go-redis/**v9**:
-
-```shell
-go get github.com/go-redis/redis/v9
+go get github.com/redis/go-redis/v9
 ```
 
 ## Quickstart
@@ -67,7 +64,7 @@ go get github.com/go-redis/redis/v9
 ```go
 import (
     "context"
-    "github.com/go-redis/redis/v8"
+    "github.com/redis/go-redis/v9"
     "fmt"
 )
 
@@ -177,6 +174,6 @@ go test
 
 Thanks to all the people who already contributed!
 
-<a href="https://github.com/go-redis/redis/graphs/contributors">
-  <img src="https://contributors-img.web.app/image?repo=go-redis/redis" />
+<a href="https://github.com/redis/go-redis/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=redis/go-redis" />
 </a>

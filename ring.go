@@ -14,10 +14,10 @@ import (
 	"github.com/cespare/xxhash/v2"
 	rendezvous "github.com/dgryski/go-rendezvous" //nolint
 
-	"github.com/go-redis/redis/v9/internal"
-	"github.com/go-redis/redis/v9/internal/hashtag"
-	"github.com/go-redis/redis/v9/internal/pool"
-	"github.com/go-redis/redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
@@ -50,6 +50,9 @@ type RingOptions struct {
 
 	// NewClient creates a shard client with provided options.
 	NewClient func(opt *Options) *Client
+
+	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
+	ClientName string
 
 	// Frequency of PING commands sent to check shards availability.
 	// Shard is considered down after 3 subsequent failed checks.
@@ -129,8 +132,9 @@ func (opt *RingOptions) init() {
 
 func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
-		Dialer:    opt.Dialer,
-		OnConnect: opt.OnConnect,
+		ClientName: opt.ClientName,
+		Dialer:     opt.Dialer,
+		OnConnect:  opt.OnConnect,
 
 		Username: opt.Username,
 		Password: opt.Password,
@@ -219,6 +223,10 @@ type ringSharding struct {
 	hash      ConsistentHash
 	numShard  int
 	onNewNode []func(rdb *Client)
+
+	// ensures exclusive access to SetAddrs so there is no need
+	// to hold mu for the duration of potentially long shard creation
+	setAddrsMu sync.Mutex
 }
 
 type ringShards struct {
@@ -245,46 +253,62 @@ func (c *ringSharding) OnNewNode(fn func(rdb *Client)) {
 // decrease number of shards, that you use. It will reuse shards that
 // existed before and close the ones that will not be used anymore.
 func (c *ringSharding) SetAddrs(addrs map[string]string) {
-	c.mu.Lock()
+	c.setAddrsMu.Lock()
+	defer c.setAddrsMu.Unlock()
 
-	if c.closed {
-		c.mu.Unlock()
-		return
-	}
-
-	shards, cleanup := c.newRingShards(addrs, c.shards)
-	c.shards = shards
-	c.mu.Unlock()
-
-	c.rebalance()
-	cleanup()
-}
-
-func (c *ringSharding) newRingShards(
-	addrs map[string]string, existingShards *ringShards,
-) (*ringShards, func()) {
-	shardMap := make(map[string]*ringShard)     // indexed by addr
-	unusedShards := make(map[string]*ringShard) // indexed by addr
-
-	if existingShards != nil {
-		for _, shard := range existingShards.list {
-			addr := shard.Client.opt.Addr
-			shardMap[addr] = shard
-			unusedShards[addr] = shard
+	cleanup := func(shards map[string]*ringShard) {
+		for addr, shard := range shards {
+			if err := shard.Client.Close(); err != nil {
+				internal.Logger.Printf(context.Background(), "shard.Close %s failed: %s", addr, err)
+			}
 		}
 	}
 
-	shards := &ringShards{
-		m: make(map[string]*ringShard),
+	c.mu.RLock()
+	if c.closed {
+		c.mu.RUnlock()
+		return
+	}
+	existing := c.shards
+	c.mu.RUnlock()
+
+	shards, created, unused := c.newRingShards(addrs, existing)
+
+	c.mu.Lock()
+	if c.closed {
+		cleanup(created)
+		c.mu.Unlock()
+		return
+	}
+	c.shards = shards
+	c.rebalanceLocked()
+	c.mu.Unlock()
+
+	cleanup(unused)
+}
+
+func (c *ringSharding) newRingShards(
+	addrs map[string]string, existing *ringShards,
+) (shards *ringShards, created, unused map[string]*ringShard) {
+
+	shards = &ringShards{m: make(map[string]*ringShard, len(addrs))}
+	created = make(map[string]*ringShard) // indexed by addr
+	unused = make(map[string]*ringShard)  // indexed by addr
+
+	if existing != nil {
+		for _, shard := range existing.list {
+			unused[shard.addr] = shard
+		}
 	}
 
 	for name, addr := range addrs {
-		if shard, ok := shardMap[addr]; ok {
+		if shard, ok := unused[addr]; ok {
 			shards.m[name] = shard
-			delete(unusedShards, addr)
+			delete(unused, addr)
 		} else {
 			shard := newRingShard(c.opt, addr)
 			shards.m[name] = shard
+			created[addr] = shard
 
 			for _, fn := range c.onNewNode {
 				fn(shard.Client)
@@ -296,13 +320,7 @@ func (c *ringSharding) newRingShards(
 		shards.list = append(shards.list, shard)
 	}
 
-	return shards, func() {
-		for addr, shard := range unusedShards {
-			if err := shard.Client.Close(); err != nil {
-				internal.Logger.Printf(context.Background(), "shard.Close %s failed: %s", addr, err)
-			}
-		}
-	}
+	return
 }
 
 func (c *ringSharding) List() []*ringShard {
@@ -388,7 +406,9 @@ func (c *ringSharding) Heartbeat(ctx context.Context, frequency time.Duration) {
 			}
 
 			if rebalance {
-				c.rebalance()
+				c.mu.Lock()
+				c.rebalanceLocked()
+				c.mu.Unlock()
 			}
 		case <-ctx.Done():
 			return
@@ -396,32 +416,26 @@ func (c *ringSharding) Heartbeat(ctx context.Context, frequency time.Duration) {
 	}
 }
 
-// rebalance removes dead shards from the Ring.
-func (c *ringSharding) rebalance() {
-	c.mu.RLock()
-	shards := c.shards
-	c.mu.RUnlock()
-
-	if shards == nil {
+// rebalanceLocked removes dead shards from the Ring.
+// Requires c.mu locked.
+func (c *ringSharding) rebalanceLocked() {
+	if c.closed {
+		return
+	}
+	if c.shards == nil {
 		return
 	}
 
-	liveShards := make([]string, 0, len(shards.m))
+	liveShards := make([]string, 0, len(c.shards.m))
 
-	for name, shard := range shards.m {
+	for name, shard := range c.shards.m {
 		if shard.IsUp() {
 			liveShards = append(liveShards, name)
 		}
 	}
 
-	hash := c.opt.NewConsistentHash(liveShards)
-
-	c.mu.Lock()
-	if !c.closed {
-		c.hash = hash
-		c.numShard = len(liveShards)
-	}
-	c.mu.Unlock()
+	c.hash = c.opt.NewConsistentHash(liveShards)
+	c.numShard = len(liveShards)
 }
 
 func (c *ringSharding) Len() int {
@@ -473,7 +487,7 @@ func (c *ringSharding) Close() error {
 // Otherwise you should use Redis Cluster.
 type Ring struct {
 	cmdable
-	hooks
+	hooksMixin
 
 	opt               *RingOptions
 	sharding          *ringSharding
@@ -495,12 +509,14 @@ func NewRing(opt *RingOptions) *Ring {
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 	ring.cmdable = ring.Process
 
-	ring.hooks.setProcess(ring.process)
-	ring.hooks.setProcessPipeline(func(ctx context.Context, cmds []Cmder) error {
-		return ring.generalProcessPipeline(ctx, cmds, false)
-	})
-	ring.hooks.setProcessTxPipeline(func(ctx context.Context, cmds []Cmder) error {
-		return ring.generalProcessPipeline(ctx, cmds, true)
+	ring.initHooks(hooks{
+		process: ring.process,
+		pipeline: func(ctx context.Context, cmds []Cmder) error {
+			return ring.generalProcessPipeline(ctx, cmds, false)
+		},
+		txPipeline: func(ctx context.Context, cmds []Cmder) error {
+			return ring.generalProcessPipeline(ctx, cmds, true)
+		},
 	})
 
 	go ring.sharding.Heartbeat(hbCtx, opt.HeartbeatFrequency)
@@ -512,7 +528,7 @@ func (c *Ring) SetAddrs(addrs map[string]string) {
 	c.sharding.SetAddrs(addrs)
 }
 
-// Do creates a Cmd from the args and processes the cmd.
+// Do create a Cmd from the args and processes the cmd.
 func (c *Ring) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	_ = c.Process(ctx, cmd)
@@ -520,7 +536,7 @@ func (c *Ring) Do(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (c *Ring) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }
@@ -703,7 +719,7 @@ func (c *Ring) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: pipelineExecer(c.hooks.processPipeline),
+		exec: pipelineExecer(c.processPipelineHook),
 	}
 	pipe.init()
 	return &pipe
@@ -717,7 +733,7 @@ func (c *Ring) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
-			return c.hooks.processTxPipeline(ctx, cmds)
+			return c.processTxPipelineHook(ctx, cmds)
 		},
 	}
 	pipe.init()
@@ -758,9 +774,9 @@ func (c *Ring) generalProcessPipeline(
 
 			if tx {
 				cmds = wrapMultiExec(ctx, cmds)
-				_ = shard.Client.hooks.processTxPipeline(ctx, cmds)
+				_ = shard.Client.processTxPipelineHook(ctx, cmds)
 			} else {
-				_ = shard.Client.hooks.processPipeline(ctx, cmds)
+				_ = shard.Client.processPipelineHook(ctx, cmds)
 			}
 		}(hash, cmds)
 	}

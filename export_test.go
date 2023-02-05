@@ -6,9 +6,9 @@ import (
 	"net"
 	"strings"
 
-	"github.com/go-redis/redis/v9/internal"
-	"github.com/go-redis/redis/v9/internal/hashtag"
-	"github.com/go-redis/redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 func (c *baseClient) Pool() pool.Pooler {
@@ -95,9 +95,6 @@ func GetSlavesAddrByName(ctx context.Context, c *SentinelClient, name string) []
 }
 
 func (c *Ring) ShardByName(name string) *ringShard {
-	return c.sharding.ShardByName(name)
-}
-
-func (c *ringSharding) ShardByName(name string) *ringShard {
-	return c.shards.m[name]
+	shard, _ := c.sharding.GetByName(name)
+	return shard
 }

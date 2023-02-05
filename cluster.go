@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-redis/redis/v9/internal"
-	"github.com/go-redis/redis/v9/internal/hashtag"
-	"github.com/go-redis/redis/v9/internal/pool"
-	"github.com/go-redis/redis/v9/internal/proto"
-	"github.com/go-redis/redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 var errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
@@ -28,6 +28,9 @@ var errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
 type ClusterOptions struct {
 	// A seed list of host:port addresses of cluster nodes.
 	Addrs []string
+
+	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
+	ClientName string
 
 	// NewClient creates a cluster node client with provided name and options.
 	NewClient func(opt *Options) *Client
@@ -133,34 +136,39 @@ func (opt *ClusterOptions) init() {
 
 // ParseClusterURL parses a URL into ClusterOptions that can be used to connect to Redis.
 // The URL must be in the form:
-//		redis://<user>:<password>@<host>:<port>
-//		or
-//		rediss://<user>:<password>@<host>:<port>
+//
+//	redis://<user>:<password>@<host>:<port>
+//	or
+//	rediss://<user>:<password>@<host>:<port>
+//
 // To add additional addresses, specify the query parameter, "addr" one or more times. e.g:
-//		redis://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
-//		or
-//		rediss://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
+//
+//	redis://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
+//	or
+//	rediss://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
 //
 // Most Option fields can be set using query parameters, with the following restrictions:
-//	- field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
-//	- only scalar type fields are supported (bool, int, time.Duration)
-//	- for time.Duration fields, values must be a valid input for time.ParseDuration();
-//	  additionally a plain integer as value (i.e. without unit) is intepreted as seconds
-//	- to disable a duration field, use value less than or equal to 0; to use the default
-//	  value, leave the value blank or remove the parameter
-//	- only the last value is interpreted if a parameter is given multiple times
-//	- fields "network", "addr", "username" and "password" can only be set using other
-//	  URL attributes (scheme, host, userinfo, resp.), query paremeters using these
-//	  names will be treated as unknown parameters
-//	- unknown parameter names will result in an error
+//   - field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
+//   - only scalar type fields are supported (bool, int, time.Duration)
+//   - for time.Duration fields, values must be a valid input for time.ParseDuration();
+//     additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//   - to disable a duration field, use value less than or equal to 0; to use the default
+//     value, leave the value blank or remove the parameter
+//   - only the last value is interpreted if a parameter is given multiple times
+//   - fields "network", "addr", "username" and "password" can only be set using other
+//     URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//     names will be treated as unknown parameters
+//   - unknown parameter names will result in an error
+//
 // Example:
-//		redis://user:password@localhost:6789?dial_timeout=3&read_timeout=6s&addr=localhost:6790&addr=localhost:6791
-//		is equivalent to:
-//		&ClusterOptions{
-//			Addr:        ["localhost:6789", "localhost:6790", "localhost:6791"]
-//			DialTimeout: 3 * time.Second, // no time unit = seconds
-//			ReadTimeout: 6 * time.Second,
-//		}
+//
+//	redis://user:password@localhost:6789?dial_timeout=3&read_timeout=6s&addr=localhost:6790&addr=localhost:6791
+//	is equivalent to:
+//	&ClusterOptions{
+//		Addr:        ["localhost:6789", "localhost:6790", "localhost:6791"]
+//		DialTimeout: 3 * time.Second, // no time unit = seconds
+//		ReadTimeout: 6 * time.Second,
+//	}
 func ParseClusterURL(redisURL string) (*ClusterOptions, error) {
 	o := &ClusterOptions{}
 
@@ -208,10 +216,11 @@ func setupClusterConn(u *url.URL, host string, o *ClusterOptions) (*ClusterOptio
 func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, error) {
 	q := queryOptions{q: u.Query()}
 
+	o.ClientName = q.string("client_name")
 	o.MaxRedirects = q.int("max_redirects")
 	o.ReadOnly = q.bool("read_only")
 	o.RouteByLatency = q.bool("route_by_latency")
-	o.RouteByLatency = q.bool("route_randomly")
+	o.RouteRandomly = q.bool("route_randomly")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")
@@ -250,8 +259,9 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 
 func (opt *ClusterOptions) clientOptions() *Options {
 	return &Options{
-		Dialer:    opt.Dialer,
-		OnConnect: opt.OnConnect,
+		ClientName: opt.ClientName,
+		Dialer:     opt.Dialer,
+		OnConnect:  opt.OnConnect,
 
 		Username: opt.Username,
 		Password: opt.Password,
@@ -828,7 +838,7 @@ type ClusterClient struct {
 	state         *clusterStateHolder
 	cmdsInfoCache *cmdsInfoCache
 	cmdable
-	hooks
+	hooksMixin
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -845,9 +855,12 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
 
-	c.hooks.setProcess(c.process)
-	c.hooks.setProcessPipeline(c._processPipeline)
-	c.hooks.setProcessTxPipeline(c._processTxPipeline)
+	c.initHooks(hooks{
+		dial:       nil,
+		process:    c.process,
+		pipeline:   c.processPipeline,
+		txPipeline: c.processTxPipeline,
+	})
 
 	return c
 }
@@ -871,7 +884,7 @@ func (c *ClusterClient) Close() error {
 	return c.nodes.Close()
 }
 
-// Do creates a Cmd from the args and processes the cmd.
+// Do create a Cmd from the args and processes the cmd.
 func (c *ClusterClient) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	_ = c.Process(ctx, cmd)
@@ -879,7 +892,7 @@ func (c *ClusterClient) Do(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }
@@ -1177,7 +1190,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 
 func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: pipelineExecer(c.hooks.processPipeline),
+		exec: pipelineExecer(c.processPipelineHook),
 	}
 	pipe.init()
 	return &pipe
@@ -1187,7 +1200,7 @@ func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error)
 	return c.Pipeline().Pipelined(ctx, fn)
 }
 
-func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) error {
+func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error {
 	cmdsMap := newCmdsMap()
 
 	if err := c.mapCmdsByNode(ctx, cmdsMap, cmds); err != nil {
@@ -1210,7 +1223,7 @@ func (c *ClusterClient) _processPipeline(ctx context.Context, cmds []Cmder) erro
 			wg.Add(1)
 			go func(node *clusterNode, cmds []Cmder) {
 				defer wg.Done()
-				c._processPipelineNode(ctx, node, cmds, failedCmds)
+				c.processPipelineNode(ctx, node, cmds, failedCmds)
 			}(node, cmds)
 		}
 
@@ -1263,22 +1276,42 @@ func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool 
 	return true
 }
 
-func (c *ClusterClient) _processPipelineNode(
+func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
-	_ = node.Client.hooks.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-			if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
-				return writeCmds(wr, cmds)
-			}); err != nil {
-				setCmdsErr(cmds, err)
-				return err
-			}
+	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+		cn, err := node.Client.getConn(ctx)
+		if err != nil {
+			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
+			setCmdsErr(cmds, err)
+			return err
+		}
 
-			return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-				return c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
-			})
-		})
+		var processErr error
+		defer func() {
+			node.Client.releaseConn(ctx, cn, processErr)
+		}()
+		processErr = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+
+		return processErr
+	})
+}
+
+func (c *ClusterClient) processPipelineNodeConn(
+	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
+) error {
+	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		return writeCmds(wr, cmds)
+	}); err != nil {
+		if shouldRetry(err, true) {
+			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
+		}
+		setCmdsErr(cmds, err)
+		return err
+	}
+
+	return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		return c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
 	})
 }
 
@@ -1354,7 +1387,7 @@ func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
-			return c.hooks.processTxPipeline(ctx, cmds)
+			return c.processTxPipelineHook(ctx, cmds)
 		},
 	}
 	pipe.init()
@@ -1365,7 +1398,7 @@ func (c *ClusterClient) TxPipelined(ctx context.Context, fn func(Pipeliner) erro
 	return c.TxPipeline().Pipelined(ctx, fn)
 }
 
-func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) error {
+func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
 	// Trim multi .. exec.
 	cmds = cmds[1 : len(cmds)-1]
 
@@ -1399,7 +1432,7 @@ func (c *ClusterClient) _processTxPipeline(ctx context.Context, cmds []Cmder) er
 				wg.Add(1)
 				go func(node *clusterNode, cmds []Cmder) {
 					defer wg.Done()
-					c._processTxPipelineNode(ctx, node, cmds, failedCmds)
+					c.processTxPipelineNode(ctx, node, cmds, failedCmds)
 				}(node, cmds)
 			}
 
@@ -1423,40 +1456,60 @@ func (c *ClusterClient) mapCmdsBySlot(ctx context.Context, cmds []Cmder) map[int
 	return cmdsMap
 }
 
-func (c *ClusterClient) _processTxPipelineNode(
+func (c *ClusterClient) processTxPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
 	cmds = wrapMultiExec(ctx, cmds)
-	_ = node.Client.hooks.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		return node.Client.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-			if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
-				return writeCmds(wr, cmds)
-			}); err != nil {
-				setCmdsErr(cmds, err)
-				return err
+	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+		cn, err := node.Client.getConn(ctx)
+		if err != nil {
+			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
+			setCmdsErr(cmds, err)
+			return err
+		}
+
+		var processErr error
+		defer func() {
+			node.Client.releaseConn(ctx, cn, processErr)
+		}()
+		processErr = c.processTxPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+
+		return processErr
+	})
+}
+
+func (c *ClusterClient) processTxPipelineNodeConn(
+	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
+) error {
+	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		return writeCmds(wr, cmds)
+	}); err != nil {
+		if shouldRetry(err, true) {
+			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
+		}
+		setCmdsErr(cmds, err)
+		return err
+	}
+
+	return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		statusCmd := cmds[0].(*StatusCmd)
+		// Trim multi and exec.
+		trimmedCmds := cmds[1 : len(cmds)-1]
+
+		if err := c.txPipelineReadQueued(
+			ctx, rd, statusCmd, trimmedCmds, failedCmds,
+		); err != nil {
+			setCmdsErr(cmds, err)
+
+			moved, ask, addr := isMovedError(err)
+			if moved || ask {
+				return c.cmdsMoved(ctx, trimmedCmds, moved, ask, addr, failedCmds)
 			}
 
-			return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-				statusCmd := cmds[0].(*StatusCmd)
-				// Trim multi and exec.
-				trimmedCmds := cmds[1 : len(cmds)-1]
+			return err
+		}
 
-				if err := c.txPipelineReadQueued(
-					ctx, rd, statusCmd, trimmedCmds, failedCmds,
-				); err != nil {
-					setCmdsErr(cmds, err)
-
-					moved, ask, addr := isMovedError(err)
-					if moved || ask {
-						return c.cmdsMoved(ctx, trimmedCmds, moved, ask, addr, failedCmds)
-					}
-
-					return err
-				}
-
-				return pipelineReadCmds(rd, trimmedCmds)
-			})
-		})
+		return pipelineReadCmds(rd, trimmedCmds)
 	})
 }
 

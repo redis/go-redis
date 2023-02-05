@@ -1,18 +1,17 @@
-module github.com/go-redis/redis/example/otel
+module github.com/redis/go-redis/example/otel
 
 go 1.14
 
-replace github.com/go-redis/redis/v9 => ../..
+replace github.com/redis/go-redis/v9 => ../..
 
-replace github.com/go-redis/redis/extra/redisotel/v9 => ../../extra/redisotel
+replace github.com/redis/go-redis/extra/redisotel/v9 => ../../extra/redisotel
 
-replace github.com/go-redis/redis/extra/rediscmd/v9 => ../../extra/rediscmd
+replace github.com/redis/go-redis/extra/rediscmd/v9 => ../../extra/rediscmd
 
 require (
-	github.com/go-redis/redis/extra/redisotel/v9 v9.0.0-rc.1
-	github.com/go-redis/redis/v9 v9.0.0-rc.1
-	github.com/uptrace/opentelemetry-go-extra/otelplay v0.1.15
-	go.opentelemetry.io/otel v1.10.0
-	golang.org/x/net v0.0.0-20220728030405-41545e8bf201 // indirect
-	google.golang.org/genproto v0.0.0-20220725144611-272f38e5d71b // indirect
+	github.com/redis/go-redis/extra/redisotel/v9 v9.0.2
+	github.com/redis/go-redis/v9 v9.0.2
+	github.com/uptrace/uptrace-go v1.12.0
+	go.opentelemetry.io/otel v1.12.0
+	google.golang.org/genproto v0.0.0-20230131230820-1c016267d619 // indirect
 )

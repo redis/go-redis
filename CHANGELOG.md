@@ -1,9 +1,13 @@
-## v9 UNRELEASED
+## v9 2023-01-30
+
+### Breaking
+
+- Changed Pipelines to not be thread-safe any more.
 
 ### Added
 
-- Added support for [RESP3](https://github.com/antirez/RESP3/blob/master/spec.md) protocol.
-  Contributed by @monkey92t who has done a lot of work recently.
+- Added support for [RESP3](https://github.com/antirez/RESP3/blob/master/spec.md) protocol. It was
+  contributed by @monkey92t who has done the majority of work in this release.
 - Added `ContextTimeoutEnabled` option that controls whether the client respects context timeouts
   and deadlines. See
   [Redis Timeouts](https://redis.uptrace.dev/guide/go-redis-debugging.html#timeouts) for details.
@@ -11,6 +15,7 @@
   `redis://user:password@localhost:6789?dial_timeout=3&read_timeout=6s&addr=localhost:6790&addr=localhost:6791`.
 - Added metrics instrumentation using `redisotel.IstrumentMetrics`. See
   [documentation](https://redis.uptrace.dev/guide/go-redis-monitoring.html)
+- Added `redis.HasErrorPrefix` to help working with errors.
 
 ### Changed
 
@@ -33,4 +38,4 @@
 ### Fixed
 
 - Improved and fixed pipeline retries.
-- As usual, added more commands and fixed some bugs.
+- As usually, added support for more commands and fixed some bugs.

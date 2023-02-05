@@ -18,7 +18,7 @@ services:
       - '9000:9000'
 
   uptrace:
-    image: 'uptrace/uptrace:1.1.0'
+    image: 'uptrace/uptrace:1.3.0'
     #image: 'uptrace/uptrace-dev:latest'
     restart: on-failure
     volumes:
@@ -36,11 +36,8 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.58.0
     restart: on-failure
-    user: '0:0' # required for logs
     volumes:
-      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/log:/var/log:ro
+      - ./config/otel-collector.yaml:/etc/otelcol-contrib/config.yaml
     ports:
       - '4317:4317'
       - '4318:4318'
@@ -48,7 +45,25 @@ services:
   vector:
     image: timberio/vector:0.24.X-alpine
     volumes:
-      - ./vector.toml:/etc/vector/vector.toml:ro
+      - ./config/vector.toml:/etc/vector/vector.toml:ro
+
+  alertmanager:
+    image: prom/alertmanager:v0.24.0
+    restart: on-failure
+    volumes:
+      - ./config/alertmanager.yml:/etc/alertmanager/config.yml
+      - alertmanager_data:/alertmanager
+    ports:
+      - 9093:9093
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    restart: on-failure
+    ports:
+      - '8025:8025'
 
   redis-server:
     image: redis
@@ -59,8 +74,5 @@ services:
 
 volumes:
   uptrace_data:
-    driver: local
   ch_data:
-    driver: local
   alertmanager_data:
-    driver: local

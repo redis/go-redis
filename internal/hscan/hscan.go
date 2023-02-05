@@ -10,6 +10,12 @@ import (
 // decoderFunc represents decoding functions for default built-in types.
 type decoderFunc func(reflect.Value, string) error
 
+// Scanner is the interface implemented by themselves,
+// which will override the decoding behavior of decoderFunc.
+type Scanner interface {
+	ScanRedis(s string) error
+}
+
 var (
 	// List of built-in decoders indexed by their numeric constant values (eg: reflect.Bool = 1).
 	decoders = []decoderFunc{

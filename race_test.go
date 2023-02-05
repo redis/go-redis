@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	. "github.com/bsm/ginkgo/v2"
+	. "github.com/bsm/gomega"
 
-	"github.com/go-redis/redis/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 var _ = Describe("races", func() {
@@ -212,53 +212,6 @@ var _ = Describe("races", func() {
 		val, err := client.Get(ctx, "key").Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(int64(C * N)))
-	})
-
-	It("should Pipeline", func() {
-		perform(C, func(id int) {
-			pipe := client.Pipeline()
-			for i := 0; i < N; i++ {
-				pipe.Echo(ctx, fmt.Sprint(i))
-			}
-
-			cmds, err := pipe.Exec(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cmds).To(HaveLen(N))
-
-			for i := 0; i < N; i++ {
-				Expect(cmds[i].(*redis.StringCmd).Val()).To(Equal(fmt.Sprint(i)))
-			}
-		})
-	})
-
-	It("should Pipeline", func() {
-		pipe := client.Pipeline()
-		perform(N, func(id int) {
-			pipe.Incr(ctx, "key")
-		})
-
-		cmds, err := pipe.Exec(ctx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(cmds).To(HaveLen(N))
-
-		n, err := client.Get(ctx, "key").Int64()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(Equal(int64(N)))
-	})
-
-	It("should TxPipeline", func() {
-		pipe := client.TxPipeline()
-		perform(N, func(id int) {
-			pipe.Incr(ctx, "key")
-		})
-
-		cmds, err := pipe.Exec(ctx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(cmds).To(HaveLen(N))
-
-		n, err := client.Get(ctx, "key").Int64()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(Equal(int64(N)))
 	})
 
 	PIt("should BLPop", func() {
