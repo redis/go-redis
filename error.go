@@ -150,10 +150,7 @@ func isReadOnlyError(err error) bool {
 }
 
 func isResetError(err error) bool {
-	if err.Error() == "Connection reset by peer" {
-		return true
-	}
-	return false
+	return err.Error() == "Connection reset by peer"
 }
 
 func isMovedSameConnAddr(err error, addr string) bool {
