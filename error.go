@@ -55,6 +55,12 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	if s == "ERR max number of clients reached" {
 		return true
 	}
+	if strings.HasPrefix(s, "ERR redis temporary failure") {
+		return true
+	}
+	if strings.HasPrefix(s, "FLUSHDB ") {
+		return true
+	}
 	if strings.HasPrefix(s, "LOADING ") {
 		return true
 	}
@@ -94,6 +100,9 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 			// Close connections when we are asked to move to the same addr
 			// of the connection. Force a DNS resolution when all connections
 			// of the pool are recycled
+			return true
+		case isResetError(err):
+			// The client connection is closed, usually due to a client buffer exception.
 			return true
 		default:
 			return false
@@ -138,6 +147,13 @@ func isLoadingError(err error) bool {
 
 func isReadOnlyError(err error) bool {
 	return strings.HasPrefix(err.Error(), "READONLY ")
+}
+
+func isResetError(err error) bool {
+	if err.Error() == "Connection reset by peer" {
+		return true
+	}
+	return false
 }
 
 func isMovedSameConnAddr(err error, addr string) bool {
