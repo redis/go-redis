@@ -29,6 +29,6 @@ if err := redisotel.InstrumentMetrics(rdb); err != nil {
 }
 ```
 
-See [example](example) and
+See [example](../../example/otel) and
 [Monitoring Go Redis Performance and Errors](https://redis.uptrace.dev/guide/go-redis-monitoring.html)
 for details.
