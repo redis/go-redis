@@ -418,14 +418,14 @@ var _ = Describe("Commands", func() {
 			Expect(n).To(Equal(int64(1)))
 
 			// Check correct expiration time is set in the future
-			future := time.Now().Add(time.Minute)
-			expireAtCmd := client.ExpireAt(ctx, "key", future)
+			expireAt := time.Now().Add(time.Minute)
+			expireAtCmd := client.ExpireAt(ctx, "key", expireAt)
 			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
 			Expect(expireAtCmd.Val()).To(Equal(true))
 
-			timeCmd, err := client.ExpireTime(ctx, "key").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(timeCmd.Seconds()).To(BeNumerically("==", future.Unix()))
+			timeCmd := client.ExpireTime(ctx, "key")
+			Expect(timeCmd.Err()).NotTo(HaveOccurred())
+			Expect(timeCmd.Val().Seconds()).To(BeNumerically("==", expireAt.Unix()))
 
 			// Check correct expiration in the past
 			expireAtCmd = client.ExpireAt(ctx, "key", time.Now().Add(-time.Hour))
