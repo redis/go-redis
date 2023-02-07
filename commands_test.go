@@ -417,24 +417,24 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(1)))
 
+			// Check correct expiration time is set in the future
+			future := time.Now().Add(time.Minute)
+			expireAtCmd := client.ExpireAt(ctx, "key", future)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			timeCmd, err := client.ExpireTime(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(timeCmd.Seconds()).To(BeNumerically("==", future.Unix()))
+
 			// Check correct expiration in the past
-			expireAtCmd := client.ExpireAt(ctx, "key", time.Now().Add(-time.Hour))
+			expireAtCmd = client.ExpireAt(ctx, "key", time.Now().Add(-time.Hour))
 			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
 			Expect(expireAtCmd.Val()).To(Equal(true))
 
 			n, err = client.Exists(ctx, "key").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(0)))
-
-			// Check correct expiration time is set in the future
-			future := time.Now().Add(time.Minute)
-			expireAtCmd = client.ExpireAt(ctx, "key", future)
-			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
-			Expect(expireAtCmd.Val()).To(Equal(true))
-
-			t, err := client.ExpireTime(ctx, "key").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(t.Seconds()).To(BeNumerically("==", future.Unix()))
 
 		})
 
