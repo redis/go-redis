@@ -38,7 +38,7 @@ type Pipeline struct {
 	statefulCmdable
 
 	exec pipelineExecer
-	cmds []Cmder
+	cmds map[string]Cmder
 }
 
 func (c *Pipeline) init() {
@@ -60,13 +60,14 @@ func (c *Pipeline) Do(ctx context.Context, args ...interface{}) *Cmd {
 
 // Process queues the cmd for later execution.
 func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
-	c.cmds = append(c.cmds, cmd)
+	//c.cmds = append(c.cmds, cmd)
+	c.cmds[cmd.Args()[3].(string)] = cmd
 	return nil
 }
 
 // Discard resets the pipeline and discards queued commands.
 func (c *Pipeline) Discard() {
-	c.cmds = c.cmds[:0]
+	c.cmds = map[string]Cmder{}
 }
 
 // Exec executes all previously queued commands using one
@@ -81,8 +82,13 @@ func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 
 	cmds := c.cmds
 	c.cmds = nil
+	cmdSlice := make([]Cmder, 0)
 
-	return cmds, c.exec(ctx, cmds)
+	for _, c := range cmds {
+		cmdSlice = append(cmdSlice, c)
+	}
+
+	return cmdSlice, c.exec(ctx, cmdSlice)
 }
 
 func (c *Pipeline) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
