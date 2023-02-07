@@ -994,9 +994,9 @@ func (c cmdable) HMGet(key string, fields ...string) *SliceCmd {
 }
 
 // HSet accepts values in following formats:
-//   - HMSet("myhash", "key1", "value1", "key2", "value2")
-//   - HMSet("myhash", []string{"key1", "value1", "key2", "value2"})
-//   - HMSet("myhash", map[string]interface{}{"key1": "value1", "key2": "value2"})
+//   - HSet("myhash", "key1", "value1", "key2", "value2")
+//   - HSet("myhash", []string{"key1", "value1", "key2", "value2"})
+//   - HSet("myhash", map[string]interface{}{"key1": "value1", "key2": "value2"})
 //
 // Note that it requires Redis v4 for multiple field/value pairs support.
 func (c cmdable) HSet(key string, values ...interface{}) *IntCmd {
