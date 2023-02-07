@@ -1,10 +1,13 @@
 package hscan
 
 import (
+	"encoding"
 	"fmt"
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/redis/go-redis/v9/internal/util"
 )
 
 // structMap contains the map of struct fields for target structs
@@ -97,8 +100,11 @@ func (s StructValue) Scan(key string, value string) error {
 	}
 
 	if isPtr && v.Type().NumMethod() > 0 && v.CanInterface() {
-		if scan, ok := v.Interface().(Scanner); ok {
+		switch scan := v.Interface().(type) {
+		case Scanner:
 			return scan.ScanRedis(value)
+		case encoding.TextUnmarshaler:
+			return scan.UnmarshalText(util.StringToBytes(value))
 		}
 	}
 
