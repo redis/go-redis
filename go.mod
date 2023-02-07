@@ -1,4 +1,4 @@
-module github.com/m1k8/go-redis/
+module github.com/m1k8/go-redis
 
 go 1.17
 
@@ -7,6 +7,7 @@ require (
 	github.com/bsm/gomega v1.20.0
 	github.com/cespare/xxhash/v2 v2.2.0
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f
+	github.com/redis/go-redis/v9 v9.0.2
 	github.com/stretchr/testify v1.8.1
 )
 
