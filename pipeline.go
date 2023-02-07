@@ -63,7 +63,14 @@ func (c *Pipeline) Do(ctx context.Context, args ...interface{}) *Cmd {
 func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 	//c.cmds = append(c.cmds, cmd)
 	log.Println(cmd.Args()...)
-	c.cmds[cmd.Args()[3].(string)] = cmd
+	if len(cmd.Args()) <= 2 {
+
+		c.cmds[cmd.Args()[2].(string)] = cmd
+	} else {
+
+		c.cmds[cmd.Args()[3].(string)] = cmd
+	}
+
 	return nil
 }
 
