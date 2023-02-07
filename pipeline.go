@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"log"
 )
 
 type pipelineExecer func(context.Context, []Cmder) error
@@ -61,6 +62,7 @@ func (c *Pipeline) Do(ctx context.Context, args ...interface{}) *Cmd {
 // Process queues the cmd for later execution.
 func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 	//c.cmds = append(c.cmds, cmd)
+	log.Println(cmd.Args()...)
 	c.cmds[cmd.Args()[3].(string)] = cmd
 	return nil
 }
