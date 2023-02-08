@@ -96,7 +96,7 @@ func (c *Pipeline) Discard() {
 // client-server roundtrip.
 //
 // Exec always returns list of commands and error of the first failed
-// command if any.
+// command if any .
 func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 	c.mu.Lock()
 	defer func() { c.mu.Unlock() }()
