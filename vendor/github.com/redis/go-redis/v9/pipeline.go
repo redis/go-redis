@@ -2,9 +2,6 @@ package redis
 
 import (
 	"context"
-	"log"
-
-	"github.com/google/uuid"
 )
 
 type pipelineExecer func(context.Context, []Cmder) error
@@ -41,7 +38,7 @@ type Pipeline struct {
 	statefulCmdable
 
 	exec pipelineExecer
-	cmds map[string]Cmder
+	cmds []Cmder
 }
 
 func (c *Pipeline) init() {
@@ -63,22 +60,13 @@ func (c *Pipeline) Do(ctx context.Context, args ...interface{}) *Cmd {
 
 // Process queues the cmd for later execution.
 func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
-	//c.cmds = append(c.cmds, cmd)
-	log.Println(cmd.Args()...)
-	uid := uuid.New().String()
-	if len(cmd.Args()) <= 2 {
-		c.cmds[cmd.Args()[1].(string)+uid] = cmd
-	} else {
-
-		c.cmds[cmd.Args()[3].(string)] = cmd
-	}
-
+	c.cmds = append(c.cmds, cmd)
 	return nil
 }
 
 // Discard resets the pipeline and discards queued commands.
 func (c *Pipeline) Discard() {
-	c.cmds = map[string]Cmder{}
+	c.cmds = c.cmds[:0]
 }
 
 // Exec executes all previously queued commands using one
@@ -93,13 +81,8 @@ func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 
 	cmds := c.cmds
 	c.cmds = nil
-	cmdSlice := make([]Cmder, 0)
 
-	for _, c := range cmds {
-		cmdSlice = append(cmdSlice, c)
-	}
-
-	return cmdSlice, c.exec(ctx, cmdSlice)
+	return cmds, c.exec(ctx, cmds)
 }
 
 func (c *Pipeline) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
