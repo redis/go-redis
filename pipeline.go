@@ -105,6 +105,8 @@ func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 		cmdSlice = append(cmdSlice, c)
 	}
 
+	c.cmds = make(map[string]Cmder)
+
 	return cmdSlice, c.exec(ctx, cmdSlice)
 }
 
