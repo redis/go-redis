@@ -1,0 +1,347 @@
+diff --git a/ghttp/handlers.go b/ghttp/handlers.go
+index f9c2fcb..bcfdf1a 100644
+--- a/ghttp/handlers.go
++++ b/ghttp/handlers.go
+@@ -8,10 +8,8 @@ import (
+ 	"fmt"
+ 	"net/http"
+ 	"net/url"
+-	"reflect"
+ 	"strings"
+ 
+-	"github.com/golang/protobuf/proto"
+ 	"github.com/bsm/gomega"
+ 	. "github.com/bsm/gomega"
+ 	"github.com/bsm/gomega/internal/gutil"
+@@ -174,32 +172,6 @@ func (g GHTTPWithGomega) VerifyFormKV(key string, values ...string) http.Handler
+ 	return g.VerifyForm(url.Values{key: values})
+ }
+ 
+-//VerifyProtoRepresenting returns a handler that verifies that the body of the request is a valid protobuf
+-//representation of the passed message.
+-//
+-//VerifyProtoRepresenting also verifies that the request's content type is application/x-protobuf
+-func (g GHTTPWithGomega) VerifyProtoRepresenting(expected proto.Message) http.HandlerFunc {
+-	return CombineHandlers(
+-		g.VerifyContentType("application/x-protobuf"),
+-		func(w http.ResponseWriter, req *http.Request) {
+-			body, err := gutil.ReadAll(req.Body)
+-			g.gomega.Expect(err).ShouldNot(HaveOccurred())
+-			req.Body.Close()
+-
+-			expectedType := reflect.TypeOf(expected)
+-			actualValuePtr := reflect.New(expectedType.Elem())
+-
+-			actual, ok := actualValuePtr.Interface().(proto.Message)
+-			g.gomega.Expect(ok).Should(BeTrue(), "Message value is not a proto.Message")
+-
+-			err = proto.Unmarshal(body, actual)
+-			g.gomega.Expect(err).ShouldNot(HaveOccurred(), "Failed to unmarshal protobuf")
+-
+-			g.gomega.Expect(actual).Should(Equal(expected), "ProtoBuf Mismatch")
+-		},
+-	)
+-}
+-
+ func copyHeader(src http.Header, dst http.Header) {
+ 	for key, value := range src {
+ 		dst[key] = value
+@@ -309,31 +281,6 @@ func (g GHTTPWithGomega) RespondWithJSONEncodedPtr(statusCode *int, object inter
+ 	}
+ }
+ 
+-//RespondWithProto returns a handler that responds to a request with the specified status code and a body
+-//containing the protobuf serialization of the provided message.
+-//
+-//Also, RespondWithProto can be given an optional http.Header.  The headers defined therein will be added to the response headers.
+-func (g GHTTPWithGomega) RespondWithProto(statusCode int, message proto.Message, optionalHeader ...http.Header) http.HandlerFunc {
+-	return func(w http.ResponseWriter, req *http.Request) {
+-		data, err := proto.Marshal(message)
+-		g.gomega.Expect(err).ShouldNot(HaveOccurred())
+-
+-		var headers http.Header
+-		if len(optionalHeader) == 1 {
+-			headers = optionalHeader[0]
+-		} else {
+-			headers = make(http.Header)
+-		}
+-		if _, found := headers["Content-Type"]; !found {
+-			headers["Content-Type"] = []string{"application/x-protobuf"}
+-		}
+-		copyHeader(headers, w.Header())
+-
+-		w.WriteHeader(statusCode)
+-		w.Write(data)
+-	}
+-}
+-
+ func VerifyRequest(method string, path interface{}, rawQuery ...string) http.HandlerFunc {
+ 	return NewGHTTPWithGomega(gomega.Default).VerifyRequest(method, path, rawQuery...)
+ }
+@@ -378,10 +325,6 @@ func VerifyFormKV(key string, values ...string) http.HandlerFunc {
+ 	return NewGHTTPWithGomega(gomega.Default).VerifyFormKV(key, values...)
+ }
+ 
+-func VerifyProtoRepresenting(expected proto.Message) http.HandlerFunc {
+-	return NewGHTTPWithGomega(gomega.Default).VerifyProtoRepresenting(expected)
+-}
+-
+ func RespondWith(statusCode int, body interface{}, optionalHeader ...http.Header) http.HandlerFunc {
+ 	return NewGHTTPWithGomega(gomega.Default).RespondWith(statusCode, body, optionalHeader...)
+ }
+@@ -397,7 +340,3 @@ func RespondWithJSONEncoded(statusCode int, object interface{}, optionalHeader .
+ func RespondWithJSONEncodedPtr(statusCode *int, object interface{}, optionalHeader ...http.Header) http.HandlerFunc {
+ 	return NewGHTTPWithGomega(gomega.Default).RespondWithJSONEncodedPtr(statusCode, object, optionalHeader...)
+ }
+-
+-func RespondWithProto(statusCode int, message proto.Message, optionalHeader ...http.Header) http.HandlerFunc {
+-	return NewGHTTPWithGomega(gomega.Default).RespondWithProto(statusCode, message, optionalHeader...)
+-}
+diff --git a/matchers.go b/matchers.go
+index 413aafb..cef21cc 100644
+--- a/matchers.go
++++ b/matchers.go
+@@ -3,7 +3,6 @@ package gomega
+ import (
+ 	"time"
+ 
+-	"github.com/google/go-cmp/cmp"
+ 	"github.com/bsm/gomega/matchers"
+ 	"github.com/bsm/gomega/types"
+ )
+@@ -27,15 +26,6 @@ func BeEquivalentTo(expected interface{}) types.GomegaMatcher {
+ 	}
+ }
+ 
+-//BeComparableTo uses gocmp.Equal to compare. You can pass cmp.Option as options.
+-//It is an error for actual and expected to be nil.  Use BeNil() instead.
+-func BeComparableTo(expected interface{}, opts ...cmp.Option) types.GomegaMatcher {
+-	return &matchers.BeComparableToMatcher{
+-		Expected: expected,
+-		Options:  opts,
+-	}
+-}
+-
+ //BeIdenticalTo uses the == operator to compare actual with expected.
+ //BeIdenticalTo is strict about types when performing comparisons.
+ //It is an error for both actual and expected to be nil.  Use BeNil() instead.
+@@ -224,24 +214,6 @@ func MatchJSON(json interface{}) types.GomegaMatcher {
+ 	}
+ }
+ 
+-//MatchXML succeeds if actual is a string or stringer of XML that matches
+-//the expected XML.  The XMLs are decoded and the resulting objects are compared via
+-//reflect.DeepEqual so things like whitespaces shouldn't matter.
+-func MatchXML(xml interface{}) types.GomegaMatcher {
+-	return &matchers.MatchXMLMatcher{
+-		XMLToMatch: xml,
+-	}
+-}
+-
+-//MatchYAML succeeds if actual is a string or stringer of YAML that matches
+-//the expected YAML.  The YAML's are decoded and the resulting objects are compared via
+-//reflect.DeepEqual so things like key-ordering and whitespace shouldn't matter.
+-func MatchYAML(yaml interface{}) types.GomegaMatcher {
+-	return &matchers.MatchYAMLMatcher{
+-		YAMLToMatch: yaml,
+-	}
+-}
+-
+ //BeEmpty succeeds if actual is empty.  Actual must be of type string, array, map, chan, or slice.
+ func BeEmpty() types.GomegaMatcher {
+ 	return &matchers.BeEmptyMatcher{}
+diff --git a/matchers/be_comparable_to_matcher.go b/matchers/be_comparable_to_matcher.go
+deleted file mode 100644
+index 7acf358..0000000
+--- a/matchers/be_comparable_to_matcher.go
++++ /dev/null
+@@ -1,49 +0,0 @@
+-package matchers
+-
+-import (
+-	"bytes"
+-	"fmt"
+-
+-	"github.com/google/go-cmp/cmp"
+-	"github.com/bsm/gomega/format"
+-)
+-
+-type BeComparableToMatcher struct {
+-	Expected interface{}
+-	Options  cmp.Options
+-}
+-
+-func (matcher *BeComparableToMatcher) Match(actual interface{}) (success bool, matchErr error) {
+-	if actual == nil && matcher.Expected == nil {
+-		return false, fmt.Errorf("Refusing to compare <nil> to <nil>.\nBe explicit and use BeNil() instead.  This is to avoid mistakes where both sides of an assertion are erroneously uninitialized.")
+-	}
+-	// Shortcut for byte slices.
+-	// Comparing long byte slices with reflect.DeepEqual is very slow,
+-	// so use bytes.Equal if actual and expected are both byte slices.
+-	if actualByteSlice, ok := actual.([]byte); ok {
+-		if expectedByteSlice, ok := matcher.Expected.([]byte); ok {
+-			return bytes.Equal(actualByteSlice, expectedByteSlice), nil
+-		}
+-	}
+-
+-	defer func() {
+-		if r := recover(); r != nil {
+-			success = false
+-			if err, ok := r.(error); ok {
+-				matchErr = err
+-			} else if errMsg, ok := r.(string); ok {
+-				matchErr = fmt.Errorf(errMsg)
+-			}
+-		}
+-	}()
+-
+-	return cmp.Equal(actual, matcher.Expected, matcher.Options...), nil
+-}
+-
+-func (matcher *BeComparableToMatcher) FailureMessage(actual interface{}) (message string) {
+-	return cmp.Diff(matcher.Expected, actual, matcher.Options)
+-}
+-
+-func (matcher *BeComparableToMatcher) NegatedFailureMessage(actual interface{}) (message string) {
+-	return format.Message(actual, "not to equal", matcher.Expected)
+-}
+diff --git a/matchers/match_xml_matcher.go b/matchers/match_xml_matcher.go
+deleted file mode 100644
+index 75479da..0000000
+--- a/matchers/match_xml_matcher.go
++++ /dev/null
+@@ -1,134 +0,0 @@
+-package matchers
+-
+-import (
+-	"bytes"
+-	"encoding/xml"
+-	"errors"
+-	"fmt"
+-	"io"
+-	"reflect"
+-	"sort"
+-	"strings"
+-
+-	"github.com/bsm/gomega/format"
+-	"golang.org/x/net/html/charset"
+-)
+-
+-type MatchXMLMatcher struct {
+-	XMLToMatch interface{}
+-}
+-
+-func (matcher *MatchXMLMatcher) Match(actual interface{}) (success bool, err error) {
+-	actualString, expectedString, err := matcher.formattedPrint(actual)
+-	if err != nil {
+-		return false, err
+-	}
+-
+-	aval, err := parseXmlContent(actualString)
+-	if err != nil {
+-		return false, fmt.Errorf("Actual '%s' should be valid XML, but it is not.\nUnderlying error:%s", actualString, err)
+-	}
+-
+-	eval, err := parseXmlContent(expectedString)
+-	if err != nil {
+-		return false, fmt.Errorf("Expected '%s' should be valid XML, but it is not.\nUnderlying error:%s", expectedString, err)
+-	}
+-
+-	return reflect.DeepEqual(aval, eval), nil
+-}
+-
+-func (matcher *MatchXMLMatcher) FailureMessage(actual interface{}) (message string) {
+-	actualString, expectedString, _ := matcher.formattedPrint(actual)
+-	return fmt.Sprintf("Expected\n%s\nto match XML of\n%s", actualString, expectedString)
+-}
+-
+-func (matcher *MatchXMLMatcher) NegatedFailureMessage(actual interface{}) (message string) {
+-	actualString, expectedString, _ := matcher.formattedPrint(actual)
+-	return fmt.Sprintf("Expected\n%s\nnot to match XML of\n%s", actualString, expectedString)
+-}
+-
+-func (matcher *MatchXMLMatcher) formattedPrint(actual interface{}) (actualString, expectedString string, err error) {
+-	var ok bool
+-	actualString, ok = toString(actual)
+-	if !ok {
+-		return "", "", fmt.Errorf("MatchXMLMatcher matcher requires a string, stringer, or []byte.  Got actual:\n%s", format.Object(actual, 1))
+-	}
+-	expectedString, ok = toString(matcher.XMLToMatch)
+-	if !ok {
+-		return "", "", fmt.Errorf("MatchXMLMatcher matcher requires a string, stringer, or []byte.  Got expected:\n%s", format.Object(matcher.XMLToMatch, 1))
+-	}
+-	return actualString, expectedString, nil
+-}
+-
+-func parseXmlContent(content string) (*xmlNode, error) {
+-	allNodes := []*xmlNode{}
+-
+-	dec := newXmlDecoder(strings.NewReader(content))
+-	for {
+-		tok, err := dec.Token()
+-		if err != nil {
+-			if err == io.EOF {
+-				break
+-			}
+-			return nil, fmt.Errorf("failed to decode next token: %v", err) // untested section
+-		}
+-
+-		lastNodeIndex := len(allNodes) - 1
+-		var lastNode *xmlNode
+-		if len(allNodes) > 0 {
+-			lastNode = allNodes[lastNodeIndex]
+-		} else {
+-			lastNode = &xmlNode{}
+-		}
+-
+-		switch tok := tok.(type) {
+-		case xml.StartElement:
+-			attrs := attributesSlice(tok.Attr)
+-			sort.Sort(attrs)
+-			allNodes = append(allNodes, &xmlNode{XMLName: tok.Name, XMLAttr: tok.Attr})
+-		case xml.EndElement:
+-			if len(allNodes) > 1 {
+-				allNodes[lastNodeIndex-1].Nodes = append(allNodes[lastNodeIndex-1].Nodes, lastNode)
+-				allNodes = allNodes[:lastNodeIndex]
+-			}
+-		case xml.CharData:
+-			lastNode.Content = append(lastNode.Content, tok.Copy()...)
+-		case xml.Comment:
+-			lastNode.Comments = append(lastNode.Comments, tok.Copy()) // untested section
+-		case xml.ProcInst:
+-			lastNode.ProcInsts = append(lastNode.ProcInsts, tok.Copy())
+-		}
+-	}
+-
+-	if len(allNodes) == 0 {
+-		return nil, errors.New("found no nodes")
+-	}
+-	firstNode := allNodes[0]
+-	trimParentNodesContentSpaces(firstNode)
+-
+-	return firstNode, nil
+-}
+-
+-func newXmlDecoder(reader io.Reader) *xml.Decoder {
+-	dec := xml.NewDecoder(reader)
+-	dec.CharsetReader = charset.NewReaderLabel
+-	return dec
+-}
+-
+-func trimParentNodesContentSpaces(node *xmlNode) {
+-	if len(node.Nodes) > 0 {
+-		node.Content = bytes.TrimSpace(node.Content)
+-		for _, childNode := range node.Nodes {
+-			trimParentNodesContentSpaces(childNode)
+-		}
+-	}
+-}
+-
+-type xmlNode struct {
+-	XMLName   xml.Name
+-	Comments  []xml.Comment
+-	ProcInsts []xml.ProcInst
+-	XMLAttr   []xml.Attr
+-	Content   []byte
+-	Nodes     []*xmlNode
+-}

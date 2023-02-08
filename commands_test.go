@@ -11,8 +11,8 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 
-	"github.com/redis/go-redis/v9"
-	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/m1k8/go-redis"
+	"github.com/m1k8/go-redis/internal/proto"
 )
 
 type TimeValue struct {

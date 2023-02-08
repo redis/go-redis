@@ -3,7 +3,7 @@ package hashtag
 import (
 	"strings"
 
-	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/m1k8/go-redis/internal/rand"
 )
 
 const slotNumber = 16384

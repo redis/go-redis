@@ -13,7 +13,7 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/m1k8/go-redis"
 )
 
 const (

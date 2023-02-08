@@ -16,8 +16,8 @@ import (
 	. "github.com/bsm/gomega"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/redis/go-redis/v9"
-	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/m1k8/go-redis"
+	"github.com/m1k8/go-redis/internal/hashtag"
 )
 
 type clusterScenario struct {

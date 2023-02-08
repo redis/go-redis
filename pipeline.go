@@ -2,6 +2,9 @@ package redis
 
 import (
 	"context"
+	"sync"
+
+	"github.com/google/uuid"
 )
 
 type pipelineExecer func(context.Context, []Cmder) error
@@ -32,13 +35,14 @@ var _ Pipeliner = (*Pipeline)(nil)
 
 // Pipeline implements pipelining as described in
 // http://redis.io/topics/pipelining.
-// Please note: it is not safe for concurrent use by multiple goroutines.
+// Please note: it is safe for concurrent use by multiple goroutines.
 type Pipeline struct {
 	cmdable
 	statefulCmdable
 
+	mu   sync.Mutex
 	exec pipelineExecer
-	cmds []Cmder
+	cmds map[string]Cmder
 }
 
 func (c *Pipeline) init() {
@@ -60,13 +64,28 @@ func (c *Pipeline) Do(ctx context.Context, args ...interface{}) *Cmd {
 
 // Process queues the cmd for later execution.
 func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
-	c.cmds = append(c.cmds, cmd)
+	//c.cmds = append(c.cmds, cmd)
+	uid := uuid.New().String()
+
+	c.mu.Lock()
+	defer func() { c.mu.Unlock() }()
+
+	if c.cmds == nil {
+		c.cmds = map[string]Cmder{}
+	}
+
+	if len(cmd.Args()) <= 4 {
+		c.cmds[cmd.Args()[1].(string)+uid] = cmd
+	} else {
+		c.cmds[cmd.Args()[3].(string)+cmd.Args()[4].(string)] = cmd
+	}
+
 	return nil
 }
 
 // Discard resets the pipeline and discards queued commands.
 func (c *Pipeline) Discard() {
-	c.cmds = c.cmds[:0]
+	c.cmds = map[string]Cmder{}
 }
 
 // Exec executes all previously queued commands using one
@@ -78,11 +97,15 @@ func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 	if len(c.cmds) == 0 {
 		return nil, nil
 	}
+	c.mu.Lock()
+	defer func() { c.mu.Unlock() }()
+	cmdSlice := make([]Cmder, 0)
 
-	cmds := c.cmds
-	c.cmds = nil
+	for _, c := range c.cmds {
+		cmdSlice = append(cmdSlice, c)
+	}
 
-	return cmds, c.exec(ctx, cmds)
+	return cmdSlice, c.exec(ctx, cmdSlice)
 }
 
 func (c *Pipeline) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

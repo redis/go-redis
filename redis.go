@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
-	"github.com/redis/go-redis/v9/internal/hscan"
-	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/m1k8/go-redis/internal"
+	"github.com/m1k8/go-redis/internal/hscan"
+	"github.com/m1k8/go-redis/internal/pool"
+	"github.com/m1k8/go-redis/internal/proto"
 )
 
 // Scanner internal/hscan.Scanner exposed interface.
@@ -661,6 +662,8 @@ func (c *Client) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 func (c *Client) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: pipelineExecer(c.processPipelineHook),
+		mu:   sync.Mutex{},
+		cmds: map[string]Cmder{},
 	}
 	pipe.init()
 	return &pipe
