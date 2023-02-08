@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"log"
 
 	"github.com/google/uuid"
 )
@@ -69,7 +70,8 @@ func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 	if c.cmds == nil {
 		c.cmds = map[string]Cmder{}
 	}
-	if len(cmd.Args()) <= 2 {
+	if len(cmd.Args()) <= 4 {
+		log.Println(cmd.Args())
 		c.cmds[cmd.Args()[1].(string)+uid] = cmd
 	} else {
 		c.cmds[cmd.Args()[3].(string)+cmd.Args()[4].(string)] = cmd
