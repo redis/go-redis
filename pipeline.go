@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"sync"
 
 	"github.com/google/uuid"
 )
@@ -39,6 +40,7 @@ type Pipeline struct {
 	cmdable
 	statefulCmdable
 
+	mu   sync.Mutex
 	exec pipelineExecer
 	cmds map[string]Cmder
 }
@@ -47,6 +49,7 @@ func (c *Pipeline) init() {
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
 	c.cmds = make(map[string]Cmder)
+	c.mu = sync.Mutex{}
 }
 
 // Len returns the number of queued commands.
@@ -66,9 +69,13 @@ func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 	//c.cmds = append(c.cmds, cmd)
 	uid := uuid.New().String()
 
+	c.mu.Lock()
+	defer func() { c.mu.Unlock() }()
+
 	if c.cmds == nil {
 		c.cmds = map[string]Cmder{}
 	}
+
 	if len(cmd.Args()) <= 4 {
 		c.cmds[cmd.Args()[1].(string)+uid] = cmd
 	} else {
@@ -92,12 +99,11 @@ func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 	if len(c.cmds) == 0 {
 		return nil, nil
 	}
-
-	cmds := c.cmds
-	c.cmds = nil
+	c.mu.Lock()
+	defer func() { c.mu.Unlock() }()
 	cmdSlice := make([]Cmder, 0)
 
-	for _, c := range cmds {
+	for _, c := range c.cmds {
 		cmdSlice = append(cmdSlice, c)
 	}
 
