@@ -72,7 +72,7 @@ func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 	if len(cmd.Args()) <= 2 {
 		c.cmds[cmd.Args()[1].(string)+uid] = cmd
 	} else {
-		c.cmds[cmd.Args()[3].(string)] = cmd
+		c.cmds[cmd.Args()[3].(string)+cmd.Args()[4].(string)] = cmd
 	}
 
 	return nil
