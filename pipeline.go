@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"log"
 
 	"github.com/google/uuid"
 )
@@ -65,7 +64,6 @@ func (c *Pipeline) Do(ctx context.Context, args ...interface{}) *Cmd {
 // Process queues the cmd for later execution.
 func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 	//c.cmds = append(c.cmds, cmd)
-	log.Println(cmd.Args()...)
 	uid := uuid.New().String()
 
 	if c.cmds == nil {
@@ -101,7 +99,6 @@ func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 
 	for _, c := range cmds {
 		cmdSlice = append(cmdSlice, c)
-		log.Println(c)
 	}
 
 	return cmdSlice, c.exec(ctx, cmdSlice)
