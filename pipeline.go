@@ -67,10 +67,13 @@ func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 	//c.cmds = append(c.cmds, cmd)
 	log.Println(cmd.Args()...)
 	uid := uuid.New().String()
+
+	if c.cmds == nil {
+		c.cmds = map[string]Cmder{}
+	}
 	if len(cmd.Args()) <= 2 {
 		c.cmds[cmd.Args()[1].(string)+uid] = cmd
 	} else {
-
 		c.cmds[cmd.Args()[3].(string)] = cmd
 	}
 
@@ -98,6 +101,7 @@ func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 
 	for _, c := range cmds {
 		cmdSlice = append(cmdSlice, c)
+		log.Println(c)
 	}
 
 	return cmdSlice, c.exec(ctx, cmdSlice)
