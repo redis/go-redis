@@ -35,7 +35,7 @@ var _ Pipeliner = (*Pipeline)(nil)
 
 // Pipeline implements pipelining as described in
 // http://redis.io/topics/pipelining.
-// Please note: it is not safe for concurrent use by multiple goroutines.
+// Please note: it is safe for concurrent use by multiple goroutines.
 type Pipeline struct {
 	cmdable
 	statefulCmdable
@@ -48,8 +48,6 @@ type Pipeline struct {
 func (c *Pipeline) init() {
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
-	c.cmds = make(map[string]Cmder)
-	c.mu = sync.Mutex{}
 }
 
 // Len returns the number of queued commands.

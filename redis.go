@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -661,6 +662,8 @@ func (c *Client) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 func (c *Client) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: pipelineExecer(c.processPipelineHook),
+		mu:   sync.Mutex{},
+		cmds: map[string]Cmder{},
 	}
 	pipe.init()
 	return &pipe
