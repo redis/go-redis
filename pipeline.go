@@ -47,6 +47,7 @@ type Pipeline struct {
 func (c *Pipeline) init() {
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
+	c.cmds = make(map[string]Cmder)
 }
 
 // Len returns the number of queued commands.
