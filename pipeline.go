@@ -52,6 +52,8 @@ func (c *Pipeline) init() {
 
 // Len returns the number of queued commands.
 func (c *Pipeline) Len() int {
+	c.mu.Lock()
+	defer func() { c.mu.Unlock() }()
 	return len(c.cmds)
 }
 
@@ -85,6 +87,8 @@ func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 
 // Discard resets the pipeline and discards queued commands.
 func (c *Pipeline) Discard() {
+	c.mu.Lock()
+	defer func() { c.mu.Unlock() }()
 	c.cmds = map[string]Cmder{}
 }
 
@@ -94,11 +98,11 @@ func (c *Pipeline) Discard() {
 // Exec always returns list of commands and error of the first failed
 // command if any.
 func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
+	c.mu.Lock()
+	defer func() { c.mu.Unlock() }()
 	if len(c.cmds) == 0 {
 		return nil, nil
 	}
-	c.mu.Lock()
-	defer func() { c.mu.Unlock() }()
 	cmdSlice := make([]Cmder, 0)
 
 	for _, c := range c.cmds {
