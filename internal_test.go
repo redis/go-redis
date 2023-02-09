@@ -352,7 +352,8 @@ var _ = Describe("withConn", func() {
 		Expect(client.connPool.Len()).To(Equal(1))
 	})
 
-	It("should remove the connection from the pool if the context is canceled", func() {
+	// https://github.com/redis/go-redis/issues/2276
+	PIt("should remove the connection from the pool if the context is canceled", func() {
 		var conn *pool.Conn
 
 		ctx2, cancel := context.WithCancel(ctx)

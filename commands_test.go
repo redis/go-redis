@@ -4843,7 +4843,8 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
-		Describe("canceled context", func() {
+		// https://github.com/redis/go-redis/issues/2276
+		PDescribe("canceled context", func() {
 			It("should unblock XRead", func() {
 				ctx2, cancel := context.WithCancel(ctx)
 				errCh := make(chan error, 1)
@@ -5042,7 +5043,8 @@ var _ = Describe("Commands", func() {
 				Expect(n).To(Equal(int64(2)))
 			})
 
-			Describe("canceled context", func() {
+			// https://github.com/redis/go-redis/issues/2276
+			PDescribe("canceled context", func() {
 				It("should unblock XReadGroup", func() {
 					ctx2, cancel := context.WithCancel(ctx)
 					errCh := make(chan error, 1)

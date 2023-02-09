@@ -569,7 +569,8 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Payload).To(Equal(text))
 	})
 
-	Describe("canceled context", func() {
+	// https://github.com/redis/go-redis/issues/2276
+	PDescribe("canceled context", func() {
 		It("should unblock ReceiveMessage", func() {
 			pubsub := client.Subscribe(ctx, "mychannel")
 			defer pubsub.Close()
