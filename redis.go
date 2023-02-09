@@ -347,7 +347,18 @@ func (c *baseClient) withConn(
 		c.releaseConn(ctx, cn, fnErr)
 	}()
 
-	fnErr = fn(ctx, cn)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- fn(ctx, cn)
+	}()
+
+	select {
+	case fnErr = <-errCh:
+	case <-ctx.Done():
+		_ = c.connPool.CloseConn(cn)
+		fnErr = ctx.Err()
+	}
 
 	return fnErr
 }

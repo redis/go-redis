@@ -432,9 +432,19 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		return nil, err
 	}
 
-	err = cn.WithReader(context.Background(), timeout, func(rd *proto.Reader) error {
-		return c.cmd.readReply(rd)
-	})
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- cn.WithReader(context.Background(), timeout, func(rd *proto.Reader) error {
+			return c.cmd.readReply(rd)
+		})
+	}()
+
+	select {
+	case err = <-errCh:
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
 
 	c.releaseConnWithLock(ctx, cn, err, timeout > 0)
 
