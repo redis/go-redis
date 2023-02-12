@@ -134,6 +134,7 @@ type Cmdable interface {
 	Exists(ctx context.Context, keys ...string) *IntCmd
 	Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireTime(ctx context.Context, key string) *DurationCmd
 	ExpireNX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireXX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireGT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
@@ -147,6 +148,7 @@ type Cmdable interface {
 	Persist(ctx context.Context, key string) *BoolCmd
 	PExpire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	PExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PExpireTime(ctx context.Context, key string) *DurationCmd
 	PTTL(ctx context.Context, key string) *DurationCmd
 	RandomKey(ctx context.Context) *StringCmd
 	Rename(ctx context.Context, key, newkey string) *StatusCmd
@@ -624,6 +626,12 @@ func (c cmdable) ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCm
 	return cmd
 }
 
+func (c cmdable) ExpireTime(ctx context.Context, key string) *DurationCmd {
+	cmd := NewDurationCmd(ctx, time.Second, "expiretime", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) Keys(ctx context.Context, pattern string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "keys", pattern)
 	_ = c(ctx, cmd)
@@ -688,6 +696,12 @@ func (c cmdable) PExpireAt(ctx context.Context, key string, tm time.Time) *BoolC
 		key,
 		tm.UnixNano()/int64(time.Millisecond),
 	)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) PExpireTime(ctx context.Context, key string) *DurationCmd {
+	cmd := NewDurationCmd(ctx, time.Millisecond, "pexpiretime", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
