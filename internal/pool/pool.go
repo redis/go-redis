@@ -54,8 +54,7 @@ type Pooler interface {
 }
 
 type Options struct {
-	Dialer  func(context.Context) (net.Conn, error)
-	OnClose func(*Conn) error
+	Dialer func(context.Context) (net.Conn, error)
 
 	PoolFIFO        bool
 	PoolSize        int
@@ -87,8 +86,7 @@ type ConnPool struct {
 
 	stats Stats
 
-	_closed  uint32 // atomic
-	closedCh chan struct{}
+	_closed uint32 // atomic
 }
 
 var _ Pooler = (*ConnPool)(nil)
@@ -100,7 +98,6 @@ func NewConnPool(opt *Options) *ConnPool {
 		queue:     make(chan struct{}, opt.PoolSize),
 		conns:     make([]*Conn, 0, opt.PoolSize),
 		idleConns: make([]*Conn, 0, opt.PoolSize),
-		closedCh:  make(chan struct{}),
 	}
 
 	p.connsMu.Lock()
@@ -376,7 +373,7 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	}
 }
 
-func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
+func (p *ConnPool) Remove(_ context.Context, cn *Conn, reason error) {
 	p.removeConnWithLock(cn)
 	p.freeTurn()
 	_ = p.closeConn(cn)
@@ -407,9 +404,6 @@ func (p *ConnPool) removeConn(cn *Conn) {
 }
 
 func (p *ConnPool) closeConn(cn *Conn) error {
-	if p.cfg.OnClose != nil {
-		_ = p.cfg.OnClose(cn)
-	}
 	return cn.Close()
 }
 
@@ -464,7 +458,6 @@ func (p *ConnPool) Close() error {
 	if !atomic.CompareAndSwapUint32(&p._closed, 0, 1) {
 		return ErrClosed
 	}
-	close(p.closedCh)
 
 	var firstErr error
 	p.connsMu.Lock()
@@ -489,7 +482,6 @@ func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 		return false
 	}
 	if p.cfg.ConnMaxIdleTime > 0 && now.Sub(cn.UsedAt()) >= p.cfg.ConnMaxIdleTime {
-		atomic.AddUint32(&p.stats.IdleConns, 1)
 		return false
 	}
 
