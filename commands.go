@@ -1465,7 +1465,7 @@ func (c cmdable) LIndex(ctx context.Context, key string, index int64) *StringCmd
 }
 
 func (c cmdable) LMPop(ctx context.Context, direction string, count int64, keys ...string) *StringSliceCmd {
-	args := make([]interface{}, 4+len(keys))
+	args := make([]interface{}, 5+len(keys))
 	args[0] = "lmpop"
 	numkeys := int64(0)
 	for i, key := range keys {
