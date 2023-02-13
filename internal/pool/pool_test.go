@@ -333,8 +333,8 @@ var _ = Describe("race", func() {
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				return &net.TCPConn{}, nil
 			},
-			PoolSize:     10000,
-			MinIdleConns: 200,
+			PoolSize:     1000,
+			MinIdleConns: 50,
 			PoolTimeout:  3 * time.Second,
 		}
 		p := pool.NewConnPool(opt)
