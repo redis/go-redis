@@ -1,9 +1,10 @@
-GO_MOD_DIRS := $(shell find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; | sort)
+GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 
 test: testdeps
 	set -e; for dir in $(GO_MOD_DIRS); do \
 	  echo "go test in $${dir}"; \
 	  (cd "$${dir}" && \
+	    go mod tidy -compat=1.18 && \
 	    go test && \
 	    go test ./... -short -race && \
 	    go test ./... -run=NONE -bench=. -benchmem && \
