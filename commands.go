@@ -225,7 +225,7 @@ type Cmdable interface {
 	LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd
 	LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd
 	LLen(ctx context.Context, key string) *IntCmd
-	LMPop(ctx context.Context, direction string, count int64, keys ...string) *StringSliceCmd
+	LMPop(ctx context.Context, direction string, count int64, keys ...string) *SliceCmd
 	LPop(ctx context.Context, key string) *StringCmd
 	LPopCount(ctx context.Context, key string, count int) *StringSliceCmd
 	LPos(ctx context.Context, key string, value string, args LPosArgs) *IntCmd
@@ -1464,7 +1464,7 @@ func (c cmdable) LIndex(ctx context.Context, key string, index int64) *StringCmd
 	return cmd
 }
 
-func (c cmdable) LMPop(ctx context.Context, direction string, count int64, keys ...string) *StringSliceCmd {
+func (c cmdable) LMPop(ctx context.Context, direction string, count int64, keys ...string) *SliceCmd {
 	args := make([]interface{}, 5+len(keys))
 	args[0] = "lmpop"
 	numkeys := int64(0)
@@ -1476,7 +1476,7 @@ func (c cmdable) LMPop(ctx context.Context, direction string, count int64, keys 
 	args[2+numkeys] = strings.ToLower(direction)
 	args[3+numkeys] = "count"
 	args[4+numkeys] = count
-	cmd := NewStringSliceCmd(ctx, args...)
+	cmd := NewSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

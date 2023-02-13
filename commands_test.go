@@ -1272,6 +1272,20 @@ var _ = Describe("Commands", func() {
 			Expect(incrByFloat.Val()).To(Equal(float64(996945661)))
 		})
 
+		It("should LMPop",func(){
+			rPush := client.RPush(ctx, "list", "one")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "two")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "three")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+
+			lMPOP := client.LMPop(ctx, "LEFT", 1, "list1")
+			Expect(lMPOP.Err()).NotTo(HaveOccurred())
+			Expect(lMPOP.Val()).To(Equal([]interface{}{"list1",[]string{"one"}}))
+
+		})
+
 		It("should MSetMGet", func() {
 			mSet := client.MSet(ctx, "key1", "hello1", "key2", "hello2")
 			Expect(mSet.Err()).NotTo(HaveOccurred())
@@ -2257,32 +2271,6 @@ var _ = Describe("Commands", func() {
 			Expect(lIndex.Val()).To(Equal(""))
 		})
 
-		It("should LMPOP", func() {
-			
-			err := client.RPush(ctx, "list1", "one").Err()
-			Expect(err).NotTo(HaveOccurred())
-			err = client.RPush(ctx, "list1", "two").Err()
-			Expect(err).NotTo(HaveOccurred())
-			err = client.RPush(ctx, "list2", "three").Err()
-			Expect(err).NotTo(HaveOccurred())
-			err = client.RPush(ctx, "list2", "four").Err()
-			Expect(err).NotTo(HaveOccurred())
-		
-			lMPOP := client.LMPop(ctx, "LEFT", 1, "list1")
-			Expect(lMPOP.Err()).NotTo(HaveOccurred())
-		
-			result := lMPOP.Val()
-			Expect(len(result)).To(Equal(2))
-		
-			keyName := result[0]
-			Expect(keyName).To(SatisfyAny(Equal("list1"), Equal("list2")))
-		
-			elements := result[1]
-			Expect(len(elements)).To(Equal(1))
-			Expect(elements).To(SatisfyAny(Equal("one"), Equal("three")))
-		    
-		})
-		
 
 		It("should LInsert", func() {
 			rPush := client.RPush(ctx, "list", "Hello")
