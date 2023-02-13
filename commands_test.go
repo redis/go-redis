@@ -2273,32 +2273,43 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should LMPop", func() {
-			rPush := client.RPush(ctx, "list", "one")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
-			rPush = client.RPush(ctx, "list", "two")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
-			rPush = client.RPush(ctx, "list", "three")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
+			err := client.LPush(ctx, "list1", "one", "two", "three", "four", "five").Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			lMPop := client.LMPop(ctx, "LEFT", 1, "list")
-			Expect(lMPop.Err()).NotTo(HaveOccurred())
-			Expect(lMPop.Val()).To(Equal([]interface{}{"list", []interface{}{"one"}}))
+			err = client.LPush(ctx, "list2", "a", "b", "c", "d", "e").Err()
+			Expect(err).NotTo(HaveOccurred())
 
-	        lMPop = client.LMPop(ctx,"LEFT",1,"non-existing-key")
-			Expect(lMPop.Err()).NotTo(HaveOccurred())
-			Expect(lMPop.Val()).To(Equal(nil))
+			key, elems, err := client.LMPop(ctx, "left", 3, "list1", "list2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("list1"))
+			Expect(elems).To(Equal([]string{"five", "four", "three"}))
 
-			rPush = client.RPush(ctx, "list1", "one")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
-			rPush = client.RPush(ctx, "list1", "two")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
-			rPush = client.RPush(ctx, "list1", "three")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
+			key, elems, err = client.LMPop(ctx, "right", 3, "list1", "list2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("list1"))
+			Expect(elems).To(Equal([]string{"one", "two"}))
 
+			key, elems, err = client.LMPop(ctx, "left", 1, "list1", "list2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("list2"))
+			Expect(elems).To(Equal([]string{"e"}))
 
-			lMPop = client.LMPop(ctx,"RIGHT",2,"list1")
-			Expect(lMPop.Err()).NotTo(HaveOccurred())
-			Expect(lMPop.Val()).To(Equal([]interface{}{"list1", []interface{}{"two", "one"}}))
+			key, elems, err = client.LMPop(ctx, "right", 10, "list1", "list2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("list2"))
+			Expect(elems).To(Equal([]string{"a", "b", "c", "d"}))
+
+			err = client.LMPop(ctx, "left", 10, "list1", "list2").Err()
+			Expect(err).To(Equal(redis.Nil))
+
+			err = client.Set(ctx, "list3", 1024, 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.LMPop(ctx, "left", 10, "list1", "list2", "list3").Err()
+			Expect(err.Error()).To(Equal("WRONGTYPE Operation against a key holding the wrong kind of value"))
+
+			err = client.LMPop(ctx, "right", 0, "list1", "list2").Err()
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should LLen", func() {

@@ -225,7 +225,7 @@ type Cmdable interface {
 	LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd
 	LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd
 	LLen(ctx context.Context, key string) *IntCmd
-	LMPop(ctx context.Context, direction string, count int64, keys ...string) *SliceCmd
+	LMPop(ctx context.Context, direction string, count int64, keys ...string) *ListElementCmd
 	LPop(ctx context.Context, key string) *StringCmd
 	LPopCount(ctx context.Context, key string, count int) *StringSliceCmd
 	LPos(ctx context.Context, key string, value string, args LPosArgs) *IntCmd
@@ -1464,19 +1464,18 @@ func (c cmdable) LIndex(ctx context.Context, key string, index int64) *StringCmd
 	return cmd
 }
 
-func (c cmdable) LMPop(ctx context.Context, direction string, count int64, keys ...string) *SliceCmd {
-	args := make([]interface{}, 5+len(keys))
+// LMPop Pops one or more elements from the first non-empty list key from the list of provided key names.
+// direction: left or right, count: > 0
+// example: client.LMPop(ctx, "left", 3, "key1", "key2")
+func (c cmdable) LMPop(ctx context.Context, direction string, count int64, keys ...string) *ListElementCmd {
+	args := make([]interface{}, 2+len(keys), 5+len(keys))
 	args[0] = "lmpop"
-	numkeys := int64(0)
+	args[1] = len(keys)
 	for i, key := range keys {
 		args[2+i] = key
-		numkeys++
 	}
-	args[1] = numkeys
-	args[2+numkeys] = strings.ToLower(direction)
-	args[3+numkeys] = "count"
-	args[4+numkeys] = count
-	cmd := NewSliceCmd(ctx, args...)
+	args = append(args, strings.ToLower(direction), "count", count)
+	cmd := NewListElementCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
