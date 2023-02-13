@@ -2189,7 +2189,7 @@ var _ = Describe("Commands", func() {
 			rPush = client.RPush(ctx, "list2", "four")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
 
-			lMPOP := client.LMPOP(ctx, "list1", "list2", "LEFT", 1)
+			lMPOP := client.LMPop(ctx, "LEFT", 1, "list1", "list2")
 			Expect(lMPOP.Err()).NotTo(HaveOccurred())
 			Expect(lMPOP.Val()).To(Equal([]string{"one", "three"}))
 
