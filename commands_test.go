@@ -2282,7 +2282,7 @@ var _ = Describe("Commands", func() {
 
 			lMPOP := client.LMPop(ctx, "LEFT", 1, "list")
 			Expect(lMPOP.Err()).NotTo(HaveOccurred())
-			Expect(lMPOP.Val()).To(Equal([]interface{}{"list", []string{"one"}}))
+			Expect(lMPOP.Val()).To(Equal([]interface{}{"list", []interface{}{"one"}}))
 
 		})
 
