@@ -1,5 +1,9 @@
 ## v9 2023-01-30
 
+### Breaking
+
+- Changed Pipelines to not be thread-safe any more.
+
 ### Added
 
 - Added support for [RESP3](https://github.com/antirez/RESP3/blob/master/spec.md) protocol. It was
@@ -30,7 +34,6 @@
 - Removed `Pipeline.Close` since there is no real need to explicitly manage pipeline resources and
   it can be safely reused via `sync.Pool` etc. `Pipeline.Discard` is still available if you want to
   reset commands for some reason.
-- Changed Pipelines to not be thread-safe any more.
 
 ### Fixed
 
