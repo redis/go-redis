@@ -2179,6 +2179,29 @@ var _ = Describe("Commands", func() {
 			Expect(lIndex.Val()).To(Equal(""))
 		})
 
+		It("should LMPOP", func() {
+			rPush := client.RPush(ctx, "list1", "one")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list1", "two")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list2", "three")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list2", "four")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+
+			lMPOP := client.LMPOP(ctx, "list1", "list2", "LEFT", 1)
+			Expect(lMPOP.Err()).NotTo(HaveOccurred())
+			Expect(lMPOP.Val()).To(Equal([]string{"one", "three"}))
+
+			lRange1 := client.LRange(ctx, "list1", 0, -1)
+			Expect(lRange1.Err()).NotTo(HaveOccurred())
+			Expect(lRange1.Val()).To(Equal([]string{"two"}))
+
+			lRange2 := client.LRange(ctx, "list2", 0, -1)
+			Expect(lRange2.Err()).NotTo(HaveOccurred())
+			Expect(lRange2.Val()).To(Equal([]string{"four"}))
+		})
+
 		It("should LInsert", func() {
 			rPush := client.RPush(ctx, "list", "Hello")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
