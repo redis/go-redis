@@ -134,6 +134,7 @@ type Cmdable interface {
 	Exists(ctx context.Context, keys ...string) *IntCmd
 	Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireTime(ctx context.Context, key string) *DurationCmd
 	ExpireNX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireXX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireGT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
@@ -147,6 +148,7 @@ type Cmdable interface {
 	Persist(ctx context.Context, key string) *BoolCmd
 	PExpire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	PExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PExpireTime(ctx context.Context, key string) *DurationCmd
 	PTTL(ctx context.Context, key string) *DurationCmd
 	RandomKey(ctx context.Context) *StringCmd
 	Rename(ctx context.Context, key, newkey string) *StatusCmd
@@ -223,6 +225,7 @@ type Cmdable interface {
 	LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd
 	LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd
 	LLen(ctx context.Context, key string) *IntCmd
+	LMPop(ctx context.Context, direction string, count int64, keys ...string) *ListElementCmd
 	LPop(ctx context.Context, key string) *StringCmd
 	LPopCount(ctx context.Context, key string, count int) *StringSliceCmd
 	LPos(ctx context.Context, key string, value string, args LPosArgs) *IntCmd
@@ -625,6 +628,12 @@ func (c cmdable) ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCm
 	return cmd
 }
 
+func (c cmdable) ExpireTime(ctx context.Context, key string) *DurationCmd {
+	cmd := NewDurationCmd(ctx, time.Second, "expiretime", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) Keys(ctx context.Context, pattern string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "keys", pattern)
 	_ = c(ctx, cmd)
@@ -689,6 +698,12 @@ func (c cmdable) PExpireAt(ctx context.Context, key string, tm time.Time) *BoolC
 		key,
 		tm.UnixNano()/int64(time.Millisecond),
 	)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) PExpireTime(ctx context.Context, key string) *DurationCmd {
+	cmd := NewDurationCmd(ctx, time.Millisecond, "pexpiretime", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1446,6 +1461,22 @@ func (c cmdable) BRPopLPush(ctx context.Context, source, destination string, tim
 
 func (c cmdable) LIndex(ctx context.Context, key string, index int64) *StringCmd {
 	cmd := NewStringCmd(ctx, "lindex", key, index)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// LMPop Pops one or more elements from the first non-empty list key from the list of provided key names.
+// direction: left or right, count: > 0
+// example: client.LMPop(ctx, "left", 3, "key1", "key2")
+func (c cmdable) LMPop(ctx context.Context, direction string, count int64, keys ...string) *ListElementCmd {
+	args := make([]interface{}, 2+len(keys), 5+len(keys))
+	args[0] = "lmpop"
+	args[1] = len(keys)
+	for i, key := range keys {
+		args[2+i] = key
+	}
+	args = append(args, strings.ToLower(direction), "count", count)
+	cmd := NewListElementCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
