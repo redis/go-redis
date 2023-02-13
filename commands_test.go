@@ -2268,7 +2268,7 @@ var _ = Describe("Commands", func() {
 			err = client.RPush(ctx, "list2", "four").Err()
 			Expect(err).NotTo(HaveOccurred())
 		
-			lMPOP := client.LMPop(ctx, "LEFT", 1, "list1", "list2")
+			lMPOP := client.LMPop(ctx, "LEFT", 1, "list1")
 			Expect(lMPOP.Err()).NotTo(HaveOccurred())
 		
 			result := lMPOP.Val()
