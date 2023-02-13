@@ -19,27 +19,6 @@ type TimeValue struct {
 	time.Time
 }
 
-type ZMPopOption interface {
-	Name() string
-	Value() interface{}
-}
-
-type zmPopCount struct {
-	count int
-}
-
-func (c *zmPopCount) Name() string {
-	return "COUNT"
-}
-
-func (c *zmPopCount) Value() interface{} {
-	return c.count
-}
-
-func ZMPopCount(count int) ZMPopOption {
-	return &zmPopCount{count}
-}
-
 func (t *TimeValue) ScanRedis(s string) (err error) {
 	t.Time, err = time.Parse(time.RFC3339Nano, s)
 	return
@@ -3578,34 +3557,6 @@ var _ = Describe("Commands", func() {
 				Score:  10,
 				Member: "two",
 			}}))
-		})
-
-		It("should ZMPop", func() {
-			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
-			Expect(err).NotTo(HaveOccurred())
-			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
-			Expect(err).NotTo(HaveOccurred())
-			err = client.ZAdd(ctx, "zset", redis.Z{Score: 3, Member: "three"}).Err()
-			Expect(err).NotTo(HaveOccurred())
-
-			zmPop := client.ZMPop(ctx, 2, []string{"zset"}, "MIN", ZMPopCount(1))
-			Expect(zmPop.Err()).NotTo(HaveOccurred())
-			Expect(zmPop.Val()).To(HaveLen(1))
-			Expect(zmPop.Val()[0]).To(Equal("one"))
-
-			zmPop = client.ZMPop(ctx, 2, []string{"zset"}, "MAX", ZMPopCount(2))
-			Expect(zmPop.Err()).NotTo(HaveOccurred())
-			Expect(zmPop.Val()).To(HaveLen(2))
-			Expect(zmPop.Val()[0]).To(Equal("three"))
-			Expect(zmPop.Val()[1]).To(Equal("two"))
-
-			zmPop = client.ZMPop(ctx, 2, []string{"zset"}, "MIN", ZMPopCount(2))
-			Expect(zmPop.Err()).NotTo(HaveOccurred())
-			Expect(zmPop.Val()).To(HaveLen(0))
-
-			zmPop = client.ZMPop(ctx, 2, []string{"zset"}, "MAX", ZMPopCount(2))
-			Expect(zmPop.Err()).NotTo(HaveOccurred())
-			Expect(zmPop.Val()).To(HaveLen(0))
 		})
 
 		It("should ZMScore", func() {
