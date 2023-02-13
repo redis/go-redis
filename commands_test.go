@@ -2280,10 +2280,25 @@ var _ = Describe("Commands", func() {
 			rPush = client.RPush(ctx, "list", "three")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
 
-			lMPOP := client.LMPop(ctx, "LEFT", 1, "list")
-			Expect(lMPOP.Err()).NotTo(HaveOccurred())
-			Expect(lMPOP.Val()).To(Equal([]interface{}{"list", []interface{}{"one"}}))
+			lMPop := client.LMPop(ctx, "LEFT", 1, "list")
+			Expect(lMPop.Err()).NotTo(HaveOccurred())
+			Expect(lMPop.Val()).To(Equal([]interface{}{"list", []interface{}{"one"}}))
 
+	        lMPop = client.LMPop(ctx,"LEFT",1,"non-existing-key")
+			Expect(lMPop.Err()).NotTo(HaveOccurred())
+			Expect(lMPop.Val()).To(Equal(nil))
+
+			rPush = client.RPush(ctx, "list1", "one")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list1", "two")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list1", "three")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+
+
+			lMPop = client.LMPop(ctx,"RIGHT",2,"list1")
+			Expect(lMPop.Err()).NotTo(HaveOccurred())
+			Expect(lMPop.Val()).To(Equal([]interface{}{"list1", []interface{}{"two", "one"}}))
 		})
 
 		It("should LLen", func() {
