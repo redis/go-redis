@@ -3752,3 +3752,68 @@ func (cmd *ListElementCmd) readReply(rd *proto.Reader) (err error) {
 
 	return nil
 }
+
+//------------------------------------------------------------------------------
+
+type ZMPopCmd struct {
+	baseCmd
+
+	key string
+	val []Z
+}
+
+var _ Cmder = (*ZMPopCmd)(nil)
+
+func NewZMPopCmd(ctx context.Context, args ...interface{}) *ZMPopCmd {
+	return &ZMPopCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ZMPopCmd) SetVal(key string, val []Z) {
+	cmd.key = key
+	cmd.val = val
+}
+
+func (cmd *ZMPopCmd) Val() (string, []Z) {
+	return cmd.key, cmd.val
+}
+
+func (cmd *ZMPopCmd) Result() (string, []Z, error) {
+	return cmd.key, cmd.val, cmd.err
+}
+
+func (cmd *ZMPopCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ZMPopCmd) readReply(rd *proto.Reader) (err error) {
+	if err = rd.ReadFixedArrayLen(2); err != nil {
+		return err
+	}
+
+	cmd.key, err = rd.ReadString()
+	if err != nil {
+		return err
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]Z, n)
+	for i := 0; i < n; i++ {
+		if cmd.val[i].Member, err = rd.ReadString(); err != nil {
+			return err
+		}
+
+		if cmd.val[i].Score, err = rd.ReadFloat(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
