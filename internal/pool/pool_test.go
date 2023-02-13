@@ -327,4 +327,30 @@ var _ = Describe("race", func() {
 			}
 		})
 	})
+
+	It("limit the number of connections", func() {
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				return &net.TCPConn{}, nil
+			},
+			PoolSize:     10000,
+			MinIdleConns: 200,
+			PoolTimeout:  3 * time.Second,
+		}
+		p := pool.NewConnPool(opt)
+
+		var wg sync.WaitGroup
+		for i := 0; i < opt.PoolSize; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = p.Get(ctx)
+			}()
+		}
+		wg.Wait()
+
+		stats := p.Stats()
+		Expect(stats.IdleConns).To(Equal(uint32(0)))
+		Expect(stats.TotalConns).To(Equal(uint32(opt.PoolSize)))
+	})
 })
