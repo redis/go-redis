@@ -3690,3 +3690,65 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	return nil
 }
+
+//------------------------------------------------------------------------------
+
+type ListElementCmd struct {
+	baseCmd
+
+	key string
+	val []string
+}
+
+var _ Cmder = (*ListElementCmd)(nil)
+
+func NewListElementCmd(ctx context.Context, args ...interface{}) *ListElementCmd {
+	return &ListElementCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ListElementCmd) SetVal(key string, val []string) {
+	cmd.key = key
+	cmd.val = val
+}
+
+func (cmd *ListElementCmd) Val() (string, []string) {
+	return cmd.key, cmd.val
+}
+
+func (cmd *ListElementCmd) Result() (string, []string, error) {
+	return cmd.key, cmd.val, cmd.err
+}
+
+func (cmd *ListElementCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ListElementCmd) readReply(rd *proto.Reader) (err error) {
+	if err = rd.ReadFixedArrayLen(2); err != nil {
+		return err
+	}
+
+	cmd.key, err = rd.ReadString()
+	if err != nil {
+		return err
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]string, n)
+	for i := 0; i < n; i++ {
+		cmd.val[i], err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
