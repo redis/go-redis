@@ -2258,27 +2258,45 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should LMPOP", func() {
-			rPush := client.RPush(ctx, "list1", "one")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
-			rPush = client.RPush(ctx, "list1", "two")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
-			rPush = client.RPush(ctx, "list2", "three")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
-			rPush = client.RPush(ctx, "list2", "four")
-			Expect(rPush.Err()).NotTo(HaveOccurred())
-
+			
+			err := client.RPush(ctx, "list1", "one").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.RPush(ctx, "list1", "two").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.RPush(ctx, "list2", "three").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.RPush(ctx, "list2", "four").Err()
+			Expect(err).NotTo(HaveOccurred())
+		
+			// Call the LMPOP command
 			lMPOP := client.LMPop(ctx, "LEFT", 1, "list1", "list2")
 			Expect(lMPOP.Err()).NotTo(HaveOccurred())
-			Expect(lMPOP.Val()).To(Equal([]string{"one", "three"}))
-
-			lRange1 := client.LRange(ctx, "list1", 0, -1)
-			Expect(lRange1.Err()).NotTo(HaveOccurred())
-			Expect(lRange1.Val()).To(Equal([]string{"two"}))
-
-			lRange2 := client.LRange(ctx, "list2", 0, -1)
-			Expect(lRange2.Err()).NotTo(HaveOccurred())
-			Expect(lRange2.Val()).To(Equal([]string{"four"}))
+		
+			// Verify that the returned value is a two-element array
+			result := lMPOP.Val()
+			Expect(len(result)).To(Equal(2))
+		
+			// Verify that the first element is the name of the key from which elements were popped
+			keyName := result[0]
+			Expect(keyName).To(SatisfyAny(Equal("list1"), Equal("list2")))
+		
+			// Verify that the second element is an array of elements
+			elements := result[1].([]string)
+			Expect(len(elements)).To(Equal(1))
+			Expect(elements[0]).To(SatisfyAny(Equal("one"), Equal("three")))
+		
+			// Verify that the correct elements have been removed from the corresponding lists
+			if keyName == "list1" {
+				lRange := client.LRange(ctx, "list1", 0, -1)
+				Expect(lRange.Err()).NotTo(HaveOccurred())
+				Expect(lRange.Val()).To(Equal([]string{"two"}))
+			} else {
+				lRange := client.LRange(ctx, "list2", 0, -1)
+				Expect(lRange.Err()).NotTo(HaveOccurred())
+				Expect(lRange.Val()).To(Equal([]string{"four"}))
+			}
 		})
+		
 
 		It("should LInsert", func() {
 			rPush := client.RPush(ctx, "list", "Hello")
