@@ -3703,7 +3703,7 @@ var _ = Describe("Commands", func() {
 
 			key, elems, err = client.ZMPop(ctx, "max", 3, "zset", "zset2").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(key).To(Equal("zset2"))
+			Expect(key).To(Equal("zset"))
 			Expect(elems).To(Equal([]redis.Z{{
 				Score:  3,
 				Member: "three",
