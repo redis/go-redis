@@ -3693,17 +3693,17 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
-type ListElementCmd struct {
+type KeyValuesCmd struct {
 	baseCmd
 
 	key string
 	val []string
 }
 
-var _ Cmder = (*ListElementCmd)(nil)
+var _ Cmder = (*KeyValuesCmd)(nil)
 
-func NewListElementCmd(ctx context.Context, args ...interface{}) *ListElementCmd {
-	return &ListElementCmd{
+func NewKeyValuesCmd(ctx context.Context, args ...interface{}) *KeyValuesCmd {
+	return &KeyValuesCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -3711,24 +3711,24 @@ func NewListElementCmd(ctx context.Context, args ...interface{}) *ListElementCmd
 	}
 }
 
-func (cmd *ListElementCmd) SetVal(key string, val []string) {
+func (cmd *KeyValuesCmd) SetVal(key string, val []string) {
 	cmd.key = key
 	cmd.val = val
 }
 
-func (cmd *ListElementCmd) Val() (string, []string) {
+func (cmd *KeyValuesCmd) Val() (string, []string) {
 	return cmd.key, cmd.val
 }
 
-func (cmd *ListElementCmd) Result() (string, []string, error) {
+func (cmd *KeyValuesCmd) Result() (string, []string, error) {
 	return cmd.key, cmd.val, cmd.err
 }
 
-func (cmd *ListElementCmd) String() string {
+func (cmd *KeyValuesCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ListElementCmd) readReply(rd *proto.Reader) (err error) {
+func (cmd *KeyValuesCmd) readReply(rd *proto.Reader) (err error) {
 	if err = rd.ReadFixedArrayLen(2); err != nil {
 		return err
 	}

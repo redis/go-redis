@@ -2279,25 +2279,25 @@ var _ = Describe("Commands", func() {
 			err = client.LPush(ctx, "list2", "a", "b", "c", "d", "e").Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			key, elems, err := client.LMPop(ctx, "left", 3, "list1", "list2").Result()
+			key, val, err := client.LMPop(ctx, "left", 3, "list1", "list2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(Equal("list1"))
-			Expect(elems).To(Equal([]string{"five", "four", "three"}))
+			Expect(val).To(Equal([]string{"five", "four", "three"}))
 
-			key, elems, err = client.LMPop(ctx, "right", 3, "list1", "list2").Result()
+			key, val, err = client.LMPop(ctx, "right", 3, "list1", "list2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(Equal("list1"))
-			Expect(elems).To(Equal([]string{"one", "two"}))
+			Expect(val).To(Equal([]string{"one", "two"}))
 
-			key, elems, err = client.LMPop(ctx, "left", 1, "list1", "list2").Result()
+			key, val, err = client.LMPop(ctx, "left", 1, "list1", "list2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(Equal("list2"))
-			Expect(elems).To(Equal([]string{"e"}))
+			Expect(val).To(Equal([]string{"e"}))
 
-			key, elems, err = client.LMPop(ctx, "right", 10, "list1", "list2").Result()
+			key, val, err = client.LMPop(ctx, "right", 10, "list1", "list2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(Equal("list2"))
-			Expect(elems).To(Equal([]string{"a", "b", "c", "d"}))
+			Expect(val).To(Equal([]string{"a", "b", "c", "d"}))
 
 			err = client.LMPop(ctx, "left", 10, "list1", "list2").Err()
 			Expect(err).To(Equal(redis.Nil))
