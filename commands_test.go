@@ -2312,6 +2312,81 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(HaveOccurred())
 		})
 
+		It("should BLMPop", func() {
+			err := client.LPush(ctx, "list1", "one", "two", "three", "four", "five").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.LPush(ctx, "list2", "a", "b", "c", "d", "e").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			key, val, err := client.BLMPop(ctx, 0, "left", 3, "list1", "list2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("list1"))
+			Expect(val).To(Equal([]string{"five", "four", "three"}))
+
+			key, val, err = client.BLMPop(ctx, 0, "right", 3, "list1", "list2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("list1"))
+			Expect(val).To(Equal([]string{"one", "two"}))
+
+			key, val, err = client.BLMPop(ctx, 0, "left", 1, "list1", "list2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("list2"))
+			Expect(val).To(Equal([]string{"e"}))
+
+			key, val, err = client.BLMPop(ctx, 0, "right", 10, "list1", "list2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("list2"))
+			Expect(val).To(Equal([]string{"a", "b", "c", "d"}))
+
+		})
+
+		It("should BLMPopBlocks", func() {
+			started := make(chan bool)
+			done := make(chan bool)
+			go func() {
+				defer GinkgoRecover()
+
+				started <- true
+				key, val, err := client.BLMPop(ctx, 0, "left", 1, "list_list").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(key).To(Equal("list_list"))
+				Expect(val).To(Equal([]string{"a"}))
+				done <- true
+			}()
+			<-started
+
+			select {
+			case <-done:
+				Fail("BLMPop is not blocked")
+			case <-time.After(time.Second):
+				//ok
+			}
+
+			_, err := client.LPush(ctx, "list_list", "a").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			select {
+			case <-done:
+				//ok
+			case <-time.After(time.Second):
+				Fail("BLMPop is still blocked")
+			}
+		})
+
+		It("should BLMPop timeout", func() {
+			_, val, err := client.BLMPop(ctx, time.Second, "left", 1, "list1").Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(BeNil())
+
+			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+			stats := client.PoolStats()
+			Expect(stats.Hits).To(Equal(uint32(2)))
+			Expect(stats.Misses).To(Equal(uint32(1)))
+			Expect(stats.Timeouts).To(Equal(uint32(0)))
+		})
+
 		It("should LLen", func() {
 			lPush := client.LPush(ctx, "list", "World")
 			Expect(lPush.Err()).NotTo(HaveOccurred())
