@@ -3679,7 +3679,6 @@ var _ = Describe("Commands", func() {
 
 		It("should ZMPop", func() {
 
-
 			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()

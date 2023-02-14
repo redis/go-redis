@@ -3804,8 +3804,26 @@ func (cmd *ZMPopCmd) readReply(rd *proto.Reader) (err error) {
 	if err != nil {
 		return err
 	}
-	cmd.val = make([]Z, n)
-	for i := 0; i < n; i++ {
+	
+	typ, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+	array := typ == proto.RespArray
+
+	if array {
+		cmd.val = make([]Z, n)
+	} else {
+		cmd.val = make([]Z, n/2)
+	}
+
+	for i := 0; i < len(cmd.val); i++ {
+		if array {
+			if err = rd.ReadFixedArrayLen(2); err != nil {
+				return err
+			}
+		}
+
 		if cmd.val[i].Member, err = rd.ReadString(); err != nil {
 			return err
 		}
