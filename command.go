@@ -3693,17 +3693,21 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
-type ListElementCmd struct {
-	baseCmd
-
-	key string
-	val []string
+type KeyValues struct {
+	Key    string
+	Values []string
 }
 
-var _ Cmder = (*ListElementCmd)(nil)
+type KeyValuesCmd struct {
+	baseCmd
 
-func NewListElementCmd(ctx context.Context, args ...interface{}) *ListElementCmd {
-	return &ListElementCmd{
+	val KeyValues
+}
+
+var _ Cmder = (*KeyValuesCmd)(nil)
+
+func NewKeyValuesCmd(ctx context.Context, args ...interface{}) *KeyValuesCmd {
+	return &KeyValuesCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -3711,29 +3715,28 @@ func NewListElementCmd(ctx context.Context, args ...interface{}) *ListElementCmd
 	}
 }
 
-func (cmd *ListElementCmd) SetVal(key string, val []string) {
-	cmd.key = key
+func (cmd *KeyValuesCmd) SetVal(val KeyValues) {
 	cmd.val = val
 }
 
-func (cmd *ListElementCmd) Val() (string, []string) {
-	return cmd.key, cmd.val
+func (cmd *KeyValuesCmd) Val() KeyValues {
+	return cmd.val
 }
 
-func (cmd *ListElementCmd) Result() (string, []string, error) {
-	return cmd.key, cmd.val, cmd.err
+func (cmd *KeyValuesCmd) Result() (KeyValues, error) {
+	return cmd.val, cmd.err
 }
 
-func (cmd *ListElementCmd) String() string {
+func (cmd *KeyValuesCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ListElementCmd) readReply(rd *proto.Reader) (err error) {
+func (cmd *KeyValuesCmd) readReply(rd *proto.Reader) (err error) {
 	if err = rd.ReadFixedArrayLen(2); err != nil {
 		return err
 	}
 
-	cmd.key, err = rd.ReadString()
+	cmd.val.Key, err = rd.ReadString()
 	if err != nil {
 		return err
 	}
@@ -3742,9 +3745,9 @@ func (cmd *ListElementCmd) readReply(rd *proto.Reader) (err error) {
 	if err != nil {
 		return err
 	}
-	cmd.val = make([]string, n)
+	cmd.val.Values = make([]string, n)
 	for i := 0; i < n; i++ {
-		cmd.val[i], err = rd.ReadString()
+		cmd.val.Values[i], err = rd.ReadString()
 		if err != nil {
 			return err
 		}
