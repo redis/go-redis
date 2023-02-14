@@ -3777,7 +3777,7 @@ var _ = Describe("Commands", func() {
 			}}))
 
 			_, _, err = client.ZMPop(ctx, "min", 1, "nosuchkey").Result()
-			Expect(err.Error()).To(Equal("redis: nil"))
+			Expect(err).To(Equal(redis.Nil))
 
 			err = client.ZAdd(ctx, "myzset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
