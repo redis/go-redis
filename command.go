@@ -3701,7 +3701,7 @@ type KeyValues struct {
 type KeyValuesCmd struct {
 	baseCmd
 
-	val KeyValues
+	val *KeyValues
 }
 
 var _ Cmder = (*KeyValuesCmd)(nil)
@@ -3715,15 +3715,15 @@ func NewKeyValuesCmd(ctx context.Context, args ...interface{}) *KeyValuesCmd {
 	}
 }
 
-func (cmd *KeyValuesCmd) SetVal(val KeyValues) {
+func (cmd *KeyValuesCmd) SetVal(val *KeyValues) {
 	cmd.val = val
 }
 
-func (cmd *KeyValuesCmd) Val() KeyValues {
+func (cmd *KeyValuesCmd) Val() *KeyValues {
 	return cmd.val
 }
 
-func (cmd *KeyValuesCmd) Result() (KeyValues, error) {
+func (cmd *KeyValuesCmd) Result() (*KeyValues, error) {
 	return cmd.val, cmd.err
 }
 
@@ -3736,6 +3736,7 @@ func (cmd *KeyValuesCmd) readReply(rd *proto.Reader) (err error) {
 		return err
 	}
 
+	cmd.val = &KeyValues{}
 	cmd.val.Key, err = rd.ReadString()
 	if err != nil {
 		return err
