@@ -3693,15 +3693,11 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
-type KeyValues struct {
-	Key    string
-	Values []string
-}
-
 type KeyValuesCmd struct {
 	baseCmd
 
-	val *KeyValues
+	key string
+	val []string
 }
 
 var _ Cmder = (*KeyValuesCmd)(nil)
@@ -3715,16 +3711,17 @@ func NewKeyValuesCmd(ctx context.Context, args ...interface{}) *KeyValuesCmd {
 	}
 }
 
-func (cmd *KeyValuesCmd) SetVal(val *KeyValues) {
+func (cmd *KeyValuesCmd) SetVal(key string, val []string) {
+	cmd.key = key
 	cmd.val = val
 }
 
-func (cmd *KeyValuesCmd) Val() *KeyValues {
-	return cmd.val
+func (cmd *KeyValuesCmd) Val() (string, []string) {
+	return cmd.key, cmd.val
 }
 
-func (cmd *KeyValuesCmd) Result() (*KeyValues, error) {
-	return cmd.val, cmd.err
+func (cmd *KeyValuesCmd) Result() (string, []string, error) {
+	return cmd.key, cmd.val, cmd.err
 }
 
 func (cmd *KeyValuesCmd) String() string {
@@ -3736,8 +3733,7 @@ func (cmd *KeyValuesCmd) readReply(rd *proto.Reader) (err error) {
 		return err
 	}
 
-	cmd.val = &KeyValues{}
-	cmd.val.Key, err = rd.ReadString()
+	cmd.key, err = rd.ReadString()
 	if err != nil {
 		return err
 	}
@@ -3746,9 +3742,9 @@ func (cmd *KeyValuesCmd) readReply(rd *proto.Reader) (err error) {
 	if err != nil {
 		return err
 	}
-	cmd.val.Values = make([]string, n)
+	cmd.val = make([]string, n)
 	for i := 0; i < n; i++ {
-		cmd.val.Values[i], err = rd.ReadString()
+		cmd.val[i], err = rd.ReadString()
 		if err != nil {
 			return err
 		}
