@@ -218,7 +218,7 @@ type Cmdable interface {
 	HRandFieldWithValues(ctx context.Context, key string, count int) *KeyValueSliceCmd
 
 	BLPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
-	BLMPop(ctx context.Context, timeout time.Duration, direction string, count int64, keys ...string) *ListElementCmd
+	BLMPop(ctx context.Context, timeout time.Duration, direction string, count int64, keys ...string) *KeyValuesCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPopLPush(ctx context.Context, source, destination string, timeout time.Duration) *StringCmd
 	LIndex(ctx context.Context, key string, index int64) *StringCmd
@@ -1433,7 +1433,7 @@ func (c cmdable) BLPop(ctx context.Context, timeout time.Duration, keys ...strin
 	return cmd
 }
 
-func (c cmdable) BLMPop(ctx context.Context, timeout time.Duration, direction string, count int64, keys ...string) *ListElementCmd {
+func (c cmdable) BLMPop(ctx context.Context, timeout time.Duration, direction string, count int64, keys ...string) *KeyValuesCmd {
 	args := make([]interface{}, 3+len(keys), 6+len(keys))
 	args[0] = "blmpop"
 	args[1] = formatSec(ctx, timeout)
@@ -1442,7 +1442,7 @@ func (c cmdable) BLMPop(ctx context.Context, timeout time.Duration, direction st
 		args[3+i] = key
 	}
 	args = append(args, strings.ToLower(direction), "count", count)
-	cmd := NewListElementCmd(ctx, args...)
+	cmd := NewKeyValuesCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd

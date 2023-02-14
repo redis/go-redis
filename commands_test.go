@@ -2319,25 +2319,25 @@ var _ = Describe("Commands", func() {
 			err = client.LPush(ctx, "list2", "a", "b", "c", "d", "e").Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			key, elems, err := client.BLMPop(ctx, 0, "left", 3, "list1", "list2").Result()
+			key, val, err := client.BLMPop(ctx, 0, "left", 3, "list1", "list2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(Equal("list1"))
-			Expect(elems).To(Equal([]string{"five", "four", "three"}))
+			Expect(val).To(Equal([]string{"five", "four", "three"}))
 
-			key, elems, err = client.BLMPop(ctx, 0, "right", 3, "list1", "list2").Result()
+			key, val, err = client.BLMPop(ctx, 0, "right", 3, "list1", "list2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(Equal("list1"))
-			Expect(elems).To(Equal([]string{"one", "two"}))
+			Expect(val).To(Equal([]string{"one", "two"}))
 
-			key, elems, err = client.BLMPop(ctx, 0, "left", 1, "list1", "list2").Result()
+			key, val, err = client.BLMPop(ctx, 0, "left", 1, "list1", "list2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(Equal("list2"))
-			Expect(elems).To(Equal([]string{"e"}))
+			Expect(val).To(Equal([]string{"e"}))
 
-			key, elems, err = client.BLMPop(ctx, 0, "right", 10, "list1", "list2").Result()
+			key, val, err = client.BLMPop(ctx, 0, "right", 10, "list1", "list2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(Equal("list2"))
-			Expect(elems).To(Equal([]string{"a", "b", "c", "d"}))
+			Expect(val).To(Equal([]string{"a", "b", "c", "d"}))
 
 		})
 
@@ -2348,10 +2348,10 @@ var _ = Describe("Commands", func() {
 				defer GinkgoRecover()
 
 				started <- true
-				key, elems, err := client.BLMPop(ctx, 0, "left", 1, "list_list").Result()
+				key, val, err := client.BLMPop(ctx, 0, "left", 1, "list_list").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(key).To(Equal("list_list"))
-				Expect(elems).To(Equal([]string{"a"}))
+				Expect(val).To(Equal([]string{"a"}))
 				done <- true
 			}()
 			<-started
@@ -2375,9 +2375,9 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BLMPop timeout", func() {
-			_, elems, err := client.BLMPop(ctx, time.Second, "left", 1, "list1").Result()
+			_, val, err := client.BLMPop(ctx, time.Second, "left", 1, "list1").Result()
 			Expect(err).To(Equal(redis.Nil))
-			Expect(elems).To(BeNil())
+			Expect(val).To(BeNil())
 
 			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 
