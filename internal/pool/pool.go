@@ -112,18 +112,25 @@ func (p *ConnPool) checkMinIdleConns() {
 		return
 	}
 	for p.poolSize < p.cfg.PoolSize && p.idleConnsLen < p.cfg.MinIdleConns {
-		p.poolSize++
-		p.idleConnsLen++
+		select {
+		case p.queue <- struct{}{}:
+			p.poolSize++
+			p.idleConnsLen++
 
-		go func() {
-			err := p.addIdleConn()
-			if err != nil && err != ErrClosed {
-				p.connsMu.Lock()
-				p.poolSize--
-				p.idleConnsLen--
-				p.connsMu.Unlock()
-			}
-		}()
+			go func() {
+				err := p.addIdleConn()
+				if err != nil && err != ErrClosed {
+					p.connsMu.Lock()
+					p.poolSize--
+					p.idleConnsLen--
+					p.connsMu.Unlock()
+				}
+
+				p.freeTurn()
+			}()
+		default:
+			return
+		}
 	}
 }
 
@@ -401,6 +408,7 @@ func (p *ConnPool) removeConn(cn *Conn) {
 			break
 		}
 	}
+	atomic.AddUint32(&p.stats.StaleConns, 1)
 }
 
 func (p *ConnPool) closeConn(cn *Conn) error {
