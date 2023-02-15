@@ -3755,17 +3755,17 @@ func (cmd *KeyValuesCmd) readReply(rd *proto.Reader) (err error) {
 
 //------------------------------------------------------------------------------
 
-type ZMPopCmd struct {
+type ZArrayWithKeyCmd struct {
 	baseCmd
 
 	key string
 	val []Z
 }
 
-var _ Cmder = (*ZMPopCmd)(nil)
+var _ Cmder = (*ZArrayWithKeyCmd)(nil)
 
-func NewZMPopCmd(ctx context.Context, args ...interface{}) *ZMPopCmd {
-	return &ZMPopCmd{
+func NewZArrayWithKeyCmd(ctx context.Context, args ...interface{}) *ZArrayWithKeyCmd {
+	return &ZArrayWithKeyCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -3773,24 +3773,24 @@ func NewZMPopCmd(ctx context.Context, args ...interface{}) *ZMPopCmd {
 	}
 }
 
-func (cmd *ZMPopCmd) SetVal(key string, val []Z) {
+func (cmd *ZArrayWithKeyCmd) SetVal(key string, val []Z) {
 	cmd.key = key
 	cmd.val = val
 }
 
-func (cmd *ZMPopCmd) Val() (string, []Z) {
+func (cmd *ZArrayWithKeyCmd) Val() (string, []Z) {
 	return cmd.key, cmd.val
 }
 
-func (cmd *ZMPopCmd) Result() (string, []Z, error) {
+func (cmd *ZArrayWithKeyCmd) Result() (string, []Z, error) {
 	return cmd.key, cmd.val, cmd.err
 }
 
-func (cmd *ZMPopCmd) String() string {
+func (cmd *ZArrayWithKeyCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ZMPopCmd) readReply(rd *proto.Reader) (err error) {
+func (cmd *ZArrayWithKeyCmd) readReply(rd *proto.Reader) (err error) {
 	if err = rd.ReadFixedArrayLen(2); err != nil {
 		return err
 	}
@@ -3804,7 +3804,7 @@ func (cmd *ZMPopCmd) readReply(rd *proto.Reader) (err error) {
 	if err != nil {
 		return err
 	}
-	
+
 	typ, err := rd.PeekReplyType()
 	if err != nil {
 		return err
