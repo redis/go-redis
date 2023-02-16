@@ -14,7 +14,9 @@ func (cn *Conn) NetConn() net.Conn {
 }
 
 func (p *ConnPool) CheckMinIdleConns() {
+	p.connsMu.Lock()
 	p.checkMinIdleConns()
+	p.connsMu.Unlock()
 }
 
 func (p *ConnPool) QueueLen() int {
