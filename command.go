@@ -2057,7 +2057,7 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 				}
 			case "lag":
 				group.Lag, err = rd.ReadInt()
-				if err != nil {
+				if err != nil && err != Nil {
 					return err
 				}
 			default:
@@ -2367,7 +2367,7 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 				}
 			case "lag":
 				group.Lag, err = rd.ReadInt()
-				if err != nil {
+				if err != nil && err != Nil {
 					return nil, err
 				}
 			case "pel-count":
