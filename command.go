@@ -2912,15 +2912,6 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 	cmd.val = make([]ClusterShard, n)
 
 	for i := 0; i < len(cmd.val); i++ {
-		m, err := rd.ReadMapLen()
-		if err != nil {
-			return err
-		}
-
-		if m < 2 {
-			return fmt.Errorf("got %d field, expected 2 fields", m)
-		}
-
 		//Get slots ranges data
 		slotsKey, err := rd.ReadString()
 		if err != nil {
