@@ -18,9 +18,17 @@ import (
 
 rdb := rdb.NewClient(&rdb.Options{...})
 
-rdb.AddHook(redisotel.NewTracingHook())
+// Enable tracing instrumentation.
+if err := redisotel.InstrumentTracing(rdb); err != nil {
+	panic(err)
+}
+
+// Enable metrics instrumentation.
+if err := redisotel.InstrumentMetrics(rdb); err != nil {
+	panic(err)
+}
 ```
 
-See [example](example) and
+See [example](../../example/otel) and
 [Monitoring Go Redis Performance and Errors](https://redis.uptrace.dev/guide/go-redis-monitoring.html)
 for details.

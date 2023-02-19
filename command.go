@@ -2057,7 +2057,7 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 				}
 			case "lag":
 				group.Lag, err = rd.ReadInt()
-				if err != nil {
+				if err != nil && err != Nil {
 					return err
 				}
 			default:
@@ -2367,7 +2367,7 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 				}
 			case "lag":
 				group.Lag, err = rd.ReadInt()
-				if err != nil {
+				if err != nil && err != Nil {
 					return nil, err
 				}
 			case "pel-count":
@@ -3688,5 +3688,67 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 			cmd.val[i][k] = v
 		}
 	}
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type KeyValuesCmd struct {
+	baseCmd
+
+	key string
+	val []string
+}
+
+var _ Cmder = (*KeyValuesCmd)(nil)
+
+func NewKeyValuesCmd(ctx context.Context, args ...interface{}) *KeyValuesCmd {
+	return &KeyValuesCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *KeyValuesCmd) SetVal(key string, val []string) {
+	cmd.key = key
+	cmd.val = val
+}
+
+func (cmd *KeyValuesCmd) Val() (string, []string) {
+	return cmd.key, cmd.val
+}
+
+func (cmd *KeyValuesCmd) Result() (string, []string, error) {
+	return cmd.key, cmd.val, cmd.err
+}
+
+func (cmd *KeyValuesCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *KeyValuesCmd) readReply(rd *proto.Reader) (err error) {
+	if err = rd.ReadFixedArrayLen(2); err != nil {
+		return err
+	}
+
+	cmd.key, err = rd.ReadString()
+	if err != nil {
+		return err
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]string, n)
+	for i := 0; i < n; i++ {
+		cmd.val[i], err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
