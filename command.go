@@ -2862,6 +2862,124 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 
 //------------------------------------------------------------------------------
 
+type SlotsRanges []int64
+type NodeMetadata map[string]string
+
+type ClusterShard struct {
+	SlotsMap map[string]SlotsRanges
+	NodesMap map[string]NodeMetadata
+}
+
+type ClusterShardsCmd struct {
+	baseCmd
+
+	val []ClusterShard
+}
+
+func NewClusterShardsCmd(ctx context.Context, args ...interface{}) *ClusterShardsCmd {
+	return &ClusterShardsCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+var _ Cmder = (*ClusterShardsCmd)(nil)
+
+func (cmd *ClusterShardsCmd) SetVal(val []ClusterShard) {
+	cmd.val = val
+}
+
+func (cmd *ClusterShardsCmd) Val() []ClusterShard {
+	return cmd.val
+}
+
+func (cmd *ClusterShardsCmd) Result() ([]ClusterShard, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *ClusterShardsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([]ClusterShard, n)
+
+	for i := 0; i < len(cmd.val); i++ {
+		m, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+
+		if m < 2 {
+			return fmt.Errorf("got %d field, expected 2 fields", m)
+		}
+
+		//Get slots ranges data
+		slotsKey, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		slotsRangesMap := make(map[string]SlotsRanges)
+
+		rangesSlice, err := rd.ReadSlice()
+		if err != nil {
+			return err
+		}
+
+		slotsRanges := make(SlotsRanges, len(rangesSlice))
+		for ind, iface := range rangesSlice {
+			val, err := toInt64(iface)
+			if err != nil {
+				return err
+			}
+			slotsRanges[ind] = val
+		}
+		slotsRangesMap[slotsKey] = slotsRanges
+
+		//Get nodes data
+		nodesKey, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		nodesLen, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		nodesMap := make(map[string]NodeMetadata)
+		nodes := make(NodeMetadata, nodesLen)
+		for ind := 0; ind < nodesLen; ind++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			value, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			nodes[key] = value
+		}
+
+		nodesMap[nodesKey] = nodes
+
+		cmd.val[i] = ClusterShard{
+			SlotsMap: slotsRangesMap,
+			NodesMap: nodesMap,
+		}
+	}
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
 // GeoLocation is used with GeoAdd to add geospatial location.
 type GeoLocation struct {
 	Name                      string

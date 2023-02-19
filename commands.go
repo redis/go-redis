@@ -400,6 +400,7 @@ type Cmdable interface {
 	PubSubShardNumSub(ctx context.Context, channels ...string) *MapStringIntCmd
 
 	ClusterSlots(ctx context.Context) *ClusterSlotsCmd
+	ClusterShards(ctx context.Context) *ClusterShardsCmd
 	ClusterNodes(ctx context.Context) *StringCmd
 	ClusterMeet(ctx context.Context, host, port string) *StatusCmd
 	ClusterForget(ctx context.Context, nodeID string) *StatusCmd
@@ -3283,6 +3284,12 @@ func (c cmdable) PubSubNumPat(ctx context.Context) *IntCmd {
 
 func (c cmdable) ClusterSlots(ctx context.Context) *ClusterSlotsCmd {
 	cmd := NewClusterSlotsCmd(ctx, "cluster", "slots")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ClusterShards(ctx context.Context) *ClusterShardsCmd {
+	cmd := NewClusterShardsCmd(ctx, "cluster", "shards")
 	_ = c(ctx, cmd)
 	return cmd
 }
