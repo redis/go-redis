@@ -680,13 +680,6 @@ var _ = Describe("ClusterClient", func() {
 			Expect(assertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
 		})
 
-		It("should CLUSTER SHARDS", func() {
-			res, err := client.ClusterShards(ctx).Result()
-			if err != nil {
-				fmt.Println(err.Error())
-			}
-			fmt.Println(res)
-		})
 		It("should cluster client setname", func() {
 			err := client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
 				return c.Ping(ctx).Err()
