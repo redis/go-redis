@@ -3755,17 +3755,17 @@ func (cmd *KeyValuesCmd) readReply(rd *proto.Reader) (err error) {
 
 //------------------------------------------------------------------------------
 
-type ZArrayWithKeyCmd struct {
+type ZSliceWithKeyCmd struct {
 	baseCmd
 
 	key string
 	val []Z
 }
 
-var _ Cmder = (*ZArrayWithKeyCmd)(nil)
+var _ Cmder = (*ZSliceWithKeyCmd)(nil)
 
-func NewZArrayWithKeyCmd(ctx context.Context, args ...interface{}) *ZArrayWithKeyCmd {
-	return &ZArrayWithKeyCmd{
+func NewZSliceWithKeyCmd(ctx context.Context, args ...interface{}) *ZSliceWithKeyCmd {
+	return &ZSliceWithKeyCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -3773,24 +3773,24 @@ func NewZArrayWithKeyCmd(ctx context.Context, args ...interface{}) *ZArrayWithKe
 	}
 }
 
-func (cmd *ZArrayWithKeyCmd) SetVal(key string, val []Z) {
+func (cmd *ZSliceWithKeyCmd) SetVal(key string, val []Z) {
 	cmd.key = key
 	cmd.val = val
 }
 
-func (cmd *ZArrayWithKeyCmd) Val() (string, []Z) {
+func (cmd *ZSliceWithKeyCmd) Val() (string, []Z) {
 	return cmd.key, cmd.val
 }
 
-func (cmd *ZArrayWithKeyCmd) Result() (string, []Z, error) {
+func (cmd *ZSliceWithKeyCmd) Result() (string, []Z, error) {
 	return cmd.key, cmd.val, cmd.err
 }
 
-func (cmd *ZArrayWithKeyCmd) String() string {
+func (cmd *ZSliceWithKeyCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *ZArrayWithKeyCmd) readReply(rd *proto.Reader) (err error) {
+func (cmd *ZSliceWithKeyCmd) readReply(rd *proto.Reader) (err error) {
 	if err = rd.ReadFixedArrayLen(2); err != nil {
 		return err
 	}
