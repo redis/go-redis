@@ -2473,6 +2473,10 @@ func (c cmdable) ZInterCard(ctx context.Context, limit int64, keys ...string) *I
 	_ = c(ctx, cmd)
 	return cmd
 }
+
+// ZMPop Pops one or more elements with the highest or lowest score from the first non-empty sorted set key from the list of provided key names.
+// direction: "max" (highest score) or "min" (lowest score), count: > 0
+// example: client.ZMPop(ctx, "max", 5, "set1", "set2")
 func (c cmdable) ZMPop(ctx context.Context, order string, count int64, keys ...string) *ZSliceWithKeyCmd {
 	args := make([]interface{}, 2+len(keys), 5+len(keys))
 	args[0] = "zmpop"
