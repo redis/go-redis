@@ -486,6 +486,10 @@ func (p *ConnPool) Close() error {
 func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 	now := time.Now()
 
+	if cn.watching {
+		return false
+	}
+
 	if p.cfg.ConnMaxLifetime > 0 && now.Sub(cn.createdAt) >= p.cfg.ConnMaxLifetime {
 		return false
 	}

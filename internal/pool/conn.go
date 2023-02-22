@@ -10,7 +10,11 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-var noDeadline = time.Time{}
+var (
+	// aLongTimeAgo is a non-zero time, used to immediately unblock the network.
+	aLongTimeAgo = time.Unix(1, 0)
+	noDeadline   = time.Time{}
+)
 
 type Conn struct {
 	usedAt  int64 // atomic
@@ -23,6 +27,12 @@ type Conn struct {
 	Inited    bool
 	pooled    bool
 	createdAt time.Time
+
+	_closed    int32 // atomic
+	closeChan  chan struct{}
+	watchChan  chan context.Context
+	finishChan chan struct{}
+	watching   bool
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -34,7 +44,62 @@ func NewConn(netConn net.Conn) *Conn {
 	cn.bw = bufio.NewWriter(netConn)
 	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
+
+	cn.finishChan = make(chan struct{})
+	cn.closeChan = make(chan struct{})
+	cn.watchChan = make(chan context.Context, 1)
+
+	go cn.loopWatcher()
+
 	return cn
+}
+
+func (cn *Conn) loopWatcher() {
+	var ctx context.Context
+	for {
+		select {
+		case ctx = <-cn.watchChan:
+		case <-cn.closeChan:
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			_ = cn.netConn.SetDeadline(aLongTimeAgo)
+		case <-cn.finishChan:
+		case <-cn.closeChan:
+			return
+		}
+	}
+}
+
+func (cn *Conn) WatchFinish() {
+	if !cn.watching || cn.finishChan == nil {
+		return
+	}
+	select {
+	case cn.finishChan <- struct{}{}:
+		cn.watching = false
+	case <-cn.closeChan:
+	}
+}
+
+func (cn *Conn) WatchCancel(ctx context.Context) error {
+	if cn.watching {
+		panic("repeat watchCancel")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if ctx.Done() == nil {
+		return nil
+	}
+
+	cn.watching = true
+	cn.watchChan <- ctx
+	return nil
 }
 
 func (cn *Conn) UsedAt() time.Time {
@@ -95,7 +160,11 @@ func (cn *Conn) WithWriter(
 }
 
 func (cn *Conn) Close() error {
-	return cn.netConn.Close()
+	if atomic.CompareAndSwapInt32(&cn._closed, 0, 1) {
+		close(cn.closeChan)
+		return cn.netConn.Close()
+	}
+	return nil
 }
 
 func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
