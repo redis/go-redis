@@ -299,6 +299,7 @@ type Cmdable interface {
 
 	BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
 	BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
+	BZMPop(ctx context.Context, timeout time.Duration, order string, count int64, keys ...string) *ZSliceWithKeyCmd
 
 	ZAdd(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddNX(ctx context.Context, key string, members ...Z) *IntCmd
@@ -2323,6 +2324,21 @@ func (c cmdable) BZPopMin(ctx context.Context, timeout time.Duration, keys ...st
 	}
 	args[len(args)-1] = formatSec(ctx, timeout)
 	cmd := NewZWithKeyCmd(ctx, args...)
+	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BZMPop(ctx context.Context, timeout time.Duration, order string, count int64, keys ...string) *ZSliceWithKeyCmd {
+	args := make([]interface{}, 3+len(keys), 6+len(keys))
+	args[0] = "bzmpop"
+	args[1] = formatSec(ctx, timeout)
+	args[2] = len(keys)
+	for i, key := range keys {
+		args[3+i] = key
+	}
+	args = append(args, strings.ToLower(order), "count", count)
+	cmd := NewZSliceWithKeyCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd
