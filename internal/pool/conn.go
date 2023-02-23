@@ -28,11 +28,12 @@ type Conn struct {
 	pooled    bool
 	createdAt time.Time
 
-	_closed    int32 // atomic
-	closeChan  chan struct{}
-	watchChan  chan context.Context
-	finishChan chan struct{}
-	watching   bool
+	_closed       int32 // atomic
+	closeChan     chan struct{}
+	watchChan     chan context.Context
+	finishChan    chan struct{}
+	interruptChan chan error
+	watching      bool
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -45,8 +46,9 @@ func NewConn(netConn net.Conn) *Conn {
 	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
 
-	cn.finishChan = make(chan struct{})
 	cn.closeChan = make(chan struct{})
+	cn.interruptChan = make(chan error)
+	cn.finishChan = make(chan struct{})
 	cn.watchChan = make(chan context.Context, 1)
 
 	go cn.loopWatcher()
@@ -66,6 +68,7 @@ func (cn *Conn) loopWatcher() {
 		select {
 		case <-ctx.Done():
 			_ = cn.netConn.SetDeadline(aLongTimeAgo)
+			cn.interruptChan <- ctx.Err()
 		case <-cn.finishChan:
 		case <-cn.closeChan:
 			return
@@ -73,15 +76,20 @@ func (cn *Conn) loopWatcher() {
 	}
 }
 
-func (cn *Conn) WatchFinish() {
+func (cn *Conn) WatchFinish() error {
 	if !cn.watching || cn.finishChan == nil {
-		return
+		return nil
 	}
+
+	var err error
 	select {
 	case cn.finishChan <- struct{}{}:
 		cn.watching = false
+	case err = <-cn.interruptChan:
+		cn.watching = false
 	case <-cn.closeChan:
 	}
+	return err
 }
 
 func (cn *Conn) WatchCancel(ctx context.Context) error {
@@ -167,25 +175,12 @@ func (cn *Conn) Close() error {
 	return nil
 }
 
-func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
+func (cn *Conn) deadline(_ context.Context, timeout time.Duration) time.Time {
 	tm := time.Now()
 	cn.SetUsedAt(tm)
 
 	if timeout > 0 {
 		tm = tm.Add(timeout)
-	}
-
-	if ctx != nil {
-		deadline, ok := ctx.Deadline()
-		if ok {
-			if timeout == 0 {
-				return deadline
-			}
-			if deadline.Before(tm) {
-				return deadline
-			}
-			return tm
-		}
 	}
 
 	if timeout > 0 {

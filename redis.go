@@ -336,20 +336,26 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 
 func (c *baseClient) withConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
-) error {
+) (retErr error) {
 	cn, err := c.getConn(ctx)
 	if err != nil {
 		return err
 	}
 
-	var fnErr error
 	defer func() {
-		c.releaseConn(ctx, cn, fnErr)
+		if err = cn.WatchFinish(); err != nil {
+			retErr = err
+		}
+		c.releaseConn(ctx, cn, retErr)
 	}()
 
-	fnErr = fn(ctx, cn)
+	if retErr = cn.WatchCancel(c.context(ctx)); retErr != nil {
+		return retErr
+	}
 
-	return fnErr
+	retErr = fn(ctx, cn)
+
+	return retErr
 }
 
 func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -380,19 +386,14 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 
 	retryTimeout := uint32(0)
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-		if err := cn.WatchCancel(ctx); err != nil {
-			return err
-		}
-		defer cn.WatchFinish()
-
-		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 			return writeCmd(wr, cmd)
 		}); err != nil {
 			atomic.StoreUint32(&retryTimeout, 1)
 			return err
 		}
 
-		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), cmd.readReply); err != nil {
+		if err := cn.WithReader(ctx, c.cmdTimeout(cmd), cmd.readReply); err != nil {
 			if cmd.readTimeout() == nil {
 				atomic.StoreUint32(&retryTimeout, 1)
 			} else {
