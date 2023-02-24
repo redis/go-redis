@@ -77,7 +77,7 @@ func (cn *Conn) loopWatcher() {
 }
 
 func (cn *Conn) WatchFinish() error {
-	if !cn.watching || cn.finishChan == nil {
+	if !cn.watching {
 		return nil
 	}
 
@@ -96,12 +96,13 @@ func (cn *Conn) WatchCancel(ctx context.Context) error {
 	if cn.watching {
 		panic("repeat watchCancel")
 	}
-
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
 	if ctx.Done() == nil {
+		return nil
+	}
+	if cn.closed() {
 		return nil
 	}
 
@@ -167,6 +168,10 @@ func (cn *Conn) WithWriter(
 	return cn.bw.Flush()
 }
 
+func (cn *Conn) closed() bool {
+	return atomic.LoadInt32(&cn._closed) == 1
+}
+
 func (cn *Conn) Close() error {
 	if atomic.CompareAndSwapInt32(&cn._closed, 0, 1) {
 		close(cn.closeChan)
@@ -180,11 +185,7 @@ func (cn *Conn) deadline(_ context.Context, timeout time.Duration) time.Time {
 	cn.SetUsedAt(tm)
 
 	if timeout > 0 {
-		tm = tm.Add(timeout)
-	}
-
-	if timeout > 0 {
-		return tm
+		return tm.Add(timeout)
 	}
 
 	return noDeadline

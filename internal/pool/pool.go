@@ -354,7 +354,7 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		return
 	}
 
-	if !cn.pooled {
+	if !cn.pooled || cn.watching {
 		p.Remove(ctx, cn, nil)
 		return
 	}

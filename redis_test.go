@@ -531,3 +531,34 @@ var _ = Describe("Hook", func() {
 		}))
 	})
 })
+
+var _ = Describe("Watch Context.Done", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		opt := redisOptions()
+		opt.ReadTimeout = 10 * time.Second
+		opt.WriteTimeout = 10 * time.Second
+		opt.PoolTimeout = 10 * time.Second
+		opt.ContextTimeoutEnabled = true
+
+		client = redis.NewClient(opt)
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should cancel", func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(1 * time.Second)
+			cancel()
+		}()
+
+		err := client.BLPop(ctx, 10*time.Second, "key1").Err()
+		Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+	})
+})

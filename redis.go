@@ -342,16 +342,16 @@ func (c *baseClient) withConn(
 		return err
 	}
 
+	if retErr = cn.WatchCancel(c.context(ctx)); retErr != nil {
+		return retErr
+	}
+
 	defer func() {
 		if err = cn.WatchFinish(); err != nil {
 			retErr = err
 		}
 		c.releaseConn(ctx, cn, retErr)
 	}()
-
-	if retErr = cn.WatchCancel(c.context(ctx)); retErr != nil {
-		return retErr
-	}
 
 	retErr = fn(ctx, cn)
 

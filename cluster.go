@@ -1279,7 +1279,7 @@ func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool 
 func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
-	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) (retErr error) {
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
@@ -1287,20 +1287,26 @@ func (c *ClusterClient) processPipelineNode(
 			return err
 		}
 
-		var processErr error
-		defer func() {
-			node.Client.releaseConn(ctx, cn, processErr)
-		}()
-		processErr = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+		if retErr = cn.WatchCancel(c.context(ctx)); retErr != nil {
+			return retErr
+		}
 
-		return processErr
+		defer func() {
+			if err = cn.WatchFinish(); err != nil {
+				retErr = err
+			}
+			node.Client.releaseConn(ctx, cn, retErr)
+		}()
+		retErr = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+
+		return retErr
 	})
 }
 
 func (c *ClusterClient) processPipelineNodeConn(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
-	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+	if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
 	}); err != nil {
 		if shouldRetry(err, true) {
@@ -1310,7 +1316,7 @@ func (c *ClusterClient) processPipelineNodeConn(
 		return err
 	}
 
-	return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		return c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
 	})
 }
@@ -1460,7 +1466,7 @@ func (c *ClusterClient) processTxPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
 	cmds = wrapMultiExec(ctx, cmds)
-	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) (retErr error) {
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
@@ -1468,20 +1474,26 @@ func (c *ClusterClient) processTxPipelineNode(
 			return err
 		}
 
-		var processErr error
-		defer func() {
-			node.Client.releaseConn(ctx, cn, processErr)
-		}()
-		processErr = c.processTxPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+		if retErr = cn.WatchCancel(c.context(ctx)); retErr != nil {
+			return retErr
+		}
 
-		return processErr
+		defer func() {
+			if err = cn.WatchFinish(); err != nil {
+				retErr = err
+			}
+			node.Client.releaseConn(ctx, cn, retErr)
+		}()
+		retErr = c.processTxPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+
+		return retErr
 	})
 }
 
 func (c *ClusterClient) processTxPipelineNodeConn(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
-	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+	if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
 	}); err != nil {
 		if shouldRetry(err, true) {
@@ -1491,7 +1503,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 		return err
 	}
 
-	return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		statusCmd := cmds[0].(*StatusCmd)
 		// Trim multi and exec.
 		trimmedCmds := cmds[1 : len(cmds)-1]
