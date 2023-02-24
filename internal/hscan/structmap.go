@@ -89,7 +89,7 @@ func (s StructValue) Scan(key string, value string) error {
 	}
 
 	v := s.value.Field(field.index)
-	isPtr := v.Kind() == reflect.Pointer
+	isPtr := v.Kind() == reflect.Ptr
 
 	if isPtr && v.IsNil() {
 		v.Set(reflect.New(v.Type().Elem()))
