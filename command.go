@@ -2057,6 +2057,9 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 				}
 			case "lag":
 				group.Lag, err = rd.ReadInt()
+
+				// lag: the number of entries in the stream that are still waiting to be delivered
+				// to the group's consumers, or a NULL(Nil) when that number can't be determined.
 				if err != nil && err != Nil {
 					return err
 				}
@@ -2366,6 +2369,8 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 					return nil, err
 				}
 			case "lag":
+				// lag: the number of entries in the stream that are still waiting to be delivered
+				// to the group's consumers, or a NULL(Nil) when that number can't be determined.
 				group.Lag, err = rd.ReadInt()
 				if err != nil && err != Nil {
 					return nil, err
