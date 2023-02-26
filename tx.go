@@ -19,7 +19,7 @@ type Tx struct {
 	baseClient
 	cmdable
 	statefulCmdable
-	hooksMixin
+	*hooksMixin
 }
 
 func (c *Client) newTx() *Tx {

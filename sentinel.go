@@ -211,6 +211,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		baseClient: &baseClient{
 			opt: opt,
 		},
+		hooksMixin: &hooksMixin{},
 	}
 	rdb.init()
 
@@ -267,7 +268,7 @@ func masterReplicaDialer(
 // SentinelClient is a client for a Redis Sentinel.
 type SentinelClient struct {
 	*baseClient
-	hooksMixin
+	*hooksMixin
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {
@@ -276,6 +277,7 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		baseClient: &baseClient{
 			opt: opt,
 		},
+		hooksMixin: &hooksMixin{},
 	}
 
 	c.initHooks(hooks{

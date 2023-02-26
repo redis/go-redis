@@ -838,7 +838,7 @@ type ClusterClient struct {
 	state         *clusterStateHolder
 	cmdsInfoCache *cmdsInfoCache
 	cmdable
-	hooksMixin
+	*hooksMixin
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -847,8 +847,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
 
 	c := &ClusterClient{
-		opt:   opt,
-		nodes: newClusterNodes(opt),
+		opt:        opt,
+		nodes:      newClusterNodes(opt),
+		hooksMixin: &hooksMixin{},
 	}
 
 	c.state = newClusterStateHolder(c.loadState)

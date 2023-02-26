@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,6 +45,8 @@ type hooksMixin struct {
 	slice   []Hook
 	initial hooks
 	current hooks
+
+	hooksMu sync.RWMutex
 }
 
 func (hs *hooksMixin) initHooks(hooks hooks) {
@@ -117,6 +120,9 @@ func (hs *hooksMixin) AddHook(hook Hook) {
 func (hs *hooksMixin) chain() {
 	hs.initial.setDefaults()
 
+	hs.hooksMu.Lock()
+	defer hs.hooksMu.Unlock()
+
 	hs.current.dial = hs.initial.dial
 	hs.current.process = hs.initial.process
 	hs.current.pipeline = hs.initial.pipeline
@@ -138,8 +144,15 @@ func (hs *hooksMixin) chain() {
 	}
 }
 
-func (hs *hooksMixin) clone() hooksMixin {
-	clone := *hs
+func (hs *hooksMixin) clone() *hooksMixin {
+	hs.hooksMu.Lock()
+	defer hs.hooksMu.Unlock()
+
+	clone := &hooksMixin{
+		slice:   hs.slice,
+		initial: hs.initial,
+		current: hs.current,
+	}
 	l := len(clone.slice)
 	clone.slice = clone.slice[:l:l]
 	return clone
@@ -166,7 +179,11 @@ func (hs *hooksMixin) withProcessPipelineHook(
 }
 
 func (hs *hooksMixin) dialHook(ctx context.Context, network, addr string) (net.Conn, error) {
-	return hs.current.dial(ctx, network, addr)
+	hs.hooksMu.RLock()
+	conn, err := hs.current.dial(ctx, network, addr)
+	hs.hooksMu.RUnlock()
+
+	return conn, err
 }
 
 func (hs *hooksMixin) processHook(ctx context.Context, cmd Cmder) error {
@@ -588,8 +605,8 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 // of idle connections. You can control the pool size with Config.PoolSize option.
 type Client struct {
 	*baseClient
+	*hooksMixin
 	cmdable
-	hooksMixin
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -600,6 +617,7 @@ func NewClient(opt *Options) *Client {
 		baseClient: &baseClient{
 			opt: opt,
 		},
+		hooksMixin: &hooksMixin{},
 	}
 	c.init()
 	c.connPool = newConnPool(opt, c.dialHook)
@@ -620,6 +638,7 @@ func (c *Client) init() {
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	clone := *c
 	clone.baseClient = c.baseClient.withTimeout(timeout)
+	clone.hooksMixin = c.hooksMixin.clone()
 	clone.init()
 	return &clone
 }
@@ -758,7 +777,7 @@ type Conn struct {
 	baseClient
 	cmdable
 	statefulCmdable
-	hooksMixin
+	*hooksMixin
 }
 
 func newConn(opt *Options, connPool pool.Pooler) *Conn {
@@ -767,6 +786,7 @@ func newConn(opt *Options, connPool pool.Pooler) *Conn {
 			opt:      opt,
 			connPool: connPool,
 		},
+		hooksMixin: &hooksMixin{},
 	}
 
 	c.cmdable = c.Process

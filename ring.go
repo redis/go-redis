@@ -487,7 +487,7 @@ func (c *ringSharding) Close() error {
 // Otherwise you should use Redis Cluster.
 type Ring struct {
 	cmdable
-	hooksMixin
+	*hooksMixin
 
 	opt               *RingOptions
 	sharding          *ringSharding
@@ -504,6 +504,7 @@ func NewRing(opt *RingOptions) *Ring {
 		opt:               opt,
 		sharding:          newRingSharding(opt),
 		heartbeatCancelFn: hbCancel,
+		hooksMixin:        &hooksMixin{},
 	}
 
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
