@@ -6034,6 +6034,17 @@ var _ = Describe("Commands", func() {
 			Expect(len(result)).NotTo(BeZero())
 		})
 	})
+
+	Describe("Functions", func() {
+		It("should FUNCTION KILL", func() {
+			fKill := client.FunctionKill(ctx)
+			Expect(fKill.Err()).Should(Equal("NOTBUSY No scripts in execution right now."))
+
+			/**
+			 * as other function commands are added, more test cases are to be added
+			 */
+		})
+	})
 })
 
 type numberStruct struct {
