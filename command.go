@@ -2057,6 +2057,9 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 				}
 			case "lag":
 				group.Lag, err = rd.ReadInt()
+
+				// lag: the number of entries in the stream that are still waiting to be delivered
+				// to the group's consumers, or a NULL(Nil) when that number can't be determined.
 				if err != nil && err != Nil {
 					return err
 				}
@@ -2366,6 +2369,8 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 					return nil, err
 				}
 			case "lag":
+				// lag: the number of entries in the stream that are still waiting to be delivered
+				// to the group's consumers, or a NULL(Nil) when that number can't be determined.
 				group.Lag, err = rd.ReadInt()
 				if err != nil && err != Nil {
 					return nil, err
@@ -3746,6 +3751,89 @@ func (cmd *KeyValuesCmd) readReply(rd *proto.Reader) (err error) {
 	for i := 0; i < n; i++ {
 		cmd.val[i], err = rd.ReadString()
 		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type ZSliceWithKeyCmd struct {
+	baseCmd
+
+	key string
+	val []Z
+}
+
+var _ Cmder = (*ZSliceWithKeyCmd)(nil)
+
+func NewZSliceWithKeyCmd(ctx context.Context, args ...interface{}) *ZSliceWithKeyCmd {
+	return &ZSliceWithKeyCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ZSliceWithKeyCmd) SetVal(key string, val []Z) {
+	cmd.key = key
+	cmd.val = val
+}
+
+func (cmd *ZSliceWithKeyCmd) Val() (string, []Z) {
+	return cmd.key, cmd.val
+}
+
+func (cmd *ZSliceWithKeyCmd) Result() (string, []Z, error) {
+	return cmd.key, cmd.val, cmd.err
+}
+
+func (cmd *ZSliceWithKeyCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ZSliceWithKeyCmd) readReply(rd *proto.Reader) (err error) {
+	if err = rd.ReadFixedArrayLen(2); err != nil {
+		return err
+	}
+
+	cmd.key, err = rd.ReadString()
+	if err != nil {
+		return err
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	typ, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+	array := typ == proto.RespArray
+
+	if array {
+		cmd.val = make([]Z, n)
+	} else {
+		cmd.val = make([]Z, n/2)
+	}
+
+	for i := 0; i < len(cmd.val); i++ {
+		if array {
+			if err = rd.ReadFixedArrayLen(2); err != nil {
+				return err
+			}
+		}
+
+		if cmd.val[i].Member, err = rd.ReadString(); err != nil {
+			return err
+		}
+
+		if cmd.val[i].Score, err = rd.ReadFloat(); err != nil {
 			return err
 		}
 	}
