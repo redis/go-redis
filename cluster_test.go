@@ -9,13 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"testing"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
-	"github.com/stretchr/testify/assert"
-
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 )
@@ -1360,8 +1357,8 @@ var _ = Describe("ClusterClient timeout", func() {
 	})
 })
 
-func TestParseClusterURL(t *testing.T) {
-	cases := []struct {
+var _ = Describe("ClusterClient ParseURL", func() {
+	var cases = []struct {
 		test string
 		url  string
 		o    *redis.ClusterOptions // expected value
@@ -1454,47 +1451,36 @@ func TestParseClusterURL(t *testing.T) {
 		},
 	}
 
-	for i := range cases {
-		tc := cases[i]
-		t.Run(tc.test, func(t *testing.T) {
-			t.Parallel()
-
+	It("match ParseClusterURL", func() {
+		for i := range cases {
+			tc := cases[i]
 			actual, err := redis.ParseClusterURL(tc.url)
-			if tc.err == nil && err != nil {
-				t.Fatalf("unexpected error: %q", err)
-				return
+			if tc.err != nil {
+				Expect(err).To(Equal(err))
+			} else {
+				Expect(err).NotTo(HaveOccurred())
 			}
-			if tc.err != nil && err == nil {
-				t.Fatalf("expected error: got %+v", actual)
-				return
-			}
-			if tc.err != nil && err != nil {
-				if tc.err.Error() != err.Error() {
-					t.Fatalf("got %q, expected %q", err, tc.err)
-				}
-				return
-			}
-			comprareOptions(t, actual, tc.o)
-		})
-	}
-}
 
-func comprareOptions(t *testing.T, actual, expected *redis.ClusterOptions) {
-	t.Helper()
-	assert.Equal(t, expected.Addrs, actual.Addrs)
-	assert.Equal(t, expected.TLSConfig, actual.TLSConfig)
-	assert.Equal(t, expected.Username, actual.Username)
-	assert.Equal(t, expected.Password, actual.Password)
-	assert.Equal(t, expected.MaxRetries, actual.MaxRetries)
-	assert.Equal(t, expected.MinRetryBackoff, actual.MinRetryBackoff)
-	assert.Equal(t, expected.MaxRetryBackoff, actual.MaxRetryBackoff)
-	assert.Equal(t, expected.DialTimeout, actual.DialTimeout)
-	assert.Equal(t, expected.ReadTimeout, actual.ReadTimeout)
-	assert.Equal(t, expected.WriteTimeout, actual.WriteTimeout)
-	assert.Equal(t, expected.PoolFIFO, actual.PoolFIFO)
-	assert.Equal(t, expected.PoolSize, actual.PoolSize)
-	assert.Equal(t, expected.MinIdleConns, actual.MinIdleConns)
-	assert.Equal(t, expected.ConnMaxLifetime, actual.ConnMaxLifetime)
-	assert.Equal(t, expected.ConnMaxIdleTime, actual.ConnMaxIdleTime)
-	assert.Equal(t, expected.PoolTimeout, actual.PoolTimeout)
-}
+			if err == nil {
+				Expect(tc.o).NotTo(BeNil())
+
+				Expect(tc.o.Addrs).To(Equal(actual.Addrs))
+				Expect(tc.o.TLSConfig).To(Equal(actual.TLSConfig))
+				Expect(tc.o.Username).To(Equal(actual.Username))
+				Expect(tc.o.Password).To(Equal(actual.Password))
+				Expect(tc.o.MaxRetries).To(Equal(actual.MaxRetries))
+				Expect(tc.o.MinRetryBackoff).To(Equal(actual.MinRetryBackoff))
+				Expect(tc.o.MaxRetryBackoff).To(Equal(actual.MaxRetryBackoff))
+				Expect(tc.o.DialTimeout).To(Equal(actual.DialTimeout))
+				Expect(tc.o.ReadTimeout).To(Equal(actual.ReadTimeout))
+				Expect(tc.o.WriteTimeout).To(Equal(actual.WriteTimeout))
+				Expect(tc.o.PoolFIFO).To(Equal(actual.PoolFIFO))
+				Expect(tc.o.PoolSize).To(Equal(actual.PoolSize))
+				Expect(tc.o.MinIdleConns).To(Equal(actual.MinIdleConns))
+				Expect(tc.o.ConnMaxLifetime).To(Equal(actual.ConnMaxLifetime))
+				Expect(tc.o.ConnMaxIdleTime).To(Equal(actual.ConnMaxIdleTime))
+				Expect(tc.o.PoolTimeout).To(Equal(actual.PoolTimeout))
+			}
+		}
+	})
+})
