@@ -430,6 +430,8 @@ type Cmdable interface {
 	GeoSearchStore(ctx context.Context, key, store string, q *GeoSearchStoreQuery) *IntCmd
 	GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
+
+	FunctionKill(ctx context.Context) *StringCmd
 }
 
 type StatefulCmdable interface {
@@ -3546,6 +3548,13 @@ func (c cmdable) GeoPos(ctx context.Context, key string, members ...string) *Geo
 		args[2+i] = member
 	}
 	cmd := NewGeoPosCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// FunctionKill kills the current running function
+func (c cmdable) FunctionKill(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "FUNCTION KILL")
 	_ = c(ctx, cmd)
 	return cmd
 }
