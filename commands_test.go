@@ -6038,7 +6038,7 @@ var _ = Describe("Commands", func() {
 	Describe("Functions", func() {
 		It("should FUNCTION KILL", func() {
 			fKill := client.FunctionKill(ctx)
-			Expect(fKill.Err()).Should(Equal("NOTBUSY No scripts in execution right now."))
+			Expect(fKill.Err()).Should(Equal("No scripts in execution right now."))
 
 			/**
 			 * as other function commands are added, more test cases are to be added
