@@ -1456,7 +1456,7 @@ var _ = Describe("ClusterClient ParseURL", func() {
 			tc := cases[i]
 			actual, err := redis.ParseClusterURL(tc.url)
 			if tc.err != nil {
-				Expect(err).To(Equal(err))
+				Expect(err).Should(MatchError(tc.err))
 			} else {
 				Expect(err).NotTo(HaveOccurred())
 			}
