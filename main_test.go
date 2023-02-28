@@ -17,8 +17,6 @@ import (
 )
 
 const (
-	redisPort          = "6380"
-	redisAddr          = ":" + redisPort
 	redisSecondaryPort = "6381"
 )
 
@@ -37,6 +35,9 @@ const (
 	sentinelPort2      = "9127"
 	sentinelPort3      = "9128"
 )
+
+var redisPort = "6380"
+var redisAddr = ":" + redisPort
 
 var (
 	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
@@ -64,6 +65,11 @@ func registerProcess(port string, p *redisProcess) {
 }
 
 var _ = BeforeSuite(func() {
+	addr := os.Getenv("REDIS_PORT")
+	if addr != "" {
+		redisPort = addr
+		redisAddr = ":" + redisPort
+	}
 	var err error
 
 	redisMain, err = startRedis(redisPort)
