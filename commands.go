@@ -302,6 +302,8 @@ type Cmdable interface {
 	BZMPop(ctx context.Context, timeout time.Duration, order string, count int64, keys ...string) *ZSliceWithKeyCmd
 
 	ZAdd(ctx context.Context, key string, members ...Z) *IntCmd
+	ZAddLT(ctx context.Context, key string, members ...Z) *IntCmd
+	ZAddGT(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddNX(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddXX(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddArgs(ctx context.Context, key string, args ZAddArgs) *IntCmd
@@ -2404,6 +2406,22 @@ func (c cmdable) ZAddArgsIncr(ctx context.Context, key string, args ZAddArgs) *F
 // ZAdd Redis `ZADD key score member [score member ...]` command.
 func (c cmdable) ZAdd(ctx context.Context, key string, members ...Z) *IntCmd {
 	return c.ZAddArgs(ctx, key, ZAddArgs{
+		Members: members,
+	})
+}
+
+// ZAddLT Redis `ZADD key LT score member [score member ...]` command.
+func (c cmdable) ZAddLT(ctx context.Context, key string, members ...Z) *IntCmd {
+	return c.ZAddArgs(ctx, key, ZAddArgs{
+		LT:      true,
+		Members: members,
+	})
+}
+
+// ZAddGT Redis `ZADD key GT score member [score member ...]` command.
+func (c cmdable) ZAddGT(ctx context.Context, key string, members ...Z) *IntCmd {
+	return c.ZAddArgs(ctx, key, ZAddArgs{
+		GT:      true,
 		Members: members,
 	})
 }
