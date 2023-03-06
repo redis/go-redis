@@ -245,6 +245,10 @@ type Cmdable interface {
 	LMove(ctx context.Context, source, destination, srcpos, destpos string) *StringCmd
 	BLMove(ctx context.Context, source, destination, srcpos, destpos string, timeout time.Duration) *StringCmd
 
+	FunctionDelete(ctx context.Context, body string) *StringCmd
+	FunctionLoad(ctx context.Context, body string) *StringCmd
+	FunctionLoadReplace(ctx context.Context, body string) *StringCmd
+
 	SAdd(ctx context.Context, key string, members ...interface{}) *IntCmd
 	SCard(ctx context.Context, key string) *IntCmd
 	SDiff(ctx context.Context, keys ...string) *StringSliceCmd
@@ -1672,6 +1676,34 @@ func (c cmdable) BLMove(
 ) *StringCmd {
 	cmd := NewStringCmd(ctx, "blmove", source, destination, srcpos, destpos, formatSec(ctx, timeout))
 	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// FunctionDelete Redis `FUNCTION DELETE library-name`.
+// It deletes the library called library-name and all functions in it.
+// If the library doesn't exist, the server returns an error.
+func (c cmdable) FunctionDelete(ctx context.Context, body string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "delete", body)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// FunctionLoad Redis `FUNCTION LOAD [REPLACE] function-code`.
+// It loads the function code into the server.
+// Currently, engine name must be lua.
+func (c cmdable) FunctionLoad(ctx context.Context, body string) *StringCmd {
+
+	if !strings.HasPrefix(body, "#!lua") {
+		panic("function code must start with #!lua")
+	}
+	cmd := NewStringCmd(ctx, "function", "load", body)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionLoadReplace(ctx context.Context, body string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "load", "replace", body)
 	_ = c(ctx, cmd)
 	return cmd
 }

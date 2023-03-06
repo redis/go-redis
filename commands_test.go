@@ -1824,6 +1824,43 @@ var _ = Describe("Commands", func() {
 			replace := client.Copy(ctx, "newKey", "key", redisOptions().DB, true)
 			Expect(replace.Val()).To(Equal(int64(1)))
 		})
+
+		It("should FunctionLoad and FunctionDelete", func() {
+			val, err := client.FunctionLoad(ctx, "#!lua name=mylib \n redis.register_function('myfunc', function(keys, args) return args[1] end)").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("mylib"))
+
+			val, err = client.FunctionLoad(ctx, "#!lua name=mylib \n redis.register_function('myfunc', function(keys, args) return args[1] end)").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ERR Library"))
+
+			val, err = client.FunctionLoad(ctx, "#!lua name=mylib1 \n redis.register_function('myfunc', function(keys, args) return args[1] end)").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("already exists"))
+
+			// change the function content
+			val, err = client.FunctionLoadReplace(ctx, "#!lua name=mylib \n redis.register_function('myfunc', function(keys, args) return args[2] end)").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("mylib"))
+
+			val, err = client.FunctionLoadReplace(ctx, "#!lua name=mylib2 \n redis.register_function('myfunc2', function(keys, args) return args[1] end)").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("mylib2"))
+			val, err = client.FunctionLoadReplace(ctx, "#!lua name=mylib2 \n redis.register_function('myfunc', function(keys, args) return args[1] end)").Result()
+			Expect(err).To(HaveOccurred())
+
+			val, err = client.FunctionDelete(ctx, "mylib").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+			val, err = client.FunctionDelete(ctx, "mylib2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+
+			val, err = client.FunctionDelete(ctx, "mylib").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ERR Library not found"))
+
+		})
 	})
 
 	Describe("hashes", func() {
