@@ -299,8 +299,11 @@ type Cmdable interface {
 
 	BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
 	BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
+	BZMPop(ctx context.Context, timeout time.Duration, order string, count int64, keys ...string) *ZSliceWithKeyCmd
 
 	ZAdd(ctx context.Context, key string, members ...Z) *IntCmd
+	ZAddLT(ctx context.Context, key string, members ...Z) *IntCmd
+	ZAddGT(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddNX(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddXX(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddArgs(ctx context.Context, key string, args ZAddArgs) *IntCmd
@@ -313,6 +316,7 @@ type Cmdable interface {
 	ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd
 	ZInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd
 	ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd
+	ZMPop(ctx context.Context, order string, count int64, keys ...string) *ZSliceWithKeyCmd
 	ZMScore(ctx context.Context, key string, members ...string) *FloatSliceCmd
 	ZPopMax(ctx context.Context, key string, count ...int64) *ZSliceCmd
 	ZPopMin(ctx context.Context, key string, count ...int64) *ZSliceCmd
@@ -2333,6 +2337,26 @@ func (c cmdable) BZPopMin(ctx context.Context, timeout time.Duration, keys ...st
 	return cmd
 }
 
+// BZMPop is the blocking variant of ZMPOP.
+// When any of the sorted sets contains elements, this command behaves exactly like ZMPOP.
+// When all sorted sets are empty, Redis will block the connection until another client adds members to one of the keys or until the timeout elapses.
+// A timeout of zero can be used to block indefinitely.
+// example: client.BZMPop(ctx, 0,"max", 1, "set")
+func (c cmdable) BZMPop(ctx context.Context, timeout time.Duration, order string, count int64, keys ...string) *ZSliceWithKeyCmd {
+	args := make([]interface{}, 3+len(keys), 6+len(keys))
+	args[0] = "bzmpop"
+	args[1] = formatSec(ctx, timeout)
+	args[2] = len(keys)
+	for i, key := range keys {
+		args[3+i] = key
+	}
+	args = append(args, strings.ToLower(order), "count", count)
+	cmd := NewZSliceWithKeyCmd(ctx, args...)
+	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 // ZAddArgs WARN: The GT, LT and NX options are mutually exclusive.
 type ZAddArgs struct {
 	NX      bool
@@ -2388,6 +2412,22 @@ func (c cmdable) ZAddArgsIncr(ctx context.Context, key string, args ZAddArgs) *F
 // ZAdd Redis `ZADD key score member [score member ...]` command.
 func (c cmdable) ZAdd(ctx context.Context, key string, members ...Z) *IntCmd {
 	return c.ZAddArgs(ctx, key, ZAddArgs{
+		Members: members,
+	})
+}
+
+// ZAddLT Redis `ZADD key LT score member [score member ...]` command.
+func (c cmdable) ZAddLT(ctx context.Context, key string, members ...Z) *IntCmd {
+	return c.ZAddArgs(ctx, key, ZAddArgs{
+		LT:      true,
+		Members: members,
+	})
+}
+
+// ZAddGT Redis `ZADD key GT score member [score member ...]` command.
+func (c cmdable) ZAddGT(ctx context.Context, key string, members ...Z) *IntCmd {
+	return c.ZAddArgs(ctx, key, ZAddArgs{
+		GT:      true,
 		Members: members,
 	})
 }
@@ -2475,6 +2515,22 @@ func (c cmdable) ZInterCard(ctx context.Context, limit int64, keys ...string) *I
 	args[2+numkeys] = "limit"
 	args[3+numkeys] = limit
 	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ZMPop Pops one or more elements with the highest or lowest score from the first non-empty sorted set key from the list of provided key names.
+// direction: "max" (highest score) or "min" (lowest score), count: > 0
+// example: client.ZMPop(ctx, "max", 5, "set1", "set2")
+func (c cmdable) ZMPop(ctx context.Context, order string, count int64, keys ...string) *ZSliceWithKeyCmd {
+	args := make([]interface{}, 2+len(keys), 5+len(keys))
+	args[0] = "zmpop"
+	args[1] = len(keys)
+	for i, key := range keys {
+		args[2+i] = key
+	}
+	args = append(args, strings.ToLower(order), "count", count)
+	cmd := NewZSliceWithKeyCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
