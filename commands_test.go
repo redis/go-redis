@@ -5812,6 +5812,89 @@ var _ = Describe("Commands", func() {
 		})
 	})
 
+	Describe("Functions", func() {
+		libName := "mylib"
+		libCode := `#!lua name=mylib
+			local function hset(keys, args)
+			   return 'Hello Redis'
+			end
+			
+			redis.register_function('my_hset', hset)`
+
+		AfterEach(func() {
+			flush := client.FunctionFlush(ctx)
+			Expect(flush.Err()).NotTo(HaveOccurred())
+		})
+
+		It("Loads a new library", func() {
+			functionLoad := client.FunctionLoad(ctx, libCode)
+			Expect(functionLoad.Err()).NotTo(HaveOccurred())
+
+			args := []interface{}{"function", "load", libCode}
+			Expect(functionLoad.Args()).To(Equal(args))
+
+			Expect(functionLoad.Val()).To(Equal(libName))
+			//TODO Add FUNCTION LIST test when FUNCTION LIST is implemented
+
+		})
+
+		It("Loads and replaces a new library", func() {
+			// Load a function for the first time
+			client.FunctionLoad(ctx, libCode)
+
+			// And then replace it
+			functionLoadReplace := client.FunctionLoadReplace(ctx, libCode)
+
+			Expect(functionLoadReplace.Err()).NotTo(HaveOccurred())
+
+			args := []interface{}{"function", "load", "replace", libCode}
+			Expect(functionLoadReplace.Args()).To(Equal(args))
+
+			Expect(functionLoadReplace.Val()).To(Equal(libName))
+			//TODO Add FUNCTION LIST test when FUNCTION LIST is implemented
+		})
+
+		It("Deletes a library", func() {
+			functionLoad := client.FunctionLoad(ctx, libCode)
+			Expect(functionLoad.Err()).NotTo(HaveOccurred())
+
+			functionDelete := client.FunctionDelete(ctx, libName)
+			Expect(functionDelete.Err()).NotTo(HaveOccurred())
+
+			args := []interface{}{"function", "delete", libName}
+			Expect(functionDelete.Args()).To(Equal(args))
+
+			//TODO Add FUNCTION LIST test when FUNCTION LIST is implemented
+		})
+
+		It("Flushes all libraries", func() {
+			FunctionLoad := client.FunctionLoad(ctx, libCode)
+			Expect(FunctionLoad.Err()).NotTo(HaveOccurred())
+
+			functionFlush := client.FunctionFlush(ctx)
+			Expect(functionFlush.Err()).NotTo(HaveOccurred())
+
+			args := []interface{}{"function", "flush"}
+			Expect(functionFlush.Args()).To(Equal(args))
+
+			//TODO Add FUNCTION LIST test when FUNCTION LIST is implemented
+		})
+
+		It("Flushes all libraries asynchronously", func() {
+			FunctionLoad := client.FunctionLoad(ctx, libCode)
+			Expect(FunctionLoad.Err()).NotTo(HaveOccurred())
+
+			functionFlush := client.FunctionFlushAsync(ctx)
+			Expect(functionFlush.Err()).NotTo(HaveOccurred())
+
+			args := []interface{}{"function", "flush", "async"}
+			Expect(functionFlush.Args()).To(Equal(args))
+
+			//TODO Add FUNCTION LIST test when FUNCTION LIST is implemented
+		})
+
+	})
+
 	Describe("SlowLogGet", func() {
 		It("returns slow query result", func() {
 			const key = "slowlog-log-slower-than"

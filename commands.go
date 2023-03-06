@@ -391,6 +391,12 @@ type Cmdable interface {
 	ScriptKill(ctx context.Context) *StatusCmd
 	ScriptLoad(ctx context.Context, script string) *StringCmd
 
+	FunctionLoad(ctx context.Context, code string) *StringCmd
+	FunctionLoadReplace(ctx context.Context, code string) *StringCmd
+	FunctionDelete(ctx context.Context, libName string) *StringCmd
+	FunctionFlush(ctx context.Context) *StringCmd
+	FunctionFlushAsync(ctx context.Context) *StringCmd
+
 	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
 	SPublish(ctx context.Context, channel string, message interface{}) *IntCmd
 	PubSubChannels(ctx context.Context, pattern string) *StringSliceCmd
@@ -3210,6 +3216,37 @@ func (c cmdable) ScriptKill(ctx context.Context) *StatusCmd {
 
 func (c cmdable) ScriptLoad(ctx context.Context, script string) *StringCmd {
 	cmd := NewStringCmd(ctx, "script", "load", script)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ------------------------------------------------------------------------------
+func (c cmdable) FunctionLoad(ctx context.Context, code string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "load", code)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionLoadReplace(ctx context.Context, code string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "load", "replace", code)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionDelete(ctx context.Context, libName string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "delete", libName)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionFlush(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "flush")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionFlushAsync(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "flush", "async")
 	_ = c(ctx, cmd)
 	return cmd
 }
