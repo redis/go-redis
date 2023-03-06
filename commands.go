@@ -1693,7 +1693,6 @@ func (c cmdable) FunctionDelete(ctx context.Context, body string) *StringCmd {
 // It loads the function code into the server.
 // Currently, engine name must be lua.
 func (c cmdable) FunctionLoad(ctx context.Context, body string) *StringCmd {
-
 	if !strings.HasPrefix(body, "#!lua") {
 		panic("function code must start with #!lua")
 	}
@@ -1703,6 +1702,9 @@ func (c cmdable) FunctionLoad(ctx context.Context, body string) *StringCmd {
 }
 
 func (c cmdable) FunctionLoadReplace(ctx context.Context, body string) *StringCmd {
+	if !strings.HasPrefix(body, "#!lua") {
+		panic("function code must start with #!lua")
+	}
 	cmd := NewStringCmd(ctx, "function", "load", "replace", body)
 	_ = c(ctx, cmd)
 	return cmd
