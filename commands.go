@@ -400,6 +400,7 @@ type Cmdable interface {
 	FunctionDelete(ctx context.Context, libName string) *StringCmd
 	FunctionFlush(ctx context.Context) *StringCmd
 	FunctionFlushAsync(ctx context.Context) *StringCmd
+	FunctionList(ctx context.Context) *RdsFunctionsListCmd
 
 	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
 	SPublish(ctx context.Context, channel string, message interface{}) *IntCmd
@@ -3277,6 +3278,7 @@ func (c cmdable) ScriptLoad(ctx context.Context, script string) *StringCmd {
 }
 
 // ------------------------------------------------------------------------------
+
 func (c cmdable) FunctionLoad(ctx context.Context, code string) *StringCmd {
 	cmd := NewStringCmd(ctx, "function", "load", code)
 	_ = c(ctx, cmd)
@@ -3303,6 +3305,12 @@ func (c cmdable) FunctionFlush(ctx context.Context) *StringCmd {
 
 func (c cmdable) FunctionFlushAsync(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd(ctx, "function", "flush", "async")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionList(ctx context.Context) *RdsFunctionsListCmd {
+	cmd := NewRdsFunctionsListCmd(ctx, "function", "list")
 	_ = c(ctx, cmd)
 	return cmd
 }
