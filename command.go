@@ -3841,29 +3841,29 @@ func (cmd *ZSliceWithKeyCmd) readReply(rd *proto.Reader) (err error) {
 	return nil
 }
 
-type RdsFunction struct {
+type Function struct {
 	Name        string
 	Description string
 	Flags       []string
 }
 
-type RdsLibrary struct {
+type Library struct {
 	Name      string
 	Engine    string
-	Functions []RdsFunction
+	Functions []Function
 	Code      string
 }
 
-type RdsFunctionsListCmd struct {
+type FunctionsListCmd struct {
 	baseCmd
 
-	val []RdsLibrary
+	val []Library
 }
 
-var _ Cmder = (*RdsFunctionsListCmd)(nil)
+var _ Cmder = (*FunctionsListCmd)(nil)
 
-func NewRdsFunctionsListCmd(ctx context.Context, args ...interface{}) *RdsFunctionsListCmd {
-	return &RdsFunctionsListCmd{
+func NewFunctionsListCmd(ctx context.Context, args ...interface{}) *FunctionsListCmd {
+	return &FunctionsListCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -3871,108 +3871,108 @@ func NewRdsFunctionsListCmd(ctx context.Context, args ...interface{}) *RdsFuncti
 	}
 }
 
-func (cmd *RdsFunctionsListCmd) SetVal(val []RdsLibrary) {
+func (cmd *FunctionsListCmd) SetVal(val []Library) {
 	cmd.val = val
 }
 
-func (cmd *RdsFunctionsListCmd) String() string {
+func (cmd *FunctionsListCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *RdsFunctionsListCmd) Val() []RdsLibrary {
+func (cmd *FunctionsListCmd) Val() []Library {
 	return cmd.val
 }
 
-func (cmd *RdsFunctionsListCmd) Result() ([]RdsLibrary, error) {
+func (cmd *FunctionsListCmd) Result() ([]Library, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *RdsFunctionsListCmd) readReply(rd *proto.Reader) (err error) {
+func (cmd *FunctionsListCmd) readReply(rd *proto.Reader) (err error) {
 	cmd.val, err = readRdsLibrarySlice(rd)
 	return err
 }
 
-func readRdsLibrarySlice(rd *proto.Reader) ([]RdsLibrary, error) {
+func readRdsLibrarySlice(rd *proto.Reader) ([]Library, error) {
 	n, err := rd.ReadArrayLen()
 	if err != nil {
-		return []RdsLibrary{}, err
+		return []Library{}, err
 	}
 
-	libraries := make([]RdsLibrary, n)
+	libraries := make([]Library, n)
 	for i := 0; i < len(libraries); i++ {
 		if libraries[i], err = readRdsLibrary(rd); err != nil {
-			return []RdsLibrary{}, err
+			return []Library{}, err
 		}
 	}
 	return libraries, nil
 }
 
-func readRdsLibrary(rd *proto.Reader) (RdsLibrary, error) {
+func readRdsLibrary(rd *proto.Reader) (Library, error) {
 	n, err := rd.ReadMapLen()
 	if err != nil {
-		return RdsLibrary{}, err
+		return Library{}, err
 	}
 
-	library := RdsLibrary{}
+	library := Library{}
 	for i := 0; i < n; i++ {
 		k, err := rd.ReadString()
 		if err != nil {
-			return RdsLibrary{}, err
+			return Library{}, err
 		}
 
 		switch k {
 		case "library_name":
 			library.Name, err = rd.ReadString()
 			if err != nil {
-				return RdsLibrary{}, err
+				return Library{}, err
 			}
 		case "engine":
 			library.Engine, err = rd.ReadString()
 		case "functions":
-			library.Functions, err = readRdsFunctionsSlice(rd)
+			library.Functions, err = readFunctionsSlice(rd)
 		}
 
 		if err != nil {
-			return RdsLibrary{}, err
+			return Library{}, err
 		}
 	}
 
 	return library, nil
 }
 
-func readRdsFunctionsSlice(rd *proto.Reader) ([]RdsFunction, error) {
+func readFunctionsSlice(rd *proto.Reader) ([]Function, error) {
 	n, err := rd.ReadArrayLen()
 	if err != nil {
-		return []RdsFunction{}, err
+		return []Function{}, err
 	}
 
-	functions := make([]RdsFunction, n)
+	functions := make([]Function, n)
 	for i := 0; i < len(functions); i++ {
-		if functions[i], err = readRdsFunction(rd); err != nil {
+		if functions[i], err = readFunction(rd); err != nil {
 			return nil, err
 		}
 	}
 	return functions, nil
 }
 
-func readRdsFunction(rd *proto.Reader) (RdsFunction, error) {
+func readFunction(rd *proto.Reader) (Function, error) {
 	n, err := rd.ReadMapLen()
 	if err != nil {
-		return RdsFunction{}, err
+		return Function{}, err
 	}
 
-	function := RdsFunction{}
+	function := Function{}
 	for i := 0; i < n; i++ {
 		k, err := rd.ReadString()
 		if err != nil {
-			return RdsFunction{}, err
+			return Function{}, err
 		}
 
 		switch k {
 		case "name":
 			function.Name, err = rd.ReadString()
 			if err != nil {
-				return RdsFunction{}, err
+				return Function{}, err
 			}
 		case "description":
 			function.Description, err = rd.ReadString()
@@ -3980,14 +3980,14 @@ func readRdsFunction(rd *proto.Reader) (RdsFunction, error) {
 				if err == proto.Nil {
 					function.Description = "" // TODO Talk to Chayim
 				} else {
-					return RdsFunction{}, err
+					return Function{}, err
 				}
 
 			}
 		case "flags":
 			n, err = rd.ReadArrayLen()
 			if err != nil {
-				return RdsFunction{}, err
+				return Function{}, err
 			}
 
 			function.Flags = make([]string, n)
@@ -3995,7 +3995,7 @@ func readRdsFunction(rd *proto.Reader) (RdsFunction, error) {
 			for i := 0; i < n; i++ {
 				function.Flags[i], err = rd.ReadString()
 				if err != nil {
-					return RdsFunction{}, err
+					return Function{}, err
 				}
 			}
 		}
