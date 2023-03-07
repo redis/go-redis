@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -64,7 +65,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should Stringer", func() {
-		Expect(client.String()).To(Equal("Redis<:6380 db:15>"))
+		Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:15>", redisPort)))
 	})
 
 	It("supports context", func() {
