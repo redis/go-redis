@@ -6141,8 +6141,9 @@ var _ = Describe("Commands", func() {
 			Expect(functionLoad.Args()).To(Equal(args))
 
 			Expect(functionLoad.Val()).To(Equal(lib1Name))
-			//TODO Add FUNCTION LIST test when FUNCTION LIST is implemented
 
+			functionList := client.FunctionList(ctx)
+			Expect(len(functionList.Val())).To(Equal(1))
 		})
 
 		It("Loads and replaces a new library", func() {
@@ -6158,7 +6159,10 @@ var _ = Describe("Commands", func() {
 			Expect(functionLoadReplace.Args()).To(Equal(args))
 
 			Expect(functionLoadReplace.Val()).To(Equal(lib1Name))
-			//TODO Add FUNCTION LIST test when FUNCTION LIST is implemented
+
+			functionList := client.FunctionList(ctx)
+			Expect(len(functionList.Val())).To(Equal(1))
+
 		})
 
 		It("Deletes a library", func() {
@@ -6171,12 +6175,16 @@ var _ = Describe("Commands", func() {
 			args := []interface{}{"function", "delete", lib1Name}
 			Expect(functionDelete.Args()).To(Equal(args))
 
-			//TODO Add FUNCTION LIST test when FUNCTION LIST is implemented
+			functionList := client.FunctionList(ctx)
+			Expect(len(functionList.Val())).To(Equal(0))
 		})
 
 		It("Flushes all libraries", func() {
-			FunctionLoad := client.FunctionLoad(ctx, lib1Code)
-			Expect(FunctionLoad.Err()).NotTo(HaveOccurred())
+			functionLoad1 := client.FunctionLoad(ctx, lib1Code)
+			Expect(functionLoad1.Err()).NotTo(HaveOccurred())
+
+			functionLoad2 := client.FunctionLoad(ctx, lib2Code)
+			Expect(functionLoad2.Err()).NotTo(HaveOccurred())
 
 			functionFlush := client.FunctionFlush(ctx)
 			Expect(functionFlush.Err()).NotTo(HaveOccurred())
@@ -6184,7 +6192,8 @@ var _ = Describe("Commands", func() {
 			args := []interface{}{"function", "flush"}
 			Expect(functionFlush.Args()).To(Equal(args))
 
-			//TODO Add FUNCTION LIST test when FUNCTION LIST is implemented
+			functionList := client.FunctionList(ctx)
+			Expect(len(functionList.Val())).To(Equal(0))
 		})
 
 		It("Flushes all libraries asynchronously", func() {
@@ -6197,7 +6206,8 @@ var _ = Describe("Commands", func() {
 			args := []interface{}{"function", "flush", "async"}
 			Expect(functionFlush.Args()).To(Equal(args))
 
-			//TODO Add FUNCTION LIST test when FUNCTION LIST is implemented
+			functionList := client.FunctionList(ctx)
+			Expect(len(functionList.Val())).To(Equal(0))
 		})
 
 		It("Lists all registered functions", func() {
