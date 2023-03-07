@@ -3895,13 +3895,13 @@ func (cmd *FunctionListCmd) readReply(rd *proto.Reader) (err error) {
 func readRdsLibrarySlice(rd *proto.Reader) ([]Library, error) {
 	n, err := rd.ReadArrayLen()
 	if err != nil {
-		return []Library{}, err
+		return nil, err
 	}
 
 	libraries := make([]Library, n)
 	for i := 0; i < len(libraries); i++ {
 		if libraries[i], err = readRdsLibrary(rd); err != nil {
-			return []Library{}, err
+			return nil, err
 		}
 	}
 	return libraries, nil
@@ -3940,7 +3940,7 @@ func readRdsLibrary(rd *proto.Reader) (Library, error) {
 func readFunctionsSlice(rd *proto.Reader) ([]Function, error) {
 	n, err := rd.ReadArrayLen()
 	if err != nil {
-		return []Function{}, err
+		return nil, err
 	}
 
 	functions := make([]Function, n)
