@@ -6197,8 +6197,8 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("Flushes all libraries asynchronously", func() {
-			FunctionLoad := client.FunctionLoad(ctx, lib1Code)
-			Expect(FunctionLoad.Err()).NotTo(HaveOccurred())
+			functionLoad := client.FunctionLoad(ctx, lib1Code)
+			Expect(functionLoad.Err()).NotTo(HaveOccurred())
 
 			functionFlush := client.FunctionFlushAsync(ctx)
 			Expect(functionFlush.Err()).NotTo(HaveOccurred())
@@ -6211,29 +6211,36 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("Lists all registered functions", func() {
-			client.FunctionLoad(ctx, lib1Code)
-
+			// No registered functions in the server
 			functionList := client.FunctionList(ctx)
 			Expect(functionList.Err()).NotTo(HaveOccurred())
 
 			args := []interface{}{"function", "list"}
 			Expect(functionList.Args()).To(Equal(args))
 
-			// Check library parameters
-			Expect(functionList.Val()[0].Name).To(Equal(lib1Name))
-			Expect(functionList.Val()[0].Engine).To(Equal("LUA"))
-			Expect(len(functionList.Val()[0].Functions)).To(Equal(1))
+			Expect(len(functionList.Val())).To(Equal(0))
 
-			// Check function parameters
-			Expect(functionList.Val()[0].Functions[0].Name).To(Equal(lib1Func1Name))
-			Expect(functionList.Val()[0].Functions[0].Description).To(Equal(lib1Func1Desc))
-			Expect(len(functionList.Val()[0].Functions[0].Flags)).To(Equal(2))
-			Expect(functionList.Val()[0].Functions[0].Flags).To(ContainElements(lib1Func1Flags))
+			// Test with a single library containing two functions
+			client.FunctionLoad(ctx, lib1Code)
 
-			// Load a second library
-			client.FunctionLoad(ctx, lib2Code)
 			functionList = client.FunctionList(ctx)
 			Expect(functionList.Err()).NotTo(HaveOccurred())
+
+			// Check library parameters
+			library1 := functionList.Val()[0]
+			Expect(library1.Name).To(Equal(lib1Name))
+			Expect(library1.Engine).To(Equal("LUA"))
+			Expect(len(library1.Functions)).To(Equal(1))
+
+			// Check function parameters
+			Expect(library1.Functions[0].Name).To(Equal(lib1Func1Name))
+			Expect(library1.Functions[0].Description).To(Equal(lib1Func1Desc))
+			Expect(len(library1.Functions[0].Flags)).To(Equal(2))
+			Expect(library1.Functions[0].Flags).To(ContainElements(lib1Func1Flags))
+
+			// Load a second library and check length of slice
+			client.FunctionLoad(ctx, lib2Code)
+			functionList = client.FunctionList(ctx)
 
 			Expect(len(functionList.Val())).To(Equal(2))
 		})

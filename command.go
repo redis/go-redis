@@ -3923,9 +3923,6 @@ func readRdsLibrary(rd *proto.Reader) (Library, error) {
 		switch k {
 		case "library_name":
 			library.Name, err = rd.ReadString()
-			if err != nil {
-				return Library{}, err
-			}
 		case "engine":
 			library.Engine, err = rd.ReadString()
 		case "functions":
@@ -3978,7 +3975,7 @@ func readFunction(rd *proto.Reader) (Function, error) {
 			function.Description, err = rd.ReadString()
 			if err != nil {
 				if err == proto.Nil {
-					function.Description = "" // TODO Talk to Chayim
+					function.Description = ""
 				} else {
 					return Function{}, err
 				}
