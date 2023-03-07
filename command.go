@@ -3986,10 +3986,17 @@ func readRdsFunction(rd *proto.Reader) (RdsFunction, error) {
 			}
 		case "flags":
 			n, err = rd.ReadArrayLen()
+			if err != nil {
+				return RdsFunction{}, err
+			}
+
 			function.Flags = make([]string, n)
 
 			for i := 0; i < n; i++ {
 				function.Flags[i], err = rd.ReadString()
+				if err != nil {
+					return RdsFunction{}, err
+				}
 			}
 		}
 
