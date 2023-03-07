@@ -3854,16 +3854,16 @@ type Library struct {
 	Code      string
 }
 
-type FunctionsListCmd struct {
+type FunctionListCmd struct {
 	baseCmd
 
 	val []Library
 }
 
-var _ Cmder = (*FunctionsListCmd)(nil)
+var _ Cmder = (*FunctionListCmd)(nil)
 
-func NewFunctionsListCmd(ctx context.Context, args ...interface{}) *FunctionsListCmd {
-	return &FunctionsListCmd{
+func NewFunctionListCmd(ctx context.Context, args ...interface{}) *FunctionListCmd {
+	return &FunctionListCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -3871,23 +3871,23 @@ func NewFunctionsListCmd(ctx context.Context, args ...interface{}) *FunctionsLis
 	}
 }
 
-func (cmd *FunctionsListCmd) SetVal(val []Library) {
+func (cmd *FunctionListCmd) SetVal(val []Library) {
 	cmd.val = val
 }
 
-func (cmd *FunctionsListCmd) String() string {
+func (cmd *FunctionListCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *FunctionsListCmd) Val() []Library {
+func (cmd *FunctionListCmd) Val() []Library {
 	return cmd.val
 }
 
-func (cmd *FunctionsListCmd) Result() ([]Library, error) {
+func (cmd *FunctionListCmd) Result() ([]Library, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *FunctionsListCmd) readReply(rd *proto.Reader) (err error) {
+func (cmd *FunctionListCmd) readReply(rd *proto.Reader) (err error) {
 	cmd.val, err = readRdsLibrarySlice(rd)
 	return err
 }
