@@ -3854,6 +3854,17 @@ type Library struct {
 	Code      string
 }
 
+// FunctionListQuery is used with FunctionList to query for Redis libraries
+//
+//	  	LibraryNamePattern 	- Use an empty string to get all libraries.
+//	  						- Use a glob-style pattern to match multiple libraries with a matching name
+//	  						- Use a library's full name to match a single library
+//		WithCode			- If true, it will return the code of the library
+type FunctionListQuery struct {
+	LibraryNamePattern string
+	WithCode           bool
+}
+
 type FunctionListCmd struct {
 	baseCmd
 
@@ -3862,13 +3873,25 @@ type FunctionListCmd struct {
 
 var _ Cmder = (*FunctionListCmd)(nil)
 
-func NewFunctionListCmd(ctx context.Context, args ...interface{}) *FunctionListCmd {
+func NewFunctionListCmd(ctx context.Context, q FunctionListQuery, args ...interface{}) *FunctionListCmd {
 	return &FunctionListCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
-			args: args,
+			args: getFunctionListArgs(&q, args...),
 		},
 	}
+}
+
+func getFunctionListArgs(q *FunctionListQuery, args ...interface{}) []interface{} {
+
+	if q.LibraryNamePattern != "" {
+		args = append(args, "libraryname", q.LibraryNamePattern)
+	}
+	if q.WithCode {
+		args = append(args, "withcode")
+	}
+
+	return args
 }
 
 func (cmd *FunctionListCmd) SetVal(val []Library) {
@@ -3883,8 +3906,24 @@ func (cmd *FunctionListCmd) Val() []Library {
 	return cmd.val
 }
 
+func (cmd *FunctionListCmd) FirstVal() Library {
+	if len(cmd.val) > 0 {
+		return cmd.val[0]
+	} else {
+		return Library{}
+	}
+}
+
 func (cmd *FunctionListCmd) Result() ([]Library, error) {
 	return cmd.val, cmd.err
+}
+
+func (cmd *FunctionListCmd) First() (Library, error) {
+	if len(cmd.val) > 0 {
+		return cmd.val[0], cmd.err
+	} else {
+		return Library{}, cmd.err
+	}
 }
 
 func (cmd *FunctionListCmd) readReply(rd *proto.Reader) (err error) {
@@ -3925,6 +3964,8 @@ func readRdsLibrary(rd *proto.Reader) (Library, error) {
 			library.Name, err = rd.ReadString()
 		case "engine":
 			library.Engine, err = rd.ReadString()
+		case "library_code":
+			library.Code, err = rd.ReadString()
 		case "functions":
 			library.Functions, err = readFunctionsSlice(rd)
 		}

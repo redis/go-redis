@@ -6097,36 +6097,35 @@ var _ = Describe("Commands", func() {
 					   return 'Function 1'
 					end
 
-					
 					redis.register_function{
-					 function_name='%s',
-					 description ='%s',
-					 callback=f1,
-					 flags={'%s', '%s'}
+						function_name='%s',
+						description ='%s',
+						callback=f1,
+						flags={'%s', '%s'}
 					}`
 		lib1Code = fmt.Sprintf(lib1Code, lib1Name, lib1Func1Name, lib1Func1Desc, lib1Func1Flags[0], lib1Func1Flags[1])
 
-		lib2Name := "mylib2"
+		lib2Name := "lib2"
 		lib2Code := `#!lua name=%s
-					
+
 					local function f1(keys, args)
-					   return 'Function 1'
+						 return 'Function 1'
 					end
 					
 					local function f2(keys, args)
-					   return 'Function 2'
+						 return 'Function 2'
 					end
 					
 					redis.register_function('other_func_1', f1)
 					redis.register_function{
-					 function_name='other_func_2',
-					 description ='This is the second function of lib 2',
-					 callback=f2,
-					 flags={'no-writes', 'allow-stale'}
+						function_name='other_func_2',
+						description ='This is the second function of lib 2',
+						callback=f2,
+						flags={'no-writes', 'allow-stale'}
 					}`
-		lib2Code = fmt.Sprintf(lib2Code, lib2Name)
 
-		//lib2Name := "mylib2"
+		lib2Code = fmt.Sprintf(lib2Code, lib2Name)
+		q := redis.FunctionListQuery{}
 
 		AfterEach(func() {
 			flush := client.FunctionFlush(ctx)
@@ -6142,8 +6141,9 @@ var _ = Describe("Commands", func() {
 
 			Expect(functionLoad.Val()).To(Equal(lib1Name))
 
-			functionList := client.FunctionList(ctx)
+			functionList := client.FunctionList(ctx, q)
 			Expect(len(functionList.Val())).To(Equal(1))
+
 		})
 
 		It("Loads and replaces a new library", func() {
@@ -6160,7 +6160,7 @@ var _ = Describe("Commands", func() {
 
 			Expect(functionLoadReplace.Val()).To(Equal(lib1Name))
 
-			functionList := client.FunctionList(ctx)
+			functionList := client.FunctionList(ctx, q)
 			Expect(len(functionList.Val())).To(Equal(1))
 
 		})
@@ -6175,7 +6175,7 @@ var _ = Describe("Commands", func() {
 			args := []interface{}{"function", "delete", lib1Name}
 			Expect(functionDelete.Args()).To(Equal(args))
 
-			functionList := client.FunctionList(ctx)
+			functionList := client.FunctionList(ctx, q)
 			Expect(len(functionList.Val())).To(Equal(0))
 		})
 
@@ -6192,7 +6192,7 @@ var _ = Describe("Commands", func() {
 			args := []interface{}{"function", "flush"}
 			Expect(functionFlush.Args()).To(Equal(args))
 
-			functionList := client.FunctionList(ctx)
+			functionList := client.FunctionList(ctx, q)
 			Expect(len(functionList.Val())).To(Equal(0))
 		})
 
@@ -6206,13 +6206,13 @@ var _ = Describe("Commands", func() {
 			args := []interface{}{"function", "flush", "async"}
 			Expect(functionFlush.Args()).To(Equal(args))
 
-			functionList := client.FunctionList(ctx)
+			functionList := client.FunctionList(ctx, q)
 			Expect(len(functionList.Val())).To(Equal(0))
 		})
 
 		It("Lists all registered functions", func() {
 			// No registered functions in the server
-			functionList := client.FunctionList(ctx)
+			functionList := client.FunctionList(ctx, q)
 			Expect(functionList.Err()).NotTo(HaveOccurred())
 
 			args := []interface{}{"function", "list"}
@@ -6223,7 +6223,7 @@ var _ = Describe("Commands", func() {
 			// Test with a single library containing two functions
 			client.FunctionLoad(ctx, lib1Code)
 
-			functionList = client.FunctionList(ctx)
+			functionList = client.FunctionList(ctx, q)
 			Expect(functionList.Err()).NotTo(HaveOccurred())
 
 			// Check library parameters
@@ -6240,10 +6240,57 @@ var _ = Describe("Commands", func() {
 
 			// Load a second library and check length of slice
 			client.FunctionLoad(ctx, lib2Code)
-			functionList = client.FunctionList(ctx)
+			functionList = client.FunctionList(ctx, q)
 
 			Expect(len(functionList.Val())).To(Equal(2))
 		})
+
+		It("Returns only first registered function", func() {
+			client.FunctionLoad(ctx, lib1Code)
+			client.FunctionLoad(ctx, lib2Code)
+
+			functionList := client.FunctionList(ctx, q)
+			Expect(functionList.Err()).NotTo(HaveOccurred())
+
+			library1 := functionList.FirstVal()
+			Expect(library1.Name).To(BeElementOf([]string{lib1Name, lib2Name}))
+		})
+
+		It("Lists registered functions with code", func() {
+			client.FunctionLoad(ctx, lib1Code)
+
+			q := redis.FunctionListQuery{WithCode: true}
+
+			functionList := client.FunctionList(ctx, q)
+			Expect(functionList.Err()).NotTo(HaveOccurred())
+
+			// Check library parameters
+			library1 := functionList.Val()[0]
+			Expect(library1.Name).To(Equal(lib1Name))
+			Expect(library1.Engine).To(Equal("LUA"))
+			Expect(library1.Code).To(Equal(lib1Code))
+			Expect(len(library1.Functions)).To(Equal(1))
+		})
+
+		It("Lists libraries matching a name pattern", func() {
+			client.FunctionLoad(ctx, lib1Code)
+			client.FunctionLoad(ctx, lib2Code)
+
+			q := redis.FunctionListQuery{LibraryNamePattern: "my*"}
+
+			functionList := client.FunctionList(ctx, q)
+			Expect(functionList.Err()).NotTo(HaveOccurred())
+
+			Expect(len(functionList.Val())).To(Equal(1))
+
+			q = redis.FunctionListQuery{LibraryNamePattern: "*lib*"}
+
+			functionList = client.FunctionList(ctx, q)
+			Expect(functionList.Err()).NotTo(HaveOccurred())
+
+			Expect(len(functionList.Val())).To(Equal(2))
+		})
+
 	})
 
 	Describe("SlowLogGet", func() {
