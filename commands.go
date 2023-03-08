@@ -402,6 +402,7 @@ type Cmdable interface {
 	FunctionFlushAsync(ctx context.Context) *StringCmd
 	FunctionList(ctx context.Context, q FunctionListQuery) *FunctionListCmd
 	FunctionDump(ctx context.Context) *StringCmd
+	FunctionRestore(ctx context.Context, libDump string) *StringCmd
 
 	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
 	SPublish(ctx context.Context, channel string, message interface{}) *IntCmd
@@ -3318,6 +3319,12 @@ func (c cmdable) FunctionList(ctx context.Context, q FunctionListQuery) *Functio
 
 func (c cmdable) FunctionDump(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd(ctx, "function", "dump")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionRestore(ctx context.Context, libDump string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "restore", libDump)
 	_ = c(ctx, cmd)
 	return cmd
 }

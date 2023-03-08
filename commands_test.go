@@ -6134,10 +6134,11 @@ var _ = Describe("Commands", func() {
 
 		It("Loads a new library", func() {
 			functionLoad := client.FunctionLoad(ctx, lib1Code)
-			Expect(functionLoad.Err()).NotTo(HaveOccurred())
 
 			args := []interface{}{"function", "load", lib1Code}
 			Expect(functionLoad.Args()).To(Equal(args))
+
+			Expect(functionLoad.Err()).NotTo(HaveOccurred())
 
 			Expect(functionLoad.Val()).To(Equal(lib1Name))
 
@@ -6147,16 +6148,16 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("Loads and replaces a new library", func() {
-			// Load a function for the first time
+			// Load a library for the first time
 			client.FunctionLoad(ctx, lib1Code)
 
 			// And then replace it
 			functionLoadReplace := client.FunctionLoadReplace(ctx, lib1Code)
 
-			Expect(functionLoadReplace.Err()).NotTo(HaveOccurred())
-
 			args := []interface{}{"function", "load", "replace", lib1Code}
 			Expect(functionLoadReplace.Args()).To(Equal(args))
+
+			Expect(functionLoadReplace.Err()).NotTo(HaveOccurred())
 
 			Expect(functionLoadReplace.Val()).To(Equal(lib1Name))
 
@@ -6170,10 +6171,11 @@ var _ = Describe("Commands", func() {
 			Expect(functionLoad.Err()).NotTo(HaveOccurred())
 
 			functionDelete := client.FunctionDelete(ctx, lib1Name)
-			Expect(functionDelete.Err()).NotTo(HaveOccurred())
 
 			args := []interface{}{"function", "delete", lib1Name}
 			Expect(functionDelete.Args()).To(Equal(args))
+
+			Expect(functionDelete.Err()).NotTo(HaveOccurred())
 
 			functionList := client.FunctionList(ctx, q)
 			Expect(len(functionList.Val())).To(Equal(0))
@@ -6187,10 +6189,11 @@ var _ = Describe("Commands", func() {
 			Expect(functionLoad2.Err()).NotTo(HaveOccurred())
 
 			functionFlush := client.FunctionFlush(ctx)
-			Expect(functionFlush.Err()).NotTo(HaveOccurred())
 
 			args := []interface{}{"function", "flush"}
 			Expect(functionFlush.Args()).To(Equal(args))
+
+			Expect(functionFlush.Err()).NotTo(HaveOccurred())
 
 			functionList := client.FunctionList(ctx, q)
 			Expect(len(functionList.Val())).To(Equal(0))
@@ -6201,10 +6204,11 @@ var _ = Describe("Commands", func() {
 			Expect(functionLoad.Err()).NotTo(HaveOccurred())
 
 			functionFlush := client.FunctionFlushAsync(ctx)
-			Expect(functionFlush.Err()).NotTo(HaveOccurred())
 
 			args := []interface{}{"function", "flush", "async"}
 			Expect(functionFlush.Args()).To(Equal(args))
+
+			Expect(functionFlush.Err()).NotTo(HaveOccurred())
 
 			functionList := client.FunctionList(ctx, q)
 			Expect(len(functionList.Val())).To(Equal(0))
@@ -6213,10 +6217,11 @@ var _ = Describe("Commands", func() {
 		It("Lists all registered functions", func() {
 			// No registered functions in the server
 			functionList := client.FunctionList(ctx, q)
-			Expect(functionList.Err()).NotTo(HaveOccurred())
 
 			args := []interface{}{"function", "list"}
 			Expect(functionList.Args()).To(Equal(args))
+
+			Expect(functionList.Err()).NotTo(HaveOccurred())
 
 			Expect(len(functionList.Val())).To(Equal(0))
 
@@ -6262,10 +6267,11 @@ var _ = Describe("Commands", func() {
 			q := redis.FunctionListQuery{WithCode: true}
 
 			functionList := client.FunctionList(ctx, q)
-			Expect(functionList.Err()).NotTo(HaveOccurred())
 
 			args := []interface{}{"function", "list", "withcode"}
 			Expect(functionList.Args()).To(Equal(args))
+
+			Expect(functionList.Err()).NotTo(HaveOccurred())
 
 			// Check library parameters
 			library1 := functionList.Val()[0]
@@ -6282,10 +6288,11 @@ var _ = Describe("Commands", func() {
 			q := redis.FunctionListQuery{LibraryNamePattern: "my*"}
 
 			functionList := client.FunctionList(ctx, q)
-			Expect(functionList.Err()).NotTo(HaveOccurred())
 
 			args := []interface{}{"function", "list", "libraryname", "my*"}
 			Expect(functionList.Args()).To(Equal(args))
+
+			Expect(functionList.Err()).NotTo(HaveOccurred())
 
 			Expect(len(functionList.Val())).To(Equal(1))
 
@@ -6302,11 +6309,38 @@ var _ = Describe("Commands", func() {
 			client.FunctionLoad(ctx, lib2Code)
 
 			functionDump := client.FunctionDump(ctx)
-			Expect(functionDump.Err()).NotTo(HaveOccurred())
-			Expect(functionDump.Val()).NotTo(BeEmpty())
 
 			args := []interface{}{"function", "dump"}
 			Expect(functionDump.Args()).To(Equal(args))
+
+			Expect(functionDump.Err()).NotTo(HaveOccurred())
+			Expect(functionDump.Val()).NotTo(BeEmpty())
+		})
+
+		It("Restores all libraries", func() {
+			client.FunctionLoad(ctx, lib1Code)
+
+			// Get serialized payload of loaded libraries
+			functionDump := client.FunctionDump(ctx)
+
+			// Try to restore the payload having the original libraries still on the server
+			functionRestore := client.FunctionRestore(ctx, functionDump.Val())
+
+			args := []interface{}{"function", "dump"}
+			Expect(functionDump.Args()).To(Equal(args))
+
+			expectedError := fmt.Sprintf("ERR Library %s already exists", lib1Name)
+			Expect(functionRestore.Err()).To(Equal(proto.RedisError(expectedError)))
+
+			// Flush all libraries and try restoring the payload again
+			client.FunctionFlush(ctx)
+
+			functionRestore = client.FunctionRestore(ctx, functionDump.Val())
+
+			Expect(functionRestore.Err()).NotTo(HaveOccurred())
+
+			functionList := client.FunctionList(ctx, q)
+			Expect(len(functionList.Val())).To(Equal(1))
 		})
 
 	})
