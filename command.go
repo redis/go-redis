@@ -3918,11 +3918,11 @@ func (cmd *FunctionListCmd) Result() ([]Library, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *FunctionListCmd) First() (Library, error) {
+func (cmd *FunctionListCmd) First() (*Library, error) {
 	if len(cmd.val) > 0 {
-		return cmd.val[0], cmd.err
+		return &cmd.val[0], cmd.err
 	} else {
-		return Library{}, cmd.err
+		return &Library{}, cmd.err
 	}
 }
 

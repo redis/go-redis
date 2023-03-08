@@ -6252,7 +6252,7 @@ var _ = Describe("Commands", func() {
 			functionList := client.FunctionList(ctx, q)
 			Expect(functionList.Err()).NotTo(HaveOccurred())
 
-			library1 := functionList.FirstVal()
+			library1, _ := functionList.First()
 			Expect(library1.Name).To(BeElementOf([]string{lib1Name, lib2Name}))
 		})
 
