@@ -6264,6 +6264,9 @@ var _ = Describe("Commands", func() {
 			functionList := client.FunctionList(ctx, q)
 			Expect(functionList.Err()).NotTo(HaveOccurred())
 
+			args := []interface{}{"function", "list", "withcode"}
+			Expect(functionList.Args()).To(Equal(args))
+
 			// Check library parameters
 			library1 := functionList.Val()[0]
 			Expect(library1.Name).To(Equal(lib1Name))
@@ -6281,6 +6284,9 @@ var _ = Describe("Commands", func() {
 			functionList := client.FunctionList(ctx, q)
 			Expect(functionList.Err()).NotTo(HaveOccurred())
 
+			args := []interface{}{"function", "list", "libraryname", "my*"}
+			Expect(functionList.Args()).To(Equal(args))
+
 			Expect(len(functionList.Val())).To(Equal(1))
 
 			q = redis.FunctionListQuery{LibraryNamePattern: "*lib*"}
@@ -6289,6 +6295,18 @@ var _ = Describe("Commands", func() {
 			Expect(functionList.Err()).NotTo(HaveOccurred())
 
 			Expect(len(functionList.Val())).To(Equal(2))
+		})
+
+		It("Dumps all libraries", func() {
+			client.FunctionLoad(ctx, lib1Code)
+			client.FunctionLoad(ctx, lib2Code)
+
+			functionDump := client.FunctionDump(ctx)
+			Expect(functionDump.Err()).NotTo(HaveOccurred())
+			Expect(functionDump.Val()).NotTo(BeEmpty())
+
+			args := []interface{}{"function", "dump"}
+			Expect(functionDump.Args()).To(Equal(args))
 		})
 
 	})
