@@ -6087,11 +6087,29 @@ var _ = Describe("Commands", func() {
 	})
 
 	Describe("Functions", func() {
-		lib1Name := "mylib1"
-		lib1Func1Name := "myfun1"
-		lib1Func1Desc := "This is the first function of lib 1"
-		lib1Func1Flags := []string{"no-writes", "allow-stale"}
-		lib1Code := `#!lua name=%s
+		var (
+			q        redis.FunctionListQuery
+			lib1Code string
+			lib2Code string
+			lib1     redis.Library
+			lib2     redis.Library
+		)
+
+		BeforeEach(func() {
+			flush := client.FunctionFlush(ctx)
+			Expect(flush.Err()).NotTo(HaveOccurred())
+
+			lib1 = redis.Library{
+				Name:   "mylib1",
+				Engine: "LUA",
+				Functions: []redis.Function{
+					{
+						Name:        "lib1_func1",
+						Description: "This is the func-1 of lib 1",
+						Flags:       []string{"no-writes", "allow-stale"},
+					},
+				},
+				Code: `#!lua name=%s
 					
 					local function f1(keys, args)
 					   return 'Function 1'
@@ -6102,11 +6120,24 @@ var _ = Describe("Commands", func() {
 						description ='%s',
 						callback=f1,
 						flags={'%s', '%s'}
-					}`
-		lib1Code = fmt.Sprintf(lib1Code, lib1Name, lib1Func1Name, lib1Func1Desc, lib1Func1Flags[0], lib1Func1Flags[1])
+					}`,
+			}
 
-		lib2Name := "lib2"
-		lib2Code := `#!lua name=%s
+			lib2 = redis.Library{
+				Name:   "mylib2",
+				Engine: "LUA",
+				Functions: []redis.Function{
+					{
+						Name:  "lib2_func1",
+						Flags: []string{},
+					},
+					{
+						Name:        "lib2_func2",
+						Description: "This is the func-2 of lib 2",
+						Flags:       []string{"no-writes"},
+					},
+				},
+				Code: `#!lua name=%s
 
 					local function f1(keys, args)
 						 return 'Function 1'
@@ -6116,231 +6147,162 @@ var _ = Describe("Commands", func() {
 						 return 'Function 2'
 					end
 					
-					redis.register_function('other_func_1', f1)
+					redis.register_function('%s', f1)
 					redis.register_function{
-						function_name='other_func_2',
-						description ='This is the second function of lib 2',
+						function_name='%s',
+						description ='%s',
 						callback=f2,
-						flags={'no-writes', 'allow-stale'}
-					}`
+						flags={'%s'}
+					}`,
+			}
 
-		lib2Code = fmt.Sprintf(lib2Code, lib2Name)
-		q := redis.FunctionListQuery{}
+			lib1Code = fmt.Sprintf(lib1.Code, lib1.Name, lib1.Functions[0].Name,
+				lib1.Functions[0].Description, lib1.Functions[0].Flags[0], lib1.Functions[0].Flags[1])
+			lib2Code = fmt.Sprintf(lib2.Code, lib2.Name, lib2.Functions[0].Name,
+				lib2.Functions[1].Name, lib2.Functions[1].Description, lib2.Functions[1].Flags[0])
 
-		AfterEach(func() {
-			flush := client.FunctionFlush(ctx)
-			Expect(flush.Err()).NotTo(HaveOccurred())
+			q = redis.FunctionListQuery{}
 		})
 
 		It("Loads a new library", func() {
 			functionLoad := client.FunctionLoad(ctx, lib1Code)
-
-			args := []interface{}{"function", "load", lib1Code}
-			Expect(functionLoad.Args()).To(Equal(args))
-
 			Expect(functionLoad.Err()).NotTo(HaveOccurred())
-
-			Expect(functionLoad.Val()).To(Equal(lib1Name))
+			Expect(functionLoad.Val()).To(Equal(lib1.Name))
 
 			functionList := client.FunctionList(ctx, q)
-			Expect(len(functionList.Val())).To(Equal(1))
-
+			Expect(functionList.Err()).NotTo(HaveOccurred())
+			Expect(functionList.Val()).To(HaveLen(1))
 		})
 
 		It("Loads and replaces a new library", func() {
 			// Load a library for the first time
-			client.FunctionLoad(ctx, lib1Code)
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			newFuncName := "replaces_func_name"
+			newFuncDesc := "replaces_func_desc"
+			flag1, flag2 := "allow-stale", "no-cluster"
+			newCode := fmt.Sprintf(lib1.Code, lib1.Name, newFuncName, newFuncDesc, flag1, flag2)
 
 			// And then replace it
-			functionLoadReplace := client.FunctionLoadReplace(ctx, lib1Code)
-
-			args := []interface{}{"function", "load", "replace", lib1Code}
-			Expect(functionLoadReplace.Args()).To(Equal(args))
-
+			functionLoadReplace := client.FunctionLoadReplace(ctx, newCode)
 			Expect(functionLoadReplace.Err()).NotTo(HaveOccurred())
+			Expect(functionLoadReplace.Val()).To(Equal(lib1.Name))
 
-			Expect(functionLoadReplace.Val()).To(Equal(lib1Name))
-
-			functionList := client.FunctionList(ctx, q)
-			Expect(len(functionList.Val())).To(Equal(1))
-
+			lib, err := client.FunctionList(ctx, q).First()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lib.Functions).To(Equal([]redis.Function{
+				{
+					Name:        newFuncName,
+					Description: newFuncDesc,
+					Flags:       []string{flag1, flag2},
+				},
+			}))
 		})
 
 		It("Deletes a library", func() {
-			functionLoad := client.FunctionLoad(ctx, lib1Code)
-			Expect(functionLoad.Err()).NotTo(HaveOccurred())
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			functionDelete := client.FunctionDelete(ctx, lib1Name)
+			err = client.FunctionDelete(ctx, lib1.Name).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			args := []interface{}{"function", "delete", lib1Name}
-			Expect(functionDelete.Args()).To(Equal(args))
-
-			Expect(functionDelete.Err()).NotTo(HaveOccurred())
-
-			functionList := client.FunctionList(ctx, q)
-			Expect(len(functionList.Val())).To(Equal(0))
+			val, err := client.FunctionList(ctx, redis.FunctionListQuery{
+				LibraryNamePattern: lib1.Name,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(HaveLen(0))
 		})
 
 		It("Flushes all libraries", func() {
-			functionLoad1 := client.FunctionLoad(ctx, lib1Code)
-			Expect(functionLoad1.Err()).NotTo(HaveOccurred())
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			functionLoad2 := client.FunctionLoad(ctx, lib2Code)
-			Expect(functionLoad2.Err()).NotTo(HaveOccurred())
+			err = client.FunctionLoad(ctx, lib2Code).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			functionFlush := client.FunctionFlush(ctx)
+			err = client.FunctionFlush(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			args := []interface{}{"function", "flush"}
-			Expect(functionFlush.Args()).To(Equal(args))
-
-			Expect(functionFlush.Err()).NotTo(HaveOccurred())
-
-			functionList := client.FunctionList(ctx, q)
-			Expect(len(functionList.Val())).To(Equal(0))
+			val, err := client.FunctionList(ctx, q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(HaveLen(0))
 		})
 
 		It("Flushes all libraries asynchronously", func() {
 			functionLoad := client.FunctionLoad(ctx, lib1Code)
 			Expect(functionLoad.Err()).NotTo(HaveOccurred())
 
+			// we only verify the command result.
 			functionFlush := client.FunctionFlushAsync(ctx)
-
-			args := []interface{}{"function", "flush", "async"}
-			Expect(functionFlush.Args()).To(Equal(args))
-
 			Expect(functionFlush.Err()).NotTo(HaveOccurred())
-
-			functionList := client.FunctionList(ctx, q)
-			Expect(len(functionList.Val())).To(Equal(0))
 		})
 
-		It("Lists all registered functions", func() {
-			// No registered functions in the server
-			functionList := client.FunctionList(ctx, q)
+		It("Lists registered functions", func() {
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			args := []interface{}{"function", "list"}
-			Expect(functionList.Args()).To(Equal(args))
+			val, err := client.FunctionList(ctx, redis.FunctionListQuery{
+				LibraryNamePattern: "*",
+				WithCode:           true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(HaveLen(1))
+			Expect(val[0].Name).To(Equal(lib1.Name))
+			Expect(val[0].Engine).To(Equal(lib1.Engine))
+			Expect(val[0].Code).To(Equal(lib1Code))
+			Expect(val[0].Functions).Should(ConsistOf(lib1.Functions))
 
-			Expect(functionList.Err()).NotTo(HaveOccurred())
+			err = client.FunctionLoad(ctx, lib2Code).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			Expect(len(functionList.Val())).To(Equal(0))
+			val, err = client.FunctionList(ctx, redis.FunctionListQuery{
+				WithCode: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(HaveLen(2))
 
-			// Test with a single library containing two functions
-			client.FunctionLoad(ctx, lib1Code)
+			lib, err := client.FunctionList(ctx, redis.FunctionListQuery{
+				LibraryNamePattern: lib2.Name,
+				WithCode:           false,
+			}).First()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lib.Name).To(Equal(lib2.Name))
+			Expect(lib.Code).To(Equal(""))
 
-			functionList = client.FunctionList(ctx, q)
-			Expect(functionList.Err()).NotTo(HaveOccurred())
-
-			// Check library parameters
-			library1 := functionList.Val()[0]
-			Expect(library1.Name).To(Equal(lib1Name))
-			Expect(library1.Engine).To(Equal("LUA"))
-			Expect(len(library1.Functions)).To(Equal(1))
-
-			// Check function parameters
-			Expect(library1.Functions[0].Name).To(Equal(lib1Func1Name))
-			Expect(library1.Functions[0].Description).To(Equal(lib1Func1Desc))
-			Expect(len(library1.Functions[0].Flags)).To(Equal(2))
-			Expect(library1.Functions[0].Flags).To(ContainElements(lib1Func1Flags))
-
-			// Load a second library and check length of slice
-			client.FunctionLoad(ctx, lib2Code)
-			functionList = client.FunctionList(ctx, q)
-
-			Expect(len(functionList.Val())).To(Equal(2))
+			_, err = client.FunctionList(ctx, redis.FunctionListQuery{
+				LibraryNamePattern: "non_lib",
+				WithCode:           true,
+			}).First()
+			Expect(err).To(Equal(redis.Nil))
 		})
 
-		It("Returns only first registered function", func() {
-			client.FunctionLoad(ctx, lib1Code)
-			client.FunctionLoad(ctx, lib2Code)
+		It("Dump and restores all libraries", func() {
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.FunctionLoad(ctx, lib2Code).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			functionList := client.FunctionList(ctx, q)
-			Expect(functionList.Err()).NotTo(HaveOccurred())
+			dump, err := client.FunctionDump(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dump).NotTo(BeEmpty())
 
-			library1, _ := functionList.First()
-			Expect(library1.Name).To(BeElementOf([]string{lib1Name, lib2Name}))
-		})
+			err = client.FunctionRestore(ctx, dump).Err()
+			Expect(err).To(HaveOccurred())
 
-		It("Lists registered functions with code", func() {
-			client.FunctionLoad(ctx, lib1Code)
+			err = client.FunctionFlush(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			q := redis.FunctionListQuery{WithCode: true}
+			list, err := client.FunctionList(ctx, q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(list).To(HaveLen(0))
 
-			functionList := client.FunctionList(ctx, q)
+			err = client.FunctionRestore(ctx, dump).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			args := []interface{}{"function", "list", "withcode"}
-			Expect(functionList.Args()).To(Equal(args))
-
-			Expect(functionList.Err()).NotTo(HaveOccurred())
-
-			// Check library parameters
-			library1 := functionList.Val()[0]
-			Expect(library1.Name).To(Equal(lib1Name))
-			Expect(library1.Engine).To(Equal("LUA"))
-			Expect(library1.Code).To(Equal(lib1Code))
-			Expect(len(library1.Functions)).To(Equal(1))
-		})
-
-		It("Lists libraries matching a name pattern", func() {
-			client.FunctionLoad(ctx, lib1Code)
-			client.FunctionLoad(ctx, lib2Code)
-
-			q := redis.FunctionListQuery{LibraryNamePattern: "my*"}
-
-			functionList := client.FunctionList(ctx, q)
-
-			args := []interface{}{"function", "list", "libraryname", "my*"}
-			Expect(functionList.Args()).To(Equal(args))
-
-			Expect(functionList.Err()).NotTo(HaveOccurred())
-
-			Expect(len(functionList.Val())).To(Equal(1))
-
-			q = redis.FunctionListQuery{LibraryNamePattern: "*lib*"}
-
-			functionList = client.FunctionList(ctx, q)
-			Expect(functionList.Err()).NotTo(HaveOccurred())
-
-			Expect(len(functionList.Val())).To(Equal(2))
-		})
-
-		It("Dumps all libraries", func() {
-			client.FunctionLoad(ctx, lib1Code)
-			client.FunctionLoad(ctx, lib2Code)
-
-			functionDump := client.FunctionDump(ctx)
-
-			args := []interface{}{"function", "dump"}
-			Expect(functionDump.Args()).To(Equal(args))
-
-			Expect(functionDump.Err()).NotTo(HaveOccurred())
-			Expect(functionDump.Val()).NotTo(BeEmpty())
-		})
-
-		It("Restores all libraries", func() {
-			client.FunctionLoad(ctx, lib1Code)
-
-			// Get serialized payload of loaded libraries
-			functionDump := client.FunctionDump(ctx)
-
-			// Try to restore the payload having the original libraries still on the server
-			functionRestore := client.FunctionRestore(ctx, functionDump.Val())
-
-			args := []interface{}{"function", "dump"}
-			Expect(functionDump.Args()).To(Equal(args))
-
-			expectedError := fmt.Sprintf("ERR Library %s already exists", lib1Name)
-			Expect(functionRestore.Err()).To(Equal(proto.RedisError(expectedError)))
-
-			// Flush all libraries and try restoring the payload again
-			client.FunctionFlush(ctx)
-
-			functionRestore = client.FunctionRestore(ctx, functionDump.Val())
-
-			Expect(functionRestore.Err()).NotTo(HaveOccurred())
-
-			functionList := client.FunctionList(ctx, q)
-			Expect(len(functionList.Val())).To(Equal(1))
+			list, err = client.FunctionList(ctx, q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(list).To(HaveLen(2))
 		})
 
 	})

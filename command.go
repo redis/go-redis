@@ -3854,17 +3854,6 @@ type Library struct {
 	Code      string
 }
 
-// FunctionListQuery is used with FunctionList to query for Redis libraries
-//
-//	  	LibraryNamePattern 	- Use an empty string to get all libraries.
-//	  						- Use a glob-style pattern to match multiple libraries with a matching name
-//	  						- Use a library's full name to match a single library
-//		WithCode			- If true, it will return the code of the library
-type FunctionListQuery struct {
-	LibraryNamePattern string
-	WithCode           bool
-}
-
 type FunctionListCmd struct {
 	baseCmd
 
@@ -3873,25 +3862,13 @@ type FunctionListCmd struct {
 
 var _ Cmder = (*FunctionListCmd)(nil)
 
-func NewFunctionListCmd(ctx context.Context, q FunctionListQuery, args ...interface{}) *FunctionListCmd {
+func NewFunctionListCmd(ctx context.Context, args ...interface{}) *FunctionListCmd {
 	return &FunctionListCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
-			args: getFunctionListArgs(&q, args...),
+			args: args,
 		},
 	}
-}
-
-func getFunctionListArgs(q *FunctionListQuery, args ...interface{}) []interface{} {
-
-	if q.LibraryNamePattern != "" {
-		args = append(args, "libraryname", q.LibraryNamePattern)
-	}
-	if q.WithCode {
-		args = append(args, "withcode")
-	}
-
-	return args
 }
 
 func (cmd *FunctionListCmd) SetVal(val []Library) {
@@ -3906,139 +3883,112 @@ func (cmd *FunctionListCmd) Val() []Library {
 	return cmd.val
 }
 
-func (cmd *FunctionListCmd) FirstVal() Library {
-	if len(cmd.val) > 0 {
-		return cmd.val[0]
-	} else {
-		return Library{}
-	}
-}
-
 func (cmd *FunctionListCmd) Result() ([]Library, error) {
 	return cmd.val, cmd.err
 }
 
 func (cmd *FunctionListCmd) First() (*Library, error) {
-	if len(cmd.val) > 0 {
-		return &cmd.val[0], cmd.err
-	} else {
-		return &Library{}, cmd.err
+	if cmd.err != nil {
+		return nil, cmd.err
 	}
+	if len(cmd.val) > 0 {
+		return &cmd.val[0], nil
+	}
+	return nil, Nil
 }
 
 func (cmd *FunctionListCmd) readReply(rd *proto.Reader) (err error) {
-	cmd.val, err = readRdsLibrarySlice(rd)
-	return err
-}
-
-func readRdsLibrarySlice(rd *proto.Reader) ([]Library, error) {
 	n, err := rd.ReadArrayLen()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	libraries := make([]Library, n)
-	for i := 0; i < len(libraries); i++ {
-		if libraries[i], err = readRdsLibrary(rd); err != nil {
-			return nil, err
-		}
-	}
-	return libraries, nil
-}
-
-func readRdsLibrary(rd *proto.Reader) (Library, error) {
-	n, err := rd.ReadMapLen()
-	if err != nil {
-		return Library{}, err
-	}
-
-	library := Library{}
 	for i := 0; i < n; i++ {
-		k, err := rd.ReadString()
+		nn, err := rd.ReadMapLen()
 		if err != nil {
-			return Library{}, err
+			return err
 		}
 
-		switch k {
-		case "library_name":
-			library.Name, err = rd.ReadString()
-		case "engine":
-			library.Engine, err = rd.ReadString()
-		case "library_code":
-			library.Code, err = rd.ReadString()
-		case "functions":
-			library.Functions, err = readFunctionsSlice(rd)
+		library := Library{}
+		for f := 0; f < nn; f++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "library_name":
+				library.Name, err = rd.ReadString()
+			case "engine":
+				library.Engine, err = rd.ReadString()
+			case "functions":
+				library.Functions, err = cmd.readFunctions(rd)
+			case "library_code":
+				library.Code, err = rd.ReadString()
+			default:
+				return fmt.Errorf("redis: function list unexpected key %s", key)
+			}
+
+			if err != nil {
+				return err
+			}
 		}
 
-		if err != nil {
-			return Library{}, err
-		}
+		libraries[i] = library
 	}
-
-	return library, nil
+	cmd.val = libraries
+	return nil
 }
 
-func readFunctionsSlice(rd *proto.Reader) ([]Function, error) {
+func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) {
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return nil, err
 	}
 
 	functions := make([]Function, n)
-	for i := 0; i < len(functions); i++ {
-		if functions[i], err = readFunction(rd); err != nil {
+	for i := 0; i < n; i++ {
+		nn, err := rd.ReadMapLen()
+		if err != nil {
 			return nil, err
 		}
+
+		function := Function{}
+		for f := 0; f < nn; f++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+
+			switch key {
+			case "name":
+				if function.Name, err = rd.ReadString(); err != nil {
+					return nil, err
+				}
+			case "description":
+				if function.Description, err = rd.ReadString(); err != nil && err != Nil {
+					return nil, err
+				}
+			case "flags":
+				// resp set
+				nx, err := rd.ReadArrayLen()
+				if err != nil {
+					return nil, err
+				}
+
+				function.Flags = make([]string, nx)
+				for j := 0; j < nx; j++ {
+					if function.Flags[j], err = rd.ReadString(); err != nil {
+						return nil, err
+					}
+				}
+			default:
+				return nil, fmt.Errorf("redis: function list unexpected key %s", key)
+			}
+		}
+
+		functions[i] = function
 	}
 	return functions, nil
-}
-
-func readFunction(rd *proto.Reader) (Function, error) {
-	n, err := rd.ReadMapLen()
-	if err != nil {
-		return Function{}, err
-	}
-
-	function := Function{}
-	for i := 0; i < n; i++ {
-		k, err := rd.ReadString()
-		if err != nil {
-			return Function{}, err
-		}
-
-		switch k {
-		case "name":
-			function.Name, err = rd.ReadString()
-			if err != nil {
-				return Function{}, err
-			}
-		case "description":
-			function.Description, err = rd.ReadString()
-			if err != nil {
-				if err == proto.Nil {
-					function.Description = ""
-				} else {
-					return Function{}, err
-				}
-
-			}
-		case "flags":
-			n, err = rd.ReadArrayLen()
-			if err != nil {
-				return Function{}, err
-			}
-
-			function.Flags = make([]string, n)
-
-			for i := 0; i < n; i++ {
-				function.Flags[i], err = rd.ReadString()
-				if err != nil {
-					return Function{}, err
-				}
-			}
-		}
-
-	}
-
-	return function, nil
 }

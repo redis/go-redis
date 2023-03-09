@@ -3281,6 +3281,17 @@ func (c cmdable) ScriptLoad(ctx context.Context, script string) *StringCmd {
 
 // ------------------------------------------------------------------------------
 
+// FunctionListQuery is used with FunctionList to query for Redis libraries
+//
+//	  	LibraryNamePattern 	- Use an empty string to get all libraries.
+//	  						- Use a glob-style pattern to match multiple libraries with a matching name
+//	  						- Use a library's full name to match a single library
+//		WithCode			- If true, it will return the code of the library
+type FunctionListQuery struct {
+	LibraryNamePattern string
+	WithCode           bool
+}
+
 func (c cmdable) FunctionLoad(ctx context.Context, code string) *StringCmd {
 	cmd := NewStringCmd(ctx, "function", "load", code)
 	_ = c(ctx, cmd)
@@ -3312,7 +3323,16 @@ func (c cmdable) FunctionFlushAsync(ctx context.Context) *StringCmd {
 }
 
 func (c cmdable) FunctionList(ctx context.Context, q FunctionListQuery) *FunctionListCmd {
-	cmd := NewFunctionListCmd(ctx, q, "function", "list")
+	args := make([]interface{}, 2, 5)
+	args[0] = "function"
+	args[1] = "list"
+	if q.LibraryNamePattern != "" {
+		args = append(args, "libraryname", q.LibraryNamePattern)
+	}
+	if q.WithCode {
+		args = append(args, "withcode")
+	}
+	cmd := NewFunctionListCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
