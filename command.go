@@ -3840,3 +3840,54 @@ func (cmd *ZSliceWithKeyCmd) readReply(rd *proto.Reader) (err error) {
 
 	return nil
 }
+
+//------------------------------------------------------------------------------
+
+type LCSMatch struct {
+	Positions1 []int
+	Positions2 []int
+}
+
+type LCSMatchLen struct {
+	Match LCSMatch
+	Len int64
+}
+
+type LCSCmd struct {
+	baseCmd
+
+	Val LCSMatchLen
+}
+
+var _ Cmder = (*LCSCmd)(nil)
+
+func NewLCSCmd(ctx context.Context,args ...interface{}) *LCSCmd {
+    return &LCSCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *LCSCmd) Result() (LCSMatchLen, error) {
+	return cmd.Val, cmd.err
+}
+
+func (cmd *LCSCmd) String() string {
+	return cmdString(cmd, cmd.Val)
+}
+
+func (cmd *LCSCmd) readReply(rd *proto.Reader) error {
+
+		length, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+
+		if length != 4 {
+			return fmt.Errorf("Unexpected number of items in array reply: %d", length)
+		}
+
+		return nil
+}

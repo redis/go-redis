@@ -1476,6 +1476,25 @@ func (c cmdable) BRPopLPush(ctx context.Context, source, destination string, tim
 	return cmd
 }
 
+func (c cmdable) LCS(ctx context.Context, key1 string, key2 string) *StringCmd {
+    cmd := NewStringCmd(ctx, "lcs", key1, key2)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) LCSLen(ctx context.Context, key1 string, key2 string) *IntCmd {
+	cmd := NewIntCmd(ctx, "lcs", key1, key2, "len")
+	_ = c(ctx, cmd)
+    return cmd
+}
+
+func (c cmdable) LCSIdx(ctx context.Context, key1 string, key2 string, idx bool) *LCSCmd {
+	cmd := NewLCSCmd(ctx, "lcs", key1, key2, true)
+	_ = c(ctx,cmd)
+	return cmd
+}
+
+
 func (c cmdable) LIndex(ctx context.Context, key string, index int64) *StringCmd {
 	cmd := NewStringCmd(ctx, "lindex", key, index)
 	_ = c(ctx, cmd)
