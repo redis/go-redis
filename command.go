@@ -3840,3 +3840,155 @@ func (cmd *ZSliceWithKeyCmd) readReply(rd *proto.Reader) (err error) {
 
 	return nil
 }
+
+type Function struct {
+	Name        string
+	Description string
+	Flags       []string
+}
+
+type Library struct {
+	Name      string
+	Engine    string
+	Functions []Function
+	Code      string
+}
+
+type FunctionListCmd struct {
+	baseCmd
+
+	val []Library
+}
+
+var _ Cmder = (*FunctionListCmd)(nil)
+
+func NewFunctionListCmd(ctx context.Context, args ...interface{}) *FunctionListCmd {
+	return &FunctionListCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *FunctionListCmd) SetVal(val []Library) {
+	cmd.val = val
+}
+
+func (cmd *FunctionListCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FunctionListCmd) Val() []Library {
+	return cmd.val
+}
+
+func (cmd *FunctionListCmd) Result() ([]Library, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FunctionListCmd) First() (*Library, error) {
+	if cmd.err != nil {
+		return nil, cmd.err
+	}
+	if len(cmd.val) > 0 {
+		return &cmd.val[0], nil
+	}
+	return nil, Nil
+}
+
+func (cmd *FunctionListCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	libraries := make([]Library, n)
+	for i := 0; i < n; i++ {
+		nn, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+
+		library := Library{}
+		for f := 0; f < nn; f++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "library_name":
+				library.Name, err = rd.ReadString()
+			case "engine":
+				library.Engine, err = rd.ReadString()
+			case "functions":
+				library.Functions, err = cmd.readFunctions(rd)
+			case "library_code":
+				library.Code, err = rd.ReadString()
+			default:
+				return fmt.Errorf("redis: function list unexpected key %s", key)
+			}
+
+			if err != nil {
+				return err
+			}
+		}
+
+		libraries[i] = library
+	}
+	cmd.val = libraries
+	return nil
+}
+
+func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	functions := make([]Function, n)
+	for i := 0; i < n; i++ {
+		nn, err := rd.ReadMapLen()
+		if err != nil {
+			return nil, err
+		}
+
+		function := Function{}
+		for f := 0; f < nn; f++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+
+			switch key {
+			case "name":
+				if function.Name, err = rd.ReadString(); err != nil {
+					return nil, err
+				}
+			case "description":
+				if function.Description, err = rd.ReadString(); err != nil && err != Nil {
+					return nil, err
+				}
+			case "flags":
+				// resp set
+				nx, err := rd.ReadArrayLen()
+				if err != nil {
+					return nil, err
+				}
+
+				function.Flags = make([]string, nx)
+				for j := 0; j < nx; j++ {
+					if function.Flags[j], err = rd.ReadString(); err != nil {
+						return nil, err
+					}
+				}
+			default:
+				return nil, fmt.Errorf("redis: function list unexpected key %s", key)
+			}
+		}
+
+		functions[i] = function
+	}
+	return functions, nil
+}

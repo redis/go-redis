@@ -395,6 +395,15 @@ type Cmdable interface {
 	ScriptKill(ctx context.Context) *StatusCmd
 	ScriptLoad(ctx context.Context, script string) *StringCmd
 
+	FunctionLoad(ctx context.Context, code string) *StringCmd
+	FunctionLoadReplace(ctx context.Context, code string) *StringCmd
+	FunctionDelete(ctx context.Context, libName string) *StringCmd
+	FunctionFlush(ctx context.Context) *StringCmd
+	FunctionFlushAsync(ctx context.Context) *StringCmd
+	FunctionList(ctx context.Context, q FunctionListQuery) *FunctionListCmd
+	FunctionDump(ctx context.Context) *StringCmd
+	FunctionRestore(ctx context.Context, libDump string) *StringCmd
+
 	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
 	SPublish(ctx context.Context, channel string, message interface{}) *IntCmd
 	PubSubChannels(ctx context.Context, pattern string) *StringSliceCmd
@@ -3266,6 +3275,76 @@ func (c cmdable) ScriptKill(ctx context.Context) *StatusCmd {
 
 func (c cmdable) ScriptLoad(ctx context.Context, script string) *StringCmd {
 	cmd := NewStringCmd(ctx, "script", "load", script)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ------------------------------------------------------------------------------
+
+// FunctionListQuery is used with FunctionList to query for Redis libraries
+//
+//	  	LibraryNamePattern 	- Use an empty string to get all libraries.
+//	  						- Use a glob-style pattern to match multiple libraries with a matching name
+//	  						- Use a library's full name to match a single library
+//		WithCode			- If true, it will return the code of the library
+type FunctionListQuery struct {
+	LibraryNamePattern string
+	WithCode           bool
+}
+
+func (c cmdable) FunctionLoad(ctx context.Context, code string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "load", code)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionLoadReplace(ctx context.Context, code string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "load", "replace", code)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionDelete(ctx context.Context, libName string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "delete", libName)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionFlush(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "flush")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionFlushAsync(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "flush", "async")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionList(ctx context.Context, q FunctionListQuery) *FunctionListCmd {
+	args := make([]interface{}, 2, 5)
+	args[0] = "function"
+	args[1] = "list"
+	if q.LibraryNamePattern != "" {
+		args = append(args, "libraryname", q.LibraryNamePattern)
+	}
+	if q.WithCode {
+		args = append(args, "withcode")
+	}
+	cmd := NewFunctionListCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionDump(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "dump")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionRestore(ctx context.Context, libDump string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "restore", libDump)
 	_ = c(ctx, cmd)
 	return cmd
 }
