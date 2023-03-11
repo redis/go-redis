@@ -4043,6 +4043,10 @@ func NewLCSCmd(ctx context.Context, args ...interface{}) *LCSCmd {
 	}
 }
 
+func (cmd *LCSCmd) SetVal(val *LCSMatch) {
+	cmd.val = val
+}
+
 func (cmd *LCSCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
@@ -4101,7 +4105,7 @@ func (cmd *LCSCmd) readReply(rd *proto.Reader) (err error) {
 }
 
 func readMatchedPositions(rd *proto.Reader) ([]LCSMatchedPosition, error) {
-	
+
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return nil, err

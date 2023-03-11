@@ -2238,6 +2238,58 @@ var _ = Describe("Commands", func() {
 			Expect(v).To(Equal("c"))
 		})
 
+		It("should LCS", func() {
+			err := client.MSet(ctx, "key1", "ohmytext", "key2", "mynewtext").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			lcs, err := client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+			}).Result()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal("mytext"))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "nonexistent_key1",
+				Key2: "key2",
+			}).Result()
+
+			// Expect an error to be returned
+			Expect(err).To(HaveOccurred())
+			// Expect the LCS result to be an empty string
+			Expect(lcs.MatchString).To(BeEmpty())
+
+		})
+
+		It("should LCS with Len", func() {
+			err := client.MSet(ctx, "key1", "ohmytext", "key2", "mynewtext").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			lcs, err := client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+				Len:  true,
+			}).Result()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.Len).To(Equal(6))
+
+			// Call LCS with both keys as non-existent
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "nonexistent_key1",
+				Key2: "nonexistent_key2",
+				Len:  true,
+			}).Result()
+
+			// Expect an error to be returned
+			Expect(err).To(HaveOccurred())
+			// Expect the LCS length result to be 0
+			Expect(lcs.Len).To(BeZero())
+		})
+
+
+
 		It("should LIndex", func() {
 			lPush := client.LPush(ctx, "list", "World")
 			Expect(lPush.Err()).NotTo(HaveOccurred())
