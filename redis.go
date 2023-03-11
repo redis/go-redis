@@ -285,7 +285,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// we continue to provide services with RESP2.
 	if err := conn.Hello(ctx, 3, username, password, "").Err(); err == nil {
 		auth = true
-	} else if !strings.HasPrefix(err.Error(), "ERR unknown command") {
+	} else if !strings.HasPrefix(err.Error(), "ERR unknown command") &&
+		// this check is for compatibility DragonflyDB.
+		!strings.HasPrefix(err.Error(), "NOAUTH Authentication") {
 		return err
 	}
 
