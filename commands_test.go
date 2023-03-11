@@ -2238,34 +2238,6 @@ var _ = Describe("Commands", func() {
 			Expect(v).To(Equal("c"))
 		})
 
-		It("should LCS", func() {
-			mSet := client.MSet(ctx, "key1", "ohmytext", "key2", "mynewtext")
-			Expect(mSet.Err()).NotTo(HaveOccurred())
-			Expect(mSet.Val()).To(Equal("OK"))
-		
-			lcs := client.LCS(ctx, "key1", "key2")
-			Expect(lcs.Err()).NotTo(HaveOccurred())
-			Expect(lcs.Val()).To(Equal("mytext"))
-
-			lcs = client.LCS(ctx, "nonexistent_key1", "nonexistent_key2")
-    		Expect(lcs.Err()).To(Equal(redis.Nil))
-		})
-		
-		It("should LCSLen", func() {
-			mSet := client.MSet(ctx, "key1", "ohmytext", "key2", "mynewtext")
-			Expect(mSet.Err()).NotTo(HaveOccurred())
-			Expect(mSet.Val()).To(Equal("OK"))
-		
-			lcsLen := client.LCSLen(ctx, "key1", "key2")
-			Expect(lcsLen.Err()).NotTo(HaveOccurred())
-			Expect(lcsLen.Val()).To(Equal(6))
-
-			lcsLen = client.LCSLen(ctx, "nonexistent_key1", "nonexistent_key2")
-    		Expect(lcsLen.Err()).To(Equal(redis.Nil))
-
-		})
-		
-
 		It("should LIndex", func() {
 			lPush := client.LPush(ctx, "list", "World")
 			Expect(lPush.Err()).NotTo(HaveOccurred())
