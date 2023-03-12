@@ -3992,3 +3992,164 @@ func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) 
 	}
 	return functions, nil
 }
+
+// FunctionStats contains information about the scripts currently executing on the server, and the available engines
+//   - RunningScript:
+//     The script currently running on the shard we're connecting to.
+//     For Redis Enterprise and Redis Cloud, this represents the
+//     function with the longest running time, across all the running functions, on all shards
+//   - Engines:
+//     Statistics about the engine like number of functions and number of libraries
+//   - RunningScripts
+//     All scripts currently running in a Redis Enterprise clustered database.
+//     Only available on Redis Enterprise
+type FunctionStats struct {
+	Engines        []Engine
+	RunningScript  RunningScript
+	RunningScripts []RunningScript
+}
+
+// TODO Should we call it RunningScript or RunningFunction?
+
+type RunningScript struct {
+	Name     string
+	Command  []string
+	Duration time.Duration
+}
+
+type Engine struct {
+	Language       string
+	LibrariesCount int
+	FunctionsCount int
+}
+
+type FunctionStatsCmd struct {
+	baseCmd
+	val FunctionStats
+}
+
+var _ Cmder = (*FunctionStatsCmd)(nil)
+
+func NewFunctionStatsCmd(ctx context.Context, args ...interface{}) *FunctionStatsCmd {
+	return &FunctionStatsCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *FunctionStatsCmd) SetVal(val FunctionStats) {
+	cmd.val = val
+}
+
+func (cmd *FunctionStatsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FunctionStatsCmd) Val() FunctionStats {
+	return cmd.val
+}
+
+func (cmd *FunctionStatsCmd) Result() (FunctionStats, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FunctionStatsCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	var key string
+	var result FunctionStats
+	for f := 0; f < n; f++ {
+		key, err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case "running_script":
+			result.RunningScript, err = cmd.readRunningScript(rd)
+		case "engines":
+			result.Engines, err = cmd.readEngines(rd)
+		case "all_running_scripts": // Redis Enterprise only
+			result.RunningScripts, err = cmd.readRunningScripts(rd)
+		default:
+			return fmt.Errorf("redis: function stats unexpected key %s", key)
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript, error) {
+	if err := rd.ReadFixedMapLen(3); err != nil {
+		return RunningScript{}, err
+	}
+
+	var runningScript RunningScript
+	for i := 0; i < 3; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return RunningScript{}, err
+		}
+
+		switch key {
+		case "name":
+			runningScript.Name, err = rd.ReadString()
+		case "duration_ms":
+			runningScript.Duration, err = cmd.readDuration(rd)
+		case "command":
+			runningScript.Command, err = cmd.readCommand(rd)
+		default:
+			return RunningScript{}, fmt.Errorf("redis: function stats unexpected running_script key %s", key)
+		}
+
+		if err != nil {
+			return RunningScript{}, err
+		}
+	}
+
+	return RunningScript{}, nil
+}
+
+func (cmd *FunctionStatsCmd) readEngines(rd *proto.Reader) ([]Engine, error) {
+	return nil, nil
+}
+
+// TODO Should we consider moving this to the Reader struct?
+func (cmd *FunctionStatsCmd) readDuration(rd *proto.Reader) (time.Duration, error) {
+	t, err := rd.ReadInt()
+	if err != nil {
+		return time.Duration(0), err
+	}
+	return time.Duration(t) * time.Millisecond, nil
+}
+
+func (cmd *FunctionStatsCmd) readCommand(rd *proto.Reader) ([]string, error) {
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	command := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		x, err := rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+		command = append(command, x)
+	}
+
+	return command, nil
+}
+func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScript, error) {
+	return nil, nil
+}

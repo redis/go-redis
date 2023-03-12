@@ -6305,6 +6305,38 @@ var _ = Describe("Commands", func() {
 			Expect(list).To(HaveLen(2))
 		})
 
+		It("Shows function stats", func() {
+			longRunningFunc := redis.Library{
+				Name:   "mylib1",
+				Engine: "LUA",
+				Functions: []redis.Function{
+					{
+						Name:        "lib1_func1",
+						Description: "This is the func-1 of lib 1",
+						Flags:       []string{"no-writes", "allow-stale"},
+					},
+				},
+				Code: `#!lua name=%s
+					
+					local function f1(keys, args)
+						for i = 1000000, 1,-1 do 
+						  redis.call('SET', 'a', i)
+   						end	
+						return 'Function 1'
+					end
+
+					redis.register_function{
+						function_name='%s',
+						description ='%s',
+						callback=f1,
+						flags={'%s', '%s'}
+					}`,
+			}
+
+			err := client.FunctionLoad(ctx, longRunningFunc.Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 	})
 
 	Describe("SlowLogGet", func() {
