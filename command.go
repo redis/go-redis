@@ -4017,10 +4017,14 @@ type RunningScript struct {
 	Duration time.Duration
 }
 
+func (rs *RunningScript) IsEmpty() bool {
+	return rs.Name == "" && rs.Duration == time.Duration(0) && len(rs.Command) == 0
+}
+
 type Engine struct {
 	Language       string
-	LibrariesCount int
-	FunctionsCount int
+	LibrariesCount int64
+	FunctionsCount int64
 }
 
 type FunctionStatsCmd struct {
@@ -4085,11 +4089,16 @@ func (cmd *FunctionStatsCmd) readReply(rd *proto.Reader) (err error) {
 		}
 	}
 
+	cmd.val = result
 	return nil
 }
 
 func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript, error) {
-	if err := rd.ReadFixedMapLen(3); err != nil {
+	err := rd.ReadFixedMapLen(3)
+	if err != nil {
+		if err == Nil {
+			return RunningScript{}, nil
+		}
 		return RunningScript{}, err
 	}
 
@@ -4120,7 +4129,40 @@ func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript,
 }
 
 func (cmd *FunctionStatsCmd) readEngines(rd *proto.Reader) ([]Engine, error) {
-	return nil, nil
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return nil, err
+	}
+
+	engines := make([]Engine, 0, n)
+	for i := 0; i < n; i++ {
+		engine := Engine{}
+		engine.Language, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+
+		err = rd.ReadFixedMapLen(2)
+		if err != nil {
+			return nil, fmt.Errorf("redis: function stats unexpected %s engine map length", engine.Language)
+		}
+
+		for i := 0; i < 2; i++ {
+			key, err := rd.ReadString()
+			switch key {
+			case "libraries_count":
+				engine.LibrariesCount, err = rd.ReadInt()
+			case "functions_count":
+				engine.FunctionsCount, err = rd.ReadInt()
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		engines = append(engines, engine)
+	}
+	return engines, nil
 }
 
 // TODO Should we consider moving this to the Reader struct?

@@ -6306,7 +6306,8 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("Shows function stats", func() {
-			longRunningFunc := redis.Library{
+			// The 5M iterations in the f1 function will block for around 3-4 seconds when executed
+			lib := redis.Library{
 				Name:   "mylib1",
 				Engine: "LUA",
 				Functions: []redis.Function{
@@ -6319,7 +6320,7 @@ var _ = Describe("Commands", func() {
 				Code: `#!lua name=%s
 					
 					local function f1(keys, args)
-						for i = 1000000, 1,-1 do 
+						for i = 5000000, 1,-1 do 
 						  redis.call('SET', 'a', i)
    						end	
 						return 'Function 1'
@@ -6332,9 +6333,18 @@ var _ = Describe("Commands", func() {
 						flags={'%s', '%s'}
 					}`,
 			}
+			libCode := fmt.Sprintf(lib.Code, lib.Name, lib.Functions[0].Name,
+				lib.Functions[0].Description, lib.Functions[0].Flags[0], lib.Functions[0].Flags[1])
+			err := client.FunctionLoad(ctx, libCode).Err()
 
-			err := client.FunctionLoad(ctx, longRunningFunc.Code).Err()
 			Expect(err).NotTo(HaveOccurred())
+
+			r, err := client.FunctionStats(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(r.Engines)).To(Equal(1))
+			Expect(r.RunningScript.IsEmpty()).To(BeFalse())
+
+			//TODO Add more tests after `FCALL` is implemented
 		})
 
 	})
