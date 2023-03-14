@@ -404,6 +404,8 @@ type Cmdable interface {
 	FunctionDump(ctx context.Context) *StringCmd
 	FunctionRestore(ctx context.Context, libDump string) *StringCmd
 	FunctionStats(ctx context.Context) *FunctionStatsCmd
+	FCall(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
+	FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
 
 	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
 	SPublish(ctx context.Context, channel string, message interface{}) *IntCmd
@@ -3354,6 +3356,32 @@ func (c cmdable) FunctionStats(ctx context.Context) *FunctionStatsCmd {
 	cmd := NewFunctionStatsCmd(ctx, "function", "stats")
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+func (c cmdable) FCall(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
+	cmdArgs := fcallArgs("fcall", function, keys, args...)
+	cmd := NewCmd(ctx, cmdArgs...)
+	cmd.SetFirstKeyPos(3)
+	_ = c(ctx, cmd)
+	return cmd
+}
+func (c cmdable) FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
+	cmdArgs := fcallArgs("fcall_ro", function, keys, args...)
+	cmd := NewCmd(ctx, cmdArgs...)
+	cmd.SetFirstKeyPos(3)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func fcallArgs(command string, function string, keys []string, args ...interface{}) []interface{} {
+	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
+	cmdArgs[0] = command
+	cmdArgs[1] = function
+	cmdArgs[2] = len(keys)
+	for i, key := range keys {
+		cmdArgs[3+i] = key
+	}
+	return appendArgs(cmdArgs, args)
 }
 
 //------------------------------------------------------------------------------

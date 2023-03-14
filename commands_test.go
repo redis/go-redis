@@ -6106,14 +6106,22 @@ var _ = Describe("Commands", func() {
 					{
 						Name:        "lib1_func1",
 						Description: "This is the func-1 of lib 1",
-						Flags:       []string{"no-writes", "allow-stale"},
+						Flags:       []string{"allow-oom", "allow-stale"},
 					},
 				},
 				Code: `#!lua name=%s
 					
-					local function f1(keys, args)
-					   return 'Function 1'
-					end
+                     local function f1(keys, args)
+                        local hash = keys[1]  -- Get the key name
+                        local time = redis.call('TIME')[1]  -- Get the current time from the Redis server
+
+                        -- Add the current timestamp to the arguments that the user passed to the function, stored in args
+                        table.insert(args, '_updated_at')
+                        table.insert(args, time)
+
+                        -- Run HSET with the updated argument list
+                        return redis.call('HSET', hash, unpack(args))
+                     end
 
 					redis.register_function{
 						function_name='%s',
@@ -6305,8 +6313,45 @@ var _ = Describe("Commands", func() {
 			Expect(list).To(HaveLen(2))
 		})
 
+		It("Calls a function", func() {
+			lib1Code = fmt.Sprintf(lib1.Code, lib1.Name, lib1.Functions[0].Name,
+				lib1.Functions[0].Description, lib1.Functions[0].Flags[0], lib1.Functions[0].Flags[1])
+
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			x := client.FCall(ctx, lib1.Functions[0].Name, []string{"my_hash"}, "a", 1, "b", 2)
+			Expect(x.Err()).NotTo(HaveOccurred())
+			Expect(x.Int()).To(Equal(3))
+		})
+
+		It("Calls a read-only function", func() {
+			lib1Code = fmt.Sprintf(lib1.Code, lib1.Name, lib1.Functions[0].Name,
+				lib1.Functions[0].Description, lib1.Functions[0].Flags[0], lib1.Functions[0].Flags[1])
+
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// This function doesn't have a "no-writes" flag
+			x := client.FCallRo(ctx, lib1.Functions[0].Name, []string{"my_hash"}, "a", 1, "b", 2)
+
+			Expect(x.Err()).To(HaveOccurred())
+
+			lib2Code = fmt.Sprintf(lib2.Code, lib2.Name, lib2.Functions[0].Name, lib2.Functions[1].Name,
+				lib2.Functions[1].Description, lib2.Functions[1].Flags[0])
+
+			// This function has a "no-writes" flag
+			err = client.FunctionLoad(ctx, lib2Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			x = client.FCallRo(ctx, lib2.Functions[1].Name, []string{})
+
+			Expect(x.Err()).NotTo(HaveOccurred())
+			Expect(x.Text()).To(Equal("Function 2"))
+		})
+
 		It("Shows function stats", func() {
-			// The 5M iterations in the f1 function will block for around 3-4 seconds when executed
+			// The 5M iterations in the f1 function should block for around 3-4 seconds when executed
 			lib := redis.Library{
 				Name:   "mylib1",
 				Engine: "LUA",
@@ -6314,27 +6359,31 @@ var _ = Describe("Commands", func() {
 					{
 						Name:        "lib1_func1",
 						Description: "This is the func-1 of lib 1",
-						Flags:       []string{"no-writes", "allow-stale"},
+						Flags:       []string{"allow-stale"},
 					},
 				},
 				Code: `#!lua name=%s
 					
 					local function f1(keys, args)
-						for i = 5000000, 1,-1 do 
-						  redis.call('SET', 'a', i)
-   						end	
-						return 'Function 1'
+                     local t1 = redis.call('TIME')[1]
+                     for i = 5000000, 1,-1 do 
+                     redis.call('SET', 'a', i)
+                     end
+                     local t2 = redis.call('TIME')[1]
+               
+                     redis.log(redis.LOG_NOTICE, t2-t1)
+                     return t2 - t1
 					end
 
 					redis.register_function{
 						function_name='%s',
 						description ='%s',
 						callback=f1,
-						flags={'%s', '%s'}
+						flags={'%s'}
 					}`,
 			}
 			libCode := fmt.Sprintf(lib.Code, lib.Name, lib.Functions[0].Name,
-				lib.Functions[0].Description, lib.Functions[0].Flags[0], lib.Functions[0].Flags[1])
+				lib.Functions[0].Description, lib.Functions[0].Flags[0])
 			err := client.FunctionLoad(ctx, libCode).Err()
 
 			Expect(err).NotTo(HaveOccurred())
@@ -6342,9 +6391,31 @@ var _ = Describe("Commands", func() {
 			r, err := client.FunctionStats(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(r.Engines)).To(Equal(1))
-			Expect(r.RunningScript.IsEmpty()).To(BeFalse())
+			Expect(r.RunningScript.IsEmpty()).To(BeTrue())
 
-			//TODO Add more tests after `FCALL` is implemented
+			started := make(chan bool)
+			done := make(chan bool)
+			go func() {
+				defer GinkgoRecover()
+
+				started <- true
+				callResult := client.FCall(ctx, lib.Functions[0].Name, []string{})
+				done <- true
+
+				Expect(callResult.Err()).NotTo(HaveOccurred())
+			}()
+
+			<-started
+			time.Sleep(1 * time.Second)
+			r, err = client.FunctionStats(ctx).Result()
+			<-done
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(r.Engines)).To(Equal(1))
+			Expect(r.RunningScript.Name).To(Equal(lib.Functions[0].Name))
+			Expect(r.RunningScript.Duration > 0).To(BeTrue())
+
+			//TODO Test RunningScripts against Redis Enterprise
 		})
 
 	})

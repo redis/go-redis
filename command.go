@@ -4097,7 +4097,7 @@ func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript,
 	err := rd.ReadFixedMapLen(3)
 	if err != nil {
 		if err == Nil {
-			return RunningScript{}, nil
+			return RunningScript{}, nil // TODO How to handle nil response?
 		}
 		return RunningScript{}, err
 	}
