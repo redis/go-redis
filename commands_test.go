@@ -6326,7 +6326,7 @@ var _ = Describe("Commands", func() {
 			Expect(x.Int()).To(Equal(3))
 		})
 
-		It("Calls a read-only function", func() {
+		It("Calls a function as read-only", func() {
 			lib1Code = fmt.Sprintf(lib1.Code, lib1.Name, lib1.Functions[0].Name,
 				lib1.Functions[0].Description, lib1.Functions[0].Flags[0], lib1.Functions[0].Flags[1])
 
@@ -6352,7 +6352,8 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("Shows function stats", func() {
-			// The 5M iterations in the f1 function should block for around 3-4 seconds when executed
+			// The 5M iterations in the f1 function should block for around 3 seconds when executed,
+			// depending on how busy the processor is
 			lib := redis.Library{
 				Name:   "mylib1",
 				Engine: "LUA",

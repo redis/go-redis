@@ -3994,12 +3994,12 @@ func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) 
 }
 
 // FunctionStats contains information about the scripts currently executing on the server, and the available engines
+//   - Engines:
+//     Statistics about the engine like number of functions and number of libraries
 //   - RunningScript:
 //     The script currently running on the shard we're connecting to.
 //     For Redis Enterprise and Redis Cloud, this represents the
 //     function with the longest running time, across all the running functions, on all shards
-//   - Engines:
-//     Statistics about the engine like number of functions and number of libraries
 //   - RunningScripts
 //     All scripts currently running in a Redis Enterprise clustered database.
 //     Only available on Redis Enterprise
