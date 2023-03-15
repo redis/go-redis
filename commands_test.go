@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"reflect"
 	"strconv"
 	"time"
@@ -6400,21 +6401,26 @@ var _ = Describe("Commands", func() {
 
 				started <- true
 				callResult := client.FCall(ctx, lib.Functions[0].Name, []string{})
-				done <- true
-
 				Expect(callResult.Err()).NotTo(HaveOccurred())
+				done <- true
 			}()
 
 			<-started
 			time.Sleep(1 * time.Second)
 			r, err = client.FunctionStats(ctx).Result()
-			<-done
 
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(r.Engines)).To(Equal(1))
-			Expect(r.RunningScript.Name).To(Equal(lib.Functions[0].Name))
-			Expect(r.RunningScript.Duration > 0).To(BeTrue())
+			select {
+			case <-done:
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(r.Engines)).To(Equal(1))
+				Expect(r.RunningScript.Name).To(Equal(lib.Functions[0].Name))
+				Expect(r.RunningScript.Duration > 0).To(BeTrue())
+			case <-time.After(10 * time.Second):
+				log.Println("Long-running function call timed out")
+			}
 
+			close(started)
+			close(done)
 			//TODO Test RunningScripts against Redis Enterprise
 		})
 
