@@ -539,7 +539,7 @@ func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 }
 
 func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd {
-	args := make([]interface{}, 5)
+	args := make([]interface{}, 2, 5)
 	args[0] = "command"
 	args[1] = "list"
 	if filter != nil {
