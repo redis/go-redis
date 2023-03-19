@@ -6291,21 +6291,21 @@ var _ = Describe("Commands", func() {
 		})
 	
 		It("should filter commands by module", func() {
-			opts := &redis.FilterBy{
+			filter := &redis.FilterBy{
 					Module: "JSON",
 			}
-			cmdList := client.CommandList(ctx, opts)
+			cmdList := client.CommandList(ctx, filter)
 			Expect(cmdList.Err()).NotTo(HaveOccurred())
 	        Expect(cmdList.Val()).To(HaveLen(0))
 		})
 	
 		It("should filter commands by ACL category", func() {
 			
-			opts :=  &redis.FilterBy{
+			filter :=  &redis.FilterBy{
 					ACLCat: "admin",
 			}
 
-			cmdList := client.CommandList(ctx, opts)
+			cmdList := client.CommandList(ctx, filter)
 			Expect(cmdList.Err()).NotTo(HaveOccurred())
 			cmdNames := cmdList.Val()
 		
@@ -6314,10 +6314,10 @@ var _ = Describe("Commands", func() {
 		})
 		
 		It("should filter commands by pattern", func() {
-			opts :=  &redis.FilterBy{
+			filter :=  &redis.FilterBy{
 					Pattern: "*GET*",
 			}
-			cmdList := client.CommandList(ctx, opts)
+			cmdList := client.CommandList(ctx, filter)
 			Expect(cmdList.Err()).NotTo(HaveOccurred())
 			cmdNames := cmdList.Val()
 	
