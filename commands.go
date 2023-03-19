@@ -539,7 +539,9 @@ func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 }
 
 func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd {
-	args := []interface{}{"command", "list"}
+	args := make([]interface{}, 0, 5)
+	args[0] = "command"
+	args[1] = "list"
 	if filter != nil {
 		if filter.Module != "" {
 			args = append(args, "filterby", "module", filter.Module)
@@ -553,7 +555,6 @@ func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSlice
 	_ = c(ctx, cmd)
 	return cmd
 }
-
 
 // ClientGetName returns the name of the connection.
 func (c cmdable) ClientGetName(ctx context.Context) *StringCmd {
