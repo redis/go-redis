@@ -539,15 +539,15 @@ func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 }
 
 func (c cmdable) CommandList(ctx context.Context, opts *CommandListOptions) *StringSliceCmd {
-	args := []interface{}{"COMMAND", "LIST"}
+	args := []interface{}{"command", "list"}
 	if opts != nil && opts.FilterBy != nil {
 		filter := opts.FilterBy
 		if filter.Module != "" {
-			args = append(args, "FILTERBY", "MODULE", filter.Module)
+			args = append(args, "filterby", "module", filter.Module)
 		} else if filter.AclCat != "" {
-			args = append(args, "FILTERBY", "ACLCAT", filter.AclCat)
+			args = append(args, "filterby", "aclcat", filter.AclCat)
 		} else if filter.Pattern != "" {
-			args = append(args, "FILTERBY", "PATTERN", filter.Pattern)
+			args = append(args, "filterby", "pattern", filter.Pattern)
 		}
 	}
 	cmd := NewStringSliceCmd(ctx, args...)
