@@ -125,6 +125,8 @@ type Cmdable interface {
 
 	Command(ctx context.Context) *CommandsInfoCmd
 	ClientGetName(ctx context.Context) *StringCmd
+	ClientNoEvictOn(ctx context.Context) *StatusCmd
+	ClientNoEvictOff(ctx context.Context) *StatusCmd
 	Echo(ctx context.Context, message interface{}) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
 	Quit(ctx context.Context) *StatusCmd
@@ -540,6 +542,18 @@ func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 // ClientGetName returns the name of the connection.
 func (c cmdable) ClientGetName(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd(ctx, "client", "getname")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ClientNoEvictOn(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "client", "no-evict","on")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ClientNoEvictOff(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "client", "no-evict","off")
 	_ = c(ctx, cmd)
 	return cmd
 }

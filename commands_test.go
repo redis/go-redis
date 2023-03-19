@@ -188,6 +188,16 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("theclientname"))
 		})
 
+		It("should ClientNoEvict", func() {
+			result := client.ClientNoEvictOff(ctx)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			result = client.ClientNoEvictOn(ctx)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+		})
+
 		It("should ConfigGet", func() {
 			val, err := client.ConfigGet(ctx, "*").Result()
 			Expect(err).NotTo(HaveOccurred())
