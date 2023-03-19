@@ -124,7 +124,7 @@ type Cmdable interface {
 	TxPipeline() Pipeliner
 
 	Command(ctx context.Context) *CommandsInfoCmd
-	CommandList(ctx context.Context, opts *CommandListOptions) *StringSliceCmd
+	CommandList(ctx context.Context, opts *FilterBy) *StringSliceCmd
 	ClientGetName(ctx context.Context) *StringCmd
 	Echo(ctx context.Context, message interface{}) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
@@ -538,16 +538,15 @@ func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 	return cmd
 }
 
-func (c cmdable) CommandList(ctx context.Context, opts *CommandListOptions) *StringSliceCmd {
+func (c cmdable) CommandList(ctx context.Context, opts *FilterBy) *StringSliceCmd {
 	args := []interface{}{"command", "list"}
-	if opts != nil && opts.FilterBy != nil {
-		filter := opts.FilterBy
-		if filter.Module != "" {
-			args = append(args, "filterby", "module", filter.Module)
-		} else if filter.AclCat != "" {
-			args = append(args, "filterby", "aclcat", filter.AclCat)
-		} else if filter.Pattern != "" {
-			args = append(args, "filterby", "pattern", filter.Pattern)
+	if opts != nil {
+		if opts.Module != "" {
+			args = append(args, "filterby", "module", opts.Module)
+		} else if opts.ACLCat != "" {
+			args = append(args, "filterby", "aclcat", opts.ACLCat)
+		} else if opts.Pattern != "" {
+			args = append(args, "filterby", "pattern", opts.Pattern)
 		}
 	}
 	cmd := NewStringSliceCmd(ctx, args...)

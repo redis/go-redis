@@ -3995,10 +3995,7 @@ func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) 
 
 type FilterBy struct {
 	Module  string
-	AclCat  string
+	ACLCat  string
 	Pattern string
 }
 
-type CommandListOptions struct {
-	FilterBy *FilterBy
-}
