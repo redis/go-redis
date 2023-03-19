@@ -124,6 +124,7 @@ type Cmdable interface {
 	TxPipeline() Pipeliner
 
 	Command(ctx context.Context) *CommandsInfoCmd
+	CommandList(ctx context.Context, opts *CommandListOptions) *StringSliceCmd
 	ClientGetName(ctx context.Context) *StringCmd
 	Echo(ctx context.Context, message interface{}) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
@@ -536,6 +537,24 @@ func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 	_ = c(ctx, cmd)
 	return cmd
 }
+
+func (c cmdable) CommandList(ctx context.Context, opts *CommandListOptions) *StringSliceCmd {
+	args := []interface{}{"COMMAND", "LIST"}
+	if opts != nil && opts.FilterBy != nil {
+		filter := opts.FilterBy
+		if filter.Module != "" {
+			args = append(args, "FILTERBY", "MODULE", filter.Module)
+		} else if filter.AclCat != "" {
+			args = append(args, "FILTERBY", "ACLCAT", filter.AclCat)
+		} else if filter.Pattern != "" {
+			args = append(args, "FILTERBY", "PATTERN", filter.Pattern)
+		}
+	}
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 
 // ClientGetName returns the name of the connection.
 func (c cmdable) ClientGetName(ctx context.Context) *StringCmd {

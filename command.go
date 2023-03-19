@@ -3992,3 +3992,13 @@ func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) 
 	}
 	return functions, nil
 }
+
+type FilterBy struct {
+	Module  string
+	AclCat  string
+	Pattern string
+}
+
+type CommandListOptions struct {
+	FilterBy *FilterBy
+}
