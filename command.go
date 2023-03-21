@@ -4004,21 +4004,30 @@ func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) 
 //     All scripts currently running in a Redis Enterprise clustered database.
 //     Only available on Redis Enterprise
 type FunctionStats struct {
-	Engines        []Engine
-	RunningScript  RunningScript
-	RunningScripts []RunningScript
+	Engines   []Engine
+	isRunning bool
+	rs        RunningScript
+	allrs     []RunningScript
 }
 
-// TODO Should we call it RunningScript or RunningFunction?
+func (fs *FunctionStats) Running() bool {
+	return fs.isRunning
+}
+
+func (fs *FunctionStats) RunningScript() (RunningScript, bool) {
+	return fs.rs, fs.isRunning
+}
+
+// AllRunningScripts returns all scripts currently running in a Redis Enterprise clustered database.
+// Only available on Redis Enterprise
+func (fs *FunctionStats) AllRunningScripts() []RunningScript {
+	return fs.allrs
+}
 
 type RunningScript struct {
 	Name     string
 	Command  []string
 	Duration time.Duration
-}
-
-func (rs *RunningScript) IsEmpty() bool {
-	return rs.Name == "" && rs.Duration == time.Duration(0) && len(rs.Command) == 0
 }
 
 type Engine struct {
@@ -4075,11 +4084,11 @@ func (cmd *FunctionStatsCmd) readReply(rd *proto.Reader) (err error) {
 
 		switch key {
 		case "running_script":
-			result.RunningScript, err = cmd.readRunningScript(rd)
+			result.rs, result.isRunning, err = cmd.readRunningScript(rd)
 		case "engines":
 			result.Engines, err = cmd.readEngines(rd)
 		case "all_running_scripts": // Redis Enterprise only
-			result.RunningScripts, err = cmd.readRunningScripts(rd)
+			result.allrs, result.isRunning, err = cmd.readRunningScripts(rd)
 		default:
 			return fmt.Errorf("redis: function stats unexpected key %s", key)
 		}
@@ -4093,20 +4102,20 @@ func (cmd *FunctionStatsCmd) readReply(rd *proto.Reader) (err error) {
 	return nil
 }
 
-func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript, error) {
+func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript, bool, error) {
 	err := rd.ReadFixedMapLen(3)
 	if err != nil {
 		if err == Nil {
-			return RunningScript{}, nil // TODO How to handle nil response?
+			return RunningScript{}, false, nil // TODO How to handle nil response?
 		}
-		return RunningScript{}, err
+		return RunningScript{}, false, err
 	}
 
 	var runningScript RunningScript
 	for i := 0; i < 3; i++ {
 		key, err := rd.ReadString()
 		if err != nil {
-			return RunningScript{}, err
+			return RunningScript{}, false, err
 		}
 
 		switch key {
@@ -4117,15 +4126,15 @@ func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript,
 		case "command":
 			runningScript.Command, err = cmd.readCommand(rd)
 		default:
-			return RunningScript{}, fmt.Errorf("redis: function stats unexpected running_script key %s", key)
+			return RunningScript{}, false, fmt.Errorf("redis: function stats unexpected running_script key %s", key)
 		}
 
 		if err != nil {
-			return RunningScript{}, err
+			return RunningScript{}, false, err
 		}
 	}
 
-	return RunningScript{}, nil
+	return RunningScript{}, true, nil
 }
 
 func (cmd *FunctionStatsCmd) readEngines(rd *proto.Reader) ([]Engine, error) {
@@ -4192,6 +4201,22 @@ func (cmd *FunctionStatsCmd) readCommand(rd *proto.Reader) ([]string, error) {
 
 	return command, nil
 }
-func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScript, error) {
-	return nil, nil
+func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScript, bool, error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return nil, false, err
+	}
+
+	var isRunning bool
+	runningScripts := make([]RunningScript, 0, n)
+	for i := 0; i < n; i++ {
+		rs, _, err := cmd.readRunningScript(rd)
+		if err != nil {
+			return nil, false, err
+		}
+		runningScripts = append(runningScripts, rs)
+		isRunning = true
+	}
+
+	return runningScripts, isRunning, nil
 }

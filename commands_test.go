@@ -6393,7 +6393,7 @@ var _ = Describe("Commands", func() {
 			r, err := client.FunctionStats(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(r.Engines)).To(Equal(1))
-			Expect(r.RunningScript.IsEmpty()).To(BeTrue())
+			Expect(r.Running()).To(BeFalse())
 
 			started := make(chan bool)
 			done := make(chan bool)
@@ -6414,15 +6414,16 @@ var _ = Describe("Commands", func() {
 			case <-done:
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(r.Engines)).To(Equal(1))
-				Expect(r.RunningScript.Name).To(Equal(lib.Functions[0].Name))
-				Expect(r.RunningScript.Duration > 0).To(BeTrue())
+				rs, isRunning := r.RunningScript()
+				Expect(isRunning).To(BeTrue())
+				Expect(rs.Name).To(Equal(lib.Functions[0].Name))
+				Expect(rs.Duration > 0).To(BeTrue())
 			case <-time.After(10 * time.Second):
 				log.Println("Long-running function call timed out")
 			}
 
 			close(started)
 			close(done)
-			//TODO Test RunningScripts against Redis Enterprise
 		})
 
 	})
