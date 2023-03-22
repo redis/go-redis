@@ -2,8 +2,10 @@ package redis
 
 import (
 	"context"
+	"encoding"
 	"errors"
 	"io"
+	"net"
 	"reflect"
 	"strings"
 	"time"
@@ -75,6 +77,8 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 			dst = append(dst, k, v)
 		}
 		return dst
+	case time.Time, time.Duration, encoding.BinaryMarshaler, net.IP:
+		return append(dst, arg)
 	default:
 		// scan struct field
 		v := reflect.ValueOf(arg)
