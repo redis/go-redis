@@ -539,6 +539,13 @@ func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 	return cmd
 }
 
+// FilterBy is used for the `CommandList` command parameter.
+type FilterBy struct {
+	Module  string
+	ACLCat  string
+	Pattern string
+}
+
 func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd {
 	args := make([]interface{}, 0, 5)
 	args = append(args, "command", "list")
@@ -1507,26 +1514,7 @@ func (c cmdable) BRPopLPush(ctx context.Context, source, destination string, tim
 }
 
 func (c cmdable) LCS(ctx context.Context, q *LCSQuery) *LCSCmd {
-	args := make([]interface{}, 3, 6)
-	args[0] = "lcs"
-	args[1] = q.Key1
-	args[2] = q.Key2
-	readType := uint8(1)
-	if q.Len {
-		args = append(args, "len")
-		readType = 2
-	} else if q.Idx {
-		args = append(args, "idx")
-		readType = 3
-		if q.MinMatchLen != 0 {
-			args = append(args, "minmatchlen", q.MinMatchLen)
-		}
-		if q.WithMatchLen {
-			args = append(args, "withmatchlen")
-		}
-
-	}
-	cmd := NewLCSCmd(ctx, readType, args)
+	cmd := NewLCSCmd(ctx, q)
 	_ = c(ctx, cmd)
 	return cmd
 }

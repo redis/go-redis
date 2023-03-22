@@ -2255,40 +2255,57 @@ var _ = Describe("Commands", func() {
 				Key2: "key2",
 			}).Result()
 
-			// Expect an error to be returned
-			Expect(err).To(HaveOccurred())
-			// Expect the LCS result to be an empty string
-			Expect(lcs.MatchString).To(BeEmpty())
-
-		})
-
-		It("should LCS with Len", func() {
-			err := client.MSet(ctx, "key1", "ohmytext", "key2", "mynewtext").Err()
 			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
 
-			lcs, err := client.LCS(ctx, &redis.LCSQuery{
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
 				Key1: "key1",
 				Key2: "key2",
 				Len:  true,
 			}).Result()
-
 			Expect(err).NotTo(HaveOccurred())
-			Expect(lcs.Len).To(Equal(6))
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
 
-			// Call LCS with both keys as non-existent
 			lcs, err = client.LCS(ctx, &redis.LCSQuery{
-				Key1: "nonexistent_key1",
-				Key2: "nonexistent_key2",
-				Len:  true,
+				Key1: "key1",
+				Key2: "key2",
+				Idx:  true,
 			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+			Expect(lcs.Matches).To(Equal([]redis.LCSMatchedPosition{
+				{
+					Key1:     redis.LCSPosition{Start: 4, End: 7},
+					Key2:     redis.LCSPosition{Start: 5, End: 8},
+					MatchLen: 0,
+				},
+				{
+					Key1:     redis.LCSPosition{Start: 2, End: 3},
+					Key2:     redis.LCSPosition{Start: 0, End: 1},
+					MatchLen: 0,
+				},
+			}))
 
-			// Expect an error to be returned
-			Expect(err).To(HaveOccurred())
-			// Expect the LCS length result to be 0
-			Expect(lcs.Len).To(BeZero())
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1:         "key1",
+				Key2:         "key2",
+				Idx:          true,
+				MinMatchLen:  3,
+				WithMatchLen: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+			Expect(lcs.Matches).To(Equal([]redis.LCSMatchedPosition{
+				{
+					Key1:     redis.LCSPosition{Start: 4, End: 7},
+					Key2:     redis.LCSPosition{Start: 5, End: 8},
+					MatchLen: 4,
+				},
+			}))
 		})
-
-
 
 		It("should LIndex", func() {
 			lPush := client.LPush(ctx, "list", "World")
