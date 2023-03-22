@@ -3993,7 +3993,6 @@ func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) 
 	return functions, nil
 }
 
-//------------------------------------------------------------------------------
 
 type LCSQuery struct {
 	Key1         string
@@ -4171,3 +4170,11 @@ func readPosition(rd *proto.Reader) (LCSPosition, error) {
 		End:   end,
 	}, nil
 }
+// =======
+type FilterBy struct {
+	Module  string
+	ACLCat  string
+	Pattern string
+}
+
+
