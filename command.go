@@ -4132,7 +4132,7 @@ func readMatchedPositions(rd *proto.Reader) ([]LCSMatchedPosition, error) {
 		if pos, _ := rd.PeekReplyType(); pos == proto.RespString {
 			if lenField, err := rd.ReadString(); err != nil {
 				return nil, err
-			} else if lenField == "MatchLen" {
+			} else if lenField == "matchlen" {
 				matchLen, err = rd.ReadInt()
 				if err != nil {
 					return nil, err
