@@ -3993,6 +3993,7 @@ func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) 
 	return functions, nil
 }
 
+//------------------------------------------------------------------------------
 
 type LCSQuery struct {
 	Key1         string
@@ -4033,12 +4034,13 @@ type LCSCmd struct {
 	val      *LCSMatch
 }
 
-func NewLCSCmd(ctx context.Context, args ...interface{}) *LCSCmd {
+func NewLCSCmd(ctx context.Context, readType uint8, args ...interface{}) *LCSCmd {
 	return &LCSCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
 		},
+		readType: readType,
 	}
 }
 
@@ -4170,11 +4172,10 @@ func readPosition(rd *proto.Reader) (LCSPosition, error) {
 		End:   end,
 	}, nil
 }
+
 // =======
 type FilterBy struct {
 	Module  string
 	ACLCat  string
 	Pattern string
 }
-
-

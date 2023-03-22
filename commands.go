@@ -222,7 +222,7 @@ type Cmdable interface {
 	BLMPop(ctx context.Context, timeout time.Duration, direction string, count int64, keys ...string) *KeyValuesCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPopLPush(ctx context.Context, source, destination string, timeout time.Duration) *StringCmd
-	LCS(ctx context.Context,q *LCSQuery) *LCSCmd 
+	LCS(ctx context.Context, q *LCSQuery) *LCSCmd
 	LIndex(ctx context.Context, key string, index int64) *StringCmd
 	LInsert(ctx context.Context, key, op string, pivot, value interface{}) *IntCmd
 	LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd
@@ -1507,24 +1507,27 @@ func (c cmdable) BRPopLPush(ctx context.Context, source, destination string, tim
 }
 
 func (c cmdable) LCS(ctx context.Context, q *LCSQuery) *LCSCmd {
-	args:= make([]interface{},3,6)
+	args := make([]interface{}, 3, 6)
 	args[0] = "lcs"
 	args[1] = q.Key1
 	args[2] = q.Key2
+	readType := uint8(1)
 	if q.Len {
 		args = append(args, "len")
-	}else if q.Idx {
+		readType = 2
+	} else if q.Idx {
 		args = append(args, "idx")
+		readType = 3
 		if q.MinMatchLen != 0 {
-			args  = append(args,"minmatchlen",q.MinMatchLen)
+			args = append(args, "minmatchlen", q.MinMatchLen)
 		}
 		if q.WithMatchLen {
-			args = append(args,"withmatchlen")
+			args = append(args, "withmatchlen")
 		}
-	
+
 	}
-	cmd := NewLCSCmd(ctx,args)
-	_ = c(ctx,cmd)
+	cmd := NewLCSCmd(ctx, readType, args)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
