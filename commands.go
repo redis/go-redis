@@ -1494,15 +1494,14 @@ func (c cmdable) LCS(ctx context.Context, q *LCSQuery) *LCSCmd {
 	args[1] = q.Key1
 	args[2] = q.Key2
 	if q.Len {
-		args[3] = "len"
+		args = append(args, "len")
 	}else if q.Idx {
-		args[3] = "idx"
+		args = append(args, "idx")
 		if q.MinMatchLen != 0 {
-			args[4] = "minmatchlen"
-	        args[5] = q.MinMatchLen
+			args  = append(args,"minmatchlen",q.MinMatchLen)
 		}
 		if q.WithMatchLen {
-			args[6] = "withmatchlen"
+			args = append(args,"withmatchlen")
 		}
 	
 	}
