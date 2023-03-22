@@ -194,6 +194,7 @@ type Cmdable interface {
 	BitOpXor(ctx context.Context, destKey string, keys ...string) *IntCmd
 	BitOpNot(ctx context.Context, destKey string, key string) *IntCmd
 	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
+	BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd
 	BitField(ctx context.Context, key string, args ...interface{}) *IntSliceCmd
 
 	Scan(ctx context.Context, cursor uint64, match string, count int64) *ScanCmd
@@ -1211,6 +1212,8 @@ func (c cmdable) BitOpNot(ctx context.Context, destKey string, key string) *IntC
 	return c.bitOp(ctx, "not", destKey, key)
 }
 
+// BitPos is an API before Redis version 7.0, cmd: bitpos key bit start end
+// if you need the `byte | bit` parameter, please use `BitPosSpan`.
 func (c cmdable) BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd {
 	args := make([]interface{}, 3+len(pos))
 	args[0] = "bitpos"
@@ -1227,6 +1230,18 @@ func (c cmdable) BitPos(ctx context.Context, key string, bit int64, pos ...int64
 		panic("too many arguments")
 	}
 	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// BitPosSpan supports the `byte | bit` parameters in redis version 7.0,
+// the bitpos command defaults to using byte type for the `start-end` range,
+// which means it counts in bytes from start to end. you can set the value
+// of "span" to determine the type of `start-end`.
+// span = "bit", cmd: bitpos key bit start end bit
+// span = "byte", cmd: bitpos key bit start end byte
+func (c cmdable) BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd {
+	cmd := NewIntCmd(ctx, "bitpos", key, bit, start, end, span)
 	_ = c(ctx, cmd)
 	return cmd
 }
