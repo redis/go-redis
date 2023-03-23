@@ -4106,7 +4106,7 @@ func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript,
 	err := rd.ReadFixedMapLen(3)
 	if err != nil {
 		if err == Nil {
-			return RunningScript{}, false, nil // TODO How to handle nil response?
+			return RunningScript{}, false, nil
 		}
 		return RunningScript{}, false, err
 	}
@@ -4207,7 +4207,6 @@ func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScri
 		return nil, false, err
 	}
 
-	var isRunning bool
 	runningScripts := make([]RunningScript, 0, n)
 	for i := 0; i < n; i++ {
 		rs, _, err := cmd.readRunningScript(rd)
@@ -4215,8 +4214,7 @@ func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScri
 			return nil, false, err
 		}
 		runningScripts = append(runningScripts, rs)
-		isRunning = true
 	}
 
-	return runningScripts, isRunning, nil
+	return runningScripts, len(runningScripts) > 0, nil
 }

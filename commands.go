@@ -3361,14 +3361,18 @@ func (c cmdable) FunctionStats(ctx context.Context) *FunctionStatsCmd {
 func (c cmdable) FCall(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := fcallArgs("fcall", function, keys, args...)
 	cmd := NewCmd(ctx, cmdArgs...)
-	cmd.SetFirstKeyPos(3)
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(3)
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
 func (c cmdable) FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := fcallArgs("fcall_ro", function, keys, args...)
 	cmd := NewCmd(ctx, cmdArgs...)
-	cmd.SetFirstKeyPos(3)
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(3)
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -3381,7 +3385,9 @@ func fcallArgs(command string, function string, keys []string, args ...interface
 	for i, key := range keys {
 		cmdArgs[3+i] = key
 	}
-	return appendArgs(cmdArgs, args)
+
+	cmdArgs = append(cmdArgs, args...)
+	return cmdArgs
 }
 
 //------------------------------------------------------------------------------
