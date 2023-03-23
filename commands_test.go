@@ -1092,6 +1092,19 @@ var _ = Describe("Commands", func() {
 			Expect(pos).To(Equal(int64(-1)))
 		})
 
+		It("should BitPosSpan", func() {
+			err := client.Set(ctx, "mykey", "\x00\xff\x00", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			pos, err := client.BitPosSpan(ctx, "mykey", 0, 1, 3, "byte").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(16)))
+
+			pos, err = client.BitPosSpan(ctx, "mykey", 0, 1, 3, "bit").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(1)))
+		})
+
 		It("should BitField", func() {
 			nn, err := client.BitField(ctx, "mykey", "INCRBY", "i5", 100, 1, "GET", "u4", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -6284,6 +6297,57 @@ var _ = Describe("Commands", func() {
 				WithCode:           true,
 			}).First()
 			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should return all command names", func() {
+			cmdList := client.CommandList(ctx, nil)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			cmdNames := cmdList.Val()
+
+			Expect(cmdNames).NotTo(BeEmpty())
+
+			// Assert that some expected commands are present in the list
+			Expect(cmdNames).To(ContainElement("get"))
+			Expect(cmdNames).To(ContainElement("set"))
+			Expect(cmdNames).To(ContainElement("hset"))
+		})
+
+		It("should filter commands by module", func() {
+			filter := &redis.FilterBy{
+				Module: "JSON",
+			}
+			cmdList := client.CommandList(ctx, filter)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			Expect(cmdList.Val()).To(HaveLen(0))
+		})
+
+		It("should filter commands by ACL category", func() {
+
+			filter := &redis.FilterBy{
+				ACLCat: "admin",
+			}
+
+			cmdList := client.CommandList(ctx, filter)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			cmdNames := cmdList.Val()
+
+			// Assert that the returned list only contains commands from the admin ACL category
+			Expect(len(cmdNames)).To(BeNumerically(">", 10))
+		})
+
+		It("should filter commands by pattern", func() {
+			filter := &redis.FilterBy{
+				Pattern: "*GET*",
+			}
+			cmdList := client.CommandList(ctx, filter)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			cmdNames := cmdList.Val()
+
+			// Assert that the returned list only contains commands that match the given pattern
+			Expect(cmdNames).To(ContainElement("get"))
+			Expect(cmdNames).To(ContainElement("getbit"))
+			Expect(cmdNames).To(ContainElement("getrange"))
+			Expect(cmdNames).NotTo(ContainElement("set"))
 		})
 
 		It("Dump and restores all libraries", func() {

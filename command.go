@@ -4218,3 +4218,9 @@ func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScri
 
 	return runningScripts, len(runningScripts) > 0, nil
 }
+
+type FilterBy struct {
+	Module  string
+	ACLCat  string
+	Pattern string
+}
