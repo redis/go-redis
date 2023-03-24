@@ -4134,7 +4134,7 @@ func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript,
 		}
 	}
 
-	return RunningScript{}, true, nil
+	return runningScript, true, nil
 }
 
 func (cmd *FunctionStatsCmd) readEngines(rd *proto.Reader) ([]Engine, error) {
