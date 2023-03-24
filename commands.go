@@ -3295,7 +3295,12 @@ func (c cmdable) eval(ctx context.Context, name, payload string, keys []string, 
 	}
 	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(ctx, cmdArgs...)
-	cmd.SetFirstKeyPos(3)
+
+	// it is possible that only args exist without a key.
+	// rdb.eval(ctx, eval, script, nil, arg1, arg2)
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(3)
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
