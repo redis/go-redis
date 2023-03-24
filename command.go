@@ -4220,24 +4220,14 @@ func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
 		return nil
 	}
 
-	typ, err := rd.PeekReplyType()
-	if err != nil {
-		return err
-	}
-	array := typ == proto.RespArray
-
-	if array {
-		cmd.val = make([]KeyFlags, n)
-	} else {
-		cmd.val = make([]KeyFlags, n/2)
-	}
+	cmd.val = make([]KeyFlags, n)
 
 	for i := 0; i < len(cmd.val); i++ {
-		if array {
-			if err = rd.ReadFixedArrayLen(2); err != nil {
-				return err
-			}
+
+		if err = rd.ReadFixedArrayLen(2); err != nil {
+			return err
 		}
+
 		if cmd.val[i].Key, err = rd.ReadString(); err != nil {
 			return err
 		}

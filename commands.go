@@ -129,8 +129,8 @@ type Cmdable interface {
 
 	Command(ctx context.Context) *CommandsInfoCmd
 	CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd
-	CommandGetKeys(ctx context.Context, command string, args ...string) *StringSliceCmd
-	CommandGetKeysAndFlags(ctx context.Context, command string, args ...string) *KeyFlagsCmd
+	CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd
+	CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd
 	ClientGetName(ctx context.Context) *StringCmd
 	Echo(ctx context.Context, message interface{}) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
@@ -570,27 +570,21 @@ func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSlice
 	return cmd
 }
 
-func (c cmdable) CommandGetKeys(ctx context.Context, command string, cmdArgs ...string) *StringSliceCmd {
-	args := make([]interface{}, 3+len(cmdArgs))
+func (c cmdable) CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd {
+	args := make([]interface{}, 2+len(commands))
 	args[0] = "command"
 	args[1] = "getkeys"
-	args[2] = command
-    for i, cmdArg := range cmdArgs {
-		args[3+i] = cmdArg
-	}
+	args = append(args, commands)
 	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CommandGetKeysAndFlags(ctx context.Context, command string, cmdArgs ...string) *KeyFlagsCmd {
-	args := make([]interface{}, 3+len(cmdArgs))
+func (c cmdable) CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd {
+	args := make([]interface{}, 2+len(commands))
 	args[0] = "command"
 	args[1] = "getkeysandflags"
-	args[2] = command
-    for i, cmdArg := range cmdArgs {
-		args[3+i] = cmdArg
-	}
+	args = append(args, commands)
 	cmd := NewKeyFlagsCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
