@@ -4254,8 +4254,6 @@ func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
 
 		for j := 0; j < len(cmd.val[i].Flags); i++ {
 			switch s, err := rd.ReadString(); {
-			case err == Nil:
-				cmd.val[i].Flags[j] = ""
 			case err != nil:
 				return err
 			default:

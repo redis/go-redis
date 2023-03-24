@@ -153,11 +153,11 @@ var _ = Describe("Commands", func() {
 		   Expect(keysAndFlags).To(Equal([]redis.KeyFlags{
 			{
 				Key: "mylist1",
-				Flags: []string{"RW", "", ""},
+				Flags: []string{"RW", "access", "delete"},
 			},
 			{
-				Key: "",
-				Flags: nil,
+				Key: "mylist2",
+				Flags: []string{"RW", "insert"},
 			},
 		   }))
 		})
