@@ -4235,7 +4235,7 @@ func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
 
 	for i := 0; i < len(cmd.val); i++ {
 		if array {
-			if err = rd.ReadFixedMapLen(2); err != nil {
+			if err = rd.ReadFixedArrayLen(2); err != nil {
 				return err
 			}
 		}
