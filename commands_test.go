@@ -2330,7 +2330,7 @@ var _ = Describe("Commands", func() {
 				Key2: "keywithnonstringvalue",
 			}).Result()
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(Equal("WRONGTYPE Operation against a key holding the wrong kind of value"))
+			Expect(err.Error()).To(Equal("ERR The specified keys must contain string values"))
 
            
 		})
