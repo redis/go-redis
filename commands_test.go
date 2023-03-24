@@ -2319,20 +2319,16 @@ var _ = Describe("Commands", func() {
 				},
 			}))
 
-			_, err = client.Set(ctx, "keywithstringvalue", "golang",0).Result()
+			_, err = client.Set(ctx, "keywithstringvalue", "golang", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
-           
-            _, err = client.LPush(ctx, "keywithnonstringvalue", "somevalue").Result()
+			_, err = client.LPush(ctx, "keywithnonstringvalue", "somevalue").Result()
 			Expect(err).NotTo(HaveOccurred())
-
 			_, err = client.LCS(ctx, &redis.LCSQuery{
 				Key1: "keywithstringvalue",
 				Key2: "keywithnonstringvalue",
 			}).Result()
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(Equal("ERR The specified keys must contain string values"))
-
-           
 		})
 
 		It("should LIndex", func() {
