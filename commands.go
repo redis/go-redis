@@ -405,6 +405,7 @@ type Cmdable interface {
 	FunctionLoadReplace(ctx context.Context, code string) *StringCmd
 	FunctionDelete(ctx context.Context, libName string) *StringCmd
 	FunctionFlush(ctx context.Context) *StringCmd
+	FunctionKill(ctx context.Context) *StringCmd
 	FunctionFlushAsync(ctx context.Context) *StringCmd
 	FunctionList(ctx context.Context, q FunctionListQuery) *FunctionListCmd
 	FunctionDump(ctx context.Context) *StringCmd
@@ -3352,6 +3353,12 @@ func (c cmdable) FunctionDelete(ctx context.Context, libName string) *StringCmd 
 
 func (c cmdable) FunctionFlush(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd(ctx, "function", "flush")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionKill(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "kill")
 	_ = c(ctx, cmd)
 	return cmd
 }

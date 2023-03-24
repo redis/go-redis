@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"reflect"
 	"strconv"
 	"time"
@@ -6260,6 +6259,13 @@ var _ = Describe("Commands", func() {
 			Expect(functionFlush.Err()).NotTo(HaveOccurred())
 		})
 
+		It("Kills a running function", func() {
+			functionKill := client.FunctionKill(ctx)
+			Expect(functionKill.Err()).Should(Equal("No scripts in execution right now."))
+
+			// Add test for a long-running function, once we make the test for `function stats` pass
+		})
+
 		It("Lists registered functions", func() {
 			err := client.FunctionLoad(ctx, lib1Code).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -6425,7 +6431,7 @@ var _ = Describe("Commands", func() {
 					{
 						Name:        "lib1_func1",
 						Description: "This is the func-1 of lib 1",
-						Flags:       []string{"allow-stale"},
+						Flags:       []string{"no-writes"},
 					},
 				},
 				Code: `#!lua name=%s
@@ -6433,7 +6439,7 @@ var _ = Describe("Commands", func() {
 					local function f1(keys, args)
                      local t1 = redis.call('TIME')[1]
                      for i = 5000000, 1,-1 do 
-                     redis.call('SET', 'a', i)
+                     redis.call('GET', 'a')
                      end
                      local t2 = redis.call('TIME')[1]
                
@@ -6460,34 +6466,27 @@ var _ = Describe("Commands", func() {
 			Expect(r.Running()).To(BeFalse())
 
 			started := make(chan bool)
-			done := make(chan bool)
 			go func() {
 				defer GinkgoRecover()
 
 				started <- true
-				callResult := client.FCall(ctx, lib.Functions[0].Name, []string{})
+				callResult := client.FCall(ctx, lib.Functions[0].Name, nil)
 				Expect(callResult.Err()).NotTo(HaveOccurred())
-				done <- true
 			}()
 
 			<-started
 			time.Sleep(1 * time.Second)
 			r, err = client.FunctionStats(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(r.Engines)).To(Equal(1))
+			rs, isRunning := r.RunningScript()
+			Expect(isRunning).To(BeTrue())
+			Expect(rs.Name).To(Equal(lib.Functions[0].Name))
+			Expect(rs.Duration > 0).To(BeTrue())
 
-			select {
-			case <-done:
-				Expect(err).NotTo(HaveOccurred())
-				Expect(len(r.Engines)).To(Equal(1))
-				rs, isRunning := r.RunningScript()
-				Expect(isRunning).To(BeTrue())
-				Expect(rs.Name).To(Equal(lib.Functions[0].Name))
-				Expect(rs.Duration > 0).To(BeTrue())
-			case <-time.After(10 * time.Second):
-				log.Println("Long-running function call timed out")
-			}
+			client.FunctionKill(ctx)
 
 			close(started)
-			close(done)
 		})
 
 	})
