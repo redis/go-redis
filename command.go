@@ -4215,7 +4215,6 @@ func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
-	// If n is 0, can't continue reading.
 	if n == 0 {
 		cmd.val = make([]KeyFlags, 0)
 		return nil
@@ -4239,26 +4238,20 @@ func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 		}
-
 		if cmd.val[i].Key, err = rd.ReadString(); err != nil {
 			return err
 		}
-
 		flagsLen, err := rd.ReadArrayLen()
 		if err != nil {
 			return err
 		}
-
 		cmd.val[i].Flags = make([]string, flagsLen)
 
 		for j := 0; j < flagsLen; j++ {
-			
-				if cmd.val[i].Flags[j] , err = rd.ReadString(); err !=nil {
-					return err
-				}
-			
+			if cmd.val[i].Flags[j], err = rd.ReadString(); err != nil {
+				return err
+			}
 		}
-
 	}
 
 	return nil

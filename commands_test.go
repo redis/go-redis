@@ -136,30 +136,29 @@ var _ = Describe("Commands", func() {
 			keys, err := client.CommandGetKeys(ctx, "MSET", "a", "b", "c", "d", "e", "f").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(keys).To(Equal([]string{"a", "c", "e"}))
-		
+
 			keys, err = client.CommandGetKeys(ctx, "EVAL", "not consulted", "3", "key1", "key2", "key3", "arg1", "arg2", "arg3", "argN").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(keys).To(Equal([]string{"key1", "key2", "key3"}))
-		
+
 			keys, err = client.CommandGetKeys(ctx, "SORT", "mylist", "ALPHA", "STORE", "outlist").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(keys).To(Equal([]string{"mylist", "outlist"}))
 		})
-		
 
 		It("should CommandGetKeysAndFlags", func() {
-		   keysAndFlags, err := client.CommandGetKeysAndFlags(ctx, "LMOVE", "mylist1", "mylist2", "left", "left").Result()
-		   Expect(err).NotTo(HaveOccurred())
-		   Expect(keysAndFlags).To(Equal([]redis.KeyFlags{
-			{
-				Key: "mylist1",
-				Flags: []string{"RW", "access", "delete"},
-			},
-			{
-				Key: "mylist2",
-				Flags: []string{"RW", "insert"},
-			},
-		   }))
+			keysAndFlags, err := client.CommandGetKeysAndFlags(ctx, "LMOVE", "mylist1", "mylist2", "left", "left").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keysAndFlags).To(Equal([]redis.KeyFlags{
+				{
+					Key:   "mylist1",
+					Flags: []string{"RW", "access", "delete"},
+				},
+				{
+					Key:   "mylist2",
+					Flags: []string{"RW", "insert"},
+				},
+			}))
 		})
 
 		It("should ClientKill", func() {
