@@ -2318,6 +2318,21 @@ var _ = Describe("Commands", func() {
 					MatchLen: 4,
 				},
 			}))
+
+			_, err = client.Set(ctx, "keywithstringvalue", "golang",0).Result()
+			Expect(err).NotTo(HaveOccurred())
+           
+            _, err = client.LPush(ctx, "keywithnonstringvalue", "somevalue").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "keywithstringvalue",
+				Key2: "keywithnonstringvalue",
+			}).Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(Equal("WRONGTYPE Operation against a key holding the wrong kind of value"))
+
+           
 		})
 
 		It("should LIndex", func() {
