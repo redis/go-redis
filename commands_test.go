@@ -132,6 +132,28 @@ var _ = Describe("Commands", func() {
 			}, "30s").Should(Equal("Background saving started"))
 		})
 
+		It("Should CommandGetKeys", func() {
+			cmd := client.CommandGetKeys(ctx, "MSET", "a", "b", "c", "d", "e", "f")
+			keys, err := cmd.Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(Equal([]string{"a", "c", "e"}))
+		
+			cmd = client.CommandGetKeys(ctx, "EVAL", "not consulted", "3", "key1", "key2", "key3", "arg1", "arg2", "arg3", "argN")
+			keys, err = cmd.Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(Equal([]string{"key1", "key2", "key3"}))
+		
+			cmd = client.CommandGetKeys(ctx, "SORT", "mylist", "ALPHA", "STORE", "outlist")
+			keys, err = cmd.Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(Equal([]string{"mylist", "outlist"}))
+		})
+		
+
+		It("should CommandGetKeysAndFlags", func() {
+		   // TO-DO	
+		})
+
 		It("should ClientKill", func() {
 			r := client.ClientKill(ctx, "1.1.1.1:1111")
 			Expect(r.Err()).To(MatchError("ERR No such client"))
