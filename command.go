@@ -4235,7 +4235,7 @@ func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
 
 	for i := 0; i < len(cmd.val); i++ {
 		if array {
-			if err = rd.ReadFixedArrayLen(2); err != nil {
+			if err = rd.ReadFixedMapLen(2); err != nil {
 				return err
 			}
 		}
@@ -4251,13 +4251,12 @@ func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
 
 		cmd.val[i].Flags = make([]string, flagsLen)
 
-		for j := 0; j < len(cmd.val[i].Flags); i++ {
-			switch s, err := rd.ReadString(); {
-			case err != nil:
-				return err
-			default:
-				cmd.val[i].Flags[j] = s
-			}
+		for j := 0; j < flagsLen; j++ {
+			
+				if cmd.val[i].Flags[j] , err = rd.ReadString(); err !=nil {
+					return err
+				}
+			
 		}
 
 	}
