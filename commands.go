@@ -227,6 +227,7 @@ type Cmdable interface {
 	BLMPop(ctx context.Context, timeout time.Duration, direction string, count int64, keys ...string) *KeyValuesCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPopLPush(ctx context.Context, source, destination string, timeout time.Duration) *StringCmd
+	LCS(ctx context.Context, q *LCSQuery) *LCSCmd
 	LIndex(ctx context.Context, key string, index int64) *StringCmd
 	LInsert(ctx context.Context, key, op string, pivot, value interface{}) *IntCmd
 	LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd
@@ -541,6 +542,13 @@ func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 	cmd := NewCommandsInfoCmd(ctx, "command")
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+// FilterBy is used for the `CommandList` command parameter.
+type FilterBy struct {
+	Module  string
+	ACLCat  string
+	Pattern string
 }
 
 func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd {
@@ -1520,6 +1528,12 @@ func (c cmdable) BRPopLPush(ctx context.Context, source, destination string, tim
 		formatSec(ctx, timeout),
 	)
 	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) LCS(ctx context.Context, q *LCSQuery) *LCSCmd {
+	cmd := NewLCSCmd(ctx, q)
 	_ = c(ctx, cmd)
 	return cmd
 }

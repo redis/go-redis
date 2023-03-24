@@ -3993,9 +3993,178 @@ func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) 
 	return functions, nil
 }
 
-type FilterBy struct {
-	Module  string
-	ACLCat  string
-	Pattern string
+//------------------------------------------------------------------------------
+
+// LCSQuery is a parameter used for the LCS command
+type LCSQuery struct {
+	Key1         string
+	Key2         string
+	Len          bool
+	Idx          bool
+	MinMatchLen  int
+	WithMatchLen bool
 }
 
+// LCSMatch is the result set of the LCS command.
+type LCSMatch struct {
+	MatchString string
+	Matches     []LCSMatchedPosition
+	Len         int64
+}
+
+type LCSMatchedPosition struct {
+	Key1 LCSPosition
+	Key2 LCSPosition
+
+	// only for withMatchLen is true
+	MatchLen int64
+}
+
+type LCSPosition struct {
+	Start int64
+	End   int64
+}
+
+type LCSCmd struct {
+	baseCmd
+
+	// 1: match string
+	// 2: match len
+	// 3: match idx LCSMatch
+	readType uint8
+	val      *LCSMatch
+}
+
+func NewLCSCmd(ctx context.Context, q *LCSQuery) *LCSCmd {
+	args := make([]interface{}, 3, 7)
+	args[0] = "lcs"
+	args[1] = q.Key1
+	args[2] = q.Key2
+
+	cmd := &LCSCmd{readType: 1}
+	if q.Len {
+		cmd.readType = 2
+		args = append(args, "len")
+	} else if q.Idx {
+		cmd.readType = 3
+		args = append(args, "idx")
+		if q.MinMatchLen != 0 {
+			args = append(args, "minmatchlen", q.MinMatchLen)
+		}
+		if q.WithMatchLen {
+			args = append(args, "withmatchlen")
+		}
+	}
+	cmd.baseCmd = baseCmd{
+		ctx:  ctx,
+		args: args,
+	}
+
+	return cmd
+}
+
+func (cmd *LCSCmd) SetVal(val *LCSMatch) {
+	cmd.val = val
+}
+
+func (cmd *LCSCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *LCSCmd) Val() *LCSMatch {
+	return cmd.val
+}
+
+func (cmd *LCSCmd) Result() (*LCSMatch, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *LCSCmd) readReply(rd *proto.Reader) (err error) {
+	lcs := &LCSMatch{}
+	switch cmd.readType {
+	case 1:
+		// match string
+		if lcs.MatchString, err = rd.ReadString(); err != nil {
+			return err
+		}
+	case 2:
+		// match len
+		if lcs.Len, err = rd.ReadInt(); err != nil {
+			return err
+		}
+	case 3:
+		// read LCSMatch
+		if err = rd.ReadFixedMapLen(2); err != nil {
+			return err
+		}
+
+		// read matches or len field
+		for i := 0; i < 2; i++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "matches":
+				// read array of matched positions
+				if lcs.Matches, err = cmd.readMatchedPositions(rd); err != nil {
+					return err
+				}
+			case "len":
+				// read match length
+				if lcs.Len, err = rd.ReadInt(); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	cmd.val = lcs
+	return nil
+}
+
+func (cmd *LCSCmd) readMatchedPositions(rd *proto.Reader) ([]LCSMatchedPosition, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	positions := make([]LCSMatchedPosition, n)
+	for i := 0; i < n; i++ {
+		pn, err := rd.ReadArrayLen()
+		if err != nil {
+			return nil, err
+		}
+
+		if positions[i].Key1, err = cmd.readPosition(rd); err != nil {
+			return nil, err
+		}
+		if positions[i].Key2, err = cmd.readPosition(rd); err != nil {
+			return nil, err
+		}
+
+		// read match length if WithMatchLen is true
+		if pn > 2 {
+			if positions[i].MatchLen, err = rd.ReadInt(); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return positions, nil
+}
+
+func (cmd *LCSCmd) readPosition(rd *proto.Reader) (pos LCSPosition, err error) {
+	if err = rd.ReadFixedArrayLen(2); err != nil {
+		return pos, err
+	}
+	if pos.Start, err = rd.ReadInt(); err != nil {
+		return pos, err
+	}
+	if pos.End, err = rd.ReadInt(); err != nil {
+		return pos, err
+	}
+
+	return pos, nil
+}

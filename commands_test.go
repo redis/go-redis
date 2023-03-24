@@ -2251,6 +2251,86 @@ var _ = Describe("Commands", func() {
 			Expect(v).To(Equal("c"))
 		})
 
+		It("should LCS", func() {
+			err := client.MSet(ctx, "key1", "ohmytext", "key2", "mynewtext").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			lcs, err := client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+			}).Result()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal("mytext"))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "nonexistent_key1",
+				Key2: "key2",
+			}).Result()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+				Len:  true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+				Idx:  true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+			Expect(lcs.Matches).To(Equal([]redis.LCSMatchedPosition{
+				{
+					Key1:     redis.LCSPosition{Start: 4, End: 7},
+					Key2:     redis.LCSPosition{Start: 5, End: 8},
+					MatchLen: 0,
+				},
+				{
+					Key1:     redis.LCSPosition{Start: 2, End: 3},
+					Key2:     redis.LCSPosition{Start: 0, End: 1},
+					MatchLen: 0,
+				},
+			}))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1:         "key1",
+				Key2:         "key2",
+				Idx:          true,
+				MinMatchLen:  3,
+				WithMatchLen: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+			Expect(lcs.Matches).To(Equal([]redis.LCSMatchedPosition{
+				{
+					Key1:     redis.LCSPosition{Start: 4, End: 7},
+					Key2:     redis.LCSPosition{Start: 5, End: 8},
+					MatchLen: 4,
+				},
+			}))
+
+			_, err = client.Set(ctx, "keywithstringvalue", "golang", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.LPush(ctx, "keywithnonstringvalue", "somevalue").Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "keywithstringvalue",
+				Key2: "keywithnonstringvalue",
+			}).Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(Equal("ERR The specified keys must contain string values"))
+		})
+
 		It("should LIndex", func() {
 			lPush := client.LPush(ctx, "list", "World")
 			Expect(lPush.Err()).NotTo(HaveOccurred())
