@@ -6261,7 +6261,7 @@ var _ = Describe("Commands", func() {
 
 		It("Kills a running function", func() {
 			functionKill := client.FunctionKill(ctx)
-			Expect(functionKill.Err()).Should(Equal("No scripts in execution right now."))
+			Expect(functionKill.Err()).To(MatchError("NOTBUSY No scripts in execution right now."))
 
 			// Add test for a long-running function, once we make the test for `function stats` pass
 		})
