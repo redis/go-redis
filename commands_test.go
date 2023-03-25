@@ -1837,6 +1837,12 @@ var _ = Describe("Commands", func() {
 			replace := client.Copy(ctx, "newKey", "key", redisOptions().DB, true)
 			Expect(replace.Val()).To(Equal(int64(1)))
 		})
+
+		It("should acl dryryn", func() {
+			dryRun := client.AclDryRun(ctx, "default", "get", "randomKey")
+			Expect(dryRun.Err()).NotTo(HaveOccurred())
+			Expect(dryRun.Val()).To(Equal("OK"))
+		})
 	})
 
 	Describe("hashes", func() {
