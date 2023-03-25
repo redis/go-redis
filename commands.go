@@ -450,6 +450,8 @@ type Cmdable interface {
 	GeoSearchStore(ctx context.Context, key, store string, q *GeoSearchStoreQuery) *IntCmd
 	GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
+
+	AclDryRun(ctx context.Context, username, command string, args ...interface{}) *StringCmd
 }
 
 type StatefulCmdable interface {
@@ -3732,6 +3734,15 @@ func (c cmdable) GeoPos(ctx context.Context, key string, members ...string) *Geo
 		args[2+i] = member
 	}
 	cmd := NewGeoPosCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) AclDryRun(ctx context.Context, username, command string, args ...interface{}) *StringCmd {
+	a := make([]interface{}, 0, 4+len(args))
+	a = append(a, "acl", "dryrun", username, command)
+	a = append(a, args...)
+	cmd := NewStringCmd(ctx, a...)
 	_ = c(ctx, cmd)
 	return cmd
 }
