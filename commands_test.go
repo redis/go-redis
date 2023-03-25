@@ -144,6 +144,10 @@ var _ = Describe("Commands", func() {
 			keys, err = client.CommandGetKeys(ctx, "SORT", "mylist", "ALPHA", "STORE", "outlist").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(keys).To(Equal([]string{"mylist", "outlist"}))
+
+			_, err = client.CommandGetKeys(ctx, "FAKECOMMAND", "arg1", "arg2").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("ERR Invalid command specified"))
 		})
 
 		It("should CommandGetKeysAndFlags", func() {
@@ -159,6 +163,10 @@ var _ = Describe("Commands", func() {
 					Flags: []string{"RW", "insert"},
 				},
 			}))
+
+			_, err = client.CommandGetKeysAndFlags(ctx, "FAKECOMMAND", "arg1", "arg2").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("ERR Invalid command specified"))
 		})
 
 		It("should ClientKill", func() {
