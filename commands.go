@@ -574,7 +574,7 @@ func (c cmdable) CommandGetKeys(ctx context.Context, commands ...interface{}) *S
 	args := make([]interface{}, 2+len(commands))
 	args[0] = "command"
 	args[1] = "getkeys"
-	args = append(args, commands...)
+	args = appendArgs(args, commands)
 	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -584,7 +584,7 @@ func (c cmdable) CommandGetKeysAndFlags(ctx context.Context, commands ...interfa
 	args := make([]interface{}, 2+len(commands))
 	args[0] = "command"
 	args[1] = "getkeysandflags"
-	args = append(args, commands...)
+	args = appendArgs(args, commands)
 	cmd := NewKeyFlagsCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
