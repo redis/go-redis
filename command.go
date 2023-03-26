@@ -4168,3 +4168,81 @@ func (cmd *LCSCmd) readPosition(rd *proto.Reader) (pos LCSPosition, err error) {
 
 	return pos, nil
 }
+
+// ------------------------------------------------------------------------
+
+type KeyFlags struct {
+	Key   string
+	Flags []string
+}
+
+type KeyFlagsCmd struct {
+	baseCmd
+
+	val []KeyFlags
+}
+
+var _ Cmder = (*KeyFlagsCmd)(nil)
+
+func NewKeyFlagsCmd(ctx context.Context, args ...interface{}) *KeyFlagsCmd {
+	return &KeyFlagsCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *KeyFlagsCmd) SetVal(val []KeyFlags) {
+	cmd.val = val
+}
+
+func (cmd *KeyFlagsCmd) Val() []KeyFlags {
+	return cmd.val
+}
+
+func (cmd *KeyFlagsCmd) Result() ([]KeyFlags, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *KeyFlagsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	if n == 0 {
+		cmd.val = make([]KeyFlags, 0)
+		return nil
+	}
+
+	cmd.val = make([]KeyFlags, n)
+
+	for i := 0; i < len(cmd.val); i++ {
+
+		if err = rd.ReadFixedArrayLen(2); err != nil {
+			return err
+		}
+
+		if cmd.val[i].Key, err = rd.ReadString(); err != nil {
+			return err
+		}
+		flagsLen, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Flags = make([]string, flagsLen)
+
+		for j := 0; j < flagsLen; j++ {
+			if cmd.val[i].Flags[j], err = rd.ReadString(); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}

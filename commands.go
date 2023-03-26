@@ -129,6 +129,8 @@ type Cmdable interface {
 
 	Command(ctx context.Context) *CommandsInfoCmd
 	CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd
+	CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd
+	CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd
 	ClientGetName(ctx context.Context) *StringCmd
 	Echo(ctx context.Context, message interface{}) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
@@ -566,6 +568,26 @@ func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSlice
 		}
 	}
 	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd {
+	args := make([]interface{}, 2+len(commands))
+	args[0] = "command"
+	args[1] = "getkeys"
+	copy(args[2:], commands)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd {
+	args := make([]interface{}, 2+len(commands))
+	args[0] = "command"
+	args[1] = "getkeysandflags"
+	copy(args[2:], commands)
+	cmd := NewKeyFlagsCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
