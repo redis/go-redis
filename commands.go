@@ -451,7 +451,7 @@ type Cmdable interface {
 	GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
 
-	AclDryRun(ctx context.Context, username, command string, args ...interface{}) *StringCmd
+	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
 }
 
 type StatefulCmdable interface {
@@ -3738,11 +3738,11 @@ func (c cmdable) GeoPos(ctx context.Context, key string, members ...string) *Geo
 	return cmd
 }
 
-func (c cmdable) AclDryRun(ctx context.Context, username, command string, args ...interface{}) *StringCmd {
-	a := make([]interface{}, 0, 4+len(args))
-	a = append(a, "acl", "dryrun", username, command)
-	a = append(a, args...)
-	cmd := NewStringCmd(ctx, a...)
+func (c cmdable) ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd {
+	args := make([]interface{}, 0, 3+len(command))
+	args = append(args, "acl", "dryrun", username)
+	args = append(args, command...)
+	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

@@ -1839,7 +1839,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should acl dryryn", func() {
-			dryRun := client.AclDryRun(ctx, "default", "get", "randomKey")
+			dryRun := client.ACLDryRun(ctx, "default", "get", "randomKey")
 			Expect(dryRun.Err()).NotTo(HaveOccurred())
 			Expect(dryRun.Val()).To(Equal("OK"))
 		})
