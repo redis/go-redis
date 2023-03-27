@@ -4246,3 +4246,96 @@ func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
 
 	return nil
 }
+
+// ---------------------------------------------------------------------------------------------------
+
+type ClusterLink struct {
+	Direction           string
+	Node                string
+	CreateTime          int64
+	Events              string
+	SendBufferAllocated int64
+	SendBufferUsed      int64
+}
+
+type ClusterLinksCmd struct {
+	baseCmd
+
+	val []ClusterLink
+}
+
+var _ Cmder = (*ClusterLinksCmd)(nil)
+
+func NewClusterLinksCmd(ctx context.Context, args ...interface{}) *ClusterLinksCmd {
+	return &ClusterLinksCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ClusterLinksCmd) SetVal(val []ClusterLink) {
+	cmd.val = val
+}
+
+func (cmd *ClusterLinksCmd) Val() []ClusterLink {
+	return cmd.val
+}
+
+func (cmd *ClusterLinksCmd) Result() ([]ClusterLink, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *ClusterLinksCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterLinksCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]ClusterLink, n)
+
+	for i := 0; i < len(cmd.val); i++ {
+		m, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+
+		link := ClusterLink{}
+
+		for j := 0; j < m; j++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "direction":
+				link.Direction, err = rd.ReadString()
+			case "node":
+				link.Node, err = rd.ReadString()
+			case "create-time":
+				link.CreateTime, err = rd.ReadInt()
+			case "events":
+				link.Events, err = rd.ReadString()
+			case "send-buffer-allocated":
+				link.SendBufferAllocated, err = rd.ReadInt()
+			case "send-buffer-used":
+				link.SendBufferUsed, err = rd.ReadInt()
+			default:
+				return fmt.Errorf("unsupported key in cluster link info: %s", key)
+			}
+
+			if err != nil {
+				return err
+			}
+		}
+
+		cmd.val[i] = link
+	}
+
+	return nil
+}
