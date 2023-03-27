@@ -129,6 +129,8 @@ type Cmdable interface {
 
 	Command(ctx context.Context) *CommandsInfoCmd
 	CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd
+	CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd
+	CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd
 	ClientGetName(ctx context.Context) *StringCmd
 	Echo(ctx context.Context, message interface{}) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
@@ -227,6 +229,7 @@ type Cmdable interface {
 	BLMPop(ctx context.Context, timeout time.Duration, direction string, count int64, keys ...string) *KeyValuesCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPopLPush(ctx context.Context, source, destination string, timeout time.Duration) *StringCmd
+	LCS(ctx context.Context, q *LCSQuery) *LCSCmd
 	LIndex(ctx context.Context, key string, index int64) *StringCmd
 	LInsert(ctx context.Context, key, op string, pivot, value interface{}) *IntCmd
 	LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd
@@ -547,6 +550,13 @@ func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 	return cmd
 }
 
+// FilterBy is used for the `CommandList` command parameter.
+type FilterBy struct {
+	Module  string
+	ACLCat  string
+	Pattern string
+}
+
 func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd {
 	args := make([]interface{}, 0, 5)
 	args = append(args, "command", "list")
@@ -560,6 +570,26 @@ func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSlice
 		}
 	}
 	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd {
+	args := make([]interface{}, 2+len(commands))
+	args[0] = "command"
+	args[1] = "getkeys"
+	copy(args[2:], commands)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd {
+	args := make([]interface{}, 2+len(commands))
+	args[0] = "command"
+	args[1] = "getkeysandflags"
+	copy(args[2:], commands)
+	cmd := NewKeyFlagsCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1524,6 +1554,12 @@ func (c cmdable) BRPopLPush(ctx context.Context, source, destination string, tim
 		formatSec(ctx, timeout),
 	)
 	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) LCS(ctx context.Context, q *LCSQuery) *LCSCmd {
+	cmd := NewLCSCmd(ctx, q)
 	_ = c(ctx, cmd)
 	return cmd
 }

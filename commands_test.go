@@ -132,6 +132,43 @@ var _ = Describe("Commands", func() {
 			}, "30s").Should(Equal("Background saving started"))
 		})
 
+		It("Should CommandGetKeys", func() {
+			keys, err := client.CommandGetKeys(ctx, "MSET", "a", "b", "c", "d", "e", "f").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(Equal([]string{"a", "c", "e"}))
+
+			keys, err = client.CommandGetKeys(ctx, "EVAL", "not consulted", "3", "key1", "key2", "key3", "arg1", "arg2", "arg3", "argN").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(Equal([]string{"key1", "key2", "key3"}))
+
+			keys, err = client.CommandGetKeys(ctx, "SORT", "mylist", "ALPHA", "STORE", "outlist").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(Equal([]string{"mylist", "outlist"}))
+
+			_, err = client.CommandGetKeys(ctx, "FAKECOMMAND", "arg1", "arg2").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("ERR Invalid command specified"))
+		})
+
+		It("should CommandGetKeysAndFlags", func() {
+			keysAndFlags, err := client.CommandGetKeysAndFlags(ctx, "LMOVE", "mylist1", "mylist2", "left", "left").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keysAndFlags).To(Equal([]redis.KeyFlags{
+				{
+					Key:   "mylist1",
+					Flags: []string{"RW", "access", "delete"},
+				},
+				{
+					Key:   "mylist2",
+					Flags: []string{"RW", "insert"},
+				},
+			}))
+
+			_, err = client.CommandGetKeysAndFlags(ctx, "FAKECOMMAND", "arg1", "arg2").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("ERR Invalid command specified"))
+		})
+
 		It("should ClientKill", func() {
 			r := client.ClientKill(ctx, "1.1.1.1:1111")
 			Expect(r.Err()).To(MatchError("ERR No such client"))
@@ -2300,6 +2337,86 @@ var _ = Describe("Commands", func() {
 			v, err := client.BRPopLPush(ctx, "list1", "list2", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(v).To(Equal("c"))
+		})
+
+		It("should LCS", func() {
+			err := client.MSet(ctx, "key1", "ohmytext", "key2", "mynewtext").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			lcs, err := client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+			}).Result()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal("mytext"))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "nonexistent_key1",
+				Key2: "key2",
+			}).Result()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+				Len:  true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+				Idx:  true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+			Expect(lcs.Matches).To(Equal([]redis.LCSMatchedPosition{
+				{
+					Key1:     redis.LCSPosition{Start: 4, End: 7},
+					Key2:     redis.LCSPosition{Start: 5, End: 8},
+					MatchLen: 0,
+				},
+				{
+					Key1:     redis.LCSPosition{Start: 2, End: 3},
+					Key2:     redis.LCSPosition{Start: 0, End: 1},
+					MatchLen: 0,
+				},
+			}))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1:         "key1",
+				Key2:         "key2",
+				Idx:          true,
+				MinMatchLen:  3,
+				WithMatchLen: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+			Expect(lcs.Matches).To(Equal([]redis.LCSMatchedPosition{
+				{
+					Key1:     redis.LCSPosition{Start: 4, End: 7},
+					Key2:     redis.LCSPosition{Start: 5, End: 8},
+					MatchLen: 4,
+				},
+			}))
+
+			_, err = client.Set(ctx, "keywithstringvalue", "golang", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.LPush(ctx, "keywithnonstringvalue", "somevalue").Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "keywithstringvalue",
+				Key2: "keywithnonstringvalue",
+			}).Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(Equal("ERR The specified keys must contain string values"))
 		})
 
 		It("should LIndex", func() {
