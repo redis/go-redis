@@ -10,7 +10,7 @@ type pipelineExecer func(context.Context, []Cmder) error
 //
 // Pipelining is a technique to extremely speed up processing by packing
 // operations to batches, send them at once to Redis and read a replies in a
-// singe step.
+// single step.
 // See https://redis.io/topics/pipelining
 //
 // Pay attention, that Pipeline is not a transaction, so you can get unexpected
