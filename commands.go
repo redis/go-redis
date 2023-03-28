@@ -422,6 +422,7 @@ type Cmdable interface {
 	PubSubShardNumSub(ctx context.Context, channels ...string) *MapStringIntCmd
 
 	ClusterSlots(ctx context.Context) *ClusterSlotsCmd
+	ClusterLinks(ctx context.Context) *ClusterLinksCmd
 	ClusterNodes(ctx context.Context) *StringCmd
 	ClusterMeet(ctx context.Context, host, port string) *StatusCmd
 	ClusterForget(ctx context.Context, nodeID string) *StatusCmd
@@ -452,6 +453,8 @@ type Cmdable interface {
 	GeoSearchStore(ctx context.Context, key, store string, q *GeoSearchStoreQuery) *IntCmd
 	GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
+
+	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
 }
 
 type StatefulCmdable interface {
@@ -3498,6 +3501,12 @@ func (c cmdable) ClusterSlots(ctx context.Context) *ClusterSlotsCmd {
 	return cmd
 }
 
+func (c cmdable) ClusterLinks(ctx context.Context) *ClusterLinksCmd {
+	cmd := NewClusterLinksCmd(ctx, "cluster", "links")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) ClusterNodes(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd(ctx, "cluster", "nodes")
 	_ = c(ctx, cmd)
@@ -3757,6 +3766,15 @@ func (c cmdable) GeoPos(ctx context.Context, key string, members ...string) *Geo
 		args[2+i] = member
 	}
 	cmd := NewGeoPosCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd {
+	args := make([]interface{}, 0, 3+len(command))
+	args = append(args, "acl", "dryrun", username)
+	args = append(args, command...)
+	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
