@@ -4401,7 +4401,7 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 	cmd.val = make([]ClusterShard, n)
 
 	for i := 0; i < n; i++ {
-		m, err := rd.ReadArrayLen()
+		m, err := rd.ReadMapLen()
 		if err != nil {
 			return err
 		}
@@ -4417,20 +4417,23 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 
 			switch key {
 			case "slots":
-				slotLen, err := rd.ReadArrayLen()
+				l, err := rd.ReadArrayLen()
 				if err != nil {
 					return err
 				}
-				for k := 0; k < slotLen; k += 2 {
-					slotStart, err := rd.ReadInt()
+
+				for k := 0; k < l; k += 2 {
+					start, err := rd.ReadInt()
 					if err != nil {
 						return err
 					}
-					slotEnd, err := rd.ReadInt()
+
+					end, err := rd.ReadInt()
 					if err != nil {
 						return err
 					}
-					slots = append(slots, SlotRange{Start: slotStart, End: slotEnd})
+
+					slots = append(slots, SlotRange{Start: start, End: end})
 				}
 			case "nodes":
 				nodesLen, err := rd.ReadArrayLen()
