@@ -4324,7 +4324,7 @@ func (cmd *ClusterLinksCmd) readReply(rd *proto.Reader) error {
 			case "send-buffer-used":
 				cmd.val[i].SendBufferUsed, err = rd.ReadInt()
 			default:
-				return fmt.Errorf("redis: unsupported key in cluster link info: %s", key)
+				return fmt.Errorf("redis: unexpected key %q in CLUSTER LINKS reply", key)
 			}
 
 			if err != nil {
