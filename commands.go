@@ -1444,7 +1444,7 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 //     Playing struct With "redis" tag.
 //     type MyHash struct { Key1 string `redis:"key1"`; Key2 int `redis:"key2"` }
 //
-//   - HSet("myhash", MyHash{"value1", "value2"})
+//   - HSet("myhash", MyHash{"value1", "value2"}) Warn: redis-server >= 4.0
 //
 //     For struct, can be a structure pointer type, we only parse the field whose tag is redis.
 //     if you don't want the field to be read, you can use the `redis:"-"` flag to ignore it,
@@ -1453,7 +1453,10 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 //     string, int/uint(8,16,32,64), float(32,64), time.Time(to RFC3339Nano), time.Duration(to Nanoseconds ),
 //     if you are other more complex or custom data types, please implement the encoding.BinaryMarshaler interface.
 //
-// Note that it requires Redis v4 for multiple field/value pairs support.
+// Note that in older versions of Redis server(redis-server < 4.0), HSet only supports a single key-value pair.
+// redis-docs: https://redis.io/commands/hset (Starting with Redis version 4.0.0: Accepts multiple field and value arguments.)
+// If you are using a Struct type and the number of fields is greater than one,
+// you will receive an error similar to "ERR wrong number of arguments", you can use HMSet as a substitute.
 func (c cmdable) HSet(ctx context.Context, key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "hset"
