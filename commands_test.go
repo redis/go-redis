@@ -6592,7 +6592,6 @@ var _ = Describe("Commands", func() {
 			}()
 
 			<-started
-			time.Sleep(1 * time.Second)
 			r, err = client.FunctionStats(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(r.Engines)).To(Equal(1))
