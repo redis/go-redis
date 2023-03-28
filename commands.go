@@ -2,8 +2,10 @@ package redis
 
 import (
 	"context"
+	"encoding"
 	"errors"
 	"io"
+	"net"
 	"reflect"
 	"strings"
 	"time"
@@ -75,6 +77,8 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 			dst = append(dst, k, v)
 		}
 		return dst
+	case time.Time, time.Duration, encoding.BinaryMarshaler, net.IP:
+		return append(dst, arg)
 	default:
 		// scan struct field
 		v := reflect.ValueOf(arg)
@@ -124,6 +128,9 @@ type Cmdable interface {
 	TxPipeline() Pipeliner
 
 	Command(ctx context.Context) *CommandsInfoCmd
+	CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd
+	CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd
+	CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd
 	ClientGetName(ctx context.Context) *StringCmd
 	Echo(ctx context.Context, message interface{}) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
@@ -193,6 +200,7 @@ type Cmdable interface {
 	BitOpXor(ctx context.Context, destKey string, keys ...string) *IntCmd
 	BitOpNot(ctx context.Context, destKey string, key string) *IntCmd
 	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
+	BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd
 	BitField(ctx context.Context, key string, args ...interface{}) *IntSliceCmd
 
 	Scan(ctx context.Context, cursor uint64, match string, count int64) *ScanCmd
@@ -221,6 +229,7 @@ type Cmdable interface {
 	BLMPop(ctx context.Context, timeout time.Duration, direction string, count int64, keys ...string) *KeyValuesCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPopLPush(ctx context.Context, source, destination string, timeout time.Duration) *StringCmd
+	LCS(ctx context.Context, q *LCSQuery) *LCSCmd
 	LIndex(ctx context.Context, key string, index int64) *StringCmd
 	LInsert(ctx context.Context, key, op string, pivot, value interface{}) *IntCmd
 	LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd
@@ -299,8 +308,11 @@ type Cmdable interface {
 
 	BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
 	BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd
+	BZMPop(ctx context.Context, timeout time.Duration, order string, count int64, keys ...string) *ZSliceWithKeyCmd
 
 	ZAdd(ctx context.Context, key string, members ...Z) *IntCmd
+	ZAddLT(ctx context.Context, key string, members ...Z) *IntCmd
+	ZAddGT(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddNX(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddXX(ctx context.Context, key string, members ...Z) *IntCmd
 	ZAddArgs(ctx context.Context, key string, args ZAddArgs) *IntCmd
@@ -313,6 +325,7 @@ type Cmdable interface {
 	ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd
 	ZInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd
 	ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd
+	ZMPop(ctx context.Context, order string, count int64, keys ...string) *ZSliceWithKeyCmd
 	ZMScore(ctx context.Context, key string, members ...string) *FloatSliceCmd
 	ZPopMax(ctx context.Context, key string, count ...int64) *ZSliceCmd
 	ZPopMin(ctx context.Context, key string, count ...int64) *ZSliceCmd
@@ -391,6 +404,15 @@ type Cmdable interface {
 	ScriptKill(ctx context.Context) *StatusCmd
 	ScriptLoad(ctx context.Context, script string) *StringCmd
 
+	FunctionLoad(ctx context.Context, code string) *StringCmd
+	FunctionLoadReplace(ctx context.Context, code string) *StringCmd
+	FunctionDelete(ctx context.Context, libName string) *StringCmd
+	FunctionFlush(ctx context.Context) *StringCmd
+	FunctionFlushAsync(ctx context.Context) *StringCmd
+	FunctionList(ctx context.Context, q FunctionListQuery) *FunctionListCmd
+	FunctionDump(ctx context.Context) *StringCmd
+	FunctionRestore(ctx context.Context, libDump string) *StringCmd
+
 	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
 	SPublish(ctx context.Context, channel string, message interface{}) *IntCmd
 	PubSubChannels(ctx context.Context, pattern string) *StringSliceCmd
@@ -401,6 +423,7 @@ type Cmdable interface {
 
 	ClusterSlots(ctx context.Context) *ClusterSlotsCmd
 	ClusterShards(ctx context.Context) *ClusterShardsCmd
+	ClusterLinks(ctx context.Context) *ClusterLinksCmd
 	ClusterNodes(ctx context.Context) *StringCmd
 	ClusterMeet(ctx context.Context, host, port string) *StatusCmd
 	ClusterForget(ctx context.Context, nodeID string) *StatusCmd
@@ -431,6 +454,8 @@ type Cmdable interface {
 	GeoSearchStore(ctx context.Context, key, store string, q *GeoSearchStoreQuery) *IntCmd
 	GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
+
+	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
 }
 
 type StatefulCmdable interface {
@@ -521,6 +546,50 @@ func (c statefulCmdable) Hello(ctx context.Context,
 
 func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 	cmd := NewCommandsInfoCmd(ctx, "command")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// FilterBy is used for the `CommandList` command parameter.
+type FilterBy struct {
+	Module  string
+	ACLCat  string
+	Pattern string
+}
+
+func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd {
+	args := make([]interface{}, 0, 5)
+	args = append(args, "command", "list")
+	if filter != nil {
+		if filter.Module != "" {
+			args = append(args, "filterby", "module", filter.Module)
+		} else if filter.ACLCat != "" {
+			args = append(args, "filterby", "aclcat", filter.ACLCat)
+		} else if filter.Pattern != "" {
+			args = append(args, "filterby", "pattern", filter.Pattern)
+		}
+	}
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd {
+	args := make([]interface{}, 2+len(commands))
+	args[0] = "command"
+	args[1] = "getkeys"
+	copy(args[2:], commands)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd {
+	args := make([]interface{}, 2+len(commands))
+	args[0] = "command"
+	args[1] = "getkeysandflags"
+	copy(args[2:], commands)
+	cmd := NewKeyFlagsCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1181,6 +1250,8 @@ func (c cmdable) BitOpNot(ctx context.Context, destKey string, key string) *IntC
 	return c.bitOp(ctx, "not", destKey, key)
 }
 
+// BitPos is an API before Redis version 7.0, cmd: bitpos key bit start end
+// if you need the `byte | bit` parameter, please use `BitPosSpan`.
 func (c cmdable) BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd {
 	args := make([]interface{}, 3+len(pos))
 	args[0] = "bitpos"
@@ -1197,6 +1268,18 @@ func (c cmdable) BitPos(ctx context.Context, key string, bit int64, pos ...int64
 		panic("too many arguments")
 	}
 	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// BitPosSpan supports the `byte | bit` parameters in redis version 7.0,
+// the bitpos command defaults to using byte type for the `start-end` range,
+// which means it counts in bytes from start to end. you can set the value
+// of "span" to determine the type of `start-end`.
+// span = "bit", cmd: bitpos key bit start end bit
+// span = "byte", cmd: bitpos key bit start end byte
+func (c cmdable) BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd {
+	cmd := NewIntCmd(ctx, "bitpos", key, bit, start, end, span)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1471,6 +1554,12 @@ func (c cmdable) BRPopLPush(ctx context.Context, source, destination string, tim
 		formatSec(ctx, timeout),
 	)
 	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) LCS(ctx context.Context, q *LCSQuery) *LCSCmd {
+	cmd := NewLCSCmd(ctx, q)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2328,6 +2417,26 @@ func (c cmdable) BZPopMin(ctx context.Context, timeout time.Duration, keys ...st
 	return cmd
 }
 
+// BZMPop is the blocking variant of ZMPOP.
+// When any of the sorted sets contains elements, this command behaves exactly like ZMPOP.
+// When all sorted sets are empty, Redis will block the connection until another client adds members to one of the keys or until the timeout elapses.
+// A timeout of zero can be used to block indefinitely.
+// example: client.BZMPop(ctx, 0,"max", 1, "set")
+func (c cmdable) BZMPop(ctx context.Context, timeout time.Duration, order string, count int64, keys ...string) *ZSliceWithKeyCmd {
+	args := make([]interface{}, 3+len(keys), 6+len(keys))
+	args[0] = "bzmpop"
+	args[1] = formatSec(ctx, timeout)
+	args[2] = len(keys)
+	for i, key := range keys {
+		args[3+i] = key
+	}
+	args = append(args, strings.ToLower(order), "count", count)
+	cmd := NewZSliceWithKeyCmd(ctx, args...)
+	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 // ZAddArgs WARN: The GT, LT and NX options are mutually exclusive.
 type ZAddArgs struct {
 	NX      bool
@@ -2383,6 +2492,22 @@ func (c cmdable) ZAddArgsIncr(ctx context.Context, key string, args ZAddArgs) *F
 // ZAdd Redis `ZADD key score member [score member ...]` command.
 func (c cmdable) ZAdd(ctx context.Context, key string, members ...Z) *IntCmd {
 	return c.ZAddArgs(ctx, key, ZAddArgs{
+		Members: members,
+	})
+}
+
+// ZAddLT Redis `ZADD key LT score member [score member ...]` command.
+func (c cmdable) ZAddLT(ctx context.Context, key string, members ...Z) *IntCmd {
+	return c.ZAddArgs(ctx, key, ZAddArgs{
+		LT:      true,
+		Members: members,
+	})
+}
+
+// ZAddGT Redis `ZADD key GT score member [score member ...]` command.
+func (c cmdable) ZAddGT(ctx context.Context, key string, members ...Z) *IntCmd {
+	return c.ZAddArgs(ctx, key, ZAddArgs{
+		GT:      true,
 		Members: members,
 	})
 }
@@ -2470,6 +2595,22 @@ func (c cmdable) ZInterCard(ctx context.Context, limit int64, keys ...string) *I
 	args[2+numkeys] = "limit"
 	args[3+numkeys] = limit
 	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ZMPop Pops one or more elements with the highest or lowest score from the first non-empty sorted set key from the list of provided key names.
+// direction: "max" (highest score) or "min" (lowest score), count: > 0
+// example: client.ZMPop(ctx, "max", 5, "set1", "set2")
+func (c cmdable) ZMPop(ctx context.Context, order string, count int64, keys ...string) *ZSliceWithKeyCmd {
+	args := make([]interface{}, 2+len(keys), 5+len(keys))
+	args[0] = "zmpop"
+	args[1] = len(keys)
+	for i, key := range keys {
+		args[2+i] = key
+	}
+	args = append(args, strings.ToLower(order), "count", count)
+	cmd := NewZSliceWithKeyCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -3215,6 +3356,76 @@ func (c cmdable) ScriptLoad(ctx context.Context, script string) *StringCmd {
 	return cmd
 }
 
+// ------------------------------------------------------------------------------
+
+// FunctionListQuery is used with FunctionList to query for Redis libraries
+//
+//	  	LibraryNamePattern 	- Use an empty string to get all libraries.
+//	  						- Use a glob-style pattern to match multiple libraries with a matching name
+//	  						- Use a library's full name to match a single library
+//		WithCode			- If true, it will return the code of the library
+type FunctionListQuery struct {
+	LibraryNamePattern string
+	WithCode           bool
+}
+
+func (c cmdable) FunctionLoad(ctx context.Context, code string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "load", code)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionLoadReplace(ctx context.Context, code string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "load", "replace", code)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionDelete(ctx context.Context, libName string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "delete", libName)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionFlush(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "flush")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionFlushAsync(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "flush", "async")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionList(ctx context.Context, q FunctionListQuery) *FunctionListCmd {
+	args := make([]interface{}, 2, 5)
+	args[0] = "function"
+	args[1] = "list"
+	if q.LibraryNamePattern != "" {
+		args = append(args, "libraryname", q.LibraryNamePattern)
+	}
+	if q.WithCode {
+		args = append(args, "withcode")
+	}
+	cmd := NewFunctionListCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionDump(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "dump")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FunctionRestore(ctx context.Context, libDump string) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "restore", libDump)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 //------------------------------------------------------------------------------
 
 // Publish posts the message to the channel.
@@ -3290,6 +3501,9 @@ func (c cmdable) ClusterSlots(ctx context.Context) *ClusterSlotsCmd {
 
 func (c cmdable) ClusterShards(ctx context.Context) *ClusterShardsCmd {
 	cmd := NewClusterShardsCmd(ctx, "cluster", "shards")
+
+func (c cmdable) ClusterLinks(ctx context.Context) *ClusterLinksCmd {
+	cmd := NewClusterLinksCmd(ctx, "cluster", "links")
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -3553,6 +3767,15 @@ func (c cmdable) GeoPos(ctx context.Context, key string, members ...string) *Geo
 		args[2+i] = member
 	}
 	cmd := NewGeoPosCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd {
+	args := make([]interface{}, 0, 3+len(command))
+	args = append(args, "acl", "dryrun", username)
+	args = append(args, command...)
+	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

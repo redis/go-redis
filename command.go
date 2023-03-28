@@ -2057,6 +2057,9 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 				}
 			case "lag":
 				group.Lag, err = rd.ReadInt()
+
+				// lag: the number of entries in the stream that are still waiting to be delivered
+				// to the group's consumers, or a NULL(Nil) when that number can't be determined.
 				if err != nil && err != Nil {
 					return err
 				}
@@ -2366,6 +2369,8 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 					return nil, err
 				}
 			case "lag":
+				// lag: the number of entries in the stream that are still waiting to be delivered
+				// to the group's consumers, or a NULL(Nil) when that number can't be determined.
 				group.Lag, err = rd.ReadInt()
 				if err != nil && err != Nil {
 					return nil, err
@@ -3856,6 +3861,584 @@ func (cmd *KeyValuesCmd) readReply(rd *proto.Reader) (err error) {
 		cmd.val[i], err = rd.ReadString()
 		if err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+//------------------------------------------------------------------------------
+
+type ZSliceWithKeyCmd struct {
+	baseCmd
+
+	key string
+	val []Z
+}
+
+var _ Cmder = (*ZSliceWithKeyCmd)(nil)
+
+func NewZSliceWithKeyCmd(ctx context.Context, args ...interface{}) *ZSliceWithKeyCmd {
+	return &ZSliceWithKeyCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ZSliceWithKeyCmd) SetVal(key string, val []Z) {
+	cmd.key = key
+	cmd.val = val
+}
+
+func (cmd *ZSliceWithKeyCmd) Val() (string, []Z) {
+	return cmd.key, cmd.val
+}
+
+func (cmd *ZSliceWithKeyCmd) Result() (string, []Z, error) {
+	return cmd.key, cmd.val, cmd.err
+}
+
+func (cmd *ZSliceWithKeyCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ZSliceWithKeyCmd) readReply(rd *proto.Reader) (err error) {
+	if err = rd.ReadFixedArrayLen(2); err != nil {
+		return err
+	}
+
+	cmd.key, err = rd.ReadString()
+	if err != nil {
+		return err
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	typ, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+	array := typ == proto.RespArray
+
+	if array {
+		cmd.val = make([]Z, n)
+	} else {
+		cmd.val = make([]Z, n/2)
+	}
+
+	for i := 0; i < len(cmd.val); i++ {
+		if array {
+			if err = rd.ReadFixedArrayLen(2); err != nil {
+				return err
+			}
+		}
+
+		if cmd.val[i].Member, err = rd.ReadString(); err != nil {
+			return err
+		}
+
+		if cmd.val[i].Score, err = rd.ReadFloat(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type Function struct {
+	Name        string
+	Description string
+	Flags       []string
+}
+
+type Library struct {
+	Name      string
+	Engine    string
+	Functions []Function
+	Code      string
+}
+
+type FunctionListCmd struct {
+	baseCmd
+
+	val []Library
+}
+
+var _ Cmder = (*FunctionListCmd)(nil)
+
+func NewFunctionListCmd(ctx context.Context, args ...interface{}) *FunctionListCmd {
+	return &FunctionListCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *FunctionListCmd) SetVal(val []Library) {
+	cmd.val = val
+}
+
+func (cmd *FunctionListCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FunctionListCmd) Val() []Library {
+	return cmd.val
+}
+
+func (cmd *FunctionListCmd) Result() ([]Library, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FunctionListCmd) First() (*Library, error) {
+	if cmd.err != nil {
+		return nil, cmd.err
+	}
+	if len(cmd.val) > 0 {
+		return &cmd.val[0], nil
+	}
+	return nil, Nil
+}
+
+func (cmd *FunctionListCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	libraries := make([]Library, n)
+	for i := 0; i < n; i++ {
+		nn, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+
+		library := Library{}
+		for f := 0; f < nn; f++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "library_name":
+				library.Name, err = rd.ReadString()
+			case "engine":
+				library.Engine, err = rd.ReadString()
+			case "functions":
+				library.Functions, err = cmd.readFunctions(rd)
+			case "library_code":
+				library.Code, err = rd.ReadString()
+			default:
+				return fmt.Errorf("redis: function list unexpected key %s", key)
+			}
+
+			if err != nil {
+				return err
+			}
+		}
+
+		libraries[i] = library
+	}
+	cmd.val = libraries
+	return nil
+}
+
+func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	functions := make([]Function, n)
+	for i := 0; i < n; i++ {
+		nn, err := rd.ReadMapLen()
+		if err != nil {
+			return nil, err
+		}
+
+		function := Function{}
+		for f := 0; f < nn; f++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+
+			switch key {
+			case "name":
+				if function.Name, err = rd.ReadString(); err != nil {
+					return nil, err
+				}
+			case "description":
+				if function.Description, err = rd.ReadString(); err != nil && err != Nil {
+					return nil, err
+				}
+			case "flags":
+				// resp set
+				nx, err := rd.ReadArrayLen()
+				if err != nil {
+					return nil, err
+				}
+
+				function.Flags = make([]string, nx)
+				for j := 0; j < nx; j++ {
+					if function.Flags[j], err = rd.ReadString(); err != nil {
+						return nil, err
+					}
+				}
+			default:
+				return nil, fmt.Errorf("redis: function list unexpected key %s", key)
+			}
+		}
+
+		functions[i] = function
+	}
+	return functions, nil
+}
+
+//------------------------------------------------------------------------------
+
+// LCSQuery is a parameter used for the LCS command
+type LCSQuery struct {
+	Key1         string
+	Key2         string
+	Len          bool
+	Idx          bool
+	MinMatchLen  int
+	WithMatchLen bool
+}
+
+// LCSMatch is the result set of the LCS command.
+type LCSMatch struct {
+	MatchString string
+	Matches     []LCSMatchedPosition
+	Len         int64
+}
+
+type LCSMatchedPosition struct {
+	Key1 LCSPosition
+	Key2 LCSPosition
+
+	// only for withMatchLen is true
+	MatchLen int64
+}
+
+type LCSPosition struct {
+	Start int64
+	End   int64
+}
+
+type LCSCmd struct {
+	baseCmd
+
+	// 1: match string
+	// 2: match len
+	// 3: match idx LCSMatch
+	readType uint8
+	val      *LCSMatch
+}
+
+func NewLCSCmd(ctx context.Context, q *LCSQuery) *LCSCmd {
+	args := make([]interface{}, 3, 7)
+	args[0] = "lcs"
+	args[1] = q.Key1
+	args[2] = q.Key2
+
+	cmd := &LCSCmd{readType: 1}
+	if q.Len {
+		cmd.readType = 2
+		args = append(args, "len")
+	} else if q.Idx {
+		cmd.readType = 3
+		args = append(args, "idx")
+		if q.MinMatchLen != 0 {
+			args = append(args, "minmatchlen", q.MinMatchLen)
+		}
+		if q.WithMatchLen {
+			args = append(args, "withmatchlen")
+		}
+	}
+	cmd.baseCmd = baseCmd{
+		ctx:  ctx,
+		args: args,
+	}
+
+	return cmd
+}
+
+func (cmd *LCSCmd) SetVal(val *LCSMatch) {
+	cmd.val = val
+}
+
+func (cmd *LCSCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *LCSCmd) Val() *LCSMatch {
+	return cmd.val
+}
+
+func (cmd *LCSCmd) Result() (*LCSMatch, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *LCSCmd) readReply(rd *proto.Reader) (err error) {
+	lcs := &LCSMatch{}
+	switch cmd.readType {
+	case 1:
+		// match string
+		if lcs.MatchString, err = rd.ReadString(); err != nil {
+			return err
+		}
+	case 2:
+		// match len
+		if lcs.Len, err = rd.ReadInt(); err != nil {
+			return err
+		}
+	case 3:
+		// read LCSMatch
+		if err = rd.ReadFixedMapLen(2); err != nil {
+			return err
+		}
+
+		// read matches or len field
+		for i := 0; i < 2; i++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "matches":
+				// read array of matched positions
+				if lcs.Matches, err = cmd.readMatchedPositions(rd); err != nil {
+					return err
+				}
+			case "len":
+				// read match length
+				if lcs.Len, err = rd.ReadInt(); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	cmd.val = lcs
+	return nil
+}
+
+func (cmd *LCSCmd) readMatchedPositions(rd *proto.Reader) ([]LCSMatchedPosition, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	positions := make([]LCSMatchedPosition, n)
+	for i := 0; i < n; i++ {
+		pn, err := rd.ReadArrayLen()
+		if err != nil {
+			return nil, err
+		}
+
+		if positions[i].Key1, err = cmd.readPosition(rd); err != nil {
+			return nil, err
+		}
+		if positions[i].Key2, err = cmd.readPosition(rd); err != nil {
+			return nil, err
+		}
+
+		// read match length if WithMatchLen is true
+		if pn > 2 {
+			if positions[i].MatchLen, err = rd.ReadInt(); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return positions, nil
+}
+
+func (cmd *LCSCmd) readPosition(rd *proto.Reader) (pos LCSPosition, err error) {
+	if err = rd.ReadFixedArrayLen(2); err != nil {
+		return pos, err
+	}
+	if pos.Start, err = rd.ReadInt(); err != nil {
+		return pos, err
+	}
+	if pos.End, err = rd.ReadInt(); err != nil {
+		return pos, err
+	}
+
+	return pos, nil
+}
+
+// ------------------------------------------------------------------------
+
+type KeyFlags struct {
+	Key   string
+	Flags []string
+}
+
+type KeyFlagsCmd struct {
+	baseCmd
+
+	val []KeyFlags
+}
+
+var _ Cmder = (*KeyFlagsCmd)(nil)
+
+func NewKeyFlagsCmd(ctx context.Context, args ...interface{}) *KeyFlagsCmd {
+	return &KeyFlagsCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *KeyFlagsCmd) SetVal(val []KeyFlags) {
+	cmd.val = val
+}
+
+func (cmd *KeyFlagsCmd) Val() []KeyFlags {
+	return cmd.val
+}
+
+func (cmd *KeyFlagsCmd) Result() ([]KeyFlags, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *KeyFlagsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	if n == 0 {
+		cmd.val = make([]KeyFlags, 0)
+		return nil
+	}
+
+	cmd.val = make([]KeyFlags, n)
+
+	for i := 0; i < len(cmd.val); i++ {
+
+		if err = rd.ReadFixedArrayLen(2); err != nil {
+			return err
+		}
+
+		if cmd.val[i].Key, err = rd.ReadString(); err != nil {
+			return err
+		}
+		flagsLen, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Flags = make([]string, flagsLen)
+
+		for j := 0; j < flagsLen; j++ {
+			if cmd.val[i].Flags[j], err = rd.ReadString(); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// ---------------------------------------------------------------------------------------------------
+
+type ClusterLink struct {
+	Direction           string
+	Node                string
+	CreateTime          int64
+	Events              string
+	SendBufferAllocated int64
+	SendBufferUsed      int64
+}
+
+type ClusterLinksCmd struct {
+	baseCmd
+
+	val []ClusterLink
+}
+
+var _ Cmder = (*ClusterLinksCmd)(nil)
+
+func NewClusterLinksCmd(ctx context.Context, args ...interface{}) *ClusterLinksCmd {
+	return &ClusterLinksCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ClusterLinksCmd) SetVal(val []ClusterLink) {
+	cmd.val = val
+}
+
+func (cmd *ClusterLinksCmd) Val() []ClusterLink {
+	return cmd.val
+}
+
+func (cmd *ClusterLinksCmd) Result() ([]ClusterLink, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *ClusterLinksCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterLinksCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]ClusterLink, n)
+
+	for i := 0; i < len(cmd.val); i++ {
+		m, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+
+		for j := 0; j < m; j++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "direction":
+				cmd.val[i].Direction, err = rd.ReadString()
+			case "node":
+				cmd.val[i].Node, err = rd.ReadString()
+			case "create-time":
+				cmd.val[i].CreateTime, err = rd.ReadInt()
+			case "events":
+				cmd.val[i].Events, err = rd.ReadString()
+			case "send-buffer-allocated":
+				cmd.val[i].SendBufferAllocated, err = rd.ReadInt()
+			case "send-buffer-used":
+				cmd.val[i].SendBufferUsed, err = rd.ReadInt()
+			default:
+				return fmt.Errorf("redis: unexpected key %q in CLUSTER LINKS reply", key)
+			}
+
+			if err != nil {
+				return err
+			}
 		}
 	}
 

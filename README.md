@@ -167,6 +167,12 @@ Lastly, run:
 go test
 ```
 
+Another option is to run your specific tests with an already running redis. The example below, tests against a redis running on port 9999.:
+
+```shell
+REDIS_PORT=9999 go test <your options>
+```
+
 ## See also
 
 - [Golang ORM](https://bun.uptrace.dev) for PostgreSQL, MySQL, MSSQL, and SQLite

@@ -132,6 +132,43 @@ var _ = Describe("Commands", func() {
 			}, "30s").Should(Equal("Background saving started"))
 		})
 
+		It("Should CommandGetKeys", func() {
+			keys, err := client.CommandGetKeys(ctx, "MSET", "a", "b", "c", "d", "e", "f").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(Equal([]string{"a", "c", "e"}))
+
+			keys, err = client.CommandGetKeys(ctx, "EVAL", "not consulted", "3", "key1", "key2", "key3", "arg1", "arg2", "arg3", "argN").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(Equal([]string{"key1", "key2", "key3"}))
+
+			keys, err = client.CommandGetKeys(ctx, "SORT", "mylist", "ALPHA", "STORE", "outlist").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(Equal([]string{"mylist", "outlist"}))
+
+			_, err = client.CommandGetKeys(ctx, "FAKECOMMAND", "arg1", "arg2").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("ERR Invalid command specified"))
+		})
+
+		It("should CommandGetKeysAndFlags", func() {
+			keysAndFlags, err := client.CommandGetKeysAndFlags(ctx, "LMOVE", "mylist1", "mylist2", "left", "left").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keysAndFlags).To(Equal([]redis.KeyFlags{
+				{
+					Key:   "mylist1",
+					Flags: []string{"RW", "access", "delete"},
+				},
+				{
+					Key:   "mylist2",
+					Flags: []string{"RW", "insert"},
+				},
+			}))
+
+			_, err = client.CommandGetKeysAndFlags(ctx, "FAKECOMMAND", "arg1", "arg2").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("ERR Invalid command specified"))
+		})
+
 		It("should ClientKill", func() {
 			r := client.ClientKill(ctx, "1.1.1.1:1111")
 			Expect(r.Err()).To(MatchError("ERR No such client"))
@@ -1091,6 +1128,19 @@ var _ = Describe("Commands", func() {
 			Expect(pos).To(Equal(int64(-1)))
 		})
 
+		It("should BitPosSpan", func() {
+			err := client.Set(ctx, "mykey", "\x00\xff\x00", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			pos, err := client.BitPosSpan(ctx, "mykey", 0, 1, 3, "byte").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(16)))
+
+			pos, err = client.BitPosSpan(ctx, "mykey", 0, 1, 3, "bit").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(int64(1)))
+		})
+
 		It("should BitField", func() {
 			nn, err := client.BitField(ctx, "mykey", "INCRBY", "i5", 100, 1, "GET", "u4", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -1824,6 +1874,12 @@ var _ = Describe("Commands", func() {
 			replace := client.Copy(ctx, "newKey", "key", redisOptions().DB, true)
 			Expect(replace.Val()).To(Equal(int64(1)))
 		})
+
+		It("should acl dryryn", func() {
+			dryRun := client.ACLDryRun(ctx, "default", "get", "randomKey")
+			Expect(dryRun.Err()).NotTo(HaveOccurred())
+			Expect(dryRun.Val()).To(Equal("OK"))
+		})
 	})
 
 	Describe("hashes", func() {
@@ -2236,6 +2292,86 @@ var _ = Describe("Commands", func() {
 			v, err := client.BRPopLPush(ctx, "list1", "list2", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(v).To(Equal("c"))
+		})
+
+		It("should LCS", func() {
+			err := client.MSet(ctx, "key1", "ohmytext", "key2", "mynewtext").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			lcs, err := client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+			}).Result()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal("mytext"))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "nonexistent_key1",
+				Key2: "key2",
+			}).Result()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+				Len:  true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "key1",
+				Key2: "key2",
+				Idx:  true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+			Expect(lcs.Matches).To(Equal([]redis.LCSMatchedPosition{
+				{
+					Key1:     redis.LCSPosition{Start: 4, End: 7},
+					Key2:     redis.LCSPosition{Start: 5, End: 8},
+					MatchLen: 0,
+				},
+				{
+					Key1:     redis.LCSPosition{Start: 2, End: 3},
+					Key2:     redis.LCSPosition{Start: 0, End: 1},
+					MatchLen: 0,
+				},
+			}))
+
+			lcs, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1:         "key1",
+				Key2:         "key2",
+				Idx:          true,
+				MinMatchLen:  3,
+				WithMatchLen: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lcs.MatchString).To(Equal(""))
+			Expect(lcs.Len).To(Equal(int64(6)))
+			Expect(lcs.Matches).To(Equal([]redis.LCSMatchedPosition{
+				{
+					Key1:     redis.LCSPosition{Start: 4, End: 7},
+					Key2:     redis.LCSPosition{Start: 5, End: 8},
+					MatchLen: 4,
+				},
+			}))
+
+			_, err = client.Set(ctx, "keywithstringvalue", "golang", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.LPush(ctx, "keywithnonstringvalue", "somevalue").Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.LCS(ctx, &redis.LCSQuery{
+				Key1: "keywithstringvalue",
+				Key2: "keywithnonstringvalue",
+			}).Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(Equal("ERR The specified keys must contain string values"))
 		})
 
 		It("should LIndex", func() {
@@ -3407,6 +3543,76 @@ var _ = Describe("Commands", func() {
 			Expect(vals).To(Equal([]redis.Z{{Score: 1, Member: "one"}}))
 		})
 
+		It("should ZAddArgsLT", func() {
+			added, err := client.ZAddLT(ctx, "zset", redis.Z{
+				Score:  2,
+				Member: "one",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(1)))
+
+			vals, err := client.ZRangeWithScores(ctx, "zset", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]redis.Z{{Score: 2, Member: "one"}}))
+
+			added, err = client.ZAddLT(ctx, "zset", redis.Z{
+				Score:  3,
+				Member: "one",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(0)))
+
+			vals, err = client.ZRangeWithScores(ctx, "zset", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]redis.Z{{Score: 2, Member: "one"}}))
+
+			added, err = client.ZAddLT(ctx, "zset", redis.Z{
+				Score:  1,
+				Member: "one",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(0)))
+
+			vals, err = client.ZRangeWithScores(ctx, "zset", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]redis.Z{{Score: 1, Member: "one"}}))
+		})
+
+		It("should ZAddArgsGT", func() {
+			added, err := client.ZAddGT(ctx, "zset", redis.Z{
+				Score:  2,
+				Member: "one",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(1)))
+
+			vals, err := client.ZRangeWithScores(ctx, "zset", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]redis.Z{{Score: 2, Member: "one"}}))
+
+			added, err = client.ZAddGT(ctx, "zset", redis.Z{
+				Score:  3,
+				Member: "one",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(0)))
+
+			vals, err = client.ZRangeWithScores(ctx, "zset", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]redis.Z{{Score: 3, Member: "one"}}))
+
+			added, err = client.ZAddGT(ctx, "zset", redis.Z{
+				Score:  1,
+				Member: "one",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added).To(Equal(int64(0)))
+
+			vals, err = client.ZRangeWithScores(ctx, "zset", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]redis.Z{{Score: 3, Member: "one"}}))
+		})
+
 		It("should ZAddArgsNX", func() {
 			added, err := client.ZAddNX(ctx, "zset", redis.Z{
 				Score:  1,
@@ -3750,6 +3956,210 @@ var _ = Describe("Commands", func() {
 				Score:  10,
 				Member: "two",
 			}}))
+		})
+
+		It("should ZMPop", func() {
+
+			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.ZAdd(ctx, "zset2", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			key, elems, err := client.ZMPop(ctx, "min", 1, "zset").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("zset"))
+			Expect(elems).To(Equal([]redis.Z{{
+				Score:  1,
+				Member: "one",
+			}}))
+
+			_, _, err = client.ZMPop(ctx, "min", 1, "nosuchkey").Result()
+			Expect(err).To(Equal(redis.Nil))
+
+			err = client.ZAdd(ctx, "myzset", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "myzset", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "myzset", redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			key, elems, err = client.ZMPop(ctx, "min", 1, "myzset").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("myzset"))
+			Expect(elems).To(Equal([]redis.Z{{
+				Score:  1,
+				Member: "one",
+			}}))
+
+			key, elems, err = client.ZMPop(ctx, "max", 10, "myzset").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("myzset"))
+			Expect(elems).To(Equal([]redis.Z{{
+				Score:  3,
+				Member: "three",
+			}, {
+				Score:  2,
+				Member: "two",
+			}}))
+
+			err = client.ZAdd(ctx, "myzset2", redis.Z{Score: 4, Member: "four"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "myzset2", redis.Z{Score: 5, Member: "five"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "myzset2", redis.Z{Score: 6, Member: "six"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			key, elems, err = client.ZMPop(ctx, "min", 10, "myzset", "myzset2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("myzset2"))
+			Expect(elems).To(Equal([]redis.Z{{
+				Score:  4,
+				Member: "four",
+			}, {
+				Score:  5,
+				Member: "five",
+			}, {
+				Score:  6,
+				Member: "six",
+			}}))
+
+		})
+
+		It("should BZMPop", func() {
+
+			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.ZAdd(ctx, "zset2", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset2", redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			key, elems, err := client.BZMPop(ctx, 0, "min", 1, "zset").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("zset"))
+			Expect(elems).To(Equal([]redis.Z{{
+				Score:  1,
+				Member: "one",
+			}}))
+			key, elems, err = client.BZMPop(ctx, 0, "max", 1, "zset").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("zset"))
+			Expect(elems).To(Equal([]redis.Z{{
+				Score:  3,
+				Member: "three",
+			}}))
+			key, elems, err = client.BZMPop(ctx, 0, "min", 10, "zset").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("zset"))
+			Expect(elems).To(Equal([]redis.Z{{
+				Score:  2,
+				Member: "two",
+			}}))
+
+			key, elems, err = client.BZMPop(ctx, 0, "max", 10, "zset2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("zset2"))
+			Expect(elems).To(Equal([]redis.Z{{
+				Score:  3,
+				Member: "three",
+			}, {
+				Score:  2,
+				Member: "two",
+			}, {
+				Score:  1,
+				Member: "one",
+			}}))
+
+			err = client.ZAdd(ctx, "myzset", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			key, elems, err = client.BZMPop(ctx, 0, "min", 10, "myzset").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("myzset"))
+			Expect(elems).To(Equal([]redis.Z{{
+				Score:  1,
+				Member: "one",
+			}}))
+
+			err = client.ZAdd(ctx, "myzset2", redis.Z{Score: 4, Member: "four"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "myzset2", redis.Z{Score: 5, Member: "five"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			key, elems, err = client.BZMPop(ctx, 0, "min", 10, "myzset", "myzset2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("myzset2"))
+			Expect(elems).To(Equal([]redis.Z{{
+				Score:  4,
+				Member: "four",
+			}, {
+				Score:  5,
+				Member: "five",
+			}}))
+		})
+
+		It("should BZMPopBlocks", func() {
+			started := make(chan bool)
+			done := make(chan bool)
+			go func() {
+				defer GinkgoRecover()
+
+				started <- true
+				key, elems, err := client.BZMPop(ctx, 0, "min", 1, "list_list").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(key).To(Equal("list_list"))
+				Expect(elems).To(Equal([]redis.Z{{
+					Score:  1,
+					Member: "one",
+				}}))
+				done <- true
+			}()
+			<-started
+
+			select {
+			case <-done:
+				Fail("BZMPop is not blocked")
+			case <-time.After(time.Second):
+				//ok
+			}
+
+			err := client.ZAdd(ctx, "list_list", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			select {
+			case <-done:
+				//ok
+			case <-time.After(time.Second):
+				Fail("BZMPop is still blocked")
+			}
+		})
+
+		It("should BZMPop timeout", func() {
+			_, val, err := client.BZMPop(ctx, time.Second, "min", 1, "list1").Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(BeNil())
+
+			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+			stats := client.PoolStats()
+			Expect(stats.Hits).To(Equal(uint32(2)))
+			Expect(stats.Misses).To(Equal(uint32(1)))
+			Expect(stats.Timeouts).To(Equal(uint32(0)))
 		})
 
 		It("should ZMScore", func() {
@@ -5810,6 +6220,278 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
 		})
+	})
+
+	Describe("Functions", func() {
+		var (
+			q        redis.FunctionListQuery
+			lib1Code string
+			lib2Code string
+			lib1     redis.Library
+			lib2     redis.Library
+		)
+
+		BeforeEach(func() {
+			flush := client.FunctionFlush(ctx)
+			Expect(flush.Err()).NotTo(HaveOccurred())
+
+			lib1 = redis.Library{
+				Name:   "mylib1",
+				Engine: "LUA",
+				Functions: []redis.Function{
+					{
+						Name:        "lib1_func1",
+						Description: "This is the func-1 of lib 1",
+						Flags:       []string{"no-writes", "allow-stale"},
+					},
+				},
+				Code: `#!lua name=%s
+					
+					local function f1(keys, args)
+					   return 'Function 1'
+					end
+
+					redis.register_function{
+						function_name='%s',
+						description ='%s',
+						callback=f1,
+						flags={'%s', '%s'}
+					}`,
+			}
+
+			lib2 = redis.Library{
+				Name:   "mylib2",
+				Engine: "LUA",
+				Functions: []redis.Function{
+					{
+						Name:  "lib2_func1",
+						Flags: []string{},
+					},
+					{
+						Name:        "lib2_func2",
+						Description: "This is the func-2 of lib 2",
+						Flags:       []string{"no-writes"},
+					},
+				},
+				Code: `#!lua name=%s
+
+					local function f1(keys, args)
+						 return 'Function 1'
+					end
+					
+					local function f2(keys, args)
+						 return 'Function 2'
+					end
+					
+					redis.register_function('%s', f1)
+					redis.register_function{
+						function_name='%s',
+						description ='%s',
+						callback=f2,
+						flags={'%s'}
+					}`,
+			}
+
+			lib1Code = fmt.Sprintf(lib1.Code, lib1.Name, lib1.Functions[0].Name,
+				lib1.Functions[0].Description, lib1.Functions[0].Flags[0], lib1.Functions[0].Flags[1])
+			lib2Code = fmt.Sprintf(lib2.Code, lib2.Name, lib2.Functions[0].Name,
+				lib2.Functions[1].Name, lib2.Functions[1].Description, lib2.Functions[1].Flags[0])
+
+			q = redis.FunctionListQuery{}
+		})
+
+		It("Loads a new library", func() {
+			functionLoad := client.FunctionLoad(ctx, lib1Code)
+			Expect(functionLoad.Err()).NotTo(HaveOccurred())
+			Expect(functionLoad.Val()).To(Equal(lib1.Name))
+
+			functionList := client.FunctionList(ctx, q)
+			Expect(functionList.Err()).NotTo(HaveOccurred())
+			Expect(functionList.Val()).To(HaveLen(1))
+		})
+
+		It("Loads and replaces a new library", func() {
+			// Load a library for the first time
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			newFuncName := "replaces_func_name"
+			newFuncDesc := "replaces_func_desc"
+			flag1, flag2 := "allow-stale", "no-cluster"
+			newCode := fmt.Sprintf(lib1.Code, lib1.Name, newFuncName, newFuncDesc, flag1, flag2)
+
+			// And then replace it
+			functionLoadReplace := client.FunctionLoadReplace(ctx, newCode)
+			Expect(functionLoadReplace.Err()).NotTo(HaveOccurred())
+			Expect(functionLoadReplace.Val()).To(Equal(lib1.Name))
+
+			lib, err := client.FunctionList(ctx, q).First()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lib.Functions).To(Equal([]redis.Function{
+				{
+					Name:        newFuncName,
+					Description: newFuncDesc,
+					Flags:       []string{flag1, flag2},
+				},
+			}))
+		})
+
+		It("Deletes a library", func() {
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.FunctionDelete(ctx, lib1.Name).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.FunctionList(ctx, redis.FunctionListQuery{
+				LibraryNamePattern: lib1.Name,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(HaveLen(0))
+		})
+
+		It("Flushes all libraries", func() {
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.FunctionLoad(ctx, lib2Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.FunctionFlush(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.FunctionList(ctx, q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(HaveLen(0))
+		})
+
+		It("Flushes all libraries asynchronously", func() {
+			functionLoad := client.FunctionLoad(ctx, lib1Code)
+			Expect(functionLoad.Err()).NotTo(HaveOccurred())
+
+			// we only verify the command result.
+			functionFlush := client.FunctionFlushAsync(ctx)
+			Expect(functionFlush.Err()).NotTo(HaveOccurred())
+		})
+
+		It("Lists registered functions", func() {
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.FunctionList(ctx, redis.FunctionListQuery{
+				LibraryNamePattern: "*",
+				WithCode:           true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(HaveLen(1))
+			Expect(val[0].Name).To(Equal(lib1.Name))
+			Expect(val[0].Engine).To(Equal(lib1.Engine))
+			Expect(val[0].Code).To(Equal(lib1Code))
+			Expect(val[0].Functions).Should(ConsistOf(lib1.Functions))
+
+			err = client.FunctionLoad(ctx, lib2Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err = client.FunctionList(ctx, redis.FunctionListQuery{
+				WithCode: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(HaveLen(2))
+
+			lib, err := client.FunctionList(ctx, redis.FunctionListQuery{
+				LibraryNamePattern: lib2.Name,
+				WithCode:           false,
+			}).First()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lib.Name).To(Equal(lib2.Name))
+			Expect(lib.Code).To(Equal(""))
+
+			_, err = client.FunctionList(ctx, redis.FunctionListQuery{
+				LibraryNamePattern: "non_lib",
+				WithCode:           true,
+			}).First()
+			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should return all command names", func() {
+			cmdList := client.CommandList(ctx, nil)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			cmdNames := cmdList.Val()
+
+			Expect(cmdNames).NotTo(BeEmpty())
+
+			// Assert that some expected commands are present in the list
+			Expect(cmdNames).To(ContainElement("get"))
+			Expect(cmdNames).To(ContainElement("set"))
+			Expect(cmdNames).To(ContainElement("hset"))
+		})
+
+		It("should filter commands by module", func() {
+			filter := &redis.FilterBy{
+				Module: "JSON",
+			}
+			cmdList := client.CommandList(ctx, filter)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			Expect(cmdList.Val()).To(HaveLen(0))
+		})
+
+		It("should filter commands by ACL category", func() {
+
+			filter := &redis.FilterBy{
+				ACLCat: "admin",
+			}
+
+			cmdList := client.CommandList(ctx, filter)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			cmdNames := cmdList.Val()
+
+			// Assert that the returned list only contains commands from the admin ACL category
+			Expect(len(cmdNames)).To(BeNumerically(">", 10))
+		})
+
+		It("should filter commands by pattern", func() {
+			filter := &redis.FilterBy{
+				Pattern: "*GET*",
+			}
+			cmdList := client.CommandList(ctx, filter)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			cmdNames := cmdList.Val()
+
+			// Assert that the returned list only contains commands that match the given pattern
+			Expect(cmdNames).To(ContainElement("get"))
+			Expect(cmdNames).To(ContainElement("getbit"))
+			Expect(cmdNames).To(ContainElement("getrange"))
+			Expect(cmdNames).NotTo(ContainElement("set"))
+		})
+
+		It("Dump and restores all libraries", func() {
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.FunctionLoad(ctx, lib2Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			dump, err := client.FunctionDump(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dump).NotTo(BeEmpty())
+
+			err = client.FunctionRestore(ctx, dump).Err()
+			Expect(err).To(HaveOccurred())
+
+			err = client.FunctionFlush(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			list, err := client.FunctionList(ctx, q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(list).To(HaveLen(0))
+
+			err = client.FunctionRestore(ctx, dump).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			list, err = client.FunctionList(ctx, q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(list).To(HaveLen(2))
+		})
+
 	})
 
 	Describe("SlowLogGet", func() {
