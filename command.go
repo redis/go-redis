@@ -4406,9 +4406,6 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 			return err
 		}
 
-		slots := make([]SlotRange, 0)
-		nodes := make([]Node, 0)
-
 		for j := 0; j < m; j++ {
 			key, err := rd.ReadString()
 			if err != nil {
@@ -4421,7 +4418,6 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 				if err != nil {
 					return err
 				}
-
 				for k := 0; k < l; k += 2 {
 					start, err := rd.ReadInt()
 					if err != nil {
@@ -4433,14 +4429,14 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 						return err
 					}
 
-					slots = append(slots, SlotRange{Start: start, End: end})
+					cmd.val[i].Slots = append(cmd.val[i].Slots, SlotRange{Start: start, End: end})
 				}
 			case "nodes":
 				nodesLen, err := rd.ReadArrayLen()
 				if err != nil {
 					return err
 				}
-				nodes = make([]Node, nodesLen)
+				cmd.val[i].Nodes = make([]Node, nodesLen)
 				for k := 0; k < nodesLen; k++ {
 					nodeMapLen, err := rd.ReadMapLen()
 					if err != nil {
@@ -4455,23 +4451,23 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 
 						switch nodeKey {
 						case "id":
-							nodes[k].ID, err = rd.ReadString()
+							cmd.val[i].Nodes[k].ID, err = rd.ReadString()
 						case "endpoint":
-							nodes[k].Endpoint, err = rd.ReadString()
+							cmd.val[i].Nodes[k].Endpoint, err = rd.ReadString()
 						case "ip":
-							nodes[k].IP, err = rd.ReadString()
+							cmd.val[i].Nodes[k].IP, err = rd.ReadString()
 						case "hostname":
-							nodes[k].Hostname, err = rd.ReadString()
+							cmd.val[i].Nodes[k].Hostname, err = rd.ReadString()
 						case "port":
-							nodes[k].Port, err = rd.ReadInt()
+							cmd.val[i].Nodes[k].Port, err = rd.ReadInt()
 						case "tls-port":
-							nodes[k].TLSPort, err = rd.ReadInt()
+							cmd.val[i].Nodes[k].TLSPort, err = rd.ReadInt()
 						case "role":
-							nodes[k].Role, err = rd.ReadString()
+							cmd.val[i].Nodes[k].Role, err = rd.ReadString()
 						case "replication-offset":
-							nodes[k].ReplicationOffset, err = rd.ReadInt()
+							cmd.val[i].Nodes[k].ReplicationOffset, err = rd.ReadInt()
 						case "health":
-							nodes[k].Health, err = rd.ReadString()
+							cmd.val[i].Nodes[k].Health, err = rd.ReadString()
 						default:
 							return fmt.Errorf("redis: unexpected key %q in CLUSTER SHARDS node reply", nodeKey)
 						}
@@ -4484,11 +4480,6 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 			default:
 				return fmt.Errorf("redis: unexpected key %q in CLUSTER SHARDS reply", key)
 			}
-		}
-
-		cmd.val[i] = ClusterShard{
-			Slots: slots,
-			Nodes: nodes,
 		}
 	}
 
