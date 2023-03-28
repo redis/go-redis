@@ -4304,8 +4304,6 @@ func (cmd *ClusterLinksCmd) readReply(rd *proto.Reader) error {
 			return err
 		}
 
-		link := ClusterLink{}
-
 		for j := 0; j < m; j++ {
 			key, err := rd.ReadString()
 			if err != nil {
@@ -4314,27 +4312,25 @@ func (cmd *ClusterLinksCmd) readReply(rd *proto.Reader) error {
 
 			switch key {
 			case "direction":
-				link.Direction, err = rd.ReadString()
+				cmd.val[i].Direction, err = rd.ReadString()
 			case "node":
-				link.Node, err = rd.ReadString()
+				cmd.val[i].Node, err = rd.ReadString()
 			case "create-time":
-				link.CreateTime, err = rd.ReadInt()
+				cmd.val[i].CreateTime, err = rd.ReadInt()
 			case "events":
-				link.Events, err = rd.ReadString()
+				cmd.val[i].Events, err = rd.ReadString()
 			case "send-buffer-allocated":
-				link.SendBufferAllocated, err = rd.ReadInt()
+				cmd.val[i].SendBufferAllocated, err = rd.ReadInt()
 			case "send-buffer-used":
-				link.SendBufferUsed, err = rd.ReadInt()
+				cmd.val[i].SendBufferUsed, err = rd.ReadInt()
 			default:
-				return fmt.Errorf("unsupported key in cluster link info: %s", key)
+				return fmt.Errorf("redis: unsupported key in cluster link info: %s", key)
 			}
 
 			if err != nil {
 				return err
 			}
 		}
-
-		cmd.val[i] = link
 	}
 
 	return nil
