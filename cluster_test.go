@@ -677,6 +677,30 @@ var _ = Describe("ClusterClient", func() {
 			Expect(assertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
 		})
 
+		It("should CLUSTER LINKS", func() {
+			res, err := client.ClusterLinks(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).NotTo(BeEmpty())
+
+			// Iterate over the ClusterLink results and validate the map keys.
+			for _, link := range res {
+
+				Expect(link.Direction).NotTo(BeEmpty())
+				Expect([]string{"from", "to"}).To(ContainElement(link.Direction))
+				Expect(link.Node).NotTo(BeEmpty())
+				Expect(link.CreateTime).To(BeNumerically(">", 0))
+
+				Expect(link.Events).NotTo(BeEmpty())
+				validEventChars := []rune{'r', 'w'}
+				for _, eventChar := range link.Events {
+					Expect(validEventChars).To(ContainElement(eventChar))
+				}
+
+				Expect(link.SendBufferAllocated).To(BeNumerically(">=", 0))
+				Expect(link.SendBufferUsed).To(BeNumerically(">=", 0))
+			}
+		})
+
 		It("should cluster client setname", func() {
 			err := client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
 				return c.Ping(ctx).Err()
