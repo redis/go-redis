@@ -6545,8 +6545,8 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("Shows function stats", func() {
-			// The 5M iterations in the f1 function should block for around 3 seconds when executed,
-			// depending on how busy the processor is
+			// We can not run blocking commands in Redis functions, so we're using an infinite loop,
+			// but we're killing the function after calling FUNCTION STATS
 			lib := redis.Library{
 				Name:   "mylib1",
 				Engine: "LUA",
@@ -6558,18 +6558,11 @@ var _ = Describe("Commands", func() {
 					},
 				},
 				Code: `#!lua name=%s
-					
 					local function f1(keys, args)
-                     local t1 = redis.call('TIME')[1]
-					   local j = 0
-					   for i = 1000000000, 1,-1 do 
-						  j = j+1
-					   end
-					   redis.call('GET', 'a')
-					   local t2 = redis.call('TIME')[1]
-               
-                     redis.log(redis.LOG_NOTICE, t2-t1)
-                     return t2 - t1
+						local i = 0
+					   	while true do
+							i = i + 1
+					   	end
 					end
 
 					redis.register_function{
@@ -6594,13 +6587,11 @@ var _ = Describe("Commands", func() {
 			go func() {
 				defer GinkgoRecover()
 
-				client2 := redis.NewClient(&redis.Options{
-					Addr: "localhost:6380",
-					DB:   15,
-				})
+				client2 := redis.NewClient(redisOptions())
 
 				started <- true
-				client2.FCall(ctx, lib.Functions[0].Name, nil)
+				_, err = client2.FCall(ctx, lib.Functions[0].Name, nil).Result()
+				Expect(err).To(HaveOccurred())
 			}()
 
 			<-started
@@ -6614,7 +6605,8 @@ var _ = Describe("Commands", func() {
 			Expect(rs.Name).To(Equal(lib.Functions[0].Name))
 			Expect(rs.Duration > 0).To(BeTrue())
 
-			client.FunctionKill(ctx)
+			err = client.FunctionKill(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
 
 			close(started)
 		})
