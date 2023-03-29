@@ -4335,3 +4335,153 @@ func (cmd *ClusterLinksCmd) readReply(rd *proto.Reader) error {
 
 	return nil
 }
+
+// ------------------------------------------------------------------------------------------------------------------
+
+type SlotRange struct {
+	Start int64
+	End   int64
+}
+
+type Node struct {
+	ID                string
+	Endpoint          string
+	IP                string
+	Hostname          string
+	Port              int64
+	TLSPort           int64
+	Role              string
+	ReplicationOffset int64
+	Health            string
+}
+
+type ClusterShard struct {
+	Slots []SlotRange
+	Nodes []Node
+}
+
+type ClusterShardsCmd struct {
+	baseCmd
+
+	val []ClusterShard
+}
+
+var _ Cmder = (*ClusterShardsCmd)(nil)
+
+func NewClusterShardsCmd(ctx context.Context, args ...interface{}) *ClusterShardsCmd {
+	return &ClusterShardsCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ClusterShardsCmd) SetVal(val []ClusterShard) {
+	cmd.val = val
+}
+
+func (cmd *ClusterShardsCmd) Val() []ClusterShard {
+	return cmd.val
+}
+
+func (cmd *ClusterShardsCmd) Result() ([]ClusterShard, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *ClusterShardsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]ClusterShard, n)
+
+	for i := 0; i < n; i++ {
+		m, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+
+		for j := 0; j < m; j++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "slots":
+				l, err := rd.ReadArrayLen()
+				if err != nil {
+					return err
+				}
+				for k := 0; k < l; k += 2 {
+					start, err := rd.ReadInt()
+					if err != nil {
+						return err
+					}
+
+					end, err := rd.ReadInt()
+					if err != nil {
+						return err
+					}
+
+					cmd.val[i].Slots = append(cmd.val[i].Slots, SlotRange{Start: start, End: end})
+				}
+			case "nodes":
+				nodesLen, err := rd.ReadArrayLen()
+				if err != nil {
+					return err
+				}
+				cmd.val[i].Nodes = make([]Node, nodesLen)
+				for k := 0; k < nodesLen; k++ {
+					nodeMapLen, err := rd.ReadMapLen()
+					if err != nil {
+						return err
+					}
+
+					for l := 0; l < nodeMapLen; l++ {
+						nodeKey, err := rd.ReadString()
+						if err != nil {
+							return err
+						}
+
+						switch nodeKey {
+						case "id":
+							cmd.val[i].Nodes[k].ID, err = rd.ReadString()
+						case "endpoint":
+							cmd.val[i].Nodes[k].Endpoint, err = rd.ReadString()
+						case "ip":
+							cmd.val[i].Nodes[k].IP, err = rd.ReadString()
+						case "hostname":
+							cmd.val[i].Nodes[k].Hostname, err = rd.ReadString()
+						case "port":
+							cmd.val[i].Nodes[k].Port, err = rd.ReadInt()
+						case "tls-port":
+							cmd.val[i].Nodes[k].TLSPort, err = rd.ReadInt()
+						case "role":
+							cmd.val[i].Nodes[k].Role, err = rd.ReadString()
+						case "replication-offset":
+							cmd.val[i].Nodes[k].ReplicationOffset, err = rd.ReadInt()
+						case "health":
+							cmd.val[i].Nodes[k].Health, err = rd.ReadString()
+						default:
+							return fmt.Errorf("redis: unexpected key %q in CLUSTER SHARDS node reply", nodeKey)
+						}
+
+						if err != nil {
+							return err
+						}
+					}
+				}
+			default:
+				return fmt.Errorf("redis: unexpected key %q in CLUSTER SHARDS reply", key)
+			}
+		}
+	}
+
+	return nil
+}
