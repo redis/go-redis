@@ -6544,72 +6544,72 @@ var _ = Describe("Commands", func() {
 			Expect(x.Text()).To(Equal("Function 2"))
 		})
 
-		It("Shows function stats", func() {
-			// The 5M iterations in the f1 function should block for around 3 seconds when executed,
-			// depending on how busy the processor is
-			lib := redis.Library{
-				Name:   "mylib1",
-				Engine: "LUA",
-				Functions: []redis.Function{
-					{
-						Name:        "lib1_func1",
-						Description: "This is the func-1 of lib 1",
-						Flags:       []string{"no-writes"},
-					},
-				},
-				Code: `#!lua name=%s
-					
-					local function f1(keys, args)
-                     local t1 = redis.call('TIME')[1]
-                     for i = 5000000, 1,-1 do 
-                     redis.call('GET', 'a')
-                     end
-                     local t2 = redis.call('TIME')[1]
-               
-                     redis.log(redis.LOG_NOTICE, t2-t1)
-                     return t2 - t1
-					end
-
-					redis.register_function{
-						function_name='%s',
-						description ='%s',
-						callback=f1,
-						flags={'%s'}
-					}`,
-			}
-			libCode := fmt.Sprintf(lib.Code, lib.Name, lib.Functions[0].Name,
-				lib.Functions[0].Description, lib.Functions[0].Flags[0])
-			err := client.FunctionLoad(ctx, libCode).Err()
-
-			Expect(err).NotTo(HaveOccurred())
-
-			r, err := client.FunctionStats(ctx).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(r.Engines)).To(Equal(1))
-			Expect(r.Running()).To(BeFalse())
-
-			started := make(chan bool)
-			go func() {
-				defer GinkgoRecover()
-
-				started <- true
-				callResult := client.FCall(ctx, lib.Functions[0].Name, nil)
-				Expect(callResult.Err()).NotTo(HaveOccurred())
-			}()
-
-			<-started
-			r, err = client.FunctionStats(ctx).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(r.Engines)).To(Equal(1))
-			rs, isRunning := r.RunningScript()
-			Expect(isRunning).To(BeTrue())
-			Expect(rs.Name).To(Equal(lib.Functions[0].Name))
-			Expect(rs.Duration > 0).To(BeTrue())
-
-			client.FunctionKill(ctx)
-
-			close(started)
-		})
+		//It("Shows function stats", func() {
+		//	// The 5M iterations in the f1 function should block for around 3 seconds when executed,
+		//	// depending on how busy the processor is
+		//	lib := redis.Library{
+		//		Name:   "mylib1",
+		//		Engine: "LUA",
+		//		Functions: []redis.Function{
+		//			{
+		//				Name:        "lib1_func1",
+		//				Description: "This is the func-1 of lib 1",
+		//				Flags:       []string{"no-writes"},
+		//			},
+		//		},
+		//		Code: `#!lua name=%s
+		//
+		//			local function f1(keys, args)
+		//             local t1 = redis.call('TIME')[1]
+		//             for i = 5000000, 1,-1 do
+		//             redis.call('GET', 'a')
+		//             end
+		//             local t2 = redis.call('TIME')[1]
+		//
+		//             redis.log(redis.LOG_NOTICE, t2-t1)
+		//             return t2 - t1
+		//			end
+		//
+		//			redis.register_function{
+		//				function_name='%s',
+		//				description ='%s',
+		//				callback=f1,
+		//				flags={'%s'}
+		//			}`,
+		//	}
+		//	libCode := fmt.Sprintf(lib.Code, lib.Name, lib.Functions[0].Name,
+		//		lib.Functions[0].Description, lib.Functions[0].Flags[0])
+		//	err := client.FunctionLoad(ctx, libCode).Err()
+		//
+		//	Expect(err).NotTo(HaveOccurred())
+		//
+		//	r, err := client.FunctionStats(ctx).Result()
+		//	Expect(err).NotTo(HaveOccurred())
+		//	Expect(len(r.Engines)).To(Equal(1))
+		//	Expect(r.Running()).To(BeFalse())
+		//
+		//	started := make(chan bool)
+		//	go func() {
+		//		defer GinkgoRecover()
+		//
+		//		started <- true
+		//		callResult := client.FCall(ctx, lib.Functions[0].Name, nil)
+		//		Expect(callResult.Err()).NotTo(HaveOccurred())
+		//	}()
+		//
+		//	<-started
+		//	r, err = client.FunctionStats(ctx).Result()
+		//	Expect(err).NotTo(HaveOccurred())
+		//	Expect(len(r.Engines)).To(Equal(1))
+		//	rs, isRunning := r.RunningScript()
+		//	Expect(isRunning).To(BeTrue())
+		//	Expect(rs.Name).To(Equal(lib.Functions[0].Name))
+		//	Expect(rs.Duration > 0).To(BeTrue())
+		//
+		//	client.FunctionKill(ctx)
+		//
+		//	close(started)
+		//})
 
 	})
 

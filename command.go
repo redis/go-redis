@@ -4201,7 +4201,7 @@ func (cmd *FunctionStatsCmd) readCommand(rd *proto.Reader) ([]string, error) {
 	return command, nil
 }
 func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScript, bool, error) {
-	n, err := rd.ReadMapLen()
+	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return nil, false, err
 	}
