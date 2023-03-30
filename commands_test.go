@@ -6545,6 +6545,8 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("Shows function stats", func() {
+			defer client.FunctionKill(ctx)
+
 			// We can not run blocking commands in Redis functions, so we're using an infinite loop,
 			// but we're killing the function after calling FUNCTION STATS
 			lib := redis.Library{
@@ -6604,9 +6606,6 @@ var _ = Describe("Commands", func() {
 			Expect(isRunning).To(BeTrue())
 			Expect(rs.Name).To(Equal(lib.Functions[0].Name))
 			Expect(rs.Duration > 0).To(BeTrue())
-
-			err = client.FunctionKill(ctx).Err()
-			Expect(err).NotTo(HaveOccurred())
 
 			close(started)
 		})
