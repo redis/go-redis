@@ -3993,6 +3993,231 @@ func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) 
 	return functions, nil
 }
 
+// FunctionStats contains information about the scripts currently executing on the server, and the available engines
+//   - Engines:
+//     Statistics about the engine like number of functions and number of libraries
+//   - RunningScript:
+//     The script currently running on the shard we're connecting to.
+//     For Redis Enterprise and Redis Cloud, this represents the
+//     function with the longest running time, across all the running functions, on all shards
+//   - RunningScripts
+//     All scripts currently running in a Redis Enterprise clustered database.
+//     Only available on Redis Enterprise
+type FunctionStats struct {
+	Engines   []Engine
+	isRunning bool
+	rs        RunningScript
+	allrs     []RunningScript
+}
+
+func (fs *FunctionStats) Running() bool {
+	return fs.isRunning
+}
+
+func (fs *FunctionStats) RunningScript() (RunningScript, bool) {
+	return fs.rs, fs.isRunning
+}
+
+// AllRunningScripts returns all scripts currently running in a Redis Enterprise clustered database.
+// Only available on Redis Enterprise
+func (fs *FunctionStats) AllRunningScripts() []RunningScript {
+	return fs.allrs
+}
+
+type RunningScript struct {
+	Name     string
+	Command  []string
+	Duration time.Duration
+}
+
+type Engine struct {
+	Language       string
+	LibrariesCount int64
+	FunctionsCount int64
+}
+
+type FunctionStatsCmd struct {
+	baseCmd
+	val FunctionStats
+}
+
+var _ Cmder = (*FunctionStatsCmd)(nil)
+
+func NewFunctionStatsCmd(ctx context.Context, args ...interface{}) *FunctionStatsCmd {
+	return &FunctionStatsCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *FunctionStatsCmd) SetVal(val FunctionStats) {
+	cmd.val = val
+}
+
+func (cmd *FunctionStatsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FunctionStatsCmd) Val() FunctionStats {
+	return cmd.val
+}
+
+func (cmd *FunctionStatsCmd) Result() (FunctionStats, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FunctionStatsCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	var key string
+	var result FunctionStats
+	for f := 0; f < n; f++ {
+		key, err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case "running_script":
+			result.rs, result.isRunning, err = cmd.readRunningScript(rd)
+		case "engines":
+			result.Engines, err = cmd.readEngines(rd)
+		case "all_running_scripts": // Redis Enterprise only
+			result.allrs, result.isRunning, err = cmd.readRunningScripts(rd)
+		default:
+			return fmt.Errorf("redis: function stats unexpected key %s", key)
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	cmd.val = result
+	return nil
+}
+
+func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript, bool, error) {
+	err := rd.ReadFixedMapLen(3)
+	if err != nil {
+		if err == Nil {
+			return RunningScript{}, false, nil
+		}
+		return RunningScript{}, false, err
+	}
+
+	var runningScript RunningScript
+	for i := 0; i < 3; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return RunningScript{}, false, err
+		}
+
+		switch key {
+		case "name":
+			runningScript.Name, err = rd.ReadString()
+		case "duration_ms":
+			runningScript.Duration, err = cmd.readDuration(rd)
+		case "command":
+			runningScript.Command, err = cmd.readCommand(rd)
+		default:
+			return RunningScript{}, false, fmt.Errorf("redis: function stats unexpected running_script key %s", key)
+		}
+
+		if err != nil {
+			return RunningScript{}, false, err
+		}
+	}
+
+	return runningScript, true, nil
+}
+
+func (cmd *FunctionStatsCmd) readEngines(rd *proto.Reader) ([]Engine, error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return nil, err
+	}
+
+	engines := make([]Engine, 0, n)
+	for i := 0; i < n; i++ {
+		engine := Engine{}
+		engine.Language, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+
+		err = rd.ReadFixedMapLen(2)
+		if err != nil {
+			return nil, fmt.Errorf("redis: function stats unexpected %s engine map length", engine.Language)
+		}
+
+		for i := 0; i < 2; i++ {
+			key, err := rd.ReadString()
+			switch key {
+			case "libraries_count":
+				engine.LibrariesCount, err = rd.ReadInt()
+			case "functions_count":
+				engine.FunctionsCount, err = rd.ReadInt()
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		engines = append(engines, engine)
+	}
+	return engines, nil
+}
+
+func (cmd *FunctionStatsCmd) readDuration(rd *proto.Reader) (time.Duration, error) {
+	t, err := rd.ReadInt()
+	if err != nil {
+		return time.Duration(0), err
+	}
+	return time.Duration(t) * time.Millisecond, nil
+}
+
+func (cmd *FunctionStatsCmd) readCommand(rd *proto.Reader) ([]string, error) {
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	command := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		x, err := rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+		command = append(command, x)
+	}
+
+	return command, nil
+}
+func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScript, bool, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, false, err
+	}
+
+	runningScripts := make([]RunningScript, 0, n)
+	for i := 0; i < n; i++ {
+		rs, _, err := cmd.readRunningScript(rd)
+		if err != nil {
+			return nil, false, err
+		}
+		runningScripts = append(runningScripts, rs)
+	}
+
+	return runningScripts, len(runningScripts) > 0, nil
+}
+
 //------------------------------------------------------------------------------
 
 // LCSQuery is a parameter used for the LCS command

@@ -332,6 +332,57 @@ var _ = Describe("Commands", func() {
 			Expect(cmd.LastKeyPos).To(Equal(int8(0)))
 			Expect(cmd.StepCount).To(Equal(int8(0)))
 		})
+
+		It("should return all command names", func() {
+			cmdList := client.CommandList(ctx, nil)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			cmdNames := cmdList.Val()
+
+			Expect(cmdNames).NotTo(BeEmpty())
+
+			// Assert that some expected commands are present in the list
+			Expect(cmdNames).To(ContainElement("get"))
+			Expect(cmdNames).To(ContainElement("set"))
+			Expect(cmdNames).To(ContainElement("hset"))
+		})
+
+		It("should filter commands by module", func() {
+			filter := &redis.FilterBy{
+				Module: "JSON",
+			}
+			cmdList := client.CommandList(ctx, filter)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			Expect(cmdList.Val()).To(HaveLen(0))
+		})
+
+		It("should filter commands by ACL category", func() {
+
+			filter := &redis.FilterBy{
+				ACLCat: "admin",
+			}
+
+			cmdList := client.CommandList(ctx, filter)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			cmdNames := cmdList.Val()
+
+			// Assert that the returned list only contains commands from the admin ACL category
+			Expect(len(cmdNames)).To(BeNumerically(">", 10))
+		})
+
+		It("should filter commands by pattern", func() {
+			filter := &redis.FilterBy{
+				Pattern: "*GET*",
+			}
+			cmdList := client.CommandList(ctx, filter)
+			Expect(cmdList.Err()).NotTo(HaveOccurred())
+			cmdNames := cmdList.Val()
+
+			// Assert that the returned list only contains commands that match the given pattern
+			Expect(cmdNames).To(ContainElement("get"))
+			Expect(cmdNames).To(ContainElement("getbit"))
+			Expect(cmdNames).To(ContainElement("getrange"))
+			Expect(cmdNames).NotTo(ContainElement("set"))
+		})
 	})
 
 	Describe("debugging", func() {
@@ -6242,14 +6293,22 @@ var _ = Describe("Commands", func() {
 					{
 						Name:        "lib1_func1",
 						Description: "This is the func-1 of lib 1",
-						Flags:       []string{"no-writes", "allow-stale"},
+						Flags:       []string{"allow-oom", "allow-stale"},
 					},
 				},
 				Code: `#!lua name=%s
 					
-					local function f1(keys, args)
-					   return 'Function 1'
-					end
+                     local function f1(keys, args)
+                        local hash = keys[1]  -- Get the key name
+                        local time = redis.call('TIME')[1]  -- Get the current time from the Redis server
+
+                        -- Add the current timestamp to the arguments that the user passed to the function, stored in args
+                        table.insert(args, '_updated_at')
+                        table.insert(args, time)
+
+                        -- Run HSET with the updated argument list
+                        return redis.call('HSET', hash, unpack(args))
+                     end
 
 					redis.register_function{
 						function_name='%s',
@@ -6374,6 +6433,13 @@ var _ = Describe("Commands", func() {
 			Expect(functionFlush.Err()).NotTo(HaveOccurred())
 		})
 
+		It("Kills a running function", func() {
+			functionKill := client.FunctionKill(ctx)
+			Expect(functionKill.Err()).To(MatchError("NOTBUSY No scripts in execution right now."))
+
+			// Add test for a long-running function, once we make the test for `function stats` pass
+		})
+
 		It("Lists registered functions", func() {
 			err := client.FunctionLoad(ctx, lib1Code).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -6413,57 +6479,6 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
-		It("should return all command names", func() {
-			cmdList := client.CommandList(ctx, nil)
-			Expect(cmdList.Err()).NotTo(HaveOccurred())
-			cmdNames := cmdList.Val()
-
-			Expect(cmdNames).NotTo(BeEmpty())
-
-			// Assert that some expected commands are present in the list
-			Expect(cmdNames).To(ContainElement("get"))
-			Expect(cmdNames).To(ContainElement("set"))
-			Expect(cmdNames).To(ContainElement("hset"))
-		})
-
-		It("should filter commands by module", func() {
-			filter := &redis.FilterBy{
-				Module: "JSON",
-			}
-			cmdList := client.CommandList(ctx, filter)
-			Expect(cmdList.Err()).NotTo(HaveOccurred())
-			Expect(cmdList.Val()).To(HaveLen(0))
-		})
-
-		It("should filter commands by ACL category", func() {
-
-			filter := &redis.FilterBy{
-				ACLCat: "admin",
-			}
-
-			cmdList := client.CommandList(ctx, filter)
-			Expect(cmdList.Err()).NotTo(HaveOccurred())
-			cmdNames := cmdList.Val()
-
-			// Assert that the returned list only contains commands from the admin ACL category
-			Expect(len(cmdNames)).To(BeNumerically(">", 10))
-		})
-
-		It("should filter commands by pattern", func() {
-			filter := &redis.FilterBy{
-				Pattern: "*GET*",
-			}
-			cmdList := client.CommandList(ctx, filter)
-			Expect(cmdList.Err()).NotTo(HaveOccurred())
-			cmdNames := cmdList.Val()
-
-			// Assert that the returned list only contains commands that match the given pattern
-			Expect(cmdNames).To(ContainElement("get"))
-			Expect(cmdNames).To(ContainElement("getbit"))
-			Expect(cmdNames).To(ContainElement("getrange"))
-			Expect(cmdNames).NotTo(ContainElement("set"))
-		})
-
 		It("Dump and restores all libraries", func() {
 			err := client.FunctionLoad(ctx, lib1Code).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -6492,6 +6507,109 @@ var _ = Describe("Commands", func() {
 			Expect(list).To(HaveLen(2))
 		})
 
+		It("Calls a function", func() {
+			lib1Code = fmt.Sprintf(lib1.Code, lib1.Name, lib1.Functions[0].Name,
+				lib1.Functions[0].Description, lib1.Functions[0].Flags[0], lib1.Functions[0].Flags[1])
+
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			x := client.FCall(ctx, lib1.Functions[0].Name, []string{"my_hash"}, "a", 1, "b", 2)
+			Expect(x.Err()).NotTo(HaveOccurred())
+			Expect(x.Int()).To(Equal(3))
+		})
+
+		It("Calls a function as read-only", func() {
+			lib1Code = fmt.Sprintf(lib1.Code, lib1.Name, lib1.Functions[0].Name,
+				lib1.Functions[0].Description, lib1.Functions[0].Flags[0], lib1.Functions[0].Flags[1])
+
+			err := client.FunctionLoad(ctx, lib1Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// This function doesn't have a "no-writes" flag
+			x := client.FCallRo(ctx, lib1.Functions[0].Name, []string{"my_hash"}, "a", 1, "b", 2)
+
+			Expect(x.Err()).To(HaveOccurred())
+
+			lib2Code = fmt.Sprintf(lib2.Code, lib2.Name, lib2.Functions[0].Name, lib2.Functions[1].Name,
+				lib2.Functions[1].Description, lib2.Functions[1].Flags[0])
+
+			// This function has a "no-writes" flag
+			err = client.FunctionLoad(ctx, lib2Code).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			x = client.FCallRo(ctx, lib2.Functions[1].Name, []string{})
+
+			Expect(x.Err()).NotTo(HaveOccurred())
+			Expect(x.Text()).To(Equal("Function 2"))
+		})
+
+		It("Shows function stats", func() {
+			defer client.FunctionKill(ctx)
+
+			// We can not run blocking commands in Redis functions, so we're using an infinite loop,
+			// but we're killing the function after calling FUNCTION STATS
+			lib := redis.Library{
+				Name:   "mylib1",
+				Engine: "LUA",
+				Functions: []redis.Function{
+					{
+						Name:        "lib1_func1",
+						Description: "This is the func-1 of lib 1",
+						Flags:       []string{"no-writes"},
+					},
+				},
+				Code: `#!lua name=%s
+					local function f1(keys, args)
+						local i = 0
+					   	while true do
+							i = i + 1
+					   	end
+					end
+
+					redis.register_function{
+						function_name='%s',
+						description ='%s',
+						callback=f1,
+						flags={'%s'}
+					}`,
+			}
+			libCode := fmt.Sprintf(lib.Code, lib.Name, lib.Functions[0].Name,
+				lib.Functions[0].Description, lib.Functions[0].Flags[0])
+			err := client.FunctionLoad(ctx, libCode).Err()
+
+			Expect(err).NotTo(HaveOccurred())
+
+			r, err := client.FunctionStats(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(r.Engines)).To(Equal(1))
+			Expect(r.Running()).To(BeFalse())
+
+			started := make(chan bool)
+			go func() {
+				defer GinkgoRecover()
+
+				client2 := redis.NewClient(redisOptions())
+
+				started <- true
+				_, err = client2.FCall(ctx, lib.Functions[0].Name, nil).Result()
+				Expect(err).To(HaveOccurred())
+			}()
+
+			<-started
+			time.Sleep(1 * time.Second)
+			r, err = client.FunctionStats(ctx).Result()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(r.Engines)).To(Equal(1))
+			rs, isRunning := r.RunningScript()
+			Expect(isRunning).To(BeTrue())
+			Expect(rs.Name).To(Equal(lib.Functions[0].Name))
+			Expect(rs.Duration > 0).To(BeTrue())
+
+			close(started)
+		})
+
 	})
 
 	Describe("SlowLogGet", func() {
@@ -6512,6 +6630,7 @@ var _ = Describe("Commands", func() {
 			Expect(len(result)).NotTo(BeZero())
 		})
 	})
+
 })
 
 type numberStruct struct {
