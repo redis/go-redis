@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"errors"
 	"strconv"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -83,6 +84,11 @@ var _ = Describe("pipelining", func() {
 					Expect(cmd).To(BeAssignableToTypeOf(&redis.BoolCmd{}))
 				}
 			}
+		})
+
+		It("should Exec, not Do", func() {
+			err := pipe.Do(ctx).Err()
+			Expect(err).To(Equal(errors.New("redis: please enter the command to be executed")))
 		})
 	}
 
