@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 )
 
 type pipelineExecer func(context.Context, []Cmder) error
@@ -21,10 +22,21 @@ type pipelineExecer func(context.Context, []Cmder) error
 // depends of your batch size and/or use TxPipeline.
 type Pipeliner interface {
 	StatefulCmdable
+
+	// Len is to obtain the number of commands in the pipeline that have not yet been executed.
 	Len() int
+
+	// Do is an API for executing any command.
+	// If a certain Redis command is not yet supported, you can use Do to execute it.
 	Do(ctx context.Context, args ...interface{}) *Cmd
+
+	// Process is to put the commands to be executed into the pipeline buffer.
 	Process(ctx context.Context, cmd Cmder) error
+
+	// Discard is to discard all commands in the cache that have not yet been executed.
 	Discard()
+
+	// Exec is to send all the commands buffered in the pipeline to the redis-server.
 	Exec(ctx context.Context) ([]Cmder, error)
 }
 
@@ -54,6 +66,10 @@ func (c *Pipeline) Len() int {
 // Do queues the custom command for later execution.
 func (c *Pipeline) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
+	if len(args) == 0 {
+		cmd.SetErr(errors.New("redis: please enter the command to be executed"))
+		return cmd
+	}
 	_ = c.Process(ctx, cmd)
 	return cmd
 }
