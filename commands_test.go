@@ -2136,6 +2136,7 @@ var _ = Describe("Commands", func() {
 				Set3 time.Duration          `redis:"set3"`
 				Set4 interface{}            `redis:"set4"`
 				Set5 map[string]interface{} `redis:"-"`
+				Set6 string                 `redis:"set6,omitempty"`
 			}
 
 			hSet = client.HSet(ctx, "hash", &set{
@@ -2148,13 +2149,29 @@ var _ = Describe("Commands", func() {
 			Expect(hSet.Err()).NotTo(HaveOccurred())
 			Expect(hSet.Val()).To(Equal(int64(4)))
 
-			hMGet := client.HMGet(ctx, "hash", "set1", "set2", "set3", "set4")
+			hMGet := client.HMGet(ctx, "hash", "set1", "set2", "set3", "set4", "set5", "set6")
 			Expect(hMGet.Err()).NotTo(HaveOccurred())
 			Expect(hMGet.Val()).To(Equal([]interface{}{
 				"val1",
 				"1024",
 				strconv.Itoa(int(2 * time.Millisecond.Nanoseconds())),
 				"",
+				nil,
+				nil,
+			}))
+
+			hSet = client.HSet(ctx, "hash2", &set{
+				Set1: "val2",
+				Set6: "val",
+			})
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+			Expect(hSet.Val()).To(Equal(int64(5)))
+
+			hMGet = client.HMGet(ctx, "hash2", "set1", "set6")
+			Expect(hMGet.Err()).NotTo(HaveOccurred())
+			Expect(hMGet.Val()).To(Equal([]interface{}{
+				"val2",
+				"val",
 			}))
 		})
 
