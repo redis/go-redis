@@ -677,6 +677,61 @@ var _ = Describe("ClusterClient", func() {
 			Expect(assertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
 		})
 
+		It("should CLUSTER SHARDS", func() {
+			res, err := client.ClusterShards(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).NotTo(BeEmpty())
+
+			// Iterate over the ClusterShard results and validate the fields.
+			for _, shard := range res {
+				Expect(shard.Slots).NotTo(BeEmpty())
+				for _, slotRange := range shard.Slots {
+					Expect(slotRange.Start).To(BeNumerically(">=", 0))
+					Expect(slotRange.End).To(BeNumerically(">=", slotRange.Start))
+				}
+
+				Expect(shard.Nodes).NotTo(BeEmpty())
+				for _, node := range shard.Nodes {
+					Expect(node.ID).NotTo(BeEmpty())
+					Expect(node.Endpoint).NotTo(BeEmpty())
+					Expect(node.IP).NotTo(BeEmpty())
+					Expect(node.Port).To(BeNumerically(">", 0))
+
+					validRoles := []string{"master", "slave", "replica"}
+					Expect(validRoles).To(ContainElement(node.Role))
+
+					Expect(node.ReplicationOffset).To(BeNumerically(">=", 0))
+
+					validHealthStatuses := []string{"online", "failed", "loading"}
+					Expect(validHealthStatuses).To(ContainElement(node.Health))
+				}
+			}
+		})
+
+		It("should CLUSTER LINKS", func() {
+			res, err := client.ClusterLinks(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).NotTo(BeEmpty())
+
+			// Iterate over the ClusterLink results and validate the map keys.
+			for _, link := range res {
+
+				Expect(link.Direction).NotTo(BeEmpty())
+				Expect([]string{"from", "to"}).To(ContainElement(link.Direction))
+				Expect(link.Node).NotTo(BeEmpty())
+				Expect(link.CreateTime).To(BeNumerically(">", 0))
+
+				Expect(link.Events).NotTo(BeEmpty())
+				validEventChars := []rune{'r', 'w'}
+				for _, eventChar := range link.Events {
+					Expect(validEventChars).To(ContainElement(eventChar))
+				}
+
+				Expect(link.SendBufferAllocated).To(BeNumerically(">=", 0))
+				Expect(link.SendBufferUsed).To(BeNumerically(">=", 0))
+			}
+		})
+
 		It("should cluster client setname", func() {
 			err := client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
 				return c.Ping(ctx).Err()

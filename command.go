@@ -3993,9 +3993,720 @@ func (cmd *FunctionListCmd) readFunctions(rd *proto.Reader) ([]Function, error) 
 	return functions, nil
 }
 
-type FilterBy struct {
-	Module  string
-	ACLCat  string
-	Pattern string
+// FunctionStats contains information about the scripts currently executing on the server, and the available engines
+//   - Engines:
+//     Statistics about the engine like number of functions and number of libraries
+//   - RunningScript:
+//     The script currently running on the shard we're connecting to.
+//     For Redis Enterprise and Redis Cloud, this represents the
+//     function with the longest running time, across all the running functions, on all shards
+//   - RunningScripts
+//     All scripts currently running in a Redis Enterprise clustered database.
+//     Only available on Redis Enterprise
+type FunctionStats struct {
+	Engines   []Engine
+	isRunning bool
+	rs        RunningScript
+	allrs     []RunningScript
 }
 
+func (fs *FunctionStats) Running() bool {
+	return fs.isRunning
+}
+
+func (fs *FunctionStats) RunningScript() (RunningScript, bool) {
+	return fs.rs, fs.isRunning
+}
+
+// AllRunningScripts returns all scripts currently running in a Redis Enterprise clustered database.
+// Only available on Redis Enterprise
+func (fs *FunctionStats) AllRunningScripts() []RunningScript {
+	return fs.allrs
+}
+
+type RunningScript struct {
+	Name     string
+	Command  []string
+	Duration time.Duration
+}
+
+type Engine struct {
+	Language       string
+	LibrariesCount int64
+	FunctionsCount int64
+}
+
+type FunctionStatsCmd struct {
+	baseCmd
+	val FunctionStats
+}
+
+var _ Cmder = (*FunctionStatsCmd)(nil)
+
+func NewFunctionStatsCmd(ctx context.Context, args ...interface{}) *FunctionStatsCmd {
+	return &FunctionStatsCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *FunctionStatsCmd) SetVal(val FunctionStats) {
+	cmd.val = val
+}
+
+func (cmd *FunctionStatsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FunctionStatsCmd) Val() FunctionStats {
+	return cmd.val
+}
+
+func (cmd *FunctionStatsCmd) Result() (FunctionStats, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FunctionStatsCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	var key string
+	var result FunctionStats
+	for f := 0; f < n; f++ {
+		key, err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case "running_script":
+			result.rs, result.isRunning, err = cmd.readRunningScript(rd)
+		case "engines":
+			result.Engines, err = cmd.readEngines(rd)
+		case "all_running_scripts": // Redis Enterprise only
+			result.allrs, result.isRunning, err = cmd.readRunningScripts(rd)
+		default:
+			return fmt.Errorf("redis: function stats unexpected key %s", key)
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	cmd.val = result
+	return nil
+}
+
+func (cmd *FunctionStatsCmd) readRunningScript(rd *proto.Reader) (RunningScript, bool, error) {
+	err := rd.ReadFixedMapLen(3)
+	if err != nil {
+		if err == Nil {
+			return RunningScript{}, false, nil
+		}
+		return RunningScript{}, false, err
+	}
+
+	var runningScript RunningScript
+	for i := 0; i < 3; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return RunningScript{}, false, err
+		}
+
+		switch key {
+		case "name":
+			runningScript.Name, err = rd.ReadString()
+		case "duration_ms":
+			runningScript.Duration, err = cmd.readDuration(rd)
+		case "command":
+			runningScript.Command, err = cmd.readCommand(rd)
+		default:
+			return RunningScript{}, false, fmt.Errorf("redis: function stats unexpected running_script key %s", key)
+		}
+
+		if err != nil {
+			return RunningScript{}, false, err
+		}
+	}
+
+	return runningScript, true, nil
+}
+
+func (cmd *FunctionStatsCmd) readEngines(rd *proto.Reader) ([]Engine, error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return nil, err
+	}
+
+	engines := make([]Engine, 0, n)
+	for i := 0; i < n; i++ {
+		engine := Engine{}
+		engine.Language, err = rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+
+		err = rd.ReadFixedMapLen(2)
+		if err != nil {
+			return nil, fmt.Errorf("redis: function stats unexpected %s engine map length", engine.Language)
+		}
+
+		for i := 0; i < 2; i++ {
+			key, err := rd.ReadString()
+			switch key {
+			case "libraries_count":
+				engine.LibrariesCount, err = rd.ReadInt()
+			case "functions_count":
+				engine.FunctionsCount, err = rd.ReadInt()
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		engines = append(engines, engine)
+	}
+	return engines, nil
+}
+
+func (cmd *FunctionStatsCmd) readDuration(rd *proto.Reader) (time.Duration, error) {
+	t, err := rd.ReadInt()
+	if err != nil {
+		return time.Duration(0), err
+	}
+	return time.Duration(t) * time.Millisecond, nil
+}
+
+func (cmd *FunctionStatsCmd) readCommand(rd *proto.Reader) ([]string, error) {
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	command := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		x, err := rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+		command = append(command, x)
+	}
+
+	return command, nil
+}
+func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScript, bool, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, false, err
+	}
+
+	runningScripts := make([]RunningScript, 0, n)
+	for i := 0; i < n; i++ {
+		rs, _, err := cmd.readRunningScript(rd)
+		if err != nil {
+			return nil, false, err
+		}
+		runningScripts = append(runningScripts, rs)
+	}
+
+	return runningScripts, len(runningScripts) > 0, nil
+}
+
+//------------------------------------------------------------------------------
+
+// LCSQuery is a parameter used for the LCS command
+type LCSQuery struct {
+	Key1         string
+	Key2         string
+	Len          bool
+	Idx          bool
+	MinMatchLen  int
+	WithMatchLen bool
+}
+
+// LCSMatch is the result set of the LCS command.
+type LCSMatch struct {
+	MatchString string
+	Matches     []LCSMatchedPosition
+	Len         int64
+}
+
+type LCSMatchedPosition struct {
+	Key1 LCSPosition
+	Key2 LCSPosition
+
+	// only for withMatchLen is true
+	MatchLen int64
+}
+
+type LCSPosition struct {
+	Start int64
+	End   int64
+}
+
+type LCSCmd struct {
+	baseCmd
+
+	// 1: match string
+	// 2: match len
+	// 3: match idx LCSMatch
+	readType uint8
+	val      *LCSMatch
+}
+
+func NewLCSCmd(ctx context.Context, q *LCSQuery) *LCSCmd {
+	args := make([]interface{}, 3, 7)
+	args[0] = "lcs"
+	args[1] = q.Key1
+	args[2] = q.Key2
+
+	cmd := &LCSCmd{readType: 1}
+	if q.Len {
+		cmd.readType = 2
+		args = append(args, "len")
+	} else if q.Idx {
+		cmd.readType = 3
+		args = append(args, "idx")
+		if q.MinMatchLen != 0 {
+			args = append(args, "minmatchlen", q.MinMatchLen)
+		}
+		if q.WithMatchLen {
+			args = append(args, "withmatchlen")
+		}
+	}
+	cmd.baseCmd = baseCmd{
+		ctx:  ctx,
+		args: args,
+	}
+
+	return cmd
+}
+
+func (cmd *LCSCmd) SetVal(val *LCSMatch) {
+	cmd.val = val
+}
+
+func (cmd *LCSCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *LCSCmd) Val() *LCSMatch {
+	return cmd.val
+}
+
+func (cmd *LCSCmd) Result() (*LCSMatch, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *LCSCmd) readReply(rd *proto.Reader) (err error) {
+	lcs := &LCSMatch{}
+	switch cmd.readType {
+	case 1:
+		// match string
+		if lcs.MatchString, err = rd.ReadString(); err != nil {
+			return err
+		}
+	case 2:
+		// match len
+		if lcs.Len, err = rd.ReadInt(); err != nil {
+			return err
+		}
+	case 3:
+		// read LCSMatch
+		if err = rd.ReadFixedMapLen(2); err != nil {
+			return err
+		}
+
+		// read matches or len field
+		for i := 0; i < 2; i++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "matches":
+				// read array of matched positions
+				if lcs.Matches, err = cmd.readMatchedPositions(rd); err != nil {
+					return err
+				}
+			case "len":
+				// read match length
+				if lcs.Len, err = rd.ReadInt(); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	cmd.val = lcs
+	return nil
+}
+
+func (cmd *LCSCmd) readMatchedPositions(rd *proto.Reader) ([]LCSMatchedPosition, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	positions := make([]LCSMatchedPosition, n)
+	for i := 0; i < n; i++ {
+		pn, err := rd.ReadArrayLen()
+		if err != nil {
+			return nil, err
+		}
+
+		if positions[i].Key1, err = cmd.readPosition(rd); err != nil {
+			return nil, err
+		}
+		if positions[i].Key2, err = cmd.readPosition(rd); err != nil {
+			return nil, err
+		}
+
+		// read match length if WithMatchLen is true
+		if pn > 2 {
+			if positions[i].MatchLen, err = rd.ReadInt(); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return positions, nil
+}
+
+func (cmd *LCSCmd) readPosition(rd *proto.Reader) (pos LCSPosition, err error) {
+	if err = rd.ReadFixedArrayLen(2); err != nil {
+		return pos, err
+	}
+	if pos.Start, err = rd.ReadInt(); err != nil {
+		return pos, err
+	}
+	if pos.End, err = rd.ReadInt(); err != nil {
+		return pos, err
+	}
+
+	return pos, nil
+}
+
+// ------------------------------------------------------------------------
+
+type KeyFlags struct {
+	Key   string
+	Flags []string
+}
+
+type KeyFlagsCmd struct {
+	baseCmd
+
+	val []KeyFlags
+}
+
+var _ Cmder = (*KeyFlagsCmd)(nil)
+
+func NewKeyFlagsCmd(ctx context.Context, args ...interface{}) *KeyFlagsCmd {
+	return &KeyFlagsCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *KeyFlagsCmd) SetVal(val []KeyFlags) {
+	cmd.val = val
+}
+
+func (cmd *KeyFlagsCmd) Val() []KeyFlags {
+	return cmd.val
+}
+
+func (cmd *KeyFlagsCmd) Result() ([]KeyFlags, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *KeyFlagsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *KeyFlagsCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	if n == 0 {
+		cmd.val = make([]KeyFlags, 0)
+		return nil
+	}
+
+	cmd.val = make([]KeyFlags, n)
+
+	for i := 0; i < len(cmd.val); i++ {
+
+		if err = rd.ReadFixedArrayLen(2); err != nil {
+			return err
+		}
+
+		if cmd.val[i].Key, err = rd.ReadString(); err != nil {
+			return err
+		}
+		flagsLen, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Flags = make([]string, flagsLen)
+
+		for j := 0; j < flagsLen; j++ {
+			if cmd.val[i].Flags[j], err = rd.ReadString(); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// ---------------------------------------------------------------------------------------------------
+
+type ClusterLink struct {
+	Direction           string
+	Node                string
+	CreateTime          int64
+	Events              string
+	SendBufferAllocated int64
+	SendBufferUsed      int64
+}
+
+type ClusterLinksCmd struct {
+	baseCmd
+
+	val []ClusterLink
+}
+
+var _ Cmder = (*ClusterLinksCmd)(nil)
+
+func NewClusterLinksCmd(ctx context.Context, args ...interface{}) *ClusterLinksCmd {
+	return &ClusterLinksCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ClusterLinksCmd) SetVal(val []ClusterLink) {
+	cmd.val = val
+}
+
+func (cmd *ClusterLinksCmd) Val() []ClusterLink {
+	return cmd.val
+}
+
+func (cmd *ClusterLinksCmd) Result() ([]ClusterLink, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *ClusterLinksCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterLinksCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]ClusterLink, n)
+
+	for i := 0; i < len(cmd.val); i++ {
+		m, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+
+		for j := 0; j < m; j++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "direction":
+				cmd.val[i].Direction, err = rd.ReadString()
+			case "node":
+				cmd.val[i].Node, err = rd.ReadString()
+			case "create-time":
+				cmd.val[i].CreateTime, err = rd.ReadInt()
+			case "events":
+				cmd.val[i].Events, err = rd.ReadString()
+			case "send-buffer-allocated":
+				cmd.val[i].SendBufferAllocated, err = rd.ReadInt()
+			case "send-buffer-used":
+				cmd.val[i].SendBufferUsed, err = rd.ReadInt()
+			default:
+				return fmt.Errorf("redis: unexpected key %q in CLUSTER LINKS reply", key)
+			}
+
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+
+type SlotRange struct {
+	Start int64
+	End   int64
+}
+
+type Node struct {
+	ID                string
+	Endpoint          string
+	IP                string
+	Hostname          string
+	Port              int64
+	TLSPort           int64
+	Role              string
+	ReplicationOffset int64
+	Health            string
+}
+
+type ClusterShard struct {
+	Slots []SlotRange
+	Nodes []Node
+}
+
+type ClusterShardsCmd struct {
+	baseCmd
+
+	val []ClusterShard
+}
+
+var _ Cmder = (*ClusterShardsCmd)(nil)
+
+func NewClusterShardsCmd(ctx context.Context, args ...interface{}) *ClusterShardsCmd {
+	return &ClusterShardsCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ClusterShardsCmd) SetVal(val []ClusterShard) {
+	cmd.val = val
+}
+
+func (cmd *ClusterShardsCmd) Val() []ClusterShard {
+	return cmd.val
+}
+
+func (cmd *ClusterShardsCmd) Result() ([]ClusterShard, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *ClusterShardsCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]ClusterShard, n)
+
+	for i := 0; i < n; i++ {
+		m, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+
+		for j := 0; j < m; j++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "slots":
+				l, err := rd.ReadArrayLen()
+				if err != nil {
+					return err
+				}
+				for k := 0; k < l; k += 2 {
+					start, err := rd.ReadInt()
+					if err != nil {
+						return err
+					}
+
+					end, err := rd.ReadInt()
+					if err != nil {
+						return err
+					}
+
+					cmd.val[i].Slots = append(cmd.val[i].Slots, SlotRange{Start: start, End: end})
+				}
+			case "nodes":
+				nodesLen, err := rd.ReadArrayLen()
+				if err != nil {
+					return err
+				}
+				cmd.val[i].Nodes = make([]Node, nodesLen)
+				for k := 0; k < nodesLen; k++ {
+					nodeMapLen, err := rd.ReadMapLen()
+					if err != nil {
+						return err
+					}
+
+					for l := 0; l < nodeMapLen; l++ {
+						nodeKey, err := rd.ReadString()
+						if err != nil {
+							return err
+						}
+
+						switch nodeKey {
+						case "id":
+							cmd.val[i].Nodes[k].ID, err = rd.ReadString()
+						case "endpoint":
+							cmd.val[i].Nodes[k].Endpoint, err = rd.ReadString()
+						case "ip":
+							cmd.val[i].Nodes[k].IP, err = rd.ReadString()
+						case "hostname":
+							cmd.val[i].Nodes[k].Hostname, err = rd.ReadString()
+						case "port":
+							cmd.val[i].Nodes[k].Port, err = rd.ReadInt()
+						case "tls-port":
+							cmd.val[i].Nodes[k].TLSPort, err = rd.ReadInt()
+						case "role":
+							cmd.val[i].Nodes[k].Role, err = rd.ReadString()
+						case "replication-offset":
+							cmd.val[i].Nodes[k].ReplicationOffset, err = rd.ReadInt()
+						case "health":
+							cmd.val[i].Nodes[k].Health, err = rd.ReadString()
+						default:
+							return fmt.Errorf("redis: unexpected key %q in CLUSTER SHARDS node reply", nodeKey)
+						}
+
+						if err != nil {
+							return err
+						}
+					}
+				}
+			default:
+				return fmt.Errorf("redis: unexpected key %q in CLUSTER SHARDS reply", key)
+			}
+		}
+	}
+
+	return nil
+}
