@@ -5775,15 +5775,12 @@ var _ = Describe("Commands", func() {
 				Expect(err).NotTo(HaveOccurred())
 				for i := range res {
 					res[i].Idle = 0
-				}
-
-				for i := 0; i < len(res); i++ {
 					res[i].Inactive = 0
 				}
 
 				Expect(res).To(Equal([]redis.XInfoConsumer{
-					{Name: "consumer1", Pending: 2, Idle: 0},
-					{Name: "consumer2", Pending: 1, Idle: 0},
+					{Name: "consumer1", Pending: 2, Idle: 0, Inactive: 0},
+					{Name: "consumer2", Pending: 1, Idle: 0, Inactive: 0},
 				}))
 			})
 		})
