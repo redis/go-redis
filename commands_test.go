@@ -2165,7 +2165,7 @@ var _ = Describe("Commands", func() {
 				Set6: "val",
 			})
 			Expect(hSet.Err()).NotTo(HaveOccurred())
-			Expect(hSet.Val()).To(Equal(int64(2)))
+			Expect(hSet.Val()).To(Equal(int64(5)))
 
 			hMGet = client.HMGet(ctx, "hash2", "set1", "set6")
 			Expect(hMGet.Err()).NotTo(HaveOccurred())
