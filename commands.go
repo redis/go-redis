@@ -495,6 +495,8 @@ type Cmdable interface {
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
 
 	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
+
+	Loadex(ctx context.Context, conf *LoadexConfig) *Cmd
 }
 
 type StatefulCmdable interface {
