@@ -27,7 +27,7 @@ or
 // PAGES: lpush
 ```
 
-##### `HIDE_START` and `HIDE_END`
+##### HIDE_START and HIDE_END
 Should be used to hide imports, connection creation and other bootstrapping code that is not important
 for understanding a command example.
 
