@@ -9,7 +9,7 @@
 
 ### Special markup
 
-##### PAGES
+#### PAGES
 The first line of every file should specify on which command pages should this example appear. The defined format is: 
 ```
 // PAGES: comma-separated list of command names
@@ -27,7 +27,7 @@ or
 // PAGES: lpush
 ```
 
-##### HIDE_START and HIDE_END
+#### HIDE_START and HIDE_END
 Should be used to hide imports, connection creation and other bootstrapping code that is not important
 for understanding a command example.
 
@@ -64,7 +64,7 @@ func ExampleSetGet() {
 
 ```
 
-##### REMOVE_START and REMOVE_END
+#### REMOVE_START and REMOVE_END
 Should be used to **remove** code from the resulting code snippet published on redis.io.
 This markup can be useful to remove assertions, and any eventual other testing blocks.
 
