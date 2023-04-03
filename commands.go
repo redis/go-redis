@@ -106,18 +106,53 @@ func appendStructField(dst []interface{}, v reflect.Value) []interface{} {
 		if tag == "" || tag == "-" {
 			continue
 		}
-		tag = strings.Split(tag, ",")[0]
-		if tag == "" {
+		name, opt, _ := strings.Cut(tag, ",")
+		if name == "" {
 			continue
 		}
 
 		field := v.Field(i)
+
+		// miss field
+		if omitEmpty(opt) && isEmptyValue(field) {
+			continue
+		}
+
 		if field.CanInterface() {
-			dst = append(dst, tag, field.Interface())
+			dst = append(dst, name, field.Interface())
 		}
 	}
 
 	return dst
+}
+
+func omitEmpty(opt string) bool {
+	for opt != "" {
+		var name string
+		name, opt, _ = strings.Cut(opt, ",")
+		if name == "omitempty" {
+			return true
+		}
+	}
+	return false
+}
+
+func isEmptyValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return v.Len() == 0
+	case reflect.Bool:
+		return !v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return v.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() == 0
+	case reflect.Interface, reflect.Pointer:
+		return v.IsNil()
+	}
+	return false
 }
 
 type Cmdable interface {
