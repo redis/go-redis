@@ -4689,6 +4689,31 @@ var _ = Describe("Commands", func() {
 			Expect(zRank.Val()).To(Equal(int64(0)))
 		})
 
+		It("should ZRankWithScore", func() {
+			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			zRankWithScore := client.ZRankWithScore(ctx, "zset", "one")
+			Expect(zRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 0, Score: "1"}))
+
+			zRankWithScore = client.ZRankWithScore(ctx, "zset", "two")
+			Expect(zRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 1, Score: "2"}))
+
+			zRankWithScore = client.ZRankWithScore(ctx, "zset", "three")
+			Expect(zRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 2, Score: "3"}))
+
+			zRankWithScore = client.ZRankWithScore(ctx, "zset", "four")
+			Expect(zRankWithScore.Err()).To(HaveOccurred())
+			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{}))
+		})
+
 		It("should ZRem", func() {
 			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -4958,6 +4983,31 @@ var _ = Describe("Commands", func() {
 			zRevRank = client.ZRevRank(ctx, "zset", "four")
 			Expect(zRevRank.Err()).To(Equal(redis.Nil))
 			Expect(zRevRank.Val()).To(Equal(int64(0)))
+		})
+
+		It("should ZRevRankWithScore", func() {
+			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			zRevRankWithScore := client.ZRevRankWithScore(ctx, "zset", "one")
+			Expect(zRevRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 2, Score: "1"}))
+
+			zRevRankWithScore = client.ZRevRankWithScore(ctx, "zset", "two")
+			Expect(zRevRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 1, Score: "2"}))
+
+			zRevRankWithScore = client.ZRevRankWithScore(ctx, "zset", "three")
+			Expect(zRevRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 0, Score: "3"}))
+
+			zRevRankWithScore = client.ZRevRankWithScore(ctx, "zset", "four")
+			Expect(zRevRankWithScore.Err()).To(HaveOccurred())
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{}))
 		})
 
 		It("should ZScore", func() {

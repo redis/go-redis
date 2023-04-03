@@ -383,6 +383,7 @@ type Cmdable interface {
 	ZRevRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd
 	ZRevRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd
 	ZRevRank(ctx context.Context, key, member string) *IntCmd
+	ZRevRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd
 	ZScore(ctx context.Context, key, member string) *FloatCmd
 	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
 	ZRandMember(ctx context.Context, key string, count int) *StringSliceCmd
@@ -2880,6 +2881,12 @@ func (c cmdable) ZRank(ctx context.Context, key, member string) *IntCmd {
 	return cmd
 }
 
+func (c cmdable) ZRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd {
+	cmd := NewRankWithScoreCmd(ctx, "zrank", key, member, "withscore")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "zrem"
@@ -2966,6 +2973,12 @@ func (c cmdable) ZRevRangeByScoreWithScores(ctx context.Context, key string, opt
 
 func (c cmdable) ZRevRank(ctx context.Context, key, member string) *IntCmd {
 	cmd := NewIntCmd(ctx, "zrevrank", key, member)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZRevRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd {
+	cmd := NewRankWithScoreCmd(ctx, "zrevrank", key, member, "withscore")
 	_ = c(ctx, cmd)
 	return cmd
 }
