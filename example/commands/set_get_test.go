@@ -1,4 +1,3 @@
-// PAGES: Set, Get
 // HIDE_START
 package example_commands_test
 

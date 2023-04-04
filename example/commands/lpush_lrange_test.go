@@ -1,4 +1,3 @@
-// PAGES: Set, Get
 // HIDE_START
 package example_commands_test
 
@@ -20,7 +19,7 @@ func ExampleLPushLRange() {
 	// HIDE_END
 	listSize, err := rdb.LPush(ctx, "my_bikes", "bike:1", "bike:2").Result()
 	if err != nil {
-		fmt.Println("problem here")
+		fmt.Println("Something went wrong")
 	}
 
 	fmt.Println(listSize)
