@@ -2226,10 +2226,11 @@ type XInfoStreamGroupPending struct {
 }
 
 type XInfoStreamConsumer struct {
-	Name     string
-	SeenTime time.Time
-	PelCount int64
-	Pending  []XInfoStreamConsumerPending
+	Name       string
+	SeenTime   time.Time
+	ActiveTime time.Time
+	PelCount   int64
+	Pending    []XInfoStreamConsumerPending
 }
 
 type XInfoStreamConsumerPending struct {
@@ -2473,6 +2474,12 @@ func readXInfoStreamConsumers(rd *proto.Reader) ([]XInfoStreamConsumer, error) {
 					return nil, err
 				}
 				c.SeenTime = time.Unix(seen/1000, seen%1000*int64(time.Millisecond))
+			case "active-time":
+				active, err := rd.ReadInt()
+				if err != nil {
+					return nil, err
+				}
+				c.ActiveTime = time.Unix(active/1000, active%1000*int64(time.Millisecond))
 			case "pel-count":
 				c.PelCount, err = rd.ReadInt()
 			case "pending":
