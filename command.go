@@ -4765,10 +4765,10 @@ func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
-	cmd.val = make([]ACLLogEntry, n/2)
-	for i := 0; i < n/2; i++ {
+	cmd.val = make([]ACLLogEntry, n)
+	for i := 0; i < n; i++ {
 		entry := &cmd.val[i]
-		for j := 0; j < 10; j += 2 {
+		for j := 0; j < 10; j++ {
 			key, err := rd.ReadString()
 			if err != nil {
 				return err
