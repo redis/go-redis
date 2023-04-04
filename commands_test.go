@@ -1978,6 +1978,21 @@ var _ = Describe("Commands", func() {
 			}
 		})
 
+		It("should ACL LOG RESET", func() {
+			// Call ACL LOG RESET
+			resetCmd := client.ACLLogReset(ctx)
+			Expect(resetCmd.Err()).NotTo(HaveOccurred())
+
+			// Check if it returns "OK"
+			Expect(resetCmd.Val()).To(Equal("OK"))
+
+			// Verify that the log is empty after the reset
+			logCmd := client.ACLLog(ctx)
+			Expect(logCmd.Err()).NotTo(HaveOccurred())
+			logEntries := logCmd.Val()
+			Expect(len(logEntries)).To(Equal(0))
+		})
+
 	})
 
 	Describe("hashes", func() {
