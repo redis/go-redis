@@ -4710,3 +4710,100 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 
 	return nil
 }
+
+// -------------------------------------------
+
+type ACLLogEntry struct {
+	Count                int64
+	Reason               string
+	Context              string
+	Object               string
+	Username             string
+	AgeSeconds           float64
+	ClientInfo           string
+	EntryID              int64
+	TimestampCreated     int64
+	TimestampLastUpdated int64
+}
+
+type ACLLogCmd struct {
+	baseCmd
+
+	val []ACLLogEntry
+}
+
+var _ Cmder = (*ACLLogCmd)(nil)
+
+func NewACLLogCmd(ctx context.Context, args ...interface{}) *ACLLogCmd {
+	return &ACLLogCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ACLLogCmd) SetVal(val []ACLLogEntry) {
+	cmd.val = val
+}
+
+func (cmd *ACLLogCmd) Val() []ACLLogEntry {
+	return cmd.val
+}
+
+func (cmd *ACLLogCmd) Result() ([]ACLLogEntry, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *ACLLogCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([]ACLLogEntry, n/2)
+	for i := 0; i < n/2; i++ {
+		entry := &cmd.val[i]
+		for j := 0; j < 10; j += 2 {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "count":
+				entry.Count, err = rd.ReadInt()
+			case "reason":
+				entry.Reason, err = rd.ReadString()
+			case "context":
+				entry.Context, err = rd.ReadString()
+			case "object":
+				entry.Object, err = rd.ReadString()
+			case "username":
+				entry.Username, err = rd.ReadString()
+			case "age-seconds":
+				entry.AgeSeconds, err = rd.ReadFloat()
+			case "client-info":
+				entry.ClientInfo, err = rd.ReadString()
+			case "entry-id":
+				entry.EntryID, err = rd.ReadInt()
+			case "timestamp-created":
+				entry.TimestampCreated, err = rd.ReadInt()
+			case "timestamp-last-updated":
+				entry.TimestampLastUpdated, err = rd.ReadInt()
+			default:
+				return fmt.Errorf("redis: unexpected key %q in ACL LOG reply", key)
+			}
+
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}

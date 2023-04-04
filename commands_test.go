@@ -1926,11 +1926,58 @@ var _ = Describe("Commands", func() {
 			Expect(replace.Val()).To(Equal(int64(1)))
 		})
 
-		It("should acl dryryn", func() {
+		It("should acl dryrun", func() {
 			dryRun := client.ACLDryRun(ctx, "default", "get", "randomKey")
 			Expect(dryRun.Err()).NotTo(HaveOccurred())
 			Expect(dryRun.Val()).To(Equal("OK"))
 		})
+
+		It("should ACL LOG", func() {
+			// Test without the count parameter
+			logs := client.ACLLog(ctx)
+			Expect(logs.Err()).NotTo(HaveOccurred())
+
+			logEntries := logs.Val()
+			Expect(logEntries).NotTo(BeNil())
+
+			for _, entry := range logEntries {
+				Expect(entry.Count).To(BeNumerically(">=", 0))
+				Expect(entry.Reason).NotTo(BeEmpty())
+				Expect(entry.Context).NotTo(BeEmpty())
+				Expect(entry.Object).NotTo(BeEmpty())
+				Expect(entry.Username).NotTo(BeEmpty())
+				Expect(entry.AgeSeconds).To(BeNumerically(">=", 0))
+				Expect(entry.ClientInfo).NotTo(BeEmpty())
+				Expect(entry.EntryID).To(BeNumerically(">=", 0))
+				Expect(entry.TimestampCreated).To(BeNumerically(">=", 0))
+				Expect(entry.TimestampLastUpdated).To(BeNumerically(">=", 0))
+			}
+
+			// Test with the count parameter
+			desiredCount := int64(5)
+			logs = client.ACLLog(ctx, desiredCount)
+			Expect(logs.Err()).NotTo(HaveOccurred())
+
+			logEntriesWithCount := logs.Val()
+			Expect(logEntriesWithCount).NotTo(BeNil())
+
+			// Verify the length of the returned entries
+			Expect(len(logEntriesWithCount)).To(BeNumerically("<=", desiredCount))
+
+			for _, entry := range logEntriesWithCount {
+				Expect(entry.Count).To(BeNumerically(">=", 0))
+				Expect(entry.Reason).NotTo(BeEmpty())
+				Expect(entry.Context).NotTo(BeEmpty())
+				Expect(entry.Object).NotTo(BeEmpty())
+				Expect(entry.Username).NotTo(BeEmpty())
+				Expect(entry.AgeSeconds).To(BeNumerically(">=", 0))
+				Expect(entry.ClientInfo).NotTo(BeEmpty())
+				Expect(entry.EntryID).To(BeNumerically(">=", 0))
+				Expect(entry.TimestampCreated).To(BeNumerically(">=", 0))
+				Expect(entry.TimestampLastUpdated).To(BeNumerically(">=", 0))
+			}
+		})
+
 	})
 
 	Describe("hashes", func() {

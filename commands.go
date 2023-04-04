@@ -495,6 +495,8 @@ type Cmdable interface {
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
 
 	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
+	ACLLog(ctx context.Context, count ...int64) *ACLLogCmd
+	ACLLogReset(ctx context.Context) *StatusCmd
 }
 
 type StatefulCmdable interface {
@@ -3870,6 +3872,30 @@ func (c cmdable) ACLDryRun(ctx context.Context, username string, command ...inte
 	args = append(args, "acl", "dryrun", username)
 	args = append(args, command...)
 	cmd := NewStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLLog(ctx context.Context, count ...int64) *ACLLogCmd {
+	args := make([]interface{}, 0, 3)
+	args = append(args, "acl", "log")
+
+	switch len(count) {
+	case 0:
+		break
+	case 1:
+		args = append(args, count[0])
+	default:
+		panic("too many arguments")
+	}
+
+	cmd := NewACLLogCmd(ctx, args)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLLogReset(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "ACL", "LOG", "RESET")
 	_ = c(ctx, cmd)
 	return cmd
 }
