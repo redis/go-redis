@@ -9,24 +9,6 @@
 
 ### Special markup
 
-#### PAGES
-The first line of every file should specify on which command pages should this example appear. The defined format is: 
-```
-// PAGES: comma-separated list of command names
-```
-
-The command names should use the name specified in the commands json definition (ex: [set.json](https://github.com/redis/redis/blob/unstable/src/commands/set.json))
-
-For example:
-```
-// PAGES: set, get
-```
-
-or 
-```
-// PAGES: lpush
-```
-
 #### HIDE_START and HIDE_END
 Should be used to hide imports, connection creation and other bootstrapping code that is not important
 for understanding a command example.
