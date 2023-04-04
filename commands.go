@@ -3877,16 +3877,14 @@ func (c cmdable) ACLDryRun(ctx context.Context, username string, command ...inte
 }
 
 func (c cmdable) ACLLog(ctx context.Context, count ...int64) *ACLLogCmd {
-	args := make([]interface{}, 0, 3)
+	args := make([]interface{}, 0, 1)
 	args = append(args, "acl", "log")
 
-	switch len(count) {
-	case 0:
-		break
-	case 1:
+	if len(count) > 0 {
+		if len(count) > 1 {
+			panic("too many arguments")
+		}
 		args = append(args, count[0])
-	default:
-		panic("too many arguments")
 	}
 
 	cmd := NewACLLogCmd(ctx, args)
@@ -3895,7 +3893,7 @@ func (c cmdable) ACLLog(ctx context.Context, count ...int64) *ACLLogCmd {
 }
 
 func (c cmdable) ACLLogReset(ctx context.Context) *StatusCmd {
-	cmd := NewStatusCmd(ctx, "ACL", "LOG", "RESET")
+	cmd := NewStatusCmd(ctx, "acl", "log", "reset")
 	_ = c(ctx, cmd)
 	return cmd
 }

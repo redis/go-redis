@@ -1983,7 +1983,6 @@ var _ = Describe("Commands", func() {
 			resetCmd := client.ACLLogReset(ctx)
 			Expect(resetCmd.Err()).NotTo(HaveOccurred())
 
-			// Check if it returns "OK"
 			Expect(resetCmd.Val()).To(Equal("OK"))
 
 			// Verify that the log is empty after the reset
