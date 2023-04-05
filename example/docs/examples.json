@@ -1,18 +1,4 @@
-[
-  {
-    "command": "set",
-    "file": "set_get_test.go"
-  },
-  {
-    "command": "get",
-    "file": "set_get_test.go"
-  },
-  {
-    "command": "lpush",
-    "file": "lpush_lrange_test.go"
-  },
-  {
-    "command": "lrange",
-    "file": "lpush_lrange_test.go"
-  }
-]
+{
+  "id": "auto",
+  "file": "*_test.go"
+}
