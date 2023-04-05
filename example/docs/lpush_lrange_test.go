@@ -1,4 +1,4 @@
-// EXAMPLE: set_and_get
+// EXAMPLE: lpush_and_lrange
 // HIDE_START
 package example_commands_test
 
@@ -30,7 +30,10 @@ func ExampleLPushLRange() {
 		panic(err)
 	}
 	fmt.Println(value)
+	// HIDE_START
 
 	// Output: 2
 	// [bike:2 bike:1]
 }
+
+// HIDE_END

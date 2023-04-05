@@ -25,10 +25,6 @@ func ExampleSetGet() {
 
 	fmt.Println("OK")
 
-	// REMOVE_START
-	fmt.Println("Testing removed lines")
-	// REMOVE_END
-
 	value, err := rdb.Get(ctx, "bike:1").Result()
 	if err != nil {
 		panic(err)
