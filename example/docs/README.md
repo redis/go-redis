@@ -4,10 +4,15 @@
 
 - Create a Go test file with a meaningful name in the current folder. 
 - Create a single method prefixed with `Example` and write your test in it.
+- Find out what's the example id for the example you're creating and add it as the first line of the file `// EXAMPLE: set_and_get`. More info below. 
 - We're using the [Testable Examples](https://go.dev/blog/examples) feature of Go to test the desired output has been written to stdout.
 - To run the tests start a Redis server locally on port 6379 and run `go test`
 
 ### Special markup
+
+#### EXAMPLE:
+Every file should contain an example id so it can be matched to the doc page it should show up on. You can check out the markdown file for that command to find the id, or if it hasn't been yet added in there, reach out to the docs team to agree on one.
+
 
 #### HIDE_START and HIDE_END
 Should be used to hide imports, connection creation and other bootstrapping code that is not important
