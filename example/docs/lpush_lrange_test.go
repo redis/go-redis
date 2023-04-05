@@ -19,7 +19,7 @@ func ExampleLPushLRange() {
 	// HIDE_END
 	listSize, err := rdb.LPush(ctx, "my_bikes", "bike:1", "bike:2").Result()
 	if err != nil {
-		fmt.Println("Something went wrong")
+		panic(err)
 	}
 
 	fmt.Println(listSize)
