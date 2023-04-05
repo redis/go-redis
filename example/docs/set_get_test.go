@@ -30,7 +30,10 @@ func ExampleSetGet() {
 		panic(err)
 	}
 	fmt.Println(value)
+	// HIDE_START
 
 	// Output: OK
 	// Process 134
 }
+
+// HIDE_END
