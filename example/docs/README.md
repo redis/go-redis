@@ -21,9 +21,9 @@ for understanding a command example.
 Example:
 
 ```go
-// PAGES: Set, Get
+// EXAMPLE: set_and_get
 // HIDE_START
-package example_docs_test
+package example_commands_test
 
 import (
 	"context"
@@ -47,8 +47,19 @@ func ExampleSetGet() {
 	}
 
 	fmt.Println("OK")
+
+	value, err := rdb.Get(ctx, "bike:1").Result()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(value)
+	// HIDE_START
+
+	// Output: OK
+	// Process 134
 }
 
+// HIDE_END
 ```
 
 #### REMOVE_START and REMOVE_END

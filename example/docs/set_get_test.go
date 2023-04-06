@@ -29,11 +29,11 @@ func ExampleSetGet() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(value)
+	fmt.Printf("The name of the bike is %s", value)
 	// HIDE_START
 
 	// Output: OK
-	// Process 134
+	// The name of the bike is Process 134
 }
 
 // HIDE_END
