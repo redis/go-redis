@@ -1945,6 +1945,40 @@ var _ = Describe("Commands", func() {
 			Expect(dryRun.Err()).To(HaveOccurred())
 			Expect(dryRun.Err().Error()).To(Equal("ERR Error loading the extension. Please check the server logs."))
 		})
+
+		It("converts the module loadex configuration to a slice of arguments correctly", func() {
+			conf := &redis.ModuleLoadexConfig{
+				Path: "/path/to/your/module.so",
+				Conf: map[string]interface{}{
+					"param1": "value1",
+				},
+				Args: []interface{}{
+					"arg1",
+					"arg2",
+					3,
+				},
+			}
+
+			args := conf.ToArgs()
+
+			// Test if the arguments are in the correct order
+			expectedArgs := []interface{}{
+				"MODULE",
+				"LOADEX",
+				"/path/to/your/module.so",
+				"CONFIG",
+				"param1",
+				"value1",
+				"ARGS",
+				"arg1",
+				"ARGS",
+				"arg2",
+				"ARGS",
+				3,
+			}
+
+			Expect(args).To(Equal(expectedArgs))
+		})
 	})
 
 	Describe("hashes", func() {
