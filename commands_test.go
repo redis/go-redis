@@ -1926,10 +1926,24 @@ var _ = Describe("Commands", func() {
 			Expect(replace.Val()).To(Equal(int64(1)))
 		})
 
-		It("should acl dryryn", func() {
+		It("should acl dryrun", func() {
 			dryRun := client.ACLDryRun(ctx, "default", "get", "randomKey")
 			Expect(dryRun.Err()).NotTo(HaveOccurred())
 			Expect(dryRun.Val()).To(Equal("OK"))
+		})
+
+		It("should fail module loadex", func() {
+			dryRun := client.ModuleLoadex(ctx, &redis.ModuleLoadexConfig{
+				Path: "/path/to/non-existent-library.so",
+				Conf: map[string]interface{}{
+					"param1": "value1",
+				},
+				Args: []interface{}{
+					"arg1",
+				},
+			})
+			Expect(dryRun.Err()).To(HaveOccurred())
+			Expect(dryRun.Err().Error()).To(Equal("ERR Error loading the extension. Please check the server logs."))
 		})
 	})
 
