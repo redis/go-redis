@@ -5799,7 +5799,9 @@ var _ = Describe("Commands", func() {
 					}
 					for k3, c := range g.Consumers {
 						Expect(now.Sub(c.SeenTime)).To(BeNumerically("<=", maxElapsed))
+						Expect(now.Sub(c.ActiveTime)).To(BeNumerically("<=", maxElapsed))
 						res.Groups[k].Consumers[k3].SeenTime = time.Time{}
+						res.Groups[k].Consumers[k3].ActiveTime = time.Time{}
 
 						for k4, p := range c.Pending {
 							Expect(now.Sub(p.DeliveryTime)).To(BeNumerically("<=", maxElapsed))
@@ -5823,10 +5825,12 @@ var _ = Describe("Commands", func() {
 				Expect(err).NotTo(HaveOccurred())
 				for i := range res {
 					res[i].Idle = 0
+					res[i].Inactive = 0
 				}
+
 				Expect(res).To(Equal([]redis.XInfoConsumer{
-					{Name: "consumer1", Pending: 2, Idle: 0},
-					{Name: "consumer2", Pending: 1, Idle: 0},
+					{Name: "consumer1", Pending: 2, Idle: 0, Inactive: 0},
+					{Name: "consumer2", Pending: 1, Idle: 0, Inactive: 0},
 				}))
 			})
 		})

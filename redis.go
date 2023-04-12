@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -281,13 +280,18 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	var auth bool
 
-	// For redis-server < 6.0 that does not support the Hello command,
-	// we continue to provide services with RESP2.
+	// for redis-server versions that do not support the HELLO command,
+	// RESP2 will continue to be used.
 	if err := conn.Hello(ctx, 3, username, password, "").Err(); err == nil {
 		auth = true
-	} else if !strings.HasPrefix(err.Error(), "ERR unknown command") &&
-		// this check is for compatibility DragonflyDB.
-		!strings.HasPrefix(err.Error(), "NOAUTH Authentication") {
+	} else if !isRedisError(err) {
+		// When the server responds with the RESP protocol and the result is not a normal
+		// execution result of the HELLO command, we consider it to be an indication that
+		// the server does not support the HELLO command.
+		// The server may be a redis-server that does not support the HELLO command,
+		// or it could be DragonflyDB or a third-party redis-proxy. They all respond
+		// with different error string results for unsupported commands, making it
+		// difficult to rely on error strings to determine all results.
 		return err
 	}
 
