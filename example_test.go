@@ -227,7 +227,7 @@ func ExampleClient_BLPop() {
 		panic(err)
 	}
 
-	// use `rdb.BLPop(0, "queue")` for infinite waiting time
+	// use `rdb.BLPop(ctx, 0, "queue")` for infinite waiting time
 	result, err := rdb.BLPop(ctx, 1*time.Second, "queue").Result()
 	if err != nil {
 		panic(err)
