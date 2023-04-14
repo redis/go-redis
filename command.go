@@ -1892,9 +1892,10 @@ type XInfoConsumersCmd struct {
 }
 
 type XInfoConsumer struct {
-	Name    string
-	Pending int64
-	Idle    time.Duration
+	Name     string
+	Pending  int64
+	Idle     time.Duration
+	Inactive time.Duration
 }
 
 var _ Cmder = (*XInfoConsumersCmd)(nil)
@@ -1932,12 +1933,13 @@ func (cmd *XInfoConsumersCmd) readReply(rd *proto.Reader) error {
 	cmd.val = make([]XInfoConsumer, n)
 
 	for i := 0; i < len(cmd.val); i++ {
-		if err = rd.ReadFixedMapLen(3); err != nil {
+		nn, err := rd.ReadMapLen()
+		if err != nil {
 			return err
 		}
 
 		var key string
-		for f := 0; f < 3; f++ {
+		for f := 0; f < nn; f++ {
 			key, err = rd.ReadString()
 			if err != nil {
 				return err
@@ -1952,6 +1954,10 @@ func (cmd *XInfoConsumersCmd) readReply(rd *proto.Reader) error {
 				var idle int64
 				idle, err = rd.ReadInt()
 				cmd.val[i].Idle = time.Duration(idle) * time.Millisecond
+			case "inactive":
+				var inactive int64
+				inactive, err = rd.ReadInt()
+				cmd.val[i].Inactive = time.Duration(inactive) * time.Millisecond
 			default:
 				return fmt.Errorf("redis: unexpected content %s in XINFO CONSUMERS reply", key)
 			}
@@ -2226,10 +2232,11 @@ type XInfoStreamGroupPending struct {
 }
 
 type XInfoStreamConsumer struct {
-	Name     string
-	SeenTime time.Time
-	PelCount int64
-	Pending  []XInfoStreamConsumerPending
+	Name       string
+	SeenTime   time.Time
+	ActiveTime time.Time
+	PelCount   int64
+	Pending    []XInfoStreamConsumerPending
 }
 
 type XInfoStreamConsumerPending struct {
@@ -2452,13 +2459,14 @@ func readXInfoStreamConsumers(rd *proto.Reader) ([]XInfoStreamConsumer, error) {
 	consumers := make([]XInfoStreamConsumer, 0, n)
 
 	for i := 0; i < n; i++ {
-		if err = rd.ReadFixedMapLen(4); err != nil {
+		nn, err := rd.ReadMapLen()
+		if err != nil {
 			return nil, err
 		}
 
 		c := XInfoStreamConsumer{}
 
-		for f := 0; f < 4; f++ {
+		for f := 0; f < nn; f++ {
 			cKey, err := rd.ReadString()
 			if err != nil {
 				return nil, err
@@ -2472,7 +2480,13 @@ func readXInfoStreamConsumers(rd *proto.Reader) ([]XInfoStreamConsumer, error) {
 				if err != nil {
 					return nil, err
 				}
-				c.SeenTime = time.Unix(seen/1000, seen%1000*int64(time.Millisecond))
+				c.SeenTime = time.UnixMilli(seen)
+			case "active-time":
+				active, err := rd.ReadInt()
+				if err != nil {
+					return nil, err
+				}
+				c.ActiveTime = time.UnixMilli(active)
 			case "pel-count":
 				c.PelCount, err = rd.ReadInt()
 			case "pending":
