@@ -451,6 +451,7 @@ type Cmdable interface {
 	FunctionStats(ctx context.Context) *FunctionStatsCmd
 	FCall(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
 	FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
+	FCallRO(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
 
 	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
 	SPublish(ctx context.Context, channel string, message interface{}) *IntCmd
@@ -3494,7 +3495,19 @@ func (c cmdable) FCall(ctx context.Context, function string, keys []string, args
 	_ = c(ctx, cmd)
 	return cmd
 }
+
+// Deprecated to maintain convention FCallRO
 func (c cmdable) FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
+	cmdArgs := fcallArgs("fcall_ro", function, keys, args...)
+	cmd := NewCmd(ctx, cmdArgs...)
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(3)
+	}
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FCallRO(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
 	cmdArgs := fcallArgs("fcall_ro", function, keys, args...)
 	cmd := NewCmd(ctx, cmdArgs...)
 	if len(keys) > 0 {
