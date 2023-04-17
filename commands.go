@@ -3497,7 +3497,8 @@ func (c cmdable) FCall(ctx context.Context, function string, keys []string, args
 	return cmd
 }
 
-// FCallRo Deprecated to maintain convention FCallRO, this function simply calls FCallRO
+// FCallRo this function simply calls FCallRO,
+// Deprecated: to maintain convention FCallRO.
 func (c cmdable) FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
 	return c.FCallRO(ctx, function, keys, args...)
 }
