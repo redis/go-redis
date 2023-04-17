@@ -3496,15 +3496,9 @@ func (c cmdable) FCall(ctx context.Context, function string, keys []string, args
 	return cmd
 }
 
-// Deprecated to maintain convention FCallRO
+// FCallRo Deprecated to maintain convention FCallRO, this function simply calls FCallRO
 func (c cmdable) FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
-	cmdArgs := fcallArgs("fcall_ro", function, keys, args...)
-	cmd := NewCmd(ctx, cmdArgs...)
-	if len(keys) > 0 {
-		cmd.SetFirstKeyPos(3)
-	}
-	_ = c(ctx, cmd)
-	return cmd
+	return c.FCallRO(ctx, function, keys, args...)
 }
 
 func (c cmdable) FCallRO(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
