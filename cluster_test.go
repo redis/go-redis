@@ -749,7 +749,7 @@ var _ = Describe("ClusterClient", func() {
 		It("should CLUSTER MYSHARDID", func() {
 			shardID, err := client.ClusterMyShardID(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(shardID).ToNot(BeEmpty())
+			Expect(shardID).ToNot(BeEmpty()) // Only meaningful test currently
 		})
 
 		It("should CLUSTER NODES", func() {
