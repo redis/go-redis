@@ -3899,7 +3899,7 @@ type ModuleLoadexConfig struct {
 	Args []interface{}
 }
 
-func (c *ModuleLoadexConfig) ToArgs() []interface{} {
+func (c *ModuleLoadexConfig) toArgs() []interface{} {
 	args := make([]interface{}, 3, 3+len(c.Conf)*3+len(c.Args)*2)
 	args[0] = "MODULE"
 	args[1] = "LOADEX"
@@ -3915,7 +3915,7 @@ func (c *ModuleLoadexConfig) ToArgs() []interface{} {
 
 // ModuleLoadex Redis `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]` command.
 func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd {
-	cmd := NewStringCmd(ctx, conf.ToArgs()...)
+	cmd := NewStringCmd(ctx, conf.toArgs()...)
 	_ = c(ctx, cmd)
 	return cmd
 }
