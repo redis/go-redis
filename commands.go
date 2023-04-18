@@ -497,6 +497,8 @@ type Cmdable interface {
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
 
 	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
+
+	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 }
 
 type StatefulCmdable interface {
@@ -3885,6 +3887,35 @@ func (c cmdable) ACLDryRun(ctx context.Context, username string, command ...inte
 	args = append(args, "acl", "dryrun", username)
 	args = append(args, command...)
 	cmd := NewStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ModuleLoadexConfig struct is used to specify the arguments for the MODULE LOADEX command of redis.
+// `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]`
+type ModuleLoadexConfig struct {
+	Path string
+	Conf map[string]interface{}
+	Args []interface{}
+}
+
+func (c *ModuleLoadexConfig) toArgs() []interface{} {
+	args := make([]interface{}, 3, 3+len(c.Conf)*3+len(c.Args)*2)
+	args[0] = "MODULE"
+	args[1] = "LOADEX"
+	args[2] = c.Path
+	for k, v := range c.Conf {
+		args = append(args, "CONFIG", k, v)
+	}
+	for _, arg := range c.Args {
+		args = append(args, "ARGS", arg)
+	}
+	return args
+}
+
+// ModuleLoadex Redis `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]` command.
+func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd {
+	cmd := NewStringCmd(ctx, conf.toArgs()...)
 	_ = c(ctx, cmd)
 	return cmd
 }
