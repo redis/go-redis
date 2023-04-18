@@ -4711,7 +4711,7 @@ var _ = Describe("Commands", func() {
 
 			zRankWithScore = client.ZRankWithScore(ctx, "zset", "four")
 			Expect(zRankWithScore.Err()).To(HaveOccurred())
-			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{}))
+			Expect(zRankWithScore.Result()).To(Equal(redis.Nil))
 		})
 
 		It("should ZRem", func() {
@@ -5007,7 +5007,7 @@ var _ = Describe("Commands", func() {
 
 			zRevRankWithScore = client.ZRevRankWithScore(ctx, "zset", "four")
 			Expect(zRevRankWithScore.Err()).To(HaveOccurred())
-			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{}))
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.Nil))
 		})
 
 		It("should ZScore", func() {
