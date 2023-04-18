@@ -4699,15 +4699,15 @@ var _ = Describe("Commands", func() {
 
 			zRankWithScore := client.ZRankWithScore(ctx, "zset", "one")
 			Expect(zRankWithScore.Err()).NotTo(HaveOccurred())
-			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 0, Score: "1"}))
+			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 0, Score: 1}))
 
 			zRankWithScore = client.ZRankWithScore(ctx, "zset", "two")
 			Expect(zRankWithScore.Err()).NotTo(HaveOccurred())
-			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 1, Score: "2"}))
+			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 1, Score: 2}))
 
 			zRankWithScore = client.ZRankWithScore(ctx, "zset", "three")
 			Expect(zRankWithScore.Err()).NotTo(HaveOccurred())
-			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 2, Score: "3"}))
+			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 2, Score: 3}))
 
 			zRankWithScore = client.ZRankWithScore(ctx, "zset", "four")
 			Expect(zRankWithScore.Err()).To(HaveOccurred())
@@ -4995,15 +4995,15 @@ var _ = Describe("Commands", func() {
 
 			zRevRankWithScore := client.ZRevRankWithScore(ctx, "zset", "one")
 			Expect(zRevRankWithScore.Err()).NotTo(HaveOccurred())
-			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 2, Score: "1"}))
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 2, Score: 1}))
 
 			zRevRankWithScore = client.ZRevRankWithScore(ctx, "zset", "two")
 			Expect(zRevRankWithScore.Err()).NotTo(HaveOccurred())
-			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 1, Score: "2"}))
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 1, Score: 2}))
 
 			zRevRankWithScore = client.ZRevRankWithScore(ctx, "zset", "three")
 			Expect(zRevRankWithScore.Err()).NotTo(HaveOccurred())
-			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 0, Score: "3"}))
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 0, Score: 3}))
 
 			zRevRankWithScore = client.ZRevRankWithScore(ctx, "zset", "four")
 			Expect(zRevRankWithScore.Err()).To(HaveOccurred())

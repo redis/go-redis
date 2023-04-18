@@ -4729,7 +4729,7 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 
 type RankScore struct {
 	Rank  int64
-	Score string
+	Score float64
 }
 
 type RankWithScoreCmd struct {
@@ -4776,7 +4776,7 @@ func (cmd *RankWithScoreCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
-	score, err := rd.ReadString()
+	score, err := rd.ReadFloat()
 	if err != nil {
 		return err
 	}
