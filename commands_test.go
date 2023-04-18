@@ -225,6 +225,16 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("theclientname"))
 		})
 
+		It("should ClientNoTouch", func() {
+			noTouchOn := client.ClientNoTouch(ctx, true)
+			Expect(noTouchOn.Err()).NotTo(HaveOccurred())
+			Expect(noTouchOn.Val()).To(BeTrue())
+
+			noTouchOff := client.ClientNoTouch(ctx, true)
+			Expect(noTouchOff.Err()).NotTo(HaveOccurred())
+			Expect(noTouchOff.Val()).To(BeTrue())
+		})
+
 		It("should ConfigGet", func() {
 			val, err := client.ConfigGet(ctx, "*").Result()
 			Expect(err).NotTo(HaveOccurred())

@@ -407,6 +407,7 @@ type Cmdable interface {
 	ClientID(ctx context.Context) *IntCmd
 	ClientUnblock(ctx context.Context, id int64) *IntCmd
 	ClientUnblockWithError(ctx context.Context, id int64) *IntCmd
+	ClientNoTouch(ctx context.Context, value bool) *BoolCmd
 	ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd
 	ConfigResetStat(ctx context.Context) *StatusCmd
 	ConfigSet(ctx context.Context, parameter, value string) *StatusCmd
@@ -3170,6 +3171,17 @@ func (c cmdable) ClientUnblock(ctx context.Context, id int64) *IntCmd {
 
 func (c cmdable) ClientUnblockWithError(ctx context.Context, id int64) *IntCmd {
 	cmd := NewIntCmd(ctx, "client", "unblock", id, "error")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ClientNoTouch(ctx context.Context, value bool) *BoolCmd {
+	val := "OFF"
+	if value {
+		val = "ON"
+	}
+
+	cmd := NewBoolCmd(ctx, "client", "no-touch", val)
 	_ = c(ctx, cmd)
 	return cmd
 }
