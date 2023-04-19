@@ -4766,8 +4766,7 @@ func (cmd *RankWithScoreCmd) String() string {
 }
 
 func (cmd *RankWithScoreCmd) readReply(rd *proto.Reader) error {
-	_, err := rd.ReadArrayLen()
-	if err != nil {
+	if err := rd.ReadFixedArrayLen(2); err != nil {
 		return err
 	}
 
