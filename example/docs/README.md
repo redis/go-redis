@@ -1,22 +1,23 @@
 # Command examples for redis.io
 
+These examples appear on the [Redis documentation](https://redis.io) site as part of the tabbed examples interface.
+
 ## How to add examples
 
 - Create a Go test file with a meaningful name in the current folder. 
 - Create a single method prefixed with `Example` and write your test in it.
-- Find out what's the example id for the example you're creating and add it as the first line of the file `// EXAMPLE: set_and_get`. More info below. 
+- Find out what's the example id for the example you're creating and add it as the first line of the file `// EXAMPLE: set_and_get`. See more info below under the [Example](#example) section.
 - We're using the [Testable Examples](https://go.dev/blog/examples) feature of Go to test the desired output has been written to stdout.
-- To run the tests start a Redis server locally on port 6379 and run `go test`
+- To run the tests start a Redis server locally on port 6379 and run `go test`. (This will be improved and aligned with the way we run the main test suite).
 
 ### Special markup
 
 #### EXAMPLE:
-Every file should contain an example id so it can be matched to the doc page it should show up on. You can check out the markdown file for that command to find the id, or if it hasn't been yet added in there, reach out to the docs team to agree on one.
+Every file should contain an **example id**, so it can be matched to the documentation page it should show up on. You should be able to find this id in the command's [documentation page](https://github.com/redis/redis-doc/tree/master/commands). If one hasn't been added yet, reach out to the `redis-doc` repo maintainers and agree on a new id.
 
 
 #### HIDE_START and HIDE_END
-Should be used to hide imports, connection creation and other bootstrapping code that is not important
-for understanding a command example.
+Should be used to hide imports, connection creation and other bootstrapping code that is not the focal part of the example.
 
 Example:
 
