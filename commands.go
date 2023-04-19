@@ -403,6 +403,7 @@ type Cmdable interface {
 	ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd
 	ClientList(ctx context.Context) *StringCmd
 	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
+	ClientSetInfo(ctx context.Context, libName, libVersion string) *StatusCmd
 	ClientUnpause(ctx context.Context) *BoolCmd
 	ClientID(ctx context.Context) *IntCmd
 	ClientUnblock(ctx context.Context, id int64) *IntCmd
@@ -3146,6 +3147,22 @@ func (c cmdable) ClientList(ctx context.Context) *StringCmd {
 
 func (c cmdable) ClientPause(ctx context.Context, dur time.Duration) *BoolCmd {
 	cmd := NewBoolCmd(ctx, "client", "pause", formatMs(ctx, dur))
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ClientSetInfo(ctx context.Context, libName, libVersion string) *StatusCmd {
+	args := []interface{}{"client", "setinfo"}
+	if libName != "" {
+		args = append(args, "lib-name", libName)
+	}
+	if libVersion != "" {
+		args = append(args, "lib-ver", libVersion)
+	}
+	cmd := NewStatusCmd(ctx, args...)
+	if libName == "" && libVersion == "" {
+		cmd.SetErr(errors.New("libName and/or libVersion must be provided"))
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
