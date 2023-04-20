@@ -373,6 +373,7 @@ type Cmdable interface {
 	ZRangeArgsWithScores(ctx context.Context, z ZRangeArgs) *ZSliceCmd
 	ZRangeStore(ctx context.Context, dst string, z ZRangeArgs) *IntCmd
 	ZRank(ctx context.Context, key, member string) *IntCmd
+	ZRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd
 	ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd
 	ZRemRangeByRank(ctx context.Context, key string, start, stop int64) *IntCmd
 	ZRemRangeByScore(ctx context.Context, key, min, max string) *IntCmd
@@ -383,6 +384,7 @@ type Cmdable interface {
 	ZRevRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd
 	ZRevRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd
 	ZRevRank(ctx context.Context, key, member string) *IntCmd
+	ZRevRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd
 	ZScore(ctx context.Context, key, member string) *FloatCmd
 	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
 	ZRandMember(ctx context.Context, key string, count int) *StringSliceCmd
@@ -2885,6 +2887,14 @@ func (c cmdable) ZRank(ctx context.Context, key, member string) *IntCmd {
 	return cmd
 }
 
+// ZRankWithScore according to the Redis documentation, if member does not exist
+// in the sorted set or key does not exist, it will return a redis.Nil error.
+func (c cmdable) ZRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd {
+	cmd := NewRankWithScoreCmd(ctx, "zrank", key, member, "withscore")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "zrem"
@@ -2925,6 +2935,8 @@ func (c cmdable) ZRevRange(ctx context.Context, key string, start, stop int64) *
 	return cmd
 }
 
+// ZRevRangeWithScores according to the Redis documentation, if member does not exist
+// in the sorted set or key does not exist, it will return a redis.Nil error.
 func (c cmdable) ZRevRangeWithScores(ctx context.Context, key string, start, stop int64) *ZSliceCmd {
 	cmd := NewZSliceCmd(ctx, "zrevrange", key, start, stop, "withscores")
 	_ = c(ctx, cmd)
@@ -2971,6 +2983,12 @@ func (c cmdable) ZRevRangeByScoreWithScores(ctx context.Context, key string, opt
 
 func (c cmdable) ZRevRank(ctx context.Context, key, member string) *IntCmd {
 	cmd := NewIntCmd(ctx, "zrevrank", key, member)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZRevRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd {
+	cmd := NewRankWithScoreCmd(ctx, "zrevrank", key, member, "withscore")
 	_ = c(ctx, cmd)
 	return cmd
 }
