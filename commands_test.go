@@ -175,6 +175,16 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(""))
 		})
 
+		It("should ClientNoTouch", func() {
+			r := client.ClientNoTouchON(ctx)
+			Expect(r.Err()).NotTo(HaveOccurred())
+			Expect(r.Val()).To(Equal("OK"))
+
+			r = client.ClientNoTouchOFF(ctx)
+			Expect(r.Err()).NotTo(HaveOccurred())
+			Expect(r.Val()).To(Equal("OK"))
+		})
+
 		It("should ClientKillByFilter", func() {
 			r := client.ClientKillByFilter(ctx, "TYPE", "test")
 			Expect(r.Err()).To(MatchError("ERR Unknown client type 'test'"))
