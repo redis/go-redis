@@ -4725,6 +4725,66 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 	return nil
 }
 
+// -----------------------------------------
+
+type RankScore struct {
+	Rank  int64
+	Score float64
+}
+
+type RankWithScoreCmd struct {
+	baseCmd
+
+	val RankScore
+}
+
+var _ Cmder = (*RankWithScoreCmd)(nil)
+
+func NewRankWithScoreCmd(ctx context.Context, args ...interface{}) *RankWithScoreCmd {
+	return &RankWithScoreCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *RankWithScoreCmd) SetVal(val RankScore) {
+	cmd.val = val
+}
+
+func (cmd *RankWithScoreCmd) Val() RankScore {
+	return cmd.val
+}
+
+func (cmd *RankWithScoreCmd) Result() (RankScore, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *RankWithScoreCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *RankWithScoreCmd) readReply(rd *proto.Reader) error {
+	if err := rd.ReadFixedArrayLen(2); err != nil {
+		return err
+	}
+
+	rank, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+
+	score, err := rd.ReadFloat()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = RankScore{Rank: rank, Score: score}
+
+	return nil
+}
+
 // -------------------------------------------
 
 type ACLLogEntry struct {
