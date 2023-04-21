@@ -3941,7 +3941,7 @@ func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *St
 }
 
 func (c cmdable) ACLLog(ctx context.Context, count ...int64) *ACLLogCmd {
-	args := make([]interface{}, 0, 1)
+	args := make([]interface{}, 0, 2+len(count))
 	args = append(args, "acl", "log")
 
 	if len(count) > 0 {
@@ -3951,7 +3951,7 @@ func (c cmdable) ACLLog(ctx context.Context, count ...int64) *ACLLogCmd {
 		args = append(args, count[0])
 	}
 
-	cmd := NewACLLogCmd(ctx, args)
+	cmd := NewACLLogCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
