@@ -2,8 +2,10 @@ package redis
 
 import (
 	"context"
+	"encoding"
 	"errors"
 	"io"
+	"net"
 	"reflect"
 	"strings"
 	"time"
@@ -75,6 +77,8 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 			dst = append(dst, k, v)
 		}
 		return dst
+	case time.Time, time.Duration, encoding.BinaryMarshaler, net.IP:
+		return append(dst, arg)
 	default:
 		// scan struct field
 		v := reflect.ValueOf(arg)
@@ -102,18 +106,53 @@ func appendStructField(dst []interface{}, v reflect.Value) []interface{} {
 		if tag == "" || tag == "-" {
 			continue
 		}
-		tag = strings.Split(tag, ",")[0]
-		if tag == "" {
+		name, opt, _ := strings.Cut(tag, ",")
+		if name == "" {
 			continue
 		}
 
 		field := v.Field(i)
+
+		// miss field
+		if omitEmpty(opt) && isEmptyValue(field) {
+			continue
+		}
+
 		if field.CanInterface() {
-			dst = append(dst, tag, field.Interface())
+			dst = append(dst, name, field.Interface())
 		}
 	}
 
 	return dst
+}
+
+func omitEmpty(opt string) bool {
+	for opt != "" {
+		var name string
+		name, opt, _ = strings.Cut(opt, ",")
+		if name == "omitempty" {
+			return true
+		}
+	}
+	return false
+}
+
+func isEmptyValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return v.Len() == 0
+	case reflect.Bool:
+		return !v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return v.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() == 0
+	case reflect.Interface, reflect.Pointer:
+		return v.IsNil()
+	}
+	return false
 }
 
 type Cmdable interface {
@@ -124,6 +163,9 @@ type Cmdable interface {
 	TxPipeline() Pipeliner
 
 	Command(ctx context.Context) *CommandsInfoCmd
+	CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd
+	CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd
+	CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd
 	ClientGetName(ctx context.Context) *StringCmd
 	Echo(ctx context.Context, message interface{}) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
@@ -193,6 +235,7 @@ type Cmdable interface {
 	BitOpXor(ctx context.Context, destKey string, keys ...string) *IntCmd
 	BitOpNot(ctx context.Context, destKey string, key string) *IntCmd
 	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
+	BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd
 	BitField(ctx context.Context, key string, args ...interface{}) *IntSliceCmd
 
 	Scan(ctx context.Context, cursor uint64, match string, count int64) *ScanCmd
@@ -221,6 +264,7 @@ type Cmdable interface {
 	BLMPop(ctx context.Context, timeout time.Duration, direction string, count int64, keys ...string) *KeyValuesCmd
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPopLPush(ctx context.Context, source, destination string, timeout time.Duration) *StringCmd
+	LCS(ctx context.Context, q *LCSQuery) *LCSCmd
 	LIndex(ctx context.Context, key string, index int64) *StringCmd
 	LInsert(ctx context.Context, key, op string, pivot, value interface{}) *IntCmd
 	LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd
@@ -329,6 +373,7 @@ type Cmdable interface {
 	ZRangeArgsWithScores(ctx context.Context, z ZRangeArgs) *ZSliceCmd
 	ZRangeStore(ctx context.Context, dst string, z ZRangeArgs) *IntCmd
 	ZRank(ctx context.Context, key, member string) *IntCmd
+	ZRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd
 	ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd
 	ZRemRangeByRank(ctx context.Context, key string, start, stop int64) *IntCmd
 	ZRemRangeByScore(ctx context.Context, key, min, max string) *IntCmd
@@ -339,6 +384,7 @@ type Cmdable interface {
 	ZRevRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd
 	ZRevRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd
 	ZRevRank(ctx context.Context, key, member string) *IntCmd
+	ZRevRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd
 	ZScore(ctx context.Context, key, member string) *FloatCmd
 	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
 	ZRandMember(ctx context.Context, key string, count int) *StringSliceCmd
@@ -400,10 +446,15 @@ type Cmdable interface {
 	FunctionLoadReplace(ctx context.Context, code string) *StringCmd
 	FunctionDelete(ctx context.Context, libName string) *StringCmd
 	FunctionFlush(ctx context.Context) *StringCmd
+	FunctionKill(ctx context.Context) *StringCmd
 	FunctionFlushAsync(ctx context.Context) *StringCmd
 	FunctionList(ctx context.Context, q FunctionListQuery) *FunctionListCmd
 	FunctionDump(ctx context.Context) *StringCmd
 	FunctionRestore(ctx context.Context, libDump string) *StringCmd
+	FunctionStats(ctx context.Context) *FunctionStatsCmd
+	FCall(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
+	FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
+	FCallRO(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
 
 	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
 	SPublish(ctx context.Context, channel string, message interface{}) *IntCmd
@@ -413,7 +464,10 @@ type Cmdable interface {
 	PubSubShardChannels(ctx context.Context, pattern string) *StringSliceCmd
 	PubSubShardNumSub(ctx context.Context, channels ...string) *MapStringIntCmd
 
+	ClusterMyShardID(ctx context.Context) *StringCmd
 	ClusterSlots(ctx context.Context) *ClusterSlotsCmd
+	ClusterShards(ctx context.Context) *ClusterShardsCmd
+	ClusterLinks(ctx context.Context) *ClusterLinksCmd
 	ClusterNodes(ctx context.Context) *StringCmd
 	ClusterMeet(ctx context.Context, host, port string) *StatusCmd
 	ClusterForget(ctx context.Context, nodeID string) *StatusCmd
@@ -444,6 +498,10 @@ type Cmdable interface {
 	GeoSearchStore(ctx context.Context, key, store string, q *GeoSearchStoreQuery) *IntCmd
 	GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
+
+	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
+
+	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 }
 
 type StatefulCmdable interface {
@@ -534,6 +592,50 @@ func (c statefulCmdable) Hello(ctx context.Context,
 
 func (c cmdable) Command(ctx context.Context) *CommandsInfoCmd {
 	cmd := NewCommandsInfoCmd(ctx, "command")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// FilterBy is used for the `CommandList` command parameter.
+type FilterBy struct {
+	Module  string
+	ACLCat  string
+	Pattern string
+}
+
+func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd {
+	args := make([]interface{}, 0, 5)
+	args = append(args, "command", "list")
+	if filter != nil {
+		if filter.Module != "" {
+			args = append(args, "filterby", "module", filter.Module)
+		} else if filter.ACLCat != "" {
+			args = append(args, "filterby", "aclcat", filter.ACLCat)
+		} else if filter.Pattern != "" {
+			args = append(args, "filterby", "pattern", filter.Pattern)
+		}
+	}
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd {
+	args := make([]interface{}, 2+len(commands))
+	args[0] = "command"
+	args[1] = "getkeys"
+	copy(args[2:], commands)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd {
+	args := make([]interface{}, 2+len(commands))
+	args[0] = "command"
+	args[1] = "getkeysandflags"
+	copy(args[2:], commands)
+	cmd := NewKeyFlagsCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1194,6 +1296,8 @@ func (c cmdable) BitOpNot(ctx context.Context, destKey string, key string) *IntC
 	return c.bitOp(ctx, "not", destKey, key)
 }
 
+// BitPos is an API before Redis version 7.0, cmd: bitpos key bit start end
+// if you need the `byte | bit` parameter, please use `BitPosSpan`.
 func (c cmdable) BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd {
 	args := make([]interface{}, 3+len(pos))
 	args[0] = "bitpos"
@@ -1210,6 +1314,18 @@ func (c cmdable) BitPos(ctx context.Context, key string, bit int64, pos ...int64
 		panic("too many arguments")
 	}
 	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// BitPosSpan supports the `byte | bit` parameters in redis version 7.0,
+// the bitpos command defaults to using byte type for the `start-end` range,
+// which means it counts in bytes from start to end. you can set the value
+// of "span" to determine the type of `start-end`.
+// span = "bit", cmd: bitpos key bit start end bit
+// span = "byte", cmd: bitpos key bit start end byte
+func (c cmdable) BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd {
+	cmd := NewIntCmd(ctx, "bitpos", key, bit, start, end, span)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1375,7 +1491,7 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 //     Playing struct With "redis" tag.
 //     type MyHash struct { Key1 string `redis:"key1"`; Key2 int `redis:"key2"` }
 //
-//   - HSet("myhash", MyHash{"value1", "value2"})
+//   - HSet("myhash", MyHash{"value1", "value2"}) Warn: redis-server >= 4.0
 //
 //     For struct, can be a structure pointer type, we only parse the field whose tag is redis.
 //     if you don't want the field to be read, you can use the `redis:"-"` flag to ignore it,
@@ -1384,7 +1500,10 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 //     string, int/uint(8,16,32,64), float(32,64), time.Time(to RFC3339Nano), time.Duration(to Nanoseconds ),
 //     if you are other more complex or custom data types, please implement the encoding.BinaryMarshaler interface.
 //
-// Note that it requires Redis v4 for multiple field/value pairs support.
+// Note that in older versions of Redis server(redis-server < 4.0), HSet only supports a single key-value pair.
+// redis-docs: https://redis.io/commands/hset (Starting with Redis version 4.0.0: Accepts multiple field and value arguments.)
+// If you are using a Struct type and the number of fields is greater than one,
+// you will receive an error similar to "ERR wrong number of arguments", you can use HMSet as a substitute.
 func (c cmdable) HSet(ctx context.Context, key string, values ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(values))
 	args[0] = "hset"
@@ -1484,6 +1603,12 @@ func (c cmdable) BRPopLPush(ctx context.Context, source, destination string, tim
 		formatSec(ctx, timeout),
 	)
 	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) LCS(ctx context.Context, q *LCSQuery) *LCSCmd {
+	cmd := NewLCSCmd(ctx, q)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2762,6 +2887,14 @@ func (c cmdable) ZRank(ctx context.Context, key, member string) *IntCmd {
 	return cmd
 }
 
+// ZRankWithScore according to the Redis documentation, if member does not exist
+// in the sorted set or key does not exist, it will return a redis.Nil error.
+func (c cmdable) ZRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd {
+	cmd := NewRankWithScoreCmd(ctx, "zrank", key, member, "withscore")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "zrem"
@@ -2802,6 +2935,8 @@ func (c cmdable) ZRevRange(ctx context.Context, key string, start, stop int64) *
 	return cmd
 }
 
+// ZRevRangeWithScores according to the Redis documentation, if member does not exist
+// in the sorted set or key does not exist, it will return a redis.Nil error.
 func (c cmdable) ZRevRangeWithScores(ctx context.Context, key string, start, stop int64) *ZSliceCmd {
 	cmd := NewZSliceCmd(ctx, "zrevrange", key, start, stop, "withscores")
 	_ = c(ctx, cmd)
@@ -2848,6 +2983,12 @@ func (c cmdable) ZRevRangeByScoreWithScores(ctx context.Context, key string, opt
 
 func (c cmdable) ZRevRank(ctx context.Context, key, member string) *IntCmd {
 	cmd := NewIntCmd(ctx, "zrevrank", key, member)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZRevRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd {
+	cmd := NewRankWithScoreCmd(ctx, "zrevrank", key, member, "withscore")
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -3253,7 +3394,12 @@ func (c cmdable) eval(ctx context.Context, name, payload string, keys []string, 
 	}
 	cmdArgs = appendArgs(cmdArgs, args)
 	cmd := NewCmd(ctx, cmdArgs...)
-	cmd.SetFirstKeyPos(3)
+
+	// it is possible that only args exist without a key.
+	// rdb.eval(ctx, eval, script, nil, arg1, arg2)
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(3)
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -3325,6 +3471,12 @@ func (c cmdable) FunctionFlush(ctx context.Context) *StringCmd {
 	return cmd
 }
 
+func (c cmdable) FunctionKill(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "function", "kill")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) FunctionFlushAsync(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd(ctx, "function", "flush", "async")
 	_ = c(ctx, cmd)
@@ -3356,6 +3508,51 @@ func (c cmdable) FunctionRestore(ctx context.Context, libDump string) *StringCmd
 	cmd := NewStringCmd(ctx, "function", "restore", libDump)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+func (c cmdable) FunctionStats(ctx context.Context) *FunctionStatsCmd {
+	cmd := NewFunctionStatsCmd(ctx, "function", "stats")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) FCall(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
+	cmdArgs := fcallArgs("fcall", function, keys, args...)
+	cmd := NewCmd(ctx, cmdArgs...)
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(3)
+	}
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// FCallRo this function simply calls FCallRO,
+// Deprecated: to maintain convention FCallRO.
+func (c cmdable) FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
+	return c.FCallRO(ctx, function, keys, args...)
+}
+
+func (c cmdable) FCallRO(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
+	cmdArgs := fcallArgs("fcall_ro", function, keys, args...)
+	cmd := NewCmd(ctx, cmdArgs...)
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(3)
+	}
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func fcallArgs(command string, function string, keys []string, args ...interface{}) []interface{} {
+	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
+	cmdArgs[0] = command
+	cmdArgs[1] = function
+	cmdArgs[2] = len(keys)
+	for i, key := range keys {
+		cmdArgs[3+i] = key
+	}
+
+	cmdArgs = append(cmdArgs, args...)
+	return cmdArgs
 }
 
 //------------------------------------------------------------------------------
@@ -3425,8 +3622,26 @@ func (c cmdable) PubSubNumPat(ctx context.Context) *IntCmd {
 
 //------------------------------------------------------------------------------
 
+func (c cmdable) ClusterMyShardID(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "cluster", "myshardid")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) ClusterSlots(ctx context.Context) *ClusterSlotsCmd {
 	cmd := NewClusterSlotsCmd(ctx, "cluster", "slots")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ClusterShards(ctx context.Context) *ClusterShardsCmd {
+	cmd := NewClusterShardsCmd(ctx, "cluster", "shards")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ClusterLinks(ctx context.Context) *ClusterLinksCmd {
+	cmd := NewClusterLinksCmd(ctx, "cluster", "links")
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -3690,6 +3905,44 @@ func (c cmdable) GeoPos(ctx context.Context, key string, members ...string) *Geo
 		args[2+i] = member
 	}
 	cmd := NewGeoPosCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd {
+	args := make([]interface{}, 0, 3+len(command))
+	args = append(args, "acl", "dryrun", username)
+	args = append(args, command...)
+	cmd := NewStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ModuleLoadexConfig struct is used to specify the arguments for the MODULE LOADEX command of redis.
+// `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]`
+type ModuleLoadexConfig struct {
+	Path string
+	Conf map[string]interface{}
+	Args []interface{}
+}
+
+func (c *ModuleLoadexConfig) toArgs() []interface{} {
+	args := make([]interface{}, 3, 3+len(c.Conf)*3+len(c.Args)*2)
+	args[0] = "MODULE"
+	args[1] = "LOADEX"
+	args[2] = c.Path
+	for k, v := range c.Conf {
+		args = append(args, "CONFIG", k, v)
+	}
+	for _, arg := range c.Args {
+		args = append(args, "ARGS", arg)
+	}
+	return args
+}
+
+// ModuleLoadex Redis `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]` command.
+func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd {
+	cmd := NewStringCmd(ctx, conf.toArgs()...)
 	_ = c(ctx, cmd)
 	return cmd
 }
