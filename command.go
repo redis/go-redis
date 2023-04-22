@@ -4875,6 +4875,8 @@ type ClientInfo struct {
 	User               string        // the authenticated username of the client
 	Redir              int64         // client id of current client tracking redirection
 	Resp               int           // redis version 7.0, client RESP protocol version
+	LibName            string        // redis version 7.2, client library name
+	LibVer             string        // redis version 7.2, client library version
 }
 
 type ClientInfoCmd struct {
@@ -5040,6 +5042,10 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 			info.Redir, err = strconv.ParseInt(val, 10, 64)
 		case "resp":
 			info.Resp, err = strconv.Atoi(val)
+		case "lib-name":
+			info.LibName = val
+		case "lib-ver":
+			info.LibVer = val
 		default:
 			return nil, fmt.Errorf("redis: unexpected client info key(%s)", key)
 		}
