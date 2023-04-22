@@ -176,11 +176,11 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ClientNoTouch", func() {
-			r := client.ClientNoTouchON(ctx)
+			r := client.ClientNoTouchOn(ctx)
 			Expect(r.Err()).NotTo(HaveOccurred())
 			Expect(r.Val()).To(Equal("OK"))
 
-			r = client.ClientNoTouchOFF(ctx)
+			r = client.ClientNoTouchOff(ctx)
 			Expect(r.Err()).NotTo(HaveOccurred())
 			Expect(r.Val()).To(Equal("OK"))
 		})

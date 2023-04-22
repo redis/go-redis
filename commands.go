@@ -167,8 +167,8 @@ type Cmdable interface {
 	CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd
 	CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd
 	ClientGetName(ctx context.Context) *StringCmd
-	ClientNoTouchON(ctx context.Context) *StatusCmd
-	ClientNoTouchOFF(ctx context.Context) *StatusCmd
+	ClientNoTouchOn(ctx context.Context) *StatusCmd
+	ClientNoTouchOff(ctx context.Context) *StatusCmd
 	Echo(ctx context.Context, message interface{}) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
 	Quit(ctx context.Context) *StatusCmd
@@ -3143,13 +3143,13 @@ func (c cmdable) ClientKill(ctx context.Context, ipPort string) *StatusCmd {
 	return cmd
 }
 
-func (c cmdable) ClientNoTouchON(ctx context.Context) *StatusCmd {
+func (c cmdable) ClientNoTouchOn(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "client", "no-touch", "on")
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) ClientNoTouchOFF(ctx context.Context) *StatusCmd {
+func (c cmdable) ClientNoTouchOff(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "client", "no-touch", "off")
 	_ = c(ctx, cmd)
 	return cmd
