@@ -5139,7 +5139,7 @@ func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
 				if err != nil {
 					return err
 				}
-				entry.ClientInfo, err = parseClientInfo(strings.TrimSpace(txt))
+				entry.ClientInfo, err = parseClientInfo(strings.TrimSpace(txt)) // nolint:ineffassign
 			case "entry-id":
 				entry.EntryID, err = rd.ReadInt()
 			case "timestamp-created":
