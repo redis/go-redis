@@ -5067,7 +5067,7 @@ type ACLLogEntry struct {
 	Object               string
 	Username             string
 	AgeSeconds           float64
-	ClientInfo           ClientInfo
+	ClientInfo           *ClientInfo
 	EntryID              int64
 	TimestampCreated     int64
 	TimestampLastUpdated int64
@@ -5139,11 +5139,7 @@ func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
 				if err != nil {
 					return err
 				}
-				clientInfoPtr, err := parseClientInfo(strings.TrimSpace(txt))
-				if err != nil {
-					return err
-				}
-				entry.ClientInfo = *clientInfoPtr
+				entry.ClientInfo, err = parseClientInfo(strings.TrimSpace(txt))
 			case "entry-id":
 				entry.EntryID, err = rd.ReadInt()
 			case "timestamp-created":
