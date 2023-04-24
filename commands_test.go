@@ -201,6 +201,12 @@ var _ = Describe("Commands", func() {
 			Expect(r).To(Equal(int64(0)))
 		})
 
+		It("should ClientInfo", func() {
+			info, err := client.ClientInfo(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info).NotTo(BeNil())
+		})
+
 		It("should ClientPause", func() {
 			err := client.ClientPause(ctx, time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())

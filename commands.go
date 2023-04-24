@@ -404,6 +404,7 @@ type Cmdable interface {
 	ClientKill(ctx context.Context, ipPort string) *StatusCmd
 	ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd
 	ClientList(ctx context.Context) *StringCmd
+	ClientInfo(ctx context.Context) *ClientInfoCmd
 	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
 	ClientUnpause(ctx context.Context) *BoolCmd
 	ClientID(ctx context.Context) *IntCmd
@@ -3191,6 +3192,14 @@ func (c cmdable) ClientUnblockWithError(ctx context.Context, id int64) *IntCmd {
 	_ = c(ctx, cmd)
 	return cmd
 }
+
+func (c cmdable) ClientInfo(ctx context.Context) *ClientInfoCmd {
+	cmd := NewClientInfoCmd(ctx, "client", "info")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ------------------------------------------------------------------------------------------------
 
 func (c cmdable) ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd {
 	cmd := NewMapStringStringCmd(ctx, "config", "get", parameter)
