@@ -5076,7 +5076,7 @@ type ACLLogEntry struct {
 type ACLLogCmd struct {
 	baseCmd
 
-	val []ACLLogEntry
+	val []*ACLLogEntry
 }
 
 var _ Cmder = (*ACLLogCmd)(nil)
@@ -5090,15 +5090,15 @@ func NewACLLogCmd(ctx context.Context, args ...interface{}) *ACLLogCmd {
 	}
 }
 
-func (cmd *ACLLogCmd) SetVal(val []ACLLogEntry) {
+func (cmd *ACLLogCmd) SetVal(val []*ACLLogEntry) {
 	cmd.val = val
 }
 
-func (cmd *ACLLogCmd) Val() []ACLLogEntry {
+func (cmd *ACLLogCmd) Val() []*ACLLogEntry {
 	return cmd.val
 }
 
-func (cmd *ACLLogCmd) Result() ([]ACLLogEntry, error) {
+func (cmd *ACLLogCmd) Result() ([]*ACLLogEntry, error) {
 	return cmd.Val(), cmd.Err()
 }
 
@@ -5112,9 +5112,10 @@ func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
-	cmd.val = make([]ACLLogEntry, n)
+	cmd.val = make([]*ACLLogEntry, n)
 	for i := 0; i < n; i++ {
-		entry := &cmd.val[i]
+		cmd.val[i] = &ACLLogEntry{}
+		entry := cmd.val[i]
 		for j := 0; j < 10; j++ {
 			key, err := rd.ReadString()
 			if err != nil {
@@ -5139,7 +5140,10 @@ func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
 				if err != nil {
 					return err
 				}
-				entry.ClientInfo, err = parseClientInfo(strings.TrimSpace(txt)) // nolint:ineffassign,staticcheck
+				entry.ClientInfo, err = parseClientInfo(strings.TrimSpace(txt))
+				if err != nil {
+					return err
+				}
 			case "entry-id":
 				entry.EntryID, err = rd.ReadInt()
 			case "timestamp-created":

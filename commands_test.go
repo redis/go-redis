@@ -1988,10 +1988,8 @@ var _ = Describe("Commands", func() {
 
 		It("should ACL LOG", func() {
 			// Test without the count parameter
-			logs := client.ACLLog(ctx)
-			Expect(logs.Err()).NotTo(HaveOccurred())
-
-			logEntries := logs.Val()
+			logEntries, err := client.ACLLog(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
 			Expect(logEntries).NotTo(BeNil())
 
 			for _, entry := range logEntries {
@@ -2009,10 +2007,8 @@ var _ = Describe("Commands", func() {
 
 			// Test with the count parameter
 			desiredCount := int64(5)
-			logs = client.ACLLog(ctx, desiredCount)
-			Expect(logs.Err()).NotTo(HaveOccurred())
-
-			logEntriesWithCount := logs.Val()
+			logEntriesWithCount, err := client.ACLLog(ctx, desiredCount).Result()
+			Expect(err).NotTo(HaveOccurred())
 			Expect(logEntriesWithCount).NotTo(BeNil())
 
 			// Verify the length of the returned entries
@@ -2040,11 +2036,11 @@ var _ = Describe("Commands", func() {
 			Expect(resetCmd.Val()).To(Equal("OK"))
 
 			// Verify that the log is empty after the reset
-			logCmd := client.ACLLog(ctx)
-			Expect(logCmd.Err()).NotTo(HaveOccurred())
-			logEntries := logCmd.Val()
+			logEntries, err := client.ACLLog(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
 			Expect(len(logEntries)).To(Equal(0))
 		})
+
 	})
 
 	Describe("hashes", func() {
