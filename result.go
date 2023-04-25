@@ -82,7 +82,7 @@ func NewBoolSliceResult(val []bool, err error) *BoolSliceCmd {
 	return &cmd
 }
 
-// NewStringStringMapResult returns a StringStringMapCmd initialised with val and err for testing.
+// NewMapStringStringResult returns a MapStringStringCmd initialised with val and err for testing.
 func NewMapStringStringResult(val map[string]string, err error) *MapStringStringCmd {
 	var cmd MapStringStringCmd
 	cmd.val = val
@@ -114,7 +114,7 @@ func NewZSliceCmdResult(val []Z, err error) *ZSliceCmd {
 	return &cmd
 }
 
-// NewZWithKeyCmdResult returns a NewZWithKeyCmd initialised with val and err for testing.
+// NewZWithKeyCmdResult returns a ZWithKeyCmd initialised with val and err for testing.
 func NewZWithKeyCmdResult(val *ZWithKey, err error) *ZWithKeyCmd {
 	var cmd ZWithKeyCmd
 	cmd.val = val
