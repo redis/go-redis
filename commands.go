@@ -549,6 +549,16 @@ func (c cmdable) Wait(ctx context.Context, numSlaves int, timeout time.Duration)
 	return cmd
 }
 
+// WaitAOF Perform an WAITAOF, This command blocks the current client until all the previous write commands are acknowledged
+// as having been fsynced to the AOF of the local Redis(@numLocal) and/or at least the specified number of replicas(@numReplicas).
+// If the @timeout, specified in milliseconds, is reached, the command returns even if the specified number of acknowledgments has not been met..
+// Use with Redis >= 7.2.
+func (c cmdable) WaitAOF(ctx context.Context, numLocal int, numReplicas int, timeout time.Duration) *IntSliceCmd {
+	cmd := NewIntSliceCmd(ctx, "waitaof", numLocal, numReplicas, formatMs(ctx, timeout))
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c statefulCmdable) Select(ctx context.Context, index int) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "select", index)
 	_ = c(ctx, cmd)

@@ -95,6 +95,18 @@ var _ = Describe("Commands", func() {
 			Expect(time.Now()).To(BeTemporally("~", start.Add(wait), 3*time.Second))
 		})
 
+		It("should WaitAOF", func() {
+			const timeout = 3 * time.Second
+			Skip("flaky test")
+
+			// assume testing on single redis instance
+			start := time.Now()
+			val, err := client.WaitAOF(ctx, 1, 1, timeout).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).NotTo(ContainSubstring("ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled"))
+			Expect(time.Now()).To(BeTemporally("~", start.Add(timeout), 3*time.Second))
+		})
+
 		It("should Select", func() {
 			pipe := client.Pipeline()
 			sel := pipe.Select(ctx, 1)
