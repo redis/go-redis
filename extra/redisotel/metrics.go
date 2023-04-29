@@ -132,14 +132,14 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 		func(ctx context.Context, o metric.Observer) error {
 			stats := rdb.PoolStats()
 
-			o.ObserveInt64(idleMax, int64(redisConf.MaxIdleConns), labels...)
-			o.ObserveInt64(idleMin, int64(redisConf.MinIdleConns), labels...)
-			o.ObserveInt64(connsMax, int64(redisConf.PoolSize), labels...)
+			o.ObserveInt64(idleMax, int64(redisConf.MaxIdleConns), metric.WithAttributes(labels...))
+			o.ObserveInt64(idleMin, int64(redisConf.MinIdleConns), metric.WithAttributes(labels...))
+			o.ObserveInt64(connsMax, int64(redisConf.PoolSize), metric.WithAttributes(labels...))
 
-			o.ObserveInt64(usage, int64(stats.IdleConns), idleAttrs...)
-			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), usedAttrs...)
+			o.ObserveInt64(usage, int64(stats.IdleConns), metric.WithAttributes(idleAttrs...))
+			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), metric.WithAttributes(usedAttrs...))
 
-			o.ObserveInt64(timeouts, int64(stats.Timeouts), labels...)
+			o.ObserveInt64(timeouts, int64(stats.Timeouts), metric.WithAttributes(labels...))
 			return nil
 		},
 		idleMax,
@@ -197,7 +197,7 @@ func (mh *metricsHook) DialHook(hook redis.DialHook) redis.DialHook {
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, statusAttr(err))
 
-		mh.createTime.Record(ctx, milliseconds(time.Since(start)), attrs...)
+		mh.createTime.Record(ctx, milliseconds(time.Since(start)), metric.WithAttributes(attrs...))
 		return conn, err
 	}
 }
@@ -215,7 +215,7 @@ func (mh *metricsHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		attrs = append(attrs, attribute.String("type", "command"))
 		attrs = append(attrs, statusAttr(err))
 
-		mh.useTime.Record(ctx, milliseconds(dur), attrs...)
+		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
 
 		return err
 	}
@@ -236,7 +236,7 @@ func (mh *metricsHook) ProcessPipelineHook(
 		attrs = append(attrs, attribute.String("type", "pipeline"))
 		attrs = append(attrs, statusAttr(err))
 
-		mh.useTime.Record(ctx, milliseconds(dur), attrs...)
+		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
 
 		return err
 	}
