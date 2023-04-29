@@ -133,6 +133,11 @@ type Options struct {
 
 	// Enables read only queries on slave/follower nodes.
 	readOnly bool
+
+	// Protocol Version
+	// Redis version 6 and above supports two protocols: the old protocol, RESP2, and a new one introduced with Redis 6, RESP3.
+	// Default is 3.
+	ProtocolVersion int
 }
 
 func (opt *Options) init() {
@@ -198,6 +203,13 @@ func (opt *Options) init() {
 		opt.MaxRetryBackoff = 0
 	case 0:
 		opt.MaxRetryBackoff = 512 * time.Millisecond
+	}
+
+	// If no ProtocolVersion is specified we default to 3.
+	// RESP3 has certain advantages since when the connection is in this mode,
+	// Redis is able to reply with more semantical replies.
+	if opt.ProtocolVersion != 2 && opt.ProtocolVersion != 3 {
+		opt.ProtocolVersion = 3
 	}
 }
 
