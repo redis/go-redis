@@ -104,8 +104,10 @@ type Options struct {
 	PoolTimeout time.Duration
 	// Minimum number of idle connections which is useful when establishing
 	// new connection is slow.
+	// Default is 0. the idle connections are not closed by default.
 	MinIdleConns int
 	// Maximum number of idle connections.
+	// Default is 0. the idle connections are not closed by default.
 	MaxIdleConns int
 	// ConnMaxIdleTime is the maximum amount of time a connection may be idle.
 	// Should be less than server's timeout.
