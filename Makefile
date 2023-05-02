@@ -1,5 +1,7 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 
+REDIS_VERSION := 7.2-rc1
+
 test: testdeps
 	set -e; for dir in $(GO_MOD_DIRS); do \
 	  echo "go test in $${dir}"; \
@@ -23,7 +25,7 @@ bench: testdeps
 
 testdata/redis:
 	mkdir -p $@
-	wget -qO- https://download.redis.io/releases/redis-7.2-rc1.tar.gz | tar xvz --strip-components=1 -C $@
+	wget -qO- https://download.redis.io/releases/redis-${REDIS_VERSION}.tar.gz | tar xvz --strip-components=1 -C $@
 
 testdata/redis/src/redis-server: testdata/redis
 	cd $< && make all
