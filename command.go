@@ -1460,7 +1460,7 @@ func readXMessageSlice(rd *proto.Reader) ([]XMessage, error) {
 	}
 	if len(msgs) < 1 {
 		// Compatible with previous returns
-		return nil, proto.Nil
+		return nil, Nil
 	}
 	return msgs, nil
 }
