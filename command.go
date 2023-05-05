@@ -1452,11 +1452,15 @@ func readXMessageSlice(rd *proto.Reader) ([]XMessage, error) {
 		return nil, err
 	}
 
-	msgs := make([]XMessage, n)
-	for i := 0; i < len(msgs); i++ {
-		if msgs[i], err = readXMessage(rd); err != nil {
-			return nil, err
+	msgs := make([]XMessage, 0, n)
+	for i := 0; i < n; i++ {
+		if xMessage, err := readXMessage(rd); err == nil {
+			msgs = append(msgs, xMessage)
 		}
+	}
+	if len(msgs) < 1 {
+		// Compatible with previous returns
+		return nil, proto.Nil
 	}
 	return msgs, nil
 }
