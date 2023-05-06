@@ -5116,7 +5116,11 @@ func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
 	for i := 0; i < n; i++ {
 		cmd.val[i] = &ACLLogEntry{}
 		entry := cmd.val[i]
-		for j := 0; j < 10; j++ {
+		respLen, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		for j := 0; j < respLen/2; j++ {
 			key, err := rd.ReadString()
 			if err != nil {
 				return err
