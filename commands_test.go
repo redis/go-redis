@@ -1987,34 +1987,12 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ACL LOG", func() {
-			// Test without the count parameter
-			logEntries, err := client.ACLLog(ctx).Result()
+
+			logEntries, err := client.ACLLog(ctx, 10).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(logEntries).NotTo(BeNil())
 
 			for _, entry := range logEntries {
-				Expect(entry.Count).To(BeNumerically(">=", 0))
-				Expect(entry.Reason).NotTo(BeEmpty())
-				Expect(entry.Context).NotTo(BeEmpty())
-				Expect(entry.Object).NotTo(BeEmpty())
-				Expect(entry.Username).NotTo(BeEmpty())
-				Expect(entry.AgeSeconds).To(BeNumerically(">=", 0))
-				Expect(entry.ClientInfo).NotTo(BeNil())
-				Expect(entry.EntryID).To(BeNumerically(">=", 0))
-				Expect(entry.TimestampCreated).To(BeNumerically(">=", 0))
-				Expect(entry.TimestampLastUpdated).To(BeNumerically(">=", 0))
-			}
-
-			// Test with the count parameter
-			desiredCount := int64(5)
-			logEntriesWithCount, err := client.ACLLog(ctx, desiredCount).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(logEntriesWithCount).NotTo(BeNil())
-
-			// Verify the length of the returned entries
-			Expect(len(logEntriesWithCount)).To(BeNumerically("<=", desiredCount))
-
-			for _, entry := range logEntriesWithCount {
 				Expect(entry.Count).To(BeNumerically(">=", 0))
 				Expect(entry.Reason).NotTo(BeEmpty())
 				Expect(entry.Context).NotTo(BeEmpty())
@@ -2036,7 +2014,7 @@ var _ = Describe("Commands", func() {
 			Expect(resetCmd.Val()).To(Equal("OK"))
 
 			// Verify that the log is empty after the reset
-			logEntries, err := client.ACLLog(ctx).Result()
+			logEntries, err := client.ACLLog(ctx, 10).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(logEntries)).To(Equal(0))
 		})

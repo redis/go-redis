@@ -500,7 +500,7 @@ type Cmdable interface {
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
 
 	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
-	ACLLog(ctx context.Context, count ...int64) *ACLLogCmd
+	ACLLog(ctx context.Context, count int64) *ACLLogCmd
 	ACLLogReset(ctx context.Context) *StatusCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
@@ -3949,16 +3949,11 @@ func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *St
 	return cmd
 }
 
-func (c cmdable) ACLLog(ctx context.Context, count ...int64) *ACLLogCmd {
-	args := make([]interface{}, 0, 2+len(count))
+func (c cmdable) ACLLog(ctx context.Context, count int64) *ACLLogCmd {
+	args := make([]interface{}, 0, 3)
 	args = append(args, "acl", "log")
 
-	if len(count) > 0 {
-		if len(count) > 1 {
-			panic("too many arguments")
-		}
-		args = append(args, count[0])
-	}
+	args = append(args, count)
 
 	cmd := NewACLLogCmd(ctx, args...)
 	_ = c(ctx, cmd)
