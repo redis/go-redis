@@ -2010,7 +2010,6 @@ var _ = Describe("Commands", func() {
 			// Call ACL LOG RESET
 			resetCmd := client.ACLLogReset(ctx)
 			Expect(resetCmd.Err()).NotTo(HaveOccurred())
-
 			Expect(resetCmd.Val()).To(Equal("OK"))
 
 			// Verify that the log is empty after the reset
