@@ -1988,22 +1988,38 @@ var _ = Describe("Commands", func() {
 
 		It("should ACL LOG", func() {
 
+			err := client.Do(ctx, "acl", "setuser", "test", ">test", "on", "allkeys", "+get").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			clientAcl := redis.NewClient(redisOptions())
+			clientAcl.Options().Username = "test"
+			clientAcl.Options().Password = "test"
+			clientAcl.Options().DB = 0
+			_ = clientAcl.Set(ctx, "mystring", "foo", 0).Err()
+			_ = clientAcl.HSet(ctx, "myhash", "foo", "bar").Err()
+			_ = clientAcl.SAdd(ctx, "myset", "foo", "bar").Err()
+
 			logEntries, err := client.ACLLog(ctx, 10).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(logEntries).NotTo(BeNil())
+			Expect(len(logEntries)).To(Equal(3))
 
 			for _, entry := range logEntries {
-				Expect(entry.Count).To(BeNumerically(">=", 0))
-				Expect(entry.Reason).NotTo(BeEmpty())
-				Expect(entry.Context).NotTo(BeEmpty())
+				Expect(entry.Count).To(BeNumerically("==", 1))
+				Expect(entry.Reason).To(Equal("command"))
+				Expect(entry.Context).To(Equal("toplevel"))
 				Expect(entry.Object).NotTo(BeEmpty())
-				Expect(entry.Username).NotTo(BeEmpty())
+				Expect(entry.Username).To(Equal("test"))
 				Expect(entry.AgeSeconds).To(BeNumerically(">=", 0))
 				Expect(entry.ClientInfo).NotTo(BeNil())
 				Expect(entry.EntryID).To(BeNumerically(">=", 0))
 				Expect(entry.TimestampCreated).To(BeNumerically(">=", 0))
 				Expect(entry.TimestampLastUpdated).To(BeNumerically(">=", 0))
 			}
+
+			limitedLogEntries, err := client.ACLLog(ctx, 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(limitedLogEntries)).To(Equal(2))
+
 		})
 
 		It("should ACL LOG RESET", func() {
