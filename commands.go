@@ -175,12 +175,16 @@ type Cmdable interface {
 	Dump(ctx context.Context, key string) *StringCmd
 	Exists(ctx context.Context, keys ...string) *IntCmd
 	Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
-	ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
-	ExpireTime(ctx context.Context, key string) *DurationCmd
 	ExpireNX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireXX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireGT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireLT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireAtNX(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireAtXX(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireAtGT(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireAtLT(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireTime(ctx context.Context, key string) *DurationCmd
 	Keys(ctx context.Context, pattern string) *StringSliceCmd
 	Migrate(ctx context.Context, host, port, key string, db int, timeout time.Duration) *StatusCmd
 	Move(ctx context.Context, key string, db int) *BoolCmd
@@ -189,7 +193,15 @@ type Cmdable interface {
 	ObjectIdleTime(ctx context.Context, key string) *DurationCmd
 	Persist(ctx context.Context, key string) *BoolCmd
 	PExpire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	PExpireNX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	PExpireXX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	PExpireGT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	PExpireLT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	PExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PExpireAtNX(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PExpireAtXX(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PExpireAtGT(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PExpireAtLT(ctx context.Context, key string, tm time.Time) *BoolCmd
 	PExpireTime(ctx context.Context, key string) *DurationCmd
 	PTTL(ctx context.Context, key string) *DurationCmd
 	RandomKey(ctx context.Context) *StringCmd
@@ -741,7 +753,37 @@ func (c cmdable) expire(
 }
 
 func (c cmdable) ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "expireat", key, tm.Unix())
+	return c.expireAt(ctx, key, tm, "")
+}
+
+func (c cmdable) ExpireAtNX(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.expireAt(ctx, key, tm, "NX")
+}
+
+func (c cmdable) ExpireAtXX(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.expireAt(ctx, key, tm, "XX")
+}
+
+func (c cmdable) ExpireAtGT(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.expireAt(ctx, key, tm, "GT")
+}
+
+func (c cmdable) ExpireAtLT(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.expireAt(ctx, key, tm, "LT")
+}
+
+func (c cmdable) expireAt(
+	ctx context.Context, key string, tm time.Time, mode string,
+) *BoolCmd {
+	args := make([]interface{}, 3, 4)
+	args[0] = "expireat"
+	args[1] = key
+	args[2] = tm.Unix()
+	if mode != "" {
+		args = append(args, mode)
+	}
+
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -804,18 +846,73 @@ func (c cmdable) Persist(ctx context.Context, key string) *BoolCmd {
 }
 
 func (c cmdable) PExpire(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "pexpire", key, formatMs(ctx, expiration))
+	return c.pexpire(ctx, key, expiration, "")
+}
+
+func (c cmdable) PExpireNX(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.pexpire(ctx, key, expiration, "NX")
+}
+
+func (c cmdable) PExpireXX(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.pexpire(ctx, key, expiration, "XX")
+}
+
+func (c cmdable) PExpireGT(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.pexpire(ctx, key, expiration, "GT")
+}
+
+func (c cmdable) PExpireLT(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.pexpire(ctx, key, expiration, "LT")
+}
+
+func (c cmdable) pexpire(
+	ctx context.Context, key string, expiration time.Duration, mode string,
+) *BoolCmd {
+	args := make([]interface{}, 3, 4)
+	args[0] = "pexpire"
+	args[1] = key
+	args[2] = formatMs(ctx, expiration)
+	if mode != "" {
+		args = append(args, mode)
+	}
+
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) PExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd {
-	cmd := NewBoolCmd(
-		ctx,
-		"pexpireat",
-		key,
-		tm.UnixNano()/int64(time.Millisecond),
-	)
+	return c.pexpireAt(ctx, key, tm, "")
+}
+
+func (c cmdable) PExpireAtNX(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.pexpireAt(ctx, key, tm, "NX")
+}
+
+func (c cmdable) PExpireAtXX(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.pexpireAt(ctx, key, tm, "XX")
+}
+
+func (c cmdable) PExpireAtGT(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.pexpireAt(ctx, key, tm, "GT")
+}
+
+func (c cmdable) PExpireAtLT(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.pexpireAt(ctx, key, tm, "LT")
+}
+
+func (c cmdable) pexpireAt(
+	ctx context.Context, key string, tm time.Time, mode string,
+) *BoolCmd {
+	args := make([]interface{}, 3, 4)
+	args[0] = "pexpireat"
+	args[1] = key
+	args[2] = tm.UnixNano() / int64(time.Millisecond)
+	if mode != "" {
+		args = append(args, mode)
+	}
+
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
