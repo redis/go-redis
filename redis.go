@@ -183,6 +183,7 @@ func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) e
 //------------------------------------------------------------------------------
 
 type baseClient struct {
+	plugin
 	opt      *Options
 	connPool pool.Pooler
 
@@ -264,21 +265,13 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
-	if cn.Inited {
-		return nil
-	}
-	cn.Inited = true
+func (c *baseClient) authentication(ctx context.Context, conn *Conn) error {
+	var auth bool
 
 	username, password := c.opt.Username, c.opt.Password
 	if c.opt.CredentialsProvider != nil {
 		username, password = c.opt.CredentialsProvider()
 	}
-
-	connPool := pool.NewSingleConnPool(c.connPool, cn)
-	conn := newConn(c.opt, connPool)
-
-	var auth bool
 
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
@@ -295,15 +288,49 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return err
 	}
 
-	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
-		if !auth && password != "" {
-			if username != "" {
-				pipe.AuthACL(ctx, username, password)
-			} else {
-				pipe.Auth(ctx, password)
-			}
+	if !auth && password != "" {
+		var authErr error
+		if username != "" {
+			authErr = conn.AuthACL(ctx, username, password).Err()
+		} else {
+			authErr = conn.Auth(ctx, password).Err()
 		}
 
+		if authErr != nil {
+			return authErr
+		}
+	}
+
+	return nil
+}
+
+func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
+	if cn.Inited {
+		return nil
+	}
+
+	connPool := pool.NewSingleConnPool(c.connPool, cn)
+	conn := newConn(c.opt, connPool, c.plugin)
+
+	for _, p := range c.plugin.preInitConnPlugins {
+		if err := p(ctx, conn); err != nil {
+			return err
+		}
+	}
+
+	cn.Inited = true
+
+	if c.plugin.initConnPlugin != nil {
+		if err := c.plugin.initConnPlugin(ctx, conn); err != nil {
+			return err
+		}
+	} else {
+		if err := c.authentication(ctx, conn); err != nil {
+			return err
+		}
+	}
+
+	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
 		}
@@ -320,6 +347,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	for _, p := range c.plugin.postInitConnPlugin {
+		if err = p(ctx, conn); err != nil {
+			return err
+		}
 	}
 
 	if c.opt.OnConnect != nil {
@@ -631,7 +664,7 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 }
 
 func (c *Client) Conn() *Conn {
-	return newConn(c.opt, pool.NewStickyConnPool(c.connPool))
+	return newConn(c.opt, pool.NewStickyConnPool(c.connPool), c.baseClient.plugin)
 }
 
 // Do create a Cmd from the args and processes the cmd.
@@ -767,11 +800,12 @@ type Conn struct {
 	hooksMixin
 }
 
-func newConn(opt *Options, connPool pool.Pooler) *Conn {
+func newConn(opt *Options, connPool pool.Pooler, plugin plugin) *Conn {
 	c := Conn{
 		baseClient: baseClient{
 			opt:      opt,
 			connPool: connPool,
+			plugin:   plugin,
 		},
 	}
 
