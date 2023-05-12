@@ -297,7 +297,6 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 	}
 
 	var realPoolTimeout time.Duration
-
 	timer := timers.Get().(*time.Timer)
 	deadline, ok := ctx.Deadline()
 	if ok {
