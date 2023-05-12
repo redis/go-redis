@@ -296,8 +296,19 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 	default:
 	}
 
+	var realPoolTimeout time.Duration
+
 	timer := timers.Get().(*time.Timer)
-	timer.Reset(p.cfg.PoolTimeout)
+	deadline, ok := ctx.Deadline()
+	if ok {
+		realPoolTimeout = deadline.Sub(time.Now())
+		if realPoolTimeout > p.cfg.PoolTimeout {
+			realPoolTimeout = p.cfg.PoolTimeout
+		}
+	} else {
+		realPoolTimeout = p.cfg.PoolTimeout
+	}
+	timer.Reset(realPoolTimeout)
 
 	select {
 	case <-ctx.Done():
