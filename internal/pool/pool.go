@@ -300,7 +300,7 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 	timer := timers.Get().(*time.Timer)
 	deadline, ok := ctx.Deadline()
 	if ok {
-		realPoolTimeout = deadline.Sub(time.Now())
+		realPoolTimeout = time.Until(deadline)
 		if realPoolTimeout > p.cfg.PoolTimeout {
 			realPoolTimeout = p.cfg.PoolTimeout
 		}
