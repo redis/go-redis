@@ -5846,6 +5846,7 @@ var _ = Describe("Commands", func() {
 				// Verify DeliveryTime
 				now := time.Now()
 				maxElapsed := 10 * time.Minute
+				Expect(res.Groups).NotTo(BeNil())
 				for k, g := range res.Groups {
 					for k2, p := range g.Pending {
 						Expect(now.Sub(p.DeliveryTime)).To(BeNumerically("<=", maxElapsed))
