@@ -2373,7 +2373,7 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 				}
 			case "entries-read":
 				group.EntriesRead, err = rd.ReadInt()
-				if err != nil {
+				if err != nil && err != Nil {
 					return nil, err
 				}
 			case "lag":
