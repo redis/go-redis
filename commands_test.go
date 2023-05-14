@@ -5970,6 +5970,39 @@ var _ = Describe("Commands", func() {
 						},
 					},
 				}))
+
+				// entries-read = nil
+				Expect(client.Del(ctx, "xinfo-stream-full-stream").Err()).NotTo(HaveOccurred())
+				id, err := client.XAdd(ctx, &redis.XAddArgs{
+					Stream: "xinfo-stream-full-stream",
+					ID:     "*",
+					Values: []any{"k1", "v1"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(client.XGroupCreateMkStream(ctx, "xinfo-stream-full-stream", "xinfo-stream-full-group", "0").Err()).NotTo(HaveOccurred())
+				res, err = client.XInfoStreamFull(ctx, "xinfo-stream-full-stream", 0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal(&redis.XInfoStreamFull{
+					Length:            1,
+					RadixTreeKeys:     1,
+					RadixTreeNodes:    2,
+					LastGeneratedID:   id,
+					MaxDeletedEntryID: "0-0",
+					EntriesAdded:      1,
+					Entries:           []redis.XMessage{{ID: id, Values: map[string]any{"k1": "v1"}}},
+					Groups: []redis.XInfoStreamGroup{
+						{
+							Name:            "xinfo-stream-full-group",
+							LastDeliveredID: "0-0",
+							EntriesRead:     0,
+							Lag:             1,
+							PelCount:        0,
+							Pending:         []redis.XInfoStreamGroupPending{},
+							Consumers:       []redis.XInfoStreamConsumer{},
+						},
+					},
+					RecordedFirstEntryID: id,
+				}))
 			})
 
 			It("should XINFO GROUPS", func() {
