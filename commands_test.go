@@ -5912,6 +5912,64 @@ var _ = Describe("Commands", func() {
 						}
 					}
 				}
+
+				Expect(res.Groups).To(Equal([]redis.XInfoStreamGroup{
+					{
+						Name:            "group1",
+						LastDeliveredID: "3-0",
+						EntriesRead:     3,
+						Lag:             0,
+						PelCount:        3,
+						Pending: []redis.XInfoStreamGroupPending{
+							{ID: "1-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+							{ID: "2-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+						},
+						Consumers: []redis.XInfoStreamConsumer{
+							{
+								Name:       "consumer1",
+								SeenTime:   time.Time{},
+								ActiveTime: time.Time{},
+								PelCount:   2,
+								Pending: []redis.XInfoStreamConsumerPending{
+									{ID: "1-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+									{ID: "2-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+								},
+							},
+							{
+								Name:       "consumer2",
+								SeenTime:   time.Time{},
+								ActiveTime: time.Time{},
+								PelCount:   1,
+								Pending: []redis.XInfoStreamConsumerPending{
+									{ID: "3-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+								},
+							},
+						},
+					},
+					{
+						Name:            "group2",
+						LastDeliveredID: "3-0",
+						EntriesRead:     3,
+						Lag:             0,
+						PelCount:        2,
+						Pending: []redis.XInfoStreamGroupPending{
+							{ID: "2-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+							{ID: "3-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+						},
+						Consumers: []redis.XInfoStreamConsumer{
+							{
+								Name:       "consumer1",
+								SeenTime:   time.Time{},
+								ActiveTime: time.Time{},
+								PelCount:   2,
+								Pending: []redis.XInfoStreamConsumerPending{
+									{ID: "2-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+									{ID: "3-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+								},
+							},
+						},
+					},
+				}))
 			})
 
 			It("should XINFO GROUPS", func() {
