@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	rendezvous "github.com/dgryski/go-rendezvous" //nolint
+	"github.com/dgryski/go-rendezvous" //nolint
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hashtag"
@@ -70,6 +70,7 @@ type RingOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	Protocol int
 	Username string
 	Password string
 	DB       int
@@ -136,6 +137,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		Dialer:     opt.Dialer,
 		OnConnect:  opt.OnConnect,
 
+		Protocol: opt.Protocol,
 		Username: opt.Username,
 		Password: opt.Password,
 		DB:       opt.DB,

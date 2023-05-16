@@ -54,6 +54,7 @@ type FailoverOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	Protocol int
 	Username string
 	Password string
 	DB       int
@@ -88,6 +89,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		OnConnect: opt.OnConnect,
 
 		DB:       opt.DB,
+		Protocol: opt.Protocol,
 		Username: opt.Username,
 		Password: opt.Password,
 
@@ -151,6 +153,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
+		Protocol: opt.Protocol,
 		Username: opt.Username,
 		Password: opt.Password,
 
