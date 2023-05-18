@@ -1520,6 +1520,10 @@ var _ = Describe("ClusterClient ParseURL", func() {
 			url:  "redis://localhost:123?conn_max_idle_time=",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
 		}, {
+			test: "Protocol",
+			url:  "redis://localhost:123?protocol=2",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Protocol: 2},
+		}, {
 			test: "ClientName",
 			url:  "redis://localhost:123?client_name=cluster_hi",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ClientName: "cluster_hi"},

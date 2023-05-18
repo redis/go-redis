@@ -217,6 +217,7 @@ func setupClusterConn(u *url.URL, host string, o *ClusterOptions) (*ClusterOptio
 func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, error) {
 	q := queryOptions{q: u.Query()}
 
+	o.Protocol = q.int("protocol")
 	o.ClientName = q.string("client_name")
 	o.MaxRedirects = q.int("max_redirects")
 	o.ReadOnly = q.bool("read_only")
