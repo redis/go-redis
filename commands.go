@@ -175,12 +175,16 @@ type Cmdable interface {
 	Dump(ctx context.Context, key string) *StringCmd
 	Exists(ctx context.Context, keys ...string) *IntCmd
 	Expire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
-	ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
-	ExpireTime(ctx context.Context, key string) *DurationCmd
 	ExpireNX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireXX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireGT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	ExpireLT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireAtNX(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireAtXX(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireAtGT(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireAtLT(ctx context.Context, key string, tm time.Time) *BoolCmd
+	ExpireTime(ctx context.Context, key string) *DurationCmd
 	Keys(ctx context.Context, pattern string) *StringSliceCmd
 	Migrate(ctx context.Context, host, port, key string, db int, timeout time.Duration) *StatusCmd
 	Move(ctx context.Context, key string, db int) *BoolCmd
@@ -189,7 +193,15 @@ type Cmdable interface {
 	ObjectIdleTime(ctx context.Context, key string) *DurationCmd
 	Persist(ctx context.Context, key string) *BoolCmd
 	PExpire(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	PExpireNX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	PExpireXX(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	PExpireGT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
+	PExpireLT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	PExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PExpireAtNX(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PExpireAtXX(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PExpireAtGT(ctx context.Context, key string, tm time.Time) *BoolCmd
+	PExpireAtLT(ctx context.Context, key string, tm time.Time) *BoolCmd
 	PExpireTime(ctx context.Context, key string) *DurationCmd
 	PTTL(ctx context.Context, key string) *DurationCmd
 	RandomKey(ctx context.Context) *StringCmd
@@ -373,6 +385,7 @@ type Cmdable interface {
 	ZRangeArgsWithScores(ctx context.Context, z ZRangeArgs) *ZSliceCmd
 	ZRangeStore(ctx context.Context, dst string, z ZRangeArgs) *IntCmd
 	ZRank(ctx context.Context, key, member string) *IntCmd
+	ZRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd
 	ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd
 	ZRemRangeByRank(ctx context.Context, key string, start, stop int64) *IntCmd
 	ZRemRangeByScore(ctx context.Context, key, min, max string) *IntCmd
@@ -383,6 +396,7 @@ type Cmdable interface {
 	ZRevRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd
 	ZRevRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd
 	ZRevRank(ctx context.Context, key, member string) *IntCmd
+	ZRevRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd
 	ZScore(ctx context.Context, key, member string) *FloatCmd
 	ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd
 	ZRandMember(ctx context.Context, key string, count int) *StringSliceCmd
@@ -402,6 +416,7 @@ type Cmdable interface {
 	ClientKill(ctx context.Context, ipPort string) *StatusCmd
 	ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd
 	ClientList(ctx context.Context) *StringCmd
+	ClientInfo(ctx context.Context) *ClientInfoCmd
 	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
 	ClientUnpause(ctx context.Context) *BoolCmd
 	ClientID(ctx context.Context) *IntCmd
@@ -497,6 +512,8 @@ type Cmdable interface {
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
 
 	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
+	ACLLog(ctx context.Context, count int64) *ACLLogCmd
+	ACLLogReset(ctx context.Context) *StatusCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 }
@@ -736,7 +753,37 @@ func (c cmdable) expire(
 }
 
 func (c cmdable) ExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "expireat", key, tm.Unix())
+	return c.expireAt(ctx, key, tm, "")
+}
+
+func (c cmdable) ExpireAtNX(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.expireAt(ctx, key, tm, "NX")
+}
+
+func (c cmdable) ExpireAtXX(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.expireAt(ctx, key, tm, "XX")
+}
+
+func (c cmdable) ExpireAtGT(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.expireAt(ctx, key, tm, "GT")
+}
+
+func (c cmdable) ExpireAtLT(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.expireAt(ctx, key, tm, "LT")
+}
+
+func (c cmdable) expireAt(
+	ctx context.Context, key string, tm time.Time, mode string,
+) *BoolCmd {
+	args := make([]interface{}, 3, 4)
+	args[0] = "expireat"
+	args[1] = key
+	args[2] = tm.Unix()
+	if mode != "" {
+		args = append(args, mode)
+	}
+
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -799,18 +846,73 @@ func (c cmdable) Persist(ctx context.Context, key string) *BoolCmd {
 }
 
 func (c cmdable) PExpire(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "pexpire", key, formatMs(ctx, expiration))
+	return c.pexpire(ctx, key, expiration, "")
+}
+
+func (c cmdable) PExpireNX(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.pexpire(ctx, key, expiration, "NX")
+}
+
+func (c cmdable) PExpireXX(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.pexpire(ctx, key, expiration, "XX")
+}
+
+func (c cmdable) PExpireGT(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.pexpire(ctx, key, expiration, "GT")
+}
+
+func (c cmdable) PExpireLT(ctx context.Context, key string, expiration time.Duration) *BoolCmd {
+	return c.pexpire(ctx, key, expiration, "LT")
+}
+
+func (c cmdable) pexpire(
+	ctx context.Context, key string, expiration time.Duration, mode string,
+) *BoolCmd {
+	args := make([]interface{}, 3, 4)
+	args[0] = "pexpire"
+	args[1] = key
+	args[2] = formatMs(ctx, expiration)
+	if mode != "" {
+		args = append(args, mode)
+	}
+
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) PExpireAt(ctx context.Context, key string, tm time.Time) *BoolCmd {
-	cmd := NewBoolCmd(
-		ctx,
-		"pexpireat",
-		key,
-		tm.UnixNano()/int64(time.Millisecond),
-	)
+	return c.pexpireAt(ctx, key, tm, "")
+}
+
+func (c cmdable) PExpireAtNX(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.pexpireAt(ctx, key, tm, "NX")
+}
+
+func (c cmdable) PExpireAtXX(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.pexpireAt(ctx, key, tm, "XX")
+}
+
+func (c cmdable) PExpireAtGT(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.pexpireAt(ctx, key, tm, "GT")
+}
+
+func (c cmdable) PExpireAtLT(ctx context.Context, key string, tm time.Time) *BoolCmd {
+	return c.pexpireAt(ctx, key, tm, "LT")
+}
+
+func (c cmdable) pexpireAt(
+	ctx context.Context, key string, tm time.Time, mode string,
+) *BoolCmd {
+	args := make([]interface{}, 3, 4)
+	args[0] = "pexpireat"
+	args[1] = key
+	args[2] = tm.UnixNano() / int64(time.Millisecond)
+	if mode != "" {
+		args = append(args, mode)
+	}
+
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -2884,6 +2986,14 @@ func (c cmdable) ZRank(ctx context.Context, key, member string) *IntCmd {
 	return cmd
 }
 
+// ZRankWithScore according to the Redis documentation, if member does not exist
+// in the sorted set or key does not exist, it will return a redis.Nil error.
+func (c cmdable) ZRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd {
+	cmd := NewRankWithScoreCmd(ctx, "zrank", key, member, "withscore")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "zrem"
@@ -2924,6 +3034,8 @@ func (c cmdable) ZRevRange(ctx context.Context, key string, start, stop int64) *
 	return cmd
 }
 
+// ZRevRangeWithScores according to the Redis documentation, if member does not exist
+// in the sorted set or key does not exist, it will return a redis.Nil error.
 func (c cmdable) ZRevRangeWithScores(ctx context.Context, key string, start, stop int64) *ZSliceCmd {
 	cmd := NewZSliceCmd(ctx, "zrevrange", key, start, stop, "withscores")
 	_ = c(ctx, cmd)
@@ -2970,6 +3082,12 @@ func (c cmdable) ZRevRangeByScoreWithScores(ctx context.Context, key string, opt
 
 func (c cmdable) ZRevRank(ctx context.Context, key, member string) *IntCmd {
 	cmd := NewIntCmd(ctx, "zrevrank", key, member)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ZRevRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd {
+	cmd := NewRankWithScoreCmd(ctx, "zrevrank", key, member, "withscore")
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -3173,6 +3291,14 @@ func (c cmdable) ClientUnblockWithError(ctx context.Context, id int64) *IntCmd {
 	_ = c(ctx, cmd)
 	return cmd
 }
+
+func (c cmdable) ClientInfo(ctx context.Context) *ClientInfoCmd {
+	cmd := NewClientInfoCmd(ctx, "client", "info")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ------------------------------------------------------------------------------------------------
 
 func (c cmdable) ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd {
 	cmd := NewMapStringStringCmd(ctx, "config", "get", parameter)
@@ -3916,6 +4042,23 @@ func (c *ModuleLoadexConfig) toArgs() []interface{} {
 // ModuleLoadex Redis `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]` command.
 func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd {
 	cmd := NewStringCmd(ctx, conf.toArgs()...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLLog(ctx context.Context, count int64) *ACLLogCmd {
+	args := make([]interface{}, 0, 3)
+	args = append(args, "acl", "log")
+	if count > 0 {
+		args = append(args, count)
+	}
+	cmd := NewACLLogCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLLogReset(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "acl", "log", "reset")
 	_ = c(ctx, cmd)
 	return cmd
 }

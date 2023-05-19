@@ -201,6 +201,12 @@ var _ = Describe("Commands", func() {
 			Expect(r).To(Equal(int64(0)))
 		})
 
+		It("should ClientInfo", func() {
+			info, err := client.ClientInfo(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info).NotTo(BeNil())
+		})
+
 		It("should ClientPause", func() {
 			err := client.ClientPause(ctx, time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -496,6 +502,146 @@ var _ = Describe("Commands", func() {
 			Expect(ttl.Val()).To(Equal(time.Duration(-2)))
 		})
 
+		It("should ExpireNX", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expire := client.ExpireNX(ctx, "key", 10*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(10 * time.Second))
+
+			expire = client.ExpireNX(ctx, "key", 10*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(false))
+
+			set = client.Set(ctx, "key", "Hello World", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			ttl = client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Duration(-1)))
+
+			ttl = client.TTL(ctx, "nonexistent_key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Duration(-2)))
+		})
+
+		It("should ExpireXX", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expire := client.ExpireXX(ctx, "key", 10*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(false))
+
+			expire = client.Expire(ctx, "key", 10*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(true))
+
+			expire = client.ExpireXX(ctx, "key", 20*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(20 * time.Second))
+
+			set = client.Set(ctx, "key", "Hello World", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			ttl = client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Duration(-1)))
+
+			ttl = client.TTL(ctx, "nonexistent_key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Duration(-2)))
+		})
+
+		It("should ExpireGT", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expire := client.Expire(ctx, "key", 10*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(10 * time.Second))
+
+			expire = client.ExpireGT(ctx, "key", 5*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(false))
+
+			expire = client.ExpireGT(ctx, "key", 20*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(true))
+
+			ttl = client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(20 * time.Second))
+
+			set = client.Set(ctx, "key", "Hello World", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			ttl = client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Duration(-1)))
+
+			ttl = client.TTL(ctx, "nonexistent_key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Duration(-2)))
+		})
+
+		It("should ExpireLT", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expire := client.Expire(ctx, "key", 10*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(10 * time.Second))
+
+			expire = client.ExpireLT(ctx, "key", 20*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(false))
+
+			expire = client.ExpireLT(ctx, "key", 5*time.Second)
+			Expect(expire.Err()).NotTo(HaveOccurred())
+			Expect(expire.Val()).To(Equal(true))
+
+			ttl = client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(5 * time.Second))
+
+			set = client.Set(ctx, "key", "Hello World", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			ttl = client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Duration(-1)))
+
+			ttl = client.TTL(ctx, "nonexistent_key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Duration(-2)))
+		})
+
 		It("should ExpireAt", func() {
 			setCmd := client.Set(ctx, "key", "Hello", 0)
 			Expect(setCmd.Err()).NotTo(HaveOccurred())
@@ -524,6 +670,155 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(0)))
 
+		})
+
+		It("should ExpireAtNX", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			n, err := client.Exists(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			expireAt := time.Now().Add(time.Minute)
+			expireAtCmd := client.ExpireAtNX(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			timeCmd := client.ExpireTime(ctx, "key")
+			Expect(timeCmd.Err()).NotTo(HaveOccurred())
+			Expect(timeCmd.Val().Seconds()).To(BeNumerically("==", expireAt.Unix()))
+
+			expireAtCmd = client.ExpireAtNX(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(false))
+
+			expireAtCmd = client.ExpireAt(ctx, "key", time.Now().Add(-time.Hour))
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			n, err = client.Exists(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
+		})
+
+		It("should ExpireAtXX", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			n, err := client.Exists(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			expireAt := time.Now().Add(time.Minute)
+			expireAtCmd := client.ExpireAtXX(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(false))
+
+			expireAtCmd = client.ExpireAt(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			expireAt = expireAt.Add(time.Minute)
+			expireAtCmd = client.ExpireAtXX(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			timeCmd := client.ExpireTime(ctx, "key")
+			Expect(timeCmd.Err()).NotTo(HaveOccurred())
+			Expect(timeCmd.Val().Seconds()).To(BeNumerically("==", expireAt.Unix()))
+
+			expireAtCmd = client.ExpireAt(ctx, "key", time.Now().Add(-time.Hour))
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			n, err = client.Exists(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
+		})
+
+		It("should ExpireAtGT", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			n, err := client.Exists(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			expireAt := time.Now().Add(2 * time.Minute)
+			expireAtCmd := client.ExpireAt(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			timeCmd := client.ExpireTime(ctx, "key")
+			Expect(timeCmd.Err()).NotTo(HaveOccurred())
+			Expect(timeCmd.Val().Seconds()).To(BeNumerically("==", expireAt.Unix()))
+
+			expireAt = expireAt.Add(-time.Minute)
+			expireAtCmd = client.ExpireAtGT(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(false))
+
+			expireAt = expireAt.Add(2 * time.Minute)
+			expireAtCmd = client.ExpireAtGT(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			timeCmd = client.ExpireTime(ctx, "key")
+			Expect(timeCmd.Err()).NotTo(HaveOccurred())
+			Expect(timeCmd.Val().Seconds()).To(BeNumerically("==", expireAt.Unix()))
+
+			expireAtCmd = client.ExpireAt(ctx, "key", time.Now().Add(-time.Hour))
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			n, err = client.Exists(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
+		})
+
+		It("should ExpireAtLT", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			n, err := client.Exists(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			expireAt := time.Now().Add(2 * time.Minute)
+			expireAtCmd := client.ExpireAt(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			timeCmd := client.ExpireTime(ctx, "key")
+			Expect(timeCmd.Err()).NotTo(HaveOccurred())
+			Expect(timeCmd.Val().Seconds()).To(BeNumerically("==", expireAt.Unix()))
+
+			expireAt = expireAt.Add(time.Minute)
+			expireAtCmd = client.ExpireAtLT(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(false))
+
+			expireAt = expireAt.Add(-2 * time.Minute)
+			expireAtCmd = client.ExpireAtLT(ctx, "key", expireAt)
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			timeCmd = client.ExpireTime(ctx, "key")
+			Expect(timeCmd.Err()).NotTo(HaveOccurred())
+			Expect(timeCmd.Val().Seconds()).To(BeNumerically("==", expireAt.Unix()))
+
+			expireAtCmd = client.ExpireAt(ctx, "key", time.Now().Add(-time.Hour))
+			Expect(expireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(expireAtCmd.Val()).To(Equal(true))
+
+			n, err = client.Exists(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(0)))
 		})
 
 		It("should Keys", func() {
@@ -650,6 +945,115 @@ var _ = Describe("Commands", func() {
 			Expect(pttl.Val()).To(BeNumerically("~", expiration, 100*time.Millisecond))
 		})
 
+		It("should PExpireNX", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expiration := 900 * time.Millisecond
+			pexpire := client.PExpireNX(ctx, "key", expiration)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Second))
+
+			pexpire = client.PExpireNX(ctx, "key", 1900*time.Millisecond)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(false))
+
+			pttl := client.PTTL(ctx, "key")
+			Expect(pttl.Err()).NotTo(HaveOccurred())
+			Expect(pttl.Val()).To(BeNumerically("~", expiration, 100*time.Millisecond))
+		})
+
+		It("should PExpireXX", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expiration := 900 * time.Millisecond
+			pexpire := client.PExpireXX(ctx, "key", expiration)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(false))
+
+			pexpire = client.PExpire(ctx, "key", expiration)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Second))
+
+			expiration = 1900 * time.Millisecond
+			pexpire = client.PExpireXX(ctx, "key", expiration)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(true))
+
+			pttl := client.PTTL(ctx, "key")
+			Expect(pttl.Err()).NotTo(HaveOccurred())
+			Expect(pttl.Val()).To(BeNumerically("~", expiration, 1000*time.Millisecond))
+		})
+
+		It("should PExpireGT", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expiration := 10000 * time.Millisecond
+			pexpire := client.PExpire(ctx, "key", expiration)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(10 * time.Second))
+
+			expiration = 5000 * time.Millisecond
+			pexpire = client.PExpireGT(ctx, "key", expiration)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(false))
+
+			expiration = 20000 * time.Millisecond
+			pexpire = client.PExpireGT(ctx, "key", expiration)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(true))
+
+			ttl = client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(20 * time.Second))
+		})
+
+		It("should PExpireLT", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expiration := 10000 * time.Millisecond
+			pexpire := client.PExpire(ctx, "key", expiration)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(10 * time.Second))
+
+			expiration = 20000 * time.Millisecond
+			pexpire = client.PExpireLT(ctx, "key", expiration)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(false))
+
+			expiration = 5000 * time.Millisecond
+			pexpire = client.PExpireLT(ctx, "key", expiration)
+			Expect(pexpire.Err()).NotTo(HaveOccurred())
+			Expect(pexpire.Val()).To(Equal(true))
+
+			ttl = client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(5 * time.Second))
+		})
+
 		It("should PExpireAt", func() {
 			set := client.Set(ctx, "key", "Hello", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
@@ -667,6 +1071,117 @@ var _ = Describe("Commands", func() {
 			pttl := client.PTTL(ctx, "key")
 			Expect(pttl.Err()).NotTo(HaveOccurred())
 			Expect(pttl.Val()).To(BeNumerically("~", expiration, 100*time.Millisecond))
+		})
+
+		It("should PExpireAtNX", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expiration := 900 * time.Millisecond
+			pexpireAt := time.Now().Add(expiration)
+			pexpireAtCmd := client.PExpireAtNX(ctx, "key", pexpireAt)
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Second))
+
+			pexpireAtCmd = client.PExpireAtNX(ctx, "key", pexpireAt.Add(time.Second))
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(false))
+
+			pttl := client.PTTL(ctx, "key")
+			Expect(pttl.Err()).NotTo(HaveOccurred())
+			Expect(pttl.Val()).To(BeNumerically("~", expiration, 100*time.Millisecond))
+		})
+
+		It("should PExpireAtXX", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			expiration := 900 * time.Millisecond
+			pexpireAt := time.Now().Add(expiration)
+			pexpireAtCmd := client.PExpireAtXX(ctx, "key", pexpireAt)
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(false))
+
+			pexpireAtCmd = client.PExpireAt(ctx, "key", pexpireAt)
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(time.Second))
+
+			pexpireAt = pexpireAt.Add(time.Second)
+			pexpireAtCmd = client.PExpireAtXX(ctx, "key", pexpireAt)
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(true))
+
+			pttl := client.PTTL(ctx, "key")
+			Expect(pttl.Err()).NotTo(HaveOccurred())
+			Expect(pttl.Val()).To(BeNumerically("~", 1900*time.Millisecond, 1000*time.Millisecond))
+		})
+
+		It("should PExpireAtGT", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			pexpireAt := time.Now().Add(5000 * time.Millisecond)
+			pexpireAtCmd := client.PExpireAt(ctx, "key", pexpireAt)
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(5 * time.Second))
+
+			pexpireAt = pexpireAt.Add(-2000 * time.Millisecond)
+			pexpireAtCmd = client.PExpireAtGT(ctx, "key", pexpireAt)
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(false))
+
+			pexpireAt = pexpireAt.Add(5000 * time.Millisecond)
+			pexpireAtCmd = client.PExpireAtGT(ctx, "key", pexpireAt)
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(true))
+
+			pttl := client.PTTL(ctx, "key")
+			Expect(pttl.Err()).NotTo(HaveOccurred())
+			Expect(pttl.Val()).To(BeNumerically("~", 8000*time.Millisecond, 7000*time.Millisecond))
+		})
+
+		It("should PExpireAtLT", func() {
+			set := client.Set(ctx, "key", "Hello", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			pexpireAt := time.Now().Add(5000 * time.Millisecond)
+			pexpireAtCmd := client.PExpireAt(ctx, "key", pexpireAt)
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(true))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(Equal(5 * time.Second))
+
+			pexpireAt = pexpireAt.Add(2000 * time.Millisecond)
+			pexpireAtCmd = client.PExpireAtLT(ctx, "key", pexpireAt)
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(false))
+
+			pexpireAt = pexpireAt.Add(-5000 * time.Millisecond)
+			pexpireAtCmd = client.PExpireAtLT(ctx, "key", pexpireAt)
+			Expect(pexpireAtCmd.Err()).NotTo(HaveOccurred())
+			Expect(pexpireAtCmd.Val()).To(Equal(true))
+
+			pttl := client.PTTL(ctx, "key")
+			Expect(pttl.Err()).NotTo(HaveOccurred())
+			Expect(pttl.Val()).To(BeNumerically("~", 2000*time.Millisecond, 1000*time.Millisecond))
 		})
 
 		It("should PExpireTime", func() {
@@ -1979,6 +2494,55 @@ var _ = Describe("Commands", func() {
 
 			Expect(args).To(Equal(expectedArgs))
 		})
+
+		It("should ACL LOG", func() {
+
+			err := client.Do(ctx, "acl", "setuser", "test", ">test", "on", "allkeys", "+get").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			clientAcl := redis.NewClient(redisOptions())
+			clientAcl.Options().Username = "test"
+			clientAcl.Options().Password = "test"
+			clientAcl.Options().DB = 0
+			_ = clientAcl.Set(ctx, "mystring", "foo", 0).Err()
+			_ = clientAcl.HSet(ctx, "myhash", "foo", "bar").Err()
+			_ = clientAcl.SAdd(ctx, "myset", "foo", "bar").Err()
+
+			logEntries, err := client.ACLLog(ctx, 10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(logEntries)).To(Equal(3))
+
+			for _, entry := range logEntries {
+				Expect(entry.Count).To(BeNumerically("==", 1))
+				Expect(entry.Reason).To(Equal("command"))
+				Expect(entry.Context).To(Equal("toplevel"))
+				Expect(entry.Object).NotTo(BeEmpty())
+				Expect(entry.Username).To(Equal("test"))
+				Expect(entry.AgeSeconds).To(BeNumerically(">=", 0))
+				Expect(entry.ClientInfo).NotTo(BeNil())
+				Expect(entry.EntryID).To(BeNumerically(">=", 0))
+				Expect(entry.TimestampCreated).To(BeNumerically(">=", 0))
+				Expect(entry.TimestampLastUpdated).To(BeNumerically(">=", 0))
+			}
+
+			limitedLogEntries, err := client.ACLLog(ctx, 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(limitedLogEntries)).To(Equal(2))
+
+		})
+
+		It("should ACL LOG RESET", func() {
+			// Call ACL LOG RESET
+			resetCmd := client.ACLLogReset(ctx)
+			Expect(resetCmd.Err()).NotTo(HaveOccurred())
+			Expect(resetCmd.Val()).To(Equal("OK"))
+
+			// Verify that the log is empty after the reset
+			logEntries, err := client.ACLLog(ctx, 10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(logEntries)).To(Equal(0))
+		})
+
 	})
 
 	Describe("hashes", func() {
@@ -4737,6 +5301,31 @@ var _ = Describe("Commands", func() {
 			Expect(zRank.Val()).To(Equal(int64(0)))
 		})
 
+		It("should ZRankWithScore", func() {
+			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			zRankWithScore := client.ZRankWithScore(ctx, "zset", "one")
+			Expect(zRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 0, Score: 1}))
+
+			zRankWithScore = client.ZRankWithScore(ctx, "zset", "two")
+			Expect(zRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 1, Score: 2}))
+
+			zRankWithScore = client.ZRankWithScore(ctx, "zset", "three")
+			Expect(zRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 2, Score: 3}))
+
+			zRankWithScore = client.ZRankWithScore(ctx, "zset", "four")
+			Expect(zRankWithScore.Err()).To(HaveOccurred())
+			Expect(zRankWithScore.Err()).To(Equal(redis.Nil))
+		})
+
 		It("should ZRem", func() {
 			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -5006,6 +5595,31 @@ var _ = Describe("Commands", func() {
 			zRevRank = client.ZRevRank(ctx, "zset", "four")
 			Expect(zRevRank.Err()).To(Equal(redis.Nil))
 			Expect(zRevRank.Val()).To(Equal(int64(0)))
+		})
+
+		It("should ZRevRankWithScore", func() {
+			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			zRevRankWithScore := client.ZRevRankWithScore(ctx, "zset", "one")
+			Expect(zRevRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 2, Score: 1}))
+
+			zRevRankWithScore = client.ZRevRankWithScore(ctx, "zset", "two")
+			Expect(zRevRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 1, Score: 2}))
+
+			zRevRankWithScore = client.ZRevRankWithScore(ctx, "zset", "three")
+			Expect(zRevRankWithScore.Err()).NotTo(HaveOccurred())
+			Expect(zRevRankWithScore.Result()).To(Equal(redis.RankScore{Rank: 0, Score: 3}))
+
+			zRevRankWithScore = client.ZRevRankWithScore(ctx, "zset", "four")
+			Expect(zRevRankWithScore.Err()).To(HaveOccurred())
+			Expect(zRevRankWithScore.Err()).To(Equal(redis.Nil))
 		})
 
 		It("should ZScore", func() {
