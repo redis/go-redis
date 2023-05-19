@@ -21,7 +21,3 @@ See https://github.com/redis-stack/redis-stack-website#readme for more details.
 - Run `go test` to test all examples in the current folder.
 - Run `go test filename.go` to test a single file
 
-## Missing
-
-- We need to set up a way to automatically bring up a Redis server on port 6379 before the test suite, flush the db between tests and stop the server after the test suite.
-- We should be able to test with more than one Redis version
