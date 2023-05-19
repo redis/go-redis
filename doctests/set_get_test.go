@@ -18,6 +18,14 @@ func ExampleSetGet() {
 	})
 
 	// HIDE_END
+
+	// REMOVE_START
+	errFlush := rdb.FlushDB(ctx).Err() // Clear the database before each test
+	if errFlush != nil {
+		panic(errFlush)
+	}
+	// REMOVE_END
+
 	err := rdb.Set(ctx, "bike:1", "Process 134", 0).Err()
 	if err != nil {
 		panic(err)

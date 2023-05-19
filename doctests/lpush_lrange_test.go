@@ -18,6 +18,14 @@ func ExampleLPushLRange() {
 	})
 
 	// HIDE_END
+
+	// REMOVE_START
+	errFlush := rdb.FlushDB(ctx).Err() // Clear the database before each test
+	if errFlush != nil {
+		panic(errFlush)
+	}
+	// REMOVE_END
+
 	listSize, err := rdb.LPush(ctx, "my_bikes", "bike:1", "bike:2").Result()
 	if err != nil {
 		panic(err)
