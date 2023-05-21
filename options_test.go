@@ -63,6 +63,9 @@ func TestParseURL(t *testing.T) {
 			url: "redis://localhost:123/?db=2&client_name=hi", // client name
 			o:   &Options{Addr: "localhost:123", DB: 2, ClientName: "hi"},
 		}, {
+			url: "redis://localhost:123/?db=2&protocol=2", // RESP Protocol
+			o:   &Options{Addr: "localhost:123", DB: 2, Protocol: 2},
+		}, {
 			url: "unix:///tmp/redis.sock",
 			o:   &Options{Addr: "/tmp/redis.sock"},
 		}, {
