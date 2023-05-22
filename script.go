@@ -63,6 +63,21 @@ func (s *Script) EvalShaRO(ctx context.Context, c Scripter, keys []string, args 
 	return c.EvalShaRO(ctx, s.hash, keys, args...)
 }
 
+// Optimistically uses EVALSHA to run the script. Load the script if it doesn't exist
+func (s *Script) RunLoad(ctx context.Context, c Scripter, keys []string, args ...interface{}) (*Cmd, error) {
+	r := s.EvalSha(ctx, c, keys, args...)
+
+	if err := r.Err(); err != nil && HasErrorPrefix(r.Err(), "NOSCRIPT") {
+		if err := s.Load(ctx, c).Err(); err != nil {
+			return nil, err
+		}
+
+		return s.EvalSha(ctx, c, keys, args...), nil
+	}
+
+	return r, nil
+}
+
 // Run optimistically uses EVALSHA to run the script. If script does not exist
 // it is retried using EVAL.
 func (s *Script) Run(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
