@@ -25,6 +25,8 @@ func SetLogger(logger internal.Logging) {
 	internal.Logger = logger
 }
 
+//------------------------------------------------------------------------------
+
 type Hook interface {
 	DialHook(next DialHook) DialHook
 	ProcessHook(next ProcessHook) ProcessHook
