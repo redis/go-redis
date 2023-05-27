@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go.uber.org/zap"
 	"net"
 	"sync/atomic"
 	"time"
@@ -21,27 +20,10 @@ type Scanner = hscan.Scanner
 // Nil reply returned by Redis when key does not exist.
 const Nil = proto.Nil
 
-type ZapLogger struct {
-	logger *zap.Logger
-}
-
-func (z *ZapLogger) Printf(ctx context.Context, format string, v ...interface{}) {
-	z.logger.Info(fmt.Sprintf(format, v...))
-}
-
 // SetLogger set custom log
 func SetLogger(logger internal.Logging) {
 	internal.Logger = logger
 }
-
-// Set Zap Logger
-func SetZapLogger(logger *zap.Logger) {
-	internal.Logger = &ZapLogger{
-		logger: logger,
-	}
-}
-
-//------------------------------------------------------------------------------
 
 type Hook interface {
 	DialHook(next DialHook) DialHook
