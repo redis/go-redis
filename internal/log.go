@@ -14,11 +14,8 @@ import (
 
 type Logging interface {
 	Printf(ctx context.Context, format string, v ...interface{})
-	Debug(ctx context.Context, msg string, keysAndValues ...interface{})
 	Info(ctx context.Context, msg string, keysAndValues ...interface{})
-	Warn(ctx context.Context, msg string, keysAndValues ...interface{})
 	Error(ctx context.Context, msg string, keysAndValues ...interface{})
-	Fatal(ctx context.Context, msg string, keysAndValues ...interface{})
 }
 
 type logger struct {
@@ -32,20 +29,8 @@ func (l *logger) Info(ctx context.Context, msg string, keysAndValues ...interfac
 	_ = l.log.Output(2, fmt.Sprintf(msg, keysAndValues...))
 }
 
-func (l *logger) Debug(ctx context.Context, msg string, keysAndValues ...interface{}) {
-	_ = l.log.Output(2, fmt.Sprintf("DEBUG: "+msg, keysAndValues...))
-}
-
-func (l *logger) Warn(ctx context.Context, msg string, keysAndValues ...interface{}) {
-	_ = l.log.Output(2, fmt.Sprintf("WARN: "+msg, keysAndValues...))
-}
-
 func (l *logger) Error(ctx context.Context, msg string, keysAndValues ...interface{}) {
 	_ = l.log.Output(2, fmt.Sprintf("ERROR: "+msg, keysAndValues...))
-}
-
-func (l *logger) Fatal(ctx context.Context, msg string, keysAndValues ...interface{}) {
-	l.log.Fatalf("FATAL: "+msg, keysAndValues...)
 }
 
 // Logger calls Output to print to the stderr.
