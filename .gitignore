@@ -1,3 +1,4 @@
 *.rdb
 testdata/*
 .idea/
+.DS_Store
