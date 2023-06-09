@@ -69,3 +69,28 @@ var _ = Describe("HashSlot", func() {
 		}
 	})
 })
+
+var _ = Describe("Present", func() {
+	It("should calculate hash slots", func() {
+		tests := []struct {
+			key     string
+			present bool
+		}{
+			{"123456789", false},
+			{"{}foo", false},
+			{"foo{}", false},
+			{"foo{}{bar}", false},
+			{"", false},
+			{string([]byte{83, 153, 134, 118, 229, 214, 244, 75, 140, 37, 215, 215}), false},
+			{"foo{bar}", true},
+			{"{foo}bar", true},
+			{"{user1000}.following", true},
+			{"foo{{bar}}zap", true},
+			{"foo{bar}{zap}", true},
+		}
+
+		for _, test := range tests {
+			Expect(Present(test.key)).To(Equal(test.present), "for %s", test.key)
+		}
+	})
+})
