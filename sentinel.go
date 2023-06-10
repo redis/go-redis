@@ -51,8 +51,9 @@ type FailoverOptions struct {
 
 	// Following options are copied from Options struct.
 
-	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
-	OnConnect func(ctx context.Context, cn *Conn) error
+	Dialer       func(ctx context.Context, network, addr string) (net.Conn, error)
+	OnConnect    func(ctx context.Context, cn *Conn) error
+	OnDisconnect func(ctx context.Context, cn *Conn) error
 
 	Protocol int
 	Username string
@@ -85,8 +86,9 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		Addr:       "FailoverClient",
 		ClientName: opt.ClientName,
 
-		Dialer:    opt.Dialer,
-		OnConnect: opt.OnConnect,
+		Dialer:       opt.Dialer,
+		OnConnect:    opt.OnConnect,
+		OnDisconnect: opt.OnDisconnect,
 
 		DB:       opt.DB,
 		Protocol: opt.Protocol,
@@ -119,8 +121,9 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		Addr:       addr,
 		ClientName: opt.ClientName,
 
-		Dialer:    opt.Dialer,
-		OnConnect: opt.OnConnect,
+		Dialer:       opt.Dialer,
+		OnConnect:    opt.OnConnect,
+		OnDisconnect: opt.OnDisconnect,
 
 		DB:       0,
 		Username: opt.SentinelUsername,

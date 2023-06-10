@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"runtime"
@@ -44,6 +45,9 @@ type Options struct {
 
 	// Hook that is called when new connection is established.
 	OnConnect func(ctx context.Context, cn *Conn) error
+
+	// Hook that is called client disconnect from server.
+	OnDisconnect func(ctx context.Context, cn *Conn) error
 
 	// Protocol 2 or 3. Use the version to negotiate RESP version with redis-server.
 	// Default is 3.
@@ -273,6 +277,25 @@ func ParseURL(redisURL string) (*Options, error) {
 		return setupUnixConn(u)
 	default:
 		return nil, fmt.Errorf("redis: invalid URL scheme: %s", u.Scheme)
+	}
+}
+
+// DefaultOnDisconnect track server disconnection and send log in console stdout
+func DefaultOnDisconnect(interval time.Duration, cancel <-chan struct{}) func(ctx context.Context, cn *Conn) error {
+	return func(ctx context.Context, cn *Conn) error {
+		ticker := time.NewTicker(interval)
+
+		for {
+			select {
+			case <-ticker.C:
+				s := cn.Ping(context.Background())
+				if s.err != nil {
+					log.Printf("redis: client disconnect from server, got error %s", s.err.Error())
+				}
+			case <-cancel:
+				return nil
+			}
+		}
 	}
 }
 

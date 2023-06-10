@@ -465,6 +465,30 @@ var _ = Describe("Client OnConnect", func() {
 	})
 })
 
+var _ = Describe("Client OnDisconnect", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		opt := redisOptions()
+		opt.DB = 0
+		opt.OnDisconnect = func(ctx context.Context, cn *redis.Conn) error {
+			return cn.ClientSetName(ctx, "on_disconnect").Err()
+		}
+
+		client = redis.NewClient(opt)
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("calls OnDisconnect", func() {
+		name, err := client.ClientGetName(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(name).To(Equal("on_disconnect"))
+	})
+})
+
 var _ = Describe("Client context cancelation", func() {
 	var opt *redis.Options
 	var client *redis.Client

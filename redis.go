@@ -330,6 +330,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if c.opt.OnConnect != nil {
 		return c.opt.OnConnect(ctx, conn)
 	}
+
+	if c.opt.OnDisconnect != nil {
+		return c.opt.OnDisconnect(ctx, conn)
+	}
+
 	return nil
 }
 

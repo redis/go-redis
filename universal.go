@@ -23,8 +23,9 @@ type UniversalOptions struct {
 
 	// Common options.
 
-	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
-	OnConnect func(ctx context.Context, cn *Conn) error
+	Dialer       func(ctx context.Context, network, addr string) (net.Conn, error)
+	OnConnect    func(ctx context.Context, cn *Conn) error
+	OnDisconnect func(ctx context.Context, cn *Conn) error
 
 	Protocol         int
 	Username         string
@@ -159,10 +160,11 @@ func (o *UniversalOptions) Simple() *Options {
 	}
 
 	return &Options{
-		Addr:       addr,
-		ClientName: o.ClientName,
-		Dialer:     o.Dialer,
-		OnConnect:  o.OnConnect,
+		Addr:         addr,
+		ClientName:   o.ClientName,
+		Dialer:       o.Dialer,
+		OnConnect:    o.OnConnect,
+		OnDisconnect: o.OnDisconnect,
 
 		DB:       o.DB,
 		Protocol: o.Protocol,
