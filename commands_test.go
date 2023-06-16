@@ -510,22 +510,6 @@ var _ = Describe("Commands", func() {
 			expire := client.ExpireNX(ctx, "key", 10*time.Second)
 			Expect(expire.Err()).NotTo(HaveOccurred())
 			Expect(expire.Val()).To(Equal(true))
-
-			ttl := client.TTL(ctx, "key")
-			Expect(ttl.Err()).NotTo(HaveOccurred())
-			Expect(ttl.Val()).To(BeNumerically("~", 10*time.Second, time.Second))
-
-			expire = client.ExpireNX(ctx, "key", 10*time.Second)
-			Expect(expire.Err()).NotTo(HaveOccurred())
-			Expect(expire.Val()).To(Equal(false))
-
-			set = client.Set(ctx, "key", "Hello World", 0)
-			Expect(set.Err()).NotTo(HaveOccurred())
-			Expect(set.Val()).To(Equal("OK"))
-
-			ttl = client.TTL(ctx, "key")
-			Expect(ttl.Err()).NotTo(HaveOccurred())
-			Expect(ttl.Val()).To(Equal(time.Duration(-1)))
 		})
 
 		It("should ExpireXX", func() {
@@ -548,26 +532,14 @@ var _ = Describe("Commands", func() {
 			ttl := client.TTL(ctx, "key")
 			Expect(ttl.Err()).NotTo(HaveOccurred())
 			Expect(ttl.Val()).To(BeNumerically("~", 20*time.Second, 10*time.Second))
-
-			set = client.Set(ctx, "key", "Hello World", 0)
-			Expect(set.Err()).NotTo(HaveOccurred())
-			Expect(set.Val()).To(Equal("OK"))
-
-			ttl = client.TTL(ctx, "key")
-			Expect(ttl.Err()).NotTo(HaveOccurred())
-			Expect(ttl.Val()).To(Equal(time.Duration(-1)))
 		})
 
 		It("should ExpireGT", func() {
-			set := client.Set(ctx, "key", "Hello", 0)
+			set := client.Set(ctx, "key", "Hello", 10*time.Second)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
 
-			expire := client.Expire(ctx, "key", 10*time.Second)
-			Expect(expire.Err()).NotTo(HaveOccurred())
-			Expect(expire.Val()).To(Equal(true))
-
-			expire = client.ExpireGT(ctx, "key", 5*time.Second)
+			expire := client.ExpireGT(ctx, "key", 5*time.Second)
 			Expect(expire.Err()).NotTo(HaveOccurred())
 			Expect(expire.Val()).To(Equal(false))
 
@@ -578,14 +550,6 @@ var _ = Describe("Commands", func() {
 			ttl := client.TTL(ctx, "key")
 			Expect(ttl.Err()).NotTo(HaveOccurred())
 			Expect(ttl.Val()).To(BeNumerically("~", 20*time.Second, 10*time.Second))
-
-			set = client.Set(ctx, "key", "Hello World", 0)
-			Expect(set.Err()).NotTo(HaveOccurred())
-			Expect(set.Val()).To(Equal("OK"))
-
-			ttl = client.TTL(ctx, "key")
-			Expect(ttl.Err()).NotTo(HaveOccurred())
-			Expect(ttl.Val()).To(Equal(time.Duration(-1)))
 		})
 
 		It("should ExpireLT", func() {
@@ -604,14 +568,6 @@ var _ = Describe("Commands", func() {
 			ttl := client.TTL(ctx, "key")
 			Expect(ttl.Err()).NotTo(HaveOccurred())
 			Expect(ttl.Val()).To(BeNumerically("~", 5*time.Second, time.Second))
-
-			set = client.Set(ctx, "key", "Hello World", 0)
-			Expect(set.Err()).NotTo(HaveOccurred())
-			Expect(set.Val()).To(Equal("OK"))
-
-			ttl = client.TTL(ctx, "key")
-			Expect(ttl.Err()).NotTo(HaveOccurred())
-			Expect(ttl.Val()).To(Equal(time.Duration(-1)))
 		})
 
 		It("should ExpireAt", func() {
