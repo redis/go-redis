@@ -95,6 +95,17 @@ var _ = Describe("Commands", func() {
 			Expect(time.Now()).To(BeTemporally("~", start.Add(wait), 3*time.Second))
 		})
 
+		It("should WaitAOF", func() {
+			const waitAOF = 3 * time.Second
+
+			// assuming that the redis instance doesn't have AOF enabled
+			start := time.Now()
+			val, err := client.WaitAOF(ctx, 0, 1, waitAOF).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(0)))
+			Expect(time.Now()).To(BeTemporally("~", start.Add(waitAOF), 3*time.Second))
+		})
+
 		It("should Select", func() {
 			pipe := client.Pipeline()
 			sel := pipe.Select(ctx, 1)
