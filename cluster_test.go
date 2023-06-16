@@ -583,6 +583,35 @@ var _ = Describe("ClusterClient", func() {
 		})
 	}
 
+	Describe("ClusterClient PROTO 2", func() {
+		BeforeEach(func() {
+			opt = redisClusterOptions()
+			opt.Protocol = 2
+			client = cluster.newClusterClient(ctx, opt)
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				return master.FlushDB(ctx).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			_ = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				return master.FlushDB(ctx).Err()
+			})
+			Expect(client.Close()).NotTo(HaveOccurred())
+		})
+
+		It("should CLUSTER PROTO 2", func() {
+			_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+				val, err := c.Do(ctx, "HELLO").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).Should(ContainElements("proto", int64(2)))
+				return nil
+			})
+		})
+	})
+
 	Describe("ClusterClient", func() {
 		BeforeEach(func() {
 			opt = redisClusterOptions()
@@ -742,6 +771,15 @@ var _ = Describe("ClusterClient", func() {
 				val, err := c.ClientList(ctx).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(val).Should(ContainSubstring("name=cluster_hi"))
+				return nil
+			})
+		})
+
+		It("should CLUSTER PROTO 3", func() {
+			_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+				val, err := c.Do(ctx, "HELLO").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
 				return nil
 			})
 		})
@@ -1481,6 +1519,10 @@ var _ = Describe("ClusterClient ParseURL", func() {
 			test: "UseDefault",
 			url:  "redis://localhost:123?conn_max_idle_time=",
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
+		}, {
+			test: "Protocol",
+			url:  "redis://localhost:123?protocol=2",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Protocol: 2},
 		}, {
 			test: "ClientName",
 			url:  "redis://localhost:123?client_name=cluster_hi",

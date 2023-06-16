@@ -15,6 +15,37 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+var _ = Describe("Redis Ring PROTO 2", func() {
+	const heartbeat = 100 * time.Millisecond
+
+	var ring *redis.Ring
+
+	BeforeEach(func() {
+		opt := redisRingOptions()
+		opt.Protocol = 2
+		opt.HeartbeatFrequency = heartbeat
+		ring = redis.NewRing(opt)
+
+		err := ring.ForEachShard(ctx, func(ctx context.Context, cl *redis.Client) error {
+			return cl.FlushDB(ctx).Err()
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(ring.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should ring PROTO 2", func() {
+		_ = ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := c.Do(ctx, "HELLO").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(ContainElements("proto", int64(2)))
+			return nil
+		})
+	})
+})
+
 var _ = Describe("Redis Ring", func() {
 	const heartbeat = 100 * time.Millisecond
 
@@ -61,6 +92,15 @@ var _ = Describe("Redis Ring", func() {
 			val, err := c.ClientList(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).Should(ContainSubstring("name=ring_hi"))
+			return nil
+		})
+	})
+
+	It("should ring PROTO 3", func() {
+		_ = ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := c.Do(ctx, "HELLO").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
 			return nil
 		})
 	})
