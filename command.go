@@ -5224,16 +5224,16 @@ func (cmd *JSONStringCmd) Scan(index int, dst interface{}) error {
 func (cmd *JSONStringCmd) readReply(rd *proto.Reader) error {
 
 	// nil response from JSON.(M)GET (cmd.baseCmd.err will be "redis: nil")
-	if cmd.baseCmd.Err().Error() == Nil.Error() {
+	if cmd.baseCmd.Err() == Nil {
 		cmd.val = nil
 		cmd.SetErr(nil)
 		return nil
 	}
 
 	var err error
-	if cmd.raw, err = rd.ReadString(); err != nil {
+	if cmd.raw, err = rd.ReadString(); err != nil && err != Nil {
 		return err
-	} else if cmd.raw == "" {
+	} else if cmd.raw == "" || err == Nil {
 		cmd.val = nil
 	} else {
 		cmd.val = []interface{}{}

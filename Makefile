@@ -14,7 +14,7 @@ test: testdeps
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet
 
-testdeps: testdata/redis/src/redis-server
+testdeps: testdata/redis/src/redis-server testdata/redis-json-module
 
 bench: testdeps
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem
@@ -25,8 +25,17 @@ testdata/redis:
 	mkdir -p $@
 	wget -qO- https://download.redis.io/releases/redis-7.2-rc1.tar.gz | tar xvz --strip-components=1 -C $@
 
+testdata/redis-json:
+	mkdir -p $@
+	wget -qO- https://github.com/RedisJSON/RedisJSON/archive/refs/tags/v2.4.7.tar.gz | tar xvz --strip-components=1 -C $@
+
+
 testdata/redis/src/redis-server: testdata/redis
 	cd $< && make all
+
+testdata/redis-json-module: testdata/redis-json
+	cd $< && cargo build --release
+
 
 fmt:
 	gofmt -w -s ./
