@@ -118,7 +118,10 @@ var _ = AfterSuite(func() {
 
 func TestGinkgoSuite(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "go-redis")
+
+	suiteConfig, reportConfig := GinkgoConfiguration()
+	suiteConfig.LabelFilter = "json"
+	RunSpecs(t, "go-redis", suiteConfig, reportConfig)
 }
 
 //------------------------------------------------------------------------------
