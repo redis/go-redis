@@ -118,7 +118,10 @@ var _ = AfterSuite(func() {
 
 func TestGinkgoSuite(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "go-redis")
+
+	suiteConfig, reportConfig := GinkgoConfiguration()
+	suiteConfig.LabelFilter = "json"
+	RunSpecs(t, "go-redis", suiteConfig, reportConfig)
 }
 
 //------------------------------------------------------------------------------
@@ -302,6 +305,22 @@ func redisDir(port string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+func redisJSONPath() (string, error) {
+	dir, err := filepath.Abs(filepath.Join("testdata", "redis-json", "target", "release"))
+	if err != nil {
+		return "", nil
+	}
+	_, err = os.Stat(filepath.Join(dir, "librejson.so"))
+	if err == nil {
+		return filepath.Join(dir, "librejson.so"), nil
+	}
+	_, err = os.Stat(filepath.Join(dir, "librejson.dylib"))
+	if err == nil {
+		return filepath.Join(dir, "librejson.dylib"), nil
+	}
+	return "", err
 }
 
 func startRedis(port string, args ...string) (*redisProcess, error) {

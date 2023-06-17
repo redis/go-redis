@@ -12,10 +12,19 @@ type JSONGetTestStruct struct {
 	Hello string `json:"hello"`
 }
 
-var _ = Describe("JSON Commands", Label("json"), func() {
+var _ = Describe("JSON Commands", Ordered, Label("json"), func() {
 
 	ctx := context.TODO()
 	var client *redis.Client
+
+	BeforeAll(func() {
+		client = redis.NewClient(redisOptions())
+		path, err := redisJSONPath()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(client.ModuleLoadex(ctx, &redis.ModuleLoadexConfig{
+			Path: path,
+		}).Err()).NotTo(HaveOccurred())
+	})
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
