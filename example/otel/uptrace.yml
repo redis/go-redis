@@ -79,30 +79,30 @@ metrics_from_spans:
     description: Spans duration (excluding events)
     instrument: histogram
     unit: microseconds
-    value: span.duration / 1000
+    value: .duration / 1000
     attrs:
-      - span.system
-      - span.group_id
+      - .system
+      - .group_id
       - service.name
       - host.name
-      - span.status_code
+      - .status_code
     annotations:
-      - span.name
-    where: not span.is_event
+      - display.name
+    where: .event_name = ''
 
   - name: uptrace.tracing.events
     description: Events count (excluding spans)
     instrument: counter
     unit: 1
-    value: span.count
+    value: .count
     attrs:
-      - span.system
-      - span.group_id
-      - service.name
+      - .system
+      - .group_id
+      - .name
       - host.name
     annotations:
-      - span.event_name
-    where: span.is_event
+      - display.name
+    where: .is_event = 1
 
 ##
 ## To require authentication, uncomment one of the following sections.
@@ -247,7 +247,7 @@ smtp_mailer:
 ##
 ## Logging configuration.
 ##
-logs:
+logging:
   # Zap minimal logging level.
   # Valid values: DEBUG, INFO, WARN, ERROR, DPANIC, PANIC, FATAL.
   level: INFO
