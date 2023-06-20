@@ -3965,3 +3965,228 @@ func (c cmdable) ACLLogReset(ctx context.Context) *StatusCmd {
 	_ = c(ctx, cmd)
 	return cmd
 }
+
+// -------------------------------------------
+
+type BFReserveOptions struct {
+	Capacity   int64
+	Error      float64
+	Expansion  int64
+	NonScaling bool
+}
+
+type CFReserveOptions struct {
+	Capacity      int64
+	BucketSize    int64
+	MaxIterations int64
+	Expansion     int64
+}
+
+type BFInfo int
+
+const (
+	BFCAPACITY BFInfo = iota
+	BFSIZE
+	BFFILTERS
+	BFITEMS
+	BFEXPANSION
+)
+
+func (b BFInfo) String() string {
+	switch b {
+	case BFCAPACITY:
+		return "capacity"
+	case BFSIZE:
+		return "size"
+	case BFFILTERS:
+		return "filters"
+	case BFITEMS:
+		return "items"
+	case BFEXPANSION:
+		return "expansion"
+	}
+	return ""
+}
+
+func (c cmdable) BFReserve(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd {
+	args := []interface{}{"bf.reserve", key, errorRate, capacity}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFReserveExpansion(ctx context.Context, key string, errorRate float64, capacity, expansion int64) *StatusCmd {
+	args := []interface{}{"bf.reserve", key, errorRate, capacity, "expansion", expansion}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFReserveNonScaling(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd {
+	args := []interface{}{"bf.reserve", key, errorRate, capacity, "nonscaling"}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFReserveArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd {
+	args := []interface{}{"bf.reserve", key}
+	if options != nil {
+		if options.Error != 0 {
+			args = append(args, options.Error)
+		}
+		if options.Capacity != 0 {
+			args = append(args, options.Capacity)
+		}
+		if options.Expansion != 0 {
+			args = append(args, "expansion", options.Expansion)
+		}
+		if options.NonScaling {
+			args = append(args, "nonscaling")
+		}
+	}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFAdd(ctx context.Context, key, item string) *IntCmd {
+	args := []interface{}{"bf.add", key, item}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFCard(ctx context.Context, key string) *IntCmd {
+	args := []interface{}{"bf.card", key}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFExists(ctx context.Context, key, item string) *IntCmd {
+	args := []interface{}{"bf.exists", key, item}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFInfo(ctx context.Context, key string) *MapStringStringCmd {
+	args := []interface{}{"bf.info", key}
+	cmd := NewMapStringStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFInfoArg(ctx context.Context, key string, option BFInfo) *IntCmd {
+	args := []interface{}{"bf.info", key, option.String()}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFInsert(ctx context.Context, key string, options *BFReserveOptions, items ...string) *IntSliceCmd {
+	args := []interface{}{"bf.insert", key}
+	if options != nil {
+		if options.Error != 0 {
+			args = append(args, "error", options.Error)
+		}
+		if options.Capacity != 0 {
+			args = append(args, "capacity", options.Capacity)
+		}
+		if options.Expansion != 0 {
+			args = append(args, "expansion", options.Expansion)
+		}
+		if options.NonScaling {
+			args = append(args, "nonscaling")
+		}
+	}
+	args = append(args, "items")
+	for _, s := range items {
+		args = append(args, s)
+	}
+
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFMAdd(ctx context.Context, key string, items ...string) *IntSliceCmd {
+	args := []interface{}{"bf.madd", key, "items"}
+	for _, s := range items {
+		args = append(args, s)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFMExists(ctx context.Context, key string, items ...string) *IntSliceCmd {
+	args := []interface{}{"bf.mexists", key, "items"}
+	for _, s := range items {
+		args = append(args, s)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// -------------------------------------------
+
+func (c cmdable) CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd {
+	args := []interface{}{"cf.reserve", key, capacity}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CFReserveArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
+	args := []interface{}{"cf.reserve", key, options.Capacity}
+	if options.BucketSize != 0 {
+		args = append(args, "bucketsize", options.BucketSize)
+	}
+	if options.MaxIterations != 0 {
+		args = append(args, "maxiterations", options.MaxIterations)
+	}
+	if options.Expansion != 0 {
+		args = append(args, "expansion", options.Expansion)
+	}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CFAdd(ctx context.Context, key, item string) *IntCmd {
+	args := []interface{}{"cf.add", key, item}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CFCount(ctx context.Context, key, item string) *IntCmd {
+	args := []interface{}{"cf.count", key, item}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CFAddNX(ctx context.Context, key, item string) *IntCmd {
+	args := []interface{}{"cf.addnx", key, item}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CFDel(ctx context.Context, key string) *IntCmd {
+	args := []interface{}{"cf.del", key}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CFExists(ctx context.Context, key, item string) *IntCmd {
+	args := []interface{}{"cf.exists", key, item}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
