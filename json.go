@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/util"
 )
 
 // -------------------------------------------
@@ -366,7 +367,7 @@ func (c cmdable) JSONObjLen(ctx context.Context, key, path string) *IntPointerSl
 }
 
 // JSONSet sets the JSON value at the given path in the given key. The value must be something that
-// can be marshalled to JSON (using encoding/JSON) unless the argument is a string when we assume that
+// can be marshalled to JSON (using encoding/JSON) unless the argument is a string or a []byte when we assume that
 // it can be passed directly as JSON.
 func (c cmdable) JSONSet(ctx context.Context, key, path string, value interface{}) *StatusCmd {
 	return c.JSONSetMode(ctx, key, path, value, "")
@@ -374,7 +375,7 @@ func (c cmdable) JSONSet(ctx context.Context, key, path string, value interface{
 
 // JSONSetMOde sets the JSON value at the given path in the given key allows the mode to be set
 // as well (the mode value must be "XX" or "NX").  The value must be something that can be marshalled to JSON (using encoding/JSON) unless
-// the argument is a string when we assume that  it can be passed directly as JSON.
+// the argument is a string or []byte when we assume that  it can be passed directly as JSON.
 func (c cmdable) JSONSetMode(ctx context.Context, key, path string, value interface{}, mode string) *StatusCmd {
 
 	var bytes []byte
@@ -383,11 +384,13 @@ func (c cmdable) JSONSetMode(ctx context.Context, key, path string, value interf
 	switch v := value.(type) {
 	case string:
 		bytes = []byte(v)
+	case []byte:
+		bytes = v
 	default:
 		bytes, err = json.Marshal(v)
 	}
 
-	args := []interface{}{"json.set", key, path, bytes}
+	args := []interface{}{"json.set", key, path, util.BytesToString(bytes)}
 
 	if mode != "" {
 		args = append(args, mode)
