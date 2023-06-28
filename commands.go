@@ -504,6 +504,22 @@ type Cmdable interface {
 	ACLLogReset(ctx context.Context) *StatusCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
+
+	BFAdd(ctx context.Context, key, item string) *IntCmd
+	BFCard(ctx context.Context, key string) *IntCmd
+	BFExists(ctx context.Context, key, item string) *IntCmd
+	BFInfo(ctx context.Context, key string) *MapStringStringCmd
+	BFInfoArg(ctx context.Context, key string, option BFInfo) *IntCmd
+	BFInsert(ctx context.Context, key string, options *BFReserveOptions, items ...string) *IntSliceCmd
+	BFMAdd(ctx context.Context, key string, items ...string) *IntSliceCmd
+	BFMExists(ctx context.Context, key string, items ...string) *IntSliceCmd
+	BFReserve(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
+	BFReserveExpansion(ctx context.Context, key string, errorRate float64, capacity, expansion int64) *StatusCmd
+	BFReserveNonScaling(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
+	BFReserveArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd
+	//TODO Loadchunk and scandump missing
+
+	CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd
 }
 
 type StatefulCmdable interface {
@@ -4112,7 +4128,7 @@ func (c cmdable) BFInsert(ctx context.Context, key string, options *BFReserveOpt
 }
 
 func (c cmdable) BFMAdd(ctx context.Context, key string, items ...string) *IntSliceCmd {
-	args := []interface{}{"bf.madd", key, "items"}
+	args := []interface{}{"bf.madd", key}
 	for _, s := range items {
 		args = append(args, s)
 	}
@@ -4122,7 +4138,7 @@ func (c cmdable) BFMAdd(ctx context.Context, key string, items ...string) *IntSl
 }
 
 func (c cmdable) BFMExists(ctx context.Context, key string, items ...string) *IntSliceCmd {
-	args := []interface{}{"bf.mexists", key, "items"}
+	args := []interface{}{"bf.mexists", key}
 	for _, s := range items {
 		args = append(args, s)
 	}
