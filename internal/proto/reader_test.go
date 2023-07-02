@@ -78,7 +78,7 @@ func TestReader_ReadLine(t *testing.T) {
 		t.Errorf("Should be able to read the full buffer: %v", err)
 	}
 
-	if bytes.Compare(read, original[:len(original)-2]) != 0 {
+	if !bytes.Equal(read, original[:len(original)-2]) {
 		t.Errorf("Values must be equal: %d expected %d", len(read), len(original[:len(original)-2]))
 	}
 }
