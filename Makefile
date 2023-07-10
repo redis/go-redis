@@ -1,10 +1,14 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
+REDIS_PORT ?= 6379
 
-test: testdeps
+redis:
+	docker run --name redis-stack -d -p ${REDIS_PORT}:6379 -it redis/redis-stack-server:edge
+
+test: redis
 	set -e; for dir in $(GO_MOD_DIRS); do \
 	  echo "go test in $${dir}"; \
 	  (cd "$${dir}" && \
-	    go mod tidy -compat=1.18 && \
+	    go mod tidy -compat=1.19 && \
 	    go test && \
 	    go test ./... -short -race && \
 	    go test ./... -run=NONE -bench=. -benchmem && \
@@ -14,19 +18,12 @@ test: testdeps
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet
 
-testdeps: testdata/redis/src/redis-server
+# testdeps: testdata/redis/src/redis-server
 
-bench: testdeps
+bench: redis
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem
 
-.PHONY: all test testdeps bench
-
-testdata/redis:
-	mkdir -p $@
-	wget -qO- https://download.redis.io/releases/redis-7.2-rc1.tar.gz | tar xvz --strip-components=1 -C $@
-
-testdata/redis/src/redis-server: testdata/redis
-	cd $< && make all
+.PHONY: all test redis bench
 
 fmt:
 	gofmt -w -s ./
@@ -37,5 +34,5 @@ go_mod_tidy:
 	  echo "go mod tidy in $${dir}"; \
 	  (cd "$${dir}" && \
 	    go get -u ./... && \
-	    go mod tidy -compat=1.18); \
+	    go mod tidy -compat=1.19); \
 	done

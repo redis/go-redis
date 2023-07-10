@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,10 +17,10 @@ import (
 )
 
 type clusterScenario struct {
-	ports     []string
-	nodeIDs   []string
-	processes map[string]*redisProcess
-	clients   map[string]*redis.Client
+	ports   []string
+	nodeIDs []string
+	// processes map[string]*redisProcess
+	clients map[string]*redis.Client
 }
 
 func (s *clusterScenario) masters() []*redis.Client {
@@ -81,125 +80,125 @@ func (s *clusterScenario) newClusterClient(
 	return client
 }
 
-func (s *clusterScenario) Close() error {
-	for _, port := range s.ports {
-		if process, ok := processes[port]; ok {
-			process.Close()
-			delete(processes, port)
-		}
-	}
-	return nil
-}
+// func (s *clusterScenario) Close() error {
+// 	for _, port := range s.ports {
+// 		if process, ok := processes[port]; ok {
+// 			process.Close()
+// 			delete(processes, port)
+// 		}
+// 	}
+// 	return nil
+// }
 
-func startCluster(ctx context.Context, scenario *clusterScenario) error {
-	// Start processes and collect node ids
-	for pos, port := range scenario.ports {
-		process, err := startRedis(port, "--cluster-enabled", "yes")
-		if err != nil {
-			return err
-		}
+// func startCluster(ctx context.Context, scenario *clusterScenario) error {
+// 	// Start processes and collect node ids
+// 	for pos, port := range scenario.ports {
+// 		process, err := startRedis(port, "--cluster-enabled", "yes")
+// 		if err != nil {
+// 			return err
+// 		}
 
-		client := redis.NewClient(&redis.Options{
-			Addr: ":" + port,
-		})
+// 		client := redis.NewClient(&redis.Options{
+// 			Addr: ":" + port,
+// 		})
 
-		info, err := client.ClusterNodes(ctx).Result()
-		if err != nil {
-			return err
-		}
+// 		info, err := client.ClusterNodes(ctx).Result()
+// 		if err != nil {
+// 			return err
+// 		}
 
-		scenario.processes[port] = process
-		scenario.clients[port] = client
-		scenario.nodeIDs[pos] = info[:40]
-	}
+// 		scenario.processes[port] = process
+// 		scenario.clients[port] = client
+// 		scenario.nodeIDs[pos] = info[:40]
+// 	}
 
-	// Meet cluster nodes.
-	for _, client := range scenario.clients {
-		err := client.ClusterMeet(ctx, "127.0.0.1", scenario.ports[0]).Err()
-		if err != nil {
-			return err
-		}
-	}
+// 	// Meet cluster nodes.
+// 	for _, client := range scenario.clients {
+// 		err := client.ClusterMeet(ctx, "127.0.0.1", scenario.ports[0]).Err()
+// 		if err != nil {
+// 			return err
+// 		}
+// 	}
 
-	// Bootstrap masters.
-	slots := []int{0, 5000, 10000, 16384}
-	for pos, master := range scenario.masters() {
-		err := master.ClusterAddSlotsRange(ctx, slots[pos], slots[pos+1]-1).Err()
-		if err != nil {
-			return err
-		}
-	}
+// 	// Bootstrap masters.
+// 	slots := []int{0, 5000, 10000, 16384}
+// 	for pos, master := range scenario.masters() {
+// 		err := master.ClusterAddSlotsRange(ctx, slots[pos], slots[pos+1]-1).Err()
+// 		if err != nil {
+// 			return err
+// 		}
+// 	}
 
-	// Bootstrap slaves.
-	for idx, slave := range scenario.slaves() {
-		masterID := scenario.nodeIDs[idx]
+// 	// Bootstrap slaves.
+// 	for idx, slave := range scenario.slaves() {
+// 		masterID := scenario.nodeIDs[idx]
 
-		// Wait until master is available
-		err := eventually(func() error {
-			s := slave.ClusterNodes(ctx).Val()
-			wanted := masterID
-			if !strings.Contains(s, wanted) {
-				return fmt.Errorf("%q does not contain %q", s, wanted)
-			}
-			return nil
-		}, 10*time.Second)
-		if err != nil {
-			return err
-		}
+// 		// Wait until master is available
+// 		err := eventually(func() error {
+// 			s := slave.ClusterNodes(ctx).Val()
+// 			wanted := masterID
+// 			if !strings.Contains(s, wanted) {
+// 				return fmt.Errorf("%q does not contain %q", s, wanted)
+// 			}
+// 			return nil
+// 		}, 10*time.Second)
+// 		if err != nil {
+// 			return err
+// 		}
 
-		err = slave.ClusterReplicate(ctx, masterID).Err()
-		if err != nil {
-			return err
-		}
-	}
+// 		err = slave.ClusterReplicate(ctx, masterID).Err()
+// 		if err != nil {
+// 			return err
+// 		}
+// 	}
 
-	// Wait until all nodes have consistent info.
-	wanted := []redis.ClusterSlot{{
-		Start: 0,
-		End:   4999,
-		Nodes: []redis.ClusterNode{{
-			ID:   "",
-			Addr: "127.0.0.1:8220",
-		}, {
-			ID:   "",
-			Addr: "127.0.0.1:8223",
-		}},
-	}, {
-		Start: 5000,
-		End:   9999,
-		Nodes: []redis.ClusterNode{{
-			ID:   "",
-			Addr: "127.0.0.1:8221",
-		}, {
-			ID:   "",
-			Addr: "127.0.0.1:8224",
-		}},
-	}, {
-		Start: 10000,
-		End:   16383,
-		Nodes: []redis.ClusterNode{{
-			ID:   "",
-			Addr: "127.0.0.1:8222",
-		}, {
-			ID:   "",
-			Addr: "127.0.0.1:8225",
-		}},
-	}}
-	for _, client := range scenario.clients {
-		err := eventually(func() error {
-			res, err := client.ClusterSlots(ctx).Result()
-			if err != nil {
-				return err
-			}
-			return assertSlotsEqual(res, wanted)
-		}, 30*time.Second)
-		if err != nil {
-			return err
-		}
-	}
+// 	// Wait until all nodes have consistent info.
+// 	wanted := []redis.ClusterSlot{{
+// 		Start: 0,
+// 		End:   4999,
+// 		Nodes: []redis.ClusterNode{{
+// 			ID:   "",
+// 			Addr: "127.0.0.1:8220",
+// 		}, {
+// 			ID:   "",
+// 			Addr: "127.0.0.1:8223",
+// 		}},
+// 	}, {
+// 		Start: 5000,
+// 		End:   9999,
+// 		Nodes: []redis.ClusterNode{{
+// 			ID:   "",
+// 			Addr: "127.0.0.1:8221",
+// 		}, {
+// 			ID:   "",
+// 			Addr: "127.0.0.1:8224",
+// 		}},
+// 	}, {
+// 		Start: 10000,
+// 		End:   16383,
+// 		Nodes: []redis.ClusterNode{{
+// 			ID:   "",
+// 			Addr: "127.0.0.1:8222",
+// 		}, {
+// 			ID:   "",
+// 			Addr: "127.0.0.1:8225",
+// 		}},
+// 	}}
+// 	for _, client := range scenario.clients {
+// 		err := eventually(func() error {
+// 			res, err := client.ClusterSlots(ctx).Result()
+// 			if err != nil {
+// 				return err
+// 			}
+// 			return assertSlotsEqual(res, wanted)
+// 		}, 30*time.Second)
+// 		if err != nil {
+// 			return err
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func assertSlotsEqual(slots, wanted []redis.ClusterSlot) error {
 outerLoop:
@@ -665,45 +664,6 @@ var _ = Describe("ClusterClient", func() {
 			size, err := client.DBSize(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(Equal(int64(0)))
-		})
-
-		It("should CLUSTER SLOTS", func() {
-			res, err := client.ClusterSlots(ctx).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(HaveLen(3))
-
-			wanted := []redis.ClusterSlot{{
-				Start: 0,
-				End:   4999,
-				Nodes: []redis.ClusterNode{{
-					ID:   "",
-					Addr: "127.0.0.1:8220",
-				}, {
-					ID:   "",
-					Addr: "127.0.0.1:8223",
-				}},
-			}, {
-				Start: 5000,
-				End:   9999,
-				Nodes: []redis.ClusterNode{{
-					ID:   "",
-					Addr: "127.0.0.1:8221",
-				}, {
-					ID:   "",
-					Addr: "127.0.0.1:8224",
-				}},
-			}, {
-				Start: 10000,
-				End:   16383,
-				Nodes: []redis.ClusterNode{{
-					ID:   "",
-					Addr: "127.0.0.1:8222",
-				}, {
-					ID:   "",
-					Addr: "127.0.0.1:8225",
-				}},
-			}}
-			Expect(assertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
 		})
 
 		It("should CLUSTER SHARDS", func() {

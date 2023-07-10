@@ -1,0 +1,107 @@
+---
+
+version: "3.8"
+
+services:
+
+  redis:
+    image: redis/redis-stack-server:edge
+    container_name: redis-standalone
+    ports:
+      - 6379:6379
+    environment:
+      - "REDIS_ARGS=--enable-debug-command yes --enable-module-command yes"
+    profiles:
+      - standalone
+      - replica
+      - all
+
+  replica:
+    image: redis/redis-stack-server:edge
+    container_name: redis-replica
+    depends_on:
+      - redis
+    environment:
+      - "REDIS_ARGS=--replicaof redis 6379"
+    ports:
+      - 6380:6379
+    profiles:
+      - replica
+      - all
+
+  cluster:
+    container_name: redis-cluster
+    build:
+      context: .
+      dockerfile: dockers/Dockerfile.cluster
+    ports:
+      - 16379:16379
+      - 16380:16380
+      - 16381:16381
+      - 16382:16382
+      - 16383:16383
+      - 16384:16384
+    volumes:
+      - "./dockers/cluster.redis.conf:/redis.conf:ro"
+    profiles:
+      - cluster
+      - all
+
+  stunnel:
+    image: redisfab/stunnel:latest
+    depends_on:
+      - redis
+    ports:
+      - 6666:6666
+    profiles:
+      - all
+      - standalone
+      - ssl
+    volumes:
+      - "./dockers/stunnel/conf:/etc/stunnel/conf.d:ro"
+      - "./dockers/stunnel/keys:/etc/stunnel/keys:ro"
+
+  sentinel-master:
+    image: redis/redis-stack-server:edge
+    container_name: redis-sentinel-master
+    depends_on:
+      - redis
+    environment:
+      - "REDIS_ARGS=--enable-debug-command yes --enable-module-command yes --port 26379"
+    ports:
+      - 26379:26379
+    profiles:
+      - sentinel
+      - all
+
+  sentinel:
+    image: redis/redis-stack-server:edge
+    container_name: redis-sentinel
+    depends_on:
+      - redis
+    environment:
+      - "REDIS_ARGS=--port 26380"
+    entrypoint: "/opt/redis-stack/bin/redis-sentinel /redis.conf --port 26380"
+    ports:
+      - 26380:26380
+    volumes:
+      - "./dockers/sentinel.conf:/redis.conf"
+    profiles:
+      - sentinel
+      - all
+
+  sentinel2:
+    image: redis/redis-stack-server:edge
+    container_name: redis-sentinel2
+    depends_on:
+      - redis
+    environment:
+      - "REDIS_ARGS=--port 26381"
+    entrypoint: "/opt/redis-stack/bin/redis-sentinel /redis.conf --port 26381"
+    ports:
+      - 26381:26381
+    volumes:
+      - "./dockers/sentinel.conf:/redis.conf"
+    profiles:
+      - sentinel
+      - all

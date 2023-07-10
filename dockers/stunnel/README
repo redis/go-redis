@@ -1,0 +1,1 @@
+ This directory contains a helper script to create ssl certificates for ssl tests. If the certificates are out of date, re-run create_certs and check them in. These are snake oil certificates.
