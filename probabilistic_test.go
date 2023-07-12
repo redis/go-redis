@@ -23,7 +23,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 	Describe("bloom", Label("bloom"), func() {
 		It("should BFAdd", Label("bloom", "bfadd"), func() {
-			resultAdd, err := client.BFAdd(ctx, "testbf1", "test1").Result()
+			resultAdd, err := client.BFAdd(ctx, "testbf1", 1).Result()
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resultAdd).To(Equal(int64(1)))
@@ -44,7 +44,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			_, err = client.BFAdd(ctx, "testbf1", "item2").Result()
 			Expect(err).NotTo(HaveOccurred())
-			_, err = client.BFAdd(ctx, "testbf1", "item3").Result()
+			_, err = client.BFAdd(ctx, "testbf1", 3).Result()
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err := client.BFCard(ctx, "testbf1").Result()
@@ -162,7 +162,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 		})
 	})
 
-	FDescribe("cuckoo", Label("cuckoo"), func() {
+	Describe("cuckoo", Label("cuckoo"), func() {
 		It("should CFAdd", Label("cuckoo", "cfadd"), func() {
 			err := client.CFAdd(ctx, "testcf1", "item1").Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -305,6 +305,100 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(result[1]).To(BeEquivalentTo(int64(1)))
 			Expect(result[2]).To(BeEquivalentTo(int64(1)))
 			Expect(result[3]).To(BeEquivalentTo(int64(0)))
+		})
+
+	})
+
+	FDescribe("CMS", Label("cms"), func() {
+		It("should CMSIncrBy", Label("cms", "cmsincrby"), func() {
+			err := client.CMSInitByDim(ctx, "testcms1", 5, 10).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err := client.CMSIncrBy(ctx, "testcms1", "item1", 1, "item2", 2, "item3", 3).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).To(BeEquivalentTo(3))
+			Expect(result[0]).To(BeEquivalentTo(int64(1)))
+			Expect(result[1]).To(BeEquivalentTo(int64(2)))
+			Expect(result[2]).To(BeEquivalentTo(int64(3)))
+
+		})
+
+		It("should CMSInitByDim and CMSInfo", Label("cms", "cmsinitbydim", "cmsinfo"), func() {
+			err := client.CMSInitByDim(ctx, "testcms1", 5, 10).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			info, err := client.CMSInfo(ctx, "testcms1").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			fmt.Println()
+			fmt.Println()
+			fmt.Println(info)
+
+			Expect(info).To(BeAssignableToTypeOf(map[string]int64{}))
+			Expect(info["width"]).To(BeEquivalentTo(int64(5)))
+			Expect(info["depth"]).To(BeEquivalentTo(int64(10)))
+		})
+
+		It("should CMSInitByProb", Label("cms", "cmsinitbyprob"), func() {
+			err := client.CMSInitByProb(ctx, "testcms1", 0.002, 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			info, err := client.CMSInfo(ctx, "testcms1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info).To(BeAssignableToTypeOf(map[string]int64{}))
+		})
+
+		It("should CMSMerge, CMSMergeWithWeight and CMSQuery", Label("cms", "cmsmerge", "cmsquery"), func() {
+			err := client.CMSMerge(ctx, "destCms1", "testcms2", "testcms3").Err()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("CMS: key does not exist"))
+
+			err = client.CMSInitByDim(ctx, "destCms1", 5, 10).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.CMSInitByDim(ctx, "destCms2", 5, 10).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.CMSInitByDim(ctx, "cms1", 2, 20).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.CMSInitByDim(ctx, "cms2", 3, 20).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.CMSMerge(ctx, "destCms1", "cms1", "cms2").Err()
+			Expect(err).To(MatchError("CMS: width/depth is not equal"))
+
+			client.Del(ctx, "cms1", "cms2")
+
+			err = client.CMSInitByDim(ctx, "cms1", 5, 10).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.CMSInitByDim(ctx, "cms2", 5, 10).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			client.CMSIncrBy(ctx, "cms1", "item1", 1, "item2", 2)
+			client.CMSIncrBy(ctx, "cms2", "item2", 2, "item3", 3)
+
+			err = client.CMSMerge(ctx, "destCms1", "cms1", "cms2").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err := client.CMSQuery(ctx, "destCms1", "item1", "item2", "item3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).To(BeEquivalentTo(3))
+			Expect(result[0]).To(BeEquivalentTo(int64(1)))
+			Expect(result[1]).To(BeEquivalentTo(int64(4)))
+			Expect(result[2]).To(BeEquivalentTo(int64(3)))
+
+			sourceSketches := map[string]int{
+				"cms1": 1,
+				"cms2": 2,
+			}
+			err = client.CMSMergeWithWeight(ctx, "destCms2", sourceSketches).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.CMSQuery(ctx, "destCms2", "item1", "item2", "item3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).To(BeEquivalentTo(3))
+			Expect(result[0]).To(BeEquivalentTo(int64(1)))
+			Expect(result[1]).To(BeEquivalentTo(int64(6)))
+			Expect(result[2]).To(BeEquivalentTo(int64(6)))
+
 		})
 
 	})

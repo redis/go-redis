@@ -5,31 +5,35 @@ import (
 )
 
 type ProbabilisticCmdble interface {
-	BFAdd(ctx context.Context, key, item string) *IntCmd
+	BFAdd(ctx context.Context, key, item interface{}) *IntCmd
 	BFCard(ctx context.Context, key string) *IntCmd
-	BFExists(ctx context.Context, key, item string) *IntCmd
+	BFExists(ctx context.Context, key, item interface{}) *IntCmd
 	BFInfo(ctx context.Context, key string) *MapStringIntCmd
 	BFInfoArg(ctx context.Context, key string, option BFInfo) *IntCmd
-	BFInsert(ctx context.Context, key string, options *BFReserveOptions, items ...string) *IntSliceCmd
-	BFMAdd(ctx context.Context, key string, items ...string) *IntSliceCmd
-	BFMExists(ctx context.Context, key string, items ...string) *IntSliceCmd
+	BFInsert(ctx context.Context, key string, options *BFReserveOptions, items ...interface{}) *IntSliceCmd
+	BFMAdd(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
+	BFMExists(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
 	BFReserve(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
 	BFReserveExpansion(ctx context.Context, key string, errorRate float64, capacity, expansion int64) *StatusCmd
 	BFReserveNonScaling(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
 	BFReserveArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd
 	//TODO Loadchunk and scandump missing
 
-	CFAdd(ctx context.Context, key, item string) *IntCmd
-	CFAddNX(ctx context.Context, key, item string) *IntCmd
-	CFCount(ctx context.Context, key, item string) *IntCmd
+	CFAdd(ctx context.Context, key, item interface{}) *IntCmd
+	CFAddNX(ctx context.Context, key, item interface{}) *IntCmd
+	CFCount(ctx context.Context, key, item interface{}) *IntCmd
 	CFDel(ctx context.Context, key string) *IntCmd
-	CFExists(ctx context.Context, key, item string) *IntCmd
+	CFExists(ctx context.Context, key, item interface{}) *IntCmd
 	CFInfo(ctx context.Context, key string) *MapStringStringCmd
 	CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd
-	CFInsert(ctx context.Context, key string, options *CFInsertOptions, items ...string) *IntSliceCmd
-	CFInsertNx(ctx context.Context, key string, options *CFInsertOptions, items ...string) *IntSliceCmd
-	CFMExists(ctx context.Context, key string, items ...string) *IntSliceCmd
+	CFInsert(ctx context.Context, key string, options *CFInsertOptions, items ...interface{}) *IntSliceCmd
+	CFInsertNx(ctx context.Context, key string, options *CFInsertOptions, items ...interface{}) *IntSliceCmd
+	CFMExists(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
 	//TODO Loadchunk and scandump missing
+
+	CMSIncrBy(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
+	CMSInitByDim(ctx context.Context, key string, width, height int64) *StatusCmd
+	CMSInitByProb(ctx context.Context, key string, error_rate, probability float64) *StatusCmd
 }
 
 type BFReserveOptions struct {
@@ -77,6 +81,10 @@ func (b BFInfo) String() string {
 	return ""
 }
 
+// -------------------------------------------
+// Bloom filter commands
+//-------------------------------------------
+
 func (c cmdable) BFReserve(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd {
 	args := []interface{}{"bf.reserve", key, errorRate, capacity}
 	cmd := NewStatusCmd(ctx, args...)
@@ -119,7 +127,7 @@ func (c cmdable) BFReserveArgs(ctx context.Context, key string, options *BFReser
 	return cmd
 }
 
-func (c cmdable) BFAdd(ctx context.Context, key, item string) *IntCmd {
+func (c cmdable) BFAdd(ctx context.Context, key, item interface{}) *IntCmd {
 	args := []interface{}{"bf.add", key, item}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -201,6 +209,8 @@ func (c cmdable) BFMExists(ctx context.Context, key string, items ...string) *In
 }
 
 // -------------------------------------------
+// Cuckoo filter commands
+//-------------------------------------------
 
 func (c cmdable) CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd {
 	args := []interface{}{"cf.reserve", key, capacity}
@@ -303,6 +313,86 @@ func (c cmdable) getCfInsertArgs(args []interface{}, options *CFInsertOptions, i
 
 func (c cmdable) CFMExists(ctx context.Context, key string, items ...string) *IntSliceCmd {
 	args := []interface{}{"cf.mexists", key}
+	for _, s := range items {
+		args = append(args, s)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// -------------------------------------------
+// CMS commands
+//-------------------------------------------
+
+func (c cmdable) CMSIncrBy(ctx context.Context, key string, items ...interface{}) *IntSliceCmd {
+	args := make([]interface{}, 2, 2+len(items))
+	args[0] = "cms.incrby"
+	args[1] = key
+	args = appendArgs(args, items)
+
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CMSInitByDim(ctx context.Context, key string, width, depth int64) *StatusCmd {
+	args := []interface{}{"cms.initbydim", key, width, depth}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CMSInitByProb(ctx context.Context, key string, error_rate, probability float64) *StatusCmd {
+	args := []interface{}{"cms.initbyprob", key, error_rate, probability}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CMSInfo(ctx context.Context, key string) *MapStringIntCmd {
+	args := []interface{}{"cms.info", key}
+	cmd := NewMapStringIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd {
+	args := []interface{}{"cms.merge", destKey, len(sourceKeys)}
+	for _, s := range sourceKeys {
+		args = append(args, s)
+	}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int) *StatusCmd {
+	args := make([]interface{}, 0, 4+(len(sourceKeys)*2+1))
+	args = append(args, "cms.merge", destKey, len(sourceKeys))
+
+	if len(sourceKeys) > 0 {
+		sk := make([]interface{}, len(sourceKeys))
+		sw := make([]interface{}, len(sourceKeys))
+
+		i := 0
+		for k, w := range sourceKeys {
+			sk[i] = k
+			sw[i] = w
+			i++
+		}
+
+		args = append(args, sk...)
+		args = append(args, "weights")
+		args = append(args, sw...)
+	}
+
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CMSQuery(ctx context.Context, key string, items ...interface{}) *IntSliceCmd {
+	args := []interface{}{"cms.query", key}
 	for _, s := range items {
 		args = append(args, s)
 	}
