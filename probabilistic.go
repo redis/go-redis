@@ -32,8 +32,12 @@ type ProbabilisticCmdble interface {
 	//TODO Loadchunk and scandump missing
 
 	CMSIncrBy(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
+	CMSInfo(ctx context.Context, key string) *MapStringStringCmd
 	CMSInitByDim(ctx context.Context, key string, width, height int64) *StatusCmd
-	CMSInitByProb(ctx context.Context, key string, error_rate, probability float64) *StatusCmd
+	CMSInitByProb(ctx context.Context, key string, errorRate, probability float64) *StatusCmd
+	CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd
+	CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int) *StatusCmd
+	CMSQuery(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
 }
 
 type BFReserveOptions struct {
@@ -336,6 +340,13 @@ func (c cmdable) CMSIncrBy(ctx context.Context, key string, items ...interface{}
 	return cmd
 }
 
+func (c cmdable) CMSInfo(ctx context.Context, key string) *MapStringIntCmd {
+	args := []interface{}{"cms.info", key}
+	cmd := NewMapStringIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) CMSInitByDim(ctx context.Context, key string, width, depth int64) *StatusCmd {
 	args := []interface{}{"cms.initbydim", key, width, depth}
 	cmd := NewStatusCmd(ctx, args...)
@@ -343,19 +354,13 @@ func (c cmdable) CMSInitByDim(ctx context.Context, key string, width, depth int6
 	return cmd
 }
 
-func (c cmdable) CMSInitByProb(ctx context.Context, key string, error_rate, probability float64) *StatusCmd {
-	args := []interface{}{"cms.initbyprob", key, error_rate, probability}
+func (c cmdable) CMSInitByProb(ctx context.Context, key string, errorRate, probability float64) *StatusCmd {
+	args := []interface{}{"cms.initbyprob", key, errorRate, probability}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CMSInfo(ctx context.Context, key string) *MapStringIntCmd {
-	args := []interface{}{"cms.info", key}
-	cmd := NewMapStringIntCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
-}
 func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd {
 	args := []interface{}{"cms.merge", destKey, len(sourceKeys)}
 	for _, s := range sourceKeys {
