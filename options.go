@@ -99,7 +99,7 @@ type Options struct {
 	// but it helps closing idle connections faster reducing the pool size.
 	PoolFIFO bool
 	// Base number of socket connections.
-	// Default is 5 connections per every available CPU as reported by runtime.GOMAXPROCS.
+	// Default is 10 connections per every available CPU as reported by runtime.GOMAXPROCS.
 	// If there is not enough connections in the pool, new connections will be allocated in excess of PoolSize,
 	// you can limit it through MaxActiveConns
 	PoolSize int
