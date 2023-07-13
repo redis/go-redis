@@ -2,6 +2,8 @@ package redis
 
 import (
 	"context"
+	"fmt"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 type ProbabilisticCmdble interface {
@@ -29,7 +31,6 @@ type ProbabilisticCmdble interface {
 	CFInsert(ctx context.Context, key string, options *CFInsertOptions, items ...interface{}) *IntSliceCmd
 	CFInsertNx(ctx context.Context, key string, options *CFInsertOptions, items ...interface{}) *IntSliceCmd
 	CFMExists(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
-	//TODO Loadchunk and scandump missing
 
 	CMSIncrBy(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
 	CMSInfo(ctx context.Context, key string) *MapStringStringCmd
@@ -38,6 +39,14 @@ type ProbabilisticCmdble interface {
 	CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd
 	CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int) *StatusCmd
 	CMSQuery(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
+
+	TOPKAdd(ctx context.Context, key string, items ...interface{}) *StringSliceCmd
+	TOPKReserve(ctx context.Context, key string, k int) *StatusCmd
+	TOPKReserveWithOptions(ctx context.Context, key string, k int, width, depth int64, decay float64) *StatusCmd
+	TOPKInfo(ctx context.Context, key string) *MapStringInterfaceCmd
+	TOPKQuery(ctx context.Context, key string, items ...interface{}) *BoolSliceCmd
+	TOPKCount(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
+	TOPKIncrBy(ctx context.Context, key string, items ...interface{}) *StringSliceCmd
 }
 
 type BFReserveOptions struct {
@@ -402,6 +411,170 @@ func (c cmdable) CMSQuery(ctx context.Context, key string, items ...interface{})
 		args = append(args, s)
 	}
 	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// -------------------------------------------
+// TOPK commands
+//-------------------------------------------
+
+func (c cmdable) TOPKAdd(ctx context.Context, key string, items ...interface{}) *StringSliceCmd {
+	args := make([]interface{}, 2, 2+len(items))
+	args[0] = "topk.add"
+	args[1] = key
+	args = appendArgs(args, items)
+
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) TOPKReserve(ctx context.Context, key string, k int) *StatusCmd {
+	args := []interface{}{"topk.reserve", key, k}
+
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) TOPKReserveWithOptions(ctx context.Context, key string, k int, width, depth int64, decay float64) *StatusCmd {
+	args := []interface{}{"topk.reserve", key, k, width, depth, decay}
+
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type TOPKInfo struct {
+	K     int64
+	Width int64
+	Depth int64
+	Decay float64
+}
+
+type TOPKInfoCmd struct {
+	baseCmd
+
+	val TOPKInfo
+}
+
+func NewTOPKInfoCmd(ctx context.Context, args ...interface{}) *TOPKInfoCmd {
+	return &TOPKInfoCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *TOPKInfoCmd) SetVal(val TOPKInfo) {
+	cmd.val = val
+}
+
+func (cmd *TOPKInfoCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *TOPKInfoCmd) Val() TOPKInfo {
+	return cmd.val
+}
+
+func (cmd *TOPKInfoCmd) Result() (TOPKInfo, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *TOPKInfoCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	var key string
+	var result TOPKInfo
+	for f := 0; f < n; f++ {
+		key, err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case "k":
+			result.K, err = rd.ReadInt()
+		case "width":
+			result.Width, err = rd.ReadInt()
+		case "depth":
+			result.Depth, err = rd.ReadInt()
+		case "decay":
+			result.Decay, err = rd.ReadFloat()
+		default:
+			return fmt.Errorf("redis: topk.info unexpected key %s", key)
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	cmd.val = result
+	return nil
+}
+
+func (c cmdable) TOPKInfo(ctx context.Context, key string) *TOPKInfoCmd {
+	args := make([]interface{}, 2, 2)
+	args[0] = "topk.info"
+	args[1] = key
+
+	cmd := NewTOPKInfoCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) TOPKQuery(ctx context.Context, key string, items ...interface{}) *BoolSliceCmd {
+	args := make([]interface{}, 2, 2+len(items))
+	args[0] = "topk.query"
+	args[1] = key
+	args = appendArgs(args, items)
+
+	cmd := NewBoolSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) TOPKCount(ctx context.Context, key string, items ...interface{}) *IntSliceCmd {
+	args := make([]interface{}, 2, 2+len(items))
+	args[0] = "topk.count"
+	args[1] = key
+	args = appendArgs(args, items)
+
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) TOPKIncrBy(ctx context.Context, key string, items ...interface{}) *StringSliceCmd {
+	args := make([]interface{}, 2, 2+len(items))
+	args[0] = "topk.incrby"
+	args[1] = key
+	args = appendArgs(args, items)
+
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) TOPKList(ctx context.Context, key string) *StringSliceCmd {
+	args := []interface{}{"topk.list", key}
+
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) TOPKListWithCount(ctx context.Context, key string) *MapStringIntCmd {
+	args := []interface{}{"topk.list", key, "withcount"}
+
+	cmd := NewMapStringIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
