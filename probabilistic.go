@@ -10,8 +10,8 @@ type ProbabilisticCmdble interface {
 	BFAdd(ctx context.Context, key, item interface{}) *IntCmd
 	BFCard(ctx context.Context, key string) *IntCmd
 	BFExists(ctx context.Context, key, item interface{}) *IntCmd
-	BFInfo(ctx context.Context, key string) *MapStringIntCmd
-	BFInfoArg(ctx context.Context, key string, option BFInfo) *IntCmd
+	BFInfo(ctx context.Context, key string) *BFInfoCmd
+	BFInfoArg(ctx context.Context, key string, option BFInfo) *BFInfoCmd
 	BFInsert(ctx context.Context, key string, options *BFReserveOptions, items ...interface{}) *IntSliceCmd
 	BFMAdd(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
 	BFMExists(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
@@ -26,14 +26,14 @@ type ProbabilisticCmdble interface {
 	CFCount(ctx context.Context, key, item interface{}) *IntCmd
 	CFDel(ctx context.Context, key string) *IntCmd
 	CFExists(ctx context.Context, key, item interface{}) *IntCmd
-	CFInfo(ctx context.Context, key string) *MapStringStringCmd
+	CFInfo(ctx context.Context, key string) *CFInfoCmd
 	CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd
 	CFInsert(ctx context.Context, key string, options *CFInsertOptions, items ...interface{}) *IntSliceCmd
 	CFInsertNx(ctx context.Context, key string, options *CFInsertOptions, items ...interface{}) *IntSliceCmd
 	CFMExists(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
 
 	CMSIncrBy(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
-	CMSInfo(ctx context.Context, key string) *MapStringStringCmd
+	CMSInfo(ctx context.Context, key string) *CMSInfoCmd
 	CMSInitByDim(ctx context.Context, key string, width, height int64) *StatusCmd
 	CMSInitByProb(ctx context.Context, key string, errorRate, probability float64) *StatusCmd
 	CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd
@@ -43,7 +43,7 @@ type ProbabilisticCmdble interface {
 	TOPKAdd(ctx context.Context, key string, items ...interface{}) *StringSliceCmd
 	TOPKReserve(ctx context.Context, key string, k int) *StatusCmd
 	TOPKReserveWithOptions(ctx context.Context, key string, k int, width, depth int64, decay float64) *StatusCmd
-	TOPKInfo(ctx context.Context, key string) *MapStringInterfaceCmd
+	TOPKInfo(ctx context.Context, key string) *TOPKInfoCmd
 	TOPKQuery(ctx context.Context, key string, items ...interface{}) *BoolSliceCmd
 	TOPKCount(ctx context.Context, key string, items ...interface{}) *IntSliceCmd
 	TOPKIncrBy(ctx context.Context, key string, items ...interface{}) *StringSliceCmd
@@ -68,17 +68,17 @@ type CFInsertOptions struct {
 	NoCreate bool
 }
 
-type BFInfo int
+type BFInfoArgs int
 
 const (
-	BFCAPACITY BFInfo = iota
+	BFCAPACITY BFInfoArgs = iota
 	BFSIZE
 	BFFILTERS
 	BFITEMS
 	BFEXPANSION
 )
 
-func (b BFInfo) String() string {
+func (b BFInfoArgs) String() string {
 	switch b {
 	case BFCAPACITY:
 		return "capacity"
@@ -140,9 +140,9 @@ func (c cmdable) BFReserveArgs(ctx context.Context, key string, options *BFReser
 	return cmd
 }
 
-func (c cmdable) BFAdd(ctx context.Context, key, item interface{}) *IntCmd {
+func (c cmdable) BFAdd(ctx context.Context, key, item interface{}) *BoolCmd {
 	args := []interface{}{"bf.add", key, item}
-	cmd := NewIntCmd(ctx, args...)
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -154,28 +154,105 @@ func (c cmdable) BFCard(ctx context.Context, key string) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) BFExists(ctx context.Context, key, item string) *IntCmd {
+func (c cmdable) BFExists(ctx context.Context, key, item string) *BoolCmd {
 	args := []interface{}{"bf.exists", key, item}
-	cmd := NewIntCmd(ctx, args...)
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) BFInfo(ctx context.Context, key string) *MapStringIntCmd {
+func (c cmdable) BFInfo(ctx context.Context, key string) *BFInfoCmd {
 	args := []interface{}{"bf.info", key}
-	cmd := NewMapStringIntCmd(ctx, args...)
+	cmd := NewBFInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) BFInfoArg(ctx context.Context, key string, option BFInfo) *IntCmd {
+type BFInfo struct {
+	Capacity         int64
+	Size             int64
+	NumFilters       int64
+	NumItemsInserted int64
+	ExpansionRate    int64
+}
+
+type BFInfoCmd struct {
+	baseCmd
+
+	val BFInfo
+}
+
+func NewBFInfoCmd(ctx context.Context, args ...interface{}) *BFInfoCmd {
+	return &BFInfoCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *BFInfoCmd) SetVal(val BFInfo) {
+	cmd.val = val
+}
+
+func (cmd *BFInfoCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *BFInfoCmd) Val() BFInfo {
+	return cmd.val
+}
+
+func (cmd *BFInfoCmd) Result() (BFInfo, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	var key string
+	var result BFInfo
+	for f := 0; f < n; f++ {
+		key, err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case "Capacity":
+			result.Capacity, err = rd.ReadInt()
+		case "Size":
+			result.Size, err = rd.ReadInt()
+		case "Number of filters":
+			result.NumFilters, err = rd.ReadInt()
+		case "Number of items inserted":
+			result.NumItemsInserted, err = rd.ReadInt()
+		case "Expansion rate":
+			result.ExpansionRate, err = rd.ReadInt()
+		default:
+			return fmt.Errorf("redis: bloom.info unexpected key %s", key)
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	cmd.val = result
+	return nil
+}
+
+func (c cmdable) BFInfoArg(ctx context.Context, key string, option BFInfoArgs) *BFInfoCmd {
 	args := []interface{}{"bf.info", key, option.String()}
-	cmd := NewIntCmd(ctx, args...)
+	cmd := NewBFInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) BFInsert(ctx context.Context, key string, options *BFReserveOptions, items ...string) *IntSliceCmd {
+func (c cmdable) BFInsert(ctx context.Context, key string, options *BFReserveOptions, items ...string) *BoolSliceCmd {
 	args := []interface{}{"bf.insert", key}
 	if options != nil {
 		if options.Error != 0 {
@@ -196,27 +273,27 @@ func (c cmdable) BFInsert(ctx context.Context, key string, options *BFReserveOpt
 		args = append(args, s)
 	}
 
-	cmd := NewIntSliceCmd(ctx, args...)
+	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) BFMAdd(ctx context.Context, key string, items ...string) *IntSliceCmd {
+func (c cmdable) BFMAdd(ctx context.Context, key string, items ...string) *BoolSliceCmd {
 	args := []interface{}{"bf.madd", key}
 	for _, s := range items {
 		args = append(args, s)
 	}
-	cmd := NewIntSliceCmd(ctx, args...)
+	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) BFMExists(ctx context.Context, key string, items ...string) *IntSliceCmd {
+func (c cmdable) BFMExists(ctx context.Context, key string, items ...string) *BoolSliceCmd {
 	args := []interface{}{"bf.mexists", key}
 	for _, s := range items {
 		args = append(args, s)
 	}
-	cmd := NewIntSliceCmd(ctx, args...)
+	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -248,16 +325,16 @@ func (c cmdable) CFReserveArgs(ctx context.Context, key string, options *CFReser
 	return cmd
 }
 
-func (c cmdable) CFAdd(ctx context.Context, key, item string) *IntCmd {
+func (c cmdable) CFAdd(ctx context.Context, key, item string) *BoolCmd {
 	args := []interface{}{"cf.add", key, item}
-	cmd := NewIntCmd(ctx, args...)
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CFAddNX(ctx context.Context, key, item string) *IntCmd {
+func (c cmdable) CFAddNX(ctx context.Context, key, item string) *BoolCmd {
 	args := []interface{}{"cf.addnx", key, item}
-	cmd := NewIntCmd(ctx, args...)
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -269,32 +346,119 @@ func (c cmdable) CFCount(ctx context.Context, key, item string) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) CFDel(ctx context.Context, key string, item string) *IntCmd {
+func (c cmdable) CFDel(ctx context.Context, key string, item string) *BoolCmd {
 	args := []interface{}{"cf.del", key, item}
-	cmd := NewIntCmd(ctx, args...)
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CFExists(ctx context.Context, key, item string) *IntCmd {
+func (c cmdable) CFExists(ctx context.Context, key, item string) *BoolCmd {
 	args := []interface{}{"cf.exists", key, item}
-	cmd := NewIntCmd(ctx, args...)
+	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CFInfo(ctx context.Context, key string) *MapStringIntCmd {
+type CFInfo struct {
+	Size             int64
+	NumBuckets       int64
+	NumFilters       int64
+	NumItemsInserted int64
+	NumItemsDeleted  int64
+	BucketSize       int64
+	ExpansionRate    int64
+	MaxIteration     int64
+}
+
+type CFInfoCmd struct {
+	baseCmd
+
+	val CFInfo
+}
+
+func NewCFInfoCmd(ctx context.Context, args ...interface{}) *CFInfoCmd {
+	return &CFInfoCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *CFInfoCmd) SetVal(val CFInfo) {
+	cmd.val = val
+}
+
+func (cmd *CFInfoCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *CFInfoCmd) Val() CFInfo {
+	return cmd.val
+}
+
+func (cmd *CFInfoCmd) Result() (CFInfo, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *CFInfoCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	var key string
+	var result CFInfo
+	for f := 0; f < n; f++ {
+		key, err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case "Size":
+			result.Size, err = rd.ReadInt()
+		case "Number of buckets":
+			result.NumBuckets, err = rd.ReadInt()
+		case "Number of filters":
+			result.NumFilters, err = rd.ReadInt()
+		case "Number of items inserted":
+			result.NumItemsInserted, err = rd.ReadInt()
+		case "Number of items deleted":
+			result.NumItemsDeleted, err = rd.ReadInt()
+		case "Bucket size":
+			result.BucketSize, err = rd.ReadInt()
+		case "Expansion rate":
+			result.ExpansionRate, err = rd.ReadInt()
+		case "Max iterations":
+			result.MaxIteration, err = rd.ReadInt()
+
+		default:
+			return fmt.Errorf("redis: cf.info unexpected key %s", key)
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	cmd.val = result
+	return nil
+}
+
+func (c cmdable) CFInfo(ctx context.Context, key string) *CFInfoCmd {
 	args := []interface{}{"cf.info", key}
-	cmd := NewMapStringIntCmd(ctx, args...)
+	cmd := NewCFInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOptions, items ...string) *IntSliceCmd {
+func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOptions, items ...string) *BoolSliceCmd {
 	args := []interface{}{"cf.insert", key}
 	args = c.getCfInsertArgs(args, options, items...)
 
-	cmd := NewIntSliceCmd(ctx, args...)
+	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -324,12 +488,12 @@ func (c cmdable) getCfInsertArgs(args []interface{}, options *CFInsertOptions, i
 	return args
 }
 
-func (c cmdable) CFMExists(ctx context.Context, key string, items ...string) *IntSliceCmd {
+func (c cmdable) CFMExists(ctx context.Context, key string, items ...string) *BoolSliceCmd {
 	args := []interface{}{"cf.mexists", key}
 	for _, s := range items {
 		args = append(args, s)
 	}
-	cmd := NewIntSliceCmd(ctx, args...)
+	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -349,9 +513,80 @@ func (c cmdable) CMSIncrBy(ctx context.Context, key string, items ...interface{}
 	return cmd
 }
 
-func (c cmdable) CMSInfo(ctx context.Context, key string) *MapStringIntCmd {
+type CMSInfo struct {
+	Width int64
+	Depth int64
+	Count int64
+}
+
+type CMSInfoCmd struct {
+	baseCmd
+
+	val CMSInfo
+}
+
+func NewCMSInfoCmd(ctx context.Context, args ...interface{}) *CMSInfoCmd {
+	return &CMSInfoCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *CMSInfoCmd) SetVal(val CMSInfo) {
+	cmd.val = val
+}
+
+func (cmd *CMSInfoCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *CMSInfoCmd) Val() CMSInfo {
+	return cmd.val
+}
+
+func (cmd *CMSInfoCmd) Result() (CMSInfo, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *CMSInfoCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	var key string
+	var result CMSInfo
+	for f := 0; f < n; f++ {
+		key, err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case "width":
+			result.Width, err = rd.ReadInt()
+		case "depth":
+			result.Depth, err = rd.ReadInt()
+		case "count":
+			result.Count, err = rd.ReadInt()
+		default:
+			return fmt.Errorf("redis: cms.info unexpected key %s", key)
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	cmd.val = result
+	return nil
+}
+
+func (c cmdable) CMSInfo(ctx context.Context, key string) *CMSInfoCmd {
 	args := []interface{}{"cms.info", key}
-	cmd := NewMapStringIntCmd(ctx, args...)
+	cmd := NewCMSInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

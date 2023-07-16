@@ -2,7 +2,6 @@ package redis_test
 
 import (
 	"context"
-	"fmt"
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
@@ -26,13 +25,13 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			resultAdd, err := client.BFAdd(ctx, "testbf1", 1).Result()
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(resultAdd).To(Equal(int64(1)))
+			Expect(resultAdd).To(BeTrue())
 
 			resultInfo, err := client.BFInfo(ctx, "testbf1").Result()
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(resultInfo).To(BeAssignableToTypeOf(map[string]int64{}))
-			Expect(resultInfo["Number of items inserted"]).To(BeEquivalentTo(int64(1)))
+			Expect(resultInfo).To(BeAssignableToTypeOf(redis.BFInfo{}))
+			Expect(resultInfo.NumItemsInserted).To(BeEquivalentTo(int64(1)))
 		})
 
 		It("should BFCard", Label("bloom", "bfcard"), func() {
@@ -56,7 +55,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 		It("should BFExists", Label("bloom", "bfexists"), func() {
 			exists, err := client.BFExists(ctx, "testbf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(exists).To(Equal(int64(0)))
+			Expect(exists).To(BeFalse())
 
 			_, err = client.BFAdd(ctx, "testbf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -64,7 +63,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			exists, err = client.BFExists(ctx, "testbf1", "item1").Result()
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(exists).To(BeEquivalentTo(int64(1)))
+			Expect(exists).To(BeTrue())
 		})
 
 		It("should BFInfo and BFReserve", Label("bloom", "bfinfo", "bfreserve"), func() {
@@ -73,8 +72,17 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 			result, err := client.BFInfo(ctx, "testbf1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(BeAssignableToTypeOf(map[string]int64{}))
-			Expect(result["Capacity"]).To(BeEquivalentTo(int64(2000)))
+			Expect(result).To(BeAssignableToTypeOf(redis.BFInfo{}))
+			Expect(result.Capacity).To(BeEquivalentTo(int64(2000)))
+		})
+
+		It("should BFInfoArg", Label("bloom", "bfinfoarg"), func() {
+			err := client.BFReserve(ctx, "testbf1", 0.001, 2000).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err := client.BFInfoArg(ctx, "testbf1", redis.BFInfoArgs(redis.BFCAPACITY)).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Capacity).To(BeEquivalentTo(int64(2000)))
 		})
 
 		It("should BFInsert", Label("bloom", "bfinsert"), func() {
@@ -84,41 +92,41 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 				Expansion:  3,
 				NonScaling: false,
 			}
-			err := client.BFInsert(ctx, "testbf1", options, "item1").Err()
+			resultInsert, err := client.BFInsert(ctx, "testbf1", options, "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
+			Expect(len(resultInsert)).To(BeEquivalentTo(1))
 
 			exists, err := client.BFExists(ctx, "testbf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(exists).To(BeEquivalentTo(int64(1)))
+			Expect(exists).To(BeTrue())
 
 			result, err := client.BFInfo(ctx, "testbf1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(BeAssignableToTypeOf(map[string]int64{}))
-			Expect(result["Capacity"]).To(BeEquivalentTo(int64(2000)))
-			Expect(result["Expansion rate"]).To(BeEquivalentTo(int64(3)))
+			Expect(result).To(BeAssignableToTypeOf(redis.BFInfo{}))
+			Expect(result.Capacity).To(BeEquivalentTo(int64(2000)))
+			Expect(result.ExpansionRate).To(BeEquivalentTo(int64(3)))
 		})
 
 		It("should BFMAdd", Label("bloom", "bfmadd"), func() {
 			resultAdd, err := client.BFMAdd(ctx, "testbf1", "item1", "item2", "item3").Result()
-			fmt.Printf("resultAdd: %v\n", resultAdd)
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(resultAdd)).To(Equal(int(3)))
+			Expect(len(resultAdd)).To(Equal(3))
 
 			resultInfo, err := client.BFInfo(ctx, "testbf1").Result()
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(resultInfo).To(BeAssignableToTypeOf(map[string]int64{}))
-			Expect(resultInfo["Number of items inserted"]).To(BeEquivalentTo(int64(3)))
+			Expect(resultInfo).To(BeAssignableToTypeOf(redis.BFInfo{}))
+			Expect(resultInfo.NumItemsInserted).To(BeEquivalentTo(int64(3)))
 		})
 
 		It("should BFMExists", Label("bloom", "bfmexists"), func() {
 			exist, err := client.BFMExists(ctx, "testbf1", "item1", "item2", "item3").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(exist)).To(Equal(int(3)))
-			Expect(exist[0]).To(Equal(int64(0)))
-			Expect(exist[1]).To(Equal(int64(0)))
-			Expect(exist[2]).To(Equal(int64(0)))
+			Expect(exist[0]).To(BeFalse())
+			Expect(exist[1]).To(BeFalse())
+			Expect(exist[2]).To(BeFalse())
 
 			_, err = client.BFMAdd(ctx, "testbf1", "item1", "item2", "item3").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -127,10 +135,10 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(exist)).To(Equal(int(4)))
-			Expect(exist[0]).To(Equal(int64(1)))
-			Expect(exist[1]).To(Equal(int64(1)))
-			Expect(exist[2]).To(Equal(int64(1)))
-			Expect(exist[3]).To(Equal(int64(0)))
+			Expect(exist[0]).To(BeTrue())
+			Expect(exist[1]).To(BeTrue())
+			Expect(exist[2]).To(BeTrue())
+			Expect(exist[3]).To(BeFalse())
 		})
 
 		It("should BFReserveExpansion", Label("bloom", "bfreserveexpansion"), func() {
@@ -139,9 +147,9 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 			result, err := client.BFInfo(ctx, "testbf1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(BeAssignableToTypeOf(map[string]int64{}))
-			Expect(result["Capacity"]).To(BeEquivalentTo(int64(2000)))
-			Expect(result["Expansion rate"]).To(BeEquivalentTo(int64(3)))
+			Expect(result).To(BeAssignableToTypeOf(redis.BFInfo{}))
+			Expect(result.Capacity).To(BeEquivalentTo(int64(2000)))
+			Expect(result.ExpansionRate).To(BeEquivalentTo(int64(3)))
 		})
 
 		It("should BFReserveArgs", Label("bloom", "bfreserveargs"), func() {
@@ -156,46 +164,48 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 			result, err := client.BFInfo(ctx, "testbf").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(BeAssignableToTypeOf(map[string]int64{}))
-			Expect(result["Capacity"]).To(BeEquivalentTo(int64(2000)))
-			Expect(result["Expansion rate"]).To(BeEquivalentTo(int64(3)))
+			Expect(result).To(BeAssignableToTypeOf(redis.BFInfo{}))
+			Expect(result.Capacity).To(BeEquivalentTo(int64(2000)))
+			Expect(result.ExpansionRate).To(BeEquivalentTo(int64(3)))
 		})
 	})
 
 	Describe("cuckoo", Label("cuckoo"), func() {
 		It("should CFAdd", Label("cuckoo", "cfadd"), func() {
-			err := client.CFAdd(ctx, "testcf1", "item1").Err()
+			add, err := client.CFAdd(ctx, "testcf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
+			Expect(add).To(BeTrue())
 
 			exists, err := client.CFExists(ctx, "testcf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(exists).To(BeEquivalentTo(int64(1)))
+			Expect(exists).To(BeTrue())
 
 			info, err := client.CFInfo(ctx, "testcf1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(info).To(BeAssignableToTypeOf(map[string]int64{}))
-			Expect(info["Number of items inserted"]).To(BeEquivalentTo(int64(1)))
+			Expect(info).To(BeAssignableToTypeOf(redis.CFInfo{}))
+			Expect(info.NumItemsInserted).To(BeEquivalentTo(int64(1)))
 		})
 
 		It("should CFAddNX", Label("cuckoo", "cfaddnx"), func() {
-			err := client.CFAddNX(ctx, "testcf1", "item1").Err()
+			add, err := client.CFAddNX(ctx, "testcf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
+			Expect(add).To(BeTrue())
 
 			exists, err := client.CFExists(ctx, "testcf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(exists).To(BeEquivalentTo(int64(1)))
+			Expect(exists).To(BeTrue())
 
 			result, err := client.CFAddNX(ctx, "testcf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(BeEquivalentTo(int64(0)))
+			Expect(result).To(BeFalse())
 
 			info, err := client.CFInfo(ctx, "testcf1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(info).To(BeAssignableToTypeOf(map[string]int64{}))
-			Expect(info["Number of items inserted"]).To(BeEquivalentTo(int64(1)))
+			Expect(info).To(BeAssignableToTypeOf(redis.CFInfo{}))
+			Expect(info.NumItemsInserted).To(BeEquivalentTo(int64(1)))
 		})
 
-		It("should CFInCFCountsert", Label("cuckoo", "cfinsert"), func() {
+		It("should CFCount", Label("cuckoo", "cfcount"), func() {
 			err := client.CFAdd(ctx, "testcf1", "item1").Err()
 			cnt, err := client.CFCount(ctx, "testcf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -215,14 +225,15 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 			exists, err := client.CFExists(ctx, "testcf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(exists).To(BeEquivalentTo(int64(1)))
+			Expect(exists).To(BeTrue())
 
-			err = client.CFDel(ctx, "testcf1", "item1").Err()
+			del, err := client.CFDel(ctx, "testcf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
+			Expect(del).To(BeTrue())
 
 			exists, err = client.CFExists(ctx, "testcf1", "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(exists).To(BeEquivalentTo(int64(0)))
+			Expect(exists).To(BeFalse())
 		})
 
 		It("should CFInfo and CFReserve", Label("cuckoo", "cfinfo", "cfreserve"), func() {
@@ -231,7 +242,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 			result, err := client.CFInfo(ctx, "testcf1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(BeAssignableToTypeOf(map[string]int64{}))
+			Expect(result).To(BeAssignableToTypeOf(redis.CFInfo{}))
 		})
 
 		It("should CFInfo and CFReserveArgs", Label("cuckoo", "cfinfo", "cfreserveargs"), func() {
@@ -247,10 +258,10 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 			result, err := client.CFInfo(ctx, "testcf1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(BeAssignableToTypeOf(map[string]int64{}))
-			Expect(result["Bucket size"]).To(BeEquivalentTo(int64(3)))
-			Expect(result["Max iterations"]).To(BeEquivalentTo(int64(15)))
-			Expect(result["Expansion rate"]).To(BeEquivalentTo(int64(2)))
+			Expect(result).To(BeAssignableToTypeOf(redis.CFInfo{}))
+			Expect(result.BucketSize).To(BeEquivalentTo(int64(3)))
+			Expect(result.MaxIteration).To(BeEquivalentTo(int64(15)))
+			Expect(result.ExpansionRate).To(BeEquivalentTo(int64(2)))
 		})
 
 		It("should CFInsert", Label("cuckoo", "cfinsert"), func() {
@@ -301,10 +312,10 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			result, err := client.CFMExists(ctx, "testcf1", "item1", "item2", "item3", "item4").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).To(BeEquivalentTo(4))
-			Expect(result[0]).To(BeEquivalentTo(int64(1)))
-			Expect(result[1]).To(BeEquivalentTo(int64(1)))
-			Expect(result[2]).To(BeEquivalentTo(int64(1)))
-			Expect(result[3]).To(BeEquivalentTo(int64(0)))
+			Expect(result[0]).To(BeTrue())
+			Expect(result[1]).To(BeTrue())
+			Expect(result[2]).To(BeTrue())
+			Expect(result[3]).To(BeFalse())
 		})
 
 	})
@@ -330,13 +341,9 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			info, err := client.CMSInfo(ctx, "testcms1").Result()
 			Expect(err).NotTo(HaveOccurred())
 
-			fmt.Println()
-			fmt.Println()
-			fmt.Println(info)
-
-			Expect(info).To(BeAssignableToTypeOf(map[string]int64{}))
-			Expect(info["width"]).To(BeEquivalentTo(int64(5)))
-			Expect(info["depth"]).To(BeEquivalentTo(int64(10)))
+			Expect(info).To(BeAssignableToTypeOf(redis.CMSInfo{}))
+			Expect(info.Width).To(BeEquivalentTo(int64(5)))
+			Expect(info.Depth).To(BeEquivalentTo(int64(10)))
 		})
 
 		It("should CMSInitByProb", Label("cms", "cmsinitbyprob"), func() {
@@ -345,7 +352,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 			info, err := client.CMSInfo(ctx, "testcms1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(info).To(BeAssignableToTypeOf(map[string]int64{}))
+			Expect(info).To(BeAssignableToTypeOf(redis.CMSInfo{}))
 		})
 
 		It("should CMSMerge, CMSMergeWithWeight and CMSQuery", Label("cms", "cmsmerge", "cmsquery"), func() {
