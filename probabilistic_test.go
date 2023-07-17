@@ -5,6 +5,7 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"math"
 )
 
 var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
@@ -475,5 +476,126 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(resultInfo.Decay).To(BeEquivalentTo(float64(0.5)))
 		})
 
+	})
+
+	Describe("t-digest", Label("tdigest"), func() {
+		It("should TDigestCreate, TDigestAdd, TDigestQuantile, TDigestCDF, TDigestMerge, TDigestInfo", Label("tdigest", "tdigestcreate", "tdigestadd", "tdigestquantile", "tdigestcdf", "tdigestmerge", "tdigestinfo"), func() {
+			err := client.TDigestCreate(ctx, "tdigest1").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			info, err := client.TDigestInfo(ctx, "tdigest1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Observations).To(BeEquivalentTo(int64(0)))
+
+			// Test with empty sketch
+			byRank, err := client.TDigestByRank(ctx, "tdigest1", 0, 1, 2, 3).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(byRank)).To(BeEquivalentTo(4))
+
+			byRevRank, err := client.TDigestByRevRank(ctx, "tdigest1", 0, 1, 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(byRevRank)).To(BeEquivalentTo(3))
+
+			cdf, err := client.TDigestCDF(ctx, "tdigest1", 15, 35, 70).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(cdf)).To(BeEquivalentTo(3))
+
+			max, err := client.TDigestMax(ctx, "tdigest1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(math.IsNaN(max)).To(BeTrue())
+
+			min, err := client.TDigestMin(ctx, "tdigest1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(math.IsNaN(min)).To(BeTrue())
+
+			quantile, err := client.TDigestQuantile(ctx, "tdigest1", 0.1, 0.2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(quantile)).To(BeEquivalentTo(2))
+
+			rank, err := client.TDigestRank(ctx, "tdigest1", 10, 20).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(rank)).To(BeEquivalentTo(2))
+
+			revRank, err := client.TDigestRevRank(ctx, "tdigest1", 10, 20).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(revRank)).To(BeEquivalentTo(2))
+
+			trimmedMean, err := client.TDigestTrimmedMean(ctx, "tdigest1", 0.1, 0.6).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(math.IsNaN(trimmedMean)).To(BeTrue())
+
+			// Add elements
+			err = client.TDigestAdd(ctx, "tdigest1", 10, 20, 30, 40, 50, 60, 70, 80, 90, 100).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			info, err = client.TDigestInfo(ctx, "tdigest1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Observations).To(BeEquivalentTo(int64(10)))
+
+			byRank, err = client.TDigestByRank(ctx, "tdigest1", 0, 1, 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(byRank)).To(BeEquivalentTo(3))
+			Expect(byRank[0]).To(BeEquivalentTo(float64(10)))
+			Expect(byRank[1]).To(BeEquivalentTo(float64(20)))
+			Expect(byRank[2]).To(BeEquivalentTo(float64(30)))
+
+			byRevRank, err = client.TDigestByRevRank(ctx, "tdigest1", 0, 1, 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(byRevRank)).To(BeEquivalentTo(3))
+			Expect(byRevRank[0]).To(BeEquivalentTo(float64(100)))
+			Expect(byRevRank[1]).To(BeEquivalentTo(float64(90)))
+			Expect(byRevRank[2]).To(BeEquivalentTo(float64(80)))
+
+			cdf, err = client.TDigestCDF(ctx, "tdigest1", 15, 35, 70).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(cdf)).To(BeEquivalentTo(3))
+			Expect(cdf[0]).To(BeEquivalentTo(float64(0.1)))
+			Expect(cdf[1]).To(BeEquivalentTo(float64(0.3)))
+			Expect(cdf[2]).To(BeEquivalentTo(float64(0.65)))
+
+			max, err = client.TDigestMax(ctx, "tdigest1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(max).To(BeEquivalentTo(float64(100)))
+
+			min, err = client.TDigestMin(ctx, "tdigest1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(min).To(BeEquivalentTo(float64(10)))
+
+			quantile, err = client.TDigestQuantile(ctx, "tdigest1", 0.1, 0.2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(quantile)).To(BeEquivalentTo(2))
+			Expect(quantile[0]).To(BeEquivalentTo(float64(20)))
+			Expect(quantile[1]).To(BeEquivalentTo(float64(30)))
+
+			rank, err = client.TDigestRank(ctx, "tdigest1", 10, 20).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(rank)).To(BeEquivalentTo(2))
+			Expect(rank[0]).To(BeEquivalentTo(int64(0)))
+			Expect(rank[1]).To(BeEquivalentTo(int64(1)))
+
+			revRank, err = client.TDigestRevRank(ctx, "tdigest1", 10, 20).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(revRank)).To(BeEquivalentTo(2))
+			Expect(revRank[0]).To(BeEquivalentTo(int64(9)))
+			Expect(revRank[1]).To(BeEquivalentTo(int64(8)))
+
+			trimmedMean, err = client.TDigestTrimmedMean(ctx, "tdigest1", 0.1, 0.6).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(trimmedMean).To(BeEquivalentTo(float64(40)))
+
+			reset, err := client.TDigestReset(ctx, "tdigest1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reset).To(BeEquivalentTo("OK"))
+
+		})
+
+		It("should TDigestCreateWithCompression", Label("tdigest", "tcreatewithcompression"), func() {
+			err := client.TDigestCreateWithCompression(ctx, "tdigest1", 2000).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			info, err := client.TDigestInfo(ctx, "tdigest1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Compression).To(BeEquivalentTo(int64(2000)))
+		})
 	})
 })
