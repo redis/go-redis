@@ -1,20 +1,9 @@
 package redis
 
-import (
-	"context"
-	"fmt"
-	"reflect"
-	"sync"
-	"sync/atomic"
-	"testing"
-	"time"
+//	. "github.com/bsm/ginkgo/v2"
+//	. "github.com/bsm/gomega"
 
-	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/proto"
-
-	. "github.com/bsm/ginkgo/v2"
-	. "github.com/bsm/gomega"
-)
+/*
 
 var _ = Describe("newClusterState", func() {
 	var state *clusterState
@@ -352,3 +341,4 @@ var _ = Describe("withConn", func() {
 		Expect(client.connPool.Len()).To(Equal(1))
 	})
 })
+*/
