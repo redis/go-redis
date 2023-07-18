@@ -340,6 +340,8 @@ func (cmd *Cmd) Bool() (bool, error) {
 
 func toBool(val interface{}) (bool, error) {
 	switch val := val.(type) {
+	case bool:
+		return val, nil
 	case int64:
 		return val != 0, nil
 	case string:
