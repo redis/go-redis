@@ -22,9 +22,9 @@ type JSONCmdAble interface {
 	JSONClear(ctx context.Context, key, path string) *IntCmd
 	JSONDel(ctx context.Context, key, path string) *IntCmd
 	JSONForget(ctx context.Context, key, path string) *IntCmd
-	JSONGet(ctx context.Context, key string, paths ...string) *JSONStringCmd
+	JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd
 	JSONMGet(ctx context.Context, path string, keys ...string) *JSONSliceCmd
-	JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONStringCmd
+	JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd
 	JSONObjKeys(ctx context.Context, key, path string) *SliceCmd
 	JSONObjLen(ctx context.Context, key, path string) *IntPointerSliceCmd
 	JSONSet(ctx context.Context, key, path string, value interface{}) *StatusCmd
@@ -35,17 +35,17 @@ type JSONCmdAble interface {
 	JSONType(ctx context.Context, key, path string) *StringSliceCmd
 }
 
-type JSONStringCmd struct {
+type JSONCmd struct {
 	baseCmd
 	val []interface{}
 	raw string
 }
 
-var _ Cmder = (*JSONStringCmd)(nil)
+var _ Cmder = (*JSONCmd)(nil)
 
-func NewJSONStringCmd(ctx context.Context, args ...interface{}) *JSONStringCmd {
+func NewJSONCmd(ctx context.Context, args ...interface{}) *JSONCmd {
 
-	return &JSONStringCmd{
+	return &JSONCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -53,23 +53,23 @@ func NewJSONStringCmd(ctx context.Context, args ...interface{}) *JSONStringCmd {
 	}
 }
 
-func (cmd *JSONStringCmd) String() string {
+func (cmd *JSONCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *JSONStringCmd) SetVal(val []interface{}) {
+func (cmd *JSONCmd) SetVal(val []interface{}) {
 	cmd.val = val
 }
 
-func (cmd *JSONStringCmd) Val() []interface{} {
+func (cmd *JSONCmd) Val() []interface{} {
 	return cmd.val
 }
 
-func (cmd *JSONStringCmd) Result() ([]interface{}, error) {
+func (cmd *JSONCmd) Result() ([]interface{}, error) {
 	return cmd.Val(), cmd.Err()
 }
 
-func (cmd *JSONStringCmd) Scan(index int, dst interface{}) error {
+func (cmd *JSONCmd) Scan(index int, dst interface{}) error {
 	if cmd.Err() != nil {
 		return cmd.Err()
 	}
@@ -86,7 +86,9 @@ func (cmd *JSONStringCmd) Scan(index int, dst interface{}) error {
 	}
 }
 
-func (cmd *JSONStringCmd) readReply(rd *proto.Reader) error {
+func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
+
+	var err error
 
 	// nil response from JSON.(M)GET (cmd.baseCmd.err will be "redis: nil")
 	if cmd.baseCmd.Err() == Nil {
@@ -95,7 +97,13 @@ func (cmd *JSONStringCmd) readReply(rd *proto.Reader) error {
 		return nil
 	}
 
-	var err error
+	if readType, err := rd.PeekReplyType(); err != nil {
+		return err
+	} else if readType == proto.RespArray {
+		len := rd.ReadArrayLen()
+		cmd.val, err = rd.ReadArrayLen()
+	}
+
 	if cmd.raw, err = rd.ReadString(); err != nil && err != Nil {
 		return err
 	} else if cmd.raw == "" || err == Nil {
@@ -311,7 +319,7 @@ func (c cmdable) JSONForget(ctx context.Context, key, path string) *IntCmd {
 }
 
 // JSONGet returns the value at path in JSON serialized form
-func (c cmdable) JSONGet(ctx context.Context, key string, paths ...string) *JSONStringCmd {
+func (c cmdable) JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd {
 
 	args := make([]interface{}, len(paths)+2)
 	args[0] = "json.get"
@@ -320,7 +328,7 @@ func (c cmdable) JSONGet(ctx context.Context, key string, paths ...string) *JSON
 		args[n+2] = path
 	}
 
-	cmd := NewJSONStringCmd(ctx, args...)
+	cmd := NewJSONCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -343,9 +351,9 @@ func (c cmdable) JSONMGet(ctx context.Context, path string, keys ...string) *JSO
 }
 
 // JSONNumIncrBy increments the number value stored at path by number
-func (c cmdable) JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONStringCmd {
+func (c cmdable) JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd {
 	args := []interface{}{"json.numincrby", key, path, value}
-	cmd := NewJSONStringCmd(ctx, args...)
+	cmd := NewJSONCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
