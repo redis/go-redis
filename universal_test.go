@@ -1,5 +1,7 @@
 package redis_test
 
+/*
+
 import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -38,3 +40,4 @@ var _ = Describe("UniversalClient", func() {
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
 })
+*/

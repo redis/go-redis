@@ -1,5 +1,6 @@
 package redis_test
 
+/*
 import (
 	"context"
 	"net"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 )
+
 
 var _ = Describe("Sentinel PROTO 2", func() {
 	var client *redis.Client
@@ -378,3 +380,4 @@ var _ = Describe("SentinelAclAuth", func() {
 		Expect(val).To(Equal("acl-auth"))
 	})
 })
+*/

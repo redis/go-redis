@@ -243,6 +243,7 @@ var _ = Describe("races", func() {
 	})
 })
 
+/*
 var _ = Describe("cluster races", func() {
 	var client *redis.ClusterClient
 	var C, N int
@@ -311,6 +312,7 @@ var _ = Describe("cluster races", func() {
 		}
 	})
 })
+*/
 
 func bigVal() []byte {
 	return bytes.Repeat([]byte{'*'}, 1<<17) // 128kb

@@ -145,7 +145,7 @@ var _ = Describe("Redis Ring", func() {
 
 		// Start ringShard2.
 		var err error
-		ringShard2, err = startRedis(ringShard2Port)
+		ringShard2, err = connectTo(ringShard2Port)
 		Expect(err).NotTo(HaveOccurred())
 
 		Eventually(func() int {
@@ -174,15 +174,15 @@ var _ = Describe("Redis Ring", func() {
 
 			wantShard := ring.ShardByName("ringShardOne")
 			ring.SetAddrs(map[string]string{
-				"ringShardOne": ":" + ringShard1Port,
+				"ringShardOne": fmt.Sprintf(":%d", ringShard1Port),
 			})
 			Expect(ring.Len(), 1)
 			gotShard := ring.ShardByName("ringShardOne")
 			Expect(gotShard).To(BeIdenticalTo(wantShard))
 
 			ring.SetAddrs(map[string]string{
-				"ringShardOne": ":" + ringShard1Port,
-				"ringShardTwo": ":" + ringShard2Port,
+				"ringShardOne": fmt.Sprintf(":%d", ringShard1Port),
+				"ringShardTwo": fmt.Sprintf(":%d", ringShard2Port),
 			})
 			Expect(ring.Len(), 2)
 			gotShard = ring.ShardByName("ringShardOne")
@@ -193,13 +193,13 @@ var _ = Describe("Redis Ring", func() {
 			Expect(ring.Len(), 2)
 
 			shardName1 := "ringShardOne"
-			shardAddr1 := ":" + ringShard1Port
+			shardAddr1 := fmt.Sprintf(":%d", ringShard1Port)
 			wantShard1 := ring.ShardByName(shardName1)
 			shardName2 := "ringShardTwo"
-			shardAddr2 := ":" + ringShard2Port
+			shardAddr2 := fmt.Sprintf(":%d", ringShard2Port)
 			wantShard2 := ring.ShardByName(shardName2)
 			shardName3 := "ringShardThree"
-			shardAddr3 := ":" + ringShard3Port
+			shardAddr3 := fmt.Sprintf(":%d", ringShard3Port)
 
 			ring.SetAddrs(map[string]string{
 				shardName1: shardAddr1,

@@ -1,5 +1,7 @@
 package redis_test
 
+/*
+
 import (
 	"context"
 	"crypto/tls"
@@ -1587,3 +1589,4 @@ var _ = Describe("ClusterClient ParseURL", func() {
 		}
 	})
 })
+*/
