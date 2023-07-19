@@ -81,19 +81,33 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 			err := client.BFReserve(ctx, "testbf1", 0.001, 2000).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			result, err := client.BFInfoArg(ctx, "testbf1", redis.BFInfoArgs(redis.BFCAPACITY)).Result()
+			result, err := client.BFInfoArg(ctx, "testbf1", redis.BFCAPACITY).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Capacity).To(BeEquivalentTo(int64(2000)))
 		})
 
 		It("should BFInsert", Label("bloom", "bfinsert"), func() {
-			options := &redis.BFReserveOptions{
+			options := &redis.BFInsertOptions{
 				Capacity:   2000,
 				Error:      0.001,
 				Expansion:  3,
 				NonScaling: false,
+				NoCreate:   true,
 			}
+
 			resultInsert, err := client.BFInsert(ctx, "testbf1", options, "item1").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("ERR not found"))
+
+			options = &redis.BFInsertOptions{
+				Capacity:   2000,
+				Error:      0.001,
+				Expansion:  3,
+				NonScaling: false,
+				NoCreate:   false,
+			}
+
+			resultInsert, err = client.BFInsert(ctx, "testbf1", options, "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(resultInsert)).To(BeEquivalentTo(1))
 
@@ -124,7 +138,7 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 		It("should BFMExists", Label("bloom", "bfmexists"), func() {
 			exist, err := client.BFMExists(ctx, "testbf1", "item1", "item2", "item3").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(exist)).To(Equal(int(3)))
+			Expect(len(exist)).To(Equal(3))
 			Expect(exist[0]).To(BeFalse())
 			Expect(exist[1]).To(BeFalse())
 			Expect(exist[2]).To(BeFalse())
@@ -135,7 +149,7 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 			exist, err = client.BFMExists(ctx, "testbf1", "item1", "item2", "item3", "item4").Result()
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(exist)).To(Equal(int(4)))
+			Expect(len(exist)).To(Equal(4))
 			Expect(exist[0]).To(BeTrue())
 			Expect(exist[1]).To(BeTrue())
 			Expect(exist[2]).To(BeTrue())
@@ -426,7 +440,7 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 
 			resultQuery, err := client.TOPKQuery(ctx, "topk1", "item1", "item2", 4, 3).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(resultQuery)).To(BeEquivalentTo(int(4)))
+			Expect(len(resultQuery)).To(BeEquivalentTo(4))
 			Expect(resultQuery[0]).To(BeTrue())
 			Expect(resultQuery[1]).To(BeTrue())
 			Expect(resultQuery[2]).To(BeFalse())
@@ -434,30 +448,30 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 
 			resultCount, err := client.TOPKCount(ctx, "topk1", "item1", "item2", "item3").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(resultCount)).To(BeEquivalentTo(int(3)))
+			Expect(len(resultCount)).To(BeEquivalentTo(3))
 			Expect(resultCount[0]).To(BeEquivalentTo(int64(2)))
 			Expect(resultCount[1]).To(BeEquivalentTo(int64(1)))
 			Expect(resultCount[2]).To(BeEquivalentTo(int64(0)))
 
 			resultIncr, err := client.TOPKIncrBy(ctx, "topk1", "item1", 5, "item2", 10).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(resultIncr)).To(BeEquivalentTo(int(2)))
+			Expect(len(resultIncr)).To(BeEquivalentTo(2))
 
 			resultCount, err = client.TOPKCount(ctx, "topk1", "item1", "item2", "item3").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(resultCount)).To(BeEquivalentTo(int(3)))
+			Expect(len(resultCount)).To(BeEquivalentTo(3))
 			Expect(resultCount[0]).To(BeEquivalentTo(int64(7)))
 			Expect(resultCount[1]).To(BeEquivalentTo(int64(11)))
 			Expect(resultCount[2]).To(BeEquivalentTo(int64(0)))
 
 			resultList, err := client.TOPKList(ctx, "topk1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(resultList)).To(BeEquivalentTo(int(3)))
+			Expect(len(resultList)).To(BeEquivalentTo(3))
 			Expect(resultList).To(ContainElements("item2", "item1", "3"))
 
 			resultListWithCount, err := client.TOPKListWithCount(ctx, "topk1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(resultListWithCount)).To(BeEquivalentTo(int(3)))
+			Expect(len(resultListWithCount)).To(BeEquivalentTo(3))
 			Expect(resultListWithCount["3"]).To(BeEquivalentTo(int64(1)))
 			Expect(resultListWithCount["item1"]).To(BeEquivalentTo(int64(7)))
 			Expect(resultListWithCount["item2"]).To(BeEquivalentTo(int64(11)))
@@ -473,7 +487,7 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(resultInfo.K).To(BeEquivalentTo(int64(3)))
 			Expect(resultInfo.Width).To(BeEquivalentTo(int64(1500)))
 			Expect(resultInfo.Depth).To(BeEquivalentTo(int64(8)))
-			Expect(resultInfo.Decay).To(BeEquivalentTo(float64(0.5)))
+			Expect(resultInfo.Decay).To(BeEquivalentTo(0.5))
 		})
 
 	})
@@ -549,9 +563,9 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 			cdf, err = client.TDigestCDF(ctx, "tdigest1", 15, 35, 70).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(cdf)).To(BeEquivalentTo(3))
-			Expect(cdf[0]).To(BeEquivalentTo(float64(0.1)))
-			Expect(cdf[1]).To(BeEquivalentTo(float64(0.3)))
-			Expect(cdf[2]).To(BeEquivalentTo(float64(0.65)))
+			Expect(cdf[0]).To(BeEquivalentTo(0.1))
+			Expect(cdf[1]).To(BeEquivalentTo(0.3))
+			Expect(cdf[2]).To(BeEquivalentTo(0.65))
 
 			max, err = client.TDigestMax(ctx, "tdigest1").Result()
 			Expect(err).NotTo(HaveOccurred())

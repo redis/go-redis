@@ -12,7 +12,7 @@ type ProbabilisticCmdable interface {
 	BFExists(ctx context.Context, key, element interface{}) *BoolCmd
 	BFInfo(ctx context.Context, key string) *BFInfoCmd
 	BFInfoArg(ctx context.Context, key string, option BFInfoArgs) *BFInfoCmd
-	BFInsert(ctx context.Context, key string, options *BFReserveOptions, elements ...interface{}) *BoolSliceCmd
+	BFInsert(ctx context.Context, key string, options *BFInsertOptions, elements ...interface{}) *BoolSliceCmd
 	BFMAdd(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
 	BFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
 	BFReserve(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
@@ -65,6 +65,14 @@ type ProbabilisticCmdable interface {
 	TDigestReset(ctx context.Context, key string) *StatusCmd
 	TDigestRevRank(ctx context.Context, key string, values ...float64) *IntSliceCmd
 	TDigestTrimmedMean(ctx context.Context, key string, lowCutQuantile, highCutQuantile float64) *FloatCmd
+}
+
+type BFInsertOptions struct {
+	Capacity   int64
+	Error      float64
+	Expansion  int64
+	NonScaling bool
+	NoCreate   bool
 }
 
 type BFReserveOptions struct {
@@ -246,7 +254,7 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 			result.Size, err = rd.ReadInt()
 		case "Number of filters":
 			result.NumFilters, err = rd.ReadInt()
-		case "Number of elements inserted":
+		case "Number of items inserted":
 			result.NumItemsInserted, err = rd.ReadInt()
 		case "Expansion rate":
 			result.ExpansionRate, err = rd.ReadInt()
@@ -270,26 +278,27 @@ func (c cmdable) BFInfoArg(ctx context.Context, key string, option BFInfoArgs) *
 	return cmd
 }
 
-func (c cmdable) BFInsert(ctx context.Context, key string, options *BFReserveOptions, elements ...interface{}) *BoolSliceCmd {
+func (c cmdable) BFInsert(ctx context.Context, key string, options *BFInsertOptions, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"bf.insert", key}
 	if options != nil {
-		if options.Error != 0 {
-			args = append(args, "error", options.Error)
-		}
 		if options.Capacity != 0 {
 			args = append(args, "capacity", options.Capacity)
 		}
+		if options.Error != 0 {
+			args = append(args, "error", options.Error)
+		}
 		if options.Expansion != 0 {
 			args = append(args, "expansion", options.Expansion)
+		}
+		if options.NoCreate {
+			args = append(args, "nocreate")
 		}
 		if options.NonScaling {
 			args = append(args, "nonscaling")
 		}
 	}
-	args = append(args, "elements")
-	for _, s := range elements {
-		args = append(args, s)
-	}
+	args = append(args, "items")
+	args = append(args, elements...)
 
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -441,9 +450,9 @@ func (cmd *CFInfoCmd) readReply(rd *proto.Reader) (err error) {
 			result.NumBuckets, err = rd.ReadInt()
 		case "Number of filters":
 			result.NumFilters, err = rd.ReadInt()
-		case "Number of elements inserted":
+		case "Number of items inserted":
 			result.NumItemsInserted, err = rd.ReadInt()
-		case "Number of elements deleted":
+		case "Number of items deleted":
 			result.NumItemsDeleted, err = rd.ReadInt()
 		case "Bucket size":
 			result.BucketSize, err = rd.ReadInt()
@@ -499,7 +508,7 @@ func (c cmdable) getCfInsertArgs(args []interface{}, options *CFInsertOptions, e
 			args = append(args, "nocreate")
 		}
 	}
-	args = append(args, "elements")
+	args = append(args, "items")
 	for _, s := range elements {
 		args = append(args, s)
 	}
