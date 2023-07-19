@@ -8,7 +8,7 @@ import (
 	"math"
 )
 
-var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
+var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
 

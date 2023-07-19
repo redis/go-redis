@@ -6,30 +6,30 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-type ProbabilisticCmdble interface {
-	BFAdd(ctx context.Context, key, element interface{}) *IntCmd
+type ProbabilisticCmdable interface {
+	BFAdd(ctx context.Context, key, element interface{}) *BoolCmd
 	BFCard(ctx context.Context, key string) *IntCmd
-	BFExists(ctx context.Context, key, element interface{}) *IntCmd
+	BFExists(ctx context.Context, key, element interface{}) *BoolCmd
 	BFInfo(ctx context.Context, key string) *BFInfoCmd
-	BFInfoArg(ctx context.Context, key string, option BFInfo) *BFInfoCmd
-	BFInsert(ctx context.Context, key string, options *BFReserveOptions, elements ...interface{}) *IntSliceCmd
-	BFMAdd(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
-	BFMExists(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
+	BFInfoArg(ctx context.Context, key string, option BFInfoArgs) *BFInfoCmd
+	BFInsert(ctx context.Context, key string, options *BFReserveOptions, elements ...interface{}) *BoolSliceCmd
+	BFMAdd(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
+	BFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
 	BFReserve(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
 	BFReserveExpansion(ctx context.Context, key string, errorRate float64, capacity, expansion int64) *StatusCmd
 	BFReserveNonScaling(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
 	BFReserveArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd
 	//TODO LoadChunk and ScanDump missing
 
-	CFAdd(ctx context.Context, key, element interface{}) *IntCmd
-	CFAddNX(ctx context.Context, key, element interface{}) *IntCmd
+	CFAdd(ctx context.Context, key, element interface{}) *BoolCmd
+	CFAddNX(ctx context.Context, key, element interface{}) *BoolCmd
 	CFCount(ctx context.Context, key, element interface{}) *IntCmd
-	CFDel(ctx context.Context, key string) *IntCmd
-	CFExists(ctx context.Context, key, element interface{}) *IntCmd
+	CFDel(ctx context.Context, key string, element interface{}) *BoolCmd
+	CFExists(ctx context.Context, key, element interface{}) *BoolCmd
 	CFInfo(ctx context.Context, key string) *CFInfoCmd
-	CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd
+	CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *BoolSliceCmd
 	CFInsertNx(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd
-	CFMExists(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
+	CFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
 	CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd
 	//TODO LoadChunk and ScanDump missing
 
@@ -172,7 +172,7 @@ func (c cmdable) BFCard(ctx context.Context, key string) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) BFExists(ctx context.Context, key, element string) *BoolCmd {
+func (c cmdable) BFExists(ctx context.Context, key, element interface{}) *BoolCmd {
 	args := []interface{}{"bf.exists", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -270,7 +270,7 @@ func (c cmdable) BFInfoArg(ctx context.Context, key string, option BFInfoArgs) *
 	return cmd
 }
 
-func (c cmdable) BFInsert(ctx context.Context, key string, options *BFReserveOptions, elements ...string) *BoolSliceCmd {
+func (c cmdable) BFInsert(ctx context.Context, key string, options *BFReserveOptions, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"bf.insert", key}
 	if options != nil {
 		if options.Error != 0 {
@@ -296,7 +296,7 @@ func (c cmdable) BFInsert(ctx context.Context, key string, options *BFReserveOpt
 	return cmd
 }
 
-func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...string) *BoolSliceCmd {
+func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"bf.madd", key}
 	for _, s := range elements {
 		args = append(args, s)
@@ -306,7 +306,7 @@ func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...string) *Bo
 	return cmd
 }
 
-func (c cmdable) BFMExists(ctx context.Context, key string, elements ...string) *BoolSliceCmd {
+func (c cmdable) BFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"bf.mexists", key}
 	for _, s := range elements {
 		args = append(args, s)
@@ -343,35 +343,35 @@ func (c cmdable) CFReserveArgs(ctx context.Context, key string, options *CFReser
 	return cmd
 }
 
-func (c cmdable) CFAdd(ctx context.Context, key, element string) *BoolCmd {
+func (c cmdable) CFAdd(ctx context.Context, key, element interface{}) *BoolCmd {
 	args := []interface{}{"cf.add", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CFAddNX(ctx context.Context, key, element string) *BoolCmd {
+func (c cmdable) CFAddNX(ctx context.Context, key, element interface{}) *BoolCmd {
 	args := []interface{}{"cf.addnx", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CFCount(ctx context.Context, key, element string) *IntCmd {
+func (c cmdable) CFCount(ctx context.Context, key, element interface{}) *IntCmd {
 	args := []interface{}{"cf.count", key, element}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CFDel(ctx context.Context, key string, element string) *BoolCmd {
+func (c cmdable) CFDel(ctx context.Context, key string, element interface{}) *BoolCmd {
 	args := []interface{}{"cf.del", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CFExists(ctx context.Context, key, element string) *BoolCmd {
+func (c cmdable) CFExists(ctx context.Context, key, element interface{}) *BoolCmd {
 	args := []interface{}{"cf.exists", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -472,7 +472,7 @@ func (c cmdable) CFInfo(ctx context.Context, key string) *CFInfoCmd {
 	return cmd
 }
 
-func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...string) *BoolSliceCmd {
+func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"cf.insert", key}
 	args = c.getCfInsertArgs(args, options, elements...)
 
@@ -481,7 +481,7 @@ func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOpti
 	return cmd
 }
 
-func (c cmdable) CFInsertNx(ctx context.Context, key string, options *CFInsertOptions, elements ...string) *IntSliceCmd {
+func (c cmdable) CFInsertNx(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd {
 	args := []interface{}{"cf.insertnx", key}
 	args = c.getCfInsertArgs(args, options, elements...)
 
@@ -490,7 +490,7 @@ func (c cmdable) CFInsertNx(ctx context.Context, key string, options *CFInsertOp
 	return cmd
 }
 
-func (c cmdable) getCfInsertArgs(args []interface{}, options *CFInsertOptions, elements ...string) []interface{} {
+func (c cmdable) getCfInsertArgs(args []interface{}, options *CFInsertOptions, elements ...interface{}) []interface{} {
 	if options != nil {
 		if options.Capacity != 0 {
 			args = append(args, "capacity", options.Capacity)
@@ -506,7 +506,7 @@ func (c cmdable) getCfInsertArgs(args []interface{}, options *CFInsertOptions, e
 	return args
 }
 
-func (c cmdable) CFMExists(ctx context.Context, key string, elements ...string) *BoolSliceCmd {
+func (c cmdable) CFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"cf.mexists", key}
 	for _, s := range elements {
 		args = append(args, s)
