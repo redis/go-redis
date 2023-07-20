@@ -93,6 +93,10 @@ var _ = Describe("Client", func() {
 		var res []string
 		res = append(res, "before")
 		
+		client := redis.NewClient(&redis.Options{
+			Addr:       redisAddr,
+			MaxRetries: 1,
+		})
 		client.WithTimeout(10 * time.Millisecond)
 		client.AddHook(&hook{
 			dialHook: func(hook redis.DialHook) redis.DialHook {
