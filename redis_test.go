@@ -88,12 +88,14 @@ var _ = Describe("Client", func() {
 
 		//check withTimeout supports the addition of dialHook
 		var res []string
+		res = append(res, "before")
 		client.AddHook(&hook{
 			dialHook: func(hook redis.DialHook) redis.DialHook {
+				res = append(res, "before-dial-hook-start")
 				return func(ctx context.Context, network, addr string) (n net.Conn, e error) {
 					res = append(res, "dial-hook-start")
 					n, e = hook(ctx, network, addr)
-					return 
+					return n, e
 				}
 			},
 		})
