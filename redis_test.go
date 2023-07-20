@@ -77,18 +77,23 @@ var _ = Describe("Client", func() {
 	})
 
 	It("supports WithTimeout", func() {
-		//err := client.ClientPause(ctx, time.Second).Err()
-		//Expect(err).NotTo(HaveOccurred())
+		err := client.ClientPause(ctx, time.Second).Err()
+		Expect(err).NotTo(HaveOccurred())
 
-		//err = client.WithTimeout(10 * time.Millisecond).Ping(ctx).Err()
-		//Expect(err).To(HaveOccurred())
+		err = client.WithTimeout(10 * time.Millisecond).Ping(ctx).Err()
+		Expect(err).To(HaveOccurred())
 
-		//err = client.Ping(ctx).Err()
-		//Expect(err).NotTo(HaveOccurred())
+		err = client.Ping(ctx).Err()
+		Expect(err).NotTo(HaveOccurred())
+	
+	})
 
-		//check withTimeout supports the addition of dialHook
+	It("timeout should support dialHook", func() {
+
 		var res []string
 		res = append(res, "before")
+		
+		client.WithTimeout(10 * time.Millisecond)
 		client.AddHook(&hook{
 			dialHook: func(hook redis.DialHook) redis.DialHook {
 				res = append(res, "before-dial-hook-start")
@@ -99,8 +104,8 @@ var _ = Describe("Client", func() {
 				}
 			},
 		})
-		client.Keys(ctx, "key")
-		//Expect(err).NotTo(HaveOccurred())
+		err := client.Ping(ctx).Err()
+		Expect(err).NotTo(HaveOccurred())
 		Expect(res).To(Equal([]string{
 			"dial-hook-start",
 		}))
