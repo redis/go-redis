@@ -85,6 +85,23 @@ var _ = Describe("Client", func() {
 
 		err = client.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
+
+		//check withTimeout supports the addition of dialHook
+		var res []string
+		client.AddHook(&hook{
+			dialHook: func(hook redis.DialHook) redis.DialHook {
+				return func(ctx context.Context, network, addr string) (n net.Conn, e error) {
+					res = append(res, "dial-hook-start")
+					n, e = hook(ctx, network, addr)
+					return 
+				}
+			},
+		})
+		err = client.Ping(ctx).Err()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(Equal([]string{
+			"dial-hook-start",
+		}))
 	})
 
 	It("should ping", func() {
