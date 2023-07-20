@@ -1038,6 +1038,32 @@ func (c cmdable) TDigestMax(ctx context.Context, key string) *FloatCmd {
 	return cmd
 }
 
+type TDigestMergeOptions struct {
+	Compression int64
+	Override    bool
+}
+
+func (c cmdable) TDigestMerge(ctx context.Context, destKey string, options *TDigestMergeOptions, sourceKeys ...string) *StatusCmd {
+	args := []interface{}{"tdigest.merge", destKey, len(sourceKeys)}
+
+	for _, sourceKey := range sourceKeys {
+		args = append(args, sourceKey)
+	}
+
+	if options != nil {
+		if options.Compression != 0 {
+			args = append(args, "COMPRESSION", options.Compression)
+		}
+		if options.Override {
+			args = append(args, "OVERRIDE")
+		}
+	}
+
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) TDigestMin(ctx context.Context, key string) *FloatCmd {
 	args := []interface{}{"tdigest.min", key}
 

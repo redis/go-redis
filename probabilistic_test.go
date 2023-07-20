@@ -493,7 +493,7 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 	})
 
 	Describe("t-digest", Label("tdigest"), func() {
-		It("should TDigestCreate, TDigestAdd, TDigestQuantile, TDigestCDF, TDigestMerge, TDigestInfo", Label("tdigest", "tdigestcreate", "tdigestadd", "tdigestquantile", "tdigestcdf", "tdigestmerge", "tdigestinfo"), func() {
+		It("should TDigestAdd, TDigestCreate, TDigestInfo, TDigestByRank, TDigestByRevRank, TDigestCDF, TDigestMax, TDigestMin, TDigestQuantile, TDigestRank, TDigestRevRank, TDigestTrimmedMean, TDigestReset, ", Label("tdigest", "tdigestadd", "tdigestcreate", "tdigestinfo", "tdigestbyrank", "tdigestbyrevrank", "tdigestcdf", "tdigestmax", "tdigestmin", "tdigestquantile", "tdigestrank", "tdigestrevrank", "tdigesttrimmedmean", "tdigestreset"), func() {
 			err := client.TDigestCreate(ctx, "tdigest1").Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -610,6 +610,39 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 			info, err := client.TDigestInfo(ctx, "tdigest1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(info.Compression).To(BeEquivalentTo(int64(2000)))
+		})
+
+		FIt("should TDigestMerge", Label("tdigest", "tmerge"), func() {
+			err := client.TDigestCreate(ctx, "tdigest1").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.TDigestAdd(ctx, "tdigest1", 10, 20, 30, 40, 50, 60, 70, 80, 90, 100).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.TDigestCreate(ctx, "tdigest2").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.TDigestAdd(ctx, "tdigest2", 15, 25, 35, 45, 55, 65, 75, 85, 95, 105).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.TDigestCreate(ctx, "tdigest3").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.TDigestAdd(ctx, "tdigest3", 50, 60, 70, 80, 90, 100, 110, 120, 130, 140).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			options := &redis.TDigestMergeOptions{
+				Compression: 1000,
+				Override:    false,
+			}
+			err = client.TDigestMerge(ctx, "tdigest1", options, "tdigest2", "tdigest3").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			info, err := client.TDigestInfo(ctx, "tdigest1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Observations).To(BeEquivalentTo(int64(30)))
+			Expect(info.Compression).To(BeEquivalentTo(int64(1000)))
+
+			max, err := client.TDigestMax(ctx, "tdigest1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(max).To(BeEquivalentTo(float64(140)))
 		})
 	})
 })
