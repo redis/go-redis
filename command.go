@@ -340,6 +340,8 @@ func (cmd *Cmd) Bool() (bool, error) {
 
 func toBool(val interface{}) (bool, error) {
 	switch val := val.(type) {
+	case bool:
+		return val, nil
 	case int64:
 		return val != 0, nil
 	case string:
@@ -2373,7 +2375,7 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 				}
 			case "entries-read":
 				group.EntriesRead, err = rd.ReadInt()
-				if err != nil {
+				if err != nil && err != Nil {
 					return nil, err
 				}
 			case "lag":

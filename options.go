@@ -45,6 +45,9 @@ type Options struct {
 	// Hook that is called when new connection is established.
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	// Protocol 2 or 3. Use the version to negotiate RESP version with redis-server.
+	// Default is 3.
+	Protocol int
 	// Use the specified Username to authenticate the current connection
 	// with one of the connections defined in the ACL list when connecting
 	// to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
@@ -437,6 +440,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 		o.DB = db
 	}
 
+	o.Protocol = q.int("protocol")
 	o.ClientName = q.string("client_name")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")

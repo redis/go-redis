@@ -612,7 +612,7 @@ var _ = Describe("Commands", func() {
 			// if too much time (>1s) is used during command execution, it may also cause the test to fail.
 			// so the ObjectIdleTime result should be <=now-start+1s
 			// link: https://github.com/redis/redis/blob/5b48d900498c85bbf4772c1d466c214439888115/src/object.c#L1265-L1272
-			Expect(idleTime.Val()).To(BeNumerically("<=", time.Now().Sub(start)+time.Second))
+			Expect(idleTime.Val()).To(BeNumerically("<=", time.Since(start)+time.Second))
 		})
 
 		It("should Persist", func() {
@@ -5912,6 +5912,97 @@ var _ = Describe("Commands", func() {
 						}
 					}
 				}
+
+				Expect(res.Groups).To(Equal([]redis.XInfoStreamGroup{
+					{
+						Name:            "group1",
+						LastDeliveredID: "3-0",
+						EntriesRead:     3,
+						Lag:             0,
+						PelCount:        3,
+						Pending: []redis.XInfoStreamGroupPending{
+							{ID: "1-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+							{ID: "2-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+						},
+						Consumers: []redis.XInfoStreamConsumer{
+							{
+								Name:       "consumer1",
+								SeenTime:   time.Time{},
+								ActiveTime: time.Time{},
+								PelCount:   2,
+								Pending: []redis.XInfoStreamConsumerPending{
+									{ID: "1-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+									{ID: "2-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+								},
+							},
+							{
+								Name:       "consumer2",
+								SeenTime:   time.Time{},
+								ActiveTime: time.Time{},
+								PelCount:   1,
+								Pending: []redis.XInfoStreamConsumerPending{
+									{ID: "3-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+								},
+							},
+						},
+					},
+					{
+						Name:            "group2",
+						LastDeliveredID: "3-0",
+						EntriesRead:     3,
+						Lag:             0,
+						PelCount:        2,
+						Pending: []redis.XInfoStreamGroupPending{
+							{ID: "2-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+							{ID: "3-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+						},
+						Consumers: []redis.XInfoStreamConsumer{
+							{
+								Name:       "consumer1",
+								SeenTime:   time.Time{},
+								ActiveTime: time.Time{},
+								PelCount:   2,
+								Pending: []redis.XInfoStreamConsumerPending{
+									{ID: "2-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+									{ID: "3-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+								},
+							},
+						},
+					},
+				}))
+
+				// entries-read = nil
+				Expect(client.Del(ctx, "xinfo-stream-full-stream").Err()).NotTo(HaveOccurred())
+				id, err := client.XAdd(ctx, &redis.XAddArgs{
+					Stream: "xinfo-stream-full-stream",
+					ID:     "*",
+					Values: []any{"k1", "v1"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(client.XGroupCreateMkStream(ctx, "xinfo-stream-full-stream", "xinfo-stream-full-group", "0").Err()).NotTo(HaveOccurred())
+				res, err = client.XInfoStreamFull(ctx, "xinfo-stream-full-stream", 0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal(&redis.XInfoStreamFull{
+					Length:            1,
+					RadixTreeKeys:     1,
+					RadixTreeNodes:    2,
+					LastGeneratedID:   id,
+					MaxDeletedEntryID: "0-0",
+					EntriesAdded:      1,
+					Entries:           []redis.XMessage{{ID: id, Values: map[string]any{"k1": "v1"}}},
+					Groups: []redis.XInfoStreamGroup{
+						{
+							Name:            "xinfo-stream-full-group",
+							LastDeliveredID: "0-0",
+							EntriesRead:     0,
+							Lag:             1,
+							PelCount:        0,
+							Pending:         []redis.XInfoStreamGroupPending{},
+							Consumers:       []redis.XInfoStreamConsumer{},
+						},
+					},
+					RecordedFirstEntryID: id,
+				}))
 			})
 
 			It("should XINFO GROUPS", func() {

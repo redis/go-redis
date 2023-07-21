@@ -26,6 +26,7 @@ type UniversalOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	Protocol         int
 	Username         string
 	Password         string
 	SentinelUsername string
@@ -77,6 +78,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		Dialer:     o.Dialer,
 		OnConnect:  o.OnConnect,
 
+		Protocol: o.Protocol,
 		Username: o.Username,
 		Password: o.Password,
 
@@ -122,6 +124,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		OnConnect: o.OnConnect,
 
 		DB:               o.DB,
+		Protocol:         o.Protocol,
 		Username:         o.Username,
 		Password:         o.Password,
 		SentinelUsername: o.SentinelUsername,
@@ -162,6 +165,7 @@ func (o *UniversalOptions) Simple() *Options {
 		OnConnect:  o.OnConnect,
 
 		DB:       o.DB,
+		Protocol: o.Protocol,
 		Username: o.Username,
 		Password: o.Password,
 
