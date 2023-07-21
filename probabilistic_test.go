@@ -407,7 +407,7 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(result[1]).To(BeEquivalentTo(int64(4)))
 			Expect(result[2]).To(BeEquivalentTo(int64(3)))
 
-			sourceSketches := map[string]int{
+			sourceSketches := map[string]int64{
 				"cms1": 1,
 				"cms2": 2,
 			}

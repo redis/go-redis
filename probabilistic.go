@@ -38,7 +38,7 @@ type probabilisticCmdable interface {
 	CMSInitByDim(ctx context.Context, key string, width, height int64) *StatusCmd
 	CMSInitByProb(ctx context.Context, key string, errorRate, probability float64) *StatusCmd
 	CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd
-	CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int) *StatusCmd
+	CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int64) *StatusCmd
 	CMSQuery(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
 
 	TopKAdd(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd
@@ -48,15 +48,15 @@ type probabilisticCmdable interface {
 	TopKList(ctx context.Context, key string) *StringSliceCmd
 	TopKListWithCount(ctx context.Context, key string) *MapStringIntCmd
 	TopKQuery(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
-	TopKReserve(ctx context.Context, key string, k int) *StatusCmd
-	TopKReserveWithOptions(ctx context.Context, key string, k int, width, depth int64, decay float64) *StatusCmd
+	TopKReserve(ctx context.Context, key string, k int64) *StatusCmd
+	TopKReserveWithOptions(ctx context.Context, key string, k int64, width, depth int64, decay float64) *StatusCmd
 
 	TDigestAdd(ctx context.Context, key string, elements ...float64) *StatusCmd
-	TDigestByRank(ctx context.Context, key string, rank ...uint) *FloatSliceCmd
-	TDigestByRevRank(ctx context.Context, key string, rank ...uint) *FloatSliceCmd
+	TDigestByRank(ctx context.Context, key string, rank ...uint64) *FloatSliceCmd
+	TDigestByRevRank(ctx context.Context, key string, rank ...uint64) *FloatSliceCmd
 	TDigestCDF(ctx context.Context, key string, elements ...float64) *FloatSliceCmd
 	TDigestCreate(ctx context.Context, key string) *StatusCmd
-	TDigestCreateWithCompression(ctx context.Context, key string, compression int) *StatusCmd
+	TDigestCreateWithCompression(ctx context.Context, key string, compression int64) *StatusCmd
 	TDigestInfo(ctx context.Context, key string) *TDigestInfoCmd
 	TDigestMax(ctx context.Context, key string) *FloatCmd
 	TDigestMin(ctx context.Context, key string) *FloatCmd
@@ -638,7 +638,7 @@ func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...str
 	return cmd
 }
 
-func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int) *StatusCmd {
+func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int64) *StatusCmd {
 	args := make([]interface{}, 0, 4+(len(sourceKeys)*2+1))
 	args = append(args, "cms.merge", destKey, len(sourceKeys))
 
@@ -688,7 +688,7 @@ func (c cmdable) TopKAdd(ctx context.Context, key string, elements ...interface{
 	return cmd
 }
 
-func (c cmdable) TopKReserve(ctx context.Context, key string, k int) *StatusCmd {
+func (c cmdable) TopKReserve(ctx context.Context, key string, k int64) *StatusCmd {
 	args := []interface{}{"topk.reserve", key, k}
 
 	cmd := NewStatusCmd(ctx, args...)
@@ -696,7 +696,7 @@ func (c cmdable) TopKReserve(ctx context.Context, key string, k int) *StatusCmd 
 	return cmd
 }
 
-func (c cmdable) TopKReserveWithOptions(ctx context.Context, key string, k int, width, depth int64, decay float64) *StatusCmd {
+func (c cmdable) TopKReserveWithOptions(ctx context.Context, key string, k int64, width, depth int64, decay float64) *StatusCmd {
 	args := []interface{}{"topk.reserve", key, k, width, depth, decay}
 
 	cmd := NewStatusCmd(ctx, args...)
@@ -857,7 +857,7 @@ func (c cmdable) TDigestAdd(ctx context.Context, key string, elements ...float64
 	return cmd
 }
 
-func (c cmdable) TDigestByRank(ctx context.Context, key string, rank ...uint) *FloatSliceCmd {
+func (c cmdable) TDigestByRank(ctx context.Context, key string, rank ...uint64) *FloatSliceCmd {
 	args := make([]interface{}, 2, 2+len(rank))
 	args[0] = "tdigest.byrank"
 	args[1] = key
@@ -875,7 +875,7 @@ func (c cmdable) TDigestByRank(ctx context.Context, key string, rank ...uint) *F
 	return cmd
 }
 
-func (c cmdable) TDigestByRevRank(ctx context.Context, key string, rank ...uint) *FloatSliceCmd {
+func (c cmdable) TDigestByRevRank(ctx context.Context, key string, rank ...uint64) *FloatSliceCmd {
 	args := make([]interface{}, 2, 2+len(rank))
 	args[0] = "tdigest.byrevrank"
 	args[1] = key
@@ -919,7 +919,7 @@ func (c cmdable) TDigestCreate(ctx context.Context, key string) *StatusCmd {
 	return cmd
 }
 
-func (c cmdable) TDigestCreateWithCompression(ctx context.Context, key string, compression int) *StatusCmd {
+func (c cmdable) TDigestCreateWithCompression(ctx context.Context, key string, compression int64) *StatusCmd {
 	args := []interface{}{"tdigest.create", key, "compression", compression}
 
 	cmd := NewStatusCmd(ctx, args...)
