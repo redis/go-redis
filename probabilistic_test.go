@@ -426,19 +426,19 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 	})
 
 	Describe("TopK", Label("topk"), func() {
-		It("should TopKReserve, TOPKInfo, TOPKAdd, TOPKQuery, TOPKCount, TOPKIncrBy, TOPKList, TOPKListWithCount", Label("topk", "topkreserve", "topkinfo", "topkadd", "topkquery", "topkcount", "topkincrby", "topklist", "topklistwithcount"), func() {
-			err := client.TOPKReserve(ctx, "topk1", 3).Err()
+		It("should TopKReserve, TopKInfo, TopKAdd, TopKQuery, TopKCount, TopKIncrBy, TopKList, TopKListWithCount", Label("topk", "topkreserve", "topkinfo", "topkadd", "topkquery", "topkcount", "topkincrby", "topklist", "topklistwithcount"), func() {
+			err := client.TopKReserve(ctx, "topk1", 3).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			resultInfo, err := client.TOPKInfo(ctx, "topk1").Result()
+			resultInfo, err := client.TopKInfo(ctx, "topk1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resultInfo.K).To(BeEquivalentTo(int64(3)))
 
-			resultAdd, err := client.TOPKAdd(ctx, "topk1", "item1", "item2", 3, "item1").Result()
+			resultAdd, err := client.TopKAdd(ctx, "topk1", "item1", "item2", 3, "item1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(resultAdd)).To(BeEquivalentTo(int64(4)))
 
-			resultQuery, err := client.TOPKQuery(ctx, "topk1", "item1", "item2", 4, 3).Result()
+			resultQuery, err := client.TopKQuery(ctx, "topk1", "item1", "item2", 4, 3).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(resultQuery)).To(BeEquivalentTo(4))
 			Expect(resultQuery[0]).To(BeTrue())
@@ -446,30 +446,30 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(resultQuery[2]).To(BeFalse())
 			Expect(resultQuery[3]).To(BeTrue())
 
-			resultCount, err := client.TOPKCount(ctx, "topk1", "item1", "item2", "item3").Result()
+			resultCount, err := client.TopKCount(ctx, "topk1", "item1", "item2", "item3").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(resultCount)).To(BeEquivalentTo(3))
 			Expect(resultCount[0]).To(BeEquivalentTo(int64(2)))
 			Expect(resultCount[1]).To(BeEquivalentTo(int64(1)))
 			Expect(resultCount[2]).To(BeEquivalentTo(int64(0)))
 
-			resultIncr, err := client.TOPKIncrBy(ctx, "topk1", "item1", 5, "item2", 10).Result()
+			resultIncr, err := client.TopKIncrBy(ctx, "topk1", "item1", 5, "item2", 10).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(resultIncr)).To(BeEquivalentTo(2))
 
-			resultCount, err = client.TOPKCount(ctx, "topk1", "item1", "item2", "item3").Result()
+			resultCount, err = client.TopKCount(ctx, "topk1", "item1", "item2", "item3").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(resultCount)).To(BeEquivalentTo(3))
 			Expect(resultCount[0]).To(BeEquivalentTo(int64(7)))
 			Expect(resultCount[1]).To(BeEquivalentTo(int64(11)))
 			Expect(resultCount[2]).To(BeEquivalentTo(int64(0)))
 
-			resultList, err := client.TOPKList(ctx, "topk1").Result()
+			resultList, err := client.TopKList(ctx, "topk1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(resultList)).To(BeEquivalentTo(3))
 			Expect(resultList).To(ContainElements("item2", "item1", "3"))
 
-			resultListWithCount, err := client.TOPKListWithCount(ctx, "topk1").Result()
+			resultListWithCount, err := client.TopKListWithCount(ctx, "topk1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(resultListWithCount)).To(BeEquivalentTo(3))
 			Expect(resultListWithCount["3"]).To(BeEquivalentTo(int64(1)))
@@ -477,12 +477,11 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(resultListWithCount["item2"]).To(BeEquivalentTo(int64(11)))
 		})
 
-		It("should TOPKReserveWithOptions", Label("topk", "topkreservewithoptions"), func() {
-			//&redis.TOPKReserveOptions{Width: 1500, Depth: 8, Decay: 0.5}
-			err := client.TOPKReserveWithOptions(ctx, "topk1", 3, 1500, 8, 0.5).Err()
+		It("should TopKReserveWithOptions", Label("topk", "topkreservewithoptions"), func() {
+			err := client.TopKReserveWithOptions(ctx, "topk1", 3, 1500, 8, 0.5).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			resultInfo, err := client.TOPKInfo(ctx, "topk1").Result()
+			resultInfo, err := client.TopKInfo(ctx, "topk1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resultInfo.K).To(BeEquivalentTo(int64(3)))
 			Expect(resultInfo.Width).To(BeEquivalentTo(int64(1500)))

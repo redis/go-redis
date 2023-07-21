@@ -6,10 +6,10 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-type ProbabilisticCmdable interface {
-	BFAdd(ctx context.Context, key, element interface{}) *BoolCmd
+type probabilisticCmdable interface {
+	BFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
 	BFCard(ctx context.Context, key string) *IntCmd
-	BFExists(ctx context.Context, key, element interface{}) *BoolCmd
+	BFExists(ctx context.Context, key string, element interface{}) *BoolCmd
 	BFInfo(ctx context.Context, key string) *BFInfoCmd
 	BFInfoArg(ctx context.Context, key string, option BFInfoArgs) *BFInfoCmd
 	BFInsert(ctx context.Context, key string, options *BFInsertOptions, elements ...interface{}) *BoolSliceCmd
@@ -21,11 +21,11 @@ type ProbabilisticCmdable interface {
 	BFReserveArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd
 	//TODO LoadChunk and ScanDump missing
 
-	CFAdd(ctx context.Context, key, element interface{}) *BoolCmd
-	CFAddNX(ctx context.Context, key, element interface{}) *BoolCmd
-	CFCount(ctx context.Context, key, element interface{}) *IntCmd
+	CFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
+	CFAddNX(ctx context.Context, key string, element interface{}) *BoolCmd
+	CFCount(ctx context.Context, key string, element interface{}) *IntCmd
 	CFDel(ctx context.Context, key string, element interface{}) *BoolCmd
-	CFExists(ctx context.Context, key, element interface{}) *BoolCmd
+	CFExists(ctx context.Context, key string, element interface{}) *BoolCmd
 	CFInfo(ctx context.Context, key string) *CFInfoCmd
 	CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *BoolSliceCmd
 	CFInsertNx(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd
@@ -41,15 +41,15 @@ type ProbabilisticCmdable interface {
 	CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int) *StatusCmd
 	CMSQuery(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
 
-	TOPKAdd(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd
-	TOPKCount(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
-	TOPKIncrBy(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd
-	TOPKInfo(ctx context.Context, key string) *TOPKInfoCmd
-	TOPKList(ctx context.Context, key string) *StringSliceCmd
-	TOPKListWithCount(ctx context.Context, key string) *MapStringIntCmd
-	TOPKQuery(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
-	TOPKReserve(ctx context.Context, key string, k int) *StatusCmd
-	TOPKReserveWithOptions(ctx context.Context, key string, k int, width, depth int64, decay float64) *StatusCmd
+	TopKAdd(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd
+	TopKCount(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
+	TopKIncrBy(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd
+	TopKInfo(ctx context.Context, key string) *TopKInfoCmd
+	TopKList(ctx context.Context, key string) *StringSliceCmd
+	TopKListWithCount(ctx context.Context, key string) *MapStringIntCmd
+	TopKQuery(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
+	TopKReserve(ctx context.Context, key string, k int) *StatusCmd
+	TopKReserveWithOptions(ctx context.Context, key string, k int, width, depth int64, decay float64) *StatusCmd
 
 	TDigestAdd(ctx context.Context, key string, elements ...float64) *StatusCmd
 	TDigestByRank(ctx context.Context, key string, rank ...uint) *FloatSliceCmd
@@ -166,7 +166,7 @@ func (c cmdable) BFReserveArgs(ctx context.Context, key string, options *BFReser
 	return cmd
 }
 
-func (c cmdable) BFAdd(ctx context.Context, key, element interface{}) *BoolCmd {
+func (c cmdable) BFAdd(ctx context.Context, key string, element interface{}) *BoolCmd {
 	args := []interface{}{"bf.add", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -180,7 +180,7 @@ func (c cmdable) BFCard(ctx context.Context, key string) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) BFExists(ctx context.Context, key, element interface{}) *BoolCmd {
+func (c cmdable) BFExists(ctx context.Context, key string, element interface{}) *BoolCmd {
 	args := []interface{}{"bf.exists", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -307,9 +307,7 @@ func (c cmdable) BFInsert(ctx context.Context, key string, options *BFInsertOpti
 
 func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"bf.madd", key}
-	for _, s := range elements {
-		args = append(args, s)
-	}
+	args = append(args, elements...)
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -317,9 +315,8 @@ func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...interface{}
 
 func (c cmdable) BFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"bf.mexists", key}
-	for _, s := range elements {
-		args = append(args, s)
-	}
+	args = append(args, elements...)
+
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -352,21 +349,21 @@ func (c cmdable) CFReserveArgs(ctx context.Context, key string, options *CFReser
 	return cmd
 }
 
-func (c cmdable) CFAdd(ctx context.Context, key, element interface{}) *BoolCmd {
+func (c cmdable) CFAdd(ctx context.Context, key string, element interface{}) *BoolCmd {
 	args := []interface{}{"cf.add", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CFAddNX(ctx context.Context, key, element interface{}) *BoolCmd {
+func (c cmdable) CFAddNX(ctx context.Context, key string, element interface{}) *BoolCmd {
 	args := []interface{}{"cf.addnx", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) CFCount(ctx context.Context, key, element interface{}) *IntCmd {
+func (c cmdable) CFCount(ctx context.Context, key string, element interface{}) *IntCmd {
 	args := []interface{}{"cf.count", key, element}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -380,7 +377,7 @@ func (c cmdable) CFDel(ctx context.Context, key string, element interface{}) *Bo
 	return cmd
 }
 
-func (c cmdable) CFExists(ctx context.Context, key, element interface{}) *BoolCmd {
+func (c cmdable) CFExists(ctx context.Context, key string, element interface{}) *BoolCmd {
 	args := []interface{}{"cf.exists", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -509,9 +506,8 @@ func (c cmdable) getCfInsertArgs(args []interface{}, options *CFInsertOptions, e
 		}
 	}
 	args = append(args, "items")
-	for _, s := range elements {
-		args = append(args, s)
-	}
+	args = append(args, elements...)
+
 	return args
 }
 
@@ -678,10 +674,10 @@ func (c cmdable) CMSQuery(ctx context.Context, key string, elements ...interface
 }
 
 // -------------------------------------------
-// TOPK commands
+// TopK commands
 //--------------------------------------------
 
-func (c cmdable) TOPKAdd(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd {
+func (c cmdable) TopKAdd(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd {
 	args := make([]interface{}, 2, 2+len(elements))
 	args[0] = "topk.add"
 	args[1] = key
@@ -692,7 +688,7 @@ func (c cmdable) TOPKAdd(ctx context.Context, key string, elements ...interface{
 	return cmd
 }
 
-func (c cmdable) TOPKReserve(ctx context.Context, key string, k int) *StatusCmd {
+func (c cmdable) TopKReserve(ctx context.Context, key string, k int) *StatusCmd {
 	args := []interface{}{"topk.reserve", key, k}
 
 	cmd := NewStatusCmd(ctx, args...)
@@ -700,7 +696,7 @@ func (c cmdable) TOPKReserve(ctx context.Context, key string, k int) *StatusCmd 
 	return cmd
 }
 
-func (c cmdable) TOPKReserveWithOptions(ctx context.Context, key string, k int, width, depth int64, decay float64) *StatusCmd {
+func (c cmdable) TopKReserveWithOptions(ctx context.Context, key string, k int, width, depth int64, decay float64) *StatusCmd {
 	args := []interface{}{"topk.reserve", key, k, width, depth, decay}
 
 	cmd := NewStatusCmd(ctx, args...)
@@ -708,21 +704,21 @@ func (c cmdable) TOPKReserveWithOptions(ctx context.Context, key string, k int, 
 	return cmd
 }
 
-type TOPKInfo struct {
+type TopKInfo struct {
 	K     int64
 	Width int64
 	Depth int64
 	Decay float64
 }
 
-type TOPKInfoCmd struct {
+type TopKInfoCmd struct {
 	baseCmd
 
-	val TOPKInfo
+	val TopKInfo
 }
 
-func NewTOPKInfoCmd(ctx context.Context, args ...interface{}) *TOPKInfoCmd {
-	return &TOPKInfoCmd{
+func NewTopKInfoCmd(ctx context.Context, args ...interface{}) *TopKInfoCmd {
+	return &TopKInfoCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -730,30 +726,30 @@ func NewTOPKInfoCmd(ctx context.Context, args ...interface{}) *TOPKInfoCmd {
 	}
 }
 
-func (cmd *TOPKInfoCmd) SetVal(val TOPKInfo) {
+func (cmd *TopKInfoCmd) SetVal(val TopKInfo) {
 	cmd.val = val
 }
 
-func (cmd *TOPKInfoCmd) String() string {
+func (cmd *TopKInfoCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *TOPKInfoCmd) Val() TOPKInfo {
+func (cmd *TopKInfoCmd) Val() TopKInfo {
 	return cmd.val
 }
 
-func (cmd *TOPKInfoCmd) Result() (TOPKInfo, error) {
+func (cmd *TopKInfoCmd) Result() (TopKInfo, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *TOPKInfoCmd) readReply(rd *proto.Reader) (err error) {
+func (cmd *TopKInfoCmd) readReply(rd *proto.Reader) (err error) {
 	n, err := rd.ReadMapLen()
 	if err != nil {
 		return err
 	}
 
 	var key string
-	var result TOPKInfo
+	var result TopKInfo
 	for f := 0; f < n; f++ {
 		key, err = rd.ReadString()
 		if err != nil {
@@ -782,17 +778,15 @@ func (cmd *TOPKInfoCmd) readReply(rd *proto.Reader) (err error) {
 	return nil
 }
 
-func (c cmdable) TOPKInfo(ctx context.Context, key string) *TOPKInfoCmd {
-	args := make([]interface{}, 2, 2)
-	args[0] = "topk.info"
-	args[1] = key
+func (c cmdable) TopKInfo(ctx context.Context, key string) *TopKInfoCmd {
+	args := []interface{}{"topk.info", key}
 
-	cmd := NewTOPKInfoCmd(ctx, args...)
+	cmd := NewTopKInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) TOPKQuery(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
+func (c cmdable) TopKQuery(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := make([]interface{}, 2, 2+len(elements))
 	args[0] = "topk.query"
 	args[1] = key
@@ -803,7 +797,7 @@ func (c cmdable) TOPKQuery(ctx context.Context, key string, elements ...interfac
 	return cmd
 }
 
-func (c cmdable) TOPKCount(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
+func (c cmdable) TopKCount(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
 	args := make([]interface{}, 2, 2+len(elements))
 	args[0] = "topk.count"
 	args[1] = key
@@ -814,7 +808,7 @@ func (c cmdable) TOPKCount(ctx context.Context, key string, elements ...interfac
 	return cmd
 }
 
-func (c cmdable) TOPKIncrBy(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd {
+func (c cmdable) TopKIncrBy(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd {
 	args := make([]interface{}, 2, 2+len(elements))
 	args[0] = "topk.incrby"
 	args[1] = key
@@ -825,7 +819,7 @@ func (c cmdable) TOPKIncrBy(ctx context.Context, key string, elements ...interfa
 	return cmd
 }
 
-func (c cmdable) TOPKList(ctx context.Context, key string) *StringSliceCmd {
+func (c cmdable) TopKList(ctx context.Context, key string) *StringSliceCmd {
 	args := []interface{}{"topk.list", key}
 
 	cmd := NewStringSliceCmd(ctx, args...)
@@ -833,7 +827,7 @@ func (c cmdable) TOPKList(ctx context.Context, key string) *StringSliceCmd {
 	return cmd
 }
 
-func (c cmdable) TOPKListWithCount(ctx context.Context, key string) *MapStringIntCmd {
+func (c cmdable) TopKListWithCount(ctx context.Context, key string) *MapStringIntCmd {
 	args := []interface{}{"topk.list", key, "withcount"}
 
 	cmd := NewMapStringIntCmd(ctx, args...)
