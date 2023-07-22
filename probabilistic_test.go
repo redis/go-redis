@@ -8,7 +8,7 @@ import (
 	"math"
 )
 
-var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
+var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
 
@@ -32,7 +32,7 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resultInfo).To(BeAssignableToTypeOf(redis.BFInfo{}))
-			Expect(resultInfo.NumItemsInserted).To(BeEquivalentTo(int64(1)))
+			Expect(resultInfo.ItemsInserted).To(BeEquivalentTo(int64(1)))
 		})
 
 		It("should BFCard", Label("bloom", "bfcard"), func() {
@@ -77,13 +77,32 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(result.Capacity).To(BeEquivalentTo(int64(2000)))
 		})
 
-		It("should BFInfoArg", Label("bloom", "bfinfoarg"), func() {
+		It("should BFInfoCapacity, BFInfoSize, BFInfoFilters, BFInfoItems, BFInfoExpansion, ", Label("bloom", "bfinfocapacity", "bfinfosize", "bfinfofilters", "bfinfoitems", "bfinfoexpansion"), func() {
 			err := client.BFReserve(ctx, "testbf1", 0.001, 2000).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			result, err := client.BFInfoArg(ctx, "testbf1", redis.BFCAPACITY).Result()
+			result, err := client.BFInfoCapacity(ctx, "testbf1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Capacity).To(BeEquivalentTo(int64(2000)))
+
+			result, err = client.BFInfoItems(ctx, "testbf1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.ItemsInserted).To(BeEquivalentTo(int64(0)))
+
+			result, err = client.BFInfoSize(ctx, "testbf1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Size).To(BeEquivalentTo(int64(4056)))
+
+			err = client.BFReserveExpansion(ctx, "testbf2", 0.001, 2000, 3).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.BFInfoFilters(ctx, "testbf2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Filters).To(BeEquivalentTo(int64(1)))
+
+			result, err = client.BFInfoExpansion(ctx, "testbf2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.ExpansionRate).To(BeEquivalentTo(int64(3)))
 		})
 
 		It("should BFInsert", Label("bloom", "bfinsert"), func() {
@@ -132,7 +151,7 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resultInfo).To(BeAssignableToTypeOf(redis.BFInfo{}))
-			Expect(resultInfo.NumItemsInserted).To(BeEquivalentTo(int64(3)))
+			Expect(resultInfo.ItemsInserted).To(BeEquivalentTo(int64(3)))
 		})
 
 		It("should BFMExists", Label("bloom", "bfmexists"), func() {
@@ -611,7 +630,7 @@ var _ = FDescribe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(info.Compression).To(BeEquivalentTo(int64(2000)))
 		})
 
-		FIt("should TDigestMerge", Label("tdigest", "tmerge"), func() {
+		It("should TDigestMerge", Label("tdigest", "tmerge"), func() {
 			err := client.TDigestCreate(ctx, "tdigest1").Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.TDigestAdd(ctx, "tdigest1", 10, 20, 30, 40, 50, 60, 70, 80, 90, 100).Err()

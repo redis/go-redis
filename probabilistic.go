@@ -11,7 +11,11 @@ type probabilisticCmdable interface {
 	BFCard(ctx context.Context, key string) *IntCmd
 	BFExists(ctx context.Context, key string, element interface{}) *BoolCmd
 	BFInfo(ctx context.Context, key string) *BFInfoCmd
-	BFInfoArg(ctx context.Context, key string, option BFInfoArgs) *BFInfoCmd
+	BFInfoCapacity(ctx context.Context, key string) *BFInfoCmd
+	BFInfoSize(ctx context.Context, key string) *BFInfoCmd
+	BFInfoFilters(ctx context.Context, key string) *BFInfoCmd
+	BFInfoItems(ctx context.Context, key string) *BFInfoCmd
+	BFInfoExpansion(ctx context.Context, key string) *BFInfoCmd
 	BFInsert(ctx context.Context, key string, options *BFInsertOptions, elements ...interface{}) *BoolSliceCmd
 	BFMAdd(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
 	BFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
@@ -94,32 +98,6 @@ type CFInsertOptions struct {
 	NoCreate bool
 }
 
-type BFInfoArgs int
-
-const (
-	BFCAPACITY BFInfoArgs = iota
-	BFSIZE
-	BFFILTERS
-	BFITEMS
-	BFEXPANSION
-)
-
-func (b BFInfoArgs) String() string {
-	switch b {
-	case BFCAPACITY:
-		return "capacity"
-	case BFSIZE:
-		return "size"
-	case BFFILTERS:
-		return "filters"
-	case BFITEMS:
-		return "elements"
-	case BFEXPANSION:
-		return "expansion"
-	}
-	return ""
-}
-
 // -------------------------------------------
 // Bloom filter commands
 //-------------------------------------------
@@ -195,11 +173,11 @@ func (c cmdable) BFInfo(ctx context.Context, key string) *BFInfoCmd {
 }
 
 type BFInfo struct {
-	Capacity         int64
-	Size             int64
-	NumFilters       int64
-	NumItemsInserted int64
-	ExpansionRate    int64
+	Capacity      int64
+	Size          int64
+	Filters       int64
+	ItemsInserted int64
+	ExpansionRate int64
 }
 
 type BFInfoCmd struct {
@@ -253,9 +231,9 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 		case "Size":
 			result.Size, err = rd.ReadInt()
 		case "Number of filters":
-			result.NumFilters, err = rd.ReadInt()
+			result.Filters, err = rd.ReadInt()
 		case "Number of items inserted":
-			result.NumItemsInserted, err = rd.ReadInt()
+			result.ItemsInserted, err = rd.ReadInt()
 		case "Expansion rate":
 			result.ExpansionRate, err = rd.ReadInt()
 		default:
@@ -271,8 +249,28 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 	return nil
 }
 
-func (c cmdable) BFInfoArg(ctx context.Context, key string, option BFInfoArgs) *BFInfoCmd {
-	args := []interface{}{"bf.info", key, option.String()}
+func (c cmdable) BFInfoCapacity(ctx context.Context, key string) *BFInfoCmd {
+	return c.bFInfoArg(ctx, key, "capacity")
+}
+
+func (c cmdable) BFInfoSize(ctx context.Context, key string) *BFInfoCmd {
+	return c.bFInfoArg(ctx, key, "size")
+}
+
+func (c cmdable) BFInfoFilters(ctx context.Context, key string) *BFInfoCmd {
+	return c.bFInfoArg(ctx, key, "filters")
+}
+
+func (c cmdable) BFInfoItems(ctx context.Context, key string) *BFInfoCmd {
+	return c.bFInfoArg(ctx, key, "items")
+}
+
+func (c cmdable) BFInfoExpansion(ctx context.Context, key string) *BFInfoCmd {
+	return c.bFInfoArg(ctx, key, "expansion")
+}
+
+func (c cmdable) bFInfoArg(ctx context.Context, key, option string) *BFInfoCmd {
+	args := []interface{}{"bf.info", key, option}
 	cmd := NewBFInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
