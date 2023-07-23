@@ -233,12 +233,18 @@ var _ = Describe("Commands", func() {
 
 		It("should ClientSetInfo", func() {
 			pipe := client.Pipeline()
-			setInfo := pipe.ClientSetInfo(ctx, "go-redis", "v9")
+
+			setInfoLibName := pipe.ClientSetInfo(ctx, "LIB-NAME", "thelibname")
+			setInfoLibVer := pipe.ClientSetInfo(ctx, "LIB-VER", "vX.x")
+
 			_, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(setInfo.Err()).NotTo(HaveOccurred())
-			Expect(setInfo.Val()).To(Equal("OK"))
+			Expect(setInfoLibName.Err()).NotTo(HaveOccurred())
+			Expect(setInfoLibName.Val()).To(Equal("OK"))
+
+			Expect(setInfoLibVer.Err()).NotTo(HaveOccurred())
+			Expect(setInfoLibVer.Val()).To(Equal("OK"))
 		})
 
 		It("should ConfigGet", func() {

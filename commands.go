@@ -513,7 +513,7 @@ type StatefulCmdable interface {
 	Select(ctx context.Context, index int) *StatusCmd
 	SwapDB(ctx context.Context, index1, index2 int) *StatusCmd
 	ClientSetName(ctx context.Context, name string) *BoolCmd
-	ClientSetInfo(ctx context.Context, libName string, libVer string) *StatusCmd
+	ClientSetInfo(ctx context.Context, option string, value string) *StatusCmd
 	Hello(ctx context.Context, ver int, username, password, clientName string) *MapStringInterfaceCmd
 }
 
@@ -571,8 +571,8 @@ func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCm
 	return cmd
 }
 
-func (c cmdable) ClientSetInfo(ctx context.Context, libName string, libVer string) *StatusCmd {
-	cmd := NewStatusCmd(ctx, "client", "setinfo", "LIB-NAME", libName, "LIB-VER", libVer)
+func (c statefulCmdable) ClientSetInfo(ctx context.Context, option string, value string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "client", "setinfo", option, value)
 	_ = c(ctx, cmd)
 	return cmd
 }
