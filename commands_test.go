@@ -233,7 +233,7 @@ var _ = Describe("Commands", func() {
 
 		It("should ClientSetInfo", func() {
 			pipe := client.Pipeline()
-			setInfo := pipe.ClientSetInfo(ctx, "thelibname", "vX.x")
+			setInfo := pipe.ClientSetInfo(ctx, "go-redis", "v9")
 			_, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
