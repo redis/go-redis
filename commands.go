@@ -513,6 +513,7 @@ type StatefulCmdable interface {
 	Select(ctx context.Context, index int) *StatusCmd
 	SwapDB(ctx context.Context, index1, index2 int) *StatusCmd
 	ClientSetName(ctx context.Context, name string) *BoolCmd
+	ClientSetInfo(ctx context.Context, libName string, libVer string) *BoolCmd
 	Hello(ctx context.Context, ver int, username, password, clientName string) *MapStringInterfaceCmd
 }
 
@@ -566,6 +567,12 @@ func (c statefulCmdable) SwapDB(ctx context.Context, index1, index2 int) *Status
 // ClientSetName assigns a name to the connection.
 func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCmd {
 	cmd := NewBoolCmd(ctx, "client", "setname", name)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c statefulCmdable) ClientSetInfo(ctx context.Context, libName string, libVer string) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "client", "setinfo", libName, libVer)
 	_ = c(ctx, cmd)
 	return cmd
 }

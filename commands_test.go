@@ -231,6 +231,16 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("theclientname"))
 		})
 
+		It("should ClientSetInfo", func() {
+			pipe := client.Pipeline()
+			setInfo := pipe.ClientSetInfo(ctx, "thelibname", "vX.x")
+			_, err := pipe.Exec(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(setInfo.Err()).NotTo(HaveOccurred())
+			Expect(setInfo.Val()).To(BeTrue())
+		})
+
 		It("should ConfigGet", func() {
 			val, err := client.ConfigGet(ctx, "*").Result()
 			Expect(err).NotTo(HaveOccurred())
