@@ -572,7 +572,7 @@ func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCm
 }
 
 func (c statefulCmdable) ClientSetInfo(ctx context.Context, libName string, libVer string) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "client", "setinfo", libName, libVer)
+	cmd := NewBoolCmd(ctx, "client", "setinfo", "lib-name", libName, "lib-ver", libVer)
 	_ = c(ctx, cmd)
 	return cmd
 }
