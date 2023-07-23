@@ -575,7 +575,7 @@ func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCm
 func (c statefulCmdable) ClientSetInfo(ctx context.Context, info LibraryInfo) *StatusCmd {
 	err := info.Validate()
 	if err != nil {
-		panic(err)
+		panic(err.Error())
 	}
 
 	var cmd *StatusCmd
