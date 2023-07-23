@@ -256,6 +256,7 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 		p.connsMu.Unlock()
 
 		if err != nil {
+			p.freeTurn()
 			return nil, err
 		}
 
