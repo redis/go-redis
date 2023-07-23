@@ -5168,3 +5168,9 @@ func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
 
 	return nil
 }
+
+// LibraryInfo holds the library info.
+type LibraryInfo struct {
+	LibName *string
+	LibVer  *string
+}
