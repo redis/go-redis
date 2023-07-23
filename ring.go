@@ -580,9 +580,8 @@ func (c *Ring) Subscribe(ctx context.Context, channels ...string) *PubSub {
 
 	shard, err := c.sharding.GetByKey(channels[0])
 	if err != nil {
-		return &PubSub{
-			err: err,
-		}
+		// TODO: return PubSub with sticky error
+		panic(err)
 	}
 	return shard.Client.Subscribe(ctx, channels...)
 }
@@ -595,9 +594,8 @@ func (c *Ring) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 
 	shard, err := c.sharding.GetByKey(channels[0])
 	if err != nil {
-		return &PubSub{
-			err: err,
-		}
+		// TODO: return PubSub with sticky error
+		panic(err)
 	}
 	return shard.Client.PSubscribe(ctx, channels...)
 }
@@ -609,9 +607,8 @@ func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	}
 	shard, err := c.sharding.GetByKey(channels[0])
 	if err != nil {
-		return &PubSub{
-			err: err,
-		}
+		// TODO: return PubSub with sticky error
+		panic(err)
 	}
 	return shard.Client.SSubscribe(ctx, channels...)
 }

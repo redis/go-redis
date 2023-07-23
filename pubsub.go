@@ -33,8 +33,6 @@ type PubSub struct {
 	closed bool
 	exit   chan struct{}
 
-	err error
-
 	cmd *Cmd
 
 	chOnce sync.Once
