@@ -232,39 +232,54 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ClientSetInfo", func() {
-			// Test setting LibName
-			libName := "thelibname"
-			libInfo := redis.LibraryInfo{LibName: &libName}
 
 			pipe := client.Pipeline()
-			setInfoLibName := pipe.ClientSetInfo(ctx, libInfo)
-			_, errExec := pipe.Exec(ctx)
 
-			Expect(errExec).NotTo(HaveOccurred())
-			Expect(setInfoLibName.Err()).NotTo(HaveOccurred())
-			Expect(setInfoLibName.Val()).To(Equal("OK"))
+			// Test setting the libName
+			libName := "go-redis"
+			libInfo := redis.LibraryInfo{LibName: &libName}
+			setInfo := pipe.ClientSetInfo(ctx, libInfo)
+			_, err := pipe.Exec(ctx)
 
-			// Test setting LibVer
+			Expect(err).NotTo(HaveOccurred())
+			Expect(setInfo.Err()).NotTo(HaveOccurred())
+			Expect(setInfo.Val()).To(Equal("OK"))
+
+			// Test setting the libVer
 			libVer := "vX.x"
 			libInfo = redis.LibraryInfo{LibVer: &libVer}
+			setInfo = pipe.ClientSetInfo(ctx, libInfo)
+			_, err = pipe.Exec(ctx)
 
-			pipe = client.Pipeline()
-			setInfoLibVer := pipe.ClientSetInfo(ctx, libInfo)
-			_, errExec = pipe.Exec(ctx)
-
-			Expect(errExec).NotTo(HaveOccurred())
-			Expect(setInfoLibVer.Err()).NotTo(HaveOccurred())
-			Expect(setInfoLibVer.Val()).To(Equal("OK"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(setInfo.Err()).NotTo(HaveOccurred())
+			Expect(setInfo.Val()).To(Equal("OK"))
 
 			// Test setting both fields, expect a panic
 			libInfo = redis.LibraryInfo{LibName: &libName, LibVer: &libVer}
 
-			Expect(func() { pipe.ClientSetInfo(ctx, libInfo) }).To(PanicWith("both LibName and LibVer cannot be set at the same time"))
+			Expect(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						err := r.(error)
+						Expect(err).To(MatchError("both LibName and LibVer cannot be set at the same time"))
+					}
+				}()
+				pipe.ClientSetInfo(ctx, libInfo)
+			}).To(Panic())
 
 			// Test setting neither field, expect a panic
 			libInfo = redis.LibraryInfo{}
 
-			Expect(func() { pipe.ClientSetInfo(ctx, libInfo) }).To(PanicWith("at least one of LibName and LibVer should be set"))
+			Expect(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						err := r.(error)
+						Expect(err).To(MatchError("at least one of LibName and LibVer should be set"))
+					}
+				}()
+				pipe.ClientSetInfo(ctx, libInfo)
+			}).To(Panic())
 		})
 
 		It("should ConfigGet", func() {
