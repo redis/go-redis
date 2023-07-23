@@ -238,7 +238,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(setInfo.Err()).NotTo(HaveOccurred())
-			Expect(setInfo.Val()).To(BeTrue())
+			Expect(setInfo.Val()).To(Equal("OK"))
 		})
 
 		It("should ConfigGet", func() {
