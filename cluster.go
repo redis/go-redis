@@ -62,6 +62,7 @@ type ClusterOptions struct {
 
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	Protocol int
 	Username string
 	Password string
 
@@ -216,6 +217,7 @@ func setupClusterConn(u *url.URL, host string, o *ClusterOptions) (*ClusterOptio
 func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, error) {
 	q := queryOptions{q: u.Query()}
 
+	o.Protocol = q.int("protocol")
 	o.ClientName = q.string("client_name")
 	o.MaxRedirects = q.int("max_redirects")
 	o.ReadOnly = q.bool("read_only")
@@ -263,6 +265,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		Dialer:     opt.Dialer,
 		OnConnect:  opt.OnConnect,
 
+		Protocol: opt.Protocol,
 		Username: opt.Username,
 		Password: opt.Password,
 

@@ -211,6 +211,12 @@ var _ = Describe("Commands", func() {
 			Expect(r).To(Equal(int64(0)))
 		})
 
+		It("should ClientInfo", func() {
+			info, err := client.ClientInfo(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info).NotTo(BeNil())
+		})
+
 		It("should ClientPause", func() {
 			err := client.ClientPause(ctx, time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -616,7 +622,7 @@ var _ = Describe("Commands", func() {
 			// if too much time (>1s) is used during command execution, it may also cause the test to fail.
 			// so the ObjectIdleTime result should be <=now-start+1s
 			// link: https://github.com/redis/redis/blob/5b48d900498c85bbf4772c1d466c214439888115/src/object.c#L1265-L1272
-			Expect(idleTime.Val()).To(BeNumerically("<=", time.Now().Sub(start)+time.Second))
+			Expect(idleTime.Val()).To(BeNumerically("<=", time.Since(start)+time.Second))
 		})
 
 		It("should Persist", func() {
@@ -1989,6 +1995,55 @@ var _ = Describe("Commands", func() {
 
 			Expect(args).To(Equal(expectedArgs))
 		})
+
+		It("should ACL LOG", func() {
+
+			err := client.Do(ctx, "acl", "setuser", "test", ">test", "on", "allkeys", "+get").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			clientAcl := redis.NewClient(redisOptions())
+			clientAcl.Options().Username = "test"
+			clientAcl.Options().Password = "test"
+			clientAcl.Options().DB = 0
+			_ = clientAcl.Set(ctx, "mystring", "foo", 0).Err()
+			_ = clientAcl.HSet(ctx, "myhash", "foo", "bar").Err()
+			_ = clientAcl.SAdd(ctx, "myset", "foo", "bar").Err()
+
+			logEntries, err := client.ACLLog(ctx, 10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(logEntries)).To(Equal(3))
+
+			for _, entry := range logEntries {
+				Expect(entry.Count).To(BeNumerically("==", 1))
+				Expect(entry.Reason).To(Equal("command"))
+				Expect(entry.Context).To(Equal("toplevel"))
+				Expect(entry.Object).NotTo(BeEmpty())
+				Expect(entry.Username).To(Equal("test"))
+				Expect(entry.AgeSeconds).To(BeNumerically(">=", 0))
+				Expect(entry.ClientInfo).NotTo(BeNil())
+				Expect(entry.EntryID).To(BeNumerically(">=", 0))
+				Expect(entry.TimestampCreated).To(BeNumerically(">=", 0))
+				Expect(entry.TimestampLastUpdated).To(BeNumerically(">=", 0))
+			}
+
+			limitedLogEntries, err := client.ACLLog(ctx, 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(limitedLogEntries)).To(Equal(2))
+
+		})
+
+		It("should ACL LOG RESET", func() {
+			// Call ACL LOG RESET
+			resetCmd := client.ACLLogReset(ctx)
+			Expect(resetCmd.Err()).NotTo(HaveOccurred())
+			Expect(resetCmd.Val()).To(Equal("OK"))
+
+			// Verify that the log is empty after the reset
+			logEntries, err := client.ACLLog(ctx, 10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(logEntries)).To(Equal(0))
+		})
+
 	})
 
 	Describe("hashes", func() {
@@ -5867,6 +5922,97 @@ var _ = Describe("Commands", func() {
 						}
 					}
 				}
+
+				Expect(res.Groups).To(Equal([]redis.XInfoStreamGroup{
+					{
+						Name:            "group1",
+						LastDeliveredID: "3-0",
+						EntriesRead:     3,
+						Lag:             0,
+						PelCount:        3,
+						Pending: []redis.XInfoStreamGroupPending{
+							{ID: "1-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+							{ID: "2-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+						},
+						Consumers: []redis.XInfoStreamConsumer{
+							{
+								Name:       "consumer1",
+								SeenTime:   time.Time{},
+								ActiveTime: time.Time{},
+								PelCount:   2,
+								Pending: []redis.XInfoStreamConsumerPending{
+									{ID: "1-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+									{ID: "2-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+								},
+							},
+							{
+								Name:       "consumer2",
+								SeenTime:   time.Time{},
+								ActiveTime: time.Time{},
+								PelCount:   1,
+								Pending: []redis.XInfoStreamConsumerPending{
+									{ID: "3-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+								},
+							},
+						},
+					},
+					{
+						Name:            "group2",
+						LastDeliveredID: "3-0",
+						EntriesRead:     3,
+						Lag:             0,
+						PelCount:        2,
+						Pending: []redis.XInfoStreamGroupPending{
+							{ID: "2-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+							{ID: "3-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
+						},
+						Consumers: []redis.XInfoStreamConsumer{
+							{
+								Name:       "consumer1",
+								SeenTime:   time.Time{},
+								ActiveTime: time.Time{},
+								PelCount:   2,
+								Pending: []redis.XInfoStreamConsumerPending{
+									{ID: "2-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+									{ID: "3-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
+								},
+							},
+						},
+					},
+				}))
+
+				// entries-read = nil
+				Expect(client.Del(ctx, "xinfo-stream-full-stream").Err()).NotTo(HaveOccurred())
+				id, err := client.XAdd(ctx, &redis.XAddArgs{
+					Stream: "xinfo-stream-full-stream",
+					ID:     "*",
+					Values: []any{"k1", "v1"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(client.XGroupCreateMkStream(ctx, "xinfo-stream-full-stream", "xinfo-stream-full-group", "0").Err()).NotTo(HaveOccurred())
+				res, err = client.XInfoStreamFull(ctx, "xinfo-stream-full-stream", 0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal(&redis.XInfoStreamFull{
+					Length:            1,
+					RadixTreeKeys:     1,
+					RadixTreeNodes:    2,
+					LastGeneratedID:   id,
+					MaxDeletedEntryID: "0-0",
+					EntriesAdded:      1,
+					Entries:           []redis.XMessage{{ID: id, Values: map[string]any{"k1": "v1"}}},
+					Groups: []redis.XInfoStreamGroup{
+						{
+							Name:            "xinfo-stream-full-group",
+							LastDeliveredID: "0-0",
+							EntriesRead:     0,
+							Lag:             1,
+							PelCount:        0,
+							Pending:         []redis.XInfoStreamGroupPending{},
+							Consumers:       []redis.XInfoStreamConsumer{},
+						},
+					},
+					RecordedFirstEntryID: id,
+				}))
 			})
 
 			It("should XINFO GROUPS", func() {

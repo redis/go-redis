@@ -10,7 +10,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/instrument"
 )
 
 // InstrumentMetrics starts reporting OpenTelemetry Metrics.
@@ -89,7 +88,7 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 
 	idleMax, err := conf.meter.Int64ObservableUpDownCounter(
 		"db.client.connections.idle.max",
-		instrument.WithDescription("The maximum number of idle open connections allowed"),
+		metric.WithDescription("The maximum number of idle open connections allowed"),
 	)
 	if err != nil {
 		return err
@@ -97,7 +96,7 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 
 	idleMin, err := conf.meter.Int64ObservableUpDownCounter(
 		"db.client.connections.idle.min",
-		instrument.WithDescription("The minimum number of idle open connections allowed"),
+		metric.WithDescription("The minimum number of idle open connections allowed"),
 	)
 	if err != nil {
 		return err
@@ -105,7 +104,7 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 
 	connsMax, err := conf.meter.Int64ObservableUpDownCounter(
 		"db.client.connections.max",
-		instrument.WithDescription("The maximum number of open connections allowed"),
+		metric.WithDescription("The maximum number of open connections allowed"),
 	)
 	if err != nil {
 		return err
@@ -113,7 +112,7 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 
 	usage, err := conf.meter.Int64ObservableUpDownCounter(
 		"db.client.connections.usage",
-		instrument.WithDescription("The number of connections that are currently in state described by the state attribute"),
+		metric.WithDescription("The number of connections that are currently in state described by the state attribute"),
 	)
 	if err != nil {
 		return err
@@ -121,7 +120,7 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 
 	timeouts, err := conf.meter.Int64ObservableUpDownCounter(
 		"db.client.connections.timeouts",
-		instrument.WithDescription("The number of connection timeouts that have occurred trying to obtain a connection from the pool"),
+		metric.WithDescription("The number of connection timeouts that have occurred trying to obtain a connection from the pool"),
 	)
 	if err != nil {
 		return err
@@ -132,14 +131,14 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 		func(ctx context.Context, o metric.Observer) error {
 			stats := rdb.PoolStats()
 
-			o.ObserveInt64(idleMax, int64(redisConf.MaxIdleConns), labels...)
-			o.ObserveInt64(idleMin, int64(redisConf.MinIdleConns), labels...)
-			o.ObserveInt64(connsMax, int64(redisConf.PoolSize), labels...)
+			o.ObserveInt64(idleMax, int64(redisConf.MaxIdleConns), metric.WithAttributes(labels...))
+			o.ObserveInt64(idleMin, int64(redisConf.MinIdleConns), metric.WithAttributes(labels...))
+			o.ObserveInt64(connsMax, int64(redisConf.PoolSize), metric.WithAttributes(labels...))
 
-			o.ObserveInt64(usage, int64(stats.IdleConns), idleAttrs...)
-			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), usedAttrs...)
+			o.ObserveInt64(usage, int64(stats.IdleConns), metric.WithAttributes(idleAttrs...))
+			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), metric.WithAttributes(usedAttrs...))
 
-			o.ObserveInt64(timeouts, int64(stats.Timeouts), labels...)
+			o.ObserveInt64(timeouts, int64(stats.Timeouts), metric.WithAttributes(labels...))
 			return nil
 		},
 		idleMax,
@@ -155,8 +154,8 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 func addMetricsHook(rdb *redis.Client, conf *config) error {
 	createTime, err := conf.meter.Float64Histogram(
 		"db.client.connections.create_time",
-		instrument.WithDescription("The time it took to create a new connection."),
-		instrument.WithUnit("ms"),
+		metric.WithDescription("The time it took to create a new connection."),
+		metric.WithUnit("ms"),
 	)
 	if err != nil {
 		return err
@@ -164,8 +163,8 @@ func addMetricsHook(rdb *redis.Client, conf *config) error {
 
 	useTime, err := conf.meter.Float64Histogram(
 		"db.client.connections.use_time",
-		instrument.WithDescription("The time between borrowing a connection and returning it to the pool."),
-		instrument.WithUnit("ms"),
+		metric.WithDescription("The time between borrowing a connection and returning it to the pool."),
+		metric.WithUnit("ms"),
 	)
 	if err != nil {
 		return err
@@ -180,8 +179,8 @@ func addMetricsHook(rdb *redis.Client, conf *config) error {
 }
 
 type metricsHook struct {
-	createTime instrument.Float64Histogram
-	useTime    instrument.Float64Histogram
+	createTime metric.Float64Histogram
+	useTime    metric.Float64Histogram
 	attrs      []attribute.KeyValue
 }
 
@@ -197,7 +196,7 @@ func (mh *metricsHook) DialHook(hook redis.DialHook) redis.DialHook {
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, statusAttr(err))
 
-		mh.createTime.Record(ctx, milliseconds(time.Since(start)), attrs...)
+		mh.createTime.Record(ctx, milliseconds(time.Since(start)), metric.WithAttributes(attrs...))
 		return conn, err
 	}
 }
@@ -215,7 +214,7 @@ func (mh *metricsHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		attrs = append(attrs, attribute.String("type", "command"))
 		attrs = append(attrs, statusAttr(err))
 
-		mh.useTime.Record(ctx, milliseconds(dur), attrs...)
+		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
 
 		return err
 	}
@@ -236,7 +235,7 @@ func (mh *metricsHook) ProcessPipelineHook(
 		attrs = append(attrs, attribute.String("type", "pipeline"))
 		attrs = append(attrs, statusAttr(err))
 
-		mh.useTime.Record(ctx, milliseconds(dur), attrs...)
+		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
 
 		return err
 	}

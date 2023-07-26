@@ -406,6 +406,7 @@ type Cmdable interface {
 	ClientKill(ctx context.Context, ipPort string) *StatusCmd
 	ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd
 	ClientList(ctx context.Context) *StringCmd
+	ClientInfo(ctx context.Context) *ClientInfoCmd
 	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
 	ClientUnpause(ctx context.Context) *BoolCmd
 	ClientID(ctx context.Context) *IntCmd
@@ -501,6 +502,8 @@ type Cmdable interface {
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
 
 	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
+	ACLLog(ctx context.Context, count int64) *ACLLogCmd
+	ACLLogReset(ctx context.Context) *StatusCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 }
@@ -3206,6 +3209,14 @@ func (c cmdable) ClientUnblockWithError(ctx context.Context, id int64) *IntCmd {
 	return cmd
 }
 
+func (c cmdable) ClientInfo(ctx context.Context) *ClientInfoCmd {
+	cmd := NewClientInfoCmd(ctx, "client", "info")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ------------------------------------------------------------------------------------------------
+
 func (c cmdable) ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd {
 	cmd := NewMapStringStringCmd(ctx, "config", "get", parameter)
 	_ = c(ctx, cmd)
@@ -3948,6 +3959,23 @@ func (c *ModuleLoadexConfig) toArgs() []interface{} {
 // ModuleLoadex Redis `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]` command.
 func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd {
 	cmd := NewStringCmd(ctx, conf.toArgs()...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLLog(ctx context.Context, count int64) *ACLLogCmd {
+	args := make([]interface{}, 0, 3)
+	args = append(args, "acl", "log")
+	if count > 0 {
+		args = append(args, count)
+	}
+	cmd := NewACLLogCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLLogReset(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "acl", "log", "reset")
 	_ = c(ctx, cmd)
 	return cmd
 }

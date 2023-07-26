@@ -4,7 +4,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/global"
 	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -56,7 +55,7 @@ func newConfig(opts ...baseOption) *config {
 		attrs:    []attribute.KeyValue{},
 
 		tp:            otel.GetTracerProvider(),
-		mp:            global.MeterProvider(),
+		mp:            otel.GetMeterProvider(),
 		dbStmtEnabled: true,
 	}
 
