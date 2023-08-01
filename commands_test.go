@@ -273,6 +273,20 @@ var _ = Describe("Commands", func() {
 			Expect(info.Val()).NotTo(Equal(""))
 		})
 
+		It("should InfoMap", Label("redis.info"), func() {
+			info := client.InfoMap(ctx)
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).NotTo(BeNil())
+
+			info = client.InfoMap(ctx, "dummy")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(BeNil())
+
+			info = client.InfoMap(ctx, "server")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(HaveLen(1))
+		})
+
 		It("should Info cpu", func() {
 			info := client.Info(ctx, "cpu")
 			Expect(info.Err()).NotTo(HaveOccurred())

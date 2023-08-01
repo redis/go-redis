@@ -3268,6 +3268,17 @@ func (c cmdable) Info(ctx context.Context, sections ...string) *StringCmd {
 	return cmd
 }
 
+func (c cmdable) InfoMap(ctx context.Context, sections ...string) *InfoCmd {
+	args := make([]interface{}, 1+len(sections))
+	args[0] = "info"
+	for i, section := range sections {
+		args[i+1] = section
+	}
+	cmd := NewInfoCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) LastSave(ctx context.Context) *IntCmd {
 	cmd := NewIntCmd(ctx, "lastsave")
 	_ = c(ctx, cmd)
