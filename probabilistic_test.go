@@ -2,10 +2,12 @@ package redis_test
 
 import (
 	"context"
+	"fmt"
+	"math"
+
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
-	"math"
 )
 
 var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
@@ -13,7 +15,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(redisOptions())
+		client = redis.NewClient(&redis.Options{Addr: ":6379"})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
@@ -152,6 +154,12 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resultInfo).To(BeAssignableToTypeOf(redis.BFInfo{}))
 			Expect(resultInfo.ItemsInserted).To(BeEquivalentTo(int64(3)))
+			resultAdd2, err := client.BFMAdd(ctx, "testbf1", "item1", "item2", "item4").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resultAdd2[0]).To(BeFalse())
+			Expect(resultAdd2[1]).To(BeFalse())
+			Expect(resultAdd2[2]).To(BeTrue())
+
 		})
 
 		It("should BFMExists", Label("bloom", "bfmexists"), func() {
@@ -184,6 +192,39 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(result).To(BeAssignableToTypeOf(redis.BFInfo{}))
 			Expect(result.Capacity).To(BeEquivalentTo(int64(2000)))
 			Expect(result.ExpansionRate).To(BeEquivalentTo(int64(3)))
+		})
+
+		It("should BFReserveNonScaling", Label("bloom", "bfreservenonscaling"), func() {
+			err := client.BFReserveNonScaling(ctx, "testbfns1", 0.001, 1000).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = client.BFInfo(ctx, "testbfns1").Result()
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should BFScanDump and BFLoadChunk", Label("bloom", "bfscandump", "bfloadchunk"), func() {
+			err := client.BFReserve(ctx, "testbfsd1", 0.001, 3000).Err()
+			Expect(err).NotTo(HaveOccurred())
+			for i := 0; i < 1000; i++ {
+				client.BFAdd(ctx, "testbfsd1", i)
+			}
+			infBefore := client.BFInfoSize(ctx, "testbfsd1")
+			fd := []redis.ScanDump{}
+			sd, err := client.BFScanDump(ctx, "testbfsd1", 0).Result()
+			for {
+				if sd.Iter == 0 {
+					break
+				}
+				Expect(err).NotTo(HaveOccurred())
+				fd = append(fd, sd)
+				sd, err = client.BFScanDump(ctx, "testbfsd1", sd.Iter).Result()
+			}
+			client.Del(ctx, "testbfsd1")
+			for _, e := range fd {
+				client.BFLoadChunk(ctx, "testbfsd1", e.Iter, e.Data)
+			}
+			infAfter := client.BFInfoSize(ctx, "testbfsd1")
+			Expect(infBefore).To(BeEquivalentTo(infAfter))
 		})
 
 		It("should BFReserveArgs", Label("bloom", "bfreserveargs"), func() {
@@ -273,10 +314,42 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 		It("should CFInfo and CFReserve", Label("cuckoo", "cfinfo", "cfreserve"), func() {
 			err := client.CFReserve(ctx, "testcf1", 1000).Err()
 			Expect(err).NotTo(HaveOccurred())
+			err = client.CFReserveExpansion(ctx, "testcfe1", 1000, 1).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.CFReserveBucketsize(ctx, "testcfbs1", 1000, 4).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.CFReserveMaxiterations(ctx, "testcfmi1", 1000, 10).Err()
+			Expect(err).NotTo(HaveOccurred())
 
 			result, err := client.CFInfo(ctx, "testcf1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeAssignableToTypeOf(redis.CFInfo{}))
+		})
+
+		It("should CFScanDump and CFLoadChunk", Label("bloom", "cfscandump", "cfloadchunk"), func() {
+			err := client.CFReserve(ctx, "testcfsd1", 1000).Err()
+			Expect(err).NotTo(HaveOccurred())
+			for i := 0; i < 1000; i++ {
+				Item := fmt.Sprintf("item%d", i)
+				client.CFAdd(ctx, "testcfsd1", Item)
+			}
+			infBefore := client.CFInfo(ctx, "testcfsd1")
+			fd := []redis.ScanDump{}
+			sd, err := client.CFScanDump(ctx, "testcfsd1", 0).Result()
+			for {
+				if sd.Iter == 0 {
+					break
+				}
+				Expect(err).NotTo(HaveOccurred())
+				fd = append(fd, sd)
+				sd, err = client.CFScanDump(ctx, "testcfsd1", sd.Iter).Result()
+			}
+			client.Del(ctx, "testcfsd1")
+			for _, e := range fd {
+				client.CFLoadChunk(ctx, "testcfsd1", e.Iter, e.Data)
+			}
+			infAfter := client.CFInfo(ctx, "testcfsd1")
+			Expect(infBefore).To(BeEquivalentTo(infAfter))
 		})
 
 		It("should CFInfo and CFReserveArgs", Label("cuckoo", "cfinfo", "cfreserveargs"), func() {
