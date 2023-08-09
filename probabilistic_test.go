@@ -39,7 +39,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 		It("should BFCard", Label("bloom", "bfcard"), func() {
 			// This is a probabilistic data structure, and it's not always guaranteed that we will get back
-			// the exact number of inserted items, during hash collisions
+			// the exact number of inserted items during hash collisions
 			// But with such a low number of items (only 3),
 			// the probability of a collision is very low, so we can expect to get back the exact number of items
 			_, err := client.BFAdd(ctx, "testbf1", "item1").Result()
