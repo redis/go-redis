@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -23,7 +24,8 @@ type probabilisticCmdable interface {
 	BFReserveExpansion(ctx context.Context, key string, errorRate float64, capacity, expansion int64) *StatusCmd
 	BFReserveNonScaling(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
 	BFReserveArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd
-	//TODO LoadChunk and ScanDump missing
+	BFScanDump(ctx context.Context, key string, iterator int64) *ScanDumpCmd
+	BFLoadChunk(ctx context.Context, key string, iterator int64, data interface{}) *StatusCmd
 
 	CFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
 	CFAddNX(ctx context.Context, key string, element interface{}) *BoolCmd
@@ -35,7 +37,9 @@ type probabilisticCmdable interface {
 	CFInsertNx(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd
 	CFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
 	CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd
-	//TODO LoadChunk and ScanDump missing
+	CFReserveArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd
+	CFScanDump(ctx context.Context, key string, iterator int64) *ScanDumpCmd
+	CFLoadChunk(ctx context.Context, key string, iterator int64, data interface{}) *StatusCmd
 
 	CMSIncrBy(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
 	CMSInfo(ctx context.Context, key string) *CMSInfoCmd
@@ -165,6 +169,79 @@ func (c cmdable) BFExists(ctx context.Context, key string, element interface{}) 
 	return cmd
 }
 
+func (c cmdable) BFLoadChunk(ctx context.Context, key string, iterator int64, data interface{}) *StatusCmd {
+	args := []interface{}{"bf.loadchunk", key, iterator, data}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) BFScanDump(ctx context.Context, key string, iterator int64) *ScanDumpCmd {
+	args := []interface{}{"bf.scandump", key, iterator}
+	cmd := newScanDumpCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type ScanDump struct {
+	Iter int64
+	Data string
+}
+
+type ScanDumpCmd struct {
+	baseCmd
+
+	val ScanDump
+}
+
+func newScanDumpCmd(ctx context.Context, args ...interface{}) *ScanDumpCmd {
+	return &ScanDumpCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ScanDumpCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ScanDumpCmd) SetVal(val ScanDump) {
+	cmd.val = val
+}
+
+func (cmd *ScanDumpCmd) Result() (ScanDump, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *ScanDumpCmd) Val() ScanDump {
+	return cmd.val
+}
+
+func (cmd *ScanDumpCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = ScanDump{}
+	for i := 0; i < n; i++ {
+		iter, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		data, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		cmd.val.Data = data
+		cmd.val.Iter = iter
+
+	}
+
+	return nil
+}
+
 func (c cmdable) BFInfo(ctx context.Context, key string) *BFInfoCmd {
 	args := []interface{}{"bf.info", key}
 	cmd := NewBFInfoCmd(ctx, args...)
@@ -198,7 +275,6 @@ func NewBFInfoCmd(ctx context.Context, args ...interface{}) *BFInfoCmd {
 func (cmd *BFInfoCmd) SetVal(val BFInfo) {
 	cmd.val = val
 }
-
 func (cmd *BFInfoCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
@@ -331,6 +407,27 @@ func (c cmdable) CFReserve(ctx context.Context, key string, capacity int64) *Sta
 	return cmd
 }
 
+func (c cmdable) CFReserveExpansion(ctx context.Context, key string, capacity int64, expansion int64) *StatusCmd {
+	args := []interface{}{"cf.reserve", key, capacity, "expansion", expansion}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CFReserveBucketsize(ctx context.Context, key string, capacity int64, bucketsize int64) *StatusCmd {
+	args := []interface{}{"cf.reserve", key, capacity, "bucketsize", bucketsize}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CFReserveMaxiterations(ctx context.Context, key string, capacity int64, maxiterations int64) *StatusCmd {
+	args := []interface{}{"cf.reserve", key, capacity, "maxiterations", maxiterations}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) CFReserveArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
 	args := []interface{}{"cf.reserve", key, options.Capacity}
 	if options.BucketSize != 0 {
@@ -378,6 +475,20 @@ func (c cmdable) CFDel(ctx context.Context, key string, element interface{}) *Bo
 func (c cmdable) CFExists(ctx context.Context, key string, element interface{}) *BoolCmd {
 	args := []interface{}{"cf.exists", key, element}
 	cmd := NewBoolCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CFLoadChunk(ctx context.Context, key string, iterator int64, data interface{}) *StatusCmd {
+	args := []interface{}{"cf.loadchunk", key, iterator, data}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) CFScanDump(ctx context.Context, key string, iterator int64) *ScanDumpCmd {
+	args := []interface{}{"cf.scandump", key, iterator}
+	cmd := newScanDumpCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
