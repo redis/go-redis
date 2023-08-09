@@ -622,9 +622,7 @@ func (c cmdable) getCfInsertArgs(args []interface{}, options *CFInsertOptions, e
 
 func (c cmdable) CFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"cf.mexists", key}
-	for _, s := range elements {
-		args = append(args, s)
-	}
+	args = append(args, elements...)
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -774,9 +772,7 @@ func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceK
 
 func (c cmdable) CMSQuery(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
 	args := []interface{}{"cms.query", key}
-	for _, s := range elements {
-		args = append(args, s)
-	}
+	args = append(args, elements...)
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
