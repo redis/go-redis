@@ -316,9 +316,9 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			err = client.CFReserveExpansion(ctx, "testcfe1", 1000, 1).Err()
 			Expect(err).NotTo(HaveOccurred())
-			err = client.CFReserveBucketsize(ctx, "testcfbs1", 1000, 4).Err()
+			err = client.CFReserveBucketSize(ctx, "testcfbs1", 1000, 4).Err()
 			Expect(err).NotTo(HaveOccurred())
-			err = client.CFReserveMaxiterations(ctx, "testcfmi1", 1000, 10).Err()
+			err = client.CFReserveMaxIterations(ctx, "testcfmi1", 1000, 10).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err := client.CFInfo(ctx, "testcf1").Result()
@@ -390,13 +390,13 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(len(result)).To(BeEquivalentTo(3))
 		})
 
-		It("should CFInsertNx", Label("cuckoo", "cfinsertnx"), func() {
+		It("should CFInsertNX", Label("cuckoo", "cfinsertnx"), func() {
 			args := &redis.CFInsertOptions{
 				Capacity: 3000,
 				NoCreate: true,
 			}
 
-			result, err := client.CFInsertNx(ctx, "testcf1", args, "item1", "item2", "item2").Result()
+			result, err := client.CFInsertNX(ctx, "testcf1", args, "item1", "item2", "item2").Result()
 			Expect(err).To(HaveOccurred())
 
 			args = &redis.CFInsertOptions{
@@ -404,7 +404,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 				NoCreate: false,
 			}
 
-			result, err = client.CFInsertNx(ctx, "testcf2", args, "item1", "item2", "item2").Result()
+			result, err = client.CFInsertNX(ctx, "testcf2", args, "item1", "item2", "item2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).To(BeEquivalentTo(3))
 			Expect(result[0]).To(BeEquivalentTo(int64(1)))
