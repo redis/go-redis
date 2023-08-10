@@ -1329,7 +1329,7 @@ func (c *ClusterClient) pipelineReadCmds(
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
 
-		if err == nil {
+		if err == nil || err == Nil {
 			continue
 		}
 
