@@ -504,6 +504,8 @@ type Cmdable interface {
 	ACLLogReset(ctx context.Context) *StatusCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
+
+	probabilisticCmdable
 }
 
 type StatefulCmdable interface {
