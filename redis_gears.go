@@ -14,6 +14,8 @@ type gearsCmdable interface {
 	TFunctionListArgs(ctx context.Context, options *TFunctionListOptions) *MapStringInterfaceSliceCmd
 	TFCall(ctx context.Context, libName string, funcName string, numKeys int) *Cmd
 	TFCallArgs(ctx context.Context, libName string, funcName string, numKeys int, options *TFCallOptions) *Cmd
+	TFCallASYNC(ctx context.Context, libName string, funcName string, numKeys int) *Cmd
+	TFCallASYNCArgs(ctx context.Context, libName string, funcName string, numKeys int, options *TFCallOptions) *Cmd
 }
 type TFunctionLoadOptions struct {
 	Replace bool
@@ -36,7 +38,7 @@ type TFCallOptions struct {
 func (c cmdable) TFunctionLoad(ctx context.Context, lib string) *StatusCmd {
 	args := []interface{}{"TFUNCTION", "LOAD", lib}
 	cmd := NewStatusCmd(ctx, args...)
-	c(ctx, cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -52,7 +54,7 @@ func (c cmdable) TFunctionLoadArgs(ctx context.Context, lib string, options *TFu
 	}
 	args = append(args, lib)
 	cmd := NewStatusCmd(ctx, args...)
-	c(ctx, cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -61,7 +63,7 @@ func (c cmdable) TFunctionLoadArgs(ctx context.Context, lib string, options *TFu
 func (c cmdable) TFunctionDelete(ctx context.Context, libName string) *StatusCmd {
 	args := []interface{}{"TFUNCTION", "DELETE", libName}
 	cmd := NewStatusCmd(ctx, args...)
-	c(ctx, cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -70,7 +72,7 @@ func (c cmdable) TFunctionDelete(ctx context.Context, libName string) *StatusCmd
 func (c cmdable) TFunctionList(ctx context.Context) *MapStringInterfaceSliceCmd {
 	args := []interface{}{"TFUNCTION", "LIST"}
 	cmd := NewMapStringInterfaceSliceCmd(ctx, args...)
-	c(ctx, cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -90,7 +92,7 @@ func (c cmdable) TFunctionListArgs(ctx context.Context, options *TFunctionListOp
 		}
 	}
 	cmd := NewMapStringInterfaceSliceCmd(ctx, args...)
-	c(ctx, cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -100,7 +102,7 @@ func (c cmdable) TFCall(ctx context.Context, libName string, funcName string, nu
 	lf := libName + "." + funcName
 	args := []interface{}{"TFCALL", lf, numKeys}
 	cmd := NewCmd(ctx, args...)
-	c(ctx, cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -122,7 +124,7 @@ func (c cmdable) TFCallArgs(ctx context.Context, libName string, funcName string
 		}
 	}
 	cmd := NewCmd(ctx, args...)
-	c(ctx, cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -132,7 +134,7 @@ func (c cmdable) TFCallASYNC(ctx context.Context, libName string, funcName strin
 	lf := fmt.Sprintf("%s.%s", libName, funcName)
 	args := []interface{}{"TFCALLASYNC", lf, numKeys}
 	cmd := NewCmd(ctx, args...)
-	c(ctx, cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
 
@@ -154,6 +156,6 @@ func (c cmdable) TFCallASYNCArgs(ctx context.Context, libName string, funcName s
 		}
 	}
 	cmd := NewCmd(ctx, args...)
-	c(ctx, cmd)
+	_ = c(ctx, cmd)
 	return cmd
 }
