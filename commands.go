@@ -506,6 +506,7 @@ type Cmdable interface {
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 
 	gearsCmdable
+	probabilisticCmdable
 }
 
 type StatefulCmdable interface {
