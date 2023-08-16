@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +25,60 @@ import (
 var errRingShardsDown = errors.New("redis: all ring shards are down")
 
 //------------------------------------------------------------------------------
+
+// SRVLookupOpts is used to construct the DNS name to look up following RFC
+// 2782. That is, it looks up _Service._Proto.Name. To accommodate services
+// publishing SRV records under non-standard names, if both Service and Proto
+// fields are left unspecified, LookupSRV looks up Name directly.
+type SRVLookupOpts struct {
+	// Service is the symbolic name of the desired service.
+	Service string
+
+	// Proto is the transport protocol of the desired service; this is usually
+	// "tcp".
+	Proto string
+
+	// Name is the domain name of the desired service.
+	Name string
+
+	// UpdateFrequency is the frequency of periodic SRV lookups. Defaults to
+	// 30 seconds.
+	UpdateFrequency time.Duration
+
+	// DNSAuthority is the single <hostname|IPv4|[IPv6]>:<port> of the DNS
+	// server to be used for SRV lookups. If the address contains a hostname it
+	// will be resolved via the system DNS. If the port is left unspecified it
+	// will default to '53'. If this field is left unspecified the system DNS
+	// will be used for resolution.
+	DNSAuthority string
+}
+
+// isEmpty returns true if all fields of SRVLookupOpts are left unspecified.
+func (opt *SRVLookupOpts) isEmpty() bool {
+	return reflect.DeepEqual(*opt, SRVLookupOpts{})
+}
+
+// dnsName returns DNS name to look up as defined in RFC 2782. If both Service
+// and Proto fields are left unspecified, dnsName returns Name directly.
+func (opt *SRVLookupOpts) dnsName() string {
+	if opt.Service == "" && opt.Proto == "" {
+		return opt.Name
+	}
+	return fmt.Sprintf("_%s._%s.%s", opt.Service, opt.Proto, opt.Name)
+}
+
+// getResolver returns a resolver that will be used to perform SRV lookups.
+func (opt *SRVLookupOpts) getResolver() *net.Resolver {
+	if opt.DNSAuthority == "" {
+		return net.DefaultResolver
+	}
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return net.Dial(network, opt.DNSAuthority)
+		},
+	}
+}
 
 type ConsistentHash interface {
 	Get(string) string
@@ -47,6 +103,12 @@ func newRendezvous(shards []string) ConsistentHash {
 type RingOptions struct {
 	// Map of name => host:port addresses of ring shards.
 	Addrs map[string]string
+
+	// SRVLookup if specified will query SRV records for the given service name.
+	// If the records are present they will be used as the addresses for the
+	// ring shards. If SRVLookup is specified Addrs is ignored. Periodic SRV
+	// lookups are performed to handle changes in service topology.
+	SRVLookup SRVLookupOpts
 
 	// NewClient creates a shard client with provided options.
 	NewClient func(opt *Options) *Client
@@ -240,7 +302,16 @@ func newRingSharding(opt *RingOptions) *ringSharding {
 	c := &ringSharding{
 		opt: opt,
 	}
-	c.SetAddrs(opt.Addrs)
+
+	if !opt.SRVLookup.isEmpty() && len(opt.Addrs) == 0 {
+		addrs, err := c.LookupShards(context.Background())
+		if err != nil {
+			panic(err)
+		}
+		c.SetAddrs(addrs)
+	} else {
+		c.SetAddrs(opt.Addrs)
+	}
 
 	return c
 }
@@ -418,6 +489,73 @@ func (c *ringSharding) Heartbeat(ctx context.Context, frequency time.Duration) {
 	}
 }
 
+// LookupShards performs SRV lookups for the given service name and returns the
+// resolved shard addresses.
+func (c *ringSharding) LookupShards(ctx context.Context) (map[string]string, error) {
+	resolver := c.opt.SRVLookup.getResolver()
+
+	_, addrs, err := resolver.LookupSRV(ctx, c.opt.SRVLookup.Service, c.opt.SRVLookup.Proto, c.opt.SRVLookup.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lookup SRV records for service %q: %w", c.opt.SRVLookup.dnsName(), err)
+	}
+
+	if len(addrs) <= 0 {
+		return nil, fmt.Errorf("no SRV targets found for service %q", c.opt.SRVLookup.dnsName())
+	}
+
+	newAddrs := make(map[string]string)
+
+	for _, srv := range addrs {
+		host := strings.TrimRight(srv.Target, ".")
+
+		if c.opt.SRVLookup.DNSAuthority != "" {
+			// Lookup A/AAAA records for the SRV target using the custom DNS authority.
+			hostAddrs, err := resolver.LookupHost(ctx, host)
+			if err != nil {
+				return nil, fmt.Errorf("failed to lookup A/AAAA records for %q: %w", host, err)
+			}
+			if len(hostAddrs) <= 0 {
+				return nil, fmt.Errorf("no A/AAAA records found for %q", host)
+			}
+			// Use the first resolved IP address.
+			host = hostAddrs[0]
+		}
+
+		addr := fmt.Sprintf("%s:%d", host, srv.Port)
+		newAddrs[addr] = addr
+	}
+	return newAddrs, nil
+}
+
+// LookupShardsPeriodically periodically performs SRV lookups for the given service name
+// and updates the ring shards accordingly.
+func (c *ringSharding) LookupShardsPeriodically(ctx context.Context, frequency time.Duration) {
+	if frequency == 0 {
+		// Use default frequency.
+		frequency = 30 * time.Second
+	}
+
+	ticker := time.NewTicker(frequency)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			timeoutCtx, cancel := context.WithTimeout(ctx, frequency)
+			newAddrs, err := c.LookupShards(timeoutCtx)
+			cancel()
+			if err != nil {
+				internal.Logger.Printf(ctx, err.Error())
+				continue
+			}
+			c.SetAddrs(newAddrs)
+
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 // rebalanceLocked removes dead shards from the Ring.
 // Requires c.mu locked.
 func (c *ringSharding) rebalanceLocked() {
@@ -495,17 +633,20 @@ type Ring struct {
 	sharding          *ringSharding
 	cmdsInfoCache     *cmdsInfoCache
 	heartbeatCancelFn context.CancelFunc
+	lookupCancelFn    context.CancelFunc
 }
 
 func NewRing(opt *RingOptions) *Ring {
 	opt.init()
 
 	hbCtx, hbCancel := context.WithCancel(context.Background())
+	luCtx, luCancel := context.WithCancel(context.Background())
 
 	ring := Ring{
 		opt:               opt,
 		sharding:          newRingSharding(opt),
 		heartbeatCancelFn: hbCancel,
+		lookupCancelFn:    luCancel,
 	}
 
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
@@ -522,6 +663,9 @@ func NewRing(opt *RingOptions) *Ring {
 	})
 
 	go ring.sharding.Heartbeat(hbCtx, opt.HeartbeatFrequency)
+	if !opt.SRVLookup.isEmpty() {
+		go ring.sharding.LookupShardsPeriodically(luCtx, opt.SRVLookup.UpdateFrequency)
+	}
 
 	return &ring
 }
@@ -827,6 +971,9 @@ func (c *Ring) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) er
 // and shared between many goroutines.
 func (c *Ring) Close() error {
 	c.heartbeatCancelFn()
+	if !c.opt.SRVLookup.isEmpty() {
+		c.lookupCancelFn()
+	}
 
 	return c.sharding.Close()
 }

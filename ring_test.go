@@ -794,3 +794,63 @@ var _ = Describe("Ring Tx timeout", func() {
 		testTimeout()
 	})
 })
+
+var _ = Describe("Ring Shard Lookup via SRV", func() {
+	const heartbeat = 100 * time.Millisecond
+
+	var ring *redis.Ring
+
+	BeforeEach(func() {
+		opt := redisRingOptions()
+		opt.Addrs = nil
+		opt.HeartbeatFrequency = heartbeat
+		opt.SRVLookup.DNSAuthority = srvDNSAuthority
+		opt.SRVLookup.Service = srvService
+		opt.SRVLookup.Proto = srvProto
+		opt.SRVLookup.Name = srvName
+		ring = redis.NewRing(opt)
+
+		err := ring.ForEachShard(ctx, func(ctx context.Context, cl *redis.Client) error {
+			return cl.FlushDB(ctx).Err()
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(ring.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should ring client setname", func() {
+		err := ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			return c.Ping(ctx).Err()
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_ = ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := c.ClientList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(ContainSubstring("name=ring_hi"))
+			return nil
+		})
+	})
+
+	It("should ring PROTO 3", func() {
+		_ = ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := c.Do(ctx, "HELLO").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
+			return nil
+		})
+	})
+
+	It("distributes keys", func() {
+		for i := 0; i < 100; i++ {
+			err := ring.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		// Both shards should have some keys now.
+		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=56"))
+		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=44"))
+	})
+})

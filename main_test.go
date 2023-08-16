@@ -2,16 +2,19 @@ package redis_test
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+	"github.com/miekg/dns"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -38,6 +41,16 @@ const (
 
 var redisPort = "6380"
 var redisAddr = ":" + redisPort
+
+const (
+	srvDNSAuthority   = ":5353"
+	srvService        = "shards"
+	srvProto          = "tcp"
+	srvName           = "example.com"
+	ringShard1DNSName = "shard1.example.com."
+	ringShard2DNSName = "shard2.example.com."
+	ringShard3DNSName = "shard3.example.com."
+)
 
 var (
 	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
@@ -105,6 +118,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	Expect(startCluster(ctx, cluster)).NotTo(HaveOccurred())
+
+	startTestDNSServer()
 })
 
 var _ = AfterSuite(func() {
@@ -371,6 +386,59 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 	p := &redisProcess{process, client}
 	registerProcess(port, p)
 	return p, nil
+}
+
+func startTestDNSServer() {
+	shards := map[string]string{
+		ringShard1DNSName: ringShard1Port,
+		ringShard2DNSName: ringShard2Port,
+		ringShard3DNSName: ringShard3Port,
+	}
+
+	dns.HandleFunc(fmt.Sprintf("_%s._%s.%s.", srvService, srvProto, srvName), func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+
+		if r.Question[0].Qtype == dns.TypeSRV {
+			for domain, port := range shards {
+				portUint, ok := strconv.ParseUint(port, 10, 16)
+				if ok != nil {
+					panic(fmt.Sprintf("invalid port number %s", port))
+				}
+				m.Answer = append(m.Answer, &dns.SRV{
+					Hdr:    dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeSRV, Class: dns.ClassINET, Ttl: 60},
+					Port:   uint16(portUint),
+					Target: domain,
+				})
+			}
+		}
+		w.WriteMsg(m)
+	})
+
+	for domain := range shards {
+		dns.HandleFunc(domain, func(w dns.ResponseWriter, r *dns.Msg) {
+			m := new(dns.Msg)
+			m.SetReply(r)
+
+			if r.Question[0].Qtype == dns.TypeA {
+				m.Answer = append(m.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: domain, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+					A:   net.ParseIP("127.0.0.1"),
+				})
+			}
+			w.WriteMsg(m)
+		})
+	}
+
+	server := &dns.Server{
+		Addr: srvDNSAuthority,
+		Net:  "udp",
+	}
+
+	// Run the server in a goroutine so it doesn't block
+	go func() {
+		log.Fatal(server.ListenAndServe())
+	}()
 }
 
 //------------------------------------------------------------------------------
