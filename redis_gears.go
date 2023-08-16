@@ -36,7 +36,7 @@ type TFCallOptions struct {
 func (c cmdable) TFunctionLoad(ctx context.Context, lib string) *StatusCmd {
 	args := []interface{}{"TFUNCTION", "LOAD", lib}
 	cmd := NewStatusCmd(ctx, args...)
-	_ = c(ctx, cmd)
+	c(ctx, cmd)
 	return cmd
 }
 
@@ -52,7 +52,7 @@ func (c cmdable) TFunctionLoadArgs(ctx context.Context, lib string, options *TFu
 	}
 	args = append(args, lib)
 	cmd := NewStatusCmd(ctx, args...)
-	_ = c(ctx, cmd)
+	c(ctx, cmd)
 	return cmd
 }
 
@@ -61,7 +61,7 @@ func (c cmdable) TFunctionLoadArgs(ctx context.Context, lib string, options *TFu
 func (c cmdable) TFunctionDelete(ctx context.Context, libName string) *StatusCmd {
 	args := []interface{}{"TFUNCTION", "DELETE", libName}
 	cmd := NewStatusCmd(ctx, args...)
-	_ = c(ctx, cmd)
+	c(ctx, cmd)
 	return cmd
 }
 
@@ -70,7 +70,7 @@ func (c cmdable) TFunctionDelete(ctx context.Context, libName string) *StatusCmd
 func (c cmdable) TFunctionList(ctx context.Context) *MapStringInterfaceSliceCmd {
 	args := []interface{}{"TFUNCTION", "LIST"}
 	cmd := NewMapStringInterfaceSliceCmd(ctx, args...)
-	_ = c(ctx, cmd)
+	c(ctx, cmd)
 	return cmd
 }
 
@@ -90,7 +90,7 @@ func (c cmdable) TFunctionListArgs(ctx context.Context, options *TFunctionListOp
 		}
 	}
 	cmd := NewMapStringInterfaceSliceCmd(ctx, args...)
-	_ = c(ctx, cmd)
+	c(ctx, cmd)
 	return cmd
 }
 
@@ -122,7 +122,7 @@ func (c cmdable) TFCallArgs(ctx context.Context, libName string, funcName string
 		}
 	}
 	cmd := NewCmd(ctx, args...)
-	_ = c(ctx, cmd)
+	c(ctx, cmd)
 	return cmd
 }
 
@@ -132,7 +132,7 @@ func (c cmdable) TFCallASYNC(ctx context.Context, libName string, funcName strin
 	lf := fmt.Sprintf("%s.%s", libName, funcName)
 	args := []interface{}{"TFCALLASYNC", lf, numKeys}
 	cmd := NewCmd(ctx, args...)
-	_ = c(ctx, cmd)
+	c(ctx, cmd)
 	return cmd
 }
 
@@ -154,6 +154,6 @@ func (c cmdable) TFCallASYNCArgs(ctx context.Context, libName string, funcName s
 		}
 	}
 	cmd := NewCmd(ctx, args...)
-	_ = c(ctx, cmd)
+	c(ctx, cmd)
 	return cmd
 }
