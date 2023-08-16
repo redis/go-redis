@@ -97,15 +97,15 @@ func (c cmdable) TFunctionListArgs(ctx context.Context, options *TFunctionListOp
 // TFCall - invoke a function.
 // For more information - https://redis.io/commands/tfcall/
 func (c cmdable) TFCall(ctx context.Context, libName string, funcName string, numKeys int) *Cmd {
-	lf := fmt.Sprintf("%s.%s", libName, funcName)
+	lf := libName + "." + funcName
 	args := []interface{}{"TFCALL", lf, numKeys}
 	cmd := NewCmd(ctx, args...)
-	_ = c(ctx, cmd)
+	c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) TFCallArgs(ctx context.Context, libName string, funcName string, numKeys int, options *TFCallOptions) *Cmd {
-	lf := fmt.Sprintf("%s.%s", libName, funcName)
+	lf := libName + "." + funcName
 	args := []interface{}{"TFCALL", lf, numKeys}
 	if options != nil {
 		if options.Keys != nil {
@@ -126,9 +126,9 @@ func (c cmdable) TFCallArgs(ctx context.Context, libName string, funcName string
 	return cmd
 }
 
-// TFCallASync - invoke an asynchronous JavaScript function (coroutine).
-// For more information - https://redis.io/commands/tfcallasync/
-func (c cmdable) TFCallASync(ctx context.Context, libName string, funcName string, numKeys int) *Cmd {
+// TFCallASYNC - invoke an asynchronous JavaScript function (coroutine).
+// For more information - https://redis.io/commands/TFCallASYNC/
+func (c cmdable) TFCallASYNC(ctx context.Context, libName string, funcName string, numKeys int) *Cmd {
 	lf := fmt.Sprintf("%s.%s", libName, funcName)
 	args := []interface{}{"TFCALLASYNC", lf, numKeys}
 	cmd := NewCmd(ctx, args...)
@@ -136,7 +136,7 @@ func (c cmdable) TFCallASync(ctx context.Context, libName string, funcName strin
 	return cmd
 }
 
-func (c cmdable) TFCallASyncArgs(ctx context.Context, libName string, funcName string, numKeys int, options *TFCallOptions) *Cmd {
+func (c cmdable) TFCallASYNCArgs(ctx context.Context, libName string, funcName string, numKeys int, options *TFCallOptions) *Cmd {
 	lf := fmt.Sprintf("%s.%s", libName, funcName)
 	args := []interface{}{"TFCALLASYNC", lf, numKeys}
 	if options != nil {

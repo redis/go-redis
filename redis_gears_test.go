@@ -33,7 +33,7 @@ func libCodeWithConfig(libName string) string {
 	return fmt.Sprintf(lib, libName)
 }
 
-var _ = Describe("Redis Gears commands", Label("gears"), func() {
+var _ = Describe("RedisGears commands", Label("gears"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
 
@@ -109,12 +109,12 @@ var _ = Describe("Redis Gears commands", Label("gears"), func() {
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
 	})
 
-	It("should TFCallASync", Label("gears", "tfcallasync"), func() {
+	It("should TFCallASYNC", Label("gears", "TFCallASYNC"), func() {
 		var resultAdd interface{}
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("libtfc1")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
-		resultAdd, err = client.TFCallASync(ctx, "libtfc1", "foo", 0).Result()
+		resultAdd, err = client.TFCallASYNC(ctx, "libtfc1", "foo", 0).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("bar"))
 		resultAdd, err = client.TFunctionDelete(ctx, "libtfc1").Result()
@@ -122,13 +122,13 @@ var _ = Describe("Redis Gears commands", Label("gears"), func() {
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
 	})
 
-	It("should TFCallASyncArgs", Label("gears", "tfcallasyncargs"), func() {
+	It("should TFCallASYNCArgs", Label("gears", "TFCallASYNCargs"), func() {
 		var resultAdd interface{}
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("libtfca1")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
 		opt := &redis.TFCallOptions{Arguments: []string{"foo", "bar"}}
-		resultAdd, err = client.TFCallASyncArgs(ctx, "libtfca1", "foo", 0, opt).Result()
+		resultAdd, err = client.TFCallASYNCArgs(ctx, "libtfca1", "foo", 0, opt).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("bar"))
 		resultAdd, err = client.TFunctionDelete(ctx, "libtfca1").Result()
