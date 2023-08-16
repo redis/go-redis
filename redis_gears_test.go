@@ -61,21 +61,25 @@ var _ = Describe("Redis Gears commands", Label("gears"), func() {
 
 	})
 	It("should TFunctionList", Label("gears", "tfunctionlist"), func() {
-		var resultAdd interface{}
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("libtfli1")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
-		resultAdd, err = client.TFunctionList(ctx).Result()
+		resultAdd, err = client.TFunctionLoad(ctx, libCode("libtfli2")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
-		// opt := &redis.TFunctionListOptions{Withcode: false, Verbose: 0}
-		// resultAdd, err = client.TFunctionListArgs(ctx, opt).Result()
-		// Expect(err).NotTo(HaveOccurred())
-		// Expect(resultAdd).To(BeEquivalentTo("OK"))
+		resultList, err := client.TFunctionList(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resultList[0]["engine"]).To(BeEquivalentTo("js"))
+		opt := &redis.TFunctionListOptions{Withcode: true, Verbose: 2}
+		resultListArgs, err := client.TFunctionListArgs(ctx, opt).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resultListArgs[0]["code"]).To(BeEquivalentTo(libCode("libtfli1")))
 		resultAdd, err = client.TFunctionDelete(ctx, "libtfli1").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
-
+		resultAdd, err = client.TFunctionDelete(ctx, "libtfli2").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resultAdd).To(BeEquivalentTo("OK"))
 	})
 
 	It("should TFCall", Label("gears", "tfcall"), func() {

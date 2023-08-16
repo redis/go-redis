@@ -3766,10 +3766,11 @@ func (cmd *MapStringInterfaceSliceCmd) readReply(rd *proto.Reader) error {
 			if err != nil {
 				return err
 			}
-
 			v, err := rd.ReadReply()
 			if err != nil {
-				return err
+				if err != Nil {
+					return err
+				}
 			}
 			cmd.val[i][k] = v
 		}

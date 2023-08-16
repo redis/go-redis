@@ -31,6 +31,8 @@ type TFCallOptions struct {
 	Arguments []string
 }
 
+// TFunctionLoad - load a new JavaScript library into Redis.
+// For more information - https://redis.io/commands/tfunction-load/
 func (c cmdable) TFunctionLoad(ctx context.Context, lib string) *StatusCmd {
 	args := []interface{}{"TFUNCTION", "LOAD", lib}
 	cmd := NewStatusCmd(ctx, args...)
@@ -54,6 +56,8 @@ func (c cmdable) TFunctionLoadArgs(ctx context.Context, lib string, options *TFu
 	return cmd
 }
 
+// TFunctionDelete - delete a JavaScript library from Redis.
+// For more information - https://redis.io/commands/tfunction-delete/
 func (c cmdable) TFunctionDelete(ctx context.Context, libName string) *StatusCmd {
 	args := []interface{}{"TFUNCTION", "DELETE", libName}
 	cmd := NewStatusCmd(ctx, args...)
@@ -61,6 +65,8 @@ func (c cmdable) TFunctionDelete(ctx context.Context, libName string) *StatusCmd
 	return cmd
 }
 
+// TFunctionList - list the functions with additional information about each function.
+// For more information - https://redis.io/commands/tfunction-list/
 func (c cmdable) TFunctionList(ctx context.Context) *MapStringInterfaceSliceCmd {
 	args := []interface{}{"TFUNCTION", "LIST"}
 	cmd := NewMapStringInterfaceSliceCmd(ctx, args...)
@@ -88,6 +94,8 @@ func (c cmdable) TFunctionListArgs(ctx context.Context, options *TFunctionListOp
 	return cmd
 }
 
+// TFCall - invoke a function.
+// For more information - https://redis.io/commands/tfcall/
 func (c cmdable) TFCall(ctx context.Context, libName string, funcName string, numKeys int) *Cmd {
 	lf := fmt.Sprintf("%s.%s", libName, funcName)
 	args := []interface{}{"TFCALL", lf, numKeys}
@@ -118,6 +126,8 @@ func (c cmdable) TFCallArgs(ctx context.Context, libName string, funcName string
 	return cmd
 }
 
+// TFCallASync - invoke an asynchronous JavaScript function (coroutine).
+// For more information - https://redis.io/commands/tfcallasync/
 func (c cmdable) TFCallASync(ctx context.Context, libName string, funcName string, numKeys int) *Cmd {
 	lf := fmt.Sprintf("%s.%s", libName, funcName)
 	args := []interface{}{"TFCALLASYNC", lf, numKeys}
