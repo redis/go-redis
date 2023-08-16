@@ -53,3 +53,4 @@ URI
 url
 variadic
 RedisStack
+RedisGears
