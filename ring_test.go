@@ -861,8 +861,8 @@ var _ = Describe("Ring Shard Lookup via SRV", func() {
 		setRingKeys()
 
 		// All shards should have some keys now.
-		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=32"))
+		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=34"))
 		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=34"))
-		Expect(ringShard3.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=34"))
+		Expect(ringShard3.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=32"))
 	})
 })
