@@ -800,6 +800,13 @@ var _ = Describe("Ring Shard Lookup via SRV", func() {
 
 	var ring *redis.Ring
 
+	setRingKeys := func() {
+		for i := 0; i < 100; i++ {
+			err := ring.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
+	}
+
 	BeforeEach(func() {
 		opt := redisRingOptions()
 		opt.ClientName = "ring_hi"
@@ -830,8 +837,6 @@ var _ = Describe("Ring Shard Lookup via SRV", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		_ = ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
-			defer GinkgoRecover()
-
 			val, err := c.ClientList(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).Should(ContainSubstring("name=ring_hi"))
@@ -853,6 +858,7 @@ var _ = Describe("Ring Shard Lookup via SRV", func() {
 			err := ring.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 		}
+		setRingKeys()
 
 		// Both shards should have some keys now.
 		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=56"))
