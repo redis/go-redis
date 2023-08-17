@@ -43,7 +43,7 @@ var redisPort = "6380"
 var redisAddr = ":" + redisPort
 
 const (
-	srvDNSAuthority   = ":5353"
+	srvDNSAuthority   = ":12345"
 	srvService        = "shards"
 	srvProto          = "tcp"
 	srvName           = "example.com"
@@ -395,47 +395,52 @@ func startTestDNSServer() {
 		ringShard3DNSName: ringShard3Port,
 	}
 
-	dns.HandleFunc(fmt.Sprintf("_%s._%s.%s.", srvService, srvProto, srvName), func(w dns.ResponseWriter, r *dns.Msg) {
+	handleSRV := func(w dns.ResponseWriter, r *dns.Msg) {
 		m := new(dns.Msg)
 		m.SetReply(r)
 
 		if r.Question[0].Qtype == dns.TypeSRV {
 			for domain, port := range shards {
-				portUint, ok := strconv.ParseUint(port, 10, 16)
-				if ok != nil {
+				portUint, err := strconv.ParseUint(port, 10, 16)
+				if err != nil {
+					// Should never happen.
 					panic(fmt.Sprintf("invalid port number %s", port))
 				}
-				m.Answer = append(m.Answer, &dns.SRV{
+				srvRecord := &dns.SRV{
 					Hdr:    dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeSRV, Class: dns.ClassINET, Ttl: 60},
 					Port:   uint16(portUint),
 					Target: domain,
-				})
+				}
+				m.Answer = append(m.Answer, srvRecord)
 			}
 		}
 		w.WriteMsg(m)
-	})
+	}
+	dns.HandleFunc(fmt.Sprintf("_%s._%s.%s.", srvService, srvProto, srvName), handleSRV)
 
-	for domain := range shards {
-		dns.HandleFunc(domain, func(w dns.ResponseWriter, r *dns.Msg) {
+	handleA := func(domain string) dns.HandlerFunc {
+		return func(w dns.ResponseWriter, r *dns.Msg) {
 			m := new(dns.Msg)
 			m.SetReply(r)
 
 			if r.Question[0].Qtype == dns.TypeA {
-				m.Answer = append(m.Answer, &dns.A{
+				aRecord := &dns.A{
 					Hdr: dns.RR_Header{Name: domain, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
 					A:   net.ParseIP("127.0.0.1"),
-				})
+				}
+				m.Answer = append(m.Answer, aRecord)
 			}
 			w.WriteMsg(m)
-		})
+		}
+	}
+	for domain := range shards {
+		dns.HandleFunc(domain, handleA(domain))
 	}
 
 	server := &dns.Server{
 		Addr: srvDNSAuthority,
 		Net:  "udp",
 	}
-
-	// Run the server in a goroutine so it doesn't block
 	go func() {
 		log.Fatal(server.ListenAndServe())
 	}()
