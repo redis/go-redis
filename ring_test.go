@@ -802,8 +802,11 @@ var _ = Describe("Ring Shard Lookup via SRV", func() {
 
 	BeforeEach(func() {
 		opt := redisRingOptions()
-		opt.Addrs = nil
+		opt.ClientName = "ring_hi"
 		opt.HeartbeatFrequency = heartbeat
+		// Empty addrs, we'll use SRV lookup.
+		opt.Addrs = nil
+		// Set SRV lookup opts.
 		opt.SRVLookup.DNSAuthority = srvDNSAuthority
 		opt.SRVLookup.Service = srvService
 		opt.SRVLookup.Proto = srvProto
@@ -827,6 +830,8 @@ var _ = Describe("Ring Shard Lookup via SRV", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		_ = ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			defer GinkgoRecover()
+
 			val, err := c.ClientList(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).Should(ContainSubstring("name=ring_hi"))
