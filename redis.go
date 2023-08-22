@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,6 +41,7 @@ type (
 )
 
 type hooksMixin struct {
+	mu sync.RWMutex
 	slice   []Hook
 	initial hooks
 	current hooks
@@ -116,6 +118,9 @@ func (hs *hooksMixin) AddHook(hook Hook) {
 func (hs *hooksMixin) chain() {
 	hs.initial.setDefaults()
 
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+
 	hs.current.dial = hs.initial.dial
 	hs.current.process = hs.initial.process
 	hs.current.pipeline = hs.initial.pipeline
@@ -165,18 +170,26 @@ func (hs *hooksMixin) withProcessPipelineHook(
 }
 
 func (hs *hooksMixin) dialHook(ctx context.Context, network, addr string) (net.Conn, error) {
+	hs.mu.RLock()
+	defer hs.mu.RUnlock()
 	return hs.current.dial(ctx, network, addr)
 }
 
 func (hs *hooksMixin) processHook(ctx context.Context, cmd Cmder) error {
+	hs.mu.RLock()
+	defer hs.mu.RUnlock()
 	return hs.current.process(ctx, cmd)
 }
 
 func (hs *hooksMixin) processPipelineHook(ctx context.Context, cmds []Cmder) error {
+	hs.mu.RLock()
+	defer hs.mu.RUnlock()
 	return hs.current.pipeline(ctx, cmds)
 }
 
 func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) error {
+	hs.mu.RLock()
+	defer hs.mu.RUnlock()
 	return hs.current.txPipeline(ctx, cmds)
 }
 
