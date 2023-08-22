@@ -276,7 +276,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
-	conn := newConn(c.opt, connPool)
+	conn := newConn(c.opt, connPool, hooksMixin{})
 
 	var auth bool
 	protocol := c.opt.Protocol
@@ -636,7 +636,7 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 }
 
 func (c *Client) Conn() *Conn {
-	return newConn(c.opt, pool.NewStickyConnPool(c.connPool))
+	return newConn(c.opt, pool.NewStickyConnPool(c.connPool), c.hooksMixin)
 }
 
 // Do create a Cmd from the args and processes the cmd.
@@ -772,7 +772,7 @@ type Conn struct {
 	hooksMixin
 }
 
-func newConn(opt *Options, connPool pool.Pooler) *Conn {
+func newConn(opt *Options, connPool pool.Pooler, parentHooks hooksMixin) *Conn {
 	c := Conn{
 		baseClient: baseClient{
 			opt:      opt,
@@ -782,6 +782,7 @@ func newConn(opt *Options, connPool pool.Pooler) *Conn {
 
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
+	c.hooksMixin = parentHooks
 	c.initHooks(hooks{
 		dial:       c.baseClient.dial,
 		process:    c.baseClient.process,
