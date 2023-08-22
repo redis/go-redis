@@ -17,14 +17,14 @@ func libCodeWithConfig(libName string) string {
 	lib := `#!js api_version=1.0 name=%s
 
 	var last_update_field_name = "__last_update__"
-	
+
 	if (redis.config.last_update_field_name !== undefined) {
 		if (typeof redis.config.last_update_field_name != 'string') {
 			throw "last_update_field_name must be a string";
 		}
 		last_update_field_name = redis.config.last_update_field_name
 	}
-	
+
 	redis.registerFunction("hset", function(client, key, field, val){
 		// get the current time in ms
 		var curr_time = client.call("time")[0];
@@ -47,7 +47,6 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 	})
 
 	It("should TFunctionLoad, TFunctionLoadArgs and TFunctionDelete ", Label("gears", "tfunctionload"), func() {
-
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("libtflo1")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
@@ -60,6 +59,7 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
 
 	})
+
 	It("should TFunctionList", Label("gears", "tfunctionlist"), func() {
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("libtfli1")).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -73,7 +73,13 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 		opt := &redis.TFunctionListOptions{Withcode: true, Verbose: 2}
 		resultListArgs, err := client.TFunctionListArgs(ctx, opt).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(resultListArgs[0]["code"]).To(BeEquivalentTo(libCode("libtfli1")))
+
+		resultFunctionCodes := make([]string, len(resultListArgs))
+		for i, function := range resultListArgs {
+			resultFunctionCodes[i] = function["code"].(string)
+		}
+
+		Expect(resultFunctionCodes).To(ConsistOf(libCode("libtfli1"), libCode("libtfli2")))
 		resultAdd, err = client.TFunctionDelete(ctx, "libtfli1").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
@@ -135,5 +141,4 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
 	})
-
 })
