@@ -11,7 +11,7 @@
 > Slack, Telegram, and others.
 >
 > See [OpenTelemetry](example/otel) example which demonstrates how you can use Uptrace to monitor
-> go-redis. 
+> go-redis.
 
 ## Documentation
 
