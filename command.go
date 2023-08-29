@@ -3551,7 +3551,7 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 		if err != nil {
 			return err
 		}
-		cmd.val[i].Duration = time.Duration(costs) * time.Microsecond
+		cmd.val[i].Duration = time.Duration(costs)
 
 		cmdLen, err := rd.ReadArrayLen()
 		if err != nil {
