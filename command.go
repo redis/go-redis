@@ -3713,6 +3713,71 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 	return nil
 }
 
+//-----------------------------------------------------------------------
+
+type MapStringInterfaceSliceCmd struct {
+	baseCmd
+
+	val []map[string]interface{}
+}
+
+var _ Cmder = (*MapStringInterfaceSliceCmd)(nil)
+
+func NewMapStringInterfaceSliceCmd(ctx context.Context, args ...interface{}) *MapStringInterfaceSliceCmd {
+	return &MapStringInterfaceSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *MapStringInterfaceSliceCmd) SetVal(val []map[string]interface{}) {
+	cmd.val = val
+}
+
+func (cmd *MapStringInterfaceSliceCmd) Val() []map[string]interface{} {
+	return cmd.val
+}
+
+func (cmd *MapStringInterfaceSliceCmd) Result() ([]map[string]interface{}, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *MapStringInterfaceSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *MapStringInterfaceSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([]map[string]interface{}, n)
+	for i := 0; i < n; i++ {
+		nn, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = make(map[string]interface{}, nn)
+		for f := 0; f < nn; f++ {
+			k, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			v, err := rd.ReadReply()
+			if err != nil {
+				if err != Nil {
+					return err
+				}
+			}
+			cmd.val[i][k] = v
+		}
+	}
+	return nil
+}
+
 //------------------------------------------------------------------------------
 
 type KeyValuesCmd struct {
