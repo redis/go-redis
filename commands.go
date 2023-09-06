@@ -500,8 +500,13 @@ type Cmdable interface {
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
 
 	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
+	ACLLog(ctx context.Context, count int64) *ACLLogCmd
+	ACLLogReset(ctx context.Context) *StatusCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
+
+	gearsCmdable
+	probabilisticCmdable
 }
 
 type StatefulCmdable interface {
@@ -3953,6 +3958,23 @@ func (c *ModuleLoadexConfig) toArgs() []interface{} {
 // ModuleLoadex Redis `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]` command.
 func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd {
 	cmd := NewStringCmd(ctx, conf.toArgs()...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLLog(ctx context.Context, count int64) *ACLLogCmd {
+	args := make([]interface{}, 0, 3)
+	args = append(args, "acl", "log")
+	if count > 0 {
+		args = append(args, count)
+	}
+	cmd := NewACLLogCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLLogReset(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "acl", "log", "reset")
 	_ = c(ctx, cmd)
 	return cmd
 }

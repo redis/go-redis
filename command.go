@@ -340,6 +340,8 @@ func (cmd *Cmd) Bool() (bool, error) {
 
 func toBool(val interface{}) (bool, error) {
 	switch val := val.(type) {
+	case bool:
+		return val, nil
 	case int64:
 		return val != 0, nil
 	case string:
@@ -2373,7 +2375,7 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 				}
 			case "entries-read":
 				group.EntriesRead, err = rd.ReadInt()
-				if err != nil {
+				if err != nil && err != Nil {
 					return nil, err
 				}
 			case "lag":
@@ -3704,6 +3706,71 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 			v, err := rd.ReadString()
 			if err != nil {
 				return err
+			}
+			cmd.val[i][k] = v
+		}
+	}
+	return nil
+}
+
+//-----------------------------------------------------------------------
+
+type MapStringInterfaceSliceCmd struct {
+	baseCmd
+
+	val []map[string]interface{}
+}
+
+var _ Cmder = (*MapStringInterfaceSliceCmd)(nil)
+
+func NewMapStringInterfaceSliceCmd(ctx context.Context, args ...interface{}) *MapStringInterfaceSliceCmd {
+	return &MapStringInterfaceSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *MapStringInterfaceSliceCmd) SetVal(val []map[string]interface{}) {
+	cmd.val = val
+}
+
+func (cmd *MapStringInterfaceSliceCmd) Val() []map[string]interface{} {
+	return cmd.val
+}
+
+func (cmd *MapStringInterfaceSliceCmd) Result() ([]map[string]interface{}, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *MapStringInterfaceSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *MapStringInterfaceSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([]map[string]interface{}, n)
+	for i := 0; i < n; i++ {
+		nn, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = make(map[string]interface{}, nn)
+		for f := 0; f < nn; f++ {
+			k, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			v, err := rd.ReadReply()
+			if err != nil {
+				if err != Nil {
+					return err
+				}
 			}
 			cmd.val[i][k] = v
 		}
@@ -5056,4 +5123,113 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 	}
 
 	return info, nil
+}
+
+// -------------------------------------------
+
+type ACLLogEntry struct {
+	Count                int64
+	Reason               string
+	Context              string
+	Object               string
+	Username             string
+	AgeSeconds           float64
+	ClientInfo           *ClientInfo
+	EntryID              int64
+	TimestampCreated     int64
+	TimestampLastUpdated int64
+}
+
+type ACLLogCmd struct {
+	baseCmd
+
+	val []*ACLLogEntry
+}
+
+var _ Cmder = (*ACLLogCmd)(nil)
+
+func NewACLLogCmd(ctx context.Context, args ...interface{}) *ACLLogCmd {
+	return &ACLLogCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *ACLLogCmd) SetVal(val []*ACLLogEntry) {
+	cmd.val = val
+}
+
+func (cmd *ACLLogCmd) Val() []*ACLLogEntry {
+	return cmd.val
+}
+
+func (cmd *ACLLogCmd) Result() ([]*ACLLogEntry, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *ACLLogCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([]*ACLLogEntry, n)
+	for i := 0; i < n; i++ {
+		cmd.val[i] = &ACLLogEntry{}
+		entry := cmd.val[i]
+		respLen, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		for j := 0; j < respLen; j++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+
+			switch key {
+			case "count":
+				entry.Count, err = rd.ReadInt()
+			case "reason":
+				entry.Reason, err = rd.ReadString()
+			case "context":
+				entry.Context, err = rd.ReadString()
+			case "object":
+				entry.Object, err = rd.ReadString()
+			case "username":
+				entry.Username, err = rd.ReadString()
+			case "age-seconds":
+				entry.AgeSeconds, err = rd.ReadFloat()
+			case "client-info":
+				txt, err := rd.ReadString()
+				if err != nil {
+					return err
+				}
+				entry.ClientInfo, err = parseClientInfo(strings.TrimSpace(txt))
+				if err != nil {
+					return err
+				}
+			case "entry-id":
+				entry.EntryID, err = rd.ReadInt()
+			case "timestamp-created":
+				entry.TimestampCreated, err = rd.ReadInt()
+			case "timestamp-last-updated":
+				entry.TimestampLastUpdated, err = rd.ReadInt()
+			default:
+				return fmt.Errorf("redis: unexpected key %q in ACL LOG reply", key)
+			}
+
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }

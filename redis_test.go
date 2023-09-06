@@ -185,6 +185,33 @@ var _ = Describe("Client", func() {
 		Expect(val).Should(ContainSubstring("name=hi"))
 	})
 
+	It("should client PROTO 2", func() {
+		opt := redisOptions()
+		opt.Protocol = 2
+		db := redis.NewClient(opt)
+
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		val, err := db.Do(ctx, "HELLO").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).Should(ContainElements("proto", int64(2)))
+	})
+
+	It("should client PROTO 3", func() {
+		opt := redisOptions()
+		db := redis.NewClient(opt)
+
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		val, err := db.Do(ctx, "HELLO").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
+	})
+
 	It("processes custom commands", func() {
 		cmd := redis.NewCmd(ctx, "PING")
 		_ = client.Process(ctx, cmd)
