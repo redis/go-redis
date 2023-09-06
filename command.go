@@ -1398,12 +1398,12 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 			return err
 		}
 		cmd.val[k] = make([]interface{}, nn)
-		for i := 0; i < nn; i++ {
+		for j := 0; j < nn; j++ {
 			value, err := rd.ReadReply()
 			if err != nil {
 				return err
 			}
-			cmd.val[k][i] = value
+			cmd.val[k][j] = value
 		}
 	}
 
