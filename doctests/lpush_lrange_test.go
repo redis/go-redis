@@ -5,6 +5,7 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
+
 	"github.com/redis/go-redis/v9"
 )
 
