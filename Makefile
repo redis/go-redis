@@ -29,7 +29,7 @@ testdata/redis/src/redis-server: testdata/redis
 	cd $< && make all
 
 fmt:
-	gofmt -w -s ./
+	gofumpt -w ./
 	goimports -w  -local github.com/redis/go-redis ./
 
 go_mod_tidy:
