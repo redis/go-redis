@@ -1458,7 +1458,7 @@ var _ = Describe("ClusterClient timeout", func() {
 })
 
 var _ = Describe("ClusterClient ParseURL", func() {
-	var cases = []struct {
+	cases := []struct {
 		test string
 		url  string
 		o    *redis.ClusterOptions // expected value

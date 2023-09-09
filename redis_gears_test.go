@@ -48,7 +48,6 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 	})
 
 	It("should TFunctionLoad, TFunctionLoadArgs and TFunctionDelete ", Label("gears", "tfunctionload"), func() {
-
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("libtflo1")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
@@ -59,7 +58,6 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 		resultAdd, err = client.TFunctionDelete(ctx, "libtflo1").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
-
 	})
 	It("should TFunctionList", Label("gears", "tfunctionlist"), func() {
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("libtfli1")).Result()
@@ -136,5 +134,4 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
 	})
-
 })

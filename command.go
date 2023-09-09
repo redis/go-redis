@@ -4265,7 +4265,6 @@ func (cmd *FunctionStatsCmd) readDuration(rd *proto.Reader) (time.Duration, erro
 }
 
 func (cmd *FunctionStatsCmd) readCommand(rd *proto.Reader) ([]string, error) {
-
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return nil, err
@@ -4282,6 +4281,7 @@ func (cmd *FunctionStatsCmd) readCommand(rd *proto.Reader) ([]string, error) {
 
 	return command, nil
 }
+
 func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScript, bool, error) {
 	n, err := rd.ReadArrayLen()
 	if err != nil {

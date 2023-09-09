@@ -160,7 +160,6 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(resultAdd2[0]).To(BeFalse())
 			Expect(resultAdd2[1]).To(BeFalse())
 			Expect(resultAdd2[2]).To(BeTrue())
-
 		})
 
 		It("should BFMExists", Label("bloom", "bfmexists"), func() {
@@ -425,7 +424,6 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(result[2]).To(BeTrue())
 			Expect(result[3]).To(BeFalse())
 		})
-
 	})
 
 	Describe("CMS", Label("cms"), func() {
@@ -439,7 +437,6 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(result[0]).To(BeEquivalentTo(int64(1)))
 			Expect(result[1]).To(BeEquivalentTo(int64(2)))
 			Expect(result[2]).To(BeEquivalentTo(int64(3)))
-
 		})
 
 		It("should CMSInitByDim and CMSInfo", Label("cms", "cmsinitbydim", "cmsinfo"), func() {
@@ -513,9 +510,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(result[0]).To(BeEquivalentTo(int64(1)))
 			Expect(result[1]).To(BeEquivalentTo(int64(6)))
 			Expect(result[2]).To(BeEquivalentTo(int64(6)))
-
 		})
-
 	})
 
 	Describe("TopK", Label("topk"), func() {
@@ -581,7 +576,6 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(resultInfo.Depth).To(BeEquivalentTo(int64(8)))
 			Expect(resultInfo.Decay).To(BeEquivalentTo(0.5))
 		})
-
 	})
 
 	Describe("t-digest", Label("tdigest"), func() {
@@ -692,7 +686,6 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			reset, err := client.TDigestReset(ctx, "tdigest1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(reset).To(BeEquivalentTo("OK"))
-
 		})
 
 		It("should TDigestCreateWithCompression", Label("tdigest", "tcreatewithcompression"), func() {
