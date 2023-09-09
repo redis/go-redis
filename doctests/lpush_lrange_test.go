@@ -9,7 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func ExampleLPushLRange() {
+func ExampleClient_LPush_and_lrange() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{
