@@ -7,7 +7,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-type probabilisticCmdable interface {
+type ProbabilisticCmdable interface {
 	BFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
 	BFCard(ctx context.Context, key string) *IntCmd
 	BFExists(ctx context.Context, key string, element interface{}) *BoolCmd
