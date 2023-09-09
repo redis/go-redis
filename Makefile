@@ -19,7 +19,7 @@ testdeps: testdata/redis/src/redis-server
 bench: testdeps
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem
 
-.PHONY: all test testdeps bench
+.PHONY: all test testdeps bench fmt
 
 testdata/redis:
 	mkdir -p $@
