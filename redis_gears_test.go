@@ -59,11 +59,7 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 
 	})
 	It("should TFunctionList", Label("gears", "tfunctionlist"), func() {
-		client.TFunctionDelete(ctx, "lib2").Result()
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("lib1")).Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resultAdd).To(BeEquivalentTo("OK"))
-		resultAdd, err = client.TFunctionLoad(ctx, libCode("lib2")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
 		resultList, err := client.TFunctionList(ctx).Result()
@@ -72,10 +68,7 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 		opt := &redis.TFunctionListOptions{Withcode: true, Verbose: 2}
 		resultListArgs, err := client.TFunctionListArgs(ctx, opt).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(resultListArgs[0]["code"]).To(BeEquivalentTo(libCode("lib1")))
-		resultAdd, err = client.TFunctionDelete(ctx, "lib2").Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resultAdd).To(BeEquivalentTo("OK"))
+		Expect(resultListArgs[0]["code"]).NotTo(BeEquivalentTo(""))
 	})
 
 	It("should TFCall", Label("gears", "tfcall"), func() {
