@@ -7,7 +7,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-type timeseriesCmdable interface {
+type TimeseriesCmdable interface {
 	TSAdd(ctx context.Context, key string, timestamp interface{}, value float64) *IntCmd
 	TSAddWithArgs(ctx context.Context, key string, timestamp interface{}, value float64, options *TSOptions) *IntCmd
 	TSCreate(ctx context.Context, key string) *StatusCmd
