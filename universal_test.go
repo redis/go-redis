@@ -17,7 +17,7 @@ var _ = Describe("UniversalClient", func() {
 	})
 
 	It("should connect to failover servers", func() {
-		Skip("Flakky Test")
+		Skip("Flaky Test")
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			MasterName: sentinelName,
 			Addrs:      sentinelAddrs,
