@@ -49,7 +49,6 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 	})
 
 	It("should TFunctionLoad, TFunctionLoadArgs and TFunctionDelete ", Label("gears", "tfunctionload"), func() {
-
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("lib1")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
