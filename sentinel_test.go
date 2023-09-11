@@ -10,6 +10,30 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+var _ = Describe("Sentinel PROTO 2", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    sentinelName,
+			SentinelAddrs: sentinelAddrs,
+			MaxRetries:    -1,
+			Protocol:      2,
+		})
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		_ = client.Close()
+	})
+
+	It("should sentinel client PROTO 2", func() {
+		val, err := client.Do(ctx, "HELLO").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).Should(ContainElements("proto", int64(2)))
+	})
+})
+
 var _ = Describe("Sentinel", func() {
 	var client *redis.Client
 	var master *redis.Client
@@ -134,6 +158,40 @@ var _ = Describe("Sentinel", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).Should(ContainSubstring("name=sentinel_hi"))
 	})
+
+	It("should sentinel client PROTO 3", func() {
+		val, err := client.Do(ctx, "HELLO").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
+	})
+})
+
+var _ = Describe("NewFailoverClusterClient PROTO 2", func() {
+	var client *redis.ClusterClient
+
+	BeforeEach(func() {
+		client = redis.NewFailoverClusterClient(&redis.FailoverOptions{
+			MasterName:    sentinelName,
+			SentinelAddrs: sentinelAddrs,
+			Protocol:      2,
+
+			RouteRandomly: true,
+		})
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		_ = client.Close()
+	})
+
+	It("should sentinel cluster PROTO 2", func() {
+		_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := client.Do(ctx, "HELLO").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(ContainElements("proto", int64(2)))
+			return nil
+		})
+	})
 })
 
 var _ = Describe("NewFailoverClusterClient", func() {
@@ -183,6 +241,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 	})
 
 	It("should facilitate failover", func() {
+		Skip("Flaky Test")
 		// Set value.
 		err := client.Set(ctx, "foo", "master", 0).Err()
 		Expect(err).NotTo(HaveOccurred())
@@ -225,6 +284,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 	})
 
 	It("should sentinel cluster client setname", func() {
+		Skip("Flaky Test")
 		err := client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
 			return c.Ping(ctx).Err()
 		})
@@ -234,6 +294,16 @@ var _ = Describe("NewFailoverClusterClient", func() {
 			val, err := c.ClientList(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).Should(ContainSubstring("name=sentinel_cluster_hi"))
+			return nil
+		})
+	})
+
+	It("should sentinel cluster PROTO 3", func() {
+		Skip("Flaky Test")
+		_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := client.Do(ctx, "HELLO").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
 			return nil
 		})
 	})

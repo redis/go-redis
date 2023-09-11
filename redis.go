@@ -279,10 +279,15 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	conn := newConn(c.opt, connPool)
 
 	var auth bool
+	protocol := c.opt.Protocol
+	// By default, use RESP3 in current version.
+	if protocol < 2 {
+		protocol = 3
+	}
 
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
-	if err := conn.Hello(ctx, 3, username, password, "").Err(); err == nil {
+	if err := conn.Hello(ctx, protocol, username, password, "").Err(); err == nil {
 		auth = true
 	} else if !isRedisError(err) {
 		// When the server responds with the RESP protocol and the result is not a normal
