@@ -40,14 +40,12 @@ var (
 	redisAddr                                      string
 	ringShard1Port, ringShard2Port, ringShard3Port int
 	ringShard1, ringShard2                         *redis.Client
-	testFilter                                     string
+	testFilter                                     = "json"
 )
 
 var _ = BeforeSuite(func() {
 
 	var err error
-
-	testFilter = "json"
 
 	port := os.Getenv("REDIS_PORT")
 	if port != "" {
@@ -74,17 +72,17 @@ var _ = BeforeSuite(func() {
 		}
 	}
 
-	redisSecondaryPort = redisPort + secondaryPortOffset
-	ringShard1Port = redisPort + ringOffset
-	ringShard2Port = ringShard1Port + 1
-	ringShard3Port = ringShard1Port + 2
+	/*
+	   redisSecondaryPort = redisPort + secondaryPortOffset
+	   ringShard1Port = redisPort + ringOffset
+	   ringShard2Port = ringShard1Port + 1
+	   ringShard3Port = ringShard1Port + 2
 
-	ringShard1, err = connectTo(ringShard1Port)
-	Expect(err).NotTo(HaveOccurred())
-
-	ringShard2, err = connectTo(ringShard2Port)
-	Expect(err).NotTo(HaveOccurred())
-
+	   ringShard1, err = connectTo(ringShard1Port)
+	   Expect(err).NotTo(HaveOccurred())
+	   ringShard2, err = connectTo(ringShard2Port)
+	   Expect(err).NotTo(HaveOccurred())
+	*/
 })
 
 func TestGinkgoSuite(t *testing.T) {

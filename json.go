@@ -23,7 +23,6 @@ type JSONCmdAble interface {
 	JSONDel(ctx context.Context, key, path string) *IntCmd
 	JSONForget(ctx context.Context, key, path string) *IntCmd
 	JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd
-	JSONGetOptions(ctx context.Context, key string, options *JSONGetOptions, paths ...string) *JSONCmd
 	JSONMGet(ctx context.Context, path string, keys ...string) *JSONSliceCmd
 	JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd
 	JSONObjKeys(ctx context.Context, key, path string) *SliceCmd
@@ -33,36 +32,13 @@ type JSONCmdAble interface {
 	JSONStrAppend(ctx context.Context, key, path, value string) *IntPointerSliceCmd
 	JSONStrLen(ctx context.Context, key, path string) *IntPointerSliceCmd
 	JSONToggle(ctx context.Context, key, path string) *IntPointerSliceCmd
-	JSONType(ctx context.Context, key, path string) *StringSliceCmd
-}
-
-// JSONFormat defines the format types that can be used when calling
-// JSON.GET
-type JSONFormat string
-
-const (
-	JSONFormatString  JSONFormat = "STRING"  // Returns a single string (e.g RESP2 style)
-	JSONFormatStrings JSONFormat = "STRINGS" // Returns an array of arrays of strings (path arg, results)
-	JSONFormatExpand  JSONFormat = "EXPAND"  // Expands the result out to RESP3 data types
-	JSONFormatExpand1 JSONFormat = "EXPAND1" // Expands just the first level out
-)
-
-// JSONGetOptions allows modification of the output of JSON.GET. The pretty print fields
-// have no effect if FORMAT is set to "EXPAND". If no options are provided or the fields are
-// not set, Format is treated as "STRING" and the others are empty strings (redis defaults)
-type JSONGetOptions struct {
-	Format  JSONFormat
-	Indent  string
-	Newline string
-	Space   string
+	JSONType(ctx context.Context, key, path string) *JSONSliceCmd
 }
 
 type JSONCmd struct {
 	baseCmd
 	val      string
-	expanded interface{}
-	Paths    []string
-	Options  *JSONGetOptions
+	expanded []interface{}
 }
 
 var _ Cmder = (*JSONCmd)(nil)
@@ -86,9 +62,7 @@ func (cmd *JSONCmd) SetVal(val string) {
 }
 
 func (cmd *JSONCmd) Val() string {
-	if cmd.val == "" && cmd.expanded != nil {
-		// TODO - think about this - it causes an inconsistency with
-		// Result().
+	if len(cmd.val) == 0 && cmd.expanded != nil {
 		val, err := json.Marshal(cmd.expanded)
 		if err != nil {
 			cmd.SetErr(err)
@@ -108,7 +82,7 @@ func (cmd *JSONCmd) Result() (string, error) {
 
 func (cmd JSONCmd) Expanded() (interface{}, error) {
 
-	if cmd.val != "" && cmd.expanded == nil {
+	if len(cmd.val) != 0 && cmd.expanded == nil {
 		err := json.Unmarshal([]byte(cmd.val), &cmd.expanded)
 		if err != nil {
 			return "", err
@@ -169,10 +143,12 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 		cmd.expanded = expanded
 
 	} else {
-		if cmd.val, err = rd.ReadString(); err != nil && err != Nil {
+		if str, err := rd.ReadString(); err != nil && err != Nil {
 			return err
-		} else if cmd.val == "" || err == Nil {
+		} else if str == "" || err == Nil {
 			cmd.val = ""
+		} else {
+			cmd.val = str
 		}
 	}
 
@@ -183,7 +159,7 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 
 type JSONSliceCmd struct {
 	baseCmd
-	val [][]interface{}
+	val []interface{}
 }
 
 func NewJSONSliceCmd(ctx context.Context, args ...interface{}) *JSONSliceCmd {
@@ -199,41 +175,54 @@ func (cmd *JSONSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *JSONSliceCmd) SetVal(val [][]interface{}) {
+func (cmd *JSONSliceCmd) SetVal(val []interface{}) {
 	cmd.val = val
 }
 
-func (cmd *JSONSliceCmd) Val() [][]interface{} {
+func (cmd *JSONSliceCmd) Val() []interface{} {
 	return cmd.val
 }
 
-func (cmd *JSONSliceCmd) Result() ([][]interface{}, error) {
+func (cmd *JSONSliceCmd) Result() ([]interface{}, error) {
 	return cmd.Val(), cmd.Err()
 }
 
 func (cmd *JSONSliceCmd) readReply(rd *proto.Reader) error {
 
-	n, err := rd.ReadArrayLen()
-	if err != nil {
-		return err
+	if cmd.baseCmd.Err() == Nil {
+		cmd.val = nil
+		return Nil
 	}
-	cmd.val = make([][]interface{}, n)
-	for i := 0; i < len(cmd.val); i++ {
-		switch s, err := rd.ReadString(); {
-		case err == Nil:
-			cmd.val[i] = nil
-		case err != nil:
+
+	if readType, err := rd.PeekReplyType(); err != nil {
+		return err
+	} else if readType == proto.RespArray {
+		response, err := rd.ReadReply()
+		if err != nil {
+			return nil
+		} else {
+			cmd.val = response.([]interface{})
+		}
+
+	} else {
+		n, err := rd.ReadArrayLen()
+		if err != nil {
 			return err
-		default:
-			objects := []interface{}{}
-			if err := json.Unmarshal([]byte(s), &objects); err != nil {
+		}
+		cmd.val = make([]interface{}, n)
+		for i := 0; i < len(cmd.val); i++ {
+			switch s, err := rd.ReadString(); {
+			case err == Nil:
+				cmd.val[i] = ""
+			case err != nil:
 				return err
-			} else {
-				cmd.val[i] = objects
+			default:
+				cmd.val[i] = s
 			}
 		}
 	}
 	return nil
+
 }
 
 /*******************************************************************************
@@ -379,26 +368,17 @@ func (c cmdable) JSONForget(ctx context.Context, key, path string) *IntCmd {
 	return cmd
 }
 
-// JSONGet returns the value at path in JSON serialized form
+// JSONGet returns the value at path in JSON serialized form. JSON.GET returns an
+// array of strings. This function parses out the wrapping array but leaves the
+// internal strings unprocessed by default (see Val())
 func (c cmdable) JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd {
-	return c.JSONGetOptions(ctx, key, nil, paths...)
-}
-
-// JSONGetOptions allows basic options to be overridden for formatting and return data.
-func (c cmdable) JSONGetOptions(ctx context.Context, key string, options *JSONGetOptions, paths ...string) *JSONCmd {
 	args := make([]interface{}, len(paths)+2)
 	args[0] = "json.get"
 	args[1] = key
 	for n, path := range paths {
 		args[n+2] = path
 	}
-	if options != nil {
-		args = append(args, options.serialize()...)
-	}
 	cmd := NewJSONCmd(ctx, args...)
-	cmd.Paths = paths
-	cmd.Options = options
-
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -510,29 +490,9 @@ func (c cmdable) JSONToggle(ctx context.Context, key, path string) *IntPointerSl
 }
 
 // JSONType reports the type of JSON value at path
-func (c cmdable) JSONType(ctx context.Context, key, path string) *StringSliceCmd {
+func (c cmdable) JSONType(ctx context.Context, key, path string) *JSONSliceCmd {
 	args := []interface{}{"json.type", key, path}
-	cmd := NewStringSliceCmd(ctx, args...)
+	cmd := NewJSONSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
-}
-
-func (o *JSONGetOptions) serialize() []interface{} {
-
-	args := []interface{}{}
-
-	if o.Format != "" {
-		args = append(args, "FORMAT", o.Format)
-	}
-	if o.Indent != "" {
-		args = append(args, "INDENT", o.Indent)
-	}
-	if o.Newline != "" {
-		args = append(args, "NEWLINE", o.Newline)
-	}
-	if o.Space != "" {
-		args = append(args, "SPACE", o.Space)
-	}
-
-	return args
 }
