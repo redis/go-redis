@@ -135,7 +135,7 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 
 		var expanded = make([]interface{}, size)
 
-		for i := 0; i < len(cmd.val); i++ {
+		for i := 0; i < size; i++ {
 			if expanded[i], err = rd.ReadReply(); err != nil {
 				return err
 			}

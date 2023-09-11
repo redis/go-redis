@@ -128,7 +128,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 			cmd2 := client.JSONGet(ctx, "get3", "$.*")
 			Expect(cmd2.Err()).NotTo(HaveOccurred())
-			Expect(len(cmd2.Val())).To(Equal(3))
+			Expect(cmd2.Val()).To(Equal(`[1,2,{"hello":"world"}]`))
 		})
 
 		/*		It("should Scan", Label("json.get"), func() {
@@ -158,16 +158,8 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			cmd3 := client.JSONMGet(ctx, "$..a", "mget2a", "mget2b")
 			Expect(cmd3.Err()).NotTo(HaveOccurred())
 			Expect(cmd3.Val()).To(HaveLen(2))
-			Expect(cmd3.Val()[0]).To(BeAssignableToTypeOf([]interface{}{1}))
-			Expect(cmd3.Val()[0]).To(Equal([]interface{}{
-				[]interface{}{"aa", "ab", "ac", "ad"},
-				[]interface{}{"ba", "bb", "bc", "bd"},
-			}))
-			Expect(cmd3.Val()[1]).To(BeAssignableToTypeOf([]interface{}{1}))
-			Expect(cmd3.Val()[1]).To(Equal([]interface{}{
-				[]interface{}{float64(100), float64(200), float64(300), float64(200)},
-				[]interface{}{float64(100), float64(200), float64(300), float64(200)},
-			}))
+			Expect(cmd3.Val()[0]).To(Equal(`[["aa","ab","ac","ad"],["ba","bb","bc","bd"]]`))
+			Expect(cmd3.Val()[1]).To(Equal(`[[100,200,300,200],[100,200,300,200]]`))
 		})
 
 	})
@@ -185,9 +177,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 			cmd3 := client.JSONGet(ctx, "clear1", "$")
 			Expect(cmd3.Err()).NotTo(HaveOccurred())
-			Expect(cmd3.Val()).To(HaveLen(1))
-			Expect(cmd3.Val()[0]).To(BeAssignableToTypeOf([]interface{}{1}))
-			Expect(cmd3.Val()[0]).To(Equal([]interface{}{}))
+			Expect(cmd3.Val()).To(Equal(`[[]]`))
 		})
 
 		It("should JSONDel", Label("json.del"), func() {
@@ -215,13 +205,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 			cmd3 := client.JSONGet(ctx, "forget3", "$")
 			Expect(cmd3.Err()).NotTo(HaveOccurred())
-			Expect(cmd3.Val()).To(HaveLen(1))
-			Expect(cmd3.Val()[0]).To(BeAssignableToTypeOf(map[string]interface{}{"foo": "bar"}))
-			Expect(cmd3.Val()[0]).To(Equal(map[string]interface{}{
-				"b": map[string]interface{}{
-					"b": "annie",
-				},
-			}))
+			Expect(cmd3.Val()).To(Equal(`[{"b":{"b":"annie"}}]`))
 
 		})
 
@@ -232,7 +216,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 			cmd2 := client.JSONNumIncrBy(ctx, "incr3", "$..a[1]", float64(1))
 			Expect(cmd2.Err()).NotTo(HaveOccurred())
-			Expect(cmd2.Val()).To(Equal([]interface{}{float64(3), float64(0)}))
+			Expect(cmd2.Val()).To(Equal(`[3,0]`))
 		})
 
 		It("should JSONObjKeys", Label("json.objkeys"), func() {
@@ -295,7 +279,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd2.Err()).NotTo(HaveOccurred())
 			Expect(cmd2.Val()).To(HaveLen(1))
 			// RESP2 v RESP3
-			Expect(cmd2.Val()[0]).To(Or(Equal("boolean"), Equal([]interface{}{"boolean"})))
+			Expect(cmd2.Val()[0]).To(Or(Equal([]interface{}{"boolean"}), Equal("boolean")))
 		})
 	})
 })
