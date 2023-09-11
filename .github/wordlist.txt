@@ -54,4 +54,5 @@ url
 variadic
 RedisStack
 RedisGears
+RedisTimeseries
 RediSearch
