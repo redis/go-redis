@@ -69,7 +69,10 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 			cmd3 := client.JSONGet(ctx, "insert2")
 			Expect(cmd3.Err()).NotTo(HaveOccurred())
-			Expect(cmd3.Val()).To(Equal(`[[100,200,300,1,2,200]]`))
+			// RESP2 vs RESP3
+			Expect(cmd3.Val()).To(Or(
+				Equal(`[100,200,300,1,2,200]`),
+				Equal(`[[100,200,300,1,2,200]]`)))
 		})
 
 		It("should JSONArrLen", Label("json.arrlen"), func() {

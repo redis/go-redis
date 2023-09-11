@@ -3,7 +3,6 @@ package redis
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
@@ -90,30 +89,6 @@ func (cmd JSONCmd) Expanded() (interface{}, error) {
 	}
 
 	return cmd.expanded, nil
-}
-
-func (cmd *JSONCmd) Scan(index int, dst interface{}) error {
-	if cmd.Err() != nil {
-		return cmd.Err()
-	}
-
-	if cmd.val != "" && cmd.expanded == nil {
-		err := json.Unmarshal([]byte(cmd.val), &cmd.expanded)
-		if err != nil {
-			return err
-		}
-	}
-
-	if index < 0 || index >= len(cmd.val) {
-		return fmt.Errorf("JSONCmd.Scan - %d is out of range (0..%d)", index, len(cmd.val))
-	}
-
-	results := []json.RawMessage{}
-	if err := json.Unmarshal([]byte(cmd.val), &results); err != nil {
-		return err
-	} else {
-		return json.Unmarshal(results[index], dst)
-	}
 }
 
 func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
