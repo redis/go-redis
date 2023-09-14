@@ -136,6 +136,9 @@ type Options struct {
 
 	// Enables read only queries on slave/follower nodes.
 	readOnly bool
+
+	// Disable set-lib during connect with name and version. Default is false.
+	DisableClientSetInfo bool
 }
 
 func (opt *Options) init() {

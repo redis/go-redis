@@ -299,7 +299,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// difficult to rely on error strings to determine all results.
 		return err
 	}
-
+	if !c.opt.DisableClientSetInfo {
+		// conn.ClientSetInfo(ctx,)
+	}
 	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if !auth && password != "" {
 			if username != "" {
