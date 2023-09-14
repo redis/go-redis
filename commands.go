@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
+	"runtime"
 	"strings"
 	"time"
 
@@ -584,7 +586,8 @@ func (c statefulCmdable) ClientSetInfo(ctx context.Context, info LibraryInfo) *S
 
 	var cmd *StatusCmd
 	if info.LibName != nil {
-		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-NAME", *info.LibName)
+		libName := fmt.Sprintf("go-redis(%s,%s)", *info.LibName, runtime.Version())
+		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-NAME", libName)
 	} else {
 		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-VER", *info.LibVer)
 	}
