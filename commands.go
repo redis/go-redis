@@ -507,6 +507,7 @@ type Cmdable interface {
 
 	gearsCmdable
 	probabilisticCmdable
+	TimeseriesCmdable
 }
 
 type StatefulCmdable interface {
