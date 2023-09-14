@@ -183,6 +183,7 @@ type Cmdable interface {
 	ExpireLT(ctx context.Context, key string, expiration time.Duration) *BoolCmd
 	Keys(ctx context.Context, pattern string) *StringSliceCmd
 	Migrate(ctx context.Context, host, port, key string, db int, timeout time.Duration) *StatusCmd
+	MigrateWithOptions(ctx context.Context, host, port string, keys []string, db int, timeout time.Duration, copy, replace bool) *StatusCmd
 	Move(ctx context.Context, key string, db int) *BoolCmd
 	ObjectRefCount(ctx context.Context, key string) *IntCmd
 	ObjectEncoding(ctx context.Context, key string) *StringCmd
@@ -793,15 +794,47 @@ func (c cmdable) Keys(ctx context.Context, pattern string) *StringSliceCmd {
 }
 
 func (c cmdable) Migrate(ctx context.Context, host, port, key string, db int, timeout time.Duration) *StatusCmd {
-	cmd := NewStatusCmd(
-		ctx,
+	return c.migrate(ctx, host, port, []string{key}, db, timeout, false, false)
+}
+
+func (c cmdable) MigrateWithOptions(ctx context.Context, host, port string, keys []string, db int, timeout time.Duration, copy, replace bool) *StatusCmd {
+	return c.migrate(ctx, host, port, keys, db, timeout, copy, replace)
+}
+
+func (c cmdable) migrate(ctx context.Context, host, port string, keys []string, db int, timeout time.Duration, copy, replace bool) *StatusCmd {
+	args := []interface{}{
 		"migrate",
 		host,
 		port,
-		key,
-		db,
-		formatMs(ctx, timeout),
-	)
+	}
+	copyReplaceArgs := []interface{}{}
+	if copy {
+		copyReplaceArgs = append(copyReplaceArgs, "copy")
+	}
+	if replace {
+		copyReplaceArgs = append(copyReplaceArgs, "replace")
+	}
+
+	if len(keys) == 1 {
+		args = append(args, []interface{}{
+			keys[0],
+			db,
+			formatMs(ctx, timeout),
+		}...)
+		args = append(args, copyReplaceArgs...)
+	} else {
+		args = append(args, []interface{}{
+			"",
+			db,
+			formatMs(ctx, timeout),
+		}...)
+		args = append(args, copyReplaceArgs...)
+		args = append(args, "keys")
+		for _, key := range keys {
+			args = append(args, key)
+		}
+	}
+	cmd := NewStatusCmd(ctx, args...)
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd

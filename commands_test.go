@@ -606,6 +606,18 @@ var _ = Describe("Commands", func() {
 			Expect(migrate.Err()).NotTo(HaveOccurred())
 			Expect(migrate.Val()).To(Equal("NOKEY"))
 
+			migrate = client.MigrateWithOptions(ctx, "localhost", redisSecondaryPort, []string{"key"}, 0, 0, false, true)
+			Expect(migrate.Err()).NotTo(HaveOccurred())
+			Expect(migrate.Val()).To(Equal("NOKEY"))
+
+			migrate = client.MigrateWithOptions(ctx, "localhost", redisSecondaryPort, []string{"key"}, 0, 0, true, true)
+			Expect(migrate.Err()).NotTo(HaveOccurred())
+			Expect(migrate.Val()).To(Equal("NOKEY"))
+
+			migrate = client.MigrateWithOptions(ctx, "localhost", redisSecondaryPort, []string{"key1", "key2"}, 0, 0, false, false)
+			Expect(migrate.Err()).NotTo(HaveOccurred())
+			Expect(migrate.Val()).To(Equal("NOKEY"))
+
 			set := client.Set(ctx, "key", "hello", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
