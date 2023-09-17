@@ -23,7 +23,7 @@ var _ = Describe("newClusterState", func() {
 		opt := &ClusterOptions{}
 		opt.init()
 		nodes := newClusterNodes(opt)
-		state, err := newClusterState(nodes, slots, "10.10.10.10:1234")
+		state, err := newClusterState(nodes, slots, "10.10.10.10:1234", nil)
 		Expect(err).NotTo(HaveOccurred())
 		return state
 	}

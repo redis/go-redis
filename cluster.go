@@ -56,6 +56,10 @@ type ClusterOptions struct {
 	// and Cluster.ReloadState to manually trigger state reloading.
 	ClusterSlots func(context.Context) ([]ClusterSlot, error)
 
+	// Optional map to map internal ip's used for nodes to communicate to map to external
+	// Ip's used by clients.
+	AddressMapping map[string]string
+
 	// Following options are copied from Options struct.
 
 	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -601,7 +605,7 @@ type clusterState struct {
 }
 
 func newClusterState(
-	nodes *clusterNodes, slots []ClusterSlot, origin string,
+	nodes *clusterNodes, slots []ClusterSlot, origin string, addressMapping map[string]string,
 ) (*clusterState, error) {
 	c := clusterState{
 		nodes: nodes,
@@ -619,6 +623,10 @@ func newClusterState(
 		var nodes []*clusterNode
 		for i, slotNode := range slot.Nodes {
 			addr := slotNode.Addr
+			if mappedAddress, ok := addressMapping[addr]; ok {
+				addr = mappedAddress
+			}
+
 			if !isLoopbackOrigin {
 				addr = replaceLoopbackHost(addr, originHost)
 			}
@@ -1146,7 +1154,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 		if err != nil {
 			return nil, err
 		}
-		return newClusterState(c.nodes, slots, "")
+		return newClusterState(c.nodes, slots, "", c.opt.AddressMapping)
 	}
 
 	addrs, err := c.nodes.Addrs()
@@ -1175,7 +1183,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 			continue
 		}
 
-		return newClusterState(c.nodes, slots, node.Client.opt.Addr)
+		return newClusterState(c.nodes, slots, node.Client.opt.Addr, c.opt.AddressMapping)
 	}
 
 	/*
