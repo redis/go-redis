@@ -243,6 +243,57 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("theclientname"))
 		})
 
+		It("should ClientSetInfo", func() {
+
+			pipe := client.Pipeline()
+
+			// Test setting the libName
+			libName := "go-redis"
+			libInfo := redis.LibraryInfo{LibName: &libName}
+			setInfo := pipe.ClientSetInfo(ctx, libInfo)
+			_, err := pipe.Exec(ctx)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(setInfo.Err()).NotTo(HaveOccurred())
+			Expect(setInfo.Val()).To(Equal("OK"))
+
+			// Test setting the libVer
+			libVer := "vX.x"
+			libInfo = redis.LibraryInfo{LibVer: &libVer}
+			setInfo = pipe.ClientSetInfo(ctx, libInfo)
+			_, err = pipe.Exec(ctx)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(setInfo.Err()).NotTo(HaveOccurred())
+			Expect(setInfo.Val()).To(Equal("OK"))
+
+			// Test setting both fields, expect a panic
+			libInfo = redis.LibraryInfo{LibName: &libName, LibVer: &libVer}
+
+			Expect(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						err := r.(error)
+						Expect(err).To(MatchError("both LibName and LibVer cannot be set at the same time"))
+					}
+				}()
+				pipe.ClientSetInfo(ctx, libInfo)
+			}).To(Panic())
+
+			// Test setting neither field, expect a panic
+			libInfo = redis.LibraryInfo{}
+
+			Expect(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						err := r.(error)
+						Expect(err).To(MatchError("at least one of LibName and LibVer should be set"))
+					}
+				}()
+				pipe.ClientSetInfo(ctx, libInfo)
+			}).To(Panic())
+		})
+
 		It("should ConfigGet", func() {
 			val, err := client.ConfigGet(ctx, "*").Result()
 			Expect(err).NotTo(HaveOccurred())

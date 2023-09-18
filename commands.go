@@ -507,6 +507,7 @@ type Cmdable interface {
 
 	gearsCmdable
 	probabilisticCmdable
+	TimeseriesCmdable
 }
 
 type StatefulCmdable interface {
@@ -516,6 +517,7 @@ type StatefulCmdable interface {
 	Select(ctx context.Context, index int) *StatusCmd
 	SwapDB(ctx context.Context, index1, index2 int) *StatusCmd
 	ClientSetName(ctx context.Context, name string) *BoolCmd
+	ClientSetInfo(ctx context.Context, info LibraryInfo) *StatusCmd
 	Hello(ctx context.Context, ver int, username, password, clientName string) *MapStringInterfaceCmd
 }
 
@@ -581,6 +583,35 @@ func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCm
 	cmd := NewBoolCmd(ctx, "client", "setname", name)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+// ClientSetInfo sends a CLIENT SETINFO command with the provided info.
+func (c statefulCmdable) ClientSetInfo(ctx context.Context, info LibraryInfo) *StatusCmd {
+	err := info.Validate()
+	if err != nil {
+		panic(err.Error())
+	}
+
+	var cmd *StatusCmd
+	if info.LibName != nil {
+		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-NAME", *info.LibName)
+	} else {
+		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-VER", *info.LibVer)
+	}
+
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Validate checks if only one field in the struct is non-nil.
+func (info LibraryInfo) Validate() error {
+	if info.LibName != nil && info.LibVer != nil {
+		return errors.New("both LibName and LibVer cannot be set at the same time")
+	}
+	if info.LibName == nil && info.LibVer == nil {
+		return errors.New("at least one of LibName and LibVer should be set")
+	}
+	return nil
 }
 
 // Hello Set the resp protocol used.
