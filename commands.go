@@ -217,6 +217,7 @@ type Cmdable interface {
 	SortedSetCmdable
 	ClusterCmdable
 	ScriptingFunctionsCmdable
+	StringCmdable
 	PubSubCmdable
 	gearsCmdable
 	probabilisticCmdable
