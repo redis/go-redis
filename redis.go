@@ -299,7 +299,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// difficult to rely on error strings to determine all results.
 		return err
 	}
-	if !c.opt.DisableClientSetInfo {
+	if !c.opt.DisableIndentity {
 		libName := ""
 		libVer := Version()
 		libInfo := LibraryInfo{LibName: &libName}

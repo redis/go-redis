@@ -138,7 +138,7 @@ type Options struct {
 	readOnly bool
 
 	// // Disable set-lib on connect. Default is false.
-	DisableClientSetInfo bool
+	DisableIndentity bool
 }
 
 func (opt *Options) init() {
