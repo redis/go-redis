@@ -137,7 +137,7 @@ type Options struct {
 	// Enables read only queries on slave/follower nodes.
 	readOnly bool
 
-	// Disable set-lib during connect with name and version. Default is false.
+	// // Disable set-lib on connect. Default is false.
 	DisableClientSetInfo bool
 }
 
