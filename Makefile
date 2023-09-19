@@ -21,6 +21,9 @@ bench: testdeps
 
 .PHONY: all test testdeps bench
 
+build:
+	go build .
+
 testdata/redis:
 	mkdir -p $@
 	wget -qO- https://download.redis.io/releases/redis-7.2-rc3.tar.gz | tar xvz --strip-components=1 -C $@
