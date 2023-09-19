@@ -47,6 +47,7 @@ func NewClusterClientStub(resp []byte) *ClientStub {
 			return stub.stubConn(initHello), nil
 		},
 		DisableIndentity: true,
+
 		ClusterSlots: func(_ context.Context) ([]ClusterSlot, error) {
 			return []ClusterSlot{
 				{
