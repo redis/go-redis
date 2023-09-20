@@ -13,6 +13,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 )
@@ -1457,7 +1458,7 @@ var _ = Describe("ClusterClient timeout", func() {
 })
 
 var _ = Describe("ClusterClient ParseURL", func() {
-	var cases = []struct {
+	cases := []struct {
 		test string
 		url  string
 		o    *redis.ClusterOptions // expected value

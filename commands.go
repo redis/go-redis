@@ -609,7 +609,8 @@ func (info LibraryInfo) Validate() error {
 
 // Hello Set the resp protocol used.
 func (c statefulCmdable) Hello(ctx context.Context,
-	ver int, username, password, clientName string) *MapStringInterfaceCmd {
+	ver int, username, password, clientName string,
+) *MapStringInterfaceCmd {
 	args := make([]interface{}, 0, 7)
 	args = append(args, "hello", ver)
 	if password != "" {

@@ -29,12 +29,12 @@ var _ prometheus.Collector = (*Collector)(nil)
 // The given namespace and subsystem are used to build the fully qualified metric name,
 // i.e. "{namespace}_{subsystem}_{metric}".
 // The provided metrics are:
-//   * pool_hit_total
-//   * pool_miss_total
-//   * pool_timeout_total
-//   * pool_conn_total_current
-//   * pool_conn_idle_current
-//   * pool_conn_stale_total
+//   - pool_hit_total
+//   - pool_miss_total
+//   - pool_timeout_total
+//   - pool_conn_total_current
+//   - pool_conn_idle_current
+//   - pool_conn_stale_total
 func NewCollector(namespace, subsystem string, getter StatGetter) *Collector {
 	return &Collector{
 		getter: getter,
