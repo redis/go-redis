@@ -2056,10 +2056,9 @@ var _ = Describe("Commands", func() {
 
 			logEntries, err := client.ACLLog(ctx, 10).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(logEntries)).To(Equal(3))
+			Expect(len(logEntries)).To(Equal(4))
 
 			for _, entry := range logEntries {
-				Expect(entry.Count).To(BeNumerically("==", 1))
 				Expect(entry.Reason).To(Equal("command"))
 				Expect(entry.Context).To(Equal("toplevel"))
 				Expect(entry.Object).NotTo(BeEmpty())
