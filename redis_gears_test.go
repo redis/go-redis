@@ -6,6 +6,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -48,7 +49,6 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 	})
 
 	It("should TFunctionLoad, TFunctionLoadArgs and TFunctionDelete ", Label("gears", "tfunctionload"), func() {
-
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("lib1")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
@@ -56,7 +56,6 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 		resultAdd, err = client.TFunctionLoadArgs(ctx, libCodeWithConfig("lib1"), opt).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
-
 	})
 	It("should TFunctionList", Label("gears", "tfunctionlist"), func() {
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("lib1")).Result()
@@ -112,5 +111,4 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("bar"))
 	})
-
 })
