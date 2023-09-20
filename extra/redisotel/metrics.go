@@ -6,10 +6,11 @@ import (
 	"net"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // InstrumentMetrics starts reporting OpenTelemetry Metrics.
