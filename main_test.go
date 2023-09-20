@@ -36,8 +36,10 @@ const (
 	sentinelPort3      = "9128"
 )
 
-var redisPort = "6380"
-var redisAddr = ":" + redisPort
+var (
+	redisPort = "6380"
+	redisAddr = ":" + redisPort
+)
 
 var (
 	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}

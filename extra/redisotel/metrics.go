@@ -6,10 +6,11 @@ import (
 	"net"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // InstrumentMetrics starts reporting OpenTelemetry Metrics.
@@ -192,11 +193,13 @@ func (mh *metricsHook) DialHook(hook redis.DialHook) redis.DialHook {
 
 		conn, err := hook(ctx, network, addr)
 
+		dur := time.Since(start)
+
 		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+1)
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, statusAttr(err))
 
-		mh.createTime.Record(ctx, milliseconds(time.Since(start)), metric.WithAttributes(attrs...))
+		mh.createTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
 		return conn, err
 	}
 }

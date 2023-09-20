@@ -7,7 +7,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-type probabilisticCmdable interface {
+type ProbabilisticCmdable interface {
 	BFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
 	BFCard(ctx context.Context, key string) *IntCmd
 	BFExists(ctx context.Context, key string, element interface{}) *BoolCmd
@@ -24,7 +24,7 @@ type probabilisticCmdable interface {
 	BFReserve(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
 	BFReserveExpansion(ctx context.Context, key string, errorRate float64, capacity, expansion int64) *StatusCmd
 	BFReserveNonScaling(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
-	BFReserveArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd
+	BFReserveWithArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd
 	BFScanDump(ctx context.Context, key string, iterator int64) *ScanDumpCmd
 	BFLoadChunk(ctx context.Context, key string, iterator int64, data interface{}) *StatusCmd
 
@@ -38,7 +38,7 @@ type probabilisticCmdable interface {
 	CFInsertNX(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd
 	CFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
 	CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd
-	CFReserveArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd
+	CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd
 	CFReserveExpansion(ctx context.Context, key string, capacity int64, expansion int64) *StatusCmd
 	CFReserveBucketSize(ctx context.Context, key string, capacity int64, bucketsize int64) *StatusCmd
 	CFReserveMaxIterations(ctx context.Context, key string, capacity int64, maxiterations int64) *StatusCmd
@@ -143,11 +143,11 @@ func (c cmdable) BFReserveNonScaling(ctx context.Context, key string, errorRate 
 	return cmd
 }
 
-// BFReserveArgs creates an empty Bloom filter with a single sub-filter
+// BFReserveWithArgs creates an empty Bloom filter with a single sub-filter
 // for the initial specified capacity and with an upper bound error_rate.
 // This function also allows for specifying additional options such as expansion rate and non-scaling behavior.
 // For more information - https://redis.io/commands/bf.reserve/
-func (c cmdable) BFReserveArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd {
+func (c cmdable) BFReserveWithArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd {
 	args := []interface{}{"BF.RESERVE", key}
 	if options != nil {
 		if options.Error != 0 {
@@ -310,6 +310,7 @@ func NewBFInfoCmd(ctx context.Context, args ...interface{}) *BFInfoCmd {
 func (cmd *BFInfoCmd) SetVal(val BFInfo) {
 	cmd.val = val
 }
+
 func (cmd *BFInfoCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
@@ -493,10 +494,10 @@ func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacit
 	return cmd
 }
 
-// CFReserveArgs creates an empty Cuckoo filter with the specified options.
+// CFReserveWithArgs creates an empty Cuckoo filter with the specified options.
 // This function allows for specifying additional options such as bucket size and maximum number of iterations.
 // For more information - https://redis.io/commands/cf.reserve/
-func (c cmdable) CFReserveArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
+func (c cmdable) CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
 	args := []interface{}{"CF.RESERVE", key, options.Capacity}
 	if options.BucketSize != 0 {
 		args = append(args, "BUCKETSIZE", options.BucketSize)
@@ -679,7 +680,7 @@ func (c cmdable) CFInfo(ctx context.Context, key string) *CFInfoCmd {
 // For more information - https://redis.io/commands/cf.insert/
 func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"CF.INSERT", key}
-	args = c.getCfInsertArgs(args, options, elements...)
+	args = c.getCfInsertWithArgs(args, options, elements...)
 
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -693,14 +694,14 @@ func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOpti
 // For more information - https://redis.io/commands/cf.insertnx/
 func (c cmdable) CFInsertNX(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd {
 	args := []interface{}{"CF.INSERTNX", key}
-	args = c.getCfInsertArgs(args, options, elements...)
+	args = c.getCfInsertWithArgs(args, options, elements...)
 
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) getCfInsertArgs(args []interface{}, options *CFInsertOptions, elements ...interface{}) []interface{} {
+func (c cmdable) getCfInsertWithArgs(args []interface{}, options *CFInsertOptions, elements ...interface{}) []interface{} {
 	if options != nil {
 		if options.Capacity != 0 {
 			args = append(args, "CAPACITY", options.Capacity)

@@ -12,7 +12,7 @@ type BitMapCmdable interface {
 	BitOpNot(ctx context.Context, destKey string, key string) *IntCmd
 	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
 	BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd
-	BitField(ctx context.Context, key string, args ...interface{}) *IntSliceCmd
+	BitField(ctx context.Context, key string, values ...interface{}) *IntSliceCmd
 }
 
 func (c cmdable) GetBit(ctx context.Context, key string, offset int64) *IntCmd {
@@ -114,12 +114,16 @@ func (c cmdable) BitPosSpan(ctx context.Context, key string, bit int8, start, en
 	return cmd
 }
 
-func (c cmdable) BitField(ctx context.Context, key string, args ...interface{}) *IntSliceCmd {
-	a := make([]interface{}, 0, 2+len(args))
-	a = append(a, "bitfield")
-	a = append(a, key)
-	a = append(a, args...)
-	cmd := NewIntSliceCmd(ctx, a...)
+// BitField accepts multiple values:
+//   - BitField("set", "i1", "offset1", "value1","cmd2", "type2", "offset2", "value2")
+//   - BitField([]string{"cmd1", "type1", "offset1", "value1","cmd2", "type2", "offset2", "value2"})
+//   - BitField([]interface{}{"cmd1", "type1", "offset1", "value1","cmd2", "type2", "offset2", "value2"})
+func (c cmdable) BitField(ctx context.Context, key string, values ...interface{}) *IntSliceCmd {
+	args := make([]interface{}, 2, 2+len(values))
+	args[0] = "bitfield"
+	args[1] = key
+	args = appendArgs(args, values)
+	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

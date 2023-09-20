@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
+	"runtime"
 	"strings"
 	"time"
 
@@ -219,8 +221,8 @@ type Cmdable interface {
 	ScriptingFunctionsCmdable
 	StringCmdable
 	PubSubCmdable
-	gearsCmdable
-	probabilisticCmdable
+	GearsCmdable
+	ProbabilisticCmdable
 	TimeseriesCmdable
 }
 
@@ -270,6 +272,13 @@ func (c cmdable) Wait(ctx context.Context, numSlaves int, timeout time.Duration)
 	return cmd
 }
 
+func (c cmdable) WaitAOF(ctx context.Context, numLocal, numSlaves int, timeout time.Duration) *IntCmd {
+	cmd := NewIntCmd(ctx, "waitAOF", numLocal, numSlaves, int(timeout/time.Millisecond))
+	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c statefulCmdable) Select(ctx context.Context, index int) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "select", index)
 	_ = c(ctx, cmd)
@@ -298,7 +307,8 @@ func (c statefulCmdable) ClientSetInfo(ctx context.Context, info LibraryInfo) *S
 
 	var cmd *StatusCmd
 	if info.LibName != nil {
-		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-NAME", *info.LibName)
+		libName := fmt.Sprintf("go-redis(%s,%s)", *info.LibName, runtime.Version())
+		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-NAME", libName)
 	} else {
 		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-VER", *info.LibVer)
 	}
@@ -320,7 +330,8 @@ func (info LibraryInfo) Validate() error {
 
 // Hello Set the resp protocol used.
 func (c statefulCmdable) Hello(ctx context.Context,
-	ver int, username, password, clientName string) *MapStringInterfaceCmd {
+	ver int, username, password, clientName string,
+) *MapStringInterfaceCmd {
 	args := make([]interface{}, 0, 7)
 	args = append(args, "hello", ver)
 	if password != "" {
