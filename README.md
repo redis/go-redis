@@ -142,6 +142,10 @@ func ExampleClient() {
     rdb := redis.NewClient(opts)
 ```
 
+## Contributing
+
+Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
+
 ## Look and feel
 
 Some corner cases:
