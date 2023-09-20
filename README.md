@@ -46,6 +46,7 @@ key value NoSQL database that uses RocksDB as storage engine and is compatible w
 - [Redis Cluster](https://redis.uptrace.dev/guide/go-redis-cluster.html).
 - [Redis Ring](https://redis.uptrace.dev/guide/ring.html).
 - [Redis Performance Monitoring](https://redis.uptrace.dev/guide/redis-performance-monitoring.html).
+- [Redis Probabilistic [RedisStack]](https://redis.io/docs/data-types/probabilistic/)
 
 ## Installation
 
