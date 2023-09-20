@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
+	"runtime"
 	"strings"
 	"time"
 
@@ -236,7 +238,7 @@ type Cmdable interface {
 	BitOpNot(ctx context.Context, destKey string, key string) *IntCmd
 	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
 	BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd
-	BitField(ctx context.Context, key string, args ...interface{}) *IntSliceCmd
+	BitField(ctx context.Context, key string, values ...interface{}) *IntSliceCmd
 
 	Scan(ctx context.Context, cursor uint64, match string, count int64) *ScanCmd
 	ScanType(ctx context.Context, cursor uint64, match string, count int64, keyType string) *ScanCmd
@@ -507,6 +509,7 @@ type Cmdable interface {
 
 	gearsCmdable
 	probabilisticCmdable
+	TimeseriesCmdable
 }
 
 type StatefulCmdable interface {
@@ -516,6 +519,7 @@ type StatefulCmdable interface {
 	Select(ctx context.Context, index int) *StatusCmd
 	SwapDB(ctx context.Context, index1, index2 int) *StatusCmd
 	ClientSetName(ctx context.Context, name string) *BoolCmd
+	ClientSetInfo(ctx context.Context, info LibraryInfo) *StatusCmd
 	Hello(ctx context.Context, ver int, username, password, clientName string) *MapStringInterfaceCmd
 }
 
@@ -554,6 +558,13 @@ func (c cmdable) Wait(ctx context.Context, numSlaves int, timeout time.Duration)
 	return cmd
 }
 
+func (c cmdable) WaitAOF(ctx context.Context, numLocal, numSlaves int, timeout time.Duration) *IntCmd {
+	cmd := NewIntCmd(ctx, "waitAOF", numLocal, numSlaves, int(timeout/time.Millisecond))
+	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c statefulCmdable) Select(ctx context.Context, index int) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "select", index)
 	_ = c(ctx, cmd)
@@ -573,9 +584,40 @@ func (c statefulCmdable) ClientSetName(ctx context.Context, name string) *BoolCm
 	return cmd
 }
 
+// ClientSetInfo sends a CLIENT SETINFO command with the provided info.
+func (c statefulCmdable) ClientSetInfo(ctx context.Context, info LibraryInfo) *StatusCmd {
+	err := info.Validate()
+	if err != nil {
+		panic(err.Error())
+	}
+
+	var cmd *StatusCmd
+	if info.LibName != nil {
+		libName := fmt.Sprintf("go-redis(%s,%s)", *info.LibName, runtime.Version())
+		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-NAME", libName)
+	} else {
+		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-VER", *info.LibVer)
+	}
+
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Validate checks if only one field in the struct is non-nil.
+func (info LibraryInfo) Validate() error {
+	if info.LibName != nil && info.LibVer != nil {
+		return errors.New("both LibName and LibVer cannot be set at the same time")
+	}
+	if info.LibName == nil && info.LibVer == nil {
+		return errors.New("at least one of LibName and LibVer should be set")
+	}
+	return nil
+}
+
 // Hello Set the resp protocol used.
 func (c statefulCmdable) Hello(ctx context.Context,
-	ver int, username, password, clientName string) *MapStringInterfaceCmd {
+	ver int, username, password, clientName string,
+) *MapStringInterfaceCmd {
 	args := make([]interface{}, 0, 7)
 	args = append(args, "hello", ver)
 	if password != "" {
@@ -1335,12 +1377,16 @@ func (c cmdable) BitPosSpan(ctx context.Context, key string, bit int8, start, en
 	return cmd
 }
 
-func (c cmdable) BitField(ctx context.Context, key string, args ...interface{}) *IntSliceCmd {
-	a := make([]interface{}, 0, 2+len(args))
-	a = append(a, "bitfield")
-	a = append(a, key)
-	a = append(a, args...)
-	cmd := NewIntSliceCmd(ctx, a...)
+// BitField accepts multiple values:
+//   - BitField("set", "i1", "offset1", "value1","cmd2", "type2", "offset2", "value2")
+//   - BitField([]string{"cmd1", "type1", "offset1", "value1","cmd2", "type2", "offset2", "value2"})
+//   - BitField([]interface{}{"cmd1", "type1", "offset1", "value1","cmd2", "type2", "offset2", "value2"})
+func (c cmdable) BitField(ctx context.Context, key string, values ...interface{}) *IntSliceCmd {
+	args := make([]interface{}, 2, 2+len(values))
+	args[0] = "bitfield"
+	args[1] = key
+	args = appendArgs(args, values)
+	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

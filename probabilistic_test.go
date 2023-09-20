@@ -7,6 +7,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -159,7 +160,6 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(resultAdd2[0]).To(BeFalse())
 			Expect(resultAdd2[1]).To(BeFalse())
 			Expect(resultAdd2[2]).To(BeTrue())
-
 		})
 
 		It("should BFMExists", Label("bloom", "bfmexists"), func() {
@@ -227,14 +227,14 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(infBefore).To(BeEquivalentTo(infAfter))
 		})
 
-		It("should BFReserveArgs", Label("bloom", "bfreserveargs"), func() {
+		It("should BFReserveWithArgs", Label("bloom", "bfreserveargs"), func() {
 			options := &redis.BFReserveOptions{
 				Capacity:   2000,
 				Error:      0.001,
 				Expansion:  3,
 				NonScaling: false,
 			}
-			err := client.BFReserveArgs(ctx, "testbf", options).Err()
+			err := client.BFReserveWithArgs(ctx, "testbf", options).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err := client.BFInfo(ctx, "testbf").Result()
@@ -352,7 +352,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(infBefore).To(BeEquivalentTo(infAfter))
 		})
 
-		It("should CFInfo and CFReserveArgs", Label("cuckoo", "cfinfo", "cfreserveargs"), func() {
+		It("should CFInfo and CFReserveWithArgs", Label("cuckoo", "cfinfo", "cfreserveargs"), func() {
 			args := &redis.CFReserveOptions{
 				Capacity:      2048,
 				BucketSize:    3,
@@ -360,7 +360,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 				Expansion:     2,
 			}
 
-			err := client.CFReserveArgs(ctx, "testcf1", args).Err()
+			err := client.CFReserveWithArgs(ctx, "testcf1", args).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err := client.CFInfo(ctx, "testcf1").Result()
@@ -424,7 +424,6 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(result[2]).To(BeTrue())
 			Expect(result[3]).To(BeFalse())
 		})
-
 	})
 
 	Describe("CMS", Label("cms"), func() {
@@ -438,7 +437,6 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(result[0]).To(BeEquivalentTo(int64(1)))
 			Expect(result[1]).To(BeEquivalentTo(int64(2)))
 			Expect(result[2]).To(BeEquivalentTo(int64(3)))
-
 		})
 
 		It("should CMSInitByDim and CMSInfo", Label("cms", "cmsinitbydim", "cmsinfo"), func() {
@@ -512,9 +510,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(result[0]).To(BeEquivalentTo(int64(1)))
 			Expect(result[1]).To(BeEquivalentTo(int64(6)))
 			Expect(result[2]).To(BeEquivalentTo(int64(6)))
-
 		})
-
 	})
 
 	Describe("TopK", Label("topk"), func() {
@@ -580,7 +576,6 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(resultInfo.Depth).To(BeEquivalentTo(int64(8)))
 			Expect(resultInfo.Decay).To(BeEquivalentTo(0.5))
 		})
-
 	})
 
 	Describe("t-digest", Label("tdigest"), func() {
@@ -691,7 +686,6 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			reset, err := client.TDigestReset(ctx, "tdigest1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(reset).To(BeEquivalentTo("OK"))
-
 		})
 
 		It("should TDigestCreateWithCompression", Label("tdigest", "tcreatewithcompression"), func() {
