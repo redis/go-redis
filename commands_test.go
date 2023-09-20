@@ -232,7 +232,6 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ClientSetInfo", func() {
-
 			pipe := client.Pipeline()
 
 			// Test setting the libName
