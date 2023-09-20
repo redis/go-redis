@@ -227,14 +227,14 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(infBefore).To(BeEquivalentTo(infAfter))
 		})
 
-		It("should BFReserveArgs", Label("bloom", "bfreserveargs"), func() {
+		It("should BFReserveWithArgs", Label("bloom", "bfreserveargs"), func() {
 			options := &redis.BFReserveOptions{
 				Capacity:   2000,
 				Error:      0.001,
 				Expansion:  3,
 				NonScaling: false,
 			}
-			err := client.BFReserveArgs(ctx, "testbf", options).Err()
+			err := client.BFReserveWithArgs(ctx, "testbf", options).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err := client.BFInfo(ctx, "testbf").Result()
@@ -352,7 +352,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(infBefore).To(BeEquivalentTo(infAfter))
 		})
 
-		It("should CFInfo and CFReserveArgs", Label("cuckoo", "cfinfo", "cfreserveargs"), func() {
+		It("should CFInfo and CFReserveWithArgs", Label("cuckoo", "cfinfo", "cfreserveargs"), func() {
 			args := &redis.CFReserveOptions{
 				Capacity:      2048,
 				BucketSize:    3,
@@ -360,7 +360,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 				Expansion:     2,
 			}
 
-			err := client.CFReserveArgs(ctx, "testcf1", args).Err()
+			err := client.CFReserveWithArgs(ctx, "testcf1", args).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err := client.CFInfo(ctx, "testcf1").Result()
