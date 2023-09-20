@@ -209,7 +209,6 @@ func (c cmdable) TSAddWithArgs(ctx context.Context, key string, timestamp interf
 		}
 		if options.ChunkSize != 0 {
 			args = append(args, "CHUNK_SIZE", options.ChunkSize)
-
 		}
 		if options.Encoding != "" {
 			args = append(args, "ENCODING", options.Encoding)
@@ -251,7 +250,6 @@ func (c cmdable) TSCreateWithArgs(ctx context.Context, key string, options *TSOp
 		}
 		if options.ChunkSize != 0 {
 			args = append(args, "CHUNK_SIZE", options.ChunkSize)
-
 		}
 		if options.Encoding != "" {
 			args = append(args, "ENCODING", options.Encoding)
@@ -264,7 +262,6 @@ func (c cmdable) TSCreateWithArgs(ctx context.Context, key string, options *TSOp
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
-
 			}
 		}
 	}
@@ -285,7 +282,6 @@ func (c cmdable) TSAlter(ctx context.Context, key string, options *TSAlterOption
 		}
 		if options.ChunkSize != 0 {
 			args = append(args, "CHUNK_SIZE", options.ChunkSize)
-
 		}
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
@@ -294,7 +290,6 @@ func (c cmdable) TSAlter(ctx context.Context, key string, options *TSAlterOption
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
-
 			}
 		}
 	}
@@ -352,7 +347,6 @@ func (c cmdable) TSIncrByWithArgs(ctx context.Context, key string, timestamp flo
 		}
 		if options.ChunkSize != 0 {
 			args = append(args, "CHUNK_SIZE", options.ChunkSize)
-
 		}
 		if options.Uncompressed {
 			args = append(args, "UNCOMPRESSED")
@@ -361,7 +355,6 @@ func (c cmdable) TSIncrByWithArgs(ctx context.Context, key string, timestamp flo
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
-
 			}
 		}
 	}
@@ -394,7 +387,6 @@ func (c cmdable) TSDecrByWithArgs(ctx context.Context, key string, timestamp flo
 		}
 		if options.ChunkSize != 0 {
 			args = append(args, "CHUNK_SIZE", options.ChunkSize)
-
 		}
 		if options.Uncompressed {
 			args = append(args, "UNCOMPRESSED")
@@ -403,7 +395,6 @@ func (c cmdable) TSDecrByWithArgs(ctx context.Context, key string, timestamp flo
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
-
 			}
 		}
 	}

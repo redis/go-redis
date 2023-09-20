@@ -88,7 +88,6 @@ func (c cmdable) TFunctionListArgs(ctx context.Context, options *TFunctionListOp
 		}
 		if options.Library != "" {
 			args = append(args, "LIBRARY", options.Library)
-
 		}
 	}
 	cmd := NewMapStringInterfaceSliceCmd(ctx, args...)
@@ -112,13 +111,11 @@ func (c cmdable) TFCallArgs(ctx context.Context, libName string, funcName string
 	if options != nil {
 		if options.Keys != nil {
 			for _, key := range options.Keys {
-
 				args = append(args, key)
 			}
 		}
 		if options.Arguments != nil {
 			for _, key := range options.Arguments {
-
 				args = append(args, key)
 			}
 		}
@@ -144,13 +141,11 @@ func (c cmdable) TFCallASYNCArgs(ctx context.Context, libName string, funcName s
 	if options != nil {
 		if options.Keys != nil {
 			for _, key := range options.Keys {
-
 				args = append(args, key)
 			}
 		}
 		if options.Arguments != nil {
 			for _, key := range options.Arguments {
-
 				args = append(args, key)
 			}
 		}
