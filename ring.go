@@ -292,7 +292,6 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 func (c *ringSharding) newRingShards(
 	addrs map[string]string, existing *ringShards,
 ) (shards *ringShards, created, unused map[string]*ringShard) {
-
 	shards = &ringShards{m: make(map[string]*ringShard, len(addrs))}
 	created = make(map[string]*ringShard) // indexed by addr
 	unused = make(map[string]*ringShard)  // indexed by addr

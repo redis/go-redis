@@ -310,6 +310,7 @@ func NewBFInfoCmd(ctx context.Context, args ...interface{}) *BFInfoCmd {
 func (cmd *BFInfoCmd) SetVal(val BFInfo) {
 	cmd.val = val
 }
+
 func (cmd *BFInfoCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
