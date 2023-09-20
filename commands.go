@@ -558,6 +558,13 @@ func (c cmdable) Wait(ctx context.Context, numSlaves int, timeout time.Duration)
 	return cmd
 }
 
+func (c cmdable) WaitAOF(ctx context.Context, numLocal, numSlaves int, timeout time.Duration) *IntCmd {
+	cmd := NewIntCmd(ctx, "waitAOF", numLocal, numSlaves, int(timeout/time.Millisecond))
+	cmd.setReadTimeout(timeout)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c statefulCmdable) Select(ctx context.Context, index int) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "select", index)
 	_ = c(ctx, cmd)
