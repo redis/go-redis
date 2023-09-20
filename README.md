@@ -69,8 +69,9 @@ go get github.com/redis/go-redis/v9
 ```go
 import (
     "context"
-    "github.com/redis/go-redis/v9"
     "fmt"
+
+    "github.com/redis/go-redis/v9"
 )
 
 var ctx = context.Background()
@@ -125,8 +126,9 @@ go-redis also supports connecting via the [redis uri specification](https://gith
 ```go
 import (
     "context"
-    "github.com/redis/go-redis/v9"
     "fmt"
+
+    "github.com/redis/go-redis/v9"
 )
 
 var ctx = context.Background()
@@ -139,6 +141,10 @@ func ExampleClient() {
     }
     rdb := redis.NewClient(opts)
 ```
+
+## Contributing
+
+Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
 
 ## Look and feel
 

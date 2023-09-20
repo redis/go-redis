@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+
 	"golang.org/x/tools/go/analysis"
 )
 
