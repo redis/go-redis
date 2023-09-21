@@ -175,7 +175,7 @@ func ExampleConn_name() {
 	// Output: foobar
 }
 
-func ExampleConn_info() {
+func ExampleConn_client_setInfo_libraryVersion() {
 	conn := rdb.Conn()
 
 	err := conn.ClientSetInfo(ctx, redis.WithLibraryVersion("1.0.0")).Err()
