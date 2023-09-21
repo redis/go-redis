@@ -142,7 +142,7 @@ type Options struct {
 	// Enables read only queries on slave/follower nodes.
 	readOnly bool
 
-	// // Disable set-lib on connect. Default is false.
+	// Disable set-lib on connect. Default is false.
 	DisableIndentity bool
 }
 

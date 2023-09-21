@@ -64,6 +64,8 @@ type UniversalOptions struct {
 	// Only failover clients.
 
 	MasterName string
+
+	DisableIndentity bool
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -106,6 +108,8 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
 	}
 }
 
@@ -148,6 +152,8 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
 	}
 }
 
@@ -187,6 +193,8 @@ func (o *UniversalOptions) Simple() *Options {
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
 	}
 }
 

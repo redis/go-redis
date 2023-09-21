@@ -73,7 +73,10 @@ type RingOptions struct {
 	Protocol int
 	Username string
 	Password string
-	DB       int
+
+	CredentialsProvider func() (username string, password string)
+
+	DB int
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -82,6 +85,8 @@ type RingOptions struct {
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+
+	ContextTimeoutEnabled bool
 
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
@@ -95,6 +100,8 @@ type RingOptions struct {
 
 	TLSConfig *tls.Config
 	Limiter   Limiter
+
+	DisableIndentity bool
 }
 
 func (opt *RingOptions) init() {
@@ -140,13 +147,18 @@ func (opt *RingOptions) clientOptions() *Options {
 		Protocol: opt.Protocol,
 		Username: opt.Username,
 		Password: opt.Password,
-		DB:       opt.DB,
+
+		CredentialsProvider: opt.CredentialsProvider,
+
+		DB: opt.DB,
 
 		MaxRetries: -1,
 
 		DialTimeout:  opt.DialTimeout,
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
+
+		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,
@@ -158,6 +170,8 @@ func (opt *RingOptions) clientOptions() *Options {
 
 		TLSConfig: opt.TLSConfig,
 		Limiter:   opt.Limiter,
+
+		DisableIndentity: opt.DisableIndentity,
 	}
 }
 
