@@ -191,7 +191,7 @@ func (o *UniversalOptions) Ring() *RingOptions {
 		DialTimeout:  o.DialTimeout,
 		ReadTimeout:  o.ReadTimeout,
 		WriteTimeout: o.WriteTimeout,
-		// ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+		// ContextTimeoutEnabled: o.ContextTimeoutEnabled, // field does not exist yet, see PR 2726
 
 		PoolFIFO:        o.PoolFIFO,
 		PoolSize:        o.PoolSize,
@@ -203,7 +203,7 @@ func (o *UniversalOptions) Ring() *RingOptions {
 
 		TLSConfig: o.TLSConfig,
 
-		// DisableIndentity: o.DisableIndentity,
+		// DisableIndentity: o.DisableIndentity, // field does not exist yet, see PR 2726
 	}
 }
 
