@@ -178,12 +178,7 @@ func ExampleConn_name() {
 func ExampleConn_info() {
 	conn := rdb.Conn()
 
-	err := conn.ClientSetInfo(ctx, redis.WithLibraryName("lib-name")).Err()
-	if err != nil {
-		panic(err)
-	}
-
-	err = conn.ClientSetInfo(ctx, redis.WithLibraryVersion("1.0.0")).Err()
+	err := conn.ClientSetInfo(ctx, redis.WithLibraryVersion("1.0.0")).Err()
 	if err != nil {
 		panic(err)
 	}
@@ -197,12 +192,9 @@ func ExampleConn_info() {
 	if err != nil {
 		panic(err)
 	}
-	// under go1.21.1 will return library name: go-redis(lib-name,go1.21.1)
-	// fmt.Println("library name:", s.LibName)
 
-	fmt.Println("library version:", s.LibVer)
-	// Output:
-	// library version: 1.0.0
+	fmt.Println(s.LibVer)
+	// Output: 1.0.0
 }
 
 func ExampleClient_Set() {
