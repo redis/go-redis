@@ -38,4 +38,13 @@ var _ = Describe("UniversalClient", func() {
 		})
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
+
+	It("should connect to ring", func() {
+		ring := redisRingOptions()
+
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			AddressMap: ring.Addrs,
+		})
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+	})
 })
