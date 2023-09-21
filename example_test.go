@@ -197,10 +197,11 @@ func ExampleConn_info() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("library name:", s.LibName)
+	// under go1.21.1 will return library name: go-redis(lib-name,go1.21.1)
+	// fmt.Println("library name:", s.LibName)
+
 	fmt.Println("library version:", s.LibVer)
 	// Output:
-	// library name: go-redis(lib-name,go1.21.1)
 	// library version: 1.0.0
 }
 
