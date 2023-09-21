@@ -73,10 +73,7 @@ type RingOptions struct {
 	Protocol int
 	Username string
 	Password string
-
-	CredentialsProvider func() (username string, password string)
-
-	DB int
+	DB       int
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -147,10 +144,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		Protocol: opt.Protocol,
 		Username: opt.Username,
 		Password: opt.Password,
-
-		CredentialsProvider: opt.CredentialsProvider,
-
-		DB: opt.DB,
+		DB:       opt.DB,
 
 		MaxRetries: -1,
 
