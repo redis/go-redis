@@ -281,7 +281,7 @@ var (
 // 1. If the MasterName option is specified, a sentinel-backed FailoverClient is returned.
 // 2. if the number of Addrs is two or more, a ClusterClient is returned.
 // 3. If the AddressMap option is specified, a Ring is returned.
-// 3. Otherwise, a single-node Client is returned.
+// 4. Otherwise, a single-node Client is returned.
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
 	if opts.MasterName != "" {
 		return NewFailoverClient(opts.Failover())
