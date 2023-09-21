@@ -248,7 +248,7 @@ var _ = Describe("Commands", func() {
 
 			// Test setting the libName
 			libName := "go-redis"
-			libInfo := redis.LibraryInfo{LibName: &libName}
+			libInfo := redis.WithLibraryName(libName)
 			setInfo := pipe.ClientSetInfo(ctx, libInfo)
 			_, err := pipe.Exec(ctx)
 
@@ -258,7 +258,7 @@ var _ = Describe("Commands", func() {
 
 			// Test setting the libVer
 			libVer := "vX.x"
-			libInfo = redis.LibraryInfo{LibVer: &libVer}
+			libInfo = redis.WithLibraryVersion(libVer)
 			setInfo = pipe.ClientSetInfo(ctx, libInfo)
 			_, err = pipe.Exec(ctx)
 
