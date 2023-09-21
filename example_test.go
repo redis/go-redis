@@ -154,7 +154,7 @@ func ExampleClient() {
 	// missing_key does not exist
 }
 
-func ExampleConn() {
+func ExampleConn_name() {
 	conn := rdb.Conn()
 
 	err := conn.ClientSetName(ctx, "foobar").Err()
@@ -173,6 +173,35 @@ func ExampleConn() {
 	}
 	fmt.Println(s)
 	// Output: foobar
+}
+
+func ExampleConn_info() {
+	conn := rdb.Conn()
+
+	err := conn.ClientSetInfo(ctx, redis.WithLibraryName("lib-name")).Err()
+	if err != nil {
+		panic(err)
+	}
+
+	err = conn.ClientSetInfo(ctx, redis.WithLibraryVersion("1.0.0")).Err()
+	if err != nil {
+		panic(err)
+	}
+
+	// Open other connections.
+	for i := 0; i < 10; i++ {
+		go rdb.Ping(ctx)
+	}
+
+	s, err := conn.ClientInfo(ctx).Result()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("library name:", s.LibName)
+	fmt.Println("library version:", s.LibVer)
+	// Output:
+	// library name: go-redis(lib-name,go1.21.1)
+	// library version: 1.0.0
 }
 
 func ExampleClient_Set() {
