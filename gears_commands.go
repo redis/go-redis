@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-type gearsCmdable interface {
+type GearsCmdable interface {
 	TFunctionLoad(ctx context.Context, lib string) *StatusCmd
 	TFunctionLoadArgs(ctx context.Context, lib string, options *TFunctionLoadOptions) *StatusCmd
 	TFunctionDelete(ctx context.Context, libName string) *StatusCmd
@@ -17,6 +17,7 @@ type gearsCmdable interface {
 	TFCallASYNC(ctx context.Context, libName string, funcName string, numKeys int) *Cmd
 	TFCallASYNCArgs(ctx context.Context, libName string, funcName string, numKeys int, options *TFCallOptions) *Cmd
 }
+
 type TFunctionLoadOptions struct {
 	Replace bool
 	Config  string
@@ -88,7 +89,6 @@ func (c cmdable) TFunctionListArgs(ctx context.Context, options *TFunctionListOp
 		}
 		if options.Library != "" {
 			args = append(args, "LIBRARY", options.Library)
-
 		}
 	}
 	cmd := NewMapStringInterfaceSliceCmd(ctx, args...)
@@ -112,13 +112,11 @@ func (c cmdable) TFCallArgs(ctx context.Context, libName string, funcName string
 	if options != nil {
 		if options.Keys != nil {
 			for _, key := range options.Keys {
-
 				args = append(args, key)
 			}
 		}
 		if options.Arguments != nil {
 			for _, key := range options.Arguments {
-
 				args = append(args, key)
 			}
 		}
@@ -144,13 +142,11 @@ func (c cmdable) TFCallASYNCArgs(ctx context.Context, libName string, funcName s
 	if options != nil {
 		if options.Keys != nil {
 			for _, key := range options.Keys {
-
 				args = append(args, key)
 			}
 		}
 		if options.Arguments != nil {
 			for _, key := range options.Arguments {
-
 				args = append(args, key)
 			}
 		}
