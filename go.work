@@ -1,0 +1,19 @@
+go 1.19
+
+use (
+	./.
+
+	./example/del-keys-without-ttl
+	./example/hll
+	./example/lua-scripting
+	./example/otel
+	./example/redis-bloom
+	./example/scan-struct
+
+	./extra/rediscensus
+	./extra/rediscmd
+	./extra/redisotel
+	./extra/redisprometheus
+
+	./internal/customvet
+)
