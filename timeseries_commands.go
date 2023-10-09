@@ -480,6 +480,10 @@ func (cmd *TSTimestampValueCmd) Val() TSTimestampValue {
 	return cmd.val
 }
 
+func (cmd *TSTimestampValueCmd) RawResult() ([]byte, error) {
+	return cmd.rawReplay, cmd.rawReplayErr
+}
+
 func (cmd *TSTimestampValueCmd) readReply(rd *proto.Reader) (err error) {
 	n, err := rd.ReadMapLen()
 	if err != nil {

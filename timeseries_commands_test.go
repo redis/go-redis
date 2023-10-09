@@ -284,10 +284,12 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		resultGet, err := client.TSAddWithArgs(ctx, "foo", 2265985, 151, opt).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultGet).To(BeEquivalentTo(2265985))
-		result, err := client.TSGet(ctx, "foo").Result()
+		res := client.TSGet(ctx, "foo")
+		result, err := res.Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.Timestamp).To(BeEquivalentTo(2265985))
 		Expect(result.Value).To(BeEquivalentTo(151))
+		// Expect(res.RawResult()).To(BeEquivalentTo(0))
 	})
 
 	It("should TSGet Latest", Label("timeseries", "tsgetlatest"), func() {

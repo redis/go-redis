@@ -405,7 +405,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			return err
 		}
 
-		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), cmd.readReply); err != nil {
+		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), []func(rd *proto.Reader) error{cmd.readReply, cmd.readRawReply}); err != nil {
 			if cmd.readTimeout() == nil {
 				atomic.StoreUint32(&retryTimeout, 1)
 			} else {
@@ -511,9 +511,9 @@ func (c *baseClient) pipelineProcessCmds(
 		return true, err
 	}
 
-	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, []func(rd *proto.Reader) error{func(rd *proto.Reader) error {
 		return pipelineReadCmds(rd, cmds)
-	}); err != nil {
+	}}); err != nil {
 		return true, err
 	}
 
@@ -543,7 +543,7 @@ func (c *baseClient) txPipelineProcessCmds(
 		return true, err
 	}
 
-	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, []func(rd *proto.Reader) error{func(rd *proto.Reader) error {
 		statusCmd := cmds[0].(*StatusCmd)
 		// Trim multi and exec.
 		trimmedCmds := cmds[1 : len(cmds)-1]
@@ -554,7 +554,7 @@ func (c *baseClient) txPipelineProcessCmds(
 		}
 
 		return pipelineReadCmds(rd, trimmedCmds)
-	}); err != nil {
+	}}); err != nil {
 		return false, err
 	}
 
