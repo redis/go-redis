@@ -13,11 +13,12 @@ import (
 type JSONCmdAble interface {
 	JSONArrAppend(ctx context.Context, key, path string, values ...interface{}) *IntSliceCmd
 	JSONArrIndex(ctx context.Context, key, path string, value interface{}) *IntSliceCmd
-	JSONArrIndexStartStop(ctx context.Context, key, path string, value interface{}, start, stop int64) *IntSliceCmd
+	JSONArrIndexWithArgs(ctx context.Context, key, path string, value interface{}, options *JSONArrIndexOptions) *IntSliceCmd
 	JSONArrInsert(ctx context.Context, key, path string, index int64, values ...interface{}) *IntSliceCmd
 	JSONArrLen(ctx context.Context, key, path string) *IntSliceCmd
 	JSONArrPop(ctx context.Context, key, path string, index int) *StringSliceCmd
-	JSONArrTrim(ctx context.Context, key, path string, start, stop int) *IntSliceCmd
+	JSONArrTrim(ctx context.Context, key, path string) *IntSliceCmd
+	JSONArrTrimWithArgs(ctx context.Context, key, path string, options *JSONArrTrimOptions) *IntSliceCmd
 	JSONClear(ctx context.Context, key, path string) *IntCmd
 	JSONDel(ctx context.Context, key, path string) *IntCmd
 	JSONForget(ctx context.Context, key, path string) *IntCmd
@@ -27,7 +28,7 @@ type JSONCmdAble interface {
 	JSONObjKeys(ctx context.Context, key, path string) *SliceCmd
 	JSONObjLen(ctx context.Context, key, path string) *IntPointerSliceCmd
 	JSONSet(ctx context.Context, key, path string, value interface{}) *StatusCmd
-	JSONSetMode(ctx context.Context, key, path string, value interface{}, mode string) *StatusCmd
+	JSONSetMode(ctx context.Context, key, path string, value interface{}, mode *JSONSetModeOptions) *StatusCmd
 	JSONStrAppend(ctx context.Context, key, path, value string) *IntPointerSliceCmd
 	JSONStrLen(ctx context.Context, key, path string) *IntPointerSliceCmd
 	JSONToggle(ctx context.Context, key, path string) *IntPointerSliceCmd
@@ -277,16 +278,29 @@ func (c cmdable) JSONArrIndex(ctx context.Context, key, path string, value inter
 	return cmd
 }
 
+type JSONArrIndexOptions struct {
+	Start interface{}
+	Stop  interface{}
+}
+
 // JSONArrIndexFromTo searches for the first occurrence of a JSON value in an array whilst allowing the start and
 // stop options to be provided.
-func (c cmdable) JSONArrIndexStartStop(ctx context.Context, key, path string, value interface{}, start, stop int64) *IntSliceCmd {
-	args := []interface{}{"json.arrindex", key, path, value, start, stop}
+func (c cmdable) JSONArrIndexWithArgs(ctx context.Context, key, path string, value interface{}, options *JSONArrIndexOptions) *IntSliceCmd {
+	args := []interface{}{"json.arrindex", key, path, value}
+	if options != nil {
+		if options.Start != nil {
+			args = append(args, options.Start)
+		}
+		if options.Stop != nil {
+			args = append(args, options.Stop)
+		}
+	}
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// JSONArrInsert inserts the json values into the array at path before the index (shifts to the right)
+// // JSONArrInsert inserts the json values into the array at path before the index (shifts to the right)
 func (c cmdable) JSONArrInsert(ctx context.Context, key, path string, index int64, values ...interface{}) *IntSliceCmd {
 	args := []interface{}{"json.arrinsert", key, path, index}
 	args = append(args, values...)
@@ -312,8 +326,29 @@ func (c cmdable) JSONArrPop(ctx context.Context, key, path string, index int) *S
 }
 
 // JSONArrTrim trims an array so that it contains only the specified inclusive range of elements
-func (c cmdable) JSONArrTrim(ctx context.Context, key, path string, start, stop int) *IntSliceCmd {
-	args := []interface{}{"json.arrtrim", key, path, start, stop}
+func (c cmdable) JSONArrTrim(ctx context.Context, key, path string) *IntSliceCmd {
+	args := []interface{}{"json.arrtrim", key, path}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type JSONArrTrimOptions struct {
+	Start interface{}
+	Stop  interface{}
+}
+
+// JSONArrTrimWithArgs trims an array so that it contains only the specified inclusive range of elements
+func (c cmdable) JSONArrTrimWithArgs(ctx context.Context, key, path string, options *JSONArrTrimOptions) *IntSliceCmd {
+	args := []interface{}{"json.arrtrim", key, path}
+	if options != nil {
+		if options.Start != nil {
+			args = append(args, options.Start)
+		}
+		if options.Stop != nil {
+			args = append(args, options.Stop)
+		}
+	}
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -322,6 +357,14 @@ func (c cmdable) JSONArrTrim(ctx context.Context, key, path string, start, stop 
 // JSONClear clears container values (arrays/objects) and set numeric values to 0
 func (c cmdable) JSONClear(ctx context.Context, key, path string) *IntCmd {
 	args := []interface{}{"json.clear", key, path}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// JSONDebugMemory report a value's memory usage in bytes
+func (c cmdable) JSONDebugMemory(ctx context.Context, key, path string) *IntCmd {
+	args := []interface{}{"JSON.DEBUG", "MEMORY", key, path}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -346,6 +389,7 @@ func (c cmdable) JSONForget(ctx context.Context, key, path string) *IntCmd {
 // JSONGet returns the value at path in JSON serialized form. JSON.GET returns an
 // array of strings. This function parses out the wrapping array but leaves the
 // internal strings unprocessed by default (see Val())
+// For more information - https://redis.io/commands/json.get/
 func (c cmdable) JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd {
 	args := make([]interface{}, len(paths)+2)
 	args[0] = "json.get"
@@ -354,6 +398,55 @@ func (c cmdable) JSONGet(ctx context.Context, key string, paths ...string) *JSON
 		args[n+2] = path
 	}
 	cmd := NewJSONCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type JSONGetArgs struct {
+	Path      string
+	Paths     []interface{}
+	Indention string
+	NewLine   string
+	Space     string
+}
+
+// JSONGetWithArgs - Retrieves the value of a key from a JSON document.
+// This function also allows for specifying additional options such as:
+// Indention, NewLine, Space, Path and Paths.
+// For more information - https://redis.io/commands/json.get/
+func (c cmdable) JSONGetWithArgs(ctx context.Context, key string, options *JSONGetArgs) *JSONCmd {
+	args := []interface{}{"JSON.GET", key}
+	if options != nil {
+		if options.Indention != "" {
+			args = append(args, options.Indention)
+		}
+		if options.NewLine != "" {
+			args = append(args, options.NewLine)
+		}
+		if options.Space != "" {
+			args = append(args, options.Space)
+		}
+		if options.Path != "" && options.Paths != nil {
+			panic("redis: JSON.GET can only accept one of Path or Paths")
+
+		}
+		if options.Path != "" {
+			args = append(args, options.Path)
+		}
+		if options.Paths != nil {
+			args = append(args, options.Paths...)
+		}
+
+	}
+	cmd := NewJSONCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// JSONMerge merge a given JSON value into matching paths
+func (c cmdable) JSONMerge(ctx context.Context, key, path string, value string) *StatusCmd {
+	args := []interface{}{"JSON.MERGE", key, path, value}
+	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -375,10 +468,43 @@ func (c cmdable) JSONMGet(ctx context.Context, path string, keys ...string) *JSO
 	return cmd
 }
 
+type JSONSetParams struct {
+	Key   interface{}
+	Path  string
+	Value interface{}
+}
+
+// JSONMSet set or update one or more JSON values according to the specified key-path-value triplets
+func (c cmdable) JSONMSet(ctx context.Context, docs []JSONSetParams) *StatusCmd {
+	args := []interface{}{"JSON.MSET"}
+	for _, doc := range docs {
+		args = append(args, doc.Key, doc.Path, doc.Value)
+	}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 // JSONNumIncrBy increments the number value stored at path by number
 func (c cmdable) JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd {
 	args := []interface{}{"json.numincrby", key, path, value}
 	cmd := NewJSONCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// JSONNumMultBy multiply the number value stored at path by number
+func (c cmdable) JSONNumMultBy(ctx context.Context, key, path string, value float64) *JSONCmd {
+	args := []interface{}{"JSON.NUMMULTBY", key, path, value}
+	cmd := NewJSONCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// JSONNumMultBy multiply the number value stored at path by number
+func (c cmdable) JSONResp(ctx context.Context, key, path string) *MapStringInterfaceCmd {
+	args := []interface{}{"JSON.RESP", key, path}
+	cmd := NewMapStringInterfaceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -403,13 +529,18 @@ func (c cmdable) JSONObjLen(ctx context.Context, key, path string) *IntPointerSl
 // can be marshalled to JSON (using encoding/JSON) unless the argument is a string or a []byte when we assume that
 // it can be passed directly as JSON.
 func (c cmdable) JSONSet(ctx context.Context, key, path string, value interface{}) *StatusCmd {
-	return c.JSONSetMode(ctx, key, path, value, "")
+	return c.JSONSetMode(ctx, key, path, value, &JSONSetModeOptions{})
 }
 
-// JSONSetMOde sets the JSON value at the given path in the given key allows the mode to be set
+type JSONSetModeOptions struct {
+	XX bool
+	NX bool
+}
+
+// JSONSetMode sets the JSON value at the given path in the given key allows the mode to be set
 // as well (the mode value must be "XX" or "NX").  The value must be something that can be marshalled to JSON (using encoding/JSON) unless
-// the argument is a string or []byte when we assume that  it can be passed directly as JSON.
-func (c cmdable) JSONSetMode(ctx context.Context, key, path string, value interface{}, mode string) *StatusCmd {
+// the argument is a string or []byte when we assume that it can be passed directly as JSON.
+func (c cmdable) JSONSetMode(ctx context.Context, key, path string, value interface{}, mode *JSONSetModeOptions) *StatusCmd {
 
 	var bytes []byte
 	var err error
@@ -425,12 +556,19 @@ func (c cmdable) JSONSetMode(ctx context.Context, key, path string, value interf
 
 	args := []interface{}{"json.set", key, path, util.BytesToString(bytes)}
 
-	if mode != "" {
-		args = append(args, mode)
+	if mode != nil {
+		if mode.XX && mode.NX {
+			panic("redis: JSON.SET can only accept one of XX or NX")
+		}
+		if mode.XX {
+			args = append(args, "XX")
+		}
+		if mode.NX {
+			args = append(args, "NX")
+		}
 	}
 
 	cmd := NewStatusCmd(ctx, args...)
-
 	if err != nil {
 		cmd.SetErr(err)
 	} else {
