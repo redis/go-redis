@@ -796,6 +796,10 @@ func newConn(opt *Options, connPool pool.Pooler) *Conn {
 		txPipeline: c.baseClient.processTxPipeline,
 	})
 
+	for _, hook := range opt.Hooks {
+		c.AddHook(hook)
+	}
+
 	return &c
 }
 

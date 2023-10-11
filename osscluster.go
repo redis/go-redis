@@ -85,6 +85,7 @@ type ClusterOptions struct {
 
 	TLSConfig        *tls.Config
 	DisableIndentity bool // Disable set-lib on connect. Default is false.
+	Hooks            []Hook
 }
 
 func (opt *ClusterOptions) init() {
@@ -865,6 +866,10 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		pipeline:   c.processPipeline,
 		txPipeline: c.processTxPipeline,
 	})
+
+	for _, hook := range opt.Hooks {
+		c.AddHook(hook)
+	}
 
 	return c
 }

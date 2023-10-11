@@ -144,6 +144,9 @@ type Options struct {
 
 	// // Disable set-lib on connect. Default is false.
 	DisableIndentity bool
+
+	// Hooks are initial hooks in options like AddHook.
+	Hooks []Hook
 }
 
 func (opt *Options) init() {
