@@ -12,8 +12,8 @@ import (
 
 type JSONCmdAble interface {
 	JSONArrAppend(ctx context.Context, key, path string, values ...interface{}) *IntSliceCmd
-	JSONArrIndex(ctx context.Context, key, path string, value interface{}) *IntSliceCmd
-	JSONArrIndexWithArgs(ctx context.Context, key, path string, value interface{}, options *JSONArrIndexOptions) *IntSliceCmd
+	JSONArrIndex(ctx context.Context, key, path string, value ...interface{}) *IntSliceCmd
+	JSONArrIndexWithArgs(ctx context.Context, key, path string, options *JSONArrIndexOptions, value ...interface{}) *IntSliceCmd
 	JSONArrInsert(ctx context.Context, key, path string, index int64, values ...interface{}) *IntSliceCmd
 	JSONArrLen(ctx context.Context, key, path string) *IntSliceCmd
 	JSONArrPop(ctx context.Context, key, path string, index int) *StringSliceCmd
@@ -271,8 +271,9 @@ func (c cmdable) JSONArrAppend(ctx context.Context, key, path string, values ...
 }
 
 // JSONArrIndex searches for the first occurrence of a JSON value in an array
-func (c cmdable) JSONArrIndex(ctx context.Context, key, path string, value interface{}) *IntSliceCmd {
-	args := []interface{}{"json.arrindex", key, path, value}
+func (c cmdable) JSONArrIndex(ctx context.Context, key, path string, value ...interface{}) *IntSliceCmd {
+	args := []interface{}{"json.arrindex", key, path}
+	args = append(args, value...)
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -285,8 +286,9 @@ type JSONArrIndexOptions struct {
 
 // JSONArrIndexFromTo searches for the first occurrence of a JSON value in an array whilst allowing the start and
 // stop options to be provided.
-func (c cmdable) JSONArrIndexWithArgs(ctx context.Context, key, path string, value interface{}, options *JSONArrIndexOptions) *IntSliceCmd {
-	args := []interface{}{"json.arrindex", key, path, value}
+func (c cmdable) JSONArrIndexWithArgs(ctx context.Context, key, path string, options *JSONArrIndexOptions, value ...interface{}) *IntSliceCmd {
+	args := []interface{}{"json.arrindex", key, path}
+	args = append(args, value...)
 	if options != nil {
 		if options.Start != nil {
 			args = append(args, options.Start)
