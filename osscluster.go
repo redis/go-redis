@@ -235,7 +235,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.PoolSize = q.int("pool_size")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
-	o.MaxActiveConns = q.int("max_action_conns")
+	o.MaxActiveConns = q.int("max_active_conns")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
