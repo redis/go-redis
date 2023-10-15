@@ -503,14 +503,6 @@ func (c cmdable) JSONNumMultBy(ctx context.Context, key, path string, value floa
 	return cmd
 }
 
-// JSONNumMultBy multiply the number value stored at path by number
-func (c cmdable) JSONResp(ctx context.Context, key, path string) *MapStringInterfaceCmd {
-	args := []interface{}{"JSON.RESP", key, path}
-	cmd := NewMapStringInterfaceCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
-}
-
 // JSONObjKeys returns the keys in the object that's referenced by path
 func (c cmdable) JSONObjKeys(ctx context.Context, key, path string) *SliceCmd {
 	args := []interface{}{"json.objkeys", key, path}
