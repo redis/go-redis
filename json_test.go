@@ -279,20 +279,20 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 		})
 
 		It("should JSONMSet", Label("json.mset", "json"), func() {
-			doc1 := &redis.JSONSetParams{Key: "1", Path: "$", Value: 1}
-			doc2 := &redis.JSONSetParams{Key: "2", Path: "$", Value: 2}
-			docs := []*redis.JSONSetParams{doc1, doc2}
+			doc1 := redis.JSONSetArgs{Key: "1", Path: "$", Value: 1}
+			doc2 := redis.JSONSetArgs{Key: "2", Path: "$", Value: 2}
+			docs := []redis.JSONSetArgs{doc1, doc2}
 			cmd1 := client.JSONMSet(ctx, docs)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
 
-			cmd2, err := client.JSONMGet(ctx, "$", "1").Result()
+			res, err := client.JSONMGet(ctx, "$", "1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cmd2).To(Equal([]interface{}{"[1]"}))
+			Expect(res).To(Equal([]interface{}{"[1]"}))
 
-			cmd3, err := client.JSONMGet(ctx, "$", "1", "2").Result()
+			res, err = client.JSONMGet(ctx, "$", "1", "2").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cmd3).To(Equal([]interface{}{"[1]", "[2]"}))
+			Expect(res).To(Equal([]interface{}{"[1]", "[2]"}))
 		})
 
 		It("should JSONMGet", Label("json.mget", "json"), func() {
