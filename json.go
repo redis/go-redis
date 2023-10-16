@@ -24,7 +24,7 @@ type JSONCmdAble interface {
 	JSONDel(ctx context.Context, key, path string) *IntCmd
 	JSONForget(ctx context.Context, key, path string) *IntCmd
 	JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd
-	JSONGetWithArgs(ctx context.Context, key string, options *JSONGetArgs) *JSONCmd
+	JSONGetArgs(ctx context.Context, key string, options JSONGetArgs, paths ...string) *JSONCmd
 	JSONMerge(ctx context.Context, key, path string, value string) *StatusCmd
 	JSONMSet(ctx context.Context, docs []*JSONSetParams) *StatusCmd
 	JSONMGet(ctx context.Context, path string, keys ...string) *JSONSliceCmd
@@ -425,40 +425,28 @@ func (c cmdable) JSONGet(ctx context.Context, key string, paths ...string) *JSON
 }
 
 type JSONGetArgs struct {
-	Path      string
-	Paths     []interface{}
-	Indention string
-	NewLine   string
-	Space     string
+	Indent  string
+	Newline string
+	Space   string
 }
 
-// JSONGetWithArgs - Retrieves the value of a key from a JSON document.
+// JSONGetArgs - Retrieves the value of a key from a JSON document.
 // This function also allows for specifying additional options such as:
-// Indention, NewLine, Space, Path and Paths.
+// Indention, NewLine and Space
 // For more information - https://redis.io/commands/json.get/
-func (c cmdable) JSONGetWithArgs(ctx context.Context, key string, options *JSONGetArgs) *JSONCmd {
+func (c cmdable) JSONGetArgs(ctx context.Context, key string, options JSONGetArgs, paths ...string) *JSONCmd {
 	args := []interface{}{"JSON.GET", key}
-	if options != nil {
-		if options.Indention != "" {
-			args = append(args, options.Indention)
-		}
-		if options.NewLine != "" {
-			args = append(args, options.NewLine)
-		}
-		if options.Space != "" {
-			args = append(args, options.Space)
-		}
-		if options.Path != "" && options.Paths != nil {
-			panic("redis: JSON.GET can only accept one of Path or Paths")
-
-		}
-		if options.Path != "" {
-			args = append(args, options.Path)
-		}
-		if options.Paths != nil {
-			args = append(args, options.Paths...)
-		}
-
+	if options.Indent != "" {
+		args = append(args, options.Indent)
+	}
+	if options.Newline != "" {
+		args = append(args, options.Newline)
+	}
+	if options.Space != "" {
+		args = append(args, options.Space)
+	}
+	for _, path := range paths {
+		args = append(args, path)
 	}
 	cmd := NewJSONCmd(ctx, args...)
 	_ = c(ctx, cmd)

@@ -246,27 +246,36 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 		})
 
 		It("should JSONGet", Label("json.get", "json"), func() {
-			cmd1 := client.JSONSet(ctx, "get3", "$", `{"a": 1, "b": 2, "c": {"hello": "world"}}`)
-			Expect(cmd1.Err()).NotTo(HaveOccurred())
-			Expect(cmd1.Val()).To(Equal("OK"))
+			res, err := client.JSONSet(ctx, "get3", "$", `{"a": 1, "b": 2, "c": {"hello": "world"}}`).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal("OK"))
 
-			cmd2 := client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Path: "$.*"})
-			Expect(cmd2.Err()).NotTo(HaveOccurred())
-			Expect(cmd2.Val()).To(Equal(`[1,2,{"hello":"world"}]`))
+			res, err = client.JSONGetArgs(ctx, "get3", redis.JSONGetArgs{Indent: "--"}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(`{--\"a\":1,--\"b\":2,--\"c\":{----\"hello\":\"world\"--}}`))
+
+			res, err = client.JSONGetArgs(ctx, "get3", redis.JSONGetArgs{Indent: "--"}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(`{--\"a\":1,--\"b\":2,--\"c\":{----\"hello\":\"world\"--}}`))
+
+			res, err = client.JSONGetArgs(ctx, "get3", redis.JSONGetArgs{Indent: "--", Newline: `~`, Space: `!`}, `$.a`, `$.c`).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(`{~--\"$.a\":![~----1~--],~--\"$.c\":![~----{~------\"hello\":!\"world\"~----}~--]~}`))
+
 		})
 
 		It("should JSONMerge", Label("json.merge", "json"), func() {
-			cmd1, err := client.JSONSet(ctx, "merge1", "$", `{"a": 1, "b": 2}`).Result()
+			res, err := client.JSONSet(ctx, "merge1", "$", `{"a": 1, "b": 2}`).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cmd1).To(Equal("OK"))
+			Expect(res).To(Equal("OK"))
 
-			cmd2 := client.JSONMerge(ctx, "merge1", "$", `{"b": 3, "c": 4}`)
-			Expect(cmd2.Err()).NotTo(HaveOccurred())
-			Expect(cmd2.Val()).To(Equal("OK"))
-
-			cmd3, err := client.JSONGet(ctx, "merge1", "$").Result()
+			res, err = client.JSONMerge(ctx, "merge1", "$", `{"b": 3, "c": 4}`).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cmd3).To(Equal(`[{"a":1,"b":3,"c":4}]`))
+			Expect(res).To(Equal("OK"))
+
+			res, err = client.JSONGet(ctx, "merge1", "$").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(`[{"a":1,"b":3,"c":4}]`))
 		})
 
 		It("should JSONMSet", Label("json.mset", "json"), func() {
