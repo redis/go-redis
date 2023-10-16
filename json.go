@@ -20,11 +20,16 @@ type JSONCmdAble interface {
 	JSONArrTrim(ctx context.Context, key, path string) *IntSliceCmd
 	JSONArrTrimWithArgs(ctx context.Context, key, path string, options *JSONArrTrimOptions) *IntSliceCmd
 	JSONClear(ctx context.Context, key, path string) *IntCmd
+	JSONDebugMemory(ctx context.Context, key, path string) *IntCmd
 	JSONDel(ctx context.Context, key, path string) *IntCmd
 	JSONForget(ctx context.Context, key, path string) *IntCmd
 	JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd
+	JSONGetWithArgs(ctx context.Context, key string, options *JSONGetArgs) *JSONCmd
+	JSONMerge(ctx context.Context, key, path string, value string) *StatusCmd
+	JSONMSet(ctx context.Context, docs []*JSONSetParams) *StatusCmd
 	JSONMGet(ctx context.Context, path string, keys ...string) *JSONSliceCmd
 	JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd
+	JSONNumMultBy(ctx context.Context, key, path string, value float64) *JSONCmd
 	JSONObjKeys(ctx context.Context, key, path string) *SliceCmd
 	JSONObjLen(ctx context.Context, key, path string) *IntPointerSliceCmd
 	JSONSet(ctx context.Context, key, path string, value interface{}) *StatusCmd
@@ -477,7 +482,7 @@ type JSONSetParams struct {
 }
 
 // JSONMSet set or update one or more JSON values according to the specified key-path-value triplets
-func (c cmdable) JSONMSet(ctx context.Context, docs []JSONSetParams) *StatusCmd {
+func (c cmdable) JSONMSet(ctx context.Context, docs []*JSONSetParams) *StatusCmd {
 	args := []interface{}{"JSON.MSET"}
 	for _, doc := range docs {
 		args = append(args, doc.Key, doc.Path, doc.Value)

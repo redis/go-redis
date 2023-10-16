@@ -28,7 +28,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 	Describe("arrays", Label("arrays"), func() {
 
-		It("should JSONArrAppend", Label("json.arrappend"), func() {
+		It("should JSONArrAppend", Label("json.arrappend", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "append2", "$", `{"a": [10], "b": {"a": [12, 13]}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -38,49 +38,49 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd2.Val()).To(Equal([]int64{2, 3}))
 		})
 
-		// It("should JSONArrIndex and JSONArrIndexWithArgs", Label("json.arrindex"), func() {
-		// 	cmd1, err := client.JSONSet(ctx, "index1", "$", `{"a": [10], "b": {"a": [12, 10]}}`).Result()
-		// 	Expect(err).NotTo(HaveOccurred())
-		// 	Expect(cmd1).To(Equal("OK"))
+		It("should JSONArrIndex and JSONArrIndexWithArgs", Label("json.arrindex", "json"), func() {
+			cmd1, err := client.JSONSet(ctx, "index1", "$", `{"a": [10], "b": {"a": [12, 10]}}`).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmd1).To(Equal("OK"))
 
-		// 	cmd2, err := client.JSONArrIndex(ctx, "index1", "$.b.a", 10).Result()
-		// 	Expect(err).NotTo(HaveOccurred())
-		// 	Expect(cmd2).To(Equal([]int64{1}))
+			cmd2, err := client.JSONArrIndex(ctx, "index1", "$.b.a", 10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmd2).To(Equal([]int64{1}))
 
-		// 	cmd3, err := client.JSONSet(ctx, "index2", "$", `[0,1,2,3,4]`).Result()
-		// 	Expect(err).NotTo(HaveOccurred())
-		// 	Expect(cmd3).To(Equal("OK"))
+			cmd3, err := client.JSONSet(ctx, "index2", "$", `[0,1,2,3,4]`).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmd3).To(Equal("OK"))
 
-		// 	res, err := client.JSONArrIndex(ctx, "index2", "$", 1).Result()
-		// 	Expect(err).NotTo(HaveOccurred())
-		// 	Expect(res[0]).To(Equal(int64(1)))
+			res, err := client.JSONArrIndex(ctx, "index2", "$", 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res[0]).To(Equal(int64(1)))
 
-		// 	res, err = client.JSONArrIndex(ctx, "index2", "$", 1, 2).Result()
-		// 	Expect(err).NotTo(HaveOccurred())
-		// 	Expect(res[0]).To(Equal(int64(-1)))
+			res, err = client.JSONArrIndex(ctx, "index2", "$", 1, 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res[0]).To(Equal(int64(-1)))
 
-		// 	res, err = client.JSONArrIndex(ctx, "index2", "$", 4).Result()
-		// 	Expect(err).NotTo(HaveOccurred())
-		// 	Expect(res[0]).To(Equal(int64(4)))
+			res, err = client.JSONArrIndex(ctx, "index2", "$", 4).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res[0]).To(Equal(int64(4)))
 
-		// 	args := &redis.JSONArrIndexOptions{Start: 0}
-		// 	res, err = client.JSONArrIndexWithArgs(ctx, "index2", "$", args, 4).Result()
-		// 	Expect(err).NotTo(HaveOccurred())
-		// 	Expect(res[0]).To(Equal(int64(4)))
+			args := &redis.JSONArrIndexOptions{Start: 0}
+			res, err = client.JSONArrIndexWithArgs(ctx, "index2", "$", args, 4).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res[0]).To(Equal(int64(4)))
 
-		// 	args = &redis.JSONArrIndexOptions{Start: 0, Stop: 5000}
-		// 	res, err = client.JSONArrIndexWithArgs(ctx, "index2", "$", args, 4).Result()
-		// 	Expect(err).NotTo(HaveOccurred())
-		// 	Expect(res[0]).To(Equal(int64(4)))
+			args = &redis.JSONArrIndexOptions{Start: 0, Stop: 5000}
+			res, err = client.JSONArrIndexWithArgs(ctx, "index2", "$", args, 4).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res[0]).To(Equal(int64(4)))
 
-		// 	args = &redis.JSONArrIndexOptions{Start: 0, Stop: -1}
-		// 	res, err = client.JSONArrIndexWithArgs(ctx, "index2", "$", args, 4).Result()
-		// 	Expect(err).NotTo(HaveOccurred())
-		// 	Expect(res[0]).To(Equal(int64(-1)))
+			args = &redis.JSONArrIndexOptions{Start: 0, Stop: -1}
+			res, err = client.JSONArrIndexWithArgs(ctx, "index2", "$", args, 4).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res[0]).To(Equal(int64(-1)))
 
-		// })
+		})
 
-		It("should JSONArrIndex and JSONArrIndexWithArgs with $", Label("json.arrindex"), func() {
+		It("should JSONArrIndex and JSONArrIndexWithArgs with $", Label("json.arrindex", "json"), func() {
 			doc := `{
 				"store": {
 					"book": [
@@ -131,7 +131,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(resArr).To(Equal([]int64{1, 2}))
 		})
 
-		It("should JSONArrInsert", Label("json.arrinsert"), func() {
+		It("should JSONArrInsert", Label("json.arrinsert", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "insert2", "$", `[100, 200, 300, 200]`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -148,7 +148,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Equal(`[[100,200,300,1,2,200]]`)))
 		})
 
-		It("should JSONArrLen", Label("json.arrlen"), func() {
+		It("should JSONArrLen", Label("json.arrlen", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "length2", "$", `{"a": [10], "b": {"a": [12, 10, 20, 12, 90, 10]}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -172,7 +172,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd3.Val()).To(Equal("[[100,200,200]]"))
 		})
 
-		It("should JSONArrTrim", func() {
+		It("should JSONArrTrim", Label("json.arrtrim", "json"), func() {
 			cmd1, err := client.JSONSet(ctx, "trim1", "$", `[0,1,2,3,4]`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd1).To(Equal("OK"))
@@ -223,7 +223,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd10).To(Equal([]int64{0}))
 		})
 
-		It("should JSONArrPop", Label("json.arrpop"), func() {
+		It("should JSONArrPop", Label("json.arrpop", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "pop4", "$", `[100, 200, 300, 200]`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -240,13 +240,13 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 	})
 
 	Describe("get/set", Label("getset"), func() {
-		It("should JSONSet", Label("json.set"), func() {
+		It("should JSONSet", Label("json.set", "json"), func() {
 			cmd := client.JSONSet(ctx, "set1", "$", `{"a": 1, "b": 2, "hello": "world"}`)
 			Expect(cmd.Err()).NotTo(HaveOccurred())
 			Expect(cmd.Val()).To(Equal("OK"))
 		})
 
-		It("should JSONGet", Label("json.get"), func() {
+		It("should JSONGet", Label("json.get", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "get3", "$", `{"a": 1, "b": 2, "c": {"hello": "world"}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -256,7 +256,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd2.Val()).To(Equal(`[1,2,{"hello":"world"}]`))
 		})
 
-		It("should JSONMerge", Label("jsonmerge", "json"), func() {
+		It("should JSONMerge", Label("json.merge", "json"), func() {
 			cmd1, err := client.JSONSet(ctx, "merge1", "$", `{"a": 1, "b": 2}`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd1).To(Equal("OK"))
@@ -270,7 +270,24 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd3).To(Equal(`[{"a":1,"b":3,"c":4}]`))
 		})
 
-		It("should JSONMGet", Label("jsonmget", "json"), func() {
+		It("should JSONMSet", Label("json.mset", "json"), func() {
+			doc1 := &redis.JSONSetParams{Key: "1", Path: "$", Value: 1}
+			doc2 := &redis.JSONSetParams{Key: "2", Path: "$", Value: 2}
+			docs := []*redis.JSONSetParams{doc1, doc2}
+			cmd1 := client.JSONMSet(ctx, docs)
+			Expect(cmd1.Err()).NotTo(HaveOccurred())
+			Expect(cmd1.Val()).To(Equal("OK"))
+
+			cmd2, err := client.JSONMGet(ctx, "$", "1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmd2).To(Equal([]interface{}{"[1]"}))
+
+			cmd3, err := client.JSONMGet(ctx, "$", "1", "2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmd3).To(Equal([]interface{}{"[1]", "[2]"}))
+		})
+
+		It("should JSONMGet", Label("json.mget", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "mget2a", "$", `{"a": ["aa", "ab", "ac", "ad"], "b": {"a": ["ba", "bb", "bc", "bd"]}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -285,7 +302,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd3.Val()[1]).To(Equal(`[[100,200,300,200],[100,200,300,200]]`))
 		})
 
-		It("should JSONMget with $", Label("json.mget"), func() {
+		It("should JSONMget with $", Label("json.mget", "json"), func() {
 			cmd, err := client.JSONSet(ctx, "doc1", "$", `{"a": 1, "b": 2, "nested": {"a": 3}, "c": "", "nested2": {"a": ""}}`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd).To(Equal("OK"))
@@ -312,7 +329,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 	Describe("Misc", Label("misc"), func() {
 
-		It("should JSONClear", Label("json.clear"), func() {
+		It("should JSONClear", Label("json.clear", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "clear1", "$", `[1]`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -326,7 +343,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd3.Val()).To(Equal(`[[]]`))
 		})
 
-		It("should JSONClear with $", Label("json.clear"), func() {
+		It("should JSONClear with $", Label("json.clear", "json"), func() {
 			doc := `{
 				"nested1": {"a": {"foo": 10, "bar": 20}},
 				"a": ["foo"],
@@ -358,7 +375,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(resGet).To(Equal(`[{"nested1":{"a":{}},"a":["foo"],"nested2":{"a":"claro"},"nested3":{"a":{"baz":50}}}]`))
 		})
 
-		It("should JSONDel", Label("json.del"), func() {
+		It("should JSONDel", Label("json.del", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "del1", "$", `[1]`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -372,7 +389,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd3.Val()).To(HaveLen(0))
 		})
 
-		It("should JSONDel with $", Label("json.del"), func() {
+		It("should JSONDel with $", Label("json.del", "json"), func() {
 			cmd, err := client.JSONSet(ctx, "del1", "$", `{"a": 1, "nested": {"a": 2, "b": 3}}`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd).To(Equal("OK"))
@@ -422,7 +439,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(resGet).To(Equal(resVal))
 		})
 
-		It("should JSONForget", Label("json.forget"), func() {
+		It("should JSONForget", Label("json.forget", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "forget3", "$", `{"a": [1,2,3], "b": {"a": [1,2,3], "b": "annie"}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -437,7 +454,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 		})
 
-		It("should JSONForget with $", Label("json.forget"), func() {
+		It("should JSONForget with $", Label("json.forget", "json"), func() {
 			cmd, err := client.JSONSet(ctx, "doc1", "$", `{"a": 1, "nested": {"a": 2, "b": 3}}`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd).To(Equal("OK"))
@@ -487,7 +504,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(resGet).To(Equal(resVal))
 		})
 
-		It("should JSONNumIncrBy", Label("json.numincrby"), func() {
+		It("should JSONNumIncrBy", Label("json.numincrby", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "incr3", "$", `{"a": [1, 2], "b": {"a": [0, -1]}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -497,7 +514,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd2.Val()).To(Equal(`[3,0]`))
 		})
 
-		It("should JSONNumIncrBy with $", Label("json.numincrby"), func() {
+		It("should JSONNumIncrBy with $", Label("json.numincrby", "json"), func() {
 			cmd, err := client.JSONSet(ctx, "doc1", "$", `{"a": "b", "b": [{"a": 2}, {"a": 5.0}, {"a": "c"}]}`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd).To(Equal("OK"))
@@ -519,7 +536,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd).To(Equal(`[5]`))
 		})
 
-		It("should JSONNumMultBy", Label("json.nummultby"), func() {
+		It("should JSONNumMultBy", Label("json.nummultby", "json"), func() {
 			cmd1, err := client.JSONSet(ctx, "num1", "$", `1`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd1).To(Equal("OK"))
@@ -537,7 +554,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd2).To(Equal(`[2.5]`))
 		})
 
-		It("should JSONObjKeys", Label("json.objkeys"), func() {
+		It("should JSONObjKeys", Label("json.objkeys", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "objkeys1", "$", `{"a": [1, 2], "b": {"a": [0, -1]}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -548,7 +565,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd2.Val()).To(Equal([]interface{}{nil, []interface{}{"a"}, nil, nil, nil, nil, nil}))
 		})
 
-		It("should JSONObjKeys with $", Label("json.objkeys"), func() {
+		It("should JSONObjKeys with $", Label("json.objkeys", "json"), func() {
 			doc := `{
 				"nested1": {"a": {"foo": 10, "bar": 20}},
 				"a": ["foo"],
@@ -574,7 +591,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(err).To(HaveOccurred())
 		})
 
-		It("should JSONObjLen", Label("json.objlen"), func() {
+		It("should JSONObjLen", Label("json.objlen", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "objlen2", "$", `{"a": [1, 2], "b": {"a": [0, -1]}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -586,7 +603,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(*cmd2.Val()[1]).To(Equal(int64(1)))
 		})
 
-		It("should JSONStrLen", Label("json.strlen"), func() {
+		It("should JSONStrLen", Label("json.strlen", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "strlen2", "$", `{"a": "alice", "b": "bob", "c": {"a": "alice", "b": "bob"}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -603,7 +620,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(*cmd2.Val()[4]).To(Equal(int64(3)))
 		})
 
-		It("should JSONStrAppend", Label("json.strappend"), func() {
+		It("should JSONStrAppend", Label("json.strappend", "json"), func() {
 			cmd1, err := client.JSONSet(ctx, "strapp1", "$", `"foo"`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd1).To(Equal("OK"))
@@ -616,7 +633,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 		})
 
-		It("should JSONStrAppend and JSONStrLen with $", Label("json.strappend", "json.strappend"), func() {
+		It("should JSONStrAppend and JSONStrLen with $", Label("json.strappend", "json.strlen", "json"), func() {
 			cmd, err := client.JSONSet(ctx, "doc1", "$", `{"a": "foo", "nested1": {"a": "hello"}, "nested2": {"a": 31}}`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd).To(Equal("OK"))
@@ -634,7 +651,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(*res[0]).To(Equal(int64(5)))
 		})
 
-		It("should JSONToggle", Label("json.toggle"), func() {
+		It("should JSONToggle", Label("json.toggle", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "toggle1", "$", `[true]`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -645,7 +662,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(*cmd2.Val()[0]).To(Equal(int64(0)))
 		})
 
-		It("should JSONType", Label("json.type"), func() {
+		It("should JSONType", Label("json.type", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "type1", "$", `[true]`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
