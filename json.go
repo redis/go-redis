@@ -20,7 +20,6 @@ type JSONCmdAble interface {
 	JSONArrTrim(ctx context.Context, key, path string) *IntSliceCmd
 	JSONArrTrimArgs(ctx context.Context, key, path string, options JSONArrTrimArgs) *IntSliceCmd
 	JSONClear(ctx context.Context, key, path string) *IntCmd
-	JSONDebugMemory(ctx context.Context, key, path string) *IntCmd
 	JSONDel(ctx context.Context, key, path string) *IntCmd
 	JSONForget(ctx context.Context, key, path string) *IntCmd
 	JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd
@@ -376,15 +375,6 @@ func (c cmdable) JSONArrTrimArgs(ctx context.Context, key, path string, options 
 // For more information, see https://redis.io/commands/json.clear
 func (c cmdable) JSONClear(ctx context.Context, key, path string) *IntCmd {
 	args := []interface{}{"JSON.CLEAR", key, path}
-	cmd := NewIntCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
-}
-
-// JSONDebugMemory reports a value's memory usage in bytes.
-// For more information, see https://redis.io/commands/json.debug.memory
-func (c cmdable) JSONDebugMemory(ctx context.Context, key, path string) *IntCmd {
-	args := []interface{}{"JSON.DEBUG", "MEMORY", key, path}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
