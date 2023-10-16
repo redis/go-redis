@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
@@ -25,21 +26,21 @@ type JSONCmdAble interface {
 	JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd
 	JSONGetArgs(ctx context.Context, key string, options JSONGetArgs, paths ...string) *JSONCmd
 	JSONMerge(ctx context.Context, key, path string, value string) *StatusCmd
-	JSONMSet(ctx context.Context, docs []*JSONSetParams) *StatusCmd
+	JSONMSet(ctx context.Context, docs []JSONSetArgs) *StatusCmd
 	JSONMGet(ctx context.Context, path string, keys ...string) *JSONSliceCmd
 	JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd
 	JSONNumMultBy(ctx context.Context, key, path string, value float64) *JSONCmd
 	JSONObjKeys(ctx context.Context, key, path string) *SliceCmd
 	JSONObjLen(ctx context.Context, key, path string) *IntPointerSliceCmd
 	JSONSet(ctx context.Context, key, path string, value interface{}) *StatusCmd
-	JSONSetMode(ctx context.Context, key, path string, value interface{}, mode *JSONSetModeOptions) *StatusCmd
+	JSONSetMode(ctx context.Context, key, path string, value interface{}, mode string) *StatusCmd
 	JSONStrAppend(ctx context.Context, key, path, value string) *IntPointerSliceCmd
 	JSONStrLen(ctx context.Context, key, path string) *IntPointerSliceCmd
 	JSONToggle(ctx context.Context, key, path string) *IntPointerSliceCmd
 	JSONType(ctx context.Context, key, path string) *JSONSliceCmd
 }
 
-type JSONSetParams struct {
+type JSONSetArgs struct {
 	Key   interface{}
 	Path  string
 	Value interface{}
@@ -53,11 +54,6 @@ type JSONArrIndexArgs struct {
 type JSONArrTrimArgs struct {
 	Start int
 	Stop  *int
-}
-
-type JSONSetModeOptions struct {
-	XX bool
-	NX bool
 }
 
 type JSONCmd struct {
@@ -470,7 +466,7 @@ func (c cmdable) JSONMGet(ctx context.Context, path string, keys ...string) *JSO
 
 // JSONMSet sets or updates one or more JSON values according to the specified key-path-value triplets.
 // For more information, see https://redis.io/commands/json.mset
-func (c cmdable) JSONMSet(ctx context.Context, docs []*JSONSetParams) *StatusCmd {
+func (c cmdable) JSONMSet(ctx context.Context, docs []JSONSetArgs) *StatusCmd {
 	args := []interface{}{"JSON.MSET"}
 	for _, doc := range docs {
 		args = append(args, doc.Key, doc.Path, doc.Value)
@@ -521,14 +517,14 @@ func (c cmdable) JSONObjLen(ctx context.Context, key, path string) *IntPointerSl
 // it can be passed directly as JSON.
 // For more information, see https://redis.io/commands/json.set
 func (c cmdable) JSONSet(ctx context.Context, key, path string, value interface{}) *StatusCmd {
-	return c.JSONSetMode(ctx, key, path, value, &JSONSetModeOptions{})
+	return c.JSONSetMode(ctx, key, path, value, "")
 }
 
 // JSONSetMode sets the JSON value at the given path in the given key and allows the mode to be set
 // (the mode value must be "XX" or "NX"). The value must be something that can be marshaled to JSON (using encoding/JSON) unless
 // the argument is a string or []byte when we assume that it can be passed directly as JSON.
 // For more information, see https://redis.io/commands/json.set
-func (c cmdable) JSONSetMode(ctx context.Context, key, path string, value interface{}, mode *JSONSetModeOptions) *StatusCmd {
+func (c cmdable) JSONSetMode(ctx context.Context, key, path string, value interface{}, mode string) *StatusCmd {
 	var bytes []byte
 	var err error
 	switch v := value.(type) {
@@ -540,15 +536,13 @@ func (c cmdable) JSONSetMode(ctx context.Context, key, path string, value interf
 		bytes, err = json.Marshal(v)
 	}
 	args := []interface{}{"JSON.SET", key, path, util.BytesToString(bytes)}
-	if mode != nil {
-		if mode.XX && mode.NX {
-			panic("redis: JSON.SET can only accept one of XX or NX")
-		}
-		if mode.XX {
-			args = append(args, "XX")
-		}
-		if mode.NX {
-			args = append(args, "NX")
+	if mode != "" {
+		switch strings.ToUpper(mode) {
+		case "XX", "NX":
+			args = append(args, strings.ToUpper(mode))
+
+		default:
+			panic("redis: JSON.SET mode must be NX or XX")
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
