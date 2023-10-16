@@ -13,7 +13,7 @@ import (
 type JSONCmdAble interface {
 	JSONArrAppend(ctx context.Context, key, path string, values ...interface{}) *IntSliceCmd
 	JSONArrIndex(ctx context.Context, key, path string, value ...interface{}) *IntSliceCmd
-	JSONArrIndexWithArgs(ctx context.Context, key, path string, options *JSONArrIndexOptions, value ...interface{}) *IntSliceCmd
+	JSONArrIndexArgs(ctx context.Context, key, path string, options JSONArrIndexArgs, value ...interface{}) *IntSliceCmd
 	JSONArrInsert(ctx context.Context, key, path string, index int64, values ...interface{}) *IntSliceCmd
 	JSONArrLen(ctx context.Context, key, path string) *IntSliceCmd
 	JSONArrPop(ctx context.Context, key, path string, index int) *StringSliceCmd
@@ -46,9 +46,9 @@ type JSONSetParams struct {
 	Value interface{}
 }
 
-type JSONArrIndexOptions struct {
-	Start interface{}
-	Stop  interface{}
+type JSONArrIndexArgs struct {
+	Start int
+	Stop  *int
 }
 
 type JSONArrTrimOptions struct {
@@ -307,19 +307,15 @@ func (c cmdable) JSONArrIndex(ctx context.Context, key, path string, value ...in
 	return cmd
 }
 
-// JSONArrIndexWithArgs searches for the first occurrence of a JSON value in an array while allowing the start and
+// JSONArrIndexArgs searches for the first occurrence of a JSON value in an array while allowing the start and
 // stop options to be provided.
 // For more information, see https://redis.io/commands/json.arrindex
-func (c cmdable) JSONArrIndexWithArgs(ctx context.Context, key, path string, options *JSONArrIndexOptions, value ...interface{}) *IntSliceCmd {
+func (c cmdable) JSONArrIndexArgs(ctx context.Context, key, path string, options JSONArrIndexArgs, value ...interface{}) *IntSliceCmd {
 	args := []interface{}{"JSON.ARRINDEX", key, path}
 	args = append(args, value...)
-	if options != nil {
-		if options.Start != nil {
-			args = append(args, options.Start)
-		}
-		if options.Stop != nil {
-			args = append(args, options.Stop)
-		}
+	args = append(args, options.Start)
+	if options.Stop != nil {
+		args = append(args, *options.Stop)
 	}
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)

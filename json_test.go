@@ -63,18 +63,17 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res[0]).To(Equal(int64(4)))
 
-			args := &redis.JSONArrIndexOptions{Start: 0}
-			res, err = client.JSONArrIndexWithArgs(ctx, "index2", "$", args, 4).Result()
+			res, err = client.JSONArrIndexArgs(ctx, "index2", "$", redis.JSONArrIndexArgs{}, 4).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res[0]).To(Equal(int64(4)))
 
-			args = &redis.JSONArrIndexOptions{Start: 0, Stop: 5000}
-			res, err = client.JSONArrIndexWithArgs(ctx, "index2", "$", args, 4).Result()
+			stop := 5000
+			res, err = client.JSONArrIndexArgs(ctx, "index2", "$", redis.JSONArrIndexArgs{Stop: &stop}, 4).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res[0]).To(Equal(int64(4)))
 
-			args = &redis.JSONArrIndexOptions{Start: 0, Stop: -1}
-			res, err = client.JSONArrIndexWithArgs(ctx, "index2", "$", args, 4).Result()
+			stop = -1
+			res, err = client.JSONArrIndexArgs(ctx, "index2", "$", redis.JSONArrIndexArgs{Stop: &stop}, 4).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res[0]).To(Equal(int64(-1)))
 
