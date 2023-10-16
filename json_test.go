@@ -176,8 +176,8 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd1).To(Equal("OK"))
 
-			opt := &redis.JSONArrTrimOptions{Start: 1, Stop: 3}
-			cmd2, err := client.JSONArrTrimWithArgs(ctx, "trim1", "$", opt).Result()
+			stop := 3
+			cmd2, err := client.JSONArrTrimArgs(ctx, "trim1", "$", redis.JSONArrTrimArgs{Start: 1, Stop: &stop}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd2).To(Equal([]int64{3}))
 
@@ -189,8 +189,8 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd3).To(Equal("OK"))
 
-			opt = &redis.JSONArrTrimOptions{Start: -1, Stop: 3}
-			cmd4, err := client.JSONArrTrimWithArgs(ctx, "trim2", "$", opt).Result()
+			stop = 3
+			cmd4, err := client.JSONArrTrimArgs(ctx, "trim2", "$", redis.JSONArrTrimArgs{Start: -1, Stop: &stop}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd4).To(Equal([]int64{0}))
 
@@ -198,8 +198,8 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd5).To(Equal("OK"))
 
-			opt = &redis.JSONArrTrimOptions{Start: 3, Stop: 99}
-			cmd6, err := client.JSONArrTrimWithArgs(ctx, "trim3", "$", opt).Result()
+			stop = 99
+			cmd6, err := client.JSONArrTrimArgs(ctx, "trim3", "$", redis.JSONArrTrimArgs{Start: 3, Stop: &stop}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd6).To(Equal([]int64{2}))
 
@@ -207,8 +207,8 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd7).To(Equal("OK"))
 
-			opt = &redis.JSONArrTrimOptions{Start: 9, Stop: 1}
-			cmd8, err := client.JSONArrTrimWithArgs(ctx, "trim4", "$", opt).Result()
+			stop = 1
+			cmd8, err := client.JSONArrTrimArgs(ctx, "trim4", "$", redis.JSONArrTrimArgs{Start: 9, Stop: &stop}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd8).To(Equal([]int64{0}))
 
@@ -216,8 +216,8 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd9).To(Equal("OK"))
 
-			opt = &redis.JSONArrTrimOptions{Start: 9, Stop: 11}
-			cmd10, err := client.JSONArrTrimWithArgs(ctx, "trim5", "$", opt).Result()
+			stop = 11
+			cmd10, err := client.JSONArrTrimArgs(ctx, "trim5", "$", redis.JSONArrTrimArgs{Start: 9, Stop: &stop}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmd10).To(Equal([]int64{0}))
 		})

@@ -18,7 +18,7 @@ type JSONCmdAble interface {
 	JSONArrLen(ctx context.Context, key, path string) *IntSliceCmd
 	JSONArrPop(ctx context.Context, key, path string, index int) *StringSliceCmd
 	JSONArrTrim(ctx context.Context, key, path string) *IntSliceCmd
-	JSONArrTrimWithArgs(ctx context.Context, key, path string, options *JSONArrTrimOptions) *IntSliceCmd
+	JSONArrTrimArgs(ctx context.Context, key, path string, options JSONArrTrimArgs) *IntSliceCmd
 	JSONClear(ctx context.Context, key, path string) *IntCmd
 	JSONDebugMemory(ctx context.Context, key, path string) *IntCmd
 	JSONDel(ctx context.Context, key, path string) *IntCmd
@@ -51,9 +51,9 @@ type JSONArrIndexArgs struct {
 	Stop  *int
 }
 
-type JSONArrTrimOptions struct {
-	Start interface{}
-	Stop  interface{}
+type JSONArrTrimArgs struct {
+	Start int
+	Stop  *int
 }
 
 type JSONSetModeOptions struct {
@@ -359,17 +359,13 @@ func (c cmdable) JSONArrTrim(ctx context.Context, key, path string) *IntSliceCmd
 	return cmd
 }
 
-// JSONArrTrimWithArgs trims an array to contain only the specified inclusive range of elements.
+// JSONArrTrimArgs trims an array to contain only the specified inclusive range of elements.
 // For more information, see https://redis.io/commands/json.arrtrim
-func (c cmdable) JSONArrTrimWithArgs(ctx context.Context, key, path string, options *JSONArrTrimOptions) *IntSliceCmd {
+func (c cmdable) JSONArrTrimArgs(ctx context.Context, key, path string, options JSONArrTrimArgs) *IntSliceCmd {
 	args := []interface{}{"JSON.ARRTRIM", key, path}
-	if options != nil {
-		if options.Start != nil {
-			args = append(args, options.Start)
-		}
-		if options.Stop != nil {
-			args = append(args, options.Stop)
-		}
+	args = append(args, options.Start)
+	if options.Stop != nil {
+		args = append(args, *options.Stop)
 	}
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
