@@ -21,6 +21,7 @@ type JSONCmdAble interface {
 	JSONArrTrim(ctx context.Context, key, path string) *IntSliceCmd
 	JSONArrTrimArgs(ctx context.Context, key, path string, options JSONArrTrimArgs) *IntSliceCmd
 	JSONClear(ctx context.Context, key, path string) *IntCmd
+	JSONDebugMemory(ctx context.Context, key, path string) *IntCmd
 	JSONDel(ctx context.Context, key, path string) *IntCmd
 	JSONForget(ctx context.Context, key, path string) *IntCmd
 	JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd
@@ -32,6 +33,7 @@ type JSONCmdAble interface {
 	JSONNumMultBy(ctx context.Context, key, path string, value float64) *JSONCmd
 	JSONObjKeys(ctx context.Context, key, path string) *SliceCmd
 	JSONObjLen(ctx context.Context, key, path string) *IntPointerSliceCmd
+	JSONResp(ctx context.Context, key, path string) *MapStringInterfaceCmd
 	JSONSet(ctx context.Context, key, path string, value interface{}) *StatusCmd
 	JSONSetMode(ctx context.Context, key, path string, value interface{}, mode string) *StatusCmd
 	JSONStrAppend(ctx context.Context, key, path, value string) *IntPointerSliceCmd
@@ -376,6 +378,12 @@ func (c cmdable) JSONClear(ctx context.Context, key, path string) *IntCmd {
 	return cmd
 }
 
+// JSONDebugMemory reports a value's memory usage in bytes (unimplemented)
+// For more information, see https://redis.io/commands/json.debug-memory
+func (c cmdable) JSONDebugMemory(ctx context.Context, key, path string) *IntCmd {
+	panic("not implemented")
+}
+
 // JSONDel deletes a value.
 // For more information, see https://redis.io/commands/json.del
 func (c cmdable) JSONDel(ctx context.Context, key, path string) *IntCmd {
@@ -510,6 +518,13 @@ func (c cmdable) JSONObjLen(ctx context.Context, key, path string) *IntPointerSl
 	cmd := NewIntPointerSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+// JSONResp returns the JSON in key in Redis serialization protocol specification form.
+// This function is considered deprecated and will panic if called.
+// For more information, set https://redis.io/commands/json.resp
+func (c cmdable) JSONResp(ctx context.Context, key, path string) *MapStringInterfaceCmd {
+	panic("not implemented")
 }
 
 // JSONSet sets the JSON value at the given path in the given key. The value must be something that
