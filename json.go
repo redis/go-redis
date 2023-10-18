@@ -14,26 +14,26 @@ import (
 type JSONCmdAble interface {
 	JSONArrAppend(ctx context.Context, key, path string, values ...interface{}) *IntSliceCmd
 	JSONArrIndex(ctx context.Context, key, path string, value ...interface{}) *IntSliceCmd
-	JSONArrIndexArgs(ctx context.Context, key, path string, options JSONArrIndexArgs, value ...interface{}) *IntSliceCmd
+	JSONArrIndexWithArgs(ctx context.Context, key, path string, options *JSONArrIndexArgs, value ...interface{}) *IntSliceCmd
 	JSONArrInsert(ctx context.Context, key, path string, index int64, values ...interface{}) *IntSliceCmd
 	JSONArrLen(ctx context.Context, key, path string) *IntSliceCmd
 	JSONArrPop(ctx context.Context, key, path string, index int) *StringSliceCmd
 	JSONArrTrim(ctx context.Context, key, path string) *IntSliceCmd
-	JSONArrTrimArgs(ctx context.Context, key, path string, options JSONArrTrimArgs) *IntSliceCmd
+	JSONArrTrimWithArgs(ctx context.Context, key, path string, options *JSONArrTrimArgs) *IntSliceCmd
 	JSONClear(ctx context.Context, key, path string) *IntCmd
 	JSONDebugMemory(ctx context.Context, key, path string) *IntCmd
 	JSONDel(ctx context.Context, key, path string) *IntCmd
 	JSONForget(ctx context.Context, key, path string) *IntCmd
 	JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd
-	JSONGetArgs(ctx context.Context, key string, options JSONGetArgs, paths ...string) *JSONCmd
+	JSONGetWithArgs(ctx context.Context, key string, options *JSONGetArgs, paths ...string) *JSONCmd
 	JSONMerge(ctx context.Context, key, path string, value string) *StatusCmd
-	JSONMSet(ctx context.Context, docs []JSONSetArgs) *StatusCmd
+	JSONMSetArgs(ctx context.Context, docs []JSONSetArgs) *StatusCmd
+	JSONMSet(ctx context.Context, params ...interface{}) *StatusCmd
 	JSONMGet(ctx context.Context, path string, keys ...string) *JSONSliceCmd
 	JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd
 	JSONNumMultBy(ctx context.Context, key, path string, value float64) *JSONCmd
 	JSONObjKeys(ctx context.Context, key, path string) *SliceCmd
 	JSONObjLen(ctx context.Context, key, path string) *IntPointerSliceCmd
-	JSONResp(ctx context.Context, key, path string) *MapStringInterfaceCmd
 	JSONSet(ctx context.Context, key, path string, value interface{}) *StatusCmd
 	JSONSetMode(ctx context.Context, key, path string, value interface{}, mode string) *StatusCmd
 	JSONStrAppend(ctx context.Context, key, path, value string) *IntPointerSliceCmd
@@ -43,7 +43,7 @@ type JSONCmdAble interface {
 }
 
 type JSONSetArgs struct {
-	Key   interface{}
+	Key   string
 	Path  string
 	Value interface{}
 }
@@ -304,15 +304,18 @@ func (c cmdable) JSONArrIndex(ctx context.Context, key, path string, value ...in
 	return cmd
 }
 
-// JSONArrIndexArgs searches for the first occurrence of a JSON value in an array while allowing the start and
+// JSONArrIndexWithArgs searches for the first occurrence of a JSON value in an array while allowing the start and
 // stop options to be provided.
 // For more information, see https://redis.io/commands/json.arrindex
-func (c cmdable) JSONArrIndexArgs(ctx context.Context, key, path string, options JSONArrIndexArgs, value ...interface{}) *IntSliceCmd {
+func (c cmdable) JSONArrIndexWithArgs(ctx context.Context, key, path string, options *JSONArrIndexArgs, value ...interface{}) *IntSliceCmd {
 	args := []interface{}{"JSON.ARRINDEX", key, path}
 	args = append(args, value...)
-	args = append(args, options.Start)
-	if options.Stop != nil {
-		args = append(args, *options.Stop)
+
+	if options != nil {
+		args = append(args, options.Start)
+		if options.Stop != nil {
+			args = append(args, *options.Stop)
+		}
 	}
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -356,13 +359,17 @@ func (c cmdable) JSONArrTrim(ctx context.Context, key, path string) *IntSliceCmd
 	return cmd
 }
 
-// JSONArrTrimArgs trims an array to contain only the specified inclusive range of elements.
+// JSONArrTrimWithArgs trims an array to contain only the specified inclusive range of elements.
 // For more information, see https://redis.io/commands/json.arrtrim
-func (c cmdable) JSONArrTrimArgs(ctx context.Context, key, path string, options JSONArrTrimArgs) *IntSliceCmd {
+func (c cmdable) JSONArrTrimWithArgs(ctx context.Context, key, path string, options *JSONArrTrimArgs) *IntSliceCmd {
 	args := []interface{}{"JSON.ARRTRIM", key, path}
-	args = append(args, options.Start)
-	if options.Stop != nil {
-		args = append(args, *options.Stop)
+
+	if options != nil {
+		args = append(args, options.Start)
+
+		if options.Stop != nil {
+			args = append(args, *options.Stop)
+		}
 	}
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -424,23 +431,25 @@ type JSONGetArgs struct {
 	Space   string
 }
 
-// JSONGetArgs - Retrieves the value of a key from a JSON document.
+// JSONGetWithArgs - Retrieves the value of a key from a JSON document.
 // This function also allows for specifying additional options such as:
 // Indention, NewLine and Space
 // For more information - https://redis.io/commands/json.get/
-func (c cmdable) JSONGetArgs(ctx context.Context, key string, options JSONGetArgs, paths ...string) *JSONCmd {
+func (c cmdable) JSONGetWithArgs(ctx context.Context, key string, options *JSONGetArgs, paths ...string) *JSONCmd {
 	args := []interface{}{"JSON.GET", key}
-	if options.Indent != "" {
-		args = append(args, options.Indent)
-	}
-	if options.Newline != "" {
-		args = append(args, options.Newline)
-	}
-	if options.Space != "" {
-		args = append(args, options.Space)
-	}
-	for _, path := range paths {
-		args = append(args, path)
+	if options != nil {
+		if options.Indent != "" {
+			args = append(args, options.Indent)
+		}
+		if options.Newline != "" {
+			args = append(args, options.Newline)
+		}
+		if options.Space != "" {
+			args = append(args, options.Space)
+		}
+		for _, path := range paths {
+			args = append(args, path)
+		}
 	}
 	cmd := NewJSONCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -472,13 +481,21 @@ func (c cmdable) JSONMGet(ctx context.Context, path string, keys ...string) *JSO
 	return cmd
 }
 
-// JSONMSet sets or updates one or more JSON values according to the specified key-path-value triplets.
+// JSONMSetArgs sets or updates one or more JSON values according to the specified key-path-value triplets.
 // For more information, see https://redis.io/commands/json.mset
-func (c cmdable) JSONMSet(ctx context.Context, docs []JSONSetArgs) *StatusCmd {
+func (c cmdable) JSONMSetArgs(ctx context.Context, docs []JSONSetArgs) *StatusCmd {
 	args := []interface{}{"JSON.MSET"}
 	for _, doc := range docs {
 		args = append(args, doc.Key, doc.Path, doc.Value)
 	}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) JSONMSet(ctx context.Context, params ...interface{}) *StatusCmd {
+	args := []interface{}{"JSON.MSET"}
+	args = append(args, params...)
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -518,13 +535,6 @@ func (c cmdable) JSONObjLen(ctx context.Context, key, path string) *IntPointerSl
 	cmd := NewIntPointerSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
-}
-
-// JSONResp returns the JSON in key in Redis serialization protocol specification form.
-// This function is considered deprecated and will panic if called.
-// For more information, set https://redis.io/commands/json.resp
-func (c cmdable) JSONResp(ctx context.Context, key, path string) *MapStringInterfaceCmd {
-	panic("not implemented")
 }
 
 // JSONSet sets the JSON value at the given path in the given key. The value must be something that
