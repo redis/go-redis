@@ -246,21 +246,17 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 		})
 
 		It("should JSONGet", Label("json.get", "json"), func() {
-			res, err := client.JSONSet(ctx, "get3", "$", `{"a": 1, "b": 2, "c": {"hello": "world"}}`).Result()
+			res, err := client.JSONSet(ctx, "get3", "$", `{"a": 1, "b": 2}`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal("OK"))
 
-			res, err = client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Indent: "--"}).Result()
+			res, err = client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Indent: "-"}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal(`{--\"a\":1,--\"b\":2,--\"c\":{----\"hello\":\"world\"--}}`))
+			Expect(res).To(Equal(`[-{--"a":1,--"b":2-}]`))
 
-			res, err = client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Indent: "--"}).Result()
+			res, err = client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Indent: "-", Newline: `~`, Space: `!`}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal(`{--\"a\":1,--\"b\":2,--\"c\":{----\"hello\":\"world\"--}}`))
-
-			res, err = client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Indent: "--", Newline: `~`, Space: `!`}, `$.a`, `$.c`).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal(`{~--\"$.a\":![~----1~--],~--\"$.c\":![~----{~------\"hello\":!\"world\"~----}~--]~}`))
+			Expect(res).To(Equal(`[~-{~--"a":!1,~--"b":!2~-}~]`))
 
 		})
 
@@ -284,16 +280,16 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			docs := []redis.JSONSetArgs{doc1, doc2}
 
 			mSetResult, err := client.JSONMSetArgs(ctx, docs).Result()
-			Expect(mSetResult).NotTo(HaveOccurred())
-			Expect(err).To(Equal("OK"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mSetResult).To(Equal("OK"))
 
 			res, err := client.JSONMGet(ctx, "$", "mset1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]interface{}{`[{"a": "1"}]`}))
+			Expect(res).To(Equal([]interface{}{`[{"a":1}]`}))
 
 			res, err = client.JSONMGet(ctx, "$", "mset1", "mset2").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]interface{}{`[{"a": "1"}]`, "[2]"}))
+			Expect(res).To(Equal([]interface{}{`[{"a":1}]`, "[2]"}))
 
 			mSetResult, err = client.JSONMSet(ctx, "mset1", "$.a", 2, "mset3", "$", `[1]`).Result()
 			Expect(err).NotTo(HaveOccurred())

@@ -439,13 +439,13 @@ func (c cmdable) JSONGetWithArgs(ctx context.Context, key string, options *JSONG
 	args := []interface{}{"JSON.GET", key}
 	if options != nil {
 		if options.Indent != "" {
-			args = append(args, options.Indent)
+		    args = append(args, "INDENT", options.Indent)
 		}
 		if options.Newline != "" {
-			args = append(args, options.Newline)
+			args = append(args, "NEWLINE", options.Newline)
 		}
 		if options.Space != "" {
-			args = append(args, options.Space)
+			args = append(args, "SPACE", options.Space)
 		}
 		for _, path := range paths {
 			args = append(args, path)
