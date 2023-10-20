@@ -10,8 +10,8 @@
 > use it to monitor applications and set up automatic alerts to receive notifications via email,
 > Slack, Telegram, and others.
 >
-> See [OpenTelemetry](example/otel) example which demonstrates how you can use Uptrace to monitor
-> go-redis.
+> See [OpenTelemetry](https://github.com/redis/go-redis/tree/master/example/otel) example which
+> demonstrates how you can use Uptrace to monitor go-redis.
 
 ## Documentation
 
@@ -46,6 +46,7 @@ key value NoSQL database that uses RocksDB as storage engine and is compatible w
 - [Redis Cluster](https://redis.uptrace.dev/guide/go-redis-cluster.html).
 - [Redis Ring](https://redis.uptrace.dev/guide/ring.html).
 - [Redis Performance Monitoring](https://redis.uptrace.dev/guide/redis-performance-monitoring.html).
+- [Redis Probabilistic [RedisStack]](https://redis.io/docs/data-types/probabilistic/)
 
 ## Installation
 
@@ -68,8 +69,9 @@ go get github.com/redis/go-redis/v9
 ```go
 import (
     "context"
-    "github.com/redis/go-redis/v9"
     "fmt"
+
+    "github.com/redis/go-redis/v9"
 )
 
 var ctx = context.Background()
@@ -105,7 +107,8 @@ func ExampleClient() {
 }
 ```
 
-The above can be modified to specify the version of the RESP protocol by adding the `protocol` option to the `Options` struct:
+The above can be modified to specify the version of the RESP protocol by adding the `protocol`
+option to the `Options` struct:
 
 ```go
     rdb := redis.NewClient(&redis.Options{
@@ -119,13 +122,17 @@ The above can be modified to specify the version of the RESP protocol by adding 
 
 ### Connecting via a redis url
 
-go-redis also supports connecting via the [redis uri specification](https://github.com/redis/redis-specifications/tree/master/uri/redis.txt). The example below demonstrates how the connection can easily be configured using a string, adhering to this specification.
+go-redis also supports connecting via the
+[redis uri specification](https://github.com/redis/redis-specifications/tree/master/uri/redis.txt).
+The example below demonstrates how the connection can easily be configured using a string, adhering
+to this specification.
 
 ```go
 import (
     "context"
-    "github.com/redis/go-redis/v9"
     "fmt"
+
+    "github.com/redis/go-redis/v9"
 )
 
 var ctx = context.Background()
@@ -138,6 +145,10 @@ func ExampleClient() {
     }
     rdb := redis.NewClient(opts)
 ```
+
+## Contributing
+
+Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
 
 ## Look and feel
 
@@ -201,7 +212,8 @@ Lastly, run:
 go test
 ```
 
-Another option is to run your specific tests with an already running redis. The example below, tests against a redis running on port 9999.:
+Another option is to run your specific tests with an already running redis. The example below, tests
+against a redis running on port 9999.:
 
 ```shell
 REDIS_PORT=9999 go test <your options>
