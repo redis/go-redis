@@ -221,10 +221,10 @@ type Cmdable interface {
 	ScriptingFunctionsCmdable
 	StringCmdable
 	PubSubCmdable
+	StreamCmdable
 	GearsCmdable
 	ProbabilisticCmdable
 	TimeseriesCmdable
-	StreamCmdable
 	JSONCmdable
 }
 

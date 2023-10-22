@@ -11,7 +11,7 @@ import (
 
 // -------------------------------------------
 
-type JSONCmdAble interface {
+type JSONCmdable interface {
 	JSONArrAppend(ctx context.Context, key, path string, values ...interface{}) *IntSliceCmd
 	JSONArrIndex(ctx context.Context, key, path string, value ...interface{}) *IntSliceCmd
 	JSONArrIndexWithArgs(ctx context.Context, key, path string, options *JSONArrIndexArgs, value ...interface{}) *IntSliceCmd
@@ -439,7 +439,7 @@ func (c cmdable) JSONGetWithArgs(ctx context.Context, key string, options *JSONG
 	args := []interface{}{"JSON.GET", key}
 	if options != nil {
 		if options.Indent != "" {
-		    args = append(args, "INDENT", options.Indent)
+			args = append(args, "INDENT", options.Indent)
 		}
 		if options.Newline != "" {
 			args = append(args, "NEWLINE", options.Newline)
