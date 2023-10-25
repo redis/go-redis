@@ -110,15 +110,11 @@ func (c cmdable) TFCallArgs(ctx context.Context, libName string, funcName string
 	lf := libName + "." + funcName
 	args := []interface{}{"TFCALL", lf, numKeys}
 	if options != nil {
-		if options.Keys != nil {
-			for _, key := range options.Keys {
-				args = append(args, key)
-			}
+		for _, key := range options.Keys {
+			args = append(args, key)
 		}
-		if options.Arguments != nil {
-			for _, key := range options.Arguments {
-				args = append(args, key)
-			}
+		for _, key := range options.Arguments {
+			args = append(args, key)
 		}
 	}
 	cmd := NewCmd(ctx, args...)
@@ -140,15 +136,11 @@ func (c cmdable) TFCallASYNCArgs(ctx context.Context, libName string, funcName s
 	lf := fmt.Sprintf("%s.%s", libName, funcName)
 	args := []interface{}{"TFCALLASYNC", lf, numKeys}
 	if options != nil {
-		if options.Keys != nil {
-			for _, key := range options.Keys {
-				args = append(args, key)
-			}
+		for _, key := range options.Keys {
+			args = append(args, key)
 		}
-		if options.Arguments != nil {
-			for _, key := range options.Arguments {
-				args = append(args, key)
-			}
+		for _, key := range options.Arguments {
+			args = append(args, key)
 		}
 	}
 	cmd := NewCmd(ctx, args...)
