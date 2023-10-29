@@ -19,7 +19,10 @@ testdeps: testdata/redis/src/redis-server
 bench: testdeps
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem
 
-.PHONY: all test testdeps bench
+.PHONY: all test testdeps bench fmt
+
+build:
+	go build .
 
 testdata/redis:
 	mkdir -p $@
@@ -29,7 +32,7 @@ testdata/redis/src/redis-server: testdata/redis
 	cd $< && make all
 
 fmt:
-	gofmt -w -s ./
+	gofumpt -w ./
 	goimports -w  -local github.com/redis/go-redis ./
 
 go_mod_tidy:
