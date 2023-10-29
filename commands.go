@@ -224,6 +224,7 @@ type Cmdable interface {
 	GearsCmdable
 	ProbabilisticCmdable
 	TimeseriesCmdable
+	StreamCmdable
 }
 
 type StatefulCmdable interface {
