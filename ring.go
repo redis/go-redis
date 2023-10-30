@@ -79,9 +79,10 @@ type RingOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	DialTimeout           time.Duration
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	ContextTimeoutEnabled bool
 
 	ContextTimeoutEnabled bool
 
@@ -92,6 +93,7 @@ type RingOptions struct {
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
+	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
@@ -148,9 +150,10 @@ func (opt *RingOptions) clientOptions() *Options {
 
 		MaxRetries: -1,
 
-		DialTimeout:  opt.DialTimeout,
-		ReadTimeout:  opt.ReadTimeout,
-		WriteTimeout: opt.WriteTimeout,
+		DialTimeout:           opt.DialTimeout,
+		ReadTimeout:           opt.ReadTimeout,
+		WriteTimeout:          opt.WriteTimeout,
+		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
@@ -159,6 +162,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		PoolTimeout:     opt.PoolTimeout,
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
+		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 
