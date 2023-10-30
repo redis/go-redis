@@ -142,7 +142,7 @@ type Options struct {
 	// Enables read only queries on slave/follower nodes.
 	readOnly bool
 
-	// // Disable set-lib on connect. Default is false.
+	// Disable set-lib on connect. Default is false.
 	DisableIndentity bool
 }
 
@@ -461,6 +461,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
+	o.MaxActiveConns = q.int("max_active_conns")
 	if q.has("conn_max_idle_time") {
 		o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	} else {
