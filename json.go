@@ -65,7 +65,7 @@ type JSONCmd struct {
 
 var _ Cmder = (*JSONCmd)(nil)
 
-func NewJSONCmd(ctx context.Context, args ...interface{}) *JSONCmd {
+func newJSONCmd(ctx context.Context, args ...interface{}) *JSONCmd {
 
 	return &JSONCmd{
 		baseCmd: baseCmd{
@@ -419,7 +419,7 @@ func (c cmdable) JSONGet(ctx context.Context, key string, paths ...string) *JSON
 	for n, path := range paths {
 		args[n+2] = path
 	}
-	cmd := NewJSONCmd(ctx, args...)
+	cmd := newJSONCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -450,7 +450,7 @@ func (c cmdable) JSONGetWithArgs(ctx context.Context, key string, options *JSONG
 			args = append(args, path)
 		}
 	}
-	cmd := NewJSONCmd(ctx, args...)
+	cmd := newJSONCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -504,7 +504,7 @@ func (c cmdable) JSONMSet(ctx context.Context, params ...interface{}) *StatusCmd
 // For more information, see https://redis.io/commands/json.numincreby
 func (c cmdable) JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd {
 	args := []interface{}{"JSON.NUMINCRBY", key, path, value}
-	cmd := NewJSONCmd(ctx, args...)
+	cmd := newJSONCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
