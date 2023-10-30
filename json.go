@@ -31,7 +31,6 @@ type JSONCmdable interface {
 	JSONMSet(ctx context.Context, params ...interface{}) *StatusCmd
 	JSONMGet(ctx context.Context, path string, keys ...string) *JSONSliceCmd
 	JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd
-	JSONNumMultBy(ctx context.Context, key, path string, value float64) *JSONCmd
 	JSONObjKeys(ctx context.Context, key, path string) *SliceCmd
 	JSONObjLen(ctx context.Context, key, path string) *IntPointerSliceCmd
 	JSONSet(ctx context.Context, key, path string, value interface{}) *StatusCmd
@@ -505,15 +504,6 @@ func (c cmdable) JSONMSet(ctx context.Context, params ...interface{}) *StatusCmd
 // For more information, see https://redis.io/commands/json.numincreby
 func (c cmdable) JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd {
 	args := []interface{}{"JSON.NUMINCRBY", key, path, value}
-	cmd := NewJSONCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
-}
-
-// JSONNumMultBy multiplies the number value stored at the specified path by the provided number.
-// For more information, see https://redis.io/commands/json.nummultby
-func (c cmdable) JSONNumMultBy(ctx context.Context, key, path string, value float64) *JSONCmd {
-	args := []interface{}{"JSON.NUMMULTBY", key, path, value}
 	cmd := NewJSONCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd

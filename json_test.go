@@ -546,24 +546,6 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(res).To(Equal(`[5]`))
 		})
 
-		It("should JSONNumMultBy", Label("json.nummultby", "json"), func() {
-			cmd1, err := client.JSONSet(ctx, "num1", "$", `1`).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cmd1).To(Equal("OK"))
-
-			cmd2, err := client.JSONNumMultBy(ctx, "num1", "$", float64(2)).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cmd2).To(Equal(`[2]`))
-
-			cmd2, err = client.JSONNumMultBy(ctx, "num1", "$", float64(2.5)).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cmd2).To(Equal(`[5]`))
-
-			cmd2, err = client.JSONNumMultBy(ctx, "num1", "$", float64(0.5)).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cmd2).To(Equal(`[2.5]`))
-		})
-
 		It("should JSONObjKeys", Label("json.objkeys", "json"), func() {
 			cmd1 := client.JSONSet(ctx, "objkeys1", "$", `{"a": [1, 2], "b": {"a": [0, -1]}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
