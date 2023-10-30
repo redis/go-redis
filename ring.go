@@ -84,6 +84,8 @@ type RingOptions struct {
 	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
 
+	ContextTimeoutEnabled bool
+
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
@@ -97,6 +99,8 @@ type RingOptions struct {
 
 	TLSConfig *tls.Config
 	Limiter   Limiter
+
+	DisableIndentity bool
 }
 
 func (opt *RingOptions) init() {
@@ -151,6 +155,8 @@ func (opt *RingOptions) clientOptions() *Options {
 		WriteTimeout:          opt.WriteTimeout,
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
+		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
+
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,
 		PoolTimeout:     opt.PoolTimeout,
@@ -162,6 +168,8 @@ func (opt *RingOptions) clientOptions() *Options {
 
 		TLSConfig: opt.TLSConfig,
 		Limiter:   opt.Limiter,
+
+		DisableIndentity: opt.DisableIndentity,
 	}
 }
 

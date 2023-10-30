@@ -79,6 +79,8 @@ type FailoverOptions struct {
 	ConnMaxLifetime time.Duration
 
 	TLSConfig *tls.Config
+
+	DisableIndentity bool
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -113,6 +115,8 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
+
+		DisableIndentity: opt.DisableIndentity,
 	}
 }
 
