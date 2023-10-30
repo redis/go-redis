@@ -226,6 +226,7 @@ type Cmdable interface {
 	StringCmdable
 	StreamCmdable
 	TimeseriesCmdable
+	JSONCmdable
 }
 
 type StatefulCmdable interface {
