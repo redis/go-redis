@@ -210,21 +210,23 @@ type Cmdable interface {
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 
 	ACLCmdable
+	BitMapCmdable
+	ClusterCmdable
+	GearsCmdable
+	GenericCmdable
+	GeoCmdable
 	HashCmdable
 	HyperLogLogCmdable
-	GeoCmdable
-	GenericCmdable
 	ListCmdable
+	ProbabilisticCmdable
+	PubSubCmdable
+	ScriptingFunctionsCmdable
 	SetCmdable
 	SortedSetCmdable
-	ClusterCmdable
-	ScriptingFunctionsCmdable
 	StringCmdable
-	PubSubCmdable
-	GearsCmdable
-	ProbabilisticCmdable
-	TimeseriesCmdable
 	StreamCmdable
+	TimeseriesCmdable
+	JSONCmdable
 }
 
 type StatefulCmdable interface {
