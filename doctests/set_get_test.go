@@ -5,10 +5,11 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
+
 	"github.com/redis/go-redis/v9"
 )
 
-func ExampleSetGet() {
+func ExampleClient_Set_and_get() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{

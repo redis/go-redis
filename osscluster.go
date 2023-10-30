@@ -80,10 +80,12 @@ type ClusterOptions struct {
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
+	MaxActiveConns  int // applies per cluster node and not for the whole cluster
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
-	TLSConfig *tls.Config
+	TLSConfig        *tls.Config
+	DisableIndentity bool // Disable set-lib on connect. Default is false.
 }
 
 func (opt *ClusterOptions) init() {
@@ -232,6 +234,8 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.MinIdleConns = q.int("min_idle_conns")
+	o.MaxIdleConns = q.int("max_idle_conns")
+	o.MaxActiveConns = q.int("max_active_conns")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
@@ -273,19 +277,21 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
 
-		DialTimeout:  opt.DialTimeout,
-		ReadTimeout:  opt.ReadTimeout,
-		WriteTimeout: opt.WriteTimeout,
+		DialTimeout:           opt.DialTimeout,
+		ReadTimeout:           opt.ReadTimeout,
+		WriteTimeout:          opt.WriteTimeout,
+		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:        opt.PoolFIFO,
-		PoolSize:        opt.PoolSize,
-		PoolTimeout:     opt.PoolTimeout,
-		MinIdleConns:    opt.MinIdleConns,
-		MaxIdleConns:    opt.MaxIdleConns,
-		ConnMaxIdleTime: opt.ConnMaxIdleTime,
-		ConnMaxLifetime: opt.ConnMaxLifetime,
-
-		TLSConfig: opt.TLSConfig,
+		PoolFIFO:         opt.PoolFIFO,
+		PoolSize:         opt.PoolSize,
+		PoolTimeout:      opt.PoolTimeout,
+		MinIdleConns:     opt.MinIdleConns,
+		MaxIdleConns:     opt.MaxIdleConns,
+		MaxActiveConns:   opt.MaxActiveConns,
+		ConnMaxIdleTime:  opt.ConnMaxIdleTime,
+		ConnMaxLifetime:  opt.ConnMaxLifetime,
+		DisableIndentity: opt.DisableIndentity,
+		TLSConfig:        opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
 		// cluster whose nodes are not in clustering mode (otherwise there isn't
 		// much use for ClusterSlots config).  This means we cannot execute the
