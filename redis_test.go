@@ -558,4 +558,24 @@ var _ = Describe("Hook", func() {
 			"hook-1-process-end",
 		}))
 	})
+
+	It("wrapped error in a hook", func() {
+		client.AddHook(&hook{
+			processHook: func(hook redis.ProcessHook) redis.ProcessHook {
+				return func(ctx context.Context, cmd redis.Cmder) error {
+					if err := hook(ctx, cmd); err != nil {
+						return fmt.Errorf("wrapped error: %w", err)
+					}
+					return nil
+				}
+			},
+		})
+		client.ScriptFlush(ctx)
+
+		script := redis.NewScript(`return 'Script and hook'`)
+
+		cmd := script.Run(ctx, client, nil)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+		Expect(cmd.Val()).To(Equal("Script and hook"))
+	})
 })
