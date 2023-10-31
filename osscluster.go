@@ -116,9 +116,6 @@ func (opt *ClusterOptions) init() {
 		opt.WriteTimeout = opt.ReadTimeout
 	}
 
-	if opt.MaxRetries == 0 {
-		opt.MaxRetries = -1
-	}
 	switch opt.MinRetryBackoff {
 	case -1:
 		opt.MinRetryBackoff = 0
