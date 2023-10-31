@@ -150,12 +150,7 @@ func (c cmdable) BFReserveNonScaling(ctx context.Context, key string, errorRate 
 func (c cmdable) BFReserveWithArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd {
 	args := []interface{}{"BF.RESERVE", key}
 	if options != nil {
-		if options.Error != 0 {
-			args = append(args, options.Error)
-		}
-		if options.Capacity != 0 {
-			args = append(args, options.Capacity)
-		}
+		args = append(args, options.Error, options.Capacity)
 		if options.Expansion != 0 {
 			args = append(args, "EXPANSION", options.Expansion)
 		}
