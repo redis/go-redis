@@ -164,6 +164,18 @@ func (p *ConnPool) NewConn(ctx context.Context) (*Conn, error) {
 }
 
 func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
+	var poolExhausted bool
+
+	p.connsMu.Lock()
+	if p.cfg.MaxActiveConns > 0 {
+		poolExhausted = p.poolSize >= p.cfg.MaxActiveConns
+	}
+	p.connsMu.Unlock()
+
+	if poolExhausted {
+		return nil, ErrPoolExhausted
+	}
+
 	cn, err := p.dialConn(ctx, pooled)
 	if err != nil {
 		return nil, err
@@ -176,12 +188,6 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if p.closed() {
 		_ = cn.Close()
 		return nil, ErrClosed
-	}
-
-	// It is not allowed to add new connections to the connection pool.
-	if p.cfg.MaxActiveConns > 0 && p.poolSize >= p.cfg.MaxActiveConns {
-		_ = cn.Close()
-		return nil, ErrPoolExhausted
 	}
 
 	p.conns = append(p.conns, cn)
