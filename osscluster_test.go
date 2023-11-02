@@ -1467,71 +1467,75 @@ var _ = Describe("ClusterClient ParseURL", func() {
 		{
 			test: "ParseRedisURL",
 			url:  "redis://localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, MaxRetries: 3},
 		}, {
 			test: "ParseRedissURL",
 			url:  "rediss://localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost"}, MaxRetries: 3},
 		}, {
 			test: "MissingRedisPort",
 			url:  "redis://localhost",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, MaxRetries: 3},
 		}, {
 			test: "MissingRedissPort",
 			url:  "rediss://localhost",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost"}, MaxRetries: 3},
 		}, {
 			test: "MultipleRedisURLs",
 			url:  "redis://localhost:123?addr=localhost:1234&addr=localhost:12345",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, MaxRetries: 3},
 		}, {
 			test: "MultipleRedissURLs",
 			url:  "rediss://localhost:123?addr=localhost:1234&addr=localhost:12345",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}, MaxRetries: 3},
 		}, {
 			test: "OnlyPassword",
 			url:  "redis://:bar@localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Password: "bar"},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Password: "bar", MaxRetries: 3},
 		}, {
 			test: "OnlyUser",
 			url:  "redis://foo@localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo"},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo", MaxRetries: 3},
 		}, {
 			test: "RedisUsernamePassword",
 			url:  "redis://foo:bar@localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo", Password: "bar"},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo", Password: "bar", MaxRetries: 3},
 		}, {
 			test: "RedissUsernamePassword",
 			url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}, MaxRetries: 3},
 		}, {
 			test: "QueryParameters",
 			url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, ReadTimeout: 2 * time.Second, PoolFIFO: true},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, ReadTimeout: 2 * time.Second, PoolFIFO: true, MaxRetries: 3},
 		}, {
 			test: "DisabledTimeout",
 			url:  "redis://localhost:123?conn_max_idle_time=0",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1, MaxRetries: 3},
 		}, {
 			test: "DisabledTimeoutNeg",
 			url:  "redis://localhost:123?conn_max_idle_time=-1",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1, MaxRetries: 3},
 		}, {
 			test: "UseDefault",
 			url:  "redis://localhost:123?conn_max_idle_time=",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0, MaxRetries: 3},
 		}, {
 			test: "Protocol",
 			url:  "redis://localhost:123?protocol=2",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Protocol: 2},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Protocol: 2, MaxRetries: 3},
 		}, {
 			test: "ClientName",
 			url:  "redis://localhost:123?client_name=cluster_hi",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ClientName: "cluster_hi"},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ClientName: "cluster_hi", MaxRetries: 3},
+		}, {
+			test: "SetNoRetry",
+			url:  "redis://localhost:123?max_retries=-1",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
 		}, {
 			test: "UseDefaultMissing=",
 			url:  "redis://localhost:123?conn_max_idle_time",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0, MaxRetries: 3},
 		}, {
 			test: "InvalidQueryAddr",
 			url:  "rediss://foo:bar@localhost:123?addr=rediss://foo:barr@localhost:1234",
