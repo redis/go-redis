@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
-
-	"github.com/redis/go-redis/v9/internal/util"
 )
 
 // decoderFunc represents decoding functions for default built-in types.
@@ -206,16 +204,4 @@ func decodeSlice(f reflect.Value, s string) error {
 
 func decodeUnsupported(v reflect.Value, s string) error {
 	return fmt.Errorf("redis.Scan(unsupported %s)", v.Type())
-}
-
-func decodePtr(v reflect.Value, s string) error {
-	if v.Type().Elem().Kind() == reflect.Bool {
-		b, err := strconv.ParseBool(s)
-		if err != nil {
-			return err
-		}
-		v.Set(reflect.ValueOf(util.ToPtr(b)))
-		return nil
-	}
-	return decodeUnsupported(v, s)
 }
