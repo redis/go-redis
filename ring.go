@@ -88,10 +88,10 @@ type RingOptions struct {
 	PoolFIFO bool
 
 	PoolSize        int
+	PoolSizeStrict  bool
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
-	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
@@ -155,10 +155,10 @@ func (opt *RingOptions) clientOptions() *Options {
 
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,
+		PoolSizeStrict:  opt.PoolSizeStrict,
 		PoolTimeout:     opt.PoolTimeout,
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
-		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 

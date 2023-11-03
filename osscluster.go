@@ -76,11 +76,11 @@ type ClusterOptions struct {
 	ContextTimeoutEnabled bool
 
 	PoolFIFO        bool
-	PoolSize        int // applies per cluster node and not for the whole cluster
+	PoolSize        int  // applies per cluster node and not for the whole cluster
+	PoolSizeStrict  bool // applies per cluster node and not for the whole cluster
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
-	MaxActiveConns  int // applies per cluster node and not for the whole cluster
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
@@ -233,9 +233,9 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.WriteTimeout = q.duration("write_timeout")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
+	o.PoolSizeStrict = q.bool("pool_size_strict")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
-	o.MaxActiveConns = q.int("max_active_conns")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
@@ -284,10 +284,10 @@ func (opt *ClusterOptions) clientOptions() *Options {
 
 		PoolFIFO:         opt.PoolFIFO,
 		PoolSize:         opt.PoolSize,
+		PoolSizeStrict:   opt.PoolSizeStrict,
 		PoolTimeout:      opt.PoolTimeout,
 		MinIdleConns:     opt.MinIdleConns,
 		MaxIdleConns:     opt.MaxIdleConns,
-		MaxActiveConns:   opt.MaxActiveConns,
 		ConnMaxIdleTime:  opt.ConnMaxIdleTime,
 		ConnMaxLifetime:  opt.ConnMaxLifetime,
 		DisableIndentity: opt.DisableIndentity,

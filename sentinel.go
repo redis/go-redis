@@ -71,10 +71,10 @@ type FailoverOptions struct {
 	PoolFIFO bool
 
 	PoolSize        int
+	PoolSizeStrict  bool
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
-	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
@@ -107,10 +107,10 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,
+		PoolSizeStrict:  opt.PoolSizeStrict,
 		PoolTimeout:     opt.PoolTimeout,
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
-		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 
@@ -143,10 +143,10 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,
+		PoolSizeStrict:  opt.PoolSizeStrict,
 		PoolTimeout:     opt.PoolTimeout,
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
-		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 
@@ -180,10 +180,10 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,
+		PoolSizeStrict:  opt.PoolSizeStrict,
 		PoolTimeout:     opt.PoolTimeout,
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
-		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 

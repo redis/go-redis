@@ -100,9 +100,12 @@ type Options struct {
 	PoolFIFO bool
 	// Base number of socket connections.
 	// Default is 10 connections per every available CPU as reported by runtime.GOMAXPROCS.
-	// If there is not enough connections in the pool, new connections will be allocated in excess of PoolSize,
-	// you can limit it through MaxActiveConns
+	// If there are not enough connections in the pool, new connections will be allocated beyond the PoolSize,
+	// which can flood the server with connections under heavy load.
+	// To enable standard pool behavior with overflow checking, use the PoolSizeStrict parameter
 	PoolSize int
+	// Enabling classic pool mode, when it is guaranteed that no more connections will open to the server than specified in PoolSize
+	PoolSizeStrict bool
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
 	// Default is ReadTimeout + 1 second.
@@ -114,9 +117,6 @@ type Options struct {
 	// Maximum number of idle connections.
 	// Default is 0. the idle connections are not closed by default.
 	MaxIdleConns int
-	// Maximum number of connections allocated by the pool at a given time.
-	// When zero, there is no limit on the number of connections in the pool.
-	MaxActiveConns int
 	// ConnMaxIdleTime is the maximum amount of time a connection may be idle.
 	// Should be less than server's timeout.
 	//
@@ -458,10 +458,10 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.WriteTimeout = q.duration("write_timeout")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
+	o.PoolSizeStrict = q.bool("pool_size_strict")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
-	o.MaxActiveConns = q.int("max_active_conns")
 	if q.has("conn_max_idle_time") {
 		o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	} else {
@@ -505,10 +505,10 @@ func newConnPool(
 		},
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,
+		PoolSizeStrict:  opt.PoolSizeStrict,
 		PoolTimeout:     opt.PoolTimeout,
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
-		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 	})

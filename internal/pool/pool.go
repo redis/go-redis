@@ -62,10 +62,10 @@ type Options struct {
 
 	PoolFIFO        bool
 	PoolSize        int
+	PoolSizeStrict  bool
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
-	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 }
@@ -167,8 +167,8 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	var poolExhausted bool
 
 	p.connsMu.Lock()
-	if p.cfg.MaxActiveConns > 0 {
-		poolExhausted = p.poolSize >= p.cfg.MaxActiveConns
+	if p.cfg.PoolSizeStrict {
+		poolExhausted = len(p.conns) >= p.poolSize
 	}
 	p.connsMu.Unlock()
 
