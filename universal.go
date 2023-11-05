@@ -48,6 +48,7 @@ type UniversalOptions struct {
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
+	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
@@ -64,6 +65,8 @@ type UniversalOptions struct {
 	// Only failover clients.
 
 	MasterName string
+
+	DisableIndentity bool
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -102,10 +105,13 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
 	}
 }
 
@@ -144,10 +150,13 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
 	}
 }
 
@@ -183,10 +192,13 @@ func (o *UniversalOptions) Simple() *Options {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
 	}
 }
 

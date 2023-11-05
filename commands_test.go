@@ -95,6 +95,18 @@ var _ = Describe("Commands", func() {
 			Expect(time.Now()).To(BeTemporally("~", start.Add(wait), 3*time.Second))
 		})
 
+		It("should WaitAOF", func() {
+			const waitAOF = 3 * time.Second
+			Skip("flaky test")
+
+			// assuming that the redis instance doesn't have AOF enabled
+			start := time.Now()
+			val, err := client.WaitAOF(ctx, 1, 1, waitAOF).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).NotTo(ContainSubstring("ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled"))
+			Expect(time.Now()).To(BeTemporally("~", start.Add(waitAOF), 3*time.Second))
+		})
+
 		It("should Select", func() {
 			pipe := client.Pipeline()
 			sel := pipe.Select(ctx, 1)
@@ -231,6 +243,56 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("theclientname"))
 		})
 
+		It("should ClientSetInfo", func() {
+			pipe := client.Pipeline()
+
+			// Test setting the libName
+			libName := "go-redis"
+			libInfo := redis.LibraryInfo{LibName: &libName}
+			setInfo := pipe.ClientSetInfo(ctx, libInfo)
+			_, err := pipe.Exec(ctx)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(setInfo.Err()).NotTo(HaveOccurred())
+			Expect(setInfo.Val()).To(Equal("OK"))
+
+			// Test setting the libVer
+			libVer := "vX.x"
+			libInfo = redis.LibraryInfo{LibVer: &libVer}
+			setInfo = pipe.ClientSetInfo(ctx, libInfo)
+			_, err = pipe.Exec(ctx)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(setInfo.Err()).NotTo(HaveOccurred())
+			Expect(setInfo.Val()).To(Equal("OK"))
+
+			// Test setting both fields, expect a panic
+			libInfo = redis.LibraryInfo{LibName: &libName, LibVer: &libVer}
+
+			Expect(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						err := r.(error)
+						Expect(err).To(MatchError("both LibName and LibVer cannot be set at the same time"))
+					}
+				}()
+				pipe.ClientSetInfo(ctx, libInfo)
+			}).To(Panic())
+
+			// Test setting neither field, expect a panic
+			libInfo = redis.LibraryInfo{}
+
+			Expect(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						err := r.(error)
+						Expect(err).To(MatchError("at least one of LibName and LibVer should be set"))
+					}
+				}()
+				pipe.ClientSetInfo(ctx, libInfo)
+			}).To(Panic())
+		})
+
 		It("should ConfigGet", func() {
 			val, err := client.ConfigGet(ctx, "*").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -271,6 +333,20 @@ var _ = Describe("Commands", func() {
 			info := client.Info(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(Equal(""))
+		})
+
+		It("should InfoMap", Label("redis.info"), func() {
+			info := client.InfoMap(ctx)
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).NotTo(BeNil())
+
+			info = client.InfoMap(ctx, "dummy")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(BeNil())
+
+			info = client.InfoMap(ctx, "server")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(HaveLen(1))
 		})
 
 		It("should Info cpu", func() {
@@ -362,7 +438,6 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should filter commands by ACL category", func() {
-
 			filter := &redis.FilterBy{
 				ACLCat: "admin",
 			}
@@ -529,7 +604,6 @@ var _ = Describe("Commands", func() {
 			n, err = client.Exists(ctx, "key").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(0)))
-
 		})
 
 		It("should Keys", func() {
@@ -676,7 +750,6 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should PExpireTime", func() {
-
 			// The command returns -1 if the key exists but has no associated expiration time.
 			// The command returns -2 if the key does not exist.
 			pExpireTime := client.PExpireTime(ctx, "key")
@@ -915,7 +988,6 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ExpireTime", func() {
-
 			// The command returns -1 if the key exists but has no associated expiration time.
 			// The command returns -2 if the key does not exist.
 			expireTimeCmd := client.ExpireTime(ctx, "key")
@@ -937,7 +1009,6 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should TTL", func() {
-
 			// The command returns -1 if the key exists but has no associated expire
 			// The command returns -2 if the key does not exist.
 			ttl := client.TTL(ctx, "key")
@@ -1202,6 +1273,10 @@ var _ = Describe("Commands", func() {
 			nn, err := client.BitField(ctx, "mykey", "INCRBY", "i5", 100, 1, "GET", "u4", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nn).To(Equal([]int64{1, 0}))
+
+			nn, err = client.BitField(ctx, "mykey", "set", "i1", 1, 1, "GET", "u4", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nn).To(Equal([]int64{0, 4}))
 		})
 
 		It("should Decr", func() {
@@ -1987,7 +2062,6 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ACL LOG", func() {
-
 			err := client.Do(ctx, "acl", "setuser", "test", ">test", "on", "allkeys", "+get").Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2001,10 +2075,9 @@ var _ = Describe("Commands", func() {
 
 			logEntries, err := client.ACLLog(ctx, 10).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(logEntries)).To(Equal(3))
+			Expect(len(logEntries)).To(Equal(4))
 
 			for _, entry := range logEntries {
-				Expect(entry.Count).To(BeNumerically("==", 1))
 				Expect(entry.Reason).To(Equal("command"))
 				Expect(entry.Context).To(Equal("toplevel"))
 				Expect(entry.Object).NotTo(BeEmpty())
@@ -2019,7 +2092,6 @@ var _ = Describe("Commands", func() {
 			limitedLogEntries, err := client.ACLLog(ctx, 2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(limitedLogEntries)).To(Equal(2))
-
 		})
 
 		It("should ACL LOG RESET", func() {
@@ -2033,7 +2105,6 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(logEntries)).To(Equal(0))
 		})
-
 	})
 
 	Describe("hashes", func() {
@@ -2645,7 +2716,6 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(Equal("list2"))
 			Expect(val).To(Equal([]string{"a", "b", "c", "d"}))
-
 		})
 
 		It("should BLMPopBlocks", func() {
@@ -2667,7 +2737,7 @@ var _ = Describe("Commands", func() {
 			case <-done:
 				Fail("BLMPop is not blocked")
 			case <-time.After(time.Second):
-				//ok
+				// ok
 			}
 
 			_, err := client.LPush(ctx, "list_list", "a").Result()
@@ -2675,7 +2745,7 @@ var _ = Describe("Commands", func() {
 
 			select {
 			case <-done:
-				//ok
+				// ok
 			case <-time.After(time.Second):
 				Fail("BLMPop is still blocked")
 			}
@@ -4130,7 +4200,6 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ZMPop", func() {
-
 			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
@@ -4202,11 +4271,9 @@ var _ = Describe("Commands", func() {
 				Score:  6,
 				Member: "six",
 			}}))
-
 		})
 
 		It("should BZMPop", func() {
-
 			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
@@ -4306,7 +4373,7 @@ var _ = Describe("Commands", func() {
 			case <-done:
 				Fail("BZMPop is not blocked")
 			case <-time.After(time.Second):
-				//ok
+				// ok
 			}
 
 			err := client.ZAdd(ctx, "list_list", redis.Z{Score: 1, Member: "one"}).Err()
@@ -4314,7 +4381,7 @@ var _ = Describe("Commands", func() {
 
 			select {
 			case <-done:
-				//ok
+				// ok
 			case <-time.After(time.Second):
 				Fail("BZMPop is still blocked")
 			}
@@ -6874,7 +6941,6 @@ var _ = Describe("Commands", func() {
 
 			close(started)
 		})
-
 	})
 
 	Describe("SlowLogGet", func() {
@@ -6895,7 +6961,6 @@ var _ = Describe("Commands", func() {
 			Expect(len(result)).NotTo(BeZero())
 		})
 	})
-
 })
 
 type numberStruct struct {

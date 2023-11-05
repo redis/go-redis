@@ -2,3 +2,5 @@
 testdata/*
 .idea/
 .DS_Store
+*.tar.gz
+*.dic
