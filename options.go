@@ -144,6 +144,10 @@ type Options struct {
 
 	// Disable set-lib on connect. Default is false.
 	DisableIndentity bool
+
+	// Disable Hello on connect. Default is false.
+	// Hello is used to check the server version,but in Enterprise environment with twproxy,it will cause error,return EOF panic.
+	DisableHelloCmd bool
 }
 
 func (opt *Options) init() {
