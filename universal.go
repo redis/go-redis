@@ -154,6 +154,9 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		SentinelUsername: o.SentinelUsername,
 		SentinelPassword: o.SentinelPassword,
 
+		RouteByLatency: o.RouteByLatency,
+		RouteRandomly:  o.RouteRandomly,
+
 		MaxRetries:      o.MaxRetries,
 		MinRetryBackoff: o.MinRetryBackoff,
 		MaxRetryBackoff: o.MaxRetryBackoff,
@@ -260,10 +263,14 @@ var (
 // 2. if the number of Addrs is two or more, a ClusterClient is returned.
 // 3. Otherwise, a single-node Client is returned.
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
-	if opts.MasterName != "" {
+	switch {
+	case opts.MasterName != "" && (opts.RouteByLatency || opts.RouteRandomly):
+		return NewFailoverClusterClient(opts.Failover())
+	case opts.MasterName != "":
 		return NewFailoverClient(opts.Failover())
-	} else if len(opts.Addrs) > 1 || opts.IsClusterMode {
+	case len(opts.Addrs) > 1 || opts.IsClusterMode:
 		return NewClusterClient(opts.Cluster())
+	default:
+		return NewClient(opts.Simple())
 	}
-	return NewClient(opts.Simple())
 }
