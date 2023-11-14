@@ -82,6 +82,13 @@ const (
 	Max
 	Range
 	Count
+	CountDistinct
+	CountDistinctish
+	StdDev
+	Quantile
+	ToList
+	FirstValue
+	RandomSample
 	First
 	Last
 	StdP
@@ -107,6 +114,20 @@ func (a Aggregator) String() string {
 		return "RANGE"
 	case Count:
 		return "COUNT"
+	case CountDistinct:
+		return "COUNT_DISTINCT"
+	case CountDistinctish:
+		return "COUNT_DISTINCTISH"
+	case StdDev:
+		return "STDDEV"
+	case Quantile:
+		return "QUANTILE"
+	case ToList:
+		return "TOLIST"
+	case FirstValue:
+		return "FIRST_VALUE"
+	case RandomSample:
+		return "RANDOM_SAMPLE"
 	case First:
 		return "FIRST"
 	case Last:
