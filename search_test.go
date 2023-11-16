@@ -1115,18 +1115,21 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 	})
 
 	It("should FTConfigSet and FTConfigGet dialect", Label("search", "ftconfigget", "ftconfigset"), func() {
+		res, err := client.FTConfigSet(ctx, "DEFAULT_DIALECT", "1").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(BeEquivalentTo("OK"))
+
 		defDialect, err := client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "1"}))
 
-		res, err := client.FTConfigSet(ctx, "DEFAULT_DIALECT", "2").Result()
+		res, err = client.FTConfigSet(ctx, "DEFAULT_DIALECT", "2").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res).To(BeEquivalentTo("OK"))
 
 		defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "2"}))
-
 	})
 
 	It("should FTCreate WithSuffixtrie", Label("search", "ftcreate", "ftinfo"), func() {
