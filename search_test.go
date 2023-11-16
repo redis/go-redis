@@ -9,6 +9,17 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+func WaitForIndexing(c *redis.Client, index string) {
+	for {
+		res, err := c.FTInfo(context.Background(), index).Result()
+		Expect(err).NotTo(HaveOccurred())
+		if res["indexing"].(int64) == 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 var _ = Describe("RediSearch commands", Label("search"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
@@ -26,6 +37,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "txt", FieldType: "TEXT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txt")
 		client.HSet(ctx, "doc1", "txt", "foo baz")
 		client.HSet(ctx, "doc2", "txt", "foo bar")
 		res, err := client.FTSearchWithArgs(ctx, "txt", "foo ~bar", &redis.FTSearchOptions{WithScores: true}).Result()
@@ -41,6 +53,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{StopWords: []interface{}{"foo", "bar", "baz"}}, &redis.SearchSchema{FieldName: "txt", FieldType: "TEXT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txt")
 		client.HSet(ctx, "doc1", "txt", "foo baz")
 		client.HSet(ctx, "doc2", "txt", "hello world")
 		res1, err := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{NoContent: true}).Result()
@@ -58,6 +71,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "txt", FieldType: "TEXT"}, &redis.SearchSchema{FieldName: "num", FieldType: "NUMERIC"}, &redis.SearchSchema{FieldName: "loc", FieldType: "GEO"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txt")
 		client.HSet(ctx, "doc1", "txt", "foo bar", "num", 3.141, "loc", "-0.441,51.458")
 		client.HSet(ctx, "doc2", "txt", "foo baz", "num", 2, "loc", "-0.1,51.2")
 		res1, err := client.FTSearchWithArgs(ctx, "txt", "foo", &redis.FTSearchOptions{Filters: []redis.FTSearchFilter{{FieldName: "num", Min: 0, Max: 2}}, NoContent: true}).Result()
@@ -92,6 +106,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "num", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "txt", FieldType: "TEXT"}, &redis.SearchSchema{FieldName: "num", FieldType: "NUMERIC", Sortable: true}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "num")
 		client.HSet(ctx, "doc1", "txt", "foo bar", "num", 1)
 		client.HSet(ctx, "doc2", "txt", "foo baz", "num", 2)
 		client.HSet(ctx, "doc3", "txt", "foo qux", "num", 3)
@@ -120,6 +135,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "title", FieldType: "TEXT", Weight: 5}, &redis.SearchSchema{FieldName: "body", FieldType: "TEXT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txt")
 		client.HSet(ctx, "doc1", "title", "RediSearch", "body", "Redisearch impements a search engine on top of redis")
 		res1, err := client.FTSearchWithArgs(ctx, "txt", "search engine", &redis.FTSearchOptions{NoContent: true, Verbatim: true, LimitOffset: 0, Limit: 5}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -137,6 +153,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx", &redis.FTCreateOptions{}, text1, text2, num, geo, tag).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx")
 		client.HSet(ctx, "doc1", "field", "aaa", "text", "1", "numeric", 1, "geo", "1,1", "tag", "1")
 		client.HSet(ctx, "doc2", "field", "aab", "text", "2", "numeric", 2, "geo", "2,2", "tag", "2")
 		res1, err := client.FTSearch(ctx, "idx", "@text:aa*").Result()
@@ -172,6 +189,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{}, text1, text2, text3).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txt")
 		res1, err := client.FTExplain(ctx, "txt", "@f3:f3_val @f2:f2_val @f1:f1_val").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res1).ToNot(BeEmpty())
@@ -184,9 +202,11 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val1, err := client.FTCreate(ctx, "testAlias", &redis.FTCreateOptions{Prefix: []interface{}{"index1:"}}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val1).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "testAlias")
 		val2, err := client.FTCreate(ctx, "testAlias2", &redis.FTCreateOptions{Prefix: []interface{}{"index2:"}}, text2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val2).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "testAlias2")
 
 		client.HSet(ctx, "index1:lonestar", "name", "lonestar")
 		client.HSet(ctx, "index2:yogurt", "name", "yogurt")
@@ -221,6 +241,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "txt", FieldType: "TEXT", Sortable: true, NoStem: true}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		resInfo, err := client.FTInfo(ctx, "idx1").Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -232,6 +253,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "txt", FieldType: "TEXT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		resAlter, err := client.FTAlter(ctx, "idx1", false, []interface{}{"body", "TEXT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -250,6 +272,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, text2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "f1", "some valid content", "f2", "this is sample text")
 		client.HSet(ctx, "doc2", "f1", "very important", "f2", "lorem ipsum")
@@ -299,6 +322,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, text2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		dict := []interface{}{"item1", "item2", "item3"}
 		resDictAdd, err := client.FTDictAdd(ctx, "custom_dict", dict).Result()
@@ -323,6 +347,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "name", "Jon")
 		client.HSet(ctx, "doc2", "name", "John")
@@ -338,6 +363,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val2, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val2).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "name", "Jon")
 		client.HSet(ctx, "doc2", "name", "John")
@@ -358,6 +384,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "description", "The quick brown fox jumps over the lazy dog")
 		client.HSet(ctx, "doc2", "description", "Quick alice was beginning to get very tired of sitting by her quick sister on the bank, and of having nothing to do.")
@@ -421,6 +448,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, text2, text3, num).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "search", "title", "RediSearch",
 			"body", "Redisearch impements a search engine on top of redis",
@@ -532,6 +560,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, text2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "t1", "a", "t2", "b")
 		client.HSet(ctx, "doc2", "t1", "b", "t2", "a")
@@ -573,6 +602,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, text2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "t1", "hello", "t2", "world")
 
@@ -601,6 +631,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, num1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "PrimaryKey", "9::362330", "CreatedDateTimeUTC", "637387878524969984")
 		client.HSet(ctx, "doc2", "PrimaryKey", "9::362329", "CreatedDateTimeUTC", "637387875859270016")
@@ -620,6 +651,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, num1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "name", "bar", "age", "25")
 		client.HSet(ctx, "doc2", "name", "foo", "age", "19")
@@ -651,6 +683,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{SkipInitalScan: true}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		res, err := client.FTSearch(ctx, "idx1", "@foo:bar").Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -663,6 +696,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true, Prefix: []interface{}{"king:"}}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.JSONSet(ctx, "king:1", "$", `{"name": "henry"}`)
 		client.JSONSet(ctx, "king:2", "$", `{"name": "james"}`)
@@ -683,6 +717,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true}, text1, num1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.JSONSet(ctx, "doc:1", "$", `{"name": "Jon", "age": 25}`)
 
@@ -702,6 +737,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, tag1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "1", "t", "HELLO")
 		client.HSet(ctx, "2", "t", "hello")
@@ -723,7 +759,8 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err = client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, tag2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
-		time.Sleep(5 * time.Second)
+		WaitForIndexing(client, "idx1")
+
 		res, err = client.FTSearch(ctx, "idx1", "@t:{HELLO}").Result()
 		Expect(err).NotTo(HaveOccurred())
 		results = res.(map[interface{}]interface{})["results"].([]interface{})
@@ -743,8 +780,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true}, text1, num1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
-
-		time.Sleep(5 * time.Second)
+		WaitForIndexing(client, "idx1")
 
 		res, err := client.FTSearchWithArgs(ctx, "idx1", "*", &redis.FTSearchOptions{Return: []redis.FTSearchReturn{{FieldName: "$.t", As: "txt"}}}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -770,6 +806,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnHash: true}, text1, text2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		resSynUpdate, err := client.FTSynUpdateWithArgs(ctx, "idx1", "id1", &redis.FTSynUpdateOptions{SkipInitialScan: true}, []interface{}{"boy", "child", "offspring"}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -796,6 +833,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnHash: true}, text1, text2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		resSynUpdate, err := client.FTSynUpdate(ctx, "idx1", "id1", []interface{}{"boy", "child", "offspring"}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -827,6 +865,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true, Prefix: []interface{}{"king:"}}, text1, num1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.JSONSet(ctx, "king:1", "$", `{"name": "henry", "num": 42}`)
 		client.JSONSet(ctx, "king:2", "$", `{"name": "james", "num": 3.14}`)
@@ -854,6 +893,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true, Prefix: []interface{}{"king:"}}, tag1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.JSONSet(ctx, "king:1", "$", `{"name": "henry", "country": {"name": "england"}}`)
 
@@ -873,6 +913,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true}, text1, text2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.JSONSet(ctx, "doc:1", "$", `{"prod:name": "RediSearch"}`)
 
@@ -903,6 +944,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "t", FieldType: "TEXT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "1", "t", "hello")
 		client.HSet(ctx, "2", "t", "world")
@@ -935,6 +977,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "t", FieldType: "TEXT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "1", "t", "hello")
 		client.HSet(ctx, "2", "t", "hell")
@@ -960,6 +1003,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 			&redis.SearchSchema{FieldName: "v", FieldType: "VECTOR", VectorArgs: &redis.FTVectorArgs{HNSWOptions: hnswOptions}}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "a", "v", "aaaaaaaa")
 		client.HSet(ctx, "b", "v", "aaaabaaa")
@@ -992,6 +1036,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 			&redis.SearchSchema{FieldName: "v", FieldType: "VECTOR", VectorArgs: &redis.FTVectorArgs{HNSWOptions: hnswOptions}}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "a", "v", "aaaaaaaa")
 		client.HSet(ctx, "b", "v", "aaaabaaa")
@@ -1015,6 +1060,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "name", FieldType: "TEXT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "name", "Alice")
 		client.HSet(ctx, "doc2", "name", "Bob")
@@ -1033,6 +1079,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "numval", FieldType: "NUMERIC"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "numval", 101)
 		client.HSet(ctx, "doc2", "numval", 102)
@@ -1051,6 +1098,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "g", FieldType: "GEO"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "doc1", "g", "29.69465, 34.95126")
 		client.HSet(ctx, "doc2", "g", "29.69350, 34.94737")
@@ -1085,6 +1133,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "txt", FieldType: "TEXT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		res, err := client.FTInfo(ctx, "idx1").Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -1099,6 +1148,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err = client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "txt", FieldType: "TEXT", WithSuffixtrie: true}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		res, err = client.FTInfo(ctx, "idx1").Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -1113,6 +1163,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err = client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "t", FieldType: "TAG", WithSuffixtrie: true}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		res, err = client.FTInfo(ctx, "idx1").Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -1124,6 +1175,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.SearchSchema{FieldName: "geom", FieldType: "GEOSHAPE", GeoShapeFieldType: "FLAT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "small", "geom", "POLYGON((1 1, 1 100, 100 100, 100 1, 1 1))")
 		client.HSet(ctx, "large", "geom", "POLYGON((1 1, 1 200, 200 200, 200 1, 1 1))")
