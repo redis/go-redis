@@ -165,7 +165,7 @@ func (p *ConnPool) NewConn(ctx context.Context) (*Conn, error) {
 
 func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	p.connsMu.Lock()
-	if p.cfg.PoolSizeStrict && len(p.conns) >= p.poolSize {
+	if p.cfg.PoolSizeStrict && len(p.conns) >= p.cfg.PoolSize {
 		p.connsMu.Unlock()
 		return nil, ErrPoolExhausted
 	}
