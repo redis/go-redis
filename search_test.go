@@ -13,7 +13,7 @@ func WaitForIndexing(c *redis.Client, index string) {
 	for {
 		res, err := c.FTInfo(context.Background(), index).Result()
 		Expect(err).NotTo(HaveOccurred())
-		if res["indexing"].(int64) == 0 {
+		if res["indexing"].(float64) == 0 {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
