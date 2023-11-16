@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"context"
+	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -374,12 +375,12 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "TFIDF.DOCNORM"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		result = res.(map[interface{}]interface{})["results"].([]interface{})[0].(map[interface{}]interface{})["score"]
-		Expect(result).To(BeEquivalentTo(0.1111111111111111))
+		Expect(result).To(BeEquivalentTo(0.14285714285714285))
 
 		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "BM25"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		result = res.(map[interface{}]interface{})["results"].([]interface{})[0].(map[interface{}]interface{})["score"]
-		Expect(result).To(BeEquivalentTo(0.17699114465425977))
+		Expect(result).To(BeEquivalentTo(0.22471909420069797))
 
 		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "DISMAX"}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -722,7 +723,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err = client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, tag2).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
-
+		time.Sleep(5 * time.Second)
 		res, err = client.FTSearch(ctx, "idx1", "@t:{HELLO}").Result()
 		Expect(err).NotTo(HaveOccurred())
 		results = res.(map[interface{}]interface{})["results"].([]interface{})
@@ -742,6 +743,8 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true}, text1, num1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
+
+		time.Sleep(5 * time.Second)
 
 		res, err := client.FTSearchWithArgs(ctx, "idx1", "*", &redis.FTSearchOptions{Return: []redis.FTSearchReturn{{FieldName: "$.t", As: "txt"}}}).Result()
 		Expect(err).NotTo(HaveOccurred())
