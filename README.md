@@ -69,7 +69,7 @@ go-redis supports 2 last Go versions and requires a Go version with
 module:
 
 ```shell
-go mod init github.com/my/repo
+go mod init example.com/greetings
 ```
 
 Then install go-redis/**v9**:
