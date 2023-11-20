@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"strings"
 )
 
 type SearchCmdable interface {
@@ -60,7 +59,7 @@ type FTCreateOptions struct {
 type FieldSchema struct {
 	FieldName         string
 	As                string
-	FieldType         string
+	FieldType         SearchFieldType
 	Sortable          bool
 	UNF               bool
 	NoStem            bool
@@ -170,6 +169,39 @@ func (a SearchAggregator) String() string {
 		return "RANDOM_SAMPLE"
 	default:
 		return ""
+	}
+}
+
+type SearchFieldType int
+
+const (
+	SearchFieldTypeInvalid = SearchFieldType(iota)
+	SearchFieldTypeNumeric
+	SearchFieldTypeTag
+	SearchFieldTypeText
+	SearchFieldTypeGeo
+	SearchFieldTypeVector
+	SearchFieldTypeGeoShape
+)
+
+func (t SearchFieldType) String() string {
+	switch t {
+	case SearchFieldTypeInvalid:
+		return ""
+	case SearchFieldTypeNumeric:
+		return "NUMERIC"
+	case SearchFieldTypeTag:
+		return "TAG"
+	case SearchFieldTypeText:
+		return "TEXT"
+	case SearchFieldTypeGeo:
+		return "GEO"
+	case SearchFieldTypeVector:
+		return "VECTOR"
+	case SearchFieldTypeGeoShape:
+		return "GEOSHAPE"
+	default:
+		return "TEXT"
 	}
 }
 
@@ -657,16 +689,16 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 	}
 	args = append(args, "SCHEMA")
 	for _, schema := range schema {
-		if schema.FieldName == "" || schema.FieldType == "" {
+		if schema.FieldName == "" || schema.FieldType == SearchFieldTypeInvalid {
 			panic("FT.CREATE: SCHEMA FieldName and FieldType are required")
 		}
 		args = append(args, schema.FieldName)
 		if schema.As != "" {
 			args = append(args, "AS", schema.As)
 		}
-		args = append(args, schema.FieldType)
+		args = append(args, schema.FieldType.String())
 		if schema.VectorArgs != nil {
-			if strings.ToUpper(schema.FieldType) != "VECTOR" {
+			if schema.FieldType != SearchFieldTypeVector {
 				panic("FT.CREATE: SCHEMA FieldType VECTOR is required for VectorArgs")
 			}
 			if schema.VectorArgs.FlatOptions != nil && schema.VectorArgs.HNSWOptions != nil {
@@ -721,7 +753,7 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 			}
 		}
 		if schema.GeoShapeFieldType != "" {
-			if strings.ToUpper(schema.FieldType) != "GEOSHAPE" {
+			if schema.FieldType != SearchFieldTypeGeoShape {
 				panic("FT.CREATE: SCHEMA FieldType GEOSHAPE is required for GeoShapeFieldType")
 			}
 			args = append(args, schema.GeoShapeFieldType)
