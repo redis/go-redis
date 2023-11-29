@@ -678,18 +678,6 @@ func (c *Ring) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
 	return nil, firstErr
 }
 
-func (c *Ring) cmdInfo(ctx context.Context, name string) *CommandInfo {
-	cmdsInfo, err := c.cmdsInfoCache.Get(ctx)
-	if err != nil {
-		return nil
-	}
-	info := cmdsInfo[name]
-	if info == nil {
-		internal.Logger.Printf(ctx, "info for cmd=%s not found", name)
-	}
-	return info
-}
-
 func (c *Ring) cmdShard(ctx context.Context, cmd Cmder) (*ringShard, error) {
 	pos := cmdFirstKeyPos(cmd)
 	if pos == 0 {
