@@ -861,7 +861,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	}
 
 	c.state = newClusterStateHolder(c.loadState)
-	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
+	// c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
 
 	c.initHooks(hooks{
@@ -907,7 +907,7 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
-	cmdInfo := c.cmdInfo(ctx, cmd.Name())
+	// cmdInfo := c.cmdInfo(ctx, cmd.Name())
 	slot := c.cmdSlot(ctx, cmd)
 	var node *clusterNode
 	var ask bool
@@ -921,7 +921,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 
 		if node == nil {
 			var err error
-			node, err = c.cmdNode(ctx, cmdInfo, slot)
+			node, err = c.cmdNode(ctx, slot)
 			if err != nil {
 				return err
 			}
@@ -1252,7 +1252,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 		return err
 	}
 
-	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
+	if c.opt.ReadOnly {
 		for _, cmd := range cmds {
 			slot := c.cmdSlot(ctx, cmd)
 			node, err := c.slotReadOnlyNode(state, slot)
@@ -1275,15 +1275,15 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	return nil
 }
 
-func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool {
-	for _, cmd := range cmds {
-		cmdInfo := c.cmdInfo(ctx, cmd.Name())
-		if cmdInfo == nil || !cmdInfo.ReadOnly {
-			return false
-		}
-	}
-	return true
-}
+// func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool {
+// 	for _, cmd := range cmds {
+// 		cmdInfo := c.cmdInfo(ctx, cmd.Name())
+// 		if cmdInfo == nil || !cmdInfo.ReadOnly {
+// 			return false
+// 		}
+// 	}
+// 	return true
+// }
 
 func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
@@ -1778,13 +1778,13 @@ func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 }
 
 func (c *ClusterClient) cmdSlot(ctx context.Context, cmd Cmder) int {
-	args := cmd.Args()
-	if args[0] == "cluster" && args[1] == "getkeysinslot" {
-		return args[2].(int)
-	}
+	// args := cmd.Args()
+	// if args[0] == "cluster" && args[1] == "getkeysinslot" {
+	// 	return args[2].(int)
+	// }
 
-	cmdInfo := c.cmdInfo(ctx, cmd.Name())
-	return cmdSlot(cmd, cmdFirstKeyPos(cmd, cmdInfo))
+	// cmdInfo := c.cmdInfo(ctx, cmd.Name())
+	return cmdSlot(cmd, cmdFirstKeyPos(cmd, nil))
 }
 
 func cmdSlot(cmd Cmder, pos int) int {
@@ -1797,7 +1797,6 @@ func cmdSlot(cmd Cmder, pos int) int {
 
 func (c *ClusterClient) cmdNode(
 	ctx context.Context,
-	cmdInfo *CommandInfo,
 	slot int,
 ) (*clusterNode, error) {
 	state, err := c.state.Get(ctx)
@@ -1805,7 +1804,7 @@ func (c *ClusterClient) cmdNode(
 		return nil, err
 	}
 
-	if c.opt.ReadOnly && cmdInfo != nil && cmdInfo.ReadOnly {
+	if c.opt.ReadOnly {
 		return c.slotReadOnlyNode(state, slot)
 	}
 	return state.slotMasterNode(slot)
