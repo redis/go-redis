@@ -17,10 +17,22 @@ import (
 )
 
 type Cmder interface {
+	// command name.
+	// e.g. "set k v ex 10" -> `set`, "cluster info" -> "cluster"
 	Name() string
+
+	// full command name.
+	// e.g. "set k v ex 10" -> `set`, "cluster info" -> "cluster info"
 	FullName() string
+
+	// all command args
+	// e.g. "set k v ex 10" -> "[set k1 v1 ex 10]"
 	Args() []interface{}
+
+	// format req and resp string
+	// e.g. "set k v ex 10" -> "set k1 v1 ex 10: OK", "get k1" -> "get k1: v1"
 	String() string
+
 	stringArg(int) string
 	firstKeyPos() int8
 	SetFirstKeyPos(int8)
