@@ -691,8 +691,7 @@ func (c *Ring) cmdInfo(ctx context.Context, name string) *CommandInfo {
 }
 
 func (c *Ring) cmdShard(ctx context.Context, cmd Cmder) (*ringShard, error) {
-	cmdInfo := c.cmdInfo(ctx, cmd.Name())
-	pos := cmdFirstKeyPos(cmd, cmdInfo)
+	pos := cmdFirstKeyPos(cmd)
 	if pos == 0 {
 		return c.sharding.Random()
 	}
@@ -760,8 +759,7 @@ func (c *Ring) generalProcessPipeline(
 	cmdsMap := make(map[string][]Cmder)
 
 	for _, cmd := range cmds {
-		cmdInfo := c.cmdInfo(ctx, cmd.Name())
-		hash := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
+		hash := cmd.stringArg(cmdFirstKeyPos(cmd))
 		if hash != "" {
 			hash = c.sharding.Hash(hash)
 		}
