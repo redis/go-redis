@@ -1,6 +1,6 @@
 module github.com/redis/go-redis/extra/redisprometheus/v9
 
-go 1.17
+go 1.19
 
 replace github.com/redis/go-redis/v9 => ../..
 
