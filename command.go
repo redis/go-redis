@@ -5381,3 +5381,74 @@ func (cmd *InfoCmd) Item(section, key string) string {
 		return cmd.val[section][key]
 	}
 }
+
+type MonitorCmd struct {
+	baseCmd
+	ch chan<- string
+}
+
+func NewMonitorCmd(ctx context.Context, ch chan<- string) *MonitorCmd {
+	return &MonitorCmd{
+		baseCmd: baseCmd{
+			ctx: ctx,
+			args: []interface{}{
+				"monitor",
+			},
+		},
+		ch: ch,
+	}
+}
+
+// func (cmd *InfoCmd) SetVal(val map[string]map[string]string) {
+// 	cmd.val = val
+// }
+
+// func (cmd *InfoCmd) Val() map[string]map[string]string {
+// 	return cmd.val
+// }
+
+// func (cmd *InfoCmd) Result() (map[string]map[string]string, error) {
+// 	return cmd.Val(), cmd.Err()
+// }
+
+func (cmd *MonitorCmd) String() string {
+	return cmdString(cmd, nil)
+}
+
+func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
+
+	go func() {
+		for {
+			line, err := rd.ReadString()
+			if err != nil {
+				return
+			}
+			cmd.ch <- line
+			fmt.Println(line)
+		}
+	}()
+	return nil
+
+}
+
+func (cmd *MonitorCmd) Stop() {
+	close(cmd.ch)
+}
+
+// func (cmd *MonitorCmd) WaitAndRecieve() *string {
+// 	if cmd == nil {
+// 		c.cmd = NewCmd(ctx)
+// 	}
+
+// 	err = cn.WithReader(context.Background(), timeout, func(rd *proto.Reader) error {
+// 		return c.cmd.readReply(rd)
+// 	})
+
+// 	c.releaseConnWithLock(ctx, cn, err, timeout > 0)
+
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	return c.newMessage(c.cmd.Val())
+// }
