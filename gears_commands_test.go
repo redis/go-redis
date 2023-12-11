@@ -111,18 +111,4 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("bar"))
 	})
-
-	It("should monitor", Label("mon", "monitor"), func() {
-		ress := make(chan string)
-
-		client1 := redis.NewClient(&redis.Options{Addr: ":6379"})
-		client1.Monitor(ctx, ress)
-		client.Set(ctx, "foo", "bar", 0)
-		client.Set(ctx, "bar", "baz", 0)
-		client.Set(ctx, "bap", 8, 0)
-		client.Get(ctx, "bap")
-		panic(<-ress)
-		// stop <- true
-		// Expect(<-ress).To(BeEquivalentTo(""))
-	})
 })
