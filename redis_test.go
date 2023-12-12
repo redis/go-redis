@@ -579,3 +579,53 @@ var _ = Describe("Hook", func() {
 		Expect(cmd.Val()).To(Equal("Script and hook"))
 	})
 })
+
+var _ = Describe("Hook with MinIdleConns", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		options := redisOptions()
+		options.MinIdleConns = 1
+		client = redis.NewClient(options)
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("fifo", func() {
+		var res []string
+		client.AddHook(&hook{
+			processHook: func(hook redis.ProcessHook) redis.ProcessHook {
+				return func(ctx context.Context, cmd redis.Cmder) error {
+					res = append(res, "hook-1-process-start")
+					err := hook(ctx, cmd)
+					res = append(res, "hook-1-process-end")
+					return err
+				}
+			},
+		})
+		client.AddHook(&hook{
+			processHook: func(hook redis.ProcessHook) redis.ProcessHook {
+				return func(ctx context.Context, cmd redis.Cmder) error {
+					res = append(res, "hook-2-process-start")
+					err := hook(ctx, cmd)
+					res = append(res, "hook-2-process-end")
+					return err
+				}
+			},
+		})
+
+		err := client.Ping(ctx).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(res).To(Equal([]string{
+			"hook-1-process-start",
+			"hook-2-process-start",
+			"hook-2-process-end",
+			"hook-1-process-end",
+		}))
+	})
+})
