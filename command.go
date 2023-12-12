@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -5394,9 +5395,11 @@ type MonitorCmd struct {
 	baseCmd
 	ch     chan string
 	status MonitorStatus
+	mu     sync.Mutex
 }
 
 func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
+	mu := sync.Mutex{}
 	return &MonitorCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -5404,6 +5407,7 @@ func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
 		},
 		ch:     ch,
 		status: monitorStatusIdle,
+		mu:     mu,
 	}
 }
 
@@ -5431,26 +5435,33 @@ func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) error {
-	for cmd.status == monitorStatusStart {
-		if pk, _ := rd.Peek(1); len(pk) != 0 {
+	for {
+		cmd.mu.Lock()
+		st := cmd.status
+		cmd.mu.Unlock()
+		if pk, _ := rd.Peek(1); len(pk) != 0 && st == monitorStatusStart {
 			line, err := rd.ReadString()
 			if err != nil {
 				return err
 			}
 			cmd.ch <- line
 		}
-
-	}
-	if cmd.status == monitorStatusStop {
-		cancel()
+		if st == monitorStatusStop {
+			cancel()
+			break
+		}
 	}
 	return nil
 }
 
 func (cmd *MonitorCmd) Start() {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
 	cmd.status = monitorStatusStart
 }
 
 func (cmd *MonitorCmd) Stop() {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
 	cmd.status = monitorStatusStop
 }
