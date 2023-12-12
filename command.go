@@ -5399,7 +5399,6 @@ type MonitorCmd struct {
 }
 
 func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
-	mu := sync.Mutex{}
 	return &MonitorCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -5407,7 +5406,7 @@ func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
 		},
 		ch:     ch,
 		status: monitorStatusIdle,
-		mu:     mu,
+		mu:     sync.Mutex{},
 	}
 }
 
