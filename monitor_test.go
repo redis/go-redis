@@ -25,9 +25,10 @@ var _ = Describe("Monitor command", Label("monitor"), func() {
 
 	It("should monitor", Label("monitor"), func() {
 		ress := make(chan string)
-		client1 := redis.NewClient(&redis.Options{Addr: ":6379"})
+		client1 := redis.NewClient(&redis.Options{Addr: rediStackAddr})
 		mn := client1.Monitor(ctx, ress)
 		mn.Start()
+		// Wait for monitor to start listening.
 		time.Sleep(100 * time.Millisecond)
 		client.Set(ctx, "foo", "bar", 0)
 		client.Set(ctx, "bar", "baz", 0)
@@ -40,8 +41,8 @@ var _ = Describe("Monitor command", Label("monitor"), func() {
 		}
 		mn.Stop()
 		Expect(lst[0]).To(ContainSubstring("OK"))
-		Expect(lst[1]).To(ContainSubstring("\"set\" \"foo\" \"bar\""))
-		Expect(lst[2]).To(ContainSubstring("\"set\" \"bar\" \"baz\""))
-		Expect(lst[3]).To(ContainSubstring("\"set\" \"bap\" \"8\""))
+		Expect(lst[1]).To(ContainSubstring(`"set" "foo" "bar"`))
+		Expect(lst[2]).To(ContainSubstring(`"set" "bar" "baz"`))
+		Expect(lst[3]).To(ContainSubstring(`"set" "bap" "8"`))
 	})
 })

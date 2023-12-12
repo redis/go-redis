@@ -5385,9 +5385,9 @@ func (cmd *InfoCmd) Item(section, key string) string {
 type MonitorStatus int
 
 const (
-	MonitorStatusIdle MonitorStatus = iota
-	MonitorStatusStart
-	MonitorStatusStop
+	monitorStatusIdle MonitorStatus = iota
+	monitorStatusStart
+	monitorStatusStop
 )
 
 type MonitorCmd struct {
@@ -5396,14 +5396,14 @@ type MonitorCmd struct {
 	status MonitorStatus
 }
 
-func NewMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
+func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
 	return &MonitorCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: []interface{}{"monitor"},
 		},
 		ch:     ch,
-		status: MonitorStatusIdle,
+		status: monitorStatusIdle,
 	}
 }
 
@@ -5412,11 +5412,26 @@ func (cmd *MonitorCmd) String() string {
 }
 
 func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
-	go cmd.readMonitor(rd)
+	ctx, cancel := context.WithCancel(cmd.ctx)
+	go func(ctx context.Context) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				err := cmd.readMonitor(rd, cancel)
+				if err != nil {
+					cmd.err = err
+					return
+				}
+			}
+		}
+	}(ctx)
 	return nil
 }
-func (cmd *MonitorCmd) readMonitor(rd *proto.Reader) error {
-	for cmd.status == MonitorStatusStart {
+
+func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) error {
+	for cmd.status == monitorStatusStart {
 		if pk, _ := rd.Peek(1); len(pk) != 0 {
 			line, err := rd.ReadString()
 			if err != nil {
@@ -5426,16 +5441,16 @@ func (cmd *MonitorCmd) readMonitor(rd *proto.Reader) error {
 		}
 
 	}
-	if cmd.status == MonitorStatusStop {
-		close(cmd.ch)
+	if cmd.status == monitorStatusStop {
+		cancel()
 	}
 	return nil
 }
 
 func (cmd *MonitorCmd) Start() {
-	cmd.status = MonitorStatusStart
+	cmd.status = monitorStatusStart
 }
 
 func (cmd *MonitorCmd) Stop() {
-	cmd.status = MonitorStatusStop
+	cmd.status = monitorStatusStop
 }

@@ -700,16 +700,19 @@ func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *St
 	return cmd
 }
 
-// Monitor - represents a Redis MONITOR command, which allows you to capture
-// and process all commands processed by a Redis server. Note that:
-// -- using MONITOR blocks the connection to the server for itself,
-// so it is recommended to createa separate connection dedicated to monitoring purposes.
-// -- The provided channel for monitor output should be of type string.
-// -- The MonitorCmd runs concurrently in the background. Use the Start method
-// to initiate monitoring and the Stop method to terminate it.
-// Redis MONITOR command: https://redis.io/commands/monitor
+/*
+Monitor - represents a Redis MONITOR command, allowing the user to capture
+and process all commands sent to a Redis server. This mimics the behavior of
+MONITOR in the redis-cli.
+
+Notes:
+- Using MONITOR blocks the connection to the server for itself. It needs a dedicated connection
+- The user should create a channel of type string
+- This runs concurrently in the background. Trigger via the Start and Stop functions
+See further: Redis MONITOR command: https://redis.io/commands/monitor
+*/
 func (c cmdable) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
-	cmd := NewMonitorCmd(ctx, ch)
+	cmd := newMonitorCmd(ctx, ch)
 	_ = c(ctx, cmd)
 	return cmd
 }
