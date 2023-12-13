@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding"
 	"fmt"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -102,6 +103,24 @@ func BenchmarkWriteBuffer_Append(b *testing.B) {
 	}
 }
 
+func truncateToDecimalPlace(input float64, decimalPlaces int) float64 {
+	// Calculate the divisor based on the desired decimal places
+	divisor := math.Pow(10, float64(decimalPlaces))
+	// Truncate the float using math.Floor
+	truncated := math.Floor(input*divisor) / divisor
+	return truncated
+}
+
+func truncateToDecimalPlaceFloat32(input float32, decimalPlaces int) float32 {
+	// Convert the input to float64 for calculation
+	input64 := float64(input)
+	// Calculate the divisor based on the desired decimal places
+	divisor := math.Pow(10, float64(decimalPlaces))
+	// Truncate the float using math.Floor
+	truncated := float32(math.Floor(input64*divisor) / divisor)
+	return truncated
+}
+
 var _ = Describe("WriteArg", func() {
 	var buf *bytes.Buffer
 	var wr *proto.Writer
@@ -112,42 +131,42 @@ var _ = Describe("WriteArg", func() {
 	})
 
 	args := map[any]string{
-		"hello":                   "$1\r\nhello\r\n",
-		int(10):                   "$2\r\n10\r\n",
-		util.ToPtr(int(10)):       "$2\r\n10\r\n",
-		int8(10):                  "$2\r\n10\r\n",
-		util.ToPtr(int8(10)):      "$2\r\n10\r\n",
-		int16(10):                 "$2\r\n10\r\n",
-		util.ToPtr(int16(10)):     "$2\r\n10\r\n",
-		int32(10):                 "$2\r\n10\r\n",
-		util.ToPtr(int32(10)):     "$2\r\n10\r\n",
-		int64(10):                 "$2\r\n10\r\n",
-		util.ToPtr(int64(10)):     "$2\r\n10\r\n",
-		uint(10):                  "$2\r\n10\r\n",
-		util.ToPtr(uint(10)):      "$2\r\n10\r\n",
-		uint8(10):                 "$2\r\n10\r\n",
-		util.ToPtr(uint8(10)):     "$2\r\n10\r\n",
-		uint16(10):                "$2\r\n10\r\n",
-		util.ToPtr(uint16(10)):    "$2\r\n10\r\n",
-		uint32(10):                "$2\r\n10\r\n",
-		util.ToPtr(uint32(10)):    "$2\r\n10\r\n",
-		uint64(10):                "$2\r\n10\r\n",
-		util.ToPtr(uint64(10)):    "$2\r\n10\r\n",
-		float32(10.3):             "$4\r\n10.3\r\n",
-		util.ToPtr(float32(10.3)): "$4\r\n10.3\r\n",
-		float64(10.3):             "$4\r\n10.3\r\n",
-		util.ToPtr(float64(10.3)): "$4\r\n10.3\r\n",
-		bool(true):                "$1\r\n1\r\n",
-		bool(false):               "$1\r\n0\r\n",
-		util.ToPtr(bool(true)):    "$1\r\n1\r\n",
-		util.ToPtr(bool(false)):   "$1\r\n0\r\n",
+		"hello":                "$1\r\nhello\r\n",
+		int(10):                "$2\r\n10\r\n",
+		util.ToPtr(int(10)):    "$2\r\n10\r\n",
+		int8(10):               "$2\r\n10\r\n",
+		util.ToPtr(int8(10)):   "$2\r\n10\r\n",
+		int16(10):              "$2\r\n10\r\n",
+		util.ToPtr(int16(10)):  "$2\r\n10\r\n",
+		int32(10):              "$2\r\n10\r\n",
+		util.ToPtr(int32(10)):  "$2\r\n10\r\n",
+		int64(10):              "$2\r\n10\r\n",
+		util.ToPtr(int64(10)):  "$2\r\n10\r\n",
+		uint(10):               "$2\r\n10\r\n",
+		util.ToPtr(uint(10)):   "$2\r\n10\r\n",
+		uint8(10):              "$2\r\n10\r\n",
+		util.ToPtr(uint8(10)):  "$2\r\n10\r\n",
+		uint16(10):             "$2\r\n10\r\n",
+		util.ToPtr(uint16(10)): "$2\r\n10\r\n",
+		uint32(10):             "$2\r\n10\r\n",
+		util.ToPtr(uint32(10)): "$2\r\n10\r\n",
+		uint64(10):             "$2\r\n10\r\n",
+		util.ToPtr(uint64(10)): "$2\r\n10\r\n",
+		truncateToDecimalPlaceFloat32(float32(10.3), 1):             "$4\r\n10.3\r\n",
+		util.ToPtr(truncateToDecimalPlaceFloat32(float32(10.3), 1)): "$4\r\n10.3\r\n",
+		truncateToDecimalPlace(float64(10.3), 1):                    "$4\r\n10.3\r\n",
+		util.ToPtr(truncateToDecimalPlace(float64(10.3), 1)):        "$4\r\n10.3\r\n",
+		bool(true):              "$1\r\n1\r\n",
+		bool(false):             "$1\r\n0\r\n",
+		util.ToPtr(bool(true)):  "$1\r\n1\r\n",
+		util.ToPtr(bool(false)): "$1\r\n0\r\n",
 	}
-
 	for arg, expect := range args {
 		It(fmt.Sprintf("should write arg of type %T", arg), func() {
 			err := wr.WriteArg(arg)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(buf.String()).To(Equal(expect))
+
 		})
 	}
 })
