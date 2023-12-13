@@ -28,7 +28,7 @@ var _ = Describe("Monitor command", Label("monitor"), func() {
 		client1 := redis.NewClient(&redis.Options{Addr: rediStackAddr})
 		mn := client1.Monitor(ctx, ress)
 		mn.Start()
-		// Wait for monitor to start listening.
+		// Wait for the Redis server to be in monitoring mode.
 		time.Sleep(100 * time.Millisecond)
 		client.Set(ctx, "foo", "bar", 0)
 		client.Set(ctx, "bar", "baz", 0)
