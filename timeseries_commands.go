@@ -532,7 +532,7 @@ func (c cmdable) TSInfoWithArgs(ctx context.Context, key string, options *TSInfo
 
 // TSMAdd - Adds multiple samples to multiple time-series keys.
 // It accepts a slice of 'ktv' slices, each containing exactly three elements: key, timestamp, and value.
-// If this structure isn't followed, the command won't execute correctly.
+// This struct must be provided for this command to work.
 // For more information - https://redis.io/commands/ts.madd/
 func (c cmdable) TSMAdd(ctx context.Context, ktvSlices [][]interface{}) *IntSliceCmd {
 	args := []interface{}{"TS.MADD"}
