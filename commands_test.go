@@ -3722,28 +3722,28 @@ var _ = Describe("Commands", func() {
 		It("should ZAdd bytes", func() {
 			added, err := client.ZAdd(ctx, "zset", redis.Z{
 				Score:  1,
-				Member: []byte("one"),
+				Member: "one",
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(added).To(Equal(int64(1)))
 
 			added, err = client.ZAdd(ctx, "zset", redis.Z{
 				Score:  1,
-				Member: []byte("uno"),
+				Member: "uno",
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(added).To(Equal(int64(1)))
 
 			added, err = client.ZAdd(ctx, "zset", redis.Z{
 				Score:  2,
-				Member: []byte("two"),
+				Member: "two",
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(added).To(Equal(int64(1)))
 
 			added, err = client.ZAdd(ctx, "zset", redis.Z{
 				Score:  3,
-				Member: []byte("two"),
+				Member: "two",
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(added).To(Equal(int64(0)))
