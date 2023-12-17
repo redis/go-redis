@@ -1279,6 +1279,20 @@ var _ = Describe("Commands", func() {
 			Expect(nn).To(Equal([]int64{0, 4}))
 		})
 
+		It("should BitFieldRO", func() {
+			nn, err := client.BitField(ctx, "mykey", "SET", "u8", 8, 255).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nn).To(Equal([]int64{0}))
+
+			nn, err = client.BitFieldRO(ctx, "mykey", "u8", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nn).To(Equal([]int64{0}))
+
+			nn, err = client.BitFieldRO(ctx, "mykey", "u8", 0, "u4", 8, "u4", 12, "u4", 13).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nn).To(Equal([]int64{0, 15, 15, 14}))
+		})
+
 		It("should Decr", func() {
 			set := client.Set(ctx, "key", "10", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
