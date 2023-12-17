@@ -112,7 +112,7 @@ var _ = Describe("WriteArg", func() {
 	})
 
 	args := map[any]string{
-		"hello":                   "$1\r\nhello\r\n",
+		"hello":                   "$5\r\nhello\r\n",
 		int(10):                   "$2\r\n10\r\n",
 		util.ToPtr(int(10)):       "$2\r\n10\r\n",
 		int8(10):                  "$2\r\n10\r\n",
@@ -133,8 +133,8 @@ var _ = Describe("WriteArg", func() {
 		util.ToPtr(uint32(10)):    "$2\r\n10\r\n",
 		uint64(10):                "$2\r\n10\r\n",
 		util.ToPtr(uint64(10)):    "$2\r\n10\r\n",
-		float32(10.3):             "$4\r\n10.3\r\n",
-		util.ToPtr(float32(10.3)): "$4\r\n10.3\r\n",
+		float32(10.3):             "$18\r\n10.300000190734863\r\n",
+		util.ToPtr(float32(10.3)): "$18\r\n10.300000190734863\r\n",
 		float64(10.3):             "$4\r\n10.3\r\n",
 		util.ToPtr(float64(10.3)): "$4\r\n10.3\r\n",
 		bool(true):                "$1\r\n1\r\n",
@@ -144,6 +144,7 @@ var _ = Describe("WriteArg", func() {
 	}
 
 	for arg, expect := range args {
+		arg, expect := arg, expect
 		It(fmt.Sprintf("should write arg of type %T", arg), func() {
 			err := wr.WriteArg(arg)
 			Expect(err).NotTo(HaveOccurred())
