@@ -1,6 +1,8 @@
 package redis
 
-import "context"
+import (
+	"context"
+)
 
 type BitMapCmdable interface {
 	GetBit(ctx context.Context, key string, offset int64) *IntCmd
@@ -123,6 +125,24 @@ func (c cmdable) BitField(ctx context.Context, key string, values ...interface{}
 	args[0] = "bitfield"
 	args[1] = key
 	args = appendArgs(args, values)
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// BitFieldRO - Read-only variant of the BITFIELD command.
+// It is like the original BITFIELD but only accepts GET subcommand and can safely be used in read-only replicas.
+// - BitFieldRO(ctx, key, "<Encoding0>", "<Offset0>", "<Encoding1>","<Offset1>")
+func (c cmdable) BitFieldRO(ctx context.Context, key string, values ...interface{}) *IntSliceCmd {
+	args := make([]interface{}, 2, 2+len(values))
+	args[0] = "BITFIELD_RO"
+	args[1] = key
+	if len(values)%2 != 0 {
+		panic("BitFieldRO: invalid number of arguments, must be even")
+	}
+	for i := 0; i < len(values); i += 2 {
+		args = append(args, "GET", values[i], values[i+1])
+	}
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd

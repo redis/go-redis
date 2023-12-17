@@ -727,7 +727,7 @@ func (c cmdable) ZScan(ctx context.Context, key string, cursor uint64, match str
 // Z represents sorted set member.
 type Z struct {
 	Score  float64
-	Member interface{}
+	Member string
 }
 
 // ZWithKey represents sorted set member including the name of the key where it was popped.
