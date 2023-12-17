@@ -11,7 +11,7 @@ import (
 type Model struct {
 	Str1    string   `redis:"str1"`
 	Str2    string   `redis:"str2"`
-	Bytes1  []byte   `redis:"bytes1"`
+	Bytes   []byte   `redis:"bytes"`
 	Int     int      `redis:"int"`
 	Bool    bool     `redis:"bool"`
 	Ignored struct{} `redis:"-"`
@@ -31,7 +31,7 @@ func main() {
 		rdb.HSet(ctx, "key", "str2", "world")
 		rdb.HSet(ctx, "key", "int", 123)
 		rdb.HSet(ctx, "key", "bool", 1)
-		rdb.HSet(ctx, "key", "bytes1", []byte("this is bytes !"))
+		rdb.HSet(ctx, "key", "bytes", []byte("this is bytes !"))
 		return nil
 	}); err != nil {
 		panic(err)
@@ -54,7 +54,7 @@ func main() {
 	// (main.Model) {
 	// 	Str1: (string) (len=5) "hello",
 	// 	Str2: (string) (len=5) "world",
-	// 	Bytes1: ([]uint8) (len=15 cap=16) {
+	// 	Bytes: ([]uint8) (len=15 cap=16) {
 	// 	 00000000  74 68 69 73 20 69 73 20  62 79 74 65 73 20 21     |this is bytes !|
 	// 	},
 	// 	Int: (int) 123,
@@ -68,11 +68,10 @@ func main() {
 	// (main.Model) {
 	// 	Str1: (string) (len=5) "hello",
 	// 	Str2: (string) "",
-	// 	Bytes1: ([]uint8) <nil>,
+	// 	Bytes: ([]uint8) <nil>,
 	// 	Int: (int) 123,
 	// 	Bool: (bool) false,
 	// 	Ignored: (struct {}) {
 	// 	}
 	// }
-
 }
