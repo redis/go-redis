@@ -18,10 +18,22 @@ import (
 )
 
 type Cmder interface {
+	// command name.
+	// e.g. "set k v ex 10" -> "set", "cluster info" -> "cluster".
 	Name() string
+
+	// full command name.
+	// e.g. "set k v ex 10" -> "set", "cluster info" -> "cluster info".
 	FullName() string
+
+	// all args of the command.
+	// e.g. "set k v ex 10" -> "[set k v ex 10]".
 	Args() []interface{}
+
+	// format request and response string.
+	// e.g. "set k v ex 10" -> "set k v ex 10: OK", "get k" -> "get k: v".
 	String() string
+
 	stringArg(int) string
 	firstKeyPos() int8
 	SetFirstKeyPos(int8)
@@ -63,7 +75,7 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 	return wr.WriteArgs(cmd.Args())
 }
 
-func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
+func cmdFirstKeyPos(cmd Cmder) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
 	}
@@ -82,10 +94,6 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(1) == "usage" {
 			return 2
 		}
-	}
-
-	if info != nil {
-		return int(info.FirstKeyPos)
 	}
 	return 1
 }
