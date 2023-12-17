@@ -150,7 +150,7 @@ import (
 )
 
 func ExampleClient() *redis.Client {
-    url := "redis://localhost:6379?password=hello&protocol=3"
+    url := "redis://user:password@localhost:6379/0?protocol=3"
     opts, err := redis.ParseURL(url)
     if err != nil {
         panic(err)
