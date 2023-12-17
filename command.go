@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -5380,4 +5381,86 @@ func (cmd *InfoCmd) Item(section, key string) string {
 	} else {
 		return cmd.val[section][key]
 	}
+}
+
+type MonitorStatus int
+
+const (
+	monitorStatusIdle MonitorStatus = iota
+	monitorStatusStart
+	monitorStatusStop
+)
+
+type MonitorCmd struct {
+	baseCmd
+	ch     chan string
+	status MonitorStatus
+	mu     sync.Mutex
+}
+
+func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
+	return &MonitorCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: []interface{}{"monitor"},
+		},
+		ch:     ch,
+		status: monitorStatusIdle,
+		mu:     sync.Mutex{},
+	}
+}
+
+func (cmd *MonitorCmd) String() string {
+	return cmdString(cmd, nil)
+}
+
+func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
+	ctx, cancel := context.WithCancel(cmd.ctx)
+	go func(ctx context.Context) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				err := cmd.readMonitor(rd, cancel)
+				if err != nil {
+					cmd.err = err
+					return
+				}
+			}
+		}
+	}(ctx)
+	return nil
+}
+
+func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) error {
+	for {
+		cmd.mu.Lock()
+		st := cmd.status
+		cmd.mu.Unlock()
+		if pk, _ := rd.Peek(1); len(pk) != 0 && st == monitorStatusStart {
+			line, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			cmd.ch <- line
+		}
+		if st == monitorStatusStop {
+			cancel()
+			break
+		}
+	}
+	return nil
+}
+
+func (cmd *MonitorCmd) Start() {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	cmd.status = monitorStatusStart
+}
+
+func (cmd *MonitorCmd) Stop() {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	cmd.status = monitorStatusStop
 }
