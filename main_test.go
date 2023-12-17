@@ -42,6 +42,11 @@ var (
 )
 
 var (
+	rediStackPort = "6379"
+	rediStackAddr = ":" + rediStackPort
+)
+
+var (
 	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
 
 	processes map[string]*redisProcess
