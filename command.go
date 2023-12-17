@@ -5378,7 +5378,6 @@ func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 	}
 
 	return nil
-
 }
 
 func (cmd *InfoCmd) Item(section, key string) string {
