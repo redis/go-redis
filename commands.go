@@ -204,7 +204,6 @@ type Cmdable interface {
 	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
 	Time(ctx context.Context) *TimeCmd
 	DebugObject(ctx context.Context, key string) *StringCmd
-
 	MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
@@ -697,6 +696,23 @@ func (c *ModuleLoadexConfig) toArgs() []interface{} {
 // ModuleLoadex Redis `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]` command.
 func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd {
 	cmd := NewStringCmd(ctx, conf.toArgs()...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+/*
+Monitor - represents a Redis MONITOR command, allowing the user to capture
+and process all commands sent to a Redis server. This mimics the behavior of
+MONITOR in the redis-cli.
+
+Notes:
+- Using MONITOR blocks the connection to the server for itself. It needs a dedicated connection
+- The user should create a channel of type string
+- This runs concurrently in the background. Trigger via the Start and Stop functions
+See further: Redis MONITOR command: https://redis.io/commands/monitor
+*/
+func (c cmdable) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	cmd := newMonitorCmd(ctx, ch)
 	_ = c(ctx, cmd)
 	return cmd
 }
