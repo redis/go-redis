@@ -152,7 +152,7 @@ import (
 var ctx = context.Background()
 
 func ExampleClient() {
-    url := "redis://user:secret@localhost:6379/0?protocol=3"
+    url := "redis://user:password@localhost:6379/0?protocol=3"
     opts, err := redis.ParseURL(url)
     if err != nil {
         panic(err)
