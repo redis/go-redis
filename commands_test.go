@@ -2414,6 +2414,22 @@ var _ = Describe("Commands", func() {
 				Equal([]redis.KeyValue{{Key: "key2", Value: "hello2"}}),
 			))
 		})
+
+		It("should HStrLen", func() {
+			hSet := client.HSet(ctx, "hash", "key", "hello")
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+
+			hStrLen := client.HStrLen(ctx, "hash", "key")
+			Expect(hStrLen.Err()).NotTo(HaveOccurred())
+			Expect(hStrLen.Val()).NotTo(Equal(int64(len("hello"))))
+
+			nonHStrLen := client.HGet(ctx, "hash", "key1")
+			Expect(nonHStrLen.Val()).To(Equal(int64(0)))
+
+			hDel := client.HDel(ctx, "hash", "key")
+			Expect(hDel.Err()).NotTo(HaveOccurred())
+			Expect(hDel.Val()).To(Equal(int64(1)))
+		})
 	})
 
 	Describe("hyperloglog", func() {
