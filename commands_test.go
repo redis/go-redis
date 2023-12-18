@@ -2421,9 +2421,10 @@ var _ = Describe("Commands", func() {
 
 			hStrLen := client.HStrLen(ctx, "hash", "key")
 			Expect(hStrLen.Err()).NotTo(HaveOccurred())
-			Expect(hStrLen.Val()).NotTo(Equal(int64(len("hello"))))
+			Expect(hStrLen.Val()).To(Equal(int64(len("hello"))))
 
-			nonHStrLen := client.HGet(ctx, "hash", "key1")
+			nonHStrLen := client.HStrLen(ctx, "hash", "keyNon")
+			Expect(hStrLen.Err()).NotTo(HaveOccurred())
 			Expect(nonHStrLen.Val()).To(Equal(int64(0)))
 
 			hDel := client.HDel(ctx, "hash", "key")
