@@ -66,7 +66,6 @@ type JSONCmd struct {
 var _ Cmder = (*JSONCmd)(nil)
 
 func newJSONCmd(ctx context.Context, args ...interface{}) *JSONCmd {
-
 	return &JSONCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -95,7 +94,6 @@ func (cmd *JSONCmd) Val() string {
 	} else {
 		return cmd.val
 	}
-
 }
 
 func (cmd *JSONCmd) Result() (string, error) {
@@ -103,7 +101,6 @@ func (cmd *JSONCmd) Result() (string, error) {
 }
 
 func (cmd JSONCmd) Expanded() (interface{}, error) {
-
 	if len(cmd.val) != 0 && cmd.expanded == nil {
 		err := json.Unmarshal([]byte(cmd.val), &cmd.expanded)
 		if err != nil {
@@ -115,7 +112,6 @@ func (cmd JSONCmd) Expanded() (interface{}, error) {
 }
 
 func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
-
 	// nil response from JSON.(M)GET (cmd.baseCmd.err will be "redis: nil")
 	if cmd.baseCmd.Err() == Nil {
 		cmd.val = ""
@@ -131,7 +127,7 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 			return err
 		}
 
-		var expanded = make([]interface{}, size)
+		expanded := make([]interface{}, size)
 
 		for i := 0; i < size; i++ {
 			if expanded[i], err = rd.ReadReply(); err != nil {
@@ -186,7 +182,6 @@ func (cmd *JSONSliceCmd) Result() ([]interface{}, error) {
 }
 
 func (cmd *JSONSliceCmd) readReply(rd *proto.Reader) error {
-
 	if cmd.baseCmd.Err() == Nil {
 		cmd.val = nil
 		return Nil
@@ -220,7 +215,6 @@ func (cmd *JSONSliceCmd) readReply(rd *proto.Reader) error {
 		}
 	}
 	return nil
-
 }
 
 /*******************************************************************************
@@ -262,7 +256,6 @@ func (cmd *IntPointerSliceCmd) Result() ([]*int64, error) {
 }
 
 func (cmd *IntPointerSliceCmd) readReply(rd *proto.Reader) error {
-
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
