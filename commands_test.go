@@ -675,6 +675,9 @@ var _ = Describe("Commands", func() {
 			Expect(refCount.Err()).NotTo(HaveOccurred())
 			Expect(refCount.Val()).To(Equal(int64(1)))
 
+			freq := client.ObjectFreq(ctx, "key")
+			Expect(freq.Err()).NotTo(HaveOccurred())
+
 			err := client.ObjectEncoding(ctx, "key").Err()
 			Expect(err).NotTo(HaveOccurred())
 
