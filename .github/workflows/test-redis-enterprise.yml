@@ -1,0 +1,58 @@
+name: RE Tests
+
+on:
+  push:
+    branches: [master, v9]
+  pull_request:
+    branches: [master, v9]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: [1.21.x]
+        re-build: ["100.0.1-64402"]
+        # go-version: [1.19.x, 1.20.x, 1.21.x]
+
+    steps:
+      - name: Clone Redis EE docker repository
+        run: |
+          git clone https://github.com/RedisLabs/redis-ee-docker.git redis-ee
+      - name: Install Docker-compose
+        run: |
+          DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+          mkdir -p $DOCKER_CONFIG/cli-plugins
+          curl -SL https://github.com/docker/compose/releases/download/v2.23.3/docker-compose-linux-x86_64 -o $DOCKER_CONFIG/cli-plugins/docker-compose
+      - name: Build cluster
+        env:
+          IMAGE: "redislabs/redis-internal:${{ matrix.re-build }}"
+          RE_USERNAME: test@test.com
+          RE_PASS: 12345
+          RE_CLUSTER_NAME: test
+          OSS_CLUSTER: false
+          DB_PORT: 6379
+          DOCKER_ACCESS_TOKEN: ${{ secrets.DOCKER_ACCESS_TOKEN }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: |
+          cd redis-ee/
+          ./build.sh
+
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test
+        run: go test
