@@ -8,6 +8,8 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
+	"github.com/redis/go-redis/v9/internal/util"
 )
 
 type data struct {
@@ -29,6 +31,7 @@ type data struct {
 	Float   float32 `redis:"float"`
 	Float64 float64 `redis:"float64"`
 	Bool    bool    `redis:"bool"`
+	BoolRef *bool   `redis:"boolRef"`
 }
 
 type TimeRFC3339Nano struct {
@@ -117,10 +120,10 @@ var _ = Describe("Scan", func() {
 		Expect(Scan(&d, i{"key"}, i{"value"})).NotTo(HaveOccurred())
 		Expect(d).To(Equal(data{}))
 
-		keys := i{"string", "byte", "int", "int64", "uint", "uint64", "float", "float64", "bool"}
+		keys := i{"string", "byte", "int", "int64", "uint", "uint64", "float", "float64", "bool", "boolRef"}
 		vals := i{
 			"str!", "bytes!", "123", "123456789123456789", "456", "987654321987654321",
-			"123.456", "123456789123456789.987654321987654321", "1",
+			"123.456", "123456789123456789.987654321987654321", "1", "1",
 		}
 		Expect(Scan(&d, keys, vals)).NotTo(HaveOccurred())
 		Expect(d).To(Equal(data{
@@ -133,6 +136,7 @@ var _ = Describe("Scan", func() {
 			Float:   123.456,
 			Float64: 1.2345678912345678e+17,
 			Bool:    true,
+			BoolRef: util.ToPtr(true),
 		}))
 
 		// Scan a different type with the same values to test that
@@ -167,6 +171,7 @@ var _ = Describe("Scan", func() {
 			Float:   1.0,
 			Float64: 1.2345678912345678e+17,
 			Bool:    true,
+			BoolRef: util.ToPtr(true),
 		}))
 	})
 
