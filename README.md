@@ -149,15 +149,16 @@ import (
     "github.com/redis/go-redis/v9"
 )
 
-var ctx = context.Background()
-
-func ExampleClient() {
-    url := "redis://localhost:6379?password=hello&protocol=3"
+func ExampleClient() *redis.Client {
+    url := "redis://user:password@localhost:6379/0?protocol=3"
     opts, err := redis.ParseURL(url)
     if err != nil {
         panic(err)
     }
-    rdb := redis.NewClient(opts)
+
+    return redis.NewClient(opts)
+}
+
 ```
 
 ## Contributing
