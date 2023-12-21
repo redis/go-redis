@@ -317,7 +317,7 @@ var _ = Describe("Commands", func() {
 			Expect(configSet.Val()).To(Equal("OK"))
 		})
 
-		It("should ConfigRewrite", func() {
+		It("should ConfigRewrite", Label("NonRedisEnterprise"), func() {
 			configRewrite := client.ConfigRewrite(ctx)
 			Expect(configRewrite.Err()).NotTo(HaveOccurred())
 			Expect(configRewrite.Val()).To(Equal("OK"))
@@ -393,7 +393,7 @@ var _ = Describe("Commands", func() {
 			Expect(tm).To(BeTemporally("~", time.Now(), 3*time.Second))
 		})
 
-		It("should Command", func() {
+		It("should Command", Label("NonRedisEnterprise"), func() {
 			cmds, err := client.Command(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(cmds)).To(BeNumerically("~", 240, 25))
@@ -2027,7 +2027,7 @@ var _ = Describe("Commands", func() {
 			Expect(dryRun.Val()).To(Equal("OK"))
 		})
 
-		It("should fail module loadex", func() {
+		It("should fail module loadex", Label("NonRedisEnterprise"), func() {
 			dryRun := client.ModuleLoadex(ctx, &redis.ModuleLoadexConfig{
 				Path: "/path/to/non-existent-library.so",
 				Conf: map[string]interface{}{

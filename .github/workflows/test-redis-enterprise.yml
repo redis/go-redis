@@ -55,4 +55,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Test
-        run: go test
+        env:
+          RE_CLUSTER: "1"
+        run: |
+          go test \
+          --ginkgo.skip-file="ring_test.go" \
+          --ginkgo.skip-file="sentinel_test.go" \
+          --ginkgo.skip-file="osscluster_test.go" \
+          --ginkgo.skip-file="pubsub_test.go" \
+          --ginkgo.label-filter='!NonRedisEnterprise'

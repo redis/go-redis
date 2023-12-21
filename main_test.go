@@ -64,6 +64,8 @@ var cluster = &clusterScenario{
 	clients:   make(map[string]*redis.Client, 6),
 }
 
+var RECluster = false
+
 func registerProcess(port string, p *redisProcess) {
 	if processes == nil {
 		processes = make(map[string]*redisProcess)
@@ -78,47 +80,59 @@ var _ = BeforeSuite(func() {
 		redisAddr = ":" + redisPort
 	}
 	var err error
+	if val, exists := os.LookupEnv("RE_CLUSTER"); !exists || val != "1" {
+		RECluster = false
+	} else {
+		RECluster = true
+	}
+	if !RECluster {
 
-	redisMain, err = startRedis(redisPort)
-	Expect(err).NotTo(HaveOccurred())
+		redisMain, err = startRedis(redisPort)
+		Expect(err).NotTo(HaveOccurred())
 
-	ringShard1, err = startRedis(ringShard1Port)
-	Expect(err).NotTo(HaveOccurred())
+		ringShard1, err = startRedis(ringShard1Port)
+		Expect(err).NotTo(HaveOccurred())
 
-	ringShard2, err = startRedis(ringShard2Port)
-	Expect(err).NotTo(HaveOccurred())
+		ringShard2, err = startRedis(ringShard2Port)
+		Expect(err).NotTo(HaveOccurred())
 
-	ringShard3, err = startRedis(ringShard3Port)
-	Expect(err).NotTo(HaveOccurred())
+		ringShard3, err = startRedis(ringShard3Port)
+		Expect(err).NotTo(HaveOccurred())
 
-	sentinelMaster, err = startRedis(sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		sentinelMaster, err = startRedis(sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
 
-	sentinel1, err = startSentinel(sentinelPort1, sentinelName, sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		sentinel1, err = startSentinel(sentinelPort1, sentinelName, sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
 
-	sentinel2, err = startSentinel(sentinelPort2, sentinelName, sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		sentinel2, err = startSentinel(sentinelPort2, sentinelName, sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
 
-	sentinel3, err = startSentinel(sentinelPort3, sentinelName, sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		sentinel3, err = startSentinel(sentinelPort3, sentinelName, sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
 
-	sentinelSlave1, err = startRedis(
-		sentinelSlave1Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		sentinelSlave1, err = startRedis(
+			sentinelSlave1Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
 
-	sentinelSlave2, err = startRedis(
-		sentinelSlave2Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		sentinelSlave2, err = startRedis(
+			sentinelSlave2Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
 
-	Expect(startCluster(ctx, cluster)).NotTo(HaveOccurred())
+		Expect(startCluster(ctx, cluster)).NotTo(HaveOccurred())
+	} else {
+		redisPort = rediStackPort
+		redisAddr = rediStackAddr
+	}
 })
 
 var _ = AfterSuite(func() {
-	Expect(cluster.Close()).NotTo(HaveOccurred())
+	if !RECluster {
+		Expect(cluster.Close()).NotTo(HaveOccurred())
 
-	for _, p := range processes {
-		Expect(p.Close()).NotTo(HaveOccurred())
+		for _, p := range processes {
+			Expect(p.Close()).NotTo(HaveOccurred())
+		}
 	}
 	processes = nil
 })

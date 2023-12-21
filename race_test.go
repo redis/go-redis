@@ -243,7 +243,7 @@ var _ = Describe("races", func() {
 	})
 })
 
-var _ = Describe("cluster races", func() {
+var _ = Describe("cluster races", Label("NonRedisEnterprise"), func() {
 	var client *redis.ClusterClient
 	var C, N int
 
