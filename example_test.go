@@ -178,7 +178,7 @@ func ExampleConn_name() {
 func ExampleConn_client_setInfo_libraryVersion() {
 	conn := rdb.Conn()
 
-	err := conn.ClientSetInfo(ctx, redis.WithLibraryVersion("1.0.0")).Err()
+	err := conn.ClientSetInfo(ctx, redis.WithLibraryVersion("1.2.3")).Err()
 	if err != nil {
 		panic(err)
 	}
@@ -194,7 +194,7 @@ func ExampleConn_client_setInfo_libraryVersion() {
 	}
 
 	fmt.Println(s.LibVer)
-	// Output: 1.0.0
+	// Output: 1.2.3
 }
 
 func ExampleClient_Set() {
