@@ -29,9 +29,7 @@ var _ = Describe("Commands", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		opt := redisOptions()
-		opt.DB = 0
-		client = redis.NewClient(opt)
+		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 

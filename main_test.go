@@ -147,7 +147,7 @@ func TestGinkgoSuite(t *testing.T) {
 func redisOptions() *redis.Options {
 	return &redis.Options{
 		Addr: redisAddr,
-		DB:   15,
+		DB:   0,
 
 		DialTimeout:           10 * time.Second,
 		ReadTimeout:           30 * time.Second,
