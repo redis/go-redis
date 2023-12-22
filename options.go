@@ -46,7 +46,8 @@ type Options struct {
 	OnConnect func(ctx context.Context, cn *Conn) error
 
 	// Protocol 2 or 3. Use the version to negotiate RESP version with redis-server.
-	// Default is 3.
+	// Default is 3; -1 disables sending HELLO means that the version depends on the default
+	// settings of redis-server.
 	Protocol int
 	// Use the specified Username to authenticate the current connection
 	// with one of the connections defined in the ACL list when connecting
