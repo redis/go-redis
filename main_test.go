@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -80,11 +81,8 @@ var _ = BeforeSuite(func() {
 		redisAddr = ":" + redisPort
 	}
 	var err error
-	if val, exists := os.LookupEnv("RE_CLUSTER"); !exists || val != "1" {
-		RECluster = false
-	} else {
-		RECluster = true
-	}
+	RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
+
 	if !RECluster {
 
 		redisMain, err = startRedis(redisPort)
