@@ -159,7 +159,11 @@ var _ = Describe("races", func() {
 
 		n, err := client.Get(ctx, "db").Int64()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(Equal(int64(1)))
+		if RECluster {
+			Expect(n).To(Equal(int64(0)))
+		} else {
+			Expect(n).To(Equal(int64(1)))
+		}
 	})
 
 	It("should select DB with read timeout", func() {

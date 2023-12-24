@@ -65,7 +65,11 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should Stringer", func() {
-		Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:15>", redisPort)))
+		if RECluster {
+			Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:0>", redisPort)))
+		} else {
+			Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:15>", redisPort)))
+		}
 	})
 
 	It("supports context", func() {

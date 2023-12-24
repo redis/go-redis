@@ -145,9 +145,26 @@ func TestGinkgoSuite(t *testing.T) {
 //------------------------------------------------------------------------------
 
 func redisOptions() *redis.Options {
+	if RECluster {
+		return &redis.Options{
+			Addr: redisAddr,
+			DB:   0,
+
+			DialTimeout:           10 * time.Second,
+			ReadTimeout:           30 * time.Second,
+			WriteTimeout:          30 * time.Second,
+			ContextTimeoutEnabled: true,
+
+			MaxRetries: -1,
+			PoolSize:   10,
+
+			PoolTimeout:     30 * time.Second,
+			ConnMaxIdleTime: time.Minute,
+		}
+	}
 	return &redis.Options{
 		Addr: redisAddr,
-		DB:   0,
+		DB:   15,
 
 		DialTimeout:           10 * time.Second,
 		ReadTimeout:           30 * time.Second,
