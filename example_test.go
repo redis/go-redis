@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -656,7 +657,10 @@ func ExampleNewUniversalClient_cluster() {
 	rdb.Ping(ctx)
 }
 
-func ExampleClient_SlowLogGet() {
+func ExampleClient_SlowLogGet(t *testing.T) {
+	if RECluster {
+		t.Skip("skip slowlog test for cluster")
+	}
 	const key = "slowlog-log-slower-than"
 
 	old := rdb.ConfigGet(ctx, key).Val()
