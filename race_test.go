@@ -137,7 +137,7 @@ var _ = Describe("races", func() {
 		})
 	})
 
-	It("should select db", func() {
+	It("should select db", Label("NonRedisEnterprise"), func() {
 		err := client.Set(ctx, "db", 1, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -159,11 +159,7 @@ var _ = Describe("races", func() {
 
 		n, err := client.Get(ctx, "db").Int64()
 		Expect(err).NotTo(HaveOccurred())
-		if RECluster {
-			Expect(n).To(Equal(int64(0)))
-		} else {
-			Expect(n).To(Equal(int64(1)))
-		}
+		Expect(n).To(Equal(int64(1)))
 	})
 
 	It("should select DB with read timeout", func() {

@@ -2,9 +2,8 @@ name: RE Tests
 
 on:
   push:
-    branches: [master, v9]
+    branches: [master]
   pull_request:
-    branches: [master, v9]
 
 permissions:
   contents: read
@@ -18,17 +17,28 @@ jobs:
       matrix:
         go-version: [1.21.x]
         re-build: ["100.0.1-64402"]
-        # go-version: [1.19.x, 1.20.x, 1.21.x]
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Clone Redis EE docker repository
-        run: |
-          git clone https://github.com/RedisLabs/redis-ee-docker.git redis-ee
-      - name: Install Docker-compose
-        run: |
-          DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
-          mkdir -p $DOCKER_CONFIG/cli-plugins
-          curl -SL https://github.com/docker/compose/releases/download/v2.23.3/docker-compose-linux-x86_64 -o $DOCKER_CONFIG/cli-plugins/docker-compose
+        uses: actions/checkout@v4
+        with:
+          repository: RedisLabs/redis-ee-docker
+          path: redis-ee
+
+      - name: Set up ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      # - name: Install Docker-compose
+      #   run: |
+      #     DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+      #     mkdir -p $DOCKER_CONFIG/cli-plugins
+      #     curl -SL https://github.com/docker/compose/releases/download/v2.23.3/docker-compose-linux-x86_64 -o $DOCKER_CONFIG/cli-plugins/docker-compose
+
       - name: Build cluster
         env:
           IMAGE: "redislabs/redis-internal:${{ matrix.re-build }}"
@@ -42,18 +52,6 @@ jobs:
         run: |
           cd redis-ee/
           ./build.sh
-
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ matrix.go-version }}
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Test
         env:
           RE_CLUSTER: "1"
@@ -63,4 +61,5 @@ jobs:
           --ginkgo.skip-file="sentinel_test.go" \
           --ginkgo.skip-file="osscluster_test.go" \
           --ginkgo.skip-file="pubsub_test.go" \
+          --ginkgo.skip-file="gears_commands_test.go" \
           --ginkgo.label-filter='!NonRedisEnterprise'

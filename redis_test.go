@@ -80,7 +80,7 @@ var _ = Describe("Client", func() {
 		Expect(err).To(MatchError("context canceled"))
 	})
 
-	It("supports WithTimeout", func() {
+	It("supports WithTimeout", Label("NonRedisEnterprise"), func() {
 		err := client.ClientPause(ctx, time.Second).Err()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -155,7 +155,7 @@ var _ = Describe("Client", func() {
 		Expect(pubsub.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should select DB", func() {
+	It("should select DB", Label("NonRedisEnterprise"), func() {
 		db2 := redis.NewClient(&redis.Options{
 			Addr: redisAddr,
 			DB:   2,
@@ -507,7 +507,7 @@ var _ = Describe("Conn", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("TxPipeline", func() {
+	It("TxPipeline", Label("NonRedisEnterprise"), func() {
 		tx := client.Conn().TxPipeline()
 		tx.SwapDB(ctx, 0, 2)
 		tx.SwapDB(ctx, 1, 0)
