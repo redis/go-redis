@@ -215,9 +215,9 @@ func (c cmdable) XGroupDelConsumer(ctx context.Context, stream, group, consumer 
 type XReadGroupArgs struct {
 	Group    string
 	Consumer string
-	Streams  []string // list of streams and ids, e.g. stream1 stream2 id1 id2
+	Streams  []string      // list of streams and ids, e.g. stream1 stream2 id1 id2
 	Count    int64
-	Block    time.Duration
+	Block    time.Duration // [Block 0] by default (if no value set), or set a negative value (like -time.Millisecond) to make it non-blocking
 	NoAck    bool
 }
 
