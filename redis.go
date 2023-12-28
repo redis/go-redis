@@ -315,8 +315,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if !c.opt.DisableIndentity {
 		libName := ""
 		libVer := Version()
-		if c.opt.ClientNameSuffix != "" {
-			libName = libName + c.opt.ClientNameSuffix
+		if c.opt.IdentitySuffix != "" {
+			libName = c.opt.IdentitySuffix
 		}
 		libInfo := LibraryInfo{LibName: &libName}
 		conn.ClientSetInfo(ctx, libInfo)

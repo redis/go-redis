@@ -87,7 +87,7 @@ type ClusterOptions struct {
 	TLSConfig        *tls.Config
 	DisableIndentity bool // Disable set-lib on connect. Default is false.
 
-	ClientNameSuffix string // Add suffix to client name. Default is empty.
+	IdentitySuffix string // Add suffix to client name. Default is empty.
 }
 
 func (opt *ClusterOptions) init() {
@@ -293,7 +293,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ConnMaxIdleTime:  opt.ConnMaxIdleTime,
 		ConnMaxLifetime:  opt.ConnMaxLifetime,
 		DisableIndentity: opt.DisableIndentity,
-		ClientNameSuffix: opt.ClientNameSuffix,
+		IdentitySuffix:   opt.IdentitySuffix,
 		TLSConfig:        opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
 		// cluster whose nodes are not in clustering mode (otherwise there isn't

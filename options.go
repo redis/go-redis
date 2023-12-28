@@ -146,7 +146,7 @@ type Options struct {
 	DisableIndentity bool
 
 	// Add suffix to client name. Default is empty.
-	ClientNameSuffix string
+	IdentitySuffix string
 }
 
 func (opt *Options) init() {
