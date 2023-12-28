@@ -67,6 +67,7 @@ type UniversalOptions struct {
 	MasterName string
 
 	DisableIndentity bool
+	ClientNameSuffix string
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -112,6 +113,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		TLSConfig: o.TLSConfig,
 
 		DisableIndentity: o.DisableIndentity,
+		ClientNameSuffix: o.ClientNameSuffix,
 	}
 }
 
@@ -157,6 +159,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		TLSConfig: o.TLSConfig,
 
 		DisableIndentity: o.DisableIndentity,
+		ClientNameSuffix: o.ClientNameSuffix,
 	}
 }
 
@@ -199,6 +202,7 @@ func (o *UniversalOptions) Simple() *Options {
 		TLSConfig: o.TLSConfig,
 
 		DisableIndentity: o.DisableIndentity,
+		ClientNameSuffix: o.ClientNameSuffix,
 	}
 }
 

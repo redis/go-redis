@@ -99,6 +99,7 @@ type RingOptions struct {
 	Limiter   Limiter
 
 	DisableIndentity bool
+	ClientNameSuffix string
 }
 
 func (opt *RingOptions) init() {

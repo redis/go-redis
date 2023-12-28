@@ -144,6 +144,9 @@ type Options struct {
 
 	// Disable set-lib on connect. Default is false.
 	DisableIndentity bool
+
+	// Add suffix to client name. Default is empty.
+	ClientNameSuffix string
 }
 
 func (opt *Options) init() {
