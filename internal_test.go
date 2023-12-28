@@ -351,4 +351,22 @@ var _ = Describe("withConn", func() {
 		Expect(newConn).NotTo(Equal(conn))
 		Expect(client.connPool.Len()).To(Equal(1))
 	})
+
+	// https://github.com/redis/go-redis/issues/2276
+	PIt("should remove the connection from the pool if the context is canceled", func() {
+		var conn *pool.Conn
+
+		ctx2, cancel := context.WithCancel(ctx)
+		cancel()
+
+		client.withConn(ctx2, func(ctx context.Context, c *pool.Conn) error {
+			conn = c
+			return nil
+		})
+
+		newConn, err := client.connPool.Get(ctx)
+		Expect(err).To(BeNil())
+		Expect(newConn).NotTo(Equal(conn))
+		Expect(client.connPool.Len()).To(Equal(1))
+	})
 })

@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"io"
 	"net"
 	"sync"
@@ -566,5 +567,26 @@ var _ = Describe("PubSub", func() {
 		Eventually(ch).Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal(text))
+	})
+
+	// https://github.com/redis/go-redis/issues/2276
+	PDescribe("canceled context", func() {
+		It("should unblock ReceiveMessage", func() {
+			pubsub := client.Subscribe(ctx, "mychannel")
+			defer pubsub.Close()
+
+			ctx2, cancel := context.WithCancel(ctx)
+			errCh := make(chan error, 1)
+			go func() {
+				_, err := pubsub.ReceiveMessage(ctx2)
+				errCh <- err
+			}()
+
+			var gotErr error
+			Consistently(errCh).ShouldNot(Receive(&gotErr), "Received %v", gotErr)
+			cancel()
+			Eventually(errCh).Should(Receive(&gotErr))
+			Expect(gotErr).To(HaveOccurred())
+		})
 	})
 })

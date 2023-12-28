@@ -5670,6 +5670,25 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
+		// https://github.com/redis/go-redis/issues/2276
+		PDescribe("canceled context", func() {
+			It("should unblock XRead", func() {
+				ctx2, cancel := context.WithCancel(ctx)
+				errCh := make(chan error, 1)
+				go func() {
+					errCh <- client.XRead(ctx2, &redis.XReadArgs{
+						Streams: []string{"stream", "$"},
+					}).Err()
+				}()
+
+				var gotErr error
+				Consistently(errCh).ShouldNot(Receive(&gotErr), "Received %v", gotErr)
+				cancel()
+				Eventually(errCh).Should(Receive(&gotErr))
+				Expect(gotErr).To(HaveOccurred())
+			})
+		})
+
 		Describe("group", func() {
 			BeforeEach(func() {
 				err := client.XGroupCreate(ctx, "stream", "group", "0").Err()
@@ -5849,6 +5868,27 @@ var _ = Describe("Commands", func() {
 				n, err := client.XAck(ctx, "stream", "group", "1-0", "2-0", "4-0").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(n).To(Equal(int64(2)))
+			})
+
+			// https://github.com/redis/go-redis/issues/2276
+			PDescribe("canceled context", func() {
+				It("should unblock XReadGroup", func() {
+					ctx2, cancel := context.WithCancel(ctx)
+					errCh := make(chan error, 1)
+					go func() {
+						errCh <- client.XReadGroup(ctx2, &redis.XReadGroupArgs{
+							Group:    "group",
+							Consumer: "consumer",
+							Streams:  []string{"stream", ">"},
+						}).Err()
+					}()
+
+					var gotErr error
+					Consistently(errCh).ShouldNot(Receive(&gotErr), "Received %v", gotErr)
+					cancel()
+					Eventually(errCh).Should(Receive(&gotErr))
+					Expect(gotErr).To(HaveOccurred())
+				})
 			})
 		})
 
