@@ -32,7 +32,7 @@ var _ = Describe("UniversalClient", func() {
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
 
-	It("should connect to clusters", func() {
+	It("should connect to clusters", Label("NonRedisEnterprise"), func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs: cluster.addrs(),
 		})
