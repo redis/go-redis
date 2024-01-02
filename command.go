@@ -1,11 +1,14 @@
 package redis
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -15,10 +18,22 @@ import (
 )
 
 type Cmder interface {
+	// command name.
+	// e.g. "set k v ex 10" -> "set", "cluster info" -> "cluster".
 	Name() string
+
+	// full command name.
+	// e.g. "set k v ex 10" -> "set", "cluster info" -> "cluster info".
 	FullName() string
+
+	// all args of the command.
+	// e.g. "set k v ex 10" -> "[set k v ex 10]".
 	Args() []interface{}
+
+	// format request and response string.
+	// e.g. "set k v ex 10" -> "set k v ex 10: OK", "get k" -> "get k: v".
 	String() string
+
 	stringArg(int) string
 	firstKeyPos() int8
 	SetFirstKeyPos(int8)
@@ -60,7 +75,7 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 	return wr.WriteArgs(cmd.Args())
 }
 
-func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
+func cmdFirstKeyPos(cmd Cmder) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
 	}
@@ -79,10 +94,6 @@ func cmdFirstKeyPos(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(1) == "usage" {
 			return 2
 		}
-	}
-
-	if info != nil {
-		return int(info.FirstKeyPos)
 	}
 	return 1
 }
@@ -5297,4 +5308,166 @@ func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
 type LibraryInfo struct {
 	LibName *string
 	LibVer  *string
+}
+
+// -------------------------------------------
+
+type InfoCmd struct {
+	baseCmd
+	val map[string]map[string]string
+}
+
+var _ Cmder = (*InfoCmd)(nil)
+
+func NewInfoCmd(ctx context.Context, args ...interface{}) *InfoCmd {
+	return &InfoCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *InfoCmd) SetVal(val map[string]map[string]string) {
+	cmd.val = val
+}
+
+func (cmd *InfoCmd) Val() map[string]map[string]string {
+	return cmd.val
+}
+
+func (cmd *InfoCmd) Result() (map[string]map[string]string, error) {
+	return cmd.Val(), cmd.Err()
+}
+
+func (cmd *InfoCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
+	val, err := rd.ReadString()
+	if err != nil {
+		return err
+	}
+
+	section := ""
+	scanner := bufio.NewScanner(strings.NewReader(val))
+	moduleRe := regexp.MustCompile(`module:name=(.+?),(.+)$`)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "#") {
+			if cmd.val == nil {
+				cmd.val = make(map[string]map[string]string)
+			}
+			section = strings.TrimPrefix(line, "# ")
+			cmd.val[section] = make(map[string]string)
+		} else if line != "" {
+			if section == "Modules" {
+				kv := moduleRe.FindStringSubmatch(line)
+				if len(kv) == 3 {
+					cmd.val[section][kv[1]] = kv[2]
+				}
+			} else {
+				kv := strings.SplitN(line, ":", 2)
+				if len(kv) == 2 {
+					cmd.val[section][kv[0]] = kv[1]
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (cmd *InfoCmd) Item(section, key string) string {
+	if cmd.val == nil {
+		return ""
+	} else if cmd.val[section] == nil {
+		return ""
+	} else {
+		return cmd.val[section][key]
+	}
+}
+
+type MonitorStatus int
+
+const (
+	monitorStatusIdle MonitorStatus = iota
+	monitorStatusStart
+	monitorStatusStop
+)
+
+type MonitorCmd struct {
+	baseCmd
+	ch     chan string
+	status MonitorStatus
+	mu     sync.Mutex
+}
+
+func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
+	return &MonitorCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: []interface{}{"monitor"},
+		},
+		ch:     ch,
+		status: monitorStatusIdle,
+		mu:     sync.Mutex{},
+	}
+}
+
+func (cmd *MonitorCmd) String() string {
+	return cmdString(cmd, nil)
+}
+
+func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
+	ctx, cancel := context.WithCancel(cmd.ctx)
+	go func(ctx context.Context) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				err := cmd.readMonitor(rd, cancel)
+				if err != nil {
+					cmd.err = err
+					return
+				}
+			}
+		}
+	}(ctx)
+	return nil
+}
+
+func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) error {
+	for {
+		cmd.mu.Lock()
+		st := cmd.status
+		cmd.mu.Unlock()
+		if pk, _ := rd.Peek(1); len(pk) != 0 && st == monitorStatusStart {
+			line, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			cmd.ch <- line
+		}
+		if st == monitorStatusStop {
+			cancel()
+			break
+		}
+	}
+	return nil
+}
+
+func (cmd *MonitorCmd) Start() {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	cmd.status = monitorStatusStart
+}
+
+func (cmd *MonitorCmd) Stop() {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	cmd.status = monitorStatusStop
 }

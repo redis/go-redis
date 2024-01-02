@@ -64,7 +64,7 @@ var _ = Describe("Tx", func() {
 		Expect(n).To(Equal(int64(100)))
 	})
 
-	It("should discard", func() {
+	It("should discard", Label("NonRedisEnterprise"), func() {
 		err := client.Watch(ctx, func(tx *redis.Tx) error {
 			cmds, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.Set(ctx, "key1", "hello1", 0)
