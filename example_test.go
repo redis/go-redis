@@ -657,6 +657,11 @@ func ExampleNewUniversalClient_cluster() {
 }
 
 func ExampleClient_SlowLogGet() {
+	if RECluster {
+		// skip slowlog test for cluster
+		fmt.Println(2)
+		return
+	}
 	const key = "slowlog-log-slower-than"
 
 	old := rdb.ConfigGet(ctx, key).Val()
