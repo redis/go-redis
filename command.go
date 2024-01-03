@@ -854,7 +854,7 @@ func (cmd *StringCmd) Val() string {
 }
 
 func (cmd *StringCmd) Result() (string, error) {
-	return cmd.Val(), cmd.err
+	return cmd.val, cmd.err
 }
 
 func (cmd *StringCmd) Bytes() ([]byte, error) {
@@ -958,7 +958,7 @@ func (cmd *FloatCmd) Val() float64 {
 }
 
 func (cmd *FloatCmd) Result() (float64, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *FloatCmd) String() string {
@@ -1053,7 +1053,7 @@ func (cmd *StringSliceCmd) Val() []string {
 }
 
 func (cmd *StringSliceCmd) Result() ([]string, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *StringSliceCmd) String() string {
@@ -2715,7 +2715,7 @@ func (cmd *ZWithKeyCmd) Val() *ZWithKey {
 }
 
 func (cmd *ZWithKeyCmd) Result() (*ZWithKey, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *ZWithKeyCmd) String() string {
@@ -2853,7 +2853,7 @@ func (cmd *ClusterSlotsCmd) Val() []ClusterSlot {
 }
 
 func (cmd *ClusterSlotsCmd) Result() ([]ClusterSlot, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *ClusterSlotsCmd) String() string {
@@ -3313,7 +3313,7 @@ func (cmd *GeoPosCmd) Val() []*GeoPos {
 }
 
 func (cmd *GeoPosCmd) Result() ([]*GeoPos, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *GeoPosCmd) String() string {
@@ -3394,7 +3394,7 @@ func (cmd *CommandsInfoCmd) Val() map[string]*CommandInfo {
 }
 
 func (cmd *CommandsInfoCmd) Result() (map[string]*CommandInfo, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *CommandsInfoCmd) String() string {
@@ -3584,7 +3584,7 @@ func (cmd *SlowLogCmd) Val() []SlowLog {
 }
 
 func (cmd *SlowLogCmd) Result() ([]SlowLog, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *SlowLogCmd) String() string {
@@ -3683,7 +3683,7 @@ func (cmd *MapStringInterfaceCmd) Val() map[string]interface{} {
 }
 
 func (cmd *MapStringInterfaceCmd) Result() (map[string]interface{}, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *MapStringInterfaceCmd) String() string {
@@ -3747,7 +3747,7 @@ func (cmd *MapStringStringSliceCmd) Val() []map[string]string {
 }
 
 func (cmd *MapStringStringSliceCmd) Result() ([]map[string]string, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *MapStringStringSliceCmd) String() string {
@@ -3811,7 +3811,7 @@ func (cmd *MapStringInterfaceSliceCmd) Val() []map[string]interface{} {
 }
 
 func (cmd *MapStringInterfaceSliceCmd) Result() ([]map[string]interface{}, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *MapStringInterfaceSliceCmd) String() string {
@@ -4661,7 +4661,7 @@ func (cmd *ClusterLinksCmd) Val() []ClusterLink {
 }
 
 func (cmd *ClusterLinksCmd) Result() ([]ClusterLink, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *ClusterLinksCmd) String() string {
@@ -4763,7 +4763,7 @@ func (cmd *ClusterShardsCmd) Val() []ClusterShard {
 }
 
 func (cmd *ClusterShardsCmd) Result() ([]ClusterShard, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *ClusterShardsCmd) String() string {
@@ -5236,7 +5236,7 @@ func (cmd *ACLLogCmd) Val() []*ACLLogEntry {
 }
 
 func (cmd *ACLLogCmd) Result() ([]*ACLLogEntry, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *ACLLogCmd) String() string {
@@ -5337,7 +5337,7 @@ func (cmd *InfoCmd) Val() map[string]map[string]string {
 }
 
 func (cmd *InfoCmd) Result() (map[string]map[string]string, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *InfoCmd) String() string {
