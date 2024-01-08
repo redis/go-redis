@@ -6,7 +6,7 @@ replace github.com/redis/go-redis/v9 => ../..
 
 require (
 	github.com/prometheus/client_golang v1.14.0
-	github.com/redis/go-redis/v9 v9.3.1
+	github.com/redis/go-redis/v9 v9.4.0
 )
 
 require (
