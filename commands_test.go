@@ -243,6 +243,12 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("theclientname"))
 		})
 
+		It("should ClientTrackingInfo", func() {
+			clientTrackingInfo, err := client.Conn().ClientTrackingInfo(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(clientTrackingInfo["prefixes"]).To(Equal([]interface{}{}))
+		})
+
 		It("should ClientSetInfo", func() {
 			pipe := client.Pipeline()
 
