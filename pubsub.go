@@ -12,6 +12,9 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
+type PubsubNewConnFunc func(ctx context.Context, channels []string) (*pool.Conn, error)
+type PubsubCloseConnFunc func(*pool.Conn) error
+
 // PubSub implements Pub/Sub commands as described in
 // http://redis.io/topics/pubsub. Message receiving is NOT safe
 // for concurrent use by multiple goroutines.
@@ -21,8 +24,8 @@ import (
 type PubSub struct {
 	opt *Options
 
-	newConn   func(ctx context.Context, channels []string) (*pool.Conn, error)
-	closeConn func(*pool.Conn) error
+	newConn   PubsubNewConnFunc
+	closeConn PubsubCloseConnFunc
 
 	mu        sync.Mutex
 	cn        *pool.Conn

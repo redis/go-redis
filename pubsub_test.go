@@ -567,4 +567,104 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal(text))
 	})
+
+	It("should not use connections from pool", func() {
+		statsBefore := client.PoolStats()
+
+		pubsub := client.Subscribe(ctx, "mychannel")
+		defer pubsub.Close()
+
+		stats := client.PoolStats()
+		// A connection has been created
+		Expect(stats.TotalConns - statsBefore.TotalConns).To(Equal(uint32(1)))
+		// But it's not taken from the pool
+		poolFetchesBefore := statsBefore.Hits + statsBefore.Misses
+		poolFetchesAfter := stats.Hits + stats.Misses
+		Expect(poolFetchesAfter - poolFetchesBefore).To(Equal(uint32(0)))
+
+		pubsub.Close()
+
+		stats = client.PoolStats()
+		// The connection no longer exists
+		Expect(stats.TotalConns - statsBefore.TotalConns).To(Equal(uint32(0)))
+		Expect(stats.IdleConns - statsBefore.IdleConns).To(Equal(uint32(0)))
+	})
+})
+
+var _ = Describe("PubSub with PubsubFromPool set", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		opt := redisOptions()
+		opt.MinIdleConns = 0
+		opt.ConnMaxLifetime = 0
+		opt.PubsubFromPool = true
+		// zero value ends up using default so set small instead
+		opt.PoolTimeout = time.Microsecond
+		client = redis.NewClient(opt)
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should use connection from pool", func() {
+		statsBefore := client.PoolStats()
+
+		pubsub := client.Subscribe(ctx, "mychannel")
+		defer pubsub.Close()
+
+		stats := client.PoolStats()
+		// A connection has been taken from the pool
+		Expect(stats.Hits - statsBefore.Hits).To(Equal(uint32(1)))
+		statsDuring := client.PoolStats()
+
+		pubsub.Close()
+
+		stats = client.PoolStats()
+		// It's not returned to the idle pool ..
+		Expect(statsDuring.IdleConns - stats.IdleConns).To(Equal(uint32(0)))
+		// .. and has been terminated
+		Expect(statsDuring.TotalConns - stats.TotalConns).To(Equal(uint32(1)))
+	})
+
+	It("should respect pool size limit", func() {
+		poolSize := client.Options().PoolSize
+		statsBefore := client.PoolStats()
+
+		var pubsubs []*redis.PubSub
+		for i := 0; i < poolSize; i++ {
+			pubsub := client.Subscribe(ctx, "mychannel")
+			defer pubsub.Close()
+			pubsubs = append(pubsubs, pubsub)
+		}
+
+		statsDuring := client.PoolStats()
+		poolFetchesBefore := statsBefore.Hits + statsBefore.Misses
+		poolFetchesAfter := statsDuring.Hits + statsDuring.Misses
+
+		// A total of poolSize connections should have been taken from the pool (new or existing)
+		Expect(poolFetchesAfter - poolFetchesBefore).To(Equal(uint32(poolSize)))
+
+		// The next pubsub connection should fail to connect (waiting for pool)
+		extraPubsub := client.Subscribe(ctx, "mychannel")
+		defer extraPubsub.Close()
+		Expect(client.PoolStats().Timeouts - statsDuring.Timeouts).To(Equal(uint32(1)))
+
+		// As should retries
+		err := extraPubsub.Ping(ctx)
+		Expect(err).To(MatchError(ContainSubstring("connection pool timeout")))
+		Expect(client.PoolStats().Timeouts - statsDuring.Timeouts).To(Equal(uint32(2)))
+
+		for _, pubsub := range pubsubs {
+			pubsub.Close()
+		}
+
+		stats := client.PoolStats()
+		// Connections are not returned to the idle pool ..
+		Expect(statsDuring.IdleConns - stats.IdleConns).To(Equal(uint32(0)))
+		// .. and have been terminated
+		Expect(statsDuring.TotalConns - stats.TotalConns).To(Equal(uint32(poolSize)))
+	})
 })
