@@ -350,7 +350,12 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 		return nil, err
 	}
 
-	baseArgs := []string{filepath.Join(dir, "redis.conf"), "--port", port, "--dir", dir, "--enable-module-command", "yes"}
+	baseArgs := []string{filepath.Join(dir, "redis.conf"),
+		"--port", port,
+		"--dir", dir,
+		"--enable-module-command", "yes",
+		"--enable-debug-command", "local",
+	}
 	process, err := execCmd(redisServerBin, append(baseArgs, args...)...)
 	if err != nil {
 		return nil, err
