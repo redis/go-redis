@@ -71,6 +71,16 @@ var _ = Describe("Cmd", func() {
 		Expect(val).To(Equal(f))
 	})
 
+	It("supports attribute type", func() {
+		attributes, err := client.Do(ctx, "DEBUG", "PROTOCOL", "attrib").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(attributes).To(Equal(map[interface{}]interface{}{
+			"key-popularity": []interface{}{
+				"key:123", int64(90),
+			},
+		}))
+	})
+
 	It("supports time.Time", func() {
 		tm := time.Date(2019, 1, 1, 9, 45, 10, 222125, time.UTC)
 

@@ -64,6 +64,10 @@ func BenchmarkReader_ParseReply_Map(b *testing.B) {
 	benchmarkParseReply(b, "%2\r\n$5\r\nhello\r\n$5\r\nworld\r\n+key\r\n+value\r\n", false)
 }
 
+func BenchmarkReader_ParseReply_Attribute(b *testing.B) {
+	benchmarkParseReply(b, "|2\r\n$5\r\nhello\r\n$5\r\nworld\r\n+key\r\n+value\r\n", false)
+}
+
 func BenchmarkReader_ParseReply_Attr(b *testing.B) {
 	benchmarkParseReply(b, "%1\r\n+key\r\n+value\r\n+hello\r\n", false)
 }

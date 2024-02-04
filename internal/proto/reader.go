@@ -109,11 +109,6 @@ func (r *Reader) ReadLine() ([]byte, error) {
 			err = RedisError(blobErr)
 		}
 		return nil, err
-	case RespAttr:
-		if err = r.Discard(line); err != nil {
-			return nil, err
-		}
-		return r.ReadLine()
 	}
 
 	// Compatible with RESP2
@@ -176,7 +171,7 @@ func (r *Reader) ReadReply() (interface{}, error) {
 
 	case RespArray, RespSet, RespPush:
 		return r.readSlice(line)
-	case RespMap:
+	case RespMap, RespAttr:
 		return r.readMap(line)
 	}
 	return nil, fmt.Errorf("redis: can't parse %.100q", line)
@@ -458,7 +453,7 @@ func (r *Reader) ReadMapLen() (int, error) {
 		return 0, err
 	}
 	switch line[0] {
-	case RespMap:
+	case RespMap, RespAttr:
 		return replyLen(line)
 	case RespArray, RespSet, RespPush:
 		// Some commands and RESP2 protocol may respond to array types.
