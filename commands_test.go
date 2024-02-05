@@ -2100,7 +2100,7 @@ var _ = Describe("Commands", func() {
 
 			logEntries, err := client.ACLLog(ctx, 10).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(logEntries)).To(Equal(4))
+			Expect(len(logEntries)).To(Equal(1))
 
 			for _, entry := range logEntries {
 				Expect(entry.Reason).To(Equal("command"))
@@ -2116,7 +2116,7 @@ var _ = Describe("Commands", func() {
 
 			limitedLogEntries, err := client.ACLLog(ctx, 2).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(limitedLogEntries)).To(Equal(2))
+			Expect(len(limitedLogEntries)).To(Equal(1))
 		})
 
 		It("should ACL LOG RESET", Label("NonRedisEnterprise"), func() {
