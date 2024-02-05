@@ -1,0 +1,59 @@
+name: RE Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: [1.21.x]
+        re-build: ["7.2.4-92"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Clone Redis EE docker repository
+        uses: actions/checkout@v4
+        with:
+          repository: RedisLabs/redis-ee-docker
+          path: redis-ee
+
+      - name: Set up ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Build cluster
+        working-directory: redis-ee
+        env:
+          IMAGE: "redislabs/redis-internal:${{ matrix.re-build }}"
+          RE_USERNAME: ${{ secrets.RE_USERNAME }}
+          RE_PASS: ${{ secrets.RE_PASS }}
+          RE_CLUSTER_NAME: ${{ secrets.RE_CLUSTER_NAME }}
+          RE_USE_OSS_CLUSTER: false
+          RE_DB_PORT: ${{ secrets.RE_DB_PORT }}
+          DOCKER_ACCESS_TOKEN: ${{ secrets.DOCKER_ACCESS_TOKEN }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: ./build.sh
+
+      - name: Test
+        env:
+          RE_CLUSTER: "1"
+        run: |
+          go test \
+          --ginkgo.skip-file="ring_test.go" \
+          --ginkgo.skip-file="sentinel_test.go" \
+          --ginkgo.skip-file="osscluster_test.go" \
+          --ginkgo.skip-file="pubsub_test.go" \
+          --ginkgo.skip-file="gears_commands_test.go" \
+          --ginkgo.label-filter='!NonRedisEnterprise'

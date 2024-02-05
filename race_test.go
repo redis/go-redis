@@ -137,7 +137,7 @@ var _ = Describe("races", func() {
 		})
 	})
 
-	It("should select db", func() {
+	It("should select db", Label("NonRedisEnterprise"), func() {
 		err := client.Set(ctx, "db", 1, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -243,7 +243,7 @@ var _ = Describe("races", func() {
 	})
 })
 
-var _ = Describe("cluster races", func() {
+var _ = Describe("cluster races", Label("NonRedisEnterprise"), func() {
 	var client *redis.ClusterClient
 	var C, N int
 
