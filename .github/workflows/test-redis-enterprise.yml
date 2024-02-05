@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         go-version: [1.21.x]
-        re-build: ["edge-focal"]
+        re-build: ["edge.focal"]
 
     steps:
       - name: Checkout code
