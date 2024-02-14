@@ -51,8 +51,8 @@ key value NoSQL database that uses RocksDB as storage engine and is compatible w
 
 ## Features
 
-- Redis 3 commands except QUIT, MONITOR, and SYNC.
-- Automatic connection pooling with
+- Redis commands except QUIT and SYNC.
+- Automatic connection pooling.
 - [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
 - [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
 - [Scripting](https://redis.uptrace.dev/guide/lua-scripting.html).
