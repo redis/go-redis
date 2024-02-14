@@ -686,6 +686,11 @@ var _ = Describe("Commands", func() {
 			Expect(refCount.Err()).NotTo(HaveOccurred())
 			Expect(refCount.Val()).To(Equal(int64(1)))
 
+			client.ConfigSet(ctx, "maxmemory-policy", "volatile-lfu")
+			freq := client.ObjectFreq(ctx, "key")
+			Expect(freq.Err()).NotTo(HaveOccurred())
+			client.ConfigSet(ctx, "maxmemory-policy", "noeviction") // default
+
 			err := client.ObjectEncoding(ctx, "key").Err()
 			Expect(err).NotTo(HaveOccurred())
 
