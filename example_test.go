@@ -154,7 +154,7 @@ func ExampleClient() {
 	// missing_key does not exist
 }
 
-func ExampleConn() {
+func ExampleConn_name() {
 	conn := rdb.Conn()
 
 	err := conn.ClientSetName(ctx, "foobar").Err()
@@ -173,6 +173,28 @@ func ExampleConn() {
 	}
 	fmt.Println(s)
 	// Output: foobar
+}
+
+func ExampleConn_client_setInfo_libraryVersion() {
+	conn := rdb.Conn()
+
+	err := conn.ClientSetInfo(ctx, redis.WithLibraryVersion("1.2.3")).Err()
+	if err != nil {
+		panic(err)
+	}
+
+	// Open other connections.
+	for i := 0; i < 10; i++ {
+		go rdb.Ping(ctx)
+	}
+
+	s, err := conn.ClientInfo(ctx).Result()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(s.LibVer)
+	// Output: 1.2.3
 }
 
 func ExampleClient_Set() {
