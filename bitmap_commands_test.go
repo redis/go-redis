@@ -82,4 +82,17 @@ var _ = Describe("BitCountByte", func() {
 			Expect(cmd.Val()).To(Equal(e.Expected))
 		}
 	})
+
+	It("bit count byte with no unit specified", func() {
+		var expected = []bitCountExpected{
+			{0, 0, 1},
+			{0, 1, 3},
+		}
+
+		for _, e := range expected {
+			cmd := client.BitCount(ctx, key, &redis.BitCount{Start: e.Start, End: e.End})
+			Expect(cmd.Err()).NotTo(HaveOccurred())
+			Expect(cmd.Val()).To(Equal(e.Expected))
+		}
+	})
 })
