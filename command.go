@@ -5310,6 +5310,16 @@ type LibraryInfo struct {
 	LibVer  *string
 }
 
+// WithLibraryName returns a valid LibraryInfo with library name only.
+func WithLibraryName(libName string) LibraryInfo {
+	return LibraryInfo{LibName: &libName}
+}
+
+// WithLibraryVersion returns a valid LibraryInfo with library version only.
+func WithLibraryVersion(libVer string) LibraryInfo {
+	return LibraryInfo{LibVer: &libVer}
+}
+
 // -------------------------------------------
 
 type InfoCmd struct {
