@@ -676,7 +676,7 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("hello"))
 		})
 
-		It("should Object", func() {
+		It("should Object", Label("NonRedisEnterprise"), func() {
 			start := time.Now()
 			set := client.Set(ctx, "key", "hello", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
