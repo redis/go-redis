@@ -315,13 +315,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if !c.opt.DisableIndentity {
 		libName := ""
 		libVer := Version()
+
 		if c.opt.IdentitySuffix != "" {
 			libName = c.opt.IdentitySuffix
 		}
-		libInfo := LibraryInfo{LibName: &libName}
-		conn.ClientSetInfo(ctx, libInfo)
-		libInfo = LibraryInfo{LibVer: &libVer}
-		conn.ClientSetInfo(ctx, libInfo)
+		conn.ClientSetInfo(ctx,  WithLibraryName(libName))
+		conn.ClientSetInfo(ctx, WithLibraryVersion(libVer))
 	}
 	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if !auth && password != "" {
