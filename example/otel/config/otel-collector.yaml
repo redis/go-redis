@@ -30,18 +30,18 @@ receivers:
 processors:
   resourcedetection:
     detectors: ['system']
+  cumulativetodelta:
   batch:
     send_batch_size: 10000
     timeout: 10s
 
 exporters:
-  logging:
-    logLevel: debug
-  otlp:
-    endpoint: uptrace:14317
+  otlp/uptrace:
+    endpoint: http://uptrace:14317
     tls:
       insecure: true
     headers: { 'uptrace-dsn': 'http://project2_secret_token@localhost:14317/2' }
+  debug:
 
 service:
   # telemetry:
@@ -51,18 +51,18 @@ service:
     traces:
       receivers: [otlp, jaeger]
       processors: [batch]
-      exporters: [otlp, logging]
+      exporters: [otlp/uptrace]
     metrics:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [otlp]
+      processors: [cumulativetodelta, batch]
+      exporters: [otlp/uptrace]
     metrics/hostmetrics:
       receivers: [hostmetrics, redis]
-      processors: [batch, resourcedetection]
-      exporters: [otlp]
+      processors: [cumulativetodelta, batch, resourcedetection]
+      exporters: [otlp/uptrace]
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp]
+      exporters: [otlp/uptrace]
 
   extensions: [health_check, pprof, zpages]
