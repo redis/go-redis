@@ -2,7 +2,7 @@ version: '3'
 
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:22.10
+    image: clickhouse/clickhouse-server:23.7
     restart: on-failure
     environment:
       CLICKHOUSE_DB: uptrace
@@ -36,7 +36,7 @@ services:
       - '5432:5432'
 
   uptrace:
-    image: 'uptrace/uptrace:1.5.0'
+    image: 'uptrace/uptrace:1.6.2'
     #image: 'uptrace/uptrace-dev:latest'
     restart: on-failure
     volumes:
@@ -51,7 +51,7 @@ services:
         condition: service_healthy
 
   otelcol:
-    image: otel/opentelemetry-collector-contrib:0.70.0
+    image: otel/opentelemetry-collector-contrib:0.91.0
     restart: on-failure
     volumes:
       - ./config/otel-collector.yaml:/etc/otelcol-contrib/config.yaml
