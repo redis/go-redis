@@ -460,7 +460,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(info).To(BeAssignableToTypeOf(redis.CMSInfo{}))
 		})
 
-		It("should CMSMerge, CMSMergeWithWeight and CMSQuery", Label("cms", "cmsmerge", "cmsquery"), func() {
+		It("should CMSMerge, CMSMergeWithWeight and CMSQuery", Label("cms", "cmsmerge", "cmsquery", "NonRedisEnterprise"), func() {
 			err := client.CMSMerge(ctx, "destCms1", "testcms2", "testcms3").Err()
 			Expect(err).To(HaveOccurred())
 			Expect(err).To(MatchError("CMS: key does not exist"))
@@ -697,7 +697,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 			Expect(info.Compression).To(BeEquivalentTo(int64(2000)))
 		})
 
-		It("should TDigestMerge", Label("tdigest", "tmerge"), func() {
+		It("should TDigestMerge", Label("tdigest", "tmerge", "NonRedisEnterprise"), func() {
 			err := client.TDigestCreate(ctx, "tdigest1").Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.TDigestAdd(ctx, "tdigest1", 10, 20, 30, 40, 50, 60, 70, 80, 90, 100).Err()

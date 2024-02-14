@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 )
 
 type BitMapCmdable interface {
@@ -37,15 +38,28 @@ func (c cmdable) SetBit(ctx context.Context, key string, offset int64, value int
 
 type BitCount struct {
 	Start, End int64
+	Unit       string // BYTE(default) | BIT
 }
+
+const BitCountIndexByte string = "BYTE"
+const BitCountIndexBit string = "BIT"
 
 func (c cmdable) BitCount(ctx context.Context, key string, bitCount *BitCount) *IntCmd {
 	args := []interface{}{"bitcount", key}
 	if bitCount != nil {
+		if bitCount.Unit == "" {
+			bitCount.Unit = "BYTE"
+		}
+		if bitCount.Unit != BitCountIndexByte && bitCount.Unit != BitCountIndexBit {
+			cmd := NewIntCmd(ctx)
+			cmd.SetErr(errors.New("redis: invalid bitcount index"))
+			return cmd
+		}
 		args = append(
 			args,
 			bitCount.Start,
 			bitCount.End,
+			string(bitCount.Unit),
 		)
 	}
 	cmd := NewIntCmd(ctx, args...)

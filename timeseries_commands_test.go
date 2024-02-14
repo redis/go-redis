@@ -15,7 +15,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{Addr: ":6379"})
+		client = redis.NewClient(&redis.Options{Addr: rediStackAddr})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
@@ -290,15 +290,17 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(result.Value).To(BeEquivalentTo(151))
 	})
 
-	It("should TSGet Latest", Label("timeseries", "tsgetlatest"), func() {
+	It("should TSGet Latest", Label("timeseries", "tsgetlatest", "NonRedisEnterprise"), func() {
 		resultGet, err := client.TSCreate(ctx, "tsgl-1").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultGet).To(BeEquivalentTo("OK"))
 		resultGet, err = client.TSCreate(ctx, "tsgl-2").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultGet).To(BeEquivalentTo("OK"))
+
 		resultGet, err = client.TSCreateRule(ctx, "tsgl-1", "tsgl-2", redis.Sum, 10).Result()
 		Expect(err).NotTo(HaveOccurred())
+
 		Expect(resultGet).To(BeEquivalentTo("OK"))
 		_, err = client.TSAdd(ctx, "tsgl-1", 1, 1).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -344,7 +346,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(result).To(BeEquivalentTo([]int64{1, 2, 3}))
 	})
 
-	It("should TSMGet and TSMGetWithArgs", Label("timeseries", "tsmget", "tsmgetWithArgs"), func() {
+	It("should TSMGet and TSMGetWithArgs", Label("timeseries", "tsmget", "tsmgetWithArgs", "NonRedisEnterprise"), func() {
 		opt := &redis.TSOptions{Labels: map[string]string{"Test": "This"}}
 		resultCreate, err := client.TSCreateWithArgs(ctx, "a", opt).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -429,7 +431,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(resultRange[0]).To(BeEquivalentTo(redis.TSTimestampValue{Timestamp: 22, Value: 1}))
 	})
 
-	It("should TSRange, TSRangeWithArgs", Label("timeseries", "tsrange", "tsrangeWithArgs"), func() {
+	It("should TSRange, TSRangeWithArgs", Label("timeseries", "tsrange", "tsrangeWithArgs", "NonRedisEnterprise"), func() {
 		for i := 0; i < 100; i++ {
 			_, err := client.TSAdd(ctx, "a", i, float64(i%7)).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -541,7 +543,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(len(resultRange)).To(BeEquivalentTo(7))
 	})
 
-	It("should TSRevRange, TSRevRangeWithArgs", Label("timeseries", "tsrevrange", "tsrevrangeWithArgs"), func() {
+	It("should TSRevRange, TSRevRangeWithArgs", Label("timeseries", "tsrevrange", "tsrevrangeWithArgs", "NonRedisEnterprise"), func() {
 		for i := 0; i < 100; i++ {
 			_, err := client.TSAdd(ctx, "a", i, float64(i%7)).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -755,7 +757,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(result["a"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 5.0}, []interface{}{int64(5), 6.0}}))
 	})
 
-	It("should TSMRangeWithArgs Latest", Label("timeseries", "tsmrangeWithArgs", "tsmrangelatest"), func() {
+	It("should TSMRangeWithArgs Latest", Label("timeseries", "tsmrangeWithArgs", "tsmrangelatest", "NonRedisEnterprise"), func() {
 		resultCreate, err := client.TSCreate(ctx, "a").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultCreate).To(BeEquivalentTo("OK"))
@@ -888,7 +890,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(result["a"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(1), 10.0}, []interface{}{int64(0), 1.0}}))
 	})
 
-	It("should TSMRevRangeWithArgs Latest", Label("timeseries", "tsmrevrangeWithArgs", "tsmrevrangelatest"), func() {
+	It("should TSMRevRangeWithArgs Latest", Label("timeseries", "tsmrevrangeWithArgs", "tsmrevrangelatest", "NonRedisEnterprise"), func() {
 		resultCreate, err := client.TSCreate(ctx, "a").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultCreate).To(BeEquivalentTo("OK"))
