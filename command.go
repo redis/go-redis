@@ -5456,7 +5456,9 @@ func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) 
 		st := cmd.status
 		cmd.mu.Unlock()
 		if pk, _ := rd.Peek(1); len(pk) != 0 && st == monitorStatusStart {
+			cmd.mu.Lock()
 			line, err := rd.ReadString()
+			cmd.mu.Unlock()
 			if err != nil {
 				return err
 			}
