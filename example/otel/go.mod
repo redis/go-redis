@@ -9,8 +9,8 @@ replace github.com/redis/go-redis/extra/redisotel/v9 => ../../extra/redisotel
 replace github.com/redis/go-redis/extra/rediscmd/v9 => ../../extra/rediscmd
 
 require (
-	github.com/redis/go-redis/extra/redisotel/v9 v9.4.0
-	github.com/redis/go-redis/v9 v9.4.0
+	github.com/redis/go-redis/extra/redisotel/v9 v9.5.0
+	github.com/redis/go-redis/v9 v9.5.0
 	github.com/uptrace/uptrace-go v1.21.0
 	go.opentelemetry.io/otel v1.21.0
 )
@@ -23,7 +23,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.19.0 // indirect
-	github.com/redis/go-redis/extra/rediscmd/v9 v9.4.0 // indirect
+	github.com/redis/go-redis/extra/rediscmd/v9 v9.5.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.46.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/internal/retry v1.17.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric v0.43.0 // indirect
