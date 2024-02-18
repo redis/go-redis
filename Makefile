@@ -1,7 +1,7 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 
 test: testdeps
-	$(eval GO_VERSION := $(shell go version | cut -d " " -f 3 | cut -d. -f2));
+	$(eval GO_VERSION := $(shell go version | cut -d " " -f 3 | cut -d. -f2))
 	set -e; for dir in $(GO_MOD_DIRS); do \
 	  if [ "$(GO_VERSION)" = "19" && ["$${dir}" == "./example/"]]; then \
 	    continue; \
