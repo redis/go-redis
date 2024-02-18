@@ -8,7 +8,7 @@ replace github.com/redis/go-redis/extra/rediscmd/v9 => ../rediscmd
 
 require (
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
-	github.com/redis/go-redis/extra/rediscmd/v9 v9.4.0
-	github.com/redis/go-redis/v9 v9.4.0
+	github.com/redis/go-redis/extra/rediscmd/v9 v9.5.0
+	github.com/redis/go-redis/v9 v9.5.0
 	go.opencensus.io v0.24.0
 )

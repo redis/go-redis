@@ -85,8 +85,8 @@ type ClusterOptions struct {
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
-	TLSConfig        *tls.Config
-	DisableIndentity bool // Disable set-lib on connect. Default is false.
+	TLSConfig       *tls.Config
+	DisableIdentity bool // Disable set-lib on connect. Default is false.
 
 	IdentitySuffix string // Add suffix to client name. Default is empty.
 }
@@ -286,17 +286,17 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		WriteTimeout:          opt.WriteTimeout,
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:         opt.PoolFIFO,
-		PoolSize:         opt.PoolSize,
-		PoolTimeout:      opt.PoolTimeout,
-		MinIdleConns:     opt.MinIdleConns,
-		MaxIdleConns:     opt.MaxIdleConns,
-		MaxActiveConns:   opt.MaxActiveConns,
-		ConnMaxIdleTime:  opt.ConnMaxIdleTime,
-		ConnMaxLifetime:  opt.ConnMaxLifetime,
-		DisableIndentity: opt.DisableIndentity,
-		IdentitySuffix:   opt.IdentitySuffix,
-		TLSConfig:        opt.TLSConfig,
+		PoolFIFO:        opt.PoolFIFO,
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		MaxActiveConns:  opt.MaxActiveConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
+		DisableIdentity: opt.DisableIdentity,
+		IdentitySuffix:  opt.IdentitySuffix,
+		TLSConfig:       opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
 		// cluster whose nodes are not in clustering mode (otherwise there isn't
 		// much use for ClusterSlots config).  This means we cannot execute the
