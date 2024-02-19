@@ -5,7 +5,7 @@ go 1.18
 replace github.com/redis/go-redis/v9 => ../..
 
 require (
-	github.com/redis/go-redis/v9 v9.5.0
+	github.com/redis/go-redis/v9 v9.5.1
 	go.uber.org/zap v1.24.0
 )
 
