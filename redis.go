@@ -334,7 +334,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			pipe.ClientSetName(ctx, c.opt.ClientName)
 		}
 
-		if !c.opt.DisableIdentity {
+		if !c.opt.DisableIndentity {
 			libName := ""
 			libVer := Version()
 			if c.opt.IdentitySuffix != "" {

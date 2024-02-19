@@ -80,8 +80,8 @@ type FailoverOptions struct {
 
 	TLSConfig *tls.Config
 
-	DisableIdentity bool
-	IdentitySuffix  string
+	DisableIndentity bool
+	IdentitySuffix   string
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -117,8 +117,8 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 		TLSConfig: opt.TLSConfig,
 
-		DisableIdentity: opt.DisableIdentity,
-		IdentitySuffix:  opt.IdentitySuffix,
+		DisableIndentity: opt.DisableIndentity,
+		IdentitySuffix:   opt.IdentitySuffix,
 	}
 }
 
