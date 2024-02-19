@@ -2,6 +2,7 @@ ACLs
 autoload
 autoloader
 autoloading
+analytics
 Autoloading
 backend
 backends
