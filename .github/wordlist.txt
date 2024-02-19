@@ -43,6 +43,7 @@ RocksDB
 runtime
 SHA
 sharding
+SETNAME
 SSL
 struct
 stunnel
