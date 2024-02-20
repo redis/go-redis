@@ -346,8 +346,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		if c.opt.IdentitySuffix != "" {
 			libName = c.opt.IdentitySuffix
 		}
-		conn.ClientSetInfo(ctx, WithLibraryName(libName))
-		conn.ClientSetInfo(ctx, WithLibraryVersion(libVer))
+		p := conn.Pipeline()
+		p.ClientSetInfo(ctx, WithLibraryName(libName))
+		p.ClientSetInfo(ctx, WithLibraryVersion(libVer))
+		p.Exec(ctx)
 	}
 
 	if c.opt.OnConnect != nil {
