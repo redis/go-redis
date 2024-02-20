@@ -349,7 +349,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		p := conn.Pipeline()
 		p.ClientSetInfo(ctx, WithLibraryName(libName))
 		p.ClientSetInfo(ctx, WithLibraryVersion(libVer))
-		p.Exec(ctx)
+		_, _ = p.Exec(ctx)
 	}
 
 	if c.opt.OnConnect != nil {
