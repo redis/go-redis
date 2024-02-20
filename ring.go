@@ -98,8 +98,8 @@ type RingOptions struct {
 	TLSConfig *tls.Config
 	Limiter   Limiter
 
-	DisableIdentity bool
-	IdentitySuffix  string
+	DisableIndentity bool
+	IdentitySuffix   string
 }
 
 func (opt *RingOptions) init() {
@@ -166,8 +166,8 @@ func (opt *RingOptions) clientOptions() *Options {
 		TLSConfig: opt.TLSConfig,
 		Limiter:   opt.Limiter,
 
-		DisableIdentity: opt.DisableIdentity,
-		IdentitySuffix:  opt.IdentitySuffix,
+		DisableIndentity: opt.DisableIndentity,
+		IdentitySuffix:   opt.IdentitySuffix,
 	}
 }
 
