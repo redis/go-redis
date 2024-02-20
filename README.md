@@ -161,6 +161,30 @@ func ExampleClient() *redis.Client {
 
 ```
 
+
+### Advanced Configuration
+
+go-redis supports extending the client identification phase to allow projects to send their own custom client identification.
+
+#### Default Client Identification
+
+By default, go-redis automatically sends the client library name and version during the connection process. This feature is available in redis-server as of version 7.2. As a result, the command is "fire and forget", meaning it should fail silently, in the case that the redis server does not support this feature.
+
+#### Disabling Identity Verification
+
+When connection identity verification is not required or needs to be explicitly disabled, a `DisableIndentity` configuration option exists. In V10 of this library, `DisableIndentity` will become `DisableIdentity` in order to fix the associated typo.
+
+To disable verification, set the `DisableIndentity` option to `true` in the Redis client options:
+
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr:            "localhost:6379",
+    Password:        "",
+    DB:              0,
+    DisableIndentity: true, // Disable set-info on connect
+})
+```
+
 ## Contributing
 
 Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
