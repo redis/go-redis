@@ -89,6 +89,8 @@ type ClusterOptions struct {
 	DisableIndentity bool // Disable set-lib on connect. Default is false.
 
 	IdentitySuffix string // Add suffix to client name. Default is empty.
+
+	FailingTimeLimit int // Failing time limit for a node. Default is 15 seconds.
 }
 
 func (opt *ClusterOptions) init() {
@@ -137,6 +139,10 @@ func (opt *ClusterOptions) init() {
 
 	if opt.NewClient == nil {
 		opt.NewClient = NewClient
+	}
+
+	if opt.FailingTimeLimit == 0 {
+		opt.FailingTimeLimit = 15
 	}
 }
 
@@ -242,6 +248,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
+	o.FailingTimeLimit = q.int("failing_time_limit")
 
 	if q.err != nil {
 		return nil, q.err
@@ -296,6 +303,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ConnMaxLifetime:  opt.ConnMaxLifetime,
 		DisableIndentity: opt.DisableIndentity,
 		IdentitySuffix:   opt.IdentitySuffix,
+		FailingTimeLimit: opt.FailingTimeLimit,
 		TLSConfig:        opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
 		// cluster whose nodes are not in clustering mode (otherwise there isn't
@@ -376,7 +384,7 @@ func (n *clusterNode) MarkAsFailing() {
 }
 
 func (n *clusterNode) Failing() bool {
-	const timeout = 15 // 15 seconds
+	timeout := int64(n.Client.opt.FailingTimeLimit)
 
 	failing := atomic.LoadUint32(&n.failing)
 	if failing == 0 {
