@@ -228,9 +228,14 @@ type Options struct {
 	// IdentitySuffix - add suffix to client name.
 	IdentitySuffix string
 
+<<<<<<< HEAD
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	// When unstable mode is enabled, the client will use RESP3 protocol and only be able to use RawResult
 	UnstableResp3 bool
+=======
+	// Failing time limit for a node. Default is 15 seconds.
+	FailingTimeLimit int
+>>>>>>> 5ee5089 (Fix hard code of failing timeout)
 }
 
 func (opt *Options) init() {
