@@ -22,12 +22,16 @@ ch:
   password:
   database: uptrace
 
+  # Maximum query execution time.
+  max_execution_time: 30s
+
   # TLS configuration. Uncomment to enable.
   # tls:
   #   insecure_skip_verify: true
 
-  # Maximum query execution time.
-  max_execution_time: 30s
+  # TLS configuration. Uncomment to enable.
+  # tls:
+  #   insecure_skip_verify: true # only for self-signed certificates
 
 ##
 ## PostgreSQL db that is used to store metadata such us metric names, dashboards, alerts,
@@ -49,13 +53,15 @@ projects:
     # Token grants write access to the project. Keep a secret.
     token: project1_secret_token
     pinned_attrs:
-      - service.name
-      - host.name
-      - deployment.environment
+      - service_name
+      - host_name
+      - deployment_environment
     # Group spans by deployment.environment attribute.
     group_by_env: false
     # Group funcs spans by service.name attribute.
     group_funcs_by_service: false
+    # Enable prom_compat if you want to use the project as a Prometheus datasource in Grafana.
+    prom_compat: true
 
   # Other projects can be used to monitor your applications.
   # To monitor micro-services or multiple related services, use a single project.
@@ -63,13 +69,12 @@ projects:
     name: My project
     token: project2_secret_token
     pinned_attrs:
-      - service.name
-      - host.name
-      - deployment.environment
-    # Group spans by deployment.environment attribute.
+      - service_name
+      - host_name
+      - deployment_environment
     group_by_env: false
-    # Group funcs spans by service.name attribute.
     group_funcs_by_service: false
+    prom_compat: true
 
 ##
 ## Create metrics from spans and events.
@@ -79,30 +84,30 @@ metrics_from_spans:
     description: Spans duration (excluding events)
     instrument: histogram
     unit: microseconds
-    value: .duration / 1000
+    value: _duration / 1000
     attrs:
-      - .system
-      - .group_id
-      - service.name
-      - host.name
-      - .status_code
+      - _system
+      - _group_id
+      - service_name
+      - host_name
+      - _status_code
     annotations:
-      - display.name
-    where: .event_name = ''
+      - display_name
+    where: _event_name = ''
 
   - name: uptrace.tracing.events
     description: Events count (excluding spans)
     instrument: counter
     unit: 1
-    value: .count
+    value: _count
     attrs:
-      - .system
-      - .group_id
-      - .name
-      - host.name
+      - _system
+      - _group_id
+      - _name
+      - host_name
     annotations:
-      - display.name
-    where: .is_event = 1
+      - display_name
+    where: _is_event = 1
 
 ##
 ## To require authentication, uncomment one of the following sections.
@@ -158,12 +163,12 @@ ch_schema:
 
   spans:
     # Delete spans data after 30 days.
-    ttl_delete: 30 DAY
+    ttl_delete: 7 DAY
     storage_policy: 'default'
 
   metrics:
     # Delete metrics data after 90 days.
-    ttl_delete: 90 DAY
+    ttl_delete: 30 DAY
     storage_policy: 'default'
 
 ##
@@ -173,16 +178,14 @@ listen:
   # OTLP/gRPC API.
   grpc:
     addr: ':14317'
-    # tls:
-    #   cert_file: config/tls/uptrace.crt
-    #   key_file: config/tls/uptrace.key
 
   # OTLP/HTTP API and Uptrace API with UI.
   http:
     addr: ':14318'
-    # tls:
-    #   cert_file: config/tls/uptrace.crt
-    #   key_file: config/tls/uptrace.key
+
+  # tls:
+  #   cert_file: config/tls/uptrace.crt
+  #   key_file: config/tls/uptrace.key
 
 ##
 ## Various options for Uptrace UI.
@@ -190,8 +193,6 @@ listen:
 site:
   # Overrides public URL for Vue-powered UI in case you put Uptrace behind a proxy.
   #addr: 'https://uptrace.mydomain.com'
-  # The base path for the Vue-powered UI in case you serve Uptrace UI behind a sub path.
-  path: '/'
 
 ##
 ## Spans processing options.
@@ -210,9 +211,9 @@ spans:
 metrics:
   # List of attributes to drop for being noisy.
   drop_attrs:
-    - telemetry.sdk.language
-    - telemetry.sdk.name
-    - telemetry.sdk.version
+    - telemetry_sdk_language
+    - telemetry_sdk_name
+    - telemetry_sdk_version
 
   # The size of the Go chan used to buffer incoming measures.
   # If the buffer is full, Uptrace starts to drop measures.
@@ -226,7 +227,12 @@ metrics:
 ## Uptrace sends internal telemetry here. Defaults to listen.grpc.addr.
 ##
 uptrace_go:
+  # Enabled by default.
+  #disabled: true
+
+  # Defaults to the first projects.
   # dsn: http://project1_secret_token@localhost:14317/1
+
   # tls:
   #   cert_file: config/tls/uptrace.crt
   #   key_file: config/tls/uptrace.key
