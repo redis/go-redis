@@ -314,7 +314,9 @@ type clusterNode struct {
 	generation uint32 // atomic
 	failing    uint32 // atomic
 
-	lastLatencyMeasurement int64
+	// last time the latency measurement was performed for the node, stored in nanoseconds
+	// from epoch
+	lastLatencyMeasurement int64 // atomic
 }
 
 func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
@@ -411,7 +413,7 @@ func (n *clusterNode) SetGeneration(gen uint32) {
 func (n *clusterNode) SetLastLatencyMeasurement(t time.Time) {
 	for {
 		v := atomic.LoadInt64(&n.lastLatencyMeasurement)
-		if t.Unix() < v || atomic.CompareAndSwapInt64(&n.lastLatencyMeasurement, v, t.Unix()) {
+		if t.UnixNano() < v || atomic.CompareAndSwapInt64(&n.lastLatencyMeasurement, v, t.UnixNano()) {
 			break
 		}
 	}
@@ -508,7 +510,7 @@ func (c *clusterNodes) GC(generation uint32) {
 	for addr, node := range c.nodes {
 		if node.Generation() >= generation {
 			c.activeAddrs = append(c.activeAddrs, addr)
-			if c.opt.RouteByLatency && node.LastLatencyMeasurement() < now.Add(-minLatencyMeasurementInterval).Unix() {
+			if c.opt.RouteByLatency && node.LastLatencyMeasurement() < now.Add(-minLatencyMeasurementInterval).UnixNano() {
 				go node.updateLatency()
 			}
 			continue
