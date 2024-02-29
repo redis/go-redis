@@ -116,6 +116,7 @@ func WithDBStatement(on bool) TracingOption {
 }
 
 // WithMaxCommandBytes limit the bytes of raw redis commands.
+// Default is 0, don't limit.
 func WithMaxCommandBytes(size int) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.maxCommandBytes = size
