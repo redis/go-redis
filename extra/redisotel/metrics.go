@@ -127,6 +127,22 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 		return err
 	}
 
+	hits, err := conf.meter.Int64ObservableUpDownCounter(
+		"db.client.connections.hits",
+		metric.WithDescription("The number of times free connection was found in the pool"),
+	)
+	if err != nil {
+		return err
+	}
+
+	misses, err := conf.meter.Int64ObservableUpDownCounter(
+		"db.client.connections.misses",
+		metric.WithDescription("The number of times free connection was not found in the pool"),
+	)
+	if err != nil {
+		return err
+	}
+
 	redisConf := rdb.Options()
 	_, err = conf.meter.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
@@ -140,6 +156,8 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), metric.WithAttributes(usedAttrs...))
 
 			o.ObserveInt64(timeouts, int64(stats.Timeouts), metric.WithAttributes(labels...))
+			o.ObserveInt64(hits, int64(stats.Hits), metric.WithAttributes(labels...))
+			o.ObserveInt64(misses, int64(stats.Misses), metric.WithAttributes(labels...))
 			return nil
 		},
 		idleMax,
@@ -147,6 +165,8 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 		connsMax,
 		usage,
 		timeouts,
+		hits,
+		misses,
 	)
 
 	return err
