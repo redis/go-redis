@@ -27,6 +27,7 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 		connString := formatDBConnString(opt.Network, opt.Addr)
 		rdb.AddHook(newTracingHook(connString, opts...))
 		return nil
+
 	case *redis.ClusterClient:
 		rdb.AddHook(newTracingHook("", opts...))
 
@@ -120,6 +121,9 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 
 		if th.conf.dbStmtEnabled {
 			cmdString := rediscmd.CmdString(cmd)
+			if th.conf.maxCommandBytes > 0 {
+				cmdString = maxString(cmdString, th.conf.maxCommandBytes)
+			}
 			attrs = append(attrs, semconv.DBStatementKey.String(cmdString))
 		}
 
@@ -157,6 +161,9 @@ func (th *tracingHook) ProcessPipelineHook(
 
 		summary, cmdsString := rediscmd.CmdsString(cmds)
 		if th.conf.dbStmtEnabled {
+			if th.conf.maxCommandBytes > 0 {
+				cmdsString = maxString(cmdsString, th.conf.maxCommandBytes)
+			}
 			attrs = append(attrs, semconv.DBStatementKey.String(cmdsString))
 		}
 
@@ -212,4 +219,15 @@ func funcFileLine(pkg string) (string, string, int) {
 	}
 
 	return fn, file, line
+}
+
+func maxString(s string, length int) string {
+	if length <= 0 { // no define or no limit
+		return s
+	}
+
+	if len(s) > length {
+		return s[:length]
+	}
+	return s
 }

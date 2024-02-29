@@ -2,6 +2,7 @@ package redisotel
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
@@ -57,5 +58,23 @@ func TestWithDBStatement(t *testing.T) {
 	err := processHook(ctx, cmd)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMaxString(t *testing.T) {
+	src := strings.Repeat("a", 100)
+	dst := maxString(src, 50)
+	if dst != src[:50] {
+		t.Fatal("failed to maxstring")
+	}
+
+	dst = maxString(src, 200)
+	if dst != src {
+		t.Fatal("failed to maxstring")
+	}
+
+	dst = maxString(src, 0)
+	if dst != src {
+		t.Fatal("failed to maxstring")
 	}
 }

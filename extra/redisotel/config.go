@@ -19,7 +19,8 @@ type config struct {
 	tp     trace.TracerProvider
 	tracer trace.Tracer
 
-	dbStmtEnabled bool
+	dbStmtEnabled   bool
+	maxCommandBytes int
 
 	// Metrics options.
 
@@ -54,9 +55,10 @@ func newConfig(opts ...baseOption) *config {
 		dbSystem: "redis",
 		attrs:    []attribute.KeyValue{},
 
-		tp:            otel.GetTracerProvider(),
-		mp:            otel.GetMeterProvider(),
-		dbStmtEnabled: true,
+		tp:              otel.GetTracerProvider(),
+		mp:              otel.GetMeterProvider(),
+		dbStmtEnabled:   true,
+		maxCommandBytes: 0,
 	}
 
 	for _, opt := range opts {
@@ -110,6 +112,13 @@ func WithTracerProvider(provider trace.TracerProvider) TracingOption {
 func WithDBStatement(on bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.dbStmtEnabled = on
+	})
+}
+
+// WithMaxCommandBytes limit the bytes of raw redis commands.
+func WithMaxCommandBytes(size int) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.maxCommandBytes = size
 	})
 }
 
