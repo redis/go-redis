@@ -334,20 +334,22 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			pipe.ClientSetName(ctx, c.opt.ClientName)
 		}
 
-		if !c.opt.DisableIndentity {
-			libName := ""
-			libVer := Version()
-			if c.opt.IdentitySuffix != "" {
-				libName = c.opt.IdentitySuffix
-			}
-			pipe.ClientSetInfo(ctx, WithLibraryName(libName))
-			pipe.ClientSetInfo(ctx, WithLibraryVersion(libVer))
-		}
-
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+
+	if !c.opt.DisableIndentity {
+		libName := ""
+		libVer := Version()
+		if c.opt.IdentitySuffix != "" {
+			libName = c.opt.IdentitySuffix
+		}
+		p := conn.Pipeline()
+		p.ClientSetInfo(ctx, WithLibraryName(libName))
+		p.ClientSetInfo(ctx, WithLibraryVersion(libVer))
+		_, _ = p.Exec(ctx)
 	}
 
 	if c.opt.OnConnect != nil {
