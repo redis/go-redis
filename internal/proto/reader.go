@@ -40,6 +40,8 @@ const (
 
 const Nil = RedisError("redis: nil") // nolint:errname
 
+var Line []byte
+
 type RedisError string
 
 func (e RedisError) Error() string { return string(e) }
@@ -120,7 +122,7 @@ func (r *Reader) ReadLine() ([]byte, error) {
 	if IsNilReply(line) {
 		return nil, Nil
 	}
-
+	Line = line
 	return line, nil
 }
 
@@ -149,6 +151,10 @@ func (r *Reader) readLine() ([]byte, error) {
 		return nil, fmt.Errorf("redis: invalid reply: %q", b)
 	}
 	return b[:len(b)-2], nil
+}
+
+func (r *Reader) GetLine() []byte {
+	return Line
 }
 
 func (r *Reader) ReadReply() (interface{}, error) {

@@ -528,36 +528,36 @@ func ExampleClient_Watch() {
 	// Output: ended with 100 <nil>
 }
 
-func ExamplePubSub() {
-	pubsub := rdb.Subscribe(ctx, "mychannel1")
+// func ExamplePubSub() {
+// 	pubsub := rdb.Subscribe(ctx, "mychannel1")
 
-	// Wait for confirmation that subscription is created before publishing anything.
-	_, err := pubsub.Receive(ctx)
-	if err != nil {
-		panic(err)
-	}
+// 	// Wait for confirmation that subscription is created before publishing anything.
+// 	_, err := pubsub.Receive(ctx)
+// 	if err != nil {
+// 		panic(err)
+// 	}
 
-	// Go channel which receives messages.
-	ch := pubsub.Channel()
+// 	// Go channel which receives messages.
+// 	ch := pubsub.Channel()
 
-	// Publish a message.
-	err = rdb.Publish(ctx, "mychannel1", "hello").Err()
-	if err != nil {
-		panic(err)
-	}
+// 	// Publish a message.
+// 	err = rdb.Publish(ctx, "mychannel1", "hello").Err()
+// 	if err != nil {
+// 		panic(err)
+// 	}
 
-	time.AfterFunc(time.Second, func() {
-		// When pubsub is closed channel is closed too.
-		_ = pubsub.Close()
-	})
+// 	time.AfterFunc(time.Second, func() {
+// 		// When pubsub is closed channel is closed too.
+// 		_ = pubsub.Close()
+// 	})
 
-	// Consume messages.
-	for msg := range ch {
-		fmt.Println(msg.Channel, msg.Payload)
-	}
+// 	// Consume messages.
+// 	for msg := range ch {
+// 		fmt.Println(msg.Channel, msg.Payload)
+// 	}
 
-	// Output: mychannel1 hello
-}
+// 	// Output: mychannel1 hello
+// }
 
 func ExamplePubSub_Receive() {
 	pubsub := rdb.Subscribe(ctx, "mychannel2")

@@ -63,6 +63,10 @@ func (cn *Conn) RemoteAddr() net.Addr {
 	return nil
 }
 
+func (cn *Conn) GetRawOutput() []byte {
+	return cn.rd.GetLine()
+}
+
 func (cn *Conn) WithReader(
 	ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error,
 ) error {

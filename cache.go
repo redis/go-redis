@@ -9,6 +9,14 @@ type Cache struct {
 	cache *ristretto.Cache
 }
 
+type CacheConfig struct {
+	MaxSize int64 // maximum size of the cache in bytes
+	MaxKeys int64 // maximum number of keys to store in the cache
+	// other configuration options:
+	// - ttl (time to live) for cache entries
+	// - eviction policy
+}
+
 // NewCache creates a new Cache instance with the given configuration
 func NewCache(numKeys int64, memSize int64) (*Cache, error) {
 	// Create a new cache with the given configuration
@@ -27,12 +35,12 @@ func NewCache(numKeys int64, memSize int64) (*Cache, error) {
 }
 
 // Set adds a value to the cache
-func (c *Cache) Set(key, value interface{}, cost int64) bool {
+func (c *Cache) SetKey(key, value interface{}, cost int64) bool {
 	return c.cache.Set(key, value, cost)
 }
 
 // Get retrieves a value from the cache
-func (c *Cache) Get(key interface{}) (interface{}, bool) {
+func (c *Cache) GetKey(key interface{}) (interface{}, bool) {
 	return c.cache.Get(key)
 }
 

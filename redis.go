@@ -1,9 +1,11 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -200,6 +202,7 @@ type baseClient struct {
 	connPool pool.Pooler
 
 	onClose func() error // hook called when client is closed
+	Cache   *Cache
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -414,6 +417,18 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		}
 	}
 
+	// Check if cache enabled
+	if c.opt.EnableCache {
+		// Check if the command is in cache, if so return from cache
+		if val, found := c.Cache.GetKey(cmd.Name()); found {
+			rd := proto.NewReader(bytes.NewReader(val.([]byte)))
+			err := cmd.readReply(rd)
+			if err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+	}
 	retryTimeout := uint32(0)
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
@@ -430,6 +445,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 				atomic.StoreUint32(&retryTimeout, 0)
 			}
 			return err
+		}
+
+		if c.opt.EnableCache {
+			// Set the command in cache
+			c.Cache.SetKey(cmd.Name(), cn.GetRawOutput(), 0)
 		}
 
 		return nil
@@ -626,16 +646,26 @@ type Client struct {
 	*baseClient
 	cmdable
 	hooksMixin
+	*Cache
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
 func NewClient(opt *Options) *Client {
+	var c Client
 	opt.init()
-
-	c := Client{
+	c = Client{
 		baseClient: &baseClient{
 			opt: opt,
 		},
+	}
+	if opt.EnableCache {
+		maxKeys := opt.CacheConfig.MaxKeys
+		maxSize := opt.CacheConfig.MaxSize
+		cache, err := NewCache(maxKeys, maxSize)
+		if err != nil {
+			log.Fatalf("Failed to create client cache: %v", err)
+		}
+		c.Cache = cache
 	}
 	c.init()
 	c.connPool = newConnPool(opt, c.dialHook)
