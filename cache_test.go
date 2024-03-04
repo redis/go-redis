@@ -96,10 +96,26 @@ func TestCacheClear(t *testing.T) {
 }
 
 func TestSetCache(t *testing.T) {
-	client := redis.NewClient(&redis.Options{Addr: ":6379", EnableCache: true, CacheConfig: &redis.CacheConfig{MaxSize: 1 << 20, MaxKeys: 1000}})
+	cache, err := redis.NewCache(1000, 1<<20)
+	if err != nil {
+		t.Fatalf("Failed to create cache: %v", err)
+	}
+	client := redis.NewClient(&redis.Options{Addr: ":6379", CacheObject: cache})
 	defer client.Close()
 	ctx := context.Background()
-	client.Cache.SetKey("pingi", "pong", 0)
 	client.Ping(ctx)
-	client.Cache.GetKey("ping")
+	// TODO: fix this
+	time.Sleep(1 * time.Millisecond)
+	val, found := client.Options().CacheObject.GetKey("ping")
+	if found {
+		t.Log(val)
+	} else {
+		t.Error("Key not found")
+	}
+	ping := client.Ping(ctx)
+	if ping.Val() == "PONG" {
+		t.Log(ping.Val())
+	} else {
+		t.Error("Ping from cache failed")
+	}
 }

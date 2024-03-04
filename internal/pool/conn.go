@@ -64,7 +64,13 @@ func (cn *Conn) RemoteAddr() net.Addr {
 }
 
 func (cn *Conn) GetRawOutput() []byte {
-	return cn.rd.GetLine()
+	line := cn.rd.GetLine()
+	cn.rd.ResetLine()
+	return line
+}
+
+func (cn *Conn) ResetRawOutput() {
+	cn.rd.ResetLine()
 }
 
 func (cn *Conn) WithReader(
