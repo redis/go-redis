@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         go-version: [1.21.x]
-        re-build: ["7.2.4-92"]
+        re-build: ["7.4.2-54"]
 
     steps:
       - name: Checkout code
@@ -36,7 +36,7 @@ jobs:
       - name: Build cluster
         working-directory: redis-ee
         env:
-          IMAGE: "redislabs/redis-internal:${{ matrix.re-build }}"
+          IMAGE: "redislabs/redis:${{ matrix.re-build }}"
           RE_USERNAME: ${{ secrets.RE_USERNAME }}
           RE_PASS: ${{ secrets.RE_PASS }}
           RE_CLUSTER_NAME: ${{ secrets.RE_CLUSTER_NAME }}
