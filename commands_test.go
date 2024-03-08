@@ -1100,8 +1100,26 @@ var _ = Describe("Commands", func() {
 
 			keys, cursor, err := client.HScan(ctx, "myhash", 0, "", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(keys).NotTo(BeEmpty())
-			Expect(cursor).NotTo(BeZero())
+			// If we don't get at least two items back, it's really strange.
+			Expect(cursor).To(BeNumerically(">=", 2))
+			Expect(len(keys)).To(BeNumerically(">=", 2))
+			Expect(keys[0]).To(HavePrefix("key"))
+			Expect(keys[1]).To(Equal("hello"))
+		})
+
+		It("should HScan without values", func() {
+			for i := 0; i < 1000; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			keys, cursor, err := client.HScanNoValues(ctx, "myhash", 0, "", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			// If we don't get at least two items back, it's really strange.
+			Expect(cursor).To(BeNumerically(">=", 2))
+			Expect(len(keys)).To(BeNumerically(">=", 2))
+			Expect(keys[0]).To(HavePrefix("key"))
+			Expect(keys[1]).To(HavePrefix("key"))
 		})
 
 		It("should ZScan", func() {
