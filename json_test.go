@@ -19,7 +19,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(&redis.Options{Addr: ":6379"})
-		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		Expect(client.FlushAll(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -270,7 +270,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(res).To(Equal(`[{"a":1,"b":3,"c":4}]`))
 		})
 
-		It("should JSONMSet", Label("json.mset", "json"), func() {
+		It("should JSONMSet", Label("json.mset", "json", "NonRedisEnterprise"), func() {
 			doc1 := redis.JSONSetArgs{Key: "mset1", Path: "$", Value: `{"a": 1}`}
 			doc2 := redis.JSONSetArgs{Key: "mset2", Path: "$", Value: 2}
 			docs := []redis.JSONSetArgs{doc1, doc2}
@@ -287,11 +287,11 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]interface{}{`[{"a":1}]`, "[2]"}))
 
-			mSetResult, err = client.JSONMSet(ctx, "mset1", "$.a", 2, "mset3", "$", `[1]`).Result()
+			_, err = client.JSONMSet(ctx, "mset1", "$.a", 2, "mset3", "$", `[1]`).Result()
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("should JSONMGet", Label("json.mget", "json"), func() {
+		It("should JSONMGet", Label("json.mget", "json", "NonRedisEnterprise"), func() {
 			cmd1 := client.JSONSet(ctx, "mget2a", "$", `{"a": ["aa", "ab", "ac", "ad"], "b": {"a": ["ba", "bb", "bc", "bd"]}}`)
 			Expect(cmd1.Err()).NotTo(HaveOccurred())
 			Expect(cmd1.Val()).To(Equal("OK"))
@@ -306,7 +306,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd3.Val()[1]).To(Equal(`[[100,200,300,200],[100,200,300,200]]`))
 		})
 
-		It("should JSONMget with $", Label("json.mget", "json"), func() {
+		It("should JSONMget with $", Label("json.mget", "json", "NonRedisEnterprise"), func() {
 			res, err := client.JSONSet(ctx, "doc1", "$", `{"a": 1, "b": 2, "nested": {"a": 3}, "c": "", "nested2": {"a": ""}}`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal("OK"))

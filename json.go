@@ -178,7 +178,7 @@ func (cmd *JSONSliceCmd) Val() []interface{} {
 }
 
 func (cmd *JSONSliceCmd) Result() ([]interface{}, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *JSONSliceCmd) readReply(rd *proto.Reader) error {
@@ -252,7 +252,7 @@ func (cmd *IntPointerSliceCmd) Val() []*int64 {
 }
 
 func (cmd *IntPointerSliceCmd) Result() ([]*int64, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *IntPointerSliceCmd) readReply(rd *proto.Reader) error {

@@ -51,8 +51,8 @@ key value NoSQL database that uses RocksDB as storage engine and is compatible w
 
 ## Features
 
-- Redis 3 commands except QUIT, MONITOR, and SYNC.
-- Automatic connection pooling with
+- Redis commands except QUIT and SYNC.
+- Automatic connection pooling.
 - [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
 - [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
 - [Scripting](https://redis.uptrace.dev/guide/lua-scripting.html).
@@ -159,6 +159,30 @@ func ExampleClient() *redis.Client {
     return redis.NewClient(opts)
 }
 
+```
+
+
+### Advanced Configuration
+
+go-redis supports extending the client identification phase to allow projects to send their own custom client identification.
+
+#### Default Client Identification
+
+By default, go-redis automatically sends the client library name and version during the connection process. This feature is available in redis-server as of version 7.2. As a result, the command is "fire and forget", meaning it should fail silently, in the case that the redis server does not support this feature.
+
+#### Disabling Identity Verification
+
+When connection identity verification is not required or needs to be explicitly disabled, a `DisableIndentity` configuration option exists. In V10 of this library, `DisableIndentity` will become `DisableIdentity` in order to fix the associated typo.
+
+To disable verification, set the `DisableIndentity` option to `true` in the Redis client options:
+
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr:            "localhost:6379",
+    Password:        "",
+    DB:              0,
+    DisableIndentity: true, // Disable set-info on connect
+})
 ```
 
 ## Contributing
