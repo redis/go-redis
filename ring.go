@@ -22,8 +22,8 @@ import (
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
 
-// defaultShardHealthCheckFn is the default function used to check the shard liveness
-var defaultShardHealthCheckFn = func(ctx context.Context, client *Client) bool {
+// defaultHeartbeatFn is the default function used to check the shard liveness
+var defaultHeartbeatFn = func(ctx context.Context, client *Client) bool {
 	err := client.Ping(ctx).Err()
 	return err == nil || err == pool.ErrPoolTimeout
 }
@@ -33,8 +33,6 @@ var defaultShardHealthCheckFn = func(ctx context.Context, client *Client) bool {
 type ConsistentHash interface {
 	Get(string) string
 }
-
-type ShardHealthCheckFn func(ctx context.Context, client *Client) bool
 
 type rendezvousWrapper struct {
 	*rendezvous.Rendezvous
@@ -62,13 +60,13 @@ type RingOptions struct {
 	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
 	ClientName string
 
-	// Frequency of executing ShardHealthCheckFn to check shards availability.
+	// Frequency of executing HeartbeatFn to check shards availability.
 	// Shard is considered down after 3 subsequent failed checks.
 	HeartbeatFrequency time.Duration
 
 	// A function used to check the shard liveness
-	// if not set, defaults to defaultShardHealthCheckFn
-	ShardHealthCheckFn ShardHealthCheckFn
+	// if not set, defaults to defaultHeartbeatFn
+	HeartbeatFn func(ctx context.Context, client *Client) bool
 
 	// NewConsistentHash returns a consistent hash that is used
 	// to distribute keys across the shards.
@@ -125,8 +123,8 @@ func (opt *RingOptions) init() {
 		opt.HeartbeatFrequency = 500 * time.Millisecond
 	}
 
-	if opt.ShardHealthCheckFn == nil {
-		opt.ShardHealthCheckFn = defaultShardHealthCheckFn
+	if opt.HeartbeatFn == nil {
+		opt.HeartbeatFn = defaultHeartbeatFn
 	}
 
 	if opt.NewConsistentHash == nil {
@@ -424,7 +422,7 @@ func (c *ringSharding) Heartbeat(ctx context.Context, frequency time.Duration) {
 			var rebalance bool
 
 			for _, shard := range c.List() {
-				isUp := c.opt.ShardHealthCheckFn(ctx, shard.Client)
+				isUp := c.opt.HeartbeatFn(ctx, shard.Client)
 				if shard.Vote(isUp) {
 					internal.Logger.Printf(ctx, "ring shard state changed: %s", shard)
 					rebalance = true
