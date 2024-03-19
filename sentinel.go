@@ -153,6 +153,9 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
+
+		DisableIndentity: opt.DisableIndentity,
+		IdentitySuffix:   opt.IdentitySuffix,
 	}
 }
 
@@ -190,6 +193,9 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
+
+		DisableIndentity: opt.DisableIndentity,
+		IdentitySuffix:   opt.IdentitySuffix,
 	}
 }
 
