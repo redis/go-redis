@@ -37,8 +37,8 @@ jobs:
         working-directory: redis-ee
         env:
           IMAGE: "redislabs/redis:${{ matrix.re-build }}"
-          RE_USERNAME: goredis
-          RE_PASS: 123456
+          RE_USERNAME: test@test.com
+          RE_PASS: 12345
           RE_CLUSTER_NAME: re-test
           RE_USE_OSS_CLUSTER: false
           RE_DB_PORT: 6379
