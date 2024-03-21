@@ -1,7 +1,12 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 
 test: testdeps
+	$(eval GO_VERSION := $(shell go version | cut -d " " -f 3 | cut -d. -f2))
 	set -e; for dir in $(GO_MOD_DIRS); do \
+	  if echo "$${dir}" | grep -q "./example" && [ "$(GO_VERSION)" = "19" ]; then \
+	    echo "Skipping go test in $${dir} due to Go version 1.19 and dir contains ./example"; \
+	    continue; \
+	  fi; \
 	  echo "go test in $${dir}"; \
 	  (cd "$${dir}" && \
 	    go mod tidy -compat=1.18 && \
