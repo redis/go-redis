@@ -19,6 +19,7 @@ type HashCmdable interface {
 	HVals(ctx context.Context, key string) *StringSliceCmd
 	HRandField(ctx context.Context, key string, count int) *StringSliceCmd
 	HRandFieldWithValues(ctx context.Context, key string, count int) *KeyValueSliceCmd
+	HStrLen(ctx context.Context, key, field string) *IntCmd
 }
 
 func (c cmdable) HDel(ctx context.Context, key string, fields ...string) *IntCmd {
@@ -169,6 +170,12 @@ func (c cmdable) HScan(ctx context.Context, key string, cursor uint64, match str
 		args = append(args, "count", count)
 	}
 	cmd := NewScanCmd(ctx, c, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HStrLen(ctx context.Context, key, field string) *IntCmd {
+	cmd := NewIntCmd(ctx, "hstrlen", key, field)
 	_ = c(ctx, cmd)
 	return cmd
 }
