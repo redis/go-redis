@@ -71,7 +71,7 @@ var _ = Describe("pipelining", func() {
 			Expect(cmds).To(HaveLen(1))
 		})
 
-		It("handles large pipelines", func() {
+		It("handles large pipelines", Label("NonRedisEnterprise"), func() {
 			for callCount := 1; callCount < 16; callCount++ {
 				for i := 1; i <= callCount; i++ {
 					pipe.SetNX(ctx, strconv.Itoa(i)+"_key", strconv.Itoa(i)+"_value", 0)
