@@ -324,7 +324,7 @@ var _ = Describe("SentinelAclAuth", func() {
 	BeforeEach(func() {
 		authCmd := redis.NewStatusCmd(ctx, "ACL", "SETUSER", aclSentinelUsername, "ON",
 			">"+aclSentinelPassword, "-@all", "+auth", "+client|getname", "+client|id", "+client|setname",
-			"+command", "+hello", "+ping", "+role", "+sentinel|get-master-addr-by-name", "+sentinel|master",
+			"+command", "+hello", "+ping", "+client|setinfo", "+role", "+sentinel|get-master-addr-by-name", "+sentinel|master",
 			"+sentinel|myid", "+sentinel|replicas", "+sentinel|sentinels")
 
 		for _, process := range sentinels() {

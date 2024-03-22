@@ -99,6 +99,7 @@ type RingOptions struct {
 	Limiter   Limiter
 
 	DisableIndentity bool
+	IdentitySuffix   string
 }
 
 func (opt *RingOptions) init() {
@@ -166,6 +167,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		Limiter:   opt.Limiter,
 
 		DisableIndentity: opt.DisableIndentity,
+		IdentitySuffix:   opt.IdentitySuffix,
 	}
 }
 
@@ -678,21 +680,8 @@ func (c *Ring) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
 	return nil, firstErr
 }
 
-func (c *Ring) cmdInfo(ctx context.Context, name string) *CommandInfo {
-	cmdsInfo, err := c.cmdsInfoCache.Get(ctx)
-	if err != nil {
-		return nil
-	}
-	info := cmdsInfo[name]
-	if info == nil {
-		internal.Logger.Printf(ctx, "info for cmd=%s not found", name)
-	}
-	return info
-}
-
 func (c *Ring) cmdShard(ctx context.Context, cmd Cmder) (*ringShard, error) {
-	cmdInfo := c.cmdInfo(ctx, cmd.Name())
-	pos := cmdFirstKeyPos(cmd, cmdInfo)
+	pos := cmdFirstKeyPos(cmd)
 	if pos == 0 {
 		return c.sharding.Random()
 	}
@@ -760,8 +749,7 @@ func (c *Ring) generalProcessPipeline(
 	cmdsMap := make(map[string][]Cmder)
 
 	for _, cmd := range cmds {
-		cmdInfo := c.cmdInfo(ctx, cmd.Name())
-		hash := cmd.stringArg(cmdFirstKeyPos(cmd, cmdInfo))
+		hash := cmd.stringArg(cmdFirstKeyPos(cmd))
 		if hash != "" {
 			hash = c.sharding.Hash(hash)
 		}
