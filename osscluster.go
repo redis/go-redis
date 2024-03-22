@@ -101,7 +101,7 @@ func (opt *ClusterOptions) init() {
 		opt.MaxRedirects = 3
 	}
 
-	if opt.RouteByLatency || opt.RouteRandomly {
+	if opt.RouteByLatency || opt.RouteRandomly || opt.RouteRoundRobinReplicas {
 		opt.ReadOnly = true
 	}
 
