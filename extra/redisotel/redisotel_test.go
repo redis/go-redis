@@ -59,3 +59,32 @@ func TestWithDBStatement(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWithSpanName(t *testing.T) {
+	provider := sdktrace.NewTracerProvider()
+	hook := newTracingHook(
+		"",
+		WithTracerProvider(provider),
+		WithSpanName(func(hook TracingHook, defaultName string) string {
+			if hook == TracingHookProcess {
+				return "redis." + defaultName
+			}
+			return defaultName
+		}),
+	)
+	ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+	cmd := redis.NewCmd(ctx, "ping")
+	defer span.End()
+
+	processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+		name := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan).Name()
+		if name != "redis.ping" {
+			t.Fatal("Span name was not changed by the function")
+		}
+		return nil
+	})
+	err := processHook(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+}

@@ -91,7 +91,12 @@ func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 			return hook(ctx, network, addr)
 		}
 
-		ctx, span := th.conf.tracer.Start(ctx, "redis.dial", th.spanOpts...)
+		spanName := "redis.dial"
+		if th.conf.spanNameFn != nil {
+			spanName = th.conf.spanNameFn(TracingHookDial, spanName)
+		}
+
+		ctx, span := th.conf.tracer.Start(ctx, spanName, th.spanOpts...)
 		defer span.End()
 
 		conn, err := hook(ctx, network, addr)
@@ -126,7 +131,12 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		opts := th.spanOpts
 		opts = append(opts, trace.WithAttributes(attrs...))
 
-		ctx, span := th.conf.tracer.Start(ctx, cmd.FullName(), opts...)
+		spanName := cmd.FullName()
+		if th.conf.spanNameFn != nil {
+			spanName = th.conf.spanNameFn(TracingHookProcess, spanName)
+		}
+
+		ctx, span := th.conf.tracer.Start(ctx, spanName, opts...)
 		defer span.End()
 
 		if err := hook(ctx, cmd); err != nil {
@@ -163,7 +173,12 @@ func (th *tracingHook) ProcessPipelineHook(
 		opts := th.spanOpts
 		opts = append(opts, trace.WithAttributes(attrs...))
 
-		ctx, span := th.conf.tracer.Start(ctx, "redis.pipeline "+summary, opts...)
+		spanName := "redis.pipeline " + summary
+		if th.conf.spanNameFn != nil {
+			spanName = th.conf.spanNameFn(TracingHookProcessPipeline, spanName)
+		}
+
+		ctx, span := th.conf.tracer.Start(ctx, spanName, opts...)
 		defer span.End()
 
 		if err := hook(ctx, cmds); err != nil {

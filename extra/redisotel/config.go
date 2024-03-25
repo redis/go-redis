@@ -11,8 +11,9 @@ import (
 type config struct {
 	// Common options.
 
-	dbSystem string
-	attrs    []attribute.KeyValue
+	dbSystem   string
+	attrs      []attribute.KeyValue
+	spanNameFn func(hook TracingHook, defaultName string) string
 
 	// Tracing options.
 
@@ -81,7 +82,7 @@ func WithAttributes(attrs ...attribute.KeyValue) Option {
 	})
 }
 
-//------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------
 
 type TracingOption interface {
 	baseOption
@@ -113,7 +114,22 @@ func WithDBStatement(on bool) TracingOption {
 	})
 }
 
-//------------------------------------------------------------------------------
+type TracingHook int
+
+const (
+	TracingHookDial TracingHook = iota
+	TracingHookProcess
+	TracingHookProcessPipeline
+)
+
+// WithSpanName provides a function to customize the span names.
+func WithSpanName(f func(hook TracingHook, defaultName string) string) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.spanNameFn = f
+	})
+}
+
+// ------------------------------------------------------------------------------
 
 type MetricsOption interface {
 	baseOption
