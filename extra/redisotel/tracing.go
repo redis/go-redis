@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.10.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/redis/go-redis/extra/rediscmd/v9"
@@ -25,6 +26,7 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 	case *redis.Client:
 		opt := rdb.Options()
 		connString := formatDBConnString(opt.Network, opt.Addr)
+		opts = addServerAttributes(opts, opt.Addr)
 		rdb.AddHook(newTracingHook(connString, opts...))
 		return nil
 	case *redis.ClusterClient:
@@ -32,6 +34,7 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			opt := rdb.Options()
+			opts = addServerAttributes(opts, opt.Addr)
 			connString := formatDBConnString(opt.Network, opt.Addr)
 			rdb.AddHook(newTracingHook(connString, opts...))
 		})
@@ -41,6 +44,7 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			opt := rdb.Options()
+			opts = addServerAttributes(opts, opt.Addr)
 			connString := formatDBConnString(opt.Network, opt.Addr)
 			rdb.AddHook(newTracingHook(connString, opts...))
 		})
@@ -72,7 +76,7 @@ func newTracingHook(connString string, opts ...TracingOption) *tracingHook {
 		)
 	}
 	if connString != "" {
-		conf.attrs = append(conf.attrs, semconv.DBConnectionStringKey.String(connString))
+		conf.attrs = append(conf.attrs, semconv.DBConnectionString(connString))
 	}
 
 	return &tracingHook{
@@ -113,14 +117,14 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 
 		attrs := make([]attribute.KeyValue, 0, 8)
 		attrs = append(attrs,
-			semconv.CodeFunctionKey.String(fn),
-			semconv.CodeFilepathKey.String(file),
-			semconv.CodeLineNumberKey.Int(line),
+			semconv.CodeFunction(fn),
+			semconv.CodeFilepath(file),
+			semconv.CodeLineNumber(line),
 		)
 
 		if th.conf.dbStmtEnabled {
 			cmdString := rediscmd.CmdString(cmd)
-			attrs = append(attrs, semconv.DBStatementKey.String(cmdString))
+			attrs = append(attrs, semconv.DBStatement(cmdString))
 		}
 
 		opts := th.spanOpts
@@ -149,15 +153,15 @@ func (th *tracingHook) ProcessPipelineHook(
 
 		attrs := make([]attribute.KeyValue, 0, 8)
 		attrs = append(attrs,
-			semconv.CodeFunctionKey.String(fn),
-			semconv.CodeFilepathKey.String(file),
-			semconv.CodeLineNumberKey.Int(line),
+			semconv.CodeFunction(fn),
+			semconv.CodeFilepath(file),
+			semconv.CodeLineNumber(line),
 			attribute.Int("db.redis.num_cmd", len(cmds)),
 		)
 
 		summary, cmdsString := rediscmd.CmdsString(cmds)
 		if th.conf.dbStmtEnabled {
-			attrs = append(attrs, semconv.DBStatementKey.String(cmdsString))
+			attrs = append(attrs, semconv.DBStatement(cmdsString))
 		}
 
 		opts := th.spanOpts
@@ -212,4 +216,29 @@ func funcFileLine(pkg string) (string, string, int) {
 	}
 
 	return fn, file, line
+}
+
+// Database span attributes semantic conventions recommended server address and port
+// https://opentelemetry.io/docs/specs/semconv/database/database-spans/#connection-level-attributes
+func addServerAttributes(opts []TracingOption, addr string) []TracingOption {
+	host, portString, err := net.SplitHostPort(addr)
+	if err != nil {
+		return opts
+	}
+
+	opts = append(opts, WithAttributes(
+		semconv.ServerAddress(host),
+	))
+
+	// Parse the port string to an integer
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		return opts
+	}
+
+	opts = append(opts, WithAttributes(
+		semconv.ServerPort(port),
+	))
+
+	return opts
 }
