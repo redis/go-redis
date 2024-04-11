@@ -469,7 +469,7 @@ var _ = Describe("Client OnConnect", func() {
 	})
 })
 
-var _ = Describe("Client context cancelation", func() {
+var _ = Describe("Client context cancellation", func() {
 	var opt *redis.Options
 	var client *redis.Client
 
@@ -484,7 +484,7 @@ var _ = Describe("Client context cancelation", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("Blocking operation cancelation", func() {
+	It("Blocking operation cancellation", func() {
 		ctx, cancel := context.WithCancel(ctx)
 		cancel()
 
