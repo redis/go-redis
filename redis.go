@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,12 +41,15 @@ type (
 )
 
 type hooksMixin struct {
+	hooksMu *sync.Mutex
+
 	slice   []Hook
 	initial hooks
 	current hooks
 }
 
 func (hs *hooksMixin) initHooks(hooks hooks) {
+	hs.hooksMu = new(sync.Mutex)
 	hs.initial = hooks
 	hs.chain()
 }
@@ -116,6 +120,9 @@ func (hs *hooksMixin) AddHook(hook Hook) {
 func (hs *hooksMixin) chain() {
 	hs.initial.setDefaults()
 
+	hs.hooksMu.Lock()
+	defer hs.hooksMu.Unlock()
+
 	hs.current.dial = hs.initial.dial
 	hs.current.process = hs.initial.process
 	hs.current.pipeline = hs.initial.pipeline
@@ -138,9 +145,13 @@ func (hs *hooksMixin) chain() {
 }
 
 func (hs *hooksMixin) clone() hooksMixin {
+	hs.hooksMu.Lock()
+	defer hs.hooksMu.Unlock()
+
 	clone := *hs
 	l := len(clone.slice)
 	clone.slice = clone.slice[:l:l]
+	clone.hooksMu = new(sync.Mutex)
 	return clone
 }
 
@@ -165,6 +176,8 @@ func (hs *hooksMixin) withProcessPipelineHook(
 }
 
 func (hs *hooksMixin) dialHook(ctx context.Context, network, addr string) (net.Conn, error) {
+	hs.hooksMu.Lock()
+	defer hs.hooksMu.Unlock()
 	return hs.current.dial(ctx, network, addr)
 }
 
@@ -299,14 +312,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// difficult to rely on error strings to determine all results.
 		return err
 	}
-	if !c.opt.DisableIndentity {
-		libName := ""
-		libVer := Version()
-		libInfo := LibraryInfo{LibName: &libName}
-		conn.ClientSetInfo(ctx, libInfo)
-		libInfo = LibraryInfo{LibVer: &libVer}
-		conn.ClientSetInfo(ctx, libInfo)
-	}
+
 	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if !auth && password != "" {
 			if username != "" {
@@ -332,6 +338,18 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	if !c.opt.DisableIndentity {
+		libName := ""
+		libVer := Version()
+		if c.opt.IdentitySuffix != "" {
+			libName = c.opt.IdentitySuffix
+		}
+		p := conn.Pipeline()
+		p.ClientSetInfo(ctx, WithLibraryName(libName))
+		p.ClientSetInfo(ctx, WithLibraryVersion(libVer))
+		_, _ = p.Exec(ctx)
 	}
 
 	if c.opt.OnConnect != nil {

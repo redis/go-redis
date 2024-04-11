@@ -144,6 +144,9 @@ type Options struct {
 
 	// Disable set-lib on connect. Default is false.
 	DisableIndentity bool
+
+	// Add suffix to client name. Default is empty.
+	IdentitySuffix string
 }
 
 func (opt *Options) init() {
@@ -232,7 +235,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 	}
 }
 
-// ParseURL parses an URL into Options that can be used to connect to Redis.
+// ParseURL parses a URL into Options that can be used to connect to Redis.
 // Scheme is required.
 // There are two connection types: by tcp socket and by unix socket.
 // Tcp connection:

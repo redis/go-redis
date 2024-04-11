@@ -65,7 +65,11 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should Stringer", func() {
-		Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:15>", redisPort)))
+		if RECluster {
+			Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:0>", redisPort)))
+		} else {
+			Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:15>", redisPort)))
+		}
 	})
 
 	It("supports context", func() {
@@ -76,7 +80,7 @@ var _ = Describe("Client", func() {
 		Expect(err).To(MatchError("context canceled"))
 	})
 
-	It("supports WithTimeout", func() {
+	It("supports WithTimeout", Label("NonRedisEnterprise"), func() {
 		err := client.ClientPause(ctx, time.Second).Err()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -151,7 +155,7 @@ var _ = Describe("Client", func() {
 		Expect(pubsub.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should select DB", func() {
+	It("should select DB", Label("NonRedisEnterprise"), func() {
 		db2 := redis.NewClient(&redis.Options{
 			Addr: redisAddr,
 			DB:   2,
@@ -503,7 +507,7 @@ var _ = Describe("Conn", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("TxPipeline", func() {
+	It("TxPipeline", Label("NonRedisEnterprise"), func() {
 		tx := client.Conn().TxPipeline()
 		tx.SwapDB(ctx, 0, 2)
 		tx.SwapDB(ctx, 1, 0)
@@ -577,5 +581,55 @@ var _ = Describe("Hook", func() {
 		cmd := script.Run(ctx, client, nil)
 		Expect(cmd.Err()).NotTo(HaveOccurred())
 		Expect(cmd.Val()).To(Equal("Script and hook"))
+	})
+})
+
+var _ = Describe("Hook with MinIdleConns", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		options := redisOptions()
+		options.MinIdleConns = 1
+		client = redis.NewClient(options)
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("fifo", func() {
+		var res []string
+		client.AddHook(&hook{
+			processHook: func(hook redis.ProcessHook) redis.ProcessHook {
+				return func(ctx context.Context, cmd redis.Cmder) error {
+					res = append(res, "hook-1-process-start")
+					err := hook(ctx, cmd)
+					res = append(res, "hook-1-process-end")
+					return err
+				}
+			},
+		})
+		client.AddHook(&hook{
+			processHook: func(hook redis.ProcessHook) redis.ProcessHook {
+				return func(ctx context.Context, cmd redis.Cmder) error {
+					res = append(res, "hook-2-process-start")
+					err := hook(ctx, cmd)
+					res = append(res, "hook-2-process-end")
+					return err
+				}
+			},
+		})
+
+		err := client.Ping(ctx).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(res).To(Equal([]string{
+			"hook-1-process-start",
+			"hook-2-process-start",
+			"hook-2-process-end",
+			"hook-1-process-end",
+		}))
 	})
 })
