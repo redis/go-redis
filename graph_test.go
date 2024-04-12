@@ -12,7 +12,10 @@ var _ = Describe("Client", func() {
 	var graph = "test-graph"
 
 	BeforeEach(func() {
-		client = redis.NewClient(redisOptions())
+		// redisgraph / falkordb
+		opt := redisOptions()
+		opt.Addr = ":36379"
+		client = redis.NewClient(opt)
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 

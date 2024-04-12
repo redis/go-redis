@@ -5627,7 +5627,7 @@ func (cmd *GraphCmd) readGraph(rd *proto.Reader) error {
 	return err
 }
 
-// node = 3, id +labels +properties
+// node = 3, id +labels + properties
 func (cmd *GraphCmd) readNode(rd *proto.Reader) (GraphNode, error) {
 	node := GraphNode{}
 	for j := 0; j < 3; j++ {
