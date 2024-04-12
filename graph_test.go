@@ -44,7 +44,7 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(row).To(HaveLen(5))
 		Expect(row["id"].Int()).To(Equal(1024))
-		Expect(row["name"].Int()).To(Equal("foo"))
+		Expect(row["name"].String()).To(Equal("foo"))
 		Expect(row["pr"].Float64()).To(Equal(3.14))
 		Expect(row["success"].Bool()).To(BeTrue())
 		Expect(row["non"].IsNil()).To(BeTrue())

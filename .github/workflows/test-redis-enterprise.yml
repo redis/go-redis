@@ -50,6 +50,7 @@ jobs:
         run: |
           go test \
           --ginkgo.skip-file="ring_test.go" \
+          --ginkgo.skip-file="graph_test.go" \
           --ginkgo.skip-file="sentinel_test.go" \
           --ginkgo.skip-file="osscluster_test.go" \
           --ginkgo.skip-file="pubsub_test.go" \
