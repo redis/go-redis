@@ -3,7 +3,9 @@ package redis
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"regexp"
 	"strconv"
@@ -5483,4 +5485,284 @@ func (cmd *MonitorCmd) Stop() {
 	cmd.mu.Lock()
 	defer cmd.mu.Unlock()
 	cmd.status = monitorStatusStop
+}
+
+// --------------------------------------------------------------------------------------
+
+type GraphCmd struct {
+	baseCmd
+
+	val *GraphResult
+}
+
+var _ Cmder = (*GraphCmd)(nil)
+
+func NewGraphCmd(ctx context.Context, args ...any) *GraphCmd {
+	return &GraphCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *GraphCmd) SetVal(val *GraphResult) {
+	cmd.val = val
+}
+
+func (cmd *GraphCmd) Val() *GraphResult {
+	return cmd.val
+}
+
+func (cmd *GraphCmd) Result() (*GraphResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *GraphCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *GraphCmd) readReply(rd *proto.Reader) error {
+	cmd.val = &GraphResult{}
+	cmd.val.err = cmd.readGraph(rd)
+	return cmd.val.err
+}
+
+func (cmd *GraphCmd) readGraph(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n != 1 && n != 3 {
+		return fmt.Errorf("redis: invalid number of elements in graph result: %d", n)
+	}
+
+	if n == 1 {
+		// create?
+		cmd.val.noResult = true
+		if cmd.val.text, err = cmd.readStringArray(rd); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// n = 3, read graph result
+	if cmd.val.field, err = cmd.readStringArray(rd); err != nil {
+		return err
+	}
+	fieldLen := len(cmd.val.field)
+	if fieldLen == 0 {
+		return nil
+	}
+
+	// read response
+	rows, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val.rows = make([][]*graphRow, rows)
+	for i := 0; i < rows; i++ {
+		// field == row
+		if err = rd.ReadFixedArrayLen(fieldLen); err != nil {
+			return err
+		}
+
+		cmd.val.rows[i] = make([]*graphRow, fieldLen)
+		for f := 0; f < fieldLen; f++ {
+			next, err := rd.PeekReplyType()
+			if err != nil {
+				return err
+			}
+			var nn int
+			switch next {
+			case proto.RespArray, proto.RespSet, proto.RespPush:
+				nn, err = rd.ReadArrayLen()
+				if err != nil {
+					return err
+				}
+			default:
+				nn = 1
+			}
+
+			// 1: int/string/nil
+			// 3: node, id + labels + properties
+			// 5: edge, id + type + src_node + dest_node + properties
+			switch nn {
+			case 1:
+				data, err := cmd.readData(rd)
+				if err != nil {
+					return err
+				}
+				cmd.val.rows[i][f] = &graphRow{
+					typ:   graphResultBasic,
+					basic: data,
+				}
+			case 3:
+				node, err := cmd.readNode(rd)
+				if err != nil {
+					return err
+				}
+				cmd.val.rows[i][f] = &graphRow{
+					typ:  graphResultNode,
+					node: node,
+				}
+			case 5:
+				edge, err := cmd.readEdge(rd)
+				if err != nil {
+					return err
+				}
+				cmd.val.rows[i][f] = &graphRow{
+					typ:  graphResultEdge,
+					edge: edge,
+				}
+			default:
+				return fmt.Errorf("redis: graph-row-field-len, got %d elements in the array, wanted %v", nn, "1/3/5")
+			}
+		}
+	}
+	if cmd.val.text, err = cmd.readStringArray(rd); err != nil {
+		return err
+	}
+
+	return err
+}
+
+// node = 3, id +labels +properties
+func (cmd *GraphCmd) readNode(rd *proto.Reader) (GraphNode, error) {
+	node := GraphNode{}
+	for j := 0; j < 3; j++ {
+		if err := rd.ReadFixedArrayLen(2); err != nil {
+			return node, err
+		}
+		key, err := rd.ReadString()
+		if err != nil {
+			return node, err
+		}
+		switch key {
+		case "id":
+			if node.ID, err = rd.ReadInt(); err != nil {
+				return node, err
+			}
+		case "labels":
+			if node.Labels, err = cmd.readStringArray(rd); err != nil {
+				return node, err
+			}
+		case "properties":
+			if node.Properties, err = cmd.readProperties(rd); err != nil {
+				return node, err
+			}
+		default:
+			return node, fmt.Errorf("redis: invalid graph node key - %s", key)
+		}
+	}
+	return node, nil
+}
+
+// edge = 5, id + type + src_node + dest_node + properties
+func (cmd *GraphCmd) readEdge(rd *proto.Reader) (GraphEdge, error) {
+	edge := GraphEdge{}
+	for j := 0; j < 5; j++ {
+		if err := rd.ReadFixedArrayLen(2); err != nil {
+			return edge, err
+		}
+		key, err := rd.ReadString()
+		if err != nil {
+			return edge, err
+		}
+		switch key {
+		case "id":
+			if edge.ID, err = rd.ReadInt(); err != nil {
+				return edge, err
+			}
+		case "type":
+			if edge.Typ, err = rd.ReadString(); err != nil {
+				return edge, err
+			}
+		case "src_node":
+			if edge.SrcNode, err = rd.ReadInt(); err != nil {
+				return edge, err
+			}
+		case "dest_node":
+			if edge.DstNode, err = rd.ReadInt(); err != nil {
+				return edge, err
+			}
+		case "properties":
+			if edge.Properties, err = cmd.readProperties(rd); err != nil {
+				return edge, err
+			}
+		default:
+			return edge, fmt.Errorf("redis: invalid graph edge key - %s", key)
+		}
+	}
+	return edge, nil
+}
+
+func (cmd *GraphCmd) readProperties(rd *proto.Reader) (map[string]GraphData, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]GraphData, n)
+	for i := 0; i < n; i++ {
+		if err = rd.ReadFixedArrayLen(2); err != nil {
+			return nil, err
+		}
+		key, err := rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+		val, err := cmd.readData(rd)
+		if err != nil {
+			return nil, err
+		}
+		m[key] = val
+	}
+	return m, nil
+}
+
+func (cmd *GraphCmd) readData(rd *proto.Reader) (GraphData, error) {
+	var data GraphData
+	reply, err := rd.ReadReply()
+	if err != nil {
+		if errors.Is(err, Nil) {
+			data.typ = graphNil
+			return data, nil
+		}
+		return data, err
+	}
+
+	switch v := reply.(type) {
+	case string:
+		data.typ = graphString
+		data.stringVal = v
+	case int64:
+		data.typ = graphInteger
+		data.integerVal = v
+	case *big.Int:
+		data.typ = graphInteger
+		if !v.IsInt64() {
+			return data, fmt.Errorf("redis: bigInt(%s) value out of range", v.String())
+		}
+		data.integerVal = v.Int64()
+	default:
+		return data, fmt.Errorf("redis: invalid reply - %q", reply)
+	}
+	return data, nil
+}
+
+func (cmd *GraphCmd) readStringArray(rd *proto.Reader) ([]string, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	ss := make([]string, n)
+	for i := 0; i < n; i++ {
+		if ss[i], err = rd.ReadString(); err != nil {
+			return ss, err
+		}
+	}
+	return ss, nil
 }
