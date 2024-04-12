@@ -825,7 +825,7 @@ func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 		}
 		return slots, nil
 	}
-
+	opt.OnClose = failover.Close
 	c := NewClusterClient(opt)
 
 	failover.mu.Lock()

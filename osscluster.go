@@ -62,6 +62,8 @@ type ClusterOptions struct {
 
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	OnClose func() error
+
 	Protocol            int
 	Username            string
 	Password            string
@@ -868,7 +870,6 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.state = newClusterStateHolder(c.loadState)
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
-
 	c.initHooks(hooks{
 		dial:       nil,
 		process:    c.process,
@@ -895,7 +896,11 @@ func (c *ClusterClient) ReloadState(ctx context.Context) {
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
 // to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
-	return c.nodes.Close()
+	err := c.nodes.Close()
+	if c.opt.OnClose != nil && err == nil {
+		err = c.opt.OnClose()
+	}
+	return err
 }
 
 // Do create a Cmd from the args and processes the cmd.
