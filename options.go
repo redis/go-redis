@@ -255,7 +255,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //     value, leave the value blank or remove the parameter
 //   - only the last value is interpreted if a parameter is given multiple times
 //   - fields "network", "addr", "username" and "password" can only be set using other
-//     URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
 //
