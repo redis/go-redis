@@ -250,7 +250,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //   - field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
 //   - only scalar type fields are supported (bool, int, time.Duration)
 //   - for time.Duration fields, values must be a valid input for time.ParseDuration();
-//     additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//     additionally a plain integer as value (i.e. without unit) is interpreted as seconds
 //   - to disable a duration field, use value less than or equal to 0; to use the default
 //     value, leave the value blank or remove the parameter
 //   - only the last value is interpreted if a parameter is given multiple times
