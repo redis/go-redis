@@ -200,7 +200,7 @@ var _ = Describe("Commands", func() {
 				r1 := client.BLPop(ctx, 10, "list")
 				ch <- r1.Val()
 			}()
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(2000 * time.Millisecond)
 			r2 := client.ClientKillByFilter(ctx, "MAXAGE", "1")
 			Expect(r2.Val()).To(Equal(int64(1)))
 			Expect(<-ch).To(Equal(s))
