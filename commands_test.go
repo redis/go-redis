@@ -193,6 +193,19 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(int64(0)))
 		})
 
+		It("should ClientKillByFilter with MAXAGE", func() {
+			var s []string
+			ch := make(chan []string, 1)
+			go func() {
+				r1 := client.BLPop(ctx, 10, "list")
+				ch <- r1.Val()
+			}()
+			time.Sleep(200 * time.Millisecond)
+			r2 := client.ClientKillByFilter(ctx, "MAXAGE", "1")
+			Expect(r2.Val()).To(Equal(int64(1)))
+			Expect(<-ch).To(Equal(s))
+		})
+
 		It("should ClientID", func() {
 			err := client.ClientID(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
