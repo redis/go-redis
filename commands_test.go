@@ -195,15 +195,16 @@ var _ = Describe("Commands", func() {
 
 		It("should ClientKillByFilter with MAXAGE", func() {
 			var s []string
-			ch := make(chan []string, 1)
+			id := client.ClientID(ctx).Val()
 			go func() {
-				r1 := client.BLPop(ctx, 10, "list")
-				ch <- r1.Val()
+				defer GinkgoRecover()
+
+				r1 := client.BLPop(ctx, 0, "list")
+				Expect(r1.Val()).To(Equal(s))
 			}()
 			time.Sleep(2000 * time.Millisecond)
-			r2 := client.ClientKillByFilter(ctx, "MAXAGE", "1")
+			r2 := client.ClientKillByFilter(ctx, "MAXAGE", "1", "ID", strconv.FormatInt(id, 10))
 			Expect(r2.Val()).To(Equal(int64(1)))
-			Expect(<-ch).To(Equal(s))
 		})
 
 		It("should ClientID", func() {
