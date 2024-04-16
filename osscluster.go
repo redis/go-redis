@@ -1601,12 +1601,12 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	}
 
 	slot := hashtag.Slot(keys[0])
-	for _, key := range keys[1:] {
-		if hashtag.Slot(key) != slot {
-			err := fmt.Errorf("redis: Watch requires all keys to be in the same slot")
-			return err
-		}
-	}
+	// for _, key := range keys[1:] {
+	// 	if hashtag.Slot(key) != slot {
+	// 		err := fmt.Errorf("redis: Watch requires all keys to be in the same slot")
+	// 		return err
+	// 	}
+	// }
 
 	node, err := c.slotMasterNode(ctx, slot)
 	if err != nil {
