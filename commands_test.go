@@ -198,10 +198,11 @@ var _ = Describe("Commands", func() {
 			go func() {
 				defer GinkgoRecover()
 
+				fmt.Println("Started")
 				r1 := client.BLPop(ctx, 0, "list")
+				fmt.Println("Finished")
 				Expect(r1.Val()).To(Equal(s))
 			}()
-			fmt.Println(client.ClientList(ctx).Val())
 			time.Sleep(2000 * time.Millisecond)
 			r2 := client.ClientKillByFilter(ctx, "MAXAGE", "1")
 			Expect(r2.Val()).To(Equal(int64(1)))
