@@ -16,6 +16,7 @@ type BitMapCmdable interface {
 	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
 	BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd
 	BitField(ctx context.Context, key string, values ...interface{}) *IntSliceCmd
+	BitFieldRO(ctx context.Context, key string, values ...interface{}) *IntSliceCmd
 }
 
 func (c cmdable) GetBit(ctx context.Context, key string, offset int64) *IntCmd {
