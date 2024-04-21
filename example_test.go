@@ -482,7 +482,7 @@ func ExampleClient_Watch() {
 				return err
 			}
 
-			// Actual opperation (local in optimistic lock).
+			// Actual operation (local in optimistic lock).
 			n++
 
 			// Operation is committed only if the watched keys remain unchanged.
