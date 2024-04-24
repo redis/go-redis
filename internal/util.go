@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"net"
 	"strings"
 	"time"
 
@@ -63,4 +64,23 @@ func ReplaceSpaces(s string) string {
 	}
 
 	return builder.String()
+}
+
+func GetAddr(addr string) string {
+	ind := strings.LastIndex(addr, ":")
+	if ind == -1 {
+		return ""
+	}
+
+	port := addr[ind+1:]
+	host := addr[:ind]
+	if string(host[0]) == "[" && string(host[len(host)-1]) == "]" {
+		host = host[1 : len(host)-1]
+	}
+
+	if net.ParseIP(host) == nil {
+		return ""
+	}
+
+	return net.JoinHostPort(host, port)
 }
