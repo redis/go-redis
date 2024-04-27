@@ -178,36 +178,42 @@ func (c cmdable) XReadStreams(ctx context.Context, streams ...string) *XStreamSl
 
 func (c cmdable) XGroupCreate(ctx context.Context, stream, group, start string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "xgroup", "create", stream, group, start)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XGroupCreateMkStream(ctx context.Context, stream, group, start string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "xgroup", "create", stream, group, start, "mkstream")
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XGroupSetID(ctx context.Context, stream, group, start string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "xgroup", "setid", stream, group, start)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XGroupDestroy(ctx context.Context, stream, group string) *IntCmd {
 	cmd := NewIntCmd(ctx, "xgroup", "destroy", stream, group)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XGroupCreateConsumer(ctx context.Context, stream, group, consumer string) *IntCmd {
 	cmd := NewIntCmd(ctx, "xgroup", "createconsumer", stream, group, consumer)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XGroupDelConsumer(ctx context.Context, stream, group, consumer string) *IntCmd {
 	cmd := NewIntCmd(ctx, "xgroup", "delconsumer", stream, group, consumer)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
