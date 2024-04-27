@@ -67,20 +67,17 @@ func ReplaceSpaces(s string) string {
 }
 
 func GetAddr(addr string) string {
-	ind := strings.LastIndex(addr, ":")
+	ind := strings.LastIndexByte(addr, ':')
 	if ind == -1 {
 		return ""
 	}
 
-	port := addr[ind+1:]
-	host := addr[:ind]
-	if string(host[0]) == "[" && string(host[len(host)-1]) == "]" {
-		host = host[1 : len(host)-1]
+	if strings.IndexByte(addr, '.') != -1 {
+		return addr
 	}
 
-	if net.ParseIP(host) == nil {
-		return ""
+	if addr[0] == '[' {
+		return addr
 	}
-
-	return net.JoinHostPort(host, port)
+	return net.JoinHostPort(addr[:ind], addr[ind+1:])
 }
