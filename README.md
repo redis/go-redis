@@ -169,16 +169,16 @@ By default, go-redis automatically sends the client library name and version dur
 
 #### Disabling Identity Verification
 
-When connection identity verification is not required or needs to be explicitly disabled, a `DisableIndentity` configuration option exists. In V10 of this library, `DisableIndentity` will become `DisableIdentity` in order to fix the associated typo.
+When connection identity verification is not required or needs to be explicitly disabled, a `DisableIdentity` configuration option exists. In V10 of this library, `DisableIdentity` will become `DisableIdentity` in order to fix the associated typo.
 
-To disable verification, set the `DisableIndentity` option to `true` in the Redis client options:
+To disable verification, set the `DisableIdentity` option to `true` in the Redis client options:
 
 ```go
 rdb := redis.NewClient(&redis.Options{
     Addr:            "localhost:6379",
     Password:        "",
     DB:              0,
-    DisableIndentity: true, // Disable set-info on connect
+    DisableIdentity: true, // Disable set-info on connect
 })
 ```
 

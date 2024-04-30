@@ -340,7 +340,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return err
 	}
 
-	if !c.opt.DisableIndentity {
+	if !c.opt.DisableIdentity {
 		libName := ""
 		libVer := Version()
 		if c.opt.IdentitySuffix != "" {

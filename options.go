@@ -143,7 +143,7 @@ type Options struct {
 	readOnly bool
 
 	// Disable set-lib on connect. Default is false.
-	DisableIndentity bool
+	DisableIdentity bool
 
 	// Add suffix to client name. Default is empty.
 	IdentitySuffix string
