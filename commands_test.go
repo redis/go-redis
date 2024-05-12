@@ -1105,6 +1105,12 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HExpire", func() {
+			//For testing purposes only
+			// client1 := redis.NewClient(&redis.Options{
+			// 	Addr: "ADDR",
+			// })
+			// defer client1.Close()
+
 			res, err := client.HExpire(ctx, "no_such_key", 10, "field1", "field2", "field3").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(BeNil())
