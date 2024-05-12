@@ -1,6 +1,9 @@
 package redis
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type HashCmdable interface {
 	HDel(ctx context.Context, key string, fields ...string) *IntCmd
@@ -173,12 +176,273 @@ func (c cmdable) HScan(ctx context.Context, key string, cursor uint64, match str
 	return cmd
 }
 
-func (c cmdable) HExpire(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HEXPIRE", key, count, "FIELDS", len(fields)}
+type HExpireArgs struct {
+	NX bool
+	XX bool
+	GT bool
+	LT bool
+}
+
+func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HEXPIRE", key, expiration}
+
+	// only if one argument is true, we can add it to the args
+	// if more than one argument is true, it will cause an error
+	if expirationArgs.NX {
+		args = append(args, "NX")
+	} else if expirationArgs.XX {
+		args = append(args, "XX")
+	} else if expirationArgs.GT {
+		args = append(args, "GT")
+	} else if expirationArgs.LT {
+		args = append(args, "LT")
+	}
+
+	args = append(args, "FIELDS", len(fields))
+
 	for _, field := range fields {
 		args = append(args, field)
 	}
 	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HPExpire(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPEXPIRE", key, formatMs(ctx, expiration)}
+
+	// only if one argument is true, we can add it to the args
+	// if more than one argument is true, it will cause an error
+	if expirationArgs.NX {
+		args = append(args, "NX")
+	} else if expirationArgs.XX {
+		args = append(args, "XX")
+	} else if expirationArgs.GT {
+		args = append(args, "GT")
+	} else if expirationArgs.LT {
+		args = append(args, "LT")
+	}
+
+	args = append(args, "FIELDS", len(fields))
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HExpireAt(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HEXPIREAT", key, tm.Unix()}
+
+	// only if one argument is true, we can add it to the args
+	// if more than one argument is true, it will cause an error
+	if expirationArgs.NX {
+		args = append(args, "NX")
+	} else if expirationArgs.XX {
+		args = append(args, "XX")
+	} else if expirationArgs.GT {
+		args = append(args, "GT")
+	} else if expirationArgs.LT {
+		args = append(args, "LT")
+	}
+
+	args = append(args, "FIELDS", len(fields))
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HPExpireAt(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond)}
+
+	// only if one argument is true, we can add it to the args
+	// if more than one argument is true, it will cause an error
+	if expirationArgs.NX {
+		args = append(args, "NX")
+	} else if expirationArgs.XX {
+		args = append(args, "XX")
+	} else if expirationArgs.GT {
+		args = append(args, "GT")
+	} else if expirationArgs.LT {
+		args = append(args, "LT")
+	}
+
+	args = append(args, "FIELDS", len(fields))
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HPersist(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPERSIST", key, count, "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HExpireTime(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HEXPIRETIME", key, count, "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HPExpireTime(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPEXPIRETIME", key, count, "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HTTL(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HTTL", key, count, "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HPTTL(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPTTL", key, count, "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type HGetFArgs struct {
+	Persist bool
+	EX      time.Duration
+	PX      time.Duration
+	EXAT    time.Time
+	PXAT    time.Time
+}
+
+func (c cmdable) HGetF(ctx context.Context, key, field string, expirationArgs HExpireArgs, args HGetFArgs) *StringSliceCmd {
+	argsSlice := []interface{}{"HGETF", key, field}
+
+	// only if one argument is true, we can add it to the args
+	// if more than one argument is true, it will cause an error
+	if expirationArgs.NX {
+		argsSlice = append(argsSlice, "NX")
+	} else if expirationArgs.XX {
+		argsSlice = append(argsSlice, "XX")
+	} else if expirationArgs.GT {
+		argsSlice = append(argsSlice, "GT")
+	} else if expirationArgs.LT {
+		argsSlice = append(argsSlice, "LT")
+	}
+
+	if args.Persist {
+		argsSlice = append(argsSlice, "PERSIST")
+	} else if args.EX > 0 {
+		argsSlice = append(argsSlice, "EX", args.EX)
+	} else if args.PX > 0 {
+		argsSlice = append(argsSlice, "PX", formatMs(ctx, args.PX))
+	} else if !args.EXAT.IsZero() {
+		argsSlice = append(argsSlice, "EXAT", args.EXAT.Unix())
+	} else if !args.PXAT.IsZero() {
+		argsSlice = append(argsSlice, "PXAT", args.PXAT.UnixNano()/int64(time.Millisecond))
+	}
+
+	cmd := NewStringSliceCmd(ctx, argsSlice...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type HSetFArgs struct {
+	DC      bool
+	DCF     bool
+	DOF     bool
+	NX      bool
+	XX      bool
+	GT      bool
+	LT      bool
+	GETNEW  bool
+	GETOLD  bool
+	EX      time.Duration
+	PX      time.Duration
+	EXAT    time.Time
+	PXAT    time.Time
+	KEEPTTL bool
+}
+
+func (c cmdable) HSetF(ctx context.Context, key string, args HSetFArgs, fieldValues ...string) *StringSliceCmd {
+	argsSlice := []interface{}{"HSETF", key}
+
+	if args.DC {
+		argsSlice = append(argsSlice, "DC")
+	}
+
+	if args.DCF {
+		argsSlice = append(argsSlice, "DCF")
+	} else if args.DOF {
+		argsSlice = append(argsSlice, "DOF")
+	}
+
+	if args.NX {
+		argsSlice = append(argsSlice, "NX")
+	} else if args.XX {
+		argsSlice = append(argsSlice, "XX")
+	} else if args.GT {
+		argsSlice = append(argsSlice, "GT")
+	} else if args.LT {
+		argsSlice = append(argsSlice, "LT")
+	}
+
+	if args.GETNEW {
+		argsSlice = append(argsSlice, "GETNEW")
+	} else if args.GETOLD {
+		argsSlice = append(argsSlice, "GETOLD")
+	}
+
+	if args.KEEPTTL {
+		argsSlice = append(argsSlice, "KEEPTTL")
+	} else if args.EX > 0 {
+		argsSlice = append(argsSlice, "EX", args.EX)
+	} else if args.PX > 0 {
+		argsSlice = append(argsSlice, "PX", formatMs(ctx, args.PX))
+	} else if !args.EXAT.IsZero() {
+		argsSlice = append(argsSlice, "EXAT", args.EXAT.Unix())
+	} else if !args.PXAT.IsZero() {
+		argsSlice = append(argsSlice, "PXAT", args.PXAT.UnixNano()/int64(time.Millisecond))
+	}
+
+	argsSlice = append(argsSlice, "FVS", len(fieldValues))
+
+	for _, fieldValue := range fieldValues {
+		argsSlice = append(argsSlice, fieldValue)
+	}
+
+	cmd := NewStringSliceCmd(ctx, argsSlice...)
 	_ = c(ctx, cmd)
 	return cmd
 }
