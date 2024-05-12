@@ -172,3 +172,13 @@ func (c cmdable) HScan(ctx context.Context, key string, cursor uint64, match str
 	_ = c(ctx, cmd)
 	return cmd
 }
+
+func (c cmdable) HExpire(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HEXPIRE", key, count, "FIELDS", len(fields)}
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}

@@ -1104,6 +1104,20 @@ var _ = Describe("Commands", func() {
 			Expect(cursor).NotTo(BeZero())
 		})
 
+		It("should HExpire", func() {
+			res, err := client.HExpire(ctx, "no_such_key", 10, "field1", "field2", "field3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeNil())
+			for i := 0; i < 100; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err = client.HExpire(ctx, "myhash", 10, "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int{1, 1, -2}))
+		})
+
 		It("should ZScan", func() {
 			for i := 0; i < 1000; i++ {
 				err := client.ZAdd(ctx, "myset", redis.Z{
