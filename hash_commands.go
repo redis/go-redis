@@ -187,8 +187,6 @@ type HExpireArgs struct {
 // The command constructs an argument list starting with "HEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
 // For more information - https://redis.io/commands/hexpire/
 func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd {
-	//temp until fixed in redis
-	// args := []interface{}{"HEXPIRE", key, expiration, "FIELDS", len(fields)}
 	args := []interface{}{"HEXPIRE", key, expiration, len(fields)}
 
 	for _, field := range fields {
@@ -218,7 +216,7 @@ func (c cmdable) HExpireWithArgs(ctx context.Context, key string, expiration tim
 		args = append(args, "LT")
 	}
 
-	args = append(args, "FIELDS", len(fields))
+	args = append(args, len(fields))
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -233,8 +231,6 @@ func (c cmdable) HExpireWithArgs(ctx context.Context, key string, expiration tim
 // The command modifies the standard time.Duration to milliseconds for the Redis command.
 // For more information - https://redis.io/commands/hpexpire/
 func (c cmdable) HPExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd {
-	//temp until fixed in redis
-	// args := []interface{}{"HPEXPIRE", key, formatMs(ctx, expiration), "FIELDS", len(fields)}
 	args := []interface{}{"HPEXPIRE", key, formatMs(ctx, expiration), len(fields)}
 
 	for _, field := range fields {
@@ -260,7 +256,7 @@ func (c cmdable) HPExpireWithArgs(ctx context.Context, key string, expiration ti
 		args = append(args, "LT")
 	}
 
-	args = append(args, "FIELDS", len(fields))
+	args = append(args, len(fields))
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -275,8 +271,7 @@ func (c cmdable) HPExpireWithArgs(ctx context.Context, key string, expiration ti
 // The command sets absolute expiration times based on the UNIX timestamp provided.
 // For more information - https://redis.io/commands/hexpireat/
 func (c cmdable) HExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
-	//temp until fixed in redis
-	// args := []interface{}{"HEXPIREAT", key, tm.Unix(), "FIELDS", len(fields)}
+
 	args := []interface{}{"HEXPIREAT", key, tm.Unix(), len(fields)}
 
 	for _, field := range fields {
@@ -302,7 +297,7 @@ func (c cmdable) HExpireAtWithArgs(ctx context.Context, key string, tm time.Time
 		args = append(args, "LT")
 	}
 
-	args = append(args, "FIELDS", len(fields))
+	args = append(args, len(fields))
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -316,8 +311,6 @@ func (c cmdable) HExpireAtWithArgs(ctx context.Context, key string, tm time.Time
 // Similar to HExpireAt but for timestamps in milliseconds. It accepts the same parameters and adjusts the UNIX time to milliseconds.
 // For more information - https://redis.io/commands/hpexpireat/
 func (c cmdable) HPExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
-	//temp until fixed in redis
-	// args := []interface{}{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond), "FIELDS", len(fields)}
 	args := []interface{}{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond), len(fields)}
 
 	for _, field := range fields {
@@ -343,7 +336,7 @@ func (c cmdable) HPExpireAtWithArgs(ctx context.Context, key string, tm time.Tim
 		args = append(args, "LT")
 	}
 
-	args = append(args, "FIELDS", len(fields))
+	args = append(args, len(fields))
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -354,13 +347,11 @@ func (c cmdable) HPExpireAtWithArgs(ctx context.Context, key string, tm time.Tim
 }
 
 // HPersist - Removes the expiration time from specified fields in a hash.
-// Accepts a key, the count of fields to affect, and the fields themselves.
+// Accepts a key and the fields themselves.
 // This command ensures that each field specified will have its expiration removed if present.
 // For more information - https://redis.io/commands/hpersist/
-func (c cmdable) HPersist(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
-	//temp until fixed in redis
-	// args := []interface{}{"HPERSIST", key, count, "FIELDS", len(fields)}
-	args := []interface{}{"HPERSIST", key, count, len(fields)}
+func (c cmdable) HPersist(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPERSIST", key, len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -371,13 +362,11 @@ func (c cmdable) HPersist(ctx context.Context, key string, count int, fields ...
 }
 
 // HExpireTime - Retrieves the expiration time for specified fields in a hash as a UNIX timestamp in seconds.
-// Requires a key, a count of fields, and the fields themselves to fetch their expiration timestamps.
+// Requires a key and the fields themselves to fetch their expiration timestamps.
 // This command returns the expiration times for each field or error/status codes for each field as specified.
 // For more information - https://redis.io/commands/hexpiretime/
-func (c cmdable) HExpireTime(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
-	//temp until fixed in redis
-	// args := []interface{}{"HEXPIRETIME", key, count, "FIELDS", len(fields)}
-	args := []interface{}{"HEXPIRETIME", key, count, len(fields)}
+func (c cmdable) HExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HEXPIRETIME", key, len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -391,8 +380,8 @@ func (c cmdable) HExpireTime(ctx context.Context, key string, count int, fields 
 // Similar to HExpireTime, adjusted for timestamps in milliseconds. It requires the same parameters.
 // Provides the expiration timestamp for each field in milliseconds.
 // For more information - https://redis.io/commands/hexpiretime/
-func (c cmdable) HPExpireTime(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPEXPIRETIME", key, count, "FIELDS", len(fields)}
+func (c cmdable) HPExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPEXPIRETIME", key, len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -403,11 +392,11 @@ func (c cmdable) HPExpireTime(ctx context.Context, key string, count int, fields
 }
 
 // HTTL - Retrieves the remaining time to live for specified fields in a hash in seconds.
-// Requires a key, the count of fields, and the fields themselves. It returns the TTL for each specified field.
+// Requires a key and the fields themselves. It returns the TTL for each specified field.
 // This command fetches the TTL in seconds for each field or returns error/status codes as appropriate.
 // For more information - https://redis.io/commands/httl/
-func (c cmdable) HTTL(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HTTL", key, count, "FIELDS", len(fields)}
+func (c cmdable) HTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HTTL", key, len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -418,11 +407,11 @@ func (c cmdable) HTTL(ctx context.Context, key string, count int, fields ...stri
 }
 
 // HPTTL - Retrieves the remaining time to live for specified fields in a hash in milliseconds.
-// Similar to HTTL, but returns the TTL in milliseconds. It requires a key, a count of fields, and the specified fields.
+// Similar to HTTL, but returns the TTL in milliseconds. It requires a key and the specified fields.
 // This command provides the TTL in milliseconds for each field or returns error/status codes as needed.
 // For more information - https://redis.io/commands/hpttl/
-func (c cmdable) HPTTL(ctx context.Context, key string, count int, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPTTL", key, count, "FIELDS", len(fields)}
+func (c cmdable) HPTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPTTL", key, len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
