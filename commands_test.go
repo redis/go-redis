@@ -1104,172 +1104,6 @@ var _ = Describe("Commands", func() {
 			Expect(cursor).NotTo(BeZero())
 		})
 
-		It("should HExpire", func() {
-			res, err := client.HExpire(ctx, "no_such_key", 10, "field1", "field2", "field3").Result()
-			Expect(err).To(HaveOccurred())
-			for i := 0; i < 100; i++ {
-				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
-				Expect(sadd.Err()).NotTo(HaveOccurred())
-			}
-
-			res, err = client.HExpire(ctx, "myhash", 10, "key1", "key2", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{1, 1, -2}))
-		})
-
-		It("should HPExpire", func() {
-			_, err := client.HPExpire(ctx, "no_such_key", 10, "field1", "field2", "field3").Result()
-			Expect(err).To(HaveOccurred())
-			for i := 0; i < 100; i++ {
-				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
-				Expect(sadd.Err()).NotTo(HaveOccurred())
-			}
-
-			res, err := client.HPExpire(ctx, "myhash", 10, "key1", "key2", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{1, 1, -2}))
-		})
-
-		It("should HExpireAt", func() {
-			_, err := client.HExpireAt(ctx, "no_such_key", time.Now().Add(10*time.Second), "field1", "field2", "field3").Result()
-			Expect(err).To(HaveOccurred())
-			for i := 0; i < 100; i++ {
-				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
-				Expect(sadd.Err()).NotTo(HaveOccurred())
-			}
-
-			res, err := client.HExpireAt(ctx, "myhash", time.Now().Add(10*time.Second), "key1", "key2", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{1, 1, -2}))
-		})
-
-		It("should HPExpireAt", func() {
-			_, err := client.HPExpireAt(ctx, "no_such_key", time.Now().Add(10*time.Second), "field1", "field2", "field3").Result()
-			Expect(err).To(HaveOccurred())
-			for i := 0; i < 100; i++ {
-				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
-				Expect(sadd.Err()).NotTo(HaveOccurred())
-			}
-
-			res, err := client.HPExpireAt(ctx, "myhash", time.Now().Add(10*time.Second), "key1", "key2", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{1, 1, -2}))
-		})
-
-		It("should HPersist", func() {
-			_, err := client.HPersist(ctx, "no_such_key", "field1", "field2", "field3").Result()
-			Expect(err).To(HaveOccurred())
-			for i := 0; i < 100; i++ {
-				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
-				Expect(sadd.Err()).NotTo(HaveOccurred())
-			}
-
-			res, err := client.HPersist(ctx, "myhash", "key1", "key2", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{-1, -1, -2}))
-
-			res, err = client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{1, -2}))
-
-			res, err = client.HPersist(ctx, "myhash", "key1", "key2", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{1, -1, -2}))
-		})
-
-		It("should HExpireTime", func() {
-			_, err := client.HExpireTime(ctx, "no_such_key", "field1", "field2", "field3").Result()
-			Expect(err).To(HaveOccurred())
-			for i := 0; i < 100; i++ {
-				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
-				Expect(sadd.Err()).NotTo(HaveOccurred())
-			}
-
-			res, err := client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{1, -2}))
-
-			res, err = client.HExpireTime(ctx, "myhash", "key1", "key2", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res[0]).To(BeNumerically("~", time.Now().Add(10*time.Second).Unix(), 1))
-		})
-
-		It("should HPExpireTime", func() {
-			_, err := client.HPExpireTime(ctx, "no_such_key", "field1", "field2", "field3").Result()
-			Expect(err).To(HaveOccurred())
-			for i := 0; i < 100; i++ {
-				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
-				Expect(sadd.Err()).NotTo(HaveOccurred())
-			}
-
-			res, err := client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{1, -2}))
-
-			res, err = client.HPExpireTime(ctx, "myhash", "key1", "key2", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(BeEquivalentTo([]int64{time.Now().Add(10 * time.Second).UnixMilli(), -1, -2}))
-		})
-
-		It("should HTTL", func() {
-			_, err := client.HTTL(ctx, "no_such_key", "field1", "field2", "field3").Result()
-			Expect(err).To(HaveOccurred())
-			for i := 0; i < 100; i++ {
-				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
-				Expect(sadd.Err()).NotTo(HaveOccurred())
-			}
-
-			res, err := client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{1, -2}))
-
-			res, err = client.HTTL(ctx, "myhash", "key1", "key2", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{10, -1, -2}))
-		})
-
-		It("should HPTTL", func() {
-			_, err := client.HPTTL(ctx, "no_such_key", "field1", "field2", "field3").Result()
-			Expect(err).To(HaveOccurred())
-			for i := 0; i < 100; i++ {
-				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
-				Expect(sadd.Err()).NotTo(HaveOccurred())
-			}
-
-			res, err := client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal([]int64{1, -2}))
-
-			res, err = client.HPTTL(ctx, "myhash", "key1", "key2", "key200").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 1))
-		})
-
-		It("should HSetF and HGetF", func() {
-			sadd := client.HSetF(ctx, "myhash", redis.HSetFArgs{}, "field1", "Hello", "field2", "World")
-			Expect(sadd.Err()).NotTo(HaveOccurred())
-			Expect(sadd.Val()).To(Equal([]string{"1", "1"}))
-
-			for i := 0; i < 100; i++ {
-				sadd := client.HSetF(ctx, "myhash", redis.HSetFArgs{}, fmt.Sprintf("key%d", i), "Hello")
-				Expect(sadd.Err()).NotTo(HaveOccurred())
-				Expect(sadd.Val()).To(Equal([]string{"1"}))
-			}
-
-			res, err := client.HSetF(ctx, "myhash", redis.HSetFArgs{GETOLD: true, EX: 10}, "field1", "Hello", "field2", "World", "field3", "foo").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(BeEquivalentTo([]string{"Hello", "World", ""}))
-
-			res, err = client.HSetF(ctx, "myhash", redis.HSetFArgs{DOF: true}, "field1", "Hello", "field2", "World", "field4", "bar").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(BeEquivalentTo([]string{"0", "0", "1"}))
-
-			res, err = client.HGetF(ctx, "myhash", redis.HGetFArgs{Persist: true}, "field1", "field2", "field3").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(BeEquivalentTo([]string{"Hello", "World", "foo"}))
-
-		})
-
 		It("should ZScan", func() {
 			for i := 0; i < 1000; i++ {
 				err := client.ZAdd(ctx, "myset", redis.Z{
@@ -2595,6 +2429,157 @@ var _ = Describe("Commands", func() {
 				Equal([]redis.KeyValue{{Key: "key1", Value: "hello1"}}),
 				Equal([]redis.KeyValue{{Key: "key2", Value: "hello2"}}),
 			))
+		})
+
+		It("should HExpire", Label("hash-expiration"), func() {
+			//redis client with port 6379
+			client1 := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+			res, err := client1.HExpire(ctx, "no_such_key", 10, "field1", "field2", "field3").Result()
+			Expect(err).To(HaveOccurred())
+			for i := 0; i < 100; i++ {
+				sadd := client1.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err = client1.HExpire(ctx, "myhash", 10, "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, 1, -2}))
+		})
+
+		It("should HPExpire", Label("hash-expiration"), func() {
+			client1 := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+			_, err := client1.HPExpire(ctx, "no_such_key", 10, "field1", "field2", "field3").Result()
+			Expect(err).To(HaveOccurred())
+			for i := 0; i < 100; i++ {
+				sadd := client1.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client1.HPExpire(ctx, "myhash", 10, "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, 1, -2}))
+		})
+
+		It("should HExpireAt", Label("hash-expiration"), func() {
+			client1 := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+			_, err := client1.HExpireAt(ctx, "no_such_key", time.Now().Add(10*time.Second), "field1", "field2", "field3").Result()
+			Expect(err).To(HaveOccurred())
+			for i := 0; i < 100; i++ {
+				sadd := client1.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client1.HExpireAt(ctx, "myhash", time.Now().Add(10*time.Second), "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, 1, -2}))
+		})
+
+		It("should HPExpireAt", Label("hash-expiration"), func() {
+			client1 := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+			_, err := client1.HPExpireAt(ctx, "no_such_key", time.Now().Add(10*time.Second), "field1", "field2", "field3").Result()
+			Expect(err).To(HaveOccurred())
+			for i := 0; i < 100; i++ {
+				sadd := client1.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client1.HPExpireAt(ctx, "myhash", time.Now().Add(10*time.Second), "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, 1, -2}))
+		})
+
+		It("should HPersist", Label("hash-expiration"), func() {
+			client1 := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+			_, err := client1.HPersist(ctx, "no_such_key", "field1", "field2", "field3").Result()
+			Expect(err).To(HaveOccurred())
+			for i := 0; i < 100; i++ {
+				sadd := client1.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client1.HPersist(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{-1, -1, -2}))
+
+			res, err = client1.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			res, err = client1.HPersist(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -1, -2}))
+		})
+
+		It("should HExpireTime", Label("hash-expiration"), func() {
+			client1 := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+			_, err := client1.HExpireTime(ctx, "no_such_key", "field1", "field2", "field3").Result()
+			Expect(err).To(HaveOccurred())
+			for i := 0; i < 100; i++ {
+				sadd := client1.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client1.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			res, err = client1.HExpireTime(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res[0]).To(BeNumerically("~", time.Now().Add(10*time.Second).Unix(), 1))
+		})
+
+		It("should HPExpireTime", Label("hash-expiration"), func() {
+			client1 := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+			_, err := client1.HPExpireTime(ctx, "no_such_key", "field1", "field2", "field3").Result()
+			Expect(err).To(HaveOccurred())
+			for i := 0; i < 100; i++ {
+				sadd := client1.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client1.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			res, err = client1.HPExpireTime(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo([]int64{time.Now().Add(10 * time.Second).UnixMilli(), -1, -2}))
+		})
+
+		It("should HTTL", Label("hash-expiration"), func() {
+			client1 := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+			_, err := client1.HTTL(ctx, "no_such_key", "field1", "field2", "field3").Result()
+			Expect(err).To(HaveOccurred())
+			for i := 0; i < 100; i++ {
+				sadd := client1.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client1.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			res, err = client1.HTTL(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{10, -1, -2}))
+		})
+
+		It("should HPTTL", Label("hash-expiration"), func() {
+			client1 := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+			_, err := client1.HPTTL(ctx, "no_such_key", "field1", "field2", "field3").Result()
+			Expect(err).To(HaveOccurred())
+			for i := 0; i < 100; i++ {
+				sadd := client1.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client1.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			res, err = client1.HPTTL(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 1))
 		})
 	})
 
