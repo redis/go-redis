@@ -171,7 +171,9 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 }
 
 func (c cmdable) XReadLastEntry(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
-	a.Streams = append(a.Streams, "+")
+	for range a.Streams {
+		a.Streams = append(a.Streams, "+")
+	}
 	return c.XRead(ctx, &XReadArgs{
 		Streams: a.Streams,
 		Count:   1,
