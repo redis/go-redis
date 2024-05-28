@@ -5686,6 +5686,21 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
+		It("should XReadLastEntry", func() {
+			res, err := client.XReadLastEntry(ctx, &redis.XReadArgs{
+				Streams: []string{"stream"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+			}))
+		})
+
 		Describe("group", func() {
 			BeforeEach(func() {
 				err := client.XGroupCreate(ctx, "stream", "group", "0").Err()
