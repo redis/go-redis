@@ -62,10 +62,11 @@ type ClusterOptions struct {
 
 	OnConnect func(ctx context.Context, cn *Conn) error
 
-	Protocol            int
-	Username            string
-	Password            string
-	CredentialsProvider func() (username string, password string)
+	Protocol                   int
+	Username                   string
+	Password                   string
+	CredentialsProvider        func() (username string, password string)
+	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -272,10 +273,11 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		Dialer:     opt.Dialer,
 		OnConnect:  opt.OnConnect,
 
-		Protocol:            opt.Protocol,
-		Username:            opt.Username,
-		Password:            opt.Password,
-		CredentialsProvider: opt.CredentialsProvider,
+		Protocol:                   opt.Protocol,
+		Username:                   opt.Username,
+		Password:                   opt.Password,
+		CredentialsProvider:        opt.CredentialsProvider,
+		CredentialsProviderContext: opt.CredentialsProviderContext,
 
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
