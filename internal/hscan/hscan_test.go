@@ -196,6 +196,22 @@ var _ = Describe("Scan", func() {
 		Expect(Scan(&d, i{"bool"}, i{"123"})).To(HaveOccurred())
 	})
 
+	It("does not stop scanning on first failure", func() {
+		var d data
+
+		keys := i{"bool", "string", "int"}
+		vals := i{"-1", "foobar", "123"}
+
+		err := Scan(&d, keys, vals)
+		Expect(err).To(HaveOccurred())
+
+		Expect(d).To(Equal(data{
+			Bool:   false,
+			String: "foobar",
+			Int:    123,
+		}))
+  })
+
 	It("Implements Scanner", func() {
 		var td TimeData
 
