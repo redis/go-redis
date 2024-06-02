@@ -301,7 +301,6 @@ var _ = Describe("Commands", func() {
 			defer client2.Close()
 			clientInfo = client2.ClientInfo(ctx).Val()
 			Expect(clientInfo.LibName).To(ContainSubstring("go-redis(suffix,"))
-
 		})
 
 		It("should ConfigGet", func() {

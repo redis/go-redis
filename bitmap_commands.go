@@ -42,8 +42,10 @@ type BitCount struct {
 	Unit       string // BYTE(default) | BIT
 }
 
-const BitCountIndexByte string = "BYTE"
-const BitCountIndexBit string = "BIT"
+const (
+	BitCountIndexByte string = "BYTE"
+	BitCountIndexBit  string = "BIT"
+)
 
 func (c cmdable) BitCount(ctx context.Context, key string, bitCount *BitCount) *IntCmd {
 	args := make([]any, 2, 5)

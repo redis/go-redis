@@ -3,9 +3,8 @@ package redis_test
 import (
 	"context"
 	"strings"
-	"time"
-
 	"testing"
+	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
