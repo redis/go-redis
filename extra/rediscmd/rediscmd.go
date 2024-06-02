@@ -123,7 +123,7 @@ func appendArg(b []byte, v interface{}) []byte {
 	}
 }
 
-func appendUTF8String(dst []byte, src []byte) []byte {
+func appendUTF8String(dst, src []byte) []byte {
 	if isSimple(src) {
 		dst = append(dst, src...)
 		return dst

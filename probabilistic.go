@@ -39,9 +39,9 @@ type ProbabilisticCmdable interface {
 	CFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
 	CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd
 	CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd
-	CFReserveExpansion(ctx context.Context, key string, capacity int64, expansion int64) *StatusCmd
-	CFReserveBucketSize(ctx context.Context, key string, capacity int64, bucketsize int64) *StatusCmd
-	CFReserveMaxIterations(ctx context.Context, key string, capacity int64, maxiterations int64) *StatusCmd
+	CFReserveExpansion(ctx context.Context, key string, capacity, expansion int64) *StatusCmd
+	CFReserveBucketSize(ctx context.Context, key string, capacity, bucketsize int64) *StatusCmd
+	CFReserveMaxIterations(ctx context.Context, key string, capacity, maxiterations int64) *StatusCmd
 	CFScanDump(ctx context.Context, key string, iterator int64) *ScanDumpCmd
 	CFLoadChunk(ctx context.Context, key string, iterator int64, data interface{}) *StatusCmd
 
@@ -61,7 +61,7 @@ type ProbabilisticCmdable interface {
 	TopKListWithCount(ctx context.Context, key string) *MapStringIntCmd
 	TopKQuery(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
 	TopKReserve(ctx context.Context, key string, k int64) *StatusCmd
-	TopKReserveWithOptions(ctx context.Context, key string, k int64, width, depth int64, decay float64) *StatusCmd
+	TopKReserveWithOptions(ctx context.Context, key string, k, width, depth int64, decay float64) *StatusCmd
 
 	TDigestAdd(ctx context.Context, key string, elements ...float64) *StatusCmd
 	TDigestByRank(ctx context.Context, key string, rank ...uint64) *FloatSliceCmd
@@ -496,7 +496,7 @@ func (c cmdable) CFReserve(ctx context.Context, key string, capacity int64) *Sta
 
 // CFReserveExpansion creates an empty Cuckoo filter with the specified capacity and expansion rate.
 // For more information - https://redis.io/commands/cf.reserve/
-func (c cmdable) CFReserveExpansion(ctx context.Context, key string, capacity int64, expansion int64) *StatusCmd {
+func (c cmdable) CFReserveExpansion(ctx context.Context, key string, capacity, expansion int64) *StatusCmd {
 	args := []interface{}{"CF.RESERVE", key, capacity, "EXPANSION", expansion}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -505,7 +505,7 @@ func (c cmdable) CFReserveExpansion(ctx context.Context, key string, capacity in
 
 // CFReserveBucketSize creates an empty Cuckoo filter with the specified capacity and bucket size.
 // For more information - https://redis.io/commands/cf.reserve/
-func (c cmdable) CFReserveBucketSize(ctx context.Context, key string, capacity int64, bucketsize int64) *StatusCmd {
+func (c cmdable) CFReserveBucketSize(ctx context.Context, key string, capacity, bucketsize int64) *StatusCmd {
 	args := []interface{}{"CF.RESERVE", key, capacity, "BUCKETSIZE", bucketsize}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -514,7 +514,7 @@ func (c cmdable) CFReserveBucketSize(ctx context.Context, key string, capacity i
 
 // CFReserveMaxIterations creates an empty Cuckoo filter with the specified capacity and maximum number of iterations.
 // For more information - https://redis.io/commands/cf.reserve/
-func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacity int64, maxiterations int64) *StatusCmd {
+func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacity, maxiterations int64) *StatusCmd {
 	args := []interface{}{"CF.RESERVE", key, capacity, "MAXITERATIONS", maxiterations}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -956,7 +956,7 @@ func (c cmdable) TopKReserve(ctx context.Context, key string, k int64) *StatusCm
 // TopKReserveWithOptions creates an empty Top-K filter with the specified number of top items to keep and additional options.
 // This function allows for specifying additional options such as width, depth and decay.
 // For more information - https://redis.io/commands/topk.reserve/
-func (c cmdable) TopKReserveWithOptions(ctx context.Context, key string, k int64, width, depth int64, decay float64) *StatusCmd {
+func (c cmdable) TopKReserveWithOptions(ctx context.Context, key string, k, width, depth int64, decay float64) *StatusCmd {
 	args := []interface{}{"TOPK.RESERVE", key, k, width, depth, decay}
 
 	cmd := NewStatusCmd(ctx, args...)

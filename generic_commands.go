@@ -40,7 +40,7 @@ type GenericCmdable interface {
 	Touch(ctx context.Context, keys ...string) *IntCmd
 	TTL(ctx context.Context, key string) *DurationCmd
 	Type(ctx context.Context, key string) *StatusCmd
-	Copy(ctx context.Context, sourceKey string, destKey string, db int, replace bool) *IntCmd
+	Copy(ctx context.Context, sourceKey, destKey string, db int, replace bool) *IntCmd
 
 	Scan(ctx context.Context, cursor uint64, match string, count int64) *ScanCmd
 	ScanType(ctx context.Context, cursor uint64, match string, count int64, keyType string) *ScanCmd
