@@ -188,10 +188,10 @@ func (o *UniversalOptions) Ring() *RingOptions {
 		MinRetryBackoff: o.MinRetryBackoff,
 		MaxRetryBackoff: o.MaxRetryBackoff,
 
-		DialTimeout:  o.DialTimeout,
-		ReadTimeout:  o.ReadTimeout,
-		WriteTimeout: o.WriteTimeout,
-		// ContextTimeoutEnabled: o.ContextTimeoutEnabled, // field does not exist yet, see PR 2726
+		DialTimeout:           o.DialTimeout,
+		ReadTimeout:           o.ReadTimeout,
+		WriteTimeout:          o.WriteTimeout,
+		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
 
 		PoolFIFO:        o.PoolFIFO,
 		PoolSize:        o.PoolSize,
