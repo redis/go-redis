@@ -156,7 +156,7 @@ func (c *PubSub) closeTheCn(reason error) error {
 		return nil
 	}
 	if !c.closed {
-		internal.Logger.Printf(c.getContext(), "redis: discarding bad PubSub connection: %s", reason)
+		internal.Logger.Printf("redis: discarding bad PubSub connection: %s", reason)
 	}
 	err := c.closeConn(c.cn)
 	c.cn = nil
@@ -612,11 +612,11 @@ func (c *channel) initMsgChan() {
 					}
 				case <-timer.C:
 					c.logger.Printf(
-						ctx, "redis: %+v channel is full for %s (message is dropped)",
+						"redis: %+v channel is full for %s (message is dropped)",
 						c, c.chanSendTimeout)
 				}
 			default:
-				c.logger.Printf(ctx, "redis: unknown message type: %T", msg)
+				c.logger.Printf("redis: unknown message type: %T", msg)
 			}
 		}
 	}()
@@ -666,11 +666,11 @@ func (c *channel) initAllChan() {
 					}
 				case <-timer.C:
 					c.logger.Printf(
-						ctx, "redis: %+v channel is full for %s (message is dropped)",
+						"redis: %+v channel is full for %s (message is dropped)",
 						c, c.chanSendTimeout)
 				}
 			default:
-				c.logger.Printf(ctx, "redis: unknown message type: %T", msg)
+				c.logger.Printf("redis: unknown message type: %T", msg)
 			}
 		}
 	}()

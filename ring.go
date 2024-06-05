@@ -322,7 +322,7 @@ func (c *ringShards) Heartbeat(frequency time.Duration) {
 			err := shard.Client.Ping(ctx).Err()
 			isUp := err == nil || err == pool.ErrPoolTimeout
 			if shard.Vote(isUp) {
-				internal.Logger.Printf(context.Background(), "ring shard state changed: %s", shard)
+				internal.Logger.Printf("ring shard state changed: %s", shard)
 				rebalance = true
 			}
 		}
@@ -576,7 +576,7 @@ func (c *Ring) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	}
 	info := cmdsInfo[name]
 	if info == nil {
-		internal.Logger.Printf(ctx, "info for cmd=%s not found", name)
+		internal.Logger.Printf("info for cmd=%s not found", name)
 	}
 	return info
 }

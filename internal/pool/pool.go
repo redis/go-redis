@@ -353,7 +353,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	if cn.rd.Buffered() > 0 {
-		internal.Logger.Printf(ctx, "Conn has unread data")
+		internal.Logger.Printf("Conn has unread data")
 		p.Remove(ctx, cn, BadConnError{})
 		return
 	}
@@ -492,7 +492,7 @@ func (p *ConnPool) reaper(frequency time.Duration) {
 			}
 			_, err := p.ReapStaleConns()
 			if err != nil {
-				internal.Logger.Printf(context.Background(), "ReapStaleConns failed: %s", err)
+				internal.Logger.Printf("ReapStaleConns failed: %s", err)
 				continue
 			}
 		case <-p.closedCh:

@@ -1070,7 +1070,7 @@ func (c *ClusterClient) reaper(idleCheckFrequency time.Duration) {
 		for _, node := range nodes {
 			_, err := node.Client.connPool.(*pool.ConnPool).ReapStaleConns()
 			if err != nil {
-				internal.Logger.Printf(c.Context(), "ReapStaleConns failed: %s", err)
+				internal.Logger.Printf("ReapStaleConns failed: %s", err)
 			}
 		}
 	}
@@ -1622,7 +1622,7 @@ func (c *ClusterClient) cmdInfo(name string) *CommandInfo {
 
 	info := cmdsInfo[name]
 	if info == nil {
-		internal.Logger.Printf(c.Context(), "info for cmd=%s not found", name)
+		internal.Logger.Printf("info for cmd=%s not found", name)
 	}
 	return info
 }

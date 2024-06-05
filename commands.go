@@ -23,7 +23,6 @@ func usePrecise(dur time.Duration) bool {
 func formatMs(ctx context.Context, dur time.Duration) int64 {
 	if dur > 0 && dur < time.Millisecond {
 		internal.Logger.Printf(
-			ctx,
 			"specified duration is %s, but minimal supported value is %s - truncating to 1ms",
 			dur, time.Millisecond,
 		)
@@ -35,7 +34,6 @@ func formatMs(ctx context.Context, dur time.Duration) int64 {
 func formatSec(ctx context.Context, dur time.Duration) int64 {
 	if dur > 0 && dur < time.Second {
 		internal.Logger.Printf(
-			ctx,
 			"specified duration is %s, but minimal supported value is %s - truncating to 1s",
 			dur, time.Second,
 		)
