@@ -61,6 +61,12 @@ type Options struct {
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
 
+	// CredentialsProviderContext is an enhanced parameter of CredentialsProvider,
+	// done to maintain API compatibility. In the future,
+	// there might be a merge between CredentialsProviderContext and CredentialsProvider.
+	// There will be a conflict between them; if CredentialsProviderContext exists, we will ignore CredentialsProvider.
+	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
+
 	// Database to be selected after connecting to the server.
 	DB int
 
