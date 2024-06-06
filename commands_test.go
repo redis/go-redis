@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"sync"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -5696,6 +5697,41 @@ var _ = Describe("Commands", func() {
 					Stream: "stream",
 					Messages: []redis.XMessage{
 						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+			}))
+		})
+
+		It("should XReadLastEntry block for empty stream", func() {
+			now := time.Now()
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				time.Sleep(100 * time.Millisecond)
+				id, err := client.XAdd(ctx, &redis.XAddArgs{
+					Stream: "empty",
+					ID:     "4-0",
+					Values: map[string]interface{}{"quatro": "quatre"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal("4-0"))
+			}()
+
+			res, err := client.XReadLastEntry(ctx, &redis.XReadArgs{
+				Streams: []string{"empty"},
+				Block:   500 * time.Millisecond,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Ensure that the XReadLastEntry call blocked for at least 100ms.
+			Expect(time.Since(now)).To(BeNumerically(">=", 100*time.Millisecond))
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "empty",
+					Messages: []redis.XMessage{
+						{ID: "4-0", Values: map[string]interface{}{"quatro": "quatre"}},
 					},
 				},
 			}))
