@@ -7,8 +7,8 @@ replace github.com/redis/go-redis/v9 => ../..
 replace github.com/redis/go-redis/extra/rediscmd/v9 => ../rediscmd
 
 require (
-	github.com/redis/go-redis/extra/rediscmd/v9 v9.5.1
-	github.com/redis/go-redis/v9 v9.5.1
+	github.com/redis/go-redis/extra/rediscmd/v9 v9.5.3
+	github.com/redis/go-redis/v9 v9.5.3
 	go.opencensus.io v0.24.0
 )
 
