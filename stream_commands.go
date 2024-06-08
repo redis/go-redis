@@ -141,7 +141,7 @@ type XReadArgs struct {
 }
 
 func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
-	args := make([]interface{}, 0, 6+len(a.Streams))
+	args := make([]interface{}, 0, 2*len(a.Streams)+6)
 	args = append(args, "xread")
 
 	keyPos := int8(1)
