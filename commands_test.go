@@ -5746,7 +5746,7 @@ var _ = Describe("Commands", func() {
 				LastEntry: true,
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			// Ensure that the XReadLastEntry call blocked for at least 100ms.
+			// Ensure that the XRead call with LastEntry option blocked for at least 100ms.
 			Expect(time.Since(start)).To(BeNumerically(">=", 100*time.Millisecond))
 			Expect(res).To(Equal([]redis.XStream{
 				{
