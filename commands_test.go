@@ -5686,9 +5686,11 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
-		It("should XReadLastEntry", func() {
-			res, err := client.XReadLastEntry(ctx, &redis.XReadArgs{
-				Streams: []string{"stream"},
+		It("should XRead LastEntry", func() {
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams:   []string{"stream"},
+				Count:     2, // we expect 1 message
+				LastEntry: true,
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]redis.XStream{
@@ -5701,9 +5703,10 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		It("should XReadLastEntry from two streams", func() {
-			res, err := client.XReadLastEntry(ctx, &redis.XReadArgs{
-				Streams: []string{"stream", "stream"},
+		It("should XRead LastEntry from two streams", func() {
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams:   []string{"stream", "stream"},
+				LastEntry: true,
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]redis.XStream{
@@ -5722,7 +5725,7 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		It("should XReadLastEntry blocks", func() {
+		It("should XRead LastEntry blocks", func() {
 			start := time.Now()
 			go func() {
 				defer GinkgoRecover()
@@ -5737,9 +5740,10 @@ var _ = Describe("Commands", func() {
 				Expect(id).To(Equal("4-0"))
 			}()
 
-			res, err := client.XReadLastEntry(ctx, &redis.XReadArgs{
-				Streams: []string{"empty"},
-				Block:   500 * time.Millisecond,
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams:   []string{"empty"},
+				Block:     500 * time.Millisecond,
+				LastEntry: true,
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			// Ensure that the XReadLastEntry call blocked for at least 100ms.

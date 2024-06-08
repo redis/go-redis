@@ -14,7 +14,6 @@ type StreamCmdable interface {
 	XRevRange(ctx context.Context, stream string, start, stop string) *XMessageSliceCmd
 	XRevRangeN(ctx context.Context, stream string, start, stop string, count int64) *XMessageSliceCmd
 	XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd
-	XReadLastEntry(ctx context.Context, a *XReadArgs) *XStreamSliceCmd
 	XReadStreams(ctx context.Context, streams ...string) *XStreamSliceCmd
 	XGroupCreate(ctx context.Context, stream, group, start string) *StatusCmd
 	XGroupCreateMkStream(ctx context.Context, stream, group, start string) *StatusCmd
@@ -135,9 +134,10 @@ func (c cmdable) XRevRangeN(ctx context.Context, stream, start, stop string, cou
 }
 
 type XReadArgs struct {
-	Streams []string // list of streams and ids, e.g. stream1 stream2 id1 id2
-	Count   int64
-	Block   time.Duration
+	Streams   []string // list of streams and ids, e.g. stream1 stream2 id1 id2
+	Count     int64
+	Block     time.Duration
+	LastEntry bool
 }
 
 func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
@@ -160,6 +160,11 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	for _, s := range a.Streams {
 		args = append(args, s)
 	}
+	if a.LastEntry {
+		for range a.Streams {
+			args = append(args, "+")
+		}
+	}
 
 	cmd := NewXStreamSliceCmd(ctx, args...)
 	if a.Block >= 0 {
@@ -168,17 +173,6 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	cmd.SetFirstKeyPos(keyPos)
 	_ = c(ctx, cmd)
 	return cmd
-}
-
-func (c cmdable) XReadLastEntry(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
-	for range a.Streams {
-		a.Streams = append(a.Streams, "+")
-	}
-	return c.XRead(ctx, &XReadArgs{
-		Streams: a.Streams,
-		Count:   1,
-		Block:   a.Block,
-	})
 }
 
 func (c cmdable) XReadStreams(ctx context.Context, streams ...string) *XStreamSliceCmd {
