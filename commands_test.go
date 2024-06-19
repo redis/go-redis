@@ -193,6 +193,40 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(int64(0)))
 		})
 
+		It("should ClientKillByFilter with MAXAGE", func() {
+			var s []string
+			started := make(chan bool)
+			done := make(chan bool)
+
+			go func() {
+				defer GinkgoRecover()
+
+				started <- true
+				blpop := client.BLPop(ctx, 0, "list")
+				Expect(blpop.Val()).To(Equal(s))
+				done <- true
+			}()
+			<-started
+
+			select {
+			case <-done:
+				Fail("BLPOP is not blocked.")
+			case <-time.After(2 * time.Second):
+				// ok
+			}
+
+			killed := client.ClientKillByFilter(ctx, "MAXAGE", "1")
+			Expect(killed.Err()).NotTo(HaveOccurred())
+			Expect(killed.Val()).To(Equal(int64(2)))
+
+			select {
+			case <-done:
+				// ok
+			case <-time.After(time.Second):
+				Fail("BLPOP is still blocked.")
+			}
+		})
+
 		It("should ClientID", func() {
 			err := client.ClientID(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
