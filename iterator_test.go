@@ -99,7 +99,7 @@ var _ = Describe("ScanIterator", func() {
 		Expect(vals).To(ContainElement("x"))
 	})
 
-	It("should hscan without values across multiple pages", func() {
+	It("should hscan without values across multiple pages", Label("NonRedisEnterprise"), func() {
 		Expect(hashSeed(71)).NotTo(HaveOccurred())
 
 		var vals []string

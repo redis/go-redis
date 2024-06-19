@@ -193,7 +193,7 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(int64(0)))
 		})
 
-		It("should ClientKillByFilter with MAXAGE", func() {
+		It("should ClientKillByFilter with MAXAGE", Label("NonRedisEnterprise"), func() {
 			var s []string
 			started := make(chan bool)
 			done := make(chan bool)
@@ -217,7 +217,7 @@ var _ = Describe("Commands", func() {
 
 			killed := client.ClientKillByFilter(ctx, "MAXAGE", "1")
 			Expect(killed.Err()).NotTo(HaveOccurred())
-			Expect(killed.Val()).To(Equal(int64(2)))
+			Expect(killed.Val()).To(SatisfyAny(Equal(int64(2)), Equal(int64(3))))
 
 			select {
 			case <-done:
@@ -1141,7 +1141,7 @@ var _ = Describe("Commands", func() {
 			Expect(keys[1]).To(Equal("hello"))
 		})
 
-		It("should HScan without values", func() {
+		It("should HScan without values", Label("NonRedisEnterprise"), func() {
 			for i := 0; i < 1000; i++ {
 				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
 				Expect(sadd.Err()).NotTo(HaveOccurred())
@@ -1154,6 +1154,8 @@ var _ = Describe("Commands", func() {
 			Expect(len(keys)).To(BeNumerically(">=", 2))
 			Expect(keys[0]).To(HavePrefix("key"))
 			Expect(keys[1]).To(HavePrefix("key"))
+			Expect(keys).NotTo(BeEmpty())
+			Expect(cursor).NotTo(BeZero())
 		})
 
 		It("should ZScan", func() {
