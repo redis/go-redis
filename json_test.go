@@ -249,11 +249,11 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 			res, err = client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Indent: "-"}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal(`[-{--"a":1,--"b":2-}]`))
+			Expect(res).To(Equal(`{-"a":1,-"b":2}`))
 
 			res, err = client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Indent: "-", Newline: `~`, Space: `!`}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal(`[~-{~--"a":!1,~--"b":!2~-}~]`))
+			Expect(res).To(Equal(`{~-"a":!1,~-"b":!2~}`))
 		})
 
 		It("should JSONMerge", Label("json.merge", "json"), func() {
