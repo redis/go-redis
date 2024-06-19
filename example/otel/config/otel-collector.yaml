@@ -1,0 +1,68 @@
+extensions:
+  health_check:
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+  hostmetrics:
+    collection_interval: 10s
+    scrapers:
+      cpu:
+      disk:
+      load:
+      filesystem:
+      memory:
+      network:
+      paging:
+  redis:
+    endpoint: 'redis-server:6379'
+    collection_interval: 10s
+  jaeger:
+    protocols:
+      grpc:
+
+processors:
+  resourcedetection:
+    detectors: ['system']
+  cumulativetodelta:
+  batch:
+    send_batch_size: 10000
+    timeout: 10s
+
+exporters:
+  otlp/uptrace:
+    endpoint: http://uptrace:14317
+    tls:
+      insecure: true
+    headers: { 'uptrace-dsn': 'http://project2_secret_token@localhost:14317/2' }
+  debug:
+
+service:
+  # telemetry:
+  #   logs:
+  #     level: DEBUG
+  pipelines:
+    traces:
+      receivers: [otlp, jaeger]
+      processors: [batch]
+      exporters: [otlp/uptrace]
+    metrics:
+      receivers: [otlp]
+      processors: [cumulativetodelta, batch]
+      exporters: [otlp/uptrace]
+    metrics/hostmetrics:
+      receivers: [hostmetrics, redis]
+      processors: [cumulativetodelta, batch, resourcedetection]
+      exporters: [otlp/uptrace]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/uptrace]
+
+  extensions: [health_check, pprof, zpages]
