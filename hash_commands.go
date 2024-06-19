@@ -187,6 +187,9 @@ func (c cmdable) HScanNoValues(ctx context.Context, key string, cursor uint64, m
 	}
 	args = append(args, "novalues")
 	cmd := NewScanCmd(ctx, c, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
 
 type HExpireArgs struct {
 	NX bool
