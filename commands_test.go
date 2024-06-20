@@ -2588,13 +2588,14 @@ var _ = Describe("Commands", func() {
 				Expect(sadd.Err()).NotTo(HaveOccurred())
 			}
 
-			res, err := client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			expireAt := time.Now().Add(10 * time.Second)
+			res, err := client.HPExpireAt(ctx, "myhash", expireAt, "key1", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, -2}))
 
 			res, err = client.HPExpireTime(ctx, "myhash", "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(BeEquivalentTo([]int64{time.Now().Add(10 * time.Second).UnixMilli(), -1, -2}))
+			Expect(res).To(BeEquivalentTo([]int64{expireAt.UnixMilli(), -1, -2}))
 		})
 
 		It("should HTTL", Label("hash-expiration", "NonRedisEnterprise"), func() {
@@ -5886,6 +5887,78 @@ var _ = Describe("Commands", func() {
 				Block:   100 * time.Millisecond,
 			}).Result()
 			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should XRead LastEntry", Label("NonRedisEnterprise"), func() {
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream"},
+				Count:   2, // we expect 1 message
+				ID:      "+",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+			}))
+		})
+
+		It("should XRead LastEntry from two streams", Label("NonRedisEnterprise"), func() {
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream"},
+				ID:      "+",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+			}))
+		})
+
+		It("should XRead LastEntry blocks", Label("NonRedisEnterprise"), func() {
+			start := time.Now()
+			go func() {
+				defer GinkgoRecover()
+
+				time.Sleep(100 * time.Millisecond)
+				id, err := client.XAdd(ctx, &redis.XAddArgs{
+					Stream: "empty",
+					ID:     "4-0",
+					Values: map[string]interface{}{"quatro": "quatre"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal("4-0"))
+			}()
+
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"empty"},
+				Block:   500 * time.Millisecond,
+				ID:      "+",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			// Ensure that the XRead call with LastEntry option blocked for at least 100ms.
+			Expect(time.Since(start)).To(BeNumerically(">=", 100*time.Millisecond))
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "empty",
+					Messages: []redis.XMessage{
+						{ID: "4-0", Values: map[string]interface{}{"quatro": "quatre"}},
+					},
+				},
+			}))
 		})
 
 		Describe("group", func() {
