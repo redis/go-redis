@@ -134,10 +134,10 @@ func (c cmdable) XRevRangeN(ctx context.Context, stream, start, stop string, cou
 }
 
 type XReadArgs struct {
-	Streams   []string // list of streams and ids, e.g. stream1 stream2 id1 id2
-	Count     int64
-	Block     time.Duration
-	LastEntry bool
+	Streams []string // list of streams and ids, e.g. stream1 stream2 id1 id2
+	Count   int64
+	Block   time.Duration
+	ID      string
 }
 
 func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
@@ -160,9 +160,9 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	for _, s := range a.Streams {
 		args = append(args, s)
 	}
-	if a.LastEntry {
+	if a.ID != "" {
 		for range a.Streams {
-			args = append(args, "+")
+			args = append(args, a.ID)
 		}
 	}
 
