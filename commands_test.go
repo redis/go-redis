@@ -2588,13 +2588,14 @@ var _ = Describe("Commands", func() {
 				Expect(sadd.Err()).NotTo(HaveOccurred())
 			}
 
-			res, err := client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			expireAt := time.Now().Add(10 * time.Second)
+			res, err := client.HExpireAt(ctx, "myhash", expireAt, "key1", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, -2}))
 
 			res, err = client.HPExpireTime(ctx, "myhash", "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(BeEquivalentTo([]int64{time.Now().Add(10 * time.Second).UnixMilli(), -1, -2}))
+			Expect(res).To(BeEquivalentTo([]int64{expireAt.UnixMilli(), -1, -2}))
 		})
 
 		It("should HTTL", Label("hash-expiration", "NonRedisEnterprise"), func() {
