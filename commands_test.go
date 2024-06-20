@@ -2589,7 +2589,7 @@ var _ = Describe("Commands", func() {
 			}
 
 			expireAt := time.Now().Add(10 * time.Second)
-			res, err := client.HExpireAt(ctx, "myhash", expireAt, "key1", "key200").Result()
+			res, err := client.HPExpireAt(ctx, "myhash", expireAt, "key1", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, -2}))
 
