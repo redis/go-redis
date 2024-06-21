@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"net"
 	"strings"
 	"time"
 
@@ -63,4 +64,20 @@ func ReplaceSpaces(s string) string {
 	}
 
 	return builder.String()
+}
+
+func GetAddr(addr string) string {
+	ind := strings.LastIndexByte(addr, ':')
+	if ind == -1 {
+		return ""
+	}
+
+	if strings.IndexByte(addr, '.') != -1 {
+		return addr
+	}
+
+	if addr[0] == '[' {
+		return addr
+	}
+	return net.JoinHostPort(addr[:ind], addr[ind+1:])
 }
