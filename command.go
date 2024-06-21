@@ -573,6 +573,10 @@ func (cmd *StatusCmd) Result() (string, error) {
 	return cmd.val, cmd.err
 }
 
+func (cmd *StatusCmd) Bytes() ([]byte, error) {
+	return util.StringToBytes(cmd.val), cmd.err
+}
+
 func (cmd *StatusCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
