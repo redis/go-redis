@@ -62,10 +62,11 @@ type ClusterOptions struct {
 
 	OnConnect func(ctx context.Context, cn *Conn) error
 
-	Protocol            int
-	Username            string
-	Password            string
-	CredentialsProvider func() (username string, password string)
+	Protocol                   int
+	Username                   string
+	Password                   string
+	CredentialsProvider        func() (username string, password string)
+	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -157,12 +158,12 @@ func (opt *ClusterOptions) init() {
 //   - field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
 //   - only scalar type fields are supported (bool, int, time.Duration)
 //   - for time.Duration fields, values must be a valid input for time.ParseDuration();
-//     additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//     additionally a plain integer as value (i.e. without unit) is interpreted as seconds
 //   - to disable a duration field, use value less than or equal to 0; to use the default
 //     value, leave the value blank or remove the parameter
 //   - only the last value is interpreted if a parameter is given multiple times
 //   - fields "network", "addr", "username" and "password" can only be set using other
-//     URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
 //
@@ -272,10 +273,11 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		Dialer:     opt.Dialer,
 		OnConnect:  opt.OnConnect,
 
-		Protocol:            opt.Protocol,
-		Username:            opt.Username,
-		Password:            opt.Password,
-		CredentialsProvider: opt.CredentialsProvider,
+		Protocol:                   opt.Protocol,
+		Username:                   opt.Username,
+		Password:                   opt.Password,
+		CredentialsProvider:        opt.CredentialsProvider,
+		CredentialsProviderContext: opt.CredentialsProviderContext,
 
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
@@ -1295,6 +1297,7 @@ func (c *ClusterClient) processPipelineNode(
 	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
+			node.MarkAsFailing()
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
 			return err
@@ -1316,6 +1319,9 @@ func (c *ClusterClient) processPipelineNodeConn(
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
 	}); err != nil {
+		if isBadConn(err, false, node.Client.getAddr()) {
+			node.MarkAsFailing()
+		}
 		if shouldRetry(err, true) {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		}
@@ -1347,7 +1353,7 @@ func (c *ClusterClient) pipelineReadCmds(
 			continue
 		}
 
-		if c.opt.ReadOnly {
+		if c.opt.ReadOnly && isBadConn(err, false, node.Client.getAddr()) {
 			node.MarkAsFailing()
 		}
 

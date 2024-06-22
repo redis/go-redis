@@ -573,6 +573,10 @@ func (cmd *StatusCmd) Result() (string, error) {
 	return cmd.val, cmd.err
 }
 
+func (cmd *StatusCmd) Bytes() ([]byte, error) {
+	return util.StringToBytes(cmd.val), cmd.err
+}
+
 func (cmd *StatusCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
@@ -4997,6 +5001,7 @@ type ClientInfo struct {
 	PSub               int           // number of pattern matching subscriptions
 	SSub               int           // redis version 7.0.3, number of shard channel subscriptions
 	Multi              int           // number of commands in a MULTI/EXEC context
+	Watch              int           // redis version 7.4 RC1, number of keys this client is currently watching.
 	QueryBuf           int           // qbuf, query buffer length (0 means no query pending)
 	QueryBufFree       int           // qbuf-free, free space of the query buffer (0 means the buffer is full)
 	ArgvMem            int           // incomplete arguments for the next command (already extracted from query buffer)
@@ -5149,6 +5154,8 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 			info.SSub, err = strconv.Atoi(val)
 		case "multi":
 			info.Multi, err = strconv.Atoi(val)
+		case "watch":
+			info.Watch, err = strconv.Atoi(val)
 		case "qbuf":
 			info.QueryBuf, err = strconv.Atoi(val)
 		case "qbuf-free":
