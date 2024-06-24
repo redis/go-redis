@@ -3829,15 +3829,15 @@ func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 	for i := 0; i < n; i += 2 {
 		_, err := rd.ReadArrayLen()
 		if err != nil {
-			err = cmd.err
+			cmd.err = err
 		}
 		key, err := rd.ReadString()
 		if err != nil {
-			err = cmd.err
+			cmd.err = err
 		}
 		value, err := rd.ReadString()
 		if err != nil {
-			err = cmd.err
+			cmd.err = err
 		}
 		data[key] = value
 	}
