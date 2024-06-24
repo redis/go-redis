@@ -2,35 +2,39 @@ package redis
 
 import (
 	"context"
+	"fmt"
+	"strconv"
+
+	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 type SearchCmdable interface {
 	FT_List(ctx context.Context) *StringSliceCmd
 	FTAggregate(ctx context.Context, index string, query string) *MapStringInterfaceCmd
-	FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *MapStringInterfaceCmd
+	FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd
 	FTAliasAdd(ctx context.Context, index string, alias string) *StatusCmd
 	FTAliasDel(ctx context.Context, alias string) *StatusCmd
 	FTAliasUpdate(ctx context.Context, index string, alias string) *StatusCmd
 	FTAlter(ctx context.Context, index string, skipInitalScan bool, definition []interface{}) *StatusCmd
-	FTConfigGet(ctx context.Context, option string) *MapStringInterfaceCmd
+	FTConfigGet(ctx context.Context, option string) *MapMapStringInterfaceCmd
 	FTConfigSet(ctx context.Context, option string, value interface{}) *StatusCmd
 	FTCreate(ctx context.Context, index string, options *FTCreateOptions, schema ...*FieldSchema) *StatusCmd
 	FTCursorDel(ctx context.Context, index string, cursorId int) *StatusCmd
 	FTCursorRead(ctx context.Context, index string, cursorId int, count int) *MapStringInterfaceCmd
-	FTDictAdd(ctx context.Context, dict string, term []interface{}) *IntCmd
-	FTDictDel(ctx context.Context, dict string, term []interface{}) *IntCmd
+	FTDictAdd(ctx context.Context, dict string, term ...interface{}) *IntCmd
+	FTDictDel(ctx context.Context, dict string, term ...interface{}) *IntCmd
 	FTDictDump(ctx context.Context, dict string) *StringSliceCmd
 	FTDropIndex(ctx context.Context, index string) *StatusCmd
 	FTDropIndexWithArgs(ctx context.Context, index string, options *FTDropIndexOptions) *StatusCmd
 	FTExplain(ctx context.Context, index string, query string) *StringCmd
 	FTExplainWithArgs(ctx context.Context, index string, query string, options *FTExplainOptions) *StringCmd
-	FTInfo(ctx context.Context, index string) *MapStringInterfaceCmd
-	FTProfile(ctx context.Context, index string, limited bool, query interface{}) *MapStringInterfaceCmd
-	FTSpellCheck(ctx context.Context, index string, query string) *MapStringInterfaceCmd
-	FTSpellCheckWithArgs(ctx context.Context, index string, query string, options *FTSpellCheckOptions) *MapStringInterfaceCmd
-	FTSearch(ctx context.Context, index string, query string) *Cmd
-	FTSearchWithArgs(ctx context.Context, index string, query string, options *FTSearchOptions) *Cmd
-	FTSynDump(ctx context.Context, index string) *MapStringSliceInterfaceCmd
+	FTInfo(ctx context.Context, index string) *FTInfoCmd
+	FTSpellCheck(ctx context.Context, index string, query string) *FTSpellCheckCmd
+	FTSpellCheckWithArgs(ctx context.Context, index string, query string, options *FTSpellCheckOptions) *FTSpellCheckCmd
+	FTSearch(ctx context.Context, index string, query string) *FTSearchCmd
+	FTSearchWithArgs(ctx context.Context, index string, query string, options *FTSearchOptions) *FTSearchCmd
+	FTSynDump(ctx context.Context, index string) *FTSynDumpCmd
 	FTSynUpdate(ctx context.Context, index string, synGroupId interface{}, terms []interface{}) *StatusCmd
 	FTSynUpdateWithArgs(ctx context.Context, index string, synGroupId interface{}, options *FTSynUpdateOptions, terms []interface{}) *StatusCmd
 	FTTagVals(ctx context.Context, index string, field string) *StringSliceCmd
@@ -105,12 +109,6 @@ type SpellCheckTerms struct {
 	Include    bool
 	Exclude    bool
 	Dictionary string
-}
-
-type FTSpellCheckOptions struct {
-	Distance int
-	Terms    SpellCheckTerms
-	Dialect  int
 }
 
 type FTExplainOptions struct {
@@ -310,6 +308,153 @@ type FTSearchOptions struct {
 	DialectVersion  int
 }
 
+type FTSynDumpResult struct {
+	Term     string
+	Synonyms []string
+}
+
+type FTSynDumpCmd struct {
+	baseCmd
+	val []FTSynDumpResult
+}
+
+type FTAggregateResult struct {
+	Total int
+	Rows  []AggregateRow
+}
+
+type AggregateRow struct {
+	Fields map[string]interface{}
+}
+
+type AggregateCmd struct {
+	baseCmd
+	val *FTAggregateResult
+}
+
+type FTInfoResult struct {
+	IndexErrors              IndexErrors
+	Attributes               []FTAttribute
+	BytesPerRecordAvg        string
+	Cleaning                 int
+	CursorStats              CursorStats
+	DialectStats             map[string]int
+	DocTableSizeMB           float64
+	FieldStatistics          []FieldStatistic
+	GCStats                  GCStats
+	GeoshapesSzMB            float64
+	HashIndexingFailures     int
+	IndexDefinition          IndexDefinition
+	IndexName                string
+	IndexOptions             []string
+	Indexing                 int
+	InvertedSzMB             float64
+	KeyTableSizeMB           float64
+	MaxDocID                 int
+	NumDocs                  int
+	NumRecords               int
+	NumTerms                 int
+	NumberOfUses             int
+	OffsetBitsPerRecordAvg   string
+	OffsetVectorsSzMB        float64
+	OffsetsPerTermAvg        string
+	PercentIndexed           float64
+	RecordsPerDocAvg         string
+	SortableValuesSizeMB     float64
+	TagOverheadSzMB          float64
+	TextOverheadSzMB         float64
+	TotalIndexMemorySzMB     float64
+	TotalIndexingTime        int
+	TotalInvertedIndexBlocks int
+	VectorIndexSzMB          float64
+}
+
+type IndexErrors struct {
+	IndexingFailures     int
+	LastIndexingError    string
+	LastIndexingErrorKey string
+}
+
+type FTAttribute struct {
+	Identifier      string
+	Attribute       string
+	Type            string
+	Weight          float64
+	Sortable        bool
+	NoStem          bool
+	NoIndex         bool
+	UNF             bool
+	PhoneticMatcher string
+	CaseSensitive   bool
+	WithSuffixtrie  bool
+}
+
+type CursorStats struct {
+	GlobalIdle    int
+	GlobalTotal   int
+	IndexCapacity int
+	IndexTotal    int
+}
+
+type FieldStatistic struct {
+	Identifier  string
+	Attribute   string
+	IndexErrors IndexErrors
+}
+
+type GCStats struct {
+	BytesCollected       int
+	TotalMsRun           int
+	TotalCycles          int
+	AverageCycleTimeMs   string
+	LastRunTimeMs        int
+	GCNumericTreesMissed int
+	GCBlocksDenied       int
+}
+
+type IndexDefinition struct {
+	KeyType      string
+	Prefixes     []string
+	DefaultScore float64
+}
+
+type FTSpellCheckOptions struct {
+	Distance int
+	Terms    *FTSpellCheckTerms
+	Dialect  int
+}
+
+type FTSpellCheckTerms struct {
+	Inclusion  string // Either "INCLUDE" or "EXCLUDE"
+	Dictionary string
+	Terms      []interface{}
+}
+
+type SpellCheckResult struct {
+	Term        string
+	Suggestions []SpellCheckSuggestion
+}
+
+type SpellCheckSuggestion struct {
+	Score      float64
+	Suggestion string
+}
+
+type FTSearchResult struct {
+	Total int
+	Docs  []Document
+}
+
+type Document struct {
+	ID      string
+	Score   *float64
+	Payload *string
+	SortKey *string
+	Fields  map[string]string
+}
+
+type AggregateQuery []interface{}
+
 // FT_List - Lists all the existing indexes in the database.
 // For more information, please refer to the Redis documentation:
 // [FT._LIST]: (https://redis.io/commands/ft._list/)
@@ -329,8 +474,6 @@ func (c cmdable) FTAggregate(ctx context.Context, index string, query string) *M
 	_ = c(ctx, cmd)
 	return cmd
 }
-
-type AggregateQuery []interface{}
 
 func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery {
 	queryArgs := []interface{}{query}
@@ -436,12 +579,86 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 	return queryArgs
 }
 
+func ProcessAggregateResult(data []interface{}) (*FTAggregateResult, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("no data returned")
+	}
+
+	total, ok := data[0].(int64)
+	if !ok {
+		return nil, fmt.Errorf("invalid total format")
+	}
+
+	rows := make([]AggregateRow, 0, len(data)-1)
+	for _, row := range data[1:] {
+		fields, ok := row.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid row format")
+		}
+
+		rowMap := make(map[string]interface{})
+		for i := 0; i < len(fields); i += 2 {
+			key, ok := fields[i].(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid field key format")
+			}
+			value := fields[i+1]
+			rowMap[key] = value
+		}
+		rows = append(rows, AggregateRow{Fields: rowMap})
+	}
+
+	result := &FTAggregateResult{
+		Total: int(total),
+		Rows:  rows,
+	}
+	return result, nil
+}
+
+func NewAggregateCmd(ctx context.Context, args ...interface{}) *AggregateCmd {
+	return &AggregateCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *AggregateCmd) SetVal(val *FTAggregateResult) {
+	cmd.val = val
+}
+
+func (cmd *AggregateCmd) Val() *FTAggregateResult {
+	return cmd.val
+}
+
+func (cmd *AggregateCmd) Result() (*FTAggregateResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *AggregateCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
+	data, err := rd.ReadSlice()
+	if err != nil {
+		cmd.err = err
+		return nil
+	}
+	cmd.val, err = ProcessAggregateResult(data)
+	if err != nil {
+		cmd.err = err
+	}
+	return nil
+}
+
 // FTAggregateWithArgs - Performs a search query on an index and applies a series of aggregate transformations to the result.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
 // This function also allows for specifying additional options such as: Verbatim, LoadAll, Load, Timeout, GroupBy, SortBy, SortByMax, Apply, LimitOffset, Limit, Filter, WithCursor, Params, and DialectVersion.
 // For more information, please refer to the Redis documentation:
 // [FT.AGGREGATE]: (https://redis.io/commands/ft.aggregate/)
-func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *MapStringInterfaceCmd {
+func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd {
 	args := []interface{}{"FT.AGGREGATE", index, query}
 	if options != nil {
 		if options.Verbatim {
@@ -543,7 +760,7 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 	}
 
-	cmd := NewMapStringInterfaceCmd(ctx, args...)
+	cmd := NewAggregateCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -601,8 +818,8 @@ func (c cmdable) FTAlter(ctx context.Context, index string, skipInitalScan bool,
 // The 'option' parameter specifies the configuration parameter to retrieve.
 // For more information, please refer to the Redis documentation:
 // [FT.CONFIG GET]: (https://redis.io/commands/ft.config-get/)
-func (c cmdable) FTConfigGet(ctx context.Context, option string) *MapStringInterfaceCmd {
-	cmd := NewMapStringInterfaceCmd(ctx, "FT.CONFIG", "GET", option)
+func (c cmdable) FTConfigGet(ctx context.Context, option string) *MapMapStringInterfaceCmd {
+	cmd := NewMapMapStringInterfaceCmd(ctx, "FT.CONFIG", "GET", option)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -819,7 +1036,7 @@ func (c cmdable) FTCursorRead(ctx context.Context, index string, cursorId int, c
 // The 'dict' parameter specifies the dictionary to which to add the terms, and the 'term' parameter specifies the terms to add.
 // For more information, please refer to the Redis documentation:
 // [FT.DICTADD]: (https://redis.io/commands/ft.dictadd/)
-func (c cmdable) FTDictAdd(ctx context.Context, dict string, term []interface{}) *IntCmd {
+func (c cmdable) FTDictAdd(ctx context.Context, dict string, term ...interface{}) *IntCmd {
 	args := []interface{}{"FT.DICTADD", dict}
 	args = append(args, term...)
 	cmd := NewIntCmd(ctx, args...)
@@ -831,7 +1048,7 @@ func (c cmdable) FTDictAdd(ctx context.Context, dict string, term []interface{})
 // The 'dict' parameter specifies the dictionary from which to delete the terms, and the 'term' parameter specifies the terms to delete.
 // For more information, please refer to the Redis documentation:
 // [FT.DICTDEL]: (https://redis.io/commands/ft.dictdel/)
-func (c cmdable) FTDictDel(ctx context.Context, dict string, term []interface{}) *IntCmd {
+func (c cmdable) FTDictDel(ctx context.Context, dict string, term ...interface{}) *IntCmd {
 	args := []interface{}{"FT.DICTDEL", dict}
 	args = append(args, term...)
 	cmd := NewIntCmd(ctx, args...)
@@ -906,45 +1123,229 @@ func (c cmdable) FTExplainCli(ctx context.Context, key, path string) error {
 	panic("not implemented")
 }
 
+func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
+	var ftInfo FTInfoResult
+	// Manually parse each field from the map
+	if indexErrors, ok := data["Index Errors"].([]interface{}); ok {
+		ftInfo.IndexErrors = IndexErrors{
+			IndexingFailures:     internal.ToInteger(indexErrors[1]),
+			LastIndexingError:    internal.ToString(indexErrors[3]),
+			LastIndexingErrorKey: internal.ToString(indexErrors[5]),
+		}
+	}
+
+	if attributes, ok := data["attributes"].([]interface{}); ok {
+		for _, attr := range attributes {
+			if attrMap, ok := attr.([]interface{}); ok {
+				att := FTAttribute{}
+				for i := 0; i < len(attrMap); i++ {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "attribute" {
+						att.Attribute = internal.ToString(attrMap[i+1])
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "identifier" {
+						att.Identifier = internal.ToString(attrMap[i+1])
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "type" {
+						att.Type = internal.ToString(attrMap[i+1])
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "weight" {
+						att.Weight = internal.ToFloat(attrMap[i+1])
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "nostem" {
+						att.NoStem = true
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "sortable" {
+						att.Sortable = true
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "noindex" {
+						att.NoIndex = true
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "unf" {
+						att.UNF = true
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "phonetic" {
+						att.PhoneticMatcher = internal.ToString(attrMap[i+1])
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "case_sensitive" {
+						att.CaseSensitive = true
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "withsuffixtrie" {
+						att.WithSuffixtrie = true
+						continue
+					}
+
+				}
+				ftInfo.Attributes = append(ftInfo.Attributes, att)
+			}
+		}
+	}
+
+	ftInfo.BytesPerRecordAvg = internal.ToString(data["bytes_per_record_avg"])
+	ftInfo.Cleaning = internal.ToInteger(data["cleaning"])
+
+	if cursorStats, ok := data["cursor_stats"].([]interface{}); ok {
+		ftInfo.CursorStats = CursorStats{
+			GlobalIdle:    internal.ToInteger(cursorStats[1]),
+			GlobalTotal:   internal.ToInteger(cursorStats[3]),
+			IndexCapacity: internal.ToInteger(cursorStats[5]),
+			IndexTotal:    internal.ToInteger(cursorStats[7]),
+		}
+	}
+
+	if dialectStats, ok := data["dialect_stats"].([]interface{}); ok {
+		ftInfo.DialectStats = make(map[string]int)
+		for i := 0; i < len(dialectStats); i += 2 {
+			ftInfo.DialectStats[internal.ToString(dialectStats[i])] = internal.ToInteger(dialectStats[i+1])
+		}
+	}
+
+	ftInfo.DocTableSizeMB = internal.ToFloat(data["doc_table_size_mb"])
+
+	if fieldStats, ok := data["field statistics"].([]interface{}); ok {
+		for _, stat := range fieldStats {
+			if statMap, ok := stat.([]interface{}); ok {
+				ftInfo.FieldStatistics = append(ftInfo.FieldStatistics, FieldStatistic{
+					Identifier: internal.ToString(statMap[1]),
+					Attribute:  internal.ToString(statMap[3]),
+					IndexErrors: IndexErrors{
+						IndexingFailures:     internal.ToInteger(statMap[5].([]interface{})[1]),
+						LastIndexingError:    internal.ToString(statMap[5].([]interface{})[3]),
+						LastIndexingErrorKey: internal.ToString(statMap[5].([]interface{})[5]),
+					},
+				})
+			}
+		}
+	}
+
+	if gcStats, ok := data["gc_stats"].([]interface{}); ok {
+		ftInfo.GCStats = GCStats{
+			BytesCollected:       internal.ToInteger(gcStats[1]),
+			TotalMsRun:           internal.ToInteger(gcStats[3]),
+			TotalCycles:          internal.ToInteger(gcStats[5]),
+			AverageCycleTimeMs:   internal.ToString(gcStats[7]),
+			LastRunTimeMs:        internal.ToInteger(gcStats[9]),
+			GCNumericTreesMissed: internal.ToInteger(gcStats[11]),
+			GCBlocksDenied:       internal.ToInteger(gcStats[13]),
+		}
+	}
+
+	ftInfo.GeoshapesSzMB = internal.ToFloat(data["geoshapes_sz_mb"])
+	ftInfo.HashIndexingFailures = internal.ToInteger(data["hash_indexing_failures"])
+
+	if indexDef, ok := data["index_definition"].([]interface{}); ok {
+		ftInfo.IndexDefinition = IndexDefinition{
+			KeyType:      internal.ToString(indexDef[1]),
+			Prefixes:     internal.ToStringSlice(indexDef[3]),
+			DefaultScore: internal.ToFloat(indexDef[5]),
+		}
+	}
+
+	ftInfo.IndexName = internal.ToString(data["index_name"])
+	ftInfo.IndexOptions = internal.ToStringSlice(data["index_options"].([]interface{}))
+	ftInfo.Indexing = internal.ToInteger(data["indexing"])
+	ftInfo.InvertedSzMB = internal.ToFloat(data["inverted_sz_mb"])
+	ftInfo.KeyTableSizeMB = internal.ToFloat(data["key_table_size_mb"])
+	ftInfo.MaxDocID = internal.ToInteger(data["max_doc_id"])
+	ftInfo.NumDocs = internal.ToInteger(data["num_docs"])
+	ftInfo.NumRecords = internal.ToInteger(data["num_records"])
+	ftInfo.NumTerms = internal.ToInteger(data["num_terms"])
+	ftInfo.NumberOfUses = internal.ToInteger(data["number_of_uses"])
+	ftInfo.OffsetBitsPerRecordAvg = internal.ToString(data["offset_bits_per_record_avg"])
+	ftInfo.OffsetVectorsSzMB = internal.ToFloat(data["offset_vectors_sz_mb"])
+	ftInfo.OffsetsPerTermAvg = internal.ToString(data["offsets_per_term_avg"])
+	ftInfo.PercentIndexed = internal.ToFloat(data["percent_indexed"])
+	ftInfo.RecordsPerDocAvg = internal.ToString(data["records_per_doc_avg"])
+	ftInfo.SortableValuesSizeMB = internal.ToFloat(data["sortable_values_size_mb"])
+	ftInfo.TagOverheadSzMB = internal.ToFloat(data["tag_overhead_sz_mb"])
+	ftInfo.TextOverheadSzMB = internal.ToFloat(data["text_overhead_sz_mb"])
+	ftInfo.TotalIndexMemorySzMB = internal.ToFloat(data["total_index_memory_sz_mb"])
+	ftInfo.TotalIndexingTime = internal.ToInteger(data["total_indexing_time"])
+	ftInfo.TotalInvertedIndexBlocks = internal.ToInteger(data["total_inverted_index_blocks"])
+	ftInfo.VectorIndexSzMB = internal.ToFloat(data["vector_index_sz_mb"])
+
+	return ftInfo, nil
+}
+
+type FTInfoCmd struct {
+	baseCmd
+	val FTInfoResult
+}
+
+func newFTInfoCmd(ctx context.Context, args ...interface{}) *FTInfoCmd {
+	return &FTInfoCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *FTInfoCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FTInfoCmd) SetVal(val FTInfoResult) {
+	cmd.val = val
+}
+
+func (cmd *FTInfoCmd) Result() (FTInfoResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FTInfoCmd) Val() FTInfoResult {
+	return cmd.val
+}
+
+func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	data := make(map[string]interface{}, n)
+	for i := 0; i < n; i++ {
+		k, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		v, err := rd.ReadReply()
+		if err != nil {
+			if err == Nil {
+				data[k] = Nil
+				continue
+			}
+			if err, ok := err.(proto.RedisError); ok {
+				data[k] = err
+				continue
+			}
+			return err
+		}
+		data[k] = v
+	}
+	cmd.val, err = parseFTInfo(data)
+	if err != nil {
+		cmd.err = err
+	}
+
+	return nil
+}
+
 // FTInfo - Retrieves information about an index.
 // The 'index' parameter specifies the index to retrieve information about.
 // For more information, please refer to the Redis documentation:
 // [FT.INFO]: (https://redis.io/commands/ft.info/)
-func (c cmdable) FTInfo(ctx context.Context, index string) *MapStringInterfaceCmd {
-	cmd := NewMapStringInterfaceCmd(ctx, "FT.INFO", index)
-	_ = c(ctx, cmd)
-	return cmd
-}
-
-// FTProfileSearch - Executes a search query and returns a profile of how the query was processed.
-// The 'index' parameter specifies the index to search, the 'limited' parameter specifies whether to limit the results,
-// and the 'query' parameter specifies the search / aggreagte query. Please notice that you must either pass a SearchQuery or an AggregateQuery.
-// For more information, please refer to the Redis documentation:
-// [FT.PROFILE SEARCH]: (https://redis.io/commands/ft.profile/)
-func (c cmdable) FTProfile(ctx context.Context, index string, limited bool, query interface{}) *MapStringInterfaceCmd {
-	queryType := ""
-	var argsQuery []interface{}
-
-	switch v := query.(type) {
-	case AggregateQuery:
-		queryType = "AGGREGATE"
-		argsQuery = v
-	case SearchQuery:
-		queryType = "SEARCH"
-		argsQuery = v
-	default:
-		panic("FT.PROFILE: query must be either AggregateQuery or SearchQuery")
-	}
-
-	args := []interface{}{"FT.PROFILE", index, queryType}
-
-	if limited {
-		args = append(args, "LIMITED")
-	}
-	args = append(args, "QUERY")
-	args = append(args, argsQuery...)
-
-	cmd := NewMapStringInterfaceCmd(ctx, args...)
+func (c cmdable) FTInfo(ctx context.Context, index string) *FTInfoCmd {
+	cmd := newFTInfoCmd(ctx, "FT.INFO", index)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -954,8 +1355,9 @@ func (c cmdable) FTProfile(ctx context.Context, index string, limited bool, quer
 // https://redis.io/docs/interact/search-and-query/advanced-concepts/spellcheck/
 // For more information, please refer to the Redis documentation:
 // [FT.SPELLCHECK]: (https://redis.io/commands/ft.spellcheck/)
-func (c cmdable) FTSpellCheck(ctx context.Context, index string, query string) *MapStringInterfaceCmd {
-	cmd := NewMapStringInterfaceCmd(ctx, "FT.SPELLCHECK", index, query)
+func (c cmdable) FTSpellCheck(ctx context.Context, index string, query string) *FTSpellCheckCmd {
+	args := []interface{}{"FT.SPELLCHECK", index, query}
+	cmd := newFTSpellCheckCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -965,43 +1367,256 @@ func (c cmdable) FTSpellCheck(ctx context.Context, index string, query string) *
 // https://redis.io/docs/interact/search-and-query/advanced-concepts/spellcheck/
 // For more information, please refer to the Redis documentation:
 // [FT.SPELLCHECK]: (https://redis.io/commands/ft.spellcheck/)
-func (c cmdable) FTSpellCheckWithArgs(ctx context.Context, index string, query string, options *FTSpellCheckOptions) *MapStringInterfaceCmd {
+func (c cmdable) FTSpellCheckWithArgs(ctx context.Context, index string, query string, options *FTSpellCheckOptions) *FTSpellCheckCmd {
 	args := []interface{}{"FT.SPELLCHECK", index, query}
 	if options != nil {
-		if options.Distance > 4 {
-			panic("FT.SPELLCHECK: DISTANCE must be between 0 and 4")
-		}
 		if options.Distance > 0 {
 			args = append(args, "DISTANCE", options.Distance)
 		}
-		if options.Terms.Include && options.Terms.Exclude {
-			panic("FT.SPELLCHECK: INCLUDE and EXCLUDE are mutually exclusive")
-		}
-		if options.Terms.Include {
-			args = append(args, "TERMS", "INCLUDE")
-		}
-		if options.Terms.Exclude {
-			args = append(args, "TERMS", "EXCLUDE")
-		}
-		if options.Terms.Dictionary != "" {
-			args = append(args, options.Terms.Dictionary)
+		if options.Terms != nil {
+			args = append(args, "TERMS", options.Terms.Inclusion, options.Terms.Dictionary)
+			args = append(args, options.Terms.Terms...)
 		}
 		if options.Dialect > 0 {
 			args = append(args, "DIALECT", options.Dialect)
 		}
 	}
-	cmd := NewMapStringInterfaceCmd(ctx, args...)
+	cmd := newFTSpellCheckCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+type FTSpellCheckCmd struct {
+	baseCmd
+	val []SpellCheckResult
+}
+
+func newFTSpellCheckCmd(ctx context.Context, args ...interface{}) *FTSpellCheckCmd {
+	return &FTSpellCheckCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *FTSpellCheckCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FTSpellCheckCmd) SetVal(val []SpellCheckResult) {
+	cmd.val = val
+}
+
+func (cmd *FTSpellCheckCmd) Result() ([]SpellCheckResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FTSpellCheckCmd) Val() []SpellCheckResult {
+	return cmd.val
+}
+
+func (cmd *FTSpellCheckCmd) readReply(rd *proto.Reader) (err error) {
+	data, err := rd.ReadSlice()
+	if err != nil {
+		cmd.err = err
+		return nil
+	}
+	cmd.val, err = parseFTSpellCheck(data)
+	if err != nil {
+		cmd.err = err
+	}
+	return nil
+}
+
+func parseFTSpellCheck(data []interface{}) ([]SpellCheckResult, error) {
+	results := make([]SpellCheckResult, 0, len(data))
+
+	for _, termData := range data {
+		termInfo, ok := termData.([]interface{})
+		if !ok || len(termInfo) != 3 {
+			return nil, fmt.Errorf("invalid term format")
+		}
+
+		term, ok := termInfo[1].(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid term format")
+		}
+
+		suggestionsData, ok := termInfo[2].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid suggestions format")
+		}
+
+		suggestions := make([]SpellCheckSuggestion, 0, len(suggestionsData))
+		for _, suggestionData := range suggestionsData {
+			suggestionInfo, ok := suggestionData.([]interface{})
+			if !ok || len(suggestionInfo) != 2 {
+				return nil, fmt.Errorf("invalid suggestion format")
+			}
+
+			scoreStr, ok := suggestionInfo[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid suggestion score format")
+			}
+			score, err := strconv.ParseFloat(scoreStr, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid suggestion score value")
+			}
+
+			suggestion, ok := suggestionInfo[1].(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid suggestion format")
+			}
+
+			suggestions = append(suggestions, SpellCheckSuggestion{
+				Score:      score,
+				Suggestion: suggestion,
+			})
+		}
+
+		results = append(results, SpellCheckResult{
+			Term:        term,
+			Suggestions: suggestions,
+		})
+	}
+
+	return results, nil
+}
+
+func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, withSortKeys bool) (FTSearchResult, error) {
+	if len(data) < 1 {
+		return FTSearchResult{}, fmt.Errorf("unexpected search result format")
+	}
+
+	total, ok := data[0].(int64)
+	if !ok {
+		return FTSearchResult{}, fmt.Errorf("invalid total results format")
+	}
+
+	var results []Document
+	for i := 1; i < len(data); {
+		docID, ok := data[i].(string)
+		if !ok {
+			return FTSearchResult{}, fmt.Errorf("invalid document ID format")
+		}
+
+		doc := Document{
+			ID:     docID,
+			Fields: make(map[string]string),
+		}
+		i++
+
+		if noContent {
+			results = append(results, doc)
+			continue
+		}
+
+		if withScores && i < len(data) {
+			if scoreStr, ok := data[i].(string); ok {
+				score, err := strconv.ParseFloat(scoreStr, 64)
+				if err != nil {
+					return FTSearchResult{}, fmt.Errorf("invalid score format")
+				}
+				doc.Score = &score
+				i++
+			}
+		}
+
+		if withPayloads && i < len(data) {
+			if payload, ok := data[i].(string); ok {
+				doc.Payload = &payload
+				i++
+			}
+		}
+
+		if withSortKeys && i < len(data) {
+			if sortKey, ok := data[i].(string); ok {
+				doc.SortKey = &sortKey
+				i++
+			}
+		}
+
+		if i < len(data) {
+			fields, ok := data[i].([]interface{})
+			if !ok {
+				return FTSearchResult{}, fmt.Errorf("invalid document fields format")
+			}
+
+			for j := 0; j < len(fields); j += 2 {
+				key, ok := fields[j].(string)
+				if !ok {
+					return FTSearchResult{}, fmt.Errorf("invalid field key format")
+				}
+				value, ok := fields[j+1].(string)
+				if !ok {
+					return FTSearchResult{}, fmt.Errorf("invalid field value format")
+				}
+				doc.Fields[key] = value
+			}
+			i++
+		}
+
+		results = append(results, doc)
+	}
+	return FTSearchResult{
+		Total: int(total),
+		Docs:  results,
+	}, nil
+}
+
+type FTSearchCmd struct {
+	baseCmd
+	val     FTSearchResult
+	options *FTSearchOptions
+}
+
+func newFTSearchCmd(ctx context.Context, options *FTSearchOptions, args ...interface{}) *FTSearchCmd {
+	return &FTSearchCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+		options: options,
+	}
+}
+
+func (cmd *FTSearchCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FTSearchCmd) SetVal(val FTSearchResult) {
+	cmd.val = val
+}
+
+func (cmd *FTSearchCmd) Result() (FTSearchResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FTSearchCmd) Val() FTSearchResult {
+	return cmd.val
+}
+
+func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
+	data, err := rd.ReadSlice()
+	if err != nil {
+		cmd.err = err
+		return nil
+	}
+	cmd.val, err = parseFTSearch(data, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
+	if err != nil {
+		cmd.err = err
+	}
+	return nil
 }
 
 // FTSearch - Executes a search query on an index.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
 // For more information, please refer to the Redis documentation:
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
-func (c cmdable) FTSearch(ctx context.Context, index string, query string) *Cmd {
+func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
-	cmd := NewCmd(ctx, args...)
+	cmd := newFTSearchCmd(ctx, &FTSearchOptions{}, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1122,7 +1737,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 // and the 'options' parameter specifies additional options for the search.
 // For more information, please refer to the Redis documentation:
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
-func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query string, options *FTSearchOptions) *Cmd {
+func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query string, options *FTSearchOptions) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
 	if options != nil {
 		if options.NoContent {
@@ -1228,17 +1843,79 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 			args = append(args, "DIALECT", options.DialectVersion)
 		}
 	}
-	cmd := NewCmd(ctx, args...)
+	cmd := newFTSearchCmd(ctx, options, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// FTSynDump - Dumps the synonyms data structure.
+func NewFTSynDumpCmd(ctx context.Context, args ...interface{}) *FTSynDumpCmd {
+	return &FTSynDumpCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *FTSynDumpCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FTSynDumpCmd) SetVal(val []FTSynDumpResult) {
+	cmd.val = val
+}
+
+func (cmd *FTSynDumpCmd) Val() []FTSynDumpResult {
+	return cmd.val
+}
+
+func (cmd *FTSynDumpCmd) Result() ([]FTSynDumpResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FTSynDumpCmd) readReply(rd *proto.Reader) error {
+	termSynonymPairs, err := rd.ReadSlice()
+	if err != nil {
+		return err
+	}
+
+	var results []FTSynDumpResult
+	for i := 0; i < len(termSynonymPairs); i += 2 {
+		term, ok := termSynonymPairs[i].(string)
+		if !ok {
+			return fmt.Errorf("invalid term format")
+		}
+
+		synonyms, ok := termSynonymPairs[i+1].([]interface{})
+		if !ok {
+			return fmt.Errorf("invalid synonyms format")
+		}
+
+		synonymList := make([]string, len(synonyms))
+		for j, syn := range synonyms {
+			synonym, ok := syn.(string)
+			if !ok {
+				return fmt.Errorf("invalid synonym format")
+			}
+			synonymList[j] = synonym
+		}
+
+		results = append(results, FTSynDumpResult{
+			Term:     term,
+			Synonyms: synonymList,
+		})
+	}
+
+	cmd.val = results
+	return nil
+}
+
+// FTSynDump - Dumps the contents of a synonym group.
 // The 'index' parameter specifies the index to dump.
 // For more information, please refer to the Redis documentation:
 // [FT.SYNDUMP]: (https://redis.io/commands/ft.syndump/)
-func (c cmdable) FTSynDump(ctx context.Context, index string) *MapStringSliceInterfaceCmd {
-	cmd := NewMapStringSliceInterfaceCmd(ctx, "FT.SYNDUMP", index)
+func (c cmdable) FTSynDump(ctx context.Context, index string) *FTSynDumpCmd {
+	cmd := NewFTSynDumpCmd(ctx, "FT.SYNDUMP", index)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1279,3 +1956,215 @@ func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *Str
 	_ = c(ctx, cmd)
 	return cmd
 }
+
+// type FTProfileResult struct {
+// 	Results []interface{}
+// 	Profile ProfileDetails
+// }
+
+// type ProfileDetails struct {
+// 	TotalProfileTime        string
+// 	ParsingTime             string
+// 	PipelineCreationTime    string
+// 	Warning                 string
+// 	IteratorsProfile        []IteratorProfile
+// 	ResultProcessorsProfile []ResultProcessorProfile
+// }
+
+// type IteratorProfile struct {
+// 	Type           string
+// 	QueryType      string
+// 	Time           interface{}
+// 	Counter        int
+// 	Term           string
+// 	Size           int
+// 	ChildIterators []IteratorProfile
+// }
+
+// type ResultProcessorProfile struct {
+// 	Type    string
+// 	Time    interface{}
+// 	Counter int
+// }
+
+// func parseFTProfileResult(data []interface{}) (FTProfileResult, error) {
+// 	var result FTProfileResult
+// 	if len(data) < 2 {
+// 		return result, fmt.Errorf("unexpected data length")
+// 	}
+
+// 	// Parse results
+// 	result.Results = data[0].([]interface{})
+
+// 	// Parse profile details
+// 	profileData := data[1].([]interface{})
+// 	profileDetails := ProfileDetails{}
+// 	for i := 0; i < len(profileData); i += 2 {
+// 		switch profileData[i].(string) {
+// 		case "Total profile time":
+// 			profileDetails.TotalProfileTime = profileData[i+1].(string)
+// 		case "Parsing time":
+// 			profileDetails.ParsingTime = profileData[i+1].(string)
+// 		case "Pipeline creation time":
+// 			profileDetails.PipelineCreationTime = profileData[i+1].(string)
+// 		case "Warning":
+// 			profileDetails.Warning = profileData[i+1].(string)
+// 		case "Iterators profile":
+// 			profileDetails.IteratorsProfile = parseIteratorsProfile(profileData[i+1].([]interface{}))
+// 		case "Result processors profile":
+// 			profileDetails.ResultProcessorsProfile = parseResultProcessorsProfile(profileData[i+1].([]interface{}))
+// 		}
+// 	}
+
+// 	result.Profile = profileDetails
+// 	return result, nil
+// }
+
+// func parseIteratorsProfile(data []interface{}) []IteratorProfile {
+// 	var iterators []IteratorProfile
+// 	for _, item := range data {
+// 		profile := item.([]interface{})
+// 		iterator := IteratorProfile{}
+// 		for i := 0; i < len(profile); i += 2 {
+// 			switch profile[i].(string) {
+// 			case "Type":
+// 				iterator.Type = profile[i+1].(string)
+// 			case "Query type":
+// 				iterator.QueryType = profile[i+1].(string)
+// 			case "Time":
+// 				iterator.Time = profile[i+1]
+// 			case "Counter":
+// 				iterator.Counter = int(profile[i+1].(int64))
+// 			case "Term":
+// 				iterator.Term = profile[i+1].(string)
+// 			case "Size":
+// 				iterator.Size = int(profile[i+1].(int64))
+// 			case "Child iterators":
+// 				iterator.ChildIterators = parseChildIteratorsProfile(profile[i+1].([]interface{}))
+// 			}
+// 		}
+// 		iterators = append(iterators, iterator)
+// 	}
+// 	return iterators
+// }
+
+// func parseChildIteratorsProfile(data []interface{}) []IteratorProfile {
+// 	var iterators []IteratorProfile
+// 	for _, item := range data {
+// 		profile := item.([]interface{})
+// 		iterator := IteratorProfile{}
+// 		for i := 0; i < len(profile); i += 2 {
+// 			switch profile[i].(string) {
+// 			case "Type":
+// 				iterator.Type = profile[i+1].(string)
+// 			case "Query type":
+// 				iterator.QueryType = profile[i+1].(string)
+// 			case "Time":
+// 				iterator.Time = profile[i+1]
+// 			case "Counter":
+// 				iterator.Counter = int(profile[i+1].(int64))
+// 			case "Term":
+// 				iterator.Term = profile[i+1].(string)
+// 			case "Size":
+// 				iterator.Size = int(profile[i+1].(int64))
+// 			}
+// 		}
+// 		iterators = append(iterators, iterator)
+// 	}
+// 	return iterators
+// }
+
+// func parseResultProcessorsProfile(data []interface{}) []ResultProcessorProfile {
+// 	var processors []ResultProcessorProfile
+// 	for _, item := range data {
+// 		profile := item.([]interface{})
+// 		processor := ResultProcessorProfile{}
+// 		for i := 0; i < len(profile); i += 2 {
+// 			switch profile[i].(string) {
+// 			case "Type":
+// 				processor.Type = profile[i+1].(string)
+// 			case "Time":
+// 				processor.Time = profile[i+1]
+// 			case "Counter":
+// 				processor.Counter = int(profile[i+1].(int64))
+// 			}
+// 		}
+// 		processors = append(processors, processor)
+// 	}
+// 	return processors
+// }
+
+// func NewFTProfileCmd(ctx context.Context, args ...interface{}) *FTProfileCmd {
+// 	return &FTProfileCmd{
+// 		baseCmd: baseCmd{
+// 			ctx:  ctx,
+// 			args: args,
+// 		},
+// 	}
+// }
+
+// type FTProfileCmd struct {
+// 	baseCmd
+// 	val FTProfileResult
+// }
+
+// func (cmd *FTProfileCmd) String() string {
+// 	return cmdString(cmd, cmd.val)
+// }
+
+// func (cmd *FTProfileCmd) SetVal(val FTProfileResult) {
+// 	cmd.val = val
+// }
+
+// func (cmd *FTProfileCmd) Result() (FTProfileResult, error) {
+// 	return cmd.val, cmd.err
+// }
+
+// func (cmd *FTProfileCmd) Val() FTProfileResult {
+// 	return cmd.val
+// }
+
+// func (cmd *FTProfileCmd) readReply(rd *proto.Reader) (err error) {
+// 	data, err := rd.ReadSlice()
+// 	if err != nil {
+// 		return err
+// 	}
+// 	cmd.val, err = parseFTProfileResult(data)
+// 	if err != nil {
+// 		cmd.err = err
+// 	}
+// 	return nil
+// }
+
+// // FTProfile - Executes a search query and returns a profile of how the query was processed.
+// // The 'index' parameter specifies the index to search, the 'limited' parameter specifies whether to limit the results,
+// // and the 'query' parameter specifies the search / aggreagte query. Please notice that you must either pass a SearchQuery or an AggregateQuery.
+// // For more information, please refer to the Redis documentation:
+// // [FT.PROFILE]: (https://redis.io/commands/ft.profile/)
+// func (c cmdable) FTProfile(ctx context.Context, index string, limited bool, query interface{}) *FTProfileCmd {
+// 	queryType := ""
+// 	var argsQuery []interface{}
+
+// 	switch v := query.(type) {
+// 	case AggregateQuery:
+// 		queryType = "AGGREGATE"
+// 		argsQuery = v
+// 	case SearchQuery:
+// 		queryType = "SEARCH"
+// 		argsQuery = v
+// 	default:
+// 		panic("FT.PROFILE: query must be either AggregateQuery or SearchQuery")
+// 	}
+
+// 	args := []interface{}{"FT.PROFILE", index, queryType}
+
+// 	if limited {
+// 		args = append(args, "LIMITED")
+// 	}
+// 	args = append(args, "QUERY")
+// 	args = append(args, argsQuery...)
+
+// 	cmd := NewFTProfileCmd(ctx, args...)
+// 	_ = c(ctx, cmd)
+// 	return cmd
+// }
