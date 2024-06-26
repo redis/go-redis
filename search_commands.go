@@ -1228,14 +1228,36 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 	}
 
 	if gcStats, ok := data["gc_stats"].([]interface{}); ok {
-		ftInfo.GCStats = GCStats{
-			BytesCollected:       internal.ToInteger(gcStats[1]),
-			TotalMsRun:           internal.ToInteger(gcStats[3]),
-			TotalCycles:          internal.ToInteger(gcStats[5]),
-			AverageCycleTimeMs:   internal.ToString(gcStats[7]),
-			LastRunTimeMs:        internal.ToInteger(gcStats[9]),
-			GCNumericTreesMissed: internal.ToInteger(gcStats[11]),
-			GCBlocksDenied:       internal.ToInteger(gcStats[13]),
+		ftInfo.GCStats = GCStats{}
+		for i := 0; i < len(gcStats); i += 2 {
+			if internal.ToLower(internal.ToString(gcStats[i])) == "bytes_collected" {
+				ftInfo.GCStats.BytesCollected = internal.ToInteger(gcStats[i+1])
+				continue
+			}
+			if internal.ToLower(internal.ToString(gcStats[i])) == "total_ms_run" {
+				ftInfo.GCStats.TotalMsRun = internal.ToInteger(gcStats[i+1])
+				continue
+			}
+			if internal.ToLower(internal.ToString(gcStats[i])) == "total_cycles" {
+				ftInfo.GCStats.TotalCycles = internal.ToInteger(gcStats[i+1])
+				continue
+			}
+			if internal.ToLower(internal.ToString(gcStats[i])) == "average_cycle_time_ms" {
+				ftInfo.GCStats.AverageCycleTimeMs = internal.ToString(gcStats[i+1])
+				continue
+			}
+			if internal.ToLower(internal.ToString(gcStats[i])) == "last_run_time_ms" {
+				ftInfo.GCStats.LastRunTimeMs = internal.ToInteger(gcStats[i+1])
+				continue
+			}
+			if internal.ToLower(internal.ToString(gcStats[i])) == "gc_numeric_trees_missed" {
+				ftInfo.GCStats.GCNumericTreesMissed = internal.ToInteger(gcStats[i+1])
+				continue
+			}
+			if internal.ToLower(internal.ToString(gcStats[i])) == "gc_blocks_denied" {
+				ftInfo.GCStats.GCBlocksDenied = internal.ToInteger(gcStats[i+1])
+				continue
+			}
 		}
 	}
 
