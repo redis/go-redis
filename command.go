@@ -3787,6 +3787,65 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 	return nil
 }
 
+// -----------------------------------------------------------------------
+// MapStringInterfaceCmd represents a command that returns a map of strings to interface{}.
+type MapMapStringInterfaceCmd struct {
+	baseCmd
+	val map[string]interface{}
+}
+
+func NewMapMapStringInterfaceCmd(ctx context.Context, args ...interface{}) *MapMapStringInterfaceCmd {
+	return &MapMapStringInterfaceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *MapMapStringInterfaceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *MapMapStringInterfaceCmd) SetVal(val map[string]interface{}) {
+	cmd.val = val
+}
+
+func (cmd *MapMapStringInterfaceCmd) Result() (map[string]interface{}, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *MapMapStringInterfaceCmd) Val() map[string]interface{} {
+	return cmd.val
+}
+
+func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	data := make(map[string]interface{}, n/2)
+	for i := 0; i < n; i += 2 {
+		_, err := rd.ReadArrayLen()
+		if err != nil {
+			cmd.err = err
+		}
+		key, err := rd.ReadString()
+		if err != nil {
+			cmd.err = err
+		}
+		value, err := rd.ReadString()
+		if err != nil {
+			cmd.err = err
+		}
+		data[key] = value
+	}
+
+	cmd.val = data
+	return nil
+}
+
 //-----------------------------------------------------------------------
 
 type MapStringInterfaceSliceCmd struct {

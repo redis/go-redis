@@ -58,3 +58,4 @@ variadic
 RedisStack
 RedisGears
 RedisTimeseries
+RediSearch
