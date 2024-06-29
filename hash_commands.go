@@ -215,7 +215,7 @@ type HExpireArgs struct {
 // The command constructs an argument list starting with "HEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
 // For more information - https://redis.io/commands/hexpire/
 func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HEXPIRE", key, expiration, "FIELDS", len(fields)}
+	args := []interface{}{"HEXPIRE", key, formatSec(ctx, expiration), "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -230,7 +230,7 @@ func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Durati
 // The command constructs an argument list starting with "HEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
 // For more information - https://redis.io/commands/hexpire/
 func (c cmdable) HExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HEXPIRE", key, expiration}
+	args := []interface{}{"HEXPIRE", key, formatSec(ctx, expiration)}
 
 	// only if one argument is true, we can add it to the args
 	// if more than one argument is true, it will cause an error
