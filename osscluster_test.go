@@ -1282,6 +1282,66 @@ var _ = Describe("ClusterClient", func() {
 
 		assertClusterClient()
 	})
+
+	Describe("ClusterClient with RouteRoundRobinReplicas and ClusterSlots with multiple nodes per slot", func() {
+		BeforeEach(func() {
+			failover = true
+
+			opt = redisClusterOptions()
+			opt.RouteRoundRobinReplicas = true
+			opt.ClusterSlots = func(ctx context.Context) ([]redis.ClusterSlot, error) {
+				slots := []redis.ClusterSlot{{
+					Start: 0,
+					End:   4999,
+					Nodes: []redis.ClusterNode{{
+						Addr: ":8220",
+					}, {
+						Addr: ":8223",
+					}},
+				}, {
+					Start: 5000,
+					End:   9999,
+					Nodes: []redis.ClusterNode{{
+						Addr: ":8221",
+					}, {
+						Addr: ":8224",
+					}},
+				}, {
+					Start: 10000,
+					End:   16383,
+					Nodes: []redis.ClusterNode{{
+						Addr: ":8222",
+					}, {
+						Addr: ":8225",
+					}},
+				}}
+				return slots, nil
+			}
+			client = cluster.newClusterClient(ctx, opt)
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				return master.FlushDB(ctx).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.ForEachSlave(ctx, func(ctx context.Context, slave *redis.Client) error {
+				Eventually(func() int64 {
+					return client.DBSize(ctx).Val()
+				}, 30*time.Second).Should(Equal(int64(0)))
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			failover = false
+
+			err := client.Close()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		assertClusterClient()
+	})
 })
 
 var _ = Describe("ClusterClient without nodes", func() {
