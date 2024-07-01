@@ -153,6 +153,9 @@ type Options struct {
 
 	// Add suffix to client name. Default is empty.
 	IdentitySuffix string
+
+	// Failing time limit for a node. Default is 15 seconds.
+	FailingTimeLimit int
 }
 
 func (opt *Options) init() {
