@@ -35,38 +35,38 @@ var _ prometheus.Collector = (*Collector)(nil)
 //   - pool_conn_total_current
 //   - pool_conn_idle_current
 //   - pool_conn_stale_total
-func NewCollector(namespace, subsystem string, getter StatGetter) *Collector {
+func NewCollector(namespace, subsystem string, getter StatGetter, constantLabels prometheus.Labels) *Collector {
 	return &Collector{
 		getter: getter,
 		hitDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, subsystem, "pool_hit_total"),
 			"Number of times a connection was found in the pool",
-			nil, nil,
+			nil, constantLabels,
 		),
 		missDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, subsystem, "pool_miss_total"),
 			"Number of times a connection was not found in the pool",
-			nil, nil,
+			nil, constantLabels,
 		),
 		timeoutDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, subsystem, "pool_timeout_total"),
 			"Number of times a timeout occurred when looking for a connection in the pool",
-			nil, nil,
+			nil, constantLabels,
 		),
 		totalDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, subsystem, "pool_conn_total_current"),
 			"Current number of connections in the pool",
-			nil, nil,
+			nil, constantLabels,
 		),
 		idleDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, subsystem, "pool_conn_idle_current"),
 			"Current number of idle connections in the pool",
-			nil, nil,
+			nil, constantLabels,
 		),
 		staleDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, subsystem, "pool_conn_stale_total"),
 			"Number of times a connection was removed from the pool because it was stale",
-			nil, nil,
+			nil, constantLabels,
 		),
 	}
 }
