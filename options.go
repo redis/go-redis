@@ -153,6 +153,9 @@ type Options struct {
 
 	// Add suffix to client name. Default is empty.
 	IdentitySuffix string
+
+	// Enable cache for the client.
+	CacheObject *Cache
 }
 
 func (opt *Options) init() {

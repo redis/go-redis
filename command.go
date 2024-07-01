@@ -538,6 +538,7 @@ func (cmd *SliceCmd) Scan(dst interface{}) error {
 }
 
 func (cmd *SliceCmd) readReply(rd *proto.Reader) (err error) {
+
 	cmd.val, err = rd.ReadSlice()
 	return err
 }
@@ -583,6 +584,7 @@ func (cmd *StatusCmd) String() string {
 
 func (cmd *StatusCmd) readReply(rd *proto.Reader) (err error) {
 	cmd.val, err = rd.ReadString()
+
 	return err
 }
 

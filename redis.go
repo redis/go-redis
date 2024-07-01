@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -399,9 +400,20 @@ func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, 
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
+	// Check if cache enabled
+	if c.opt.CacheObject != nil {
+		// Check if the command is in cache, if so return from cache
+		if val, found := c.opt.CacheObject.GetKey(cmd.Name()); found {
+			rd := proto.NewReader(bytes.NewReader(val.([]byte)))
+			err := cmd.readReply(rd)
+			if err != nil {
+				lastErr = err
+			}
+			return lastErr
+		}
+	}
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		attempt := attempt
-
 		retry, err := c._process(ctx, cmd, attempt)
 		if err == nil || !retry {
 			return err
@@ -421,6 +433,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 
 	retryTimeout := uint32(0)
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		cn.ResetRawOutput()
 		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 			return writeCmd(wr, cmd)
 		}); err != nil {
@@ -435,6 +448,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 				atomic.StoreUint32(&retryTimeout, 0)
 			}
 			return err
+		}
+
+		if c.opt.CacheObject != nil {
+			// Set the command in cache
+			c.opt.CacheObject.SetKey(cmd.Name(), cn.GetRawOutput(), 0)
 		}
 
 		return nil
@@ -636,7 +654,6 @@ type Client struct {
 // NewClient returns a client to the Redis Server specified by Options.
 func NewClient(opt *Options) *Client {
 	opt.init()
-
 	c := Client{
 		baseClient: &baseClient{
 			opt: opt,
