@@ -199,6 +199,9 @@ type baseClient struct {
 	opt      *Options
 	connPool pool.Pooler
 
+	pubsubNewConn   PubsubNewConnFunc
+	pubsubCloseConn PubsubCloseConnFunc
+
 	onClose func() error // hook called when client is closed
 }
 
@@ -373,6 +376,13 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	} else {
 		c.connPool.Put(ctx, cn)
 	}
+}
+
+func (c *baseClient) removeConn(ctx context.Context, cn *pool.Conn, err error) {
+	if c.opt.Limiter != nil {
+		c.opt.Limiter.ReportResult(err)
+	}
+	c.connPool.Remove(ctx, cn, err)
 }
 
 func (c *baseClient) withConn(
@@ -656,6 +666,28 @@ func (c *Client) init() {
 		pipeline:   c.baseClient.processPipeline,
 		txPipeline: c.baseClient.processTxPipeline,
 	})
+
+	if c.opt.PubsubFromPool {
+		// Take connections from pool and remove them from pool afterwards. (Pubsub & other connections are managed
+		// together.)
+		c.pubsubNewConn = func(ctx context.Context, channels []string) (*pool.Conn, error) {
+			return c.getConn(ctx)
+		}
+		c.pubsubCloseConn = func(conn *pool.Conn) error {
+			c.removeConn(context.TODO(), conn, nil)
+			return nil
+		}
+	} else {
+		// Make brand new connection from pool and close it afterwards. (Pubsub & other connections are managed
+		// independently other than that pubsub connection can no longer be created once the pool is full.)
+		c.pubsubNewConn = func(ctx context.Context, channels []string) (*pool.Conn, error) {
+			return c.newConn(ctx)
+		}
+		// wrapping in closure since pool has not been initialised yet
+		c.pubsubCloseConn = func(conn *pool.Conn) error {
+			return c.connPool.CloseConn(conn)
+		}
+	}
 }
 
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
@@ -727,10 +759,8 @@ func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
 
-		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			return c.newConn(ctx)
-		},
-		closeConn: c.connPool.CloseConn,
+		newConn:   c.pubsubNewConn,
+		closeConn: c.pubsubCloseConn,
 	}
 	pubsub.init()
 	return pubsub
