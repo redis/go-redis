@@ -123,9 +123,14 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resGet).To(Equal("[[10,20,30,40],[5,10,20,30]]"))
 
+			_, err = client.JSONGet(ctx, "this-key-does-not-exist", "$").Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(BeIdenticalTo(redis.Nil))
+
 			resArr, err := client.JSONArrIndex(ctx, "doc1", "$.store.book[?(@.price<10)].size", 20).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resArr).To(Equal([]int64{1, 2}))
+
 		})
 
 		It("should JSONArrInsert", Label("json.arrinsert", "json"), func() {
