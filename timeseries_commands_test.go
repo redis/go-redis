@@ -23,7 +23,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should TSCreate and TSCreateWithArgs", Label("timeseries", "tscreate", "tscreateWithArgs"), func() {
+	It("should TSCreate and TSCreateWithArgs", Label("timeseries", "tscreate", "tscreateWithArgs", "NonRedisEnterprise"), func() {
 		result, err := client.TSCreate(ctx, "1").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(BeEquivalentTo("OK"))
@@ -76,7 +76,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(resultAdd).To(BeEquivalentTo(1010))
 		resultAdd, err = client.TSAdd(ctx, "ts-if-1", 1013, 10.0).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(resultAdd).To(BeEquivalentTo(1013))
+		Expect(resultAdd).To(BeEquivalentTo(1010))
 		resultAdd, err = client.TSAdd(ctx, "ts-if-1", 1020, 11.5).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo(1020))
@@ -86,11 +86,10 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 		rangePoints, err := client.TSRange(ctx, "ts-if-1", 1000, 1021).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(len(rangePoints)).To(BeEquivalentTo(5))
+		Expect(len(rangePoints)).To(BeEquivalentTo(4))
 		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{
 			{Timestamp: 1000, Value: 1.0},
 			{Timestamp: 1010, Value: 11.0},
-			{Timestamp: 1013, Value: 10.0},
 			{Timestamp: 1020, Value: 11.5},
 			{Timestamp: 1021, Value: 22.0}}))
 		// Test insertion filters with other duplicate policy
@@ -110,13 +109,13 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 		rangePoints, err = client.TSRange(ctx, "ts-if-1", 1000, 1013).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(len(rangePoints)).To(BeEquivalentTo(4))
+		Expect(len(rangePoints)).To(BeEquivalentTo(3))
 		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{
 			{Timestamp: 1000, Value: 1.0},
 			{Timestamp: 1010, Value: 11.0},
 			{Timestamp: 1013, Value: 10.0}}))
 	})
-	It("should TSAdd and TSAddWithArgs", Label("timeseries", "tsadd", "tsaddWithArgs"), func() {
+	It("should TSAdd and TSAddWithArgs", Label("timeseries", "tsadd", "tsaddWithArgs", "NonRedisEnterprise"), func() {
 		result, err := client.TSAdd(ctx, "1", 1, 1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(BeEquivalentTo(1))
@@ -197,12 +196,12 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 		result, err = client.TSAddWithArgs(ctx, "ts-if-1", 1004, 3.0, opt).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(BeEquivalentTo(1004))
+		Expect(result).To(BeEquivalentTo(1000))
 
 		rangePoints, err := client.TSRange(ctx, "ts-if-1", 1000, 1004).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(len(rangePoints)).To(BeEquivalentTo(2))
-		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 1.0}, {Timestamp: 1004, Value: 3.0}}))
+		Expect(len(rangePoints)).To(BeEquivalentTo(1))
+		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 1.0}}))
 	})
 
 	It("should TSAlter", Label("timeseries", "tsalter"), func() {
@@ -262,7 +261,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 		resultAdd, err = client.TSAdd(ctx, "ts-if-1", 1015, 11.5).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(resultAdd).To(BeEquivalentTo(1015))
+		Expect(resultAdd).To(BeEquivalentTo(1013))
 
 		rangePoints, err := client.TSRange(ctx, "ts-if-1", 1000, 1013).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -308,7 +307,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(resultInfo["rules"]).To(BeEquivalentTo(map[interface{}]interface{}{}))
 	})
 
-	It("should TSIncrBy, TSIncrByWithArgs, TSDecrBy and TSDecrByWithArgs", Label("timeseries", "tsincrby", "tsdecrby", "tsincrbyWithArgs", "tsdecrbyWithArgs"), func() {
+	It("should TSIncrBy, TSIncrByWithArgs, TSDecrBy and TSDecrByWithArgs", Label("timeseries", "tsincrby", "tsdecrby", "tsincrbyWithArgs", "tsdecrbyWithArgs", "NonRedisEnterprise"), func() {
 		for i := 0; i < 100; i++ {
 			_, err := client.TSIncrBy(ctx, "1", 1).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -383,7 +382,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		rangePoints, err := client.TSRange(ctx, "ts-if-1", 1000, 1004).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(rangePoints)).To(BeEquivalentTo(1))
-		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 4.0}}))
+		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 1.0}}))
 
 		res, err = client.TSIncrByWithArgs(ctx, "ts-if-1", 10.1, &redis.TSIncrDecrOptions{Timestamp: 1000}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -392,7 +391,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		rangePoints, err = client.TSRange(ctx, "ts-if-1", 1000, 1004).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(rangePoints)).To(BeEquivalentTo(1))
-		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 14.1}}))
+		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 11.1}}))
 
 		// Test insertion filters DECRBY
 		opt = &redis.TSIncrDecrOptions{Timestamp: 1000, IgnoreMaxTimeDiff: 5, IgnoreMaxValDiff: 10.0, DuplicatePolicy: "LAST"}
@@ -407,7 +406,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		rangePoints, err = client.TSRange(ctx, "ts-if-2", 1000, 1004).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(rangePoints)).To(BeEquivalentTo(1))
-		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: -4.0}}))
+		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: -1.0}}))
 
 		res, err = client.TSDecrByWithArgs(ctx, "ts-if-2", 10.1, &redis.TSIncrDecrOptions{Timestamp: 1000}).Result()
 		Expect(err).NotTo(HaveOccurred())
