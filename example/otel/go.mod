@@ -9,8 +9,8 @@ replace github.com/redis/go-redis/extra/redisotel/v9 => ../../extra/redisotel
 replace github.com/redis/go-redis/extra/rediscmd/v9 => ../../extra/rediscmd
 
 require (
-	github.com/redis/go-redis/extra/redisotel/v9 v9.5.1
-	github.com/redis/go-redis/v9 v9.5.1
+	github.com/redis/go-redis/extra/redisotel/v9 v9.5.3
+	github.com/redis/go-redis/v9 v9.5.3
 	github.com/uptrace/uptrace-go v1.21.0
 	go.opentelemetry.io/otel v1.22.0
 )
@@ -23,7 +23,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.19.0 // indirect
-	github.com/redis/go-redis/extra/rediscmd/v9 v9.5.1 // indirect
+	github.com/redis/go-redis/extra/rediscmd/v9 v9.5.3 // indirect
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.46.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v0.44.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.21.0 // indirect
@@ -34,8 +34,8 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.21.0 // indirect
 	go.opentelemetry.io/otel/trace v1.22.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.0.0 // indirect
-	golang.org/x/net v0.20.0 // indirect
-	golang.org/x/sys v0.16.0 // indirect
+	golang.org/x/net v0.23.0 // indirect
+	golang.org/x/sys v0.18.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/genproto v0.0.0-20240108191215-35c7eff3a6b1 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240108191215-35c7eff3a6b1 // indirect
