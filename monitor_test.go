@@ -2,10 +2,10 @@ package redis_test
 
 import (
 	"context"
+	"os"
 	"strings"
-	"time"
-
 	"testing"
+	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -13,13 +13,18 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// This test is for manual use and is not part of the CI of Go-Redis.
 var _ = Describe("Monitor command", Label("monitor"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
 
 	BeforeEach(func() {
+		if os.Getenv("RUN_MONITOR_TEST") != "true" {
+			Skip("Skipping Monitor command test. Set RUN_MONITOR_TEST=true to run it.")
+		}
 		client = redis.NewClient(&redis.Options{Addr: ":6379"})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
 	})
 
 	AfterEach(func() {
@@ -51,6 +56,10 @@ var _ = Describe("Monitor command", Label("monitor"), func() {
 })
 
 func TestMonitorCommand(t *testing.T) {
+	if os.Getenv("RUN_MONITOR_TEST") != "true" {
+		t.Skip("Skipping Monitor command test. Set RUN_MONITOR_TEST=true to run it.")
+	}
+
 	ctx := context.TODO()
 	client := redis.NewClient(&redis.Options{Addr: ":6379"})
 	if err := client.FlushDB(ctx).Err(); err != nil {
