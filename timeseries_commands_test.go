@@ -204,7 +204,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 1.0}}))
 	})
 
-	It("should TSAlter", Label("timeseries", "tsalter"), func() {
+	It("should TSAlter", Label("timeseries", "tsalter", "NonRedisEnterprise"), func() {
 		result, err := client.TSCreate(ctx, "1").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(BeEquivalentTo("OK"))
