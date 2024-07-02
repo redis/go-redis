@@ -76,7 +76,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(resultAdd).To(BeEquivalentTo(1010))
 		resultAdd, err = client.TSAdd(ctx, "ts-if-1", 1013, 10.0).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(resultAdd).To(BeEquivalentTo(1010))
+		Expect(resultAdd).To(BeEquivalentTo(1013))
 		resultAdd, err = client.TSAdd(ctx, "ts-if-1", 1020, 11.5).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo(1020))
@@ -196,7 +196,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 		result, err = client.TSAddWithArgs(ctx, "ts-if-1", 1004, 3.0, opt).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(BeEquivalentTo(1000))
+		Expect(result).To(BeEquivalentTo(1004))
 
 		rangePoints, err := client.TSRange(ctx, "ts-if-1", 1000, 1004).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -261,7 +261,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 		resultAdd, err = client.TSAdd(ctx, "ts-if-1", 1015, 11.5).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(resultAdd).To(BeEquivalentTo(1013))
+		Expect(resultAdd).To(BeEquivalentTo(1015))
 
 		rangePoints, err := client.TSRange(ctx, "ts-if-1", 1000, 1013).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -382,7 +382,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		rangePoints, err := client.TSRange(ctx, "ts-if-1", 1000, 1004).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(rangePoints)).To(BeEquivalentTo(1))
-		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 1.0}}))
+		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 4.0}}))
 
 		res, err = client.TSIncrByWithArgs(ctx, "ts-if-1", 10.1, &redis.TSIncrDecrOptions{Timestamp: 1000}).Result()
 		Expect(err).NotTo(HaveOccurred())
