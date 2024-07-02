@@ -90,6 +90,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{
 			{Timestamp: 1000, Value: 1.0},
 			{Timestamp: 1010, Value: 11.0},
+			{Timestamp: 1013, Value: 10.0},
 			{Timestamp: 1020, Value: 11.5},
 			{Timestamp: 1021, Value: 22.0}}))
 		// Test insertion filters with other duplicate policy
@@ -201,7 +202,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		rangePoints, err := client.TSRange(ctx, "ts-if-1", 1000, 1004).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(rangePoints)).To(BeEquivalentTo(2))
-		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 1.0}}))
+		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: 1.0}, {Timestamp: 1004, Value: 3.0}}))
 	})
 
 	It("should TSAlter", Label("timeseries", "tsalter"), func() {
@@ -406,7 +407,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		rangePoints, err = client.TSRange(ctx, "ts-if-2", 1000, 1004).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(rangePoints)).To(BeEquivalentTo(1))
-		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: -1.0}}))
+		Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{{Timestamp: 1000, Value: -4.0}}))
 
 		res, err = client.TSDecrByWithArgs(ctx, "ts-if-2", 10.1, &redis.TSIncrDecrOptions{Timestamp: 1000}).Result()
 		Expect(err).NotTo(HaveOccurred())
