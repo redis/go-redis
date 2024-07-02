@@ -15,16 +15,16 @@ import (
 
 // This test is for manual use and is not part of the CI of Go-Redis.
 var _ = Describe("Monitor command", Label("monitor"), func() {
-	if os.Getenv("RUN_MONITOR_TEST") != "true" {
-		Skip("Skipping Monitor command test. Set RUN_MONITOR_TEST=true to run it.")
-	}
-
 	ctx := context.TODO()
 	var client *redis.Client
 
 	BeforeEach(func() {
+		if os.Getenv("RUN_MONITOR_TEST") != "true" {
+			Skip("Skipping Monitor command test. Set RUN_MONITOR_TEST=true to run it.")
+		}
 		client = redis.NewClient(&redis.Options{Addr: ":6379"})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
 	})
 
 	AfterEach(func() {
