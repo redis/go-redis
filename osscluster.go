@@ -341,6 +341,8 @@ func (n *clusterNode) Close() error {
 	return n.Client.Close()
 }
 
+const maximumNodeLatency = 1 * time.Minute
+
 func (n *clusterNode) updateLatency() {
 	const numProbe = 10
 	var dur uint64
@@ -361,7 +363,7 @@ func (n *clusterNode) updateLatency() {
 	if successes == 0 {
 		// If none of the pings worked, set latency to some arbitrarily high value so this node gets
 		// least priority.
-		latency = float64((1 * time.Minute) / time.Microsecond)
+		latency = float64((maximumNodeLatency) / time.Microsecond)
 	} else {
 		latency = float64(dur) / float64(successes)
 	}
@@ -735,21 +737,39 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 		return c.nodes.Random()
 	}
 
-	var node *clusterNode
+	var allNodesFailing = true
+	var (
+		closestNonFailingNode *clusterNode
+		closestNode           *clusterNode
+		minLatency            time.Duration
+	)
+
 	for _, n := range nodes {
-		if n.Failing() {
-			continue
+		if closestNode == nil || n.Latency() < minLatency {
+			closestNode = n
+			minLatency = n.Latency()
+			if !n.Failing() {
+				closestNonFailingNode = n
+				allNodesFailing = false
+			}
 		}
-		if node == nil || n.Latency() < node.Latency() {
-			node = n
-		}
-	}
-	if node != nil {
-		return node, nil
 	}
 
-	// If all nodes are failing - return random node
-	return c.nodes.Random()
+	// pick the healthly node with the lowest latency
+	if !allNodesFailing && closestNonFailingNode != nil {
+		return closestNonFailingNode, nil
+	}
+
+	// if all nodes are failing, we will pick the temporarily failing node with lowest latency
+	if minLatency < maximumNodeLatency {
+		internal.Logger.Printf(context.TODO(), "redis: all nodes are failing, picking the temporarily failing node with lowest latency")
+		return closestNode, nil
+	}
+
+	// If all nodes are having the maximum latency(all pings are failing) - return a random node within the nodes corresponding to the slot
+	randomNodes := rand.Perm(len(nodes))
+	internal.Logger.Printf(context.TODO(), "redis: pings to all nodes are failing, picking a random node within the slot")
+	return nodes[randomNodes[0]], nil
 }
 
 func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
