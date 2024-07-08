@@ -744,6 +744,9 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 		minLatency            time.Duration
 	)
 
+	// setting the max possible duration as zerovalue for minlatency
+	minLatency = time.Duration(math.MaxInt64)
+
 	for _, n := range nodes {
 		if closestNode == nil || n.Latency() < minLatency {
 			closestNode = n
@@ -761,15 +764,14 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 	}
 
 	// if all nodes are failing, we will pick the temporarily failing node with lowest latency
-	if minLatency < maximumNodeLatency {
-		internal.Logger.Printf(context.TODO(), "redis: all nodes are failing, picking the temporarily failing node with lowest latency")
+	if minLatency < maximumNodeLatency && closestNode != nil {
+		internal.Logger.Printf(context.TODO(), "redis: all nodes are marked as failed, picking the temporarily failing node with lowest latency")
 		return closestNode, nil
 	}
 
-	// If all nodes are having the maximum latency(all pings are failing) - return a random node within the nodes corresponding to the slot
-	randomNodes := rand.Perm(len(nodes))
-	internal.Logger.Printf(context.TODO(), "redis: pings to all nodes are failing, picking a random node within the slot")
-	return nodes[randomNodes[0]], nil
+	// If all nodes are having the maximum latency(all pings are failing) - return a random node across the cluster
+	internal.Logger.Printf(context.TODO(), "redis: pings to all nodes are failing, picking a random node across the cluster")
+	return c.nodes.Random()
 }
 
 func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
