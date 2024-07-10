@@ -341,6 +341,8 @@ func (n *clusterNode) Close() error {
 	return n.Client.Close()
 }
 
+const maximumNodeLatency = 1 * time.Minute
+
 func (n *clusterNode) updateLatency() {
 	const numProbe = 10
 	var dur uint64
@@ -361,7 +363,7 @@ func (n *clusterNode) updateLatency() {
 	if successes == 0 {
 		// If none of the pings worked, set latency to some arbitrarily high value so this node gets
 		// least priority.
-		latency = float64((1 * time.Minute) / time.Microsecond)
+		latency = float64((maximumNodeLatency) / time.Microsecond)
 	} else {
 		latency = float64(dur) / float64(successes)
 	}
@@ -735,20 +737,40 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 		return c.nodes.Random()
 	}
 
-	var node *clusterNode
+	var allNodesFailing = true
+	var (
+		closestNonFailingNode *clusterNode
+		closestNode           *clusterNode
+		minLatency            time.Duration
+	)
+
+	// setting the max possible duration as zerovalue for minlatency
+	minLatency = time.Duration(math.MaxInt64)
+
 	for _, n := range nodes {
-		if n.Failing() {
-			continue
+		if closestNode == nil || n.Latency() < minLatency {
+			closestNode = n
+			minLatency = n.Latency()
+			if !n.Failing() {
+				closestNonFailingNode = n
+				allNodesFailing = false
+			}
 		}
-		if node == nil || n.Latency() < node.Latency() {
-			node = n
-		}
-	}
-	if node != nil {
-		return node, nil
 	}
 
-	// If all nodes are failing - return random node
+	// pick the healthly node with the lowest latency
+	if !allNodesFailing && closestNonFailingNode != nil {
+		return closestNonFailingNode, nil
+	}
+
+	// if all nodes are failing, we will pick the temporarily failing node with lowest latency
+	if minLatency < maximumNodeLatency && closestNode != nil {
+		internal.Logger.Printf(context.TODO(), "redis: all nodes are marked as failed, picking the temporarily failing node with lowest latency")
+		return closestNode, nil
+	}
+
+	// If all nodes are having the maximum latency(all pings are failing) - return a random node across the cluster
+	internal.Logger.Printf(context.TODO(), "redis: pings to all nodes are failing, picking a random node across the cluster")
 	return c.nodes.Random()
 }
 
