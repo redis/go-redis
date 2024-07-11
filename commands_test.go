@@ -2486,31 +2486,31 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			resEmpty, err := client.HExpire(ctx, "no_such_key", 10, "field1", "field2", "field3").Result()
+			res, err := client.HExpire(ctx, "no_such_key", 10*time.Second, "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
-			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
+			Expect(res).To(BeEquivalentTo([]int64{-2, -2, -2}))
 
 			for i := 0; i < 100; i++ {
 				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
 				Expect(sadd.Err()).NotTo(HaveOccurred())
 			}
 
-			res, err := client.HExpire(ctx, "myhash", 10, "key1", "key2", "key200").Result()
+			res, err = client.HExpire(ctx, "myhash", 10*time.Second, "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, 1, -2}))
 		})
 
 		It("should HPExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			resEmpty, err := client.HPExpire(ctx, "no_such_key", 10, "field1", "field2", "field3").Result()
+			res, err := client.HPExpire(ctx, "no_such_key", 10*time.Second, "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
-			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
+			Expect(res).To(BeEquivalentTo([]int64{-2, -2, -2}))
 
 			for i := 0; i < 100; i++ {
 				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
 				Expect(sadd.Err()).NotTo(HaveOccurred())
 			}
 
-			res, err := client.HPExpire(ctx, "myhash", 10, "key1", "key2", "key200").Result()
+			res, err = client.HPExpire(ctx, "myhash", 10*time.Second, "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, 1, -2}))
 		})
@@ -2559,7 +2559,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{-1, -1, -2}))
 
-			res, err = client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			res, err = client.HExpire(ctx, "myhash", 10*time.Second, "key1", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, -2}))
 
@@ -2578,7 +2578,7 @@ var _ = Describe("Commands", func() {
 				Expect(sadd.Err()).NotTo(HaveOccurred())
 			}
 
-			res, err := client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			res, err := client.HExpire(ctx, "myhash", 10*time.Second, "key1", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, -2}))
 
@@ -2617,7 +2617,7 @@ var _ = Describe("Commands", func() {
 				Expect(sadd.Err()).NotTo(HaveOccurred())
 			}
 
-			res, err := client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			res, err := client.HExpire(ctx, "myhash", 10*time.Second, "key1", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, -2}))
 
@@ -2636,7 +2636,7 @@ var _ = Describe("Commands", func() {
 				Expect(sadd.Err()).NotTo(HaveOccurred())
 			}
 
-			res, err := client.HExpire(ctx, "myhash", 10, "key1", "key200").Result()
+			res, err := client.HExpire(ctx, "myhash", 10*time.Second, "key1", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, -2}))
 
