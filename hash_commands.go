@@ -23,6 +23,19 @@ type HashCmdable interface {
 	HVals(ctx context.Context, key string) *StringSliceCmd
 	HRandField(ctx context.Context, key string, count int) *StringSliceCmd
 	HRandFieldWithValues(ctx context.Context, key string, count int) *KeyValueSliceCmd
+	HExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd
+	HExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd
+	HPExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd
+	HPExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd
+	HExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd
+	HExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd
+	HPExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd
+	HPExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd
+	HPersist(ctx context.Context, key string, fields ...string) *IntSliceCmd
+	HExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd
+	HPExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd
+	HTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd
+	HPTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd
 }
 
 func (c cmdable) HDel(ctx context.Context, key string, fields ...string) *IntCmd {
@@ -202,7 +215,7 @@ type HExpireArgs struct {
 // The command constructs an argument list starting with "HEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
 // For more information - https://redis.io/commands/hexpire/
 func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HEXPIRE", key, expiration, "FIELDS", len(fields)}
+	args := []interface{}{"HEXPIRE", key, formatSec(ctx, expiration), "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -217,7 +230,7 @@ func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Durati
 // The command constructs an argument list starting with "HEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
 // For more information - https://redis.io/commands/hexpire/
 func (c cmdable) HExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HEXPIRE", key, expiration}
+	args := []interface{}{"HEXPIRE", key, formatSec(ctx, expiration)}
 
 	// only if one argument is true, we can add it to the args
 	// if more than one argument is true, it will cause an error
