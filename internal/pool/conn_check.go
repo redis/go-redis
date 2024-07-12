@@ -18,8 +18,8 @@ func connCheck(conn net.Conn) error {
 	_ = conn.SetDeadline(time.Time{})
 
 	// Check if tls.Conn.
-	if _, ok := conn.(*tls.Conn); ok {
-		conn = conn.(*tls.Conn).NetConn()
+	if c, ok := conn.(*tls.Conn); ok {
+		conn = c.NetConn()
 	}
 	sysConn, ok := conn.(syscall.Conn)
 	if !ok {
