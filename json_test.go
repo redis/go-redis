@@ -242,18 +242,18 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			Expect(cmd.Val()).To(Equal("OK"))
 		})
 
-		It("should JSONGet", Label("json.get", "json"), func() {
+		It("should JSONGet", Label("json.get", "json", "NonRedisEnterprise"), func() {
 			res, err := client.JSONSet(ctx, "get3", "$", `{"a": 1, "b": 2}`).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal("OK"))
 
 			res, err = client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Indent: "-"}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal(`[-{--"a":1,--"b":2-}]`))
+			Expect(res).To(Equal(`{-"a":1,-"b":2}`))
 
 			res, err = client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Indent: "-", Newline: `~`, Space: `!`}).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(Equal(`[~-{~--"a":!1,~--"b":!2~-}~]`))
+			Expect(res).To(Equal(`{~-"a":!1,~-"b":!2~}`))
 		})
 
 		It("should JSONMerge", Label("json.merge", "json"), func() {

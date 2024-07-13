@@ -1,6 +1,9 @@
 package redis
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type HashCmdable interface {
 	HDel(ctx context.Context, key string, fields ...string) *IntCmd
@@ -16,9 +19,23 @@ type HashCmdable interface {
 	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
 	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
 	HScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
+	HScanNoValues(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
 	HVals(ctx context.Context, key string) *StringSliceCmd
 	HRandField(ctx context.Context, key string, count int) *StringSliceCmd
 	HRandFieldWithValues(ctx context.Context, key string, count int) *KeyValueSliceCmd
+	HExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd
+	HExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd
+	HPExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd
+	HPExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd
+	HExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd
+	HExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd
+	HPExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd
+	HPExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd
+	HPersist(ctx context.Context, key string, fields ...string) *IntSliceCmd
+	HExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd
+	HPExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd
+	HTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd
+	HPTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd
 }
 
 func (c cmdable) HDel(ctx context.Context, key string, fields ...string) *IntCmd {
@@ -169,6 +186,265 @@ func (c cmdable) HScan(ctx context.Context, key string, cursor uint64, match str
 		args = append(args, "count", count)
 	}
 	cmd := NewScanCmd(ctx, c, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HScanNoValues(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
+	args := []interface{}{"hscan", key, cursor}
+	if match != "" {
+		args = append(args, "match", match)
+	}
+	if count > 0 {
+		args = append(args, "count", count)
+	}
+	args = append(args, "novalues")
+	cmd := NewScanCmd(ctx, c, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type HExpireArgs struct {
+	NX bool
+	XX bool
+	GT bool
+	LT bool
+}
+
+// HExpire - Sets the expiration time for specified fields in a hash in seconds.
+// The command constructs an argument list starting with "HEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
+// For more information - https://redis.io/commands/hexpire/
+func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HEXPIRE", key, formatSec(ctx, expiration), "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HExpire - Sets the expiration time for specified fields in a hash in seconds.
+// It requires a key, an expiration duration, a struct with boolean flags for conditional expiration settings (NX, XX, GT, LT), and a list of fields.
+// The command constructs an argument list starting with "HEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
+// For more information - https://redis.io/commands/hexpire/
+func (c cmdable) HExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HEXPIRE", key, formatSec(ctx, expiration)}
+
+	// only if one argument is true, we can add it to the args
+	// if more than one argument is true, it will cause an error
+	if expirationArgs.NX {
+		args = append(args, "NX")
+	} else if expirationArgs.XX {
+		args = append(args, "XX")
+	} else if expirationArgs.GT {
+		args = append(args, "GT")
+	} else if expirationArgs.LT {
+		args = append(args, "LT")
+	}
+
+	args = append(args, "FIELDS", len(fields))
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HPExpire - Sets the expiration time for specified fields in a hash in milliseconds.
+// Similar to HExpire, it accepts a key, an expiration duration in milliseconds, a struct with expiration condition flags, and a list of fields.
+// The command modifies the standard time.Duration to milliseconds for the Redis command.
+// For more information - https://redis.io/commands/hpexpire/
+func (c cmdable) HPExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPEXPIRE", key, formatMs(ctx, expiration), "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HPExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPEXPIRE", key, formatMs(ctx, expiration)}
+
+	// only if one argument is true, we can add it to the args
+	// if more than one argument is true, it will cause an error
+	if expirationArgs.NX {
+		args = append(args, "NX")
+	} else if expirationArgs.XX {
+		args = append(args, "XX")
+	} else if expirationArgs.GT {
+		args = append(args, "GT")
+	} else if expirationArgs.LT {
+		args = append(args, "LT")
+	}
+
+	args = append(args, "FIELDS", len(fields))
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HExpireAt - Sets the expiration time for specified fields in a hash to a UNIX timestamp in seconds.
+// Takes a key, a UNIX timestamp, a struct of conditional flags, and a list of fields.
+// The command sets absolute expiration times based on the UNIX timestamp provided.
+// For more information - https://redis.io/commands/hexpireat/
+func (c cmdable) HExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
+
+	args := []interface{}{"HEXPIREAT", key, tm.Unix(), "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HEXPIREAT", key, tm.Unix()}
+
+	// only if one argument is true, we can add it to the args
+	// if more than one argument is true, it will cause an error
+	if expirationArgs.NX {
+		args = append(args, "NX")
+	} else if expirationArgs.XX {
+		args = append(args, "XX")
+	} else if expirationArgs.GT {
+		args = append(args, "GT")
+	} else if expirationArgs.LT {
+		args = append(args, "LT")
+	}
+
+	args = append(args, "FIELDS", len(fields))
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HPExpireAt - Sets the expiration time for specified fields in a hash to a UNIX timestamp in milliseconds.
+// Similar to HExpireAt but for timestamps in milliseconds. It accepts the same parameters and adjusts the UNIX time to milliseconds.
+// For more information - https://redis.io/commands/hpexpireat/
+func (c cmdable) HPExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond), "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HPExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond)}
+
+	// only if one argument is true, we can add it to the args
+	// if more than one argument is true, it will cause an error
+	if expirationArgs.NX {
+		args = append(args, "NX")
+	} else if expirationArgs.XX {
+		args = append(args, "XX")
+	} else if expirationArgs.GT {
+		args = append(args, "GT")
+	} else if expirationArgs.LT {
+		args = append(args, "LT")
+	}
+
+	args = append(args, "FIELDS", len(fields))
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HPersist - Removes the expiration time from specified fields in a hash.
+// Accepts a key and the fields themselves.
+// This command ensures that each field specified will have its expiration removed if present.
+// For more information - https://redis.io/commands/hpersist/
+func (c cmdable) HPersist(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPERSIST", key, "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HExpireTime - Retrieves the expiration time for specified fields in a hash as a UNIX timestamp in seconds.
+// Requires a key and the fields themselves to fetch their expiration timestamps.
+// This command returns the expiration times for each field or error/status codes for each field as specified.
+// For more information - https://redis.io/commands/hexpiretime/
+func (c cmdable) HExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HEXPIRETIME", key, "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HPExpireTime - Retrieves the expiration time for specified fields in a hash as a UNIX timestamp in milliseconds.
+// Similar to HExpireTime, adjusted for timestamps in milliseconds. It requires the same parameters.
+// Provides the expiration timestamp for each field in milliseconds.
+// For more information - https://redis.io/commands/hexpiretime/
+func (c cmdable) HPExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPEXPIRETIME", key, "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HTTL - Retrieves the remaining time to live for specified fields in a hash in seconds.
+// Requires a key and the fields themselves. It returns the TTL for each specified field.
+// This command fetches the TTL in seconds for each field or returns error/status codes as appropriate.
+// For more information - https://redis.io/commands/httl/
+func (c cmdable) HTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HTTL", key, "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HPTTL - Retrieves the remaining time to live for specified fields in a hash in milliseconds.
+// Similar to HTTL, but returns the TTL in milliseconds. It requires a key and the specified fields.
+// This command provides the TTL in milliseconds for each field or returns error/status codes as needed.
+// For more information - https://redis.io/commands/hpttl/
+func (c cmdable) HPTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+	args := []interface{}{"HPTTL", key, "FIELDS", len(fields)}
+
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

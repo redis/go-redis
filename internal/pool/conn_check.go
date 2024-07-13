@@ -3,6 +3,7 @@
 package pool
 
 import (
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
@@ -16,6 +17,10 @@ func connCheck(conn net.Conn) error {
 	// Reset previous timeout.
 	_ = conn.SetDeadline(time.Time{})
 
+	// Check if tls.Conn.
+	if c, ok := conn.(*tls.Conn); ok {
+		conn = c.NetConn()
+	}
 	sysConn, ok := conn.(syscall.Conn)
 	if !ok {
 		return nil

@@ -137,10 +137,11 @@ type XReadArgs struct {
 	Streams []string // list of streams and ids, e.g. stream1 stream2 id1 id2
 	Count   int64
 	Block   time.Duration
+	ID      string
 }
 
 func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
-	args := make([]interface{}, 0, 6+len(a.Streams))
+	args := make([]interface{}, 0, 2*len(a.Streams)+6)
 	args = append(args, "xread")
 
 	keyPos := int8(1)
@@ -158,6 +159,11 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	keyPos++
 	for _, s := range a.Streams {
 		args = append(args, s)
+	}
+	if a.ID != "" {
+		for range a.Streams {
+			args = append(args, a.ID)
+		}
 	}
 
 	cmd := NewXStreamSliceCmd(ctx, args...)
