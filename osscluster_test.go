@@ -653,6 +653,32 @@ var _ = Describe("ClusterClient", func() {
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
+		It("follows node redirection immediately", func() {
+			// Configure retry backoffs far in excess of the expected duration of redirection
+			opt := redisClusterOptions()
+			opt.MinRetryBackoff = 10 * time.Minute
+			opt.MaxRetryBackoff = 20 * time.Minute
+			client := cluster.newClusterClient(ctx, opt)
+
+			Eventually(func() error {
+				return client.SwapNodes(ctx, "A")
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+
+			// Note that this context sets a deadline more aggressive than the lowest possible bound
+			// of the retry backoff; this verifies that redirection completes immediately.
+			redirCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			err := client.Set(redirCtx, "A", "VALUE", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			v, err := client.Get(redirCtx, "A").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal("VALUE"))
+
+			Expect(client.Close()).NotTo(HaveOccurred())
+		})
+
 		It("calls fn for every master node", func() {
 			for i := 0; i < 10; i++ {
 				Expect(client.Set(ctx, strconv.Itoa(i), "", 0).Err()).NotTo(HaveOccurred())

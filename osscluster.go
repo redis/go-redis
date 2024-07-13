@@ -938,10 +938,13 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	slot := c.cmdSlot(ctx, cmd)
 	var node *clusterNode
+	var moved bool
 	var ask bool
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
-		if attempt > 0 {
+		// MOVED and ASK responses are not transient errors that require retry delay; they
+		// should be attempted immediately.
+		if attempt > 0 && !moved && !ask {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				return err
 			}
@@ -985,7 +988,6 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
-		var moved bool
 		var addr string
 		moved, ask, addr = isMovedError(lastErr)
 		if moved || ask {
