@@ -1017,6 +1017,57 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(res.Attributes[0].WithSuffixtrie).To(BeTrue())
 	})
 
+	It("should test dialect 4", Label("search", "ftcreate", "ftsearch"), func() {
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{
+			Prefix: []interface{}{"resource:"},
+		}, &redis.FieldSchema{
+			FieldName: "uuid",
+			FieldType: redis.SearchFieldTypeTag,
+		}, &redis.FieldSchema{
+			FieldName: "tags",
+			FieldType: redis.SearchFieldTypeTag,
+		}, &redis.FieldSchema{
+			FieldName: "description",
+			FieldType: redis.SearchFieldTypeText,
+		}, &redis.FieldSchema{
+			FieldName: "rating",
+			FieldType: redis.SearchFieldTypeNumeric,
+		}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+
+		client.HSet(ctx, "resource:1", map[string]interface{}{
+			"uuid":        "123e4567-e89b-12d3-a456-426614174000",
+			"tags":        "finance|crypto|$btc|blockchain",
+			"description": "Analysis of blockchain technologies & Bitcoin's potential.",
+			"rating":      5,
+		})
+		client.HSet(ctx, "resource:2", map[string]interface{}{
+			"uuid":        "987e6543-e21c-12d3-a456-426614174999",
+			"tags":        "health|well-being|fitness|new-year's-resolutions",
+			"description": "Health trends for the new year, including fitness regimes.",
+			"rating":      4,
+		})
+
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "@uuid:{$uuid}",
+			&redis.FTSearchOptions{
+				DialectVersion: 2,
+				Params:         map[string]interface{}{"uuid": "123e4567-e89b-12d3-a456-426614174000"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(int64(1)))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("resource:1"))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "@uuid:{$uuid}",
+			&redis.FTSearchOptions{
+				DialectVersion: 4,
+				Params:         map[string]interface{}{"uuid": "123e4567-e89b-12d3-a456-426614174000"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(int64(1)))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("resource:1"))
+	})
+
 	It("should FTCreate GeoShape", Label("search", "ftcreate", "ftsearch"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.FieldSchema{FieldName: "geom", FieldType: redis.SearchFieldTypeGeoShape, GeoShapeFieldType: "FLAT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
