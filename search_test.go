@@ -1044,7 +1044,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(res2.Total).To(BeEquivalentTo(int64(2)))
 	})
 
-	It("should search missing fields", Label("search", "ftcreate", "ftsearch"), func() {
+	It("should search missing fields", Label("search", "ftcreate", "ftsearch", "NonRedisEnterprise"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{Prefix: []interface{}{"property:"}},
 			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: true},
 			&redis.FieldSchema{FieldName: "features", FieldType: redis.SearchFieldTypeTag, IndexMissing: true},
@@ -1088,7 +1088,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(res.Docs[1].ID).To(BeEquivalentTo("property:2"))
 	})
 
-	It("should search empty fields", Label("search", "ftcreate", "ftsearch"), func() {
+	It("should search empty fields", Label("search", "ftcreate", "ftsearch", "NonRedisEnterprise"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{Prefix: []interface{}{"property:"}},
 			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: true},
 			&redis.FieldSchema{FieldName: "features", FieldType: redis.SearchFieldTypeTag, IndexEmpty: true},
