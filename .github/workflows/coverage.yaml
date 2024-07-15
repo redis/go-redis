@@ -1,0 +1,42 @@
+name: Go
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+        redis:
+          image: redis/redis-stack-server:edge
+          options: >-
+            --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+          ports:
+            - 6379:6379
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.21
+
+    - name: Install dependencies
+      run: go mod tidy
+
+    - name: Run tests
+      run: go test -coverprofile=coverage.out ./...
+
+    - name: Upload to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: coverage.out
+        token: ${{ secrets.CODECOV_TOKEN }}
