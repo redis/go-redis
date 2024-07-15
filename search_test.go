@@ -1044,7 +1044,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(res2.Total).To(BeEquivalentTo(int64(2)))
 	})
 
-	It("should test geoshapes query intersects and disjoint", func() {
+	It("should test geoshapes query intersects and disjoint", Label("NonRedisEnterprise"), func() {
 		_, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.FieldSchema{
 			FieldName:         "g",
 			FieldType:         redis.SearchFieldTypeGeoShape,
