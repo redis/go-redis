@@ -1066,6 +1066,59 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Total).To(BeEquivalentTo(int64(1)))
 		Expect(res.Docs[0].ID).To(BeEquivalentTo("resource:1"))
+
+		client.HSet(ctx, "test:1", map[string]interface{}{
+			"uuid":  "3d3586fe-0416-4572-8ce",
+			"email": "adriano@acme.com.ie",
+			"num":   5,
+		})
+
+		// Create the index
+		ftCreateOptions := &redis.FTCreateOptions{
+			Prefix: []interface{}{"test:"},
+		}
+		schema := []*redis.FieldSchema{
+			{
+				FieldName: "uuid",
+				FieldType: redis.SearchFieldTypeTag,
+			},
+			{
+				FieldName: "email",
+				FieldType: redis.SearchFieldTypeTag,
+			},
+			{
+				FieldName: "num",
+				FieldType: redis.SearchFieldTypeNumeric,
+			},
+		}
+
+		val, err = client.FTCreate(ctx, "idx_hash", ftCreateOptions, schema...).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal("OK"))
+
+		ftSearchOptions := &redis.FTSearchOptions{
+			DialectVersion: 4,
+			Params: map[string]interface{}{
+				"uuid":  "3d3586fe-0416-4572-8ce",
+				"email": "adriano@acme.com.ie",
+			},
+		}
+
+		res, err = client.FTSearchWithArgs(ctx, "idx_hash", "@uuid:{$uuid}", ftSearchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("test:1"))
+		Expect(res.Docs[0].Fields["uuid"]).To(BeEquivalentTo("3d3586fe-0416-4572-8ce"))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx_hash", "@email:{$email}", ftSearchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("test:1"))
+		Expect(res.Docs[0].Fields["email"]).To(BeEquivalentTo("adriano@acme.com.ie"))
+
+		ftSearchOptions.Params = map[string]interface{}{"num": 5}
+		res, err = client.FTSearchWithArgs(ctx, "idx_hash", "@num:[5]", ftSearchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("test:1"))
+		Expect(res.Docs[0].Fields["num"]).To(BeEquivalentTo("5"))
 	})
 
 	It("should FTCreate GeoShape", Label("search", "ftcreate", "ftsearch"), func() {
