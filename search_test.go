@@ -1148,6 +1148,74 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(res2.Total).To(BeEquivalentTo(int64(2)))
 	})
 
+	It("should test geoshapes query intersects and disjoint", Label("NonRedisEnterprise"), func() {
+		_, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.FieldSchema{
+			FieldName:         "g",
+			FieldType:         redis.SearchFieldTypeGeoShape,
+			GeoShapeFieldType: "FLAT",
+		}).Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		client.HSet(ctx, "doc_point1", "g", "POINT (10 10)")
+		client.HSet(ctx, "doc_point2", "g", "POINT (50 50)")
+		client.HSet(ctx, "doc_polygon1", "g", "POLYGON ((20 20, 25 35, 35 25, 20 20))")
+		client.HSet(ctx, "doc_polygon2", "g", "POLYGON ((60 60, 65 75, 70 70, 65 55, 60 60))")
+
+		intersection, err := client.FTSearchWithArgs(ctx, "idx1", "@g:[intersects $shape]",
+			&redis.FTSearchOptions{
+				DialectVersion: 3,
+				Params:         map[string]interface{}{"shape": "POLYGON((15 15, 75 15, 50 70, 20 40, 15 15))"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		_assert_geosearch_result(&intersection, []string{"doc_point2", "doc_polygon1"})
+
+		disjunction, err := client.FTSearchWithArgs(ctx, "idx1", "@g:[disjoint $shape]",
+			&redis.FTSearchOptions{
+				DialectVersion: 3,
+				Params:         map[string]interface{}{"shape": "POLYGON((15 15, 75 15, 50 70, 20 40, 15 15))"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		_assert_geosearch_result(&disjunction, []string{"doc_point1", "doc_polygon2"})
+	})
+
+	It("should test geoshapes query contains and within", func() {
+		_, err := client.FTCreate(ctx, "idx2", &redis.FTCreateOptions{}, &redis.FieldSchema{
+			FieldName:         "g",
+			FieldType:         redis.SearchFieldTypeGeoShape,
+			GeoShapeFieldType: "FLAT",
+		}).Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		client.HSet(ctx, "doc_point1", "g", "POINT (10 10)")
+		client.HSet(ctx, "doc_point2", "g", "POINT (50 50)")
+		client.HSet(ctx, "doc_polygon1", "g", "POLYGON ((20 20, 25 35, 35 25, 20 20))")
+		client.HSet(ctx, "doc_polygon2", "g", "POLYGON ((60 60, 65 75, 70 70, 65 55, 60 60))")
+
+		containsA, err := client.FTSearchWithArgs(ctx, "idx2", "@g:[contains $shape]",
+			&redis.FTSearchOptions{
+				DialectVersion: 3,
+				Params:         map[string]interface{}{"shape": "POINT(25 25)"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		_assert_geosearch_result(&containsA, []string{"doc_polygon1"})
+
+		containsB, err := client.FTSearchWithArgs(ctx, "idx2", "@g:[contains $shape]",
+			&redis.FTSearchOptions{
+				DialectVersion: 3,
+				Params:         map[string]interface{}{"shape": "POLYGON((24 24, 24 26, 25 25, 24 24))"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		_assert_geosearch_result(&containsB, []string{"doc_polygon1"})
+
+		within, err := client.FTSearchWithArgs(ctx, "idx2", "@g:[within $shape]",
+			&redis.FTSearchOptions{
+				DialectVersion: 3,
+				Params:         map[string]interface{}{"shape": "POLYGON((15 15, 75 15, 50 70, 20 40, 15 15))"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		_assert_geosearch_result(&within, []string{"doc_point2", "doc_polygon1"})
+	})
+
 	It("should search missing fields", Label("search", "ftcreate", "ftsearch", "NonRedisEnterprise"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{Prefix: []interface{}{"property:"}},
 			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: true},
@@ -1238,6 +1306,15 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(res.Docs[1].ID).To(BeEquivalentTo("property:2"))
 	})
 })
+
+func _assert_geosearch_result(result *redis.FTSearchResult, expectedDocIDs []string) {
+	ids := make([]string, len(result.Docs))
+	for i, doc := range result.Docs {
+		ids[i] = doc.ID
+	}
+	Expect(ids).To(ConsistOf(expectedDocIDs))
+	Expect(result.Total).To(BeEquivalentTo(len(expectedDocIDs)))
+}
 
 // It("should FTProfile Search and Aggregate", Label("search", "ftprofile"), func() {
 // 	val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.FieldSchema{FieldName: "t", FieldType: redis.SearchFieldTypeText}).Result()
