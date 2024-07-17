@@ -75,6 +75,8 @@ type FieldSchema struct {
 	WithSuffixtrie    bool
 	VectorArgs        *FTVectorArgs
 	GeoShapeFieldType string
+	IndexEmpty        bool
+	IndexMissing      bool
 }
 
 type FTVectorArgs struct {
@@ -1001,6 +1003,13 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		}
 		if schema.WithSuffixtrie {
 			args = append(args, "WITHSUFFIXTRIE")
+		}
+		if schema.IndexEmpty {
+			args = append(args, "INDEXEMPTY")
+		}
+		if schema.IndexMissing {
+			args = append(args, "INDEXMISSING")
+
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
