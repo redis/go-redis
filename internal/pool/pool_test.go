@@ -57,12 +57,14 @@ var _ = Describe("ConnPool", func() {
 		time.Sleep(time.Second)
 
 		Expect(connPool.Stats()).To(Equal(&pool.Stats{
-			Hits:       0,
-			Misses:     0,
-			Timeouts:   0,
-			TotalConns: 0,
-			IdleConns:  0,
-			StaleConns: 0,
+			Hits:           0,
+			Misses:         0,
+			Timeouts:       0,
+			WaitCount:      0,
+			WaitDurationNs: 0,
+			TotalConns:     0,
+			IdleConns:      0,
+			StaleConns:     0,
 		}))
 	})
 
@@ -352,5 +354,32 @@ var _ = Describe("race", func() {
 		stats := p.Stats()
 		Expect(stats.IdleConns).To(Equal(uint32(0)))
 		Expect(stats.TotalConns).To(Equal(uint32(opt.PoolSize)))
+	})
+
+	It("wait", func() {
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				return &net.TCPConn{}, nil
+			},
+			PoolSize:    1,
+			PoolTimeout: 3 * time.Second,
+		}
+		p := pool.NewConnPool(opt)
+
+		wait := make(chan struct{})
+		conn, _ := p.Get(ctx)
+		go func() {
+			_, _ = p.Get(ctx)
+			wait <- struct{}{}
+		}()
+		time.Sleep(time.Second)
+		p.Put(ctx, conn)
+		<-wait
+
+		stats := p.Stats()
+		Expect(stats.IdleConns).To(Equal(uint32(0)))
+		Expect(stats.TotalConns).To(Equal(uint32(1)))
+		Expect(stats.WaitCount).To(Equal(uint32(1)))
+		Expect(stats.WaitDurationNs).To(BeNumerically("~", time.Second.Nanoseconds(), 100*time.Millisecond.Nanoseconds()))
 	})
 })
