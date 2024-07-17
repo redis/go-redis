@@ -1017,7 +1017,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(res.Attributes[0].WithSuffixtrie).To(BeTrue())
 	})
 
-	It("should test dialect 4", Label("search", "ftcreate", "ftsearch"), func() {
+	It("should test dialect 4", Label("search", "ftcreate", "ftsearch", "NonRedisEnterprise"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{
 			Prefix: []interface{}{"resource:"},
 		}, &redis.FieldSchema{
