@@ -60,6 +60,7 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 }
 
 func (cn *Conn) setRawConn() {
+	cn.rawConn = nil
 	conn := cn.netConn
 	if conn == nil {
 		return
@@ -118,6 +119,7 @@ func (cn *Conn) WithWriter(
 }
 
 func (cn *Conn) Close() error {
+	cn.rawConn = nil
 	return cn.netConn.Close()
 }
 
