@@ -39,7 +39,7 @@ func NewConn(netConn net.Conn) *Conn {
 	cn.bw = bufio.NewWriter(netConn)
 	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
-	cn.setRawConn()
+	cn.setSysConn()
 	return cn
 }
 
@@ -56,10 +56,10 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 	cn.netConn = netConn
 	cn.rd.Reset(netConn)
 	cn.bw.Reset(netConn)
-	cn.setRawConn()
+	cn.setSysConn()
 }
 
-func (cn *Conn) setRawConn() {
+func (cn *Conn) setSysConn() {
 	cn.sysConn = nil
 	conn := cn.netConn
 	if conn == nil {
