@@ -1017,6 +1017,110 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(res.Attributes[0].WithSuffixtrie).To(BeTrue())
 	})
 
+	It("should test dialect 4", Label("search", "ftcreate", "ftsearch", "NonRedisEnterprise"), func() {
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{
+			Prefix: []interface{}{"resource:"},
+		}, &redis.FieldSchema{
+			FieldName: "uuid",
+			FieldType: redis.SearchFieldTypeTag,
+		}, &redis.FieldSchema{
+			FieldName: "tags",
+			FieldType: redis.SearchFieldTypeTag,
+		}, &redis.FieldSchema{
+			FieldName: "description",
+			FieldType: redis.SearchFieldTypeText,
+		}, &redis.FieldSchema{
+			FieldName: "rating",
+			FieldType: redis.SearchFieldTypeNumeric,
+		}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+
+		client.HSet(ctx, "resource:1", map[string]interface{}{
+			"uuid":        "123e4567-e89b-12d3-a456-426614174000",
+			"tags":        "finance|crypto|$btc|blockchain",
+			"description": "Analysis of blockchain technologies & Bitcoin's potential.",
+			"rating":      5,
+		})
+		client.HSet(ctx, "resource:2", map[string]interface{}{
+			"uuid":        "987e6543-e21c-12d3-a456-426614174999",
+			"tags":        "health|well-being|fitness|new-year's-resolutions",
+			"description": "Health trends for the new year, including fitness regimes.",
+			"rating":      4,
+		})
+
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "@uuid:{$uuid}",
+			&redis.FTSearchOptions{
+				DialectVersion: 2,
+				Params:         map[string]interface{}{"uuid": "123e4567-e89b-12d3-a456-426614174000"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(int64(1)))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("resource:1"))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "@uuid:{$uuid}",
+			&redis.FTSearchOptions{
+				DialectVersion: 4,
+				Params:         map[string]interface{}{"uuid": "123e4567-e89b-12d3-a456-426614174000"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(int64(1)))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("resource:1"))
+
+		client.HSet(ctx, "test:1", map[string]interface{}{
+			"uuid":  "3d3586fe-0416-4572-8ce",
+			"email": "adriano@acme.com.ie",
+			"num":   5,
+		})
+
+		// Create the index
+		ftCreateOptions := &redis.FTCreateOptions{
+			Prefix: []interface{}{"test:"},
+		}
+		schema := []*redis.FieldSchema{
+			{
+				FieldName: "uuid",
+				FieldType: redis.SearchFieldTypeTag,
+			},
+			{
+				FieldName: "email",
+				FieldType: redis.SearchFieldTypeTag,
+			},
+			{
+				FieldName: "num",
+				FieldType: redis.SearchFieldTypeNumeric,
+			},
+		}
+
+		val, err = client.FTCreate(ctx, "idx_hash", ftCreateOptions, schema...).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal("OK"))
+
+		ftSearchOptions := &redis.FTSearchOptions{
+			DialectVersion: 4,
+			Params: map[string]interface{}{
+				"uuid":  "3d3586fe-0416-4572-8ce",
+				"email": "adriano@acme.com.ie",
+			},
+		}
+
+		res, err = client.FTSearchWithArgs(ctx, "idx_hash", "@uuid:{$uuid}", ftSearchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("test:1"))
+		Expect(res.Docs[0].Fields["uuid"]).To(BeEquivalentTo("3d3586fe-0416-4572-8ce"))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx_hash", "@email:{$email}", ftSearchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("test:1"))
+		Expect(res.Docs[0].Fields["email"]).To(BeEquivalentTo("adriano@acme.com.ie"))
+
+		ftSearchOptions.Params = map[string]interface{}{"num": 5}
+		res, err = client.FTSearchWithArgs(ctx, "idx_hash", "@num:[5]", ftSearchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("test:1"))
+		Expect(res.Docs[0].Fields["num"]).To(BeEquivalentTo("5"))
+	})
+
 	It("should FTCreate GeoShape", Label("search", "ftcreate", "ftsearch"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.FieldSchema{FieldName: "geom", FieldType: redis.SearchFieldTypeGeoShape, GeoShapeFieldType: "FLAT"}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -1043,7 +1147,184 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res2.Total).To(BeEquivalentTo(int64(2)))
 	})
+
+	It("should create search index with FLOAT16 and BFLOAT16 vectors", Label("search", "ftcreate", "NonRedisEnterprise"), func() {
+		val, err := client.FTCreate(ctx, "index", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "float16", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{FlatOptions: &redis.FTFlatOptions{Type: "FLOAT16", Dim: 768, DistanceMetric: "COSINE"}}},
+			&redis.FieldSchema{FieldName: "bfloat16", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{FlatOptions: &redis.FTFlatOptions{Type: "BFLOAT16", Dim: 768, DistanceMetric: "COSINE"}}},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "index")
+	})
+
+	It("should test geoshapes query intersects and disjoint", Label("NonRedisEnterprise"), func() {
+		_, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.FieldSchema{
+			FieldName:         "g",
+			FieldType:         redis.SearchFieldTypeGeoShape,
+			GeoShapeFieldType: "FLAT",
+		}).Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		client.HSet(ctx, "doc_point1", "g", "POINT (10 10)")
+		client.HSet(ctx, "doc_point2", "g", "POINT (50 50)")
+		client.HSet(ctx, "doc_polygon1", "g", "POLYGON ((20 20, 25 35, 35 25, 20 20))")
+		client.HSet(ctx, "doc_polygon2", "g", "POLYGON ((60 60, 65 75, 70 70, 65 55, 60 60))")
+
+		intersection, err := client.FTSearchWithArgs(ctx, "idx1", "@g:[intersects $shape]",
+			&redis.FTSearchOptions{
+				DialectVersion: 3,
+				Params:         map[string]interface{}{"shape": "POLYGON((15 15, 75 15, 50 70, 20 40, 15 15))"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		_assert_geosearch_result(&intersection, []string{"doc_point2", "doc_polygon1"})
+
+		disjunction, err := client.FTSearchWithArgs(ctx, "idx1", "@g:[disjoint $shape]",
+			&redis.FTSearchOptions{
+				DialectVersion: 3,
+				Params:         map[string]interface{}{"shape": "POLYGON((15 15, 75 15, 50 70, 20 40, 15 15))"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		_assert_geosearch_result(&disjunction, []string{"doc_point1", "doc_polygon2"})
+	})
+
+	It("should test geoshapes query contains and within", func() {
+		_, err := client.FTCreate(ctx, "idx2", &redis.FTCreateOptions{}, &redis.FieldSchema{
+			FieldName:         "g",
+			FieldType:         redis.SearchFieldTypeGeoShape,
+			GeoShapeFieldType: "FLAT",
+		}).Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		client.HSet(ctx, "doc_point1", "g", "POINT (10 10)")
+		client.HSet(ctx, "doc_point2", "g", "POINT (50 50)")
+		client.HSet(ctx, "doc_polygon1", "g", "POLYGON ((20 20, 25 35, 35 25, 20 20))")
+		client.HSet(ctx, "doc_polygon2", "g", "POLYGON ((60 60, 65 75, 70 70, 65 55, 60 60))")
+
+		containsA, err := client.FTSearchWithArgs(ctx, "idx2", "@g:[contains $shape]",
+			&redis.FTSearchOptions{
+				DialectVersion: 3,
+				Params:         map[string]interface{}{"shape": "POINT(25 25)"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		_assert_geosearch_result(&containsA, []string{"doc_polygon1"})
+
+		containsB, err := client.FTSearchWithArgs(ctx, "idx2", "@g:[contains $shape]",
+			&redis.FTSearchOptions{
+				DialectVersion: 3,
+				Params:         map[string]interface{}{"shape": "POLYGON((24 24, 24 26, 25 25, 24 24))"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		_assert_geosearch_result(&containsB, []string{"doc_polygon1"})
+
+		within, err := client.FTSearchWithArgs(ctx, "idx2", "@g:[within $shape]",
+			&redis.FTSearchOptions{
+				DialectVersion: 3,
+				Params:         map[string]interface{}{"shape": "POLYGON((15 15, 75 15, 50 70, 20 40, 15 15))"},
+			}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		_assert_geosearch_result(&within, []string{"doc_point2", "doc_polygon1"})
+	})
+
+	It("should search missing fields", Label("search", "ftcreate", "ftsearch", "NonRedisEnterprise"), func() {
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{Prefix: []interface{}{"property:"}},
+			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: true},
+			&redis.FieldSchema{FieldName: "features", FieldType: redis.SearchFieldTypeTag, IndexMissing: true},
+			&redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText, IndexMissing: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "property:1", map[string]interface{}{
+			"title":       "Luxury Villa in Malibu",
+			"features":    "pool,sea view,modern",
+			"description": "A stunning modern villa overlooking the Pacific Ocean.",
+		})
+
+		client.HSet(ctx, "property:2", map[string]interface{}{
+			"title":       "Downtown Flat",
+			"description": "Modern flat in central Paris with easy access to metro.",
+		})
+
+		client.HSet(ctx, "property:3", map[string]interface{}{
+			"title":    "Beachfront Bungalow",
+			"features": "beachfront,sun deck",
+		})
+
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "ismissing(@features)", &redis.FTSearchOptions{DialectVersion: 4, Return: []redis.FTSearchReturn{{FieldName: "id"}}, NoContent: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("property:2"))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "-ismissing(@features)", &redis.FTSearchOptions{DialectVersion: 4, Return: []redis.FTSearchReturn{{FieldName: "id"}}, NoContent: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("property:1"))
+		Expect(res.Docs[1].ID).To(BeEquivalentTo("property:3"))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "ismissing(@description)", &redis.FTSearchOptions{DialectVersion: 4, Return: []redis.FTSearchReturn{{FieldName: "id"}}, NoContent: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("property:3"))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "-ismissing(@description)", &redis.FTSearchOptions{DialectVersion: 4, Return: []redis.FTSearchReturn{{FieldName: "id"}}, NoContent: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("property:1"))
+		Expect(res.Docs[1].ID).To(BeEquivalentTo("property:2"))
+	})
+
+	It("should search empty fields", Label("search", "ftcreate", "ftsearch", "NonRedisEnterprise"), func() {
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{Prefix: []interface{}{"property:"}},
+			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: true},
+			&redis.FieldSchema{FieldName: "features", FieldType: redis.SearchFieldTypeTag, IndexEmpty: true},
+			&redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText, IndexEmpty: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "property:1", map[string]interface{}{
+			"title":       "Luxury Villa in Malibu",
+			"features":    "pool,sea view,modern",
+			"description": "A stunning modern villa overlooking the Pacific Ocean.",
+		})
+
+		client.HSet(ctx, "property:2", map[string]interface{}{
+			"title":       "Downtown Flat",
+			"features":    "",
+			"description": "Modern flat in central Paris with easy access to metro.",
+		})
+
+		client.HSet(ctx, "property:3", map[string]interface{}{
+			"title":       "Beachfront Bungalow",
+			"features":    "beachfront,sun deck",
+			"description": "",
+		})
+
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "@features:{\"\"}", &redis.FTSearchOptions{DialectVersion: 4, Return: []redis.FTSearchReturn{{FieldName: "id"}}, NoContent: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("property:2"))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "-@features:{\"\"}", &redis.FTSearchOptions{DialectVersion: 4, Return: []redis.FTSearchReturn{{FieldName: "id"}}, NoContent: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("property:1"))
+		Expect(res.Docs[1].ID).To(BeEquivalentTo("property:3"))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "@description:''", &redis.FTSearchOptions{DialectVersion: 4, Return: []redis.FTSearchReturn{{FieldName: "id"}}, NoContent: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("property:3"))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "-@description:''", &redis.FTSearchOptions{DialectVersion: 4, Return: []redis.FTSearchReturn{{FieldName: "id"}}, NoContent: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("property:1"))
+		Expect(res.Docs[1].ID).To(BeEquivalentTo("property:2"))
+	})
 })
+
+func _assert_geosearch_result(result *redis.FTSearchResult, expectedDocIDs []string) {
+	ids := make([]string, len(result.Docs))
+	for i, doc := range result.Docs {
+		ids[i] = doc.ID
+	}
+	Expect(ids).To(ConsistOf(expectedDocIDs))
+	Expect(result.Total).To(BeEquivalentTo(len(expectedDocIDs)))
+}
 
 // It("should FTProfile Search and Aggregate", Label("search", "ftprofile"), func() {
 // 	val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.FieldSchema{FieldName: "t", FieldType: redis.SearchFieldTypeText}).Result()
