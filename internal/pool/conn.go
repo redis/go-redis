@@ -3,8 +3,10 @@ package pool
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"net"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -15,6 +17,9 @@ var noDeadline = time.Time{}
 type Conn struct {
 	usedAt  int64 // atomic
 	netConn net.Conn
+
+	// for checking the health status of the connection, it may be nil.
+	rawConn syscall.RawConn
 
 	rd *proto.Reader
 	bw *bufio.Writer
@@ -34,6 +39,7 @@ func NewConn(netConn net.Conn) *Conn {
 	cn.bw = bufio.NewWriter(netConn)
 	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
+	cn.setRawConn()
 	return cn
 }
 
@@ -50,6 +56,23 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 	cn.netConn = netConn
 	cn.rd.Reset(netConn)
 	cn.bw.Reset(netConn)
+	cn.setRawConn()
+}
+
+func (cn *Conn) setRawConn() {
+	conn := cn.netConn
+	if conn == nil {
+		return
+	}
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		conn = tlsConn.NetConn()
+	}
+
+	if sysConn, ok := conn.(syscall.Conn); ok {
+		if rawConn, err := sysConn.SyscallConn(); err == nil {
+			cn.rawConn = rawConn
+		}
+	}
 }
 
 func (cn *Conn) Write(b []byte) (int, error) {

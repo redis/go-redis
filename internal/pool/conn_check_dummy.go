@@ -2,8 +2,10 @@
 
 package pool
 
-import "net"
+import (
+	"syscall"
+)
 
-func connCheck(conn net.Conn) error {
+func connCheck(_ syscall.RawConn) error {
 	return nil
 }
