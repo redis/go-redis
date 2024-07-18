@@ -3,28 +3,14 @@
 package pool
 
 import (
-	"crypto/tls"
 	"errors"
 	"io"
-	"net"
 	"syscall"
-	"time"
 )
 
 var errUnexpectedRead = errors.New("unexpected read from socket")
 
-func connCheck(conn net.Conn) error {
-	// Reset previous timeout.
-	_ = conn.SetDeadline(time.Time{})
-
-	// Check if tls.Conn.
-	if c, ok := conn.(*tls.Conn); ok {
-		conn = c.NetConn()
-	}
-	sysConn, ok := conn.(syscall.Conn)
-	if !ok {
-		return nil
-	}
+func connCheck(sysConn syscall.Conn) error {
 	rawConn, err := sysConn.SyscallConn()
 	if err != nil {
 		return err

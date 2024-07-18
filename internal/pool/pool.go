@@ -499,6 +499,8 @@ func (p *ConnPool) Close() error {
 	return firstErr
 }
 
+var zeroTime = time.Time{}
+
 func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 	now := time.Now()
 
@@ -509,8 +511,12 @@ func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 		return false
 	}
 
-	if connCheck(cn.netConn) != nil {
-		return false
+	if cn.sysConn != nil {
+		// reset previous timeout.
+		_ = cn.netConn.SetDeadline(zeroTime)
+		if connCheck(cn.sysConn) != nil {
+			return false
+		}
 	}
 
 	cn.SetUsedAt(now)
