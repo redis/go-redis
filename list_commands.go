@@ -19,8 +19,8 @@ type ListCmdable interface {
 	LMPop(ctx context.Context, direction string, count int64, keys ...string) *KeyValuesCmd
 	LPop(ctx context.Context, key string) *StringCmd
 	LPopCount(ctx context.Context, key string, count int) *StringSliceCmd
-	LPos(ctx context.Context, key string, value string, args LPosArgs) *IntCmd
-	LPosCount(ctx context.Context, key string, value string, count int64, args LPosArgs) *IntSliceCmd
+	LPos(ctx context.Context, key, value string, args LPosArgs) *IntCmd
+	LPosCount(ctx context.Context, key, value string, count int64, args LPosArgs) *IntSliceCmd
 	LPush(ctx context.Context, key string, values ...interface{}) *IntCmd
 	LPushX(ctx context.Context, key string, values ...interface{}) *IntCmd
 	LRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd
@@ -152,7 +152,7 @@ type LPosArgs struct {
 	Rank, MaxLen int64
 }
 
-func (c cmdable) LPos(ctx context.Context, key string, value string, a LPosArgs) *IntCmd {
+func (c cmdable) LPos(ctx context.Context, key, value string, a LPosArgs) *IntCmd {
 	args := []interface{}{"lpos", key, value}
 	if a.Rank != 0 {
 		args = append(args, "rank", a.Rank)
@@ -166,7 +166,7 @@ func (c cmdable) LPos(ctx context.Context, key string, value string, a LPosArgs)
 	return cmd
 }
 
-func (c cmdable) LPosCount(ctx context.Context, key string, value string, count int64, a LPosArgs) *IntSliceCmd {
+func (c cmdable) LPosCount(ctx context.Context, key, value string, count int64, a LPosArgs) *IntSliceCmd {
 	args := []interface{}{"lpos", key, value, "count", count}
 	if a.Rank != 0 {
 		args = append(args, "rank", a.Rank)

@@ -201,7 +201,7 @@ func (c cmdable) FCallRO(ctx context.Context, function string, keys []string, ar
 	return cmd
 }
 
-func fcallArgs(command string, function string, keys []string, args ...interface{}) []interface{} {
+func fcallArgs(command, function string, keys []string, args ...interface{}) []interface{} {
 	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = command
 	cmdArgs[1] = function

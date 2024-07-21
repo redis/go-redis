@@ -12,7 +12,7 @@ type BitMapCmdable interface {
 	BitOpAnd(ctx context.Context, destKey string, keys ...string) *IntCmd
 	BitOpOr(ctx context.Context, destKey string, keys ...string) *IntCmd
 	BitOpXor(ctx context.Context, destKey string, keys ...string) *IntCmd
-	BitOpNot(ctx context.Context, destKey string, key string) *IntCmd
+	BitOpNot(ctx context.Context, destKey, key string) *IntCmd
 	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
 	BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd
 	BitField(ctx context.Context, key string, values ...interface{}) *IntSliceCmd
@@ -42,8 +42,10 @@ type BitCount struct {
 	Unit       string // BYTE(default) | BIT
 }
 
-const BitCountIndexByte string = "BYTE"
-const BitCountIndexBit string = "BIT"
+const (
+	BitCountIndexByte string = "BYTE"
+	BitCountIndexBit  string = "BIT"
+)
 
 func (c cmdable) BitCount(ctx context.Context, key string, bitCount *BitCount) *IntCmd {
 	args := make([]any, 2, 5)
@@ -90,7 +92,7 @@ func (c cmdable) BitOpXor(ctx context.Context, destKey string, keys ...string) *
 	return c.bitOp(ctx, "xor", destKey, keys...)
 }
 
-func (c cmdable) BitOpNot(ctx context.Context, destKey string, key string) *IntCmd {
+func (c cmdable) BitOpNot(ctx context.Context, destKey, key string) *IntCmd {
 	return c.bitOp(ctx, "not", destKey, key)
 }
 
