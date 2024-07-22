@@ -14,7 +14,7 @@ test: testdeps
 	    go test ./... -short -race && \
 	    go test ./... -run=NONE -bench=. -benchmem && \
 	    env GOOS=linux GOARCH=386 go test && \
-		go test -race -coverprofile=coverage.txt -covermode=atomic ./... \
+	    go test -coverprofile=coverage.txt -covermode=atomic ./... && \
 	    go vet); \
 	done
 	cd internal/customvet && go build .
