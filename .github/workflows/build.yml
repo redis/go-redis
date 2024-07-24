@@ -20,7 +20,7 @@ jobs:
 
     services:
       redis:
-        image: redis/redis-stack-server:edge
+        image: redis/redis-stack-server:7.4.0-rc2
         options: >-
           --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
         ports:
