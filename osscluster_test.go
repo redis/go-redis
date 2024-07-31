@@ -653,6 +653,32 @@ var _ = Describe("ClusterClient", func() {
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
+		It("determines hash slots correctly for generic commands", func() {
+			opt := redisClusterOptions()
+			opt.MaxRedirects = -1
+			client := cluster.newClusterClient(ctx, opt)
+
+			err := client.Do(ctx, "GET", "A").Err()
+			Expect(err).To(Equal(redis.Nil))
+
+			err = client.Do(ctx, []byte("GET"), []byte("A")).Err()
+			Expect(err).To(Equal(redis.Nil))
+
+			Eventually(func() error {
+				return client.SwapNodes(ctx, "A")
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+
+			err = client.Do(ctx, "GET", "A").Err()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("MOVED"))
+
+			err = client.Do(ctx, []byte("GET"), []byte("A")).Err()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("MOVED"))
+
+			Expect(client.Close()).NotTo(HaveOccurred())
+		})
+
 		It("follows node redirection immediately", func() {
 			// Configure retry backoffs far in excess of the expected duration of redirection
 			opt := redisClusterOptions()
