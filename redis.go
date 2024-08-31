@@ -412,14 +412,14 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	return lastErr
 }
 
-func (c *baseClient) isProblematicMethodsOfSearchResp3(cmd Cmder) bool {
+func (c *baseClient) isProblematicMethodsOfSearchResp3(ctx context.Context, cmd Cmder) bool {
 	if c.opt.Protocol != 3 {
 		return false
 	}
 
 	switch cmd.(type) {
 	case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
-		fmt.Println("Some RESP3 results for Redis Query Engine responses may change. Refer to the readme for guidance")
+		internal.Logger.Printf(ctx, "Some RESP3 results for Redis Query Engine responses may change. Refer to the readme for guidance")
 		return true
 	default:
 		return false
@@ -443,7 +443,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		}
 		readReplyFunc := cmd.readReply
 		// Apply unstable RESP3 search module.
-		if c.opt.UnstableResp3SearchModule && c.isProblematicMethodsOfSearchResp3(cmd) {
+		if c.opt.UnstableResp3SearchModule && c.isProblematicMethodsOfSearchResp3(ctx, cmd) {
 			readReplyFunc = cmd.readRawReply
 		}
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
