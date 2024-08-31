@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net" // TODO change to import only specific method (Not necesarry in compiling)
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -442,7 +442,8 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			return err
 		}
 		readReplyFunc := cmd.readReply
-		if c.isProblematicMethodsOfSearchResp3(cmd) {
+		// Apply unstable RESP3 search module.
+		if c.opt.UnstableResp3SearchModule && c.isProblematicMethodsOfSearchResp3(cmd) {
 			readReplyFunc = cmd.readRawReply
 		}
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
