@@ -182,6 +182,9 @@ rdb := redis.NewClient(&redis.Options{
 })
 ```
 
+#### Unstable RESP3 Structures for RediSearch Commands
+When connecting with Redis using RESP3 protocol, it's important to note that some response structures aren't final yet. This is the case for more complex structures in FT.SEARCH, FT.AGGREGATE, FT.Info, FT.SpellCheck and FT.SynDump. We recommend using RESP2 when using these commands, but we plan to stabilize the RESP3-based APIs in the coming versions. You can find more guidance in the upcoming release notes.
+
 ## Contributing
 
 Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
