@@ -5555,8 +5555,3 @@ func (cmd *MonitorCmd) Stop() {
 	defer cmd.mu.Unlock()
 	cmd.status = monitorStatusStop
 }
-
-type SearchCmd struct {
-	baseCmd
-	val interface{}
-}
