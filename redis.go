@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"net" // TODO change to import only specific method (Not necesarry in compiling)
 	"sync"
 	"sync/atomic"
 	"time"
@@ -412,6 +412,20 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	return lastErr
 }
 
+func (c *baseClient) isProblematicMethodsOfSearchResp3(cmd Cmder) bool {
+	if c.opt.Protocol != 3 {
+		return false
+	}
+
+	switch cmd.(type) {
+	case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
+		fmt.Println("Some RESP3 results for Redis Query Engine responses may change. Refer to the readme for guidance")
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -427,8 +441,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			atomic.StoreUint32(&retryTimeout, 1)
 			return err
 		}
-
-		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), cmd.readReply); err != nil {
+		readReplyFunc := cmd.readReply
+		if c.isProblematicMethodsOfSearchResp3(cmd) {
+			readReplyFunc = cmd.readRawReply
+		}
+		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
 			if cmd.readTimeout() == nil {
 				atomic.StoreUint32(&retryTimeout, 1)
 			} else {

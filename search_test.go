@@ -22,12 +22,12 @@ func WaitForIndexing(c *redis.Client, index string) {
 	}
 }
 
-var _ = Describe("RediSearch commands", Label("search"), func() {
+var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
+		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
