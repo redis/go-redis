@@ -412,18 +412,17 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	return lastErr
 }
 
-func (c *baseClient) assertStableCommand(ctx context.Context, cmd Cmder) bool {
-	if c.opt.Protocol != 2 && c.opt.UnstableResp3SearchModule {
-		switch cmd.(type) {
-		case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
-			internal.Logger.Printf(ctx, "Some RESP3 results for Redis Query Engine responses may change. Refer to the readme for guidance")
+func (c *baseClient) assertStableCommand(cmd Cmder) bool {
+	switch cmd.(type) {
+	case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
+		if c.opt.UnstableResp3SearchModule {
 			return true
-		default:
-			return false
+		} else {
+			panic("Some RESP3 results for Redis Query Engine responses may change. Refer to the readme for guidance")
 		}
+	default:
+		return false
 	}
-	return false
-
 }
 
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error) {
@@ -443,7 +442,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		}
 		readReplyFunc := cmd.readReply
 		// Apply unstable RESP3 search module.
-		if c.assertStableCommand(ctx, cmd) {
+		if c.opt.Protocol != 2 && c.assertStableCommand(cmd) {
 			readReplyFunc = cmd.readRawReply
 		}
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
