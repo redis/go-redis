@@ -412,7 +412,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	return lastErr
 }
 
-func (c *baseClient) assertStableCommand(cmd Cmder) bool {
+func (c *baseClient) assertUnstableCommand(cmd Cmder) bool {
 	switch cmd.(type) {
 	case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
 		if c.opt.UnstableResp3SearchModule {
@@ -442,7 +442,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		}
 		readReplyFunc := cmd.readReply
 		// Apply unstable RESP3 search module.
-		if c.opt.Protocol != 2 && c.assertStableCommand(cmd) {
+		if c.opt.Protocol != 2 && c.assertUnstableCommand(cmd) {
 			readReplyFunc = cmd.readRawReply
 		}
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
