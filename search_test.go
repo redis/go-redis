@@ -1457,11 +1457,13 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
 
 		// Test with UnstableResp3SearchModule false
-		options = &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
-		rawRes, _ := client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
-		rawVal = client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
-		Expect(rawRes).To(BeNil())
-		Expect(rawVal).To(BeNil())
+		Expect(func() {
+			options = &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
+			rawRes, _ := client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
+			rawVal = client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
+			Expect(rawRes).To(BeNil())
+			Expect(rawVal).To(BeNil())
+		}).Should(Panic())
 
 	})
 
@@ -1483,10 +1485,12 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(flags).To(ConsistOf("SORTABLE", "NOSTEM"))
 
 		// Test with UnstableResp3SearchModule false
-		rawResInfo, _ := client2.FTInfo(ctx, "idx1").RawResult()
-		rawValInfo := client2.FTInfo(ctx, "idx1").RawVal()
-		Expect(rawResInfo).To(BeNil())
-		Expect(rawValInfo).To(BeNil())
+		Expect(func() {
+			rawResInfo, _ := client2.FTInfo(ctx, "idx1").RawResult()
+			rawValInfo := client2.FTInfo(ctx, "idx1").RawVal()
+			Expect(rawResInfo).To(BeNil())
+			Expect(rawValInfo).To(BeNil())
+		}).Should(Panic())
 	})
 
 	It("should handle FTSpellCheck with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftspellcheck"), func() {
@@ -1508,10 +1512,12 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(results["impornant"].([]interface{})[0].(map[interface{}]interface{})["important"]).To(BeEquivalentTo(0.5))
 
 		// Test with UnstableResp3SearchModule false
-		rawResSpellCheck, _ := client2.FTSpellCheck(ctx, "idx1", "impornant").RawResult()
-		rawValSpellCheck := client2.FTSpellCheck(ctx, "idx1", "impornant").RawVal()
-		Expect(rawResSpellCheck).To(BeNil())
-		Expect(rawValSpellCheck).To(BeNil())
+		Expect(func() {
+			rawResSpellCheck, _ := client2.FTSpellCheck(ctx, "idx1", "impornant").RawResult()
+			rawValSpellCheck := client2.FTSpellCheck(ctx, "idx1", "impornant").RawVal()
+			Expect(rawResSpellCheck).To(BeNil())
+			Expect(rawValSpellCheck).To(BeNil())
+		}).Should(Panic())
 	})
 
 	It("should handle FTSearch with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftsearch"), func() {
@@ -1533,11 +1539,12 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(totalResults2).To(BeEquivalentTo(int64(1)))
 
 		// Test with UnstableResp3SearchModule false
-		rawRes2, _ := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawResult()
-		rawVal2 := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawVal()
-		Expect(rawRes2).To(BeNil())
-		Expect(rawVal2).To(BeNil())
-
+		Expect(func() {
+			rawRes2, _ := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawResult()
+			rawVal2 := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawVal()
+			Expect(rawRes2).To(BeNil())
+			Expect(rawVal2).To(BeNil())
+		}).Should(Panic())
 	})
 	It("should handle FTSynDump with Unstable RESP3 Search Module and without stability", Label("search", "ftsyndump"), func() {
 		text1 := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText}
@@ -1566,10 +1573,12 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(resSynDump.(map[interface{}]interface{})["baby"]).To(BeEquivalentTo([]interface{}{"id1"}))
 
 		// Test with UnstableResp3SearchModule false
-		rawResSynDump, _ := client2.FTSynDump(ctx, "idx1").RawResult()
-		rawValSynDump := client2.FTSynDump(ctx, "idx1").RawVal()
-		Expect(rawResSynDump).To(BeNil())
-		Expect(rawValSynDump).To(BeNil())
+		Expect(func() {
+			rawResSynDump, _ := client2.FTSynDump(ctx, "idx1").RawResult()
+			rawValSynDump := client2.FTSynDump(ctx, "idx1").RawVal()
+			Expect(rawResSynDump).To(BeNil())
+			Expect(rawValSynDump).To(BeNil())
+		}).Should(Panic())
 	})
 
 	It("should test not affected Resp 3 Search method - FTExplain", Label("search", "ftexplain"), func() {
@@ -1585,8 +1594,10 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(res1).ToNot(BeEmpty())
 
 		// Test with UnstableResp3SearchModule false
-		res2, err := client2.FTExplain(ctx, "txt", "@f3:f3_val @f2:f2_val @f1:f1_val").Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(res2).ToNot(BeEmpty())
+		Expect(func() {
+			res2, err := client2.FTExplain(ctx, "txt", "@f3:f3_val @f2:f2_val @f1:f1_val").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res2).ToNot(BeEmpty())
+		}).ShouldNot(Panic())
 	})
 })
