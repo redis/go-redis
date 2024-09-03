@@ -418,7 +418,7 @@ func (c *baseClient) assertUnstableCommand(cmd Cmder) bool {
 		if c.opt.UnstableResp3SearchModule {
 			return true
 		} else {
-			panic("Some RESP3 results for Redis Query Engine responses may change. Refer to the readme for guidance")
+			panic("RESP3 responses for this command are disabled because they may still change. Please set the flag UnstableResp3SearchModule .  See the [README](https://github.com/redis/go-redis/blob/master/README.md) and the release notes for guidance.")
 		}
 	default:
 		return false
