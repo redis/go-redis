@@ -370,11 +370,11 @@ var _ = Describe("Client", func() {
 		err := client.Set(ctx, "custom", val, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		var val2 customString
+		var val2 string
 		err = client.Get(ctx, "custom").Scan(&val2)
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(val2).To(Equal(val))
+		Expect(customString(val2)).To(Equal(val))
 	})
 })
 
