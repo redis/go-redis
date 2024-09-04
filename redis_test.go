@@ -362,6 +362,20 @@ var _ = Describe("Client", func() {
 
 		Expect(ip2).To(Equal(ip))
 	})
+
+	It("should set and scan custom type", func() {
+		type customString string
+
+		val := customString("hello")
+		err := client.Set(ctx, "custom", val, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		var val2 customString
+		err = client.Get(ctx, "custom").Scan(&val2)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(val2).To(Equal(val))
+	})
 })
 
 var _ = Describe("Client timeout", func() {
