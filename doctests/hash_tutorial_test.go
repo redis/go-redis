@@ -1,4 +1,4 @@
-// EXAMPLE: set_tutorial
+// EXAMPLE: hash_tutorial
 // HIDE_START
 package example_commands_test
 
@@ -56,7 +56,8 @@ func ExampleClient_set_get_all() {
 
 	fmt.Println(res3) // >>> 4972
 
-	res4, err := rdb.HGetAll(ctx, "bike:1").Result()
+	cmdReturn := rdb.HGetAll(ctx, "bike:1")
+	res4, err := cmdReturn.Result()
 
 	if err != nil {
 		panic(err)
@@ -64,6 +65,21 @@ func ExampleClient_set_get_all() {
 
 	fmt.Println(res4)
 	// >>> map[brand:Ergonom model:Deimos price:4972 type:Enduro bikes]
+
+	type BikeInfo struct {
+		Model string `redis:"model"`
+		Brand string `redis:"brand"`
+		Type  string `redis:"type"`
+		Price int    `redis:"price"`
+	}
+
+	var res4a BikeInfo
+
+	if err := cmdReturn.Scan(&res4a); err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res4a) // >>> {Deimos Ergonom Enduro bikes 4972}
 	// STEP_END
 
 	// Output:
@@ -71,6 +87,7 @@ func ExampleClient_set_get_all() {
 	// Deimos
 	// 4972
 	// map[brand:Ergonom model:Deimos price:4972 type:Enduro bikes]
+	// {Deimos Ergonom Enduro bikes 4972}
 }
 
 func ExampleClient_hmget() {
@@ -100,17 +117,34 @@ func ExampleClient_hmget() {
 	}
 
 	// STEP_START hmget
-	res5, err := rdb.HMGet(ctx, "bike:1", "model", "price").Result()
+	cmdReturn := rdb.HMGet(ctx, "bike:1", "model", "price")
+	res5, err := cmdReturn.Result()
 
 	if err != nil {
 		panic(err)
 	}
 
 	fmt.Println(res5) // >>> [Deimos 4972]
+
+	type BikeInfo struct {
+		Model string `redis:"model"`
+		Brand string `redis:"-"`
+		Type  string `redis:"-"`
+		Price int    `redis:"price"`
+	}
+
+	var res5a BikeInfo
+
+	if err := cmdReturn.Scan(&res5a); err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res5a) // >>> {Deimos 4972}
 	// STEP_END
 
 	// Output:
 	// [Deimos 4972]
+	// {Deimos 4972}
 }
 
 func ExampleClient_hincrby() {
