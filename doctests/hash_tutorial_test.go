@@ -79,7 +79,9 @@ func ExampleClient_set_get_all() {
 		panic(err)
 	}
 
-	fmt.Println(res4a) // >>> {Deimos Ergonom Enduro bikes 4972}
+	fmt.Printf("Model: %v, Brand: %v, Type: %v, Price: $%v\n",
+		res4a.Model, res4a.Brand, res4a.Type, res4a.Price)
+	// >>> Model: Deimos, Brand: Ergonom, Type: Enduro bikes, Price: $4972
 	// STEP_END
 
 	// Output:
@@ -87,7 +89,7 @@ func ExampleClient_set_get_all() {
 	// Deimos
 	// 4972
 	// map[brand:Ergonom model:Deimos price:4972 type:Enduro bikes]
-	// {Deimos Ergonom Enduro bikes 4972}
+	// Model: Deimos, Brand: Ergonom, Type: Enduro bikes, Price: $4972
 }
 
 func ExampleClient_hmget() {
@@ -139,12 +141,13 @@ func ExampleClient_hmget() {
 		panic(err)
 	}
 
-	fmt.Println(res5a) // >>> {Deimos 4972}
+	fmt.Printf("Model: %v, Price: $%v\n", res5a.Model, res5a.Price)
+	// >>> Model: Deimos, Price: $4972
 	// STEP_END
 
 	// Output:
 	// [Deimos 4972]
-	// {Deimos 4972}
+	// Model: Deimos, Price: $4972
 }
 
 func ExampleClient_hincrby() {
