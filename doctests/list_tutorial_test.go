@@ -589,6 +589,7 @@ func ExampleClient_rule11() {
 
 	if err != nil {
 		fmt.Println(err)
+		// >>> WRONGTYPE Operation against a key holding the wrong kind of value
 	}
 
 	fmt.Println(res41)
