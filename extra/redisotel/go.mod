@@ -22,3 +22,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	golang.org/x/sys v0.16.0 // indirect
 )
+
+retract (
+	v9.5.3 // This version was accidentally released.
+)
