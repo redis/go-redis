@@ -24,7 +24,9 @@ func ExampleClient_zadd() {
 	// REMOVE_END
 
 	// STEP_START zadd
-	res1, err := rdb.ZAdd(ctx, "racer_scores", redis.Z{Member: "Norem", Score: 10}).Result()
+	res1, err := rdb.ZAdd(ctx, "racer_scores",
+		redis.Z{Member: "Norem", Score: 10},
+	).Result()
 
 	if err != nil {
 		panic(err)
@@ -32,7 +34,9 @@ func ExampleClient_zadd() {
 
 	fmt.Println(res1) // >>> 1
 
-	res2, err := rdb.ZAdd(ctx, "racer_scores", redis.Z{Member: "Castilla", Score: 12}).Result()
+	res2, err := rdb.ZAdd(ctx, "racer_scores",
+		redis.Z{Member: "Castilla", Score: 12},
+	).Result()
 
 	if err != nil {
 		panic(err)
@@ -95,7 +99,8 @@ func ExampleClient_zrange() {
 		panic(err)
 	}
 
-	fmt.Println(res4) // >>> [Ford Sam-Bodden Norem Royce Castilla Prickett]
+	fmt.Println(res4)
+	// >>> [Ford Sam-Bodden Norem Royce Castilla Prickett]
 
 	res5, err := rdb.ZRevRange(ctx, "racer_scores", 0, -1).Result()
 
@@ -103,7 +108,8 @@ func ExampleClient_zrange() {
 		panic(err)
 	}
 
-	fmt.Println(res5) // >>> [Prickett Castilla Royce Norem Sam-Bodden Ford]
+	fmt.Println(res5)
+	// >>> [Prickett Castilla Royce Norem Sam-Bodden Ford]
 	// STEP_END
 
 	// Output:
@@ -144,7 +150,8 @@ func ExampleClient_zrangewithscores() {
 		panic(err)
 	}
 
-	fmt.Println(res6) // >>> [{6 Ford} {8 Sam-Bodden} {10 Norem} {10 Royce} {12 Castilla} {14 Prickett}]
+	fmt.Println(res6)
+	// >>> [{6 Ford} {8 Sam-Bodden} {10 Norem} {10 Royce} {12 Castilla} {14 Prickett}]
 	// STEP_END
 
 	// Output:
@@ -179,13 +186,15 @@ func ExampleClient_zrangebyscore() {
 
 	// STEP_START zrangebyscore
 	res7, err := rdb.ZRangeByScore(ctx, "racer_scores",
-		&redis.ZRangeBy{Min: "-inf", Max: "10"}).Result()
+		&redis.ZRangeBy{Min: "-inf", Max: "10"},
+	).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(res7) // >>> [Ford Sam-Bodden Norem Royce]
+	fmt.Println(res7)
+	// >>> [Ford Sam-Bodden Norem Royce]
 	// STEP_END
 
 	// Output:
@@ -241,7 +250,8 @@ func ExampleClient_zremrangebyscore() {
 		panic(err)
 	}
 
-	fmt.Println(res10) // >>> [Norem Royce Prickett]
+	fmt.Println(res10)
+	// >>> [Norem Royce Prickett]
 	// STEP_END
 
 	// Output:
@@ -337,9 +347,12 @@ func ExampleClient_zaddlex() {
 		panic(err)
 	}
 
-	fmt.Println(res14) // >>> [Castilla Ford Norem Prickett Royce Sam-Bodden]
+	fmt.Println(res14)
+	// >>> [Castilla Ford Norem Prickett Royce Sam-Bodden]
 
-	res15, err := rdb.ZRangeByLex(ctx, "racer_scores", &redis.ZRangeBy{Min: "[A", Max: "[L"}).Result()
+	res15, err := rdb.ZRangeByLex(ctx, "racer_scores", &redis.ZRangeBy{
+		Min: "[A", Max: "[L",
+	}).Result()
 
 	if err != nil {
 		panic(err)
@@ -368,7 +381,9 @@ func ExampleClient_leaderboard() {
 	// REMOVE_END
 
 	// STEP_START leaderboard
-	res16, err := rdb.ZAdd(ctx, "racer_scores", redis.Z{Member: "Wood", Score: 100}).Result()
+	res16, err := rdb.ZAdd(ctx, "racer_scores",
+		redis.Z{Member: "Wood", Score: 100},
+	).Result()
 
 	if err != nil {
 		panic(err)
@@ -376,7 +391,9 @@ func ExampleClient_leaderboard() {
 
 	fmt.Println(res16) // >>> 1
 
-	res17, err := rdb.ZAdd(ctx, "racer_scores", redis.Z{Member: "Henshaw", Score: 100}).Result()
+	res17, err := rdb.ZAdd(ctx, "racer_scores",
+		redis.Z{Member: "Henshaw", Score: 100},
+	).Result()
 
 	if err != nil {
 		panic(err)
@@ -384,7 +401,9 @@ func ExampleClient_leaderboard() {
 
 	fmt.Println(res17) // >>> 1
 
-	res18, err := rdb.ZAdd(ctx, "racer_scores", redis.Z{Member: "Henshaw", Score: 150}).Result()
+	res18, err := rdb.ZAdd(ctx, "racer_scores",
+		redis.Z{Member: "Henshaw", Score: 150},
+	).Result()
 
 	if err != nil {
 		panic(err)
