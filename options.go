@@ -155,7 +155,7 @@ type Options struct {
 	IdentitySuffix string
 
 	// Enable Unstable mode for Redis Search module with RESP3.
-	UnstableResp3SearchModule bool
+	UnstableResp3 bool
 }
 
 func (opt *Options) init() {

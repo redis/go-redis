@@ -80,9 +80,9 @@ type FailoverOptions struct {
 
 	TLSConfig *tls.Config
 
-	DisableIndentity          bool
-	IdentitySuffix            string
-	UnstableResp3SearchModule bool
+	DisableIndentity bool
+	IdentitySuffix   string
+	UnstableResp3    bool
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -118,9 +118,9 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 		TLSConfig: opt.TLSConfig,
 
-		DisableIndentity:          opt.DisableIndentity,
-		IdentitySuffix:            opt.IdentitySuffix,
-		UnstableResp3SearchModule: opt.UnstableResp3SearchModule,
+		DisableIndentity: opt.DisableIndentity,
+		IdentitySuffix:   opt.IdentitySuffix,
+		UnstableResp3:    opt.UnstableResp3,
 	}
 }
 
@@ -156,9 +156,9 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 
 		TLSConfig: opt.TLSConfig,
 
-		DisableIndentity:          opt.DisableIndentity,
-		IdentitySuffix:            opt.IdentitySuffix,
-		UnstableResp3SearchModule: opt.UnstableResp3SearchModule,
+		DisableIndentity: opt.DisableIndentity,
+		IdentitySuffix:   opt.IdentitySuffix,
+		UnstableResp3:    opt.UnstableResp3,
 	}
 }
 

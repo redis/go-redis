@@ -66,9 +66,9 @@ type UniversalOptions struct {
 
 	MasterName string
 
-	DisableIndentity          bool
-	IdentitySuffix            string
-	UnstableResp3SearchModule bool
+	DisableIndentity bool
+	IdentitySuffix   string
+	UnstableResp3    bool
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -159,9 +159,9 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 
 		TLSConfig: o.TLSConfig,
 
-		DisableIndentity:          o.DisableIndentity,
-		IdentitySuffix:            o.IdentitySuffix,
-		UnstableResp3SearchModule: o.UnstableResp3SearchModule,
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
+		UnstableResp3:    o.UnstableResp3,
 	}
 }
 
@@ -203,9 +203,9 @@ func (o *UniversalOptions) Simple() *Options {
 
 		TLSConfig: o.TLSConfig,
 
-		DisableIndentity:          o.DisableIndentity,
-		IdentitySuffix:            o.IdentitySuffix,
-		UnstableResp3SearchModule: o.UnstableResp3SearchModule,
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
+		UnstableResp3:    o.UnstableResp3,
 	}
 }
 

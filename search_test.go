@@ -1424,7 +1424,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 	var client2 *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3SearchModule: true})
+		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3: true})
 		client2 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
@@ -1456,7 +1456,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(results[1].(map[interface{}]interface{})["extra_attributes"].(map[interface{}]interface{})["CreatedDateTimeUTC"]).
 			To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
 
-		// Test with UnstableResp3SearchModule false
+		// Test with UnstableResp3 false
 		Expect(func() {
 			options = &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
 			rawRes, _ := client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
@@ -1484,7 +1484,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		flags = attributes[0].(map[interface{}]interface{})["flags"].([]interface{})
 		Expect(flags).To(ConsistOf("SORTABLE", "NOSTEM"))
 
-		// Test with UnstableResp3SearchModule false
+		// Test with UnstableResp3 false
 		Expect(func() {
 			rawResInfo, _ := client2.FTInfo(ctx, "idx1").RawResult()
 			rawValInfo := client2.FTInfo(ctx, "idx1").RawVal()
@@ -1511,7 +1511,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		results := resSpellCheck.(map[interface{}]interface{})["results"].(map[interface{}]interface{})
 		Expect(results["impornant"].([]interface{})[0].(map[interface{}]interface{})["important"]).To(BeEquivalentTo(0.5))
 
-		// Test with UnstableResp3SearchModule false
+		// Test with UnstableResp3 false
 		Expect(func() {
 			rawResSpellCheck, _ := client2.FTSpellCheck(ctx, "idx1", "impornant").RawResult()
 			rawValSpellCheck := client2.FTSpellCheck(ctx, "idx1", "impornant").RawVal()
@@ -1538,7 +1538,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		totalResults2 := res2.(map[interface{}]interface{})["total_results"]
 		Expect(totalResults2).To(BeEquivalentTo(int64(1)))
 
-		// Test with UnstableResp3SearchModule false
+		// Test with UnstableResp3 false
 		Expect(func() {
 			rawRes2, _ := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawResult()
 			rawVal2 := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawVal()
@@ -1572,7 +1572,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(valSynDump).To(BeEquivalentTo(resSynDump))
 		Expect(resSynDump.(map[interface{}]interface{})["baby"]).To(BeEquivalentTo([]interface{}{"id1"}))
 
-		// Test with UnstableResp3SearchModule false
+		// Test with UnstableResp3 false
 		Expect(func() {
 			rawResSynDump, _ := client2.FTSynDump(ctx, "idx1").RawResult()
 			rawValSynDump := client2.FTSynDump(ctx, "idx1").RawVal()
@@ -1593,7 +1593,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res1).ToNot(BeEmpty())
 
-		// Test with UnstableResp3SearchModule false
+		// Test with UnstableResp3 false
 		Expect(func() {
 			res2, err := client2.FTExplain(ctx, "txt", "@f3:f3_val @f2:f2_val @f1:f1_val").Result()
 			Expect(err).NotTo(HaveOccurred())
