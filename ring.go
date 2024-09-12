@@ -100,6 +100,7 @@ type RingOptions struct {
 
 	DisableIndentity bool
 	IdentitySuffix   string
+	UnstableResp3    bool
 }
 
 func (opt *RingOptions) init() {
@@ -168,6 +169,7 @@ func (opt *RingOptions) clientOptions() *Options {
 
 		DisableIndentity: opt.DisableIndentity,
 		IdentitySuffix:   opt.IdentitySuffix,
+		UnstableResp3:    opt.UnstableResp3,
 	}
 }
 

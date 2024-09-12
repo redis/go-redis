@@ -638,6 +638,14 @@ func (cmd *AggregateCmd) Result() (*FTAggregateResult, error) {
 	return cmd.val, cmd.err
 }
 
+func (cmd *AggregateCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *AggregateCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
+}
+
 func (cmd *AggregateCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
@@ -1337,6 +1345,13 @@ func (cmd *FTInfoCmd) Val() FTInfoResult {
 	return cmd.val
 }
 
+func (cmd *FTInfoCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *FTInfoCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
+}
 func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	n, err := rd.ReadMapLen()
 	if err != nil {
@@ -1445,6 +1460,14 @@ func (cmd *FTSpellCheckCmd) Result() ([]SpellCheckResult, error) {
 
 func (cmd *FTSpellCheckCmd) Val() []SpellCheckResult {
 	return cmd.val
+}
+
+func (cmd *FTSpellCheckCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *FTSpellCheckCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
 }
 
 func (cmd *FTSpellCheckCmd) readReply(rd *proto.Reader) (err error) {
@@ -1626,6 +1649,14 @@ func (cmd *FTSearchCmd) Result() (FTSearchResult, error) {
 
 func (cmd *FTSearchCmd) Val() FTSearchResult {
 	return cmd.val
+}
+
+func (cmd *FTSearchCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *FTSearchCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
 }
 
 func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
@@ -1902,6 +1933,14 @@ func (cmd *FTSynDumpCmd) Val() []FTSynDumpResult {
 
 func (cmd *FTSynDumpCmd) Result() ([]FTSynDumpResult, error) {
 	return cmd.val, cmd.err
+}
+
+func (cmd *FTSynDumpCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *FTSynDumpCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
 }
 
 func (cmd *FTSynDumpCmd) readReply(rd *proto.Reader) error {
