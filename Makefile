@@ -32,7 +32,7 @@ build:
 
 testdata/redis:
 	mkdir -p $@
-	wget -qO- https://download.redis.io/releases/redis-7.4-rc2.tar.gz  | tar xvz --strip-components=1 -C $@
+	wget -qO- https://github.com/redis/redis/archive/refs/tags/8.0-m01.tar.gz  | tar xvz --strip-components=1 -C $@
 
 testdata/redis/src/redis-server: testdata/redis
 	cd $< && make all
