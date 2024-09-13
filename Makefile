@@ -35,7 +35,7 @@ testdata/redis:
 	wget -qO- https://github.com/redis/redis/archive/refs/tags/8.0-m01.tar.gz  | tar xvz --strip-components=1 -C $@
 
 testdata/redis/src/redis-server: testdata/redis
-	cd $< && make all
+	cd $< && make BUILD_WITH_MODULES=yes
 
 fmt:
 	gofumpt -w ./
