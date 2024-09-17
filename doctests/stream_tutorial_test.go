@@ -95,7 +95,7 @@ func ExampleClient_xadd() {
 	// 3
 }
 
-func ExampleClient_xrange() {
+func ExampleClient_racefrance1() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{
@@ -164,67 +164,6 @@ func ExampleClient_xrange() {
 	// >>> [{1692632086370-0 map[location_id:1 position:1 rider:Castilla...
 	// STEP_END
 
-	// Output:
-	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]
-}
-
-func ExampleClient_xreadblock() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:france")
-	// REMOVE_END
-	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       30.2,
-			"position":    1,
-			"location_id": 1,
-		},
-		ID: "1692632086370-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Norem",
-			"speed":       28.8,
-			"position":    3,
-			"location_id": 1,
-		},
-		ID: "1692632094485-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Prickett",
-			"speed":       29.7,
-			"position":    2,
-			"location_id": 1,
-		},
-		ID: "1692632102976-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
 	// STEP_START xread_block
 	res5, err := rdb.XRead(ctx, &redis.XReadArgs{
 		Streams: []string{"race:france", "0"},
@@ -239,23 +178,6 @@ func ExampleClient_xreadblock() {
 	fmt.Println(res5)
 	// >>> // [{race:france [{1692632086370-0 map[location_id:1 position:1...
 	// STEP_END
-
-	// Output:
-	// [{race:france [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]} {1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]}]}]
-}
-
-func ExampleClient_xadd2() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:france")
-	// REMOVE_END
 
 	// STEP_START xadd_2
 	res6, err := rdb.XAdd(ctx, &redis.XAddArgs{
@@ -275,93 +197,6 @@ func ExampleClient_xadd2() {
 	//fmt.Println(res6) // >>> 1692632147973-0
 	// STEP_END
 
-	// REMOVE_START
-	UNUSED(res6)
-	// REMOVE_END
-
-	xlen, err := rdb.XLen(ctx, "race:france").Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(xlen) // >>> 1
-	// Output:
-	// 1
-}
-
-func ExampleClient_xlen() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:france")
-	// REMOVE_END
-
-	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       30.2,
-			"position":    1,
-			"location_id": 1,
-		},
-		ID: "1692632086370-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Norem",
-			"speed":       28.8,
-			"position":    3,
-			"location_id": 1,
-		},
-		ID: "1692632094485-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Prickett",
-			"speed":       29.7,
-			"position":    2,
-			"location_id": 1,
-		},
-		ID: "1692632102976-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       29.9,
-			"position":    1,
-			"location_id": 2,
-		},
-		ID: "1692632147973-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
 	// STEP_START xlen
 	res7, err := rdb.XLen(ctx, "race:france").Result()
 
@@ -372,11 +207,17 @@ func ExampleClient_xlen() {
 	fmt.Println(res7) // >>> 4
 	// STEP_END
 
+	// REMOVE_START
+	UNUSED(res6)
+	// REMOVE_END
+
 	// Output:
+	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]
+	// [{race:france [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]} {1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]}]}]
 	// 4
 }
 
-func ExampleClient_xaddid() {
+func ExampleClient_raceusa() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{
@@ -419,37 +260,6 @@ func ExampleClient_xaddid() {
 	fmt.Println(res9) // >>> 0-2
 	// STEP_END
 
-	// Output:
-	// 0-1
-	// 0-2
-}
-
-func ExampleClient_xaddbadid() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:usa")
-	// REMOVE_END
-
-	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:usa",
-		Values: map[string]interface{}{
-
-			"racer": "Castilla",
-		},
-		ID: "0-1",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
 	// STEP_START xadd_bad_id
 	res10, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Values: map[string]interface{}{
@@ -465,47 +275,6 @@ func ExampleClient_xaddbadid() {
 
 	fmt.Println(res10)
 	// STEP_END
-
-	// Output:
-	// ERR The ID specified in XADD is equal or smaller than the target stream top item
-}
-
-func ExampleClient_xadd7() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:usa")
-	// REMOVE_END
-
-	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:usa",
-		Values: map[string]interface{}{
-			"racer": "Castilla",
-		},
-		ID: "0-1",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:usa",
-		Values: map[string]interface{}{
-			"racer": "Norem",
-		},
-		ID: "0-2",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
 
 	// STEP_START xadd_7
 	res11, err := rdb.XAdd(ctx, &redis.XAddArgs{
@@ -524,10 +293,14 @@ func ExampleClient_xadd7() {
 	// STEP_END
 
 	// Output:
+	// 0-1
+	// 0-2
+	// ERR The ID specified in XADD is equal or smaller than the target stream top item
+	//
 	// 0-3
 }
 
-func ExampleClient_xrangeall() {
+func ExampleClient_racefrance2() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{
@@ -610,82 +383,6 @@ func ExampleClient_xrangeall() {
 	// >>> [{1692632086370-0 map[location_id:1 position:1 rider:Castilla...
 	// STEP_END
 
-	// Output:
-	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]} {1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
-}
-
-func ExampleClient_xrangetime() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:france")
-	// REMOVE_END
-
-	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       30.2,
-			"position":    1,
-			"location_id": 1,
-		},
-		ID: "1692632086370-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Norem",
-			"speed":       28.8,
-			"position":    3,
-			"location_id": 1,
-		},
-		ID: "1692632094485-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Prickett",
-			"speed":       29.7,
-			"position":    2,
-			"location_id": 1,
-		},
-		ID: "1692632102976-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       29.9,
-			"position":    1,
-			"location_id": 2,
-		},
-		ID: "1692632147973-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
 	// STEP_START xrange_time
 	res13, err := rdb.XRange(ctx, "race:france",
 		"1692632086369", "1692632086371",
@@ -699,82 +396,6 @@ func ExampleClient_xrangetime() {
 	// >>> [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]}]
 	// STEP_END
 
-	// Output:
-	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]}]
-}
-
-func ExampleClient_xrangestep1() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:france")
-	// REMOVE_END
-
-	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       30.2,
-			"position":    1,
-			"location_id": 1,
-		},
-		ID: "1692632086370-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Norem",
-			"speed":       28.8,
-			"position":    3,
-			"location_id": 1,
-		},
-		ID: "1692632094485-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Prickett",
-			"speed":       29.7,
-			"position":    2,
-			"location_id": 1,
-		},
-		ID: "1692632102976-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       29.9,
-			"position":    1,
-			"location_id": 2,
-		},
-		ID: "1692632147973-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
 	// STEP_START xrange_step_1
 	res14, err := rdb.XRangeN(ctx, "race:france", "-", "+", 2).Result()
 
@@ -786,82 +407,6 @@ func ExampleClient_xrangestep1() {
 	// >>> [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]
 	// STEP_END
 
-	// Output:
-	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]
-}
-
-func ExampleClient_xrangestep2() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:france")
-	// REMOVE_END
-
-	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       30.2,
-			"position":    1,
-			"location_id": 1,
-		},
-		ID: "1692632086370-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Norem",
-			"speed":       28.8,
-			"position":    3,
-			"location_id": 1,
-		},
-		ID: "1692632094485-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Prickett",
-			"speed":       29.7,
-			"position":    2,
-			"location_id": 1,
-		},
-		ID: "1692632102976-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       29.9,
-			"position":    1,
-			"location_id": 2,
-		},
-		ID: "1692632147973-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
 	// STEP_START xrange_step_2
 	res15, err := rdb.XRangeN(ctx, "race:france",
 		"(1692632094485-0", "+", 2,
@@ -874,83 +419,6 @@ func ExampleClient_xrangestep2() {
 	fmt.Println(res15)
 	// >>> [{1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
 	// STEP_END
-
-	// Output:
-	// [{1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
-}
-
-func ExampleClient_xrangeempty() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:france")
-	// REMOVE_END
-
-	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       30.2,
-			"position":    1,
-			"location_id": 1,
-		},
-		ID: "1692632086370-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Norem",
-			"speed":       28.8,
-			"position":    3,
-			"location_id": 1,
-		},
-		ID: "1692632094485-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Prickett",
-			"speed":       29.7,
-			"position":    2,
-			"location_id": 1,
-		},
-		ID: "1692632102976-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       29.9,
-			"position":    1,
-			"location_id": 2,
-		},
-		ID: "1692632147973-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
 
 	// STEP_START xrange_empty
 	res16, err := rdb.XRangeN(ctx, "race:france",
@@ -965,83 +433,6 @@ func ExampleClient_xrangeempty() {
 	// >>> []
 	// STEP_END
 
-	// Output:
-	// []
-}
-
-func ExampleClient_xrevrange() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:france")
-	// REMOVE_END
-
-	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       30.2,
-			"position":    1,
-			"location_id": 1,
-		},
-		ID: "1692632086370-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Norem",
-			"speed":       28.8,
-			"position":    3,
-			"location_id": 1,
-		},
-		ID: "1692632094485-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Prickett",
-			"speed":       29.7,
-			"position":    2,
-			"location_id": 1,
-		},
-		ID: "1692632102976-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       29.9,
-			"position":    1,
-			"location_id": 2,
-		},
-		ID: "1692632147973-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
 	// STEP_START xrevrange
 	res17, err := rdb.XRevRangeN(ctx, "race:france", "+", "-", 1).Result()
 
@@ -1052,83 +443,6 @@ func ExampleClient_xrevrange() {
 	fmt.Println(res17)
 	// >>> [{1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
 	// STEP_END
-
-	// Output:
-	// [{1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
-}
-
-func ExampleClient_xread() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	rdb.Del(ctx, "race:france")
-	// REMOVE_END
-
-	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       30.2,
-			"position":    1,
-			"location_id": 1,
-		},
-		ID: "1692632086370-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Norem",
-			"speed":       28.8,
-			"position":    3,
-			"location_id": 1,
-		},
-		ID: "1692632094485-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Prickett",
-			"speed":       29.7,
-			"position":    2,
-			"location_id": 1,
-		},
-		ID: "1692632102976-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "race:france",
-		Values: map[string]interface{}{
-			"rider":       "Castilla",
-			"speed":       29.9,
-			"position":    1,
-			"location_id": 2,
-		},
-		ID: "1692632147973-0",
-	}).Result()
-
-	if err != nil {
-		panic(err)
-	}
 
 	// STEP_START xread
 	res18, err := rdb.XRead(ctx, &redis.XReadArgs{
@@ -1145,5 +459,397 @@ func ExampleClient_xread() {
 	// STEP_END
 
 	// Output:
+	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]} {1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
+	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]}]
+	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]
+	// [{1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
+	// []
+	// [{1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
 	// [{race:france [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]}]
+}
+
+func ExampleClient_xgroupcreate() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password docs
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	rdb.Del(ctx, "race:france")
+	// REMOVE_END
+
+	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:france",
+		Values: map[string]interface{}{
+			"rider":       "Castilla",
+			"speed":       30.2,
+			"position":    1,
+			"location_id": 1,
+		},
+		ID: "1692632086370-0",
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	// STEP_START xgroup_create
+	res19, err := rdb.XGroupCreate(ctx, "race:france", "france_riders", "$").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res19) // >>> OK
+	// STEP_END
+
+	// Output:
+	// OK
+}
+
+func ExampleClient_xgroupcreatemkstream() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password docs
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	rdb.Del(ctx, "race:italy")
+	// REMOVE_END
+
+	// STEP_START xgroup_create_mkstream
+	res20, err := rdb.XGroupCreateMkStream(ctx,
+		"race:italy", "italy_riders", "$",
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res20) // >>> OK
+	// STEP_END
+
+	// Output:
+	// OK
+}
+
+func ExampleClient_xgroupread() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password docs
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	rdb.Del(ctx, "race:italy")
+	// REMOVE_END
+
+	_, err := rdb.XGroupCreateMkStream(ctx,
+		"race:italy", "italy_riders", "$",
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	// STEP_START xgroup_read
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		Values: map[string]interface{}{"rider": "Castilla"},
+	}).Result()
+	// >>> 1692632639151-0
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		Values: map[string]interface{}{"rider": "Royce"},
+	}).Result()
+	// >>> 1692632647899-0
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		Values: map[string]interface{}{"rider": "Sam-Bodden"},
+	}).Result()
+	// >>> 1692632662819-0
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		Values: map[string]interface{}{"rider": "Prickett"},
+	}).Result()
+	// >>> 1692632670501-0
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		Values: map[string]interface{}{"rider": "Norem"},
+	}).Result()
+	// >>> 1692632678249-0
+
+	if err != nil {
+		panic(err)
+	}
+
+	// fmt.Println(res25)
+
+	res21, err := rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Streams:  []string{"race:italy", ">"},
+		Group:    "italy_riders",
+		Consumer: "Alice",
+		Count:    1,
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	// fmt.Println(res21)
+	// >>> [{race:italy [{1692632639151-0 map[rider:Castilla]}]}]
+	// STEP_END
+
+	// REMOVE_START
+	UNUSED(res21)
+	// REMOVE_END
+
+	xlen, err := rdb.XLen(ctx, "race:italy").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(xlen)
+
+	// Output:
+	// 5
+}
+
+func ExampleClient_raceitaly() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password docs
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	rdb.Del(ctx, "race:italy")
+	rdb.XGroupDestroy(ctx, "race:italy", "italy_riders")
+	// REMOVE_END
+
+	_, err := rdb.XGroupCreateMkStream(ctx,
+		"race:italy", "italy_riders", "$",
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		Values: map[string]interface{}{"rider": "Castilla"},
+		ID:     "1692632639151-0",
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		Values: map[string]interface{}{"rider": "Royce"},
+		ID:     "1692632647899-0",
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		Values: map[string]interface{}{"rider": "Sam-Bodden"},
+		ID:     "1692632662819-0",
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		Values: map[string]interface{}{"rider": "Prickett"},
+		ID:     "1692632670501-0",
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		Values: map[string]interface{}{"rider": "Norem"},
+		ID:     "1692632678249-0",
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Streams:  []string{"race:italy", ">"},
+		Group:    "italy_riders",
+		Consumer: "Alice",
+		Count:    1,
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+	// STEP_START xgroup_read_id
+	res22, err := rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Streams:  []string{"race:italy", "0"},
+		Group:    "italy_riders",
+		Consumer: "Alice",
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res22)
+	// >>> [{race:italy [{1692632639151-0 map[rider:Castilla]}]}]
+	// STEP_END
+
+	// STEP_START xack
+	res23, err := rdb.XAck(ctx,
+		"race:italy", "italy_riders", "1692632639151-0",
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res23) // >>> 1
+
+	res24, err := rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Streams:  []string{"race:italy", "0"},
+		Group:    "italy_riders",
+		Consumer: "Alice",
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res24)
+	// >>> [{race:italy []}]
+	// STEP_END
+
+	// STEP_START xgroup_read_bob
+	res25, err := rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Streams:  []string{"race:italy", ">"},
+		Group:    "italy_riders",
+		Consumer: "Bob",
+		Count:    2,
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res25)
+	// >>> [{race:italy [{1692632647899-0 map[rider:Royce]} {1692632662819-0 map[rider:Sam-Bodden]}]}]
+
+	// STEP_END
+
+	// STEP_START xpending
+	res26, err := rdb.XPending(ctx, "race:italy", "italy_riders").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res26)
+	// >>> &{2 1692632647899-0 1692632662819-0 map[Bob:2]}
+	// STEP_END
+
+	// STEP_START xpending_plus_minus
+	res27, err := rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: "race:italy",
+		Group:  "italy_riders",
+		Start:  "-",
+		End:    "+",
+		Count:  10,
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	// fmt.Println(res27)
+	// >>> [{1692632647899-0 Bob 0s 1} {1692632662819-0 Bob 0s 1}]
+	// STEP_END
+
+	// STEP_START xrange_pending
+	res28, err := rdb.XRange(ctx, "race:italy",
+		"1692632647899-0", "1692632647899-0",
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res28)
+	// STEP_END
+
+	// STEP_START xclaim
+	res29, err := rdb.XClaim(ctx, &redis.XClaimArgs{
+		Stream:   "race:italy",
+		Group:    "italy_riders",
+		Consumer: "Alice",
+		MinIdle:  0,
+		Messages: []string{"1692632647899-0"},
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res29)
+	// >>> [{1692632647899-0 map[rider:Royce]}]
+	// STEP_END
+
+	// REMOVE_START
+	UNUSED(res27)
+	// REMOVE_END
+
+	// Output:
+	// [{race:italy [{1692632639151-0 map[rider:Castilla]}]}]
+	// 1
+	// [{race:italy []}]
+	// [{race:italy [{1692632647899-0 map[rider:Royce]} {1692632662819-0 map[rider:Sam-Bodden]}]}]
+	// &{2 1692632647899-0 1692632662819-0 map[Bob:2]}
+	// [{1692632647899-0 map[rider:Royce]}]
+	// [{1692632647899-0 map[rider:Royce]}]
 }
