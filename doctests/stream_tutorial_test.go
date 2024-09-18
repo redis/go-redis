@@ -840,8 +840,147 @@ func ExampleClient_raceitaly() {
 	// >>> [{1692632647899-0 map[rider:Royce]}]
 	// STEP_END
 
+	// STEP_START xautoclaim
+	res30, res30a, err := rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		Stream:   "race:italy",
+		Group:    "italy_riders",
+		Consumer: "Alice",
+		Start:    "0-0",
+		Count:    1,
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res30)  // >>> [{1692632647899-0 map[rider:Royce]}]
+	fmt.Println(res30a) // >>> 1692632662819-0
+	// STEP_END
+
+	// STEP_START xautoclaim_cursor
+	res31, res31a, err := rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		Stream:   "race:italy",
+		Group:    "italy_riders",
+		Consumer: "Lora",
+		Start:    "(1692632662819-0",
+		Count:    1,
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res31)
+	fmt.Println(res31a)
+	// STEP_END
+
+	// STEP_START xinfo
+	res32, err := rdb.XInfoStream(ctx, "race:italy").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res32)
+	// >>> &{5 1 2 1 1692632678249-0 0-0 5 {1692632639151-0 map[rider:Castilla]} {1692632678249-0 map[rider:Norem]} 1692632639151-0}
+	// STEP_END
+
+	// STEP_START xinfo_groups
+	res33, err := rdb.XInfoGroups(ctx, "race:italy").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res33)
+	// >>> [{italy_riders 3 2 1692632662819-0 3 2}]
+	// STEP_END
+
+	// STEP_START xinfo_consumers
+	res34, err := rdb.XInfoConsumers(ctx, "race:italy", "italy_riders").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	// fmt.Println(res34)
+	// >>> [{Alice 1 1ms 1ms} {Bob 1 2ms 2ms} {Lora 0 1ms -1ms}]
+	// STEP_END
+
+	// STEP_START maxlen
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		MaxLen: 2,
+		Values: map[string]interface{}{"rider": "Jones"},
+	},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		MaxLen: 2,
+		Values: map[string]interface{}{"rider": "Wood"},
+	},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		MaxLen: 2,
+		Values: map[string]interface{}{"rider": "Henshaw"},
+	},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	res35, err := rdb.XLen(ctx, "race:italy").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res35) // >>> 2
+
+	res36, err := rdb.XRange(ctx, "race:italy", "-", "+").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	// fmt.Println(res36)
+	// >>> [{1726649529170-1 map[rider:Wood]} {1726649529171-0 map[rider:Henshaw]}]
+	// STEP_END
+
+	// STEP_START xtrim
+	res37, err := rdb.XTrimMaxLen(ctx, "race:italy", 10).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res37) // >>> 0
+	// STEP_END
+
+	// STEP_START xtrim
+	res38, err := rdb.XTrimMaxLenApprox(ctx, "race:italy", 10, 20).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res38) // >>> 0
+	// STEP_END
+
 	// REMOVE_START
-	UNUSED(res27)
+	UNUSED(res27, res34, res36)
 	// REMOVE_END
 
 	// Output:
@@ -852,4 +991,84 @@ func ExampleClient_raceitaly() {
 	// &{2 1692632647899-0 1692632662819-0 map[Bob:2]}
 	// [{1692632647899-0 map[rider:Royce]}]
 	// [{1692632647899-0 map[rider:Royce]}]
+	// [{1692632647899-0 map[rider:Royce]}]
+	// 1692632662819-0
+	// []
+	// 0-0
+	// &{5 1 2 1 1692632678249-0 0-0 5 {1692632639151-0 map[rider:Castilla]} {1692632678249-0 map[rider:Norem]} 1692632639151-0}
+	// [{italy_riders 3 2 1692632662819-0 3 2}]
+	// 2
+	// 0
+	// 0
+}
+
+func ExampleClient_xdel() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password docs
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	rdb.Del(ctx, "race:italy")
+	// REMOVE_END
+
+	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		MaxLen: 2,
+		Values: map[string]interface{}{"rider": "Wood"},
+		ID:     "1692633198206-0",
+	},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: "race:italy",
+		MaxLen: 2,
+		Values: map[string]interface{}{"rider": "Henshaw"},
+		ID:     "1692633208557-0",
+	},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	// STEP_START xdel
+	res39, err := rdb.XRangeN(ctx, "race:italy", "-", "+", 2).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res39)
+	// >>> [{1692633198206-0 map[rider:Wood]} {1692633208557-0 map[rider:Henshaw]}]
+
+	res40, err := rdb.XDel(ctx, "race:italy", "1692633208557-0").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res40) // 1
+
+	res41, err := rdb.XRangeN(ctx, "race:italy", "-", "+", 2).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res41)
+	// >>> [{1692633198206-0 map[rider:Wood]}]
+	// STEP_END
+
+	// Output:
+	// [{1692633198206-0 map[rider:Wood]} {1692633208557-0 map[rider:Henshaw]}]
+	// 1
+	// [{1692633198206-0 map[rider:Wood]}]
 }
