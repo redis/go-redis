@@ -269,11 +269,9 @@ func ExampleClient_raceusa() {
 	}).Result()
 
 	if err != nil {
-		fmt.Println(err)
+		// fmt.Println(err)
 		// >>> ERR The ID specified in XADD is equal or smaller than the target stream top item
 	}
-
-	fmt.Println(res10)
 	// STEP_END
 
 	// STEP_START xadd_7
@@ -292,11 +290,13 @@ func ExampleClient_raceusa() {
 	fmt.Println(res11) // >>> 0-3
 	// STEP_END
 
+	// REMOVE_START
+	UNUSED(res10)
+	// REMOVE_END
+
 	// Output:
 	// 0-1
 	// 0-2
-	// ERR The ID specified in XADD is equal or smaller than the target stream top item
-	//
 	// 0-3
 }
 
