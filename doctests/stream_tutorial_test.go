@@ -820,7 +820,7 @@ func ExampleClient_raceitaly() {
 		panic(err)
 	}
 
-	fmt.Println(res28)
+	fmt.Println(res28) // >>> [{1692632647899-0 map[rider:Royce]}]
 	// STEP_END
 
 	// STEP_START xclaim
@@ -837,7 +837,6 @@ func ExampleClient_raceitaly() {
 	}
 
 	fmt.Println(res29)
-	// >>> [{1692632647899-0 map[rider:Royce]}]
 	// STEP_END
 
 	// STEP_START xautoclaim
@@ -870,8 +869,8 @@ func ExampleClient_raceitaly() {
 		panic(err)
 	}
 
-	fmt.Println(res31)
-	fmt.Println(res31a)
+	fmt.Println(res31)  // >>> []
+	fmt.Println(res31a) // >>> 0-0
 	// STEP_END
 
 	// STEP_START xinfo
@@ -969,7 +968,7 @@ func ExampleClient_raceitaly() {
 	fmt.Println(res37) // >>> 0
 	// STEP_END
 
-	// STEP_START xtrim
+	// STEP_START xtrim2
 	res38, err := rdb.XTrimMaxLenApprox(ctx, "race:italy", 10, 20).Result()
 
 	if err != nil {
