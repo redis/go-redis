@@ -431,7 +431,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			return false, err
 		}
 	}
-
+	panic(cmd.firstKeyPos())
 	retryTimeout := uint32(0)
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {

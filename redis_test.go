@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -630,6 +631,58 @@ var _ = Describe("Hook with MinIdleConns", func() {
 			"hook-2-process-start",
 			"hook-2-process-end",
 			"hook-1-process-end",
+		}))
+	})
+})
+
+var _ = Describe("Command Name", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should return key name", func() {
+		mSet := client.MSet(ctx, "key1", "hello1", "key2", "hello2")
+		Expect(mSet.Err()).NotTo(HaveOccurred())
+		Expect(mSet.Val()).To(Equal("OK"))
+		Expect(mSet.Args()).To(Equal([]string{"MSET", "key1", "hello1", "key2", "hello2"}))
+
+		mGet := client.MGet(ctx, "key1", "key2", "_")
+		Expect(mGet.Err()).NotTo(HaveOccurred())
+		Expect(mGet.Val()).To(Equal([]interface{}{"hello1", "hello2", nil}))
+
+		// MSet struct
+		type set struct {
+			Set1 string                 `redis:"set1"`
+			Set2 int16                  `redis:"set2"`
+			Set3 time.Duration          `redis:"set3"`
+			Set4 interface{}            `redis:"set4"`
+			Set5 map[string]interface{} `redis:"-"`
+		}
+		mSet = client.MSet(ctx, &set{
+			Set1: "val1",
+			Set2: 1024,
+			Set3: 2 * time.Millisecond,
+			Set4: nil,
+			Set5: map[string]interface{}{"k1": 1},
+		})
+		Expect(mSet.Err()).NotTo(HaveOccurred())
+		Expect(mSet.Val()).To(Equal("OK"))
+
+		mGet = client.MGet(ctx, "set1", "set2", "set3", "set4")
+		Expect(mGet.Err()).NotTo(HaveOccurred())
+		Expect(mGet.Val()).To(Equal([]interface{}{
+			"val1",
+			"1024",
+			strconv.Itoa(int(2 * time.Millisecond.Nanoseconds())),
+			"",
 		}))
 	})
 })
