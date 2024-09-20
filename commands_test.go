@@ -7279,6 +7279,29 @@ var _ = Describe("Commands", func() {
 	})
 })
 
+var _ = Describe("Get Keys from Command", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("returns the keys extracted from the command", func() {
+		cmd := redis.NewCmd(ctx, "SET", "key1", "value1")
+		keys := redis.GetKeys(cmd)
+		Expect(keys).To(Equal([]string{"key1"}))
+
+		cmd = redis.NewCmd(ctx, "MGET", "key1", "key2", "key3")
+		keys = redis.GetKeys(cmd)
+		Expect(keys).To(Equal([]string{"key1", "key2", "key3"}))
+	})
+})
+
 type numberStruct struct {
 	Number int
 }

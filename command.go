@@ -119,18 +119,23 @@ func cmdString(cmd Cmder, val interface{}) string {
 	return util.BytesToString(b)
 }
 
+// A wrapper around extract keys, just to make it easier to test.
+func GetKeys(cmd Cmder) []string {
+	return extractKeys(cmd)
+}
+
 func extractKeys(cmd Cmder) []string {
 	firstKeyPos := cmdFirstKeyPos(cmd)
 	if firstKeyPos == -1 {
 		return nil
 	}
-	internal.Logger.Printf(context.Background(), "firstKeyPos: %d", firstKeyPos)
+
 	args := cmd.Args()
 	keys := []string{}
 
 	switch cmd.Name() {
-	case "MGET", "MSET":
-		for i := int(firstKeyPos); i < len(args); i += 2 {
+	case "mget":
+		for i := int(firstKeyPos); i < len(args); i++ {
 			keys = append(keys, cmd.stringArg(i))
 		}
 
