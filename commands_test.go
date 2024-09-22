@@ -7279,8 +7279,9 @@ var _ = Describe("Commands", func() {
 	})
 })
 
-var _ = Describe("Get Keys from Command", func() {
+var _ = Describe("Get Keys from Commands", func() {
 	var client *redis.Client
+	var ctx = context.TODO()
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
@@ -7291,14 +7292,12 @@ var _ = Describe("Get Keys from Command", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("returns the keys extracted from the command", func() {
-		cmd := redis.NewCmd(ctx, "SET", "key1", "value1")
-		keys := redis.GetKeys(cmd)
-		Expect(keys).To(Equal([]string{"key1"}))
+	It("should test string commands", func() {
+		setCmd := client.Set(ctx, "key1", "val1", 0)
+		Expect(setCmd.Keys()).To(Equal([]string{"key1"}))
 
-		cmd = redis.NewCmd(ctx, "MGET", "key1", "key2", "key3")
-		keys = redis.GetKeys(cmd)
-		Expect(keys).To(Equal([]string{"key1", "key2", "key3"}))
+		getCmd := client.MGet(ctx, "key1", "key2", "key3")
+		Expect(getCmd.Keys()).To(Equal([]string{"key1", "key2", "key3"}))
 	})
 })
 

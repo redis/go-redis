@@ -30,6 +30,9 @@ type Cmder interface {
 	// e.g. "set k v ex 10" -> "[set k v ex 10]".
 	Args() []interface{}
 
+	//all keys in command.
+	Keys() []string
+
 	// format request and response string.
 	// e.g. "set k v ex 10" -> "set k v ex 10: OK", "get k" -> "get k: v".
 	String() string
@@ -119,11 +122,6 @@ func cmdString(cmd Cmder, val interface{}) string {
 	return util.BytesToString(b)
 }
 
-// A wrapper around extract keys, just to make it easier to test.
-func GetKeys(cmd Cmder) []string {
-	return extractKeys(cmd)
-}
-
 func extractKeys(cmd Cmder) []string {
 	firstKeyPos := cmdFirstKeyPos(cmd)
 	if firstKeyPos == -1 {
@@ -155,6 +153,7 @@ type baseCmd struct {
 	args         []interface{}
 	err          error
 	keyPos       int8
+	keys         []string
 	rawVal       interface{}
 	_readTimeout *time.Duration
 }
@@ -186,6 +185,10 @@ func (cmd *baseCmd) FullName() string {
 
 func (cmd *baseCmd) Args() []interface{} {
 	return cmd.args
+}
+
+func (cmd *baseCmd) Keys() []string {
+	return cmd.keys
 }
 
 func (cmd *baseCmd) stringArg(pos int) string {
