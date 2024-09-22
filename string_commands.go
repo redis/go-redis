@@ -151,7 +151,7 @@ func (c cmdable) MSet(ctx context.Context, values ...interface{}) *StatusCmd {
 	args[0] = "mset"
 	args = appendArgs(args, values)
 	cmd := NewStatusCmd(ctx, args...)
-	cmd.keys = append(cmd.keys, cmd.getInterleavedArgumentsWithOffset(1)...)
+	cmd.keys = append(cmd.keys, cmd.getInterleavedArguments()...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -166,7 +166,7 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 	args[0] = "msetnx"
 	args = appendArgs(args, values)
 	cmd := NewBoolCmd(ctx, args...)
-	cmd.keys = append(cmd.keys, cmd.getInterleavedArgumentsWithOffset(1)...)
+	cmd.keys = append(cmd.keys, cmd.getInterleavedArguments()...)
 	_ = c(ctx, cmd)
 	return cmd
 }

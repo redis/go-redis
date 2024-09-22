@@ -210,9 +210,9 @@ func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 	return err
 }
 
-// getInterleavedArguments returns arguments at even indices starting from index 0.
+// getInterleavedArguments returns arguments at even indices starting from index 1.
 func (cmd *baseCmd) getInterleavedArguments() []string {
-	return cmd.getInterleavedArgumentsWithOffset(0)
+	return cmd.getInterleavedArgumentsWithOffset(1)
 }
 
 // getInterleavedArgumentsWithOffset returns arguments at even indices starting from the specified offset.
