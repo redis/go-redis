@@ -234,6 +234,22 @@ func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 	return err
 }
 
+// getInterleavedArguments returns arguments at even indices starting from index 0.
+func (cmd *baseCmd) getInterleavedArguments() []string {
+	return cmd.getInterleavedArgumentsWithOffset(0)
+}
+
+// getInterleavedArgumentsWithOffset returns arguments at even indices starting from the specified offset.
+func (cmd *baseCmd) getInterleavedArgumentsWithOffset(offset int) []string {
+	var matchingArguments []string
+	for i := offset; i < len(cmd.args); i += 2 {
+		if arg, ok := cmd.args[i].(string); ok {
+			matchingArguments = append(matchingArguments, arg)
+		}
+	}
+	return matchingArguments
+}
+
 //------------------------------------------------------------------------------
 
 type Cmd struct {

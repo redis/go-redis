@@ -7279,7 +7279,7 @@ var _ = Describe("Commands", func() {
 	})
 })
 
-var _ = Describe("Get Keys from Commands", func() {
+var _ = Describe("Keys Extraction Tests", func() {
 	var client *redis.Client
 	var ctx = context.TODO()
 
@@ -7292,12 +7292,51 @@ var _ = Describe("Get Keys from Commands", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should test string commands", func() {
-		setCmd := client.Set(ctx, "key1", "val1", 0)
-		Expect(setCmd.Keys()).To(Equal([]string{"key1"}))
+	// STRING COMMANDS
 
-		getCmd := client.MGet(ctx, "key1", "key2", "key3")
-		Expect(getCmd.Keys()).To(Equal([]string{"key1", "key2", "key3"}))
+	It("should test Append command", func() {
+		cmd := client.Append(ctx, "key1", "value")
+		Expect(cmd.Keys()).To(Equal([]string{"key1"}))
+	})
+
+	It("should test Decr command", func() {
+		cmd := client.Decr(ctx, "key1")
+		Expect(cmd.Keys()).To(Equal([]string{"key1"}))
+	})
+
+	It("should test Get command", func() {
+		cmd := client.Get(ctx, "key1")
+		Expect(cmd.Keys()).To(Equal([]string{"key1"}))
+	})
+
+	It("should test MGet command", func() {
+		cmd := client.MGet(ctx, "key1", "key2", "key3")
+		Expect(cmd.Keys()).To(Equal([]string{"key1", "key2", "key3"}))
+	})
+
+	It("should test Set command", func() {
+		cmd := client.Set(ctx, "key1", "value", time.Second)
+		Expect(cmd.Keys()).To(Equal([]string{"key1"}))
+	})
+
+	It("should test MSet command", func() {
+		cmd := client.MSet(ctx, "key1", "value1", "key2", "value2")
+		Expect(cmd.Keys()).To(Equal([]string{"key1", "key2"}))
+	})
+
+	It("should test IncrBy command", func() {
+		cmd := client.IncrBy(ctx, "key1", 10)
+		Expect(cmd.Keys()).To(Equal([]string{"key1"}))
+	})
+
+	It("should test SetNX command", func() {
+		cmd := client.SetNX(ctx, "key1", "value", time.Second)
+		Expect(cmd.Keys()).To(Equal([]string{"key1"}))
+	})
+
+	It("should test GetDel command", func() {
+		cmd := client.GetDel(ctx, "key1")
+		Expect(cmd.Keys()).To(Equal([]string{"key1"}))
 	})
 })
 
