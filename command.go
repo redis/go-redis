@@ -122,30 +122,6 @@ func cmdString(cmd Cmder, val interface{}) string {
 	return util.BytesToString(b)
 }
 
-func extractKeys(cmd Cmder) []string {
-	firstKeyPos := cmdFirstKeyPos(cmd)
-	if firstKeyPos == -1 {
-		return nil
-	}
-
-	args := cmd.Args()
-	keys := []string{}
-
-	switch cmd.Name() {
-	case "mget":
-		for i := int(firstKeyPos); i < len(args); i++ {
-			keys = append(keys, cmd.stringArg(i))
-		}
-
-	default:
-		if int(firstKeyPos) < len(args) {
-			keys = append(keys, cmd.stringArg(firstKeyPos))
-		}
-	}
-
-	return keys
-}
-
 //------------------------------------------------------------------------------
 
 type baseCmd struct {
