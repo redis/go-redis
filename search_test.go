@@ -637,11 +637,11 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 	})
 
-	It("should FTSearch SkipInitalScan", Label("search", "ftsearch"), func() {
+	It("should FTSearch SkipInitialScan", Label("search", "ftsearch"), func() {
 		client.HSet(ctx, "doc1", "foo", "bar")
 
 		text1 := &redis.FieldSchema{FieldName: "foo", FieldType: redis.SearchFieldTypeText}
-		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{SkipInitalScan: true}, text1).Result()
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{SkipInitialScan: true}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
 		WaitForIndexing(client, "idx1")
