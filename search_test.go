@@ -29,7 +29,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
+		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
@@ -1424,8 +1424,10 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 	var client2 *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3: true})
-		client2 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3})
+		client1Opt := redisOptions()
+		client1Opt.UnstableResp3 = true
+		client = redis.NewClient(client1Opt)
+		client2 = redis.NewClient(redisOptions())
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
