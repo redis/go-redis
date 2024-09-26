@@ -138,6 +138,12 @@ func (w *Writer) WriteArg(v interface{}) error {
 			return err
 		}
 		return w.bytes(b)
+	case encoding.TextMarshaler:
+		b, err := v.MarshalText()
+		if err != nil {
+			return err
+		}
+		return w.bytes(b)
 	case net.IP:
 		return w.bytes(v)
 	default:
