@@ -10,6 +10,6 @@ require (
 )
 
 retract (
-	v9.5.3 // This version was accidentally released. Please use version 9.6.0 instead.
 	v9.5.4 // This version was accidentally released. Please use version 9.6.0 instead.
+	v9.5.3 // This version was accidentally released. Please use version 9.6.0 instead.
 )

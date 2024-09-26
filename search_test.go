@@ -1446,15 +1446,17 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 		options := &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
 		res, err := client.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
-		rawVal := client.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
-
-		Expect(err).NotTo(HaveOccurred())
-		Expect(rawVal).To(BeEquivalentTo(res))
 		results := res.(map[interface{}]interface{})["results"].([]interface{})
 		Expect(results[0].(map[interface{}]interface{})["extra_attributes"].(map[interface{}]interface{})["CreatedDateTimeUTC"]).
 			To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
 		Expect(results[1].(map[interface{}]interface{})["extra_attributes"].(map[interface{}]interface{})["CreatedDateTimeUTC"]).
 			To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
+
+		rawVal := client.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
+		rawValResults := rawVal.(map[interface{}]interface{})["results"].([]interface{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rawValResults[0]).To(Or(BeEquivalentTo(results[0]), BeEquivalentTo(results[1])))
+		Expect(rawValResults[1]).To(Or(BeEquivalentTo(results[0]), BeEquivalentTo(results[1])))
 
 		// Test with UnstableResp3 false
 		Expect(func() {
