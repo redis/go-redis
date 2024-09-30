@@ -237,6 +237,12 @@ type StatefulCmdable interface {
 	SwapDB(ctx context.Context, index1, index2 int) *StatusCmd
 	ClientSetName(ctx context.Context, name string) *BoolCmd
 	ClientSetInfo(ctx context.Context, info LibraryInfo) *StatusCmd
+	ClientTracking(ctx context.Context, on bool, options *ClientTrackingOptions) *StatusCmd
+	ClientTrackingOn(ctx context.Context) *StatusCmd
+	ClientTrackingOff(ctx context.Context) *StatusCmd
+	ClientTrackingOnWithArgs(ctx context.Context, options *ClientTrackingOptions) *StatusCmd
+	ClientTrackingOffWithArgs(ctx context.Context, options *ClientTrackingOptions) *StatusCmd
+	ClientTrackingInfo(ctx context.Context) *MapStringInterfaceCmd
 	Hello(ctx context.Context, ver int, username, password, clientName string) *MapStringInterfaceCmd
 }
 
@@ -316,6 +322,91 @@ func (c statefulCmdable) ClientSetInfo(ctx context.Context, info LibraryInfo) *S
 		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-VER", *info.LibVer)
 	}
 
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type ClientTrackingOptions struct {
+	ClientID int
+	Prefixes []interface{}
+	BCast    bool
+	OptIn    bool
+	OptOut   bool
+	NoLoop   bool
+}
+
+// Enables the tracking feature of the Redis server, that is used
+// for server assisted client side caching.
+// “on“ indicate for tracking on or tracking off. The dafualt is on.
+// “clientid“ send invalidation messages to the connection with
+// the specified ID.
+// “bcast“ enable tracking in broadcasting mode. In this mode
+// invalidation messages are reported for all the prefixes
+// specified, regardless of the keys requested by the connection.
+// “optin“  when broadcasting is NOT active, normally don't track
+// keys in read only commands, unless they are called immediately
+// after a CLIENT CACHING yes command.
+// “optout“ when broadcasting is NOT active, normally track keys in
+// read only commands, unless they are called immediately after a
+// CLIENT CACHING no command.
+// “noloop“ don't send notifications about keys modified by this
+// connection itself.
+// “prefixes“  for broadcasting, register a given key prefix, so that
+// notifications will be provided only for keys starting with this string.
+// For more innformation - https://redis.io/commands/client-tracking
+func (c statefulCmdable) ClientTracking(ctx context.Context, on bool, options *ClientTrackingOptions) *StatusCmd {
+	args := []interface{}{"CLIENT", "TRACKING"}
+	if on {
+		args = append(args, "ON")
+	} else {
+		args = append(args, "OFF")
+	}
+	if options != nil {
+		if options.Prefixes != nil && !options.BCast {
+			panic("prefixes can only be used with BCast")
+		}
+		if options.ClientID != 0 {
+			args = append(args, "REDIRECT", options.ClientID)
+		}
+		for _, prefix := range options.Prefixes {
+			args = append(args, "PREFIX", prefix)
+		}
+		if options.BCast {
+			args = append(args, "BCAST")
+		}
+		if options.OptIn {
+			args = append(args, "OPTIN")
+		}
+		if options.OptOut {
+			args = append(args, "OPTOUT")
+		}
+		if options.NoLoop {
+			args = append(args, "NOLOOP")
+		}
+	}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c statefulCmdable) ClientTrackingOn(ctx context.Context) *StatusCmd {
+	return c.ClientTracking(ctx, true, nil)
+}
+
+func (c statefulCmdable) ClientTrackingOff(ctx context.Context) *StatusCmd {
+	return c.ClientTracking(ctx, false, nil)
+}
+
+func (c statefulCmdable) ClientTrackingOnWithArgs(ctx context.Context, options *ClientTrackingOptions) *StatusCmd {
+	return c.ClientTracking(ctx, true, options)
+}
+
+func (c statefulCmdable) ClientTrackingOffWithArgs(ctx context.Context, options *ClientTrackingOptions) *StatusCmd {
+	return c.ClientTracking(ctx, false, options)
+}
+
+func (c statefulCmdable) ClientTrackingInfo(ctx context.Context) *MapStringInterfaceCmd {
+	cmd := NewMapStringInterfaceCmd(ctx, "CLIENT", "TRACKINGINFO")
 	_ = c(ctx, cmd)
 	return cmd
 }
