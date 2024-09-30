@@ -235,7 +235,6 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		netDialer := &net.Dialer{
 			Timeout:   opt.DialTimeout,
-			KeepAlive: 5 * time.Minute,
 		}
 		if opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
