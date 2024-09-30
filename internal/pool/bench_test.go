@@ -33,6 +33,7 @@ func BenchmarkPoolGetPut(b *testing.B) {
 				Dialer:          dummyDialer,
 				PoolSize:        bm.poolSize,
 				PoolTimeout:     time.Second,
+				DialTimeout:     1 * time.Second,
 				ConnMaxIdleTime: time.Hour,
 			})
 
@@ -76,6 +77,7 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 				Dialer:          dummyDialer,
 				PoolSize:        bm.poolSize,
 				PoolTimeout:     time.Second,
+				DialTimeout:     1 * time.Second,
 				ConnMaxIdleTime: time.Hour,
 			})
 
