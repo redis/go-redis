@@ -3,6 +3,7 @@ package redis
 import "context"
 
 type ClusterCmdable interface {
+	ClusterMyID(ctx context.Context) *StringCmd
 	ClusterMyShardID(ctx context.Context) *StringCmd
 	ClusterSlots(ctx context.Context) *ClusterSlotsCmd
 	ClusterShards(ctx context.Context) *ClusterShardsCmd
@@ -27,6 +28,12 @@ type ClusterCmdable interface {
 	ClusterAddSlotsRange(ctx context.Context, min, max int) *StatusCmd
 	ReadOnly(ctx context.Context) *StatusCmd
 	ReadWrite(ctx context.Context) *StatusCmd
+}
+
+func (c cmdable) ClusterMyID(ctx context.Context) *StringCmd {
+	cmd := NewStringCmd(ctx, "cluster", "myid")
+	_ = c(ctx, cmd)
+	return cmd
 }
 
 func (c cmdable) ClusterMyShardID(ctx context.Context) *StringCmd {
