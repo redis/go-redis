@@ -23,8 +23,8 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 		return redis.NewClient(&redis.Options{
 			Addr:          "localhost:6379",
 			DB:            0,
-			Protocol:      protocolVersion, // Setting RESP2 or RESP3 protocol
-			UnstableResp3: true,            // Enable RESP3 features
+			Protocol:      protocolVersion,
+			UnstableResp3: true,
 		})
 	}
 
