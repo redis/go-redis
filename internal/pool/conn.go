@@ -3,7 +3,6 @@ package pool
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"net"
 	"sync/atomic"
 	"syscall"
@@ -64,9 +63,6 @@ func (cn *Conn) setSysConn() {
 	conn := cn.netConn
 	if conn == nil {
 		return
-	}
-	if tlsConn, ok := conn.(*tls.Conn); ok {
-		conn = tlsConn.NetConn()
 	}
 
 	if sysConn, ok := conn.(syscall.Conn); ok {
