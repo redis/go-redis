@@ -60,7 +60,7 @@ type JSONArrTrimArgs struct {
 type JSONCmd struct {
 	baseCmd
 	val      string
-	expanded []interface{}
+	expanded interface{}
 }
 
 var _ Cmder = (*JSONCmd)(nil)
@@ -100,11 +100,11 @@ func (cmd *JSONCmd) Result() (string, error) {
 	return cmd.Val(), cmd.Err()
 }
 
-func (cmd JSONCmd) Expanded() (interface{}, error) {
+func (cmd *JSONCmd) Expanded() (interface{}, error) {
 	if len(cmd.val) != 0 && cmd.expanded == nil {
 		err := json.Unmarshal([]byte(cmd.val), &cmd.expanded)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 	}
 
@@ -494,7 +494,7 @@ func (c cmdable) JSONMSet(ctx context.Context, params ...interface{}) *StatusCmd
 }
 
 // JSONNumIncrBy increments the number value stored at the specified path by the provided number.
-// For more information, see https://redis.io/commands/json.numincreby
+// For more information, see https://redis.io/docs/latest/commands/json.numincrby/
 func (c cmdable) JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd {
 	args := []interface{}{"JSON.NUMINCRBY", key, path, value}
 	cmd := newJSONCmd(ctx, args...)
