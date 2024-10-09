@@ -6123,7 +6123,7 @@ var _ = Describe("Commands", func() {
 					Stream:   "stream",
 					Group:    "group",
 					Consumer: "consumer",
-					Messages: []string{"1-0", "2-0", "3-0"},
+					Messages: []string{"1-0", "2-0", "3-0", "5-0"},
 				}).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(msgs).To(Equal([]redis.XMessage{{
