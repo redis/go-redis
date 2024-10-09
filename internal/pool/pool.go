@@ -123,6 +123,18 @@ func (p *ConnPool) checkMinIdleConns() {
 			p.idleConnsLen++
 
 			go func() {
+				defer func() {
+					if err := recover(); err != nil {
+						p.connsMu.Lock()
+						p.poolSize--
+						p.idleConnsLen--
+						p.connsMu.Unlock()
+
+						p.freeTurn()
+						internal.Logger.Printf(context.Background(), "addIdleConn panic: %+v", err)
+					}
+				}()
+
 				err := p.addIdleConn()
 				if err != nil && err != ErrClosed {
 					p.connsMu.Lock()
