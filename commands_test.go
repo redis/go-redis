@@ -679,7 +679,9 @@ var _ = Describe("Commands", func() {
 			Expect(set.Val()).To(Equal("OK"))
 
 			migrate = client.Migrate(ctx, "localhost", redisSecondaryPort, "key", 0, 0)
-			Expect(migrate.Err()).To(MatchError("IOERR error or timeout writing to target instance"))
+			Expect(migrate.Err()).To(SatisfyAny(
+				MatchError("IOERR error or timeout writing to target instance"),
+				MatchError("IOERR error or timeout reading to target instance")))
 			Expect(migrate.Val()).To(Equal(""))
 		})
 

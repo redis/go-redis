@@ -10,9 +10,10 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: build
+  test-makefile:
+    name: Build with Makefile
     runs-on: ubuntu-latest
+
     strategy:
       fail-fast: false
       matrix:
@@ -35,8 +36,91 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Test
+      - name: Run tests using Makefile
         run: make test
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.txt
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  test-redis-8:
+    name: Build with Enhanced Tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: [1.19.x, 1.20.x, 1.21.x]
+
+    services:
+      redis:
+        image: redis:8.0-M01
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+        ports:
+          - 6379:6379
+          - 6380:6380
+          - 6381:6381
+          - 6390:6390
+          - 6391:6391
+          - 6392:6392
+          - 9123:9123
+          - 9124:9124
+          - 9125:9125
+          - 9126:9126
+          - 9127:9127
+          - 9128:9128
+          - 8220:8220
+          - 8221:8221
+          - 8222:8222
+          - 8223:8223
+          - 8224:8224
+          - 8225:8225
+
+    steps:
+      - name: Set up ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run enhanced tests
+        run: |
+          GO_MOD_DIRS=$(find . -type f -name 'go.mod' -exec dirname {} \; | sort)
+          GO_VERSION=$(go version | cut -d " " -f 3 | cut -d. -f2)
+          set -e
+          for dir in $GO_MOD_DIRS; do
+            if echo "$dir" | grep -q "./example" && [ "$GO_VERSION" = "19" ]; then
+              echo "Skipping go test in $dir due to Go version 1.19 and dir contains ./example"
+              continue
+            fi
+            echo "Running tests in $dir"
+            cd "$dir"
+            go mod tidy -compat=1.18
+            go test --ginkgo.skip-file="gears_commands_test.go"
+            go test ./... -short -race --ginkgo.skip-file="gears_commands_test.go"
+            go test ./... -run=NONE -bench=. -benchmem --ginkgo.skip-file="gears_commands_test.go"
+            env GOOS=linux GOARCH=386 go test --ginkgo.skip-file="gears_commands_test.go"
+            go test -coverprofile=coverage.txt -covermode=atomic ./... --ginkgo.skip-file="gears_commands_test.go"
+            go vet
+            cd -
+          done
+
+      - name: Build and run custom vet tool
+        run: |
+          cd internal/customvet
+          go build .
+          cd ../..
+          go vet -vettool ./internal/customvet/customvet
+
+      - name: Check code formatting
+        run: |
+          gofumpt -w ./
+          goimports -w -local github.com/redis/go-redis ./
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
