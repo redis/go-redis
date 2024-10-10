@@ -21,10 +21,12 @@ type Limiter interface {
 	// Allow returns nil if operation is allowed or an error otherwise.
 	// If operation is allowed client must ReportResult of the operation
 	// whether it is a success or a failure.
-	Allow() error
+	// The returned context will be passed to ReportResult.
+	Allow(ctx context.Context) (context.Context, error)
 	// ReportResult reports the result of the previously allowed operation.
 	// nil indicates a success, non-nil error usually indicates a failure.
-	ReportResult(result error)
+	// Context can be used to access state tracked by previous Allow call.
+	ReportResult(ctx context.Context, result error)
 }
 
 // Options keeps the settings to set up redis connection.
