@@ -237,23 +237,24 @@ func (c *baseClient) newConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
+func (c *baseClient) getConn(ctx context.Context) (context.Context, *pool.Conn, error) {
+	var err error
 	if c.opt.Limiter != nil {
-		err := c.opt.Limiter.Allow()
+		ctx, err = c.opt.Limiter.Allow(ctx)
 		if err != nil {
-			return nil, err
+			return ctx, nil, err
 		}
 	}
 
 	cn, err := c._getConn(ctx)
 	if err != nil {
 		if c.opt.Limiter != nil {
-			c.opt.Limiter.ReportResult(err)
+			c.opt.Limiter.ReportResult(ctx, err)
 		}
-		return nil, err
+		return ctx, nil, err
 	}
 
-	return cn, nil
+	return ctx, cn, nil
 }
 
 func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
@@ -365,7 +366,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) {
 	if c.opt.Limiter != nil {
-		c.opt.Limiter.ReportResult(err)
+		c.opt.Limiter.ReportResult(ctx, err)
 	}
 
 	if isBadConn(err, false, c.opt.Addr) {
@@ -378,7 +379,7 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 func (c *baseClient) withConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) error {
-	cn, err := c.getConn(ctx)
+	ctx, cn, err := c.getConn(ctx)
 	if err != nil {
 		return err
 	}
