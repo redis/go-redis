@@ -68,6 +68,7 @@ type Options struct {
 	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
+	ConnChecker     func(net.Conn) error
 }
 
 type lastDialErrorWrap struct {
@@ -511,6 +512,12 @@ func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 
 	if connCheck(cn.netConn) != nil {
 		return false
+	}
+
+	if p.cfg.ConnChecker != nil {
+		if err := p.cfg.ConnChecker(cn.netConn); err != nil {
+			return false
+		}
 	}
 
 	cn.SetUsedAt(now)
