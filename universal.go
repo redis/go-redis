@@ -14,6 +14,9 @@ type UniversalOptions struct {
 	// of cluster/sentinel nodes.
 	Addrs []string
 
+	// Map of name => host:port addresses of ring shards.
+	AddressMap map[string]string
+
 	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
 	ClientName string
 
@@ -165,6 +168,47 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 	}
 }
 
+// Ring returns ring options created from the universal options.
+func (o *UniversalOptions) Ring() *RingOptions {
+	if len(o.Addrs) == 0 {
+		o.Addrs = []string{"127.0.0.1:26379"}
+	}
+
+	return &RingOptions{
+		Addrs:      o.AddressMap,
+		ClientName: o.ClientName,
+
+		Dialer:    o.Dialer,
+		OnConnect: o.OnConnect,
+
+		DB:       o.DB,
+		Protocol: o.Protocol,
+		Username: o.Username,
+		Password: o.Password,
+
+		MaxRetries:      o.MaxRetries,
+		MinRetryBackoff: o.MinRetryBackoff,
+		MaxRetryBackoff: o.MaxRetryBackoff,
+
+		DialTimeout:           o.DialTimeout,
+		ReadTimeout:           o.ReadTimeout,
+		WriteTimeout:          o.WriteTimeout,
+		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+
+		PoolFIFO:        o.PoolFIFO,
+		PoolSize:        o.PoolSize,
+		PoolTimeout:     o.PoolTimeout,
+		MinIdleConns:    o.MinIdleConns,
+		MaxIdleConns:    o.MaxIdleConns,
+		ConnMaxIdleTime: o.ConnMaxIdleTime,
+		ConnMaxLifetime: o.ConnMaxLifetime,
+
+		TLSConfig: o.TLSConfig,
+
+		// DisableIndentity: o.DisableIndentity, // field does not exist yet, see PR 2726
+	}
+}
+
 // Simple returns basic options created from the universal options.
 func (o *UniversalOptions) Simple() *Options {
 	addr := "127.0.0.1:6379"
@@ -239,12 +283,16 @@ var (
 //
 // 1. If the MasterName option is specified, a sentinel-backed FailoverClient is returned.
 // 2. if the number of Addrs is two or more, a ClusterClient is returned.
-// 3. Otherwise, a single-node Client is returned.
+// 3. If the AddressMap option is specified, a Ring is returned.
+// 4. Otherwise, a single-node Client is returned.
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
 	if opts.MasterName != "" {
 		return NewFailoverClient(opts.Failover())
 	} else if len(opts.Addrs) > 1 {
 		return NewClusterClient(opts.Cluster())
+	} else if len(opts.AddressMap) > 0 {
+		return NewRing(opts.Ring())
 	}
+
 	return NewClient(opts.Simple())
 }
