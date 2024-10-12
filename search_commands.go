@@ -1004,7 +1004,7 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 			args = append(args, "WEIGHT", schema.Weight)
 		}
 		if schema.Seperator != "" {
-			args = append(args, "SEPERATOR", schema.Seperator)
+			args = append(args, "SEPARATOR", schema.Seperator)
 		}
 		if schema.CaseSensitive {
 			args = append(args, "CASESENSITIVE")
