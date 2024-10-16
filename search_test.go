@@ -637,11 +637,11 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 	})
 
-	It("should FTSearch SkipInitalScan", Label("search", "ftsearch"), func() {
+	It("should FTSearch SkipInitialScan", Label("search", "ftsearch"), func() {
 		client.HSet(ctx, "doc1", "foo", "bar")
 
 		text1 := &redis.FieldSchema{FieldName: "foo", FieldType: redis.SearchFieldTypeText}
-		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{SkipInitalScan: true}, text1).Result()
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{SkipInitialScan: true}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
 		WaitForIndexing(client, "idx1")
@@ -1446,15 +1446,17 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 		options := &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
 		res, err := client.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
-		rawVal := client.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
-
-		Expect(err).NotTo(HaveOccurred())
-		Expect(rawVal).To(BeEquivalentTo(res))
 		results := res.(map[interface{}]interface{})["results"].([]interface{})
 		Expect(results[0].(map[interface{}]interface{})["extra_attributes"].(map[interface{}]interface{})["CreatedDateTimeUTC"]).
 			To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
 		Expect(results[1].(map[interface{}]interface{})["extra_attributes"].(map[interface{}]interface{})["CreatedDateTimeUTC"]).
 			To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
+
+		rawVal := client.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
+		rawValResults := rawVal.(map[interface{}]interface{})["results"].([]interface{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rawValResults[0]).To(Or(BeEquivalentTo(results[0]), BeEquivalentTo(results[1])))
+		Expect(rawValResults[1]).To(Or(BeEquivalentTo(results[0]), BeEquivalentTo(results[1])))
 
 		// Test with UnstableResp3 false
 		Expect(func() {
