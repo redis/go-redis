@@ -23,4 +23,6 @@ require (
 	golang.org/x/sys v0.16.0 // indirect
 )
 
-retract v9.5.3 // This version was accidentally released.
+retract (
+	v9.5.3 // This version was accidentally released.
+)
