@@ -63,6 +63,9 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	if strings.HasPrefix(s, "READONLY ") {
 		return true
 	}
+	if strings.HasPrefix(s, "MASTERDOWN ") {
+		return true
+	}
 	if strings.HasPrefix(s, "CLUSTERDOWN ") {
 		return true
 	}
