@@ -22,6 +22,7 @@ var _ = Describe("ConnPool", func() {
 			Dialer:          dummyDialer,
 			PoolSize:        10,
 			PoolTimeout:     time.Hour,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
 		})
 	})
@@ -46,6 +47,7 @@ var _ = Describe("ConnPool", func() {
 			},
 			PoolSize:        10,
 			PoolTimeout:     time.Hour,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
 			MinIdleConns:    minIdleConns,
 		})
@@ -129,6 +131,7 @@ var _ = Describe("MinIdleConns", func() {
 			PoolSize:        poolSize,
 			MinIdleConns:    minIdleConns,
 			PoolTimeout:     100 * time.Millisecond,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: -1,
 		})
 		Eventually(func() int {
@@ -306,6 +309,7 @@ var _ = Describe("race", func() {
 			Dialer:          dummyDialer,
 			PoolSize:        10,
 			PoolTimeout:     time.Minute,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
 		})
 
@@ -336,6 +340,7 @@ var _ = Describe("race", func() {
 			PoolSize:     1000,
 			MinIdleConns: 50,
 			PoolTimeout:  3 * time.Second,
+			DialTimeout:  1 * time.Second,
 		}
 		p := pool.NewConnPool(opt)
 
