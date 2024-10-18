@@ -283,8 +283,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 	cn.Inited = true
 
+	var err error
 	username, password := c.opt.Username, c.opt.Password
-	if c.opt.CredentialsProvider != nil {
+	if c.opt.CredentialsProviderContext != nil {
+		if username, password, err = c.opt.CredentialsProviderContext(ctx); err != nil {
+			return err
+		}
+	} else if c.opt.CredentialsProvider != nil {
 		username, password = c.opt.CredentialsProvider()
 	}
 
@@ -300,7 +305,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
-	if err := conn.Hello(ctx, protocol, username, password, "").Err(); err == nil {
+	if err = conn.Hello(ctx, protocol, username, password, "").Err(); err == nil {
 		auth = true
 	} else if !isRedisError(err) {
 		// When the server responds with the RESP protocol and the result is not a normal
@@ -313,7 +318,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return err
 	}
 
-	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
+	_, err = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if !auth && password != "" {
 			if username != "" {
 				pipe.AuthACL(ctx, username, password)
@@ -407,6 +412,19 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	return lastErr
 }
 
+func (c *baseClient) assertUnstableCommand(cmd Cmder) bool {
+	switch cmd.(type) {
+	case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
+		if c.opt.UnstableResp3 {
+			return true
+		} else {
+			panic("RESP3 responses for this command are disabled because they may still change. Please set the flag UnstableResp3 .  See the [README](https://github.com/redis/go-redis/blob/master/README.md) and the release notes for guidance.")
+		}
+	default:
+		return false
+	}
+}
+
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -422,8 +440,12 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			atomic.StoreUint32(&retryTimeout, 1)
 			return err
 		}
-
-		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), cmd.readReply); err != nil {
+		readReplyFunc := cmd.readReply
+		// Apply unstable RESP3 search module.
+		if c.opt.Protocol != 2 && c.assertUnstableCommand(cmd) {
+			readReplyFunc = cmd.readRawReply
+		}
+		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
 			if cmd.readTimeout() == nil {
 				atomic.StoreUint32(&retryTimeout, 1)
 			} else {

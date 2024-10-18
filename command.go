@@ -40,7 +40,7 @@ type Cmder interface {
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
-
+	readRawReply(rd *proto.Reader) error
 	SetErr(error)
 	Err() error
 }
@@ -122,11 +122,11 @@ func cmdString(cmd Cmder, val interface{}) string {
 //------------------------------------------------------------------------------
 
 type baseCmd struct {
-	ctx    context.Context
-	args   []interface{}
-	err    error
-	keyPos int8
-
+	ctx          context.Context
+	args         []interface{}
+	err          error
+	keyPos       int8
+	rawVal       interface{}
 	_readTimeout *time.Duration
 }
 
@@ -195,6 +195,11 @@ func (cmd *baseCmd) readTimeout() *time.Duration {
 
 func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 	cmd._readTimeout = &d
+}
+
+func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
+	cmd.rawVal, err = rd.ReadReply()
+	return err
 }
 
 //------------------------------------------------------------------------------
@@ -571,6 +576,10 @@ func (cmd *StatusCmd) Val() string {
 
 func (cmd *StatusCmd) Result() (string, error) {
 	return cmd.val, cmd.err
+}
+
+func (cmd *StatusCmd) Bytes() ([]byte, error) {
+	return util.StringToBytes(cmd.val), cmd.err
 }
 
 func (cmd *StatusCmd) String() string {
@@ -3783,6 +3792,65 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 	return nil
 }
 
+// -----------------------------------------------------------------------
+// MapStringInterfaceCmd represents a command that returns a map of strings to interface{}.
+type MapMapStringInterfaceCmd struct {
+	baseCmd
+	val map[string]interface{}
+}
+
+func NewMapMapStringInterfaceCmd(ctx context.Context, args ...interface{}) *MapMapStringInterfaceCmd {
+	return &MapMapStringInterfaceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *MapMapStringInterfaceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *MapMapStringInterfaceCmd) SetVal(val map[string]interface{}) {
+	cmd.val = val
+}
+
+func (cmd *MapMapStringInterfaceCmd) Result() (map[string]interface{}, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *MapMapStringInterfaceCmd) Val() map[string]interface{} {
+	return cmd.val
+}
+
+func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	data := make(map[string]interface{}, n/2)
+	for i := 0; i < n; i += 2 {
+		_, err := rd.ReadArrayLen()
+		if err != nil {
+			cmd.err = err
+		}
+		key, err := rd.ReadString()
+		if err != nil {
+			cmd.err = err
+		}
+		value, err := rd.ReadString()
+		if err != nil {
+			cmd.err = err
+		}
+		data[key] = value
+	}
+
+	cmd.val = data
+	return nil
+}
+
 //-----------------------------------------------------------------------
 
 type MapStringInterfaceSliceCmd struct {
@@ -4997,6 +5065,7 @@ type ClientInfo struct {
 	PSub               int           // number of pattern matching subscriptions
 	SSub               int           // redis version 7.0.3, number of shard channel subscriptions
 	Multi              int           // number of commands in a MULTI/EXEC context
+	Watch              int           // redis version 7.4 RC1, number of keys this client is currently watching.
 	QueryBuf           int           // qbuf, query buffer length (0 means no query pending)
 	QueryBufFree       int           // qbuf-free, free space of the query buffer (0 means the buffer is full)
 	ArgvMem            int           // incomplete arguments for the next command (already extracted from query buffer)
@@ -5149,6 +5218,8 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 			info.SSub, err = strconv.Atoi(val)
 		case "multi":
 			info.Multi, err = strconv.Atoi(val)
+		case "watch":
+			info.Watch, err = strconv.Atoi(val)
 		case "qbuf":
 			info.QueryBuf, err = strconv.Atoi(val)
 		case "qbuf-free":
