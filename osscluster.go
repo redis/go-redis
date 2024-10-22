@@ -691,7 +691,7 @@ func replaceLoopbackHost(nodeAddr, originHost string) string {
 func isLoopback(host string) bool {
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return true
+		return false
 	}
 	return ip.IsLoopback()
 }
