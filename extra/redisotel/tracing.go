@@ -27,6 +27,7 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 		opt := rdb.Options()
 		connString := formatDBConnString(opt.Network, opt.Addr)
 		opts = addServerAttributes(opts, opt.Addr)
+		opts = append(opts, WithAttributes(semconv.ServiceNamespace(strconv.Itoa(opt.DB))))
 		rdb.AddHook(newTracingHook(connString, opts...))
 		return nil
 	case *redis.ClusterClient:
