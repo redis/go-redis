@@ -2,6 +2,7 @@ package redisotel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"runtime"
@@ -10,7 +11,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/redis/go-redis/extra/rediscmd/v9"
@@ -27,7 +28,7 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 		opt := rdb.Options()
 		connString := formatDBConnString(opt.Network, opt.Addr)
 		opts = addServerAttributes(opts, opt.Addr)
-		opts = append(opts, WithAttributes(semconv.ServiceNamespace(strconv.Itoa(opt.DB))))
+		opts = append(opts, WithAttributes(semconv.DBNamespace(strconv.Itoa(opt.DB))))
 		rdb.AddHook(newTracingHook(connString, opts...))
 		return nil
 	case *redis.ClusterClient:
@@ -77,7 +78,9 @@ func newTracingHook(connString string, opts ...TracingOption) *tracingHook {
 		)
 	}
 	if connString != "" {
-		conf.attrs = append(conf.attrs, semconv.DBConnectionString(connString))
+		conf.attrs = append(conf.attrs,
+			attribute.String("db.connection_string", connString), // Deprecated, use ServerAddress and ServerPort
+		)
 	}
 
 	return &tracingHook{
@@ -117,7 +120,10 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 
 		if th.conf.dbStmtEnabled {
 			cmdString := rediscmd.CmdString(cmd)
-			attrs = append(attrs, semconv.DBStatement(cmdString))
+			attrs = append(attrs,
+				attribute.String("db.statement", cmdString), // Deprecated, use DBQueryText
+				semconv.DBQueryText(cmdString),
+			)
 		}
 
 		opts := th.spanOpts
@@ -150,7 +156,10 @@ func (th *tracingHook) ProcessPipelineHook(
 
 		summary, cmdsString := rediscmd.CmdsString(cmds)
 		if th.conf.dbStmtEnabled {
-			attrs = append(attrs, semconv.DBStatement(cmdsString))
+			attrs = append(attrs,
+				attribute.String("db.statement", cmdsString), // Deprecated, use DBQueryText
+				semconv.DBQueryText(cmdsString),
+			)
 		}
 
 		opts := th.spanOpts
@@ -168,7 +177,7 @@ func (th *tracingHook) ProcessPipelineHook(
 }
 
 func recordError(span trace.Span, err error) {
-	if err != redis.Nil {
+	if !errors.Is(err, redis.Nil) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
