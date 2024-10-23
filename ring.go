@@ -341,7 +341,8 @@ func (c *ringSharding) List() []*ringShard {
 
 	c.mu.RLock()
 	if !c.closed {
-		list = c.shards.list
+		list = make([]*ringShard, len(c.shards.list))
+		copy(c.shards.list, list)
 	}
 	c.mu.RUnlock()
 
