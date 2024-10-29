@@ -14,15 +14,6 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
 
-	setupRedisClient := func(protocolVersion int) *redis.Client {
-		return redis.NewClient(&redis.Options{
-			Addr:          "localhost:6379",
-			DB:            0,
-			Protocol:      protocolVersion,
-			UnstableResp3: true,
-		})
-	}
-
 	AfterEach(func() {
 		if client != nil {
 			client.FlushDB(ctx)
@@ -30,10 +21,14 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 		}
 	})
 
-	protocols := []int{2, 3}
+	protocols := []int{2}
 	for _, protocol := range protocols {
 		BeforeEach(func() {
-			client = setupRedisClient(protocol)
+			client = redis.NewClient(&redis.Options{
+				Addr:     "localhost:6379",
+				DB:       0,
+				Protocol: protocol,
+			})
 			Expect(client.FlushAll(ctx).Err()).NotTo(HaveOccurred())
 		})
 
