@@ -186,6 +186,20 @@ rdb := redis.NewClient(&redis.Options{
 #### Unstable RESP3 Structures for RediSearch Commands
 When integrating Redis with application functionalities using RESP3, it's important to note that some response structures aren't final yet. This is especially true for more complex structures like search and query results. We recommend using RESP2 when using the search and query capabilities, but we plan to stabilize the RESP3-based API-s in the coming versions. You can find more guidance in the upcoming release notes.
 
+To enable unstable RESP3, set the option in your client configuration:
+
+```go
+redis.NewClient(&redis.Options{
+			UnstableResp3: true,
+		})
+```
+**Note:** When using unstable RESP3 in the RediSearch module, use RawResult() or RawVal() to handle responses:
+
+```go
+res1, err := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{}).RawResult()
+val1 := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{}).RawVal()
+```
+
 ## Contributing
 
 Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
