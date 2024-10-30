@@ -62,3 +62,5 @@ RedisStack
 RedisGears
 RedisTimeseries
 RediSearch
+RawResult
+RawVal
