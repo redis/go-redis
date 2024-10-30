@@ -1,4 +1,4 @@
-module github.com/redis/go-redis
+module github.com/ns-ofang/go-redis
 
 go 1.18
 
