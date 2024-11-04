@@ -228,6 +228,12 @@ type UniversalClient interface {
 	PoolStats() *PoolStats
 }
 
+func (c cmdable) Do(ctx context.Context, args ...interface{}) *Cmd {
+	cmd := NewCmd(ctx, args)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 var (
 	_ UniversalClient = (*Client)(nil)
 	_ UniversalClient = (*ClusterClient)(nil)
