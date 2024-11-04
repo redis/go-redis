@@ -319,36 +319,66 @@ func (cmd *BFInfoCmd) Result() (BFInfo, error) {
 }
 
 func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
-	n, err := rd.ReadMapLen()
+	result := BFInfo{}
+
+	readAndAssignValue := func(key string) error {
+		switch key {
+		case "Capacity", "CAPACITY":
+			if result.Capacity, err = rd.ReadInt(); err != nil {
+				return err
+			}
+		case "Size", "SIZE":
+			if result.Size, err = rd.ReadInt(); err != nil {
+				return err
+			}
+		case "Number of filters", "FILTERS":
+			if result.Filters, err = rd.ReadInt(); err != nil {
+				return err
+			}
+		case "Number of items inserted", "ITEMS":
+			if result.ItemsInserted, err = rd.ReadInt(); err != nil {
+				return err
+			}
+		case "Expansion rate", "EXPANSION":
+			if result.ExpansionRate, err = rd.ReadInt(); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("redis: BLOOM.INFO unexpected key %s", key)
+		}
+		return nil
+	}
+
+	readType, err := rd.PeekReplyType()
 	if err != nil {
 		return err
 	}
 
-	var key string
-	var result BFInfo
-	for f := 0; f < n; f++ {
-		key, err = rd.ReadString()
+	if len(cmd.args) > 2 && readType == proto.RespArray {
+		n, err := rd.ReadArrayLen()
 		if err != nil {
 			return err
 		}
-
-		switch key {
-		case "Capacity":
-			result.Capacity, err = rd.ReadInt()
-		case "Size":
-			result.Size, err = rd.ReadInt()
-		case "Number of filters":
-			result.Filters, err = rd.ReadInt()
-		case "Number of items inserted":
-			result.ItemsInserted, err = rd.ReadInt()
-		case "Expansion rate":
-			result.ExpansionRate, err = rd.ReadInt()
-		default:
-			return fmt.Errorf("redis: BLOOM.INFO unexpected key %s", key)
+		if key, ok := cmd.args[2].(string); ok && n == 1 {
+			if err := readAndAssignValue(key); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("redis: BLOOM.INFO invalid argument key type")
 		}
-
+	} else {
+		n, err := rd.ReadMapLen()
 		if err != nil {
 			return err
+		}
+		for i := 0; i < n; i++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			if err := readAndAssignValue(key); err != nil {
+				return err
+			}
 		}
 	}
 
