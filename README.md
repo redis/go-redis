@@ -3,6 +3,7 @@
 [![build workflow](https://github.com/redis/go-redis/actions/workflows/build.yml/badge.svg)](https://github.com/redis/go-redis/actions)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/redis/go-redis/v9)](https://pkg.go.dev/github.com/redis/go-redis/v9?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
+[![codecov](https://codecov.io/github/redis/go-redis/graph/badge.svg?token=tsrCZKuSSw)](https://codecov.io/github/redis/go-redis)
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
 > go-redis is brought to you by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
@@ -10,12 +11,30 @@
 > use it to monitor applications and set up automatic alerts to receive notifications via email,
 > Slack, Telegram, and others.
 >
-> See [OpenTelemetry](example/otel) example which demonstrates how you can use Uptrace to monitor
-> go-redis.
+> See [OpenTelemetry](https://github.com/redis/go-redis/tree/master/example/otel) example which
+> demonstrates how you can use Uptrace to monitor go-redis.
+
+## How do I Redis?
+
+[Learn for free at Redis University](https://university.redis.com/)
+
+[Build faster with the Redis Launchpad](https://launchpad.redis.com/)
+
+[Try the Redis Cloud](https://redis.com/try-free/)
+
+[Dive in developer tutorials](https://developer.redis.com/)
+
+[Join the Redis community](https://redis.com/community/)
+
+[Work at Redis](https://redis.com/company/careers/jobs/)
+
+## Documentation
+
+- [English](https://redis.uptrace.dev)
+- [简体中文](https://redis.uptrace.dev/zh/)
 
 ## Resources
 
-- [Documentation](https://redis.uptrace.dev)
 - [Discussions](https://github.com/redis/go-redis/discussions)
 - [Chat](https://discord.gg/rWtp5Aj)
 - [Reference](https://pkg.go.dev/github.com/redis/go-redis/v9)
@@ -33,8 +52,8 @@ key value NoSQL database that uses RocksDB as storage engine and is compatible w
 
 ## Features
 
-- Redis 3 commands except QUIT, MONITOR, and SYNC.
-- Automatic connection pooling with
+- Redis commands except QUIT and SYNC.
+- Automatic connection pooling.
 - [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
 - [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
 - [Scripting](https://redis.uptrace.dev/guide/lua-scripting.html).
@@ -42,6 +61,7 @@ key value NoSQL database that uses RocksDB as storage engine and is compatible w
 - [Redis Cluster](https://redis.uptrace.dev/guide/go-redis-cluster.html).
 - [Redis Ring](https://redis.uptrace.dev/guide/ring.html).
 - [Redis Performance Monitoring](https://redis.uptrace.dev/guide/redis-performance-monitoring.html).
+- [Redis Probabilistic [RedisStack]](https://redis.io/docs/data-types/probabilistic/)
 
 ## Installation
 
@@ -64,8 +84,9 @@ go get github.com/redis/go-redis/v9
 ```go
 import (
     "context"
-    "github.com/redis/go-redis/v9"
     "fmt"
+
+    "github.com/redis/go-redis/v9"
 )
 
 var ctx = context.Background()
@@ -100,6 +121,74 @@ func ExampleClient() {
     // key2 does not exist
 }
 ```
+
+The above can be modified to specify the version of the RESP protocol by adding the `protocol`
+option to the `Options` struct:
+
+```go
+    rdb := redis.NewClient(&redis.Options{
+        Addr:     "localhost:6379",
+        Password: "", // no password set
+        DB:       0,  // use default DB
+        Protocol: 3, // specify 2 for RESP 2 or 3 for RESP 3
+    })
+
+```
+
+### Connecting via a redis url
+
+go-redis also supports connecting via the
+[redis uri specification](https://github.com/redis/redis-specifications/tree/master/uri/redis.txt).
+The example below demonstrates how the connection can easily be configured using a string, adhering
+to this specification.
+
+```go
+import (
+    "github.com/redis/go-redis/v9"
+)
+
+func ExampleClient() *redis.Client {
+    url := "redis://user:password@localhost:6379/0?protocol=3"
+    opts, err := redis.ParseURL(url)
+    if err != nil {
+        panic(err)
+    }
+
+    return redis.NewClient(opts)
+}
+
+```
+
+
+### Advanced Configuration
+
+go-redis supports extending the client identification phase to allow projects to send their own custom client identification.
+
+#### Default Client Identification
+
+By default, go-redis automatically sends the client library name and version during the connection process. This feature is available in redis-server as of version 7.2. As a result, the command is "fire and forget", meaning it should fail silently, in the case that the redis server does not support this feature.
+
+#### Disabling Identity Verification
+
+When connection identity verification is not required or needs to be explicitly disabled, a `DisableIndentity` configuration option exists. In V10 of this library, `DisableIndentity` will become `DisableIdentity` in order to fix the associated typo.
+
+To disable verification, set the `DisableIndentity` option to `true` in the Redis client options:
+
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr:            "localhost:6379",
+    Password:        "",
+    DB:              0,
+    DisableIndentity: true, // Disable set-info on connect
+})
+```
+
+#### Unstable RESP3 Structures for RediSearch Commands
+When integrating Redis with application functionalities using RESP3, it's important to note that some response structures aren't final yet. This is especially true for more complex structures like search and query results. We recommend using RESP2 when using the search and query capabilities, but we plan to stabilize the RESP3-based API-s in the coming versions. You can find more guidance in the upcoming release notes.
+
+## Contributing
+
+Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
 
 ## Look and feel
 
@@ -161,6 +250,13 @@ Lastly, run:
 
 ```shell
 go test
+```
+
+Another option is to run your specific tests with an already running redis. The example below, tests
+against a redis running on port 9999.:
+
+```shell
+REDIS_PORT=9999 go test <your options>
 ```
 
 ## See also

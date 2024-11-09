@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,12 +41,15 @@ type (
 )
 
 type hooksMixin struct {
+	hooksMu *sync.Mutex
+
 	slice   []Hook
 	initial hooks
 	current hooks
 }
 
 func (hs *hooksMixin) initHooks(hooks hooks) {
+	hs.hooksMu = new(sync.Mutex)
 	hs.initial = hooks
 	hs.chain()
 }
@@ -117,6 +120,9 @@ func (hs *hooksMixin) AddHook(hook Hook) {
 func (hs *hooksMixin) chain() {
 	hs.initial.setDefaults()
 
+	hs.hooksMu.Lock()
+	defer hs.hooksMu.Unlock()
+
 	hs.current.dial = hs.initial.dial
 	hs.current.process = hs.initial.process
 	hs.current.pipeline = hs.initial.pipeline
@@ -139,9 +145,13 @@ func (hs *hooksMixin) chain() {
 }
 
 func (hs *hooksMixin) clone() hooksMixin {
+	hs.hooksMu.Lock()
+	defer hs.hooksMu.Unlock()
+
 	clone := *hs
 	l := len(clone.slice)
 	clone.slice = clone.slice[:l:l]
+	clone.hooksMu = new(sync.Mutex)
 	return clone
 }
 
@@ -166,6 +176,8 @@ func (hs *hooksMixin) withProcessPipelineHook(
 }
 
 func (hs *hooksMixin) dialHook(ctx context.Context, network, addr string) (net.Conn, error) {
+	hs.hooksMu.Lock()
+	defer hs.hooksMu.Unlock()
 	return hs.current.dial(ctx, network, addr)
 }
 
@@ -271,8 +283,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 	cn.Inited = true
 
+	var err error
 	username, password := c.opt.Username, c.opt.Password
-	if c.opt.CredentialsProvider != nil {
+	if c.opt.CredentialsProviderContext != nil {
+		if username, password, err = c.opt.CredentialsProviderContext(ctx); err != nil {
+			return err
+		}
+	} else if c.opt.CredentialsProvider != nil {
 		username, password = c.opt.CredentialsProvider()
 	}
 
@@ -280,16 +297,28 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	conn := newConn(c.opt, connPool)
 
 	var auth bool
+	protocol := c.opt.Protocol
+	// By default, use RESP3 in current version.
+	if protocol < 2 {
+		protocol = 3
+	}
 
-	// For redis-server < 6.0 that does not support the Hello command,
-	// we continue to provide services with RESP2.
-	if err := conn.Hello(ctx, 3, username, password, "").Err(); err == nil {
+	// for redis-server versions that do not support the HELLO command,
+	// RESP2 will continue to be used.
+	if err = conn.Hello(ctx, protocol, username, password, "").Err(); err == nil {
 		auth = true
-	} else if !strings.HasPrefix(err.Error(), "ERR unknown command") {
+	} else if !isRedisError(err) {
+		// When the server responds with the RESP protocol and the result is not a normal
+		// execution result of the HELLO command, we consider it to be an indication that
+		// the server does not support the HELLO command.
+		// The server may be a redis-server that does not support the HELLO command,
+		// or it could be DragonflyDB or a third-party redis-proxy. They all respond
+		// with different error string results for unsupported commands, making it
+		// difficult to rely on error strings to determine all results.
 		return err
 	}
 
-	_, err := conn.Pipelined(ctx, func(pipe Pipeliner) error {
+	_, err = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if !auth && password != "" {
 			if username != "" {
 				pipe.AuthACL(ctx, username, password)
@@ -314,6 +343,18 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	if !c.opt.DisableIndentity {
+		libName := ""
+		libVer := Version()
+		if c.opt.IdentitySuffix != "" {
+			libName = c.opt.IdentitySuffix
+		}
+		p := conn.Pipeline()
+		p.ClientSetInfo(ctx, WithLibraryName(libName))
+		p.ClientSetInfo(ctx, WithLibraryVersion(libVer))
+		_, _ = p.Exec(ctx)
 	}
 
 	if c.opt.OnConnect != nil {
@@ -371,6 +412,19 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	return lastErr
 }
 
+func (c *baseClient) assertUnstableCommand(cmd Cmder) bool {
+	switch cmd.(type) {
+	case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
+		if c.opt.UnstableResp3 {
+			return true
+		} else {
+			panic("RESP3 responses for this command are disabled because they may still change. Please set the flag UnstableResp3 .  See the [README](https://github.com/redis/go-redis/blob/master/README.md) and the release notes for guidance.")
+		}
+	default:
+		return false
+	}
+}
+
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -386,8 +440,12 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			atomic.StoreUint32(&retryTimeout, 1)
 			return err
 		}
-
-		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), cmd.readReply); err != nil {
+		readReplyFunc := cmd.readReply
+		// Apply unstable RESP3 search module.
+		if c.opt.Protocol != 2 && c.assertUnstableCommand(cmd) {
+			readReplyFunc = cmd.readRawReply
+		}
+		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
 			if cmd.readTimeout() == nil {
 				atomic.StoreUint32(&retryTimeout, 1)
 			} else {

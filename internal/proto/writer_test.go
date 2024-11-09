@@ -12,6 +12,7 @@ import (
 	. "github.com/bsm/gomega"
 
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/util"
 )
 
 type MyType struct{}
@@ -100,3 +101,54 @@ func BenchmarkWriteBuffer_Append(b *testing.B) {
 		}
 	}
 }
+
+var _ = Describe("WriteArg", func() {
+	var buf *bytes.Buffer
+	var wr *proto.Writer
+
+	BeforeEach(func() {
+		buf = new(bytes.Buffer)
+		wr = proto.NewWriter(buf)
+	})
+
+	args := map[any]string{
+		"hello":                   "$5\r\nhello\r\n",
+		int(10):                   "$2\r\n10\r\n",
+		util.ToPtr(int(10)):       "$2\r\n10\r\n",
+		int8(10):                  "$2\r\n10\r\n",
+		util.ToPtr(int8(10)):      "$2\r\n10\r\n",
+		int16(10):                 "$2\r\n10\r\n",
+		util.ToPtr(int16(10)):     "$2\r\n10\r\n",
+		int32(10):                 "$2\r\n10\r\n",
+		util.ToPtr(int32(10)):     "$2\r\n10\r\n",
+		int64(10):                 "$2\r\n10\r\n",
+		util.ToPtr(int64(10)):     "$2\r\n10\r\n",
+		uint(10):                  "$2\r\n10\r\n",
+		util.ToPtr(uint(10)):      "$2\r\n10\r\n",
+		uint8(10):                 "$2\r\n10\r\n",
+		util.ToPtr(uint8(10)):     "$2\r\n10\r\n",
+		uint16(10):                "$2\r\n10\r\n",
+		util.ToPtr(uint16(10)):    "$2\r\n10\r\n",
+		uint32(10):                "$2\r\n10\r\n",
+		util.ToPtr(uint32(10)):    "$2\r\n10\r\n",
+		uint64(10):                "$2\r\n10\r\n",
+		util.ToPtr(uint64(10)):    "$2\r\n10\r\n",
+		float32(10.3):             "$18\r\n10.300000190734863\r\n",
+		util.ToPtr(float32(10.3)): "$18\r\n10.300000190734863\r\n",
+		float64(10.3):             "$4\r\n10.3\r\n",
+		util.ToPtr(float64(10.3)): "$4\r\n10.3\r\n",
+		bool(true):                "$1\r\n1\r\n",
+		bool(false):               "$1\r\n0\r\n",
+		util.ToPtr(bool(true)):    "$1\r\n1\r\n",
+		util.ToPtr(bool(false)):   "$1\r\n0\r\n",
+	}
+
+	for arg, expect := range args {
+		arg, expect := arg, expect
+		It(fmt.Sprintf("should write arg of type %T", arg), func() {
+			err := wr.WriteArg(arg)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(buf.String()).To(Equal(expect))
+		})
+	}
+})

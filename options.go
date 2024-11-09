@@ -45,6 +45,9 @@ type Options struct {
 	// Hook that is called when new connection is established.
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	// Protocol 2 or 3. Use the version to negotiate RESP version with redis-server.
+	// Default is 3.
+	Protocol int
 	// Use the specified Username to authenticate the current connection
 	// with one of the connections defined in the ACL list when connecting
 	// to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
@@ -57,6 +60,12 @@ type Options struct {
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
+
+	// CredentialsProviderContext is an enhanced parameter of CredentialsProvider,
+	// done to maintain API compatibility. In the future,
+	// there might be a merge between CredentialsProviderContext and CredentialsProvider.
+	// There will be a conflict between them; if CredentialsProviderContext exists, we will ignore CredentialsProvider.
+	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
 
 	// Database to be selected after connecting to the server.
 	DB int
@@ -95,8 +104,10 @@ type Options struct {
 	// Note that FIFO has slightly higher overhead compared to LIFO,
 	// but it helps closing idle connections faster reducing the pool size.
 	PoolFIFO bool
-	// Maximum number of socket connections.
+	// Base number of socket connections.
 	// Default is 10 connections per every available CPU as reported by runtime.GOMAXPROCS.
+	// If there is not enough connections in the pool, new connections will be allocated in excess of PoolSize,
+	// you can limit it through MaxActiveConns
 	PoolSize int
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
@@ -104,9 +115,14 @@ type Options struct {
 	PoolTimeout time.Duration
 	// Minimum number of idle connections which is useful when establishing
 	// new connection is slow.
+	// Default is 0. the idle connections are not closed by default.
 	MinIdleConns int
 	// Maximum number of idle connections.
+	// Default is 0. the idle connections are not closed by default.
 	MaxIdleConns int
+	// Maximum number of connections allocated by the pool at a given time.
+	// When zero, there is no limit on the number of connections in the pool.
+	MaxActiveConns int
 	// ConnMaxIdleTime is the maximum amount of time a connection may be idle.
 	// Should be less than server's timeout.
 	//
@@ -131,6 +147,15 @@ type Options struct {
 
 	// Enables read only queries on slave/follower nodes.
 	readOnly bool
+
+	// Disable set-lib on connect. Default is false.
+	DisableIndentity bool
+
+	// Add suffix to client name. Default is empty.
+	IdentitySuffix string
+
+	// Enable Unstable mode for Redis Search module with RESP3.
+	UnstableResp3 bool
 }
 
 func (opt *Options) init() {
@@ -219,7 +244,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 	}
 }
 
-// ParseURL parses an URL into Options that can be used to connect to Redis.
+// ParseURL parses a URL into Options that can be used to connect to Redis.
 // Scheme is required.
 // There are two connection types: by tcp socket and by unix socket.
 // Tcp connection:
@@ -234,12 +259,12 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //   - field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
 //   - only scalar type fields are supported (bool, int, time.Duration)
 //   - for time.Duration fields, values must be a valid input for time.ParseDuration();
-//     additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//     additionally a plain integer as value (i.e. without unit) is interpreted as seconds
 //   - to disable a duration field, use value less than or equal to 0; to use the default
 //     value, leave the value blank or remove the parameter
 //   - only the last value is interpreted if a parameter is given multiple times
 //   - fields "network", "addr", "username" and "password" can only be set using other
-//     URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
 //
@@ -435,6 +460,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 		o.DB = db
 	}
 
+	o.Protocol = q.int("protocol")
 	o.ClientName = q.string("client_name")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
@@ -447,6 +473,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
+	o.MaxActiveConns = q.int("max_active_conns")
 	if q.has("conn_max_idle_time") {
 		o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	} else {
@@ -493,6 +520,7 @@ func newConnPool(
 		PoolTimeout:     opt.PoolTimeout,
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
+		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 	})

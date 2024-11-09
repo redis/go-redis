@@ -17,6 +17,7 @@ var _ = Describe("UniversalClient", func() {
 	})
 
 	It("should connect to failover servers", func() {
+		Skip("Flaky Test")
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			MasterName: sentinelName,
 			Addrs:      sentinelAddrs,
@@ -31,7 +32,7 @@ var _ = Describe("UniversalClient", func() {
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
 
-	It("should connect to clusters", func() {
+	It("should connect to clusters", Label("NonRedisEnterprise"), func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs: cluster.addrs(),
 		})

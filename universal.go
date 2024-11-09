@@ -26,6 +26,7 @@ type UniversalOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	Protocol         int
 	Username         string
 	Password         string
 	SentinelUsername string
@@ -47,6 +48,7 @@ type UniversalOptions struct {
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
+	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
@@ -63,6 +65,10 @@ type UniversalOptions struct {
 	// Only failover clients.
 
 	MasterName string
+
+	DisableIndentity bool
+	IdentitySuffix   string
+	UnstableResp3    bool
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -77,6 +83,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		Dialer:     o.Dialer,
 		OnConnect:  o.OnConnect,
 
+		Protocol: o.Protocol,
 		Username: o.Username,
 		Password: o.Password,
 
@@ -100,10 +107,14 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
 	}
 }
 
@@ -122,6 +133,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		OnConnect: o.OnConnect,
 
 		DB:               o.DB,
+		Protocol:         o.Protocol,
 		Username:         o.Username,
 		Password:         o.Password,
 		SentinelUsername: o.SentinelUsername,
@@ -141,10 +153,15 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
+		UnstableResp3:    o.UnstableResp3,
 	}
 }
 
@@ -162,6 +179,7 @@ func (o *UniversalOptions) Simple() *Options {
 		OnConnect:  o.OnConnect,
 
 		DB:       o.DB,
+		Protocol: o.Protocol,
 		Username: o.Username,
 		Password: o.Password,
 
@@ -179,10 +197,15 @@ func (o *UniversalOptions) Simple() *Options {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
+		UnstableResp3:    o.UnstableResp3,
 	}
 }
 
