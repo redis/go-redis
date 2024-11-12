@@ -193,7 +193,8 @@ redis.NewClient(&redis.Options{
 			UnstableResp3: true,
 		})
 ```
-**Note:** When using unstable RESP3 in the RediSearch module, use RawResult() or RawVal() to handle responses:
+**Note:** When UnstableResp3 mode is enabled, it's necessary to use RawResult() and RawVal() to retrieve a raw data.
+          Since, raw response is the only option for unstable search commands Val() and Result() calls wouldn't have any affect on them:
 
 ```go
 res1, err := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{}).RawResult()
