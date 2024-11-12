@@ -321,31 +321,33 @@ func (cmd *BFInfoCmd) Result() (BFInfo, error) {
 func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 	result := BFInfo{}
 
+	// Create a mapping from key names to pointers of struct fields
+	respMapping := map[string]*int64{
+		"Capacity":                 &result.Capacity,
+		"CAPACITY":                 &result.Capacity,
+		"Size":                     &result.Size,
+		"SIZE":                     &result.Size,
+		"Number of filters":        &result.Filters,
+		"FILTERS":                  &result.Filters,
+		"Number of items inserted": &result.ItemsInserted,
+		"ITEMS":                    &result.ItemsInserted,
+		"Expansion rate":           &result.ExpansionRate,
+		"EXPANSION":                &result.ExpansionRate,
+	}
+
+	// Helper function to read and assign a value based on the key
 	readAndAssignValue := func(key string) error {
-		switch key {
-		case "Capacity", "CAPACITY":
-			if result.Capacity, err = rd.ReadInt(); err != nil {
-				return err
-			}
-		case "Size", "SIZE":
-			if result.Size, err = rd.ReadInt(); err != nil {
-				return err
-			}
-		case "Number of filters", "FILTERS":
-			if result.Filters, err = rd.ReadInt(); err != nil {
-				return err
-			}
-		case "Number of items inserted", "ITEMS":
-			if result.ItemsInserted, err = rd.ReadInt(); err != nil {
-				return err
-			}
-		case "Expansion rate", "EXPANSION":
-			if result.ExpansionRate, err = rd.ReadInt(); err != nil {
-				return err
-			}
-		default:
+		fieldPtr, exists := respMapping[key]
+		if !exists {
 			return fmt.Errorf("redis: BLOOM.INFO unexpected key %s", key)
 		}
+
+		// Read the integer and assign to the field via pointer dereferencing
+		val, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		*fieldPtr = val
 		return nil
 	}
 
