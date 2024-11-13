@@ -54,6 +54,7 @@ stunnel
 SynDump
 TCP
 TLS
+UnstableResp
 uri
 URI
 url
@@ -62,3 +63,5 @@ RedisStack
 RedisGears
 RedisTimeseries
 RediSearch
+RawResult
+RawVal
