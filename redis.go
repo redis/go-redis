@@ -176,8 +176,6 @@ func (hs *hooksMixin) withProcessPipelineHook(
 }
 
 func (hs *hooksMixin) dialHook(ctx context.Context, network, addr string) (net.Conn, error) {
-	hs.hooksMu.Lock()
-	defer hs.hooksMu.Unlock()
 	return hs.current.dial(ctx, network, addr)
 }
 
