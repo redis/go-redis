@@ -139,6 +139,9 @@ type Options struct {
 	// Default is to not close idle connections.
 	ConnMaxLifetime time.Duration
 
+	// ConnChecker checks the health of a connection before returning it to the client.
+	ConnChecker func(net.Conn) error
+
 	// TLS Config to use. When set, TLS will be negotiated.
 	TLSConfig *tls.Config
 
@@ -523,5 +526,6 @@ func newConnPool(
 		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
+		ConnChecker:     opt.ConnChecker,
 	})
 }
