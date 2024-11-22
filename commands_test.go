@@ -6063,9 +6063,9 @@ var _ = Describe("Commands", func() {
 					infoExt[i].Idle = 0
 				}
 				Expect(infoExt).To(Equal([]redis.XPendingExt{
-					{ID: "1-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
-					{ID: "2-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
-					{ID: "3-0", Consumer: "consumer", Idle: 0, RetryCount: 1},
+					{ID: "1-0", Consumer: "consumer", Idle: 0, DeliveredTimes: 1},
+					{ID: "2-0", Consumer: "consumer", Idle: 0, DeliveredTimes: 1},
+					{ID: "3-0", Consumer: "consumer", Idle: 0, DeliveredTimes: 1},
 				}))
 
 				args.Idle = 72 * time.Hour

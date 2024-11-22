@@ -1784,10 +1784,10 @@ func (cmd *XPendingCmd) readReply(rd *proto.Reader) error {
 //------------------------------------------------------------------------------
 
 type XPendingExt struct {
-	ID         string
-	Consumer   string
-	Idle       time.Duration
-	RetryCount int64
+	ID             string
+	Consumer       string
+	Idle           time.Duration
+	DeliveredTimes int64
 }
 
 type XPendingExtCmd struct {
@@ -1848,7 +1848,7 @@ func (cmd *XPendingExtCmd) readReply(rd *proto.Reader) error {
 		}
 		cmd.val[i].Idle = time.Duration(idle) * time.Millisecond
 
-		if cmd.val[i].RetryCount, err = rd.ReadInt(); err != nil && err != Nil {
+		if cmd.val[i].DeliveredTimes, err = rd.ReadInt(); err != nil && err != Nil {
 			return err
 		}
 	}
