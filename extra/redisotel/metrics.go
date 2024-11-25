@@ -175,6 +175,7 @@ func addMetricsHook(rdb *redis.Client, conf *config) error {
 		createTime: createTime,
 		useTime:    useTime,
 		attrs:      conf.attrs,
+		attrsFunc: conf.attrsFunc,
 	})
 	return nil
 }
@@ -183,6 +184,7 @@ type metricsHook struct {
 	createTime metric.Float64Histogram
 	useTime    metric.Float64Histogram
 	attrs      []attribute.KeyValue
+	attrsFunc func(context.Context) []attribute.KeyValue
 }
 
 var _ redis.Hook = (*metricsHook)(nil)
@@ -214,6 +216,7 @@ func (mh *metricsHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 
 		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
 		attrs = append(attrs, mh.attrs...)
+		attrs = append(attrs, mh.attrsFunc(ctx)...)
 		attrs = append(attrs, attribute.String("type", "command"))
 		attrs = append(attrs, statusAttr(err))
 
@@ -235,6 +238,7 @@ func (mh *metricsHook) ProcessPipelineHook(
 
 		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
 		attrs = append(attrs, mh.attrs...)
+		attrs = append(attrs, mh.attrsFunc(ctx)...)
 		attrs = append(attrs, attribute.String("type", "pipeline"))
 		attrs = append(attrs, statusAttr(err))
 
