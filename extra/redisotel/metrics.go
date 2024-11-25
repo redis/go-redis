@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -36,8 +37,7 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 			opt := rdb.Options()
 			conf.poolName = opt.Addr
 		}
-		conf.attrs = append(conf.attrs, attribute.String("pool.name", conf.poolName))
-
+		conf.attrs = append(conf.attrs,semconv.DBClientConnectionPoolName(conf.poolName))
 		if err := reportPoolStats(rdb, conf); err != nil {
 			return err
 		}
@@ -51,7 +51,7 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 				opt := rdb.Options()
 				conf.poolName = opt.Addr
 			}
-			conf.attrs = append(conf.attrs, attribute.String("pool.name", conf.poolName))
+			conf.attrs = append(conf.attrs, semconv.DBClientConnectionPoolName(conf.poolName))
 
 			if err := reportPoolStats(rdb, conf); err != nil {
 				otel.Handle(err)
@@ -67,7 +67,7 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 				opt := rdb.Options()
 				conf.poolName = opt.Addr
 			}
-			conf.attrs = append(conf.attrs, attribute.String("pool.name", conf.poolName))
+			conf.attrs = append(conf.attrs, semconv.DBClientConnectionPoolName(conf.poolName))
 
 			if err := reportPoolStats(rdb, conf); err != nil {
 				otel.Handle(err)
@@ -88,40 +88,45 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 	usedAttrs := append(labels, attribute.String("state", "used"))
 
 	idleMax, err := conf.meter.Int64ObservableUpDownCounter(
-		"db.client.connections.idle.max",
-		metric.WithDescription("The maximum number of idle open connections allowed"),
+		semconv.DBClientConnectionIdleMaxName,
+		metric.WithDescription(semconv.DBClientConnectionIdleMaxDescription),
+		metric.WithUnit(semconv.DBClientConnectionIdleMaxUnit),
 	)
 	if err != nil {
 		return err
 	}
 
 	idleMin, err := conf.meter.Int64ObservableUpDownCounter(
-		"db.client.connections.idle.min",
-		metric.WithDescription("The minimum number of idle open connections allowed"),
+		semconv.DBClientConnectionIdleMinName,
+		metric.WithDescription(semconv.DBClientConnectionIdleMinDescription),
+		metric.WithUnit(semconv.DBClientConnectionIdleMinUnit),
 	)
 	if err != nil {
 		return err
 	}
 
 	connsMax, err := conf.meter.Int64ObservableUpDownCounter(
-		"db.client.connections.max",
-		metric.WithDescription("The maximum number of open connections allowed"),
+		semconv.DBClientConnectionMaxName,
+		metric.WithDescription(semconv.DBClientConnectionMaxDescription),
+		metric.WithUnit(semconv.DBClientConnectionMaxUnit),
 	)
 	if err != nil {
 		return err
 	}
 
 	usage, err := conf.meter.Int64ObservableUpDownCounter(
-		"db.client.connections.usage",
-		metric.WithDescription("The number of connections that are currently in state described by the state attribute"),
+		semconv.DBClientConnectionCountName,
+		metric.WithDescription(semconv.DBClientConnectionCountDescription),
+		metric.WithUnit(semconv.DBClientConnectionCountUnit),
 	)
 	if err != nil {
 		return err
 	}
 
 	timeouts, err := conf.meter.Int64ObservableUpDownCounter(
-		"db.client.connections.timeouts",
-		metric.WithDescription("The number of connection timeouts that have occurred trying to obtain a connection from the pool"),
+		semconv.DBClientConnectionTimeoutsName,
+		metric.WithDescription(semconv.DBClientConnectionTimeoutsDescription),
+		metric.WithUnit(semconv.DBClientConnectionTimeoutsUnit),
 	)
 	if err != nil {
 		return err
@@ -154,18 +159,18 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 
 func addMetricsHook(rdb *redis.Client, conf *config) error {
 	createTime, err := conf.meter.Float64Histogram(
-		"db.client.connections.create_time",
-		metric.WithDescription("The time it took to create a new connection."),
-		metric.WithUnit("ms"),
+		semconv.DBClientConnectionCreateTimeName,
+		metric.WithDescription(semconv.DBClientConnectionCreateTimeDescription),
+		metric.WithUnit(semconv.DBClientConnectionCreateTimeUnit),
 	)
 	if err != nil {
 		return err
 	}
 
 	useTime, err := conf.meter.Float64Histogram(
-		"db.client.connections.use_time",
-		metric.WithDescription("The time between borrowing a connection and returning it to the pool."),
-		metric.WithUnit("ms"),
+		semconv.DBClientConnectionUseTimeName,
+		metric.WithDescription(semconv.DBClientConnectionUseTimeDescription),
+		metric.WithUnit(semconv.DBClientConnectionUseTimeUnit),
 	)
 	if err != nil {
 		return err
@@ -199,7 +204,7 @@ func (mh *metricsHook) DialHook(hook redis.DialHook) redis.DialHook {
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, statusAttr(err))
 
-		mh.createTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
+		mh.createTime.Record(ctx, dur.Seconds(), metric.WithAttributes(attrs...))
 		return conn, err
 	}
 }
@@ -216,8 +221,8 @@ func (mh *metricsHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, attribute.String("type", "command"))
 		attrs = append(attrs, statusAttr(err))
-
-		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
+		attrs = append(attrs, semconv.DBOperationName(cmd.FullName()))
+		mh.useTime.Record(ctx, dur.Seconds(), metric.WithAttributes(attrs...))
 
 		return err
 	}
@@ -237,15 +242,15 @@ func (mh *metricsHook) ProcessPipelineHook(
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, attribute.String("type", "pipeline"))
 		attrs = append(attrs, statusAttr(err))
+		if len(cmds) > 0 {
+			attrs = append(attrs, semconv.DBOperationName(cmds[0].FullName()))
+			attrs = append(attrs, semconv.DBOperationBatchSize(len(cmds)))
+		}
 
-		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
+		mh.useTime.Record(ctx, dur.Seconds(), metric.WithAttributes(attrs...))
 
 		return err
 	}
-}
-
-func milliseconds(d time.Duration) float64 {
-	return float64(d) / float64(time.Millisecond)
 }
 
 func statusAttr(err error) attribute.KeyValue {
