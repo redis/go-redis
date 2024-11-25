@@ -26,9 +26,11 @@ type UniversalOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
-	Protocol         int
-	Username         string
-	Password         string
+	Protocol            int
+	Username            string
+	Password            string
+	CredentialsProvider func() (username string, password string)
+
 	SentinelUsername string
 	SentinelPassword string
 
@@ -83,9 +85,10 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		Dialer:     o.Dialer,
 		OnConnect:  o.OnConnect,
 
-		Protocol: o.Protocol,
-		Username: o.Username,
-		Password: o.Password,
+		Protocol:            o.Protocol,
+		Username:            o.Username,
+		Password:            o.Password,
+		CredentialsProvider: o.CredentialsProvider,
 
 		MaxRedirects:   o.MaxRedirects,
 		ReadOnly:       o.ReadOnly,
@@ -132,10 +135,12 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		Dialer:    o.Dialer,
 		OnConnect: o.OnConnect,
 
-		DB:               o.DB,
-		Protocol:         o.Protocol,
-		Username:         o.Username,
-		Password:         o.Password,
+		DB:                  o.DB,
+		Protocol:            o.Protocol,
+		Username:            o.Username,
+		Password:            o.Password,
+		CredentialsProvider: o.CredentialsProvider,
+
 		SentinelUsername: o.SentinelUsername,
 		SentinelPassword: o.SentinelPassword,
 
@@ -178,10 +183,11 @@ func (o *UniversalOptions) Simple() *Options {
 		Dialer:     o.Dialer,
 		OnConnect:  o.OnConnect,
 
-		DB:       o.DB,
-		Protocol: o.Protocol,
-		Username: o.Username,
-		Password: o.Password,
+		DB:                  o.DB,
+		Protocol:            o.Protocol,
+		Username:            o.Username,
+		Password:            o.Password,
+		CredentialsProvider: o.CredentialsProvider,
 
 		MaxRetries:      o.MaxRetries,
 		MinRetryBackoff: o.MinRetryBackoff,

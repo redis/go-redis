@@ -70,10 +70,11 @@ type RingOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
-	Protocol int
-	Username string
-	Password string
-	DB       int
+	Protocol            int
+	Username            string
+	Password            string
+	CredentialsProvider func() (username string, password string)
+	DB                  int
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -143,10 +144,11 @@ func (opt *RingOptions) clientOptions() *Options {
 		Dialer:     opt.Dialer,
 		OnConnect:  opt.OnConnect,
 
-		Protocol: opt.Protocol,
-		Username: opt.Username,
-		Password: opt.Password,
-		DB:       opt.DB,
+		Protocol:            opt.Protocol,
+		Username:            opt.Username,
+		Password:            opt.Password,
+		CredentialsProvider: opt.CredentialsProvider,
+		DB:                  opt.DB,
 
 		MaxRetries: -1,
 
