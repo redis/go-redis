@@ -60,7 +60,7 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	if strings.HasPrefix(s, "LOADING ") {
 		return true
 	}
-	if strings.HasPrefix(s, "READONLY ") {
+	if isReadOnlyError(err) {
 		return true
 	}
 	if strings.HasPrefix(s, "CLUSTERDOWN ") {
@@ -141,7 +141,14 @@ func isLoadingError(err error) bool {
 }
 
 func isReadOnlyError(err error) bool {
-	return strings.HasPrefix(err.Error(), "READONLY ")
+	redisError := err.Error()
+	if strings.HasPrefix(redisError, "READONLY ") {
+		return true
+	}
+
+	// For a Lua script that includes a write command, the error string
+	// contains "-READONLY" rather than beginning with "READONLY "
+	return strings.Contains(redisError, "-READONLY")
 }
 
 func isMovedSameConnAddr(err error, addr string) bool {
