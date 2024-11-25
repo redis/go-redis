@@ -175,7 +175,7 @@ func addMetricsHook(rdb *redis.Client, conf *config) error {
 		createTime: createTime,
 		useTime:    useTime,
 		attrs:      conf.attrs,
-		attrsFunc: conf.attrsFunc,
+		attrsFunc:  conf.attrsFunc,
 	})
 	return nil
 }
@@ -184,7 +184,7 @@ type metricsHook struct {
 	createTime metric.Float64Histogram
 	useTime    metric.Float64Histogram
 	attrs      []attribute.KeyValue
-	attrsFunc func(context.Context) []attribute.KeyValue
+	attrsFunc  func(context.Context) []attribute.KeyValue
 }
 
 var _ redis.Hook = (*metricsHook)(nil)
