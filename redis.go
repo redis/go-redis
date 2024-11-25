@@ -677,6 +677,7 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	clone := *c
 	clone.baseClient = c.baseClient.withTimeout(timeout)
 	clone.init()
+	clone.connPool = newConnPool(clone.baseClient.opt, clone.dialHook)
 	return &clone
 }
 
