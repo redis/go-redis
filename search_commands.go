@@ -16,7 +16,7 @@ type SearchCmdable interface {
 	FTAliasAdd(ctx context.Context, index string, alias string) *StatusCmd
 	FTAliasDel(ctx context.Context, alias string) *StatusCmd
 	FTAliasUpdate(ctx context.Context, index string, alias string) *StatusCmd
-	FTAlter(ctx context.Context, index string, skipInitalScan bool, definition []interface{}) *StatusCmd
+	FTAlter(ctx context.Context, index string, skipInitialScan bool, definition []interface{}) *StatusCmd
 	FTConfigGet(ctx context.Context, option string) *MapMapStringInterfaceCmd
 	FTConfigSet(ctx context.Context, option string, value interface{}) *StatusCmd
 	FTCreate(ctx context.Context, index string, options *FTCreateOptions, schema ...*FieldSchema) *StatusCmd
@@ -57,7 +57,7 @@ type FTCreateOptions struct {
 	NoFields        bool
 	NoFreqs         bool
 	StopWords       []interface{}
-	SkipInitalScan  bool
+	SkipInitialScan bool
 }
 
 type FieldSchema struct {
@@ -70,11 +70,13 @@ type FieldSchema struct {
 	NoIndex           bool
 	PhoneticMatcher   string
 	Weight            float64
-	Seperator         string
+	Separator         string
 	CaseSensitive     bool
 	WithSuffixtrie    bool
 	VectorArgs        *FTVectorArgs
 	GeoShapeFieldType string
+	IndexEmpty        bool
+	IndexMissing      bool
 }
 
 type FTVectorArgs struct {
@@ -283,7 +285,7 @@ type FTSearchSortBy struct {
 type FTSearchOptions struct {
 	NoContent       bool
 	Verbatim        bool
-	NoStopWrods     bool
+	NoStopWords     bool
 	WithScores      bool
 	WithPayloads    bool
 	WithSortKeys    bool
@@ -636,6 +638,14 @@ func (cmd *AggregateCmd) Result() (*FTAggregateResult, error) {
 	return cmd.val, cmd.err
 }
 
+func (cmd *AggregateCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *AggregateCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
+}
+
 func (cmd *AggregateCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
@@ -798,13 +808,13 @@ func (c cmdable) FTAliasUpdate(ctx context.Context, index string, alias string) 
 }
 
 // FTAlter - Alters the definition of an existing index.
-// The 'index' parameter specifies the index to alter, and the 'skipInitalScan' parameter specifies whether to skip the initial scan.
+// The 'index' parameter specifies the index to alter, and the 'skipInitialScan' parameter specifies whether to skip the initial scan.
 // The 'definition' parameter specifies the new definition for the index.
 // For more information, please refer to the Redis documentation:
 // [FT.ALTER]: (https://redis.io/commands/ft.alter/)
-func (c cmdable) FTAlter(ctx context.Context, index string, skipInitalScan bool, definition []interface{}) *StatusCmd {
+func (c cmdable) FTAlter(ctx context.Context, index string, skipInitialScan bool, definition []interface{}) *StatusCmd {
 	args := []interface{}{"FT.ALTER", index}
-	if skipInitalScan {
+	if skipInitialScan {
 		args = append(args, "SKIPINITIALSCAN")
 	}
 	args = append(args, "SCHEMA", "ADD")
@@ -897,7 +907,7 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 			args = append(args, "STOPWORDS", len(options.StopWords))
 			args = append(args, options.StopWords...)
 		}
-		if options.SkipInitalScan {
+		if options.SkipInitialScan {
 			args = append(args, "SKIPINITIALSCAN")
 		}
 	}
@@ -993,14 +1003,21 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		if schema.Weight > 0 {
 			args = append(args, "WEIGHT", schema.Weight)
 		}
-		if schema.Seperator != "" {
-			args = append(args, "SEPERATOR", schema.Seperator)
+		if schema.Separator != "" {
+			args = append(args, "SEPARATOR", schema.Separator)
 		}
 		if schema.CaseSensitive {
 			args = append(args, "CASESENSITIVE")
 		}
 		if schema.WithSuffixtrie {
 			args = append(args, "WITHSUFFIXTRIE")
+		}
+		if schema.IndexEmpty {
+			args = append(args, "INDEXEMPTY")
+		}
+		if schema.IndexMissing {
+			args = append(args, "INDEXMISSING")
+
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -1328,6 +1345,13 @@ func (cmd *FTInfoCmd) Val() FTInfoResult {
 	return cmd.val
 }
 
+func (cmd *FTInfoCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *FTInfoCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
+}
 func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	n, err := rd.ReadMapLen()
 	if err != nil {
@@ -1436,6 +1460,14 @@ func (cmd *FTSpellCheckCmd) Result() ([]SpellCheckResult, error) {
 
 func (cmd *FTSpellCheckCmd) Val() []SpellCheckResult {
 	return cmd.val
+}
+
+func (cmd *FTSpellCheckCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *FTSpellCheckCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
 }
 
 func (cmd *FTSpellCheckCmd) readReply(rd *proto.Reader) (err error) {
@@ -1619,6 +1651,14 @@ func (cmd *FTSearchCmd) Val() FTSearchResult {
 	return cmd.val
 }
 
+func (cmd *FTSearchCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *FTSearchCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
+}
+
 func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
@@ -1654,7 +1694,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 		if options.Verbatim {
 			queryArgs = append(queryArgs, "VERBATIM")
 		}
-		if options.NoStopWrods {
+		if options.NoStopWords {
 			queryArgs = append(queryArgs, "NOSTOPWORDS")
 		}
 		if options.WithScores {
@@ -1768,7 +1808,7 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 		if options.Verbatim {
 			args = append(args, "VERBATIM")
 		}
-		if options.NoStopWrods {
+		if options.NoStopWords {
 			args = append(args, "NOSTOPWORDS")
 		}
 		if options.WithScores {
@@ -1893,6 +1933,14 @@ func (cmd *FTSynDumpCmd) Val() []FTSynDumpResult {
 
 func (cmd *FTSynDumpCmd) Result() ([]FTSynDumpResult, error) {
 	return cmd.val, cmd.err
+}
+
+func (cmd *FTSynDumpCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *FTSynDumpCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
 }
 
 func (cmd *FTSynDumpCmd) readReply(rd *proto.Reader) error {

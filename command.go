@@ -40,7 +40,7 @@ type Cmder interface {
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
-
+	readRawReply(rd *proto.Reader) error
 	SetErr(error)
 	Err() error
 }
@@ -122,11 +122,11 @@ func cmdString(cmd Cmder, val interface{}) string {
 //------------------------------------------------------------------------------
 
 type baseCmd struct {
-	ctx    context.Context
-	args   []interface{}
-	err    error
-	keyPos int8
-
+	ctx          context.Context
+	args         []interface{}
+	err          error
+	keyPos       int8
+	rawVal       interface{}
 	_readTimeout *time.Duration
 }
 
@@ -167,6 +167,8 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	switch v := arg.(type) {
 	case string:
 		return v
+	case []byte:
+		return string(v)
 	default:
 		// TODO: consider using appendArg
 		return fmt.Sprint(v)
@@ -195,6 +197,11 @@ func (cmd *baseCmd) readTimeout() *time.Duration {
 
 func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 	cmd._readTimeout = &d
+}
+
+func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
+	cmd.rawVal, err = rd.ReadReply()
+	return err
 }
 
 //------------------------------------------------------------------------------
@@ -1398,27 +1405,63 @@ func (cmd *MapStringSliceInterfaceCmd) Val() map[string][]interface{} {
 }
 
 func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
-	n, err := rd.ReadMapLen()
+	readType, err := rd.PeekReplyType()
 	if err != nil {
 		return err
 	}
-	cmd.val = make(map[string][]interface{}, n)
-	for i := 0; i < n; i++ {
-		k, err := rd.ReadString()
+
+	cmd.val = make(map[string][]interface{})
+
+	if readType == proto.RespMap {
+		n, err := rd.ReadMapLen()
 		if err != nil {
 			return err
 		}
-		nn, err := rd.ReadArrayLen()
-		if err != nil {
-			return err
-		}
-		cmd.val[k] = make([]interface{}, nn)
-		for j := 0; j < nn; j++ {
-			value, err := rd.ReadReply()
+		for i := 0; i < n; i++ {
+			k, err := rd.ReadString()
 			if err != nil {
 				return err
 			}
-			cmd.val[k][j] = value
+			nn, err := rd.ReadArrayLen()
+			if err != nil {
+				return err
+			}
+			cmd.val[k] = make([]interface{}, nn)
+			for j := 0; j < nn; j++ {
+				value, err := rd.ReadReply()
+				if err != nil {
+					return err
+				}
+				cmd.val[k][j] = value
+			}
+		}
+	} else if readType == proto.RespArray {
+		// RESP2 response
+		n, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+
+		for i := 0; i < n; i++ {
+			// Each entry in this array is itself an array with key details
+			itemLen, err := rd.ReadArrayLen()
+			if err != nil {
+				return err
+			}
+
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			cmd.val[key] = make([]interface{}, 0, itemLen-1)
+			for j := 1; j < itemLen; j++ {
+				// Read the inner array for timestamp-value pairs
+				data, err := rd.ReadReply()
+				if err != nil {
+					return err
+				}
+				cmd.val[key] = append(cmd.val[key], data)
+			}
 		}
 	}
 
