@@ -1344,7 +1344,9 @@ func (c *ClusterClient) processPipelineNode(
 	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
-			node.MarkAsFailing()
+			if !isContextError(err) {
+				node.MarkAsFailing()
+			}
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
 			return err
