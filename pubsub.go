@@ -409,6 +409,20 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 			return &Pong{
 				Payload: reply[1].(string),
 			}, nil
+		case "invalidate":
+			switch payload := reply[1].(type) {
+			case []interface{}:
+				s := make([]string, len(payload))
+				for idx := range payload {
+					s[idx] = payload[idx].(string)
+				}
+				return &Message{
+					Channel:      "invalidate",
+					PayloadSlice: s,
+				}, nil
+			default:
+				return nil, fmt.Errorf("redis: unsupported invalidate message payload: %#v", payload)
+			}
 		default:
 			return nil, fmt.Errorf("redis: unsupported pubsub message: %q", kind)
 		}
