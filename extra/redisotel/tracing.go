@@ -10,7 +10,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/redis/go-redis/extra/rediscmd/v9"
@@ -25,28 +25,25 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 	switch rdb := rdb.(type) {
 	case *redis.Client:
 		opt := rdb.Options()
-		connString := formatDBConnString(opt.Network, opt.Addr)
 		opts = addServerAttributes(opts, opt.Addr)
-		rdb.AddHook(newTracingHook(connString, opts...))
+		rdb.AddHook(newTracingHook(opts...))
 		return nil
 	case *redis.ClusterClient:
-		rdb.AddHook(newTracingHook("", opts...))
+		rdb.AddHook(newTracingHook(opts...))
 
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			opt := rdb.Options()
 			opts = addServerAttributes(opts, opt.Addr)
-			connString := formatDBConnString(opt.Network, opt.Addr)
-			rdb.AddHook(newTracingHook(connString, opts...))
+			rdb.AddHook(newTracingHook(opts...))
 		})
 		return nil
 	case *redis.Ring:
-		rdb.AddHook(newTracingHook("", opts...))
+		rdb.AddHook(newTracingHook(opts...))
 
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			opt := rdb.Options()
 			opts = addServerAttributes(opts, opt.Addr)
-			connString := formatDBConnString(opt.Network, opt.Addr)
-			rdb.AddHook(newTracingHook(connString, opts...))
+			rdb.AddHook(newTracingHook(opts...))
 		})
 		return nil
 	default:
@@ -62,7 +59,7 @@ type tracingHook struct {
 
 var _ redis.Hook = (*tracingHook)(nil)
 
-func newTracingHook(connString string, opts ...TracingOption) *tracingHook {
+func newTracingHook(opts ...TracingOption) *tracingHook {
 	baseOpts := make([]baseOption, len(opts))
 	for i, opt := range opts {
 		baseOpts[i] = opt
@@ -75,10 +72,6 @@ func newTracingHook(connString string, opts ...TracingOption) *tracingHook {
 			trace.WithInstrumentationVersion("semver:"+redis.Version()),
 		)
 	}
-	if connString != "" {
-		conf.attrs = append(conf.attrs, semconv.DBConnectionString(connString))
-	}
-
 	return &tracingHook{
 		conf: conf,
 
@@ -116,7 +109,7 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 
 		if th.conf.dbStmtEnabled {
 			cmdString := rediscmd.CmdString(cmd)
-			attrs = append(attrs, semconv.DBStatement(cmdString))
+			attrs = append(attrs, semconv.DBQueryText(cmdString))
 		}
 
 		opts := th.spanOpts
@@ -149,7 +142,7 @@ func (th *tracingHook) ProcessPipelineHook(
 
 		summary, cmdsString := rediscmd.CmdsString(cmds)
 		if th.conf.dbStmtEnabled {
-			attrs = append(attrs, semconv.DBStatement(cmdsString))
+			attrs = append(attrs, semconv.DBQueryText(cmdsString))
 		}
 
 		opts := th.spanOpts
@@ -171,13 +164,6 @@ func recordError(span trace.Span, err error) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
-}
-
-func formatDBConnString(network, addr string) string {
-	if network == "tcp" {
-		network = "redis"
-	}
-	return fmt.Sprintf("%s://%s", network, addr)
 }
 
 func funcFileLine(pkg string) (string, string, int) {
