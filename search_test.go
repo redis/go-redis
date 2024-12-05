@@ -125,6 +125,10 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res2.Docs[1].ID).To(BeEquivalentTo("doc2"))
 		Expect(res2.Docs[0].ID).To(BeEquivalentTo("doc3"))
 
+		res3, err := client.FTSearchWithArgs(ctx, "num", "foo", &redis.FTSearchOptions{NoContent: true, SortBy: []redis.FTSearchSortBy{sortBy2}, SortByWithCount: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res3.Total).To(BeEquivalentTo(int64(0)))
+
 	})
 
 	It("should FTCreate and FTSearch example", Label("search", "ftcreate", "ftsearch"), func() {
