@@ -8,7 +8,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
-
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
@@ -46,6 +46,10 @@ func (t *TimeRFC3339Nano) ScanRedis(s string) (err error) {
 type TimeData struct {
 	Name string           `redis:"name"`
 	Time *TimeRFC3339Nano `redis:"login"`
+}
+
+type UUIDData struct {
+	ID uuid.UUID `redis:"id"`
 }
 
 type i []interface{}
@@ -216,5 +220,14 @@ var _ = Describe("Scan", func() {
 		var tt TimeTime
 		Expect(Scan(&tt, i{"time"}, i{now.Format(time.RFC3339Nano)})).NotTo(HaveOccurred())
 		Expect(now.Unix()).To(Equal(tt.Time.Unix()))
+	})
+
+	It("should unmarshal UUID", func() {
+		var ud UUIDData
+
+		testUUID := uuid.New()
+
+		Expect(Scan(&ud, i{"id"}, i{testUUID.String()})).NotTo(HaveOccurred())
+		Expect(ud.ID).To(Equal(testUUID))
 	})
 })
