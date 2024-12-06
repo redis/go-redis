@@ -518,6 +518,7 @@ func newConnPool(
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,
 		PoolTimeout:     opt.PoolTimeout,
+		DialTimeout:     opt.DialTimeout,
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
 		MaxActiveConns:  opt.MaxActiveConns,
