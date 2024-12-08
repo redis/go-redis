@@ -678,6 +678,17 @@ func ExampleNewUniversalClient_cluster() {
 	rdb.Ping(ctx)
 }
 
+func ExampleNewUniversalClient_ring() {
+	rdb := redis.NewUniversalClient(&redis.UniversalOptions{
+		AddressMap: map[string]string{
+			"shard1": ":7000",
+			"shard2": ":7001",
+			"shard3": ":7002",
+		},
+	})
+	rdb.Ping(ctx)
+}
+
 func ExampleClient_SlowLogGet() {
 	if RECluster {
 		// skip slowlog test for cluster
