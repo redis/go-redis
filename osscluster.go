@@ -1342,7 +1342,7 @@ func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
 	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		cn, err := node.Client.getConn(ctx)
+		ctx, cn, err := node.Client.getConn(ctx)
 		if err != nil {
 			node.MarkAsFailing()
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
@@ -1527,7 +1527,7 @@ func (c *ClusterClient) processTxPipelineNode(
 ) {
 	cmds = wrapMultiExec(ctx, cmds)
 	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		cn, err := node.Client.getConn(ctx)
+		ctx, cn, err := node.Client.getConn(ctx)
 		if err != nil {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
