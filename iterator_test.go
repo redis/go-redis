@@ -21,7 +21,7 @@ var _ = Describe("ScanIterator", func() {
 		return err
 	}
 
-	extraSeed := func(n int, m int) error {
+	extraSeed := func(n, m int) error {
 		pipe := client.Pipeline()
 		for i := 1; i <= m; i++ {
 			pipe.Set(ctx, fmt.Sprintf("A%02d", i), "x", 0).Err()

@@ -2020,7 +2020,7 @@ type XInfoConsumer struct {
 
 var _ Cmder = (*XInfoConsumersCmd)(nil)
 
-func NewXInfoConsumersCmd(ctx context.Context, stream string, group string) *XInfoConsumersCmd {
+func NewXInfoConsumersCmd(ctx context.Context, stream, group string) *XInfoConsumersCmd {
 	return &XInfoConsumersCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,

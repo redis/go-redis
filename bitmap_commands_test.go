@@ -3,6 +3,7 @@ package redis_test
 import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -31,7 +32,7 @@ var _ = Describe("BitCountBite", func() {
 	})
 
 	It("bit count bite", func() {
-		var expected = []bitCountExpected{
+		expected := []bitCountExpected{
 			{0, 0, 0},
 			{0, 1, 1},
 			{0, 2, 1},
@@ -71,7 +72,7 @@ var _ = Describe("BitCountByte", func() {
 	})
 
 	It("bit count byte", func() {
-		var expected = []bitCountExpected{
+		expected := []bitCountExpected{
 			{0, 0, 1},
 			{0, 1, 3},
 		}
@@ -84,7 +85,7 @@ var _ = Describe("BitCountByte", func() {
 	})
 
 	It("bit count byte with no unit specified", func() {
-		var expected = []bitCountExpected{
+		expected := []bitCountExpected{
 			{0, 0, 1},
 			{0, 1, 3},
 		}

@@ -12,10 +12,10 @@ type GearsCmdable interface {
 	TFunctionDelete(ctx context.Context, libName string) *StatusCmd
 	TFunctionList(ctx context.Context) *MapStringInterfaceSliceCmd
 	TFunctionListArgs(ctx context.Context, options *TFunctionListOptions) *MapStringInterfaceSliceCmd
-	TFCall(ctx context.Context, libName string, funcName string, numKeys int) *Cmd
-	TFCallArgs(ctx context.Context, libName string, funcName string, numKeys int, options *TFCallOptions) *Cmd
-	TFCallASYNC(ctx context.Context, libName string, funcName string, numKeys int) *Cmd
-	TFCallASYNCArgs(ctx context.Context, libName string, funcName string, numKeys int, options *TFCallOptions) *Cmd
+	TFCall(ctx context.Context, libName, funcName string, numKeys int) *Cmd
+	TFCallArgs(ctx context.Context, libName, funcName string, numKeys int, options *TFCallOptions) *Cmd
+	TFCallASYNC(ctx context.Context, libName, funcName string, numKeys int) *Cmd
+	TFCallASYNCArgs(ctx context.Context, libName, funcName string, numKeys int, options *TFCallOptions) *Cmd
 }
 
 type TFunctionLoadOptions struct {
@@ -98,7 +98,7 @@ func (c cmdable) TFunctionListArgs(ctx context.Context, options *TFunctionListOp
 
 // TFCall - invoke a function.
 // For more information - https://redis.io/commands/tfcall/
-func (c cmdable) TFCall(ctx context.Context, libName string, funcName string, numKeys int) *Cmd {
+func (c cmdable) TFCall(ctx context.Context, libName, funcName string, numKeys int) *Cmd {
 	lf := libName + "." + funcName
 	args := []interface{}{"TFCALL", lf, numKeys}
 	cmd := NewCmd(ctx, args...)
@@ -106,7 +106,7 @@ func (c cmdable) TFCall(ctx context.Context, libName string, funcName string, nu
 	return cmd
 }
 
-func (c cmdable) TFCallArgs(ctx context.Context, libName string, funcName string, numKeys int, options *TFCallOptions) *Cmd {
+func (c cmdable) TFCallArgs(ctx context.Context, libName, funcName string, numKeys int, options *TFCallOptions) *Cmd {
 	lf := libName + "." + funcName
 	args := []interface{}{"TFCALL", lf, numKeys}
 	if options != nil {
@@ -124,7 +124,7 @@ func (c cmdable) TFCallArgs(ctx context.Context, libName string, funcName string
 
 // TFCallASYNC - invoke an asynchronous JavaScript function (coroutine).
 // For more information - https://redis.io/commands/TFCallASYNC/
-func (c cmdable) TFCallASYNC(ctx context.Context, libName string, funcName string, numKeys int) *Cmd {
+func (c cmdable) TFCallASYNC(ctx context.Context, libName, funcName string, numKeys int) *Cmd {
 	lf := fmt.Sprintf("%s.%s", libName, funcName)
 	args := []interface{}{"TFCALLASYNC", lf, numKeys}
 	cmd := NewCmd(ctx, args...)
@@ -132,7 +132,7 @@ func (c cmdable) TFCallASYNC(ctx context.Context, libName string, funcName strin
 	return cmd
 }
 
-func (c cmdable) TFCallASYNCArgs(ctx context.Context, libName string, funcName string, numKeys int, options *TFCallOptions) *Cmd {
+func (c cmdable) TFCallASYNCArgs(ctx context.Context, libName, funcName string, numKeys int, options *TFCallOptions) *Cmd {
 	lf := fmt.Sprintf("%s.%s", libName, funcName)
 	args := []interface{}{"TFCALLASYNC", lf, numKeys}
 	if options != nil {

@@ -86,7 +86,7 @@ type StructValue struct {
 	value reflect.Value
 }
 
-func (s StructValue) Scan(key string, value string) error {
+func (s StructValue) Scan(key, value string) error {
 	field, ok := s.spec.m[key]
 	if !ok {
 		return nil

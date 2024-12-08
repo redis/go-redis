@@ -111,7 +111,7 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 	return true
 }
 
-func isMovedError(err error) (moved bool, ask bool, addr string) {
+func isMovedError(err error) (moved, ask bool, addr string) {
 	if !isRedisError(err) {
 		return
 	}
