@@ -1,0 +1,22 @@
+---
+
+services:
+
+  redis:
+    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:8.0-M01}
+    container_name: redis-standalone
+    environment:
+      - TLS_ENABLED=yes
+      - REDIS_CLUSTER=no
+      - PORT=6379
+      - TLS_PORT=6666
+    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional --save ""}
+    ports:
+      - 6379:6379
+      - 6380:6379
+      - 6666:6666 # TLS port
+    volumes:
+      - "./dockers/standalone:/redis/work"
+    profiles:
+      - standalone
+      - all
