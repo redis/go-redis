@@ -39,7 +39,7 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{Addr: ":6379"})
+		client = redis.NewClient(&redis.Options{Addr: rediStackAddr})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 		client.TFunctionDelete(ctx, "lib1")
 	})

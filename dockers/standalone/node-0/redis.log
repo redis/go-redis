@@ -1,0 +1,496 @@
+27:C 05 Dec 2024 08:52:52.311 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+27:C 05 Dec 2024 08:52:52.312 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=27, just started
+27:C 05 Dec 2024 08:52:52.312 * Configuration loaded
+27:M 05 Dec 2024 08:52:52.313 * monotonic clock: POSIX clock_gettime
+27:M 05 Dec 2024 08:52:52.314 * Running mode=standalone, port=6379.
+27:M 05 Dec 2024 08:52:52.316 * Server initialized
+27:M 05 Dec 2024 08:52:52.316 * Ready to accept connections tcp
+27:M 05 Dec 2024 08:52:52.316 * Ready to accept connections tls
+27:M 05 Dec 2024 08:52:52.504 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 05 Dec 2024 08:52:52.504 * Full resync requested by replica 172.21.0.5:6379
+27:M 05 Dec 2024 08:52:52.505 * Replication backlog created, my new replication IDs are '01ba0054c5168e7801b93a965f375df43cbd49ae' and '0000000000000000000000000000000000000000'
+27:M 05 Dec 2024 08:52:52.505 * Delay next BGSAVE for diskless SYNC
+27:M 05 Dec 2024 08:52:57.459 * Starting BGSAVE for SYNC with target: replicas sockets
+27:M 05 Dec 2024 08:52:57.460 * Background RDB transfer started by pid 57
+57:C 05 Dec 2024 08:52:57.460 * Fork CoW for RDB: current 0 MB, peak 0 MB, average 0 MB
+27:M 05 Dec 2024 08:52:57.461 * Diskless rdb transfer, done reading from pipe, 1 replicas still up.
+27:M 05 Dec 2024 08:52:57.463 * Background RDB transfer terminated with success
+27:M 05 Dec 2024 08:52:57.463 * Streamed RDB transfer with replica 172.21.0.5:6379 succeeded (socket). Waiting for REPLCONF ACK from replica to enable streaming
+27:M 05 Dec 2024 08:52:57.464 * Synchronization with replica 172.21.0.5:6379 succeeded
+27:M 05 Dec 2024 10:54:04.647 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 05 Dec 2024 10:54:04.649 * Connection with replica 172.21.0.5:6379 lost.
+27:M 05 Dec 2024 10:54:04.653 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 05 Dec 2024 10:54:04.654 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 33793.
+27:M 05 Dec 2024 13:52:40.557 * Connection with replica 172.21.0.5:6379 lost.
+27:M 05 Dec 2024 13:52:40.559 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 05 Dec 2024 13:52:40.560 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 38483.
+27:M 05 Dec 2024 15:54:50.048 * Connection with replica 172.21.0.5:6379 lost.
+27:M 05 Dec 2024 15:54:50.050 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 05 Dec 2024 15:54:50.051 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 38525.
+27:M 05 Dec 2024 17:56:40.964 * Connection with replica 172.21.0.5:6379 lost.
+27:M 05 Dec 2024 17:56:40.965 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 05 Dec 2024 17:56:40.965 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 38553.
+27:M 05 Dec 2024 18:09:24.075 * Connection with replica 172.21.0.5:6379 lost.
+27:M 05 Dec 2024 18:09:24.076 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 05 Dec 2024 18:09:24.077 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 38595.
+27:M 05 Dec 2024 22:02:39.906 * Connection with replica 172.21.0.5:6379 lost.
+27:M 05 Dec 2024 22:02:39.909 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 05 Dec 2024 22:02:39.909 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 43621.
+27:M 06 Dec 2024 00:04:43.299 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 06 Dec 2024 00:04:43.299 * Connection with replica 172.21.0.5:6379 lost.
+27:M 06 Dec 2024 00:04:43.301 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 06 Dec 2024 00:04:43.302 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 43663.
+27:M 06 Dec 2024 04:08:36.158 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 06 Dec 2024 04:08:36.159 * Connection with replica 172.21.0.5:6379 lost.
+27:M 06 Dec 2024 04:08:36.161 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 06 Dec 2024 04:08:36.162 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 43705.
+27:M 06 Dec 2024 06:10:40.379 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 06 Dec 2024 06:10:40.380 * Connection with replica 172.21.0.5:6379 lost.
+27:M 06 Dec 2024 06:10:40.382 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 06 Dec 2024 06:10:40.382 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 43747.
+27:M 06 Dec 2024 09:13:44.329 * Connection with replica 172.21.0.5:6379 lost.
+27:M 06 Dec 2024 09:13:44.331 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 06 Dec 2024 09:13:44.332 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 43789.
+27:M 06 Dec 2024 12:16:43.149 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 06 Dec 2024 12:16:43.151 * Connection with replica 172.21.0.5:6379 lost.
+27:M 06 Dec 2024 12:16:43.155 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 06 Dec 2024 12:16:43.156 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 14 bytes of backlog starting from offset 43817.
+27:M 06 Dec 2024 14:18:39.965 * Connection with replica 172.21.0.5:6379 lost.
+27:M 06 Dec 2024 14:18:39.966 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 06 Dec 2024 14:18:39.967 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 43859.
+27:M 06 Dec 2024 17:21:38.373 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 06 Dec 2024 17:21:38.374 * Connection with replica 172.21.0.5:6379 lost.
+27:M 06 Dec 2024 17:21:38.378 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 06 Dec 2024 17:21:38.379 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 43901.
+27:M 06 Dec 2024 18:22:39.761 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 06 Dec 2024 18:22:39.762 * Connection with replica 172.21.0.5:6379 lost.
+27:M 06 Dec 2024 18:22:39.763 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 06 Dec 2024 18:22:39.764 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 43943.
+27:M 06 Dec 2024 21:25:36.104 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 06 Dec 2024 21:25:36.105 * Connection with replica 172.21.0.5:6379 lost.
+27:M 06 Dec 2024 21:25:36.109 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 06 Dec 2024 21:25:36.110 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 43985.
+27:M 06 Dec 2024 22:26:41.981 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 06 Dec 2024 22:26:41.983 * Connection with replica 172.21.0.5:6379 lost.
+27:M 06 Dec 2024 22:26:41.986 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 06 Dec 2024 22:26:41.987 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44013.
+27:M 07 Dec 2024 01:29:37.439 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 07 Dec 2024 01:29:37.440 * Connection with replica 172.21.0.5:6379 lost.
+27:M 07 Dec 2024 01:29:37.441 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 07 Dec 2024 01:29:37.441 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44055.
+27:M 07 Dec 2024 04:32:40.080 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 07 Dec 2024 04:32:40.081 * Connection with replica 172.21.0.5:6379 lost.
+27:M 07 Dec 2024 04:32:40.082 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 07 Dec 2024 04:32:40.083 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44097.
+27:M 07 Dec 2024 07:35:36.458 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 07 Dec 2024 07:35:36.460 * Connection with replica 172.21.0.5:6379 lost.
+27:M 07 Dec 2024 07:35:36.464 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 07 Dec 2024 07:35:36.465 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44139.
+27:M 07 Dec 2024 09:37:47.655 * Connection with replica 172.21.0.5:6379 lost.
+27:M 07 Dec 2024 09:37:47.657 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 07 Dec 2024 09:37:47.658 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44181.
+27:M 07 Dec 2024 12:40:38.373 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 07 Dec 2024 12:40:38.374 * Connection with replica 172.21.0.5:6379 lost.
+27:M 07 Dec 2024 12:40:38.376 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 07 Dec 2024 12:40:38.378 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44209.
+27:M 07 Dec 2024 14:42:36.713 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 07 Dec 2024 14:42:36.714 * Connection with replica 172.21.0.5:6379 lost.
+27:M 07 Dec 2024 14:42:36.718 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 07 Dec 2024 14:42:36.719 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44251.
+27:M 07 Dec 2024 16:44:45.784 * Connection with replica 172.21.0.5:6379 lost.
+27:M 07 Dec 2024 16:44:45.785 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 07 Dec 2024 16:44:45.786 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44293.
+27:M 07 Dec 2024 19:47:46.146 * Connection with replica 172.21.0.5:6379 lost.
+27:M 07 Dec 2024 19:47:46.149 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 07 Dec 2024 19:47:46.150 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44335.
+27:M 07 Dec 2024 22:20:20.015 * Connection with replica 172.21.0.5:6379 lost.
+27:M 07 Dec 2024 22:20:20.017 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 07 Dec 2024 22:20:20.018 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44363.
+27:M 08 Dec 2024 00:52:41.823 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 08 Dec 2024 00:52:41.827 * Connection with replica 172.21.0.5:6379 lost.
+27:M 08 Dec 2024 00:52:41.830 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 08 Dec 2024 00:52:41.831 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44405.
+27:M 08 Dec 2024 02:54:50.247 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 08 Dec 2024 02:54:50.248 * Connection with replica 172.21.0.5:6379 lost.
+27:M 08 Dec 2024 02:54:50.251 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 08 Dec 2024 02:54:50.252 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44447.
+27:M 08 Dec 2024 05:57:37.045 * Connection with replica 172.21.0.5:6379 lost.
+27:M 08 Dec 2024 05:57:37.047 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 08 Dec 2024 05:57:37.048 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44489.
+27:M 08 Dec 2024 06:58:42.865 * Connection with replica 172.21.0.5:6379 lost.
+27:M 08 Dec 2024 06:58:42.867 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 08 Dec 2024 06:58:42.868 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44531.
+27:M 08 Dec 2024 10:01:41.784 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 08 Dec 2024 10:01:41.786 * Connection with replica 172.21.0.5:6379 lost.
+27:M 08 Dec 2024 10:01:41.790 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 08 Dec 2024 10:01:41.791 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44559.
+27:M 08 Dec 2024 10:43:04.444 * Connection with replica 172.21.0.5:6379 lost.
+27:M 08 Dec 2024 10:43:04.445 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 08 Dec 2024 10:43:04.446 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 44601.
+27:M 09 Dec 2024 08:51:08.931 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 09 Dec 2024 08:51:08.992 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 08:51:09.073 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 08:51:09.087 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 85145.
+27:M 09 Dec 2024 11:19:14.239 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 11:19:14.242 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 11:19:14.243 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 96989.
+27:M 09 Dec 2024 11:20:41.439 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 11:20:41.447 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 11:20:41.448 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 97017.
+27:M 09 Dec 2024 13:18:55.122 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 09 Dec 2024 13:18:55.123 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 13:18:55.126 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 13:18:55.126 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 97101.
+27:M 09 Dec 2024 13:25:09.844 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 13:25:09.846 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 13:25:09.846 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 97143.
+27:M 09 Dec 2024 14:25:30.782 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 09 Dec 2024 14:25:30.784 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 14:25:30.788 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 14:25:30.789 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 14 bytes of backlog starting from offset 101021.
+27:M 09 Dec 2024 14:31:59.494 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 09 Dec 2024 14:31:59.496 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 14:31:59.500 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 14:31:59.501 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101063.
+27:M 09 Dec 2024 14:33:53.882 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 14:33:53.884 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 14:33:53.884 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101105.
+27:M 09 Dec 2024 15:26:25.101 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 09 Dec 2024 15:26:25.102 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 15:26:25.106 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 15:26:25.106 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101147.
+27:M 09 Dec 2024 16:28:34.958 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 16:28:34.960 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 16:28:34.960 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101189.
+27:M 09 Dec 2024 16:31:14.620 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 16:31:14.623 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 16:31:14.625 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101217.
+27:M 09 Dec 2024 16:33:25.834 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 16:33:25.836 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 16:33:25.837 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101259.
+27:M 09 Dec 2024 16:35:42.515 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 09 Dec 2024 16:35:42.516 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 16:35:42.519 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 16:35:42.520 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101301.
+27:M 09 Dec 2024 16:39:42.262 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 16:39:42.264 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 16:39:42.265 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101343.
+27:M 09 Dec 2024 17:24:49.392 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 09 Dec 2024 17:24:49.393 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 17:24:49.397 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 17:24:49.398 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 14 bytes of backlog starting from offset 101371.
+27:M 09 Dec 2024 18:23:35.982 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 09 Dec 2024 18:23:35.983 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 18:23:35.985 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 18:23:35.986 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101413.
+27:M 09 Dec 2024 18:25:27.115 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 09 Dec 2024 18:25:27.117 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 18:25:27.120 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 18:25:27.120 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101455.
+27:M 09 Dec 2024 20:27:25.601 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 09 Dec 2024 20:27:25.602 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 20:27:25.606 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 20:27:25.607 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101497.
+27:M 09 Dec 2024 22:29:37.250 * Connection with replica 172.21.0.5:6379 lost.
+27:M 09 Dec 2024 22:29:37.250 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 09 Dec 2024 22:29:37.251 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101539.
+27:M 10 Dec 2024 00:31:37.935 * Connection with replica 172.21.0.5:6379 lost.
+27:M 10 Dec 2024 00:31:37.938 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 10 Dec 2024 00:31:37.939 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101567.
+27:M 10 Dec 2024 03:34:24.371 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 10 Dec 2024 03:34:24.372 * Connection with replica 172.21.0.5:6379 lost.
+27:M 10 Dec 2024 03:34:24.374 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 10 Dec 2024 03:34:24.375 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101609.
+27:M 10 Dec 2024 05:36:37.934 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 10 Dec 2024 05:36:38.045 * Connection with replica 172.21.0.5:6379 lost.
+27:M 10 Dec 2024 05:36:38.047 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 10 Dec 2024 05:36:38.048 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101651.
+27:M 10 Dec 2024 07:57:06.696 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 10 Dec 2024 07:57:06.700 * Connection with replica 172.21.0.5:6379 lost.
+27:M 10 Dec 2024 07:57:06.703 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 10 Dec 2024 07:57:06.704 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101693.
+27:M 10 Dec 2024 08:22:15.489 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 10 Dec 2024 08:22:15.489 * Connection with replica 172.21.0.5:6379 lost.
+27:M 10 Dec 2024 08:22:15.492 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 10 Dec 2024 08:22:15.492 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 101735.
+27:M 10 Dec 2024 11:44:54.371 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 10 Dec 2024 11:44:54.373 * Connection with replica 172.21.0.5:6379 lost.
+27:M 10 Dec 2024 11:44:54.375 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 10 Dec 2024 11:44:54.375 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 117919.
+27:M 10 Dec 2024 12:01:11.659 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 10 Dec 2024 12:01:11.660 * Connection with replica 172.21.0.5:6379 lost.
+27:M 10 Dec 2024 12:01:11.669 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 10 Dec 2024 12:01:11.670 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 118003.
+27:M 11 Dec 2024 16:23:34.957 * Connection with replica 172.21.0.5:6379 lost.
+27:M 11 Dec 2024 16:23:34.960 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 11 Dec 2024 16:23:34.961 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 253061.
+27:M 11 Dec 2024 16:36:13.344 * Connection with replica 172.21.0.5:6379 lost.
+27:M 11 Dec 2024 16:36:13.345 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 11 Dec 2024 16:36:13.345 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 253103.
+27:M 11 Dec 2024 16:38:27.678 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 11 Dec 2024 16:38:27.680 * Connection with replica 172.21.0.5:6379 lost.
+27:M 11 Dec 2024 16:38:27.683 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 11 Dec 2024 16:38:27.684 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 253145.
+27:M 11 Dec 2024 16:53:05.155 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 11 Dec 2024 16:53:05.157 * Connection with replica 172.21.0.5:6379 lost.
+27:M 11 Dec 2024 16:53:05.160 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 11 Dec 2024 16:53:05.161 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 14 bytes of backlog starting from offset 253859.
+27:M 11 Dec 2024 20:00:58.000 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 11 Dec 2024 20:00:58.001 * Connection with replica 172.21.0.5:6379 lost.
+27:M 11 Dec 2024 20:00:58.006 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 11 Dec 2024 20:00:58.007 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 268895.
+27:M 11 Dec 2024 21:00:31.698 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 11 Dec 2024 21:00:31.706 * Connection with replica 172.21.0.5:6379 lost.
+27:M 11 Dec 2024 21:00:31.708 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 11 Dec 2024 21:00:31.709 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 268937.
+27:M 12 Dec 2024 00:01:46.470 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 12 Dec 2024 00:01:46.472 * Connection with replica 172.21.0.5:6379 lost.
+27:M 12 Dec 2024 00:01:46.476 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 12 Dec 2024 00:01:46.477 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 14 bytes of backlog starting from offset 268965.
+27:M 12 Dec 2024 02:35:21.563 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 12 Dec 2024 02:35:21.563 * Connection with replica 172.21.0.5:6379 lost.
+27:M 12 Dec 2024 02:35:21.565 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 12 Dec 2024 02:35:21.566 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 269007.
+27:M 12 Dec 2024 06:07:37.151 * Connection with replica 172.21.0.5:6379 lost.
+27:M 12 Dec 2024 06:07:37.152 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 12 Dec 2024 06:07:37.153 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 269049.
+27:M 12 Dec 2024 09:10:38.917 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 12 Dec 2024 09:10:38.919 * Connection with replica 172.21.0.5:6379 lost.
+27:M 12 Dec 2024 09:10:38.923 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 12 Dec 2024 09:10:38.924 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 269091.
+27:M 12 Dec 2024 09:24:18.812 # Disconnecting timedout replica (streaming sync): 172.21.0.5:6379
+27:M 12 Dec 2024 09:24:18.813 * Connection with replica 172.21.0.5:6379 lost.
+27:M 12 Dec 2024 09:24:18.815 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 12 Dec 2024 09:24:18.815 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 269133.
+27:M 15 Dec 2024 08:15:45.040 * Connection with replica 172.21.0.5:6379 lost.
+27:M 15 Dec 2024 08:15:45.063 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 15 Dec 2024 08:15:45.069 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 316677.
+27:M 15 Dec 2024 11:09:23.133 * Connection with replica 172.21.0.5:6379 lost.
+27:M 15 Dec 2024 11:09:23.135 * Replica 172.21.0.5:6379 asks for synchronization
+27:M 15 Dec 2024 11:09:23.136 * Partial resynchronization request from 172.21.0.5:6379 accepted. Sending 0 bytes of backlog starting from offset 327723.
+27:signal-handler (1734261519) Received SIGTERM scheduling shutdown...
+27:M 15 Dec 2024 11:18:39.452 * User requested shutdown...
+27:M 15 Dec 2024 11:18:39.455 * 1 of 1 replicas are in sync when shutting down.
+27:M 15 Dec 2024 11:18:39.455 * Removing the pid file.
+27:M 15 Dec 2024 11:18:39.457 # Redis is now ready to exit, bye bye...
+13:C 15 Dec 2024 11:18:41.351 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+13:C 15 Dec 2024 11:18:41.352 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=13, just started
+13:C 15 Dec 2024 11:18:41.352 * Configuration loaded
+13:M 15 Dec 2024 11:18:41.354 * monotonic clock: POSIX clock_gettime
+13:M 15 Dec 2024 11:18:41.358 * Running mode=standalone, port=6379.
+13:M 15 Dec 2024 11:18:41.365 * Server initialized
+13:M 15 Dec 2024 11:18:41.366 * Ready to accept connections tcp
+13:M 15 Dec 2024 11:18:41.367 * Ready to accept connections tls
+13:signal-handler (1734261737) Received SIGTERM scheduling shutdown...
+13:M 15 Dec 2024 11:22:17.495 * User requested shutdown...
+13:M 15 Dec 2024 11:22:17.504 * Removing the pid file.
+13:M 15 Dec 2024 11:22:17.510 # Redis is now ready to exit, bye bye...
+13:C 15 Dec 2024 11:22:19.241 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+13:C 15 Dec 2024 11:22:19.250 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=13, just started
+13:C 15 Dec 2024 11:22:19.256 * Configuration loaded
+13:M 15 Dec 2024 11:22:19.258 * monotonic clock: POSIX clock_gettime
+13:M 15 Dec 2024 11:22:19.265 * Running mode=standalone, port=6379.
+13:M 15 Dec 2024 11:22:19.276 * Server initialized
+13:M 15 Dec 2024 11:22:19.277 * Ready to accept connections tcp
+13:M 15 Dec 2024 11:22:19.277 * Ready to accept connections tls
+13:M 15 Dec 2024 11:22:19.535 * Replica 172.21.0.4:6379 asks for synchronization
+13:M 15 Dec 2024 11:22:19.536 * Partial resynchronization not accepted: Replication ID mismatch (Replica asked for '01ba0054c5168e7801b93a965f375df43cbd49ae', my replication IDs are '7a382c162bb42195472953794e4e35afa2765fe4' and '0000000000000000000000000000000000000000')
+13:M 15 Dec 2024 11:22:19.536 * Replication backlog created, my new replication IDs are '85660648d35e865e8b5311062d817c7e91b0fd68' and '0000000000000000000000000000000000000000'
+13:M 15 Dec 2024 11:22:19.536 * Delay next BGSAVE for diskless SYNC
+13:M 15 Dec 2024 11:22:24.422 * Starting BGSAVE for SYNC with target: replicas sockets
+13:M 15 Dec 2024 11:22:24.427 * Background RDB transfer started by pid 43
+43:C 15 Dec 2024 11:22:24.427 * Fork CoW for RDB: current 0 MB, peak 0 MB, average 0 MB
+13:M 15 Dec 2024 11:22:24.443 * Diskless rdb transfer, done reading from pipe, 1 replicas still up.
+13:M 15 Dec 2024 11:22:24.447 * Background RDB transfer terminated with success
+13:M 15 Dec 2024 11:22:24.447 * Streamed RDB transfer with replica 172.21.0.4:6379 succeeded (socket). Waiting for REPLCONF ACK from replica to enable streaming
+13:M 15 Dec 2024 11:22:24.448 * Synchronization with replica 172.21.0.4:6379 succeeded
+13:M 15 Dec 2024 11:24:03.169 * Connection with replica 172.21.0.4:6379 lost.
+13:M 15 Dec 2024 11:24:03.170 * Replica 172.21.0.4:6379 asks for synchronization
+13:M 15 Dec 2024 11:24:03.171 * Partial resynchronization request from 172.21.0.4:6379 accepted. Sending 0 bytes of backlog starting from offset 43.
+13:M 15 Dec 2024 11:36:32.691 * Connection with replica 172.21.0.4:6379 lost.
+13:M 15 Dec 2024 11:36:32.692 * Replica 172.21.0.4:6379 asks for synchronization
+13:M 15 Dec 2024 11:36:32.693 * Partial resynchronization request from 172.21.0.4:6379 accepted. Sending 0 bytes of backlog starting from offset 57452251.
+13:M 15 Dec 2024 11:36:33.831 * CONFIG REWRITE executed with success.
+13:M 15 Dec 2024 11:36:33.872 * DB saved on disk
+13:S 15 Dec 2024 11:36:33.878 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+13:S 15 Dec 2024 11:36:33.878 * Connecting to MASTER localhost:8888
+13:S 15 Dec 2024 11:36:33.881 * MASTER <-> REPLICA sync started
+13:S 15 Dec 2024 11:36:33.882 * REPLICAOF localhost:8888 enabled (user request from 'id=700 addr=192.168.65.1:47367 laddr=172.21.0.2:6379 fd=15 name= age=0 idle=0 flags=N db=15 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=42 qbuf-free=20432 argv-mem=20 multi-mem=0 rbs=16384 rbp=16384 obl=0 oll=0 omem=0 tot-mem=37804 events=r cmd=slaveof user=default redir=-1 resp=3 lib-name=go-redis(,go1.23.1) lib-ver=9.6.2')
+13:S 15 Dec 2024 11:36:33.884 # Error condition on socket for SYNC: Connection refused
+13:M 15 Dec 2024 11:36:33.885 * Discarding previously cached master state.
+13:M 15 Dec 2024 11:36:33.885 * Setting secondary replication ID to 85660648d35e865e8b5311062d817c7e91b0fd68, valid up to offset: 57452574. New replication ID is acf2b69a233b3c0cc712ab21f05055b1e50f12eb
+13:M 15 Dec 2024 11:36:33.885 * Connection with replica 172.21.0.4:6379 lost.
+13:M 15 Dec 2024 11:36:33.885 * MASTER MODE enabled (user request from 'id=700 addr=192.168.65.1:47367 laddr=172.21.0.2:6379 fd=15 name= age=0 idle=0 flags=N db=15 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=34 qbuf-free=20440 argv-mem=12 multi-mem=0 rbs=16384 rbp=5 obl=0 oll=0 omem=0 tot-mem=37796 events=r cmd=slaveof user=default redir=-1 resp=3 lib-name=go-redis(,go1.23.1) lib-ver=9.6.2')
+13:M 15 Dec 2024 11:36:33.886 * Replica 172.21.0.4:6379 asks for synchronization
+13:M 15 Dec 2024 11:36:33.887 * Partial resynchronization request from 172.21.0.4:6379 accepted. Sending 0 bytes of backlog starting from offset 57452574.
+13:M 15 Dec 2024 11:36:37.458 # Module /path/to/non-existent-library.so failed to load: /path/to/non-existent-library.so: cannot open shared object file: No such file or directory
+13:M 15 Dec 2024 11:36:56.787 # Slow script detected: still in execution after 5000 milliseconds. You can try killing the script using the FUNCTION KILL command. Script name is: lib1_func1.
+13:M 15 Dec 2024 11:36:56.789 * Lua script killed by user with SCRIPT KILL.
+13:M 15 Dec 2024 11:47:34.858 * Connection with replica 172.21.0.4:6379 lost.
+13:signal-handler (1734263255) Received SIGTERM scheduling shutdown...
+13:M 15 Dec 2024 11:47:35.162 * User requested shutdown...
+13:M 15 Dec 2024 11:47:35.162 * Removing the pid file.
+13:M 15 Dec 2024 11:47:35.163 # Redis is now ready to exit, bye bye...
+13:C 15 Dec 2024 11:49:55.732 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+13:C 15 Dec 2024 11:49:55.733 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=13, just started
+13:C 15 Dec 2024 11:49:55.734 * Configuration loaded
+13:M 15 Dec 2024 11:49:55.738 * monotonic clock: POSIX clock_gettime
+13:M 15 Dec 2024 11:49:55.742 * Running mode=standalone, port=6379.
+13:M 15 Dec 2024 11:49:55.750 * Server initialized
+13:M 15 Dec 2024 11:49:55.751 * Loading RDB produced by version 7.9.224
+13:M 15 Dec 2024 11:49:55.751 * RDB age 802 seconds
+13:M 15 Dec 2024 11:49:55.752 * RDB memory usage when created 2.29 Mb
+13:M 15 Dec 2024 11:49:55.752 * Done loading RDB, keys loaded: 10, keys expired: 0.
+13:M 15 Dec 2024 11:49:55.753 * DB loaded from disk: 0.003 seconds
+13:M 15 Dec 2024 11:49:55.754 * Ready to accept connections tcp
+13:M 15 Dec 2024 11:49:55.754 * Ready to accept connections tls
+13:M 15 Dec 2024 11:49:55.882 * Replica 172.21.0.4:6379 asks for synchronization
+13:M 15 Dec 2024 11:49:55.883 * Full resync requested by replica 172.21.0.4:6379
+13:M 15 Dec 2024 11:49:55.885 * Delay next BGSAVE for diskless SYNC
+13:M 15 Dec 2024 11:50:00.921 * Starting BGSAVE for SYNC with target: replicas sockets
+13:M 15 Dec 2024 11:50:00.924 * Background RDB transfer started by pid 37
+37:C 15 Dec 2024 11:50:00.925 * Fork CoW for RDB: current 0 MB, peak 0 MB, average 0 MB
+13:M 15 Dec 2024 11:50:00.926 * Diskless rdb transfer, done reading from pipe, 1 replicas still up.
+13:M 15 Dec 2024 11:50:00.928 * Background RDB transfer terminated with success
+13:M 15 Dec 2024 11:50:00.929 * Streamed RDB transfer with replica 172.21.0.4:6379 succeeded (socket). Waiting for REPLCONF ACK from replica to enable streaming
+13:M 15 Dec 2024 11:50:00.929 * Synchronization with replica 172.21.0.4:6379 succeeded
+13:M 15 Dec 2024 11:51:28.978 * Connection with replica 172.21.0.4:6379 lost.
+13:signal-handler (1734263489) Received SIGTERM scheduling shutdown...
+13:M 15 Dec 2024 11:51:29.224 * User requested shutdown...
+13:M 15 Dec 2024 11:51:29.224 * Removing the pid file.
+13:M 15 Dec 2024 11:51:29.225 # Redis is now ready to exit, bye bye...
+13:C 15 Dec 2024 11:52:57.865 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+13:C 15 Dec 2024 11:52:57.866 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=13, just started
+13:C 15 Dec 2024 11:52:57.866 * Configuration loaded
+13:M 15 Dec 2024 11:52:57.867 * monotonic clock: POSIX clock_gettime
+13:M 15 Dec 2024 11:52:57.869 * Running mode=standalone, port=6379.
+13:M 15 Dec 2024 11:52:57.877 * Server initialized
+13:M 15 Dec 2024 11:52:57.892 * Loading RDB produced by version 7.9.224
+13:M 15 Dec 2024 11:52:57.894 * RDB age 984 seconds
+13:M 15 Dec 2024 11:52:57.894 * RDB memory usage when created 2.29 Mb
+13:M 15 Dec 2024 11:52:57.894 * Done loading RDB, keys loaded: 10, keys expired: 0.
+13:M 15 Dec 2024 11:52:57.895 * DB loaded from disk: 0.017 seconds
+13:M 15 Dec 2024 11:52:57.895 * Ready to accept connections tcp
+13:M 15 Dec 2024 11:52:57.896 * Ready to accept connections tls
+13:M 15 Dec 2024 11:52:58.058 * Replica 172.21.0.5:6379 asks for synchronization
+13:M 15 Dec 2024 11:52:58.059 * Full resync requested by replica 172.21.0.5:6379
+13:M 15 Dec 2024 11:52:58.059 * Delay next BGSAVE for diskless SYNC
+13:M 15 Dec 2024 11:53:03.064 * Starting BGSAVE for SYNC with target: replicas sockets
+13:M 15 Dec 2024 11:53:03.066 * Background RDB transfer started by pid 43
+43:C 15 Dec 2024 11:53:03.067 * Fork CoW for RDB: current 0 MB, peak 0 MB, average 0 MB
+13:M 15 Dec 2024 11:53:03.068 * Diskless rdb transfer, done reading from pipe, 1 replicas still up.
+13:M 15 Dec 2024 11:53:03.071 * Background RDB transfer terminated with success
+13:M 15 Dec 2024 11:53:03.071 * Streamed RDB transfer with replica 172.21.0.5:6379 succeeded (socket). Waiting for REPLCONF ACK from replica to enable streaming
+13:M 15 Dec 2024 11:53:03.071 * Synchronization with replica 172.21.0.5:6379 succeeded
+13:M 15 Dec 2024 13:10:27.920 * Connection with replica 172.21.0.5:6379 lost.
+13:signal-handler (1734268228) Received SIGTERM scheduling shutdown...
+13:M 15 Dec 2024 13:10:28.208 * User requested shutdown...
+13:M 15 Dec 2024 13:10:28.209 * Removing the pid file.
+13:M 15 Dec 2024 13:10:28.210 # Redis is now ready to exit, bye bye...
+13:C 15 Dec 2024 13:13:28.148 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+13:C 15 Dec 2024 13:13:28.151 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=13, just started
+13:C 15 Dec 2024 13:13:28.154 * Configuration loaded
+13:M 15 Dec 2024 13:13:28.159 * monotonic clock: POSIX clock_gettime
+13:M 15 Dec 2024 13:13:28.167 * Running mode=standalone, port=6379.
+13:M 15 Dec 2024 13:13:28.184 * Server initialized
+13:M 15 Dec 2024 13:13:28.189 * Loading RDB produced by version 7.9.224
+13:M 15 Dec 2024 13:13:28.190 * RDB age 5815 seconds
+13:M 15 Dec 2024 13:13:28.191 * RDB memory usage when created 2.29 Mb
+13:M 15 Dec 2024 13:13:28.192 * Done loading RDB, keys loaded: 10, keys expired: 0.
+13:M 15 Dec 2024 13:13:28.193 * DB loaded from disk: 0.009 seconds
+13:M 15 Dec 2024 13:13:28.194 * Ready to accept connections tcp
+13:M 15 Dec 2024 13:13:28.196 * Ready to accept connections tls
+13:M 15 Dec 2024 13:13:28.386 * Replica 172.21.0.7:6379 asks for synchronization
+13:M 15 Dec 2024 13:13:28.389 * Full resync requested by replica 172.21.0.7:6379
+13:M 15 Dec 2024 13:13:28.391 * Delay next BGSAVE for diskless SYNC
+13:M 15 Dec 2024 13:13:33.351 * Starting BGSAVE for SYNC with target: replicas sockets
+13:M 15 Dec 2024 13:13:33.353 * Background RDB transfer started by pid 43
+43:C 15 Dec 2024 13:13:33.354 * Fork CoW for RDB: current 0 MB, peak 0 MB, average 0 MB
+13:M 15 Dec 2024 13:13:33.355 * Diskless rdb transfer, done reading from pipe, 1 replicas still up.
+13:M 15 Dec 2024 13:13:33.358 * Background RDB transfer terminated with success
+13:M 15 Dec 2024 13:13:33.359 * Streamed RDB transfer with replica 172.21.0.7:6379 succeeded (socket). Waiting for REPLCONF ACK from replica to enable streaming
+13:M 15 Dec 2024 13:13:33.359 * Synchronization with replica 172.21.0.7:6379 succeeded
+13:M 15 Dec 2024 13:30:14.636 * Connection with replica 172.21.0.7:6379 lost.
+13:signal-handler (1734269414) Received SIGTERM scheduling shutdown...
+13:M 15 Dec 2024 13:30:14.899 * User requested shutdown...
+13:M 15 Dec 2024 13:30:14.899 * Removing the pid file.
+13:M 15 Dec 2024 13:30:14.900 # Redis is now ready to exit, bye bye...
+12:C 15 Dec 2024 13:30:30.638 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+12:C 15 Dec 2024 13:30:30.639 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=12, just started
+12:C 15 Dec 2024 13:30:30.639 * Configuration loaded
+12:M 15 Dec 2024 13:30:30.641 * monotonic clock: POSIX clock_gettime
+12:M 15 Dec 2024 13:30:30.646 * Running mode=standalone, port=6379.
+12:M 15 Dec 2024 13:30:30.653 * Server initialized
+12:M 15 Dec 2024 13:30:30.655 * Loading RDB produced by version 7.9.224
+12:M 15 Dec 2024 13:30:30.670 * RDB age 6837 seconds
+12:M 15 Dec 2024 13:30:30.671 * RDB memory usage when created 2.29 Mb
+12:M 15 Dec 2024 13:30:30.673 * Done loading RDB, keys loaded: 10, keys expired: 0.
+12:M 15 Dec 2024 13:30:30.678 * DB loaded from disk: 0.024 seconds
+12:M 15 Dec 2024 13:30:30.679 * Ready to accept connections tcp
+12:M 15 Dec 2024 13:30:30.680 * Ready to accept connections tls
+12:M 15 Dec 2024 13:30:30.922 * Replica 172.21.0.9:6379 asks for synchronization
+12:M 15 Dec 2024 13:30:30.924 * Full resync requested by replica 172.21.0.9:6379
+12:M 15 Dec 2024 13:30:30.928 * Delay next BGSAVE for diskless SYNC
+12:M 15 Dec 2024 13:30:35.807 * Starting BGSAVE for SYNC with target: replicas sockets
+12:M 15 Dec 2024 13:30:35.809 * Background RDB transfer started by pid 42
+42:C 15 Dec 2024 13:30:35.809 * Fork CoW for RDB: current 0 MB, peak 0 MB, average 0 MB
+12:M 15 Dec 2024 13:30:35.810 * Diskless rdb transfer, done reading from pipe, 1 replicas still up.
+12:M 15 Dec 2024 13:30:35.812 * Background RDB transfer terminated with success
+12:M 15 Dec 2024 13:30:35.812 * Streamed RDB transfer with replica 172.21.0.9:6379 succeeded (socket). Waiting for REPLCONF ACK from replica to enable streaming
+12:M 15 Dec 2024 13:30:35.813 * Synchronization with replica 172.21.0.9:6379 succeeded
+12:M 15 Dec 2024 13:36:35.527 * Connection with replica 172.21.0.9:6379 lost.
+12:signal-handler (1734269795) Received SIGTERM scheduling shutdown...
+12:M 15 Dec 2024 13:36:35.733 * User requested shutdown...
+12:M 15 Dec 2024 13:36:35.734 * Removing the pid file.
+12:M 15 Dec 2024 13:36:35.735 # Redis is now ready to exit, bye bye...
+13:C 15 Dec 2024 13:37:03.304 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+13:C 15 Dec 2024 13:37:03.306 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=13, just started
+13:C 15 Dec 2024 13:37:03.308 * Configuration loaded
+13:M 15 Dec 2024 13:37:03.309 * monotonic clock: POSIX clock_gettime
+13:M 15 Dec 2024 13:37:03.312 * Running mode=standalone, port=6379.
+13:M 15 Dec 2024 13:37:03.322 * Server initialized
+13:M 15 Dec 2024 13:37:03.326 * Loading RDB produced by version 7.9.224
+13:M 15 Dec 2024 13:37:03.327 * RDB age 7230 seconds
+13:M 15 Dec 2024 13:37:03.328 * RDB memory usage when created 2.29 Mb
+13:M 15 Dec 2024 13:37:03.329 * Done loading RDB, keys loaded: 10, keys expired: 0.
+13:M 15 Dec 2024 13:37:03.330 * DB loaded from disk: 0.006 seconds
+13:M 15 Dec 2024 13:37:03.331 * Ready to accept connections tcp
+13:M 15 Dec 2024 13:37:03.333 * Ready to accept connections tls
+13:M 15 Dec 2024 13:37:03.605 * Replica 172.21.0.7:6379 asks for synchronization
+13:M 15 Dec 2024 13:37:03.607 * Full resync requested by replica 172.21.0.7:6379
+13:M 15 Dec 2024 13:37:03.608 * Delay next BGSAVE for diskless SYNC
+13:M 15 Dec 2024 13:37:08.490 * Starting BGSAVE for SYNC with target: replicas sockets
+13:M 15 Dec 2024 13:37:08.491 * Background RDB transfer started by pid 43
+43:C 15 Dec 2024 13:37:08.492 * Fork CoW for RDB: current 0 MB, peak 0 MB, average 0 MB
+13:M 15 Dec 2024 13:37:08.493 * Diskless rdb transfer, done reading from pipe, 1 replicas still up.
+13:M 15 Dec 2024 13:37:08.496 * Background RDB transfer terminated with success
+13:M 15 Dec 2024 13:37:08.496 * Streamed RDB transfer with replica 172.21.0.7:6379 succeeded (socket). Waiting for REPLCONF ACK from replica to enable streaming
+13:M 15 Dec 2024 13:37:08.496 * Synchronization with replica 172.21.0.7:6379 succeeded
+13:M 15 Dec 2024 13:39:04.666 * Connection with replica 172.21.0.7:6379 lost.
+13:signal-handler (1734269944) Received SIGTERM scheduling shutdown...
+13:M 15 Dec 2024 13:39:04.968 * User requested shutdown...
+13:M 15 Dec 2024 13:39:04.969 * Removing the pid file.
+13:M 15 Dec 2024 13:39:04.970 # Redis is now ready to exit, bye bye...
+12:C 15 Dec 2024 13:39:11.113 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+12:C 15 Dec 2024 13:39:11.116 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=12, just started
+12:C 15 Dec 2024 13:39:11.118 * Configuration loaded
+12:M 15 Dec 2024 13:39:11.120 * monotonic clock: POSIX clock_gettime
+12:M 15 Dec 2024 13:39:11.128 * Running mode=standalone, port=6379.
+12:M 15 Dec 2024 13:39:11.142 * Server initialized
+12:M 15 Dec 2024 13:39:11.145 * Loading RDB produced by version 7.9.224
+12:M 15 Dec 2024 13:39:11.146 * RDB age 7358 seconds
+12:M 15 Dec 2024 13:39:11.148 * RDB memory usage when created 2.29 Mb
+12:M 15 Dec 2024 13:39:11.149 * Done loading RDB, keys loaded: 10, keys expired: 0.
+12:M 15 Dec 2024 13:39:11.151 * DB loaded from disk: 0.008 seconds
+12:M 15 Dec 2024 13:39:11.153 * Ready to accept connections tcp
+12:M 15 Dec 2024 13:39:11.154 * Ready to accept connections tls
+12:M 15 Dec 2024 13:39:11.346 * Replica 172.21.0.8:6379 asks for synchronization
+12:M 15 Dec 2024 13:39:11.346 * Full resync requested by replica 172.21.0.8:6379
+12:M 15 Dec 2024 13:39:11.347 * Delay next BGSAVE for diskless SYNC
+12:M 15 Dec 2024 13:39:16.293 * Starting BGSAVE for SYNC with target: replicas sockets
+12:M 15 Dec 2024 13:39:16.295 * Background RDB transfer started by pid 42
+42:C 15 Dec 2024 13:39:16.296 * Fork CoW for RDB: current 0 MB, peak 0 MB, average 0 MB
+12:M 15 Dec 2024 13:39:16.299 * Diskless rdb transfer, done reading from pipe, 1 replicas still up.
+12:M 15 Dec 2024 13:39:16.304 * Background RDB transfer terminated with success
+12:M 15 Dec 2024 13:39:16.306 * Streamed RDB transfer with replica 172.21.0.8:6379 succeeded (socket). Waiting for REPLCONF ACK from replica to enable streaming
+12:M 15 Dec 2024 13:39:16.307 * Synchronization with replica 172.21.0.8:6379 succeeded

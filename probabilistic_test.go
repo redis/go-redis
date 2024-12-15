@@ -16,7 +16,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
 		return redis.NewClient(&redis.Options{
-			Addr:     "localhost:6379",
+			Addr:     rediStackAddr,
 			DB:       0,
 			Protocol: protocolVersion,
 		})

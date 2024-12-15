@@ -16,7 +16,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
 		return redis.NewClient(&redis.Options{
-			Addr:          "localhost:6379",
+			Addr:          rediStackAddr,
 			DB:            0,
 			Protocol:      protocolVersion,
 			UnstableResp3: true,

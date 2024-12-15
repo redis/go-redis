@@ -1,0 +1,140 @@
+---
+
+services:
+
+  redis:
+    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:8.0-M01}
+    container_name: redis-standalone
+    environment:
+      - TLS_ENABLED=yes
+      - REDIS_CLUSTER=no
+      - PORT=6379
+      - TLS_PORT=6666
+    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional --save ""}
+    ports:
+      - 6379:6379
+      - 9123:6379 # Sentinel port
+      - 6666:6666 # TLS port
+    volumes:
+      - "./dockers/standalone:/redis/work"
+    profiles:
+      - standalone
+      - sentinel
+      - replica
+      - all-stack
+      - all
+
+  replica:
+    image: ${REDIS_IMAGE:-redis:8.0-M01}
+    container_name: redis-replica
+    depends_on:
+      - redis
+    command: redis-server --replicaof redis 6379 --protected-mode no --save ""
+    ports:
+      - 6380:6379
+    profiles:
+      - replica
+      - all-stack
+      - all
+
+  cluster:
+    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:8.0-M01}
+    container_name: redis-cluster
+    environment:
+      - REDIS_CLUSTER=yes
+      - NODES=6
+      - REPLICAS=1
+      - TLS_ENABLED=yes
+      - PORT=16379
+      - TLS_PORT=27379
+    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --save ""}
+    ports:
+      - "16379-16381:16379-16381"
+    volumes:
+      - "./dockers/cluster:/redis/work"
+    profiles:
+      - cluster
+      - all-stack
+      - all
+
+  sentinel:
+    image: ${REDIS_IMAGE:-redis:8.0-M01}
+    container_name: redis-sentinel1
+    depends_on:
+      - redis
+    entrypoint: "redis-sentinel /redis.conf --port 9123"
+    ports:
+      - 9126:9126
+    volumes:
+      - "./dockers/sentinel.conf:/redis.conf"
+    profiles:
+      - sentinel
+      - all-stack
+      - all
+
+  sentinel2:
+    image: ${REDIS_IMAGE:-redis:8.0-M01}
+    container_name: redis-sentinel2
+    depends_on:
+      - redis
+    entrypoint: "redis-sentinel /redis.conf --port 9124"
+    ports:
+      - 9127:9127
+    volumes:
+      - "./dockers/sentinel.conf:/redis.conf"
+    profiles:
+      - sentinel
+      - all-stack
+      - all
+
+  sentinel3:
+    image: ${REDIS_IMAGE:-redis:8.0-M01}
+    container_name: redis-sentinel3
+    depends_on:
+      - redis
+    entrypoint: "redis-sentinel /redis.conf --port 26381"
+    ports:
+      - 9128:9128
+    volumes:
+      - "./dockers/sentinel.conf:/redis.conf"
+    profiles:
+      - sentinel
+      - all-stack
+      - all
+
+  sentinel-slave1:
+    image: ${REDIS_IMAGE:-redis:8.0-M01}
+    container_name: redis-sentinel1-slave
+    depends_on:
+      - redis
+    command: redis-server --slaveof redis 9123 --protected-mode no --save ""
+    ports:
+      - 9124:9123
+    profiles:
+      - sentinel
+      - all-stack
+      - all
+
+  sentinel-slave2:
+    image: ${REDIS_IMAGE:-redis:8.0-M01}
+    container_name: redis-sentinel2-slave
+    depends_on:
+      - redis
+    command: redis-server --slaveof redis 9123 --protected-mode no --save ""
+    ports:
+      - 9125:9123
+    profiles:
+      - sentinel
+      - all-stack
+      - all
+
+  redis-stack:
+    image: ${REDIS_STACK_IMAGE:-redis/redis-stack-server:edge}
+    container_name: redis-stack
+    ports:
+      - 6349:6379
+    environment:
+      - "REDIS_ARGS=${REDIS_STACK_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --save ''}"
+    profiles:
+      - standalone
+      - all-stack

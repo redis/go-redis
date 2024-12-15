@@ -21,7 +21,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
 		return redis.NewClient(&redis.Options{
-			Addr:          "localhost:6379",
+			Addr:          rediStackAddr,
 			DB:            0,
 			Protocol:      protocolVersion,
 			UnstableResp3: true,
@@ -682,7 +682,7 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
 		return redis.NewClient(&redis.Options{
-			Addr:          "localhost:6379",
+			Addr:          rediStackAddr,
 			DB:            0,
 			Protocol:      protocolVersion, // Setting RESP2 or RESP3 protocol
 			UnstableResp3: true,            // Enable RESP3 features

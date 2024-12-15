@@ -1,0 +1,950 @@
+49:C 05 Dec 2024 08:52:53.042 # WARNING: Changing databases number from 16 to 1 since we are in cluster mode
+49:C 05 Dec 2024 08:52:53.044 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+49:C 05 Dec 2024 08:52:53.045 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=49, just started
+49:C 05 Dec 2024 08:52:53.046 * Configuration loaded
+49:M 05 Dec 2024 08:52:53.047 * monotonic clock: POSIX clock_gettime
+49:M 05 Dec 2024 08:52:53.050 * Running mode=cluster, port=16382.
+49:M 05 Dec 2024 08:52:53.054 * No cluster configuration found, I'm a0970bd542e1e5b7512bfc61deac5244e4478c58
+49:M 05 Dec 2024 08:52:53.062 * Server initialized
+49:M 05 Dec 2024 08:52:53.063 * Ready to accept connections tcp
+49:M 05 Dec 2024 08:52:53.064 * Ready to accept connections tls
+49:M 05 Dec 2024 08:52:54.169 * configEpoch set to 4 via CLUSTER SET-CONFIG-EPOCH
+49:M 05 Dec 2024 08:52:54.197 * IP address for this node updated to 127.0.0.1
+49:M 05 Dec 2024 08:52:54.198 * Address updated for node 3a1250b30cc37fca6db12b82fdefcbf615dec08f (), now 127.0.0.1:16379
+49:M 05 Dec 2024 08:52:55.119 * Cluster state changed: ok
+49:S 05 Dec 2024 08:52:55.177 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+49:S 05 Dec 2024 08:52:55.178 * Connecting to MASTER 127.0.0.1:16380
+49:S 05 Dec 2024 08:52:55.179 * MASTER <-> REPLICA sync started
+49:S 05 Dec 2024 08:52:55.181 * Non blocking connect for SYNC fired the event.
+49:S 05 Dec 2024 08:52:55.182 * Master replied to PING, replication can continue...
+49:S 05 Dec 2024 08:52:55.183 * Trying a partial resynchronization (request 50c5cc8b824c5345352c7475f534dbeafb0c83e9:1).
+49:S 05 Dec 2024 08:52:55.223 * Node 0287949c6e8aa2fb3f26d81820cc54b82bfd551f () is no longer master of shard c2a7e402de12d3568489aaac260c785e72fb7ecd; removed all 0 slot(s) it used to own
+49:S 05 Dec 2024 08:52:55.224 * Node 0287949c6e8aa2fb3f26d81820cc54b82bfd551f () is now part of shard 4554bc07be3de979d00342a6de84369994bb059c
+49:S 05 Dec 2024 08:52:56.037 * Node 16151e686272aa1dd2d15d4af407b6be45c9eca1 () is no longer master of shard 9298d5cf800697ccdb6ed879c2bb68d8d0e99d58; removed all 0 slot(s) it used to own
+49:S 05 Dec 2024 08:52:56.038 * Node 16151e686272aa1dd2d15d4af407b6be45c9eca1 () is now part of shard 78410864729d91b91858e4f921bcd314095cfcc6
+49:S 05 Dec 2024 08:53:00.283 * Full resync from master: 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:0
+49:S 05 Dec 2024 08:53:00.284 * MASTER <-> REPLICA sync: receiving streamed RDB from master with EOF to disk
+49:S 05 Dec 2024 08:53:00.284 * Discarding previously cached master state.
+49:S 05 Dec 2024 08:53:00.284 * MASTER <-> REPLICA sync: Loading DB in memory
+49:S 05 Dec 2024 08:53:00.285 * MASTER <-> REPLICA sync: Flushing old data
+49:S 05 Dec 2024 08:53:00.286 * Loading RDB produced by version 7.9.224
+49:S 05 Dec 2024 08:53:00.286 * RDB age 0 seconds
+49:S 05 Dec 2024 08:53:00.286 * RDB memory usage when created 2.49 Mb
+49:S 05 Dec 2024 08:53:00.286 * Done loading RDB, keys loaded: 0, keys expired: 0.
+49:S 05 Dec 2024 08:53:00.287 * MASTER <-> REPLICA sync: Finished with success
+49:S 05 Dec 2024 10:54:05.075 * Connection with master lost.
+49:S 05 Dec 2024 10:54:05.076 * Caching the disconnected master state.
+49:S 05 Dec 2024 10:54:05.076 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 05 Dec 2024 10:54:05.077 * MASTER <-> REPLICA sync started
+49:S 05 Dec 2024 10:54:05.078 * Non blocking connect for SYNC fired the event.
+49:S 05 Dec 2024 10:54:05.079 * Master replied to PING, replication can continue...
+49:S 05 Dec 2024 10:54:05.079 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:9493).
+49:S 05 Dec 2024 10:54:05.080 * Successful partial resynchronization with master.
+49:S 05 Dec 2024 10:54:05.081 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 05 Dec 2024 13:52:40.971 * Connection with master lost.
+49:S 05 Dec 2024 13:52:40.973 * Caching the disconnected master state.
+49:S 05 Dec 2024 13:52:40.974 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 05 Dec 2024 13:52:40.975 * MASTER <-> REPLICA sync started
+49:S 05 Dec 2024 13:52:40.975 * Non blocking connect for SYNC fired the event.
+49:S 05 Dec 2024 13:52:40.976 * Master replied to PING, replication can continue...
+49:S 05 Dec 2024 13:52:40.977 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:14183).
+49:S 05 Dec 2024 13:52:40.978 * Successful partial resynchronization with master.
+49:S 05 Dec 2024 13:52:40.979 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 05 Dec 2024 15:54:50.581 * Connection with master lost.
+49:S 05 Dec 2024 15:54:50.581 * Caching the disconnected master state.
+49:S 05 Dec 2024 15:54:50.581 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 05 Dec 2024 15:54:50.582 * MASTER <-> REPLICA sync started
+49:S 05 Dec 2024 15:54:50.582 * Non blocking connect for SYNC fired the event.
+49:S 05 Dec 2024 15:54:50.582 * Master replied to PING, replication can continue...
+49:S 05 Dec 2024 15:54:50.583 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:14225).
+49:S 05 Dec 2024 15:54:50.583 * Successful partial resynchronization with master.
+49:S 05 Dec 2024 15:54:50.583 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 05 Dec 2024 17:56:41.686 * Connection with master lost.
+49:S 05 Dec 2024 17:56:41.687 * Caching the disconnected master state.
+49:S 05 Dec 2024 17:56:41.688 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 05 Dec 2024 17:56:41.689 * MASTER <-> REPLICA sync started
+49:S 05 Dec 2024 17:56:41.690 * Non blocking connect for SYNC fired the event.
+49:S 05 Dec 2024 17:56:41.690 * Master replied to PING, replication can continue...
+49:S 05 Dec 2024 17:56:41.691 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:14253).
+49:S 05 Dec 2024 17:56:41.692 * Successful partial resynchronization with master.
+49:S 05 Dec 2024 17:56:41.692 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 05 Dec 2024 18:09:23.680 * Connection with master lost.
+49:S 05 Dec 2024 18:09:23.681 * Caching the disconnected master state.
+49:S 05 Dec 2024 18:09:23.682 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 05 Dec 2024 18:09:23.683 * MASTER <-> REPLICA sync started
+49:S 05 Dec 2024 18:09:23.683 * Non blocking connect for SYNC fired the event.
+49:S 05 Dec 2024 18:09:23.684 * Master replied to PING, replication can continue...
+49:S 05 Dec 2024 18:09:23.684 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:14295).
+49:S 05 Dec 2024 18:09:23.685 * Successful partial resynchronization with master.
+49:S 05 Dec 2024 18:09:23.686 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 05 Dec 2024 22:02:40.213 # MASTER timeout: no data nor PING received...
+49:S 05 Dec 2024 22:02:40.216 * Connection with master lost.
+49:S 05 Dec 2024 22:02:40.217 * Caching the disconnected master state.
+49:S 05 Dec 2024 22:02:40.218 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 05 Dec 2024 22:02:40.219 * MASTER <-> REPLICA sync started
+49:S 05 Dec 2024 22:02:40.220 * Non blocking connect for SYNC fired the event.
+49:S 05 Dec 2024 22:02:40.220 * Master replied to PING, replication can continue...
+49:S 05 Dec 2024 22:02:40.221 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19335).
+49:S 05 Dec 2024 22:02:40.222 * Successful partial resynchronization with master.
+49:S 05 Dec 2024 22:02:40.222 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 06 Dec 2024 00:04:43.536 # MASTER timeout: no data nor PING received...
+49:S 06 Dec 2024 00:04:43.538 * Connection with master lost.
+49:S 06 Dec 2024 00:04:43.538 * Caching the disconnected master state.
+49:S 06 Dec 2024 00:04:43.540 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 06 Dec 2024 00:04:43.541 * MASTER <-> REPLICA sync started
+49:S 06 Dec 2024 00:04:43.542 * Non blocking connect for SYNC fired the event.
+49:S 06 Dec 2024 00:04:43.542 * Master replied to PING, replication can continue...
+49:S 06 Dec 2024 00:04:43.543 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19363).
+49:S 06 Dec 2024 00:04:43.544 * Successful partial resynchronization with master.
+49:S 06 Dec 2024 00:04:43.545 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 06 Dec 2024 04:08:36.582 # MASTER timeout: no data nor PING received...
+49:S 06 Dec 2024 04:08:36.583 * Connection with master lost.
+49:S 06 Dec 2024 04:08:36.584 * Caching the disconnected master state.
+49:S 06 Dec 2024 04:08:36.585 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 06 Dec 2024 04:08:36.587 * MASTER <-> REPLICA sync started
+49:S 06 Dec 2024 04:08:36.587 * Non blocking connect for SYNC fired the event.
+49:S 06 Dec 2024 04:08:36.588 * Master replied to PING, replication can continue...
+49:S 06 Dec 2024 04:08:36.588 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19405).
+49:S 06 Dec 2024 04:08:36.590 * Successful partial resynchronization with master.
+49:S 06 Dec 2024 04:08:36.591 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 06 Dec 2024 06:10:39.757 * Connection with master lost.
+49:S 06 Dec 2024 06:10:39.758 * Caching the disconnected master state.
+49:S 06 Dec 2024 06:10:39.759 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 06 Dec 2024 06:10:39.760 * MASTER <-> REPLICA sync started
+49:S 06 Dec 2024 06:10:39.760 * Non blocking connect for SYNC fired the event.
+49:S 06 Dec 2024 06:10:39.761 * Master replied to PING, replication can continue...
+49:S 06 Dec 2024 06:10:39.761 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19447).
+49:S 06 Dec 2024 06:10:39.762 * Successful partial resynchronization with master.
+49:S 06 Dec 2024 06:10:39.763 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 06 Dec 2024 09:13:44.526 * Connection with master lost.
+49:S 06 Dec 2024 09:13:44.527 * Caching the disconnected master state.
+49:S 06 Dec 2024 09:13:44.528 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 06 Dec 2024 09:13:44.528 * MASTER <-> REPLICA sync started
+49:S 06 Dec 2024 09:13:44.529 * Non blocking connect for SYNC fired the event.
+49:S 06 Dec 2024 09:13:44.530 * Master replied to PING, replication can continue...
+49:S 06 Dec 2024 09:13:44.530 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19489).
+49:S 06 Dec 2024 09:13:44.531 * Successful partial resynchronization with master.
+49:S 06 Dec 2024 09:13:44.532 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 06 Dec 2024 12:16:42.580 # MASTER timeout: no data nor PING received...
+49:S 06 Dec 2024 12:16:42.582 * Connection with master lost.
+49:S 06 Dec 2024 12:16:42.583 * Caching the disconnected master state.
+49:S 06 Dec 2024 12:16:42.585 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 06 Dec 2024 12:16:42.587 * MASTER <-> REPLICA sync started
+49:S 06 Dec 2024 12:16:42.588 * Non blocking connect for SYNC fired the event.
+49:S 06 Dec 2024 12:16:42.589 * Master replied to PING, replication can continue...
+49:S 06 Dec 2024 12:16:42.589 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19517).
+49:S 06 Dec 2024 12:16:42.590 * Successful partial resynchronization with master.
+49:S 06 Dec 2024 12:16:42.591 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 06 Dec 2024 14:18:40.275 * Connection with master lost.
+49:S 06 Dec 2024 14:18:40.276 * Caching the disconnected master state.
+49:S 06 Dec 2024 14:18:40.277 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 06 Dec 2024 14:18:40.277 * MASTER <-> REPLICA sync started
+49:S 06 Dec 2024 14:18:40.278 * Non blocking connect for SYNC fired the event.
+49:S 06 Dec 2024 14:18:40.279 * Master replied to PING, replication can continue...
+49:S 06 Dec 2024 14:18:40.279 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19559).
+49:S 06 Dec 2024 14:18:40.280 * Successful partial resynchronization with master.
+49:S 06 Dec 2024 14:18:40.281 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 06 Dec 2024 17:21:39.092 # MASTER timeout: no data nor PING received...
+49:S 06 Dec 2024 17:21:39.094 * Connection with master lost.
+49:S 06 Dec 2024 17:21:39.096 * Caching the disconnected master state.
+49:S 06 Dec 2024 17:21:39.096 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 06 Dec 2024 17:21:39.097 * MASTER <-> REPLICA sync started
+49:S 06 Dec 2024 17:21:39.098 * Non blocking connect for SYNC fired the event.
+49:S 06 Dec 2024 17:21:39.098 * Master replied to PING, replication can continue...
+49:S 06 Dec 2024 17:21:39.099 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19601).
+49:S 06 Dec 2024 17:21:39.100 * Successful partial resynchronization with master.
+49:S 06 Dec 2024 17:21:39.100 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 06 Dec 2024 18:22:40.153 # MASTER timeout: no data nor PING received...
+49:S 06 Dec 2024 18:22:40.154 * Connection with master lost.
+49:S 06 Dec 2024 18:22:40.154 * Caching the disconnected master state.
+49:S 06 Dec 2024 18:22:40.154 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 06 Dec 2024 18:22:40.155 * MASTER <-> REPLICA sync started
+49:S 06 Dec 2024 18:22:40.155 * Non blocking connect for SYNC fired the event.
+49:S 06 Dec 2024 18:22:40.156 * Master replied to PING, replication can continue...
+49:S 06 Dec 2024 18:22:40.156 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19643).
+49:S 06 Dec 2024 18:22:40.157 * Successful partial resynchronization with master.
+49:S 06 Dec 2024 18:22:40.157 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 06 Dec 2024 21:25:36.653 # MASTER timeout: no data nor PING received...
+49:S 06 Dec 2024 21:25:36.654 * Connection with master lost.
+49:S 06 Dec 2024 21:25:36.655 * Caching the disconnected master state.
+49:S 06 Dec 2024 21:25:36.656 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 06 Dec 2024 21:25:36.657 * MASTER <-> REPLICA sync started
+49:S 06 Dec 2024 21:25:36.658 * Non blocking connect for SYNC fired the event.
+49:S 06 Dec 2024 21:25:36.658 * Master replied to PING, replication can continue...
+49:S 06 Dec 2024 21:25:36.659 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19685).
+49:S 06 Dec 2024 21:25:36.660 * Successful partial resynchronization with master.
+49:S 06 Dec 2024 21:25:36.660 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 06 Dec 2024 22:26:41.644 * Connection with master lost.
+49:S 06 Dec 2024 22:26:41.645 * Caching the disconnected master state.
+49:S 06 Dec 2024 22:26:41.645 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 06 Dec 2024 22:26:41.646 * MASTER <-> REPLICA sync started
+49:S 06 Dec 2024 22:26:41.646 * Non blocking connect for SYNC fired the event.
+49:S 06 Dec 2024 22:26:41.647 * Master replied to PING, replication can continue...
+49:S 06 Dec 2024 22:26:41.647 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19713).
+49:S 06 Dec 2024 22:26:41.649 * Successful partial resynchronization with master.
+49:S 06 Dec 2024 22:26:41.649 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 07 Dec 2024 01:29:37.019 # MASTER timeout: no data nor PING received...
+49:S 07 Dec 2024 01:29:37.020 * Connection with master lost.
+49:S 07 Dec 2024 01:29:37.020 * Caching the disconnected master state.
+49:S 07 Dec 2024 01:29:37.021 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 07 Dec 2024 01:29:37.022 * MASTER <-> REPLICA sync started
+49:S 07 Dec 2024 01:29:37.022 * Non blocking connect for SYNC fired the event.
+49:S 07 Dec 2024 01:29:37.022 * Master replied to PING, replication can continue...
+49:S 07 Dec 2024 01:29:37.023 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19755).
+49:S 07 Dec 2024 01:29:37.023 * Successful partial resynchronization with master.
+49:S 07 Dec 2024 01:29:37.024 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 07 Dec 2024 04:32:39.663 # MASTER timeout: no data nor PING received...
+49:S 07 Dec 2024 04:32:39.665 * Connection with master lost.
+49:S 07 Dec 2024 04:32:39.666 * Caching the disconnected master state.
+49:S 07 Dec 2024 04:32:39.666 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 07 Dec 2024 04:32:39.668 * MASTER <-> REPLICA sync started
+49:S 07 Dec 2024 04:32:39.669 * Non blocking connect for SYNC fired the event.
+49:S 07 Dec 2024 04:32:39.669 * Master replied to PING, replication can continue...
+49:S 07 Dec 2024 04:32:39.670 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19797).
+49:S 07 Dec 2024 04:32:39.671 * Successful partial resynchronization with master.
+49:S 07 Dec 2024 04:32:39.671 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 07 Dec 2024 07:35:36.189 # MASTER timeout: no data nor PING received...
+49:S 07 Dec 2024 07:35:36.190 * Connection with master lost.
+49:S 07 Dec 2024 07:35:36.191 * Caching the disconnected master state.
+49:S 07 Dec 2024 07:35:36.191 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 07 Dec 2024 07:35:36.192 * MASTER <-> REPLICA sync started
+49:S 07 Dec 2024 07:35:36.193 * Non blocking connect for SYNC fired the event.
+49:S 07 Dec 2024 07:35:36.194 * Master replied to PING, replication can continue...
+49:S 07 Dec 2024 07:35:36.195 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19839).
+49:S 07 Dec 2024 07:35:36.197 * Successful partial resynchronization with master.
+49:S 07 Dec 2024 07:35:36.198 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 07 Dec 2024 09:37:48.210 # MASTER timeout: no data nor PING received...
+49:S 07 Dec 2024 09:37:48.211 * Connection with master lost.
+49:S 07 Dec 2024 09:37:48.212 * Caching the disconnected master state.
+49:S 07 Dec 2024 09:37:48.213 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 07 Dec 2024 09:37:48.215 * MASTER <-> REPLICA sync started
+49:S 07 Dec 2024 09:37:48.216 * Non blocking connect for SYNC fired the event.
+49:S 07 Dec 2024 09:37:48.216 * Master replied to PING, replication can continue...
+49:S 07 Dec 2024 09:37:48.217 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19881).
+49:S 07 Dec 2024 09:37:48.218 * Successful partial resynchronization with master.
+49:S 07 Dec 2024 09:37:48.219 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 07 Dec 2024 12:40:38.383 * Connection with master lost.
+49:S 07 Dec 2024 12:40:38.384 * Caching the disconnected master state.
+49:S 07 Dec 2024 12:40:38.384 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 07 Dec 2024 12:40:38.385 * MASTER <-> REPLICA sync started
+49:S 07 Dec 2024 12:40:38.385 * Non blocking connect for SYNC fired the event.
+49:S 07 Dec 2024 12:40:38.386 * Master replied to PING, replication can continue...
+49:S 07 Dec 2024 12:40:38.386 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19909).
+49:S 07 Dec 2024 12:40:38.388 * Successful partial resynchronization with master.
+49:S 07 Dec 2024 12:40:38.388 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 07 Dec 2024 14:42:36.395 # MASTER timeout: no data nor PING received...
+49:S 07 Dec 2024 14:42:36.397 * Connection with master lost.
+49:S 07 Dec 2024 14:42:36.397 * Caching the disconnected master state.
+49:S 07 Dec 2024 14:42:36.398 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 07 Dec 2024 14:42:36.399 * MASTER <-> REPLICA sync started
+49:S 07 Dec 2024 14:42:36.400 * Non blocking connect for SYNC fired the event.
+49:S 07 Dec 2024 14:42:36.401 * Master replied to PING, replication can continue...
+49:S 07 Dec 2024 14:42:36.402 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19951).
+49:S 07 Dec 2024 14:42:36.403 * Successful partial resynchronization with master.
+49:S 07 Dec 2024 14:42:36.403 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 07 Dec 2024 16:44:45.677 # MASTER timeout: no data nor PING received...
+49:S 07 Dec 2024 16:44:45.678 * Connection with master lost.
+49:S 07 Dec 2024 16:44:45.679 * Caching the disconnected master state.
+49:S 07 Dec 2024 16:44:45.680 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 07 Dec 2024 16:44:45.681 * MASTER <-> REPLICA sync started
+49:S 07 Dec 2024 16:44:45.681 * Non blocking connect for SYNC fired the event.
+49:S 07 Dec 2024 16:44:45.681 * Master replied to PING, replication can continue...
+49:S 07 Dec 2024 16:44:45.682 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:19993).
+49:S 07 Dec 2024 16:44:45.682 * Successful partial resynchronization with master.
+49:S 07 Dec 2024 16:44:45.682 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 07 Dec 2024 19:47:46.883 # MASTER timeout: no data nor PING received...
+49:S 07 Dec 2024 19:47:46.884 * Connection with master lost.
+49:S 07 Dec 2024 19:47:46.885 * Caching the disconnected master state.
+49:S 07 Dec 2024 19:47:46.885 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 07 Dec 2024 19:47:46.886 * MASTER <-> REPLICA sync started
+49:S 07 Dec 2024 19:47:46.886 * Non blocking connect for SYNC fired the event.
+49:S 07 Dec 2024 19:47:46.887 * Master replied to PING, replication can continue...
+49:S 07 Dec 2024 19:47:46.887 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:20035).
+49:S 07 Dec 2024 19:47:46.888 * Successful partial resynchronization with master.
+49:S 07 Dec 2024 19:47:46.888 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 07 Dec 2024 22:20:19.894 * Connection with master lost.
+49:S 07 Dec 2024 22:20:19.895 * Caching the disconnected master state.
+49:S 07 Dec 2024 22:20:19.895 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 07 Dec 2024 22:20:19.896 * MASTER <-> REPLICA sync started
+49:S 07 Dec 2024 22:20:19.896 * Non blocking connect for SYNC fired the event.
+49:S 07 Dec 2024 22:20:19.896 * Master replied to PING, replication can continue...
+49:S 07 Dec 2024 22:20:19.897 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:20063).
+49:S 07 Dec 2024 22:20:19.897 * Successful partial resynchronization with master.
+49:S 07 Dec 2024 22:20:19.898 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 08 Dec 2024 00:52:41.971 # MASTER timeout: no data nor PING received...
+49:S 08 Dec 2024 00:52:41.972 * Connection with master lost.
+49:S 08 Dec 2024 00:52:41.973 * Caching the disconnected master state.
+49:S 08 Dec 2024 00:52:41.974 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 08 Dec 2024 00:52:41.975 * MASTER <-> REPLICA sync started
+49:S 08 Dec 2024 00:52:41.976 * Non blocking connect for SYNC fired the event.
+49:S 08 Dec 2024 00:52:41.976 * Master replied to PING, replication can continue...
+49:S 08 Dec 2024 00:52:41.977 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:20105).
+49:S 08 Dec 2024 00:52:41.978 * Successful partial resynchronization with master.
+49:S 08 Dec 2024 00:52:41.979 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 08 Dec 2024 02:54:50.497 # MASTER timeout: no data nor PING received...
+49:S 08 Dec 2024 02:54:50.498 * Connection with master lost.
+49:S 08 Dec 2024 02:54:50.499 * Caching the disconnected master state.
+49:S 08 Dec 2024 02:54:50.501 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 08 Dec 2024 02:54:50.502 * MASTER <-> REPLICA sync started
+49:S 08 Dec 2024 02:54:50.503 * Non blocking connect for SYNC fired the event.
+49:S 08 Dec 2024 02:54:50.503 * Master replied to PING, replication can continue...
+49:S 08 Dec 2024 02:54:50.504 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:20147).
+49:S 08 Dec 2024 02:54:50.505 * Successful partial resynchronization with master.
+49:S 08 Dec 2024 02:54:50.506 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 08 Dec 2024 05:57:36.830 * Connection with master lost.
+49:S 08 Dec 2024 05:57:36.832 * Caching the disconnected master state.
+49:S 08 Dec 2024 05:57:36.833 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 08 Dec 2024 05:57:36.834 * MASTER <-> REPLICA sync started
+49:S 08 Dec 2024 05:57:36.834 * Non blocking connect for SYNC fired the event.
+49:S 08 Dec 2024 05:57:36.835 * Master replied to PING, replication can continue...
+49:S 08 Dec 2024 05:57:36.836 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:20189).
+49:S 08 Dec 2024 05:57:36.839 * Successful partial resynchronization with master.
+49:S 08 Dec 2024 05:57:36.840 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 08 Dec 2024 06:58:42.552 * Connection with master lost.
+49:S 08 Dec 2024 06:58:42.553 * Caching the disconnected master state.
+49:S 08 Dec 2024 06:58:42.553 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 08 Dec 2024 06:58:42.553 * MASTER <-> REPLICA sync started
+49:S 08 Dec 2024 06:58:42.554 * Non blocking connect for SYNC fired the event.
+49:S 08 Dec 2024 06:58:42.554 * Master replied to PING, replication can continue...
+49:S 08 Dec 2024 06:58:42.554 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:20217).
+49:S 08 Dec 2024 06:58:42.555 * Successful partial resynchronization with master.
+49:S 08 Dec 2024 06:58:42.555 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 08 Dec 2024 10:01:41.686 # MASTER timeout: no data nor PING received...
+49:S 08 Dec 2024 10:01:41.688 * Connection with master lost.
+49:S 08 Dec 2024 10:01:41.689 * Caching the disconnected master state.
+49:S 08 Dec 2024 10:01:41.689 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 08 Dec 2024 10:01:41.691 * MASTER <-> REPLICA sync started
+49:S 08 Dec 2024 10:01:41.691 * Non blocking connect for SYNC fired the event.
+49:S 08 Dec 2024 10:01:41.692 * Master replied to PING, replication can continue...
+49:S 08 Dec 2024 10:01:41.692 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:20259).
+49:S 08 Dec 2024 10:01:41.693 * Successful partial resynchronization with master.
+49:S 08 Dec 2024 10:01:41.694 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 08 Dec 2024 10:43:04.656 # MASTER timeout: no data nor PING received...
+49:S 08 Dec 2024 10:43:04.656 * Connection with master lost.
+49:S 08 Dec 2024 10:43:04.656 * Caching the disconnected master state.
+49:S 08 Dec 2024 10:43:04.657 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 08 Dec 2024 10:43:04.657 * MASTER <-> REPLICA sync started
+49:S 08 Dec 2024 10:43:04.658 * Non blocking connect for SYNC fired the event.
+49:S 08 Dec 2024 10:43:04.658 * Master replied to PING, replication can continue...
+49:S 08 Dec 2024 10:43:04.658 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:20301).
+49:S 08 Dec 2024 10:43:04.659 * Successful partial resynchronization with master.
+49:S 08 Dec 2024 10:43:04.660 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 08:51:08.973 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 08:51:09.008 * Connection with master lost.
+49:S 09 Dec 2024 08:51:09.031 * Caching the disconnected master state.
+49:S 09 Dec 2024 08:51:09.057 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 08:51:09.072 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 08:51:09.085 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 08:51:09.104 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 08:51:09.194 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:60845).
+49:S 09 Dec 2024 08:51:09.353 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 08:51:09.368 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 11:19:14.066 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 11:19:14.068 * Connection with master lost.
+49:S 09 Dec 2024 11:19:14.069 * Caching the disconnected master state.
+49:S 09 Dec 2024 11:19:14.070 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 11:19:14.071 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 11:19:14.072 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 11:19:14.073 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 11:19:14.074 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:72689).
+49:S 09 Dec 2024 11:19:14.075 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 11:19:14.076 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 11:20:41.330 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 11:20:41.330 * Connection with master lost.
+49:S 09 Dec 2024 11:20:41.331 * Caching the disconnected master state.
+49:S 09 Dec 2024 11:20:41.332 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 11:20:41.333 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 11:20:41.334 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 11:20:41.334 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 11:20:41.335 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:72731).
+49:S 09 Dec 2024 11:20:41.336 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 11:20:41.337 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 13:18:54.908 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 13:18:54.909 * Connection with master lost.
+49:S 09 Dec 2024 13:18:54.910 * Caching the disconnected master state.
+49:S 09 Dec 2024 13:18:54.910 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 13:18:54.912 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 13:18:54.912 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 13:18:54.913 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 13:18:54.914 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:72815).
+49:S 09 Dec 2024 13:18:54.915 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 13:18:54.915 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 13:25:09.944 * Connection with master lost.
+49:S 09 Dec 2024 13:25:09.944 * Caching the disconnected master state.
+49:S 09 Dec 2024 13:25:09.945 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 13:25:09.945 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 13:25:09.945 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 13:25:09.946 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 13:25:09.946 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:72843).
+49:S 09 Dec 2024 13:25:09.946 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 13:25:09.947 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 14:25:30.868 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 14:25:30.870 * Connection with master lost.
+49:S 09 Dec 2024 14:25:30.871 * Caching the disconnected master state.
+49:S 09 Dec 2024 14:25:30.873 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 14:25:30.875 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 14:25:30.877 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 14:25:30.878 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 14:25:30.879 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:76735).
+49:S 09 Dec 2024 14:25:30.881 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 14:25:30.883 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 14:31:59.073 * Connection with master lost.
+49:S 09 Dec 2024 14:31:59.074 * Caching the disconnected master state.
+49:S 09 Dec 2024 14:31:59.075 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 14:31:59.076 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 14:31:59.076 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 14:31:59.077 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 14:31:59.078 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:76777).
+49:S 09 Dec 2024 14:31:59.080 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 14:31:59.080 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 14:33:53.867 * Connection with master lost.
+49:S 09 Dec 2024 14:33:53.868 * Caching the disconnected master state.
+49:S 09 Dec 2024 14:33:53.869 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 14:33:53.870 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 14:33:53.871 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 14:33:53.871 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 14:33:53.872 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:76819).
+49:S 09 Dec 2024 14:33:53.873 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 14:33:53.874 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 15:26:24.840 * Connection with master lost.
+49:S 09 Dec 2024 15:26:24.842 * Caching the disconnected master state.
+49:S 09 Dec 2024 15:26:24.843 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 15:26:24.844 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 15:26:24.844 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 15:26:24.845 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 15:26:24.846 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:76847).
+49:S 09 Dec 2024 15:26:24.847 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 15:26:24.848 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 16:28:34.745 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 16:28:34.746 * Connection with master lost.
+49:S 09 Dec 2024 16:28:34.747 * Caching the disconnected master state.
+49:S 09 Dec 2024 16:28:34.748 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 16:28:34.749 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 16:28:34.750 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 16:28:34.751 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 16:28:34.752 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:76889).
+49:S 09 Dec 2024 16:28:34.753 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 16:28:34.753 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 16:31:14.588 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 16:31:14.590 * Connection with master lost.
+49:S 09 Dec 2024 16:31:14.592 * Caching the disconnected master state.
+49:S 09 Dec 2024 16:31:14.593 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 16:31:14.595 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 16:31:14.596 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 16:31:14.597 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 16:31:14.598 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:76931).
+49:S 09 Dec 2024 16:31:14.599 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 16:31:14.599 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 16:33:25.617 * Connection with master lost.
+49:S 09 Dec 2024 16:33:25.617 * Caching the disconnected master state.
+49:S 09 Dec 2024 16:33:25.618 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 16:33:25.618 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 16:33:25.618 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 16:33:25.619 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 16:33:25.619 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:76973).
+49:S 09 Dec 2024 16:33:25.620 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 16:33:25.621 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 16:35:42.796 * Connection with master lost.
+49:S 09 Dec 2024 16:35:42.797 * Caching the disconnected master state.
+49:S 09 Dec 2024 16:35:42.798 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 16:35:42.799 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 16:35:42.799 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 16:35:42.800 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 16:35:42.800 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77001).
+49:S 09 Dec 2024 16:35:42.801 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 16:35:42.801 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 16:39:42.261 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 16:39:42.263 * Connection with master lost.
+49:S 09 Dec 2024 16:39:42.264 * Caching the disconnected master state.
+49:S 09 Dec 2024 16:39:42.265 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 16:39:42.266 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 16:39:42.267 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 16:39:42.267 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 16:39:42.268 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77043).
+49:S 09 Dec 2024 16:39:42.269 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 16:39:42.269 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 17:24:50.023 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 17:24:50.025 * Connection with master lost.
+49:S 09 Dec 2024 17:24:50.025 * Caching the disconnected master state.
+49:S 09 Dec 2024 17:24:50.026 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 17:24:50.028 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 17:24:50.028 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 17:24:50.029 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 17:24:50.030 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77085).
+49:S 09 Dec 2024 17:24:50.031 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 17:24:50.031 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 18:23:36.654 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 18:23:36.655 * Connection with master lost.
+49:S 09 Dec 2024 18:23:36.655 * Caching the disconnected master state.
+49:S 09 Dec 2024 18:23:36.656 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 18:23:36.656 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 18:23:36.656 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 18:23:36.657 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 18:23:36.657 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77127).
+49:S 09 Dec 2024 18:23:36.658 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 18:23:36.659 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 18:25:27.560 * Connection with master lost.
+49:S 09 Dec 2024 18:25:27.561 * Caching the disconnected master state.
+49:S 09 Dec 2024 18:25:27.562 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 18:25:27.562 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 18:25:27.563 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 18:25:27.564 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 18:25:27.564 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77169).
+49:S 09 Dec 2024 18:25:27.566 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 18:25:27.566 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 20:27:26.194 * Connection with master lost.
+49:S 09 Dec 2024 20:27:26.195 * Caching the disconnected master state.
+49:S 09 Dec 2024 20:27:26.196 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 20:27:26.197 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 20:27:26.198 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 20:27:26.198 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 20:27:26.199 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77197).
+49:S 09 Dec 2024 20:27:26.199 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 20:27:26.200 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 09 Dec 2024 22:29:38.106 # MASTER timeout: no data nor PING received...
+49:S 09 Dec 2024 22:29:38.107 * Connection with master lost.
+49:S 09 Dec 2024 22:29:38.107 * Caching the disconnected master state.
+49:S 09 Dec 2024 22:29:38.108 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 09 Dec 2024 22:29:38.109 * MASTER <-> REPLICA sync started
+49:S 09 Dec 2024 22:29:38.109 * Non blocking connect for SYNC fired the event.
+49:S 09 Dec 2024 22:29:38.109 * Master replied to PING, replication can continue...
+49:S 09 Dec 2024 22:29:38.110 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77239).
+49:S 09 Dec 2024 22:29:38.110 * Successful partial resynchronization with master.
+49:S 09 Dec 2024 22:29:38.111 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 10 Dec 2024 00:31:37.758 * Connection with master lost.
+49:S 10 Dec 2024 00:31:37.759 * Caching the disconnected master state.
+49:S 10 Dec 2024 00:31:37.759 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 10 Dec 2024 00:31:37.760 * MASTER <-> REPLICA sync started
+49:S 10 Dec 2024 00:31:37.761 * Non blocking connect for SYNC fired the event.
+49:S 10 Dec 2024 00:31:37.761 * Master replied to PING, replication can continue...
+49:S 10 Dec 2024 00:31:37.762 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77281).
+49:S 10 Dec 2024 00:31:37.763 * Successful partial resynchronization with master.
+49:S 10 Dec 2024 00:31:37.764 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 10 Dec 2024 03:34:24.179 # MASTER timeout: no data nor PING received...
+49:S 10 Dec 2024 03:34:24.180 * Connection with master lost.
+49:S 10 Dec 2024 03:34:24.181 * Caching the disconnected master state.
+49:S 10 Dec 2024 03:34:24.182 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 10 Dec 2024 03:34:24.183 * MASTER <-> REPLICA sync started
+49:S 10 Dec 2024 03:34:24.184 * Non blocking connect for SYNC fired the event.
+49:S 10 Dec 2024 03:34:24.185 * Master replied to PING, replication can continue...
+49:S 10 Dec 2024 03:34:24.185 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77323).
+49:S 10 Dec 2024 03:34:24.186 * Successful partial resynchronization with master.
+49:S 10 Dec 2024 03:34:24.187 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 10 Dec 2024 05:36:37.449 * Connection with master lost.
+49:S 10 Dec 2024 05:36:37.450 * Caching the disconnected master state.
+49:S 10 Dec 2024 05:36:37.452 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 10 Dec 2024 05:36:37.452 * MASTER <-> REPLICA sync started
+49:S 10 Dec 2024 05:36:37.453 * Non blocking connect for SYNC fired the event.
+49:S 10 Dec 2024 05:36:37.453 * Master replied to PING, replication can continue...
+49:S 10 Dec 2024 05:36:37.454 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77351).
+49:S 10 Dec 2024 05:36:37.455 * Successful partial resynchronization with master.
+49:S 10 Dec 2024 05:36:37.456 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 10 Dec 2024 07:57:07.380 # MASTER timeout: no data nor PING received...
+49:S 10 Dec 2024 07:57:07.382 * Connection with master lost.
+49:S 10 Dec 2024 07:57:07.383 * Caching the disconnected master state.
+49:S 10 Dec 2024 07:57:07.384 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 10 Dec 2024 07:57:07.385 * MASTER <-> REPLICA sync started
+49:S 10 Dec 2024 07:57:07.386 * Non blocking connect for SYNC fired the event.
+49:S 10 Dec 2024 07:57:07.388 * Master replied to PING, replication can continue...
+49:S 10 Dec 2024 07:57:07.388 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77393).
+49:S 10 Dec 2024 07:57:07.389 * Successful partial resynchronization with master.
+49:S 10 Dec 2024 07:57:07.390 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 10 Dec 2024 08:22:16.293 # MASTER timeout: no data nor PING received...
+49:S 10 Dec 2024 08:22:16.293 * Connection with master lost.
+49:S 10 Dec 2024 08:22:16.294 * Caching the disconnected master state.
+49:S 10 Dec 2024 08:22:16.295 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 10 Dec 2024 08:22:16.296 * MASTER <-> REPLICA sync started
+49:S 10 Dec 2024 08:22:16.296 * Non blocking connect for SYNC fired the event.
+49:S 10 Dec 2024 08:22:16.297 * Master replied to PING, replication can continue...
+49:S 10 Dec 2024 08:22:16.297 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:77435).
+49:S 10 Dec 2024 08:22:16.298 * Successful partial resynchronization with master.
+49:S 10 Dec 2024 08:22:16.299 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 10 Dec 2024 11:44:54.375 * Connection with master lost.
+49:S 10 Dec 2024 11:44:54.376 * Caching the disconnected master state.
+49:S 10 Dec 2024 11:44:54.377 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 10 Dec 2024 11:44:54.377 * MASTER <-> REPLICA sync started
+49:S 10 Dec 2024 11:44:54.378 * Non blocking connect for SYNC fired the event.
+49:S 10 Dec 2024 11:44:54.378 * Master replied to PING, replication can continue...
+49:S 10 Dec 2024 11:44:54.379 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:93633).
+49:S 10 Dec 2024 11:44:54.380 * Successful partial resynchronization with master.
+49:S 10 Dec 2024 11:44:54.380 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 10 Dec 2024 12:01:11.670 * Connection with master lost.
+49:S 10 Dec 2024 12:01:11.670 * Caching the disconnected master state.
+49:S 10 Dec 2024 12:01:11.670 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 10 Dec 2024 12:01:11.671 * MASTER <-> REPLICA sync started
+49:S 10 Dec 2024 12:01:11.671 * Non blocking connect for SYNC fired the event.
+49:S 10 Dec 2024 12:01:11.671 * Master replied to PING, replication can continue...
+49:S 10 Dec 2024 12:01:11.671 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:93703).
+49:S 10 Dec 2024 12:01:11.672 * Successful partial resynchronization with master.
+49:S 10 Dec 2024 12:01:11.672 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 11 Dec 2024 16:23:34.961 * Connection with master lost.
+49:S 11 Dec 2024 16:23:34.962 * Caching the disconnected master state.
+49:S 11 Dec 2024 16:23:34.963 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 11 Dec 2024 16:23:34.963 * MASTER <-> REPLICA sync started
+49:S 11 Dec 2024 16:23:34.964 * Non blocking connect for SYNC fired the event.
+49:S 11 Dec 2024 16:23:34.965 * Master replied to PING, replication can continue...
+49:S 11 Dec 2024 16:23:34.965 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:228789).
+49:S 11 Dec 2024 16:23:34.966 * Successful partial resynchronization with master.
+49:S 11 Dec 2024 16:23:34.967 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 11 Dec 2024 16:36:12.904 * Connection with master lost.
+49:S 11 Dec 2024 16:36:12.905 * Caching the disconnected master state.
+49:S 11 Dec 2024 16:36:12.905 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 11 Dec 2024 16:36:12.906 * MASTER <-> REPLICA sync started
+49:S 11 Dec 2024 16:36:12.907 * Non blocking connect for SYNC fired the event.
+49:S 11 Dec 2024 16:36:12.907 * Master replied to PING, replication can continue...
+49:S 11 Dec 2024 16:36:12.907 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:228831).
+49:S 11 Dec 2024 16:36:12.908 * Successful partial resynchronization with master.
+49:S 11 Dec 2024 16:36:12.909 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 11 Dec 2024 16:38:27.737 # MASTER timeout: no data nor PING received...
+49:S 11 Dec 2024 16:38:27.738 * Connection with master lost.
+49:S 11 Dec 2024 16:38:27.739 * Caching the disconnected master state.
+49:S 11 Dec 2024 16:38:27.740 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 11 Dec 2024 16:38:27.742 * MASTER <-> REPLICA sync started
+49:S 11 Dec 2024 16:38:27.742 * Non blocking connect for SYNC fired the event.
+49:S 11 Dec 2024 16:38:27.743 * Master replied to PING, replication can continue...
+49:S 11 Dec 2024 16:38:27.743 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:228873).
+49:S 11 Dec 2024 16:38:27.744 * Successful partial resynchronization with master.
+49:S 11 Dec 2024 16:38:27.745 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 11 Dec 2024 16:53:05.473 * Connection with master lost.
+49:S 11 Dec 2024 16:53:05.474 * Caching the disconnected master state.
+49:S 11 Dec 2024 16:53:05.474 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 11 Dec 2024 16:53:05.475 * MASTER <-> REPLICA sync started
+49:S 11 Dec 2024 16:53:05.475 * Non blocking connect for SYNC fired the event.
+49:S 11 Dec 2024 16:53:05.476 * Master replied to PING, replication can continue...
+49:S 11 Dec 2024 16:53:05.476 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:229601).
+49:S 11 Dec 2024 16:53:05.477 * Successful partial resynchronization with master.
+49:S 11 Dec 2024 16:53:05.477 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 11 Dec 2024 20:00:58.462 # MASTER timeout: no data nor PING received...
+49:S 11 Dec 2024 20:00:58.464 * Connection with master lost.
+49:S 11 Dec 2024 20:00:58.464 * Caching the disconnected master state.
+49:S 11 Dec 2024 20:00:58.465 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 11 Dec 2024 20:00:58.467 * MASTER <-> REPLICA sync started
+49:S 11 Dec 2024 20:00:58.468 * Non blocking connect for SYNC fired the event.
+49:S 11 Dec 2024 20:00:58.468 * Master replied to PING, replication can continue...
+49:S 11 Dec 2024 20:00:58.469 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:244623).
+49:S 11 Dec 2024 20:00:58.470 * Successful partial resynchronization with master.
+49:S 11 Dec 2024 20:00:58.470 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 11 Dec 2024 21:00:31.729 # MASTER timeout: no data nor PING received...
+49:S 11 Dec 2024 21:00:31.729 * Connection with master lost.
+49:S 11 Dec 2024 21:00:31.729 * Caching the disconnected master state.
+49:S 11 Dec 2024 21:00:31.730 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 11 Dec 2024 21:00:31.730 * MASTER <-> REPLICA sync started
+49:S 11 Dec 2024 21:00:31.731 * Non blocking connect for SYNC fired the event.
+49:S 11 Dec 2024 21:00:31.731 * Master replied to PING, replication can continue...
+49:S 11 Dec 2024 21:00:31.731 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:244665).
+49:S 11 Dec 2024 21:00:31.732 * Successful partial resynchronization with master.
+49:S 11 Dec 2024 21:00:31.732 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 12 Dec 2024 00:01:46.558 # MASTER timeout: no data nor PING received...
+49:S 12 Dec 2024 00:01:46.559 * Connection with master lost.
+49:S 12 Dec 2024 00:01:46.560 * Caching the disconnected master state.
+49:S 12 Dec 2024 00:01:46.561 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 12 Dec 2024 00:01:46.563 * MASTER <-> REPLICA sync started
+49:S 12 Dec 2024 00:01:46.564 * Non blocking connect for SYNC fired the event.
+49:S 12 Dec 2024 00:01:46.566 * Master replied to PING, replication can continue...
+49:S 12 Dec 2024 00:01:46.568 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:244707).
+49:S 12 Dec 2024 00:01:46.570 * Successful partial resynchronization with master.
+49:S 12 Dec 2024 00:01:46.571 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 12 Dec 2024 02:35:21.439 # MASTER timeout: no data nor PING received...
+49:S 12 Dec 2024 02:35:21.440 * Connection with master lost.
+49:S 12 Dec 2024 02:35:21.443 * Caching the disconnected master state.
+49:S 12 Dec 2024 02:35:21.444 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 12 Dec 2024 02:35:21.446 * MASTER <-> REPLICA sync started
+49:S 12 Dec 2024 02:35:21.446 * Non blocking connect for SYNC fired the event.
+49:S 12 Dec 2024 02:35:21.447 * Master replied to PING, replication can continue...
+49:S 12 Dec 2024 02:35:21.448 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:244749).
+49:S 12 Dec 2024 02:35:21.449 * Successful partial resynchronization with master.
+49:S 12 Dec 2024 02:35:21.449 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 12 Dec 2024 06:07:37.150 * Connection with master lost.
+49:S 12 Dec 2024 06:07:37.151 * Caching the disconnected master state.
+49:S 12 Dec 2024 06:07:37.151 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 12 Dec 2024 06:07:37.152 * MASTER <-> REPLICA sync started
+49:S 12 Dec 2024 06:07:37.153 * Non blocking connect for SYNC fired the event.
+49:S 12 Dec 2024 06:07:37.153 * Master replied to PING, replication can continue...
+49:S 12 Dec 2024 06:07:37.153 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:244777).
+49:S 12 Dec 2024 06:07:37.154 * Successful partial resynchronization with master.
+49:S 12 Dec 2024 06:07:37.155 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 12 Dec 2024 09:10:39.235 * Connection with master lost.
+49:S 12 Dec 2024 09:10:39.236 * Caching the disconnected master state.
+49:S 12 Dec 2024 09:10:39.237 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 12 Dec 2024 09:10:39.237 * MASTER <-> REPLICA sync started
+49:S 12 Dec 2024 09:10:39.238 * Non blocking connect for SYNC fired the event.
+49:S 12 Dec 2024 09:10:39.238 * Master replied to PING, replication can continue...
+49:S 12 Dec 2024 09:10:39.239 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:244819).
+49:S 12 Dec 2024 09:10:39.240 * Successful partial resynchronization with master.
+49:S 12 Dec 2024 09:10:39.241 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 12 Dec 2024 09:24:18.402 # MASTER timeout: no data nor PING received...
+49:S 12 Dec 2024 09:24:18.403 * Connection with master lost.
+49:S 12 Dec 2024 09:24:18.405 * Caching the disconnected master state.
+49:S 12 Dec 2024 09:24:18.408 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 12 Dec 2024 09:24:18.412 * MASTER <-> REPLICA sync started
+49:S 12 Dec 2024 09:24:18.415 * Non blocking connect for SYNC fired the event.
+49:S 12 Dec 2024 09:24:18.416 * Master replied to PING, replication can continue...
+49:S 12 Dec 2024 09:24:18.416 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:244861).
+49:S 12 Dec 2024 09:24:18.421 * Successful partial resynchronization with master.
+49:S 12 Dec 2024 09:24:18.421 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 15 Dec 2024 08:15:46.912 * Connection with master lost.
+49:S 15 Dec 2024 08:15:47.012 * Caching the disconnected master state.
+49:S 15 Dec 2024 08:15:47.128 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 15 Dec 2024 08:15:47.249 * MASTER <-> REPLICA sync started
+49:S 15 Dec 2024 08:15:47.320 * Non blocking connect for SYNC fired the event.
+49:S 15 Dec 2024 08:15:47.345 * Master replied to PING, replication can continue...
+49:S 15 Dec 2024 08:15:47.459 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:292433).
+49:S 15 Dec 2024 08:15:47.513 * Successful partial resynchronization with master.
+49:S 15 Dec 2024 08:15:47.533 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 15 Dec 2024 11:09:22.608 * Connection with master lost.
+49:S 15 Dec 2024 11:09:22.609 * Caching the disconnected master state.
+49:S 15 Dec 2024 11:09:22.609 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 15 Dec 2024 11:09:22.610 * MASTER <-> REPLICA sync started
+49:S 15 Dec 2024 11:09:22.610 * Non blocking connect for SYNC fired the event.
+49:S 15 Dec 2024 11:09:22.611 * Master replied to PING, replication can continue...
+49:S 15 Dec 2024 11:09:22.611 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:303465).
+49:S 15 Dec 2024 11:09:22.612 * Successful partial resynchronization with master.
+49:S 15 Dec 2024 11:09:22.613 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:S 15 Dec 2024 11:24:03.061 # MASTER timeout: no data nor PING received...
+49:S 15 Dec 2024 11:24:03.064 * Connection with master lost.
+49:S 15 Dec 2024 11:24:03.065 * Caching the disconnected master state.
+49:S 15 Dec 2024 11:24:03.065 * Reconnecting to MASTER 127.0.0.1:16380
+49:S 15 Dec 2024 11:24:03.066 * MASTER <-> REPLICA sync started
+49:S 15 Dec 2024 11:24:03.067 * Non blocking connect for SYNC fired the event.
+49:S 15 Dec 2024 11:24:03.067 * Master replied to PING, replication can continue...
+49:S 15 Dec 2024 11:24:03.067 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:304557).
+49:S 15 Dec 2024 11:24:03.068 * Successful partial resynchronization with master.
+49:S 15 Dec 2024 11:24:03.068 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+49:signal-handler (1734263254) Received SIGTERM scheduling shutdown...
+49:S 15 Dec 2024 11:47:34.859 * User requested shutdown...
+49:S 15 Dec 2024 11:47:34.860 * Removing the pid file.
+49:S 15 Dec 2024 11:47:34.862 # Redis is now ready to exit, bye bye...
+33:C 15 Dec 2024 11:49:55.870 # WARNING: Changing databases number from 16 to 1 since we are in cluster mode
+33:C 15 Dec 2024 11:49:55.876 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+33:C 15 Dec 2024 11:49:55.877 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=33, just started
+33:C 15 Dec 2024 11:49:55.880 * Configuration loaded
+33:M 15 Dec 2024 11:49:55.883 * monotonic clock: POSIX clock_gettime
+33:M 15 Dec 2024 11:49:55.891 * Running mode=cluster, port=16382.
+33:M 15 Dec 2024 11:49:55.903 * Node configuration loaded, I'm a0970bd542e1e5b7512bfc61deac5244e4478c58
+33:M 15 Dec 2024 11:49:55.951 * Server initialized
+33:M 15 Dec 2024 11:49:55.966 * Loading RDB produced by version 7.9.224
+33:M 15 Dec 2024 11:49:55.971 * RDB age 874615 seconds
+33:M 15 Dec 2024 11:49:55.985 * RDB memory usage when created 2.49 Mb
+33:M 15 Dec 2024 11:49:55.993 * Done loading RDB, keys loaded: 0, keys expired: 0.
+33:M 15 Dec 2024 11:49:55.999 * DB loaded from disk: 0.040 seconds
+33:M 15 Dec 2024 11:49:56.001 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+33:M 15 Dec 2024 11:49:56.003 * Ready to accept connections tcp
+33:M 15 Dec 2024 11:49:56.005 * Ready to accept connections tls
+33:S 15 Dec 2024 11:49:56.006 * Discarding previously cached master state.
+33:S 15 Dec 2024 11:49:56.007 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+33:S 15 Dec 2024 11:49:56.009 * Connecting to MASTER 127.0.0.1:16380
+33:S 15 Dec 2024 11:49:56.022 * MASTER <-> REPLICA sync started
+33:S 15 Dec 2024 11:49:56.025 * Cluster state changed: ok
+33:S 15 Dec 2024 11:49:56.031 * Non blocking connect for SYNC fired the event.
+33:S 15 Dec 2024 11:49:56.054 * Master replied to PING, replication can continue...
+33:S 15 Dec 2024 11:49:56.056 * Trying a partial resynchronization (request 4c4b71f970ac144c4fb9694d5c05f63c7ce855a7:1).
+33:S 15 Dec 2024 11:50:01.129 * Full resync from master: 4651d7be0c487da1e558d1b57956e6b1bfba990a:0
+33:S 15 Dec 2024 11:50:01.131 * MASTER <-> REPLICA sync: receiving streamed RDB from master with EOF to disk
+33:S 15 Dec 2024 11:50:01.132 * Discarding previously cached master state.
+33:S 15 Dec 2024 11:50:01.133 * MASTER <-> REPLICA sync: Loading DB in memory
+33:S 15 Dec 2024 11:50:01.135 * MASTER <-> REPLICA sync: Flushing old data
+33:S 15 Dec 2024 11:50:01.137 * Loading RDB produced by version 7.9.224
+33:S 15 Dec 2024 11:50:01.139 * RDB age 0 seconds
+33:S 15 Dec 2024 11:50:01.141 * RDB memory usage when created 2.32 Mb
+33:S 15 Dec 2024 11:50:01.142 * Done loading RDB, keys loaded: 0, keys expired: 0.
+33:S 15 Dec 2024 11:50:01.144 * MASTER <-> REPLICA sync: Finished with success
+33:signal-handler (1734263488) Received SIGTERM scheduling shutdown...
+33:S 15 Dec 2024 11:51:28.923 * Connection with master lost.
+33:S 15 Dec 2024 11:51:28.924 * Caching the disconnected master state.
+33:S 15 Dec 2024 11:51:28.924 * Reconnecting to MASTER 127.0.0.1:16380
+33:S 15 Dec 2024 11:51:28.925 * MASTER <-> REPLICA sync started
+33:S 15 Dec 2024 11:51:28.925 # Error condition on socket for SYNC: Connection refused
+33:S 15 Dec 2024 11:51:28.946 * User requested shutdown...
+33:S 15 Dec 2024 11:51:28.947 * Removing the pid file.
+33:S 15 Dec 2024 11:51:28.948 # Redis is now ready to exit, bye bye...
+34:C 15 Dec 2024 11:52:09.095 # WARNING: Changing databases number from 16 to 1 since we are in cluster mode
+34:C 15 Dec 2024 11:52:09.098 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+34:C 15 Dec 2024 11:52:09.103 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=34, just started
+34:C 15 Dec 2024 11:52:09.162 * Configuration loaded
+34:M 15 Dec 2024 11:52:09.166 * monotonic clock: POSIX clock_gettime
+34:M 15 Dec 2024 11:52:09.176 * Running mode=cluster, port=16382.
+34:M 15 Dec 2024 11:52:09.179 * Node configuration loaded, I'm a0970bd542e1e5b7512bfc61deac5244e4478c58
+34:M 15 Dec 2024 11:52:09.190 * Server initialized
+34:M 15 Dec 2024 11:52:09.192 * Loading RDB produced by version 7.9.224
+34:M 15 Dec 2024 11:52:09.193 * RDB age 128 seconds
+34:M 15 Dec 2024 11:52:09.195 * RDB memory usage when created 2.32 Mb
+34:M 15 Dec 2024 11:52:09.195 * Done loading RDB, keys loaded: 0, keys expired: 0.
+34:M 15 Dec 2024 11:52:09.197 * DB loaded from disk: 0.006 seconds
+34:M 15 Dec 2024 11:52:09.198 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+34:M 15 Dec 2024 11:52:09.198 * Ready to accept connections tcp
+34:M 15 Dec 2024 11:52:09.199 * Ready to accept connections tls
+34:S 15 Dec 2024 11:52:09.201 * Discarding previously cached master state.
+34:S 15 Dec 2024 11:52:09.202 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+34:S 15 Dec 2024 11:52:09.204 * Connecting to MASTER 127.0.0.1:16380
+34:S 15 Dec 2024 11:52:09.206 * MASTER <-> REPLICA sync started
+34:S 15 Dec 2024 11:52:09.207 * Cluster state changed: ok
+34:S 15 Dec 2024 11:52:09.209 * Non blocking connect for SYNC fired the event.
+34:S 15 Dec 2024 11:52:09.216 * Master replied to PING, replication can continue...
+34:S 15 Dec 2024 11:52:09.217 * Trying a partial resynchronization (request 4651d7be0c487da1e558d1b57956e6b1bfba990a:1).
+34:S 15 Dec 2024 11:52:14.385 * Full resync from master: 1443e39b506ca94b530837f3a3f734db4a096a17:0
+34:S 15 Dec 2024 11:52:14.389 * MASTER <-> REPLICA sync: receiving streamed RDB from master with EOF to disk
+34:S 15 Dec 2024 11:52:14.393 * Discarding previously cached master state.
+34:S 15 Dec 2024 11:52:14.395 * MASTER <-> REPLICA sync: Loading DB in memory
+34:S 15 Dec 2024 11:52:14.399 * MASTER <-> REPLICA sync: Flushing old data
+34:S 15 Dec 2024 11:52:14.400 * Loading RDB produced by version 7.9.224
+34:S 15 Dec 2024 11:52:14.401 * RDB age 0 seconds
+34:S 15 Dec 2024 11:52:14.401 * RDB memory usage when created 2.32 Mb
+34:S 15 Dec 2024 11:52:14.402 * Done loading RDB, keys loaded: 0, keys expired: 0.
+34:S 15 Dec 2024 11:52:14.403 * MASTER <-> REPLICA sync: Finished with success
+34:signal-handler (1734268227) Received SIGTERM scheduling shutdown...
+34:S 15 Dec 2024 13:10:27.945 * User requested shutdown...
+34:S 15 Dec 2024 13:10:27.946 * Removing the pid file.
+34:S 15 Dec 2024 13:10:27.948 # Redis is now ready to exit, bye bye...
+34:C 15 Dec 2024 13:13:28.239 # WARNING: Changing databases number from 16 to 1 since we are in cluster mode
+34:C 15 Dec 2024 13:13:28.249 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+34:C 15 Dec 2024 13:13:28.251 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=34, just started
+34:C 15 Dec 2024 13:13:28.252 * Configuration loaded
+34:M 15 Dec 2024 13:13:28.254 * monotonic clock: POSIX clock_gettime
+34:M 15 Dec 2024 13:13:28.260 * Running mode=cluster, port=16382.
+34:M 15 Dec 2024 13:13:28.264 * Node configuration loaded, I'm a0970bd542e1e5b7512bfc61deac5244e4478c58
+34:M 15 Dec 2024 13:13:28.280 * Server initialized
+34:M 15 Dec 2024 13:13:28.284 * Loading RDB produced by version 7.9.224
+34:M 15 Dec 2024 13:13:28.288 * RDB age 4874 seconds
+34:M 15 Dec 2024 13:13:28.306 * RDB memory usage when created 2.32 Mb
+34:M 15 Dec 2024 13:13:28.309 * Done loading RDB, keys loaded: 0, keys expired: 0.
+34:M 15 Dec 2024 13:13:28.314 * DB loaded from disk: 0.032 seconds
+34:M 15 Dec 2024 13:13:28.317 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+34:M 15 Dec 2024 13:13:28.319 * Ready to accept connections tcp
+34:M 15 Dec 2024 13:13:28.320 * Ready to accept connections tls
+34:S 15 Dec 2024 13:13:28.321 * Discarding previously cached master state.
+34:S 15 Dec 2024 13:13:28.323 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+34:S 15 Dec 2024 13:13:28.327 * Connecting to MASTER 127.0.0.1:16380
+34:S 15 Dec 2024 13:13:28.330 * MASTER <-> REPLICA sync started
+34:S 15 Dec 2024 13:13:28.332 * Cluster state changed: ok
+34:S 15 Dec 2024 13:13:28.334 * Non blocking connect for SYNC fired the event.
+34:S 15 Dec 2024 13:13:28.338 * Master replied to PING, replication can continue...
+34:S 15 Dec 2024 13:13:28.339 * Trying a partial resynchronization (request 1443e39b506ca94b530837f3a3f734db4a096a17:1).
+34:S 15 Dec 2024 13:13:33.421 * Full resync from master: ff84398ba7a75d26592ed8fac08848aef3bddbd7:0
+34:S 15 Dec 2024 13:13:33.425 * MASTER <-> REPLICA sync: receiving streamed RDB from master with EOF to disk
+34:S 15 Dec 2024 13:13:33.427 * Discarding previously cached master state.
+34:S 15 Dec 2024 13:13:33.428 * MASTER <-> REPLICA sync: Loading DB in memory
+34:S 15 Dec 2024 13:13:33.432 * MASTER <-> REPLICA sync: Flushing old data
+34:S 15 Dec 2024 13:13:33.434 * Loading RDB produced by version 7.9.224
+34:S 15 Dec 2024 13:13:33.435 * RDB age 0 seconds
+34:S 15 Dec 2024 13:13:33.436 * RDB memory usage when created 2.32 Mb
+34:S 15 Dec 2024 13:13:33.436 * Done loading RDB, keys loaded: 0, keys expired: 0.
+34:S 15 Dec 2024 13:13:33.437 * MASTER <-> REPLICA sync: Finished with success
+34:signal-handler (1734269414) Received SIGTERM scheduling shutdown...
+34:S 15 Dec 2024 13:30:14.579 * Connection with master lost.
+34:S 15 Dec 2024 13:30:14.579 * Caching the disconnected master state.
+34:S 15 Dec 2024 13:30:14.579 * Reconnecting to MASTER 127.0.0.1:16380
+34:S 15 Dec 2024 13:30:14.580 * MASTER <-> REPLICA sync started
+34:S 15 Dec 2024 13:30:14.580 # Error condition on socket for SYNC: Connection refused
+34:S 15 Dec 2024 13:30:14.623 * User requested shutdown...
+34:S 15 Dec 2024 13:30:14.623 * Removing the pid file.
+34:S 15 Dec 2024 13:30:14.627 # Redis is now ready to exit, bye bye...
+34:C 15 Dec 2024 13:30:30.721 # WARNING: Changing databases number from 16 to 1 since we are in cluster mode
+34:C 15 Dec 2024 13:30:30.723 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+34:C 15 Dec 2024 13:30:30.726 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=34, just started
+34:C 15 Dec 2024 13:30:30.731 * Configuration loaded
+34:M 15 Dec 2024 13:30:30.736 * monotonic clock: POSIX clock_gettime
+34:M 15 Dec 2024 13:30:30.746 * Running mode=cluster, port=16382.
+34:M 15 Dec 2024 13:30:30.757 * Node configuration loaded, I'm a0970bd542e1e5b7512bfc61deac5244e4478c58
+34:M 15 Dec 2024 13:30:30.773 * Server initialized
+34:M 15 Dec 2024 13:30:30.795 * Loading RDB produced by version 7.9.224
+34:M 15 Dec 2024 13:30:30.797 * RDB age 1017 seconds
+34:M 15 Dec 2024 13:30:30.799 * RDB memory usage when created 2.32 Mb
+34:M 15 Dec 2024 13:30:30.800 * Done loading RDB, keys loaded: 0, keys expired: 0.
+34:M 15 Dec 2024 13:30:30.805 * DB loaded from disk: 0.030 seconds
+34:M 15 Dec 2024 13:30:30.806 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+34:M 15 Dec 2024 13:30:30.808 * Ready to accept connections tcp
+34:M 15 Dec 2024 13:30:30.810 * Ready to accept connections tls
+34:S 15 Dec 2024 13:30:30.813 * Discarding previously cached master state.
+34:S 15 Dec 2024 13:30:30.815 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+34:S 15 Dec 2024 13:30:30.817 * Connecting to MASTER 127.0.0.1:16380
+34:S 15 Dec 2024 13:30:30.820 * MASTER <-> REPLICA sync started
+34:S 15 Dec 2024 13:30:30.821 * Cluster state changed: ok
+34:S 15 Dec 2024 13:30:30.823 * Non blocking connect for SYNC fired the event.
+34:S 15 Dec 2024 13:30:30.846 * Master replied to PING, replication can continue...
+34:S 15 Dec 2024 13:30:30.849 * Trying a partial resynchronization (request ff84398ba7a75d26592ed8fac08848aef3bddbd7:1).
+34:S 15 Dec 2024 13:30:35.918 * Full resync from master: 2e716795a57fb649d2d28f683fdf9fe86508e9be:0
+34:S 15 Dec 2024 13:30:35.920 * MASTER <-> REPLICA sync: receiving streamed RDB from master with EOF to disk
+34:S 15 Dec 2024 13:30:35.921 * Discarding previously cached master state.
+34:S 15 Dec 2024 13:30:35.921 * MASTER <-> REPLICA sync: Loading DB in memory
+34:S 15 Dec 2024 13:30:35.924 * MASTER <-> REPLICA sync: Flushing old data
+34:S 15 Dec 2024 13:30:35.925 * Loading RDB produced by version 7.9.224
+34:S 15 Dec 2024 13:30:35.925 * RDB age 0 seconds
+34:S 15 Dec 2024 13:30:35.925 * RDB memory usage when created 2.32 Mb
+34:S 15 Dec 2024 13:30:35.926 * Done loading RDB, keys loaded: 0, keys expired: 0.
+34:S 15 Dec 2024 13:30:35.926 * MASTER <-> REPLICA sync: Finished with success
+34:signal-handler (1734269795) Received SIGTERM scheduling shutdown...
+34:S 15 Dec 2024 13:36:35.528 * User requested shutdown...
+34:S 15 Dec 2024 13:36:35.529 * Removing the pid file.
+34:S 15 Dec 2024 13:36:35.534 # Redis is now ready to exit, bye bye...
+34:C 15 Dec 2024 13:37:03.398 # WARNING: Changing databases number from 16 to 1 since we are in cluster mode
+34:C 15 Dec 2024 13:37:03.405 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+34:C 15 Dec 2024 13:37:03.418 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=34, just started
+34:C 15 Dec 2024 13:37:03.424 * Configuration loaded
+34:M 15 Dec 2024 13:37:03.426 * monotonic clock: POSIX clock_gettime
+34:M 15 Dec 2024 13:37:03.437 * Running mode=cluster, port=16382.
+34:M 15 Dec 2024 13:37:03.452 * Node configuration loaded, I'm a0970bd542e1e5b7512bfc61deac5244e4478c58
+34:M 15 Dec 2024 13:37:03.465 * Server initialized
+34:M 15 Dec 2024 13:37:03.481 * Loading RDB produced by version 7.9.224
+34:M 15 Dec 2024 13:37:03.482 * RDB age 388 seconds
+34:M 15 Dec 2024 13:37:03.484 * RDB memory usage when created 2.32 Mb
+34:M 15 Dec 2024 13:37:03.485 * Done loading RDB, keys loaded: 0, keys expired: 0.
+34:M 15 Dec 2024 13:37:03.488 * DB loaded from disk: 0.023 seconds
+34:M 15 Dec 2024 13:37:03.490 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+34:M 15 Dec 2024 13:37:03.490 * Ready to accept connections tcp
+34:M 15 Dec 2024 13:37:03.492 * Ready to accept connections tls
+34:S 15 Dec 2024 13:37:03.494 * Discarding previously cached master state.
+34:S 15 Dec 2024 13:37:03.500 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+34:S 15 Dec 2024 13:37:03.506 * Connecting to MASTER 127.0.0.1:16380
+34:S 15 Dec 2024 13:37:03.510 * MASTER <-> REPLICA sync started
+34:S 15 Dec 2024 13:37:03.512 * Cluster state changed: ok
+34:S 15 Dec 2024 13:37:03.514 * Non blocking connect for SYNC fired the event.
+34:S 15 Dec 2024 13:37:03.522 * Master replied to PING, replication can continue...
+34:S 15 Dec 2024 13:37:03.528 * Trying a partial resynchronization (request 2e716795a57fb649d2d28f683fdf9fe86508e9be:1).
+34:S 15 Dec 2024 13:37:08.637 * Full resync from master: a219bea1c07f97a3e76aea963b45521d49fcbf16:0
+34:S 15 Dec 2024 13:37:08.639 * MASTER <-> REPLICA sync: receiving streamed RDB from master with EOF to disk
+34:S 15 Dec 2024 13:37:08.640 * Discarding previously cached master state.
+34:S 15 Dec 2024 13:37:08.641 * MASTER <-> REPLICA sync: Loading DB in memory
+34:S 15 Dec 2024 13:37:08.645 * MASTER <-> REPLICA sync: Flushing old data
+34:S 15 Dec 2024 13:37:08.649 * Loading RDB produced by version 7.9.224
+34:S 15 Dec 2024 13:37:08.650 * RDB age 0 seconds
+34:S 15 Dec 2024 13:37:08.650 * RDB memory usage when created 2.32 Mb
+34:S 15 Dec 2024 13:37:08.650 * Done loading RDB, keys loaded: 0, keys expired: 0.
+34:S 15 Dec 2024 13:37:08.651 * MASTER <-> REPLICA sync: Finished with success
+34:signal-handler (1734269944) Received SIGTERM scheduling shutdown...
+34:S 15 Dec 2024 13:39:04.660 * User requested shutdown...
+34:S 15 Dec 2024 13:39:04.660 * Removing the pid file.
+34:S 15 Dec 2024 13:39:04.662 # Redis is now ready to exit, bye bye...
+34:C 15 Dec 2024 13:39:11.108 # WARNING: Changing databases number from 16 to 1 since we are in cluster mode
+34:C 15 Dec 2024 13:39:11.110 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+34:C 15 Dec 2024 13:39:11.111 * Redis version=7.9.224, bits=64, commit=00000000, modified=1, pid=34, just started
+34:C 15 Dec 2024 13:39:11.116 * Configuration loaded
+34:M 15 Dec 2024 13:39:11.118 * monotonic clock: POSIX clock_gettime
+34:M 15 Dec 2024 13:39:11.123 * Running mode=cluster, port=16382.
+34:M 15 Dec 2024 13:39:11.132 * Node configuration loaded, I'm a0970bd542e1e5b7512bfc61deac5244e4478c58
+34:M 15 Dec 2024 13:39:11.146 * Server initialized
+34:M 15 Dec 2024 13:39:11.151 * Loading RDB produced by version 7.9.224
+34:M 15 Dec 2024 13:39:11.152 * RDB age 123 seconds
+34:M 15 Dec 2024 13:39:11.154 * RDB memory usage when created 2.32 Mb
+34:M 15 Dec 2024 13:39:11.157 * Done loading RDB, keys loaded: 0, keys expired: 0.
+34:M 15 Dec 2024 13:39:11.160 * DB loaded from disk: 0.013 seconds
+34:M 15 Dec 2024 13:39:11.162 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+34:M 15 Dec 2024 13:39:11.167 * Ready to accept connections tcp
+34:M 15 Dec 2024 13:39:11.172 * Ready to accept connections tls
+34:S 15 Dec 2024 13:39:11.174 * Discarding previously cached master state.
+34:S 15 Dec 2024 13:39:11.175 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+34:S 15 Dec 2024 13:39:11.177 * Connecting to MASTER 127.0.0.1:16380
+34:S 15 Dec 2024 13:39:11.179 * MASTER <-> REPLICA sync started
+34:S 15 Dec 2024 13:39:11.180 * Cluster state changed: ok
+34:S 15 Dec 2024 13:39:11.183 * Non blocking connect for SYNC fired the event.
+34:S 15 Dec 2024 13:39:11.202 * Master replied to PING, replication can continue...
+34:S 15 Dec 2024 13:39:11.207 * Trying a partial resynchronization (request a219bea1c07f97a3e76aea963b45521d49fcbf16:1).
+34:S 15 Dec 2024 13:39:16.303 * Full resync from master: 437cfb40f65179a540ef3e9e90f93d384ec81034:0
+34:S 15 Dec 2024 13:39:16.307 * MASTER <-> REPLICA sync: receiving streamed RDB from master with EOF to disk
+34:S 15 Dec 2024 13:39:16.309 * Discarding previously cached master state.
+34:S 15 Dec 2024 13:39:16.309 * MASTER <-> REPLICA sync: Loading DB in memory
+34:S 15 Dec 2024 13:39:16.312 * MASTER <-> REPLICA sync: Flushing old data
+34:S 15 Dec 2024 13:39:16.313 * Loading RDB produced by version 7.9.224
+34:S 15 Dec 2024 13:39:16.313 * RDB age 0 seconds
+34:S 15 Dec 2024 13:39:16.313 * RDB memory usage when created 2.32 Mb
+34:S 15 Dec 2024 13:39:16.313 * Done loading RDB, keys loaded: 0, keys expired: 0.
+34:S 15 Dec 2024 13:39:16.314 * MASTER <-> REPLICA sync: Finished with success

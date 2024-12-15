@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -22,13 +21,13 @@ const (
 )
 
 const (
-	ringShard1Port = "6390"
-	ringShard2Port = "6391"
-	ringShard3Port = "6392"
+	ringShard1Port = "16379"
+	ringShard2Port = "16380"
+	ringShard3Port = "16381"
 )
 
 const (
-	sentinelName       = "mymaster"
+	sentinelName       = "redis-standalone"
 	sentinelMasterPort = "9123"
 	sentinelSlave1Port = "9124"
 	sentinelSlave2Port = "9125"
@@ -43,7 +42,7 @@ var (
 )
 
 var (
-	rediStackPort = "6379"
+	rediStackPort = "6349"
 	rediStackAddr = ":" + rediStackPort
 )
 
@@ -80,59 +79,59 @@ var _ = BeforeSuite(func() {
 		redisPort = addr
 		redisAddr = ":" + redisPort
 	}
-	var err error
-	RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
+	// var err error
+	// RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
 
-	if !RECluster {
+	// if !RECluster {
 
-		redisMain, err = startRedis(redisPort)
-		Expect(err).NotTo(HaveOccurred())
+	// 	redisMain, err = startRedis(redisPort)
+	// 	Expect(err).NotTo(HaveOccurred())
 
-		ringShard1, err = startRedis(ringShard1Port)
-		Expect(err).NotTo(HaveOccurred())
+	// 	ringShard1, err = startRedis(ringShard1Port)
+	// 	Expect(err).NotTo(HaveOccurred())
 
-		ringShard2, err = startRedis(ringShard2Port)
-		Expect(err).NotTo(HaveOccurred())
+	// 	ringShard2, err = startRedis(ringShard2Port)
+	// 	Expect(err).NotTo(HaveOccurred())
 
-		ringShard3, err = startRedis(ringShard3Port)
-		Expect(err).NotTo(HaveOccurred())
+	// 	ringShard3, err = startRedis(ringShard3Port)
+	// 	Expect(err).NotTo(HaveOccurred())
 
-		sentinelMaster, err = startRedis(sentinelMasterPort)
-		Expect(err).NotTo(HaveOccurred())
+	// 	sentinelMaster, err = startRedis(sentinelMasterPort)
+	// 	Expect(err).NotTo(HaveOccurred())
 
-		sentinel1, err = startSentinel(sentinelPort1, sentinelName, sentinelMasterPort)
-		Expect(err).NotTo(HaveOccurred())
+	// err = startSentinel(sentinelPort1, sentinelName, sentinelMasterPort)
+	// Expect(err).NotTo(HaveOccurred())
 
-		sentinel2, err = startSentinel(sentinelPort2, sentinelName, sentinelMasterPort)
-		Expect(err).NotTo(HaveOccurred())
+	// err = startSentinel(sentinelPort2, sentinelName, sentinelMasterPort)
+	// Expect(err).NotTo(HaveOccurred())
 
-		sentinel3, err = startSentinel(sentinelPort3, sentinelName, sentinelMasterPort)
-		Expect(err).NotTo(HaveOccurred())
+	// err = startSentinel(sentinelPort3, sentinelName, sentinelMasterPort)
+	// Expect(err).NotTo(HaveOccurred())
 
-		sentinelSlave1, err = startRedis(
-			sentinelSlave1Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
-		Expect(err).NotTo(HaveOccurred())
+	// 	sentinelSlave1, err = startRedis(
+	// 		sentinelSlave1Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
+	// 	Expect(err).NotTo(HaveOccurred())
 
-		sentinelSlave2, err = startRedis(
-			sentinelSlave2Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
-		Expect(err).NotTo(HaveOccurred())
+	// 	sentinelSlave2, err = startRedis(
+	// 		sentinelSlave2Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
+	// 	Expect(err).NotTo(HaveOccurred())
 
-		Expect(startCluster(ctx, cluster)).NotTo(HaveOccurred())
-	} else {
-		redisPort = rediStackPort
-		redisAddr = rediStackAddr
-	}
+	// 	Expect(startCluster(ctx, cluster)).NotTo(HaveOccurred())
+	// } else {
+	redisPort = rediStackPort
+	redisAddr = rediStackAddr
+	// }
 })
 
 var _ = AfterSuite(func() {
-	if !RECluster {
-		Expect(cluster.Close()).NotTo(HaveOccurred())
+	// if !RECluster {
+	// 	Expect(cluster.Close()).NotTo(HaveOccurred())
 
-		for _, p := range processes {
-			Expect(p.Close()).NotTo(HaveOccurred())
-		}
-	}
-	processes = nil
+	// 	// for _, p := range processes {
+	// 	// 	Expect(p.Close()).NotTo(HaveOccurred())
+	// 	// }
+	// }
+	// processes = nil
 })
 
 func TestGinkgoSuite(t *testing.T) {
@@ -367,26 +366,26 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 	return p, nil
 }
 
-func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
-	dir, err := redisDir(port)
-	if err != nil {
-		return nil, err
-	}
+func startSentinel(port, masterName, masterPort string) error {
+	// dir, err := redisDir(port)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
-	sentinelConf := filepath.Join(dir, "sentinel.conf")
-	if err := os.WriteFile(sentinelConf, nil, 0o644); err != nil {
-		return nil, err
-	}
+	// sentinelConf := filepath.Join(dir, "sentinel.conf")
+	// if err := os.WriteFile(sentinelConf, nil, 0o644); err != nil {
+	// 	return nil, err
+	// }
 
-	process, err := execCmd(redisServerBin, sentinelConf, "--sentinel", "--port", port, "--dir", dir)
-	if err != nil {
-		return nil, err
-	}
+	// process, err := execCmd(redisServerBin, sentinelConf, "--sentinel", "--port", port, "--dir", dir)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
 	client, err := connectTo(port)
 	if err != nil {
-		process.Kill()
-		return nil, err
+		// process.Kill()
+		return err
 	}
 
 	// set down-after-milliseconds=2000
@@ -399,14 +398,14 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 	} {
 		client.Process(ctx, cmd)
 		if err := cmd.Err(); err != nil {
-			process.Kill()
-			return nil, fmt.Errorf("%s failed: %w", cmd, err)
+			// process.Kill()
+			return fmt.Errorf("%s failed: %w", cmd, err)
 		}
 	}
 
-	p := &redisProcess{process, client}
-	registerProcess(port, p)
-	return p, nil
+	// p := &redisProcess{process, client}
+	// registerProcess(port, p)
+	return nil
 }
 
 //------------------------------------------------------------------------------
