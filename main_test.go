@@ -66,6 +66,7 @@ var cluster = &clusterScenario{
 }
 
 var RECluster = false
+var USE_PREBUILT_REDIS = false
 
 func registerProcess(port string, p *redisProcess) {
 	if processes == nil {
@@ -82,8 +83,9 @@ var _ = BeforeSuite(func() {
 	}
 	var err error
 	RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
-
-	if !RECluster {
+	USE_PREBUILT_REDIS, _ = strconv.ParseBool(os.Getenv("USE_PREBUILT_REDIS"))
+	// panic("RECluster: " + strconv.FormatBool(RECluster) + " USE_PREBUILT_REDIS: " + strconv.FormatBool(USE_PREBUILT_REDIS))
+	if !RECluster || !USE_PREBUILT_REDIS {
 
 		redisMain, err = startRedis(redisPort)
 		Expect(err).NotTo(HaveOccurred())

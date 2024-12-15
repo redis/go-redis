@@ -72,9 +72,12 @@ jobs:
       # Set up Docker Compose environment
       - name: Set up Docker Compose environment
         run: |
-          docker compose -f src/test/resources/env/docker-compose.yml up -d
+          docker compose --profile all up -d --build
       
       - name: Run tests
+        env:
+          USE_PREBUILT_REDIS: "true"
+          RE_CLUSTER: "true"
         run: |
           go test \
           --ginkgo.skip-file="ring_test.go" \
@@ -82,3 +85,4 @@ jobs:
           --ginkgo.skip-file="osscluster_test.go" \
           --ginkgo.skip-file="pubsub_test.go" \
           --ginkgo.skip-file="gears_commands_test.go" \
+          --ginkgo.label-filter='!NonRedisEnterprise'
