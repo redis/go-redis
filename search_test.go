@@ -911,6 +911,30 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Docs[0].Fields["__v_score"]).To(BeEquivalentTo("0"))
 	})
 
+	It("should FTCreate VECTOR with default dialect", Label("search", "ftcreate"), func() {
+		hnswOptions := &redis.FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{HNSWOptions: hnswOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "a", "v", "aaaaaaaa")
+		client.HSet(ctx, "b", "v", "aaaabaaa")
+		client.HSet(ctx, "c", "v", "aaaaabaa")
+
+		searchOptions := &redis.FTSearchOptions{
+			Return: []redis.FTSearchReturn{{FieldName: "__v_score"}},
+			SortBy: []redis.FTSearchSortBy{{FieldName: "__v_score", Asc: true}},
+			Params: map[string]interface{}{"vec": "aaaaaaaa"},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 2 @v $vec]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("a"))
+		Expect(res.Docs[0].Fields["__v_score"]).To(BeEquivalentTo("0"))
+	})
+
 	It("should FTCreate and FTSearch text params", Label("search", "ftcreate", "ftsearch"), func() {
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.FieldSchema{FieldName: "name", FieldType: redis.SearchFieldTypeText}).Result()
 		Expect(err).NotTo(HaveOccurred())
