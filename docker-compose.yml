@@ -3,13 +3,13 @@
 services:
 
   redis:
-    image: redislabs/client-libs-test:8.0-M01
+    image: redislabs/client-libs-test:8.0-M02
     container_name: redis-standalone
     environment:
       - REDIS_CLUSTER=no
       - PORT=6379
       - TLS_PORT=6666
-    command: --enable-module-command yes
+    command: --enable-module-command yes 
     ports:
       - 6379:6379
       - 6380:6379
