@@ -1775,7 +1775,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 				}
 			}
 			if options.SortByWithCount {
-				queryArgs = append(queryArgs, "WITHCOUT")
+				queryArgs = append(queryArgs, "WITHCOUNT")
 			}
 		}
 		if options.LimitOffset >= 0 && options.Limit > 0 {

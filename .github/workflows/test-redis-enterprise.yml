@@ -47,6 +47,7 @@ jobs:
       - name: Test
         env:
           RE_CLUSTER: "1"
+          USE_CONTAINERIZED_REDIS: "1"
         run: |
           go test \
           --ginkgo.skip-file="ring_test.go" \
