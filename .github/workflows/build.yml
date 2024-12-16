@@ -43,3 +43,46 @@ jobs:
         with:
           files: coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
+  
+  test-redis-ce:
+    name: test-redis-ce
+    runs-on: ubuntu-latest
+    strategy:
+        fail-fast: false
+        matrix:
+          redis_version:
+            - "8.0-M01"
+            - "7.4.1"
+            - "7.2.6"
+            - "6.2.16"
+          go-version:
+            - "1.19.x"
+            - "1.20.x"
+            - "1.21.x"
+
+    steps:
+      - name: Set up ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Set up Docker Compose environment
+      - name: Set up Docker Compose environment
+        run: |
+          docker compose --profile all up -d
+      
+      - name: Run tests
+        env:
+          USE_CONTAINERIZED_REDIS: "true"
+          RE_CLUSTER: "true"
+        run: |
+          go test \
+          --ginkgo.skip-file="ring_test.go" \
+          --ginkgo.skip-file="sentinel_test.go" \
+          --ginkgo.skip-file="osscluster_test.go" \
+          --ginkgo.skip-file="pubsub_test.go" \
+          --ginkgo.skip-file="gears_commands_test.go" \
+          --ginkgo.label-filter='!NonRedisEnterprise'
