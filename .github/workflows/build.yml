@@ -72,11 +72,11 @@ jobs:
       # Set up Docker Compose environment
       - name: Set up Docker Compose environment
         run: |
-          docker compose --profile all up -d --build
+          docker compose --profile all up -d
       
       - name: Run tests
         env:
-          USE_PREBUILT_REDIS: "true"
+          USE_CONTAINERIZED_REDIS: "true"
           RE_CLUSTER: "true"
         run: |
           go test \

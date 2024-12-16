@@ -2,7 +2,7 @@
 
 services:
 
-  redis:
+  redis-stanalone:
     image: redislabs/client-libs-test:8.0-M02
     container_name: redis-standalone
     environment:
