@@ -1,0 +1,21 @@
+---
+
+services:
+
+  redis-stanalone:
+    image: redislabs/client-libs-test:8.0-M02
+    container_name: redis-standalone
+    environment:
+      - REDIS_CLUSTER=no
+      - PORT=6379
+      - TLS_PORT=6666
+    command: --loadmodule /usr/local/lib/redis/modules/redisbloom.so --loadmodule /usr/local/lib/redis/modules/redisearch.so --loadmodule  /usr/local/lib/redis/modules/redistimeseries.so --loadmodule /usr/local/lib/redis/modules/rejson.so 
+    ports:
+      - 6379:6379
+      - 6380:6379
+      - 6666:6666 # TLS port
+    volumes:
+      - "./dockers/redis-standalone:/redis/work"
+    profiles:
+      - standalone
+      - all
