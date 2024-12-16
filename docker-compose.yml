@@ -15,7 +15,7 @@ services:
       - 6380:6379
       - 6666:6666 # TLS port
     volumes:
-      - "./dockers/standalone:/redis/work"
+      - "./dockers/redis-standalone:/redis/work"
     profiles:
       - standalone
       - all
