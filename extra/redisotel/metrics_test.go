@@ -58,7 +58,7 @@ func TestMetrics(t *testing.T) {
 						{
 							Attributes: attribute.NewSet(
 								semconv.DBSystemRedis,
-								attribute.String("status", "error"),
+								attribute.String("status", "ok"),
 							),
 						},
 					},
@@ -75,7 +75,7 @@ func TestMetrics(t *testing.T) {
 							Attributes: attribute.NewSet(
 								semconv.DBSystemRedis,
 								attribute.String("type", "command"),
-								attribute.String("status", "error"),
+								attribute.String("status", "ok"),
 							),
 						},
 					},
@@ -114,7 +114,7 @@ func TestCustomAttributes(t *testing.T) {
 						{
 							Attributes: attribute.NewSet(
 								semconv.DBSystemRedis,
-								attribute.String("status", "error"),
+								attribute.String("status", "ok"),
 							),
 						},
 					},
@@ -131,7 +131,7 @@ func TestCustomAttributes(t *testing.T) {
 							Attributes: attribute.NewSet(
 								semconv.DBSystemRedis,
 								attribute.String("type", "command"),
-								attribute.String("status", "error"),
+								attribute.String("status", "ok"),
 								attribute.String("custom", "value"),
 							),
 						},
