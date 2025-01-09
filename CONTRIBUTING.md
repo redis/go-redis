@@ -33,8 +33,8 @@ Here's how to get started with your code contribution:
 1.  Create your own fork of go-redis
 2.  Do the changes in your fork
 3.  If you need a development environment, run `make test`. Note: this clones and builds the latest release of [redis](https://redis.io). You also need a redis-stack-server docker, in order to run the capabilities tests. This can be started by running:
-    ```docker run -p 6379:6379 -it redis/redis-stack-server:edge```
-4.  While developing, make sure the tests pass by running `make tests`
+    ```docker run -p 6379:6379 -it redis/redis-stack-server:latest```
+4.  While developing, make sure the tests pass by running `make test`
 5.  If you like the change and think the project could use it, send a
     pull request
 
