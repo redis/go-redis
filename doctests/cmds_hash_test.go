@@ -81,7 +81,7 @@ func ExampleClient_hset() {
 		keys = append(keys, key)
 	}
 
-	sort.Slice(keys, func(i, j int) bool { return i < j })
+	sort.Strings(keys)
 
 	for _, key := range keys {
 		fmt.Printf("Key: %v, value: %v\n", key, res6[key])
@@ -184,7 +184,7 @@ func ExampleClient_hgetall() {
 		keys = append(keys, key)
 	}
 
-	sort.Slice(keys, func(i, j int) bool { return i < j })
+	sort.Strings(keys)
 
 	for _, key := range keys {
 		fmt.Printf("Key: %v, value: %v\n", key, hGetAllResult2[key])
@@ -230,7 +230,7 @@ func ExampleClient_hvals() {
 		panic(err)
 	}
 
-	sort.Slice(hValsResult2, func(i, j int) bool { return i < j })
+	sort.Strings(hValsResult2)
 
 	fmt.Println(hValsResult2) // >>> [Hello World]
 	// STEP_END
