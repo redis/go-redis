@@ -5,6 +5,8 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -74,8 +76,16 @@ func ExampleClient_hset() {
 		panic(err)
 	}
 
-	fmt.Println(res6)
-	// >>> map[field1:Hello field2:Hi field3:World]
+	keys := slices.Collect(maps.Keys(res6))
+
+	slices.Sort(keys)
+
+	for key, value := range res6 {
+		fmt.Printf("Key: %v, value: %v\n", key, value)
+	}
+	// >>> Key: field1, value: Hello
+	// >>> Key: field2, value: Hi
+	// >>> Key: field3, value: World
 	// STEP_END
 
 	// Output:
@@ -84,7 +94,9 @@ func ExampleClient_hset() {
 	// 2
 	// Hi
 	// World
-	// map[field1:Hello field2:Hi field3:World]
+	// Key: field1, value: Hello
+	// Key: field2, value: Hi
+	// Key: field3, value: World
 }
 
 func ExampleClient_hget() {
@@ -130,4 +142,93 @@ func ExampleClient_hget() {
 	// 1
 	// foo
 	// redis: nil
+}
+
+func ExampleClient_hgetall() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password docs
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	rdb.Del(ctx, "myhash")
+	// REMOVE_END
+
+	// STEP_START hgetall
+	hGetAllResult1, err := rdb.HSet(ctx, "myhash",
+		"field1", "Hello",
+		"field2", "World",
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(hGetAllResult1) // >>> 2
+
+	hGetAllResult2, err := rdb.HGetAll(ctx, "myhash").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	keys := slices.Collect(maps.Keys(hGetAllResult2))
+
+	slices.Sort(keys)
+
+	for key, value := range hGetAllResult2 {
+		fmt.Printf("Key: %v, value: %v\n", key, value)
+	}
+	// >>> Key: field1, value: Hello
+	// >>> Key: field2, value: World
+	// STEP_END
+
+	// Output:
+	// 2
+	// Key: field1, value: Hello
+	// Key: field2, value: World
+}
+
+func ExampleClient_hvals() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password docs
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	rdb.Del(ctx, "myhash")
+	// REMOVE_END
+
+	// STEP_START hvals
+	hValsResult1, err := rdb.HSet(ctx, "myhash",
+		"field1", "Hello",
+		"field2", "World",
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(hValsResult1) // >>> 2
+
+	hValsResult2, err := rdb.HVals(ctx, "myhash").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	slices.Sort(hValsResult2)
+
+	fmt.Println(hValsResult2) // >>> [Hello World]
+	// STEP_END
+
+	// Output:
+	// 2
+	// [Hello World]
 }
