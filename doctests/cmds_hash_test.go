@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sort"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -81,7 +82,7 @@ func ExampleClient_hset() {
 		keys = append(keys, key)
 	}
 
-	slices.Sort(keys)
+	sort.Slice(keys, func(i, j int) bool { return i < j })
 
 	for key, _ := range res6 {
 		fmt.Printf("Key: %v, value: %v\n", key, res6[key])
@@ -184,7 +185,7 @@ func ExampleClient_hgetall() {
 		keys = append(keys, key)
 	}
 
-	slices.Sort(keys)
+	sort.Slice(keys, func(i, j int) bool { return i < j })
 
 	for key, _ := range hGetAllResult2 {
 		fmt.Printf("Key: %v, value: %v\n", key, hGetAllResult2[key])
