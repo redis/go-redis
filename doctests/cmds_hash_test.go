@@ -5,7 +5,6 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sort"
 
 	"github.com/redis/go-redis/v9"
@@ -231,7 +230,7 @@ func ExampleClient_hvals() {
 		panic(err)
 	}
 
-	slices.Sort(hValsResult2)
+	sort.Slice(hValsResult2, func(i, j int) bool { return i < j })
 
 	fmt.Println(hValsResult2) // >>> [Hello World]
 	// STEP_END
