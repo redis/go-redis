@@ -5,7 +5,6 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 
 	"github.com/redis/go-redis/v9"
@@ -76,12 +75,16 @@ func ExampleClient_hset() {
 		panic(err)
 	}
 
-	keys := slices.Collect(maps.Keys(res6))
+	keys := make([]string, 0, len(res6))
+
+	for key, _ := range res6 {
+		keys = append(keys, key)
+	}
 
 	slices.Sort(keys)
 
-	for key, value := range res6 {
-		fmt.Printf("Key: %v, value: %v\n", key, value)
+	for key, _ := range res6 {
+		fmt.Printf("Key: %v, value: %v\n", key, res6[key])
 	}
 	// >>> Key: field1, value: Hello
 	// >>> Key: field2, value: Hi
@@ -175,12 +178,16 @@ func ExampleClient_hgetall() {
 		panic(err)
 	}
 
-	keys := slices.Collect(maps.Keys(hGetAllResult2))
+	keys := make([]string, 0, len(hGetAllResult2))
+
+	for key, _ := range hGetAllResult2 {
+		keys = append(keys, key)
+	}
 
 	slices.Sort(keys)
 
-	for key, value := range hGetAllResult2 {
-		fmt.Printf("Key: %v, value: %v\n", key, value)
+	for key, _ := range hGetAllResult2 {
+		fmt.Printf("Key: %v, value: %v\n", key, hGetAllResult2[key])
 	}
 	// >>> Key: field1, value: Hello
 	// >>> Key: field2, value: World
