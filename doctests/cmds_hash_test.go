@@ -149,7 +149,7 @@ func ExampleClient_hgetall() {
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
-		Password: "", // no password docs
+		Password: "", // no password
 		DB:       0,  // use default DB
 	})
 
