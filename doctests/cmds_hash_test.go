@@ -83,7 +83,7 @@ func ExampleClient_hset() {
 
 	sort.Slice(keys, func(i, j int) bool { return i < j })
 
-	for key, _ := range res6 {
+	for _, key := range keys {
 		fmt.Printf("Key: %v, value: %v\n", key, res6[key])
 	}
 	// >>> Key: field1, value: Hello
@@ -186,7 +186,7 @@ func ExampleClient_hgetall() {
 
 	sort.Slice(keys, func(i, j int) bool { return i < j })
 
-	for key, _ := range hGetAllResult2 {
+	for _, key := range keys {
 		fmt.Printf("Key: %v, value: %v\n", key, hGetAllResult2[key])
 	}
 	// >>> Key: field1, value: Hello
