@@ -1,4 +1,4 @@
-module github.com/acenda/go-redis/v9
+module github.com/redis/go-redis/v9
 
 go 1.18
 
@@ -13,3 +13,19 @@ retract (
 	v9.5.4 // This version was accidentally released. Please use version 9.6.0 instead.
 	v9.5.3 // This version was accidentally released. Please use version 9.6.0 instead.
 )
+
+replace github.com/redis/go-redis/v9 => .
+
+replace github.com/redis/go-redis/v9/internal => ./internal
+
+replace github.com/redis/go-redis/v9/internal/proto => ./internal/proto
+
+replace github.com/redis/go-redis/v9/internal/hashtag => ./internal/hashtag
+
+replace github.com/redis/go-redis/v9/internal/hscan => ./internal/hscan
+
+replace github.com/redis/go-redis/v9/internal/pool => ./internal/pool
+
+replace github.com/redis/go-redis/v9/internal/rand => ./internal/rand
+
+replace github.com/redis/go-redis/v9/internal/util => ./internal/util
