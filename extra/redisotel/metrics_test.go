@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
@@ -26,8 +25,8 @@ var instrumentationScope = instrumentation.Scope{
 func setupMetrics(conf *config) (*sdkmetric.ManualReader, *redis.Client) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	otel.SetMeterProvider(mp)
-
+	conf.mp = mp
+	
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
@@ -43,7 +42,7 @@ func setupMetrics(conf *config) (*sdkmetric.ManualReader, *redis.Client) {
 
 func TestMetrics(t *testing.T) {
 	reader, rdb := setupMetrics(newConfig())
-	rdb.Get(context.Background(), "key")
+	rdb.Ping(context.Background())
 
 	want := metricdata.ScopeMetrics{
 		Scope: instrumentationScope,
@@ -99,7 +98,7 @@ func TestCustomAttributes(t *testing.T) {
 	config := newConfig(WithAttributesFunc(customAttrFn))
 	reader, rdb := setupMetrics(config)
 
-	rdb.Get(context.Background(), "key")
+	rdb.Ping(context.Background())
 
 	want := metricdata.ScopeMetrics{
 		Scope: instrumentationScope,
