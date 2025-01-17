@@ -31,7 +31,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-          cache-dependency-path: "**/*.sum"
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -67,7 +66,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-          cache-dependency-path: "**/*.sum"
 
       - name: Checkout code
         uses: actions/checkout@v4
