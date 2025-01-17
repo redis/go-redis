@@ -44,9 +44,6 @@ jobs:
         with:
           files: coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: check the *.sum files location
-        run: ls -la **/*.sum
   
   test-redis-ce:
     name: test-redis-ce
