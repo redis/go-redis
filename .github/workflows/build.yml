@@ -31,6 +31,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
+          cache-dependency-path: "**/*.sum"
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -43,6 +44,9 @@ jobs:
         with:
           files: coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: check the *.sum files location
+        run: ls -la **/*.sum
   
   test-redis-ce:
     name: test-redis-ce
@@ -66,6 +70,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
+          cache-dependency-path: "**/*.sum"
 
       - name: Checkout code
         uses: actions/checkout@v4
