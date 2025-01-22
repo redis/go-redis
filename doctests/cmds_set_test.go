@@ -64,3 +64,39 @@ func ExampleClient_sadd_cmd() {
 	// 0
 	// [Hello World]
 }
+
+func ExampleClient_smembers_cmd() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password docs
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	rdb.Del(ctx, "myset")
+	// REMOVE_END
+
+	// STEP_START smembers
+	sMembersResult1, err := rdb.SAdd(ctx, "myset", "Hello", "World").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(sMembersResult1) // >>> 2
+
+	sMembersResult2, err := rdb.SMembers(ctx, "myset").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(sMembersResult2) // >>> [Hello World]
+	// STEP_END
+
+	// Output:
+	// 2
+	// [Hello World]
+}
