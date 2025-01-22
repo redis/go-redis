@@ -3,7 +3,7 @@
 services:
 
   redis-stanalone:
-    image: redislabs/client-libs-test:8.0-M02
+    image: redislabs/client-libs-test:8.0-M03
     container_name: redis-standalone
     environment:
       - REDIS_CLUSTER=no
