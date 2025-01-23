@@ -1,3 +1,4 @@
+dockers/
 *.rdb
 testdata/*
 .idea/
