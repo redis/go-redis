@@ -1,6 +1,5 @@
 *.rdb
 testdata/*
-dockers/
 .idea/
 .DS_Store
 *.tar.gz
