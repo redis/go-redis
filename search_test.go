@@ -371,7 +371,47 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(names).To(ContainElement("John"))
 	})
 
-	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
+	// in redis 8, the default scorer is changed BM25
+	It("should FTSearch WithScores", Label("search", "ftsearch", "RedisVersion:v8"), func() {
+		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "doc1", "description", "The quick brown fox jumps over the lazy dog")
+		client.HSet(ctx, "doc2", "description", "Quick alice was beginning to get very tired of sitting by her quick sister on the bank, and of having nothing to do.")
+
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeNumerically("<=", 0.22471909420069797))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "TFIDF"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(1)))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "TFIDF.DOCNORM"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(0.14285714285714285))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "BM25"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeNumerically("<=", 0.22471909420069797))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "DISMAX"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(2)))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "DOCSCORE"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(1)))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "HAMMING"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(0)))
+	})
+
+	It("should FTSearch WithScores", Label("search", "ftsearch", "RedisVersion:v7"), func() {
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())

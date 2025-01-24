@@ -1,6 +1,10 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
+REDIS_VERSION="7.4.2"
 
 test: testdeps
+	$(eval R_MAJOR := $(shell echo "$(REDIS_VERSION)" | grep -o '\d' | head -1))
+	echo "Executing test agains redis-stack-server:latest and redis $(REDIS_VERSION), $(R_MAJOR) "
+	docker start go-redis-redis-stack || docker run -d --name go-redis-redis-stack  -p 6379:6379 -e REDIS_ARGS="--enable-debug-command yes --enable-module-command yes" redis/redis-stack-server:latest
 	$(eval GO_VERSION := $(shell go version | cut -d " " -f 3 | cut -d. -f2))
 	set -e; for dir in $(GO_MOD_DIRS); do \
 	  if echo "$${dir}" | grep -q "./example" && [ "$(GO_VERSION)" = "19" ]; then \
@@ -10,7 +14,7 @@ test: testdeps
 	  echo "go test in $${dir}"; \
 	  (cd "$${dir}" && \
 	    go mod tidy -compat=1.18 && \
-	    go test && \
+	    go test --ginkgo.label-filter="RedisVersion: isSubsetOf \"$(R_MAJOR)\""&& \
 	    go test ./... -short -race && \
 	    go test ./... -run=NONE -bench=. -benchmem && \
 	    env GOOS=linux GOARCH=386 go test && \
@@ -19,8 +23,11 @@ test: testdeps
 	done
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet
+	docker stop (docker container ls -a -q --filter name=go-redis-redis-stack)
 
 testdeps: testdata/redis/src/redis-server
+
+
 
 bench: testdeps
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem
@@ -32,7 +39,7 @@ build:
 
 testdata/redis:
 	mkdir -p $@
-	wget -qO- https://download.redis.io/releases/redis-7.4-rc2.tar.gz  | tar xvz --strip-components=1 -C $@
+	wget -qO- https://download.redis.io/releases/redis-7.4.2.tar.gz  | tar xvz --strip-components=1 -C $@
 
 testdata/redis/src/redis-server: testdata/redis
 	cd $< && make all

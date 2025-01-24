@@ -18,14 +18,6 @@ jobs:
       matrix:
         go-version: [1.21.x, 1.22.x, 1.23.x]
 
-    services:
-      redis:
-        image: redis/redis-stack-server:latest
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
-        ports:
-          - 6379:6379
-
     steps:
       - name: Set up ${{ matrix.go-version }}
         uses: actions/setup-go@v5
