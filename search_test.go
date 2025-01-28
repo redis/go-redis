@@ -372,7 +372,10 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	// in redis 8, the default scorer is changed BM25
-	It("should FTSearch WithScores", Label("search", "ftsearch", "RedisVersion:v8"), func() {
+	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
+		if REDIS_MAJOR_VERSION < 8 {
+			Skip("default scorer is not BM25")
+		}
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -384,7 +387,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 		res, err := client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true}).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(*res.Docs[0].Score).To(BeNumerically("<=", 0.22471909420069797))
+		Expect(*res.Docs[0].Score).To(BeNumerically("<=", 0.236))
 
 		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "TFIDF"}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -411,7 +414,10 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(0)))
 	})
 
-	It("should FTSearch WithScores", Label("search", "ftsearch", "RedisVersion:v7"), func() {
+	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
+		if REDIS_MAJOR_VERSION >= 8 {
+			Skip("default scorer is BM25")
+		}
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())

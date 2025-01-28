@@ -70,6 +70,11 @@ var RECluster = false
 // Redis Community Edition Docker
 var RCEDocker = false
 
+// Notes the major version of redis we are executing tests.
+// This can be used before we change the bsm fork of ginkgo for one,
+// which have support for label sets, so we can filter tests per redis major version.
+var REDIS_MAJOR_VERSION = 7
+
 func registerProcess(port string, p *redisProcess) {
 	if processes == nil {
 		processes = make(map[string]*redisProcess)
@@ -86,7 +91,13 @@ var _ = BeforeSuite(func() {
 	var err error
 	RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
 	RCEDocker, _ = strconv.ParseBool(os.Getenv("RCE_DOCKER"))
+
+	REDIS_MAJOR_VERSION, _ = strconv.Atoi(os.Getenv("REDIS_MAJOR_VERSION"))
+	Expect(REDIS_MAJOR_VERSION).To(BeNumerically(">=", 6))
+	Expect(REDIS_MAJOR_VERSION).To(BeNumerically("<=", 8))
+
 	fmt.Printf("RECluster: %v\n", RECluster)
+	fmt.Printf("REDIS_MAJOR_VERSION: %v\n", REDIS_MAJOR_VERSION)
 	fmt.Printf("RCEDocker: %v\n", RCEDocker)
 	if !RECluster && !RCEDocker {
 
