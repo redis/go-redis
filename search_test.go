@@ -416,7 +416,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
 		if REDIS_MAJOR_VERSION >= 8 {
-			Skip("default scorer is BM25")
+			Skip("default scorer is not TFIDF")
 		}
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()

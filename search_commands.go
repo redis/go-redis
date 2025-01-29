@@ -282,6 +282,9 @@ type FTSearchSortBy struct {
 	Desc      bool
 }
 
+// FTSearchOptions hold options that can be passed to the FT.SEARCH command.
+// More information about the options can be found
+// in the documentation for FT.SEARCH https://redis.io/docs/latest/commands/ft.search/
 type FTSearchOptions struct {
 	NoContent    bool
 	Verbatim     bool
@@ -299,7 +302,10 @@ type FTSearchOptions struct {
 	InOrder      bool
 	Language     string
 	Expander     string
-	// TODO: add document about scorers
+	// Scorer is used to set scoring function, if not set passed, a default will be used.
+	// The default scorer depends on the Redis version:
+	// - `BM25` for Redis >= 8
+	// - `TFIDF` for Redis < 8
 	Scorer          string
 	ExplainScore    bool
 	Payload         string

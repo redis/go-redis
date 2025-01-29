@@ -2,7 +2,6 @@ GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 export REDIS_MAJOR_VERSION := 7
 
 test: testdeps
-	$(eval R_MAJOR := $(shell echo "$(REDIS_VERSION)" | grep -o '\d' | head -1))
 	docker start go-redis-redis-stack || docker run -d --name go-redis-redis-stack  -p 6379:6379 -e REDIS_ARGS="--enable-debug-command yes --enable-module-command yes" redis/redis-stack-server:latest
 	$(eval GO_VERSION := $(shell go version | cut -d " " -f 3 | cut -d. -f2))
 	set -e; for dir in $(GO_MOD_DIRS); do \
@@ -22,10 +21,6 @@ test: testdeps
 	done
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet
-	docker stop go-redis-redis-stack
-
-dockertest:
-	docker start go-redis-redis-stack || docker run -d --name go-redis-redis-stack  -p 6379:6379 -e REDIS_ARGS="--enable-debug-command yes --enable-module-command yes" redis/redis-stack-server:latest
 	docker stop go-redis-redis-stack
 
 testdeps: testdata/redis/src/redis-server
