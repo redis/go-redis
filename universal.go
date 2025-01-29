@@ -69,6 +69,9 @@ type UniversalOptions struct {
 	DisableIndentity bool
 	IdentitySuffix   string
 	UnstableResp3    bool
+
+	CredentialsProvider        func() (username string, password string)
+	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -113,8 +116,10 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 
 		TLSConfig: o.TLSConfig,
 
-		DisableIndentity: o.DisableIndentity,
-		IdentitySuffix:   o.IdentitySuffix,
+		DisableIndentity:           o.DisableIndentity,
+		IdentitySuffix:             o.IdentitySuffix,
+		CredentialsProvider:        o.CredentialsProvider,
+		CredentialsProviderContext: o.CredentialsProviderContext,
 	}
 }
 
@@ -203,9 +208,11 @@ func (o *UniversalOptions) Simple() *Options {
 
 		TLSConfig: o.TLSConfig,
 
-		DisableIndentity: o.DisableIndentity,
-		IdentitySuffix:   o.IdentitySuffix,
-		UnstableResp3:    o.UnstableResp3,
+		DisableIndentity:           o.DisableIndentity,
+		IdentitySuffix:             o.IdentitySuffix,
+		UnstableResp3:              o.UnstableResp3,
+		CredentialsProvider:        o.CredentialsProvider,
+		CredentialsProviderContext: o.CredentialsProviderContext,
 	}
 }
 
