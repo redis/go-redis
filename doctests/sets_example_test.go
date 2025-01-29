@@ -5,6 +5,7 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -215,6 +216,9 @@ func ExampleClient_saddsmembers() {
 		panic(err)
 	}
 
+	// Sort the strings in the slice to make sure the output is lexicographical 
+	sort.Strings(res10)
+
 	fmt.Println(res10) // >>> [bike:1 bike:2 bike:3]
 	// STEP_END
 
@@ -294,6 +298,10 @@ func ExampleClient_sdiff() {
 		panic(err)
 	}
 
+
+	// Sort the strings in the slice to make sure the output is lexicographical 
+	sort.Strings(res13)
+
 	fmt.Println(res13) // >>> [bike:2 bike:3]
 	// STEP_END
 
@@ -349,6 +357,9 @@ func ExampleClient_multisets() {
 		panic(err)
 	}
 
+	// Sort the strings in the slice to make sure the output is lexicographical 
+	sort.Strings(res15)
+
 	fmt.Println(res15) // >>> [bike:1 bike:2 bike:3 bike:4]
 
 	res16, err := rdb.SDiff(ctx, "bikes:racing:france", "bikes:racing:usa", "bikes:racing:italy").Result()
@@ -372,6 +383,9 @@ func ExampleClient_multisets() {
 	if err != nil {
 		panic(err)
 	}
+
+	// Sort the strings in the slice to make sure the output is lexicographical 
+	sort.Strings(res18)
 
 	fmt.Println(res18) // >>> [bike:2 bike:3]
 	// STEP_END
