@@ -93,12 +93,15 @@ var _ = BeforeSuite(func() {
 	RCEDocker, _ = strconv.ParseBool(os.Getenv("RCE_DOCKER"))
 
 	REDIS_MAJOR_VERSION, _ = strconv.Atoi(os.Getenv("REDIS_MAJOR_VERSION"))
+	if REDIS_MAJOR_VERSION == 0 {
+		REDIS_MAJOR_VERSION = 7
+	}
 	Expect(REDIS_MAJOR_VERSION).To(BeNumerically(">=", 6))
 	Expect(REDIS_MAJOR_VERSION).To(BeNumerically("<=", 8))
 
 	fmt.Printf("RECluster: %v\n", RECluster)
-	fmt.Printf("REDIS_MAJOR_VERSION: %v\n", REDIS_MAJOR_VERSION)
 	fmt.Printf("RCEDocker: %v\n", RCEDocker)
+	fmt.Printf("REDIS_MAJOR_VERSION: %v\n", REDIS_MAJOR_VERSION)
 	if !RECluster && !RCEDocker {
 
 		redisMain, err = startRedis(redisPort)
