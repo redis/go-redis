@@ -5,6 +5,7 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -231,11 +232,15 @@ func ExampleClient_query_ft() {
 
 	fmt.Println(res1.Total) // >>> 2
 
+	sort.Slice(res1.Docs, func(i, j int) bool {
+		return res1.Docs[i].ID < res1.Docs[j].ID
+	})
+
 	for _, doc := range res1.Docs {
 		fmt.Println(doc.ID)
 	}
-	// >>> bicycle:2
 	// >>> bicycle:1
+	// >>> bicycle:2
 	// STEP_END
 
 	// STEP_START ft2
@@ -266,11 +271,14 @@ func ExampleClient_query_ft() {
 
 	fmt.Println(res3.Total) // >>> 2
 
+	sort.Slice(res3.Docs, func(i, j int) bool {
+		return res3.Docs[i].ID < res3.Docs[j].ID
+	})
 	for _, doc := range res3.Docs {
 		fmt.Println(doc.ID)
 	}
-	// >>> bicycle:6
 	// >>> bicycle:4
+	// >>> bicycle:6
 	// STEP_END
 
 	// STEP_START ft4
@@ -309,13 +317,13 @@ func ExampleClient_query_ft() {
 
 	// Output:
 	// 2
-	// bicycle:2
 	// bicycle:1
+	// bicycle:2
 	// 1
 	// bicycle:4
 	// 2
-	// bicycle:6
 	// bicycle:4
+	// bicycle:6
 	// 1
 	// bicycle:3
 	// 1
