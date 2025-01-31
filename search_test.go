@@ -374,9 +374,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	// up until redis 8 the default scorer was TFIDF, in redis 8 it is BM25
 	// this test expect redis major version >= 8
 	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
-		if REDIS_MAJOR_VERSION < 8 {
-			Skip("(redis major version < 8) default scorer is not BM25")
-		}
+		SkipBeforeRedisMajor(8, "default scorer is not BM25")
+
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -418,9 +417,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	// up until redis 8 the default scorer was TFIDF, in redis 8 it is BM25
 	// this test expect redis major version <=7
 	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
-		if REDIS_MAJOR_VERSION > 7 {
-			Skip("(redis major version > 7) default scorer is not TFIDF")
-		}
+		SkipAfterRedisMajor(7, "default scorer is not TFIDF")
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())

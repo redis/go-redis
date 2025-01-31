@@ -344,6 +344,23 @@ var _ = Describe("Commands", func() {
 			Expect(val).NotTo(BeEmpty())
 		})
 
+		It("should ConfigGet Modules", func() {
+			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			expected := map[string]string{
+				"search-*": "search-min-prefix",
+				"ts-*":     "ts-retention-policy",
+				"bf-*":     "bf-error-rate",
+				"cf-*":     "cf-initial-size",
+			}
+
+			for prefix, lookup := range expected {
+				val, err := client.ConfigGet(ctx, prefix).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val[lookup]).NotTo(BeEmpty())
+			}
+		})
+
 		It("should ConfigResetStat", Label("NonRedisEnterprise"), func() {
 			r := client.ConfigResetStat(ctx)
 			Expect(r.Err()).NotTo(HaveOccurred())
@@ -360,6 +377,64 @@ var _ = Describe("Commands", func() {
 			configSet := client.ConfigSet(ctx, "maxmemory", configGet.Val()["maxmemory"])
 			Expect(configSet.Err()).NotTo(HaveOccurred())
 			Expect(configSet.Val()).To(Equal("OK"))
+		})
+
+		It("should ConfigSet Modules", func() {
+			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			defaults := map[string]string{}
+			expected := map[string]string{
+				"search-min-prefix":   "32",
+				"ts-retention-policy": "2",
+				"bf-error-rate":       "0.13",
+				"cf-initial-size":     "64",
+			}
+
+			// read the defaults to set them back later
+			for setting, _ := range expected {
+				val, err := client.ConfigGet(ctx, setting).Result()
+				Expect(err).NotTo(HaveOccurred())
+				defaults[setting] = val[setting]
+			}
+
+			// check if new values can be set
+			for setting, value := range expected {
+				val, err := client.ConfigSet(ctx, setting, value).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val).To(Equal("OK"))
+			}
+
+			for setting, value := range expected {
+				val, err := client.ConfigGet(ctx, setting).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val[setting]).To(Equal(value))
+			}
+
+			// set back to the defaults
+			for setting, value := range defaults {
+				val, err := client.ConfigSet(ctx, setting, value).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val).To(Equal("OK"))
+			}
+		})
+
+		It("should Fail ConfigSet Modules", func() {
+			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			expected := map[string]string{
+				"search-min-prefix":   "-32",
+				"ts-retention-policy": "-10",
+				"bf-error-rate":       "1.5",
+				"cf-initial-size":     "-10",
+			}
+
+			for setting, value := range expected {
+				val, err := client.ConfigSet(ctx, setting, value).Result()
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(ContainSubstring(setting)))
+				Expect(val).To(BeEmpty())
+			}
 		})
 
 		It("should ConfigRewrite", Label("NonRedisEnterprise"), func() {
