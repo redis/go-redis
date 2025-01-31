@@ -379,11 +379,63 @@ var _ = Describe("Commands", func() {
 			Expect(configSet.Val()).To(Equal("OK"))
 		})
 
+		It("should ConfigSet FT DIALECT", func() {
+			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			defaultState, err := client.ConfigGet(ctx, "search-default-dialect").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// set to 3
+			res, err := client.ConfigSet(ctx, "search-default-dialect", "3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+
+			defDialect, err := client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "3"}))
+
+			resGet, err := client.ConfigGet(ctx, "search-default-dialect").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resGet).To(BeEquivalentTo(map[string]string{"search-default-dialect": "3"}))
+
+			// set to 2
+			res, err = client.ConfigSet(ctx, "search-default-dialect", "2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+
+			defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "2"}))
+
+			// set to 1
+			res, err = client.ConfigSet(ctx, "search-default-dialect", "1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+
+			defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "1"}))
+
+			resGet, err = client.ConfigGet(ctx, "search-default-dialect").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resGet).To(BeEquivalentTo(map[string]string{"search-default-dialect": "1"}))
+
+			// set to default
+			res, err = client.ConfigSet(ctx, "search-default-dialect", defaultState["search-default-dialect"]).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+		})
+
+		It("should ConfigSet fail for ReadOnly", func() {
+			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			_, err := client.ConfigSet(ctx, "search-max-doctablesize", "100000").Result()
+			Expect(err).To(HaveOccurred())
+		})
+
 		It("should ConfigSet Modules", func() {
 			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
 			defaults := map[string]string{}
 			expected := map[string]string{
-				"search-min-prefix":   "32",
+				"search-timeout":      "100",
 				"ts-retention-policy": "2",
 				"bf-error-rate":       "0.13",
 				"cf-initial-size":     "64",
@@ -423,7 +475,7 @@ var _ = Describe("Commands", func() {
 		It("should Fail ConfigSet Modules", func() {
 			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
 			expected := map[string]string{
-				"search-min-prefix":   "-32",
+				"search-timeout":      "-100",
 				"ts-retention-policy": "-10",
 				"bf-error-rate":       "1.5",
 				"cf-initial-size":     "-10",

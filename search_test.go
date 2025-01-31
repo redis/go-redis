@@ -457,6 +457,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTConfigSet and FTConfigGet ", Label("search", "ftconfigget", "ftconfigset", "NonRedisEnterprise"), func() {
+		SkipAfterRedisMajor(7, "FT.CONFIG is moved to Config for redis 8")
 		val, err := client.FTConfigSet(ctx, "TIMEOUT", "100").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
@@ -1013,6 +1014,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTConfigSet and FTConfigGet dialect", Label("search", "ftconfigget", "ftconfigset", "NonRedisEnterprise"), func() {
+		SkipAfterRedisMajor(7, "FT.CONFIG is moved to Config for redis 8")
 		res, err := client.FTConfigSet(ctx, "DEFAULT_DIALECT", "1").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res).To(BeEquivalentTo("OK"))

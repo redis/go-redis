@@ -3863,29 +3863,46 @@ func (cmd *MapMapStringInterfaceCmd) Val() map[string]interface{} {
 }
 
 func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
-	n, err := rd.ReadArrayLen()
+	data, err := rd.ReadReply()
 	if err != nil {
 		return err
 	}
+	resultMap := map[string]interface{}{}
 
-	data := make(map[string]interface{}, n/2)
-	for i := 0; i < n; i += 2 {
-		_, err := rd.ReadArrayLen()
-		if err != nil {
-			cmd.err = err
+	switch midResponse := data.(type) {
+	case map[interface{}]interface{}:
+		for k, v := range midResponse {
+			stringKey, ok := k.(string)
+			if !ok {
+				return fmt.Errorf("redis: invalid map key %#v", k)
+			}
+			resultMap[stringKey] = v
 		}
-		key, err := rd.ReadString()
-		if err != nil {
-			cmd.err = err
+	case []interface{}: // resp2
+		n := len(midResponse)
+		for i := 0; i < n; i++ {
+			finalArr, ok := midResponse[i].([]interface{})
+			if !ok {
+				return fmt.Errorf("redis: unexpected response %#v", data)
+			}
+			m := len(finalArr)
+			if m%2 != 0 {
+				return fmt.Errorf("redis: unexpected response %#v", data)
+			}
+
+			for j := 0; j < m; j += 2 {
+				stringKey, ok := finalArr[j].(string)
+				if !ok {
+					return fmt.Errorf("redis: invalid map key %#v", finalArr[i])
+				}
+				resultMap[stringKey] = finalArr[j+1]
+			}
 		}
-		value, err := rd.ReadString()
-		if err != nil {
-			cmd.err = err
-		}
-		data[key] = value
+	default:
+		return fmt.Errorf("redis: unexpected response %#v", data)
 	}
 
-	cmd.val = data
+	cmd.val = resultMap
 	return nil
 }
 
