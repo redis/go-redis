@@ -457,7 +457,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTConfigSet and FTConfigGet ", Label("search", "ftconfigget", "ftconfigset", "NonRedisEnterprise"), func() {
-		SkipAfterRedisMajor(7, "FT.CONFIG is moved to Config for redis 8")
 		val, err := client.FTConfigSet(ctx, "TIMEOUT", "100").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
@@ -1013,8 +1012,25 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 	})
 
+	It("should FTConfigGet return multiple fields", Label("search", "NonRedisEnterprise"), func() {
+		res, err := client.FTConfigSet(ctx, "DEFAULT_DIALECT", "1").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(BeEquivalentTo("OK"))
+
+		defDialect, err := client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "1"}))
+
+		res, err = client.FTConfigSet(ctx, "DEFAULT_DIALECT", "2").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(BeEquivalentTo("OK"))
+
+		defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "2"}))
+	})
+
 	It("should FTConfigSet and FTConfigGet dialect", Label("search", "ftconfigget", "ftconfigset", "NonRedisEnterprise"), func() {
-		SkipAfterRedisMajor(7, "FT.CONFIG is moved to Config for redis 8")
 		res, err := client.FTConfigSet(ctx, "DEFAULT_DIALECT", "1").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res).To(BeEquivalentTo("OK"))
@@ -1469,6 +1485,46 @@ func _assert_geosearch_result(result *redis.FTSearchResult, expectedDocIDs []str
 // 		Expect(results0["id"]).To(BeEquivalentTo("a"))
 // 		Expect(results0["extra_attributes"].(map[interface{}]interface{})["__v_score"]).To(BeEquivalentTo("0"))
 // 	})
+
+var _ = Describe("RediSearch FT.Config with Resp2 and Resp3", Label("search", "NonRedisEnterprise"), func() {
+
+	var clientResp2 *redis.Client
+	var clientResp3 *redis.Client
+	BeforeEach(func() {
+		clientResp2 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
+		clientResp3 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3: true})
+		Expect(clientResp3.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(clientResp2.Close()).NotTo(HaveOccurred())
+		Expect(clientResp3.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should FTConfigSet and FTConfigGet ", Label("search", "ftconfigget", "ftconfigset", "NonRedisEnterprise"), func() {
+		val, err := clientResp3.FTConfigSet(ctx, "TIMEOUT", "100").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+
+		res2, err := clientResp2.FTConfigGet(ctx, "TIMEOUT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res2).To(BeEquivalentTo(map[string]interface{}{"TIMEOUT": "100"}))
+
+		res3, err := clientResp3.FTConfigGet(ctx, "TIMEOUT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res3).To(BeEquivalentTo(map[string]interface{}{"TIMEOUT": "100"}))
+	})
+
+	It("should FTConfigGet all resp2 and resp3", Label("search", "NonRedisEnterprise"), func() {
+		res2, err := clientResp2.FTConfigGet(ctx, "*").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		res3, err := clientResp3.FTConfigGet(ctx, "*").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(res3)).To(BeEquivalentTo(len(res2)))
+		Expect(res2["DEFAULT_DIALECT"]).To(BeEquivalentTo(res2["DEFAULT_DIALECT"]))
+	})
+})
 
 var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 	ctx := context.TODO()

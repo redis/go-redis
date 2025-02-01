@@ -379,8 +379,19 @@ var _ = Describe("Commands", func() {
 			Expect(configSet.Val()).To(Equal("OK"))
 		})
 
+		It("should ConfigGet with Modules", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisMajor(8, "config get won't return modules configs before redis 8")
+			configGet := client.ConfigGet(ctx, "*")
+			Expect(configGet.Err()).NotTo(HaveOccurred())
+			Expect(configGet.Val()).To(HaveKey("maxmemory"))
+			Expect(configGet.Val()).To(HaveKey("search-timeout"))
+			Expect(configGet.Val()).To(HaveKey("ts-retention-policy"))
+			Expect(configGet.Val()).To(HaveKey("bf-error-rate"))
+			Expect(configGet.Val()).To(HaveKey("cf-initial-size"))
+		})
+
 		It("should ConfigSet FT DIALECT", func() {
-			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			SkipBeforeRedisMajor(8, "config doesn't include modules before Redis 8")
 			defaultState, err := client.ConfigGet(ctx, "search-default-dialect").Result()
 			Expect(err).NotTo(HaveOccurred())
 

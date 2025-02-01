@@ -3862,6 +3862,7 @@ func (cmd *MapMapStringInterfaceCmd) Val() map[string]interface{} {
 	return cmd.val
 }
 
+// readReply will try to parse the reply from the proto.Reader for both resp2 and resp3
 func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadReply()
 	if err != nil {
@@ -3870,7 +3871,7 @@ func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 	resultMap := map[string]interface{}{}
 
 	switch midResponse := data.(type) {
-	case map[interface{}]interface{}:
+	case map[interface{}]interface{}: // resp3 will return map
 		for k, v := range midResponse {
 			stringKey, ok := k.(string)
 			if !ok {
@@ -3878,24 +3879,24 @@ func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 			}
 			resultMap[stringKey] = v
 		}
-	case []interface{}: // resp2
+	case []interface{}: // resp2 will return array of arrays
 		n := len(midResponse)
 		for i := 0; i < n; i++ {
-			finalArr, ok := midResponse[i].([]interface{})
+			finalArr, ok := midResponse[i].([]interface{}) // final array that we need to transform to map
 			if !ok {
 				return fmt.Errorf("redis: unexpected response %#v", data)
 			}
 			m := len(finalArr)
-			if m%2 != 0 {
+			if m%2 != 0 { // since this should be map, keys should be even number
 				return fmt.Errorf("redis: unexpected response %#v", data)
 			}
 
 			for j := 0; j < m; j += 2 {
-				stringKey, ok := finalArr[j].(string)
+				stringKey, ok := finalArr[j].(string) // the first one
 				if !ok {
 					return fmt.Errorf("redis: invalid map key %#v", finalArr[i])
 				}
-				resultMap[stringKey] = finalArr[j+1]
+				resultMap[stringKey] = finalArr[j+1] // second one is value
 			}
 		}
 	default:
