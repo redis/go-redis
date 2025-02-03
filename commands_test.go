@@ -347,7 +347,7 @@ var _ = Describe("Commands", func() {
 		It("should ConfigGet Modules", func() {
 			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
 			expected := map[string]string{
-				"search-*": "search-min-prefix",
+				"search-*": "search-timeout",
 				"ts-*":     "ts-retention-policy",
 				"bf-*":     "bf-error-rate",
 				"cf-*":     "cf-initial-size",
