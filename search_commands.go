@@ -831,13 +831,13 @@ func (c cmdable) FTAlter(ctx context.Context, index string, skipInitialScan bool
 	return cmd
 }
 
-// Deprecated: FTConfigGet is deprecated in Redis 8.
-// All configuration will be done with the CONFIG GET command.
-// For more information check [Client.ConfigGet] and [CONFIG GET Documentation]
-//
 // Retrieves the value of a RediSearch configuration parameter.
 // The 'option' parameter specifies the configuration parameter to retrieve.
 // For more information, please refer to the Redis [FT.CONFIG GET] documentation.
+//
+// Deprecated: FTConfigGet is deprecated in Redis 8.
+// All configuration will be done with the CONFIG GET command.
+// For more information check [Client.ConfigGet] and [CONFIG GET Documentation]
 //
 // [CONFIG GET Documentation]: https://redis.io/commands/config-get/
 // [FT.CONFIG GET]: https://redis.io/commands/ft.config-get/
@@ -847,13 +847,13 @@ func (c cmdable) FTConfigGet(ctx context.Context, option string) *MapMapStringIn
 	return cmd
 }
 
-// Deprecated: FTConfigSet is deprecated in Redis 8.
-// All configuration will be done with the CONFIG SET command.
-// For more information check [Client.ConfigSet] and [CONFIG SET Documentation]
-//
 // Sets the value of a RediSearch configuration parameter.
 // The 'option' parameter specifies the configuration parameter to set, and the 'value' parameter specifies the new value.
 // For more information, please refer to the Redis [FT.CONFIG SET] documentation.
+//
+// Deprecated: FTConfigSet is deprecated in Redis 8.
+// All configuration will be done with the CONFIG SET command.
+// For more information check [Client.ConfigSet] and [CONFIG SET Documentation]
 //
 // [CONFIG SET Documentation]: https://redis.io/commands/config-set/
 // [FT.CONFIG SET]: https://redis.io/commands/ft.config-set/
