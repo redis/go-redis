@@ -136,7 +136,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
 		WaitForIndexing(client, "txt")
-		client.HSet(ctx, "doc1", "title", "RediSearch", "body", "Redisearch impements a search engine on top of redis")
+		client.HSet(ctx, "doc1", "title", "RediSearch", "body", "Redisearch implements a search engine on top of redis")
 		res1, err := client.FTSearchWithArgs(ctx, "txt", "search engine", &redis.FTSearchOptions{NoContent: true, Verbatim: true, LimitOffset: 0, Limit: 5}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res1.Total).To(BeEquivalentTo(int64(1)))
@@ -436,7 +436,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "search", "title", "RediSearch",
-			"body", "Redisearch impements a search engine on top of redis",
+			"body", "Redisearch implements a search engine on top of redis",
 			"parent", "redis",
 			"random_num", 10)
 		client.HSet(ctx, "ai", "title", "RedisAI",
