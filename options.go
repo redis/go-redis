@@ -267,6 +267,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
+//   - use "skip_verify=true" to ignore TLS certificate validation
 //
 // Examples:
 //
