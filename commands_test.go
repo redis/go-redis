@@ -2283,6 +2283,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ACL LOG", Label("NonRedisEnterprise"), func() {
+			Expect(client.ACLLogReset(ctx).Err()).NotTo(HaveOccurred())
 			err := client.Do(ctx, "acl", "setuser", "test", ">test", "on", "allkeys", "+get").Err()
 			Expect(err).NotTo(HaveOccurred())
 
