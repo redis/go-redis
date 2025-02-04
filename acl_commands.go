@@ -4,11 +4,20 @@ import "context"
 
 type ACLCmdable interface {
 	ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd
+
 	ACLLog(ctx context.Context, count int64) *ACLLogCmd
 	ACLLogReset(ctx context.Context) *StatusCmd
+
 	ACLSetUser(ctx context.Context, username string, rules ...string) *StatusCmd
 	ACLDelUser(ctx context.Context, username string) *IntCmd
 	ACLList(ctx context.Context) *StringSliceCmd
+
+	ACLCat(ctx context.Context) *StringSliceCmd
+	ACLCatArgs(ctx context.Context, options *ACLCatArgs) *StringSliceCmd
+}
+
+type ACLCatArgs struct {
+	Category string
 }
 
 func (c cmdable) ACLDryRun(ctx context.Context, username string, command ...interface{}) *StringCmd {
@@ -64,4 +73,22 @@ func (c cmdable) ACLList(ctx context.Context) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "acl", "list")
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+func (c cmdable) ACLCat(ctx context.Context) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "acl", "cat")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ACLCatArgs(ctx context.Context, options *ACLCatArgs) *StringSliceCmd {
+	// if there is a category passed, build new cmd, if there isn't - use the ACLCat method
+	if options != nil && options.Category != "" {
+		args := []interface{}{"acl", "cat", options.Category}
+		cmd := NewStringSliceCmd(ctx, args...)
+		_ = c(ctx, cmd)
+		return cmd
+	}
+
+	return c.ACLCat(ctx)
 }

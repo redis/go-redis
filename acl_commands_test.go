@@ -57,4 +57,54 @@ var _ = Describe("ACL Commands", func() {
 		Expect(resAfterDeletion).To(HaveLen(1))
 		Expect(resAfterDeletion[0]).To(BeEquivalentTo(res[0]))
 	})
+
+	It("lists acl categories and subcategories", func() {
+		res, err := client.ACLCat(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(res)).To(BeNumerically(">", 20))
+		Expect(res).To(ContainElements(
+			"read",
+			"write",
+			"keyspace",
+			"dangerous",
+			"slow",
+			"set",
+			"sortedset",
+			"list",
+			"hash",
+		))
+
+		res, err = client.ACLCatArgs(ctx, &redis.ACLCatArgs{Category: "read"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(ContainElement("get"))
+	})
+
+	It("lists acl categories and subcategories with Modules", func() {
+		SkipBeforeRedisMajor(8, "modules are included in acl for redis version >= 8")
+		aclTestCase := map[string]string{
+			"search":     "FT.CREATE",
+			"bloom":      "bf.add",
+			"json":       "json.get",
+			"cuckoo":     "cf.insert",
+			"cms":        "cms.query",
+			"topk":       "topk.list",
+			"tdigest":    "tdigest.rank",
+			"timeseries": "ts.range",
+		}
+		var cats []interface{}
+
+		for cat, subitem := range aclTestCase {
+			cats = append(cats, cat)
+
+			res, err := client.ACLCatArgs(ctx, &redis.ACLCatArgs{
+				Category: cat,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(ContainElement(subitem))
+		}
+
+		res, err := client.ACLCat(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(ContainElements(cats...))
+	})
 })
