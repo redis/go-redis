@@ -51,3 +51,24 @@ func TestIsLower(t *testing.T) {
 		Expect(isLower(str)).To(BeTrue())
 	})
 }
+
+func TestGetAddr(t *testing.T) {
+	It("getAddr", func() {
+		str := "127.0.0.1:1234"
+		Expect(GetAddr(str)).To(Equal(str))
+
+		str = "[::1]:1234"
+		Expect(GetAddr(str)).To(Equal(str))
+
+		str = "[fd01:abcd::7d03]:6379"
+		Expect(GetAddr(str)).To(Equal(str))
+
+		Expect(GetAddr("::1:1234")).To(Equal("[::1]:1234"))
+
+		Expect(GetAddr("fd01:abcd::7d03:6379")).To(Equal("[fd01:abcd::7d03]:6379"))
+
+		Expect(GetAddr("127.0.0.1")).To(Equal(""))
+
+		Expect(GetAddr("127")).To(Equal(""))
+	})
+}
