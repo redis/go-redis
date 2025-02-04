@@ -10,13 +10,15 @@ import (
 )
 
 var TestUserName string = "goredis"
-var _ = Describe("ACL Users Commands", Label("NonRedisEnterprise"), func() {
+var _ = Describe("ACL user commands", Label("NonRedisEnterprise"), func() {
 	var client *redis.Client
 	var ctx context.Context
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		client = redis.NewClient(redisOptions())
+		opt := redisOptions()
+		opt.UnstableResp3 = true
+		client = redis.NewClient(opt)
 	})
 
 	AfterEach(func() {
@@ -58,13 +60,15 @@ var _ = Describe("ACL Users Commands", Label("NonRedisEnterprise"), func() {
 	})
 })
 
-var _ = Describe("ACL Permissions", Label("NonRedisEnterprise"), func() {
+var _ = Describe("ACL permissions", Label("NonRedisEnterprise"), func() {
 	var client *redis.Client
 	var ctx context.Context
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		client = redis.NewClient(redisOptions())
+		opt := redisOptions()
+		opt.UnstableResp3 = true
+		client = redis.NewClient(opt)
 	})
 
 	AfterEach(func() {
@@ -170,6 +174,147 @@ var _ = Describe("ACL Permissions", Label("NonRedisEnterprise"), func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(del).To(BeEquivalentTo(1))
 	})
+
+	It("set permissions for module commands", func() {
+		SkipBeforeRedisMajor(8, "permissions for modules are supported for Redis Version >=8")
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{}, &redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txt")
+		client.HSet(ctx, "doc1", "txt", "foo baz")
+		client.HSet(ctx, "doc2", "txt", "foo bar")
+		add, err := client.ACLSetUser(ctx,
+			TestUserName,
+			"reset",
+			"nopass",
+			"on",
+			"~*",
+			"+FT.SEARCH",
+			"-FT.DROPINDEX",
+			"+json.set",
+			"+json.get",
+			"-json.clear",
+			"+bf.reserve",
+			"-bf.info",
+			"+cf.reserve",
+			"+cms.initbydim",
+			"+topk.reserve",
+			"+tdigest.create",
+			"+ts.create",
+			"-ts.info",
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(add).To(Equal("OK"))
+
+		c := client.Conn()
+		authed, err := c.AuthACL(ctx, TestUserName, "").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(authed).To(Equal("OK"))
+
+		// has perm for search
+		Expect(c.FTSearch(ctx, "txt", "foo ~bar").Err()).NotTo(HaveOccurred())
+
+		// no perm for dropindex
+		err = c.FTDropIndex(ctx, "txt").Err()
+		Expect(err).ToNot(BeEmpty())
+		Expect(err.Error()).To(ContainSubstring("NOPERM"))
+
+		// json set and get have perm
+		Expect(c.JSONSet(ctx, "foo", "$", "\"bar\"").Err()).NotTo(HaveOccurred())
+		Expect(c.JSONGet(ctx, "foo", "$").Val()).To(BeEquivalentTo("[\"bar\"]"))
+
+		// no perm for json clear
+		err = c.JSONClear(ctx, "foo", "$").Err()
+		Expect(err).ToNot(BeEmpty())
+		Expect(err.Error()).To(ContainSubstring("NOPERM"))
+
+		// perm for reserve
+		Expect(c.BFReserve(ctx, "bloom", 0.01, 100).Err()).NotTo(HaveOccurred())
+
+		// no perm for info
+		err = c.BFInfo(ctx, "bloom").Err()
+		Expect(err).ToNot(BeEmpty())
+		Expect(err.Error()).To(ContainSubstring("NOPERM"))
+
+		// perm for cf.reserve
+		Expect(c.CFReserve(ctx, "cfres", 100).Err()).NotTo(HaveOccurred())
+		// perm for cms.initbydim
+		Expect(c.CMSInitByDim(ctx, "cmsdim", 100, 5).Err()).NotTo(HaveOccurred())
+		// perm for topk.reserve
+		Expect(c.TopKReserve(ctx, "topk", 10).Err()).NotTo(HaveOccurred())
+		// perm for tdigest.create
+		Expect(c.TDigestCreate(ctx, "tdc").Err()).NotTo(HaveOccurred())
+		// perm for ts.create
+		Expect(c.TSCreate(ctx, "tsts").Err()).NotTo(HaveOccurred())
+		// noperm for ts.info
+		err = c.TSInfo(ctx, "tsts").Err()
+		Expect(err).ToNot(BeEmpty())
+		Expect(err.Error()).To(ContainSubstring("NOPERM"))
+
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	It("set permissions for module categories", func() {
+		SkipBeforeRedisMajor(8, "permissions for modules are supported for Redis Version >=8")
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{}, &redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txt")
+		client.HSet(ctx, "doc1", "txt", "foo baz")
+		client.HSet(ctx, "doc2", "txt", "foo bar")
+		add, err := client.ACLSetUser(ctx,
+			TestUserName,
+			"reset",
+			"nopass",
+			"on",
+			"~*",
+			"+@search",
+			"+@json",
+			"+@bloom",
+			"+@cuckoo",
+			"+@topk",
+			"+@cms",
+			"+@timeseries",
+			"+@tdigest",
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(add).To(Equal("OK"))
+
+		c := client.Conn()
+		authed, err := c.AuthACL(ctx, TestUserName, "").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(authed).To(Equal("OK"))
+
+		// has perm for search
+		Expect(c.FTSearch(ctx, "txt", "foo ~bar").Err()).NotTo(HaveOccurred())
+		// perm for dropindex
+		Expect(c.FTDropIndex(ctx, "txt").Err()).NotTo(HaveOccurred())
+		// json set and get have perm
+		Expect(c.JSONSet(ctx, "foo", "$", "\"bar\"").Err()).NotTo(HaveOccurred())
+		Expect(c.JSONGet(ctx, "foo", "$").Val()).To(BeEquivalentTo("[\"bar\"]"))
+		// perm for json clear
+		Expect(c.JSONClear(ctx, "foo", "$").Err()).NotTo(HaveOccurred())
+		// perm for reserve
+		Expect(c.BFReserve(ctx, "bloom", 0.01, 100).Err()).NotTo(HaveOccurred())
+		// perm for info
+		Expect(c.BFInfo(ctx, "bloom").Err()).NotTo(HaveOccurred())
+		// perm for cf.reserve
+		Expect(c.CFReserve(ctx, "cfres", 100).Err()).NotTo(HaveOccurred())
+		// perm for cms.initbydim
+		Expect(c.CMSInitByDim(ctx, "cmsdim", 100, 5).Err()).NotTo(HaveOccurred())
+		// perm for topk.reserve
+		Expect(c.TopKReserve(ctx, "topk", 10).Err()).NotTo(HaveOccurred())
+		// perm for tdigest.create
+		Expect(c.TDigestCreate(ctx, "tdc").Err()).NotTo(HaveOccurred())
+		// perm for ts.create
+		Expect(c.TSCreate(ctx, "tsts").Err()).NotTo(HaveOccurred())
+		// perm for ts.info
+		Expect(c.TSInfo(ctx, "tsts").Err()).NotTo(HaveOccurred())
+
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
 })
 
 var _ = Describe("ACL Categories", func() {
@@ -178,7 +323,9 @@ var _ = Describe("ACL Categories", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		client = redis.NewClient(redisOptions())
+		opt := redisOptions()
+		opt.UnstableResp3 = true
+		client = redis.NewClient(opt)
 	})
 
 	AfterEach(func() {
