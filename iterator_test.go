@@ -96,6 +96,22 @@ var _ = Describe("ScanIterator", func() {
 		Expect(vals).To(HaveLen(71 * 2))
 		Expect(vals).To(ContainElement("K01"))
 		Expect(vals).To(ContainElement("K71"))
+		Expect(vals).To(ContainElement("x"))
+	})
+
+	It("should hscan without values across multiple pages", Label("NonRedisEnterprise"), func() {
+		Expect(hashSeed(71)).NotTo(HaveOccurred())
+
+		var vals []string
+		iter := client.HScanNoValues(ctx, hashKey, 0, "", 10).Iterator()
+		for iter.Next(ctx) {
+			vals = append(vals, iter.Val())
+		}
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(71))
+		Expect(vals).To(ContainElement("K01"))
+		Expect(vals).To(ContainElement("K71"))
+		Expect(vals).NotTo(ContainElement("x"))
 	})
 
 	It("should scan to page borders", func() {
