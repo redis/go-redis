@@ -9,6 +9,7 @@ import (
 
 	"github.com/uptrace/uptrace-go/uptrace"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
 	"github.com/redis/go-redis/extra/redisotel/v9"
@@ -17,6 +18,11 @@ import (
 
 var tracer = otel.Tracer("github.com/redis/go-redis/example/otel")
 
+func customAttrFn(ctx context.Context) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String("custom_attr", "custom_value"),
+	}
+}
 func main() {
 	ctx := context.Background()
 
@@ -32,7 +38,8 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
-	if err := redisotel.InstrumentTracing(rdb); err != nil {
+
+	if err := redisotel.InstrumentTracing(rdb, redisotel.WithAttributesFunc(customAttrFn)); err != nil {
 		panic(err)
 	}
 	if err := redisotel.InstrumentMetrics(rdb); err != nil {
