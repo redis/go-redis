@@ -2313,6 +2313,10 @@ var _ = Describe("Commands", func() {
 			limitedLogEntries, err := client.ACLLog(ctx, 2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(limitedLogEntries)).To(Equal(2))
+
+			// cleanup after creating the user
+			err = client.Do(ctx, "acl", "deluser", "test").Err()
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("should ACL LOG RESET", Label("NonRedisEnterprise"), func() {

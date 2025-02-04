@@ -47,17 +47,13 @@ func (c cmdable) ACLLogReset(ctx context.Context) *StatusCmd {
 }
 
 func (c cmdable) ACLDelUser(ctx context.Context, username string) *IntCmd {
-	args := make([]interface{}, 3, 3)
-	args[0] = "acl"
-	args[1] = "deluser"
-	args[2] = username
-	cmd := NewIntCmd(ctx, args...)
+	cmd := NewIntCmd(ctx, "acl", "deluser", username)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) ACLSetUser(ctx context.Context, username string, rules ...string) *StatusCmd {
-	args := make([]interface{}, 3+len(rules), 3+len(rules))
+	args := make([]interface{}, 3+len(rules))
 	args[0] = "acl"
 	args[1] = "setuser"
 	args[2] = username
@@ -84,8 +80,7 @@ func (c cmdable) ACLCat(ctx context.Context) *StringSliceCmd {
 func (c cmdable) ACLCatArgs(ctx context.Context, options *ACLCatArgs) *StringSliceCmd {
 	// if there is a category passed, build new cmd, if there isn't - use the ACLCat method
 	if options != nil && options.Category != "" {
-		args := []interface{}{"acl", "cat", options.Category}
-		cmd := NewStringSliceCmd(ctx, args...)
+		cmd := NewStringSliceCmd(ctx, "acl", "cat", options.Category)
 		_ = c(ctx, cmd)
 		return cmd
 	}
