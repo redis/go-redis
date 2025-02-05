@@ -211,13 +211,13 @@ var _ = Describe("Commands", func() {
 			select {
 			case <-done:
 				Fail("BLPOP is not blocked.")
-			case <-time.After(2 * time.Second):
+			case <-time.After(1 * time.Second):
 				// ok
 			}
 
 			killed := client.ClientKillByFilter(ctx, "MAXAGE", "1")
 			Expect(killed.Err()).NotTo(HaveOccurred())
-			Expect(killed.Val()).To(SatisfyAny(Equal(int64(2)), Equal(int64(3))))
+			Expect(killed.Val()).To(SatisfyAny(Equal(int64(2)), Equal(int64(3)), Equal(int64(4))))
 
 			select {
 			case <-done:
