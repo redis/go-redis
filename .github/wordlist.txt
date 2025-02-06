@@ -1,4 +1,5 @@
 ACLs
+APIs
 autoload
 autoloader
 autoloading
@@ -46,11 +47,14 @@ runtime
 SHA
 sharding
 SETNAME
+SpellCheck
 SSL
 struct
 stunnel
+SynDump
 TCP
 TLS
+UnstableResp
 uri
 URI
 url
@@ -59,3 +63,5 @@ RedisStack
 RedisGears
 RedisTimeseries
 RediSearch
+RawResult
+RawVal

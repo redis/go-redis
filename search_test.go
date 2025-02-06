@@ -18,11 +18,13 @@ func WaitForIndexing(c *redis.Client, index string) {
 				return
 			}
 			time.Sleep(100 * time.Millisecond)
+		} else {
+			return
 		}
 	}
 }
 
-var _ = Describe("RediSearch commands", Label("search"), func() {
+var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
 
@@ -123,6 +125,10 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(res2.Docs[1].ID).To(BeEquivalentTo("doc2"))
 		Expect(res2.Docs[0].ID).To(BeEquivalentTo("doc3"))
 
+		res3, err := client.FTSearchWithArgs(ctx, "num", "foo", &redis.FTSearchOptions{NoContent: true, SortBy: []redis.FTSearchSortBy{sortBy2}, SortByWithCount: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res3.Total).To(BeEquivalentTo(int64(0)))
+
 	})
 
 	It("should FTCreate and FTSearch example", Label("search", "ftcreate", "ftsearch"), func() {
@@ -130,7 +136,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
 		WaitForIndexing(client, "txt")
-		client.HSet(ctx, "doc1", "title", "RediSearch", "body", "Redisearch impements a search engine on top of redis")
+		client.HSet(ctx, "doc1", "title", "RediSearch", "body", "Redisearch implements a search engine on top of redis")
 		res1, err := client.FTSearchWithArgs(ctx, "txt", "search engine", &redis.FTSearchOptions{NoContent: true, Verbatim: true, LimitOffset: 0, Limit: 5}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res1.Total).To(BeEquivalentTo(int64(1)))
@@ -365,7 +371,53 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(names).To(ContainElement("John"))
 	})
 
+	// up until redis 8 the default scorer was TFIDF, in redis 8 it is BM25
+	// this test expect redis major version >= 8
 	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
+		SkipBeforeRedisMajor(8, "default scorer is not BM25")
+
+		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "doc1", "description", "The quick brown fox jumps over the lazy dog")
+		client.HSet(ctx, "doc2", "description", "Quick alice was beginning to get very tired of sitting by her quick sister on the bank, and of having nothing to do.")
+
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeNumerically("<=", 0.236))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "TFIDF"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(1)))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "TFIDF.DOCNORM"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(0.14285714285714285))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "BM25"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeNumerically("<=", 0.22471909420069797))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "DISMAX"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(2)))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "DOCSCORE"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(1)))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "HAMMING"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(0)))
+	})
+
+	// up until redis 8 the default scorer was TFIDF, in redis 8 it is BM25
+	// this test expect redis major version <=7
+	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
+		SkipAfterRedisMajor(7, "default scorer is not TFIDF")
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -430,7 +482,7 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		WaitForIndexing(client, "idx1")
 
 		client.HSet(ctx, "search", "title", "RediSearch",
-			"body", "Redisearch impements a search engine on top of redis",
+			"body", "Redisearch implements a search engine on top of redis",
 			"parent", "redis",
 			"random_num", 10)
 		client.HSet(ctx, "ai", "title", "RedisAI",
@@ -635,11 +687,11 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 
 	})
 
-	It("should FTSearch SkipInitalScan", Label("search", "ftsearch"), func() {
+	It("should FTSearch SkipInitialScan", Label("search", "ftsearch"), func() {
 		client.HSet(ctx, "doc1", "foo", "bar")
 
 		text1 := &redis.FieldSchema{FieldName: "foo", FieldType: redis.SearchFieldTypeText}
-		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{SkipInitalScan: true}, text1).Result()
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{SkipInitialScan: true}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
 		WaitForIndexing(client, "idx1")
@@ -958,6 +1010,24 @@ var _ = Describe("RediSearch commands", Label("search"), func() {
 		Expect(res1.Docs[1].ID).To(BeEquivalentTo("doc2"))
 		Expect(res1.Docs[2].ID).To(BeEquivalentTo("doc3"))
 
+	})
+
+	It("should FTConfigGet return multiple fields", Label("search", "NonRedisEnterprise"), func() {
+		res, err := client.FTConfigSet(ctx, "DEFAULT_DIALECT", "1").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(BeEquivalentTo("OK"))
+
+		defDialect, err := client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "1"}))
+
+		res, err = client.FTConfigSet(ctx, "DEFAULT_DIALECT", "2").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(BeEquivalentTo("OK"))
+
+		defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "2"}))
 	})
 
 	It("should FTConfigSet and FTConfigGet dialect", Label("search", "ftconfigget", "ftconfigset", "NonRedisEnterprise"), func() {
@@ -1415,3 +1485,229 @@ func _assert_geosearch_result(result *redis.FTSearchResult, expectedDocIDs []str
 // 		Expect(results0["id"]).To(BeEquivalentTo("a"))
 // 		Expect(results0["extra_attributes"].(map[interface{}]interface{})["__v_score"]).To(BeEquivalentTo("0"))
 // 	})
+
+var _ = Describe("RediSearch FT.Config with Resp2 and Resp3", Label("search", "NonRedisEnterprise"), func() {
+
+	var clientResp2 *redis.Client
+	var clientResp3 *redis.Client
+	BeforeEach(func() {
+		clientResp2 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
+		clientResp3 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3: true})
+		Expect(clientResp3.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(clientResp2.Close()).NotTo(HaveOccurred())
+		Expect(clientResp3.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should FTConfigSet and FTConfigGet ", Label("search", "ftconfigget", "ftconfigset", "NonRedisEnterprise"), func() {
+		val, err := clientResp3.FTConfigSet(ctx, "TIMEOUT", "100").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+
+		res2, err := clientResp2.FTConfigGet(ctx, "TIMEOUT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res2).To(BeEquivalentTo(map[string]interface{}{"TIMEOUT": "100"}))
+
+		res3, err := clientResp3.FTConfigGet(ctx, "TIMEOUT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res3).To(BeEquivalentTo(map[string]interface{}{"TIMEOUT": "100"}))
+	})
+
+	It("should FTConfigGet all resp2 and resp3", Label("search", "NonRedisEnterprise"), func() {
+		res2, err := clientResp2.FTConfigGet(ctx, "*").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		res3, err := clientResp3.FTConfigGet(ctx, "*").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(res3)).To(BeEquivalentTo(len(res2)))
+		Expect(res2["DEFAULT_DIALECT"]).To(BeEquivalentTo(res2["DEFAULT_DIALECT"]))
+	})
+})
+
+var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
+	ctx := context.TODO()
+	var client *redis.Client
+	var client2 *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3: true})
+		client2 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3})
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should handle FTAggregate with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftaggregate"), func() {
+		text1 := &redis.FieldSchema{FieldName: "PrimaryKey", FieldType: redis.SearchFieldTypeText, Sortable: true}
+		num1 := &redis.FieldSchema{FieldName: "CreatedDateTimeUTC", FieldType: redis.SearchFieldTypeNumeric, Sortable: true}
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, num1).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "doc1", "PrimaryKey", "9::362330", "CreatedDateTimeUTC", "637387878524969984")
+		client.HSet(ctx, "doc2", "PrimaryKey", "9::362329", "CreatedDateTimeUTC", "637387875859270016")
+
+		options := &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
+		res, err := client.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
+		results := res.(map[interface{}]interface{})["results"].([]interface{})
+		Expect(results[0].(map[interface{}]interface{})["extra_attributes"].(map[interface{}]interface{})["CreatedDateTimeUTC"]).
+			To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
+		Expect(results[1].(map[interface{}]interface{})["extra_attributes"].(map[interface{}]interface{})["CreatedDateTimeUTC"]).
+			To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
+
+		rawVal := client.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
+		rawValResults := rawVal.(map[interface{}]interface{})["results"].([]interface{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rawValResults[0]).To(Or(BeEquivalentTo(results[0]), BeEquivalentTo(results[1])))
+		Expect(rawValResults[1]).To(Or(BeEquivalentTo(results[0]), BeEquivalentTo(results[1])))
+
+		// Test with UnstableResp3 false
+		Expect(func() {
+			options = &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
+			rawRes, _ := client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
+			rawVal = client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
+			Expect(rawRes).To(BeNil())
+			Expect(rawVal).To(BeNil())
+		}).Should(Panic())
+
+	})
+
+	It("should handle FTInfo with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftinfo"), func() {
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText, Sortable: true, NoStem: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		resInfo, err := client.FTInfo(ctx, "idx1").RawResult()
+		Expect(err).NotTo(HaveOccurred())
+		attributes := resInfo.(map[interface{}]interface{})["attributes"].([]interface{})
+		flags := attributes[0].(map[interface{}]interface{})["flags"].([]interface{})
+		Expect(flags).To(ConsistOf("SORTABLE", "NOSTEM"))
+
+		valInfo := client.FTInfo(ctx, "idx1").RawVal()
+		attributes = valInfo.(map[interface{}]interface{})["attributes"].([]interface{})
+		flags = attributes[0].(map[interface{}]interface{})["flags"].([]interface{})
+		Expect(flags).To(ConsistOf("SORTABLE", "NOSTEM"))
+
+		// Test with UnstableResp3 false
+		Expect(func() {
+			rawResInfo, _ := client2.FTInfo(ctx, "idx1").RawResult()
+			rawValInfo := client2.FTInfo(ctx, "idx1").RawVal()
+			Expect(rawResInfo).To(BeNil())
+			Expect(rawValInfo).To(BeNil())
+		}).Should(Panic())
+	})
+
+	It("should handle FTSpellCheck with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftspellcheck"), func() {
+		text1 := &redis.FieldSchema{FieldName: "f1", FieldType: redis.SearchFieldTypeText}
+		text2 := &redis.FieldSchema{FieldName: "f2", FieldType: redis.SearchFieldTypeText}
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, text2).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "doc1", "f1", "some valid content", "f2", "this is sample text")
+		client.HSet(ctx, "doc2", "f1", "very important", "f2", "lorem ipsum")
+
+		resSpellCheck, err := client.FTSpellCheck(ctx, "idx1", "impornant").RawResult()
+		valSpellCheck := client.FTSpellCheck(ctx, "idx1", "impornant").RawVal()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(valSpellCheck).To(BeEquivalentTo(resSpellCheck))
+		results := resSpellCheck.(map[interface{}]interface{})["results"].(map[interface{}]interface{})
+		Expect(results["impornant"].([]interface{})[0].(map[interface{}]interface{})["important"]).To(BeEquivalentTo(0.5))
+
+		// Test with UnstableResp3 false
+		Expect(func() {
+			rawResSpellCheck, _ := client2.FTSpellCheck(ctx, "idx1", "impornant").RawResult()
+			rawValSpellCheck := client2.FTSpellCheck(ctx, "idx1", "impornant").RawVal()
+			Expect(rawResSpellCheck).To(BeNil())
+			Expect(rawValSpellCheck).To(BeNil())
+		}).Should(Panic())
+	})
+
+	It("should handle FTSearch with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftsearch"), func() {
+		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{StopWords: []interface{}{"foo", "bar", "baz"}}, &redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txt")
+		client.HSet(ctx, "doc1", "txt", "foo baz")
+		client.HSet(ctx, "doc2", "txt", "hello world")
+		res1, err := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{NoContent: true}).RawResult()
+		val1 := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{NoContent: true}).RawVal()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val1).To(BeEquivalentTo(res1))
+		totalResults := res1.(map[interface{}]interface{})["total_results"]
+		Expect(totalResults).To(BeEquivalentTo(int64(0)))
+		res2, err := client.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawResult()
+		Expect(err).NotTo(HaveOccurred())
+		totalResults2 := res2.(map[interface{}]interface{})["total_results"]
+		Expect(totalResults2).To(BeEquivalentTo(int64(1)))
+
+		// Test with UnstableResp3 false
+		Expect(func() {
+			rawRes2, _ := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawResult()
+			rawVal2 := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawVal()
+			Expect(rawRes2).To(BeNil())
+			Expect(rawVal2).To(BeNil())
+		}).Should(Panic())
+	})
+	It("should handle FTSynDump with Unstable RESP3 Search Module and without stability", Label("search", "ftsyndump"), func() {
+		text1 := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText}
+		text2 := &redis.FieldSchema{FieldName: "body", FieldType: redis.SearchFieldTypeText}
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnHash: true}, text1, text2).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		resSynUpdate, err := client.FTSynUpdate(ctx, "idx1", "id1", []interface{}{"boy", "child", "offspring"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resSynUpdate).To(BeEquivalentTo("OK"))
+
+		resSynUpdate, err = client.FTSynUpdate(ctx, "idx1", "id1", []interface{}{"baby", "child"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resSynUpdate).To(BeEquivalentTo("OK"))
+
+		resSynUpdate, err = client.FTSynUpdate(ctx, "idx1", "id1", []interface{}{"tree", "wood"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resSynUpdate).To(BeEquivalentTo("OK"))
+
+		resSynDump, err := client.FTSynDump(ctx, "idx1").RawResult()
+		valSynDump := client.FTSynDump(ctx, "idx1").RawVal()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(valSynDump).To(BeEquivalentTo(resSynDump))
+		Expect(resSynDump.(map[interface{}]interface{})["baby"]).To(BeEquivalentTo([]interface{}{"id1"}))
+
+		// Test with UnstableResp3 false
+		Expect(func() {
+			rawResSynDump, _ := client2.FTSynDump(ctx, "idx1").RawResult()
+			rawValSynDump := client2.FTSynDump(ctx, "idx1").RawVal()
+			Expect(rawResSynDump).To(BeNil())
+			Expect(rawValSynDump).To(BeNil())
+		}).Should(Panic())
+	})
+
+	It("should test not affected Resp 3 Search method - FTExplain", Label("search", "ftexplain"), func() {
+		text1 := &redis.FieldSchema{FieldName: "f1", FieldType: redis.SearchFieldTypeText}
+		text2 := &redis.FieldSchema{FieldName: "f2", FieldType: redis.SearchFieldTypeText}
+		text3 := &redis.FieldSchema{FieldName: "f3", FieldType: redis.SearchFieldTypeText}
+		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{}, text1, text2, text3).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txt")
+		res1, err := client.FTExplain(ctx, "txt", "@f3:f3_val @f2:f2_val @f1:f1_val").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res1).ToNot(BeEmpty())
+
+		// Test with UnstableResp3 false
+		Expect(func() {
+			res2, err := client2.FTExplain(ctx, "txt", "@f3:f3_val @f2:f2_val @f1:f1_val").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res2).ToNot(BeEmpty())
+		}).ShouldNot(Panic())
+	})
+})

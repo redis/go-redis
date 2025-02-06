@@ -7,8 +7,8 @@ replace github.com/redis/go-redis/v9 => ../..
 replace github.com/redis/go-redis/extra/rediscmd/v9 => ../rediscmd
 
 require (
-	github.com/redis/go-redis/extra/rediscmd/v9 v9.6.1
-	github.com/redis/go-redis/v9 v9.6.1
+	github.com/redis/go-redis/extra/rediscmd/v9 v9.6.2
+	github.com/redis/go-redis/v9 v9.6.2
 	go.opentelemetry.io/otel v1.22.0
 	go.opentelemetry.io/otel/metric v1.22.0
 	go.opentelemetry.io/otel/sdk v1.22.0
@@ -21,4 +21,8 @@ require (
 	github.com/go-logr/logr v1.4.1 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	golang.org/x/sys v0.16.0 // indirect
+)
+
+retract (
+	v9.5.3 // This version was accidentally released.
 )
