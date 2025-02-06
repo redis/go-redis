@@ -497,6 +497,15 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		if options.Verbatim {
 			queryArgs = append(queryArgs, "VERBATIM")
 		}
+
+		if options.Scorer != "" {
+			queryArgs = append(queryArgs, "SCORER", options.Scorer)
+		}
+
+		if options.AddScores {
+			queryArgs = append(queryArgs, "ADDSCORES")
+		}
+
 		if options.LoadAll && options.Load != nil {
 			panic("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
 		}
@@ -522,14 +531,6 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 			if apply.As != "" {
 				queryArgs = append(queryArgs, "AS", apply.As)
 			}
-		}
-
-		if options.Scorer != "" {
-			queryArgs = append(queryArgs, "SCORER", options.Scorer)
-		}
-
-		if options.AddScores {
-			queryArgs = append(queryArgs, "ADDSCORES")
 		}
 
 		if options.GroupBy != nil {
@@ -701,6 +702,12 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		if options.Verbatim {
 			args = append(args, "VERBATIM")
 		}
+		if options.Scorer != "" {
+			args = append(args, "SCORER", options.Scorer)
+		}
+		if options.AddScores {
+			args = append(args, "ADDSCORES")
+		}
 		if options.LoadAll && options.Load != nil {
 			panic("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
 		}
@@ -724,12 +731,6 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 			if apply.As != "" {
 				args = append(args, "AS", apply.As)
 			}
-		}
-		if options.Scorer != "" {
-			args = append(args, "SCORER", options.Scorer)
-		}
-		if options.AddScores {
-			args = append(args, "ADDSCORES")
 		}
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
