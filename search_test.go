@@ -2,6 +2,8 @@ package redis_test
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -640,6 +642,62 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Rows[0].Fields["t2"]).To(BeEquivalentTo("world"))
 	})
 
+	FIt("should FTAggregate with scorer and addscores", Label("search", "ftaggregate"), func() {
+		title := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: false}
+		description := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText, Sortable: false}
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnHash: true, Prefix: []interface{}{"product:"}}, title, description).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "product:1", "title", "New Gaming Laptop", "description", "this is not a desktop")
+		client.HSet(ctx, "product:2", "title", "Super Old Not Gaming Laptop", "description", "this laptop is not a new laptop but it is a laptop")
+		client.HSet(ctx, "product:3", "title", "Office PC", "description", "office desktop pc")
+
+		options := &redis.FTAggregateOptions{
+			AddScores: true,
+			Scorer:    "BM25",
+			SortBy: []redis.FTAggregateSortBy{{
+				FieldName: "@__score",
+				Desc:      true,
+			}},
+		}
+
+		res, err := client.FTAggregateWithArgs(ctx, "idx1", "laptop", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).ToNot(BeNil())
+		Expect(len(res.Rows)).To(BeEquivalentTo(2))
+		score1, err := strconv.ParseFloat(fmt.Sprintf("%s", res.Rows[0].Fields["__score"]), 64)
+		Expect(err).NotTo(HaveOccurred())
+		score2, err := strconv.ParseFloat(fmt.Sprintf("%s", res.Rows[1].Fields["__score"]), 64)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(score1).To(BeNumerically(">", score2))
+
+		optionsDM := &redis.FTAggregateOptions{
+			AddScores: true,
+			Scorer:    "DISMAX",
+			SortBy: []redis.FTAggregateSortBy{{
+				FieldName: "@__score",
+				Desc:      true,
+			}},
+		}
+
+		resDM, err := client.FTAggregateWithArgs(ctx, "idx1", "laptop", optionsDM).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resDM).ToNot(BeNil())
+		Expect(len(resDM.Rows)).To(BeEquivalentTo(2))
+		score1DM, err := strconv.ParseFloat(fmt.Sprintf("%s", resDM.Rows[0].Fields["__score"]), 64)
+		Expect(err).NotTo(HaveOccurred())
+		score2DM, err := strconv.ParseFloat(fmt.Sprintf("%s", resDM.Rows[1].Fields["__score"]), 64)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(score1DM).To(BeNumerically(">", score2DM))
+
+		Expect(score1DM).To(BeEquivalentTo(float64(4)))
+		Expect(score2DM).To(BeEquivalentTo(float64(1)))
+		Expect(score1).NotTo(BeEquivalentTo(score1DM))
+		Expect(score2).NotTo(BeEquivalentTo(score2DM))
+	})
+
 	It("should FTAggregate apply and groupby", Label("search", "ftaggregate"), func() {
 		text1 := &redis.FieldSchema{FieldName: "PrimaryKey", FieldType: redis.SearchFieldTypeText, Sortable: true}
 		num1 := &redis.FieldSchema{FieldName: "CreatedDateTimeUTC", FieldType: redis.SearchFieldTypeNumeric, Sortable: true}
@@ -721,7 +779,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 			Expect(res.Rows[0].Fields["age"]).To(BeEquivalentTo("19"))
 			Expect(res.Rows[1].Fields["age"]).To(BeEquivalentTo("25"))
 		}
-
 	})
 
 	It("should FTSearch SkipInitialScan", Label("search", "ftsearch"), func() {

@@ -240,13 +240,19 @@ type FTAggregateWithCursor struct {
 }
 
 type FTAggregateOptions struct {
-	Verbatim          bool
-	LoadAll           bool
-	Load              []FTAggregateLoad
-	Timeout           int
-	GroupBy           []FTAggregateGroupBy
-	SortBy            []FTAggregateSortBy
-	SortByMax         int
+	Verbatim  bool
+	LoadAll   bool
+	Load      []FTAggregateLoad
+	Timeout   int
+	GroupBy   []FTAggregateGroupBy
+	SortBy    []FTAggregateSortBy
+	SortByMax int
+	// Scorer is used to set scoring function, if not set passed, a default will be used.
+	// The default scorer depends on the Redis version:
+	// - `BM25` for Redis >= 8
+	// - `TFIDF` for Redis < 8
+	Scorer            string
+	AddScores         bool
 	Apply             []FTAggregateApply
 	LimitOffset       int
 	Limit             int
@@ -505,15 +511,26 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 				}
 			}
 		}
+
 		if options.Timeout > 0 {
 			queryArgs = append(queryArgs, "TIMEOUT", options.Timeout)
 		}
+
 		for _, apply := range options.Apply {
 			queryArgs = append(queryArgs, "APPLY", apply.Field)
 			if apply.As != "" {
 				queryArgs = append(queryArgs, "AS", apply.As)
 			}
 		}
+
+		if options.Scorer != "" {
+			queryArgs = append(queryArgs, "SCORER", options.Scorer)
+		}
+
+		if options.AddScores == true {
+			queryArgs = append(queryArgs, "ADDSCORES")
+		}
+
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
 				queryArgs = append(queryArgs, "GROUPBY", len(groupBy.Fields))
@@ -581,6 +598,7 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 				queryArgs = append(queryArgs, key, value)
 			}
 		}
+
 		if options.DialectVersion > 0 {
 			queryArgs = append(queryArgs, "DIALECT", options.DialectVersion)
 		}
@@ -706,6 +724,12 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 				args = append(args, "AS", apply.As)
 			}
 		}
+		if options.Scorer != "" {
+			args = append(args, "SCORER", options.Scorer)
+		}
+		if options.AddScores == true {
+			args = append(args, "ADDSCORES")
+		}
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
 				args = append(args, "GROUPBY", len(groupBy.Fields))
@@ -779,6 +803,7 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 	}
 
 	cmd := NewAggregateCmd(ctx, args...)
+	cmd.err = cmd.err
 	_ = c(ctx, cmd)
 	return cmd
 }
