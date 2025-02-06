@@ -655,14 +655,26 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		client.HSet(ctx, "doc2", "PrimaryKey", "9::362329", "CreatedDateTimeUTC", "1739342399")
 		client.HSet(ctx, "doc3", "PrimaryKey", "9::362329", "CreatedDateTimeUTC", "1739353199")
 
-		reducer := redis.FTAggregateReducer{Reducer: redis.SearchCount}
+		reducer := redis.FTAggregateReducer{Reducer: redis.SearchCount, As: "perDay"}
 
 		options := &redis.FTAggregateOptions{
-			Apply:   []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC /(60*60*24)", As: "TimestampAsDay"}},
-			GroupBy: []redis.FTAggregateGroupBy{{Fields: []interface{}{"@TimestampAsDay"}, Reduce: []redis.FTAggregateReducer{reducer}}},
+			Apply: []redis.FTAggregateApply{{Field: "floor(@CreatedDateTimeUTC /(60*60*24))", As: "TimestampAsDay"}},
+			GroupBy: []redis.FTAggregateGroupBy{{
+				Fields: []interface{}{"@TimestampAsDay"},
+				Reduce: []redis.FTAggregateReducer{reducer},
+			}},
+			SortBy: []redis.FTAggregateSortBy{{
+				FieldName: "@perDay",
+				Desc:      true,
+			}},
 		}
+
 		res, err := client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
 		Expect(err).NotTo(HaveOccurred())
+		Expect(res).ToNot(BeNil())
+		Expect(len(res.Rows)).To(BeEquivalentTo(2))
+		Expect(res.Rows[0].Fields["perDay"]).To(BeEquivalentTo("2"))
+		Expect(res.Rows[1].Fields["perDay"]).To(BeEquivalentTo("1"))
 	})
 
 	It("should FTAggregate apply", Label("search", "ftaggregate"), func() {
