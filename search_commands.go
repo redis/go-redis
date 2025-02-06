@@ -251,7 +251,8 @@ type FTAggregateOptions struct {
 	// The default scorer depends on the Redis version:
 	// - `BM25` for Redis >= 8
 	// - `TFIDF` for Redis < 8
-	Scorer            string
+	Scorer string
+	// AddScores is available in Redis CE 8
 	AddScores         bool
 	Apply             []FTAggregateApply
 	LimitOffset       int
