@@ -642,7 +642,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Rows[0].Fields["t2"]).To(BeEquivalentTo("world"))
 	})
 
-	FIt("should FTAggregate with scorer and addscores", Label("search", "ftaggregate"), func() {
+	It("should FTAggregate with scorer and addscores", Label("search", "ftaggregate"), func() {
 		title := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: false}
 		description := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText, Sortable: false}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnHash: true, Prefix: []interface{}{"product:"}}, title, description).Result()
