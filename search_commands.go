@@ -527,7 +527,7 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 			queryArgs = append(queryArgs, "SCORER", options.Scorer)
 		}
 
-		if options.AddScores == true {
+		if options.AddScores {
 			queryArgs = append(queryArgs, "ADDSCORES")
 		}
 
@@ -727,7 +727,7 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		if options.Scorer != "" {
 			args = append(args, "SCORER", options.Scorer)
 		}
-		if options.AddScores == true {
+		if options.AddScores {
 			args = append(args, "ADDSCORES")
 		}
 		if options.GroupBy != nil {
@@ -803,7 +803,6 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 	}
 
 	cmd := NewAggregateCmd(ctx, args...)
-	cmd.err = cmd.err
 	_ = c(ctx, cmd)
 	return cmd
 }
