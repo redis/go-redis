@@ -94,6 +94,9 @@ type ClusterOptions struct {
 	DisableIndentity bool // Disable set-lib on connect. Default is false.
 
 	IdentitySuffix string // Add suffix to client name. Default is empty.
+
+	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
+	UnstableResp3 bool
 }
 
 func (opt *ClusterOptions) init() {
