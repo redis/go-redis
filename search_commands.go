@@ -508,6 +508,12 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		if options.Timeout > 0 {
 			queryArgs = append(queryArgs, "TIMEOUT", options.Timeout)
 		}
+		for _, apply := range options.Apply {
+			queryArgs = append(queryArgs, "APPLY", apply.Field)
+			if apply.As != "" {
+				queryArgs = append(queryArgs, "AS", apply.As)
+			}
+		}
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
 				queryArgs = append(queryArgs, "GROUPBY", len(groupBy.Fields))
@@ -548,12 +554,6 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		}
 		if options.SortByMax > 0 {
 			queryArgs = append(queryArgs, "MAX", options.SortByMax)
-		}
-		for _, apply := range options.Apply {
-			queryArgs = append(queryArgs, "APPLY", apply.Field)
-			if apply.As != "" {
-				queryArgs = append(queryArgs, "AS", apply.As)
-			}
 		}
 		if options.LimitOffset > 0 {
 			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset)
@@ -661,11 +661,12 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
 		cmd.err = err
-		return nil
+		return err
 	}
 	cmd.val, err = ProcessAggregateResult(data)
 	if err != nil {
 		cmd.err = err
+		return err
 	}
 	return nil
 }
@@ -698,6 +699,12 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.Timeout > 0 {
 			args = append(args, "TIMEOUT", options.Timeout)
+		}
+		for _, apply := range options.Apply {
+			args = append(args, "APPLY", apply.Field)
+			if apply.As != "" {
+				args = append(args, "AS", apply.As)
+			}
 		}
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
@@ -739,12 +746,6 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.SortByMax > 0 {
 			args = append(args, "MAX", options.SortByMax)
-		}
-		for _, apply := range options.Apply {
-			args = append(args, "APPLY", apply.Field)
-			if apply.As != "" {
-				args = append(args, "AS", apply.As)
-			}
 		}
 		if options.LimitOffset > 0 {
 			args = append(args, "LIMIT", options.LimitOffset)
@@ -1693,7 +1694,8 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 
 // FTSearch - Executes a search query on an index.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
-// For more information, please refer to the Redis documentation:
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
@@ -1704,6 +1706,12 @@ func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSe
 
 type SearchQuery []interface{}
 
+// FTSearchQuery - Executes a search query on an index with additional options.
+// The 'index' parameter specifies the index to search, the 'query' parameter specifies the search query,
+// and the 'options' parameter specifies additional options for the search.
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
+// [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 	queryArgs := []interface{}{query}
 	if options != nil {
@@ -1816,7 +1824,8 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 // FTSearchWithArgs - Executes a search query on an index with additional options.
 // The 'index' parameter specifies the index to search, the 'query' parameter specifies the search query,
 // and the 'options' parameter specifies additional options for the search.
-// For more information, please refer to the Redis documentation:
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query string, options *FTSearchOptions) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
@@ -1908,7 +1917,7 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 				}
 			}
 			if options.SortByWithCount {
-				args = append(args, "WITHCOUT")
+				args = append(args, "WITHCOUNT")
 			}
 		}
 		if options.LimitOffset >= 0 && options.Limit > 0 {

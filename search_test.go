@@ -640,6 +640,31 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Rows[0].Fields["t2"]).To(BeEquivalentTo("world"))
 	})
 
+	It("should FTAggregate apply and groupby", Label("search", "ftaggregate"), func() {
+		text1 := &redis.FieldSchema{FieldName: "PrimaryKey", FieldType: redis.SearchFieldTypeText, Sortable: true}
+		num1 := &redis.FieldSchema{FieldName: "CreatedDateTimeUTC", FieldType: redis.SearchFieldTypeNumeric, Sortable: true}
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, num1).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		// 6 feb
+		client.HSet(ctx, "doc1", "PrimaryKey", "9::362330", "CreatedDateTimeUTC", "1738823999")
+
+		// 12 feb
+		client.HSet(ctx, "doc2", "PrimaryKey", "9::362329", "CreatedDateTimeUTC", "1739342399")
+		client.HSet(ctx, "doc3", "PrimaryKey", "9::362329", "CreatedDateTimeUTC", "1739353199")
+
+		reducer := redis.FTAggregateReducer{Reducer: redis.SearchCount}
+
+		options := &redis.FTAggregateOptions{
+			Apply:   []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC /(60*60*24)", As: "TimestampAsDay"}},
+			GroupBy: []redis.FTAggregateGroupBy{{Fields: []interface{}{"@TimestampAsDay"}, Reduce: []redis.FTAggregateReducer{reducer}}},
+		}
+		res, err := client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("should FTAggregate apply", Label("search", "ftaggregate"), func() {
 		text1 := &redis.FieldSchema{FieldName: "PrimaryKey", FieldType: redis.SearchFieldTypeText, Sortable: true}
 		num1 := &redis.FieldSchema{FieldName: "CreatedDateTimeUTC", FieldType: redis.SearchFieldTypeNumeric, Sortable: true}
