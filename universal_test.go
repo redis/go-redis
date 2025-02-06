@@ -46,7 +46,7 @@ var _ = Describe("UniversalClient", func() {
 			UnstableResp3: true,
 		})
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
-		_, err := client.FTInfo(ctx, "test").Result()
+		_, err := client.FTInfo(ctx, "all").Result()
 		Expect(err).ToNot(HaveOccurred())
 	})
 })
