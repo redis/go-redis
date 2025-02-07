@@ -39,8 +39,19 @@ var _ = Describe("UniversalClient", func() {
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
 
-	It("should connect to clusters with unstableresp3", Label("NonRedisEnterprise"), func() {
+	It("connect to clusters with UniversalClient and UnstableResp3", Label("NonRedisEnterprise"), func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:         cluster.addrs(),
+			Protocol:      3,
+			UnstableResp3: true,
+		})
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+		a := func() { client.FTInfo(ctx, "all").Result() }
+		Expect(a).ToNot(Panic())
+	})
+
+	It("connect to clusters with ClusterClient and UnstableResp3", Label("NonRedisEnterprise"), func() {
+		client = redis.NewClusterClient(&redis.ClusterOptions{
 			Addrs:         cluster.addrs(),
 			Protocol:      3,
 			UnstableResp3: true,
