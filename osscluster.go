@@ -487,9 +487,11 @@ func (c *clusterNodes) Addrs() ([]string, error) {
 	closed := c.closed //nolint:ifshort
 	if !closed {
 		if len(c.activeAddrs) > 0 {
-			addrs = c.activeAddrs
+			addrs = make([]string, len(c.activeAddrs))
+			copy(addrs, c.activeAddrs)
 		} else {
-			addrs = c.addrs
+			addrs = make([]string, len(c.addrs))
+			copy(addrs, c.addrs)
 		}
 	}
 	c.mu.RUnlock()
