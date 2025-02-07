@@ -16,7 +16,7 @@ type SearchCmdable interface {
 	FTAliasAdd(ctx context.Context, index string, alias string) *StatusCmd
 	FTAliasDel(ctx context.Context, alias string) *StatusCmd
 	FTAliasUpdate(ctx context.Context, index string, alias string) *StatusCmd
-	FTAlter(ctx context.Context, index string, skipInitalScan bool, definition []interface{}) *StatusCmd
+	FTAlter(ctx context.Context, index string, skipInitialScan bool, definition []interface{}) *StatusCmd
 	FTConfigGet(ctx context.Context, option string) *MapMapStringInterfaceCmd
 	FTConfigSet(ctx context.Context, option string, value interface{}) *StatusCmd
 	FTCreate(ctx context.Context, index string, options *FTCreateOptions, schema ...*FieldSchema) *StatusCmd
@@ -57,7 +57,7 @@ type FTCreateOptions struct {
 	NoFields        bool
 	NoFreqs         bool
 	StopWords       []interface{}
-	SkipInitalScan  bool
+	SkipInitialScan bool
 }
 
 type FieldSchema struct {
@@ -70,7 +70,7 @@ type FieldSchema struct {
 	NoIndex           bool
 	PhoneticMatcher   string
 	Weight            float64
-	Seperator         string
+	Separator         string
 	CaseSensitive     bool
 	WithSuffixtrie    bool
 	VectorArgs        *FTVectorArgs
@@ -240,13 +240,20 @@ type FTAggregateWithCursor struct {
 }
 
 type FTAggregateOptions struct {
-	Verbatim          bool
-	LoadAll           bool
-	Load              []FTAggregateLoad
-	Timeout           int
-	GroupBy           []FTAggregateGroupBy
-	SortBy            []FTAggregateSortBy
-	SortByMax         int
+	Verbatim  bool
+	LoadAll   bool
+	Load      []FTAggregateLoad
+	Timeout   int
+	GroupBy   []FTAggregateGroupBy
+	SortBy    []FTAggregateSortBy
+	SortByMax int
+	// Scorer is used to set scoring function, if not set passed, a default will be used.
+	// The default scorer depends on the Redis version:
+	// - `BM25` for Redis >= 8
+	// - `TFIDF` for Redis < 8
+	Scorer string
+	// AddScores is available in Redis CE 8
+	AddScores         bool
 	Apply             []FTAggregateApply
 	LimitOffset       int
 	Limit             int
@@ -282,23 +289,30 @@ type FTSearchSortBy struct {
 	Desc      bool
 }
 
+// FTSearchOptions hold options that can be passed to the FT.SEARCH command.
+// More information about the options can be found
+// in the documentation for FT.SEARCH https://redis.io/docs/latest/commands/ft.search/
 type FTSearchOptions struct {
-	NoContent       bool
-	Verbatim        bool
-	NoStopWrods     bool
-	WithScores      bool
-	WithPayloads    bool
-	WithSortKeys    bool
-	Filters         []FTSearchFilter
-	GeoFilter       []FTSearchGeoFilter
-	InKeys          []interface{}
-	InFields        []interface{}
-	Return          []FTSearchReturn
-	Slop            int
-	Timeout         int
-	InOrder         bool
-	Language        string
-	Expander        string
+	NoContent    bool
+	Verbatim     bool
+	NoStopWords  bool
+	WithScores   bool
+	WithPayloads bool
+	WithSortKeys bool
+	Filters      []FTSearchFilter
+	GeoFilter    []FTSearchGeoFilter
+	InKeys       []interface{}
+	InFields     []interface{}
+	Return       []FTSearchReturn
+	Slop         int
+	Timeout      int
+	InOrder      bool
+	Language     string
+	Expander     string
+	// Scorer is used to set scoring function, if not set passed, a default will be used.
+	// The default scorer depends on the Redis version:
+	// - `BM25` for Redis >= 8
+	// - `TFIDF` for Redis < 8
 	Scorer          string
 	ExplainScore    bool
 	Payload         string
@@ -483,6 +497,15 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		if options.Verbatim {
 			queryArgs = append(queryArgs, "VERBATIM")
 		}
+
+		if options.Scorer != "" {
+			queryArgs = append(queryArgs, "SCORER", options.Scorer)
+		}
+
+		if options.AddScores {
+			queryArgs = append(queryArgs, "ADDSCORES")
+		}
+
 		if options.LoadAll && options.Load != nil {
 			panic("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
 		}
@@ -498,9 +521,18 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 				}
 			}
 		}
+
 		if options.Timeout > 0 {
 			queryArgs = append(queryArgs, "TIMEOUT", options.Timeout)
 		}
+
+		for _, apply := range options.Apply {
+			queryArgs = append(queryArgs, "APPLY", apply.Field)
+			if apply.As != "" {
+				queryArgs = append(queryArgs, "AS", apply.As)
+			}
+		}
+
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
 				queryArgs = append(queryArgs, "GROUPBY", len(groupBy.Fields))
@@ -542,12 +574,6 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		if options.SortByMax > 0 {
 			queryArgs = append(queryArgs, "MAX", options.SortByMax)
 		}
-		for _, apply := range options.Apply {
-			queryArgs = append(queryArgs, "APPLY", apply.Field)
-			if apply.As != "" {
-				queryArgs = append(queryArgs, "AS", apply.As)
-			}
-		}
 		if options.LimitOffset > 0 {
 			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset)
 		}
@@ -574,6 +600,7 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 				queryArgs = append(queryArgs, key, value)
 			}
 		}
+
 		if options.DialectVersion > 0 {
 			queryArgs = append(queryArgs, "DIALECT", options.DialectVersion)
 		}
@@ -654,11 +681,12 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
 		cmd.err = err
-		return nil
+		return err
 	}
 	cmd.val, err = ProcessAggregateResult(data)
 	if err != nil {
 		cmd.err = err
+		return err
 	}
 	return nil
 }
@@ -673,6 +701,12 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 	if options != nil {
 		if options.Verbatim {
 			args = append(args, "VERBATIM")
+		}
+		if options.Scorer != "" {
+			args = append(args, "SCORER", options.Scorer)
+		}
+		if options.AddScores {
+			args = append(args, "ADDSCORES")
 		}
 		if options.LoadAll && options.Load != nil {
 			panic("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
@@ -691,6 +725,12 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.Timeout > 0 {
 			args = append(args, "TIMEOUT", options.Timeout)
+		}
+		for _, apply := range options.Apply {
+			args = append(args, "APPLY", apply.Field)
+			if apply.As != "" {
+				args = append(args, "AS", apply.As)
+			}
 		}
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
@@ -732,12 +772,6 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.SortByMax > 0 {
 			args = append(args, "MAX", options.SortByMax)
-		}
-		for _, apply := range options.Apply {
-			args = append(args, "APPLY", apply.Field)
-			if apply.As != "" {
-				args = append(args, "AS", apply.As)
-			}
 		}
 		if options.LimitOffset > 0 {
 			args = append(args, "LIMIT", options.LimitOffset)
@@ -808,13 +842,13 @@ func (c cmdable) FTAliasUpdate(ctx context.Context, index string, alias string) 
 }
 
 // FTAlter - Alters the definition of an existing index.
-// The 'index' parameter specifies the index to alter, and the 'skipInitalScan' parameter specifies whether to skip the initial scan.
+// The 'index' parameter specifies the index to alter, and the 'skipInitialScan' parameter specifies whether to skip the initial scan.
 // The 'definition' parameter specifies the new definition for the index.
 // For more information, please refer to the Redis documentation:
 // [FT.ALTER]: (https://redis.io/commands/ft.alter/)
-func (c cmdable) FTAlter(ctx context.Context, index string, skipInitalScan bool, definition []interface{}) *StatusCmd {
+func (c cmdable) FTAlter(ctx context.Context, index string, skipInitialScan bool, definition []interface{}) *StatusCmd {
 	args := []interface{}{"FT.ALTER", index}
-	if skipInitalScan {
+	if skipInitialScan {
 		args = append(args, "SKIPINITIALSCAN")
 	}
 	args = append(args, "SCHEMA", "ADD")
@@ -824,20 +858,32 @@ func (c cmdable) FTAlter(ctx context.Context, index string, skipInitalScan bool,
 	return cmd
 }
 
-// FTConfigGet - Retrieves the value of a RediSearch configuration parameter.
+// Retrieves the value of a RediSearch configuration parameter.
 // The 'option' parameter specifies the configuration parameter to retrieve.
-// For more information, please refer to the Redis documentation:
-// [FT.CONFIG GET]: (https://redis.io/commands/ft.config-get/)
+// For more information, please refer to the Redis [FT.CONFIG GET] documentation.
+//
+// Deprecated: FTConfigGet is deprecated in Redis 8.
+// All configuration will be done with the CONFIG GET command.
+// For more information check [Client.ConfigGet] and [CONFIG GET Documentation]
+//
+// [CONFIG GET Documentation]: https://redis.io/commands/config-get/
+// [FT.CONFIG GET]: https://redis.io/commands/ft.config-get/
 func (c cmdable) FTConfigGet(ctx context.Context, option string) *MapMapStringInterfaceCmd {
 	cmd := NewMapMapStringInterfaceCmd(ctx, "FT.CONFIG", "GET", option)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// FTConfigSet - Sets the value of a RediSearch configuration parameter.
+// Sets the value of a RediSearch configuration parameter.
 // The 'option' parameter specifies the configuration parameter to set, and the 'value' parameter specifies the new value.
-// For more information, please refer to the Redis documentation:
-// [FT.CONFIG SET]: (https://redis.io/commands/ft.config-set/)
+// For more information, please refer to the Redis [FT.CONFIG SET] documentation.
+//
+// Deprecated: FTConfigSet is deprecated in Redis 8.
+// All configuration will be done with the CONFIG SET command.
+// For more information check [Client.ConfigSet] and [CONFIG SET Documentation]
+//
+// [CONFIG SET Documentation]: https://redis.io/commands/config-set/
+// [FT.CONFIG SET]: https://redis.io/commands/ft.config-set/
 func (c cmdable) FTConfigSet(ctx context.Context, option string, value interface{}) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "FT.CONFIG", "SET", option, value)
 	_ = c(ctx, cmd)
@@ -907,7 +953,7 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 			args = append(args, "STOPWORDS", len(options.StopWords))
 			args = append(args, options.StopWords...)
 		}
-		if options.SkipInitalScan {
+		if options.SkipInitialScan {
 			args = append(args, "SKIPINITIALSCAN")
 		}
 	}
@@ -1003,8 +1049,8 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		if schema.Weight > 0 {
 			args = append(args, "WEIGHT", schema.Weight)
 		}
-		if schema.Seperator != "" {
-			args = append(args, "SEPERATOR", schema.Seperator)
+		if schema.Separator != "" {
+			args = append(args, "SEPARATOR", schema.Separator)
 		}
 		if schema.CaseSensitive {
 			args = append(args, "CASESENSITIVE")
@@ -1674,7 +1720,8 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 
 // FTSearch - Executes a search query on an index.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
-// For more information, please refer to the Redis documentation:
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
@@ -1685,6 +1732,12 @@ func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSe
 
 type SearchQuery []interface{}
 
+// FTSearchQuery - Executes a search query on an index with additional options.
+// The 'index' parameter specifies the index to search, the 'query' parameter specifies the search query,
+// and the 'options' parameter specifies additional options for the search.
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
+// [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 	queryArgs := []interface{}{query}
 	if options != nil {
@@ -1694,7 +1747,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 		if options.Verbatim {
 			queryArgs = append(queryArgs, "VERBATIM")
 		}
-		if options.NoStopWrods {
+		if options.NoStopWords {
 			queryArgs = append(queryArgs, "NOSTOPWORDS")
 		}
 		if options.WithScores {
@@ -1775,7 +1828,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 				}
 			}
 			if options.SortByWithCount {
-				queryArgs = append(queryArgs, "WITHCOUT")
+				queryArgs = append(queryArgs, "WITHCOUNT")
 			}
 		}
 		if options.LimitOffset >= 0 && options.Limit > 0 {
@@ -1797,7 +1850,8 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 // FTSearchWithArgs - Executes a search query on an index with additional options.
 // The 'index' parameter specifies the index to search, the 'query' parameter specifies the search query,
 // and the 'options' parameter specifies additional options for the search.
-// For more information, please refer to the Redis documentation:
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query string, options *FTSearchOptions) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
@@ -1808,7 +1862,7 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 		if options.Verbatim {
 			args = append(args, "VERBATIM")
 		}
-		if options.NoStopWrods {
+		if options.NoStopWords {
 			args = append(args, "NOSTOPWORDS")
 		}
 		if options.WithScores {
@@ -1889,7 +1943,7 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 				}
 			}
 			if options.SortByWithCount {
-				args = append(args, "WITHCOUT")
+				args = append(args, "WITHCOUNT")
 			}
 		}
 		if options.LimitOffset >= 0 && options.Limit > 0 {
