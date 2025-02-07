@@ -240,13 +240,20 @@ type FTAggregateWithCursor struct {
 }
 
 type FTAggregateOptions struct {
-	Verbatim          bool
-	LoadAll           bool
-	Load              []FTAggregateLoad
-	Timeout           int
-	GroupBy           []FTAggregateGroupBy
-	SortBy            []FTAggregateSortBy
-	SortByMax         int
+	Verbatim  bool
+	LoadAll   bool
+	Load      []FTAggregateLoad
+	Timeout   int
+	GroupBy   []FTAggregateGroupBy
+	SortBy    []FTAggregateSortBy
+	SortByMax int
+	// Scorer is used to set scoring function, if not set passed, a default will be used.
+	// The default scorer depends on the Redis version:
+	// - `BM25` for Redis >= 8
+	// - `TFIDF` for Redis < 8
+	Scorer string
+	// AddScores is available in Redis CE 8
+	AddScores         bool
 	Apply             []FTAggregateApply
 	LimitOffset       int
 	Limit             int
@@ -483,6 +490,15 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		if options.Verbatim {
 			queryArgs = append(queryArgs, "VERBATIM")
 		}
+
+		if options.Scorer != "" {
+			queryArgs = append(queryArgs, "SCORER", options.Scorer)
+		}
+
+		if options.AddScores {
+			queryArgs = append(queryArgs, "ADDSCORES")
+		}
+
 		if options.LoadAll && options.Load != nil {
 			panic("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
 		}
@@ -498,9 +514,18 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 				}
 			}
 		}
+
 		if options.Timeout > 0 {
 			queryArgs = append(queryArgs, "TIMEOUT", options.Timeout)
 		}
+
+		for _, apply := range options.Apply {
+			queryArgs = append(queryArgs, "APPLY", apply.Field)
+			if apply.As != "" {
+				queryArgs = append(queryArgs, "AS", apply.As)
+			}
+		}
+
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
 				queryArgs = append(queryArgs, "GROUPBY", len(groupBy.Fields))
@@ -542,12 +567,6 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		if options.SortByMax > 0 {
 			queryArgs = append(queryArgs, "MAX", options.SortByMax)
 		}
-		for _, apply := range options.Apply {
-			queryArgs = append(queryArgs, "APPLY", apply.Field)
-			if apply.As != "" {
-				queryArgs = append(queryArgs, "AS", apply.As)
-			}
-		}
 		if options.LimitOffset > 0 {
 			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset)
 		}
@@ -574,6 +593,7 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 				queryArgs = append(queryArgs, key, value)
 			}
 		}
+
 		if options.DialectVersion > 0 {
 			queryArgs = append(queryArgs, "DIALECT", options.DialectVersion)
 		}
@@ -654,11 +674,12 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
 		cmd.err = err
-		return nil
+		return err
 	}
 	cmd.val, err = ProcessAggregateResult(data)
 	if err != nil {
 		cmd.err = err
+		return err
 	}
 	return nil
 }
@@ -673,6 +694,12 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 	if options != nil {
 		if options.Verbatim {
 			args = append(args, "VERBATIM")
+		}
+		if options.Scorer != "" {
+			args = append(args, "SCORER", options.Scorer)
+		}
+		if options.AddScores {
+			args = append(args, "ADDSCORES")
 		}
 		if options.LoadAll && options.Load != nil {
 			panic("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
@@ -691,6 +718,12 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.Timeout > 0 {
 			args = append(args, "TIMEOUT", options.Timeout)
+		}
+		for _, apply := range options.Apply {
+			args = append(args, "APPLY", apply.Field)
+			if apply.As != "" {
+				args = append(args, "AS", apply.As)
+			}
 		}
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
@@ -732,12 +765,6 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.SortByMax > 0 {
 			args = append(args, "MAX", options.SortByMax)
-		}
-		for _, apply := range options.Apply {
-			args = append(args, "APPLY", apply.Field)
-			if apply.As != "" {
-				args = append(args, "AS", apply.As)
-			}
 		}
 		if options.LimitOffset > 0 {
 			args = append(args, "LIMIT", options.LimitOffset)
@@ -1674,7 +1701,8 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 
 // FTSearch - Executes a search query on an index.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
-// For more information, please refer to the Redis documentation:
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
@@ -1685,6 +1713,12 @@ func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSe
 
 type SearchQuery []interface{}
 
+// FTSearchQuery - Executes a search query on an index with additional options.
+// The 'index' parameter specifies the index to search, the 'query' parameter specifies the search query,
+// and the 'options' parameter specifies additional options for the search.
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
+// [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 	queryArgs := []interface{}{query}
 	if options != nil {
@@ -1797,7 +1831,8 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 // FTSearchWithArgs - Executes a search query on an index with additional options.
 // The 'index' parameter specifies the index to search, the 'query' parameter specifies the search query,
 // and the 'options' parameter specifies additional options for the search.
-// For more information, please refer to the Redis documentation:
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query string, options *FTSearchOptions) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
@@ -1889,7 +1924,7 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 				}
 			}
 			if options.SortByWithCount {
-				args = append(args, "WITHCOUT")
+				args = append(args, "WITHCOUNT")
 			}
 		}
 		if options.LimitOffset >= 0 && options.Limit > 0 {
