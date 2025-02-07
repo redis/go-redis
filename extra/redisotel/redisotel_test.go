@@ -13,21 +13,21 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-type providerFunc func(name string, opts ...trace.TracerOption) trace.Tracer
+type providerFunc func(name string, opts ...trace.TracerOption) trace.TracerProvider
 
-func (fn providerFunc) Tracer(name string, opts ...trace.TracerOption) trace.Tracer {
+func (fn providerFunc) TracerProvider(name string, opts ...trace.TracerOption) trace.TracerProvider {
 	return fn(name, opts...)
 }
 
 func TestNewWithTracerProvider(t *testing.T) {
 	invoked := false
 
-	tp := providerFunc(func(name string, opts ...trace.TracerOption) trace.Tracer {
+	tp := providerFunc(func(name string, opts ...trace.TracerOption) trace.TracerProvider {
 		invoked = true
-		return otel.GetTracerProvider().Tracer(name, opts...)
+		return otel.GetTracerProvider()
 	})
 
-	_ = newTracingHook("", WithTracerProvider(tp))
+	_ = newTracingHook("redis-hook", WithTracerProvider(tp.TracerProvider("redis-test")))
 
 	if !invoked {
 		t.Fatalf("did not call custom TraceProvider")
