@@ -231,6 +231,7 @@ type FTAggregateApply struct {
 
 type FTAggregateLoad struct {
 	Field string
+	As    string
 }
 
 type FTAggregateWithCursor struct {
@@ -497,9 +498,16 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		}
 		if options.Load != nil {
 			queryArgs = append(queryArgs, "LOAD", len(options.Load))
+			index, count := len(queryArgs)-1, 0
 			for _, load := range options.Load {
 				queryArgs = append(queryArgs, load.Field)
+				count++
+				if load.As != "" {
+					queryArgs = append(queryArgs, "AS", load.As)
+					count += 2
+				}
 			}
+			queryArgs[index] = count
 		}
 		if options.Timeout > 0 {
 			queryArgs = append(queryArgs, "TIMEOUT", options.Timeout)
@@ -684,9 +692,16 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.Load != nil {
 			args = append(args, "LOAD", len(options.Load))
+			index, count := len(args)-1, 0
 			for _, load := range options.Load {
 				args = append(args, load.Field)
+				count++
+				if load.As != "" {
+					args = append(args, "AS", load.As)
+					count += 2
+				}
 			}
+			args[index] = count
 		}
 		if options.Timeout > 0 {
 			args = append(args, "TIMEOUT", options.Timeout)

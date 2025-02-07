@@ -637,6 +637,17 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Rows[0].Fields["t2"]).To(BeEquivalentTo("world"))
 
+		options = &redis.FTAggregateOptions{Load: []redis.FTAggregateLoad{{Field: "t2", As: "t2alias"}}}
+		res, err = client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows[0].Fields["t2alias"]).To(BeEquivalentTo("world"))
+
+		options = &redis.FTAggregateOptions{Load: []redis.FTAggregateLoad{{Field: "t1"}, {Field: "t2", As: "t2alias"}}}
+		res, err = client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows[0].Fields["t1"]).To(BeEquivalentTo("hello"))
+		Expect(res.Rows[0].Fields["t2alias"]).To(BeEquivalentTo("world"))
+
 		options = &redis.FTAggregateOptions{LoadAll: true}
 		res, err = client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
 		Expect(err).NotTo(HaveOccurred())
