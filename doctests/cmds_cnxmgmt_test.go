@@ -44,24 +44,32 @@ func ExampleClient_cmd_auth() {
 
 	fmt.Println(authResult2) // >>> OK
 	// REMOVE_START
-	rdb.ConfigSet(ctx, "require_pass", "")
+	confRes, err := rdb.ConfigSet(ctx, "requirepass", "").Result()
+	fmt.Println(confRes)
 	// REMOVE_END
 	// STEP_END
 
 	// STEP_START auth2
+	// REMOVE_START
+	res, err := rdb.ACLSetUser(ctx, "test-user", "on", ">strong_password", "+acl").Result()
+	fmt.Println(res)
+	// REMOVE_END
 	authResult3, err := rdb.Conn().AuthACL(ctx,
 		"test_user", "strong_password",
 	).Result()
 
 	if err != nil {
-		fmt.Println(err)
+		panic(err)
 	}
 
 	fmt.Println(authResult3) // >>> OK
+	// REMOVE_START
+	rdb.ACLDelUser(ctx, "test-user")
+	// REMOVE_END
 	// STEP_END
 
 	// Output:
 	// OK
 	// OK
-	// WRONGPASS invalid username-password pair or user is disabled.
+	// OK
 }
