@@ -153,6 +153,8 @@ func isEmptyValue(v reflect.Value) bool {
 		return v.Float() == 0
 	case reflect.Interface, reflect.Pointer:
 		return v.IsNil()
+	case reflect.Struct:
+		return v.IsZero()
 	}
 	return false
 }
