@@ -1,0 +1,62 @@
+name: 'Run go-redis tests'
+description: 'Runs go-redis tests against different Redis versions and configurations'
+inputs:
+  go-version:
+    description: 'Go version to use for running tests'
+    default: '1.23'
+  redis-version:
+    description: 'Redis version to test against'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Set up ${{ inputs.go-version }}
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+
+    - name: Setup Test environment
+      env:
+        REDIS_VERSION: ${{ inputs.redis-version }}
+        CLIENT_LIBS_TEST_IMAGE: "redislabs/client-libs-test:${{ inputs.redis-version }}"
+      run: |
+        set -e
+        redis_major_version=$(echo "$REDIS_VERSION" | grep -oP '^\d+')
+        if (( redis_major_version < 8 )); then
+          echo "Using redis-stack for module tests"
+        else
+          echo "Using redis CE for module tests"
+        fi        
+        
+        # Mapping of redis version to redis testing containers
+        declare -A redis_version_mapping=(
+          ["8.0-M03"]="8.0-M04-pre"
+          ["7.4.2"]="rs-7.4.0-v2"
+          ["7.2.7"]="rs-7.2.0-v14"
+        )
+        
+        if [[ -v redis_version_mapping[$REDIS_VERSION] ]]; then
+          echo "REDIS_MAJOR_VERSION=${redis_major_version}" >> $GITHUB_ENV
+          echo "REDIS_IMAGE=redis:${{ inputs.redis-version }}" >> $GITHUB_ENV
+          echo "CLIENT_LIBS_TEST_IMAGE=redislabs/client-libs-test:${redis_version_mapping[$REDIS_VERSION]}" >> $GITHUB_ENV
+        else
+          echo "Version not found in the mapping."
+          exit 1
+        fi
+        sleep 10 # time to settle
+      shell: bash
+    - name: Set up Docker Compose environment with redis ${{ inputs.redis-version }}
+      run: docker compose --profile all up -d
+      shell: bash
+    - name: Run tests
+      env:
+        RCE_DOCKER: "true"
+        RE_CLUSTER: "false"
+      run: |
+        go test \
+        --ginkgo.skip-file="ring_test.go" \
+        --ginkgo.skip-file="sentinel_test.go" \
+        --ginkgo.skip-file="pubsub_test.go" \
+        --ginkgo.skip-file="gears_commands_test.go" \
+        --ginkgo.label-filter="!NonRedisEnterprise"
+      shell: bash
