@@ -73,7 +73,19 @@ var RCEDocker = false
 // Notes the major version of redis we are executing tests.
 // This can be used before we change the bsm fork of ginkgo for one,
 // which have support for label sets, so we can filter tests per redis major version.
-var REDIS_MAJOR_VERSION = 7
+var RedisMajorVersion = 7
+
+func SkipBeforeRedisMajor(version int, msg string) {
+	if RedisMajorVersion < version {
+		Skip(fmt.Sprintf("(redis major version < %d) %s", version, msg))
+	}
+}
+
+func SkipAfterRedisMajor(version int, msg string) {
+	if RedisMajorVersion > version {
+		Skip(fmt.Sprintf("(redis major version > %d) %s", version, msg))
+	}
+}
 
 func registerProcess(port string, p *redisProcess) {
 	if processes == nil {
@@ -92,16 +104,20 @@ var _ = BeforeSuite(func() {
 	RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
 	RCEDocker, _ = strconv.ParseBool(os.Getenv("RCE_DOCKER"))
 
-	REDIS_MAJOR_VERSION, _ = strconv.Atoi(os.Getenv("REDIS_MAJOR_VERSION"))
-	if REDIS_MAJOR_VERSION == 0 {
-		REDIS_MAJOR_VERSION = 7
+	RedisMajorVersion, _ = strconv.Atoi(os.Getenv("REDIS_MAJOR_VERSION"))
+
+	if RedisMajorVersion == 0 {
+		RedisMajorVersion = 7
 	}
-	Expect(REDIS_MAJOR_VERSION).To(BeNumerically(">=", 6))
-	Expect(REDIS_MAJOR_VERSION).To(BeNumerically("<=", 8))
 
 	fmt.Printf("RECluster: %v\n", RECluster)
 	fmt.Printf("RCEDocker: %v\n", RCEDocker)
-	fmt.Printf("REDIS_MAJOR_VERSION: %v\n", REDIS_MAJOR_VERSION)
+	fmt.Printf("REDIS_MAJOR_VERSION: %v\n", RedisMajorVersion)
+
+	if RedisMajorVersion < 6 || RedisMajorVersion > 8 {
+		panic("incorrect or not supported redis major version")
+	}
+
 	if !RECluster && !RCEDocker {
 
 		redisMain, err = startRedis(redisPort)
