@@ -266,15 +266,95 @@ func ExampleClient_query_agg() {
 	// STEP_END
 
 	// STEP_START agg2
+	res2, err := rdb.FTAggregateWithArgs(ctx,
+		"idx:bicycle", "*",
+		&redis.FTAggregateOptions{
+			Load: []redis.FTAggregateLoad{
+				{Field: "price"},
+			},
+			Apply: []redis.FTAggregateApply{
+				{
+					Field: "@price<1000",
+					As:    "price_category",
+				},
+			},
+			GroupBy: []redis.FTAggregateGroupBy{
+				{
+					Fields: []interface{}{"@condition"},
+					Reduce: []redis.FTAggregateReducer{
+						{
+							Reducer: redis.SearchSum,
+							Args:    []interface{}{"@price_category"},
+							As:      "num_affordable",
+						},
+					},
+				},
+			},
+		},
+	).Result()
 
-	// Not currently implemented in go-redis.
+	if err != nil {
+		panic(err)
+	}
 
+	fmt.Println(len(res2.Rows)) // >>> 3
+
+	sort.Slice(res2.Rows, func(i, j int) bool {
+		return res2.Rows[i].Fields["condition"].(string) <
+			res2.Rows[j].Fields["condition"].(string)
+	})
+
+	for _, row := range res2.Rows {
+		fmt.Printf(
+			"condition=%v, num_affordable=%v\n",
+			row.Fields["condition"],
+			row.Fields["num_affordable"],
+		)
+	}
+	// >>> condition=new, num_affordable=3
+	// >>> condition=refurbished, num_affordable=1
+	// >>> condition=used, num_affordable=1
 	// STEP_END
 
 	// STEP_START agg3
 
-	// Not currently implemented in go-redis.
+	res3, err := rdb.FTAggregateWithArgs(ctx,
+		"idx:bicycle", "*",
+		&redis.FTAggregateOptions{
+			Apply: []redis.FTAggregateApply{
+				{
+					Field: "'bicycle'",
+					As:    "type",
+				},
+			},
+			GroupBy: []redis.FTAggregateGroupBy{
+				{
+					Fields: []interface{}{"@type"},
+					Reduce: []redis.FTAggregateReducer{
+						{
+							Reducer: redis.SearchCount,
+							As:      "num_total",
+						},
+					},
+				},
+			},
+		},
+	).Result()
 
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(len(res3.Rows)) // >>> 1
+
+	for _, row := range res3.Rows {
+		fmt.Printf(
+			"type=%v, num_total=%v\n",
+			row.Fields["type"],
+			row.Fields["num_total"],
+		)
+	}
+	// type=bicycle, num_total=10
 	// STEP_END
 
 	// STEP_START agg4
@@ -282,9 +362,7 @@ func ExampleClient_query_agg() {
 		"idx:bicycle", "*",
 		&redis.FTAggregateOptions{
 			Load: []redis.FTAggregateLoad{
-				{
-					Field: "__key",
-				},
+				{Field: "__key"},
 			},
 			GroupBy: []redis.FTAggregateGroupBy{
 				{
@@ -342,6 +420,12 @@ func ExampleClient_query_agg() {
 	// __key=bicycle:6, discounted=2070, price=2300
 	// __key=bicycle:7, discounted=387, price=430
 	// __key=bicycle:8, discounted=1080, price=1200
+	// 3
+	// condition=new, num_affordable=3
+	// condition=refurbished, num_affordable=1
+	// condition=used, num_affordable=1
+	// 1
+	// type=bicycle, num_total=10
 	// 3
 	// condition=new, bicycles=[bicycle:0 bicycle:5 bicycle:6 bicycle:7 bicycle:8]
 	// condition=refurbished, bicycles=[bicycle:9]
