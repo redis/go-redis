@@ -55,7 +55,7 @@ func ExampleClient_cmd_auth() {
 	fmt.Println(res)
 	// REMOVE_END
 	authResult3, err := rdb.Conn().AuthACL(ctx,
-		"test_user", "strong_password",
+		"test-user", "strong_password",
 	).Result()
 
 	if err != nil {
