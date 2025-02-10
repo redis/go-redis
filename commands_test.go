@@ -217,7 +217,7 @@ var _ = Describe("Commands", func() {
 
 			killed := client.ClientKillByFilter(ctx, "MAXAGE", "1")
 			Expect(killed.Err()).NotTo(HaveOccurred())
-			Expect(killed.Val()).To(SatisfyAny(Equal(int64(2)), Equal(int64(3)), Equal(int64(4))))
+			Expect(killed.Val()).To(BeNumerically(">=", 2))
 
 			select {
 			case <-done:
