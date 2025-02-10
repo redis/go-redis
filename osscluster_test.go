@@ -115,6 +115,7 @@ func (s *clusterScenario) Close() error {
 }
 
 func configureClusterTopology(ctx context.Context, scenario *clusterScenario) error {
+	fmt.Println("configuring cluster")
 	err := collectNodeInformation(ctx, scenario)
 	if err != nil {
 		return err

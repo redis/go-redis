@@ -1,5 +1,5 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
-export REDIS_MAJOR_VERSION := 7
+export REDIS_VERSION := "7.2"
 
 redisstackdocker.start:
 	docker start go-redis-redis-stack || docker run -d --name go-redis-redis-stack  -p 6379:6379 -e REDIS_ARGS="--enable-debug-command yes --enable-module-command yes" redis/redis-stack-server:latest
@@ -31,11 +31,9 @@ test: testdeps
 testdeps: testdata/redis/src/redis-server
 
 bench:
-	$(MAKE) redisstackdocker.start
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem
-	$(MAKE) redisstackdocker.stop
 
-.PHONY: all test testdeps bench fmt
+.PHONY: all test bench fmt
 
 build:
 	go build .

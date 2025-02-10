@@ -85,6 +85,7 @@ var _ = Describe("ScanIterator", func() {
 	})
 
 	It("should hscan across multiple pages", func() {
+		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 		Expect(hashSeed(71)).NotTo(HaveOccurred())
 
 		var vals []string
@@ -100,6 +101,7 @@ var _ = Describe("ScanIterator", func() {
 	})
 
 	It("should hscan without values across multiple pages", Label("NonRedisEnterprise"), func() {
+		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 		Expect(hashSeed(71)).NotTo(HaveOccurred())
 
 		var vals []string

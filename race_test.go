@@ -138,7 +138,7 @@ var _ = Describe("races", func() {
 	})
 
 	It("should select db", Label("NonRedisEnterprise"), func() {
-		err := client.Set(ctx, "db", 1, 0).Err()
+		err := client.Set(ctx, "db", 0, 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		perform(C, func(id int) {
@@ -159,7 +159,7 @@ var _ = Describe("races", func() {
 
 		n, err := client.Get(ctx, "db").Int64()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(Equal(int64(1)))
+		Expect(n).To(Equal(int64(0)))
 	})
 
 	It("should select DB with read timeout", func() {

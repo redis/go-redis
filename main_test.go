@@ -70,20 +70,20 @@ var RECluster = false
 // Redis Community Edition Docker
 var RCEDocker = false
 
-// Notes the major version of redis we are executing tests.
+// Notes version of redis we are executing tests against.
 // This can be used before we change the bsm fork of ginkgo for one,
-// which have support for label sets, so we can filter tests per redis major version.
-var RedisMajorVersion = 7
+// which have support for label sets, so we can filter tests per redis version.
+var RedisVersion float64 = 7.2
 
-func SkipBeforeRedisMajor(version int, msg string) {
-	if RedisMajorVersion < version {
-		Skip(fmt.Sprintf("(redis major version < %d) %s", version, msg))
+func SkipBeforeRedisVersion(version float64, msg string) {
+	if RedisVersion < version {
+		Skip(fmt.Sprintf("(redis version < %f) %s", version, msg))
 	}
 }
 
-func SkipAfterRedisMajor(version int, msg string) {
-	if RedisMajorVersion > version {
-		Skip(fmt.Sprintf("(redis major version > %d) %s", version, msg))
+func SkipAfterRedisVersion(version float64, msg string) {
+	if RedisVersion > version {
+		Skip(fmt.Sprintf("(redis version > %f) %s", version, msg))
 	}
 }
 
@@ -104,18 +104,18 @@ var _ = BeforeSuite(func() {
 	RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
 	RCEDocker, _ = strconv.ParseBool(os.Getenv("RCE_DOCKER"))
 
-	RedisMajorVersion, _ = strconv.Atoi(os.Getenv("REDIS_MAJOR_VERSION"))
+	RedisVersion, _ = strconv.ParseFloat(os.Getenv("REDIS_VERSION"), 64)
 
-	if RedisMajorVersion == 0 {
-		RedisMajorVersion = 7
+	if RedisVersion == 0 {
+		RedisVersion = 7.2
 	}
 
 	fmt.Printf("RECluster: %v\n", RECluster)
 	fmt.Printf("RCEDocker: %v\n", RCEDocker)
-	fmt.Printf("REDIS_MAJOR_VERSION: %v\n", RedisMajorVersion)
+	fmt.Printf("REDIS_VERSION: %v\n", RedisVersion)
 
-	if RedisMajorVersion < 6 || RedisMajorVersion > 8 {
-		panic("incorrect or not supported redis major version")
+	if RedisVersion < 7.0 || RedisVersion > 9 {
+		panic("incorrect or not supported redis version")
 	}
 
 	if !RECluster && !RCEDocker {
@@ -204,7 +204,7 @@ func redisOptions() *redis.Options {
 	}
 	return &redis.Options{
 		Addr: redisAddr,
-		DB:   15,
+		DB:   0,
 
 		DialTimeout:           10 * time.Second,
 		ReadTimeout:           30 * time.Second,
@@ -256,7 +256,9 @@ func performAsync(n int, cbs ...func(int)) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for _, cb := range cbs {
 		wg.Add(n)
-		for i := 0; i < n; i++ {
+		// start from 1, so we can skip db 0 where such test is executed with
+		// select db command
+		for i := 1; i <= n; i++ {
 			go func(cb func(int), i int) {
 				defer GinkgoRecover()
 				defer wg.Done()

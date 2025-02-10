@@ -47,7 +47,7 @@ jobs:
       - name: Test
         env:
           RE_CLUSTER: true
-          REDIS_MAJOR_VERSION: 7
+          REDIS_VERSION: "7.4"
         run: |
           go test \
           --ginkgo.skip-file="ring_test.go" \

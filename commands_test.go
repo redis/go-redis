@@ -194,6 +194,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ClientKillByFilter with MAXAGE", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			var s []string
 			started := make(chan bool)
 			done := make(chan bool)
@@ -345,7 +346,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ConfigGet Modules", func() {
-			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
 			expected := map[string]string{
 				"search-*": "search-timeout",
 				"ts-*":     "ts-retention-policy",
@@ -380,7 +381,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ConfigGet with Modules", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisMajor(8, "config get won't return modules configs before redis 8")
+			SkipBeforeRedisVersion(8, "config get won't return modules configs before redis 8")
 			configGet := client.ConfigGet(ctx, "*")
 			Expect(configGet.Err()).NotTo(HaveOccurred())
 			Expect(configGet.Val()).To(HaveKey("maxmemory"))
@@ -391,7 +392,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ConfigSet FT DIALECT", func() {
-			SkipBeforeRedisMajor(8, "config doesn't include modules before Redis 8")
+			SkipBeforeRedisVersion(8, "config doesn't include modules before Redis 8")
 			defaultState, err := client.ConfigGet(ctx, "search-default-dialect").Result()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -437,13 +438,13 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ConfigSet fail for ReadOnly", func() {
-			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
 			_, err := client.ConfigSet(ctx, "search-max-doctablesize", "100000").Result()
 			Expect(err).To(HaveOccurred())
 		})
 
 		It("should ConfigSet Modules", func() {
-			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
 			defaults := map[string]string{}
 			expected := map[string]string{
 				"search-timeout":      "100",
@@ -484,7 +485,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Fail ConfigSet Modules", func() {
-			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
 			expected := map[string]string{
 				"search-timeout":      "-100",
 				"ts-retention-policy": "-10",
@@ -533,7 +534,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Info Modules", Label("redis.info"), func() {
-			SkipBeforeRedisMajor(8, "modules are included in info for Redis Version >= 8")
+			SkipBeforeRedisVersion(8, "modules are included in info for Redis Version >= 8")
 			info := client.Info(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(BeNil())
@@ -558,7 +559,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should InfoMap Modules", Label("redis.info"), func() {
-			SkipBeforeRedisMajor(8, "modules are included in info for Redis Version >= 8")
+			SkipBeforeRedisVersion(8, "modules are included in info for Redis Version >= 8")
 			info := client.InfoMap(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(BeNil())
@@ -1332,6 +1333,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HScan without values", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			for i := 0; i < 1000; i++ {
 				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
 				Expect(sadd.Err()).NotTo(HaveOccurred())
@@ -2625,6 +2627,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			res, err := client.HExpire(ctx, "no_such_key", 10*time.Second, "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(res).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -2640,6 +2643,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HPExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			res, err := client.HPExpire(ctx, "no_such_key", 10*time.Second, "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(res).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -2655,6 +2659,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HExpireAt", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			resEmpty, err := client.HExpireAt(ctx, "no_such_key", time.Now().Add(10*time.Second), "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -2670,6 +2675,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HPExpireAt", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			resEmpty, err := client.HPExpireAt(ctx, "no_such_key", time.Now().Add(10*time.Second), "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -2685,6 +2691,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HPersist", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			resEmpty, err := client.HPersist(ctx, "no_such_key", "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -2708,6 +2715,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HExpireTime", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			resEmpty, err := client.HExpireTime(ctx, "no_such_key", "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -2727,6 +2735,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HPExpireTime", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			resEmpty, err := client.HPExpireTime(ctx, "no_such_key", "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -2747,6 +2756,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HTTL", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			resEmpty, err := client.HTTL(ctx, "no_such_key", "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -2766,6 +2776,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HPTTL", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			resEmpty, err := client.HPTTL(ctx, "no_such_key", "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -6040,6 +6051,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XRead LastEntry", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			res, err := client.XRead(ctx, &redis.XReadArgs{
 				Streams: []string{"stream"},
 				Count:   2, // we expect 1 message
@@ -6057,6 +6069,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XRead LastEntry from two streams", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			res, err := client.XRead(ctx, &redis.XReadArgs{
 				Streams: []string{"stream", "stream"},
 				ID:      "+",
@@ -6079,6 +6092,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XRead LastEntry blocks", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			start := time.Now()
 			go func() {
 				defer GinkgoRecover()
@@ -7332,6 +7346,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("Shows function stats", func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			defer client.FunctionKill(ctx)
 
 			// We can not run blocking commands in Redis functions, so we're using an infinite loop,

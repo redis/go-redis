@@ -2081,6 +2081,7 @@ func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *Str
 	return cmd
 }
 
+// TODO: remove FTProfile
 // type FTProfileResult struct {
 // 	Results []interface{}
 // 	Profile ProfileDetails

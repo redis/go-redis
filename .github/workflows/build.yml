@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: [1.21.x, 1.22.x, 1.23.x]
+        go-version: [1.22.x, 1.23.x]
 
     steps:
       - name: Set up ${{ matrix.go-version }}
@@ -42,7 +42,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: [1.21.x, 1.23.x]
+        redis-version:
+          - "8.0-M03" # 8.0 milestone 4
+          - "7.4.2" # should use redis stack 7.4
+        go-version:
+          - "1.22.x"
+          - "1.23.x"
 
     steps:
       - name: Set up ${{ matrix.go-version }}
@@ -53,10 +58,38 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Test environment
+        env:
+          REDIS_VERSION: ${{ matrix.redis-version }}
+          CLIENT_LIBS_TEST_IMAGE: "redislabs/client-libs-test:${{ matrix.redis-version }}"
+        run: |
+          set -e
+          redis_version_np=$(echo "$REDIS_VERSION" | grep -oP '^\d+.\d+')
+          
+          # Mapping of redis version to redis testing containers
+          declare -A redis_version_mapping=(
+            ["8.0-M03"]="8.0-M04-pre"
+            ["7.4.2"]="rs-7.4.0-v2"
+          )
+          
+          if [[ -v redis_version_mapping[$REDIS_VERSION] ]]; then
+            echo "REDIS_VERSION=${redis_version_np}" >> $GITHUB_ENV
+            echo "REDIS_IMAGE=redis:${{ matrix.redis-version }}" >> $GITHUB_ENV
+            echo "CLIENT_LIBS_TEST_IMAGE=redislabs/client-libs-test:${redis_version_mapping[$REDIS_VERSION]}" >> $GITHUB_ENV
+          else
+            echo "Version not found in the mapping."
+            exit 1
+          fi
+        shell: bash
+      - name: Set up Docker Compose environment with redis ${{ matrix.redis-version }}
+        run: docker compose --profile all up -d
+        shell: bash
       - name: Benchmark Tests
+        env:
+          RCE_DOCKER: "true"
+          RE_CLUSTER: "false"
         run: make bench
 
-  
   test-redis-ce:
     name: test-redis-ce
     runs-on: ubuntu-latest
@@ -72,7 +105,6 @@ jobs:
             - "1.23.x"
 
     steps:
-
       - name: Checkout code
         uses: actions/checkout@v4
 
