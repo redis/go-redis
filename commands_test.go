@@ -2517,6 +2517,19 @@ var _ = Describe("Commands", func() {
 				"val2",
 				"val",
 			}))
+
+			type set2 struct {
+				Set1 string        `redis:"set1"`
+				Set2 int           `redis:"set2,omitempty"`
+				Set3 time.Duration `redis:"set3,omitempty"`
+				Set4 string        `redis:"set4,omitempty"`
+				Set5 time.Time     `redis:"set5,omitempty"`
+			}
+			hSet = client.HSet(ctx, "hash3", &set2{
+				Set1: "val",
+			})
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+			Expect(hSet.Val()).To(Equal(int64(1)))
 		})
 
 		It("should HSetNX", func() {
