@@ -51,8 +51,7 @@ var (
 
 	processes map[string]*redisProcess
 
-	redisMain                                      *redisProcess
-	ringShard1, ringShard2, ringShard3             *redisProcess
+	ringShard1, ringShard2, ringShard3             *redis.Client
 	sentinelMaster, sentinelSlave1, sentinelSlave2 *redisProcess
 	sentinel1, sentinel2, sentinel3                *redisProcess
 )
@@ -119,19 +118,6 @@ var _ = BeforeSuite(func() {
 	}
 
 	if !RECluster && !RCEDocker {
-
-		redisMain, err = startRedis(redisPort)
-		Expect(err).NotTo(HaveOccurred())
-
-		ringShard1, err = startRedis(ringShard1Port)
-		Expect(err).NotTo(HaveOccurred())
-
-		ringShard2, err = startRedis(ringShard2Port)
-		Expect(err).NotTo(HaveOccurred())
-
-		ringShard3, err = startRedis(ringShard3Port)
-		Expect(err).NotTo(HaveOccurred())
-
 		sentinelMaster, err = startRedis(sentinelMasterPort)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -159,6 +145,15 @@ var _ = BeforeSuite(func() {
 		redisAddr = redisStackAddr
 
 		if !RECluster {
+			ringShard1, err = connectTo(ringShard1Port)
+			Expect(err).NotTo(HaveOccurred())
+
+			ringShard2, err = connectTo(ringShard2Port)
+			Expect(err).NotTo(HaveOccurred())
+
+			ringShard3, err = connectTo(ringShard3Port)
+			Expect(err).NotTo(HaveOccurred())
+
 			// populate cluster node information
 			Expect(configureClusterTopology(ctx, cluster)).NotTo(HaveOccurred())
 		}
