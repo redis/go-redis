@@ -1,8 +1,14 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 export REDIS_MAJOR_VERSION := 7
 
-test: testdeps
+redisstackdocker.start:
 	docker start go-redis-redis-stack || docker run -d --name go-redis-redis-stack  -p 6379:6379 -e REDIS_ARGS="--enable-debug-command yes --enable-module-command yes" redis/redis-stack-server:latest
+
+redisstackdocker.stop:
+	docker stop go-redis-redis-stack
+
+test: testdeps
+	$(MAKE) redisstackdocker.start
 	$(eval GO_VERSION := $(shell go version | cut -d " " -f 3 | cut -d. -f2))
 	set -e; for dir in $(GO_MOD_DIRS); do \
 	  if echo "$${dir}" | grep -q "./example" && [ "$(GO_VERSION)" = "19" ]; then \
@@ -14,19 +20,20 @@ test: testdeps
 	    go mod tidy -compat=1.18 && \
 	    go test && \
 	    go test ./... -short -race && \
-	    go test ./... -run=NONE -bench=. -benchmem && \
 	    env GOOS=linux GOARCH=386 go test && \
 	    go test -coverprofile=coverage.txt -covermode=atomic ./... && \
 	    go vet); \
 	done
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet
-	docker stop go-redis-redis-stack
+	$(MAKE) redisstackdocker.stop
 
 testdeps: testdata/redis/src/redis-server
 
-bench: testdeps
+bench:
+	$(MAKE) redisstackdocker.start
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem
+	$(MAKE) redisstackdocker.stop
 
 .PHONY: all test testdeps bench fmt
 
