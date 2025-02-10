@@ -48,7 +48,6 @@ runs:
         RE_CLUSTER: "false"
       run: |
         go test \
-        --ginkgo.skip-file="ring_test.go" \
         --ginkgo.skip-file="sentinel_test.go" \
         --ginkgo.skip-file="gears_commands_test.go" \
       shell: bash
