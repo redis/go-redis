@@ -105,7 +105,7 @@ var _ = Describe("races", func() {
 	})
 
 	It("should handle big vals in Get", func() {
-		C, N = 4, 100
+		C, N := 4, 100
 
 		bigVal := bigVal()
 
@@ -126,7 +126,7 @@ var _ = Describe("races", func() {
 	})
 
 	It("should handle big vals in Set", func() {
-		C, N = 4, 100
+		C, N := 4, 100
 
 		bigVal := bigVal()
 		perform(C, func(id int) {
@@ -214,12 +214,14 @@ var _ = Describe("races", func() {
 		Expect(val).To(Equal(int64(C * N)))
 	})
 
-	PIt("should BLPop", func() {
+	It("should BLPop", func() {
+		C := 5
+		N := 5
 		var received uint32
 
 		wg := performAsync(C, func(id int) {
 			for {
-				v, err := client.BLPop(ctx, 5*time.Second, "list").Result()
+				v, err := client.BLPop(ctx, time.Second, "list").Result()
 				if err != nil {
 					if err == redis.Nil {
 						break

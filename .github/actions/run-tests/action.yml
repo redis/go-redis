@@ -47,6 +47,5 @@ runs:
         RCE_DOCKER: "true"
         RE_CLUSTER: "false"
       run: |
-        go test ./... -short -race && \
-        go test -coverprofile=coverage.txt -covermode=atomic ./... && \
+        make test.ci
       shell: bash

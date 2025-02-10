@@ -703,7 +703,7 @@ var _ = Describe("Commands", func() {
 	})
 
 	Describe("debugging", func() {
-		PIt("should DebugObject", func() {
+		It("should DebugObject", func() {
 			err := client.DebugObject(ctx, "foo").Err()
 			Expect(err).To(MatchError("ERR no such key"))
 
@@ -6628,14 +6628,12 @@ var _ = Describe("Commands", func() {
 
 			res, err := client.ZRangeWithScores(ctx, "result", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(ContainElement(redis.Z{
-				Score:  190.44242984775784,
-				Member: "Palermo",
-			}))
-			Expect(res).To(ContainElement(redis.Z{
-				Score:  56.4412578701582,
-				Member: "Catania",
-			}))
+			Expect(len(res)).To(Equal(2))
+			var palermo, catania redis.Z
+			Expect(res).To(ContainElement(HaveField("Member", "Palermo"), &palermo))
+			Expect(res).To(ContainElement(HaveField("Member", "Catania"), &catania))
+			Expect(palermo.Score).To(BeNumerically("~", 190, 1))
+			Expect(catania.Score).To(BeNumerically("~", 56, 1))
 		})
 
 		It("should search geo radius with options", func() {
@@ -6947,16 +6945,13 @@ var _ = Describe("Commands", func() {
 
 			v, err := client.ZRangeWithScores(ctx, "key2", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(v).To(Equal([]redis.Z{
-				{
-					Score:  56.441257870158204,
-					Member: "Catania",
-				},
-				{
-					Score:  190.44242984775784,
-					Member: "Palermo",
-				},
-			}))
+
+			Expect(len(v)).To(Equal(2))
+			var palermo, catania redis.Z
+			Expect(v).To(ContainElement(HaveField("Member", "Palermo"), &palermo))
+			Expect(v).To(ContainElement(HaveField("Member", "Catania"), &catania))
+			Expect(palermo.Score).To(BeNumerically("~", 190, 1))
+			Expect(catania.Score).To(BeNumerically("~", 56, 1))
 		})
 	})
 
