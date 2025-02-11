@@ -93,7 +93,7 @@ var _ = BeforeSuite(func() {
 	RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
 	RCEDocker, _ = strconv.ParseBool(os.Getenv("RCE_DOCKER"))
 
-	RedisVersion, _ = strconv.ParseFloat(os.Getenv("REDIS_VERSION"), 64)
+	RedisVersion, _ = strconv.ParseFloat(strings.Trim(os.Getenv("REDIS_VERSION"), "\""), 64)
 
 	if RedisVersion == 0 {
 		RedisVersion = 7.2

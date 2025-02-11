@@ -50,7 +50,7 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 	})
 
 	It("should TFunctionLoad, TFunctionLoadArgs and TFunctionDelete ", Label("gears", "tfunctionload"), func() {
-		SkipAfterRedisVersion(7.2, "gears are not working in later versions")
+		SkipAfterRedisVersion(7.4, "gears are not working in later versions")
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("lib1")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
@@ -60,7 +60,7 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
 	})
 	It("should TFunctionList", Label("gears", "tfunctionlist"), func() {
-		SkipAfterRedisVersion(7.2, "gears are not working in later versions")
+		SkipAfterRedisVersion(7.4, "gears are not working in later versions")
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("lib1")).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resultAdd).To(BeEquivalentTo("OK"))
@@ -74,7 +74,7 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 	})
 
 	It("should TFCall", Label("gears", "tfcall"), func() {
-		SkipAfterRedisVersion(7.2, "gears are not working in later versions")
+		SkipAfterRedisVersion(7.4, "gears are not working in later versions")
 		var resultAdd interface{}
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("lib1")).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -85,7 +85,7 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 	})
 
 	It("should TFCallArgs", Label("gears", "tfcallargs"), func() {
-		SkipAfterRedisVersion(7.2, "gears are not working in later versions")
+		SkipAfterRedisVersion(7.4, "gears are not working in later versions")
 		var resultAdd interface{}
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("lib1")).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -97,7 +97,7 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 	})
 
 	It("should TFCallASYNC", Label("gears", "TFCallASYNC"), func() {
-		SkipAfterRedisVersion(7.2, "gears are not working in later versions")
+		SkipAfterRedisVersion(7.4, "gears are not working in later versions")
 		var resultAdd interface{}
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("lib1")).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -108,7 +108,7 @@ var _ = Describe("RedisGears commands", Label("gears"), func() {
 	})
 
 	It("should TFCallASYNCArgs", Label("gears", "TFCallASYNCargs"), func() {
-		SkipAfterRedisVersion(7.2, "gears are not working in later versions")
+		SkipAfterRedisVersion(7.4, "gears are not working in later versions")
 		var resultAdd interface{}
 		resultAdd, err := client.TFunctionLoad(ctx, libCode("lib1")).Result()
 		Expect(err).NotTo(HaveOccurred())

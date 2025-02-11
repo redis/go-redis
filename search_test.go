@@ -379,7 +379,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	// up until redis 8 the default scorer was TFIDF, in redis 8 it is BM25
 	// this test expect redis major version >= 8
 	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
-		SkipBeforeRedisVersion(8, "default scorer is not BM25")
+		SkipBeforeRedisVersion(7.9, "default scorer is not BM25")
 
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
@@ -420,9 +420,9 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	// up until redis 8 the default scorer was TFIDF, in redis 8 it is BM25
-	// this test expect redis major version <=7
+	// this test expect redis version < 8.0
 	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
-		SkipAfterRedisVersion(7, "default scorer is not TFIDF")
+		SkipAfterRedisVersion(7.9, "default scorer is not TFIDF")
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -646,7 +646,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTAggregate with scorer and addscores", Label("search", "ftaggregate", "NonRedisEnterprise"), func() {
-		SkipBeforeRedisVersion(8, "ADDSCORES is available in Redis CE 8")
+		SkipBeforeRedisVersion(7.9, "ADDSCORES is available in Redis CE 8")
 		title := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: false}
 		description := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText, Sortable: false}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnHash: true, Prefix: []interface{}{"product:"}}, title, description).Result()

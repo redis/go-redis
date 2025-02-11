@@ -1,5 +1,4 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
-export REDIS_VERSION := "7.4"
 
 docker.start:
 	docker compose --profile all up -d
@@ -17,8 +16,8 @@ test.ci:
 	  echo "go test in $${dir}"; \
 	  (cd "$${dir}" && \
 	    go mod tidy -compat=1.18 && \
-	    go test -coverprofile=coverage.txt -covermode=atomic ./... -race && \
-	    go vet); \
+	    go vet && \
+	    go test -coverprofile=coverage.txt -covermode=atomic ./... -race); \
 	done
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet
