@@ -306,7 +306,7 @@ func ExampleClient_racefrance2() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
 		Password: "", // no password docs
-		DB:       0,  // use default DB
+		DB:       1,  // use default DB
 	})
 
 	// REMOVE_START

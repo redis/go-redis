@@ -150,7 +150,7 @@ var _ = BeforeSuite(func() {
 
 var _ = AfterSuite(func() {
 	if !RECluster {
-		//Expect(cluster.Close()).NotTo(HaveOccurred())
+		Expect(cluster.Close()).NotTo(HaveOccurred())
 	}
 })
 

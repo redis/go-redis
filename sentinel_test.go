@@ -9,7 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var _ = XDescribe("Sentinel", func() {
+var _ = Describe("Sentinel", func() {
 	var _ = Describe("Sentinel PROTO 2", func() {
 		var client *redis.Client
 		BeforeEach(func() {
