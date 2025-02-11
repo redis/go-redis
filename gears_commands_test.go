@@ -34,7 +34,8 @@ func libCodeWithConfig(libName string) string {
 	return fmt.Sprintf(lib, libName)
 }
 
-var _ = Describe("RedisGears commands", Label("gears"), func() {
+// TODO: Drop Gears
+var _ = XDescribe("RedisGears commands", Label("gears"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
 
