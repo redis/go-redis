@@ -1,1 +1,7 @@
-*/
+osscluster/
+ring1/
+ring2/
+ring3/
+standalone/
+sentinel-cluster/
+
