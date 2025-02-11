@@ -702,7 +702,7 @@ var _ = Describe("Commands", func() {
 		})
 	})
 
-	Describe("debugging", func() {
+	Describe("debugging", Label("NonRedisEnterprise"), func() {
 		It("should DebugObject", func() {
 			err := client.DebugObject(ctx, "foo").Err()
 			Expect(err).To(MatchError("ERR no such key"))
