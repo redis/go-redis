@@ -49,13 +49,13 @@ func ExampleClient_sadd_cmd() {
 
 	fmt.Println(sAddResult3) // >>> 0
 
-	sAddResult4, err := rdb.SMembers(ctx, "myset").Result()
+	sMembersResult, err := rdb.SMembers(ctx, "myset").Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(sAddResult4) // >>> [Hello World]
+	fmt.Println(sMembersResult) // >>> [Hello World]
 	// STEP_END
 
 	// Output:
@@ -79,21 +79,21 @@ func ExampleClient_smembers_cmd() {
 	// REMOVE_END
 
 	// STEP_START smembers
-	sMembersResult1, err := rdb.SAdd(ctx, "myset", "Hello", "World").Result()
+	sAddResult, err := rdb.SAdd(ctx, "myset", "Hello", "World").Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(sMembersResult1) // >>> 2
+	fmt.Println(sAddResult) // >>> 2
 
-	sMembersResult2, err := rdb.SMembers(ctx, "myset").Result()
+	sMembersResult, err := rdb.SMembers(ctx, "myset").Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(sMembersResult2) // >>> [Hello World]
+	fmt.Println(sMembersResult) // >>> [Hello World]
 	// STEP_END
 
 	// Output:
