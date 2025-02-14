@@ -567,11 +567,8 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		if options.SortByMax > 0 {
 			queryArgs = append(queryArgs, "MAX", options.SortByMax)
 		}
-		if options.LimitOffset > 0 {
-			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset)
-		}
-		if options.Limit > 0 {
-			queryArgs = append(queryArgs, options.Limit)
+		if options.LimitOffset >= 0 && options.Limit > 0 {
+			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset, options.Limit)
 		}
 		if options.Filter != "" {
 			queryArgs = append(queryArgs, "FILTER", options.Filter)
@@ -766,11 +763,8 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		if options.SortByMax > 0 {
 			args = append(args, "MAX", options.SortByMax)
 		}
-		if options.LimitOffset > 0 {
-			args = append(args, "LIMIT", options.LimitOffset)
-		}
-		if options.Limit > 0 {
-			args = append(args, options.Limit)
+		if options.LimitOffset >= 0 && options.Limit > 0 {
+			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
 		}
 		if options.Filter != "" {
 			args = append(args, "FILTER", options.Filter)
