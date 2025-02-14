@@ -616,6 +616,11 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		res, err = client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Rows[0].Fields["t1"]).To(BeEquivalentTo("b"))
+
+		options = &redis.FTAggregateOptions{SortBy: []redis.FTAggregateSortBy{{FieldName: "@t1"}}, Limit: 1, LimitOffset: 0}
+		res, err = client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows[0].Fields["t1"]).To(BeEquivalentTo("a"))
 	})
 
 	It("should FTAggregate load ", Label("search", "ftaggregate"), func() {
