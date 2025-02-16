@@ -170,7 +170,6 @@ func (w *Writer) WriteArg(v interface{}) error {
 		}
 		return w.int(0)
 	case time.Time:
-		fmt.Println("writing time")
 		w.numBuf = v.AppendFormat(w.numBuf[:0], time.RFC3339Nano)
 		return w.bytes(w.numBuf)
 	case *time.Time:

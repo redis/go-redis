@@ -21,6 +21,7 @@ type Model struct {
 	Bool    bool       `redis:"bool"`
 	Bool2   *bool      `redis:"bool2"`
 	Bool3   *bool      `redis:"bool3"`
+	Bool4   *bool      `redis:"bool4,omitempty"`
 	Time    time.Time  `redis:"time"`
 	Time2   *time.Time `redis:"time2"`
 	Time3   *time.Time `redis:"time3"`
@@ -31,7 +32,8 @@ func main() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{
-		Addr: ":6379",
+		Addr:     ":6379",
+		Password: "Mafia1234",
 	})
 	_ = rdb.FlushDB(ctx).Err()
 
@@ -91,6 +93,7 @@ func main() {
 	//  Bool: (bool) true,
 	//  Bool2: (*bool)(0xc000014570)(false),
 	//  Bool3: (*bool)(0xc000014548)(false),
+	//  Bool4: (*bool)(<nil>),
 	//  Time: (time.Time) 2025-02-08 00:00:00 +0000 UTC,
 	//  Time2: (*time.Time)(0xc0000122a0)(2025-02-08 00:00:00 +0000 UTC),
 	//  Time3: (*time.Time)(0xc000012288)(0001-01-01 00:00:00 +0000 UTC),
@@ -112,6 +115,7 @@ func main() {
 	//  Bool: (bool) false,
 	//  Bool2: (*bool)(<nil>),
 	//  Bool3: (*bool)(<nil>),
+	//  Bool4: (*bool)(<nil>),
 	//  Time: (time.Time) 0001-01-01 00:00:00 +0000 UTC,
 	//  Time2: (*time.Time)(<nil>),
 	//  Time3: (*time.Time)(<nil>),
