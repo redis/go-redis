@@ -32,8 +32,7 @@ func main() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     ":6379",
-		Password: "Mafia1234",
+		Addr: ":6379",
 	})
 	_ = rdb.FlushDB(ctx).Err()
 
