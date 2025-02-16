@@ -34,6 +34,7 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
+
 	_ = rdb.FlushDB(ctx).Err()
 
 	t := time.Date(2025, 02, 8, 0, 0, 0, 0, time.UTC)
