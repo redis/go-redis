@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -631,5 +632,69 @@ var _ = Describe("Hook with MinIdleConns", func() {
 			"hook-2-process-end",
 			"hook-1-process-end",
 		}))
+	})
+})
+
+var _ = Describe("Dialer connection timeouts", func() {
+	var client *redis.Client
+
+	const dialSimulatedDelay = 1 * time.Second
+
+	BeforeEach(func() {
+		options := redisOptions()
+		options.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Simulated slow dialer.
+			// Note that the following sleep is deliberately not context-aware.
+			time.Sleep(dialSimulatedDelay)
+			return net.Dial("tcp", options.Addr)
+		}
+		options.MinIdleConns = 1
+		client = redis.NewClient(options)
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("does not contend on connection dial for concurrent commands", func() {
+		var wg sync.WaitGroup
+
+		const concurrency = 10
+
+		durations := make(chan time.Duration, concurrency)
+		errs := make(chan error, concurrency)
+
+		start := time.Now()
+		wg.Add(concurrency)
+
+		for i := 0; i < concurrency; i++ {
+			go func() {
+				defer wg.Done()
+
+				start := time.Now()
+				err := client.Ping(ctx).Err()
+				durations <- time.Since(start)
+				errs <- err
+			}()
+		}
+
+		wg.Wait()
+		close(durations)
+		close(errs)
+
+		// All commands should eventually succeed, after acquiring a connection.
+		for err := range errs {
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		// Each individual command should complete within the simulated dial duration bound.
+		for duration := range durations {
+			Expect(duration).To(BeNumerically("<", 2*dialSimulatedDelay))
+		}
+
+		// Due to concurrent execution, the entire test suite should also complete within
+		// the same dial duration bound applied for individual commands.
+		Expect(time.Since(start)).To(BeNumerically("<", 2*dialSimulatedDelay))
 	})
 })
