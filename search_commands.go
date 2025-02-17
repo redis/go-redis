@@ -240,22 +240,13 @@ type FTAggregateWithCursor struct {
 }
 
 type FTAggregateOptions struct {
-	Verbatim  bool
-	LoadAll   bool
-	Load      []FTAggregateLoad
-	Timeout   int
-	GroupBy   []FTAggregateGroupBy
-	SortBy    []FTAggregateSortBy
-	SortByMax int
-	// Scorer is used to set scoring function, if not set passed, a default will be used.
-	// The default scorer depends on the Redis version:
-	// - `BM25` for Redis >= 8
-	// - `TFIDF` for Redis < 8
-	Scorer string
-	// AddScores is available in Redis CE 8
-	AddScores         bool
-	Apply             []FTAggregateApply
-	LimitOffset       int
+	Verbatim          bool
+	LoadAll           bool
+	Load              []FTAggregateLoad
+	Timeout           int
+	GroupBy           []FTAggregateGroupBy
+	SortBy            []FTAggregateSortBy
+	SortByMax         int
 	Limit             int
 	Filter            string
 	WithCursor        bool
