@@ -247,6 +247,10 @@ type FTAggregateOptions struct {
 	GroupBy           []FTAggregateGroupBy
 	SortBy            []FTAggregateSortBy
 	SortByMax         int
+	Scorer            string
+	AddScores         bool
+	Apply             []FTAggregateApply
+	LimitOffset       int
 	Limit             int
 	Filter            string
 	WithCursor        bool
