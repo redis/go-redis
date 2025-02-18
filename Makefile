@@ -17,7 +17,7 @@ test.ci:
 	  (cd "$${dir}" && \
 	    go mod tidy -compat=1.18 && \
 	    go vet && \
-	    go test -coverprofile=coverage.txt -covermode=atomic ./... -race -v); \
+	    go test -coverprofile=coverage.txt -covermode=atomic ./... -race); \
 	done
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet

@@ -91,7 +91,6 @@ func GetSlavesAddrByName(ctx context.Context, c *SentinelClient, name string) []
 			name, err)
 		return []string{}
 	}
-	fmt.Println(addrs)
 	return parseReplicaAddrs(addrs, false)
 }
 

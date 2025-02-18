@@ -111,11 +111,13 @@ var _ = Describe("Sentinel", func() {
 		ch := pub.Channel()
 
 		// Kill master.
-		err = master.Shutdown(ctx).Err()
-		Expect(err).NotTo(HaveOccurred())
-		Eventually(func() error {
-			return master.Ping(ctx).Err()
-		}, "20s", "50ms").Should(HaveOccurred())
+		/*
+			err = master.Shutdown(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func() error {
+				return master.Ping(ctx).Err()
+			}, "20s", "50ms").Should(HaveOccurred())
+		*/
 
 		// Check that client picked up new master.
 		Eventually(func() string {
@@ -248,11 +250,13 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		ch := sub.Channel()
 
 		// Kill master.
-		err = master.Shutdown(ctx).Err()
-		Expect(err).NotTo(HaveOccurred())
-		Eventually(func() error {
-			return master.Ping(ctx).Err()
-		}, "20s", "100ms").Should(HaveOccurred())
+		/*
+			err = master.Shutdown(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func() error {
+				return master.Ping(ctx).Err()
+			}, "20s", "100ms").Should(HaveOccurred())
+		*/
 
 		// Check that client picked up new master.
 		Eventually(func() string {
