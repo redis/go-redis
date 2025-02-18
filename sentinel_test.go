@@ -9,7 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var _ = FDescribe("Sentinel", func() {
+var _ = Describe("Sentinel", func() {
 	var _ = Describe("Sentinel PROTO 2", func() {
 		var client *redis.Client
 		BeforeEach(func() {
@@ -63,13 +63,13 @@ var _ = FDescribe("Sentinel", func() {
 			// Wait until slaves are picked up by sentinel.
 			Eventually(func() string {
 				return sentinel1.Info(ctx).Val()
-			}, "30s", "100ms").Should(ContainSubstring("slaves=2"))
+			}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 			Eventually(func() string {
 				return sentinel2.Info(ctx).Val()
-			}, "30s", "100ms").Should(ContainSubstring("slaves=2"))
+			}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 			Eventually(func() string {
 				return sentinel3.Info(ctx).Val()
-			}, "30s", "100ms").Should(ContainSubstring("slaves=2"))
+			}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 		})
 
 		AfterEach(func() {
@@ -93,7 +93,7 @@ var _ = FDescribe("Sentinel", func() {
 			Eventually(func() []string {
 				slavesAddr = redis.GetSlavesAddrByName(ctx, sentinel, sentinelName)
 				return slavesAddr
-			}, "30s", "100ms").Should(HaveLen(2))
+			}, "15s", "100ms").Should(HaveLen(2))
 			Eventually(func() bool {
 				sync := true
 				for _, addr := range slavesAddr {
@@ -105,7 +105,7 @@ var _ = FDescribe("Sentinel", func() {
 					_ = slave.Close()
 				}
 				return sync
-			}, "30s", "100ms").Should(BeTrue())
+			}, "15s", "100ms").Should(BeTrue())
 
 			// Create subscription.
 			pub := client.Subscribe(ctx, "foo")
@@ -116,19 +116,19 @@ var _ = FDescribe("Sentinel", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Eventually(func() error {
 				return master.Ping(ctx).Err()
-			}, "30s", "100ms").Should(HaveOccurred())
+			}, "15s", "100ms").Should(HaveOccurred())
 
 			// Check that client picked up new master.
 			Eventually(func() string {
 				return client.Get(ctx, "foo").Val()
-			}, "30s", "100ms").Should(Equal("master"))
+			}, "15s", "100ms").Should(Equal("master"))
 
 			// Check if subscription is renewed.
 			var msg *redis.Message
 			Eventually(func() <-chan *redis.Message {
 				_ = client.Publish(ctx, "foo", "hello").Err()
 				return ch
-			}, "30s", "100ms").Should(Receive(&msg))
+			}, "15s", "100ms").Should(Receive(&msg))
 			Expect(msg.Channel).To(Equal("foo"))
 			Expect(msg.Payload).To(Equal("hello"))
 			Expect(pub.Close()).NotTo(HaveOccurred())
@@ -218,13 +218,13 @@ var _ = FDescribe("Sentinel", func() {
 			// Wait until slaves are picked up by sentinel.
 			Eventually(func() string {
 				return sentinel1.Info(ctx).Val()
-			}, "30s", "100ms").Should(ContainSubstring("slaves=2"))
+			}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 			Eventually(func() string {
 				return sentinel2.Info(ctx).Val()
-			}, "30s", "100ms").Should(ContainSubstring("slaves=2"))
+			}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 			Eventually(func() string {
 				return sentinel3.Info(ctx).Val()
-			}, "30s", "100ms").Should(ContainSubstring("slaves=2"))
+			}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
 		})
 
 		AfterEach(func() {
@@ -241,7 +241,7 @@ var _ = FDescribe("Sentinel", func() {
 				// Verify.
 				Eventually(func() string {
 					return client.Get(ctx, "foo").Val()
-				}, "30s", "1ms").Should(Equal("master"))
+				}, "15s", "1ms").Should(Equal("master"))
 			}
 
 			// Create subscription.
@@ -253,19 +253,19 @@ var _ = FDescribe("Sentinel", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Eventually(func() error {
 				return master.Ping(ctx).Err()
-			}, "30s", "100ms").Should(HaveOccurred())
+			}, "15s", "100ms").Should(HaveOccurred())
 
 			// Check that client picked up new master.
 			Eventually(func() string {
 				return client.Get(ctx, "foo").Val()
-			}, "30s", "100ms").Should(Equal("master"))
+			}, "15s", "100ms").Should(Equal("master"))
 
 			// Check if subscription is renewed.
 			var msg *redis.Message
 			Eventually(func() <-chan *redis.Message {
 				_ = client.Publish(ctx, "foo", "hello").Err()
 				return ch
-			}, "30s", "100ms").Should(Receive(&msg))
+			}, "15s", "100ms").Should(Receive(&msg))
 			Expect(msg.Channel).To(Equal("foo"))
 			Expect(msg.Payload).To(Equal("hello"))
 			Expect(sub.Close()).NotTo(HaveOccurred())
@@ -343,7 +343,7 @@ var _ = FDescribe("Sentinel", func() {
 			for _, process := range sentinels() {
 				Eventually(func() string {
 					return process.Info(ctx).Val()
-				}, "30s", "100ms").Should(ContainSubstring("sentinels=3"))
+				}, "15s", "100ms").Should(ContainSubstring("sentinels=3"))
 			}
 		})
 
