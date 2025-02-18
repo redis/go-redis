@@ -5484,6 +5484,10 @@ func (cmd *InfoCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
+var (
+	moduleRe = regexp.MustCompile(`module:name=(.+?),(.+)$`)
+)
+
 func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 	val, err := rd.ReadString()
 	if err != nil {
@@ -5492,8 +5496,6 @@ func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 
 	section := ""
 	scanner := bufio.NewScanner(strings.NewReader(val))
-	moduleRe := regexp.MustCompile(`module:name=(.+?),(.+)$`)
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "#") {
