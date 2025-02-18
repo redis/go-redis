@@ -1,7 +1,5 @@
 osscluster/
-ring1/
-ring2/
-ring3/
+ring/
 standalone/
 sentinel-cluster/
 sentinel/

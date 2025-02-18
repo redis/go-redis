@@ -56,13 +56,14 @@ jobs:
           fi
         shell: bash
       - name: Set up Docker Compose environment with redis ${{ matrix.redis-version }}
-        run: docker compose --profile all up -d
+        run: make docker.start
         shell: bash
       - name: Benchmark Tests
         env:
           RCE_DOCKER: "true"
           RE_CLUSTER: "false"
         run: make bench
+        shell: bash
 
   test-redis-ce:
     name: test-redis-ce

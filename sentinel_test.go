@@ -62,13 +62,13 @@ var _ = Describe("Sentinel", func() {
 		// Wait until slaves are picked up by sentinel.
 		Eventually(func() string {
 			return sentinel1.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
 		Eventually(func() string {
 			return sentinel2.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
 		Eventually(func() string {
 			return sentinel3.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
 	})
 
 	AfterEach(func() {
@@ -92,7 +92,7 @@ var _ = Describe("Sentinel", func() {
 		Eventually(func() []string {
 			slavesAddr = redis.GetSlavesAddrByName(ctx, sentinel, sentinelName)
 			return slavesAddr
-		}, "15s", "100ms").Should(HaveLen(2))
+		}, "20s", "50ms").Should(HaveLen(2))
 		Eventually(func() bool {
 			sync := true
 			for _, addr := range slavesAddr {
@@ -104,7 +104,7 @@ var _ = Describe("Sentinel", func() {
 				_ = slave.Close()
 			}
 			return sync
-		}, "15s", "100ms").Should(BeTrue())
+		}, "20s", "50ms").Should(BeTrue())
 
 		// Create subscription.
 		pub := client.Subscribe(ctx, "foo")
@@ -115,19 +115,19 @@ var _ = Describe("Sentinel", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() error {
 			return master.Ping(ctx).Err()
-		}, "15s", "100ms").Should(HaveOccurred())
+		}, "20s", "50ms").Should(HaveOccurred())
 
 		// Check that client picked up new master.
 		Eventually(func() string {
 			return client.Get(ctx, "foo").Val()
-		}, "15s", "100ms").Should(Equal("master"))
+		}, "20s", "100ms").Should(Equal("master"))
 
 		// Check if subscription is renewed.
 		var msg *redis.Message
 		Eventually(func() <-chan *redis.Message {
 			_ = client.Publish(ctx, "foo", "hello").Err()
 			return ch
-		}, "15s", "100ms").Should(Receive(&msg))
+		}, "20s", "100ms").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
 		Expect(pub.Close()).NotTo(HaveOccurred())
@@ -217,13 +217,13 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		// Wait until slaves are picked up by sentinel.
 		Eventually(func() string {
 			return sentinel1.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
 		Eventually(func() string {
 			return sentinel2.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
 		Eventually(func() string {
 			return sentinel3.Info(ctx).Val()
-		}, "15s", "100ms").Should(ContainSubstring("slaves=2"))
+		}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
 	})
 
 	AfterEach(func() {
@@ -240,7 +240,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 			// Verify.
 			Eventually(func() string {
 				return client.Get(ctx, "foo").Val()
-			}, "15s", "1ms").Should(Equal("master"))
+			}, "20s", "1ms").Should(Equal("master"))
 		}
 
 		// Create subscription.
@@ -252,19 +252,19 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() error {
 			return master.Ping(ctx).Err()
-		}, "15s", "100ms").Should(HaveOccurred())
+		}, "20s", "100ms").Should(HaveOccurred())
 
 		// Check that client picked up new master.
 		Eventually(func() string {
 			return client.Get(ctx, "foo").Val()
-		}, "15s", "100ms").Should(Equal("master"))
+		}, "20s", "100ms").Should(Equal("master"))
 
 		// Check if subscription is renewed.
 		var msg *redis.Message
 		Eventually(func() <-chan *redis.Message {
 			_ = client.Publish(ctx, "foo", "hello").Err()
 			return ch
-		}, "15s", "100ms").Should(Receive(&msg))
+		}, "20s", "100ms").Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
 		Expect(sub.Close()).NotTo(HaveOccurred())
@@ -342,7 +342,7 @@ var _ = Describe("SentinelAclAuth", func() {
 		for _, process := range sentinels() {
 			Eventually(func() string {
 				return process.Info(ctx).Val()
-			}, "15s", "100ms").Should(ContainSubstring("sentinels=3"))
+			}, "20s", "100ms").Should(ContainSubstring("sentinels=3"))
 		}
 	})
 

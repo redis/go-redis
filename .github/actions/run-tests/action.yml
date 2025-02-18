@@ -40,7 +40,8 @@ runs:
         fi
       shell: bash
     - name: Set up Docker Compose environment with redis ${{ inputs.redis-version }}
-      run: docker compose --profile all up -d
+      run: |
+        make docker.start
       shell: bash
     - name: Run tests
       env:

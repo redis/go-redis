@@ -46,7 +46,7 @@ var (
 )
 
 var (
-	sentinelAddrs = []string{"127.0.0.1:" + sentinelPort1, "127.0.0.1:" + sentinelPort2, "127.0.0.1:" + sentinelPort3}
+	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
 
 	ringShard1, ringShard2, ringShard3             *redis.Client
 	sentinelMaster, sentinelSlave1, sentinelSlave2 *redis.Client
@@ -313,13 +313,8 @@ func startSentinel(port, masterName, masterPort string) (*redis.Client, error) {
 		return nil, err
 	}
 
-	// set down-after-milliseconds=2000
-	// link: https://github.com/redis/redis/issues/8607
 	for _, cmd := range []*redis.StatusCmd{
 		redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", masterName, "127.0.0.1", masterPort, "2"),
-		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "down-after-milliseconds", "2000"),
-		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "failover-timeout", "1000"),
-		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "parallel-syncs", "1"),
 	} {
 		client.Process(ctx, cmd)
 		if err := cmd.Err(); err != nil && !strings.Contains(err.Error(), "ERR Duplicate master name.") {

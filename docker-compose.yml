@@ -62,8 +62,8 @@ services:
     depends_on:
       - sentinel-cluster
     environment:
-      - REDIS_CLUSTER=no
       - NODES=3
+      - REDIS_CLUSTER=no
       - PORT=26379
     command: ${REDIS_EXTRA_ARGS:---sentinel}
     network_mode: "host"
@@ -79,61 +79,23 @@ services:
       - all-stack
       - all
 
-
-
-  redisRing1:
+  ring-cluster:
     image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:rs-7.4.0-v2}
-    container_name: redis-ring-1
+    container_name: redis-ring-cluster
     environment:
+      - NODES=3
       - TLS_ENABLED=yes
       - REDIS_CLUSTER=no
       - PORT=6390
     command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional --save ""}
     ports:
       - 6390:6390
-    volumes:
-      - "./dockers/ring1:/redis/work"
-    profiles:
-      - ring
-      - cluster
-      - sentinel
-      - all-stack
-      - all
-
-  redisRing2:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:rs-7.4.0-v2}
-    container_name: redis-ring-2
-    environment:
-      - TLS_ENABLED=yes
-      - REDIS_CLUSTER=no
-      - PORT=6391
-    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional --save ""}
-    ports:
       - 6391:6391
-    volumes:
-      - "./dockers/ring2:/redis/work"
-    profiles:
-      - ring
-      - cluster
-      - sentinel
-      - all-stack
-      - all
-
-  redisRing3:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:rs-7.4.0-v2}
-    container_name: redis-ring-3
-    environment:
-      - TLS_ENABLED=yes
-      - REDIS_CLUSTER=no
-      - PORT=6392
-    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional --save ""}
-    ports:
       - 6392:6392
     volumes:
-      - "./dockers/ring3:/redis/work"
+      - "./dockers/ring:/redis/work"
     profiles:
       - ring
       - cluster
-      - sentinel
       - all-stack
       - all

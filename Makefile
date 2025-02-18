@@ -1,7 +1,7 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 
 docker.start:
-	docker compose --profile all up -d
+	docker compose --profile all up -d --quiet-pull
 
 docker.stop:
 	docker compose --profile all down
