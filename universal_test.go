@@ -16,7 +16,7 @@ var _ = Describe("UniversalClient", func() {
 		}
 	})
 
-	It("should connect to failover servers", func() {
+	It("should connect to failover servers", Label("NonRedisEnterprise"), func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			MasterName: sentinelName,
 			Addrs:      sentinelAddrs,
