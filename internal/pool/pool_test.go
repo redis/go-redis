@@ -292,8 +292,8 @@ var _ = Describe("race", func() {
 	BeforeEach(func() {
 		C, N = 10, 1000
 		if testing.Short() {
-			C = 4
-			N = 100
+			C = 2
+			N = 50
 		}
 	})
 

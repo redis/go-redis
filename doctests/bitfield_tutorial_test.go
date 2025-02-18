@@ -21,6 +21,8 @@ func ExampleClient_bf() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bike:1:stats")
 	// REMOVE_END
 

@@ -21,6 +21,8 @@ func ExampleClient_queue() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -75,6 +77,8 @@ func ExampleClient_stack() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -129,6 +133,8 @@ func ExampleClient_llen() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -156,6 +162,8 @@ func ExampleClient_lmove_lrange() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	rdb.Del(ctx, "bikes:finished")
 	// REMOVE_END
@@ -220,6 +228,8 @@ func ExampleClient_lpush_rpush() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -274,6 +284,8 @@ func ExampleClient_variadic() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -319,6 +331,8 @@ func ExampleClient_lpop_rpop() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -384,6 +398,8 @@ func ExampleClient_ltrim() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -429,6 +445,8 @@ func ExampleClient_ltrim_end_of_list() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -474,6 +492,8 @@ func ExampleClient_brpop() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -529,6 +549,8 @@ func ExampleClient_rule1() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "new_bikes")
 	// REMOVE_END
 
