@@ -269,6 +269,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res1.Total).To(BeEquivalentTo(int64(1)))
 
+		_, err = client.FTSearch(ctx, "idx_not_exist", "only in the body").Result()
+		Expect(err).To(HaveOccurred())
 	})
 
 	It("should FTSpellCheck", Label("search", "ftcreate", "ftsearch", "ftspellcheck"), func() {
@@ -643,11 +645,32 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Rows[0].Fields["t2"]).To(BeEquivalentTo("world"))
 
+		options = &redis.FTAggregateOptions{Load: []redis.FTAggregateLoad{{Field: "t2", As: "t2alias"}}}
+		res, err = client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows[0].Fields["t2alias"]).To(BeEquivalentTo("world"))
+
+		options = &redis.FTAggregateOptions{Load: []redis.FTAggregateLoad{{Field: "t1"}, {Field: "t2", As: "t2alias"}}}
+		res, err = client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows[0].Fields["t1"]).To(BeEquivalentTo("hello"))
+		Expect(res.Rows[0].Fields["t2alias"]).To(BeEquivalentTo("world"))
+
 		options = &redis.FTAggregateOptions{LoadAll: true}
 		res, err = client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Rows[0].Fields["t1"]).To(BeEquivalentTo("hello"))
 		Expect(res.Rows[0].Fields["t2"]).To(BeEquivalentTo("world"))
+
+		_, err = client.FTAggregateWithArgs(ctx, "idx_not_exist", "*", &redis.FTAggregateOptions{}).Result()
+		if !RECluster {
+			Expect(err).To(HaveOccurred())
+		} else {
+			//FIXME:This is a known issue, which is fixed in RedisSearch(2.8.10), but the Redis Enterprise(7.4.2) packaged RediSearch 2.8.9
+			//https://github.com/RediSearch/RediSearch/issues/4272
+			//https://redis.io/docs/latest/operate/rs/release-notes/rs-7-4-2-releases/rs-7-4-2-54/
+			Expect(err).NotTo(HaveOccurred())
+		}
 	})
 
 	It("should FTAggregate with scorer and addscores", Label("search", "ftaggregate", "NonRedisEnterprise"), func() {
@@ -1268,6 +1291,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		val, err = client.FTCreate(ctx, "idx_hash", ftCreateOptions, schema...).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal("OK"))
+		WaitForIndexing(client, "idx_hash")
 
 		ftSearchOptions := &redis.FTSearchOptions{
 			DialectVersion: 4,
