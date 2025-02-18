@@ -277,10 +277,9 @@ func BenchmarkXRead(b *testing.B) {
 
 func newClusterScenario() *clusterScenario {
 	return &clusterScenario{
-		ports:     []string{"16600", "16601", "16602", "16603", "16604", "16605"},
-		nodeIDs:   make([]string, 6),
-		processes: make(map[string]*redisProcess, 6),
-		clients:   make(map[string]*redis.Client, 6),
+		ports:   []string{"16600", "16601", "16602", "16603", "16604", "16605"},
+		nodeIDs: make([]string, 6),
+		clients: make(map[string]*redis.Client, 6),
 	}
 }
 

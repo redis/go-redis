@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -306,50 +305,6 @@ func connectTo(port string) (*redis.Client, error) {
 	}
 
 	return client, nil
-}
-
-type redisProcess struct {
-	*os.Process
-	*redis.Client
-}
-
-func (p *redisProcess) Close() error {
-	if err := p.Kill(); err != nil {
-		return err
-	}
-
-	err := eventually(func() error {
-		if err := p.Client.Ping(ctx).Err(); err != nil {
-			return nil
-		}
-		return fmt.Errorf("client %s is not shutdown", p.Options().Addr)
-	}, 10*time.Second)
-	if err != nil {
-		return err
-	}
-
-	p.Client.Close()
-	return nil
-}
-
-var (
-	redisServerBin, _    = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
-	redisServerConf, _   = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
-	redisSentinelConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "sentinel.conf"))
-)
-
-func redisDir(port string) (string, error) {
-	dir, err := filepath.Abs(filepath.Join("testdata", "instances", port))
-	if err != nil {
-		return "", err
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(dir, 0o775); err != nil {
-		return "", err
-	}
-	return dir, nil
 }
 
 func startSentinel(port, masterName, masterPort string) (*redis.Client, error) {

@@ -20,10 +20,9 @@ import (
 )
 
 type clusterScenario struct {
-	ports     []string
-	nodeIDs   []string
-	processes map[string]*redisProcess
-	clients   map[string]*redis.Client
+	ports   []string
+	nodeIDs []string
+	clients map[string]*redis.Client
 }
 
 func (s *clusterScenario) slots() []int {
@@ -197,7 +196,7 @@ func configureClusterTopology(ctx context.Context, scenario *clusterScenario) er
 				return err
 			}
 			return assertSlotsEqual(res, wanted)
-		}, 60*time.Second)
+		}, 2*time.Minute)
 		if err != nil {
 			return err
 		}
