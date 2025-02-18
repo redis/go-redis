@@ -46,7 +46,7 @@ var (
 )
 
 var (
-	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
+	sentinelAddrs = []string{"127.0.0.1:" + sentinelPort1, "127.0.0.1:" + sentinelPort2, "127.0.0.1:" + sentinelPort3}
 
 	ringShard1, ringShard2, ringShard3             *redis.Client
 	sentinelMaster, sentinelSlave1, sentinelSlave2 *redis.Client
