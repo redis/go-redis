@@ -20,6 +20,8 @@ func ExampleClient_transactions() {
 		DB:       0,  // use default DB
 	})
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	for i := 0; i < 5; i++ {
 		rdb.Del(ctx, fmt.Sprintf("seat:%d", i))
 	}

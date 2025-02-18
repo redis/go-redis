@@ -21,6 +21,8 @@ func ExampleClient_cmd_incr() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "mykey")
 	// REMOVE_END
 

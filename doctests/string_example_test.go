@@ -20,6 +20,8 @@ func ExampleClient_set_get() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bike:1")
 	// REMOVE_END
 
@@ -56,6 +58,8 @@ func ExampleClient_setnx_xx() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Set(ctx, "bike:1", "Deimos", 0)
 	// REMOVE_END
 
@@ -101,6 +105,8 @@ func ExampleClient_mset() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bike:1", "bike:2", "bike:3")
 	// REMOVE_END
 
@@ -137,6 +143,8 @@ func ExampleClient_incr() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "total_crashes")
 	// REMOVE_END
 
