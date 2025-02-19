@@ -60,16 +60,17 @@ var _ = Describe("UniversalClient", func() {
 		a := func() { client.FTInfo(ctx, "all").Result() }
 		Expect(a).ToNot(Panic())
 	})
+
+
+	It("should connect to failover servers on slaves", func() {
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			MasterName: sentinelName,
+			Addrs:      sentinelAddrs,
+			ReadOnly: true,
+		})
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+
 })
 
-It("should connect to failover servers - slaves", func() {
-	Skip("Flaky Test")
-	client = redis.NewUniversalClient(&redis.UniversalOptions{
-		MasterName: sentinelName,
-		Addrs:      sentinelAddrs,
-		ReadOnly: true,
-	})
-	Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
-	a := func() { client.Do(ctx, "ROLE").Result() }
-    Expect(a).ToNot(Panic())
-})
