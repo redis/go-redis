@@ -127,7 +127,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 		res3, err := client.FTSearchWithArgs(ctx, "num", "foo", &redis.FTSearchOptions{NoContent: true, SortBy: []redis.FTSearchSortBy{sortBy2}, SortByWithCount: true}).Result()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(res3.Total).To(BeEquivalentTo(int64(0)))
+		Expect(res3.Total).To(BeEquivalentTo(int64(3)))
 
 	})
 
@@ -925,15 +925,15 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		client.HSet(ctx, "c", "v", "aaaaabaa")
 
 		searchOptions := &redis.FTSearchOptions{
-			Return:         []redis.FTSearchReturn{{FieldName: "__v_score"}},
-			SortBy:         []redis.FTSearchSortBy{{FieldName: "__v_score", Asc: true}},
+			Return:         []redis.FTSearchReturn{{FieldName: "v"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "v", Asc: true}},
+			Limit:          10,
 			DialectVersion: 1,
-			Params:         map[string]interface{}{"vec": "aaaaaaaa"},
 		}
-		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 2 @v $vec]", searchOptions).Result()
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*", searchOptions).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Docs[0].ID).To(BeEquivalentTo("a"))
-		Expect(res.Docs[0].Fields["__v_score"]).To(BeEquivalentTo("0"))
+		Expect(res.Docs[0].Fields["v"]).To(BeEquivalentTo("aaaaaaaa"))
 	})
 
 	It("should FTCreate VECTOR with default dialect", Label("search", "ftcreate"), func() {

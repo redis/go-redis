@@ -1671,11 +1671,12 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
 		cmd.err = err
-		return nil
+		return err
 	}
 	cmd.val, err = parseFTSearch(data, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
 	if err != nil {
 		cmd.err = err
+		return err
 	}
 	return nil
 }
@@ -1899,7 +1900,7 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 				}
 			}
 			if options.SortByWithCount {
-				args = append(args, "WITHCOUT")
+				args = append(args, "WITHCOUNT")
 			}
 		}
 		if options.LimitOffset >= 0 && options.Limit > 0 {
