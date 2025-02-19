@@ -5484,10 +5484,6 @@ func (cmd *InfoCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-var (
-	moduleRe = regexp.MustCompile(`module:name=(.+?),(.+)$`)
-)
-
 func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 	val, err := rd.ReadString()
 	if err != nil {
@@ -5506,6 +5502,7 @@ func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 			cmd.val[section] = make(map[string]string)
 		} else if line != "" {
 			if section == "Modules" {
+				moduleRe := regexp.MustCompile(`module:name=(.+?),(.+)$`)
 				kv := moduleRe.FindStringSubmatch(line)
 				if len(kv) == 3 {
 					cmd.val[section][kv[1]] = kv[2]
