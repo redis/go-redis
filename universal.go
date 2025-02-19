@@ -160,6 +160,8 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 
 		TLSConfig: o.TLSConfig,
 
+		ReplicaOnly:     o.ReadOnly,
+
 		DisableIndentity: o.DisableIndentity,
 		IdentitySuffix:   o.IdentitySuffix,
 		UnstableResp3:    o.UnstableResp3,

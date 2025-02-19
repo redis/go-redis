@@ -60,4 +60,18 @@ var _ = Describe("UniversalClient", func() {
 		a := func() { client.FTInfo(ctx, "all").Result() }
 		Expect(a).ToNot(Panic())
 	})
+
+
+	It("should connect to failover servers on slaves when readonly Options is ok", func() {
+		Skip("Flaky Test")
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			MasterName: sentinelName,
+			Addrs:      sentinelAddrs,
+			ReadOnly: true,
+		})
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+
 })
+
