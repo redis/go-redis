@@ -5492,8 +5492,6 @@ func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 
 	section := ""
 	scanner := bufio.NewScanner(strings.NewReader(val))
-	moduleRe := regexp.MustCompile(`module:name=(.+?),(.+)$`)
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "#") {
@@ -5504,6 +5502,7 @@ func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 			cmd.val[section] = make(map[string]string)
 		} else if line != "" {
 			if section == "Modules" {
+				moduleRe := regexp.MustCompile(`module:name=(.+?),(.+)$`)
 				kv := moduleRe.FindStringSubmatch(line)
 				if len(kv) == 3 {
 					cmd.val[section][kv[1]] = kv[2]
