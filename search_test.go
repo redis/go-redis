@@ -663,14 +663,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Rows[0].Fields["t2"]).To(BeEquivalentTo("world"))
 
 		_, err = client.FTAggregateWithArgs(ctx, "idx_not_exist", "*", &redis.FTAggregateOptions{}).Result()
-		if !RECluster {
-			Expect(err).To(HaveOccurred())
-		} else {
-			//FIXME:This is a known issue, which is fixed in RedisSearch(2.8.10), but the Redis Enterprise(7.4.2) packaged RediSearch 2.8.9
-			//https://github.com/RediSearch/RediSearch/issues/4272
-			//https://redis.io/docs/latest/operate/rs/release-notes/rs-7-4-2-releases/rs-7-4-2-54/
-			Expect(err).NotTo(HaveOccurred())
-		}
+		Expect(err).To(HaveOccurred())
 	})
 
 	It("should FTAggregate with scorer and addscores", Label("search", "ftaggregate", "NonRedisEnterprise"), func() {
