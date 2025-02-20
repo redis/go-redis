@@ -681,12 +681,10 @@ func (cmd *AggregateCmd) String() string {
 func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
-		cmd.err = err
 		return err
 	}
 	cmd.val, err = ProcessAggregateResult(data)
 	if err != nil {
-		cmd.err = err
 		return err
 	}
 	return nil
@@ -1428,7 +1426,7 @@ func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	}
 	cmd.val, err = parseFTInfo(data)
 	if err != nil {
-		cmd.err = err
+		return err
 	}
 
 	return nil
@@ -1525,7 +1523,7 @@ func (cmd *FTSpellCheckCmd) readReply(rd *proto.Reader) (err error) {
 	}
 	cmd.val, err = parseFTSpellCheck(data)
 	if err != nil {
-		cmd.err = err
+		return err
 	}
 	return nil
 }
@@ -1713,7 +1711,7 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 	}
 	cmd.val, err = parseFTSearch(data, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
 	if err != nil {
-		cmd.err = err
+		return err
 	}
 	return nil
 }
