@@ -41,7 +41,7 @@ type (
 )
 
 type hooksMixin struct {
-	hooksMu *sync.Mutex
+	hooksMu *sync.RWMutex
 
 	slice   []Hook
 	initial hooks
@@ -49,7 +49,7 @@ type hooksMixin struct {
 }
 
 func (hs *hooksMixin) initHooks(hooks hooks) {
-	hs.hooksMu = new(sync.Mutex)
+	hs.hooksMu = new(sync.RWMutex)
 	hs.initial = hooks
 	hs.chain()
 }
@@ -151,7 +151,7 @@ func (hs *hooksMixin) clone() hooksMixin {
 	clone := *hs
 	l := len(clone.slice)
 	clone.slice = clone.slice[:l:l]
-	clone.hooksMu = new(sync.Mutex)
+	clone.hooksMu = new(sync.RWMutex)
 	return clone
 }
 
@@ -176,9 +176,14 @@ func (hs *hooksMixin) withProcessPipelineHook(
 }
 
 func (hs *hooksMixin) dialHook(ctx context.Context, network, addr string) (net.Conn, error) {
-	hs.hooksMu.Lock()
-	defer hs.hooksMu.Unlock()
-	return hs.current.dial(ctx, network, addr)
+	// Access to hs.current is guarded by a read-only lock since it may be mutated by AddHook(...)
+	// while this dialer is concurrently accessed by the background connection pool population
+	// routine when MinIdleConns > 0.
+	hs.hooksMu.RLock()
+	current := hs.current
+	hs.hooksMu.RUnlock()
+
+	return current.dial(ctx, network, addr)
 }
 
 func (hs *hooksMixin) processHook(ctx context.Context, cmd Cmder) error {
@@ -412,6 +417,19 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	return lastErr
 }
 
+func (c *baseClient) assertUnstableCommand(cmd Cmder) bool {
+	switch cmd.(type) {
+	case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
+		if c.opt.UnstableResp3 {
+			return true
+		} else {
+			panic("RESP3 responses for this command are disabled because they may still change. Please set the flag UnstableResp3 .  See the [README](https://github.com/redis/go-redis/blob/master/README.md) and the release notes for guidance.")
+		}
+	default:
+		return false
+	}
+}
+
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -427,8 +445,12 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			atomic.StoreUint32(&retryTimeout, 1)
 			return err
 		}
-
-		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), cmd.readReply); err != nil {
+		readReplyFunc := cmd.readReply
+		// Apply unstable RESP3 search module.
+		if c.opt.Protocol != 2 && c.assertUnstableCommand(cmd) {
+			readReplyFunc = cmd.readRawReply
+		}
+		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
 			if cmd.readTimeout() == nil {
 				atomic.StoreUint32(&retryTimeout, 1)
 			} else {
