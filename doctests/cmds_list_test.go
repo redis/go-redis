@@ -25,29 +25,29 @@ func ExampleClient_cmd_llen() {
 	// REMOVE_END
 
 	// STEP_START llen
-	lLenResult1, err := rdb.LPush(ctx, "mylist", "World").Result()
+	lPushResult1, err := rdb.LPush(ctx, "mylist", "World").Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(lLenResult1) // >>> 1
+	fmt.Println(lPushResult1) // >>> 1
 
-	lLenResult2, err := rdb.LPush(ctx, "mylist", "Hello").Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(lLenResult2) // >>> 2
-
-	lLenResult3, err := rdb.LLen(ctx, "mylist").Result()
+	lPushResult2, err := rdb.LPush(ctx, "mylist", "Hello").Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(lLenResult3) // >>> 2
+	fmt.Println(lPushResult2) // >>> 2
+
+	lLenResult, err := rdb.LLen(ctx, "mylist").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(lLenResult) // >>> 2
 	// STEP_END
 
 	// Output:
@@ -69,7 +69,7 @@ func ExampleClient_cmd_lpop() {
 	// REMOVE_END
 
 	// STEP_START lpop
-	lPopResult1, err := rdb.RPush(ctx,
+	RPushResult, err := rdb.RPush(ctx,
 		"mylist", "one", "two", "three", "four", "five",
 	).Result()
 
@@ -77,31 +77,31 @@ func ExampleClient_cmd_lpop() {
 		panic(err)
 	}
 
-	fmt.Println(lPopResult1) // >>> 5
+	fmt.Println(RPushResult) // >>> 5
 
-	lPopResult2, err := rdb.LPop(ctx, "mylist").Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(lPopResult2) // >>> one
-
-	lPopResult3, err := rdb.LPopCount(ctx, "mylist", 2).Result()
+	lPopResult, err := rdb.LPop(ctx, "mylist").Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(lPopResult3) // >>> [two three]
+	fmt.Println(lPopResult) // >>> one
 
-	lPopResult4, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
+	lPopCountResult, err := rdb.LPopCount(ctx, "mylist", 2).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(lPopResult4) // >>> [four five]
+	fmt.Println(lPopCountResult) // >>> [two three]
+
+	lRangeResult, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(lRangeResult) // >>> [four five]
 	// STEP_END
 
 	// Output:
@@ -141,13 +141,13 @@ func ExampleClient_cmd_lpush() {
 
 	fmt.Println(lPushResult2) // >>> 2
 
-	lPushResult3, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
+	lRangeResult, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(lPushResult3) // >>> [Hello World]
+	fmt.Println(lRangeResult) // >>> [Hello World]
 	// STEP_END
 
 	// Output:
@@ -170,7 +170,7 @@ func ExampleClient_cmd_lrange() {
 	// REMOVE_END
 
 	// STEP_START lrange
-	lRangeResult1, err := rdb.RPush(ctx, "mylist",
+	RPushResult, err := rdb.RPush(ctx, "mylist",
 		"one", "two", "three",
 	).Result()
 
@@ -178,17 +178,25 @@ func ExampleClient_cmd_lrange() {
 		panic(err)
 	}
 
-	fmt.Println(lRangeResult1) // >>> 3
+	fmt.Println(RPushResult) // >>> 3
 
-	lRangeResult2, err := rdb.LRange(ctx, "mylist", 0, 0).Result()
+	lRangeResult1, err := rdb.LRange(ctx, "mylist", 0, 0).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(lRangeResult2) // >>> [one]
+	fmt.Println(lRangeResult1) // >>> [one]
 
-	lRangeResult3, err := rdb.LRange(ctx, "mylist", -3, 2).Result()
+	lRangeResult2, err := rdb.LRange(ctx, "mylist", -3, 2).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(lRangeResult2) // >>> [one two three]
+
+	lRangeResult3, err := rdb.LRange(ctx, "mylist", -100, 100).Result()
 
 	if err != nil {
 		panic(err)
@@ -196,21 +204,13 @@ func ExampleClient_cmd_lrange() {
 
 	fmt.Println(lRangeResult3) // >>> [one two three]
 
-	lRangeResult4, err := rdb.LRange(ctx, "mylist", -100, 100).Result()
+	lRangeResult4, err := rdb.LRange(ctx, "mylist", 5, 10).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(lRangeResult4) // >>> [one two three]
-
-	lRangeResult5, err := rdb.LRange(ctx, "mylist", 5, 10).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(lRangeResult5) // >>> []
+	fmt.Println(lRangeResult4) // >>> []
 	// STEP_END
 
 	// Output:
@@ -235,7 +235,7 @@ func ExampleClient_cmd_rpop() {
 	// REMOVE_END
 
 	// STEP_START rpop
-	rPopResult1, err := rdb.RPush(ctx, "mylist",
+	rPushResult, err := rdb.RPush(ctx, "mylist",
 		"one", "two", "three", "four", "five",
 	).Result()
 
@@ -243,31 +243,31 @@ func ExampleClient_cmd_rpop() {
 		panic(err)
 	}
 
-	fmt.Println(rPopResult1) // >>> 5
+	fmt.Println(rPushResult) // >>> 5
 
-	rPopResult2, err := rdb.RPop(ctx, "mylist").Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(rPopResult2) // >>> five
-
-	rPopResult3, err := rdb.RPopCount(ctx, "mylist", 2).Result()
+	rPopResult, err := rdb.RPop(ctx, "mylist").Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(rPopResult3) // >>> [four three]
+	fmt.Println(rPopResult) // >>> five
 
-	rPopResult4, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
+	rPopCountResult, err := rdb.RPopCount(ctx, "mylist", 2).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(rPopResult4) // >>> [one two]
+	fmt.Println(rPopCountResult) // >>> [four three]
+
+	lRangeResult, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(lRangeResult) // >>> [one two]
 	// STEP_END
 
 	// Output:
@@ -307,13 +307,13 @@ func ExampleClient_cmd_rpush() {
 
 	fmt.Println(rPushResult2) // >>> 2
 
-	rPushResult3, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
+	lRangeResult, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(rPushResult3) // >>> [Hello World]
+	fmt.Println(lRangeResult) // >>> [Hello World]
 	// STEP_END
 
 	// Output:
