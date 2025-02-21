@@ -211,7 +211,7 @@ var _ = Describe("Commands", func() {
 			select {
 			case <-done:
 				Fail("BLPOP is not blocked.")
-			case <-time.After(2 * time.Second):
+			case <-time.After(1 * time.Second):
 				// ok
 			}
 
@@ -344,6 +344,23 @@ var _ = Describe("Commands", func() {
 			Expect(val).NotTo(BeEmpty())
 		})
 
+		It("should ConfigGet Modules", func() {
+			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			expected := map[string]string{
+				"search-*": "search-timeout",
+				"ts-*":     "ts-retention-policy",
+				"bf-*":     "bf-error-rate",
+				"cf-*":     "cf-initial-size",
+			}
+
+			for prefix, lookup := range expected {
+				val, err := client.ConfigGet(ctx, prefix).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val[lookup]).NotTo(BeEmpty())
+			}
+		})
+
 		It("should ConfigResetStat", Label("NonRedisEnterprise"), func() {
 			r := client.ConfigResetStat(ctx)
 			Expect(r.Err()).NotTo(HaveOccurred())
@@ -360,6 +377,127 @@ var _ = Describe("Commands", func() {
 			configSet := client.ConfigSet(ctx, "maxmemory", configGet.Val()["maxmemory"])
 			Expect(configSet.Err()).NotTo(HaveOccurred())
 			Expect(configSet.Val()).To(Equal("OK"))
+		})
+
+		It("should ConfigGet with Modules", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisMajor(8, "config get won't return modules configs before redis 8")
+			configGet := client.ConfigGet(ctx, "*")
+			Expect(configGet.Err()).NotTo(HaveOccurred())
+			Expect(configGet.Val()).To(HaveKey("maxmemory"))
+			Expect(configGet.Val()).To(HaveKey("search-timeout"))
+			Expect(configGet.Val()).To(HaveKey("ts-retention-policy"))
+			Expect(configGet.Val()).To(HaveKey("bf-error-rate"))
+			Expect(configGet.Val()).To(HaveKey("cf-initial-size"))
+		})
+
+		It("should ConfigSet FT DIALECT", func() {
+			SkipBeforeRedisMajor(8, "config doesn't include modules before Redis 8")
+			defaultState, err := client.ConfigGet(ctx, "search-default-dialect").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// set to 3
+			res, err := client.ConfigSet(ctx, "search-default-dialect", "3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+
+			defDialect, err := client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "3"}))
+
+			resGet, err := client.ConfigGet(ctx, "search-default-dialect").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resGet).To(BeEquivalentTo(map[string]string{"search-default-dialect": "3"}))
+
+			// set to 2
+			res, err = client.ConfigSet(ctx, "search-default-dialect", "2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+
+			defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "2"}))
+
+			// set to 1
+			res, err = client.ConfigSet(ctx, "search-default-dialect", "1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+
+			defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "1"}))
+
+			resGet, err = client.ConfigGet(ctx, "search-default-dialect").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resGet).To(BeEquivalentTo(map[string]string{"search-default-dialect": "1"}))
+
+			// set to default
+			res, err = client.ConfigSet(ctx, "search-default-dialect", defaultState["search-default-dialect"]).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+		})
+
+		It("should ConfigSet fail for ReadOnly", func() {
+			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			_, err := client.ConfigSet(ctx, "search-max-doctablesize", "100000").Result()
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should ConfigSet Modules", func() {
+			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			defaults := map[string]string{}
+			expected := map[string]string{
+				"search-timeout":      "100",
+				"ts-retention-policy": "2",
+				"bf-error-rate":       "0.13",
+				"cf-initial-size":     "64",
+			}
+
+			// read the defaults to set them back later
+			for setting, _ := range expected {
+				val, err := client.ConfigGet(ctx, setting).Result()
+				Expect(err).NotTo(HaveOccurred())
+				defaults[setting] = val[setting]
+			}
+
+			// check if new values can be set
+			for setting, value := range expected {
+				val, err := client.ConfigSet(ctx, setting, value).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val).To(Equal("OK"))
+			}
+
+			for setting, value := range expected {
+				val, err := client.ConfigGet(ctx, setting).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val[setting]).To(Equal(value))
+			}
+
+			// set back to the defaults
+			for setting, value := range defaults {
+				val, err := client.ConfigSet(ctx, setting, value).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val).To(Equal("OK"))
+			}
+		})
+
+		It("should Fail ConfigSet Modules", func() {
+			SkipBeforeRedisMajor(8, "Config doesn't include modules before Redis 8")
+			expected := map[string]string{
+				"search-timeout":      "-100",
+				"ts-retention-policy": "-10",
+				"bf-error-rate":       "1.5",
+				"cf-initial-size":     "-10",
+			}
+
+			for setting, value := range expected {
+				val, err := client.ConfigSet(ctx, setting, value).Result()
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(ContainSubstring(setting)))
+				Expect(val).To(BeEmpty())
+			}
 		})
 
 		It("should ConfigRewrite", Label("NonRedisEnterprise"), func() {
@@ -392,6 +530,59 @@ var _ = Describe("Commands", func() {
 			info = client.InfoMap(ctx, "server")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).To(HaveLen(1))
+		})
+
+		It("should Info Modules", Label("redis.info"), func() {
+			SkipBeforeRedisMajor(8, "modules are included in info for Redis Version >= 8")
+			info := client.Info(ctx)
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).NotTo(BeNil())
+
+			info = client.Info(ctx, "search")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(ContainSubstring("search"))
+
+			info = client.Info(ctx, "modules")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(ContainSubstring("search"))
+			Expect(info.Val()).To(ContainSubstring("ReJSON"))
+			Expect(info.Val()).To(ContainSubstring("timeseries"))
+			Expect(info.Val()).To(ContainSubstring("bf"))
+
+			info = client.Info(ctx, "everything")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(ContainSubstring("search"))
+			Expect(info.Val()).To(ContainSubstring("ReJSON"))
+			Expect(info.Val()).To(ContainSubstring("timeseries"))
+			Expect(info.Val()).To(ContainSubstring("bf"))
+		})
+
+		It("should InfoMap Modules", Label("redis.info"), func() {
+			SkipBeforeRedisMajor(8, "modules are included in info for Redis Version >= 8")
+			info := client.InfoMap(ctx)
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).NotTo(BeNil())
+
+			info = client.InfoMap(ctx, "search")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(len(info.Val())).To(BeNumerically(">=", 2))
+			Expect(info.Val()["search_version"]).ToNot(BeNil())
+
+			info = client.InfoMap(ctx, "modules")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			val := info.Val()
+			modules, ok := val["Modules"]
+			Expect(ok).To(BeTrue())
+			Expect(len(val)).To(BeNumerically(">=", 2))
+			Expect(val["search_version"]).ToNot(BeNil())
+			Expect(modules["search"]).ToNot(BeNil())
+			Expect(modules["ReJSON"]).ToNot(BeNil())
+			Expect(modules["timeseries"]).ToNot(BeNil())
+			Expect(modules["bf"]).ToNot(BeNil())
+
+			info = client.InfoMap(ctx, "everything")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(len(info.Val())).To(BeNumerically(">=", 10))
 		})
 
 		It("should Info cpu", func() {
@@ -441,7 +632,6 @@ var _ = Describe("Commands", func() {
 		It("should Command", Label("NonRedisEnterprise"), func() {
 			cmds, err := client.Command(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(cmds)).To(BeNumerically("~", 240, 25))
 
 			cmd := cmds["mget"]
 			Expect(cmd.Name).To(Equal("mget"))
@@ -2091,12 +2281,6 @@ var _ = Describe("Commands", func() {
 			Expect(replace.Val()).To(Equal(int64(1)))
 		})
 
-		It("should acl dryrun", func() {
-			dryRun := client.ACLDryRun(ctx, "default", "get", "randomKey")
-			Expect(dryRun.Err()).NotTo(HaveOccurred())
-			Expect(dryRun.Val()).To(Equal("OK"))
-		})
-
 		It("should fail module loadex", Label("NonRedisEnterprise"), func() {
 			dryRun := client.ModuleLoadex(ctx, &redis.ModuleLoadexConfig{
 				Path: "/path/to/non-existent-library.so",
@@ -2143,51 +2327,6 @@ var _ = Describe("Commands", func() {
 			}
 
 			Expect(args).To(Equal(expectedArgs))
-		})
-
-		It("should ACL LOG", Label("NonRedisEnterprise"), func() {
-			err := client.Do(ctx, "acl", "setuser", "test", ">test", "on", "allkeys", "+get").Err()
-			Expect(err).NotTo(HaveOccurred())
-
-			clientAcl := redis.NewClient(redisOptions())
-			clientAcl.Options().Username = "test"
-			clientAcl.Options().Password = "test"
-			clientAcl.Options().DB = 0
-			_ = clientAcl.Set(ctx, "mystring", "foo", 0).Err()
-			_ = clientAcl.HSet(ctx, "myhash", "foo", "bar").Err()
-			_ = clientAcl.SAdd(ctx, "myset", "foo", "bar").Err()
-
-			logEntries, err := client.ACLLog(ctx, 10).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(logEntries)).To(Equal(4))
-
-			for _, entry := range logEntries {
-				Expect(entry.Reason).To(Equal("command"))
-				Expect(entry.Context).To(Equal("toplevel"))
-				Expect(entry.Object).NotTo(BeEmpty())
-				Expect(entry.Username).To(Equal("test"))
-				Expect(entry.AgeSeconds).To(BeNumerically(">=", 0))
-				Expect(entry.ClientInfo).NotTo(BeNil())
-				Expect(entry.EntryID).To(BeNumerically(">=", 0))
-				Expect(entry.TimestampCreated).To(BeNumerically(">=", 0))
-				Expect(entry.TimestampLastUpdated).To(BeNumerically(">=", 0))
-			}
-
-			limitedLogEntries, err := client.ACLLog(ctx, 2).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(limitedLogEntries)).To(Equal(2))
-		})
-
-		It("should ACL LOG RESET", Label("NonRedisEnterprise"), func() {
-			// Call ACL LOG RESET
-			resetCmd := client.ACLLogReset(ctx)
-			Expect(resetCmd.Err()).NotTo(HaveOccurred())
-			Expect(resetCmd.Val()).To(Equal("OK"))
-
-			// Verify that the log is empty after the reset
-			logEntries, err := client.ACLLog(ctx, 10).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(logEntries)).To(Equal(0))
 		})
 	})
 

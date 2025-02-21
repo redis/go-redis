@@ -378,7 +378,53 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(names).To(ContainElement("John"))
 	})
 
+	// up until redis 8 the default scorer was TFIDF, in redis 8 it is BM25
+	// this test expect redis major version >= 8
 	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
+		SkipBeforeRedisMajor(8, "default scorer is not BM25")
+
+		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "doc1", "description", "The quick brown fox jumps over the lazy dog")
+		client.HSet(ctx, "doc2", "description", "Quick alice was beginning to get very tired of sitting by her quick sister on the bank, and of having nothing to do.")
+
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeNumerically("<=", 0.236))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "TFIDF"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(1)))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "TFIDF.DOCNORM"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(0.14285714285714285))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "BM25"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeNumerically("<=", 0.22471909420069797))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "DISMAX"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(2)))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "DOCSCORE"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(1)))
+
+		res, err = client.FTSearchWithArgs(ctx, "idx1", "quick", &redis.FTSearchOptions{WithScores: true, Scorer: "HAMMING"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*res.Docs[0].Score).To(BeEquivalentTo(float64(0)))
+	})
+
+	// up until redis 8 the default scorer was TFIDF, in redis 8 it is BM25
+	// this test expect redis major version <=7
+	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
+		SkipAfterRedisMajor(7, "default scorer is not TFIDF")
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -1084,6 +1130,24 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 	})
 
+	It("should FTConfigGet return multiple fields", Label("search", "NonRedisEnterprise"), func() {
+		res, err := client.FTConfigSet(ctx, "DEFAULT_DIALECT", "1").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(BeEquivalentTo("OK"))
+
+		defDialect, err := client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "1"}))
+
+		res, err = client.FTConfigSet(ctx, "DEFAULT_DIALECT", "2").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(BeEquivalentTo("OK"))
+
+		defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "2"}))
+	})
+
 	It("should FTConfigSet and FTConfigGet dialect", Label("search", "ftconfigget", "ftconfigset", "NonRedisEnterprise"), func() {
 		res, err := client.FTConfigSet(ctx, "DEFAULT_DIALECT", "1").Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -1540,6 +1604,46 @@ func _assert_geosearch_result(result *redis.FTSearchResult, expectedDocIDs []str
 // 		Expect(results0["id"]).To(BeEquivalentTo("a"))
 // 		Expect(results0["extra_attributes"].(map[interface{}]interface{})["__v_score"]).To(BeEquivalentTo("0"))
 // 	})
+
+var _ = Describe("RediSearch FT.Config with Resp2 and Resp3", Label("search", "NonRedisEnterprise"), func() {
+
+	var clientResp2 *redis.Client
+	var clientResp3 *redis.Client
+	BeforeEach(func() {
+		clientResp2 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
+		clientResp3 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3: true})
+		Expect(clientResp3.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(clientResp2.Close()).NotTo(HaveOccurred())
+		Expect(clientResp3.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should FTConfigSet and FTConfigGet ", Label("search", "ftconfigget", "ftconfigset", "NonRedisEnterprise"), func() {
+		val, err := clientResp3.FTConfigSet(ctx, "TIMEOUT", "100").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+
+		res2, err := clientResp2.FTConfigGet(ctx, "TIMEOUT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res2).To(BeEquivalentTo(map[string]interface{}{"TIMEOUT": "100"}))
+
+		res3, err := clientResp3.FTConfigGet(ctx, "TIMEOUT").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res3).To(BeEquivalentTo(map[string]interface{}{"TIMEOUT": "100"}))
+	})
+
+	It("should FTConfigGet all resp2 and resp3", Label("search", "NonRedisEnterprise"), func() {
+		res2, err := clientResp2.FTConfigGet(ctx, "*").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		res3, err := clientResp3.FTConfigGet(ctx, "*").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(res3)).To(BeEquivalentTo(len(res2)))
+		Expect(res2["DEFAULT_DIALECT"]).To(BeEquivalentTo(res2["DEFAULT_DIALECT"]))
+	})
+})
 
 var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 	ctx := context.TODO()
