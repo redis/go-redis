@@ -6,7 +6,7 @@ replace github.com/redis/go-redis/v9 => ../..
 
 require (
 	github.com/davecgh/go-spew v1.1.1
-	github.com/redis/go-redis/v9 v9.6.2
+	github.com/redis/go-redis/v9 v9.7.0
 )
 
 require (
