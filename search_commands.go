@@ -514,12 +514,16 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		}
 		if options.Load != nil {
 			queryArgs = append(queryArgs, "LOAD", len(options.Load))
+			index, count := len(queryArgs)-1, 0
 			for _, load := range options.Load {
 				queryArgs = append(queryArgs, load.Field)
+				count++
 				if load.As != "" {
 					queryArgs = append(queryArgs, "AS", load.As)
+					count += 2
 				}
 			}
+			queryArgs[index] = count
 		}
 
 		if options.Timeout > 0 {
@@ -574,11 +578,8 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		if options.SortByMax > 0 {
 			queryArgs = append(queryArgs, "MAX", options.SortByMax)
 		}
-		if options.LimitOffset > 0 {
-			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset)
-		}
-		if options.Limit > 0 {
-			queryArgs = append(queryArgs, options.Limit)
+		if options.LimitOffset >= 0 && options.Limit > 0 {
+			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset, options.Limit)
 		}
 		if options.Filter != "" {
 			queryArgs = append(queryArgs, "FILTER", options.Filter)
@@ -680,12 +681,10 @@ func (cmd *AggregateCmd) String() string {
 func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
-		cmd.err = err
 		return err
 	}
 	cmd.val, err = ProcessAggregateResult(data)
 	if err != nil {
-		cmd.err = err
 		return err
 	}
 	return nil
@@ -716,12 +715,16 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.Load != nil {
 			args = append(args, "LOAD", len(options.Load))
+			index, count := len(args)-1, 0
 			for _, load := range options.Load {
 				args = append(args, load.Field)
+				count++
 				if load.As != "" {
 					args = append(args, "AS", load.As)
+					count += 2
 				}
 			}
+			args[index] = count
 		}
 		if options.Timeout > 0 {
 			args = append(args, "TIMEOUT", options.Timeout)
@@ -773,11 +776,8 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		if options.SortByMax > 0 {
 			args = append(args, "MAX", options.SortByMax)
 		}
-		if options.LimitOffset > 0 {
-			args = append(args, "LIMIT", options.LimitOffset)
-		}
-		if options.Limit > 0 {
-			args = append(args, options.Limit)
+		if options.LimitOffset >= 0 && options.Limit > 0 {
+			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
 		}
 		if options.Filter != "" {
 			args = append(args, "FILTER", options.Filter)
@@ -1426,7 +1426,7 @@ func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	}
 	cmd.val, err = parseFTInfo(data)
 	if err != nil {
-		cmd.err = err
+		return err
 	}
 
 	return nil
@@ -1519,12 +1519,11 @@ func (cmd *FTSpellCheckCmd) RawResult() (interface{}, error) {
 func (cmd *FTSpellCheckCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
-		cmd.err = err
-		return nil
+		return err
 	}
 	cmd.val, err = parseFTSpellCheck(data)
 	if err != nil {
-		cmd.err = err
+		return err
 	}
 	return nil
 }
@@ -1708,12 +1707,11 @@ func (cmd *FTSearchCmd) RawResult() (interface{}, error) {
 func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
-		cmd.err = err
-		return nil
+		return err
 	}
 	cmd.val, err = parseFTSearch(data, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
 	if err != nil {
-		cmd.err = err
+		return err
 	}
 	return nil
 }
