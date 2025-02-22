@@ -556,6 +556,38 @@ var _ = Describe("ClusterClient", func() {
 				AfterEach(func() {})
 
 				assertPipeline()
+
+				It("doesn't fail node with context.Canceled error", func() {
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					pipe.Set(ctx, "A", "A_value", 0)
+					cmds, err := pipe.Exec(ctx)
+					Expect(cmds).To(HaveLen(1))
+					Expect(err).To(Equal(context.Canceled))
+
+					clientNodes, _ := client.Nodes(ctx, "A")
+
+					for _, node := range clientNodes {
+						Expect(node.Failing()).To(BeFalse())
+					}
+				})
+
+				It("doesn't fail node with context.DeadlineExceeded error", func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+					defer cancel()
+
+					pipe.Set(ctx, "A", "A_value", 0)
+					_, err := pipe.Exec(ctx)
+
+					Expect(err).To(HaveOccurred())
+					Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
+
+					clientNodes, _ := client.Nodes(ctx, "A")
+
+					for _, node := range clientNodes {
+						Expect(node.Failing()).To(BeFalse())
+					}
+				})
 			})
 
 			Describe("with TxPipeline", func() {
