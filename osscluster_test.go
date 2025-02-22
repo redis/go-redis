@@ -561,9 +561,10 @@ var _ = Describe("ClusterClient", func() {
 					ctx, cancel := context.WithCancel(context.Background())
 					cancel()
 					pipe.Set(ctx, "A", "A_value", 0)
-					cmds, err := pipe.Exec(ctx)
-					Expect(cmds).To(HaveLen(1))
-					Expect(err).To(Equal(context.Canceled))
+					_, err := pipe.Exec(ctx)
+
+					Expect(err).To(HaveOccurred())
+					Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 
 					clientNodes, _ := client.Nodes(ctx, "A")
 
