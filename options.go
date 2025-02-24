@@ -85,7 +85,7 @@ type Options struct {
 	DialTimeout time.Duration
 	// Timeout for socket reads. If reached, commands will fail
 	// with a timeout instead of blocking. Supported values:
-	//   - `0` - default timeout (3 seconds).
+	//   - `0` - default timeout (5 seconds).
 	//   - `-1` - no timeout (block indefinitely).
 	//   - `-2` - disables SetReadDeadline calls completely.
 	ReadTimeout time.Duration
