@@ -274,6 +274,16 @@ against a redis running on port 9999.:
 REDIS_PORT=9999 go test <your options>
 ```
 
+### Running Tests with Redis Modules
+
+If you need to run tests that require Redis modules, ensure that you're using a Redis server with the necessary modules installed. You can quickly set up such a server using Docker:
+
+```shell
+docker run -p 6379:6379 -it redis:8.0-M03
+```
+
+Then, sync your test environment with this server.
+
 ## See also
 
 - [Golang ORM](https://bun.uptrace.dev) for PostgreSQL, MySQL, MSSQL, and SQLite
