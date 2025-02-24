@@ -81,7 +81,7 @@ var _ = Describe("UniversalClient", func() {
         Expect(roleSlice[0]).To(Equal("slave"))
 
 
-		err := client.Set(ctx, "somekey", "somevalue", 0).Err()
+		err = client.Set(ctx, "somekey", "somevalue", 0).Err()
         Expect(err).To(HaveOccurred())
 
 	})
