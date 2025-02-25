@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -804,6 +805,72 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 			Expect(res.Rows[0].Fields["age"]).To(BeEquivalentTo("19"))
 			Expect(res.Rows[1].Fields["age"]).To(BeEquivalentTo("25"))
 		}
+	})
+
+	It("should return only the base query when options is nil", Label("search", "ftaggregate"), func() {
+		args := redis.FTAggregateQuery("testQuery", nil)
+		Expect(args).To(Equal(redis.AggregateQuery{"testQuery"}))
+	})
+
+	It("should include VERBATIM and SCORER when options are set", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Verbatim: true,
+			Scorer:   "BM25",
+		}
+		args := redis.FTAggregateQuery("testQuery", options)
+		Expect(args[0]).To(Equal("testQuery"))
+		Expect(args).To(ContainElement("VERBATIM"))
+		Expect(args).To(ContainElement("SCORER"))
+		Expect(args).To(ContainElement("BM25"))
+	})
+
+	It("should include ADDSCORES when AddScores is true", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			AddScores: true,
+		}
+		args := redis.FTAggregateQuery("q", options)
+		Expect(args).To(ContainElement("ADDSCORES"))
+	})
+
+	It("should include LOADALL when LoadAll is true", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			LoadAll: true,
+		}
+		args := redis.FTAggregateQuery("q", options)
+		Expect(args).To(ContainElement("LOAD"))
+		Expect(args).To(ContainElement("*"))
+	})
+
+	It("should include LOAD when Load is provided", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Load: []redis.FTAggregateLoad{
+				{Field: "field1", As: "alias1"},
+				{Field: "field2"},
+			},
+		}
+		args := redis.FTAggregateQuery("q", options)
+		// Verify LOAD options related arguments
+		Expect(args).To(ContainElement("LOAD"))
+		// Check that field names and aliases are present
+		Expect(args).To(ContainElement("field1"))
+		Expect(args).To(ContainElement("alias1"))
+		Expect(args).To(ContainElement("field2"))
+	})
+
+	It("should include TIMEOUT when Timeout > 0", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Timeout: 500,
+		}
+		args := redis.FTAggregateQuery("q", options)
+		Expect(args).To(ContainElement("TIMEOUT"))
+		found := false
+		for _, a := range args {
+			if reflect.DeepEqual(a, 500) {
+				found = true
+				break
+			}
+		}
+		Expect(found).To(BeTrue())
 	})
 
 	It("should FTSearch SkipInitialScan", Label("search", "ftsearch"), func() {
