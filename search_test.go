@@ -668,7 +668,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTAggregate with scorer and addscores", Label("search", "ftaggregate", "NonRedisEnterprise"), func() {
-		SkipBeforeRedisMajor(8, "ADDSCORES is available in Redis CE 8")
 		title := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: false}
 		description := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText, Sortable: false}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnHash: true, Prefix: []interface{}{"product:"}}, title, description).Result()
