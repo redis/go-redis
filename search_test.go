@@ -3,7 +3,6 @@ package redis_test
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strconv"
 	"time"
 
