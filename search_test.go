@@ -864,7 +864,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		found := false
 		for i, a := range args {
 			if fmt.Sprintf("%s", a) == "TIMEOUT" {
-				Expect(fmt.Sprintf("%s", args[i+1])).To(Equal("500"))
+				Expect(fmt.Sprintf("%d", args[i+1])).To(Equal("500"))
 				found = true
 				break
 			}
