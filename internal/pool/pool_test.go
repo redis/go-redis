@@ -353,4 +353,22 @@ var _ = Describe("race", func() {
 		Expect(stats.IdleConns).To(Equal(uint32(0)))
 		Expect(stats.TotalConns).To(Equal(uint32(opt.PoolSize)))
 	})
+
+	It("recover addIdleConn panic", func() {
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				panic("test panic")
+			},
+			PoolSize:     100,
+			MinIdleConns: 30,
+		}
+		p := pool.NewConnPool(opt)
+
+		p.CheckMinIdleConns()
+
+		Eventually(func() bool {
+			state := p.Stats()
+			return state.TotalConns == 0 && state.IdleConns == 0 && p.QueueLen() == 0
+		}, "3s", "50ms").Should(BeTrue())
+	})
 })
