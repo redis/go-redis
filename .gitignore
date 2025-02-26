@@ -5,3 +5,4 @@ testdata/*
 *.tar.gz
 *.dic
 redis8tests.sh
+.vscode
