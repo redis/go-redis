@@ -11,9 +11,12 @@ import (
 type Model struct {
 	Str1    string   `redis:"str1"`
 	Str2    string   `redis:"str2"`
+	Str3    *string  `redis:"str3"`
 	Bytes   []byte   `redis:"bytes"`
 	Int     int      `redis:"int"`
+	Int2    *int     `redis:"int2"`
 	Bool    bool     `redis:"bool"`
+	Bool2   *bool    `redis:"bool2"`
 	Ignored struct{} `redis:"-"`
 }
 
@@ -29,8 +32,11 @@ func main() {
 	if _, err := rdb.Pipelined(ctx, func(rdb redis.Pipeliner) error {
 		rdb.HSet(ctx, "key", "str1", "hello")
 		rdb.HSet(ctx, "key", "str2", "world")
+		rdb.HSet(ctx, "key", "str3", "")
 		rdb.HSet(ctx, "key", "int", 123)
+		rdb.HSet(ctx, "key", "int2", 0)
 		rdb.HSet(ctx, "key", "bool", 1)
+		rdb.HSet(ctx, "key", "bool2", 0)
 		rdb.HSet(ctx, "key", "bytes", []byte("this is bytes !"))
 		return nil
 	}); err != nil {

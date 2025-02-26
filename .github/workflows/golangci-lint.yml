@@ -12,15 +12,13 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read  # for golangci/golangci-lint-action to fetch pull requests
 
 jobs:
   golangci:
-    permissions:
-      contents: read  # for actions/checkout to fetch code
-      pull-requests: read  # for golangci/golangci-lint-action to fetch pull requests
     name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v6.5.0
