@@ -90,6 +90,32 @@ var _ = Describe("Client", func() {
 
 		err = client.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
+	
+	})
+
+	It("timeout should support dialHook", func() {
+
+		var res []string
+		
+		client := redis.NewClient(&redis.Options{
+			Addr:       redisAddr,
+			MaxRetries: 1,
+		})
+		client.WithTimeout(10 * time.Millisecond)
+		client.AddHook(&hook{
+			dialHook: func(hook redis.DialHook) redis.DialHook {
+				return func(ctx context.Context, network, addr string) (n net.Conn, e error) {
+					res = append(res, "dial-hook-start")
+					n, e = hook(ctx, network, addr)
+					return n, e
+				}
+			},
+		})
+		err := client.Ping(ctx).Err()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(Equal([]string{
+			"dial-hook-start",
+		}))
 	})
 
 	It("should ping", func() {
