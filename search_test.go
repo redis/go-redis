@@ -863,8 +863,9 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		args := redis.FTAggregateQuery("q", options)
 		Expect(args).To(ContainElement("TIMEOUT"))
 		found := false
-		for _, a := range args {
-			if reflect.DeepEqual(a, 500) {
+		for i, a := range args {
+			if fmt.Sprintf("%s", a) == "TIMEOUT" {
+				Expect(fmt.Sprintf("%s", args[i+1])).To(Equal("500"))
 				found = true
 				break
 			}
