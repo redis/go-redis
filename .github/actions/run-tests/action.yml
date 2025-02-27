@@ -38,6 +38,7 @@ runs:
           echo "Version not found in the mapping."
           exit 1
         fi
+        sleep 10 # wait for redis to start
       shell: bash
     - name: Set up Docker Compose environment with redis ${{ inputs.redis-version }}
       run: |
