@@ -25,7 +25,7 @@ Although the `go.mod` states it requires at minimum `go 1.18`, our CI is configu
 versions of Redis and latest two versions of Go ([1.23](https://go.dev/doc/devel/release#go1.23.0),
 [1.24](https://go.dev/doc/devel/release#go1.24.0)). We observe that some modules related test may not pass with
 Redis Stack 7.2 and some commands are changed with Redis CE 8.0.
-Please do refer to the documentation and the tests if you experience any issues. We do plane to update the go version
+Please do refer to the documentation and the tests if you experience any issues. We do plan to update the go version
 in the `go.mod` to `go 1.24` in one of the next releases.
 
 ## How do I Redis?
