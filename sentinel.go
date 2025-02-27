@@ -54,10 +54,11 @@ type FailoverOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
-	Protocol int
-	Username string
-	Password string
-	DB       int
+	Protocol            int
+	Username            string
+	Password            string
+	CredentialsProvider func() (username string, password string)
+	DB                  int
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -93,10 +94,11 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
-		DB:       opt.DB,
-		Protocol: opt.Protocol,
-		Username: opt.Username,
-		Password: opt.Password,
+		DB:                  opt.DB,
+		Protocol:            opt.Protocol,
+		Username:            opt.Username,
+		Password:            opt.Password,
+		CredentialsProvider: opt.CredentialsProvider,
 
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
@@ -169,9 +171,10 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
-		Protocol: opt.Protocol,
-		Username: opt.Username,
-		Password: opt.Password,
+		Protocol:            opt.Protocol,
+		Username:            opt.Username,
+		Password:            opt.Password,
+		CredentialsProvider: opt.CredentialsProvider,
 
 		MaxRedirects: opt.MaxRetries,
 
