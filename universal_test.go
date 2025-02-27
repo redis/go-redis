@@ -61,7 +61,6 @@ var _ = Describe("UniversalClient", func() {
 		Expect(a).ToNot(Panic())
 	})
 
-
 	It("should connect to failover servers on slaves when readonly Options is ok", func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			MasterName: sentinelName,
@@ -85,6 +84,21 @@ var _ = Describe("UniversalClient", func() {
 
 	})
 
+	It("should connect to clusters if IsClusterMode is set even if only a single address is provided", Label("NonRedisEnterprise"), func() {
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:         []string{cluster.addrs()[0]},
+			IsClusterMode: true,
+		})
+		_, ok := client.(*redis.ClusterClient)
+		Expect(ok).To(BeTrue(), "expected a ClusterClient")
+	})
 
+	It("should return all slots after instantiating UniversalClient with IsClusterMode", Label("NonRedisEnterprise"), func() {
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:         []string{cluster.addrs()[0]},
+			IsClusterMode: true,
+		})
+		Expect(client.ClusterSlots(ctx).Val()).To(HaveLen(3))
+	})
 })
 
