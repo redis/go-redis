@@ -21,8 +21,8 @@ jobs:
           - "8.0-M03" # 8.0 milestone 4
           - "7.4.2" # should use redis stack 7.4
         go-version:
-          - "1.22.x"
           - "1.23.x"
+          - "1.24.x"
 
     steps:
       - name: Set up ${{ matrix.go-version }}
@@ -76,8 +76,8 @@ jobs:
             - "7.4.2" # should use redis stack 7.4
             - "7.2.7" # should redis stack 7.2
           go-version:
-            - "1.22.x"
             - "1.23.x"
+            - "1.24.x"
 
     steps:
       - name: Checkout code
