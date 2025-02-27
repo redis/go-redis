@@ -59,4 +59,21 @@ var _ = Describe("UniversalClient", func() {
 		a := func() { client.FTInfo(ctx, "all").Result() }
 		Expect(a).ToNot(Panic())
 	})
+
+	It("should connect to clusters if IsClusterMode is set even if only a single address is provided", Label("NonRedisEnterprise"), func() {
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:         []string{cluster.addrs()[0]},
+			IsClusterMode: true,
+		})
+		_, ok := client.(*redis.ClusterClient)
+		Expect(ok).To(BeTrue(), "expected a ClusterClient")
+	})
+
+	It("should return all slots after instantiating UniversalClient with IsClusterMode", Label("NonRedisEnterprise"), func() {
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:         []string{cluster.addrs()[0]},
+			IsClusterMode: true,
+		})
+		Expect(client.ClusterSlots(ctx).Val()).To(HaveLen(3))
+	})
 })
