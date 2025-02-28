@@ -26,6 +26,8 @@ func ExampleClient_search_json() {
 	})
 	// STEP_END
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "user:1", "user:2", "user:3")
 	rdb.FTDropIndex(ctx, "idx:users")
 	// REMOVE_END
