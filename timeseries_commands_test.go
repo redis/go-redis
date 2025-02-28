@@ -43,6 +43,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should TSCreate and TSCreateWithArgs", Label("timeseries", "tscreate", "tscreateWithArgs", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(7.4, "older redis stack has different results for timeseries module")
 				result, err := client.TSCreate(ctx, "1").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(BeEquivalentTo("OK"))
@@ -139,6 +140,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 					{Timestamp: 1013, Value: 10.0}}))
 			})
 			It("should TSAdd and TSAddWithArgs", Label("timeseries", "tsadd", "tsaddWithArgs", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(7.4, "older redis stack has different results for timeseries module")
 				result, err := client.TSAdd(ctx, "1", 1, 1).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(BeEquivalentTo(1))
@@ -232,6 +234,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should TSAlter", Label("timeseries", "tsalter", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(7.4, "older redis stack has different results for timeseries module")
 				result, err := client.TSCreate(ctx, "1").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(BeEquivalentTo("OK"))
@@ -349,6 +352,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should TSIncrBy, TSIncrByWithArgs, TSDecrBy and TSDecrByWithArgs", Label("timeseries", "tsincrby", "tsdecrby", "tsincrbyWithArgs", "tsdecrbyWithArgs", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(7.4, "older redis stack has different results for timeseries module")
 				for i := 0; i < 100; i++ {
 					_, err := client.TSIncrBy(ctx, "1", 1).Result()
 					Expect(err).NotTo(HaveOccurred())

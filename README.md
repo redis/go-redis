@@ -14,6 +14,20 @@
 > See [OpenTelemetry](https://github.com/redis/go-redis/tree/master/example/otel) example which
 > demonstrates how you can use Uptrace to monitor go-redis.
 
+## Supported versions
+
+In `go-redis` we are aiming to support the last three releases of Redis. Currently, this means we do support:
+- [Redis 7.2](https://raw.githubusercontent.com/redis/redis/7.2/00-RELEASENOTES) - using Redis Stack 7.2 for modules support
+- [Redis 7.4](https://raw.githubusercontent.com/redis/redis/7.4/00-RELEASENOTES) - using Redis Stack 7.4 for modules support
+- [Redis 8.0](https://raw.githubusercontent.com/redis/redis/8.0/00-RELEASENOTES) - using Redis CE 8.0 where modules are included
+
+Although the `go.mod` states it requires at minimum `go 1.18`, our CI is configured to run the tests against all three
+versions of Redis and latest two versions of Go ([1.23](https://go.dev/doc/devel/release#go1.23.0),
+[1.24](https://go.dev/doc/devel/release#go1.24.0)). We observe that some modules related test may not pass with
+Redis Stack 7.2 and some commands are changed with Redis CE 8.0.
+Please do refer to the documentation and the tests if you experience any issues. We do plan to update the go version
+in the `go.mod` to `go 1.24` in one of the next releases.
+
 ## How do I Redis?
 
 [Learn for free at Redis University](https://university.redis.com/)
