@@ -60,7 +60,7 @@ var _ = Describe("UniversalClient", func() {
 		Expect(a).ToNot(Panic())
 	})
 
-	It("should connect to failover servers on slaves when readonly Options is ok", func() {
+	It("should connect to failover servers on slaves when readonly Options is ok", Label("NonRedisEnterprise"), func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			MasterName: sentinelName,
 			Addrs:      sentinelAddrs,
