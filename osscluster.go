@@ -21,6 +21,10 @@ import (
 	"github.com/redis/go-redis/v9/internal/rand"
 )
 
+const (
+	minLatencyMeasurementInterval = 10 * time.Second
+)
+
 var errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
 
 // ClusterOptions are used to configure a cluster client and should be
@@ -90,6 +94,9 @@ type ClusterOptions struct {
 	DisableIndentity bool // Disable set-lib on connect. Default is false.
 
 	IdentitySuffix string // Add suffix to client name. Default is empty.
+
+	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
+	UnstableResp3 bool
 }
 
 func (opt *ClusterOptions) init() {
@@ -304,7 +311,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// much use for ClusterSlots config).  This means we cannot execute the
 		// READONLY command against that node -- setting readOnly to false in such
 		// situations in the options below will prevent that from happening.
-		readOnly: opt.ReadOnly && opt.ClusterSlots == nil,
+		readOnly:      opt.ReadOnly && opt.ClusterSlots == nil,
+		UnstableResp3: opt.UnstableResp3,
 	}
 }
 
@@ -316,6 +324,10 @@ type clusterNode struct {
 	latency    uint32 // atomic
 	generation uint32 // atomic
 	failing    uint32 // atomic
+
+	// last time the latency measurement was performed for the node, stored in nanoseconds
+	// from epoch
+	lastLatencyMeasurement int64 // atomic
 }
 
 func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
@@ -368,6 +380,7 @@ func (n *clusterNode) updateLatency() {
 		latency = float64(dur) / float64(successes)
 	}
 	atomic.StoreUint32(&n.latency, uint32(latency+0.5))
+	n.SetLastLatencyMeasurement(time.Now())
 }
 
 func (n *clusterNode) Latency() time.Duration {
@@ -397,10 +410,23 @@ func (n *clusterNode) Generation() uint32 {
 	return atomic.LoadUint32(&n.generation)
 }
 
+func (n *clusterNode) LastLatencyMeasurement() int64 {
+	return atomic.LoadInt64(&n.lastLatencyMeasurement)
+}
+
 func (n *clusterNode) SetGeneration(gen uint32) {
 	for {
 		v := atomic.LoadUint32(&n.generation)
 		if gen < v || atomic.CompareAndSwapUint32(&n.generation, v, gen) {
+			break
+		}
+	}
+}
+
+func (n *clusterNode) SetLastLatencyMeasurement(t time.Time) {
+	for {
+		v := atomic.LoadInt64(&n.lastLatencyMeasurement)
+		if t.UnixNano() < v || atomic.CompareAndSwapInt64(&n.lastLatencyMeasurement, v, t.UnixNano()) {
 			break
 		}
 	}
@@ -465,9 +491,11 @@ func (c *clusterNodes) Addrs() ([]string, error) {
 	closed := c.closed //nolint:ifshort
 	if !closed {
 		if len(c.activeAddrs) > 0 {
-			addrs = c.activeAddrs
+			addrs = make([]string, len(c.activeAddrs))
+			copy(addrs, c.activeAddrs)
 		} else {
-			addrs = c.addrs
+			addrs = make([]string, len(c.addrs))
+			copy(addrs, c.addrs)
 		}
 	}
 	c.mu.RUnlock()
@@ -493,10 +521,11 @@ func (c *clusterNodes) GC(generation uint32) {
 	c.mu.Lock()
 
 	c.activeAddrs = c.activeAddrs[:0]
+	now := time.Now()
 	for addr, node := range c.nodes {
 		if node.Generation() >= generation {
 			c.activeAddrs = append(c.activeAddrs, addr)
-			if c.opt.RouteByLatency {
+			if c.opt.RouteByLatency && node.LastLatencyMeasurement() < now.Add(-minLatencyMeasurementInterval).UnixNano() {
 				go node.updateLatency()
 			}
 			continue

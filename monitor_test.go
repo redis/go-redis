@@ -22,7 +22,7 @@ var _ = Describe("Monitor command", Label("monitor"), func() {
 		if os.Getenv("RUN_MONITOR_TEST") != "true" {
 			Skip("Skipping Monitor command test. Set RUN_MONITOR_TEST=true to run it.")
 		}
-		client = redis.NewClient(&redis.Options{Addr: ":6379"})
+		client = redis.NewClient(&redis.Options{Addr: redisPort})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 	})
@@ -33,7 +33,7 @@ var _ = Describe("Monitor command", Label("monitor"), func() {
 
 	It("should monitor", Label("monitor"), func() {
 		ress := make(chan string)
-		client1 := redis.NewClient(&redis.Options{Addr: rediStackAddr})
+		client1 := redis.NewClient(&redis.Options{Addr: redisPort})
 		mn := client1.Monitor(ctx, ress)
 		mn.Start()
 		// Wait for the Redis server to be in monitoring mode.
@@ -61,7 +61,7 @@ func TestMonitorCommand(t *testing.T) {
 	}
 
 	ctx := context.TODO()
-	client := redis.NewClient(&redis.Options{Addr: ":6379"})
+	client := redis.NewClient(&redis.Options{Addr: redisPort})
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("FlushDB failed: %v", err)
 	}
@@ -72,8 +72,8 @@ func TestMonitorCommand(t *testing.T) {
 		}
 	}()
 
-	ress := make(chan string, 10)                             // Buffer to prevent blocking
-	client1 := redis.NewClient(&redis.Options{Addr: ":6379"}) // Adjust the Addr field as necessary
+	ress := make(chan string, 10)                               // Buffer to prevent blocking
+	client1 := redis.NewClient(&redis.Options{Addr: redisPort}) // Adjust the Addr field as necessary
 	mn := client1.Monitor(ctx, ress)
 	mn.Start()
 	// Wait for the Redis server to be in monitoring mode.
