@@ -12,7 +12,6 @@ var _ = Describe("Do cmdble", func() {
 
 	BeforeEach(func() {
 		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -22,6 +21,6 @@ var _ = Describe("Do cmdble", func() {
 	It("should pong with Do cmd", func() {
 		result := client.Conn().Do(ctx, "PING")
 		Expect(result.Result()).To(Equal("PONG"))
-		Expect(result.Err()).NotTo(HaveOccurred())
+		Expect(result.Err()).ShouldNot(HaveOccurred())
 	})
 })
