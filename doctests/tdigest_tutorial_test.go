@@ -21,6 +21,8 @@ func ExampleClient_tdigstart() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_ages", "bikes:sales")
 	// REMOVE_END
 
@@ -69,6 +71,8 @@ func ExampleClient_tdigcdf() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_ages", "bikes:sales")
 	// REMOVE_END
 
@@ -126,6 +130,8 @@ func ExampleClient_tdigquant() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_ages")
 	// REMOVE_END
 
@@ -177,6 +183,8 @@ func ExampleClient_tdigmin() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_ages")
 	// REMOVE_END
 
@@ -228,6 +236,8 @@ func ExampleClient_tdigreset() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_ages")
 	// REMOVE_END
 	_, err := rdb.TDigestCreate(ctx, "racer_ages").Result()
