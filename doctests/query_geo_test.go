@@ -21,6 +21,8 @@ func ExampleClient_query_geo() {
 	})
 	// HIDE_END
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.FTDropIndex(ctx, "idx:bicycle")
 	// REMOVE_END
 

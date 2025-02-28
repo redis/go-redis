@@ -22,6 +22,8 @@ func ExampleClient_hset() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "myhash")
 	// REMOVE_END
 
@@ -112,6 +114,8 @@ func ExampleClient_hget() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "myhash")
 	// REMOVE_END
 
@@ -157,6 +161,8 @@ func ExampleClient_hgetall() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "myhash")
 	// REMOVE_END
 
@@ -209,6 +215,8 @@ func ExampleClient_hvals() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "myhash")
 	// REMOVE_END
 

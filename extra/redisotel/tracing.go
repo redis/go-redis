@@ -30,8 +30,6 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 		rdb.AddHook(newTracingHook(connString, opts...))
 		return nil
 	case *redis.ClusterClient:
-		rdb.AddHook(newTracingHook("", opts...))
-
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			opt := rdb.Options()
 			opts = addServerAttributes(opts, opt.Addr)
@@ -40,8 +38,6 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 		})
 		return nil
 	case *redis.Ring:
-		rdb.AddHook(newTracingHook("", opts...))
-
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			opt := rdb.Options()
 			opts = addServerAttributes(opts, opt.Addr)

@@ -20,7 +20,10 @@ func ExampleClient_geoindex() {
 		DB:       0,  // use default DB
 		Protocol: 2,
 	})
+
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.FTDropIndex(ctx, "productidx")
 	rdb.FTDropIndex(ctx, "geomidx")
 	rdb.Del(ctx, "product:46885", "product:46886", "shape:1", "shape:2", "shape:3", "shape:4")

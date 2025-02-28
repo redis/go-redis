@@ -21,6 +21,8 @@ func ExampleClient_Set_and_get() {
 	// HIDE_END
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	errFlush := rdb.FlushDB(ctx).Err() // Clear the database before each test
 	if errFlush != nil {
 		panic(errFlush)

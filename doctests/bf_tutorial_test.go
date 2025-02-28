@@ -21,6 +21,8 @@ func ExampleClient_bloom() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:models")
 	// REMOVE_END
 
