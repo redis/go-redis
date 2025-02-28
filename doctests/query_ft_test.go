@@ -21,6 +21,8 @@ func ExampleClient_query_ft() {
 	})
 	// HIDE_END
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.FTDropIndex(ctx, "idx:bicycle")
 	rdb.FTDropIndex(ctx, "idx:email")
 	// REMOVE_END
