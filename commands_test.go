@@ -84,6 +84,12 @@ var _ = Describe("Commands", func() {
 			Expect(ping.Val()).To(Equal("PONG"))
 		})
 
+		It("should Ping with Do method", func() {
+			result := client.Conn().Do(ctx, "PING")
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("PONG"))
+		})
+
 		It("should Wait", func() {
 			const wait = 3 * time.Second
 
@@ -2658,7 +2664,6 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, 1, -2}))
 		})
-
 
 		It("should HPExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
