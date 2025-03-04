@@ -5,6 +5,8 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -21,6 +23,8 @@ func ExampleClient_query_em() {
 
 	// HIDE_END
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.FTDropIndex(ctx, "idx:bicycle")
 	rdb.FTDropIndex(ctx, "idx:email")
 	// REMOVE_END
@@ -274,11 +278,16 @@ func ExampleClient_query_em() {
 
 	fmt.Println(res3.Total) // >>> 5
 
-	for _, doc := range res3.Docs {
+	docs := res3.Docs
+	slices.SortFunc(docs, func(a, b redis.Document) int {
+		return strings.Compare(a.ID, b.ID)
+	})
+
+	for _, doc := range docs {
 		fmt.Println(doc.ID)
 	}
-	// >>> bicycle:5
 	// >>> bicycle:0
+	// >>> bicycle:5
 	// >>> bicycle:6
 	// >>> bicycle:7
 	// >>> bicycle:8
@@ -350,8 +359,8 @@ func ExampleClient_query_em() {
 	// 1
 	// bicycle:0
 	// 5
-	// bicycle:5
 	// bicycle:0
+	// bicycle:5
 	// bicycle:6
 	// bicycle:7
 	// bicycle:8

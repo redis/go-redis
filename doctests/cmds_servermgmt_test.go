@@ -22,6 +22,8 @@ func ExampleClient_cmd_flushall() {
 
 	// STEP_START flushall
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Set(ctx, "testkey1", "1", 0)
 	rdb.Set(ctx, "testkey2", "2", 0)
 	rdb.Set(ctx, "testkey3", "3", 0)

@@ -21,6 +21,8 @@ func ExampleClient_topk() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:keywords")
 	// REMOVE_END
 
