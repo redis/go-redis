@@ -220,6 +220,7 @@ type Cmdable interface {
 	ProbabilisticCmdable
 	PubSubCmdable
 	ScriptingFunctionsCmdable
+	SearchCmdable
 	SetCmdable
 	SortedSetCmdable
 	StringCmdable
@@ -309,7 +310,7 @@ func (c statefulCmdable) ClientSetInfo(ctx context.Context, info LibraryInfo) *S
 
 	var cmd *StatusCmd
 	if info.LibName != nil {
-		libName := fmt.Sprintf("go-redis(%s,%s)", *info.LibName, runtime.Version())
+		libName := fmt.Sprintf("go-redis(%s,%s)", *info.LibName, internal.ReplaceSpaces(runtime.Version()))
 		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-NAME", libName)
 	} else {
 		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-VER", *info.LibVer)
