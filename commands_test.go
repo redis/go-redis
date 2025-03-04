@@ -2626,6 +2626,23 @@ var _ = Describe("Commands", func() {
 			))
 		})
 
+		It("should HStrLen", func() {
+			hSet := client.HSet(ctx, "hash", "key", "hello")
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+
+			hStrLen := client.HStrLen(ctx, "hash", "key")
+			Expect(hStrLen.Err()).NotTo(HaveOccurred())
+			Expect(hStrLen.Val()).To(Equal(int64(len("hello"))))
+
+			nonHStrLen := client.HStrLen(ctx, "hash", "keyNon")
+			Expect(hStrLen.Err()).NotTo(HaveOccurred())
+			Expect(nonHStrLen.Val()).To(Equal(int64(0)))
+
+			hDel := client.HDel(ctx, "hash", "key")
+			Expect(hDel.Err()).NotTo(HaveOccurred())
+			Expect(hDel.Val()).To(Equal(int64(1)))
+		})
+
 		It("should HExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			res, err := client.HExpire(ctx, "no_such_key", 10*time.Second, "field1", "field2", "field3").Result()
@@ -2641,6 +2658,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, 1, -2}))
 		})
+
 
 		It("should HPExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
