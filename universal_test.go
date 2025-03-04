@@ -16,8 +16,7 @@ var _ = Describe("UniversalClient", func() {
 		}
 	})
 
-	It("should connect to failover servers", func() {
-		Skip("Flaky Test")
+	It("should connect to failover servers", Label("NonRedisEnterprise"), func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			MasterName: sentinelName,
 			Addrs:      sentinelAddrs,
@@ -37,5 +36,44 @@ var _ = Describe("UniversalClient", func() {
 			Addrs: cluster.addrs(),
 		})
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	It("connect to clusters with UniversalClient and UnstableResp3", Label("NonRedisEnterprise"), func() {
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:         cluster.addrs(),
+			Protocol:      3,
+			UnstableResp3: true,
+		})
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+		a := func() { client.FTInfo(ctx, "all").Result() }
+		Expect(a).ToNot(Panic())
+	})
+
+	It("connect to clusters with ClusterClient and UnstableResp3", Label("NonRedisEnterprise"), func() {
+		client = redis.NewClusterClient(&redis.ClusterOptions{
+			Addrs:         cluster.addrs(),
+			Protocol:      3,
+			UnstableResp3: true,
+		})
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+		a := func() { client.FTInfo(ctx, "all").Result() }
+		Expect(a).ToNot(Panic())
+	})
+
+	It("should connect to clusters if IsClusterMode is set even if only a single address is provided", Label("NonRedisEnterprise"), func() {
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:         []string{cluster.addrs()[0]},
+			IsClusterMode: true,
+		})
+		_, ok := client.(*redis.ClusterClient)
+		Expect(ok).To(BeTrue(), "expected a ClusterClient")
+	})
+
+	It("should return all slots after instantiating UniversalClient with IsClusterMode", Label("NonRedisEnterprise"), func() {
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:         []string{cluster.addrs()[0]},
+			IsClusterMode: true,
+		})
+		Expect(client.ClusterSlots(ctx).Val()).To(HaveLen(3))
 	})
 })
