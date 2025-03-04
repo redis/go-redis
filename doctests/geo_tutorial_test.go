@@ -21,6 +21,8 @@ func ExampleClient_geoadd() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:rentable")
 	// REMOVE_END
 
@@ -81,6 +83,8 @@ func ExampleClient_geosearch() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:rentable")
 
 	_, err := rdb.GeoAdd(ctx, "bikes:rentable",

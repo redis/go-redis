@@ -23,6 +23,8 @@ func ExampleClient_del_cmd() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "key1", "key2", "key3")
 	// REMOVE_END
 
@@ -68,6 +70,8 @@ func ExampleClient_expire_cmd() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "mykey")
 	// REMOVE_END
 
@@ -167,6 +171,8 @@ func ExampleClient_ttl_cmd() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "mykey")
 	// REMOVE_END
 

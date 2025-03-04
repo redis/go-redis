@@ -2,29 +2,27 @@ name: Go
 
 on:
   push:
-    branches: [master, v9]
+    branches: [master, v9, v9.7]
   pull_request:
-    branches: [master, v9]
+    branches: [master, v9, v9.7]
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    name: build
+
+  benchmark:
+    name: benchmark
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        go-version: [1.19.x, 1.20.x, 1.21.x]
-
-    services:
-      redis:
-        image: redis/redis-stack-server:latest
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
-        ports:
-          - 6379:6379
+        redis-version:
+          - "8.0-M03" # 8.0 milestone 4
+          - "7.4.2" # should use redis stack 7.4
+        go-version:
+          - "1.23.x"
+          - "1.24.x"
 
     steps:
       - name: Set up ${{ matrix.go-version }}
@@ -35,54 +33,65 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Test
-        run: make test
+      - name: Setup Test environment
+        env:
+          REDIS_VERSION: ${{ matrix.redis-version }}
+          CLIENT_LIBS_TEST_IMAGE: "redislabs/client-libs-test:${{ matrix.redis-version }}"
+        run: |
+          set -e
+          redis_version_np=$(echo "$REDIS_VERSION" | grep -oP '^\d+.\d+')
+          
+          # Mapping of redis version to redis testing containers
+          declare -A redis_version_mapping=(
+            ["8.0-M03"]="8.0-M04-pre"
+            ["7.4.2"]="rs-7.4.0-v2"
+          )
+          if [[ -v redis_version_mapping[$REDIS_VERSION] ]]; then
+            echo "REDIS_VERSION=${redis_version_np}" >> $GITHUB_ENV
+            echo "REDIS_IMAGE=redis:${{ matrix.redis-version }}" >> $GITHUB_ENV
+            echo "CLIENT_LIBS_TEST_IMAGE=redislabs/client-libs-test:${redis_version_mapping[$REDIS_VERSION]}" >> $GITHUB_ENV
+          else
+            echo "Version not found in the mapping."
+            exit 1
+          fi
+        shell: bash
+      - name: Set up Docker Compose environment with redis ${{ matrix.redis-version }}
+        run: make docker.start
+        shell: bash
+      - name: Benchmark Tests
+        env:
+          RCE_DOCKER: "true"
+          RE_CLUSTER: "false"
+        run: make bench
+        shell: bash
 
-      - name: Upload to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: coverage.txt
-          token: ${{ secrets.CODECOV_TOKEN }}
-  
   test-redis-ce:
     name: test-redis-ce
     runs-on: ubuntu-latest
     strategy:
         fail-fast: false
         matrix:
-          redis_version:
-            - "8.0-M01"
-            - "7.4.1"
-            - "7.2.6"
-            - "6.2.16"
+          redis-version:
+            - "8.0-M03" # 8.0 milestone 4
+            - "7.4.2" # should use redis stack 7.4
+            - "7.2.7" # should redis stack 7.2
           go-version:
-            - "1.19.x"
-            - "1.20.x"
-            - "1.21.x"
+            - "1.23.x"
+            - "1.24.x"
 
     steps:
-      - name: Set up ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ matrix.go-version }}
-
       - name: Checkout code
         uses: actions/checkout@v4
-      
-      # Set up Docker Compose environment
-      - name: Set up Docker Compose environment
-        run: |
-          docker compose --profile all up -d
-      
+
       - name: Run tests
-        env:
-          USE_CONTAINERIZED_REDIS: "true"
-          RE_CLUSTER: "true"
-        run: |
-          go test \
-          --ginkgo.skip-file="ring_test.go" \
-          --ginkgo.skip-file="sentinel_test.go" \
-          --ginkgo.skip-file="osscluster_test.go" \
-          --ginkgo.skip-file="pubsub_test.go" \
-          --ginkgo.skip-file="gears_commands_test.go" \
-          --ginkgo.label-filter='!NonRedisEnterprise'
+        uses: ./.github/actions/run-tests
+        with:
+          go-version: ${{matrix.go-version}}
+          redis-version: ${{ matrix.redis-version }}
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.txt
+          token: ${{ secrets.CODECOV_TOKEN }}
+
