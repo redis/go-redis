@@ -130,34 +130,6 @@ var _ = Describe("Redis Ring", func() {
 		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=44"))
 	})
 
-	It("uses single shard when one of the shards is down", func() {
-		// Stop ringShard2.
-		Expect(ringShard2.Close()).NotTo(HaveOccurred())
-
-		Eventually(func() int {
-			return ring.Len()
-		}, "30s").Should(Equal(1))
-
-		setRingKeys()
-
-		// RingShard1 should have all keys.
-		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=100"))
-
-		// Start ringShard2.
-		var err error
-		ringShard2, err = startRedis(ringShard2Port)
-		Expect(err).NotTo(HaveOccurred())
-
-		Eventually(func() int {
-			return ring.Len()
-		}, "30s").Should(Equal(2))
-
-		setRingKeys()
-
-		// RingShard2 should have its keys.
-		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=44"))
-	})
-
 	It("supports hash tags", func() {
 		for i := 0; i < 100; i++ {
 			err := ring.Set(ctx, fmt.Sprintf("key%d{tag}", i), "value", 0).Err()

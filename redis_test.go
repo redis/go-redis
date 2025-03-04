@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,7 +66,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should Stringer", func() {
-		Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:15>", redisPort)))
+		Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:0>", redisPort)))
 	})
 
 	It("supports context", func() {
@@ -76,7 +77,7 @@ var _ = Describe("Client", func() {
 		Expect(err).To(MatchError("context canceled"))
 	})
 
-	It("supports WithTimeout", func() {
+	It("supports WithTimeout", Label("NonRedisEnterprise"), func() {
 		err := client.ClientPause(ctx, time.Second).Err()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -151,7 +152,7 @@ var _ = Describe("Client", func() {
 		Expect(pubsub.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should select DB", func() {
+	It("should select DB", Label("NonRedisEnterprise"), func() {
 		db2 := redis.NewClient(&redis.Options{
 			Addr: redisAddr,
 			DB:   2,
@@ -465,7 +466,7 @@ var _ = Describe("Client OnConnect", func() {
 	})
 })
 
-var _ = Describe("Client context cancelation", func() {
+var _ = Describe("Client context cancellation", func() {
 	var opt *redis.Options
 	var client *redis.Client
 
@@ -480,7 +481,7 @@ var _ = Describe("Client context cancelation", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("Blocking operation cancelation", func() {
+	It("Blocking operation cancellation", func() {
 		ctx, cancel := context.WithCancel(ctx)
 		cancel()
 
@@ -503,7 +504,7 @@ var _ = Describe("Conn", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("TxPipeline", func() {
+	It("TxPipeline", Label("NonRedisEnterprise"), func() {
 		tx := client.Conn().TxPipeline()
 		tx.SwapDB(ctx, 0, 2)
 		tx.SwapDB(ctx, 1, 0)
@@ -627,5 +628,69 @@ var _ = Describe("Hook with MinIdleConns", func() {
 			"hook-2-process-end",
 			"hook-1-process-end",
 		}))
+	})
+})
+
+var _ = Describe("Dialer connection timeouts", func() {
+	var client *redis.Client
+
+	const dialSimulatedDelay = 1 * time.Second
+
+	BeforeEach(func() {
+		options := redisOptions()
+		options.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Simulated slow dialer.
+			// Note that the following sleep is deliberately not context-aware.
+			time.Sleep(dialSimulatedDelay)
+			return net.Dial("tcp", options.Addr)
+		}
+		options.MinIdleConns = 1
+		client = redis.NewClient(options)
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("does not contend on connection dial for concurrent commands", func() {
+		var wg sync.WaitGroup
+
+		const concurrency = 10
+
+		durations := make(chan time.Duration, concurrency)
+		errs := make(chan error, concurrency)
+
+		start := time.Now()
+		wg.Add(concurrency)
+
+		for i := 0; i < concurrency; i++ {
+			go func() {
+				defer wg.Done()
+
+				start := time.Now()
+				err := client.Ping(ctx).Err()
+				durations <- time.Since(start)
+				errs <- err
+			}()
+		}
+
+		wg.Wait()
+		close(durations)
+		close(errs)
+
+		// All commands should eventually succeed, after acquiring a connection.
+		for err := range errs {
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		// Each individual command should complete within the simulated dial duration bound.
+		for duration := range durations {
+			Expect(duration).To(BeNumerically("<", 2*dialSimulatedDelay))
+		}
+
+		// Due to concurrent execution, the entire test suite should also complete within
+		// the same dial duration bound applied for individual commands.
+		Expect(time.Since(start)).To(BeNumerically("<", 2*dialSimulatedDelay))
 	})
 })

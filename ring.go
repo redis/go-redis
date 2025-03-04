@@ -99,6 +99,8 @@ type RingOptions struct {
 	Limiter   Limiter
 
 	DisableIndentity bool
+	IdentitySuffix   string
+	UnstableResp3    bool
 }
 
 func (opt *RingOptions) init() {
@@ -166,6 +168,8 @@ func (opt *RingOptions) clientOptions() *Options {
 		Limiter:   opt.Limiter,
 
 		DisableIndentity: opt.DisableIndentity,
+		IdentitySuffix:   opt.IdentitySuffix,
+		UnstableResp3:    opt.UnstableResp3,
 	}
 }
 
@@ -337,7 +341,8 @@ func (c *ringSharding) List() []*ringShard {
 
 	c.mu.RLock()
 	if !c.closed {
-		list = c.shards.list
+		list = make([]*ringShard, len(c.shards.list))
+		copy(list, c.shards.list)
 	}
 	c.mu.RUnlock()
 

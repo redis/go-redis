@@ -21,6 +21,10 @@ import (
 	"github.com/redis/go-redis/v9/internal/rand"
 )
 
+const (
+	minLatencyMeasurementInterval = 10 * time.Second
+)
+
 var errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
 
 // ClusterOptions are used to configure a cluster client and should be
@@ -62,9 +66,11 @@ type ClusterOptions struct {
 
 	OnConnect func(ctx context.Context, cn *Conn) error
 
-	Protocol int
-	Username string
-	Password string
+	Protocol                   int
+	Username                   string
+	Password                   string
+	CredentialsProvider        func() (username string, password string)
+	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -86,6 +92,11 @@ type ClusterOptions struct {
 
 	TLSConfig        *tls.Config
 	DisableIndentity bool // Disable set-lib on connect. Default is false.
+
+	IdentitySuffix string // Add suffix to client name. Default is empty.
+
+	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
+	UnstableResp3 bool
 }
 
 func (opt *ClusterOptions) init() {
@@ -154,12 +165,12 @@ func (opt *ClusterOptions) init() {
 //   - field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
 //   - only scalar type fields are supported (bool, int, time.Duration)
 //   - for time.Duration fields, values must be a valid input for time.ParseDuration();
-//     additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//     additionally a plain integer as value (i.e. without unit) is interpreted as seconds
 //   - to disable a duration field, use value less than or equal to 0; to use the default
 //     value, leave the value blank or remove the parameter
 //   - only the last value is interpreted if a parameter is given multiple times
 //   - fields "network", "addr", "username" and "password" can only be set using other
-//     URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
 //
@@ -269,9 +280,11 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		Dialer:     opt.Dialer,
 		OnConnect:  opt.OnConnect,
 
-		Protocol: opt.Protocol,
-		Username: opt.Username,
-		Password: opt.Password,
+		Protocol:                   opt.Protocol,
+		Username:                   opt.Username,
+		Password:                   opt.Password,
+		CredentialsProvider:        opt.CredentialsProvider,
+		CredentialsProviderContext: opt.CredentialsProviderContext,
 
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
@@ -291,13 +304,15 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ConnMaxIdleTime:  opt.ConnMaxIdleTime,
 		ConnMaxLifetime:  opt.ConnMaxLifetime,
 		DisableIndentity: opt.DisableIndentity,
+		IdentitySuffix:   opt.IdentitySuffix,
 		TLSConfig:        opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
 		// cluster whose nodes are not in clustering mode (otherwise there isn't
 		// much use for ClusterSlots config).  This means we cannot execute the
 		// READONLY command against that node -- setting readOnly to false in such
 		// situations in the options below will prevent that from happening.
-		readOnly: opt.ReadOnly && opt.ClusterSlots == nil,
+		readOnly:      opt.ReadOnly && opt.ClusterSlots == nil,
+		UnstableResp3: opt.UnstableResp3,
 	}
 }
 
@@ -309,6 +324,10 @@ type clusterNode struct {
 	latency    uint32 // atomic
 	generation uint32 // atomic
 	failing    uint32 // atomic
+
+	// last time the latency measurement was performed for the node, stored in nanoseconds
+	// from epoch
+	lastLatencyMeasurement int64 // atomic
 }
 
 func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
@@ -334,6 +353,8 @@ func (n *clusterNode) Close() error {
 	return n.Client.Close()
 }
 
+const maximumNodeLatency = 1 * time.Minute
+
 func (n *clusterNode) updateLatency() {
 	const numProbe = 10
 	var dur uint64
@@ -354,11 +375,12 @@ func (n *clusterNode) updateLatency() {
 	if successes == 0 {
 		// If none of the pings worked, set latency to some arbitrarily high value so this node gets
 		// least priority.
-		latency = float64((1 * time.Minute) / time.Microsecond)
+		latency = float64((maximumNodeLatency) / time.Microsecond)
 	} else {
 		latency = float64(dur) / float64(successes)
 	}
 	atomic.StoreUint32(&n.latency, uint32(latency+0.5))
+	n.SetLastLatencyMeasurement(time.Now())
 }
 
 func (n *clusterNode) Latency() time.Duration {
@@ -388,10 +410,23 @@ func (n *clusterNode) Generation() uint32 {
 	return atomic.LoadUint32(&n.generation)
 }
 
+func (n *clusterNode) LastLatencyMeasurement() int64 {
+	return atomic.LoadInt64(&n.lastLatencyMeasurement)
+}
+
 func (n *clusterNode) SetGeneration(gen uint32) {
 	for {
 		v := atomic.LoadUint32(&n.generation)
 		if gen < v || atomic.CompareAndSwapUint32(&n.generation, v, gen) {
+			break
+		}
+	}
+}
+
+func (n *clusterNode) SetLastLatencyMeasurement(t time.Time) {
+	for {
+		v := atomic.LoadInt64(&n.lastLatencyMeasurement)
+		if t.UnixNano() < v || atomic.CompareAndSwapInt64(&n.lastLatencyMeasurement, v, t.UnixNano()) {
 			break
 		}
 	}
@@ -456,9 +491,11 @@ func (c *clusterNodes) Addrs() ([]string, error) {
 	closed := c.closed //nolint:ifshort
 	if !closed {
 		if len(c.activeAddrs) > 0 {
-			addrs = c.activeAddrs
+			addrs = make([]string, len(c.activeAddrs))
+			copy(addrs, c.activeAddrs)
 		} else {
-			addrs = c.addrs
+			addrs = make([]string, len(c.addrs))
+			copy(addrs, c.addrs)
 		}
 	}
 	c.mu.RUnlock()
@@ -484,10 +521,11 @@ func (c *clusterNodes) GC(generation uint32) {
 	c.mu.Lock()
 
 	c.activeAddrs = c.activeAddrs[:0]
+	now := time.Now()
 	for addr, node := range c.nodes {
 		if node.Generation() >= generation {
 			c.activeAddrs = append(c.activeAddrs, addr)
-			if c.opt.RouteByLatency {
+			if c.opt.RouteByLatency && node.LastLatencyMeasurement() < now.Add(-minLatencyMeasurementInterval).UnixNano() {
 				go node.updateLatency()
 			}
 			continue
@@ -728,20 +766,40 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 		return c.nodes.Random()
 	}
 
-	var node *clusterNode
+	var allNodesFailing = true
+	var (
+		closestNonFailingNode *clusterNode
+		closestNode           *clusterNode
+		minLatency            time.Duration
+	)
+
+	// setting the max possible duration as zerovalue for minlatency
+	minLatency = time.Duration(math.MaxInt64)
+
 	for _, n := range nodes {
-		if n.Failing() {
-			continue
+		if closestNode == nil || n.Latency() < minLatency {
+			closestNode = n
+			minLatency = n.Latency()
+			if !n.Failing() {
+				closestNonFailingNode = n
+				allNodesFailing = false
+			}
 		}
-		if node == nil || n.Latency() < node.Latency() {
-			node = n
-		}
-	}
-	if node != nil {
-		return node, nil
 	}
 
-	// If all nodes are failing - return random node
+	// pick the healthly node with the lowest latency
+	if !allNodesFailing && closestNonFailingNode != nil {
+		return closestNonFailingNode, nil
+	}
+
+	// if all nodes are failing, we will pick the temporarily failing node with lowest latency
+	if minLatency < maximumNodeLatency && closestNode != nil {
+		internal.Logger.Printf(context.TODO(), "redis: all nodes are marked as failed, picking the temporarily failing node with lowest latency")
+		return closestNode, nil
+	}
+
+	// If all nodes are having the maximum latency(all pings are failing) - return a random node across the cluster
+	internal.Logger.Printf(context.TODO(), "redis: pings to all nodes are failing, picking a random node across the cluster")
 	return c.nodes.Random()
 }
 
@@ -909,10 +967,13 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	slot := c.cmdSlot(ctx, cmd)
 	var node *clusterNode
+	var moved bool
 	var ask bool
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
-		if attempt > 0 {
+		// MOVED and ASK responses are not transient errors that require retry delay; they
+		// should be attempted immediately.
+		if attempt > 0 && !moved && !ask {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				return err
 			}
@@ -956,7 +1017,6 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
-		var moved bool
 		var addr string
 		moved, ask, addr = isMovedError(lastErr)
 		if moved || ask {
@@ -1290,6 +1350,7 @@ func (c *ClusterClient) processPipelineNode(
 	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
+			node.MarkAsFailing()
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
 			return err
@@ -1311,6 +1372,9 @@ func (c *ClusterClient) processPipelineNodeConn(
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
 	}); err != nil {
+		if isBadConn(err, false, node.Client.getAddr()) {
+			node.MarkAsFailing()
+		}
 		if shouldRetry(err, true) {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		}
@@ -1342,7 +1406,7 @@ func (c *ClusterClient) pipelineReadCmds(
 			continue
 		}
 
-		if c.opt.ReadOnly {
+		if c.opt.ReadOnly && isBadConn(err, false, node.Client.getAddr()) {
 			node.MarkAsFailing()
 		}
 
