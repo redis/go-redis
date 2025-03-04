@@ -61,6 +61,12 @@ type Options struct {
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
 
+	// CredentialsProviderContext is an enhanced parameter of CredentialsProvider,
+	// done to maintain API compatibility. In the future,
+	// there might be a merge between CredentialsProviderContext and CredentialsProvider.
+	// There will be a conflict between them; if CredentialsProviderContext exists, we will ignore CredentialsProvider.
+	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
+
 	// Database to be selected after connecting to the server.
 	DB int
 
@@ -147,6 +153,9 @@ type Options struct {
 
 	// Add suffix to client name. Default is empty.
 	IdentitySuffix string
+
+	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
+	UnstableResp3 bool
 }
 
 func (opt *Options) init() {
@@ -258,6 +267,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
+//   - use "skip_verify=true" to ignore TLS certificate validation
 //
 // Examples:
 //
@@ -477,6 +487,9 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	}
 	if q.err != nil {
 		return nil, q.err
+	}
+	if o.TLSConfig != nil && q.has("skip_verify") {
+		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
 	}
 
 	// any parameters left?
