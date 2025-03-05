@@ -230,6 +230,12 @@ func ExampleClient_query_range() {
 					FieldName: "price",
 				},
 			},
+			SortBy: []redis.FTSearchSortBy{
+				{
+					FieldName: "price",
+					Asc:       true,
+				},
+			},
 		},
 	).Result()
 
@@ -263,6 +269,12 @@ func ExampleClient_query_range() {
 					FieldName: "price",
 				},
 			},
+			SortBy: []redis.FTSearchSortBy{
+				{
+					FieldName: "price",
+					Asc:       true,
+				},
+			},
 		},
 	).Result()
 
@@ -287,6 +299,12 @@ func ExampleClient_query_range() {
 			Return: []redis.FTSearchReturn{
 				{
 					FieldName: "price",
+				},
+			},
+			SortBy: []redis.FTSearchSortBy{
+				{
+					FieldName: "price",
+					Asc:       true,
 				},
 			},
 			Filters: []redis.FTSearchFilter{
@@ -354,19 +372,19 @@ func ExampleClient_query_range() {
 
 	// Output:
 	// 3
-	// bicycle:2 : price 815
 	// bicycle:5 : price 810
+	// bicycle:2 : price 815
 	// bicycle:9 : price 815
 	// 3
-	// bicycle:2 : price 815
 	// bicycle:5 : price 810
+	// bicycle:2 : price 815
 	// bicycle:9 : price 815
 	// 5
 	// bicycle:1 : price 1200
-	// bicycle:4 : price 3200
-	// bicycle:6 : price 2300
-	// bicycle:3 : price 3400
 	// bicycle:8 : price 1200
+	// bicycle:6 : price 2300
+	// bicycle:4 : price 3200
+	// bicycle:3 : price 3400
 	// 7
 	// bicycle:0 : price 270
 	// bicycle:7 : price 430
