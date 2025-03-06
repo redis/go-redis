@@ -64,25 +64,21 @@ var _ = Describe("UniversalClient", func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			MasterName: sentinelName,
 			Addrs:      sentinelAddrs,
-			ReadOnly: true,
+			ReadOnly:   true,
 		})
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 
-
 		roleCmd := client.Do(ctx, "ROLE")
-        role, err := roleCmd.Result()
-        Expect(err).NotTo(HaveOccurred())
+		role, err := roleCmd.Result()
+		Expect(err).NotTo(HaveOccurred())
 
-        roleSlice, ok := role.([]interface{})
-        Expect(ok).To(BeTrue())
-        Expect(roleSlice[0]).To(Equal("slave"))
-
+		roleSlice, ok := role.([]interface{})
+		Expect(ok).To(BeTrue())
+		Expect(roleSlice[0]).To(Equal("slave"))
 
 		err = client.Set(ctx, "somekey", "somevalue", 0).Err()
-        Expect(err).To(HaveOccurred())
-
+		Expect(err).To(HaveOccurred())
 	})
-
 	It("should connect to clusters if IsClusterMode is set even if only a single address is provided", Label("NonRedisEnterprise"), func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs:         []string{cluster.addrs()[0]},
