@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 
 	"github.com/redis/go-redis/extra/redisotel/v9"
 	"github.com/redis/go-redis/v9"
@@ -19,9 +21,14 @@ import (
 var tracer = otel.Tracer("github.com/redis/go-redis/example/otel")
 
 func customAttrFn(ctx context.Context) []attribute.KeyValue {
-	return []attribute.KeyValue{
-		attribute.String("custom_attr", "custom_value"),
+
+	attributes := make([]attribute.KeyValue, 0)
+
+	if method, ok := ctx.Value(semconv.RPCMethodKey).(string); ok {
+		attributes = append(attributes, semconv.RPCMethodKey.String(method))
 	}
+
+	return attributes
 }
 func main() {
 	ctx := context.Background()
@@ -48,7 +55,8 @@ func main() {
 
 	for i := 0; i < 1e6; i++ {
 		ctx, rootSpan := tracer.Start(ctx, "handleRequest")
-
+		ctx = context.WithValue(ctx, semconv.RPCMethodKey, "handleRequest "+ strconv.Itoa(i))
+		
 		if err := handleRequest(ctx, rdb); err != nil {
 			rootSpan.RecordError(err)
 			rootSpan.SetStatus(codes.Error, err.Error())
