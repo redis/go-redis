@@ -69,8 +69,8 @@ type ClusterOptions struct {
 	Protocol                   int
 	Username                   string
 	Password                   string
-	CredentialsProvider        func() (username string, password string)
-	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
+	CredentialsProvider        func() (username, password string)
+	CredentialsProviderContext func(ctx context.Context) (username, password string, err error)
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration

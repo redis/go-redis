@@ -73,7 +73,7 @@ func Struct(dst interface{}) (StructValue, error) {
 
 // Scan scans the results from a key-value Redis map result set to a destination struct.
 // The Redis keys are matched to the struct's field with the `redis` tag.
-func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
+func Scan(dst interface{}, keys, vals []interface{}) error {
 	if len(keys) != len(vals) {
 		return errors.New("args should have the same number of keys and vals")
 	}
