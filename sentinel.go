@@ -45,6 +45,9 @@ type FailoverOptions struct {
 	// Route all commands to replica read-only nodes.
 	ReplicaOnly bool
 
+	//Route all read-only commands to master + replica nodes.
+	ReadFromAny bool
+
 	// Use replicas disconnected with master when cannot get connected replicas
 	// Now, this option only works in RandomReplicaAddr function.
 	UseDisconnectedReplicas bool
@@ -262,6 +265,8 @@ func masterReplicaDialer(
 
 		if failover.opt.ReplicaOnly {
 			addr, err = failover.RandomReplicaAddr(ctx)
+		} else if failover.opt.ReadFromAny {
+			addr, err = failover.RandomAddr(ctx)
 		} else {
 			addr, err = failover.MasterAddr(ctx)
 			if err == nil {
@@ -510,6 +515,30 @@ func (c *sentinelFailover) RandomReplicaAddr(ctx context.Context) (string, error
 		return c.MasterAddr(ctx)
 	}
 	return addresses[rand.Intn(len(addresses))], nil
+}
+
+func (c *sentinelFailover) RandomAddr(ctx context.Context) (string, error) {
+	if c.opt == nil {
+		return "", errors.New("opt is nil")
+	}
+
+	addresses, err := c.replicaAddrs(ctx, false)
+	if err != nil {
+		return "", err
+	}
+
+	if len(addresses) == 0 && c.opt.UseDisconnectedReplicas {
+		addresses, err = c.replicaAddrs(ctx, true)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	masterAdd, _ := c.MasterAddr(ctx)
+	addresses = append(addresses, masterAdd)
+
+	add := addresses[rand.Intn(len(addresses))]
+	return add, nil
 }
 
 func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
