@@ -116,6 +116,7 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		}
 
 		opts := th.spanOpts
+		opts = append(opts, trace.WithAttributes(th.conf.attrsFunc(ctx)...))
 		opts = append(opts, trace.WithAttributes(attrs...))
 
 		ctx, span := th.conf.tracer.Start(ctx, cmd.FullName(), opts...)
@@ -149,6 +150,7 @@ func (th *tracingHook) ProcessPipelineHook(
 		}
 
 		opts := th.spanOpts
+		opts = append(opts, trace.WithAttributes(th.conf.attrsFunc(ctx)...))
 		opts = append(opts, trace.WithAttributes(attrs...))
 
 		ctx, span := th.conf.tracer.Start(ctx, "redis.pipeline "+summary, opts...)
