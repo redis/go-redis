@@ -1408,7 +1408,7 @@ func (c *ClusterClient) pipelineReadCmds(
 			continue
 		}
 
-		if c.opt.ReadOnly && isBadConn(err, false, node.Client.getAddr()) {
+		if c.opt.ReadOnly {
 			node.MarkAsFailing()
 		}
 
