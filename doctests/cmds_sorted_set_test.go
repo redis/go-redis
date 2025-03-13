@@ -21,6 +21,8 @@ func ExampleClient_zadd_cmd() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "myzset")
 	// REMOVE_END
 
@@ -82,6 +84,8 @@ func ExampleClient_zrange1() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "myzset")
 	// REMOVE_END
 
@@ -140,6 +144,8 @@ func ExampleClient_zrange2() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "myzset")
 	// REMOVE_END
 
@@ -180,6 +186,8 @@ func ExampleClient_zrange3() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "myzset")
 	// REMOVE_END
 

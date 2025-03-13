@@ -21,6 +21,8 @@ func ExampleClient_pfadd() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes", "commuter_bikes", "all_bikes")
 	// REMOVE_END
 
