@@ -214,8 +214,10 @@ func (mh *metricsHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 
 		dur := time.Since(start)
 
-		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
-		attrs = append(attrs, mh.attrsFunc(ctx)...)
+		customAttrs := mh.attrsFunc(ctx)
+		
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs) + len(customAttrs) + 2)
+		attrs = append(attrs, customAttrs...)
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, attribute.String("type", "command"))
 		attrs = append(attrs, statusAttr(err))
@@ -236,8 +238,10 @@ func (mh *metricsHook) ProcessPipelineHook(
 
 		dur := time.Since(start)
 
-		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
-		attrs = append(attrs, mh.attrsFunc(ctx)...)
+		customAttrs := mh.attrsFunc(ctx)
+
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs) + len(customAttrs) + 2)
+		attrs = append(attrs, customAttrs...)
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, attribute.String("type", "pipeline"))
 		attrs = append(attrs, statusAttr(err))
