@@ -6,13 +6,21 @@
 [![codecov](https://codecov.io/github/redis/go-redis/graph/badge.svg?token=tsrCZKuSSw)](https://codecov.io/github/redis/go-redis)
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
-> go-redis is brought to you by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
-> Uptrace is an open-source APM tool that supports distributed tracing, metrics, and logs. You can
-> use it to monitor applications and set up automatic alerts to receive notifications via email,
-> Slack, Telegram, and others.
->
-> See [OpenTelemetry](https://github.com/redis/go-redis/tree/master/example/otel) example which
-> demonstrates how you can use Uptrace to monitor go-redis.
+> go-redis is the official Redis client library for the Go programming language. It offers a straightforward interface for interacting with Redis servers. 
+
+## Supported versions
+
+In `go-redis` we are aiming to support the last three releases of Redis. Currently, this means we do support:
+- [Redis 7.2](https://raw.githubusercontent.com/redis/redis/7.2/00-RELEASENOTES) - using Redis Stack 7.2 for modules support
+- [Redis 7.4](https://raw.githubusercontent.com/redis/redis/7.4/00-RELEASENOTES) - using Redis Stack 7.4 for modules support
+- [Redis 8.0](https://raw.githubusercontent.com/redis/redis/8.0/00-RELEASENOTES) - using Redis CE 8.0 where modules are included
+
+Although the `go.mod` states it requires at minimum `go 1.18`, our CI is configured to run the tests against all three
+versions of Redis and latest two versions of Go ([1.23](https://go.dev/doc/devel/release#go1.23.0),
+[1.24](https://go.dev/doc/devel/release#go1.24.0)). We observe that some modules related test may not pass with
+Redis Stack 7.2 and some commands are changed with Redis CE 8.0.
+Please do refer to the documentation and the tests if you experience any issues. We do plan to update the go version
+in the `go.mod` to `go 1.24` in one of the next releases.
 
 ## How do I Redis?
 
@@ -282,6 +290,14 @@ REDIS_PORT=9999 go test <your options>
 - [Golang ClickHouse ORM](https://github.com/uptrace/go-clickhouse)
 
 ## Contributors
+
+> The go-redis project was originally initiated by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
+> Uptrace is an open-source APM tool that supports distributed tracing, metrics, and logs. You can
+> use it to monitor applications and set up automatic alerts to receive notifications via email,
+> Slack, Telegram, and others.
+>
+> See [OpenTelemetry](https://github.com/redis/go-redis/tree/master/example/otel) example which
+> demonstrates how you can use Uptrace to monitor go-redis.
 
 Thanks to all the people who already contributed!
 
