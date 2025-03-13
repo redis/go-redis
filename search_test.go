@@ -1902,4 +1902,62 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			Expect(res2).ToNot(BeEmpty())
 		}).ShouldNot(Panic())
 	})
+
+	It("should FTCreate VECTOR with int8 and uint8 types", Label("search", "ftcreate"), func() {
+		ctx := context.TODO()
+
+		// Define INT8 vector field
+		hnswOptionsInt8 := &redis.FTHNSWOptions{
+			Type:           "INT8",
+			Dim:            2,
+			DistanceMetric: "L2",
+		}
+
+		// Define UINT8 vector field
+		hnswOptionsUint8 := &redis.FTHNSWOptions{
+			Type:           "UINT8",
+			Dim:            2,
+			DistanceMetric: "L2",
+		}
+
+		// Create index with INT8 and UINT8 vector fields
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "int8_vector", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{HNSWOptions: hnswOptionsInt8}},
+			&redis.FieldSchema{FieldName: "uint8_vector", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{HNSWOptions: hnswOptionsUint8}},
+		).Result()
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		// Insert vectors in int8 and uint8 format
+		client.HSet(ctx, "doc1", "int8_vector", "\x01\x02", "uint8_vector", "\x01\x02")
+		client.HSet(ctx, "doc2", "int8_vector", "\x03\x04", "uint8_vector", "\x03\x04")
+
+		// Perform KNN search on INT8 vector
+		searchOptionsInt8 := &redis.FTSearchOptions{
+			Return:         []redis.FTSearchReturn{{FieldName: "int8_vector"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "int8_vector", Asc: true}},
+			DialectVersion: 2,
+			Params:         map[string]interface{}{"vec": "\x01\x02"},
+		}
+
+		resInt8, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 1 @int8_vector $vec]", searchOptionsInt8).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resInt8).To(BeEquivalentTo("doc1"))
+
+		// Perform KNN search on UINT8 vector
+		searchOptionsUint8 := &redis.FTSearchOptions{
+			Return:         []redis.FTSearchReturn{{FieldName: "uint8_vector"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "uint8_vector", Asc: true}},
+			DialectVersion: 2,
+			Params:         map[string]interface{}{"vec": "\x01\x02"},
+		}
+
+		resUint8, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 1 @uint8_vector $vec]", searchOptionsUint8).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resUint8).To(BeEquivalentTo("doc1"))
+	})
+
 })
