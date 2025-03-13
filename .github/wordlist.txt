@@ -1,7 +1,9 @@
 ACLs
+APIs
 autoload
 autoloader
 autoloading
+analytics
 Autoloading
 backend
 backends
@@ -13,6 +15,7 @@ customizable
 Customizable
 dataset
 de
+DisableIdentity
 ElastiCache
 extensibility
 FPM
@@ -43,11 +46,15 @@ RocksDB
 runtime
 SHA
 sharding
+SETNAME
+SpellCheck
 SSL
 struct
 stunnel
+SynDump
 TCP
 TLS
+UnstableResp
 uri
 URI
 url
@@ -55,3 +62,6 @@ variadic
 RedisStack
 RedisGears
 RedisTimeseries
+RediSearch
+RawResult
+RawVal

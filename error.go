@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -36,6 +37,15 @@ type Error interface {
 }
 
 var _ Error = proto.RedisError("")
+
+func isContextError(err error) bool {
+	switch err {
+	case context.Canceled, context.DeadlineExceeded:
+		return true
+	default:
+		return false
+	}
+}
 
 func shouldRetry(err error, retryTimeout bool) bool {
 	switch err {
@@ -129,7 +139,9 @@ func isMovedError(err error) (moved bool, ask bool, addr string) {
 	if ind == -1 {
 		return false, false, ""
 	}
+
 	addr = s[ind+1:]
+	addr = internal.GetAddr(addr)
 	return
 }
 

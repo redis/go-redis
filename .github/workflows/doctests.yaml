@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: [ "1.18", "1.19", "1.20", "1.21" ]
+        go-version: ["1.24"]
 
     steps:
       - name: Set up ${{ matrix.go-version }}
@@ -38,4 +38,4 @@ jobs:
 
       - name: Test doc examples
         working-directory: ./doctests
-        run: go test
+        run: go test -v
