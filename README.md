@@ -209,6 +209,10 @@ res1, err := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptio
 val1 := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{}).RawVal()
 ```
 
+#### Redis-Search Default Dialect
+
+In the Redis-Search module, **the default dialect is 2**. If needed, you can explicitly specify a different dialect using the appropriate configuration in your queries.
+
 ## Contributing
 
 Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
