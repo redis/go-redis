@@ -15,7 +15,7 @@ type GeoCmdable interface {
 	GeoSearch(ctx context.Context, key string, q *GeoSearchQuery) *StringSliceCmd
 	GeoSearchLocation(ctx context.Context, key string, q *GeoSearchLocationQuery) *GeoSearchLocationCmd
 	GeoSearchStore(ctx context.Context, key, store string, q *GeoSearchStoreQuery) *IntCmd
-	GeoDist(ctx context.Context, key string, member1, member2, unit string) *FloatCmd
+	GeoDist(ctx context.Context, key, member1, member2, unit string) *FloatCmd
 	GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd
 }
 
@@ -120,7 +120,7 @@ func (c cmdable) GeoSearchStore(ctx context.Context, key, store string, q *GeoSe
 }
 
 func (c cmdable) GeoDist(
-	ctx context.Context, key string, member1, member2, unit string,
+	ctx context.Context, key, member1, member2, unit string,
 ) *FloatCmd {
 	if unit == "" {
 		unit = "km"

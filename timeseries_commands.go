@@ -13,28 +13,28 @@ type TimeseriesCmdable interface {
 	TSCreate(ctx context.Context, key string) *StatusCmd
 	TSCreateWithArgs(ctx context.Context, key string, options *TSOptions) *StatusCmd
 	TSAlter(ctx context.Context, key string, options *TSAlterOptions) *StatusCmd
-	TSCreateRule(ctx context.Context, sourceKey string, destKey string, aggregator Aggregator, bucketDuration int) *StatusCmd
-	TSCreateRuleWithArgs(ctx context.Context, sourceKey string, destKey string, aggregator Aggregator, bucketDuration int, options *TSCreateRuleOptions) *StatusCmd
+	TSCreateRule(ctx context.Context, sourceKey, destKey string, aggregator Aggregator, bucketDuration int) *StatusCmd
+	TSCreateRuleWithArgs(ctx context.Context, sourceKey, destKey string, aggregator Aggregator, bucketDuration int, options *TSCreateRuleOptions) *StatusCmd
 	TSIncrBy(ctx context.Context, Key string, timestamp float64) *IntCmd
 	TSIncrByWithArgs(ctx context.Context, key string, timestamp float64, options *TSIncrDecrOptions) *IntCmd
 	TSDecrBy(ctx context.Context, Key string, timestamp float64) *IntCmd
 	TSDecrByWithArgs(ctx context.Context, key string, timestamp float64, options *TSIncrDecrOptions) *IntCmd
-	TSDel(ctx context.Context, Key string, fromTimestamp int, toTimestamp int) *IntCmd
-	TSDeleteRule(ctx context.Context, sourceKey string, destKey string) *StatusCmd
+	TSDel(ctx context.Context, Key string, fromTimestamp, toTimestamp int) *IntCmd
+	TSDeleteRule(ctx context.Context, sourceKey, destKey string) *StatusCmd
 	TSGet(ctx context.Context, key string) *TSTimestampValueCmd
 	TSGetWithArgs(ctx context.Context, key string, options *TSGetOptions) *TSTimestampValueCmd
 	TSInfo(ctx context.Context, key string) *MapStringInterfaceCmd
 	TSInfoWithArgs(ctx context.Context, key string, options *TSInfoOptions) *MapStringInterfaceCmd
 	TSMAdd(ctx context.Context, ktvSlices [][]interface{}) *IntSliceCmd
 	TSQueryIndex(ctx context.Context, filterExpr []string) *StringSliceCmd
-	TSRevRange(ctx context.Context, key string, fromTimestamp int, toTimestamp int) *TSTimestampValueSliceCmd
-	TSRevRangeWithArgs(ctx context.Context, key string, fromTimestamp int, toTimestamp int, options *TSRevRangeOptions) *TSTimestampValueSliceCmd
-	TSRange(ctx context.Context, key string, fromTimestamp int, toTimestamp int) *TSTimestampValueSliceCmd
-	TSRangeWithArgs(ctx context.Context, key string, fromTimestamp int, toTimestamp int, options *TSRangeOptions) *TSTimestampValueSliceCmd
-	TSMRange(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string) *MapStringSliceInterfaceCmd
-	TSMRangeWithArgs(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string, options *TSMRangeOptions) *MapStringSliceInterfaceCmd
-	TSMRevRange(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string) *MapStringSliceInterfaceCmd
-	TSMRevRangeWithArgs(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string, options *TSMRevRangeOptions) *MapStringSliceInterfaceCmd
+	TSRevRange(ctx context.Context, key string, fromTimestamp, toTimestamp int) *TSTimestampValueSliceCmd
+	TSRevRangeWithArgs(ctx context.Context, key string, fromTimestamp, toTimestamp int, options *TSRevRangeOptions) *TSTimestampValueSliceCmd
+	TSRange(ctx context.Context, key string, fromTimestamp, toTimestamp int) *TSTimestampValueSliceCmd
+	TSRangeWithArgs(ctx context.Context, key string, fromTimestamp, toTimestamp int, options *TSRangeOptions) *TSTimestampValueSliceCmd
+	TSMRange(ctx context.Context, fromTimestamp, toTimestamp int, filterExpr []string) *MapStringSliceInterfaceCmd
+	TSMRangeWithArgs(ctx context.Context, fromTimestamp, toTimestamp int, filterExpr []string, options *TSMRangeOptions) *MapStringSliceInterfaceCmd
+	TSMRevRange(ctx context.Context, fromTimestamp, toTimestamp int, filterExpr []string) *MapStringSliceInterfaceCmd
+	TSMRevRangeWithArgs(ctx context.Context, fromTimestamp, toTimestamp int, filterExpr []string, options *TSMRevRangeOptions) *MapStringSliceInterfaceCmd
 	TSMGet(ctx context.Context, filters []string) *MapStringSliceInterfaceCmd
 	TSMGetWithArgs(ctx context.Context, filters []string, options *TSMGetOptions) *MapStringSliceInterfaceCmd
 }
@@ -316,7 +316,7 @@ func (c cmdable) TSAlter(ctx context.Context, key string, options *TSAlterOption
 
 // TSCreateRule - Creates a compaction rule from sourceKey to destKey.
 // For more information - https://redis.io/commands/ts.createrule/
-func (c cmdable) TSCreateRule(ctx context.Context, sourceKey string, destKey string, aggregator Aggregator, bucketDuration int) *StatusCmd {
+func (c cmdable) TSCreateRule(ctx context.Context, sourceKey, destKey string, aggregator Aggregator, bucketDuration int) *StatusCmd {
 	args := []interface{}{"TS.CREATERULE", sourceKey, destKey, "AGGREGATION", aggregator.String(), bucketDuration}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -327,7 +327,7 @@ func (c cmdable) TSCreateRule(ctx context.Context, sourceKey string, destKey str
 // This function allows for specifying additional option such as:
 // alignTimestamp.
 // For more information - https://redis.io/commands/ts.createrule/
-func (c cmdable) TSCreateRuleWithArgs(ctx context.Context, sourceKey string, destKey string, aggregator Aggregator, bucketDuration int, options *TSCreateRuleOptions) *StatusCmd {
+func (c cmdable) TSCreateRuleWithArgs(ctx context.Context, sourceKey, destKey string, aggregator Aggregator, bucketDuration int, options *TSCreateRuleOptions) *StatusCmd {
 	args := []interface{}{"TS.CREATERULE", sourceKey, destKey, "AGGREGATION", aggregator.String(), bucketDuration}
 	if options != nil {
 		if options.alignTimestamp != 0 {
@@ -433,7 +433,7 @@ func (c cmdable) TSDecrByWithArgs(ctx context.Context, key string, timestamp flo
 
 // TSDel - Deletes a range of samples from a time-series key.
 // For more information - https://redis.io/commands/ts.del/
-func (c cmdable) TSDel(ctx context.Context, Key string, fromTimestamp int, toTimestamp int) *IntCmd {
+func (c cmdable) TSDel(ctx context.Context, Key string, fromTimestamp, toTimestamp int) *IntCmd {
 	args := []interface{}{"TS.DEL", Key, fromTimestamp, toTimestamp}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -442,7 +442,7 @@ func (c cmdable) TSDel(ctx context.Context, Key string, fromTimestamp int, toTim
 
 // TSDeleteRule - Deletes a compaction rule from sourceKey to destKey.
 // For more information - https://redis.io/commands/ts.deleterule/
-func (c cmdable) TSDeleteRule(ctx context.Context, sourceKey string, destKey string) *StatusCmd {
+func (c cmdable) TSDeleteRule(ctx context.Context, sourceKey, destKey string) *StatusCmd {
 	args := []interface{}{"TS.DELETERULE", sourceKey, destKey}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -586,7 +586,7 @@ func (c cmdable) TSQueryIndex(ctx context.Context, filterExpr []string) *StringS
 
 // TSRevRange - Returns a range of samples from a time-series key in reverse order.
 // For more information - https://redis.io/commands/ts.revrange/
-func (c cmdable) TSRevRange(ctx context.Context, key string, fromTimestamp int, toTimestamp int) *TSTimestampValueSliceCmd {
+func (c cmdable) TSRevRange(ctx context.Context, key string, fromTimestamp, toTimestamp int) *TSTimestampValueSliceCmd {
 	args := []interface{}{"TS.REVRANGE", key, fromTimestamp, toTimestamp}
 	cmd := newTSTimestampValueSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -598,7 +598,7 @@ func (c cmdable) TSRevRange(ctx context.Context, key string, fromTimestamp int, 
 // Latest, FilterByTS, FilterByValue, Count, Align, Aggregator,
 // BucketDuration, BucketTimestamp and Empty.
 // For more information - https://redis.io/commands/ts.revrange/
-func (c cmdable) TSRevRangeWithArgs(ctx context.Context, key string, fromTimestamp int, toTimestamp int, options *TSRevRangeOptions) *TSTimestampValueSliceCmd {
+func (c cmdable) TSRevRangeWithArgs(ctx context.Context, key string, fromTimestamp, toTimestamp int, options *TSRevRangeOptions) *TSTimestampValueSliceCmd {
 	args := []interface{}{"TS.REVRANGE", key, fromTimestamp, toTimestamp}
 	if options != nil {
 		if options.Latest {
@@ -642,7 +642,7 @@ func (c cmdable) TSRevRangeWithArgs(ctx context.Context, key string, fromTimesta
 
 // TSRange - Returns a range of samples from a time-series key.
 // For more information - https://redis.io/commands/ts.range/
-func (c cmdable) TSRange(ctx context.Context, key string, fromTimestamp int, toTimestamp int) *TSTimestampValueSliceCmd {
+func (c cmdable) TSRange(ctx context.Context, key string, fromTimestamp, toTimestamp int) *TSTimestampValueSliceCmd {
 	args := []interface{}{"TS.RANGE", key, fromTimestamp, toTimestamp}
 	cmd := newTSTimestampValueSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -654,7 +654,7 @@ func (c cmdable) TSRange(ctx context.Context, key string, fromTimestamp int, toT
 // Latest, FilterByTS, FilterByValue, Count, Align, Aggregator,
 // BucketDuration, BucketTimestamp and Empty.
 // For more information - https://redis.io/commands/ts.range/
-func (c cmdable) TSRangeWithArgs(ctx context.Context, key string, fromTimestamp int, toTimestamp int, options *TSRangeOptions) *TSTimestampValueSliceCmd {
+func (c cmdable) TSRangeWithArgs(ctx context.Context, key string, fromTimestamp, toTimestamp int, options *TSRangeOptions) *TSTimestampValueSliceCmd {
 	args := []interface{}{"TS.RANGE", key, fromTimestamp, toTimestamp}
 	if options != nil {
 		if options.Latest {
@@ -754,7 +754,7 @@ func (cmd *TSTimestampValueSliceCmd) readReply(rd *proto.Reader) (err error) {
 
 // TSMRange - Returns a range of samples from multiple time-series keys.
 // For more information - https://redis.io/commands/ts.mrange/
-func (c cmdable) TSMRange(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string) *MapStringSliceInterfaceCmd {
+func (c cmdable) TSMRange(ctx context.Context, fromTimestamp, toTimestamp int, filterExpr []string) *MapStringSliceInterfaceCmd {
 	args := []interface{}{"TS.MRANGE", fromTimestamp, toTimestamp, "FILTER"}
 	for _, f := range filterExpr {
 		args = append(args, f)
@@ -770,7 +770,7 @@ func (c cmdable) TSMRange(ctx context.Context, fromTimestamp int, toTimestamp in
 // Count, Align, Aggregator, BucketDuration, BucketTimestamp,
 // Empty, GroupByLabel and Reducer.
 // For more information - https://redis.io/commands/ts.mrange/
-func (c cmdable) TSMRangeWithArgs(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string, options *TSMRangeOptions) *MapStringSliceInterfaceCmd {
+func (c cmdable) TSMRangeWithArgs(ctx context.Context, fromTimestamp, toTimestamp int, filterExpr []string, options *TSMRangeOptions) *MapStringSliceInterfaceCmd {
 	args := []interface{}{"TS.MRANGE", fromTimestamp, toTimestamp}
 	if options != nil {
 		if options.Latest {
@@ -833,7 +833,7 @@ func (c cmdable) TSMRangeWithArgs(ctx context.Context, fromTimestamp int, toTime
 
 // TSMRevRange - Returns a range of samples from multiple time-series keys in reverse order.
 // For more information - https://redis.io/commands/ts.mrevrange/
-func (c cmdable) TSMRevRange(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string) *MapStringSliceInterfaceCmd {
+func (c cmdable) TSMRevRange(ctx context.Context, fromTimestamp, toTimestamp int, filterExpr []string) *MapStringSliceInterfaceCmd {
 	args := []interface{}{"TS.MREVRANGE", fromTimestamp, toTimestamp, "FILTER"}
 	for _, f := range filterExpr {
 		args = append(args, f)
@@ -849,7 +849,7 @@ func (c cmdable) TSMRevRange(ctx context.Context, fromTimestamp int, toTimestamp
 // Count, Align, Aggregator, BucketDuration, BucketTimestamp,
 // Empty, GroupByLabel and Reducer.
 // For more information - https://redis.io/commands/ts.mrevrange/
-func (c cmdable) TSMRevRangeWithArgs(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string, options *TSMRevRangeOptions) *MapStringSliceInterfaceCmd {
+func (c cmdable) TSMRevRangeWithArgs(ctx context.Context, fromTimestamp, toTimestamp int, filterExpr []string, options *TSMRevRangeOptions) *MapStringSliceInterfaceCmd {
 	args := []interface{}{"TS.MREVRANGE", fromTimestamp, toTimestamp}
 	if options != nil {
 		if options.Latest {
