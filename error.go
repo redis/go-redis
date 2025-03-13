@@ -38,6 +38,15 @@ type Error interface {
 
 var _ Error = proto.RedisError("")
 
+func isContextError(err error) bool {
+	switch err {
+	case context.Canceled, context.DeadlineExceeded:
+		return true
+	default:
+		return false
+	}
+}
+
 func shouldRetry(err error, retryTimeout bool) bool {
 	switch err {
 	case io.EOF, io.ErrUnexpectedEOF:
