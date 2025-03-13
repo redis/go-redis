@@ -69,6 +69,9 @@ type UniversalOptions struct {
 	DisableIndentity bool
 	IdentitySuffix   string
 	UnstableResp3    bool
+
+	// IsClusterMode can be used when only one Addrs is provided (e.g. Elasticache supports setting up cluster mode with configuration endpoint).
+	IsClusterMode bool
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -160,6 +163,8 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 
 		TLSConfig: o.TLSConfig,
 
+		ReplicaOnly:     o.ReadOnly,
+
 		DisableIndentity: o.DisableIndentity,
 		IdentitySuffix:   o.IdentitySuffix,
 		UnstableResp3:    o.UnstableResp3,
@@ -244,7 +249,7 @@ var (
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
 	if opts.MasterName != "" {
 		return NewFailoverClient(opts.Failover())
-	} else if len(opts.Addrs) > 1 {
+	} else if len(opts.Addrs) > 1 || opts.IsClusterMode {
 		return NewClusterClient(opts.Cluster())
 	}
 	return NewClient(opts.Simple())
