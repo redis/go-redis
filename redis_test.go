@@ -396,6 +396,13 @@ var _ = Describe("Client timeout", func() {
 	})
 
 	testTimeout := func() {
+		It("SETINFO timeouts", func() {
+			conn := client.Conn()
+			err := conn.Ping(ctx).Err()
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
+		})
+
 		It("Ping timeouts", func() {
 			err := client.Ping(ctx).Err()
 			Expect(err).To(HaveOccurred())
