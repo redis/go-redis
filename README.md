@@ -6,13 +6,7 @@
 [![codecov](https://codecov.io/github/redis/go-redis/graph/badge.svg?token=tsrCZKuSSw)](https://codecov.io/github/redis/go-redis)
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
-> go-redis is brought to you by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
-> Uptrace is an open-source APM tool that supports distributed tracing, metrics, and logs. You can
-> use it to monitor applications and set up automatic alerts to receive notifications via email,
-> Slack, Telegram, and others.
->
-> See [OpenTelemetry](https://github.com/redis/go-redis/tree/master/example/otel) example which
-> demonstrates how you can use Uptrace to monitor go-redis.
+> go-redis is the official Redis client library for the Go programming language. It offers a straightforward interface for interacting with Redis servers. 
 
 ## Supported versions
 
@@ -296,6 +290,14 @@ REDIS_PORT=9999 go test <your options>
 - [Golang ClickHouse ORM](https://github.com/uptrace/go-clickhouse)
 
 ## Contributors
+
+> The go-redis project was originally initiated by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
+> Uptrace is an open-source APM tool that supports distributed tracing, metrics, and logs. You can
+> use it to monitor applications and set up automatic alerts to receive notifications via email,
+> Slack, Telegram, and others.
+>
+> See [OpenTelemetry](https://github.com/redis/go-redis/tree/master/example/otel) example which
+> demonstrates how you can use Uptrace to monitor go-redis.
 
 Thanks to all the people who already contributed!
 
