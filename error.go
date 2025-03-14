@@ -53,6 +53,9 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return true
 	case nil, context.Canceled, context.DeadlineExceeded:
 		return false
+	case pool.ErrPoolTimeout:
+		// connection pool timeout, increase retries. #3289
+		return true
 	}
 
 	if v, ok := err.(timeoutError); ok {

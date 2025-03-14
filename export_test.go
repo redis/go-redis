@@ -11,6 +11,8 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
+var ErrPoolTimeout = pool.ErrPoolTimeout
+
 func (c *baseClient) Pool() pool.Pooler {
 	return c.connPool
 }
@@ -101,4 +103,8 @@ func (c *Ring) ShardByName(name string) *ringShard {
 
 func (c *ModuleLoadexConfig) ToArgs() []interface{} {
 	return c.toArgs()
+}
+
+func ShouldRetry(err error, retryTimeout bool) bool {
+	return shouldRetry(err, retryTimeout)
 }
