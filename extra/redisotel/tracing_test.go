@@ -117,12 +117,23 @@ func TestTracingHook_DialHook(t *testing.T) {
 	}
 }
 
+func customAttrFn(ctx context.Context) []attribute.KeyValue {
+
+	attributes := make([]attribute.KeyValue, 0)
+
+	if method, ok := ctx.Value(semconv.RPCMethodKey).(string); ok {
+		attributes = append(attributes, semconv.RPCMethodKey.String(method))
+	}
+
+	return attributes
+}
 func TestTracingHook_ProcessHook(t *testing.T) {
 	imsb := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
 	hook := newTracingHook(
 		"redis://localhost:6379",
 		WithTracerProvider(provider),
+		WithAttributesFunc(customAttrFn),
 	)
 
 	tests := []struct {
@@ -141,7 +152,9 @@ func TestTracingHook_ProcessHook(t *testing.T) {
 			processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
 				return tt.errTest
 			})
-			assertEqual(t, tt.errTest, processHook(context.Background(), cmd))
+
+			ctx := context.WithValue(context.Background(), semconv.RPCMethodKey, "ping")
+			assertEqual(t, tt.errTest, processHook(ctx, cmd))
 			assertEqual(t, 1, len(imsb.GetSpans()))
 
 			spanData := imsb.GetSpans()[0]
@@ -151,6 +164,8 @@ func TestTracingHook_ProcessHook(t *testing.T) {
 			assertAttributeContains(t, spanData.Attributes, semconv.DBSystemRedis)
 			assertAttributeContains(t, spanData.Attributes, semconv.DBConnectionStringKey.String("redis://localhost:6379"))
 			assertAttributeContains(t, spanData.Attributes, semconv.DBStatementKey.String("ping"))
+			// check for custom attribute
+			assertAttributeContains(t, spanData.Attributes, semconv.RPCMethodKey.String("ping"))
 
 			if tt.errTest == nil {
 				assertEqual(t, 0, len(spanData.Events))

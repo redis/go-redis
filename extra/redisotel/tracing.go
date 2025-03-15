@@ -103,7 +103,10 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		fn, file, line := funcFileLine("github.com/redis/go-redis")
 
-		attrs := make([]attribute.KeyValue, 0, 8)
+
+		customAttrs := th.conf.attrsFunc(ctx)
+
+		attrs := make([]attribute.KeyValue, 0, len(customAttrs) + 8)
 		attrs = append(attrs,
 			semconv.CodeFunction(fn),
 			semconv.CodeFilepath(file),
@@ -116,6 +119,7 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		}
 
 		opts := th.spanOpts
+		opts = append(opts, trace.WithAttributes(customAttrs...))
 		opts = append(opts, trace.WithAttributes(attrs...))
 
 		ctx, span := th.conf.tracer.Start(ctx, cmd.FullName(), opts...)
@@ -135,7 +139,9 @@ func (th *tracingHook) ProcessPipelineHook(
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		fn, file, line := funcFileLine("github.com/redis/go-redis")
 
-		attrs := make([]attribute.KeyValue, 0, 8)
+		customAttrs := th.conf.attrsFunc(ctx)
+		
+		attrs := make([]attribute.KeyValue, 0, len(customAttrs) + 8)
 		attrs = append(attrs,
 			semconv.CodeFunction(fn),
 			semconv.CodeFilepath(file),
@@ -149,6 +155,7 @@ func (th *tracingHook) ProcessPipelineHook(
 		}
 
 		opts := th.spanOpts
+		opts = append(opts, trace.WithAttributes(customAttrs...))
 		opts = append(opts, trace.WithAttributes(attrs...))
 
 		ctx, span := th.conf.tracer.Start(ctx, "redis.pipeline "+summary, opts...)
