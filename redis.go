@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -282,13 +283,34 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
+func (c *baseClient) reAuth(ctx context.Context, cn *Conn, credentials auth.Credentials) error {
+	var err error
+	username, password := credentials.BasicAuth()
+	if username != "" {
+		err = cn.AuthACL(ctx, username, password).Err()
+	} else {
+		err = cn.Auth(ctx, password).Err()
+	}
+	return err
+}
+
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if cn.Inited {
 		return nil
 	}
-	cn.Inited = true
 
 	var err error
+	cn.Inited = true
+	connPool := pool.NewSingleConnPool(c.connPool, cn)
+	conn := newConn(c.opt, connPool)
+
+	protocol := c.opt.Protocol
+	// By default, use RESP3 in current version.
+	if protocol < 2 {
+		protocol = 3
+	}
+
+	var authenticated bool
 	username, password := c.opt.Username, c.opt.Password
 	if c.opt.CredentialsProviderContext != nil {
 		if username, password, err = c.opt.CredentialsProviderContext(ctx); err != nil {
@@ -298,20 +320,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		username, password = c.opt.CredentialsProvider()
 	}
 
-	connPool := pool.NewSingleConnPool(c.connPool, cn)
-	conn := newConn(c.opt, connPool)
-
-	var auth bool
-	protocol := c.opt.Protocol
-	// By default, use RESP3 in current version.
-	if protocol < 2 {
-		protocol = 3
-	}
-
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
 	if err = conn.Hello(ctx, protocol, username, password, "").Err(); err == nil {
-		auth = true
+		authenticated = true
 	} else if !isRedisError(err) {
 		// When the server responds with the RESP protocol and the result is not a normal
 		// execution result of the HELLO command, we consider it to be an indication that
@@ -323,15 +335,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return err
 	}
 
-	_, err = conn.Pipelined(ctx, func(pipe Pipeliner) error {
-		if !auth && password != "" {
-			if username != "" {
-				pipe.AuthACL(ctx, username, password)
-			} else {
-				pipe.Auth(ctx, password)
-			}
+	if !authenticated && password != "" {
+		err = c.reAuth(ctx, conn, auth.NewCredentials(username, password))
+		if err != nil {
+			return err
 		}
-
+	}
+	_, err = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
 		}
