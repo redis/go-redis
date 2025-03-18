@@ -2,3 +2,9 @@
 testdata/*
 .idea/
 .DS_Store
+*.tar.gz
+*.dic
+redis8tests.sh
+coverage.txt
+**/coverage.txt
+.vscode

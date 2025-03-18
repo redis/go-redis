@@ -6,8 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {

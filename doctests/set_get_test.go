@@ -5,10 +5,11 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
+
 	"github.com/redis/go-redis/v9"
 )
 
-func ExampleSetGet() {
+func ExampleClient_Set_and_get() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{
@@ -20,6 +21,8 @@ func ExampleSetGet() {
 	// HIDE_END
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	errFlush := rdb.FlushDB(ctx).Err() // Clear the database before each test
 	if errFlush != nil {
 		panic(errFlush)

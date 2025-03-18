@@ -48,6 +48,7 @@ type UniversalOptions struct {
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
+	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
@@ -64,6 +65,13 @@ type UniversalOptions struct {
 	// Only failover clients.
 
 	MasterName string
+
+	DisableIndentity bool
+	IdentitySuffix   string
+	UnstableResp3    bool
+
+	// IsClusterMode can be used when only one Addrs is provided (e.g. Elasticache supports setting up cluster mode with configuration endpoint).
+	IsClusterMode bool
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -102,10 +110,15 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
+		UnstableResp3:    o.UnstableResp3,
 	}
 }
 
@@ -144,10 +157,17 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		ReplicaOnly:     o.ReadOnly,
+
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
+		UnstableResp3:    o.UnstableResp3,
 	}
 }
 
@@ -183,10 +203,15 @@ func (o *UniversalOptions) Simple() *Options {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
+		UnstableResp3:    o.UnstableResp3,
 	}
 }
 
@@ -224,7 +249,7 @@ var (
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
 	if opts.MasterName != "" {
 		return NewFailoverClient(opts.Failover())
-	} else if len(opts.Addrs) > 1 {
+	} else if len(opts.Addrs) > 1 || opts.IsClusterMode {
 		return NewClusterClient(opts.Cluster())
 	}
 	return NewClient(opts.Simple())
