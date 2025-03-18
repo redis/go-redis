@@ -10,9 +10,9 @@ type HashCmdable interface {
 	HExists(ctx context.Context, key, field string) *BoolCmd
 	HGet(ctx context.Context, key, field string) *StringCmd
 	HGetAll(ctx context.Context, key string) *MapStringStringCmd
-	HGetDel(ctx context.Context, key string, fields ...string) *IntSliceCmd
-	HGetEX(ctx context.Context, key string, fields ...string) *IntSliceCmd
-	HGetEXWithArgs(ctx context.Context, key string, expirationType HGetEXExpirationType, expirationVal int64, fields ...string) *IntSliceCmd
+	HGetDel(ctx context.Context, key string, fields ...string) *StringSliceCmd
+	HGetEX(ctx context.Context, key string, fields ...string) *StringSliceCmd
+	HGetEXWithArgs(ctx context.Context, key string, expirationType HGetEXExpirationType, expirationVal int64, fields ...string) *StringSliceCmd
 	HIncrBy(ctx context.Context, key, field string, incr int64) *IntCmd
 	HIncrByFloat(ctx context.Context, key, field string, incr float64) *FloatCmd
 	HKeys(ctx context.Context, key string) *StringSliceCmd
@@ -460,28 +460,27 @@ func (c cmdable) HPTTL(ctx context.Context, key string, fields ...string) *IntSl
 	return cmd
 }
 
-// TODO check return type
-func (c cmdable) HGetDel(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+func (c cmdable) HGetDel(ctx context.Context, key string, fields ...string) *StringSliceCmd {
 	args := []interface{}{"HGETDEL", key, "FIELDS", len(fields)}
 	for _, field := range fields {
 		args = append(args, field)
 	}
-	cmd := NewIntSliceCmd(ctx, args...)
+	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) HGetEX(ctx context.Context, key string, fields ...string) *IntSliceCmd {
+func (c cmdable) HGetEX(ctx context.Context, key string, fields ...string) *StringSliceCmd {
 	args := []interface{}{"HGETEX", key, "FIELDS", len(fields)}
 	for _, field := range fields {
 		args = append(args, field)
 	}
-	cmd := NewIntSliceCmd(ctx, args...)
+	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// ExpirationType represents an expiration option for the hash commands.
+// ExpirationType represents an expiration option for the HGETEX command.
 type HGetEXExpirationType string
 
 const (
@@ -492,10 +491,9 @@ const (
 	HGetEXExpirationPERSIST HGetEXExpirationType = "PERSIST"
 )
 
-func (c cmdable) HGetEXWithArgs(ctx context.Context, key string, expirationType HGetEXExpirationType, expirationVal int64, fields ...string) *IntSliceCmd {
+func (c cmdable) HGetEXWithArgs(ctx context.Context, key string, expirationType HGetEXExpirationType, expirationVal int64, fields ...string) *StringSliceCmd {
 	args := []interface{}{"HGETEX", key}
 
-	// Append expiration option and its value if necessary.
 	args = append(args, string(expirationType))
 	if expirationType != HGetEXExpirationPERSIST {
 		args = append(args, expirationVal)
@@ -506,7 +504,7 @@ func (c cmdable) HGetEXWithArgs(ctx context.Context, key string, expirationType 
 		args = append(args, field)
 	}
 
-	cmd := NewIntSliceCmd(ctx, args...)
+	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -535,7 +533,7 @@ type HSetXOptions struct {
 }
 
 func (c cmdable) HSetEX(ctx context.Context, key string, fieldsAndValues ...string) *IntCmd {
-	args := []interface{}{"HSETEX", key, "FIELDS", len(fieldsAndValues)}
+	args := []interface{}{"HSETEX", key, "FIELDS", len(fieldsAndValues) / 2}
 	for _, field := range fieldsAndValues {
 		args = append(args, field)
 	}
@@ -546,7 +544,6 @@ func (c cmdable) HSetEX(ctx context.Context, key string, fieldsAndValues ...stri
 }
 
 func (c cmdable) HSetEXWithArgs(ctx context.Context, key string, options *HSetXOptions, fieldsAndValues ...string) *IntCmd {
-	// Start with the command name and key.
 	args := []interface{}{"HSETEX", key}
 	if options.Condition != "" {
 		args = append(args, string(options.Condition))
@@ -557,12 +554,11 @@ func (c cmdable) HSetEXWithArgs(ctx context.Context, key string, options *HSetXO
 			args = append(args, options.ExpirationVal)
 		}
 	}
-	args = append(args, "FIELDS", len(fieldsAndValues))
+	args = append(args, "FIELDS", len(fieldsAndValues)/2)
 	for _, field := range fieldsAndValues {
 		args = append(args, field)
 	}
 
-	// Create and execute the command.
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
