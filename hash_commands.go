@@ -21,7 +21,7 @@ type HashCmdable interface {
 	HSet(ctx context.Context, key string, values ...interface{}) *IntCmd
 	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
 	HSetEX(ctx context.Context, key string, fieldsAndValues ...string) *IntCmd
-	HSetEXWithArgs(ctx context.Context, key string, options HSetXOptions, fieldsAndValues ...string) *IntCmd
+	HSetEXWithArgs(ctx context.Context, key string, options *HSetXOptions, fieldsAndValues ...string) *IntCmd
 	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
 	HScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
 	HScanNoValues(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
@@ -545,7 +545,7 @@ func (c cmdable) HSetEX(ctx context.Context, key string, fieldsAndValues ...stri
 	return cmd
 }
 
-func (c cmdable) HSetEXWithArgs(ctx context.Context, key string, options HSetXOptions, fieldsAndValues ...string) *IntCmd {
+func (c cmdable) HSetEXWithArgs(ctx context.Context, key string, options *HSetXOptions, fieldsAndValues ...string) *IntCmd {
 	// Start with the command name and key.
 	args := []interface{}{"HSETEX", key}
 	if options.Condition != "" {
