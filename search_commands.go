@@ -1592,6 +1592,7 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 	if !ok {
 		return FTSearchResult{}, fmt.Errorf("invalid total results format")
 	}
+
 	var results []Document
 	for i := 1; i < len(data); {
 		docID, ok := data[i].(string)

@@ -1579,6 +1579,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTCreate VECTOR with int8 and uint8 types", Label("search", "ftcreate"), func() {
+		SkipBeforeRedisVersion(7.9, "doesn't work with older redis")
 		// Define INT8 vector field
 		hnswOptionsInt8 := &redis.FTHNSWOptions{
 			Type:           "INT8",
