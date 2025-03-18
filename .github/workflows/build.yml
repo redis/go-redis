@@ -72,7 +72,7 @@ jobs:
         fail-fast: false
         matrix:
           redis-version:
-            - "8.0-M05" # 8.0 milestone 4
+            - "8.0-M05" # 8.0 milestone 5
             - "7.4.2" # should use redis stack 7.4
             - "7.2.7" # should redis stack 7.2
           go-version:
