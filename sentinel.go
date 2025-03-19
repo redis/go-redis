@@ -80,8 +80,19 @@ type FailoverOptions struct {
 
 	TLSConfig *tls.Config
 
+	// DisableIndentity - Disable set-lib on connect.
+	//
+	// default: false
+	//
+	// Deprecated: Use DisableIdentity instead.
 	DisableIndentity bool
-	IdentitySuffix   string
+
+	// DisableIdentity is used to disable CLIENT SETINFO command on connect.
+	//
+	// default: false
+	DisableIdentity bool
+
+	IdentitySuffix string
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -117,6 +128,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 		TLSConfig: opt.TLSConfig,
 
+		DisableIdentity:  opt.DisableIdentity,
 		DisableIndentity: opt.DisableIndentity,
 		IdentitySuffix:   opt.IdentitySuffix,
 	}
@@ -154,6 +166,7 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 
 		TLSConfig: opt.TLSConfig,
 
+		DisableIdentity:  opt.DisableIdentity,
 		DisableIndentity: opt.DisableIndentity,
 		IdentitySuffix:   opt.IdentitySuffix,
 	}
@@ -194,6 +207,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		TLSConfig: opt.TLSConfig,
 
+		DisableIdentity:  opt.DisableIdentity,
 		DisableIndentity: opt.DisableIndentity,
 		IdentitySuffix:   opt.IdentitySuffix,
 	}
