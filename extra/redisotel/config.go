@@ -1,6 +1,8 @@
 package redisotel
 
 import (
+	"context"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -11,8 +13,9 @@ import (
 type config struct {
 	// Common options.
 
-	dbSystem string
-	attrs    []attribute.KeyValue
+	dbSystem  string
+	attrs     []attribute.KeyValue
+	attrsFunc func(context.Context) []attribute.KeyValue
 
 	// Tracing options.
 
@@ -51,8 +54,9 @@ func (fn option) metrics() {}
 
 func newConfig(opts ...baseOption) *config {
 	conf := &config{
-		dbSystem: "redis",
-		attrs:    []attribute.KeyValue{},
+		dbSystem:  "redis",
+		attrs:     []attribute.KeyValue{},
+		attrsFunc: func(ctx context.Context) []attribute.KeyValue { return []attribute.KeyValue{} },
 
 		tp:            otel.GetTracerProvider(),
 		mp:            otel.GetMeterProvider(),
@@ -78,6 +82,14 @@ func WithDBSystem(dbSystem string) Option {
 func WithAttributes(attrs ...attribute.KeyValue) Option {
 	return option(func(conf *config) {
 		conf.attrs = append(conf.attrs, attrs...)
+	})
+}
+
+// WithAttributesFunc takes a function that returns additional attributes to be added using the context.
+// This is executed only in ProcessPipelineHook and ProcessHook
+func WithAttributesFunc(f func(context.Context) []attribute.KeyValue) Option {
+	return option(func(conf *config) {
+		conf.attrsFunc = f
 	})
 }
 
