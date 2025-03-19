@@ -66,11 +66,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should Stringer", func() {
-		if RECluster {
-			Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:0>", redisPort)))
-		} else {
-			Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:15>", redisPort)))
-		}
+		Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:0>", redisPort)))
 	})
 
 	It("supports context", func() {
@@ -188,6 +184,32 @@ var _ = Describe("Client", func() {
 		val, err := db.ClientList(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).Should(ContainSubstring("name=hi"))
+	})
+
+	It("should attempt to set client name in HELLO", func() {
+		opt := redisOptions()
+		opt.ClientName = "hi"
+		db := redis.NewClient(opt)
+
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		// Client name should be already set on any successfully initialized connection
+		name, err := db.ClientGetName(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(name).Should(Equal("hi"))
+
+		// HELLO should be able to explicitly overwrite the client name
+		conn := db.Conn()
+		hello, err := conn.Hello(ctx, 3, "", "", "hi2").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(hello["proto"]).Should(Equal(int64(3)))
+		name, err = conn.ClientGetName(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(name).Should(Equal("hi2"))
+		err = conn.Close()
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("should client PROTO 2", func() {
