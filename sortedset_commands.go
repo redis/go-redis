@@ -514,7 +514,7 @@ func (c cmdable) ZRank(ctx context.Context, key, member string) *IntCmd {
 // ZRankWithScore according to the Redis documentation, if member does not exist
 // in the sorted set or key does not exist, it will return a redis.Nil error.
 func (c cmdable) ZRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd {
-	cmd := NewRankWithScoreCmd(ctx, "zrank", key, member, "withscore")
+	cmd := NewRankWithScoreCmd(ctx, "zrank", key, member, "withscores")
 	_ = c(ctx, cmd)
 	return cmd
 }
