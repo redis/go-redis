@@ -98,8 +98,18 @@ type RingOptions struct {
 	TLSConfig *tls.Config
 	Limiter   Limiter
 
+	// DisableIndentity - Disable set-lib on connect.
+	//
+	// default: false
+	//
+	// Deprecated: Use DisableIdentity instead.
 	DisableIndentity bool
-	IdentitySuffix   string
+
+	// DisableIdentity is used to disable CLIENT SETINFO command on connect.
+	//
+	// default: false
+	DisableIdentity bool
+	IdentitySuffix  string
 }
 
 func (opt *RingOptions) init() {
@@ -166,6 +176,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		TLSConfig: opt.TLSConfig,
 		Limiter:   opt.Limiter,
 
+		DisableIdentity:  opt.DisableIdentity,
 		DisableIndentity: opt.DisableIndentity,
 		IdentitySuffix:   opt.IdentitySuffix,
 	}
