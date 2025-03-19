@@ -137,10 +137,11 @@ type XReadArgs struct {
 	Streams []string // list of streams and ids, e.g. stream1 stream2 id1 id2
 	Count   int64
 	Block   time.Duration
+	ID      string
 }
 
 func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
-	args := make([]interface{}, 0, 6+len(a.Streams))
+	args := make([]interface{}, 0, 2*len(a.Streams)+6)
 	args = append(args, "xread")
 
 	keyPos := int8(1)
@@ -158,6 +159,11 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	keyPos++
 	for _, s := range a.Streams {
 		args = append(args, s)
+	}
+	if a.ID != "" {
+		for range a.Streams {
+			args = append(args, a.ID)
+		}
 	}
 
 	cmd := NewXStreamSliceCmd(ctx, args...)
@@ -178,36 +184,42 @@ func (c cmdable) XReadStreams(ctx context.Context, streams ...string) *XStreamSl
 
 func (c cmdable) XGroupCreate(ctx context.Context, stream, group, start string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "xgroup", "create", stream, group, start)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XGroupCreateMkStream(ctx context.Context, stream, group, start string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "xgroup", "create", stream, group, start, "mkstream")
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XGroupSetID(ctx context.Context, stream, group, start string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "xgroup", "setid", stream, group, start)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XGroupDestroy(ctx context.Context, stream, group string) *IntCmd {
 	cmd := NewIntCmd(ctx, "xgroup", "destroy", stream, group)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XGroupCreateConsumer(ctx context.Context, stream, group, consumer string) *IntCmd {
 	cmd := NewIntCmd(ctx, "xgroup", "createconsumer", stream, group, consumer)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XGroupDelConsumer(ctx context.Context, stream, group, consumer string) *IntCmd {
 	cmd := NewIntCmd(ctx, "xgroup", "delconsumer", stream, group, consumer)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }

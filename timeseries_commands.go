@@ -40,25 +40,32 @@ type TimeseriesCmdable interface {
 }
 
 type TSOptions struct {
-	Retention       int
-	ChunkSize       int
-	Encoding        string
-	DuplicatePolicy string
-	Labels          map[string]string
+	Retention         int
+	ChunkSize         int
+	Encoding          string
+	DuplicatePolicy   string
+	Labels            map[string]string
+	IgnoreMaxTimeDiff int64
+	IgnoreMaxValDiff  float64
 }
 type TSIncrDecrOptions struct {
-	Timestamp    int64
-	Retention    int
-	ChunkSize    int
-	Uncompressed bool
-	Labels       map[string]string
+	Timestamp         int64
+	Retention         int
+	ChunkSize         int
+	Uncompressed      bool
+	DuplicatePolicy   string
+	Labels            map[string]string
+	IgnoreMaxTimeDiff int64
+	IgnoreMaxValDiff  float64
 }
 
 type TSAlterOptions struct {
-	Retention       int
-	ChunkSize       int
-	DuplicatePolicy string
-	Labels          map[string]string
+	Retention         int
+	ChunkSize         int
+	DuplicatePolicy   string
+	Labels            map[string]string
+	IgnoreMaxTimeDiff int64
+	IgnoreMaxValDiff  float64
 }
 
 type TSCreateRuleOptions struct {
@@ -223,6 +230,9 @@ func (c cmdable) TSAddWithArgs(ctx context.Context, key string, timestamp interf
 				args = append(args, label, value)
 			}
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 	}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -264,6 +274,9 @@ func (c cmdable) TSCreateWithArgs(ctx context.Context, key string, options *TSOp
 				args = append(args, label, value)
 			}
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -291,6 +304,9 @@ func (c cmdable) TSAlter(ctx context.Context, key string, options *TSAlterOption
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
+		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -351,11 +367,17 @@ func (c cmdable) TSIncrByWithArgs(ctx context.Context, key string, timestamp flo
 		if options.Uncompressed {
 			args = append(args, "UNCOMPRESSED")
 		}
+		if options.DuplicatePolicy != "" {
+			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
+		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewIntCmd(ctx, args...)
@@ -391,11 +413,17 @@ func (c cmdable) TSDecrByWithArgs(ctx context.Context, key string, timestamp flo
 		if options.Uncompressed {
 			args = append(args, "UNCOMPRESSED")
 		}
+		if options.DuplicatePolicy != "" {
+			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
+		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewIntCmd(ctx, args...)
@@ -531,6 +559,8 @@ func (c cmdable) TSInfoWithArgs(ctx context.Context, key string, options *TSInfo
 }
 
 // TSMAdd - Adds multiple samples to multiple time-series keys.
+// It accepts a slice of 'ktv' slices, each containing exactly three elements: key, timestamp, and value.
+// This struct must be provided for this command to work.
 // For more information - https://redis.io/commands/ts.madd/
 func (c cmdable) TSMAdd(ctx context.Context, ktvSlices [][]interface{}) *IntSliceCmd {
 	args := []interface{}{"TS.MADD"}

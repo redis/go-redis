@@ -168,9 +168,12 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, ErrClosed
 	}
 
+	p.connsMu.Lock()
 	if p.cfg.MaxActiveConns > 0 && p.poolSize >= p.cfg.MaxActiveConns {
+		p.connsMu.Unlock()
 		return nil, ErrPoolExhausted
 	}
+	p.connsMu.Unlock()
 
 	cn, err := p.dialConn(ctx, pooled)
 	if err != nil {
@@ -179,6 +182,11 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
+
+	if p.cfg.MaxActiveConns > 0 && p.poolSize >= p.cfg.MaxActiveConns {
+		_ = cn.Close()
+		return nil, ErrPoolExhausted
+	}
 
 	p.conns = append(p.conns, cn)
 	if pooled {

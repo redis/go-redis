@@ -59,14 +59,6 @@ func NewClusterClientStub(resp []byte) *ClientStub {
 		},
 	})
 
-	// init command.
-	tmpClient := NewClient(&Options{Addr: ":6379"})
-	cmdsInfo, err := tmpClient.Command(ctx).Result()
-	_ = tmpClient.Close()
-	client.cmdsInfoCache = newCmdsInfoCache(func(_ context.Context) (map[string]*CommandInfo, error) {
-		return cmdsInfo, err
-	})
-
 	stub.Cmdable = client
 	return stub
 }

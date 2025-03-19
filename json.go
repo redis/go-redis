@@ -60,13 +60,12 @@ type JSONArrTrimArgs struct {
 type JSONCmd struct {
 	baseCmd
 	val      string
-	expanded []interface{}
+	expanded interface{}
 }
 
 var _ Cmder = (*JSONCmd)(nil)
 
 func newJSONCmd(ctx context.Context, args ...interface{}) *JSONCmd {
-
 	return &JSONCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -95,19 +94,17 @@ func (cmd *JSONCmd) Val() string {
 	} else {
 		return cmd.val
 	}
-
 }
 
 func (cmd *JSONCmd) Result() (string, error) {
 	return cmd.Val(), cmd.Err()
 }
 
-func (cmd JSONCmd) Expanded() (interface{}, error) {
-
+func (cmd *JSONCmd) Expanded() (interface{}, error) {
 	if len(cmd.val) != 0 && cmd.expanded == nil {
 		err := json.Unmarshal([]byte(cmd.val), &cmd.expanded)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 	}
 
@@ -115,7 +112,6 @@ func (cmd JSONCmd) Expanded() (interface{}, error) {
 }
 
 func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
-
 	// nil response from JSON.(M)GET (cmd.baseCmd.err will be "redis: nil")
 	if cmd.baseCmd.Err() == Nil {
 		cmd.val = ""
@@ -131,7 +127,7 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 			return err
 		}
 
-		var expanded = make([]interface{}, size)
+		expanded := make([]interface{}, size)
 
 		for i := 0; i < size; i++ {
 			if expanded[i], err = rd.ReadReply(); err != nil {
@@ -182,11 +178,10 @@ func (cmd *JSONSliceCmd) Val() []interface{} {
 }
 
 func (cmd *JSONSliceCmd) Result() ([]interface{}, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *JSONSliceCmd) readReply(rd *proto.Reader) error {
-
 	if cmd.baseCmd.Err() == Nil {
 		cmd.val = nil
 		return Nil
@@ -220,7 +215,6 @@ func (cmd *JSONSliceCmd) readReply(rd *proto.Reader) error {
 		}
 	}
 	return nil
-
 }
 
 /*******************************************************************************
@@ -258,11 +252,10 @@ func (cmd *IntPointerSliceCmd) Val() []*int64 {
 }
 
 func (cmd *IntPointerSliceCmd) Result() ([]*int64, error) {
-	return cmd.Val(), cmd.Err()
+	return cmd.val, cmd.err
 }
 
 func (cmd *IntPointerSliceCmd) readReply(rd *proto.Reader) error {
-
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
@@ -501,7 +494,7 @@ func (c cmdable) JSONMSet(ctx context.Context, params ...interface{}) *StatusCmd
 }
 
 // JSONNumIncrBy increments the number value stored at the specified path by the provided number.
-// For more information, see https://redis.io/commands/json.numincreby
+// For more information, see https://redis.io/docs/latest/commands/json.numincrby/
 func (c cmdable) JSONNumIncrBy(ctx context.Context, key, path string, value float64) *JSONCmd {
 	args := []interface{}{"JSON.NUMINCRBY", key, path, value}
 	cmd := newJSONCmd(ctx, args...)
