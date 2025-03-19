@@ -3,6 +3,7 @@
 services:
   redis:
     image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:rs-7.4.0-v2}
+    platform: linux/amd64
     container_name: redis-standalone
     environment:
       - TLS_ENABLED=yes
@@ -23,6 +24,7 @@ services:
 
   osscluster:
     image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:rs-7.4.0-v2}
+    platform: linux/amd64
     container_name: redis-osscluster
     environment:
       - NODES=6
@@ -39,6 +41,7 @@ services:
 
   sentinel-cluster:
     image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:rs-7.4.0-v2}
+    platform: linux/amd64
     container_name: redis-sentinel-cluster
     network_mode: "host"
     environment:
@@ -58,6 +61,7 @@ services:
 
   sentinel:
     image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:rs-7.4.0-v2}
+    platform: linux/amd64
     container_name: redis-sentinel
     depends_on:
       - sentinel-cluster
@@ -81,6 +85,7 @@ services:
 
   ring-cluster:
     image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:rs-7.4.0-v2}
+    platform: linux/amd64
     container_name: redis-ring-cluster
     environment:
       - NODES=3
