@@ -259,12 +259,16 @@ var (
 // NewUniversalClient returns a new multi client. The type of the returned client depends
 // on the following conditions:
 //
-// 1. If the MasterName option is specified, a sentinel-backed FailoverClient is returned.
-// 2. if the number of Addrs is two or more, a ClusterClient is returned.
-// 3. Otherwise, a single-node Client is returned.
+// 1. If the MasterName option is specified with RouteByLatency, RouteRandomly or IsClusterMode,
+//    a FailoverClusterClient is returned.
+// 2. If the MasterName option is specified without RouteByLatency, RouteRandomly or IsClusterMode,
+//    a sentinel-backed FailoverClient is returned.
+// 3. If the number of Addrs is two or more, or IsClusterMode option is specified,
+//    a ClusterClient is returned.
+// 4. Otherwise, a single-node Client is returned.
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
 	switch {
-	case opts.MasterName != "" && (opts.RouteByLatency || opts.RouteRandomly):
+	case opts.MasterName != "" && (opts.RouteByLatency || opts.RouteRandomly || opts.IsClusterMode):
 		return NewFailoverClusterClient(opts.Failover())
 	case opts.MasterName != "":
 		return NewFailoverClient(opts.Failover())
