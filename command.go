@@ -30,6 +30,9 @@ type Cmder interface {
 	// e.g. "set k v ex 10" -> "[set k v ex 10]".
 	Args() []interface{}
 
+	//all keys in command.
+	Keys() []string
+
 	// format request and response string.
 	// e.g. "set k v ex 10" -> "set k v ex 10: OK", "get k" -> "get k: v".
 	String() string
@@ -126,6 +129,7 @@ type baseCmd struct {
 	args         []interface{}
 	err          error
 	keyPos       int8
+	keys         []string
 	rawVal       interface{}
 	_readTimeout *time.Duration
 }
@@ -157,6 +161,10 @@ func (cmd *baseCmd) FullName() string {
 
 func (cmd *baseCmd) Args() []interface{} {
 	return cmd.args
+}
+
+func (cmd *baseCmd) Keys() []string {
+	return cmd.keys
 }
 
 func (cmd *baseCmd) stringArg(pos int) string {
@@ -202,6 +210,22 @@ func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 	cmd.rawVal, err = rd.ReadReply()
 	return err
+}
+
+// getInterleavedArguments returns arguments at even indices starting from index 1.
+func (cmd *baseCmd) getInterleavedArguments() []string {
+	return cmd.getInterleavedArgumentsWithOffset(1)
+}
+
+// getInterleavedArgumentsWithOffset returns arguments at even indices starting from the specified offset.
+func (cmd *baseCmd) getInterleavedArgumentsWithOffset(offset int) []string {
+	var matchingArguments []string
+	for i := offset; i < len(cmd.args); i += 2 {
+		if arg, ok := cmd.args[i].(string); ok {
+			matchingArguments = append(matchingArguments, arg)
+		}
+	}
+	return matchingArguments
 }
 
 //------------------------------------------------------------------------------
