@@ -1,6 +1,7 @@
 module github.com/redis/go-redis/example/otel
 
-go 1.19
+go 1.23.0
+
 toolchain go1.24.1
 
 replace github.com/redis/go-redis/v9 => ../..
@@ -10,8 +11,8 @@ replace github.com/redis/go-redis/extra/redisotel/v9 => ../../extra/redisotel
 replace github.com/redis/go-redis/extra/rediscmd/v9 => ../../extra/rediscmd
 
 require (
-	github.com/redis/go-redis/extra/redisotel/v9 v9.7.1
-	github.com/redis/go-redis/v9 v9.7.1
+	github.com/redis/go-redis/extra/redisotel/v9 v9.7.3
+	github.com/redis/go-redis/v9 v9.7.3
 	github.com/uptrace/uptrace-go v1.21.0
 	go.opentelemetry.io/otel v1.22.0
 )
@@ -24,7 +25,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.19.0 // indirect
-	github.com/redis/go-redis/extra/rediscmd/v9 v9.7.1 // indirect
+	github.com/redis/go-redis/extra/rediscmd/v9 v9.7.3 // indirect
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.46.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v0.44.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.21.0 // indirect
