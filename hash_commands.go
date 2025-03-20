@@ -12,8 +12,7 @@ type HashCmdable interface {
 	HGetAll(ctx context.Context, key string) *MapStringStringCmd
 	HGetDel(ctx context.Context, key string, fields ...string) *StringSliceCmd
 	HGetEX(ctx context.Context, key string, fields ...string) *StringSliceCmd
-	HGetEXWithArgs(ctx context.Context, key string, expirationType HGetEXExpirationType, expirationVal int64, fields ...string) *StringSliceCmd
-	HIncrBy(ctx context.Context, key, field string, incr int64) *IntCmd
+	HGetEXWithArgs(ctx context.Context, key string, options *HGetEXOptions, fields ...string) *StringSliceCmd
 	HIncrByFloat(ctx context.Context, key, field string, incr float64) *FloatCmd
 	HKeys(ctx context.Context, key string) *StringSliceCmd
 	HLen(ctx context.Context, key string) *IntCmd
@@ -21,7 +20,7 @@ type HashCmdable interface {
 	HSet(ctx context.Context, key string, values ...interface{}) *IntCmd
 	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
 	HSetEX(ctx context.Context, key string, fieldsAndValues ...string) *IntCmd
-	HSetEXWithArgs(ctx context.Context, key string, options *HSetXOptions, fieldsAndValues ...string) *IntCmd
+	HSetEXWithArgs(ctx context.Context, key string, options *HSetEXOptions, fieldsAndValues ...string) *IntCmd
 	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
 	HScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
 	HScanNoValues(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
@@ -491,12 +490,18 @@ const (
 	HGetEXExpirationPERSIST HGetEXExpirationType = "PERSIST"
 )
 
-func (c cmdable) HGetEXWithArgs(ctx context.Context, key string, expirationType HGetEXExpirationType, expirationVal int64, fields ...string) *StringSliceCmd {
-	args := []interface{}{"HGETEX", key}
+type HGetEXOptions struct {
+	ExpirationType HGetEXExpirationType
+	ExpirationVal  int64
+}
 
-	args = append(args, string(expirationType))
-	if expirationType != HGetEXExpirationPERSIST {
-		args = append(args, expirationVal)
+func (c cmdable) HGetEXWithArgs(ctx context.Context, key string, options *HGetEXOptions, fields ...string) *StringSliceCmd {
+	args := []interface{}{"HGETEX", key}
+	if options.ExpirationType != "" {
+		args = append(args, string(options.ExpirationType))
+		if options.ExpirationType != HGetEXExpirationPERSIST {
+			args = append(args, options.ExpirationVal)
+		}
 	}
 
 	args = append(args, "FIELDS", len(fields))
@@ -526,7 +531,7 @@ const (
 	HSetEXExpirationKEEPTTL HSetEXExpirationType = "KEEPTTL"
 )
 
-type HSetXOptions struct {
+type HSetEXOptions struct {
 	Condition      HSetEXCondition
 	ExpirationType HSetEXExpirationType
 	ExpirationVal  int64
@@ -543,7 +548,7 @@ func (c cmdable) HSetEX(ctx context.Context, key string, fieldsAndValues ...stri
 	return cmd
 }
 
-func (c cmdable) HSetEXWithArgs(ctx context.Context, key string, options *HSetXOptions, fieldsAndValues ...string) *IntCmd {
+func (c cmdable) HSetEXWithArgs(ctx context.Context, key string, options *HSetEXOptions, fieldsAndValues ...string) *IntCmd {
 	args := []interface{}{"HSETEX", key}
 	if options.Condition != "" {
 		args = append(args, string(options.Condition))

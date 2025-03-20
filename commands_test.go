@@ -2814,7 +2814,7 @@ var _ = Describe("Commands", func() {
 
 		It("should HGETDEL", Label("hash", "HGETDEL"), func() {
 			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
-			// Setup: create a hash with three fields.
+
 			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2", "f3", "val3").Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2837,8 +2837,6 @@ var _ = Describe("Commands", func() {
 			// HGETDEL on a key that does not exist.
 			res, err := client.HGetDel(ctx, "nonexistent", "f1", "f2").Result()
 			Expect(err).To(BeNil())
-			// Depending on your implementation, missing fields may return nil or empty strings.
-			// Adjust the expectation accordingly.
 			Expect(res).To(Equal([]string{"", ""}))
 		})
 
@@ -2847,38 +2845,46 @@ var _ = Describe("Commands", func() {
 		// -----------------------------
 		It("should HGETEX with EX option", Label("hash", "HGETEX"), func() {
 			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
-			// Setup: create a hash.
+
 			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2").Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			// Call HGETEX with EX option and 60 seconds TTL.
-			res, err := client.HGetEXWithArgs(ctx, "myhash", redis.HGetEXExpirationEX, 60, "f1", "f2").Result()
+			opt := redis.HGetEXOptions{
+				ExpirationType: redis.HGetEXExpirationEX,
+				ExpirationVal:  60,
+			}
+			res, err := client.HGetEXWithArgs(ctx, "myhash", &opt, "f1", "f2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]string{"val1", "val2"}))
-			// Optionally, verify TTL if your implementation exposes it.
 		})
 
 		It("should HGETEX with PERSIST option", Label("hash", "HGETEX"), func() {
-			SkipBeforeRedisVersion(8, "requires Redis 8.x")
-			// Setup: create a hash.
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+
 			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2").Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			// Call HGETEX with PERSIST (no TTL value needed).
-			res, err := client.HGetEXWithArgs(ctx, "myhash", redis.HGetEXExpirationPERSIST, 0, "f1", "f2").Result()
+			opt := redis.HGetEXOptions{ExpirationType: redis.HGetEXExpirationPERSIST}
+			res, err := client.HGetEXWithArgs(ctx, "myhash", &opt, "f1", "f2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]string{"val1", "val2"}))
 		})
 
 		It("should HGETEX with EXAT option", Label("hash", "HGETEX"), func() {
-			SkipBeforeRedisVersion(8, "requires Redis 8.x")
-			// Setup: create a hash.
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+
 			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2").Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			// Set expiration at a specific Unix timestamp (60 seconds from now).
 			expireAt := time.Now().Add(60 * time.Second).Unix()
-			res, err := client.HGetEXWithArgs(ctx, "myhash", redis.HGetEXExpirationEXAT, expireAt, "f1", "f2").Result()
+			opt := redis.HGetEXOptions{
+				ExpirationType: redis.HGetEXExpirationEXAT,
+				ExpirationVal:  expireAt,
+			}
+			res, err := client.HGetEXWithArgs(ctx, "myhash", &opt, "f1", "f2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]string{"val1", "val2"}))
 		})
@@ -2887,75 +2893,62 @@ var _ = Describe("Commands", func() {
 		// HSETEX with FNX/FXX options
 		// -----------------------------
 		It("should HSETEX with FNX condition", Label("hash", "HSETEX"), func() {
-			SkipBeforeRedisVersion(8, "requires Redis 8.x")
-			// Ensure the key is removed.
-			client.Del(ctx, "myhash")
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
 
-			// FNX: set field only if it does not exist.
-			opt := redis.HSetXOptions{
+			opt := redis.HSetEXOptions{
 				Condition:      redis.HSetEXFNX,
 				ExpirationType: redis.HSetEXExpirationEX,
 				ExpirationVal:  60,
 			}
 			res, err := client.HSetEXWithArgs(ctx, "myhash", &opt, "f1", "val1").Result()
 			Expect(err).NotTo(HaveOccurred())
-			// Expect the field to be set.
 			Expect(res).To(Equal(int64(1)))
 
-			opt = redis.HSetXOptions{
+			opt = redis.HSetEXOptions{
 				Condition:      redis.HSetEXFNX,
 				ExpirationType: redis.HSetEXExpirationEX,
 				ExpirationVal:  60,
 			}
-			// Attempt to set the same field again with FNX.
 			res, err = client.HSetEXWithArgs(ctx, "myhash", &opt, "f1", "val2").Result()
 			Expect(err).NotTo(HaveOccurred())
-			// Since the field already exists, no update occurs.
 			Expect(res).To(Equal(int64(0)))
 		})
 
 		It("should HSETEX with FXX condition", Label("hash", "HSETEX"), func() {
 			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
-			// Setup: ensure field f2 exists.
-			client.Del(ctx, "myhash")
+
 			err := client.HSet(ctx, "myhash", "f2", "val1").Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			opt := redis.HSetXOptions{
+			opt := redis.HSetEXOptions{
 				Condition:      redis.HSetEXFXX,
 				ExpirationType: redis.HSetEXExpirationEX,
 				ExpirationVal:  60,
 			}
-			// FXX: update field only if it exists.
 			res, err := client.HSetEXWithArgs(ctx, "myhash", &opt, "f2", "val2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal(int64(1)))
-			opt = redis.HSetXOptions{
+			opt = redis.HSetEXOptions{
 				Condition:      redis.HSetEXFXX,
 				ExpirationType: redis.HSetEXExpirationEX,
 				ExpirationVal:  60,
 			}
-			// FXX on a non-existing field (f3) should not set the field.
 			res, err = client.HSetEXWithArgs(ctx, "myhash", &opt, "f3", "val3").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal(int64(0)))
 		})
 
 		It("should HSETEX with multiple field operations", Label("hash", "HSETEX"), func() {
-			SkipBeforeRedisVersion(8, "requires Redis 8.x")
-			// Remove key if it exists.
-			client.Del(ctx, "myhash")
-			opt := redis.HSetXOptions{
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+
+			opt := redis.HSetEXOptions{
 				ExpirationType: redis.HSetEXExpirationEX,
 				ExpirationVal:  60,
 			}
-			// Set multiple fields at once (no condition).
 			res, err := client.HSetEXWithArgs(ctx, "myhash", &opt, "f1", "val1", "f2", "val2").Result()
 			Expect(err).NotTo(HaveOccurred())
-			// Assume 1 indicates all fields were set.
 			Expect(res).To(Equal(int64(1)))
 
-			// Verify that both fields are set.
 			values, err := client.HMGet(ctx, "myhash", "f1", "f2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(values).To(Equal([]interface{}{"val1", "val2"}))
