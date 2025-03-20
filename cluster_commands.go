@@ -16,7 +16,7 @@ type ClusterCmdable interface {
 	ClusterResetHard(ctx context.Context) *StatusCmd
 	ClusterInfo(ctx context.Context) *StringCmd
 	ClusterKeySlot(ctx context.Context, key string) *IntCmd
-	ClusterGetKeysInSlot(ctx context.Context, slot int, count int) *StringSliceCmd
+	ClusterGetKeysInSlot(ctx context.Context, slot, count int) *StringSliceCmd
 	ClusterCountFailureReports(ctx context.Context, nodeID string) *IntCmd
 	ClusterCountKeysInSlot(ctx context.Context, slot int) *IntCmd
 	ClusterDelSlots(ctx context.Context, slots ...int) *StatusCmd
@@ -108,7 +108,7 @@ func (c cmdable) ClusterKeySlot(ctx context.Context, key string) *IntCmd {
 	return cmd
 }
 
-func (c cmdable) ClusterGetKeysInSlot(ctx context.Context, slot int, count int) *StringSliceCmd {
+func (c cmdable) ClusterGetKeysInSlot(ctx context.Context, slot, count int) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "cluster", "getkeysinslot", slot, count)
 	_ = c(ctx, cmd)
 	return cmd

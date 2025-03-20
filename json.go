@@ -26,7 +26,7 @@ type JSONCmdable interface {
 	JSONForget(ctx context.Context, key, path string) *IntCmd
 	JSONGet(ctx context.Context, key string, paths ...string) *JSONCmd
 	JSONGetWithArgs(ctx context.Context, key string, options *JSONGetArgs, paths ...string) *JSONCmd
-	JSONMerge(ctx context.Context, key, path string, value string) *StatusCmd
+	JSONMerge(ctx context.Context, key, path, value string) *StatusCmd
 	JSONMSetArgs(ctx context.Context, docs []JSONSetArgs) *StatusCmd
 	JSONMSet(ctx context.Context, params ...interface{}) *StatusCmd
 	JSONMGet(ctx context.Context, path string, keys ...string) *JSONSliceCmd
@@ -450,7 +450,7 @@ func (c cmdable) JSONGetWithArgs(ctx context.Context, key string, options *JSONG
 
 // JSONMerge merges a given JSON value into matching paths.
 // For more information, see https://redis.io/commands/json.merge
-func (c cmdable) JSONMerge(ctx context.Context, key, path string, value string) *StatusCmd {
+func (c cmdable) JSONMerge(ctx context.Context, key, path, value string) *StatusCmd {
 	args := []interface{}{"JSON.MERGE", key, path, value}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)

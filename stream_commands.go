@@ -11,8 +11,8 @@ type StreamCmdable interface {
 	XLen(ctx context.Context, stream string) *IntCmd
 	XRange(ctx context.Context, stream, start, stop string) *XMessageSliceCmd
 	XRangeN(ctx context.Context, stream, start, stop string, count int64) *XMessageSliceCmd
-	XRevRange(ctx context.Context, stream string, start, stop string) *XMessageSliceCmd
-	XRevRangeN(ctx context.Context, stream string, start, stop string, count int64) *XMessageSliceCmd
+	XRevRange(ctx context.Context, stream, start, stop string) *XMessageSliceCmd
+	XRevRangeN(ctx context.Context, stream, start, stop string, count int64) *XMessageSliceCmd
 	XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd
 	XReadStreams(ctx context.Context, streams ...string) *XStreamSliceCmd
 	XGroupCreate(ctx context.Context, stream, group, start string) *StatusCmd
@@ -31,12 +31,12 @@ type StreamCmdable interface {
 	XAutoClaimJustID(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimJustIDCmd
 	XTrimMaxLen(ctx context.Context, key string, maxLen int64) *IntCmd
 	XTrimMaxLenApprox(ctx context.Context, key string, maxLen, limit int64) *IntCmd
-	XTrimMinID(ctx context.Context, key string, minID string) *IntCmd
-	XTrimMinIDApprox(ctx context.Context, key string, minID string, limit int64) *IntCmd
+	XTrimMinID(ctx context.Context, key, minID string) *IntCmd
+	XTrimMinIDApprox(ctx context.Context, key, minID string, limit int64) *IntCmd
 	XInfoGroups(ctx context.Context, key string) *XInfoGroupsCmd
 	XInfoStream(ctx context.Context, key string) *XInfoStreamCmd
 	XInfoStreamFull(ctx context.Context, key string, count int) *XInfoStreamFullCmd
-	XInfoConsumers(ctx context.Context, key string, group string) *XInfoConsumersCmd
+	XInfoConsumers(ctx context.Context, key, group string) *XInfoConsumersCmd
 }
 
 // XAddArgs accepts values in the following formats:
@@ -410,15 +410,15 @@ func (c cmdable) XTrimMaxLenApprox(ctx context.Context, key string, maxLen, limi
 	return c.xTrim(ctx, key, "maxlen", true, maxLen, limit)
 }
 
-func (c cmdable) XTrimMinID(ctx context.Context, key string, minID string) *IntCmd {
+func (c cmdable) XTrimMinID(ctx context.Context, key, minID string) *IntCmd {
 	return c.xTrim(ctx, key, "minid", false, minID, 0)
 }
 
-func (c cmdable) XTrimMinIDApprox(ctx context.Context, key string, minID string, limit int64) *IntCmd {
+func (c cmdable) XTrimMinIDApprox(ctx context.Context, key, minID string, limit int64) *IntCmd {
 	return c.xTrim(ctx, key, "minid", true, minID, limit)
 }
 
-func (c cmdable) XInfoConsumers(ctx context.Context, key string, group string) *XInfoConsumersCmd {
+func (c cmdable) XInfoConsumers(ctx context.Context, key, group string) *XInfoConsumersCmd {
 	cmd := NewXInfoConsumersCmd(ctx, key, group)
 	_ = c(ctx, cmd)
 	return cmd
