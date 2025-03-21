@@ -6,7 +6,7 @@ replace github.com/redis/go-redis/v9 => ../..
 
 require (
 	github.com/prometheus/client_golang v1.14.0
-	github.com/redis/go-redis/v9 v9.7.1
+	github.com/redis/go-redis/v9 v9.7.3
 )
 
 require (
@@ -22,4 +22,7 @@ require (
 	google.golang.org/protobuf v1.33.0 // indirect
 )
 
-retract v9.5.3 // This version was accidentally released.
+retract (
+	v9.5.3 // This version was accidentally released.
+	v9.7.2 // This version was accidentally released.
+)
