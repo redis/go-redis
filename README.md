@@ -167,6 +167,24 @@ func ExampleClient() *redis.Client {
 
 ```
 
+### Instrument with OpenTelementry
+
+```go
+import (
+    "github.com/redis/go-redis/v9"
+    "github.com/redis/go-redis/extra/redisotel/v9"
+    "errors"
+)
+
+func main() {
+    ...
+    rdb := redis.NewClient(&redis.Options{...})
+
+    if err := errors.Join(redisotel.InstrumentTracing(rdb), redisotel.InstrumentMetrics(rdb)); err != nil {
+        log.Fatal(err)
+    }
+```
+
 
 ### Advanced Configuration
 
