@@ -211,7 +211,6 @@ type Cmdable interface {
 	ACLCmdable
 	BitMapCmdable
 	ClusterCmdable
-	GearsCmdable
 	GenericCmdable
 	GeoCmdable
 	HashCmdable
