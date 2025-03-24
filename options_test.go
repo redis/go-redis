@@ -1,5 +1,4 @@
 //go:build go1.7
-// +build go1.7
 
 package redis
 
@@ -31,6 +30,9 @@ func TestParseURL(t *testing.T) {
 		}, {
 			url: "rediss://localhost:123",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ /* no deep comparison */ }},
+		}, {
+			url: "rediss://localhost:123/?skip_verify=true",
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{InsecureSkipVerify: true}},
 		}, {
 			url: "redis://:bar@localhost:123",
 			o:   &Options{Addr: "localhost:123", Password: "bar"},

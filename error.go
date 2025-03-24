@@ -2,10 +2,12 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -15,11 +17,11 @@ var ErrClosed = pool.ErrClosed
 
 // HasErrorPrefix checks if the err is a Redis error and the message contains a prefix.
 func HasErrorPrefix(err error, prefix string) bool {
-	err, ok := err.(Error)
-	if !ok {
+	var rErr Error
+	if !errors.As(err, &rErr) {
 		return false
 	}
-	msg := err.Error()
+	msg := rErr.Error()
 	msg = strings.TrimPrefix(msg, "ERR ") // KVRocks adds such prefix
 	return strings.HasPrefix(msg, prefix)
 }
@@ -36,12 +38,24 @@ type Error interface {
 
 var _ Error = proto.RedisError("")
 
+func isContextError(err error) bool {
+	switch err {
+	case context.Canceled, context.DeadlineExceeded:
+		return true
+	default:
+		return false
+	}
+}
+
 func shouldRetry(err error, retryTimeout bool) bool {
 	switch err {
 	case io.EOF, io.ErrUnexpectedEOF:
 		return true
 	case nil, context.Canceled, context.DeadlineExceeded:
 		return false
+	case pool.ErrPoolTimeout:
+		// connection pool timeout, increase retries. #3289
+		return true
 	}
 
 	if v, ok := err.(timeoutError); ok {
@@ -128,7 +142,9 @@ func isMovedError(err error) (moved bool, ask bool, addr string) {
 	if ind == -1 {
 		return false, false, ""
 	}
+
 	addr = s[ind+1:]
+	addr = internal.GetAddr(addr)
 	return
 }
 
