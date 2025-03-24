@@ -30,6 +30,7 @@ MSSQL
 namespace
 NoSQL
 ORM
+OpenTelemetry
 Packagist
 PhpRedis
 pipelining
