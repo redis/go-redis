@@ -167,7 +167,7 @@ func ExampleClient() *redis.Client {
 
 ```
 
-### Instrument with OpenTelementry
+### Instrument with OpenTelemetry
 
 ```go
 import (
