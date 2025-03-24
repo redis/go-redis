@@ -61,6 +61,12 @@ type Options struct {
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
 
+	// CredentialsProviderContext is an enhanced parameter of CredentialsProvider,
+	// done to maintain API compatibility. In the future,
+	// there might be a merge between CredentialsProviderContext and CredentialsProvider.
+	// There will be a conflict between them; if CredentialsProviderContext exists, we will ignore CredentialsProvider.
+	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
+
 	// Database to be selected after connecting to the server.
 	DB int
 
@@ -142,11 +148,23 @@ type Options struct {
 	// Enables read only queries on slave/follower nodes.
 	readOnly bool
 
-	// Disable set-lib on connect. Default is false.
+	// DisableIndentity - Disable set-lib on connect.
+	//
+	// default: false
+	//
+	// Deprecated: Use DisableIdentity instead.
 	DisableIndentity bool
+
+	// DisableIdentity is used to disable CLIENT SETINFO command on connect.
+	//
+	// default: false
+	DisableIdentity bool
 
 	// Add suffix to client name. Default is empty.
 	IdentitySuffix string
+
+	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
+	UnstableResp3 bool
 }
 
 func (opt *Options) init() {
@@ -235,7 +253,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 	}
 }
 
-// ParseURL parses an URL into Options that can be used to connect to Redis.
+// ParseURL parses a URL into Options that can be used to connect to Redis.
 // Scheme is required.
 // There are two connection types: by tcp socket and by unix socket.
 // Tcp connection:
@@ -250,14 +268,15 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //   - field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
 //   - only scalar type fields are supported (bool, int, time.Duration)
 //   - for time.Duration fields, values must be a valid input for time.ParseDuration();
-//     additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//     additionally a plain integer as value (i.e. without unit) is interpreted as seconds
 //   - to disable a duration field, use value less than or equal to 0; to use the default
 //     value, leave the value blank or remove the parameter
 //   - only the last value is interpreted if a parameter is given multiple times
 //   - fields "network", "addr", "username" and "password" can only be set using other
-//     URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
+//   - use "skip_verify=true" to ignore TLS certificate validation
 //
 // Examples:
 //
@@ -478,6 +497,9 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
+	if o.TLSConfig != nil && q.has("skip_verify") {
+		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
+	}
 
 	// any parameters left?
 	if r := q.remaining(); len(r) > 0 {
@@ -509,6 +531,7 @@ func newConnPool(
 		PoolFIFO:        opt.PoolFIFO,
 		PoolSize:        opt.PoolSize,
 		PoolTimeout:     opt.PoolTimeout,
+		DialTimeout:     opt.DialTimeout,
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
 		MaxActiveConns:  opt.MaxActiveConns,

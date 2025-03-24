@@ -16,6 +16,7 @@ type BitMapCmdable interface {
 	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
 	BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd
 	BitField(ctx context.Context, key string, values ...interface{}) *IntSliceCmd
+	BitFieldRO(ctx context.Context, key string, values ...interface{}) *IntSliceCmd
 }
 
 func (c cmdable) GetBit(ctx context.Context, key string, offset int64) *IntCmd {
@@ -45,22 +46,19 @@ const BitCountIndexByte string = "BYTE"
 const BitCountIndexBit string = "BIT"
 
 func (c cmdable) BitCount(ctx context.Context, key string, bitCount *BitCount) *IntCmd {
-	args := []interface{}{"bitcount", key}
+	args := make([]any, 2, 5)
+	args[0] = "bitcount"
+	args[1] = key
 	if bitCount != nil {
-		if bitCount.Unit == "" {
-			bitCount.Unit = "BYTE"
+		args = append(args, bitCount.Start, bitCount.End)
+		if bitCount.Unit != "" {
+			if bitCount.Unit != BitCountIndexByte && bitCount.Unit != BitCountIndexBit {
+				cmd := NewIntCmd(ctx)
+				cmd.SetErr(errors.New("redis: invalid bitcount index"))
+				return cmd
+			}
+			args = append(args, bitCount.Unit)
 		}
-		if bitCount.Unit != BitCountIndexByte && bitCount.Unit != BitCountIndexBit {
-			cmd := NewIntCmd(ctx)
-			cmd.SetErr(errors.New("redis: invalid bitcount index"))
-			return cmd
-		}
-		args = append(
-			args,
-			bitCount.Start,
-			bitCount.End,
-			string(bitCount.Unit),
-		)
 	}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
