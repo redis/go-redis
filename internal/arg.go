@@ -52,7 +52,7 @@ func AppendArg(b []byte, v interface{}) []byte {
 	}
 }
 
-func appendUTF8String(dst []byte, src []byte) []byte {
+func appendUTF8String(dst, src []byte) []byte {
 	dst = append(dst, src...)
 	return dst
 }

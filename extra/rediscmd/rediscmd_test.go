@@ -14,7 +14,7 @@ func TestGinkgo(t *testing.T) {
 
 var _ = Describe("AppendArg", func() {
 	DescribeTable("...",
-		func(src string, wanted string) {
+		func(src, wanted string) {
 			b := appendArg(nil, src)
 			Expect(string(b)).To(Equal(wanted))
 		},
