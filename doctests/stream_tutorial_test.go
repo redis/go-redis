@@ -26,6 +26,8 @@ func ExampleClient_xadd() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "race:france")
 	// REMOVE_END
 
@@ -105,6 +107,8 @@ func ExampleClient_racefrance1() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "race:france")
 	// REMOVE_END
 
@@ -227,6 +231,8 @@ func ExampleClient_raceusa() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "race:usa")
 	// REMOVE_END
 
@@ -310,6 +316,8 @@ func ExampleClient_racefrance2() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "race:france")
 	// REMOVE_END
 
@@ -478,6 +486,8 @@ func ExampleClient_xgroupcreate() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "race:france")
 	// REMOVE_END
 
@@ -520,6 +530,8 @@ func ExampleClient_xgroupcreatemkstream() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "race:italy")
 	// REMOVE_END
 
@@ -549,6 +561,8 @@ func ExampleClient_xgroupread() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "race:italy")
 	// REMOVE_END
 
@@ -654,6 +668,8 @@ func ExampleClient_raceitaly() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "race:italy")
 	rdb.XGroupDestroy(ctx, "race:italy", "italy_riders")
 	// REMOVE_END
@@ -1011,6 +1027,8 @@ func ExampleClient_xdel() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "race:italy")
 	// REMOVE_END
 

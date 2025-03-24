@@ -21,6 +21,8 @@ func ExampleClient_cms() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:profit")
 	// REMOVE_END
 

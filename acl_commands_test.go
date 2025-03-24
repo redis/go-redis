@@ -242,7 +242,7 @@ var _ = Describe("ACL permissions", Label("NonRedisEnterprise"), func() {
 	})
 
 	It("set permissions for module commands", func() {
-		SkipBeforeRedisMajor(8, "permissions for modules are supported for Redis Version >=8")
+		SkipBeforeRedisVersion(8, "permissions for modules are supported for Redis Version >=8")
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{}, &redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -322,7 +322,7 @@ var _ = Describe("ACL permissions", Label("NonRedisEnterprise"), func() {
 	})
 
 	It("set permissions for module categories", func() {
-		SkipBeforeRedisMajor(8, "permissions for modules are supported for Redis Version >=8")
+		SkipBeforeRedisVersion(8, "permissions for modules are supported for Redis Version >=8")
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 		val, err := client.FTCreate(ctx, "txt", &redis.FTCreateOptions{}, &redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -419,7 +419,7 @@ var _ = Describe("ACL Categories", func() {
 	})
 
 	It("lists acl categories and subcategories with Modules", func() {
-		SkipBeforeRedisMajor(8, "modules are included in acl for redis version >= 8")
+		SkipBeforeRedisVersion(8, "modules are included in acl for redis version >= 8")
 		aclTestCase := map[string]string{
 			"search":     "FT.CREATE",
 			"bloom":      "bf.add",

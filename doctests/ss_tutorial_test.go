@@ -20,6 +20,8 @@ func ExampleClient_zadd() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_scores")
 	// REMOVE_END
 
@@ -76,6 +78,8 @@ func ExampleClient_zrange() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_scores")
 	// REMOVE_END
 
@@ -127,6 +131,8 @@ func ExampleClient_zrangewithscores() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_scores")
 	// REMOVE_END
 
@@ -168,6 +174,8 @@ func ExampleClient_zrangebyscore() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_scores")
 	// REMOVE_END
 
@@ -211,6 +219,8 @@ func ExampleClient_zremrangebyscore() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_scores")
 	// REMOVE_END
 
@@ -270,6 +280,8 @@ func ExampleClient_zrank() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_scores")
 	// REMOVE_END
 
@@ -316,6 +328,8 @@ func ExampleClient_zaddlex() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_scores")
 	// REMOVE_END
 
@@ -377,6 +391,8 @@ func ExampleClient_leaderboard() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "racer_scores")
 	// REMOVE_END
 

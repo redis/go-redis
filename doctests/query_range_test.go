@@ -1,16 +1,15 @@
-// EXAMPLE: query_ft
+// EXAMPLE: query_range
 // HIDE_START
 package example_commands_test
 
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/redis/go-redis/v9"
 )
 
-func ExampleClient_query_ft() {
+func ExampleClient_query_range() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{
@@ -19,10 +18,9 @@ func ExampleClient_query_ft() {
 		DB:       0,  // use default DB
 		Protocol: 2,
 	})
+
 	// HIDE_END
 	// REMOVE_START
-	// start with fresh database
-	rdb.FlushDB(ctx)
 	rdb.FTDropIndex(ctx, "idx:bicycle")
 	rdb.FTDropIndex(ctx, "idx:email")
 	// REMOVE_END
@@ -72,7 +70,7 @@ func ExampleClient_query_ft() {
 			"model":          "Jigger",
 			"price":          270,
 			"description": "Small and powerful, the Jigger is the best ride for the smallest of tikes! " +
-				"This is the tiniest kids’ pedal bike on the market available without a coaster brake, the Jigger " +
+				"This is the tiniest kids pedal bike on the market available without a coaster brake, the Jigger " +
 				"is the vehicle of choice for the rare tenacious little rider raring to go.",
 			"condition": "new",
 		},
@@ -223,111 +221,174 @@ func ExampleClient_query_ft() {
 		}
 	}
 
-	// STEP_START ft1
-	res1, err := rdb.FTSearch(ctx,
-		"idx:bicycle", "@description: kids",
+	// STEP_START range1
+	res1, err := rdb.FTSearchWithArgs(ctx,
+		"idx:bicycle", "@price:[500 1000]",
+		&redis.FTSearchOptions{
+			Return: []redis.FTSearchReturn{
+				{
+					FieldName: "price",
+				},
+			},
+			SortBy: []redis.FTSearchSortBy{
+				{
+					FieldName: "price",
+					Asc:       true,
+				},
+			},
+		},
 	).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(res1.Total) // >>> 2
-
-	sort.Slice(res1.Docs, func(i, j int) bool {
-		return res1.Docs[i].ID < res1.Docs[j].ID
-	})
+	fmt.Println(res1.Total) // >>> 3
 
 	for _, doc := range res1.Docs {
-		fmt.Println(doc.ID)
+		fmt.Printf("%v : price %v\n", doc.ID, doc.Fields["price"])
 	}
-	// >>> bicycle:1
-	// >>> bicycle:2
+	// >>> bicycle:2 : price 815
+	// >>> bicycle:5 : price 810
+	// >>> bicycle:9 : price 815
 	// STEP_END
 
-	// STEP_START ft2
-	res2, err := rdb.FTSearch(ctx,
-		"idx:bicycle", "@model: ka*",
+	// STEP_START range2
+	res2, err := rdb.FTSearchWithArgs(ctx,
+		"idx:bicycle", "*",
+		&redis.FTSearchOptions{
+			Filters: []redis.FTSearchFilter{
+				{
+					FieldName: "price",
+					Min:       500,
+					Max:       1000,
+				},
+			},
+			Return: []redis.FTSearchReturn{
+				{
+					FieldName: "price",
+				},
+			},
+			SortBy: []redis.FTSearchSortBy{
+				{
+					FieldName: "price",
+					Asc:       true,
+				},
+			},
+		},
 	).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(res2.Total) // >>> 1
+	fmt.Println(res2.Total) // >>> 3
 
 	for _, doc := range res2.Docs {
-		fmt.Println(doc.ID)
+		fmt.Printf("%v : price %v\n", doc.ID, doc.Fields["price"])
 	}
-	// >>> bicycle:4
+	// >>> bicycle:2 : price 815
+	// >>> bicycle:5 : price 810
+	// >>> bicycle:9 : price 815
 	// STEP_END
 
-	// STEP_START ft3
-	res3, err := rdb.FTSearch(ctx,
-		"idx:bicycle", "@brand: *bikes",
+	// STEP_START range3
+	res3, err := rdb.FTSearchWithArgs(ctx,
+		"idx:bicycle", "*",
+		&redis.FTSearchOptions{
+			Return: []redis.FTSearchReturn{
+				{
+					FieldName: "price",
+				},
+			},
+			SortBy: []redis.FTSearchSortBy{
+				{
+					FieldName: "price",
+					Asc:       true,
+				},
+			},
+			Filters: []redis.FTSearchFilter{
+				{
+					FieldName: "price",
+					Min:       "(1000",
+					Max:       "+inf",
+				},
+			},
+		},
 	).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(res3.Total) // >>> 2
+	fmt.Println(res3.Total) // >>> 5
 
-	sort.Slice(res3.Docs, func(i, j int) bool {
-		return res3.Docs[i].ID < res3.Docs[j].ID
-	})
 	for _, doc := range res3.Docs {
-		fmt.Println(doc.ID)
+		fmt.Printf("%v : price %v\n", doc.ID, doc.Fields["price"])
 	}
-	// >>> bicycle:4
-	// >>> bicycle:6
+	// >>> bicycle:1 : price 1200
+	// >>> bicycle:4 : price 3200
+	// >>> bicycle:6 : price 2300
+	// >>> bicycle:3 : price 3400
+	// >>> bicycle:8 : price 1200
 	// STEP_END
 
-	// STEP_START ft4
-	res4, err := rdb.FTSearch(ctx,
-		"idx:bicycle", "%optamized%",
+	// STEP_START range4
+	res4, err := rdb.FTSearchWithArgs(ctx,
+		"idx:bicycle",
+		"@price:[-inf 2000]",
+		&redis.FTSearchOptions{
+			Return: []redis.FTSearchReturn{
+				{
+					FieldName: "price",
+				},
+			},
+			SortBy: []redis.FTSearchSortBy{
+				{
+					FieldName: "price",
+					Asc:       true,
+				},
+			},
+			LimitOffset: 0,
+			Limit:       5,
+		},
 	).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(res4.Total) // >>> 1
+	fmt.Println(res4.Total) // >>> 7
 
 	for _, doc := range res4.Docs {
-		fmt.Println(doc.ID)
+		fmt.Printf("%v : price %v\n", doc.ID, doc.Fields["price"])
 	}
-	// >>> bicycle:3
-	// STEP_END
-
-	// STEP_START ft5
-	res5, err := rdb.FTSearch(ctx,
-		"idx:bicycle", "%%optamised%%",
-	).Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(res5.Total) // >>> 1
-
-	for _, doc := range res5.Docs {
-		fmt.Println(doc.ID)
-	}
-	// >>> bicycle:3
+	// >>> bicycle:0 : price 270
+	// >>> bicycle:7 : price 430
+	// >>> bicycle:5 : price 810
+	// >>> bicycle:2 : price 815
+	// >>> bicycle:9 : price 815
 	// STEP_END
 
 	// Output:
-	// 2
-	// bicycle:1
-	// bicycle:2
-	// 1
-	// bicycle:4
-	// 2
-	// bicycle:4
-	// bicycle:6
-	// 1
-	// bicycle:3
-	// 1
-	// bicycle:3
+	// 3
+	// bicycle:5 : price 810
+	// bicycle:2 : price 815
+	// bicycle:9 : price 815
+	// 3
+	// bicycle:5 : price 810
+	// bicycle:2 : price 815
+	// bicycle:9 : price 815
+	// 5
+	// bicycle:1 : price 1200
+	// bicycle:8 : price 1200
+	// bicycle:6 : price 2300
+	// bicycle:4 : price 3200
+	// bicycle:3 : price 3400
+	// 7
+	// bicycle:0 : price 270
+	// bicycle:7 : price 430
+	// bicycle:5 : price 810
+	// bicycle:2 : price 815
+	// bicycle:9 : price 815
 }
