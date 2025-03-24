@@ -21,6 +21,8 @@ func ExampleClient_queue() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -75,6 +77,8 @@ func ExampleClient_stack() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -129,6 +133,8 @@ func ExampleClient_llen() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -156,6 +162,8 @@ func ExampleClient_lmove_lrange() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	rdb.Del(ctx, "bikes:finished")
 	// REMOVE_END
@@ -220,6 +228,8 @@ func ExampleClient_lpush_rpush() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -274,6 +284,8 @@ func ExampleClient_variadic() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -319,6 +331,8 @@ func ExampleClient_lpop_rpop() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -384,11 +398,13 @@ func ExampleClient_ltrim() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
 	// STEP_START ltrim
-	res27, err := rdb.LPush(ctx, "bikes:repairs", "bike:1", "bike:2", "bike:3", "bike:4", "bike:5").Result()
+	res27, err := rdb.RPush(ctx, "bikes:repairs", "bike:1", "bike:2", "bike:3", "bike:4", "bike:5").Result()
 
 	if err != nil {
 		panic(err)
@@ -410,13 +426,13 @@ func ExampleClient_ltrim() {
 		panic(err)
 	}
 
-	fmt.Println(res29) // >>> [bike:5 bike:4 bike:3]
+	fmt.Println(res29) // >>> [bike:1 bike:2 bike:3]
 	// STEP_END
 
 	// Output:
 	// 5
 	// OK
-	// [bike:5 bike:4 bike:3]
+	// [bike:1 bike:2 bike:3]
 }
 
 func ExampleClient_ltrim_end_of_list() {
@@ -429,6 +445,8 @@ func ExampleClient_ltrim_end_of_list() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -474,6 +492,8 @@ func ExampleClient_brpop() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bikes:repairs")
 	// REMOVE_END
 
@@ -529,6 +549,8 @@ func ExampleClient_rule1() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "new_bikes")
 	// REMOVE_END
 

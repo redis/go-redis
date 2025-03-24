@@ -21,6 +21,8 @@ func ExampleClient_ping() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "pings:2024-01-01-00:00")
 	// REMOVE_END
 
@@ -66,6 +68,8 @@ func ExampleClient_bitcount() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	_, err := rdb.SetBit(ctx, "pings:2024-01-01-00:00", 123, 1).Result()
 
 	if err != nil {
