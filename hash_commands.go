@@ -23,6 +23,7 @@ type HashCmdable interface {
 	HVals(ctx context.Context, key string) *StringSliceCmd
 	HRandField(ctx context.Context, key string, count int) *StringSliceCmd
 	HRandFieldWithValues(ctx context.Context, key string, count int) *KeyValueSliceCmd
+	HStrLen(ctx context.Context, key, field string) *IntCmd
 	HExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd
 	HExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd
 	HPExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd
@@ -190,6 +191,11 @@ func (c cmdable) HScan(ctx context.Context, key string, cursor uint64, match str
 	return cmd
 }
 
+func (c cmdable) HStrLen(ctx context.Context, key, field string) *IntCmd {
+	cmd := NewIntCmd(ctx, "hstrlen", key, field)
+	_ = c(ctx, cmd)
+	return cmd
+}
 func (c cmdable) HScanNoValues(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"hscan", key, cursor}
 	if match != "" {
@@ -225,7 +231,7 @@ func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Durati
 	return cmd
 }
 
-// HExpire - Sets the expiration time for specified fields in a hash in seconds.
+// HExpireWithArgs - Sets the expiration time for specified fields in a hash in seconds.
 // It requires a key, an expiration duration, a struct with boolean flags for conditional expiration settings (NX, XX, GT, LT), and a list of fields.
 // The command constructs an argument list starting with "HEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
 // For more information - https://redis.io/commands/hexpire/

@@ -17,7 +17,6 @@ func CmdString(cmd redis.Cmder) string {
 }
 
 func CmdsString(cmds []redis.Cmder) (string, string) {
-	const numCmdLimit = 100
 	const numNameLimit = 10
 
 	seen := make(map[string]struct{}, numNameLimit)
@@ -26,10 +25,6 @@ func CmdsString(cmds []redis.Cmder) (string, string) {
 	b := make([]byte, 0, 32*len(cmds))
 
 	for i, cmd := range cmds {
-		if i > numCmdLimit {
-			break
-		}
-
 		if i > 0 {
 			b = append(b, '\n')
 		}
@@ -51,12 +46,7 @@ func CmdsString(cmds []redis.Cmder) (string, string) {
 }
 
 func AppendCmd(b []byte, cmd redis.Cmder) []byte {
-	const numArgLimit = 32
-
 	for i, arg := range cmd.Args() {
-		if i > numArgLimit {
-			break
-		}
 		if i > 0 {
 			b = append(b, ' ')
 		}
@@ -72,20 +62,12 @@ func AppendCmd(b []byte, cmd redis.Cmder) []byte {
 }
 
 func appendArg(b []byte, v interface{}) []byte {
-	const argLenLimit = 64
-
 	switch v := v.(type) {
 	case nil:
 		return append(b, "<nil>"...)
 	case string:
-		if len(v) > argLenLimit {
-			v = v[:argLenLimit]
-		}
 		return appendUTF8String(b, Bytes(v))
 	case []byte:
-		if len(v) > argLenLimit {
-			v = v[:argLenLimit]
-		}
 		return appendUTF8String(b, v)
 	case int:
 		return strconv.AppendInt(b, int64(v), 10)
