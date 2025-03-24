@@ -10,13 +10,17 @@ type HashCmdable interface {
 	HExists(ctx context.Context, key, field string) *BoolCmd
 	HGet(ctx context.Context, key, field string) *StringCmd
 	HGetAll(ctx context.Context, key string) *MapStringStringCmd
-	HIncrBy(ctx context.Context, key, field string, incr int64) *IntCmd
+	HGetDel(ctx context.Context, key string, fields ...string) *StringSliceCmd
+	HGetEX(ctx context.Context, key string, fields ...string) *StringSliceCmd
+	HGetEXWithArgs(ctx context.Context, key string, options *HGetEXOptions, fields ...string) *StringSliceCmd
 	HIncrByFloat(ctx context.Context, key, field string, incr float64) *FloatCmd
 	HKeys(ctx context.Context, key string) *StringSliceCmd
 	HLen(ctx context.Context, key string) *IntCmd
 	HMGet(ctx context.Context, key string, fields ...string) *SliceCmd
 	HSet(ctx context.Context, key string, values ...interface{}) *IntCmd
 	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
+	HSetEX(ctx context.Context, key string, fieldsAndValues ...string) *IntCmd
+	HSetEXWithArgs(ctx context.Context, key string, options *HSetEXOptions, fieldsAndValues ...string) *IntCmd
 	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
 	HScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
 	HScanNoValues(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
@@ -451,6 +455,116 @@ func (c cmdable) HPTTL(ctx context.Context, key string, fields ...string) *IntSl
 		args = append(args, field)
 	}
 	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HGetDel(ctx context.Context, key string, fields ...string) *StringSliceCmd {
+	args := []interface{}{"HGETDEL", key, "FIELDS", len(fields)}
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HGetEX(ctx context.Context, key string, fields ...string) *StringSliceCmd {
+	args := []interface{}{"HGETEX", key, "FIELDS", len(fields)}
+	for _, field := range fields {
+		args = append(args, field)
+	}
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ExpirationType represents an expiration option for the HGETEX command.
+type HGetEXExpirationType string
+
+const (
+	HGetEXExpirationEX      HGetEXExpirationType = "EX"
+	HGetEXExpirationPX      HGetEXExpirationType = "PX"
+	HGetEXExpirationEXAT    HGetEXExpirationType = "EXAT"
+	HGetEXExpirationPXAT    HGetEXExpirationType = "PXAT"
+	HGetEXExpirationPERSIST HGetEXExpirationType = "PERSIST"
+)
+
+type HGetEXOptions struct {
+	ExpirationType HGetEXExpirationType
+	ExpirationVal  int64
+}
+
+func (c cmdable) HGetEXWithArgs(ctx context.Context, key string, options *HGetEXOptions, fields ...string) *StringSliceCmd {
+	args := []interface{}{"HGETEX", key}
+	if options.ExpirationType != "" {
+		args = append(args, string(options.ExpirationType))
+		if options.ExpirationType != HGetEXExpirationPERSIST {
+			args = append(args, options.ExpirationVal)
+		}
+	}
+
+	args = append(args, "FIELDS", len(fields))
+	for _, field := range fields {
+		args = append(args, field)
+	}
+
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type HSetEXCondition string
+
+const (
+	HSetEXFNX HSetEXCondition = "FNX" // Only set the fields if none of them already exist.
+	HSetEXFXX HSetEXCondition = "FXX" // Only set the fields if all already exist.
+)
+
+type HSetEXExpirationType string
+
+const (
+	HSetEXExpirationEX      HSetEXExpirationType = "EX"
+	HSetEXExpirationPX      HSetEXExpirationType = "PX"
+	HSetEXExpirationEXAT    HSetEXExpirationType = "EXAT"
+	HSetEXExpirationPXAT    HSetEXExpirationType = "PXAT"
+	HSetEXExpirationKEEPTTL HSetEXExpirationType = "KEEPTTL"
+)
+
+type HSetEXOptions struct {
+	Condition      HSetEXCondition
+	ExpirationType HSetEXExpirationType
+	ExpirationVal  int64
+}
+
+func (c cmdable) HSetEX(ctx context.Context, key string, fieldsAndValues ...string) *IntCmd {
+	args := []interface{}{"HSETEX", key, "FIELDS", len(fieldsAndValues) / 2}
+	for _, field := range fieldsAndValues {
+		args = append(args, field)
+	}
+
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) HSetEXWithArgs(ctx context.Context, key string, options *HSetEXOptions, fieldsAndValues ...string) *IntCmd {
+	args := []interface{}{"HSETEX", key}
+	if options.Condition != "" {
+		args = append(args, string(options.Condition))
+	}
+	if options.ExpirationType != "" {
+		args = append(args, string(options.ExpirationType))
+		if options.ExpirationType != HSetEXExpirationKEEPTTL {
+			args = append(args, options.ExpirationVal)
+		}
+	}
+	args = append(args, "FIELDS", len(fieldsAndValues)/2)
+	for _, field := range fieldsAndValues {
+		args = append(args, field)
+	}
+
+	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
