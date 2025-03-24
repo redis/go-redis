@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
@@ -73,6 +74,14 @@ type Options struct {
 	// there might be a merge between CredentialsProviderContext and CredentialsProvider.
 	// There will be a conflict between them; if CredentialsProviderContext exists, we will ignore CredentialsProvider.
 	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
+
+	// StreamingCredentialsProvider is used to retrieve the credentials
+	// for the connection from an external source. Those credentials may change
+	// during the connection lifetime. This is useful for managed identity
+	// scenarios where the credentials are retrieved from an external source.
+	//
+	// Currently, this is a placeholder for the future implementation.
+	StreamingCredentialsProvider auth.StreamingCredentialsProvider
 
 	// DB is the database to be selected after connecting to the server.
 	DB int
