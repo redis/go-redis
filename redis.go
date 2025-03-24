@@ -336,7 +336,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 
 	if !authenticated && password != "" {
-		err = c.reAuth(ctx, conn, auth.NewCredentials(username, password))
+		err = c.reAuth(ctx, conn, auth.NewBasicCredentials(username, password))
 		if err != nil {
 			return err
 		}
