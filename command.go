@@ -40,7 +40,7 @@ type Cmder interface {
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
-
+	readRawReply(rd *proto.Reader) error
 	SetErr(error)
 	Err() error
 }
@@ -122,11 +122,11 @@ func cmdString(cmd Cmder, val interface{}) string {
 //------------------------------------------------------------------------------
 
 type baseCmd struct {
-	ctx    context.Context
-	args   []interface{}
-	err    error
-	keyPos int8
-
+	ctx          context.Context
+	args         []interface{}
+	err          error
+	keyPos       int8
+	rawVal       interface{}
 	_readTimeout *time.Duration
 }
 
@@ -167,6 +167,8 @@ func (cmd *baseCmd) stringArg(pos int) string {
 	switch v := arg.(type) {
 	case string:
 		return v
+	case []byte:
+		return string(v)
 	default:
 		// TODO: consider using appendArg
 		return fmt.Sprint(v)
@@ -195,6 +197,11 @@ func (cmd *baseCmd) readTimeout() *time.Duration {
 
 func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 	cmd._readTimeout = &d
+}
+
+func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
+	cmd.rawVal, err = rd.ReadReply()
+	return err
 }
 
 //------------------------------------------------------------------------------
@@ -571,6 +578,10 @@ func (cmd *StatusCmd) Val() string {
 
 func (cmd *StatusCmd) Result() (string, error) {
 	return cmd.val, cmd.err
+}
+
+func (cmd *StatusCmd) Bytes() ([]byte, error) {
+	return util.StringToBytes(cmd.val), cmd.err
 }
 
 func (cmd *StatusCmd) String() string {
@@ -1394,27 +1405,63 @@ func (cmd *MapStringSliceInterfaceCmd) Val() map[string][]interface{} {
 }
 
 func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
-	n, err := rd.ReadMapLen()
+	readType, err := rd.PeekReplyType()
 	if err != nil {
 		return err
 	}
-	cmd.val = make(map[string][]interface{}, n)
-	for i := 0; i < n; i++ {
-		k, err := rd.ReadString()
+
+	cmd.val = make(map[string][]interface{})
+
+	if readType == proto.RespMap {
+		n, err := rd.ReadMapLen()
 		if err != nil {
 			return err
 		}
-		nn, err := rd.ReadArrayLen()
-		if err != nil {
-			return err
-		}
-		cmd.val[k] = make([]interface{}, nn)
-		for j := 0; j < nn; j++ {
-			value, err := rd.ReadReply()
+		for i := 0; i < n; i++ {
+			k, err := rd.ReadString()
 			if err != nil {
 				return err
 			}
-			cmd.val[k][j] = value
+			nn, err := rd.ReadArrayLen()
+			if err != nil {
+				return err
+			}
+			cmd.val[k] = make([]interface{}, nn)
+			for j := 0; j < nn; j++ {
+				value, err := rd.ReadReply()
+				if err != nil {
+					return err
+				}
+				cmd.val[k][j] = value
+			}
+		}
+	} else if readType == proto.RespArray {
+		// RESP2 response
+		n, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+
+		for i := 0; i < n; i++ {
+			// Each entry in this array is itself an array with key details
+			itemLen, err := rd.ReadArrayLen()
+			if err != nil {
+				return err
+			}
+
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			cmd.val[key] = make([]interface{}, 0, itemLen-1)
+			for j := 1; j < itemLen; j++ {
+				// Read the inner array for timestamp-value pairs
+				data, err := rd.ReadReply()
+				if err != nil {
+					return err
+				}
+				cmd.val[key] = append(cmd.val[key], data)
+			}
 		}
 	}
 
@@ -3783,6 +3830,83 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 	return nil
 }
 
+// -----------------------------------------------------------------------
+// MapStringInterfaceCmd represents a command that returns a map of strings to interface{}.
+type MapMapStringInterfaceCmd struct {
+	baseCmd
+	val map[string]interface{}
+}
+
+func NewMapMapStringInterfaceCmd(ctx context.Context, args ...interface{}) *MapMapStringInterfaceCmd {
+	return &MapMapStringInterfaceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *MapMapStringInterfaceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *MapMapStringInterfaceCmd) SetVal(val map[string]interface{}) {
+	cmd.val = val
+}
+
+func (cmd *MapMapStringInterfaceCmd) Result() (map[string]interface{}, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *MapMapStringInterfaceCmd) Val() map[string]interface{} {
+	return cmd.val
+}
+
+// readReply will try to parse the reply from the proto.Reader for both resp2 and resp3
+func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
+	data, err := rd.ReadReply()
+	if err != nil {
+		return err
+	}
+	resultMap := map[string]interface{}{}
+
+	switch midResponse := data.(type) {
+	case map[interface{}]interface{}: // resp3 will return map
+		for k, v := range midResponse {
+			stringKey, ok := k.(string)
+			if !ok {
+				return fmt.Errorf("redis: invalid map key %#v", k)
+			}
+			resultMap[stringKey] = v
+		}
+	case []interface{}: // resp2 will return array of arrays
+		n := len(midResponse)
+		for i := 0; i < n; i++ {
+			finalArr, ok := midResponse[i].([]interface{}) // final array that we need to transform to map
+			if !ok {
+				return fmt.Errorf("redis: unexpected response %#v", data)
+			}
+			m := len(finalArr)
+			if m%2 != 0 { // since this should be map, keys should be even number
+				return fmt.Errorf("redis: unexpected response %#v", data)
+			}
+
+			for j := 0; j < m; j += 2 {
+				stringKey, ok := finalArr[j].(string) // the first one
+				if !ok {
+					return fmt.Errorf("redis: invalid map key %#v", finalArr[i])
+				}
+				resultMap[stringKey] = finalArr[j+1] // second one is value
+			}
+		}
+	default:
+		return fmt.Errorf("redis: unexpected response %#v", data)
+	}
+
+	cmd.val = resultMap
+	return nil
+}
+
 //-----------------------------------------------------------------------
 
 type MapStringInterfaceSliceCmd struct {
@@ -4997,6 +5121,7 @@ type ClientInfo struct {
 	PSub               int           // number of pattern matching subscriptions
 	SSub               int           // redis version 7.0.3, number of shard channel subscriptions
 	Multi              int           // number of commands in a MULTI/EXEC context
+	Watch              int           // redis version 7.4 RC1, number of keys this client is currently watching.
 	QueryBuf           int           // qbuf, query buffer length (0 means no query pending)
 	QueryBufFree       int           // qbuf-free, free space of the query buffer (0 means the buffer is full)
 	ArgvMem            int           // incomplete arguments for the next command (already extracted from query buffer)
@@ -5007,6 +5132,7 @@ type ClientInfo struct {
 	OutputListLength   int           // oll, output list length (replies are queued in this list when the buffer is full)
 	OutputMemory       int           // omem, output buffer memory usage
 	TotalMemory        int           // tot-mem, total memory consumed by this client in its various buffers
+	IoThread           int           // io-thread id
 	Events             string        // file descriptor events (see below)
 	LastCmd            string        // cmd, last command played
 	User               string        // the authenticated username of the client
@@ -5149,6 +5275,8 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 			info.SSub, err = strconv.Atoi(val)
 		case "multi":
 			info.Multi, err = strconv.Atoi(val)
+		case "watch":
+			info.Watch, err = strconv.Atoi(val)
 		case "qbuf":
 			info.QueryBuf, err = strconv.Atoi(val)
 		case "qbuf-free":
@@ -5183,6 +5311,8 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 			info.LibName = val
 		case "lib-ver":
 			info.LibVer = val
+		case "io-thread":
+			info.IoThread, err = strconv.Atoi(val)
 		default:
 			return nil, fmt.Errorf("redis: unexpected client info key(%s)", key)
 		}
@@ -5362,8 +5492,6 @@ func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 
 	section := ""
 	scanner := bufio.NewScanner(strings.NewReader(val))
-	moduleRe := regexp.MustCompile(`module:name=(.+?),(.+)$`)
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "#") {
@@ -5374,6 +5502,7 @@ func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 			cmd.val[section] = make(map[string]string)
 		} else if line != "" {
 			if section == "Modules" {
+				moduleRe := regexp.MustCompile(`module:name=(.+?),(.+)$`)
 				kv := moduleRe.FindStringSubmatch(line)
 				if len(kv) == 3 {
 					cmd.val[section][kv[1]] = kv[2]

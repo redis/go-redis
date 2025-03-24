@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,11 +66,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should Stringer", func() {
-		if RECluster {
-			Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:0>", redisPort)))
-		} else {
-			Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:15>", redisPort)))
-		}
+		Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:0>", redisPort)))
 	})
 
 	It("supports context", func() {
@@ -187,6 +184,32 @@ var _ = Describe("Client", func() {
 		val, err := db.ClientList(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).Should(ContainSubstring("name=hi"))
+	})
+
+	It("should attempt to set client name in HELLO", func() {
+		opt := redisOptions()
+		opt.ClientName = "hi"
+		db := redis.NewClient(opt)
+
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		// Client name should be already set on any successfully initialized connection
+		name, err := db.ClientGetName(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(name).Should(Equal("hi"))
+
+		// HELLO should be able to explicitly overwrite the client name
+		conn := db.Conn()
+		hello, err := conn.Hello(ctx, 3, "", "", "hi2").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(hello["proto"]).Should(Equal(int64(3)))
+		name, err = conn.ClientGetName(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(name).Should(Equal("hi2"))
+		err = conn.Close()
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("should client PROTO 2", func() {
@@ -373,6 +396,13 @@ var _ = Describe("Client timeout", func() {
 	})
 
 	testTimeout := func() {
+		It("SETINFO timeouts", func() {
+			conn := client.Conn()
+			err := conn.Ping(ctx).Err()
+			Expect(err).To(HaveOccurred())
+			Expect(err.(net.Error).Timeout()).To(BeTrue())
+		})
+
 		It("Ping timeouts", func() {
 			err := client.Ping(ctx).Err()
 			Expect(err).To(HaveOccurred())
@@ -469,7 +499,7 @@ var _ = Describe("Client OnConnect", func() {
 	})
 })
 
-var _ = Describe("Client context cancelation", func() {
+var _ = Describe("Client context cancellation", func() {
 	var opt *redis.Options
 	var client *redis.Client
 
@@ -484,7 +514,7 @@ var _ = Describe("Client context cancelation", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("Blocking operation cancelation", func() {
+	It("Blocking operation cancellation", func() {
 		ctx, cancel := context.WithCancel(ctx)
 		cancel()
 
@@ -631,5 +661,69 @@ var _ = Describe("Hook with MinIdleConns", func() {
 			"hook-2-process-end",
 			"hook-1-process-end",
 		}))
+	})
+})
+
+var _ = Describe("Dialer connection timeouts", func() {
+	var client *redis.Client
+
+	const dialSimulatedDelay = 1 * time.Second
+
+	BeforeEach(func() {
+		options := redisOptions()
+		options.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Simulated slow dialer.
+			// Note that the following sleep is deliberately not context-aware.
+			time.Sleep(dialSimulatedDelay)
+			return net.Dial("tcp", options.Addr)
+		}
+		options.MinIdleConns = 1
+		client = redis.NewClient(options)
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("does not contend on connection dial for concurrent commands", func() {
+		var wg sync.WaitGroup
+
+		const concurrency = 10
+
+		durations := make(chan time.Duration, concurrency)
+		errs := make(chan error, concurrency)
+
+		start := time.Now()
+		wg.Add(concurrency)
+
+		for i := 0; i < concurrency; i++ {
+			go func() {
+				defer wg.Done()
+
+				start := time.Now()
+				err := client.Ping(ctx).Err()
+				durations <- time.Since(start)
+				errs <- err
+			}()
+		}
+
+		wg.Wait()
+		close(durations)
+		close(errs)
+
+		// All commands should eventually succeed, after acquiring a connection.
+		for err := range errs {
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		// Each individual command should complete within the simulated dial duration bound.
+		for duration := range durations {
+			Expect(duration).To(BeNumerically("<", 2*dialSimulatedDelay))
+		}
+
+		// Due to concurrent execution, the entire test suite should also complete within
+		// the same dial duration bound applied for individual commands.
+		Expect(time.Since(start)).To(BeNumerically("<", 2*dialSimulatedDelay))
 	})
 })
