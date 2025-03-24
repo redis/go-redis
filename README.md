@@ -6,13 +6,7 @@
 [![codecov](https://codecov.io/github/redis/go-redis/graph/badge.svg?token=tsrCZKuSSw)](https://codecov.io/github/redis/go-redis)
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
-> go-redis is brought to you by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
-> Uptrace is an open-source APM tool that supports distributed tracing, metrics, and logs. You can
-> use it to monitor applications and set up automatic alerts to receive notifications via email,
-> Slack, Telegram, and others.
->
-> See [OpenTelemetry](https://github.com/redis/go-redis/tree/master/example/otel) example which
-> demonstrates how you can use Uptrace to monitor go-redis.
+> go-redis is the official Redis client library for the Go programming language. It offers a straightforward interface for interacting with Redis servers. 
 
 ## Supported versions
 
@@ -184,16 +178,18 @@ By default, go-redis automatically sends the client library name and version dur
 
 #### Disabling Identity Verification
 
-When connection identity verification is not required or needs to be explicitly disabled, a `DisableIndentity` configuration option exists. In V10 of this library, `DisableIndentity` will become `DisableIdentity` in order to fix the associated typo.
+When connection identity verification is not required or needs to be explicitly disabled, a `DisableIdentity` configuration option exists.
+Initially there was a typo and the option was named `DisableIndentity` instead of `DisableIdentity`. The misspelled option is marked as Deprecated and will be removed in V10 of this library.
+Although both options will work at the moment, the correct option is `DisableIdentity`. The deprecated option will be removed in V10 of this library, so please use the correct option name to avoid any issues.
 
-To disable verification, set the `DisableIndentity` option to `true` in the Redis client options:
+To disable verification, set the `DisableIdentity` option to `true` in the Redis client options:
 
 ```go
 rdb := redis.NewClient(&redis.Options{
     Addr:            "localhost:6379",
     Password:        "",
     DB:              0,
-    DisableIndentity: true, // Disable set-info on connect
+    DisableIdentity: true, // Disable set-info on connect
 })
 ```
 
@@ -214,6 +210,10 @@ redis.NewClient(&redis.Options{
 res1, err := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{}).RawResult()
 val1 := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{}).RawVal()
 ```
+
+#### Redis-Search Default Dialect
+
+In the Redis-Search module, **the default dialect is 2**. If needed, you can explicitly specify a different dialect using the appropriate configuration in your queries.
 
 ## Contributing
 
@@ -296,6 +296,14 @@ REDIS_PORT=9999 go test <your options>
 - [Golang ClickHouse ORM](https://github.com/uptrace/go-clickhouse)
 
 ## Contributors
+
+> The go-redis project was originally initiated by :star: [**uptrace/uptrace**](https://github.com/uptrace/uptrace).
+> Uptrace is an open-source APM tool that supports distributed tracing, metrics, and logs. You can
+> use it to monitor applications and set up automatic alerts to receive notifications via email,
+> Slack, Telegram, and others.
+>
+> See [OpenTelemetry](https://github.com/redis/go-redis/tree/master/example/otel) example which
+> demonstrates how you can use Uptrace to monitor go-redis.
 
 Thanks to all the people who already contributed!
 

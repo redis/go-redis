@@ -45,7 +45,7 @@ type Options struct {
 	// Network and Addr options.
 	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
-	// OnConnect Hook that is called when new connection is established.
+	// Hook that is called when new connection is established.
 	OnConnect func(ctx context.Context, cn *Conn) error
 
 	// Protocol 2 or 3. Use the version to negotiate RESP version with redis-server.
@@ -188,9 +188,19 @@ type Options struct {
 	// readOnly enables read only queries on slave/follower nodes.
 	readOnly bool
 
-	// DisableIndentity set-lib on connect. Default is false.
+	// DisableIndentity - Disable set-lib on connect.
+	//
+	// default: false
+	//
+	// Deprecated: Use DisableIdentity instead.
 	DisableIndentity bool
 
+	// DisableIdentity is used to disable CLIENT SETINFO command on connect.
+	//
+	// default: false
+	DisableIdentity bool
+
+	// Add suffix to client name. Default is empty.
 	// IdentitySuffix - add suffix to client name.
 	IdentitySuffix string
 
