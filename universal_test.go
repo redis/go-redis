@@ -24,6 +24,16 @@ var _ = Describe("UniversalClient", func() {
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
 
+	It("should connect to failover cluster", Label("NonRedisEnterprise"), func() {
+		client = redis.NewUniversalClient(&redis.UniversalOptions{
+			MasterName:    sentinelName,
+			RouteRandomly: true,
+			Addrs:         sentinelAddrs,
+		})
+		_, ok := client.(*redis.ClusterClient)
+		Expect(ok).To(BeTrue(), "expected a ClusterClient")
+	})
+
 	It("should connect to simple servers", func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs: []string{redisAddr},
@@ -79,6 +89,7 @@ var _ = Describe("UniversalClient", func() {
 		err = client.Set(ctx, "somekey", "somevalue", 0).Err()
 		Expect(err).To(HaveOccurred())
 	})
+
 	It("should connect to clusters if IsClusterMode is set even if only a single address is provided", Label("NonRedisEnterprise"), func() {
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs:         []string{cluster.addrs()[0]},
@@ -96,4 +107,3 @@ var _ = Describe("UniversalClient", func() {
 		Expect(client.ClusterSlots(ctx).Val()).To(HaveLen(3))
 	})
 })
-
