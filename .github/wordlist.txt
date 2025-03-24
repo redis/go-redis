@@ -65,3 +65,4 @@ RedisGears
 RedisTimeseries
 RediSearch
 RawResult
+RawVal
