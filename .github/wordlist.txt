@@ -29,8 +29,8 @@ Lua
 MSSQL
 namespace
 NoSQL
-ORM
 OpenTelemetry
+ORM
 Packagist
 PhpRedis
 pipelining
