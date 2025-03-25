@@ -90,8 +90,19 @@ type ClusterOptions struct {
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
-	TLSConfig        *tls.Config
-	DisableIndentity bool // Disable set-lib on connect. Default is false.
+	TLSConfig *tls.Config
+
+	// DisableIndentity - Disable set-lib on connect.
+	//
+	// default: false
+	//
+	// Deprecated: Use DisableIdentity instead.
+	DisableIndentity bool
+
+	// DisableIdentity is used to disable CLIENT SETINFO command on connect.
+	//
+	// default: false
+	DisableIdentity bool
 
 	IdentitySuffix string // Add suffix to client name. Default is empty.
 
@@ -303,7 +314,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		MaxActiveConns:   opt.MaxActiveConns,
 		ConnMaxIdleTime:  opt.ConnMaxIdleTime,
 		ConnMaxLifetime:  opt.ConnMaxLifetime,
-		DisableIndentity: opt.DisableIndentity,
+		DisableIdentity:  opt.DisableIdentity,
+		DisableIndentity: opt.DisableIdentity,
 		IdentitySuffix:   opt.IdentitySuffix,
 		TLSConfig:        opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
@@ -1350,7 +1362,9 @@ func (c *ClusterClient) processPipelineNode(
 	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
-			node.MarkAsFailing()
+			if !isContextError(err) {
+				node.MarkAsFailing()
+			}
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
 			return err
