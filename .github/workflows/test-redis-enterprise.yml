@@ -54,5 +54,4 @@ jobs:
           --ginkgo.skip-file="sentinel_test.go" \
           --ginkgo.skip-file="osscluster_test.go" \
           --ginkgo.skip-file="pubsub_test.go" \
-          --ginkgo.skip-file="gears_commands_test.go" \
           --ginkgo.label-filter='!NonRedisEnterprise'

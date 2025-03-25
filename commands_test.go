@@ -84,6 +84,12 @@ var _ = Describe("Commands", func() {
 			Expect(ping.Val()).To(Equal("PONG"))
 		})
 
+		It("should Ping with Do method", func() {
+			result := client.Conn().Do(ctx, "PING")
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("PONG"))
+		})
+
 		It("should Wait", func() {
 			const wait = 3 * time.Second
 
