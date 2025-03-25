@@ -61,7 +61,11 @@ func newStructSpec(t reflect.Type, fieldTag string) *structSpec {
 		}
 
 		// Use the built-in decoder.
-		out.set(tag, &structField{index: i, fn: decoders[f.Type.Kind()]})
+		kind := f.Type.Kind()
+		if kind == reflect.Pointer {
+			kind = f.Type.Elem().Kind()
+		}
+		out.set(tag, &structField{index: i, fn: decoders[kind]})
 	}
 
 	return out
@@ -89,7 +93,7 @@ func (s StructValue) Scan(key string, value string) error {
 	}
 
 	v := s.value.Field(field.index)
-	isPtr := v.Kind() == reflect.Pointer
+	isPtr := v.Kind() == reflect.Ptr
 
 	if isPtr && v.IsNil() {
 		v.Set(reflect.New(v.Type().Elem()))

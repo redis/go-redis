@@ -1,22 +1,18 @@
 [sources.syslog_logs]
 type = "demo_logs"
 format = "syslog"
-interval = 0.1
 
 [sources.apache_common_logs]
 type = "demo_logs"
 format = "apache_common"
-interval = 0.1
 
 [sources.apache_error_logs]
 type = "demo_logs"
 format = "apache_error"
-interval = 0.1
 
 [sources.json_logs]
 type = "demo_logs"
 format = "json"
-interval = 0.1
 
 # Parse Syslog logs
 # See the Vector Remap Language reference for more info: https://vrl.dev

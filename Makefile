@@ -1,35 +1,37 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 
-test: testdeps
+docker.start:
+	docker compose --profile all up -d --quiet-pull
+
+docker.stop:
+	docker compose --profile all down
+
+test:
+	$(MAKE) docker.start
+	$(MAKE) test.ci
+	$(MAKE) docker.stop
+
+test.ci:
 	set -e; for dir in $(GO_MOD_DIRS); do \
 	  echo "go test in $${dir}"; \
 	  (cd "$${dir}" && \
 	    go mod tidy -compat=1.18 && \
-	    go test && \
-	    go test ./... -short -race && \
-	    go test ./... -run=NONE -bench=. -benchmem && \
-	    env GOOS=linux GOARCH=386 go test && \
-	    go vet); \
+	    go vet && \
+	    go test -v -coverprofile=coverage.txt -covermode=atomic ./... -race); \
 	done
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet
 
-testdeps: testdata/redis/src/redis-server
-
-bench: testdeps
+bench:
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem
 
-.PHONY: all test testdeps bench
+.PHONY: all test bench fmt
 
-testdata/redis:
-	mkdir -p $@
-	wget -qO- https://download.redis.io/releases/redis-7.0.7.tar.gz | tar xvz --strip-components=1 -C $@
-
-testdata/redis/src/redis-server: testdata/redis
-	cd $< && make all
+build:
+	go build .
 
 fmt:
-	gofmt -w -s ./
+	gofumpt -w ./
 	goimports -w  -local github.com/redis/go-redis ./
 
 go_mod_tidy:

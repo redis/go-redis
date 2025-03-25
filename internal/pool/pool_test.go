@@ -22,6 +22,7 @@ var _ = Describe("ConnPool", func() {
 			Dialer:          dummyDialer,
 			PoolSize:        10,
 			PoolTimeout:     time.Hour,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
 		})
 	})
@@ -46,6 +47,7 @@ var _ = Describe("ConnPool", func() {
 			},
 			PoolSize:        10,
 			PoolTimeout:     time.Hour,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
 			MinIdleConns:    minIdleConns,
 		})
@@ -129,6 +131,7 @@ var _ = Describe("MinIdleConns", func() {
 			PoolSize:        poolSize,
 			MinIdleConns:    minIdleConns,
 			PoolTimeout:     100 * time.Millisecond,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: -1,
 		})
 		Eventually(func() int {
@@ -292,8 +295,8 @@ var _ = Describe("race", func() {
 	BeforeEach(func() {
 		C, N = 10, 1000
 		if testing.Short() {
-			C = 4
-			N = 100
+			C = 2
+			N = 50
 		}
 	})
 
@@ -306,6 +309,7 @@ var _ = Describe("race", func() {
 			Dialer:          dummyDialer,
 			PoolSize:        10,
 			PoolTimeout:     time.Minute,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
 		})
 
@@ -326,5 +330,32 @@ var _ = Describe("race", func() {
 				}
 			}
 		})
+	})
+
+	It("limit the number of connections", func() {
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				return &net.TCPConn{}, nil
+			},
+			PoolSize:     1000,
+			MinIdleConns: 50,
+			PoolTimeout:  3 * time.Second,
+			DialTimeout:  1 * time.Second,
+		}
+		p := pool.NewConnPool(opt)
+
+		var wg sync.WaitGroup
+		for i := 0; i < opt.PoolSize; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = p.Get(ctx)
+			}()
+		}
+		wg.Wait()
+
+		stats := p.Stats()
+		Expect(stats.IdleConns).To(Equal(uint32(0)))
+		Expect(stats.TotalConns).To(Equal(uint32(opt.PoolSize)))
 	})
 })

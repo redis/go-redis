@@ -30,6 +30,7 @@ func NewClientStub(resp []byte) *ClientStub {
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return stub.stubConn(initHello), nil
 		},
+		DisableIdentity: true,
 	})
 	return stub
 }
@@ -45,6 +46,8 @@ func NewClusterClientStub(resp []byte) *ClientStub {
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return stub.stubConn(initHello), nil
 		},
+		DisableIdentity: true,
+
 		ClusterSlots: func(_ context.Context) ([]ClusterSlot, error) {
 			return []ClusterSlot{
 				{
@@ -54,14 +57,6 @@ func NewClusterClientStub(resp []byte) *ClientStub {
 				},
 			}, nil
 		},
-	})
-
-	// init command.
-	tmpClient := NewClient(&Options{Addr: ":6379"})
-	cmdsInfo, err := tmpClient.Command(ctx).Result()
-	_ = tmpClient.Close()
-	client.cmdsInfoCache = newCmdsInfoCache(func(_ context.Context) (map[string]*CommandInfo, error) {
-		return cmdsInfo, err
 	})
 
 	stub.Cmdable = client

@@ -90,6 +90,9 @@ var _ = Describe("PubSub", func() {
 		pubsub := client.Subscribe(ctx, "mychannel", "mychannel2")
 		defer pubsub.Close()
 
+		// sleep a bit to make sure redis knows about the subscriptions
+		time.Sleep(10 * time.Millisecond)
+
 		channels, err = client.PubSubChannels(ctx, "mychannel*").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(channels).To(ConsistOf([]string{"mychannel", "mychannel2"}))
@@ -136,6 +139,8 @@ var _ = Describe("PubSub", func() {
 		pubsub := client.Subscribe(ctx, "mychannel", "mychannel2")
 		defer pubsub.Close()
 
+		// sleep a bit to make sure redis knows about the subscriptions
+		time.Sleep(10 * time.Millisecond)
 		channels, err := client.PubSubNumSub(ctx, "mychannel", "mychannel2", "mychannel3").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(channels).To(Equal(map[string]int64{
@@ -153,6 +158,8 @@ var _ = Describe("PubSub", func() {
 		pubsub := client.PSubscribe(ctx, "*")
 		defer pubsub.Close()
 
+		// sleep a bit to make sure redis knows about the subscriptions
+		time.Sleep(10 * time.Millisecond)
 		num, err = client.PubSubNumPat(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(num).To(Equal(int64(1)))

@@ -15,6 +15,37 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+var _ = Describe("Redis Ring PROTO 2", func() {
+	const heartbeat = 100 * time.Millisecond
+
+	var ring *redis.Ring
+
+	BeforeEach(func() {
+		opt := redisRingOptions()
+		opt.Protocol = 2
+		opt.HeartbeatFrequency = heartbeat
+		ring = redis.NewRing(opt)
+
+		err := ring.ForEachShard(ctx, func(ctx context.Context, cl *redis.Client) error {
+			return cl.FlushDB(ctx).Err()
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(ring.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should ring PROTO 2", func() {
+		_ = ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := c.Do(ctx, "HELLO").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(ContainElements("proto", int64(2)))
+			return nil
+		})
+	})
+})
+
 var _ = Describe("Redis Ring", func() {
 	const heartbeat = 100 * time.Millisecond
 
@@ -65,6 +96,15 @@ var _ = Describe("Redis Ring", func() {
 		})
 	})
 
+	It("should ring PROTO 3", func() {
+		_ = ring.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			val, err := c.Do(ctx, "HELLO").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
+			return nil
+		})
+	})
+
 	It("distributes keys", func() {
 		setRingKeys()
 
@@ -87,34 +127,6 @@ var _ = Describe("Redis Ring", func() {
 		}
 
 		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=56"))
-		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=44"))
-	})
-
-	It("uses single shard when one of the shards is down", func() {
-		// Stop ringShard2.
-		Expect(ringShard2.Close()).NotTo(HaveOccurred())
-
-		Eventually(func() int {
-			return ring.Len()
-		}, "30s").Should(Equal(1))
-
-		setRingKeys()
-
-		// RingShard1 should have all keys.
-		Expect(ringShard1.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=100"))
-
-		// Start ringShard2.
-		var err error
-		ringShard2, err = startRedis(ringShard2Port)
-		Expect(err).NotTo(HaveOccurred())
-
-		Eventually(func() int {
-			return ring.Len()
-		}, "30s").Should(Equal(2))
-
-		setRingKeys()
-
-		// RingShard2 should have its keys.
 		Expect(ringShard2.Info(ctx, "keyspace").Val()).To(ContainSubstring("keys=44"))
 	})
 

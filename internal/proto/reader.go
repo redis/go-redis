@@ -189,6 +189,8 @@ func (r *Reader) readFloat(line []byte) (float64, error) {
 		return math.Inf(1), nil
 	case "-inf":
 		return math.Inf(-1), nil
+	case "nan", "-nan":
+		return math.NaN(), nil
 	}
 	return strconv.ParseFloat(v, 64)
 }
