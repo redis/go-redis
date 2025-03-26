@@ -12,3 +12,13 @@ func (cn *Conn) SetCreatedAt(tm time.Time) {
 func (cn *Conn) NetConn() net.Conn {
 	return cn.netConn
 }
+
+func (p *ConnPool) CheckMinIdleConns() {
+	p.connsMu.Lock()
+	p.checkMinIdleConns()
+	p.connsMu.Unlock()
+}
+
+func (p *ConnPool) QueueLen() int {
+	return len(p.queue)
+}
