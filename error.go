@@ -51,7 +51,7 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	switch err {
 	case io.EOF, io.ErrUnexpectedEOF:
 		return true
-	case nil, context.Canceled, context.DeadlineExceeded:
+	case nil, Nil, context.Canceled, context.DeadlineExceeded:
 		return false
 	case pool.ErrPoolTimeout:
 		// connection pool timeout, increase retries. #3289
