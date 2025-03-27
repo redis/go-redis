@@ -213,7 +213,6 @@ type Cmdable interface {
 	ACLCmdable
 	BitMapCmdable
 	ClusterCmdable
-	GearsCmdable
 	GenericCmdable
 	GeoCmdable
 	HashCmdable
@@ -421,6 +420,12 @@ func (c cmdable) Echo(ctx context.Context, message interface{}) *StringCmd {
 
 func (c cmdable) Ping(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "ping")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) Do(ctx context.Context, args ...interface{}) *Cmd {
+	cmd := NewCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
