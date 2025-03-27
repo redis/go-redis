@@ -2579,18 +2579,26 @@ var _ = Describe("Commands", func() {
 				"val",
 			}))
 
-			type set2 struct {
+			type setOmitEmpty struct {
 				Set1 string        `redis:"set1"`
 				Set2 int           `redis:"set2,omitempty"`
 				Set3 time.Duration `redis:"set3,omitempty"`
 				Set4 string        `redis:"set4,omitempty"`
 				Set5 time.Time     `redis:"set5,omitempty"`
 			}
-			hSet = client.HSet(ctx, "hash3", &set2{
+			hSet = client.HSet(ctx, "hash3", &setOmitEmpty{
 				Set1: "val",
 			})
 			Expect(hSet.Err()).NotTo(HaveOccurred())
 			Expect(hSet.Val()).To(Equal(int64(1)))
+
+			var dest setOmitEmpty
+			hGetAll := client.HGetAll(ctx, "hash3")
+			Expect(hGetAll.Err()).NotTo(HaveOccurred())
+			Expect(hGetAll.Val()).To(Equal(map[string]string{
+				"set1": "val",
+			}))
+			Expect(hGetAll.Scan(&dest)).NotTo(HaveOccurred())
 		})
 
 		It("should HSetNX", func() {
