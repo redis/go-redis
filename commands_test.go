@@ -2585,20 +2585,45 @@ var _ = Describe("Commands", func() {
 				Set3 time.Duration `redis:"set3,omitempty"`
 				Set4 string        `redis:"set4,omitempty"`
 				Set5 time.Time     `redis:"set5,omitempty"`
+				Set6 childStruct   `redis:"set6,omitempty"`
 			}
+
 			hSet = client.HSet(ctx, "hash3", &setOmitEmpty{
 				Set1: "val",
 			})
 			Expect(hSet.Err()).NotTo(HaveOccurred())
 			Expect(hSet.Val()).To(Equal(int64(1)))
 
-			var dest setOmitEmpty
 			hGetAll := client.HGetAll(ctx, "hash3")
 			Expect(hGetAll.Err()).NotTo(HaveOccurred())
 			Expect(hGetAll.Val()).To(Equal(map[string]string{
 				"set1": "val",
 			}))
-			Expect(hGetAll.Scan(&dest)).NotTo(HaveOccurred())
+			var hash3 setOmitEmpty
+			Expect(hGetAll.Scan(&hash3)).NotTo(HaveOccurred())
+			Expect(hash3.Set1).To(Equal("val"))
+			Expect(hash3.Set2).To(Equal(0))
+			Expect(hash3.Set3).To(Equal(time.Duration(0)))
+			Expect(hash3.Set4).To(Equal(""))
+			Expect(hash3.Set5).To(Equal(time.Time{}))
+			Expect(hash3.Set6).To(Equal(childStruct{}))
+
+			now := time.Now()
+			hSet = client.HSet(ctx, "hash4", setOmitEmpty{
+				Set1: "val",
+				Set6: childStruct{
+					Date: now,
+				},
+			})
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+			Expect(hSet.Val()).To(Equal(int64(2)))
+
+			hGetAll = client.HGetAll(ctx, "hash4")
+			Expect(hGetAll.Err()).NotTo(HaveOccurred())
+			Expect(hGetAll.Val()).To(Equal(map[string]string{
+				"set1": "val",
+				"set6": fmt.Sprintf("{\"Date\":\"%s\"}", now.Format(time.RFC3339Nano)),
+			}))
 		})
 
 		It("should HSetNX", func() {
@@ -7632,4 +7657,16 @@ func deref(viface interface{}) interface{} {
 		v = v.Elem()
 	}
 	return v.Interface()
+}
+
+type childStruct struct {
+	Date time.Time `redis:"date,omitempty"`
+}
+
+func (c childStruct) MarshalBinary() ([]byte, error) {
+	return json.Marshal(&c)
+}
+
+func (c childStruct) UnmarshalBinary(data []byte) error {
+	return json.Unmarshal(data, &c)
 }
