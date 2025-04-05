@@ -540,6 +540,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return "", err
 			}
+			// Continue on other errors
 			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
 				c.opt.MasterName, err)
 		} else {
@@ -557,6 +558,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return "", err
 			}
+			// Continue on other errors
 			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
 				c.opt.MasterName, err)
 		} else {
