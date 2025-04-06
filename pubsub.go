@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -571,6 +572,9 @@ type channel struct {
 	chanSize        int
 	chanSendTimeout time.Duration
 	checkInterval   time.Duration
+
+	subscriptions   map[string]struct{}
+	subscriptionsMu sync.RWMutex
 }
 
 func newChannel(pubSub *PubSub, opts ...ChannelOption) *channel {
@@ -580,6 +584,8 @@ func newChannel(pubSub *PubSub, opts ...ChannelOption) *channel {
 		chanSize:        100,
 		chanSendTimeout: time.Minute,
 		checkInterval:   3 * time.Second,
+
+		subscriptions: make(map[string]struct{}),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -616,6 +622,20 @@ func (c *channel) initHealthCheck() {
 			}
 		}
 	}()
+}
+
+// Helper function to format subscription information
+func (c *channel) getSubscriptionInfo() string {
+	if len(c.subscriptions) == 0 {
+		return "none"
+	}
+
+	subs := make([]string, 0, len(c.subscriptions))
+	for sub := range c.subscriptions {
+		subs = append(subs, sub)
+	}
+	sort.Strings(subs) // Sort for consistent output
+	return strings.Join(subs, ", ")
 }
 
 // initMsgChan must be in sync with initAllChan.
@@ -663,9 +683,13 @@ func (c *channel) initMsgChan() {
 						<-timer.C
 					}
 				case <-timer.C:
+					c.subscriptionsMu.RLock()
+					subInfo := c.getSubscriptionInfo()
+					c.subscriptionsMu.RUnlock()
+
 					internal.Logger.Printf(
-						ctx, "redis: %s channel is full for %s (message is dropped)",
-						c, c.chanSendTimeout)
+						ctx, "redis: Channel is full for %s (message is dropped), subscriptions: %s",
+						c.chanSendTimeout, subInfo)
 				}
 			default:
 				internal.Logger.Printf(ctx, "redis: unknown message type: %T", msg)
@@ -717,9 +741,13 @@ func (c *channel) initAllChan() {
 						<-timer.C
 					}
 				case <-timer.C:
+					c.subscriptionsMu.RLock()
+					subInfo := c.getSubscriptionInfo()
+					c.subscriptionsMu.RUnlock()
+
 					internal.Logger.Printf(
-						ctx, "redis: %s channel is full for %s (message is dropped)",
-						c, c.chanSendTimeout)
+						ctx, "redis: Channel is full for %s (message is dropped), subscriptions: %s",
+						c.chanSendTimeout, subInfo)
 				}
 			default:
 				internal.Logger.Printf(ctx, "redis: unknown message type: %T", msg)
