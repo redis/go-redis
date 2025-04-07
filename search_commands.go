@@ -1954,7 +1954,7 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 				args = append(args, "WITHCOUNT")
 			}
 		}
-		if options.LimitOffset >= 0 && options.Limit > 0 {
+		if options.LimitOffset >= 0 && options.Limit >= 0 {
 			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
 		}
 		if options.Params != nil {

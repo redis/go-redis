@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -1681,6 +1682,388 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		resUint8, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 1 @uint8_vector $vec]", searchOptionsUint8).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resUint8.Docs[0].ID).To(BeEquivalentTo("doc1"))
+	})
+
+	It("should fail when using a non-zero offset with a zero limit", Label("search", "ftsearch"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "testIdx", &redis.FTCreateOptions{}, &redis.FieldSchema{
+			FieldName: "txt",
+			FieldType: redis.SearchFieldTypeText,
+		}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "testIdx")
+
+		client.HSet(ctx, "doc1", "txt", "hello world")
+
+		// Attempt to search with a non-zero offset and zero limit.
+		_, err = client.FTSearchWithArgs(ctx, "testIdx", "hello", &redis.FTSearchOptions{
+			LimitOffset: 5,
+			Limit:       0,
+		}).Result()
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("should evaluate exponentiation precedence in APPLY expressions correctly", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "txns", &redis.FTCreateOptions{}, &redis.FieldSchema{
+			FieldName: "dummy",
+			FieldType: redis.SearchFieldTypeText,
+		}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txns")
+
+		client.HSet(ctx, "doc1", "dummy", "dummy")
+
+		correctOptions := &redis.FTAggregateOptions{
+			Apply: []redis.FTAggregateApply{
+				{Field: "(2*3^2)", As: "Value"},
+			},
+			Limit:       1,
+			LimitOffset: 0,
+		}
+		correctRes, err := client.FTAggregateWithArgs(ctx, "txns", "*", correctOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(correctRes.Rows[0].Fields["Value"]).To(BeEquivalentTo("18"))
+	})
+
+	It("should return a syntax error when empty strings are used for numeric parameters", Label("search", "ftsearch"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "idx", &redis.FTCreateOptions{}, &redis.FieldSchema{
+			FieldName: "n",
+			FieldType: redis.SearchFieldTypeNumeric,
+		}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx")
+
+		client.HSet(ctx, "doc1", "n", 0)
+
+		_, err = client.FTSearchWithArgs(ctx, "idx", "*", &redis.FTSearchOptions{
+			Filters: []redis.FTSearchFilter{{
+				FieldName: "n",
+				Min:       "",
+				Max:       "",
+			}},
+			DialectVersion: 2,
+		}).Result()
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("should return NaN as default for AVG reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggTestAvg", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
+			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggTestAvg")
+
+		client.HSet(ctx, "doc1", "grp", "g1")
+
+		reducers := []redis.FTAggregateReducer{
+			{Reducer: redis.SearchAvg, Args: []interface{}{"@n"}, As: "avg"},
+		}
+		groupBy := []redis.FTAggregateGroupBy{
+			{Fields: []interface{}{"@grp"}, Reduce: reducers},
+		}
+		options := &redis.FTAggregateOptions{GroupBy: groupBy}
+		res, err := client.FTAggregateWithArgs(ctx, "aggTestAvg", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).ToNot(BeEmpty())
+
+		Expect(res.Rows[0].Fields["avg"]).To(SatisfyAny(Equal("nan"), Equal("NaN")))
+	})
+
+	It("should return 1 as default for COUNT reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggTestCount", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
+			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggTestCount")
+
+		client.HSet(ctx, "doc1", "grp", "g1")
+
+		reducers := []redis.FTAggregateReducer{
+			{Reducer: redis.SearchCount, As: "cnt"},
+		}
+		groupBy := []redis.FTAggregateGroupBy{
+			{Fields: []interface{}{"@grp"}, Reduce: reducers},
+		}
+		options := &redis.FTAggregateOptions{GroupBy: groupBy}
+		res, err := client.FTAggregateWithArgs(ctx, "aggTestCount", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).ToNot(BeEmpty())
+
+		Expect(res.Rows[0].Fields["cnt"]).To(BeEquivalentTo("1"))
+	})
+
+	It("should return NaN as default for SUM reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggTestSum", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
+			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggTestSum")
+
+		client.HSet(ctx, "doc1", "grp", "g1")
+
+		reducers := []redis.FTAggregateReducer{
+			{Reducer: redis.SearchSum, Args: []interface{}{"@n"}, As: "sum"},
+		}
+		groupBy := []redis.FTAggregateGroupBy{
+			{Fields: []interface{}{"@grp"}, Reduce: reducers},
+		}
+		options := &redis.FTAggregateOptions{GroupBy: groupBy}
+		res, err := client.FTAggregateWithArgs(ctx, "aggTestSum", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).ToNot(BeEmpty())
+
+		Expect(res.Rows[0].Fields["sum"]).To(SatisfyAny(Equal("nan"), Equal("NaN")))
+	})
+
+	It("should return the full requested number of results by re-running the query when some results expire", Label("search", "ftsearch"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggExpired", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "order", FieldType: redis.SearchFieldTypeNumeric, Sortable: true},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggExpired")
+
+		for i := 1; i <= 15; i++ {
+			key := fmt.Sprintf("doc%d", i)
+			_, err := client.HSet(ctx, key, "order", i).Result()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		_, err = client.Del(ctx, "doc3", "doc7").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		options := &redis.FTSearchOptions{
+			SortBy:      []redis.FTSearchSortBy{{FieldName: "order", Asc: true}},
+			LimitOffset: 0,
+			Limit:       10,
+		}
+		res, err := client.FTSearchWithArgs(ctx, "aggExpired", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(len(res.Docs)).To(BeEquivalentTo(10))
+
+		for _, doc := range res.Docs {
+			Expect(doc.ID).ToNot(Or(Equal("doc3"), Equal("doc7")))
+		}
+	})
+
+	It("should stop processing and return an error when a timeout occurs", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggTimeoutHeavy", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric, Sortable: true},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggTimeoutHeavy")
+
+		const totalDocs = 10000
+		for i := 0; i < totalDocs; i++ {
+			key := fmt.Sprintf("doc%d", i)
+			_, err := client.HSet(ctx, key, "n", i).Result()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		options := &redis.FTAggregateOptions{
+			SortBy:      []redis.FTAggregateSortBy{{FieldName: "@n", Desc: true}},
+			LimitOffset: 0,
+			Limit:       100,
+			Timeout:     1, // 1 ms timeout, expected to trigger a timeout error.
+		}
+		_, err = client.FTAggregateWithArgs(ctx, "aggTimeoutHeavy", "*", options).Result()
+		Expect(err).To(HaveOccurred())
+		Expect(strings.ToLower(err.Error())).To(ContainSubstring("timeout"))
+	})
+
+	It("should return 0 as default for COUNT_DISTINCT reducer when no values are present", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggTestCountDistinct", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
+			&redis.FieldSchema{FieldName: "x", FieldType: redis.SearchFieldTypeText},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggTestCountDistinct")
+
+		client.HSet(ctx, "doc1", "grp", "g1")
+
+		reducers := []redis.FTAggregateReducer{
+			{Reducer: redis.SearchCountDistinct, Args: []interface{}{"@x"}, As: "distinct_count"},
+		}
+		groupBy := []redis.FTAggregateGroupBy{
+			{Fields: []interface{}{"@grp"}, Reduce: reducers},
+		}
+		options := &redis.FTAggregateOptions{GroupBy: groupBy}
+
+		res, err := client.FTAggregateWithArgs(ctx, "aggTestCountDistinct", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).ToNot(BeEmpty())
+		Expect(res.Rows[0].Fields["distinct_count"]).To(BeEquivalentTo("0"))
+	})
+
+	It("should return 0 as default for COUNT_DISTINCTISH reducer when no values are present", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggTestCountDistinctIsh", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
+			&redis.FieldSchema{FieldName: "y", FieldType: redis.SearchFieldTypeText},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggTestCountDistinctIsh")
+
+		_, err = client.HSet(ctx, "doc1", "grp", "g1").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		reducers := []redis.FTAggregateReducer{
+			{Reducer: redis.SearchCountDistinctish, Args: []interface{}{"@y"}, As: "distinctish_count"},
+		}
+		groupBy := []redis.FTAggregateGroupBy{
+			{Fields: []interface{}{"@grp"}, Reduce: reducers},
+		}
+		options := &redis.FTAggregateOptions{GroupBy: groupBy}
+		res, err := client.FTAggregateWithArgs(ctx, "aggTestCountDistinctIsh", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).ToNot(BeEmpty())
+		Expect(res.Rows[0].Fields["distinctish_count"]).To(BeEquivalentTo("0"))
+	})
+
+	It("should use BM25 as the default scorer", Label("search", "ftsearch"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "scoringTest", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "scoringTest")
+
+		_, err = client.HSet(ctx, "doc1", "description", "red apple").Result()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = client.HSet(ctx, "doc2", "description", "green apple").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		resDefault, err := client.FTSearchWithArgs(ctx, "scoringTest", "apple", &redis.FTSearchOptions{WithScores: true}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resDefault.Total).To(BeNumerically(">", 0))
+
+		resBM25, err := client.FTSearchWithArgs(ctx, "scoringTest", "apple", &redis.FTSearchOptions{WithScores: true, Scorer: "BM25"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resBM25.Total).To(BeNumerically(">", 0))
+
+		Expect(resDefault).To(BeEquivalentTo(resBM25))
+	})
+
+	It("should return 0 as default for STDDEV reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggTestStddev", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
+			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggTestStddev")
+
+		_, err = client.HSet(ctx, "doc1", "grp", "g1").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		reducers := []redis.FTAggregateReducer{
+			{Reducer: redis.SearchStdDev, Args: []interface{}{"@n"}, As: "stddev"},
+		}
+		groupBy := []redis.FTAggregateGroupBy{
+			{Fields: []interface{}{"@grp"}, Reduce: reducers},
+		}
+		options := &redis.FTAggregateOptions{GroupBy: groupBy}
+		res, err := client.FTAggregateWithArgs(ctx, "aggTestStddev", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).ToNot(BeEmpty())
+
+		Expect(res.Rows[0].Fields["stddev"]).To(BeEquivalentTo("0"))
+	})
+
+	It("should return NaN as default for QUANTILE reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggTestQuantile", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
+			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggTestQuantile")
+
+		_, err = client.HSet(ctx, "doc1", "grp", "g1").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		reducers := []redis.FTAggregateReducer{
+			{Reducer: redis.SearchQuantile, Args: []interface{}{"@n", 0.5}, As: "quantile"},
+		}
+		groupBy := []redis.FTAggregateGroupBy{
+			{Fields: []interface{}{"@grp"}, Reduce: reducers},
+		}
+		options := &redis.FTAggregateOptions{GroupBy: groupBy}
+		res, err := client.FTAggregateWithArgs(ctx, "aggTestQuantile", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).ToNot(BeEmpty())
+		Expect(res.Rows[0].Fields["quantile"]).To(SatisfyAny(Equal("nan"), Equal("NaN")))
+	})
+
+	It("should return nil as default for FIRST_VALUE reducer when no values are present", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggTestFirstValue", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
+			&redis.FieldSchema{FieldName: "t", FieldType: redis.SearchFieldTypeText},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggTestFirstValue")
+
+		_, err = client.HSet(ctx, "doc1", "grp", "g1").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		reducers := []redis.FTAggregateReducer{
+			{Reducer: redis.SearchFirstValue, Args: []interface{}{"@t"}, As: "first_val"},
+		}
+		groupBy := []redis.FTAggregateGroupBy{
+			{Fields: []interface{}{"@grp"}, Reduce: reducers},
+		}
+		options := &redis.FTAggregateOptions{GroupBy: groupBy}
+		res, err := client.FTAggregateWithArgs(ctx, "aggTestFirstValue", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).ToNot(BeEmpty())
+		Expect(res.Rows[0].Fields["first_val"]).To(BeNil())
+	})
+
+	It("should fail to add an alias that is an existing index name", Label("search", "ftalias"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "name", FieldType: redis.SearchFieldTypeText},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		val, err = client.FTCreate(ctx, "idx2", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "name", FieldType: redis.SearchFieldTypeText},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx2")
+
+		_, err = client.FTAliasAdd(ctx, "idx2", "idx1").Result()
+		Expect(err).To(HaveOccurred())
+		Expect(strings.ToLower(err.Error())).To(ContainSubstring("alias"))
 	})
 
 })
