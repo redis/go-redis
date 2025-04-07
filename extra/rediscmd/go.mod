@@ -16,6 +16,6 @@ require (
 )
 
 retract (
-	v9.5.3 // This version was accidentally released.
 	v9.7.2 // This version was accidentally released.
+	v9.5.3 // This version was accidentally released.
 )
