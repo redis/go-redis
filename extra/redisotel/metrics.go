@@ -216,6 +216,7 @@ func (mh *metricsHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, attribute.String("type", "command"))
 		attrs = append(attrs, statusAttr(err))
+		attrs = append(attrs, attribute.String("cmd", cmd.FullName()))
 
 		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
 
