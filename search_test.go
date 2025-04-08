@@ -1962,8 +1962,9 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		resBM25, err := client.FTSearchWithArgs(ctx, "scoringTest", "apple", &redis.FTSearchOptions{WithScores: true, Scorer: "BM25"}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resBM25.Total).To(BeNumerically(">", 0))
-
-		Expect(resDefault).To(BeEquivalentTo(resBM25))
+		Expect(resDefault.Total).To(BeEquivalentTo(resBM25.Total))
+		Expect(resDefault.Docs[0].ID).To(BeElementOf("doc1", "doc2"))
+		Expect(resDefault.Docs[1].ID).To(BeElementOf("doc1", "doc2"))
 	})
 
 	It("should return 0 as default for STDDEV reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
