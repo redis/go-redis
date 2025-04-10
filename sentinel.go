@@ -601,13 +601,9 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		}(i, sentinelAddr)
 
 	}
-	go func() {
-		wg.Wait()
-		once.Do(func() {
-			close(done)
-		})
-	}()
-	<-done
+	defer close(done)
+	wg.Wait()
+
 	if masterAddr != "" {
 		return masterAddr, nil
 	}
