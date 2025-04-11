@@ -32,6 +32,24 @@ var _ = Describe("Sentinel PROTO 2", func() {
 	})
 })
 
+var _ = Describe("Sentinel resolution", func() {
+	It("should resolve master without context exhaustion", func() {
+		shortCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+
+		client := redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    sentinelName,
+			SentinelAddrs: sentinelAddrs,
+			MaxRetries: -1,
+		})
+
+		err := client.Ping(shortCtx).Err()
+		Expect(err).NotTo(HaveOccurred(), "expected master to resolve without context exhaustion")
+
+		_ = client.Close()
+	})
+})
+
 var _ = Describe("Sentinel", func() {
 	var client *redis.Client
 	var master *redis.Client
