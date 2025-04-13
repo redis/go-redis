@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"net"
+	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
