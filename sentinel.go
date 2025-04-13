@@ -573,6 +573,9 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		errCh      = make(chan error, len(c.sentinelAddrs))
 	)
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	for i, sentinelAddr := range c.sentinelAddrs {
 		wg.Add(1)
 		go func(i int, addr string) {
@@ -597,6 +600,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				c.sentinelAddrs[0], c.sentinelAddrs[i] = c.sentinelAddrs[i], c.sentinelAddrs[0]
 				c.setSentinel(ctx, sentinelCli)
 				internal.Logger.Printf(ctx, "sentinel: selected addr=%s masterAddr=%s", addr, masterAddr)
+				cancel()
 			})
 		}(i, sentinelAddr)
 	}
