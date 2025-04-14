@@ -320,9 +320,11 @@ type FTSearchOptions struct {
 	SortByWithCount bool
 	LimitOffset     int
 	Limit           int
-	CountOnly       bool
-	Params          map[string]interface{}
-	DialectVersion  int
+	// You can use LIMIT 0 0 to count the number of documents in the result set without actually returning them.
+	// When using this option, the Limit and LimitOffset options are ignored.
+	CountOnly      bool
+	Params         map[string]interface{}
+	DialectVersion int
 }
 
 type FTSynDumpResult struct {
