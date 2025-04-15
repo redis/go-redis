@@ -152,6 +152,32 @@ func ExampleClient_search_json() {
 	// >>> Tel Aviv
 	// STEP_END
 
+	// STEP_START query2count_only
+	citiesResult2, err := rdb.FTSearchWithArgs(
+		ctx,
+		"idx:users",
+		"Paul",
+		&redis.FTSearchOptions{
+			Return: []redis.FTSearchReturn{
+				{
+					FieldName: "$.city",
+					As:        "city",
+				},
+			},
+			CountOnly: true,
+		},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	// The `Total` field has the correct number of docs found
+	// by the query but the `Docs` slice is empty.
+	fmt.Println(len(citiesResult2.Docs)) // >>> 0
+	fmt.Println(citiesResult2.Total)     // >>> 2
+	// STEP_END
+
 	// STEP_START query3
 	aggOptions := redis.FTAggregateOptions{
 		GroupBy: []redis.FTAggregateGroupBy{
@@ -196,6 +222,8 @@ func ExampleClient_search_json() {
 	// {1 [{user:3 <nil> <nil> <nil> map[$:{"age":35,"city":"Tel Aviv","email":"paul.zamir@example.com","name":"Paul Zamir"}]}]}
 	// London
 	// Tel Aviv
+	// 0
+	// 2
 	// London - 1
 	// Tel Aviv - 2
 }
