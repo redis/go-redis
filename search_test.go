@@ -1683,6 +1683,44 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(resUint8.Docs[0].ID).To(BeEquivalentTo("doc1"))
 	})
 
+	It("should test ft.search with CountOnly param", Label("search", "ftsearch"), func() {
+		val, err := client.FTCreate(ctx, "txtIndex", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "txtIndex")
+
+		_, err = client.HSet(ctx, "doc1", "txt", "hello world").Result()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = client.HSet(ctx, "doc2", "txt", "hello go").Result()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = client.HSet(ctx, "doc3", "txt", "hello redis").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		optsCountOnly := &redis.FTSearchOptions{
+			CountOnly:      true,
+			LimitOffset:    0,
+			Limit:          2, // even though we limit to 2, with count-only no docs are returned
+			DialectVersion: 2,
+		}
+		resCountOnly, err := client.FTSearchWithArgs(ctx, "txtIndex", "hello", optsCountOnly).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resCountOnly.Total).To(BeEquivalentTo(3))
+		Expect(len(resCountOnly.Docs)).To(BeEquivalentTo(0))
+
+		optsLimit := &redis.FTSearchOptions{
+			CountOnly:      false,
+			LimitOffset:    0,
+			Limit:          2, // we expect to get 2 documents even though total count is 3
+			DialectVersion: 2,
+		}
+		resLimit, err := client.FTSearchWithArgs(ctx, "txtIndex", "hello", optsLimit).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resLimit.Total).To(BeEquivalentTo(3))
+		Expect(len(resLimit.Docs)).To(BeEquivalentTo(2))
+	})
+
 })
 
 func _assert_geosearch_result(result *redis.FTSearchResult, expectedDocIDs []string) {
