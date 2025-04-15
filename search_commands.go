@@ -297,7 +297,7 @@ type FTSearchSortBy struct {
 type FTSearchOptions struct {
 	NoContent bool
 	Verbatim  bool
-	// NoStopWords is deprecated since redis 8.0
+	// Deprecated: NoStopWords is deprecated since Redis 8.0
 	NoStopWords  bool
 	WithScores   bool
 	WithPayloads bool
