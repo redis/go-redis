@@ -13,6 +13,7 @@ type HashCmdable interface {
 	HGetDel(ctx context.Context, key string, fields ...string) *StringSliceCmd
 	HGetEX(ctx context.Context, key string, fields ...string) *StringSliceCmd
 	HGetEXWithArgs(ctx context.Context, key string, options *HGetEXOptions, fields ...string) *StringSliceCmd
+	HIncrBy(ctx context.Context, key, field string, incr int64) *IntCmd
 	HIncrByFloat(ctx context.Context, key, field string, incr float64) *FloatCmd
 	HKeys(ctx context.Context, key string) *StringSliceCmd
 	HLen(ctx context.Context, key string) *IntCmd
