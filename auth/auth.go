@@ -9,6 +9,7 @@ type StreamingCredentialsProvider interface {
 	// Subscribe subscribes to the credentials provider for updates.
 	// It returns the current credentials, a cancel function to unsubscribe from the provider,
 	// and an error if any.
+	// TODO(ndyakov): Should we add context to the Subscribe method?
 	Subscribe(listener CredentialsListener) (Credentials, CancelProviderFunc, error)
 }
 

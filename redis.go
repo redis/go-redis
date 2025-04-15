@@ -283,15 +283,57 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) reAuth(ctx context.Context, cn *Conn, credentials auth.Credentials) error {
-	var err error
-	username, password := credentials.BasicAuth()
-	if username != "" {
-		err = cn.AuthACL(ctx, username, password).Err()
-	} else {
-		err = cn.Auth(ctx, password).Err()
+func (c *baseClient) newReAuthCredentialsListener(ctx context.Context, conn *Conn) auth.CredentialsListener {
+	return auth.NewReAuthCredentialsListener(
+		c.reAuthConnection(c.context(ctx), conn),
+		c.onAuthenticationErr(c.context(ctx), conn),
+	)
+}
+
+func (c *baseClient) reAuthConnection(ctx context.Context, cn *Conn) func(credentials auth.Credentials) error {
+	return func(credentials auth.Credentials) error {
+		var err error
+		username, password := credentials.BasicAuth()
+		if username != "" {
+			err = cn.AuthACL(ctx, username, password).Err()
+		} else {
+			err = cn.Auth(ctx, password).Err()
+		}
+		return err
 	}
-	return err
+}
+func (c *baseClient) onAuthenticationErr(ctx context.Context, cn *Conn) func(err error) {
+	return func(err error) {
+		// since the connection pool of the *Conn will actually return us the underlying pool.Conn,
+		// we can get it from the *Conn and remove it from the clients pool.
+		if err != nil {
+			if isBadConn(err, false, c.opt.Addr) {
+				poolCn, _ := cn.connPool.Get(ctx)
+				c.connPool.Remove(ctx, poolCn, err)
+			}
+		}
+	}
+}
+
+func (c *baseClient) wrappedOnClose(newOnClose func() error) func() error {
+	onClose := c.onClose
+	return func() error {
+		var firstErr error
+		err := newOnClose()
+		// Even if we have an error we would like to execute the onClose hook
+		// if it exists. We will return the first error that occurred.
+		// This is to keep error handling consistent with the rest of the code.
+		if err != nil {
+			firstErr = err
+		}
+		if onClose != nil {
+			err = onClose()
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
 }
 
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
@@ -312,7 +354,15 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	var authenticated bool
 	username, password := c.opt.Username, c.opt.Password
-	if c.opt.CredentialsProviderContext != nil {
+	if c.opt.StreamingCredentialsProvider != nil {
+		credentials, cancelCredentialsProvider, err := c.opt.StreamingCredentialsProvider.
+			Subscribe(c.newReAuthCredentialsListener(ctx, conn))
+		if err != nil {
+			return err
+		}
+		c.onClose = c.wrappedOnClose(cancelCredentialsProvider)
+		username, password = credentials.BasicAuth()
+	} else if c.opt.CredentialsProviderContext != nil {
 		if username, password, err = c.opt.CredentialsProviderContext(ctx); err != nil {
 			return err
 		}
@@ -336,7 +386,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 
 	if !authenticated && password != "" {
-		err = c.reAuth(ctx, conn, auth.NewBasicCredentials(username, password))
+		err = c.reAuthConnection(ctx, conn)(auth.NewBasicCredentials(username, password))
 		if err != nil {
 			return err
 		}

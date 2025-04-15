@@ -257,7 +257,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 	connPool = newConnPool(opt, rdb.dialHook)
 	rdb.connPool = connPool
-	rdb.onClose = failover.Close
+	rdb.onClose = rdb.wrappedOnClose(failover.Close)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
