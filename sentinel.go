@@ -815,6 +815,22 @@ func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 	}
 
 	opt := failoverOpt.clusterOptions()
+	if failoverOpt.DB != 0 {
+		onConnect := opt.OnConnect
+
+		opt.OnConnect = func(ctx context.Context, cn *Conn) error {
+			if err := cn.Select(ctx, failoverOpt.DB).Err(); err != nil {
+				return err
+			}
+
+			if onConnect != nil {
+				return onConnect(ctx, cn)
+			}
+
+			return nil
+		}
+	}
+
 	opt.ClusterSlots = func(ctx context.Context) ([]ClusterSlot, error) {
 		masterAddr, err := failover.MasterAddr(ctx)
 		if err != nil {
