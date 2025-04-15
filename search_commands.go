@@ -320,7 +320,7 @@ type FTSearchOptions struct {
 	SortByWithCount bool
 	LimitOffset     int
 	Limit           int
-	// You can use LIMIT 0 0 to count the number of documents in the result set without actually returning them.
+	// CountOnly sets LIMIT 0 0 to get the count - number of documents in the result set without actually returning the result set.
 	// When using this option, the Limit and LimitOffset options are ignored.
 	CountOnly      bool
 	Params         map[string]interface{}
