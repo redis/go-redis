@@ -1684,7 +1684,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(resUint8.Docs[0].ID).To(BeEquivalentTo("doc1"))
 	})
 
-<<<<<<< HEAD
 	It("should fail when using a non-zero offset with a zero limit", Label("search", "ftsearch"), func() {
 		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "testIdx", &redis.FTCreateOptions{}, &redis.FieldSchema{
@@ -2104,6 +2103,99 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resLimit.Total).To(BeEquivalentTo(3))
 		Expect(len(resLimit.Docs)).To(BeEquivalentTo(2))
+	})
+
+	It("should reject deprecated configuration keys", Label("search", "ftconfig"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		// List of deprecated configuration keys.
+		deprecatedKeys := []string{
+			"_FREE_RESOURCE_ON_THREAD",
+			"_NUMERIC_COMPRESS",
+			"_NUMERIC_RANGES_PARENTS",
+			"_PRINT_PROFILE_CLOCK",
+			"_PRIORITIZE_INTERSECT_UNION_CHILDREN",
+			"BG_INDEX_SLEEP_GAP",
+			"CONN_PER_SHARD",
+			"CURSOR_MAX_IDLE",
+			"CURSOR_REPLY_THRESHOLD",
+			"DEFAULT_DIALECT",
+			"EXTLOAD",
+			"FORK_GC_CLEAN_THRESHOLD",
+			"FORK_GC_RETRY_INTERVAL",
+			"FORK_GC_RUN_INTERVAL",
+			"FORKGC_SLEEP_BEFORE_EXIT",
+			"FRISOINI",
+			"GC_POLICY",
+			"GCSCANSIZE",
+			"INDEX_CURSOR_LIMIT",
+			"MAXAGGREGATERESULTS",
+			"MAXDOCTABLESIZE",
+			"MAXPREFIXEXPANSIONS",
+			"MAXSEARCHRESULTS",
+			"MIN_OPERATION_WORKERS",
+			"MIN_PHONETIC_TERM_LEN",
+			"MINPREFIX",
+			"MINSTEMLEN",
+			"NO_MEM_POOLS",
+			"NOGC",
+			"ON_TIMEOUT",
+			"MULTI_TEXT_SLOP",
+			"PARTIAL_INDEXED_DOCS",
+			"RAW_DOCID_ENCODING",
+			"SEARCH_THREADS",
+			"TIERED_HNSW_BUFFER_LIMIT",
+			"TIMEOUT",
+			"TOPOLOGY_VALIDATION_TIMEOUT",
+			"UNION_ITERATOR_HEAP",
+			"VSS_MAX_RESIZE",
+			"WORKERS",
+			"WORKERS_PRIORITY_BIAS_THRESHOLD",
+			"MT_MODE",
+			"WORKER_THREADS",
+		}
+
+		for _, key := range deprecatedKeys {
+			_, err := client.FTConfigSet(ctx, key, "test_value").Result()
+			Expect(err).To(HaveOccurred())
+		}
+
+		val, err := client.ConfigGet(ctx, "*").Result()
+		Expect(err).NotTo(HaveOccurred())
+		// Since FT.CONFIG is deprecated since redis 8, use CONFIG instead with new search parameters.
+		keys := make([]string, 0, len(val))
+		for key := range val {
+			keys = append(keys, key)
+		}
+		Expect(keys).To(ContainElement(ContainSubstring("search")))
+	})
+
+	It("should return INF for MIN reducer and -INF for MAX reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
+		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		val, err := client.FTCreate(ctx, "aggTestMinMax", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
+			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "aggTestMinMax")
+
+		_, err = client.HSet(ctx, "doc1", "grp", "g1").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		reducers := []redis.FTAggregateReducer{
+			{Reducer: redis.SearchMin, Args: []interface{}{"@n"}, As: "minValue"},
+			{Reducer: redis.SearchMax, Args: []interface{}{"@n"}, As: "maxValue"},
+		}
+		groupBy := []redis.FTAggregateGroupBy{
+			{Fields: []interface{}{"@grp"}, Reduce: reducers},
+		}
+		options := &redis.FTAggregateOptions{GroupBy: groupBy}
+		res, err := client.FTAggregateWithArgs(ctx, "aggTestMinMax", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).ToNot(BeEmpty())
+
+		Expect(res.Rows[0].Fields["minValue"]).To(BeEquivalentTo("inf"))
+		Expect(res.Rows[0].Fields["maxValue"]).To(BeEquivalentTo("-inf"))
 	})
 
 })
