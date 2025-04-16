@@ -566,29 +566,60 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		}
 	}
 
+	var (
+		masterAddr string
+		wg         sync.WaitGroup
+		once       sync.Once
+		errCh      = make(chan error, len(c.sentinelAddrs))
+	)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	for i, sentinelAddr := range c.sentinelAddrs {
-		sentinel := NewSentinelClient(c.opt.sentinelOptions(sentinelAddr))
-
-		masterAddr, err := sentinel.GetMasterAddrByName(ctx, c.opt.MasterName).Result()
-		if err != nil {
-			_ = sentinel.Close()
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return "", err
+		wg.Add(1)
+		go func(i int, addr string) {
+			defer wg.Done()
+			sentinelCli := NewSentinelClient(c.opt.sentinelOptions(addr))
+			addrVal, err := sentinelCli.GetMasterAddrByName(ctx, c.opt.MasterName).Result()
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					// Report immediately and return
+					errCh <- err
+					return
+				}
+				internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName addr=%s, master=%q failed: %s",
+					addr, c.opt.MasterName, err)
+				_ = sentinelCli.Close()
+				return
 			}
-			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName master=%q failed: %s",
-				c.opt.MasterName, err)
-			continue
-		}
 
-		// Push working sentinel to the top.
-		c.sentinelAddrs[0], c.sentinelAddrs[i] = c.sentinelAddrs[i], c.sentinelAddrs[0]
-		c.setSentinel(ctx, sentinel)
-
-		addr := net.JoinHostPort(masterAddr[0], masterAddr[1])
-		return addr, nil
+			once.Do(func() {
+				masterAddr = net.JoinHostPort(addrVal[0], addrVal[1])
+				// Push working sentinel to the top
+				c.sentinelAddrs[0], c.sentinelAddrs[i] = c.sentinelAddrs[i], c.sentinelAddrs[0]
+				c.setSentinel(ctx, sentinelCli)
+				internal.Logger.Printf(ctx, "sentinel: selected addr=%s masterAddr=%s", addr, masterAddr)
+				cancel()
+			})
+		}(i, sentinelAddr)
 	}
 
-	return "", errors.New("redis: all sentinels specified in configuration are unreachable")
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if masterAddr != "" {
+			return masterAddr, nil
+		}
+		return "", errors.New("redis: all sentinels specified in configuration are unreachable")
+	case err := <-errCh:
+		return "", err
+	}
 }
 
 func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected bool) ([]string, error) {
