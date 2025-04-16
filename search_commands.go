@@ -295,9 +295,8 @@ type FTSearchSortBy struct {
 // More information about the options can be found
 // in the documentation for FT.SEARCH https://redis.io/docs/latest/commands/ft.search/
 type FTSearchOptions struct {
-	NoContent bool
-	Verbatim  bool
-	// NoStopWords is deprecated since redis 8.0
+	NoContent    bool
+	Verbatim     bool
 	NoStopWords  bool
 	WithScores   bool
 	WithPayloads bool
