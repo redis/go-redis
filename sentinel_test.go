@@ -219,6 +219,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 			SentinelAddrs: sentinelAddrs,
 
 			RouteRandomly: true,
+			DB:            1,
 		})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
@@ -304,6 +305,20 @@ var _ = Describe("NewFailoverClusterClient", func() {
 			val, err := c.ClientList(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).Should(ContainSubstring("name=sentinel_cluster_hi"))
+			return nil
+		})
+	})
+
+	It("should sentinel cluster client db", func() {
+		err := client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			return c.Ping(ctx).Err()
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			clientInfo, err := c.ClientInfo(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(clientInfo.DB).To(Equal(1))
 			return nil
 		})
 	})
