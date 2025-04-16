@@ -10,12 +10,12 @@ type StreamingCredentialsProvider interface {
 	// It returns the current credentials, a cancel function to unsubscribe from the provider,
 	// and an error if any.
 	// TODO(ndyakov): Should we add context to the Subscribe method?
-	Subscribe(listener CredentialsListener) (Credentials, CancelProviderFunc, error)
+	Subscribe(listener CredentialsListener) (Credentials, UnsubscribeFunc, error)
 }
 
-// CancelProviderFunc is a function that is used to cancel the subscription to the credentials provider.
+// UnsubscribeFunc is a function that is used to cancel the subscription to the credentials provider.
 // It is used to unsubscribe from the provider when the credentials are no longer needed.
-type CancelProviderFunc func() error
+type UnsubscribeFunc func() error
 
 // CredentialsListener is an interface that defines the methods for a credentials listener.
 // It is used to receive updates when the credentials change.
