@@ -1856,7 +1856,7 @@ func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 
 func (c *ClusterClient) cmdSlot(ctx context.Context, cmd Cmder) int {
 	args := cmd.Args()
-	if args[0] == "cluster" && args[1] == "getkeysinslot" {
+	if args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
 		return args[2].(int)
 	}
 
