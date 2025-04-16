@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"net"
+	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -29,6 +30,24 @@ var _ = Describe("Sentinel PROTO 2", func() {
 		val, err := client.Do(ctx, "HELLO").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).Should(ContainElements("proto", int64(2)))
+	})
+})
+
+var _ = Describe("Sentinel resolution", func() {
+	It("should resolve master without context exhaustion", func() {
+		shortCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+
+		client := redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    sentinelName,
+			SentinelAddrs: sentinelAddrs,
+			MaxRetries: -1,
+		})
+
+		err := client.Ping(shortCtx).Err()
+		Expect(err).NotTo(HaveOccurred(), "expected master to resolve without context exhaustion")
+
+		_ = client.Close()
 	})
 })
 
