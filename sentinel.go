@@ -618,6 +618,9 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		}
 		return "", errors.New("redis: all sentinels specified in configuration are unreachable")
 	case err := <-errCh:
+		if masterAddr != "" {
+			return masterAddr, nil
+		}
 		return "", err
 	}
 }
