@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -583,17 +584,12 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 			sentinelCli := NewSentinelClient(c.opt.sentinelOptions(addr))
 			addrVal, err := sentinelCli.GetMasterAddrByName(ctx, c.opt.MasterName).Result()
 			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					// Report immediately and return
-					errCh <- err
-					return
-				}
 				internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName addr=%s, master=%q failed: %s",
 					addr, c.opt.MasterName, err)
 				_ = sentinelCli.Close()
+				errCh <- err
 				return
 			}
-
 			once.Do(func() {
 				masterAddr = net.JoinHostPort(addrVal[0], addrVal[1])
 				// Push working sentinel to the top
@@ -605,21 +601,15 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		}(i, sentinelAddr)
 	}
 
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		if masterAddr != "" {
-			return masterAddr, nil
-		}
-		return "", errors.New("redis: all sentinels specified in configuration are unreachable")
-	case err := <-errCh:
-		return "", err
+	wg.Wait()
+	if masterAddr != "" {
+		return masterAddr, nil
 	}
+	errs := make([]error, len(c.sentinelAddrs))
+	for err := range errCh {
+		errs = append(errs, err)
+	}
+	return "", fmt.Errorf("redis: all sentinels specified in configuration are unreachable: %w", errs)
 }
 
 func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected bool) ([]string, error) {
