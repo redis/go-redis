@@ -1,6 +1,6 @@
 module github.com/redis/go-redis/extra/rediscmd/v9
 
-go 1.19
+go 1.23
 
 replace github.com/redis/go-redis/v9 => ../..
 
