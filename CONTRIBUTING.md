@@ -115,4 +115,4 @@ showing any activity.
 
 ## Support
 
-Maintainers can provide limited support to contributors on discord: https://discord.com/channels/697882427875393627/1263519057320087552
+Maintainers can provide limited support to contributors on discord: https://discord.gg/rWtp5Aj

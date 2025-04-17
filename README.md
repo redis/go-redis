@@ -6,7 +6,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/redis/go-redis/v9)](https://goreportcard.com/report/github.com/redis/go-redis/v9)
 [![codecov](https://codecov.io/github/redis/go-redis/graph/badge.svg?token=tsrCZKuSSw)](https://codecov.io/github/redis/go-redis)
 
-[![Discord](https://img.shields.io/discord/697882427875393627.svg?style=social&logo=discord)](https://discord.com/channels/697882427875393627/1263519057320087552)
+[![Discord](https://img.shields.io/discord/697882427875393627.svg?style=social&logo=discord)](https://discord.gg/W4txy5AeKM)
 [![Twitch](https://img.shields.io/twitch/status/redisinc?style=social)](https://www.twitch.tv/redisinc)
 [![YouTube](https://img.shields.io/youtube/channel/views/UCD78lHSwYqMlyetR0_P4Vig?style=social)](https://www.youtube.com/redisinc)
 [![Twitter](https://img.shields.io/twitter/follow/redisinc?style=social)](https://twitter.com/redisinc)
@@ -50,7 +50,7 @@ in the `go.mod` to `go 1.24` in one of the next releases.
 ## Resources
 
 - [Discussions](https://github.com/redis/go-redis/discussions)
-- [Chat](https://discord.gg/rWtp5Aj)
+- [Chat](https://discord.gg/W4txy5AeKM)
 - [Reference](https://pkg.go.dev/github.com/redis/go-redis/v9)
 - [Examples](https://pkg.go.dev/github.com/redis/go-redis/v9#pkg-examples)
 
