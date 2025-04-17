@@ -606,7 +606,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	if masterAddr != "" {
 		return masterAddr, nil
 	}
-	errs := make([]error, 0, len(c.sentinelAddrs))
+	errs := make([]error, 0, len(errCh))
 	for err := range errCh {
 		errs = append(errs, err)
 	}
