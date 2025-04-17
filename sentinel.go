@@ -602,6 +602,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	}
 
 	wg.Wait()
+	close(errCh)
 	if masterAddr != "" {
 		return masterAddr, nil
 	}
