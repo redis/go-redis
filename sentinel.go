@@ -605,11 +605,11 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	if masterAddr != "" {
 		return masterAddr, nil
 	}
-	errs := make([]error, len(c.sentinelAddrs))
+	errs := make([]error, 0, len(c.sentinelAddrs))
 	for err := range errCh {
 		errs = append(errs, err)
 	}
-	return "", fmt.Errorf("redis: all sentinels specified in configuration are unreachable: %w", errs)
+	return "", fmt.Errorf("redis: all sentinels specified in configuration are unreachable: %w", errors.Join(errs...))
 }
 
 func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected bool) ([]string, error) {
