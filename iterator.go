@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"iter"
 )
 
 // ScanIterator is used to incrementally iterate over a collection of elements.
@@ -16,6 +17,8 @@ func (it *ScanIterator) Err() error {
 }
 
 // Next advances the cursor and returns true if more values can be read.
+//
+// Deprecated: support for native iterators has been added in go 1.23. Use Vals instead.
 func (it *ScanIterator) Next(ctx context.Context) bool {
 	// Instantly return on errors.
 	if it.cmd.Err() != nil {
@@ -57,10 +60,23 @@ func (it *ScanIterator) Next(ctx context.Context) bool {
 }
 
 // Val returns the key/field at the current cursor position.
+//
+// Deprecated: support for native iterators has been added in go 1.23. Use Vals instead.
 func (it *ScanIterator) Val() string {
 	var v string
 	if it.cmd.Err() == nil && it.pos > 0 && it.pos <= len(it.cmd.page) {
 		v = it.cmd.page[it.pos-1]
 	}
 	return v
+}
+
+// Vals returns iterator over key/field at the current cursor position.
+func (it *ScanIterator) Vals(ctx context.Context) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for it.Next(ctx) {
+			if !yield(it.Val()) {
+				return
+			}
+		}
+	}
 }
