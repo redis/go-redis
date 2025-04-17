@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -282,15 +283,86 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
+func (c *baseClient) newReAuthCredentialsListener(ctx context.Context, conn *Conn) auth.CredentialsListener {
+	return auth.NewReAuthCredentialsListener(
+		c.reAuthConnection(c.context(ctx), conn),
+		c.onAuthenticationErr(c.context(ctx), conn),
+	)
+}
+
+func (c *baseClient) reAuthConnection(ctx context.Context, cn *Conn) func(credentials auth.Credentials) error {
+	return func(credentials auth.Credentials) error {
+		var err error
+		username, password := credentials.BasicAuth()
+		if username != "" {
+			err = cn.AuthACL(ctx, username, password).Err()
+		} else {
+			err = cn.Auth(ctx, password).Err()
+		}
+		return err
+	}
+}
+func (c *baseClient) onAuthenticationErr(ctx context.Context, cn *Conn) func(err error) {
+	return func(err error) {
+		// since the connection pool of the *Conn will actually return us the underlying pool.Conn,
+		// we can get it from the *Conn and remove it from the clients pool.
+		if err != nil {
+			if isBadConn(err, false, c.opt.Addr) {
+				poolCn, _ := cn.connPool.Get(ctx)
+				c.connPool.Remove(ctx, poolCn, err)
+			}
+		}
+	}
+}
+
+func (c *baseClient) wrappedOnClose(newOnClose func() error) func() error {
+	onClose := c.onClose
+	return func() error {
+		var firstErr error
+		err := newOnClose()
+		// Even if we have an error we would like to execute the onClose hook
+		// if it exists. We will return the first error that occurred.
+		// This is to keep error handling consistent with the rest of the code.
+		if err != nil {
+			firstErr = err
+		}
+		if onClose != nil {
+			err = onClose()
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
+}
+
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if cn.Inited {
 		return nil
 	}
-	cn.Inited = true
 
 	var err error
+	cn.Inited = true
+	connPool := pool.NewSingleConnPool(c.connPool, cn)
+	conn := newConn(c.opt, connPool)
+
+	protocol := c.opt.Protocol
+	// By default, use RESP3 in current version.
+	if protocol < 2 {
+		protocol = 3
+	}
+
+	var authenticated bool
 	username, password := c.opt.Username, c.opt.Password
-	if c.opt.CredentialsProviderContext != nil {
+	if c.opt.StreamingCredentialsProvider != nil {
+		credentials, cancelCredentialsProvider, err := c.opt.StreamingCredentialsProvider.
+			Subscribe(c.newReAuthCredentialsListener(ctx, conn))
+		if err != nil {
+			return err
+		}
+		c.onClose = c.wrappedOnClose(cancelCredentialsProvider)
+		username, password = credentials.BasicAuth()
+	} else if c.opt.CredentialsProviderContext != nil {
 		if username, password, err = c.opt.CredentialsProviderContext(ctx); err != nil {
 			return err
 		}
@@ -298,20 +370,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		username, password = c.opt.CredentialsProvider()
 	}
 
-	connPool := pool.NewSingleConnPool(c.connPool, cn)
-	conn := newConn(c.opt, connPool)
-
-	var auth bool
-	protocol := c.opt.Protocol
-	// By default, use RESP3 in current version.
-	if protocol < 2 {
-		protocol = 3
-	}
-
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
 	if err = conn.Hello(ctx, protocol, username, password, c.opt.ClientName).Err(); err == nil {
-		auth = true
+		authenticated = true
 	} else if !isRedisError(err) {
 		// When the server responds with the RESP protocol and the result is not a normal
 		// execution result of the HELLO command, we consider it to be an indication that
@@ -323,15 +385,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return err
 	}
 
-	_, err = conn.Pipelined(ctx, func(pipe Pipeliner) error {
-		if !auth && password != "" {
-			if username != "" {
-				pipe.AuthACL(ctx, username, password)
-			} else {
-				pipe.Auth(ctx, password)
-			}
+	if !authenticated && password != "" {
+		err = c.reAuthConnection(ctx, conn)(auth.NewBasicCredentials(username, password))
+		if err != nil {
+			return err
 		}
-
+	}
+	_, err = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
 		}
