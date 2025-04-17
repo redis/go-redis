@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"fmt"
+	"slices"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -52,13 +53,20 @@ var _ = Describe("ScanIterator", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should scan across empty DBs", func() {
+	It("should scan across empty DBs using Next", func() {
 		iter := client.Scan(ctx, 0, "", 10).Iterator()
 		Expect(iter.Next(ctx)).To(BeFalse())
 		Expect(iter.Err()).NotTo(HaveOccurred())
 	})
 
-	It("should scan across one page", func() {
+	It("should scan across empty DBs using Vals", func() {
+		iter := client.Scan(ctx, 0, "", 10).Iterator()
+		vals := slices.Collect(iter.Vals(ctx))
+		Expect(vals).To(BeEmpty())
+		Expect(iter.Err()).NotTo(HaveOccurred())
+	})
+
+	It("should scan across one page using Next", func() {
 		Expect(seed(7)).NotTo(HaveOccurred())
 
 		var vals []string
@@ -70,7 +78,16 @@ var _ = Describe("ScanIterator", func() {
 		Expect(vals).To(ConsistOf([]string{"K01", "K02", "K03", "K04", "K05", "K06", "K07"}))
 	})
 
-	It("should scan across multiple pages", func() {
+	It("should scan across one page using Vals", func() {
+		Expect(seed(7)).NotTo(HaveOccurred())
+
+		iter := client.Scan(ctx, 0, "", 0).Iterator()
+		vals := slices.Collect(iter.Vals(ctx))
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(ConsistOf([]string{"K01", "K02", "K03", "K04", "K05", "K06", "K07"}))
+	})
+
+	It("should scan across multiple pages using Next", func() {
 		Expect(seed(71)).NotTo(HaveOccurred())
 
 		var vals []string
@@ -84,7 +101,18 @@ var _ = Describe("ScanIterator", func() {
 		Expect(vals).To(ContainElement("K71"))
 	})
 
-	It("should hscan across multiple pages", func() {
+	It("should scan across multiple pages using Vals", func() {
+		Expect(seed(71)).NotTo(HaveOccurred())
+
+		iter := client.Scan(ctx, 0, "", 10).Iterator()
+		vals := slices.Collect(iter.Vals(ctx))
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(71))
+		Expect(vals).To(ContainElement("K01"))
+		Expect(vals).To(ContainElement("K71"))
+	})
+
+	It("should hscan across multiple pages using Next", func() {
 		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 		Expect(hashSeed(71)).NotTo(HaveOccurred())
 
@@ -100,7 +128,20 @@ var _ = Describe("ScanIterator", func() {
 		Expect(vals).To(ContainElement("x"))
 	})
 
-	It("should hscan without values across multiple pages", Label("NonRedisEnterprise"), func() {
+	It("should hscan across multiple pages using Vals", func() {
+		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+		Expect(hashSeed(71)).NotTo(HaveOccurred())
+
+		iter := client.HScan(ctx, hashKey, 0, "", 10).Iterator()
+		vals := slices.Collect(iter.Vals(ctx))
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(71 * 2))
+		Expect(vals).To(ContainElement("K01"))
+		Expect(vals).To(ContainElement("K71"))
+		Expect(vals).To(ContainElement("x"))
+	})
+
+	It("should hscan without values across multiple pages using Next", Label("NonRedisEnterprise"), func() {
 		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 		Expect(hashSeed(71)).NotTo(HaveOccurred())
 
@@ -116,7 +157,20 @@ var _ = Describe("ScanIterator", func() {
 		Expect(vals).NotTo(ContainElement("x"))
 	})
 
-	It("should scan to page borders", func() {
+	It("should hscan without values across multiple pages using Vals", Label("NonRedisEnterprise"), func() {
+		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+		Expect(hashSeed(71)).NotTo(HaveOccurred())
+
+		iter := client.HScanNoValues(ctx, hashKey, 0, "", 10).Iterator()
+		vals := slices.Collect(iter.Vals(ctx))
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(71))
+		Expect(vals).To(ContainElement("K01"))
+		Expect(vals).To(ContainElement("K71"))
+		Expect(vals).NotTo(ContainElement("x"))
+	})
+
+	It("should scan to page borders using Next", func() {
 		Expect(seed(20)).NotTo(HaveOccurred())
 
 		var vals []string
@@ -128,7 +182,16 @@ var _ = Describe("ScanIterator", func() {
 		Expect(vals).To(HaveLen(20))
 	})
 
-	It("should scan with match", func() {
+	It("should scan to page borders using Vals", func() {
+		Expect(seed(20)).NotTo(HaveOccurred())
+
+		iter := client.Scan(ctx, 0, "", 10).Iterator()
+		vals := slices.Collect(iter.Vals(ctx))
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(20))
+	})
+
+	It("should scan with match using Next", func() {
 		Expect(seed(33)).NotTo(HaveOccurred())
 
 		var vals []string
@@ -140,7 +203,16 @@ var _ = Describe("ScanIterator", func() {
 		Expect(vals).To(HaveLen(13))
 	})
 
-	It("should scan with match across empty pages", func() {
+	It("should scan with match using Vals", func() {
+		Expect(seed(33)).NotTo(HaveOccurred())
+
+		iter := client.Scan(ctx, 0, "K*2*", 10).Iterator()
+		vals := slices.Collect(iter.Vals(ctx))
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(13))
+	})
+
+	It("should scan with match across empty pages using Next", func() {
 		Expect(extraSeed(2, 10)).NotTo(HaveOccurred())
 
 		var vals []string
@@ -148,6 +220,15 @@ var _ = Describe("ScanIterator", func() {
 		for iter.Next(ctx) {
 			vals = append(vals, iter.Val())
 		}
+		Expect(iter.Err()).NotTo(HaveOccurred())
+		Expect(vals).To(HaveLen(2))
+	})
+
+	It("should scan with match across empty pages using Vals", func() {
+		Expect(extraSeed(2, 10)).NotTo(HaveOccurred())
+
+		iter := client.Scan(ctx, 0, "K*", 1).Iterator()
+		vals := slices.Collect(iter.Vals(ctx))
 		Expect(iter.Err()).NotTo(HaveOccurred())
 		Expect(vals).To(HaveLen(2))
 	})
