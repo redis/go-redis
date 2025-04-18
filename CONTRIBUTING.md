@@ -112,3 +112,7 @@ The core team regularly looks at pull requests. We will provide
 feedback as soon as possible. After receiving our feedback, please respond
 within two weeks. After that time, we may close your PR if it isn't
 showing any activity.
+
+## Support
+
+Maintainers can provide limited support to contributors on discord: https://discord.gg/W4txy5AeKM
