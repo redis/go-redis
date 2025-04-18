@@ -114,6 +114,7 @@ type SpellCheckTerms struct {
 }
 
 type FTExplainOptions struct {
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
 	Dialect string
 }
 
@@ -261,7 +262,8 @@ type FTAggregateOptions struct {
 	WithCursor        bool
 	WithCursorOptions *FTAggregateWithCursor
 	Params            map[string]interface{}
-	DialectVersion    int
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	DialectVersion int
 }
 
 type FTSearchFilter struct {
@@ -322,8 +324,9 @@ type FTSearchOptions struct {
 	Limit           int
 	// CountOnly sets LIMIT 0 0 to get the count - number of documents in the result set without actually returning the result set.
 	// When using this option, the Limit and LimitOffset options are ignored.
-	CountOnly      bool
-	Params         map[string]interface{}
+	CountOnly bool
+	Params    map[string]interface{}
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
 	DialectVersion int
 }
 
@@ -440,7 +443,8 @@ type IndexDefinition struct {
 type FTSpellCheckOptions struct {
 	Distance int
 	Terms    *FTSpellCheckTerms
-	Dialect  int
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	Dialect int
 }
 
 type FTSpellCheckTerms struct {
