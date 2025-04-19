@@ -81,6 +81,8 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 		return dst
 	case time.Time, time.Duration, encoding.BinaryMarshaler, net.IP:
 		return append(dst, arg)
+	case nil:
+		return dst
 	default:
 		// scan struct field
 		v := reflect.ValueOf(arg)
