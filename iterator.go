@@ -73,8 +73,35 @@ func (it *ScanIterator) Val() string {
 // Vals returns iterator over key/field at the current cursor position.
 func (it *ScanIterator) Vals(ctx context.Context) iter.Seq[string] {
 	return func(yield func(string) bool) {
-		for it.Next(ctx) {
-			if !yield(it.Val()) {
+		if it.cmd.Err() != nil {
+			return
+		}
+
+		for {
+			for _, val := range it.cmd.page {
+				if !yield(val) {
+					return
+				}
+			}
+
+			// Return if there is no more data to fetch.
+			if it.cmd.cursor == 0 {
+				return
+			}
+
+			// Fetch next page.
+			var cursorIndex int
+			switch it.cmd.args[0] {
+			case "scan", "qscan":
+				cursorIndex = 1
+			default:
+				cursorIndex = 2
+			}
+
+			it.cmd.args[cursorIndex] = it.cmd.cursor
+
+			err := it.cmd.process(ctx, it.cmd)
+			if err != nil {
 				return
 			}
 		}
