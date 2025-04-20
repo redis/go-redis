@@ -23,5 +23,5 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6.5.2
         with:
-          verify: false # disable verifying the configuration since golangci is currently introducing breaking changes in the configuration 
+          verify: true 
 
