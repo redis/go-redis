@@ -352,3 +352,27 @@ var _ = Describe("withConn", func() {
 		Expect(client.connPool.Len()).To(Equal(1))
 	})
 })
+
+var _ = Describe("ClusterClient", func() {
+	var client *ClusterClient
+
+	BeforeEach(func() {
+		client = &ClusterClient{}
+	})
+
+	Describe("cmdSlot", func() {
+		It("select slot from args for GETKEYSINSLOT command", func() {
+			cmd := NewStringSliceCmd(ctx, "cluster", "getkeysinslot", 100, 200)
+
+			slot := client.cmdSlot(context.Background(), cmd)
+			Expect(slot).To(Equal(100))
+		})
+
+		It("select slot from args for COUNTKEYSINSLOT command", func() {
+			cmd := NewStringSliceCmd(ctx, "cluster", "countkeysinslot", 100)
+
+			slot := client.cmdSlot(context.Background(), cmd)
+			Expect(slot).To(Equal(100))
+		})
+	})
+})
