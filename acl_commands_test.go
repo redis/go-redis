@@ -9,68 +9,69 @@ import (
 	. "github.com/bsm/gomega"
 )
 
-var TestUserName string = "goredis"
-var _ = Describe("ACL", func() {
-	var client *redis.Client
-	var ctx context.Context
+var (
+	TestUserName string = "goredis"
+	_                   = Describe("ACL", func() {
+		var client *redis.Client
+		var ctx context.Context
 
-	BeforeEach(func() {
-		ctx = context.Background()
-		opt := redisOptions()
-		client = redis.NewClient(opt)
+		BeforeEach(func() {
+			ctx = context.Background()
+			opt := redisOptions()
+			client = redis.NewClient(opt)
+		})
+
+		It("should ACL LOG", Label("NonRedisEnterprise"), func() {
+			Expect(client.ACLLogReset(ctx).Err()).NotTo(HaveOccurred())
+			err := client.Do(ctx, "acl", "setuser", "test", ">test", "on", "allkeys", "+get").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			clientAcl := redis.NewClient(redisOptions())
+			clientAcl.Options().Username = "test"
+			clientAcl.Options().Password = "test"
+			clientAcl.Options().DB = 0
+			_ = clientAcl.Set(ctx, "mystring", "foo", 0).Err()
+			_ = clientAcl.HSet(ctx, "myhash", "foo", "bar").Err()
+			_ = clientAcl.SAdd(ctx, "myset", "foo", "bar").Err()
+
+			logEntries, err := client.ACLLog(ctx, 10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(logEntries)).To(Equal(4))
+
+			for _, entry := range logEntries {
+				Expect(entry.Reason).To(Equal("command"))
+				Expect(entry.Context).To(Equal("toplevel"))
+				Expect(entry.Object).NotTo(BeEmpty())
+				Expect(entry.Username).To(Equal("test"))
+				Expect(entry.AgeSeconds).To(BeNumerically(">=", 0))
+				Expect(entry.ClientInfo).NotTo(BeNil())
+				Expect(entry.EntryID).To(BeNumerically(">=", 0))
+				Expect(entry.TimestampCreated).To(BeNumerically(">=", 0))
+				Expect(entry.TimestampLastUpdated).To(BeNumerically(">=", 0))
+			}
+
+			limitedLogEntries, err := client.ACLLog(ctx, 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(limitedLogEntries)).To(Equal(2))
+
+			// cleanup after creating the user
+			err = client.Do(ctx, "acl", "deluser", "test").Err()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should ACL LOG RESET", Label("NonRedisEnterprise"), func() {
+			// Call ACL LOG RESET
+			resetCmd := client.ACLLogReset(ctx)
+			Expect(resetCmd.Err()).NotTo(HaveOccurred())
+			Expect(resetCmd.Val()).To(Equal("OK"))
+
+			// Verify that the log is empty after the reset
+			logEntries, err := client.ACLLog(ctx, 10).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(logEntries)).To(Equal(0))
+		})
 	})
-
-	It("should ACL LOG", Label("NonRedisEnterprise"), func() {
-		Expect(client.ACLLogReset(ctx).Err()).NotTo(HaveOccurred())
-		err := client.Do(ctx, "acl", "setuser", "test", ">test", "on", "allkeys", "+get").Err()
-		Expect(err).NotTo(HaveOccurred())
-
-		clientAcl := redis.NewClient(redisOptions())
-		clientAcl.Options().Username = "test"
-		clientAcl.Options().Password = "test"
-		clientAcl.Options().DB = 0
-		_ = clientAcl.Set(ctx, "mystring", "foo", 0).Err()
-		_ = clientAcl.HSet(ctx, "myhash", "foo", "bar").Err()
-		_ = clientAcl.SAdd(ctx, "myset", "foo", "bar").Err()
-
-		logEntries, err := client.ACLLog(ctx, 10).Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(len(logEntries)).To(Equal(4))
-
-		for _, entry := range logEntries {
-			Expect(entry.Reason).To(Equal("command"))
-			Expect(entry.Context).To(Equal("toplevel"))
-			Expect(entry.Object).NotTo(BeEmpty())
-			Expect(entry.Username).To(Equal("test"))
-			Expect(entry.AgeSeconds).To(BeNumerically(">=", 0))
-			Expect(entry.ClientInfo).NotTo(BeNil())
-			Expect(entry.EntryID).To(BeNumerically(">=", 0))
-			Expect(entry.TimestampCreated).To(BeNumerically(">=", 0))
-			Expect(entry.TimestampLastUpdated).To(BeNumerically(">=", 0))
-		}
-
-		limitedLogEntries, err := client.ACLLog(ctx, 2).Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(len(limitedLogEntries)).To(Equal(2))
-
-		// cleanup after creating the user
-		err = client.Do(ctx, "acl", "deluser", "test").Err()
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	It("should ACL LOG RESET", Label("NonRedisEnterprise"), func() {
-		// Call ACL LOG RESET
-		resetCmd := client.ACLLogReset(ctx)
-		Expect(resetCmd.Err()).NotTo(HaveOccurred())
-		Expect(resetCmd.Val()).To(Equal("OK"))
-
-		// Verify that the log is empty after the reset
-		logEntries, err := client.ACLLog(ctx, 10).Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(len(logEntries)).To(Equal(0))
-	})
-
-})
+)
 var _ = Describe("ACL user commands", Label("NonRedisEnterprise"), func() {
 	var client *redis.Client
 	var ctx context.Context

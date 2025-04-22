@@ -29,7 +29,6 @@ func ExampleClient_cmd_flushall() {
 	rdb.Set(ctx, "testkey3", "3", 0)
 	// REMOVE_END
 	flushAllResult1, err := rdb.FlushAll(ctx).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -37,7 +36,6 @@ func ExampleClient_cmd_flushall() {
 	fmt.Println(flushAllResult1) // >>> OK
 
 	flushAllResult2, err := rdb.Keys(ctx, "*").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -61,7 +59,6 @@ func ExampleClient_cmd_info() {
 
 	// STEP_START info
 	infoResult, err := rdb.Info(ctx).Result()
-
 	if err != nil {
 		panic(err)
 	}

@@ -30,7 +30,6 @@ func ExampleClient_bf() {
 	res1, err := rdb.BitField(ctx, "bike:1:stats",
 		"set", "u32", "#0", "1000",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -42,7 +41,6 @@ func ExampleClient_bf() {
 		"incrby", "u32", "#0", "-50",
 		"incrby", "u32", "#1", "1",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -54,7 +52,6 @@ func ExampleClient_bf() {
 		"incrby", "u32", "#0", "500",
 		"incrby", "u32", "#1", "1",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -65,7 +62,6 @@ func ExampleClient_bf() {
 		"get", "u32", "#0",
 		"get", "u32", "#1",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}

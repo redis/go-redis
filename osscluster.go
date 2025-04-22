@@ -778,7 +778,7 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 		return c.nodes.Random()
 	}
 
-	var allNodesFailing = true
+	allNodesFailing := true
 	var (
 		closestNonFailingNode *clusterNode
 		closestNode           *clusterNode

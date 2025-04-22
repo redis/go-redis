@@ -26,7 +26,6 @@ func ExampleClient_cmd_llen() {
 
 	// STEP_START llen
 	lPushResult1, err := rdb.LPush(ctx, "mylist", "World").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -34,7 +33,6 @@ func ExampleClient_cmd_llen() {
 	fmt.Println(lPushResult1) // >>> 1
 
 	lPushResult2, err := rdb.LPush(ctx, "mylist", "Hello").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -42,7 +40,6 @@ func ExampleClient_cmd_llen() {
 	fmt.Println(lPushResult2) // >>> 2
 
 	lLenResult, err := rdb.LLen(ctx, "mylist").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -55,6 +52,7 @@ func ExampleClient_cmd_llen() {
 	// 2
 	// 2
 }
+
 func ExampleClient_cmd_lpop() {
 	ctx := context.Background()
 
@@ -72,7 +70,6 @@ func ExampleClient_cmd_lpop() {
 	RPushResult, err := rdb.RPush(ctx,
 		"mylist", "one", "two", "three", "four", "five",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -80,7 +77,6 @@ func ExampleClient_cmd_lpop() {
 	fmt.Println(RPushResult) // >>> 5
 
 	lPopResult, err := rdb.LPop(ctx, "mylist").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -88,7 +84,6 @@ func ExampleClient_cmd_lpop() {
 	fmt.Println(lPopResult) // >>> one
 
 	lPopCountResult, err := rdb.LPopCount(ctx, "mylist", 2).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -96,7 +91,6 @@ func ExampleClient_cmd_lpop() {
 	fmt.Println(lPopCountResult) // >>> [two three]
 
 	lRangeResult, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -126,7 +120,6 @@ func ExampleClient_cmd_lpush() {
 
 	// STEP_START lpush
 	lPushResult1, err := rdb.LPush(ctx, "mylist", "World").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -134,7 +127,6 @@ func ExampleClient_cmd_lpush() {
 	fmt.Println(lPushResult1) // >>> 1
 
 	lPushResult2, err := rdb.LPush(ctx, "mylist", "Hello").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -142,7 +134,6 @@ func ExampleClient_cmd_lpush() {
 	fmt.Println(lPushResult2) // >>> 2
 
 	lRangeResult, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -173,7 +164,6 @@ func ExampleClient_cmd_lrange() {
 	RPushResult, err := rdb.RPush(ctx, "mylist",
 		"one", "two", "three",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -181,7 +171,6 @@ func ExampleClient_cmd_lrange() {
 	fmt.Println(RPushResult) // >>> 3
 
 	lRangeResult1, err := rdb.LRange(ctx, "mylist", 0, 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -189,7 +178,6 @@ func ExampleClient_cmd_lrange() {
 	fmt.Println(lRangeResult1) // >>> [one]
 
 	lRangeResult2, err := rdb.LRange(ctx, "mylist", -3, 2).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -197,7 +185,6 @@ func ExampleClient_cmd_lrange() {
 	fmt.Println(lRangeResult2) // >>> [one two three]
 
 	lRangeResult3, err := rdb.LRange(ctx, "mylist", -100, 100).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -205,7 +192,6 @@ func ExampleClient_cmd_lrange() {
 	fmt.Println(lRangeResult3) // >>> [one two three]
 
 	lRangeResult4, err := rdb.LRange(ctx, "mylist", 5, 10).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -238,7 +224,6 @@ func ExampleClient_cmd_rpop() {
 	rPushResult, err := rdb.RPush(ctx, "mylist",
 		"one", "two", "three", "four", "five",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -246,7 +231,6 @@ func ExampleClient_cmd_rpop() {
 	fmt.Println(rPushResult) // >>> 5
 
 	rPopResult, err := rdb.RPop(ctx, "mylist").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -254,7 +238,6 @@ func ExampleClient_cmd_rpop() {
 	fmt.Println(rPopResult) // >>> five
 
 	rPopCountResult, err := rdb.RPopCount(ctx, "mylist", 2).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -262,7 +245,6 @@ func ExampleClient_cmd_rpop() {
 	fmt.Println(rPopCountResult) // >>> [four three]
 
 	lRangeResult, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -292,7 +274,6 @@ func ExampleClient_cmd_rpush() {
 
 	// STEP_START rpush
 	rPushResult1, err := rdb.RPush(ctx, "mylist", "Hello").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -300,7 +281,6 @@ func ExampleClient_cmd_rpush() {
 	fmt.Println(rPushResult1) // >>> 1
 
 	rPushResult2, err := rdb.RPush(ctx, "mylist", "World").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -308,7 +288,6 @@ func ExampleClient_cmd_rpush() {
 	fmt.Println(rPushResult2) // >>> 2
 
 	lRangeResult, err := rdb.LRange(ctx, "mylist", 0, -1).Result()
-
 	if err != nil {
 		panic(err)
 	}

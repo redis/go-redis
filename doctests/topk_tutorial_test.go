@@ -28,7 +28,6 @@ func ExampleClient_topk() {
 
 	// STEP_START topk
 	res1, err := rdb.TopKReserve(ctx, "bikes:keywords", 5).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -45,7 +44,6 @@ func ExampleClient_topk() {
 		"store",
 		"seat",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -53,7 +51,6 @@ func ExampleClient_topk() {
 	fmt.Println(res2) // >>> [     handlebars  ]
 
 	res3, err := rdb.TopKList(ctx, "bikes:keywords").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -61,7 +58,6 @@ func ExampleClient_topk() {
 	fmt.Println(res3) // [store seat pedals tires handles]
 
 	res4, err := rdb.TopKQuery(ctx, "bikes:keywords", "store", "handlebars").Result()
-
 	if err != nil {
 		panic(err)
 	}

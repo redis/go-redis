@@ -7,6 +7,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -41,7 +42,7 @@ var _ = Describe("Sentinel resolution", func() {
 		client := redis.NewFailoverClient(&redis.FailoverOptions{
 			MasterName:    sentinelName,
 			SentinelAddrs: sentinelAddrs,
-			MaxRetries: -1,
+			MaxRetries:    -1,
 		})
 
 		err := client.Ping(shortCtx).Err()
@@ -292,7 +293,6 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
 		Expect(sub.Close()).NotTo(HaveOccurred())
-
 	})
 
 	It("should sentinel cluster client setname", func() {

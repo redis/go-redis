@@ -28,7 +28,6 @@ func ExampleClient_cms() {
 
 	// STEP_START cms
 	res1, err := rdb.CMSInitByProb(ctx, "bikes:profit", 0.001, 0.002).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -38,7 +37,6 @@ func ExampleClient_cms() {
 	res2, err := rdb.CMSIncrBy(ctx, "bikes:profit",
 		"Smoky Mountain Striker", 100,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -49,7 +47,6 @@ func ExampleClient_cms() {
 		"Rocky Mountain Racer", 200,
 		"Cloudy City Cruiser", 150,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -59,7 +56,6 @@ func ExampleClient_cms() {
 	res4, err := rdb.CMSQuery(ctx, "bikes:profit",
 		"Smoky Mountain Striker",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -67,7 +63,6 @@ func ExampleClient_cms() {
 	fmt.Println(res4) // >>> [100]
 
 	res5, err := rdb.CMSInfo(ctx, "bikes:profit").Result()
-
 	if err != nil {
 		panic(err)
 	}

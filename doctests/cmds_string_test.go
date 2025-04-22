@@ -28,7 +28,6 @@ func ExampleClient_cmd_incr() {
 
 	// STEP_START incr
 	incrResult1, err := rdb.Set(ctx, "mykey", "10", 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -36,7 +35,6 @@ func ExampleClient_cmd_incr() {
 	fmt.Println(incrResult1) // >>> OK
 
 	incrResult2, err := rdb.Incr(ctx, "mykey").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -44,7 +42,6 @@ func ExampleClient_cmd_incr() {
 	fmt.Println(incrResult2) // >>> 11
 
 	incrResult3, err := rdb.Get(ctx, "mykey").Result()
-
 	if err != nil {
 		panic(err)
 	}

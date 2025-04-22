@@ -29,7 +29,6 @@ func ExampleClient_setget() {
 	res1, err := rdb.JSONSet(ctx, "bike", "$",
 		"\"Hyperion\"",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -37,7 +36,6 @@ func ExampleClient_setget() {
 	fmt.Println(res1) // >>> OK
 
 	res2, err := rdb.JSONGet(ctx, "bike", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -45,7 +43,6 @@ func ExampleClient_setget() {
 	fmt.Println(res2) // >>> ["Hyperion"]
 
 	res3, err := rdb.JSONType(ctx, "bike", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -77,14 +74,12 @@ func ExampleClient_str() {
 	_, err := rdb.JSONSet(ctx, "bike", "$",
 		"\"Hyperion\"",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START str
 	res4, err := rdb.JSONStrLen(ctx, "bike", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -92,7 +87,6 @@ func ExampleClient_str() {
 	fmt.Println(*res4[0]) // >>> 8
 
 	res5, err := rdb.JSONStrAppend(ctx, "bike", "$", "\" (Enduro bikes)\"").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -100,7 +94,6 @@ func ExampleClient_str() {
 	fmt.Println(*res5[0]) // >>> 23
 
 	res6, err := rdb.JSONGet(ctx, "bike", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -131,7 +124,6 @@ func ExampleClient_num() {
 
 	// STEP_START num
 	res7, err := rdb.JSONSet(ctx, "crashes", "$", 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -139,7 +131,6 @@ func ExampleClient_num() {
 	fmt.Println(res7) // >>> OK
 
 	res8, err := rdb.JSONNumIncrBy(ctx, "crashes", "$", 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -147,7 +138,6 @@ func ExampleClient_num() {
 	fmt.Println(res8) // >>> [1]
 
 	res9, err := rdb.JSONNumIncrBy(ctx, "crashes", "$", 1.5).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -155,7 +145,6 @@ func ExampleClient_num() {
 	fmt.Println(res9) // >>> [2.5]
 
 	res10, err := rdb.JSONNumIncrBy(ctx, "crashes", "$", -0.75).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -193,7 +182,6 @@ func ExampleClient_arr() {
 			nil,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -201,7 +189,6 @@ func ExampleClient_arr() {
 	fmt.Println(res11) // >>> OK
 
 	res12, err := rdb.JSONGet(ctx, "newbike", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -209,7 +196,6 @@ func ExampleClient_arr() {
 	fmt.Println(res12) // >>> [["Deimos",{"crashes":0},null]]
 
 	res13, err := rdb.JSONGet(ctx, "newbike", "$[1].crashes").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -217,7 +203,6 @@ func ExampleClient_arr() {
 	fmt.Println(res13) // >>> [0]
 
 	res14, err := rdb.JSONDel(ctx, "newbike", "$.[-1]").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -225,7 +210,6 @@ func ExampleClient_arr() {
 	fmt.Println(res14) // >>> 1
 
 	res15, err := rdb.JSONGet(ctx, "newbike", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -256,7 +240,6 @@ func ExampleClient_arr2() {
 
 	// STEP_START arr2
 	res16, err := rdb.JSONSet(ctx, "riders", "$", []interface{}{}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -264,7 +247,6 @@ func ExampleClient_arr2() {
 	fmt.Println(res16) // >>> OK
 
 	res17, err := rdb.JSONArrAppend(ctx, "riders", "$", "\"Norem\"").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -272,7 +254,6 @@ func ExampleClient_arr2() {
 	fmt.Println(res17) // >>> [1]
 
 	res18, err := rdb.JSONGet(ctx, "riders", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -282,7 +263,6 @@ func ExampleClient_arr2() {
 	res19, err := rdb.JSONArrInsert(ctx, "riders", "$", 1,
 		"\"Prickett\"", "\"Royce\"", "\"Castilla\"",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -290,7 +270,6 @@ func ExampleClient_arr2() {
 	fmt.Println(res19) // [3]
 
 	res20, err := rdb.JSONGet(ctx, "riders", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -302,7 +281,6 @@ func ExampleClient_arr2() {
 	res21, err := rdb.JSONArrTrimWithArgs(ctx, "riders", "$",
 		&redis.JSONArrTrimArgs{Start: 1, Stop: &rangeStop},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -310,7 +288,6 @@ func ExampleClient_arr2() {
 	fmt.Println(res21) // >>> [1]
 
 	res22, err := rdb.JSONGet(ctx, "riders", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -318,7 +295,6 @@ func ExampleClient_arr2() {
 	fmt.Println(res22) // >>> [["Prickett"]]
 
 	res23, err := rdb.JSONArrPop(ctx, "riders", "$", -1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -326,7 +302,6 @@ func ExampleClient_arr2() {
 	fmt.Println(res23) // >>> [["Prickett"]]
 
 	res24, err := rdb.JSONArrPop(ctx, "riders", "$", -1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -367,7 +342,6 @@ func ExampleClient_obj() {
 			"price": 4972,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -375,7 +349,6 @@ func ExampleClient_obj() {
 	fmt.Println(res25) // >>> OK
 
 	res26, err := rdb.JSONObjLen(ctx, "bike:1", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -383,7 +356,6 @@ func ExampleClient_obj() {
 	fmt.Println(*res26[0]) // >>> 3
 
 	res27, err := rdb.JSONObjKeys(ctx, "bike:1", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -483,7 +455,7 @@ func ExampleClient_setbikes() {
 	// REMOVE_END
 
 	// STEP_START set_bikes
-	var inventory_json = map[string]interface{}{
+	inventory_json := map[string]interface{}{
 		"inventory": map[string]interface{}{
 			"mountain_bikes": []interface{}{
 				map[string]interface{}{
@@ -556,7 +528,6 @@ func ExampleClient_setbikes() {
 	}
 
 	res1, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -582,7 +553,6 @@ func ExampleClient_getbikes() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -592,7 +562,6 @@ func ExampleClient_getbikes() {
 		&redis.JSONGetArgs{Indent: "  ", Newline: "\n", Space: " "},
 		"$.inventory.*",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -693,7 +662,6 @@ func ExampleClient_getmtnbikes() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -702,7 +670,6 @@ func ExampleClient_getmtnbikes() {
 	res3, err := rdb.JSONGet(ctx, "bikes:inventory",
 		"$.inventory.mountain_bikes[*].model",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -713,7 +680,6 @@ func ExampleClient_getmtnbikes() {
 	res4, err := rdb.JSONGet(ctx,
 		"bikes:inventory", "$.inventory[\"mountain_bikes\"][*].model",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -724,7 +690,6 @@ func ExampleClient_getmtnbikes() {
 	res5, err := rdb.JSONGet(ctx,
 		"bikes:inventory", "$..mountain_bikes[*].model",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -753,14 +718,12 @@ func ExampleClient_getmodels() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START get_models
 	res6, err := rdb.JSONGet(ctx, "bikes:inventory", "$..model").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -786,14 +749,12 @@ func ExampleClient_get2mtnbikes() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START get2mtnbikes
 	res7, err := rdb.JSONGet(ctx, "bikes:inventory", "$..mountain_bikes[0:2].model").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -819,7 +780,6 @@ func ExampleClient_filter1() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -829,7 +789,6 @@ func ExampleClient_filter1() {
 		&redis.JSONGetArgs{Indent: "  ", Newline: "\n", Space: " "},
 		"$..mountain_bikes[?(@.price < 3000 && @.specs.weight < 10)]",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -879,7 +838,6 @@ func ExampleClient_filter2() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -889,7 +847,6 @@ func ExampleClient_filter2() {
 		"bikes:inventory",
 		"$..[?(@.specs.material == 'alloy')].model",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -915,7 +872,6 @@ func ExampleClient_filter3() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -925,7 +881,6 @@ func ExampleClient_filter3() {
 		"bikes:inventory",
 		"$..[?(@.specs.material =~ '(?i)al')].model",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -951,7 +906,6 @@ func ExampleClient_filter4() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -962,7 +916,6 @@ func ExampleClient_filter4() {
 		"$.inventory.mountain_bikes[0].regex_pat",
 		"\"(?i)al\"",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -974,7 +927,6 @@ func ExampleClient_filter4() {
 		"$.inventory.mountain_bikes[1].regex_pat",
 		"\"(?i)al\"",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -986,7 +938,6 @@ func ExampleClient_filter4() {
 		"$.inventory.mountain_bikes[2].regex_pat",
 		"\"(?i)al\"",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -997,7 +948,6 @@ func ExampleClient_filter4() {
 		"bikes:inventory",
 		"$.inventory.mountain_bikes[?(@.specs.material =~ @.regex_pat)].model",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1026,14 +976,12 @@ func ExampleClient_updatebikes() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START update_bikes
 	res15, err := rdb.JSONGet(ctx, "bikes:inventory", "$..price").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1041,7 +989,6 @@ func ExampleClient_updatebikes() {
 	fmt.Println(res15) // >>> [1475,3941,1920,2072,3264]
 
 	res16, err := rdb.JSONNumIncrBy(ctx, "bikes:inventory", "$..price", -100).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1049,7 +996,6 @@ func ExampleClient_updatebikes() {
 	fmt.Println(res16) // >>> [1375,3841,1820,1972,3164]
 
 	res17, err := rdb.JSONNumIncrBy(ctx, "bikes:inventory", "$..price", 100).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1077,7 +1023,6 @@ func ExampleClient_updatefilters1() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1088,7 +1033,6 @@ func ExampleClient_updatefilters1() {
 		"$.inventory.*[?(@.price<2000)].price",
 		1500,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1096,7 +1040,6 @@ func ExampleClient_updatefilters1() {
 	fmt.Println(res18) // >>> OK
 
 	res19, err := rdb.JSONGet(ctx, "bikes:inventory", "$..price").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1123,7 +1066,6 @@ func ExampleClient_updatefilters2() {
 	// REMOVE_END
 
 	_, err := rdb.JSONSet(ctx, "bikes:inventory", "$", inventory_json).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1134,7 +1076,6 @@ func ExampleClient_updatefilters2() {
 		"$.inventory.*[?(@.price<2000)].colors",
 		"\"pink\"",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1142,7 +1083,6 @@ func ExampleClient_updatefilters2() {
 	fmt.Println(res20) // >>> [3 3]
 
 	res21, err := rdb.JSONGet(ctx, "bikes:inventory", "$..[*].colors").Result()
-
 	if err != nil {
 		panic(err)
 	}

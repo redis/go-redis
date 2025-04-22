@@ -7,6 +7,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -24,11 +25,9 @@ func (t testTimeout) Error() string {
 
 var _ = Describe("error", func() {
 	BeforeEach(func() {
-
 	})
 
 	AfterEach(func() {
-
 	})
 
 	It("should retry", func() {

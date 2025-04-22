@@ -35,7 +35,6 @@ func ExampleClient_set_get_all() {
 	}
 
 	res1, err := rdb.HSet(ctx, "bike:1", hashFields).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -43,7 +42,6 @@ func ExampleClient_set_get_all() {
 	fmt.Println(res1) // >>> 4
 
 	res2, err := rdb.HGet(ctx, "bike:1", "model").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -51,7 +49,6 @@ func ExampleClient_set_get_all() {
 	fmt.Println(res2) // >>> Deimos
 
 	res3, err := rdb.HGet(ctx, "bike:1", "price").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -60,7 +57,6 @@ func ExampleClient_set_get_all() {
 
 	cmdReturn := rdb.HGetAll(ctx, "bike:1")
 	res4, err := cmdReturn.Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -117,7 +113,6 @@ func ExampleClient_hmget() {
 	}
 
 	_, err := rdb.HSet(ctx, "bike:1", hashFields).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -125,7 +120,6 @@ func ExampleClient_hmget() {
 	// STEP_START hmget
 	cmdReturn := rdb.HMGet(ctx, "bike:1", "model", "price")
 	res5, err := cmdReturn.Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -177,14 +171,12 @@ func ExampleClient_hincrby() {
 	}
 
 	_, err := rdb.HSet(ctx, "bike:1", hashFields).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START hincrby
 	res6, err := rdb.HIncrBy(ctx, "bike:1", "price", 100).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -192,7 +184,6 @@ func ExampleClient_hincrby() {
 	fmt.Println(res6) // >>> 5072
 
 	res7, err := rdb.HIncrBy(ctx, "bike:1", "price", -100).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -222,7 +213,6 @@ func ExampleClient_incrby_get_mget() {
 
 	// STEP_START incrby_get_mget
 	res8, err := rdb.HIncrBy(ctx, "bike:1:stats", "rides", 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -230,7 +220,6 @@ func ExampleClient_incrby_get_mget() {
 	fmt.Println(res8) // >>> 1
 
 	res9, err := rdb.HIncrBy(ctx, "bike:1:stats", "rides", 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -238,7 +227,6 @@ func ExampleClient_incrby_get_mget() {
 	fmt.Println(res9) // >>> 2
 
 	res10, err := rdb.HIncrBy(ctx, "bike:1:stats", "rides", 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -246,7 +234,6 @@ func ExampleClient_incrby_get_mget() {
 	fmt.Println(res10) // >>> 3
 
 	res11, err := rdb.HIncrBy(ctx, "bike:1:stats", "crashes", 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -254,7 +241,6 @@ func ExampleClient_incrby_get_mget() {
 	fmt.Println(res11) // >>> 1
 
 	res12, err := rdb.HIncrBy(ctx, "bike:1:stats", "owners", 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -262,7 +248,6 @@ func ExampleClient_incrby_get_mget() {
 	fmt.Println(res12) // >>> 1
 
 	res13, err := rdb.HGet(ctx, "bike:1:stats", "rides").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -270,7 +255,6 @@ func ExampleClient_incrby_get_mget() {
 	fmt.Println(res13) // >>> 3
 
 	res14, err := rdb.HMGet(ctx, "bike:1:stats", "crashes", "owners").Result()
-
 	if err != nil {
 		panic(err)
 	}

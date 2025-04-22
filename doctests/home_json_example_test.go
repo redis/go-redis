@@ -81,7 +81,6 @@ func ExampleClient_search_json() {
 			FieldType: redis.SearchFieldTypeNumeric,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -89,19 +88,16 @@ func ExampleClient_search_json() {
 
 	// STEP_START add_data
 	_, err = rdb.JSONSet(ctx, "user:1", "$", user1).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	_, err = rdb.JSONSet(ctx, "user:2", "$", user2).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	_, err = rdb.JSONSet(ctx, "user:3", "$", user3).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -113,7 +109,6 @@ func ExampleClient_search_json() {
 		"idx:users",
 		"Paul @age:[30 40]",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -136,7 +131,6 @@ func ExampleClient_search_json() {
 			},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -167,7 +161,6 @@ func ExampleClient_search_json() {
 			CountOnly: true,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -199,7 +192,6 @@ func ExampleClient_search_json() {
 		"*",
 		&aggOptions,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}

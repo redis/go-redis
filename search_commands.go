@@ -1074,7 +1074,6 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		}
 		if schema.IndexMissing {
 			args = append(args, "INDEXMISSING")
-
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -1411,6 +1410,7 @@ func (cmd *FTInfoCmd) RawVal() interface{} {
 func (cmd *FTInfoCmd) RawResult() (interface{}, error) {
 	return cmd.rawVal, cmd.err
 }
+
 func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	n, err := rd.ReadMapLen()
 	if err != nil {

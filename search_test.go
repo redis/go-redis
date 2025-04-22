@@ -9,6 +9,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -100,7 +101,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		docs := []interface{}{res4.Docs[0].ID, res4.Docs[1].ID}
 		Expect(docs).To(ContainElement("doc1"))
 		Expect(docs).To(ContainElement("doc2"))
-
 	})
 
 	It("should FTCreate and FTSearch sortby", Label("search", "ftcreate", "ftsearch"), func() {
@@ -146,7 +146,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		res1, err := client.FTSearchWithArgs(ctx, "txt", "search engine", &redis.FTSearchOptions{NoContent: true, Verbatim: true, LimitOffset: 0, Limit: 5}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res1.Total).To(BeEquivalentTo(int64(1)))
-
 	})
 
 	It("should FTCreate NoIndex", Label("search", "ftcreate", "ftsearch"), func() {
@@ -184,7 +183,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		res7, err := client.FTSearchWithArgs(ctx, "idx", "*", &redis.FTSearchOptions{SortBy: []redis.FTSearchSortBy{{FieldName: "tag", Asc: true}}}).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res7.Docs[0].ID).To(BeEquivalentTo("doc1"))
-
 	})
 
 	It("should FTExplain", Label("search", "ftexplain"), func() {
@@ -198,7 +196,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		res1, err := client.FTExplain(ctx, "txt", "@f3:f3_val @f2:f2_val @f1:f1_val").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res1).ToNot(BeEmpty())
-
 	})
 
 	It("should FTAlias", Label("search", "ftexplain"), func() {
@@ -239,7 +236,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		aliasDelRes, err := client.FTAliasDel(ctx, "mj23").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(aliasDelRes).To(BeEquivalentTo("OK"))
-
 	})
 
 	It("should FTCreate and FTSearch textfield, sortable and nostem ", Label("search", "ftcreate", "ftsearch"), func() {
@@ -252,7 +248,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resInfo.Attributes[0].Sortable).To(BeTrue())
 		Expect(resInfo.Attributes[0].NoStem).To(BeTrue())
-
 	})
 
 	It("should FTAlter", Label("search", "ftcreate", "ftsearch", "ftalter"), func() {
@@ -476,7 +471,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		res, err = client.FTConfigGet(ctx, "MINPREFIX").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res).To(BeEquivalentTo(map[string]interface{}{"MINPREFIX": "1"}))
-
 	})
 
 	It("should FTAggregate GroupBy ", Label("search", "ftaggregate"), func() {
@@ -582,7 +576,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 			ContainElement("RedisAI"),
 			ContainElement("RedisJson"),
 		))
-
 	})
 
 	It("should FTAggregate sort and limit", Label("search", "ftaggregate"), func() {
@@ -777,7 +770,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Rows[0].Fields["CreatedDateTimeUTC"]).To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
 		Expect(res.Rows[1].Fields["CreatedDateTimeUTC"]).To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
-
 	})
 
 	It("should FTAggregate filter", Label("search", "ftaggregate"), func() {
@@ -889,7 +881,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTCreate json", Label("search", "ftcreate"), func() {
-
 		text1 := &redis.FieldSchema{FieldName: "$.name", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true, Prefix: []interface{}{"king:"}}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -907,7 +898,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTCreate json fields as names", Label("search", "ftcreate"), func() {
-
 		text1 := &redis.FieldSchema{FieldName: "$.name", FieldType: redis.SearchFieldTypeText, As: "name"}
 		num1 := &redis.FieldSchema{FieldName: "$.age", FieldType: redis.SearchFieldTypeNumeric, As: "just_a_number"}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true}, text1, num1).Result()
@@ -926,7 +916,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTCreate CaseSensitive", Label("search", "ftcreate"), func() {
-
 		tag1 := &redis.FieldSchema{FieldName: "t", FieldType: redis.SearchFieldTypeTag, CaseSensitive: false}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, tag1).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -956,7 +945,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Total).To(BeEquivalentTo(1))
 		Expect(res.Docs[0].ID).To(BeEquivalentTo("1"))
-
 	})
 
 	It("should FTSearch ReturnFields", Label("search", "ftsearch"), func() {
@@ -985,7 +973,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTSynUpdate", Label("search", "ftsynupdate"), func() {
-
 		text1 := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText}
 		text2 := &redis.FieldSchema{FieldName: "body", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnHash: true}, text1, text2).Result()
@@ -1011,7 +998,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTSynDump", Label("search", "ftsyndump"), func() {
-
 		text1 := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText}
 		text2 := &redis.FieldSchema{FieldName: "body", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnHash: true}, text1, text2).Result()
@@ -1045,11 +1031,9 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(resSynDump[4].Synonyms).To(Or(BeEquivalentTo([]string{"id1"}), BeEquivalentTo([]string{"id1", "id1"})))
 		Expect(resSynDump[5].Term).To(BeEquivalentTo("offspring"))
 		Expect(resSynDump[5].Synonyms).To(BeEquivalentTo([]string{"id1"}))
-
 	})
 
 	It("should FTCreate json with alias", Label("search", "ftcreate"), func() {
-
 		text1 := &redis.FieldSchema{FieldName: "$.name", FieldType: redis.SearchFieldTypeText, As: "name"}
 		num1 := &redis.FieldSchema{FieldName: "$.num", FieldType: redis.SearchFieldTypeNumeric, As: "num"}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true, Prefix: []interface{}{"king:"}}, text1, num1).Result()
@@ -1074,7 +1058,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTCreate json with multipath", Label("search", "ftcreate"), func() {
-
 		tag1 := &redis.FieldSchema{FieldName: "$..name", FieldType: redis.SearchFieldTypeTag, As: "name"}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true, Prefix: []interface{}{"king:"}}, tag1).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -1091,7 +1074,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTCreate json with jsonpath", Label("search", "ftcreate"), func() {
-
 		text1 := &redis.FieldSchema{FieldName: `$["prod:name"]`, FieldType: redis.SearchFieldTypeText, As: "name"}
 		text2 := &redis.FieldSchema{FieldName: `$.prod:name`, FieldType: redis.SearchFieldTypeText, As: "name_unsupported"}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnJSON: true}, text1, text2).Result()
@@ -1116,7 +1098,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Total).To(BeEquivalentTo(1))
 		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc:1"))
 		Expect(res.Docs[0].Fields["name"]).To(BeEquivalentTo("RediSearch"))
-
 	})
 
 	It("should FTCreate VECTOR", Label("search", "ftcreate"), func() {
@@ -1208,7 +1189,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res1.Total).To(BeEquivalentTo(int64(2)))
 		Expect(res1.Docs[0].ID).To(BeEquivalentTo("doc1"))
 		Expect(res1.Docs[1].ID).To(BeEquivalentTo("doc2"))
-
 	})
 
 	It("should FTCreate and FTSearch numeric params", Label("search", "ftcreate", "ftsearch"), func() {
@@ -1226,7 +1206,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res1.Total).To(BeEquivalentTo(int64(2)))
 		Expect(res1.Docs[0].ID).To(BeEquivalentTo("doc1"))
 		Expect(res1.Docs[1].ID).To(BeEquivalentTo("doc2"))
-
 	})
 
 	It("should FTCreate and FTSearch geo params", Label("search", "ftcreate", "ftsearch"), func() {
@@ -1245,7 +1224,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res1.Docs[0].ID).To(BeEquivalentTo("doc1"))
 		Expect(res1.Docs[1].ID).To(BeEquivalentTo("doc2"))
 		Expect(res1.Docs[2].ID).To(BeEquivalentTo("doc3"))
-
 	})
 
 	It("should FTConfigGet return multiple fields", Label("search", "NonRedisEnterprise"), func() {
@@ -2197,7 +2175,6 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Rows[0].Fields["minValue"]).To(BeEquivalentTo("inf"))
 		Expect(res.Rows[0].Fields["maxValue"]).To(BeEquivalentTo("-inf"))
 	})
-
 })
 
 func _assert_geosearch_result(result *redis.FTSearchResult, expectedDocIDs []string) {
@@ -2210,7 +2187,6 @@ func _assert_geosearch_result(result *redis.FTSearchResult, expectedDocIDs []str
 }
 
 var _ = Describe("RediSearch FT.Config with Resp2 and Resp3", Label("search", "NonRedisEnterprise"), func() {
-
 	var clientResp2 *redis.Client
 	var clientResp3 *redis.Client
 	BeforeEach(func() {
@@ -2297,7 +2273,6 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			Expect(rawRes).To(BeNil())
 			Expect(rawVal).To(BeNil())
 		}).Should(Panic())
-
 	})
 
 	It("should handle FTInfo with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftinfo"), func() {

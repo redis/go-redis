@@ -33,7 +33,6 @@ func ExampleClient_geoadd() {
 			Latitude:  37.805186,
 			Name:      "station:1",
 		}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -46,7 +45,6 @@ func ExampleClient_geoadd() {
 			Latitude:  37.8062344,
 			Name:      "station:2",
 		}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -59,7 +57,6 @@ func ExampleClient_geoadd() {
 			Latitude:  37.8104049,
 			Name:      "station:3",
 		}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -93,7 +90,6 @@ func ExampleClient_geosearch() {
 			Latitude:  37.805186,
 			Name:      "station:1",
 		}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -104,7 +100,6 @@ func ExampleClient_geosearch() {
 			Latitude:  37.8062344,
 			Name:      "station:2",
 		}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -115,7 +110,6 @@ func ExampleClient_geosearch() {
 			Latitude:  37.8104049,
 			Name:      "station:3",
 		}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -130,7 +124,6 @@ func ExampleClient_geosearch() {
 			RadiusUnit: "km",
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}

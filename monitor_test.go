@@ -24,7 +24,6 @@ var _ = Describe("Monitor command", Label("monitor"), func() {
 		}
 		client = redis.NewClient(&redis.Options{Addr: redisPort})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
-
 	})
 
 	AfterEach(func() {

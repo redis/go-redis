@@ -30,7 +30,6 @@ func ExampleClient_del_cmd() {
 
 	// STEP_START del
 	delResult1, err := rdb.Set(ctx, "key1", "Hello", 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -38,7 +37,6 @@ func ExampleClient_del_cmd() {
 	fmt.Println(delResult1) // >>> OK
 
 	delResult2, err := rdb.Set(ctx, "key2", "World", 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -46,7 +44,6 @@ func ExampleClient_del_cmd() {
 	fmt.Println(delResult2) // >>> OK
 
 	delResult3, err := rdb.Del(ctx, "key1", "key2", "key3").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -77,7 +74,6 @@ func ExampleClient_expire_cmd() {
 
 	// STEP_START expire
 	expireResult1, err := rdb.Set(ctx, "mykey", "Hello", 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -85,7 +81,6 @@ func ExampleClient_expire_cmd() {
 	fmt.Println(expireResult1) // >>> OK
 
 	expireResult2, err := rdb.Expire(ctx, "mykey", 10*time.Second).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -93,7 +88,6 @@ func ExampleClient_expire_cmd() {
 	fmt.Println(expireResult2) // >>> true
 
 	expireResult3, err := rdb.TTL(ctx, "mykey").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -101,7 +95,6 @@ func ExampleClient_expire_cmd() {
 	fmt.Println(math.Round(expireResult3.Seconds())) // >>> 10
 
 	expireResult4, err := rdb.Set(ctx, "mykey", "Hello World", 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -109,7 +102,6 @@ func ExampleClient_expire_cmd() {
 	fmt.Println(expireResult4) // >>> OK
 
 	expireResult5, err := rdb.TTL(ctx, "mykey").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -117,7 +109,6 @@ func ExampleClient_expire_cmd() {
 	fmt.Println(expireResult5) // >>> -1ns
 
 	expireResult6, err := rdb.ExpireXX(ctx, "mykey", 10*time.Second).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -125,7 +116,6 @@ func ExampleClient_expire_cmd() {
 	fmt.Println(expireResult6) // >>> false
 
 	expireResult7, err := rdb.TTL(ctx, "mykey").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -133,7 +123,6 @@ func ExampleClient_expire_cmd() {
 	fmt.Println(expireResult7) // >>> -1ns
 
 	expireResult8, err := rdb.ExpireNX(ctx, "mykey", 10*time.Second).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -141,7 +130,6 @@ func ExampleClient_expire_cmd() {
 	fmt.Println(expireResult8) // >>> true
 
 	expireResult9, err := rdb.TTL(ctx, "mykey").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -178,7 +166,6 @@ func ExampleClient_ttl_cmd() {
 
 	// STEP_START ttl
 	ttlResult1, err := rdb.Set(ctx, "mykey", "Hello", 10*time.Second).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -186,7 +173,6 @@ func ExampleClient_ttl_cmd() {
 	fmt.Println(ttlResult1) // >>> OK
 
 	ttlResult2, err := rdb.TTL(ctx, "mykey").Result()
-
 	if err != nil {
 		panic(err)
 	}

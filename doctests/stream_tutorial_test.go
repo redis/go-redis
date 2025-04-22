@@ -41,7 +41,6 @@ func ExampleClient_xadd() {
 			"location_id": 1,
 		},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -57,7 +56,6 @@ func ExampleClient_xadd() {
 			"location_id": 1,
 		},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -73,7 +71,6 @@ func ExampleClient_xadd() {
 			"location_id": 1,
 		},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -86,7 +83,6 @@ func ExampleClient_xadd() {
 	// REMOVE_END
 
 	xlen, err := rdb.XLen(ctx, "race:france").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -122,7 +118,6 @@ func ExampleClient_racefrance1() {
 		},
 		ID: "1692632086370-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -137,7 +132,6 @@ func ExampleClient_racefrance1() {
 		},
 		ID: "1692632094485-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -152,14 +146,12 @@ func ExampleClient_racefrance1() {
 		},
 		ID: "1692632102976-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START xrange
 	res4, err := rdb.XRangeN(ctx, "race:france", "1691765278160-0", "+", 2).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -174,7 +166,6 @@ func ExampleClient_racefrance1() {
 		Count:   100,
 		Block:   300,
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -193,17 +184,15 @@ func ExampleClient_racefrance1() {
 			"location_id": 2,
 		},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
-	//fmt.Println(res6) // >>> 1692632147973-0
+	// fmt.Println(res6) // >>> 1692632147973-0
 	// STEP_END
 
 	// STEP_START xlen
 	res7, err := rdb.XLen(ctx, "race:france").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -244,7 +233,6 @@ func ExampleClient_raceusa() {
 		},
 		ID: "0-1",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -258,7 +246,6 @@ func ExampleClient_raceusa() {
 		},
 		ID: "0-2",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -273,7 +260,6 @@ func ExampleClient_raceusa() {
 		},
 		ID: "0-1",
 	}).Result()
-
 	if err != nil {
 		// fmt.Println(err)
 		// >>> ERR The ID specified in XADD is equal or smaller than the target stream top item
@@ -288,7 +274,6 @@ func ExampleClient_raceusa() {
 		},
 		ID: "0-*",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -331,7 +316,6 @@ func ExampleClient_racefrance2() {
 		},
 		ID: "1692632086370-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -346,7 +330,6 @@ func ExampleClient_racefrance2() {
 		},
 		ID: "1692632094485-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -361,7 +344,6 @@ func ExampleClient_racefrance2() {
 		},
 		ID: "1692632102976-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -376,13 +358,11 @@ func ExampleClient_racefrance2() {
 		},
 		ID: "1692632147973-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
 	// STEP_START xrange_all
 	res12, err := rdb.XRange(ctx, "race:france", "-", "+").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -395,7 +375,6 @@ func ExampleClient_racefrance2() {
 	res13, err := rdb.XRange(ctx, "race:france",
 		"1692632086369", "1692632086371",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -406,7 +385,6 @@ func ExampleClient_racefrance2() {
 
 	// STEP_START xrange_step_1
 	res14, err := rdb.XRangeN(ctx, "race:france", "-", "+", 2).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -419,7 +397,6 @@ func ExampleClient_racefrance2() {
 	res15, err := rdb.XRangeN(ctx, "race:france",
 		"(1692632094485-0", "+", 2,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -432,7 +409,6 @@ func ExampleClient_racefrance2() {
 	res16, err := rdb.XRangeN(ctx, "race:france",
 		"(1692632147973-0", "+", 2,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -443,7 +419,6 @@ func ExampleClient_racefrance2() {
 
 	// STEP_START xrevrange
 	res17, err := rdb.XRevRangeN(ctx, "race:france", "+", "-", 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -457,7 +432,6 @@ func ExampleClient_racefrance2() {
 		Streams: []string{"race:france", "0"},
 		Count:   2,
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -501,14 +475,12 @@ func ExampleClient_xgroupcreate() {
 		},
 		ID: "1692632086370-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START xgroup_create
 	res19, err := rdb.XGroupCreate(ctx, "race:france", "france_riders", "$").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -539,7 +511,6 @@ func ExampleClient_xgroupcreatemkstream() {
 	res20, err := rdb.XGroupCreateMkStream(ctx,
 		"race:italy", "italy_riders", "$",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -569,7 +540,6 @@ func ExampleClient_xgroupread() {
 	_, err := rdb.XGroupCreateMkStream(ctx,
 		"race:italy", "italy_riders", "$",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -580,7 +550,6 @@ func ExampleClient_xgroupread() {
 		Values: map[string]interface{}{"rider": "Castilla"},
 	}).Result()
 	// >>> 1692632639151-0
-
 	if err != nil {
 		panic(err)
 	}
@@ -590,7 +559,6 @@ func ExampleClient_xgroupread() {
 		Values: map[string]interface{}{"rider": "Royce"},
 	}).Result()
 	// >>> 1692632647899-0
-
 	if err != nil {
 		panic(err)
 	}
@@ -600,7 +568,6 @@ func ExampleClient_xgroupread() {
 		Values: map[string]interface{}{"rider": "Sam-Bodden"},
 	}).Result()
 	// >>> 1692632662819-0
-
 	if err != nil {
 		panic(err)
 	}
@@ -610,7 +577,6 @@ func ExampleClient_xgroupread() {
 		Values: map[string]interface{}{"rider": "Prickett"},
 	}).Result()
 	// >>> 1692632670501-0
-
 	if err != nil {
 		panic(err)
 	}
@@ -620,7 +586,6 @@ func ExampleClient_xgroupread() {
 		Values: map[string]interface{}{"rider": "Norem"},
 	}).Result()
 	// >>> 1692632678249-0
-
 	if err != nil {
 		panic(err)
 	}
@@ -633,7 +598,6 @@ func ExampleClient_xgroupread() {
 		Consumer: "Alice",
 		Count:    1,
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -647,7 +611,6 @@ func ExampleClient_xgroupread() {
 	// REMOVE_END
 
 	xlen, err := rdb.XLen(ctx, "race:italy").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -677,7 +640,6 @@ func ExampleClient_raceitaly() {
 	_, err := rdb.XGroupCreateMkStream(ctx,
 		"race:italy", "italy_riders", "$",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -687,7 +649,6 @@ func ExampleClient_raceitaly() {
 		Values: map[string]interface{}{"rider": "Castilla"},
 		ID:     "1692632639151-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -697,7 +658,6 @@ func ExampleClient_raceitaly() {
 		Values: map[string]interface{}{"rider": "Royce"},
 		ID:     "1692632647899-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -707,7 +667,6 @@ func ExampleClient_raceitaly() {
 		Values: map[string]interface{}{"rider": "Sam-Bodden"},
 		ID:     "1692632662819-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -717,7 +676,6 @@ func ExampleClient_raceitaly() {
 		Values: map[string]interface{}{"rider": "Prickett"},
 		ID:     "1692632670501-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -727,7 +685,6 @@ func ExampleClient_raceitaly() {
 		Values: map[string]interface{}{"rider": "Norem"},
 		ID:     "1692632678249-0",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -738,7 +695,6 @@ func ExampleClient_raceitaly() {
 		Consumer: "Alice",
 		Count:    1,
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -748,7 +704,6 @@ func ExampleClient_raceitaly() {
 		Group:    "italy_riders",
 		Consumer: "Alice",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -761,7 +716,6 @@ func ExampleClient_raceitaly() {
 	res23, err := rdb.XAck(ctx,
 		"race:italy", "italy_riders", "1692632639151-0",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -773,7 +727,6 @@ func ExampleClient_raceitaly() {
 		Group:    "italy_riders",
 		Consumer: "Alice",
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -789,7 +742,6 @@ func ExampleClient_raceitaly() {
 		Consumer: "Bob",
 		Count:    2,
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -801,7 +753,6 @@ func ExampleClient_raceitaly() {
 
 	// STEP_START xpending
 	res26, err := rdb.XPending(ctx, "race:italy", "italy_riders").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -818,7 +769,6 @@ func ExampleClient_raceitaly() {
 		End:    "+",
 		Count:  10,
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -831,7 +781,6 @@ func ExampleClient_raceitaly() {
 	res28, err := rdb.XRange(ctx, "race:italy",
 		"1692632647899-0", "1692632647899-0",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -847,7 +796,6 @@ func ExampleClient_raceitaly() {
 		MinIdle:  0,
 		Messages: []string{"1692632647899-0"},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -863,7 +811,6 @@ func ExampleClient_raceitaly() {
 		Start:    "0-0",
 		Count:    1,
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -880,7 +827,6 @@ func ExampleClient_raceitaly() {
 		Start:    "(1692632662819-0",
 		Count:    1,
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -891,7 +837,6 @@ func ExampleClient_raceitaly() {
 
 	// STEP_START xinfo
 	res32, err := rdb.XInfoStream(ctx, "race:italy").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -902,7 +847,6 @@ func ExampleClient_raceitaly() {
 
 	// STEP_START xinfo_groups
 	res33, err := rdb.XInfoGroups(ctx, "race:italy").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -913,7 +857,6 @@ func ExampleClient_raceitaly() {
 
 	// STEP_START xinfo_consumers
 	res34, err := rdb.XInfoConsumers(ctx, "race:italy", "italy_riders").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -929,7 +872,6 @@ func ExampleClient_raceitaly() {
 		Values: map[string]interface{}{"rider": "Jones"},
 	},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -940,7 +882,6 @@ func ExampleClient_raceitaly() {
 		Values: map[string]interface{}{"rider": "Wood"},
 	},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -951,13 +892,11 @@ func ExampleClient_raceitaly() {
 		Values: map[string]interface{}{"rider": "Henshaw"},
 	},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	res35, err := rdb.XLen(ctx, "race:italy").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -965,7 +904,6 @@ func ExampleClient_raceitaly() {
 	fmt.Println(res35) // >>> 2
 
 	res36, err := rdb.XRange(ctx, "race:italy", "-", "+").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -976,7 +914,6 @@ func ExampleClient_raceitaly() {
 
 	// STEP_START xtrim
 	res37, err := rdb.XTrimMaxLen(ctx, "race:italy", 10).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -986,7 +923,6 @@ func ExampleClient_raceitaly() {
 
 	// STEP_START xtrim2
 	res38, err := rdb.XTrimMaxLenApprox(ctx, "race:italy", 10, 20).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1039,7 +975,6 @@ func ExampleClient_xdel() {
 		ID:     "1692633198206-0",
 	},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1051,14 +986,12 @@ func ExampleClient_xdel() {
 		ID:     "1692633208557-0",
 	},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START xdel
 	res39, err := rdb.XRangeN(ctx, "race:italy", "-", "+", 2).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1067,7 +1000,6 @@ func ExampleClient_xdel() {
 	// >>> [{1692633198206-0 map[rider:Wood]} {1692633208557-0 map[rider:Henshaw]}]
 
 	res40, err := rdb.XDel(ctx, "race:italy", "1692633208557-0").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1075,7 +1007,6 @@ func ExampleClient_xdel() {
 	fmt.Println(res40) // 1
 
 	res41, err := rdb.XRangeN(ctx, "race:italy", "-", "+", 2).Result()
-
 	if err != nil {
 		panic(err)
 	}

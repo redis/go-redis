@@ -111,7 +111,7 @@ var _ = Describe("WriteArg", func() {
 		wr = proto.NewWriter(buf)
 	})
 
-	t := time.Date(2025, 2, 8, 00, 00, 00, 0, time.UTC)
+	t := time.Date(2025, 2, 8, 0o0, 0o0, 0o0, 0, time.UTC)
 
 	args := map[any]string{
 		"hello":                                "$5\r\nhello\r\n",

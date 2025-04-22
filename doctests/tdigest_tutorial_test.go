@@ -28,7 +28,6 @@ func ExampleClient_tdigstart() {
 
 	// STEP_START tdig_start
 	res1, err := rdb.TDigestCreate(ctx, "bikes:sales").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -36,7 +35,6 @@ func ExampleClient_tdigstart() {
 	fmt.Println(res1) // >>> OK
 
 	res2, err := rdb.TDigestAdd(ctx, "bikes:sales", 21).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -46,7 +44,6 @@ func ExampleClient_tdigstart() {
 	res3, err := rdb.TDigestAdd(ctx, "bikes:sales",
 		150, 95, 75, 34,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -78,7 +75,6 @@ func ExampleClient_tdigcdf() {
 
 	// STEP_START tdig_cdf
 	res4, err := rdb.TDigestCreate(ctx, "racer_ages").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -89,7 +85,6 @@ func ExampleClient_tdigcdf() {
 		45.88, 44.2, 58.03, 19.76, 39.84, 69.28,
 		50.97, 25.41, 19.27, 85.71, 42.63,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -97,7 +92,6 @@ func ExampleClient_tdigcdf() {
 	fmt.Println(res5) // >>> OK
 
 	res6, err := rdb.TDigestRank(ctx, "racer_ages", 50).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -105,7 +99,6 @@ func ExampleClient_tdigcdf() {
 	fmt.Println(res6) // >>> [7]
 
 	res7, err := rdb.TDigestRank(ctx, "racer_ages", 50, 40).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -136,7 +129,6 @@ func ExampleClient_tdigquant() {
 	// REMOVE_END
 
 	_, err := rdb.TDigestCreate(ctx, "racer_ages").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -145,14 +137,12 @@ func ExampleClient_tdigquant() {
 		45.88, 44.2, 58.03, 19.76, 39.84, 69.28,
 		50.97, 25.41, 19.27, 85.71, 42.63,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START tdig_quant
 	res8, err := rdb.TDigestQuantile(ctx, "racer_ages", 0.5).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -160,7 +150,6 @@ func ExampleClient_tdigquant() {
 	fmt.Println(res8) // >>> [44.2]
 
 	res9, err := rdb.TDigestByRank(ctx, "racer_ages", 4).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -189,7 +178,6 @@ func ExampleClient_tdigmin() {
 	// REMOVE_END
 
 	_, err := rdb.TDigestCreate(ctx, "racer_ages").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -198,14 +186,12 @@ func ExampleClient_tdigmin() {
 		45.88, 44.2, 58.03, 19.76, 39.84, 69.28,
 		50.97, 25.41, 19.27, 85.71, 42.63,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START tdig_min
 	res10, err := rdb.TDigestMin(ctx, "racer_ages").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -213,7 +199,6 @@ func ExampleClient_tdigmin() {
 	fmt.Println(res10) // >>> 19.27
 
 	res11, err := rdb.TDigestMax(ctx, "racer_ages").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -241,14 +226,12 @@ func ExampleClient_tdigreset() {
 	rdb.Del(ctx, "racer_ages")
 	// REMOVE_END
 	_, err := rdb.TDigestCreate(ctx, "racer_ages").Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	// STEP_START tdig_reset
 	res12, err := rdb.TDigestReset(ctx, "racer_ages").Result()
-
 	if err != nil {
 		panic(err)
 	}

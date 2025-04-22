@@ -115,7 +115,8 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 					{Timestamp: 1000, Value: 1.0},
 					{Timestamp: 1010, Value: 11.0},
 					{Timestamp: 1020, Value: 11.5},
-					{Timestamp: 1021, Value: 22.0}}))
+					{Timestamp: 1021, Value: 22.0},
+				}))
 				// Test insertion filters with other duplicate policy
 				opt = &redis.TSOptions{IgnoreMaxTimeDiff: 5, IgnoreMaxValDiff: 10.0}
 				result, err = client.TSCreateWithArgs(ctx, "ts-if-2", opt).Result()
@@ -137,7 +138,8 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{
 					{Timestamp: 1000, Value: 1.0},
 					{Timestamp: 1010, Value: 11.0},
-					{Timestamp: 1013, Value: 10.0}}))
+					{Timestamp: 1013, Value: 10.0},
+				}))
 			})
 			It("should TSAdd and TSAddWithArgs", Label("timeseries", "tsadd", "tsaddWithArgs", "NonRedisEnterprise"), func() {
 				SkipBeforeRedisVersion(7.4, "older redis stack has different results for timeseries module")
@@ -309,7 +311,8 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(rangePoints).To(BeEquivalentTo([]redis.TSTimestampValue{
 					{Timestamp: 1000, Value: 1.0},
 					{Timestamp: 1010, Value: 11.0},
-					{Timestamp: 1013, Value: 10.0}}))
+					{Timestamp: 1013, Value: 10.0},
+				}))
 			})
 
 			It("should TSCreateRule and TSDeleteRule", Label("timeseries", "tscreaterule", "tsdeleterule"), func() {

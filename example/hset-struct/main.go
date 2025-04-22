@@ -37,7 +37,7 @@ func main() {
 
 	_ = rdb.FlushDB(ctx).Err()
 
-	t := time.Date(2025, 02, 8, 0, 0, 0, 0, time.UTC)
+	t := time.Date(2025, 0o2, 8, 0, 0, 0, 0, time.UTC)
 
 	data := Model{
 		Str1:    "hello",

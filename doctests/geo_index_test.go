@@ -42,7 +42,6 @@ func ExampleClient_geoindex() {
 			FieldType: redis.SearchFieldTypeGeo,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -59,7 +58,6 @@ func ExampleClient_geoindex() {
 	}
 
 	gjResult1, err := rdb.JSONSet(ctx, "product:46885", "$", prd46885).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -74,7 +72,6 @@ func ExampleClient_geoindex() {
 	}
 
 	gjResult2, err := rdb.JSONSet(ctx, "product:46886", "$", prd46886).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -86,7 +83,6 @@ func ExampleClient_geoindex() {
 	geoQueryResult, err := rdb.FTSearch(ctx, "productidx",
 		"@location:[-104.800644 38.846127 100 mi]",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -113,7 +109,6 @@ func ExampleClient_geoindex() {
 			GeoShapeFieldType: "FLAT",
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -128,7 +123,6 @@ func ExampleClient_geoindex() {
 	}
 
 	gmjResult1, err := rdb.JSONSet(ctx, "shape:1", "$", shape1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -141,7 +135,6 @@ func ExampleClient_geoindex() {
 	}
 
 	gmjResult2, err := rdb.JSONSet(ctx, "shape:2", "$", shape2).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -154,7 +147,6 @@ func ExampleClient_geoindex() {
 	}
 
 	gmjResult3, err := rdb.JSONSet(ctx, "shape:3", "$", shape3).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -167,7 +159,6 @@ func ExampleClient_geoindex() {
 	}
 
 	gmjResult4, err := rdb.JSONSet(ctx, "shape:4", "$", shape4).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -186,7 +177,6 @@ func ExampleClient_geoindex() {
 			Limit:          1,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}

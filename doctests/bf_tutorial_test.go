@@ -28,7 +28,6 @@ func ExampleClient_bloom() {
 
 	// STEP_START bloom
 	res1, err := rdb.BFReserve(ctx, "bikes:models", 0.01, 1000).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -36,7 +35,6 @@ func ExampleClient_bloom() {
 	fmt.Println(res1) // >>> OK
 
 	res2, err := rdb.BFAdd(ctx, "bikes:models", "Smoky Mountain Striker").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -44,7 +42,6 @@ func ExampleClient_bloom() {
 	fmt.Println(res2) // >>> true
 
 	res3, err := rdb.BFExists(ctx, "bikes:models", "Smoky Mountain Striker").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -56,7 +53,6 @@ func ExampleClient_bloom() {
 		"Cloudy City Cruiser",
 		"Windy City Wippet",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -68,7 +64,6 @@ func ExampleClient_bloom() {
 		"Cloudy City Cruiser",
 		"Windy City Wippet",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}

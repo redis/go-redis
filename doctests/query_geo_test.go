@@ -68,7 +68,6 @@ func ExampleClient_query_geo() {
 			GeoShapeFieldType: "FLAT",
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -227,7 +226,6 @@ func ExampleClient_query_geo() {
 
 	for i, json := range exampleJsons {
 		_, err := rdb.JSONSet(ctx, fmt.Sprintf("bicycle:%v", i), "$", json).Result()
-
 		if err != nil {
 			panic(err)
 		}
@@ -246,7 +244,6 @@ func ExampleClient_query_geo() {
 			DialectVersion: 2,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -270,7 +267,6 @@ func ExampleClient_query_geo() {
 			DialectVersion: 3,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -294,7 +290,6 @@ func ExampleClient_query_geo() {
 			DialectVersion: 3,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}

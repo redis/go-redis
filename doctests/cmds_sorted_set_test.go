@@ -30,7 +30,6 @@ func ExampleClient_zadd_cmd() {
 	zAddResult1, err := rdb.ZAdd(ctx, "myzset",
 		redis.Z{Member: "one", Score: 1},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -40,7 +39,6 @@ func ExampleClient_zadd_cmd() {
 	zAddResult2, err := rdb.ZAdd(ctx, "myzset",
 		redis.Z{Member: "uno", Score: 1},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -51,7 +49,6 @@ func ExampleClient_zadd_cmd() {
 		redis.Z{Member: "two", Score: 2},
 		redis.Z{Member: "three", Score: 3},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -59,7 +56,6 @@ func ExampleClient_zadd_cmd() {
 	fmt.Println(zAddResult3) // >>> 2
 
 	zAddResult4, err := rdb.ZRangeWithScores(ctx, "myzset", 0, -1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -95,7 +91,6 @@ func ExampleClient_zrange1() {
 		redis.Z{Member: "two", Score: 2},
 		redis.Z{Member: "three", Score: 3},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -103,7 +98,6 @@ func ExampleClient_zrange1() {
 	fmt.Println(zrangeResult1) // >>> 3
 
 	zrangeResult2, err := rdb.ZRange(ctx, "myzset", 0, -1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -111,7 +105,6 @@ func ExampleClient_zrange1() {
 	fmt.Println(zrangeResult2) // >>> [one two three]
 
 	zrangeResult3, err := rdb.ZRange(ctx, "myzset", 2, 3).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -119,7 +112,6 @@ func ExampleClient_zrange1() {
 	fmt.Println(zrangeResult3) // >>> [three]
 
 	zrangeResult4, err := rdb.ZRange(ctx, "myzset", -2, -1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -155,7 +147,6 @@ func ExampleClient_zrange2() {
 		redis.Z{Member: "two", Score: 2},
 		redis.Z{Member: "three", Score: 3},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -163,7 +154,6 @@ func ExampleClient_zrange2() {
 	fmt.Println(zRangeResult5) // >>> 3
 
 	zRangeResult6, err := rdb.ZRangeWithScores(ctx, "myzset", 0, 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -197,7 +187,6 @@ func ExampleClient_zrange3() {
 		redis.Z{Member: "two", Score: 2},
 		redis.Z{Member: "three", Score: 3},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -214,7 +203,6 @@ func ExampleClient_zrange3() {
 			Count:   1,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}

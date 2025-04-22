@@ -678,7 +678,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 	var client *redis.Client
-	var ctx = context.Background()
+	ctx := context.Background()
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
 		return redis.NewClient(&redis.Options{

@@ -37,7 +37,6 @@ func ExampleClient_transactions() {
 	}
 
 	cmds, err := pipe.Exec(ctx)
-
 	if err != nil {
 		panic(err)
 	}
@@ -75,7 +74,6 @@ func ExampleClient_transactions() {
 		pd4Result = (*redis.StatusCmd)(pipe.Get(ctx, "seat:4"))
 		return nil
 	})
-
 	if err != nil {
 		panic(err)
 	}
@@ -115,7 +113,6 @@ func ExampleClient_transactions() {
 		tx3Result = trans.IncrBy(ctx, "counter:3", 3)
 		return nil
 	})
-
 	if err != nil {
 		panic(err)
 	}

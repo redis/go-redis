@@ -60,7 +60,6 @@ func ExampleClient_query_em() {
 			FieldType: redis.SearchFieldTypeTag,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -219,7 +218,6 @@ func ExampleClient_query_em() {
 
 	for i, json := range exampleJsons {
 		_, err := rdb.JSONSet(ctx, fmt.Sprintf("bicycle:%v", i), "$", json).Result()
-
 		if err != nil {
 			panic(err)
 		}
@@ -229,7 +227,6 @@ func ExampleClient_query_em() {
 	res1, err := rdb.FTSearch(ctx,
 		"idx:bicycle", "@price:[270 270]",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -254,7 +251,6 @@ func ExampleClient_query_em() {
 			},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -271,7 +267,6 @@ func ExampleClient_query_em() {
 	res3, err := rdb.FTSearch(ctx,
 		"idx:bicycle", "@condition:{new}",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -306,7 +301,6 @@ func ExampleClient_query_em() {
 			FieldType: redis.SearchFieldTypeTag,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -318,7 +312,6 @@ func ExampleClient_query_em() {
 			"email": "test@redis.com",
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -328,7 +321,6 @@ func ExampleClient_query_em() {
 	res6, err := rdb.FTSearch(ctx, "idx:email",
 		"@email:{test\\@redis\\.com}",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -340,7 +332,6 @@ func ExampleClient_query_em() {
 	res7, err := rdb.FTSearch(ctx,
 		"idx:bicycle", "@description:\"rough terrain\"",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}

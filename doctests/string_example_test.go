@@ -27,7 +27,6 @@ func ExampleClient_set_get() {
 
 	// STEP_START set_get
 	res1, err := rdb.Set(ctx, "bike:1", "Deimos", 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -35,7 +34,6 @@ func ExampleClient_set_get() {
 	fmt.Println(res1) // >>> OK
 
 	res2, err := rdb.Get(ctx, "bike:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -65,7 +63,6 @@ func ExampleClient_setnx_xx() {
 
 	// STEP_START setnx_xx
 	res3, err := rdb.SetNX(ctx, "bike:1", "bike", 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -73,7 +70,6 @@ func ExampleClient_setnx_xx() {
 	fmt.Println(res3) // >>> false
 
 	res4, err := rdb.Get(ctx, "bike:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -81,7 +77,6 @@ func ExampleClient_setnx_xx() {
 	fmt.Println(res4) // >>> Deimos
 
 	res5, err := rdb.SetXX(ctx, "bike:1", "bike", 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -112,7 +107,6 @@ func ExampleClient_mset() {
 
 	// STEP_START mset
 	res6, err := rdb.MSet(ctx, "bike:1", "Deimos", "bike:2", "Ares", "bike:3", "Vanth").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -120,7 +114,6 @@ func ExampleClient_mset() {
 	fmt.Println(res6) // >>> OK
 
 	res7, err := rdb.MGet(ctx, "bike:1", "bike:2", "bike:3").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -150,7 +143,6 @@ func ExampleClient_incr() {
 
 	// STEP_START incr
 	res8, err := rdb.Set(ctx, "total_crashes", "0", 0).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -158,7 +150,6 @@ func ExampleClient_incr() {
 	fmt.Println(res8) // >>> OK
 
 	res9, err := rdb.Incr(ctx, "total_crashes").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -166,7 +157,6 @@ func ExampleClient_incr() {
 	fmt.Println(res9) // >>> 1
 
 	res10, err := rdb.IncrBy(ctx, "total_crashes", 10).Result()
-
 	if err != nil {
 		panic(err)
 	}

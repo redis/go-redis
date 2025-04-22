@@ -29,7 +29,6 @@ func ExampleClient_hset() {
 
 	// STEP_START hset
 	res1, err := rdb.HSet(ctx, "myhash", "field1", "Hello").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -37,7 +36,6 @@ func ExampleClient_hset() {
 	fmt.Println(res1) // >>> 1
 
 	res2, err := rdb.HGet(ctx, "myhash", "field1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -48,7 +46,6 @@ func ExampleClient_hset() {
 		"field2", "Hi",
 		"field3", "World",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -56,7 +53,6 @@ func ExampleClient_hset() {
 	fmt.Println(res3) // >>> 2
 
 	res4, err := rdb.HGet(ctx, "myhash", "field2").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -64,7 +60,6 @@ func ExampleClient_hset() {
 	fmt.Println(res4) // >>> Hi
 
 	res5, err := rdb.HGet(ctx, "myhash", "field3").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -72,14 +67,13 @@ func ExampleClient_hset() {
 	fmt.Println(res5) // >>> World
 
 	res6, err := rdb.HGetAll(ctx, "myhash").Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	keys := make([]string, 0, len(res6))
 
-	for key, _ := range res6 {
+	for key := range res6 {
 		keys = append(keys, key)
 	}
 
@@ -121,7 +115,6 @@ func ExampleClient_hget() {
 
 	// STEP_START hget
 	res7, err := rdb.HSet(ctx, "myhash", "field1", "foo").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -129,7 +122,6 @@ func ExampleClient_hget() {
 	fmt.Println(res7) // >>> 1
 
 	res8, err := rdb.HGet(ctx, "myhash", "field1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -137,7 +129,6 @@ func ExampleClient_hget() {
 	fmt.Println(res8) // >>> foo
 
 	res9, err := rdb.HGet(ctx, "myhash", "field2").Result()
-
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -171,7 +162,6 @@ func ExampleClient_hgetall() {
 		"field1", "Hello",
 		"field2", "World",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -179,14 +169,13 @@ func ExampleClient_hgetall() {
 	fmt.Println(hGetAllResult1) // >>> 2
 
 	hGetAllResult2, err := rdb.HGetAll(ctx, "myhash").Result()
-
 	if err != nil {
 		panic(err)
 	}
 
 	keys := make([]string, 0, len(hGetAllResult2))
 
-	for key, _ := range hGetAllResult2 {
+	for key := range hGetAllResult2 {
 		keys = append(keys, key)
 	}
 
@@ -225,7 +214,6 @@ func ExampleClient_hvals() {
 		"field1", "Hello",
 		"field2", "World",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -233,7 +221,6 @@ func ExampleClient_hvals() {
 	fmt.Println(hValsResult1) // >>> 2
 
 	hValsResult2, err := rdb.HVals(ctx, "myhash").Result()
-
 	if err != nil {
 		panic(err)
 	}

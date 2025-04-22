@@ -56,7 +56,6 @@ func ExampleClient_query_range() {
 			FieldType: redis.SearchFieldTypeTag,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -215,7 +214,6 @@ func ExampleClient_query_range() {
 
 	for i, json := range exampleJsons {
 		_, err := rdb.JSONSet(ctx, fmt.Sprintf("bicycle:%v", i), "$", json).Result()
-
 		if err != nil {
 			panic(err)
 		}
@@ -238,7 +236,6 @@ func ExampleClient_query_range() {
 			},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -277,7 +274,6 @@ func ExampleClient_query_range() {
 			},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -316,7 +312,6 @@ func ExampleClient_query_range() {
 			},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -353,7 +348,6 @@ func ExampleClient_query_range() {
 			Limit:       5,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}

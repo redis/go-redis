@@ -28,7 +28,6 @@ func ExampleClient_ping() {
 
 	// STEP_START ping
 	res1, err := rdb.SetBit(ctx, "pings:2024-01-01-00:00", 123, 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -36,7 +35,6 @@ func ExampleClient_ping() {
 	fmt.Println(res1) // >>> 0
 
 	res2, err := rdb.GetBit(ctx, "pings:2024-01-01-00:00", 123).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -44,7 +42,6 @@ func ExampleClient_ping() {
 	fmt.Println(res2) // >>> 1
 
 	res3, err := rdb.GetBit(ctx, "pings:2024-01-01-00:00", 456).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -71,7 +68,6 @@ func ExampleClient_bitcount() {
 	// start with fresh database
 	rdb.FlushDB(ctx)
 	_, err := rdb.SetBit(ctx, "pings:2024-01-01-00:00", 123, 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -83,7 +79,6 @@ func ExampleClient_bitcount() {
 			Start: 0,
 			End:   456,
 		}).Result()
-
 	if err != nil {
 		panic(err)
 	}

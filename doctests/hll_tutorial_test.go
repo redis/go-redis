@@ -28,7 +28,6 @@ func ExampleClient_pfadd() {
 
 	// STEP_START pfadd
 	res1, err := rdb.PFAdd(ctx, "bikes", "Hyperion", "Deimos", "Phoebe", "Quaoar").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -36,7 +35,6 @@ func ExampleClient_pfadd() {
 	fmt.Println(res1) // 1
 
 	res2, err := rdb.PFCount(ctx, "bikes").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -44,7 +42,6 @@ func ExampleClient_pfadd() {
 	fmt.Println(res2) // 4
 
 	res3, err := rdb.PFAdd(ctx, "commuter_bikes", "Salacia", "Mimas", "Quaoar").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -52,7 +49,6 @@ func ExampleClient_pfadd() {
 	fmt.Println(res3) // 1
 
 	res4, err := rdb.PFMerge(ctx, "all_bikes", "bikes", "commuter_bikes").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -60,7 +56,6 @@ func ExampleClient_pfadd() {
 	fmt.Println(res4) // OK
 
 	res5, err := rdb.PFCount(ctx, "all_bikes").Result()
-
 	if err != nil {
 		panic(err)
 	}

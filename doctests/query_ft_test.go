@@ -58,7 +58,6 @@ func ExampleClient_query_ft() {
 			FieldType: redis.SearchFieldTypeTag,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -217,7 +216,6 @@ func ExampleClient_query_ft() {
 
 	for i, json := range exampleJsons {
 		_, err := rdb.JSONSet(ctx, fmt.Sprintf("bicycle:%v", i), "$", json).Result()
-
 		if err != nil {
 			panic(err)
 		}
@@ -227,7 +225,6 @@ func ExampleClient_query_ft() {
 	res1, err := rdb.FTSearch(ctx,
 		"idx:bicycle", "@description: kids",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -249,7 +246,6 @@ func ExampleClient_query_ft() {
 	res2, err := rdb.FTSearch(ctx,
 		"idx:bicycle", "@model: ka*",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -266,7 +262,6 @@ func ExampleClient_query_ft() {
 	res3, err := rdb.FTSearch(ctx,
 		"idx:bicycle", "@brand: *bikes",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -287,7 +282,6 @@ func ExampleClient_query_ft() {
 	res4, err := rdb.FTSearch(ctx,
 		"idx:bicycle", "%optamized%",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -304,7 +298,6 @@ func ExampleClient_query_ft() {
 	res5, err := rdb.FTSearch(ctx,
 		"idx:bicycle", "%%optamised%%",
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}

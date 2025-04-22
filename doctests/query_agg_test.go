@@ -58,7 +58,6 @@ func ExampleClient_query_agg() {
 			FieldType: redis.SearchFieldTypeTag,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -217,7 +216,6 @@ func ExampleClient_query_agg() {
 
 	for i, json := range exampleJsons {
 		_, err := rdb.JSONSet(ctx, fmt.Sprintf("bicycle:%v", i), "$", json).Result()
-
 		if err != nil {
 			panic(err)
 		}
@@ -240,7 +238,6 @@ func ExampleClient_query_agg() {
 			},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -294,7 +291,6 @@ func ExampleClient_query_agg() {
 			},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -342,7 +338,6 @@ func ExampleClient_query_agg() {
 			},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -380,7 +375,6 @@ func ExampleClient_query_agg() {
 			},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
