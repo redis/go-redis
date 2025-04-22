@@ -66,3 +66,6 @@ RedisTimeseries
 RediSearch
 RawResult
 RawVal
+entra
+entraid
+Azure
