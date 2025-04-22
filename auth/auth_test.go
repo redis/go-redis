@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -47,10 +48,13 @@ func TestStreamingCredentialsProvider(t *testing.T) {
 
 		var receivedCreds []Credentials
 		var receivedErrors []error
+		var mu sync.Mutex
 
 		listener := NewReAuthCredentialsListener(
 			func(creds Credentials) error {
+				mu.Lock()
 				receivedCreds = append(receivedCreds, creds)
+				mu.Unlock()
 				return nil
 			},
 			func(err error) {
@@ -84,12 +88,14 @@ func TestStreamingCredentialsProvider(t *testing.T) {
 
 		// Wait for update to be processed
 		time.Sleep(100 * time.Millisecond)
+		mu.Lock()
 		if len(receivedCreds) != 2 {
 			t.Fatalf("expected 2 received credentials, got %d", len(receivedCreds))
 		}
 		if receivedCreds[1] != newCreds {
 			t.Fatalf("expected received credential %v, got %v", newCreds, receivedCreds[1])
 		}
+		mu.Unlock()
 
 		// Cancel subscription
 		if err := cancel(); err != nil {
