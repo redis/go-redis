@@ -62,6 +62,7 @@ key value NoSQL database that uses RocksDB as storage engine and is compatible w
 
 - Redis commands except QUIT and SYNC.
 - Automatic connection pooling.
+- [StreamingCredentialsProvider (e.g. entra id, oauth)](#1-streaming-credentials-provider-highest-priority)
 - [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
 - [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
 - [Scripting](https://redis.uptrace.dev/guide/lua-scripting.html).
@@ -128,6 +129,7 @@ func ExampleClient() {
     // Output: key value
     // key2 does not exist
 }
+```
 
 ### Authentication
 

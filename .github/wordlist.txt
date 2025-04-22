@@ -67,5 +67,10 @@ RediSearch
 RawResult
 RawVal
 entra
-entraid
+EntraID
+Entra
+OAuth
 Azure
+StreamingCredentialsProvider
+oauth
+entraid
