@@ -6,8 +6,6 @@ import (
 	"github.com/redis/go-redis/v9/internal/rand"
 )
 
-type ParentHooksMixinKey struct{}
-
 func RetryBackoff(retry int, minBackoff, maxBackoff time.Duration) time.Duration {
 	if retry < 0 {
 		panic("not reached")

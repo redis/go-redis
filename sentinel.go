@@ -309,7 +309,6 @@ func masterReplicaDialer(
 // SentinelClient is a client for a Redis Sentinel.
 type SentinelClient struct {
 	*baseClient
-	hooksMixin
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {

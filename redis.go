@@ -205,6 +205,7 @@ func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) e
 type baseClient struct {
 	opt      *Options
 	connPool pool.Pooler
+	hooksMixin
 
 	onClose func() error // hook called when client is closed
 }
@@ -352,20 +353,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	var err error
 	cn.Inited = true
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
-	var parentHooks hooksMixin
-	pH := ctx.Value(internal.ParentHooksMixinKey{})
-	switch pH := pH.(type) {
-	case nil:
-		parentHooks = hooksMixin{}
-	case hooksMixin:
-		parentHooks = pH.clone()
-	case *hooksMixin:
-		parentHooks = (*pH).clone()
-	default:
-		parentHooks = hooksMixin{}
-	}
 
-	conn := newConn(c.opt, connPool, parentHooks)
+	conn := newConn(c.opt, connPool, c.hooksMixin)
 
 	protocol := c.opt.Protocol
 	// By default, use RESP3 in current version.
@@ -743,7 +732,6 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 type Client struct {
 	*baseClient
 	cmdable
-	hooksMixin
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -779,7 +767,7 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 }
 
 func (c *Client) Conn() *Conn {
-	return newConn(c.opt, pool.NewStickyConnPool(c.connPool), c.hooksMixin.clone())
+	return newConn(c.opt, pool.NewStickyConnPool(c.connPool), c.hooksMixin)
 }
 
 // Do create a Cmd from the args and processes the cmd.
@@ -790,7 +778,6 @@ func (c *Client) Do(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (c *Client) Process(ctx context.Context, cmd Cmder) error {
-	ctx = context.WithValue(ctx, internal.ParentHooksMixinKey{}, c.hooksMixin)
 	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
@@ -913,20 +900,22 @@ type Conn struct {
 	baseClient
 	cmdable
 	statefulCmdable
-	hooksMixin
 }
 
+// newConn is a helper func to create a new Conn instance.
+// the Conn instance is not thread-safe and should not be shared between goroutines.
+// the parentHooks will be cloned, no need to clone before passing it.
 func newConn(opt *Options, connPool pool.Pooler, parentHooks hooksMixin) *Conn {
 	c := Conn{
 		baseClient: baseClient{
-			opt:      opt,
-			connPool: connPool,
+			opt:        opt,
+			connPool:   connPool,
+			hooksMixin: parentHooks.clone(),
 		},
 	}
 
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
-	c.hooksMixin = parentHooks
 	c.initHooks(hooks{
 		dial:       c.baseClient.dial,
 		process:    c.baseClient.process,
