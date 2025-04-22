@@ -3831,7 +3831,8 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 }
 
 // -----------------------------------------------------------------------
-// MapStringInterfaceCmd represents a command that returns a map of strings to interface{}.
+
+// MapMapStringInterfaceCmd represents a command that returns a map of strings to interface{}.
 type MapMapStringInterfaceCmd struct {
 	baseCmd
 	val map[string]interface{}
