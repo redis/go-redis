@@ -394,7 +394,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// or it could be DragonflyDB or a third-party redis-proxy. They all respond
 		// with different error string results for unsupported commands, making it
 		// difficult to rely on error strings to determine all results.
-		return fmt.Errorf("failed to initialize connection: %w", err)
+		return err
 	} else if password != "" {
 		// Try legacy AUTH command if HELLO failed
 		err = c.reAuthConnection(ctx, conn)(auth.NewBasicCredentials(username, password))
@@ -434,7 +434,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// Handle network errors (e.g. timeouts) in CLIENT SETINFO to avoid
 		// out of order responses later on.
 		if _, err = p.Exec(ctx); err != nil && !isRedisError(err) {
-			return fmt.Errorf("failed to set client identity: %w", err)
+			return err
 		}
 	}
 

@@ -51,7 +51,8 @@ func Example_instrumentation() {
 	rdb.AddHook(redisHook{})
 
 	rdb.Ping(ctx)
-	// Output: starting processing: <[ping]>
+	// Output:
+	// starting processing: <[ping]>
 	// dialing tcp :6379
 	// finished dialing tcp :6379
 	// starting processing: <[hello 3]>
@@ -61,7 +62,8 @@ func Example_instrumentation() {
 
 func ExamplePipeline_instrumentation() {
 	rdb := redis.NewClient(&redis.Options{
-		Addr: ":6379",
+		Addr:            ":6379",
+		DisableIdentity: true,
 	})
 	rdb.AddHook(redisHook{})
 
@@ -70,16 +72,19 @@ func ExamplePipeline_instrumentation() {
 		pipe.Ping(ctx)
 		return nil
 	})
-	// Output: pipeline starting processing: [ping:  ping: ]
-	// Output: pipeline starting processing: [[ping] [ping]]
+	// Output:
+	// pipeline starting processing: [[ping] [ping]]
 	// dialing tcp :6379
 	// finished dialing tcp :6379
+	// starting processing: <[hello 3]>
+	// finished processing: <[hello 3]>
 	// pipeline finished processing: [[ping] [ping]]
 }
 
 func ExampleClient_Watch_instrumentation() {
 	rdb := redis.NewClient(&redis.Options{
-		Addr: ":6379",
+		Addr:            ":6379",
+		DisableIdentity: true,
 	})
 	rdb.AddHook(redisHook{})
 
@@ -92,6 +97,8 @@ func ExampleClient_Watch_instrumentation() {
 	// starting processing: <[watch foo]>
 	// dialing tcp :6379
 	// finished dialing tcp :6379
+	// starting processing: <[hello 3]>
+	// finished processing: <[hello 3]>
 	// finished processing: <[watch foo]>
 	// starting processing: <[ping]>
 	// finished processing: <[ping]>
