@@ -225,7 +225,9 @@ type HExpireArgs struct {
 // HExpire - Sets the expiration time for specified fields in a hash in seconds.
 // The command constructs an argument list starting with "HEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
 // Available since Redis 7.4 CE.
-// For more information - https://redis.io/commands/hexpire/
+// For more information refer to [HEXPIRE Documentation].
+//
+// [HEXPIRE Documentation]: https://redis.io/commands/hexpire/
 func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd {
 	args := []interface{}{"HEXPIRE", key, formatSec(ctx, expiration), "FIELDS", len(fields)}
 
@@ -241,7 +243,9 @@ func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Durati
 // It requires a key, an expiration duration, a struct with boolean flags for conditional expiration settings (NX, XX, GT, LT), and a list of fields.
 // The command constructs an argument list starting with "HEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
 // Available since Redis 7.4 CE.
-// For more information - https://redis.io/commands/hexpire/
+// For more information refer to [HEXPIRE Documentation].
+//
+// [HEXPIRE Documentation]: https://redis.io/commands/hexpire/
 func (c cmdable) HExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
 	args := []interface{}{"HEXPIRE", key, formatSec(ctx, expiration)}
 
@@ -271,7 +275,9 @@ func (c cmdable) HExpireWithArgs(ctx context.Context, key string, expiration tim
 // Similar to HExpire, it accepts a key, an expiration duration in milliseconds, a struct with expiration condition flags, and a list of fields.
 // The command modifies the standard time.Duration to milliseconds for the Redis command.
 // Available since Redis 7.4 CE.
-// For more information - https://redis.io/commands/hpexpire/
+// For more information refer to [HPEXPIRE Documentation].
+//
+// [HPEXPIRE Documentation]: https://redis.io/commands/hpexpire/
 func (c cmdable) HPExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd {
 	args := []interface{}{"HPEXPIRE", key, formatMs(ctx, expiration), "FIELDS", len(fields)}
 
@@ -283,7 +289,13 @@ func (c cmdable) HPExpire(ctx context.Context, key string, expiration time.Durat
 	return cmd
 }
 
+// HPExpireWithArgs - Sets the expiration time for specified fields in a hash in milliseconds.
+// It requires a key, an expiration duration, a struct with boolean flags for conditional expiration settings (NX, XX, GT, LT), and a list of fields.
+// The command constructs an argument list starting with "HPEXPIRE", followed by the key, duration, any conditional flags, and the specified fields.
 // Available since Redis 7.4 CE.
+// For more information refer to [HPEXPIRE Documentation].
+//
+// [HPEXPIRE Documentation]: https://redis.io/commands/hpexpire/
 func (c cmdable) HPExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
 	args := []interface{}{"HPEXPIRE", key, formatMs(ctx, expiration)}
 
@@ -313,7 +325,9 @@ func (c cmdable) HPExpireWithArgs(ctx context.Context, key string, expiration ti
 // Takes a key, a UNIX timestamp, a struct of conditional flags, and a list of fields.
 // The command sets absolute expiration times based on the UNIX timestamp provided.
 // Available since Redis 7.4 CE.
-// For more information - https://redis.io/commands/hexpireat/
+// For more information refer to [HExpireAt Documentation].
+//
+// [HExpireAt Documentation]: https://redis.io/commands/hexpireat/
 func (c cmdable) HExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
 
 	args := []interface{}{"HEXPIREAT", key, tm.Unix(), "FIELDS", len(fields)}
@@ -353,8 +367,10 @@ func (c cmdable) HExpireAtWithArgs(ctx context.Context, key string, tm time.Time
 
 // HPExpireAt - Sets the expiration time for specified fields in a hash to a UNIX timestamp in milliseconds.
 // Similar to HExpireAt but for timestamps in milliseconds. It accepts the same parameters and adjusts the UNIX time to milliseconds.
-// Available since Redis 7.4 CE.
-// For more information - https://redis.io/commands/hpexpireat/
+// Available since Redis 7.4 CE.
+// For more information refer to [HExpireAt Documentation].
+//
+// [HExpireAt Documentation]: https://redis.io/commands/hexpireat/
 func (c cmdable) HPExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
 	args := []interface{}{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond), "FIELDS", len(fields)}
 
@@ -395,7 +411,9 @@ func (c cmdable) HPExpireAtWithArgs(ctx context.Context, key string, tm time.Tim
 // Accepts a key and the fields themselves.
 // This command ensures that each field specified will have its expiration removed if present.
 // Available since Redis 7.4 CE.
-// For more information - https://redis.io/commands/hpersist/
+// For more information refer to [HPersist Documentation].
+//
+// [HPersist Documentation]: https://redis.io/commands/hpersist/
 func (c cmdable) HPersist(ctx context.Context, key string, fields ...string) *IntSliceCmd {
 	args := []interface{}{"HPERSIST", key, "FIELDS", len(fields)}
 
@@ -411,6 +429,9 @@ func (c cmdable) HPersist(ctx context.Context, key string, fields ...string) *In
 // Requires a key and the fields themselves to fetch their expiration timestamps.
 // This command returns the expiration times for each field or error/status codes for each field as specified.
 // Available since Redis 7.4 CE.
+// For more information refer to [HExpireTime Documentation].
+//
+// [HExpireTime Documentation]: https://redis.io/commands/hexpiretime/
 // For more information - https://redis.io/commands/hexpiretime/
 func (c cmdable) HExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd {
 	args := []interface{}{"HEXPIRETIME", key, "FIELDS", len(fields)}
@@ -427,6 +448,9 @@ func (c cmdable) HExpireTime(ctx context.Context, key string, fields ...string) 
 // Similar to HExpireTime, adjusted for timestamps in milliseconds. It requires the same parameters.
 // Provides the expiration timestamp for each field in milliseconds.
 // Available since Redis 7.4 CE.
+// For more information refer to [HExpireTime Documentation].
+//
+// [HExpireTime Documentation]: https://redis.io/commands/hexpiretime/
 // For more information - https://redis.io/commands/hexpiretime/
 func (c cmdable) HPExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd {
 	args := []interface{}{"HPEXPIRETIME", key, "FIELDS", len(fields)}
@@ -443,7 +467,9 @@ func (c cmdable) HPExpireTime(ctx context.Context, key string, fields ...string)
 // Requires a key and the fields themselves. It returns the TTL for each specified field.
 // This command fetches the TTL in seconds for each field or returns error/status codes as appropriate.
 // Available since Redis 7.4 CE.
-// For more information - https://redis.io/commands/httl/
+// For more information refer to [HTTL Documentation].
+//
+// [HTTL Documentation]: https://redis.io/commands/httl/
 func (c cmdable) HTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd {
 	args := []interface{}{"HTTL", key, "FIELDS", len(fields)}
 
@@ -459,6 +485,9 @@ func (c cmdable) HTTL(ctx context.Context, key string, fields ...string) *IntSli
 // Similar to HTTL, but returns the TTL in milliseconds. It requires a key and the specified fields.
 // This command provides the TTL in milliseconds for each field or returns error/status codes as needed.
 // Available since Redis 7.4 CE.
+// For more information refer to [HPTTL Documentation].
+//
+// [HPTTL Documentation]: https://redis.io/commands/hpttl/
 // For more information - https://redis.io/commands/hpttl/
 func (c cmdable) HPTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd {
 	args := []interface{}{"HPTTL", key, "FIELDS", len(fields)}
