@@ -167,6 +167,24 @@ func ExampleClient() *redis.Client {
 
 ```
 
+### Instrument with OpenTelemetry
+
+```go
+import (
+    "github.com/redis/go-redis/v9"
+    "github.com/redis/go-redis/extra/redisotel/v9"
+    "errors"
+)
+
+func main() {
+    ...
+    rdb := redis.NewClient(&redis.Options{...})
+
+    if err := errors.Join(redisotel.InstrumentTracing(rdb), redisotel.InstrumentMetrics(rdb)); err != nil {
+        log.Fatal(err)
+    }
+```
+
 
 ### Advanced Configuration
 
@@ -178,16 +196,18 @@ By default, go-redis automatically sends the client library name and version dur
 
 #### Disabling Identity Verification
 
-When connection identity verification is not required or needs to be explicitly disabled, a `DisableIndentity` configuration option exists. In V10 of this library, `DisableIndentity` will become `DisableIdentity` in order to fix the associated typo.
+When connection identity verification is not required or needs to be explicitly disabled, a `DisableIdentity` configuration option exists.
+Initially there was a typo and the option was named `DisableIndentity` instead of `DisableIdentity`. The misspelled option is marked as Deprecated and will be removed in V10 of this library.
+Although both options will work at the moment, the correct option is `DisableIdentity`. The deprecated option will be removed in V10 of this library, so please use the correct option name to avoid any issues.
 
-To disable verification, set the `DisableIndentity` option to `true` in the Redis client options:
+To disable verification, set the `DisableIdentity` option to `true` in the Redis client options:
 
 ```go
 rdb := redis.NewClient(&redis.Options{
     Addr:            "localhost:6379",
     Password:        "",
     DB:              0,
-    DisableIndentity: true, // Disable set-info on connect
+    DisableIdentity: true, // Disable set-info on connect
 })
 ```
 
@@ -213,9 +233,26 @@ val1 := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{})
 
 In the Redis-Search module, **the default dialect is 2**. If needed, you can explicitly specify a different dialect using the appropriate configuration in your queries.
 
-## Contributing
+**Important**: Be aware that the query dialect may impact the results returned. If needed, you can revert to a different dialect version by passing the desired dialect in the arguments of the command you want to execute.
+For example:
+```
+	res2, err := rdb.FTSearchWithArgs(ctx,
+		"idx:bicycle",
+		"@pickup_zone:[CONTAINS $bike]",
+		&redis.FTSearchOptions{
+			Params: map[string]interface{}{
+				"bike": "POINT(-0.1278 51.5074)",
+			},
+			DialectVersion: 3,
+		},
+	).Result()
+```
+You can find further details in the [query dialect documentation](https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/dialects/).
 
-Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
+## Contributing
+We welcome contributions to the go-redis library! If you have a bug fix, feature request, or improvement, please open an issue or pull request on GitHub.
+We appreciate your help in making go-redis better for everyone.
+If you are interested in contributing to the go-redis library, please check out our [contributing guidelines](CONTRIBUTING.md) for more information on how to get started.
 
 ## Look and feel
 
