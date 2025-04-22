@@ -330,7 +330,7 @@ func (info LibraryInfo) Validate() error {
 	return nil
 }
 
-// Hello Set the resp protocol used.
+// Hello sets the resp protocol used.
 func (c statefulCmdable) Hello(ctx context.Context,
 	ver int, username, password, clientName string,
 ) *MapStringInterfaceCmd {

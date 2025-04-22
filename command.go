@@ -4692,7 +4692,8 @@ func (cmd *MapStringStringSliceCmd) Clone() Cmder {
 }
 
 // -----------------------------------------------------------------------
-// MapStringInterfaceCmd represents a command that returns a map of strings to interface{}.
+
+// MapMapStringInterfaceCmd represents a command that returns a map of strings to interface{}.
 type MapMapStringInterfaceCmd struct {
 	baseCmd
 	val map[string]interface{}
