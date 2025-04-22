@@ -10,7 +10,7 @@
 [![Twitch](https://img.shields.io/twitch/status/redisinc?style=social)](https://www.twitch.tv/redisinc)
 [![YouTube](https://img.shields.io/youtube/channel/views/UCD78lHSwYqMlyetR0_P4Vig?style=social)](https://www.youtube.com/redisinc)
 [![Twitter](https://img.shields.io/twitter/follow/redisinc?style=social)](https://twitter.com/redisinc)
-![Stack Exchange questions](https://img.shields.io/stackexchange/stackoverflow/t/lettuce?style=social&logo=stackoverflow&label=Stackoverflow)
+[![Stack Exchange questions](https://img.shields.io/stackexchange/stackoverflow/t/go-redis?style=social&logo=stackoverflow&label=Stackoverflow)](https://stackoverflow.com/questions/tagged/go-redis)
 
 > go-redis is the official Redis client library for the Go programming language. It offers a straightforward interface for interacting with Redis servers. 
 
