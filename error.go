@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -37,12 +38,24 @@ type Error interface {
 
 var _ Error = proto.RedisError("")
 
+func isContextError(err error) bool {
+	switch err {
+	case context.Canceled, context.DeadlineExceeded:
+		return true
+	default:
+		return false
+	}
+}
+
 func shouldRetry(err error, retryTimeout bool) bool {
 	switch err {
 	case io.EOF, io.ErrUnexpectedEOF:
 		return true
 	case nil, context.Canceled, context.DeadlineExceeded:
 		return false
+	case pool.ErrPoolTimeout:
+		// connection pool timeout, increase retries. #3289
+		return true
 	}
 
 	if v, ok := err.(timeoutError); ok {
@@ -60,6 +73,9 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return true
 	}
 	if strings.HasPrefix(s, "READONLY ") {
+		return true
+	}
+	if strings.HasPrefix(s, "MASTERDOWN ") {
 		return true
 	}
 	if strings.HasPrefix(s, "CLUSTERDOWN ") {
@@ -129,7 +145,9 @@ func isMovedError(err error) (moved bool, ask bool, addr string) {
 	if ind == -1 {
 		return false, false, ""
 	}
+
 	addr = s[ind+1:]
+	addr = internal.GetAddr(addr)
 	return
 }
 

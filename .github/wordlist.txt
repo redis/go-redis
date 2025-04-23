@@ -1,4 +1,5 @@
 ACLs
+APIs
 autoload
 autoloader
 autoloading
@@ -28,6 +29,7 @@ Lua
 MSSQL
 namespace
 NoSQL
+OpenTelemetry
 ORM
 Packagist
 PhpRedis
@@ -46,11 +48,14 @@ runtime
 SHA
 sharding
 SETNAME
+SpellCheck
 SSL
 struct
 stunnel
+SynDump
 TCP
 TLS
+UnstableResp
 uri
 URI
 url
@@ -58,3 +63,6 @@ variadic
 RedisStack
 RedisGears
 RedisTimeseries
+RediSearch
+RawResult
+RawVal

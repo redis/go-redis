@@ -30,8 +30,6 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 		rdb.AddHook(newTracingHook(connString, opts...))
 		return nil
 	case *redis.ClusterClient:
-		rdb.AddHook(newTracingHook("", opts...))
-
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			opt := rdb.Options()
 			opts = addServerAttributes(opts, opt.Addr)
@@ -40,8 +38,6 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 		})
 		return nil
 	case *redis.Ring:
-		rdb.AddHook(newTracingHook("", opts...))
-
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			opt := rdb.Options()
 			opts = addServerAttributes(opts, opt.Addr)
@@ -91,10 +87,6 @@ func newTracingHook(connString string, opts ...TracingOption) *tracingHook {
 
 func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if !trace.SpanFromContext(ctx).IsRecording() {
-			return hook(ctx, network, addr)
-		}
-
 		ctx, span := th.conf.tracer.Start(ctx, "redis.dial", th.spanOpts...)
 		defer span.End()
 
@@ -109,10 +101,6 @@ func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 
 func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		if !trace.SpanFromContext(ctx).IsRecording() {
-			return hook(ctx, cmd)
-		}
-
 		fn, file, line := funcFileLine("github.com/redis/go-redis")
 
 		attrs := make([]attribute.KeyValue, 0, 8)
@@ -145,10 +133,6 @@ func (th *tracingHook) ProcessPipelineHook(
 	hook redis.ProcessPipelineHook,
 ) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
-		if !trace.SpanFromContext(ctx).IsRecording() {
-			return hook(ctx, cmds)
-		}
-
 		fn, file, line := funcFileLine("github.com/redis/go-redis")
 
 		attrs := make([]attribute.KeyValue, 0, 8)

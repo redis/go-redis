@@ -81,6 +81,8 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 		return dst
 	case time.Time, time.Duration, encoding.BinaryMarshaler, net.IP:
 		return append(dst, arg)
+	case nil:
+		return dst
 	default:
 		// scan struct field
 		v := reflect.ValueOf(arg)
@@ -211,7 +213,6 @@ type Cmdable interface {
 	ACLCmdable
 	BitMapCmdable
 	ClusterCmdable
-	GearsCmdable
 	GenericCmdable
 	GeoCmdable
 	HashCmdable
@@ -220,6 +221,7 @@ type Cmdable interface {
 	ProbabilisticCmdable
 	PubSubCmdable
 	ScriptingFunctionsCmdable
+	SearchCmdable
 	SetCmdable
 	SortedSetCmdable
 	StringCmdable
@@ -330,7 +332,7 @@ func (info LibraryInfo) Validate() error {
 	return nil
 }
 
-// Hello Set the resp protocol used.
+// Hello sets the resp protocol used.
 func (c statefulCmdable) Hello(ctx context.Context,
 	ver int, username, password, clientName string,
 ) *MapStringInterfaceCmd {
@@ -418,6 +420,12 @@ func (c cmdable) Echo(ctx context.Context, message interface{}) *StringCmd {
 
 func (c cmdable) Ping(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "ping")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) Do(ctx context.Context, args ...interface{}) *Cmd {
+	cmd := NewCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
