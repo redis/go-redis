@@ -7209,6 +7209,17 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
 		})
+
+		It("returns empty values when args are nil", func() {
+			vals, err := client.Eval(
+				ctx,
+				"return {ARGV[1]}",
+				[]string{},
+				nil,
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(BeEmpty())
+		})
 	})
 
 	Describe("EvalRO", func() {
@@ -7231,6 +7242,17 @@ var _ = Describe("Commands", func() {
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
+		})
+
+		It("returns empty values when args are nil", func() {
+			vals, err := client.EvalRO(
+				ctx,
+				"return {ARGV[1]}",
+				[]string{},
+				nil,
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(BeEmpty())
 		})
 	})
 
