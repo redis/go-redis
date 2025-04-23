@@ -113,7 +113,7 @@ func (cmd *JSONCmd) Expanded() (interface{}, error) {
 
 func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 	// nil response from JSON.(M)GET (cmd.baseCmd.err will be "redis: nil")
-	if cmd.baseCmd.Err() == Nil {
+	if cmd.Err() == Nil {
 		cmd.val = ""
 		return Nil
 	}
@@ -182,7 +182,7 @@ func (cmd *JSONSliceCmd) Result() ([]interface{}, error) {
 }
 
 func (cmd *JSONSliceCmd) readReply(rd *proto.Reader) error {
-	if cmd.baseCmd.Err() == Nil {
+	if cmd.Err() == Nil {
 		cmd.val = nil
 		return Nil
 	}

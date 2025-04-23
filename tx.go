@@ -39,10 +39,10 @@ func (c *Tx) init() {
 	c.statefulCmdable = c.Process
 
 	c.initHooks(hooks{
-		dial:       c.baseClient.dial,
-		process:    c.baseClient.process,
-		pipeline:   c.baseClient.processPipeline,
-		txPipeline: c.baseClient.processTxPipeline,
+		dial:       c.dial,
+		process:    c.process,
+		pipeline:   c.processPipeline,
+		txPipeline: c.processTxPipeline,
 	})
 }
 

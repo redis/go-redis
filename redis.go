@@ -677,16 +677,16 @@ func NewClient(opt *Options) *Client {
 func (c *Client) init() {
 	c.cmdable = c.Process
 	c.initHooks(hooks{
-		dial:       c.baseClient.dial,
-		process:    c.baseClient.process,
-		pipeline:   c.baseClient.processPipeline,
-		txPipeline: c.baseClient.processTxPipeline,
+		dial:       c.dial,
+		process:    c.process,
+		pipeline:   c.processPipeline,
+		txPipeline: c.processTxPipeline,
 	})
 }
 
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	clone := *c
-	clone.baseClient = c.baseClient.withTimeout(timeout)
+	clone.baseClient = c.withTimeout(timeout)
 	clone.init()
 	return &clone
 }
@@ -839,10 +839,10 @@ func newConn(opt *Options, connPool pool.Pooler) *Conn {
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
 	c.initHooks(hooks{
-		dial:       c.baseClient.dial,
-		process:    c.baseClient.process,
-		pipeline:   c.baseClient.processPipeline,
-		txPipeline: c.baseClient.processTxPipeline,
+		dial:       c.dial,
+		process:    c.process,
+		pipeline:   c.processPipeline,
+		txPipeline: c.processTxPipeline,
 	})
 
 	return &c
