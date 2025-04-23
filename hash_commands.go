@@ -520,7 +520,7 @@ func (c cmdable) HGetEX(ctx context.Context, key string, fields ...string) *Stri
 	return cmd
 }
 
-// ExpirationType represents an expiration option for the HGETEX command.
+// HGetEXExpirationType represents an expiration option for the HGETEX command.
 type HGetEXExpirationType string
 
 const (
