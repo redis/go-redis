@@ -3,8 +3,14 @@
 [![build workflow](https://github.com/redis/go-redis/actions/workflows/build.yml/badge.svg)](https://github.com/redis/go-redis/actions)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/redis/go-redis/v9)](https://pkg.go.dev/github.com/redis/go-redis/v9?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
+[![Go Report Card](https://goreportcard.com/badge/github.com/redis/go-redis/v9)](https://goreportcard.com/report/github.com/redis/go-redis/v9)
 [![codecov](https://codecov.io/github/redis/go-redis/graph/badge.svg?token=tsrCZKuSSw)](https://codecov.io/github/redis/go-redis)
-[![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
+
+[![Discord](https://img.shields.io/discord/697882427875393627.svg?style=social&logo=discord)](https://discord.gg/W4txy5AeKM)
+[![Twitch](https://img.shields.io/twitch/status/redisinc?style=social)](https://www.twitch.tv/redisinc)
+[![YouTube](https://img.shields.io/youtube/channel/views/UCD78lHSwYqMlyetR0_P4Vig?style=social)](https://www.youtube.com/redisinc)
+[![Twitter](https://img.shields.io/twitter/follow/redisinc?style=social)](https://twitter.com/redisinc)
+[![Stack Exchange questions](https://img.shields.io/stackexchange/stackoverflow/t/go-redis?style=social&logo=stackoverflow&label=Stackoverflow)](https://stackoverflow.com/questions/tagged/go-redis)
 
 > go-redis is the official Redis client library for the Go programming language. It offers a straightforward interface for interacting with Redis servers. 
 
@@ -44,7 +50,7 @@ in the `go.mod` to `go 1.24` in one of the next releases.
 ## Resources
 
 - [Discussions](https://github.com/redis/go-redis/discussions)
-- [Chat](https://discord.gg/rWtp5Aj)
+- [Chat](https://discord.gg/W4txy5AeKM)
 - [Reference](https://pkg.go.dev/github.com/redis/go-redis/v9)
 - [Examples](https://pkg.go.dev/github.com/redis/go-redis/v9#pkg-examples)
 
@@ -167,6 +173,24 @@ func ExampleClient() *redis.Client {
 
 ```
 
+### Instrument with OpenTelemetry
+
+```go
+import (
+    "github.com/redis/go-redis/v9"
+    "github.com/redis/go-redis/extra/redisotel/v9"
+    "errors"
+)
+
+func main() {
+    ...
+    rdb := redis.NewClient(&redis.Options{...})
+
+    if err := errors.Join(redisotel.InstrumentTracing(rdb), redisotel.InstrumentMetrics(rdb)); err != nil {
+        log.Fatal(err)
+    }
+```
+
 
 ### Advanced Configuration
 
@@ -178,16 +202,18 @@ By default, go-redis automatically sends the client library name and version dur
 
 #### Disabling Identity Verification
 
-When connection identity verification is not required or needs to be explicitly disabled, a `DisableIndentity` configuration option exists. In V10 of this library, `DisableIndentity` will become `DisableIdentity` in order to fix the associated typo.
+When connection identity verification is not required or needs to be explicitly disabled, a `DisableIdentity` configuration option exists.
+Initially there was a typo and the option was named `DisableIndentity` instead of `DisableIdentity`. The misspelled option is marked as Deprecated and will be removed in V10 of this library.
+Although both options will work at the moment, the correct option is `DisableIdentity`. The deprecated option will be removed in V10 of this library, so please use the correct option name to avoid any issues.
 
-To disable verification, set the `DisableIndentity` option to `true` in the Redis client options:
+To disable verification, set the `DisableIdentity` option to `true` in the Redis client options:
 
 ```go
 rdb := redis.NewClient(&redis.Options{
     Addr:            "localhost:6379",
     Password:        "",
     DB:              0,
-    DisableIndentity: true, // Disable set-info on connect
+    DisableIdentity: true, // Disable set-info on connect
 })
 ```
 
@@ -209,9 +235,30 @@ res1, err := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptio
 val1 := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{}).RawVal()
 ```
 
-## Contributing
+#### Redis-Search Default Dialect
 
-Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
+In the Redis-Search module, **the default dialect is 2**. If needed, you can explicitly specify a different dialect using the appropriate configuration in your queries.
+
+**Important**: Be aware that the query dialect may impact the results returned. If needed, you can revert to a different dialect version by passing the desired dialect in the arguments of the command you want to execute.
+For example:
+```
+	res2, err := rdb.FTSearchWithArgs(ctx,
+		"idx:bicycle",
+		"@pickup_zone:[CONTAINS $bike]",
+		&redis.FTSearchOptions{
+			Params: map[string]interface{}{
+				"bike": "POINT(-0.1278 51.5074)",
+			},
+			DialectVersion: 3,
+		},
+	).Result()
+```
+You can find further details in the [query dialect documentation](https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/dialects/).
+
+## Contributing
+We welcome contributions to the go-redis library! If you have a bug fix, feature request, or improvement, please open an issue or pull request on GitHub.
+We appreciate your help in making go-redis better for everyone.
+If you are interested in contributing to the go-redis library, please check out our [contributing guidelines](CONTRIBUTING.md) for more information on how to get started.
 
 ## Look and feel
 
