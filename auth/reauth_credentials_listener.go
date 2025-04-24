@@ -14,22 +14,24 @@ type ReAuthCredentialsListener struct {
 // It calls the reAuth function with the new credentials.
 // If the reAuth function returns an error, it calls the onErr function with the error.
 func (c *ReAuthCredentialsListener) OnNext(credentials Credentials) {
-	if c.reAuth != nil {
-		err := c.reAuth(credentials)
-		if err != nil {
-			if c.onErr != nil {
-				c.onErr(err)
-			}
-		}
+	if c.reAuth == nil {
+		return
+	}
+
+	err := c.reAuth(credentials)
+	if err != nil {
+		c.OnError(err)
 	}
 }
 
 // OnError is called when an error occurs.
 // It can be called from both the credentials provider and the reAuth function.
 func (c *ReAuthCredentialsListener) OnError(err error) {
-	if c.onErr != nil {
-		c.onErr(err)
+	if c.onErr == nil {
+		return
 	}
+
+	c.onErr(err)
 }
 
 // NewReAuthCredentialsListener creates a new ReAuthCredentialsListener.
