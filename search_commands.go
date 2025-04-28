@@ -114,6 +114,7 @@ type SpellCheckTerms struct {
 }
 
 type FTExplainOptions struct {
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
 	Dialect string
 }
 
@@ -261,7 +262,8 @@ type FTAggregateOptions struct {
 	WithCursor        bool
 	WithCursorOptions *FTAggregateWithCursor
 	Params            map[string]interface{}
-	DialectVersion    int
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	DialectVersion int
 }
 
 type FTSearchFilter struct {
@@ -320,8 +322,12 @@ type FTSearchOptions struct {
 	SortByWithCount bool
 	LimitOffset     int
 	Limit           int
-	Params          map[string]interface{}
-	DialectVersion  int
+	// CountOnly sets LIMIT 0 0 to get the count - number of documents in the result set without actually returning the result set.
+	// When using this option, the Limit and LimitOffset options are ignored.
+	CountOnly bool
+	Params    map[string]interface{}
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	DialectVersion int
 }
 
 type FTSynDumpResult struct {
@@ -437,7 +443,8 @@ type IndexDefinition struct {
 type FTSpellCheckOptions struct {
 	Distance int
 	Terms    *FTSpellCheckTerms
-	Dialect  int
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	Dialect int
 }
 
 type FTSpellCheckTerms struct {
@@ -604,6 +611,8 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 
 		if options.DialectVersion > 0 {
 			queryArgs = append(queryArgs, "DIALECT", options.DialectVersion)
+		} else {
+			queryArgs = append(queryArgs, "DIALECT", 2)
 		}
 	}
 	return queryArgs
@@ -801,6 +810,8 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.DialectVersion > 0 {
 			args = append(args, "DIALECT", options.DialectVersion)
+		} else {
+			args = append(args, "DIALECT", 2)
 		}
 	}
 
@@ -1174,6 +1185,8 @@ func (c cmdable) FTExplainWithArgs(ctx context.Context, index string, query stri
 	args := []interface{}{"FT.EXPLAIN", index, query}
 	if options.Dialect != "" {
 		args = append(args, "DIALECT", options.Dialect)
+	} else {
+		args = append(args, "DIALECT", 2)
 	}
 	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1471,6 +1484,8 @@ func (c cmdable) FTSpellCheckWithArgs(ctx context.Context, index string, query s
 		}
 		if options.Dialect > 0 {
 			args = append(args, "DIALECT", options.Dialect)
+		} else {
+			args = append(args, "DIALECT", 2)
 		}
 	}
 	cmd := newFTSpellCheckCmd(ctx, args...)
@@ -1840,6 +1855,8 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 		}
 		if options.DialectVersion > 0 {
 			queryArgs = append(queryArgs, "DIALECT", options.DialectVersion)
+		} else {
+			queryArgs = append(queryArgs, "DIALECT", 2)
 		}
 	}
 	return queryArgs
@@ -1944,8 +1961,12 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 				args = append(args, "WITHCOUNT")
 			}
 		}
-		if options.LimitOffset >= 0 && options.Limit > 0 {
-			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
+		if options.CountOnly {
+			args = append(args, "LIMIT", 0, 0)
+		} else {
+			if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
+				args = append(args, "LIMIT", options.LimitOffset, options.Limit)
+			}
 		}
 		if options.Params != nil {
 			args = append(args, "PARAMS", len(options.Params)*2)
@@ -1955,6 +1976,8 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 		}
 		if options.DialectVersion > 0 {
 			args = append(args, "DIALECT", options.DialectVersion)
+		} else {
+			args = append(args, "DIALECT", 2)
 		}
 	}
 	cmd := newFTSearchCmd(ctx, options, args...)
@@ -2078,215 +2101,3 @@ func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *Str
 	_ = c(ctx, cmd)
 	return cmd
 }
-
-// type FTProfileResult struct {
-// 	Results []interface{}
-// 	Profile ProfileDetails
-// }
-
-// type ProfileDetails struct {
-// 	TotalProfileTime        string
-// 	ParsingTime             string
-// 	PipelineCreationTime    string
-// 	Warning                 string
-// 	IteratorsProfile        []IteratorProfile
-// 	ResultProcessorsProfile []ResultProcessorProfile
-// }
-
-// type IteratorProfile struct {
-// 	Type           string
-// 	QueryType      string
-// 	Time           interface{}
-// 	Counter        int
-// 	Term           string
-// 	Size           int
-// 	ChildIterators []IteratorProfile
-// }
-
-// type ResultProcessorProfile struct {
-// 	Type    string
-// 	Time    interface{}
-// 	Counter int
-// }
-
-// func parseFTProfileResult(data []interface{}) (FTProfileResult, error) {
-// 	var result FTProfileResult
-// 	if len(data) < 2 {
-// 		return result, fmt.Errorf("unexpected data length")
-// 	}
-
-// 	// Parse results
-// 	result.Results = data[0].([]interface{})
-
-// 	// Parse profile details
-// 	profileData := data[1].([]interface{})
-// 	profileDetails := ProfileDetails{}
-// 	for i := 0; i < len(profileData); i += 2 {
-// 		switch profileData[i].(string) {
-// 		case "Total profile time":
-// 			profileDetails.TotalProfileTime = profileData[i+1].(string)
-// 		case "Parsing time":
-// 			profileDetails.ParsingTime = profileData[i+1].(string)
-// 		case "Pipeline creation time":
-// 			profileDetails.PipelineCreationTime = profileData[i+1].(string)
-// 		case "Warning":
-// 			profileDetails.Warning = profileData[i+1].(string)
-// 		case "Iterators profile":
-// 			profileDetails.IteratorsProfile = parseIteratorsProfile(profileData[i+1].([]interface{}))
-// 		case "Result processors profile":
-// 			profileDetails.ResultProcessorsProfile = parseResultProcessorsProfile(profileData[i+1].([]interface{}))
-// 		}
-// 	}
-
-// 	result.Profile = profileDetails
-// 	return result, nil
-// }
-
-// func parseIteratorsProfile(data []interface{}) []IteratorProfile {
-// 	var iterators []IteratorProfile
-// 	for _, item := range data {
-// 		profile := item.([]interface{})
-// 		iterator := IteratorProfile{}
-// 		for i := 0; i < len(profile); i += 2 {
-// 			switch profile[i].(string) {
-// 			case "Type":
-// 				iterator.Type = profile[i+1].(string)
-// 			case "Query type":
-// 				iterator.QueryType = profile[i+1].(string)
-// 			case "Time":
-// 				iterator.Time = profile[i+1]
-// 			case "Counter":
-// 				iterator.Counter = int(profile[i+1].(int64))
-// 			case "Term":
-// 				iterator.Term = profile[i+1].(string)
-// 			case "Size":
-// 				iterator.Size = int(profile[i+1].(int64))
-// 			case "Child iterators":
-// 				iterator.ChildIterators = parseChildIteratorsProfile(profile[i+1].([]interface{}))
-// 			}
-// 		}
-// 		iterators = append(iterators, iterator)
-// 	}
-// 	return iterators
-// }
-
-// func parseChildIteratorsProfile(data []interface{}) []IteratorProfile {
-// 	var iterators []IteratorProfile
-// 	for _, item := range data {
-// 		profile := item.([]interface{})
-// 		iterator := IteratorProfile{}
-// 		for i := 0; i < len(profile); i += 2 {
-// 			switch profile[i].(string) {
-// 			case "Type":
-// 				iterator.Type = profile[i+1].(string)
-// 			case "Query type":
-// 				iterator.QueryType = profile[i+1].(string)
-// 			case "Time":
-// 				iterator.Time = profile[i+1]
-// 			case "Counter":
-// 				iterator.Counter = int(profile[i+1].(int64))
-// 			case "Term":
-// 				iterator.Term = profile[i+1].(string)
-// 			case "Size":
-// 				iterator.Size = int(profile[i+1].(int64))
-// 			}
-// 		}
-// 		iterators = append(iterators, iterator)
-// 	}
-// 	return iterators
-// }
-
-// func parseResultProcessorsProfile(data []interface{}) []ResultProcessorProfile {
-// 	var processors []ResultProcessorProfile
-// 	for _, item := range data {
-// 		profile := item.([]interface{})
-// 		processor := ResultProcessorProfile{}
-// 		for i := 0; i < len(profile); i += 2 {
-// 			switch profile[i].(string) {
-// 			case "Type":
-// 				processor.Type = profile[i+1].(string)
-// 			case "Time":
-// 				processor.Time = profile[i+1]
-// 			case "Counter":
-// 				processor.Counter = int(profile[i+1].(int64))
-// 			}
-// 		}
-// 		processors = append(processors, processor)
-// 	}
-// 	return processors
-// }
-
-// func NewFTProfileCmd(ctx context.Context, args ...interface{}) *FTProfileCmd {
-// 	return &FTProfileCmd{
-// 		baseCmd: baseCmd{
-// 			ctx:  ctx,
-// 			args: args,
-// 		},
-// 	}
-// }
-
-// type FTProfileCmd struct {
-// 	baseCmd
-// 	val FTProfileResult
-// }
-
-// func (cmd *FTProfileCmd) String() string {
-// 	return cmdString(cmd, cmd.val)
-// }
-
-// func (cmd *FTProfileCmd) SetVal(val FTProfileResult) {
-// 	cmd.val = val
-// }
-
-// func (cmd *FTProfileCmd) Result() (FTProfileResult, error) {
-// 	return cmd.val, cmd.err
-// }
-
-// func (cmd *FTProfileCmd) Val() FTProfileResult {
-// 	return cmd.val
-// }
-
-// func (cmd *FTProfileCmd) readReply(rd *proto.Reader) (err error) {
-// 	data, err := rd.ReadSlice()
-// 	if err != nil {
-// 		return err
-// 	}
-// 	cmd.val, err = parseFTProfileResult(data)
-// 	if err != nil {
-// 		cmd.err = err
-// 	}
-// 	return nil
-// }
-
-// // FTProfile - Executes a search query and returns a profile of how the query was processed.
-// // The 'index' parameter specifies the index to search, the 'limited' parameter specifies whether to limit the results,
-// // and the 'query' parameter specifies the search / aggreagte query. Please notice that you must either pass a SearchQuery or an AggregateQuery.
-// // For more information, please refer to the Redis documentation:
-// // [FT.PROFILE]: (https://redis.io/commands/ft.profile/)
-// func (c cmdable) FTProfile(ctx context.Context, index string, limited bool, query interface{}) *FTProfileCmd {
-// 	queryType := ""
-// 	var argsQuery []interface{}
-
-// 	switch v := query.(type) {
-// 	case AggregateQuery:
-// 		queryType = "AGGREGATE"
-// 		argsQuery = v
-// 	case SearchQuery:
-// 		queryType = "SEARCH"
-// 		argsQuery = v
-// 	default:
-// 		panic("FT.PROFILE: query must be either AggregateQuery or SearchQuery")
-// 	}
-
-// 	args := []interface{}{"FT.PROFILE", index, queryType}
-
-// 	if limited {
-// 		args = append(args, "LIMITED")
-// 	}
-// 	args = append(args, "QUERY")
-// 	args = append(args, argsQuery...)
-
-// 	cmd := NewFTProfileCmd(ctx, args...)
-// 	_ = c(ctx, cmd)
-// 	return cmd
-// }

@@ -20,6 +20,8 @@ func ExampleClient_setget() {
 	})
 
 	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bike")
 	// REMOVE_END
 
@@ -67,6 +69,8 @@ func ExampleClient_str() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "bike")
 	// REMOVE_END
 
@@ -120,6 +124,8 @@ func ExampleClient_num() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "crashes")
 	// REMOVE_END
 
@@ -174,6 +180,8 @@ func ExampleClient_arr() {
 	})
 
 	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "newbike")
 	// REMOVE_END
 
