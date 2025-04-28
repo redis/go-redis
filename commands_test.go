@@ -2586,18 +2586,22 @@ var _ = Describe("Commands", func() {
 				Set4 string        `redis:"set4,omitempty"`
 				Set5 time.Time     `redis:"set5,omitempty"`
 				Set6 *numberStruct `redis:"set6,omitempty"`
+				Set7 numberStruct  `redis:"set7,omitempty"`
 			}
 
 			hSet = client.HSet(ctx, "hash3", &setOmitEmpty{
 				Set1: "val",
 			})
 			Expect(hSet.Err()).NotTo(HaveOccurred())
-			Expect(hSet.Val()).To(Equal(int64(1)))
+			// both set1 and set7 are set
+			// custom struct is not omitted
+			Expect(hSet.Val()).To(Equal(int64(2)))
 
 			hGetAll := client.HGetAll(ctx, "hash3")
 			Expect(hGetAll.Err()).NotTo(HaveOccurred())
 			Expect(hGetAll.Val()).To(Equal(map[string]string{
 				"set1": "val",
+				"set7": `{"Number":0}`,
 			}))
 			var hash3 setOmitEmpty
 			Expect(hGetAll.Scan(&hash3)).NotTo(HaveOccurred())
@@ -2607,6 +2611,7 @@ var _ = Describe("Commands", func() {
 			Expect(hash3.Set4).To(Equal(""))
 			Expect(hash3.Set5).To(Equal(time.Time{}))
 			Expect(hash3.Set6).To(BeNil())
+			Expect(hash3.Set7).To(Equal(numberStruct{}))
 
 			now := time.Now()
 			hSet = client.HSet(ctx, "hash4", setOmitEmpty{
@@ -2615,9 +2620,12 @@ var _ = Describe("Commands", func() {
 				Set6: &numberStruct{
 					Number: 5,
 				},
+				Set7: numberStruct{
+					Number: 3,
+				},
 			})
 			Expect(hSet.Err()).NotTo(HaveOccurred())
-			Expect(hSet.Val()).To(Equal(int64(3)))
+			Expect(hSet.Val()).To(Equal(int64(4)))
 
 			hGetAll = client.HGetAll(ctx, "hash4")
 			Expect(hGetAll.Err()).NotTo(HaveOccurred())
@@ -2625,6 +2633,7 @@ var _ = Describe("Commands", func() {
 				"set1": "val",
 				"set5": now.Format(time.RFC3339Nano),
 				"set6": `{"Number":5}`,
+				"set7": `{"Number":3}`,
 			}))
 		})
 
@@ -7667,7 +7676,7 @@ type numberStruct struct {
 	Number int
 }
 
-func (n *numberStruct) MarshalBinary() ([]byte, error) {
+func (n numberStruct) MarshalBinary() ([]byte, error) {
 	return json.Marshal(n)
 }
 
