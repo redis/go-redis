@@ -2585,7 +2585,7 @@ var _ = Describe("Commands", func() {
 				Set3 time.Duration `redis:"set3,omitempty"`
 				Set4 string        `redis:"set4,omitempty"`
 				Set5 time.Time     `redis:"set5,omitempty"`
-				Set6 childStruct   `redis:"set6,omitempty"`
+				Set6 *numberStruct `redis:"set6,omitempty"`
 			}
 
 			hSet = client.HSet(ctx, "hash3", &setOmitEmpty{
@@ -2606,23 +2606,25 @@ var _ = Describe("Commands", func() {
 			Expect(hash3.Set3).To(Equal(time.Duration(0)))
 			Expect(hash3.Set4).To(Equal(""))
 			Expect(hash3.Set5).To(Equal(time.Time{}))
-			Expect(hash3.Set6).To(Equal(childStruct{}))
+			Expect(hash3.Set6).To(BeNil())
 
 			now := time.Now()
 			hSet = client.HSet(ctx, "hash4", setOmitEmpty{
 				Set1: "val",
-				Set6: childStruct{
-					Date: now,
+				Set5: now,
+				Set6: &numberStruct{
+					Number: 5,
 				},
 			})
 			Expect(hSet.Err()).NotTo(HaveOccurred())
-			Expect(hSet.Val()).To(Equal(int64(2)))
+			Expect(hSet.Val()).To(Equal(int64(3)))
 
 			hGetAll = client.HGetAll(ctx, "hash4")
 			Expect(hGetAll.Err()).NotTo(HaveOccurred())
 			Expect(hGetAll.Val()).To(Equal(map[string]string{
 				"set1": "val",
-				"set6": fmt.Sprintf("{\"Date\":\"%s\"}", now.Format(time.RFC3339Nano)),
+				"set5": now.Format(time.RFC3339Nano),
+				"set6": `{"Number":5}`,
 			}))
 		})
 
@@ -7665,12 +7667,16 @@ type numberStruct struct {
 	Number int
 }
 
-func (s *numberStruct) MarshalBinary() ([]byte, error) {
-	return json.Marshal(s)
+func (n *numberStruct) MarshalBinary() ([]byte, error) {
+	return json.Marshal(n)
 }
 
-func (s *numberStruct) UnmarshalBinary(b []byte) error {
-	return json.Unmarshal(b, s)
+func (n *numberStruct) UnmarshalBinary(b []byte) error {
+	return json.Unmarshal(b, n)
+}
+
+func (n *numberStruct) ScanRedis(str string) error {
+	return json.Unmarshal([]byte(str), n)
 }
 
 func deref(viface interface{}) interface{} {
@@ -7679,16 +7685,4 @@ func deref(viface interface{}) interface{} {
 		v = v.Elem()
 	}
 	return v.Interface()
-}
-
-type childStruct struct {
-	Date time.Time `redis:"date,omitempty"`
-}
-
-func (c childStruct) MarshalBinary() ([]byte, error) {
-	return json.Marshal(&c)
-}
-
-func (c childStruct) UnmarshalBinary(data []byte) error {
-	return json.Unmarshal(data, &c)
 }

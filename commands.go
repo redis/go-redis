@@ -156,7 +156,11 @@ func isEmptyValue(v reflect.Value) bool {
 	case reflect.Interface, reflect.Pointer:
 		return v.IsNil()
 	case reflect.Struct:
-		return v.IsZero()
+		if v.Type() == reflect.TypeOf(time.Time{}) {
+			return v.IsZero()
+		}
+		// Only supports the struct time.Time,
+		// subsequent iterations will follow the func Scan support decoder.
 	}
 	return false
 }
