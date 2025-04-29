@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -203,6 +205,7 @@ func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) e
 type baseClient struct {
 	opt      *Options
 	connPool pool.Pooler
+	hooksMixin
 
 	onClose func() error // hook called when client is closed
 }
@@ -282,36 +285,107 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
+func (c *baseClient) newReAuthCredentialsListener(ctx context.Context, conn *Conn) auth.CredentialsListener {
+	return auth.NewReAuthCredentialsListener(
+		c.reAuthConnection(c.context(ctx), conn),
+		c.onAuthenticationErr(c.context(ctx), conn),
+	)
+}
+
+func (c *baseClient) reAuthConnection(ctx context.Context, cn *Conn) func(credentials auth.Credentials) error {
+	return func(credentials auth.Credentials) error {
+		var err error
+		username, password := credentials.BasicAuth()
+		if username != "" {
+			err = cn.AuthACL(ctx, username, password).Err()
+		} else {
+			err = cn.Auth(ctx, password).Err()
+		}
+		return err
+	}
+}
+func (c *baseClient) onAuthenticationErr(ctx context.Context, cn *Conn) func(err error) {
+	return func(err error) {
+		// since the connection pool of the *Conn will actually return us the underlying pool.Conn,
+		// we can get it from the *Conn and remove it from the clients pool.
+		if err != nil {
+			if isBadConn(err, false, c.opt.Addr) {
+				poolCn, getErr := cn.connPool.Get(ctx)
+				if getErr == nil {
+					c.connPool.Remove(ctx, poolCn, err)
+				} else {
+					// if we can't get the pool connection, we can only close the connection
+					if err := cn.Close(); err != nil {
+						log.Printf("failed to close connection: %v", err)
+					}
+				}
+			}
+		}
+	}
+}
+
+func (c *baseClient) wrappedOnClose(newOnClose func() error) func() error {
+	onClose := c.onClose
+	return func() error {
+		var firstErr error
+		err := newOnClose()
+		// Even if we have an error we would like to execute the onClose hook
+		// if it exists. We will return the first error that occurred.
+		// This is to keep error handling consistent with the rest of the code.
+		if err != nil {
+			firstErr = err
+		}
+		if onClose != nil {
+			err = onClose()
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
+}
+
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if cn.Inited {
 		return nil
 	}
-	cn.Inited = true
 
 	var err error
-	username, password := c.opt.Username, c.opt.Password
-	if c.opt.CredentialsProviderContext != nil {
-		if username, password, err = c.opt.CredentialsProviderContext(ctx); err != nil {
-			return err
-		}
-	} else if c.opt.CredentialsProvider != nil {
-		username, password = c.opt.CredentialsProvider()
-	}
-
+	cn.Inited = true
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
-	conn := newConn(c.opt, connPool)
 
-	var auth bool
+	conn := newConn(c.opt, connPool, c.hooksMixin)
+
 	protocol := c.opt.Protocol
 	// By default, use RESP3 in current version.
 	if protocol < 2 {
 		protocol = 3
 	}
 
+	username, password := "", ""
+	if c.opt.StreamingCredentialsProvider != nil {
+		credentials, cancelCredentialsProvider, err := c.opt.StreamingCredentialsProvider.
+			Subscribe(c.newReAuthCredentialsListener(ctx, conn))
+		if err != nil {
+			return fmt.Errorf("failed to subscribe to streaming credentials: %w", err)
+		}
+		c.onClose = c.wrappedOnClose(cancelCredentialsProvider)
+		username, password = credentials.BasicAuth()
+	} else if c.opt.CredentialsProviderContext != nil {
+		username, password, err = c.opt.CredentialsProviderContext(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get credentials from context provider: %w", err)
+		}
+	} else if c.opt.CredentialsProvider != nil {
+		username, password = c.opt.CredentialsProvider()
+	} else if c.opt.Username != "" || c.opt.Password != "" {
+		username, password = c.opt.Username, c.opt.Password
+	}
+
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
 	if err = conn.Hello(ctx, protocol, username, password, c.opt.ClientName).Err(); err == nil {
-		auth = true
+		// Authentication successful with HELLO command
 	} else if !isRedisError(err) {
 		// When the server responds with the RESP protocol and the result is not a normal
 		// execution result of the HELLO command, we consider it to be an indication that
@@ -321,17 +395,15 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// with different error string results for unsupported commands, making it
 		// difficult to rely on error strings to determine all results.
 		return err
+	} else if password != "" {
+		// Try legacy AUTH command if HELLO failed
+		err = c.reAuthConnection(ctx, conn)(auth.NewBasicCredentials(username, password))
+		if err != nil {
+			return fmt.Errorf("failed to authenticate: %w", err)
+		}
 	}
 
 	_, err = conn.Pipelined(ctx, func(pipe Pipeliner) error {
-		if !auth && password != "" {
-			if username != "" {
-				pipe.AuthACL(ctx, username, password)
-			} else {
-				pipe.Auth(ctx, password)
-			}
-		}
-
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
 		}
@@ -347,7 +419,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return nil
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to initialize connection options: %w", err)
 	}
 
 	if !c.opt.DisableIdentity && !c.opt.DisableIndentity {
@@ -369,6 +441,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if c.opt.OnConnect != nil {
 		return c.opt.OnConnect(ctx, conn)
 	}
+
 	return nil
 }
 
@@ -485,6 +558,16 @@ func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
 		return t + 10*time.Second
 	}
 	return c.opt.ReadTimeout
+}
+
+// context returns the context for the current connection.
+// If the context timeout is enabled, it returns the original context.
+// Otherwise, it returns a new background context.
+func (c *baseClient) context(ctx context.Context) context.Context {
+	if c.opt.ContextTimeoutEnabled {
+		return ctx
+	}
+	return context.Background()
 }
 
 // Close closes the client, releasing any open resources.
@@ -639,13 +722,6 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 	return nil
 }
 
-func (c *baseClient) context(ctx context.Context) context.Context {
-	if c.opt.ContextTimeoutEnabled {
-		return ctx
-	}
-	return context.Background()
-}
-
 //------------------------------------------------------------------------------
 
 // Client is a Redis client representing a pool of zero or more underlying connections.
@@ -656,7 +732,6 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 type Client struct {
 	*baseClient
 	cmdable
-	hooksMixin
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -692,7 +767,7 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 }
 
 func (c *Client) Conn() *Conn {
-	return newConn(c.opt, pool.NewStickyConnPool(c.connPool))
+	return newConn(c.opt, pool.NewStickyConnPool(c.connPool), c.hooksMixin)
 }
 
 // Do create a Cmd from the args and processes the cmd.
@@ -825,14 +900,17 @@ type Conn struct {
 	baseClient
 	cmdable
 	statefulCmdable
-	hooksMixin
 }
 
-func newConn(opt *Options, connPool pool.Pooler) *Conn {
+// newConn is a helper func to create a new Conn instance.
+// the Conn instance is not thread-safe and should not be shared between goroutines.
+// the parentHooks will be cloned, no need to clone before passing it.
+func newConn(opt *Options, connPool pool.Pooler, parentHooks hooksMixin) *Conn {
 	c := Conn{
 		baseClient: baseClient{
-			opt:      opt,
-			connPool: connPool,
+			opt:        opt,
+			connPool:   connPool,
+			hooksMixin: parentHooks.clone(),
 		},
 	}
 
