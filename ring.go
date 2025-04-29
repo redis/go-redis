@@ -98,8 +98,19 @@ type RingOptions struct {
 	TLSConfig *tls.Config
 	Limiter   Limiter
 
+	// DisableIndentity - Disable set-lib on connect.
+	//
+	// default: false
+	//
+	// Deprecated: Use DisableIdentity instead.
 	DisableIndentity bool
-	IdentitySuffix   string
+
+	// DisableIdentity is used to disable CLIENT SETINFO command on connect.
+	//
+	// default: false
+	DisableIdentity bool
+	IdentitySuffix  string
+	UnstableResp3   bool
 }
 
 func (opt *RingOptions) init() {
@@ -117,9 +128,10 @@ func (opt *RingOptions) init() {
 		opt.NewConsistentHash = newRendezvous
 	}
 
-	if opt.MaxRetries == -1 {
+	switch opt.MaxRetries {
+	case -1:
 		opt.MaxRetries = 0
-	} else if opt.MaxRetries == 0 {
+	case 0:
 		opt.MaxRetries = 3
 	}
 	switch opt.MinRetryBackoff {
@@ -166,8 +178,11 @@ func (opt *RingOptions) clientOptions() *Options {
 		TLSConfig: opt.TLSConfig,
 		Limiter:   opt.Limiter,
 
+		DisableIdentity:  opt.DisableIdentity,
 		DisableIndentity: opt.DisableIndentity,
-		IdentitySuffix:   opt.IdentitySuffix,
+
+		IdentitySuffix: opt.IdentitySuffix,
+		UnstableResp3:  opt.UnstableResp3,
 	}
 }
 
@@ -339,7 +354,8 @@ func (c *ringSharding) List() []*ringShard {
 
 	c.mu.RLock()
 	if !c.closed {
-		list = c.shards.list
+		list = make([]*ringShard, len(c.shards.list))
+		copy(list, c.shards.list)
 	}
 	c.mu.RUnlock()
 
