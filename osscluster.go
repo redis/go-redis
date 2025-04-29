@@ -111,9 +111,10 @@ type ClusterOptions struct {
 }
 
 func (opt *ClusterOptions) init() {
-	if opt.MaxRedirects == -1 {
+	switch opt.MaxRedirects {
+	case -1:
 		opt.MaxRedirects = 0
-	} else if opt.MaxRedirects == 0 {
+	case 0:
 		opt.MaxRedirects = 3
 	}
 
