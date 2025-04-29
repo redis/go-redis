@@ -296,39 +296,9 @@ vals, err := rdb.Eval(ctx, "return {KEYS[1],ARGV[1]}", []string{"key"}, "hello")
 res, err := rdb.Do(ctx, "set", "key", "value").Result()
 ```
 
-## Run the test
+## Testing
 
-go-redis will start a redis-server and run the test cases.
-
-The paths of redis-server bin file and redis config file are defined in `main_test.go`:
-
-```go
-var (
-	redisServerBin, _  = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
-	redisServerConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
-)
-```
-
-For local testing, you can change the variables to refer to your local files, or create a soft link
-to the corresponding folder for redis-server and copy the config file to `testdata/redis/`:
-
-```shell
-ln -s /usr/bin/redis-server ./go-redis/testdata/redis/src
-cp ./go-redis/testdata/redis.conf ./go-redis/testdata/redis/
-```
-
-Lastly, run:
-
-```shell
-go test
-```
-
-Another option is to run your specific tests with an already running redis. The example below, tests
-against a redis running on port 9999.:
-
-```shell
-REDIS_PORT=9999 go test <your options>
-```
+The project includes comprehensive test coverage and follows best practices for testing Redis operations. Tests are run using Ginkgo and Gomega for behavior-driven development. For detailed information about running tests, writing tests, and test coverage, please refer to the [Testing Guide](./docs/redis_testing.md). The testing documentation covers test environment setup, common test patterns, and best practices for writing effective tests.
 
 ## See also
 
