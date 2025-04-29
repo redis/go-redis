@@ -46,6 +46,7 @@ in the `go.mod` to `go 1.24` in one of the next releases.
 
 - [English](https://redis.uptrace.dev)
 - [简体中文](https://redis.uptrace.dev/zh/)
+- [AI-Generated Developer Documentation](./docs) - Detailed technical documentation about the client's implementation, architecture, and internals
 
 ## Resources
 
