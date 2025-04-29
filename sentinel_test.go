@@ -41,7 +41,7 @@ var _ = Describe("Sentinel resolution", func() {
 		client := redis.NewFailoverClient(&redis.FailoverOptions{
 			MasterName:    sentinelName,
 			SentinelAddrs: sentinelAddrs,
-			MaxRetries: -1,
+			MaxRetries:    -1,
 		})
 
 		err := client.Ping(shortCtx).Err()
