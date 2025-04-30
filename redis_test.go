@@ -727,3 +727,54 @@ var _ = Describe("Dialer connection timeouts", func() {
 		Expect(time.Since(start)).To(BeNumerically("<", 2*dialSimulatedDelay))
 	})
 })
+var _ = Describe("Client creation", func() {
+	Context("simple client with nil options", func() {
+		It("panics", func() {
+			Expect(func() {
+				redis.NewClient(nil)
+			}).To(Panic())
+		})
+	})
+	Context("cluster client with nil options", func() {
+		It("panics", func() {
+			Expect(func() {
+				redis.NewClusterClient(nil)
+			}).To(Panic())
+		})
+	})
+	Context("ring client with nil options", func() {
+		It("panics", func() {
+			Expect(func() {
+				redis.NewRing(nil)
+			}).To(Panic())
+		})
+	})
+	Context("universal client with nil options", func() {
+		It("panics", func() {
+			Expect(func() {
+				redis.NewUniversalClient(nil)
+			}).To(Panic())
+		})
+	})
+	Context("failover client with nil options", func() {
+		It("panics", func() {
+			Expect(func() {
+				redis.NewFailoverClient(nil)
+			}).To(Panic())
+		})
+	})
+	Context("failover cluster client with nil options", func() {
+		It("panics", func() {
+			Expect(func() {
+				redis.NewFailoverClusterClient(nil)
+			}).To(Panic())
+		})
+	})
+	Context("sentinel client with nil options", func() {
+		It("panics", func() {
+			Expect(func() {
+				redis.NewSentinelClient(nil)
+			}).To(Panic())
+		})
+	})
+})
