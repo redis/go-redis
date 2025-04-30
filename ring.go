@@ -128,9 +128,10 @@ func (opt *RingOptions) init() {
 		opt.NewConsistentHash = newRendezvous
 	}
 
-	if opt.MaxRetries == -1 {
+	switch opt.MaxRetries {
+	case -1:
 		opt.MaxRetries = 0
-	} else if opt.MaxRetries == 0 {
+	case 0:
 		opt.MaxRetries = 3
 	}
 	switch opt.MinRetryBackoff {
@@ -522,6 +523,9 @@ type Ring struct {
 }
 
 func NewRing(opt *RingOptions) *Ring {
+	if opt == nil {
+		panic("redis: NewRing nil options")
+	}
 	opt.init()
 
 	hbCtx, hbCancel := context.WithCancel(context.Background())

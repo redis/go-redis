@@ -29,6 +29,7 @@ Lua
 MSSQL
 namespace
 NoSQL
+OpenTelemetry
 ORM
 Packagist
 PhpRedis

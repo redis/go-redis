@@ -114,9 +114,10 @@ type ClusterOptions struct {
 }
 
 func (opt *ClusterOptions) init() {
-	if opt.MaxRedirects == -1 {
+	switch opt.MaxRedirects {
+	case -1:
 		opt.MaxRedirects = 0
-	} else if opt.MaxRedirects == 0 {
+	case 0:
 		opt.MaxRedirects = 3
 	}
 
@@ -967,6 +968,9 @@ type ClusterClient struct {
 // NewClusterClient returns a Redis Cluster client as described in
 // http://redis.io/topics/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
+	if opt == nil {
+		panic("redis: NewClusterClient nil options")
+	}
 	opt.init()
 
 	c := &ClusterClient{
@@ -1900,7 +1904,7 @@ func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 
 func (c *ClusterClient) cmdSlot(ctx context.Context, cmd Cmder) int {
 	args := cmd.Args()
-	if args[0] == "cluster" && args[1] == "getkeysinslot" {
+	if args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
 		return args[2].(int)
 	}
 

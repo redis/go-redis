@@ -7,7 +7,7 @@ replace github.com/redis/go-redis/v9 => ../..
 require (
 	github.com/bsm/ginkgo/v2 v2.12.0
 	github.com/bsm/gomega v1.27.10
-	github.com/redis/go-redis/v9 v9.7.3
+	github.com/redis/go-redis/v9 v9.8.0-beta.1
 )
 
 require (
@@ -16,6 +16,6 @@ require (
 )
 
 retract (
-	v9.5.3 // This version was accidentally released.
 	v9.7.2 // This version was accidentally released.
+	v9.5.3 // This version was accidentally released.
 )
