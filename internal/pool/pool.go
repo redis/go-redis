@@ -314,6 +314,11 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 	default:
 	}
 
+	start := time.Now()
+	defer func() {
+		ctx.Value("connectionQueueTimes").(chan<- time.Duration) <- time.Since(start)
+	}()
+
 	select {
 	case p.queue <- struct{}{}:
 		return nil
