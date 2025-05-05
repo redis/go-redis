@@ -523,6 +523,9 @@ type Ring struct {
 }
 
 func NewRing(opt *RingOptions) *Ring {
+	if opt == nil {
+		panic("redis: NewRing nil options")
+	}
 	opt.init()
 
 	hbCtx, hbCancel := context.WithCancel(context.Background())

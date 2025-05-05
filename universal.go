@@ -267,6 +267,10 @@ var (
 //     a ClusterClient is returned.
 //  4. Otherwise, a single-node Client is returned.
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
+	if opts == nil {
+		panic("redis: NewUniversalClient nil options")
+	}
+
 	switch {
 	case opts.MasterName != "" && (opts.RouteByLatency || opts.RouteRandomly || opts.IsClusterMode):
 		return NewFailoverClusterClient(opts.Failover())

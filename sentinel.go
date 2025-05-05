@@ -224,6 +224,10 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 // for automatic failover. It's safe for concurrent use by multiple
 // goroutines.
 func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
+	if failoverOpt == nil {
+		panic("redis: NewFailoverClient nil options")
+	}
+
 	if failoverOpt.RouteByLatency {
 		panic("to route commands by latency, use NewFailoverClusterClient")
 	}
@@ -313,6 +317,9 @@ type SentinelClient struct {
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {
+	if opt == nil {
+		panic("redis: NewSentinelClient nil options")
+	}
 	opt.init()
 	c := &SentinelClient{
 		baseClient: &baseClient{
@@ -828,6 +835,10 @@ func contains(slice []string, str string) bool {
 // NewFailoverClusterClient returns a client that supports routing read-only commands
 // to a replica node.
 func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
+	if failoverOpt == nil {
+		panic("redis: NewFailoverClusterClient nil options")
+	}
+
 	sentinelAddrs := make([]string, len(failoverOpt.SentinelAddrs))
 	copy(sentinelAddrs, failoverOpt.SentinelAddrs)
 
