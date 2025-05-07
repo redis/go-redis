@@ -8,6 +8,7 @@ on:
       - master
       - main
       - v9
+      - v9.8
   pull_request:
 
 permissions:
