@@ -163,6 +163,11 @@ type Options struct {
 	// Add suffix to client name. Default is empty.
 	IdentitySuffix string
 
+	// Use connections from pool instead of creating new ones. Note that after use these connections will not be
+	// returned to the pool. Useful for managing the total Redis connection limit for a mix of Pubsub & other commands.
+	// Applies only to non-cluster client. Default is false.
+	PubsubFromPool bool
+
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	UnstableResp3 bool
 }
