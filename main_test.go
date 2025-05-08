@@ -102,7 +102,8 @@ var _ = BeforeSuite(func() {
 
 	fmt.Printf("RECluster: %v\n", RECluster)
 	fmt.Printf("RCEDocker: %v\n", RCEDocker)
-	fmt.Printf("REDIS_VERSION: %v\n", RedisVersion)
+	fmt.Printf("REDIS_VERSION: %.1f\n", RedisVersion)
+	fmt.Printf("CLIENT_LIBS_TEST_IMAGE: %v\n", os.Getenv("CLIENT_LIBS_TEST_IMAGE"))
 
 	if RedisVersion < 7.0 || RedisVersion > 9 {
 		panic("incorrect or not supported redis version")
