@@ -632,8 +632,8 @@ func Example_customCommand2() {
 
 func ExampleScanIterator() {
 	iter := rdb.Scan(ctx, 0, "", 0).Iterator()
-	for iter.Next(ctx) {
-		fmt.Println(iter.Val())
+	for val := range iter.Vals(ctx) {
+		fmt.Println(val)
 	}
 	if err := iter.Err(); err != nil {
 		panic(err)
@@ -642,8 +642,8 @@ func ExampleScanIterator() {
 
 func ExampleScanCmd_Iterator() {
 	iter := rdb.Scan(ctx, 0, "", 0).Iterator()
-	for iter.Next(ctx) {
-		fmt.Println(iter.Val())
+	for val := range iter.Vals(ctx) {
+		fmt.Println(val)
 	}
 	if err := iter.Err(); err != nil {
 		panic(err)
