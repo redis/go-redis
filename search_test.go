@@ -1871,17 +1871,20 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(val).To(BeEquivalentTo("OK"))
 		WaitForIndexing(client, "aggTimeoutHeavy")
 
-		const totalDocs = 10000
+		const totalDocs = 100000
 		for i := 0; i < totalDocs; i++ {
 			key := fmt.Sprintf("doc%d", i)
 			_, err := client.HSet(ctx, key, "n", i).Result()
 			Expect(err).NotTo(HaveOccurred())
 		}
+		// default behaviour was changed in 8.0.1, set to fail to validate the timeout was triggered
+		err = client.ConfigSet(ctx, "search-on-timeout", "fail").Err()
+		Expect(err).NotTo(HaveOccurred())
 
 		options := &redis.FTAggregateOptions{
 			SortBy:      []redis.FTAggregateSortBy{{FieldName: "@n", Desc: true}},
 			LimitOffset: 0,
-			Limit:       100,
+			Limit:       100000,
 			Timeout:     1, // 1 ms timeout, expected to trigger a timeout error.
 		}
 		_, err = client.FTAggregateWithArgs(ctx, "aggTimeoutHeavy", "*", options).Result()
