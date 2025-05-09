@@ -109,7 +109,7 @@ var _ = BeforeSuite(func() {
 
 	redisPort = redisStackPort
 	redisAddr = redisStackAddr
-	if !RECluster {
+	if RECluster {
 		ringShard1, err = connectTo(ringShard1Port)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -149,7 +149,7 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
-	if !RECluster {
+	if RECluster {
 		Expect(cluster.Close()).NotTo(HaveOccurred())
 	}
 })
