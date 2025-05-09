@@ -359,7 +359,7 @@ func ExampleMapStringStringCmd_Scan() {
 	// Get the map. The same approach works for HmGet().
 	res := rdb.HGetAll(ctx, "map")
 	if res.Err() != nil {
-		panic(err)
+		panic(res.Err())
 	}
 
 	type data struct {
@@ -392,7 +392,7 @@ func ExampleSliceCmd_Scan() {
 
 	res := rdb.MGet(ctx, "name", "count", "empty", "correct")
 	if res.Err() != nil {
-		panic(err)
+		panic(res.Err())
 	}
 
 	type data struct {
