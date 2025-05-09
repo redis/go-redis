@@ -317,7 +317,10 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 	start := time.Now()
 	defer func() {
 		if c, found := ctx.Value("connectionQueueTimes").(chan<- time.Duration); found {
-			c <- time.Since(start)
+			select {
+			case c <- time.Since(start):
+			default: // prevent a full buffer from freezing the application
+			}
 		}
 	}()
 
