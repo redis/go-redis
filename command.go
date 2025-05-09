@@ -5620,3 +5620,58 @@ func (cmd *MonitorCmd) Stop() {
 	defer cmd.mu.Unlock()
 	cmd.status = monitorStatusStop
 }
+
+type MapStringFloatCmd struct {
+	baseCmd
+
+	val map[string]float64
+}
+
+var _ Cmder = (*MapStringFloatCmd)(nil)
+
+func NewMapStringFloatCmd(ctx context.Context, args ...interface{}) *MapStringFloatCmd {
+	return &MapStringFloatCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *MapStringFloatCmd) SetVal(val map[string]float64) {
+	cmd.val = val
+}
+
+func (cmd *MapStringFloatCmd) Val() map[string]float64 {
+	return cmd.val
+}
+
+func (cmd *MapStringFloatCmd) Result() (map[string]float64, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *MapStringFloatCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *MapStringFloatCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make(map[string]float64, n)
+	for i := 0; i < n; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		nn, err := rd.ReadFloat()
+		if err != nil {
+			return err
+		}
+		cmd.val[key] = nn
+	}
+	return nil
+}
