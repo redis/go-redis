@@ -350,16 +350,13 @@ func (c *ringSharding) newRingShards(
 }
 
 func (c *ringSharding) List() []*ringShard {
-	var list []*ringShard
-
 	c.mu.RLock()
-	if !c.closed {
-		list = make([]*ringShard, len(c.shards.list))
-		copy(list, c.shards.list)
-	}
-	c.mu.RUnlock()
+	defer c.mu.RUnlock()
 
-	return list
+	if c.closed {
+		return nil
+	}
+	return c.shards.list
 }
 
 func (c *ringSharding) Hash(key string) string {
@@ -810,7 +807,7 @@ func (c *Ring) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) er
 
 	for _, key := range keys {
 		if key != "" {
-			shard, err := c.sharding.GetByKey(hashtag.Key(key))
+			shard, err := c.sharding.GetByKey(key)
 			if err != nil {
 				return err
 			}
