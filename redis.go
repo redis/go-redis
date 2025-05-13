@@ -285,10 +285,14 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) newReAuthCredentialsListener(ctx context.Context, conn *Conn) auth.CredentialsListener {
+func (c *baseClient) newReAuthCredentialsListener(ctx context.Context, cn *pool.Conn) auth.CredentialsListener {
+	connPool := pool.NewSingleConnPool(c.connPool, cn)
+	// hooksMixin are intentionally empty here
+	conn := newConn(c.opt, connPool, nil)
+	ctx = c.context(ctx)
 	return auth.NewReAuthCredentialsListener(
-		c.reAuthConnection(c.context(ctx), conn),
-		c.onAuthenticationErr(c.context(ctx), conn),
+		c.reAuthConnection(ctx, conn),
+		c.onAuthenticationErr(ctx, conn),
 	)
 }
 
@@ -313,11 +317,11 @@ func (c *baseClient) onAuthenticationErr(ctx context.Context, cn *Conn) func(err
 				poolCn, getErr := cn.connPool.Get(ctx)
 				if getErr == nil {
 					c.connPool.Remove(ctx, poolCn, err)
-				} else {
-					// if we can't get the pool connection, we can only close the connection
-					if err := cn.Close(); err != nil {
-						log.Printf("failed to close connection: %v", err)
-					}
+				}
+
+				// if we can't get the pool connection, we can only close the connection
+				if err := cn.Close(); err != nil {
+					log.Printf("failed to close connection: %v", err)
 				}
 			}
 		}
@@ -353,8 +357,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	var err error
 	cn.Inited = true
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
-
-	conn := newConn(c.opt, connPool, c.hooksMixin)
+	conn := newConn(c.opt, connPool, &c.hooksMixin)
 
 	protocol := c.opt.Protocol
 	// By default, use RESP3 in current version.
@@ -364,12 +367,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
-		credentials, cancelCredentialsProvider, err := c.opt.StreamingCredentialsProvider.
-			Subscribe(c.newReAuthCredentialsListener(ctx, conn))
+		credentials, unsubscribeFromCredentialsProvider, err := c.opt.StreamingCredentialsProvider.
+			Subscribe(c.newReAuthCredentialsListener(ctx, cn))
 		if err != nil {
 			return fmt.Errorf("failed to subscribe to streaming credentials: %w", err)
 		}
-		c.onClose = c.wrappedOnClose(cancelCredentialsProvider)
+		c.onClose = c.wrappedOnClose(unsubscribeFromCredentialsProvider)
+		cn.SetOnClose(unsubscribeFromCredentialsProvider)
 		username, password = credentials.BasicAuth()
 	} else if c.opt.CredentialsProviderContext != nil {
 		username, password, err = c.opt.CredentialsProviderContext(ctx)
@@ -770,7 +774,7 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 }
 
 func (c *Client) Conn() *Conn {
-	return newConn(c.opt, pool.NewStickyConnPool(c.connPool), c.hooksMixin)
+	return newConn(c.opt, pool.NewStickyConnPool(c.connPool), &c.hooksMixin)
 }
 
 // Do create a Cmd from the args and processes the cmd.
@@ -908,13 +912,16 @@ type Conn struct {
 // newConn is a helper func to create a new Conn instance.
 // the Conn instance is not thread-safe and should not be shared between goroutines.
 // the parentHooks will be cloned, no need to clone before passing it.
-func newConn(opt *Options, connPool pool.Pooler, parentHooks hooksMixin) *Conn {
+func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn {
 	c := Conn{
 		baseClient: baseClient{
-			opt:        opt,
-			connPool:   connPool,
-			hooksMixin: parentHooks.clone(),
+			opt:      opt,
+			connPool: connPool,
 		},
+	}
+
+	if parentHooks != nil {
+		c.hooksMixin = parentHooks.clone()
 	}
 
 	c.cmdable = c.Process
