@@ -842,11 +842,12 @@ var _ = Describe("Credentials Provider Priority", func() {
 	It("should handle credential updates from streaming provider", func() {
 		initialCreds := auth.NewBasicCredentials("initial_user", "initial_pass")
 		updatedCreds := auth.NewBasicCredentials("updated_user", "updated_pass")
+		updatesChan := make(chan auth.Credentials, 1)
 
 		opt = &redis.Options{
 			StreamingCredentialsProvider: &mockStreamingProvider{
 				credentials: initialCreds,
-				updates:     make(chan auth.Credentials, 1),
+				updates:     updatesChan,
 			},
 		}
 
@@ -861,6 +862,7 @@ var _ = Describe("Credentials Provider Priority", func() {
 		// wrongpass
 		Expect(client.Ping(context.Background()).Err()).To(HaveOccurred())
 		Expect(recorder.Contains("AUTH updated_user")).To(BeTrue())
+		close(updatesChan)
 	})
 })
 
@@ -875,12 +877,10 @@ func (m *mockStreamingProvider) Subscribe(listener auth.CredentialsListener) (au
 		return nil, nil, m.err
 	}
 
-	// Send initial credentials
-	listener.OnNext(m.credentials)
-
 	// Start goroutine to handle updates
 	go func() {
 		for creds := range m.updates {
+			m.credentials = creds
 			listener.OnNext(creds)
 		}
 	}()
@@ -892,7 +892,6 @@ func (m *mockStreamingProvider) Subscribe(listener auth.CredentialsListener) (au
 				// allow multiple closes from multiple listeners
 			}
 		}()
-		close(m.updates)
 		return
 	}, nil
 }
