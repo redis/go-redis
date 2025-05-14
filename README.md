@@ -68,7 +68,7 @@ key value NoSQL database that uses RocksDB as storage engine and is compatible w
 
 - Redis commands except QUIT and SYNC.
 - Automatic connection pooling.
-- [StreamingCredentialsProvider (e.g. entra id, oauth)](#1-streaming-credentials-provider-highest-priority)
+- [StreamingCredentialsProvider (e.g. entra id, oauth)](#1-streaming-credentials-provider-highest-priority) (experimental)
 - [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
 - [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
 - [Scripting](https://redis.uptrace.dev/guide/lua-scripting.html).
@@ -141,7 +141,7 @@ func ExampleClient() {
 
 The Redis client supports multiple ways to provide authentication credentials, with a clear priority order. Here are the available options:
 
-#### 1. Streaming Credentials Provider (Highest Priority)
+#### 1. Streaming Credentials Provider (Highest Priority) - Experimental feature
 
 The streaming credentials provider allows for dynamic credential updates during the connection lifetime. This is particularly useful for managed identity services and token-based authentication.
 
