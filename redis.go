@@ -317,11 +317,11 @@ func (c *baseClient) onAuthenticationErr(ctx context.Context, cn *Conn) func(err
 				poolCn, getErr := cn.connPool.Get(ctx)
 				if getErr == nil {
 					c.connPool.Remove(ctx, poolCn, err)
-				}
-
-				// if we can't get the pool connection, we can only close the connection
-				if err := cn.Close(); err != nil {
-					log.Printf("failed to close connection: %v", err)
+				} else {
+					// if we can't get the pool connection, we can only close the connection
+					if err := cn.Close(); err != nil {
+						log.Printf("failed to close connection: %v", err)
+					}
 				}
 			}
 		}
