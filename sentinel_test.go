@@ -2,7 +2,11 @@ package redis_test
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"net"
+	"sort"
+	"testing"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -405,3 +409,266 @@ var _ = Describe("SentinelAclAuth", func() {
 		Expect(val).To(Equal("acl-auth"))
 	})
 })
+
+func TestParseFailoverURL(t *testing.T) {
+	cases := []struct {
+		url string
+		o   *redis.FailoverOptions
+		err error
+	}{
+		{
+			url: "redis://localhost:6379?master_name=test",
+			o:   &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6379"}, MasterName: "test"},
+		},
+		{
+			url: "redis://localhost:6379/5?master_name=test",
+			o:   &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 5},
+		},
+		{
+			url: "rediss://localhost:6379/5?master_name=test",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 5,
+				TLSConfig: &tls.Config{
+					ServerName: "localhost",
+				}},
+		},
+		{
+			url: "redis://localhost:6379/5?master_name=test&db=2",
+			o:   &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 2},
+		},
+		{
+			url: "redis://localhost:6379/5?addr=localhost:6380&addr=localhost:6381",
+			o:   &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379", "localhost:6381"}, DB: 5},
+		},
+		{
+			url: "redis://foo:bar@localhost:6379/5?addr=localhost:6380",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5},
+		},
+		{
+			url: "redis://:bar@localhost:6379/5?addr=localhost:6380",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "", SentinelPassword: "bar", DB: 5},
+		},
+		{
+			url: "redis://foo@localhost:6379/5?addr=localhost:6380",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "", DB: 5},
+		},
+		{
+			url: "redis://foo:bar@localhost:6379/5?addr=localhost:6380&dial_timeout=3",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Second},
+		},
+		{
+			url: "redis://foo:bar@localhost:6379/5?addr=localhost:6380&dial_timeout=3s",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Second},
+		},
+		{
+			url: "redis://foo:bar@localhost:6379/5?addr=localhost:6380&dial_timeout=3ms",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Millisecond},
+		},
+		{
+			url: "redis://foo:bar@localhost:6379/5?addr=localhost:6380&dial_timeout=3&pool_fifo=true",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Second, PoolFIFO: true},
+		},
+		{
+			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=3&pool_fifo=false",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB: 5, DialTimeout: 3 * time.Second, PoolFIFO: false},
+		},
+		{
+			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=3&pool_fifo",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB: 5, DialTimeout: 3 * time.Second, PoolFIFO: false},
+		},
+		{
+			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB: 5, DialTimeout: 0},
+		},
+		{
+			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=0",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB: 5, DialTimeout: -1},
+		},
+		{
+			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=-1",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB: 5, DialTimeout: -1},
+		},
+		{
+			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=-2",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB: 5, DialTimeout: -1},
+		},
+		{
+			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB: 5, DialTimeout: 0},
+		},
+		{
+			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=0&abc=5",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB: 5, DialTimeout: -1},
+			err: errors.New("redis: unexpected option: abc"),
+		},
+		{
+			url: "http://google.com",
+			err: errors.New("redis: invalid URL scheme: http"),
+		},
+		{
+			url: "redis://localhost/1/2/3/4",
+			err: errors.New("redis: invalid URL path: /1/2/3/4"),
+		},
+		{
+			url: "12345",
+			err: errors.New("redis: invalid URL scheme: "),
+		},
+		{
+			url: "redis://localhost/database",
+			err: errors.New(`redis: invalid database number: "database"`),
+		},
+	}
+
+	for i := range cases {
+		tc := cases[i]
+		t.Run(tc.url, func(t *testing.T) {
+			t.Parallel()
+
+			actual, err := redis.ParseFailoverURL(tc.url)
+			if tc.err == nil && err != nil {
+				t.Fatalf("unexpected error: %q", err)
+				return
+			}
+			if tc.err != nil && err == nil {
+				t.Fatalf("got nil, expected %q", tc.err)
+				return
+			}
+			if tc.err != nil && err != nil {
+				if tc.err.Error() != err.Error() {
+					t.Fatalf("got %q, expected %q", err, tc.err)
+				}
+				return
+			}
+			compareFailoverOptions(t, actual, tc.o)
+		})
+	}
+}
+
+func compareFailoverOptions(t *testing.T, a, e *redis.FailoverOptions) {
+	if a.MasterName != e.MasterName {
+		t.Errorf("MasterName got %q, want %q", a.MasterName, e.MasterName)
+	}
+	compareSlices(t, a.SentinelAddrs, e.SentinelAddrs, "SentinelAddrs")
+	if a.ClientName != e.ClientName {
+		t.Errorf("ClientName got %q, want %q", a.ClientName, e.ClientName)
+	}
+	if a.SentinelUsername != e.SentinelUsername {
+		t.Errorf("SentinelUsername got %q, want %q", a.SentinelUsername, e.SentinelUsername)
+	}
+	if a.SentinelPassword != e.SentinelPassword {
+		t.Errorf("SentinelPassword got %q, want %q", a.SentinelPassword, e.SentinelPassword)
+	}
+	if a.RouteByLatency != e.RouteByLatency {
+		t.Errorf("RouteByLatency got %v, want %v", a.RouteByLatency, e.RouteByLatency)
+	}
+	if a.RouteRandomly != e.RouteRandomly {
+		t.Errorf("RouteRandomly got %v, want %v", a.RouteRandomly, e.RouteRandomly)
+	}
+	if a.ReplicaOnly != e.ReplicaOnly {
+		t.Errorf("ReplicaOnly got %v, want %v", a.ReplicaOnly, e.ReplicaOnly)
+	}
+	if a.UseDisconnectedReplicas != e.UseDisconnectedReplicas {
+		t.Errorf("UseDisconnectedReplicas got %v, want %v", a.UseDisconnectedReplicas, e.UseDisconnectedReplicas)
+	}
+	if a.Protocol != e.Protocol {
+		t.Errorf("Protocol got %v, want %v", a.Protocol, e.Protocol)
+	}
+	if a.Username != e.Username {
+		t.Errorf("Username got %q, want %q", a.Username, e.Username)
+	}
+	if a.Password != e.Password {
+		t.Errorf("Password got %q, want %q", a.Password, e.Password)
+	}
+	if a.DB != e.DB {
+		t.Errorf("DB got %v, want %v", a.DB, e.DB)
+	}
+	if a.MaxRetries != e.MaxRetries {
+		t.Errorf("MaxRetries got %v, want %v", a.MaxRetries, e.MaxRetries)
+	}
+	if a.MinRetryBackoff != e.MinRetryBackoff {
+		t.Errorf("MinRetryBackoff got %v, want %v", a.MinRetryBackoff, e.MinRetryBackoff)
+	}
+	if a.MaxRetryBackoff != e.MaxRetryBackoff {
+		t.Errorf("MaxRetryBackoff got %v, want %v", a.MaxRetryBackoff, e.MaxRetryBackoff)
+	}
+	if a.DialTimeout != e.DialTimeout {
+		t.Errorf("DialTimeout got %v, want %v", a.DialTimeout, e.DialTimeout)
+	}
+	if a.ReadTimeout != e.ReadTimeout {
+		t.Errorf("ReadTimeout got %v, want %v", a.ReadTimeout, e.ReadTimeout)
+	}
+	if a.WriteTimeout != e.WriteTimeout {
+		t.Errorf("WriteTimeout got %v, want %v", a.WriteTimeout, e.WriteTimeout)
+	}
+	if a.ContextTimeoutEnabled != e.ContextTimeoutEnabled {
+		t.Errorf("ContentTimeoutEnabled got %v, want %v", a.ContextTimeoutEnabled, e.ContextTimeoutEnabled)
+	}
+	if a.PoolFIFO != e.PoolFIFO {
+		t.Errorf("PoolFIFO got %v, want %v", a.PoolFIFO, e.PoolFIFO)
+	}
+	if a.PoolSize != e.PoolSize {
+		t.Errorf("PoolSize got %v, want %v", a.PoolSize, e.PoolSize)
+	}
+	if a.PoolTimeout != e.PoolTimeout {
+		t.Errorf("PoolTimeout got %v, want %v", a.PoolTimeout, e.PoolTimeout)
+	}
+	if a.MinIdleConns != e.MinIdleConns {
+		t.Errorf("MinIdleConns got %v, want %v", a.MinIdleConns, e.MinIdleConns)
+	}
+	if a.MaxIdleConns != e.MaxIdleConns {
+		t.Errorf("MaxIdleConns got %v, want %v", a.MaxIdleConns, e.MaxIdleConns)
+	}
+	if a.MaxActiveConns != e.MaxActiveConns {
+		t.Errorf("MaxActiveConns got %v, want %v", a.MaxActiveConns, e.MaxActiveConns)
+	}
+	if a.ConnMaxIdleTime != e.ConnMaxIdleTime {
+		t.Errorf("ConnMaxIdleTime got %v, want %v", a.ConnMaxIdleTime, e.ConnMaxIdleTime)
+	}
+	if a.ConnMaxLifetime != e.ConnMaxLifetime {
+		t.Errorf("ConnMaxLifeTime got %v, want %v", a.ConnMaxLifetime, e.ConnMaxLifetime)
+	}
+	if a.DisableIdentity != e.DisableIdentity {
+		t.Errorf("DisableIdentity got %v, want %v", a.DisableIdentity, e.DisableIdentity)
+	}
+	if a.IdentitySuffix != e.IdentitySuffix {
+		t.Errorf("IdentitySuffix got %v, want %v", a.IdentitySuffix, e.IdentitySuffix)
+	}
+	if a.UnstableResp3 != e.UnstableResp3 {
+		t.Errorf("UnstableResp3 got %v, want %v", a.UnstableResp3, e.UnstableResp3)
+	}
+	if (a.TLSConfig == nil && e.TLSConfig != nil) || (a.TLSConfig != nil && e.TLSConfig == nil) {
+		t.Errorf("TLSConfig error")
+	}
+	if a.TLSConfig != nil && e.TLSConfig != nil {
+		if a.TLSConfig.ServerName != e.TLSConfig.ServerName {
+			t.Errorf("TLSConfig.ServerName got %q, want %q", a.TLSConfig.ServerName, e.TLSConfig.ServerName)
+		}
+	}
+}
+
+func compareSlices(t *testing.T, a, b []string, name string) {
+	sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
+	sort.Slice(b, func(i, j int) bool { return b[i] < b[j] })
+	if len(a) != len(b) {
+		t.Errorf("%s got %q, want %q", name, a, b)
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			t.Errorf("%s got %q, want %q", name, a, b)
+		}
+	}
+}
