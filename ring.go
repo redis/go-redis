@@ -422,6 +422,7 @@ func (c *ringSharding) Heartbeat(ctx context.Context, frequency time.Duration) {
 		case <-ticker.C:
 			var rebalance bool
 
+			// note: `c.List()` return a shadow copy of `[]*ringShard`.
 			for _, shard := range c.List() {
 				err := shard.Client.Ping(ctx).Err()
 				isUp := err == nil || err == pool.ErrPoolTimeout
@@ -581,6 +582,7 @@ func (c *Ring) retryBackoff(attempt int) time.Duration {
 
 // PoolStats returns accumulated connection pool stats.
 func (c *Ring) PoolStats() *PoolStats {
+	// note: `c.List()` return a shadow copy of `[]*ringShard`.
 	shards := c.sharding.List()
 	var acc PoolStats
 	for _, shard := range shards {
@@ -650,6 +652,7 @@ func (c *Ring) ForEachShard(
 	ctx context.Context,
 	fn func(ctx context.Context, client *Client) error,
 ) error {
+	// note: `c.List()` return a shadow copy of `[]*ringShard`.
 	shards := c.sharding.List()
 	var wg sync.WaitGroup
 	errCh := make(chan error, 1)
@@ -681,6 +684,7 @@ func (c *Ring) ForEachShard(
 }
 
 func (c *Ring) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
+	// note: `c.List()` return a shadow copy of `[]*ringShard`.
 	shards := c.sharding.List()
 	var firstErr error
 	for _, shard := range shards {
