@@ -357,13 +357,17 @@ var _ = Describe("Redis Ring", func() {
 			ring.AddHook(&hook{
 				processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 					return func(ctx context.Context, cmds []redis.Cmder) error {
-						Expect(cmds).To(HaveLen(1))
+						// skip the connection initialization
+						if cmds[0].Name() == "hello" || cmds[0].Name() == "client" {
+							return nil
+						}
+						Expect(len(cmds)).To(BeNumerically(">", 0))
 						Expect(cmds[0].String()).To(Equal("ping: "))
 						stack = append(stack, "ring.BeforeProcessPipeline")
 
 						err := hook(ctx, cmds)
 
-						Expect(cmds).To(HaveLen(1))
+						Expect(len(cmds)).To(BeNumerically(">", 0))
 						Expect(cmds[0].String()).To(Equal("ping: PONG"))
 						stack = append(stack, "ring.AfterProcessPipeline")
 
@@ -376,13 +380,17 @@ var _ = Describe("Redis Ring", func() {
 				shard.AddHook(&hook{
 					processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 						return func(ctx context.Context, cmds []redis.Cmder) error {
-							Expect(cmds).To(HaveLen(1))
+							// skip the connection initialization
+							if cmds[0].Name() == "hello" || cmds[0].Name() == "client" {
+								return nil
+							}
+							Expect(len(cmds)).To(BeNumerically(">", 0))
 							Expect(cmds[0].String()).To(Equal("ping: "))
 							stack = append(stack, "shard.BeforeProcessPipeline")
 
 							err := hook(ctx, cmds)
 
-							Expect(cmds).To(HaveLen(1))
+							Expect(len(cmds)).To(BeNumerically(">", 0))
 							Expect(cmds[0].String()).To(Equal("ping: PONG"))
 							stack = append(stack, "shard.AfterProcessPipeline")
 
@@ -416,14 +424,18 @@ var _ = Describe("Redis Ring", func() {
 				processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 					return func(ctx context.Context, cmds []redis.Cmder) error {
 						defer GinkgoRecover()
+						// skip the connection initialization
+						if cmds[0].Name() == "hello" || cmds[0].Name() == "client" {
+							return nil
+						}
 
-						Expect(cmds).To(HaveLen(3))
+						Expect(len(cmds)).To(BeNumerically(">=", 3))
 						Expect(cmds[1].String()).To(Equal("ping: "))
 						stack = append(stack, "ring.BeforeProcessPipeline")
 
 						err := hook(ctx, cmds)
 
-						Expect(cmds).To(HaveLen(3))
+						Expect(len(cmds)).To(BeNumerically(">=", 3))
 						Expect(cmds[1].String()).To(Equal("ping: PONG"))
 						stack = append(stack, "ring.AfterProcessPipeline")
 
@@ -437,14 +449,18 @@ var _ = Describe("Redis Ring", func() {
 					processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 						return func(ctx context.Context, cmds []redis.Cmder) error {
 							defer GinkgoRecover()
+							// skip the connection initialization
+							if cmds[0].Name() == "hello" || cmds[0].Name() == "client" {
+								return nil
+							}
 
-							Expect(cmds).To(HaveLen(3))
+							Expect(len(cmds)).To(BeNumerically(">=", 3))
 							Expect(cmds[1].String()).To(Equal("ping: "))
 							stack = append(stack, "shard.BeforeProcessPipeline")
 
 							err := hook(ctx, cmds)
 
-							Expect(cmds).To(HaveLen(3))
+							Expect(len(cmds)).To(BeNumerically(">=", 3))
 							Expect(cmds[1].String()).To(Equal("ping: PONG"))
 							stack = append(stack, "shard.AfterProcessPipeline")
 

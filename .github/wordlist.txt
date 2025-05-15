@@ -66,3 +66,11 @@ RedisTimeseries
 RediSearch
 RawResult
 RawVal
+entra
+EntraID
+Entra
+OAuth
+Azure
+StreamingCredentialsProvider
+oauth
+entraid

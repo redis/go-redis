@@ -298,7 +298,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 				})
 
 				It("should CFCount", Label("cuckoo", "cfcount"), func() {
-					err := client.CFAdd(ctx, "testcf1", "item1").Err()
+					client.CFAdd(ctx, "testcf1", "item1")
 					cnt, err := client.CFCount(ctx, "testcf1", "item1").Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(cnt).To(BeEquivalentTo(int64(1)))
@@ -394,7 +394,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 						NoCreate: true,
 					}
 
-					result, err := client.CFInsert(ctx, "testcf1", args, "item1", "item2", "item3").Result()
+					_, err := client.CFInsert(ctx, "testcf1", args, "item1", "item2", "item3").Result()
 					Expect(err).To(HaveOccurred())
 
 					args = &redis.CFInsertOptions{
@@ -402,7 +402,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 						NoCreate: false,
 					}
 
-					result, err = client.CFInsert(ctx, "testcf1", args, "item1", "item2", "item3").Result()
+					result, err := client.CFInsert(ctx, "testcf1", args, "item1", "item2", "item3").Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(result)).To(BeEquivalentTo(3))
 				})
