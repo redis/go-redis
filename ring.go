@@ -349,6 +349,8 @@ func (c *ringSharding) newRingShards(
 	return
 }
 
+// Warning: External exposure of `c.shards.list` may cause data races.
+// So keep internal or implement deep copy if exposed.
 func (c *ringSharding) List() []*ringShard {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
