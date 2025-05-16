@@ -2187,8 +2187,11 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 
 				// lag: the number of entries in the stream that are still waiting to be delivered
 				// to the group's consumers, or a NULL(Nil) when that number can't be determined.
+				// In that case, we return -1.
 				if err != nil && err != Nil {
 					return err
+				} else if err == Nil {
+					group.Lag = -1
 				}
 			default:
 				return fmt.Errorf("redis: unexpected key %q in XINFO GROUPS reply", key)
