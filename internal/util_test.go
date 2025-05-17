@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -71,4 +72,37 @@ func TestGetAddr(t *testing.T) {
 
 		Expect(GetAddr("127")).To(Equal(""))
 	})
+}
+
+func BenchmarkReplaceSpaces(b *testing.B) {
+	version := runtime.Version()
+	for i := 0; i < b.N; i++ {
+		_ = ReplaceSpaces(version)
+	}
+}
+
+func ReplaceSpacesUseBuilder(s string) string {
+	// Pre-allocate a builder with the same length as s to minimize allocations.
+	// This is a basic optimization; adjust the initial size based on your use case.
+	var builder strings.Builder
+	builder.Grow(len(s))
+
+	for _, char := range s {
+		if char == ' ' {
+			// Replace space with a hyphen.
+			builder.WriteRune('-')
+		} else {
+			// Copy the character as-is.
+			builder.WriteRune(char)
+		}
+	}
+
+	return builder.String()
+}
+
+func BenchmarkReplaceSpacesUseBuilder(b *testing.B) {
+	version := runtime.Version()
+	for i := 0; i < b.N; i++ {
+		_ = ReplaceSpacesUseBuilder(version)
+	}
 }
