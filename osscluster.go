@@ -989,7 +989,7 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
-	slot := c.cmdSlot(ctx, cmd)
+	slot := c.cmdSlot(cmd)
 	var node *clusterNode
 	var moved bool
 	var ask bool
@@ -1480,7 +1480,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 
 	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
 		for _, cmd := range cmds {
-			slot := c.cmdSlot(ctx, cmd)
+			slot := c.cmdSlot(cmd)
 			node, err := c.slotReadOnlyNode(state, slot)
 			if err != nil {
 				return err
@@ -1491,7 +1491,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	}
 
 	for _, cmd := range cmds {
-		slot := c.cmdSlot(ctx, cmd)
+		slot := c.cmdSlot(cmd)
 		node, err := state.slotMasterNode(slot)
 		if err != nil {
 			return err
@@ -1635,7 +1635,7 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 func (c *ClusterClient) mapCmdsBySlot(ctx context.Context, cmds []Cmder) map[int][]Cmder {
 	cmdsMap := make(map[int][]Cmder)
 	for _, cmd := range cmds {
-		slot := c.cmdSlot(ctx, cmd)
+		slot := c.cmdSlot(cmd)
 		cmdsMap[slot] = append(cmdsMap[slot], cmd)
 	}
 	return cmdsMap
@@ -1664,7 +1664,7 @@ func (c *ClusterClient) processTxPipelineNode(
 }
 
 func (c *ClusterClient) processTxPipelineNodeConn(
-	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
+	ctx context.Context, _ *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
@@ -1934,7 +1934,7 @@ func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	return info
 }
 
-func (c *ClusterClient) cmdSlot(ctx context.Context, cmd Cmder) int {
+func (c *ClusterClient) cmdSlot(cmd Cmder) int {
 	args := cmd.Args()
 	if args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
 		return args[2].(int)
