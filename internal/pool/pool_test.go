@@ -387,4 +387,33 @@ var _ = Describe("race", func() {
 		Expect(stats.WaitCount).To(Equal(uint32(1)))
 		Expect(stats.WaitDurationNs).To(BeNumerically("~", time.Second.Nanoseconds(), 100*time.Millisecond.Nanoseconds()))
 	})
+
+	It("timeout", func() {
+		testPoolTimeout := 1 * time.Second
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				// Artificial delay to force pool timeout
+				time.Sleep(3 * testPoolTimeout)
+
+				return &net.TCPConn{}, nil
+			},
+			PoolSize:    1,
+			PoolTimeout: testPoolTimeout,
+		}
+		p := pool.NewConnPool(opt)
+
+		stats := p.Stats()
+		Expect(stats.Timeouts).To(Equal(uint32(0)))
+
+		conn, err := p.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = p.Get(ctx)
+		Expect(err).To(MatchError(pool.ErrPoolTimeout))
+		p.Put(ctx, conn)
+		conn, err = p.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
+		stats = p.Stats()
+		Expect(stats.Timeouts).To(Equal(uint32(1)))
+	})
 })
