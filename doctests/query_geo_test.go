@@ -29,7 +29,7 @@ func ExampleClient_query_geo() {
 	_, err := rdb.FTCreate(ctx, "idx:bicycle",
 		&redis.FTCreateOptions{
 			OnJSON: true,
-			Prefix: []interface{}{"bicycle:"},
+			Prefix: []any{"bicycle:"},
 		},
 		&redis.FieldSchema{
 			FieldName: "$.brand",
@@ -73,7 +73,7 @@ func ExampleClient_query_geo() {
 		panic(err)
 	}
 
-	exampleJsons := []map[string]interface{}{
+	exampleJsons := []map[string]any{
 		{
 			"pickup_zone": "POLYGON((-74.0610 40.7578, -73.9510 40.7578, -73.9510 40.6678, " +
 				"-74.0610 40.6678, -74.0610 40.7578))",
@@ -237,7 +237,7 @@ func ExampleClient_query_geo() {
 	res1, err := rdb.FTSearchWithArgs(ctx,
 		"idx:bicycle", "@store_location:[$lon $lat $radius $units]",
 		&redis.FTSearchOptions{
-			Params: map[string]interface{}{
+			Params: map[string]any{
 				"lon":    -0.1778,
 				"lat":    51.5524,
 				"radius": 20,
@@ -264,7 +264,7 @@ func ExampleClient_query_geo() {
 		"idx:bicycle",
 		"@pickup_zone:[CONTAINS $bike]",
 		&redis.FTSearchOptions{
-			Params: map[string]interface{}{
+			Params: map[string]any{
 				"bike": "POINT(-0.1278 51.5074)",
 			},
 			DialectVersion: 3,
@@ -288,7 +288,7 @@ func ExampleClient_query_geo() {
 		"idx:bicycle",
 		"@pickup_zone:[WITHIN $europe]",
 		&redis.FTSearchOptions{
-			Params: map[string]interface{}{
+			Params: map[string]any{
 				"europe": "POLYGON((-25 35, 40 35, 40 70, -25 70, -25 35))",
 			},
 			DialectVersion: 3,

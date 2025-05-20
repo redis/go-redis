@@ -151,7 +151,7 @@ func (r *Reader) readLine() ([]byte, error) {
 	return b[:len(b)-2], nil
 }
 
-func (r *Reader) ReadReply() (interface{}, error) {
+func (r *Reader) ReadReply() (any, error) {
 	line, err := r.ReadLine()
 	if err != nil {
 		return nil, err
@@ -239,13 +239,13 @@ func (r *Reader) readVerb(line []byte) (string, error) {
 	return s[4:], nil
 }
 
-func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
+func (r *Reader) readSlice(line []byte) ([]any, error) {
 	n, err := replyLen(line)
 	if err != nil {
 		return nil, err
 	}
 
-	val := make([]interface{}, n)
+	val := make([]any, n)
 	for i := 0; i < len(val); i++ {
 		v, err := r.ReadReply()
 		if err != nil {
@@ -264,12 +264,12 @@ func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
 	return val, nil
 }
 
-func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
+func (r *Reader) readMap(line []byte) (map[any]any, error) {
 	n, err := replyLen(line)
 	if err != nil {
 		return nil, err
 	}
-	m := make(map[interface{}]interface{}, n)
+	m := make(map[any]any, n)
 	for i := 0; i < n; i++ {
 		k, err := r.ReadReply()
 		if err != nil {
@@ -402,7 +402,7 @@ func (r *Reader) ReadBool() (bool, error) {
 	return s == "OK" || s == "1" || s == "true", nil
 }
 
-func (r *Reader) ReadSlice() ([]interface{}, error) {
+func (r *Reader) ReadSlice() ([]any, error) {
 	line, err := r.ReadLine()
 	if err != nil {
 		return nil, err
