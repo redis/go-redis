@@ -169,13 +169,13 @@ rdb := redis.NewClient(&redis.Options{
 })
 ```
 
-**Note:** The streaming credentials provider can be used with [go-redis-entraid](https://github.com/redis-developer/go-redis-entraid) to enable Entra ID (formerly Azure AD) authentication. This allows for seamless integration with Azure's managed identity services and token-based authentication.
+**Note:** The streaming credentials provider can be used with [go-redis-entraid](https://github.com/redis/go-redis-entraid) to enable Entra ID (formerly Azure AD) authentication. This allows for seamless integration with Azure's managed identity services and token-based authentication.
 
 Example with Entra ID:
 ```go
 import (
     "github.com/redis/go-redis/v9"
-    "github.com/redis-developer/go-redis-entraid"
+    "github.com/redis/go-redis-entraid"
 )
 
 // Create an Entra ID credentials provider
