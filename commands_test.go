@@ -657,6 +657,22 @@ var _ = Describe("Commands", func() {
 			Expect(cmd.StepCount).To(Equal(int8(0)))
 		})
 
+		It("should Command Tips", Label("NonRedisEnterprise"), func() {
+			SkipAfterRedisVersion(7.9, "Redis 8 changed the COMMAND reply format")
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd := cmds["touch"]
+			Expect(cmd.Name).To(Equal("touch"))
+			Expect(cmd.Tips["request_policy"]).To(Equal("multi_shard"))
+			Expect(cmd.Tips["response_policy"]).To(Equal("agg_sum"))
+
+			cmd = cmds["flushall"]
+			Expect(cmd.Name).To(Equal("flushall"))
+			Expect(cmd.Tips["request_policy"]).To(Equal("all_shards"))
+			Expect(cmd.Tips["response_policy"]).To(Equal("all_succeeded"))
+		})
+
 		It("should return all command names", func() {
 			cmdList := client.CommandList(ctx, nil)
 			Expect(cmdList.Err()).NotTo(HaveOccurred())
