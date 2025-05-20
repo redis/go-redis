@@ -409,7 +409,7 @@ var _ = Describe("Commands", func() {
 
 			defDialect, err := client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "3"}))
+			Expect(defDialect).To(BeEquivalentTo(map[string]any{"DEFAULT_DIALECT": "3"}))
 
 			resGet, err := client.ConfigGet(ctx, "search-default-dialect").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -422,7 +422,7 @@ var _ = Describe("Commands", func() {
 
 			defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "2"}))
+			Expect(defDialect).To(BeEquivalentTo(map[string]any{"DEFAULT_DIALECT": "2"}))
 
 			// set to 1
 			res, err = client.ConfigSet(ctx, "search-default-dialect", "1").Result()
@@ -431,7 +431,7 @@ var _ = Describe("Commands", func() {
 
 			defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "1"}))
+			Expect(defDialect).To(BeEquivalentTo(map[string]any{"DEFAULT_DIALECT": "1"}))
 
 			resGet, err = client.ConfigGet(ctx, "search-default-dialect").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -1190,7 +1190,7 @@ var _ = Describe("Commands", func() {
 					Get: []string{"object_*"},
 				}).Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(els).To(Equal([]interface{}{nil, "value2", nil}))
+				Expect(els).To(Equal([]any{nil, "value2", nil}))
 			}
 		})
 
@@ -1743,29 +1743,29 @@ var _ = Describe("Commands", func() {
 
 			mGet := client.MGet(ctx, "key1", "key2", "_")
 			Expect(mGet.Err()).NotTo(HaveOccurred())
-			Expect(mGet.Val()).To(Equal([]interface{}{"hello1", "hello2", nil}))
+			Expect(mGet.Val()).To(Equal([]any{"hello1", "hello2", nil}))
 
 			// MSet struct
 			type set struct {
 				Set1 string                 `redis:"set1"`
 				Set2 int16                  `redis:"set2"`
 				Set3 time.Duration          `redis:"set3"`
-				Set4 interface{}            `redis:"set4"`
-				Set5 map[string]interface{} `redis:"-"`
+				Set4 any            `redis:"set4"`
+				Set5 map[string]any `redis:"-"`
 			}
 			mSet = client.MSet(ctx, &set{
 				Set1: "val1",
 				Set2: 1024,
 				Set3: 2 * time.Millisecond,
 				Set4: nil,
-				Set5: map[string]interface{}{"k1": 1},
+				Set5: map[string]any{"k1": 1},
 			})
 			Expect(mSet.Err()).NotTo(HaveOccurred())
 			Expect(mSet.Val()).To(Equal("OK"))
 
 			mGet = client.MGet(ctx, "set1", "set2", "set3", "set4")
 			Expect(mGet.Err()).NotTo(HaveOccurred())
-			Expect(mGet.Val()).To(Equal([]interface{}{
+			Expect(mGet.Val()).To(Equal([]any{
 				"val1",
 				"1024",
 				strconv.Itoa(int(2 * time.Millisecond.Nanoseconds())),
@@ -1813,15 +1813,15 @@ var _ = Describe("Commands", func() {
 				Set1 string                 `redis:"set1"`
 				Set2 int16                  `redis:"set2"`
 				Set3 time.Duration          `redis:"set3"`
-				Set4 interface{}            `redis:"set4"`
-				Set5 map[string]interface{} `redis:"-"`
+				Set4 any            `redis:"set4"`
+				Set5 map[string]any `redis:"-"`
 			}
 			mSetNX = client.MSetNX(ctx, &set{
 				Set1: "val1",
 				Set2: 1024,
 				Set3: 2 * time.Millisecond,
 				Set4: nil,
-				Set5: map[string]interface{}{"k1": 1},
+				Set5: map[string]any{"k1": 1},
 			})
 			Expect(mSetNX.Err()).NotTo(HaveOccurred())
 			Expect(mSetNX.Val()).To(Equal(true))
@@ -2292,10 +2292,10 @@ var _ = Describe("Commands", func() {
 		It("should fail module loadex", Label("NonRedisEnterprise"), func() {
 			dryRun := client.ModuleLoadex(ctx, &redis.ModuleLoadexConfig{
 				Path: "/path/to/non-existent-library.so",
-				Conf: map[string]interface{}{
+				Conf: map[string]any{
 					"param1": "value1",
 				},
-				Args: []interface{}{
+				Args: []any{
 					"arg1",
 				},
 			})
@@ -2306,10 +2306,10 @@ var _ = Describe("Commands", func() {
 		It("converts the module loadex configuration to a slice of arguments correctly", func() {
 			conf := &redis.ModuleLoadexConfig{
 				Path: "/path/to/your/module.so",
-				Conf: map[string]interface{}{
+				Conf: map[string]any{
 					"param1": "value1",
 				},
-				Args: []interface{}{
+				Args: []any{
 					"arg1",
 					"arg2",
 					3,
@@ -2319,7 +2319,7 @@ var _ = Describe("Commands", func() {
 			args := conf.ToArgs()
 
 			// Test if the arguments are in the correct order
-			expectedArgs := []interface{}{
+			expectedArgs := []any{
 				"MODULE",
 				"LOADEX",
 				"/path/to/your/module.so",
@@ -2500,11 +2500,11 @@ var _ = Describe("Commands", func() {
 
 			vals, err := client.HMGet(ctx, "hash", "key1", "key2", "_").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]interface{}{"hello1", "hello2", nil}))
+			Expect(vals).To(Equal([]any{"hello1", "hello2", nil}))
 		})
 
 		It("should HSet", func() {
-			ok, err := client.HSet(ctx, "hash", map[string]interface{}{
+			ok, err := client.HSet(ctx, "hash", map[string]any{
 				"key1": "hello1",
 				"key2": "hello2",
 			}).Result()
@@ -2539,8 +2539,8 @@ var _ = Describe("Commands", func() {
 				Set1 string                 `redis:"set1"`
 				Set2 int16                  `redis:"set2"`
 				Set3 time.Duration          `redis:"set3"`
-				Set4 interface{}            `redis:"set4"`
-				Set5 map[string]interface{} `redis:"-"`
+				Set4 any            `redis:"set4"`
+				Set5 map[string]any `redis:"-"`
 				Set6 string                 `redis:"set6,omitempty"`
 			}
 
@@ -2549,14 +2549,14 @@ var _ = Describe("Commands", func() {
 				Set2: 1024,
 				Set3: 2 * time.Millisecond,
 				Set4: nil,
-				Set5: map[string]interface{}{"k1": 1},
+				Set5: map[string]any{"k1": 1},
 			})
 			Expect(hSet.Err()).NotTo(HaveOccurred())
 			Expect(hSet.Val()).To(Equal(int64(4)))
 
 			hMGet := client.HMGet(ctx, "hash", "set1", "set2", "set3", "set4", "set5", "set6")
 			Expect(hMGet.Err()).NotTo(HaveOccurred())
-			Expect(hMGet.Val()).To(Equal([]interface{}{
+			Expect(hMGet.Val()).To(Equal([]any{
 				"val1",
 				"1024",
 				strconv.Itoa(int(2 * time.Millisecond.Nanoseconds())),
@@ -2574,7 +2574,7 @@ var _ = Describe("Commands", func() {
 
 			hMGet = client.HMGet(ctx, "hash2", "set1", "set6")
 			Expect(hMGet.Err()).NotTo(HaveOccurred())
-			Expect(hMGet.Val()).To(Equal([]interface{}{
+			Expect(hMGet.Val()).To(Equal([]any{
 				"val2",
 				"val",
 			}))
@@ -3014,7 +3014,7 @@ var _ = Describe("Commands", func() {
 
 			values, err := client.HMGet(ctx, "myhash", "f1", "f2").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(values).To(Equal([]interface{}{"val1", "val2"}))
+			Expect(values).To(Equal([]any{"val1", "val2"}))
 		})
 	})
 
@@ -6045,16 +6045,16 @@ var _ = Describe("Commands", func() {
 			id, err := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
 				ID:     "1-0",
-				Values: map[string]interface{}{"uno": "un"},
+				Values: map[string]any{"uno": "un"},
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(id).To(Equal("1-0"))
 
-			// Values supports []interface{}.
+			// Values supports []any.
 			id, err = client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
 				ID:     "2-0",
-				Values: []interface{}{"dos", "deux"},
+				Values: []any{"dos", "deux"},
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(id).To(Equal("2-0"))
@@ -6096,17 +6096,17 @@ var _ = Describe("Commands", func() {
 		It("should XAdd", func() {
 			id, err := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
-				Values: map[string]interface{}{"quatro": "quatre"},
+				Values: map[string]any{"quatro": "quatre"},
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.XRange(ctx, "stream", "-", "+").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.XMessage{
-				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
-				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
-				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
-				{ID: id, Values: map[string]interface{}{"quatro": "quatre"}},
+				{ID: "1-0", Values: map[string]any{"uno": "un"}},
+				{ID: "2-0", Values: map[string]any{"dos": "deux"}},
+				{ID: "3-0", Values: map[string]any{"tres": "troix"}},
+				{ID: id, Values: map[string]any{"quatro": "quatre"}},
 			}))
 		})
 
@@ -6114,14 +6114,14 @@ var _ = Describe("Commands", func() {
 			id, err := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
 				MaxLen: 1,
-				Values: map[string]interface{}{"quatro": "quatre"},
+				Values: map[string]any{"quatro": "quatre"},
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.XRange(ctx, "stream", "-", "+").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.XMessage{
-				{ID: id, Values: map[string]interface{}{"quatro": "quatre"}},
+				{ID: id, Values: map[string]any{"quatro": "quatre"}},
 			}))
 		})
 
@@ -6130,7 +6130,7 @@ var _ = Describe("Commands", func() {
 				Stream: "stream",
 				MinID:  "5-0",
 				ID:     "4-0",
-				Values: map[string]interface{}{"quatro": "quatre"},
+				Values: map[string]any{"quatro": "quatre"},
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(id).To(Equal("4-0"))
@@ -6156,23 +6156,23 @@ var _ = Describe("Commands", func() {
 			msgs, err := client.XRange(ctx, "stream", "-", "+").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(msgs).To(Equal([]redis.XMessage{
-				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
-				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
-				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+				{ID: "1-0", Values: map[string]any{"uno": "un"}},
+				{ID: "2-0", Values: map[string]any{"dos": "deux"}},
+				{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 			}))
 
 			msgs, err = client.XRange(ctx, "stream", "2", "+").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(msgs).To(Equal([]redis.XMessage{
-				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
-				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+				{ID: "2-0", Values: map[string]any{"dos": "deux"}},
+				{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 			}))
 
 			msgs, err = client.XRange(ctx, "stream", "-", "2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(msgs).To(Equal([]redis.XMessage{
-				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
-				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+				{ID: "1-0", Values: map[string]any{"uno": "un"}},
+				{ID: "2-0", Values: map[string]any{"dos": "deux"}},
 			}))
 		})
 
@@ -6180,20 +6180,20 @@ var _ = Describe("Commands", func() {
 			msgs, err := client.XRangeN(ctx, "stream", "-", "+", 2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(msgs).To(Equal([]redis.XMessage{
-				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
-				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+				{ID: "1-0", Values: map[string]any{"uno": "un"}},
+				{ID: "2-0", Values: map[string]any{"dos": "deux"}},
 			}))
 
 			msgs, err = client.XRangeN(ctx, "stream", "2", "+", 1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(msgs).To(Equal([]redis.XMessage{
-				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+				{ID: "2-0", Values: map[string]any{"dos": "deux"}},
 			}))
 
 			msgs, err = client.XRangeN(ctx, "stream", "-", "2", 1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(msgs).To(Equal([]redis.XMessage{
-				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+				{ID: "1-0", Values: map[string]any{"uno": "un"}},
 			}))
 		})
 
@@ -6201,16 +6201,16 @@ var _ = Describe("Commands", func() {
 			msgs, err := client.XRevRange(ctx, "stream", "+", "-").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(msgs).To(Equal([]redis.XMessage{
-				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
-				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
-				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+				{ID: "3-0", Values: map[string]any{"tres": "troix"}},
+				{ID: "2-0", Values: map[string]any{"dos": "deux"}},
+				{ID: "1-0", Values: map[string]any{"uno": "un"}},
 			}))
 
 			msgs, err = client.XRevRange(ctx, "stream", "+", "2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(msgs).To(Equal([]redis.XMessage{
-				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
-				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+				{ID: "3-0", Values: map[string]any{"tres": "troix"}},
+				{ID: "2-0", Values: map[string]any{"dos": "deux"}},
 			}))
 		})
 
@@ -6218,14 +6218,14 @@ var _ = Describe("Commands", func() {
 			msgs, err := client.XRevRangeN(ctx, "stream", "+", "-", 2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(msgs).To(Equal([]redis.XMessage{
-				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
-				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+				{ID: "3-0", Values: map[string]any{"tres": "troix"}},
+				{ID: "2-0", Values: map[string]any{"dos": "deux"}},
 			}))
 
 			msgs, err = client.XRevRangeN(ctx, "stream", "+", "2", 1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(msgs).To(Equal([]redis.XMessage{
-				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+				{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 			}))
 		})
 
@@ -6236,9 +6236,9 @@ var _ = Describe("Commands", func() {
 				{
 					Stream: "stream",
 					Messages: []redis.XMessage{
-						{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
-						{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
-						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+						{ID: "1-0", Values: map[string]any{"uno": "un"}},
+						{ID: "2-0", Values: map[string]any{"dos": "deux"}},
+						{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 					},
 				},
 			}))
@@ -6258,8 +6258,8 @@ var _ = Describe("Commands", func() {
 				{
 					Stream: "stream",
 					Messages: []redis.XMessage{
-						{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
-						{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+						{ID: "1-0", Values: map[string]any{"uno": "un"}},
+						{ID: "2-0", Values: map[string]any{"dos": "deux"}},
 					},
 				},
 			}))
@@ -6284,7 +6284,7 @@ var _ = Describe("Commands", func() {
 				{
 					Stream: "stream",
 					Messages: []redis.XMessage{
-						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+						{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 					},
 				},
 			}))
@@ -6301,13 +6301,13 @@ var _ = Describe("Commands", func() {
 				{
 					Stream: "stream",
 					Messages: []redis.XMessage{
-						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+						{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 					},
 				},
 				{
 					Stream: "stream",
 					Messages: []redis.XMessage{
-						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+						{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 					},
 				},
 			}))
@@ -6323,7 +6323,7 @@ var _ = Describe("Commands", func() {
 				id, err := client.XAdd(ctx, &redis.XAddArgs{
 					Stream: "empty",
 					ID:     "4-0",
-					Values: map[string]interface{}{"quatro": "quatre"},
+					Values: map[string]any{"quatro": "quatre"},
 				}).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(id).To(Equal("4-0"))
@@ -6341,7 +6341,7 @@ var _ = Describe("Commands", func() {
 				{
 					Stream: "empty",
 					Messages: []redis.XMessage{
-						{ID: "4-0", Values: map[string]interface{}{"quatro": "quatre"}},
+						{ID: "4-0", Values: map[string]any{"quatro": "quatre"}},
 					},
 				},
 			}))
@@ -6362,9 +6362,9 @@ var _ = Describe("Commands", func() {
 					{
 						Stream: "stream",
 						Messages: []redis.XMessage{
-							{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
-							{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
-							{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+							{ID: "1-0", Values: map[string]any{"uno": "un"}},
+							{ID: "2-0", Values: map[string]any{"dos": "deux"}},
+							{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 						},
 					},
 				}))
@@ -6391,9 +6391,9 @@ var _ = Describe("Commands", func() {
 					{
 						Stream: "stream",
 						Messages: []redis.XMessage{
-							{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+							{ID: "1-0", Values: map[string]any{"uno": "un"}},
 							{ID: "2-0", Values: nil},
-							{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+							{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 						},
 					},
 				}))
@@ -6472,10 +6472,10 @@ var _ = Describe("Commands", func() {
 				Expect(start).To(Equal("3-0"))
 				Expect(msgs).To(Equal([]redis.XMessage{{
 					ID:     "1-0",
-					Values: map[string]interface{}{"uno": "un"},
+					Values: map[string]any{"uno": "un"},
 				}, {
 					ID:     "2-0",
-					Values: map[string]interface{}{"dos": "deux"},
+					Values: map[string]any{"dos": "deux"},
 				}}))
 
 				xca.Start = start
@@ -6484,7 +6484,7 @@ var _ = Describe("Commands", func() {
 				Expect(start).To(Equal("0-0"))
 				Expect(msgs).To(Equal([]redis.XMessage{{
 					ID:     "3-0",
-					Values: map[string]interface{}{"tres": "troix"},
+					Values: map[string]any{"tres": "troix"},
 				}}))
 
 				ids, start, err := client.XAutoClaimJustID(ctx, xca).Result()
@@ -6503,13 +6503,13 @@ var _ = Describe("Commands", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(msgs).To(Equal([]redis.XMessage{{
 					ID:     "1-0",
-					Values: map[string]interface{}{"uno": "un"},
+					Values: map[string]any{"uno": "un"},
 				}, {
 					ID:     "2-0",
-					Values: map[string]interface{}{"dos": "deux"},
+					Values: map[string]any{"dos": "deux"},
 				}, {
 					ID:     "3-0",
-					Values: map[string]interface{}{"tres": "troix"},
+					Values: map[string]any{"tres": "troix"},
 				}}))
 
 				ids, err := client.XClaimJustID(ctx, &redis.XClaimArgs{
@@ -6545,8 +6545,8 @@ var _ = Describe("Commands", func() {
 					{
 						Stream: "stream",
 						Messages: []redis.XMessage{
-							{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
-							{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+							{ID: "1-0", Values: map[string]any{"uno": "un"}},
+							{ID: "2-0", Values: map[string]any{"dos": "deux"}},
 						},
 					},
 				}))
@@ -6561,7 +6561,7 @@ var _ = Describe("Commands", func() {
 					{
 						Stream: "stream",
 						Messages: []redis.XMessage{
-							{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+							{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 						},
 					},
 				}))
@@ -6579,8 +6579,8 @@ var _ = Describe("Commands", func() {
 					{
 						Stream: "stream",
 						Messages: []redis.XMessage{
-							{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
-							{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+							{ID: "2-0", Values: map[string]any{"dos": "deux"}},
+							{ID: "3-0", Values: map[string]any{"tres": "troix"}},
 						},
 					},
 				}))
@@ -6611,11 +6611,11 @@ var _ = Describe("Commands", func() {
 					EntriesAdded:      3,
 					FirstEntry: redis.XMessage{
 						ID:     "1-0",
-						Values: map[string]interface{}{"uno": "un"},
+						Values: map[string]any{"uno": "un"},
 					},
 					LastEntry: redis.XMessage{
 						ID:     "3-0",
-						Values: map[string]interface{}{"tres": "troix"},
+						Values: map[string]any{"tres": "troix"},
 					},
 					RecordedFirstEntryID: "1-0",
 				}))
@@ -7209,9 +7209,9 @@ var _ = Describe("Commands", func() {
 
 	Describe("marshaling/unmarshaling", func() {
 		type convTest struct {
-			value  interface{}
+			value  any
 			wanted string
-			dest   interface{}
+			dest   any
 		}
 
 		convTests := []convTest{
@@ -7284,7 +7284,7 @@ var _ = Describe("Commands", func() {
 				"hello",
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]interface{}{"key", "hello"}))
+			Expect(vals).To(Equal([]any{"key", "hello"}))
 		})
 
 		It("returns all values after an error", func() {
@@ -7294,7 +7294,7 @@ var _ = Describe("Commands", func() {
 				nil,
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
+			Expect(vals).To(Equal([]any{int64(12), proto.RedisError("error"), "abc"}))
 		})
 
 		It("returns empty values when args are nil", func() {
@@ -7318,7 +7318,7 @@ var _ = Describe("Commands", func() {
 				"hello",
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]interface{}{"key", "hello"}))
+			Expect(vals).To(Equal([]any{"key", "hello"}))
 		})
 
 		It("returns all values after an error", func() {
@@ -7328,7 +7328,7 @@ var _ = Describe("Commands", func() {
 				nil,
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
+			Expect(vals).To(Equal([]any{int64(12), proto.RedisError("error"), "abc"}))
 		})
 
 		It("returns empty values when args are nil", func() {
@@ -7718,7 +7718,7 @@ func (n *numberStruct) ScanRedis(str string) error {
 	return json.Unmarshal([]byte(str), n)
 }
 
-func deref(viface interface{}) interface{} {
+func deref(viface any) any {
 	v := reflect.ValueOf(viface)
 	for v.Kind() == reflect.Ptr {
 		v = v.Elem()

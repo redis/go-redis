@@ -3,13 +3,13 @@ package redis
 import "context"
 
 type HyperLogLogCmdable interface {
-	PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd
+	PFAdd(ctx context.Context, key string, els ...any) *IntCmd
 	PFCount(ctx context.Context, keys ...string) *IntCmd
 	PFMerge(ctx context.Context, dest string, keys ...string) *StatusCmd
 }
 
-func (c cmdable) PFAdd(ctx context.Context, key string, els ...interface{}) *IntCmd {
-	args := make([]interface{}, 2, 2+len(els))
+func (c cmdable) PFAdd(ctx context.Context, key string, els ...any) *IntCmd {
+	args := make([]any, 2, 2+len(els))
 	args[0] = "pfadd"
 	args[1] = key
 	args = appendArgs(args, els)
@@ -19,7 +19,7 @@ func (c cmdable) PFAdd(ctx context.Context, key string, els ...interface{}) *Int
 }
 
 func (c cmdable) PFCount(ctx context.Context, keys ...string) *IntCmd {
-	args := make([]interface{}, 1+len(keys))
+	args := make([]any, 1+len(keys))
 	args[0] = "pfcount"
 	for i, key := range keys {
 		args[1+i] = key
@@ -30,7 +30,7 @@ func (c cmdable) PFCount(ctx context.Context, keys ...string) *IntCmd {
 }
 
 func (c cmdable) PFMerge(ctx context.Context, dest string, keys ...string) *StatusCmd {
-	args := make([]interface{}, 2+len(keys))
+	args := make([]any, 2+len(keys))
 	args[0] = "pfmerge"
 	args[1] = dest
 	for i, key := range keys {

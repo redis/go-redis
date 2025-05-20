@@ -297,11 +297,11 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 				res, err := client.JSONMGet(ctx, "$", "mset1").Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(res).To(Equal([]interface{}{`[{"a":1}]`}))
+				Expect(res).To(Equal([]any{`[{"a":1}]`}))
 
 				res, err = client.JSONMGet(ctx, "$", "mset1", "mset2").Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(res).To(Equal([]interface{}{`[{"a":1}]`, "[2]"}))
+				Expect(res).To(Equal([]any{`[{"a":1}]`, "[2]"}))
 
 				_, err = client.JSONMSet(ctx, "mset1", "$.a", 2, "mset3", "$", `[1]`).Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -333,15 +333,15 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 				iRes, err := client.JSONMGet(ctx, "$..a", "doc1").Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(iRes).To(Equal([]interface{}{`[1,3,""]`}))
+				Expect(iRes).To(Equal([]any{`[1,3,""]`}))
 
 				iRes, err = client.JSONMGet(ctx, "$..a", "doc1", "doc2").Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(iRes).To(Equal([]interface{}{`[1,3,""]`, `[4,6,[""]]`}))
+				Expect(iRes).To(Equal([]any{`[1,3,""]`, `[4,6,[""]]`}))
 
 				iRes, err = client.JSONMGet(ctx, "$..a", "non_existing_doc", "non_existing_doc1").Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(iRes).To(Equal([]interface{}{nil, nil}))
+				Expect(iRes).To(Equal([]any{nil, nil}))
 			})
 		})
 
@@ -562,7 +562,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				cmd2 := client.JSONObjKeys(ctx, "objkeys1", "$..*")
 				Expect(cmd2.Err()).NotTo(HaveOccurred())
 				Expect(cmd2.Val()).To(HaveLen(7))
-				Expect(cmd2.Val()).To(Equal([]interface{}{nil, []interface{}{"a"}, nil, nil, nil, nil, nil}))
+				Expect(cmd2.Val()).To(Equal([]any{nil, []any{"a"}, nil, nil, nil, nil, nil}))
 			})
 
 			It("should JSONObjKeys with $", Label("json.objkeys", "json"), func() {
@@ -577,15 +577,15 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 				cmd2, err := client.JSONObjKeys(ctx, "objkeys1", "$.nested1.a").Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(cmd2).To(Equal([]interface{}{[]interface{}{"foo", "bar"}}))
+				Expect(cmd2).To(Equal([]any{[]any{"foo", "bar"}}))
 
 				cmd2, err = client.JSONObjKeys(ctx, "objkeys1", ".*.a").Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(cmd2).To(Equal([]interface{}{"foo", "bar"}))
+				Expect(cmd2).To(Equal([]any{"foo", "bar"}))
 
 				cmd2, err = client.JSONObjKeys(ctx, "objkeys1", ".nested2.a").Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(cmd2).To(Equal([]interface{}{"baz"}))
+				Expect(cmd2).To(Equal([]any{"baz"}))
 
 				_, err = client.JSONObjKeys(ctx, "non_existing_doc", "..a").Result()
 				Expect(err).To(HaveOccurred())
@@ -670,7 +670,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(cmd2.Err()).NotTo(HaveOccurred())
 				Expect(cmd2.Val()).To(HaveLen(1))
 				// RESP2 v RESP3
-				Expect(cmd2.Val()[0]).To(Or(Equal([]interface{}{"boolean"}), Equal("boolean")))
+				Expect(cmd2.Val()[0]).To(Or(Equal([]any{"boolean"}), Equal("boolean")))
 			})
 		})
 	}
@@ -706,27 +706,27 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 				})
 
 				It("should perform complex JSON and RediSearch operations", func() {
-					jsonDoc := map[string]interface{}{
-						"person": map[string]interface{}{
+					jsonDoc := map[string]any{
+						"person": map[string]any{
 							"name":   "Alice",
 							"age":    30,
 							"status": true,
-							"address": map[string]interface{}{
+							"address": map[string]any{
 								"city":     "Wonderland",
 								"postcode": "12345",
 							},
-							"contacts": []map[string]interface{}{
+							"contacts": []map[string]any{
 								{"type": "email", "value": "alice@example.com"},
 								{"type": "phone", "value": "+123456789"},
 								{"type": "fax", "value": "+987654321"},
 							},
-							"friends": []map[string]interface{}{
+							"friends": []map[string]any{
 								{"name": "Bob", "age": 35, "status": true},
 								{"name": "Charlie", "age": 28, "status": false},
 							},
 						},
-						"settings": map[string]interface{}{
-							"notifications": map[string]interface{}{
+						"settings": map[string]any{
+							"notifications": map[string]any{
 								"email":  true,
 								"sms":    false,
 								"alerts": []string{"low battery", "door open"},
@@ -765,7 +765,7 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					arrTrimCmd := client.JSONArrTrimWithArgs(ctx, "person:1", "$.person.friends", &redis.JSONArrTrimArgs{Start: start, Stop: &stop})
 					Expect(arrTrimCmd.Err()).NotTo(HaveOccurred(), "JSON.ARRTRIM failed")
 
-					mergeData := map[string]interface{}{
+					mergeData := map[string]any{
 						"status":    false,
 						"nickname":  "WonderAlice",
 						"lastLogin": time.Now().Format(time.RFC3339),
@@ -776,7 +776,7 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					typeCmd := client.JSONType(ctx, "person:1", "$.person.nickname")
 					nicknameType, err := typeCmd.Result()
 					Expect(err).NotTo(HaveOccurred(), "JSON.TYPE failed")
-					Expect(nicknameType[0]).To(Equal([]interface{}{"string"}), "JSON.TYPE mismatch for nickname")
+					Expect(nicknameType[0]).To(Equal([]any{"string"}), "JSON.TYPE mismatch for nickname")
 
 					createIndexCmd := client.Do(ctx, "FT.CREATE", "person_idx", "ON", "JSON",
 						"PREFIX", "1", "person:", "SCHEMA",
@@ -811,7 +811,7 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 })
 
 // Helper function to marshal data into JSON for comparisons
-func jsonMustMarshal(v interface{}) string {
+func jsonMustMarshal(v any) string {
 	bytes, err := json.Marshal(v)
 	Expect(err).NotTo(HaveOccurred())
 	return string(bytes)

@@ -127,7 +127,7 @@ func (c cmdable) ClusterCountKeysInSlot(ctx context.Context, slot int) *IntCmd {
 }
 
 func (c cmdable) ClusterDelSlots(ctx context.Context, slots ...int) *StatusCmd {
-	args := make([]interface{}, 2+len(slots))
+	args := make([]any, 2+len(slots))
 	args[0] = "cluster"
 	args[1] = "delslots"
 	for i, slot := range slots {
@@ -166,7 +166,7 @@ func (c cmdable) ClusterFailover(ctx context.Context) *StatusCmd {
 }
 
 func (c cmdable) ClusterAddSlots(ctx context.Context, slots ...int) *StatusCmd {
-	args := make([]interface{}, 2+len(slots))
+	args := make([]any, 2+len(slots))
 	args[0] = "cluster"
 	args[1] = "addslots"
 	for i, num := range slots {
