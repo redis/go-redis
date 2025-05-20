@@ -219,7 +219,7 @@ func respString(b *testing.B, stub ClientStubFunc) {
 
 func respArray(b *testing.B, stub ClientStubFunc) {
 	rdb := stub([]byte("*3\r\n$5\r\nhello\r\n:10\r\n+OK\r\n"))
-	var val []interface{}
+	var val []any
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

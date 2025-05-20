@@ -28,7 +28,7 @@ type Cmder interface {
 
 	// all args of the command.
 	// e.g. "set k v ex 10" -> "[set k v ex 10]".
-	Args() []interface{}
+	Args() []any
 
 	// format request and response string.
 	// e.g. "set k v ex 10" -> "set k v ex 10: OK", "get k" -> "get k: v".
@@ -98,7 +98,7 @@ func cmdFirstKeyPos(cmd Cmder) int {
 	return 1
 }
 
-func cmdString(cmd Cmder, val interface{}) string {
+func cmdString(cmd Cmder, val any) string {
 	b := make([]byte, 0, 64)
 
 	for i, arg := range cmd.Args() {
@@ -123,10 +123,10 @@ func cmdString(cmd Cmder, val interface{}) string {
 
 type baseCmd struct {
 	ctx          context.Context
-	args         []interface{}
+	args         []any
 	err          error
 	keyPos       int8
-	rawVal       interface{}
+	rawVal       any
 	_readTimeout *time.Duration
 }
 
@@ -155,7 +155,7 @@ func (cmd *baseCmd) FullName() string {
 	}
 }
 
-func (cmd *baseCmd) Args() []interface{} {
+func (cmd *baseCmd) Args() []any {
 	return cmd.args
 }
 
@@ -209,10 +209,10 @@ func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 type Cmd struct {
 	baseCmd
 
-	val interface{}
+	val any
 }
 
-func NewCmd(ctx context.Context, args ...interface{}) *Cmd {
+func NewCmd(ctx context.Context, args ...any) *Cmd {
 	return &Cmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -225,15 +225,15 @@ func (cmd *Cmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *Cmd) SetVal(val interface{}) {
+func (cmd *Cmd) SetVal(val any) {
 	cmd.val = val
 }
 
-func (cmd *Cmd) Val() interface{} {
+func (cmd *Cmd) Val() any {
 	return cmd.val
 }
 
-func (cmd *Cmd) Result() (interface{}, error) {
+func (cmd *Cmd) Result() (any, error) {
 	return cmd.val, cmd.err
 }
 
@@ -244,7 +244,7 @@ func (cmd *Cmd) Text() (string, error) {
 	return toString(cmd.val)
 }
 
-func toString(val interface{}) (string, error) {
+func toString(val any) (string, error) {
 	switch val := val.(type) {
 	case string:
 		return val, nil
@@ -276,7 +276,7 @@ func (cmd *Cmd) Int64() (int64, error) {
 	return toInt64(cmd.val)
 }
 
-func toInt64(val interface{}) (int64, error) {
+func toInt64(val any) (int64, error) {
 	switch val := val.(type) {
 	case int64:
 		return val, nil
@@ -295,7 +295,7 @@ func (cmd *Cmd) Uint64() (uint64, error) {
 	return toUint64(cmd.val)
 }
 
-func toUint64(val interface{}) (uint64, error) {
+func toUint64(val any) (uint64, error) {
 	switch val := val.(type) {
 	case int64:
 		return uint64(val), nil
@@ -314,7 +314,7 @@ func (cmd *Cmd) Float32() (float32, error) {
 	return toFloat32(cmd.val)
 }
 
-func toFloat32(val interface{}) (float32, error) {
+func toFloat32(val any) (float32, error) {
 	switch val := val.(type) {
 	case int64:
 		return float32(val), nil
@@ -337,7 +337,7 @@ func (cmd *Cmd) Float64() (float64, error) {
 	return toFloat64(cmd.val)
 }
 
-func toFloat64(val interface{}) (float64, error) {
+func toFloat64(val any) (float64, error) {
 	switch val := val.(type) {
 	case int64:
 		return float64(val), nil
@@ -356,7 +356,7 @@ func (cmd *Cmd) Bool() (bool, error) {
 	return toBool(cmd.val)
 }
 
-func toBool(val interface{}) (bool, error) {
+func toBool(val any) (bool, error) {
 	switch val := val.(type) {
 	case bool:
 		return val, nil
@@ -370,12 +370,12 @@ func toBool(val interface{}) (bool, error) {
 	}
 }
 
-func (cmd *Cmd) Slice() ([]interface{}, error) {
+func (cmd *Cmd) Slice() ([]any, error) {
 	if cmd.err != nil {
 		return nil, cmd.err
 	}
 	switch val := cmd.val.(type) {
-	case []interface{}:
+	case []any:
 		return val, nil
 	default:
 		return nil, fmt.Errorf("redis: unexpected type=%T for Slice", val)
@@ -494,12 +494,12 @@ func (cmd *Cmd) readReply(rd *proto.Reader) (err error) {
 type SliceCmd struct {
 	baseCmd
 
-	val []interface{}
+	val []any
 }
 
 var _ Cmder = (*SliceCmd)(nil)
 
-func NewSliceCmd(ctx context.Context, args ...interface{}) *SliceCmd {
+func NewSliceCmd(ctx context.Context, args ...any) *SliceCmd {
 	return &SliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -508,15 +508,15 @@ func NewSliceCmd(ctx context.Context, args ...interface{}) *SliceCmd {
 	}
 }
 
-func (cmd *SliceCmd) SetVal(val []interface{}) {
+func (cmd *SliceCmd) SetVal(val []any) {
 	cmd.val = val
 }
 
-func (cmd *SliceCmd) Val() []interface{} {
+func (cmd *SliceCmd) Val() []any {
 	return cmd.val
 }
 
-func (cmd *SliceCmd) Result() ([]interface{}, error) {
+func (cmd *SliceCmd) Result() ([]any, error) {
 	return cmd.val, cmd.err
 }
 
@@ -526,14 +526,14 @@ func (cmd *SliceCmd) String() string {
 
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag.
-func (cmd *SliceCmd) Scan(dst interface{}) error {
+func (cmd *SliceCmd) Scan(dst any) error {
 	if cmd.err != nil {
 		return cmd.err
 	}
 
 	// Pass the list of keys and values.
 	// Skip the first two args for: HMGET key
-	var args []interface{}
+	var args []any
 	if cmd.args[0] == "hmget" {
 		args = cmd.args[2:]
 	} else {
@@ -559,7 +559,7 @@ type StatusCmd struct {
 
 var _ Cmder = (*StatusCmd)(nil)
 
-func NewStatusCmd(ctx context.Context, args ...interface{}) *StatusCmd {
+func NewStatusCmd(ctx context.Context, args ...any) *StatusCmd {
 	return &StatusCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -603,7 +603,7 @@ type IntCmd struct {
 
 var _ Cmder = (*IntCmd)(nil)
 
-func NewIntCmd(ctx context.Context, args ...interface{}) *IntCmd {
+func NewIntCmd(ctx context.Context, args ...any) *IntCmd {
 	return &IntCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -647,7 +647,7 @@ type IntSliceCmd struct {
 
 var _ Cmder = (*IntSliceCmd)(nil)
 
-func NewIntSliceCmd(ctx context.Context, args ...interface{}) *IntSliceCmd {
+func NewIntSliceCmd(ctx context.Context, args ...any) *IntSliceCmd {
 	return &IntSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -697,7 +697,7 @@ type DurationCmd struct {
 
 var _ Cmder = (*DurationCmd)(nil)
 
-func NewDurationCmd(ctx context.Context, precision time.Duration, args ...interface{}) *DurationCmd {
+func NewDurationCmd(ctx context.Context, precision time.Duration, args ...any) *DurationCmd {
 	return &DurationCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -749,7 +749,7 @@ type TimeCmd struct {
 
 var _ Cmder = (*TimeCmd)(nil)
 
-func NewTimeCmd(ctx context.Context, args ...interface{}) *TimeCmd {
+func NewTimeCmd(ctx context.Context, args ...any) *TimeCmd {
 	return &TimeCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -800,7 +800,7 @@ type BoolCmd struct {
 
 var _ Cmder = (*BoolCmd)(nil)
 
-func NewBoolCmd(ctx context.Context, args ...interface{}) *BoolCmd {
+func NewBoolCmd(ctx context.Context, args ...any) *BoolCmd {
 	return &BoolCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -847,7 +847,7 @@ type StringCmd struct {
 
 var _ Cmder = (*StringCmd)(nil)
 
-func NewStringCmd(ctx context.Context, args ...interface{}) *StringCmd {
+func NewStringCmd(ctx context.Context, args ...any) *StringCmd {
 	return &StringCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -925,7 +925,7 @@ func (cmd *StringCmd) Time() (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, cmd.Val())
 }
 
-func (cmd *StringCmd) Scan(val interface{}) error {
+func (cmd *StringCmd) Scan(val any) error {
 	if cmd.err != nil {
 		return cmd.err
 	}
@@ -951,7 +951,7 @@ type FloatCmd struct {
 
 var _ Cmder = (*FloatCmd)(nil)
 
-func NewFloatCmd(ctx context.Context, args ...interface{}) *FloatCmd {
+func NewFloatCmd(ctx context.Context, args ...any) *FloatCmd {
 	return &FloatCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -991,7 +991,7 @@ type FloatSliceCmd struct {
 
 var _ Cmder = (*FloatSliceCmd)(nil)
 
-func NewFloatSliceCmd(ctx context.Context, args ...interface{}) *FloatSliceCmd {
+func NewFloatSliceCmd(ctx context.Context, args ...any) *FloatSliceCmd {
 	return &FloatSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1046,7 +1046,7 @@ type StringSliceCmd struct {
 
 var _ Cmder = (*StringSliceCmd)(nil)
 
-func NewStringSliceCmd(ctx context.Context, args ...interface{}) *StringSliceCmd {
+func NewStringSliceCmd(ctx context.Context, args ...any) *StringSliceCmd {
 	return &StringSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1071,7 +1071,7 @@ func (cmd *StringSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *StringSliceCmd) ScanSlice(container interface{}) error {
+func (cmd *StringSliceCmd) ScanSlice(container any) error {
 	return proto.ScanSlice(cmd.Val(), container)
 }
 
@@ -1109,7 +1109,7 @@ type KeyValueSliceCmd struct {
 
 var _ Cmder = (*KeyValueSliceCmd)(nil)
 
-func NewKeyValueSliceCmd(ctx context.Context, args ...interface{}) *KeyValueSliceCmd {
+func NewKeyValueSliceCmd(ctx context.Context, args ...any) *KeyValueSliceCmd {
 	return &KeyValueSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1198,7 +1198,7 @@ type BoolSliceCmd struct {
 
 var _ Cmder = (*BoolSliceCmd)(nil)
 
-func NewBoolSliceCmd(ctx context.Context, args ...interface{}) *BoolSliceCmd {
+func NewBoolSliceCmd(ctx context.Context, args ...any) *BoolSliceCmd {
 	return &BoolSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1247,7 +1247,7 @@ type MapStringStringCmd struct {
 
 var _ Cmder = (*MapStringStringCmd)(nil)
 
-func NewMapStringStringCmd(ctx context.Context, args ...interface{}) *MapStringStringCmd {
+func NewMapStringStringCmd(ctx context.Context, args ...any) *MapStringStringCmd {
 	return &MapStringStringCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1274,7 +1274,7 @@ func (cmd *MapStringStringCmd) String() string {
 
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag.
-func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
+func (cmd *MapStringStringCmd) Scan(dest any) error {
 	if cmd.err != nil {
 		return cmd.err
 	}
@@ -1326,7 +1326,7 @@ type MapStringIntCmd struct {
 
 var _ Cmder = (*MapStringIntCmd)(nil)
 
-func NewMapStringIntCmd(ctx context.Context, args ...interface{}) *MapStringIntCmd {
+func NewMapStringIntCmd(ctx context.Context, args ...any) *MapStringIntCmd {
 	return &MapStringIntCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1376,10 +1376,10 @@ func (cmd *MapStringIntCmd) readReply(rd *proto.Reader) error {
 // ------------------------------------------------------------------------------
 type MapStringSliceInterfaceCmd struct {
 	baseCmd
-	val map[string][]interface{}
+	val map[string][]any
 }
 
-func NewMapStringSliceInterfaceCmd(ctx context.Context, args ...interface{}) *MapStringSliceInterfaceCmd {
+func NewMapStringSliceInterfaceCmd(ctx context.Context, args ...any) *MapStringSliceInterfaceCmd {
 	return &MapStringSliceInterfaceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1392,15 +1392,15 @@ func (cmd *MapStringSliceInterfaceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *MapStringSliceInterfaceCmd) SetVal(val map[string][]interface{}) {
+func (cmd *MapStringSliceInterfaceCmd) SetVal(val map[string][]any) {
 	cmd.val = val
 }
 
-func (cmd *MapStringSliceInterfaceCmd) Result() (map[string][]interface{}, error) {
+func (cmd *MapStringSliceInterfaceCmd) Result() (map[string][]any, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *MapStringSliceInterfaceCmd) Val() map[string][]interface{} {
+func (cmd *MapStringSliceInterfaceCmd) Val() map[string][]any {
 	return cmd.val
 }
 
@@ -1410,7 +1410,7 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 		return err
 	}
 
-	cmd.val = make(map[string][]interface{})
+	cmd.val = make(map[string][]any)
 
 	switch readType {
 	case proto.RespMap:
@@ -1427,7 +1427,7 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 			if err != nil {
 				return err
 			}
-			cmd.val[k] = make([]interface{}, nn)
+			cmd.val[k] = make([]any, nn)
 			for j := 0; j < nn; j++ {
 				value, err := rd.ReadReply()
 				if err != nil {
@@ -1454,7 +1454,7 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 			if err != nil {
 				return err
 			}
-			cmd.val[key] = make([]interface{}, 0, itemLen-1)
+			cmd.val[key] = make([]any, 0, itemLen-1)
 			for j := 1; j < itemLen; j++ {
 				// Read the inner array for timestamp-value pairs
 				data, err := rd.ReadReply()
@@ -1479,7 +1479,7 @@ type StringStructMapCmd struct {
 
 var _ Cmder = (*StringStructMapCmd)(nil)
 
-func NewStringStructMapCmd(ctx context.Context, args ...interface{}) *StringStructMapCmd {
+func NewStringStructMapCmd(ctx context.Context, args ...any) *StringStructMapCmd {
 	return &StringStructMapCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1525,7 +1525,7 @@ func (cmd *StringStructMapCmd) readReply(rd *proto.Reader) error {
 
 type XMessage struct {
 	ID     string
-	Values map[string]interface{}
+	Values map[string]any
 }
 
 type XMessageSliceCmd struct {
@@ -1536,7 +1536,7 @@ type XMessageSliceCmd struct {
 
 var _ Cmder = (*XMessageSliceCmd)(nil)
 
-func NewXMessageSliceCmd(ctx context.Context, args ...interface{}) *XMessageSliceCmd {
+func NewXMessageSliceCmd(ctx context.Context, args ...any) *XMessageSliceCmd {
 	return &XMessageSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1604,13 +1604,13 @@ func readXMessage(rd *proto.Reader) (XMessage, error) {
 	}, nil
 }
 
-func stringInterfaceMapParser(rd *proto.Reader) (map[string]interface{}, error) {
+func stringInterfaceMapParser(rd *proto.Reader) (map[string]any, error) {
 	n, err := rd.ReadMapLen()
 	if err != nil {
 		return nil, err
 	}
 
-	m := make(map[string]interface{}, n)
+	m := make(map[string]any, n)
 	for i := 0; i < n; i++ {
 		key, err := rd.ReadString()
 		if err != nil {
@@ -1642,7 +1642,7 @@ type XStreamSliceCmd struct {
 
 var _ Cmder = (*XStreamSliceCmd)(nil)
 
-func NewXStreamSliceCmd(ctx context.Context, args ...interface{}) *XStreamSliceCmd {
+func NewXStreamSliceCmd(ctx context.Context, args ...any) *XStreamSliceCmd {
 	return &XStreamSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1715,7 +1715,7 @@ type XPendingCmd struct {
 
 var _ Cmder = (*XPendingCmd)(nil)
 
-func NewXPendingCmd(ctx context.Context, args ...interface{}) *XPendingCmd {
+func NewXPendingCmd(ctx context.Context, args ...any) *XPendingCmd {
 	return &XPendingCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1798,7 +1798,7 @@ type XPendingExtCmd struct {
 
 var _ Cmder = (*XPendingExtCmd)(nil)
 
-func NewXPendingExtCmd(ctx context.Context, args ...interface{}) *XPendingExtCmd {
+func NewXPendingExtCmd(ctx context.Context, args ...any) *XPendingExtCmd {
 	return &XPendingExtCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1868,7 +1868,7 @@ type XAutoClaimCmd struct {
 
 var _ Cmder = (*XAutoClaimCmd)(nil)
 
-func NewXAutoClaimCmd(ctx context.Context, args ...interface{}) *XAutoClaimCmd {
+func NewXAutoClaimCmd(ctx context.Context, args ...any) *XAutoClaimCmd {
 	return &XAutoClaimCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1938,7 +1938,7 @@ type XAutoClaimJustIDCmd struct {
 
 var _ Cmder = (*XAutoClaimJustIDCmd)(nil)
 
-func NewXAutoClaimJustIDCmd(ctx context.Context, args ...interface{}) *XAutoClaimJustIDCmd {
+func NewXAutoClaimJustIDCmd(ctx context.Context, args ...any) *XAutoClaimJustIDCmd {
 	return &XAutoClaimJustIDCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -2025,7 +2025,7 @@ func NewXInfoConsumersCmd(ctx context.Context, stream string, group string) *XIn
 	return &XInfoConsumersCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
-			args: []interface{}{"xinfo", "consumers", stream, group},
+			args: []any{"xinfo", "consumers", stream, group},
 		},
 	}
 }
@@ -2113,7 +2113,7 @@ func NewXInfoGroupsCmd(ctx context.Context, stream string) *XInfoGroupsCmd {
 	return &XInfoGroupsCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
-			args: []interface{}{"xinfo", "groups", stream},
+			args: []any{"xinfo", "groups", stream},
 		},
 	}
 }
@@ -2225,7 +2225,7 @@ func NewXInfoStreamCmd(ctx context.Context, stream string) *XInfoStreamCmd {
 	return &XInfoStreamCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
-			args: []interface{}{"xinfo", "stream", stream},
+			args: []any{"xinfo", "stream", stream},
 		},
 	}
 }
@@ -2368,7 +2368,7 @@ type XInfoStreamConsumerPending struct {
 
 var _ Cmder = (*XInfoStreamFullCmd)(nil)
 
-func NewXInfoStreamFullCmd(ctx context.Context, args ...interface{}) *XInfoStreamFullCmd {
+func NewXInfoStreamFullCmd(ctx context.Context, args ...any) *XInfoStreamFullCmd {
 	return &XInfoStreamFullCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -2667,7 +2667,7 @@ type ZSliceCmd struct {
 
 var _ Cmder = (*ZSliceCmd)(nil)
 
-func NewZSliceCmd(ctx context.Context, args ...interface{}) *ZSliceCmd {
+func NewZSliceCmd(ctx context.Context, args ...any) *ZSliceCmd {
 	return &ZSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -2745,7 +2745,7 @@ type ZWithKeyCmd struct {
 
 var _ Cmder = (*ZWithKeyCmd)(nil)
 
-func NewZWithKeyCmd(ctx context.Context, args ...interface{}) *ZWithKeyCmd {
+func NewZWithKeyCmd(ctx context.Context, args ...any) *ZWithKeyCmd {
 	return &ZWithKeyCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -2802,7 +2802,7 @@ type ScanCmd struct {
 
 var _ Cmder = (*ScanCmd)(nil)
 
-func NewScanCmd(ctx context.Context, process cmdable, args ...interface{}) *ScanCmd {
+func NewScanCmd(ctx context.Context, process cmdable, args ...any) *ScanCmd {
 	return &ScanCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -2883,7 +2883,7 @@ type ClusterSlotsCmd struct {
 
 var _ Cmder = (*ClusterSlotsCmd)(nil)
 
-func NewClusterSlotsCmd(ctx context.Context, args ...interface{}) *ClusterSlotsCmd {
+func NewClusterSlotsCmd(ctx context.Context, args ...any) *ClusterSlotsCmd {
 	return &ClusterSlotsCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -3036,7 +3036,7 @@ type GeoLocationCmd struct {
 
 var _ Cmder = (*GeoLocationCmd)(nil)
 
-func NewGeoLocationCmd(ctx context.Context, q *GeoRadiusQuery, args ...interface{}) *GeoLocationCmd {
+func NewGeoLocationCmd(ctx context.Context, q *GeoRadiusQuery, args ...any) *GeoLocationCmd {
 	return &GeoLocationCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -3046,7 +3046,7 @@ func NewGeoLocationCmd(ctx context.Context, q *GeoRadiusQuery, args ...interface
 	}
 }
 
-func geoLocationArgs(q *GeoRadiusQuery, args ...interface{}) []interface{} {
+func geoLocationArgs(q *GeoRadiusQuery, args ...any) []any {
 	args = append(args, q.Radius)
 	if q.Unit != "" {
 		args = append(args, q.Unit)
@@ -3192,7 +3192,7 @@ type GeoSearchStoreQuery struct {
 	StoreDist bool
 }
 
-func geoSearchLocationArgs(q *GeoSearchLocationQuery, args []interface{}) []interface{} {
+func geoSearchLocationArgs(q *GeoSearchLocationQuery, args []any) []any {
 	args = geoSearchArgs(&q.GeoSearchQuery, args)
 
 	if q.WithCoord {
@@ -3208,7 +3208,7 @@ func geoSearchLocationArgs(q *GeoSearchLocationQuery, args []interface{}) []inte
 	return args
 }
 
-func geoSearchArgs(q *GeoSearchQuery, args []interface{}) []interface{} {
+func geoSearchArgs(q *GeoSearchQuery, args []any) []any {
 	if q.Member != "" {
 		args = append(args, "frommember", q.Member)
 	} else {
@@ -3251,7 +3251,7 @@ type GeoSearchLocationCmd struct {
 var _ Cmder = (*GeoSearchLocationCmd)(nil)
 
 func NewGeoSearchLocationCmd(
-	ctx context.Context, opt *GeoSearchLocationQuery, args ...interface{},
+	ctx context.Context, opt *GeoSearchLocationQuery, args ...any,
 ) *GeoSearchLocationCmd {
 	return &GeoSearchLocationCmd{
 		baseCmd: baseCmd{
@@ -3343,7 +3343,7 @@ type GeoPosCmd struct {
 
 var _ Cmder = (*GeoPosCmd)(nil)
 
-func NewGeoPosCmd(ctx context.Context, args ...interface{}) *GeoPosCmd {
+func NewGeoPosCmd(ctx context.Context, args ...any) *GeoPosCmd {
 	return &GeoPosCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -3424,7 +3424,7 @@ type CommandsInfoCmd struct {
 
 var _ Cmder = (*CommandsInfoCmd)(nil)
 
-func NewCommandsInfoCmd(ctx context.Context, args ...interface{}) *CommandsInfoCmd {
+func NewCommandsInfoCmd(ctx context.Context, args ...any) *CommandsInfoCmd {
 	return &CommandsInfoCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -3614,7 +3614,7 @@ type SlowLogCmd struct {
 
 var _ Cmder = (*SlowLogCmd)(nil)
 
-func NewSlowLogCmd(ctx context.Context, args ...interface{}) *SlowLogCmd {
+func NewSlowLogCmd(ctx context.Context, args ...any) *SlowLogCmd {
 	return &SlowLogCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -3708,12 +3708,12 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 type MapStringInterfaceCmd struct {
 	baseCmd
 
-	val map[string]interface{}
+	val map[string]any
 }
 
 var _ Cmder = (*MapStringInterfaceCmd)(nil)
 
-func NewMapStringInterfaceCmd(ctx context.Context, args ...interface{}) *MapStringInterfaceCmd {
+func NewMapStringInterfaceCmd(ctx context.Context, args ...any) *MapStringInterfaceCmd {
 	return &MapStringInterfaceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -3722,15 +3722,15 @@ func NewMapStringInterfaceCmd(ctx context.Context, args ...interface{}) *MapStri
 	}
 }
 
-func (cmd *MapStringInterfaceCmd) SetVal(val map[string]interface{}) {
+func (cmd *MapStringInterfaceCmd) SetVal(val map[string]any) {
 	cmd.val = val
 }
 
-func (cmd *MapStringInterfaceCmd) Val() map[string]interface{} {
+func (cmd *MapStringInterfaceCmd) Val() map[string]any {
 	return cmd.val
 }
 
-func (cmd *MapStringInterfaceCmd) Result() (map[string]interface{}, error) {
+func (cmd *MapStringInterfaceCmd) Result() (map[string]any, error) {
 	return cmd.val, cmd.err
 }
 
@@ -3744,7 +3744,7 @@ func (cmd *MapStringInterfaceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
-	cmd.val = make(map[string]interface{}, n)
+	cmd.val = make(map[string]any, n)
 	for i := 0; i < n; i++ {
 		k, err := rd.ReadString()
 		if err != nil {
@@ -3777,7 +3777,7 @@ type MapStringStringSliceCmd struct {
 
 var _ Cmder = (*MapStringStringSliceCmd)(nil)
 
-func NewMapStringStringSliceCmd(ctx context.Context, args ...interface{}) *MapStringStringSliceCmd {
+func NewMapStringStringSliceCmd(ctx context.Context, args ...any) *MapStringStringSliceCmd {
 	return &MapStringStringSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -3833,13 +3833,13 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 
 // -----------------------------------------------------------------------
 
-// MapMapStringInterfaceCmd represents a command that returns a map of strings to interface{}.
+// MapMapStringInterfaceCmd represents a command that returns a map of strings to any.
 type MapMapStringInterfaceCmd struct {
 	baseCmd
-	val map[string]interface{}
+	val map[string]any
 }
 
-func NewMapMapStringInterfaceCmd(ctx context.Context, args ...interface{}) *MapMapStringInterfaceCmd {
+func NewMapMapStringInterfaceCmd(ctx context.Context, args ...any) *MapMapStringInterfaceCmd {
 	return &MapMapStringInterfaceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -3852,15 +3852,15 @@ func (cmd *MapMapStringInterfaceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *MapMapStringInterfaceCmd) SetVal(val map[string]interface{}) {
+func (cmd *MapMapStringInterfaceCmd) SetVal(val map[string]any) {
 	cmd.val = val
 }
 
-func (cmd *MapMapStringInterfaceCmd) Result() (map[string]interface{}, error) {
+func (cmd *MapMapStringInterfaceCmd) Result() (map[string]any, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *MapMapStringInterfaceCmd) Val() map[string]interface{} {
+func (cmd *MapMapStringInterfaceCmd) Val() map[string]any {
 	return cmd.val
 }
 
@@ -3870,10 +3870,10 @@ func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 	if err != nil {
 		return err
 	}
-	resultMap := map[string]interface{}{}
+	resultMap := map[string]any{}
 
 	switch midResponse := data.(type) {
-	case map[interface{}]interface{}: // resp3 will return map
+	case map[any]any: // resp3 will return map
 		for k, v := range midResponse {
 			stringKey, ok := k.(string)
 			if !ok {
@@ -3881,10 +3881,10 @@ func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 			}
 			resultMap[stringKey] = v
 		}
-	case []interface{}: // resp2 will return array of arrays
+	case []any: // resp2 will return array of arrays
 		n := len(midResponse)
 		for i := 0; i < n; i++ {
-			finalArr, ok := midResponse[i].([]interface{}) // final array that we need to transform to map
+			finalArr, ok := midResponse[i].([]any) // final array that we need to transform to map
 			if !ok {
 				return fmt.Errorf("redis: unexpected response %#v", data)
 			}
@@ -3914,12 +3914,12 @@ func (cmd *MapMapStringInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 type MapStringInterfaceSliceCmd struct {
 	baseCmd
 
-	val []map[string]interface{}
+	val []map[string]any
 }
 
 var _ Cmder = (*MapStringInterfaceSliceCmd)(nil)
 
-func NewMapStringInterfaceSliceCmd(ctx context.Context, args ...interface{}) *MapStringInterfaceSliceCmd {
+func NewMapStringInterfaceSliceCmd(ctx context.Context, args ...any) *MapStringInterfaceSliceCmd {
 	return &MapStringInterfaceSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -3928,15 +3928,15 @@ func NewMapStringInterfaceSliceCmd(ctx context.Context, args ...interface{}) *Ma
 	}
 }
 
-func (cmd *MapStringInterfaceSliceCmd) SetVal(val []map[string]interface{}) {
+func (cmd *MapStringInterfaceSliceCmd) SetVal(val []map[string]any) {
 	cmd.val = val
 }
 
-func (cmd *MapStringInterfaceSliceCmd) Val() []map[string]interface{} {
+func (cmd *MapStringInterfaceSliceCmd) Val() []map[string]any {
 	return cmd.val
 }
 
-func (cmd *MapStringInterfaceSliceCmd) Result() ([]map[string]interface{}, error) {
+func (cmd *MapStringInterfaceSliceCmd) Result() ([]map[string]any, error) {
 	return cmd.val, cmd.err
 }
 
@@ -3950,13 +3950,13 @@ func (cmd *MapStringInterfaceSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
-	cmd.val = make([]map[string]interface{}, n)
+	cmd.val = make([]map[string]any, n)
 	for i := 0; i < n; i++ {
 		nn, err := rd.ReadMapLen()
 		if err != nil {
 			return err
 		}
-		cmd.val[i] = make(map[string]interface{}, nn)
+		cmd.val[i] = make(map[string]any, nn)
 		for f := 0; f < nn; f++ {
 			k, err := rd.ReadString()
 			if err != nil {
@@ -3985,7 +3985,7 @@ type KeyValuesCmd struct {
 
 var _ Cmder = (*KeyValuesCmd)(nil)
 
-func NewKeyValuesCmd(ctx context.Context, args ...interface{}) *KeyValuesCmd {
+func NewKeyValuesCmd(ctx context.Context, args ...any) *KeyValuesCmd {
 	return &KeyValuesCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -4047,7 +4047,7 @@ type ZSliceWithKeyCmd struct {
 
 var _ Cmder = (*ZSliceWithKeyCmd)(nil)
 
-func NewZSliceWithKeyCmd(ctx context.Context, args ...interface{}) *ZSliceWithKeyCmd {
+func NewZSliceWithKeyCmd(ctx context.Context, args ...any) *ZSliceWithKeyCmd {
 	return &ZSliceWithKeyCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -4140,7 +4140,7 @@ type FunctionListCmd struct {
 
 var _ Cmder = (*FunctionListCmd)(nil)
 
-func NewFunctionListCmd(ctx context.Context, args ...interface{}) *FunctionListCmd {
+func NewFunctionListCmd(ctx context.Context, args ...any) *FunctionListCmd {
 	return &FunctionListCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -4321,7 +4321,7 @@ type FunctionStatsCmd struct {
 
 var _ Cmder = (*FunctionStatsCmd)(nil)
 
-func NewFunctionStatsCmd(ctx context.Context, args ...interface{}) *FunctionStatsCmd {
+func NewFunctionStatsCmd(ctx context.Context, args ...any) *FunctionStatsCmd {
 	return &FunctionStatsCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -4539,7 +4539,7 @@ type LCSCmd struct {
 }
 
 func NewLCSCmd(ctx context.Context, q *LCSQuery) *LCSCmd {
-	args := make([]interface{}, 3, 7)
+	args := make([]any, 3, 7)
 	args[0] = "lcs"
 	args[1] = q.Key1
 	args[2] = q.Key2
@@ -4687,7 +4687,7 @@ type KeyFlagsCmd struct {
 
 var _ Cmder = (*KeyFlagsCmd)(nil)
 
-func NewKeyFlagsCmd(ctx context.Context, args ...interface{}) *KeyFlagsCmd {
+func NewKeyFlagsCmd(ctx context.Context, args ...any) *KeyFlagsCmd {
 	return &KeyFlagsCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -4769,7 +4769,7 @@ type ClusterLinksCmd struct {
 
 var _ Cmder = (*ClusterLinksCmd)(nil)
 
-func NewClusterLinksCmd(ctx context.Context, args ...interface{}) *ClusterLinksCmd {
+func NewClusterLinksCmd(ctx context.Context, args ...any) *ClusterLinksCmd {
 	return &ClusterLinksCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -4871,7 +4871,7 @@ type ClusterShardsCmd struct {
 
 var _ Cmder = (*ClusterShardsCmd)(nil)
 
-func NewClusterShardsCmd(ctx context.Context, args ...interface{}) *ClusterShardsCmd {
+func NewClusterShardsCmd(ctx context.Context, args ...any) *ClusterShardsCmd {
 	return &ClusterShardsCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -5004,7 +5004,7 @@ type RankWithScoreCmd struct {
 
 var _ Cmder = (*RankWithScoreCmd)(nil)
 
-func NewRankWithScoreCmd(ctx context.Context, args ...interface{}) *RankWithScoreCmd {
+func NewRankWithScoreCmd(ctx context.Context, args ...any) *RankWithScoreCmd {
 	return &RankWithScoreCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -5152,7 +5152,7 @@ type ClientInfoCmd struct {
 
 var _ Cmder = (*ClientInfoCmd)(nil)
 
-func NewClientInfoCmd(ctx context.Context, args ...interface{}) *ClientInfoCmd {
+func NewClientInfoCmd(ctx context.Context, args ...any) *ClientInfoCmd {
 	return &ClientInfoCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -5350,7 +5350,7 @@ type ACLLogCmd struct {
 
 var _ Cmder = (*ACLLogCmd)(nil)
 
-func NewACLLogCmd(ctx context.Context, args ...interface{}) *ACLLogCmd {
+func NewACLLogCmd(ctx context.Context, args ...any) *ACLLogCmd {
 	return &ACLLogCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -5461,7 +5461,7 @@ type InfoCmd struct {
 
 var _ Cmder = (*InfoCmd)(nil)
 
-func NewInfoCmd(ctx context.Context, args ...interface{}) *InfoCmd {
+func NewInfoCmd(ctx context.Context, args ...any) *InfoCmd {
 	return &InfoCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -5550,7 +5550,7 @@ func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
 	return &MonitorCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
-			args: []interface{}{"monitor"},
+			args: []any{"monitor"},
 		},
 		ch:     ch,
 		status: monitorStatusIdle,

@@ -12,7 +12,7 @@ var Analyzer = &analysis.Analyzer{
 	Name: "setval",
 	Doc:  "find Cmder types that are missing a SetVal method",
 
-	Run: func(pass *analysis.Pass) (interface{}, error) {
+	Run: func(pass *analysis.Pass) (any, error) {
 		cmderTypes := make(map[string]token.Pos)
 		typesWithSetValMethod := make(map[string]bool)
 

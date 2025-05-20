@@ -33,21 +33,21 @@ func ExampleClient_search_json() {
 	// REMOVE_END
 
 	// STEP_START create_data
-	user1 := map[string]interface{}{
+	user1 := map[string]any{
 		"name":  "Paul John",
 		"email": "paul.john@example.com",
 		"age":   42,
 		"city":  "London",
 	}
 
-	user2 := map[string]interface{}{
+	user2 := map[string]any{
 		"name":  "Eden Zamir",
 		"email": "eden.zamir@example.com",
 		"age":   29,
 		"city":  "Tel Aviv",
 	}
 
-	user3 := map[string]interface{}{
+	user3 := map[string]any{
 		"name":  "Paul Zamir",
 		"email": "paul.zamir@example.com",
 		"age":   35,
@@ -62,7 +62,7 @@ func ExampleClient_search_json() {
 		// Options:
 		&redis.FTCreateOptions{
 			OnJSON: true,
-			Prefix: []interface{}{"user:"},
+			Prefix: []any{"user:"},
 		},
 		// Index schema fields:
 		&redis.FieldSchema{
@@ -182,7 +182,7 @@ func ExampleClient_search_json() {
 	aggOptions := redis.FTAggregateOptions{
 		GroupBy: []redis.FTAggregateGroupBy{
 			{
-				Fields: []interface{}{"@city"},
+				Fields: []any{"@city"},
 				Reduce: []redis.FTAggregateReducer{
 					{
 						Reducer: redis.SearchCount,
@@ -250,7 +250,7 @@ func ExampleClient_search_hash() {
 		// Options:
 		&redis.FTCreateOptions{
 			OnHash: true,
-			Prefix: []interface{}{"huser:"},
+			Prefix: []any{"huser:"},
 		},
 		// Index schema fields:
 		&redis.FieldSchema{
@@ -272,21 +272,21 @@ func ExampleClient_search_hash() {
 	}
 	// STEP_END
 
-	user1 := map[string]interface{}{
+	user1 := map[string]any{
 		"name":  "Paul John",
 		"email": "paul.john@example.com",
 		"age":   42,
 		"city":  "London",
 	}
 
-	user2 := map[string]interface{}{
+	user2 := map[string]any{
 		"name":  "Eden Zamir",
 		"email": "eden.zamir@example.com",
 		"age":   29,
 		"city":  "Tel Aviv",
 	}
 
-	user3 := map[string]interface{}{
+	user3 := map[string]any{
 		"name":  "Paul Zamir",
 		"email": "paul.zamir@example.com",
 		"age":   35,

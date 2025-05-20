@@ -8,9 +8,9 @@ import (
 )
 
 type ProbabilisticCmdable interface {
-	BFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
+	BFAdd(ctx context.Context, key string, element any) *BoolCmd
 	BFCard(ctx context.Context, key string) *IntCmd
-	BFExists(ctx context.Context, key string, element interface{}) *BoolCmd
+	BFExists(ctx context.Context, key string, element any) *BoolCmd
 	BFInfo(ctx context.Context, key string) *BFInfoCmd
 	BFInfoArg(ctx context.Context, key, option string) *BFInfoCmd
 	BFInfoCapacity(ctx context.Context, key string) *BFInfoCmd
@@ -18,48 +18,48 @@ type ProbabilisticCmdable interface {
 	BFInfoFilters(ctx context.Context, key string) *BFInfoCmd
 	BFInfoItems(ctx context.Context, key string) *BFInfoCmd
 	BFInfoExpansion(ctx context.Context, key string) *BFInfoCmd
-	BFInsert(ctx context.Context, key string, options *BFInsertOptions, elements ...interface{}) *BoolSliceCmd
-	BFMAdd(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
-	BFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
+	BFInsert(ctx context.Context, key string, options *BFInsertOptions, elements ...any) *BoolSliceCmd
+	BFMAdd(ctx context.Context, key string, elements ...any) *BoolSliceCmd
+	BFMExists(ctx context.Context, key string, elements ...any) *BoolSliceCmd
 	BFReserve(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
 	BFReserveExpansion(ctx context.Context, key string, errorRate float64, capacity, expansion int64) *StatusCmd
 	BFReserveNonScaling(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd
 	BFReserveWithArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd
 	BFScanDump(ctx context.Context, key string, iterator int64) *ScanDumpCmd
-	BFLoadChunk(ctx context.Context, key string, iterator int64, data interface{}) *StatusCmd
+	BFLoadChunk(ctx context.Context, key string, iterator int64, data any) *StatusCmd
 
-	CFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
-	CFAddNX(ctx context.Context, key string, element interface{}) *BoolCmd
-	CFCount(ctx context.Context, key string, element interface{}) *IntCmd
-	CFDel(ctx context.Context, key string, element interface{}) *BoolCmd
-	CFExists(ctx context.Context, key string, element interface{}) *BoolCmd
+	CFAdd(ctx context.Context, key string, element any) *BoolCmd
+	CFAddNX(ctx context.Context, key string, element any) *BoolCmd
+	CFCount(ctx context.Context, key string, element any) *IntCmd
+	CFDel(ctx context.Context, key string, element any) *BoolCmd
+	CFExists(ctx context.Context, key string, element any) *BoolCmd
 	CFInfo(ctx context.Context, key string) *CFInfoCmd
-	CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *BoolSliceCmd
-	CFInsertNX(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd
-	CFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
+	CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...any) *BoolSliceCmd
+	CFInsertNX(ctx context.Context, key string, options *CFInsertOptions, elements ...any) *IntSliceCmd
+	CFMExists(ctx context.Context, key string, elements ...any) *BoolSliceCmd
 	CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd
 	CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd
 	CFReserveExpansion(ctx context.Context, key string, capacity int64, expansion int64) *StatusCmd
 	CFReserveBucketSize(ctx context.Context, key string, capacity int64, bucketsize int64) *StatusCmd
 	CFReserveMaxIterations(ctx context.Context, key string, capacity int64, maxiterations int64) *StatusCmd
 	CFScanDump(ctx context.Context, key string, iterator int64) *ScanDumpCmd
-	CFLoadChunk(ctx context.Context, key string, iterator int64, data interface{}) *StatusCmd
+	CFLoadChunk(ctx context.Context, key string, iterator int64, data any) *StatusCmd
 
-	CMSIncrBy(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
+	CMSIncrBy(ctx context.Context, key string, elements ...any) *IntSliceCmd
 	CMSInfo(ctx context.Context, key string) *CMSInfoCmd
 	CMSInitByDim(ctx context.Context, key string, width, height int64) *StatusCmd
 	CMSInitByProb(ctx context.Context, key string, errorRate, probability float64) *StatusCmd
 	CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd
 	CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int64) *StatusCmd
-	CMSQuery(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
+	CMSQuery(ctx context.Context, key string, elements ...any) *IntSliceCmd
 
-	TopKAdd(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd
-	TopKCount(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
-	TopKIncrBy(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd
+	TopKAdd(ctx context.Context, key string, elements ...any) *StringSliceCmd
+	TopKCount(ctx context.Context, key string, elements ...any) *IntSliceCmd
+	TopKIncrBy(ctx context.Context, key string, elements ...any) *StringSliceCmd
 	TopKInfo(ctx context.Context, key string) *TopKInfoCmd
 	TopKList(ctx context.Context, key string) *StringSliceCmd
 	TopKListWithCount(ctx context.Context, key string) *MapStringIntCmd
-	TopKQuery(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd
+	TopKQuery(ctx context.Context, key string, elements ...any) *BoolSliceCmd
 	TopKReserve(ctx context.Context, key string, k int64) *StatusCmd
 	TopKReserveWithOptions(ctx context.Context, key string, k int64, width, depth int64, decay float64) *StatusCmd
 
@@ -115,7 +115,7 @@ type CFInsertOptions struct {
 // for the initial specified capacity and with an upper bound error_rate.
 // For more information - https://redis.io/commands/bf.reserve/
 func (c cmdable) BFReserve(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd {
-	args := []interface{}{"BF.RESERVE", key, errorRate, capacity}
+	args := []any{"BF.RESERVE", key, errorRate, capacity}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -126,7 +126,7 @@ func (c cmdable) BFReserve(ctx context.Context, key string, errorRate float64, c
 // This function also allows for specifying an expansion rate for the filter.
 // For more information - https://redis.io/commands/bf.reserve/
 func (c cmdable) BFReserveExpansion(ctx context.Context, key string, errorRate float64, capacity, expansion int64) *StatusCmd {
-	args := []interface{}{"BF.RESERVE", key, errorRate, capacity, "EXPANSION", expansion}
+	args := []any{"BF.RESERVE", key, errorRate, capacity, "EXPANSION", expansion}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -137,7 +137,7 @@ func (c cmdable) BFReserveExpansion(ctx context.Context, key string, errorRate f
 // This function also allows for specifying that the filter should not scale.
 // For more information - https://redis.io/commands/bf.reserve/
 func (c cmdable) BFReserveNonScaling(ctx context.Context, key string, errorRate float64, capacity int64) *StatusCmd {
-	args := []interface{}{"BF.RESERVE", key, errorRate, capacity, "NONSCALING"}
+	args := []any{"BF.RESERVE", key, errorRate, capacity, "NONSCALING"}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -148,7 +148,7 @@ func (c cmdable) BFReserveNonScaling(ctx context.Context, key string, errorRate 
 // This function also allows for specifying additional options such as expansion rate and non-scaling behavior.
 // For more information - https://redis.io/commands/bf.reserve/
 func (c cmdable) BFReserveWithArgs(ctx context.Context, key string, options *BFReserveOptions) *StatusCmd {
-	args := []interface{}{"BF.RESERVE", key}
+	args := []any{"BF.RESERVE", key}
 	if options != nil {
 		args = append(args, options.Error, options.Capacity)
 		if options.Expansion != 0 {
@@ -165,8 +165,8 @@ func (c cmdable) BFReserveWithArgs(ctx context.Context, key string, options *BFR
 
 // BFAdd adds an item to a Bloom filter.
 // For more information - https://redis.io/commands/bf.add/
-func (c cmdable) BFAdd(ctx context.Context, key string, element interface{}) *BoolCmd {
-	args := []interface{}{"BF.ADD", key, element}
+func (c cmdable) BFAdd(ctx context.Context, key string, element any) *BoolCmd {
+	args := []any{"BF.ADD", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -177,7 +177,7 @@ func (c cmdable) BFAdd(ctx context.Context, key string, element interface{}) *Bo
 // (items that caused at least one bit to be set in at least one sub-filter).
 // For more information - https://redis.io/commands/bf.card/
 func (c cmdable) BFCard(ctx context.Context, key string) *IntCmd {
-	args := []interface{}{"BF.CARD", key}
+	args := []any{"BF.CARD", key}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -185,8 +185,8 @@ func (c cmdable) BFCard(ctx context.Context, key string) *IntCmd {
 
 // BFExists determines whether a given item was added to a Bloom filter.
 // For more information - https://redis.io/commands/bf.exists/
-func (c cmdable) BFExists(ctx context.Context, key string, element interface{}) *BoolCmd {
-	args := []interface{}{"BF.EXISTS", key, element}
+func (c cmdable) BFExists(ctx context.Context, key string, element any) *BoolCmd {
+	args := []any{"BF.EXISTS", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -194,8 +194,8 @@ func (c cmdable) BFExists(ctx context.Context, key string, element interface{}) 
 
 // BFLoadChunk restores a Bloom filter previously saved using BF.SCANDUMP.
 // For more information - https://redis.io/commands/bf.loadchunk/
-func (c cmdable) BFLoadChunk(ctx context.Context, key string, iterator int64, data interface{}) *StatusCmd {
-	args := []interface{}{"BF.LOADCHUNK", key, iterator, data}
+func (c cmdable) BFLoadChunk(ctx context.Context, key string, iterator int64, data any) *StatusCmd {
+	args := []any{"BF.LOADCHUNK", key, iterator, data}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -205,7 +205,7 @@ func (c cmdable) BFLoadChunk(ctx context.Context, key string, iterator int64, da
 // This command is useful for large Bloom filters that cannot fit into the DUMP and RESTORE model.
 // For more information - https://redis.io/commands/bf.scandump/
 func (c cmdable) BFScanDump(ctx context.Context, key string, iterator int64) *ScanDumpCmd {
-	args := []interface{}{"BF.SCANDUMP", key, iterator}
+	args := []any{"BF.SCANDUMP", key, iterator}
 	cmd := newScanDumpCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -222,7 +222,7 @@ type ScanDumpCmd struct {
 	val ScanDump
 }
 
-func newScanDumpCmd(ctx context.Context, args ...interface{}) *ScanDumpCmd {
+func newScanDumpCmd(ctx context.Context, args ...any) *ScanDumpCmd {
 	return &ScanDumpCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -273,7 +273,7 @@ func (cmd *ScanDumpCmd) readReply(rd *proto.Reader) (err error) {
 // Returns information about a Bloom filter.
 // For more information - https://redis.io/commands/bf.info/
 func (c cmdable) BFInfo(ctx context.Context, key string) *BFInfoCmd {
-	args := []interface{}{"BF.INFO", key}
+	args := []any{"BF.INFO", key}
 	cmd := NewBFInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -293,7 +293,7 @@ type BFInfoCmd struct {
 	val BFInfo
 }
 
-func NewBFInfoCmd(ctx context.Context, args ...interface{}) *BFInfoCmd {
+func NewBFInfoCmd(ctx context.Context, args ...any) *BFInfoCmd {
 	return &BFInfoCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -421,7 +421,7 @@ func (c cmdable) BFInfoExpansion(ctx context.Context, key string) *BFInfoCmd {
 // BFInfoArg returns information about a specific option of a Bloom filter.
 // For more information - https://redis.io/commands/bf.info/
 func (c cmdable) BFInfoArg(ctx context.Context, key, option string) *BFInfoCmd {
-	args := []interface{}{"BF.INFO", key, option}
+	args := []any{"BF.INFO", key, option}
 	cmd := NewBFInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -431,8 +431,8 @@ func (c cmdable) BFInfoArg(ctx context.Context, key, option string) *BFInfoCmd {
 // This function also allows for specifying additional options such as:
 // capacity, error rate, expansion rate, and non-scaling behavior.
 // For more information - https://redis.io/commands/bf.insert/
-func (c cmdable) BFInsert(ctx context.Context, key string, options *BFInsertOptions, elements ...interface{}) *BoolSliceCmd {
-	args := []interface{}{"BF.INSERT", key}
+func (c cmdable) BFInsert(ctx context.Context, key string, options *BFInsertOptions, elements ...any) *BoolSliceCmd {
+	args := []any{"BF.INSERT", key}
 	if options != nil {
 		if options.Capacity != 0 {
 			args = append(args, "CAPACITY", options.Capacity)
@@ -461,8 +461,8 @@ func (c cmdable) BFInsert(ctx context.Context, key string, options *BFInsertOpti
 // BFMAdd adds multiple elements to a Bloom filter.
 // Returns an array of booleans indicating whether each element was added to the filter or not.
 // For more information - https://redis.io/commands/bf.madd/
-func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
-	args := []interface{}{"BF.MADD", key}
+func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...any) *BoolSliceCmd {
+	args := []any{"BF.MADD", key}
 	args = append(args, elements...)
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -472,8 +472,8 @@ func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...interface{}
 // BFMExists check if multiple elements exist in a Bloom filter.
 // Returns an array of booleans indicating whether each element exists in the filter or not.
 // For more information - https://redis.io/commands/bf.mexists/
-func (c cmdable) BFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
-	args := []interface{}{"BF.MEXISTS", key}
+func (c cmdable) BFMExists(ctx context.Context, key string, elements ...any) *BoolSliceCmd {
+	args := []any{"BF.MEXISTS", key}
 	args = append(args, elements...)
 
 	cmd := NewBoolSliceCmd(ctx, args...)
@@ -488,7 +488,7 @@ func (c cmdable) BFMExists(ctx context.Context, key string, elements ...interfac
 // CFReserve creates an empty Cuckoo filter with the specified capacity.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserve(ctx context.Context, key string, capacity int64) *StatusCmd {
-	args := []interface{}{"CF.RESERVE", key, capacity}
+	args := []any{"CF.RESERVE", key, capacity}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -497,7 +497,7 @@ func (c cmdable) CFReserve(ctx context.Context, key string, capacity int64) *Sta
 // CFReserveExpansion creates an empty Cuckoo filter with the specified capacity and expansion rate.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserveExpansion(ctx context.Context, key string, capacity int64, expansion int64) *StatusCmd {
-	args := []interface{}{"CF.RESERVE", key, capacity, "EXPANSION", expansion}
+	args := []any{"CF.RESERVE", key, capacity, "EXPANSION", expansion}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -506,7 +506,7 @@ func (c cmdable) CFReserveExpansion(ctx context.Context, key string, capacity in
 // CFReserveBucketSize creates an empty Cuckoo filter with the specified capacity and bucket size.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserveBucketSize(ctx context.Context, key string, capacity int64, bucketsize int64) *StatusCmd {
-	args := []interface{}{"CF.RESERVE", key, capacity, "BUCKETSIZE", bucketsize}
+	args := []any{"CF.RESERVE", key, capacity, "BUCKETSIZE", bucketsize}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -515,7 +515,7 @@ func (c cmdable) CFReserveBucketSize(ctx context.Context, key string, capacity i
 // CFReserveMaxIterations creates an empty Cuckoo filter with the specified capacity and maximum number of iterations.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacity int64, maxiterations int64) *StatusCmd {
-	args := []interface{}{"CF.RESERVE", key, capacity, "MAXITERATIONS", maxiterations}
+	args := []any{"CF.RESERVE", key, capacity, "MAXITERATIONS", maxiterations}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -525,7 +525,7 @@ func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacit
 // This function allows for specifying additional options such as bucket size and maximum number of iterations.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
-	args := []interface{}{"CF.RESERVE", key, options.Capacity}
+	args := []any{"CF.RESERVE", key, options.Capacity}
 	if options.BucketSize != 0 {
 		args = append(args, "BUCKETSIZE", options.BucketSize)
 	}
@@ -543,8 +543,8 @@ func (c cmdable) CFReserveWithArgs(ctx context.Context, key string, options *CFR
 // CFAdd adds an element to a Cuckoo filter.
 // Returns true if the element was added to the filter or false if it already exists in the filter.
 // For more information - https://redis.io/commands/cf.add/
-func (c cmdable) CFAdd(ctx context.Context, key string, element interface{}) *BoolCmd {
-	args := []interface{}{"CF.ADD", key, element}
+func (c cmdable) CFAdd(ctx context.Context, key string, element any) *BoolCmd {
+	args := []any{"CF.ADD", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -553,8 +553,8 @@ func (c cmdable) CFAdd(ctx context.Context, key string, element interface{}) *Bo
 // CFAddNX adds an element to a Cuckoo filter only if it does not already exist in the filter.
 // Returns true if the element was added to the filter or false if it already exists in the filter.
 // For more information - https://redis.io/commands/cf.addnx/
-func (c cmdable) CFAddNX(ctx context.Context, key string, element interface{}) *BoolCmd {
-	args := []interface{}{"CF.ADDNX", key, element}
+func (c cmdable) CFAddNX(ctx context.Context, key string, element any) *BoolCmd {
+	args := []any{"CF.ADDNX", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -562,8 +562,8 @@ func (c cmdable) CFAddNX(ctx context.Context, key string, element interface{}) *
 
 // CFCount returns an estimate of the number of times an element may be in a Cuckoo Filter.
 // For more information - https://redis.io/commands/cf.count/
-func (c cmdable) CFCount(ctx context.Context, key string, element interface{}) *IntCmd {
-	args := []interface{}{"CF.COUNT", key, element}
+func (c cmdable) CFCount(ctx context.Context, key string, element any) *IntCmd {
+	args := []any{"CF.COUNT", key, element}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -571,8 +571,8 @@ func (c cmdable) CFCount(ctx context.Context, key string, element interface{}) *
 
 // CFDel deletes an item once from the cuckoo filter.
 // For more information - https://redis.io/commands/cf.del/
-func (c cmdable) CFDel(ctx context.Context, key string, element interface{}) *BoolCmd {
-	args := []interface{}{"CF.DEL", key, element}
+func (c cmdable) CFDel(ctx context.Context, key string, element any) *BoolCmd {
+	args := []any{"CF.DEL", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -580,8 +580,8 @@ func (c cmdable) CFDel(ctx context.Context, key string, element interface{}) *Bo
 
 // CFExists determines whether an item may exist in the Cuckoo Filter or not.
 // For more information - https://redis.io/commands/cf.exists/
-func (c cmdable) CFExists(ctx context.Context, key string, element interface{}) *BoolCmd {
-	args := []interface{}{"CF.EXISTS", key, element}
+func (c cmdable) CFExists(ctx context.Context, key string, element any) *BoolCmd {
+	args := []any{"CF.EXISTS", key, element}
 	cmd := NewBoolCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -589,8 +589,8 @@ func (c cmdable) CFExists(ctx context.Context, key string, element interface{}) 
 
 // CFLoadChunk restores a filter previously saved using SCANDUMP.
 // For more information - https://redis.io/commands/cf.loadchunk/
-func (c cmdable) CFLoadChunk(ctx context.Context, key string, iterator int64, data interface{}) *StatusCmd {
-	args := []interface{}{"CF.LOADCHUNK", key, iterator, data}
+func (c cmdable) CFLoadChunk(ctx context.Context, key string, iterator int64, data any) *StatusCmd {
+	args := []any{"CF.LOADCHUNK", key, iterator, data}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -599,7 +599,7 @@ func (c cmdable) CFLoadChunk(ctx context.Context, key string, iterator int64, da
 // CFScanDump begins an incremental save of the cuckoo filter.
 // For more information - https://redis.io/commands/cf.scandump/
 func (c cmdable) CFScanDump(ctx context.Context, key string, iterator int64) *ScanDumpCmd {
-	args := []interface{}{"CF.SCANDUMP", key, iterator}
+	args := []any{"CF.SCANDUMP", key, iterator}
 	cmd := newScanDumpCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -622,7 +622,7 @@ type CFInfoCmd struct {
 	val CFInfo
 }
 
-func NewCFInfoCmd(ctx context.Context, args ...interface{}) *CFInfoCmd {
+func NewCFInfoCmd(ctx context.Context, args ...any) *CFInfoCmd {
 	return &CFInfoCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -695,7 +695,7 @@ func (cmd *CFInfoCmd) readReply(rd *proto.Reader) (err error) {
 // CFInfo returns information about a Cuckoo filter.
 // For more information - https://redis.io/commands/cf.info/
 func (c cmdable) CFInfo(ctx context.Context, key string) *CFInfoCmd {
-	args := []interface{}{"CF.INFO", key}
+	args := []any{"CF.INFO", key}
 	cmd := NewCFInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -705,8 +705,8 @@ func (c cmdable) CFInfo(ctx context.Context, key string) *CFInfoCmd {
 // This function also allows for specifying additional options such as capacity, error rate, expansion rate, and non-scaling behavior.
 // Returns an array of booleans indicating whether each element was added to the filter or not.
 // For more information - https://redis.io/commands/cf.insert/
-func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *BoolSliceCmd {
-	args := []interface{}{"CF.INSERT", key}
+func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...any) *BoolSliceCmd {
+	args := []any{"CF.INSERT", key}
 	args = c.getCfInsertWithArgs(args, options, elements...)
 
 	cmd := NewBoolSliceCmd(ctx, args...)
@@ -719,8 +719,8 @@ func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOpti
 // capacity, error rate, expansion rate, and non-scaling behavior.
 // Returns an array of integers indicating whether each element was added to the filter or not.
 // For more information - https://redis.io/commands/cf.insertnx/
-func (c cmdable) CFInsertNX(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd {
-	args := []interface{}{"CF.INSERTNX", key}
+func (c cmdable) CFInsertNX(ctx context.Context, key string, options *CFInsertOptions, elements ...any) *IntSliceCmd {
+	args := []any{"CF.INSERTNX", key}
 	args = c.getCfInsertWithArgs(args, options, elements...)
 
 	cmd := NewIntSliceCmd(ctx, args...)
@@ -728,7 +728,7 @@ func (c cmdable) CFInsertNX(ctx context.Context, key string, options *CFInsertOp
 	return cmd
 }
 
-func (c cmdable) getCfInsertWithArgs(args []interface{}, options *CFInsertOptions, elements ...interface{}) []interface{} {
+func (c cmdable) getCfInsertWithArgs(args []any, options *CFInsertOptions, elements ...any) []any {
 	if options != nil {
 		if options.Capacity != 0 {
 			args = append(args, "CAPACITY", options.Capacity)
@@ -746,8 +746,8 @@ func (c cmdable) getCfInsertWithArgs(args []interface{}, options *CFInsertOption
 // CFMExists check if multiple elements exist in a Cuckoo filter.
 // Returns an array of booleans indicating whether each element exists in the filter or not.
 // For more information - https://redis.io/commands/cf.mexists/
-func (c cmdable) CFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
-	args := []interface{}{"CF.MEXISTS", key}
+func (c cmdable) CFMExists(ctx context.Context, key string, elements ...any) *BoolSliceCmd {
+	args := []any{"CF.MEXISTS", key}
 	args = append(args, elements...)
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -761,8 +761,8 @@ func (c cmdable) CFMExists(ctx context.Context, key string, elements ...interfac
 // CMSIncrBy increments the count of one or more items in a Count-Min Sketch filter.
 // Returns an array of integers representing the updated count of each item.
 // For more information - https://redis.io/commands/cms.incrby/
-func (c cmdable) CMSIncrBy(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
-	args := make([]interface{}, 2, 2+len(elements))
+func (c cmdable) CMSIncrBy(ctx context.Context, key string, elements ...any) *IntSliceCmd {
+	args := make([]any, 2, 2+len(elements))
 	args[0] = "CMS.INCRBY"
 	args[1] = key
 	args = appendArgs(args, elements)
@@ -784,7 +784,7 @@ type CMSInfoCmd struct {
 	val CMSInfo
 }
 
-func NewCMSInfoCmd(ctx context.Context, args ...interface{}) *CMSInfoCmd {
+func NewCMSInfoCmd(ctx context.Context, args ...any) *CMSInfoCmd {
 	return &CMSInfoCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -846,7 +846,7 @@ func (cmd *CMSInfoCmd) readReply(rd *proto.Reader) (err error) {
 // CMSInfo returns information about a Count-Min Sketch filter.
 // For more information - https://redis.io/commands/cms.info/
 func (c cmdable) CMSInfo(ctx context.Context, key string) *CMSInfoCmd {
-	args := []interface{}{"CMS.INFO", key}
+	args := []any{"CMS.INFO", key}
 	cmd := NewCMSInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -855,7 +855,7 @@ func (c cmdable) CMSInfo(ctx context.Context, key string) *CMSInfoCmd {
 // CMSInitByDim creates an empty Count-Min Sketch filter with the specified dimensions.
 // For more information - https://redis.io/commands/cms.initbydim/
 func (c cmdable) CMSInitByDim(ctx context.Context, key string, width, depth int64) *StatusCmd {
-	args := []interface{}{"CMS.INITBYDIM", key, width, depth}
+	args := []any{"CMS.INITBYDIM", key, width, depth}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -864,7 +864,7 @@ func (c cmdable) CMSInitByDim(ctx context.Context, key string, width, depth int6
 // CMSInitByProb creates an empty Count-Min Sketch filter with the specified error rate and probability.
 // For more information - https://redis.io/commands/cms.initbyprob/
 func (c cmdable) CMSInitByProb(ctx context.Context, key string, errorRate, probability float64) *StatusCmd {
-	args := []interface{}{"CMS.INITBYPROB", key, errorRate, probability}
+	args := []any{"CMS.INITBYPROB", key, errorRate, probability}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -876,7 +876,7 @@ func (c cmdable) CMSInitByProb(ctx context.Context, key string, errorRate, proba
 // Returns OK on success or an error if the filters could not be merged.
 // For more information - https://redis.io/commands/cms.merge/
 func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd {
-	args := []interface{}{"CMS.MERGE", destKey, len(sourceKeys)}
+	args := []any{"CMS.MERGE", destKey, len(sourceKeys)}
 	for _, s := range sourceKeys {
 		args = append(args, s)
 	}
@@ -891,12 +891,12 @@ func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...str
 // Returns OK on success or an error if the filters could not be merged.
 // For more information - https://redis.io/commands/cms.merge/
 func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int64) *StatusCmd {
-	args := make([]interface{}, 0, 4+(len(sourceKeys)*2+1))
+	args := make([]any, 0, 4+(len(sourceKeys)*2+1))
 	args = append(args, "CMS.MERGE", destKey, len(sourceKeys))
 
 	if len(sourceKeys) > 0 {
-		sk := make([]interface{}, len(sourceKeys))
-		sw := make([]interface{}, len(sourceKeys))
+		sk := make([]any, len(sourceKeys))
+		sw := make([]any, len(sourceKeys))
 
 		i := 0
 		for k, w := range sourceKeys {
@@ -917,8 +917,8 @@ func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceK
 
 // CMSQuery returns count for item(s).
 // For more information - https://redis.io/commands/cms.query/
-func (c cmdable) CMSQuery(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
-	args := []interface{}{"CMS.QUERY", key}
+func (c cmdable) CMSQuery(ctx context.Context, key string, elements ...any) *IntSliceCmd {
+	args := []any{"CMS.QUERY", key}
 	args = append(args, elements...)
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -932,8 +932,8 @@ func (c cmdable) CMSQuery(ctx context.Context, key string, elements ...interface
 // TopKAdd adds one or more elements to a Top-K filter.
 // Returns an array of strings representing the items that were removed from the filter, if any.
 // For more information - https://redis.io/commands/topk.add/
-func (c cmdable) TopKAdd(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd {
-	args := make([]interface{}, 2, 2+len(elements))
+func (c cmdable) TopKAdd(ctx context.Context, key string, elements ...any) *StringSliceCmd {
+	args := make([]any, 2, 2+len(elements))
 	args[0] = "TOPK.ADD"
 	args[1] = key
 	args = appendArgs(args, elements)
@@ -946,7 +946,7 @@ func (c cmdable) TopKAdd(ctx context.Context, key string, elements ...interface{
 // TopKReserve creates an empty Top-K filter with the specified number of top items to keep.
 // For more information - https://redis.io/commands/topk.reserve/
 func (c cmdable) TopKReserve(ctx context.Context, key string, k int64) *StatusCmd {
-	args := []interface{}{"TOPK.RESERVE", key, k}
+	args := []any{"TOPK.RESERVE", key, k}
 
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -957,7 +957,7 @@ func (c cmdable) TopKReserve(ctx context.Context, key string, k int64) *StatusCm
 // This function allows for specifying additional options such as width, depth and decay.
 // For more information - https://redis.io/commands/topk.reserve/
 func (c cmdable) TopKReserveWithOptions(ctx context.Context, key string, k int64, width, depth int64, decay float64) *StatusCmd {
-	args := []interface{}{"TOPK.RESERVE", key, k, width, depth, decay}
+	args := []any{"TOPK.RESERVE", key, k, width, depth, decay}
 
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -977,7 +977,7 @@ type TopKInfoCmd struct {
 	val TopKInfo
 }
 
-func NewTopKInfoCmd(ctx context.Context, args ...interface{}) *TopKInfoCmd {
+func NewTopKInfoCmd(ctx context.Context, args ...any) *TopKInfoCmd {
 	return &TopKInfoCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1041,7 +1041,7 @@ func (cmd *TopKInfoCmd) readReply(rd *proto.Reader) (err error) {
 // TopKInfo returns information about a Top-K filter.
 // For more information - https://redis.io/commands/topk.info/
 func (c cmdable) TopKInfo(ctx context.Context, key string) *TopKInfoCmd {
-	args := []interface{}{"TOPK.INFO", key}
+	args := []any{"TOPK.INFO", key}
 
 	cmd := NewTopKInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1051,8 +1051,8 @@ func (c cmdable) TopKInfo(ctx context.Context, key string) *TopKInfoCmd {
 // TopKQuery check if multiple elements exist in a Top-K filter.
 // Returns an array of booleans indicating whether each element exists in the filter or not.
 // For more information - https://redis.io/commands/topk.query/
-func (c cmdable) TopKQuery(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
-	args := make([]interface{}, 2, 2+len(elements))
+func (c cmdable) TopKQuery(ctx context.Context, key string, elements ...any) *BoolSliceCmd {
+	args := make([]any, 2, 2+len(elements))
 	args[0] = "TOPK.QUERY"
 	args[1] = key
 	args = appendArgs(args, elements)
@@ -1064,8 +1064,8 @@ func (c cmdable) TopKQuery(ctx context.Context, key string, elements ...interfac
 
 // TopKCount returns an estimate of the number of times an item may be in a Top-K filter.
 // For more information - https://redis.io/commands/topk.count/
-func (c cmdable) TopKCount(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
-	args := make([]interface{}, 2, 2+len(elements))
+func (c cmdable) TopKCount(ctx context.Context, key string, elements ...any) *IntSliceCmd {
+	args := make([]any, 2, 2+len(elements))
 	args[0] = "TOPK.COUNT"
 	args[1] = key
 	args = appendArgs(args, elements)
@@ -1077,8 +1077,8 @@ func (c cmdable) TopKCount(ctx context.Context, key string, elements ...interfac
 
 // TopKIncrBy increases the count of one or more items in a Top-K filter.
 // For more information - https://redis.io/commands/topk.incrby/
-func (c cmdable) TopKIncrBy(ctx context.Context, key string, elements ...interface{}) *StringSliceCmd {
-	args := make([]interface{}, 2, 2+len(elements))
+func (c cmdable) TopKIncrBy(ctx context.Context, key string, elements ...any) *StringSliceCmd {
+	args := make([]any, 2, 2+len(elements))
 	args[0] = "TOPK.INCRBY"
 	args[1] = key
 	args = appendArgs(args, elements)
@@ -1091,7 +1091,7 @@ func (c cmdable) TopKIncrBy(ctx context.Context, key string, elements ...interfa
 // TopKList returns all items in Top-K list.
 // For more information - https://redis.io/commands/topk.list/
 func (c cmdable) TopKList(ctx context.Context, key string) *StringSliceCmd {
-	args := []interface{}{"TOPK.LIST", key}
+	args := []any{"TOPK.LIST", key}
 
 	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1101,7 +1101,7 @@ func (c cmdable) TopKList(ctx context.Context, key string) *StringSliceCmd {
 // TopKListWithCount returns all items in Top-K list with their respective count.
 // For more information - https://redis.io/commands/topk.list/
 func (c cmdable) TopKListWithCount(ctx context.Context, key string) *MapStringIntCmd {
-	args := []interface{}{"TOPK.LIST", key, "WITHCOUNT"}
+	args := []any{"TOPK.LIST", key, "WITHCOUNT"}
 
 	cmd := NewMapStringIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1116,12 +1116,12 @@ func (c cmdable) TopKListWithCount(ctx context.Context, key string) *MapStringIn
 // Returns OK on success or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.add/
 func (c cmdable) TDigestAdd(ctx context.Context, key string, elements ...float64) *StatusCmd {
-	args := make([]interface{}, 2, 2+len(elements))
+	args := make([]any, 2, 2+len(elements))
 	args[0] = "TDIGEST.ADD"
 	args[1] = key
 
-	// Convert floatSlice to []interface{}
-	interfaceSlice := make([]interface{}, len(elements))
+	// Convert floatSlice to []any
+	interfaceSlice := make([]any, len(elements))
 	for i, v := range elements {
 		interfaceSlice[i] = v
 	}
@@ -1138,12 +1138,12 @@ func (c cmdable) TDigestAdd(ctx context.Context, key string, elements ...float64
 // Returns an array of floats representing the values at the specified ranks or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.byrank/
 func (c cmdable) TDigestByRank(ctx context.Context, key string, rank ...uint64) *FloatSliceCmd {
-	args := make([]interface{}, 2, 2+len(rank))
+	args := make([]any, 2, 2+len(rank))
 	args[0] = "TDIGEST.BYRANK"
 	args[1] = key
 
-	// Convert uint slice to []interface{}
-	interfaceSlice := make([]interface{}, len(rank))
+	// Convert uint slice to []any
+	interfaceSlice := make([]any, len(rank))
 	for i, v := range rank {
 		interfaceSlice[i] = v
 	}
@@ -1160,12 +1160,12 @@ func (c cmdable) TDigestByRank(ctx context.Context, key string, rank ...uint64) 
 // Returns an array of floats representing the values at the specified ranks or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.byrevrank/
 func (c cmdable) TDigestByRevRank(ctx context.Context, key string, rank ...uint64) *FloatSliceCmd {
-	args := make([]interface{}, 2, 2+len(rank))
+	args := make([]any, 2, 2+len(rank))
 	args[0] = "TDIGEST.BYREVRANK"
 	args[1] = key
 
-	// Convert uint slice to []interface{}
-	interfaceSlice := make([]interface{}, len(rank))
+	// Convert uint slice to []any
+	interfaceSlice := make([]any, len(rank))
 	for i, v := range rank {
 		interfaceSlice[i] = v
 	}
@@ -1182,12 +1182,12 @@ func (c cmdable) TDigestByRevRank(ctx context.Context, key string, rank ...uint6
 // Returns an array of floats representing the CDF values for each element or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.cdf/
 func (c cmdable) TDigestCDF(ctx context.Context, key string, elements ...float64) *FloatSliceCmd {
-	args := make([]interface{}, 2, 2+len(elements))
+	args := make([]any, 2, 2+len(elements))
 	args[0] = "TDIGEST.CDF"
 	args[1] = key
 
-	// Convert floatSlice to []interface{}
-	interfaceSlice := make([]interface{}, len(elements))
+	// Convert floatSlice to []any
+	interfaceSlice := make([]any, len(elements))
 	for i, v := range elements {
 		interfaceSlice[i] = v
 	}
@@ -1203,7 +1203,7 @@ func (c cmdable) TDigestCDF(ctx context.Context, key string, elements ...float64
 // Returns OK on success or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.create/
 func (c cmdable) TDigestCreate(ctx context.Context, key string) *StatusCmd {
-	args := []interface{}{"TDIGEST.CREATE", key}
+	args := []any{"TDIGEST.CREATE", key}
 
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1215,7 +1215,7 @@ func (c cmdable) TDigestCreate(ctx context.Context, key string) *StatusCmd {
 // Returns OK on success or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.create/
 func (c cmdable) TDigestCreateWithCompression(ctx context.Context, key string, compression int64) *StatusCmd {
-	args := []interface{}{"TDIGEST.CREATE", key, "COMPRESSION", compression}
+	args := []any{"TDIGEST.CREATE", key, "COMPRESSION", compression}
 
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1240,7 +1240,7 @@ type TDigestInfoCmd struct {
 	val TDigestInfo
 }
 
-func NewTDigestInfoCmd(ctx context.Context, args ...interface{}) *TDigestInfoCmd {
+func NewTDigestInfoCmd(ctx context.Context, args ...any) *TDigestInfoCmd {
 	return &TDigestInfoCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
@@ -1314,7 +1314,7 @@ func (cmd *TDigestInfoCmd) readReply(rd *proto.Reader) (err error) {
 // TDigestInfo returns information about a t-Digest data structure.
 // For more information - https://redis.io/commands/tdigest.info/
 func (c cmdable) TDigestInfo(ctx context.Context, key string) *TDigestInfoCmd {
-	args := []interface{}{"TDIGEST.INFO", key}
+	args := []any{"TDIGEST.INFO", key}
 
 	cmd := NewTDigestInfoCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1324,7 +1324,7 @@ func (c cmdable) TDigestInfo(ctx context.Context, key string) *TDigestInfoCmd {
 // TDigestMax returns the maximum value from a t-Digest data structure.
 // For more information - https://redis.io/commands/tdigest.max/
 func (c cmdable) TDigestMax(ctx context.Context, key string) *FloatCmd {
-	args := []interface{}{"TDIGEST.MAX", key}
+	args := []any{"TDIGEST.MAX", key}
 
 	cmd := NewFloatCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1341,7 +1341,7 @@ type TDigestMergeOptions struct {
 // Returns OK on success or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.merge/
 func (c cmdable) TDigestMerge(ctx context.Context, destKey string, options *TDigestMergeOptions, sourceKeys ...string) *StatusCmd {
-	args := []interface{}{"TDIGEST.MERGE", destKey, len(sourceKeys)}
+	args := []any{"TDIGEST.MERGE", destKey, len(sourceKeys)}
 
 	for _, sourceKey := range sourceKeys {
 		args = append(args, sourceKey)
@@ -1364,7 +1364,7 @@ func (c cmdable) TDigestMerge(ctx context.Context, destKey string, options *TDig
 // TDigestMin returns the minimum value from a t-Digest data structure.
 // For more information - https://redis.io/commands/tdigest.min/
 func (c cmdable) TDigestMin(ctx context.Context, key string) *FloatCmd {
-	args := []interface{}{"TDIGEST.MIN", key}
+	args := []any{"TDIGEST.MIN", key}
 
 	cmd := NewFloatCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1376,12 +1376,12 @@ func (c cmdable) TDigestMin(ctx context.Context, key string) *FloatCmd {
 // Returns an array of floats representing the quantile values for each element or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.quantile/
 func (c cmdable) TDigestQuantile(ctx context.Context, key string, elements ...float64) *FloatSliceCmd {
-	args := make([]interface{}, 2, 2+len(elements))
+	args := make([]any, 2, 2+len(elements))
 	args[0] = "TDIGEST.QUANTILE"
 	args[1] = key
 
-	// Convert floatSlice to []interface{}
-	interfaceSlice := make([]interface{}, len(elements))
+	// Convert floatSlice to []any
+	interfaceSlice := make([]any, len(elements))
 	for i, v := range elements {
 		interfaceSlice[i] = v
 	}
@@ -1398,12 +1398,12 @@ func (c cmdable) TDigestQuantile(ctx context.Context, key string, elements ...fl
 // Returns an array of integers representing the rank values for each element or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.rank/
 func (c cmdable) TDigestRank(ctx context.Context, key string, values ...float64) *IntSliceCmd {
-	args := make([]interface{}, 2, 2+len(values))
+	args := make([]any, 2, 2+len(values))
 	args[0] = "TDIGEST.RANK"
 	args[1] = key
 
-	// Convert floatSlice to []interface{}
-	interfaceSlice := make([]interface{}, len(values))
+	// Convert floatSlice to []any
+	interfaceSlice := make([]any, len(values))
 	for i, v := range values {
 		interfaceSlice[i] = v
 	}
@@ -1419,7 +1419,7 @@ func (c cmdable) TDigestRank(ctx context.Context, key string, values ...float64)
 // Returns OK on success or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.reset/
 func (c cmdable) TDigestReset(ctx context.Context, key string) *StatusCmd {
-	args := []interface{}{"TDIGEST.RESET", key}
+	args := []any{"TDIGEST.RESET", key}
 
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1431,12 +1431,12 @@ func (c cmdable) TDigestReset(ctx context.Context, key string) *StatusCmd {
 // Returns an array of integers representing the reverse rank values for each element or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.revrank/
 func (c cmdable) TDigestRevRank(ctx context.Context, key string, values ...float64) *IntSliceCmd {
-	args := make([]interface{}, 2, 2+len(values))
+	args := make([]any, 2, 2+len(values))
 	args[0] = "TDIGEST.REVRANK"
 	args[1] = key
 
-	// Convert floatSlice to []interface{}
-	interfaceSlice := make([]interface{}, len(values))
+	// Convert floatSlice to []any
+	interfaceSlice := make([]any, len(values))
 	for i, v := range values {
 		interfaceSlice[i] = v
 	}
@@ -1453,7 +1453,7 @@ func (c cmdable) TDigestRevRank(ctx context.Context, key string, values ...float
 // Returns a float representing the trimmed mean value or an error if the operation could not be completed.
 // For more information - https://redis.io/commands/tdigest.trimmed_mean/
 func (c cmdable) TDigestTrimmedMean(ctx context.Context, key string, lowCutQuantile, highCutQuantile float64) *FloatCmd {
-	args := []interface{}{"TDIGEST.TRIMMED_MEAN", key, lowCutQuantile, highCutQuantile}
+	args := []any{"TDIGEST.TRIMMED_MEAN", key, lowCutQuantile, highCutQuantile}
 
 	cmd := NewFloatCmd(ctx, args...)
 	_ = c(ctx, cmd)
