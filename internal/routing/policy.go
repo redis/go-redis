@@ -115,4 +115,7 @@ func ParseResponsePolicy(raw string) (ResponsePolicy, error) {
 type CommandPolicy struct {
 	Request  RequestPolicy
 	Response ResponsePolicy
+	// Tips that are not request_policy or response_policy
+	// e.g nondeterministic_output, nondeterministic_output_order.
+	Tips map[string]string
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 type TimeValue struct {
@@ -664,13 +665,13 @@ var _ = Describe("Commands", func() {
 
 			cmd := cmds["touch"]
 			Expect(cmd.Name).To(Equal("touch"))
-			Expect(cmd.Tips["request_policy"]).To(Equal("multi_shard"))
-			Expect(cmd.Tips["response_policy"]).To(Equal("agg_sum"))
+			Expect(cmd.Tips.Request).To(Equal(routing.ReqMultiShard))
+			Expect(cmd.Tips.Response).To(Equal(routing.RespAggSum))
 
 			cmd = cmds["flushall"]
 			Expect(cmd.Name).To(Equal("flushall"))
-			Expect(cmd.Tips["request_policy"]).To(Equal("all_shards"))
-			Expect(cmd.Tips["response_policy"]).To(Equal("all_succeeded"))
+			Expect(cmd.Tips.Request).To(Equal(routing.ReqAllShards))
+			Expect(cmd.Tips.Response).To(Equal(routing.RespAllSucceeded))
 		})
 
 		It("should return all command names", func() {

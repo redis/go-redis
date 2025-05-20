@@ -19,7 +19,6 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/rand"
-	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 const (
@@ -913,11 +912,10 @@ func (c *clusterStateHolder) ReloadOrGet(ctx context.Context) (*clusterState, er
 // or more underlying connections. It's safe for concurrent use by
 // multiple goroutines.
 type ClusterClient struct {
-	opt             *ClusterOptions
-	nodes           *clusterNodes
-	state           *clusterStateHolder
-	cmdsInfoCache   *cmdsInfoCache
-	commandPolicies map[string]routing.CommandPolicy
+	opt           *ClusterOptions
+	nodes         *clusterNodes
+	state         *clusterStateHolder
+	cmdsInfoCache *cmdsInfoCache
 	cmdable
 	hooksMixin
 }
@@ -934,7 +932,6 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 
 	c.state = newClusterStateHolder(c.loadState)
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
-	c.commandPolicies = newCommandPolicies(c.cmdsInfoCache.cmds)
 	c.cmdable = c.Process
 	c.initHooks(hooks{
 		dial:       nil,
