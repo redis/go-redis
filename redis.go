@@ -777,7 +777,7 @@ func (c *Client) Conn() *Conn {
 }
 
 // Do create a Cmd from the args and processes the cmd.
-func (c *Client) Do(ctx context.Context, args ...interface{}) *Cmd {
+func (c *Client) Do(ctx context.Context, args ...any) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	_ = c.Process(ctx, cmd)
 	return cmd

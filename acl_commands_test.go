@@ -430,7 +430,7 @@ var _ = Describe("ACL Categories", func() {
 			"tdigest":    "tdigest.rank",
 			"timeseries": "ts.range",
 		}
-		var cats []interface{}
+		var cats []any
 
 		for cat, subitem := range aclTestCase {
 			cats = append(cats, cat)
