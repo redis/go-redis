@@ -3479,7 +3479,7 @@ type CommandInfo struct {
 	LastKeyPos  int8
 	StepCount   int8
 	ReadOnly    bool
-	Tips        map[string]string
+	Tips        *routing.CommandPolicy
 }
 
 type CommandsInfoCmd struct {
@@ -3612,8 +3612,7 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 
-			cmdInfo.Tips = make(map[string]string, tipsLen)
-
+			rawTips := make(map[string]string, tipsLen)
 			for f := 0; f < tipsLen; f++ {
 				tip, err := rd.ReadString()
 				if err != nil {
@@ -3622,7 +3621,7 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 
 				// Handle tips that don't have a colon (like "nondeterministic_output")
 				if !strings.Contains(tip, ":") {
-					cmdInfo.Tips[tip] = ""
+					rawTips[tip] = ""
 					continue
 				}
 
@@ -3631,8 +3630,9 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 				if !ok {
 					return fmt.Errorf("redis: unexpected tip %q in COMMAND reply", tip)
 				}
-				cmdInfo.Tips[k] = v
+				rawTips[k] = v
 			}
+			cmdInfo.Tips = parseCommandPolicies(rawTips)
 
 			if err := rd.DiscardNext(); err != nil {
 				return err
@@ -3684,47 +3684,33 @@ func (c *cmdsInfoCache) Get(ctx context.Context) (map[string]*CommandInfo, error
 }
 
 // ------------------------------------------------------------------------------
-var BuiltinPolicies = map[string]routing.CommandPolicy{
-	"ft.create": {Request: routing.ReqSpecial, Response: routing.RespAllSucceeded},
-	"ft.alter":  {Request: routing.ReqSpecial, Response: routing.RespAllSucceeded},
-	"ft.drop":   {Request: routing.ReqSpecial, Response: routing.RespAllSucceeded},
+const requestPolicy = "request_policy"
+const responsePolicy = "response_policy"
 
-	"mset": {Request: routing.ReqMultiShard, Response: routing.RespAllSucceeded},
-	"mget": {Request: routing.ReqMultiShard, Response: routing.RespSpecial},
-	"del":  {Request: routing.ReqMultiShard, Response: routing.RespAggSum},
-}
+func parseCommandPolicies(commandInfoTips map[string]string) *routing.CommandPolicy {
+	req := routing.ReqDefault
+	resp := routing.RespAllSucceeded
 
-func newCommandPolicies(commandInfo map[string]*CommandInfo) map[string]routing.CommandPolicy {
-
-	table := make(map[string]routing.CommandPolicy, len(commandInfo))
-
-	for name, info := range commandInfo {
-		req := routing.ReqDefault
-		resp := routing.RespAllSucceeded
-
-		if tips := info.Tips; tips != nil {
-			if v, ok := tips["request_policy"]; ok {
-				if p, err := routing.ParseRequestPolicy(v); err == nil {
-					req = p
-				}
+	if commandInfoTips != nil {
+		if v, ok := commandInfoTips[requestPolicy]; ok {
+			if p, err := routing.ParseRequestPolicy(v); err == nil {
+				req = p
 			}
-			if v, ok := tips["response_policy"]; ok {
-				if p, err := routing.ParseResponsePolicy(v); err == nil {
-					resp = p
-				}
-			}
-		} else {
-			return BuiltinPolicies
 		}
-		table[name] = routing.CommandPolicy{Request: req, Response: resp}
-	}
-
-	if len(table) == 0 {
-		for k, v := range BuiltinPolicies {
-			table[k] = v
+		if v, ok := commandInfoTips[responsePolicy]; ok {
+			if p, err := routing.ParseResponsePolicy(v); err == nil {
+				resp = p
+			}
 		}
 	}
-	return table
+	tips := make(map[string]string, len(commandInfoTips))
+	for k, v := range commandInfoTips {
+		if k == requestPolicy || k == responsePolicy {
+			continue
+		}
+		tips[k] = v
+	}
+	return &routing.CommandPolicy{Request: req, Response: resp, Tips: tips}
 }
 
 //------------------------------------------------------------------------------
