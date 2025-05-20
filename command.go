@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/routing"
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
@@ -3478,6 +3479,7 @@ type CommandInfo struct {
 	LastKeyPos  int8
 	StepCount   int8
 	ReadOnly    bool
+	Tips        map[string]string
 }
 
 type CommandsInfoCmd struct {
@@ -3516,7 +3518,7 @@ func (cmd *CommandsInfoCmd) String() string {
 func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 	const numArgRedis5 = 6
 	const numArgRedis6 = 7
-	const numArgRedis7 = 10
+	const numArgRedis7 = 10 // Also matches redis 8
 
 	n, err := rd.ReadArrayLen()
 	if err != nil {
@@ -3604,9 +3606,34 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 		}
 
 		if nn >= numArgRedis7 {
-			if err := rd.DiscardNext(); err != nil {
+			// The 8th argument is an array of tips.
+			tipsLen, err := rd.ReadArrayLen()
+			if err != nil {
 				return err
 			}
+
+			cmdInfo.Tips = make(map[string]string, tipsLen)
+
+			for f := 0; f < tipsLen; f++ {
+				tip, err := rd.ReadString()
+				if err != nil {
+					return err
+				}
+
+				// Handle tips that don't have a colon (like "nondeterministic_output")
+				if !strings.Contains(tip, ":") {
+					cmdInfo.Tips[tip] = ""
+					continue
+				}
+
+				// Handle normal key:value tips
+				k, v, ok := strings.Cut(tip, ":")
+				if !ok {
+					return fmt.Errorf("redis: unexpected tip %q in COMMAND reply", tip)
+				}
+				cmdInfo.Tips[k] = v
+			}
+
 			if err := rd.DiscardNext(); err != nil {
 				return err
 			}
@@ -3654,6 +3681,50 @@ func (c *cmdsInfoCache) Get(ctx context.Context) (map[string]*CommandInfo, error
 		return nil
 	})
 	return c.cmds, err
+}
+
+// ------------------------------------------------------------------------------
+var BuiltinPolicies = map[string]routing.CommandPolicy{
+	"ft.create": {Request: routing.ReqSpecial, Response: routing.RespAllSucceeded},
+	"ft.alter":  {Request: routing.ReqSpecial, Response: routing.RespAllSucceeded},
+	"ft.drop":   {Request: routing.ReqSpecial, Response: routing.RespAllSucceeded},
+
+	"mset": {Request: routing.ReqMultiShard, Response: routing.RespAllSucceeded},
+	"mget": {Request: routing.ReqMultiShard, Response: routing.RespSpecial},
+	"del":  {Request: routing.ReqMultiShard, Response: routing.RespAggSum},
+}
+
+func newCommandPolicies(commandInfo map[string]*CommandInfo) map[string]routing.CommandPolicy {
+
+	table := make(map[string]routing.CommandPolicy, len(commandInfo))
+
+	for name, info := range commandInfo {
+		req := routing.ReqDefault
+		resp := routing.RespAllSucceeded
+
+		if tips := info.Tips; tips != nil {
+			if v, ok := tips["request_policy"]; ok {
+				if p, err := routing.ParseRequestPolicy(v); err == nil {
+					req = p
+				}
+			}
+			if v, ok := tips["response_policy"]; ok {
+				if p, err := routing.ParseResponsePolicy(v); err == nil {
+					resp = p
+				}
+			}
+		} else {
+			return BuiltinPolicies
+		}
+		table[name] = routing.CommandPolicy{Request: req, Response: resp}
+	}
+
+	if len(table) == 0 {
+		for k, v := range BuiltinPolicies {
+			table[k] = v
+		}
+	}
+	return table
 }
 
 //------------------------------------------------------------------------------
