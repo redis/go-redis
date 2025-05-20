@@ -269,11 +269,21 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				if client.Options().Protocol == 2 {
 					Expect(resultInfo["labels"].([]interface{})[0]).To(BeEquivalentTo([]interface{}{"Time", "Series"}))
 					Expect(resultInfo["retentionTime"]).To(BeEquivalentTo(10))
-					Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo(redis.Nil))
+					if RedisVersion >= 8 {
+						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo("block"))
+					} else {
+						// Older versions of Redis had a bug where the duplicate policy was not set correctly
+						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo(redis.Nil))
+					}
 				} else {
 					Expect(resultInfo["labels"].(map[interface{}]interface{})["Time"]).To(BeEquivalentTo("Series"))
 					Expect(resultInfo["retentionTime"]).To(BeEquivalentTo(10))
-					Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo(redis.Nil))
+					if RedisVersion >= 8 {
+						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo("block"))
+					} else {
+						// Older versions of Redis had a bug where the duplicate policy was not set correctly
+						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo(redis.Nil))
+					}
 				}
 				opt = &redis.TSAlterOptions{DuplicatePolicy: "min"}
 				resultAlter, err = client.TSAlter(ctx, "1", opt).Result()

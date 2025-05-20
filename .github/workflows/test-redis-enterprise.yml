@@ -2,7 +2,7 @@ name: RE Tests
 
 on:
   push:
-    branches: [master]
+    branches: [master, v9, v9.7, v9.8]
   pull_request:
 
 permissions:
