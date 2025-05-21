@@ -7,7 +7,7 @@ import (
 
 type VectorSetCmdable interface {
 	VAdd(ctx context.Context, key, element string, val Vector) *BoolCmd
-	VAddArgs(ctx context.Context, key, element string, val Vector, addArgs VAddArgs) *BoolCmd
+	VAddWithArgs(ctx context.Context, key, element string, val Vector, addArgs *VAddArgs) *BoolCmd
 	VCard(ctx context.Context, key string) *IntCmd
 	VDim(ctx context.Context, key string) *IntCmd
 	VEmb(ctx context.Context, key, element string, raw bool) *SliceCmd
@@ -21,8 +21,8 @@ type VectorSetCmdable interface {
 	VSetAttr(ctx context.Context, key, element, attr string) *BoolCmd
 	VSim(ctx context.Context, key string, val Vector) *StringSliceCmd
 	VSimWithScores(ctx context.Context, key string, val Vector) *MapStringFloatCmd
-	VSimArgs(ctx context.Context, key string, val Vector, args VSimArgs) *StringSliceCmd
-	VSimArgsWithScores(ctx context.Context, key string, val Vector, args VSimArgs) *MapStringFloatCmd
+	VSimWithArgs(ctx context.Context, key string, val Vector, args *VSimArgs) *StringSliceCmd
+	VSimWithArgsWithScores(ctx context.Context, key string, val Vector, args *VSimArgs) *MapStringFloatCmd
 }
 
 type Vector interface {
@@ -72,7 +72,7 @@ var _ Vector = &VectorRef{}
 
 // `VADD key (FP32 | VALUES num) vector element`
 func (c cmdable) VAdd(ctx context.Context, key, element string, val Vector) *BoolCmd {
-	return c.VAddArgs(ctx, key, element, val, VAddArgs{})
+	return c.VAddWithArgs(ctx, key, element, val, &VAddArgs{})
 }
 
 type VAddArgs struct {
@@ -120,7 +120,10 @@ func (v VAddArgs) appendArgs(args []any) []any {
 }
 
 // `VADD key [REDUCE dim] (FP32 | VALUES num) vector element [CAS] [NOQUANT | Q8 | BIN] [EF build-exploration-factor] [SETATTR attributes] [M numlinks]`
-func (c cmdable) VAddArgs(ctx context.Context, key, element string, val Vector, addArgs VAddArgs) *BoolCmd {
+func (c cmdable) VAddWithArgs(ctx context.Context, key, element string, val Vector, addArgs *VAddArgs) *BoolCmd {
+	if addArgs == nil {
+		addArgs = &VAddArgs{}
+	}
 	args := []any{"vadd", key}
 	if addArgs.reduce() > 0 {
 		args = append(args, "reduce", addArgs.reduce())
@@ -216,12 +219,12 @@ func (c cmdable) VSetAttr(ctx context.Context, key, element, attr string) *BoolC
 
 // `VSIM key (ELE | FP32 | VALUES num) (vector | element)`
 func (c cmdable) VSim(ctx context.Context, key string, val Vector) *StringSliceCmd {
-	return c.VSimArgs(ctx, key, val, VSimArgs{})
+	return c.VSimWithArgs(ctx, key, val, &VSimArgs{})
 }
 
 // `VSIM key (ELE | FP32 | VALUES num) (vector | element) WITHSCORES`
 func (c cmdable) VSimWithScores(ctx context.Context, key string, val Vector) *MapStringFloatCmd {
-	return c.VSimArgsWithScores(ctx, key, val, VSimArgs{})
+	return c.VSimWithArgsWithScores(ctx, key, val, &VSimArgs{})
 }
 
 type VSimArgs struct {
@@ -262,7 +265,10 @@ func (v VSimArgs) appendArgs(args []any) []any {
 
 // `VSIM key (ELE | FP32 | VALUES num) (vector | element) [COUNT num]
 // [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
-func (c cmdable) VSimArgs(ctx context.Context, key string, val Vector, simArgs VSimArgs) *StringSliceCmd {
+func (c cmdable) VSimWithArgs(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *StringSliceCmd {
+	if simArgs == nil {
+		simArgs = &VSimArgs{}
+	}
 	args := []any{"vsim", key}
 	args = append(args, val.Value()...)
 	args = simArgs.appendArgs(args)
@@ -273,7 +279,10 @@ func (c cmdable) VSimArgs(ctx context.Context, key string, val Vector, simArgs V
 
 // `VSIM key (ELE | FP32 | VALUES num) (vector | element) [WITHSCORES] [COUNT num]
 // [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
-func (c cmdable) VSimArgsWithScores(ctx context.Context, key string, val Vector, simArgs VSimArgs) *MapStringFloatCmd {
+func (c cmdable) VSimWithArgsWithScores(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *MapStringFloatCmd {
+	if simArgs == nil {
+		simArgs = &VSimArgs{}
+	}
 	args := []any{"vsim", key}
 	args = append(args, val.Value()...)
 	args = append(args, "withscores")
