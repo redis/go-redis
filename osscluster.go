@@ -454,6 +454,14 @@ func (n *clusterNode) SetLastLatencyMeasurement(t time.Time) {
 	}
 }
 
+func (n *clusterNode) Loading() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := n.Client.Ping(ctx).Err()
+	return err != nil && isLoadingError(err)
+}
+
 //------------------------------------------------------------------------------
 
 type clusterNodes struct {
@@ -763,7 +771,8 @@ func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
 	case 1:
 		return nodes[0], nil
 	case 2:
-		if slave := nodes[1]; !slave.Failing() {
+		slave := nodes[1]
+		if !slave.Failing() && !slave.Loading() {
 			return slave, nil
 		}
 		return nodes[0], nil
@@ -772,7 +781,7 @@ func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
 		for i := 0; i < 10; i++ {
 			n := rand.Intn(len(nodes)-1) + 1
 			slave = nodes[n]
-			if !slave.Failing() {
+			if !slave.Failing() && !slave.Loading() {
 				return slave, nil
 			}
 		}
