@@ -2104,7 +2104,9 @@ type XInfoGroup struct {
 	Pending         int64
 	LastDeliveredID string
 	EntriesRead     int64
-	Lag             int64
+	// Lag represents the number of pending messages in the stream not yet
+	// delivered to this consumer group. Returns -1 when the lag cannot be determined.
+	Lag int64
 }
 
 var _ Cmder = (*XInfoGroupsCmd)(nil)
