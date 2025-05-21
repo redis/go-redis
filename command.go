@@ -5629,7 +5629,7 @@ type MapStringFloatCmd struct {
 
 var _ Cmder = (*MapStringFloatCmd)(nil)
 
-func NewMapStringFloatCmd(ctx context.Context, args ...interface{}) *MapStringFloatCmd {
+func NewMapStringFloatCmd(ctx context.Context, args ...any) *MapStringFloatCmd {
 	return &MapStringFloatCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
