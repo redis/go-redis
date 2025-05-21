@@ -136,7 +136,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				reducedDim := 50
 
 				v1 := generateRandomVector(originalDim)
-				ok, err := client.VAddArgs(ctx, vecName, "k1", &v1, redis.VAddArgs{
+				ok, err := client.VAddWithArgs(ctx, vecName, "k1", &v1, &redis.VAddArgs{
 					Reduce: int64(reducedDim),
 				}).Result()
 				expectNil(err)
@@ -151,13 +151,13 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 
 				wrongDim := 80
 				wrongV := generateRandomVector(wrongDim)
-				_, err = client.VAddArgs(ctx, vecName, "kw", &wrongV, redis.VAddArgs{
+				_, err = client.VAddWithArgs(ctx, vecName, "kw", &wrongV, &redis.VAddArgs{
 					Reduce: int64(reducedDim),
 				}).Result()
 				expectTrue(err != nil)
 
 				v2 := generateRandomVector(originalDim)
-				ok, err = client.VAddArgs(ctx, vecName, "k2", &v2, redis.VAddArgs{
+				ok, err = client.VAddWithArgs(ctx, vecName, "k2", &v2, &redis.VAddArgs{
 					Reduce: int64(reducedDim),
 				}).Result()
 				expectNil(err)
@@ -257,7 +257,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(len(res), len(vals))
 
 				// test equality
-				sim, err := client.VSimArgs(ctx, vecName, &vals[0].v, redis.VSimArgs{
+				sim, err := client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age == 25`,
 				}).Result()
 				expectNil(err)
@@ -265,21 +265,21 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(sim[0], vals[0].name)
 
 				// test greater than
-				sim, err = client.VSimArgs(ctx, vecName, &vals[0].v, redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age > 25`,
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 2)
 
 				// test less than or equal
-				sim, err = client.VSimArgs(ctx, vecName, &vals[0].v, redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age <= 30`,
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 2)
 
 				// test string equality
-				sim, err = client.VSimArgs(ctx, vecName, &vals[0].v, redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.name == "Alice"`,
 				}).Result()
 				expectNil(err)
@@ -287,14 +287,14 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(sim[0], vals[0].name)
 
 				// test string inequality
-				sim, err = client.VSimArgs(ctx, vecName, &vals[0].v, redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.name != "Alice"`,
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 2)
 
 				// test bool
-				sim, err = client.VSimArgs(ctx, vecName, &vals[0].v, redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.active`,
 				}).Result()
 				expectNil(err)
@@ -302,7 +302,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(sim[0], vals[0].name)
 
 				// test logical add
-				sim, err = client.VSimArgs(ctx, vecName, &vals[0].v, redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age > 20 and .age < 30`,
 				}).Result()
 				expectNil(err)
@@ -310,7 +310,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(sim[0], vals[0].name)
 
 				// test logical or
-				sim, err = client.VSimArgs(ctx, vecName, &vals[0].v, redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age < 30 or .age > 35`,
 				}).Result()
 				expectNil(err)
