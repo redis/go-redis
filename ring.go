@@ -702,7 +702,7 @@ func (c *Ring) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
 	return nil, firstErr
 }
 
-func (c *Ring) cmdShard(ctx context.Context, cmd Cmder) (*ringShard, error) {
+func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 	pos := cmdFirstKeyPos(cmd)
 	if pos == 0 {
 		return c.sharding.Random()
@@ -720,7 +720,7 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
-		shard, err := c.cmdShard(ctx, cmd)
+		shard, err := c.cmdShard(cmd)
 		if err != nil {
 			return err
 		}
