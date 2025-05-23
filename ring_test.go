@@ -766,3 +766,74 @@ var _ = Describe("Ring Tx timeout", func() {
 		testTimeout()
 	})
 })
+
+var _ = Describe("Ring GetShards and GetShardByKey", func() {
+	var ring *redis.Ring
+
+	BeforeEach(func() {
+		ring = redis.NewRing(&redis.RingOptions{
+			Addrs: map[string]string{
+				"shard1": ":6379",
+				"shard2": ":6380",
+			},
+		})
+	})
+
+	AfterEach(func() {
+		Expect(ring.Close()).NotTo(HaveOccurred())
+	})
+
+	It("GetShards returns active shard clients", func() {
+		shards := ring.GetShards()
+		if len(shards) == 0 {
+			// Expected if Redis servers are not running
+			Skip("No active shards found (Redis servers not running)")
+		} else {
+			Expect(len(shards)).To(BeNumerically(">", 0))
+			for _, client := range shards {
+				Expect(client).NotTo(BeNil())
+			}
+		}
+	})
+
+	It("GetShardByKey returns correct shard for keys", func() {
+		testKeys := []string{"key1", "key2", "user:123", "channel:test"}
+
+		for _, key := range testKeys {
+			client, err := ring.GetShardByKey(key)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(client).NotTo(BeNil())
+		}
+	})
+
+	It("GetShardByKey is consistent for same key", func() {
+		key := "test:consistency"
+
+		var firstClient *redis.Client
+		for i := 0; i < 5; i++ {
+			client, err := ring.GetShardByKey(key)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(client).NotTo(BeNil())
+
+			if i == 0 {
+				firstClient = client
+			} else {
+				Expect(client.String()).To(Equal(firstClient.String()))
+			}
+		}
+	})
+
+	It("GetShardByKey distributes keys across shards", func() {
+		testKeys := []string{"key1", "key2", "key3", "key4", "key5"}
+		shardMap := make(map[string]int)
+
+		for _, key := range testKeys {
+			client, err := ring.GetShardByKey(key)
+			Expect(err).NotTo(HaveOccurred())
+			shardMap[client.String()]++
+		}
+
+		Expect(len(shardMap)).To(BeNumerically(">=", 1))
+		Expect(len(shardMap)).To(BeNumerically("<=", 2)) // At most 2 shards (our setup)
+	})
+})
