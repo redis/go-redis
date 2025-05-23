@@ -33,7 +33,7 @@ var _ = Describe("WriteBuffer", func() {
 	})
 
 	It("should write args", func() {
-		err := wr.WriteArgs([]interface{}{
+		err := wr.WriteArgs([]any{
 			"string",
 			12,
 			34.56,
@@ -55,14 +55,14 @@ var _ = Describe("WriteBuffer", func() {
 
 	It("should append time", func() {
 		tm := time.Date(2019, 1, 1, 9, 45, 10, 222125, time.UTC)
-		err := wr.WriteArgs([]interface{}{tm})
+		err := wr.WriteArgs([]any{tm})
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(buf.Len()).To(Equal(41))
 	})
 
 	It("should append marshalable args", func() {
-		err := wr.WriteArgs([]interface{}{&MyType{}})
+		err := wr.WriteArgs([]any{&MyType{}})
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(buf.Len()).To(Equal(15))
@@ -70,7 +70,7 @@ var _ = Describe("WriteBuffer", func() {
 
 	It("should append net.IP", func() {
 		ip := net.ParseIP("192.168.1.1")
-		err := wr.WriteArgs([]interface{}{ip})
+		err := wr.WriteArgs([]any{ip})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(buf.String()).To(Equal(fmt.Sprintf("*1\r\n$16\r\n%s\r\n", bytes.NewBuffer(ip))))
 	})
@@ -92,7 +92,7 @@ func (discard) WriteByte(c byte) error {
 
 func BenchmarkWriteBuffer_Append(b *testing.B) {
 	buf := proto.NewWriter(discard{})
-	args := []interface{}{"hello", "world", "foo", "bar"}
+	args := []any{"hello", "world", "foo", "bar"}
 
 	for i := 0; i < b.N; i++ {
 		err := buf.WriteArgs(args)
