@@ -847,3 +847,22 @@ func (c *Ring) Close() error {
 
 	return c.sharding.Close()
 }
+
+func (c *Ring) GetShards() []*Client {
+	shards := c.sharding.List()
+	clients := make([]*Client, 0, len(shards))
+	for _, shard := range shards {
+		if shard.IsUp() {
+			clients = append(clients, shard.Client)
+		}
+	}
+	return clients
+}
+
+func (c *Ring) GetShardByKey(key string) (*Client, error) {
+	shard, err := c.sharding.GetByKey(key)
+	if err != nil {
+		return nil, err
+	}
+	return shard.Client, nil
+}
