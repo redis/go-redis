@@ -783,7 +783,7 @@ var _ = Describe("Ring Tx timeout", func() {
 	})
 })
 
-var _ = Describe("Ring GetShards and GetShardByKey", func() {
+var _ = Describe("Ring GetShardClients and GetShardClientForKey", func() {
 	var ring *redis.Ring
 
 	BeforeEach(func() {
@@ -799,8 +799,12 @@ var _ = Describe("Ring GetShards and GetShardByKey", func() {
 		Expect(ring.Close()).NotTo(HaveOccurred())
 	})
 
-	It("GetShards returns active shard clients", func() {
-		shards := ring.GetShards()
+	It("GetShardClients returns active shard clients", func() {
+		shards := ring.GetShardClients()
+		// Note: This test will pass even if Redis servers are not running,
+		// because GetShardClients only returns clients that are marked as "up",
+		// and newly created shards start as "up" until the first health check fails.
+
 		if len(shards) == 0 {
 			// Expected if Redis servers are not running
 			Skip("No active shards found (Redis servers not running)")
@@ -812,22 +816,24 @@ var _ = Describe("Ring GetShards and GetShardByKey", func() {
 		}
 	})
 
-	It("GetShardByKey returns correct shard for keys", func() {
+	It("GetShardClientForKey returns correct shard for keys", func() {
 		testKeys := []string{"key1", "key2", "user:123", "channel:test"}
 
 		for _, key := range testKeys {
-			client, err := ring.GetShardByKey(key)
+			client, err := ring.GetShardClientForKey(key)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(client).NotTo(BeNil())
 		}
 	})
 
-	It("GetShardByKey is consistent for same key", func() {
+	It("GetShardClientForKey is consistent for same key", func() {
 		key := "test:consistency"
 
+		// Call GetShardClientForKey multiple times with the same key
+		// Should always return the same shard
 		var firstClient *redis.Client
 		for i := 0; i < 5; i++ {
-			client, err := ring.GetShardByKey(key)
+			client, err := ring.GetShardClientForKey(key)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(client).NotTo(BeNil())
 
@@ -839,17 +845,19 @@ var _ = Describe("Ring GetShards and GetShardByKey", func() {
 		}
 	})
 
-	It("GetShardByKey distributes keys across shards", func() {
+	It("GetShardClientForKey distributes keys across shards", func() {
 		testKeys := []string{"key1", "key2", "key3", "key4", "key5"}
 		shardMap := make(map[string]int)
 
 		for _, key := range testKeys {
-			client, err := ring.GetShardByKey(key)
+			client, err := ring.GetShardClientForKey(key)
 			Expect(err).NotTo(HaveOccurred())
 			shardMap[client.String()]++
 		}
 
+		// Should have at least 1 shard (could be all keys go to same shard due to hashing)
 		Expect(len(shardMap)).To(BeNumerically(">=", 1))
+		// But with multiple keys, we expect some distribution
 		Expect(len(shardMap)).To(BeNumerically("<=", 2)) // At most 2 shards (our setup)
 	})
 })
