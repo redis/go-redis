@@ -1,5 +1,62 @@
 # Release Notes
 
+# 9.9.0 (2024-03-21)
+
+## 🚀 Highlights
+- **Token-based Authentication**: Added `StreamingCredentialsProvider` for dynamic credential updates (experimental)
+  - Can be used with [go-redis-entraid](https://github.com/redis/go-redis-entraid) for Azure AD authentication
+- **Connection Statistics**: Added connection waiting statistics for better monitoring
+- **Failover Improvements**: Added `ParseFailoverURL` for easier failover configuration
+- **Ring Client Enhancements**: Added shard access methods for better Pub/Sub management
+
+## ✨ New Features
+- Added `StreamingCredentialsProvider` for token-based authentication ([#3320](https://github.com/redis/go-redis/pull/3320))
+  - Supports dynamic credential updates
+  - Includes connection close hooks
+  - Note: Currently marked as experimental
+- Added `ParseFailoverURL` for parsing failover URLs ([#3362](https://github.com/redis/go-redis/pull/3362))
+- Added connection waiting statistics ([#2804](https://github.com/redis/go-redis/pull/2804))
+- Added new utility functions:
+  - `ParseFloat` and `MustParseFloat` in public utils package ([#3371](https://github.com/redis/go-redis/pull/3371))
+  - Unit tests for `Atoi`, `ParseInt`, `ParseUint`, and `ParseFloat` ([#3377](https://github.com/redis/go-redis/pull/3377))
+- Added Ring client shard access methods:
+  - `GetShardClients()` to retrieve all active shard clients
+  - `GetShardClientForKey(key string)` to get the shard client for a specific key ([#3388](https://github.com/redis/go-redis/pull/3388))
+
+## 🐛 Bug Fixes
+- Fixed routing reads to loading slave nodes ([#3370](https://github.com/redis/go-redis/pull/3370))
+- Added support for nil lag in XINFO GROUPS ([#3369](https://github.com/redis/go-redis/pull/3369))
+- Fixed pool acquisition timeout issues ([#3381](https://github.com/redis/go-redis/pull/3381))
+- Optimized unnecessary copy operations ([#3376](https://github.com/redis/go-redis/pull/3376))
+
+## 📚 Documentation
+- Updated documentation for XINFO GROUPS with nil lag support ([#3369](https://github.com/redis/go-redis/pull/3369))
+- Added package-level comments for new features
+
+## ⚡ Performance and Reliability
+- Optimized `ReplaceSpaces` function ([#3383](https://github.com/redis/go-redis/pull/3383))
+- Set default value for `Options.Protocol` in `init()` ([#3387](https://github.com/redis/go-redis/pull/3387))
+- Exported pool errors for public consumption ([#3380](https://github.com/redis/go-redis/pull/3380))
+
+## 🔧 Dependencies and Infrastructure
+- Updated Redis CI to version 8.0.1 ([#3372](https://github.com/redis/go-redis/pull/3372))
+- Updated spellcheck GitHub Actions ([#3389](https://github.com/redis/go-redis/pull/3389))
+- Removed unused parameters ([#3382](https://github.com/redis/go-redis/pull/3382), [#3384](https://github.com/redis/go-redis/pull/3384))
+
+## 🧪 Testing
+- Added unit tests for pool acquisition timeout ([#3381](https://github.com/redis/go-redis/pull/3381))
+- Added unit tests for utility functions ([#3377](https://github.com/redis/go-redis/pull/3377))
+
+## 👥 Contributors
+
+We would like to thank all the contributors who made this release possible:
+
+[@ndyakov](https://github.com/ndyakov), [@ofekshenawa](https://github.com/ofekshenawa), [@LINKIWI](https://github.com/LINKIWI), [@iamamirsalehi](https://github.com/iamamirsalehi), [@fukua95](https://github.com/fukua95), [@lzakharov](https://github.com/lzakharov), [@DengY11](https://github.com/DengY11)
+
+## 📝 Changelog
+
+For a complete list of changes, see the [full changelog](https://github.com/redis/go-redis/compare/v9.8.0...v9.9.0).
+
 # 9.8.0 (2025-04-30)
 
 ## 🚀 Highlights
