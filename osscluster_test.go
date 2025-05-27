@@ -100,6 +100,9 @@ func (s *clusterScenario) newClusterClient(
 func (s *clusterScenario) Close() error {
 	ctx := context.TODO()
 	for _, master := range s.masters() {
+		if master == nil {
+			continue
+		}
 		err := master.FlushAll(ctx).Err()
 		if err != nil {
 			return err
