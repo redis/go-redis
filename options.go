@@ -229,6 +229,9 @@ func (opt *Options) init() {
 			opt.Network = "tcp"
 		}
 	}
+	if opt.Protocol < 2 {
+		opt.Protocol = 3
+	}
 	if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second
 	}
