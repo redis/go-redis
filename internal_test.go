@@ -212,10 +212,10 @@ func TestRingShardsCleanup(t *testing.T) {
 			},
 			NewClient: func(opt *Options) *Client {
 				c := NewClient(opt)
-				c.baseClient.onClose = func() error {
+				c.baseClient.onClose = c.baseClient.wrappedOnClose(func() error {
 					closeCounter.increment(opt.Addr)
 					return nil
-				}
+				})
 				return c
 			},
 		})
@@ -261,10 +261,10 @@ func TestRingShardsCleanup(t *testing.T) {
 				}
 				createCounter.increment(opt.Addr)
 				c := NewClient(opt)
-				c.baseClient.onClose = func() error {
+				c.baseClient.onClose = c.baseClient.wrappedOnClose(func() error {
 					closeCounter.increment(opt.Addr)
 					return nil
-				}
+				})
 				return c
 			},
 		})
