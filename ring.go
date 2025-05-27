@@ -847,3 +847,26 @@ func (c *Ring) Close() error {
 
 	return c.sharding.Close()
 }
+
+// GetShardClients returns a list of all shard clients in the ring.
+// This can be used to create dedicated connections (e.g., PubSub) for each shard.
+func (c *Ring) GetShardClients() []*Client {
+	shards := c.sharding.List()
+	clients := make([]*Client, 0, len(shards))
+	for _, shard := range shards {
+		if shard.IsUp() {
+			clients = append(clients, shard.Client)
+		}
+	}
+	return clients
+}
+
+// GetShardClientForKey returns the shard client that would handle the given key.
+// This can be used to determine which shard a particular key/channel would be routed to.
+func (c *Ring) GetShardClientForKey(key string) (*Client, error) {
+	shard, err := c.sharding.GetByKey(key)
+	if err != nil {
+		return nil, err
+	}
+	return shard.Client, nil
+}
