@@ -222,3 +222,26 @@ func TestReadTimeoutOptions(t *testing.T) {
 		}
 	}
 }
+
+func TestProtocolOptions(t *testing.T) {
+	testCasesMap := map[int]int{
+		0: 3,
+		1: 3,
+		2: 2,
+		3: 3,
+	}
+
+	o := &Options{}
+	o.init()
+	if o.Protocol != 3 {
+		t.Errorf("got %d instead of %d as protocol option", o.Protocol, 3)
+	}
+
+	for set, want := range testCasesMap {
+		o := &Options{Protocol: set}
+		o.init()
+		if o.Protocol != want {
+			t.Errorf("got %d instead of %d as protocol option", o.Protocol, want)
+		}
+	}
+}
