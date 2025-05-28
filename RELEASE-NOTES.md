@@ -1,6 +1,6 @@
 # Release Notes
 
-# 9.9.0 (2024-03-21)
+# 9.9.0 (2025-05-27)
 
 ## 🚀 Highlights
 - **Token-based Authentication**: Added `StreamingCredentialsProvider` for dynamic credential updates (experimental)
