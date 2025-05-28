@@ -34,7 +34,7 @@ func NewWriter(wr writer) *Writer {
 	}
 }
 
-func (w *Writer) WriteArgs(args []interface{}) error {
+func (w *Writer) WriteArgs(args []any) error {
 	if err := w.WriteByte(RespArray); err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func (w *Writer) writeLen(n int) error {
 	return err
 }
 
-func (w *Writer) WriteArg(v interface{}) error {
+func (w *Writer) WriteArg(v any) error {
 	switch v := v.(type) {
 	case nil:
 		return w.string("")

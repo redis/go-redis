@@ -63,9 +63,9 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				resultInfo, err := client.TSInfo(ctx, "4").Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(resultInfo["labels"].([]interface{})[0]).To(BeEquivalentTo([]interface{}{"Time", "Series"}))
+					Expect(resultInfo["labels"].([]any)[0]).To(BeEquivalentTo([]any{"Time", "Series"}))
 				} else {
-					Expect(resultInfo["labels"].(map[interface{}]interface{})["Time"]).To(BeEquivalentTo("Series"))
+					Expect(resultInfo["labels"].(map[any]any)["Time"]).To(BeEquivalentTo("Series"))
 				}
 				// Test chunk size
 				opt = &redis.TSOptions{ChunkSize: 128}
@@ -160,9 +160,9 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				resultInfo, err := client.TSInfo(ctx, "4").Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(resultInfo["labels"].([]interface{})).To(ContainElement([]interface{}{"Time", "Series"}))
+					Expect(resultInfo["labels"].([]any)).To(ContainElement([]any{"Time", "Series"}))
 				} else {
-					Expect(resultInfo["labels"].(map[interface{}]interface{})["Time"]).To(BeEquivalentTo("Series"))
+					Expect(resultInfo["labels"].(map[any]any)["Time"]).To(BeEquivalentTo("Series"))
 				}
 				// Test chunk size
 				opt = &redis.TSOptions{ChunkSize: 128}
@@ -254,9 +254,9 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				resultInfo, err = client.TSInfo(ctx, "1").Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(resultInfo["labels"]).To(BeEquivalentTo([]interface{}{}))
+					Expect(resultInfo["labels"]).To(BeEquivalentTo([]any{}))
 				} else {
-					Expect(resultInfo["labels"]).To(BeEquivalentTo(map[interface{}]interface{}{}))
+					Expect(resultInfo["labels"]).To(BeEquivalentTo(map[any]any{}))
 				}
 
 				opt = &redis.TSAlterOptions{Labels: map[string]string{"Time": "Series"}}
@@ -267,7 +267,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				resultInfo, err = client.TSInfo(ctx, "1").Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(resultInfo["labels"].([]interface{})[0]).To(BeEquivalentTo([]interface{}{"Time", "Series"}))
+					Expect(resultInfo["labels"].([]any)[0]).To(BeEquivalentTo([]any{"Time", "Series"}))
 					Expect(resultInfo["retentionTime"]).To(BeEquivalentTo(10))
 					if RedisVersion >= 8 {
 						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo("block"))
@@ -276,7 +276,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo(redis.Nil))
 					}
 				} else {
-					Expect(resultInfo["labels"].(map[interface{}]interface{})["Time"]).To(BeEquivalentTo("Series"))
+					Expect(resultInfo["labels"].(map[any]any)["Time"]).To(BeEquivalentTo("Series"))
 					Expect(resultInfo["retentionTime"]).To(BeEquivalentTo(10))
 					if RedisVersion >= 8 {
 						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo("block"))
@@ -355,9 +355,9 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				resultInfo, err := client.TSInfo(ctx, "1").Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(resultInfo["rules"]).To(BeEquivalentTo([]interface{}{}))
+					Expect(resultInfo["rules"]).To(BeEquivalentTo([]any{}))
 				} else {
-					Expect(resultInfo["rules"]).To(BeEquivalentTo(map[interface{}]interface{}{}))
+					Expect(resultInfo["rules"]).To(BeEquivalentTo(map[any]any{}))
 				}
 			})
 
@@ -527,9 +527,9 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				resultGet, err := client.TSCreate(ctx, "a").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resultGet).To(BeEquivalentTo("OK"))
-				ktvSlices := make([][]interface{}, 3)
+				ktvSlices := make([][]any, 3)
 				for i := 0; i < 3; i++ {
-					ktvSlices[i] = make([]interface{}, 3)
+					ktvSlices[i] = make([]any, 3)
 					ktvSlices[i][0] = "a"
 					for j := 1; j < 3; j++ {
 						ktvSlices[i][j] = (i + j) * j
@@ -557,19 +557,19 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				result, err := client.TSMGet(ctx, []string{"Test=This"}).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][1].([]interface{})[1]).To(BeEquivalentTo("15"))
-					Expect(result["b"][1].([]interface{})[1]).To(BeEquivalentTo("25"))
+					Expect(result["a"][1].([]any)[1]).To(BeEquivalentTo("15"))
+					Expect(result["b"][1].([]any)[1]).To(BeEquivalentTo("25"))
 				} else {
-					Expect(result["a"][1].([]interface{})[1]).To(BeEquivalentTo(15))
-					Expect(result["b"][1].([]interface{})[1]).To(BeEquivalentTo(25))
+					Expect(result["a"][1].([]any)[1]).To(BeEquivalentTo(15))
+					Expect(result["b"][1].([]any)[1]).To(BeEquivalentTo(25))
 				}
 				mgetOpt := &redis.TSMGetOptions{WithLabels: true}
 				result, err = client.TSMGetWithArgs(ctx, []string{"Test=This"}, mgetOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["b"][0]).To(ConsistOf([]interface{}{"Test", "This"}, []interface{}{"Taste", "That"}))
+					Expect(result["b"][0]).To(ConsistOf([]any{"Test", "This"}, []any{"Taste", "That"}))
 				} else {
-					Expect(result["b"][0]).To(BeEquivalentTo(map[interface{}]interface{}{"Test": "This", "Taste": "That"}))
+					Expect(result["b"][0]).To(BeEquivalentTo(map[any]any{"Test": "This", "Taste": "That"}))
 				}
 
 				resultCreate, err = client.TSCreate(ctx, "c").Result()
@@ -593,17 +593,17 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				result, err = client.TSMGet(ctx, []string{"is_compaction=true"}).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["d"][1]).To(BeEquivalentTo([]interface{}{int64(0), "4"}))
+					Expect(result["d"][1]).To(BeEquivalentTo([]any{int64(0), "4"}))
 				} else {
-					Expect(result["d"][1]).To(BeEquivalentTo([]interface{}{int64(0), 4.0}))
+					Expect(result["d"][1]).To(BeEquivalentTo([]any{int64(0), 4.0}))
 				}
 				mgetOpt = &redis.TSMGetOptions{Latest: true}
 				result, err = client.TSMGetWithArgs(ctx, []string{"is_compaction=true"}, mgetOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["d"][1]).To(BeEquivalentTo([]interface{}{int64(10), "8"}))
+					Expect(result["d"][1]).To(BeEquivalentTo([]any{int64(10), "8"}))
 				} else {
-					Expect(result["d"][1]).To(BeEquivalentTo([]interface{}{int64(10), 8.0}))
+					Expect(result["d"][1]).To(BeEquivalentTo([]any{int64(10), 8.0}))
 				}
 			})
 
@@ -903,18 +903,18 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(result)).To(BeEquivalentTo(2))
 				if client.Options().Protocol == 2 {
-					Expect(len(result["a"][1].([]interface{}))).To(BeEquivalentTo(100))
+					Expect(len(result["a"][1].([]any))).To(BeEquivalentTo(100))
 				} else {
-					Expect(len(result["a"][2].([]interface{}))).To(BeEquivalentTo(100))
+					Expect(len(result["a"][2].([]any))).To(BeEquivalentTo(100))
 				}
 				// Test Count
 				mrangeOpt := &redis.TSMRangeOptions{Count: 10}
 				result, err = client.TSMRangeWithArgs(ctx, 0, 200, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(len(result["a"][1].([]interface{}))).To(BeEquivalentTo(10))
+					Expect(len(result["a"][1].([]any))).To(BeEquivalentTo(10))
 				} else {
-					Expect(len(result["a"][2].([]interface{}))).To(BeEquivalentTo(10))
+					Expect(len(result["a"][2].([]any))).To(BeEquivalentTo(10))
 				}
 				// Test Aggregation and BucketDuration
 				for i := 0; i < 100; i++ {
@@ -926,34 +926,34 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(result)).To(BeEquivalentTo(2))
 				if client.Options().Protocol == 2 {
-					Expect(len(result["a"][1].([]interface{}))).To(BeEquivalentTo(20))
+					Expect(len(result["a"][1].([]any))).To(BeEquivalentTo(20))
 				} else {
-					Expect(len(result["a"][2].([]interface{}))).To(BeEquivalentTo(20))
+					Expect(len(result["a"][2].([]any))).To(BeEquivalentTo(20))
 				}
 				// Test WithLabels
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][0]).To(BeEquivalentTo([]interface{}{}))
+					Expect(result["a"][0]).To(BeEquivalentTo([]any{}))
 				} else {
-					Expect(result["a"][0]).To(BeEquivalentTo(map[interface{}]interface{}{}))
+					Expect(result["a"][0]).To(BeEquivalentTo(map[any]any{}))
 				}
 				mrangeOpt = &redis.TSMRangeOptions{WithLabels: true}
 				result, err = client.TSMRangeWithArgs(ctx, 0, 200, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][0]).To(ConsistOf([]interface{}{[]interface{}{"Test", "This"}, []interface{}{"team", "ny"}}))
+					Expect(result["a"][0]).To(ConsistOf([]any{[]any{"Test", "This"}, []any{"team", "ny"}}))
 				} else {
-					Expect(result["a"][0]).To(BeEquivalentTo(map[interface{}]interface{}{"Test": "This", "team": "ny"}))
+					Expect(result["a"][0]).To(BeEquivalentTo(map[any]any{"Test": "This", "team": "ny"}))
 				}
 				// Test SelectedLabels
-				mrangeOpt = &redis.TSMRangeOptions{SelectedLabels: []interface{}{"team"}}
+				mrangeOpt = &redis.TSMRangeOptions{SelectedLabels: []any{"team"}}
 				result, err = client.TSMRangeWithArgs(ctx, 0, 200, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][0].([]interface{})[0]).To(BeEquivalentTo([]interface{}{"team", "ny"}))
-					Expect(result["b"][0].([]interface{})[0]).To(BeEquivalentTo([]interface{}{"team", "sf"}))
+					Expect(result["a"][0].([]any)[0]).To(BeEquivalentTo([]any{"team", "ny"}))
+					Expect(result["b"][0].([]any)[0]).To(BeEquivalentTo([]any{"team", "sf"}))
 				} else {
-					Expect(result["a"][0]).To(BeEquivalentTo(map[interface{}]interface{}{"team": "ny"}))
-					Expect(result["b"][0]).To(BeEquivalentTo(map[interface{}]interface{}{"team": "sf"}))
+					Expect(result["a"][0]).To(BeEquivalentTo(map[any]any{"team": "ny"}))
+					Expect(result["b"][0]).To(BeEquivalentTo(map[any]any{"team": "sf"}))
 				}
 				// Test FilterBy
 				fts := make([]int, 0)
@@ -964,26 +964,26 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				result, err = client.TSMRangeWithArgs(ctx, 0, 200, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][1].([]interface{})).To(BeEquivalentTo([]interface{}{[]interface{}{int64(15), "1"}, []interface{}{int64(16), "2"}}))
+					Expect(result["a"][1].([]any)).To(BeEquivalentTo([]any{[]any{int64(15), "1"}, []any{int64(16), "2"}}))
 				} else {
-					Expect(result["a"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(15), 1.0}, []interface{}{int64(16), 2.0}}))
+					Expect(result["a"][2]).To(BeEquivalentTo([]any{[]any{int64(15), 1.0}, []any{int64(16), 2.0}}))
 				}
 				// Test GroupBy
 				mrangeOpt = &redis.TSMRangeOptions{GroupByLabel: "Test", Reducer: "sum"}
 				result, err = client.TSMRangeWithArgs(ctx, 0, 3, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["Test=This"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), "0"}, []interface{}{int64(1), "2"}, []interface{}{int64(2), "4"}, []interface{}{int64(3), "6"}}))
+					Expect(result["Test=This"][1]).To(BeEquivalentTo([]any{[]any{int64(0), "0"}, []any{int64(1), "2"}, []any{int64(2), "4"}, []any{int64(3), "6"}}))
 				} else {
-					Expect(result["Test=This"][3]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 0.0}, []interface{}{int64(1), 2.0}, []interface{}{int64(2), 4.0}, []interface{}{int64(3), 6.0}}))
+					Expect(result["Test=This"][3]).To(BeEquivalentTo([]any{[]any{int64(0), 0.0}, []any{int64(1), 2.0}, []any{int64(2), 4.0}, []any{int64(3), 6.0}}))
 				}
 				mrangeOpt = &redis.TSMRangeOptions{GroupByLabel: "Test", Reducer: "max"}
 				result, err = client.TSMRangeWithArgs(ctx, 0, 3, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["Test=This"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), "0"}, []interface{}{int64(1), "1"}, []interface{}{int64(2), "2"}, []interface{}{int64(3), "3"}}))
+					Expect(result["Test=This"][1]).To(BeEquivalentTo([]any{[]any{int64(0), "0"}, []any{int64(1), "1"}, []any{int64(2), "2"}, []any{int64(3), "3"}}))
 				} else {
-					Expect(result["Test=This"][3]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 0.0}, []interface{}{int64(1), 1.0}, []interface{}{int64(2), 2.0}, []interface{}{int64(3), 3.0}}))
+					Expect(result["Test=This"][3]).To(BeEquivalentTo([]any{[]any{int64(0), 0.0}, []any{int64(1), 1.0}, []any{int64(2), 2.0}, []any{int64(3), 3.0}}))
 				}
 
 				mrangeOpt = &redis.TSMRangeOptions{GroupByLabel: "team", Reducer: "min"}
@@ -991,29 +991,29 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(result)).To(BeEquivalentTo(2))
 				if client.Options().Protocol == 2 {
-					Expect(result["team=ny"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), "0"}, []interface{}{int64(1), "1"}, []interface{}{int64(2), "2"}, []interface{}{int64(3), "3"}}))
-					Expect(result["team=sf"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), "0"}, []interface{}{int64(1), "1"}, []interface{}{int64(2), "2"}, []interface{}{int64(3), "3"}}))
+					Expect(result["team=ny"][1]).To(BeEquivalentTo([]any{[]any{int64(0), "0"}, []any{int64(1), "1"}, []any{int64(2), "2"}, []any{int64(3), "3"}}))
+					Expect(result["team=sf"][1]).To(BeEquivalentTo([]any{[]any{int64(0), "0"}, []any{int64(1), "1"}, []any{int64(2), "2"}, []any{int64(3), "3"}}))
 				} else {
-					Expect(result["team=ny"][3]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 0.0}, []interface{}{int64(1), 1.0}, []interface{}{int64(2), 2.0}, []interface{}{int64(3), 3.0}}))
-					Expect(result["team=sf"][3]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 0.0}, []interface{}{int64(1), 1.0}, []interface{}{int64(2), 2.0}, []interface{}{int64(3), 3.0}}))
+					Expect(result["team=ny"][3]).To(BeEquivalentTo([]any{[]any{int64(0), 0.0}, []any{int64(1), 1.0}, []any{int64(2), 2.0}, []any{int64(3), 3.0}}))
+					Expect(result["team=sf"][3]).To(BeEquivalentTo([]any{[]any{int64(0), 0.0}, []any{int64(1), 1.0}, []any{int64(2), 2.0}, []any{int64(3), 3.0}}))
 				}
 				// Test Align
 				mrangeOpt = &redis.TSMRangeOptions{Aggregator: redis.Count, BucketDuration: 10, Align: "-"}
 				result, err = client.TSMRangeWithArgs(ctx, 0, 10, []string{"team=ny"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), "10"}, []interface{}{int64(10), "1"}}))
+					Expect(result["a"][1]).To(BeEquivalentTo([]any{[]any{int64(0), "10"}, []any{int64(10), "1"}}))
 				} else {
-					Expect(result["a"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 10.0}, []interface{}{int64(10), 1.0}}))
+					Expect(result["a"][2]).To(BeEquivalentTo([]any{[]any{int64(0), 10.0}, []any{int64(10), 1.0}}))
 				}
 
 				mrangeOpt = &redis.TSMRangeOptions{Aggregator: redis.Count, BucketDuration: 10, Align: 5}
 				result, err = client.TSMRangeWithArgs(ctx, 0, 10, []string{"team=ny"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), "5"}, []interface{}{int64(5), "6"}}))
+					Expect(result["a"][1]).To(BeEquivalentTo([]any{[]any{int64(0), "5"}, []any{int64(5), "6"}}))
 				} else {
-					Expect(result["a"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 5.0}, []interface{}{int64(5), 6.0}}))
+					Expect(result["a"][2]).To(BeEquivalentTo([]any{[]any{int64(0), 5.0}, []any{int64(5), 6.0}}))
 				}
 			})
 
@@ -1062,11 +1062,11 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				result, err := client.TSMRangeWithArgs(ctx, 0, 10, []string{"is_compaction=true"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["b"][1]).To(ConsistOf([]interface{}{int64(0), "4"}, []interface{}{int64(10), "8"}))
-					Expect(result["d"][1]).To(ConsistOf([]interface{}{int64(0), "4"}, []interface{}{int64(10), "8"}))
+					Expect(result["b"][1]).To(ConsistOf([]any{int64(0), "4"}, []any{int64(10), "8"}))
+					Expect(result["d"][1]).To(ConsistOf([]any{int64(0), "4"}, []any{int64(10), "8"}))
 				} else {
-					Expect(result["b"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 4.0}, []interface{}{int64(10), 8.0}}))
-					Expect(result["d"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 4.0}, []interface{}{int64(10), 8.0}}))
+					Expect(result["b"][2]).To(BeEquivalentTo([]any{[]any{int64(0), 4.0}, []any{int64(10), 8.0}}))
+					Expect(result["d"][2]).To(BeEquivalentTo([]any{[]any{int64(0), 4.0}, []any{int64(10), 8.0}}))
 				}
 			})
 			It("should TSMRevRange and TSMRevRangeWithArgs", Label("timeseries", "tsmrevrange", "tsmrevrangeWithArgs"), func() {
@@ -1089,18 +1089,18 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(result)).To(BeEquivalentTo(2))
 				if client.Options().Protocol == 2 {
-					Expect(len(result["a"][1].([]interface{}))).To(BeEquivalentTo(100))
+					Expect(len(result["a"][1].([]any))).To(BeEquivalentTo(100))
 				} else {
-					Expect(len(result["a"][2].([]interface{}))).To(BeEquivalentTo(100))
+					Expect(len(result["a"][2].([]any))).To(BeEquivalentTo(100))
 				}
 				// Test Count
 				mrangeOpt := &redis.TSMRevRangeOptions{Count: 10}
 				result, err = client.TSMRevRangeWithArgs(ctx, 0, 200, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(len(result["a"][1].([]interface{}))).To(BeEquivalentTo(10))
+					Expect(len(result["a"][1].([]any))).To(BeEquivalentTo(10))
 				} else {
-					Expect(len(result["a"][2].([]interface{}))).To(BeEquivalentTo(10))
+					Expect(len(result["a"][2].([]any))).To(BeEquivalentTo(10))
 				}
 				// Test Aggregation and BucketDuration
 				for i := 0; i < 100; i++ {
@@ -1112,30 +1112,30 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(result)).To(BeEquivalentTo(2))
 				if client.Options().Protocol == 2 {
-					Expect(len(result["a"][1].([]interface{}))).To(BeEquivalentTo(20))
-					Expect(result["a"][0]).To(BeEquivalentTo([]interface{}{}))
+					Expect(len(result["a"][1].([]any))).To(BeEquivalentTo(20))
+					Expect(result["a"][0]).To(BeEquivalentTo([]any{}))
 				} else {
-					Expect(len(result["a"][2].([]interface{}))).To(BeEquivalentTo(20))
-					Expect(result["a"][0]).To(BeEquivalentTo(map[interface{}]interface{}{}))
+					Expect(len(result["a"][2].([]any))).To(BeEquivalentTo(20))
+					Expect(result["a"][0]).To(BeEquivalentTo(map[any]any{}))
 				}
 				mrangeOpt = &redis.TSMRevRangeOptions{WithLabels: true}
 				result, err = client.TSMRevRangeWithArgs(ctx, 0, 200, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][0]).To(ConsistOf([]interface{}{[]interface{}{"Test", "This"}, []interface{}{"team", "ny"}}))
+					Expect(result["a"][0]).To(ConsistOf([]any{[]any{"Test", "This"}, []any{"team", "ny"}}))
 				} else {
-					Expect(result["a"][0]).To(BeEquivalentTo(map[interface{}]interface{}{"Test": "This", "team": "ny"}))
+					Expect(result["a"][0]).To(BeEquivalentTo(map[any]any{"Test": "This", "team": "ny"}))
 				}
 				// Test SelectedLabels
-				mrangeOpt = &redis.TSMRevRangeOptions{SelectedLabels: []interface{}{"team"}}
+				mrangeOpt = &redis.TSMRevRangeOptions{SelectedLabels: []any{"team"}}
 				result, err = client.TSMRevRangeWithArgs(ctx, 0, 200, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][0].([]interface{})[0]).To(BeEquivalentTo([]interface{}{"team", "ny"}))
-					Expect(result["b"][0].([]interface{})[0]).To(BeEquivalentTo([]interface{}{"team", "sf"}))
+					Expect(result["a"][0].([]any)[0]).To(BeEquivalentTo([]any{"team", "ny"}))
+					Expect(result["b"][0].([]any)[0]).To(BeEquivalentTo([]any{"team", "sf"}))
 				} else {
-					Expect(result["a"][0]).To(BeEquivalentTo(map[interface{}]interface{}{"team": "ny"}))
-					Expect(result["b"][0]).To(BeEquivalentTo(map[interface{}]interface{}{"team": "sf"}))
+					Expect(result["a"][0]).To(BeEquivalentTo(map[any]any{"team": "ny"}))
+					Expect(result["b"][0]).To(BeEquivalentTo(map[any]any{"team": "sf"}))
 				}
 				// Test FilterBy
 				fts := make([]int, 0)
@@ -1146,54 +1146,54 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				result, err = client.TSMRevRangeWithArgs(ctx, 0, 200, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][1].([]interface{})).To(ConsistOf([]interface{}{int64(16), "2"}, []interface{}{int64(15), "1"}))
+					Expect(result["a"][1].([]any)).To(ConsistOf([]any{int64(16), "2"}, []any{int64(15), "1"}))
 				} else {
-					Expect(result["a"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(16), 2.0}, []interface{}{int64(15), 1.0}}))
+					Expect(result["a"][2]).To(BeEquivalentTo([]any{[]any{int64(16), 2.0}, []any{int64(15), 1.0}}))
 				}
 				// Test GroupBy
 				mrangeOpt = &redis.TSMRevRangeOptions{GroupByLabel: "Test", Reducer: "sum"}
 				result, err = client.TSMRevRangeWithArgs(ctx, 0, 3, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["Test=This"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(3), "6"}, []interface{}{int64(2), "4"}, []interface{}{int64(1), "2"}, []interface{}{int64(0), "0"}}))
+					Expect(result["Test=This"][1]).To(BeEquivalentTo([]any{[]any{int64(3), "6"}, []any{int64(2), "4"}, []any{int64(1), "2"}, []any{int64(0), "0"}}))
 				} else {
-					Expect(result["Test=This"][3]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(3), 6.0}, []interface{}{int64(2), 4.0}, []interface{}{int64(1), 2.0}, []interface{}{int64(0), 0.0}}))
+					Expect(result["Test=This"][3]).To(BeEquivalentTo([]any{[]any{int64(3), 6.0}, []any{int64(2), 4.0}, []any{int64(1), 2.0}, []any{int64(0), 0.0}}))
 				}
 				mrangeOpt = &redis.TSMRevRangeOptions{GroupByLabel: "Test", Reducer: "max"}
 				result, err = client.TSMRevRangeWithArgs(ctx, 0, 3, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["Test=This"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(3), "3"}, []interface{}{int64(2), "2"}, []interface{}{int64(1), "1"}, []interface{}{int64(0), "0"}}))
+					Expect(result["Test=This"][1]).To(BeEquivalentTo([]any{[]any{int64(3), "3"}, []any{int64(2), "2"}, []any{int64(1), "1"}, []any{int64(0), "0"}}))
 				} else {
-					Expect(result["Test=This"][3]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(3), 3.0}, []interface{}{int64(2), 2.0}, []interface{}{int64(1), 1.0}, []interface{}{int64(0), 0.0}}))
+					Expect(result["Test=This"][3]).To(BeEquivalentTo([]any{[]any{int64(3), 3.0}, []any{int64(2), 2.0}, []any{int64(1), 1.0}, []any{int64(0), 0.0}}))
 				}
 				mrangeOpt = &redis.TSMRevRangeOptions{GroupByLabel: "team", Reducer: "min"}
 				result, err = client.TSMRevRangeWithArgs(ctx, 0, 3, []string{"Test=This"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(result)).To(BeEquivalentTo(2))
 				if client.Options().Protocol == 2 {
-					Expect(result["team=ny"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(3), "3"}, []interface{}{int64(2), "2"}, []interface{}{int64(1), "1"}, []interface{}{int64(0), "0"}}))
-					Expect(result["team=sf"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(3), "3"}, []interface{}{int64(2), "2"}, []interface{}{int64(1), "1"}, []interface{}{int64(0), "0"}}))
+					Expect(result["team=ny"][1]).To(BeEquivalentTo([]any{[]any{int64(3), "3"}, []any{int64(2), "2"}, []any{int64(1), "1"}, []any{int64(0), "0"}}))
+					Expect(result["team=sf"][1]).To(BeEquivalentTo([]any{[]any{int64(3), "3"}, []any{int64(2), "2"}, []any{int64(1), "1"}, []any{int64(0), "0"}}))
 				} else {
-					Expect(result["team=ny"][3]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(3), 3.0}, []interface{}{int64(2), 2.0}, []interface{}{int64(1), 1.0}, []interface{}{int64(0), 0.0}}))
-					Expect(result["team=sf"][3]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(3), 3.0}, []interface{}{int64(2), 2.0}, []interface{}{int64(1), 1.0}, []interface{}{int64(0), 0.0}}))
+					Expect(result["team=ny"][3]).To(BeEquivalentTo([]any{[]any{int64(3), 3.0}, []any{int64(2), 2.0}, []any{int64(1), 1.0}, []any{int64(0), 0.0}}))
+					Expect(result["team=sf"][3]).To(BeEquivalentTo([]any{[]any{int64(3), 3.0}, []any{int64(2), 2.0}, []any{int64(1), 1.0}, []any{int64(0), 0.0}}))
 				}
 				// Test Align
 				mrangeOpt = &redis.TSMRevRangeOptions{Aggregator: redis.Count, BucketDuration: 10, Align: "-"}
 				result, err = client.TSMRevRangeWithArgs(ctx, 0, 10, []string{"team=ny"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(10), "1"}, []interface{}{int64(0), "10"}}))
+					Expect(result["a"][1]).To(BeEquivalentTo([]any{[]any{int64(10), "1"}, []any{int64(0), "10"}}))
 				} else {
-					Expect(result["a"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(10), 1.0}, []interface{}{int64(0), 10.0}}))
+					Expect(result["a"][2]).To(BeEquivalentTo([]any{[]any{int64(10), 1.0}, []any{int64(0), 10.0}}))
 				}
 				mrangeOpt = &redis.TSMRevRangeOptions{Aggregator: redis.Count, BucketDuration: 10, Align: 1}
 				result, err = client.TSMRevRangeWithArgs(ctx, 0, 10, []string{"team=ny"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["a"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(1), "10"}, []interface{}{int64(0), "1"}}))
+					Expect(result["a"][1]).To(BeEquivalentTo([]any{[]any{int64(1), "10"}, []any{int64(0), "1"}}))
 				} else {
-					Expect(result["a"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(1), 10.0}, []interface{}{int64(0), 1.0}}))
+					Expect(result["a"][2]).To(BeEquivalentTo([]any{[]any{int64(1), 10.0}, []any{int64(0), 1.0}}))
 				}
 			})
 
@@ -1242,11 +1242,11 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				result, err := client.TSMRevRangeWithArgs(ctx, 0, 10, []string{"is_compaction=true"}, mrangeOpt).Result()
 				Expect(err).NotTo(HaveOccurred())
 				if client.Options().Protocol == 2 {
-					Expect(result["b"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(10), "8"}, []interface{}{int64(0), "4"}}))
-					Expect(result["d"][1]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(10), "8"}, []interface{}{int64(0), "4"}}))
+					Expect(result["b"][1]).To(BeEquivalentTo([]any{[]any{int64(10), "8"}, []any{int64(0), "4"}}))
+					Expect(result["d"][1]).To(BeEquivalentTo([]any{[]any{int64(10), "8"}, []any{int64(0), "4"}}))
 				} else {
-					Expect(result["b"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(10), 8.0}, []interface{}{int64(0), 4.0}}))
-					Expect(result["d"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(10), 8.0}, []interface{}{int64(0), 4.0}}))
+					Expect(result["b"][2]).To(BeEquivalentTo([]any{[]any{int64(10), 8.0}, []any{int64(0), 4.0}}))
+					Expect(result["d"][2]).To(BeEquivalentTo([]any{[]any{int64(10), 8.0}, []any{int64(0), 4.0}}))
 				}
 			})
 		})

@@ -39,7 +39,7 @@ type SortedSetCmdable interface {
 	ZRangeStore(ctx context.Context, dst string, z ZRangeArgs) *IntCmd
 	ZRank(ctx context.Context, key, member string) *IntCmd
 	ZRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd
-	ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd
+	ZRem(ctx context.Context, key string, members ...any) *IntCmd
 	ZRemRangeByRank(ctx context.Context, key string, start, stop int64) *IntCmd
 	ZRemRangeByScore(ctx context.Context, key, min, max string) *IntCmd
 	ZRemRangeByLex(ctx context.Context, key, min, max string) *IntCmd
@@ -64,7 +64,7 @@ type SortedSetCmdable interface {
 
 // BZPopMax Redis `BZPOPMAX key [key ...] timeout` command.
 func (c cmdable) BZPopMax(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd {
-	args := make([]interface{}, 1+len(keys)+1)
+	args := make([]any, 1+len(keys)+1)
 	args[0] = "bzpopmax"
 	for i, key := range keys {
 		args[1+i] = key
@@ -78,7 +78,7 @@ func (c cmdable) BZPopMax(ctx context.Context, timeout time.Duration, keys ...st
 
 // BZPopMin Redis `BZPOPMIN key [key ...] timeout` command.
 func (c cmdable) BZPopMin(ctx context.Context, timeout time.Duration, keys ...string) *ZWithKeyCmd {
-	args := make([]interface{}, 1+len(keys)+1)
+	args := make([]any, 1+len(keys)+1)
 	args[0] = "bzpopmin"
 	for i, key := range keys {
 		args[1+i] = key
@@ -96,7 +96,7 @@ func (c cmdable) BZPopMin(ctx context.Context, timeout time.Duration, keys ...st
 // A timeout of zero can be used to block indefinitely.
 // example: client.BZMPop(ctx, 0,"max", 1, "set")
 func (c cmdable) BZMPop(ctx context.Context, timeout time.Duration, order string, count int64, keys ...string) *ZSliceWithKeyCmd {
-	args := make([]interface{}, 3+len(keys), 6+len(keys))
+	args := make([]any, 3+len(keys), 6+len(keys))
 	args[0] = "bzmpop"
 	args[1] = formatSec(ctx, timeout)
 	args[2] = len(keys)
@@ -120,8 +120,8 @@ type ZAddArgs struct {
 	Members []Z
 }
 
-func (c cmdable) zAddArgs(key string, args ZAddArgs, incr bool) []interface{} {
-	a := make([]interface{}, 0, 6+2*len(args.Members))
+func (c cmdable) zAddArgs(key string, args ZAddArgs, incr bool) []any {
+	a := make([]any, 0, 6+2*len(args.Members))
 	a = append(a, "zadd", key)
 
 	// The GT, LT and NX options are mutually exclusive.
@@ -226,7 +226,7 @@ func (c cmdable) ZIncrBy(ctx context.Context, key string, increment float64, mem
 }
 
 func (c cmdable) ZInterStore(ctx context.Context, destination string, store *ZStore) *IntCmd {
-	args := make([]interface{}, 0, 3+store.len())
+	args := make([]any, 0, 3+store.len())
 	args = append(args, "zinterstore", destination, len(store.Keys))
 	args = store.appendArgs(args)
 	cmd := NewIntCmd(ctx, args...)
@@ -236,7 +236,7 @@ func (c cmdable) ZInterStore(ctx context.Context, destination string, store *ZSt
 }
 
 func (c cmdable) ZInter(ctx context.Context, store *ZStore) *StringSliceCmd {
-	args := make([]interface{}, 0, 2+store.len())
+	args := make([]any, 0, 2+store.len())
 	args = append(args, "zinter", len(store.Keys))
 	args = store.appendArgs(args)
 	cmd := NewStringSliceCmd(ctx, args...)
@@ -246,7 +246,7 @@ func (c cmdable) ZInter(ctx context.Context, store *ZStore) *StringSliceCmd {
 }
 
 func (c cmdable) ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd {
-	args := make([]interface{}, 0, 3+store.len())
+	args := make([]any, 0, 3+store.len())
 	args = append(args, "zinter", len(store.Keys))
 	args = store.appendArgs(args)
 	args = append(args, "withscores")
@@ -257,7 +257,7 @@ func (c cmdable) ZInterWithScores(ctx context.Context, store *ZStore) *ZSliceCmd
 }
 
 func (c cmdable) ZInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd {
-	args := make([]interface{}, 4+len(keys))
+	args := make([]any, 4+len(keys))
 	args[0] = "zintercard"
 	numkeys := int64(0)
 	for i, key := range keys {
@@ -276,7 +276,7 @@ func (c cmdable) ZInterCard(ctx context.Context, limit int64, keys ...string) *I
 // direction: "max" (highest score) or "min" (lowest score), count: > 0
 // example: client.ZMPop(ctx, "max", 5, "set1", "set2")
 func (c cmdable) ZMPop(ctx context.Context, order string, count int64, keys ...string) *ZSliceWithKeyCmd {
-	args := make([]interface{}, 2+len(keys), 5+len(keys))
+	args := make([]any, 2+len(keys), 5+len(keys))
 	args[0] = "zmpop"
 	args[1] = len(keys)
 	for i, key := range keys {
@@ -289,7 +289,7 @@ func (c cmdable) ZMPop(ctx context.Context, order string, count int64, keys ...s
 }
 
 func (c cmdable) ZMScore(ctx context.Context, key string, members ...string) *FloatSliceCmd {
-	args := make([]interface{}, 2+len(members))
+	args := make([]any, 2+len(members))
 	args[0] = "zmscore"
 	args[1] = key
 	for i, member := range members {
@@ -301,7 +301,7 @@ func (c cmdable) ZMScore(ctx context.Context, key string, members ...string) *Fl
 }
 
 func (c cmdable) ZPopMax(ctx context.Context, key string, count ...int64) *ZSliceCmd {
-	args := []interface{}{
+	args := []any{
 		"zpopmax",
 		key,
 	}
@@ -321,7 +321,7 @@ func (c cmdable) ZPopMax(ctx context.Context, key string, count ...int64) *ZSlic
 }
 
 func (c cmdable) ZPopMin(ctx context.Context, key string, count ...int64) *ZSliceCmd {
-	args := []interface{}{
+	args := []any{
 		"zpopmin",
 		key,
 	}
@@ -379,8 +379,8 @@ type ZRangeArgs struct {
 	//
 	// For normal cases (ByScore==false && ByLex==false), <Start> and <Stop> should be set to the index range (int).
 	// You can read the documentation for more information: https://redis.io/commands/zrange
-	Start interface{}
-	Stop  interface{}
+	Start any
+	Stop  any
 
 	// The ByScore and ByLex options are mutually exclusive.
 	ByScore bool
@@ -393,7 +393,7 @@ type ZRangeArgs struct {
 	Count  int64
 }
 
-func (z ZRangeArgs) appendArgs(args []interface{}) []interface{} {
+func (z ZRangeArgs) appendArgs(args []any) []any {
 	// For Rev+ByScore/ByLex, we need to adjust the position of <Start> and <Stop>.
 	if z.Rev && (z.ByScore || z.ByLex) {
 		args = append(args, z.Key, z.Stop, z.Start)
@@ -416,7 +416,7 @@ func (z ZRangeArgs) appendArgs(args []interface{}) []interface{} {
 }
 
 func (c cmdable) ZRangeArgs(ctx context.Context, z ZRangeArgs) *StringSliceCmd {
-	args := make([]interface{}, 0, 9)
+	args := make([]any, 0, 9)
 	args = append(args, "zrange")
 	args = z.appendArgs(args)
 	cmd := NewStringSliceCmd(ctx, args...)
@@ -425,7 +425,7 @@ func (c cmdable) ZRangeArgs(ctx context.Context, z ZRangeArgs) *StringSliceCmd {
 }
 
 func (c cmdable) ZRangeArgsWithScores(ctx context.Context, z ZRangeArgs) *ZSliceCmd {
-	args := make([]interface{}, 0, 10)
+	args := make([]any, 0, 10)
 	args = append(args, "zrange")
 	args = z.appendArgs(args)
 	args = append(args, "withscores")
@@ -456,7 +456,7 @@ type ZRangeBy struct {
 }
 
 func (c cmdable) zRangeBy(ctx context.Context, zcmd, key string, opt *ZRangeBy, withScores bool) *StringSliceCmd {
-	args := []interface{}{zcmd, key, opt.Min, opt.Max}
+	args := []any{zcmd, key, opt.Min, opt.Max}
 	if withScores {
 		args = append(args, "withscores")
 	}
@@ -482,7 +482,7 @@ func (c cmdable) ZRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *St
 }
 
 func (c cmdable) ZRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd {
-	args := []interface{}{"zrangebyscore", key, opt.Min, opt.Max, "withscores"}
+	args := []any{"zrangebyscore", key, opt.Min, opt.Max, "withscores"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
@@ -497,7 +497,7 @@ func (c cmdable) ZRangeByScoreWithScores(ctx context.Context, key string, opt *Z
 }
 
 func (c cmdable) ZRangeStore(ctx context.Context, dst string, z ZRangeArgs) *IntCmd {
-	args := make([]interface{}, 0, 10)
+	args := make([]any, 0, 10)
 	args = append(args, "zrangestore", dst)
 	args = z.appendArgs(args)
 	cmd := NewIntCmd(ctx, args...)
@@ -519,8 +519,8 @@ func (c cmdable) ZRankWithScore(ctx context.Context, key, member string) *RankWi
 	return cmd
 }
 
-func (c cmdable) ZRem(ctx context.Context, key string, members ...interface{}) *IntCmd {
-	args := make([]interface{}, 2, 2+len(members))
+func (c cmdable) ZRem(ctx context.Context, key string, members ...any) *IntCmd {
+	args := make([]any, 2, 2+len(members))
 	args[0] = "zrem"
 	args[1] = key
 	args = appendArgs(args, members)
@@ -568,7 +568,7 @@ func (c cmdable) ZRevRangeWithScores(ctx context.Context, key string, start, sto
 }
 
 func (c cmdable) zRevRangeBy(ctx context.Context, zcmd, key string, opt *ZRangeBy) *StringSliceCmd {
-	args := []interface{}{zcmd, key, opt.Max, opt.Min}
+	args := []any{zcmd, key, opt.Max, opt.Min}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
@@ -591,7 +591,7 @@ func (c cmdable) ZRevRangeByLex(ctx context.Context, key string, opt *ZRangeBy) 
 }
 
 func (c cmdable) ZRevRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd {
-	args := []interface{}{"zrevrangebyscore", key, opt.Max, opt.Min, "withscores"}
+	args := []any{"zrevrangebyscore", key, opt.Max, opt.Min, "withscores"}
 	if opt.Offset != 0 || opt.Count != 0 {
 		args = append(
 			args,
@@ -624,7 +624,7 @@ func (c cmdable) ZScore(ctx context.Context, key, member string) *FloatCmd {
 }
 
 func (c cmdable) ZUnion(ctx context.Context, store ZStore) *StringSliceCmd {
-	args := make([]interface{}, 0, 2+store.len())
+	args := make([]any, 0, 2+store.len())
 	args = append(args, "zunion", len(store.Keys))
 	args = store.appendArgs(args)
 	cmd := NewStringSliceCmd(ctx, args...)
@@ -634,7 +634,7 @@ func (c cmdable) ZUnion(ctx context.Context, store ZStore) *StringSliceCmd {
 }
 
 func (c cmdable) ZUnionWithScores(ctx context.Context, store ZStore) *ZSliceCmd {
-	args := make([]interface{}, 0, 3+store.len())
+	args := make([]any, 0, 3+store.len())
 	args = append(args, "zunion", len(store.Keys))
 	args = store.appendArgs(args)
 	args = append(args, "withscores")
@@ -645,7 +645,7 @@ func (c cmdable) ZUnionWithScores(ctx context.Context, store ZStore) *ZSliceCmd 
 }
 
 func (c cmdable) ZUnionStore(ctx context.Context, dest string, store *ZStore) *IntCmd {
-	args := make([]interface{}, 0, 3+store.len())
+	args := make([]any, 0, 3+store.len())
 	args = append(args, "zunionstore", dest, len(store.Keys))
 	args = store.appendArgs(args)
 	cmd := NewIntCmd(ctx, args...)
@@ -670,7 +670,7 @@ func (c cmdable) ZRandMemberWithScores(ctx context.Context, key string, count in
 
 // ZDiff redis-server version >= 6.2.0.
 func (c cmdable) ZDiff(ctx context.Context, keys ...string) *StringSliceCmd {
-	args := make([]interface{}, 2+len(keys))
+	args := make([]any, 2+len(keys))
 	args[0] = "zdiff"
 	args[1] = len(keys)
 	for i, key := range keys {
@@ -685,7 +685,7 @@ func (c cmdable) ZDiff(ctx context.Context, keys ...string) *StringSliceCmd {
 
 // ZDiffWithScores redis-server version >= 6.2.0.
 func (c cmdable) ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd {
-	args := make([]interface{}, 3+len(keys))
+	args := make([]any, 3+len(keys))
 	args[0] = "zdiff"
 	args[1] = len(keys)
 	for i, key := range keys {
@@ -701,7 +701,7 @@ func (c cmdable) ZDiffWithScores(ctx context.Context, keys ...string) *ZSliceCmd
 
 // ZDiffStore redis-server version >=6.2.0.
 func (c cmdable) ZDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd {
-	args := make([]interface{}, 0, 3+len(keys))
+	args := make([]any, 0, 3+len(keys))
 	args = append(args, "zdiffstore", destination, len(keys))
 	for _, key := range keys {
 		args = append(args, key)
@@ -712,7 +712,7 @@ func (c cmdable) ZDiffStore(ctx context.Context, destination string, keys ...str
 }
 
 func (c cmdable) ZScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
-	args := []interface{}{"zscan", key, cursor}
+	args := []any{"zscan", key, cursor}
 	if match != "" {
 		args = append(args, "match", match)
 	}
@@ -727,7 +727,7 @@ func (c cmdable) ZScan(ctx context.Context, key string, cursor uint64, match str
 // Z represents sorted set member.
 type Z struct {
 	Score  float64
-	Member interface{}
+	Member any
 }
 
 // ZWithKey represents sorted set member including the name of the key where it was popped.
@@ -755,7 +755,7 @@ func (z ZStore) len() (n int) {
 	return n
 }
 
-func (z ZStore) appendArgs(args []interface{}) []interface{} {
+func (z ZStore) appendArgs(args []any) []any {
 	for _, key := range z.Keys {
 		args = append(args, key)
 	}

@@ -129,7 +129,7 @@ func mapKeys(m map[string]struct{}) []string {
 func (c *PubSub) _subscribe(
 	ctx context.Context, cn *pool.Conn, redisCmd string, channels []string,
 ) error {
-	args := make([]interface{}, 0, 1+len(channels))
+	args := make([]any, 0, 1+len(channels))
 	args = append(args, redisCmd)
 	for _, channel := range channels {
 		args = append(args, channel)
@@ -310,7 +310,7 @@ func (c *PubSub) subscribe(ctx context.Context, redisCmd string, channels ...str
 }
 
 func (c *PubSub) Ping(ctx context.Context, payload ...string) error {
-	args := []interface{}{"ping"}
+	args := []any{"ping"}
 	if len(payload) == 1 {
 		args = append(args, payload[0])
 	}
@@ -367,13 +367,13 @@ func (p *Pong) String() string {
 	return "Pong"
 }
 
-func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
+func (c *PubSub) newMessage(reply any) (any, error) {
 	switch reply := reply.(type) {
 	case string:
 		return &Pong{
 			Payload: reply,
 		}, nil
-	case []interface{}:
+	case []any:
 		switch kind := reply[0].(string); kind {
 		case "subscribe", "unsubscribe", "psubscribe", "punsubscribe", "ssubscribe", "sunsubscribe":
 			// Can be nil in case of "unsubscribe".
@@ -390,7 +390,7 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 					Channel: reply[1].(string),
 					Payload: payload,
 				}, nil
-			case []interface{}:
+			case []any:
 				ss := make([]string, len(payload))
 				for i, s := range payload {
 					ss[i] = s.(string)
@@ -423,7 +423,7 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 // ReceiveTimeout acts like Receive but returns an error if message
 // is not received in time. This is low-level API and in most cases
 // Channel should be used instead.
-func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (interface{}, error) {
+func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (any, error) {
 	if c.cmd == nil {
 		c.cmd = NewCmd(ctx)
 	}
@@ -451,7 +451,7 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 // Receive returns a message as a Subscription, Message, Pong or error.
 // See PubSub example for details. This is low-level API and in most cases
 // Channel should be used instead.
-func (c *PubSub) Receive(ctx context.Context) (interface{}, error) {
+func (c *PubSub) Receive(ctx context.Context) (any, error) {
 	return c.ReceiveTimeout(ctx, 0)
 }
 
@@ -520,7 +520,7 @@ func (c *PubSub) ChannelSize(size int) <-chan *Message {
 // reconnections.
 //
 // ChannelWithSubscriptions can not be used together with Channel or ChannelSize.
-func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interface{} {
+func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan any {
 	c.chOnce.Do(func() {
 		c.allCh = newChannel(c, opts...)
 		c.allCh.initAllChan()
@@ -568,7 +568,7 @@ type channel struct {
 	pubSub *PubSub
 
 	msgCh chan *Message
-	allCh chan interface{}
+	allCh chan any
 	ping  chan struct{}
 
 	chanSize        int
@@ -680,7 +680,7 @@ func (c *channel) initMsgChan() {
 // initAllChan must be in sync with initMsgChan.
 func (c *channel) initAllChan() {
 	ctx := context.TODO()
-	c.allCh = make(chan interface{}, c.chanSize)
+	c.allCh = make(chan any, c.chanSize)
 
 	go func() {
 		timer := time.NewTimer(time.Minute)
