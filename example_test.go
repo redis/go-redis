@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -344,6 +345,24 @@ func ExampleClient_ScanType_hashType() {
 	// Output: 33 keys ready for use
 }
 
+type Income struct {
+	Min float64 `json:"min"`
+	Max float64 `json:"max"`
+}
+
+func (p *Income) MarshalBinary() (data []byte, err error) {
+	return json.Marshal(*p)
+}
+
+func (p *Income) UnmarshalBinary(data []byte) error {
+	val := Income{}
+	if err := json.Unmarshal(data, &val); err != nil {
+		return err
+	}
+	*p = val
+	return nil
+}
+
 // ExampleMapStringStringCmd_Scan shows how to scan the results of a map fetch
 // into a struct.
 func ExampleMapStringStringCmd_Scan() {
@@ -351,7 +370,9 @@ func ExampleMapStringStringCmd_Scan() {
 	err := rdb.HMSet(ctx, "map",
 		"name", "hello",
 		"count", 123,
-		"correct", true).Err()
+		"correct", true,
+		"income", &Income{Max: 10, Min: 1},
+	).Err()
 	if err != nil {
 		panic(err)
 	}
@@ -363,9 +384,10 @@ func ExampleMapStringStringCmd_Scan() {
 	}
 
 	type data struct {
-		Name    string `redis:"name"`
-		Count   int    `redis:"count"`
-		Correct bool   `redis:"correct"`
+		Name    string  `redis:"name"`
+		Count   int     `redis:"count"`
+		Correct bool    `redis:"correct"`
+		Income  *Income `redis:"income"`
 	}
 
 	// Scan the results into the struct.
@@ -374,8 +396,9 @@ func ExampleMapStringStringCmd_Scan() {
 		panic(err)
 	}
 
-	fmt.Println(d)
-	// Output: {hello 123 true}
+	fmt.Printf("name: %s count: %d correct: %v income: {max: %.0f, mix: %.0f}",
+		d.Name, d.Count, d.Correct, d.Income.Max, d.Income.Min)
+	// Output: name: hello count: 123 correct: true income: {max: 10, mix: 1}
 }
 
 // ExampleSliceCmd_Scan shows how to scan the results of a multi key fetch
