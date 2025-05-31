@@ -176,7 +176,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	}
 
 	p.connsMu.Lock()
-	if p.cfg.MaxActiveConns > 0 && p.poolSize >= p.cfg.MaxActiveConns {
+	if p.cfg.MaxActiveConns > 0 && len(p.conns) >= p.cfg.MaxActiveConns {
 		p.connsMu.Unlock()
 		return nil, ErrPoolExhausted
 	}
@@ -190,7 +190,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
 
-	if p.cfg.MaxActiveConns > 0 && p.poolSize >= p.cfg.MaxActiveConns {
+	if p.cfg.MaxActiveConns > 0 && len(p.conns) >= p.cfg.MaxActiveConns {
 		_ = cn.Close()
 		return nil, ErrPoolExhausted
 	}
