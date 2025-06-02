@@ -195,7 +195,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				vals := []struct {
 					name string
 					v    redis.VectorValues
-					attr string
+					attr redis.VectorAttributeRawString
 				}{
 					{
 						name: "k0",
@@ -237,7 +237,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 					expectNil(err)
 					expectTrue(ok)
 					if len(v.attr) > 0 {
-						ok, err = client.VSetAttr(ctx, vecName, v.name, v.attr).Result()
+						ok, err = client.VSetAttr(ctx, vecName, v.name, &v.attr).Result()
 						expectNil(err)
 						expectTrue(ok)
 					}
