@@ -124,9 +124,13 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 3)
-				expectTrue(sim["k1"] > 0.99)
-				expectTrue(sim["k2"] > 0.99)
-				expectTrue(sim["k3"] < 0.8)
+				simMap := make(map[string]float64)
+				for _, vi := range sim {
+					simMap[vi.Name] = vi.Score
+				}
+				expectTrue(simMap["k1"] > 0.99)
+				expectTrue(simMap["k2"] > 0.99)
+				expectTrue(simMap["k3"] < 0.8)
 			})
 
 			It("dimension operation", func() {

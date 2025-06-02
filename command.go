@@ -5621,16 +5621,21 @@ func (cmd *MonitorCmd) Stop() {
 	cmd.status = monitorStatusStop
 }
 
-type MapStringFloatCmd struct {
-	baseCmd
-
-	val map[string]float64
+type VectorInfo struct {
+	Name  string
+	Score float64
 }
 
-var _ Cmder = (*MapStringFloatCmd)(nil)
+type VectorInfoSliceCmd struct {
+	baseCmd
 
-func NewMapStringFloatCmd(ctx context.Context, args ...any) *MapStringFloatCmd {
-	return &MapStringFloatCmd{
+	val []VectorInfo
+}
+
+var _ Cmder = (*VectorInfoSliceCmd)(nil)
+
+func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorInfoSliceCmd {
+	return &VectorInfoSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
@@ -5638,40 +5643,41 @@ func NewMapStringFloatCmd(ctx context.Context, args ...any) *MapStringFloatCmd {
 	}
 }
 
-func (cmd *MapStringFloatCmd) SetVal(val map[string]float64) {
+func (cmd *VectorInfoSliceCmd) SetVal(val []VectorInfo) {
 	cmd.val = val
 }
 
-func (cmd *MapStringFloatCmd) Val() map[string]float64 {
+func (cmd *VectorInfoSliceCmd) Val() []VectorInfo {
 	return cmd.val
 }
 
-func (cmd *MapStringFloatCmd) Result() (map[string]float64, error) {
+func (cmd *VectorInfoSliceCmd) Result() ([]VectorInfo, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *MapStringFloatCmd) String() string {
+func (cmd *VectorInfoSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *MapStringFloatCmd) readReply(rd *proto.Reader) error {
+func (cmd *VectorInfoSliceCmd) readReply(rd *proto.Reader) error {
 	n, err := rd.ReadMapLen()
 	if err != nil {
 		return err
 	}
 
-	cmd.val = make(map[string]float64, n)
+	cmd.val = make([]VectorInfo, n)
 	for i := 0; i < n; i++ {
-		key, err := rd.ReadString()
+		name, err := rd.ReadString()
 		if err != nil {
 			return err
 		}
+		cmd.val[i].Name = name
 
-		nn, err := rd.ReadFloat()
+		score, err := rd.ReadFloat()
 		if err != nil {
 			return err
 		}
-		cmd.val[key] = nn
+		cmd.val[i].Score = score
 	}
 	return nil
 }

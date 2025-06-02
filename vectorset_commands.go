@@ -14,15 +14,15 @@ type VectorSetCmdable interface {
 	VGetAttr(ctx context.Context, key, element string) *StringCmd
 	VInfo(ctx context.Context, key string) *MapStringInterfaceCmd
 	VLinks(ctx context.Context, key, element string) *StringSliceCmd
-	VLinksWithScores(ctx context.Context, key, element string) *MapStringFloatCmd
+	VLinksWithScores(ctx context.Context, key, element string) *VectorInfoSliceCmd
 	VRandMember(ctx context.Context, key string) *StringCmd
 	VRandMemberCount(ctx context.Context, key string, count int) *StringSliceCmd
 	VRem(ctx context.Context, key, element string) *BoolCmd
 	VSetAttr(ctx context.Context, key, element, attr string) *BoolCmd
 	VSim(ctx context.Context, key string, val Vector) *StringSliceCmd
-	VSimWithScores(ctx context.Context, key string, val Vector) *MapStringFloatCmd
+	VSimWithScores(ctx context.Context, key string, val Vector) *VectorInfoSliceCmd
 	VSimWithArgs(ctx context.Context, key string, val Vector, args *VSimArgs) *StringSliceCmd
-	VSimWithArgsWithScores(ctx context.Context, key string, val Vector, args *VSimArgs) *MapStringFloatCmd
+	VSimWithArgsWithScores(ctx context.Context, key string, val Vector, args *VSimArgs) *VectorInfoSliceCmd
 }
 
 type Vector interface {
@@ -183,8 +183,8 @@ func (c cmdable) VLinks(ctx context.Context, key, element string) *StringSliceCm
 }
 
 // `VLINKS key element WITHSCORES`
-func (c cmdable) VLinksWithScores(ctx context.Context, key, element string) *MapStringFloatCmd {
-	cmd := NewMapStringFloatCmd(ctx, "vlinks", key, element, "withscores")
+func (c cmdable) VLinksWithScores(ctx context.Context, key, element string) *VectorInfoSliceCmd {
+	cmd := NewVectorInfoSliceCmd(ctx, "vlinks", key, element, "withscores")
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -223,7 +223,7 @@ func (c cmdable) VSim(ctx context.Context, key string, val Vector) *StringSliceC
 }
 
 // `VSIM key (ELE | FP32 | VALUES num) (vector | element) WITHSCORES`
-func (c cmdable) VSimWithScores(ctx context.Context, key string, val Vector) *MapStringFloatCmd {
+func (c cmdable) VSimWithScores(ctx context.Context, key string, val Vector) *VectorInfoSliceCmd {
 	return c.VSimWithArgsWithScores(ctx, key, val, &VSimArgs{})
 }
 
@@ -279,7 +279,7 @@ func (c cmdable) VSimWithArgs(ctx context.Context, key string, val Vector, simAr
 
 // `VSIM key (ELE | FP32 | VALUES num) (vector | element) [WITHSCORES] [COUNT num]
 // [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
-func (c cmdable) VSimWithArgsWithScores(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *MapStringFloatCmd {
+func (c cmdable) VSimWithArgsWithScores(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *VectorInfoSliceCmd {
 	if simArgs == nil {
 		simArgs = &VSimArgs{}
 	}
@@ -287,7 +287,7 @@ func (c cmdable) VSimWithArgsWithScores(ctx context.Context, key string, val Vec
 	args = append(args, val.Value()...)
 	args = append(args, "withscores")
 	args = simArgs.appendArgs(args)
-	cmd := NewMapStringFloatCmd(ctx, args...)
+	cmd := NewVectorInfoSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
