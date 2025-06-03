@@ -66,11 +66,11 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 
 			It("basic", func() {
 				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
-				vecName := "basic"
+				vecSetName := "basic"
 				val := &redis.VectorValues{
 					Val: []float64{1.5, 2.4, 3.3, 4.2},
 				}
-				ok, err := client.VAdd(ctx, vecName, "k1", val).Result()
+				ok, err := client.VAdd(ctx, vecSetName, "k1", val).Result()
 				expectNil(err)
 				expectTrue(ok)
 
@@ -78,48 +78,48 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				val2 := &redis.VectorFP32{
 					Val: []byte(fp32),
 				}
-				ok, err = client.VAdd(ctx, vecName, "k2", val2).Result()
+				ok, err = client.VAdd(ctx, vecSetName, "k2", val2).Result()
 				expectNil(err)
 				expectTrue(ok)
 
-				dim, err := client.VDim(ctx, vecName).Result()
+				dim, err := client.VDim(ctx, vecSetName).Result()
 				expectNil(err)
 				expectEqual(dim, 4)
 
-				count, err := client.VCard(ctx, vecName).Result()
+				count, err := client.VCard(ctx, vecSetName).Result()
 				expectNil(err)
 				expectEqual(count, 2)
 
-				ok, err = client.VRem(ctx, vecName, "k1").Result()
+				ok, err = client.VRem(ctx, vecSetName, "k1").Result()
 				expectNil(err)
 				expectTrue(ok)
 
-				count, err = client.VCard(ctx, vecName).Result()
+				count, err = client.VCard(ctx, vecSetName).Result()
 				expectNil(err)
 				expectEqual(count, 1)
 			})
 
 			It("basic similarity", func() {
 				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
-				vecName := "basic_similarity"
+				vecSetName := "basic_similarity"
 
-				ok, err := client.VAdd(ctx, vecName, "k1", &redis.VectorValues{
+				ok, err := client.VAdd(ctx, vecSetName, "k1", &redis.VectorValues{
 					Val: []float64{1, 0, 0, 0},
 				}).Result()
 				expectNil(err)
 				expectTrue(ok)
-				ok, err = client.VAdd(ctx, vecName, "k2", &redis.VectorValues{
+				ok, err = client.VAdd(ctx, vecSetName, "k2", &redis.VectorValues{
 					Val: []float64{0.99, 0.01, 0, 0},
 				}).Result()
 				expectNil(err)
 				expectTrue(ok)
-				ok, err = client.VAdd(ctx, vecName, "k3", &redis.VectorValues{
+				ok, err = client.VAdd(ctx, vecSetName, "k3", &redis.VectorValues{
 					Val: []float64{0.1, 1, -1, 0.5},
 				}).Result()
 				expectNil(err)
 				expectTrue(ok)
 
-				sim, err := client.VSimWithScores(ctx, vecName, &redis.VectorValues{
+				sim, err := client.VSimWithScores(ctx, vecSetName, &redis.VectorValues{
 					Val: []float64{1, 0, 0, 0},
 				}).Result()
 				expectNil(err)
@@ -135,18 +135,18 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 
 			It("dimension operation", func() {
 				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
-				vecName := "dimension_op"
+				vecSetName := "dimension_op"
 				originalDim := 100
 				reducedDim := 50
 
 				v1 := generateRandomVector(originalDim)
-				ok, err := client.VAddWithArgs(ctx, vecName, "k1", &v1, &redis.VAddArgs{
+				ok, err := client.VAddWithArgs(ctx, vecSetName, "k1", &v1, &redis.VAddArgs{
 					Reduce: int64(reducedDim),
 				}).Result()
 				expectNil(err)
 				expectTrue(ok)
 
-				info, err := client.VInfo(ctx, vecName).Result()
+				info, err := client.VInfo(ctx, vecSetName).Result()
 				expectNil(err)
 				dim := info["vector-dim"].(int64)
 				oriDim := info["projection-input-dim"].(int64)
@@ -155,13 +155,13 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 
 				wrongDim := 80
 				wrongV := generateRandomVector(wrongDim)
-				_, err = client.VAddWithArgs(ctx, vecName, "kw", &wrongV, &redis.VAddArgs{
+				_, err = client.VAddWithArgs(ctx, vecSetName, "kw", &wrongV, &redis.VAddArgs{
 					Reduce: int64(reducedDim),
 				}).Result()
 				expectTrue(err != nil)
 
 				v2 := generateRandomVector(originalDim)
-				ok, err = client.VAddWithArgs(ctx, vecName, "k2", &v2, &redis.VAddArgs{
+				ok, err = client.VAddWithArgs(ctx, vecSetName, "k2", &v2, &redis.VAddArgs{
 					Reduce: int64(reducedDim),
 				}).Result()
 				expectNil(err)
@@ -170,28 +170,28 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 
 			It("remove", func() {
 				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
-				vecName := "remove"
+				vecSetName := "remove"
 				v1 := generateRandomVector(5)
-				ok, err := client.VAdd(ctx, vecName, "k1", &v1).Result()
+				ok, err := client.VAdd(ctx, vecSetName, "k1", &v1).Result()
 				expectNil(err)
 				expectTrue(ok)
 
-				exist, err := client.Exists(ctx, vecName).Result()
+				exist, err := client.Exists(ctx, vecSetName).Result()
 				expectNil(err)
 				expectEqual(exist, 1)
 
-				ok, err = client.VRem(ctx, vecName, "k1").Result()
+				ok, err = client.VRem(ctx, vecSetName, "k1").Result()
 				expectNil(err)
 				expectTrue(ok)
 
-				exist, err = client.Exists(ctx, vecName).Result()
+				exist, err = client.Exists(ctx, vecSetName).Result()
 				expectNil(err)
 				expectEqual(exist, 0)
 			})
 
 			It("all operations", func() {
 				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
-				vecName := "commands"
+				vecSetName := "commands"
 				vals := []struct {
 					name string
 					v    redis.VectorValues
@@ -224,44 +224,44 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				}
 
 				// If the key doesn't exist, return null error
-				_, err := client.VRandMember(ctx, vecName).Result()
+				_, err := client.VRandMember(ctx, vecSetName).Result()
 				expectEqual(err.Error(), proto.Nil.Error())
 
 				// If the key doesn't exist, return an empty array
-				res, err := client.VRandMemberCount(ctx, vecName, 3).Result()
+				res, err := client.VRandMemberCount(ctx, vecSetName, 3).Result()
 				expectNil(err)
 				expectEqual(len(res), 0)
 
 				for _, v := range vals {
-					ok, err := client.VAdd(ctx, vecName, v.name, &v.v).Result()
+					ok, err := client.VAdd(ctx, vecSetName, v.name, &v.v).Result()
 					expectNil(err)
 					expectTrue(ok)
 					if len(v.attr) > 0 {
-						ok, err = client.VSetAttr(ctx, vecName, v.name, &v.attr).Result()
+						ok, err = client.VSetAttr(ctx, vecSetName, v.name, &v.attr).Result()
 						expectNil(err)
 						expectTrue(ok)
 					}
 				}
 
 				// VGetAttr
-				attr, err := client.VGetAttr(ctx, vecName, vals[1].name).Result()
+				attr, err := client.VGetAttr(ctx, vecSetName, vals[1].name).Result()
 				expectNil(err)
-				expectEqual(attr, vals[1].attr)
+				expectEqual(attr, vals[1].attr.Marshall())
 
 				// VRandMember
-				_, err = client.VRandMember(ctx, vecName).Result()
+				_, err = client.VRandMember(ctx, vecSetName).Result()
 				expectNil(err)
 
-				res, err = client.VRandMemberCount(ctx, vecName, 3).Result()
+				res, err = client.VRandMemberCount(ctx, vecSetName, 3).Result()
 				expectNil(err)
 				expectEqual(len(res), 3)
 
-				res, err = client.VRandMemberCount(ctx, vecName, 10).Result()
+				res, err = client.VRandMemberCount(ctx, vecSetName, 10).Result()
 				expectNil(err)
 				expectEqual(len(res), len(vals))
 
 				// test equality
-				sim, err := client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+				sim, err := client.VSimWithArgs(ctx, vecSetName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age == 25`,
 				}).Result()
 				expectNil(err)
@@ -269,21 +269,21 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(sim[0], vals[0].name)
 
 				// test greater than
-				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecSetName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age > 25`,
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 2)
 
 				// test less than or equal
-				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecSetName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age <= 30`,
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 2)
 
 				// test string equality
-				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecSetName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.name == "Alice"`,
 				}).Result()
 				expectNil(err)
@@ -291,14 +291,14 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(sim[0], vals[0].name)
 
 				// test string inequality
-				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecSetName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.name != "Alice"`,
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 2)
 
 				// test bool
-				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecSetName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.active`,
 				}).Result()
 				expectNil(err)
@@ -306,7 +306,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(sim[0], vals[0].name)
 
 				// test logical add
-				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecSetName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age > 20 and .age < 30`,
 				}).Result()
 				expectNil(err)
@@ -314,12 +314,21 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(sim[0], vals[0].name)
 
 				// test logical or
-				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+				sim, err = client.VSimWithArgs(ctx, vecSetName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age < 30 or .age > 35`,
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 1)
 				expectEqual(sim[0], vals[0].name)
+
+				// VClearAttributes
+				ok, err := client.VClearAttributes(ctx, vecSetName, vals[1].name).Result()
+				expectNil(err)
+				expectTrue(ok)
+
+				// VGetAttr
+				_, err = client.VGetAttr(ctx, vecSetName, vals[1].name).Result()
+				expectEqual(err, proto.Nil)
 			})
 		})
 	}
