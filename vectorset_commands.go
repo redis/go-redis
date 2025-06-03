@@ -20,7 +20,7 @@ type VectorSetCmdable interface {
 	VRandMemberCount(ctx context.Context, key string, count int) *StringSliceCmd
 	VRem(ctx context.Context, key, element string) *BoolCmd
 	VSetAttr(ctx context.Context, key, element string, attr VectorAttributeMarshaller) *BoolCmd
-	VRemAttr(ctx context.Context, key, element string) *BoolCmd
+	VClearAttributes(ctx context.Context, key, element string) *BoolCmd
 	VSim(ctx context.Context, key string, val Vector) *StringSliceCmd
 	VSimWithScores(ctx context.Context, key string, val Vector) *VectorScoreSliceCmd
 	VSimWithArgs(ctx context.Context, key string, val Vector, args *VSimArgs) *StringSliceCmd
@@ -249,10 +249,10 @@ func (c cmdable) VSetAttr(ctx context.Context, key, element string, attr VectorA
 	return cmd
 }
 
-// `VREMATTR` removes attributes on a vector set element.
-// is equal to `VSETATTR key element ""`
+// `VClearAttributes` clear attributes on a vector set element.
+// The implementation of `VClearAttributes` is execute command `VSETATTR key element ""`.
 // note: the API is experimental and may be subject to change.
-func (c cmdable) VRemAttr(ctx context.Context, key, element string) *BoolCmd {
+func (c cmdable) VClearAttributes(ctx context.Context, key, element string) *BoolCmd {
 	cmd := NewBoolCmd(ctx, "vsetattr", key, element, "")
 	_ = c(ctx, cmd)
 	return cmd
