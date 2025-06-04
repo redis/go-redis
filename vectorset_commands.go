@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 )
 
@@ -19,7 +20,7 @@ type VectorSetCmdable interface {
 	VRandMember(ctx context.Context, key string) *StringCmd
 	VRandMemberCount(ctx context.Context, key string, count int) *StringSliceCmd
 	VRem(ctx context.Context, key, element string) *BoolCmd
-	VSetAttr(ctx context.Context, key, element string, attr VectorAttributeMarshaller) *BoolCmd
+	VSetAttr(ctx context.Context, key, element string, attr interface{}) *BoolCmd
 	VClearAttributes(ctx context.Context, key, element string) *BoolCmd
 	VSim(ctx context.Context, key string, val Vector) *StringSliceCmd
 	VSimWithScores(ctx context.Context, key string, val Vector) *VectorScoreSliceCmd
@@ -76,18 +77,6 @@ type VectorScore struct {
 	Name  string
 	Score float64
 }
-
-type VectorAttributeMarshaller interface {
-	Marshall() string
-}
-
-type VectorAttributeRawString string
-
-func (a *VectorAttributeRawString) Marshall() string {
-	return string(*a)
-}
-
-var _ VectorAttributeMarshaller = (*VectorAttributeRawString)(nil)
 
 // `VADD key (FP32 | VALUES num) vector element`
 // note: the API is experimental and may be subject to change.
@@ -242,9 +231,30 @@ func (c cmdable) VRem(ctx context.Context, key, element string) *BoolCmd {
 }
 
 // `VSETATTR key element "{ JSON obj }"`
+// The `attr` must be something that can be marshaled to JSON (using encoding/JSON) unless
+// the argument is a string or []byte when we assume that it can be passed directly as JSON.
+//
 // note: the API is experimental and may be subject to change.
-func (c cmdable) VSetAttr(ctx context.Context, key, element string, attr VectorAttributeMarshaller) *BoolCmd {
-	cmd := NewBoolCmd(ctx, "vsetattr", key, element, attr.Marshall())
+func (c cmdable) VSetAttr(ctx context.Context, key, element string, attr interface{}) *BoolCmd {
+	var attrStr string
+	var err error
+	switch v := attr.(type) {
+	case string:
+		attrStr = v
+	case []byte:
+		attrStr = string(v)
+	default:
+		var bytes []byte
+		bytes, err = json.Marshal(v)
+		if err != nil {
+			// If marshalling fails, create the command and set the error; this command won't be executed.
+			cmd := NewBoolCmd(ctx, "vsetattr", key, element, "")
+			cmd.SetErr(err)
+			return cmd
+		}
+		attrStr = string(bytes)
+	}
+	cmd := NewBoolCmd(ctx, "vsetattr", key, element, attrStr)
 	_ = c(ctx, cmd)
 	return cmd
 }
