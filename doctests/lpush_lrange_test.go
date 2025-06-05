@@ -5,6 +5,7 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -33,6 +34,7 @@ func ExampleClient_LPush_and_lrange() {
 	}
 
 	fmt.Println(listSize)
+	time.Sleep(10 * time.Millisecond) // Simulate some delay
 
 	value, err := rdb.LRange(ctx, "my_bikes", 0, -1).Result()
 	if err != nil {
