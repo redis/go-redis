@@ -5,6 +5,7 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -244,8 +245,12 @@ func ExampleClient_vectorset() {
 		panic(err)
 	}
 
+	sort.Slice(res23, func(i, j int) bool {
+		return res23[i].Name < res23[j].Name
+	})
+
 	fmt.Println(res23)
-	// >>> [{pt:A 1} {pt:E 0.8535534143447876} {pt:D 0.5} {pt:C 0.5}]
+	// >>> [{pt:A 1} {pt:C 0.5} {pt:D 0.5} {pt:E 0.8535534143447876}]
 	// STEP_END
 
 	// STEP_START vsim_filter
@@ -365,7 +370,7 @@ func ExampleClient_vectorset() {
 	// true
 	// 5
 	// [pt:E pt:A pt:D pt:C pt:B]
-	// [{pt:A 1} {pt:E 0.8535534143447876} {pt:D 0.5} {pt:C 0.5}]
+	// [{pt:A 1} {pt:C 0.5} {pt:D 0.5} {pt:E 0.8535534143447876}]
 	// true
 	// true
 	// true
