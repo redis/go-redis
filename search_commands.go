@@ -114,6 +114,7 @@ type SpellCheckTerms struct {
 }
 
 type FTExplainOptions struct {
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
 	Dialect string
 }
 
@@ -240,13 +241,20 @@ type FTAggregateWithCursor struct {
 }
 
 type FTAggregateOptions struct {
-	Verbatim          bool
-	LoadAll           bool
-	Load              []FTAggregateLoad
-	Timeout           int
-	GroupBy           []FTAggregateGroupBy
-	SortBy            []FTAggregateSortBy
-	SortByMax         int
+	Verbatim  bool
+	LoadAll   bool
+	Load      []FTAggregateLoad
+	Timeout   int
+	GroupBy   []FTAggregateGroupBy
+	SortBy    []FTAggregateSortBy
+	SortByMax int
+	// Scorer is used to set scoring function, if not set passed, a default will be used.
+	// The default scorer depends on the Redis version:
+	// - `BM25` for Redis >= 8
+	// - `TFIDF` for Redis < 8
+	Scorer string
+	// AddScores is available in Redis CE 8
+	AddScores         bool
 	Apply             []FTAggregateApply
 	LimitOffset       int
 	Limit             int
@@ -254,7 +262,8 @@ type FTAggregateOptions struct {
 	WithCursor        bool
 	WithCursorOptions *FTAggregateWithCursor
 	Params            map[string]interface{}
-	DialectVersion    int
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	DialectVersion int
 }
 
 type FTSearchFilter struct {
@@ -313,8 +322,12 @@ type FTSearchOptions struct {
 	SortByWithCount bool
 	LimitOffset     int
 	Limit           int
-	Params          map[string]interface{}
-	DialectVersion  int
+	// CountOnly sets LIMIT 0 0 to get the count - number of documents in the result set without actually returning the result set.
+	// When using this option, the Limit and LimitOffset options are ignored.
+	CountOnly bool
+	Params    map[string]interface{}
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	DialectVersion int
 }
 
 type FTSynDumpResult struct {
@@ -430,7 +443,8 @@ type IndexDefinition struct {
 type FTSpellCheckOptions struct {
 	Distance int
 	Terms    *FTSpellCheckTerms
-	Dialect  int
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	Dialect int
 }
 
 type FTSpellCheckTerms struct {
@@ -490,6 +504,15 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		if options.Verbatim {
 			queryArgs = append(queryArgs, "VERBATIM")
 		}
+
+		if options.Scorer != "" {
+			queryArgs = append(queryArgs, "SCORER", options.Scorer)
+		}
+
+		if options.AddScores {
+			queryArgs = append(queryArgs, "ADDSCORES")
+		}
+
 		if options.LoadAll && options.Load != nil {
 			panic("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
 		}
@@ -498,16 +521,29 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		}
 		if options.Load != nil {
 			queryArgs = append(queryArgs, "LOAD", len(options.Load))
+			index, count := len(queryArgs)-1, 0
 			for _, load := range options.Load {
 				queryArgs = append(queryArgs, load.Field)
+				count++
 				if load.As != "" {
 					queryArgs = append(queryArgs, "AS", load.As)
+					count += 2
 				}
 			}
+			queryArgs[index] = count
 		}
+
 		if options.Timeout > 0 {
 			queryArgs = append(queryArgs, "TIMEOUT", options.Timeout)
 		}
+
+		for _, apply := range options.Apply {
+			queryArgs = append(queryArgs, "APPLY", apply.Field)
+			if apply.As != "" {
+				queryArgs = append(queryArgs, "AS", apply.As)
+			}
+		}
+
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
 				queryArgs = append(queryArgs, "GROUPBY", len(groupBy.Fields))
@@ -549,17 +585,8 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		if options.SortByMax > 0 {
 			queryArgs = append(queryArgs, "MAX", options.SortByMax)
 		}
-		for _, apply := range options.Apply {
-			queryArgs = append(queryArgs, "APPLY", apply.Field)
-			if apply.As != "" {
-				queryArgs = append(queryArgs, "AS", apply.As)
-			}
-		}
-		if options.LimitOffset > 0 {
-			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset)
-		}
-		if options.Limit > 0 {
-			queryArgs = append(queryArgs, options.Limit)
+		if options.LimitOffset >= 0 && options.Limit > 0 {
+			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset, options.Limit)
 		}
 		if options.Filter != "" {
 			queryArgs = append(queryArgs, "FILTER", options.Filter)
@@ -581,8 +608,11 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 				queryArgs = append(queryArgs, key, value)
 			}
 		}
+
 		if options.DialectVersion > 0 {
 			queryArgs = append(queryArgs, "DIALECT", options.DialectVersion)
+		} else {
+			queryArgs = append(queryArgs, "DIALECT", 2)
 		}
 	}
 	return queryArgs
@@ -660,12 +690,11 @@ func (cmd *AggregateCmd) String() string {
 func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
-		cmd.err = err
-		return nil
+		return err
 	}
 	cmd.val, err = ProcessAggregateResult(data)
 	if err != nil {
-		cmd.err = err
+		return err
 	}
 	return nil
 }
@@ -681,6 +710,12 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		if options.Verbatim {
 			args = append(args, "VERBATIM")
 		}
+		if options.Scorer != "" {
+			args = append(args, "SCORER", options.Scorer)
+		}
+		if options.AddScores {
+			args = append(args, "ADDSCORES")
+		}
 		if options.LoadAll && options.Load != nil {
 			panic("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
 		}
@@ -689,15 +724,25 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.Load != nil {
 			args = append(args, "LOAD", len(options.Load))
+			index, count := len(args)-1, 0
 			for _, load := range options.Load {
 				args = append(args, load.Field)
+				count++
 				if load.As != "" {
 					args = append(args, "AS", load.As)
+					count += 2
 				}
 			}
+			args[index] = count
 		}
 		if options.Timeout > 0 {
 			args = append(args, "TIMEOUT", options.Timeout)
+		}
+		for _, apply := range options.Apply {
+			args = append(args, "APPLY", apply.Field)
+			if apply.As != "" {
+				args = append(args, "AS", apply.As)
+			}
 		}
 		if options.GroupBy != nil {
 			for _, groupBy := range options.GroupBy {
@@ -740,17 +785,8 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		if options.SortByMax > 0 {
 			args = append(args, "MAX", options.SortByMax)
 		}
-		for _, apply := range options.Apply {
-			args = append(args, "APPLY", apply.Field)
-			if apply.As != "" {
-				args = append(args, "AS", apply.As)
-			}
-		}
-		if options.LimitOffset > 0 {
-			args = append(args, "LIMIT", options.LimitOffset)
-		}
-		if options.Limit > 0 {
-			args = append(args, options.Limit)
+		if options.LimitOffset >= 0 && options.Limit > 0 {
+			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
 		}
 		if options.Filter != "" {
 			args = append(args, "FILTER", options.Filter)
@@ -774,6 +810,8 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.DialectVersion > 0 {
 			args = append(args, "DIALECT", options.DialectVersion)
+		} else {
+			args = append(args, "DIALECT", 2)
 		}
 	}
 
@@ -1147,6 +1185,8 @@ func (c cmdable) FTExplainWithArgs(ctx context.Context, index string, query stri
 	args := []interface{}{"FT.EXPLAIN", index, query}
 	if options.Dialect != "" {
 		args = append(args, "DIALECT", options.Dialect)
+	} else {
+		args = append(args, "DIALECT", 2)
 	}
 	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -1399,7 +1439,7 @@ func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	}
 	cmd.val, err = parseFTInfo(data)
 	if err != nil {
-		cmd.err = err
+		return err
 	}
 
 	return nil
@@ -1444,6 +1484,8 @@ func (c cmdable) FTSpellCheckWithArgs(ctx context.Context, index string, query s
 		}
 		if options.Dialect > 0 {
 			args = append(args, "DIALECT", options.Dialect)
+		} else {
+			args = append(args, "DIALECT", 2)
 		}
 	}
 	cmd := newFTSpellCheckCmd(ctx, args...)
@@ -1492,12 +1534,11 @@ func (cmd *FTSpellCheckCmd) RawResult() (interface{}, error) {
 func (cmd *FTSpellCheckCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
-		cmd.err = err
-		return nil
+		return err
 	}
 	cmd.val, err = parseFTSpellCheck(data)
 	if err != nil {
-		cmd.err = err
+		return err
 	}
 	return nil
 }
@@ -1681,19 +1722,19 @@ func (cmd *FTSearchCmd) RawResult() (interface{}, error) {
 func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
-		cmd.err = err
-		return nil
+		return err
 	}
 	cmd.val, err = parseFTSearch(data, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
 	if err != nil {
-		cmd.err = err
+		return err
 	}
 	return nil
 }
 
 // FTSearch - Executes a search query on an index.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
-// For more information, please refer to the Redis documentation:
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
@@ -1704,6 +1745,12 @@ func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSe
 
 type SearchQuery []interface{}
 
+// FTSearchQuery - Executes a search query on an index with additional options.
+// The 'index' parameter specifies the index to search, the 'query' parameter specifies the search query,
+// and the 'options' parameter specifies additional options for the search.
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
+// [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 	queryArgs := []interface{}{query}
 	if options != nil {
@@ -1808,6 +1855,8 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 		}
 		if options.DialectVersion > 0 {
 			queryArgs = append(queryArgs, "DIALECT", options.DialectVersion)
+		} else {
+			queryArgs = append(queryArgs, "DIALECT", 2)
 		}
 	}
 	return queryArgs
@@ -1816,7 +1865,8 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 // FTSearchWithArgs - Executes a search query on an index with additional options.
 // The 'index' parameter specifies the index to search, the 'query' parameter specifies the search query,
 // and the 'options' parameter specifies additional options for the search.
-// For more information, please refer to the Redis documentation:
+// For more information, please refer to the Redis documentation about [FT.SEARCH].
+//
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
 func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query string, options *FTSearchOptions) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
@@ -1908,11 +1958,15 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 				}
 			}
 			if options.SortByWithCount {
-				args = append(args, "WITHCOUT")
+				args = append(args, "WITHCOUNT")
 			}
 		}
-		if options.LimitOffset >= 0 && options.Limit > 0 {
-			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
+		if options.CountOnly {
+			args = append(args, "LIMIT", 0, 0)
+		} else {
+			if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
+				args = append(args, "LIMIT", options.LimitOffset, options.Limit)
+			}
 		}
 		if options.Params != nil {
 			args = append(args, "PARAMS", len(options.Params)*2)
@@ -1922,6 +1976,8 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 		}
 		if options.DialectVersion > 0 {
 			args = append(args, "DIALECT", options.DialectVersion)
+		} else {
+			args = append(args, "DIALECT", 2)
 		}
 	}
 	cmd := newFTSearchCmd(ctx, options, args...)
@@ -2045,215 +2101,3 @@ func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *Str
 	_ = c(ctx, cmd)
 	return cmd
 }
-
-// type FTProfileResult struct {
-// 	Results []interface{}
-// 	Profile ProfileDetails
-// }
-
-// type ProfileDetails struct {
-// 	TotalProfileTime        string
-// 	ParsingTime             string
-// 	PipelineCreationTime    string
-// 	Warning                 string
-// 	IteratorsProfile        []IteratorProfile
-// 	ResultProcessorsProfile []ResultProcessorProfile
-// }
-
-// type IteratorProfile struct {
-// 	Type           string
-// 	QueryType      string
-// 	Time           interface{}
-// 	Counter        int
-// 	Term           string
-// 	Size           int
-// 	ChildIterators []IteratorProfile
-// }
-
-// type ResultProcessorProfile struct {
-// 	Type    string
-// 	Time    interface{}
-// 	Counter int
-// }
-
-// func parseFTProfileResult(data []interface{}) (FTProfileResult, error) {
-// 	var result FTProfileResult
-// 	if len(data) < 2 {
-// 		return result, fmt.Errorf("unexpected data length")
-// 	}
-
-// 	// Parse results
-// 	result.Results = data[0].([]interface{})
-
-// 	// Parse profile details
-// 	profileData := data[1].([]interface{})
-// 	profileDetails := ProfileDetails{}
-// 	for i := 0; i < len(profileData); i += 2 {
-// 		switch profileData[i].(string) {
-// 		case "Total profile time":
-// 			profileDetails.TotalProfileTime = profileData[i+1].(string)
-// 		case "Parsing time":
-// 			profileDetails.ParsingTime = profileData[i+1].(string)
-// 		case "Pipeline creation time":
-// 			profileDetails.PipelineCreationTime = profileData[i+1].(string)
-// 		case "Warning":
-// 			profileDetails.Warning = profileData[i+1].(string)
-// 		case "Iterators profile":
-// 			profileDetails.IteratorsProfile = parseIteratorsProfile(profileData[i+1].([]interface{}))
-// 		case "Result processors profile":
-// 			profileDetails.ResultProcessorsProfile = parseResultProcessorsProfile(profileData[i+1].([]interface{}))
-// 		}
-// 	}
-
-// 	result.Profile = profileDetails
-// 	return result, nil
-// }
-
-// func parseIteratorsProfile(data []interface{}) []IteratorProfile {
-// 	var iterators []IteratorProfile
-// 	for _, item := range data {
-// 		profile := item.([]interface{})
-// 		iterator := IteratorProfile{}
-// 		for i := 0; i < len(profile); i += 2 {
-// 			switch profile[i].(string) {
-// 			case "Type":
-// 				iterator.Type = profile[i+1].(string)
-// 			case "Query type":
-// 				iterator.QueryType = profile[i+1].(string)
-// 			case "Time":
-// 				iterator.Time = profile[i+1]
-// 			case "Counter":
-// 				iterator.Counter = int(profile[i+1].(int64))
-// 			case "Term":
-// 				iterator.Term = profile[i+1].(string)
-// 			case "Size":
-// 				iterator.Size = int(profile[i+1].(int64))
-// 			case "Child iterators":
-// 				iterator.ChildIterators = parseChildIteratorsProfile(profile[i+1].([]interface{}))
-// 			}
-// 		}
-// 		iterators = append(iterators, iterator)
-// 	}
-// 	return iterators
-// }
-
-// func parseChildIteratorsProfile(data []interface{}) []IteratorProfile {
-// 	var iterators []IteratorProfile
-// 	for _, item := range data {
-// 		profile := item.([]interface{})
-// 		iterator := IteratorProfile{}
-// 		for i := 0; i < len(profile); i += 2 {
-// 			switch profile[i].(string) {
-// 			case "Type":
-// 				iterator.Type = profile[i+1].(string)
-// 			case "Query type":
-// 				iterator.QueryType = profile[i+1].(string)
-// 			case "Time":
-// 				iterator.Time = profile[i+1]
-// 			case "Counter":
-// 				iterator.Counter = int(profile[i+1].(int64))
-// 			case "Term":
-// 				iterator.Term = profile[i+1].(string)
-// 			case "Size":
-// 				iterator.Size = int(profile[i+1].(int64))
-// 			}
-// 		}
-// 		iterators = append(iterators, iterator)
-// 	}
-// 	return iterators
-// }
-
-// func parseResultProcessorsProfile(data []interface{}) []ResultProcessorProfile {
-// 	var processors []ResultProcessorProfile
-// 	for _, item := range data {
-// 		profile := item.([]interface{})
-// 		processor := ResultProcessorProfile{}
-// 		for i := 0; i < len(profile); i += 2 {
-// 			switch profile[i].(string) {
-// 			case "Type":
-// 				processor.Type = profile[i+1].(string)
-// 			case "Time":
-// 				processor.Time = profile[i+1]
-// 			case "Counter":
-// 				processor.Counter = int(profile[i+1].(int64))
-// 			}
-// 		}
-// 		processors = append(processors, processor)
-// 	}
-// 	return processors
-// }
-
-// func NewFTProfileCmd(ctx context.Context, args ...interface{}) *FTProfileCmd {
-// 	return &FTProfileCmd{
-// 		baseCmd: baseCmd{
-// 			ctx:  ctx,
-// 			args: args,
-// 		},
-// 	}
-// }
-
-// type FTProfileCmd struct {
-// 	baseCmd
-// 	val FTProfileResult
-// }
-
-// func (cmd *FTProfileCmd) String() string {
-// 	return cmdString(cmd, cmd.val)
-// }
-
-// func (cmd *FTProfileCmd) SetVal(val FTProfileResult) {
-// 	cmd.val = val
-// }
-
-// func (cmd *FTProfileCmd) Result() (FTProfileResult, error) {
-// 	return cmd.val, cmd.err
-// }
-
-// func (cmd *FTProfileCmd) Val() FTProfileResult {
-// 	return cmd.val
-// }
-
-// func (cmd *FTProfileCmd) readReply(rd *proto.Reader) (err error) {
-// 	data, err := rd.ReadSlice()
-// 	if err != nil {
-// 		return err
-// 	}
-// 	cmd.val, err = parseFTProfileResult(data)
-// 	if err != nil {
-// 		cmd.err = err
-// 	}
-// 	return nil
-// }
-
-// // FTProfile - Executes a search query and returns a profile of how the query was processed.
-// // The 'index' parameter specifies the index to search, the 'limited' parameter specifies whether to limit the results,
-// // and the 'query' parameter specifies the search / aggreagte query. Please notice that you must either pass a SearchQuery or an AggregateQuery.
-// // For more information, please refer to the Redis documentation:
-// // [FT.PROFILE]: (https://redis.io/commands/ft.profile/)
-// func (c cmdable) FTProfile(ctx context.Context, index string, limited bool, query interface{}) *FTProfileCmd {
-// 	queryType := ""
-// 	var argsQuery []interface{}
-
-// 	switch v := query.(type) {
-// 	case AggregateQuery:
-// 		queryType = "AGGREGATE"
-// 		argsQuery = v
-// 	case SearchQuery:
-// 		queryType = "SEARCH"
-// 		argsQuery = v
-// 	default:
-// 		panic("FT.PROFILE: query must be either AggregateQuery or SearchQuery")
-// 	}
-
-// 	args := []interface{}{"FT.PROFILE", index, queryType}
-
-// 	if limited {
-// 		args = append(args, "LIMITED")
-// 	}
-// 	args = append(args, "QUERY")
-// 	args = append(args, argsQuery...)
-
-// 	cmd := NewFTProfileCmd(ctx, args...)
-// 	_ = c(ctx, cmd)
-// 	return cmd
-// }

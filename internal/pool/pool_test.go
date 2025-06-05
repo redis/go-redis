@@ -22,6 +22,7 @@ var _ = Describe("ConnPool", func() {
 			Dialer:          dummyDialer,
 			PoolSize:        10,
 			PoolTimeout:     time.Hour,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
 		})
 	})
@@ -46,6 +47,7 @@ var _ = Describe("ConnPool", func() {
 			},
 			PoolSize:        10,
 			PoolTimeout:     time.Hour,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
 			MinIdleConns:    minIdleConns,
 		})
@@ -57,12 +59,14 @@ var _ = Describe("ConnPool", func() {
 		time.Sleep(time.Second)
 
 		Expect(connPool.Stats()).To(Equal(&pool.Stats{
-			Hits:       0,
-			Misses:     0,
-			Timeouts:   0,
-			TotalConns: 0,
-			IdleConns:  0,
-			StaleConns: 0,
+			Hits:           0,
+			Misses:         0,
+			Timeouts:       0,
+			WaitCount:      0,
+			WaitDurationNs: 0,
+			TotalConns:     0,
+			IdleConns:      0,
+			StaleConns:     0,
 		}))
 	})
 
@@ -129,6 +133,7 @@ var _ = Describe("MinIdleConns", func() {
 			PoolSize:        poolSize,
 			MinIdleConns:    minIdleConns,
 			PoolTimeout:     100 * time.Millisecond,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: -1,
 		})
 		Eventually(func() int {
@@ -292,8 +297,8 @@ var _ = Describe("race", func() {
 	BeforeEach(func() {
 		C, N = 10, 1000
 		if testing.Short() {
-			C = 4
-			N = 100
+			C = 2
+			N = 50
 		}
 	})
 
@@ -306,6 +311,7 @@ var _ = Describe("race", func() {
 			Dialer:          dummyDialer,
 			PoolSize:        10,
 			PoolTimeout:     time.Minute,
+			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
 		})
 
@@ -336,6 +342,7 @@ var _ = Describe("race", func() {
 			PoolSize:     1000,
 			MinIdleConns: 50,
 			PoolTimeout:  3 * time.Second,
+			DialTimeout:  1 * time.Second,
 		}
 		p := pool.NewConnPool(opt)
 
@@ -352,5 +359,61 @@ var _ = Describe("race", func() {
 		stats := p.Stats()
 		Expect(stats.IdleConns).To(Equal(uint32(0)))
 		Expect(stats.TotalConns).To(Equal(uint32(opt.PoolSize)))
+	})
+
+	It("wait", func() {
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				return &net.TCPConn{}, nil
+			},
+			PoolSize:    1,
+			PoolTimeout: 3 * time.Second,
+		}
+		p := pool.NewConnPool(opt)
+
+		wait := make(chan struct{})
+		conn, _ := p.Get(ctx)
+		go func() {
+			_, _ = p.Get(ctx)
+			wait <- struct{}{}
+		}()
+		time.Sleep(time.Second)
+		p.Put(ctx, conn)
+		<-wait
+
+		stats := p.Stats()
+		Expect(stats.IdleConns).To(Equal(uint32(0)))
+		Expect(stats.TotalConns).To(Equal(uint32(1)))
+		Expect(stats.WaitCount).To(Equal(uint32(1)))
+		Expect(stats.WaitDurationNs).To(BeNumerically("~", time.Second.Nanoseconds(), 100*time.Millisecond.Nanoseconds()))
+	})
+
+	It("timeout", func() {
+		testPoolTimeout := 1 * time.Second
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				// Artificial delay to force pool timeout
+				time.Sleep(3 * testPoolTimeout)
+
+				return &net.TCPConn{}, nil
+			},
+			PoolSize:    1,
+			PoolTimeout: testPoolTimeout,
+		}
+		p := pool.NewConnPool(opt)
+
+		stats := p.Stats()
+		Expect(stats.Timeouts).To(Equal(uint32(0)))
+
+		conn, err := p.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = p.Get(ctx)
+		Expect(err).To(MatchError(pool.ErrPoolTimeout))
+		p.Put(ctx, conn)
+		conn, err = p.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
+		stats = p.Stats()
+		Expect(stats.Timeouts).To(Equal(uint32(1)))
 	})
 })

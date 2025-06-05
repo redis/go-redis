@@ -29,6 +29,7 @@ Lua
 MSSQL
 namespace
 NoSQL
+OpenTelemetry
 ORM
 Packagist
 PhpRedis
@@ -65,3 +66,11 @@ RedisTimeseries
 RediSearch
 RawResult
 RawVal
+entra
+EntraID
+Entra
+OAuth
+Azure
+StreamingCredentialsProvider
+oauth
+entraid

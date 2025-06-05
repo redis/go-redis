@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,12 +27,12 @@ const (
 
 const (
 	sentinelName       = "go-redis-test"
-	sentinelMasterPort = "9123"
-	sentinelSlave1Port = "9124"
-	sentinelSlave2Port = "9125"
-	sentinelPort1      = "9126"
-	sentinelPort2      = "9127"
-	sentinelPort3      = "9128"
+	sentinelMasterPort = "9121"
+	sentinelSlave1Port = "9122"
+	sentinelSlave2Port = "9123"
+	sentinelPort1      = "26379"
+	sentinelPort2      = "26380"
+	sentinelPort3      = "26381"
 )
 
 var (
@@ -49,19 +48,15 @@ var (
 var (
 	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
 
-	processes map[string]*redisProcess
-
-	redisMain                                      *redisProcess
-	ringShard1, ringShard2, ringShard3             *redisProcess
-	sentinelMaster, sentinelSlave1, sentinelSlave2 *redisProcess
-	sentinel1, sentinel2, sentinel3                *redisProcess
+	ringShard1, ringShard2, ringShard3             *redis.Client
+	sentinelMaster, sentinelSlave1, sentinelSlave2 *redis.Client
+	sentinel1, sentinel2, sentinel3                *redis.Client
 )
 
 var cluster = &clusterScenario{
-	ports:     []string{"16600", "16601", "16602", "16603", "16604", "16605"},
-	nodeIDs:   make([]string, 6),
-	processes: make(map[string]*redisProcess, 6),
-	clients:   make(map[string]*redis.Client, 6),
+	ports:   []string{"16600", "16601", "16602", "16603", "16604", "16605"},
+	nodeIDs: make([]string, 6),
+	clients: make(map[string]*redis.Client, 6),
 }
 
 // Redis Software Cluster
@@ -70,28 +65,21 @@ var RECluster = false
 // Redis Community Edition Docker
 var RCEDocker = false
 
-// Notes the major version of redis we are executing tests.
+// Notes version of redis we are executing tests against.
 // This can be used before we change the bsm fork of ginkgo for one,
-// which have support for label sets, so we can filter tests per redis major version.
-var RedisMajorVersion = 7
+// which have support for label sets, so we can filter tests per redis version.
+var RedisVersion float64 = 7.2
 
-func SkipBeforeRedisMajor(version int, msg string) {
-	if RedisMajorVersion < version {
-		Skip(fmt.Sprintf("(redis major version < %d) %s", version, msg))
+func SkipBeforeRedisVersion(version float64, msg string) {
+	if RedisVersion < version {
+		Skip(fmt.Sprintf("(redis version < %f) %s", version, msg))
 	}
 }
 
-func SkipAfterRedisMajor(version int, msg string) {
-	if RedisMajorVersion > version {
-		Skip(fmt.Sprintf("(redis major version > %d) %s", version, msg))
+func SkipAfterRedisVersion(version float64, msg string) {
+	if RedisVersion > version {
+		Skip(fmt.Sprintf("(redis version > %f) %s", version, msg))
 	}
-}
-
-func registerProcess(port string, p *redisProcess) {
-	if processes == nil {
-		processes = make(map[string]*redisProcess)
-	}
-	processes[port] = p
 }
 
 var _ = BeforeSuite(func() {
@@ -104,35 +92,34 @@ var _ = BeforeSuite(func() {
 	RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
 	RCEDocker, _ = strconv.ParseBool(os.Getenv("RCE_DOCKER"))
 
-	RedisMajorVersion, _ = strconv.Atoi(os.Getenv("REDIS_MAJOR_VERSION"))
+	RedisVersion, _ = strconv.ParseFloat(strings.Trim(os.Getenv("REDIS_VERSION"), "\""), 64)
 
-	if RedisMajorVersion == 0 {
-		RedisMajorVersion = 7
+	if RedisVersion == 0 {
+		RedisVersion = 7.2
 	}
 
 	fmt.Printf("RECluster: %v\n", RECluster)
 	fmt.Printf("RCEDocker: %v\n", RCEDocker)
-	fmt.Printf("REDIS_MAJOR_VERSION: %v\n", RedisMajorVersion)
+	fmt.Printf("REDIS_VERSION: %.1f\n", RedisVersion)
+	fmt.Printf("CLIENT_LIBS_TEST_IMAGE: %v\n", os.Getenv("CLIENT_LIBS_TEST_IMAGE"))
 
-	if RedisMajorVersion < 6 || RedisMajorVersion > 8 {
-		panic("incorrect or not supported redis major version")
+	if RedisVersion < 7.0 || RedisVersion > 9 {
+		panic("incorrect or not supported redis version")
 	}
 
-	if !RECluster && !RCEDocker {
-
-		redisMain, err = startRedis(redisPort)
+	redisPort = redisStackPort
+	redisAddr = redisStackAddr
+	if !RECluster {
+		ringShard1, err = connectTo(ringShard1Port)
 		Expect(err).NotTo(HaveOccurred())
 
-		ringShard1, err = startRedis(ringShard1Port)
+		ringShard2, err = connectTo(ringShard2Port)
 		Expect(err).NotTo(HaveOccurred())
 
-		ringShard2, err = startRedis(ringShard2Port)
+		ringShard3, err = connectTo(ringShard3Port)
 		Expect(err).NotTo(HaveOccurred())
 
-		ringShard3, err = startRedis(ringShard3Port)
-		Expect(err).NotTo(HaveOccurred())
-
-		sentinelMaster, err = startRedis(sentinelMasterPort)
+		sentinelMaster, err = connectTo(sentinelMasterPort)
 		Expect(err).NotTo(HaveOccurred())
 
 		sentinel1, err = startSentinel(sentinelPort1, sentinelName, sentinelMasterPort)
@@ -144,24 +131,20 @@ var _ = BeforeSuite(func() {
 		sentinel3, err = startSentinel(sentinelPort3, sentinelName, sentinelMasterPort)
 		Expect(err).NotTo(HaveOccurred())
 
-		sentinelSlave1, err = startRedis(
-			sentinelSlave1Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
+		sentinelSlave1, err = connectTo(sentinelSlave1Port)
 		Expect(err).NotTo(HaveOccurred())
 
-		sentinelSlave2, err = startRedis(
-			sentinelSlave2Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
+		err = sentinelSlave1.SlaveOf(ctx, "127.0.0.1", sentinelMasterPort).Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		err = startCluster(ctx, cluster)
+		sentinelSlave2, err = connectTo(sentinelSlave2Port)
 		Expect(err).NotTo(HaveOccurred())
-	} else {
-		redisPort = redisStackPort
-		redisAddr = redisStackAddr
 
-		if !RECluster {
-			// populate cluster node information
-			Expect(configureClusterTopology(ctx, cluster)).NotTo(HaveOccurred())
-		}
+		err = sentinelSlave2.SlaveOf(ctx, "127.0.0.1", sentinelMasterPort).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// populate cluster node information
+		Expect(configureClusterTopology(ctx, cluster)).NotTo(HaveOccurred())
 	}
 })
 
@@ -169,12 +152,6 @@ var _ = AfterSuite(func() {
 	if !RECluster {
 		Expect(cluster.Close()).NotTo(HaveOccurred())
 	}
-
-	// NOOP if there are no processes registered
-	for _, p := range processes {
-		Expect(p.Close()).NotTo(HaveOccurred())
-	}
-	processes = nil
 })
 
 func TestGinkgoSuite(t *testing.T) {
@@ -204,7 +181,7 @@ func redisOptions() *redis.Options {
 	}
 	return &redis.Options{
 		Addr: redisAddr,
-		DB:   15,
+		DB:   0,
 
 		DialTimeout:           10 * time.Second,
 		ReadTimeout:           30 * time.Second,
@@ -256,7 +233,9 @@ func performAsync(n int, cbs ...func(int)) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for _, cb := range cbs {
 		wg.Add(n)
-		for i := 0; i < n; i++ {
+		// start from 1, so we can skip db 0 where such test is executed with
+		// select db command
+		for i := 1; i <= n; i++ {
 			go func(cb func(int), i int) {
 				defer GinkgoRecover()
 				defer wg.Done()
@@ -313,15 +292,6 @@ func eventually(fn func() error, timeout time.Duration) error {
 	}
 }
 
-func execCmd(name string, args ...string) (*os.Process, error) {
-	cmd := exec.Command(name, args...)
-	if testing.Verbose() {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	return cmd.Process, cmd.Start()
-}
-
 func connectTo(port string) (*redis.Client, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:       ":" + port,
@@ -338,117 +308,22 @@ func connectTo(port string) (*redis.Client, error) {
 	return client, nil
 }
 
-type redisProcess struct {
-	*os.Process
-	*redis.Client
-}
-
-func (p *redisProcess) Close() error {
-	if err := p.Kill(); err != nil {
-		return err
-	}
-
-	err := eventually(func() error {
-		if err := p.Client.Ping(ctx).Err(); err != nil {
-			return nil
-		}
-		return fmt.Errorf("client %s is not shutdown", p.Options().Addr)
-	}, 10*time.Second)
-	if err != nil {
-		return err
-	}
-
-	p.Client.Close()
-	return nil
-}
-
-var (
-	redisServerBin, _    = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
-	redisServerConf, _   = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
-	redisSentinelConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "sentinel.conf"))
-)
-
-func redisDir(port string) (string, error) {
-	dir, err := filepath.Abs(filepath.Join("testdata", "instances", port))
-	if err != nil {
-		return "", err
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(dir, 0o775); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
-
-func startRedis(port string, args ...string) (*redisProcess, error) {
-	dir, err := redisDir(port)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := exec.Command("cp", "-f", redisServerConf, dir).Run(); err != nil {
-		return nil, err
-	}
-
-	baseArgs := []string{filepath.Join(dir, "redis.conf"), "--port", port, "--dir", dir, "--enable-module-command", "yes"}
-	process, err := execCmd(redisServerBin, append(baseArgs, args...)...)
-	if err != nil {
-		return nil, err
-	}
-
+func startSentinel(port, masterName, masterPort string) (*redis.Client, error) {
 	client, err := connectTo(port)
 	if err != nil {
-		process.Kill()
 		return nil, err
 	}
 
-	p := &redisProcess{process, client}
-	registerProcess(port, p)
-	return p, nil
-}
-
-func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
-	dir, err := redisDir(port)
-	if err != nil {
-		return nil, err
-	}
-
-	sentinelConf := filepath.Join(dir, "sentinel.conf")
-	if err := os.WriteFile(sentinelConf, nil, 0o644); err != nil {
-		return nil, err
-	}
-
-	process, err := execCmd(redisServerBin, sentinelConf, "--sentinel", "--port", port, "--dir", dir)
-	if err != nil {
-		return nil, err
-	}
-
-	client, err := connectTo(port)
-	if err != nil {
-		process.Kill()
-		return nil, err
-	}
-
-	// set down-after-milliseconds=2000
-	// link: https://github.com/redis/redis/issues/8607
 	for _, cmd := range []*redis.StatusCmd{
 		redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", masterName, "127.0.0.1", masterPort, "2"),
-		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "down-after-milliseconds", "2000"),
-		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "failover-timeout", "1000"),
-		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "parallel-syncs", "1"),
 	} {
 		client.Process(ctx, cmd)
-		if err := cmd.Err(); err != nil {
-			process.Kill()
+		if err := cmd.Err(); err != nil && !strings.Contains(err.Error(), "ERR Duplicate master name.") {
 			return nil, fmt.Errorf("%s failed: %w", cmd, err)
 		}
 	}
 
-	p := &redisProcess{process, client}
-	registerProcess(port, p)
-	return p, nil
+	return client, nil
 }
 
 //------------------------------------------------------------------------------

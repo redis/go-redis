@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,10 +20,9 @@ import (
 )
 
 type clusterScenario struct {
-	ports     []string
-	nodeIDs   []string
-	processes map[string]*redisProcess
-	clients   map[string]*redis.Client
+	ports   []string
+	nodeIDs []string
+	clients map[string]*redis.Client
 }
 
 func (s *clusterScenario) slots() []int {
@@ -89,6 +89,9 @@ func (s *clusterScenario) newClusterClient(
 func (s *clusterScenario) Close() error {
 	ctx := context.TODO()
 	for _, master := range s.masters() {
+		if master == nil {
+			continue
+		}
 		err := master.FlushAll(ctx).Err()
 		if err != nil {
 			return err
@@ -101,20 +104,17 @@ func (s *clusterScenario) Close() error {
 		}
 	}
 
-	for _, port := range s.ports {
-		if process, ok := processes[port]; ok {
-			if process != nil {
-				process.Close()
-			}
-
-			delete(processes, port)
-		}
-	}
-
 	return nil
 }
 
 func configureClusterTopology(ctx context.Context, scenario *clusterScenario) error {
+	allowErrs := []string{
+		"ERR Slot 0 is already busy",
+		"ERR Slot 5461 is already busy",
+		"ERR Slot 10923 is already busy",
+		"ERR Slot 16384 is already busy",
+	}
+
 	err := collectNodeInformation(ctx, scenario)
 	if err != nil {
 		return err
@@ -131,7 +131,7 @@ func configureClusterTopology(ctx context.Context, scenario *clusterScenario) er
 	slots := scenario.slots()
 	for pos, master := range scenario.masters() {
 		err := master.ClusterAddSlotsRange(ctx, slots[pos], slots[pos+1]-1).Err()
-		if err != nil {
+		if err != nil && slices.Contains(allowErrs, err.Error()) == false {
 			return err
 		}
 	}
@@ -199,7 +199,7 @@ func configureClusterTopology(ctx context.Context, scenario *clusterScenario) er
 				return err
 			}
 			return assertSlotsEqual(res, wanted)
-		}, 60*time.Second)
+		}, 90*time.Second)
 		if err != nil {
 			return err
 		}
@@ -214,29 +214,15 @@ func collectNodeInformation(ctx context.Context, scenario *clusterScenario) erro
 			Addr: ":" + port,
 		})
 
-		info, err := client.ClusterNodes(ctx).Result()
+		myID, err := client.ClusterMyID(ctx).Result()
 		if err != nil {
 			return err
 		}
 
 		scenario.clients[port] = client
-		scenario.nodeIDs[pos] = info[:40]
+		scenario.nodeIDs[pos] = myID
 	}
 	return nil
-}
-
-// startCluster start a cluster
-func startCluster(ctx context.Context, scenario *clusterScenario) error {
-	// Start processes and collect node ids
-	for _, port := range scenario.ports {
-		process, err := startRedis(port, "--cluster-enabled", "yes")
-		if err != nil {
-			return err
-		}
-		scenario.processes[port] = process
-	}
-
-	return configureClusterTopology(ctx, scenario)
 }
 
 func assertSlotsEqual(slots, wanted []redis.ClusterSlot) error {
@@ -556,6 +542,39 @@ var _ = Describe("ClusterClient", func() {
 				AfterEach(func() {})
 
 				assertPipeline()
+
+				It("doesn't fail node with context.Canceled error", func() {
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					pipe.Set(ctx, "A", "A_value", 0)
+					_, err := pipe.Exec(ctx)
+
+					Expect(err).To(HaveOccurred())
+					Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+
+					clientNodes, _ := client.Nodes(ctx, "A")
+
+					for _, node := range clientNodes {
+						Expect(node.Failing()).To(BeFalse())
+					}
+				})
+
+				It("doesn't fail node with context.DeadlineExceeded error", func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+					defer cancel()
+
+					pipe.Set(ctx, "A", "A_value", 0)
+					_, err := pipe.Exec(ctx)
+
+					Expect(err).To(HaveOccurred())
+					Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
+
+					clientNodes, _ := client.Nodes(ctx, "A")
+
+					for _, node := range clientNodes {
+						Expect(node.Failing()).To(BeFalse())
+					}
+				})
 			})
 
 			Describe("with TxPipeline", func() {
