@@ -6826,3 +6826,59 @@ func (cmd *MonitorCmd) Clone() Cmder {
 	// Return a new MonitorCmd with the same channel
 	return newMonitorCmd(cmd.ctx, cmd.ch)
 }
+
+type VectorScoreSliceCmd struct {
+	baseCmd
+
+	val []VectorScore
+}
+
+var _ Cmder = (*VectorScoreSliceCmd)(nil)
+
+func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+	return &VectorScoreSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorScoreSliceCmd) SetVal(val []VectorScore) {
+	cmd.val = val
+}
+
+func (cmd *VectorScoreSliceCmd) Val() []VectorScore {
+	return cmd.val
+}
+
+func (cmd *VectorScoreSliceCmd) Result() ([]VectorScore, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorScoreSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([]VectorScore, n)
+	for i := 0; i < n; i++ {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Name = name
+
+		score, err := rd.ReadFloat()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Score = score
+	}
+	return nil
+}
