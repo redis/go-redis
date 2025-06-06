@@ -16,9 +16,11 @@ jobs:
 
     services:
       redis-stack:
-        image: redis/redis-stack-server:latest
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+        image: redislabs/client-libs-test:8.0.1-pre
+        env:
+          TLS_ENABLED: no
+          REDIS_CLUSTER: no
+          PORT: 6379
         ports:
           - 6379:6379
 
@@ -38,4 +40,4 @@ jobs:
 
       - name: Test doc examples
         working-directory: ./doctests
-        run: go test -v
+        run: make test
