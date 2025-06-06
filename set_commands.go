@@ -1,6 +1,10 @@
 package redis
 
-import "context"
+import (
+	"context"
+
+	"github.com/redis/go-redis/v9/internal/hashtag"
+)
 
 type SetCmdable interface {
 	SAdd(ctx context.Context, key string, members ...interface{}) *IntCmd
@@ -212,6 +216,9 @@ func (c cmdable) SScan(ctx context.Context, key string, cursor uint64, match str
 		args = append(args, "count", count)
 	}
 	cmd := NewScanCmd(ctx, c, args...)
+	if hashtag.Present(match) {
+		cmd.SetFirstKeyPos(4)
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
