@@ -1,5 +1,31 @@
 # Release Notes
 
+# 9.10.0 (2025-06-06)
+
+## 🚀 Highlights
+
+`go-redis` now supports [vector sets](https://redis.io/docs/latest/develop/data-types/vector-sets/). This data type is marked
+as "in preview" in Redis and its support in `go-redis` is marked as experimental. You can find examples in the documentation and
+in the `doctests` folder.
+
+# Changes
+
+## 🚀 New Features
+
+- feat: support vectorset ([#3375](https://github.com/redis/go-redis/pull/3375))
+
+## 🧰 Maintenance
+
+- Add the missing NewFloatSliceResult for testing ([#3393](https://github.com/redis/go-redis/pull/3393))
+- DOC-5078 vector set examples ([#3394](https://github.com/redis/go-redis/pull/3394))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@AndBobsYourUncle](https://github.com/AndBobsYourUncle), [@andy-stark-redis](https://github.com/andy-stark-redis), [@fukua95](https://github.com/fukua95) and [@ndyakov](https://github.com/ndyakov)
+
+
+
 # 9.9.0 (2025-05-27)
 
 ## 🚀 Highlights
