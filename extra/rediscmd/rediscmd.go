@@ -61,7 +61,7 @@ func AppendCmd(b []byte, cmd redis.Cmder) []byte {
 	return b
 }
 
-func appendArg(b []byte, v interface{}) []byte {
+func appendArg(b []byte, v any) []byte {
 	switch v := v.(type) {
 	case nil:
 		return append(b, "<nil>"...)

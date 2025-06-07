@@ -82,7 +82,7 @@ var _ = Describe("UniversalClient", func() {
 		role, err := roleCmd.Result()
 		Expect(err).NotTo(HaveOccurred())
 
-		roleSlice, ok := role.([]interface{})
+		roleSlice, ok := role.([]any)
 		Expect(ok).To(BeTrue())
 		Expect(roleSlice[0]).To(Equal("slave"))
 
