@@ -3,8 +3,14 @@
 [![build workflow](https://github.com/redis/go-redis/actions/workflows/build.yml/badge.svg)](https://github.com/redis/go-redis/actions)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/redis/go-redis/v9)](https://pkg.go.dev/github.com/redis/go-redis/v9?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
+[![Go Report Card](https://goreportcard.com/badge/github.com/redis/go-redis/v9)](https://goreportcard.com/report/github.com/redis/go-redis/v9)
 [![codecov](https://codecov.io/github/redis/go-redis/graph/badge.svg?token=tsrCZKuSSw)](https://codecov.io/github/redis/go-redis)
-[![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
+
+[![Discord](https://img.shields.io/discord/697882427875393627.svg?style=social&logo=discord)](https://discord.gg/W4txy5AeKM)
+[![Twitch](https://img.shields.io/twitch/status/redisinc?style=social)](https://www.twitch.tv/redisinc)
+[![YouTube](https://img.shields.io/youtube/channel/views/UCD78lHSwYqMlyetR0_P4Vig?style=social)](https://www.youtube.com/redisinc)
+[![Twitter](https://img.shields.io/twitter/follow/redisinc?style=social)](https://twitter.com/redisinc)
+[![Stack Exchange questions](https://img.shields.io/stackexchange/stackoverflow/t/go-redis?style=social&logo=stackoverflow&label=Stackoverflow)](https://stackoverflow.com/questions/tagged/go-redis)
 
 > go-redis is the official Redis client library for the Go programming language. It offers a straightforward interface for interacting with Redis servers. 
 
@@ -44,7 +50,7 @@ in the `go.mod` to `go 1.24` in one of the next releases.
 ## Resources
 
 - [Discussions](https://github.com/redis/go-redis/discussions)
-- [Chat](https://discord.gg/rWtp5Aj)
+- [Chat](https://discord.gg/W4txy5AeKM)
 - [Reference](https://pkg.go.dev/github.com/redis/go-redis/v9)
 - [Examples](https://pkg.go.dev/github.com/redis/go-redis/v9#pkg-examples)
 
@@ -62,6 +68,7 @@ key value NoSQL database that uses RocksDB as storage engine and is compatible w
 
 - Redis commands except QUIT and SYNC.
 - Automatic connection pooling.
+- [StreamingCredentialsProvider (e.g. entra id, oauth)](#1-streaming-credentials-provider-highest-priority) (experimental)
 - [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
 - [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
 - [Scripting](https://redis.uptrace.dev/guide/lua-scripting.html).
@@ -130,17 +137,121 @@ func ExampleClient() {
 }
 ```
 
-The above can be modified to specify the version of the RESP protocol by adding the `protocol`
-option to the `Options` struct:
+### Authentication
+
+The Redis client supports multiple ways to provide authentication credentials, with a clear priority order. Here are the available options:
+
+#### 1. Streaming Credentials Provider (Highest Priority) - Experimental feature
+
+The streaming credentials provider allows for dynamic credential updates during the connection lifetime. This is particularly useful for managed identity services and token-based authentication.
 
 ```go
-    rdb := redis.NewClient(&redis.Options{
-        Addr:     "localhost:6379",
-        Password: "", // no password set
-        DB:       0,  // use default DB
-        Protocol: 3, // specify 2 for RESP 2 or 3 for RESP 3
-    })
+type StreamingCredentialsProvider interface {
+    Subscribe(listener CredentialsListener) (Credentials, UnsubscribeFunc, error)
+}
 
+type CredentialsListener interface {
+    OnNext(credentials Credentials)  // Called when credentials are updated
+    OnError(err error)              // Called when an error occurs
+}
+
+type Credentials interface {
+    BasicAuth() (username string, password string)
+    RawCredentials() string
+}
+```
+
+Example usage:
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr: "localhost:6379",
+    StreamingCredentialsProvider: &MyCredentialsProvider{},
+})
+```
+
+**Note:** The streaming credentials provider can be used with [go-redis-entraid](https://github.com/redis/go-redis-entraid) to enable Entra ID (formerly Azure AD) authentication. This allows for seamless integration with Azure's managed identity services and token-based authentication.
+
+Example with Entra ID:
+```go
+import (
+    "github.com/redis/go-redis/v9"
+    "github.com/redis/go-redis-entraid"
+)
+
+// Create an Entra ID credentials provider
+provider := entraid.NewDefaultAzureIdentityProvider()
+
+// Configure Redis client with Entra ID authentication
+rdb := redis.NewClient(&redis.Options{
+    Addr: "your-redis-server.redis.cache.windows.net:6380",
+    StreamingCredentialsProvider: provider,
+    TLSConfig: &tls.Config{
+        MinVersion: tls.VersionTLS12,
+    },
+})
+```
+
+#### 2. Context-based Credentials Provider
+
+The context-based provider allows credentials to be determined at the time of each operation, using the context.
+
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr: "localhost:6379",
+    CredentialsProviderContext: func(ctx context.Context) (string, string, error) {
+        // Return username, password, and any error
+        return "user", "pass", nil
+    },
+})
+```
+
+#### 3. Regular Credentials Provider
+
+A simple function-based provider that returns static credentials.
+
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr: "localhost:6379",
+    CredentialsProvider: func() (string, string) {
+        // Return username and password
+        return "user", "pass"
+    },
+})
+```
+
+#### 4. Username/Password Fields (Lowest Priority)
+
+The most basic way to provide credentials is through the `Username` and `Password` fields in the options.
+
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr:     "localhost:6379",
+    Username: "user",
+    Password: "pass",
+})
+```
+
+#### Priority Order
+
+The client will use credentials in the following priority order:
+1. Streaming Credentials Provider (if set)
+2. Context-based Credentials Provider (if set)
+3. Regular Credentials Provider (if set)
+4. Username/Password fields (if set)
+
+If none of these are set, the client will attempt to connect without authentication.
+
+### Protocol Version
+
+The client supports both RESP2 and RESP3 protocols. You can specify the protocol version in the options:
+
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr:     "localhost:6379",
+    Password: "", // no password set
+    DB:       0,  // use default DB
+    Protocol: 3,  // specify 2 for RESP 2 or 3 for RESP 3
+})
 ```
 
 ### Connecting via a redis url
@@ -165,6 +276,24 @@ func ExampleClient() *redis.Client {
     return redis.NewClient(opts)
 }
 
+```
+
+### Instrument with OpenTelemetry
+
+```go
+import (
+    "github.com/redis/go-redis/v9"
+    "github.com/redis/go-redis/extra/redisotel/v9"
+    "errors"
+)
+
+func main() {
+    ...
+    rdb := redis.NewClient(&redis.Options{...})
+
+    if err := errors.Join(redisotel.InstrumentTracing(rdb), redisotel.InstrumentMetrics(rdb)); err != nil {
+        log.Fatal(err)
+    }
 ```
 
 
@@ -215,9 +344,26 @@ val1 := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{})
 
 In the Redis-Search module, **the default dialect is 2**. If needed, you can explicitly specify a different dialect using the appropriate configuration in your queries.
 
-## Contributing
+**Important**: Be aware that the query dialect may impact the results returned. If needed, you can revert to a different dialect version by passing the desired dialect in the arguments of the command you want to execute.
+For example:
+```
+	res2, err := rdb.FTSearchWithArgs(ctx,
+		"idx:bicycle",
+		"@pickup_zone:[CONTAINS $bike]",
+		&redis.FTSearchOptions{
+			Params: map[string]interface{}{
+				"bike": "POINT(-0.1278 51.5074)",
+			},
+			DialectVersion: 3,
+		},
+	).Result()
+```
+You can find further details in the [query dialect documentation](https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/dialects/).
 
-Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
+## Contributing
+We welcome contributions to the go-redis library! If you have a bug fix, feature request, or improvement, please open an issue or pull request on GitHub.
+We appreciate your help in making go-redis better for everyone.
+If you are interested in contributing to the go-redis library, please check out our [contributing guidelines](CONTRIBUTING.md) for more information on how to get started.
 
 ## Look and feel
 

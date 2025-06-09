@@ -212,10 +212,10 @@ func TestRingShardsCleanup(t *testing.T) {
 			},
 			NewClient: func(opt *Options) *Client {
 				c := NewClient(opt)
-				c.baseClient.onClose = func() error {
+				c.baseClient.onClose = c.baseClient.wrappedOnClose(func() error {
 					closeCounter.increment(opt.Addr)
 					return nil
-				}
+				})
 				return c
 			},
 		})
@@ -261,10 +261,10 @@ func TestRingShardsCleanup(t *testing.T) {
 				}
 				createCounter.increment(opt.Addr)
 				c := NewClient(opt)
-				c.baseClient.onClose = func() error {
+				c.baseClient.onClose = c.baseClient.wrappedOnClose(func() error {
 					closeCounter.increment(opt.Addr)
 					return nil
-				}
+				})
 				return c
 			},
 		})
@@ -350,5 +350,29 @@ var _ = Describe("withConn", func() {
 		Expect(err).To(BeNil())
 		Expect(newConn).NotTo(Equal(conn))
 		Expect(client.connPool.Len()).To(Equal(1))
+	})
+})
+
+var _ = Describe("ClusterClient", func() {
+	var client *ClusterClient
+
+	BeforeEach(func() {
+		client = &ClusterClient{}
+	})
+
+	Describe("cmdSlot", func() {
+		It("select slot from args for GETKEYSINSLOT command", func() {
+			cmd := NewStringSliceCmd(ctx, "cluster", "getkeysinslot", 100, 200)
+
+			slot := client.cmdSlot(cmd)
+			Expect(slot).To(Equal(100))
+		})
+
+		It("select slot from args for COUNTKEYSINSLOT command", func() {
+			cmd := NewStringSliceCmd(ctx, "cluster", "countkeysinslot", 100)
+
+			slot := client.cmdSlot(cmd)
+			Expect(slot).To(Equal(100))
+		})
 	})
 })

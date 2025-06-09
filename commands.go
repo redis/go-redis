@@ -81,6 +81,8 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 		return dst
 	case time.Time, time.Duration, encoding.BinaryMarshaler, net.IP:
 		return append(dst, arg)
+	case nil:
+		return dst
 	default:
 		// scan struct field
 		v := reflect.ValueOf(arg)
@@ -153,6 +155,12 @@ func isEmptyValue(v reflect.Value) bool {
 		return v.Float() == 0
 	case reflect.Interface, reflect.Pointer:
 		return v.IsNil()
+	case reflect.Struct:
+		if v.Type() == reflect.TypeOf(time.Time{}) {
+			return v.IsZero()
+		}
+		// Only supports the struct time.Time,
+		// subsequent iterations will follow the func Scan support decoder.
 	}
 	return false
 }
@@ -226,6 +234,7 @@ type Cmdable interface {
 	StreamCmdable
 	TimeseriesCmdable
 	JSONCmdable
+	VectorSetCmdable
 }
 
 type StatefulCmdable interface {
@@ -330,7 +339,7 @@ func (info LibraryInfo) Validate() error {
 	return nil
 }
 
-// Hello Set the resp protocol used.
+// Hello sets the resp protocol used.
 func (c statefulCmdable) Hello(ctx context.Context,
 	ver int, username, password, clientName string,
 ) *MapStringInterfaceCmd {
