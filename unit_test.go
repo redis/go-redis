@@ -11,7 +11,7 @@ type mockCmdable struct {
 	returnErr error
 }
 
-func (m *mockCmdable) call(ctx context.Context, cmd Cmder) error {
+func (m *mockCmdable) call(_ context.Context, cmd Cmder) error {
 	m.lastCmd = cmd
 	if m.returnErr != nil {
 		cmd.SetErr(m.returnErr)
