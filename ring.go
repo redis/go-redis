@@ -405,7 +405,12 @@ func (c *ringSharding) GetByName(shardName string) (*ringShard, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.shards.m[shardName], nil
+	shard, ok := c.shards.m[shardName]
+	if !ok {
+		return nil, errors.New("redis: the shard is not in the ring")
+	}
+
+	return shard, nil
 }
 
 func (c *ringSharding) Random() (*ringShard, error) {
