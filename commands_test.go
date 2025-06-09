@@ -460,7 +460,7 @@ var _ = Describe("Commands", func() {
 			}
 
 			// read the defaults to set them back later
-			for setting, _ := range expected {
+			for setting := range expected {
 				val, err := client.ConfigGet(ctx, setting).Result()
 				Expect(err).NotTo(HaveOccurred())
 				defaults[setting] = val[setting]
