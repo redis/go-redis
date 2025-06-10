@@ -12,6 +12,10 @@ type BitMapCmdable interface {
 	BitOpAnd(ctx context.Context, destKey string, keys ...string) *IntCmd
 	BitOpOr(ctx context.Context, destKey string, keys ...string) *IntCmd
 	BitOpXor(ctx context.Context, destKey string, keys ...string) *IntCmd
+	BitOpDiff(ctx context.Context, destKey string, keys ...string) *IntCmd
+	BitOpDiff1(ctx context.Context, destKey string, keys ...string) *IntCmd
+	BitOpAndOr(ctx context.Context, destKey string, keys ...string) *IntCmd
+	BitOpOne(ctx context.Context, destKey string, keys ...string) *IntCmd
 	BitOpNot(ctx context.Context, destKey string, key string) *IntCmd
 	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
 	BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd
@@ -88,6 +92,22 @@ func (c cmdable) BitOpOr(ctx context.Context, destKey string, keys ...string) *I
 
 func (c cmdable) BitOpXor(ctx context.Context, destKey string, keys ...string) *IntCmd {
 	return c.bitOp(ctx, "xor", destKey, keys...)
+}
+
+func (c cmdable) BitOpDiff(ctx context.Context, destKey string, keys ...string) *IntCmd {
+	return c.bitOp(ctx, "diff", destKey, keys...)
+}
+
+func (c cmdable) BitOpDiff1(ctx context.Context, destKey string, keys ...string) *IntCmd {
+	return c.bitOp(ctx, "diff1", destKey, keys...)
+}
+
+func (c cmdable) BitOpAndOr(ctx context.Context, destKey string, keys ...string) *IntCmd {
+	return c.bitOp(ctx, "andor", destKey, keys...)
+}
+
+func (c cmdable) BitOpOne(ctx context.Context, destKey string, keys ...string) *IntCmd {
+	return c.bitOp(ctx, "one", destKey, keys...)
 }
 
 func (c cmdable) BitOpNot(ctx context.Context, destKey string, key string) *IntCmd {
