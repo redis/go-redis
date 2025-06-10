@@ -264,6 +264,12 @@ var _ = Describe("ClusterClient", func() {
 	var client *redis.ClusterClient
 
 	assertClusterClient := func() {
+		It("do", func() {
+			val, err := client.Do(ctx, "ping").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("PONG"))
+		})
+
 		It("should GET/SET/DEL", func() {
 			err := client.Get(ctx, "A").Err()
 			Expect(err).To(Equal(redis.Nil))
