@@ -564,7 +564,7 @@ func (c *Ring) SetAddrs(addrs map[string]string) {
 }
 
 // Do create a Cmd from the args and processes the cmd.
-func (c *Ring) Do(ctx context.Context, args ...interface{}) *Cmd {
+func (c *Ring) Do(ctx context.Context, args ...any) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	_ = c.Process(ctx, cmd)
 	return cmd
