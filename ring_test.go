@@ -271,6 +271,21 @@ var _ = Describe("Redis Ring", func() {
 			Expect(ringShard1.Info(ctx).Val()).ToNot(ContainSubstring("keys="))
 			Expect(ringShard2.Info(ctx).Val()).To(ContainSubstring("keys=100"))
 		})
+
+		It("return dial timeout error", func() {
+			opt := redisRingOptions()
+			opt.DialTimeout = 250 * time.Millisecond
+			opt.Addrs = map[string]string{"ringShardNotExist": ":1997"}
+			ring = redis.NewRing(opt)
+
+			_, err := ring.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.HSet(ctx, "key", "value")
+				pipe.Expire(ctx, "key", time.Minute)
+				return nil
+			})
+
+			Expect(err).To(HaveOccurred())
+		})
 	})
 
 	Describe("new client callback", func() {
