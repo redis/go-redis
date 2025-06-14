@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -202,6 +203,46 @@ func TestBasicCredentials(t *testing.T) {
 			expectedUser: "",
 			expectedPass: "pass1",
 			expectedRaw:  ":pass1",
+		},
+		{
+			name:         "empty password",
+			username:     "user1",
+			password:     "",
+			expectedUser: "user1",
+			expectedPass: "",
+			expectedRaw:  "user1:",
+		},
+		{
+			name:         "both username and password empty",
+			username:     "",
+			password:     "",
+			expectedUser: "",
+			expectedPass: "",
+			expectedRaw:  ":",
+		},
+		{
+			name:         "special characters",
+			username:     "user:1",
+			password:     "pa:ss@!#",
+			expectedUser: "user:1",
+			expectedPass: "pa:ss@!#",
+			expectedRaw:  "user:1:pa:ss@!#",
+		},
+		{
+			name:         "unicode characters",
+			username:     "ユーザー",
+			password:     "密碼123",
+			expectedUser: "ユーザー",
+			expectedPass: "密碼123",
+			expectedRaw:  "ユーザー:密碼123",
+		},
+		{
+			name:         "long credentials",
+			username:     strings.Repeat("u", 1000),
+			password:     strings.Repeat("p", 1000),
+			expectedUser: strings.Repeat("u", 1000),
+			expectedPass: strings.Repeat("p", 1000),
+			expectedRaw:  strings.Repeat("u", 1000) + ":" + strings.Repeat("p", 1000),
 		},
 	}
 
