@@ -179,36 +179,50 @@ func TestStreamingCredentialsProvider(t *testing.T) {
 }
 
 func TestBasicCredentials(t *testing.T) {
-	t.Run("basic auth", func(t *testing.T) {
-		creds := NewBasicCredentials("user1", "pass1")
-		username, password := creds.BasicAuth()
-		if username != "user1" {
-			t.Fatalf("expected username 'user1', got '%s'", username)
-		}
-		if password != "pass1" {
-			t.Fatalf("expected password 'pass1', got '%s'", password)
-		}
-	})
+	tests := []struct {
+		name         string
+		username     string
+		password     string
+		expectedUser string
+		expectedPass string
+		expectedRaw  string
+	}{
+		{
+			name:         "basic auth",
+			username:     "user1",
+			password:     "pass1",
+			expectedUser: "user1",
+			expectedPass: "pass1",
+			expectedRaw:  "user1:pass1",
+		},
+		{
+			name:         "empty username",
+			username:     "",
+			password:     "pass1",
+			expectedUser: "",
+			expectedPass: "pass1",
+			expectedRaw:  ":pass1",
+		},
+	}
 
-	t.Run("raw credentials", func(t *testing.T) {
-		creds := NewBasicCredentials("user1", "pass1")
-		raw := creds.RawCredentials()
-		expected := "user1:pass1"
-		if raw != expected {
-			t.Fatalf("expected raw credentials '%s', got '%s'", expected, raw)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			creds := NewBasicCredentials(tt.username, tt.password)
 
-	t.Run("empty username", func(t *testing.T) {
-		creds := NewBasicCredentials("", "pass1")
-		username, password := creds.BasicAuth()
-		if username != "" {
-			t.Fatalf("expected empty username, got '%s'", username)
-		}
-		if password != "pass1" {
-			t.Fatalf("expected password 'pass1', got '%s'", password)
-		}
-	})
+			user, pass := creds.BasicAuth()
+			if user != tt.expectedUser {
+				t.Errorf("BasicAuth() username = %q; want %q", user, tt.expectedUser)
+			}
+			if pass != tt.expectedPass {
+				t.Errorf("BasicAuth() password = %q; want %q", pass, tt.expectedPass)
+			}
+
+			raw := creds.RawCredentials()
+			if raw != tt.expectedRaw {
+				t.Errorf("RawCredentials() = %q; want %q", raw, tt.expectedRaw)
+			}
+		})
+	}
 }
 
 func TestReAuthCredentialsListener(t *testing.T) {
