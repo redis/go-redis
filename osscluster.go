@@ -1504,6 +1504,16 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	}
 
 	cmdsMap := c.mapCmdsBySlot(cmds)
+	// TxPipeline does not support cross slot transaction.
+	if len(cmdsMap) > 1 {
+		err := fmt.Errorf("redis: CROSSSLOT Keys in request don't hash to the same slot")
+		setCmdsErr(cmds, err)
+		return err
+	}
+	if len(cmdsMap) == 0 {
+		return nil
+	}
+
 	for slot, cmds := range cmdsMap {
 		node, err := state.slotMasterNode(slot)
 		if err != nil {
