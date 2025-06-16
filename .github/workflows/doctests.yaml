@@ -16,7 +16,7 @@ jobs:
 
     services:
       redis-stack:
-        image: redislabs/client-libs-test:8.0.1-pre
+        image: redislabs/client-libs-test:8.0.2
         env:
           TLS_ENABLED: no
           REDIS_CLUSTER: no
