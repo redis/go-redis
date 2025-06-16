@@ -89,6 +89,12 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("do", func() {
+		val, err := client.Do(ctx, "ping").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal("PONG"))
+	})
+
 	It("should ping", func() {
 		val, err := client.Ping(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
