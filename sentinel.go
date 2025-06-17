@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
@@ -57,11 +58,27 @@ type FailoverOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
-	Protocol            int
-	Username            string
-	Password            string
+	Protocol int
+	Username string
+	Password string
+	// CredentialsProvider allows the username and password to be updated
+	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
-	DB                  int
+
+	// CredentialsProviderContext is an enhanced parameter of CredentialsProvider,
+	// done to maintain API compatibility. In the future,
+	// there might be a merge between CredentialsProviderContext and CredentialsProvider.
+	// There will be a conflict between them; if CredentialsProviderContext exists, we will ignore CredentialsProvider.
+	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
+
+	// StreamingCredentialsProvider is used to retrieve the credentials
+	// for the connection from an external source. Those credentials may change
+	// during the connection lifetime. This is useful for managed identity
+	// scenarios where the credentials are retrieved from an external source.
+	//
+	// Currently, this is a placeholder for the future implementation.
+	StreamingCredentialsProvider auth.StreamingCredentialsProvider
+	DB                           int
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -108,11 +125,13 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
-		DB:                  opt.DB,
-		Protocol:            opt.Protocol,
-		Username:            opt.Username,
-		Password:            opt.Password,
-		CredentialsProvider: opt.CredentialsProvider,
+		DB:                           opt.DB,
+		Protocol:                     opt.Protocol,
+		Username:                     opt.Username,
+		Password:                     opt.Password,
+		CredentialsProvider:          opt.CredentialsProvider,
+		CredentialsProviderContext:   opt.CredentialsProviderContext,
+		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,
 
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
@@ -189,10 +208,12 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
-		Protocol:            opt.Protocol,
-		Username:            opt.Username,
-		Password:            opt.Password,
-		CredentialsProvider: opt.CredentialsProvider,
+		Protocol:                     opt.Protocol,
+		Username:                     opt.Username,
+		Password:                     opt.Password,
+		CredentialsProvider:          opt.CredentialsProvider,
+		CredentialsProviderContext:   opt.CredentialsProviderContext,
+		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,
 
 		MaxRedirects: opt.MaxRetries,
 
