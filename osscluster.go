@@ -1497,6 +1497,10 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	// Trim multi .. exec.
 	cmds = cmds[1 : len(cmds)-1]
 
+	if len(cmds) == 0 {
+		return nil
+	}
+
 	state, err := c.state.Get(ctx)
 	if err != nil {
 		setCmdsErr(cmds, err)
@@ -1508,9 +1512,6 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	if len(cmdsMap) > 1 {
 		setCmdsErr(cmds, ErrCrossSlot)
 		return ErrCrossSlot
-	}
-	if len(cmdsMap) == 0 {
-		return nil
 	}
 
 	for slot, cmds := range cmdsMap {
