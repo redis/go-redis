@@ -462,7 +462,7 @@ func (n *clusterNode) Loading() bool {
 
 	err := n.Client.Ping(ctx).Err()
 	loading := err != nil && isLoadingError(err)
-	if loading == false {
+	if !loading {
 		atomic.StoreUint32(&n.loaded, 1)
 	}
 	return loading
