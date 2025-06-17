@@ -1412,7 +1412,8 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 
 	cmd.val = make(map[string][]interface{})
 
-	if readType == proto.RespMap {
+	switch readType {
+	case proto.RespMap:
 		n, err := rd.ReadMapLen()
 		if err != nil {
 			return err
@@ -1435,7 +1436,7 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 				cmd.val[k][j] = value
 			}
 		}
-	} else if readType == proto.RespArray {
+	case proto.RespArray:
 		// RESP2 response
 		n, err := rd.ReadArrayLen()
 		if err != nil {
@@ -2103,7 +2104,9 @@ type XInfoGroup struct {
 	Pending         int64
 	LastDeliveredID string
 	EntriesRead     int64
-	Lag             int64
+	// Lag represents the number of pending messages in the stream not yet
+	// delivered to this consumer group. Returns -1 when the lag cannot be determined.
+	Lag int64
 }
 
 var _ Cmder = (*XInfoGroupsCmd)(nil)
@@ -2186,8 +2189,11 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 
 				// lag: the number of entries in the stream that are still waiting to be delivered
 				// to the group's consumers, or a NULL(Nil) when that number can't be determined.
+				// In that case, we return -1.
 				if err != nil && err != Nil {
 					return err
+				} else if err == Nil {
+					group.Lag = -1
 				}
 			default:
 				return fmt.Errorf("redis: unexpected key %q in XINFO GROUPS reply", key)
@@ -3578,15 +3584,14 @@ func (c *cmdsInfoCache) Get(ctx context.Context) (map[string]*CommandInfo, error
 			return err
 		}
 
+		lowerCmds := make(map[string]*CommandInfo, len(cmds))
+
 		// Extensions have cmd names in upper case. Convert them to lower case.
 		for k, v := range cmds {
-			lower := internal.ToLower(k)
-			if lower != k {
-				cmds[lower] = v
-			}
+			lowerCmds[internal.ToLower(k)] = v
 		}
 
-		c.cmds = cmds
+		c.cmds = lowerCmds
 		return nil
 	})
 	return c.cmds, err
@@ -3831,7 +3836,8 @@ func (cmd *MapStringStringSliceCmd) readReply(rd *proto.Reader) error {
 }
 
 // -----------------------------------------------------------------------
-// MapStringInterfaceCmd represents a command that returns a map of strings to interface{}.
+
+// MapMapStringInterfaceCmd represents a command that returns a map of strings to interface{}.
 type MapMapStringInterfaceCmd struct {
 	baseCmd
 	val map[string]interface{}
@@ -5612,4 +5618,60 @@ func (cmd *MonitorCmd) Stop() {
 	cmd.mu.Lock()
 	defer cmd.mu.Unlock()
 	cmd.status = monitorStatusStop
+}
+
+type VectorScoreSliceCmd struct {
+	baseCmd
+
+	val []VectorScore
+}
+
+var _ Cmder = (*VectorScoreSliceCmd)(nil)
+
+func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+	return &VectorScoreSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorScoreSliceCmd) SetVal(val []VectorScore) {
+	cmd.val = val
+}
+
+func (cmd *VectorScoreSliceCmd) Val() []VectorScore {
+	return cmd.val
+}
+
+func (cmd *VectorScoreSliceCmd) Result() ([]VectorScore, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorScoreSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([]VectorScore, n)
+	for i := 0; i < n; i++ {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Name = name
+
+		score, err := rd.ReadFloat()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Score = score
+	}
+	return nil
 }

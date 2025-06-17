@@ -89,6 +89,9 @@ func (s *clusterScenario) newClusterClient(
 func (s *clusterScenario) Close() error {
 	ctx := context.TODO()
 	for _, master := range s.masters() {
+		if master == nil {
+			continue
+		}
 		err := master.FlushAll(ctx).Err()
 		if err != nil {
 			return err
@@ -261,6 +264,12 @@ var _ = Describe("ClusterClient", func() {
 	var client *redis.ClusterClient
 
 	assertClusterClient := func() {
+		It("do", func() {
+			val, err := client.Do(ctx, "ping").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("PONG"))
+		})
+
 		It("should GET/SET/DEL", func() {
 			err := client.Get(ctx, "A").Err()
 			Expect(err).To(Equal(redis.Nil))
@@ -539,6 +548,39 @@ var _ = Describe("ClusterClient", func() {
 				AfterEach(func() {})
 
 				assertPipeline()
+
+				It("doesn't fail node with context.Canceled error", func() {
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					pipe.Set(ctx, "A", "A_value", 0)
+					_, err := pipe.Exec(ctx)
+
+					Expect(err).To(HaveOccurred())
+					Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+
+					clientNodes, _ := client.Nodes(ctx, "A")
+
+					for _, node := range clientNodes {
+						Expect(node.Failing()).To(BeFalse())
+					}
+				})
+
+				It("doesn't fail node with context.DeadlineExceeded error", func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+					defer cancel()
+
+					pipe.Set(ctx, "A", "A_value", 0)
+					_, err := pipe.Exec(ctx)
+
+					Expect(err).To(HaveOccurred())
+					Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
+
+					clientNodes, _ := client.Nodes(ctx, "A")
+
+					for _, node := range clientNodes {
+						Expect(node.Failing()).To(BeFalse())
+					}
+				})
 			})
 
 			Describe("with TxPipeline", func() {
