@@ -5138,6 +5138,9 @@ type ClientInfo struct {
 	OutputListLength   int           // oll, output list length (replies are queued in this list when the buffer is full)
 	OutputMemory       int           // omem, output buffer memory usage
 	TotalMemory        int           // tot-mem, total memory consumed by this client in its various buffers
+	TotalNetIn         int           // tot-net-in, total network input
+	TotalNetOut        int           // tot-net-out, total network output
+	TotalCmds          int           // tot-cmds, total number of commands processed
 	IoThread           int           // io-thread id
 	Events             string        // file descriptor events (see below)
 	LastCmd            string        // cmd, last command played
@@ -5303,6 +5306,12 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 			info.OutputMemory, err = strconv.Atoi(val)
 		case "tot-mem":
 			info.TotalMemory, err = strconv.Atoi(val)
+		case "tot-net-in":
+			info.TotalNetIn, err = strconv.Atoi(val)
+		case "tot-net-out":
+			info.TotalNetOut, err = strconv.Atoi(val)
+		case "tot-cmds":
+			info.TotalCmds, err = strconv.Atoi(val)
 		case "events":
 			info.Events = val
 		case "cmd":
