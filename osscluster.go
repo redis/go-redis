@@ -979,13 +979,6 @@ func (c *ClusterClient) Close() error {
 	return c.nodes.Close()
 }
 
-// Do create a Cmd from the args and processes the cmd.
-func (c *ClusterClient) Do(ctx context.Context, args ...interface{}) *Cmd {
-	cmd := NewCmd(ctx, args...)
-	_ = c.Process(ctx, cmd)
-	return cmd
-}
-
 func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
