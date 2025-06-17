@@ -1504,7 +1504,7 @@ var _ = Describe("Commands", func() {
 
 			get := client.Get(ctx, "dest")
 			Expect(get.Err()).NotTo(HaveOccurred())
-			Expect(get.Val()).To(Equal("\xf0"))
+			Expect(get.Val()).To(Equal("\x00"))
 		})
 
 		It("should BitOpAndOr", Label("NonRedisEnterprise"), func() {
@@ -1523,7 +1523,7 @@ var _ = Describe("Commands", func() {
 
 			get := client.Get(ctx, "dest")
 			Expect(get.Err()).NotTo(HaveOccurred())
-			Expect(get.Val()).To(Equal("\xf0"))
+			Expect(get.Val()).To(Equal("\x0f"))
 		})
 
 		It("should BitOpOne", Label("NonRedisEnterprise"), func() {
