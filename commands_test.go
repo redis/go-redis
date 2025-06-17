@@ -1470,6 +1470,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BitOpDiff", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP DIFF is available since Redis 8.2")
 			set := client.Set(ctx, "key1", "\xff", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1488,6 +1489,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BitOpDiff1", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP DIFF is available since Redis 8.2")
 			set := client.Set(ctx, "key1", "\xff", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1506,6 +1508,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BitOpAndOr", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP ANDOR is available since Redis 8.2")
 			set := client.Set(ctx, "key1", "\xff", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1524,6 +1527,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BitOpOne", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP ONE is available since Redis 8.2")
 			set := client.Set(ctx, "key1", "\xff", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
