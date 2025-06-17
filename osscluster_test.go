@@ -593,6 +593,20 @@ var _ = Describe("ClusterClient", func() {
 				// Use hashtag to force all keys to the same slot.
 				keys := []string{"A{s}", "B{s}", "C{s}", "D{s}", "E{s}", "F{s}", "G{s}"}
 				assertPipeline(keys)
+
+				// make sure CrossSlot error is returned
+				It("returns CrossSlot error", func() {
+					pipe.Set(ctx, "A{s}", "A_value", 0)
+					pipe.Set(ctx, "B{t}", "B_value", 0)
+					_, err := pipe.Exec(ctx)
+					Expect(err).To(MatchError(redis.ErrCrossSlot))
+				})
+
+				// doesn't fail when no commands are queued
+				It("returns no error when there are no commands", func() {
+					_, err := pipe.Exec(ctx)
+					Expect(err).NotTo(HaveOccurred())
+				})
 			})
 		})
 
