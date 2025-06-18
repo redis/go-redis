@@ -473,8 +473,7 @@ var _ = Describe("ClusterClient", func() {
 		Describe("pipelining", func() {
 			var pipe *redis.Pipeline
 
-			assertPipeline := func() {
-				keys := []string{"A", "B", "C", "D", "E", "F", "G"}
+			assertPipeline := func(keys []string) {
 
 				It("follows redirects", func() {
 					if !failover {
@@ -493,13 +492,12 @@ var _ = Describe("ClusterClient", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(cmds).To(HaveLen(14))
 
-					_ = client.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
-						defer GinkgoRecover()
-						Eventually(func() int64 {
-							return node.DBSize(ctx).Val()
-						}, 30*time.Second).ShouldNot(BeZero())
-						return nil
-					})
+					// Check that all keys are set.
+					for _, key := range keys {
+						Eventually(func() string {
+							return client.Get(ctx, key).Val()
+						}, 30*time.Second).Should(Equal(key + "_value"))
+					}
 
 					if !failover {
 						for _, key := range keys {
@@ -528,14 +526,14 @@ var _ = Describe("ClusterClient", func() {
 				})
 
 				It("works with missing keys", func() {
-					pipe.Set(ctx, "A", "A_value", 0)
-					pipe.Set(ctx, "C", "C_value", 0)
+					pipe.Set(ctx, "A{s}", "A_value", 0)
+					pipe.Set(ctx, "C{s}", "C_value", 0)
 					_, err := pipe.Exec(ctx)
 					Expect(err).NotTo(HaveOccurred())
 
-					a := pipe.Get(ctx, "A")
-					b := pipe.Get(ctx, "B")
-					c := pipe.Get(ctx, "C")
+					a := pipe.Get(ctx, "A{s}")
+					b := pipe.Get(ctx, "B{s}")
+					c := pipe.Get(ctx, "C{s}")
 					cmds, err := pipe.Exec(ctx)
 					Expect(err).To(Equal(redis.Nil))
 					Expect(cmds).To(HaveLen(3))
@@ -558,7 +556,8 @@ var _ = Describe("ClusterClient", func() {
 
 				AfterEach(func() {})
 
-				assertPipeline()
+				keys := []string{"A", "B", "C", "D", "E", "F", "G"}
+				assertPipeline(keys)
 
 				It("doesn't fail node with context.Canceled error", func() {
 					ctx, cancel := context.WithCancel(context.Background())
@@ -601,7 +600,25 @@ var _ = Describe("ClusterClient", func() {
 
 				AfterEach(func() {})
 
-				assertPipeline()
+				// TxPipeline doesn't support cross slot commands.
+				// Use hashtag to force all keys to the same slot.
+				keys := []string{"A{s}", "B{s}", "C{s}", "D{s}", "E{s}", "F{s}", "G{s}"}
+				assertPipeline(keys)
+
+				// make sure CrossSlot error is returned
+				It("returns CrossSlot error", func() {
+					pipe.Set(ctx, "A{s}", "A_value", 0)
+					pipe.Set(ctx, "B{t}", "B_value", 0)
+					Expect(hashtag.Slot("A{s}")).NotTo(Equal(hashtag.Slot("B{t}")))
+					_, err := pipe.Exec(ctx)
+					Expect(err).To(MatchError(redis.ErrCrossSlot))
+				})
+
+				// doesn't fail when no commands are queued
+				It("returns no error when there are no commands", func() {
+					_, err := pipe.Exec(ctx)
+					Expect(err).NotTo(HaveOccurred())
+				})
 			})
 		})
 
