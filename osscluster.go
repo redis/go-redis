@@ -340,6 +340,7 @@ type clusterNode struct {
 	latency    uint32 // atomic
 	generation uint32 // atomic
 	failing    uint32 // atomic
+	loaded     uint32 // atomic
 
 	// last time the latency measurement was performed for the node, stored in nanoseconds
 	// from epoch
@@ -406,6 +407,7 @@ func (n *clusterNode) Latency() time.Duration {
 
 func (n *clusterNode) MarkAsFailing() {
 	atomic.StoreUint32(&n.failing, uint32(time.Now().Unix()))
+	atomic.StoreUint32(&n.loaded, 0)
 }
 
 func (n *clusterNode) Failing() bool {
@@ -449,11 +451,21 @@ func (n *clusterNode) SetLastLatencyMeasurement(t time.Time) {
 }
 
 func (n *clusterNode) Loading() bool {
+	loaded := atomic.LoadUint32(&n.loaded)
+	if loaded == 1 {
+		return false
+	}
+
+	// check if the node is loading
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
 	err := n.Client.Ping(ctx).Err()
-	return err != nil && isLoadingError(err)
+	loading := err != nil && isLoadingError(err)
+	if !loading {
+		atomic.StoreUint32(&n.loaded, 1)
+	}
+	return loading
 }
 
 //------------------------------------------------------------------------------
