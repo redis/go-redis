@@ -598,6 +598,7 @@ var _ = Describe("ClusterClient", func() {
 				It("returns CrossSlot error", func() {
 					pipe.Set(ctx, "A{s}", "A_value", 0)
 					pipe.Set(ctx, "B{t}", "B_value", 0)
+					Expect(hashtag.Slot("A{s}")).NotTo(Equal(hashtag.Slot("B{t}")))
 					_, err := pipe.Exec(ctx)
 					Expect(err).To(MatchError(redis.ErrCrossSlot))
 				})
