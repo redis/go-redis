@@ -17,6 +17,55 @@ import (
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
+// keylessCommands contains Redis commands that have empty key specifications (9th slot empty)
+// Only includes core Redis commands, excludes FT.*, ts.*, timeseries.*, search.* and subcommands
+var keylessCommands = map[string]struct{}{
+	"acl":          {},
+	"asking":       {},
+	"auth":         {},
+	"bgrewriteaof": {},
+	"bgsave":       {},
+	"client":       {},
+	"cluster":      {},
+	"config":       {},
+	"debug":        {},
+	"discard":      {},
+	"echo":         {},
+	"exec":         {},
+	"failover":     {},
+	"function":     {},
+	"hello":        {},
+	"latency":      {},
+	"lolwut":       {},
+	"module":       {},
+	"monitor":      {},
+	"multi":        {},
+	"pfselftest":   {},
+	"ping":         {},
+	"psubscribe":   {},
+	"psync":        {},
+	"publish":      {},
+	"pubsub":       {},
+	"punsubscribe": {},
+	"quit":         {},
+	"readonly":     {},
+	"readwrite":    {},
+	"replconf":     {},
+	"replicaof":    {},
+	"role":         {},
+	"save":         {},
+	"script":       {},
+	"select":       {},
+	"shutdown":     {},
+	"slaveof":      {},
+	"slowlog":      {},
+	"subscribe":    {},
+	"swapdb":       {},
+	"sync":         {},
+	"unsubscribe":  {},
+	"unwatch":      {},
+}
+
 type Cmder interface {
 	// command name.
 	// e.g. "set k v ex 10" -> "set", "cluster info" -> "cluster".
@@ -83,9 +132,14 @@ func cmdFirstKeyPos(cmd Cmder) int {
 		return int(pos)
 	}
 
-	switch cmd.Name() {
-	case "echo", "ping", "command":
+	name := cmd.Name()
+
+	// first check if the command is keyless
+	if _, ok := keylessCommands[name]; ok {
 		return 0
+	}
+
+	switch name {
 	case "eval", "evalsha", "eval_ro", "evalsha_ro":
 		if cmd.stringArg(2) != "0" {
 			return 3
