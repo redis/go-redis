@@ -1521,8 +1521,8 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 
 	cmdsMap := map[int][]Cmder{}
 	slot := -1
-	// split keyed and keyless commands
-	keyedCmds, _ := c.keyedAndKeyessCmds(cmds)
+	// get only the keyed commands
+	keyedCmds := c.keyedCmds(cmds)
 	if len(keyedCmds) == 0 {
 		// no keyed commands try random slot
 		slot = hashtag.RandomSlot()
@@ -1600,17 +1600,17 @@ func (c *ClusterClient) mapCmdsBySlot(cmds []Cmder) map[int][]Cmder {
 	}
 	return cmdsMap
 }
-func (c *ClusterClient) keyedAndKeyessCmds(cmds []Cmder) ([]Cmder, []Cmder) {
+
+// keyedCmds returns all the keyed commands from the cmds slice
+// it determines keyed commands by checking if the command has a first key position
+func (c *ClusterClient) keyedCmds(cmds []Cmder) []Cmder {
 	keyedCmds := make([]Cmder, 0, len(cmds))
-	keylessCmds := make([]Cmder, 0, len(cmds))
 	for _, cmd := range cmds {
-		if cmdFirstKeyPos(cmd) == 0 {
-			keylessCmds = append(keylessCmds, cmd)
-		} else {
+		if cmdFirstKeyPos(cmd) != 0 {
 			keyedCmds = append(keyedCmds, cmd)
 		}
 	}
-	return keyedCmds, keylessCmds
+	return keyedCmds
 }
 
 func (c *ClusterClient) processTxPipelineNode(
