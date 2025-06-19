@@ -75,12 +75,17 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 	return wr.WriteArgs(cmd.Args())
 }
 
+// cmdFirstKeyPos returns the position of the first key in the command's arguments.
+// If the command does not have a key, it returns 0.
+// TODO: Use the data in CommandInfo to determine the first key position.
 func cmdFirstKeyPos(cmd Cmder) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
 	}
 
 	switch cmd.Name() {
+	case "echo", "ping", "command":
+		return 0
 	case "eval", "evalsha", "eval_ro", "evalsha_ro":
 		if cmd.stringArg(2) != "0" {
 			return 3
