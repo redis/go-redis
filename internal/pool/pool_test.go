@@ -410,7 +410,7 @@ var _ = Describe("race", func() {
 		_, err = p.Get(ctx)
 		Expect(err).To(MatchError(pool.ErrPoolTimeout))
 		p.Put(ctx, conn)
-		conn, err = p.Get(ctx)
+		_, err = p.Get(ctx)
 		Expect(err).NotTo(HaveOccurred())
 
 		stats = p.Stats()

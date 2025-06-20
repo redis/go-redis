@@ -74,6 +74,12 @@ var _ = Describe("Redis Ring", func() {
 		Expect(ring.Close()).NotTo(HaveOccurred())
 	})
 
+	It("do", func() {
+		val, err := ring.Do(ctx, "ping").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal("PONG"))
+	})
+
 	It("supports context", func() {
 		ctx, cancel := context.WithCancel(ctx)
 		cancel()
