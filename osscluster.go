@@ -998,7 +998,7 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
-	slot := c.cmdSlot(cmd)
+	slot := c.cmdSlot(cmd, -1)
 	var node *clusterNode
 	var moved bool
 	var ask bool
@@ -1344,9 +1344,13 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 		return err
 	}
 
+	preferredRandomSlot := -1
 	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
 		for _, cmd := range cmds {
-			slot := c.cmdSlot(cmd)
+			slot := c.cmdSlot(cmd, preferredRandomSlot)
+			if preferredRandomSlot == -1 {
+				preferredRandomSlot = slot
+			}
 			node, err := c.slotReadOnlyNode(state, slot)
 			if err != nil {
 				return err
@@ -1357,7 +1361,10 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	}
 
 	for _, cmd := range cmds {
-		slot := c.cmdSlot(cmd)
+		slot := c.cmdSlot(cmd, preferredRandomSlot)
+		if preferredRandomSlot == -1 {
+			preferredRandomSlot = slot
+		}
 		node, err := state.slotMasterNode(slot)
 		if err != nil {
 			return err
@@ -1519,8 +1526,36 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 		return err
 	}
 
-	cmdsMap := c.mapCmdsBySlot(cmds)
+	cmdsMap := map[int][]Cmder{}
+	slot := -1
+	// get only the keyed commands
+	keyedCmds := c.keyedCmds(cmds)
+	if len(keyedCmds) == 0 {
+		// no keyed commands try random slot
+		slot = hashtag.RandomSlot()
+	} else {
+		// keyed commands, get slot from them
+		// if more than one slot, return cross slot error
+		cmdsBySlot := c.mapCmdsBySlot(keyedCmds)
+		if len(cmdsBySlot) > 1 {
+			// cross slot error, we have more than one slot for keyed commands
+			setCmdsErr(cmds, ErrCrossSlot)
+			return ErrCrossSlot
+		}
+		// get the slot, should be only one
+		for sl := range cmdsBySlot {
+			slot = sl
+			break
+		}
+	}
+	// slot was not determined, try random one
+	if slot == -1 {
+		slot = hashtag.RandomSlot()
+	}
+	cmdsMap[slot] = cmds
+
 	// TxPipeline does not support cross slot transaction.
+	// double check the commands are in the same slot
 	if len(cmdsMap) > 1 {
 		setCmdsErr(cmds, ErrCrossSlot)
 		return ErrCrossSlot
@@ -1566,11 +1601,27 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 
 func (c *ClusterClient) mapCmdsBySlot(cmds []Cmder) map[int][]Cmder {
 	cmdsMap := make(map[int][]Cmder)
+	preferredRandomSlot := -1
 	for _, cmd := range cmds {
-		slot := c.cmdSlot(cmd)
+		slot := c.cmdSlot(cmd, preferredRandomSlot)
+		if preferredRandomSlot == -1 {
+			preferredRandomSlot = slot
+		}
 		cmdsMap[slot] = append(cmdsMap[slot], cmd)
 	}
 	return cmdsMap
+}
+
+// keyedCmds returns all the keyed commands from the cmds slice
+// it determines keyed commands by checking if the command has a first key position
+func (c *ClusterClient) keyedCmds(cmds []Cmder) []Cmder {
+	keyedCmds := make([]Cmder, 0, len(cmds))
+	for _, cmd := range cmds {
+		if cmdFirstKeyPos(cmd) != 0 {
+			keyedCmds = append(keyedCmds, cmd)
+		}
+	}
+	return keyedCmds
 }
 
 func (c *ClusterClient) processTxPipelineNode(
@@ -1885,17 +1936,20 @@ func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	return info
 }
 
-func (c *ClusterClient) cmdSlot(cmd Cmder) int {
+func (c *ClusterClient) cmdSlot(cmd Cmder, preferredRandomSlot int) int {
 	args := cmd.Args()
 	if args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
 		return args[2].(int)
 	}
 
-	return cmdSlot(cmd, cmdFirstKeyPos(cmd))
+	return cmdSlot(cmd, cmdFirstKeyPos(cmd), preferredRandomSlot)
 }
 
-func cmdSlot(cmd Cmder, pos int) int {
+func cmdSlot(cmd Cmder, pos int, preferredRandomSlot int) int {
 	if pos == 0 {
+		if preferredRandomSlot != -1 {
+			return preferredRandomSlot
+		}
 		return hashtag.RandomSlot()
 	}
 	firstKey := cmd.stringArg(pos)

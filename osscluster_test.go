@@ -603,6 +603,15 @@ var _ = Describe("ClusterClient", func() {
 					Expect(err).To(MatchError(redis.ErrCrossSlot))
 				})
 
+				It("works normally with keyless commands and no CrossSlot error", func() {
+					pipe.Set(ctx, "A{s}", "A_value", 0)
+					pipe.Ping(ctx)
+					pipe.Set(ctx, "B{s}", "B_value", 0)
+					pipe.Ping(ctx)
+					_, err := pipe.Exec(ctx)
+					Expect(err).To(Not(HaveOccurred()))
+				})
+
 				// doesn't fail when no commands are queued
 				It("returns no error when there are no commands", func() {
 					_, err := pipe.Exec(ctx)
