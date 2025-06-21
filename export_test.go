@@ -99,7 +99,7 @@ func (c *Ring) ShardByName(name string) *ringShard {
 	return shard
 }
 
-func (c *ModuleLoadexConfig) ToArgs() []interface{} {
+func (c *ModuleLoadexConfig) ToArgs() []any {
 	return c.toArgs()
 }
 
