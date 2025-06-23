@@ -405,7 +405,12 @@ func (c *ringSharding) GetByName(shardName string) (*ringShard, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.shards.m[shardName], nil
+	shard, ok := c.shards.m[shardName]
+	if !ok {
+		return nil, errors.New("redis: the shard is not in the ring")
+	}
+
+	return shard, nil
 }
 
 func (c *ringSharding) Random() (*ringShard, error) {
@@ -556,13 +561,6 @@ func NewRing(opt *RingOptions) *Ring {
 
 func (c *Ring) SetAddrs(addrs map[string]string) {
 	c.sharding.SetAddrs(addrs)
-}
-
-// Do create a Cmd from the args and processes the cmd.
-func (c *Ring) Do(ctx context.Context, args ...interface{}) *Cmd {
-	cmd := NewCmd(ctx, args...)
-	_ = c.Process(ctx, cmd)
-	return cmd
 }
 
 func (c *Ring) Process(ctx context.Context, cmd Cmder) error {
