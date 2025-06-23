@@ -71,7 +71,7 @@ func TestWithoutCaller(t *testing.T) {
 	hook := newTracingHook(
 		"",
 		WithTracerProvider(provider),
-		WithCaller(false),
+		WithCallerEnabled(false),
 	)
 	ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 	cmd := redis.NewCmd(ctx, "ping")

@@ -115,8 +115,8 @@ func WithDBStatement(on bool) TracingOption {
 	})
 }
 
-// WithCaller tells the tracing hook to log the calling function, file and line.
-func WithCaller(on bool) TracingOption {
+// WithCallerEnabled tells the tracing hook to log the calling function, file and line.
+func WithCallerEnabled(on bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.callerEnabled = on
 	})
