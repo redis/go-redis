@@ -108,14 +108,14 @@ func WithTracerProvider(provider trace.TracerProvider) TracingOption {
 	})
 }
 
-// WithDBStatement tells the tracing hook not to log raw redis commands.
+// WithDBStatement tells the tracing hook to log raw redis commands.
 func WithDBStatement(on bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.dbStmtEnabled = on
 	})
 }
 
-// WithCaller tells the tracing hook log the calling function, file and line.
+// WithCaller tells the tracing hook to log the calling function, file and line.
 func WithCaller(on bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.callerEnabled = on
