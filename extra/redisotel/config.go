@@ -20,6 +20,7 @@ type config struct {
 	tracer trace.Tracer
 
 	dbStmtEnabled bool
+	callerEnabled bool
 
 	// Metrics options.
 
@@ -57,6 +58,7 @@ func newConfig(opts ...baseOption) *config {
 		tp:            otel.GetTracerProvider(),
 		mp:            otel.GetMeterProvider(),
 		dbStmtEnabled: true,
+		callerEnabled: true,
 	}
 
 	for _, opt := range opts {
@@ -106,10 +108,17 @@ func WithTracerProvider(provider trace.TracerProvider) TracingOption {
 	})
 }
 
-// WithDBStatement tells the tracing hook not to log raw redis commands.
+// WithDBStatement tells the tracing hook to log raw redis commands.
 func WithDBStatement(on bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.dbStmtEnabled = on
+	})
+}
+
+// WithCallerEnabled tells the tracing hook to log the calling function, file and line.
+func WithCallerEnabled(on bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.callerEnabled = on
 	})
 }
 
