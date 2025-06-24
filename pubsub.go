@@ -46,6 +46,9 @@ func (c *PubSub) init() {
 }
 
 func (c *PubSub) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	channels := mapKeys(c.channels)
 	channels = append(channels, mapKeys(c.patterns)...)
 	channels = append(channels, mapKeys(c.schannels)...)

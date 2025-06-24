@@ -114,6 +114,7 @@ type SpellCheckTerms struct {
 }
 
 type FTExplainOptions struct {
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
 	Dialect string
 }
 
@@ -261,7 +262,8 @@ type FTAggregateOptions struct {
 	WithCursor        bool
 	WithCursorOptions *FTAggregateWithCursor
 	Params            map[string]interface{}
-	DialectVersion    int
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	DialectVersion int
 }
 
 type FTSearchFilter struct {
@@ -320,8 +322,12 @@ type FTSearchOptions struct {
 	SortByWithCount bool
 	LimitOffset     int
 	Limit           int
-	Params          map[string]interface{}
-	DialectVersion  int
+	// CountOnly sets LIMIT 0 0 to get the count - number of documents in the result set without actually returning the result set.
+	// When using this option, the Limit and LimitOffset options are ignored.
+	CountOnly bool
+	Params    map[string]interface{}
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	DialectVersion int
 }
 
 type FTSynDumpResult struct {
@@ -437,7 +443,8 @@ type IndexDefinition struct {
 type FTSpellCheckOptions struct {
 	Distance int
 	Terms    *FTSpellCheckTerms
-	Dialect  int
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	Dialect int
 }
 
 type FTSpellCheckTerms struct {
@@ -1954,8 +1961,12 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 				args = append(args, "WITHCOUNT")
 			}
 		}
-		if options.LimitOffset >= 0 && options.Limit > 0 {
-			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
+		if options.CountOnly {
+			args = append(args, "LIMIT", 0, 0)
+		} else {
+			if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
+				args = append(args, "LIMIT", options.LimitOffset, options.Limit)
+			}
 		}
 		if options.Params != nil {
 			args = append(args, "PARAMS", len(options.Params)*2)
