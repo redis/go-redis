@@ -172,11 +172,13 @@ func (opt *RingOptions) clientOptions() *Options {
 		Dialer:     opt.Dialer,
 		OnConnect:  opt.OnConnect,
 
-		Protocol:            opt.Protocol,
-		Username:            opt.Username,
-		Password:            opt.Password,
-		CredentialsProvider: opt.CredentialsProvider,
-		DB:                  opt.DB,
+		Protocol:                     opt.Protocol,
+		Username:                     opt.Username,
+		Password:                     opt.Password,
+		CredentialsProvider:          opt.CredentialsProvider,
+		CredentialsProviderContext:   opt.CredentialsProviderContext,
+		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,
+		DB:                           opt.DB,
 
 		MaxRetries: -1,
 
