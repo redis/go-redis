@@ -1583,15 +1583,15 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 func (c *ClusterClient) slottedKeyedCommands(cmds []Cmder) map[int][]Cmder {
 	cmdsSlots := map[int][]Cmder{}
 
-	prefferedRandomSlot := -1
+	preferredRandomSlot := -1
 	for _, cmd := range cmds {
 		if cmdFirstKeyPos(cmd) == 0 {
 			continue
 		}
 
-		slot := c.cmdSlot(cmd, prefferedRandomSlot)
-		if prefferedRandomSlot == -1 {
-			prefferedRandomSlot = slot
+		slot := c.cmdSlot(cmd, preferredRandomSlot)
+		if preferredRandomSlot == -1 {
+			preferredRandomSlot = slot
 		}
 
 		cmdsSlots[slot] = append(cmdsSlots[slot], cmd)
