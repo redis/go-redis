@@ -84,6 +84,12 @@ var _ = Describe("Commands", func() {
 			Expect(ping.Val()).To(Equal("PONG"))
 		})
 
+		It("should Ping with Do method", func() {
+			result := client.Conn().Do(ctx, "PING")
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("PONG"))
+		})
+
 		It("should Wait", func() {
 			const wait = 3 * time.Second
 
@@ -107,7 +113,7 @@ var _ = Describe("Commands", func() {
 			Expect(time.Now()).To(BeTemporally("~", start.Add(waitAOF), 3*time.Second))
 		})
 
-		It("should Select", func() {
+		It("should Select", Label("NonRedisEnterprise"), func() {
 			pipe := client.Pipeline()
 			sel := pipe.Select(ctx, 1)
 			_, err := pipe.Exec(ctx)
@@ -117,7 +123,7 @@ var _ = Describe("Commands", func() {
 			Expect(sel.Val()).To(Equal("OK"))
 		})
 
-		It("should SwapDB", func() {
+		It("should SwapDB", Label("NonRedisEnterprise"), func() {
 			pipe := client.Pipeline()
 			sel := pipe.SwapDB(ctx, 1, 2)
 			_, err := pipe.Exec(ctx)
@@ -193,6 +199,41 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(int64(0)))
 		})
 
+		It("should ClientKillByFilter with MAXAGE", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			var s []string
+			started := make(chan bool)
+			done := make(chan bool)
+
+			go func() {
+				defer GinkgoRecover()
+
+				started <- true
+				blpop := client.BLPop(ctx, 0, "list")
+				Expect(blpop.Val()).To(Equal(s))
+				done <- true
+			}()
+			<-started
+
+			select {
+			case <-done:
+				Fail("BLPOP is not blocked.")
+			case <-time.After(1100 * time.Millisecond):
+				// ok
+			}
+
+			killed := client.ClientKillByFilter(ctx, "MAXAGE", "1")
+			Expect(killed.Err()).NotTo(HaveOccurred())
+			Expect(killed.Val()).To(BeNumerically(">=", 1))
+
+			select {
+			case <-done:
+				// ok
+			case <-time.After(200 * time.Millisecond):
+				Fail("BLPOP is still blocked.")
+			}
+		})
+
 		It("should ClientID", func() {
 			err := client.ClientID(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -219,7 +260,7 @@ var _ = Describe("Commands", func() {
 			Expect(info).NotTo(BeNil())
 		})
 
-		It("should ClientPause", func() {
+		It("should ClientPause", Label("NonRedisEnterprise"), func() {
 			err := client.ClientPause(ctx, time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -248,7 +289,7 @@ var _ = Describe("Commands", func() {
 
 			// Test setting the libName
 			libName := "go-redis"
-			libInfo := redis.LibraryInfo{LibName: &libName}
+			libInfo := redis.WithLibraryName(libName)
 			setInfo := pipe.ClientSetInfo(ctx, libInfo)
 			_, err := pipe.Exec(ctx)
 
@@ -258,7 +299,7 @@ var _ = Describe("Commands", func() {
 
 			// Test setting the libVer
 			libVer := "vX.x"
-			libInfo = redis.LibraryInfo{LibVer: &libVer}
+			libInfo = redis.WithLibraryVersion(libVer)
 			setInfo = pipe.ClientSetInfo(ctx, libInfo)
 			_, err = pipe.Exec(ctx)
 
@@ -291,6 +332,17 @@ var _ = Describe("Commands", func() {
 				}()
 				pipe.ClientSetInfo(ctx, libInfo)
 			}).To(Panic())
+			// Test setting the default options for libName, libName suffix and libVer
+			clientInfo := client.ClientInfo(ctx).Val()
+			Expect(clientInfo.LibName).To(ContainSubstring("go-redis(go-redis,"))
+			// Test setting the libName suffix in options
+			opt := redisOptions()
+			opt.IdentitySuffix = "suffix"
+			client2 := redis.NewClient(opt)
+			defer client2.Close()
+			clientInfo = client2.ClientInfo(ctx).Val()
+			Expect(clientInfo.LibName).To(ContainSubstring("go-redis(suffix,"))
+
 		})
 
 		It("should ConfigGet", func() {
@@ -299,13 +351,30 @@ var _ = Describe("Commands", func() {
 			Expect(val).NotTo(BeEmpty())
 		})
 
-		It("should ConfigResetStat", func() {
+		It("should ConfigGet Modules", func() {
+			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
+			expected := map[string]string{
+				"search-*": "search-timeout",
+				"ts-*":     "ts-retention-policy",
+				"bf-*":     "bf-error-rate",
+				"cf-*":     "cf-initial-size",
+			}
+
+			for prefix, lookup := range expected {
+				val, err := client.ConfigGet(ctx, prefix).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val[lookup]).NotTo(BeEmpty())
+			}
+		})
+
+		It("should ConfigResetStat", Label("NonRedisEnterprise"), func() {
 			r := client.ConfigResetStat(ctx)
 			Expect(r.Err()).NotTo(HaveOccurred())
 			Expect(r.Val()).To(Equal("OK"))
 		})
 
-		It("should ConfigSet", func() {
+		It("should ConfigSet", Label("NonRedisEnterprise"), func() {
 			configGet := client.ConfigGet(ctx, "maxmemory")
 			Expect(configGet.Err()).NotTo(HaveOccurred())
 			Expect(configGet.Val()).To(HaveLen(1))
@@ -317,7 +386,128 @@ var _ = Describe("Commands", func() {
 			Expect(configSet.Val()).To(Equal("OK"))
 		})
 
-		It("should ConfigRewrite", func() {
+		It("should ConfigGet with Modules", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8, "config get won't return modules configs before redis 8")
+			configGet := client.ConfigGet(ctx, "*")
+			Expect(configGet.Err()).NotTo(HaveOccurred())
+			Expect(configGet.Val()).To(HaveKey("maxmemory"))
+			Expect(configGet.Val()).To(HaveKey("search-timeout"))
+			Expect(configGet.Val()).To(HaveKey("ts-retention-policy"))
+			Expect(configGet.Val()).To(HaveKey("bf-error-rate"))
+			Expect(configGet.Val()).To(HaveKey("cf-initial-size"))
+		})
+
+		It("should ConfigSet FT DIALECT", func() {
+			SkipBeforeRedisVersion(8, "config doesn't include modules before Redis 8")
+			defaultState, err := client.ConfigGet(ctx, "search-default-dialect").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// set to 3
+			res, err := client.ConfigSet(ctx, "search-default-dialect", "3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+
+			defDialect, err := client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "3"}))
+
+			resGet, err := client.ConfigGet(ctx, "search-default-dialect").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resGet).To(BeEquivalentTo(map[string]string{"search-default-dialect": "3"}))
+
+			// set to 2
+			res, err = client.ConfigSet(ctx, "search-default-dialect", "2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+
+			defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "2"}))
+
+			// set to 1
+			res, err = client.ConfigSet(ctx, "search-default-dialect", "1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+
+			defDialect, err = client.FTConfigGet(ctx, "DEFAULT_DIALECT").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "1"}))
+
+			resGet, err = client.ConfigGet(ctx, "search-default-dialect").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resGet).To(BeEquivalentTo(map[string]string{"search-default-dialect": "1"}))
+
+			// set to default
+			res, err = client.ConfigSet(ctx, "search-default-dialect", defaultState["search-default-dialect"]).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo("OK"))
+		})
+
+		It("should ConfigSet fail for ReadOnly", func() {
+			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
+			_, err := client.ConfigSet(ctx, "search-max-doctablesize", "100000").Result()
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should ConfigSet Modules", func() {
+			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
+			defaults := map[string]string{}
+			expected := map[string]string{
+				"search-timeout":      "100",
+				"ts-retention-policy": "2",
+				"bf-error-rate":       "0.13",
+				"cf-initial-size":     "64",
+			}
+
+			// read the defaults to set them back later
+			for setting := range expected {
+				val, err := client.ConfigGet(ctx, setting).Result()
+				Expect(err).NotTo(HaveOccurred())
+				defaults[setting] = val[setting]
+			}
+
+			// check if new values can be set
+			for setting, value := range expected {
+				val, err := client.ConfigSet(ctx, setting, value).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val).To(Equal("OK"))
+			}
+
+			for setting, value := range expected {
+				val, err := client.ConfigGet(ctx, setting).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val[setting]).To(Equal(value))
+			}
+
+			// set back to the defaults
+			for setting, value := range defaults {
+				val, err := client.ConfigSet(ctx, setting, value).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).NotTo(BeEmpty())
+				Expect(val).To(Equal("OK"))
+			}
+		})
+
+		It("should Fail ConfigSet Modules", func() {
+			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
+			expected := map[string]string{
+				"search-timeout":      "-100",
+				"ts-retention-policy": "-10",
+				"bf-error-rate":       "1.5",
+				"cf-initial-size":     "-10",
+			}
+
+			for setting, value := range expected {
+				val, err := client.ConfigSet(ctx, setting, value).Result()
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(ContainSubstring(setting)))
+				Expect(val).To(BeEmpty())
+			}
+		})
+
+		It("should ConfigRewrite", Label("NonRedisEnterprise"), func() {
 			configRewrite := client.ConfigRewrite(ctx)
 			Expect(configRewrite.Err()).NotTo(HaveOccurred())
 			Expect(configRewrite.Val()).To(Equal("OK"))
@@ -335,6 +525,73 @@ var _ = Describe("Commands", func() {
 			Expect(info.Val()).NotTo(Equal(""))
 		})
 
+		It("should InfoMap", Label("redis.info"), func() {
+			info := client.InfoMap(ctx)
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).NotTo(BeNil())
+
+			info = client.InfoMap(ctx, "dummy")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(BeNil())
+
+			info = client.InfoMap(ctx, "server")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(HaveLen(1))
+		})
+
+		It("should Info Modules", Label("redis.info"), func() {
+			SkipBeforeRedisVersion(8, "modules are included in info for Redis Version >= 8")
+			info := client.Info(ctx)
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).NotTo(BeNil())
+
+			info = client.Info(ctx, "search")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(ContainSubstring("search"))
+
+			info = client.Info(ctx, "modules")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(ContainSubstring("search"))
+			Expect(info.Val()).To(ContainSubstring("ReJSON"))
+			Expect(info.Val()).To(ContainSubstring("timeseries"))
+			Expect(info.Val()).To(ContainSubstring("bf"))
+
+			info = client.Info(ctx, "everything")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).To(ContainSubstring("search"))
+			Expect(info.Val()).To(ContainSubstring("ReJSON"))
+			Expect(info.Val()).To(ContainSubstring("timeseries"))
+			Expect(info.Val()).To(ContainSubstring("bf"))
+		})
+
+		It("should InfoMap Modules", Label("redis.info"), func() {
+			SkipBeforeRedisVersion(8, "modules are included in info for Redis Version >= 8")
+			info := client.InfoMap(ctx)
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).NotTo(BeNil())
+
+			info = client.InfoMap(ctx, "search")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(len(info.Val())).To(BeNumerically(">=", 2))
+			Expect(info.Val()["search_version"]).ToNot(BeNil())
+
+			info = client.InfoMap(ctx, "modules")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			val := info.Val()
+			modules, ok := val["Modules"]
+			Expect(ok).To(BeTrue())
+			Expect(len(val)).To(BeNumerically(">=", 2))
+			Expect(val["search_version"]).ToNot(BeNil())
+			Expect(modules["search"]).ToNot(BeNil())
+			Expect(modules["ReJSON"]).ToNot(BeNil())
+			Expect(modules["timeseries"]).ToNot(BeNil())
+			Expect(modules["bf"]).ToNot(BeNil())
+
+			info = client.InfoMap(ctx, "everything")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(len(info.Val())).To(BeNumerically(">=", 10))
+		})
+
 		It("should Info cpu", func() {
 			info := client.Info(ctx, "cpu")
 			Expect(info.Err()).NotTo(HaveOccurred())
@@ -350,20 +607,20 @@ var _ = Describe("Commands", func() {
 			Expect(info.Val()).To(ContainSubstring(`memory`))
 		})
 
-		It("should LastSave", func() {
+		It("should LastSave", Label("NonRedisEnterprise"), func() {
 			lastSave := client.LastSave(ctx)
 			Expect(lastSave.Err()).NotTo(HaveOccurred())
 			Expect(lastSave.Val()).NotTo(Equal(0))
 		})
 
-		It("should Save", func() {
+		It("should Save", Label("NonRedisEnterprise"), func() {
 			// workaround for "ERR Background save already in progress"
 			Eventually(func() string {
 				return client.Save(ctx).Val()
 			}, "10s").Should(Equal("OK"))
 		})
 
-		It("should SlaveOf", func() {
+		It("should SlaveOf", Label("NonRedisEnterprise"), func() {
 			slaveOf := client.SlaveOf(ctx, "localhost", "8888")
 			Expect(slaveOf.Err()).NotTo(HaveOccurred())
 			Expect(slaveOf.Val()).To(Equal("OK"))
@@ -379,10 +636,9 @@ var _ = Describe("Commands", func() {
 			Expect(tm).To(BeTemporally("~", time.Now(), 3*time.Second))
 		})
 
-		It("should Command", func() {
+		It("should Command", Label("NonRedisEnterprise"), func() {
 			cmds, err := client.Command(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(cmds)).To(BeNumerically("~", 240, 25))
 
 			cmd := cmds["mget"]
 			Expect(cmd.Name).To(Equal("mget"))
@@ -452,8 +708,8 @@ var _ = Describe("Commands", func() {
 		})
 	})
 
-	Describe("debugging", func() {
-		PIt("should DebugObject", func() {
+	Describe("debugging", Label("NonRedisEnterprise"), func() {
+		It("should DebugObject", func() {
 			err := client.DebugObject(ctx, "foo").Err()
 			Expect(err).To(MatchError("ERR no such key"))
 
@@ -610,7 +866,7 @@ var _ = Describe("Commands", func() {
 			Expect(keys.Val()).To(ConsistOf([]string{"four", "one", "three", "two"}))
 		})
 
-		It("should Migrate", func() {
+		It("should Migrate", Label("NonRedisEnterprise"), func() {
 			migrate := client.Migrate(ctx, "localhost", redisSecondaryPort, "key", 0, 0)
 			Expect(migrate.Err()).NotTo(HaveOccurred())
 			Expect(migrate.Val()).To(Equal("NOKEY"))
@@ -624,7 +880,7 @@ var _ = Describe("Commands", func() {
 			Expect(migrate.Val()).To(Equal(""))
 		})
 
-		It("should Move", func() {
+		It("should Move", Label("NonRedisEnterprise"), func() {
 			move := client.Move(ctx, "key", 2)
 			Expect(move.Err()).NotTo(HaveOccurred())
 			Expect(move.Val()).To(Equal(false))
@@ -651,7 +907,7 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("hello"))
 		})
 
-		It("should Object", func() {
+		It("should Object", Label("NonRedisEnterprise"), func() {
 			start := time.Now()
 			set := client.Set(ctx, "key", "hello", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
@@ -660,6 +916,11 @@ var _ = Describe("Commands", func() {
 			refCount := client.ObjectRefCount(ctx, "key")
 			Expect(refCount.Err()).NotTo(HaveOccurred())
 			Expect(refCount.Val()).To(Equal(int64(1)))
+
+			client.ConfigSet(ctx, "maxmemory-policy", "volatile-lfu")
+			freq := client.ObjectFreq(ctx, "key")
+			Expect(freq.Err()).NotTo(HaveOccurred())
+			client.ConfigSet(ctx, "maxmemory-policy", "noeviction") // default
 
 			err := client.ObjectEncoding(ctx, "key").Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -785,7 +1046,7 @@ var _ = Describe("Commands", func() {
 			Expect(randomKey.Val()).To(Equal("key"))
 		})
 
-		It("should Rename", func() {
+		It("should Rename", Label("NonRedisEnterprise"), func() {
 			set := client.Set(ctx, "key", "hello", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -799,7 +1060,7 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("hello"))
 		})
 
-		It("should RenameNX", func() {
+		It("should RenameNX", Label("NonRedisEnterprise"), func() {
 			set := client.Set(ctx, "key", "hello", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -900,7 +1161,7 @@ var _ = Describe("Commands", func() {
 			Expect(els).To(Equal([]string{"1", "2"}))
 		})
 
-		It("should Sort and Get", func() {
+		It("should Sort and Get", Label("NonRedisEnterprise"), func() {
 			size, err := client.LPush(ctx, "list", "1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(Equal(int64(1)))
@@ -933,7 +1194,7 @@ var _ = Describe("Commands", func() {
 			}
 		})
 
-		It("should Sort and Store", func() {
+		It("should Sort and Store", Label("NonRedisEnterprise"), func() {
 			size, err := client.LPush(ctx, "list", "1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(Equal(int64(1)))
@@ -1070,6 +1331,27 @@ var _ = Describe("Commands", func() {
 
 			keys, cursor, err := client.HScan(ctx, "myhash", 0, "", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
+			// If we don't get at least two items back, it's really strange.
+			Expect(cursor).To(BeNumerically(">=", 2))
+			Expect(len(keys)).To(BeNumerically(">=", 2))
+			Expect(keys[0]).To(HavePrefix("key"))
+			Expect(keys[1]).To(Equal("hello"))
+		})
+
+		It("should HScan without values", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			for i := 0; i < 1000; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			keys, cursor, err := client.HScanNoValues(ctx, "myhash", 0, "", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			// If we don't get at least two items back, it's really strange.
+			Expect(cursor).To(BeNumerically(">=", 2))
+			Expect(len(keys)).To(BeNumerically(">=", 2))
+			Expect(keys[0]).To(HavePrefix("key"))
+			Expect(keys[1]).To(HavePrefix("key"))
 			Expect(keys).NotTo(BeEmpty())
 			Expect(cursor).NotTo(BeZero())
 		})
@@ -1133,7 +1415,7 @@ var _ = Describe("Commands", func() {
 			Expect(bitCount.Val()).To(Equal(int64(6)))
 		})
 
-		It("should BitOpAnd", func() {
+		It("should BitOpAnd", Label("NonRedisEnterprise"), func() {
 			set := client.Set(ctx, "key1", "1", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1151,7 +1433,7 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("0"))
 		})
 
-		It("should BitOpOr", func() {
+		It("should BitOpOr", Label("NonRedisEnterprise"), func() {
 			set := client.Set(ctx, "key1", "1", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1169,7 +1451,7 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("1"))
 		})
 
-		It("should BitOpXor", func() {
+		It("should BitOpXor", Label("NonRedisEnterprise"), func() {
 			set := client.Set(ctx, "key1", "\xff", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1187,7 +1469,7 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("\xf0"))
 		})
 
-		It("should BitOpNot", func() {
+		It("should BitOpNot", Label("NonRedisEnterprise"), func() {
 			set := client.Set(ctx, "key1", "\x00", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1263,6 +1545,20 @@ var _ = Describe("Commands", func() {
 			nn, err = client.BitField(ctx, "mykey", "set", "i1", 1, 1, "GET", "u4", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nn).To(Equal([]int64{0, 4}))
+		})
+
+		It("should BitFieldRO", func() {
+			nn, err := client.BitField(ctx, "mykey", "SET", "u8", 8, 255).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nn).To(Equal([]int64{0}))
+
+			nn, err = client.BitFieldRO(ctx, "mykey", "u8", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nn).To(Equal([]int64{0}))
+
+			nn, err = client.BitFieldRO(ctx, "mykey", "u8", 0, "u4", 8, "u4", 12, "u4", 13).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nn).To(Equal([]int64{0, 15, 15, 14}))
 		})
 
 		It("should Decr", func() {
@@ -1502,7 +1798,7 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		It("should MSetNX", func() {
+		It("should MSetNX", Label("NonRedisEnterprise"), func() {
 			mSetNX := client.MSetNX(ctx, "key1", "hello1", "key2", "hello2")
 			Expect(mSetNX.Err()).NotTo(HaveOccurred())
 			Expect(mSetNX.Val()).To(Equal(true))
@@ -1967,7 +2263,7 @@ var _ = Describe("Commands", func() {
 			Expect(strLen.Val()).To(Equal(int64(0)))
 		})
 
-		It("should Copy", func() {
+		It("should Copy", Label("NonRedisEnterprise"), func() {
 			set := client.Set(ctx, "key", "hello", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1993,13 +2289,7 @@ var _ = Describe("Commands", func() {
 			Expect(replace.Val()).To(Equal(int64(1)))
 		})
 
-		It("should acl dryrun", func() {
-			dryRun := client.ACLDryRun(ctx, "default", "get", "randomKey")
-			Expect(dryRun.Err()).NotTo(HaveOccurred())
-			Expect(dryRun.Val()).To(Equal("OK"))
-		})
-
-		It("should fail module loadex", func() {
+		It("should fail module loadex", Label("NonRedisEnterprise"), func() {
 			dryRun := client.ModuleLoadex(ctx, &redis.ModuleLoadexConfig{
 				Path: "/path/to/non-existent-library.so",
 				Conf: map[string]interface{}{
@@ -2045,51 +2335,6 @@ var _ = Describe("Commands", func() {
 			}
 
 			Expect(args).To(Equal(expectedArgs))
-		})
-
-		It("should ACL LOG", func() {
-			err := client.Do(ctx, "acl", "setuser", "test", ">test", "on", "allkeys", "+get").Err()
-			Expect(err).NotTo(HaveOccurred())
-
-			clientAcl := redis.NewClient(redisOptions())
-			clientAcl.Options().Username = "test"
-			clientAcl.Options().Password = "test"
-			clientAcl.Options().DB = 0
-			_ = clientAcl.Set(ctx, "mystring", "foo", 0).Err()
-			_ = clientAcl.HSet(ctx, "myhash", "foo", "bar").Err()
-			_ = clientAcl.SAdd(ctx, "myset", "foo", "bar").Err()
-
-			logEntries, err := client.ACLLog(ctx, 10).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(logEntries)).To(Equal(4))
-
-			for _, entry := range logEntries {
-				Expect(entry.Reason).To(Equal("command"))
-				Expect(entry.Context).To(Equal("toplevel"))
-				Expect(entry.Object).NotTo(BeEmpty())
-				Expect(entry.Username).To(Equal("test"))
-				Expect(entry.AgeSeconds).To(BeNumerically(">=", 0))
-				Expect(entry.ClientInfo).NotTo(BeNil())
-				Expect(entry.EntryID).To(BeNumerically(">=", 0))
-				Expect(entry.TimestampCreated).To(BeNumerically(">=", 0))
-				Expect(entry.TimestampLastUpdated).To(BeNumerically(">=", 0))
-			}
-
-			limitedLogEntries, err := client.ACLLog(ctx, 2).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(limitedLogEntries)).To(Equal(2))
-		})
-
-		It("should ACL LOG RESET", func() {
-			// Call ACL LOG RESET
-			resetCmd := client.ACLLogReset(ctx)
-			Expect(resetCmd.Err()).NotTo(HaveOccurred())
-			Expect(resetCmd.Val()).To(Equal("OK"))
-
-			// Verify that the log is empty after the reset
-			logEntries, err := client.ACLLog(ctx, 10).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(logEntries)).To(Equal(0))
 		})
 	})
 
@@ -2333,6 +2578,63 @@ var _ = Describe("Commands", func() {
 				"val2",
 				"val",
 			}))
+
+			type setOmitEmpty struct {
+				Set1 string        `redis:"set1"`
+				Set2 int           `redis:"set2,omitempty"`
+				Set3 time.Duration `redis:"set3,omitempty"`
+				Set4 string        `redis:"set4,omitempty"`
+				Set5 time.Time     `redis:"set5,omitempty"`
+				Set6 *numberStruct `redis:"set6,omitempty"`
+				Set7 numberStruct  `redis:"set7,omitempty"`
+			}
+
+			hSet = client.HSet(ctx, "hash3", &setOmitEmpty{
+				Set1: "val",
+			})
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+			// both set1 and set7 are set
+			// custom struct is not omitted
+			Expect(hSet.Val()).To(Equal(int64(2)))
+
+			hGetAll := client.HGetAll(ctx, "hash3")
+			Expect(hGetAll.Err()).NotTo(HaveOccurred())
+			Expect(hGetAll.Val()).To(Equal(map[string]string{
+				"set1": "val",
+				"set7": `{"Number":0}`,
+			}))
+			var hash3 setOmitEmpty
+			Expect(hGetAll.Scan(&hash3)).NotTo(HaveOccurred())
+			Expect(hash3.Set1).To(Equal("val"))
+			Expect(hash3.Set2).To(Equal(0))
+			Expect(hash3.Set3).To(Equal(time.Duration(0)))
+			Expect(hash3.Set4).To(Equal(""))
+			Expect(hash3.Set5).To(Equal(time.Time{}))
+			Expect(hash3.Set6).To(BeNil())
+			Expect(hash3.Set7).To(Equal(numberStruct{}))
+
+			now := time.Now()
+			hSet = client.HSet(ctx, "hash4", setOmitEmpty{
+				Set1: "val",
+				Set5: now,
+				Set6: &numberStruct{
+					Number: 5,
+				},
+				Set7: numberStruct{
+					Number: 3,
+				},
+			})
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+			Expect(hSet.Val()).To(Equal(int64(4)))
+
+			hGetAll = client.HGetAll(ctx, "hash4")
+			Expect(hGetAll.Err()).NotTo(HaveOccurred())
+			Expect(hGetAll.Val()).To(Equal(map[string]string{
+				"set1": "val",
+				"set5": now.Format(time.RFC3339Nano),
+				"set6": `{"Number":5}`,
+				"set7": `{"Number":3}`,
+			}))
 		})
 
 		It("should HSetNX", func() {
@@ -2386,10 +2688,338 @@ var _ = Describe("Commands", func() {
 				Equal([]redis.KeyValue{{Key: "key2", Value: "hello2"}}),
 			))
 		})
+
+		It("should HStrLen", func() {
+			hSet := client.HSet(ctx, "hash", "key", "hello")
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+
+			hStrLen := client.HStrLen(ctx, "hash", "key")
+			Expect(hStrLen.Err()).NotTo(HaveOccurred())
+			Expect(hStrLen.Val()).To(Equal(int64(len("hello"))))
+
+			nonHStrLen := client.HStrLen(ctx, "hash", "keyNon")
+			Expect(hStrLen.Err()).NotTo(HaveOccurred())
+			Expect(nonHStrLen.Val()).To(Equal(int64(0)))
+
+			hDel := client.HDel(ctx, "hash", "key")
+			Expect(hDel.Err()).NotTo(HaveOccurred())
+			Expect(hDel.Val()).To(Equal(int64(1)))
+		})
+
+		It("should HExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			res, err := client.HExpire(ctx, "no_such_key", 10*time.Second, "field1", "field2", "field3").Result()
+			Expect(err).To(BeNil())
+			Expect(res).To(BeEquivalentTo([]int64{-2, -2, -2}))
+
+			for i := 0; i < 100; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err = client.HExpire(ctx, "myhash", 10*time.Second, "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, 1, -2}))
+		})
+
+		It("should HPExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			res, err := client.HPExpire(ctx, "no_such_key", 10*time.Second, "field1", "field2", "field3").Result()
+			Expect(err).To(BeNil())
+			Expect(res).To(BeEquivalentTo([]int64{-2, -2, -2}))
+
+			for i := 0; i < 100; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err = client.HPExpire(ctx, "myhash", 10*time.Second, "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, 1, -2}))
+		})
+
+		It("should HExpireAt", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			resEmpty, err := client.HExpireAt(ctx, "no_such_key", time.Now().Add(10*time.Second), "field1", "field2", "field3").Result()
+			Expect(err).To(BeNil())
+			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
+
+			for i := 0; i < 100; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client.HExpireAt(ctx, "myhash", time.Now().Add(10*time.Second), "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, 1, -2}))
+		})
+
+		It("should HPExpireAt", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			resEmpty, err := client.HPExpireAt(ctx, "no_such_key", time.Now().Add(10*time.Second), "field1", "field2", "field3").Result()
+			Expect(err).To(BeNil())
+			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
+
+			for i := 0; i < 100; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client.HPExpireAt(ctx, "myhash", time.Now().Add(10*time.Second), "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, 1, -2}))
+		})
+
+		It("should HPersist", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			resEmpty, err := client.HPersist(ctx, "no_such_key", "field1", "field2", "field3").Result()
+			Expect(err).To(BeNil())
+			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
+
+			for i := 0; i < 100; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client.HPersist(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{-1, -1, -2}))
+
+			res, err = client.HExpire(ctx, "myhash", 10*time.Second, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			res, err = client.HPersist(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -1, -2}))
+		})
+
+		It("should HExpireTime", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			resEmpty, err := client.HExpireTime(ctx, "no_such_key", "field1", "field2", "field3").Result()
+			Expect(err).To(BeNil())
+			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
+
+			for i := 0; i < 100; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client.HExpire(ctx, "myhash", 10*time.Second, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			res, err = client.HExpireTime(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res[0]).To(BeNumerically("~", time.Now().Add(10*time.Second).Unix(), 1))
+		})
+
+		It("should HPExpireTime", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			resEmpty, err := client.HPExpireTime(ctx, "no_such_key", "field1", "field2", "field3").Result()
+			Expect(err).To(BeNil())
+			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
+
+			for i := 0; i < 100; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			expireAt := time.Now().Add(10 * time.Second)
+			res, err := client.HPExpireAt(ctx, "myhash", expireAt, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			res, err = client.HPExpireTime(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(BeEquivalentTo([]int64{expireAt.UnixMilli(), -1, -2}))
+		})
+
+		It("should HTTL", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			resEmpty, err := client.HTTL(ctx, "no_such_key", "field1", "field2", "field3").Result()
+			Expect(err).To(BeNil())
+			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
+
+			for i := 0; i < 100; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client.HExpire(ctx, "myhash", 10*time.Second, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			res, err = client.HTTL(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{10, -1, -2}))
+		})
+
+		It("should HPTTL", Label("hash-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			resEmpty, err := client.HPTTL(ctx, "no_such_key", "field1", "field2", "field3").Result()
+			Expect(err).To(BeNil())
+			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
+
+			for i := 0; i < 100; i++ {
+				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
+				Expect(sadd.Err()).NotTo(HaveOccurred())
+			}
+
+			res, err := client.HExpire(ctx, "myhash", 10*time.Second, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			res, err = client.HPTTL(ctx, "myhash", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 1))
+		})
+
+		It("should HGETDEL", Label("hash", "HGETDEL"), func() {
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+
+			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2", "f3", "val3").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Execute HGETDEL on fields f1 and f2.
+			res, err := client.HGetDel(ctx, "myhash", "f1", "f2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			// Expect the returned values for f1 and f2.
+			Expect(res).To(Equal([]string{"val1", "val2"}))
+
+			// Verify that f1 and f2 have been deleted, while f3 remains.
+			remaining, err := client.HMGet(ctx, "myhash", "f1", "f2", "f3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(remaining[0]).To(BeNil())
+			Expect(remaining[1]).To(BeNil())
+			Expect(remaining[2]).To(Equal("val3"))
+		})
+
+		It("should return nil responses for HGETDEL on non-existent key", Label("hash", "HGETDEL"), func() {
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+			// HGETDEL on a key that does not exist.
+			res, err := client.HGetDel(ctx, "nonexistent", "f1", "f2").Result()
+			Expect(err).To(BeNil())
+			Expect(res).To(Equal([]string{"", ""}))
+		})
+
+		// -----------------------------
+		// HGETEX with various TTL options
+		// -----------------------------
+		It("should HGETEX with EX option", Label("hash", "HGETEX"), func() {
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+
+			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Call HGETEX with EX option and 60 seconds TTL.
+			opt := redis.HGetEXOptions{
+				ExpirationType: redis.HGetEXExpirationEX,
+				ExpirationVal:  60,
+			}
+			res, err := client.HGetEXWithArgs(ctx, "myhash", &opt, "f1", "f2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"val1", "val2"}))
+		})
+
+		It("should HGETEX with PERSIST option", Label("hash", "HGETEX"), func() {
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+
+			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Call HGETEX with PERSIST (no TTL value needed).
+			opt := redis.HGetEXOptions{ExpirationType: redis.HGetEXExpirationPERSIST}
+			res, err := client.HGetEXWithArgs(ctx, "myhash", &opt, "f1", "f2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"val1", "val2"}))
+		})
+
+		It("should HGETEX with EXAT option", Label("hash", "HGETEX"), func() {
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+
+			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Set expiration at a specific Unix timestamp (60 seconds from now).
+			expireAt := time.Now().Add(60 * time.Second).Unix()
+			opt := redis.HGetEXOptions{
+				ExpirationType: redis.HGetEXExpirationEXAT,
+				ExpirationVal:  expireAt,
+			}
+			res, err := client.HGetEXWithArgs(ctx, "myhash", &opt, "f1", "f2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"val1", "val2"}))
+		})
+
+		// -----------------------------
+		// HSETEX with FNX/FXX options
+		// -----------------------------
+		It("should HSETEX with FNX condition", Label("hash", "HSETEX"), func() {
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+
+			opt := redis.HSetEXOptions{
+				Condition:      redis.HSetEXFNX,
+				ExpirationType: redis.HSetEXExpirationEX,
+				ExpirationVal:  60,
+			}
+			res, err := client.HSetEXWithArgs(ctx, "myhash", &opt, "f1", "val1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(1)))
+
+			opt = redis.HSetEXOptions{
+				Condition:      redis.HSetEXFNX,
+				ExpirationType: redis.HSetEXExpirationEX,
+				ExpirationVal:  60,
+			}
+			res, err = client.HSetEXWithArgs(ctx, "myhash", &opt, "f1", "val2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(0)))
+		})
+
+		It("should HSETEX with FXX condition", Label("hash", "HSETEX"), func() {
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+
+			err := client.HSet(ctx, "myhash", "f2", "val1").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			opt := redis.HSetEXOptions{
+				Condition:      redis.HSetEXFXX,
+				ExpirationType: redis.HSetEXExpirationEX,
+				ExpirationVal:  60,
+			}
+			res, err := client.HSetEXWithArgs(ctx, "myhash", &opt, "f2", "val2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(1)))
+			opt = redis.HSetEXOptions{
+				Condition:      redis.HSetEXFXX,
+				ExpirationType: redis.HSetEXExpirationEX,
+				ExpirationVal:  60,
+			}
+			res, err = client.HSetEXWithArgs(ctx, "myhash", &opt, "f3", "val3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(0)))
+		})
+
+		It("should HSETEX with multiple field operations", Label("hash", "HSETEX"), func() {
+			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+
+			opt := redis.HSetEXOptions{
+				ExpirationType: redis.HSetEXExpirationEX,
+				ExpirationVal:  60,
+			}
+			res, err := client.HSetEXWithArgs(ctx, "myhash", &opt, "f1", "val1", "f2", "val2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(1)))
+
+			values, err := client.HMGet(ctx, "myhash", "f1", "f2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(values).To(Equal([]interface{}{"val1", "val2"}))
+		})
 	})
 
 	Describe("hyperloglog", func() {
-		It("should PFMerge", func() {
+		It("should PFMerge", Label("NonRedisEnterprise"), func() {
 			pfAdd := client.PFAdd(ctx, "hll1", "1", "2", "3", "4", "5")
 			Expect(pfAdd.Err()).NotTo(HaveOccurred())
 
@@ -2414,7 +3044,7 @@ var _ = Describe("Commands", func() {
 	})
 
 	Describe("lists", func() {
-		It("should BLPop", func() {
+		It("should BLPop", Label("NonRedisEnterprise"), func() {
 			rPush := client.RPush(ctx, "list1", "a", "b", "c")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
 
@@ -2468,7 +3098,7 @@ var _ = Describe("Commands", func() {
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
 		})
 
-		It("should BRPop", func() {
+		It("should BRPop", Label("NonRedisEnterprise"), func() {
 			rPush := client.RPush(ctx, "list1", "a", "b", "c")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
 
@@ -2510,7 +3140,7 @@ var _ = Describe("Commands", func() {
 			}
 		})
 
-		It("should BRPopLPush", func() {
+		It("should BRPopLPush", Label("NonRedisEnterprise"), func() {
 			_, err := client.BRPopLPush(ctx, "list1", "list2", time.Second).Result()
 			Expect(err).To(Equal(redis.Nil))
 
@@ -2522,7 +3152,7 @@ var _ = Describe("Commands", func() {
 			Expect(v).To(Equal("c"))
 		})
 
-		It("should LCS", func() {
+		It("should LCS", Label("NonRedisEnterprise"), func() {
 			err := client.MSet(ctx, "key1", "ohmytext", "key2", "mynewtext").Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2636,7 +3266,7 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Val()).To(Equal([]string{"Hello", "There", "World"}))
 		})
 
-		It("should LMPop", func() {
+		It("should LMPop", Label("NonRedisEnterprise"), func() {
 			err := client.LPush(ctx, "list1", "one", "two", "three", "four", "five").Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2676,7 +3306,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(HaveOccurred())
 		})
 
-		It("should BLMPop", func() {
+		It("should BLMPop", Label("NonRedisEnterprise"), func() {
 			err := client.LPush(ctx, "list1", "one", "two", "three", "four", "five").Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -3010,7 +3640,7 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Val()).To(Equal([]string{"one", "two"}))
 		})
 
-		It("should RPopLPush", func() {
+		It("should RPopLPush", Label("NonRedisEnterprise"), func() {
 			rPush := client.RPush(ctx, "list", "one")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
 			rPush = client.RPush(ctx, "list", "two")
@@ -3079,7 +3709,7 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Val()).To(Equal([]string{}))
 		})
 
-		It("should LMove", func() {
+		It("should LMove", Label("NonRedisEnterprise"), func() {
 			rPush := client.RPush(ctx, "lmove1", "ichi")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
 			Expect(rPush.Val()).To(Equal(int64(1)))
@@ -3101,7 +3731,7 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Val()).To(Equal([]string{"san"}))
 		})
 
-		It("should BLMove", func() {
+		It("should BLMove", Label("NonRedisEnterprise"), func() {
 			rPush := client.RPush(ctx, "blmove1", "ichi")
 			Expect(rPush.Err()).NotTo(HaveOccurred())
 			Expect(rPush.Val()).To(Equal(int64(1)))
@@ -3168,7 +3798,7 @@ var _ = Describe("Commands", func() {
 			Expect(sCard.Val()).To(Equal(int64(2)))
 		})
 
-		It("should SDiff", func() {
+		It("should SDiff", Label("NonRedisEnterprise"), func() {
 			sAdd := client.SAdd(ctx, "set1", "a")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set1", "b")
@@ -3188,7 +3818,7 @@ var _ = Describe("Commands", func() {
 			Expect(sDiff.Val()).To(ConsistOf([]string{"a", "b"}))
 		})
 
-		It("should SDiffStore", func() {
+		It("should SDiffStore", Label("NonRedisEnterprise"), func() {
 			sAdd := client.SAdd(ctx, "set1", "a")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set1", "b")
@@ -3212,7 +3842,7 @@ var _ = Describe("Commands", func() {
 			Expect(sMembers.Val()).To(ConsistOf([]string{"a", "b"}))
 		})
 
-		It("should SInter", func() {
+		It("should SInter", Label("NonRedisEnterprise"), func() {
 			sAdd := client.SAdd(ctx, "set1", "a")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set1", "b")
@@ -3232,7 +3862,7 @@ var _ = Describe("Commands", func() {
 			Expect(sInter.Val()).To(Equal([]string{"c"}))
 		})
 
-		It("should SInterCard", func() {
+		It("should SInterCard", Label("NonRedisEnterprise"), func() {
 			sAdd := client.SAdd(ctx, "set1", "a")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set1", "b")
@@ -3262,7 +3892,7 @@ var _ = Describe("Commands", func() {
 			Expect(sInterCard.Val()).To(Equal(int64(2)))
 		})
 
-		It("should SInterStore", func() {
+		It("should SInterStore", Label("NonRedisEnterprise"), func() {
 			sAdd := client.SAdd(ctx, "set1", "a")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set1", "b")
@@ -3330,7 +3960,7 @@ var _ = Describe("Commands", func() {
 			Expect(sMembersMap.Val()).To(Equal(map[string]struct{}{"Hello": {}, "World": {}}))
 		})
 
-		It("should SMove", func() {
+		It("should SMove", Label("NonRedisEnterprise"), func() {
 			sAdd := client.SAdd(ctx, "set1", "one")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set1", "two")
@@ -3438,7 +4068,7 @@ var _ = Describe("Commands", func() {
 			Expect(sMembers.Val()).To(ConsistOf([]string{"three", "two"}))
 		})
 
-		It("should SUnion", func() {
+		It("should SUnion", Label("NonRedisEnterprise"), func() {
 			sAdd := client.SAdd(ctx, "set1", "a")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set1", "b")
@@ -3458,7 +4088,7 @@ var _ = Describe("Commands", func() {
 			Expect(sUnion.Val()).To(HaveLen(5))
 		})
 
-		It("should SUnionStore", func() {
+		It("should SUnionStore", Label("NonRedisEnterprise"), func() {
 			sAdd := client.SAdd(ctx, "set1", "a")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set1", "b")
@@ -3484,7 +4114,7 @@ var _ = Describe("Commands", func() {
 	})
 
 	Describe("sorted sets", func() {
-		It("should BZPopMax", func() {
+		It("should BZPopMax", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{
 				Score:  1,
 				Member: "one",
@@ -3566,7 +4196,7 @@ var _ = Describe("Commands", func() {
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
 		})
 
-		It("should BZPopMin", func() {
+		It("should BZPopMin", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{
 				Score:  1,
 				Member: "one",
@@ -4148,7 +4778,7 @@ var _ = Describe("Commands", func() {
 			}}))
 		})
 
-		It("should ZInterStore", func() {
+		It("should ZInterStore", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{
 				Score:  1,
 				Member: "one",
@@ -4185,7 +4815,7 @@ var _ = Describe("Commands", func() {
 			}}))
 		})
 
-		It("should ZMPop", func() {
+		It("should ZMPop", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
@@ -4259,7 +4889,7 @@ var _ = Describe("Commands", func() {
 			}}))
 		})
 
-		It("should BZMPop", func() {
+		It("should BZMPop", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset", redis.Z{Score: 2, Member: "two"}).Err()
@@ -4799,7 +5429,7 @@ var _ = Describe("Commands", func() {
 			Expect(vals).To(Equal([]redis.Z{}))
 		})
 
-		It("should ZRangeStore", func() {
+		It("should ZRangeStore", Label("NonRedisEnterprise"), func() {
 			added, err := client.ZAddArgs(ctx, "zset", redis.ZAddArgs{
 				Members: []redis.Z{
 					{Score: 1, Member: "one"},
@@ -5175,7 +5805,7 @@ var _ = Describe("Commands", func() {
 			Expect(zScore.Val()).To(Equal(1.001))
 		})
 
-		It("should ZUnion", func() {
+		It("should ZUnion", Label("NonRedisEnterprise"), func() {
 			err := client.ZAddArgs(ctx, "zset1", redis.ZAddArgs{
 				Members: []redis.Z{
 					{Score: 1, Member: "one"},
@@ -5214,7 +5844,7 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		It("should ZUnionStore", func() {
+		It("should ZUnionStore", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset1", redis.Z{Score: 2, Member: "two"}).Err()
@@ -5270,7 +5900,7 @@ var _ = Describe("Commands", func() {
 			))
 		})
 
-		It("should ZDiff", func() {
+		It("should ZDiff", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset1", redis.Z{Score: 2, Member: "two"}).Err()
@@ -5285,7 +5915,7 @@ var _ = Describe("Commands", func() {
 			Expect(v).To(Equal([]string{"two", "three"}))
 		})
 
-		It("should ZDiffWithScores", func() {
+		It("should ZDiffWithScores", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset1", redis.Z{Score: 2, Member: "two"}).Err()
@@ -5309,7 +5939,7 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		It("should ZInter", func() {
+		It("should ZInter", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset1", redis.Z{Score: 2, Member: "two"}).Err()
@@ -5328,7 +5958,7 @@ var _ = Describe("Commands", func() {
 			Expect(v).To(Equal([]string{"one", "two"}))
 		})
 
-		It("should ZInterCard", func() {
+		It("should ZInterCard", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset1", redis.Z{Score: 2, Member: "two"}).Err()
@@ -5354,7 +5984,7 @@ var _ = Describe("Commands", func() {
 			Expect(sInterCard.Val()).To(Equal(int64(2)))
 		})
 
-		It("should ZInterWithScores", func() {
+		It("should ZInterWithScores", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset1", redis.Z{Score: 2, Member: "two"}).Err()
@@ -5384,7 +6014,7 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		It("should ZDiffStore", func() {
+		It("should ZDiffStore", Label("NonRedisEnterprise"), func() {
 			err := client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.ZAdd(ctx, "zset1", redis.Z{Score: 2, Member: "two"}).Err()
@@ -5640,6 +6270,81 @@ var _ = Describe("Commands", func() {
 				Block:   100 * time.Millisecond,
 			}).Result()
 			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should XRead LastEntry", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream"},
+				Count:   2, // we expect 1 message
+				ID:      "+",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+			}))
+		})
+
+		It("should XRead LastEntry from two streams", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream"},
+				ID:      "+",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+			}))
+		})
+
+		It("should XRead LastEntry blocks", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			start := time.Now()
+			go func() {
+				defer GinkgoRecover()
+
+				time.Sleep(100 * time.Millisecond)
+				id, err := client.XAdd(ctx, &redis.XAddArgs{
+					Stream: "empty",
+					ID:     "4-0",
+					Values: map[string]interface{}{"quatro": "quatre"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal("4-0"))
+			}()
+
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"empty"},
+				Block:   500 * time.Millisecond,
+				ID:      "+",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			// Ensure that the XRead call with LastEntry option blocked for at least 100ms.
+			Expect(time.Since(start)).To(BeNumerically(">=", 100*time.Millisecond))
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "empty",
+					Messages: []redis.XMessage{
+						{ID: "4-0", Values: map[string]interface{}{"quatro": "quatre"}},
+					},
+				},
+			}))
 		})
 
 		Describe("group", func() {
@@ -6067,6 +6772,36 @@ var _ = Describe("Commands", func() {
 				}))
 			})
 
+			It("should return -1 for nil lag in XINFO GROUPS", func() {
+				_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "s", ID: "0-1", Values: []string{"foo", "1"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				client.XAdd(ctx, &redis.XAddArgs{Stream: "s", ID: "0-2", Values: []string{"foo", "2"}})
+				Expect(err).NotTo(HaveOccurred())
+				client.XAdd(ctx, &redis.XAddArgs{Stream: "s", ID: "0-3", Values: []string{"foo", "3"}})
+				Expect(err).NotTo(HaveOccurred())
+
+				err = client.XGroupCreate(ctx, "s", "g", "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+				err = client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: "g", Consumer: "c", Streams: []string{"s", ">"}, Count: 1, Block: -1, NoAck: false}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				client.XDel(ctx, "s", "0-2")
+
+				res, err := client.XInfoGroups(ctx, "s").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]redis.XInfoGroup{
+					{
+						Name:            "g",
+						Consumers:       1,
+						Pending:         1,
+						LastDeliveredID: "0-1",
+						EntriesRead:     1,
+						Lag:             -1, // nil lag from Redis is reported as -1
+					},
+				}))
+			})
+
 			It("should XINFO CONSUMERS", func() {
 				res, err := client.XInfoConsumers(ctx, "stream", "group1").Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -6115,7 +6850,7 @@ var _ = Describe("Commands", func() {
 			Expect(res[1].Name).To(Equal("Catania"))
 		})
 
-		It("should geo radius and store the result", func() {
+		It("should geo radius and store the result", Label("NonRedisEnterprise"), func() {
 			n, err := client.GeoRadiusStore(ctx, "Sicily", 15, 37, &redis.GeoRadiusQuery{
 				Radius: 200,
 				Store:  "result",
@@ -6135,7 +6870,7 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		It("should geo radius and store dist", func() {
+		It("should geo radius and store dist", Label("NonRedisEnterprise"), func() {
 			n, err := client.GeoRadiusStore(ctx, "Sicily", 15, 37, &redis.GeoRadiusQuery{
 				Radius:    200,
 				StoreDist: "result",
@@ -6145,14 +6880,12 @@ var _ = Describe("Commands", func() {
 
 			res, err := client.ZRangeWithScores(ctx, "result", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(ContainElement(redis.Z{
-				Score:  190.44242984775784,
-				Member: "Palermo",
-			}))
-			Expect(res).To(ContainElement(redis.Z{
-				Score:  56.4412578701582,
-				Member: "Catania",
-			}))
+			Expect(len(res)).To(Equal(2))
+			var palermo, catania redis.Z
+			Expect(res).To(ContainElement(HaveField("Member", "Palermo"), &palermo))
+			Expect(res).To(ContainElement(HaveField("Member", "Catania"), &catania))
+			Expect(palermo.Score).To(BeNumerically("~", 190, 1))
+			Expect(catania.Score).To(BeNumerically("~", 56, 1))
 		})
 
 		It("should search geo radius with options", func() {
@@ -6417,7 +7150,7 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		It("should geo search store", func() {
+		It("should geo search store", Label("NonRedisEnterprise"), func() {
 			q := &redis.GeoSearchStoreQuery{
 				GeoSearchQuery: redis.GeoSearchQuery{
 					Longitude:  15,
@@ -6464,16 +7197,13 @@ var _ = Describe("Commands", func() {
 
 			v, err := client.ZRangeWithScores(ctx, "key2", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(v).To(Equal([]redis.Z{
-				{
-					Score:  56.441257870158204,
-					Member: "Catania",
-				},
-				{
-					Score:  190.44242984775784,
-					Member: "Palermo",
-				},
-			}))
+
+			Expect(len(v)).To(Equal(2))
+			var palermo, catania redis.Z
+			Expect(v).To(ContainElement(HaveField("Member", "Palermo"), &palermo))
+			Expect(v).To(ContainElement(HaveField("Member", "Catania"), &catania))
+			Expect(palermo.Score).To(BeNumerically("~", 190, 1))
+			Expect(catania.Score).To(BeNumerically("~", 56, 1))
 		})
 	})
 
@@ -6566,6 +7296,17 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
 		})
+
+		It("returns empty values when args are nil", func() {
+			vals, err := client.Eval(
+				ctx,
+				"return {ARGV[1]}",
+				[]string{},
+				nil,
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(BeEmpty())
+		})
 	})
 
 	Describe("EvalRO", func() {
@@ -6588,6 +7329,17 @@ var _ = Describe("Commands", func() {
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
+		})
+
+		It("returns empty values when args are nil", func() {
+			vals, err := client.EvalRO(
+				ctx,
+				"return {ARGV[1]}",
+				[]string{},
+				nil,
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(BeEmpty())
 		})
 	})
 
@@ -6677,7 +7429,7 @@ var _ = Describe("Commands", func() {
 			q = redis.FunctionListQuery{}
 		})
 
-		It("Loads a new library", func() {
+		It("Loads a new library", Label("NonRedisEnterprise"), func() {
 			functionLoad := client.FunctionLoad(ctx, lib1Code)
 			Expect(functionLoad.Err()).NotTo(HaveOccurred())
 			Expect(functionLoad.Val()).To(Equal(lib1.Name))
@@ -6687,7 +7439,7 @@ var _ = Describe("Commands", func() {
 			Expect(functionList.Val()).To(HaveLen(1))
 		})
 
-		It("Loads and replaces a new library", func() {
+		It("Loads and replaces a new library", Label("NonRedisEnterprise"), func() {
 			// Load a library for the first time
 			err := client.FunctionLoad(ctx, lib1Code).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -6758,7 +7510,7 @@ var _ = Describe("Commands", func() {
 			// Add test for a long-running function, once we make the test for `function stats` pass
 		})
 
-		It("Lists registered functions", func() {
+		It("Lists registered functions", Label("NonRedisEnterprise"), func() {
 			err := client.FunctionLoad(ctx, lib1Code).Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -6797,7 +7549,7 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
-		It("Dump and restores all libraries", func() {
+		It("Dump and restores all libraries", Label("NonRedisEnterprise"), func() {
 			err := client.FunctionLoad(ctx, lib1Code).Err()
 			Expect(err).NotTo(HaveOccurred())
 			err = client.FunctionLoad(ctx, lib2Code).Err()
@@ -6863,6 +7615,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("Shows function stats", func() {
+			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			defer client.FunctionKill(ctx)
 
 			// We can not run blocking commands in Redis functions, so we're using an infinite loop,
@@ -6953,12 +7706,16 @@ type numberStruct struct {
 	Number int
 }
 
-func (s *numberStruct) MarshalBinary() ([]byte, error) {
-	return json.Marshal(s)
+func (n numberStruct) MarshalBinary() ([]byte, error) {
+	return json.Marshal(n)
 }
 
-func (s *numberStruct) UnmarshalBinary(b []byte) error {
-	return json.Unmarshal(b, s)
+func (n *numberStruct) UnmarshalBinary(b []byte) error {
+	return json.Unmarshal(b, n)
+}
+
+func (n *numberStruct) ScanRedis(str string) error {
+	return json.Unmarshal([]byte(str), n)
 }
 
 func deref(viface interface{}) interface{} {

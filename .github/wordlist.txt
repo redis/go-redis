@@ -1,7 +1,9 @@
 ACLs
+APIs
 autoload
 autoloader
 autoloading
+analytics
 Autoloading
 backend
 backends
@@ -13,6 +15,7 @@ customizable
 Customizable
 dataset
 de
+DisableIdentity
 ElastiCache
 extensibility
 FPM
@@ -26,6 +29,7 @@ Lua
 MSSQL
 namespace
 NoSQL
+OpenTelemetry
 ORM
 Packagist
 PhpRedis
@@ -43,11 +47,15 @@ RocksDB
 runtime
 SHA
 sharding
+SETNAME
+SpellCheck
 SSL
 struct
 stunnel
+SynDump
 TCP
 TLS
+UnstableResp
 uri
 URI
 url
@@ -55,3 +63,14 @@ variadic
 RedisStack
 RedisGears
 RedisTimeseries
+RediSearch
+RawResult
+RawVal
+entra
+EntraID
+Entra
+OAuth
+Azure
+StreamingCredentialsProvider
+oauth
+entraid

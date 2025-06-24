@@ -81,6 +81,8 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 		return dst
 	case time.Time, time.Duration, encoding.BinaryMarshaler, net.IP:
 		return append(dst, arg)
+	case nil:
+		return dst
 	default:
 		// scan struct field
 		v := reflect.ValueOf(arg)
@@ -153,6 +155,12 @@ func isEmptyValue(v reflect.Value) bool {
 		return v.Float() == 0
 	case reflect.Interface, reflect.Pointer:
 		return v.IsNil()
+	case reflect.Struct:
+		if v.Type() == reflect.TypeOf(time.Time{}) {
+			return v.IsZero()
+		}
+		// Only supports the struct time.Time,
+		// subsequent iterations will follow the func Scan support decoder.
 	}
 	return false
 }
@@ -204,27 +212,29 @@ type Cmdable interface {
 	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
 	Time(ctx context.Context) *TimeCmd
 	DebugObject(ctx context.Context, key string) *StringCmd
-
 	MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 
 	ACLCmdable
+	BitMapCmdable
+	ClusterCmdable
+	GenericCmdable
+	GeoCmdable
 	HashCmdable
 	HyperLogLogCmdable
-	GeoCmdable
-	GenericCmdable
 	ListCmdable
+	ProbabilisticCmdable
+	PubSubCmdable
+	ScriptingFunctionsCmdable
+	SearchCmdable
 	SetCmdable
 	SortedSetCmdable
-	ClusterCmdable
-	ScriptingFunctionsCmdable
 	StringCmdable
-	PubSubCmdable
-	GearsCmdable
-	ProbabilisticCmdable
-	TimeseriesCmdable
 	StreamCmdable
+	TimeseriesCmdable
+	JSONCmdable
+	VectorSetCmdable
 }
 
 type StatefulCmdable interface {
@@ -308,7 +318,7 @@ func (c statefulCmdable) ClientSetInfo(ctx context.Context, info LibraryInfo) *S
 
 	var cmd *StatusCmd
 	if info.LibName != nil {
-		libName := fmt.Sprintf("go-redis(%s,%s)", *info.LibName, runtime.Version())
+		libName := fmt.Sprintf("go-redis(%s,%s)", *info.LibName, internal.ReplaceSpaces(runtime.Version()))
 		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-NAME", libName)
 	} else {
 		cmd = NewStatusCmd(ctx, "client", "setinfo", "LIB-VER", *info.LibVer)
@@ -329,7 +339,7 @@ func (info LibraryInfo) Validate() error {
 	return nil
 }
 
-// Hello Set the resp protocol used.
+// Hello sets the resp protocol used.
 func (c statefulCmdable) Hello(ctx context.Context,
 	ver int, username, password, clientName string,
 ) *MapStringInterfaceCmd {
@@ -417,6 +427,12 @@ func (c cmdable) Echo(ctx context.Context, message interface{}) *StringCmd {
 
 func (c cmdable) Ping(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "ping")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) Do(ctx context.Context, args ...interface{}) *Cmd {
+	cmd := NewCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -569,6 +585,17 @@ func (c cmdable) Info(ctx context.Context, sections ...string) *StringCmd {
 	return cmd
 }
 
+func (c cmdable) InfoMap(ctx context.Context, sections ...string) *InfoCmd {
+	args := make([]interface{}, 1+len(sections))
+	args[0] = "info"
+	for i, section := range sections {
+		args[i+1] = section
+	}
+	cmd := NewInfoCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) LastSave(ctx context.Context) *IntCmd {
 	cmd := NewIntCmd(ctx, "lastsave")
 	_ = c(ctx, cmd)
@@ -684,6 +711,23 @@ func (c *ModuleLoadexConfig) toArgs() []interface{} {
 // ModuleLoadex Redis `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]` command.
 func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd {
 	cmd := NewStringCmd(ctx, conf.toArgs()...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+/*
+Monitor - represents a Redis MONITOR command, allowing the user to capture
+and process all commands sent to a Redis server. This mimics the behavior of
+MONITOR in the redis-cli.
+
+Notes:
+- Using MONITOR blocks the connection to the server for itself. It needs a dedicated connection
+- The user should create a channel of type string
+- This runs concurrently in the background. Trigger via the Start and Stop functions
+See further: Redis MONITOR command: https://redis.io/commands/monitor
+*/
+func (c cmdable) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	cmd := newMonitorCmd(ctx, ch)
 	_ = c(ctx, cmd)
 	return cmd
 }
