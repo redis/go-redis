@@ -12,32 +12,32 @@ type ListCmdable interface {
 	BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd
 	BRPopLPush(ctx context.Context, source, destination string, timeout time.Duration) *StringCmd
 	LIndex(ctx context.Context, key string, index int64) *StringCmd
-	LInsert(ctx context.Context, key, op string, pivot, value interface{}) *IntCmd
-	LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd
-	LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd
+	LInsert(ctx context.Context, key, op string, pivot, value any) *IntCmd
+	LInsertBefore(ctx context.Context, key string, pivot, value any) *IntCmd
+	LInsertAfter(ctx context.Context, key string, pivot, value any) *IntCmd
 	LLen(ctx context.Context, key string) *IntCmd
 	LMPop(ctx context.Context, direction string, count int64, keys ...string) *KeyValuesCmd
 	LPop(ctx context.Context, key string) *StringCmd
 	LPopCount(ctx context.Context, key string, count int) *StringSliceCmd
 	LPos(ctx context.Context, key string, value string, args LPosArgs) *IntCmd
 	LPosCount(ctx context.Context, key string, value string, count int64, args LPosArgs) *IntSliceCmd
-	LPush(ctx context.Context, key string, values ...interface{}) *IntCmd
-	LPushX(ctx context.Context, key string, values ...interface{}) *IntCmd
+	LPush(ctx context.Context, key string, values ...any) *IntCmd
+	LPushX(ctx context.Context, key string, values ...any) *IntCmd
 	LRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd
-	LRem(ctx context.Context, key string, count int64, value interface{}) *IntCmd
-	LSet(ctx context.Context, key string, index int64, value interface{}) *StatusCmd
+	LRem(ctx context.Context, key string, count int64, value any) *IntCmd
+	LSet(ctx context.Context, key string, index int64, value any) *StatusCmd
 	LTrim(ctx context.Context, key string, start, stop int64) *StatusCmd
 	RPop(ctx context.Context, key string) *StringCmd
 	RPopCount(ctx context.Context, key string, count int) *StringSliceCmd
 	RPopLPush(ctx context.Context, source, destination string) *StringCmd
-	RPush(ctx context.Context, key string, values ...interface{}) *IntCmd
-	RPushX(ctx context.Context, key string, values ...interface{}) *IntCmd
+	RPush(ctx context.Context, key string, values ...any) *IntCmd
+	RPushX(ctx context.Context, key string, values ...any) *IntCmd
 	LMove(ctx context.Context, source, destination, srcpos, destpos string) *StringCmd
 	BLMove(ctx context.Context, source, destination, srcpos, destpos string, timeout time.Duration) *StringCmd
 }
 
 func (c cmdable) BLPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd {
-	args := make([]interface{}, 1+len(keys)+1)
+	args := make([]any, 1+len(keys)+1)
 	args[0] = "blpop"
 	for i, key := range keys {
 		args[1+i] = key
@@ -50,7 +50,7 @@ func (c cmdable) BLPop(ctx context.Context, timeout time.Duration, keys ...strin
 }
 
 func (c cmdable) BLMPop(ctx context.Context, timeout time.Duration, direction string, count int64, keys ...string) *KeyValuesCmd {
-	args := make([]interface{}, 3+len(keys), 6+len(keys))
+	args := make([]any, 3+len(keys), 6+len(keys))
 	args[0] = "blmpop"
 	args[1] = formatSec(ctx, timeout)
 	args[2] = len(keys)
@@ -65,7 +65,7 @@ func (c cmdable) BLMPop(ctx context.Context, timeout time.Duration, direction st
 }
 
 func (c cmdable) BRPop(ctx context.Context, timeout time.Duration, keys ...string) *StringSliceCmd {
-	args := make([]interface{}, 1+len(keys)+1)
+	args := make([]any, 1+len(keys)+1)
 	args[0] = "brpop"
 	for i, key := range keys {
 		args[1+i] = key
@@ -100,7 +100,7 @@ func (c cmdable) LIndex(ctx context.Context, key string, index int64) *StringCmd
 // direction: left or right, count: > 0
 // example: client.LMPop(ctx, "left", 3, "key1", "key2")
 func (c cmdable) LMPop(ctx context.Context, direction string, count int64, keys ...string) *KeyValuesCmd {
-	args := make([]interface{}, 2+len(keys), 5+len(keys))
+	args := make([]any, 2+len(keys), 5+len(keys))
 	args[0] = "lmpop"
 	args[1] = len(keys)
 	for i, key := range keys {
@@ -112,19 +112,19 @@ func (c cmdable) LMPop(ctx context.Context, direction string, count int64, keys 
 	return cmd
 }
 
-func (c cmdable) LInsert(ctx context.Context, key, op string, pivot, value interface{}) *IntCmd {
+func (c cmdable) LInsert(ctx context.Context, key, op string, pivot, value any) *IntCmd {
 	cmd := NewIntCmd(ctx, "linsert", key, op, pivot, value)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LInsertBefore(ctx context.Context, key string, pivot, value interface{}) *IntCmd {
+func (c cmdable) LInsertBefore(ctx context.Context, key string, pivot, value any) *IntCmd {
 	cmd := NewIntCmd(ctx, "linsert", key, "before", pivot, value)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LInsertAfter(ctx context.Context, key string, pivot, value interface{}) *IntCmd {
+func (c cmdable) LInsertAfter(ctx context.Context, key string, pivot, value any) *IntCmd {
 	cmd := NewIntCmd(ctx, "linsert", key, "after", pivot, value)
 	_ = c(ctx, cmd)
 	return cmd
@@ -153,7 +153,7 @@ type LPosArgs struct {
 }
 
 func (c cmdable) LPos(ctx context.Context, key string, value string, a LPosArgs) *IntCmd {
-	args := []interface{}{"lpos", key, value}
+	args := []any{"lpos", key, value}
 	if a.Rank != 0 {
 		args = append(args, "rank", a.Rank)
 	}
@@ -167,7 +167,7 @@ func (c cmdable) LPos(ctx context.Context, key string, value string, a LPosArgs)
 }
 
 func (c cmdable) LPosCount(ctx context.Context, key string, value string, count int64, a LPosArgs) *IntSliceCmd {
-	args := []interface{}{"lpos", key, value, "count", count}
+	args := []any{"lpos", key, value, "count", count}
 	if a.Rank != 0 {
 		args = append(args, "rank", a.Rank)
 	}
@@ -179,8 +179,8 @@ func (c cmdable) LPosCount(ctx context.Context, key string, value string, count 
 	return cmd
 }
 
-func (c cmdable) LPush(ctx context.Context, key string, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 2, 2+len(values))
+func (c cmdable) LPush(ctx context.Context, key string, values ...any) *IntCmd {
+	args := make([]any, 2, 2+len(values))
 	args[0] = "lpush"
 	args[1] = key
 	args = appendArgs(args, values)
@@ -189,8 +189,8 @@ func (c cmdable) LPush(ctx context.Context, key string, values ...interface{}) *
 	return cmd
 }
 
-func (c cmdable) LPushX(ctx context.Context, key string, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 2, 2+len(values))
+func (c cmdable) LPushX(ctx context.Context, key string, values ...any) *IntCmd {
+	args := make([]any, 2, 2+len(values))
 	args[0] = "lpushx"
 	args[1] = key
 	args = appendArgs(args, values)
@@ -211,13 +211,13 @@ func (c cmdable) LRange(ctx context.Context, key string, start, stop int64) *Str
 	return cmd
 }
 
-func (c cmdable) LRem(ctx context.Context, key string, count int64, value interface{}) *IntCmd {
+func (c cmdable) LRem(ctx context.Context, key string, count int64, value any) *IntCmd {
 	cmd := NewIntCmd(ctx, "lrem", key, count, value)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) LSet(ctx context.Context, key string, index int64, value interface{}) *StatusCmd {
+func (c cmdable) LSet(ctx context.Context, key string, index int64, value any) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "lset", key, index, value)
 	_ = c(ctx, cmd)
 	return cmd
@@ -253,8 +253,8 @@ func (c cmdable) RPopLPush(ctx context.Context, source, destination string) *Str
 	return cmd
 }
 
-func (c cmdable) RPush(ctx context.Context, key string, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 2, 2+len(values))
+func (c cmdable) RPush(ctx context.Context, key string, values ...any) *IntCmd {
+	args := make([]any, 2, 2+len(values))
 	args[0] = "rpush"
 	args[1] = key
 	args = appendArgs(args, values)
@@ -263,8 +263,8 @@ func (c cmdable) RPush(ctx context.Context, key string, values ...interface{}) *
 	return cmd
 }
 
-func (c cmdable) RPushX(ctx context.Context, key string, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 2, 2+len(values))
+func (c cmdable) RPushX(ctx context.Context, key string, values ...any) *IntCmd {
+	args := make([]any, 2, 2+len(values))
 	args[0] = "rpushx"
 	args[1] = key
 	args = appendArgs(args, values)

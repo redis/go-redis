@@ -48,7 +48,7 @@ type TimeData struct {
 	Time *TimeRFC3339Nano `redis:"login"`
 }
 
-type i []interface{}
+type i []any
 
 func TestGinkgoSuite(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -66,7 +66,7 @@ var _ = Describe("Scan", func() {
 		Expect(Scan(&d, i{"key"}, i{"1", "2"})).To(HaveOccurred())
 		Expect(Scan(nil, i{"key", "1"}, i{})).To(HaveOccurred())
 
-		var m map[string]interface{}
+		var m map[string]any
 		Expect(Scan(&m, i{"key"}, i{"1"})).To(HaveOccurred())
 		Expect(Scan(data{}, i{"key"}, i{"1"})).To(HaveOccurred())
 		Expect(Scan(data{}, i{"key", "string"}, i{nil, nil})).To(HaveOccurred())

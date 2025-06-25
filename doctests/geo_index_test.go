@@ -34,7 +34,7 @@ func ExampleClient_geoindex() {
 		"productidx",
 		&redis.FTCreateOptions{
 			OnJSON: true,
-			Prefix: []interface{}{"product:"},
+			Prefix: []any{"product:"},
 		},
 		&redis.FieldSchema{
 			FieldName: "$.location",
@@ -51,7 +51,7 @@ func ExampleClient_geoindex() {
 	// STEP_END
 
 	// STEP_START add_geo_json
-	prd46885 := map[string]interface{}{
+	prd46885 := map[string]any{
 		"description": "Navy Blue Slippers",
 		"price":       45.99,
 		"city":        "Denver",
@@ -66,7 +66,7 @@ func ExampleClient_geoindex() {
 
 	fmt.Println(gjResult1) // >>> OK
 
-	prd46886 := map[string]interface{}{
+	prd46886 := map[string]any{
 		"description": "Bright Green Socks",
 		"price":       25.50,
 		"city":        "Fort Collins",
@@ -99,7 +99,7 @@ func ExampleClient_geoindex() {
 	geomCreateResult, err := rdb.FTCreate(ctx, "geomidx",
 		&redis.FTCreateOptions{
 			OnJSON: true,
-			Prefix: []interface{}{"shape:"},
+			Prefix: []any{"shape:"},
 		},
 		&redis.FieldSchema{
 			FieldName: "$.name",
@@ -122,7 +122,7 @@ func ExampleClient_geoindex() {
 	// STEP_END
 
 	// STEP_START add_gshape_json
-	shape1 := map[string]interface{}{
+	shape1 := map[string]any{
 		"name": "Green Square",
 		"geom": "POLYGON ((1 1, 1 3, 3 3, 3 1, 1 1))",
 	}
@@ -135,7 +135,7 @@ func ExampleClient_geoindex() {
 
 	fmt.Println(gmjResult1) // >>> OK
 
-	shape2 := map[string]interface{}{
+	shape2 := map[string]any{
 		"name": "Red Rectangle",
 		"geom": "POLYGON ((2 2.5, 2 3.5, 3.5 3.5, 3.5 2.5, 2 2.5))",
 	}
@@ -148,7 +148,7 @@ func ExampleClient_geoindex() {
 
 	fmt.Println(gmjResult2) // >>> OK
 
-	shape3 := map[string]interface{}{
+	shape3 := map[string]any{
 		"name": "Blue Triangle",
 		"geom": "POLYGON ((3.5 1, 3.75 2, 4 1, 3.5 1))",
 	}
@@ -161,7 +161,7 @@ func ExampleClient_geoindex() {
 
 	fmt.Println(gmjResult3) // >>> OK
 
-	shape4 := map[string]interface{}{
+	shape4 := map[string]any{
 		"name": "Purple Point",
 		"geom": "POINT (2 2)",
 	}
@@ -179,7 +179,7 @@ func ExampleClient_geoindex() {
 	geomQueryResult, err := rdb.FTSearchWithArgs(ctx, "geomidx",
 		"(-@name:(Green Square) @geom:[WITHIN $qshape])",
 		&redis.FTSearchOptions{
-			Params: map[string]interface{}{
+			Params: map[string]any{
 				"qshape": "POLYGON ((1 1, 1 3, 3 3, 3 1, 1 1))",
 			},
 			DialectVersion: 4,
