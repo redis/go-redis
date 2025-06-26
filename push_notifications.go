@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -26,27 +27,29 @@ func (f PushNotificationHandlerFunc) HandlePushNotification(ctx context.Context,
 // PushNotificationRegistry manages handlers for different types of push notifications.
 type PushNotificationRegistry struct {
 	mu       sync.RWMutex
-	handlers map[string][]PushNotificationHandler // command -> handlers
-	global   []PushNotificationHandler            // global handlers for all notifications
+	handlers map[string]PushNotificationHandler // command -> single handler
+	global   []PushNotificationHandler          // global handlers for all notifications
 }
 
 // NewPushNotificationRegistry creates a new push notification registry.
 func NewPushNotificationRegistry() *PushNotificationRegistry {
 	return &PushNotificationRegistry{
-		handlers: make(map[string][]PushNotificationHandler),
+		handlers: make(map[string]PushNotificationHandler),
 		global:   make([]PushNotificationHandler, 0),
 	}
 }
 
 // RegisterHandler registers a handler for a specific push notification command.
-func (r *PushNotificationRegistry) RegisterHandler(command string, handler PushNotificationHandler) {
+// Returns an error if a handler is already registered for this command.
+func (r *PushNotificationRegistry) RegisterHandler(command string, handler PushNotificationHandler) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.handlers[command] == nil {
-		r.handlers[command] = make([]PushNotificationHandler, 0)
+	if _, exists := r.handlers[command]; exists {
+		return fmt.Errorf("handler already registered for command: %s", command)
 	}
-	r.handlers[command] = append(r.handlers[command], handler)
+	r.handlers[command] = handler
+	return nil
 }
 
 // RegisterGlobalHandler registers a handler that will receive all push notifications.
@@ -57,19 +60,12 @@ func (r *PushNotificationRegistry) RegisterGlobalHandler(handler PushNotificatio
 	r.global = append(r.global, handler)
 }
 
-// UnregisterHandler removes a handler for a specific command.
-func (r *PushNotificationRegistry) UnregisterHandler(command string, handler PushNotificationHandler) {
+// UnregisterHandler removes the handler for a specific push notification command.
+func (r *PushNotificationRegistry) UnregisterHandler(command string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	handlers := r.handlers[command]
-	for i, h := range handlers {
-		// Compare function pointers (this is a simplified approach)
-		if &h == &handler {
-			r.handlers[command] = append(handlers[:i], handlers[i+1:]...)
-			break
-		}
-	}
+	delete(r.handlers, command)
 }
 
 // HandleNotification processes a push notification by calling all registered handlers.
@@ -96,12 +92,10 @@ func (r *PushNotificationRegistry) HandleNotification(ctx context.Context, notif
 		}
 	}
 
-	// Call specific handlers
-	if handlers, exists := r.handlers[command]; exists {
-		for _, handler := range handlers {
-			if handler.HandlePushNotification(ctx, notification) {
-				handled = true
-			}
+	// Call specific handler
+	if handler, exists := r.handlers[command]; exists {
+		if handler.HandlePushNotification(ctx, notification) {
+			handled = true
 		}
 	}
 
@@ -207,8 +201,9 @@ func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Cont
 }
 
 // RegisterHandler is a convenience method to register a handler for a specific command.
-func (p *PushNotificationProcessor) RegisterHandler(command string, handler PushNotificationHandler) {
-	p.registry.RegisterHandler(command, handler)
+// Returns an error if a handler is already registered for this command.
+func (p *PushNotificationProcessor) RegisterHandler(command string, handler PushNotificationHandler) error {
+	return p.registry.RegisterHandler(command, handler)
 }
 
 // RegisterGlobalHandler is a convenience method to register a global handler.
@@ -217,8 +212,9 @@ func (p *PushNotificationProcessor) RegisterGlobalHandler(handler PushNotificati
 }
 
 // RegisterHandlerFunc is a convenience method to register a function as a handler.
-func (p *PushNotificationProcessor) RegisterHandlerFunc(command string, handlerFunc func(ctx context.Context, notification []interface{}) bool) {
-	p.registry.RegisterHandler(command, PushNotificationHandlerFunc(handlerFunc))
+// Returns an error if a handler is already registered for this command.
+func (p *PushNotificationProcessor) RegisterHandlerFunc(command string, handlerFunc func(ctx context.Context, notification []interface{}) bool) error {
+	return p.registry.RegisterHandler(command, PushNotificationHandlerFunc(handlerFunc))
 }
 
 // RegisterGlobalHandlerFunc is a convenience method to register a function as a global handler.

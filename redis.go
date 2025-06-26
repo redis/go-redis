@@ -814,10 +814,12 @@ func (c *Client) initializePushProcessor() {
 }
 
 // RegisterPushNotificationHandler registers a handler for a specific push notification command.
-func (c *Client) RegisterPushNotificationHandler(command string, handler PushNotificationHandler) {
+// Returns an error if a handler is already registered for this command.
+func (c *Client) RegisterPushNotificationHandler(command string, handler PushNotificationHandler) error {
 	if c.pushProcessor != nil {
-		c.pushProcessor.RegisterHandler(command, handler)
+		return c.pushProcessor.RegisterHandler(command, handler)
 	}
+	return nil
 }
 
 // RegisterGlobalPushNotificationHandler registers a handler that will receive all push notifications.
@@ -828,10 +830,12 @@ func (c *Client) RegisterGlobalPushNotificationHandler(handler PushNotificationH
 }
 
 // RegisterPushNotificationHandlerFunc registers a function as a handler for a specific push notification command.
-func (c *Client) RegisterPushNotificationHandlerFunc(command string, handlerFunc func(ctx context.Context, notification []interface{}) bool) {
+// Returns an error if a handler is already registered for this command.
+func (c *Client) RegisterPushNotificationHandlerFunc(command string, handlerFunc func(ctx context.Context, notification []interface{}) bool) error {
 	if c.pushProcessor != nil {
-		c.pushProcessor.RegisterHandlerFunc(command, handlerFunc)
+		return c.pushProcessor.RegisterHandlerFunc(command, handlerFunc)
 	}
+	return nil
 }
 
 // RegisterGlobalPushNotificationHandlerFunc registers a function as a global handler for all push notifications.
