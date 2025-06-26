@@ -16,14 +16,6 @@ type PushNotificationHandler interface {
 	HandlePushNotification(ctx context.Context, notification []interface{}) bool
 }
 
-// PushNotificationHandlerFunc is a function adapter for PushNotificationHandler.
-type PushNotificationHandlerFunc func(ctx context.Context, notification []interface{}) bool
-
-// HandlePushNotification implements PushNotificationHandler.
-func (f PushNotificationHandlerFunc) HandlePushNotification(ctx context.Context, notification []interface{}) bool {
-	return f(ctx, notification)
-}
-
 // PushNotificationRegistry manages handlers for different types of push notifications.
 type PushNotificationRegistry struct {
 	mu       sync.RWMutex
@@ -185,42 +177,13 @@ func (p *PushNotificationProcessor) RegisterHandler(command string, handler Push
 	return p.registry.RegisterHandler(command, handler)
 }
 
-// RegisterHandlerFunc is a convenience method to register a function as a handler.
-// Returns an error if a handler is already registered for this command.
-func (p *PushNotificationProcessor) RegisterHandlerFunc(command string, handlerFunc func(ctx context.Context, notification []interface{}) bool) error {
-	return p.registry.RegisterHandler(command, PushNotificationHandlerFunc(handlerFunc))
-}
-
-// Common push notification commands
+// Redis Cluster push notification commands
 const (
-	// Redis Cluster notifications
 	PushNotificationMoving     = "MOVING"
 	PushNotificationMigrating  = "MIGRATING"
 	PushNotificationMigrated   = "MIGRATED"
 	PushNotificationFailingOver = "FAILING_OVER"
 	PushNotificationFailedOver  = "FAILED_OVER"
-
-	// Redis Pub/Sub notifications
-	PushNotificationPubSubMessage = "message"
-	PushNotificationPMessage      = "pmessage"
-	PushNotificationSubscribe  = "subscribe"
-	PushNotificationUnsubscribe = "unsubscribe"
-	PushNotificationPSubscribe = "psubscribe"
-	PushNotificationPUnsubscribe = "punsubscribe"
-
-	// Redis Stream notifications
-	PushNotificationXRead      = "xread"
-	PushNotificationXReadGroup = "xreadgroup"
-
-	// Redis Keyspace notifications
-	PushNotificationKeyspace  = "keyspace"
-	PushNotificationKeyevent  = "keyevent"
-
-	// Redis Module notifications
-	PushNotificationModule    = "module"
-
-	// Custom application notifications
-	PushNotificationCustom    = "custom"
 )
 
 // PushNotificationInfo contains metadata about a push notification.

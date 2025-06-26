@@ -833,15 +833,6 @@ func (c *Client) RegisterPushNotificationHandler(command string, handler PushNot
 	return nil
 }
 
-// RegisterPushNotificationHandlerFunc registers a function as a handler for a specific push notification command.
-// Returns an error if a handler is already registered for this command.
-func (c *Client) RegisterPushNotificationHandlerFunc(command string, handlerFunc func(ctx context.Context, notification []interface{}) bool) error {
-	if c.pushProcessor != nil {
-		return c.pushProcessor.RegisterHandlerFunc(command, handlerFunc)
-	}
-	return nil
-}
-
 // GetPushNotificationProcessor returns the push notification processor.
 func (c *Client) GetPushNotificationProcessor() *PushNotificationProcessor {
 	return c.pushProcessor
@@ -1010,15 +1001,6 @@ func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
 func (c *Conn) RegisterPushNotificationHandler(command string, handler PushNotificationHandler) error {
 	if c.pushProcessor != nil {
 		return c.pushProcessor.RegisterHandler(command, handler)
-	}
-	return nil
-}
-
-// RegisterPushNotificationHandlerFunc registers a function as a handler for a specific push notification command.
-// Returns an error if a handler is already registered for this command.
-func (c *Conn) RegisterPushNotificationHandlerFunc(command string, handlerFunc func(ctx context.Context, notification []interface{}) bool) error {
-	if c.pushProcessor != nil {
-		return c.pushProcessor.RegisterHandlerFunc(command, handlerFunc)
 	}
 	return nil
 }

@@ -11,6 +11,20 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
+// testHandler is a simple implementation of PushNotificationHandler for testing
+type testHandler struct {
+	handlerFunc func(ctx context.Context, notification []interface{}) bool
+}
+
+func (h *testHandler) HandlePushNotification(ctx context.Context, notification []interface{}) bool {
+	return h.handlerFunc(ctx, notification)
+}
+
+// newTestHandler creates a test handler from a function
+func newTestHandler(f func(ctx context.Context, notification []interface{}) bool) *testHandler {
+	return &testHandler{handlerFunc: f}
+}
+
 // TestConnectionPoolPushNotificationIntegration tests the connection pool's
 // integration with push notifications for 100% coverage.
 func TestConnectionPoolPushNotificationIntegration(t *testing.T) {
@@ -102,9 +116,9 @@ func TestConnectionHealthCheckWithPushNotifications(t *testing.T) {
 	defer client.Close()
 
 	// Register a handler to ensure processor is active
-	err := client.RegisterPushNotificationHandlerFunc("TEST_HEALTH", func(ctx context.Context, notification []interface{}) bool {
+	err := client.RegisterPushNotificationHandler("TEST_HEALTH", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
@@ -147,7 +161,7 @@ func TestConnPushNotificationMethods(t *testing.T) {
 	}
 
 	// Test RegisterPushNotificationHandler
-	handler := PushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
+	handler := newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
 	})
 
@@ -156,10 +170,10 @@ func TestConnPushNotificationMethods(t *testing.T) {
 		t.Errorf("Failed to register handler on Conn: %v", err)
 	}
 
-	// Test RegisterPushNotificationHandlerFunc
-	err = conn.RegisterPushNotificationHandlerFunc("TEST_CONN_FUNC", func(ctx context.Context, notification []interface{}) bool {
+	// Test RegisterPushNotificationHandler with function wrapper
+	err = conn.RegisterPushNotificationHandler("TEST_CONN_FUNC", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	})
+	}))
 	if err != nil {
 		t.Errorf("Failed to register handler func on Conn: %v", err)
 	}
@@ -206,17 +220,17 @@ func TestConnWithoutPushNotifications(t *testing.T) {
 	}
 
 	// Test RegisterPushNotificationHandler returns nil (no error)
-	err := conn.RegisterPushNotificationHandler("TEST", PushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
+	err := conn.RegisterPushNotificationHandler("TEST", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
 	}))
 	if err != nil {
 		t.Errorf("Should return nil error when no processor: %v", err)
 	}
 
-	// Test RegisterPushNotificationHandlerFunc returns nil (no error)
-	err = conn.RegisterPushNotificationHandlerFunc("TEST", func(ctx context.Context, notification []interface{}) bool {
+	// Test RegisterPushNotificationHandler returns nil (no error)
+	err = conn.RegisterPushNotificationHandler("TEST", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	})
+	}))
 	if err != nil {
 		t.Errorf("Should return nil error when no processor: %v", err)
 	}
@@ -263,9 +277,9 @@ func TestClonedClientPushNotifications(t *testing.T) {
 	}
 
 	// Register handler on original
-	err := client.RegisterPushNotificationHandlerFunc("TEST_CLONE", func(ctx context.Context, notification []interface{}) bool {
+	err := client.RegisterPushNotificationHandler("TEST_CLONE", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
@@ -289,9 +303,9 @@ func TestClonedClientPushNotifications(t *testing.T) {
 	}
 
 	// Test registering new handler on cloned client
-	err = clonedClient.RegisterPushNotificationHandlerFunc("TEST_CLONE_NEW", func(ctx context.Context, notification []interface{}) bool {
+	err = clonedClient.RegisterPushNotificationHandler("TEST_CLONE_NEW", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	})
+	}))
 	if err != nil {
 		t.Errorf("Failed to register handler on cloned client: %v", err)
 	}
