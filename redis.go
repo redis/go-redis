@@ -207,6 +207,9 @@ type baseClient struct {
 	hooksMixin
 
 	onClose func() error // hook called when client is closed
+
+	// Push notification processing
+	pushProcessor *PushNotificationProcessor
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -530,7 +533,15 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		if c.opt.Protocol != 2 && c.assertUnstableCommand(cmd) {
 			readReplyFunc = cmd.readRawReply
 		}
-		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
+		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
+			// Check for push notifications before reading the command reply
+			if c.opt.Protocol == 3 && c.pushProcessor != nil && c.pushProcessor.IsEnabled() {
+				if err := c.pushProcessor.ProcessPendingNotifications(ctx, rd); err != nil {
+					internal.Logger.Printf(ctx, "push: error processing push notifications: %v", err)
+				}
+			}
+			return readReplyFunc(rd)
+		}); err != nil {
 			if cmd.readTimeout() == nil {
 				atomic.StoreUint32(&retryTimeout, 1)
 			} else {
@@ -752,6 +763,9 @@ func NewClient(opt *Options) *Client {
 	c.init()
 	c.connPool = newConnPool(opt, c.dialHook)
 
+	// Initialize push notification processor
+	c.initializePushProcessor()
+
 	return &c
 }
 
@@ -785,6 +799,51 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 // Options returns read-only Options that were used to create the client.
 func (c *Client) Options() *Options {
 	return c.opt
+}
+
+// initializePushProcessor initializes the push notification processor.
+func (c *Client) initializePushProcessor() {
+	// Initialize push processor if enabled
+	if c.opt.PushNotifications {
+		if c.opt.PushNotificationProcessor != nil {
+			c.pushProcessor = c.opt.PushNotificationProcessor
+		} else {
+			c.pushProcessor = NewPushNotificationProcessor(true)
+		}
+	}
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification command.
+func (c *Client) RegisterPushNotificationHandler(command string, handler PushNotificationHandler) {
+	if c.pushProcessor != nil {
+		c.pushProcessor.RegisterHandler(command, handler)
+	}
+}
+
+// RegisterGlobalPushNotificationHandler registers a handler that will receive all push notifications.
+func (c *Client) RegisterGlobalPushNotificationHandler(handler PushNotificationHandler) {
+	if c.pushProcessor != nil {
+		c.pushProcessor.RegisterGlobalHandler(handler)
+	}
+}
+
+// RegisterPushNotificationHandlerFunc registers a function as a handler for a specific push notification command.
+func (c *Client) RegisterPushNotificationHandlerFunc(command string, handlerFunc func(ctx context.Context, notification []interface{}) bool) {
+	if c.pushProcessor != nil {
+		c.pushProcessor.RegisterHandlerFunc(command, handlerFunc)
+	}
+}
+
+// RegisterGlobalPushNotificationHandlerFunc registers a function as a global handler for all push notifications.
+func (c *Client) RegisterGlobalPushNotificationHandlerFunc(handlerFunc func(ctx context.Context, notification []interface{}) bool) {
+	if c.pushProcessor != nil {
+		c.pushProcessor.RegisterGlobalHandlerFunc(handlerFunc)
+	}
+}
+
+// GetPushNotificationProcessor returns the push notification processor.
+func (c *Client) GetPushNotificationProcessor() *PushNotificationProcessor {
+	return c.pushProcessor
 }
 
 type PoolStats pool.Stats
@@ -833,6 +892,12 @@ func (c *Client) pubSub() *PubSub {
 		closeConn: c.connPool.CloseConn,
 	}
 	pubsub.init()
+
+	// Set the push notification processor if available
+	if c.pushProcessor != nil {
+		pubsub.SetPushNotificationProcessor(c.pushProcessor)
+	}
+
 	return pubsub
 }
 

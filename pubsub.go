@@ -38,10 +38,19 @@ type PubSub struct {
 	chOnce sync.Once
 	msgCh  *channel
 	allCh  *channel
+
+	// Push notification processor for handling generic push notifications
+	pushProcessor *PushNotificationProcessor
 }
 
 func (c *PubSub) init() {
 	c.exit = make(chan struct{})
+}
+
+// SetPushNotificationProcessor sets the push notification processor for handling
+// generic push notifications received on this PubSub connection.
+func (c *PubSub) SetPushNotificationProcessor(processor *PushNotificationProcessor) {
+	c.pushProcessor = processor
 }
 
 func (c *PubSub) String() string {
@@ -367,6 +376,18 @@ func (p *Pong) String() string {
 	return "Pong"
 }
 
+// PushNotificationMessage represents a generic push notification received on a PubSub connection.
+type PushNotificationMessage struct {
+	// Command is the push notification command (e.g., "MOVING", "CUSTOM_EVENT").
+	Command string
+	// Args are the arguments following the command.
+	Args []interface{}
+}
+
+func (m *PushNotificationMessage) String() string {
+	return fmt.Sprintf("push: %s", m.Command)
+}
+
 func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 	switch reply := reply.(type) {
 	case string:
@@ -413,6 +434,18 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 				Payload: reply[1].(string),
 			}, nil
 		default:
+			// Try to handle as generic push notification
+			if c.pushProcessor != nil && c.pushProcessor.IsEnabled() {
+				ctx := c.getContext()
+				handled := c.pushProcessor.GetRegistry().HandleNotification(ctx, reply)
+				if handled {
+					// Return a special message type to indicate it was handled
+					return &PushNotificationMessage{
+						Command: kind,
+						Args:    reply[1:],
+					}, nil
+				}
+			}
 			return nil, fmt.Errorf("redis: unsupported pubsub message: %q", kind)
 		}
 	default:
@@ -658,6 +691,9 @@ func (c *channel) initMsgChan() {
 				// Ignore.
 			case *Pong:
 				// Ignore.
+			case *PushNotificationMessage:
+				// Ignore push notifications in message-only channel
+				// They are already handled by the push notification processor
 			case *Message:
 				timer.Reset(c.chanSendTimeout)
 				select {
@@ -712,7 +748,7 @@ func (c *channel) initAllChan() {
 			switch msg := msg.(type) {
 			case *Pong:
 				// Ignore.
-			case *Subscription, *Message:
+			case *Subscription, *Message, *PushNotificationMessage:
 				timer.Reset(c.chanSendTimeout)
 				select {
 				case c.allCh <- msg:
