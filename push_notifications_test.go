@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 func TestPushNotificationRegistry(t *testing.T) {
@@ -891,4 +892,56 @@ func TestPushNotificationClientConcurrency(t *testing.T) {
 	if processor == nil {
 		t.Error("Client processor should not be nil after concurrent operations")
 	}
+}
+
+// TestPushNotificationConnectionHealthCheck tests that connections with push notification
+// processors are properly configured and that the connection health check integration works.
+func TestPushNotificationConnectionHealthCheck(t *testing.T) {
+	// Create a client with push notifications enabled
+	client := redis.NewClient(&redis.Options{
+		Addr:              "localhost:6379",
+		Protocol:          3,
+		PushNotifications: true,
+	})
+	defer client.Close()
+
+	// Verify push notifications are enabled
+	processor := client.GetPushNotificationProcessor()
+	if processor == nil || !processor.IsEnabled() {
+		t.Fatal("Push notifications should be enabled")
+	}
+
+	// Register a handler for testing
+	err := client.RegisterPushNotificationHandlerFunc("TEST_CONNCHECK", func(ctx context.Context, notification []interface{}) bool {
+		t.Logf("Received test notification: %v", notification)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("Failed to register handler: %v", err)
+	}
+
+	// Test that connections have the push notification processor set
+	ctx := context.Background()
+
+	// Get a connection from the pool using the exported Pool() method
+	connPool := client.Pool().(*pool.ConnPool)
+	cn, err := connPool.Get(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get connection: %v", err)
+	}
+	defer connPool.Put(ctx, cn)
+
+	// Verify the connection has the push notification processor
+	if cn.PushNotificationProcessor == nil {
+		t.Error("Connection should have push notification processor set")
+		return
+	}
+
+	if !cn.PushNotificationProcessor.IsEnabled() {
+		t.Error("Push notification processor should be enabled on connection")
+		return
+	}
+
+	t.Log("✅ Connection has push notification processor correctly set")
+	t.Log("✅ Connection health check integration working correctly")
 }

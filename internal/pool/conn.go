@@ -25,6 +25,12 @@ type Conn struct {
 	createdAt time.Time
 
 	onClose func() error
+
+	// Push notification processor for handling push notifications on this connection
+	PushNotificationProcessor interface {
+		IsEnabled() bool
+		ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error
+	}
 }
 
 func NewConn(netConn net.Conn) *Conn {

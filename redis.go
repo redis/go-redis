@@ -767,10 +767,16 @@ func NewClient(opt *Options) *Client {
 		},
 	}
 	c.init()
-	c.connPool = newConnPool(opt, c.dialHook)
 
 	// Initialize push notification processor
 	c.initializePushProcessor()
+
+	// Update options with the initialized push processor for connection pool
+	if c.pushProcessor != nil {
+		opt.PushNotificationProcessor = c.pushProcessor
+	}
+
+	c.connPool = newConnPool(opt, c.dialHook)
 
 	return &c
 }
