@@ -492,6 +492,14 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
+	// Initialize push notification processor to prevent nil pointer dereference
+	if opt.PushNotificationProcessor != nil {
+		c.pushProcessor = opt.PushNotificationProcessor
+	} else {
+		// Create void processor for Sentinel (typically doesn't need push notifications)
+		c.pushProcessor = NewVoidPushNotificationProcessor()
+	}
+
 	c.initHooks(hooks{
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
@@ -499,6 +507,18 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	c.connPool = newConnPool(opt, c.dialHook)
 
 	return c
+}
+
+// GetPushNotificationProcessor returns the push notification processor.
+func (c *SentinelClient) GetPushNotificationProcessor() PushNotificationProcessorInterface {
+	return c.pushProcessor
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *SentinelClient) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
