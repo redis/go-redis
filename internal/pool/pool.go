@@ -75,7 +75,6 @@ type Options struct {
 
 	// Push notification processor for connections
 	PushNotificationProcessor interface {
-		IsEnabled() bool
 		ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error
 	}
 }
@@ -391,7 +390,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	if cn.rd.Buffered() > 0 {
 		// Check if this might be push notification data
-		if cn.PushNotificationProcessor != nil && cn.PushNotificationProcessor.IsEnabled() {
+		if cn.PushNotificationProcessor != nil {
 			// Try to process pending push notifications before discarding connection
 			err := cn.PushNotificationProcessor.ProcessPendingNotifications(ctx, cn.rd)
 			if err != nil {
@@ -555,7 +554,7 @@ func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 	if err := connCheck(cn.netConn); err != nil {
 		// If there's unexpected data and we have push notification support,
 		// it might be push notifications
-		if err == errUnexpectedRead && cn.PushNotificationProcessor != nil && cn.PushNotificationProcessor.IsEnabled() {
+		if err == errUnexpectedRead && cn.PushNotificationProcessor != nil {
 			// Try to process any pending push notifications
 			ctx := context.Background()
 			if procErr := cn.PushNotificationProcessor.ProcessPendingNotifications(ctx, cn.rd); procErr != nil {

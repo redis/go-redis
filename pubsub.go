@@ -435,18 +435,16 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 			}, nil
 		default:
 			// Try to handle as generic push notification
-			if c.pushProcessor.IsEnabled() {
-				ctx := c.getContext()
-				registry := c.pushProcessor.GetRegistry()
-				if registry != nil {
-					handled := registry.HandleNotification(ctx, reply)
-					if handled {
-						// Return a special message type to indicate it was handled
-						return &PushNotificationMessage{
-							Command: kind,
-							Args:    reply[1:],
-						}, nil
-					}
+			ctx := c.getContext()
+			registry := c.pushProcessor.GetRegistry()
+			if registry != nil {
+				handled := registry.HandleNotification(ctx, reply)
+				if handled {
+					// Return a special message type to indicate it was handled
+					return &PushNotificationMessage{
+						Command: kind,
+						Args:    reply[1:],
+					}, nil
 				}
 			}
 			return nil, fmt.Errorf("redis: unsupported pubsub message: %q", kind)

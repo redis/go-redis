@@ -28,7 +28,6 @@ type Conn struct {
 
 	// Push notification processor for handling push notifications on this connection
 	PushNotificationProcessor interface {
-		IsEnabled() bool
 		ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error
 	}
 }

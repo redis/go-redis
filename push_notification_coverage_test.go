@@ -56,9 +56,7 @@ func TestConnectionPoolPushNotificationIntegration(t *testing.T) {
 		t.Error("Connection should have push notification processor assigned")
 	}
 
-	if !cn.PushNotificationProcessor.IsEnabled() {
-		t.Error("Connection push notification processor should be enabled")
-	}
+	// Connection should have a processor (no need to check IsEnabled anymore)
 
 	// Test ProcessPendingNotifications method
 	emptyReader := proto.NewReader(bytes.NewReader([]byte{}))
@@ -156,8 +154,9 @@ func TestConnPushNotificationMethods(t *testing.T) {
 		t.Error("Conn should have push notification processor")
 	}
 
-	if !processor.IsEnabled() {
-		t.Error("Conn push notification processor should be enabled")
+	// Processor should have a registry when enabled
+	if processor.GetRegistry() == nil {
+		t.Error("Conn push notification processor should have a registry when enabled")
 	}
 
 	// Test RegisterPushNotificationHandler
@@ -218,8 +217,9 @@ func TestConnWithoutPushNotifications(t *testing.T) {
 	if processor == nil {
 		t.Error("Conn should always have a push notification processor")
 	}
-	if processor.IsEnabled() {
-		t.Error("Push notification processor should be disabled for RESP2")
+	// VoidPushNotificationProcessor should have nil registry
+	if processor.GetRegistry() != nil {
+		t.Error("VoidPushNotificationProcessor should have nil registry for RESP2")
 	}
 
 	// Test RegisterPushNotificationHandler returns nil (no error)
@@ -242,7 +242,7 @@ func TestConnWithoutPushNotifications(t *testing.T) {
 // TestNewConnWithCustomProcessor tests newConn with custom processor in options.
 func TestNewConnWithCustomProcessor(t *testing.T) {
 	// Create custom processor
-	customProcessor := NewPushNotificationProcessor(true)
+	customProcessor := NewPushNotificationProcessor()
 
 	// Create options with custom processor
 	opt := &Options{
@@ -377,7 +377,7 @@ func TestPushNotificationInfoStructure(t *testing.T) {
 // TestConnectionPoolOptionsIntegration tests that pool options correctly include processor.
 func TestConnectionPoolOptionsIntegration(t *testing.T) {
 	// Create processor
-	processor := NewPushNotificationProcessor(true)
+	processor := NewPushNotificationProcessor()
 
 	// Create options
 	opt := &Options{
@@ -401,7 +401,7 @@ func TestConnectionPoolOptionsIntegration(t *testing.T) {
 
 // TestProcessPendingNotificationsEdgeCases tests edge cases in ProcessPendingNotifications.
 func TestProcessPendingNotificationsEdgeCases(t *testing.T) {
-	processor := NewPushNotificationProcessor(true)
+	processor := NewPushNotificationProcessor()
 	ctx := context.Background()
 
 	// Test with nil reader (should not panic)
@@ -417,10 +417,10 @@ func TestProcessPendingNotificationsEdgeCases(t *testing.T) {
 		t.Errorf("Should not error with empty reader: %v", err)
 	}
 
-	// Test with disabled processor
-	disabledProcessor := NewPushNotificationProcessor(false)
-	err = disabledProcessor.ProcessPendingNotifications(ctx, emptyReader)
+	// Test with void processor (simulates disabled state)
+	voidProcessor := NewVoidPushNotificationProcessor()
+	err = voidProcessor.ProcessPendingNotifications(ctx, emptyReader)
 	if err != nil {
-		t.Errorf("Disabled processor should not error: %v", err)
+		t.Errorf("Void processor should not error: %v", err)
 	}
 }

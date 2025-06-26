@@ -106,8 +106,6 @@ func (r *PushNotificationRegistry) HasHandlers() bool {
 
 // PushNotificationProcessorInterface defines the interface for push notification processors.
 type PushNotificationProcessorInterface interface {
-	IsEnabled() bool
-	SetEnabled(enabled bool)
 	GetRegistry() *PushNotificationRegistry
 	ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error
 	RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error
@@ -116,30 +114,13 @@ type PushNotificationProcessorInterface interface {
 // PushNotificationProcessor handles the processing of push notifications from Redis.
 type PushNotificationProcessor struct {
 	registry *PushNotificationRegistry
-	enabled  bool
-	mu       sync.RWMutex // Protects enabled field
 }
 
 // NewPushNotificationProcessor creates a new push notification processor.
-func NewPushNotificationProcessor(enabled bool) *PushNotificationProcessor {
+func NewPushNotificationProcessor() *PushNotificationProcessor {
 	return &PushNotificationProcessor{
 		registry: NewPushNotificationRegistry(),
-		enabled:  enabled,
 	}
-}
-
-// IsEnabled returns whether push notification processing is enabled.
-func (p *PushNotificationProcessor) IsEnabled() bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.enabled
-}
-
-// SetEnabled enables or disables push notification processing.
-func (p *PushNotificationProcessor) SetEnabled(enabled bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.enabled = enabled
 }
 
 // GetRegistry returns the push notification registry.
@@ -149,7 +130,7 @@ func (p *PushNotificationProcessor) GetRegistry() *PushNotificationRegistry {
 
 // ProcessPendingNotifications checks for and processes any pending push notifications.
 func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
-	if !p.IsEnabled() || !p.registry.HasHandlers() {
+	if !p.registry.HasHandlers() {
 		return nil
 	}
 
@@ -250,16 +231,6 @@ type VoidPushNotificationProcessor struct{}
 // NewVoidPushNotificationProcessor creates a new void push notification processor.
 func NewVoidPushNotificationProcessor() *VoidPushNotificationProcessor {
 	return &VoidPushNotificationProcessor{}
-}
-
-// IsEnabled always returns false for void processor.
-func (v *VoidPushNotificationProcessor) IsEnabled() bool {
-	return false
-}
-
-// SetEnabled is a no-op for void processor.
-func (v *VoidPushNotificationProcessor) SetEnabled(enabled bool) {
-	// No-op: void processor is always disabled
 }
 
 // GetRegistry returns nil for void processor since it doesn't maintain handlers.

@@ -535,7 +535,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		}
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
 			// Check for push notifications before reading the command reply
-			if c.opt.Protocol == 3 && c.pushProcessor.IsEnabled() {
+			if c.opt.Protocol == 3 {
 				if err := c.pushProcessor.ProcessPendingNotifications(ctx, rd); err != nil {
 					internal.Logger.Printf(ctx, "push: error processing push notifications: %v", err)
 				}
@@ -818,7 +818,7 @@ func (c *Client) initializePushProcessor() {
 		c.pushProcessor = c.opt.PushNotificationProcessor
 	} else if c.opt.PushNotifications {
 		// Create default processor when push notifications are enabled
-		c.pushProcessor = NewPushNotificationProcessor(true)
+		c.pushProcessor = NewPushNotificationProcessor()
 	} else {
 		// Create void processor when push notifications are disabled
 		c.pushProcessor = NewVoidPushNotificationProcessor()
