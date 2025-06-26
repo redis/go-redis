@@ -13,6 +13,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/dgryski/go-rendezvous" //nolint
+
 	"github.com/redis/go-redis/v9/auth"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -797,29 +798,48 @@ func (c *Ring) generalProcessPipeline(
 		cmdsMap[hash] = append(cmdsMap[hash], cmd)
 	}
 
-	var wg sync.WaitGroup
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+	)
 	for hash, cmds := range cmdsMap {
 		wg.Add(1)
 		go func(hash string, cmds []Cmder) {
 			defer wg.Done()
 
-			// TODO: retry?
 			shard, err := c.sharding.GetByName(hash)
 			if err != nil {
 				setCmdsErr(cmds, err)
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
 				return
 			}
 
 			if tx {
 				cmds = wrapMultiExec(ctx, cmds)
-				_ = shard.Client.processTxPipelineHook(ctx, cmds)
+				err = shard.Client.processTxPipelineHook(ctx, cmds)
 			} else {
-				_ = shard.Client.processPipelineHook(ctx, cmds)
+				err = shard.Client.processPipelineHook(ctx, cmds)
+			}
+			if err != nil {
+				setCmdsErr(cmds, err)
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
 			}
 		}(hash, cmds)
 	}
 
 	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
 	return cmdsFirstErr(cmds)
 }
 
