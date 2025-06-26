@@ -97,6 +97,7 @@ func (r *PushNotificationRegistry) HasHandlers() bool {
 type PushNotificationProcessor struct {
 	registry *PushNotificationRegistry
 	enabled  bool
+	mu       sync.RWMutex // Protects enabled field
 }
 
 // NewPushNotificationProcessor creates a new push notification processor.
@@ -109,11 +110,15 @@ func NewPushNotificationProcessor(enabled bool) *PushNotificationProcessor {
 
 // IsEnabled returns whether push notification processing is enabled.
 func (p *PushNotificationProcessor) IsEnabled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.enabled
 }
 
 // SetEnabled enables or disables push notification processing.
 func (p *PushNotificationProcessor) SetEnabled(enabled bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.enabled = enabled
 }
 
@@ -124,7 +129,7 @@ func (p *PushNotificationProcessor) GetRegistry() *PushNotificationRegistry {
 
 // ProcessPendingNotifications checks for and processes any pending push notifications.
 func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
-	if !p.enabled || !p.registry.HasHandlers() {
+	if !p.IsEnabled() || !p.registry.HasHandlers() {
 		return nil
 	}
 
