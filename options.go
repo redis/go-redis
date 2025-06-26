@@ -221,7 +221,11 @@ type Options struct {
 	// When enabled, the client will process RESP3 push notifications and
 	// route them to registered handlers.
 	//
-	// default: false
+	// For RESP3 connections (Protocol: 3), push notifications are automatically enabled.
+	// To disable push notifications for RESP3, use Protocol: 2 instead.
+	// For RESP2 connections, push notifications are not available.
+	//
+	// default: automatically enabled for RESP3, disabled for RESP2
 	PushNotifications bool
 
 	// PushNotificationProcessor is the processor for handling push notifications.

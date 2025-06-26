@@ -18,8 +18,8 @@ func main() {
 	// Example 2: Custom push notification handlers
 	customHandlersExample()
 
-	// Example 3: Global push notification handlers
-	globalHandlersExample()
+	// Example 3: Multiple specific handlers
+	multipleSpecificHandlersExample()
 
 	// Example 4: Custom push notifications
 	customPushNotificationExample()
@@ -95,8 +95,8 @@ func customHandlersExample() {
 	fmt.Println("   - SYSTEM_ALERT: Handles system alert notifications")
 }
 
-func globalHandlersExample() {
-	fmt.Println("\n=== Global Push Notification Handler Example ===")
+func multipleSpecificHandlersExample() {
+	fmt.Println("\n=== Multiple Specific Handlers Example ===")
 
 	client := redis.NewClient(&redis.Options{
 		Addr:              "localhost:6379",
@@ -105,25 +105,21 @@ func globalHandlersExample() {
 	})
 	defer client.Close()
 
-	// Register a global handler that receives ALL push notifications
-	client.RegisterGlobalPushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		if len(notification) > 0 {
-			command := notification[0]
-			fmt.Printf("📡 Global handler received: %v (args: %d)\n", command, len(notification)-1)
-		}
-		return true
-	})
-
-	// Register specific handlers as well
+	// Register specific handlers
 	client.RegisterPushNotificationHandlerFunc("SPECIFIC_EVENT", func(ctx context.Context, notification []interface{}) bool {
 		fmt.Printf("🎯 Specific handler for SPECIFIC_EVENT: %v\n", notification)
 		return true
 	})
 
-	fmt.Println("✅ Global and specific handlers registered:")
-	fmt.Println("   - Global handler will receive ALL push notifications")
-	fmt.Println("   - Specific handler will receive only SPECIFIC_EVENT notifications")
-	fmt.Println("   - Both handlers will be called for SPECIFIC_EVENT notifications")
+	client.RegisterPushNotificationHandlerFunc("ANOTHER_EVENT", func(ctx context.Context, notification []interface{}) bool {
+		fmt.Printf("🎯 Specific handler for ANOTHER_EVENT: %v\n", notification)
+		return true
+	})
+
+	fmt.Println("✅ Specific handlers registered:")
+	fmt.Println("   - SPECIFIC_EVENT handler will receive only SPECIFIC_EVENT notifications")
+	fmt.Println("   - ANOTHER_EVENT handler will receive only ANOTHER_EVENT notifications")
+	fmt.Println("   - Each notification type has a single dedicated handler")
 }
 
 func customPushNotificationExample() {
@@ -143,24 +139,9 @@ func customPushNotificationExample() {
 		return true
 	})
 
-	// Register a global handler to monitor all notifications
-	client.RegisterGlobalPushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		if len(notification) > 0 {
-			command := notification[0]
-			switch command {
-			case "MOVING", "MIGRATING", "MIGRATED":
-				fmt.Printf("🔄 Cluster notification: %v\n", command)
-			default:
-				fmt.Printf("📨 Other notification: %v\n", command)
-			}
-		}
-		return true
-	})
-
 	fmt.Println("✅ Custom push notifications enabled:")
-	fmt.Println("   - MOVING, MIGRATING, MIGRATED notifications → Cluster handlers")
 	fmt.Println("   - APPLICATION_EVENT notifications → Custom handler")
-	fmt.Println("   - All notifications → Global monitoring handler")
+	fmt.Println("   - Each notification type has a single dedicated handler")
 }
 
 func multipleNotificationTypesExample() {

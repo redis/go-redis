@@ -56,34 +56,6 @@ func TestPushNotificationRegistry(t *testing.T) {
 		t.Error("Handler should have been called")
 	}
 
-	// Test global handler
-	globalHandlerCalled := false
-	globalHandler := redis.PushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		globalHandlerCalled = true
-		return true
-	})
-
-	registry.RegisterGlobalHandler(globalHandler)
-
-	// Reset flags
-	handlerCalled = false
-	globalHandlerCalled = false
-
-	// Handle notification again
-	handled = registry.HandleNotification(ctx, notification)
-
-	if !handled {
-		t.Error("Notification should have been handled")
-	}
-
-	if !handlerCalled {
-		t.Error("Specific handler should have been called")
-	}
-
-	if !globalHandlerCalled {
-		t.Error("Global handler should have been called")
-	}
-
 	// Test duplicate handler registration error
 	duplicateHandler := redis.PushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
 		return true
@@ -124,13 +96,6 @@ func TestPushNotificationProcessor(t *testing.T) {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
 
-	// Test global handler
-	globalHandlerCalled := false
-	processor.RegisterGlobalHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		globalHandlerCalled = true
-		return true
-	})
-
 	// Simulate handling a notification
 	ctx := context.Background()
 	notification := []interface{}{"CUSTOM_NOTIFICATION", "data"}
@@ -142,10 +107,6 @@ func TestPushNotificationProcessor(t *testing.T) {
 
 	if !handlerCalled {
 		t.Error("Specific handler should have been called")
-	}
-
-	if !globalHandlerCalled {
-		t.Error("Global handler should have been called")
 	}
 
 	// Test disabling processor
@@ -184,13 +145,6 @@ func TestClientPushNotificationIntegration(t *testing.T) {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
 
-	// Test global handler through client
-	globalHandlerCalled := false
-	client.RegisterGlobalPushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		globalHandlerCalled = true
-		return true
-	})
-
 	// Simulate notification handling
 	ctx := context.Background()
 	notification := []interface{}{"CUSTOM_EVENT", "test_data"}
@@ -202,10 +156,6 @@ func TestClientPushNotificationIntegration(t *testing.T) {
 
 	if !handlerCalled {
 		t.Error("Custom handler should have been called")
-	}
-
-	if !globalHandlerCalled {
-		t.Error("Global handler should have been called")
 	}
 }
 
@@ -224,13 +174,12 @@ func TestClientWithoutPushNotifications(t *testing.T) {
 	}
 
 	// Registering handlers should not panic
-	client.RegisterPushNotificationHandlerFunc("TEST", func(ctx context.Context, notification []interface{}) bool {
+	err := client.RegisterPushNotificationHandlerFunc("TEST", func(ctx context.Context, notification []interface{}) bool {
 		return true
 	})
-
-	client.RegisterGlobalPushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		return true
-	})
+	if err != nil {
+		t.Errorf("Expected nil error when processor is nil, got: %v", err)
+	}
 }
 
 func TestPushNotificationEnabledClient(t *testing.T) {
@@ -522,17 +471,10 @@ func TestPushNotificationRegistryDuplicateHandlerError(t *testing.T) {
 	}
 }
 
-func TestPushNotificationRegistryGlobalAndSpecific(t *testing.T) {
+func TestPushNotificationRegistrySpecificHandlerOnly(t *testing.T) {
 	registry := redis.NewPushNotificationRegistry()
 
-	globalCalled := false
 	specificCalled := false
-
-	// Register global handler
-	registry.RegisterGlobalHandler(redis.PushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		globalCalled = true
-		return true
-	}))
 
 	// Register specific handler
 	err := registry.RegisterHandler("SPECIFIC_CMD", redis.PushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
@@ -552,28 +494,19 @@ func TestPushNotificationRegistryGlobalAndSpecific(t *testing.T) {
 		t.Error("Notification should be handled")
 	}
 
-	if !globalCalled {
-		t.Error("Global handler should be called")
-	}
-
 	if !specificCalled {
 		t.Error("Specific handler should be called")
 	}
 
-	// Reset flags
-	globalCalled = false
+	// Reset flag
 	specificCalled = false
 
-	// Test with non-specific command
+	// Test with non-specific command - should not be handled
 	notification = []interface{}{"OTHER_CMD", "data"}
 	handled = registry.HandleNotification(ctx, notification)
 
-	if !handled {
-		t.Error("Notification should be handled by global handler")
-	}
-
-	if !globalCalled {
-		t.Error("Global handler should be called for any command")
+	if handled {
+		t.Error("Notification should not be handled without specific handler")
 	}
 
 	if specificCalled {
@@ -631,15 +564,6 @@ func TestPushNotificationProcessorConvenienceMethods(t *testing.T) {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
 
-	// Test RegisterGlobalHandler convenience method
-	globalHandlerCalled := false
-	globalHandler := redis.PushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		globalHandlerCalled = true
-		return true
-	})
-
-	processor.RegisterGlobalHandler(globalHandler)
-
 	// Test RegisterHandlerFunc convenience method
 	funcHandlerCalled := false
 	err = processor.RegisterHandlerFunc("FUNC_CMD", func(ctx context.Context, notification []interface{}) bool {
@@ -650,14 +574,7 @@ func TestPushNotificationProcessorConvenienceMethods(t *testing.T) {
 		t.Fatalf("Failed to register func handler: %v", err)
 	}
 
-	// Test RegisterGlobalHandlerFunc convenience method
-	globalFuncHandlerCalled := false
-	processor.RegisterGlobalHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		globalFuncHandlerCalled = true
-		return true
-	})
-
-	// Test that all handlers work
+	// Test that handlers work
 	ctx := context.Background()
 
 	// Test specific handler
@@ -668,15 +585,13 @@ func TestPushNotificationProcessorConvenienceMethods(t *testing.T) {
 		t.Error("Notification should be handled")
 	}
 
-	if !handlerCalled || !globalHandlerCalled || !globalFuncHandlerCalled {
-		t.Error("Handler, global handler, and global func handler should all be called")
+	if !handlerCalled {
+		t.Error("Handler should be called")
 	}
 
 	// Reset flags
 	handlerCalled = false
-	globalHandlerCalled = false
 	funcHandlerCalled = false
-	globalFuncHandlerCalled = false
 
 	// Test func handler
 	notification = []interface{}{"FUNC_CMD", "data"}
@@ -686,8 +601,8 @@ func TestPushNotificationProcessorConvenienceMethods(t *testing.T) {
 		t.Error("Notification should be handled")
 	}
 
-	if !funcHandlerCalled || !globalHandlerCalled || !globalFuncHandlerCalled {
-		t.Error("Func handler, global handler, and global func handler should all be called")
+	if !funcHandlerCalled {
+		t.Error("Func handler should be called")
 	}
 }
 
@@ -707,20 +622,12 @@ func TestClientPushNotificationEdgeCases(t *testing.T) {
 		t.Errorf("Expected nil error when processor is nil, got: %v", err)
 	}
 
-	client.RegisterGlobalPushNotificationHandler(redis.PushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		return true
-	}))
-
 	err = client.RegisterPushNotificationHandlerFunc("TEST_FUNC", func(ctx context.Context, notification []interface{}) bool {
 		return true
 	})
 	if err != nil {
 		t.Errorf("Expected nil error when processor is nil, got: %v", err)
 	}
-
-	client.RegisterGlobalPushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-		return true
-	})
 
 	// GetPushNotificationProcessor should return nil
 	processor := client.GetPushNotificationProcessor()
@@ -867,13 +774,6 @@ func TestPushNotificationRegistryConcurrency(t *testing.T) {
 				notification := []interface{}{command, "data"}
 				registry.HandleNotification(context.Background(), notification)
 
-				// Register global handler occasionally
-				if j%10 == 0 {
-					registry.RegisterGlobalHandler(redis.PushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-						return true
-					}))
-				}
-
 				// Check registry state
 				registry.HasHandlers()
 				registry.GetRegisteredCommands()
@@ -971,13 +871,6 @@ func TestPushNotificationClientConcurrency(t *testing.T) {
 				client.RegisterPushNotificationHandlerFunc(command, func(ctx context.Context, notification []interface{}) bool {
 					return true
 				})
-
-				// Register global handlers occasionally
-				if j%5 == 0 {
-					client.RegisterGlobalPushNotificationHandlerFunc(func(ctx context.Context, notification []interface{}) bool {
-						return true
-					})
-				}
 
 				// Access processor
 				processor := client.GetPushNotificationProcessor()

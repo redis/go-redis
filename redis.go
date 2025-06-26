@@ -755,6 +755,12 @@ func NewClient(opt *Options) *Client {
 	}
 	opt.init()
 
+	// Enable push notifications by default for RESP3
+	// Only override if no custom processor is provided
+	if opt.Protocol == 3 && opt.PushNotificationProcessor == nil {
+		opt.PushNotifications = true
+	}
+
 	c := Client{
 		baseClient: &baseClient{
 			opt: opt,
@@ -803,13 +809,12 @@ func (c *Client) Options() *Options {
 
 // initializePushProcessor initializes the push notification processor.
 func (c *Client) initializePushProcessor() {
-	// Initialize push processor if enabled
-	if c.opt.PushNotifications {
-		if c.opt.PushNotificationProcessor != nil {
-			c.pushProcessor = c.opt.PushNotificationProcessor
-		} else {
-			c.pushProcessor = NewPushNotificationProcessor(true)
-		}
+	// Always use custom processor if provided
+	if c.opt.PushNotificationProcessor != nil {
+		c.pushProcessor = c.opt.PushNotificationProcessor
+	} else if c.opt.PushNotifications {
+		// Create default processor only if push notifications are enabled
+		c.pushProcessor = NewPushNotificationProcessor(true)
 	}
 }
 
@@ -822,13 +827,6 @@ func (c *Client) RegisterPushNotificationHandler(command string, handler PushNot
 	return nil
 }
 
-// RegisterGlobalPushNotificationHandler registers a handler that will receive all push notifications.
-func (c *Client) RegisterGlobalPushNotificationHandler(handler PushNotificationHandler) {
-	if c.pushProcessor != nil {
-		c.pushProcessor.RegisterGlobalHandler(handler)
-	}
-}
-
 // RegisterPushNotificationHandlerFunc registers a function as a handler for a specific push notification command.
 // Returns an error if a handler is already registered for this command.
 func (c *Client) RegisterPushNotificationHandlerFunc(command string, handlerFunc func(ctx context.Context, notification []interface{}) bool) error {
@@ -836,13 +834,6 @@ func (c *Client) RegisterPushNotificationHandlerFunc(command string, handlerFunc
 		return c.pushProcessor.RegisterHandlerFunc(command, handlerFunc)
 	}
 	return nil
-}
-
-// RegisterGlobalPushNotificationHandlerFunc registers a function as a global handler for all push notifications.
-func (c *Client) RegisterGlobalPushNotificationHandlerFunc(handlerFunc func(ctx context.Context, notification []interface{}) bool) {
-	if c.pushProcessor != nil {
-		c.pushProcessor.RegisterGlobalHandlerFunc(handlerFunc)
-	}
 }
 
 // GetPushNotificationProcessor returns the push notification processor.
