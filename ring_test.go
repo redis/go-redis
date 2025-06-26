@@ -867,3 +867,20 @@ var _ = Describe("Ring GetShardClients and GetShardClientForKey", func() {
 		Expect(len(shardMap)).To(BeNumerically("<=", 2)) // At most 2 shards (our setup)
 	})
 })
+
+var _ = Describe("unreachable ring shard", func() {
+	It("pipeline returns dial error", func() {
+		ring := redis.NewRing(&redis.RingOptions{
+			Addrs:              map[string]string{"shard1": "10.255.255.1:6379"},
+			DialTimeout:        100 * time.Millisecond,
+			HeartbeatFrequency: time.Hour,
+		})
+		defer ring.Close()
+
+		_, err := ring.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Ping(ctx)
+			return nil
+		})
+		Expect(err).To(HaveOccurred())
+	})
+})
