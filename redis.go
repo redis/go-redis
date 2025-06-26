@@ -970,8 +970,13 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 		c.hooksMixin = parentHooks.clone()
 	}
 
-	// Set push notification processor from options (always available now)
-	c.pushProcessor = opt.PushNotificationProcessor
+	// Set push notification processor from options, ensure it's never nil
+	if opt.PushNotificationProcessor != nil {
+		c.pushProcessor = opt.PushNotificationProcessor
+	} else {
+		// Create a void processor if none provided to ensure we never have nil
+		c.pushProcessor = NewVoidPushNotificationProcessor()
+	}
 
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process

@@ -174,9 +174,10 @@ func TestClientPushNotificationIntegration(t *testing.T) {
 }
 
 func TestClientWithoutPushNotifications(t *testing.T) {
-	// Test client without push notifications enabled
+	// Test client without push notifications enabled (using RESP2)
 	client := redis.NewClient(&redis.Options{
 		Addr:              "localhost:6379",
+		Protocol:          2,     // RESP2 doesn't support push notifications
 		PushNotifications: false, // Disabled
 	})
 	defer client.Close()
@@ -651,9 +652,10 @@ func TestPushNotificationProcessorConvenienceMethods(t *testing.T) {
 }
 
 func TestClientPushNotificationEdgeCases(t *testing.T) {
-	// Test client methods when processor is nil
+	// Test client methods when using void processor (RESP2)
 	client := redis.NewClient(&redis.Options{
 		Addr:              "localhost:6379",
+		Protocol:          2,     // RESP2 doesn't support push notifications
 		PushNotifications: false, // Disabled
 	})
 	defer client.Close()
@@ -673,10 +675,14 @@ func TestClientPushNotificationEdgeCases(t *testing.T) {
 		t.Errorf("Expected nil error when processor is nil, got: %v", err)
 	}
 
-	// GetPushNotificationProcessor should return nil
+	// GetPushNotificationProcessor should return VoidPushNotificationProcessor
 	processor := client.GetPushNotificationProcessor()
-	if processor != nil {
-		t.Error("Processor should be nil when push notifications are disabled")
+	if processor == nil {
+		t.Error("Processor should never be nil")
+	}
+	// VoidPushNotificationProcessor should have nil registry
+	if processor.GetRegistry() != nil {
+		t.Error("VoidPushNotificationProcessor should have nil registry when disabled")
 	}
 }
 
