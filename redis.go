@@ -982,6 +982,11 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 		c.hooksMixin = parentHooks.clone()
 	}
 
+	// Set push notification processor if available in options
+	if opt.PushNotificationProcessor != nil {
+		c.pushProcessor = opt.PushNotificationProcessor
+	}
+
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
 	c.initHooks(hooks{
@@ -998,6 +1003,29 @@ func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
 	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification command.
+// Returns an error if a handler is already registered for this command.
+func (c *Conn) RegisterPushNotificationHandler(command string, handler PushNotificationHandler) error {
+	if c.pushProcessor != nil {
+		return c.pushProcessor.RegisterHandler(command, handler)
+	}
+	return nil
+}
+
+// RegisterPushNotificationHandlerFunc registers a function as a handler for a specific push notification command.
+// Returns an error if a handler is already registered for this command.
+func (c *Conn) RegisterPushNotificationHandlerFunc(command string, handlerFunc func(ctx context.Context, notification []interface{}) bool) error {
+	if c.pushProcessor != nil {
+		return c.pushProcessor.RegisterHandlerFunc(command, handlerFunc)
+	}
+	return nil
+}
+
+// GetPushNotificationProcessor returns the push notification processor.
+func (c *Conn) GetPushNotificationProcessor() *PushNotificationProcessor {
+	return c.pushProcessor
 }
 
 func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

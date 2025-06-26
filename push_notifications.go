@@ -225,10 +225,8 @@ const (
 
 // PushNotificationInfo contains metadata about a push notification.
 type PushNotificationInfo struct {
-	Command   string
-	Args      []interface{}
-	Timestamp int64
-	Source    string
+	Command string
+	Args    []interface{}
 }
 
 // ParsePushNotificationInfo extracts information from a push notification.
