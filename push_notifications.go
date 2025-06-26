@@ -18,36 +18,47 @@ type PushNotificationHandler interface {
 
 // PushNotificationRegistry manages handlers for different types of push notifications.
 type PushNotificationRegistry struct {
-	mu       sync.RWMutex
-	handlers map[string]PushNotificationHandler // command -> single handler
+	mu        sync.RWMutex
+	handlers  map[string]PushNotificationHandler // pushNotificationName -> single handler
+	protected map[string]bool                    // pushNotificationName -> protected flag
 }
 
 // NewPushNotificationRegistry creates a new push notification registry.
 func NewPushNotificationRegistry() *PushNotificationRegistry {
 	return &PushNotificationRegistry{
-		handlers: make(map[string]PushNotificationHandler),
+		handlers:  make(map[string]PushNotificationHandler),
+		protected: make(map[string]bool),
 	}
 }
 
-// RegisterHandler registers a handler for a specific push notification command.
-// Returns an error if a handler is already registered for this command.
-func (r *PushNotificationRegistry) RegisterHandler(command string, handler PushNotificationHandler) error {
+// RegisterHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (r *PushNotificationRegistry) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.handlers[command]; exists {
-		return fmt.Errorf("handler already registered for command: %s", command)
+	if _, exists := r.handlers[pushNotificationName]; exists {
+		return fmt.Errorf("handler already registered for push notification: %s", pushNotificationName)
 	}
-	r.handlers[command] = handler
+	r.handlers[pushNotificationName] = handler
+	r.protected[pushNotificationName] = protected
 	return nil
 }
 
-// UnregisterHandler removes the handler for a specific push notification command.
-func (r *PushNotificationRegistry) UnregisterHandler(command string) {
+// UnregisterHandler removes the handler for a specific push notification name.
+// Returns an error if the handler is protected.
+func (r *PushNotificationRegistry) UnregisterHandler(pushNotificationName string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	delete(r.handlers, command)
+	if r.protected[pushNotificationName] {
+		return fmt.Errorf("cannot unregister protected handler for push notification: %s", pushNotificationName)
+	}
+
+	delete(r.handlers, pushNotificationName)
+	delete(r.protected, pushNotificationName)
+	return nil
 }
 
 // HandleNotification processes a push notification by calling the registered handler.
@@ -56,8 +67,8 @@ func (r *PushNotificationRegistry) HandleNotification(ctx context.Context, notif
 		return false
 	}
 
-	// Extract command from notification
-	command, ok := notification[0].(string)
+	// Extract push notification name from notification
+	pushNotificationName, ok := notification[0].(string)
 	if !ok {
 		return false
 	}
@@ -66,23 +77,23 @@ func (r *PushNotificationRegistry) HandleNotification(ctx context.Context, notif
 	defer r.mu.RUnlock()
 
 	// Call specific handler
-	if handler, exists := r.handlers[command]; exists {
+	if handler, exists := r.handlers[pushNotificationName]; exists {
 		return handler.HandlePushNotification(ctx, notification)
 	}
 
 	return false
 }
 
-// GetRegisteredCommands returns a list of commands that have registered handlers.
-func (r *PushNotificationRegistry) GetRegisteredCommands() []string {
+// GetRegisteredPushNotificationNames returns a list of push notification names that have registered handlers.
+func (r *PushNotificationRegistry) GetRegisteredPushNotificationNames() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	commands := make([]string, 0, len(r.handlers))
-	for command := range r.handlers {
-		commands = append(commands, command)
+	names := make([]string, 0, len(r.handlers))
+	for name := range r.handlers {
+		names = append(names, name)
 	}
-	return commands
+	return names
 }
 
 // HasHandlers returns true if there are any handlers registered.
@@ -176,13 +187,14 @@ func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Cont
 	return nil
 }
 
-// RegisterHandler is a convenience method to register a handler for a specific command.
-// Returns an error if a handler is already registered for this command.
-func (p *PushNotificationProcessor) RegisterHandler(command string, handler PushNotificationHandler) error {
-	return p.registry.RegisterHandler(command, handler)
+// RegisterHandler is a convenience method to register a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (p *PushNotificationProcessor) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+	return p.registry.RegisterHandler(pushNotificationName, handler, protected)
 }
 
-// Redis Cluster push notification commands
+// Redis Cluster push notification names
 const (
 	PushNotificationMoving     = "MOVING"
 	PushNotificationMigrating  = "MIGRATING"
@@ -193,8 +205,8 @@ const (
 
 // PushNotificationInfo contains metadata about a push notification.
 type PushNotificationInfo struct {
-	Command string
-	Args    []interface{}
+	Name string
+	Args []interface{}
 }
 
 // ParsePushNotificationInfo extracts information from a push notification.
@@ -203,14 +215,14 @@ func ParsePushNotificationInfo(notification []interface{}) *PushNotificationInfo
 		return nil
 	}
 
-	command, ok := notification[0].(string)
+	name, ok := notification[0].(string)
 	if !ok {
 		return nil
 	}
 
 	return &PushNotificationInfo{
-		Command: command,
-		Args:    notification[1:],
+		Name: name,
+		Args: notification[1:],
 	}
 }
 
@@ -219,5 +231,5 @@ func (info *PushNotificationInfo) String() string {
 	if info == nil {
 		return "<nil>"
 	}
-	return info.Command
+	return info.Name
 }

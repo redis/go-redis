@@ -32,7 +32,7 @@ func TestPushNotificationRegistry(t *testing.T) {
 		t.Error("Registry should not have handlers initially")
 	}
 
-	commands := registry.GetRegisteredCommands()
+	commands := registry.GetRegisteredPushNotificationNames()
 	if len(commands) != 0 {
 		t.Errorf("Expected 0 registered commands, got %d", len(commands))
 	}
@@ -44,7 +44,7 @@ func TestPushNotificationRegistry(t *testing.T) {
 		return true
 	})
 
-	err := registry.RegisterHandler("TEST_COMMAND", handler)
+	err := registry.RegisterHandler("TEST_COMMAND", handler, false)
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestPushNotificationRegistry(t *testing.T) {
 		t.Error("Registry should have handlers after registration")
 	}
 
-	commands = registry.GetRegisteredCommands()
+	commands = registry.GetRegisteredPushNotificationNames()
 	if len(commands) != 1 || commands[0] != "TEST_COMMAND" {
 		t.Errorf("Expected ['TEST_COMMAND'], got %v", commands)
 	}
@@ -75,11 +75,11 @@ func TestPushNotificationRegistry(t *testing.T) {
 	duplicateHandler := newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
 	})
-	err = registry.RegisterHandler("TEST_COMMAND", duplicateHandler)
+	err = registry.RegisterHandler("TEST_COMMAND", duplicateHandler, false)
 	if err == nil {
 		t.Error("Expected error when registering duplicate handler")
 	}
-	expectedError := "handler already registered for command: TEST_COMMAND"
+	expectedError := "handler already registered for push notification: TEST_COMMAND"
 	if err.Error() != expectedError {
 		t.Errorf("Expected error '%s', got '%s'", expectedError, err.Error())
 	}
@@ -106,7 +106,7 @@ func TestPushNotificationProcessor(t *testing.T) {
 			return false
 		}
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestClientPushNotificationIntegration(t *testing.T) {
 	err := client.RegisterPushNotificationHandler("CUSTOM_EVENT", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		handlerCalled = true
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestClientWithoutPushNotifications(t *testing.T) {
 	// Registering handlers should not panic
 	err := client.RegisterPushNotificationHandler("TEST", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Errorf("Expected nil error when processor is nil, got: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestPushNotificationEnabledClient(t *testing.T) {
 	err := client.RegisterPushNotificationHandler("TEST_NOTIFICATION", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		handlerCalled = true
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
@@ -238,6 +238,58 @@ func TestPushNotificationEnabledClient(t *testing.T) {
 
 	if !handlerCalled {
 		t.Error("Handler should have been called")
+	}
+}
+
+func TestPushNotificationProtectedHandlers(t *testing.T) {
+	registry := redis.NewPushNotificationRegistry()
+
+	// Register a protected handler
+	protectedHandler := newTestHandler(func(ctx context.Context, notification []interface{}) bool {
+		return true
+	})
+	err := registry.RegisterHandler("PROTECTED_HANDLER", protectedHandler, true)
+	if err != nil {
+		t.Fatalf("Failed to register protected handler: %v", err)
+	}
+
+	// Register a non-protected handler
+	normalHandler := newTestHandler(func(ctx context.Context, notification []interface{}) bool {
+		return true
+	})
+	err = registry.RegisterHandler("NORMAL_HANDLER", normalHandler, false)
+	if err != nil {
+		t.Fatalf("Failed to register normal handler: %v", err)
+	}
+
+	// Try to unregister the protected handler - should fail
+	err = registry.UnregisterHandler("PROTECTED_HANDLER")
+	if err == nil {
+		t.Error("Should not be able to unregister protected handler")
+	}
+	expectedError := "cannot unregister protected handler for push notification: PROTECTED_HANDLER"
+	if err.Error() != expectedError {
+		t.Errorf("Expected error '%s', got '%s'", expectedError, err.Error())
+	}
+
+	// Try to unregister the normal handler - should succeed
+	err = registry.UnregisterHandler("NORMAL_HANDLER")
+	if err != nil {
+		t.Errorf("Should be able to unregister normal handler: %v", err)
+	}
+
+	// Verify protected handler is still registered
+	commands := registry.GetRegisteredPushNotificationNames()
+	if len(commands) != 1 || commands[0] != "PROTECTED_HANDLER" {
+		t.Errorf("Expected only protected handler to remain, got %v", commands)
+	}
+
+	// Verify protected handler still works
+	ctx := context.Background()
+	notification := []interface{}{"PROTECTED_HANDLER", "data"}
+	handled := registry.HandleNotification(ctx, notification)
+	if !handled {
+		t.Error("Protected handler should still work")
 	}
 }
 
@@ -267,8 +319,8 @@ func TestPushNotificationInfo(t *testing.T) {
 		t.Fatal("Push notification info should not be nil")
 	}
 
-	if info.Command != "MOVING" {
-		t.Errorf("Expected command 'MOVING', got '%s'", info.Command)
+	if info.Name != "MOVING" {
+		t.Errorf("Expected name 'MOVING', got '%s'", info.Name)
 	}
 
 	if len(info.Args) != 2 {
@@ -307,7 +359,7 @@ func TestPubSubWithGenericPushNotifications(t *testing.T) {
 		customNotificationReceived = true
 		t.Logf("Received custom push notification in PubSub context: %v", notification)
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
@@ -336,27 +388,6 @@ func TestPubSubWithGenericPushNotifications(t *testing.T) {
 	}
 }
 
-func TestPushNotificationMessageType(t *testing.T) {
-	// Test the PushNotificationMessage type
-	msg := &redis.PushNotificationMessage{
-		Command: "CUSTOM_EVENT",
-		Args:    []interface{}{"arg1", "arg2", 123},
-	}
-
-	if msg.Command != "CUSTOM_EVENT" {
-		t.Errorf("Expected command 'CUSTOM_EVENT', got '%s'", msg.Command)
-	}
-
-	if len(msg.Args) != 3 {
-		t.Errorf("Expected 3 args, got %d", len(msg.Args))
-	}
-
-	expectedString := "push: CUSTOM_EVENT"
-	if msg.String() != expectedString {
-		t.Errorf("Expected string '%s', got '%s'", expectedString, msg.String())
-	}
-}
-
 func TestPushNotificationRegistryUnregisterHandler(t *testing.T) {
 	// Test unregistering handlers
 	registry := redis.NewPushNotificationRegistry()
@@ -368,13 +399,13 @@ func TestPushNotificationRegistryUnregisterHandler(t *testing.T) {
 		return true
 	})
 
-	err := registry.RegisterHandler("TEST_CMD", handler)
+	err := registry.RegisterHandler("TEST_CMD", handler, false)
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
 
 	// Verify handler is registered
-	commands := registry.GetRegisteredCommands()
+	commands := registry.GetRegisteredPushNotificationNames()
 	if len(commands) != 1 || commands[0] != "TEST_CMD" {
 		t.Errorf("Expected ['TEST_CMD'], got %v", commands)
 	}
@@ -395,7 +426,7 @@ func TestPushNotificationRegistryUnregisterHandler(t *testing.T) {
 	registry.UnregisterHandler("TEST_CMD")
 
 	// Verify handler is unregistered
-	commands = registry.GetRegisteredCommands()
+	commands = registry.GetRegisteredPushNotificationNames()
 	if len(commands) != 0 {
 		t.Errorf("Expected no registered commands after unregister, got %v", commands)
 	}
@@ -459,24 +490,24 @@ func TestPushNotificationRegistryDuplicateHandlerError(t *testing.T) {
 	})
 
 	// Register first handler - should succeed
-	err := registry.RegisterHandler("DUPLICATE_CMD", handler1)
+	err := registry.RegisterHandler("DUPLICATE_CMD", handler1, false)
 	if err != nil {
 		t.Fatalf("First handler registration should succeed: %v", err)
 	}
 
 	// Register second handler for same command - should fail
-	err = registry.RegisterHandler("DUPLICATE_CMD", handler2)
+	err = registry.RegisterHandler("DUPLICATE_CMD", handler2, false)
 	if err == nil {
 		t.Error("Second handler registration should fail")
 	}
 
-	expectedError := "handler already registered for command: DUPLICATE_CMD"
+	expectedError := "handler already registered for push notification: DUPLICATE_CMD"
 	if err.Error() != expectedError {
 		t.Errorf("Expected error '%s', got '%s'", expectedError, err.Error())
 	}
 
 	// Verify only one handler is registered
-	commands := registry.GetRegisteredCommands()
+	commands := registry.GetRegisteredPushNotificationNames()
 	if len(commands) != 1 || commands[0] != "DUPLICATE_CMD" {
 		t.Errorf("Expected ['DUPLICATE_CMD'], got %v", commands)
 	}
@@ -491,7 +522,7 @@ func TestPushNotificationRegistrySpecificHandlerOnly(t *testing.T) {
 	err := registry.RegisterHandler("SPECIFIC_CMD", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		specificCalled = true
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Fatalf("Failed to register specific handler: %v", err)
 	}
@@ -538,7 +569,7 @@ func TestPushNotificationProcessorEdgeCases(t *testing.T) {
 	processor.RegisterHandler("TEST_CMD", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		handlerCalled = true
 		return true
-	}))
+	}), false)
 
 	// Even with handlers registered, disabled processor shouldn't process
 	ctx := context.Background()
@@ -570,7 +601,7 @@ func TestPushNotificationProcessorConvenienceMethods(t *testing.T) {
 		return true
 	})
 
-	err := processor.RegisterHandler("CONV_CMD", handler)
+	err := processor.RegisterHandler("CONV_CMD", handler, false)
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
@@ -580,7 +611,7 @@ func TestPushNotificationProcessorConvenienceMethods(t *testing.T) {
 	err = processor.RegisterHandler("FUNC_CMD", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		funcHandlerCalled = true
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Fatalf("Failed to register func handler: %v", err)
 	}
@@ -628,14 +659,14 @@ func TestClientPushNotificationEdgeCases(t *testing.T) {
 	// These should not panic even when processor is nil and should return nil error
 	err := client.RegisterPushNotificationHandler("TEST", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Errorf("Expected nil error when processor is nil, got: %v", err)
 	}
 
 	err = client.RegisterPushNotificationHandler("TEST_FUNC", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Errorf("Expected nil error when processor is nil, got: %v", err)
 	}
@@ -700,8 +731,8 @@ func TestPushNotificationInfoEdgeCases(t *testing.T) {
 		t.Fatal("Info should not be nil")
 	}
 
-	if info.Command != "COMPLEX_CMD" {
-		t.Errorf("Expected command 'COMPLEX_CMD', got '%s'", info.Command)
+	if info.Name != "COMPLEX_CMD" {
+		t.Errorf("Expected command 'COMPLEX_CMD', got '%s'", info.Name)
 	}
 
 	if len(info.Args) != 4 {
@@ -757,7 +788,7 @@ func TestPushNotificationRegistryConcurrency(t *testing.T) {
 				command := fmt.Sprintf("CMD_%d_%d", id, j)
 				registry.RegisterHandler(command, newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 					return true
-				}))
+				}), false)
 
 				// Handle notification
 				notification := []interface{}{command, "data"}
@@ -765,7 +796,7 @@ func TestPushNotificationRegistryConcurrency(t *testing.T) {
 
 				// Check registry state
 				registry.HasHandlers()
-				registry.GetRegisteredCommands()
+				registry.GetRegisteredPushNotificationNames()
 			}
 		}(i)
 	}
@@ -780,7 +811,7 @@ func TestPushNotificationRegistryConcurrency(t *testing.T) {
 		t.Error("Registry should have handlers after concurrent operations")
 	}
 
-	commands := registry.GetRegisteredCommands()
+	commands := registry.GetRegisteredPushNotificationNames()
 	if len(commands) == 0 {
 		t.Error("Registry should have registered commands after concurrent operations")
 	}
@@ -805,7 +836,7 @@ func TestPushNotificationProcessorConcurrency(t *testing.T) {
 				command := fmt.Sprintf("PROC_CMD_%d_%d", id, j)
 				processor.RegisterHandler(command, newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 					return true
-				}))
+				}), false)
 
 				// Handle notifications
 				notification := []interface{}{command, "data"}
@@ -859,7 +890,7 @@ func TestPushNotificationClientConcurrency(t *testing.T) {
 				command := fmt.Sprintf("CLIENT_CMD_%d_%d", id, j)
 				client.RegisterPushNotificationHandler(command, newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 					return true
-				}))
+				}), false)
 
 				// Access processor
 				processor := client.GetPushNotificationProcessor()
@@ -903,7 +934,7 @@ func TestPushNotificationConnectionHealthCheck(t *testing.T) {
 	err := client.RegisterPushNotificationHandler("TEST_CONNCHECK", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		t.Logf("Received test notification: %v", notification)
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}

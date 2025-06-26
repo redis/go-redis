@@ -824,11 +824,12 @@ func (c *Client) initializePushProcessor() {
 	}
 }
 
-// RegisterPushNotificationHandler registers a handler for a specific push notification command.
-// Returns an error if a handler is already registered for this command.
-func (c *Client) RegisterPushNotificationHandler(command string, handler PushNotificationHandler) error {
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *Client) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
 	if c.pushProcessor != nil {
-		return c.pushProcessor.RegisterHandler(command, handler)
+		return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 	}
 	return nil
 }
@@ -996,11 +997,12 @@ func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
 	return err
 }
 
-// RegisterPushNotificationHandler registers a handler for a specific push notification command.
-// Returns an error if a handler is already registered for this command.
-func (c *Conn) RegisterPushNotificationHandler(command string, handler PushNotificationHandler) error {
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *Conn) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
 	if c.pushProcessor != nil {
-		return c.pushProcessor.RegisterHandler(command, handler)
+		return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 	}
 	return nil
 }

@@ -118,7 +118,7 @@ func TestConnectionHealthCheckWithPushNotifications(t *testing.T) {
 	// Register a handler to ensure processor is active
 	err := client.RegisterPushNotificationHandler("TEST_HEALTH", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestConnPushNotificationMethods(t *testing.T) {
 		return true
 	})
 
-	err := conn.RegisterPushNotificationHandler("TEST_CONN_HANDLER", handler)
+	err := conn.RegisterPushNotificationHandler("TEST_CONN_HANDLER", handler, false)
 	if err != nil {
 		t.Errorf("Failed to register handler on Conn: %v", err)
 	}
@@ -173,13 +173,13 @@ func TestConnPushNotificationMethods(t *testing.T) {
 	// Test RegisterPushNotificationHandler with function wrapper
 	err = conn.RegisterPushNotificationHandler("TEST_CONN_FUNC", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Errorf("Failed to register handler func on Conn: %v", err)
 	}
 
 	// Test duplicate handler error
-	err = conn.RegisterPushNotificationHandler("TEST_CONN_HANDLER", handler)
+	err = conn.RegisterPushNotificationHandler("TEST_CONN_HANDLER", handler, false)
 	if err == nil {
 		t.Error("Should get error when registering duplicate handler")
 	}
@@ -222,7 +222,7 @@ func TestConnWithoutPushNotifications(t *testing.T) {
 	// Test RegisterPushNotificationHandler returns nil (no error)
 	err := conn.RegisterPushNotificationHandler("TEST", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Errorf("Should return nil error when no processor: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestConnWithoutPushNotifications(t *testing.T) {
 	// Test RegisterPushNotificationHandler returns nil (no error)
 	err = conn.RegisterPushNotificationHandler("TEST", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Errorf("Should return nil error when no processor: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestClonedClientPushNotifications(t *testing.T) {
 	// Register handler on original
 	err := client.RegisterPushNotificationHandler("TEST_CLONE", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestClonedClientPushNotifications(t *testing.T) {
 	// Test registering new handler on cloned client
 	err = clonedClient.RegisterPushNotificationHandler("TEST_CLONE_NEW", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
-	}))
+	}), false)
 	if err != nil {
 		t.Errorf("Failed to register handler on cloned client: %v", err)
 	}
@@ -350,22 +350,22 @@ func TestPushNotificationInfoStructure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			info := ParsePushNotificationInfo(tc.notification)
 
-			if info.Command != tc.expectedCmd {
-				t.Errorf("Expected command %s, got %s", tc.expectedCmd, info.Command)
+			if info.Name != tc.expectedCmd {
+				t.Errorf("Expected name %s, got %s", tc.expectedCmd, info.Name)
 			}
 
 			if len(info.Args) != tc.expectedArgs {
 				t.Errorf("Expected %d args, got %d", tc.expectedArgs, len(info.Args))
 			}
 
-			// Verify no unused fields exist by checking the struct only has Command and Args
+			// Verify no unused fields exist by checking the struct only has Name and Args
 			// This is a compile-time check - if unused fields were added back, this would fail
 			_ = struct {
-				Command string
-				Args    []interface{}
+				Name string
+				Args []interface{}
 			}{
-				Command: info.Command,
-				Args:    info.Args,
+				Name: info.Name,
+				Args: info.Args,
 			}
 		})
 	}
