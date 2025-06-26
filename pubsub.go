@@ -40,7 +40,7 @@ type PubSub struct {
 	allCh  *channel
 
 	// Push notification processor for handling generic push notifications
-	pushProcessor *PushNotificationProcessor
+	pushProcessor PushNotificationProcessorInterface
 }
 
 func (c *PubSub) init() {
@@ -49,7 +49,7 @@ func (c *PubSub) init() {
 
 // SetPushNotificationProcessor sets the push notification processor for handling
 // generic push notifications received on this PubSub connection.
-func (c *PubSub) SetPushNotificationProcessor(processor *PushNotificationProcessor) {
+func (c *PubSub) SetPushNotificationProcessor(processor PushNotificationProcessorInterface) {
 	c.pushProcessor = processor
 }
 
@@ -435,15 +435,18 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 			}, nil
 		default:
 			// Try to handle as generic push notification
-			if c.pushProcessor != nil && c.pushProcessor.IsEnabled() {
+			if c.pushProcessor.IsEnabled() {
 				ctx := c.getContext()
-				handled := c.pushProcessor.GetRegistry().HandleNotification(ctx, reply)
-				if handled {
-					// Return a special message type to indicate it was handled
-					return &PushNotificationMessage{
-						Command: kind,
-						Args:    reply[1:],
-					}, nil
+				registry := c.pushProcessor.GetRegistry()
+				if registry != nil {
+					handled := registry.HandleNotification(ctx, reply)
+					if handled {
+						// Return a special message type to indicate it was handled
+						return &PushNotificationMessage{
+							Command: kind,
+							Args:    reply[1:],
+						}, nil
+					}
 				}
 			}
 			return nil, fmt.Errorf("redis: unsupported pubsub message: %q", kind)

@@ -182,10 +182,13 @@ func TestClientWithoutPushNotifications(t *testing.T) {
 	})
 	defer client.Close()
 
-	// Push processor should be nil
+	// Push processor should be a VoidPushNotificationProcessor
 	processor := client.GetPushNotificationProcessor()
-	if processor != nil {
-		t.Error("Push notification processor should be nil when disabled")
+	if processor == nil {
+		t.Error("Push notification processor should never be nil")
+	}
+	if processor.IsEnabled() {
+		t.Error("Push notification processor should be disabled when PushNotifications is false")
 	}
 
 	// Registering handlers should not panic

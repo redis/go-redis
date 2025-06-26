@@ -213,10 +213,13 @@ func TestConnWithoutPushNotifications(t *testing.T) {
 	conn := client.Conn()
 	defer conn.Close()
 
-	// Test GetPushNotificationProcessor returns nil
+	// Test GetPushNotificationProcessor returns VoidPushNotificationProcessor
 	processor := conn.GetPushNotificationProcessor()
-	if processor != nil {
-		t.Error("Conn should not have push notification processor for RESP2")
+	if processor == nil {
+		t.Error("Conn should always have a push notification processor")
+	}
+	if processor.IsEnabled() {
+		t.Error("Push notification processor should be disabled for RESP2")
 	}
 
 	// Test RegisterPushNotificationHandler returns nil (no error)

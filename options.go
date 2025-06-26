@@ -230,7 +230,7 @@ type Options struct {
 
 	// PushNotificationProcessor is the processor for handling push notifications.
 	// If nil, a default processor will be created when PushNotifications is enabled.
-	PushNotificationProcessor *PushNotificationProcessor
+	PushNotificationProcessor PushNotificationProcessorInterface
 }
 
 func (opt *Options) init() {

@@ -209,7 +209,7 @@ type baseClient struct {
 	onClose func() error // hook called when client is closed
 
 	// Push notification processing
-	pushProcessor *PushNotificationProcessor
+	pushProcessor PushNotificationProcessorInterface
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -535,7 +535,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		}
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
 			// Check for push notifications before reading the command reply
-			if c.opt.Protocol == 3 && c.pushProcessor != nil && c.pushProcessor.IsEnabled() {
+			if c.opt.Protocol == 3 && c.pushProcessor.IsEnabled() {
 				if err := c.pushProcessor.ProcessPendingNotifications(ctx, rd); err != nil {
 					internal.Logger.Printf(ctx, "push: error processing push notifications: %v", err)
 				}
@@ -772,9 +772,7 @@ func NewClient(opt *Options) *Client {
 	c.initializePushProcessor()
 
 	// Update options with the initialized push processor for connection pool
-	if c.pushProcessor != nil {
-		opt.PushNotificationProcessor = c.pushProcessor
-	}
+	opt.PushNotificationProcessor = c.pushProcessor
 
 	c.connPool = newConnPool(opt, c.dialHook)
 
@@ -819,8 +817,11 @@ func (c *Client) initializePushProcessor() {
 	if c.opt.PushNotificationProcessor != nil {
 		c.pushProcessor = c.opt.PushNotificationProcessor
 	} else if c.opt.PushNotifications {
-		// Create default processor only if push notifications are enabled
+		// Create default processor when push notifications are enabled
 		c.pushProcessor = NewPushNotificationProcessor(true)
+	} else {
+		// Create void processor when push notifications are disabled
+		c.pushProcessor = NewVoidPushNotificationProcessor()
 	}
 }
 
@@ -828,14 +829,11 @@ func (c *Client) initializePushProcessor() {
 // Returns an error if a handler is already registered for this push notification name.
 // If protected is true, the handler cannot be unregistered.
 func (c *Client) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
-	if c.pushProcessor != nil {
-		return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
-	}
-	return nil
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 // GetPushNotificationProcessor returns the push notification processor.
-func (c *Client) GetPushNotificationProcessor() *PushNotificationProcessor {
+func (c *Client) GetPushNotificationProcessor() PushNotificationProcessorInterface {
 	return c.pushProcessor
 }
 
@@ -886,10 +884,8 @@ func (c *Client) pubSub() *PubSub {
 	}
 	pubsub.init()
 
-	// Set the push notification processor if available
-	if c.pushProcessor != nil {
-		pubsub.SetPushNotificationProcessor(c.pushProcessor)
-	}
+	// Set the push notification processor
+	pubsub.SetPushNotificationProcessor(c.pushProcessor)
 
 	return pubsub
 }
@@ -974,10 +970,8 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 		c.hooksMixin = parentHooks.clone()
 	}
 
-	// Set push notification processor if available in options
-	if opt.PushNotificationProcessor != nil {
-		c.pushProcessor = opt.PushNotificationProcessor
-	}
+	// Set push notification processor from options (always available now)
+	c.pushProcessor = opt.PushNotificationProcessor
 
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
@@ -1001,14 +995,11 @@ func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
 // Returns an error if a handler is already registered for this push notification name.
 // If protected is true, the handler cannot be unregistered.
 func (c *Conn) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
-	if c.pushProcessor != nil {
-		return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
-	}
-	return nil
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 // GetPushNotificationProcessor returns the push notification processor.
-func (c *Conn) GetPushNotificationProcessor() *PushNotificationProcessor {
+func (c *Conn) GetPushNotificationProcessor() PushNotificationProcessorInterface {
 	return c.pushProcessor
 }
 

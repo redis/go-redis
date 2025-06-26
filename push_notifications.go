@@ -104,6 +104,15 @@ func (r *PushNotificationRegistry) HasHandlers() bool {
 	return len(r.handlers) > 0
 }
 
+// PushNotificationProcessorInterface defines the interface for push notification processors.
+type PushNotificationProcessorInterface interface {
+	IsEnabled() bool
+	SetEnabled(enabled bool)
+	GetRegistry() *PushNotificationRegistry
+	ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error
+	RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error
+}
+
 // PushNotificationProcessor handles the processing of push notifications from Redis.
 type PushNotificationProcessor struct {
 	registry *PushNotificationRegistry
@@ -232,4 +241,63 @@ func (info *PushNotificationInfo) String() string {
 		return "<nil>"
 	}
 	return info.Name
+}
+
+// VoidPushNotificationProcessor is a no-op processor that discards all push notifications.
+// Used when push notifications are disabled to avoid nil checks throughout the codebase.
+type VoidPushNotificationProcessor struct{}
+
+// NewVoidPushNotificationProcessor creates a new void push notification processor.
+func NewVoidPushNotificationProcessor() *VoidPushNotificationProcessor {
+	return &VoidPushNotificationProcessor{}
+}
+
+// IsEnabled always returns false for void processor.
+func (v *VoidPushNotificationProcessor) IsEnabled() bool {
+	return false
+}
+
+// SetEnabled is a no-op for void processor.
+func (v *VoidPushNotificationProcessor) SetEnabled(enabled bool) {
+	// No-op: void processor is always disabled
+}
+
+// GetRegistry returns nil for void processor since it doesn't maintain handlers.
+func (v *VoidPushNotificationProcessor) GetRegistry() *PushNotificationRegistry {
+	return nil
+}
+
+// ProcessPendingNotifications reads and discards any pending push notifications.
+func (v *VoidPushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
+	// Read and discard any pending push notifications to clean the buffer
+	for {
+		// Peek at the next reply type to see if it's a push notification
+		replyType, err := rd.PeekReplyType()
+		if err != nil {
+			// No more data available or error peeking
+			break
+		}
+
+		// Check if this is a RESP3 push notification
+		if replyType == '>' { // RespPush
+			// Read and discard the push notification
+			_, err := rd.ReadReply()
+			if err != nil {
+				internal.Logger.Printf(ctx, "push: error reading push notification to discard: %v", err)
+				break
+			}
+			// Continue to check for more push notifications
+		} else {
+			// Not a push notification, stop processing
+			break
+		}
+	}
+
+	return nil
+}
+
+// RegisterHandler is a no-op for void processor, always returns nil.
+func (v *VoidPushNotificationProcessor) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+	// No-op: void processor doesn't register handlers
+	return nil
 }
