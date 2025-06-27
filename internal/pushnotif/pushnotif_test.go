@@ -150,8 +150,8 @@ func testProcessPendingNotifications(processor *Processor, ctx context.Context, 
 			break
 		}
 
-		// Skip pub/sub messages - they should be handled by the pub/sub system
-		if isPubSubMessage(notificationName) {
+		// Skip notifications that should be handled by other systems
+		if shouldSkipNotification(notificationName) {
 			break
 		}
 
@@ -659,8 +659,8 @@ func TestVoidProcessor(t *testing.T) {
 	})
 }
 
-// TestIsPubSubMessage tests the isPubSubMessage function
-func TestIsPubSubMessage(t *testing.T) {
+// TestShouldSkipNotification tests the shouldSkipNotification function
+func TestShouldSkipNotification(t *testing.T) {
 	t.Run("PubSubMessages", func(t *testing.T) {
 		pubSubMessages := []string{
 			"message",      // Regular pub/sub message
@@ -673,8 +673,8 @@ func TestIsPubSubMessage(t *testing.T) {
 		}
 
 		for _, msgType := range pubSubMessages {
-			if !isPubSubMessage(msgType) {
-				t.Errorf("isPubSubMessage(%q) should return true", msgType)
+			if !shouldSkipNotification(msgType) {
+				t.Errorf("shouldSkipNotification(%q) should return true", msgType)
 			}
 		}
 	})
@@ -693,8 +693,8 @@ func TestIsPubSubMessage(t *testing.T) {
 		}
 
 		for _, msgType := range nonPubSubMessages {
-			if isPubSubMessage(msgType) {
-				t.Errorf("isPubSubMessage(%q) should return false", msgType)
+			if shouldSkipNotification(msgType) {
+				t.Errorf("shouldSkipNotification(%q) should return false", msgType)
 			}
 		}
 	})
