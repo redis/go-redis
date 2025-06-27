@@ -436,9 +436,9 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 		default:
 			// Try to handle as generic push notification
 			ctx := c.getContext()
-			registry := c.pushProcessor.GetRegistry()
-			if registry != nil {
-				handled := registry.HandleNotification(ctx, reply)
+			handler := c.pushProcessor.GetHandler(kind)
+			if handler != nil {
+				handled := handler.HandlePushNotification(ctx, reply)
 				if handled {
 					// Return a special message type to indicate it was handled
 					return &PushNotificationMessage{

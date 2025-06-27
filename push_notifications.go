@@ -142,6 +142,10 @@ func (p *PushNotificationProcessor) GetRegistryForTesting() *PushNotificationReg
 
 // ProcessPendingNotifications checks for and processes any pending push notifications.
 func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
+	// Check for nil reader
+	if rd == nil {
+		return nil
+	}
 
 	// Check if there are any buffered bytes that might contain push notifications
 	if rd.Buffered() == 0 {
@@ -255,6 +259,11 @@ func (v *VoidPushNotificationProcessor) GetRegistryForTesting() *PushNotificatio
 
 // ProcessPendingNotifications reads and discards any pending push notifications.
 func (v *VoidPushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
+	// Check for nil reader
+	if rd == nil {
+		return nil
+	}
+
 	// Read and discard any pending push notifications to clean the buffer
 	for {
 		// Peek at the next reply type to see if it's a push notification
