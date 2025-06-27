@@ -837,6 +837,12 @@ func (c *Client) GetPushNotificationProcessor() PushNotificationProcessorInterfa
 	return c.pushProcessor
 }
 
+// GetPushNotificationHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (c *Client) GetPushNotificationHandler(pushNotificationName string) PushNotificationHandler {
+	return c.pushProcessor.GetHandler(pushNotificationName)
+}
+
 type PoolStats pool.Stats
 
 // PoolStats returns connection pool stats.

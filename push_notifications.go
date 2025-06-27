@@ -96,17 +96,23 @@ func (r *PushNotificationRegistry) GetRegisteredPushNotificationNames() []string
 	return names
 }
 
-// HasHandlers returns true if there are any handlers registered.
-func (r *PushNotificationRegistry) HasHandlers() bool {
+// GetHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (r *PushNotificationRegistry) GetHandler(pushNotificationName string) PushNotificationHandler {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	return len(r.handlers) > 0
+	handler, exists := r.handlers[pushNotificationName]
+	if !exists {
+		return nil
+	}
+	return handler
 }
 
 // PushNotificationProcessorInterface defines the interface for push notification processors.
 type PushNotificationProcessorInterface interface {
-	GetRegistry() *PushNotificationRegistry
+	GetHandler(pushNotificationName string) PushNotificationHandler
+	GetRegistry() *PushNotificationRegistry // For backward compatibility and testing
 	ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error
 	RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error
 }
@@ -123,16 +129,20 @@ func NewPushNotificationProcessor() *PushNotificationProcessor {
 	}
 }
 
-// GetRegistry returns the push notification registry.
+// GetHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (p *PushNotificationProcessor) GetHandler(pushNotificationName string) PushNotificationHandler {
+	return p.registry.GetHandler(pushNotificationName)
+}
+
+// GetRegistry returns the push notification registry for internal use.
+// This method is primarily for testing and internal operations.
 func (p *PushNotificationProcessor) GetRegistry() *PushNotificationRegistry {
 	return p.registry
 }
 
 // ProcessPendingNotifications checks for and processes any pending push notifications.
 func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
-	if !p.registry.HasHandlers() {
-		return nil
-	}
 
 	// Check if there are any buffered bytes that might contain push notifications
 	if rd.Buffered() == 0 {
@@ -231,6 +241,11 @@ type VoidPushNotificationProcessor struct{}
 // NewVoidPushNotificationProcessor creates a new void push notification processor.
 func NewVoidPushNotificationProcessor() *VoidPushNotificationProcessor {
 	return &VoidPushNotificationProcessor{}
+}
+
+// GetHandler returns nil for void processor since it doesn't maintain handlers.
+func (v *VoidPushNotificationProcessor) GetHandler(pushNotificationName string) PushNotificationHandler {
+	return nil
 }
 
 // GetRegistry returns nil for void processor since it doesn't maintain handlers.

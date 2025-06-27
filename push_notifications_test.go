@@ -28,9 +28,7 @@ func TestPushNotificationRegistry(t *testing.T) {
 	registry := redis.NewPushNotificationRegistry()
 
 	// Test initial state
-	if registry.HasHandlers() {
-		t.Error("Registry should not have handlers initially")
-	}
+	// Registry starts empty (no need to check HasHandlers anymore)
 
 	commands := registry.GetRegisteredPushNotificationNames()
 	if len(commands) != 0 {
@@ -49,10 +47,7 @@ func TestPushNotificationRegistry(t *testing.T) {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
 
-	if !registry.HasHandlers() {
-		t.Error("Registry should have handlers after registration")
-	}
-
+	// Verify handler was registered by checking registered names
 	commands = registry.GetRegisteredPushNotificationNames()
 	if len(commands) != 1 || commands[0] != "TEST_COMMAND" {
 		t.Errorf("Expected ['TEST_COMMAND'], got %v", commands)
@@ -803,7 +798,6 @@ func TestPushNotificationRegistryConcurrency(t *testing.T) {
 				registry.HandleNotification(context.Background(), notification)
 
 				// Check registry state
-				registry.HasHandlers()
 				registry.GetRegisteredPushNotificationNames()
 			}
 		}(i)
@@ -815,10 +809,6 @@ func TestPushNotificationRegistryConcurrency(t *testing.T) {
 	}
 
 	// Verify registry is still functional
-	if !registry.HasHandlers() {
-		t.Error("Registry should have handlers after concurrent operations")
-	}
-
 	commands := registry.GetRegisteredPushNotificationNames()
 	if len(commands) == 0 {
 		t.Error("Registry should have registered commands after concurrent operations")

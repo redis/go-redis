@@ -522,6 +522,12 @@ func (c *SentinelClient) GetPushNotificationProcessor() PushNotificationProcesso
 	return c.pushProcessor
 }
 
+// GetPushNotificationHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (c *SentinelClient) GetPushNotificationHandler(pushNotificationName string) PushNotificationHandler {
+	return c.pushProcessor.GetHandler(pushNotificationName)
+}
+
 // RegisterPushNotificationHandler registers a handler for a specific push notification name.
 // Returns an error if a handler is already registered for this push notification name.
 // If protected is true, the handler cannot be unregistered.
