@@ -26,5 +26,4 @@ type RegistryInterface interface {
 	UnregisterHandler(pushNotificationName string) error
 	GetHandler(pushNotificationName string) Handler
 	GetRegisteredPushNotificationNames() []string
-	HandleNotification(ctx context.Context, notification []interface{}) bool
 }

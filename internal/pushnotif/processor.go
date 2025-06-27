@@ -113,6 +113,12 @@ func (v *VoidProcessor) RegisterHandler(pushNotificationName string, handler Han
 	return fmt.Errorf("cannot register push notification handler '%s': push notifications are disabled (using void processor)", pushNotificationName)
 }
 
+// UnregisterHandler returns an error for void processor since it doesn't maintain handlers.
+// This helps developers identify when they're trying to unregister handlers on disabled push notifications.
+func (v *VoidProcessor) UnregisterHandler(pushNotificationName string) error {
+	return fmt.Errorf("cannot unregister push notification handler '%s': push notifications are disabled (using void processor)", pushNotificationName)
+}
+
 
 
 // ProcessPendingNotifications for VoidProcessor does nothing since push notifications
