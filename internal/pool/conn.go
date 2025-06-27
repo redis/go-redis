@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/pushnotif"
 )
 
 var noDeadline = time.Time{}
@@ -27,8 +28,8 @@ type Conn struct {
 	onClose func() error
 
 	// Push notification processor for handling push notifications on this connection
-	// Uses the same interface as defined in pool.go to avoid duplication
-	PushNotificationProcessor PushNotificationProcessorInterface
+	// This is set when the connection is created and is a reference to the processor
+	PushNotificationProcessor pushnotif.ProcessorInterface
 }
 
 func NewConn(netConn net.Conn) *Conn {

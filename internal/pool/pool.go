@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
-	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/pushnotif"
 )
 
 var (
@@ -23,8 +23,6 @@ var (
 	// ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
 )
-
-
 
 var timers = sync.Pool{
 	New: func() interface{} {
@@ -62,12 +60,6 @@ type Pooler interface {
 	Close() error
 }
 
-// PushNotificationProcessorInterface defines the interface for push notification processors.
-// This matches the main PushNotificationProcessorInterface to avoid duplication while preventing circular imports.
-type PushNotificationProcessorInterface interface {
-	ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error
-}
-
 type Options struct {
 	Dialer func(context.Context) (net.Conn, error)
 
@@ -82,9 +74,8 @@ type Options struct {
 	ConnMaxLifetime time.Duration
 
 	// Push notification processor for connections
-	// This interface matches PushNotificationProcessorInterface to avoid duplication
-	// while preventing circular imports
-	PushNotificationProcessor PushNotificationProcessorInterface
+	// This is an interface to avoid circular imports
+	PushNotificationProcessor pushnotif.ProcessorInterface
 
 	// Protocol version for optimization (3 = RESP3 with push notifications, 2 = RESP2 without)
 	Protocol int

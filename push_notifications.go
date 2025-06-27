@@ -8,18 +8,12 @@ import (
 )
 
 // PushNotificationHandler defines the interface for push notification handlers.
-type PushNotificationHandler interface {
-	// HandlePushNotification processes a push notification.
-	// Returns true if the notification was handled, false otherwise.
-	HandlePushNotification(ctx context.Context, notification []interface{}) bool
-}
+// This is an alias to the internal push notification handler interface.
+type PushNotificationHandler = pushnotif.Handler
 
 // PushNotificationProcessorInterface defines the interface for push notification processors.
-type PushNotificationProcessorInterface interface {
-	GetHandler(pushNotificationName string) PushNotificationHandler
-	ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error
-	RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error
-}
+// This is an alias to the internal push notification processor interface.
+type PushNotificationProcessorInterface = pushnotif.ProcessorInterface
 
 // PushNotificationRegistry manages push notification handlers.
 type PushNotificationRegistry struct {
@@ -49,8 +43,7 @@ func (r *PushNotificationRegistry) GetHandler(pushNotificationName string) PushN
 	if handler == nil {
 		return nil
 	}
-	// The handler is already a PushNotificationHandler since we store it directly
-	return handler.(PushNotificationHandler)
+	return handler
 }
 
 // GetRegisteredPushNotificationNames returns a list of all registered push notification names.
@@ -58,10 +51,7 @@ func (r *PushNotificationRegistry) GetRegisteredPushNotificationNames() []string
 	return r.registry.GetRegisteredPushNotificationNames()
 }
 
-// HandleNotification attempts to handle a push notification using registered handlers.
-func (r *PushNotificationRegistry) HandleNotification(ctx context.Context, notification []interface{}) bool {
-	return r.registry.HandleNotification(ctx, notification)
-}
+
 
 // PushNotificationProcessor handles push notifications with a registry of handlers.
 type PushNotificationProcessor struct {
@@ -100,12 +90,7 @@ func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Cont
 	return p.processor.ProcessPendingNotifications(ctx, rd)
 }
 
-// GetRegistryForTesting returns the push notification registry for testing.
-func (p *PushNotificationProcessor) GetRegistryForTesting() *PushNotificationRegistry {
-	return &PushNotificationRegistry{
-		registry: p.processor.GetRegistryForTesting(),
-	}
-}
+
 
 // VoidPushNotificationProcessor discards all push notifications without processing them.
 type VoidPushNotificationProcessor struct {
@@ -132,11 +117,6 @@ func (v *VoidPushNotificationProcessor) RegisterHandler(pushNotificationName str
 // ProcessPendingNotifications reads and discards any pending push notifications.
 func (v *VoidPushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
 	return v.processor.ProcessPendingNotifications(ctx, rd)
-}
-
-// GetRegistryForTesting returns nil for void processor since it doesn't maintain handlers.
-func (v *VoidPushNotificationProcessor) GetRegistryForTesting() *PushNotificationRegistry {
-	return nil
 }
 
 

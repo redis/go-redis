@@ -1,7 +1,6 @@
 package pushnotif
 
 import (
-	"context"
 	"fmt"
 	"sync"
 )
@@ -82,25 +81,4 @@ func (r *Registry) GetRegisteredPushNotificationNames() []string {
 	return names
 }
 
-// HandleNotification attempts to handle a push notification using registered handlers.
-// Returns true if a handler was found and successfully processed the notification.
-func (r *Registry) HandleNotification(ctx context.Context, notification []interface{}) bool {
-	if len(notification) == 0 {
-		return false
-	}
 
-	// Extract the notification type (first element)
-	notificationType, ok := notification[0].(string)
-	if !ok {
-		return false
-	}
-
-	// Get the handler for this notification type
-	handler := r.GetHandler(notificationType)
-	if handler == nil {
-		return false
-	}
-
-	// Handle the notification
-	return handler.HandlePushNotification(ctx, notification)
-}
