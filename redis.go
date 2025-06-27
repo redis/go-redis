@@ -386,7 +386,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
-  if err = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); err == nil {
+	if err = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); err == nil {
 		// Authentication successful with HELLO command
 	} else if !isRedisError(err) {
 		// When the server responds with the RESP protocol and the result is not a normal
@@ -534,12 +534,6 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			readReplyFunc = cmd.readRawReply
 		}
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
-			// Check for push notifications before reading the command reply
-			if c.opt.Protocol == 3 {
-				if err := c.pushProcessor.ProcessPendingNotifications(ctx, rd); err != nil {
-					internal.Logger.Printf(ctx, "push: error processing push notifications: %v", err)
-				}
-			}
 			return readReplyFunc(rd)
 		}); err != nil {
 			if cmd.readTimeout() == nil {
@@ -813,25 +807,25 @@ func (c *Client) Options() *Options {
 
 // initializePushProcessor initializes the push notification processor for any client type.
 // This is a shared helper to avoid duplication across NewClient, NewFailoverClient, and NewSentinelClient.
-func initializePushProcessor(opt *Options, useVoidByDefault bool) PushNotificationProcessorInterface {
+func initializePushProcessor(opt *Options) PushNotificationProcessorInterface {
 	// Always use custom processor if provided
 	if opt.PushNotificationProcessor != nil {
 		return opt.PushNotificationProcessor
 	}
 
 	// For regular clients, respect the PushNotifications setting
-	if !useVoidByDefault && opt.PushNotifications {
+	if opt.PushNotifications {
 		// Create default processor when push notifications are enabled
 		return NewPushNotificationProcessor()
 	}
 
-	// Create void processor when push notifications are disabled or for specialized clients
+	// Create void processor when push notifications are disabled
 	return NewVoidPushNotificationProcessor()
 }
 
 // initializePushProcessor initializes the push notification processor for this client.
 func (c *Client) initializePushProcessor() {
-	c.pushProcessor = initializePushProcessor(c.opt, false)
+	c.pushProcessor = initializePushProcessor(c.opt)
 }
 
 // RegisterPushNotificationHandler registers a handler for a specific push notification name.
@@ -987,7 +981,7 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 
 	// Initialize push notification processor using shared helper
 	// Use void processor by default for connections (typically don't need push notifications)
-	c.pushProcessor = initializePushProcessor(opt, true)
+	c.pushProcessor = initializePushProcessor(opt)
 
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
