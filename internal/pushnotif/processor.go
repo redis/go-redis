@@ -103,8 +103,9 @@ func (v *VoidProcessor) GetHandler(pushNotificationName string) Handler {
 }
 
 // RegisterHandler returns an error for void processor since it doesn't maintain handlers.
+// This helps developers identify when they're trying to register handlers on disabled push notifications.
 func (v *VoidProcessor) RegisterHandler(pushNotificationName string, handler Handler, protected bool) error {
-	return fmt.Errorf("void push notification processor does not support handler registration")
+	return fmt.Errorf("cannot register push notification handler '%s': push notifications are disabled (using void processor)", pushNotificationName)
 }
 
 // GetRegistryForTesting returns nil for void processor since it doesn't maintain handlers.

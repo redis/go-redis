@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
@@ -207,12 +208,15 @@ func TestClientWithoutPushNotifications(t *testing.T) {
 		t.Error("VoidPushNotificationProcessor should have nil registry")
 	}
 
-	// Registering handlers should not panic
+	// Registering handlers should return an error when push notifications are disabled
 	err := client.RegisterPushNotificationHandler("TEST", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
 	}), false)
-	if err != nil {
-		t.Errorf("Expected nil error when processor is nil, got: %v", err)
+	if err == nil {
+		t.Error("Expected error when trying to register handler on client with disabled push notifications")
+	}
+	if !strings.Contains(err.Error(), "push notifications are disabled") {
+		t.Errorf("Expected error message about disabled push notifications, got: %v", err)
 	}
 }
 
@@ -675,19 +679,25 @@ func TestClientPushNotificationEdgeCases(t *testing.T) {
 	})
 	defer client.Close()
 
-	// These should not panic even when processor is nil and should return nil error
+	// These should return errors when push notifications are disabled
 	err := client.RegisterPushNotificationHandler("TEST", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
 	}), false)
-	if err != nil {
-		t.Errorf("Expected nil error when processor is nil, got: %v", err)
+	if err == nil {
+		t.Error("Expected error when trying to register handler on client with disabled push notifications")
+	}
+	if !strings.Contains(err.Error(), "push notifications are disabled") {
+		t.Errorf("Expected error message about disabled push notifications, got: %v", err)
 	}
 
 	err = client.RegisterPushNotificationHandler("TEST_FUNC", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
 	}), false)
-	if err != nil {
-		t.Errorf("Expected nil error when processor is nil, got: %v", err)
+	if err == nil {
+		t.Error("Expected error when trying to register handler on client with disabled push notifications")
+	}
+	if !strings.Contains(err.Error(), "push notifications are disabled") {
+		t.Errorf("Expected error message about disabled push notifications, got: %v", err)
 	}
 
 	// GetPushNotificationProcessor should return VoidPushNotificationProcessor
