@@ -9,6 +9,18 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
+// Helper function to access registry for testing
+func getRegistryForTesting(processor redis.PushNotificationProcessorInterface) *redis.PushNotificationRegistry {
+	switch p := processor.(type) {
+	case *redis.PushNotificationProcessor:
+		return p.GetRegistryForTesting()
+	case *redis.VoidPushNotificationProcessor:
+		return p.GetRegistryForTesting()
+	default:
+		return nil
+	}
+}
+
 // testHandler is a simple implementation of PushNotificationHandler for testing
 type testHandler struct {
 	handlerFunc func(ctx context.Context, notification []interface{}) bool
@@ -84,8 +96,10 @@ func TestPushNotificationProcessor(t *testing.T) {
 	// Test the push notification processor
 	processor := redis.NewPushNotificationProcessor()
 
-	if processor.GetRegistry() == nil {
-		t.Error("Processor should have a registry")
+	// Test that we can get a handler (should be nil since none registered yet)
+	handler := processor.GetHandler("TEST")
+	if handler != nil {
+		t.Error("Should not have handler for TEST initially")
 	}
 
 	// Test registering handlers
@@ -106,10 +120,15 @@ func TestPushNotificationProcessor(t *testing.T) {
 		t.Fatalf("Failed to register handler: %v", err)
 	}
 
-	// Simulate handling a notification
+	// Simulate handling a notification using GetHandler
 	ctx := context.Background()
 	notification := []interface{}{"CUSTOM_NOTIFICATION", "data"}
-	handled := processor.GetRegistry().HandleNotification(ctx, notification)
+	customHandler := processor.GetHandler("CUSTOM_NOTIFICATION")
+	if customHandler == nil {
+		t.Error("Should have handler for CUSTOM_NOTIFICATION after registration")
+		return
+	}
+	handled := customHandler.HandlePushNotification(ctx, notification)
 
 	if !handled {
 		t.Error("Notification should have been handled")
@@ -119,9 +138,10 @@ func TestPushNotificationProcessor(t *testing.T) {
 		t.Error("Specific handler should have been called")
 	}
 
-	// Test that processor always has a registry (no enable/disable anymore)
-	if processor.GetRegistry() == nil {
-		t.Error("Processor should always have a registry")
+	// Test that processor can retrieve handlers (no enable/disable anymore)
+	retrievedHandler := processor.GetHandler("CUSTOM_NOTIFICATION")
+	if retrievedHandler == nil {
+		t.Error("Should be able to retrieve registered handler")
 	}
 }
 
@@ -140,7 +160,7 @@ func TestClientPushNotificationIntegration(t *testing.T) {
 		t.Error("Push notification processor should be initialized")
 	}
 
-	if processor.GetRegistry() == nil {
+	if getRegistryForTesting(processor) == nil {
 		t.Error("Push notification processor should have a registry when enabled")
 	}
 
@@ -157,7 +177,7 @@ func TestClientPushNotificationIntegration(t *testing.T) {
 	// Simulate notification handling
 	ctx := context.Background()
 	notification := []interface{}{"CUSTOM_EVENT", "test_data"}
-	handled := processor.GetRegistry().HandleNotification(ctx, notification)
+	handled := getRegistryForTesting(processor).HandleNotification(ctx, notification)
 
 	if !handled {
 		t.Error("Notification should have been handled")
@@ -183,7 +203,7 @@ func TestClientWithoutPushNotifications(t *testing.T) {
 		t.Error("Push notification processor should never be nil")
 	}
 	// VoidPushNotificationProcessor should have nil registry
-	if processor.GetRegistry() != nil {
+	if getRegistryForTesting(processor) != nil {
 		t.Error("VoidPushNotificationProcessor should have nil registry")
 	}
 
@@ -211,8 +231,9 @@ func TestPushNotificationEnabledClient(t *testing.T) {
 		t.Error("Push notification processor should be initialized when enabled")
 	}
 
-	if processor.GetRegistry() == nil {
-		t.Error("Push notification processor should have a registry when enabled")
+	registry := getRegistryForTesting(processor)
+	if registry == nil {
+		t.Errorf("Push notification processor should have a registry when enabled. Processor type: %T", processor)
 	}
 
 	// Test registering a handler
@@ -226,7 +247,6 @@ func TestPushNotificationEnabledClient(t *testing.T) {
 	}
 
 	// Test that the handler works
-	registry := processor.GetRegistry()
 	ctx := context.Background()
 	notification := []interface{}{"TEST_NOTIFICATION", "data"}
 	handled := registry.HandleNotification(ctx, notification)
@@ -375,7 +395,7 @@ func TestPubSubWithGenericPushNotifications(t *testing.T) {
 
 	// Test that the processor can handle notifications
 	notification := []interface{}{"CUSTOM_PUBSUB_EVENT", "arg1", "arg2"}
-	handled := processor.GetRegistry().HandleNotification(context.Background(), notification)
+	handled := getRegistryForTesting(processor).HandleNotification(context.Background(), notification)
 
 	if !handled {
 		t.Error("Push notification should have been handled")
@@ -559,7 +579,7 @@ func TestPushNotificationProcessorEdgeCases(t *testing.T) {
 	// Test processor with disabled state
 	processor := redis.NewPushNotificationProcessor()
 
-	if processor.GetRegistry() == nil {
+	if getRegistryForTesting(processor) == nil {
 		t.Error("Processor should have a registry")
 	}
 
@@ -573,7 +593,7 @@ func TestPushNotificationProcessorEdgeCases(t *testing.T) {
 	// Even with handlers registered, disabled processor shouldn't process
 	ctx := context.Background()
 	notification := []interface{}{"TEST_CMD", "data"}
-	handled := processor.GetRegistry().HandleNotification(ctx, notification)
+	handled := getRegistryForTesting(processor).HandleNotification(ctx, notification)
 
 	if !handled {
 		t.Error("Registry should still handle notifications even when processor is disabled")
@@ -584,7 +604,7 @@ func TestPushNotificationProcessorEdgeCases(t *testing.T) {
 	}
 
 	// Test that processor always has a registry
-	if processor.GetRegistry() == nil {
+	if getRegistryForTesting(processor) == nil {
 		t.Error("Processor should always have a registry")
 	}
 }
@@ -619,7 +639,7 @@ func TestPushNotificationProcessorConvenienceMethods(t *testing.T) {
 
 	// Test specific handler
 	notification := []interface{}{"CONV_CMD", "data"}
-	handled := processor.GetRegistry().HandleNotification(ctx, notification)
+	handled := getRegistryForTesting(processor).HandleNotification(ctx, notification)
 
 	if !handled {
 		t.Error("Notification should be handled")
@@ -635,7 +655,7 @@ func TestPushNotificationProcessorConvenienceMethods(t *testing.T) {
 
 	// Test func handler
 	notification = []interface{}{"FUNC_CMD", "data"}
-	handled = processor.GetRegistry().HandleNotification(ctx, notification)
+	handled = getRegistryForTesting(processor).HandleNotification(ctx, notification)
 
 	if !handled {
 		t.Error("Notification should be handled")
@@ -676,7 +696,7 @@ func TestClientPushNotificationEdgeCases(t *testing.T) {
 		t.Error("Processor should never be nil")
 	}
 	// VoidPushNotificationProcessor should have nil registry
-	if processor.GetRegistry() != nil {
+	if getRegistryForTesting(processor) != nil {
 		t.Error("VoidPushNotificationProcessor should have nil registry when disabled")
 	}
 }
@@ -838,10 +858,10 @@ func TestPushNotificationProcessorConcurrency(t *testing.T) {
 
 				// Handle notifications
 				notification := []interface{}{command, "data"}
-				processor.GetRegistry().HandleNotification(context.Background(), notification)
+				getRegistryForTesting(processor).HandleNotification(context.Background(), notification)
 
 				// Access processor state
-				processor.GetRegistry()
+				getRegistryForTesting(processor)
 			}
 		}(i)
 	}
@@ -852,7 +872,7 @@ func TestPushNotificationProcessorConcurrency(t *testing.T) {
 	}
 
 	// Verify processor is still functional
-	registry := processor.GetRegistry()
+	registry := getRegistryForTesting(processor)
 	if registry == nil {
 		t.Error("Processor registry should not be nil after concurrent operations")
 	}
@@ -887,7 +907,7 @@ func TestPushNotificationClientConcurrency(t *testing.T) {
 				// Access processor
 				processor := client.GetPushNotificationProcessor()
 				if processor != nil {
-					processor.GetRegistry()
+					getRegistryForTesting(processor)
 				}
 			}
 		}(i)
@@ -921,7 +941,7 @@ func TestPushNotificationConnectionHealthCheck(t *testing.T) {
 	if processor == nil {
 		t.Fatal("Push notification processor should not be nil")
 	}
-	if processor.GetRegistry() == nil {
+	if getRegistryForTesting(processor) == nil {
 		t.Fatal("Push notification registry should not be nil when enabled")
 	}
 

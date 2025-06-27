@@ -112,7 +112,6 @@ func (r *PushNotificationRegistry) GetHandler(pushNotificationName string) PushN
 // PushNotificationProcessorInterface defines the interface for push notification processors.
 type PushNotificationProcessorInterface interface {
 	GetHandler(pushNotificationName string) PushNotificationHandler
-	GetRegistry() *PushNotificationRegistry // For backward compatibility and testing
 	ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error
 	RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error
 }
@@ -135,9 +134,9 @@ func (p *PushNotificationProcessor) GetHandler(pushNotificationName string) Push
 	return p.registry.GetHandler(pushNotificationName)
 }
 
-// GetRegistry returns the push notification registry for internal use.
-// This method is primarily for testing and internal operations.
-func (p *PushNotificationProcessor) GetRegistry() *PushNotificationRegistry {
+// GetRegistryForTesting returns the push notification registry for testing.
+// This method should only be used by tests.
+func (p *PushNotificationProcessor) GetRegistryForTesting() *PushNotificationRegistry {
 	return p.registry
 }
 
@@ -248,8 +247,9 @@ func (v *VoidPushNotificationProcessor) GetHandler(pushNotificationName string) 
 	return nil
 }
 
-// GetRegistry returns nil for void processor since it doesn't maintain handlers.
-func (v *VoidPushNotificationProcessor) GetRegistry() *PushNotificationRegistry {
+// GetRegistryForTesting returns nil for void processor since it doesn't maintain handlers.
+// This method should only be used by tests.
+func (v *VoidPushNotificationProcessor) GetRegistryForTesting() *PushNotificationRegistry {
 	return nil
 }
 

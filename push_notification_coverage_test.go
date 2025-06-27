@@ -11,6 +11,18 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
+// Helper function to access registry for testing
+func getRegistryForTestingCoverage(processor PushNotificationProcessorInterface) *PushNotificationRegistry {
+	switch p := processor.(type) {
+	case *PushNotificationProcessor:
+		return p.GetRegistryForTesting()
+	case *VoidPushNotificationProcessor:
+		return p.GetRegistryForTesting()
+	default:
+		return nil
+	}
+}
+
 // testHandler is a simple implementation of PushNotificationHandler for testing
 type testHandler struct {
 	handlerFunc func(ctx context.Context, notification []interface{}) bool
@@ -154,9 +166,10 @@ func TestConnPushNotificationMethods(t *testing.T) {
 		t.Error("Conn should have push notification processor")
 	}
 
-	// Processor should have a registry when enabled
-	if processor.GetRegistry() == nil {
-		t.Error("Conn push notification processor should have a registry when enabled")
+	// Test that processor can handle handlers when enabled
+	testHandler := processor.GetHandler("TEST")
+	if testHandler != nil {
+		t.Error("Should not have handler for TEST initially")
 	}
 
 	// Test RegisterPushNotificationHandler
@@ -183,16 +196,25 @@ func TestConnPushNotificationMethods(t *testing.T) {
 		t.Error("Should get error when registering duplicate handler")
 	}
 
-	// Test that handlers work
-	registry := processor.GetRegistry()
+	// Test that handlers work using GetHandler
 	ctx := context.Background()
 
-	handled := registry.HandleNotification(ctx, []interface{}{"TEST_CONN_HANDLER", "data"})
+	connHandler := processor.GetHandler("TEST_CONN_HANDLER")
+	if connHandler == nil {
+		t.Error("Should have handler for TEST_CONN_HANDLER after registration")
+		return
+	}
+	handled := connHandler.HandlePushNotification(ctx, []interface{}{"TEST_CONN_HANDLER", "data"})
 	if !handled {
 		t.Error("Handler should have been called")
 	}
 
-	handled = registry.HandleNotification(ctx, []interface{}{"TEST_CONN_FUNC", "data"})
+	funcHandler := processor.GetHandler("TEST_CONN_FUNC")
+	if funcHandler == nil {
+		t.Error("Should have handler for TEST_CONN_FUNC after registration")
+		return
+	}
+	handled = funcHandler.HandlePushNotification(ctx, []interface{}{"TEST_CONN_FUNC", "data"})
 	if !handled {
 		t.Error("Handler func should have been called")
 	}
@@ -217,9 +239,10 @@ func TestConnWithoutPushNotifications(t *testing.T) {
 	if processor == nil {
 		t.Error("Conn should always have a push notification processor")
 	}
-	// VoidPushNotificationProcessor should have nil registry
-	if processor.GetRegistry() != nil {
-		t.Error("VoidPushNotificationProcessor should have nil registry for RESP2")
+	// VoidPushNotificationProcessor should return nil for all handlers
+	handler := processor.GetHandler("TEST")
+	if handler != nil {
+		t.Error("VoidPushNotificationProcessor should return nil for all handlers")
 	}
 
 	// Test RegisterPushNotificationHandler returns nil (no error)
@@ -297,10 +320,14 @@ func TestClonedClientPushNotifications(t *testing.T) {
 		t.Error("Cloned client should have same push notification processor")
 	}
 
-	// Test that handlers work on cloned client
-	registry := clonedProcessor.GetRegistry()
+	// Test that handlers work on cloned client using GetHandler
 	ctx := context.Background()
-	handled := registry.HandleNotification(ctx, []interface{}{"TEST_CLONE", "data"})
+	cloneHandler := clonedProcessor.GetHandler("TEST_CLONE")
+	if cloneHandler == nil {
+		t.Error("Cloned client should have TEST_CLONE handler")
+		return
+	}
+	handled := cloneHandler.HandlePushNotification(ctx, []interface{}{"TEST_CLONE", "data"})
 	if !handled {
 		t.Error("Cloned client should handle notifications")
 	}
