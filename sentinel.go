@@ -61,6 +61,10 @@ type FailoverOptions struct {
 	Protocol int
 	Username string
 	Password string
+
+	// PushNotifications enables push notifications for RESP3.
+	// Defaults to true for RESP3 connections.
+	PushNotifications bool
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -129,6 +133,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
 		Password:                     opt.Password,
+		PushNotifications:            opt.PushNotifications,
 		CredentialsProvider:          opt.CredentialsProvider,
 		CredentialsProviderContext:   opt.CredentialsProviderContext,
 		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,
@@ -426,11 +431,12 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
-	// Initialize push notification processor to prevent nil pointer dereference
+	// Initialize push notification processor similar to regular client
 	if opt.PushNotificationProcessor != nil {
 		rdb.pushProcessor = opt.PushNotificationProcessor
+	} else if opt.PushNotifications {
+		rdb.pushProcessor = NewPushNotificationProcessor()
 	} else {
-		// Create void processor for failover client (typically doesn't need push notifications)
 		rdb.pushProcessor = NewVoidPushNotificationProcessor()
 	}
 
@@ -500,11 +506,12 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
-	// Initialize push notification processor to prevent nil pointer dereference
+	// Initialize push notification processor similar to regular client
 	if opt.PushNotificationProcessor != nil {
 		c.pushProcessor = opt.PushNotificationProcessor
+	} else if opt.PushNotifications {
+		c.pushProcessor = NewPushNotificationProcessor()
 	} else {
-		// Create void processor for Sentinel (typically doesn't need push notifications)
 		c.pushProcessor = NewVoidPushNotificationProcessor()
 	}
 
