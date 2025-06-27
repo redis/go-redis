@@ -426,6 +426,14 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
+	// Initialize push notification processor to prevent nil pointer dereference
+	if opt.PushNotificationProcessor != nil {
+		rdb.pushProcessor = opt.PushNotificationProcessor
+	} else {
+		// Create void processor for failover client (typically doesn't need push notifications)
+		rdb.pushProcessor = NewVoidPushNotificationProcessor()
+	}
+
 	connPool = newConnPool(opt, rdb.dialHook)
 	rdb.connPool = connPool
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
