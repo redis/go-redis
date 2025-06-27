@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -245,20 +246,26 @@ func TestConnWithoutPushNotifications(t *testing.T) {
 		t.Error("VoidPushNotificationProcessor should return nil for all handlers")
 	}
 
-	// Test RegisterPushNotificationHandler returns nil (no error)
+	// Test RegisterPushNotificationHandler returns error when push notifications are disabled
 	err := conn.RegisterPushNotificationHandler("TEST", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
 	}), false)
-	if err != nil {
-		t.Errorf("Should return nil error when no processor: %v", err)
+	if err == nil {
+		t.Error("Should return error when trying to register handler on connection with disabled push notifications")
+	}
+	if !strings.Contains(err.Error(), "push notifications are disabled") {
+		t.Errorf("Expected error message about disabled push notifications, got: %v", err)
 	}
 
-	// Test RegisterPushNotificationHandler returns nil (no error)
-	err = conn.RegisterPushNotificationHandler("TEST", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
+	// Test RegisterPushNotificationHandler returns error for second registration too
+	err = conn.RegisterPushNotificationHandler("TEST2", newTestHandler(func(ctx context.Context, notification []interface{}) bool {
 		return true
 	}), false)
-	if err != nil {
-		t.Errorf("Should return nil error when no processor: %v", err)
+	if err == nil {
+		t.Error("Should return error when trying to register handler on connection with disabled push notifications")
+	}
+	if !strings.Contains(err.Error(), "push notifications are disabled") {
+		t.Errorf("Expected error message about disabled push notifications, got: %v", err)
 	}
 }
 
