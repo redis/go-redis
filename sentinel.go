@@ -431,14 +431,9 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
-	// Initialize push notification processor similar to regular client
-	if opt.PushNotificationProcessor != nil {
-		rdb.pushProcessor = opt.PushNotificationProcessor
-	} else if opt.PushNotifications {
-		rdb.pushProcessor = NewPushNotificationProcessor()
-	} else {
-		rdb.pushProcessor = NewVoidPushNotificationProcessor()
-	}
+	// Initialize push notification processor using shared helper
+	// Use void processor by default for failover clients (typically don't need push notifications)
+	rdb.pushProcessor = initializePushProcessor(opt, true)
 
 	connPool = newConnPool(opt, rdb.dialHook)
 	rdb.connPool = connPool
@@ -506,14 +501,9 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
-	// Initialize push notification processor similar to regular client
-	if opt.PushNotificationProcessor != nil {
-		c.pushProcessor = opt.PushNotificationProcessor
-	} else if opt.PushNotifications {
-		c.pushProcessor = NewPushNotificationProcessor()
-	} else {
-		c.pushProcessor = NewVoidPushNotificationProcessor()
-	}
+	// Initialize push notification processor using shared helper
+	// Use void processor by default for sentinel clients (typically don't need push notifications)
+	c.pushProcessor = initializePushProcessor(opt, true)
 
 	c.initHooks(hooks{
 		dial:    c.baseClient.dial,

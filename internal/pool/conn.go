@@ -27,9 +27,8 @@ type Conn struct {
 	onClose func() error
 
 	// Push notification processor for handling push notifications on this connection
-	PushNotificationProcessor interface {
-		ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error
-	}
+	// Uses the same interface as defined in pool.go to avoid duplication
+	PushNotificationProcessor PushNotificationProcessorInterface
 }
 
 func NewConn(netConn net.Conn) *Conn {

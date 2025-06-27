@@ -114,35 +114,12 @@ func (v *VoidProcessor) GetRegistryForTesting() *Registry {
 	return nil
 }
 
-// ProcessPendingNotifications reads and discards any pending push notifications.
+// ProcessPendingNotifications for VoidProcessor does nothing since push notifications
+// are only available in RESP3 and this processor is used when they're disabled.
+// This avoids unnecessary buffer scanning overhead.
 func (v *VoidProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
-	// Check for nil reader
-	if rd == nil {
-		return nil
-	}
-
-	// Read and discard any pending push notifications to clean the buffer
-	for {
-		// Peek at the next reply type to see if it's a push notification
-		replyType, err := rd.PeekReplyType()
-		if err != nil {
-			// No more data available or error reading
-			break
-		}
-
-		// Push notifications use RespPush type in RESP3
-		if replyType != proto.RespPush {
-			break
-		}
-
-		// Read and discard the push notification
-		_, err = rd.ReadReply()
-		if err != nil {
-			return fmt.Errorf("failed to read push notification for discarding: %w", err)
-		}
-
-		// Notification discarded - continue to next one
-	}
-
+	// VoidProcessor is used when push notifications are disabled (typically RESP2 or disabled RESP3).
+	// Since push notifications only exist in RESP3, we can safely skip all processing
+	// to avoid unnecessary buffer scanning overhead.
 	return nil
 }

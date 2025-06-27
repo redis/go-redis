@@ -755,7 +755,7 @@ func NewClient(opt *Options) *Client {
 	}
 	opt.init()
 
-	// Enable push notifications by default for RESP3
+	// Push notifications are always enabled for RESP3 (cannot be disabled)
 	// Only override if no custom processor is provided
 	if opt.Protocol == 3 && opt.PushNotificationProcessor == nil {
 		opt.PushNotifications = true
@@ -811,18 +811,27 @@ func (c *Client) Options() *Options {
 	return c.opt
 }
 
-// initializePushProcessor initializes the push notification processor.
-func (c *Client) initializePushProcessor() {
+// initializePushProcessor initializes the push notification processor for any client type.
+// This is a shared helper to avoid duplication across NewClient, NewFailoverClient, and NewSentinelClient.
+func initializePushProcessor(opt *Options, useVoidByDefault bool) PushNotificationProcessorInterface {
 	// Always use custom processor if provided
-	if c.opt.PushNotificationProcessor != nil {
-		c.pushProcessor = c.opt.PushNotificationProcessor
-	} else if c.opt.PushNotifications {
-		// Create default processor when push notifications are enabled
-		c.pushProcessor = NewPushNotificationProcessor()
-	} else {
-		// Create void processor when push notifications are disabled
-		c.pushProcessor = NewVoidPushNotificationProcessor()
+	if opt.PushNotificationProcessor != nil {
+		return opt.PushNotificationProcessor
 	}
+
+	// For regular clients, respect the PushNotifications setting
+	if !useVoidByDefault && opt.PushNotifications {
+		// Create default processor when push notifications are enabled
+		return NewPushNotificationProcessor()
+	}
+
+	// Create void processor when push notifications are disabled or for specialized clients
+	return NewVoidPushNotificationProcessor()
+}
+
+// initializePushProcessor initializes the push notification processor for this client.
+func (c *Client) initializePushProcessor() {
+	c.pushProcessor = initializePushProcessor(c.opt, false)
 }
 
 // RegisterPushNotificationHandler registers a handler for a specific push notification name.
@@ -976,13 +985,9 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 		c.hooksMixin = parentHooks.clone()
 	}
 
-	// Set push notification processor from options, ensure it's never nil
-	if opt.PushNotificationProcessor != nil {
-		c.pushProcessor = opt.PushNotificationProcessor
-	} else {
-		// Create a void processor if none provided to ensure we never have nil
-		c.pushProcessor = NewVoidPushNotificationProcessor()
-	}
+	// Initialize push notification processor using shared helper
+	// Use void processor by default for connections (typically don't need push notifications)
+	c.pushProcessor = initializePushProcessor(opt, true)
 
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
