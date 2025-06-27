@@ -8,14 +8,16 @@ import (
 
 // Registry manages push notification handlers.
 type Registry struct {
-	mu       sync.RWMutex
-	handlers map[string]handlerEntry
+	mu        sync.RWMutex
+	handlers  map[string]Handler
+	protected map[string]bool
 }
 
 // NewRegistry creates a new push notification registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		handlers: make(map[string]handlerEntry),
+		handlers:  make(map[string]Handler),
+		protected: make(map[string]bool),
 	}
 }
 
@@ -30,10 +32,8 @@ func (r *Registry) RegisterHandler(pushNotificationName string, handler Handler,
 		return fmt.Errorf("handler already registered for push notification: %s", pushNotificationName)
 	}
 
-	r.handlers[pushNotificationName] = handlerEntry{
-		handler:   handler,
-		protected: protected,
-	}
+	r.handlers[pushNotificationName] = handler
+	r.protected[pushNotificationName] = protected
 	return nil
 }
 
@@ -43,16 +43,17 @@ func (r *Registry) UnregisterHandler(pushNotificationName string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	entry, exists := r.handlers[pushNotificationName]
+	_, exists := r.handlers[pushNotificationName]
 	if !exists {
 		return fmt.Errorf("no handler registered for push notification: %s", pushNotificationName)
 	}
 
-	if entry.protected {
+	if r.protected[pushNotificationName] {
 		return fmt.Errorf("cannot unregister protected handler for push notification: %s", pushNotificationName)
 	}
 
 	delete(r.handlers, pushNotificationName)
+	delete(r.protected, pushNotificationName)
 	return nil
 }
 
@@ -62,11 +63,11 @@ func (r *Registry) GetHandler(pushNotificationName string) Handler {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	entry, exists := r.handlers[pushNotificationName]
+	handler, exists := r.handlers[pushNotificationName]
 	if !exists {
 		return nil
 	}
-	return entry.handler
+	return handler
 }
 
 // GetRegisteredPushNotificationNames returns a list of all registered push notification names.

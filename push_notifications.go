@@ -35,7 +35,7 @@ func NewPushNotificationRegistry() *PushNotificationRegistry {
 
 // RegisterHandler registers a handler for a specific push notification name.
 func (r *PushNotificationRegistry) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
-	return r.registry.RegisterHandler(pushNotificationName, &handlerWrapper{handler}, protected)
+	return r.registry.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 // UnregisterHandler removes a handler for a specific push notification name.
@@ -49,10 +49,8 @@ func (r *PushNotificationRegistry) GetHandler(pushNotificationName string) PushN
 	if handler == nil {
 		return nil
 	}
-	if wrapper, ok := handler.(*handlerWrapper); ok {
-		return wrapper.handler
-	}
-	return nil
+	// The handler is already a PushNotificationHandler since we store it directly
+	return handler.(PushNotificationHandler)
 }
 
 // GetRegisteredPushNotificationNames returns a list of all registered push notification names.
@@ -83,15 +81,13 @@ func (p *PushNotificationProcessor) GetHandler(pushNotificationName string) Push
 	if handler == nil {
 		return nil
 	}
-	if wrapper, ok := handler.(*handlerWrapper); ok {
-		return wrapper.handler
-	}
-	return nil
+	// The handler is already a PushNotificationHandler since we store it directly
+	return handler.(PushNotificationHandler)
 }
 
 // RegisterHandler registers a handler for a specific push notification name.
 func (p *PushNotificationProcessor) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
-	return p.processor.RegisterHandler(pushNotificationName, &handlerWrapper{handler}, protected)
+	return p.processor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 // UnregisterHandler removes a handler for a specific push notification name.
@@ -143,14 +139,7 @@ func (v *VoidPushNotificationProcessor) GetRegistryForTesting() *PushNotificatio
 	return nil
 }
 
-// handlerWrapper wraps the public PushNotificationHandler interface to implement the internal Handler interface.
-type handlerWrapper struct {
-	handler PushNotificationHandler
-}
 
-func (w *handlerWrapper) HandlePushNotification(ctx context.Context, notification []interface{}) bool {
-	return w.handler.HandlePushNotification(ctx, notification)
-}
 
 // Redis Cluster push notification names
 const (

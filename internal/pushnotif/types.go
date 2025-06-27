@@ -28,9 +28,3 @@ type RegistryInterface interface {
 	GetRegisteredPushNotificationNames() []string
 	HandleNotification(ctx context.Context, notification []interface{}) bool
 }
-
-// handlerEntry represents a registered handler with its protection status.
-type handlerEntry struct {
-	handler   Handler
-	protected bool
-}
