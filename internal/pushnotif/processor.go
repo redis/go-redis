@@ -38,8 +38,6 @@ func (p *Processor) UnregisterHandler(pushNotificationName string) error {
 	return p.registry.UnregisterHandler(pushNotificationName)
 }
 
-
-
 // ProcessPendingNotifications checks for and processes any pending push notifications.
 func (p *Processor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
 	// Check for nil reader
@@ -63,6 +61,17 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, rd *proto.R
 
 		// Push notifications use RespPush type in RESP3
 		if replyType != proto.RespPush {
+			break
+		}
+
+		notificationName, err := rd.PeekPushNotificationName()
+		if err != nil {
+			// Error reading - continue to next iteration
+			break
+		}
+
+		// Skip pub/sub messages - they should be handled by the pub/sub system
+		if isPubSubMessage(notificationName) {
 			break
 		}
 
@@ -94,6 +103,23 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, rd *proto.R
 	return nil
 }
 
+// isPubSubMessage checks if a notification type is a pub/sub message that should be ignored
+// by the push notification processor and handled by the pub/sub system instead.
+func isPubSubMessage(notificationType string) bool {
+	switch notificationType {
+	case "message", // Regular pub/sub message
+		"pmessage",     // Pattern pub/sub message
+		"subscribe",    // Subscription confirmation
+		"unsubscribe",  // Unsubscription confirmation
+		"psubscribe",   // Pattern subscription confirmation
+		"punsubscribe", // Pattern unsubscription confirmation
+		"smessage":     // Sharded pub/sub message (Redis 7.0+)
+		return true
+	default:
+		return false
+	}
+}
+
 // VoidProcessor discards all push notifications without processing them.
 type VoidProcessor struct{}
 
@@ -118,8 +144,6 @@ func (v *VoidProcessor) RegisterHandler(pushNotificationName string, handler Han
 func (v *VoidProcessor) UnregisterHandler(pushNotificationName string) error {
 	return fmt.Errorf("cannot unregister push notification handler '%s': push notifications are disabled (using void processor)", pushNotificationName)
 }
-
-
 
 // ProcessPendingNotifications for VoidProcessor does nothing since push notifications
 // are only available in RESP3 and this processor is used when they're disabled.

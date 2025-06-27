@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -40,6 +41,7 @@ func (h *TestHandler) Reset() {
 // TestReaderInterface defines the interface needed for testing
 type TestReaderInterface interface {
 	PeekReplyType() (byte, error)
+	PeekPushNotificationName() (string, error)
 	ReadReply() (interface{}, error)
 }
 
@@ -95,6 +97,29 @@ func (m *MockReader) ReadReply() (interface{}, error) {
 	return reply, err
 }
 
+func (m *MockReader) PeekPushNotificationName() (string, error) {
+	// return the notification name from the next read reply
+	if m.readIndex >= len(m.readReplies) {
+		return "", io.EOF
+	}
+	reply := m.readReplies[m.readIndex]
+	if reply == nil {
+		return "", nil
+	}
+	notification, ok := reply.([]interface{})
+	if !ok {
+		return "", nil
+	}
+	if len(notification) == 0 {
+		return "", nil
+	}
+	name, ok := notification[0].(string)
+	if !ok {
+		return "", nil
+	}
+	return name, nil
+}
+
 func (m *MockReader) Reset() {
 	m.readIndex = 0
 	m.peekIndex = 0
@@ -119,10 +144,22 @@ func testProcessPendingNotifications(processor *Processor, ctx context.Context, 
 			break
 		}
 
+		notificationName, err := reader.PeekPushNotificationName()
+		if err != nil {
+			// Error reading - continue to next iteration
+			break
+		}
+
+		// Skip pub/sub messages - they should be handled by the pub/sub system
+		if isPubSubMessage(notificationName) {
+			break
+		}
+
 		// Read the push notification
 		reply, err := reader.ReadReply()
 		if err != nil {
 			// Error reading - continue to next iteration
+			internal.Logger.Printf(ctx, "push: error reading push notification: %v", err)
 			continue
 		}
 
@@ -420,7 +457,7 @@ func TestProcessor(t *testing.T) {
 		// Test with mock reader - push notification with ReadReply error
 		mockReader = NewMockReader()
 		mockReader.AddPeekReplyType(proto.RespPush, nil)
-		mockReader.AddReadReply(nil, io.ErrUnexpectedEOF) // ReadReply fails
+		mockReader.AddReadReply(nil, io.ErrUnexpectedEOF)     // ReadReply fails
 		mockReader.AddPeekReplyType(proto.RespString, io.EOF) // No more push notifications
 		err = testProcessPendingNotifications(processor, ctx, mockReader)
 		if err != nil {
@@ -430,7 +467,7 @@ func TestProcessor(t *testing.T) {
 		// Test with mock reader - push notification with invalid reply type
 		mockReader = NewMockReader()
 		mockReader.AddPeekReplyType(proto.RespPush, nil)
-		mockReader.AddReadReply("not-a-slice", nil) // Invalid reply type
+		mockReader.AddReadReply("not-a-slice", nil)           // Invalid reply type
 		mockReader.AddPeekReplyType(proto.RespString, io.EOF) // No more push notifications
 		err = testProcessPendingNotifications(processor, ctx, mockReader)
 		if err != nil {
@@ -618,6 +655,114 @@ func TestVoidProcessor(t *testing.T) {
 		err = processor.ProcessPendingNotifications(ctx, reader)
 		if err != nil {
 			t.Errorf("VoidProcessor ProcessPendingNotifications should never error, got: %v", err)
+		}
+	})
+}
+
+// TestIsPubSubMessage tests the isPubSubMessage function
+func TestIsPubSubMessage(t *testing.T) {
+	t.Run("PubSubMessages", func(t *testing.T) {
+		pubSubMessages := []string{
+			"message",      // Regular pub/sub message
+			"pmessage",     // Pattern pub/sub message
+			"subscribe",    // Subscription confirmation
+			"unsubscribe",  // Unsubscription confirmation
+			"psubscribe",   // Pattern subscription confirmation
+			"punsubscribe", // Pattern unsubscription confirmation
+			"smessage",     // Sharded pub/sub message (Redis 7.0+)
+		}
+
+		for _, msgType := range pubSubMessages {
+			if !isPubSubMessage(msgType) {
+				t.Errorf("isPubSubMessage(%q) should return true", msgType)
+			}
+		}
+	})
+
+	t.Run("NonPubSubMessages", func(t *testing.T) {
+		nonPubSubMessages := []string{
+			"MOVING",       // Cluster slot migration
+			"MIGRATING",    // Cluster slot migration
+			"MIGRATED",     // Cluster slot migration
+			"FAILING_OVER", // Cluster failover
+			"FAILED_OVER",  // Cluster failover
+			"unknown",      // Unknown message type
+			"",             // Empty string
+			"MESSAGE",      // Case sensitive - should not match
+			"PMESSAGE",     // Case sensitive - should not match
+		}
+
+		for _, msgType := range nonPubSubMessages {
+			if isPubSubMessage(msgType) {
+				t.Errorf("isPubSubMessage(%q) should return false", msgType)
+			}
+		}
+	})
+}
+
+// TestPubSubFiltering tests that pub/sub messages are filtered out during processing
+func TestPubSubFiltering(t *testing.T) {
+	t.Run("PubSubMessagesIgnored", func(t *testing.T) {
+		processor := NewProcessor()
+		handler := NewTestHandler("test", true)
+		ctx := context.Background()
+
+		// Register a handler for a non-pub/sub notification
+		err := processor.RegisterHandler("MOVING", handler, false)
+		if err != nil {
+			t.Fatalf("Failed to register handler: %v", err)
+		}
+
+		// Test with mock reader - pub/sub message should be ignored
+		mockReader := NewMockReader()
+		mockReader.AddPeekReplyType(proto.RespPush, nil)
+		pubSubNotification := []interface{}{"message", "channel", "data"}
+		mockReader.AddReadReply(pubSubNotification, nil)
+		mockReader.AddPeekReplyType(proto.RespString, io.EOF) // No more push notifications
+
+		handler.Reset()
+		err = testProcessPendingNotifications(processor, ctx, mockReader)
+		if err != nil {
+			t.Errorf("ProcessPendingNotifications should handle pub/sub messages gracefully, got: %v", err)
+		}
+
+		// Check that handler was NOT called for pub/sub message
+		handled := handler.GetHandledNotifications()
+		if len(handled) != 0 {
+			t.Errorf("Expected 0 handled notifications for pub/sub message, got: %d", len(handled))
+		}
+	})
+
+	t.Run("NonPubSubMessagesProcessed", func(t *testing.T) {
+		processor := NewProcessor()
+		handler := NewTestHandler("test", true)
+		ctx := context.Background()
+
+		// Register a handler for a non-pub/sub notification
+		err := processor.RegisterHandler("MOVING", handler, false)
+		if err != nil {
+			t.Fatalf("Failed to register handler: %v", err)
+		}
+
+		// Test with mock reader - non-pub/sub message should be processed
+		mockReader := NewMockReader()
+		mockReader.AddPeekReplyType(proto.RespPush, nil)
+		clusterNotification := []interface{}{"MOVING", "slot", "12345"}
+		mockReader.AddReadReply(clusterNotification, nil)
+		mockReader.AddPeekReplyType(proto.RespString, io.EOF) // No more push notifications
+
+		handler.Reset()
+		err = testProcessPendingNotifications(processor, ctx, mockReader)
+		if err != nil {
+			t.Errorf("ProcessPendingNotifications should handle cluster notifications, got: %v", err)
+		}
+
+		// Check that handler WAS called for cluster notification
+		handled := handler.GetHandledNotifications()
+		if len(handled) != 1 {
+			t.Errorf("Expected 1 handled notification for cluster message, got: %d", len(handled))
+		} else if len(handled[0]) != 3 || handled[0][0] != "MOVING" {
+			t.Errorf("Expected MOVING notification, got: %v", handled[0])
 		}
 	})
 }

@@ -39,19 +39,13 @@ func (r *PushNotificationRegistry) UnregisterHandler(pushNotificationName string
 
 // GetHandler returns the handler for a specific push notification name.
 func (r *PushNotificationRegistry) GetHandler(pushNotificationName string) PushNotificationHandler {
-	handler := r.registry.GetHandler(pushNotificationName)
-	if handler == nil {
-		return nil
-	}
-	return handler
+	return r.registry.GetHandler(pushNotificationName)
 }
 
 // GetRegisteredPushNotificationNames returns a list of all registered push notification names.
 func (r *PushNotificationRegistry) GetRegisteredPushNotificationNames() []string {
 	return r.registry.GetRegisteredPushNotificationNames()
 }
-
-
 
 // PushNotificationProcessor handles push notifications with a registry of handlers.
 type PushNotificationProcessor struct {
@@ -67,12 +61,7 @@ func NewPushNotificationProcessor() *PushNotificationProcessor {
 
 // GetHandler returns the handler for a specific push notification name.
 func (p *PushNotificationProcessor) GetHandler(pushNotificationName string) PushNotificationHandler {
-	handler := p.processor.GetHandler(pushNotificationName)
-	if handler == nil {
-		return nil
-	}
-	// The handler is already a PushNotificationHandler since we store it directly
-	return handler.(PushNotificationHandler)
+	return p.processor.GetHandler(pushNotificationName)
 }
 
 // RegisterHandler registers a handler for a specific push notification name.
@@ -89,8 +78,6 @@ func (p *PushNotificationProcessor) UnregisterHandler(pushNotificationName strin
 func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
 	return p.processor.ProcessPendingNotifications(ctx, rd)
 }
-
-
 
 // VoidPushNotificationProcessor discards all push notifications without processing them.
 type VoidPushNotificationProcessor struct {
@@ -118,8 +105,6 @@ func (v *VoidPushNotificationProcessor) RegisterHandler(pushNotificationName str
 func (v *VoidPushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
 	return v.processor.ProcessPendingNotifications(ctx, rd)
 }
-
-
 
 // Redis Cluster push notification names
 const (
