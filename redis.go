@@ -207,6 +207,9 @@ type baseClient struct {
 	hooksMixin
 
 	onClose func() error // hook called when client is closed
+
+	// Push notification processing
+	pushProcessor PushNotificationProcessorInterface
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -383,7 +386,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
-  if err = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); err == nil {
+	if err = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); err == nil {
 		// Authentication successful with HELLO command
 	} else if !isRedisError(err) {
 		// When the server responds with the RESP protocol and the result is not a normal
@@ -530,7 +533,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		if c.opt.Protocol != 2 && c.assertUnstableCommand(cmd) {
 			readReplyFunc = cmd.readRawReply
 		}
-		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
+		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
+			return readReplyFunc(rd)
+		}); err != nil {
 			if cmd.readTimeout() == nil {
 				atomic.StoreUint32(&retryTimeout, 1)
 			} else {
@@ -744,12 +749,25 @@ func NewClient(opt *Options) *Client {
 	}
 	opt.init()
 
+	// Push notifications are always enabled for RESP3 (cannot be disabled)
+	// Only override if no custom processor is provided
+	if opt.Protocol == 3 && opt.PushNotificationProcessor == nil {
+		opt.PushNotifications = true
+	}
+
 	c := Client{
 		baseClient: &baseClient{
 			opt: opt,
 		},
 	}
 	c.init()
+
+	// Initialize push notification processor
+	c.initializePushProcessor()
+
+	// Update options with the initialized push processor for connection pool
+	opt.PushNotificationProcessor = c.pushProcessor
+
 	c.connPool = newConnPool(opt, c.dialHook)
 
 	return &c
@@ -785,6 +803,47 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 // Options returns read-only Options that were used to create the client.
 func (c *Client) Options() *Options {
 	return c.opt
+}
+
+// initializePushProcessor initializes the push notification processor for any client type.
+// This is a shared helper to avoid duplication across NewClient, NewFailoverClient, and NewSentinelClient.
+func initializePushProcessor(opt *Options) PushNotificationProcessorInterface {
+	// Always use custom processor if provided
+	if opt.PushNotificationProcessor != nil {
+		return opt.PushNotificationProcessor
+	}
+
+	// For regular clients, respect the PushNotifications setting
+	if opt.PushNotifications {
+		// Create default processor when push notifications are enabled
+		return NewPushNotificationProcessor()
+	}
+
+	// Create void processor when push notifications are disabled
+	return NewVoidPushNotificationProcessor()
+}
+
+// initializePushProcessor initializes the push notification processor for this client.
+func (c *Client) initializePushProcessor() {
+	c.pushProcessor = initializePushProcessor(c.opt)
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *Client) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
+}
+
+// GetPushNotificationProcessor returns the push notification processor.
+func (c *Client) GetPushNotificationProcessor() PushNotificationProcessorInterface {
+	return c.pushProcessor
+}
+
+// GetPushNotificationHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (c *Client) GetPushNotificationHandler(pushNotificationName string) PushNotificationHandler {
+	return c.pushProcessor.GetHandler(pushNotificationName)
 }
 
 type PoolStats pool.Stats
@@ -833,6 +892,10 @@ func (c *Client) pubSub() *PubSub {
 		closeConn: c.connPool.CloseConn,
 	}
 	pubsub.init()
+
+	// Set the push notification processor
+	pubsub.SetPushNotificationProcessor(c.pushProcessor)
+
 	return pubsub
 }
 
@@ -916,6 +979,10 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 		c.hooksMixin = parentHooks.clone()
 	}
 
+	// Initialize push notification processor using shared helper
+	// Use void processor by default for connections (typically don't need push notifications)
+	c.pushProcessor = initializePushProcessor(opt)
+
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
 	c.initHooks(hooks{
@@ -932,6 +999,18 @@ func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
 	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *Conn) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
+}
+
+// GetPushNotificationProcessor returns the push notification processor.
+func (c *Conn) GetPushNotificationProcessor() PushNotificationProcessorInterface {
+	return c.pushProcessor
 }
 
 func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

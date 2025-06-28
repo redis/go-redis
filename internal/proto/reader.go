@@ -90,6 +90,27 @@ func (r *Reader) PeekReplyType() (byte, error) {
 	return b[0], nil
 }
 
+func (r *Reader) PeekPushNotificationName() (string, error) {
+	// peek 32 bytes, should be enough to read the push notification name
+	buf, err := r.rd.Peek(32)
+	if err != nil {
+		return "", err
+	}
+	if buf[0] != RespPush {
+		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
+	}
+	// remove push notification type and length
+	nextLine := buf[2:]
+	for i := 1; i < len(buf); i++ {
+		if buf[i] == '\r' && buf[i+1] == '\n' {
+			nextLine = buf[i+2:]
+			break
+		}
+	}
+	// return notification name or error
+	return r.readStringReply(nextLine)
+}
+
 // ReadLine Return a valid reply, it will check the protocol or redis error,
 // and discard the attribute type.
 func (r *Reader) ReadLine() ([]byte, error) {

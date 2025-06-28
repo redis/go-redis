@@ -61,6 +61,10 @@ type FailoverOptions struct {
 	Protocol int
 	Username string
 	Password string
+
+	// PushNotifications enables push notifications for RESP3.
+	// Defaults to true for RESP3 connections.
+	PushNotifications bool
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -129,6 +133,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
 		Password:                     opt.Password,
+		PushNotifications:            opt.PushNotifications,
 		CredentialsProvider:          opt.CredentialsProvider,
 		CredentialsProviderContext:   opt.CredentialsProviderContext,
 		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,
@@ -426,6 +431,10 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
+	// Initialize push notification processor using shared helper
+	// Use void processor by default for failover clients (typically don't need push notifications)
+	rdb.pushProcessor = initializePushProcessor(opt)
+
 	connPool = newConnPool(opt, rdb.dialHook)
 	rdb.connPool = connPool
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
@@ -492,6 +501,10 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
+	// Initialize push notification processor using shared helper
+	// Use void processor by default for sentinel clients (typically don't need push notifications)
+	c.pushProcessor = initializePushProcessor(opt)
+
 	c.initHooks(hooks{
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
@@ -499,6 +512,24 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	c.connPool = newConnPool(opt, c.dialHook)
 
 	return c
+}
+
+// GetPushNotificationProcessor returns the push notification processor.
+func (c *SentinelClient) GetPushNotificationProcessor() PushNotificationProcessorInterface {
+	return c.pushProcessor
+}
+
+// GetPushNotificationHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (c *SentinelClient) GetPushNotificationHandler(pushNotificationName string) PushNotificationHandler {
+	return c.pushProcessor.GetHandler(pushNotificationName)
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *SentinelClient) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
