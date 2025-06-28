@@ -210,6 +210,9 @@ type baseClient struct {
 
 	// Push notification processing
 	pushProcessor PushNotificationProcessorInterface
+
+	// Client-side cache for automatic caching with Redis invalidation
+	clientSideCache *ClientSideCache
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -835,9 +838,81 @@ func (c *Client) RegisterPushNotificationHandler(pushNotificationName string, ha
 	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
+// UnregisterPushNotificationHandler unregisters a handler for a specific push notification name.
+// Returns an error if no handler is registered for this push notification name or if the handler is protected.
+func (c *Client) UnregisterPushNotificationHandler(pushNotificationName string) error {
+	// Check if we have a processor that supports unregistration
+	if processor, ok := c.pushProcessor.(interface {
+		UnregisterHandler(pushNotificationName string) error
+	}); ok {
+		return processor.UnregisterHandler(pushNotificationName)
+	}
+	return fmt.Errorf("push notification processor does not support unregistration")
+}
+
 // GetPushNotificationProcessor returns the push notification processor.
 func (c *Client) GetPushNotificationProcessor() PushNotificationProcessorInterface {
 	return c.pushProcessor
+}
+
+// EnableClientSideCache enables client-side caching with Redis invalidation support.
+// This creates a local cache that automatically invalidates entries when Redis sends
+// invalidation notifications through CLIENT TRACKING.
+func (c *Client) EnableClientSideCache(opts *ClientSideCacheOptions) error {
+	if c.clientSideCache != nil {
+		return fmt.Errorf("client-side cache is already enabled")
+	}
+
+	cache, err := NewClientSideCache(c, opts)
+	if err != nil {
+		return err
+	}
+
+	c.clientSideCache = cache
+	return nil
+}
+
+// DisableClientSideCache disables client-side caching and cleans up resources.
+func (c *Client) DisableClientSideCache() error {
+	if c.clientSideCache == nil {
+		return nil // Already disabled
+	}
+
+	err := c.clientSideCache.Close()
+	c.clientSideCache = nil
+	return err
+}
+
+// GetClientSideCache returns the client-side cache if enabled, nil otherwise.
+func (c *Client) GetClientSideCache() *ClientSideCache {
+	return c.clientSideCache
+}
+
+// CachedGet retrieves a value using client-side caching if enabled, otherwise falls back to regular Get.
+// This is a convenience method that automatically uses the cache when available.
+func (c *Client) CachedGet(ctx context.Context, key string) *StringCmd {
+	if c.clientSideCache != nil {
+		return c.clientSideCache.Get(ctx, key)
+	}
+	return c.Get(ctx, key)
+}
+
+// CachedSet stores a value using client-side caching if enabled, otherwise falls back to regular Set.
+// This is a convenience method that automatically updates the cache when available.
+func (c *Client) CachedSet(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
+	if c.clientSideCache != nil {
+		return c.clientSideCache.Set(ctx, key, value, expiration)
+	}
+	return c.Set(ctx, key, value, expiration)
+}
+
+// CachedDel deletes keys using client-side caching if enabled, otherwise falls back to regular Del.
+// This is a convenience method that automatically updates the cache when available.
+func (c *Client) CachedDel(ctx context.Context, keys ...string) *IntCmd {
+	if c.clientSideCache != nil {
+		return c.clientSideCache.Del(ctx, keys...)
+	}
+	return c.Del(ctx, keys...)
 }
 
 // GetPushNotificationHandler returns the handler for a specific push notification name.

@@ -686,6 +686,7 @@ func TestShouldSkipNotification(t *testing.T) {
 			"MIGRATED",     // Cluster slot migration
 			"FAILING_OVER", // Cluster failover
 			"FAILED_OVER",  // Cluster failover
+			"invalidate",   // Client-side caching invalidation (now handled by cache)
 			"unknown",      // Unknown message type
 			"",             // Empty string
 			"MESSAGE",      // Case sensitive - should not match

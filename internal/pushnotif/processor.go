@@ -127,8 +127,8 @@ func shouldSkipNotification(notificationType string) bool {
 		"xread-from",      // Stream reading notifications
 		"xreadgroup-from", // Stream consumer group notifications
 
-	// Client tracking notifications - handled by client tracking system
-		"invalidate", // Client-side caching invalidation
+	// Client tracking notifications - handled by client-side cache system
+		// Note: "invalidate" is now handled by client-side cache, not filtered
 
 	// Keyspace notifications - handled by keyspace notification subscribers
 	// Note: Keyspace notifications typically have prefixes like "__keyspace@0__:" or "__keyevent@0__:"
