@@ -814,7 +814,8 @@ func (c *Ring) generalProcessPipeline(
 
 			hook := shard.Client.processPipelineHook
 			if tx {
-				cmds, hook = wrapMultiExec(ctx, cmds), shard.Client.processTxPipelineHook
+				cmds = wrapMultiExec(ctx, cmds)
+				hook = shard.Client.processTxPipelineHook
 			}
 
 			if err = hook(ctx, cmds); err != nil {
