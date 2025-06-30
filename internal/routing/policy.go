@@ -56,7 +56,9 @@ func ParseRequestPolicy(raw string) (RequestPolicy, error) {
 type ResponsePolicy uint8
 
 const (
-	RespAllSucceeded ResponsePolicy = iota
+	RespDefaultKeyless ResponsePolicy = iota
+	RespDefaultHashSlot
+	RespAllSucceeded
 	RespOneSucceeded
 	RespAggSum
 	RespAggMin
@@ -68,6 +70,10 @@ const (
 
 func (p ResponsePolicy) String() string {
 	switch p {
+	case RespDefaultKeyless:
+		return "default(keyless)"
+	case RespDefaultHashSlot:
+		return "default(hashslot)"
 	case RespAllSucceeded:
 		return "all_succeeded"
 	case RespOneSucceeded:
@@ -85,12 +91,16 @@ func (p ResponsePolicy) String() string {
 	case RespSpecial:
 		return "special"
 	default:
-		return fmt.Sprintf("unknown_response_policy(%d)", p)
+		return "all_succeeded"
 	}
 }
 
 func ParseResponsePolicy(raw string) (ResponsePolicy, error) {
 	switch strings.ToLower(raw) {
+	case "default(keyless)":
+		return RespDefaultKeyless, nil
+	case "default(hashslot)":
+		return RespDefaultHashSlot, nil
 	case "all_succeeded":
 		return RespAllSucceeded, nil
 	case "one_succeeded":
@@ -108,7 +118,7 @@ func ParseResponsePolicy(raw string) (ResponsePolicy, error) {
 	case "special":
 		return RespSpecial, nil
 	default:
-		return RespAllSucceeded, fmt.Errorf("routing: unknown response_policy %q", raw)
+		return RespDefaultKeyless, fmt.Errorf("routing: unknown response_policy %q", raw)
 	}
 }
 
