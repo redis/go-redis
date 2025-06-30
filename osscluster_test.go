@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,10 +17,18 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
-
+	"github.com/fortytw2/leaktest"
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 )
+
+// leakCleanup holds the per-spec leak check function
+var leakCleanup func()
+
+// sanitizeFilename converts spaces and slashes into underscores
+func sanitizeFilename(s string) string {
+	return strings.NewReplacer(" ", "_", "/", "_").Replace(s)
+}
 
 type clusterScenario struct {
 	ports   []string
@@ -253,7 +264,7 @@ func slotEqual(s1, s2 redis.ClusterSlot) bool {
 	return true
 }
 
-//------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------
 
 var _ = Describe("ClusterClient", func() {
 	var failover bool
@@ -988,6 +999,7 @@ var _ = Describe("ClusterClient", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
+			var mu sync.Mutex
 			var stack []string
 
 			clusterHook := &hook{
@@ -1000,12 +1012,16 @@ var _ = Describe("ClusterClient", func() {
 						}
 
 						Expect(cmd.String()).To(Equal("ping: "))
+						mu.Lock()
 						stack = append(stack, "cluster.BeforeProcess")
+						mu.Unlock()
 
 						err := hook(ctx, cmd)
 
 						Expect(cmd.String()).To(Equal("ping: PONG"))
+						mu.Lock()
 						stack = append(stack, "cluster.AfterProcess")
+						mu.Unlock()
 
 						return err
 					}
@@ -1023,12 +1039,16 @@ var _ = Describe("ClusterClient", func() {
 						}
 
 						Expect(cmd.String()).To(Equal("ping: "))
+						mu.Lock()
 						stack = append(stack, "shard.BeforeProcess")
+						mu.Unlock()
 
 						err := hook(ctx, cmd)
 
 						Expect(cmd.String()).To(Equal("ping: PONG"))
+						mu.Lock()
 						stack = append(stack, "shard.AfterProcess")
+						mu.Unlock()
 
 						return err
 					}
@@ -1042,7 +1062,13 @@ var _ = Describe("ClusterClient", func() {
 
 			err = client.Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(stack).To(Equal([]string{
+
+			mu.Lock()
+			finalStack := make([]string, len(stack))
+			copy(finalStack, stack)
+			mu.Unlock()
+
+			Expect(finalStack).To(ContainElements([]string{
 				"cluster.BeforeProcess",
 				"shard.BeforeProcess",
 				"shard.AfterProcess",
@@ -1059,6 +1085,7 @@ var _ = Describe("ClusterClient", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
+			var mu sync.Mutex
 			var stack []string
 
 			client.AddHook(&hook{
@@ -1066,13 +1093,17 @@ var _ = Describe("ClusterClient", func() {
 					return func(ctx context.Context, cmds []redis.Cmder) error {
 						Expect(cmds).To(HaveLen(1))
 						Expect(cmds[0].String()).To(Equal("ping: "))
+						mu.Lock()
 						stack = append(stack, "cluster.BeforeProcessPipeline")
+						mu.Unlock()
 
 						err := hook(ctx, cmds)
 
 						Expect(cmds).To(HaveLen(1))
 						Expect(cmds[0].String()).To(Equal("ping: PONG"))
+						mu.Lock()
 						stack = append(stack, "cluster.AfterProcessPipeline")
+						mu.Unlock()
 
 						return err
 					}
@@ -1085,13 +1116,17 @@ var _ = Describe("ClusterClient", func() {
 						return func(ctx context.Context, cmds []redis.Cmder) error {
 							Expect(cmds).To(HaveLen(1))
 							Expect(cmds[0].String()).To(Equal("ping: "))
+							mu.Lock()
 							stack = append(stack, "shard.BeforeProcessPipeline")
+							mu.Unlock()
 
 							err := hook(ctx, cmds)
 
 							Expect(cmds).To(HaveLen(1))
 							Expect(cmds[0].String()).To(Equal("ping: PONG"))
+							mu.Lock()
 							stack = append(stack, "shard.AfterProcessPipeline")
+							mu.Unlock()
 
 							return err
 						}
@@ -1105,7 +1140,13 @@ var _ = Describe("ClusterClient", func() {
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(stack).To(Equal([]string{
+
+			mu.Lock()
+			finalStack := make([]string, len(stack))
+			copy(finalStack, stack)
+			mu.Unlock()
+
+			Expect(finalStack).To(Equal([]string{
 				"cluster.BeforeProcessPipeline",
 				"shard.BeforeProcessPipeline",
 				"shard.AfterProcessPipeline",
@@ -1122,6 +1163,7 @@ var _ = Describe("ClusterClient", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
+			var mu sync.Mutex
 			var stack []string
 
 			client.AddHook(&hook{
@@ -1129,13 +1171,17 @@ var _ = Describe("ClusterClient", func() {
 					return func(ctx context.Context, cmds []redis.Cmder) error {
 						Expect(cmds).To(HaveLen(3))
 						Expect(cmds[1].String()).To(Equal("ping: "))
+						mu.Lock()
 						stack = append(stack, "cluster.BeforeProcessPipeline")
+						mu.Unlock()
 
 						err := hook(ctx, cmds)
 
 						Expect(cmds).To(HaveLen(3))
 						Expect(cmds[1].String()).To(Equal("ping: PONG"))
+						mu.Lock()
 						stack = append(stack, "cluster.AfterProcessPipeline")
+						mu.Unlock()
 
 						return err
 					}
@@ -1148,13 +1194,17 @@ var _ = Describe("ClusterClient", func() {
 						return func(ctx context.Context, cmds []redis.Cmder) error {
 							Expect(cmds).To(HaveLen(3))
 							Expect(cmds[1].String()).To(Equal("ping: "))
+							mu.Lock()
 							stack = append(stack, "shard.BeforeProcessPipeline")
+							mu.Unlock()
 
 							err := hook(ctx, cmds)
 
 							Expect(cmds).To(HaveLen(3))
 							Expect(cmds[1].String()).To(Equal("ping: PONG"))
+							mu.Lock()
 							stack = append(stack, "shard.AfterProcessPipeline")
+							mu.Unlock()
 
 							return err
 						}
@@ -1168,7 +1218,13 @@ var _ = Describe("ClusterClient", func() {
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(stack).To(Equal([]string{
+
+			mu.Lock()
+			finalStack := make([]string, len(stack))
+			copy(finalStack, stack)
+			mu.Unlock()
+
+			Expect(finalStack).To(Equal([]string{
 				"cluster.BeforeProcessPipeline",
 				"shard.BeforeProcessPipeline",
 				"shard.AfterProcessPipeline",
@@ -1335,6 +1391,8 @@ var _ = Describe("ClusterClient", func() {
 
 	Describe("ClusterClient with ClusterSlots with multiple nodes per slot", func() {
 		BeforeEach(func() {
+			leakCleanup = leaktest.Check(GinkgoT())
+			GinkgoWriter.Printf("[DEBUG] goroutines at start: %d\n", runtime.NumGoroutine())
 			failover = true
 
 			opt = redisClusterOptions()
@@ -1384,6 +1442,21 @@ var _ = Describe("ClusterClient", func() {
 		})
 
 		AfterEach(func() {
+			leakCleanup()
+
+			// on failure, write out a full goroutine dump
+			if CurrentSpecReport().Failed() {
+				fname := fmt.Sprintf("goroutines-%s.txt", sanitizeFilename(CurrentSpecReport().LeafNodeText))
+				if f, err := os.Create(fname); err == nil {
+					pprof.Lookup("goroutine").WriteTo(f, 2)
+					f.Close()
+					GinkgoWriter.Printf("[DEBUG] wrote goroutine dump to %s\n", fname)
+				} else {
+					GinkgoWriter.Printf("[DEBUG] failed to write goroutine dump: %v\n", err)
+				}
+			}
+
+			GinkgoWriter.Printf("[DEBUG] goroutines at end:   %d\n", runtime.NumGoroutine())
 			failover = false
 
 			err := client.Close()

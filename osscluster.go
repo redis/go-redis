@@ -19,6 +19,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 const (
@@ -108,12 +109,17 @@ type ClusterOptions struct {
 
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	UnstableResp3 bool
+
+	// ShardPicker is used to pick a shard when the request_policy is
+	// ReqDefault and the command has no keys.
+	ShardPicker routing.ShardPicker
 }
 
 func (opt *ClusterOptions) init() {
-	if opt.MaxRedirects == -1 {
+	switch opt.MaxRedirects {
+	case -1:
 		opt.MaxRedirects = 0
-	} else if opt.MaxRedirects == 0 {
+	case 0:
 		opt.MaxRedirects = 3
 	}
 
@@ -156,6 +162,10 @@ func (opt *ClusterOptions) init() {
 
 	if opt.NewClient == nil {
 		opt.NewClient = NewClient
+	}
+
+	if opt.ShardPicker == nil {
+		opt.ShardPicker = &routing.RoundRobinPicker{}
 	}
 }
 
@@ -1000,13 +1010,13 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 
 		if ask {
 			ask = false
-
 			pipe := node.Client.Pipeline()
 			_ = pipe.Process(ctx, NewCmd(ctx, "asking"))
 			_ = pipe.Process(ctx, cmd)
 			_, lastErr = pipe.Exec(ctx)
 		} else {
-			lastErr = node.Client.Process(ctx, cmd)
+			// Execute the command on the selected node
+			lastErr = c.routeAndRun(ctx, cmd, node)
 		}
 
 		// If there is no error - we are done.
@@ -1280,11 +1290,23 @@ func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error)
 }
 
 func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error {
-	cmdsMap := newCmdsMap()
+	// Separate commands into those that can be batched vs those that need individual routing
+	batchableCmds := make([]Cmder, 0)
+	individualCmds := make([]Cmder, 0)
 
-	if err := c.mapCmdsByNode(ctx, cmdsMap, cmds); err != nil {
-		setCmdsErr(cmds, err)
-		return err
+	for _, cmd := range cmds {
+		policy := c.getCommandPolicy(ctx, cmd)
+
+		// Commands that need special routing should be handled individually
+		if policy != nil && (policy.Request == routing.ReqAllNodes ||
+			policy.Request == routing.ReqAllShards ||
+			policy.Request == routing.ReqMultiShard ||
+			policy.Request == routing.ReqSpecial) {
+			individualCmds = append(individualCmds, cmd)
+		} else {
+			// Single-node commands can be batched
+			batchableCmds = append(batchableCmds, cmd)
+		}
 	}
 
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
@@ -1295,27 +1317,158 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 			}
 		}
 
-		failedCmds := newCmdsMap()
-		var wg sync.WaitGroup
+		var allSucceeded = true
+		var failedBatchableCmds []Cmder
+		var failedIndividualCmds []Cmder
 
-		for node, cmds := range cmdsMap.m {
-			wg.Add(1)
-			go func(node *clusterNode, cmds []Cmder) {
-				defer wg.Done()
-				c.processPipelineNode(ctx, node, cmds, failedCmds)
-			}(node, cmds)
+		// Handle individual commands using existing router
+		for _, cmd := range individualCmds {
+			if err := c.routeAndRun(ctx, cmd, nil); err != nil {
+				allSucceeded = false
+				failedIndividualCmds = append(failedIndividualCmds, cmd)
+			}
 		}
 
-		wg.Wait()
-		if len(failedCmds.m) == 0 {
+		// Handle batchable commands using original pipeline logic
+		if len(batchableCmds) > 0 {
+			cmdsMap := newCmdsMap()
+
+			if err := c.mapCmdsByNode(ctx, cmdsMap, batchableCmds); err != nil {
+				setCmdsErr(batchableCmds, err)
+				allSucceeded = false
+				failedBatchableCmds = append(failedBatchableCmds, batchableCmds...)
+			} else {
+				batchFailedCmds := newCmdsMap()
+				var wg sync.WaitGroup
+
+				for node, nodeCmds := range cmdsMap.m {
+					wg.Add(1)
+					go func(node *clusterNode, nodeCmds []Cmder) {
+						defer wg.Done()
+						c.processPipelineNode(ctx, node, nodeCmds, batchFailedCmds)
+					}(node, nodeCmds)
+				}
+
+				wg.Wait()
+
+				if len(batchFailedCmds.m) > 0 {
+					allSucceeded = false
+					for _, nodeCmds := range batchFailedCmds.m {
+						failedBatchableCmds = append(failedBatchableCmds, nodeCmds...)
+					}
+				}
+			}
+		}
+
+		// If all commands succeeded, we're done
+		if allSucceeded {
 			break
 		}
-		cmdsMap = failedCmds
+
+		// If this was the last attempt, return the error
+		if attempt == c.opt.MaxRedirects {
+			break
+		}
+
+		// Update command lists for retry - no reclassification needed
+		batchableCmds = failedBatchableCmds
+		individualCmds = failedIndividualCmds
 	}
 
 	return cmdsFirstErr(cmds)
 }
 
+// processPipelineNode handles batched pipeline commands for a single node
+func (c *ClusterClient) processPipelineNode(
+	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
+) {
+	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+		cn, err := node.Client.getConn(ctx)
+		if err != nil {
+			if !isContextError(err) {
+				node.MarkAsFailing()
+			}
+			// Commands are already mapped to this node, just add them as failed
+			failedCmds.Add(node, cmds...)
+			setCmdsErr(cmds, err)
+			return err
+		}
+
+		var processErr error
+		defer func() {
+			node.Client.releaseConn(ctx, cn, processErr)
+		}()
+		processErr = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+
+		return processErr
+	})
+}
+
+func (c *ClusterClient) processPipelineNodeConn(
+	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
+) error {
+	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		return writeCmds(wr, cmds)
+	}); err != nil {
+		if isBadConn(err, false, node.Client.getAddr()) {
+			node.MarkAsFailing()
+		}
+		if shouldRetry(err, true) {
+			// Commands are already mapped to this node, just add them as failed
+			failedCmds.Add(node, cmds...)
+		}
+		setCmdsErr(cmds, err)
+		return err
+	}
+
+	return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		return c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
+	})
+}
+
+func (c *ClusterClient) pipelineReadCmds(
+	ctx context.Context,
+	node *clusterNode,
+	rd *proto.Reader,
+	cmds []Cmder,
+	failedCmds *cmdsMap,
+) error {
+	for i, cmd := range cmds {
+		err := cmd.readReply(rd)
+		cmd.SetErr(err)
+
+		if err == nil {
+			continue
+		}
+
+		if c.checkMovedErr(ctx, cmd, err, failedCmds) {
+			continue
+		}
+
+		if c.opt.ReadOnly && isBadConn(err, false, node.Client.getAddr()) {
+			node.MarkAsFailing()
+		}
+
+		if !isRedisError(err) {
+			if shouldRetry(err, true) {
+				// Commands are already mapped to this node, just add them as failed
+				failedCmds.Add(node, cmds[i:]...)
+			}
+			setCmdsErr(cmds[i+1:], err)
+			return err
+		}
+	}
+
+	if err := cmds[0].Err(); err != nil && shouldRetry(err, true) {
+		// Commands are already mapped to this node, just add them as failed
+		failedCmds.Add(node, cmds...)
+		return err
+	}
+
+	return nil
+}
+
+// Legacy functions needed for transaction pipeline processing
 func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmds []Cmder) error {
 	state, err := c.state.Get(ctx)
 	if err != nil {
@@ -1355,91 +1508,6 @@ func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool 
 	return true
 }
 
-func (c *ClusterClient) processPipelineNode(
-	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
-) {
-	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		cn, err := node.Client.getConn(ctx)
-		if err != nil {
-			if !isContextError(err) {
-				node.MarkAsFailing()
-			}
-			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
-			setCmdsErr(cmds, err)
-			return err
-		}
-
-		var processErr error
-		defer func() {
-			node.Client.releaseConn(ctx, cn, processErr)
-		}()
-		processErr = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
-
-		return processErr
-	})
-}
-
-func (c *ClusterClient) processPipelineNodeConn(
-	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
-) error {
-	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
-		return writeCmds(wr, cmds)
-	}); err != nil {
-		if isBadConn(err, false, node.Client.getAddr()) {
-			node.MarkAsFailing()
-		}
-		if shouldRetry(err, true) {
-			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
-		}
-		setCmdsErr(cmds, err)
-		return err
-	}
-
-	return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		return c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
-	})
-}
-
-func (c *ClusterClient) pipelineReadCmds(
-	ctx context.Context,
-	node *clusterNode,
-	rd *proto.Reader,
-	cmds []Cmder,
-	failedCmds *cmdsMap,
-) error {
-	for i, cmd := range cmds {
-		err := cmd.readReply(rd)
-		cmd.SetErr(err)
-
-		if err == nil {
-			continue
-		}
-
-		if c.checkMovedErr(ctx, cmd, err, failedCmds) {
-			continue
-		}
-
-		if c.opt.ReadOnly && isBadConn(err, false, node.Client.getAddr()) {
-			node.MarkAsFailing()
-		}
-
-		if !isRedisError(err) {
-			if shouldRetry(err, true) {
-				_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
-			}
-			setCmdsErr(cmds[i+1:], err)
-			return err
-		}
-	}
-
-	if err := cmds[0].Err(); err != nil && shouldRetry(err, true) {
-		_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
-		return err
-	}
-
-	return nil
-}
-
 func (c *ClusterClient) checkMovedErr(
 	ctx context.Context, cmd Cmder, err error, failedCmds *cmdsMap,
 ) bool {
@@ -1465,6 +1533,35 @@ func (c *ClusterClient) checkMovedErr(
 	}
 
 	panic("not reached")
+}
+
+func (c *ClusterClient) cmdsMoved(
+	ctx context.Context, cmds []Cmder,
+	moved, ask bool,
+	addr string,
+	failedCmds *cmdsMap,
+) error {
+	node, err := c.nodes.GetOrCreate(addr)
+	if err != nil {
+		return err
+	}
+
+	if moved {
+		c.state.LazyReload()
+		for _, cmd := range cmds {
+			failedCmds.Add(node, cmd)
+		}
+		return nil
+	}
+
+	if ask {
+		for _, cmd := range cmds {
+			failedCmds.Add(node, NewCmd(ctx, "asking"), cmd)
+		}
+		return nil
+	}
+
+	return nil
 }
 
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
@@ -1634,35 +1731,6 @@ func (c *ClusterClient) txPipelineReadQueued(
 	return nil
 }
 
-func (c *ClusterClient) cmdsMoved(
-	ctx context.Context, cmds []Cmder,
-	moved, ask bool,
-	addr string,
-	failedCmds *cmdsMap,
-) error {
-	node, err := c.nodes.GetOrCreate(addr)
-	if err != nil {
-		return err
-	}
-
-	if moved {
-		c.state.LazyReload()
-		for _, cmd := range cmds {
-			failedCmds.Add(node, cmd)
-		}
-		return nil
-	}
-
-	if ask {
-		for _, cmd := range cmds {
-			failedCmds.Add(node, NewCmd(ctx, "asking"), cmd)
-		}
-		return nil
-	}
-
-	return nil
-}
-
 func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("redis: Watch requires at least one key")
@@ -1815,7 +1883,6 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 
 	for _, idx := range perm {
 		addr := addrs[idx]
-
 		node, err := c.nodes.GetOrCreate(addr)
 		if err != nil {
 			if firstErr == nil {
@@ -1828,6 +1895,7 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 		if err == nil {
 			return info, nil
 		}
+
 		if firstErr == nil {
 			firstErr = err
 		}
@@ -1840,7 +1908,17 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 }
 
 func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
-	cmdsInfo, err := c.cmdsInfoCache.Get(ctx)
+	// Use a separate context that won't be canceled to ensure command info lookup
+	// doesn't fail due to original context cancellation
+	cmdInfoCtx := context.Background()
+	if c.opt.ContextTimeoutEnabled && ctx != nil {
+		// If context timeout is enabled, still use a reasonable timeout
+		var cancel context.CancelFunc
+		cmdInfoCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+	}
+
+	cmdsInfo, err := c.cmdsInfoCache.Get(cmdInfoCtx)
 	if err != nil {
 		internal.Logger.Printf(context.TODO(), "getting command info: %s", err)
 		return nil
