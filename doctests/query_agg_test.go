@@ -30,7 +30,7 @@ func ExampleClient_query_agg() {
 	_, err := rdb.FTCreate(ctx, "idx:bicycle",
 		&redis.FTCreateOptions{
 			OnJSON: true,
-			Prefix: []interface{}{"bicycle:"},
+			Prefix: []any{"bicycle:"},
 		},
 		&redis.FieldSchema{
 			FieldName: "$.brand",
@@ -63,7 +63,7 @@ func ExampleClient_query_agg() {
 		panic(err)
 	}
 
-	exampleJsons := []map[string]interface{}{
+	exampleJsons := []map[string]any{
 		{
 			"pickup_zone": "POLYGON((-74.0610 40.7578, -73.9510 40.7578, -73.9510 40.6678, " +
 				"-74.0610 40.6678, -74.0610 40.7578))",
@@ -282,11 +282,11 @@ func ExampleClient_query_agg() {
 			},
 			GroupBy: []redis.FTAggregateGroupBy{
 				{
-					Fields: []interface{}{"@condition"},
+					Fields: []any{"@condition"},
 					Reduce: []redis.FTAggregateReducer{
 						{
 							Reducer: redis.SearchSum,
-							Args:    []interface{}{"@price_category"},
+							Args:    []any{"@price_category"},
 							As:      "num_affordable",
 						},
 					},
@@ -331,7 +331,7 @@ func ExampleClient_query_agg() {
 			},
 			GroupBy: []redis.FTAggregateGroupBy{
 				{
-					Fields: []interface{}{"@type"},
+					Fields: []any{"@type"},
 					Reduce: []redis.FTAggregateReducer{
 						{
 							Reducer: redis.SearchCount,
@@ -368,11 +368,11 @@ func ExampleClient_query_agg() {
 			},
 			GroupBy: []redis.FTAggregateGroupBy{
 				{
-					Fields: []interface{}{"@condition"},
+					Fields: []any{"@condition"},
 					Reduce: []redis.FTAggregateReducer{
 						{
 							Reducer: redis.SearchToList,
-							Args:    []interface{}{"__key"},
+							Args:    []any{"__key"},
 							As:      "bicycles",
 						},
 					},
@@ -393,7 +393,7 @@ func ExampleClient_query_agg() {
 	})
 
 	for _, row := range res4.Rows {
-		rowBikes := row.Fields["bicycles"].([]interface{})
+		rowBikes := row.Fields["bicycles"].([]any)
 		bikes := make([]string, len(rowBikes))
 
 		for i, rowBike := range rowBikes {

@@ -30,7 +30,7 @@ func ExampleClient_query_ft() {
 	_, err := rdb.FTCreate(ctx, "idx:bicycle",
 		&redis.FTCreateOptions{
 			OnJSON: true,
-			Prefix: []interface{}{"bicycle:"},
+			Prefix: []any{"bicycle:"},
 		},
 		&redis.FieldSchema{
 			FieldName: "$.brand",
@@ -63,7 +63,7 @@ func ExampleClient_query_ft() {
 		panic(err)
 	}
 
-	exampleJsons := []map[string]interface{}{
+	exampleJsons := []map[string]any{
 		{
 			"pickup_zone": "POLYGON((-74.0610 40.7578, -73.9510 40.7578, -73.9510 40.6678, " +
 				"-74.0610 40.6678, -74.0610 40.7578))",
