@@ -798,6 +798,8 @@ func (c *Ring) generalProcessPipeline(
 	}
 
 	var wg sync.WaitGroup
+	errs := make(chan error, len(cmdsMap))
+
 	for hash, cmds := range cmdsMap {
 		wg.Add(1)
 		go func(hash string, cmds []Cmder) {
@@ -810,16 +812,24 @@ func (c *Ring) generalProcessPipeline(
 				return
 			}
 
+			hook := shard.Client.processPipelineHook
 			if tx {
 				cmds = wrapMultiExec(ctx, cmds)
-				_ = shard.Client.processTxPipelineHook(ctx, cmds)
-			} else {
-				_ = shard.Client.processPipelineHook(ctx, cmds)
+				hook = shard.Client.processTxPipelineHook
+			}
+
+			if err = hook(ctx, cmds); err != nil {
+				errs <- err
 			}
 		}(hash, cmds)
 	}
 
 	wg.Wait()
+	close(errs)
+
+	if err := <-errs; err != nil {
+		return err
+	}
 	return cmdsFirstErr(cmds)
 }
 
