@@ -82,10 +82,15 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 	}
 }
 
+func poolStatsAttrs(conf *config) (poolAttrs, idleAttrs, usedAttrs attribute.Set) {
+	poolAttrs = attribute.NewSet(conf.attrs...)
+	idleAttrs = attribute.NewSet(append(poolAttrs.ToSlice(), attribute.String("state", "idle"))...)
+	usedAttrs = attribute.NewSet(append(poolAttrs.ToSlice(), attribute.String("state", "used"))...)
+	return
+}
+
 func reportPoolStats(rdb *redis.Client, conf *config) error {
-	labels := conf.attrs
-	idleAttrs := append(labels, attribute.String("state", "idle"))
-	usedAttrs := append(labels, attribute.String("state", "used"))
+	poolAttrs, idleAttrs, usedAttrs := poolStatsAttrs(conf)
 
 	idleMax, err := conf.meter.Int64ObservableUpDownCounter(
 		"db.client.connections.idle.max",
@@ -148,16 +153,16 @@ func reportPoolStats(rdb *redis.Client, conf *config) error {
 		func(ctx context.Context, o metric.Observer) error {
 			stats := rdb.PoolStats()
 
-			o.ObserveInt64(idleMax, int64(redisConf.MaxIdleConns), metric.WithAttributes(labels...))
-			o.ObserveInt64(idleMin, int64(redisConf.MinIdleConns), metric.WithAttributes(labels...))
-			o.ObserveInt64(connsMax, int64(redisConf.PoolSize), metric.WithAttributes(labels...))
+			o.ObserveInt64(idleMax, int64(redisConf.MaxIdleConns), metric.WithAttributeSet(poolAttrs))
+			o.ObserveInt64(idleMin, int64(redisConf.MinIdleConns), metric.WithAttributeSet(poolAttrs))
+			o.ObserveInt64(connsMax, int64(redisConf.PoolSize), metric.WithAttributeSet(poolAttrs))
 
-			o.ObserveInt64(usage, int64(stats.IdleConns), metric.WithAttributes(idleAttrs...))
-			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), metric.WithAttributes(usedAttrs...))
+			o.ObserveInt64(usage, int64(stats.IdleConns), metric.WithAttributeSet(idleAttrs))
+			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), metric.WithAttributeSet(usedAttrs))
 
-			o.ObserveInt64(timeouts, int64(stats.Timeouts), metric.WithAttributes(labels...))
-			o.ObserveInt64(hits, int64(stats.Hits), metric.WithAttributes(labels...))
-			o.ObserveInt64(misses, int64(stats.Misses), metric.WithAttributes(labels...))
+			o.ObserveInt64(timeouts, int64(stats.Timeouts), metric.WithAttributeSet(poolAttrs))
+			o.ObserveInt64(hits, int64(stats.Hits), metric.WithAttributeSet(poolAttrs))
+			o.ObserveInt64(misses, int64(stats.Misses), metric.WithAttributeSet(poolAttrs))
 			return nil
 		},
 		idleMax,
