@@ -91,8 +91,8 @@ func (r *Reader) PeekReplyType() (byte, error) {
 }
 
 func (r *Reader) PeekPushNotificationName() (string, error) {
-	// peek 32 bytes, should be enough to read the push notification name
-	buf, err := r.rd.Peek(32)
+	// peek 36 bytes, should be enough to read the push notification name
+	buf, err := r.rd.Peek(36)
 	if err != nil {
 		return "", err
 	}
