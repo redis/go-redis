@@ -500,7 +500,7 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 
 	// Initialize push notification processor using shared helper
 	// Use void processor for Sentinel clients
-	c.pushProcessor = NewVoidProcessorAdapter()
+	c.pushProcessor = NewVoidPushNotificationProcessor()
 
 	c.initHooks(hooks{
 		dial:    c.baseClient.dial,

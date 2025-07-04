@@ -1,4 +1,4 @@
-package pushnotif
+package pushprocessor
 
 import (
 	"context"

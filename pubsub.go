@@ -10,7 +10,6 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/pushnotif"
 )
 
 // PubSub implements Pub/Sub commands as described in
@@ -549,27 +548,16 @@ func (c *PubSub) processPendingPushNotificationWithReader(ctx context.Context, c
 
 	// Create handler context with client, connection pool, and connection information
 	handlerCtx := c.pushNotificationHandlerContext(cn)
-	// Convert internal context to public context for the processor
-	publicCtx := convertInternalToPublicContext(handlerCtx)
-	return c.pushProcessor.ProcessPendingNotifications(ctx, publicCtx, rd)
+	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
-func (c *PubSub) pushNotificationHandlerContext(cn *pool.Conn) pushnotif.HandlerContext {
+func (c *PubSub) pushNotificationHandlerContext(cn *pool.Conn) PushNotificationHandlerContext {
 	// PubSub doesn't have a client or connection pool, so we pass nil for those
 	// PubSub connections are blocking
-	return pushnotif.NewHandlerContext(nil, nil, c, cn, true)
+	return NewPushNotificationHandlerContext(nil, nil, c, cn, true)
 }
 
-// convertInternalToPublicContext converts internal HandlerContext to public PushNotificationHandlerContext
-func convertInternalToPublicContext(internalCtx pushnotif.HandlerContext) PushNotificationHandlerContext {
-	return NewPushNotificationHandlerContext(
-		internalCtx.GetClient(),
-		internalCtx.GetConnPool(),
-		internalCtx.GetPubSub(),
-		internalCtx.GetConn(),
-		internalCtx.IsBlocking(),
-	)
-}
+
 
 type ChannelOption func(c *channel)
 

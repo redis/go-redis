@@ -1,4 +1,4 @@
-package pushnotif
+package pushprocessor
 
 import (
 	"context"
@@ -114,7 +114,7 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 func shouldSkipNotification(notificationType string) bool {
 	switch notificationType {
 	// Pub/Sub notifications - handled by pub/sub system
-	case "message", // Regular pub/sub message
+	case "message",     // Regular pub/sub message
 		"pmessage",     // Pattern pub/sub message
 		"subscribe",    // Subscription confirmation
 		"unsubscribe",  // Unsubscription confirmation
@@ -124,27 +124,27 @@ func shouldSkipNotification(notificationType string) bool {
 		"ssubscribe",   // Sharded subscription confirmation
 		"sunsubscribe", // Sharded unsubscription confirmation
 
-	// Stream notifications - handled by stream consumers
+		// Stream notifications - handled by stream consumers
 		"xread-from",      // Stream reading notifications
 		"xreadgroup-from", // Stream consumer group notifications
 
-	// Client tracking notifications - handled by client tracking system
+		// Client tracking notifications - handled by client tracking system
 		"invalidate", // Client-side caching invalidation
 
-	// Keyspace notifications - handled by keyspace notification subscribers
-	// Note: Keyspace notifications typically have prefixes like "__keyspace@0__:" or "__keyevent@0__:"
-	// but we'll handle the base notification types here
-		"expired",   // Key expiration events
-		"evicted",   // Key eviction events
-		"set",       // Key set events
-		"del",       // Key deletion events
-		"rename",    // Key rename events
-		"move",      // Key move events
-		"copy",      // Key copy events
-		"restore",   // Key restore events
-		"sort",      // Sort operation events
-		"flushdb",   // Database flush events
-		"flushall":  // All databases flush events
+		// Keyspace notifications - handled by keyspace notification subscribers
+		// Note: Keyspace notifications typically have prefixes like "__keyspace@0__:" or "__keyevent@0__:"
+		// but we'll handle the base notification types here
+		"expired",  // Key expiration events
+		"evicted",  // Key eviction events
+		"set",      // Key set events
+		"del",      // Key deletion events
+		"rename",   // Key rename events
+		"move",     // Key move events
+		"copy",     // Key copy events
+		"restore",  // Key restore events
+		"sort",     // Sort operation events
+		"flushdb",  // Database flush events
+		"flushall": // All databases flush events
 		return true
 	default:
 		return false

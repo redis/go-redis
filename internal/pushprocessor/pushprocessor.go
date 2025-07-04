@@ -1,4 +1,4 @@
-package pushnotif
+package pushprocessor
 
 // This is an EXPERIMENTAL API for push notifications.
 // It is subject to change without notice.

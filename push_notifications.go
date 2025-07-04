@@ -2,10 +2,29 @@ package redis
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/pushnotif"
+)
+
+// Push notification constants for cluster operations
+const (
+	// MOVING indicates a slot is being moved to a different node
+	PushNotificationMoving = "MOVING"
+
+	// MIGRATING indicates a slot is being migrated from this node
+	PushNotificationMigrating = "MIGRATING"
+
+	// MIGRATED indicates a slot has been migrated to this node
+	PushNotificationMigrated = "MIGRATED"
+
+	// FAILING_OVER indicates a failover is starting
+	PushNotificationFailingOver = "FAILING_OVER"
+
+	// FAILED_OVER indicates a failover has completed
+	PushNotificationFailedOver = "FAILED_OVER"
 )
 
 // PushNotificationHandlerContext provides context information about where a push notification was received.
@@ -137,74 +156,196 @@ func (h *pushNotificationHandlerContext) IsBlocking() bool {
 	return h.isBlocking
 }
 
-// handlerAdapter adapts a PushNotificationHandler to the internal pushnotif.Handler interface
-type handlerAdapter struct {
-	handler PushNotificationHandler
+// Registry manages push notification handlers
+type Registry struct {
+	handlers  map[string]PushNotificationHandler
+	protected map[string]bool
 }
 
-// HandlePushNotification adapts the public handler to the internal interface
-func (a *handlerAdapter) HandlePushNotification(ctx context.Context, handlerCtx pushnotif.HandlerContext, notification []interface{}) bool {
-	// Convert internal HandlerContext to public PushNotificationHandlerContext
-	// We need to extract the fields from the internal context and create a public one
-	var client, connPool, pubSub interface{}
-	var conn *pool.Conn
-	var isBlocking bool
+// NewRegistry creates a new push notification registry
+func NewRegistry() *Registry {
+	return &Registry{
+		handlers:  make(map[string]PushNotificationHandler),
+		protected: make(map[string]bool),
+	}
+}
 
-	// Extract information from internal context
-	client = handlerCtx.GetClient()
-	connPool = handlerCtx.GetConnPool()
-	conn = handlerCtx.GetConn()
-	isBlocking = handlerCtx.IsBlocking()
-
-	// Try to get PubSub if available
-	if handlerCtx.GetPubSub() != nil {
-		pubSub = handlerCtx.GetPubSub()
+// RegisterHandler registers a handler for a specific push notification name
+func (r *Registry) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+	if handler == nil {
+		return fmt.Errorf("handler cannot be nil")
 	}
 
-	// Create public context
-	publicCtx := NewPushNotificationHandlerContext(client, connPool, pubSub, conn, isBlocking)
-
-	// Call the public handler
-	return a.handler.HandlePushNotification(ctx, publicCtx, notification)
-}
-
-// contextAdapter converts internal HandlerContext to public PushNotificationHandlerContext
-
-// voidProcessorAdapter adapts a VoidProcessor to the public interface
-type voidProcessorAdapter struct {
-	processor *pushnotif.VoidProcessor
-}
-
-// NewVoidProcessorAdapter creates a new void processor adapter
-func NewVoidProcessorAdapter() PushNotificationProcessorInterface {
-	return &voidProcessorAdapter{
-		processor: pushnotif.NewVoidProcessor(),
+	// Check if handler already exists and is protected
+	if existingProtected, exists := r.protected[pushNotificationName]; exists && existingProtected {
+		return fmt.Errorf("cannot overwrite protected handler for push notification: %s", pushNotificationName)
 	}
+
+	r.handlers[pushNotificationName] = handler
+	r.protected[pushNotificationName] = protected
+	return nil
+}
+
+// GetHandler returns the handler for a specific push notification name
+func (r *Registry) GetHandler(pushNotificationName string) PushNotificationHandler {
+	return r.handlers[pushNotificationName]
+}
+
+// UnregisterHandler removes a handler for a specific push notification name
+func (r *Registry) UnregisterHandler(pushNotificationName string) error {
+	// Check if handler is protected
+	if protected, exists := r.protected[pushNotificationName]; exists && protected {
+		return fmt.Errorf("cannot unregister protected handler for push notification: %s", pushNotificationName)
+	}
+
+	delete(r.handlers, pushNotificationName)
+	delete(r.protected, pushNotificationName)
+	return nil
+}
+
+// GetRegisteredPushNotificationNames returns all registered push notification names
+func (r *Registry) GetRegisteredPushNotificationNames() []string {
+	names := make([]string, 0, len(r.handlers))
+	for name := range r.handlers {
+		names = append(names, name)
+	}
+	return names
+}
+
+// Processor handles push notifications with a registry of handlers
+type Processor struct {
+	registry *Registry
+}
+
+// NewProcessor creates a new push notification processor
+func NewProcessor() *Processor {
+	return &Processor{
+		registry: NewRegistry(),
+	}
+}
+
+// GetHandler returns the handler for a specific push notification name
+func (p *Processor) GetHandler(pushNotificationName string) PushNotificationHandler {
+	return p.registry.GetHandler(pushNotificationName)
+}
+
+// RegisterHandler registers a handler for a specific push notification name
+func (p *Processor) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+	return p.registry.RegisterHandler(pushNotificationName, handler, protected)
+}
+
+// UnregisterHandler removes a handler for a specific push notification name
+func (p *Processor) UnregisterHandler(pushNotificationName string) error {
+	return p.registry.UnregisterHandler(pushNotificationName)
+}
+
+// ProcessPendingNotifications checks for and processes any pending push notifications
+func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx PushNotificationHandlerContext, rd *proto.Reader) error {
+	if rd == nil {
+		return nil
+	}
+
+	for {
+		// Check if there's data available to read
+		replyType, err := rd.PeekReplyType()
+		if err != nil {
+			// No more data available or error reading
+			break
+		}
+
+		// Only process push notifications (arrays starting with >)
+		if replyType != proto.RespPush {
+			break
+		}
+
+		// Read the push notification
+		reply, err := rd.ReadReply()
+		if err != nil {
+			internal.Logger.Printf(ctx, "push: error reading push notification: %v", err)
+			break
+		}
+
+		// Convert to slice of interfaces
+		notification, ok := reply.([]interface{})
+		if !ok {
+			continue
+		}
+
+		// Handle the notification directly
+		if len(notification) > 0 {
+			// Extract the notification type (first element)
+			if notificationType, ok := notification[0].(string); ok {
+				// Skip notifications that should be handled by other systems
+				if shouldSkipNotification(notificationType) {
+					continue
+				}
+
+				// Get the handler for this notification type
+				if handler := p.registry.GetHandler(notificationType); handler != nil {
+					// Handle the notification
+					handler.HandlePushNotification(ctx, handlerCtx, notification)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// shouldSkipNotification checks if a notification type should be ignored by the push notification
+// processor and handled by other specialized systems instead (pub/sub, streams, keyspace, etc.).
+func shouldSkipNotification(notificationType string) bool {
+	switch notificationType {
+	// Pub/Sub notifications - handled by pub/sub system
+	case "message", // Regular pub/sub message
+		"pmessage",     // Pattern pub/sub message
+		"subscribe",    // Subscription confirmation
+		"unsubscribe",  // Unsubscription confirmation
+		"psubscribe",   // Pattern subscription confirmation
+		"punsubscribe", // Pattern unsubscription confirmation
+		"smessage",     // Sharded pub/sub message (Redis 7.0+)
+		"ssubscribe",   // Sharded subscription confirmation
+		"sunsubscribe": // Sharded unsubscription confirmation
+		return true
+	default:
+		return false
+	}
+}
+
+// VoidProcessor discards all push notifications without processing them
+type VoidProcessor struct{}
+
+// NewVoidProcessor creates a new void push notification processor
+func NewVoidProcessor() *VoidProcessor {
+	return &VoidProcessor{}
 }
 
 // GetHandler returns nil for void processor since it doesn't maintain handlers
-func (v *voidProcessorAdapter) GetHandler(pushNotificationName string) PushNotificationHandler {
+func (v *VoidProcessor) GetHandler(pushNotificationName string) PushNotificationHandler {
 	return nil
 }
 
 // RegisterHandler returns an error for void processor since it doesn't maintain handlers
-func (v *voidProcessorAdapter) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
-	// Void processor doesn't support handlers
-	return v.processor.RegisterHandler(pushNotificationName, nil, protected)
+func (v *VoidProcessor) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+	return fmt.Errorf("cannot register push notification handler '%s': push notifications are disabled (using void processor)", pushNotificationName)
 }
 
-// ProcessPendingNotifications reads and discards any pending push notifications
-func (v *voidProcessorAdapter) ProcessPendingNotifications(ctx context.Context, handlerCtx PushNotificationHandlerContext, rd *proto.Reader) error {
-	// Convert public context to internal context
-	internalCtx := pushnotif.NewHandlerContext(
-		handlerCtx.GetClient(),
-		handlerCtx.GetConnPool(),
-		handlerCtx.GetPubSub(),
-		handlerCtx.GetConn(),
-		handlerCtx.IsBlocking(),
-	)
-	return v.processor.ProcessPendingNotifications(ctx, internalCtx, rd)
+// UnregisterHandler returns an error for void processor since it doesn't maintain handlers
+func (v *VoidProcessor) UnregisterHandler(pushNotificationName string) error {
+	return fmt.Errorf("cannot unregister push notification handler '%s': push notifications are disabled (using void processor)", pushNotificationName)
 }
+
+// ProcessPendingNotifications for VoidProcessor does nothing since push notifications
+// are only available in RESP3 and this processor is used for RESP2 connections.
+// This avoids unnecessary buffer scanning overhead.
+func (v *VoidProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx PushNotificationHandlerContext, rd *proto.Reader) error {
+	// VoidProcessor is used for RESP2 connections where push notifications are not available.
+	// Since push notifications only exist in RESP3, we can safely skip all processing
+	// to avoid unnecessary buffer scanning overhead.
+	return nil
+}
+
+
 
 // PushNotificationProcessorInterface defines the interface for push notification processors.
 type PushNotificationProcessorInterface interface {
@@ -215,21 +356,19 @@ type PushNotificationProcessorInterface interface {
 
 // PushNotificationRegistry manages push notification handlers.
 type PushNotificationRegistry struct {
-	registry *pushnotif.Registry
+	registry *Registry
 }
 
 // NewPushNotificationRegistry creates a new push notification registry.
 func NewPushNotificationRegistry() *PushNotificationRegistry {
 	return &PushNotificationRegistry{
-		registry: pushnotif.NewRegistry(),
+		registry: NewRegistry(),
 	}
 }
 
 // RegisterHandler registers a handler for a specific push notification name.
 func (r *PushNotificationRegistry) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
-	// Wrap the public handler in an adapter for the internal interface
-	adapter := &handlerAdapter{handler: handler}
-	return r.registry.RegisterHandler(pushNotificationName, adapter, protected)
+	return r.registry.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 // UnregisterHandler removes a handler for a specific push notification name.
@@ -239,18 +378,7 @@ func (r *PushNotificationRegistry) UnregisterHandler(pushNotificationName string
 
 // GetHandler returns the handler for a specific push notification name.
 func (r *PushNotificationRegistry) GetHandler(pushNotificationName string) PushNotificationHandler {
-	internalHandler := r.registry.GetHandler(pushNotificationName)
-	if internalHandler == nil {
-		return nil
-	}
-
-	// If it's our adapter, return the original handler
-	if adapter, ok := internalHandler.(*handlerAdapter); ok {
-		return adapter.handler
-	}
-
-	// This shouldn't happen in normal usage, but handle it gracefully
-	return nil
+	return r.registry.GetHandler(pushNotificationName)
 }
 
 // GetRegisteredPushNotificationNames returns a list of all registered push notification names.
@@ -260,37 +388,24 @@ func (r *PushNotificationRegistry) GetRegisteredPushNotificationNames() []string
 
 // PushNotificationProcessor handles push notifications with a registry of handlers.
 type PushNotificationProcessor struct {
-	processor *pushnotif.Processor
+	processor *Processor
 }
 
 // NewPushNotificationProcessor creates a new push notification processor.
 func NewPushNotificationProcessor() *PushNotificationProcessor {
 	return &PushNotificationProcessor{
-		processor: pushnotif.NewProcessor(),
+		processor: NewProcessor(),
 	}
 }
 
 // GetHandler returns the handler for a specific push notification name.
 func (p *PushNotificationProcessor) GetHandler(pushNotificationName string) PushNotificationHandler {
-	internalHandler := p.processor.GetHandler(pushNotificationName)
-	if internalHandler == nil {
-		return nil
-	}
-
-	// If it's our adapter, return the original handler
-	if adapter, ok := internalHandler.(*handlerAdapter); ok {
-		return adapter.handler
-	}
-
-	// This shouldn't happen in normal usage, but handle it gracefully
-	return nil
+	return p.processor.GetHandler(pushNotificationName)
 }
 
 // RegisterHandler registers a handler for a specific push notification name.
 func (p *PushNotificationProcessor) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
-	// Wrap the public handler in an adapter for the internal interface
-	adapter := &handlerAdapter{handler: handler}
-	return p.processor.RegisterHandler(pushNotificationName, adapter, protected)
+	return p.processor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 // UnregisterHandler removes a handler for a specific push notification name.
@@ -301,60 +416,35 @@ func (p *PushNotificationProcessor) UnregisterHandler(pushNotificationName strin
 // ProcessPendingNotifications checks for and processes any pending push notifications.
 // The handlerCtx provides context about the client, connection pool, and connection.
 func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx PushNotificationHandlerContext, rd *proto.Reader) error {
-	// Convert public context to internal context
-	internalCtx := pushnotif.NewHandlerContext(
-		handlerCtx.GetClient(),
-		handlerCtx.GetConnPool(),
-		handlerCtx.GetPubSub(),
-		handlerCtx.GetConn(),
-		handlerCtx.IsBlocking(),
-	)
-	return p.processor.ProcessPendingNotifications(ctx, internalCtx, rd)
+	return p.processor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
 // VoidPushNotificationProcessor discards all push notifications without processing them.
 type VoidPushNotificationProcessor struct {
-	processor *pushnotif.VoidProcessor
+	processor *VoidProcessor
 }
 
 // NewVoidPushNotificationProcessor creates a new void push notification processor.
 func NewVoidPushNotificationProcessor() *VoidPushNotificationProcessor {
 	return &VoidPushNotificationProcessor{
-		processor: pushnotif.NewVoidProcessor(),
+		processor: NewVoidProcessor(),
 	}
 }
 
 // GetHandler returns nil for void processor since it doesn't maintain handlers.
 func (v *VoidPushNotificationProcessor) GetHandler(pushNotificationName string) PushNotificationHandler {
-	return nil
+	return v.processor.GetHandler(pushNotificationName)
 }
 
 // RegisterHandler returns an error for void processor since it doesn't maintain handlers.
 func (v *VoidPushNotificationProcessor) RegisterHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
-	return v.processor.RegisterHandler(pushNotificationName, nil, protected)
+	return v.processor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 // ProcessPendingNotifications reads and discards any pending push notifications.
 func (v *VoidPushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx PushNotificationHandlerContext, rd *proto.Reader) error {
-	// Convert public context to internal context
-	internalCtx := pushnotif.NewHandlerContext(
-		handlerCtx.GetClient(),
-		handlerCtx.GetConnPool(),
-		handlerCtx.GetPubSub(),
-		handlerCtx.GetConn(),
-		handlerCtx.IsBlocking(),
-	)
-	return v.processor.ProcessPendingNotifications(ctx, internalCtx, rd)
+	return v.processor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
-
-// Redis Cluster push notification names
-const (
-	PushNotificationMoving      = "MOVING"
-	PushNotificationMigrating   = "MIGRATING"
-	PushNotificationMigrated    = "MIGRATED"
-	PushNotificationFailingOver = "FAILING_OVER"
-	PushNotificationFailedOver  = "FAILED_OVER"
-)
 
 // PushNotificationInfo contains metadata about a push notification.
 type PushNotificationInfo struct {

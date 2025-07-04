@@ -1,4 +1,4 @@
-package pushnotif
+package pushprocessor
 
 import (
 	"fmt"
@@ -80,5 +80,3 @@ func (r *Registry) GetRegisteredPushNotificationNames() []string {
 	}
 	return names
 }
-
-
