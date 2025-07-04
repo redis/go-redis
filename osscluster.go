@@ -1623,7 +1623,7 @@ func (c *ClusterClient) processTxPipelineNode(
 }
 
 func (c *ClusterClient) processTxPipelineNodeConn(
-	ctx context.Context, _ *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
+	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
@@ -1641,7 +1641,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
 		if err := c.txPipelineReadQueued(
-			ctx, rd, statusCmd, trimmedCmds, failedCmds,
+			ctx, node, cn, rd, statusCmd, trimmedCmds, failedCmds,
 		); err != nil {
 			setCmdsErr(cmds, err)
 
@@ -1653,23 +1653,37 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 			return err
 		}
 
-		return pipelineReadCmds(rd, trimmedCmds)
+		return node.Client.pipelineReadCmds(ctx, cn, rd, trimmedCmds)
 	})
 }
 
 func (c *ClusterClient) txPipelineReadQueued(
 	ctx context.Context,
+	node *clusterNode,
+	cn *pool.Conn,
 	rd *proto.Reader,
 	statusCmd *StatusCmd,
 	cmds []Cmder,
 	failedCmds *cmdsMap,
 ) error {
 	// Parse queued replies.
+	// To be sure there are no buffered push notifications, we process them before reading the reply
+	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		// Log the error but don't fail the command execution
+		// Push notification processing errors shouldn't break normal Redis operations
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+	}
 	if err := statusCmd.readReply(rd); err != nil {
 		return err
 	}
 
 	for _, cmd := range cmds {
+		// To be sure there are no buffered push notifications, we process them before reading the reply
+		if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			// Log the error but don't fail the command execution
+			// Push notification processing errors shouldn't break normal Redis operations
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		}
 		err := statusCmd.readReply(rd)
 		if err == nil || c.checkMovedErr(ctx, cmd, err, failedCmds) || isRedisError(err) {
 			continue
@@ -1677,6 +1691,12 @@ func (c *ClusterClient) txPipelineReadQueued(
 		return err
 	}
 
+	// To be sure there are no buffered push notifications, we process them before reading the reply
+	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		// Log the error but don't fail the command execution
+		// Push notification processing errors shouldn't break normal Redis operations
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+	}
 	// Parse number of replies.
 	line, err := rd.ReadLine()
 	if err != nil {

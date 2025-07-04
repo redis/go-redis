@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/pushnotif"
 )
 
 // PubSub implements Pub/Sub commands as described in
@@ -438,7 +439,13 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 			ctx := c.getContext()
 			handler := c.pushProcessor.GetHandler(kind)
 			if handler != nil {
-				handled := handler.HandlePushNotification(ctx, reply)
+				// Create handler context for pubsub
+				handlerCtx := &pushnotif.HandlerContext{
+					Client:   c,
+					ConnPool: nil, // Not available in pubsub context
+					Conn:     nil, // Not available in pubsub context
+				}
+				handled := handler.HandlePushNotification(ctx, handlerCtx, reply)
 				if handled {
 					// Return a special message type to indicate it was handled
 					return &PushNotificationMessage{

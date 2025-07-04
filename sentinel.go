@@ -62,9 +62,7 @@ type FailoverOptions struct {
 	Username string
 	Password string
 
-	// PushNotifications enables push notifications for RESP3.
-	// Defaults to true for RESP3 connections.
-	PushNotifications bool
+	// Push notifications are always enabled for RESP3 connections
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -133,7 +131,6 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
 		Password:                     opt.Password,
-		PushNotifications:            opt.PushNotifications,
 		CredentialsProvider:          opt.CredentialsProvider,
 		CredentialsProviderContext:   opt.CredentialsProviderContext,
 		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,

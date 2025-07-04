@@ -75,8 +75,9 @@ func (p *PushNotificationProcessor) UnregisterHandler(pushNotificationName strin
 }
 
 // ProcessPendingNotifications checks for and processes any pending push notifications.
-func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
-	return p.processor.ProcessPendingNotifications(ctx, rd)
+// The handlerCtx provides context about the client, connection pool, and connection.
+func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx *pushnotif.HandlerContext, rd *proto.Reader) error {
+	return p.processor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
 // VoidPushNotificationProcessor discards all push notifications without processing them.
@@ -102,8 +103,8 @@ func (v *VoidPushNotificationProcessor) RegisterHandler(pushNotificationName str
 }
 
 // ProcessPendingNotifications reads and discards any pending push notifications.
-func (v *VoidPushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, rd *proto.Reader) error {
-	return v.processor.ProcessPendingNotifications(ctx, rd)
+func (v *VoidPushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx *pushnotif.HandlerContext, rd *proto.Reader) error {
+	return v.processor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
 // Redis Cluster push notification names

@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/pushnotif"
 )
@@ -78,16 +77,8 @@ func (cn *Conn) RemoteAddr() net.Addr {
 func (cn *Conn) WithReader(
 	ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error,
 ) error {
-	// Process any pending push notifications before executing the read function
-	// This ensures push notifications are handled as soon as they arrive
-	if cn.PushNotificationProcessor != nil {
-		// Type assert to the processor interface
-		if err := cn.PushNotificationProcessor.ProcessPendingNotifications(ctx, cn.rd); err != nil {
-			// Log the error but don't fail the read operation
-			// Push notification processing errors shouldn't break normal Redis operations
-			internal.Logger.Printf(ctx, "push: error processing pending notifications in WithReader: %v", err)
-		}
-	}
+	// Push notification processing is now handled by the client before calling WithReader
+	// This ensures proper context (client, connection pool, connection) is available to handlers
 
 	if timeout >= 0 {
 		if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {

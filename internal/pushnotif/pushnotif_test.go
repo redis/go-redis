@@ -25,8 +25,10 @@ func NewTestHandler(name string, returnValue bool) *TestHandler {
 	}
 }
 
-func (h *TestHandler) HandlePushNotification(ctx context.Context, notification []interface{}) bool {
+func (h *TestHandler) HandlePushNotification(ctx context.Context, handlerCtx *HandlerContext, notification []interface{}) bool {
 	h.handled = append(h.handled, notification)
+	// Store the handler context for testing if needed
+	_ = handlerCtx
 	return h.returnValue
 }
 
@@ -131,6 +133,13 @@ func testProcessPendingNotifications(processor *Processor, ctx context.Context, 
 		return nil
 	}
 
+	// Create a test handler context
+	handlerCtx := &HandlerContext{
+		Client:   nil,
+		ConnPool: nil,
+		Conn:     nil,
+	}
+
 	for {
 		// Check if there are push notifications available
 		replyType, err := reader.PeekReplyType()
@@ -175,8 +184,8 @@ func testProcessPendingNotifications(processor *Processor, ctx context.Context, 
 			if notificationType, ok := notification[0].(string); ok {
 				// Get the handler for this notification type
 				if handler := processor.registry.GetHandler(notificationType); handler != nil {
-					// Handle the notification
-					handler.HandlePushNotification(ctx, notification)
+					// Handle the notification with context
+					handler.HandlePushNotification(ctx, handlerCtx, notification)
 				}
 			}
 		}
@@ -420,14 +429,19 @@ func TestProcessor(t *testing.T) {
 		ctx := context.Background()
 
 		// Test with nil reader
-		err := processor.ProcessPendingNotifications(ctx, nil)
+		handlerCtx := &HandlerContext{
+			Client:   nil,
+			ConnPool: nil,
+			Conn:     nil,
+		}
+		err := processor.ProcessPendingNotifications(ctx, handlerCtx, nil)
 		if err != nil {
 			t.Errorf("ProcessPendingNotifications with nil reader should not error, got: %v", err)
 		}
 
 		// Test with empty reader (no buffered data)
 		reader := proto.NewReader(strings.NewReader(""))
-		err = processor.ProcessPendingNotifications(ctx, reader)
+		err = processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
 			t.Errorf("ProcessPendingNotifications with empty reader should not error, got: %v", err)
 		}
@@ -533,21 +547,21 @@ func TestProcessor(t *testing.T) {
 
 		// Test the actual ProcessPendingNotifications method with real proto.Reader
 		// Test with nil reader
-		err = processor.ProcessPendingNotifications(ctx, nil)
+		err = processor.ProcessPendingNotifications(ctx, handlerCtx, nil)
 		if err != nil {
 			t.Errorf("ProcessPendingNotifications with nil reader should not error, got: %v", err)
 		}
 
 		// Test with empty reader (no buffered data)
 		protoReader := proto.NewReader(strings.NewReader(""))
-		err = processor.ProcessPendingNotifications(ctx, protoReader)
+		err = processor.ProcessPendingNotifications(ctx, handlerCtx, protoReader)
 		if err != nil {
 			t.Errorf("ProcessPendingNotifications with empty reader should not error, got: %v", err)
 		}
 
 		// Test with reader that has some data but not push notifications
 		protoReader = proto.NewReader(strings.NewReader("+OK\r\n"))
-		err = processor.ProcessPendingNotifications(ctx, protoReader)
+		err = processor.ProcessPendingNotifications(ctx, handlerCtx, protoReader)
 		if err != nil {
 			t.Errorf("ProcessPendingNotifications with non-push data should not error, got: %v", err)
 		}
@@ -637,22 +651,27 @@ func TestVoidProcessor(t *testing.T) {
 	t.Run("ProcessPendingNotifications", func(t *testing.T) {
 		processor := NewVoidProcessor()
 		ctx := context.Background()
+		handlerCtx := &HandlerContext{
+			Client:   nil,
+			ConnPool: nil,
+			Conn:     nil,
+		}
 
 		// VoidProcessor should always succeed and do nothing
-		err := processor.ProcessPendingNotifications(ctx, nil)
+		err := processor.ProcessPendingNotifications(ctx, handlerCtx, nil)
 		if err != nil {
 			t.Errorf("VoidProcessor ProcessPendingNotifications should never error, got: %v", err)
 		}
 
 		// Test with various readers
 		reader := proto.NewReader(strings.NewReader(""))
-		err = processor.ProcessPendingNotifications(ctx, reader)
+		err = processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
 			t.Errorf("VoidProcessor ProcessPendingNotifications should never error, got: %v", err)
 		}
 
 		reader = proto.NewReader(strings.NewReader("some data"))
-		err = processor.ProcessPendingNotifications(ctx, reader)
+		err = processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
 			t.Errorf("VoidProcessor ProcessPendingNotifications should never error, got: %v", err)
 		}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/pushnotif"
 )
 
@@ -237,11 +238,6 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	cn := NewConn(netConn)
 	cn.pooled = pooled
 
-	// Set push notification processor if available
-	if p.cfg.PushNotificationProcessor != nil {
-		cn.PushNotificationProcessor = p.cfg.PushNotificationProcessor
-	}
-
 	return cn, nil
 }
 
@@ -392,23 +388,18 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	if cn.rd.Buffered() > 0 {
 		// Check if this might be push notification data
-		if cn.PushNotificationProcessor != nil && p.cfg.Protocol == 3 {
-			// Only process for RESP3 clients (push notifications only available in RESP3)
-			err := cn.PushNotificationProcessor.ProcessPendingNotifications(ctx, cn.rd)
-			if err != nil {
-				internal.Logger.Printf(ctx, "push: error processing pending notifications: %v", err)
-			}
-			// Check again if there's still unread data after processing push notifications
-			if cn.rd.Buffered() > 0 {
-				internal.Logger.Printf(ctx, "Conn has unread data after processing push notifications")
-				p.Remove(ctx, cn, BadConnError{})
+		if p.cfg.Protocol == 3 {
+			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
+				// For push notifications, we allow some buffered data
+				// The client will process these notifications before using the connection
+				internal.Logger.Printf(ctx, "push: connection has buffered data, likely push notifications - will be processed by client")
 				return
 			}
-		} else {
-			internal.Logger.Printf(ctx, "Conn has unread data")
-			p.Remove(ctx, cn, BadConnError{})
-			return
 		}
+		// For non-RESP3 or data that is not a push notification, buffered data is unexpected
+		internal.Logger.Printf(ctx, "Conn has unread data")
+		p.Remove(ctx, cn, BadConnError{})
+		return
 	}
 
 	if !cn.pooled {
@@ -554,19 +545,17 @@ func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 
 	// Check connection health, but be aware of push notifications
 	if err := connCheck(cn.netConn); err != nil {
-		// If there's unexpected data and we have push notification support,
-		// it might be push notifications (only for RESP3)
-		if err == errUnexpectedRead && cn.PushNotificationProcessor != nil && p.cfg.Protocol == 3 {
-			// Try to process any pending push notifications (only for RESP3)
-			ctx := context.Background()
-			if procErr := cn.PushNotificationProcessor.ProcessPendingNotifications(ctx, cn.rd); procErr != nil {
-				internal.Logger.Printf(ctx, "push: error processing pending notifications during health check: %v", procErr)
-				return false
+		// If there's unexpected data, it might be push notifications (RESP3)
+		// However, push notification processing is now handled by the client
+		// before WithReader to ensure proper context is available to handlers
+		if err == errUnexpectedRead && p.cfg.Protocol == 3 {
+			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
+				// For RESP3 connections with push notifications, we allow some buffered data
+				// The client will process these notifications before using the connection
+				internal.Logger.Printf(context.Background(), "push: connection has buffered data, likely push notifications - will be processed by client")
+				return true // Connection is healthy, client will handle notifications
 			}
-			// Check again after processing push notifications
-			if connCheck(cn.netConn) != nil {
-				return false
-			}
+			return false // Unexpected data, not push notifications, connection is unhealthy
 		} else {
 			return false
 		}

@@ -217,19 +217,11 @@ type Options struct {
 	// When unstable mode is enabled, the client will use RESP3 protocol and only be able to use RawResult
 	UnstableResp3 bool
 
-	// PushNotifications enables general push notification processing.
-	// When enabled, the client will process RESP3 push notifications and
-	// route them to registered handlers.
-	//
-	// For RESP3 connections (Protocol: 3), push notifications are always enabled
-	// and cannot be disabled. To avoid push notifications, use Protocol: 2 (RESP2).
-	// For RESP2 connections, push notifications are not available.
-	//
-	// default: always enabled for RESP3, disabled for RESP2
-	PushNotifications bool
+	// Push notifications are always enabled for RESP3 connections (Protocol: 3)
+	// and are not available for RESP2 connections. No configuration option is needed.
 
 	// PushNotificationProcessor is the processor for handling push notifications.
-	// If nil, a default processor will be created when PushNotifications is enabled.
+	// If nil, a default processor will be created for RESP3 connections.
 	PushNotificationProcessor PushNotificationProcessorInterface
 }
 
