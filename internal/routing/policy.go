@@ -129,3 +129,7 @@ type CommandPolicy struct {
 	// e.g nondeterministic_output, nondeterministic_output_order.
 	Tips map[string]string
 }
+
+func (p *CommandPolicy) CanBeUsedInPipeline() bool {
+	return p.Request != ReqAllNodes && p.Request != ReqAllShards && p.Request != ReqMultiShard
+}
