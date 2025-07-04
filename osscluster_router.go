@@ -166,8 +166,85 @@ func (c *ClusterClient) createSlotSpecificCommand(ctx context.Context, originalC
 		newArgs = append(newArgs, key)
 	}
 
-	// Create new command with the filtered keys
-	return NewCmd(ctx, newArgs...)
+	// Create a new command of the same type using the helper function
+	return createCommandByType(ctx, originalCmd.GetCmdType(), newArgs...)
+}
+
+// createCommandByType creates a new command of the specified type with the given arguments
+func createCommandByType(ctx context.Context, cmdType CmdType, args ...interface{}) Cmder {
+	switch cmdType {
+	case CmdTypeString:
+		return NewStringCmd(ctx, args...)
+	case CmdTypeInt:
+		return NewIntCmd(ctx, args...)
+	case CmdTypeBool:
+		return NewBoolCmd(ctx, args...)
+	case CmdTypeFloat:
+		return NewFloatCmd(ctx, args...)
+	case CmdTypeStringSlice:
+		return NewStringSliceCmd(ctx, args...)
+	case CmdTypeIntSlice:
+		return NewIntSliceCmd(ctx, args...)
+	case CmdTypeFloatSlice:
+		return NewFloatSliceCmd(ctx, args...)
+	case CmdTypeBoolSlice:
+		return NewBoolSliceCmd(ctx, args...)
+	case CmdTypeStatus:
+		return NewStatusCmd(ctx, args...)
+	case CmdTypeTime:
+		return NewTimeCmd(ctx, args...)
+	case CmdTypeMapStringString:
+		return NewMapStringStringCmd(ctx, args...)
+	case CmdTypeMapStringInt:
+		return NewMapStringIntCmd(ctx, args...)
+	case CmdTypeMapStringInterface:
+		return NewMapStringInterfaceCmd(ctx, args...)
+	case CmdTypeMapStringInterfaceSlice:
+		return NewMapStringInterfaceSliceCmd(ctx, args...)
+	case CmdTypeSlice:
+		return NewSliceCmd(ctx, args...)
+	case CmdTypeStringStructMap:
+		return NewStringStructMapCmd(ctx, args...)
+	case CmdTypeXMessageSlice:
+		return NewXMessageSliceCmd(ctx, args...)
+	case CmdTypeXStreamSlice:
+		return NewXStreamSliceCmd(ctx, args...)
+	case CmdTypeXPending:
+		return NewXPendingCmd(ctx, args...)
+	case CmdTypeXPendingExt:
+		return NewXPendingExtCmd(ctx, args...)
+	case CmdTypeXAutoClaim:
+		return NewXAutoClaimCmd(ctx, args...)
+	case CmdTypeXAutoClaimJustID:
+		return NewXAutoClaimJustIDCmd(ctx, args...)
+	case CmdTypeXInfoStreamFull:
+		return NewXInfoStreamFullCmd(ctx, args...)
+	case CmdTypeZSlice:
+		return NewZSliceCmd(ctx, args...)
+	case CmdTypeZWithKey:
+		return NewZWithKeyCmd(ctx, args...)
+	case CmdTypeClusterSlots:
+		return NewClusterSlotsCmd(ctx, args...)
+	case CmdTypeGeoPos:
+		return NewGeoPosCmd(ctx, args...)
+	case CmdTypeCommandsInfo:
+		return NewCommandsInfoCmd(ctx, args...)
+	case CmdTypeSlowLog:
+		return NewSlowLogCmd(ctx, args...)
+	case CmdTypeKeyValues:
+		return NewKeyValuesCmd(ctx, args...)
+	case CmdTypeZSliceWithKey:
+		return NewZSliceWithKeyCmd(ctx, args...)
+	case CmdTypeFunctionList:
+		return NewFunctionListCmd(ctx, args...)
+	case CmdTypeFunctionStats:
+		return NewFunctionStatsCmd(ctx, args...)
+	case CmdTypeKeyFlags:
+		return NewKeyFlagsCmd(ctx, args...)
+	case CmdTypeDuration:
+		return NewDurationCmd(ctx, time.Second, args...)
+	}
+	return NewCmd(ctx, args...)
 }
 
 // executeSpecialCommand handles commands with special routing requirements
@@ -283,7 +360,7 @@ func (c *ClusterClient) aggregateKeyedResponses(ctx context.Context, cmd Cmder, 
 
 	// Add results with keys
 	for key, shardCmd := range keyedResults {
-		value := routing.ExtractCommandValue(shardCmd)
+		value := ExtractCommandValue(shardCmd)
 		if keyedAgg, ok := aggregator.(*routing.DefaultKeyedAggregator); ok {
 			if err := keyedAgg.AddWithKey(key, value, shardCmd.Err()); err != nil {
 				return err
@@ -310,7 +387,7 @@ func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *rout
 			cmd.SetErr(err)
 			return err
 		}
-		value := routing.ExtractCommandValue(shardCmd)
+		value := ExtractCommandValue(shardCmd)
 		return c.setCommandValue(cmd, value)
 	}
 
@@ -318,7 +395,7 @@ func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *rout
 
 	// Add all results to aggregator
 	for _, shardCmd := range cmds {
-		value := routing.ExtractCommandValue(shardCmd)
+		value := ExtractCommandValue(shardCmd)
 		if err := aggregator.Add(value, shardCmd.Err()); err != nil {
 			return err
 		}

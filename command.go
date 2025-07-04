@@ -18,7 +18,6 @@ import (
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
-<<<<<<< HEAD
 // keylessCommands contains Redis commands that have empty key specifications (9th slot empty)
 // Only includes core Redis commands, excludes FT.*, ts.*, timeseries.*, search.* and subcommands
 var keylessCommands = map[string]struct{}{
@@ -67,79 +66,90 @@ var keylessCommands = map[string]struct{}{
 	"unsubscribe":  {},
 	"unwatch":      {},
 }
-=======
 type CmdType = routing.CmdType
 
+// CmdTyper interface for getting command type
+type CmdTyper interface {
+	GetCmdType() CmdType
+}
+
+// CmdTypeGetter interface for getting command type without circular imports
+type CmdTypeGetter interface {
+	GetCmdType() CmdType
+}
+
+type CmdType uint8
+
 const (
-	CmdTypeGeneric                 = routing.CmdTypeGeneric
-	CmdTypeString                  = routing.CmdTypeString
-	CmdTypeInt                     = routing.CmdTypeInt
-	CmdTypeBool                    = routing.CmdTypeBool
-	CmdTypeFloat                   = routing.CmdTypeFloat
-	CmdTypeStringSlice             = routing.CmdTypeStringSlice
-	CmdTypeIntSlice                = routing.CmdTypeIntSlice
-	CmdTypeFloatSlice              = routing.CmdTypeFloatSlice
-	CmdTypeBoolSlice               = routing.CmdTypeBoolSlice
-	CmdTypeMapStringString         = routing.CmdTypeMapStringString
-	CmdTypeMapStringInt            = routing.CmdTypeMapStringInt
-	CmdTypeMapStringInterface      = routing.CmdTypeMapStringInterface
-	CmdTypeMapStringInterfaceSlice = routing.CmdTypeMapStringInterfaceSlice
-	CmdTypeSlice                   = routing.CmdTypeSlice
-	CmdTypeStatus                  = routing.CmdTypeStatus
-	CmdTypeDuration                = routing.CmdTypeDuration
-	CmdTypeTime                    = routing.CmdTypeTime
-	CmdTypeKeyValueSlice           = routing.CmdTypeKeyValueSlice
-	CmdTypeStringStructMap         = routing.CmdTypeStringStructMap
-	CmdTypeXMessageSlice           = routing.CmdTypeXMessageSlice
-	CmdTypeXStreamSlice            = routing.CmdTypeXStreamSlice
-	CmdTypeXPending                = routing.CmdTypeXPending
-	CmdTypeXPendingExt             = routing.CmdTypeXPendingExt
-	CmdTypeXAutoClaim              = routing.CmdTypeXAutoClaim
-	CmdTypeXAutoClaimJustID        = routing.CmdTypeXAutoClaimJustID
-	CmdTypeXInfoConsumers          = routing.CmdTypeXInfoConsumers
-	CmdTypeXInfoGroups             = routing.CmdTypeXInfoGroups
-	CmdTypeXInfoStream             = routing.CmdTypeXInfoStream
-	CmdTypeXInfoStreamFull         = routing.CmdTypeXInfoStreamFull
-	CmdTypeZSlice                  = routing.CmdTypeZSlice
-	CmdTypeZWithKey                = routing.CmdTypeZWithKey
-	CmdTypeScan                    = routing.CmdTypeScan
-	CmdTypeClusterSlots            = routing.CmdTypeClusterSlots
-	CmdTypeGeoLocation             = routing.CmdTypeGeoLocation
-	CmdTypeGeoSearchLocation       = routing.CmdTypeGeoSearchLocation
-	CmdTypeGeoPos                  = routing.CmdTypeGeoPos
-	CmdTypeCommandsInfo            = routing.CmdTypeCommandsInfo
-	CmdTypeSlowLog                 = routing.CmdTypeSlowLog
-	CmdTypeMapStringStringSlice    = routing.CmdTypeMapStringStringSlice
-	CmdTypeMapMapStringInterface   = routing.CmdTypeMapMapStringInterface
-	CmdTypeKeyValues               = routing.CmdTypeKeyValues
-	CmdTypeZSliceWithKey           = routing.CmdTypeZSliceWithKey
-	CmdTypeFunctionList            = routing.CmdTypeFunctionList
-	CmdTypeFunctionStats           = routing.CmdTypeFunctionStats
-	CmdTypeLCS                     = routing.CmdTypeLCS
-	CmdTypeKeyFlags                = routing.CmdTypeKeyFlags
-	CmdTypeClusterLinks            = routing.CmdTypeClusterLinks
-	CmdTypeClusterShards           = routing.CmdTypeClusterShards
-	CmdTypeRankWithScore           = routing.CmdTypeRankWithScore
-	CmdTypeClientInfo              = routing.CmdTypeClientInfo
-	CmdTypeACLLog                  = routing.CmdTypeACLLog
-	CmdTypeInfo                    = routing.CmdTypeInfo
-	CmdTypeMonitor                 = routing.CmdTypeMonitor
-	CmdTypeJSON                    = routing.CmdTypeJSON
-	CmdTypeJSONSlice               = routing.CmdTypeJSONSlice
-	CmdTypeIntPointerSlice         = routing.CmdTypeIntPointerSlice
-	CmdTypeScanDump                = routing.CmdTypeScanDump
-	CmdTypeBFInfo                  = routing.CmdTypeBFInfo
-	CmdTypeCFInfo                  = routing.CmdTypeCFInfo
-	CmdTypeCMSInfo                 = routing.CmdTypeCMSInfo
-	CmdTypeTopKInfo                = routing.CmdTypeTopKInfo
-	CmdTypeTDigestInfo             = routing.CmdTypeTDigestInfo
-	CmdTypeFTSynDump               = routing.CmdTypeFTSynDump
-	CmdTypeAggregate               = routing.CmdTypeAggregate
-	CmdTypeFTInfo                  = routing.CmdTypeFTInfo
-	CmdTypeFTSpellCheck            = routing.CmdTypeFTSpellCheck
-	CmdTypeFTSearch                = routing.CmdTypeFTSearch
-	CmdTypeTSTimestampValue        = routing.CmdTypeTSTimestampValue
-	CmdTypeTSTimestampValueSlice   = routing.CmdTypeTSTimestampValueSlice
+	CmdTypeGeneric CmdType = iota
+	CmdTypeString
+	CmdTypeInt
+	CmdTypeBool
+	CmdTypeFloat
+	CmdTypeStringSlice
+	CmdTypeIntSlice
+	CmdTypeFloatSlice
+	CmdTypeBoolSlice
+	CmdTypeMapStringString
+	CmdTypeMapStringInt
+	CmdTypeMapStringInterface
+	CmdTypeMapStringInterfaceSlice
+	CmdTypeSlice
+	CmdTypeStatus
+	CmdTypeDuration
+	CmdTypeTime
+	CmdTypeKeyValueSlice
+	CmdTypeStringStructMap
+	CmdTypeXMessageSlice
+	CmdTypeXStreamSlice
+	CmdTypeXPending
+	CmdTypeXPendingExt
+	CmdTypeXAutoClaim
+	CmdTypeXAutoClaimJustID
+	CmdTypeXInfoConsumers
+	CmdTypeXInfoGroups
+	CmdTypeXInfoStream
+	CmdTypeXInfoStreamFull
+	CmdTypeZSlice
+	CmdTypeZWithKey
+	CmdTypeScan
+	CmdTypeClusterSlots
+	CmdTypeGeoLocation
+	CmdTypeGeoSearchLocation
+	CmdTypeGeoPos
+	CmdTypeCommandsInfo
+	CmdTypeSlowLog
+	CmdTypeMapStringStringSlice
+	CmdTypeMapMapStringInterface
+	CmdTypeKeyValues
+	CmdTypeZSliceWithKey
+	CmdTypeFunctionList
+	CmdTypeFunctionStats
+	CmdTypeLCS
+	CmdTypeKeyFlags
+	CmdTypeClusterLinks
+	CmdTypeClusterShards
+	CmdTypeRankWithScore
+	CmdTypeClientInfo
+	CmdTypeACLLog
+	CmdTypeInfo
+	CmdTypeMonitor
+	CmdTypeJSON
+	CmdTypeJSONSlice
+	CmdTypeIntPointerSlice
+	CmdTypeScanDump
+	CmdTypeBFInfo
+	CmdTypeCFInfo
+	CmdTypeCMSInfo
+	CmdTypeTopKInfo
+	CmdTypeTDigestInfo
+	CmdTypeFTSynDump
+	CmdTypeAggregate
+	CmdTypeFTInfo
+	CmdTypeFTSpellCheck
+	CmdTypeFTSearch
+	CmdTypeTSTimestampValue
+	CmdTypeTSTimestampValueSlice
 )
 >>>>>>> b6633bf9 (centralize cluster command routing in osscluster_router.go and refactor osscluster.go (#6))
 
@@ -6943,6 +6953,289 @@ func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
 		}
 		cmd.val[i].Score = score
 	}
+
+	return nil
+}
+// ExtractCommandValue extracts the value from a command result using the fast enum-based approach
+func ExtractCommandValue(cmd interface{}) interface{} {
+	// First try to get the command type using the interface
+	if cmdTypeGetter, ok := cmd.(CmdTypeGetter); ok {
+		cmdType := cmdTypeGetter.GetCmdType()
+
+		// Use fast type-based extraction
+		switch cmdType {
+		case CmdTypeString:
+			if stringCmd, ok := cmd.(interface{ Val() string }); ok {
+				return stringCmd.Val()
+			}
+		case CmdTypeInt:
+			if intCmd, ok := cmd.(interface{ Val() int64 }); ok {
+				return intCmd.Val()
+			}
+		case CmdTypeBool:
+			if boolCmd, ok := cmd.(interface{ Val() bool }); ok {
+				return boolCmd.Val()
+			}
+		case CmdTypeFloat:
+			if floatCmd, ok := cmd.(interface{ Val() float64 }); ok {
+				return floatCmd.Val()
+			}
+		case CmdTypeStatus:
+			if statusCmd, ok := cmd.(interface{ Val() string }); ok {
+				return statusCmd.Val()
+			}
+		case CmdTypeDuration:
+			if durationCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return durationCmd.Val()
+			}
+		case CmdTypeTime:
+			if timeCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return timeCmd.Val()
+			}
+		case CmdTypeStringSlice:
+			if stringSliceCmd, ok := cmd.(interface{ Val() []string }); ok {
+				return stringSliceCmd.Val()
+			}
+		case CmdTypeIntSlice:
+			if intSliceCmd, ok := cmd.(interface{ Val() []int64 }); ok {
+				return intSliceCmd.Val()
+			}
+		case CmdTypeBoolSlice:
+			if boolSliceCmd, ok := cmd.(interface{ Val() []bool }); ok {
+				return boolSliceCmd.Val()
+			}
+		case CmdTypeFloatSlice:
+			if floatSliceCmd, ok := cmd.(interface{ Val() []float64 }); ok {
+				return floatSliceCmd.Val()
+			}
+		case CmdTypeMapStringString:
+			if mapCmd, ok := cmd.(interface{ Val() map[string]string }); ok {
+				return mapCmd.Val()
+			}
+		case CmdTypeMapStringInt:
+			if mapCmd, ok := cmd.(interface{ Val() map[string]int64 }); ok {
+				return mapCmd.Val()
+			}
+		case CmdTypeMapStringInterfaceSlice:
+			if mapCmd, ok := cmd.(interface {
+				Val() map[string][]interface{}
+			}); ok {
+				return mapCmd.Val()
+			}
+		case CmdTypeMapStringInterface:
+			if mapCmd, ok := cmd.(interface{ Val() map[string]interface{} }); ok {
+				return mapCmd.Val()
+			}
+		case CmdTypeMapStringStringSlice:
+			if mapCmd, ok := cmd.(interface{ Val() map[string][]string }); ok {
+				return mapCmd.Val()
+			}
+		case CmdTypeMapMapStringInterface:
+			if mapCmd, ok := cmd.(interface {
+				Val() map[string][]interface{}
+			}); ok {
+				return mapCmd.Val()
+			}
+		case CmdTypeStringStructMap:
+			if mapCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return mapCmd.Val()
+			}
+		case CmdTypeXMessageSlice:
+			if xMsgCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return xMsgCmd.Val()
+			}
+		case CmdTypeXStreamSlice:
+			if xStreamCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return xStreamCmd.Val()
+			}
+		case CmdTypeXPending:
+			if xPendingCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return xPendingCmd.Val()
+			}
+		case CmdTypeXPendingExt:
+			if xPendingExtCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return xPendingExtCmd.Val()
+			}
+		case CmdTypeXAutoClaim:
+			if xAutoClaimCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return xAutoClaimCmd.Val()
+			}
+		case CmdTypeXAutoClaimJustID:
+			if xAutoClaimJustIDCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return xAutoClaimJustIDCmd.Val()
+			}
+		case CmdTypeXInfoConsumers:
+			if xInfoConsumersCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return xInfoConsumersCmd.Val()
+			}
+		case CmdTypeXInfoGroups:
+			if xInfoGroupsCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return xInfoGroupsCmd.Val()
+			}
+		case CmdTypeXInfoStream:
+			if xInfoStreamCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return xInfoStreamCmd.Val()
+			}
+		case CmdTypeXInfoStreamFull:
+			if xInfoStreamFullCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return xInfoStreamFullCmd.Val()
+			}
+		case CmdTypeZSlice:
+			if zSliceCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return zSliceCmd.Val()
+			}
+		case CmdTypeZWithKey:
+			if zWithKeyCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return zWithKeyCmd.Val()
+			}
+		case CmdTypeScan:
+			if scanCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return scanCmd.Val()
+			}
+		case CmdTypeClusterSlots:
+			if clusterSlotsCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return clusterSlotsCmd.Val()
+			}
+		case CmdTypeGeoSearchLocation:
+			if geoSearchLocationCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return geoSearchLocationCmd.Val()
+			}
+		case CmdTypeGeoPos:
+			if geoPosCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return geoPosCmd.Val()
+			}
+		case CmdTypeCommandsInfo:
+			if commandsInfoCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return commandsInfoCmd.Val()
+			}
+		case CmdTypeSlowLog:
+			if slowLogCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return slowLogCmd.Val()
+			}
+
+		case CmdTypeKeyValues:
+			if keyValuesCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return keyValuesCmd.Val()
+			}
+		case CmdTypeZSliceWithKey:
+			if zSliceWithKeyCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return zSliceWithKeyCmd.Val()
+			}
+		case CmdTypeFunctionList:
+			if functionListCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return functionListCmd.Val()
+			}
+		case CmdTypeFunctionStats:
+			if functionStatsCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return functionStatsCmd.Val()
+			}
+		case CmdTypeLCS:
+			if lcsCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return lcsCmd.Val()
+			}
+		case CmdTypeKeyFlags:
+			if keyFlagsCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return keyFlagsCmd.Val()
+			}
+		case CmdTypeClusterLinks:
+			if clusterLinksCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return clusterLinksCmd.Val()
+			}
+		case CmdTypeClusterShards:
+			if clusterShardsCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return clusterShardsCmd.Val()
+			}
+		case CmdTypeRankWithScore:
+			if rankWithScoreCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return rankWithScoreCmd.Val()
+			}
+		case CmdTypeClientInfo:
+			if clientInfoCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return clientInfoCmd.Val()
+			}
+		case CmdTypeACLLog:
+			if aclLogCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return aclLogCmd.Val()
+			}
+		case CmdTypeInfo:
+			if infoCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return infoCmd.Val()
+			}
+		case CmdTypeMonitor:
+			if monitorCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return monitorCmd.Val()
+			}
+		case CmdTypeJSON:
+			if jsonCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return jsonCmd.Val()
+			}
+		case CmdTypeJSONSlice:
+			if jsonSliceCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return jsonSliceCmd.Val()
+			}
+		case CmdTypeIntPointerSlice:
+			if intPointerSliceCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return intPointerSliceCmd.Val()
+			}
+		case CmdTypeScanDump:
+			if scanDumpCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return scanDumpCmd.Val()
+			}
+		case CmdTypeBFInfo:
+			if bfInfoCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return bfInfoCmd.Val()
+			}
+		case CmdTypeCFInfo:
+			if cfInfoCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return cfInfoCmd.Val()
+			}
+		case CmdTypeCMSInfo:
+			if cmsInfoCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return cmsInfoCmd.Val()
+			}
+		case CmdTypeTopKInfo:
+			if topKInfoCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return topKInfoCmd.Val()
+			}
+		case CmdTypeTDigestInfo:
+			if tDigestInfoCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return tDigestInfoCmd.Val()
+			}
+		case CmdTypeFTSearch:
+			if ftSearchCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return ftSearchCmd.Val()
+			}
+		case CmdTypeFTInfo:
+			if ftInfoCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return ftInfoCmd.Val()
+			}
+		case CmdTypeFTSpellCheck:
+			if ftSpellCheckCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return ftSpellCheckCmd.Val()
+			}
+		case CmdTypeFTSynDump:
+			if ftSynDumpCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return ftSynDumpCmd.Val()
+			}
+		case CmdTypeAggregate:
+			if aggregateCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return aggregateCmd.Val()
+			}
+		case CmdTypeTSTimestampValue:
+			if tsTimestampValueCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return tsTimestampValueCmd.Val()
+			}
+		case CmdTypeTSTimestampValueSlice:
+			if tsTimestampValueSliceCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return tsTimestampValueSliceCmd.Val()
+			}
+		default:
+			// For unknown command types, return nil
+			return nil
+		}
+	}
+
+	// If we can't get the command type, return nil
 	return nil
 }
 

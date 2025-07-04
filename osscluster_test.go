@@ -1278,20 +1278,28 @@ var _ = FDescribe("ClusterClient", func() {
 				processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 					return func(ctx context.Context, cmds []redis.Cmder) error {
 						Expect(cmds).To(HaveLen(1))
-						Expect(cmds[0].String()).To(Equal("ping: "))
-						mu.Lock()
-						stack = append(stack, "cluster.BeforeProcessPipeline")
-						mu.Unlock()
+						cmdStr := cmds[0].String()
 
-						err := hook(ctx, cmds)
+						// Handle SET command (should succeed)
+						if cmdStr == "set pipeline_test_key pipeline_test_value: " {
+							mu.Lock()
+							stack = append(stack, "cluster.BeforeProcessPipeline")
+							mu.Unlock()
 
-						Expect(cmds).To(HaveLen(1))
-						Expect(cmds[0].String()).To(Equal("ping: PONG"))
-						mu.Lock()
-						stack = append(stack, "cluster.AfterProcessPipeline")
-						mu.Unlock()
+							err := hook(ctx, cmds)
 
-						return err
+							Expect(cmds).To(HaveLen(1))
+							Expect(cmds[0].String()).To(Equal("set pipeline_test_key pipeline_test_value: OK"))
+							mu.Lock()
+							stack = append(stack, "cluster.AfterProcessPipeline")
+							mu.Unlock()
+
+							return err
+						}
+
+						// For other commands (like ping), just pass through without expectations
+						// since they might fail before reaching this point
+						return hook(ctx, cmds)
 					}
 				},
 			})
@@ -1301,20 +1309,27 @@ var _ = FDescribe("ClusterClient", func() {
 					processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 						return func(ctx context.Context, cmds []redis.Cmder) error {
 							Expect(cmds).To(HaveLen(1))
-							Expect(cmds[0].String()).To(Equal("ping: "))
-							mu.Lock()
-							stack = append(stack, "shard.BeforeProcessPipeline")
-							mu.Unlock()
+							cmdStr := cmds[0].String()
 
-							err := hook(ctx, cmds)
+							// Handle SET command (should succeed)
+							if cmdStr == "set pipeline_test_key pipeline_test_value: " {
+								mu.Lock()
+								stack = append(stack, "shard.BeforeProcessPipeline")
+								mu.Unlock()
 
-							Expect(cmds).To(HaveLen(1))
-							Expect(cmds[0].String()).To(Equal("ping: PONG"))
-							mu.Lock()
-							stack = append(stack, "shard.AfterProcessPipeline")
-							mu.Unlock()
+								err := hook(ctx, cmds)
 
-							return err
+								Expect(cmds).To(HaveLen(1))
+								Expect(cmds[0].String()).To(Equal("set pipeline_test_key pipeline_test_value: OK"))
+								mu.Lock()
+								stack = append(stack, "shard.AfterProcessPipeline")
+								mu.Unlock()
+
+								return err
+							}
+
+							// For other commands (like ping), just pass through without expectations
+							return hook(ctx, cmds)
 						}
 					},
 				})
@@ -1322,7 +1337,7 @@ var _ = FDescribe("ClusterClient", func() {
 			})
 
 			_, err = client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Ping(ctx)
+				pipe.Set(ctx, "pipeline_test_key", "pipeline_test_value", 0)
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1338,6 +1353,16 @@ var _ = FDescribe("ClusterClient", func() {
 				"shard.AfterProcessPipeline",
 				"cluster.AfterProcessPipeline",
 			}))
+		})
+
+		It("rejects ping command in pipeline", func() {
+			// Test that ping command fails in pipeline as expected
+			_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Ping(ctx)
+				return nil
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("redis: cannot pipeline command \"ping\" with request policy ReqAllNodes/ReqAllShards/ReqMultiShard"))
 		})
 
 		It("supports TxPipeline hook", func() {

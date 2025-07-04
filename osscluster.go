@@ -1421,7 +1421,9 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 		for _, cmd := range cmds {
 			policy := c.getCommandPolicy(ctx, cmd)
 			if policy != nil && !policy.CanBeUsedInPipeline() {
-				return fmt.Errorf("redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard", cmd.Name())
+				return fmt.Errorf(
+					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
+				)
 			}
 			slot := c.cmdSlot(ctx, cmd)
 			node, err := c.slotReadOnlyNode(state, slot)
@@ -1436,7 +1438,9 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	for _, cmd := range cmds {
 		policy := c.getCommandPolicy(ctx, cmd)
 		if policy != nil && !policy.CanBeUsedInPipeline() {
-			return fmt.Errorf("redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard", cmd.Name())
+			return fmt.Errorf(
+				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
+			)
 		}
 		slot := c.cmdSlot(ctx, cmd)
 		node, err := state.slotMasterNode(slot)
