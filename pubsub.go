@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // PubSub implements Pub/Sub commands as described in
@@ -40,7 +41,7 @@ type PubSub struct {
 	allCh  *channel
 
 	// Push notification processor for handling generic push notifications
-	pushProcessor PushNotificationProcessorInterface
+	pushProcessor push.NotificationProcessor
 }
 
 func (c *PubSub) init() {
@@ -551,13 +552,12 @@ func (c *PubSub) processPendingPushNotificationWithReader(ctx context.Context, c
 	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
-func (c *PubSub) pushNotificationHandlerContext(cn *pool.Conn) PushNotificationHandlerContext {
+func (c *PubSub) pushNotificationHandlerContext(cn *pool.Conn) push.NotificationHandlerContext {
 	// PubSub doesn't have a client or connection pool, so we pass nil for those
 	// PubSub connections are blocking
-	return NewPushNotificationHandlerContext(nil, nil, c, cn, true)
+	return push.HandlerContext{}
+	return push.NewNotificationHandlerContext(nil, nil, c, cn, true)
 }
-
-
 
 type ChannelOption func(c *channel)
 

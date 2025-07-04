@@ -15,6 +15,7 @@ import (
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // Limiter is the interface of a rate limiter or a circuit breaker.
@@ -222,7 +223,7 @@ type Options struct {
 
 	// PushNotificationProcessor is the processor for handling push notifications.
 	// If nil, a default processor will be created for RESP3 connections.
-	PushNotificationProcessor PushNotificationProcessorInterface
+	PushNotificationProcessor push.NotificationProcessor
 }
 
 func (opt *Options) init() {

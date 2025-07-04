@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // Scanner internal/hscan.Scanner exposed interface.
@@ -209,7 +210,7 @@ type baseClient struct {
 	onClose func() error // hook called when client is closed
 
 	// Push notification processing
-	pushProcessor PushNotificationProcessorInterface
+	pushProcessor push.NotificationProcessor
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -880,7 +881,7 @@ func (c *Client) Options() *Options {
 
 // initializePushProcessor initializes the push notification processor for any client type.
 // This is a shared helper to avoid duplication across NewClient, NewFailoverClient, and NewSentinelClient.
-func initializePushProcessor(opt *Options) PushNotificationProcessorInterface {
+func initializePushProcessor(opt *Options) push.NotificationProcessor {
 	// Always use custom processor if provided
 	if opt.PushNotificationProcessor != nil {
 		return opt.PushNotificationProcessor
@@ -899,18 +900,13 @@ func initializePushProcessor(opt *Options) PushNotificationProcessorInterface {
 // RegisterPushNotificationHandler registers a handler for a specific push notification name.
 // Returns an error if a handler is already registered for this push notification name.
 // If protected is true, the handler cannot be unregistered.
-func (c *Client) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+func (c *Client) RegisterPushNotificationHandler(pushNotificationName string, handler push.NotificationHandler, protected bool) error {
 	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
-}
-
-// GetPushNotificationProcessor returns the push notification processor.
-func (c *Client) GetPushNotificationProcessor() PushNotificationProcessorInterface {
-	return c.pushProcessor
 }
 
 // GetPushNotificationHandler returns the handler for a specific push notification name.
 // Returns nil if no handler is registered for the given name.
-func (c *Client) GetPushNotificationHandler(pushNotificationName string) PushNotificationHandler {
+func (c *Client) GetPushNotificationHandler(pushNotificationName string) push.NotificationHandler {
 	return c.pushProcessor.GetHandler(pushNotificationName)
 }
 
@@ -1070,13 +1066,8 @@ func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
 // RegisterPushNotificationHandler registers a handler for a specific push notification name.
 // Returns an error if a handler is already registered for this push notification name.
 // If protected is true, the handler cannot be unregistered.
-func (c *Conn) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+func (c *Conn) RegisterPushNotificationHandler(pushNotificationName string, handler push.NotificationHandler, protected bool) error {
 	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
-}
-
-// GetPushNotificationProcessor returns the push notification processor.
-func (c *Conn) GetPushNotificationProcessor() PushNotificationProcessorInterface {
-	return c.pushProcessor
 }
 
 func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
@@ -1138,8 +1129,6 @@ func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Contex
 }
 
 // pushNotificationHandlerContext creates a handler context for push notification processing
-func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) PushNotificationHandlerContext {
-	return NewPushNotificationHandlerContext(c, c.connPool, nil, cn, false)
+func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.NotificationHandlerContext {
+	return push.NewNotificationHandlerContext(c, c.connPool, nil, cn, false)
 }
-
-

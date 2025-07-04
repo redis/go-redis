@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/push"
 )
 
 //------------------------------------------------------------------------------
@@ -511,21 +512,16 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	return c
 }
 
-// GetPushNotificationProcessor returns the push notification processor.
-func (c *SentinelClient) GetPushNotificationProcessor() PushNotificationProcessorInterface {
-	return c.pushProcessor
-}
-
 // GetPushNotificationHandler returns the handler for a specific push notification name.
 // Returns nil if no handler is registered for the given name.
-func (c *SentinelClient) GetPushNotificationHandler(pushNotificationName string) PushNotificationHandler {
+func (c *SentinelClient) GetPushNotificationHandler(pushNotificationName string) push.NotificationHandler {
 	return c.pushProcessor.GetHandler(pushNotificationName)
 }
 
 // RegisterPushNotificationHandler registers a handler for a specific push notification name.
 // Returns an error if a handler is already registered for this push notification name.
 // If protected is true, the handler cannot be unregistered.
-func (c *SentinelClient) RegisterPushNotificationHandler(pushNotificationName string, handler PushNotificationHandler, protected bool) error {
+func (c *SentinelClient) RegisterPushNotificationHandler(pushNotificationName string, handler push.NotificationHandler, protected bool) error {
 	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
