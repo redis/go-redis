@@ -40,7 +40,7 @@ func (p *Processor) UnregisterHandler(pushNotificationName string) error {
 
 // ProcessPendingNotifications checks for and processes any pending push notifications.
 // The handlerCtx provides context about the client, connection pool, and connection.
-func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx *HandlerContext, rd *proto.Reader) error {
+func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx HandlerContext, rd *proto.Reader) error {
 	// Check for nil reader
 	if rd == nil {
 		return nil
@@ -179,7 +179,7 @@ func (v *VoidProcessor) UnregisterHandler(pushNotificationName string) error {
 // ProcessPendingNotifications for VoidProcessor does nothing since push notifications
 // are only available in RESP3 and this processor is used for RESP2 connections.
 // This avoids unnecessary buffer scanning overhead.
-func (v *VoidProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx *HandlerContext, rd *proto.Reader) error {
+func (v *VoidProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx HandlerContext, rd *proto.Reader) error {
 	// VoidProcessor is used for RESP2 connections where push notifications are not available.
 	// Since push notifications only exist in RESP3, we can safely skip all processing
 	// to avoid unnecessary buffer scanning overhead.

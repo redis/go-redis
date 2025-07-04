@@ -10,7 +10,6 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/pushnotif"
 )
 
 var (
@@ -73,10 +72,6 @@ type Options struct {
 	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
-
-	// Push notification processor for connections
-	// This is an interface to avoid circular imports
-	PushNotificationProcessor pushnotif.ProcessorInterface
 
 	// Protocol version for optimization (3 = RESP3 with push notifications, 2 = RESP2 without)
 	Protocol int

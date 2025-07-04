@@ -48,12 +48,6 @@ func (c *PubSub) init() {
 	c.exit = make(chan struct{})
 }
 
-// SetPushNotificationProcessor sets the push notification processor for handling
-// generic push notifications received on this PubSub connection.
-func (c *PubSub) SetPushNotificationProcessor(processor PushNotificationProcessorInterface) {
-	c.pushProcessor = processor
-}
-
 func (c *PubSub) String() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -377,18 +371,6 @@ func (p *Pong) String() string {
 	return "Pong"
 }
 
-// PushNotificationMessage represents a generic push notification received on a PubSub connection.
-type PushNotificationMessage struct {
-	// Command is the push notification command (e.g., "MOVING", "CUSTOM_EVENT").
-	Command string
-	// Args are the arguments following the command.
-	Args []interface{}
-}
-
-func (m *PushNotificationMessage) String() string {
-	return fmt.Sprintf("push: %s", m.Command)
-}
-
 func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 	switch reply := reply.(type) {
 	case string:
@@ -435,25 +417,6 @@ func (c *PubSub) newMessage(reply interface{}) (interface{}, error) {
 				Payload: reply[1].(string),
 			}, nil
 		default:
-			// Try to handle as generic push notification
-			ctx := c.getContext()
-			handler := c.pushProcessor.GetHandler(kind)
-			if handler != nil {
-				// Create handler context for pubsub
-				handlerCtx := &pushnotif.HandlerContext{
-					Client:   c,
-					ConnPool: nil, // Not available in pubsub context
-					Conn:     nil, // Not available in pubsub context
-				}
-				handled := handler.HandlePushNotification(ctx, handlerCtx, reply)
-				if handled {
-					// Return a special message type to indicate it was handled
-					return &PushNotificationMessage{
-						Command: kind,
-						Args:    reply[1:],
-					}, nil
-				}
-			}
 			return nil, fmt.Errorf("redis: unsupported pubsub message: %q", kind)
 		}
 	default:
@@ -477,6 +440,12 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 	}
 
 	err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
+		// To be sure there are no buffered push notifications, we process them before reading the reply
+		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			// Log the error but don't fail the command execution
+			// Push notification processing errors shouldn't break normal Redis operations
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		}
 		return c.cmd.readReply(rd)
 	})
 
@@ -571,6 +540,22 @@ func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interfac
 		panic(err)
 	}
 	return c.allCh.allCh
+}
+
+func (c *PubSub) processPendingPushNotificationWithReader(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+	if c.pushProcessor == nil {
+		return nil
+	}
+
+	// Create handler context with client, connection pool, and connection information
+	handlerCtx := c.pushNotificationHandlerContext(cn)
+	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+}
+
+func (c *PubSub) pushNotificationHandlerContext(cn *pool.Conn) pushnotif.HandlerContext {
+	// PubSub doesn't have a client or connection pool, so we pass nil for those
+	// PubSub connections are blocking
+	return pushnotif.NewHandlerContext(nil, nil, c, cn, true)
 }
 
 type ChannelOption func(c *channel)
@@ -699,9 +684,6 @@ func (c *channel) initMsgChan() {
 				// Ignore.
 			case *Pong:
 				// Ignore.
-			case *PushNotificationMessage:
-				// Ignore push notifications in message-only channel
-				// They are already handled by the push notification processor
 			case *Message:
 				timer.Reset(c.chanSendTimeout)
 				select {
@@ -756,7 +738,7 @@ func (c *channel) initAllChan() {
 			switch msg := msg.(type) {
 			case *Pong:
 				// Ignore.
-			case *Subscription, *Message, *PushNotificationMessage:
+			case *Subscription, *Message:
 				timer.Reset(c.chanSendTimeout)
 				select {
 				case c.allCh <- msg:

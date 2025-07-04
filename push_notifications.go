@@ -7,6 +7,8 @@ import (
 	"github.com/redis/go-redis/v9/internal/pushnotif"
 )
 
+type PushNotificationHandlerContext = pushnotif.HandlerContext
+
 // PushNotificationHandler defines the interface for push notification handlers.
 // This is an alias to the internal push notification handler interface.
 type PushNotificationHandler = pushnotif.Handler
@@ -76,7 +78,7 @@ func (p *PushNotificationProcessor) UnregisterHandler(pushNotificationName strin
 
 // ProcessPendingNotifications checks for and processes any pending push notifications.
 // The handlerCtx provides context about the client, connection pool, and connection.
-func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx *pushnotif.HandlerContext, rd *proto.Reader) error {
+func (p *PushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx PushNotificationHandlerContext, rd *proto.Reader) error {
 	return p.processor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
@@ -103,7 +105,7 @@ func (v *VoidPushNotificationProcessor) RegisterHandler(pushNotificationName str
 }
 
 // ProcessPendingNotifications reads and discards any pending push notifications.
-func (v *VoidPushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx *pushnotif.HandlerContext, rd *proto.Reader) error {
+func (v *VoidPushNotificationProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx PushNotificationHandlerContext, rd *proto.Reader) error {
 	return v.processor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 

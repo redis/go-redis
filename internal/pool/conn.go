@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/pushnotif"
 )
 
 var noDeadline = time.Time{}
@@ -26,10 +25,6 @@ type Conn struct {
 	createdAt time.Time
 
 	onClose func() error
-
-	// Push notification processor for handling push notifications on this connection
-	// This is set when the connection is created and is a reference to the processor
-	PushNotificationProcessor pushnotif.ProcessorInterface
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -77,9 +72,6 @@ func (cn *Conn) RemoteAddr() net.Addr {
 func (cn *Conn) WithReader(
 	ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error,
 ) error {
-	// Push notification processing is now handled by the client before calling WithReader
-	// This ensures proper context (client, connection pool, connection) is available to handlers
-
 	if timeout >= 0 {
 		if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
 			return err

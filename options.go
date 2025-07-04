@@ -599,8 +599,6 @@ func newConnPool(
 		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
-		// Pass push notification processor for connection initialization
-		PushNotificationProcessor: opt.PushNotificationProcessor,
 		// Pass protocol version for push notification optimization
 		Protocol: opt.Protocol,
 	})

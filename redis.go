@@ -835,8 +835,9 @@ func NewClient(opt *Options) *Client {
 	}
 	c.init()
 
-	// Initialize push notification processor
-	c.initializePushProcessor()
+	// Initialize push notification processor using shared helper
+	// Use void processor for RESP2 connections (push notifications not available)
+	c.pushProcessor = initializePushProcessor(opt)
 
 	// Update options with the initialized push processor for connection pool
 	opt.PushNotificationProcessor = c.pushProcessor
@@ -894,11 +895,6 @@ func initializePushProcessor(opt *Options) PushNotificationProcessorInterface {
 
 	// Create void processor for RESP2 connections (push notifications not available)
 	return NewVoidPushNotificationProcessor()
-}
-
-// initializePushProcessor initializes the push notification processor for this client.
-func (c *Client) initializePushProcessor() {
-	c.pushProcessor = initializePushProcessor(c.opt)
 }
 
 // RegisterPushNotificationHandler registers a handler for a specific push notification name.
@@ -962,12 +958,10 @@ func (c *Client) pubSub() *PubSub {
 		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
 			return c.newConn(ctx)
 		},
-		closeConn: c.connPool.CloseConn,
+		closeConn:     c.connPool.CloseConn,
+		pushProcessor: c.pushProcessor,
 	}
 	pubsub.init()
-
-	// Set the push notification processor
-	pubsub.SetPushNotificationProcessor(c.pushProcessor)
 
 	return pubsub
 }
@@ -1053,7 +1047,7 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 	}
 
 	// Initialize push notification processor using shared helper
-	// Use void processor by default for connections (typically don't need push notifications)
+	// Use void processor for RESP2 connections (push notifications not available)
 	c.pushProcessor = initializePushProcessor(opt)
 
 	c.cmdable = c.Process
@@ -1145,10 +1139,6 @@ func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Contex
 }
 
 // pushNotificationHandlerContext creates a handler context for push notification processing
-func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) *pushnotif.HandlerContext {
-	return &pushnotif.HandlerContext{
-		Client:   c,
-		ConnPool: c.connPool,
-		Conn:     cn,
-	}
+func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) pushnotif.HandlerContext {
+	return pushnotif.NewHandlerContext(c, c.connPool, nil, cn, false)
 }

@@ -25,7 +25,7 @@ func NewTestHandler(name string, returnValue bool) *TestHandler {
 	}
 }
 
-func (h *TestHandler) HandlePushNotification(ctx context.Context, handlerCtx *HandlerContext, notification []interface{}) bool {
+func (h *TestHandler) HandlePushNotification(ctx context.Context, handlerCtx HandlerContext, notification []interface{}) bool {
 	h.handled = append(h.handled, notification)
 	// Store the handler context for testing if needed
 	_ = handlerCtx
@@ -134,11 +134,7 @@ func testProcessPendingNotifications(processor *Processor, ctx context.Context, 
 	}
 
 	// Create a test handler context
-	handlerCtx := &HandlerContext{
-		Client:   nil,
-		ConnPool: nil,
-		Conn:     nil,
-	}
+	handlerCtx := NewHandlerContext(nil, nil, nil, nil, false)
 
 	for {
 		// Check if there are push notifications available
@@ -429,11 +425,7 @@ func TestProcessor(t *testing.T) {
 		ctx := context.Background()
 
 		// Test with nil reader
-		handlerCtx := &HandlerContext{
-			Client:   nil,
-			ConnPool: nil,
-			Conn:     nil,
-		}
+		handlerCtx := NewHandlerContext(nil, nil, nil, nil, false)
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, nil)
 		if err != nil {
 			t.Errorf("ProcessPendingNotifications with nil reader should not error, got: %v", err)
@@ -651,11 +643,7 @@ func TestVoidProcessor(t *testing.T) {
 	t.Run("ProcessPendingNotifications", func(t *testing.T) {
 		processor := NewVoidProcessor()
 		ctx := context.Background()
-		handlerCtx := &HandlerContext{
-			Client:   nil,
-			ConnPool: nil,
-			Conn:     nil,
-		}
+		handlerCtx := NewHandlerContext(nil, nil, nil, nil, false)
 
 		// VoidProcessor should always succeed and do nothing
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, nil)

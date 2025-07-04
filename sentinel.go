@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/pushnotif"
 	"github.com/redis/go-redis/v9/internal/rand"
 )
 
@@ -429,7 +430,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	rdb.init()
 
 	// Initialize push notification processor using shared helper
-	// Use void processor by default for failover clients (typically don't need push notifications)
+	// Use void processor by default for RESP2 connections
 	rdb.pushProcessor = initializePushProcessor(opt)
 
 	connPool = newConnPool(opt, rdb.dialHook)
@@ -499,8 +500,8 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	}
 
 	// Initialize push notification processor using shared helper
-	// Use void processor by default for sentinel clients (typically don't need push notifications)
-	c.pushProcessor = initializePushProcessor(opt)
+	// Use void processor for Sentinel clients
+	c.pushProcessor = pushnotif.NewVoidProcessor()
 
 	c.initHooks(hooks{
 		dial:    c.baseClient.dial,
