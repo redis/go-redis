@@ -15,7 +15,6 @@ import (
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/pushnotif"
 	"github.com/redis/go-redis/v9/internal/rand"
 )
 
@@ -501,7 +500,7 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 
 	// Initialize push notification processor using shared helper
 	// Use void processor for Sentinel clients
-	c.pushProcessor = pushnotif.NewVoidProcessor()
+	c.pushProcessor = NewVoidProcessorAdapter()
 
 	c.initHooks(hooks{
 		dial:    c.baseClient.dial,

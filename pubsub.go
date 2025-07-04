@@ -549,13 +549,26 @@ func (c *PubSub) processPendingPushNotificationWithReader(ctx context.Context, c
 
 	// Create handler context with client, connection pool, and connection information
 	handlerCtx := c.pushNotificationHandlerContext(cn)
-	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+	// Convert internal context to public context for the processor
+	publicCtx := convertInternalToPublicContext(handlerCtx)
+	return c.pushProcessor.ProcessPendingNotifications(ctx, publicCtx, rd)
 }
 
 func (c *PubSub) pushNotificationHandlerContext(cn *pool.Conn) pushnotif.HandlerContext {
 	// PubSub doesn't have a client or connection pool, so we pass nil for those
 	// PubSub connections are blocking
 	return pushnotif.NewHandlerContext(nil, nil, c, cn, true)
+}
+
+// convertInternalToPublicContext converts internal HandlerContext to public PushNotificationHandlerContext
+func convertInternalToPublicContext(internalCtx pushnotif.HandlerContext) PushNotificationHandlerContext {
+	return NewPushNotificationHandlerContext(
+		internalCtx.GetClient(),
+		internalCtx.GetConnPool(),
+		internalCtx.GetPubSub(),
+		internalCtx.GetConn(),
+		internalCtx.IsBlocking(),
+	)
 }
 
 type ChannelOption func(c *channel)

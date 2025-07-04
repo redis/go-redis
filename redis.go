@@ -1122,7 +1122,9 @@ func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn
 	return cn.WithReader(ctx, 0, func(rd *proto.Reader) error {
 		// Create handler context with client, connection pool, and connection information
 		handlerCtx := c.pushNotificationHandlerContext(cn)
-		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+		// Convert internal context to public context for the processor
+		publicCtx := convertInternalToPublicContext(handlerCtx)
+		return c.pushProcessor.ProcessPendingNotifications(ctx, publicCtx, rd)
 	})
 }
 
@@ -1135,10 +1137,14 @@ func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Contex
 
 	// Create handler context with client, connection pool, and connection information
 	handlerCtx := c.pushNotificationHandlerContext(cn)
-	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+	// Convert internal context to public context for the processor
+	publicCtx := convertInternalToPublicContext(handlerCtx)
+	return c.pushProcessor.ProcessPendingNotifications(ctx, publicCtx, rd)
 }
 
 // pushNotificationHandlerContext creates a handler context for push notification processing
 func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) pushnotif.HandlerContext {
 	return pushnotif.NewHandlerContext(c, c.connPool, nil, cn, false)
 }
+
+
