@@ -59,59 +59,68 @@ type MockPubSub struct {
 
 // TestNotificationHandlerContext tests the handler context implementation
 func TestNotificationHandlerContext(t *testing.T) {
-	t.Run("NewNotificationHandlerContext", func(t *testing.T) {
+	t.Run("DirectObjectCreation", func(t *testing.T) {
 		client := &MockClient{name: "test-client"}
 		connPool := &MockConnPool{name: "test-pool"}
 		pubSub := &MockPubSub{name: "test-pubsub"}
 		conn := &pool.Conn{}
 
-		ctx := NewNotificationHandlerContext(client, connPool, pubSub, conn, true)
-		if ctx == nil {
-			t.Error("NewNotificationHandlerContext should not return nil")
+		ctx := NotificationHandlerContext{
+			Client:     client,
+			ConnPool:   connPool,
+			PubSub:     pubSub,
+			Conn:       conn,
+			IsBlocking: true,
 		}
 
-		if ctx.GetClient() != client {
-			t.Error("GetClient should return the provided client")
+		if ctx.Client != client {
+			t.Error("Client field should contain the provided client")
 		}
 
-		if ctx.GetConnPool() != connPool {
-			t.Error("GetConnPool should return the provided connection pool")
+		if ctx.ConnPool != connPool {
+			t.Error("ConnPool field should contain the provided connection pool")
 		}
 
-		if ctx.GetPubSub() != pubSub {
-			t.Error("GetPubSub should return the provided PubSub")
+		if ctx.PubSub != pubSub {
+			t.Error("PubSub field should contain the provided PubSub")
 		}
 
-		if ctx.GetConn() != conn {
-			t.Error("GetConn should return the provided connection")
+		if ctx.Conn != conn {
+			t.Error("Conn field should contain the provided connection")
 		}
 
-		if !ctx.IsBlocking() {
-			t.Error("IsBlocking should return true")
+		if !ctx.IsBlocking {
+			t.Error("IsBlocking field should be true")
 		}
 	})
 
 	t.Run("NilValues", func(t *testing.T) {
-		ctx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
-
-		if ctx.GetClient() != nil {
-			t.Error("GetClient should return nil when client is nil")
+		ctx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
 		}
 
-		if ctx.GetConnPool() != nil {
-			t.Error("GetConnPool should return nil when connPool is nil")
+		if ctx.Client != nil {
+			t.Error("Client field should be nil when client is nil")
 		}
 
-		if ctx.GetPubSub() != nil {
-			t.Error("GetPubSub should return nil when pubSub is nil")
+		if ctx.ConnPool != nil {
+			t.Error("ConnPool field should be nil when connPool is nil")
 		}
 
-		if ctx.GetConn() != nil {
-			t.Error("GetConn should return nil when conn is nil")
+		if ctx.PubSub != nil {
+			t.Error("PubSub field should be nil when pubSub is nil")
 		}
 
-		if ctx.IsBlocking() {
-			t.Error("IsBlocking should return false")
+		if ctx.Conn != nil {
+			t.Error("Conn field should be nil when conn is nil")
+		}
+
+		if ctx.IsBlocking {
+			t.Error("IsBlocking field should be false")
 		}
 	})
 }
@@ -427,7 +436,13 @@ func TestProcessor(t *testing.T) {
 	t.Run("ProcessPendingNotifications_NilReader", func(t *testing.T) {
 		processor := NewProcessor()
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, nil)
 		if err != nil {
@@ -487,7 +502,13 @@ func TestVoidProcessor(t *testing.T) {
 	t.Run("ProcessPendingNotifications_NilReader", func(t *testing.T) {
 		processor := NewVoidProcessor()
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, nil)
 		if err != nil {
@@ -541,7 +562,13 @@ func TestNotificationHandlerInterface(t *testing.T) {
 
 	handler := NewTestHandler("test")
 	ctx := context.Background()
-	handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+	handlerCtx := NotificationHandlerContext{
+		Client:     nil,
+		ConnPool:   nil,
+		PubSub:     nil,
+		Conn:       nil,
+		IsBlocking: false,
+	}
 	notification := []interface{}{"TEST", "data"}
 
 	err := handler.HandlePushNotification(ctx, handlerCtx, notification)
@@ -566,7 +593,13 @@ func TestNotificationHandlerError(t *testing.T) {
 	handler.SetReturnError(expectedError)
 
 	ctx := context.Background()
-	handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+	handlerCtx := NotificationHandlerContext{
+		Client:     nil,
+		ConnPool:   nil,
+		PubSub:     nil,
+		Conn:       nil,
+		IsBlocking: false,
+	}
 	notification := []interface{}{"TEST", "data"}
 
 	err := handler.HandlePushNotification(ctx, handlerCtx, notification)
@@ -864,7 +897,13 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -895,7 +934,13 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -917,7 +962,13 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -936,7 +987,13 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -959,7 +1016,13 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -988,7 +1051,13 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -1025,7 +1094,13 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -1051,7 +1126,13 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -1079,7 +1160,13 @@ func TestVoidProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -1102,7 +1189,13 @@ func TestVoidProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -1127,7 +1220,13 @@ func TestVoidProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -1145,7 +1244,13 @@ func TestVoidProcessorWithFakeBuffer(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		// VoidProcessor should handle errors gracefully
@@ -1167,7 +1272,13 @@ func TestProcessorErrorHandling(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		if err != nil {
@@ -1193,7 +1304,13 @@ func TestProcessorErrorHandling(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		// Should handle corruption gracefully
@@ -1215,7 +1332,13 @@ func TestProcessorErrorHandling(t *testing.T) {
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
-		handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+		handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 		err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 		// Should handle partial data gracefully
@@ -1250,7 +1373,13 @@ func TestProcessorPerformanceWithFakeData(t *testing.T) {
 	reader := proto.NewReader(buf)
 
 	ctx := context.Background()
-	handlerCtx := NewNotificationHandlerContext(nil, nil, nil, nil, false)
+	handlerCtx := NotificationHandlerContext{
+			Client:     nil,
+			ConnPool:   nil,
+			PubSub:     nil,
+			Conn:       nil,
+			IsBlocking: false,
+		}
 
 	err := processor.ProcessPendingNotifications(ctx, handlerCtx, reader)
 	if err != nil {
@@ -1271,8 +1400,8 @@ func TestInterfaceCompliance(t *testing.T) {
 	// Test that VoidProcessor implements NotificationProcessor
 	var _ NotificationProcessor = (*VoidProcessor)(nil)
 
-	// Test that pushNotificationHandlerContext implements NotificationHandlerContext
-	var _ NotificationHandlerContext = (*pushNotificationHandlerContext)(nil)
+	// Test that NotificationHandlerContext is a concrete struct (no interface needed)
+	var _ NotificationHandlerContext = NotificationHandlerContext{}
 
 	// Test that TestHandler implements NotificationHandler
 	var _ NotificationHandler = (*TestHandler)(nil)

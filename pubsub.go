@@ -555,8 +555,11 @@ func (c *PubSub) processPendingPushNotificationWithReader(ctx context.Context, c
 func (c *PubSub) pushNotificationHandlerContext(cn *pool.Conn) push.NotificationHandlerContext {
 	// PubSub doesn't have a client or connection pool, so we pass nil for those
 	// PubSub connections are blocking
-	return push.HandlerContext{}
-	return push.NewNotificationHandlerContext(nil, nil, c, cn, true)
+	return push.NotificationHandlerContext{
+		PubSub:     c,
+		Conn:       cn,
+		IsBlocking: true,
+	}
 }
 
 type ChannelOption func(c *channel)

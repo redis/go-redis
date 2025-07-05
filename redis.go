@@ -1130,5 +1130,9 @@ func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Contex
 
 // pushNotificationHandlerContext creates a handler context for push notification processing
 func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.NotificationHandlerContext {
-	return push.NewNotificationHandlerContext(c, c.connPool, nil, cn, false)
+	return push.NotificationHandlerContext{
+		Client:   c,
+		ConnPool: c.connPool,
+		Conn:     cn,
+	}
 }
