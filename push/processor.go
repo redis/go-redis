@@ -2,7 +2,6 @@ package push
 
 import (
 	"context"
-	"time"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -52,23 +51,8 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 	if rd == nil {
 		return nil
 	}
-	conn := handlerCtx.Conn
-	if conn == nil {
-		return nil
-	}
-	netConn := handlerCtx.Conn.GetNetConn()
-	if netConn == nil {
-		return nil
-	}
 
 	for {
-		// Set a short read deadline to check for available data
-		// otherwise we may block on Peek if there is no data available
-		err := netConn.SetReadDeadline(time.Now().Add(1))
-		if err != nil {
-			return err
-		}
-
 		// Check if there's data available to read
 		replyType, err := rd.PeekReplyType()
 		if err != nil {
@@ -120,7 +104,7 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 		}
 	}
 
-	return netConn.SetReadDeadline(time.Time{})
+	return nil
 }
 
 // VoidProcessor discards all push notifications without processing them
@@ -154,20 +138,8 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 	if rd == nil {
 		return nil
 	}
-	conn := handlerCtx.Conn
-	if conn == nil {
-		return nil
-	}
-	netConn := handlerCtx.Conn.GetNetConn()
-	if netConn == nil {
-		return nil
-	}
+
 	for {
-		// Set a short read deadline to check for available data
-		err := netConn.SetReadDeadline(time.Now().Add(1))
-		if err != nil {
-			return err
-		}
 		// Check if there's data available to read
 		replyType, err := rd.PeekReplyType()
 		if err != nil {
@@ -196,7 +168,7 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 			return nil
 		}
 	}
-	return netConn.SetReadDeadline(time.Time{})
+	return nil
 }
 
 // willHandleNotificationInClient checks if a notification type should be ignored by the push notification
@@ -204,7 +176,7 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 func willHandleNotificationInClient(notificationType string) bool {
 	switch notificationType {
 	// Pub/Sub notifications - handled by pub/sub system
-	case "message", // Regular pub/sub message
+	case "message",     // Regular pub/sub message
 		"pmessage",     // Pattern pub/sub message
 		"subscribe",    // Subscription confirmation
 		"unsubscribe",  // Unsubscription confirmation
