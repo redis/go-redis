@@ -2,6 +2,7 @@ package push
 
 import (
 	"context"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -51,8 +52,23 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 	if rd == nil {
 		return nil
 	}
+	conn := handlerCtx.Conn
+	if conn == nil {
+		return nil
+	}
+	netConn := handlerCtx.Conn.GetNetConn()
+	if netConn == nil {
+		return nil
+	}
 
 	for {
+		// Set a short read deadline to check for available data
+		// otherwise we may block on Peek if there is no data available
+		err := netConn.SetReadDeadline(time.Now().Add(1))
+		if err != nil {
+			return err
+		}
+
 		// Check if there's data available to read
 		replyType, err := rd.PeekReplyType()
 		if err != nil {
@@ -104,7 +120,7 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 		}
 	}
 
-	return nil
+	return netConn.SetReadDeadline(time.Time{})
 }
 
 // VoidProcessor discards all push notifications without processing them
@@ -133,12 +149,26 @@ func (v *VoidProcessor) UnregisterHandler(pushNotificationName string) error {
 // ProcessPendingNotifications for VoidProcessor does nothing since push notifications
 // are only available in RESP3 and this processor is used for RESP2 connections.
 // This avoids unnecessary buffer scanning overhead.
-func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, _ NotificationHandlerContext, rd *proto.Reader) error {
+func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCtx NotificationHandlerContext, rd *proto.Reader) error {
 	// read and discard all push notifications
 	if rd == nil {
 		return nil
 	}
+	conn := handlerCtx.Conn
+	if conn == nil {
+		return nil
+	}
+	netConn := handlerCtx.Conn.GetNetConn()
+	if netConn == nil {
+		return nil
+	}
 	for {
+		// Set a short read deadline to check for available data
+		err := netConn.SetReadDeadline(time.Now().Add(1))
+		if err != nil {
+			return err
+		}
+		// Check if there's data available to read
 		replyType, err := rd.PeekReplyType()
 		if err != nil {
 			// No more data available or error reading
@@ -166,7 +196,7 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, _ Notific
 			return nil
 		}
 	}
-	return nil
+	return netConn.SetReadDeadline(time.Time{})
 }
 
 // willHandleNotificationInClient checks if a notification type should be ignored by the push notification

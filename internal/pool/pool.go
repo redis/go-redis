@@ -384,6 +384,8 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	if cn.rd.Buffered() > 0 {
 		// Check if this might be push notification data
 		if p.cfg.Protocol == 3 {
+			// we know that there is something in the buffer, so peek at the next reply type without
+			// the potential to block
 			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
 				// For push notifications, we allow some buffered data
 				// The client will process these notifications before using the connection
@@ -546,6 +548,8 @@ func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 		// However, push notification processing is now handled by the client
 		// before WithReader to ensure proper context is available to handlers
 		if err == errUnexpectedRead && p.cfg.Protocol == 3 {
+			// we know that there is something in the buffer, so peek at the next reply type without
+			// the potential to block
 			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
 				// For RESP3 connections with push notifications, we allow some buffered data
 				// The client will process these notifications before using the connection
