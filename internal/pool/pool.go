@@ -392,7 +392,9 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 			}
 		}
 		// For non-RESP3 or data that is not a push notification, buffered data is unexpected
-		internal.Logger.Printf(ctx, "Conn has unread data")
+		internal.Logger.Printf(ctx, "Conn has unread data: %d bytes, closing it", cn.rd.Buffered())
+		repl, err := cn.rd.ReadReply()
+		internal.Logger.Printf(ctx, "Data: %v, ERR: %v", repl, err)
 		p.Remove(ctx, cn, BadConnError{})
 		return
 	}

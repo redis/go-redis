@@ -91,8 +91,25 @@ func (r *Reader) PeekReplyType() (byte, error) {
 }
 
 func (r *Reader) PeekPushNotificationName() (string, error) {
-	// peek 36 bytes, should be enough to read the push notification name
-	buf, err := r.rd.Peek(36)
+	// "prime" the buffer by peeking at the next byte
+	c, err := r.Peek(1)
+	if err != nil {
+		return "", err
+	}
+	if c[0] != RespPush {
+		return "", fmt.Errorf("redis: can't peek push notification name, next reply is not a push notification")
+	}
+
+	// peek 36 bytes at most, should be enough to read the push notification name
+	toPeek := 36
+	buffered := r.Buffered()
+	if buffered == 0 {
+		return "", fmt.Errorf("redis: can't peek push notification name, no data available")
+	}
+	if buffered < toPeek {
+		toPeek = buffered
+	}
+	buf, err := r.rd.Peek(toPeek)
 	if err != nil {
 		return "", err
 	}
@@ -100,15 +117,33 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
 	}
 	// remove push notification type and length
-	nextLine := buf[2:]
-	for i := 1; i < len(buf); i++ {
+	buf = buf[2:]
+	for i := 0; i < len(buf)-1; i++ {
 		if buf[i] == '\r' && buf[i+1] == '\n' {
-			nextLine = buf[i+2:]
+			buf = buf[i+2:]
 			break
 		}
 	}
-	// return notification name or error
-	return r.readStringReply(nextLine)
+	// should have the type of the push notification name and it's length
+	if buf[0] != RespString {
+		return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
+	}
+	// skip the length of the string
+	for i := 0; i < len(buf)-1; i++ {
+		if buf[i] == '\r' && buf[i+1] == '\n' {
+			buf = buf[i+2:]
+			break
+		}
+	}
+
+	// keep only the notification name
+	for i := 0; i < len(buf)-1; i++ {
+		if buf[i] == '\r' && buf[i+1] == '\n' {
+			buf = buf[:i]
+			break
+		}
+	}
+	return util.BytesToString(buf), nil
 }
 
 // ReadLine Return a valid reply, it will check the protocol or redis error,

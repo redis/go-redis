@@ -65,6 +65,16 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 			break
 		}
 
+		// see if we should skip this notification
+		notificationName, err := rd.PeekPushNotificationName()
+		if err != nil {
+			break
+		}
+
+		if willHandleNotificationInClient(notificationName) {
+			break
+		}
+
 		// Read the push notification
 		reply, err := rd.ReadReply()
 		if err != nil {
@@ -75,18 +85,13 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 		// Convert to slice of interfaces
 		notification, ok := reply.([]interface{})
 		if !ok {
-			continue
+			break
 		}
 
 		// Handle the notification directly
 		if len(notification) > 0 {
 			// Extract the notification type (first element)
 			if notificationType, ok := notification[0].(string); ok {
-				// Skip notifications that should be handled by other systems
-				if shouldSkipNotification(notificationType) {
-					continue
-				}
-
 				// Get the handler for this notification type
 				if handler := p.registry.GetHandler(notificationType); handler != nil {
 					// Handle the notification
@@ -130,47 +135,46 @@ func (v *VoidProcessor) UnregisterHandler(pushNotificationName string) error {
 // This avoids unnecessary buffer scanning overhead.
 func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, _ NotificationHandlerContext, rd *proto.Reader) error {
 	// read and discard all push notifications
-	if rd != nil {
-		for {
-			replyType, err := rd.PeekReplyType()
-			if err != nil {
-				// No more data available or error reading
-				break
-			}
+	if rd == nil {
+		return nil
+	}
+	for {
+		replyType, err := rd.PeekReplyType()
+		if err != nil {
+			// No more data available or error reading
+			break
+		}
 
-			// Only process push notifications (arrays starting with >)
-			if replyType != proto.RespPush {
-				break
-			}
-			// see if we should skip this notification
-			notificationName, err := rd.PeekPushNotificationName()
-			if err != nil {
-				break
-			}
-			if shouldSkipNotification(notificationName) {
-				// discard the notification
-				if err := rd.DiscardNext(); err != nil {
-					break
-				}
-				continue
-			}
+		// Only process push notifications (arrays starting with >)
+		if replyType != proto.RespPush {
+			break
+		}
+		// see if we should skip this notification
+		notificationName, err := rd.PeekPushNotificationName()
+		if err != nil {
+			break
+		}
 
-			// Read the push notification
-			_, err = rd.ReadReply()
-			if err != nil {
-				return nil
-			}
+		if willHandleNotificationInClient(notificationName) {
+			break
+		}
+
+		// Read the push notification
+		_, err = rd.ReadReply()
+		if err != nil {
+			internal.Logger.Printf(context.Background(), "push: error reading push notification: %v", err)
+			return nil
 		}
 	}
 	return nil
 }
 
-// shouldSkipNotification checks if a notification type should be ignored by the push notification
+// willHandleNotificationInClient checks if a notification type should be ignored by the push notification
 // processor and handled by other specialized systems instead (pub/sub, streams, keyspace, etc.).
-func shouldSkipNotification(notificationType string) bool {
+func willHandleNotificationInClient(notificationType string) bool {
 	switch notificationType {
 	// Pub/Sub notifications - handled by pub/sub system
-	case "message", // Regular pub/sub message
+	case "message",     // Regular pub/sub message
 		"pmessage",     // Pattern pub/sub message
 		"subscribe",    // Subscription confirmation
 		"unsubscribe",  // Unsubscription confirmation
