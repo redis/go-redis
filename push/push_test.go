@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -25,6 +27,18 @@ func NewTestHandler(name string) *TestHandler {
 		handled: make([][]interface{}, 0),
 	}
 }
+
+// MockNetConn implements net.Conn for testing
+type MockNetConn struct{}
+
+func (m *MockNetConn) Read(b []byte) (n int, err error)   { return 0, nil }
+func (m *MockNetConn) Write(b []byte) (n int, err error) { return len(b), nil }
+func (m *MockNetConn) Close() error                      { return nil }
+func (m *MockNetConn) LocalAddr() net.Addr              { return nil }
+func (m *MockNetConn) RemoteAddr() net.Addr             { return nil }
+func (m *MockNetConn) SetDeadline(t time.Time) error    { return nil }
+func (m *MockNetConn) SetReadDeadline(t time.Time) error { return nil }
+func (m *MockNetConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func (h *TestHandler) HandlePushNotification(ctx context.Context, handlerCtx NotificationHandlerContext, notification []interface{}) error {
 	h.handled = append(h.handled, notification)
@@ -843,6 +857,12 @@ func createReaderWithPrimedBuffer(buf *bytes.Buffer) *proto.Reader {
 	return reader
 }
 
+// createMockConnection creates a mock connection for testing
+func createMockConnection() *pool.Conn {
+	mockNetConn := &MockNetConn{}
+	return pool.NewConn(mockNetConn)
+}
+
 // createFakeRESP3Array creates a fake RESP3 array (not push notification)
 func createFakeRESP3Array(elements ...string) *bytes.Buffer {
 	buf := &bytes.Buffer{}
@@ -908,7 +928,7 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 			Client:     nil,
 			ConnPool:   nil,
 			PubSub:     nil,
-			Conn:       nil,
+			Conn:       createMockConnection(),
 			IsBlocking: false,
 		}
 
@@ -920,13 +940,14 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 		handled := handler.GetHandledNotifications()
 		if len(handled) != 1 {
 			t.Errorf("Expected 1 handled notification, got %d", len(handled))
+			return // Prevent panic if no notifications were handled
 		}
 
 		if len(handled[0]) != 7 || handled[0][0] != "MOVING" {
 			t.Errorf("Handled notification should match input: %v", handled[0])
 		}
 
-		if handled[0][1] != "slot" || handled[0][2] != "123" {
+		if len(handled[0]) > 2 && (handled[0][1] != "slot" || handled[0][2] != "123") {
 			t.Errorf("Notification arguments should match: %v", handled[0])
 		}
 	})
@@ -945,7 +966,7 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 			Client:     nil,
 			ConnPool:   nil,
 			PubSub:     nil,
-			Conn:       nil,
+			Conn:       createMockConnection(),
 			IsBlocking: false,
 		}
 
@@ -973,7 +994,7 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 			Client:     nil,
 			ConnPool:   nil,
 			PubSub:     nil,
-			Conn:       nil,
+			Conn:       createMockConnection(),
 			IsBlocking: false,
 		}
 
@@ -998,7 +1019,7 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 			Client:     nil,
 			ConnPool:   nil,
 			PubSub:     nil,
-			Conn:       nil,
+			Conn:       createMockConnection(),
 			IsBlocking: false,
 		}
 
@@ -1027,7 +1048,7 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 			Client:     nil,
 			ConnPool:   nil,
 			PubSub:     nil,
-			Conn:       nil,
+			Conn:       createMockConnection(),
 			IsBlocking: false,
 		}
 
@@ -1061,7 +1082,7 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 			Client:     nil,
 			ConnPool:   nil,
 			PubSub:     nil,
-			Conn:       nil,
+			Conn:       createMockConnection(),
 			IsBlocking: false,
 		}
 
@@ -1104,7 +1125,7 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 			Client:     nil,
 			ConnPool:   nil,
 			PubSub:     nil,
-			Conn:       nil,
+			Conn:       createMockConnection(),
 			IsBlocking: false,
 		}
 
@@ -1143,7 +1164,7 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 			Client:     nil,
 			ConnPool:   nil,
 			PubSub:     nil,
-			Conn:       nil,
+			Conn:       createMockConnection(),
 			IsBlocking: false,
 		}
 
@@ -1390,7 +1411,7 @@ func TestProcessorPerformanceWithFakeData(t *testing.T) {
 		Client:     nil,
 		ConnPool:   nil,
 		PubSub:     nil,
-		Conn:       nil,
+		Conn:       createMockConnection(),
 		IsBlocking: false,
 	}
 

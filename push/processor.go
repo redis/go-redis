@@ -204,7 +204,7 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 func willHandleNotificationInClient(notificationType string) bool {
 	switch notificationType {
 	// Pub/Sub notifications - handled by pub/sub system
-	case "message",     // Regular pub/sub message
+	case "message", // Regular pub/sub message
 		"pmessage",     // Pattern pub/sub message
 		"subscribe",    // Subscription confirmation
 		"unsubscribe",  // Unsubscription confirmation
