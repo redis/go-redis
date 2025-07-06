@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -418,10 +419,13 @@ func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *rout
 // createAggregator creates the appropriate response aggregator
 func (c *ClusterClient) createAggregator(policy *routing.CommandPolicy, cmd Cmder, isKeyed bool) routing.ResponseAggregator {
 	if policy != nil {
-		// For multi-shard commands that operate on multiple keys (like MGET),
-		// use keyed aggregator even if policy says all_succeeded
-		if policy.Request == routing.ReqMultiShard && isKeyed {
-			return routing.NewDefaultAggregator(true)
+		// For specific multi-shard commands that need keyed aggregation despite having
+		// all_succeeded policy (like MGET which needs to preserve key order)
+		if policy.Request == routing.ReqMultiShard && policy.Response == routing.RespAllSucceeded && isKeyed {
+			cmdName := strings.ToLower(cmd.Name())
+			if cmdName == "mget" {
+				return routing.NewDefaultAggregator(true)
+			}
 		}
 		return routing.NewResponseAggregator(policy.Response, cmd.Name())
 	}
