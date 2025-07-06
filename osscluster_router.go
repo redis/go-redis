@@ -411,36 +411,6 @@ func (c *ClusterClient) aggregateKeyedValues(cmd Cmder, keyedResults map[string]
 	return c.finishAggregation(cmd, aggregator)
 }
 
-// aggregateKeyedResponses aggregates responses while preserving key order
-func (c *ClusterClient) aggregateKeyedResponses(cmd Cmder, keyedResults map[string]Cmder, keyOrder []string, policy *routing.CommandPolicy) error {
-	if len(keyedResults) == 0 {
-		return fmt.Errorf("redis: no results to aggregate")
-	}
-
-	aggregator := c.createAggregator(policy, cmd, true)
-
-	// Set key order for keyed aggregators
-	if keyedAgg, ok := aggregator.(*routing.DefaultKeyedAggregator); ok {
-		keyedAgg.SetKeyOrder(keyOrder)
-	}
-
-	// Add results with keys
-	for key, shardCmd := range keyedResults {
-		value := ExtractCommandValue(shardCmd)
-		if keyedAgg, ok := aggregator.(*routing.DefaultKeyedAggregator); ok {
-			if err := keyedAgg.AddWithKey(key, value, shardCmd.Err()); err != nil {
-				return err
-			}
-		} else {
-			if err := aggregator.Add(value, shardCmd.Err()); err != nil {
-				return err
-			}
-		}
-	}
-
-	return c.finishAggregation(cmd, aggregator)
-}
-
 // aggregateResponses aggregates multiple shard responses
 func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *routing.CommandPolicy) error {
 	if len(cmds) == 0 {
