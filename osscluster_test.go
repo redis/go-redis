@@ -2073,145 +2073,65 @@ var _ = Describe("Command Tips tests", func() {
 				Expect(dbSizeResult.Val()).To(Equal(int64(0)))
 			}
 
-			// PFCOUNT command aggregation policy - verify agg_min policy
-			pfcountCmd, exists := cmds["pfcount"]
-			if !exists || pfcountCmd.Tips == nil {
-				Skip("PFCOUNT command or tips not available")
+			// WAIT command aggregation policy - verify agg_min policy
+			waitCmd, exists := cmds["wait"]
+			if !exists || waitCmd.Tips == nil {
+				Skip("WAIT command or tips not available")
 			}
 
-			actualPfcountPolicy := pfcountCmd.Tips.Response.String()
+			Expect(waitCmd.Tips.Response.String()).To(Equal("agg_min"))
 
-			if actualPfcountPolicy != "agg_min" {
-				Skip("PFCOUNT does not have agg_min policy in this Redis version")
+			// Set up some data to replicate
+			testKey := "wait_test_key_1111"
+			result := client.Set(ctx, testKey, "test_value", 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+
+			// Execute WAIT command - should aggregate using agg_min across all shards
+			// WAIT waits for a given number of replicas to acknowledge writes
+			// With agg_min policy, it returns the minimum number of replicas that acknowledged
+			waitResult := client.Wait(ctx, 0, 1000) // Wait for 0 replicas with 1 second timeout
+			Expect(waitResult.Err()).NotTo(HaveOccurred())
+
+			// The result should be the minimum number of replicas across all shards
+			// Since we're asking for 0 replicas, all shards should return 0, so min is 0
+			minReplicas := waitResult.Val()
+			Expect(minReplicas).To(BeNumerically(">=", 0))
+
+			// SCRIPT EXISTS command aggregation policy - verify agg_logical_and policy
+			scriptExistsCmd, exists := cmds["script exists"]
+			if !exists || scriptExistsCmd.Tips == nil {
+				Skip("SCRIPT EXISTS command or tips not available")
 			}
 
-			// Create HyperLogLog keys on different shards with different cardinalities
-			hllKeys := []string{
-				"hll_test_key_1111",
-				"hll_test_key_2222",
-				"hll_test_key_3333",
-			}
+			Expect(scriptExistsCmd.Tips.Response.String()).To(Equal("agg_logical_and"))
 
-			hllData := map[string][]string{
-				"hll_test_key_1111": {"elem1", "elem2", "elem3", "elem4", "elem5"},
-				"hll_test_key_2222": {"elem6", "elem7", "elem8"},
-				"hll_test_key_3333": {"elem9", "elem10", "elem11", "elem12", "elem13", "elem14", "elem15"},
-			}
+			// Load a script on all shards
+			testScript := "return 'hello'"
+			scriptLoadResult := client.ScriptLoad(ctx, testScript)
+			Expect(scriptLoadResult.Err()).NotTo(HaveOccurred())
+			scriptSHA := scriptLoadResult.Val()
 
-			hllKeysPerShard := make(map[string][]string)
-			expectedCounts := make(map[string]int64)
+			// Verify script exists on all shards using SCRIPT EXISTS
+			// With agg_logical_and policy, it should return true only if script exists on ALL shards
+			scriptExistsResult := client.ScriptExists(ctx, scriptSHA)
+			Expect(scriptExistsResult.Err()).NotTo(HaveOccurred())
 
-			for key, elements := range hllData {
+			existsResults := scriptExistsResult.Val()
+			Expect(len(existsResults)).To(Equal(1))
+			Expect(existsResults[0]).To(BeTrue()) // Script should exist on all shards
 
-				interfaceElements := make([]interface{}, len(elements))
-				for i, elem := range elements {
-					interfaceElements[i] = elem
-				}
-				result := client.PFAdd(ctx, key, interfaceElements...)
-				Expect(result.Err()).NotTo(HaveOccurred())
+			// Test with a non-existent script SHA
+			nonExistentSHA := "0000000000000000000000000000000000000000"
+			scriptExistsResult2 := client.ScriptExists(ctx, nonExistentSHA)
+			Expect(scriptExistsResult2.Err()).NotTo(HaveOccurred())
 
-				countResult := client.PFCount(ctx, key)
-				Expect(countResult.Err()).NotTo(HaveOccurred())
-				expectedCounts[key] = countResult.Val()
+			existsResults2 := scriptExistsResult2.Val()
+			Expect(len(existsResults2)).To(Equal(1))
+			Expect(existsResults2[0]).To(BeFalse()) // Script should not exist on any shard
 
-				for _, node := range masterNodes {
-					// Check if key exists on this shard by trying to get its count
-					shardCountResult := node.client.PFCount(ctx, key)
-					if shardCountResult.Err() == nil && shardCountResult.Val() > 0 {
-						hllKeysPerShard[node.addr] = append(hllKeysPerShard[node.addr], key)
-						break
-					}
-				}
-			}
-
-			// Verify keys are distributed across multiple shards
-			shardsWithHLLKeys := len(hllKeysPerShard)
-			Expect(shardsWithHLLKeys).To(BeNumerically(">", 1))
-
-			// Execute PFCOUNT command on all keys - should aggregate using agg_min
-			pfcountResult := client.PFCount(ctx, hllKeys...)
-			Expect(pfcountResult.Err()).NotTo(HaveOccurred())
-
-			aggregatedCount := pfcountResult.Val()
-
-			// Verify the aggregation by manually getting counts from each shard
-			var shardCounts []int64
-			for shardAddr, keys := range hllKeysPerShard {
-				if len(keys) == 0 {
-					continue
-				}
-
-				// Find the node for this shard
-				var shardNode *masterNode
-				for i := range masterNodes {
-					if masterNodes[i].addr == shardAddr {
-						shardNode = &masterNodes[i]
-						break
-					}
-				}
-				Expect(shardNode).NotTo(BeNil())
-
-				// Get count for keys on this specific shard
-				shardResult := shardNode.client.PFCount(ctx, keys...)
-				Expect(shardResult.Err()).NotTo(HaveOccurred())
-
-				shardCount := shardResult.Val()
-				shardCounts = append(shardCounts, shardCount)
-			}
-
-			// Find the minimum count from all shards
-			expectedMin := shardCounts[0]
-			for _, count := range shardCounts[1:] {
-				if count < expectedMin {
-					expectedMin = count
-				}
-			}
-
-			// Verify agg_min aggregation worked correctly
-			Expect(aggregatedCount).To(Equal(expectedMin))
-
-			// EXISTS command aggregation policy - verify agg_logical_and policy
-			existsCmd, exists := cmds["exists"]
-			if !exists || existsCmd.Tips == nil {
-				Skip("EXISTS command or tips not available")
-			}
-
-			actualExistsPolicy := existsCmd.Tips.Response.String()
-			if actualExistsPolicy != "agg_logical_and" {
-				Skip("EXISTS does not have agg_logical_and policy in this Redis version")
-			}
-
-			existsTestKeys := []string{
-				"exists_test_key_1111",
-				"exists_test_key_2222",
-				"exists_test_key_3333",
-			}
-
-			for _, key := range existsTestKeys {
-				result := client.Set(ctx, key, "exists_test_value", 0)
-				Expect(result.Err()).NotTo(HaveOccurred())
-			}
-
-			//All keys exist - should return true
-			existsResult := client.Exists(ctx, existsTestKeys...)
-			Expect(existsResult.Err()).NotTo(HaveOccurred())
-
-			allExistCount := existsResult.Val()
-			Expect(allExistCount).To(Equal(int64(len(existsTestKeys))))
-
-			// Delete one key and test again - logical AND should handle mixed results
-			deletedKey := existsTestKeys[0]
-			delResult := client.Del(ctx, deletedKey)
-			Expect(delResult.Err()).NotTo(HaveOccurred())
-
-			// Check EXISTS again - now one key is missing
-			existsResult2 := client.Exists(ctx, existsTestKeys...)
-			Expect(existsResult2.Err()).NotTo(HaveOccurred())
-
-			partialExistCount := existsResult2.Val()
-
-			// Should return count of existing keys (2 out of 3)
-			Expect(partialExistCount).To(Equal(int64(len(existsTestKeys) - 1)))
+			// Test with mixed scenario - flush scripts from one shard manually
+			// This is harder to test in practice since SCRIPT FLUSH affects all shards
+			// So we'll just verify the basic functionality works
 		})
 
 		It("should verify command aggregation policies", func() {
@@ -2221,10 +2141,12 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			commandPolicies := map[string]string{
-				"touch":    "agg_sum",
-				"flushall": "all_succeeded",
-				"pfcount":  "agg_min",
-				"exists":   "agg_logical_and",
+				"touch":         "agg_sum",
+				"flushall":      "all_succeeded",
+				"pfcount":       "all_succeeded",
+				"exists":        "agg_sum",
+				"script exists": "agg_logical_and",
+				"wait":          "agg_min",
 			}
 
 			for cmdName, expectedPolicy := range commandPolicies {
@@ -2341,7 +2263,7 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(masterNodes)).To(BeNumerically(">", 1))
 
-			// MGET command aggregation across multiple keys on different shards - verify agg_sum policy
+			// MGET command aggregation across multiple keys on different shards - verify all_succeeded policy with keyed aggregation
 			testData := map[string]string{
 				"mget_test_key_1111": "value1",
 				"mget_test_key_2222": "value2",

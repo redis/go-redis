@@ -418,6 +418,11 @@ func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *rout
 // createAggregator creates the appropriate response aggregator
 func (c *ClusterClient) createAggregator(policy *routing.CommandPolicy, cmd Cmder, isKeyed bool) routing.ResponseAggregator {
 	if policy != nil {
+		// For multi-shard commands that operate on multiple keys (like MGET),
+		// use keyed aggregator even if policy says all_succeeded
+		if policy.Request == routing.ReqMultiShard && isKeyed {
+			return routing.NewDefaultAggregator(true)
+		}
 		return routing.NewResponseAggregator(policy.Response, cmd.Name())
 	}
 
