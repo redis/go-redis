@@ -10,13 +10,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 type clusterScenario struct {
@@ -286,7 +286,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(cnt).To(Equal(int64(1)))
 		})
 
-		It("GET follows redirects", func() {
+		It("should follow redirects for GET", func() {
 			err := client.Set(ctx, "A", "VALUE", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -309,7 +309,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(v).To(Equal("VALUE"))
 		})
 
-		It("SET follows redirects", func() {
+		It("should follow redirects for SET", func() {
 			if !failover {
 				Eventually(func() error {
 					return client.SwapNodes(ctx, "A")
@@ -324,7 +324,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(v).To(Equal("VALUE"))
 		})
 
-		It("distributes keys", func() {
+		It("should distribute keys", func() {
 			for i := 0; i < 100; i++ {
 				err := client.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err()
 				Expect(err).NotTo(HaveOccurred())
@@ -345,7 +345,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("distributes keys when using EVAL", func() {
+		It("should distribute keys when using EVAL", func() {
 			script := redis.NewScript(`
 				local r = redis.call('SET', KEYS[1], ARGV[1])
 				return r
@@ -373,7 +373,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("distributes scripts when using Script Load", func() {
+		It("should distribute scripts when using Script Load", func() {
 			client.ScriptFlush(ctx)
 
 			script := redis.NewScript(`return 'Unique script'`)
@@ -390,7 +390,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("checks all shards when using Script Exists", func() {
+		It("should check all shards when using Script Exists", func() {
 			client.ScriptFlush(ctx)
 
 			script := redis.NewScript(`return 'First script'`)
@@ -405,7 +405,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(val).To(Equal([]bool{true, false}))
 		})
 
-		It("flushes scripts from all shards when using ScriptFlush", func() {
+		It("should flush scripts from all shards when using ScriptFlush", func() {
 			script := redis.NewScript(`return 'Unnecessary script'`)
 			script.Load(ctx, client)
 
@@ -418,7 +418,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(val).To(Equal([]bool{false}))
 		})
 
-		It("supports Watch", func() {
+		It("should support Watch", func() {
 			var incr func(string) error
 
 			// Transactionally increments key using GET and SET commands.
@@ -464,7 +464,7 @@ var _ = Describe("ClusterClient", func() {
 
 			assertPipeline := func(keys []string) {
 
-				It("follows redirects", func() {
+				It("should follow redirects", func() {
 					if !failover {
 						for _, key := range keys {
 							Eventually(func() error {
@@ -514,9 +514,9 @@ var _ = Describe("ClusterClient", func() {
 					}
 				})
 
-				It("works with missing keys", func() {
-					pipe.Set(ctx, "A{s}", "A_value", 0)
-					pipe.Set(ctx, "C{s}", "C_value", 0)
+				It("should work with missing keys", func() {
+					pipe.Set(ctx, "A", "A_value", 0)
+					pipe.Set(ctx, "C", "C_value", 0)
 					_, err := pipe.Exec(ctx)
 					Expect(err).NotTo(HaveOccurred())
 
@@ -548,7 +548,7 @@ var _ = Describe("ClusterClient", func() {
 				keys := []string{"A", "B", "C", "D", "E", "F", "G"}
 				assertPipeline(keys)
 
-				It("doesn't fail node with context.Canceled error", func() {
+				It("should not fail node with context.Canceled error", func() {
 					ctx, cancel := context.WithCancel(context.Background())
 					cancel()
 					pipe.Set(ctx, "A", "A_value", 0)
@@ -564,7 +564,7 @@ var _ = Describe("ClusterClient", func() {
 					}
 				})
 
-				It("doesn't fail node with context.DeadlineExceeded error", func() {
+				It("should not fail node with context.DeadlineExceeded error", func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 					defer cancel()
 
@@ -620,7 +620,7 @@ var _ = Describe("ClusterClient", func() {
 			})
 		})
 
-		It("supports PubSub", func() {
+		It("should support PubSub", func() {
 			pubsub := client.Subscribe(ctx, "mychannel")
 			defer pubsub.Close()
 
@@ -644,88 +644,7 @@ var _ = Describe("ClusterClient", func() {
 			}, 30*time.Second).ShouldNot(HaveOccurred())
 		})
 
-		It("supports PubSub with ReadOnly option", func() {
-			opt = redisClusterOptions()
-			opt.ReadOnly = true
-			client = cluster.newClusterClient(ctx, opt)
-
-			pubsub := client.Subscribe(ctx, "mychannel")
-			defer pubsub.Close()
-
-			Eventually(func() error {
-				var masterPubsubChannels atomic.Int64
-				var slavePubsubChannels atomic.Int64
-
-				err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
-					info := master.InfoMap(ctx, "stats")
-					if info.Err() != nil {
-						return info.Err()
-					}
-
-					pc, err := strconv.Atoi(info.Item("Stats", "pubsub_channels"))
-					if err != nil {
-						return err
-					}
-
-					masterPubsubChannels.Add(int64(pc))
-
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-
-				err = client.ForEachSlave(ctx, func(ctx context.Context, slave *redis.Client) error {
-					info := slave.InfoMap(ctx, "stats")
-					if info.Err() != nil {
-						return info.Err()
-					}
-
-					pc, err := strconv.Atoi(info.Item("Stats", "pubsub_channels"))
-					if err != nil {
-						return err
-					}
-
-					slavePubsubChannels.Add(int64(pc))
-
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-
-				if c := masterPubsubChannels.Load(); c != int64(0) {
-					return fmt.Errorf("total master pubsub_channels is %d; expected 0", c)
-				}
-
-				if c := slavePubsubChannels.Load(); c != int64(1) {
-					return fmt.Errorf("total slave pubsub_channels is %d; expected 1", c)
-				}
-
-				return nil
-			}, 30*time.Second).ShouldNot(HaveOccurred())
-
-			Eventually(func() error {
-				_, err := client.Publish(ctx, "mychannel", "hello").Result()
-				if err != nil {
-					return err
-				}
-
-				msg, err := pubsub.ReceiveTimeout(ctx, time.Second)
-				if err != nil {
-					return err
-				}
-
-				_, ok := msg.(*redis.Message)
-				if !ok {
-					return fmt.Errorf("got %T, wanted *redis.Message", msg)
-				}
-
-				return nil
-			}, 30*time.Second).ShouldNot(HaveOccurred())
-		})
-
-		It("supports sharded PubSub", func() {
+		It("should support sharded PubSub", func() {
 			pubsub := client.SSubscribe(ctx, "mychannel")
 			defer pubsub.Close()
 
@@ -749,88 +668,7 @@ var _ = Describe("ClusterClient", func() {
 			}, 30*time.Second).ShouldNot(HaveOccurred())
 		})
 
-		It("supports sharded PubSub with ReadOnly option", func() {
-			opt = redisClusterOptions()
-			opt.ReadOnly = true
-			client = cluster.newClusterClient(ctx, opt)
-
-			pubsub := client.SSubscribe(ctx, "mychannel")
-			defer pubsub.Close()
-
-			Eventually(func() error {
-				var masterPubsubShardChannels atomic.Int64
-				var slavePubsubShardChannels atomic.Int64
-
-				err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
-					info := master.InfoMap(ctx, "stats")
-					if info.Err() != nil {
-						return info.Err()
-					}
-
-					pc, err := strconv.Atoi(info.Item("Stats", "pubsubshard_channels"))
-					if err != nil {
-						return err
-					}
-
-					masterPubsubShardChannels.Add(int64(pc))
-
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-
-				err = client.ForEachSlave(ctx, func(ctx context.Context, slave *redis.Client) error {
-					info := slave.InfoMap(ctx, "stats")
-					if info.Err() != nil {
-						return info.Err()
-					}
-
-					pc, err := strconv.Atoi(info.Item("Stats", "pubsubshard_channels"))
-					if err != nil {
-						return err
-					}
-
-					slavePubsubShardChannels.Add(int64(pc))
-
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-
-				if c := masterPubsubShardChannels.Load(); c != int64(0) {
-					return fmt.Errorf("total master pubsubshard_channels is %d; expected 0", c)
-				}
-
-				if c := slavePubsubShardChannels.Load(); c != int64(1) {
-					return fmt.Errorf("total slave pubsubshard_channels is %d; expected 1", c)
-				}
-
-				return nil
-			}, 30*time.Second).ShouldNot(HaveOccurred())
-
-			Eventually(func() error {
-				_, err := client.SPublish(ctx, "mychannel", "hello").Result()
-				if err != nil {
-					return err
-				}
-
-				msg, err := pubsub.ReceiveTimeout(ctx, time.Second)
-				if err != nil {
-					return err
-				}
-
-				_, ok := msg.(*redis.Message)
-				if !ok {
-					return fmt.Errorf("got %T, wanted *redis.Message", msg)
-				}
-
-				return nil
-			}, 30*time.Second).ShouldNot(HaveOccurred())
-		})
-
-		It("supports PubSub.Ping without channels", func() {
+		It("should support PubSub.Ping without channels", func() {
 			pubsub := client.Subscribe(ctx)
 			defer pubsub.Close()
 
@@ -887,12 +725,12 @@ var _ = Describe("ClusterClient", func() {
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
-		It("returns pool stats", func() {
+		It("should return pool stats", func() {
 			stats := client.PoolStats()
 			Expect(stats).To(BeAssignableToTypeOf(&redis.PoolStats{}))
 		})
 
-		It("returns an error when there are no attempts left", func() {
+		It("should return an error when there are no attempts left", func() {
 			opt := redisClusterOptions()
 			opt.MaxRedirects = -1
 			client := cluster.newClusterClient(ctx, opt)
@@ -908,7 +746,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
-		It("determines hash slots correctly for generic commands", func() {
+		It("should determine hash slots correctly for generic commands", func() {
 			opt := redisClusterOptions()
 			opt.MaxRedirects = -1
 			client := cluster.newClusterClient(ctx, opt)
@@ -934,7 +772,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
-		It("follows node redirection immediately", func() {
+		It("should follow node redirection immediately", func() {
 			// Configure retry backoffs far in excess of the expected duration of redirection
 			opt := redisClusterOptions()
 			opt.MinRetryBackoff = 10 * time.Minute
@@ -960,7 +798,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
-		It("calls fn for every master node", func() {
+		It("should call fn for every master node", func() {
 			for i := 0; i < 10; i++ {
 				Expect(client.Set(ctx, strconv.Itoa(i), "", 0).Err()).NotTo(HaveOccurred())
 			}
@@ -1173,7 +1011,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(len(keys)).To(BeNumerically("~", nkeys, nkeys/10))
 		})
 
-		It("supports Process hook", func() {
+		It("should support Process hook", func() {
 			testCtx, cancel := context.WithCancel(ctx)
 			defer cancel()
 
@@ -1262,7 +1100,7 @@ var _ = Describe("ClusterClient", func() {
 			}))
 		})
 
-		It("supports Pipeline hook", func() {
+		It("should support Pipeline hook", func() {
 			err := client.Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1355,7 +1193,7 @@ var _ = Describe("ClusterClient", func() {
 			}))
 		})
 
-		It("rejects ping command in pipeline", func() {
+		It("should reject ping command in pipeline", func() {
 			// Test that ping command fails in pipeline as expected
 			_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.Ping(ctx)
@@ -1365,7 +1203,7 @@ var _ = Describe("ClusterClient", func() {
 			Expect(err.Error()).To(ContainSubstring("redis: cannot pipeline command \"ping\" with request policy ReqAllNodes/ReqAllShards/ReqMultiShard"))
 		})
 
-		It("supports TxPipeline hook", func() {
+		It("should support TxPipeline hook", func() {
 			err := client.Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1672,12 +1510,12 @@ var _ = Describe("ClusterClient without nodes", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("Ping returns an error", func() {
+	It("should return an error for Ping", func() {
 		err := client.Ping(ctx).Err()
 		Expect(err).To(MatchError("redis: cluster has no nodes"))
 	})
 
-	It("pipeline returns an error", func() {
+	It("should return an error for pipeline", func() {
 		_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Ping(ctx)
 			return nil
@@ -1699,12 +1537,12 @@ var _ = Describe("ClusterClient without valid nodes", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("returns an error", func() {
+	It("should return an error when cluster support is disabled", func() {
 		err := client.Ping(ctx).Err()
 		Expect(err).To(MatchError("ERR This instance has cluster support disabled"))
 	})
 
-	It("pipeline returns an error", func() {
+	It("should return an error for pipeline when cluster support is disabled", func() {
 		_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Ping(ctx)
 			return nil
@@ -1734,7 +1572,7 @@ var _ = Describe("ClusterClient with unavailable Cluster", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("recovers when Cluster recovers", func() {
+	It("should recover when Cluster recovers", func() {
 		err := client.Ping(ctx).Err()
 		Expect(err).To(HaveOccurred())
 
@@ -1752,13 +1590,13 @@ var _ = Describe("ClusterClient timeout", func() {
 	})
 
 	testTimeout := func() {
-		It("Ping timeouts", func() {
+		It("should timeout Ping", func() {
 			err := client.Ping(ctx).Err()
 			Expect(err).To(HaveOccurred())
 			Expect(err.(net.Error).Timeout()).To(BeTrue())
 		})
 
-		It("Pipeline timeouts", func() {
+		It("should timeout Pipeline", func() {
 			_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.Ping(ctx)
 				return nil
@@ -1767,7 +1605,7 @@ var _ = Describe("ClusterClient timeout", func() {
 			Expect(err.(net.Error).Timeout()).To(BeTrue())
 		})
 
-		It("Tx timeouts", func() {
+		It("should timeout Tx", func() {
 			err := client.Watch(ctx, func(tx *redis.Tx) error {
 				return tx.Ping(ctx).Err()
 			}, "foo")
@@ -1775,7 +1613,7 @@ var _ = Describe("ClusterClient timeout", func() {
 			Expect(err.(net.Error).Timeout()).To(BeTrue())
 		})
 
-		It("Tx Pipeline timeouts", func() {
+		It("should timeout Tx Pipeline", func() {
 			err := client.Watch(ctx, func(tx *redis.Tx) error {
 				_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 					pipe.Ping(ctx)
@@ -1834,140 +1672,1247 @@ var _ = Describe("ClusterClient timeout", func() {
 	})
 })
 
-var _ = Describe("ClusterClient ParseURL", func() {
-	cases := []struct {
-		test string
-		url  string
-		o    *redis.ClusterOptions // expected value
-		err  error
-	}{
-		{
-			test: "ParseRedisURL",
-			url:  "redis://localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}},
-		}, {
-			test: "ParseRedissURL",
-			url:  "rediss://localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
-		}, {
-			test: "MissingRedisPort",
-			url:  "redis://localhost",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}},
-		}, {
-			test: "MissingRedissPort",
-			url:  "rediss://localhost",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
-		}, {
-			test: "MultipleRedisURLs",
-			url:  "redis://localhost:123?addr=localhost:1234&addr=localhost:12345",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}},
-		}, {
-			test: "MultipleRedissURLs",
-			url:  "rediss://localhost:123?addr=localhost:1234&addr=localhost:12345",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
-		}, {
-			test: "OnlyPassword",
-			url:  "redis://:bar@localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Password: "bar"},
-		}, {
-			test: "OnlyUser",
-			url:  "redis://foo@localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo"},
-		}, {
-			test: "RedisUsernamePassword",
-			url:  "redis://foo:bar@localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo", Password: "bar"},
-		}, {
-			test: "RedissUsernamePassword",
-			url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}},
-		}, {
-			test: "QueryParameters",
-			url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, ReadTimeout: 2 * time.Second, PoolFIFO: true},
-		}, {
-			test: "DisabledTimeout",
-			url:  "redis://localhost:123?conn_max_idle_time=0",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
-		}, {
-			test: "DisabledTimeoutNeg",
-			url:  "redis://localhost:123?conn_max_idle_time=-1",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
-		}, {
-			test: "UseDefault",
-			url:  "redis://localhost:123?conn_max_idle_time=",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
-		}, {
-			test: "FailingTimeoutSeconds",
-			url:  "redis://localhost:123?failing_timeout_seconds=25",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, FailingTimeoutSeconds: 25},
-		}, {
-			test: "Protocol",
-			url:  "redis://localhost:123?protocol=2",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Protocol: 2},
-		}, {
-			test: "ClientName",
-			url:  "redis://localhost:123?client_name=cluster_hi",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ClientName: "cluster_hi"},
-		}, {
-			test: "UseDefaultMissing=",
-			url:  "redis://localhost:123?conn_max_idle_time",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
-		}, {
-			test: "InvalidQueryAddr",
-			url:  "rediss://foo:bar@localhost:123?addr=rediss://foo:barr@localhost:1234",
-			err:  errors.New(`redis: unable to parse addr param: rediss://foo:barr@localhost:1234`),
-		}, {
-			test: "InvalidInt",
-			url:  "redis://localhost?pool_size=five",
-			err:  errors.New(`redis: invalid pool_size number: strconv.Atoi: parsing "five": invalid syntax`),
-		}, {
-			test: "InvalidBool",
-			url:  "redis://localhost?pool_fifo=yes",
-			err:  errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
-		}, {
-			test: "UnknownParam",
-			url:  "redis://localhost?abc=123",
-			err:  errors.New("redis: unexpected option: abc"),
-		}, {
-			test: "InvalidScheme",
-			url:  "https://google.com",
-			err:  errors.New("redis: invalid URL scheme: https"),
-		},
-	}
+var _ = Describe("Command Tips tests", func() {
+	var client *redis.ClusterClient
 
-	It("match ParseClusterURL", func() {
-		for i := range cases {
-			tc := cases[i]
-			actual, err := redis.ParseClusterURL(tc.url)
-			if tc.err != nil {
-				Expect(err).Should(MatchError(tc.err))
-			} else {
+	BeforeEach(func() {
+		opt := redisClusterOptions()
+		client = cluster.newClusterClient(ctx, opt)
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should verify COMMAND tips match router policy types", func() {
+		SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+		expectedPolicies := map[string]struct {
+			RequestPolicy  string
+			ResponsePolicy string
+		}{
+			"touch": {
+				RequestPolicy:  "multi_shard",
+				ResponsePolicy: "agg_sum",
+			},
+			"flushall": {
+				RequestPolicy:  "all_shards",
+				ResponsePolicy: "all_succeeded",
+			},
+		}
+
+		cmds, err := client.Command(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		for cmdName, expected := range expectedPolicies {
+			actualCmd := cmds[cmdName]
+
+			Expect(actualCmd.Tips).NotTo(BeNil())
+
+			// Verify request_policy from COMMAND matches router policy
+			actualRequestPolicy := actualCmd.Tips.Request.String()
+			Expect(actualRequestPolicy).To(Equal(expected.RequestPolicy))
+
+			// Verify response_policy from COMMAND matches router policy
+			actualResponsePolicy := actualCmd.Tips.Response.String()
+			Expect(actualResponsePolicy).To(Equal(expected.ResponsePolicy))
+		}
+	})
+
+	Describe("Explicit Routing Policy Tests", func() {
+		It("should test explicit routing policy for TOUCH", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			// Verify TOUCH command has multi_shard policy
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			touchCmd := cmds["touch"]
+
+			Expect(touchCmd.Tips).NotTo(BeNil())
+			Expect(touchCmd.Tips.Request.String()).To(Equal("multi_shard"))
+			Expect(touchCmd.Tips.Response.String()).To(Equal("agg_sum"))
+
+			keys := []string{"key1", "key2", "key3", "key4", "key5"}
+			for _, key := range keys {
+				err := client.Set(ctx, key, "value", 0).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			if err == nil {
-				Expect(tc.o).NotTo(BeNil())
+			result := client.Touch(ctx, keys...)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal(int64(len(keys))))
+		})
 
-				Expect(tc.o.Addrs).To(Equal(actual.Addrs))
-				Expect(tc.o.TLSConfig).To(Equal(actual.TLSConfig))
-				Expect(tc.o.Username).To(Equal(actual.Username))
-				Expect(tc.o.Password).To(Equal(actual.Password))
-				Expect(tc.o.MaxRetries).To(Equal(actual.MaxRetries))
-				Expect(tc.o.MinRetryBackoff).To(Equal(actual.MinRetryBackoff))
-				Expect(tc.o.MaxRetryBackoff).To(Equal(actual.MaxRetryBackoff))
-				Expect(tc.o.DialTimeout).To(Equal(actual.DialTimeout))
-				Expect(tc.o.ReadTimeout).To(Equal(actual.ReadTimeout))
-				Expect(tc.o.WriteTimeout).To(Equal(actual.WriteTimeout))
-				Expect(tc.o.PoolFIFO).To(Equal(actual.PoolFIFO))
-				Expect(tc.o.PoolSize).To(Equal(actual.PoolSize))
-				Expect(tc.o.MinIdleConns).To(Equal(actual.MinIdleConns))
-				Expect(tc.o.ConnMaxLifetime).To(Equal(actual.ConnMaxLifetime))
-				Expect(tc.o.ConnMaxIdleTime).To(Equal(actual.ConnMaxIdleTime))
-				Expect(tc.o.PoolTimeout).To(Equal(actual.PoolTimeout))
-				Expect(tc.o.FailingTimeoutSeconds).To(Equal(actual.FailingTimeoutSeconds))
+		It("should test explicit routing policy for FLUSHALL", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			// Verify FLUSHALL command has all_shards policy
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			flushallCmd := cmds["flushall"]
+
+			Expect(flushallCmd.Tips).NotTo(BeNil())
+			Expect(flushallCmd.Tips.Request.String()).To(Equal("all_shards"))
+			Expect(flushallCmd.Tips.Response.String()).To(Equal("all_succeeded"))
+
+			testKeys := []string{"test1", "test2", "test3"}
+			for _, key := range testKeys {
+				err := client.Set(ctx, key, "value", 0).Err()
+				Expect(err).NotTo(HaveOccurred())
 			}
+
+			err = client.FlushAll(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, key := range testKeys {
+				exists := client.Exists(ctx, key)
+				Expect(exists.Val()).To(Equal(int64(0)))
+			}
+		})
+
+		It("should test explicit routing policy for PING", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			// Verify PING command has all_shards policy
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			pingCmd := cmds["ping"]
+			Expect(pingCmd.Tips).NotTo(BeNil())
+			Expect(pingCmd.Tips.Request.String()).To(Equal("all_shards"))
+			Expect(pingCmd.Tips.Response.String()).To(Equal("all_succeeded"))
+
+			result := client.Ping(ctx)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("PONG"))
+		})
+
+		It("should test explicit routing policy for DBSIZE", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			// Verify DBSIZE command has all_shards policy with agg_sum response
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			dbsizeCmd := cmds["dbsize"]
+			Expect(dbsizeCmd.Tips).NotTo(BeNil())
+			Expect(dbsizeCmd.Tips.Request.String()).To(Equal("all_shards"))
+			Expect(dbsizeCmd.Tips.Response.String()).To(Equal("agg_sum"))
+
+			testKeys := []string{"dbsize_test1", "dbsize_test2", "dbsize_test3"}
+			for _, key := range testKeys {
+				err := client.Set(ctx, key, "value", 0).Err()
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			size := client.DBSize(ctx)
+			Expect(size.Err()).NotTo(HaveOccurred())
+			Expect(size.Val()).To(BeNumerically(">=", int64(len(testKeys))))
+		})
+	})
+
+	Describe("DDL Commands Routing Policy Tests", func() {
+		BeforeEach(func() {
+			info := client.Info(ctx, "modules")
+			if info.Err() != nil || !strings.Contains(info.Val(), "search") {
+				Skip("Search module not available")
+			}
+		})
+
+		It("should test DDL commands routing policy for FT.CREATE", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			// Verify FT.CREATE command routing policy
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			ftCreateCmd, exists := cmds["ft.create"]
+			if !exists || ftCreateCmd.Tips == nil {
+				Skip("FT.CREATE command or tips not available")
+			}
+
+			// DDL commands should NOT be broadcasted - they should go to coordinator only
+			Expect(ftCreateCmd.Tips).NotTo(BeNil())
+			requestPolicy := ftCreateCmd.Tips.Request.String()
+			Expect(requestPolicy).NotTo(Equal("all_shards"))
+			Expect(requestPolicy).NotTo(Equal("all_nodes"))
+
+			indexName := "test_index_create"
+			client.FTDropIndex(ctx, indexName)
+
+			result := client.FTCreate(ctx, indexName,
+				&redis.FTCreateOptions{
+					OnHash: true,
+					Prefix: []interface{}{"doc:"},
+				},
+				&redis.FieldSchema{
+					FieldName: "title",
+					FieldType: redis.SearchFieldTypeText,
+				})
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			infoResult := client.FTInfo(ctx, indexName)
+			Expect(infoResult.Err()).NotTo(HaveOccurred())
+			Expect(infoResult.Val().IndexName).To(Equal(indexName))
+			client.FTDropIndex(ctx, indexName)
+		})
+
+		It("should test DDL commands routing policy for FT.ALTER", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			// Verify FT.ALTER command routing policy
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			ftAlterCmd, exists := cmds["ft.alter"]
+			if !exists || ftAlterCmd.Tips == nil {
+				Skip("FT.ALTER command or tips not available")
+			}
+
+			Expect(ftAlterCmd.Tips).NotTo(BeNil())
+			requestPolicy := ftAlterCmd.Tips.Request.String()
+			Expect(requestPolicy).NotTo(Equal("all_shards"))
+			Expect(requestPolicy).NotTo(Equal("all_nodes"))
+
+			indexName := "test_index_alter"
+			client.FTDropIndex(ctx, indexName)
+
+			result := client.FTCreate(ctx, indexName,
+				&redis.FTCreateOptions{
+					OnHash: true,
+					Prefix: []interface{}{"doc:"},
+				},
+				&redis.FieldSchema{
+					FieldName: "title",
+					FieldType: redis.SearchFieldTypeText,
+				})
+			Expect(result.Err()).NotTo(HaveOccurred())
+
+			alterResult := client.FTAlter(ctx, indexName, false,
+				[]interface{}{"description", redis.SearchFieldTypeText.String()})
+			Expect(alterResult.Err()).NotTo(HaveOccurred())
+			Expect(alterResult.Val()).To(Equal("OK"))
+			client.FTDropIndex(ctx, indexName)
+		})
+
+		It("should route keyed commands to correct shard based on hash slot", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			type masterNode struct {
+				client *redis.Client
+				addr   string
+			}
+			var masterNodes []masterNode
+			var mu sync.Mutex
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				addr := master.Options().Addr
+				mu.Lock()
+				masterNodes = append(masterNodes, masterNode{
+					client: master,
+					addr:   addr,
+				})
+				mu.Unlock()
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(masterNodes)).To(BeNumerically(">", 1))
+
+			// Single keyed command should go to exactly one shard - determined by hash slot
+			testKey := "test_key_12345"
+			testValue := "test_value"
+
+			result := client.Set(ctx, testKey, testValue, 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			time.Sleep(200 * time.Millisecond)
+
+			var targetNodeAddr string
+			foundNodes := 0
+
+			for _, node := range masterNodes {
+				getResult := node.client.Get(ctx, testKey)
+				if getResult.Err() == nil && getResult.Val() == testValue {
+					foundNodes++
+					targetNodeAddr = node.addr
+				} else {
+				}
+			}
+
+			Expect(foundNodes).To(Equal(1))
+			Expect(targetNodeAddr).NotTo(BeEmpty())
+
+			// Multiple commands with same key should go to same shard
+			finalValue := ""
+			for i := 0; i < 5; i++ {
+				finalValue = fmt.Sprintf("value_%d", i)
+				result := client.Set(ctx, testKey, finalValue, 0)
+				Expect(result.Err()).NotTo(HaveOccurred())
+				Expect(result.Val()).To(Equal("OK"))
+			}
+
+			time.Sleep(200 * time.Millisecond)
+
+			var currentTargetNode string
+			foundNodesAfterUpdate := 0
+
+			for _, node := range masterNodes {
+				getResult := node.client.Get(ctx, testKey)
+				if getResult.Err() == nil && getResult.Val() == finalValue {
+					foundNodesAfterUpdate++
+					currentTargetNode = node.addr
+				} else {
+				}
+			}
+
+			// All commands with same key should go to same shard
+			Expect(foundNodesAfterUpdate).To(Equal(1))
+			Expect(currentTargetNode).To(Equal(targetNodeAddr))
+		})
+
+		It("should aggregate responses according to explicit aggregation policies", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			type masterNode struct {
+				client *redis.Client
+				addr   string
+			}
+			var masterNodes []masterNode
+			var mu sync.Mutex
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				addr := master.Options().Addr
+				mu.Lock()
+				masterNodes = append(masterNodes, masterNode{
+					client: master,
+					addr:   addr,
+				})
+				mu.Unlock()
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(masterNodes)).To(BeNumerically(">", 1))
+
+			// verify TOUCH command has agg_sum policy
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			touchCmd, exists := cmds["touch"]
+			if !exists || touchCmd.Tips == nil {
+				Skip("TOUCH command or tips not available")
+			}
+
+			Expect(touchCmd.Tips.Response.String()).To(Equal("agg_sum"))
+
+			testKeys := []string{
+				"touch_test_key_1111", // These keys should map to different hash slots
+				"touch_test_key_2222",
+				"touch_test_key_3333",
+				"touch_test_key_4444",
+				"touch_test_key_5555",
+			}
+
+			// Set keys on different shards
+			keysPerShard := make(map[string][]string)
+			for _, key := range testKeys {
+				result := client.Set(ctx, key, "test_value", 0)
+				Expect(result.Err()).NotTo(HaveOccurred())
+
+				// Find which shard contains this key
+				for _, node := range masterNodes {
+					getResult := node.client.Get(ctx, key)
+					if getResult.Err() == nil {
+						keysPerShard[node.addr] = append(keysPerShard[node.addr], key)
+						break
+					}
+				}
+			}
+
+			// Verify keys are distributed across multiple shards
+			shardsWithKeys := len(keysPerShard)
+			Expect(shardsWithKeys).To(BeNumerically(">", 1))
+
+			// Execute TOUCH command on all keys - this should aggregate results using agg_sum
+			touchResult := client.Touch(ctx, testKeys...)
+			Expect(touchResult.Err()).NotTo(HaveOccurred())
+
+			totalTouched := touchResult.Val()
+			Expect(totalTouched).To(Equal(int64(len(testKeys))))
+
+			totalKeysOnShards := 0
+			for _, keys := range keysPerShard {
+				totalKeysOnShards += len(keys)
+			}
+
+			Expect(totalKeysOnShards).To(Equal(len(testKeys)))
+
+			// FLUSHALL command with all_succeeded aggregation policy
+			flushallCmd, exists := cmds["flushall"]
+			if !exists || flushallCmd.Tips == nil {
+				Skip("FLUSHALL command or tips not available")
+			}
+
+			Expect(flushallCmd.Tips.Response.String()).To(Equal("all_succeeded"))
+
+			for i := 0; i < len(masterNodes); i++ {
+				testKey := fmt.Sprintf("flush_test_key_%d_%d", i, time.Now().UnixNano())
+				result := client.Set(ctx, testKey, "test_data", 0)
+				Expect(result.Err()).NotTo(HaveOccurred())
+			}
+
+			flushResult := client.FlushAll(ctx)
+			Expect(flushResult.Err()).NotTo(HaveOccurred())
+			Expect(flushResult.Val()).To(Equal("OK"))
+
+			for _, node := range masterNodes {
+				dbSizeResult := node.client.DBSize(ctx)
+				Expect(dbSizeResult.Err()).NotTo(HaveOccurred())
+				Expect(dbSizeResult.Val()).To(Equal(int64(0)))
+			}
+
+			// PFCOUNT command aggregation policy - verify agg_min policy
+			pfcountCmd, exists := cmds["pfcount"]
+			if !exists || pfcountCmd.Tips == nil {
+				Skip("PFCOUNT command or tips not available")
+			}
+
+			actualPfcountPolicy := pfcountCmd.Tips.Response.String()
+
+			if actualPfcountPolicy != "agg_min" {
+				Skip("PFCOUNT does not have agg_min policy in this Redis version")
+			}
+
+			// Create HyperLogLog keys on different shards with different cardinalities
+			hllKeys := []string{
+				"hll_test_key_1111",
+				"hll_test_key_2222",
+				"hll_test_key_3333",
+			}
+
+			hllData := map[string][]string{
+				"hll_test_key_1111": {"elem1", "elem2", "elem3", "elem4", "elem5"},
+				"hll_test_key_2222": {"elem6", "elem7", "elem8"},
+				"hll_test_key_3333": {"elem9", "elem10", "elem11", "elem12", "elem13", "elem14", "elem15"},
+			}
+
+			hllKeysPerShard := make(map[string][]string)
+			expectedCounts := make(map[string]int64)
+
+			for key, elements := range hllData {
+
+				interfaceElements := make([]interface{}, len(elements))
+				for i, elem := range elements {
+					interfaceElements[i] = elem
+				}
+				result := client.PFAdd(ctx, key, interfaceElements...)
+				Expect(result.Err()).NotTo(HaveOccurred())
+
+				countResult := client.PFCount(ctx, key)
+				Expect(countResult.Err()).NotTo(HaveOccurred())
+				expectedCounts[key] = countResult.Val()
+
+				for _, node := range masterNodes {
+					// Check if key exists on this shard by trying to get its count
+					shardCountResult := node.client.PFCount(ctx, key)
+					if shardCountResult.Err() == nil && shardCountResult.Val() > 0 {
+						hllKeysPerShard[node.addr] = append(hllKeysPerShard[node.addr], key)
+						break
+					}
+				}
+			}
+
+			// Verify keys are distributed across multiple shards
+			shardsWithHLLKeys := len(hllKeysPerShard)
+			Expect(shardsWithHLLKeys).To(BeNumerically(">", 1))
+
+			// Execute PFCOUNT command on all keys - should aggregate using agg_min
+			pfcountResult := client.PFCount(ctx, hllKeys...)
+			Expect(pfcountResult.Err()).NotTo(HaveOccurred())
+
+			aggregatedCount := pfcountResult.Val()
+
+			// Verify the aggregation by manually getting counts from each shard
+			var shardCounts []int64
+			for shardAddr, keys := range hllKeysPerShard {
+				if len(keys) == 0 {
+					continue
+				}
+
+				// Find the node for this shard
+				var shardNode *masterNode
+				for i := range masterNodes {
+					if masterNodes[i].addr == shardAddr {
+						shardNode = &masterNodes[i]
+						break
+					}
+				}
+				Expect(shardNode).NotTo(BeNil())
+
+				// Get count for keys on this specific shard
+				shardResult := shardNode.client.PFCount(ctx, keys...)
+				Expect(shardResult.Err()).NotTo(HaveOccurred())
+
+				shardCount := shardResult.Val()
+				shardCounts = append(shardCounts, shardCount)
+			}
+
+			// Find the minimum count from all shards
+			expectedMin := shardCounts[0]
+			for _, count := range shardCounts[1:] {
+				if count < expectedMin {
+					expectedMin = count
+				}
+			}
+
+			// Verify agg_min aggregation worked correctly
+			Expect(aggregatedCount).To(Equal(expectedMin))
+
+			// EXISTS command aggregation policy - verify agg_logical_and policy
+			existsCmd, exists := cmds["exists"]
+			if !exists || existsCmd.Tips == nil {
+				Skip("EXISTS command or tips not available")
+			}
+
+			actualExistsPolicy := existsCmd.Tips.Response.String()
+			if actualExistsPolicy != "agg_logical_and" {
+				Skip("EXISTS does not have agg_logical_and policy in this Redis version")
+			}
+
+			existsTestKeys := []string{
+				"exists_test_key_1111",
+				"exists_test_key_2222",
+				"exists_test_key_3333",
+			}
+
+			for _, key := range existsTestKeys {
+				result := client.Set(ctx, key, "exists_test_value", 0)
+				Expect(result.Err()).NotTo(HaveOccurred())
+			}
+
+			//All keys exist - should return true
+			existsResult := client.Exists(ctx, existsTestKeys...)
+			Expect(existsResult.Err()).NotTo(HaveOccurred())
+
+			allExistCount := existsResult.Val()
+			Expect(allExistCount).To(Equal(int64(len(existsTestKeys))))
+
+			// Delete one key and test again - logical AND should handle mixed results
+			deletedKey := existsTestKeys[0]
+			delResult := client.Del(ctx, deletedKey)
+			Expect(delResult.Err()).NotTo(HaveOccurred())
+
+			// Check EXISTS again - now one key is missing
+			existsResult2 := client.Exists(ctx, existsTestKeys...)
+			Expect(existsResult2.Err()).NotTo(HaveOccurred())
+
+			partialExistCount := existsResult2.Val()
+
+			// Should return count of existing keys (2 out of 3)
+			Expect(partialExistCount).To(Equal(int64(len(existsTestKeys) - 1)))
+		})
+
+		It("should verify command aggregation policies", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			commandPolicies := map[string]string{
+				"touch":    "agg_sum",
+				"flushall": "all_succeeded",
+				"pfcount":  "agg_min",
+				"exists":   "agg_logical_and",
+			}
+
+			for cmdName, expectedPolicy := range commandPolicies {
+				cmd, exists := cmds[cmdName]
+				if !exists {
+					continue
+				}
+
+				if cmd.Tips == nil {
+					continue
+				}
+
+				actualPolicy := cmd.Tips.Response.String()
+				Expect(actualPolicy).To(Equal(expectedPolicy))
+			}
+		})
+
+		It("should properly aggregate responses from keyless commands executed on multiple shards", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			type masterNode struct {
+				client *redis.Client
+				addr   string
+			}
+			var masterNodes []masterNode
+			var mu sync.Mutex
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				addr := master.Options().Addr
+				mu.Lock()
+				masterNodes = append(masterNodes, masterNode{
+					client: master,
+					addr:   addr,
+				})
+				mu.Unlock()
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(masterNodes)).To(BeNumerically(">", 1))
+
+			// PING command with all_shards policy - should aggregate responses
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			pingCmd, exists := cmds["ping"]
+			if exists && pingCmd.Tips != nil {
+			}
+
+			pingResult := client.Ping(ctx)
+			Expect(pingResult.Err()).NotTo(HaveOccurred())
+			Expect(pingResult.Val()).To(Equal("PONG"))
+
+			// Verify PING was executed on all shards by checking individual nodes
+			for _, node := range masterNodes {
+				nodePingResult := node.client.Ping(ctx)
+				Expect(nodePingResult.Err()).NotTo(HaveOccurred())
+				Expect(nodePingResult.Val()).To(Equal("PONG"))
+			}
+
+			// Test 2: DBSIZE command aggregation across shards - verify agg_sum policy
+			testKeys := []string{
+				"dbsize_test_key_1111",
+				"dbsize_test_key_2222",
+				"dbsize_test_key_3333",
+				"dbsize_test_key_4444",
+			}
+
+			for _, key := range testKeys {
+				result := client.Set(ctx, key, "test_value", 0)
+				Expect(result.Err()).NotTo(HaveOccurred())
+			}
+
+			dbSizeResult := client.DBSize(ctx)
+			Expect(dbSizeResult.Err()).NotTo(HaveOccurred())
+
+			totalSize := dbSizeResult.Val()
+			Expect(totalSize).To(BeNumerically(">=", int64(len(testKeys))))
+
+			// Verify aggregation by manually getting sizes from each shard
+			totalManualSize := int64(0)
+
+			for _, node := range masterNodes {
+				nodeDbSizeResult := node.client.DBSize(ctx)
+				Expect(nodeDbSizeResult.Err()).NotTo(HaveOccurred())
+
+				nodeSize := nodeDbSizeResult.Val()
+				totalManualSize += nodeSize
+			}
+
+			// Verify aggregation worked correctly
+			Expect(totalSize).To(Equal(totalManualSize))
+		})
+
+		It("should properly aggregate responses from keyed commands executed on multiple shards", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			type masterNode struct {
+				client *redis.Client
+				addr   string
+			}
+			var masterNodes []masterNode
+			var mu sync.Mutex
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				addr := master.Options().Addr
+				mu.Lock()
+				masterNodes = append(masterNodes, masterNode{
+					client: master,
+					addr:   addr,
+				})
+				mu.Unlock()
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(masterNodes)).To(BeNumerically(">", 1))
+
+			// MGET command aggregation across multiple keys on different shards - verify agg_sum policy
+			testData := map[string]string{
+				"mget_test_key_1111": "value1",
+				"mget_test_key_2222": "value2",
+				"mget_test_key_3333": "value3",
+				"mget_test_key_4444": "value4",
+				"mget_test_key_5555": "value5",
+			}
+
+			keyLocations := make(map[string]string)
+			for key, value := range testData {
+
+				result := client.Set(ctx, key, value, 0)
+				Expect(result.Err()).NotTo(HaveOccurred())
+
+				for _, node := range masterNodes {
+					getResult := node.client.Get(ctx, key)
+					if getResult.Err() == nil && getResult.Val() == value {
+						keyLocations[key] = node.addr
+						break
+					}
+				}
+			}
+
+			shardsUsed := make(map[string]bool)
+			for _, shardAddr := range keyLocations {
+				shardsUsed[shardAddr] = true
+			}
+			Expect(len(shardsUsed)).To(BeNumerically(">", 1))
+
+			keys := make([]string, 0, len(testData))
+			expectedValues := make([]interface{}, 0, len(testData))
+
+			for key, value := range testData {
+				keys = append(keys, key)
+				expectedValues = append(expectedValues, value)
+			}
+
+			mgetResult := client.MGet(ctx, keys...)
+			Expect(mgetResult.Err()).NotTo(HaveOccurred())
+
+			actualValues := mgetResult.Val()
+			Expect(len(actualValues)).To(Equal(len(keys)))
+			Expect(actualValues).To(ConsistOf(expectedValues))
+
+			// Verify all values are correctly aggregated
+			for i, key := range keys {
+				expectedValue := testData[key]
+				actualValue := actualValues[i]
+				Expect(actualValue).To(Equal(expectedValue))
+			}
+
+			// DEL command aggregation across multiple keys on different shards
+			delResult := client.Del(ctx, keys...)
+			Expect(delResult.Err()).NotTo(HaveOccurred())
+
+			deletedCount := delResult.Val()
+			Expect(deletedCount).To(Equal(int64(len(keys))))
+
+			// Verify keys are actually deleted from their respective shards
+			for key, shardAddr := range keyLocations {
+				var targetNode *masterNode
+				for i := range masterNodes {
+					if masterNodes[i].addr == shardAddr {
+						targetNode = &masterNodes[i]
+						break
+					}
+				}
+				Expect(targetNode).NotTo(BeNil())
+
+				getResult := targetNode.client.Get(ctx, key)
+				Expect(getResult.Err()).To(HaveOccurred())
+			}
+
+			// EXISTS command aggregation across multiple keys
+			existsTestData := map[string]string{
+				"exists_agg_key_1111": "value1",
+				"exists_agg_key_2222": "value2",
+				"exists_agg_key_3333": "value3",
+			}
+
+			existsKeys := make([]string, 0, len(existsTestData))
+			for key, value := range existsTestData {
+				result := client.Set(ctx, key, value, 0)
+				Expect(result.Err()).NotTo(HaveOccurred())
+				existsKeys = append(existsKeys, key)
+			}
+
+			// Add a non-existent key to the list
+			nonExistentKey := "non_existent_key_9999"
+			existsKeys = append(existsKeys, nonExistentKey)
+
+			existsResult := client.Exists(ctx, existsKeys...)
+			Expect(existsResult.Err()).NotTo(HaveOccurred())
+
+			existsCount := existsResult.Val()
+			Expect(existsCount).To(Equal(int64(len(existsTestData))))
+		})
+
+		It("should propagate coordinator errors to client without modification", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			type masterNode struct {
+				client *redis.Client
+				addr   string
+			}
+			var masterNodes []masterNode
+			var mu sync.Mutex
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				addr := master.Options().Addr
+				mu.Lock()
+				masterNodes = append(masterNodes, masterNode{
+					client: master,
+					addr:   addr,
+				})
+				mu.Unlock()
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(masterNodes)).To(BeNumerically(">", 0))
+
+			invalidSlotResult := client.ClusterAddSlotsRange(ctx, 99999, 100000)
+			coordinatorErr := invalidSlotResult.Err()
+
+			if coordinatorErr != nil {
+				// Verify the error is a Redis error
+				var redisErr redis.Error
+				Expect(errors.As(coordinatorErr, &redisErr)).To(BeTrue())
+
+				// Verify error message is preserved exactly as returned by coordinator
+				errorMsg := coordinatorErr.Error()
+				Expect(errorMsg).To(SatisfyAny(
+					ContainSubstring("slot"),
+					ContainSubstring("ERR"),
+					ContainSubstring("Invalid"),
+				))
+
+				// Test that the same error occurs when calling coordinator directly
+				coordinatorNode := masterNodes[0]
+				directResult := coordinatorNode.client.ClusterAddSlotsRange(ctx, 99999, 100000)
+				directErr := directResult.Err()
+
+				if directErr != nil {
+					Expect(coordinatorErr.Error()).To(Equal(directErr.Error()))
+				}
+			}
+
+			// Try cluster forget with invalid node ID
+			invalidNodeID := "invalid_node_id_12345"
+			forgetResult := client.ClusterForget(ctx, invalidNodeID)
+			forgetErr := forgetResult.Err()
+
+			if forgetErr != nil {
+				var redisErr redis.Error
+				Expect(errors.As(forgetErr, &redisErr)).To(BeTrue())
+
+				errorMsg := forgetErr.Error()
+				Expect(errorMsg).To(SatisfyAny(
+					ContainSubstring("Unknown node"),
+					ContainSubstring("Invalid node"),
+					ContainSubstring("ERR"),
+				))
+
+				coordinatorNode := masterNodes[0]
+				directForgetResult := coordinatorNode.client.ClusterForget(ctx, invalidNodeID)
+				directForgetErr := directForgetResult.Err()
+
+				if directForgetErr != nil {
+					Expect(forgetErr.Error()).To(Equal(directForgetErr.Error()))
+				}
+			}
+
+			// Test error type preservation and format
+			keySlotResult := client.ClusterKeySlot(ctx, "")
+			keySlotErr := keySlotResult.Err()
+
+			if keySlotErr != nil {
+				var redisErr redis.Error
+				Expect(errors.As(keySlotErr, &redisErr)).To(BeTrue())
+
+				errorMsg := keySlotErr.Error()
+				Expect(len(errorMsg)).To(BeNumerically(">", 0))
+				Expect(errorMsg).NotTo(ContainSubstring("wrapped"))
+				Expect(errorMsg).NotTo(ContainSubstring("context"))
+			}
+
+			// Verify error propagation consistency
+			clusterInfoResult := client.ClusterInfo(ctx)
+			clusterInfoErr := clusterInfoResult.Err()
+
+			if clusterInfoErr != nil {
+				var redisErr redis.Error
+				Expect(errors.As(clusterInfoErr, &redisErr)).To(BeTrue())
+
+				coordinatorNode := masterNodes[0]
+				directInfoResult := coordinatorNode.client.ClusterInfo(ctx)
+				directInfoErr := directInfoResult.Err()
+
+				if directInfoErr != nil {
+					Expect(clusterInfoErr.Error()).To(Equal(directInfoErr.Error()))
+				}
+			}
+
+			// Verify no error modification in router
+			invalidReplicateResult := client.ClusterReplicate(ctx, "00000000000000000000000000000000invalid00")
+			invalidReplicateErr := invalidReplicateResult.Err()
+
+			if invalidReplicateErr != nil {
+				var redisErr redis.Error
+				Expect(errors.As(invalidReplicateErr, &redisErr)).To(BeTrue())
+
+				errorMsg := invalidReplicateErr.Error()
+				Expect(errorMsg).NotTo(ContainSubstring("router"))
+				Expect(errorMsg).NotTo(ContainSubstring("cluster client"))
+				Expect(errorMsg).NotTo(ContainSubstring("failed to execute"))
+
+				Expect(errorMsg).To(SatisfyAny(
+					HavePrefix("ERR"),
+					ContainSubstring("Invalid"),
+					ContainSubstring("Unknown"),
+				))
+			}
+		})
+
+		It("should route keyless commands to arbitrary shards using round robin", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			var numMasters int
+			var numMastersMu sync.Mutex
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				numMastersMu.Lock()
+				numMasters++
+				numMastersMu.Unlock()
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(numMasters).To(BeNumerically(">", 1))
+
+			err = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				return master.ConfigResetStat(ctx).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Helper function to get ECHO command counts from all nodes
+			getEchoCounts := func() map[string]int {
+				echoCounts := make(map[string]int)
+				var echoCountsMu sync.Mutex
+				err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+					info := master.Info(ctx, "server")
+					Expect(info.Err()).NotTo(HaveOccurred())
+
+					serverInfo := info.Val()
+					portStart := strings.Index(serverInfo, "tcp_port:")
+					portLine := serverInfo[portStart:]
+					portEnd := strings.Index(portLine, "\r\n")
+					if portEnd == -1 {
+						portEnd = len(portLine)
+					}
+					port := strings.TrimPrefix(portLine[:portEnd], "tcp_port:")
+
+					commandStats := master.Info(ctx, "commandstats")
+					count := 0
+					if commandStats.Err() == nil {
+						stats := commandStats.Val()
+						cmdStatKey := "cmdstat_echo:"
+						if strings.Contains(stats, cmdStatKey) {
+							statStart := strings.Index(stats, cmdStatKey)
+							statLine := stats[statStart:]
+							statEnd := strings.Index(statLine, "\r\n")
+							if statEnd == -1 {
+								statEnd = len(statLine)
+							}
+							statLine = statLine[:statEnd]
+
+							callsStart := strings.Index(statLine, "calls=")
+							if callsStart != -1 {
+								callsStr := statLine[callsStart+6:]
+								callsEnd := strings.Index(callsStr, ",")
+								if callsEnd == -1 {
+									callsEnd = strings.Index(callsStr, "\r")
+									if callsEnd == -1 {
+										callsEnd = len(callsStr)
+									}
+								}
+								if callsCount, err := strconv.Atoi(callsStr[:callsEnd]); err == nil {
+									count = callsCount
+								}
+							}
+						}
+					}
+
+					echoCountsMu.Lock()
+					echoCounts[port] = count
+					echoCountsMu.Unlock()
+					return nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				return echoCounts
+			}
+
+			// Single ECHO command should go to exactly one shard
+			result := client.Echo(ctx, "single_test")
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("single_test"))
+
+			time.Sleep(200 * time.Millisecond)
+
+			// Verify single command went to exactly one shard
+			echoCounts := getEchoCounts()
+			shardsWithEcho := 0
+			for _, count := range echoCounts {
+				if count > 0 {
+					shardsWithEcho++
+					Expect(count).To(Equal(1))
+				}
+			}
+			Expect(shardsWithEcho).To(Equal(1))
+
+			// Test Multiple ECHO commands should distribute across all shards using round robin
+			numCommands := numMasters * 3
+
+			for i := 0; i < numCommands; i++ {
+				result := client.Echo(ctx, fmt.Sprintf("multi_test_%d", i))
+				Expect(result.Err()).NotTo(HaveOccurred())
+				Expect(result.Val()).To(Equal(fmt.Sprintf("multi_test_%d", i)))
+			}
+
+			time.Sleep(200 * time.Millisecond)
+
+			echoCounts = getEchoCounts()
+			totalEchos := 0
+			shardsWithEchos := 0
+			for _, count := range echoCounts {
+				if count > 0 {
+					shardsWithEchos++
+				}
+				totalEchos += count
+			}
+
+			// All shards should now have some ECHO commands
+			Expect(shardsWithEchos).To(Equal(numMasters))
+
+			expectedTotal := 1 + numCommands
+			Expect(totalEchos).To(Equal(expectedTotal))
+		})
+	})
+
+	var _ = Describe("ClusterClient ParseURL", func() {
+		cases := []struct {
+			test string
+			url  string
+			o    *redis.ClusterOptions // expected value
+			err  error
+		}{
+			{
+				test: "ParseRedisURL",
+				url:  "redis://localhost:123",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}},
+			}, {
+				test: "ParseRedissURL",
+				url:  "rediss://localhost:123",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+			}, {
+				test: "MissingRedisPort",
+				url:  "redis://localhost",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}},
+			}, {
+				test: "MissingRedissPort",
+				url:  "rediss://localhost",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+			}, {
+				test: "MultipleRedisURLs",
+				url:  "redis://localhost:123?addr=localhost:1234&addr=localhost:12345",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}},
+			}, {
+				test: "MultipleRedissURLs",
+				url:  "rediss://localhost:123?addr=localhost:1234&addr=localhost:12345",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+			}, {
+				test: "OnlyPassword",
+				url:  "redis://:bar@localhost:123",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Password: "bar"},
+			}, {
+				test: "OnlyUser",
+				url:  "redis://foo@localhost:123",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo"},
+			}, {
+				test: "RedisUsernamePassword",
+				url:  "redis://foo:bar@localhost:123",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Username: "foo", Password: "bar"},
+			}, {
+				test: "RedissUsernamePassword",
+				url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}},
+			}, {
+				test: "QueryParameters",
+				url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, ReadTimeout: 2 * time.Second, PoolFIFO: true},
+			}, {
+				test: "DisabledTimeout",
+				url:  "redis://localhost:123?conn_max_idle_time=0",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
+			}, {
+				test: "DisabledTimeoutNeg",
+				url:  "redis://localhost:123?conn_max_idle_time=-1",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: -1},
+			}, {
+				test: "UseDefault",
+				url:  "redis://localhost:123?conn_max_idle_time=",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
+			}, {
+				test: "Protocol",
+				url:  "redis://localhost:123?protocol=2",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, Protocol: 2},
+			}, {
+				test: "ClientName",
+				url:  "redis://localhost:123?client_name=cluster_hi",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ClientName: "cluster_hi"},
+			}, {
+				test: "UseDefaultMissing=",
+				url:  "redis://localhost:123?conn_max_idle_time",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, ConnMaxIdleTime: 0},
+			}, {
+				test: "InvalidQueryAddr",
+				url:  "rediss://foo:bar@localhost:123?addr=rediss://foo:barr@localhost:1234",
+				err:  errors.New(`redis: unable to parse addr param: rediss://foo:barr@localhost:1234`),
+			}, {
+				test: "InvalidInt",
+				url:  "redis://localhost?pool_size=five",
+				err:  errors.New(`redis: invalid pool_size number: strconv.Atoi: parsing "five": invalid syntax`),
+			}, {
+				test: "InvalidBool",
+				url:  "redis://localhost?pool_fifo=yes",
+				err:  errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
+			}, {
+				test: "UnknownParam",
+				url:  "redis://localhost?abc=123",
+				err:  errors.New("redis: unexpected option: abc"),
+			}, {
+				test: "InvalidScheme",
+				url:  "https://google.com",
+				err:  errors.New("redis: invalid URL scheme: https"),
+			},
 		}
+
+		It("should match ParseClusterURL", func() {
+			for i := range cases {
+				tc := cases[i]
+				actual, err := redis.ParseClusterURL(tc.url)
+				if tc.err != nil {
+					Expect(err).Should(MatchError(tc.err))
+				} else {
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				if err == nil {
+					Expect(tc.o).NotTo(BeNil())
+
+					Expect(tc.o.Addrs).To(Equal(actual.Addrs))
+					Expect(tc.o.TLSConfig).To(Equal(actual.TLSConfig))
+					Expect(tc.o.Username).To(Equal(actual.Username))
+					Expect(tc.o.Password).To(Equal(actual.Password))
+					Expect(tc.o.MaxRetries).To(Equal(actual.MaxRetries))
+					Expect(tc.o.MinRetryBackoff).To(Equal(actual.MinRetryBackoff))
+					Expect(tc.o.MaxRetryBackoff).To(Equal(actual.MaxRetryBackoff))
+					Expect(tc.o.DialTimeout).To(Equal(actual.DialTimeout))
+					Expect(tc.o.ReadTimeout).To(Equal(actual.ReadTimeout))
+					Expect(tc.o.WriteTimeout).To(Equal(actual.WriteTimeout))
+					Expect(tc.o.PoolFIFO).To(Equal(actual.PoolFIFO))
+					Expect(tc.o.PoolSize).To(Equal(actual.PoolSize))
+					Expect(tc.o.MinIdleConns).To(Equal(actual.MinIdleConns))
+					Expect(tc.o.ConnMaxLifetime).To(Equal(actual.ConnMaxLifetime))
+					Expect(tc.o.ConnMaxIdleTime).To(Equal(actual.ConnMaxIdleTime))
+					Expect(tc.o.PoolTimeout).To(Equal(actual.PoolTimeout))
+				}
+			}
+		})
+
+		It("should distribute keyless commands randomly across shards using random shard picker", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			// Create a cluster client with random shard picker
+			opt := redisClusterOptions()
+			opt.ShardPicker = &routing.RandomPicker{}
+			randomClient := cluster.newClusterClient(ctx, opt)
+			defer randomClient.Close()
+
+			Eventually(func() error {
+				return randomClient.Ping(ctx).Err()
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+
+			var numMasters int
+			var numMastersMu sync.Mutex
+			err := randomClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				numMastersMu.Lock()
+				numMasters++
+				numMastersMu.Unlock()
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(numMasters).To(BeNumerically(">", 1))
+
+			// Reset command statistics on all masters
+			err = randomClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				return master.ConfigResetStat(ctx).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Helper function to get ECHO command counts from all nodes
+			getEchoCounts := func() map[string]int {
+				echoCounts := make(map[string]int)
+				var echoCountsMu sync.Mutex
+				err := randomClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+					addr := master.Options().Addr
+					port := addr[strings.LastIndex(addr, ":")+1:]
+
+					info, err := master.Info(ctx, "commandstats").Result()
+					if err != nil {
+						return err
+					}
+
+					count := 0
+					if strings.Contains(info, "cmdstat_echo:") {
+						lines := strings.Split(info, "\n")
+						for _, line := range lines {
+							if strings.HasPrefix(line, "cmdstat_echo:") {
+								parts := strings.Split(line, ",")
+								if len(parts) > 0 {
+									callsPart := strings.Split(parts[0], "=")
+									if len(callsPart) > 1 {
+										if parsedCount, parseErr := strconv.Atoi(callsPart[1]); parseErr == nil {
+											count = parsedCount
+										}
+									}
+								}
+								break
+							}
+						}
+					}
+
+					echoCountsMu.Lock()
+					echoCounts[port] = count
+					echoCountsMu.Unlock()
+					return nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				return echoCounts
+			}
+
+			// Execute multiple ECHO commands and measure distribution
+			numCommands := 100
+			for i := 0; i < numCommands; i++ {
+				result := randomClient.Echo(ctx, fmt.Sprintf("random_test_%d", i))
+				Expect(result.Err()).NotTo(HaveOccurred())
+			}
+
+			echoCounts := getEchoCounts()
+
+			totalEchos := 0
+			shardsWithEchos := 0
+
+			for _, count := range echoCounts {
+				if count > 0 {
+					shardsWithEchos++
+				}
+				totalEchos += count
+			}
+
+			Expect(totalEchos).To(Equal(numCommands))
+			Expect(shardsWithEchos).To(BeNumerically(">=", 2))
+		})
 	})
 })
 

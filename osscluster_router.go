@@ -312,10 +312,21 @@ func (c *ClusterClient) executeParallel(ctx context.Context, cmd Cmder, nodes []
 		close(results)
 	}()
 
-	// Collect results
+	// Collect results and check for errors
 	cmds := make([]Cmder, 0, len(nodes))
+	var firstErr error
+
 	for result := range results {
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+		}
 		cmds = append(cmds, result.cmd)
+	}
+
+	// If there was an error and no policy specified, fail fast
+	if firstErr != nil && (policy == nil || policy.Response == routing.RespDefaultKeyless) {
+		cmd.SetErr(firstErr)
+		return firstErr
 	}
 
 	return c.aggregateResponses(cmd, cmds, policy)
@@ -342,11 +353,11 @@ func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder
 		return firstErr
 	}
 
-	return c.aggregateKeyedResponses(ctx, cmd, keyedResults, keyOrder, policy)
+	return c.aggregateKeyedResponses(cmd, keyedResults, keyOrder, policy)
 }
 
 // aggregateKeyedResponses aggregates responses while preserving key order
-func (c *ClusterClient) aggregateKeyedResponses(ctx context.Context, cmd Cmder, keyedResults map[string]Cmder, keyOrder []string, policy *routing.CommandPolicy) error {
+func (c *ClusterClient) aggregateKeyedResponses(cmd Cmder, keyedResults map[string]Cmder, keyOrder []string, policy *routing.CommandPolicy) error {
 	if len(keyedResults) == 0 {
 		return fmt.Errorf("redis: no results to aggregate")
 	}

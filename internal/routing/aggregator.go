@@ -218,6 +218,9 @@ func (a *AggMinAggregator) Finish() (interface{}, error) {
 	if a.firstErr != nil {
 		return nil, a.firstErr
 	}
+	if !a.hasResult {
+		return nil, fmt.Errorf("redis: no valid results to aggregate for min operation")
+	}
 	return a.min, nil
 }
 
@@ -263,6 +266,9 @@ func (a *AggMaxAggregator) Finish() (interface{}, error) {
 
 	if a.firstErr != nil {
 		return nil, a.firstErr
+	}
+	if !a.hasResult {
+		return nil, fmt.Errorf("redis: no valid results to aggregate for max operation")
 	}
 	return a.max, nil
 }
@@ -312,6 +318,9 @@ func (a *AggLogicalAndAggregator) Finish() (interface{}, error) {
 	if a.firstErr != nil {
 		return nil, a.firstErr
 	}
+	if !a.hasResult {
+		return nil, fmt.Errorf("redis: no valid results to aggregate for logical AND operation")
+	}
 	return a.result, nil
 }
 
@@ -359,6 +368,9 @@ func (a *AggLogicalOrAggregator) Finish() (interface{}, error) {
 
 	if a.firstErr != nil {
 		return nil, a.firstErr
+	}
+	if !a.hasResult {
+		return nil, fmt.Errorf("redis: no valid results to aggregate for logical OR operation")
 	}
 	return a.result, nil
 }
