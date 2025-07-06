@@ -335,16 +335,41 @@ func (c *ClusterClient) executeParallel(ctx context.Context, cmd Cmder, nodes []
 
 // aggregateMultiSlotResults aggregates results from multi-slot execution
 func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder, results <-chan slotResult, keyOrder []string, policy *routing.CommandPolicy) error {
-	keyedResults := make(map[string]Cmder)
+	keyedResults := make(map[string]interface{})
 	var firstErr error
 
 	for result := range results {
 		if result.err != nil && firstErr == nil {
 			firstErr = result.err
 		}
-		if result.cmd != nil {
-			for _, key := range result.keys {
-				keyedResults[key] = result.cmd
+		if result.cmd != nil && result.err == nil {
+			// For MGET, extract individual values from the array result
+			if strings.ToLower(cmd.Name()) == "mget" {
+				if sliceCmd, ok := result.cmd.(*SliceCmd); ok {
+					values := sliceCmd.Val()
+					if len(values) == len(result.keys) {
+						for i, key := range result.keys {
+							keyedResults[key] = values[i]
+						}
+					} else {
+						// Fallback: map all keys to the entire result
+						for _, key := range result.keys {
+							keyedResults[key] = values
+						}
+					}
+				} else {
+					// Fallback for non-SliceCmd results
+					value := ExtractCommandValue(result.cmd)
+					for _, key := range result.keys {
+						keyedResults[key] = value
+					}
+				}
+			} else {
+				// For other commands, map each key to the entire result
+				value := ExtractCommandValue(result.cmd)
+				for _, key := range result.keys {
+					keyedResults[key] = value
+				}
 			}
 		}
 	}
@@ -354,7 +379,36 @@ func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder
 		return firstErr
 	}
 
-	return c.aggregateKeyedResponses(cmd, keyedResults, keyOrder, policy)
+	return c.aggregateKeyedValues(cmd, keyedResults, keyOrder, policy)
+}
+
+// aggregateKeyedValues aggregates individual key-value pairs while preserving key order
+func (c *ClusterClient) aggregateKeyedValues(cmd Cmder, keyedResults map[string]interface{}, keyOrder []string, policy *routing.CommandPolicy) error {
+	if len(keyedResults) == 0 {
+		return fmt.Errorf("redis: no results to aggregate")
+	}
+
+	aggregator := c.createAggregator(policy, cmd, true)
+
+	// Set key order for keyed aggregators
+	if keyedAgg, ok := aggregator.(*routing.DefaultKeyedAggregator); ok {
+		keyedAgg.SetKeyOrder(keyOrder)
+	}
+
+	// Add results with keys
+	for key, value := range keyedResults {
+		if keyedAgg, ok := aggregator.(*routing.DefaultKeyedAggregator); ok {
+			if err := keyedAgg.AddWithKey(key, value, nil); err != nil {
+				return err
+			}
+		} else {
+			if err := aggregator.Add(value, nil); err != nil {
+				return err
+			}
+		}
+	}
+
+	return c.finishAggregation(cmd, aggregator)
 }
 
 // aggregateKeyedResponses aggregates responses while preserving key order
@@ -418,15 +472,13 @@ func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *rout
 
 // createAggregator creates the appropriate response aggregator
 func (c *ClusterClient) createAggregator(policy *routing.CommandPolicy, cmd Cmder, isKeyed bool) routing.ResponseAggregator {
+	cmdName := strings.ToLower(cmd.Name())
+	// For MGET without policy, use keyed aggregator
+	if cmdName == "mget" {
+		return routing.NewDefaultAggregator(true)
+	}
+
 	if policy != nil {
-		// For specific multi-shard commands that need keyed aggregation despite having
-		// all_succeeded policy (like MGET which needs to preserve key order)
-		if policy.Request == routing.ReqMultiShard && policy.Response == routing.RespAllSucceeded && isKeyed {
-			cmdName := strings.ToLower(cmd.Name())
-			if cmdName == "mget" {
-				return routing.NewDefaultAggregator(true)
-			}
-		}
 		return routing.NewResponseAggregator(policy.Response, cmd.Name())
 	}
 
