@@ -224,6 +224,18 @@ type Options struct {
 	// PushNotificationProcessor is the processor for handling push notifications.
 	// If nil, a default processor will be created for RESP3 connections.
 	PushNotificationProcessor push.NotificationProcessor
+
+	// HitlessUpgrades enables hitless upgrade functionality for cluster upgrades.
+	// Requires Protocol: 3 (RESP3) for push notifications.
+	// When enabled, the client will automatically handle cluster upgrade notifications
+	// and manage connection/pool state transitions seamlessly.
+	//
+	// default: false
+	HitlessUpgrades bool
+
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// If nil, default configuration will be used when HitlessUpgrades is true.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
 
 func (opt *Options) init() {

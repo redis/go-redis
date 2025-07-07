@@ -565,3 +565,24 @@ func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 	cn.SetUsedAt(now)
 	return true
 }
+
+// GetDialer returns the current dialer function for the pool
+func (p *ConnPool) GetDialer() func(context.Context) (net.Conn, error) {
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+	return p.cfg.Dialer
+}
+
+// SetDialer sets a new dialer function for the pool
+// This is used for hitless upgrades to redirect new connections to new endpoints
+func (p *ConnPool) SetDialer(dialer func(context.Context) (net.Conn, error)) error {
+	if p.closed() {
+		return ErrClosed
+	}
+
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+
+	p.cfg.Dialer = dialer
+	return nil
+}
