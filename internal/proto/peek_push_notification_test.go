@@ -3,6 +3,7 @@ package proto
 import (
 	"bytes"
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -215,9 +216,9 @@ func TestPeekPushNotificationName(t *testing.T) {
 					// This is acceptable behavior for malformed input
 					name, err := reader.PeekPushNotificationName()
 					if err != nil {
-						t.Logf("PeekPushNotificationName errored for corrupted data %s: %v", tc.name, err)
+						t.Logf("PeekPushNotificationName errored for corrupted data %s: %v (DATA: %s)", tc.name, err, tc.data)
 					} else {
-						t.Logf("PeekPushNotificationName returned '%s' for corrupted data %s", name, tc.name)
+						t.Logf("PeekPushNotificationName returned '%s' for corrupted data NAME: %s, DATA: %s", name, tc.name, tc.data)
 					}
 				})
 			}
@@ -293,15 +294,27 @@ func TestPeekPushNotificationName(t *testing.T) {
 func createValidPushNotification(notificationName, data string) *bytes.Buffer {
 	buf := &bytes.Buffer{}
 
+	simpleOrString := rand.Intn(2) == 0
+
 	if data == "" {
+
 		// Single element notification
 		buf.WriteString(">1\r\n")
-		buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName))
+		if simpleOrString {
+			buf.WriteString(fmt.Sprintf("+%s\r\n", notificationName))
+		} else {
+			buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName))
+		}
 	} else {
 		// Two element notification
 		buf.WriteString(">2\r\n")
-		buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName))
-		buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(data), data))
+		if simpleOrString {
+			buf.WriteString(fmt.Sprintf("+%s\r\n", notificationName))
+			buf.WriteString(fmt.Sprintf("+%s\r\n", data))
+		} else {
+			buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName))
+			buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName))
+		}
 	}
 
 	return buf

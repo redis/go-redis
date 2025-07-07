@@ -110,6 +110,18 @@ type ClusterOptions struct {
 
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	UnstableResp3 bool
+
+	// HitlessUpgrades enables hitless upgrade functionality for cluster upgrades.
+	// Requires Protocol: 3 (RESP3) for push notifications.
+	// When enabled, the client will automatically handle cluster upgrade notifications
+	// and manage connection/pool state transitions seamlessly.
+	//
+	// default: false
+	HitlessUpgrades bool
+
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// If nil, default configuration will be used when HitlessUpgrades is true.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
 
 func (opt *ClusterOptions) init() {
@@ -327,8 +339,10 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// much use for ClusterSlots config).  This means we cannot execute the
 		// READONLY command against that node -- setting readOnly to false in such
 		// situations in the options below will prevent that from happening.
-		readOnly:      opt.ReadOnly && opt.ClusterSlots == nil,
-		UnstableResp3: opt.UnstableResp3,
+		readOnly:             opt.ReadOnly && opt.ClusterSlots == nil,
+		UnstableResp3:        opt.UnstableResp3,
+		HitlessUpgrades:      opt.HitlessUpgrades,
+		HitlessUpgradeConfig: opt.HitlessUpgradeConfig,
 	}
 }
 
@@ -943,6 +957,9 @@ type ClusterClient struct {
 	cmdsInfoCache *cmdsInfoCache
 	cmdable
 	hooksMixin
+
+	// hitlessIntegration provides hitless upgrade functionality
+	hitlessIntegration HitlessIntegration
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -969,6 +986,22 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		txPipeline: c.processTxPipeline,
 	})
 
+	// Initialize hitless upgrades if enabled
+	if opt.HitlessUpgrades {
+		if opt.Protocol != 3 {
+			internal.Logger.Printf(context.Background(), "hitless: RESP3 protocol required for hitless upgrades, but Protocol is %d", opt.Protocol)
+		} else {
+			timeoutProvider := newOptionsTimeoutProvider(opt.ReadTimeout, opt.WriteTimeout)
+			integration, err := initializeHitlessIntegration(c, opt.HitlessUpgradeConfig, timeoutProvider)
+			if err != nil {
+				internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
+			} else {
+				c.hitlessIntegration = integration
+				internal.Logger.Printf(context.Background(), "hitless: successfully initialized hitless upgrades for cluster client")
+			}
+		}
+	}
+
 	return c
 }
 
@@ -976,6 +1009,14 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 func (c *ClusterClient) Options() *ClusterOptions {
 	return c.opt
 }
+
+// GetHitlessIntegration returns the hitless integration instance for monitoring and control.
+// Returns nil if hitless upgrades are not enabled.
+func (c *ClusterClient) GetHitlessIntegration() HitlessIntegration {
+	return c.hitlessIntegration
+}
+
+// getPushNotificationProcessor removed - not needed in simplified implementation
 
 // ReloadState reloads cluster state. If available it calls ClusterSlots func
 // to get cluster slots information.
@@ -988,6 +1029,13 @@ func (c *ClusterClient) ReloadState(ctx context.Context) {
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
 // to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
+	// Close hitless integration first
+	if c.hitlessIntegration != nil {
+		if err := c.hitlessIntegration.Close(); err != nil {
+			internal.Logger.Printf(context.Background(), "hitless: error closing hitless integration: %v", err)
+		}
+	}
+
 	return c.nodes.Close()
 }
 

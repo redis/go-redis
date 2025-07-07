@@ -116,26 +116,55 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 	if buf[0] != RespPush {
 		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
 	}
-	// remove push notification type and length
-	buf = buf[2:]
+
+	if len(buf) < 3 {
+		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
+	}
+
+	// remove push notification type
+	buf = buf[1:]
+	// remove first line - e.g. >2\r\n
 	for i := 0; i < len(buf)-1; i++ {
 		if buf[i] == '\r' && buf[i+1] == '\n' {
 			buf = buf[i+2:]
 			break
+		} else {
+			if buf[i] < '0' || buf[i] > '9' {
+				return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
+			}
 		}
 	}
+	if len(buf) < 2 {
+		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
+	}
+	// next line should be $<length><string>\r\n or +<length><string>\r\n
 	// should have the type of the push notification name and it's length
-	if buf[0] != RespString {
+	if buf[0] != RespString && buf[0] != RespStatus {
 		return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
 	}
-	// skip the length of the string
-	for i := 0; i < len(buf)-1; i++ {
-		if buf[i] == '\r' && buf[i+1] == '\n' {
-			buf = buf[i+2:]
-			break
+	typeOfName := buf[0]
+	// remove the type of the push notification name
+	buf = buf[1:]
+	if typeOfName == RespString {
+		// remove the length of the string
+		if len(buf) < 2 {
+			return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
+		}
+		for i := 0; i < len(buf)-1; i++ {
+			if buf[i] == '\r' && buf[i+1] == '\n' {
+				buf = buf[i+2:]
+				break
+			} else {
+				if buf[i] < '0' || buf[i] > '9' {
+					return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
+				}
+			}
 		}
 	}
 
+	if len(buf) < 2 {
+		return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
+	}
 	// keep only the notification name
 	for i := 0; i < len(buf)-1; i++ {
 		if buf[i] == '\r' && buf[i+1] == '\n' {
@@ -143,6 +172,7 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 			break
 		}
 	}
+
 	return util.BytesToString(buf), nil
 }
 
