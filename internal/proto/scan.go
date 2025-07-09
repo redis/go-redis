@@ -6,7 +6,7 @@ import (
 	"net"
 	"reflect"
 	"time"
-
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
@@ -22,6 +22,14 @@ func Scan(b []byte, v interface{}) error {
 		return nil
 	case *[]byte:
 		*v = b
+		return nil
+	case *uuid.UUID:
+		str := util.BytesToString(b)
+		u, err := uuid.Parse(str)
+		if err != nil {
+			return fmt.Errorf("redis: failed to parse uuid: %w", err)
+		}
+		*v = u
 		return nil
 	case *int:
 		var err error
@@ -120,6 +128,7 @@ func Scan(b []byte, v interface{}) error {
 	case *net.IP:
 		*v = b
 		return nil
+
 	default:
 		return fmt.Errorf(
 			"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)", v)
