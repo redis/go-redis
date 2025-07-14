@@ -1652,21 +1652,24 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 		}
 
 		if i < len(data) {
-			fields, ok := data[i].([]interface{})
-			if !ok {
-				return FTSearchResult{}, fmt.Errorf("invalid document fields format")
-			}
+			if data[i] != nil {
+				fields, ok := data[i].([]interface{})
+				if !ok {
+					fmt.Println(data[i])
+					return FTSearchResult{}, fmt.Errorf("invalid document fields format")
+				}
 
-			for j := 0; j < len(fields); j += 2 {
-				key, ok := fields[j].(string)
-				if !ok {
-					return FTSearchResult{}, fmt.Errorf("invalid field key format")
+				for j := 0; j < len(fields); j += 2 {
+					key, ok := fields[j].(string)
+					if !ok {
+						return FTSearchResult{}, fmt.Errorf("invalid field key format")
+					}
+					value, ok := fields[j+1].(string)
+					if !ok {
+						return FTSearchResult{}, fmt.Errorf("invalid field value format")
+					}
+					doc.Fields[key] = value
 				}
-				value, ok := fields[j+1].(string)
-				if !ok {
-					return FTSearchResult{}, fmt.Errorf("invalid field value format")
-				}
-				doc.Fields[key] = value
 			}
 			i++
 		}
