@@ -351,7 +351,7 @@ For example:
 		"idx:bicycle",
 		"@pickup_zone:[CONTAINS $bike]",
 		&redis.FTSearchOptions{
-			Params: map[string]interface{}{
+			Params: map[string]any{
 				"bike": "POINT(-0.1278 51.5074)",
 			},
 			DialectVersion: 3,

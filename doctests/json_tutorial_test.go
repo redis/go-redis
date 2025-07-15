@@ -187,9 +187,9 @@ func ExampleClient_arr() {
 
 	// STEP_START arr
 	res11, err := rdb.JSONSet(ctx, "newbike", "$",
-		[]interface{}{
+		[]any{
 			"Deimos",
-			map[string]interface{}{"crashes": 0},
+			map[string]any{"crashes": 0},
 			nil,
 		},
 	).Result()
@@ -255,7 +255,7 @@ func ExampleClient_arr2() {
 	// REMOVE_END
 
 	// STEP_START arr2
-	res16, err := rdb.JSONSet(ctx, "riders", "$", []interface{}{}).Result()
+	res16, err := rdb.JSONSet(ctx, "riders", "$", []any{}).Result()
 
 	if err != nil {
 		panic(err)
@@ -361,7 +361,7 @@ func ExampleClient_obj() {
 
 	// STEP_START obj
 	res25, err := rdb.JSONSet(ctx, "bike:1", "$",
-		map[string]interface{}{
+		map[string]any{
 			"model": "Deimos",
 			"brand": "Ergonom",
 			"price": 4972,
@@ -397,10 +397,10 @@ func ExampleClient_obj() {
 	// [[brand model price]]
 }
 
-var inventory_json = map[string]interface{}{
-	"inventory": map[string]interface{}{
-		"mountain_bikes": []interface{}{
-			map[string]interface{}{
+var inventory_json = map[string]any{
+	"inventory": map[string]any{
+		"mountain_bikes": []any{
+			map[string]any{
 				"id":    "bike:1",
 				"model": "Phoebe",
 				"description": "This is a mid-travel trail slayer that is a fantastic " +
@@ -409,10 +409,10 @@ var inventory_json = map[string]interface{}{
 					"mudguards and a rack too.  This is the bike for the rider who wants " +
 					"trail manners with low fuss ownership.",
 				"price":  1920,
-				"specs":  map[string]interface{}{"material": "carbon", "weight": 13.1},
-				"colors": []interface{}{"black", "silver"},
+				"specs":  map[string]any{"material": "carbon", "weight": 13.1},
+				"colors": []any{"black", "silver"},
 			},
-			map[string]interface{}{
+			map[string]any{
 				"id":    "bike:2",
 				"model": "Quaoar",
 				"description": "Redesigned for the 2020 model year, this bike " +
@@ -422,10 +422,10 @@ var inventory_json = map[string]interface{}{
 					"and tear. All in all it's an impressive package for the price, " +
 					"making it very competitive.",
 				"price":  2072,
-				"specs":  map[string]interface{}{"material": "aluminium", "weight": 7.9},
-				"colors": []interface{}{"black", "white"},
+				"specs":  map[string]any{"material": "aluminium", "weight": 7.9},
+				"colors": []any{"black", "white"},
 			},
-			map[string]interface{}{
+			map[string]any{
 				"id":    "bike:3",
 				"model": "Weywot",
 				"description": "This bike gives kids aged six years and older " +
@@ -435,11 +435,11 @@ var inventory_json = map[string]interface{}{
 					"ability. If you're after a budget option, this is one of the best " +
 					"bikes you could get.",
 				"price": 3264,
-				"specs": map[string]interface{}{"material": "alloy", "weight": 13.8},
+				"specs": map[string]any{"material": "alloy", "weight": 13.8},
 			},
 		},
-		"commuter_bikes": []interface{}{
-			map[string]interface{}{
+		"commuter_bikes": []any{
+			map[string]any{
 				"id":    "bike:4",
 				"model": "Salacia",
 				"description": "This bike is a great option for anyone who just " +
@@ -448,10 +448,10 @@ var inventory_json = map[string]interface{}{
 					"bank and delivers craved performance.  It\u2019s for the rider " +
 					"who wants both efficiency and capability.",
 				"price":  1475,
-				"specs":  map[string]interface{}{"material": "aluminium", "weight": 16.6},
-				"colors": []interface{}{"black", "silver"},
+				"specs":  map[string]any{"material": "aluminium", "weight": 16.6},
+				"colors": []any{"black", "silver"},
 			},
-			map[string]interface{}{
+			map[string]any{
 				"id":    "bike:5",
 				"model": "Mimas",
 				"description": "A real joy to ride, this bike got very high " +
@@ -463,7 +463,7 @@ var inventory_json = map[string]interface{}{
 					"conveniently placed thumb throttle. Put it all together and you " +
 					"get a bike that helps redefine what can be done for this price.",
 				"price": 3941,
-				"specs": map[string]interface{}{"material": "alloy", "weight": 11.6},
+				"specs": map[string]any{"material": "alloy", "weight": 11.6},
 			},
 		},
 	},
@@ -483,10 +483,10 @@ func ExampleClient_setbikes() {
 	// REMOVE_END
 
 	// STEP_START set_bikes
-	var inventory_json = map[string]interface{}{
-		"inventory": map[string]interface{}{
-			"mountain_bikes": []interface{}{
-				map[string]interface{}{
+	var inventory_json = map[string]any{
+		"inventory": map[string]any{
+			"mountain_bikes": []any{
+				map[string]any{
 					"id":    "bike:1",
 					"model": "Phoebe",
 					"description": "This is a mid-travel trail slayer that is a fantastic " +
@@ -495,10 +495,10 @@ func ExampleClient_setbikes() {
 						"mudguards and a rack too.  This is the bike for the rider who wants " +
 						"trail manners with low fuss ownership.",
 					"price":  1920,
-					"specs":  map[string]interface{}{"material": "carbon", "weight": 13.1},
-					"colors": []interface{}{"black", "silver"},
+					"specs":  map[string]any{"material": "carbon", "weight": 13.1},
+					"colors": []any{"black", "silver"},
 				},
-				map[string]interface{}{
+				map[string]any{
 					"id":    "bike:2",
 					"model": "Quaoar",
 					"description": "Redesigned for the 2020 model year, this bike " +
@@ -508,10 +508,10 @@ func ExampleClient_setbikes() {
 						"and tear. All in all it's an impressive package for the price, " +
 						"making it very competitive.",
 					"price":  2072,
-					"specs":  map[string]interface{}{"material": "aluminium", "weight": 7.9},
-					"colors": []interface{}{"black", "white"},
+					"specs":  map[string]any{"material": "aluminium", "weight": 7.9},
+					"colors": []any{"black", "white"},
 				},
-				map[string]interface{}{
+				map[string]any{
 					"id":    "bike:3",
 					"model": "Weywot",
 					"description": "This bike gives kids aged six years and older " +
@@ -521,11 +521,11 @@ func ExampleClient_setbikes() {
 						"ability. If you're after a budget option, this is one of the best " +
 						"bikes you could get.",
 					"price": 3264,
-					"specs": map[string]interface{}{"material": "alloy", "weight": 13.8},
+					"specs": map[string]any{"material": "alloy", "weight": 13.8},
 				},
 			},
-			"commuter_bikes": []interface{}{
-				map[string]interface{}{
+			"commuter_bikes": []any{
+				map[string]any{
 					"id":    "bike:4",
 					"model": "Salacia",
 					"description": "This bike is a great option for anyone who just " +
@@ -534,10 +534,10 @@ func ExampleClient_setbikes() {
 						"bank and delivers craved performance.  It\u2019s for the rider " +
 						"who wants both efficiency and capability.",
 					"price":  1475,
-					"specs":  map[string]interface{}{"material": "aluminium", "weight": 16.6},
-					"colors": []interface{}{"black", "silver"},
+					"specs":  map[string]any{"material": "aluminium", "weight": 16.6},
+					"colors": []any{"black", "silver"},
 				},
-				map[string]interface{}{
+				map[string]any{
 					"id":    "bike:5",
 					"model": "Mimas",
 					"description": "A real joy to ride, this bike got very high " +
@@ -549,7 +549,7 @@ func ExampleClient_setbikes() {
 						"conveniently placed thumb throttle. Put it all together and you " +
 						"get a bike that helps redefine what can be done for this price.",
 					"price": 3941,
-					"specs": map[string]interface{}{"material": "alloy", "weight": 11.6},
+					"specs": map[string]any{"material": "alloy", "weight": 11.6},
 				},
 			},
 		},

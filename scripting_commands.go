@@ -3,10 +3,10 @@ package redis
 import "context"
 
 type ScriptingFunctionsCmdable interface {
-	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd
-	EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd
-	EvalRO(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd
-	EvalShaRO(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd
+	Eval(ctx context.Context, script string, keys []string, args ...any) *Cmd
+	EvalSha(ctx context.Context, sha1 string, keys []string, args ...any) *Cmd
+	EvalRO(ctx context.Context, script string, keys []string, args ...any) *Cmd
+	EvalShaRO(ctx context.Context, sha1 string, keys []string, args ...any) *Cmd
 	ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd
 	ScriptFlush(ctx context.Context) *StatusCmd
 	ScriptKill(ctx context.Context) *StatusCmd
@@ -22,29 +22,29 @@ type ScriptingFunctionsCmdable interface {
 	FunctionDump(ctx context.Context) *StringCmd
 	FunctionRestore(ctx context.Context, libDump string) *StringCmd
 	FunctionStats(ctx context.Context) *FunctionStatsCmd
-	FCall(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
-	FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
-	FCallRO(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd
+	FCall(ctx context.Context, function string, keys []string, args ...any) *Cmd
+	FCallRo(ctx context.Context, function string, keys []string, args ...any) *Cmd
+	FCallRO(ctx context.Context, function string, keys []string, args ...any) *Cmd
 }
 
-func (c cmdable) Eval(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) Eval(ctx context.Context, script string, keys []string, args ...any) *Cmd {
 	return c.eval(ctx, "eval", script, keys, args...)
 }
 
-func (c cmdable) EvalRO(ctx context.Context, script string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) EvalRO(ctx context.Context, script string, keys []string, args ...any) *Cmd {
 	return c.eval(ctx, "eval_ro", script, keys, args...)
 }
 
-func (c cmdable) EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) EvalSha(ctx context.Context, sha1 string, keys []string, args ...any) *Cmd {
 	return c.eval(ctx, "evalsha", sha1, keys, args...)
 }
 
-func (c cmdable) EvalShaRO(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) EvalShaRO(ctx context.Context, sha1 string, keys []string, args ...any) *Cmd {
 	return c.eval(ctx, "evalsha_ro", sha1, keys, args...)
 }
 
-func (c cmdable) eval(ctx context.Context, name, payload string, keys []string, args ...interface{}) *Cmd {
-	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
+func (c cmdable) eval(ctx context.Context, name, payload string, keys []string, args ...any) *Cmd {
+	cmdArgs := make([]any, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = name
 	cmdArgs[1] = payload
 	cmdArgs[2] = len(keys)
@@ -64,7 +64,7 @@ func (c cmdable) eval(ctx context.Context, name, payload string, keys []string, 
 }
 
 func (c cmdable) ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd {
-	args := make([]interface{}, 2+len(hashes))
+	args := make([]any, 2+len(hashes))
 	args[0] = "script"
 	args[1] = "exists"
 	for i, hash := range hashes {
@@ -143,7 +143,7 @@ func (c cmdable) FunctionFlushAsync(ctx context.Context) *StringCmd {
 }
 
 func (c cmdable) FunctionList(ctx context.Context, q FunctionListQuery) *FunctionListCmd {
-	args := make([]interface{}, 2, 5)
+	args := make([]any, 2, 5)
 	args[0] = "function"
 	args[1] = "list"
 	if q.LibraryNamePattern != "" {
@@ -175,7 +175,7 @@ func (c cmdable) FunctionStats(ctx context.Context) *FunctionStatsCmd {
 	return cmd
 }
 
-func (c cmdable) FCall(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) FCall(ctx context.Context, function string, keys []string, args ...any) *Cmd {
 	cmdArgs := fcallArgs("fcall", function, keys, args...)
 	cmd := NewCmd(ctx, cmdArgs...)
 	if len(keys) > 0 {
@@ -187,11 +187,11 @@ func (c cmdable) FCall(ctx context.Context, function string, keys []string, args
 
 // FCallRo this function simply calls FCallRO,
 // Deprecated: to maintain convention FCallRO.
-func (c cmdable) FCallRo(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) FCallRo(ctx context.Context, function string, keys []string, args ...any) *Cmd {
 	return c.FCallRO(ctx, function, keys, args...)
 }
 
-func (c cmdable) FCallRO(ctx context.Context, function string, keys []string, args ...interface{}) *Cmd {
+func (c cmdable) FCallRO(ctx context.Context, function string, keys []string, args ...any) *Cmd {
 	cmdArgs := fcallArgs("fcall_ro", function, keys, args...)
 	cmd := NewCmd(ctx, cmdArgs...)
 	if len(keys) > 0 {
@@ -201,8 +201,8 @@ func (c cmdable) FCallRO(ctx context.Context, function string, keys []string, ar
 	return cmd
 }
 
-func fcallArgs(command string, function string, keys []string, args ...interface{}) []interface{} {
-	cmdArgs := make([]interface{}, 3+len(keys), 3+len(keys)+len(args))
+func fcallArgs(command string, function string, keys []string, args ...any) []any {
+	cmdArgs := make([]any, 3+len(keys), 3+len(keys)+len(args))
 	cmdArgs[0] = command
 	cmdArgs[1] = function
 	cmdArgs[2] = len(keys)
