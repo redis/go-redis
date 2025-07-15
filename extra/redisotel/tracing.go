@@ -42,6 +42,7 @@ func InstrumentTracing(ctx context.Context, rdb redis.UniversalClient, opts ...T
 			opts = addServerAttributes(opts, opt.Addr)
 			connString := formatDBConnString(opt.Network, opt.Addr)
 			rdb.AddHook(newTracingHook(connString, opts...))
+			return nil
 		})
 		return nil
 	case *redis.Ring:
@@ -57,6 +58,7 @@ func InstrumentTracing(ctx context.Context, rdb redis.UniversalClient, opts ...T
 			opts = addServerAttributes(opts, opt.Addr)
 			connString := formatDBConnString(opt.Network, opt.Addr)
 			rdb.AddHook(newTracingHook(connString, opts...))
+			return nil
 		})
 		return nil
 	default:
