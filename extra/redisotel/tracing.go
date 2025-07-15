@@ -21,7 +21,7 @@ const (
 	instrumName = "github.com/redis/go-redis/extra/redisotel"
 )
 
-func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
+func InstrumentTracing(ctx context.Context, rdb redis.UniversalClient, opts ...TracingOption) error {
 	switch rdb := rdb.(type) {
 	case *redis.Client:
 		opt := rdb.Options()
@@ -36,9 +36,23 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 			connString := formatDBConnString(opt.Network, opt.Addr)
 			rdb.AddHook(newTracingHook(connString, opts...))
 		})
+
+		rdb.ForEachShard(ctx, func(ctx context.Context, rdb *redis.Client) error {
+			opt := rdb.Options()
+			opts = addServerAttributes(opts, opt.Addr)
+			connString := formatDBConnString(opt.Network, opt.Addr)
+			rdb.AddHook(newTracingHook(connString, opts...))
+		})
 		return nil
 	case *redis.Ring:
 		rdb.OnNewNode(func(rdb *redis.Client) {
+			opt := rdb.Options()
+			opts = addServerAttributes(opts, opt.Addr)
+			connString := formatDBConnString(opt.Network, opt.Addr)
+			rdb.AddHook(newTracingHook(connString, opts...))
+		})
+
+		rdb.ForEachShard(ctx, func(ctx context.Context, rdb *redis.Client) error {
 			opt := rdb.Options()
 			opts = addServerAttributes(opts, opt.Addr)
 			connString := formatDBConnString(opt.Network, opt.Addr)
