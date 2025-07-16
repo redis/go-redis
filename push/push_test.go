@@ -1653,27 +1653,23 @@ func TestErrorHelperFunctions(t *testing.T) {
 	})
 }
 
-// TestErrorConstants tests the error message constants
+// TestErrorConstants tests the error reason constants
 func TestErrorConstants(t *testing.T) {
-	t.Run("ErrorMessageConstants", func(t *testing.T) {
-		if MsgHandlerNil != "handler cannot be nil" {
-			t.Errorf("MsgHandlerNil should be 'handler cannot be nil', got: %s", MsgHandlerNil)
+	t.Run("ErrorReasonConstants", func(t *testing.T) {
+		if ReasonHandlerNil != "handler cannot be nil" {
+			t.Errorf("ReasonHandlerNil should be 'handler cannot be nil', got: %s", ReasonHandlerNil)
 		}
 
-		if MsgHandlerExists != "cannot overwrite existing handler for push notification: %s" {
-			t.Errorf("MsgHandlerExists should be 'cannot overwrite existing handler for push notification: %%s', got: %s", MsgHandlerExists)
+		if ReasonHandlerExists != "cannot overwrite existing handler" {
+			t.Errorf("ReasonHandlerExists should be 'cannot overwrite existing handler', got: %s", ReasonHandlerExists)
 		}
 
-		if MsgProtectedHandler != "cannot unregister protected handler for push notification: %s" {
-			t.Errorf("MsgProtectedHandler should be 'cannot unregister protected handler for push notification: %%s', got: %s", MsgProtectedHandler)
+		if ReasonHandlerProtected != "handler is protected" {
+			t.Errorf("ReasonHandlerProtected should be 'handler is protected', got: %s", ReasonHandlerProtected)
 		}
 
-		if MsgVoidProcessorRegister != "cannot register push notification handler '%s': push notifications are disabled (using void processor)" {
-			t.Errorf("MsgVoidProcessorRegister constant mismatch, got: %s", MsgVoidProcessorRegister)
-		}
-
-		if MsgVoidProcessorUnregister != "cannot unregister push notification handler '%s': push notifications are disabled (using void processor)" {
-			t.Errorf("MsgVoidProcessorUnregister constant mismatch, got: %s", MsgVoidProcessorUnregister)
+		if ReasonPushNotificationsDisabled != "push notifications are disabled" {
+			t.Errorf("ReasonPushNotificationsDisabled should be 'push notifications are disabled', got: %s", ReasonPushNotificationsDisabled)
 		}
 	})
 }

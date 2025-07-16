@@ -8,45 +8,46 @@ import (
 // Push notification error definitions
 // This file contains all error types and messages used by the push notification system
 
+// Error reason constants
+const (
+	// HandlerReasons
+	ReasonHandlerNil       = "handler cannot be nil"
+	ReasonHandlerExists    = "cannot overwrite existing handler"
+	ReasonHandlerProtected = "handler is protected"
+
+	// ProcessorReasons
+	ReasonPushNotificationsDisabled = "push notifications are disabled"
+)
+
 // Common error variables for reuse
 var (
 	// ErrHandlerNil is returned when attempting to register a nil handler
-	ErrHandlerNil = errors.New("handler cannot be nil")
+	ErrHandlerNil = errors.New(ReasonHandlerNil)
 )
 
 // Registry errors
 
 // ErrHandlerExists creates an error for when attempting to overwrite an existing handler
 func ErrHandlerExists(pushNotificationName string) error {
-	return NewHandlerError("register", pushNotificationName, "cannot overwrite existing handler", nil)
+	return NewHandlerError("register", pushNotificationName, ReasonHandlerExists, nil)
 }
 
 // ErrProtectedHandler creates an error for when attempting to unregister a protected handler
 func ErrProtectedHandler(pushNotificationName string) error {
-	return NewHandlerError("unregister", pushNotificationName, "handler is protected", nil)
+	return NewHandlerError("unregister", pushNotificationName, ReasonHandlerProtected, nil)
 }
 
 // VoidProcessor errors
 
 // ErrVoidProcessorRegister creates an error for when attempting to register a handler on void processor
 func ErrVoidProcessorRegister(pushNotificationName string) error {
-	return NewProcessorError("void_processor", "register", pushNotificationName, "push notifications are disabled", nil)
+	return NewProcessorError("void_processor", "register", pushNotificationName, ReasonPushNotificationsDisabled, nil)
 }
 
 // ErrVoidProcessorUnregister creates an error for when attempting to unregister a handler on void processor
 func ErrVoidProcessorUnregister(pushNotificationName string) error {
-	return NewProcessorError("void_processor", "unregister", pushNotificationName, "push notifications are disabled", nil)
+	return NewProcessorError("void_processor", "unregister", pushNotificationName, ReasonPushNotificationsDisabled, nil)
 }
-
-// Error message constants for consistency
-const (
-	// Error message templates
-	MsgHandlerNil              = "handler cannot be nil"
-	MsgHandlerExists           = "cannot overwrite existing handler for push notification: %s"
-	MsgProtectedHandler        = "cannot unregister protected handler for push notification: %s"
-	MsgVoidProcessorRegister   = "cannot register push notification handler '%s': push notifications are disabled (using void processor)"
-	MsgVoidProcessorUnregister = "cannot unregister push notification handler '%s': push notifications are disabled (using void processor)"
-)
 
 // Error type definitions for advanced error handling
 
@@ -124,7 +125,7 @@ func IsHandlerNilError(err error) bool {
 // IsHandlerExistsError checks if an error is due to attempting to overwrite an existing handler
 func IsHandlerExistsError(err error) bool {
 	if handlerErr, ok := err.(*HandlerError); ok {
-		return handlerErr.Operation == "register" && handlerErr.Reason == "cannot overwrite existing handler"
+		return handlerErr.Operation == "register" && handlerErr.Reason == ReasonHandlerExists
 	}
 	return false
 }
@@ -132,7 +133,7 @@ func IsHandlerExistsError(err error) bool {
 // IsProtectedHandlerError checks if an error is due to attempting to unregister a protected handler
 func IsProtectedHandlerError(err error) bool {
 	if handlerErr, ok := err.(*HandlerError); ok {
-		return handlerErr.Operation == "unregister" && handlerErr.Reason == "handler is protected"
+		return handlerErr.Operation == "unregister" && handlerErr.Reason == ReasonHandlerProtected
 	}
 	return false
 }
@@ -140,7 +141,7 @@ func IsProtectedHandlerError(err error) bool {
 // IsVoidProcessorError checks if an error is due to void processor operations
 func IsVoidProcessorError(err error) bool {
 	if procErr, ok := err.(*ProcessorError); ok {
-		return procErr.ProcessorType == "void_processor" && procErr.Reason == "push notifications are disabled"
+		return procErr.ProcessorType == "void_processor" && procErr.Reason == ReasonPushNotificationsDisabled
 	}
 	return false
 }
