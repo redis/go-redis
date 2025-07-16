@@ -30,12 +30,12 @@ func ErrProtectedHandler(pushNotificationName string) error {
 
 // ErrVoidProcessorRegister creates an error for when attempting to register a handler on void processor
 func ErrVoidProcessorRegister(pushNotificationName string) error {
-	return NewProcessorError("void_processor", "register", "push notifications are disabled", nil)
+	return NewProcessorError("void_processor", "register", pushNotificationName, "push notifications are disabled", nil)
 }
 
 // ErrVoidProcessorUnregister creates an error for when attempting to unregister a handler on void processor
 func ErrVoidProcessorUnregister(pushNotificationName string) error {
-	return NewProcessorError("void_processor", "unregister", "push notifications are disabled", nil)
+	return NewProcessorError("void_processor", "unregister", pushNotificationName, "push notifications are disabled", nil)
 }
 
 // Error message constants for consistency
@@ -81,17 +81,18 @@ func NewHandlerError(operation, pushNotificationName, reason string, err error) 
 
 // ProcessorError represents errors related to processor operations
 type ProcessorError struct {
-	ProcessorType string // "processor", "void_processor"
-	Operation     string // "process", "register", "unregister"
-	Reason        string
-	Err           error
+	ProcessorType        string // "processor", "void_processor"
+	Operation            string // "process", "register", "unregister"
+	PushNotificationName string // Name of the push notification involved
+	Reason               string
+	Err                  error
 }
 
 func (e *ProcessorError) Error() string {
 	if e.Err != nil {
-		return fmt.Sprintf("%s %s failed: %s (%v)", e.ProcessorType, e.Operation, e.Reason, e.Err)
+		return fmt.Sprintf("%s %s failed for '%s': %s (%v)", e.ProcessorType, e.Operation, e.PushNotificationName, e.Reason, e.Err)
 	}
-	return fmt.Sprintf("%s %s failed: %s", e.ProcessorType, e.Operation, e.Reason)
+	return fmt.Sprintf("%s %s failed for '%s': %s", e.ProcessorType, e.Operation, e.PushNotificationName, e.Reason)
 }
 
 func (e *ProcessorError) Unwrap() error {
@@ -99,12 +100,13 @@ func (e *ProcessorError) Unwrap() error {
 }
 
 // NewProcessorError creates a new ProcessorError
-func NewProcessorError(processorType, operation, reason string, err error) *ProcessorError {
+func NewProcessorError(processorType, operation, pushNotificationName, reason string, err error) *ProcessorError {
 	return &ProcessorError{
-		ProcessorType: processorType,
-		Operation:     operation,
-		Reason:        reason,
-		Err:           err,
+		ProcessorType:        processorType,
+		Operation:            operation,
+		PushNotificationName: pushNotificationName,
+		Reason:               reason,
+		Err:                  err,
 	}
 }
 
@@ -142,12 +144,14 @@ func IsVoidProcessorError(err error) bool {
 // extractNotificationName attempts to extract the notification name from error messages
 func extractNotificationName(err error) string {
 	if handlerErr, ok := err.(*HandlerError); ok {
-		return handlerErr.PushNotificationName
+		if handlerErr.PushNotificationName != "" {
+			return handlerErr.PushNotificationName
+		}
 	}
 	if procErr, ok := err.(*ProcessorError); ok {
-		// For ProcessorError, we don't have direct access to the notification name
-		// but in a real implementation you could store this in the struct
-		return "unknown"
+		if procErr.PushNotificationName != "" {
+			return procErr.PushNotificationName
+		}
 	}
 	return "unknown"
 }
