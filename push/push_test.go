@@ -32,12 +32,12 @@ func NewTestHandler(name string) *TestHandler {
 type MockNetConn struct{}
 
 func (m *MockNetConn) Read(b []byte) (n int, err error)   { return 0, nil }
-func (m *MockNetConn) Write(b []byte) (n int, err error) { return len(b), nil }
-func (m *MockNetConn) Close() error                      { return nil }
-func (m *MockNetConn) LocalAddr() net.Addr              { return nil }
-func (m *MockNetConn) RemoteAddr() net.Addr             { return nil }
-func (m *MockNetConn) SetDeadline(t time.Time) error    { return nil }
-func (m *MockNetConn) SetReadDeadline(t time.Time) error { return nil }
+func (m *MockNetConn) Write(b []byte) (n int, err error)  { return len(b), nil }
+func (m *MockNetConn) Close() error                       { return nil }
+func (m *MockNetConn) LocalAddr() net.Addr                { return nil }
+func (m *MockNetConn) RemoteAddr() net.Addr               { return nil }
+func (m *MockNetConn) SetDeadline(t time.Time) error      { return nil }
+func (m *MockNetConn) SetReadDeadline(t time.Time) error  { return nil }
 func (m *MockNetConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func (h *TestHandler) HandlePushNotification(ctx context.Context, handlerCtx NotificationHandlerContext, notification []interface{}) error {
@@ -1564,7 +1564,7 @@ func TestHandlerError(t *testing.T) {
 // TestProcessorError tests the ProcessorError structured error type
 func TestProcessorError(t *testing.T) {
 	t.Run("ProcessorErrorWithoutWrappedError", func(t *testing.T) {
-		err := NewProcessorError("processor", "process", "invalid notification format", nil)
+		err := NewProcessorError("processor", "process", "", "invalid notification format", nil)
 
 		if err == nil {
 			t.Error("NewProcessorError should not return nil")
@@ -1594,7 +1594,7 @@ func TestProcessorError(t *testing.T) {
 
 	t.Run("ProcessorErrorWithWrappedError", func(t *testing.T) {
 		wrappedErr := errors.New("network error")
-		err := NewProcessorError("void_processor", "register", "disabled", wrappedErr)
+		err := NewProcessorError("void_processor", "register", "", "disabled", wrappedErr)
 
 		expectedMsg := "void_processor register failed: disabled (network error)"
 		if err.Error() != expectedMsg {

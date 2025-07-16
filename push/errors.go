@@ -89,10 +89,14 @@ type ProcessorError struct {
 }
 
 func (e *ProcessorError) Error() string {
-	if e.Err != nil {
-		return fmt.Sprintf("%s %s failed for '%s': %s (%v)", e.ProcessorType, e.Operation, e.PushNotificationName, e.Reason, e.Err)
+	notifInfo := ""
+	if e.PushNotificationName != "" {
+		notifInfo = fmt.Sprintf(" for '%s'", e.PushNotificationName)
 	}
-	return fmt.Sprintf("%s %s failed for '%s': %s", e.ProcessorType, e.Operation, e.PushNotificationName, e.Reason)
+	if e.Err != nil {
+		return fmt.Sprintf("%s %s failed%s: %s (%v)", e.ProcessorType, e.Operation, notifInfo, e.Reason, e.Err)
+	}
+	return fmt.Sprintf("%s %s failed%s: %s", e.ProcessorType, e.Operation, notifInfo, e.Reason)
 }
 
 func (e *ProcessorError) Unwrap() error {
