@@ -279,8 +279,8 @@ func TestRegistry(t *testing.T) {
 			t.Error("UnregisterHandler should error for protected handler")
 		}
 
-		if !strings.Contains(err.Error(), "cannot unregister protected handler") {
-			t.Errorf("Error message should mention protected handler, got: %v", err)
+		if !strings.Contains(err.Error(), "handler is protected") {
+			t.Errorf("Error message should mention handler is protected, got: %v", err)
 		}
 
 		// Handler should still be there
@@ -491,7 +491,7 @@ func TestVoidProcessor(t *testing.T) {
 			t.Error("VoidProcessor RegisterHandler should return error")
 		}
 
-		if !strings.Contains(err.Error(), "cannot register push notification handler") {
+		if !strings.Contains(err.Error(), "register failed") {
 			t.Errorf("Error message should mention registration failure, got: %v", err)
 		}
 
@@ -508,7 +508,7 @@ func TestVoidProcessor(t *testing.T) {
 			t.Error("VoidProcessor UnregisterHandler should return error")
 		}
 
-		if !strings.Contains(err.Error(), "cannot unregister push notification handler") {
+		if !strings.Contains(err.Error(), "unregister failed") {
 			t.Errorf("Error message should mention unregistration failure, got: %v", err)
 		}
 	})
@@ -1466,7 +1466,7 @@ func TestErrors(t *testing.T) {
 			t.Error("ErrHandlerExists should not return nil")
 		}
 
-		expectedMsg := "cannot overwrite existing handler for push notification: TEST_NOTIFICATION"
+		expectedMsg := "handler register failed for 'TEST_NOTIFICATION': cannot overwrite existing handler"
 		if err.Error() != expectedMsg {
 			t.Errorf("ErrHandlerExists message should be '%s', got: %s", expectedMsg, err.Error())
 		}
@@ -1480,7 +1480,7 @@ func TestErrors(t *testing.T) {
 			t.Error("ErrProtectedHandler should not return nil")
 		}
 
-		expectedMsg := "cannot unregister protected handler for push notification: PROTECTED_NOTIFICATION"
+		expectedMsg := "handler unregister failed for 'PROTECTED_NOTIFICATION': handler is protected"
 		if err.Error() != expectedMsg {
 			t.Errorf("ErrProtectedHandler message should be '%s', got: %s", expectedMsg, err.Error())
 		}
@@ -1494,7 +1494,7 @@ func TestErrors(t *testing.T) {
 			t.Error("ErrVoidProcessorRegister should not return nil")
 		}
 
-		expectedMsg := "cannot register push notification handler 'VOID_TEST': push notifications are disabled (using void processor)"
+		expectedMsg := "void_processor register failed for 'VOID_TEST': push notifications are disabled"
 		if err.Error() != expectedMsg {
 			t.Errorf("ErrVoidProcessorRegister message should be '%s', got: %s", expectedMsg, err.Error())
 		}
@@ -1508,7 +1508,7 @@ func TestErrors(t *testing.T) {
 			t.Error("ErrVoidProcessorUnregister should not return nil")
 		}
 
-		expectedMsg := "cannot unregister push notification handler 'VOID_TEST': push notifications are disabled (using void processor)"
+		expectedMsg := "void_processor unregister failed for 'VOID_TEST': push notifications are disabled"
 		if err.Error() != expectedMsg {
 			t.Errorf("ErrVoidProcessorUnregister message should be '%s', got: %s", expectedMsg, err.Error())
 		}
