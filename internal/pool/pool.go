@@ -389,14 +389,11 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
 				// For push notifications, we allow some buffered data
 				// The client will process these notifications before using the connection
-				internal.Logger.Printf(ctx, "push: connection has buffered data, likely push notifications - will be processed by client")
 				return
 			}
 		}
 		// For non-RESP3 or data that is not a push notification, buffered data is unexpected
-		internal.Logger.Printf(ctx, "Conn has unread data: %d bytes, closing it", cn.rd.Buffered())
-		repl, err := cn.rd.ReadReply()
-		internal.Logger.Printf(ctx, "Data: %v, ERR: %v", repl, err)
+		internal.Logger.Printf(ctx, "Conn has unread data, closing it")
 		p.Remove(ctx, cn, BadConnError{})
 		return
 	}
