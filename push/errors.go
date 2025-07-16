@@ -140,18 +140,3 @@ func IsVoidProcessorError(err error) bool {
 	}
 	return false
 }
-
-// extractNotificationName attempts to extract the notification name from error messages
-func extractNotificationName(err error) string {
-	if handlerErr, ok := err.(*HandlerError); ok {
-		if handlerErr.PushNotificationName != "" {
-			return handlerErr.PushNotificationName
-		}
-	}
-	if procErr, ok := err.(*ProcessorError); ok {
-		if procErr.PushNotificationName != "" {
-			return procErr.PushNotificationName
-		}
-	}
-	return "unknown"
-}

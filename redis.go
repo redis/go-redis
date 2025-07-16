@@ -1103,7 +1103,9 @@ func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn
 	// Use WithReader to access the reader and process push notifications
 	// This is critical for hitless upgrades to work properly
 	// NOTE: almost no timeouts are set for this read, so it should not block
-	return cn.WithReader(ctx, 1, func(rd *proto.Reader) error {
+	// longer than necessary, 50us should be plenty of time to read if there are any push notifications
+	// on the socket
+	return cn.WithReader(ctx, 50*time.Microsecond, func(rd *proto.Reader) error {
 		// Create handler context with client, connection pool, and connection information
 		handlerCtx := c.pushNotificationHandlerContext(cn)
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)

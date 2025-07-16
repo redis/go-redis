@@ -232,7 +232,6 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	cn := NewConn(netConn)
 	cn.pooled = pooled
-
 	return cn, nil
 }
 
