@@ -3,7 +3,6 @@ package push
 import (
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // Push notification error definitions
@@ -19,24 +18,24 @@ var (
 
 // ErrHandlerExists creates an error for when attempting to overwrite an existing handler
 func ErrHandlerExists(pushNotificationName string) error {
-	return fmt.Errorf("cannot overwrite existing handler for push notification: %s", pushNotificationName)
+	return NewHandlerError("register", pushNotificationName, "cannot overwrite existing handler", nil)
 }
 
 // ErrProtectedHandler creates an error for when attempting to unregister a protected handler
 func ErrProtectedHandler(pushNotificationName string) error {
-	return fmt.Errorf("cannot unregister protected handler for push notification: %s", pushNotificationName)
+	return NewHandlerError("unregister", pushNotificationName, "handler is protected", nil)
 }
 
 // VoidProcessor errors
 
 // ErrVoidProcessorRegister creates an error for when attempting to register a handler on void processor
 func ErrVoidProcessorRegister(pushNotificationName string) error {
-	return fmt.Errorf("cannot register push notification handler '%s': push notifications are disabled (using void processor)", pushNotificationName)
+	return NewProcessorError("void_processor", "register", "push notifications are disabled", nil)
 }
 
 // ErrVoidProcessorUnregister creates an error for when attempting to unregister a handler on void processor
 func ErrVoidProcessorUnregister(pushNotificationName string) error {
-	return fmt.Errorf("cannot unregister push notification handler '%s': push notifications are disabled (using void processor)", pushNotificationName)
+	return NewProcessorError("void_processor", "unregister", "push notifications are disabled", nil)
 }
 
 // Error message constants for consistency
@@ -118,33 +117,37 @@ func IsHandlerNilError(err error) bool {
 
 // IsHandlerExistsError checks if an error is due to attempting to overwrite an existing handler
 func IsHandlerExistsError(err error) bool {
-	if err == nil {
-		return false
+	if handlerErr, ok := err.(*HandlerError); ok {
+		return handlerErr.Operation == "register" && handlerErr.Reason == "cannot overwrite existing handler"
 	}
-	return fmt.Sprintf("%v", err) == fmt.Sprintf(MsgHandlerExists, extractNotificationName(err))
+	return false
 }
 
 // IsProtectedHandlerError checks if an error is due to attempting to unregister a protected handler
 func IsProtectedHandlerError(err error) bool {
-	if err == nil {
-		return false
+	if handlerErr, ok := err.(*HandlerError); ok {
+		return handlerErr.Operation == "unregister" && handlerErr.Reason == "handler is protected"
 	}
-	return fmt.Sprintf("%v", err) == fmt.Sprintf(MsgProtectedHandler, extractNotificationName(err))
+	return false
 }
 
 // IsVoidProcessorError checks if an error is due to void processor operations
 func IsVoidProcessorError(err error) bool {
-	if err == nil {
-		return false
+	if procErr, ok := err.(*ProcessorError); ok {
+		return procErr.ProcessorType == "void_processor" && procErr.Reason == "push notifications are disabled"
 	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "push notifications are disabled (using void processor)")
+	return false
 }
 
 // extractNotificationName attempts to extract the notification name from error messages
-// This is a helper function for error type checking
 func extractNotificationName(err error) string {
-	// This is a simplified implementation - in practice, you might want more sophisticated parsing
-	// For now, we return a placeholder since the exact extraction logic depends on the error format
+	if handlerErr, ok := err.(*HandlerError); ok {
+		return handlerErr.PushNotificationName
+	}
+	if procErr, ok := err.(*ProcessorError); ok {
+		// For ProcessorError, we don't have direct access to the notification name
+		// but in a real implementation you could store this in the struct
+		return "unknown"
+	}
 	return "unknown"
 }
