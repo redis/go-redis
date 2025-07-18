@@ -13,9 +13,6 @@ type NotificationHandlerContext struct {
 	// circular dependencies. The developer is responsible for type assertion.
 	// It can be one of the following types:
 	// - *redis.baseClient
-	// - *redis.Client
-	// - *redis.ClusterClient
-	// - *redis.Conn
 	Client interface{}
 
 	// ConnPool is the connection pool from which the connection was obtained.
@@ -25,7 +22,7 @@ type NotificationHandlerContext struct {
 	// - *pool.ConnPool
 	// - *pool.SingleConnPool
 	// - *pool.StickyConnPool
-	ConnPool interface{}
+	ConnPool pool.Pooler
 
 	// PubSub is the PubSub instance that received the notification.
 	// It is interface to both allow for future expansion and to avoid
