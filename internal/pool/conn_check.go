@@ -8,7 +8,6 @@ import (
 	"net"
 	"syscall"
 	"time"
-	"unsafe"
 )
 
 var errUnexpectedRead = errors.New("unexpected read from socket")
@@ -34,24 +33,17 @@ func connCheck(conn net.Conn) error {
 	if err := rawConn.Read(func(fd uintptr) bool {
 		var buf [1]byte
 		// Use MSG_PEEK to peek at data without consuming it
-		n, _, errno := syscall.Syscall6(
-			syscall.SYS_RECVFROM,
-			fd,
-			uintptr(unsafe.Pointer(&buf[0])),
-			1,
-			syscall.MSG_PEEK, // This ensures the byte stays in the socket buffer
-			0, 0,
-		)
+		n, _, err := syscall.Recvfrom(int(fd), buf[:], syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
 
 		switch {
-		case n == 0 && errno == 0:
+		case n == 0 && err == nil:
 			sysErr = io.EOF
 		case n > 0:
 			sysErr = errUnexpectedRead
-		case errno == syscall.EAGAIN || errno == syscall.EWOULDBLOCK:
+		case err == syscall.EAGAIN || err == syscall.EWOULDBLOCK:
 			sysErr = nil
 		default:
-			sysErr = errno
+			sysErr = err
 		}
 		return true
 	}); err != nil {
