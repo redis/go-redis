@@ -468,9 +468,13 @@ func ExampleClient_timeseries_query_multi() {
 
 	// Retrieve the same data points, but include the `unit`
 	// label in the results.
-	res29, err := rdb.TSMGetWithArgs(ctx, []string{"location=us"}, &redis.TSMGetOptions{
-		SelectedLabels: []interface{}{"unit"},
-	}).Result()
+	res29, err := rdb.TSMGetWithArgs(
+		ctx,
+		[]string{"location=us"},
+		&redis.TSMGetOptions{
+			SelectedLabels: []interface{}{"unit"},
+		},
+	).Result()
 
 	if err != nil {
 		panic(err)
@@ -509,6 +513,8 @@ func ExampleClient_timeseries_query_multi() {
 	// Retrieve data points up to time 2 (inclusive) from all
 	// time series that use millimeters as the unit. Include all
 	// labels in the results.
+	// Note that the `aggregators` field is empty if no
+	// aggregators are specified.
 	res30, err := rdb.TSMRangeWithArgs(
 		ctx,
 		0, 2,
@@ -548,7 +554,7 @@ func ExampleClient_timeseries_query_multi() {
 	// >>>   location: uk
 	// >>>   unit: mm
 	// >>>   Aggregators: map[aggregators:[]]
-	// >>>   Data points: [{0 25} {1 18} {2 21}]
+	// >>>   [{0 25} {1 18} {2 21}]
 
 	// Retrieve data points from time 1 to time 3 (inclusive) from
 	// all time series that use centimeters or millimeters as the unit,
@@ -566,6 +572,7 @@ func ExampleClient_timeseries_query_multi() {
 	if err != nil {
 		panic(err)
 	}
+
 	res31Keys := slices.Collect(maps.Keys(res31))
 	sort.Strings(res31Keys)
 
@@ -588,6 +595,14 @@ func ExampleClient_timeseries_query_multi() {
 		fmt.Printf("  Aggregators: %v\n", res31[k][1])
 		fmt.Printf("  %v\n", res31[k][2])
 	}
+	// >>> rg:2:
+	// >>>   location: us
+	// >>>   Aggregators: map[aggregators:[]]
+	// >>>   [{3 1.9} {2 2.3} {1 2.1}]
+	// >>> rg:4:
+	// >>>   location: uk
+	// >>>   Aggregators: map[aggregators:[]]
+	// >>>   [{3 19} {2 21} {1 18}]
 	// STEP_END
 
 	// Output:
@@ -636,10 +651,68 @@ func ExampleClient_timeseries_aggregation() {
 	// REMOVE_START
 	// make sure we are working with fresh database
 	rdb.FlushDB(ctx)
+	rdb.Del(ctx, "rg:2")
+	// REMOVE_END
+
+	// Setup data for aggregation example
+	_, err := rdb.TSCreateWithArgs(ctx, "rg:2", &redis.TSOptions{
+		Labels: map[string]string{"location": "us", "unit": "cm"},
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = rdb.TSMAdd(ctx, [][]interface{}{
+		{"rg:2", 0, 1.8},
+		{"rg:2", 1, 2.1},
+		{"rg:2", 2, 2.3},
+		{"rg:2", 3, 1.9},
+		{"rg:2", 4, 1.78},
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	// STEP_START agg
+	res32, err := rdb.TSRangeWithArgs(
+		ctx,
+		"rg:2",
+		0, math.MaxInt64,
+		&redis.TSRangeOptions{
+			Aggregator:     redis.Avg,
+			BucketDuration: 2,
+		},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res32)
+	// >>> [{0 1.9500000000000002} {2 2.0999999999999996} {4 1.78}]
+	// STEP_END
+
+	// Output:
+	// [{0 1.9500000000000002} {2 2.0999999999999996} {4 1.78}]
+}
+func ExampleClient_timeseries_agg_bucket() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
 	rdb.Del(ctx, "sensor3")
 	// REMOVE_END
 
-	// STEP_START aggregation
+	// STEP_START agg_bucket
 	res1, err := rdb.TSCreate(ctx, "sensor3").Result()
 
 	if err != nil {
@@ -648,37 +721,29 @@ func ExampleClient_timeseries_aggregation() {
 
 	fmt.Println(res1) // >>> OK
 
-	for i := 1; i <= 10; i++ {
-		_, err := rdb.TSAdd(ctx, "sensor3", int64(i), float64(i*2)).Result()
-
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	res2, err := rdb.TSRangeWithArgs(
-		ctx,
-		"sensor3",
-		0, math.MaxInt64,
-		&redis.TSRangeOptions{
-			Aggregator:     redis.Avg,
-			BucketDuration: 5,
-		},
-	).Result()
+	res2, err := rdb.TSMAdd(ctx, [][]interface{}{
+		{"sensor3", 10, 1000},
+		{"sensor3", 20, 2000},
+		{"sensor3", 30, 3000},
+		{"sensor3", 40, 4000},
+		{"sensor3", 50, 5000},
+		{"sensor3", 60, 6000},
+		{"sensor3", 70, 7000},
+	}).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(res2) // >>> (0, 6.0) (5, 16.0)
+	fmt.Println(res2) // >>> [10 20 30 40 50 60 70]
 
 	res3, err := rdb.TSRangeWithArgs(
 		ctx,
 		"sensor3",
-		0, math.MaxInt64,
+		10, 70,
 		&redis.TSRangeOptions{
 			Aggregator:     redis.Min,
-			BucketDuration: 5,
+			BucketDuration: 25,
 		},
 	).Result()
 
@@ -686,15 +751,16 @@ func ExampleClient_timeseries_aggregation() {
 		panic(err)
 	}
 
-	fmt.Println(res3) // >>> (0, 2.0) (5, 12.0)
+	fmt.Println(res3) // >>> [{0 1000} {25 3000} {50 5000}]
 
 	res4, err := rdb.TSRangeWithArgs(
 		ctx,
 		"sensor3",
-		0, math.MaxInt64,
+		10, 70,
 		&redis.TSRangeOptions{
-			Aggregator:     redis.Max,
-			BucketDuration: 5,
+			Aggregator:     redis.Min,
+			BucketDuration: 25,
+			Align:          "START",
 		},
 	).Result()
 
@@ -702,14 +768,14 @@ func ExampleClient_timeseries_aggregation() {
 		panic(err)
 	}
 
-	fmt.Println(res4) // >>> (0, 10.0) (5, 20.0)
+	fmt.Println(res4) // >>> [{10 1000} {35 4000} {60 6000}]
 	// STEP_END
 
 	// Output:
 	// OK
-	// [{0 5} {5 14} {10 20}]
-	// [{0 2} {5 10} {10 20}]
-	// [{0 8} {5 18} {10 20}]
+	// [10 20 30 40 50 60 70]
+	// [{0 1000} {25 3000} {50 5000}]
+	// [{10 1000} {35 4000} {60 6000}]
 }
 
 func ExampleClient_timeseries_downsampling() {
