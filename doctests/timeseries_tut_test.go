@@ -87,7 +87,10 @@ func ExampleClient_timeseries_create() {
 		"thermometer:3",
 		1, 10.4,
 		&redis.TSOptions{
-			Labels: map[string]string{"location": "UK", "type": "Mercury"},
+			Labels: map[string]string{
+				"location": "UK",
+				"type":     "Mercury",
+			},
 		},
 	).Result()
 
@@ -513,8 +516,8 @@ func ExampleClient_timeseries_query_multi() {
 	// Retrieve data points up to time 2 (inclusive) from all
 	// time series that use millimeters as the unit. Include all
 	// labels in the results.
-	// Note that the `aggregators` field is empty if no
-	// aggregators are specified.
+	// Note that the `aggregators` field is empty if you don't
+	// specify any aggregators.
 	res30, err := rdb.TSMRangeWithArgs(
 		ctx,
 		0, 2,
@@ -752,7 +755,9 @@ func ExampleClient_timeseries_agg_bucket() {
 	}
 
 	fmt.Println(res3) // >>> [{0 1000} {25 3000} {50 5000}]
+	// STEP_END
 
+	// STEP_START agg_align
 	res4, err := rdb.TSRangeWithArgs(
 		ctx,
 		"sensor3",
@@ -778,7 +783,7 @@ func ExampleClient_timeseries_agg_bucket() {
 	// [{10 1000} {35 4000} {60 6000}]
 }
 
-func ExampleClient_timeseries_downsampling() {
+func ExampleClient_timeseries_aggmulti() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{
@@ -793,111 +798,181 @@ func ExampleClient_timeseries_downsampling() {
 	rdb.Del(ctx, "wind:1", "wind:2", "wind:3", "wind:4")
 	// REMOVE_END
 
-	// STEP_START downsampling
-	res1, err := rdb.TSCreate(ctx, "wind:1").Result()
+	// STEP_START agg_multi
+	res37, err := rdb.TSCreateWithArgs(ctx, "wind:1", &redis.TSOptions{
+		Labels: map[string]string{"country": "uk"},
+	}).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(res1) // >>> OK
+	fmt.Println(res37) // >>> OK
 
-	res2, err := rdb.TSCreate(ctx, "wind:2").Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(res2) // >>> OK
-
-	res3, err := rdb.TSCreateRule(ctx, "wind:1", "wind:2", redis.Avg, 3600000).Result()
+	res38, err := rdb.TSCreateWithArgs(ctx, "wind:2", &redis.TSOptions{
+		Labels: map[string]string{"country": "uk"},
+	}).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(res3) // >>> OK
+	fmt.Println(res38) // >>> OK
 
-	res4, err := rdb.TSCreate(ctx, "wind:3").Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(res4) // >>> OK
-
-	res5, err := rdb.TSCreateRule(ctx, "wind:1", "wind:3", redis.Max, 3600000).Result()
+	res39, err := rdb.TSCreateWithArgs(ctx, "wind:3", &redis.TSOptions{
+		Labels: map[string]string{"country": "us"},
+	}).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(res5) // >>> OK
+	fmt.Println(res39) // >>> OK
 
-	res6, err := rdb.TSCreate(ctx, "wind:4").Result()
-
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(res6) // >>> OK
-
-	res7, err := rdb.TSCreateRule(ctx, "wind:1", "wind:4", redis.Min, 3600000).Result()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(res7) // >>> OK
-
-	samples := [][]interface{}{
-		{"wind:1", 1000, 15},
-		{"wind:1", 1500, 16},
-		{"wind:1", 2000, 17},
-		{"wind:1", 2500, 14},
-		{"wind:1", 3000, 13},
-		{"wind:1", 3600000 + 1000, 20},
-		{"wind:1", 3600000 + 1500, 22},
-		{"wind:1", 3600000 + 2000, 24},
-		{"wind:1", 3600000 + 2500, 19},
-		{"wind:1", 3600000 + 3000, 18},
-	}
-
-	_, err = rdb.TSMAdd(ctx, samples).Result()
+	res40, err := rdb.TSCreateWithArgs(ctx, "wind:4", &redis.TSOptions{
+		Labels: map[string]string{"country": "us"},
+	}).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	res8, err := rdb.TSRange(ctx, "wind:2", math.MinInt64, math.MaxInt64).Result()
+	fmt.Println(res40) // >>> OK
+
+	res41, err := rdb.TSMAdd(ctx, [][]interface{}{
+		{"wind:1", 1, 12},
+		{"wind:2", 1, 18},
+		{"wind:3", 1, 5},
+		{"wind:4", 1, 20},
+	}).Result()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Print("Hourly average wind speed: ")
-	for _, dp := range res8 {
-		fmt.Printf("(%.0f, %.1f) ", float64(dp.Timestamp), dp.Value)
-	}
-	fmt.Println() // >>> Hourly average wind speed: (0, 15.0) (3600000, 20.6)
+	fmt.Println(res41) // >>> [1 1 1 1]
 
-	res9, err := rdb.TSRange(ctx, "wind:3", math.MinInt64, math.MaxInt64).Result()
+	res42, err := rdb.TSMAdd(ctx, [][]interface{}{
+		{"wind:1", 2, 14},
+		{"wind:2", 2, 21},
+		{"wind:3", 2, 4},
+		{"wind:4", 2, 25},
+	}).Result()
+
 	if err != nil {
 		panic(err)
 	}
-	fmt.Print("Hourly maximum wind speed: ")
-	for _, dp := range res9 {
-		fmt.Printf("(%.0f, %.1f) ", float64(dp.Timestamp), dp.Value)
-	}
-	fmt.Println() // >>> Hourly maximum wind speed: (0, 17.0) (3600000, 24.0)
 
-	res10, err := rdb.TSRange(ctx, "wind:4", math.MinInt64, math.MaxInt64).Result()
+	fmt.Println(res42) // >>> [2 2 2 2]
+
+	res43, err := rdb.TSMAdd(ctx, [][]interface{}{
+		{"wind:1", 3, 10},
+		{"wind:2", 3, 24},
+		{"wind:3", 3, 8},
+		{"wind:4", 3, 18},
+	}).Result()
+
 	if err != nil {
 		panic(err)
 	}
-	fmt.Print("Hourly minimum wind speed: ")
-	for _, dp := range res10 {
-		fmt.Printf("(%.0f, %.1f) ", float64(dp.Timestamp), dp.Value)
+
+	fmt.Println(res43) // >>> [3 3 3 3]
+
+	// The result pairs contain the timestamp and the maximum sample value
+	// for the country at that timestamp.
+	res44, err := rdb.TSMRangeWithArgs(
+		ctx,
+		0, math.MaxInt64,
+		[]string{"country=(us,uk)"},
+		&redis.TSMRangeOptions{
+			GroupByLabel: "country",
+			Reducer:      "max",
+		},
+	).Result()
+
+	if err != nil {
+		panic(err)
 	}
-	fmt.Println() // >>> Hourly minimum wind speed: (0, 13.0) (3600000, 18.0)
+
+	res44Keys := slices.Collect(maps.Keys(res44))
+	sort.Strings(res44Keys)
+
+	for _, k := range res44Keys {
+		labels := res44[k][0].(map[interface{}]interface{})
+		labelKeys := make([]string, 0, len(labels))
+
+		for lk := range labels {
+			labelKeys = append(labelKeys, lk.(string))
+		}
+
+		sort.Strings(labelKeys)
+
+		fmt.Printf("%v:\n", k)
+
+		for _, lk := range labelKeys {
+			fmt.Printf("  %v: %v\n", lk, labels[lk])
+		}
+
+		fmt.Printf("  %v\n", res44[k][1])
+		fmt.Printf("  %v\n", res44[k][2])
+		fmt.Printf("  %v\n", res44[k][3])
+	}
+	// >>> country=uk:
+	// >>>   map[reducers:[max]]
+	// >>>   map[sources:[wind:1 wind:2]]
+	// >>>   [[1 18] [2 21] [3 24]]
+	// >>> country=us:
+	// >>>   map[reducers:[max]]
+	// >>>   map[sources:[wind:3 wind:4]]
+	// >>>   [[1 20] [2 25] [3 18]]
+
+	// The result pairs contain the timestamp and the average sample value
+	// for the country at that timestamp.
+	res45, err := rdb.TSMRangeWithArgs(
+		ctx,
+		0, math.MaxInt64,
+		[]string{"country=(us,uk)"},
+		&redis.TSMRangeOptions{
+			GroupByLabel: "country",
+			Reducer:      "avg",
+		},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	res45Keys := slices.Collect(maps.Keys(res45))
+	sort.Strings(res45Keys)
+
+	for _, k := range res45Keys {
+		labels := res45[k][0].(map[interface{}]interface{})
+		labelKeys := make([]string, 0, len(labels))
+
+		for lk := range labels {
+			labelKeys = append(labelKeys, lk.(string))
+		}
+
+		sort.Strings(labelKeys)
+
+		fmt.Printf("%v:\n", k)
+
+		for _, lk := range labelKeys {
+			fmt.Printf("  %v: %v\n", lk, labels[lk])
+		}
+
+		fmt.Printf("  %v\n", res45[k][1])
+		fmt.Printf("  %v\n", res45[k][2])
+		fmt.Printf("  %v\n", res45[k][3])
+	}
+	// >>> country=uk:
+	// >>>   map[reducers:[avg]]
+	// >>>   map[sources:[wind:1 wind:2]]
+	// >>>   [[1 15] [2 17.5] [3 17]]
+	// >>> country=us:
+	// >>>   map[reducers:[avg]]
+	// >>>   map[sources:[wind:3 wind:4]]
+	// >>>   [[1 12.5] [2 14.5] [3 13]]
 	// STEP_END
 
 	// Output:
@@ -905,12 +980,25 @@ func ExampleClient_timeseries_downsampling() {
 	// OK
 	// OK
 	// OK
-	// OK
-	// OK
-	// OK
-	// Hourly average wind speed: (0, 15.0) (3600000, 20.6)
-	// Hourly maximum wind speed: (0, 17.0) (3600000, 24.0)
-	// Hourly minimum wind speed: (0, 13.0) (3600000, 18.0)
+	// [1 1 1 1]
+	// [2 2 2 2]
+	// [3 3 3 3]
+	// country=uk:
+	//   map[reducers:[max]]
+	//   map[sources:[wind:1 wind:2]]
+	//   [[1 18] [2 21] [3 24]]
+	// country=us:
+	//   map[reducers:[max]]
+	//   map[sources:[wind:3 wind:4]]
+	//   [[1 20] [2 25] [3 18]]
+	// country=uk:
+	//   map[reducers:[avg]]
+	//   map[sources:[wind:1 wind:2]]
+	//   [[1 15] [2 17.5] [3 17]]
+	// country=us:
+	//   map[reducers:[avg]]
+	//   map[sources:[wind:3 wind:4]]
+	//   [[1 12.5] [2 14.5] [3 13]]
 }
 
 func ExampleClient_timeseries_compaction() {
@@ -928,57 +1016,201 @@ func ExampleClient_timeseries_compaction() {
 	rdb.Del(ctx, "hyg:1", "hyg:compacted")
 	// REMOVE_END
 
-	// STEP_START compaction
-	res1, err := rdb.TSCreate(ctx, "hyg:1").Result()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(res1) // >>> OK
+	// STEP_START create_compaction
+	res45, err := rdb.TSCreate(ctx, "hyg:1").Result()
 
-	res2, err := rdb.TSCreate(ctx, "hyg:compacted").Result()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(res2) // >>> OK
-
-	res3, err := rdb.TSCreateRuleWithArgs(ctx, "hyg:1", "hyg:compacted", redis.Twa, 60000, &redis.TSCreateRuleOptions{}).Result()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(res3) // >>> OK
-
-	samples := [][]interface{}{
-		{"hyg:1", 1000, 70},
-		{"hyg:1", 15000, 72},
-		{"hyg:1", 29000, 75},
-		{"hyg:1", 40000, 68},
-		{"hyg:1", 55000, 65},
-		{"hyg:1", 60000 + 1000, 63},
-		{"hyg:1", 60000 + 15000, 60},
-		{"hyg:1", 60000 + 29000, 58},
-		{"hyg:1", 60000 + 40000, 62},
-		{"hyg:1", 60000 + 55000, 65},
-	}
-
-	_, err = rdb.TSMAdd(ctx, samples).Result()
 	if err != nil {
 		panic(err)
 	}
 
-	res4, err := rdb.TSRange(ctx, "hyg:compacted", math.MinInt64, math.MaxInt64).Result()
+	fmt.Println(res45) // >>> OK
+
+	res46, err := rdb.TSCreate(ctx, "hyg:compacted").Result()
+
 	if err != nil {
 		panic(err)
 	}
-	fmt.Print("Compacted humidity data (time-weighted average): ")
-	for _, dp := range res4 {
-		fmt.Printf("(%.0f, %.1f) ", float64(dp.Timestamp), dp.Value)
+
+	fmt.Println(res46) // >>> OK
+
+	res47, err := rdb.TSCreateRule(
+		ctx, "hyg:1", "hyg:compacted", redis.Min, 3,
+	).Result()
+
+	if err != nil {
+		panic(err)
 	}
-	fmt.Println() // >>> Compacted humidity data (time-weighted average): (0, 70.5) (60000, 61.5)
+
+	fmt.Println(res47) // >>> OK
+
+	res48, err := rdb.TSInfo(ctx, "hyg:1").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res48["rules"]) // >>> [[hyg:compacted 3 MIN 0]]
+
+	res49, err := rdb.TSInfo(ctx, "hyg:compacted").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res49["sourceKey"]) // >>> hyg:1
+	// STEP_END
+
+	// STEP_START comp_add
+	res50, err := rdb.TSMAdd(ctx, [][]interface{}{
+		{"hyg:1", 0, 75},
+		{"hyg:1", 1, 77},
+		{"hyg:1", 2, 78},
+	}).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res50) // >>> [0 1 2]
+
+	res51, err := rdb.TSRange(
+		ctx, "hyg:compacted", 0, math.MaxInt64,
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res51) // >>> []
+
+	res52, err := rdb.TSAdd(ctx, "hyg:1", 3, 79).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res52) // >>> 3
+
+	res53, err := rdb.TSRange(
+		ctx, "hyg:compacted", 0, math.MaxInt64,
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res53) // >>> [{0 75}]
 	// STEP_END
 
 	// Output:
 	// OK
 	// OK
 	// OK
-	// Compacted humidity data (time-weighted average): (0, 70.5) (60000, 61.5)
+	// map[hyg:compacted:[3 MIN 0]]
+	// hyg:1
+	// [0 1 2]
+	// []
+	// 3
+	// [{0 75}]
+}
+
+func ExampleClient_timeseries_delete() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	// make sure we are working with fresh database
+	rdb.FlushDB(ctx)
+	rdb.Del(ctx, "thermometer:1")
+	// Setup initial data
+	rdb.TSCreate(ctx, "thermometer:1")
+	rdb.TSMAdd(ctx, [][]interface{}{
+		{"thermometer:1", 1, 9.2},
+		{"thermometer:1", 2, 9.9},
+	})
+	// REMOVE_END
+
+	// STEP_START del
+	res54, err := rdb.TSInfo(ctx, "thermometer:1").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res54["totalSamples"])   // >>> 2
+	fmt.Println(res54["firstTimestamp"]) // >>> 1
+	fmt.Println(res54["lastTimestamp"])  // >>> 2
+
+	res55, err := rdb.TSAdd(ctx, "thermometer:1", 3, 9.7).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res55) // >>> 3
+
+	res56, err := rdb.TSInfo(ctx, "thermometer:1").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res56["totalSamples"])   // >>> 3
+	fmt.Println(res56["firstTimestamp"]) // >>> 1
+	fmt.Println(res56["lastTimestamp"])  // >>> 3
+
+	res57, err := rdb.TSDel(ctx, "thermometer:1", 1, 2).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res57) // >>> 2
+
+	res58, err := rdb.TSInfo(ctx, "thermometer:1").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res58["totalSamples"])   // >>> 1
+	fmt.Println(res58["firstTimestamp"]) // >>> 3
+	fmt.Println(res58["lastTimestamp"])  // >>> 3
+
+	res59, err := rdb.TSDel(ctx, "thermometer:1", 3, 3).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res59) // >>> 1
+
+	res60, err := rdb.TSInfo(ctx, "thermometer:1").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res60["totalSamples"]) // >>> 0
+	// STEP_END
+
+	// Output:
+	// 2
+	// 1
+	// 2
+	// 3
+	// 3
+	// 1
+	// 3
+	// 2
+	// 1
+	// 3
+	// 3
+	// 1
+	// 0
 }
