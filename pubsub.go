@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // PubSub implements Pub/Sub commands as described in
@@ -38,6 +39,9 @@ type PubSub struct {
 	chOnce sync.Once
 	msgCh  *channel
 	allCh  *channel
+
+	// Push notification processor for handling generic push notifications
+	pushProcessor push.NotificationProcessor
 }
 
 func (c *PubSub) init() {
@@ -436,6 +440,12 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 	}
 
 	err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
+		// To be sure there are no buffered push notifications, we process them before reading the reply
+		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			// Log the error but don't fail the command execution
+			// Push notification processing errors shouldn't break normal Redis operations
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		}
 		return c.cmd.readReply(rd)
 	})
 
@@ -530,6 +540,26 @@ func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interfac
 		panic(err)
 	}
 	return c.allCh.allCh
+}
+
+func (c *PubSub) processPendingPushNotificationWithReader(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+	if c.pushProcessor == nil {
+		return nil
+	}
+
+	// Create handler context with client, connection pool, and connection information
+	handlerCtx := c.pushNotificationHandlerContext(cn)
+	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+}
+
+func (c *PubSub) pushNotificationHandlerContext(cn *pool.Conn) push.NotificationHandlerContext {
+	// PubSub doesn't have a client or connection pool, so we pass nil for those
+	// PubSub connections are blocking
+	return push.NotificationHandlerContext{
+		PubSub:     c,
+		Conn:       cn,
+		IsBlocking: true,
+	}
 }
 
 type ChannelOption func(c *channel)
