@@ -12,6 +12,8 @@ type NotificationProcessor interface {
 	// GetHandler returns the handler for a specific push notification name.
 	GetHandler(pushNotificationName string) NotificationHandler
 	// ProcessPendingNotifications checks for and processes any pending push notifications.
+	// To be used when it is known that there are notifications on the socket.
+	// It will try to read from the socket and if it is empty - it may block.
 	ProcessPendingNotifications(ctx context.Context, handlerCtx NotificationHandlerContext, rd *proto.Reader) error
 	// RegisterHandler registers a handler for a specific push notification name.
 	RegisterHandler(pushNotificationName string, handler NotificationHandler, protected bool) error
@@ -47,6 +49,8 @@ func (p *Processor) UnregisterHandler(pushNotificationName string) error {
 }
 
 // ProcessPendingNotifications checks for and processes any pending push notifications
+// This method should be called by the client in WithReader before reading the reply
+// It will try to read from the socket and if it is empty - it may block.
 func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx NotificationHandlerContext, rd *proto.Reader) error {
 	if rd == nil {
 		return nil
@@ -134,6 +138,11 @@ func (v *VoidProcessor) UnregisterHandler(pushNotificationName string) error {
 // ProcessPendingNotifications for VoidProcessor does nothing since push notifications
 // are only available in RESP3 and this processor is used for RESP2 connections.
 // This avoids unnecessary buffer scanning overhead.
+// It does however read and discard all push notifications from the buffer to avoid
+// them being interpreted as a reply.
+// This method should be called by the client in WithReader before reading the reply
+// to be sure there are no buffered push notifications.
+// It will try to read from the socket and if it is empty - it may block.
 func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCtx NotificationHandlerContext, rd *proto.Reader) error {
 	// read and discard all push notifications
 	if rd == nil {
