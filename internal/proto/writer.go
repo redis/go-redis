@@ -185,6 +185,12 @@ func (w *Writer) WriteArg(v interface{}) error {
 			return w.int(0)
 		}
 		return w.int(v.Nanoseconds())
+	case encoding.TextMarshaler:
+		b, err := v.MarshalText()
+		if err != nil {
+			return err
+		}
+		return w.bytes(b)
 	case encoding.BinaryMarshaler:
 		b, err := v.MarshalBinary()
 		if err != nil {
