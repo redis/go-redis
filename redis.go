@@ -462,8 +462,6 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	} else {
 		// process any pending push notifications before returning the connection to the pool
 		if err := c.processPushNotifications(ctx, cn); err != nil {
-			// Log the error but don't fail the connection release
-			// Push notification processing errors shouldn't break normal Redis operations
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
 		}
 		c.connPool.Put(ctx, cn)
@@ -531,8 +529,6 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		// Process any pending push notifications before executing the command
 		if err := c.processPushNotifications(ctx, cn); err != nil {
-			// Log the error but don't fail the command execution
-			// Push notification processing errors shouldn't break normal Redis operations
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
 		}
 
@@ -550,8 +546,6 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
 			// To be sure there are no buffered push notifications, we process them before reading the reply
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-				// Log the error but don't fail the command execution
-				// Push notification processing errors shouldn't break normal Redis operations
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 			}
 			return readReplyFunc(rd)
@@ -652,9 +646,7 @@ func (c *baseClient) generalProcessPipeline(
 		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 			// Process any pending push notifications before executing the pipeline
 			if err := c.processPushNotifications(ctx, cn); err != nil {
-				// Log the error but don't fail the pipeline execution
-				// Push notification processing errors shouldn't break normal Redis operations
-				internal.Logger.Printf(ctx, "push: error processing pending notifications before pipeline: %v", err)
+				internal.Logger.Printf(ctx, "push: error processing pending notifications before processing pipeline: %v", err)
 			}
 			var err error
 			canRetry, err = p(ctx, cn, cmds)
@@ -671,11 +663,8 @@ func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
 	// Process any pending push notifications before executing the pipeline
-	// This ensures that cluster topology changes are handled immediately
 	if err := c.processPushNotifications(ctx, cn); err != nil {
-		// Log the error but don't fail the pipeline execution
-		// Push notification processing errors shouldn't break normal Redis operations
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before pipeline: %v", err)
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
 	}
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
@@ -699,8 +688,6 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 	for i, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-			// Log the error but don't fail the command execution
-			// Push notification processing errors shouldn't break normal Redis operations
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
@@ -718,10 +705,7 @@ func (c *baseClient) txPipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
 	// Process any pending push notifications before executing the transaction pipeline
-	// This ensures that cluster topology changes are handled immediately
 	if err := c.processPushNotifications(ctx, cn); err != nil {
-		// Log the error but don't fail the transaction execution
-		// Push notification processing errors shouldn't break normal Redis operations
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before transaction: %v", err)
 	}
 
@@ -756,8 +740,6 @@ func (c *baseClient) txPipelineProcessCmds(
 func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
 	// To be sure there are no buffered push notifications, we process them before reading the reply
 	if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-		// Log the error but don't fail the command execution
-		// Push notification processing errors shouldn't break normal Redis operations
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
 	// Parse +OK.
@@ -769,8 +751,6 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	for range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-			// Log the error but don't fail the command execution
-			// Push notification processing errors shouldn't break normal Redis operations
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		if err := statusCmd.readReply(rd); err != nil && !isRedisError(err) {
@@ -780,8 +760,6 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 
 	// To be sure there are no buffered push notifications, we process them before reading the reply
 	if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-		// Log the error but don't fail the command execution
-		// Push notification processing errors shouldn't break normal Redis operations
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
 	// Parse number of replies.
@@ -1096,7 +1074,10 @@ func (c *Conn) TxPipeline() Pipeliner {
 // This method should be called by the client before using WithReader for command execution
 func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn) error {
 	// Only process push notifications for RESP3 connections with a processor
-	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+	// Also check if there is any data to read before processing
+	// Which is an optimization on UNIX systems where MaybeHasData is a syscall
+	// On Windows, MaybeHasData always returns true, so this check is a no-op
+	if c.opt.Protocol != 3 || c.pushProcessor == nil || !cn.MaybeHasData() {
 		return nil
 	}
 
@@ -1104,7 +1085,7 @@ func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn
 	// This is critical for hitless upgrades to work properly
 	// NOTE: almost no timeouts are set for this read, so it should not block
 	// longer than necessary, 10us should be plenty of time to read if there are any push notifications
-	// on the socket. Even if it was not enough time, the next read will just read the push notifications again.
+	// on the socket.
 	return cn.WithReader(ctx, 10*time.Microsecond, func(rd *proto.Reader) error {
 		// Create handler context with client, connection pool, and connection information
 		handlerCtx := c.pushNotificationHandlerContext(cn)
@@ -1115,6 +1096,8 @@ func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn
 // processPendingPushNotificationWithReader processes all pending push notifications on a connection
 // This method should be called by the client in WithReader before reading the reply
 func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+	// if we have the reader, we don't need to check for data on the socket, we are waiting
+	// for either a reply or a push notification, so we can block until we get a reply or reach the timeout
 	if c.opt.Protocol != 3 || c.pushProcessor == nil {
 		return nil
 	}

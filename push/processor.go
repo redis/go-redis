@@ -57,6 +57,7 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 		replyType, err := rd.PeekReplyType()
 		if err != nil {
 			// No more data available or error reading
+			// if timeout, it will be handled by the caller
 			break
 		}
 
@@ -144,6 +145,7 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 		replyType, err := rd.PeekReplyType()
 		if err != nil {
 			// No more data available or error reading
+			// if timeout, it will be handled by the caller
 			break
 		}
 
@@ -176,7 +178,7 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 func willHandleNotificationInClient(notificationType string) bool {
 	switch notificationType {
 	// Pub/Sub notifications - handled by pub/sub system
-	case "message",     // Regular pub/sub message
+	case "message", // Regular pub/sub message
 		"pmessage",     // Pattern pub/sub message
 		"subscribe",    // Subscription confirmation
 		"unsubscribe",  // Unsubscription confirmation

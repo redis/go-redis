@@ -52,3 +52,8 @@ func connCheck(conn net.Conn) error {
 
 	return sysErr
 }
+
+// maybeHasData checks if there is data in the socket without consuming it
+func maybeHasData(conn net.Conn) bool {
+	return connCheck(conn) == errUnexpectedRead
+}

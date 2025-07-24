@@ -113,6 +113,13 @@ func (cn *Conn) Close() error {
 	return cn.netConn.Close()
 }
 
+// MaybeHasData tries to peek at the next byte in the socket without consuming it
+// This is used to check if there are push notifications available
+// Important: This will work on Linux, but not on Windows
+func (cn *Conn) MaybeHasData() bool {
+	return maybeHasData(cn.netConn)
+}
+
 func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	tm := time.Now()
 	cn.SetUsedAt(tm)
