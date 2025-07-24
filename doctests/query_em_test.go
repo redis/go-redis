@@ -32,7 +32,7 @@ func ExampleClient_query_em() {
 	_, err := rdb.FTCreate(ctx, "idx:bicycle",
 		&redis.FTCreateOptions{
 			OnJSON: true,
-			Prefix: []interface{}{"bicycle:"},
+			Prefix: []any{"bicycle:"},
 		},
 		&redis.FieldSchema{
 			FieldName: "$.brand",
@@ -65,7 +65,7 @@ func ExampleClient_query_em() {
 		panic(err)
 	}
 
-	exampleJsons := []map[string]interface{}{
+	exampleJsons := []map[string]any{
 		{
 			"pickup_zone": "POLYGON((-74.0610 40.7578, -73.9510 40.7578, -73.9510 40.6678, " +
 				"-74.0610 40.6678, -74.0610 40.7578))",
@@ -298,7 +298,7 @@ func ExampleClient_query_em() {
 		"idx:email",
 		&redis.FTCreateOptions{
 			OnJSON: true,
-			Prefix: []interface{}{"key:"},
+			Prefix: []any{"key:"},
 		},
 		&redis.FieldSchema{
 			FieldName: "$.email",
@@ -314,7 +314,7 @@ func ExampleClient_query_em() {
 	fmt.Println(res4) // >>> OK
 
 	res5, err := rdb.JSONSet(ctx, "key:1", "$",
-		map[string]interface{}{
+		map[string]any{
 			"email": "test@redis.com",
 		},
 	).Result()
