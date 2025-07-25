@@ -382,10 +382,7 @@ func xClaimArgs(a *XClaimArgs) []interface{} {
 //	XTRIM key MAXLEN/MINID ~ threshold LIMIT limit.
 //
 // The redis-server version is lower than 6.2, please set limit to 0.
-func (c cmdable) xTrim(
-	ctx context.Context, key, strategy string,
-	approx bool, threshold interface{}, limit int64,
-) *IntCmd {
+func (c cmdable) xTrim(ctx context.Context, key, strategy string, approx bool, threshold interface{}, limit int64) *IntCmd {
 	args := make([]interface{}, 0, 7)
 	args = append(args, "xtrim", key, strategy)
 	if approx {

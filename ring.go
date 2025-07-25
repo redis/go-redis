@@ -667,10 +667,7 @@ func (c *Ring) OnNewNode(fn func(rdb *Client)) {
 
 // ForEachShard concurrently calls the fn on each live shard in the ring.
 // It returns the first error if any.
-func (c *Ring) ForEachShard(
-	ctx context.Context,
-	fn func(ctx context.Context, client *Client) error,
-) error {
+func (c *Ring) ForEachShard(ctx context.Context, fn func(ctx context.Context, client *Client) error) error {
 	// note: `c.List()` return a shadow copy of `[]*ringShard`.
 	shards := c.sharding.List()
 	var wg sync.WaitGroup
@@ -779,9 +776,7 @@ func (c *Ring) TxPipeline() Pipeliner {
 	return &pipe
 }
 
-func (c *Ring) generalProcessPipeline(
-	ctx context.Context, cmds []Cmder, tx bool,
-) error {
+func (c *Ring) generalProcessPipeline(ctx context.Context, cmds []Cmder, tx bool) error {
 	if tx {
 		// Trim multi .. exec.
 		cmds = cmds[1 : len(cmds)-1]

@@ -383,7 +383,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
-  if err = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); err == nil {
+	if err = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); err == nil {
 		// Authentication successful with HELLO command
 	} else if !isRedisError(err) {
 		// When the server responds with the RESP protocol and the result is not a normal
@@ -460,9 +460,7 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	}
 }
 
-func (c *baseClient) withConn(
-	ctx context.Context, fn func(context.Context, *pool.Conn) error,
-) error {
+func (c *baseClient) withConn(ctx context.Context, fn func(context.Context, *pool.Conn) error) error {
 	cn, err := c.getConn(ctx)
 	if err != nil {
 		return err
@@ -610,9 +608,7 @@ func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error 
 
 type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 
-func (c *baseClient) generalProcessPipeline(
-	ctx context.Context, cmds []Cmder, p pipelineProcessor,
-) error {
+func (c *baseClient) generalProcessPipeline(ctx context.Context, cmds []Cmder, p pipelineProcessor) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -636,9 +632,7 @@ func (c *baseClient) generalProcessPipeline(
 	return lastErr
 }
 
-func (c *baseClient) pipelineProcessCmds(
-	ctx context.Context, cn *pool.Conn, cmds []Cmder,
-) (bool, error) {
+func (c *baseClient) pipelineProcessCmds(ctx context.Context, cn *pool.Conn, cmds []Cmder) (bool, error) {
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
 	}); err != nil {
@@ -668,9 +662,7 @@ func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
 	return cmds[0].Err()
 }
 
-func (c *baseClient) txPipelineProcessCmds(
-	ctx context.Context, cn *pool.Conn, cmds []Cmder,
-) (bool, error) {
+func (c *baseClient) txPipelineProcessCmds(ctx context.Context, cn *pool.Conn, cmds []Cmder) (bool, error) {
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
 	}); err != nil {

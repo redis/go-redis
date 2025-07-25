@@ -447,9 +447,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	return rdb
 }
 
-func masterReplicaDialer(
-	failover *sentinelFailover,
-) func(ctx context.Context, network, addr string) (net.Conn, error) {
+func masterReplicaDialer(failover *sentinelFailover) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, _ string) (net.Conn, error) {
 		var addr string
 		var err error
