@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hscan"
+	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/push"
@@ -211,11 +213,24 @@ type baseClient struct {
 
 	// Push notification processing
 	pushProcessor push.NotificationProcessor
+
+	// Connection processor for handling connection lifecycle events
+	connectionProcessor interfaces.ConnectionProcessor
+
+	// Hitless upgrade manager
+	hitlessManager *hitless.HitlessManager
 }
 
 func (c *baseClient) clone() *baseClient {
-	clone := *c
-	return &clone
+	clone := &baseClient{
+		opt:                 c.opt,
+		connPool:            c.connPool,
+		onClose:             c.onClose,
+		pushProcessor:       c.pushProcessor,
+		connectionProcessor: c.connectionProcessor,
+		hitlessManager:      c.hitlessManager,
+	}
+	return clone
 }
 
 func (c *baseClient) withTimeout(timeout time.Duration) *baseClient {
@@ -423,11 +438,25 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			pipe.ClientSetName(ctx, c.opt.ClientName)
 		}
 
+		// Enable maintenance notifications if hitless upgrades are configured
+		if c.opt.HitlessUpgrades && c.opt.HitlessUpgradeConfig != nil && c.opt.HitlessUpgradeConfig.Enabled && c.opt.Protocol == 3 {
+			endpointType := c.opt.HitlessUpgradeConfig.EndpointType
+			if endpointType == "" {
+				// Auto-detect endpoint type if not specified
+				endpointConfig := hitless.DetectEndpointType(c.opt.Addr, c.opt.TLSConfig != nil)
+				endpointType = endpointConfig.Type
+			}
+			pipe.ClientMaintNotifications(ctx, true, endpointType)
+		}
+
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize connection options: %w", err)
 	}
+
+	cn.SetUsable(true)
+	cn.Inited = true
 
 	if !c.opt.DisableIdentity && !c.opt.DisableIndentity {
 		libName := ""
@@ -448,6 +477,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if c.opt.OnConnect != nil {
 		return c.opt.OnConnect(ctx, conn)
 	}
+
+	// Set the connection initialization function for potential reconnections
+	cn.SetInitConnFunc(c.createInitConnFunc())
 
 	return nil
 }
@@ -590,6 +622,13 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.Background()
+}
+
+// createInitConnFunc creates a connection initialization function that can be used for reconnections.
+func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) error {
+	return func(ctx context.Context, cn *pool.Conn) error {
+		return c.initConn(ctx, cn)
+	}
 }
 
 // Close closes the client, releasing any open resources.
@@ -809,11 +848,37 @@ func NewClient(opt *Options) *Client {
 	// Initialize push notification processor using shared helper
 	// Use void processor for RESP2 connections (push notifications not available)
 	c.pushProcessor = initializePushProcessor(opt)
-
-	// Update options with the initialized push processor for connection pool
+	// Update options with the initialized push processor
 	opt.PushNotificationProcessor = c.pushProcessor
 
-	c.connPool = newConnPool(opt, c.dialHook)
+	// Initialize hitless upgrades first if enabled to get the connection processor
+	var connectionProcessor interfaces.ConnectionProcessor
+	if opt.HitlessUpgrades {
+		if opt.Protocol != 3 {
+			internal.Logger.Printf(context.Background(), "hitless: RESP3 protocol required for hitless upgrades, but Protocol is %d", opt.Protocol)
+		} else {
+			integration, err := initializeHitlessManager(&c, opt.HitlessUpgradeConfig)
+			if err != nil {
+				internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
+			} else {
+				c.hitlessManager = integration
+
+				// Create the connection processor from the hitless manager
+				connectionProcessor = integration.CreateConnectionProcessor(opt.Protocol, c.dialHook)
+			}
+		}
+	}
+
+	// Create connection pool with the processor (nil if hitless upgrades disabled)
+	c.connPool = newConnPool(opt, c.dialHook, connectionProcessor)
+
+	// Set the pool reference in the processor for connection removal on handoff failure
+	if connectionProcessor != nil {
+		if redisProcessor, ok := connectionProcessor.(*hitless.RedisConnectionProcessor); ok {
+			// Use pool.Pooler interface directly - no adapter needed
+			redisProcessor.SetPool(c.connPool)
+		}
+	}
 
 	return &c
 }
@@ -848,6 +913,12 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 // Options returns read-only Options that were used to create the client.
 func (c *Client) Options() *Options {
 	return c.opt
+}
+
+// GetHitlessManager returns the hitless manager instance for monitoring and control.
+// Returns nil if hitless upgrades are not enabled.
+func (c *Client) GetHitlessManager() *hitless.HitlessManager {
+	return c.hitlessManager
 }
 
 // initializePushProcessor initializes the push notification processor for any client type.
@@ -922,7 +993,7 @@ func (c *Client) pubSub() *PubSub {
 		opt: c.opt,
 
 		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			return c.newConn(ctx)
+			return c.connPool.GetPubSub(ctx)
 		},
 		closeConn:     c.connPool.CloseConn,
 		pushProcessor: c.pushProcessor,
@@ -1112,6 +1183,30 @@ func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.Notifica
 	return push.NotificationHandlerContext{
 		Client:   c,
 		ConnPool: c.connPool,
-		Conn:     cn,
+		Conn:     &connectionAdapter{conn: cn}, // Wrap in adapter for hitless integration
 	}
+}
+
+// initializeHitlessManager initializes hitless upgrade manager for a client.
+func initializeHitlessManager(client *Client, config *HitlessUpgradeConfig) (*hitless.HitlessManager, error) {
+	// Apply defaults to any missing configuration fields
+	config = config.ApplyDefaults()
+	config.Enabled = true // Enable by default when HitlessUpgrades is true
+
+	// Create client adapter
+	clientAdapterInstance := NewClientAdapter(client)
+
+	// Create hitless manager directly
+	manager, err := hitless.NewHitlessManager(clientAdapterInstance, config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Auto-configure maintenance notifications if endpoint type is not specified
+	if config.EndpointType == "" {
+		endpointConfig := hitless.DetectEndpointType(client.opt.Addr, client.opt.TLSConfig != nil)
+		config.EndpointType = endpointConfig.Type
+	}
+
+	return manager, nil
 }

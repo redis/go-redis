@@ -3,13 +3,14 @@ package pool
 import (
 	"context"
 	"errors"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
-	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/interfaces"
 )
 
 var (
@@ -38,7 +39,10 @@ type Stats struct {
 	Misses         uint32 // number of times free connection was NOT found in the pool
 	Timeouts       uint32 // number of times a wait timeout occurred
 	WaitCount      uint32 // number of times a connection was waited
+	Unusable       uint32 // number of times a connection was found to be unusable
+	PubSubCount    uint32 // number of times a connection was used for pub/sub
 	WaitDurationNs int64  // total time spent for waiting a connection in nanoseconds
+	WaitUsableNs   int64  // total time spent for waiting a usable connection in nanoseconds
 
 	TotalConns uint32 // number of total connections in the pool
 	IdleConns  uint32 // number of idle connections in the pool
@@ -50,6 +54,7 @@ type Pooler interface {
 	CloseConn(*Conn) error
 
 	Get(context.Context) (*Conn, error)
+	GetPubSub(context.Context) (*Conn, error)
 	Put(context.Context, *Conn)
 	Remove(context.Context, *Conn, error)
 
@@ -73,8 +78,9 @@ type Options struct {
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
-	// Protocol version for optimization (3 = RESP3 with push notifications, 2 = RESP2 without)
-	Protocol int
+	// ConnectionProcessor handles protocol-specific connection processing
+	// If nil, connections are processed with default behavior
+	ConnectionProcessor interfaces.ConnectionProcessor
 }
 
 type lastDialErrorWrap struct {
@@ -98,6 +104,7 @@ type ConnPool struct {
 
 	stats          Stats
 	waitDurationNs atomic.Int64
+	waitUsableNs   atomic.Int64
 
 	_closed uint32 // atomic
 }
@@ -113,9 +120,13 @@ func NewConnPool(opt *Options) *ConnPool {
 		idleConns: make([]*Conn, 0, opt.PoolSize),
 	}
 
-	p.connsMu.Lock()
-	p.checkMinIdleConns()
-	p.connsMu.Unlock()
+	// Only create MinIdleConns if explicitly requested (> 0)
+	// This avoids creating connections during pool initialization for tests
+	if opt.MinIdleConns > 0 {
+		p.connsMu.Lock()
+		p.checkMinIdleConns()
+		p.connsMu.Unlock()
+	}
 
 	return p
 }
@@ -124,6 +135,9 @@ func (p *ConnPool) checkMinIdleConns() {
 	if p.cfg.MinIdleConns == 0 {
 		return
 	}
+
+	// Only create idle connections if we haven't reached the total pool size limit
+	// MinIdleConns should be a subset of PoolSize, not additional connections
 	for p.poolSize < p.cfg.PoolSize && p.idleConnsLen < p.cfg.MinIdleConns {
 		select {
 		case p.queue <- struct{}{}:
@@ -232,6 +246,11 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	cn := NewConn(netConn)
 	cn.pooled = pooled
+
+	// Mark connection as usable after successful creation
+	// This is essential for normal pool operations
+	cn.SetUsable(true)
+
 	return cn, nil
 }
 
@@ -270,6 +289,14 @@ func (p *ConnPool) getLastDialError() error {
 	return nil
 }
 
+// GetPubSub returns a connection for pubsub.
+// The purpose of GetPubSub is just to increment the stats.PubSubCount counter.
+// The connection is still returned from the pool with Get().
+func (p *ConnPool) GetPubSub(ctx context.Context) (*Conn, error) {
+	p.stats.PubSubCount++
+	return p.Get(ctx)
+}
+
 // Get returns existed connection from the pool or creates a new one.
 func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 	if p.closed() {
@@ -280,7 +307,14 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 		return nil, err
 	}
 
+	tries := 0
+	start := time.Now()
 	for {
+		if tries > 10 {
+			log.Printf("redis: connection pool: failed to get a connection after %d tries", tries)
+			break
+		}
+		tries++
 		p.connsMu.Lock()
 		cn, err := p.popIdle()
 		p.connsMu.Unlock()
@@ -299,7 +333,17 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 			continue
 		}
 
+		// Process connection using the connection processor if available
+		if p.cfg.ConnectionProcessor != nil {
+			if err := p.cfg.ConnectionProcessor.ProcessConnectionOnGet(ctx, cn); err != nil {
+				// Failed to process connection, discard it
+				_ = p.CloseConn(cn)
+				continue
+			}
+		}
+
 		atomic.AddUint32(&p.stats.Hits, 1)
+		p.waitUsableNs.Add(time.Since(start).Nanoseconds())
 		return cn, nil
 	}
 
@@ -365,41 +409,73 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 	}
 
 	var cn *Conn
-	if p.cfg.PoolFIFO {
-		cn = p.idleConns[0]
-		copy(p.idleConns, p.idleConns[1:])
-		p.idleConns = p.idleConns[:n-1]
-	} else {
-		idx := n - 1
-		cn = p.idleConns[idx]
-		p.idleConns = p.idleConns[:idx]
+	attempts := 0
+	maxAttempts := len(p.idleConns) + 1 // Prevent infinite loop
+
+	for attempts < maxAttempts {
+		if len(p.idleConns) == 0 {
+			return nil, nil
+		}
+
+		if p.cfg.PoolFIFO {
+			cn = p.idleConns[0]
+			copy(p.idleConns, p.idleConns[1:])
+			p.idleConns = p.idleConns[:len(p.idleConns)-1]
+		} else {
+			idx := len(p.idleConns) - 1
+			cn = p.idleConns[idx]
+			p.idleConns = p.idleConns[:idx]
+		}
+		attempts++
+
+		if cn.IsUsable() {
+			p.idleConnsLen--
+			break
+		}
+
+		// Connection is not usable, put it back in the pool
+		if p.cfg.PoolFIFO {
+			// FIFO: put at end (will be picked up last since we pop from front)
+			p.idleConns = append(p.idleConns, cn)
+		} else {
+			// LIFO: put at beginning (will be picked up last since we pop from end)
+			p.idleConns = append([]*Conn{cn}, p.idleConns...)
+		}
 	}
-	p.idleConnsLen--
+
+	// If we exhausted all attempts without finding a usable connection, return nil
+	if attempts >= maxAttempts {
+		return nil, nil
+	}
 	p.checkMinIdleConns()
 	return cn, nil
 }
 
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
+	// Process connection using the connection processor if available
+	shouldPool := true
 	shouldRemove := false
-	if cn.rd.Buffered() > 0 {
-		// Check if this might be push notification data
-		if p.cfg.Protocol == 3 {
-			// we know that there is something in the buffer, so peek at the next reply type without
-			// the potential to block and check if it's a push notification
-			if replyType, err := cn.rd.PeekReplyType(); err != nil || replyType != proto.RespPush {
-				shouldRemove = true
-			}
-		} else {
-			// not a push notification since protocol 2 doesn't support them
-			shouldRemove = true
-		}
+	var err error
 
-		if shouldRemove {
-			// For non-RESP3 or data that is not a push notification, buffered data is unexpected
-			internal.Logger.Printf(ctx, "Conn has unread data, closing it")
-			p.Remove(ctx, cn, BadConnError{})
+	if p.cfg.ConnectionProcessor != nil {
+		shouldPool, shouldRemove, err = p.cfg.ConnectionProcessor.ProcessConnectionOnPut(ctx, cn)
+		if err != nil {
+			internal.Logger.Printf(ctx, "Connection processor error: %v", err)
+			p.Remove(ctx, cn, err)
 			return
 		}
+	}
+
+	// If processor says to remove the connection, do so
+	if shouldRemove {
+		p.Remove(ctx, cn, nil)
+		return
+	}
+
+	// If processor says not to pool the connection, remove it
+	if !shouldPool {
+		p.Remove(ctx, cn, nil)
+		return
 	}
 
 	if !cn.pooled {
@@ -485,7 +561,10 @@ func (p *ConnPool) Stats() *Stats {
 		Misses:         atomic.LoadUint32(&p.stats.Misses),
 		Timeouts:       atomic.LoadUint32(&p.stats.Timeouts),
 		WaitCount:      atomic.LoadUint32(&p.stats.WaitCount),
+		Unusable:       atomic.LoadUint32(&p.stats.Unusable),
+		PubSubCount:    atomic.LoadUint32(&p.stats.PubSubCount),
 		WaitDurationNs: p.waitDurationNs.Load(),
+		WaitUsableNs:   p.waitUsableNs.Load(),
 
 		TotalConns: uint32(p.Len()),
 		IdleConns:  uint32(p.IdleLen()),
@@ -543,24 +622,10 @@ func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 		return false
 	}
 
-	// Check connection health, but be aware of push notifications
-	if err := connCheck(cn.netConn); err != nil {
-		// If there's unexpected data, it might be push notifications (RESP3)
-		// However, push notification processing is now handled by the client
-		// before WithReader to ensure proper context is available to handlers
-		if err == errUnexpectedRead && p.cfg.Protocol == 3 {
-			// we know that there is something in the buffer, so peek at the next reply type without
-			// the potential to block
-			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
-				// For RESP3 connections with push notifications, we allow some buffered data
-				// The client will process these notifications before using the connection
-				internal.Logger.Printf(context.Background(), "push: connection has buffered data, likely push notifications - will be processed by client")
-				return true // Connection is healthy, client will handle notifications
-			}
-			return false // Unexpected data, not push notifications, connection is unhealthy
-		} else {
-			return false
-		}
+	// Check basic connection health
+	// Use GetNetConn() to safely access netConn and avoid data races
+	if err := connCheck(cn.GetNetConn()); err != nil {
+		return false
 	}
 
 	cn.SetUsedAt(now)

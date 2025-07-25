@@ -65,6 +65,10 @@ func (p *StickyConnPool) CloseConn(cn *Conn) error {
 	return p.pool.CloseConn(cn)
 }
 
+func (p *StickyConnPool) GetPubSub(ctx context.Context) (*Conn, error) {
+	return p.Get(ctx)
+}
+
 func (p *StickyConnPool) Get(ctx context.Context) (*Conn, error) {
 	// In worst case this races with Close which is not a very common operation.
 	for i := 0; i < 1000; i++ {

@@ -78,7 +78,8 @@ var _ = Describe("PubSub", func() {
 		}
 
 		stats := client.PoolStats()
-		Expect(stats.Misses).To(Equal(uint32(1)))
+		Expect(stats.Misses).To(Equal(uint32(2)))
+		Expect(stats.PubSubCount).To(Equal(uint32(1)))
 	})
 
 	It("should pub/sub channels", func() {
@@ -237,7 +238,8 @@ var _ = Describe("PubSub", func() {
 		}
 
 		stats := client.PoolStats()
-		Expect(stats.Misses).To(Equal(uint32(1)))
+		Expect(stats.Misses).To(Equal(uint32(2)))
+		Expect(stats.PubSubCount).To(Equal(uint32(1)))
 	})
 
 	It("should sharded pub/sub", func() {
@@ -313,7 +315,8 @@ var _ = Describe("PubSub", func() {
 		}
 
 		stats := client.PoolStats()
-		Expect(stats.Misses).To(Equal(uint32(1)))
+		Expect(stats.Misses).To(Equal(uint32(2)))
+		Expect(stats.PubSubCount).To(Equal(uint32(1)))
 	})
 
 	It("should ping/pong", func() {
