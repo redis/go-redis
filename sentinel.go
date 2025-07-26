@@ -13,9 +13,12 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/push"
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
@@ -62,6 +65,8 @@ type FailoverOptions struct {
 	Protocol int
 	Username string
 	Password string
+
+	// Push notifications are always enabled for RESP3 connections
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -116,6 +121,18 @@ type FailoverOptions struct {
 
 	IdentitySuffix string
 	UnstableResp3  bool
+
+	// HitlessUpgrades enables hitless upgrade functionality for failover clients.
+	// Requires Protocol: 3 (RESP3) for push notifications.
+	// When enabled, the client will automatically handle upgrade notifications
+	// and manage connection/pool state transitions seamlessly.
+	//
+	// default: false
+	HitlessUpgrades bool
+
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// If nil, default configuration will be used when HitlessUpgrades is true.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -423,7 +440,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	opt.Dialer = masterReplicaDialer(failover)
 	opt.init()
 
-	var connPool *pool.ConnPool
+
 
 	rdb := &Client{
 		baseClient: &baseClient{
@@ -432,15 +449,44 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
-	connPool = newConnPool(opt, rdb.dialHook)
-	rdb.connPool = connPool
+	// Initialize push notification processor using shared helper
+	// Use void processor by default for RESP2 connections
+	rdb.pushProcessor = initializePushProcessor(opt)
+
+	// Initialize hitless upgrades first if enabled to get the connection processor
+	var connectionProcessor interfaces.ConnectionProcessor
+	if opt.HitlessUpgrades {
+		if opt.Protocol != 3 {
+			internal.Logger.Printf(context.Background(), "hitless: RESP3 protocol required for hitless upgrades, but Protocol is %d", opt.Protocol)
+		} else {
+			integration, err := initializeHitlessManager(rdb, opt.HitlessUpgradeConfig)
+			if err != nil {
+				internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
+			} else {
+				rdb.hitlessManager = integration
+
+				// Create the connection processor from the hitless manager
+				// This automatically sets the manager in the processor
+				connectionProcessor = integration.CreateConnectionProcessor(opt.Protocol, rdb.dialHook)
+				rdb.connectionProcessor = connectionProcessor
+
+				internal.Logger.Printf(context.Background(), "hitless: successfully initialized hitless upgrades for failover client")
+			}
+		}
+	}
+
+	// Create connection pool with the processor (nil if hitless upgrades disabled)
+	rdb.connectionProcessor = connectionProcessor
+	rdb.connPool = newConnPool(opt, rdb.dialHook, connectionProcessor)
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
-		_ = connPool.Filter(func(cn *pool.Conn) bool {
-			return cn.RemoteAddr().String() != addr
-		})
+		if connPool, ok := rdb.connPool.(*pool.ConnPool); ok {
+			_ = connPool.Filter(func(cn *pool.Conn) bool {
+				return cn.RemoteAddr().String() != addr
+			})
+		}
 	}
 	failover.mu.Unlock()
 
@@ -498,13 +544,63 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
+	// Initialize push notification processor using shared helper
+	// Use void processor for Sentinel clients
+	c.pushProcessor = NewVoidPushNotificationProcessor()
+
 	c.initHooks(hooks{
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
 	})
-	c.connPool = newConnPool(opt, c.dialHook)
+	// Initialize hitless upgrades first if enabled to get the connection processor
+	var connectionProcessor interfaces.ConnectionProcessor
+	if opt.HitlessUpgrades {
+		if opt.Protocol != 3 {
+			internal.Logger.Printf(context.Background(), "hitless: RESP3 protocol required for hitless upgrades, but Protocol is %d", opt.Protocol)
+		} else {
+			// Create a temporary Client wrapper for the sentinel client
+			clientWrapper := &Client{baseClient: c.baseClient}
+			integration, err := initializeHitlessManager(clientWrapper, opt.HitlessUpgradeConfig)
+			if err != nil {
+				internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
+			} else {
+				c.hitlessManager = integration
+
+				// Create the connection processor from the hitless manager
+				// This automatically sets the manager in the processor
+				connectionProcessor = integration.CreateConnectionProcessor(opt.Protocol, c.dialHook)
+				c.connectionProcessor = connectionProcessor
+
+				internal.Logger.Printf(context.Background(), "hitless: successfully initialized hitless upgrades for sentinel client")
+			}
+		}
+	}
+
+	// Create connection pool with the processor (nil if hitless upgrades disabled)
+	c.connectionProcessor = connectionProcessor
+	c.connPool = newConnPool(opt, c.dialHook, connectionProcessor)
+
+	// Set the pool reference in the processor for connection removal on handoff failure
+	if connectionProcessor != nil {
+		if redisProcessor, ok := connectionProcessor.(*hitless.RedisConnectionProcessor); ok {
+			redisProcessor.SetPool(c.connPool)
+		}
+	}
 
 	return c
+}
+
+// GetPushNotificationHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (c *SentinelClient) GetPushNotificationHandler(pushNotificationName string) push.NotificationHandler {
+	return c.pushProcessor.GetHandler(pushNotificationName)
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *SentinelClient) RegisterPushNotificationHandler(pushNotificationName string, handler push.NotificationHandler, protected bool) error {
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {

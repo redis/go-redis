@@ -25,6 +25,10 @@ func (p *SingleConnPool) CloseConn(cn *Conn) error {
 	return p.pool.CloseConn(cn)
 }
 
+func (p *SingleConnPool) GetPubSub(ctx context.Context) (*Conn, error) {
+	return p.Get(ctx)
+}
+
 func (p *SingleConnPool) Get(ctx context.Context) (*Conn, error) {
 	if p.stickyErr != nil {
 		return nil, p.stickyErr
