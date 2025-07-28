@@ -991,9 +991,19 @@ func (c *Client) TxPipeline() Pipeliner {
 func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
-
 		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			return c.connPool.GetPubSub(ctx)
+			cn, err := c.connPool.GetPubSub(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			err = c.initConn(ctx, cn)
+			if err != nil {
+				_ = c.connPool.CloseConn(cn)
+				return nil, err
+			}
+
+			return cn, nil
 		},
 		closeConn:     c.connPool.CloseConn,
 		pushProcessor: c.pushProcessor,
