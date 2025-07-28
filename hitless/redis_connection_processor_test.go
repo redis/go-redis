@@ -368,6 +368,10 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			if err := connections[i].MarkForHandoff("new-endpoint:6379", int64(i)); err != nil {
 				t.Fatalf("Failed to mark connection %d for handoff: %v", i, err)
 			}
+			// Set a mock initialization function
+			connections[i].SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
+				return nil
+			})
 		}
 
 		ctx := context.Background()
@@ -450,6 +454,11 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
 		}
 
+		// Set a mock initialization function
+		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
+			return nil
+		})
+
 		// Process the connection to trigger handoff
 		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
 		if err != nil {
@@ -530,6 +539,11 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
 		}
 
+		// Set a mock initialization function
+		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
+			return nil
+		})
+
 		// Connection should no longer be usable
 		if conn.IsUsable() {
 			t.Error("Connection should not be usable after being marked for handoff")
@@ -598,6 +612,10 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			if err := conn.MarkForHandoff("new-endpoint:6379", int64(i+1)); err != nil {
 				t.Fatalf("Failed to mark connection %d for handoff: %v", i, err)
 			}
+			// Set a mock initialization function
+			conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
+				return nil
+			})
 
 			shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
 			if err != nil {
@@ -695,7 +713,14 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
-		conn.MarkForHandoff("new-endpoint:6379", 12345)
+		if err := conn.MarkForHandoff("new-endpoint:6379", 12345); err != nil {
+			t.Fatalf("Failed to mark connection for handoff: %v", err)
+		}
+
+		// Set a mock initialization function
+		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
+			return nil
+		})
 
 		ctx := context.Background()
 		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)

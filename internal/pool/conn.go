@@ -323,6 +323,7 @@ func (cn *Conn) ExecuteInitConn(ctx context.Context) error {
 		}
 		cn.Inited = true
 		cn.setUsable(true) // Use atomic operation
+		return nil
 	}
 	return fmt.Errorf("redis: no initConnFunc set for connection %d", cn.GetID())
 }

@@ -272,7 +272,15 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			t.Fatalf("Failed to get connection: %v", err)
 		}
 
-		conn.MarkForHandoff("new-endpoint:6379", 12345)
+		if err := conn.MarkForHandoff("new-endpoint:6379", 12345); err != nil {
+			t.Fatalf("Failed to mark connection for handoff: %v", err)
+		}
+
+		// Set a mock initialization function
+		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
+			return nil
+		})
+
 		testPool.Put(ctx, conn)
 
 		// Verify handoff was queued
@@ -280,8 +288,12 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			t.Error("Handoff should be queued in pending map")
 		}
 
+		// Give the handoff a moment to start processing
+		time.Sleep(50 * time.Millisecond)
+
 		// Shutdown processor gracefully
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		// Use a longer timeout to account for slow dialer (100ms) plus processing overhead
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
 		err = processor.Shutdown(shutdownCtx)
