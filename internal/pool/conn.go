@@ -3,8 +3,8 @@ package pool
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,9 +24,9 @@ func generateConnID() uint64 {
 type Conn struct {
 	usedAt int64 // atomic
 
-	// Mutex to protect netConn and related fields from concurrent access
-	mu      sync.RWMutex
-	netConn net.Conn
+	// Lock-free netConn access using atomic.Value
+	// Contains net.Conn, accessed atomically for better performance
+	netConnAtomic atomic.Value // stores net.Conn
 
 	rd *proto.Reader
 	bw *bufio.Writer
@@ -34,16 +34,14 @@ type Conn struct {
 
 	Inited    bool
 	pooled    bool
-	usable    bool // Flag indicating if connection is safe to use for new commands
 	createdAt time.Time
-
-	// Separate mutex for timeout management to avoid contention with connection operations
-	timeoutMu sync.RWMutex
+	expiresAt time.Time
 
 	// Hitless upgrade support: relaxed timeouts during migrations/failovers
-	relaxedReadTimeout  time.Duration
-	relaxedWriteTimeout time.Duration
-	relaxedDeadline     time.Time // Deadline when relaxed timeouts should expire
+	// Using atomic operations for lock-free access to avoid mutex contention
+	relaxedReadTimeoutNs  int64 // time.Duration as nanoseconds, accessed atomically
+	relaxedWriteTimeoutNs int64 // time.Duration as nanoseconds, accessed atomically
+	relaxedDeadlineNs     int64 // time.Time as nanoseconds since epoch, accessed atomically
 
 	// Connection initialization function for reconnections
 	initConnFunc func(context.Context, *Conn) error
@@ -51,21 +49,35 @@ type Conn struct {
 	// Connection identifier for unique tracking across handoffs
 	id uint64 // Unique numeric identifier for this connection
 
-	shouldHandoff  bool   // Flag indicating connection needs handoff
-	newEndpoint    string // New endpoint from MOVING notification
-	movingSeqID    int64  // Sequence ID from MOVING notification
-	handoffRetries int    // Retry counter for handoff attempts
+	// Handoff state - using atomic operations for lock-free access
+	usableAtomic         int32 // 1 if usable, 0 if not (atomic bool)
+	shouldHandoffAtomic  int32 // 1 if should handoff, 0 if not (atomic bool)
+	movingSeqIDAtomic    int64 // Sequence ID from MOVING notification (atomic)
+	handoffRetriesAtomic int32 // Retry counter for handoff attempts (atomic)
+
+	// newEndpoint needs special handling as it's a string
+	// We'll use atomic.Value for this
+	newEndpointAtomic atomic.Value // stores string
 
 	onClose func() error
 }
 
 func NewConn(netConn net.Conn) *Conn {
 	cn := &Conn{
-		netConn:   netConn,
 		createdAt: time.Now(),
-		usable:    false,            // Will be set to true after initialization
 		id:        generateConnID(), // Generate unique ID for this connection
 	}
+
+	// Store netConn atomically for lock-free access
+	cn.netConnAtomic.Store(netConn)
+
+	// Initialize atomic handoff state
+	atomic.StoreInt32(&cn.usableAtomic, 0)         // false initially, set to true after initialization
+	atomic.StoreInt32(&cn.shouldHandoffAtomic, 0)  // false initially
+	atomic.StoreInt64(&cn.movingSeqIDAtomic, 0)    // 0 initially
+	atomic.StoreInt32(&cn.handoffRetriesAtomic, 0) // 0 initially
+	cn.newEndpointAtomic.Store("")                 // empty string initially
+
 	cn.rd = proto.NewReader(netConn)
 	cn.bw = bufio.NewWriter(netConn)
 	cn.wr = proto.NewWriter(cn.bw)
@@ -82,123 +94,208 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 	atomic.StoreInt64(&cn.usedAt, tm.Unix())
 }
 
-// IsUsable returns true if the connection is safe to use for new commands.
-func (cn *Conn) IsUsable() bool {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
-	return cn.usable
+// getNetConn returns the current network connection using atomic load (lock-free).
+// This is the fast path for accessing netConn without mutex overhead.
+func (cn *Conn) getNetConn() net.Conn {
+	if conn := cn.netConnAtomic.Load(); conn != nil {
+		return conn.(net.Conn)
+	}
+	return nil
 }
 
-// SetUsable sets the usable flag for the connection.
+// setNetConn stores the network connection atomically (lock-free).
+// This is used for the fast path of connection replacement.
+func (cn *Conn) setNetConn(netConn net.Conn) {
+	cn.netConnAtomic.Store(netConn)
+}
+
+// Lock-free helper methods for handoff state management
+
+// isUsable returns true if the connection is safe to use (lock-free).
+func (cn *Conn) isUsable() bool {
+	return atomic.LoadInt32(&cn.usableAtomic) == 1
+}
+
+// setUsable sets the usable flag atomically (lock-free).
+func (cn *Conn) setUsable(usable bool) {
+	var val int32
+	if usable {
+		val = 1
+	}
+	atomic.StoreInt32(&cn.usableAtomic, val)
+}
+
+// shouldHandoff returns true if connection needs handoff (lock-free).
+func (cn *Conn) shouldHandoff() bool {
+	return atomic.LoadInt32(&cn.shouldHandoffAtomic) == 1
+}
+
+// setShouldHandoff sets the handoff flag atomically (lock-free).
+func (cn *Conn) setShouldHandoff(should bool) {
+	var val int32
+	if should {
+		val = 1
+	}
+	atomic.StoreInt32(&cn.shouldHandoffAtomic, val)
+}
+
+// getMovingSeqID returns the sequence ID atomically (lock-free).
+func (cn *Conn) getMovingSeqID() int64 {
+	return atomic.LoadInt64(&cn.movingSeqIDAtomic)
+}
+
+// setMovingSeqID sets the sequence ID atomically (lock-free).
+func (cn *Conn) setMovingSeqID(seqID int64) {
+	atomic.StoreInt64(&cn.movingSeqIDAtomic, seqID)
+}
+
+// getNewEndpoint returns the new endpoint atomically (lock-free).
+func (cn *Conn) getNewEndpoint() string {
+	if endpoint := cn.newEndpointAtomic.Load(); endpoint != nil {
+		return endpoint.(string)
+	}
+	return ""
+}
+
+// setNewEndpoint sets the new endpoint atomically (lock-free).
+func (cn *Conn) setNewEndpoint(endpoint string) {
+	cn.newEndpointAtomic.Store(endpoint)
+}
+
+// getHandoffRetries returns the retry count atomically (lock-free).
+func (cn *Conn) getHandoffRetries() int {
+	return int(atomic.LoadInt32(&cn.handoffRetriesAtomic))
+}
+
+// setHandoffRetries sets the retry count atomically (lock-free).
+func (cn *Conn) setHandoffRetries(retries int) {
+	atomic.StoreInt32(&cn.handoffRetriesAtomic, int32(retries))
+}
+
+// incrementHandoffRetries atomically increments and returns the new retry count (lock-free).
+func (cn *Conn) incrementHandoffRetries(delta int) int {
+	return int(atomic.AddInt32(&cn.handoffRetriesAtomic, int32(delta)))
+}
+
+// IsUsable returns true if the connection is safe to use for new commands (lock-free).
+func (cn *Conn) IsUsable() bool {
+	return cn.isUsable()
+}
+
+// SetUsable sets the usable flag for the connection (lock-free).
 func (cn *Conn) SetUsable(usable bool) {
-	cn.mu.Lock()
-	defer cn.mu.Unlock()
-	cn.usable = usable
+	cn.setUsable(usable)
 }
 
 // SetRelaxedTimeout sets relaxed timeouts for this connection during hitless upgrades.
 // These timeouts will be used for all subsequent commands until the deadline expires.
+// Uses atomic operations for lock-free access.
 func (cn *Conn) SetRelaxedTimeout(readTimeout, writeTimeout time.Duration) {
-	cn.timeoutMu.Lock()
-	defer cn.timeoutMu.Unlock()
-	cn.relaxedReadTimeout = readTimeout
-	cn.relaxedWriteTimeout = writeTimeout
+	atomic.StoreInt64(&cn.relaxedReadTimeoutNs, int64(readTimeout))
+	atomic.StoreInt64(&cn.relaxedWriteTimeoutNs, int64(writeTimeout))
 	// No deadline set - timeouts remain until explicitly cleared
-	cn.relaxedDeadline = time.Time{}
+	atomic.StoreInt64(&cn.relaxedDeadlineNs, 0)
 }
 
 // SetRelaxedTimeoutWithDeadline sets relaxed timeouts with an expiration deadline.
 // After the deadline, timeouts automatically revert to normal values.
+// Uses atomic operations for lock-free access.
 func (cn *Conn) SetRelaxedTimeoutWithDeadline(readTimeout, writeTimeout time.Duration, deadline time.Time) {
-	cn.timeoutMu.Lock()
-	defer cn.timeoutMu.Unlock()
-	cn.relaxedReadTimeout = readTimeout
-	cn.relaxedWriteTimeout = writeTimeout
-	cn.relaxedDeadline = deadline
+	atomic.StoreInt64(&cn.relaxedReadTimeoutNs, int64(readTimeout))
+	atomic.StoreInt64(&cn.relaxedWriteTimeoutNs, int64(writeTimeout))
+	atomic.StoreInt64(&cn.relaxedDeadlineNs, deadline.UnixNano())
 }
 
 // ClearRelaxedTimeout removes relaxed timeouts, returning to normal timeout behavior.
+// Uses atomic operations for lock-free access.
 func (cn *Conn) ClearRelaxedTimeout() {
-	cn.timeoutMu.Lock()
-	defer cn.timeoutMu.Unlock()
-	cn.relaxedReadTimeout = 0
-	cn.relaxedWriteTimeout = 0
-	cn.relaxedDeadline = time.Time{}
+	atomic.StoreInt64(&cn.relaxedReadTimeoutNs, 0)
+	atomic.StoreInt64(&cn.relaxedWriteTimeoutNs, 0)
+	atomic.StoreInt64(&cn.relaxedDeadlineNs, 0)
 }
 
 // HasRelaxedTimeout returns true if relaxed timeouts are currently active on this connection.
 // This checks both the timeout values and the deadline (if set).
+// Uses atomic operations for lock-free access.
 func (cn *Conn) HasRelaxedTimeout() bool {
-	cn.timeoutMu.RLock()
-	defer cn.timeoutMu.RUnlock()
+	readTimeoutNs := atomic.LoadInt64(&cn.relaxedReadTimeoutNs)
+	writeTimeoutNs := atomic.LoadInt64(&cn.relaxedWriteTimeoutNs)
 
 	// If no relaxed timeouts are set, return false
-	if cn.relaxedReadTimeout <= 0 && cn.relaxedWriteTimeout <= 0 {
+	if readTimeoutNs <= 0 && writeTimeoutNs <= 0 {
 		return false
 	}
 
+	deadlineNs := atomic.LoadInt64(&cn.relaxedDeadlineNs)
 	// If no deadline is set, relaxed timeouts are active
-	if cn.relaxedDeadline.IsZero() {
+	if deadlineNs == 0 {
 		return true
 	}
 
 	// If deadline is set, check if it's still in the future
-	return time.Now().Before(cn.relaxedDeadline)
+	return time.Now().UnixNano() < deadlineNs
 }
 
-// getEffectiveTimeout returns the timeout to use for operations.
+// getEffectiveReadTimeout returns the timeout to use for read operations.
 // If relaxed timeout is set and not expired, it takes precedence over the provided timeout.
-// This method automatically clears expired relaxed timeouts.
+// This method automatically clears expired relaxed timeouts using atomic operations.
 func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Duration {
-	cn.timeoutMu.Lock()
-	defer cn.timeoutMu.Unlock()
+	readTimeoutNs := atomic.LoadInt64(&cn.relaxedReadTimeoutNs)
 
-	// Check if relaxed timeout is set
-	if cn.relaxedReadTimeout > 0 {
-		// If no deadline is set, use relaxed timeout
-		if cn.relaxedDeadline.IsZero() {
-			return cn.relaxedReadTimeout
-		}
-
-		// Check if deadline has passed
-		if time.Now().Before(cn.relaxedDeadline) {
-			// Deadline is in the future, use relaxed timeout
-			return cn.relaxedReadTimeout
-		} else {
-			// Deadline has passed, clear relaxed timeouts and use normal timeout
-			cn.relaxedReadTimeout = 0
-			cn.relaxedWriteTimeout = 0
-			cn.relaxedDeadline = time.Time{}
-			return normalTimeout
-		}
+	// Fast path: no relaxed timeout set
+	if readTimeoutNs <= 0 {
+		return normalTimeout
 	}
-	return normalTimeout
+
+	deadlineNs := atomic.LoadInt64(&cn.relaxedDeadlineNs)
+	// If no deadline is set, use relaxed timeout
+	if deadlineNs == 0 {
+		return time.Duration(readTimeoutNs)
+	}
+
+	nowNs := time.Now().UnixNano()
+	// Check if deadline has passed
+	if nowNs < deadlineNs {
+		// Deadline is in the future, use relaxed timeout
+		return time.Duration(readTimeoutNs)
+	} else {
+		// Deadline has passed, clear relaxed timeouts atomically and use normal timeout
+		atomic.StoreInt64(&cn.relaxedReadTimeoutNs, 0)
+		atomic.StoreInt64(&cn.relaxedWriteTimeoutNs, 0)
+		atomic.StoreInt64(&cn.relaxedDeadlineNs, 0)
+		return normalTimeout
+	}
 }
 
+// getEffectiveWriteTimeout returns the timeout to use for write operations.
+// If relaxed timeout is set and not expired, it takes precedence over the provided timeout.
+// This method automatically clears expired relaxed timeouts using atomic operations.
 func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Duration {
-	cn.timeoutMu.Lock()
-	defer cn.timeoutMu.Unlock()
+	writeTimeoutNs := atomic.LoadInt64(&cn.relaxedWriteTimeoutNs)
 
-	// Check if relaxed timeout is set
-	if cn.relaxedWriteTimeout > 0 {
-		// If no deadline is set, use relaxed timeout
-		if cn.relaxedDeadline.IsZero() {
-			return cn.relaxedWriteTimeout
-		}
-
-		// Check if deadline has passed
-		if time.Now().Before(cn.relaxedDeadline) {
-			// Deadline is in the future, use relaxed timeout
-			return cn.relaxedWriteTimeout
-		} else {
-			// Deadline has passed, clear relaxed timeouts and use normal timeout
-			cn.relaxedReadTimeout = 0
-			cn.relaxedWriteTimeout = 0
-			cn.relaxedDeadline = time.Time{}
-			return normalTimeout
-		}
+	// Fast path: no relaxed timeout set
+	if writeTimeoutNs <= 0 {
+		return normalTimeout
 	}
-	return normalTimeout
+
+	deadlineNs := atomic.LoadInt64(&cn.relaxedDeadlineNs)
+	// If no deadline is set, use relaxed timeout
+	if deadlineNs == 0 {
+		return time.Duration(writeTimeoutNs)
+	}
+
+	nowNs := time.Now().UnixNano()
+	// Check if deadline has passed
+	if nowNs < deadlineNs {
+		// Deadline is in the future, use relaxed timeout
+		return time.Duration(writeTimeoutNs)
+	} else {
+		// Deadline has passed, clear relaxed timeouts atomically and use normal timeout
+		atomic.StoreInt64(&cn.relaxedReadTimeoutNs, 0)
+		atomic.StoreInt64(&cn.relaxedWriteTimeoutNs, 0)
+		atomic.StoreInt64(&cn.relaxedDeadlineNs, 0)
+		return normalTimeout
+	}
 }
 
 func (cn *Conn) SetOnClose(fn func() error) {
@@ -216,7 +313,7 @@ func (cn *Conn) ExecuteInitConn(ctx context.Context) error {
 		err := cn.initConnFunc(ctx, cn)
 		if err == nil {
 			cn.Inited = true
-			cn.usable = true
+			cn.setUsable(true) // Use atomic operation
 		}
 		return err
 	}
@@ -224,20 +321,16 @@ func (cn *Conn) ExecuteInitConn(ctx context.Context) error {
 }
 
 func (cn *Conn) SetNetConn(netConn net.Conn) {
-	cn.mu.Lock()
-	defer cn.mu.Unlock()
-
-	cn.netConn = netConn
+	// Store the new connection atomically first (lock-free)
+	cn.setNetConn(netConn)
 	cn.rd.Reset(netConn)
 	cn.bw.Reset(netConn)
 }
 
-// GetNetConn safely returns the current network connection.
-// This method is used by the pool for health checks to avoid data races.
+// GetNetConn safely returns the current network connection using atomic load (lock-free).
+// This method is used by the pool for health checks and provides better performance.
 func (cn *Conn) GetNetConn() net.Conn {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
-	return cn.netConn
+	return cn.getNetConn()
 }
 
 // SetNetConnWithInitConn replaces the underlying connection and executes the initialization.
@@ -249,35 +342,27 @@ func (cn *Conn) SetNetConnWithInitConn(ctx context.Context, netConn net.Conn) er
 	return cn.ExecuteInitConn(ctx)
 }
 
-// MarkForHandoff marks the connection for handoff due to MOVING notification.
+// MarkForHandoff marks the connection for handoff due to MOVING notification (lock-free).
 func (cn *Conn) MarkForHandoff(newEndpoint string, seqID int64) {
-	cn.mu.Lock()
-	defer cn.mu.Unlock()
-	cn.shouldHandoff = true
-	cn.newEndpoint = newEndpoint
-	cn.movingSeqID = seqID
-	cn.usable = false // Connection is not safe to use until handoff completes
+	cn.setShouldHandoff(true)
+	cn.setNewEndpoint(newEndpoint)
+	cn.setMovingSeqID(seqID)
+	cn.setUsable(false) // Connection is not safe to use until handoff completes
 }
 
-// ShouldHandoff returns true if the connection needs to be handed off.
+// ShouldHandoff returns true if the connection needs to be handed off (lock-free).
 func (cn *Conn) ShouldHandoff() bool {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
-	return cn.shouldHandoff
+	return cn.shouldHandoff()
 }
 
-// GetHandoffEndpoint returns the new endpoint for handoff.
+// GetHandoffEndpoint returns the new endpoint for handoff (lock-free).
 func (cn *Conn) GetHandoffEndpoint() string {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
-	return cn.newEndpoint
+	return cn.getNewEndpoint()
 }
 
-// GetMovingSeqID returns the sequence ID from the MOVING notification.
+// GetMovingSeqID returns the sequence ID from the MOVING notification (lock-free).
 func (cn *Conn) GetMovingSeqID() int64 {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
-	return cn.movingSeqID
+	return cn.getMovingSeqID()
 }
 
 // GetID returns the unique identifier for this connection.
@@ -285,65 +370,57 @@ func (cn *Conn) GetID() uint64 {
 	return cn.id
 }
 
-// ClearHandoffState clears the handoff state after successful handoff.
+// ClearHandoffState clears the handoff state after successful handoff (lock-free).
 func (cn *Conn) ClearHandoffState() {
-	cn.mu.Lock()
-	defer cn.mu.Unlock()
-	cn.shouldHandoff = false
-	cn.newEndpoint = ""
-	cn.movingSeqID = 0
-	cn.handoffRetries = 0
-	cn.usable = true // Connection is safe to use again after handoff completes
+	cn.setShouldHandoff(false)
+	cn.setNewEndpoint("")
+	cn.setMovingSeqID(0)
+	cn.setHandoffRetries(0)
+	cn.setUsable(true) // Connection is safe to use again after handoff completes
 }
 
+// IncrementAndGetHandoffRetries atomically increments and returns handoff retries (lock-free).
 func (cn *Conn) IncrementAndGetHandoffRetries(n int) int {
-	cn.mu.Lock()
-	defer cn.mu.Unlock()
-	cn.handoffRetries += n
-	return cn.handoffRetries
+	return cn.incrementHandoffRetries(n)
 }
 
 // Rd returns the connection's reader for protocol-specific processing
 func (cn *Conn) Rd() *proto.Reader {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
 	return cn.rd
 }
 
 // Reader returns the connection's proto reader for processing notifications
 func (cn *Conn) Reader() *proto.Reader {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
 	return cn.rd
 }
 
 // HasBufferedData safely checks if the connection has buffered data.
 // This method is used to avoid data races when checking for push notifications.
 func (cn *Conn) HasBufferedData() bool {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
 	return cn.rd.Buffered() > 0
 }
 
 // PeekReplyTypeSafe safely peeks at the reply type.
 // This method is used to avoid data races when checking for push notifications.
 func (cn *Conn) PeekReplyTypeSafe() (byte, error) {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
+	if !cn.HasBufferedData() {
+		return 0, fmt.Errorf("redis: can't peek reply type, no data available")
+	}
 	return cn.rd.PeekReplyType()
 }
 
 func (cn *Conn) Write(b []byte) (int, error) {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
-	return cn.netConn.Write(b)
+	// Lock-free netConn access for better performance
+	if netConn := cn.getNetConn(); netConn != nil {
+		return netConn.Write(b)
+	}
+	return 0, net.ErrClosed
 }
 
 func (cn *Conn) RemoteAddr() net.Addr {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
-	if cn.netConn != nil {
-		return cn.netConn.RemoteAddr()
+	// Lock-free netConn access for better performance
+	if netConn := cn.getNetConn(); netConn != nil {
+		return netConn.RemoteAddr()
 	}
 	return nil
 }
@@ -355,12 +432,11 @@ func (cn *Conn) WithReader(
 		// Use relaxed timeout if set, otherwise use provided timeout
 		effectiveTimeout := cn.getEffectiveReadTimeout(timeout)
 
-		cn.mu.RLock()
-		err := cn.netConn.SetReadDeadline(cn.deadline(ctx, effectiveTimeout))
-		cn.mu.RUnlock()
-
-		if err != nil {
-			return err
+		// Lock-free netConn access for better performance
+		if netConn := cn.getNetConn(); netConn != nil {
+			if err := netConn.SetReadDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -374,20 +450,19 @@ func (cn *Conn) WithWriter(
 		// Use relaxed timeout if set, otherwise use provided timeout
 		effectiveTimeout := cn.getEffectiveWriteTimeout(timeout)
 
-		cn.mu.RLock()
-		err := cn.netConn.SetWriteDeadline(cn.deadline(ctx, effectiveTimeout))
-		cn.mu.RUnlock()
-
-		if err != nil {
-			return err
+		// Lock-free netConn access for better performance
+		if netConn := cn.getNetConn(); netConn != nil {
+			if err := netConn.SetWriteDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
+				return err
+			}
 		}
 	}
 
-	cn.mu.RLock()
 	if cn.bw.Buffered() > 0 {
-		cn.bw.Reset(cn.netConn)
+		if netConn := cn.getNetConn(); netConn != nil {
+			cn.bw.Reset(netConn)
+		}
 	}
-	cn.mu.RUnlock()
 
 	if err := fn(cn.wr); err != nil {
 		return err
@@ -402,18 +477,22 @@ func (cn *Conn) Close() error {
 		_ = cn.onClose()
 	}
 
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
-	return cn.netConn.Close()
+	// Lock-free netConn access for better performance
+	if netConn := cn.getNetConn(); netConn != nil {
+		return netConn.Close()
+	}
+	return nil
 }
 
 // MaybeHasData tries to peek at the next byte in the socket without consuming it
 // This is used to check if there are push notifications available
 // Important: This will work on Linux, but not on Windows
 func (cn *Conn) MaybeHasData() bool {
-	cn.mu.RLock()
-	defer cn.mu.RUnlock()
-	return maybeHasData(cn.netConn)
+	// Lock-free netConn access for better performance
+	if netConn := cn.getNetConn(); netConn != nil {
+		return maybeHasData(netConn)
+	}
+	return false
 }
 
 func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {

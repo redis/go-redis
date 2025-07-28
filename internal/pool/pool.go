@@ -23,6 +23,10 @@ var (
 
 	// ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
+
+	minTime      = time.Unix(-2208988800, 0) // Jan 1, 1900
+	maxTime      = minTime.Add(1<<63 - 1)
+	noExpiration = maxTime
 )
 
 var timers = sync.Pool{
@@ -42,7 +46,6 @@ type Stats struct {
 	Unusable       uint32 // number of times a connection was found to be unusable
 	PubSubCount    uint32 // number of times a connection was used for pub/sub
 	WaitDurationNs int64  // total time spent for waiting a connection in nanoseconds
-	WaitUsableNs   int64  // total time spent for waiting a usable connection in nanoseconds
 
 	TotalConns uint32 // number of total connections in the pool
 	IdleConns  uint32 // number of idle connections in the pool
@@ -104,7 +107,9 @@ type ConnPool struct {
 
 	stats          Stats
 	waitDurationNs atomic.Int64
-	waitUsableNs   atomic.Int64
+
+	// Atomic flag to prevent concurrent minimum idle connection checks
+	checkingMinIdle uint32 // atomic: 1 if checking is in progress, 0 otherwise
 
 	_closed uint32 // atomic
 }
@@ -123,14 +128,38 @@ func NewConnPool(opt *Options) *ConnPool {
 	// Only create MinIdleConns if explicitly requested (> 0)
 	// This avoids creating connections during pool initialization for tests
 	if opt.MinIdleConns > 0 {
-		p.connsMu.Lock()
-		p.checkMinIdleConns()
-		p.connsMu.Unlock()
+		p.checkMinIdleConnsAsync()
 	}
 
 	return p
 }
 
+// checkMinIdleConnsAsync asynchronously checks and maintains minimum idle connections.
+// Uses an atomic flag to prevent concurrent checks - only creates a goroutine when needed.
+func (p *ConnPool) checkMinIdleConnsAsync() {
+	// Fast path: if MinIdleConns is 0, no need to check
+	if p.cfg.MinIdleConns == 0 {
+		return
+	}
+
+	// Check if idle connections are already being checked
+	if !atomic.CompareAndSwapUint32(&p.checkingMinIdle, 0, 1) {
+		// Already checking, return early to avoid duplicate work
+		return
+	}
+
+	// Start checking in a goroutine to avoid blocking the caller
+	go func() {
+		defer atomic.StoreUint32(&p.checkingMinIdle, 0) // Reset the flag when done
+
+		// Check and maintain minimum idle connections
+		p.connsMu.Lock()
+		p.checkMinIdleConns()
+		p.connsMu.Unlock()
+	}()
+}
+
+// checkMinIdleConns is not thread-safe. Should be called with connsMu locked.
 func (p *ConnPool) checkMinIdleConns() {
 	if p.cfg.MinIdleConns == 0 {
 		return
@@ -143,24 +172,19 @@ func (p *ConnPool) checkMinIdleConns() {
 		case p.queue <- struct{}{}:
 			p.poolSize++
 			p.idleConnsLen++
-
-			go func() {
-				err := p.addIdleConn()
-				if err != nil && err != ErrClosed {
-					p.connsMu.Lock()
-					p.poolSize--
-					p.idleConnsLen--
-					p.connsMu.Unlock()
-				}
-
-				p.freeTurn()
-			}()
+			err := p.addIdleConn()
+			if err != nil && err != ErrClosed {
+				p.poolSize--
+				p.idleConnsLen--
+			}
+			p.freeTurn()
 		default:
 			return
 		}
 	}
 }
 
+// addIdleConn is not thread-safe. Should be called with connsMu locked.
 func (p *ConnPool) addIdleConn() error {
 	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.DialTimeout)
 	defer cancel()
@@ -169,9 +193,6 @@ func (p *ConnPool) addIdleConn() error {
 	if err != nil {
 		return err
 	}
-
-	p.connsMu.Lock()
-	defer p.connsMu.Unlock()
 
 	// It is not allowed to add new connections to the closed connection pool.
 	if p.closed() {
@@ -246,6 +267,11 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	cn := NewConn(netConn)
 	cn.pooled = pooled
+	if p.cfg.ConnMaxLifetime > 0 {
+		cn.expiresAt = time.Now().Add(p.cfg.ConnMaxLifetime)
+	} else {
+		cn.expiresAt = noExpiration
+	}
 
 	// Mark connection as usable after successful creation
 	// This is essential for normal pool operations
@@ -308,7 +334,6 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 	}
 
 	tries := 0
-	start := time.Now()
 	for {
 		if tries > 10 {
 			log.Printf("redis: connection pool: failed to get a connection after %d tries", tries)
@@ -334,8 +359,9 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 		}
 
 		// Process connection using the connection processor if available
-		if p.cfg.ConnectionProcessor != nil {
-			if err := p.cfg.ConnectionProcessor.ProcessConnectionOnGet(ctx, cn); err != nil {
+		// Fast path: check processor existence once and cache the result
+		if processor := p.cfg.ConnectionProcessor; processor != nil {
+			if err := processor.ProcessConnectionOnGet(ctx, cn); err != nil {
 				// Failed to process connection, discard it
 				_ = p.CloseConn(cn)
 				continue
@@ -343,7 +369,6 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 		}
 
 		atomic.AddUint32(&p.stats.Hits, 1)
-		p.waitUsableNs.Add(time.Since(start).Nanoseconds())
 		return cn, nil
 	}
 
@@ -383,7 +408,7 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 		}
 		return ctx.Err()
 	case p.queue <- struct{}{}:
-		p.waitDurationNs.Add(time.Since(start).Nanoseconds())
+		p.waitDurationNs.Add(time.Now().UnixNano() - start.UnixNano())
 		atomic.AddUint32(&p.stats.WaitCount, 1)
 		if !timer.Stop() {
 			<-timer.C
@@ -439,6 +464,8 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 			p.idleConns = append(p.idleConns, cn)
 		} else {
 			// LIFO: put at beginning (will be picked up last since we pop from end)
+			// currently isUsable is only set for hitless upgrades, so this is a no-op
+			// but we may need it in the future, so leaving it here for now.
 			p.idleConns = append([]*Conn{cn}, p.idleConns...)
 		}
 	}
@@ -447,7 +474,13 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 	if attempts >= maxAttempts {
 		return nil, nil
 	}
-	p.checkMinIdleConns()
+
+	// Asynchronously check minimum idle connections (only if MinIdleConns > 0)
+	// This avoids blocking the Get() operation while still maintaining pool health
+	if p.cfg.MinIdleConns > 0 {
+		p.checkMinIdleConnsAsync()
+	}
+
 	return cn, nil
 }
 
@@ -457,8 +490,9 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	shouldRemove := false
 	var err error
 
-	if p.cfg.ConnectionProcessor != nil {
-		shouldPool, shouldRemove, err = p.cfg.ConnectionProcessor.ProcessConnectionOnPut(ctx, cn)
+	// Fast path: cache processor reference to avoid repeated field access
+	if processor := p.cfg.ConnectionProcessor; processor != nil {
+		shouldPool, shouldRemove, err = processor.ProcessConnectionOnPut(ctx, cn)
 		if err != nil {
 			internal.Logger.Printf(ctx, "Connection processor error: %v", err)
 			p.Remove(ctx, cn, err)
@@ -516,9 +550,18 @@ func (p *ConnPool) CloseConn(cn *Conn) error {
 }
 
 func (p *ConnPool) removeConnWithLock(cn *Conn) {
+	var shouldCheckMinIdle bool
+
 	p.connsMu.Lock()
-	defer p.connsMu.Unlock()
+	oldPoolSize := p.poolSize
 	p.removeConn(cn)
+	shouldCheckMinIdle = cn.pooled && p.poolSize < oldPoolSize // Connection was removed from pool
+	p.connsMu.Unlock()
+
+	// Check minimum idle connections asynchronously after releasing the lock
+	if shouldCheckMinIdle {
+		p.checkMinIdleConnsAsync()
+	}
 }
 
 func (p *ConnPool) removeConn(cn *Conn) {
@@ -527,7 +570,6 @@ func (p *ConnPool) removeConn(cn *Conn) {
 			p.conns = append(p.conns[:i], p.conns[i+1:]...)
 			if cn.pooled {
 				p.poolSize--
-				p.checkMinIdleConns()
 			}
 			break
 		}
@@ -564,7 +606,6 @@ func (p *ConnPool) Stats() *Stats {
 		Unusable:       atomic.LoadUint32(&p.stats.Unusable),
 		PubSubCount:    atomic.LoadUint32(&p.stats.PubSubCount),
 		WaitDurationNs: p.waitDurationNs.Load(),
-		WaitUsableNs:   p.waitUsableNs.Load(),
 
 		TotalConns: uint32(p.Len()),
 		IdleConns:  uint32(p.IdleLen()),
@@ -615,9 +656,11 @@ func (p *ConnPool) Close() error {
 func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 	now := time.Now()
 
-	if p.cfg.ConnMaxLifetime > 0 && now.Sub(cn.createdAt) >= p.cfg.ConnMaxLifetime {
+	// slight optimization, check expiresAt first.
+	if cn.expiresAt.Before(now) {
 		return false
 	}
+
 	if p.cfg.ConnMaxIdleTime > 0 && now.Sub(cn.UsedAt()) >= p.cfg.ConnMaxIdleTime {
 		return false
 	}
