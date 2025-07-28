@@ -18,6 +18,11 @@ var noDeadline = time.Time{}
 // Global atomic counter for connection IDs
 var connIDCounter uint64
 
+// atomicNetConn is a wrapper to ensure consistent typing in atomic.Value
+type atomicNetConn struct {
+	conn net.Conn
+}
+
 // generateConnID generates a fast unique identifier for a connection with zero allocations
 func generateConnID() uint64 {
 	return atomic.AddUint64(&connIDCounter, 1)
@@ -27,8 +32,8 @@ type Conn struct {
 	usedAt int64 // atomic
 
 	// Lock-free netConn access using atomic.Value
-	// Contains net.Conn, accessed atomically for better performance
-	netConnAtomic atomic.Value // stores net.Conn
+	// Contains *atomicNetConn wrapper, accessed atomically for better performance
+	netConnAtomic atomic.Value // stores *atomicNetConn
 
 	rd *proto.Reader
 	bw *bufio.Writer
@@ -74,8 +79,8 @@ func NewConn(netConn net.Conn) *Conn {
 		id:        generateConnID(), // Generate unique ID for this connection
 	}
 
-	// Store netConn atomically for lock-free access
-	cn.netConnAtomic.Store(netConn)
+	// Store netConn atomically for lock-free access using wrapper
+	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
 
 	// Initialize atomic handoff state
 	atomic.StoreInt32(&cn.usableAtomic, 0)         // false initially, set to true after initialization
@@ -103,8 +108,10 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 // getNetConn returns the current network connection using atomic load (lock-free).
 // This is the fast path for accessing netConn without mutex overhead.
 func (cn *Conn) getNetConn() net.Conn {
-	if conn := cn.netConnAtomic.Load(); conn != nil {
-		return conn.(net.Conn)
+	if v := cn.netConnAtomic.Load(); v != nil {
+		if wrapper, ok := v.(*atomicNetConn); ok {
+			return wrapper.conn
+		}
 	}
 	return nil
 }
@@ -112,7 +119,7 @@ func (cn *Conn) getNetConn() net.Conn {
 // setNetConn stores the network connection atomically (lock-free).
 // This is used for the fast path of connection replacement.
 func (cn *Conn) setNetConn(netConn net.Conn) {
-	cn.netConnAtomic.Store(netConn)
+	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
 }
 
 // Lock-free helper methods for handoff state management
@@ -311,14 +318,13 @@ func (cn *Conn) SetInitConnFunc(fn func(context.Context, *Conn) error) {
 // ExecuteInitConn runs the stored connection initialization function if available.
 func (cn *Conn) ExecuteInitConn(ctx context.Context) error {
 	if cn.initConnFunc != nil {
-		err := cn.initConnFunc(ctx, cn)
-		if err == nil {
-			cn.Inited = true
-			cn.setUsable(true) // Use atomic operation
+		if err := cn.initConnFunc(ctx, cn); err != nil {
+			return err
 		}
-		return err
+		cn.Inited = true
+		cn.setUsable(true) // Use atomic operation
 	}
-	return nil
+	return fmt.Errorf("redis: no initConnFunc set for connection %d", cn.GetID())
 }
 
 func (cn *Conn) SetNetConn(netConn net.Conn) {

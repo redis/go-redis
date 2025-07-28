@@ -501,7 +501,11 @@ func (rcp *RedisConnectionProcessor) performConnectionHandoffWithPool(ctx contex
 
 	// Get the old connection
 	oldConn := cn.GetNetConn()
-	defer oldConn.Close()
+	defer func() {
+		if oldConn != nil {
+			oldConn.Close()
+		}
+	}()
 
 	// Replace the connection and execute initialization
 	err = cn.SetNetConnWithInitConn(ctx, newNetConn)
