@@ -80,8 +80,9 @@ type FieldSchema struct {
 }
 
 type FTVectorArgs struct {
-	FlatOptions *FTFlatOptions
-	HNSWOptions *FTHNSWOptions
+	FlatOptions   *FTFlatOptions
+	HNSWOptions   *FTHNSWOptions
+	VamanaOptions *FTVamanaOptions
 }
 
 type FTFlatOptions struct {
@@ -101,6 +102,19 @@ type FTHNSWOptions struct {
 	MaxAllowedEdgesPerNode int
 	EFRunTime              int
 	Epsilon                float64
+}
+
+type FTVamanaOptions struct {
+	Type                   string
+	Dim                    int
+	DistanceMetric         string
+	Compression            string
+	ConstructionWindowSize int
+	GraphMaxDegree         int
+	SearchWindowSize       int
+	Epsilon                float64
+	TrainingThreshold      int
+	ReduceDim              int
 }
 
 type FTDropIndexOptions struct {
@@ -985,8 +999,19 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 			if schema.FieldType != SearchFieldTypeVector {
 				panic("FT.CREATE: SCHEMA FieldType VECTOR is required for VectorArgs")
 			}
-			if schema.VectorArgs.FlatOptions != nil && schema.VectorArgs.HNSWOptions != nil {
-				panic("FT.CREATE: SCHEMA VectorArgs FlatOptions and HNSWOptions are mutually exclusive")
+			// Check mutual exclusivity of vector options
+			optionCount := 0
+			if schema.VectorArgs.FlatOptions != nil {
+				optionCount++
+			}
+			if schema.VectorArgs.HNSWOptions != nil {
+				optionCount++
+			}
+			if schema.VectorArgs.VamanaOptions != nil {
+				optionCount++
+			}
+			if optionCount != 1 {
+				panic("FT.CREATE: SCHEMA VectorArgs must have exactly one of FlatOptions, HNSWOptions, or VamanaOptions")
 			}
 			if schema.VectorArgs.FlatOptions != nil {
 				args = append(args, "FLAT")
@@ -1034,6 +1059,40 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 				}
 				args = append(args, len(hnswArgs))
 				args = append(args, hnswArgs...)
+			}
+			if schema.VectorArgs.VamanaOptions != nil {
+				args = append(args, "VAMANA")
+				if schema.VectorArgs.VamanaOptions.Type == "" || schema.VectorArgs.VamanaOptions.Dim == 0 || schema.VectorArgs.VamanaOptions.DistanceMetric == "" {
+					panic("FT.CREATE: Type, Dim and DistanceMetric are required for VECTOR VAMANA")
+				}
+				vamanaArgs := []interface{}{
+					"TYPE", schema.VectorArgs.VamanaOptions.Type,
+					"DIM", schema.VectorArgs.VamanaOptions.Dim,
+					"DISTANCE_METRIC", schema.VectorArgs.VamanaOptions.DistanceMetric,
+				}
+				if schema.VectorArgs.VamanaOptions.Compression != "" {
+					vamanaArgs = append(vamanaArgs, "COMPRESSION", schema.VectorArgs.VamanaOptions.Compression)
+				}
+				if schema.VectorArgs.VamanaOptions.ConstructionWindowSize > 0 {
+					vamanaArgs = append(vamanaArgs, "CONSTRUCTION_WINDOW_SIZE", schema.VectorArgs.VamanaOptions.ConstructionWindowSize)
+				}
+				if schema.VectorArgs.VamanaOptions.GraphMaxDegree > 0 {
+					vamanaArgs = append(vamanaArgs, "GRAPH_MAX_DEGREE", schema.VectorArgs.VamanaOptions.GraphMaxDegree)
+				}
+				if schema.VectorArgs.VamanaOptions.SearchWindowSize > 0 {
+					vamanaArgs = append(vamanaArgs, "SEARCH_WINDOW_SIZE", schema.VectorArgs.VamanaOptions.SearchWindowSize)
+				}
+				if schema.VectorArgs.VamanaOptions.Epsilon > 0 {
+					vamanaArgs = append(vamanaArgs, "EPSILON", schema.VectorArgs.VamanaOptions.Epsilon)
+				}
+				if schema.VectorArgs.VamanaOptions.TrainingThreshold > 0 {
+					vamanaArgs = append(vamanaArgs, "TRAINING_THRESHOLD", schema.VectorArgs.VamanaOptions.TrainingThreshold)
+				}
+				if schema.VectorArgs.VamanaOptions.ReduceDim > 0 {
+					vamanaArgs = append(vamanaArgs, "REDUCE", schema.VectorArgs.VamanaOptions.ReduceDim)
+				}
+				args = append(args, len(vamanaArgs))
+				args = append(args, vamanaArgs...)
 			}
 		}
 		if schema.GeoShapeFieldType != "" {
