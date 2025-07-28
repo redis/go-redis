@@ -390,3 +390,21 @@ func BenchmarkPoolStatsCollection(b *testing.B) {
 		_ = stats.Hits + stats.Misses + stats.Timeouts // Use the stats to prevent optimization
 	}
 }
+
+// BenchmarkPoolHighContention tests pool performance under high contention
+func BenchmarkPoolHighContention(b *testing.B) {
+	ctx := context.Background()
+	client := benchmarkClient(32)
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			// High contention Get/Put operations
+			pubsub := client.Subscribe(ctx, "test-channel")
+			pubsub.Close()
+		}
+	})
+}

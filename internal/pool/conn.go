@@ -3,6 +3,7 @@ package pool
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
@@ -160,11 +161,6 @@ func (cn *Conn) getNewEndpoint() string {
 // setNewEndpoint sets the new endpoint atomically (lock-free).
 func (cn *Conn) setNewEndpoint(endpoint string) {
 	cn.newEndpointAtomic.Store(endpoint)
-}
-
-// getHandoffRetries returns the retry count atomically (lock-free).
-func (cn *Conn) getHandoffRetries() int {
-	return int(atomic.LoadInt32(&cn.handoffRetriesAtomic))
 }
 
 // setHandoffRetries sets the retry count atomically (lock-free).
@@ -343,11 +339,18 @@ func (cn *Conn) SetNetConnWithInitConn(ctx context.Context, netConn net.Conn) er
 }
 
 // MarkForHandoff marks the connection for handoff due to MOVING notification (lock-free).
-func (cn *Conn) MarkForHandoff(newEndpoint string, seqID int64) {
+// Returns an error if the connection is already marked for handoff.
+func (cn *Conn) MarkForHandoff(newEndpoint string, seqID int64) error {
+	// Check if connection is already marked for handoff
+	if cn.shouldHandoff() {
+		return errors.New("connection is already marked for handoff")
+	}
+
 	cn.setShouldHandoff(true)
 	cn.setNewEndpoint(newEndpoint)
 	cn.setMovingSeqID(seqID)
 	cn.setUsable(false) // Connection is not safe to use until handoff completes
+	return nil
 }
 
 // ShouldHandoff returns true if the connection needs to be handed off (lock-free).

@@ -517,7 +517,6 @@ func (rcp *RedisConnectionProcessor) performConnectionHandoffWithPool(ctx contex
 			}
 		} else {
 			cn.Close()
-			newNetConn.Close()
 			internal.Logger.Printf(ctx,
 				"hitless: no pool provided for connection %d, cannot remove due to handoff initialization failure: %v",
 				cn.GetID(), err)

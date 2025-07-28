@@ -111,7 +111,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
-		conn.MarkForHandoff("new-endpoint:6379", 12345)
+		if err := conn.MarkForHandoff("new-endpoint:6379", 12345); err != nil {
+			t.Fatalf("Failed to mark connection for handoff: %v", err)
+		}
 
 		// Set a mock initialization function
 		initConnCalled := false
@@ -182,7 +184,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 	t.Run("EmptyEndpoint", func(t *testing.T) {
 		processor := NewRedisConnectionProcessor(3, baseDialer, nil, nil)
 		conn := createMockPoolConnection()
-		conn.MarkForHandoff("", 12345) // Empty endpoint
+		if err := conn.MarkForHandoff("", 12345); err != nil { // Empty endpoint
+			t.Fatalf("Failed to mark connection for handoff: %v", err)
+		}
 
 		ctx := context.Background()
 		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
@@ -214,7 +218,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
-		conn.MarkForHandoff("new-endpoint:6379", 12345)
+		if err := conn.MarkForHandoff("new-endpoint:6379", 12345); err != nil {
+			t.Fatalf("Failed to mark connection for handoff: %v", err)
+		}
 
 		ctx := context.Background()
 		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
@@ -359,7 +365,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		connections := make([]*pool.Conn, 5)
 		for i := 0; i < 5; i++ {
 			connections[i] = createMockPoolConnection()
-			connections[i].MarkForHandoff("new-endpoint:6379", int64(i))
+			if err := connections[i].MarkForHandoff("new-endpoint:6379", int64(i)); err != nil {
+				t.Fatalf("Failed to mark connection %d for handoff: %v", i, err)
+			}
 		}
 
 		ctx := context.Background()
@@ -438,7 +446,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 
 		// Create a connection and trigger handoff
 		conn := createMockPoolConnection()
-		conn.MarkForHandoff("new-endpoint:6379", 1)
+		if err := conn.MarkForHandoff("new-endpoint:6379", 1); err != nil {
+			t.Fatalf("Failed to mark connection for handoff: %v", err)
+		}
 
 		// Process the connection to trigger handoff
 		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
@@ -516,7 +526,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		}
 
 		// Mark connection for handoff
-		conn.MarkForHandoff("new-endpoint:6379", 1)
+		if err := conn.MarkForHandoff("new-endpoint:6379", 1); err != nil {
+			t.Fatalf("Failed to mark connection for handoff: %v", err)
+		}
 
 		// Connection should no longer be usable
 		if conn.IsUsable() {
@@ -583,7 +595,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		// Fill part of the queue
 		for i := 0; i < 10; i++ {
 			conn := createMockPoolConnection()
-			conn.MarkForHandoff("new-endpoint:6379", int64(i+1))
+			if err := conn.MarkForHandoff("new-endpoint:6379", int64(i+1)); err != nil {
+				t.Fatalf("Failed to mark connection %d for handoff: %v", i, err)
+			}
 
 			shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
 			if err != nil {
@@ -634,7 +648,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 
 		// Create a connection and mark it for handoff
 		conn := createMockPoolConnection()
-		conn.MarkForHandoff("new-endpoint:6379", 1)
+		if err := conn.MarkForHandoff("new-endpoint:6379", 1); err != nil {
+			t.Fatalf("Failed to mark connection for handoff: %v", err)
+		}
 
 		// Set a failing initialization function
 		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
@@ -710,6 +726,33 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		// Verify that relaxed timeout was automatically cleared
 		if conn.HasRelaxedTimeout() {
 			t.Error("Relaxed timeout should be automatically cleared after post-handoff duration")
+		}
+	})
+
+	t.Run("MarkForHandoff returns error when already marked", func(t *testing.T) {
+		conn := createMockPoolConnection()
+
+		// First mark should succeed
+		if err := conn.MarkForHandoff("new-endpoint:6379", 1); err != nil {
+			t.Fatalf("First MarkForHandoff should succeed: %v", err)
+		}
+
+		// Second mark should fail
+		if err := conn.MarkForHandoff("another-endpoint:6379", 2); err == nil {
+			t.Fatal("Second MarkForHandoff should return error")
+		} else if err.Error() != "connection is already marked for handoff" {
+			t.Fatalf("Expected specific error message, got: %v", err)
+		}
+
+		// Verify original handoff data is preserved
+		if !conn.ShouldHandoff() {
+			t.Fatal("Connection should still be marked for handoff")
+		}
+		if conn.GetHandoffEndpoint() != "new-endpoint:6379" {
+			t.Fatalf("Expected original endpoint, got: %s", conn.GetHandoffEndpoint())
+		}
+		if conn.GetMovingSeqID() != 1 {
+			t.Fatalf("Expected original sequence ID, got: %d", conn.GetMovingSeqID())
 		}
 	})
 }

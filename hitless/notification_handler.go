@@ -91,7 +91,11 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	}
 
 	// Mark the connection for handoff
-	poolConn.MarkForHandoff(newEndpoint, seqID)
+	if err := poolConn.MarkForHandoff(newEndpoint, seqID); err != nil {
+		// Connection is already marked for handoff, which is acceptable
+		// This can happen if multiple MOVING notifications are received for the same connection
+		return nil
+	}
 
 	// Optionally track in hitless manager for monitoring/debugging
 	if snh.manager != nil {

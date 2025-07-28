@@ -108,9 +108,6 @@ type ConnPool struct {
 	stats          Stats
 	waitDurationNs atomic.Int64
 
-	// Atomic flag to prevent concurrent minimum idle connection checks
-	checkingMinIdle uint32 // atomic: 1 if checking is in progress, 0 otherwise
-
 	_closed uint32 // atomic
 }
 
@@ -128,38 +125,14 @@ func NewConnPool(opt *Options) *ConnPool {
 	// Only create MinIdleConns if explicitly requested (> 0)
 	// This avoids creating connections during pool initialization for tests
 	if opt.MinIdleConns > 0 {
-		p.checkMinIdleConnsAsync()
+		p.connsMu.Lock()
+		p.checkMinIdleConns()
+		p.connsMu.Unlock()
 	}
 
 	return p
 }
 
-// checkMinIdleConnsAsync asynchronously checks and maintains minimum idle connections.
-// Uses an atomic flag to prevent concurrent checks - only creates a goroutine when needed.
-func (p *ConnPool) checkMinIdleConnsAsync() {
-	// Fast path: if MinIdleConns is 0, no need to check
-	if p.cfg.MinIdleConns == 0 {
-		return
-	}
-
-	// Check if idle connections are already being checked
-	if !atomic.CompareAndSwapUint32(&p.checkingMinIdle, 0, 1) {
-		// Already checking, return early to avoid duplicate work
-		return
-	}
-
-	// Start checking in a goroutine to avoid blocking the caller
-	go func() {
-		defer atomic.StoreUint32(&p.checkingMinIdle, 0) // Reset the flag when done
-
-		// Check and maintain minimum idle connections
-		p.connsMu.Lock()
-		p.checkMinIdleConns()
-		p.connsMu.Unlock()
-	}()
-}
-
-// checkMinIdleConns is not thread-safe. Should be called with connsMu locked.
 func (p *ConnPool) checkMinIdleConns() {
 	if p.cfg.MinIdleConns == 0 {
 		return
@@ -172,19 +145,23 @@ func (p *ConnPool) checkMinIdleConns() {
 		case p.queue <- struct{}{}:
 			p.poolSize++
 			p.idleConnsLen++
-			err := p.addIdleConn()
-			if err != nil && err != ErrClosed {
-				p.poolSize--
-				p.idleConnsLen--
-			}
-			p.freeTurn()
+			go func() {
+				err := p.addIdleConn()
+				if err != nil && err != ErrClosed {
+					p.connsMu.Lock()
+					p.poolSize--
+					p.idleConnsLen--
+					p.connsMu.Unlock()
+				}
+
+				p.freeTurn()
+			}()
 		default:
 			return
 		}
 	}
 }
 
-// addIdleConn is not thread-safe. Should be called with connsMu locked.
 func (p *ConnPool) addIdleConn() error {
 	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.DialTimeout)
 	defer cancel()
@@ -193,6 +170,9 @@ func (p *ConnPool) addIdleConn() error {
 	if err != nil {
 		return err
 	}
+
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
 
 	// It is not allowed to add new connections to the closed connection pool.
 	if p.closed() {
@@ -334,6 +314,7 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 	}
 
 	tries := 0
+	now := time.Now()
 	for {
 		if tries > 10 {
 			log.Printf("redis: connection pool: failed to get a connection after %d tries", tries)
@@ -353,7 +334,7 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 			break
 		}
 
-		if !p.isHealthyConn(cn) {
+		if !p.isHealthyConn(cn, now) {
 			_ = p.CloseConn(cn)
 			continue
 		}
@@ -475,12 +456,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		return nil, nil
 	}
 
-	// Asynchronously check minimum idle connections (only if MinIdleConns > 0)
-	// This avoids blocking the Get() operation while still maintaining pool health
-	if p.cfg.MinIdleConns > 0 {
-		p.checkMinIdleConnsAsync()
-	}
-
+	p.checkMinIdleConns()
 	return cn, nil
 }
 
@@ -550,18 +526,9 @@ func (p *ConnPool) CloseConn(cn *Conn) error {
 }
 
 func (p *ConnPool) removeConnWithLock(cn *Conn) {
-	var shouldCheckMinIdle bool
-
 	p.connsMu.Lock()
-	oldPoolSize := p.poolSize
+	defer p.connsMu.Unlock()
 	p.removeConn(cn)
-	shouldCheckMinIdle = cn.pooled && p.poolSize < oldPoolSize // Connection was removed from pool
-	p.connsMu.Unlock()
-
-	// Check minimum idle connections asynchronously after releasing the lock
-	if shouldCheckMinIdle {
-		p.checkMinIdleConnsAsync()
-	}
 }
 
 func (p *ConnPool) removeConn(cn *Conn) {
@@ -570,6 +537,8 @@ func (p *ConnPool) removeConn(cn *Conn) {
 			p.conns = append(p.conns[:i], p.conns[i+1:]...)
 			if cn.pooled {
 				p.poolSize--
+				// Immediately check for minimum idle connections when a pooled connection is removed
+				p.checkMinIdleConns()
 			}
 			break
 		}
@@ -653,9 +622,7 @@ func (p *ConnPool) Close() error {
 	return firstErr
 }
 
-func (p *ConnPool) isHealthyConn(cn *Conn) bool {
-	now := time.Now()
-
+func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 	// slight optimization, check expiresAt first.
 	if cn.expiresAt.Before(now) {
 		return false
@@ -667,7 +634,7 @@ func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 
 	// Check basic connection health
 	// Use GetNetConn() to safely access netConn and avoid data races
-	if err := connCheck(cn.GetNetConn()); err != nil {
+	if err := connCheck(cn.getNetConn()); err != nil {
 		return false
 	}
 
