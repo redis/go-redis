@@ -28,6 +28,8 @@ type config struct {
 	meter metric.Meter
 
 	poolName string
+
+	closeChan chan struct{}
 }
 
 type baseOption interface {
@@ -143,5 +145,11 @@ func (fn metricsOption) metrics() {}
 func WithMeterProvider(mp metric.MeterProvider) MetricsOption {
 	return metricsOption(func(conf *config) {
 		conf.mp = mp
+	})
+}
+
+func WithCloseChan(closeChan chan struct{}) MetricsOption {
+	return metricsOption(func(conf *config) {
+		conf.closeChan = closeChan
 	})
 }
