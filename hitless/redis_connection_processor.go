@@ -111,6 +111,20 @@ func (rcp *RedisConnectionProcessor) SetPool(pooler pool.Pooler) {
 	rcp.pool = pooler
 }
 
+// GetCurrentWorkers returns the current number of workers (for testing)
+func (rcp *RedisConnectionProcessor) GetCurrentWorkers() int {
+	rcp.scalingMu.Lock()
+	defer rcp.scalingMu.Unlock()
+	return rcp.currentWorkers
+}
+
+// GetScaleLevel returns the current scale level (for testing)
+func (rcp *RedisConnectionProcessor) GetScaleLevel() int {
+	rcp.scalingMu.Lock()
+	defer rcp.scalingMu.Unlock()
+	return rcp.scaleLevel
+}
+
 // IsHandoffPending returns true if the given connection has a pending handoff
 func (rcp *RedisConnectionProcessor) IsHandoffPending(conn *pool.Conn) bool {
 	_, pending := rcp.pending.Load(conn)
