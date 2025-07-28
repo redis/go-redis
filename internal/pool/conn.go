@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +33,10 @@ type Conn struct {
 	rd *proto.Reader
 	bw *bufio.Writer
 	wr *proto.Writer
+
+	// Lightweight mutex to protect reader operations during handoff
+	// Only used for the brief period during SetNetConn and HasBufferedData/PeekReplyTypeSafe
+	readerMu sync.RWMutex
 
 	Inited    bool
 	pooled    bool
@@ -319,7 +324,13 @@ func (cn *Conn) ExecuteInitConn(ctx context.Context) error {
 func (cn *Conn) SetNetConn(netConn net.Conn) {
 	// Store the new connection atomically first (lock-free)
 	cn.setNetConn(netConn)
+
+	// Protect reader reset operations to avoid data races
+	// Use write lock since we're modifying the reader state
+	cn.readerMu.Lock()
 	cn.rd.Reset(netConn)
+	cn.readerMu.Unlock()
+
 	cn.bw.Reset(netConn)
 }
 
@@ -393,6 +404,8 @@ func (cn *Conn) Rd() *proto.Reader {
 }
 
 // Reader returns the connection's proto reader for processing notifications
+// Note: This method should be used carefully as it returns the raw reader.
+// For thread-safe operations, use HasBufferedData() and PeekReplyTypeSafe().
 func (cn *Conn) Reader() *proto.Reader {
 	return cn.rd
 }
@@ -400,13 +413,20 @@ func (cn *Conn) Reader() *proto.Reader {
 // HasBufferedData safely checks if the connection has buffered data.
 // This method is used to avoid data races when checking for push notifications.
 func (cn *Conn) HasBufferedData() bool {
+	// Use read lock for concurrent access to reader state
+	cn.readerMu.RLock()
+	defer cn.readerMu.RUnlock()
 	return cn.rd.Buffered() > 0
 }
 
 // PeekReplyTypeSafe safely peeks at the reply type.
 // This method is used to avoid data races when checking for push notifications.
 func (cn *Conn) PeekReplyTypeSafe() (byte, error) {
-	if !cn.HasBufferedData() {
+	// Use read lock for concurrent access to reader state
+	cn.readerMu.RLock()
+	defer cn.readerMu.RUnlock()
+
+	if cn.rd.Buffered() <= 0 {
 		return 0, fmt.Errorf("redis: can't peek reply type, no data available")
 	}
 	return cn.rd.PeekReplyType()
