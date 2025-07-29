@@ -8,9 +8,9 @@ import (
 
 type StreamCmdable interface {
 	XAdd(ctx context.Context, a *XAddArgs) *StringCmd
-	XAckDel(ctx context.Context, stream string, group string, mode string, ids ...string) *IntCmd
+	XAckDel(ctx context.Context, stream string, group string, mode string, ids ...string) *SliceCmd
 	XDel(ctx context.Context, stream string, ids ...string) *IntCmd
-	XDelEx(ctx context.Context, stream string, mode string, ids ...string) *IntCmd
+	XDelEx(ctx context.Context, stream string, mode string, ids ...string) *SliceCmd
 	XLen(ctx context.Context, stream string) *IntCmd
 	XRange(ctx context.Context, stream, start, stop string) *XMessageSliceCmd
 	XRangeN(ctx context.Context, stream, start, stop string, count int64) *XMessageSliceCmd
@@ -106,12 +106,12 @@ func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
 	return cmd
 }
 
-func (c cmdable) XAckDel(ctx context.Context, stream string, group string, mode string, ids ...string) *IntCmd {
+func (c cmdable) XAckDel(ctx context.Context, stream string, group string, mode string, ids ...string) *SliceCmd {
 	args := []interface{}{"xackdel", stream, group, mode, "ids", strconv.Itoa(len(ids))}
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	cmd := NewIntCmd(ctx, args...)
+	cmd := NewSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -126,12 +126,12 @@ func (c cmdable) XDel(ctx context.Context, stream string, ids ...string) *IntCmd
 	return cmd
 }
 
-func (c cmdable) XDelEx(ctx context.Context, stream string, mode string, ids ...string) *IntCmd {
+func (c cmdable) XDelEx(ctx context.Context, stream string, mode string, ids ...string) *SliceCmd {
 	args := []interface{}{"xdelex", stream, mode, "ids", strconv.Itoa(len(ids))}
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	cmd := NewIntCmd(ctx, args...)
+	cmd := NewSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
