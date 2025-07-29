@@ -153,7 +153,6 @@ func (p *ConnPool) checkMinIdleConns() {
 					p.idleConnsLen--
 					p.connsMu.Unlock()
 				}
-
 				p.freeTurn()
 			}()
 		default:
@@ -170,6 +169,9 @@ func (p *ConnPool) addIdleConn() error {
 	if err != nil {
 		return err
 	}
+	// Mark connection as usable after successful creation
+	// This is essential for normal pool operations
+	cn.SetUsable(true)
 
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
@@ -205,6 +207,9 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Mark connection as usable after successful creation
+	// This is essential for normal pool operations
+	cn.SetUsable(true)
 
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
@@ -253,10 +258,6 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		cn.expiresAt = noExpiration
 	}
 
-	// Mark connection as usable after successful creation
-	// This is essential for normal pool operations
-	cn.SetUsable(true)
-
 	return cn, nil
 }
 
@@ -299,19 +300,23 @@ func (p *ConnPool) getLastDialError() error {
 // The purpose of GetPubSub is just to increment the stats.PubSubCount counter.
 // The connection is still returned from the pool with Get().
 func (p *ConnPool) GetPubSub(ctx context.Context) (*Conn, error) {
-	p.stats.PubSubCount++
-	return p.Get(ctx)
+	return p.getConn(ctx, true)
 }
 
 // Get returns existed connection from the pool or creates a new one.
 func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
+	return p.getConn(ctx, false)
+}
+
+// getConn returns a connection from the pool.
+func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 	if p.closed() {
 		return nil, ErrClosed
 	}
 
-	if err := p.waitTurn(ctx); err != nil {
-		return nil, err
-	}
+	//if err := p.waitTurn(ctx); err != nil {
+	//return nil, err
+	//	}
 
 	tries := 0
 	now := time.Now()
@@ -326,7 +331,7 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 		p.connsMu.Unlock()
 
 		if err != nil {
-			p.freeTurn()
+			//p.freeTurn()
 			return nil, err
 		}
 
@@ -350,6 +355,10 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 		}
 
 		atomic.AddUint32(&p.stats.Hits, 1)
+		cn.isPubSub = isPubSub
+		if isPubSub {
+			atomic.AddUint32(&p.stats.PubSubCount, 1)
+		}
 		return cn, nil
 	}
 
@@ -357,10 +366,13 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 
 	newcn, err := p.newConn(ctx, true)
 	if err != nil {
-		p.freeTurn()
+		//p.freeTurn()
 		return nil, err
 	}
-
+	newcn.isPubSub = isPubSub
+	if isPubSub {
+		atomic.AddUint32(&p.stats.PubSubCount, 1)
+	}
 	return newcn, nil
 }
 
@@ -465,6 +477,10 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	shouldPool := true
 	shouldRemove := false
 	var err error
+	if cn.isPubSub {
+		p.Remove(ctx, cn, err)
+		return
+	}
 
 	// Fast path: cache processor reference to avoid repeated field access
 	if processor := p.cfg.ConnectionProcessor; processor != nil {
@@ -507,7 +523,7 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 
 	p.connsMu.Unlock()
 
-	p.freeTurn()
+	//p.freeTurn()
 
 	if shouldCloseConn {
 		_ = p.closeConn(cn)
@@ -542,6 +558,10 @@ func (p *ConnPool) removeConn(cn *Conn) {
 			}
 			break
 		}
+	}
+	if cn.isPubSub {
+		// Decrement pubsub count if this is a pubsub connection
+		atomic.AddUint32(&p.stats.PubSubCount, ^uint32(0))
 	}
 	atomic.AddUint32(&p.stats.StaleConns, 1)
 }

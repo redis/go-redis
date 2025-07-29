@@ -45,6 +45,7 @@ type Conn struct {
 
 	Inited    bool
 	pooled    bool
+	isPubSub  bool
 	createdAt time.Time
 	expiresAt time.Time
 
@@ -90,7 +91,7 @@ func NewConn(netConn net.Conn) *Conn {
 	cn.newEndpointAtomic.Store("")                 // empty string initially
 
 	cn.rd = proto.NewReader(netConn)
-	cn.bw = bufio.NewWriter(netConn)
+	cn.bw = bufio.NewWriterSize(netConn, 1<<19)
 	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
 	return cn
