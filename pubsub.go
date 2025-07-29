@@ -164,10 +164,12 @@ func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allo
 	}
 
 	if !cn.IsUsable() || cn.ShouldHandoff() {
+		fmt.Printf("Connection is not usable, reconnecting...\n")
 		c.reconnect(ctx, fmt.Errorf("pubsub: connection is not usable"))
 	}
 
 	if isBadConn(err, allowTimeout, c.opt.Addr) {
+		fmt.Printf("Bad connection, reconnecting...\n")
 		c.reconnect(ctx, err)
 	}
 }

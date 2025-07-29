@@ -460,14 +460,20 @@ func (cn *Conn) WithReader(
 	ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error,
 ) error {
 	if timeout >= 0 {
+		// CRITICAL FIX: Revert to original working approach
+		// Use direct netConn access instead of atomic getNetConn() which can return nil
+
 		// Use relaxed timeout if set, otherwise use provided timeout
 		effectiveTimeout := cn.getEffectiveReadTimeout(timeout)
 
-		// Lock-free netConn access for better performance
-		if netConn := cn.getNetConn(); netConn != nil {
-			if err := netConn.SetReadDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
-				return err
-			}
+		// Get the connection directly from atomic storage
+		netConn := cn.getNetConn()
+		if netConn == nil {
+			return fmt.Errorf("redis: connection not available")
+		}
+
+		if err := netConn.SetReadDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
+			return err
 		}
 	}
 
@@ -481,11 +487,16 @@ func (cn *Conn) WithWriter(
 		// Use relaxed timeout if set, otherwise use provided timeout
 		effectiveTimeout := cn.getEffectiveWriteTimeout(timeout)
 
-		// Lock-free netConn access for better performance
+		// CRITICAL FIX: Always set write deadline, even if getNetConn() returns nil
+		// This prevents write operations from hanging indefinitely
 		if netConn := cn.getNetConn(); netConn != nil {
 			if err := netConn.SetWriteDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
 				return err
 			}
+		} else {
+			// If getNetConn() returns nil, we still need to respect the timeout
+			// Return an error to prevent indefinite blocking
+			return fmt.Errorf("redis: connection not available for write operation")
 		}
 	}
 

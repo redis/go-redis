@@ -61,7 +61,7 @@ func main() {
 		go floodThePool(subCtx, rdb, wg)
 	}
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 500; i++ {
 		if err := rdb.Incr(ctx, "cons").Err(); err != nil {
 			panic(err)
 		}
@@ -95,12 +95,14 @@ func floodThePool(ctx context.Context, rdb *redis.Client, wg *sync.WaitGroup) {
 		}
 		err := rdb.Publish(ctx, "test2", "hello").Err()
 		if err != nil {
-			log.Println("publish error:", err)
+			// noop
+			//log.Println("publish error:", err)
 		}
 
 		err = rdb.Incr(ctx, "cntr").Err()
 		if err != nil {
-			log.Println("incr error:", err)
+			// noop
+			//log.Println("incr error:", err)
 		}
 		time.Sleep(10 * time.Nanosecond)
 	}

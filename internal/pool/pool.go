@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -102,7 +103,7 @@ type ConnPool struct {
 	conns     []*Conn
 	idleConns []*Conn
 
-	poolSize     int
+	poolSize     atomic.Int32
 	idleConnsLen int
 
 	stats          Stats
@@ -140,16 +141,16 @@ func (p *ConnPool) checkMinIdleConns() {
 
 	// Only create idle connections if we haven't reached the total pool size limit
 	// MinIdleConns should be a subset of PoolSize, not additional connections
-	for p.poolSize < p.cfg.PoolSize && p.idleConnsLen < p.cfg.MinIdleConns {
+	for p.poolSize.Load() < int32(p.cfg.PoolSize) && p.idleConnsLen < p.cfg.MinIdleConns {
 		select {
 		case p.queue <- struct{}{}:
-			p.poolSize++
+			p.poolSize.Add(1)
 			p.idleConnsLen++
 			go func() {
 				err := p.addIdleConn()
 				if err != nil && err != ErrClosed {
 					p.connsMu.Lock()
-					p.poolSize--
+					p.poolSize.Add(-1)
 					p.idleConnsLen--
 					p.connsMu.Unlock()
 				}
@@ -197,7 +198,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	}
 
 	p.connsMu.Lock()
-	if p.cfg.MaxActiveConns > 0 && p.poolSize >= p.cfg.MaxActiveConns {
+	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() >= int32(p.cfg.MaxActiveConns) {
 		p.connsMu.Unlock()
 		return nil, ErrPoolExhausted
 	}
@@ -214,7 +215,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
 
-	if p.cfg.MaxActiveConns > 0 && p.poolSize >= p.cfg.MaxActiveConns {
+	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() >= int32(p.cfg.MaxActiveConns) {
 		_ = cn.Close()
 		return nil, ErrPoolExhausted
 	}
@@ -222,10 +223,12 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	p.conns = append(p.conns, cn)
 	if pooled {
 		// If pool is full remove the cn on next Put.
-		if p.poolSize >= p.cfg.PoolSize {
+		currentPoolSize := p.poolSize.Load()
+		if currentPoolSize >= int32(p.cfg.PoolSize) {
+			fmt.Printf("Conn %d poolSize (%d) >= cfg.PoolSize (%d), setting pooled to false\n", cn.GetID(), currentPoolSize, p.cfg.PoolSize)
 			cn.pooled = false
 		} else {
-			p.poolSize++
+			p.poolSize.Add(1)
 		}
 	}
 
@@ -314,9 +317,12 @@ func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 		return nil, ErrClosed
 	}
 
-	//if err := p.waitTurn(ctx); err != nil {
-	//return nil, err
-	//	}
+	// if it is not a pubsub connection, we need to wait for a turn
+	if !isPubSub {
+		if err := p.waitTurn(ctx); err != nil {
+			return nil, err
+		}
+	}
 
 	tries := 0
 	now := time.Now()
@@ -331,7 +337,10 @@ func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 		p.connsMu.Unlock()
 
 		if err != nil {
-			//p.freeTurn()
+			if !isPubSub {
+				p.freeTurn()
+			}
+
 			return nil, err
 		}
 
@@ -340,6 +349,7 @@ func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 		}
 
 		if !p.isHealthyConn(cn, now) {
+			fmt.Printf("Conn %d is not healthy, closing...\n", cn.GetID())
 			_ = p.CloseConn(cn)
 			continue
 		}
@@ -348,6 +358,7 @@ func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 		// Fast path: check processor existence once and cache the result
 		if processor := p.cfg.ConnectionProcessor; processor != nil {
 			if err := processor.ProcessConnectionOnGet(ctx, cn); err != nil {
+				fmt.Printf("Conn %d failed processor on get, closing...\n", cn.GetID())
 				// Failed to process connection, discard it
 				_ = p.CloseConn(cn)
 				continue
@@ -357,6 +368,8 @@ func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 		atomic.AddUint32(&p.stats.Hits, 1)
 		cn.isPubSub = isPubSub
 		if isPubSub {
+			cn.pooled = false
+			p.poolSize.Add(-1)
 			atomic.AddUint32(&p.stats.PubSubCount, 1)
 		}
 		return cn, nil
@@ -364,13 +377,16 @@ func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 
 	atomic.AddUint32(&p.stats.Misses, 1)
 
-	newcn, err := p.newConn(ctx, true)
+	newcn, err := p.newConn(ctx, !isPubSub)
 	if err != nil {
-		//p.freeTurn()
+		if !isPubSub {
+			p.freeTurn()
+		}
 		return nil, err
 	}
-	newcn.isPubSub = isPubSub
+
 	if isPubSub {
+		newcn.isPubSub = true
 		atomic.AddUint32(&p.stats.PubSubCount, 1)
 	}
 	return newcn, nil
@@ -449,6 +465,8 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		if cn.IsUsable() {
 			p.idleConnsLen--
 			break
+		} else {
+			fmt.Printf("Connection %d is not usable, retrying...\n", cn.GetID())
 		}
 
 		// Connection is not usable, put it back in the pool
@@ -478,6 +496,7 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	shouldRemove := false
 	var err error
 	if cn.isPubSub {
+		fmt.Printf("Conn %d is pubsub, removing...\n", cn.GetID())
 		p.Remove(ctx, cn, err)
 		return
 	}
@@ -492,19 +511,23 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		}
 	}
 
+	fmt.Printf("Conn %d shouldPool: %v, shouldRemove: %v\n", cn.GetID(), shouldPool, shouldRemove)
 	// If processor says to remove the connection, do so
 	if shouldRemove {
+		fmt.Printf("Conn %d shouldRemove, removing...\n", cn.GetID())
 		p.Remove(ctx, cn, nil)
 		return
 	}
 
 	// If processor says not to pool the connection, remove it
 	if !shouldPool {
+		fmt.Printf("Conn %d !shouldPool, removing...\n", cn.GetID())
 		p.Remove(ctx, cn, nil)
 		return
 	}
 
 	if !cn.pooled {
+		fmt.Printf("Conn %d !cn.pooled, removing...\n", cn.GetID())
 		p.Remove(ctx, cn, nil)
 		return
 	}
@@ -517,15 +540,17 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		p.idleConns = append(p.idleConns, cn)
 		p.idleConnsLen++
 	} else {
+		fmt.Printf("Conn %d p.idleConnsLen >= p.cfg.MaxIdleConns, removing...\n", cn.GetID())
 		p.removeConn(cn)
 		shouldCloseConn = true
 	}
 
 	p.connsMu.Unlock()
 
-	//p.freeTurn()
+	p.freeTurn()
 
 	if shouldCloseConn {
+		fmt.Printf("Conn %d shouldCloseConn, closing...\n", cn.GetID())
 		_ = p.closeConn(cn)
 	}
 }
@@ -552,7 +577,7 @@ func (p *ConnPool) removeConn(cn *Conn) {
 		if c == cn {
 			p.conns = append(p.conns[:i], p.conns[i+1:]...)
 			if cn.pooled {
-				p.poolSize--
+				p.poolSize.Add(-1)
 				// Immediately check for minimum idle connections when a pooled connection is removed
 				p.checkMinIdleConns()
 			}
@@ -634,7 +659,7 @@ func (p *ConnPool) Close() error {
 		}
 	}
 	p.conns = nil
-	p.poolSize = 0
+	p.poolSize.Store(0)
 	p.idleConns = nil
 	p.idleConnsLen = 0
 	p.connsMu.Unlock()

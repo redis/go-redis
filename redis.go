@@ -479,7 +479,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 
 	// Set the connection initialization function for potential reconnections
-	cn.SetInitConnFunc(c.createInitConnFunc())
+	cn.SetInitConnFunc(c.initConn)
 
 	return nil
 }
@@ -622,13 +622,6 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.Background()
-}
-
-// createInitConnFunc creates a connection initialization function that can be used for reconnections.
-func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) error {
-	return func(ctx context.Context, cn *pool.Conn) error {
-		return c.initConn(ctx, cn)
-	}
 }
 
 // Close closes the client, releasing any open resources.
