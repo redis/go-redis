@@ -6267,7 +6267,7 @@ var _ = Describe("Commands", func() {
 			// Test XAckDel with KEEPREF mode
 			n, err := client.XAckDel(ctx, "stream", "testgroup", "KEEPREF", "1-0", "2-0").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(BeNumerically(">=", 0))
+			Expect(n).To(HaveLen(2))
 
 			// Clean up
 			client.XGroupDestroy(ctx, "stream", "testgroup")
@@ -6278,7 +6278,7 @@ var _ = Describe("Commands", func() {
 			// Test XDelEx with KEEPREF mode
 			n, err := client.XDelEx(ctx, "stream", "KEEPREF", "1-0", "2-0").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(BeNumerically(">=", 0))
+			Expect(n).To(HaveLen(2))
 		})
 
 		It("should XLen", func() {
