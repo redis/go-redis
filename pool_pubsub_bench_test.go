@@ -95,40 +95,6 @@ func BenchmarkPoolGetPut(b *testing.B) {
 	}
 }
 
-// BenchmarkPoolGetPubSub benchmarks the new GetPubSub method
-func BenchmarkPoolGetPubSub(b *testing.B) {
-	ctx := context.Background()
-
-	poolSizes := []int{1, 2, 4, 8, 16, 32, 64, 128}
-
-	for _, poolSize := range poolSizes {
-		b.Run(fmt.Sprintf("PoolSize_%d", poolSize), func(b *testing.B) {
-			connPool := pool.NewConnPool(&pool.Options{
-				Dialer:          dummyDialer,
-				PoolSize:        poolSize,
-				PoolTimeout:     time.Second,
-				DialTimeout:     time.Second,
-				ConnMaxIdleTime: time.Hour,
-				MinIdleConns:    0,
-			})
-			defer connPool.Close()
-
-			b.ResetTimer()
-			b.ReportAllocs()
-
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					cn, err := connPool.GetPubSub(ctx)
-					if err != nil {
-						b.Fatal(err)
-					}
-					connPool.Put(ctx, cn)
-				}
-			})
-		})
-	}
-}
-
 // BenchmarkPoolGetPutWithMinIdle benchmarks pool operations with MinIdleConns
 func BenchmarkPoolGetPutWithMinIdle(b *testing.B) {
 	ctx := context.Background()

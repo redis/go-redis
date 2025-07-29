@@ -314,13 +314,14 @@ func isPrivateIP(addr string) bool {
 	// Simplified check for common private IP ranges
 	// 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
 	// This is a simplified implementation; a full implementation would parse the IP properly
-	if len(addr) >= 3 {
-		if addr[:3] == "10." || addr[:8] == "192.168." {
-			return true
-		}
-		if len(addr) >= 7 && addr[:7] == "172.16." {
-			return true
-		}
+	if len(addr) >= 3 && addr[:3] == "10." {
+		return true
+	}
+	if len(addr) >= 8 && addr[:8] == "192.168." {
+		return true
+	}
+	if len(addr) >= 7 && addr[:7] == "172.16." {
+		return true
 	}
 	return false
 }

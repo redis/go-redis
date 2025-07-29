@@ -45,7 +45,6 @@ type Conn struct {
 
 	Inited    bool
 	pooled    bool
-	isPubSub  bool
 	createdAt time.Time
 	expiresAt time.Time
 

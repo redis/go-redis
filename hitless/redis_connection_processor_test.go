@@ -60,10 +60,6 @@ func (mp *mockPool) Get(ctx context.Context) (*pool.Conn, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (mp *mockPool) GetPubSub(ctx context.Context) (*pool.Conn, error) {
-	return nil, errors.New("not implemented")
-}
-
 func (mp *mockPool) Put(ctx context.Context, conn *pool.Conn) {
 	// Not implemented for testing
 }
@@ -107,7 +103,13 @@ func TestRedisConnectionProcessor(t *testing.T) {
 	}
 
 	t.Run("SuccessfulEventDrivenHandoff", func(t *testing.T) {
-		processor := NewRedisConnectionProcessor(3, baseDialer, nil, nil)
+		config := &Config{
+			MinWorkers:       1,
+			MaxWorkers:       2,
+			HandoffQueueSize: 10, // Explicit queue size to avoid 0-size queue
+			LogLevel:         2,
+		}
+		processor := NewRedisConnectionProcessor(3, baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -115,10 +117,13 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
 		}
 
-		// Set a mock initialization function
-		initConnCalled := false
+		// Set a mock initialization function with synchronization
+		initConnCalled := make(chan bool, 1)
 		initConnFunc := func(ctx context.Context, cn *pool.Conn) error {
-			initConnCalled = true
+			select {
+			case initConnCalled <- true:
+			default:
+			}
 			return nil
 		}
 		conn.SetInitConnFunc(initConnFunc)
@@ -142,22 +147,44 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			t.Error("Connection should be in pending handoffs map")
 		}
 
-		// Wait for handoff to complete
-		time.Sleep(100 * time.Millisecond)
+		// Wait for initialization to be called (indicates handoff started)
+		select {
+		case <-initConnCalled:
+			// Good, initialization was called
+		case <-time.After(1 * time.Second):
+			t.Fatal("Timeout waiting for initialization function to be called")
+		}
+
+		// Wait for handoff to complete with proper timeout and polling
+		timeout := time.After(2 * time.Second)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+
+		handoffCompleted := false
+		for !handoffCompleted {
+			select {
+			case <-timeout:
+				t.Fatal("Timeout waiting for handoff to complete")
+			case <-ticker.C:
+				if _, pending := processor.pending.Load(conn); !pending {
+					handoffCompleted = true
+				}
+			}
+		}
 
 		// Verify handoff completed (removed from pending map)
 		if _, pending := processor.pending.Load(conn); pending {
 			t.Error("Connection should be removed from pending map after handoff")
 		}
 
-		// Verify handoff state was cleared
-		if conn.ShouldHandoff() {
-			t.Error("Connection should not be marked for handoff after successful handoff")
+		// Verify connection is usable again
+		if !conn.IsUsable() {
+			t.Error("Connection should be usable after successful handoff")
 		}
 
-		// Verify initialization was called
-		if !initConnCalled {
-			t.Error("InitConn should have been called")
+		// Verify handoff state is cleared
+		if conn.ShouldHandoff() {
+			t.Error("Connection should not be marked for handoff after completion")
 		}
 	})
 
@@ -214,7 +241,13 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			return nil, errors.New("dial failed")
 		}
 
-		processor := NewRedisConnectionProcessor(3, failingDialer, nil, nil)
+		config := &Config{
+			MinWorkers:       1,
+			MaxWorkers:       2,
+			HandoffQueueSize: 10, // Explicit queue size to avoid 0-size queue
+			LogLevel:         2,
+		}
+		processor := NewRedisConnectionProcessor(3, failingDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -236,8 +269,22 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			t.Error("Connection should not be removed when queuing handoff")
 		}
 
-		// Wait for handoff to complete and fail
-		time.Sleep(100 * time.Millisecond)
+		// Wait for handoff to complete and fail with proper timeout and polling
+		timeout := time.After(2 * time.Second)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+
+		handoffCompleted := false
+		for !handoffCompleted {
+			select {
+			case <-timeout:
+				t.Fatal("Timeout waiting for failed handoff to complete")
+			case <-ticker.C:
+				if _, pending := processor.pending.Load(conn); !pending {
+					handoffCompleted = true
+				}
+			}
+		}
 
 		// Connection should be removed from pending map after failed handoff
 		if _, pending := processor.pending.Load(conn); pending {
@@ -285,7 +332,13 @@ func TestRedisConnectionProcessor(t *testing.T) {
 	})
 
 	t.Run("ProcessConnectionOnGetWithPendingHandoff", func(t *testing.T) {
-		processor := NewRedisConnectionProcessor(3, baseDialer, nil, nil)
+		config := &Config{
+			MinWorkers:       1,
+			MaxWorkers:       2,
+			HandoffQueueSize: 10, // Explicit queue size to avoid 0-size queue
+			LogLevel:         2,
+		}
+		processor := NewRedisConnectionProcessor(3, baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -468,8 +521,22 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			t.Error("Connection should be pooled after handoff")
 		}
 
-		// Wait for handoff to complete
-		time.Sleep(50 * time.Millisecond)
+		// Wait for handoff to complete with proper timeout and polling
+		timeout := time.After(1 * time.Second)
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+
+		handoffCompleted := false
+		for !handoffCompleted {
+			select {
+			case <-timeout:
+				t.Fatal("Timeout waiting for handoff to complete")
+			case <-ticker.C:
+				if _, pending := processor.pending.Load(conn); !pending {
+					handoffCompleted = true
+				}
+			}
+		}
 
 		// Verify relaxed timeout is set with deadline
 		if !conn.HasRelaxedTimeout() {
@@ -626,17 +693,15 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			}
 		}
 
-		// Verify queue has items but capacity remains static
-		currentQueueSize := len(processor.handoffQueue)
-		if currentQueueSize == 0 {
-			t.Error("Expected some items in queue after processing connections")
-		}
-
+		// Verify queue capacity remains static (the main purpose of this test)
 		finalCapacity := cap(processor.handoffQueue)
 		if finalCapacity != 50 {
 			t.Errorf("Queue capacity should remain static at 50, got %d", finalCapacity)
 		}
 
+		// Note: We don't check queue size here because workers process items quickly
+		// The important thing is that the capacity remains static regardless of pool size
+		currentQueueSize := len(processor.handoffQueue)
 		t.Logf("Static queue test completed - Capacity: %d, Current size: %d",
 			finalCapacity, currentQueueSize)
 	})
@@ -738,7 +803,21 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		}
 
 		// Wait for the handoff to complete (it happens asynchronously)
-		time.Sleep(50 * time.Millisecond)
+		timeout := time.After(1 * time.Second)
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+
+		handoffCompleted := false
+		for !handoffCompleted {
+			select {
+			case <-timeout:
+				t.Fatal("Timeout waiting for handoff to complete")
+			case <-ticker.C:
+				if _, pending := processor.pending.Load(conn); !pending {
+					handoffCompleted = true
+				}
+			}
+		}
 
 		// Verify that relaxed timeout was applied to the new connection
 		if !conn.HasRelaxedTimeout() {

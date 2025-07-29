@@ -3,7 +3,6 @@ package pool
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -45,12 +44,12 @@ type Stats struct {
 	Timeouts       uint32 // number of times a wait timeout occurred
 	WaitCount      uint32 // number of times a connection was waited
 	Unusable       uint32 // number of times a connection was found to be unusable
-	PubSubCount    uint32 // number of times a connection was used for pub/sub
 	WaitDurationNs int64  // total time spent for waiting a connection in nanoseconds
 
-	TotalConns uint32 // number of total connections in the pool
-	IdleConns  uint32 // number of idle connections in the pool
-	StaleConns uint32 // number of stale connections removed from the pool
+	TotalConns  uint32 // number of total connections in the pool
+	IdleConns   uint32 // number of idle connections in the pool
+	StaleConns  uint32 // number of stale connections removed from the pool
+	PubSubStats PubSubStats
 }
 
 type Pooler interface {
@@ -58,7 +57,6 @@ type Pooler interface {
 	CloseConn(*Conn) error
 
 	Get(context.Context) (*Conn, error)
-	GetPubSub(context.Context) (*Conn, error)
 	Put(context.Context, *Conn)
 	Remove(context.Context, *Conn, error)
 
@@ -225,7 +223,6 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		// If pool is full remove the cn on next Put.
 		currentPoolSize := p.poolSize.Load()
 		if currentPoolSize >= int32(p.cfg.PoolSize) {
-			fmt.Printf("Conn %d poolSize (%d) >= cfg.PoolSize (%d), setting pooled to false\n", cn.GetID(), currentPoolSize, p.cfg.PoolSize)
 			cn.pooled = false
 		} else {
 			p.poolSize.Add(1)
@@ -299,29 +296,19 @@ func (p *ConnPool) getLastDialError() error {
 	return nil
 }
 
-// GetPubSub returns a connection for pubsub.
-// The purpose of GetPubSub is just to increment the stats.PubSubCount counter.
-// The connection is still returned from the pool with Get().
-func (p *ConnPool) GetPubSub(ctx context.Context) (*Conn, error) {
-	return p.getConn(ctx, true)
-}
-
 // Get returns existed connection from the pool or creates a new one.
 func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
-	return p.getConn(ctx, false)
+	return p.getConn(ctx)
 }
 
 // getConn returns a connection from the pool.
-func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
+func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	if p.closed() {
 		return nil, ErrClosed
 	}
 
-	// if it is not a pubsub connection, we need to wait for a turn
-	if !isPubSub {
-		if err := p.waitTurn(ctx); err != nil {
-			return nil, err
-		}
+	if err := p.waitTurn(ctx); err != nil {
+		return nil, err
 	}
 
 	tries := 0
@@ -337,10 +324,7 @@ func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 		p.connsMu.Unlock()
 
 		if err != nil {
-			if !isPubSub {
-				p.freeTurn()
-			}
-
+			p.freeTurn()
 			return nil, err
 		}
 
@@ -349,7 +333,6 @@ func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 		}
 
 		if !p.isHealthyConn(cn, now) {
-			fmt.Printf("Conn %d is not healthy, closing...\n", cn.GetID())
 			_ = p.CloseConn(cn)
 			continue
 		}
@@ -358,7 +341,6 @@ func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 		// Fast path: check processor existence once and cache the result
 		if processor := p.cfg.ConnectionProcessor; processor != nil {
 			if err := processor.ProcessConnectionOnGet(ctx, cn); err != nil {
-				fmt.Printf("Conn %d failed processor on get, closing...\n", cn.GetID())
 				// Failed to process connection, discard it
 				_ = p.CloseConn(cn)
 				continue
@@ -366,29 +348,17 @@ func (p *ConnPool) getConn(ctx context.Context, isPubSub bool) (*Conn, error) {
 		}
 
 		atomic.AddUint32(&p.stats.Hits, 1)
-		cn.isPubSub = isPubSub
-		if isPubSub {
-			cn.pooled = false
-			p.poolSize.Add(-1)
-			atomic.AddUint32(&p.stats.PubSubCount, 1)
-		}
 		return cn, nil
 	}
 
 	atomic.AddUint32(&p.stats.Misses, 1)
 
-	newcn, err := p.newConn(ctx, !isPubSub)
+	newcn, err := p.newConn(ctx, true)
 	if err != nil {
-		if !isPubSub {
-			p.freeTurn()
-		}
+		p.freeTurn()
 		return nil, err
 	}
 
-	if isPubSub {
-		newcn.isPubSub = true
-		atomic.AddUint32(&p.stats.PubSubCount, 1)
-	}
 	return newcn, nil
 }
 
@@ -465,8 +435,6 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		if cn.IsUsable() {
 			p.idleConnsLen--
 			break
-		} else {
-			fmt.Printf("Connection %d is not usable, retrying...\n", cn.GetID())
 		}
 
 		// Connection is not usable, put it back in the pool
@@ -495,11 +463,6 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	shouldPool := true
 	shouldRemove := false
 	var err error
-	if cn.isPubSub {
-		fmt.Printf("Conn %d is pubsub, removing...\n", cn.GetID())
-		p.Remove(ctx, cn, err)
-		return
-	}
 
 	// Fast path: cache processor reference to avoid repeated field access
 	if processor := p.cfg.ConnectionProcessor; processor != nil {
@@ -511,23 +474,19 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		}
 	}
 
-	fmt.Printf("Conn %d shouldPool: %v, shouldRemove: %v\n", cn.GetID(), shouldPool, shouldRemove)
 	// If processor says to remove the connection, do so
 	if shouldRemove {
-		fmt.Printf("Conn %d shouldRemove, removing...\n", cn.GetID())
 		p.Remove(ctx, cn, nil)
 		return
 	}
 
 	// If processor says not to pool the connection, remove it
 	if !shouldPool {
-		fmt.Printf("Conn %d !shouldPool, removing...\n", cn.GetID())
 		p.Remove(ctx, cn, nil)
 		return
 	}
 
 	if !cn.pooled {
-		fmt.Printf("Conn %d !cn.pooled, removing...\n", cn.GetID())
 		p.Remove(ctx, cn, nil)
 		return
 	}
@@ -540,7 +499,6 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		p.idleConns = append(p.idleConns, cn)
 		p.idleConnsLen++
 	} else {
-		fmt.Printf("Conn %d p.idleConnsLen >= p.cfg.MaxIdleConns, removing...\n", cn.GetID())
 		p.removeConn(cn)
 		shouldCloseConn = true
 	}
@@ -550,7 +508,6 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	p.freeTurn()
 
 	if shouldCloseConn {
-		fmt.Printf("Conn %d shouldCloseConn, closing...\n", cn.GetID())
 		_ = p.closeConn(cn)
 	}
 }
@@ -584,10 +541,6 @@ func (p *ConnPool) removeConn(cn *Conn) {
 			break
 		}
 	}
-	if cn.isPubSub {
-		// Decrement pubsub count if this is a pubsub connection
-		atomic.AddUint32(&p.stats.PubSubCount, ^uint32(0))
-	}
 	atomic.AddUint32(&p.stats.StaleConns, 1)
 }
 
@@ -618,7 +571,6 @@ func (p *ConnPool) Stats() *Stats {
 		Timeouts:       atomic.LoadUint32(&p.stats.Timeouts),
 		WaitCount:      atomic.LoadUint32(&p.stats.WaitCount),
 		Unusable:       atomic.LoadUint32(&p.stats.Unusable),
-		PubSubCount:    atomic.LoadUint32(&p.stats.PubSubCount),
 		WaitDurationNs: p.waitDurationNs.Load(),
 
 		TotalConns: uint32(p.Len()),

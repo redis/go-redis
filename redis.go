@@ -205,8 +205,9 @@ func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) e
 //------------------------------------------------------------------------------
 
 type baseClient struct {
-	opt      *Options
-	connPool pool.Pooler
+	opt        *Options
+	connPool   pool.Pooler
+	pubsubPool *pool.PubSubPool
 	hooksMixin
 
 	onClose func() error // hook called when client is closed
@@ -225,6 +226,7 @@ func (c *baseClient) clone() *baseClient {
 	clone := &baseClient{
 		opt:                 c.opt,
 		connPool:            c.connPool,
+		pubsubPool:          c.pubsubPool,
 		onClose:             c.onClose,
 		pushProcessor:       c.pushProcessor,
 		connectionProcessor: c.connectionProcessor,
@@ -479,7 +481,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 
 	// Set the connection initialization function for potential reconnections
-	cn.SetInitConnFunc(c.initConn)
+	cn.SetInitConnFunc(c.createInitConnFunc())
 
 	return nil
 }
@@ -624,6 +626,13 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 	return context.Background()
 }
 
+// createInitConnFunc creates a connection initialization function that can be used for reconnections.
+func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) error {
+	return func(ctx context.Context, cn *pool.Conn) error {
+		return c.initConn(ctx, cn)
+	}
+}
+
 // Close closes the client, releasing any open resources.
 //
 // It is rare to Close a Client, as the Client is meant to be
@@ -637,6 +646,11 @@ func (c *baseClient) Close() error {
 	}
 	if err := c.connPool.Close(); err != nil && firstErr == nil {
 		firstErr = err
+	}
+	if c.pubsubPool != nil {
+		if err := c.pubsubPool.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
 }
@@ -865,6 +879,11 @@ func NewClient(opt *Options) *Client {
 	// Create connection pool with the processor (nil if hitless upgrades disabled)
 	c.connPool = newConnPool(opt, c.dialHook, connectionProcessor)
 
+	// Create separate PubSub pool
+	c.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
+		return c.dialHook(ctx, opt.Network, opt.Addr)
+	})
+
 	// Set the pool reference in the processor for connection removal on handoff failure
 	if connectionProcessor != nil {
 		if redisProcessor, ok := connectionProcessor.(*hitless.RedisConnectionProcessor); ok {
@@ -950,6 +969,8 @@ type PoolStats pool.Stats
 // PoolStats returns connection pool stats.
 func (c *Client) PoolStats() *PoolStats {
 	stats := c.connPool.Stats()
+	pubsubStats := c.pubsubPool.Stats()
+	stats.PubSubStats = pubsubStats
 	return (*PoolStats)(stats)
 }
 
@@ -985,8 +1006,7 @@ func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
 		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			//return c.getConn(ctx)
-			cn, err := c.connPool.GetPubSub(ctx)
+			cn, err := c.pubsubPool.Get(ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -994,13 +1014,16 @@ func (c *Client) pubSub() *PubSub {
 			// will return nil if already initialized
 			err = c.initConn(ctx, cn)
 			if err != nil {
-				_ = c.connPool.CloseConn(cn)
+				c.pubsubPool.Remove(ctx, cn, err)
 				return nil, err
 			}
 
 			return cn, nil
 		},
-		closeConn:     c.connPool.CloseConn,
+		closeConn: func(cn *pool.Conn) error {
+			c.pubsubPool.Remove(context.Background(), cn, nil)
+			return nil
+		},
 		pushProcessor: c.pushProcessor,
 	}
 	pubsub.init()

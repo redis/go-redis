@@ -478,6 +478,12 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// Create connection pool with the processor (nil if hitless upgrades disabled)
 	rdb.connectionProcessor = connectionProcessor
 	rdb.connPool = newConnPool(opt, rdb.dialHook, connectionProcessor)
+
+	// Create separate PubSub pool
+	rdb.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
+		return rdb.dialHook(ctx, opt.Network, opt.Addr)
+	})
+
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
 
 	failover.mu.Lock()
@@ -580,6 +586,11 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	c.connectionProcessor = connectionProcessor
 	c.connPool = newConnPool(opt, c.dialHook, connectionProcessor)
 
+	// Create separate PubSub pool
+	c.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
+		return c.dialHook(ctx, opt.Network, opt.Addr)
+	})
+
 	// Set the pool reference in the processor for connection removal on handoff failure
 	if connectionProcessor != nil {
 		if redisProcessor, ok := connectionProcessor.(*hitless.RedisConnectionProcessor); ok {
@@ -612,11 +623,26 @@ func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
 func (c *SentinelClient) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
-
 		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			return c.newConn(ctx)
+			cn, err := c.pubsubPool.Get(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			// will return nil if already initialized
+			err = c.initConn(ctx, cn)
+			if err != nil {
+				c.pubsubPool.Remove(ctx, cn, err)
+				return nil, err
+			}
+
+			return cn, nil
 		},
-		closeConn: c.connPool.CloseConn,
+		closeConn: func(cn *pool.Conn) error {
+			c.pubsubPool.Remove(context.Background(), cn, nil)
+			return nil
+		},
+		pushProcessor: c.pushProcessor,
 	}
 	pubsub.init()
 	return pubsub

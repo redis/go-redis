@@ -11,12 +11,15 @@ import (
 )
 
 var ctx = context.Background()
-var consStopped = false
 
+// This example is not supposed to be run as is. It is just a test to see how pubsub behaves in relation to pool management.
+// It was used to find regressions in pool management in hitless mode.
+// Please don't use it as a reference for how to use pubsub.
 func main() {
 	wg := &sync.WaitGroup{}
 	rdb := redis.NewClient(&redis.Options{
-		Addr: ":6379",
+		Addr:            ":6379",
+		HitlessUpgrades: true,
 	})
 	_ = rdb.FlushDB(ctx).Err()
 
@@ -30,21 +33,22 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := rdb.Set(ctx, "prods", "0", 0).Err(); err != nil {
+	if err := rdb.Set(ctx, "publishers", "0", 0).Err(); err != nil {
 		panic(err)
 	}
-	if err := rdb.Set(ctx, "cons", "0", 0).Err(); err != nil {
+	if err := rdb.Set(ctx, "subscribers", "0", 0).Err(); err != nil {
 		panic(err)
 	}
-	if err := rdb.Set(ctx, "cntr", "0", 0).Err(); err != nil {
+	if err := rdb.Set(ctx, "published", "0", 0).Err(); err != nil {
 		panic(err)
 	}
-	if err := rdb.Set(ctx, "recs", "0", 0).Err(); err != nil {
+	if err := rdb.Set(ctx, "received", "0", 0).Err(); err != nil {
 		panic(err)
 	}
-	fmt.Println("cntr", rdb.Get(ctx, "cntr").Val())
-	fmt.Println("recs", rdb.Get(ctx, "recs").Val())
+	fmt.Println("published", rdb.Get(ctx, "published").Val())
+	fmt.Println("received", rdb.Get(ctx, "received").Val())
 	subCtx, cancelSubCtx := context.WithCancel(ctx)
+	pubCtx, cancelPublishers := context.WithCancel(ctx)
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go subscribe(subCtx, rdb, "test", i, wg)
@@ -54,32 +58,39 @@ func main() {
 	time.Sleep(time.Second)
 	subCtx, cancelSubCtx = context.WithCancel(ctx)
 	for i := 0; i < 10; i++ {
-		if err := rdb.Incr(ctx, "prods").Err(); err != nil {
+		if err := rdb.Incr(ctx, "publishers").Err(); err != nil {
 			panic(err)
 		}
 		wg.Add(1)
-		go floodThePool(subCtx, rdb, wg)
+		go floodThePool(pubCtx, rdb, wg)
 	}
 
 	for i := 0; i < 500; i++ {
-		if err := rdb.Incr(ctx, "cons").Err(); err != nil {
+		if err := rdb.Incr(ctx, "subscribers").Err(); err != nil {
 			panic(err)
 		}
 		wg.Add(1)
 		go subscribe(subCtx, rdb, "test2", i, wg)
 	}
+	time.Sleep(5 * time.Second)
+	fmt.Println("canceling publishers")
+	cancelPublishers()
 	time.Sleep(10 * time.Second)
-	fmt.Println("canceling")
+	fmt.Println("canceling subscribers")
 	cancelSubCtx()
 	wg.Wait()
-	cntr, err := rdb.Get(ctx, "cntr").Result()
-	recs, err := rdb.Get(ctx, "recs").Result()
-	prods, err := rdb.Get(ctx, "prods").Result()
-	cons, err := rdb.Get(ctx, "cons").Result()
-	fmt.Printf("cntr: %s\n", cntr)
-	fmt.Printf("recs: %s\n", recs)
-	fmt.Printf("prods: %s\n", prods)
-	fmt.Printf("cons: %s\n", cons)
+	published, err := rdb.Get(ctx, "published").Result()
+	received, err := rdb.Get(ctx, "received").Result()
+	publishers, err := rdb.Get(ctx, "publishers").Result()
+	subscribers, err := rdb.Get(ctx, "subscribers").Result()
+	fmt.Printf("publishers: %s\n", publishers)
+	fmt.Printf("published: %s\n", published)
+	fmt.Printf("subscribers: %s\n", subscribers)
+	fmt.Printf("received: %s\n", received)
+	publishedInt, err := rdb.Get(ctx, "published").Int()
+	subscribersInt, err := rdb.Get(ctx, "subscribers").Int()
+	fmt.Printf("if drained = published*subscribers: %d\n", publishedInt*subscribersInt)
+
 	time.Sleep(2 * time.Second)
 }
 
@@ -88,8 +99,6 @@ func floodThePool(ctx context.Context, rdb *redis.Client, wg *sync.WaitGroup) {
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("floodThePool stopping")
-			consStopped = true
 			return
 		default:
 		}
@@ -99,7 +108,7 @@ func floodThePool(ctx context.Context, rdb *redis.Client, wg *sync.WaitGroup) {
 			//log.Println("publish error:", err)
 		}
 
-		err = rdb.Incr(ctx, "cntr").Err()
+		err = rdb.Incr(ctx, "published").Err()
 		if err != nil {
 			// noop
 			//log.Println("incr error:", err)
@@ -110,36 +119,24 @@ func floodThePool(ctx context.Context, rdb *redis.Client, wg *sync.WaitGroup) {
 
 func subscribe(ctx context.Context, rdb *redis.Client, topic string, subscriberId int, wg *sync.WaitGroup) {
 	defer wg.Done()
-	defer fmt.Printf("subscriber %d stopping\n", subscriberId)
 	rec := rdb.Subscribe(ctx, topic)
 	recChan := rec.Channel()
 	for {
 		select {
 		case <-ctx.Done():
 			rec.Close()
-			if subscriberId == 199 {
-				fmt.Printf("subscriber %d done\n", subscriberId)
-			}
 			return
 		default:
 			select {
 			case <-ctx.Done():
 				rec.Close()
-				if subscriberId == 199 {
-					fmt.Printf("subscriber %d done\n", subscriberId)
-				}
 				return
 			case msg := <-recChan:
-				err := rdb.Incr(ctx, "recs").Err()
+				err := rdb.Incr(ctx, "received").Err()
 				if err != nil {
 					log.Println("incr error:", err)
 				}
-				if consStopped {
-					fmt.Printf("subscriber %d received %s\n", subscriberId, msg.Payload)
-				}
-				if subscriberId == 199 {
-					fmt.Printf("subscriber %d received %s\n", subscriberId, msg.Payload)
-				}
+				_ = msg // Use the message to avoid unused variable warning
 			}
 		}
 	}

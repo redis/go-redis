@@ -610,6 +610,20 @@ func getUserPassword(u *url.URL) (string, string) {
 	return user, password
 }
 
+func newConnPoolConfig(opt *Options) *pool.Config {
+	return &pool.Config{
+		PoolFIFO:        opt.PoolFIFO || opt.HitlessUpgrades, // Always FIFO with hitless upgrades
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		DialTimeout:     opt.DialTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		MaxActiveConns:  opt.MaxActiveConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
+	}
+}
+
 func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
