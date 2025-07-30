@@ -74,3 +74,4 @@ Azure
 StreamingCredentialsProvider
 oauth
 entraid
+MiB
