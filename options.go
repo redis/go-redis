@@ -15,6 +15,7 @@ import (
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // Limiter is the interface of a rate limiter or a circuit breaker.
@@ -130,6 +131,18 @@ type Options struct {
 	// See https://redis.uptrace.dev/guide/go-redis-debugging.html#timeouts
 	ContextTimeoutEnabled bool
 
+	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
+	// Larger buffers can improve performance for commands that return large responses.
+	//
+	// default: 0.5MiB (524288 bytes)
+	ReadBufferSize int
+
+	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
+	// Larger buffers can improve performance for large pipelines and commands with many arguments.
+	//
+	// default: 0.5MiB (524288 bytes)
+	WriteBufferSize int
+
 	// PoolFIFO type of connection pool.
 	//
 	//	- true for FIFO pool
@@ -240,6 +253,12 @@ func (opt *Options) init() {
 	}
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
+	}
+	if opt.ReadBufferSize == 0 {
+		opt.ReadBufferSize = proto.DefaultBufferSize
+	}
+	if opt.WriteBufferSize == 0 {
+		opt.WriteBufferSize = proto.DefaultBufferSize
 	}
 	switch opt.ReadTimeout {
 	case -2:
@@ -592,5 +611,7 @@ func newConnPool(
 		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
+		ReadBufferSize:  opt.ReadBufferSize,
+		WriteBufferSize: opt.WriteBufferSize,
 	})
 }

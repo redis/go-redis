@@ -92,6 +92,18 @@ type ClusterOptions struct {
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
+	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
+	// Larger buffers can improve performance for commands that return large responses.
+	//
+	// default: 0.5MiB (524288 bytes)
+	ReadBufferSize int
+
+	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
+	// Larger buffers can improve performance for large pipelines and commands with many arguments.
+	//
+	// default: 0.5MiB (524288 bytes)
+	WriteBufferSize int
+
 	TLSConfig *tls.Config
 
 	// DisableIndentity - Disable set-lib on connect.
@@ -126,6 +138,12 @@ func (opt *ClusterOptions) init() {
 
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 5 * runtime.GOMAXPROCS(0)
+	}
+	if opt.ReadBufferSize == 0 {
+		opt.ReadBufferSize = proto.DefaultBufferSize
+	}
+	if opt.WriteBufferSize == 0 {
+		opt.WriteBufferSize = proto.DefaultBufferSize
 	}
 
 	switch opt.ReadTimeout {
@@ -318,6 +336,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		MaxActiveConns:   opt.MaxActiveConns,
 		ConnMaxIdleTime:  opt.ConnMaxIdleTime,
 		ConnMaxLifetime:  opt.ConnMaxLifetime,
+		ReadBufferSize:   opt.ReadBufferSize,
+		WriteBufferSize:  opt.WriteBufferSize,
 		DisableIdentity:  opt.DisableIdentity,
 		DisableIndentity: opt.DisableIdentity,
 		IdentitySuffix:   opt.IdentitySuffix,
