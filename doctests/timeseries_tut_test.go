@@ -32,7 +32,6 @@ func ExampleClient_timeseries_create() {
 
 	// STEP_START create
 	res1, err := rdb.TSCreate(ctx, "thermometer:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -40,7 +39,6 @@ func ExampleClient_timeseries_create() {
 	fmt.Println(res1) // >>> OK
 
 	res2, err := rdb.Type(ctx, "thermometer:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -48,7 +46,6 @@ func ExampleClient_timeseries_create() {
 	fmt.Println(res2) // >>> TSDB-TYPE
 
 	res3, err := rdb.TSInfo(ctx, "thermometer:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -65,7 +62,6 @@ func ExampleClient_timeseries_create() {
 			Retention: 100,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -73,7 +69,6 @@ func ExampleClient_timeseries_create() {
 	fmt.Println(res4) // >>> 1
 
 	res5, err := rdb.TSInfo(ctx, "thermometer:2").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -93,7 +88,6 @@ func ExampleClient_timeseries_create() {
 			},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -101,7 +95,6 @@ func ExampleClient_timeseries_create() {
 	fmt.Println(res6) // >>> 1
 
 	res7, err := rdb.TSInfo(ctx, "thermometer:3").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -143,7 +136,6 @@ func ExampleClient_timeseries_add() {
 		{"thermometer:1", 2, 9.9},
 		{"thermometer:2", 2, 10.3},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -155,7 +147,6 @@ func ExampleClient_timeseries_add() {
 	// The last recorded temperature for thermometer:2
 	// was 10.3 at time 2.
 	res2, err := rdb.TSGet(ctx, "thermometer:2").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -187,7 +178,6 @@ func ExampleClient_timeseries_range() {
 	// STEP_START range
 	// Add 5 data points to a time series named "rg:1".
 	res1, err := rdb.TSCreate(ctx, "rg:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -201,7 +191,6 @@ func ExampleClient_timeseries_range() {
 		{"rg:1", 3, 18},
 		{"rg:1", 4, 24},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -214,7 +203,6 @@ func ExampleClient_timeseries_range() {
 	res3, err := rdb.TSRange(ctx, "rg:1",
 		0, math.MaxInt64,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -224,7 +212,6 @@ func ExampleClient_timeseries_range() {
 
 	// Retrieve data points up to time 1 (inclusive).
 	res4, err := rdb.TSRange(ctx, "rg:1", 0, 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -234,7 +221,6 @@ func ExampleClient_timeseries_range() {
 
 	// Retrieve data points from time 3 onwards.
 	res5, err := rdb.TSRange(ctx, "rg:1", 3, math.MaxInt64).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -244,7 +230,6 @@ func ExampleClient_timeseries_range() {
 
 	// Retrieve all the data points in descending order.
 	res6, err := rdb.TSRevRange(ctx, "rg:1", 0, math.MaxInt64).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -255,7 +240,6 @@ func ExampleClient_timeseries_range() {
 	// Retrieve data points up to time 1 (inclusive), but return them
 	// in descending order.
 	res7, err := rdb.TSRevRange(ctx, "rg:1", 0, 1).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -273,7 +257,6 @@ func ExampleClient_timeseries_range() {
 			FilterByTS: []int{0, 2, 4},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -289,7 +272,6 @@ func ExampleClient_timeseries_range() {
 			FilterByValue: []int{20, 25},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -305,7 +287,6 @@ func ExampleClient_timeseries_range() {
 			FilterByValue: []int{22, 22},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -348,7 +329,6 @@ func ExampleClient_timeseries_query_multi() {
 	res20, err := rdb.TSCreateWithArgs(ctx, "rg:2", &redis.TSOptions{
 		Labels: map[string]string{"location": "us", "unit": "cm"},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -358,7 +338,6 @@ func ExampleClient_timeseries_query_multi() {
 	res21, err := rdb.TSCreateWithArgs(ctx, "rg:3", &redis.TSOptions{
 		Labels: map[string]string{"location": "us", "unit": "in"},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -368,7 +347,6 @@ func ExampleClient_timeseries_query_multi() {
 	res22, err := rdb.TSCreateWithArgs(ctx, "rg:4", &redis.TSOptions{
 		Labels: map[string]string{"location": "uk", "unit": "mm"},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -380,7 +358,6 @@ func ExampleClient_timeseries_query_multi() {
 		{"rg:3", 0, 0.9},
 		{"rg:4", 0, 25},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -392,7 +369,6 @@ func ExampleClient_timeseries_query_multi() {
 		{"rg:3", 1, 0.77},
 		{"rg:4", 1, 18},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -404,7 +380,6 @@ func ExampleClient_timeseries_query_multi() {
 		{"rg:3", 2, 1.1},
 		{"rg:4", 2, 21},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -416,7 +391,6 @@ func ExampleClient_timeseries_query_multi() {
 		{"rg:3", 3, 0.81},
 		{"rg:4", 3, 19},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -428,7 +402,6 @@ func ExampleClient_timeseries_query_multi() {
 		{"rg:3", 4, 0.74},
 		{"rg:4", 4, 23},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -437,7 +410,6 @@ func ExampleClient_timeseries_query_multi() {
 
 	// Retrieve the last data point from each US time series.
 	res28, err := rdb.TSMGet(ctx, []string{"location=us"}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -478,7 +450,6 @@ func ExampleClient_timeseries_query_multi() {
 			SelectedLabels: []interface{}{"unit"},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -526,7 +497,6 @@ func ExampleClient_timeseries_query_multi() {
 			WithLabels: true,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -571,7 +541,6 @@ func ExampleClient_timeseries_query_multi() {
 			SelectedLabels: []interface{}{"location"},
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -661,7 +630,6 @@ func ExampleClient_timeseries_aggregation() {
 	_, err := rdb.TSCreateWithArgs(ctx, "rg:2", &redis.TSOptions{
 		Labels: map[string]string{"location": "us", "unit": "cm"},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -673,7 +641,6 @@ func ExampleClient_timeseries_aggregation() {
 		{"rg:2", 3, 1.9},
 		{"rg:2", 4, 1.78},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -688,7 +655,6 @@ func ExampleClient_timeseries_aggregation() {
 			BucketDuration: 2,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -717,7 +683,6 @@ func ExampleClient_timeseries_agg_bucket() {
 
 	// STEP_START agg_bucket
 	res1, err := rdb.TSCreate(ctx, "sensor3").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -733,7 +698,6 @@ func ExampleClient_timeseries_agg_bucket() {
 		{"sensor3", 60, 6000},
 		{"sensor3", 70, 7000},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -749,7 +713,6 @@ func ExampleClient_timeseries_agg_bucket() {
 			BucketDuration: 25,
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -768,7 +731,6 @@ func ExampleClient_timeseries_agg_bucket() {
 			Align:          "START",
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -802,7 +764,6 @@ func ExampleClient_timeseries_aggmulti() {
 	res37, err := rdb.TSCreateWithArgs(ctx, "wind:1", &redis.TSOptions{
 		Labels: map[string]string{"country": "uk"},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -812,7 +773,6 @@ func ExampleClient_timeseries_aggmulti() {
 	res38, err := rdb.TSCreateWithArgs(ctx, "wind:2", &redis.TSOptions{
 		Labels: map[string]string{"country": "uk"},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -822,7 +782,6 @@ func ExampleClient_timeseries_aggmulti() {
 	res39, err := rdb.TSCreateWithArgs(ctx, "wind:3", &redis.TSOptions{
 		Labels: map[string]string{"country": "us"},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -832,7 +791,6 @@ func ExampleClient_timeseries_aggmulti() {
 	res40, err := rdb.TSCreateWithArgs(ctx, "wind:4", &redis.TSOptions{
 		Labels: map[string]string{"country": "us"},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -845,7 +803,6 @@ func ExampleClient_timeseries_aggmulti() {
 		{"wind:3", 1, 5},
 		{"wind:4", 1, 20},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -858,7 +815,6 @@ func ExampleClient_timeseries_aggmulti() {
 		{"wind:3", 2, 4},
 		{"wind:4", 2, 25},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -871,7 +827,6 @@ func ExampleClient_timeseries_aggmulti() {
 		{"wind:3", 3, 8},
 		{"wind:4", 3, 18},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -889,7 +844,6 @@ func ExampleClient_timeseries_aggmulti() {
 			Reducer:      "max",
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -937,7 +891,6 @@ func ExampleClient_timeseries_aggmulti() {
 			Reducer:      "avg",
 		},
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1018,7 +971,6 @@ func ExampleClient_timeseries_compaction() {
 
 	// STEP_START create_compaction
 	res45, err := rdb.TSCreate(ctx, "hyg:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1026,7 +978,6 @@ func ExampleClient_timeseries_compaction() {
 	fmt.Println(res45) // >>> OK
 
 	res46, err := rdb.TSCreate(ctx, "hyg:compacted").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1036,7 +987,6 @@ func ExampleClient_timeseries_compaction() {
 	res47, err := rdb.TSCreateRule(
 		ctx, "hyg:1", "hyg:compacted", redis.Min, 3,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1044,7 +994,6 @@ func ExampleClient_timeseries_compaction() {
 	fmt.Println(res47) // >>> OK
 
 	res48, err := rdb.TSInfo(ctx, "hyg:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1052,7 +1001,6 @@ func ExampleClient_timeseries_compaction() {
 	fmt.Println(res48["rules"]) // >>> [[hyg:compacted 3 MIN 0]]
 
 	res49, err := rdb.TSInfo(ctx, "hyg:compacted").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1066,7 +1014,6 @@ func ExampleClient_timeseries_compaction() {
 		{"hyg:1", 1, 77},
 		{"hyg:1", 2, 78},
 	}).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1076,7 +1023,6 @@ func ExampleClient_timeseries_compaction() {
 	res51, err := rdb.TSRange(
 		ctx, "hyg:compacted", 0, math.MaxInt64,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1084,7 +1030,6 @@ func ExampleClient_timeseries_compaction() {
 	fmt.Println(res51) // >>> []
 
 	res52, err := rdb.TSAdd(ctx, "hyg:1", 3, 79).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1094,7 +1039,6 @@ func ExampleClient_timeseries_compaction() {
 	res53, err := rdb.TSRange(
 		ctx, "hyg:compacted", 0, math.MaxInt64,
 	).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1137,7 +1081,6 @@ func ExampleClient_timeseries_delete() {
 
 	// STEP_START del
 	res54, err := rdb.TSInfo(ctx, "thermometer:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1147,7 +1090,6 @@ func ExampleClient_timeseries_delete() {
 	fmt.Println(res54["lastTimestamp"])  // >>> 2
 
 	res55, err := rdb.TSAdd(ctx, "thermometer:1", 3, 9.7).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1155,7 +1097,6 @@ func ExampleClient_timeseries_delete() {
 	fmt.Println(res55) // >>> 3
 
 	res56, err := rdb.TSInfo(ctx, "thermometer:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1165,7 +1106,6 @@ func ExampleClient_timeseries_delete() {
 	fmt.Println(res56["lastTimestamp"])  // >>> 3
 
 	res57, err := rdb.TSDel(ctx, "thermometer:1", 1, 2).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1173,7 +1113,6 @@ func ExampleClient_timeseries_delete() {
 	fmt.Println(res57) // >>> 2
 
 	res58, err := rdb.TSInfo(ctx, "thermometer:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1183,7 +1122,6 @@ func ExampleClient_timeseries_delete() {
 	fmt.Println(res58["lastTimestamp"])  // >>> 3
 
 	res59, err := rdb.TSDel(ctx, "thermometer:1", 3, 3).Result()
-
 	if err != nil {
 		panic(err)
 	}
@@ -1191,7 +1129,6 @@ func ExampleClient_timeseries_delete() {
 	fmt.Println(res59) // >>> 1
 
 	res60, err := rdb.TSInfo(ctx, "thermometer:1").Result()
-
 	if err != nil {
 		panic(err)
 	}
