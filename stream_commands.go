@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"strconv"
 	"time"
 )
 
@@ -107,7 +106,7 @@ func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
 }
 
 func (c cmdable) XAckDel(ctx context.Context, stream string, group string, mode string, ids ...string) *SliceCmd {
-	args := []interface{}{"xackdel", stream, group, mode, "ids", strconv.Itoa(len(ids))}
+	args := []interface{}{"xackdel", stream, group, mode, "ids", len(ids)}
 	for _, id := range ids {
 		args = append(args, id)
 	}
@@ -127,7 +126,7 @@ func (c cmdable) XDel(ctx context.Context, stream string, ids ...string) *IntCmd
 }
 
 func (c cmdable) XDelEx(ctx context.Context, stream string, mode string, ids ...string) *SliceCmd {
-	args := []interface{}{"xdelex", stream, mode, "ids", strconv.Itoa(len(ids))}
+	args := []interface{}{"xdelex", stream, mode, "ids", len(ids)}
 	for _, id := range ids {
 		args = append(args, id)
 	}
@@ -407,6 +406,8 @@ func xClaimArgs(a *XClaimArgs) []interface{} {
 	}
 	return args
 }
+
+// TODO: refactor xTrim, xTrimMode and the wrappers over the functions
 
 // xTrim If approx is true, add the "~" parameter, otherwise it is the default "=" (redis default).
 // example:
