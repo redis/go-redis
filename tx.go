@@ -75,7 +75,7 @@ func (c *Tx) Close(ctx context.Context) error {
 // Watch marks the keys to be watched for conditional execution
 // of a transaction.
 func (c *Tx) Watch(ctx context.Context, keys ...string) *StatusCmd {
-	args := make([]interface{}, 1+len(keys))
+	args := make([]any, 1+len(keys))
 	args[0] = "watch"
 	for i, key := range keys {
 		args[1+i] = key
@@ -87,7 +87,7 @@ func (c *Tx) Watch(ctx context.Context, keys ...string) *StatusCmd {
 
 // Unwatch flushes all the previously watched keys for a transaction.
 func (c *Tx) Unwatch(ctx context.Context, keys ...string) *StatusCmd {
-	args := make([]interface{}, 1+len(keys))
+	args := make([]any, 1+len(keys))
 	args[0] = "unwatch"
 	for i, key := range keys {
 		args[1+i] = key

@@ -8,7 +8,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
-func AppendArg(b []byte, v interface{}) []byte {
+func AppendArg(b []byte, v any) []byte {
 	switch v := v.(type) {
 	case nil:
 		return append(b, "<nil>"...)
