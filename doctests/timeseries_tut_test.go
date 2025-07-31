@@ -57,7 +57,8 @@ func ExampleClient_timeseries_create() {
 	res4, err := rdb.TSAddWithArgs(
 		ctx,
 		"thermometer:2",
-		1, 10.8,
+		1,
+		10.8,
 		&redis.TSOptions{
 			Retention: 100,
 		},
@@ -80,7 +81,8 @@ func ExampleClient_timeseries_create() {
 	res6, err := rdb.TSAddWithArgs(
 		ctx,
 		"thermometer:3",
-		1, 10.4,
+		1,
+		10.4,
 		&redis.TSOptions{
 			Labels: map[string]string{
 				"location": "UK",
@@ -200,9 +202,7 @@ func ExampleClient_timeseries_range() {
 	// Retrieve all the data points in ascending order.
 	// Note: use 0 and `math.MaxInt64` instead of - and +
 	// to denote the minimum and maximum possible timestamps.
-	res3, err := rdb.TSRange(ctx, "rg:1",
-		0, math.MaxInt64,
-	).Result()
+	res3, err := rdb.TSRange(ctx, "rg:1", 0, math.MaxInt64).Result()
 	if err != nil {
 		panic(err)
 	}
@@ -252,7 +252,8 @@ func ExampleClient_timeseries_range() {
 	res8, err := rdb.TSRangeWithArgs(
 		ctx,
 		"rg:1",
-		0, math.MaxInt64,
+		0,
+		math.MaxInt64,
 		&redis.TSRangeOptions{
 			FilterByTS: []int{0, 2, 4},
 		},
@@ -266,7 +267,8 @@ func ExampleClient_timeseries_range() {
 	res9, err := rdb.TSRevRangeWithArgs(
 		ctx,
 		"rg:1",
-		0, math.MaxInt64,
+		0,
+		math.MaxInt64,
 		&redis.TSRevRangeOptions{
 			FilterByTS:    []int{0, 2, 4},
 			FilterByValue: []int{20, 25},
@@ -281,7 +283,8 @@ func ExampleClient_timeseries_range() {
 	res10, err := rdb.TSRevRangeWithArgs(
 		ctx,
 		"rg:1",
-		0, math.MaxInt64,
+		0,
+		math.MaxInt64,
 		&redis.TSRevRangeOptions{
 			FilterByTS:    []int{0, 2, 4},
 			FilterByValue: []int{22, 22},
@@ -491,7 +494,8 @@ func ExampleClient_timeseries_query_multi() {
 	// specify any aggregators.
 	res30, err := rdb.TSMRangeWithArgs(
 		ctx,
-		0, 2,
+		0,
+		2,
 		[]string{"unit=mm"},
 		&redis.TSMRangeOptions{
 			WithLabels: true,
@@ -535,7 +539,8 @@ func ExampleClient_timeseries_query_multi() {
 	// in descending order of timestamp.
 	res31, err := rdb.TSMRevRangeWithArgs(
 		ctx,
-		1, 3,
+		1,
+		3,
 		[]string{"unit=(cm,mm)"},
 		&redis.TSMRevRangeOptions{
 			SelectedLabels: []interface{}{"location"},
@@ -649,7 +654,8 @@ func ExampleClient_timeseries_aggregation() {
 	res32, err := rdb.TSRangeWithArgs(
 		ctx,
 		"rg:2",
-		0, math.MaxInt64,
+		0,
+		math.MaxInt64,
 		&redis.TSRangeOptions{
 			Aggregator:     redis.Avg,
 			BucketDuration: 2,
@@ -707,7 +713,8 @@ func ExampleClient_timeseries_agg_bucket() {
 	res3, err := rdb.TSRangeWithArgs(
 		ctx,
 		"sensor3",
-		10, 70,
+		10,
+		70,
 		&redis.TSRangeOptions{
 			Aggregator:     redis.Min,
 			BucketDuration: 25,
@@ -724,7 +731,8 @@ func ExampleClient_timeseries_agg_bucket() {
 	res4, err := rdb.TSRangeWithArgs(
 		ctx,
 		"sensor3",
-		10, 70,
+		10,
+		70,
 		&redis.TSRangeOptions{
 			Aggregator:     redis.Min,
 			BucketDuration: 25,
@@ -837,7 +845,8 @@ func ExampleClient_timeseries_aggmulti() {
 	// for the country at that timestamp.
 	res44, err := rdb.TSMRangeWithArgs(
 		ctx,
-		0, math.MaxInt64,
+		0,
+		math.MaxInt64,
 		[]string{"country=(us,uk)"},
 		&redis.TSMRangeOptions{
 			GroupByLabel: "country",
@@ -884,7 +893,8 @@ func ExampleClient_timeseries_aggmulti() {
 	// for the country at that timestamp.
 	res45, err := rdb.TSMRangeWithArgs(
 		ctx,
-		0, math.MaxInt64,
+		0,
+		math.MaxInt64,
 		[]string{"country=(us,uk)"},
 		&redis.TSMRangeOptions{
 			GroupByLabel: "country",
