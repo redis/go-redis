@@ -65,6 +65,8 @@ func (p *StickyConnPool) CloseConn(cn *Conn) error {
 	return p.pool.CloseConn(cn)
 }
 
+
+
 func (p *StickyConnPool) Get(ctx context.Context) (*Conn, error) {
 	// In worst case this races with Close which is not a very common operation.
 	for i := 0; i < 1000; i++ {

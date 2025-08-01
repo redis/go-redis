@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -110,6 +111,18 @@ type ClusterOptions struct {
 
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	UnstableResp3 bool
+
+	// HitlessUpgrades enables hitless upgrade functionality for cluster upgrades.
+	// Requires Protocol: 3 (RESP3) for push notifications.
+	// When enabled, the client will automatically handle cluster upgrade notifications
+	// and manage connection/pool state transitions seamlessly.
+	//
+	// default: false
+	HitlessUpgrades bool
+
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// If nil, default configuration will be used when HitlessUpgrades is true.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
 
 func (opt *ClusterOptions) init() {
@@ -327,8 +340,10 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// much use for ClusterSlots config).  This means we cannot execute the
 		// READONLY command against that node -- setting readOnly to false in such
 		// situations in the options below will prevent that from happening.
-		readOnly:      opt.ReadOnly && opt.ClusterSlots == nil,
-		UnstableResp3: opt.UnstableResp3,
+		readOnly:             opt.ReadOnly && opt.ClusterSlots == nil,
+		UnstableResp3:        opt.UnstableResp3,
+		HitlessUpgrades:      opt.HitlessUpgrades,
+		HitlessUpgradeConfig: opt.HitlessUpgradeConfig,
 	}
 }
 
@@ -943,6 +958,9 @@ type ClusterClient struct {
 	cmdsInfoCache *cmdsInfoCache
 	cmdable
 	hooksMixin
+
+	// Hitless upgrade manager
+	hitlessManager *hitless.HitlessManager
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -969,12 +987,33 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		txPipeline: c.processTxPipeline,
 	})
 
+	// Initialize hitless upgrades if enabled
+	if opt.HitlessUpgrades {
+		if opt.Protocol != 3 {
+			internal.Logger.Printf(context.Background(), "hitless: RESP3 protocol required for hitless upgrades, but Protocol is %d", opt.Protocol)
+		} else {
+			integration, err := initializeClusterHitlessManager(c, opt.HitlessUpgradeConfig)
+			if err != nil {
+				internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
+			} else {
+				c.hitlessManager = integration
+				internal.Logger.Printf(context.Background(), "hitless: successfully initialized hitless upgrades for cluster client")
+			}
+		}
+	}
+
 	return c
 }
 
 // Options returns read-only Options that were used to create the client.
 func (c *ClusterClient) Options() *ClusterOptions {
 	return c.opt
+}
+
+// GetHitlessManager returns the hitless manager instance for monitoring and control.
+// Returns nil if hitless upgrades are not enabled.
+func (c *ClusterClient) GetHitlessManager() *hitless.HitlessManager {
+	return c.hitlessManager
 }
 
 // ReloadState reloads cluster state. If available it calls ClusterSlots func
@@ -1623,7 +1662,7 @@ func (c *ClusterClient) processTxPipelineNode(
 }
 
 func (c *ClusterClient) processTxPipelineNodeConn(
-	ctx context.Context, _ *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
+	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
@@ -1641,7 +1680,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
 		if err := c.txPipelineReadQueued(
-			ctx, rd, statusCmd, trimmedCmds, failedCmds,
+			ctx, node, cn, rd, statusCmd, trimmedCmds, failedCmds,
 		); err != nil {
 			setCmdsErr(cmds, err)
 
@@ -1653,23 +1692,37 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 			return err
 		}
 
-		return pipelineReadCmds(rd, trimmedCmds)
+		return node.Client.pipelineReadCmds(ctx, cn, rd, trimmedCmds)
 	})
 }
 
 func (c *ClusterClient) txPipelineReadQueued(
 	ctx context.Context,
+	node *clusterNode,
+	cn *pool.Conn,
 	rd *proto.Reader,
 	statusCmd *StatusCmd,
 	cmds []Cmder,
 	failedCmds *cmdsMap,
 ) error {
 	// Parse queued replies.
+	// To be sure there are no buffered push notifications, we process them before reading the reply
+	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		// Log the error but don't fail the command execution
+		// Push notification processing errors shouldn't break normal Redis operations
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+	}
 	if err := statusCmd.readReply(rd); err != nil {
 		return err
 	}
 
 	for _, cmd := range cmds {
+		// To be sure there are no buffered push notifications, we process them before reading the reply
+		if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			// Log the error but don't fail the command execution
+			// Push notification processing errors shouldn't break normal Redis operations
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		}
 		err := statusCmd.readReply(rd)
 		if err == nil || c.checkMovedErr(ctx, cmd, err, failedCmds) || isRedisError(err) {
 			continue
@@ -1677,6 +1730,12 @@ func (c *ClusterClient) txPipelineReadQueued(
 		return err
 	}
 
+	// To be sure there are no buffered push notifications, we process them before reading the reply
+	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		// Log the error but don't fail the command execution
+		// Push notification processing errors shouldn't break normal Redis operations
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+	}
 	// Parse number of replies.
 	line, err := rd.ReadLine()
 	if err != nil {
@@ -2044,4 +2103,37 @@ func (m *cmdsMap) Add(node *clusterNode, cmds ...Cmder) {
 	m.mu.Lock()
 	m.m[node] = append(m.m[node], cmds...)
 	m.mu.Unlock()
+}
+
+// initializeClusterHitlessManager initializes hitless upgrade manager for a cluster client.
+func initializeClusterHitlessManager(client *ClusterClient, config *HitlessUpgradeConfig) (*hitless.HitlessManager, error) {
+	// Apply defaults to any missing configuration fields
+	config = config.ApplyDefaults()
+	config.Enabled = true // Enable by default when HitlessUpgrades is true
+
+	// Create cluster client adapter
+	clientAdapterInstance := NewClusterClientAdapter(client)
+
+	// Create hitless manager directly
+	manager, err := hitless.NewHitlessManager(clientAdapterInstance, config)
+	if err != nil {
+		return nil, err
+	}
+
+	// For cluster clients, we need to register handlers on each node
+	// This is a simplified approach - in a real implementation, we would
+	// register handlers as nodes are discovered and added to the cluster
+
+	// Auto-configure maintenance notifications if endpoint type is not specified
+	if config.EndpointType == "" {
+		// For cluster clients, we'll use the first node's address for detection
+		nodes, _ := client.nodes.All()
+		if len(nodes) > 0 {
+			firstNode := nodes[0]
+			endpointConfig := hitless.DetectEndpointType(firstNode.Client.Options().Addr, firstNode.Client.Options().TLSConfig != nil)
+			config.EndpointType = endpointConfig.Type
+		}
+	}
+
+	return manager, nil
 }

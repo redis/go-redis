@@ -10,10 +10,13 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hscan"
+	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // Scanner internal/hscan.Scanner exposed interface.
@@ -202,16 +205,34 @@ func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) e
 //------------------------------------------------------------------------------
 
 type baseClient struct {
-	opt      *Options
-	connPool pool.Pooler
+	opt        *Options
+	connPool   pool.Pooler
+	pubsubPool *pool.PubSubPool
 	hooksMixin
 
 	onClose func() error // hook called when client is closed
+
+	// Push notification processing
+	pushProcessor push.NotificationProcessor
+
+	// Connection processor for handling connection lifecycle events
+	connectionProcessor interfaces.ConnectionProcessor
+
+	// Hitless upgrade manager
+	hitlessManager *hitless.HitlessManager
 }
 
 func (c *baseClient) clone() *baseClient {
-	clone := *c
-	return &clone
+	clone := &baseClient{
+		opt:                 c.opt,
+		connPool:            c.connPool,
+		pubsubPool:          c.pubsubPool,
+		onClose:             c.onClose,
+		pushProcessor:       c.pushProcessor,
+		connectionProcessor: c.connectionProcessor,
+		hitlessManager:      c.hitlessManager,
+	}
+	return clone
 }
 
 func (c *baseClient) withTimeout(timeout time.Duration) *baseClient {
@@ -383,7 +404,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
-  if err = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); err == nil {
+	if err = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); err == nil {
 		// Authentication successful with HELLO command
 	} else if !isRedisError(err) {
 		// When the server responds with the RESP protocol and the result is not a normal
@@ -419,11 +440,25 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			pipe.ClientSetName(ctx, c.opt.ClientName)
 		}
 
+		// Enable maintenance notifications if hitless upgrades are configured
+		if c.opt.HitlessUpgrades && c.opt.HitlessUpgradeConfig != nil && c.opt.HitlessUpgradeConfig.Enabled && c.opt.Protocol == 3 {
+			endpointType := c.opt.HitlessUpgradeConfig.EndpointType
+			if endpointType == "" {
+				// Auto-detect endpoint type if not specified
+				endpointConfig := hitless.DetectEndpointType(c.opt.Addr, c.opt.TLSConfig != nil)
+				endpointType = endpointConfig.Type
+			}
+			pipe.ClientMaintNotifications(ctx, true, endpointType)
+		}
+
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize connection options: %w", err)
 	}
+
+	cn.SetUsable(true)
+	cn.Inited = true
 
 	if !c.opt.DisableIdentity && !c.opt.DisableIndentity {
 		libName := ""
@@ -445,6 +480,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return c.opt.OnConnect(ctx, conn)
 	}
 
+	// Set the connection initialization function for potential reconnections
+	cn.SetInitConnFunc(c.createInitConnFunc())
+
 	return nil
 }
 
@@ -456,6 +494,10 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	if isBadConn(err, false, c.opt.Addr) {
 		c.connPool.Remove(ctx, cn, err)
 	} else {
+		// process any pending push notifications before returning the connection to the pool
+		if err := c.processPushNotifications(ctx, cn); err != nil {
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
+		}
 		c.connPool.Put(ctx, cn)
 	}
 }
@@ -519,6 +561,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 
 	retryTimeout := uint32(0)
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		// Process any pending push notifications before executing the command
+		if err := c.processPushNotifications(ctx, cn); err != nil {
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
+		}
+
 		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 			return writeCmd(wr, cmd)
 		}); err != nil {
@@ -530,7 +577,13 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		if c.opt.Protocol != 2 && c.assertUnstableCommand(cmd) {
 			readReplyFunc = cmd.readRawReply
 		}
-		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), readReplyFunc); err != nil {
+		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
+			// To be sure there are no buffered push notifications, we process them before reading the reply
+			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+			}
+			return readReplyFunc(rd)
+		}); err != nil {
 			if cmd.readTimeout() == nil {
 				atomic.StoreUint32(&retryTimeout, 1)
 			} else {
@@ -573,6 +626,13 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 	return context.Background()
 }
 
+// createInitConnFunc creates a connection initialization function that can be used for reconnections.
+func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) error {
+	return func(ctx context.Context, cn *pool.Conn) error {
+		return c.initConn(ctx, cn)
+	}
+}
+
 // Close closes the client, releasing any open resources.
 //
 // It is rare to Close a Client, as the Client is meant to be
@@ -586,6 +646,11 @@ func (c *baseClient) Close() error {
 	}
 	if err := c.connPool.Close(); err != nil && firstErr == nil {
 		firstErr = err
+	}
+	if c.pubsubPool != nil {
+		if err := c.pubsubPool.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
 }
@@ -625,6 +690,10 @@ func (c *baseClient) generalProcessPipeline(
 		// Enable retries by default to retry dial errors returned by withConn.
 		canRetry := true
 		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			// Process any pending push notifications before executing the pipeline
+			if err := c.processPushNotifications(ctx, cn); err != nil {
+				internal.Logger.Printf(ctx, "push: error processing pending notifications before processing pipeline: %v", err)
+			}
 			var err error
 			canRetry, err = p(ctx, cn, cmds)
 			return err
@@ -639,6 +708,11 @@ func (c *baseClient) generalProcessPipeline(
 func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
+	// Process any pending push notifications before executing the pipeline
+	if err := c.processPushNotifications(ctx, cn); err != nil {
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
+	}
+
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
 	}); err != nil {
@@ -647,7 +721,8 @@ func (c *baseClient) pipelineProcessCmds(
 	}
 
 	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		return pipelineReadCmds(rd, cmds)
+		// read all replies
+		return c.pipelineReadCmds(ctx, cn, rd, cmds)
 	}); err != nil {
 		return true, err
 	}
@@ -655,8 +730,12 @@ func (c *baseClient) pipelineProcessCmds(
 	return false, nil
 }
 
-func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
+func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cmds []Cmder) error {
 	for i, cmd := range cmds {
+		// To be sure there are no buffered push notifications, we process them before reading the reply
+		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		}
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
@@ -671,6 +750,11 @@ func pipelineReadCmds(rd *proto.Reader, cmds []Cmder) error {
 func (c *baseClient) txPipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
+	// Process any pending push notifications before executing the transaction pipeline
+	if err := c.processPushNotifications(ctx, cn); err != nil {
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before transaction: %v", err)
+	}
+
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
 	}); err != nil {
@@ -683,12 +767,13 @@ func (c *baseClient) txPipelineProcessCmds(
 		// Trim multi and exec.
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
-		if err := txPipelineReadQueued(rd, statusCmd, trimmedCmds); err != nil {
+		if err := c.txPipelineReadQueued(ctx, cn, rd, statusCmd, trimmedCmds); err != nil {
 			setCmdsErr(cmds, err)
 			return err
 		}
 
-		return pipelineReadCmds(rd, trimmedCmds)
+		// Read replies.
+		return c.pipelineReadCmds(ctx, cn, rd, trimmedCmds)
 	}); err != nil {
 		return false, err
 	}
@@ -696,7 +781,13 @@ func (c *baseClient) txPipelineProcessCmds(
 	return false, nil
 }
 
-func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
+// txPipelineReadQueued reads queued replies from the Redis server.
+// It returns an error if the server returns an error or if the number of replies does not match the number of commands.
+func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
+	// To be sure there are no buffered push notifications, we process them before reading the reply
+	if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+	}
 	// Parse +OK.
 	if err := statusCmd.readReply(rd); err != nil {
 		return err
@@ -704,11 +795,19 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 
 	// Parse +QUEUED.
 	for range cmds {
+		// To be sure there are no buffered push notifications, we process them before reading the reply
+		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		}
 		if err := statusCmd.readReply(rd); err != nil && !isRedisError(err) {
 			return err
 		}
 	}
 
+	// To be sure there are no buffered push notifications, we process them before reading the reply
+	if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+	}
 	// Parse number of replies.
 	line, err := rd.ReadLine()
 	if err != nil {
@@ -744,13 +843,54 @@ func NewClient(opt *Options) *Client {
 	}
 	opt.init()
 
+	// Push notifications are always enabled for RESP3 (cannot be disabled)
+
 	c := Client{
 		baseClient: &baseClient{
 			opt: opt,
 		},
 	}
 	c.init()
-	c.connPool = newConnPool(opt, c.dialHook)
+
+	// Initialize push notification processor using shared helper
+	// Use void processor for RESP2 connections (push notifications not available)
+	c.pushProcessor = initializePushProcessor(opt)
+	// Update options with the initialized push processor
+	opt.PushNotificationProcessor = c.pushProcessor
+
+	// Initialize hitless upgrades first if enabled to get the connection processor
+	var connectionProcessor interfaces.ConnectionProcessor
+	if opt.HitlessUpgrades {
+		if opt.Protocol != 3 {
+			internal.Logger.Printf(context.Background(), "hitless: RESP3 protocol required for hitless upgrades, but Protocol is %d", opt.Protocol)
+		} else {
+			integration, err := initializeHitlessManager(&c, opt.HitlessUpgradeConfig)
+			if err != nil {
+				internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
+			} else {
+				c.hitlessManager = integration
+
+				// Create the connection processor from the hitless manager
+				connectionProcessor = integration.CreateConnectionProcessor(opt.Protocol, c.dialHook)
+			}
+		}
+	}
+
+	// Create connection pool with the processor (nil if hitless upgrades disabled)
+	c.connPool = newConnPool(opt, c.dialHook, connectionProcessor)
+
+	// Create separate PubSub pool
+	c.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
+		return c.dialHook(ctx, opt.Network, opt.Addr)
+	})
+
+	// Set the pool reference in the processor for connection removal on handoff failure
+	if connectionProcessor != nil {
+		if redisProcessor, ok := connectionProcessor.(*hitless.RedisConnectionProcessor); ok {
+			// Use pool.Pooler interface directly - no adapter needed
+			redisProcessor.SetPool(c.connPool)
+		}
+	}
 
 	return &c
 }
@@ -787,11 +927,50 @@ func (c *Client) Options() *Options {
 	return c.opt
 }
 
+// GetHitlessManager returns the hitless manager instance for monitoring and control.
+// Returns nil if hitless upgrades are not enabled.
+func (c *Client) GetHitlessManager() *hitless.HitlessManager {
+	return c.hitlessManager
+}
+
+// initializePushProcessor initializes the push notification processor for any client type.
+// This is a shared helper to avoid duplication across NewClient, NewFailoverClient, and NewSentinelClient.
+func initializePushProcessor(opt *Options) push.NotificationProcessor {
+	// Always use custom processor if provided
+	if opt.PushNotificationProcessor != nil {
+		return opt.PushNotificationProcessor
+	}
+
+	// Push notifications are always enabled for RESP3, disabled for RESP2
+	if opt.Protocol == 3 {
+		// Create default processor for RESP3 connections
+		return NewPushNotificationProcessor()
+	}
+
+	// Create void processor for RESP2 connections (push notifications not available)
+	return NewVoidPushNotificationProcessor()
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *Client) RegisterPushNotificationHandler(pushNotificationName string, handler push.NotificationHandler, protected bool) error {
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
+}
+
+// GetPushNotificationHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (c *Client) GetPushNotificationHandler(pushNotificationName string) push.NotificationHandler {
+	return c.pushProcessor.GetHandler(pushNotificationName)
+}
+
 type PoolStats pool.Stats
 
 // PoolStats returns connection pool stats.
 func (c *Client) PoolStats() *PoolStats {
 	stats := c.connPool.Stats()
+	pubsubStats := c.pubsubPool.Stats()
+	stats.PubSubStats = pubsubStats
 	return (*PoolStats)(stats)
 }
 
@@ -826,13 +1005,29 @@ func (c *Client) TxPipeline() Pipeliner {
 func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
-
 		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			return c.newConn(ctx)
+			cn, err := c.pubsubPool.Get(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			// will return nil if already initialized
+			err = c.initConn(ctx, cn)
+			if err != nil {
+				c.pubsubPool.Remove(ctx, cn, err)
+				return nil, err
+			}
+
+			return cn, nil
 		},
-		closeConn: c.connPool.CloseConn,
+		closeConn: func(cn *pool.Conn) error {
+			c.pubsubPool.Remove(context.Background(), cn, nil)
+			return nil
+		},
+		pushProcessor: c.pushProcessor,
 	}
 	pubsub.init()
+
 	return pubsub
 }
 
@@ -916,6 +1111,10 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 		c.hooksMixin = parentHooks.clone()
 	}
 
+	// Initialize push notification processor using shared helper
+	// Use void processor for RESP2 connections (push notifications not available)
+	c.pushProcessor = initializePushProcessor(opt)
+
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
 	c.initHooks(hooks{
@@ -932,6 +1131,13 @@ func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
 	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *Conn) RegisterPushNotificationHandler(pushNotificationName string, handler push.NotificationHandler, protected bool) error {
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
@@ -960,4 +1166,75 @@ func (c *Conn) TxPipeline() Pipeliner {
 	}
 	pipe.init()
 	return &pipe
+}
+
+// processPushNotifications processes all pending push notifications on a connection
+// This ensures that cluster topology changes are handled immediately before the connection is used
+// This method should be called by the client before using WithReader for command execution
+func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn) error {
+	// Only process push notifications for RESP3 connections with a processor
+	// Also check if there is any data to read before processing
+	// Which is an optimization on UNIX systems where MaybeHasData is a syscall
+	// On Windows, MaybeHasData always returns true, so this check is a no-op
+	if c.opt.Protocol != 3 || c.pushProcessor == nil || !cn.MaybeHasData() {
+		return nil
+	}
+
+	// Use WithReader to access the reader and process push notifications
+	// This is critical for hitless upgrades to work properly
+	// NOTE: almost no timeouts are set for this read, so it should not block
+	// longer than necessary, 10us should be plenty of time to read if there are any push notifications
+	// on the socket.
+	return cn.WithReader(ctx, 10*time.Microsecond, func(rd *proto.Reader) error {
+		// Create handler context with client, connection pool, and connection information
+		handlerCtx := c.pushNotificationHandlerContext(cn)
+		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+	})
+}
+
+// processPendingPushNotificationWithReader processes all pending push notifications on a connection
+// This method should be called by the client in WithReader before reading the reply
+func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+	// if we have the reader, we don't need to check for data on the socket, we are waiting
+	// for either a reply or a push notification, so we can block until we get a reply or reach the timeout
+	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+		return nil
+	}
+
+	// Create handler context with client, connection pool, and connection information
+	handlerCtx := c.pushNotificationHandlerContext(cn)
+	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+}
+
+// pushNotificationHandlerContext creates a handler context for push notification processing
+func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.NotificationHandlerContext {
+	return push.NotificationHandlerContext{
+		Client:   c,
+		ConnPool: c.connPool,
+		Conn:     &connectionAdapter{conn: cn}, // Wrap in adapter for hitless integration
+	}
+}
+
+// initializeHitlessManager initializes hitless upgrade manager for a client.
+func initializeHitlessManager(client *Client, config *HitlessUpgradeConfig) (*hitless.HitlessManager, error) {
+	// Apply defaults to any missing configuration fields
+	config = config.ApplyDefaults()
+	config.Enabled = true // Enable by default when HitlessUpgrades is true
+
+	// Create client adapter
+	clientAdapterInstance := NewClientAdapter(client)
+
+	// Create hitless manager directly
+	manager, err := hitless.NewHitlessManager(clientAdapterInstance, config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Auto-configure maintenance notifications if endpoint type is not specified
+	if config.EndpointType == "" {
+		endpointConfig := hitless.DetectEndpointType(client.opt.Addr, client.opt.TLSConfig != nil)
+		config.EndpointType = endpointConfig.Type
+	}
+
+	return manager, nil
 }
