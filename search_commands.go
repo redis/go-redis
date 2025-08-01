@@ -488,6 +488,7 @@ type Document struct {
 	Payload *string
 	SortKey *string
 	Fields  map[string]string
+	Error   error
 }
 
 type AggregateQuery []interface{}
@@ -1735,7 +1736,13 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 		if i < len(data) {
 			fields, ok := data[i].([]interface{})
 			if !ok {
-				return FTSearchResult{}, fmt.Errorf("invalid document fields format")
+				if data[i] == proto.Nil || data[i] == nil {
+					doc.Error = proto.Nil
+					doc.Fields = map[string]string{}
+					fields = []interface{}{}
+				} else {
+					return FTSearchResult{}, fmt.Errorf("invalid document fields format")
+				}
 			}
 
 			for j := 0; j < len(fields); j += 2 {
