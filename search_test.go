@@ -1911,8 +1911,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		}
 
 		searchOptions := &redis.FTSearchOptions{
-			Return:         []redis.FTSearchReturn{{FieldName: "__v_score"}},
-			SortBy:         []redis.FTSearchSortBy{{FieldName: "__v_score", Asc: true}},
+			Return:         []redis.FTSearchReturn{{FieldName: "score"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "score", Asc: true}},
 			DialectVersion: 2,
 			NoContent:      true,
 			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
@@ -1949,8 +1949,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		}
 
 		searchOptions := &redis.FTSearchOptions{
-			Return:         []redis.FTSearchReturn{{FieldName: "__v_score"}},
-			SortBy:         []redis.FTSearchSortBy{{FieldName: "__v_score", Asc: true}},
+			Return:         []redis.FTSearchReturn{{FieldName: "score"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "score", Asc: true}},
 			DialectVersion: 2,
 			NoContent:      true,
 			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
@@ -1987,8 +1987,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		}
 
 		searchOptions := &redis.FTSearchOptions{
-			Return:         []redis.FTSearchReturn{{FieldName: "__v_score"}},
-			SortBy:         []redis.FTSearchSortBy{{FieldName: "__v_score", Asc: true}},
+			Return:         []redis.FTSearchReturn{{FieldName: "score"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "score", Asc: true}},
 			DialectVersion: 2,
 			NoContent:      true,
 			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
@@ -2357,7 +2357,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 			GraphMaxDegree:         32,
 			SearchWindowSize:       15,
 			Epsilon:                0.01,
-			TrainingThreshold:      512,
+			TrainingThreshold:      1024,
 			ReduceDim:              4,
 		}
 		val, err := client.FTCreate(ctx, "idx1",
