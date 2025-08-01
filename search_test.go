@@ -2352,7 +2352,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 			Type:                   "FLOAT32",
 			Dim:                    8,
 			DistanceMetric:         "L2",
-			Compression:            "LVQ8",
+			Compression:            "LeanVec",
 			ConstructionWindowSize: 200,
 			GraphMaxDegree:         32,
 			SearchWindowSize:       15,
