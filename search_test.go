@@ -830,7 +830,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return only the base query when options is nil", Label("search", "ftaggregate"), func() {
-		args := redis.FTAggregateQuery("testQuery", nil)
+		args, err := redis.FTAggregateQuery("testQuery", nil)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(args).To(Equal(redis.AggregateQuery{"testQuery"}))
 	})
 
@@ -839,7 +840,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 			Verbatim: true,
 			Scorer:   "BM25",
 		}
-		args := redis.FTAggregateQuery("testQuery", options)
+		args, err := redis.FTAggregateQuery("testQuery", options)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(args[0]).To(Equal("testQuery"))
 		Expect(args).To(ContainElement("VERBATIM"))
 		Expect(args).To(ContainElement("SCORER"))
@@ -850,7 +852,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		options := &redis.FTAggregateOptions{
 			AddScores: true,
 		}
-		args := redis.FTAggregateQuery("q", options)
+		args, err := redis.FTAggregateQuery("q", options)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(args).To(ContainElement("ADDSCORES"))
 	})
 
@@ -858,7 +861,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		options := &redis.FTAggregateOptions{
 			LoadAll: true,
 		}
-		args := redis.FTAggregateQuery("q", options)
+		args, err := redis.FTAggregateQuery("q", options)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(args).To(ContainElement("LOAD"))
 		Expect(args).To(ContainElement("*"))
 	})
@@ -870,7 +874,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 				{Field: "field2"},
 			},
 		}
-		args := redis.FTAggregateQuery("q", options)
+		args, err := redis.FTAggregateQuery("q", options)
+		Expect(err).NotTo(HaveOccurred())
 		// Verify LOAD options related arguments
 		Expect(args).To(ContainElement("LOAD"))
 		// Check that field names and aliases are present
@@ -883,7 +888,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		options := &redis.FTAggregateOptions{
 			Timeout: 500,
 		}
-		args := redis.FTAggregateQuery("q", options)
+		args, err := redis.FTAggregateQuery("q", options)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(args).To(ContainElement("TIMEOUT"))
 		found := false
 		for i, a := range args {
@@ -1826,56 +1832,56 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 	It("should fail FTCreate VECTOR with VAMANA - missing required parameters", Label("search", "ftcreate"), func() {
 		// Test missing Type
-		Expect(func() {
-			client.FTCreate(ctx, "idx1",
-				&redis.FTCreateOptions{},
-				&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: &redis.FTVamanaOptions{
-					Dim:            2,
-					DistanceMetric: "L2",
-				}}})
-		}).To(Panic())
+		cmd := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: &redis.FTVamanaOptions{
+				Dim:            2,
+				DistanceMetric: "L2",
+			}}})
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("Type, Dim and DistanceMetric are required for VECTOR VAMANA"))
 
 		// Test missing Dim
-		Expect(func() {
-			client.FTCreate(ctx, "idx1",
-				&redis.FTCreateOptions{},
-				&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: &redis.FTVamanaOptions{
-					Type:           "FLOAT32",
-					DistanceMetric: "L2",
-				}}})
-		}).To(Panic())
+		cmd = client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: &redis.FTVamanaOptions{
+				Type:           "FLOAT32",
+				DistanceMetric: "L2",
+			}}})
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("Type, Dim and DistanceMetric are required for VECTOR VAMANA"))
 
 		// Test missing DistanceMetric
-		Expect(func() {
-			client.FTCreate(ctx, "idx1",
-				&redis.FTCreateOptions{},
-				&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: &redis.FTVamanaOptions{
-					Type: "FLOAT32",
-					Dim:  2,
-				}}})
-		}).To(Panic())
+		cmd = client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: &redis.FTVamanaOptions{
+				Type: "FLOAT32",
+				Dim:  2,
+			}}})
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("Type, Dim and DistanceMetric are required for VECTOR VAMANA"))
 	})
 
 	It("should fail FTCreate VECTOR with multiple vector options", Label("search", "ftcreate"), func() {
 		// Test VAMANA + HNSW
-		Expect(func() {
-			client.FTCreate(ctx, "idx1",
-				&redis.FTCreateOptions{},
-				&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{
-					VamanaOptions: &redis.FTVamanaOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
-					HNSWOptions:   &redis.FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
-				}})
-		}).To(Panic())
+		cmd := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{
+				VamanaOptions: &redis.FTVamanaOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
+				HNSWOptions:   &redis.FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
+			}})
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("VectorArgs must have exactly one of FlatOptions, HNSWOptions, or VamanaOptions"))
 
 		// Test VAMANA + FLAT
-		Expect(func() {
-			client.FTCreate(ctx, "idx1",
-				&redis.FTCreateOptions{},
-				&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{
-					VamanaOptions: &redis.FTVamanaOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
-					FlatOptions:   &redis.FTFlatOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
-				}})
-		}).To(Panic())
+		cmd = client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{
+				VamanaOptions: &redis.FTVamanaOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
+				FlatOptions:   &redis.FTFlatOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
+			}})
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("VectorArgs must have exactly one of FlatOptions, HNSWOptions, or VamanaOptions"))
 	})
 
 	It("should test VAMANA L2 distance metric", Label("search", "ftcreate", "vamana"), func() {
