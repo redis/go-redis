@@ -18,8 +18,8 @@ type SearchBuilder struct {
 	options *FTSearchOptions
 }
 
-// Search starts building an FT.SEARCH command.
-func (c *Client) Search(ctx context.Context, index, query string) *SearchBuilder {
+// NewSearchBuilder creates a new SearchBuilder for FT.SEARCH commands.
+func (c *Client) NewSearchBuilder(ctx context.Context, index, query string) *SearchBuilder {
 	b := &SearchBuilder{c: c, ctx: ctx, index: index, query: query, options: &FTSearchOptions{LimitOffset: -1}}
 	return b
 }
@@ -215,8 +215,8 @@ type AggregateBuilder struct {
 	options *FTAggregateOptions
 }
 
-// Aggregate starts building an FT.AGGREGATE command.
-func (c *Client) Aggregate(ctx context.Context, index, query string) *AggregateBuilder {
+// NewAggregateBuilder creates a new AggregateBuilder for FT.AGGREGATE commands.
+func (c *Client) NewAggregateBuilder(ctx context.Context, index, query string) *AggregateBuilder {
 	return &AggregateBuilder{c: c, ctx: ctx, index: index, query: query, options: &FTAggregateOptions{LimitOffset: -1}}
 }
 
@@ -367,8 +367,8 @@ type CreateIndexBuilder struct {
 	schema  []*FieldSchema
 }
 
-// CreateIndex starts building an FT.CREATE command.
-func (c *Client) CreateIndex(ctx context.Context, index string) *CreateIndexBuilder {
+// NewCreateIndexBuilder creates a new CreateIndexBuilder for FT.CREATE commands.
+func (c *Client) NewCreateIndexBuilder(ctx context.Context, index string) *CreateIndexBuilder {
 	return &CreateIndexBuilder{c: c, ctx: ctx, index: index, options: &FTCreateOptions{}}
 }
 
@@ -473,8 +473,8 @@ type DropIndexBuilder struct {
 	options *FTDropIndexOptions
 }
 
-// DropIndex starts FT.DROPINDEX builder.
-func (c *Client) DropIndex(ctx context.Context, index string) *DropIndexBuilder {
+// NewDropIndexBuilder creates a new DropIndexBuilder for FT.DROPINDEX commands.
+func (c *Client) NewDropIndexBuilder(ctx context.Context, index string) *DropIndexBuilder {
 	return &DropIndexBuilder{c: c, ctx: ctx, index: index}
 }
 
@@ -499,19 +499,35 @@ type AliasBuilder struct {
 	action string // add|del|update
 }
 
-// AliasAdd starts FT.ALIASADD builder.
-func (c *Client) AliasAdd(ctx context.Context, alias, index string) *AliasBuilder {
-	return &AliasBuilder{c: c, ctx: ctx, alias: alias, index: index, action: "add"}
+// NewAliasBuilder creates a new AliasBuilder for FT.ALIAS* commands.
+func (c *Client) NewAliasBuilder(ctx context.Context, alias string) *AliasBuilder {
+	return &AliasBuilder{c: c, ctx: ctx, alias: alias}
 }
 
-// AliasDel starts FT.ALIASDEL builder.
-func (c *Client) AliasDel(ctx context.Context, alias string) *AliasBuilder {
-	return &AliasBuilder{c: c, ctx: ctx, alias: alias, action: "del"}
+// Action sets the action for the alias builder.
+func (b *AliasBuilder) Action(action string) *AliasBuilder {
+	b.action = action
+	return b
 }
 
-// AliasUpdate starts FT.ALIASUPDATE builder.
-func (c *Client) AliasUpdate(ctx context.Context, alias, index string) *AliasBuilder {
-	return &AliasBuilder{c: c, ctx: ctx, alias: alias, index: index, action: "update"}
+// Add sets the action to "add" and requires an index.
+func (b *AliasBuilder) Add(index string) *AliasBuilder {
+	b.action = "add"
+	b.index = index
+	return b
+}
+
+// Del sets the action to "del".
+func (b *AliasBuilder) Del() *AliasBuilder {
+	b.action = "del"
+	return b
+}
+
+// Update sets the action to "update" and requires an index.
+func (b *AliasBuilder) Update(index string) *AliasBuilder {
+	b.action = "update"
+	b.index = index
+	return b
 }
 
 // Run executes the configured alias command.
@@ -542,8 +558,8 @@ type ExplainBuilder struct {
 	options *FTExplainOptions
 }
 
-// Explain starts FT.EXPLAIN builder.
-func (c *Client) Explain(ctx context.Context, index, query string) *ExplainBuilder {
+// NewExplainBuilder creates a new ExplainBuilder for FT.EXPLAIN commands.
+func (c *Client) NewExplainBuilder(ctx context.Context, index, query string) *ExplainBuilder {
 	return &ExplainBuilder{c: c, ctx: ctx, index: index, query: query, options: &FTExplainOptions{}}
 }
 
@@ -566,8 +582,8 @@ type FTInfoBuilder struct {
 	index string
 }
 
-// SearchInfo starts building an FT.INFO command for RediSearch.
-func (c *Client) SearchInfo(ctx context.Context, index string) *FTInfoBuilder {
+// NewSearchInfoBuilder creates a new FTInfoBuilder for FT.INFO commands.
+func (c *Client) NewSearchInfoBuilder(ctx context.Context, index string) *FTInfoBuilder {
 	return &FTInfoBuilder{c: c, ctx: ctx, index: index}
 }
 
@@ -589,8 +605,8 @@ type SpellCheckBuilder struct {
 	options *FTSpellCheckOptions
 }
 
-// SpellCheck starts FT.SPELLCHECK builder.
-func (c *Client) SpellCheck(ctx context.Context, index, query string) *SpellCheckBuilder {
+// NewSpellCheckBuilder creates a new SpellCheckBuilder for FT.SPELLCHECK commands.
+func (c *Client) NewSpellCheckBuilder(ctx context.Context, index, query string) *SpellCheckBuilder {
 	return &SpellCheckBuilder{c: c, ctx: ctx, index: index, query: query, options: &FTSpellCheckOptions{}}
 }
 
@@ -633,19 +649,35 @@ type DictBuilder struct {
 	action string // add|del|dump
 }
 
-// DictAdd starts FT.DICTADD builder.
-func (c *Client) DictAdd(ctx context.Context, dict string, terms ...interface{}) *DictBuilder {
-	return &DictBuilder{c: c, ctx: ctx, dict: dict, terms: terms, action: "add"}
+// NewDictBuilder creates a new DictBuilder for FT.DICT* commands.
+func (c *Client) NewDictBuilder(ctx context.Context, dict string) *DictBuilder {
+	return &DictBuilder{c: c, ctx: ctx, dict: dict}
 }
 
-// DictDel starts FT.DICTDEL builder.
-func (c *Client) DictDel(ctx context.Context, dict string, terms ...interface{}) *DictBuilder {
-	return &DictBuilder{c: c, ctx: ctx, dict: dict, terms: terms, action: "del"}
+// Action sets the action for the dictionary builder.
+func (b *DictBuilder) Action(action string) *DictBuilder {
+	b.action = action
+	return b
 }
 
-// DictDump starts FT.DICTDUMP builder.
-func (c *Client) DictDump(ctx context.Context, dict string) *DictBuilder {
-	return &DictBuilder{c: c, ctx: ctx, dict: dict, action: "dump"}
+// Add sets the action to "add" and requires terms.
+func (b *DictBuilder) Add(terms ...interface{}) *DictBuilder {
+	b.action = "add"
+	b.terms = terms
+	return b
+}
+
+// Del sets the action to "del" and requires terms.
+func (b *DictBuilder) Del(terms ...interface{}) *DictBuilder {
+	b.action = "del"
+	b.terms = terms
+	return b
+}
+
+// Dump sets the action to "dump".
+func (b *DictBuilder) Dump() *DictBuilder {
+	b.action = "dump"
+	return b
 }
 
 // Run executes the configured dictionary command.
@@ -675,8 +707,8 @@ type TagValsBuilder struct {
 	field string
 }
 
-// TagVals starts FT.TAGVALS builder.
-func (c *Client) TagVals(ctx context.Context, index, field string) *TagValsBuilder {
+// NewTagValsBuilder creates a new TagValsBuilder for FT.TAGVALS commands.
+func (c *Client) NewTagValsBuilder(ctx context.Context, index, field string) *TagValsBuilder {
 	return &TagValsBuilder{c: c, ctx: ctx, index: index, field: field}
 }
 
@@ -699,14 +731,27 @@ type CursorBuilder struct {
 	action   string // read|del
 }
 
-// CursorRead starts FT.CURSOR READ builder.
-func (c *Client) CursorRead(ctx context.Context, index string, cursorId int64) *CursorBuilder {
-	return &CursorBuilder{c: c, ctx: ctx, index: index, cursorId: cursorId, action: "read"}
+// NewCursorBuilder creates a new CursorBuilder for FT.CURSOR* commands.
+func (c *Client) NewCursorBuilder(ctx context.Context, index string, cursorId int64) *CursorBuilder {
+	return &CursorBuilder{c: c, ctx: ctx, index: index, cursorId: cursorId}
 }
 
-// CursorDel starts FT.CURSOR DEL builder.
-func (c *Client) CursorDel(ctx context.Context, index string, cursorId int64) *CursorBuilder {
-	return &CursorBuilder{c: c, ctx: ctx, index: index, cursorId: cursorId, action: "del"}
+// Action sets the action for the cursor builder.
+func (b *CursorBuilder) Action(action string) *CursorBuilder {
+	b.action = action
+	return b
+}
+
+// Read sets the action to "read".
+func (b *CursorBuilder) Read() *CursorBuilder {
+	b.action = "read"
+	return b
+}
+
+// Del sets the action to "del".
+func (b *CursorBuilder) Del() *CursorBuilder {
+	b.action = "del"
+	return b
 }
 
 // Count for READ.
@@ -738,8 +783,8 @@ type SynUpdateBuilder struct {
 	terms   []interface{}
 }
 
-// SynUpdate starts FT.SYNUPDATE builder.
-func (c *Client) SynUpdate(ctx context.Context, index string, groupId interface{}) *SynUpdateBuilder {
+// NewSynUpdateBuilder creates a new SynUpdateBuilder for FT.SYNUPDATE commands.
+func (c *Client) NewSynUpdateBuilder(ctx context.Context, index string, groupId interface{}) *SynUpdateBuilder {
 	return &SynUpdateBuilder{c: c, ctx: ctx, index: index, groupId: groupId, options: &FTSynUpdateOptions{}}
 }
 

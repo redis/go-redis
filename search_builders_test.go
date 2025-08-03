@@ -24,7 +24,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should create index and search with scores using builders", Label("search", "ftcreate", "ftsearch"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx1").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx1").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "foo", FieldType: redis.SearchFieldTypeText}).
 			Run()
@@ -36,7 +36,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc1", "foo", "hello world")
 		client.HSet(ctx, "doc2", "foo", "hello redis")
 
-		res, err := client.Search(ctx, "idx1", "hello").WithScores().Run()
+		res, err := client.NewSearchBuilder(ctx, "idx1", "hello").WithScores().Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Total).To(Equal(2))
 		for _, doc := range res.Docs {
@@ -45,7 +45,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should aggregate using builders", Label("search", "ftaggregate"), func() {
-		_, err := client.CreateIndex(ctx, "idx2").
+		_, err := client.NewCreateIndexBuilder(ctx, "idx2").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric}).
 			Run()
@@ -55,7 +55,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "d1", "n", 1)
 		client.HSet(ctx, "d2", "n", 2)
 
-		agg, err := client.Aggregate(ctx, "idx2", "*").
+		agg, err := client.NewAggregateBuilder(ctx, "idx2", "*").
 			GroupBy("@n").
 			ReduceAs(redis.SearchCount, "count").
 			Run()
@@ -64,38 +64,38 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should drop index using builder", Label("search", "ftdropindex"), func() {
-		Expect(client.CreateIndex(ctx, "idx3").
+		Expect(client.NewCreateIndexBuilder(ctx, "idx3").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "x", FieldType: redis.SearchFieldTypeText}).
 			Run()).To(Equal("OK"))
 		WaitForIndexing(client, "idx3")
 
-		dropVal, err := client.DropIndex(ctx, "idx3").Run()
+		dropVal, err := client.NewDropIndexBuilder(ctx, "idx3").Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(dropVal).To(Equal("OK"))
 	})
 
 	It("should manage aliases using builder", Label("search", "ftalias"), func() {
-		Expect(client.CreateIndex(ctx, "idx4").
+		Expect(client.NewCreateIndexBuilder(ctx, "idx4").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "t", FieldType: redis.SearchFieldTypeText}).
 			Run()).To(Equal("OK"))
 		WaitForIndexing(client, "idx4")
 
-		addVal, err := client.AliasAdd(ctx, "alias1", "idx4").Run()
+		addVal, err := client.NewAliasBuilder(ctx, "alias1").Add("idx4").Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(addVal).To(Equal("OK"))
 
-		_, err = client.Search(ctx, "alias1", "*").Run()
+		_, err = client.NewSearchBuilder(ctx, "alias1", "*").Run()
 		Expect(err).NotTo(HaveOccurred())
 
-		delVal, err := client.AliasDel(ctx, "alias1").Run()
+		delVal, err := client.NewAliasBuilder(ctx, "alias1").Del().Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(delVal).To(Equal("OK"))
 	})
 
 	It("should explain query using ExplainBuilder", Label("search", "builders", "ftexplain"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_explain").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_explain").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "foo", FieldType: redis.SearchFieldTypeText}).
 			Run()
@@ -103,13 +103,13 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(createVal).To(Equal("OK"))
 		WaitForIndexing(client, "idx_explain")
 
-		expl, err := client.Explain(ctx, "idx_explain", "foo").Run()
+		expl, err := client.NewExplainBuilder(ctx, "idx_explain", "foo").Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(expl).To(ContainSubstring("UNION"))
 	})
 
 	It("should retrieve info using SearchInfo builder", Label("search", "builders", "ftinfo"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_info").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_info").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "foo", FieldType: redis.SearchFieldTypeText}).
 			Run()
@@ -117,13 +117,13 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(createVal).To(Equal("OK"))
 		WaitForIndexing(client, "idx_info")
 
-		i, err := client.SearchInfo(ctx, "idx_info").Run()
+		i, err := client.NewSearchInfoBuilder(ctx, "idx_info").Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(i.IndexName).To(Equal("idx_info"))
 	})
 
 	It("should spellcheck using builder", Label("search", "builders", "ftspellcheck"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_spell").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_spell").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "foo", FieldType: redis.SearchFieldTypeText}).
 			Run()
@@ -133,26 +133,26 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 
 		client.HSet(ctx, "doc1", "foo", "bar")
 
-		_, err = client.SpellCheck(ctx, "idx_spell", "ba").Distance(1).Run()
+		_, err = client.NewSpellCheckBuilder(ctx, "idx_spell", "ba").Distance(1).Run()
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("should manage dictionary using DictBuilder", Label("search", "ftdict"), func() {
-		addCount, err := client.DictAdd(ctx, "dict1", "a", "b").Run()
+		addCount, err := client.NewDictBuilder(ctx, "dict1").Add("a", "b").Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(addCount).To(Equal(int64(2)))
 
-		dump, err := client.DictDump(ctx, "dict1").Run()
+		dump, err := client.NewDictBuilder(ctx, "dict1").Dump().Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(dump).To(ContainElements("a", "b"))
 
-		delCount, err := client.DictDel(ctx, "dict1", "a").Run()
+		delCount, err := client.NewDictBuilder(ctx, "dict1").Del("a").Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(delCount).To(Equal(int64(1)))
 	})
 
 	It("should tag values using TagValsBuilder", Label("search", "builders", "fttagvals"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_tag").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_tag").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "tags", FieldType: redis.SearchFieldTypeTag}).
 			Run()
@@ -163,13 +163,13 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc1", "tags", "red,blue")
 		client.HSet(ctx, "doc2", "tags", "green,blue")
 
-		vals, err := client.TagVals(ctx, "idx_tag", "tags").Run()
+		vals, err := client.NewTagValsBuilder(ctx, "idx_tag", "tags").Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(vals).To(BeAssignableToTypeOf([]string{}))
 	})
 
 	It("should cursor read and delete using CursorBuilder", Label("search", "builders", "ftcursor"), func() {
-		Expect(client.CreateIndex(ctx, "idx5").
+		Expect(client.NewCreateIndexBuilder(ctx, "idx5").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "f", FieldType: redis.SearchFieldTypeText}).
 			Run()).To(Equal("OK"))
@@ -177,18 +177,18 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc1", "f", "hello")
 		client.HSet(ctx, "doc2", "f", "world")
 
-		cursorBuilder := client.CursorRead(ctx, "idx5", 1)
+		cursorBuilder := client.NewCursorBuilder(ctx, "idx5", 1)
 		Expect(cursorBuilder).NotTo(BeNil())
 
 		cursorBuilder = cursorBuilder.Count(10)
 		Expect(cursorBuilder).NotTo(BeNil())
 
-		delBuilder := client.CursorDel(ctx, "idx5", 1)
+		delBuilder := client.NewCursorBuilder(ctx, "idx5", 1)
 		Expect(delBuilder).NotTo(BeNil())
 	})
 
 	It("should update synonyms using SynUpdateBuilder", Label("search", "builders", "ftsynupdate"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_syn").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_syn").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "foo", FieldType: redis.SearchFieldTypeText}).
 			Run()
@@ -196,13 +196,13 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(createVal).To(Equal("OK"))
 		WaitForIndexing(client, "idx_syn")
 
-		syn, err := client.SynUpdate(ctx, "idx_syn", "grp1").Terms("a", "b").Run()
+		syn, err := client.NewSynUpdateBuilder(ctx, "idx_syn", "grp1").Terms("a", "b").Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(syn).To(Equal("OK"))
 	})
 
 	It("should test SearchBuilder with NoContent and Verbatim", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_nocontent").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_nocontent").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Weight: 5}).
 			Schema(&redis.FieldSchema{FieldName: "body", FieldType: redis.SearchFieldTypeText}).
@@ -213,7 +213,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 
 		client.HSet(ctx, "doc1", "title", "RediSearch", "body", "Redisearch implements a search engine on top of redis")
 
-		res, err := client.Search(ctx, "idx_nocontent", "search engine").
+		res, err := client.NewSearchBuilder(ctx, "idx_nocontent", "search engine").
 			NoContent().
 			Verbatim().
 			Limit(0, 5).
@@ -226,7 +226,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder with NoStopWords", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_nostop").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_nostop").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).
 			Run()
@@ -238,13 +238,13 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc2", "txt", "test document")
 
 		// Test that NoStopWords method can be called and search works
-		res, err := client.Search(ctx, "idx_nostop", "hello").NoContent().NoStopWords().Run()
+		res, err := client.NewSearchBuilder(ctx, "idx_nostop", "hello").NoContent().NoStopWords().Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Total).To(Equal(1))
 	})
 
 	It("should test SearchBuilder with filters", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_filters").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_filters").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).
 			Schema(&redis.FieldSchema{FieldName: "num", FieldType: redis.SearchFieldTypeNumeric}).
@@ -258,7 +258,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc2", "txt", "foo baz", "num", 2, "loc", "-0.1,51.2")
 
 		// Test numeric filter
-		res1, err := client.Search(ctx, "idx_filters", "foo").
+		res1, err := client.NewSearchBuilder(ctx, "idx_filters", "foo").
 			Filter("num", 2, 4).
 			NoContent().
 			Run()
@@ -266,7 +266,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(res1.Total).To(Equal(2))
 
 		// Test geo filter
-		res2, err := client.Search(ctx, "idx_filters", "foo").
+		res2, err := client.NewSearchBuilder(ctx, "idx_filters", "foo").
 			GeoFilter("loc", -0.44, 51.45, 10, "km").
 			NoContent().
 			Run()
@@ -275,7 +275,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder with sorting", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_sort").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_sort").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).
 			Schema(&redis.FieldSchema{FieldName: "num", FieldType: redis.SearchFieldTypeNumeric, Sortable: true}).
@@ -289,7 +289,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc3", "txt", "foo qux", "num", 3)
 
 		// Test ascending sort
-		res1, err := client.Search(ctx, "idx_sort", "foo").
+		res1, err := client.NewSearchBuilder(ctx, "idx_sort", "foo").
 			SortBy("num", true).
 			NoContent().
 			Run()
@@ -300,7 +300,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(res1.Docs[2].ID).To(Equal("doc3"))
 
 		// Test descending sort
-		res2, err := client.Search(ctx, "idx_sort", "foo").
+		res2, err := client.NewSearchBuilder(ctx, "idx_sort", "foo").
 			SortBy("num", false).
 			NoContent().
 			Run()
@@ -312,7 +312,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder with InKeys and InFields", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_in").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_in").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText}).
 			Schema(&redis.FieldSchema{FieldName: "body", FieldType: redis.SearchFieldTypeText}).
@@ -326,7 +326,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc3", "title", "baz qux", "body", "dolor sit")
 
 		// Test InKeys
-		res1, err := client.Search(ctx, "idx_in", "hello").
+		res1, err := client.NewSearchBuilder(ctx, "idx_in", "hello").
 			InKeys("doc1", "doc2").
 			NoContent().
 			Run()
@@ -334,7 +334,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(res1.Total).To(Equal(2))
 
 		// Test InFields
-		res2, err := client.Search(ctx, "idx_in", "hello").
+		res2, err := client.NewSearchBuilder(ctx, "idx_in", "hello").
 			InFields("title").
 			NoContent().
 			Run()
@@ -344,7 +344,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder with Return fields", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_return").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_return").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText}).
 			Schema(&redis.FieldSchema{FieldName: "body", FieldType: redis.SearchFieldTypeText}).
@@ -357,7 +357,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc1", "title", "hello", "body", "world", "num", 42)
 
 		// Test ReturnFields
-		res1, err := client.Search(ctx, "idx_return", "hello").
+		res1, err := client.NewSearchBuilder(ctx, "idx_return", "hello").
 			ReturnFields("title", "num").
 			Run()
 		Expect(err).NotTo(HaveOccurred())
@@ -367,7 +367,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(res1.Docs[0].Fields).NotTo(HaveKey("body"))
 
 		// Test ReturnAs
-		res2, err := client.Search(ctx, "idx_return", "hello").
+		res2, err := client.NewSearchBuilder(ctx, "idx_return", "hello").
 			ReturnAs("title", "doc_title").
 			Run()
 		Expect(err).NotTo(HaveOccurred())
@@ -377,7 +377,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder with advanced options", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_advanced").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_advanced").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}).
 			Run()
@@ -389,7 +389,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc2", "description", "Quick alice was beginning to get very tired of sitting by her quick sister on the bank")
 
 		// Test with scores and different scorers
-		res1, err := client.Search(ctx, "idx_advanced", "quick").
+		res1, err := client.NewSearchBuilder(ctx, "idx_advanced", "quick").
 			WithScores().
 			Scorer("TFIDF").
 			Run()
@@ -399,7 +399,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 			Expect(*doc.Score).To(BeNumerically(">", 0))
 		}
 
-		res2, err := client.Search(ctx, "idx_advanced", "quick").
+		res2, err := client.NewSearchBuilder(ctx, "idx_advanced", "quick").
 			WithScores().
 			Payload("test_payload").
 			NoContent().
@@ -408,7 +408,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(res2.Total).To(Equal(2))
 
 		// Test with Slop and InOrder
-		res3, err := client.Search(ctx, "idx_advanced", "quick brown").
+		res3, err := client.NewSearchBuilder(ctx, "idx_advanced", "quick brown").
 			Slop(1).
 			InOrder().
 			NoContent().
@@ -417,7 +417,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(res3.Total).To(Equal(1))
 
 		// Test with Language and Expander
-		res4, err := client.Search(ctx, "idx_advanced", "quick").
+		res4, err := client.NewSearchBuilder(ctx, "idx_advanced", "quick").
 			Language("english").
 			Expander("SYNONYM").
 			NoContent().
@@ -426,7 +426,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(res4.Total).To(BeNumerically(">=", 0))
 
 		// Test with Timeout
-		res5, err := client.Search(ctx, "idx_advanced", "quick").
+		res5, err := client.NewSearchBuilder(ctx, "idx_advanced", "quick").
 			Timeout(1000).
 			NoContent().
 			Run()
@@ -435,7 +435,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder with Params and Dialect", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_params").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_params").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "name", FieldType: redis.SearchFieldTypeText}).
 			Run()
@@ -448,7 +448,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc3", "name", "Carol")
 
 		// Test with single param
-		res1, err := client.Search(ctx, "idx_params", "@name:$name").
+		res1, err := client.NewSearchBuilder(ctx, "idx_params", "@name:$name").
 			Param("name", "Alice").
 			NoContent().
 			Run()
@@ -461,7 +461,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 			"name1": "Bob",
 			"name2": "Carol",
 		}
-		res2, err := client.Search(ctx, "idx_params", "@name:($name1|$name2)").
+		res2, err := client.NewSearchBuilder(ctx, "idx_params", "@name:($name1|$name2)").
 			ParamsMap(params).
 			Dialect(2).
 			NoContent().
@@ -471,7 +471,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder with Limit and CountOnly", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_limit").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_limit").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).
 			Run()
@@ -484,7 +484,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		}
 
 		// Test with Limit
-		res1, err := client.Search(ctx, "idx_limit", "test").
+		res1, err := client.NewSearchBuilder(ctx, "idx_limit", "test").
 			Limit(2, 3).
 			NoContent().
 			Run()
@@ -493,7 +493,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(len(res1.Docs)).To(Equal(3))
 
 		// Test with CountOnly
-		res2, err := client.Search(ctx, "idx_limit", "test").
+		res2, err := client.NewSearchBuilder(ctx, "idx_limit", "test").
 			CountOnly().
 			Run()
 		Expect(err).NotTo(HaveOccurred())
@@ -502,7 +502,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder with WithSortByCount and SortBy", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_payloads").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_payloads").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).
 			Schema(&redis.FieldSchema{FieldName: "num", FieldType: redis.SearchFieldTypeNumeric, Sortable: true}).
@@ -515,7 +515,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc2", "txt", "world", "num", 2)
 
 		// Test WithSortByCount and SortBy
-		res, err := client.Search(ctx, "idx_payloads", "*").
+		res, err := client.NewSearchBuilder(ctx, "idx_payloads", "*").
 			SortBy("num", true).
 			WithSortByCount().
 			NoContent().
@@ -525,7 +525,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder with JSON", Label("search", "ftsearch", "builders", "json"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_json").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_json").
 			OnJSON().
 			Prefix("king:").
 			Schema(&redis.FieldSchema{FieldName: "$.name", FieldType: redis.SearchFieldTypeText}).
@@ -537,7 +537,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.JSONSet(ctx, "king:1", "$", `{"name": "henry"}`)
 		client.JSONSet(ctx, "king:2", "$", `{"name": "james"}`)
 
-		res, err := client.Search(ctx, "idx_json", "henry").Run()
+		res, err := client.NewSearchBuilder(ctx, "idx_json", "henry").Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Total).To(Equal(1))
 		Expect(res.Docs[0].ID).To(Equal("king:1"))
@@ -546,7 +546,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 
 	It("should test SearchBuilder with vector search", Label("search", "ftsearch", "builders", "vector"), func() {
 		hnswOptions := &redis.FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"}
-		createVal, err := client.CreateIndex(ctx, "idx_vector").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_vector").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{HNSWOptions: hnswOptions}}).
 			Run()
@@ -558,7 +558,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "b", "v", "aaaabaaa")
 		client.HSet(ctx, "c", "v", "aaaaabaa")
 
-		res, err := client.Search(ctx, "idx_vector", "*=>[KNN 2 @v $vec]").
+		res, err := client.NewSearchBuilder(ctx, "idx_vector", "*=>[KNN 2 @v $vec]").
 			ReturnFields("__v_score").
 			SortBy("__v_score", true).
 			Dialect(2).
@@ -570,7 +570,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder with complex filtering and aggregation", Label("search", "ftsearch", "builders"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_complex").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_complex").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "category", FieldType: redis.SearchFieldTypeTag}).
 			Schema(&redis.FieldSchema{FieldName: "price", FieldType: redis.SearchFieldTypeNumeric, Sortable: true}).
@@ -585,7 +585,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "product2", "category", "electronics", "price", 200, "location", "-0.2,51.6", "description", "laptop computer")
 		client.HSet(ctx, "product3", "category", "books", "price", 20, "location", "-0.3,51.7", "description", "programming guide")
 
-		res, err := client.Search(ctx, "idx_complex", "@category:{electronics} @description:(device|computer)").
+		res, err := client.NewSearchBuilder(ctx, "idx_complex", "@category:{electronics} @description:(device|computer)").
 			Filter("price", 50, 250).
 			GeoFilter("location", -0.15, 51.55, 50, "km").
 			SortBy("price", true).
@@ -595,7 +595,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.Total).To(BeNumerically(">=", 1))
 
-		res2, err := client.Search(ctx, "idx_complex", "@category:{$cat} @price:[$min $max]").
+		res2, err := client.NewSearchBuilder(ctx, "idx_complex", "@category:{$cat} @price:[$min $max]").
 			ParamsMap(map[string]interface{}{
 				"cat": "electronics",
 				"min": 150,
@@ -610,7 +610,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder error handling and edge cases", Label("search", "ftsearch", "builders", "edge-cases"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_edge").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_edge").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "txt", FieldType: redis.SearchFieldTypeText}).
 			Run()
@@ -621,17 +621,17 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc1", "txt", "hello world")
 
 		// Test empty query
-		res1, err := client.Search(ctx, "idx_edge", "*").NoContent().Run()
+		res1, err := client.NewSearchBuilder(ctx, "idx_edge", "*").NoContent().Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res1.Total).To(Equal(1))
 
 		// Test query with no results
-		res2, err := client.Search(ctx, "idx_edge", "nonexistent").NoContent().Run()
+		res2, err := client.NewSearchBuilder(ctx, "idx_edge", "nonexistent").NoContent().Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res2.Total).To(Equal(0))
 
 		// Test with multiple chained methods
-		res3, err := client.Search(ctx, "idx_edge", "hello").
+		res3, err := client.NewSearchBuilder(ctx, "idx_edge", "hello").
 			WithScores().
 			NoContent().
 			Verbatim().
@@ -646,7 +646,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	})
 
 	It("should test SearchBuilder method chaining", Label("search", "ftsearch", "builders", "fluent"), func() {
-		createVal, err := client.CreateIndex(ctx, "idx_fluent").
+		createVal, err := client.NewCreateIndexBuilder(ctx, "idx_fluent").
 			OnHash().
 			Schema(&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText}).
 			Schema(&redis.FieldSchema{FieldName: "tags", FieldType: redis.SearchFieldTypeTag}).
@@ -659,7 +659,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		client.HSet(ctx, "doc1", "title", "Redis Search Tutorial", "tags", "redis,search,tutorial", "score", 95)
 		client.HSet(ctx, "doc2", "title", "Advanced Redis", "tags", "redis,advanced", "score", 88)
 
-		builder := client.Search(ctx, "idx_fluent", "@title:(redis) @tags:{search}")
+		builder := client.NewSearchBuilder(ctx, "idx_fluent", "@title:(redis) @tags:{search}")
 		result := builder.
 			WithScores().
 			Filter("score", 90, 100).
