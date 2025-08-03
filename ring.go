@@ -116,12 +116,14 @@ type RingOptions struct {
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
 	// Larger buffers can improve performance for commands that return large responses.
+	// Smaller buffers can improve memory usage for larger pools.
 	//
 	// default: 0.5MiB (524288 bytes)
 	ReadBufferSize int
 
 	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
 	// Larger buffers can improve performance for large pipelines and commands with many arguments.
+	// Smaller buffers can improve memory usage for larger pools.
 	//
 	// default: 0.5MiB (524288 bytes)
 	WriteBufferSize int
