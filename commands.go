@@ -193,6 +193,8 @@ type Cmdable interface {
 	ClientID(ctx context.Context) *IntCmd
 	ClientUnblock(ctx context.Context, id int64) *IntCmd
 	ClientUnblockWithError(ctx context.Context, id int64) *IntCmd
+	ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd
+	ClientMaintNotificationsInfo(ctx context.Context) *MapStringInterfaceCmd
 	ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd
 	ConfigResetStat(ctx context.Context) *StatusCmd
 	ConfigSet(ctx context.Context, parameter, value string) *StatusCmd
@@ -514,6 +516,34 @@ func (c cmdable) ClientUnblockWithError(ctx context.Context, id int64) *IntCmd {
 
 func (c cmdable) ClientInfo(ctx context.Context) *ClientInfoCmd {
 	cmd := NewClientInfoCmd(ctx, "client", "info")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ClientMaintNotifications enables or disables maintenance push notifications.
+// This command is used for hitless upgrades to control whether the client
+// receives MOVING, MIGRATING, MIGRATED, FAILING_OVER, and FAILED_OVER notifications.
+func (c cmdable) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
+	args := []interface{}{"client", "maint_notifications"}
+
+	if enabled {
+		args = append(args, "on")
+		if endpointType != "" {
+			args = append(args, "moving-endpoint-type", endpointType)
+		}
+	} else {
+		args = append(args, "off")
+	}
+
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ClientMaintNotificationsInfo returns information about the current maintenance
+// notification configuration, similar to CLIENT TRACKINGINFO.
+func (c cmdable) ClientMaintNotificationsInfo(ctx context.Context) *MapStringInterfaceCmd {
+	cmd := NewMapStringInterfaceCmd(ctx, "client", "maint_notifications_info")
 	_ = c(ctx, cmd)
 	return cmd
 }
