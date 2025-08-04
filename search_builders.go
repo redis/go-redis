@@ -20,6 +20,7 @@ type SearchBuilder struct {
 }
 
 // NewSearchBuilder creates a new SearchBuilder for FT.SEARCH commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewSearchBuilder(ctx context.Context, index, query string) *SearchBuilder {
 	b := &SearchBuilder{c: c, ctx: ctx, index: index, query: query, options: &FTSearchOptions{LimitOffset: -1}}
 	return b
