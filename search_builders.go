@@ -10,6 +10,7 @@ import (
 
 // SearchBuilder provides a fluent API for FT.SEARCH
 // (see original FTSearchOptions for all options).
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type SearchBuilder struct {
 	c       *Client
 	ctx     context.Context
