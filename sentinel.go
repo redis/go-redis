@@ -657,10 +657,10 @@ type sentinelFailover struct {
 	onFailover func(ctx context.Context, addr string)
 	onUpdate   func(ctx context.Context)
 
-	mu          sync.RWMutex
-	_masterAddr string
-	sentinel    *SentinelClient
-	pubsub      *PubSub
+	mu         sync.RWMutex
+	masterAddr string
+	sentinel   *SentinelClient
+	pubsub     *PubSub
 }
 
 func (c *sentinelFailover) Close() error {
@@ -921,7 +921,7 @@ func parseReplicaAddrs(addrs []map[string]string, keepDisconnected bool) []strin
 
 func (c *sentinelFailover) trySwitchMaster(ctx context.Context, addr string) {
 	c.mu.RLock()
-	currentAddr := c._masterAddr //nolint:ifshort
+	currentAddr := c.masterAddr //nolint:ifshort
 	c.mu.RUnlock()
 
 	if addr == currentAddr {
@@ -931,10 +931,10 @@ func (c *sentinelFailover) trySwitchMaster(ctx context.Context, addr string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if addr == c._masterAddr {
+	if addr == c.masterAddr {
 		return
 	}
-	c._masterAddr = addr
+	c.masterAddr = addr
 
 	internal.Logger.Printf(ctx, "sentinel: new master=%q addr=%q",
 		c.opt.MasterName, addr)
