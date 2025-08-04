@@ -24,6 +24,7 @@ type Scanner = hscan.Scanner
 const Nil = proto.Nil
 
 // SetLogger set custom log
+// Use with VoidLogger to disable logging.
 func SetLogger(logger internal.Logging) {
 	internal.Logger = logger
 }
