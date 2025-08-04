@@ -218,6 +218,7 @@ type AggregateBuilder struct {
 }
 
 // NewAggregateBuilder creates a new AggregateBuilder for FT.AGGREGATE commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewAggregateBuilder(ctx context.Context, index, query string) *AggregateBuilder {
 	return &AggregateBuilder{c: c, ctx: ctx, index: index, query: query, options: &FTAggregateOptions{LimitOffset: -1}}
 }
@@ -360,7 +361,8 @@ func (b *AggregateBuilder) Run() (*FTAggregateResult, error) {
 // ----------------------
 // CreateIndexBuilder for FT.CREATE
 // ----------------------
-
+// CreateIndexBuilder is builder for FT.CREATE
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type CreateIndexBuilder struct {
 	c       *Client
 	ctx     context.Context
@@ -370,6 +372,7 @@ type CreateIndexBuilder struct {
 }
 
 // NewCreateIndexBuilder creates a new CreateIndexBuilder for FT.CREATE commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewCreateIndexBuilder(ctx context.Context, index string) *CreateIndexBuilder {
 	return &CreateIndexBuilder{c: c, ctx: ctx, index: index, options: &FTCreateOptions{}}
 }
@@ -467,7 +470,8 @@ func (b *CreateIndexBuilder) Run() (string, error) {
 // ----------------------
 // DropIndexBuilder for FT.DROPINDEX
 // ----------------------
-
+// DropIndexBuilder is a builder for FT.DROPINDEX
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type DropIndexBuilder struct {
 	c       *Client
 	ctx     context.Context
@@ -476,6 +480,7 @@ type DropIndexBuilder struct {
 }
 
 // NewDropIndexBuilder creates a new DropIndexBuilder for FT.DROPINDEX commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewDropIndexBuilder(ctx context.Context, index string) *DropIndexBuilder {
 	return &DropIndexBuilder{c: c, ctx: ctx, index: index}
 }
@@ -492,7 +497,8 @@ func (b *DropIndexBuilder) Run() (string, error) {
 // ----------------------
 // AliasBuilder for FT.ALIAS* commands
 // ----------------------
-
+// AliasBuilder is builder for FT.ALIAS* commands
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type AliasBuilder struct {
 	c      *Client
 	ctx    context.Context
@@ -502,6 +508,7 @@ type AliasBuilder struct {
 }
 
 // NewAliasBuilder creates a new AliasBuilder for FT.ALIAS* commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewAliasBuilder(ctx context.Context, alias string) *AliasBuilder {
 	return &AliasBuilder{c: c, ctx: ctx, alias: alias}
 }
@@ -551,7 +558,8 @@ func (b *AliasBuilder) Run() (string, error) {
 // ----------------------
 // ExplainBuilder for FT.EXPLAIN
 // ----------------------
-
+// ExplainBuilder is builder for FT.EXPLAIN
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type ExplainBuilder struct {
 	c       *Client
 	ctx     context.Context
@@ -561,6 +569,7 @@ type ExplainBuilder struct {
 }
 
 // NewExplainBuilder creates a new ExplainBuilder for FT.EXPLAIN commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewExplainBuilder(ctx context.Context, index, query string) *ExplainBuilder {
 	return &ExplainBuilder{c: c, ctx: ctx, index: index, query: query, options: &FTExplainOptions{}}
 }
@@ -598,7 +607,8 @@ func (b *FTInfoBuilder) Run() (FTInfoResult, error) {
 // ----------------------
 // SpellCheckBuilder for FT.SPELLCHECK
 // ----------------------
-
+// SpellCheckBuilder is builder for FT.SPELLCHECK
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type SpellCheckBuilder struct {
 	c       *Client
 	ctx     context.Context
@@ -608,6 +618,7 @@ type SpellCheckBuilder struct {
 }
 
 // NewSpellCheckBuilder creates a new SpellCheckBuilder for FT.SPELLCHECK commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewSpellCheckBuilder(ctx context.Context, index, query string) *SpellCheckBuilder {
 	return &SpellCheckBuilder{c: c, ctx: ctx, index: index, query: query, options: &FTSpellCheckOptions{}}
 }
@@ -642,7 +653,8 @@ func (b *SpellCheckBuilder) Run() ([]SpellCheckResult, error) {
 // ----------------------
 // DictBuilder for FT.DICT* commands
 // ----------------------
-
+// DictBuilder is builder for FT.DICT* commands
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type DictBuilder struct {
 	c      *Client
 	ctx    context.Context
@@ -652,6 +664,7 @@ type DictBuilder struct {
 }
 
 // NewDictBuilder creates a new DictBuilder for FT.DICT* commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewDictBuilder(ctx context.Context, dict string) *DictBuilder {
 	return &DictBuilder{c: c, ctx: ctx, dict: dict}
 }
@@ -701,7 +714,8 @@ func (b *DictBuilder) Run() (interface{}, error) {
 // ----------------------
 // TagValsBuilder for FT.TAGVALS
 // ----------------------
-
+// TagValsBuilder is builder for FT.TAGVALS
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type TagValsBuilder struct {
 	c     *Client
 	ctx   context.Context
@@ -710,6 +724,7 @@ type TagValsBuilder struct {
 }
 
 // NewTagValsBuilder creates a new TagValsBuilder for FT.TAGVALS commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewTagValsBuilder(ctx context.Context, index, field string) *TagValsBuilder {
 	return &TagValsBuilder{c: c, ctx: ctx, index: index, field: field}
 }
@@ -723,7 +738,8 @@ func (b *TagValsBuilder) Run() ([]string, error) {
 // ----------------------
 // CursorBuilder for FT.CURSOR*
 // ----------------------
-
+// CursorBuilder is builder for FT.CURSOR* commands
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type CursorBuilder struct {
 	c        *Client
 	ctx      context.Context
@@ -734,6 +750,7 @@ type CursorBuilder struct {
 }
 
 // NewCursorBuilder creates a new CursorBuilder for FT.CURSOR* commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewCursorBuilder(ctx context.Context, index string, cursorId int64) *CursorBuilder {
 	return &CursorBuilder{c: c, ctx: ctx, index: index, cursorId: cursorId}
 }
@@ -775,7 +792,8 @@ func (b *CursorBuilder) Run() (interface{}, error) {
 // ----------------------
 // SynUpdateBuilder for FT.SYNUPDATE
 // ----------------------
-
+// SyncUpdateBuilder is builder for FT.SYNCUPDATE
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type SynUpdateBuilder struct {
 	c       *Client
 	ctx     context.Context
@@ -786,6 +804,7 @@ type SynUpdateBuilder struct {
 }
 
 // NewSynUpdateBuilder creates a new SynUpdateBuilder for FT.SYNUPDATE commands.
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewSynUpdateBuilder(ctx context.Context, index string, groupId interface{}) *SynUpdateBuilder {
 	return &SynUpdateBuilder{c: c, ctx: ctx, index: index, groupId: groupId, options: &FTSynUpdateOptions{}}
 }
