@@ -19,6 +19,29 @@ const (
 	ReasonPushNotificationsDisabled = "push notifications are disabled"
 )
 
+// ProcessorType represents the type of processor involved in the error
+// defined as a custom type for better readability and easier maintenance
+type ProcessorType string
+
+const (
+	// ProcessorTypes
+	ProcessorTypeProcessor     = ProcessorType("processor")
+	ProcessorTypeVoidProcessor = ProcessorType("void_processor")
+	ProcessorTypeCustom        = ProcessorType("custom")
+)
+
+// ProcessorOperation represents the operation being performed by the processor
+// defined as a custom type for better readability and easier maintenance
+type ProcessorOperation string
+
+const (
+	// ProcessorOperations
+	ProcessorOperationProcess    = ProcessorOperation("process")
+	ProcessorOperationRegister   = ProcessorOperation("register")
+	ProcessorOperationUnregister = ProcessorOperation("unregister")
+	ProcessorOperationUnknown    = ProcessorOperation("unknown")
+)
+
 // Common error variables for reuse
 var (
 	// ErrHandlerNil is returned when attempting to register a nil handler
@@ -29,31 +52,31 @@ var (
 
 // ErrHandlerExists creates an error for when attempting to overwrite an existing handler
 func ErrHandlerExists(pushNotificationName string) error {
-	return NewHandlerError("register", pushNotificationName, ReasonHandlerExists, nil)
+	return NewHandlerError(ProcessorOperationRegister, pushNotificationName, ReasonHandlerExists, nil)
 }
 
 // ErrProtectedHandler creates an error for when attempting to unregister a protected handler
 func ErrProtectedHandler(pushNotificationName string) error {
-	return NewHandlerError("unregister", pushNotificationName, ReasonHandlerProtected, nil)
+	return NewHandlerError(ProcessorOperationUnregister, pushNotificationName, ReasonHandlerProtected, nil)
 }
 
 // VoidProcessor errors
 
 // ErrVoidProcessorRegister creates an error for when attempting to register a handler on void processor
 func ErrVoidProcessorRegister(pushNotificationName string) error {
-	return NewProcessorError("void_processor", "register", pushNotificationName, ReasonPushNotificationsDisabled, nil)
+	return NewProcessorError(ProcessorTypeVoidProcessor, ProcessorOperationRegister, pushNotificationName, ReasonPushNotificationsDisabled, nil)
 }
 
 // ErrVoidProcessorUnregister creates an error for when attempting to unregister a handler on void processor
 func ErrVoidProcessorUnregister(pushNotificationName string) error {
-	return NewProcessorError("void_processor", "unregister", pushNotificationName, ReasonPushNotificationsDisabled, nil)
+	return NewProcessorError(ProcessorTypeVoidProcessor, ProcessorOperationUnregister, pushNotificationName, ReasonPushNotificationsDisabled, nil)
 }
 
 // Error type definitions for advanced error handling
 
 // HandlerError represents errors related to handler operations
 type HandlerError struct {
-	Operation            string // "register", "unregister", "get"
+	Operation            ProcessorOperation
 	PushNotificationName string
 	Reason               string
 	Err                  error
@@ -71,7 +94,7 @@ func (e *HandlerError) Unwrap() error {
 }
 
 // NewHandlerError creates a new HandlerError
-func NewHandlerError(operation, pushNotificationName, reason string, err error) *HandlerError {
+func NewHandlerError(operation ProcessorOperation, pushNotificationName, reason string, err error) *HandlerError {
 	return &HandlerError{
 		Operation:            operation,
 		PushNotificationName: pushNotificationName,
@@ -82,9 +105,9 @@ func NewHandlerError(operation, pushNotificationName, reason string, err error) 
 
 // ProcessorError represents errors related to processor operations
 type ProcessorError struct {
-	ProcessorType        string // "processor", "void_processor"
-	Operation            string // "process", "register", "unregister"
-	PushNotificationName string // Name of the push notification involved
+	ProcessorType        ProcessorType      // "processor", "void_processor"
+	Operation            ProcessorOperation // "process", "register", "unregister"
+	PushNotificationName string             // Name of the push notification involved
 	Reason               string
 	Err                  error
 }
@@ -105,7 +128,7 @@ func (e *ProcessorError) Unwrap() error {
 }
 
 // NewProcessorError creates a new ProcessorError
-func NewProcessorError(processorType, operation, pushNotificationName, reason string, err error) *ProcessorError {
+func NewProcessorError(processorType ProcessorType, operation ProcessorOperation, pushNotificationName, reason string, err error) *ProcessorError {
 	return &ProcessorError{
 		ProcessorType:        processorType,
 		Operation:            operation,
@@ -125,7 +148,7 @@ func IsHandlerNilError(err error) bool {
 // IsHandlerExistsError checks if an error is due to attempting to overwrite an existing handler
 func IsHandlerExistsError(err error) bool {
 	if handlerErr, ok := err.(*HandlerError); ok {
-		return handlerErr.Operation == "register" && handlerErr.Reason == ReasonHandlerExists
+		return handlerErr.Operation == ProcessorOperationRegister && handlerErr.Reason == ReasonHandlerExists
 	}
 	return false
 }
@@ -133,7 +156,7 @@ func IsHandlerExistsError(err error) bool {
 // IsProtectedHandlerError checks if an error is due to attempting to unregister a protected handler
 func IsProtectedHandlerError(err error) bool {
 	if handlerErr, ok := err.(*HandlerError); ok {
-		return handlerErr.Operation == "unregister" && handlerErr.Reason == ReasonHandlerProtected
+		return handlerErr.Operation == ProcessorOperationUnregister && handlerErr.Reason == ReasonHandlerProtected
 	}
 	return false
 }
@@ -141,7 +164,7 @@ func IsProtectedHandlerError(err error) bool {
 // IsVoidProcessorError checks if an error is due to void processor operations
 func IsVoidProcessorError(err error) bool {
 	if procErr, ok := err.(*ProcessorError); ok {
-		return procErr.ProcessorType == "void_processor" && procErr.Reason == ReasonPushNotificationsDisabled
+		return procErr.ProcessorType == ProcessorTypeVoidProcessor && procErr.Reason == ReasonPushNotificationsDisabled
 	}
 	return false
 }

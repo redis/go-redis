@@ -74,10 +74,6 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 	cn.bw.Reset(netConn)
 }
 
-func (cn *Conn) GetNetConn() net.Conn {
-	return cn.netConn
-}
-
 func (cn *Conn) Write(b []byte) (int, error) {
 	return cn.netConn.Write(b)
 }
@@ -97,7 +93,6 @@ func (cn *Conn) WithReader(
 			return err
 		}
 	}
-
 	return fn(cn.rd)
 }
 
