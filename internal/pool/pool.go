@@ -71,6 +71,9 @@ type Options struct {
 	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
+
+	ReadBufferSize  int
+	WriteBufferSize int
 }
 
 type lastDialErrorWrap struct {
@@ -226,7 +229,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, err
 	}
 
-	cn := NewConn(netConn)
+	cn := NewConnWithBufferSize(netConn, p.cfg.ReadBufferSize, p.cfg.WriteBufferSize)
 	cn.pooled = pooled
 	return cn, nil
 }
@@ -325,6 +328,7 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 
 	start := time.Now()
 	timer := timers.Get().(*time.Timer)
+	defer timers.Put(timer)
 	timer.Reset(p.cfg.PoolTimeout)
 
 	select {
@@ -332,7 +336,6 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 		if !timer.Stop() {
 			<-timer.C
 		}
-		timers.Put(timer)
 		return ctx.Err()
 	case p.queue <- struct{}{}:
 		p.waitDurationNs.Add(time.Since(start).Nanoseconds())
@@ -340,10 +343,8 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 		if !timer.Stop() {
 			<-timer.C
 		}
-		timers.Put(timer)
 		return nil
 	case <-timer.C:
-		timers.Put(timer)
 		atomic.AddUint32(&p.stats.Timeouts, 1)
 		return ErrPoolTimeout
 	}
