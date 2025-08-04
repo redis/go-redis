@@ -42,6 +42,9 @@ type PubSub struct {
 
 	// Push notification processor for handling generic push notifications
 	pushProcessor push.NotificationProcessor
+
+	// Cleanup callback for hitless upgrade tracking
+	onClose func()
 }
 
 func (c *PubSub) init() {
@@ -157,6 +160,11 @@ func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allo
 	if c.cn != cn {
 		return
 	}
+
+	if !cn.IsUsable() || cn.ShouldHandoff() {
+		c.reconnect(ctx, fmt.Errorf("pubsub: connection is not usable"))
+	}
+
 	if isBadConn(err, allowTimeout, c.opt.Addr) {
 		c.reconnect(ctx, err)
 	}
@@ -188,6 +196,11 @@ func (c *PubSub) Close() error {
 	}
 	c.closed = true
 	close(c.exit)
+
+	// Call cleanup callback if set
+	if c.onClose != nil {
+		c.onClose()
+	}
 
 	return c.closeTheCn(pool.ErrClosed)
 }

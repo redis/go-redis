@@ -14,9 +14,11 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/hitless"
+	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/push"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // Limiter is the interface of a rate limiter or a circuit breaker.
@@ -151,8 +153,11 @@ type Options struct {
 	//	- true for FIFO pool
 	//	- false for LIFO pool.
 	//
+	// NOTE: If you are using HitlessUpgrades, this will be ignored and pool will always be FIFO.
+	//
 	// Note that FIFO has slightly higher overhead compared to LIFO,
 	// but it helps closing idle connections faster reducing the pool size.
+	// default: false
 	PoolFIFO bool
 
 	// PoolSize is the base number of socket connections.
@@ -239,7 +244,23 @@ type Options struct {
 	// PushNotificationProcessor is the processor for handling push notifications.
 	// If nil, a default processor will be created for RESP3 connections.
 	PushNotificationProcessor push.NotificationProcessor
+
+	// HitlessUpgrades enables hitless upgrade functionality for cluster upgrades.
+	// Requires Protocol: 3 (RESP3) for push notifications.
+	// When enabled, the client will automatically handle cluster upgrade notifications
+	// and manage connection/pool state transitions seamlessly.
+	//
+	// default: false
+	HitlessUpgrades bool
+
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// If nil, default configuration will be used when HitlessUpgrades is true.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
+
+// HitlessUpgradeConfig provides configuration options for hitless upgrades.
+// This is an alias to hitless.Config for convenience.
+type HitlessUpgradeConfig = hitless.Config
 
 func (opt *Options) init() {
 	if opt.Addr == "" {
@@ -320,6 +341,12 @@ func (opt *Options) init() {
 func (opt *Options) clone() *Options {
 	clone := *opt
 	return &clone
+}
+
+// NewDialer returns a function that will be used as the default dialer
+// when none is specified in Options.Dialer.
+func (opt *Options) NewDialer() func(context.Context, string, string) (net.Conn, error) {
+	return NewDialer(opt)
 }
 
 // NewDialer returns a function that will be used as the default dialer
@@ -604,15 +631,9 @@ func getUserPassword(u *url.URL) (string, string) {
 	return user, password
 }
 
-func newConnPool(
-	opt *Options,
-	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
-) *pool.ConnPool {
-	return pool.NewConnPool(&pool.Options{
-		Dialer: func(ctx context.Context) (net.Conn, error) {
-			return dialer(ctx, opt.Network, opt.Addr)
-		},
-		PoolFIFO:        opt.PoolFIFO,
+func newConnPoolConfig(opt *Options) *pool.Config {
+	return &pool.Config{
+		PoolFIFO:        opt.PoolFIFO || opt.HitlessUpgrades, // Always FIFO with hitless upgrades
 		PoolSize:        opt.PoolSize,
 		PoolTimeout:     opt.PoolTimeout,
 		DialTimeout:     opt.DialTimeout,
@@ -621,9 +642,29 @@ func newConnPool(
 		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
-		// Pass protocol version for push notification optimization
-		Protocol: opt.Protocol,
-		ReadBufferSize:  opt.ReadBufferSize,
-		WriteBufferSize: opt.WriteBufferSize,
+	}
+}
+
+func newConnPool(
+	opt *Options,
+	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
+	processor interfaces.ConnectionProcessor,
+) *pool.ConnPool {
+	return pool.NewConnPool(&pool.Options{
+		Dialer: func(ctx context.Context) (net.Conn, error) {
+			return dialer(ctx, opt.Network, opt.Addr)
+		},
+		PoolFIFO:            opt.PoolFIFO || opt.HitlessUpgrades, // Always FIFO with hitless upgrades
+		PoolSize:            opt.PoolSize,
+		PoolTimeout:         opt.PoolTimeout,
+		DialTimeout:         opt.DialTimeout,
+		MinIdleConns:        opt.MinIdleConns,
+		MaxIdleConns:        opt.MaxIdleConns,
+		MaxActiveConns:      opt.MaxActiveConns,
+		ConnMaxIdleTime:     opt.ConnMaxIdleTime,
+		ConnMaxLifetime:     opt.ConnMaxLifetime,
+		ConnectionProcessor: processor,
+		ReadBufferSize:      opt.ReadBufferSize,
+		WriteBufferSize:     opt.WriteBufferSize,
 	})
 }

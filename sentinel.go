@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
 	"github.com/redis/go-redis/v9/push"
@@ -119,6 +121,18 @@ type FailoverOptions struct {
 
 	IdentitySuffix string
 	UnstableResp3  bool
+
+	// HitlessUpgrades enables hitless upgrade functionality for failover clients.
+	// Requires Protocol: 3 (RESP3) for push notifications.
+	// When enabled, the client will automatically handle upgrade notifications
+	// and manage connection/pool state transitions seamlessly.
+	//
+	// default: false
+	HitlessUpgrades bool
+
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// If nil, default configuration will be used when HitlessUpgrades is true.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -426,7 +440,6 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	opt.Dialer = masterReplicaDialer(failover)
 	opt.init()
 
-	var connPool *pool.ConnPool
 
 	rdb := &Client{
 		baseClient: &baseClient{
@@ -439,15 +452,46 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// Use void processor by default for RESP2 connections
 	rdb.pushProcessor = initializePushProcessor(opt)
 
-	connPool = newConnPool(opt, rdb.dialHook)
-	rdb.connPool = connPool
+	// Initialize hitless upgrades first if enabled to get the connection processor
+	var connectionProcessor interfaces.ConnectionProcessor
+	if opt.HitlessUpgrades {
+		if opt.Protocol != 3 {
+			internal.Logger.Printf(context.Background(), "hitless: RESP3 protocol required for hitless upgrades, but Protocol is %d", opt.Protocol)
+		} else {
+			integration, err := initializeHitlessManager(rdb, opt.HitlessUpgradeConfig)
+			if err != nil {
+				internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
+			} else {
+				rdb.hitlessManager = integration
+
+				// Create the connection processor from the hitless manager
+				// This automatically sets the manager in the processor
+				connectionProcessor = integration.CreateConnectionProcessor(opt.Protocol, rdb.dialHook)
+				rdb.connectionProcessor = connectionProcessor
+
+				internal.Logger.Printf(context.Background(), "hitless: successfully initialized hitless upgrades for failover client")
+			}
+		}
+	}
+
+	// Create connection pool with the processor (nil if hitless upgrades disabled)
+	rdb.connectionProcessor = connectionProcessor
+	rdb.connPool = newConnPool(opt, rdb.dialHook, connectionProcessor)
+
+	// Create separate PubSub pool
+	rdb.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
+		return rdb.dialHook(ctx, opt.Network, opt.Addr)
+	})
+
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
-		_ = connPool.Filter(func(cn *pool.Conn) bool {
-			return cn.RemoteAddr().String() != addr
-		})
+		if connPool, ok := rdb.connPool.(*pool.ConnPool); ok {
+			_ = connPool.Filter(func(cn *pool.Conn) bool {
+				return cn.RemoteAddr().String() != addr
+			})
+		}
 	}
 	failover.mu.Unlock()
 
@@ -513,7 +557,45 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
 	})
-	c.connPool = newConnPool(opt, c.dialHook)
+	// Initialize hitless upgrades first if enabled to get the connection processor
+	var connectionProcessor interfaces.ConnectionProcessor
+	if opt.HitlessUpgrades {
+		if opt.Protocol != 3 {
+			internal.Logger.Printf(context.Background(), "hitless: RESP3 protocol required for hitless upgrades, but Protocol is %d", opt.Protocol)
+		} else {
+			// Create a temporary Client wrapper for the sentinel client
+			clientWrapper := &Client{baseClient: c.baseClient}
+			integration, err := initializeHitlessManager(clientWrapper, opt.HitlessUpgradeConfig)
+			if err != nil {
+				internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
+			} else {
+				c.hitlessManager = integration
+
+				// Create the connection processor from the hitless manager
+				// This automatically sets the manager in the processor
+				connectionProcessor = integration.CreateConnectionProcessor(opt.Protocol, c.dialHook)
+				c.connectionProcessor = connectionProcessor
+
+				internal.Logger.Printf(context.Background(), "hitless: successfully initialized hitless upgrades for sentinel client")
+			}
+		}
+	}
+
+	// Create connection pool with the processor (nil if hitless upgrades disabled)
+	c.connectionProcessor = connectionProcessor
+	c.connPool = newConnPool(opt, c.dialHook, connectionProcessor)
+
+	// Create separate PubSub pool
+	c.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
+		return c.dialHook(ctx, opt.Network, opt.Addr)
+	})
+
+	// Set the pool reference in the processor for connection removal on handoff failure
+	if connectionProcessor != nil {
+		if redisProcessor, ok := connectionProcessor.(*hitless.RedisConnectionProcessor); ok {
+			redisProcessor.SetPool(c.connPool)
+		}
+	}
 
 	return c
 }
@@ -540,11 +622,26 @@ func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
 func (c *SentinelClient) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
-
 		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			return c.newConn(ctx)
+			cn, err := c.pubsubPool.Get(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			// will return nil if already initialized
+			err = c.initConn(ctx, cn)
+			if err != nil {
+				c.pubsubPool.Remove(ctx, cn, err)
+				return nil, err
+			}
+
+			return cn, nil
 		},
-		closeConn: c.connPool.CloseConn,
+		closeConn: func(cn *pool.Conn) error {
+			c.pubsubPool.Remove(context.Background(), cn, nil)
+			return nil
+		},
+		pushProcessor: c.pushProcessor,
 	}
 	pubsub.init()
 	return pubsub
