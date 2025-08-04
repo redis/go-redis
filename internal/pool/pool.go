@@ -73,8 +73,13 @@ type Options struct {
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
+
 	// Protocol version for optimization (3 = RESP3 with push notifications, 2 = RESP2 without)
 	Protocol int
+
+	ReadBufferSize  int
+	WriteBufferSize int
+
 }
 
 type lastDialErrorWrap struct {
@@ -230,7 +235,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, err
 	}
 
-	cn := NewConn(netConn)
+	cn := NewConnWithBufferSize(netConn, p.cfg.ReadBufferSize, p.cfg.WriteBufferSize)
 	cn.pooled = pooled
 	return cn, nil
 }
