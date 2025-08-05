@@ -15,6 +15,7 @@ import (
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/push"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -231,6 +232,13 @@ type Options struct {
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	// When unstable mode is enabled, the client will use RESP3 protocol and only be able to use RawResult
 	UnstableResp3 bool
+
+	// Push notifications are always enabled for RESP3 connections (Protocol: 3)
+	// and are not available for RESP2 connections. No configuration option is needed.
+
+	// PushNotificationProcessor is the processor for handling push notifications.
+	// If nil, a default processor will be created for RESP3 connections.
+	PushNotificationProcessor push.NotificationProcessor
 }
 
 func (opt *Options) init() {
@@ -613,6 +621,8 @@ func newConnPool(
 		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
+		// Pass protocol version for push notification optimization
+		Protocol: opt.Protocol,
 		ReadBufferSize:  opt.ReadBufferSize,
 		WriteBufferSize: opt.WriteBufferSize,
 	})

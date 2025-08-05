@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/push"
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
@@ -62,6 +63,8 @@ type FailoverOptions struct {
 	Protocol int
 	Username string
 	Password string
+
+	// Push notifications are always enabled for RESP3 connections
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -432,6 +435,10 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
+	// Initialize push notification processor using shared helper
+	// Use void processor by default for RESP2 connections
+	rdb.pushProcessor = initializePushProcessor(opt)
+
 	connPool = newConnPool(opt, rdb.dialHook)
 	rdb.connPool = connPool
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
@@ -498,6 +505,10 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
+	// Initialize push notification processor using shared helper
+	// Use void processor for Sentinel clients
+	c.pushProcessor = NewVoidPushNotificationProcessor()
+
 	c.initHooks(hooks{
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
@@ -505,6 +516,19 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	c.connPool = newConnPool(opt, c.dialHook)
 
 	return c
+}
+
+// GetPushNotificationHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (c *SentinelClient) GetPushNotificationHandler(pushNotificationName string) push.NotificationHandler {
+	return c.pushProcessor.GetHandler(pushNotificationName)
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *SentinelClient) RegisterPushNotificationHandler(pushNotificationName string, handler push.NotificationHandler, protected bool) error {
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
