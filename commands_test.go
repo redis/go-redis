@@ -460,7 +460,7 @@ var _ = Describe("Commands", func() {
 			}
 
 			// read the defaults to set them back later
-			for setting, _ := range expected {
+			for setting := range expected {
 				val, err := client.ConfigGet(ctx, setting).Result()
 				Expect(err).NotTo(HaveOccurred())
 				defaults[setting] = val[setting]
@@ -1463,6 +1463,82 @@ var _ = Describe("Commands", func() {
 			bitOpXor := client.BitOpXor(ctx, "dest", "key1", "key2")
 			Expect(bitOpXor.Err()).NotTo(HaveOccurred())
 			Expect(bitOpXor.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\xf0"))
+		})
+
+		It("should BitOpDiff", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP DIFF is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpDiff := client.BitOpDiff(ctx, "dest", "key1", "key2")
+			Expect(bitOpDiff.Err()).NotTo(HaveOccurred())
+			Expect(bitOpDiff.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\xf0"))
+		})
+
+		It("should BitOpDiff1", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP DIFF is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpDiff1 := client.BitOpDiff1(ctx, "dest", "key1", "key2")
+			Expect(bitOpDiff1.Err()).NotTo(HaveOccurred())
+			Expect(bitOpDiff1.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\x00"))
+		})
+
+		It("should BitOpAndOr", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP ANDOR is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpAndOr := client.BitOpAndOr(ctx, "dest", "key1", "key2")
+			Expect(bitOpAndOr.Err()).NotTo(HaveOccurred())
+			Expect(bitOpAndOr.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\x0f"))
+		})
+
+		It("should BitOpOne", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP ONE is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpOne := client.BitOpOne(ctx, "dest", "key1", "key2")
+			Expect(bitOpOne.Err()).NotTo(HaveOccurred())
+			Expect(bitOpOne.Val()).To(Equal(int64(1)))
 
 			get := client.Get(ctx, "dest")
 			Expect(get.Err()).NotTo(HaveOccurred())
@@ -2577,6 +2653,63 @@ var _ = Describe("Commands", func() {
 			Expect(hMGet.Val()).To(Equal([]interface{}{
 				"val2",
 				"val",
+			}))
+
+			type setOmitEmpty struct {
+				Set1 string        `redis:"set1"`
+				Set2 int           `redis:"set2,omitempty"`
+				Set3 time.Duration `redis:"set3,omitempty"`
+				Set4 string        `redis:"set4,omitempty"`
+				Set5 time.Time     `redis:"set5,omitempty"`
+				Set6 *numberStruct `redis:"set6,omitempty"`
+				Set7 numberStruct  `redis:"set7,omitempty"`
+			}
+
+			hSet = client.HSet(ctx, "hash3", &setOmitEmpty{
+				Set1: "val",
+			})
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+			// both set1 and set7 are set
+			// custom struct is not omitted
+			Expect(hSet.Val()).To(Equal(int64(2)))
+
+			hGetAll := client.HGetAll(ctx, "hash3")
+			Expect(hGetAll.Err()).NotTo(HaveOccurred())
+			Expect(hGetAll.Val()).To(Equal(map[string]string{
+				"set1": "val",
+				"set7": `{"Number":0}`,
+			}))
+			var hash3 setOmitEmpty
+			Expect(hGetAll.Scan(&hash3)).NotTo(HaveOccurred())
+			Expect(hash3.Set1).To(Equal("val"))
+			Expect(hash3.Set2).To(Equal(0))
+			Expect(hash3.Set3).To(Equal(time.Duration(0)))
+			Expect(hash3.Set4).To(Equal(""))
+			Expect(hash3.Set5).To(Equal(time.Time{}))
+			Expect(hash3.Set6).To(BeNil())
+			Expect(hash3.Set7).To(Equal(numberStruct{}))
+
+			now := time.Now()
+			hSet = client.HSet(ctx, "hash4", setOmitEmpty{
+				Set1: "val",
+				Set5: now,
+				Set6: &numberStruct{
+					Number: 5,
+				},
+				Set7: numberStruct{
+					Number: 3,
+				},
+			})
+			Expect(hSet.Err()).NotTo(HaveOccurred())
+			Expect(hSet.Val()).To(Equal(int64(4)))
+
+			hGetAll = client.HGetAll(ctx, "hash4")
+			Expect(hGetAll.Err()).NotTo(HaveOccurred())
+			Expect(hGetAll.Val()).To(Equal(map[string]string{
+				"set1": "val",
+				"set5": now.Format(time.RFC3339Nano),
+				"set6": `{"Number":5}`,
+				"set7": `{"Number":3}`,
 			}))
 		})
 
@@ -6036,6 +6169,34 @@ var _ = Describe("Commands", func() {
 			Expect(n).To(Equal(int64(3)))
 		})
 
+		It("should XTrimMaxLenMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMaxLenMode(ctx, "stream", 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMaxLenApproxMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMaxLenApproxMode(ctx, "stream", 0, 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMinIDMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMinIDMode(ctx, "stream", "4-0", "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMinIDApproxMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMinIDApproxMode(ctx, "stream", "4-0", 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
 		It("should XAdd", func() {
 			id, err := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
@@ -6087,6 +6248,37 @@ var _ = Describe("Commands", func() {
 			n, err := client.XDel(ctx, "stream", "1-0", "2-0", "3-0").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(3)))
+		})
+
+		It("should XAckDel", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			// First, create a consumer group
+			err := client.XGroupCreate(ctx, "stream", "testgroup", "0").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Read messages to create pending entries
+			_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "testgroup",
+				Consumer: "testconsumer",
+				Streams:  []string{"stream", ">"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Test XAckDel with KEEPREF mode
+			n, err := client.XAckDel(ctx, "stream", "testgroup", "KEEPREF", "1-0", "2-0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(HaveLen(2))
+
+			// Clean up
+			client.XGroupDestroy(ctx, "stream", "testgroup")
+		})
+
+		It("should XDelEx", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			// Test XDelEx with KEEPREF mode
+			n, err := client.XDelEx(ctx, "stream", "KEEPREF", "1-0", "2-0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(HaveLen(2))
 		})
 
 		It("should XLen", func() {
@@ -6755,6 +6947,36 @@ var _ = Describe("Commands", func() {
 				}))
 			})
 
+			It("should return -1 for nil lag in XINFO GROUPS", func() {
+				_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "s", ID: "0-1", Values: []string{"foo", "1"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				client.XAdd(ctx, &redis.XAddArgs{Stream: "s", ID: "0-2", Values: []string{"foo", "2"}})
+				Expect(err).NotTo(HaveOccurred())
+				client.XAdd(ctx, &redis.XAddArgs{Stream: "s", ID: "0-3", Values: []string{"foo", "3"}})
+				Expect(err).NotTo(HaveOccurred())
+
+				err = client.XGroupCreate(ctx, "s", "g", "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+				err = client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: "g", Consumer: "c", Streams: []string{"s", ">"}, Count: 1, Block: -1, NoAck: false}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				client.XDel(ctx, "s", "0-2")
+
+				res, err := client.XInfoGroups(ctx, "s").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]redis.XInfoGroup{
+					{
+						Name:            "g",
+						Consumers:       1,
+						Pending:         1,
+						LastDeliveredID: "0-1",
+						EntriesRead:     1,
+						Lag:             -1, // nil lag from Redis is reported as -1
+					},
+				}))
+			})
+
 			It("should XINFO CONSUMERS", func() {
 				res, err := client.XInfoConsumers(ctx, "stream", "group1").Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -7249,6 +7471,17 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
 		})
+
+		It("returns empty values when args are nil", func() {
+			vals, err := client.Eval(
+				ctx,
+				"return {ARGV[1]}",
+				[]string{},
+				nil,
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(BeEmpty())
+		})
 	})
 
 	Describe("EvalRO", func() {
@@ -7271,6 +7504,17 @@ var _ = Describe("Commands", func() {
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
+		})
+
+		It("returns empty values when args are nil", func() {
+			vals, err := client.EvalRO(
+				ctx,
+				"return {ARGV[1]}",
+				[]string{},
+				nil,
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(BeEmpty())
 		})
 	})
 
@@ -7637,12 +7881,16 @@ type numberStruct struct {
 	Number int
 }
 
-func (s *numberStruct) MarshalBinary() ([]byte, error) {
-	return json.Marshal(s)
+func (n numberStruct) MarshalBinary() ([]byte, error) {
+	return json.Marshal(n)
 }
 
-func (s *numberStruct) UnmarshalBinary(b []byte) error {
-	return json.Unmarshal(b, s)
+func (n *numberStruct) UnmarshalBinary(b []byte) error {
+	return json.Unmarshal(b, n)
+}
+
+func (n *numberStruct) ScanRedis(str string) error {
+	return json.Unmarshal([]byte(str), n)
 }
 
 func deref(viface interface{}) interface{} {

@@ -80,8 +80,9 @@ type FieldSchema struct {
 }
 
 type FTVectorArgs struct {
-	FlatOptions *FTFlatOptions
-	HNSWOptions *FTHNSWOptions
+	FlatOptions   *FTFlatOptions
+	HNSWOptions   *FTHNSWOptions
+	VamanaOptions *FTVamanaOptions
 }
 
 type FTFlatOptions struct {
@@ -103,6 +104,19 @@ type FTHNSWOptions struct {
 	Epsilon                float64
 }
 
+type FTVamanaOptions struct {
+	Type                   string
+	Dim                    int
+	DistanceMetric         string
+	Compression            string
+	ConstructionWindowSize int
+	GraphMaxDegree         int
+	SearchWindowSize       int
+	Epsilon                float64
+	TrainingThreshold      int
+	ReduceDim              int
+}
+
 type FTDropIndexOptions struct {
 	DeleteDocs bool
 }
@@ -114,6 +128,7 @@ type SpellCheckTerms struct {
 }
 
 type FTExplainOptions struct {
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
 	Dialect string
 }
 
@@ -261,7 +276,8 @@ type FTAggregateOptions struct {
 	WithCursor        bool
 	WithCursorOptions *FTAggregateWithCursor
 	Params            map[string]interface{}
-	DialectVersion    int
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	DialectVersion int
 }
 
 type FTSearchFilter struct {
@@ -320,8 +336,12 @@ type FTSearchOptions struct {
 	SortByWithCount bool
 	LimitOffset     int
 	Limit           int
-	Params          map[string]interface{}
-	DialectVersion  int
+	// CountOnly sets LIMIT 0 0 to get the count - number of documents in the result set without actually returning the result set.
+	// When using this option, the Limit and LimitOffset options are ignored.
+	CountOnly bool
+	Params    map[string]interface{}
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	DialectVersion int
 }
 
 type FTSynDumpResult struct {
@@ -437,7 +457,8 @@ type IndexDefinition struct {
 type FTSpellCheckOptions struct {
 	Distance int
 	Terms    *FTSpellCheckTerms
-	Dialect  int
+	// Dialect 1,3 and 4 are deprecated since redis 8.0
+	Dialect int
 }
 
 type FTSpellCheckTerms struct {
@@ -467,6 +488,7 @@ type Document struct {
 	Payload *string
 	SortKey *string
 	Fields  map[string]string
+	Error   error
 }
 
 type AggregateQuery []interface{}
@@ -491,7 +513,7 @@ func (c cmdable) FTAggregate(ctx context.Context, index string, query string) *M
 	return cmd
 }
 
-func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery {
+func FTAggregateQuery(query string, options *FTAggregateOptions) (AggregateQuery, error) {
 	queryArgs := []interface{}{query}
 	if options != nil {
 		if options.Verbatim {
@@ -507,7 +529,7 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 		}
 
 		if options.LoadAll && options.Load != nil {
-			panic("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
+			return nil, fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
 		}
 		if options.LoadAll {
 			queryArgs = append(queryArgs, "LOAD", "*")
@@ -563,7 +585,7 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 			for _, sortBy := range options.SortBy {
 				sortByOptions = append(sortByOptions, sortBy.FieldName)
 				if sortBy.Asc && sortBy.Desc {
-					panic("FT.AGGREGATE: ASC and DESC are mutually exclusive")
+					return nil, fmt.Errorf("FT.AGGREGATE: ASC and DESC are mutually exclusive")
 				}
 				if sortBy.Asc {
 					sortByOptions = append(sortByOptions, "ASC")
@@ -608,7 +630,7 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) AggregateQuery 
 			queryArgs = append(queryArgs, "DIALECT", 2)
 		}
 	}
-	return queryArgs
+	return queryArgs, nil
 }
 
 func ProcessAggregateResult(data []interface{}) (*FTAggregateResult, error) {
@@ -710,7 +732,9 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 			args = append(args, "ADDSCORES")
 		}
 		if options.LoadAll && options.Load != nil {
-			panic("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
+			cmd := NewAggregateCmd(ctx, args...)
+			cmd.SetErr(fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive"))
+			return cmd
 		}
 		if options.LoadAll {
 			args = append(args, "LOAD", "*")
@@ -763,7 +787,9 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 			for _, sortBy := range options.SortBy {
 				sortByOptions = append(sortByOptions, sortBy.FieldName)
 				if sortBy.Asc && sortBy.Desc {
-					panic("FT.AGGREGATE: ASC and DESC are mutually exclusive")
+					cmd := NewAggregateCmd(ctx, args...)
+					cmd.SetErr(fmt.Errorf("FT.AGGREGATE: ASC and DESC are mutually exclusive"))
+					return cmd
 				}
 				if sortBy.Asc {
 					sortByOptions = append(sortByOptions, "ASC")
@@ -911,7 +937,9 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 			args = append(args, "ON", "JSON")
 		}
 		if options.OnHash && options.OnJSON {
-			panic("FT.CREATE: ON HASH and ON JSON are mutually exclusive")
+			cmd := NewStatusCmd(ctx, args...)
+			cmd.SetErr(fmt.Errorf("FT.CREATE: ON HASH and ON JSON are mutually exclusive"))
+			return cmd
 		}
 		if options.Prefix != nil {
 			args = append(args, "PREFIX", len(options.Prefix))
@@ -962,12 +990,16 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		}
 	}
 	if schema == nil {
-		panic("FT.CREATE: SCHEMA is required")
+		cmd := NewStatusCmd(ctx, args...)
+		cmd.SetErr(fmt.Errorf("FT.CREATE: SCHEMA is required"))
+		return cmd
 	}
 	args = append(args, "SCHEMA")
 	for _, schema := range schema {
 		if schema.FieldName == "" || schema.FieldType == SearchFieldTypeInvalid {
-			panic("FT.CREATE: SCHEMA FieldName and FieldType are required")
+			cmd := NewStatusCmd(ctx, args...)
+			cmd.SetErr(fmt.Errorf("FT.CREATE: SCHEMA FieldName and FieldType are required"))
+			return cmd
 		}
 		args = append(args, schema.FieldName)
 		if schema.As != "" {
@@ -976,15 +1008,32 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		args = append(args, schema.FieldType.String())
 		if schema.VectorArgs != nil {
 			if schema.FieldType != SearchFieldTypeVector {
-				panic("FT.CREATE: SCHEMA FieldType VECTOR is required for VectorArgs")
+				cmd := NewStatusCmd(ctx, args...)
+				cmd.SetErr(fmt.Errorf("FT.CREATE: SCHEMA FieldType VECTOR is required for VectorArgs"))
+				return cmd
 			}
-			if schema.VectorArgs.FlatOptions != nil && schema.VectorArgs.HNSWOptions != nil {
-				panic("FT.CREATE: SCHEMA VectorArgs FlatOptions and HNSWOptions are mutually exclusive")
+			// Check mutual exclusivity of vector options
+			optionCount := 0
+			if schema.VectorArgs.FlatOptions != nil {
+				optionCount++
+			}
+			if schema.VectorArgs.HNSWOptions != nil {
+				optionCount++
+			}
+			if schema.VectorArgs.VamanaOptions != nil {
+				optionCount++
+			}
+			if optionCount != 1 {
+				cmd := NewStatusCmd(ctx, args...)
+				cmd.SetErr(fmt.Errorf("FT.CREATE: SCHEMA VectorArgs must have exactly one of FlatOptions, HNSWOptions, or VamanaOptions"))
+				return cmd
 			}
 			if schema.VectorArgs.FlatOptions != nil {
 				args = append(args, "FLAT")
 				if schema.VectorArgs.FlatOptions.Type == "" || schema.VectorArgs.FlatOptions.Dim == 0 || schema.VectorArgs.FlatOptions.DistanceMetric == "" {
-					panic("FT.CREATE: Type, Dim and DistanceMetric are required for VECTOR FLAT")
+					cmd := NewStatusCmd(ctx, args...)
+					cmd.SetErr(fmt.Errorf("FT.CREATE: Type, Dim and DistanceMetric are required for VECTOR FLAT"))
+					return cmd
 				}
 				flatArgs := []interface{}{
 					"TYPE", schema.VectorArgs.FlatOptions.Type,
@@ -1003,7 +1052,9 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 			if schema.VectorArgs.HNSWOptions != nil {
 				args = append(args, "HNSW")
 				if schema.VectorArgs.HNSWOptions.Type == "" || schema.VectorArgs.HNSWOptions.Dim == 0 || schema.VectorArgs.HNSWOptions.DistanceMetric == "" {
-					panic("FT.CREATE: Type, Dim and DistanceMetric are required for VECTOR HNSW")
+					cmd := NewStatusCmd(ctx, args...)
+					cmd.SetErr(fmt.Errorf("FT.CREATE: Type, Dim and DistanceMetric are required for VECTOR HNSW"))
+					return cmd
 				}
 				hnswArgs := []interface{}{
 					"TYPE", schema.VectorArgs.HNSWOptions.Type,
@@ -1028,10 +1079,48 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 				args = append(args, len(hnswArgs))
 				args = append(args, hnswArgs...)
 			}
+			if schema.VectorArgs.VamanaOptions != nil {
+				args = append(args, "SVS-VAMANA")
+				if schema.VectorArgs.VamanaOptions.Type == "" || schema.VectorArgs.VamanaOptions.Dim == 0 || schema.VectorArgs.VamanaOptions.DistanceMetric == "" {
+					cmd := NewStatusCmd(ctx, args...)
+					cmd.SetErr(fmt.Errorf("FT.CREATE: Type, Dim and DistanceMetric are required for VECTOR VAMANA"))
+					return cmd
+				}
+				vamanaArgs := []interface{}{
+					"TYPE", schema.VectorArgs.VamanaOptions.Type,
+					"DIM", schema.VectorArgs.VamanaOptions.Dim,
+					"DISTANCE_METRIC", schema.VectorArgs.VamanaOptions.DistanceMetric,
+				}
+				if schema.VectorArgs.VamanaOptions.Compression != "" {
+					vamanaArgs = append(vamanaArgs, "COMPRESSION", schema.VectorArgs.VamanaOptions.Compression)
+				}
+				if schema.VectorArgs.VamanaOptions.ConstructionWindowSize > 0 {
+					vamanaArgs = append(vamanaArgs, "CONSTRUCTION_WINDOW_SIZE", schema.VectorArgs.VamanaOptions.ConstructionWindowSize)
+				}
+				if schema.VectorArgs.VamanaOptions.GraphMaxDegree > 0 {
+					vamanaArgs = append(vamanaArgs, "GRAPH_MAX_DEGREE", schema.VectorArgs.VamanaOptions.GraphMaxDegree)
+				}
+				if schema.VectorArgs.VamanaOptions.SearchWindowSize > 0 {
+					vamanaArgs = append(vamanaArgs, "SEARCH_WINDOW_SIZE", schema.VectorArgs.VamanaOptions.SearchWindowSize)
+				}
+				if schema.VectorArgs.VamanaOptions.Epsilon > 0 {
+					vamanaArgs = append(vamanaArgs, "EPSILON", schema.VectorArgs.VamanaOptions.Epsilon)
+				}
+				if schema.VectorArgs.VamanaOptions.TrainingThreshold > 0 {
+					vamanaArgs = append(vamanaArgs, "TRAINING_THRESHOLD", schema.VectorArgs.VamanaOptions.TrainingThreshold)
+				}
+				if schema.VectorArgs.VamanaOptions.ReduceDim > 0 {
+					vamanaArgs = append(vamanaArgs, "REDUCE", schema.VectorArgs.VamanaOptions.ReduceDim)
+				}
+				args = append(args, len(vamanaArgs))
+				args = append(args, vamanaArgs...)
+			}
 		}
 		if schema.GeoShapeFieldType != "" {
 			if schema.FieldType != SearchFieldTypeGeoShape {
-				panic("FT.CREATE: SCHEMA FieldType GEOSHAPE is required for GeoShapeFieldType")
+				cmd := NewStatusCmd(ctx, args...)
+				cmd.SetErr(fmt.Errorf("FT.CREATE: SCHEMA FieldType GEOSHAPE is required for GeoShapeFieldType"))
+				return cmd
 			}
 			args = append(args, schema.GeoShapeFieldType)
 		}
@@ -1189,7 +1278,7 @@ func (c cmdable) FTExplainWithArgs(ctx context.Context, index string, query stri
 // FTExplainCli - Returns the execution plan for a complex query. [Not Implemented]
 // For more information, see https://redis.io/commands/ft.explaincli/
 func (c cmdable) FTExplainCli(ctx context.Context, key, path string) error {
-	panic("not implemented")
+	return fmt.Errorf("FTExplainCli is not implemented")
 }
 
 func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
@@ -1647,7 +1736,13 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 		if i < len(data) {
 			fields, ok := data[i].([]interface{})
 			if !ok {
-				return FTSearchResult{}, fmt.Errorf("invalid document fields format")
+				if data[i] == proto.Nil || data[i] == nil {
+					doc.Error = proto.Nil
+					doc.Fields = map[string]string{}
+					fields = []interface{}{}
+				} else {
+					return FTSearchResult{}, fmt.Errorf("invalid document fields format")
+				}
 			}
 
 			for j := 0; j < len(fields); j += 2 {
@@ -1744,7 +1839,7 @@ type SearchQuery []interface{}
 // For more information, please refer to the Redis documentation about [FT.SEARCH].
 //
 // [FT.SEARCH]: (https://redis.io/commands/ft.search/)
-func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
+func FTSearchQuery(query string, options *FTSearchOptions) (SearchQuery, error) {
 	queryArgs := []interface{}{query}
 	if options != nil {
 		if options.NoContent {
@@ -1824,7 +1919,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 			for _, sortBy := range options.SortBy {
 				queryArgs = append(queryArgs, sortBy.FieldName)
 				if sortBy.Asc && sortBy.Desc {
-					panic("FT.SEARCH: ASC and DESC are mutually exclusive")
+					return nil, fmt.Errorf("FT.SEARCH: ASC and DESC are mutually exclusive")
 				}
 				if sortBy.Asc {
 					queryArgs = append(queryArgs, "ASC")
@@ -1852,7 +1947,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) SearchQuery {
 			queryArgs = append(queryArgs, "DIALECT", 2)
 		}
 	}
-	return queryArgs
+	return queryArgs, nil
 }
 
 // FTSearchWithArgs - Executes a search query on an index with additional options.
@@ -1941,7 +2036,9 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 			for _, sortBy := range options.SortBy {
 				args = append(args, sortBy.FieldName)
 				if sortBy.Asc && sortBy.Desc {
-					panic("FT.SEARCH: ASC and DESC are mutually exclusive")
+					cmd := newFTSearchCmd(ctx, options, args...)
+					cmd.SetErr(fmt.Errorf("FT.SEARCH: ASC and DESC are mutually exclusive"))
+					return cmd
 				}
 				if sortBy.Asc {
 					args = append(args, "ASC")
@@ -1954,8 +2051,12 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 				args = append(args, "WITHCOUNT")
 			}
 		}
-		if options.LimitOffset >= 0 && options.Limit > 0 {
-			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
+		if options.CountOnly {
+			args = append(args, "LIMIT", 0, 0)
+		} else {
+			if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
+				args = append(args, "LIMIT", options.LimitOffset, options.Limit)
+			}
 		}
 		if options.Params != nil {
 			args = append(args, "PARAMS", len(options.Params)*2)
@@ -2090,216 +2191,3 @@ func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *Str
 	_ = c(ctx, cmd)
 	return cmd
 }
-
-// TODO: remove FTProfile
-// type FTProfileResult struct {
-// 	Results []interface{}
-// 	Profile ProfileDetails
-// }
-
-// type ProfileDetails struct {
-// 	TotalProfileTime        string
-// 	ParsingTime             string
-// 	PipelineCreationTime    string
-// 	Warning                 string
-// 	IteratorsProfile        []IteratorProfile
-// 	ResultProcessorsProfile []ResultProcessorProfile
-// }
-
-// type IteratorProfile struct {
-// 	Type           string
-// 	QueryType      string
-// 	Time           interface{}
-// 	Counter        int
-// 	Term           string
-// 	Size           int
-// 	ChildIterators []IteratorProfile
-// }
-
-// type ResultProcessorProfile struct {
-// 	Type    string
-// 	Time    interface{}
-// 	Counter int
-// }
-
-// func parseFTProfileResult(data []interface{}) (FTProfileResult, error) {
-// 	var result FTProfileResult
-// 	if len(data) < 2 {
-// 		return result, fmt.Errorf("unexpected data length")
-// 	}
-
-// 	// Parse results
-// 	result.Results = data[0].([]interface{})
-
-// 	// Parse profile details
-// 	profileData := data[1].([]interface{})
-// 	profileDetails := ProfileDetails{}
-// 	for i := 0; i < len(profileData); i += 2 {
-// 		switch profileData[i].(string) {
-// 		case "Total profile time":
-// 			profileDetails.TotalProfileTime = profileData[i+1].(string)
-// 		case "Parsing time":
-// 			profileDetails.ParsingTime = profileData[i+1].(string)
-// 		case "Pipeline creation time":
-// 			profileDetails.PipelineCreationTime = profileData[i+1].(string)
-// 		case "Warning":
-// 			profileDetails.Warning = profileData[i+1].(string)
-// 		case "Iterators profile":
-// 			profileDetails.IteratorsProfile = parseIteratorsProfile(profileData[i+1].([]interface{}))
-// 		case "Result processors profile":
-// 			profileDetails.ResultProcessorsProfile = parseResultProcessorsProfile(profileData[i+1].([]interface{}))
-// 		}
-// 	}
-
-// 	result.Profile = profileDetails
-// 	return result, nil
-// }
-
-// func parseIteratorsProfile(data []interface{}) []IteratorProfile {
-// 	var iterators []IteratorProfile
-// 	for _, item := range data {
-// 		profile := item.([]interface{})
-// 		iterator := IteratorProfile{}
-// 		for i := 0; i < len(profile); i += 2 {
-// 			switch profile[i].(string) {
-// 			case "Type":
-// 				iterator.Type = profile[i+1].(string)
-// 			case "Query type":
-// 				iterator.QueryType = profile[i+1].(string)
-// 			case "Time":
-// 				iterator.Time = profile[i+1]
-// 			case "Counter":
-// 				iterator.Counter = int(profile[i+1].(int64))
-// 			case "Term":
-// 				iterator.Term = profile[i+1].(string)
-// 			case "Size":
-// 				iterator.Size = int(profile[i+1].(int64))
-// 			case "Child iterators":
-// 				iterator.ChildIterators = parseChildIteratorsProfile(profile[i+1].([]interface{}))
-// 			}
-// 		}
-// 		iterators = append(iterators, iterator)
-// 	}
-// 	return iterators
-// }
-
-// func parseChildIteratorsProfile(data []interface{}) []IteratorProfile {
-// 	var iterators []IteratorProfile
-// 	for _, item := range data {
-// 		profile := item.([]interface{})
-// 		iterator := IteratorProfile{}
-// 		for i := 0; i < len(profile); i += 2 {
-// 			switch profile[i].(string) {
-// 			case "Type":
-// 				iterator.Type = profile[i+1].(string)
-// 			case "Query type":
-// 				iterator.QueryType = profile[i+1].(string)
-// 			case "Time":
-// 				iterator.Time = profile[i+1]
-// 			case "Counter":
-// 				iterator.Counter = int(profile[i+1].(int64))
-// 			case "Term":
-// 				iterator.Term = profile[i+1].(string)
-// 			case "Size":
-// 				iterator.Size = int(profile[i+1].(int64))
-// 			}
-// 		}
-// 		iterators = append(iterators, iterator)
-// 	}
-// 	return iterators
-// }
-
-// func parseResultProcessorsProfile(data []interface{}) []ResultProcessorProfile {
-// 	var processors []ResultProcessorProfile
-// 	for _, item := range data {
-// 		profile := item.([]interface{})
-// 		processor := ResultProcessorProfile{}
-// 		for i := 0; i < len(profile); i += 2 {
-// 			switch profile[i].(string) {
-// 			case "Type":
-// 				processor.Type = profile[i+1].(string)
-// 			case "Time":
-// 				processor.Time = profile[i+1]
-// 			case "Counter":
-// 				processor.Counter = int(profile[i+1].(int64))
-// 			}
-// 		}
-// 		processors = append(processors, processor)
-// 	}
-// 	return processors
-// }
-
-// func NewFTProfileCmd(ctx context.Context, args ...interface{}) *FTProfileCmd {
-// 	return &FTProfileCmd{
-// 		baseCmd: baseCmd{
-// 			ctx:  ctx,
-// 			args: args,
-// 		},
-// 	}
-// }
-
-// type FTProfileCmd struct {
-// 	baseCmd
-// 	val FTProfileResult
-// }
-
-// func (cmd *FTProfileCmd) String() string {
-// 	return cmdString(cmd, cmd.val)
-// }
-
-// func (cmd *FTProfileCmd) SetVal(val FTProfileResult) {
-// 	cmd.val = val
-// }
-
-// func (cmd *FTProfileCmd) Result() (FTProfileResult, error) {
-// 	return cmd.val, cmd.err
-// }
-
-// func (cmd *FTProfileCmd) Val() FTProfileResult {
-// 	return cmd.val
-// }
-
-// func (cmd *FTProfileCmd) readReply(rd *proto.Reader) (err error) {
-// 	data, err := rd.ReadSlice()
-// 	if err != nil {
-// 		return err
-// 	}
-// 	cmd.val, err = parseFTProfileResult(data)
-// 	if err != nil {
-// 		cmd.err = err
-// 	}
-// 	return nil
-// }
-
-// // FTProfile - Executes a search query and returns a profile of how the query was processed.
-// // The 'index' parameter specifies the index to search, the 'limited' parameter specifies whether to limit the results,
-// // and the 'query' parameter specifies the search / aggreagte query. Please notice that you must either pass a SearchQuery or an AggregateQuery.
-// // For more information, please refer to the Redis documentation:
-// // [FT.PROFILE]: (https://redis.io/commands/ft.profile/)
-// func (c cmdable) FTProfile(ctx context.Context, index string, limited bool, query interface{}) *FTProfileCmd {
-// 	queryType := ""
-// 	var argsQuery []interface{}
-
-// 	switch v := query.(type) {
-// 	case AggregateQuery:
-// 		queryType = "AGGREGATE"
-// 		argsQuery = v
-// 	case SearchQuery:
-// 		queryType = "SEARCH"
-// 		argsQuery = v
-// 	default:
-// 		panic("FT.PROFILE: query must be either AggregateQuery or SearchQuery")
-// 	}
-
-// 	args := []interface{}{"FT.PROFILE", index, queryType}
-
-// 	if limited {
-// 		args = append(args, "LIMITED")
-// 	}
-// 	args = append(args, "QUERY")
-// 	args = append(args, argsQuery...)
-
-// 	cmd := NewFTProfileCmd(ctx, args...)
-// 	_ = c(ctx, cmd)
-// 	return cmd
-// }

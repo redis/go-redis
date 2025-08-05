@@ -66,6 +66,35 @@ func TestWithDBStatement(t *testing.T) {
 	}
 }
 
+func TestWithoutCaller(t *testing.T) {
+	provider := sdktrace.NewTracerProvider()
+	hook := newTracingHook(
+		"",
+		WithTracerProvider(provider),
+		WithCallerEnabled(false),
+	)
+	ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+	cmd := redis.NewCmd(ctx, "ping")
+	defer span.End()
+
+	processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+		attrs := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan).Attributes()
+		for _, attr := range attrs {
+			switch attr.Key {
+			case semconv.CodeFunctionKey,
+				semconv.CodeFilepathKey,
+				semconv.CodeLineNumberKey:
+				t.Fatalf("Attribute with %s statement should not exist", attr.Key)
+			}
+		}
+		return nil
+	})
+	err := processHook(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTracingHook_DialHook(t *testing.T) {
 	imsb := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
