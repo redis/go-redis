@@ -432,6 +432,14 @@ func TestParseFailoverURL(t *testing.T) {
 				}},
 		},
 		{
+			url: "rediss://localhost:6379/5?master_name=test&skip_verify=true",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 5,
+				TLSConfig: &tls.Config{
+					ServerName:         "localhost",
+					InsecureSkipVerify: true,
+				}},
+		},
+		{
 			url: "redis://localhost:6379/5?master_name=test&db=2",
 			o:   &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 2},
 		},

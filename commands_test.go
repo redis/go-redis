@@ -460,7 +460,7 @@ var _ = Describe("Commands", func() {
 			}
 
 			// read the defaults to set them back later
-			for setting, _ := range expected {
+			for setting := range expected {
 				val, err := client.ConfigGet(ctx, setting).Result()
 				Expect(err).NotTo(HaveOccurred())
 				defaults[setting] = val[setting]
@@ -1463,6 +1463,82 @@ var _ = Describe("Commands", func() {
 			bitOpXor := client.BitOpXor(ctx, "dest", "key1", "key2")
 			Expect(bitOpXor.Err()).NotTo(HaveOccurred())
 			Expect(bitOpXor.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\xf0"))
+		})
+
+		It("should BitOpDiff", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP DIFF is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpDiff := client.BitOpDiff(ctx, "dest", "key1", "key2")
+			Expect(bitOpDiff.Err()).NotTo(HaveOccurred())
+			Expect(bitOpDiff.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\xf0"))
+		})
+
+		It("should BitOpDiff1", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP DIFF is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpDiff1 := client.BitOpDiff1(ctx, "dest", "key1", "key2")
+			Expect(bitOpDiff1.Err()).NotTo(HaveOccurred())
+			Expect(bitOpDiff1.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\x00"))
+		})
+
+		It("should BitOpAndOr", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP ANDOR is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpAndOr := client.BitOpAndOr(ctx, "dest", "key1", "key2")
+			Expect(bitOpAndOr.Err()).NotTo(HaveOccurred())
+			Expect(bitOpAndOr.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\x0f"))
+		})
+
+		It("should BitOpOne", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP ONE is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpOne := client.BitOpOne(ctx, "dest", "key1", "key2")
+			Expect(bitOpOne.Err()).NotTo(HaveOccurred())
+			Expect(bitOpOne.Val()).To(Equal(int64(1)))
 
 			get := client.Get(ctx, "dest")
 			Expect(get.Err()).NotTo(HaveOccurred())
@@ -6093,6 +6169,34 @@ var _ = Describe("Commands", func() {
 			Expect(n).To(Equal(int64(3)))
 		})
 
+		It("should XTrimMaxLenMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMaxLenMode(ctx, "stream", 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMaxLenApproxMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMaxLenApproxMode(ctx, "stream", 0, 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMinIDMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMinIDMode(ctx, "stream", "4-0", "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMinIDApproxMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMinIDApproxMode(ctx, "stream", "4-0", 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
 		It("should XAdd", func() {
 			id, err := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
@@ -6144,6 +6248,37 @@ var _ = Describe("Commands", func() {
 			n, err := client.XDel(ctx, "stream", "1-0", "2-0", "3-0").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(3)))
+		})
+
+		It("should XAckDel", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			// First, create a consumer group
+			err := client.XGroupCreate(ctx, "stream", "testgroup", "0").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Read messages to create pending entries
+			_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "testgroup",
+				Consumer: "testconsumer",
+				Streams:  []string{"stream", ">"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Test XAckDel with KEEPREF mode
+			n, err := client.XAckDel(ctx, "stream", "testgroup", "KEEPREF", "1-0", "2-0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(HaveLen(2))
+
+			// Clean up
+			client.XGroupDestroy(ctx, "stream", "testgroup")
+		})
+
+		It("should XDelEx", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			// Test XDelEx with KEEPREF mode
+			n, err := client.XDelEx(ctx, "stream", "KEEPREF", "1-0", "2-0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(HaveLen(2))
 		})
 
 		It("should XLen", func() {
