@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -55,6 +56,35 @@ func TestWithDBStatement(t *testing.T) {
 		for _, attr := range attrs {
 			if attr.Key == semconv.DBStatementKey {
 				t.Fatal("Attribute with db statement should not exist")
+			}
+		}
+		return nil
+	})
+	err := processHook(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWithoutCaller(t *testing.T) {
+	provider := sdktrace.NewTracerProvider()
+	hook := newTracingHook(
+		"",
+		WithTracerProvider(provider),
+		WithCallerEnabled(false),
+	)
+	ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+	cmd := redis.NewCmd(ctx, "ping")
+	defer span.End()
+
+	processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+		attrs := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan).Attributes()
+		for _, attr := range attrs {
+			switch attr.Key {
+			case semconv.CodeFunctionKey,
+				semconv.CodeFilepathKey,
+				semconv.CodeLineNumberKey:
+				t.Fatalf("Attribute with %s statement should not exist", attr.Key)
 			}
 		}
 		return nil
@@ -218,6 +248,169 @@ func TestTracingHook_ProcessPipelineHook(t *testing.T) {
 			assertAttributeContains(t, spanData.Events[0].Attributes, semconv.ExceptionMessageKey.String(tt.errTest.Error()))
 			assertEqual(t, codes.Error, spanData.Status.Code)
 			assertEqual(t, tt.errTest.Error(), spanData.Status.Description)
+		})
+	}
+}
+
+func TestTracingHook_ProcessHook_LongCommand(t *testing.T) {
+	imsb := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+	hook := newTracingHook(
+		"redis://localhost:6379",
+		WithTracerProvider(provider),
+	)
+	longValue := strings.Repeat("a", 102400)
+
+	tests := []struct {
+		name     string
+		cmd      redis.Cmder
+		expected string
+	}{
+		{
+			name:     "short command",
+			cmd:      redis.NewCmd(context.Background(), "SET", "key", "value"),
+			expected: "SET key value",
+		},
+		{
+			name:     "set command with long key",
+			cmd:      redis.NewCmd(context.Background(), "SET", longValue, "value"),
+			expected: "SET " + longValue + " value",
+		},
+		{
+			name:     "set command with long value",
+			cmd:      redis.NewCmd(context.Background(), "SET", "key", longValue),
+			expected: "SET key " + longValue,
+		},
+		{
+			name:     "set command with long key and value",
+			cmd:      redis.NewCmd(context.Background(), "SET", longValue, longValue),
+			expected: "SET " + longValue + " " + longValue,
+		},
+		{
+			name:     "short command with many arguments",
+			cmd:      redis.NewCmd(context.Background(), "MSET", "key1", "value1", "key2", "value2", "key3", "value3", "key4", "value4", "key5", "value5"),
+			expected: "MSET key1 value1 key2 value2 key3 value3 key4 value4 key5 value5",
+		},
+		{
+			name:     "long command",
+			cmd:      redis.NewCmd(context.Background(), longValue, "key", "value"),
+			expected: longValue + " key value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer imsb.Reset()
+
+			processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+				return nil
+			})
+
+			if err := processHook(context.Background(), tt.cmd); err != nil {
+				t.Fatal(err)
+			}
+
+			assertEqual(t, 1, len(imsb.GetSpans()))
+
+			spanData := imsb.GetSpans()[0]
+
+			var dbStatement string
+			for _, attr := range spanData.Attributes {
+				if attr.Key == semconv.DBStatementKey {
+					dbStatement = attr.Value.AsString()
+					break
+				}
+			}
+
+			if dbStatement != tt.expected {
+				t.Errorf("Expected DB statement: %q\nGot: %q", tt.expected, dbStatement)
+			}
+		})
+	}
+}
+
+func TestTracingHook_ProcessPipelineHook_LongCommands(t *testing.T) {
+	imsb := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+	hook := newTracingHook(
+		"redis://localhost:6379",
+		WithTracerProvider(provider),
+	)
+
+	tests := []struct {
+		name     string
+		cmds     []redis.Cmder
+		expected string
+	}{
+		{
+			name: "multiple short commands",
+			cmds: []redis.Cmder{
+				redis.NewCmd(context.Background(), "SET", "key1", "value1"),
+				redis.NewCmd(context.Background(), "SET", "key2", "value2"),
+			},
+			expected: "SET key1 value1\nSET key2 value2",
+		},
+		{
+			name: "multiple short commands with long key",
+			cmds: []redis.Cmder{
+				redis.NewCmd(context.Background(), "SET", strings.Repeat("a", 102400), "value1"),
+				redis.NewCmd(context.Background(), "SET", strings.Repeat("b", 102400), "value2"),
+			},
+			expected: "SET " + strings.Repeat("a", 102400) + " value1\nSET " + strings.Repeat("b", 102400) + " value2",
+		},
+		{
+			name: "multiple short commands with long value",
+			cmds: []redis.Cmder{
+				redis.NewCmd(context.Background(), "SET", "key1", strings.Repeat("a", 102400)),
+				redis.NewCmd(context.Background(), "SET", "key2", strings.Repeat("b", 102400)),
+			},
+			expected: "SET key1 " + strings.Repeat("a", 102400) + "\nSET key2 " + strings.Repeat("b", 102400),
+		},
+		{
+			name: "multiple short commands with long key and value",
+			cmds: []redis.Cmder{
+				redis.NewCmd(context.Background(), "SET", strings.Repeat("a", 102400), strings.Repeat("b", 102400)),
+				redis.NewCmd(context.Background(), "SET", strings.Repeat("c", 102400), strings.Repeat("d", 102400)),
+			},
+			expected: "SET " + strings.Repeat("a", 102400) + " " + strings.Repeat("b", 102400) + "\nSET " + strings.Repeat("c", 102400) + " " + strings.Repeat("d", 102400),
+		},
+		{
+			name: "multiple long commands",
+			cmds: []redis.Cmder{
+				redis.NewCmd(context.Background(), strings.Repeat("a", 102400), "key1", "value1"),
+				redis.NewCmd(context.Background(), strings.Repeat("a", 102400), "key2", "value2"),
+			},
+			expected: strings.Repeat("a", 102400) + " key1 value1\n" + strings.Repeat("a", 102400) + " key2 value2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer imsb.Reset()
+
+			processHook := hook.ProcessPipelineHook(func(ctx context.Context, cmds []redis.Cmder) error {
+				return nil
+			})
+
+			if err := processHook(context.Background(), tt.cmds); err != nil {
+				t.Fatal(err)
+			}
+
+			assertEqual(t, 1, len(imsb.GetSpans()))
+
+			spanData := imsb.GetSpans()[0]
+
+			var dbStatement string
+			for _, attr := range spanData.Attributes {
+				if attr.Key == semconv.DBStatementKey {
+					dbStatement = attr.Value.AsString()
+					break
+				}
+			}
+
+			if dbStatement != tt.expected {
+				t.Errorf("Expected DB statement:\n%q\nGot:\n%q", tt.expected, dbStatement)
+			}
 		})
 	}
 }

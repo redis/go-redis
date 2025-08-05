@@ -48,6 +48,9 @@ func (c *PubSub) init() {
 }
 
 func (c *PubSub) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	channels := mapKeys(c.channels)
 	channels = append(channels, mapKeys(c.patterns)...)
 	channels = append(channels, mapKeys(c.schannels)...)
@@ -435,7 +438,7 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		return nil, err
 	}
 
-	err = cn.WithReader(context.Background(), timeout, func(rd *proto.Reader) error {
+	err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
 		return c.cmd.readReply(rd)
 	})
 

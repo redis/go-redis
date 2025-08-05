@@ -7,8 +7,8 @@ replace github.com/redis/go-redis/v9 => ../..
 replace github.com/redis/go-redis/extra/rediscmd/v9 => ../rediscmd
 
 require (
-	github.com/redis/go-redis/extra/rediscmd/v9 v9.7.1
-	github.com/redis/go-redis/v9 v9.7.1
+	github.com/redis/go-redis/extra/rediscmd/v9 v9.12.0-beta.1
+	github.com/redis/go-redis/v9 v9.12.0-beta.1
 	go.opencensus.io v0.24.0
 )
 
@@ -18,4 +18,7 @@ require (
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 )
 
-retract v9.5.3 // This version was accidentally released.
+retract (
+	v9.7.2 // This version was accidentally released.
+	v9.5.3 // This version was accidentally released.
+)
