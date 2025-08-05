@@ -1,0 +1,43 @@
+name: Documentation Tests
+
+on:
+  push:
+    branches: [master, examples]
+  pull_request:
+    branches: [master, examples]
+
+permissions:
+  contents: read
+
+jobs:
+  doctests:
+    name: doctests
+    runs-on: ubuntu-latest
+
+    services:
+      redis-stack:
+        image: redislabs/client-libs-test:8.0.2
+        env:
+          TLS_ENABLED: no
+          REDIS_CLUSTER: no
+          PORT: 6379
+        ports:
+          - 6379:6379
+
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.24"]
+
+    steps:
+      - name: Set up ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test doc examples
+        working-directory: ./doctests
+        run: make test

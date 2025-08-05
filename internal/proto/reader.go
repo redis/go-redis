@@ -12,6 +12,9 @@ import (
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
+// DefaultBufferSize is the default size for read/write buffers (0.5MiB)
+const DefaultBufferSize = 512 * 1024
+
 // redis resp protocol data type.
 const (
 	RespStatus    = '+' // +<string>\r\n
@@ -58,7 +61,13 @@ type Reader struct {
 
 func NewReader(rd io.Reader) *Reader {
 	return &Reader{
-		rd: bufio.NewReader(rd),
+		rd: bufio.NewReaderSize(rd, DefaultBufferSize),
+	}
+}
+
+func NewReaderSize(rd io.Reader, size int) *Reader {
+	return &Reader{
+		rd: bufio.NewReaderSize(rd, size),
 	}
 }
 
@@ -189,6 +198,8 @@ func (r *Reader) readFloat(line []byte) (float64, error) {
 		return math.Inf(1), nil
 	case "-inf":
 		return math.Inf(-1), nil
+	case "nan", "-nan":
+		return math.NaN(), nil
 	}
 	return strconv.ParseFloat(v, 64)
 }

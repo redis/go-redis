@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"errors"
 	"strconv"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -70,7 +71,7 @@ var _ = Describe("pipelining", func() {
 			Expect(cmds).To(HaveLen(1))
 		})
 
-		It("handles large pipelines", func() {
+		It("handles large pipelines", Label("NonRedisEnterprise"), func() {
 			for callCount := 1; callCount < 16; callCount++ {
 				for i := 1; i <= callCount; i++ {
 					pipe.SetNX(ctx, strconv.Itoa(i)+"_key", strconv.Itoa(i)+"_value", 0)
@@ -83,6 +84,11 @@ var _ = Describe("pipelining", func() {
 					Expect(cmd).To(BeAssignableToTypeOf(&redis.BoolCmd{}))
 				}
 			}
+		})
+
+		It("should Exec, not Do", func() {
+			err := pipe.Do(ctx).Err()
+			Expect(err).To(Equal(errors.New("redis: please enter the command to be executed")))
 		})
 	}
 

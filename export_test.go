@@ -98,3 +98,11 @@ func (c *Ring) ShardByName(name string) *ringShard {
 	shard, _ := c.sharding.GetByName(name)
 	return shard
 }
+
+func (c *ModuleLoadexConfig) ToArgs() []interface{} {
+	return c.toArgs()
+}
+
+func ShouldRetry(err error, retryTimeout bool) bool {
+	return shouldRetry(err, retryTimeout)
+}

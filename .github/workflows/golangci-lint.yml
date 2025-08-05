@@ -8,19 +8,21 @@ on:
       - master
       - main
       - v9
+      - v9.8
   pull_request:
 
 permissions:
   contents: read
+  pull-requests: read  # for golangci/golangci-lint-action to fetch pull requests
 
 jobs:
   golangci:
-    permissions:
-      contents: read  # for actions/checkout to fetch code
-      pull-requests: read  # for golangci/golangci-lint-action to fetch pull requests
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v3
+        uses: golangci/golangci-lint-action@v8.0.0
+        with:
+          verify: true 
+

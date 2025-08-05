@@ -1,0 +1,97 @@
+name: "Stale Issue Management"
+on:
+  schedule:
+    # Run daily at midnight UTC
+    - cron: "0 0 * * *"
+  workflow_dispatch: # Allow manual triggering
+
+env:
+  # Default stale policy timeframes
+  DAYS_BEFORE_STALE: 365
+  DAYS_BEFORE_CLOSE: 30
+
+  # Accelerated timeline for needs-information issues
+  NEEDS_INFO_DAYS_BEFORE_STALE: 30
+  NEEDS_INFO_DAYS_BEFORE_CLOSE: 7
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      # First step: Handle regular issues (excluding needs-information)
+      - name: Mark regular issues as stale
+        uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          debug-only: true
+
+          # Default stale policy
+          days-before-stale: ${{ env.DAYS_BEFORE_STALE }}
+          days-before-close: ${{ env.DAYS_BEFORE_CLOSE }}
+
+          # Explicit stale label configuration
+          stale-issue-label: "stale"
+          stale-pr-label: "stale"
+
+          stale-issue-message: |
+            This issue has been automatically marked as stale due to inactivity.
+            It will be closed in 30 days if no further activity occurs.
+            If you believe this issue is still relevant, please add a comment to keep it open.
+
+          close-issue-message: |
+            This issue has been automatically closed due to inactivity.
+            If you believe this issue is still relevant, please reopen it or create a new issue with updated information.
+
+          # Exclude needs-information issues from this step
+          exempt-issue-labels: 'no-stale,needs-information'
+
+          # Remove stale label when issue/PR becomes active again
+          remove-stale-when-updated: true
+
+          # Apply to pull requests with same timeline
+          days-before-pr-stale: ${{ env.DAYS_BEFORE_STALE }}
+          days-before-pr-close: ${{ env.DAYS_BEFORE_CLOSE }}
+
+          stale-pr-message: |
+            This pull request has been automatically marked as stale due to inactivity.
+            It will be closed in 30 days if no further activity occurs.
+
+          close-pr-message: |
+            This pull request has been automatically closed due to inactivity.
+            If you would like to continue this work, please reopen the PR or create a new one.
+
+          # Only exclude no-stale PRs (needs-information PRs follow standard timeline)
+          exempt-pr-labels: 'no-stale'
+
+      # Second step: Handle needs-information issues with accelerated timeline
+      - name: Mark needs-information issues as stale
+        uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          debug-only: true
+
+          # Accelerated timeline for needs-information
+          days-before-stale: ${{ env.NEEDS_INFO_DAYS_BEFORE_STALE }}
+          days-before-close: ${{ env.NEEDS_INFO_DAYS_BEFORE_CLOSE }}
+
+          # Explicit stale label configuration
+          stale-issue-label: "stale"
+
+          # Only target ISSUES with needs-information label (not PRs)
+          only-issue-labels: 'needs-information'
+
+          stale-issue-message: |
+            This issue has been marked as stale because it requires additional information
+            that has not been provided for 30 days. It will be closed in 7 days if the
+            requested information is not provided.
+
+          close-issue-message: |
+            This issue has been closed because the requested information was not provided within the specified timeframe.
+            If you can provide the missing information, please reopen this issue or create a new one.
+
+          # Disable PR processing for this step
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+
+          # Remove stale label when issue becomes active again
+          remove-stale-when-updated: true

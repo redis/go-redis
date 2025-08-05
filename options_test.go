@@ -1,5 +1,4 @@
 //go:build go1.7
-// +build go1.7
 
 package redis
 
@@ -32,6 +31,9 @@ func TestParseURL(t *testing.T) {
 			url: "rediss://localhost:123",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ /* no deep comparison */ }},
 		}, {
+			url: "rediss://localhost:123/?skip_verify=true",
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{InsecureSkipVerify: true}},
+		}, {
 			url: "redis://:bar@localhost:123",
 			o:   &Options{Addr: "localhost:123", Password: "bar"},
 		}, {
@@ -62,6 +64,9 @@ func TestParseURL(t *testing.T) {
 		}, {
 			url: "redis://localhost:123/?db=2&client_name=hi", // client name
 			o:   &Options{Addr: "localhost:123", DB: 2, ClientName: "hi"},
+		}, {
+			url: "redis://localhost:123/?db=2&protocol=2", // RESP Protocol
+			o:   &Options{Addr: "localhost:123", DB: 2, Protocol: 2},
 		}, {
 			url: "unix:///tmp/redis.sock",
 			o:   &Options{Addr: "/tmp/redis.sock"},
@@ -214,6 +219,29 @@ func TestReadTimeoutOptions(t *testing.T) {
 
 		if o.WriteTimeout != o.ReadTimeout {
 			t.Errorf("got %d instead of %d as WriteTimeout option", o.WriteTimeout, o.ReadTimeout)
+		}
+	}
+}
+
+func TestProtocolOptions(t *testing.T) {
+	testCasesMap := map[int]int{
+		0: 3,
+		1: 3,
+		2: 2,
+		3: 3,
+	}
+
+	o := &Options{}
+	o.init()
+	if o.Protocol != 3 {
+		t.Errorf("got %d instead of %d as protocol option", o.Protocol, 3)
+	}
+
+	for set, want := range testCasesMap {
+		o := &Options{Protocol: set}
+		o.init()
+		if o.Protocol != want {
+			t.Errorf("got %d instead of %d as protocol option", o.Protocol, want)
 		}
 	}
 }

@@ -154,7 +154,7 @@ func ExampleClient() {
 	// missing_key does not exist
 }
 
-func ExampleConn() {
+func ExampleConn_name() {
 	conn := rdb.Conn()
 
 	err := conn.ClientSetName(ctx, "foobar").Err()
@@ -173,6 +173,28 @@ func ExampleConn() {
 	}
 	fmt.Println(s)
 	// Output: foobar
+}
+
+func ExampleConn_client_setInfo_libraryVersion() {
+	conn := rdb.Conn()
+
+	err := conn.ClientSetInfo(ctx, redis.WithLibraryVersion("1.2.3")).Err()
+	if err != nil {
+		panic(err)
+	}
+
+	// Open other connections.
+	for i := 0; i < 10; i++ {
+		go rdb.Ping(ctx)
+	}
+
+	s, err := conn.ClientInfo(ctx).Result()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(s.LibVer)
+	// Output: 1.2.3
 }
 
 func ExampleClient_Set() {
@@ -227,7 +249,7 @@ func ExampleClient_BLPop() {
 		panic(err)
 	}
 
-	// use `rdb.BLPop(0, "queue")` for infinite waiting time
+	// use `rdb.BLPop(ctx, 0, "queue")` for infinite waiting time
 	result, err := rdb.BLPop(ctx, 1*time.Second, "queue").Result()
 	if err != nil {
 		panic(err)
@@ -337,7 +359,7 @@ func ExampleMapStringStringCmd_Scan() {
 	// Get the map. The same approach works for HmGet().
 	res := rdb.HGetAll(ctx, "map")
 	if res.Err() != nil {
-		panic(err)
+		panic(res.Err())
 	}
 
 	type data struct {
@@ -370,7 +392,7 @@ func ExampleSliceCmd_Scan() {
 
 	res := rdb.MGet(ctx, "name", "count", "empty", "correct")
 	if res.Err() != nil {
-		panic(err)
+		panic(res.Err())
 	}
 
 	type data struct {
@@ -460,7 +482,7 @@ func ExampleClient_Watch() {
 				return err
 			}
 
-			// Actual opperation (local in optimistic lock).
+			// Actual operation (local in optimistic lock).
 			n++
 
 			// Operation is committed only if the watched keys remain unchanged.
@@ -657,6 +679,11 @@ func ExampleNewUniversalClient_cluster() {
 }
 
 func ExampleClient_SlowLogGet() {
+	if RECluster {
+		// skip slowlog test for cluster
+		fmt.Println(2)
+		return
+	}
 	const key = "slowlog-log-slower-than"
 
 	old := rdb.ConfigGet(ctx, key).Val()

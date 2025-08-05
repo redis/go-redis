@@ -2,7 +2,7 @@ version: '3'
 
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:22.7
+    image: clickhouse/clickhouse-server:23.7
     restart: on-failure
     environment:
       CLICKHOUSE_DB: uptrace
@@ -12,17 +12,34 @@ services:
       timeout: 1s
       retries: 30
     volumes:
-      - ch_data:/var/lib/clickhouse
+      - ch_data2:/var/lib/clickhouse
     ports:
       - '8123:8123'
       - '9000:9000'
 
+  postgres:
+    image: postgres:15-alpine
+    restart: on-failure
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_USER: uptrace
+      POSTGRES_PASSWORD: uptrace
+      POSTGRES_DB: uptrace
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready', '-U', 'uptrace', '-d', 'uptrace']
+      interval: 1s
+      timeout: 1s
+      retries: 30
+    volumes:
+      - 'pg_data2:/var/lib/postgresql/data/pgdata'
+    ports:
+      - '5432:5432'
+
   uptrace:
-    image: 'uptrace/uptrace:1.3.0'
+    image: 'uptrace/uptrace:1.6.2'
     #image: 'uptrace/uptrace-dev:latest'
     restart: on-failure
     volumes:
-      - uptrace_data:/var/lib/uptrace
       - ./uptrace.yml:/etc/uptrace/uptrace.yml
     #environment:
     #  - DEBUG=2
@@ -33,8 +50,8 @@ services:
       clickhouse:
         condition: service_healthy
 
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.58.0
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.91.0
     restart: on-failure
     volumes:
       - ./config/otel-collector.yaml:/etc/otelcol-contrib/config.yaml
@@ -43,21 +60,9 @@ services:
       - '4318:4318'
 
   vector:
-    image: timberio/vector:0.24.X-alpine
+    image: timberio/vector:0.28.X-alpine
     volumes:
       - ./config/vector.toml:/etc/vector/vector.toml:ro
-
-  alertmanager:
-    image: prom/alertmanager:v0.24.0
-    restart: on-failure
-    volumes:
-      - ./config/alertmanager.yml:/etc/alertmanager/config.yml
-      - alertmanager_data:/alertmanager
-    ports:
-      - 9093:9093
-    command:
-      - '--config.file=/etc/alertmanager/config.yml'
-      - '--storage.path=/alertmanager'
 
   mailhog:
     image: mailhog/mailhog:v1.0.1
@@ -73,6 +78,5 @@ services:
     image: redis
 
 volumes:
-  uptrace_data:
-  ch_data:
-  alertmanager_data:
+  ch_data2:
+  pg_data2:

@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"net"
 	"time"
+
+	"github.com/redis/go-redis/v9/auth"
 )
 
 // UniversalOptions information is required by UniversalClient to establish
@@ -26,8 +28,27 @@ type UniversalOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
-	Username         string
-	Password         string
+	Protocol int
+	Username string
+	Password string
+	// CredentialsProvider allows the username and password to be updated
+	// before reconnecting. It should return the current username and password.
+	CredentialsProvider func() (username string, password string)
+
+	// CredentialsProviderContext is an enhanced parameter of CredentialsProvider,
+	// done to maintain API compatibility. In the future,
+	// there might be a merge between CredentialsProviderContext and CredentialsProvider.
+	// There will be a conflict between them; if CredentialsProviderContext exists, we will ignore CredentialsProvider.
+	CredentialsProviderContext func(ctx context.Context) (username string, password string, err error)
+
+	// StreamingCredentialsProvider is used to retrieve the credentials
+	// for the connection from an external source. Those credentials may change
+	// during the connection lifetime. This is useful for managed identity
+	// scenarios where the credentials are retrieved from an external source.
+	//
+	// Currently, this is a placeholder for the future implementation.
+	StreamingCredentialsProvider auth.StreamingCredentialsProvider
+
 	SentinelUsername string
 	SentinelPassword string
 
@@ -47,6 +68,7 @@ type UniversalOptions struct {
 	PoolTimeout     time.Duration
 	MinIdleConns    int
 	MaxIdleConns    int
+	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
@@ -59,10 +81,27 @@ type UniversalOptions struct {
 	RouteByLatency bool
 	RouteRandomly  bool
 
-	// The sentinel master name.
-	// Only failover clients.
-
+	// MasterName is the sentinel master name.
+	// Only for failover clients.
 	MasterName string
+
+	// DisableIndentity - Disable set-lib on connect.
+	//
+	// default: false
+	//
+	// Deprecated: Use DisableIdentity instead.
+	DisableIndentity bool
+
+	// DisableIdentity is used to disable CLIENT SETINFO command on connect.
+	//
+	// default: false
+	DisableIdentity bool
+
+	IdentitySuffix string
+	UnstableResp3  bool
+
+	// IsClusterMode can be used when only one Addrs is provided (e.g. Elasticache supports setting up cluster mode with configuration endpoint).
+	IsClusterMode bool
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -77,8 +116,12 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		Dialer:     o.Dialer,
 		OnConnect:  o.OnConnect,
 
-		Username: o.Username,
-		Password: o.Password,
+		Protocol:                     o.Protocol,
+		Username:                     o.Username,
+		Password:                     o.Password,
+		CredentialsProvider:          o.CredentialsProvider,
+		CredentialsProviderContext:   o.CredentialsProviderContext,
+		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
 
 		MaxRedirects:   o.MaxRedirects,
 		ReadOnly:       o.ReadOnly,
@@ -100,10 +143,16 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIdentity:  o.DisableIdentity,
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
+		UnstableResp3:    o.UnstableResp3,
 	}
 }
 
@@ -121,11 +170,19 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		Dialer:    o.Dialer,
 		OnConnect: o.OnConnect,
 
-		DB:               o.DB,
-		Username:         o.Username,
-		Password:         o.Password,
+		DB:                           o.DB,
+		Protocol:                     o.Protocol,
+		Username:                     o.Username,
+		Password:                     o.Password,
+		CredentialsProvider:          o.CredentialsProvider,
+		CredentialsProviderContext:   o.CredentialsProviderContext,
+		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
+
 		SentinelUsername: o.SentinelUsername,
 		SentinelPassword: o.SentinelPassword,
+
+		RouteByLatency: o.RouteByLatency,
+		RouteRandomly:  o.RouteRandomly,
 
 		MaxRetries:      o.MaxRetries,
 		MinRetryBackoff: o.MinRetryBackoff,
@@ -141,10 +198,18 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		ReplicaOnly: o.ReadOnly,
+
+		DisableIdentity:  o.DisableIdentity,
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
+		UnstableResp3:    o.UnstableResp3,
 	}
 }
 
@@ -161,9 +226,13 @@ func (o *UniversalOptions) Simple() *Options {
 		Dialer:     o.Dialer,
 		OnConnect:  o.OnConnect,
 
-		DB:       o.DB,
-		Username: o.Username,
-		Password: o.Password,
+		DB:                           o.DB,
+		Protocol:                     o.Protocol,
+		Username:                     o.Username,
+		Password:                     o.Password,
+		CredentialsProvider:          o.CredentialsProvider,
+		CredentialsProviderContext:   o.CredentialsProviderContext,
+		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
 
 		MaxRetries:      o.MaxRetries,
 		MinRetryBackoff: o.MinRetryBackoff,
@@ -179,10 +248,16 @@ func (o *UniversalOptions) Simple() *Options {
 		PoolTimeout:     o.PoolTimeout,
 		MinIdleConns:    o.MinIdleConns,
 		MaxIdleConns:    o.MaxIdleConns,
+		MaxActiveConns:  o.MaxActiveConns,
 		ConnMaxIdleTime: o.ConnMaxIdleTime,
 		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
+
+		DisableIdentity:  o.DisableIdentity,
+		DisableIndentity: o.DisableIndentity,
+		IdentitySuffix:   o.IdentitySuffix,
+		UnstableResp3:    o.UnstableResp3,
 	}
 }
 
@@ -214,14 +289,26 @@ var (
 // NewUniversalClient returns a new multi client. The type of the returned client depends
 // on the following conditions:
 //
-// 1. If the MasterName option is specified, a sentinel-backed FailoverClient is returned.
-// 2. if the number of Addrs is two or more, a ClusterClient is returned.
-// 3. Otherwise, a single-node Client is returned.
+//  1. If the MasterName option is specified with RouteByLatency, RouteRandomly or IsClusterMode,
+//     a FailoverClusterClient is returned.
+//  2. If the MasterName option is specified without RouteByLatency, RouteRandomly or IsClusterMode,
+//     a sentinel-backed FailoverClient is returned.
+//  3. If the number of Addrs is two or more, or IsClusterMode option is specified,
+//     a ClusterClient is returned.
+//  4. Otherwise, a single-node Client is returned.
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
-	if opts.MasterName != "" {
-		return NewFailoverClient(opts.Failover())
-	} else if len(opts.Addrs) > 1 {
-		return NewClusterClient(opts.Cluster())
+	if opts == nil {
+		panic("redis: NewUniversalClient nil options")
 	}
-	return NewClient(opts.Simple())
+
+	switch {
+	case opts.MasterName != "" && (opts.RouteByLatency || opts.RouteRandomly || opts.IsClusterMode):
+		return NewFailoverClusterClient(opts.Failover())
+	case opts.MasterName != "":
+		return NewFailoverClient(opts.Failover())
+	case len(opts.Addrs) > 1 || opts.IsClusterMode:
+		return NewClusterClient(opts.Cluster())
+	default:
+		return NewClient(opts.Simple())
+	}
 }
