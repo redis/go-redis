@@ -1,59 +1,124 @@
-# Example for go-redis OpenTelemetry instrumentation
+# go-redis OpenTelemetry Monitoring with Uptrace
 
-This example demonstrates how to monitor Redis using OpenTelemetry and
-[Uptrace](https://github.com/uptrace/uptrace). It requires Docker to start Redis Server and Uptrace.
+This example demonstrates how to instrument and monitor Redis operations in Go applications using
+OpenTelemetry and [Uptrace](https://github.com/uptrace/uptrace), providing comprehensive
+observability into your Redis performance and operations.
 
-See
-[Monitoring Go Redis Performance and Errors](https://redis.uptrace.dev/guide/go-redis-monitoring.html)
-for details.
+## Overview
 
-**Step 1**. Download the example using Git:
+This integration provides:
 
-```shell
+- **Distributed tracing** for Redis operations
+- **Performance monitoring** with latency and throughput metrics
+- **Error tracking** and debugging capabilities
+- **Visual dashboards** for Redis health monitoring
+- **Production-ready** observability stack with Docker
+
+## Prerequisites
+
+- Go 1.19+
+- Docker and Docker Compose
+- Basic understanding of Redis and OpenTelemetry
+
+## Quick Start
+
+### 1. Clone and Navigate
+
+```bash
 git clone https://github.com/redis/go-redis.git
 cd example/otel
 ```
 
-**Step 2**. Start the services using Docker:
+### 2. Start the Monitoring Stack
 
-```shell
-docker-compose up -d
+Launch Redis and Uptrace services:
+
+```bash
+docker compose up -d
 ```
 
-**Step 3**. Make sure Uptrace is running:
+This starts:
 
-```shell
-docker-compose logs uptrace
+- Redis server on `localhost:6379`
+- Uptrace APM on `http://localhost:14318`
+
+### 3. Verify Services
+
+Check that Uptrace is running properly:
+
+```bash
+docker compose logs uptrace
 ```
 
-**Step 4**. Run the Redis client example and Follow the link to view the trace:
+Look for successful startup messages without errors.
 
-```shell
+### 4. Run the Example
+
+Execute the instrumented Redis client:
+
+```bash
 go run client.go
+```
+
+You should see output similar to:
+
+```
 trace: http://localhost:14318/traces/ee029d8782242c8ed38b16d961093b35
 ```
 
-![Redis trace](./image/redis-trace.png)
+Click the trace URL to view detailed operation traces in Uptrace.
 
-You can also open Uptrace UI at [http://localhost:14318](http://localhost:14318) to view available
-spans, logs, and metrics.
+![Redis trace visualization](./image/redis-trace.png)
 
-## Redis monitoring
+### 5. Explore the Dashboard
 
-You can also [monitor Redis performance](https://uptrace.dev/opentelemetry/redis-monitoring.html)
-metrics By installing OpenTelemetry Collector.
+Open the Uptrace UI at [http://localhost:14318](http://localhost:14318/metrics/1) to explore:
 
-[OpenTelemetry Collector](https://uptrace.dev/opentelemetry/collector.html) is an agent that pulls
-telemetry data from systems you want to monitor and sends it to APM tools using the OpenTelemetry
-protocol (OTLP).
+- **Traces**: Individual Redis operation details
+- **Metrics**: Performance statistics and trends
+- **Logs**: Application and system logs
+- **Service Map**: Visual representation of dependencies
 
-When telemetry data reaches Uptrace, it automatically generates a Redis dashboard from a pre-defined
-template.
+## Advanced Monitoring Setup
 
-![Redis dashboard](./image/metrics.png)
+### Redis Performance Metrics
 
-## Links
+For production environments, enable comprehensive Redis monitoring by installing the OpenTelemetry
+Collector:
 
-- [Uptrace open-source APM](https://uptrace.dev/get/open-source-apm.html)
-- [OpenTelemetry Go instrumentations](https://uptrace.dev/opentelemetry/instrumentations/?lang=go)
-- [OpenTelemetry Go Tracing API](https://uptrace.dev/opentelemetry/go-tracing.html)
+The [OpenTelemetry Collector](https://uptrace.dev/opentelemetry/collector) acts as a telemetry agent
+that:
+
+- Pulls performance metrics directly from Redis
+- Collects system-level statistics
+- Forwards data to Uptrace via OTLP protocol
+
+When configured, Uptrace automatically generates a Redis dashboard:
+
+![Redis performance dashboard](./image/metrics.png)
+
+### Key Metrics Monitored
+
+- **Connection Statistics**: Active connections, connection pool utilization
+- **Command Performance**: Operation latency, throughput, error rates
+- **Memory Usage**: Memory consumption, key distribution
+- **Replication Health**: Master-slave sync status and lag
+
+### Logs and Debugging
+
+View service logs:
+
+```bash
+# All services
+docker compose logs
+
+# Specific service
+docker compose logs redis
+docker compose logs uptrace
+```
+
+## Additional Resources
+
+- [Complete go-redis Monitoring Guide](https://redis.uptrace.dev/guide/go-redis-monitoring.html)
+- [OpenTelemetry Go Instrumentation](https://uptrace.dev/get/opentelemetry-go/tracing)
+- [Uptrace Open Source APM](https://uptrace.dev/get/hosted/open-source-apm)
