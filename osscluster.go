@@ -741,12 +741,25 @@ func replaceLoopbackHost(nodeAddr, originHost string) string {
 	return net.JoinHostPort(originHost, nodePort)
 }
 
+// isLoopback returns true if the host is a loopback address.
+// For IP addresses, it uses net.IP.IsLoopback().
+// For hostnames, it recognizes well-known loopback hostnames like "localhost"
+// and Docker-specific loopback patterns like "*.docker.internal".
 func isLoopback(host string) bool {
 	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
+	if ip != nil {
+		return ip.IsLoopback()
 	}
-	return ip.IsLoopback()
+
+	if strings.ToLower(host) == "localhost" {
+		return true
+	}
+
+	if strings.HasSuffix(strings.ToLower(host), ".docker.internal") {
+		return true
+	}
+
+	return false
 }
 
 func (c *clusterState) slotMasterNode(slot int) (*clusterNode, error) {
