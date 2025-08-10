@@ -114,9 +114,14 @@ func (cmd *JSONCmd) Expanded() (interface{}, error) {
 }
 
 func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
-
-	if cmd.baseCmd.Err() != nil {
+	// nil response from JSON.(M)GET (cmd.baseCmd.err will be "redis: nil")
+	if cmd.baseCmd.Err() == Nil {
 		cmd.val = ""
+		return Nil
+	}
+
+	// Handle other base command errors
+	if cmd.baseCmd.Err() != nil {
 		return cmd.baseCmd.Err()
 	}
 
@@ -128,7 +133,10 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 		if err != nil {
 			return err
 		}
+
+		// Empty array could indicate no results found for JSON path
 		if size == 0 {
+			cmd.val = ""
 			return Nil
 		}
 
