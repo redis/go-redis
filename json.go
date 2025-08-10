@@ -118,6 +118,11 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 		return Nil
 	}
 
+	// Handle other base command errors
+	if cmd.baseCmd.Err() != nil {
+		return cmd.baseCmd.Err()
+	}
+
 	if readType, err := rd.PeekReplyType(); err != nil {
 		return err
 	} else if readType == proto.RespArray {
@@ -125,6 +130,12 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 		size, err := rd.ReadArrayLen()
 		if err != nil {
 			return err
+		}
+
+		// Empty array could indicate no results found for JSON path
+		if size == 0 {
+			cmd.val = ""
+			return Nil
 		}
 
 		expanded := make([]interface{}, size)
