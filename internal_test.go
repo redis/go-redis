@@ -364,15 +364,22 @@ var _ = Describe("ClusterClient", func() {
 		It("select slot from args for GETKEYSINSLOT command", func() {
 			cmd := NewStringSliceCmd(ctx, "cluster", "getkeysinslot", 100, 200)
 
-			slot := client.cmdSlot(cmd)
+			slot := client.cmdSlot(cmd, -1)
 			Expect(slot).To(Equal(100))
 		})
 
 		It("select slot from args for COUNTKEYSINSLOT command", func() {
 			cmd := NewStringSliceCmd(ctx, "cluster", "countkeysinslot", 100)
 
-			slot := client.cmdSlot(cmd)
+			slot := client.cmdSlot(cmd, -1)
 			Expect(slot).To(Equal(100))
+		})
+
+		It("follows preferred random slot", func() {
+			cmd := NewStatusCmd(ctx, "ping")
+
+			slot := client.cmdSlot(cmd, 101)
+			Expect(slot).To(Equal(101))
 		})
 	})
 })

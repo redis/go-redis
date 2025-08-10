@@ -74,6 +74,12 @@ var _ = Describe("Redis Ring", func() {
 		Expect(ring.Close()).NotTo(HaveOccurred())
 	})
 
+	It("do", func() {
+		val, err := ring.Do(ctx, "ping").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal("PONG"))
+	})
+
 	It("supports context", func() {
 		ctx, cancel := context.WithCancel(ctx)
 		cancel()
@@ -271,6 +277,21 @@ var _ = Describe("Redis Ring", func() {
 			Expect(ringShard1.Info(ctx).Val()).ToNot(ContainSubstring("keys="))
 			Expect(ringShard2.Info(ctx).Val()).To(ContainSubstring("keys=100"))
 		})
+
+		It("return dial timeout error", func() {
+			opt := redisRingOptions()
+			opt.DialTimeout = 250 * time.Millisecond
+			opt.Addrs = map[string]string{"ringShardNotExist": ":1997"}
+			ring = redis.NewRing(opt)
+
+			_, err := ring.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.HSet(ctx, "key", "value")
+				pipe.Expire(ctx, "key", time.Minute)
+				return nil
+			})
+
+			Expect(err).To(HaveOccurred())
+		})
 	})
 
 	Describe("new client callback", func() {
@@ -298,7 +319,7 @@ var _ = Describe("Redis Ring", func() {
 			ring = redis.NewRing(opt)
 		})
 		It("supports Process hook", func() {
-			err := ring.Ping(ctx).Err()
+			err := ring.Set(ctx, "key", "test", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			var stack []string
@@ -306,12 +327,12 @@ var _ = Describe("Redis Ring", func() {
 			ring.AddHook(&hook{
 				processHook: func(hook redis.ProcessHook) redis.ProcessHook {
 					return func(ctx context.Context, cmd redis.Cmder) error {
-						Expect(cmd.String()).To(Equal("ping: "))
+						Expect(cmd.String()).To(Equal("get key: "))
 						stack = append(stack, "ring.BeforeProcess")
 
 						err := hook(ctx, cmd)
 
-						Expect(cmd.String()).To(Equal("ping: PONG"))
+						Expect(cmd.String()).To(Equal("get key: test"))
 						stack = append(stack, "ring.AfterProcess")
 
 						return err
@@ -323,12 +344,12 @@ var _ = Describe("Redis Ring", func() {
 				shard.AddHook(&hook{
 					processHook: func(hook redis.ProcessHook) redis.ProcessHook {
 						return func(ctx context.Context, cmd redis.Cmder) error {
-							Expect(cmd.String()).To(Equal("ping: "))
+							Expect(cmd.String()).To(Equal("get key: "))
 							stack = append(stack, "shard.BeforeProcess")
 
 							err := hook(ctx, cmd)
 
-							Expect(cmd.String()).To(Equal("ping: PONG"))
+							Expect(cmd.String()).To(Equal("get key: test"))
 							stack = append(stack, "shard.AfterProcess")
 
 							return err
@@ -338,7 +359,7 @@ var _ = Describe("Redis Ring", func() {
 				return nil
 			})
 
-			err = ring.Ping(ctx).Err()
+			err = ring.Get(ctx, "key").Err()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(stack).To(Equal([]string{
 				"ring.BeforeProcess",

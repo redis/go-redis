@@ -361,6 +361,24 @@ var _ = Describe("race", func() {
 		Expect(stats.TotalConns).To(Equal(uint32(opt.PoolSize)))
 	})
 
+	It("recover addIdleConn panic", func() {
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				panic("test panic")
+			},
+			PoolSize:     100,
+			MinIdleConns: 30,
+		}
+		p := pool.NewConnPool(opt)
+
+		p.CheckMinIdleConns()
+
+		Eventually(func() bool {
+			state := p.Stats()
+			return state.TotalConns == 0 && state.IdleConns == 0 && p.QueueLen() == 0
+		}, "3s", "50ms").Should(BeTrue())
+  })
+  
 	It("wait", func() {
 		opt := &pool.Options{
 			Dialer: func(ctx context.Context) (net.Conn, error) {
@@ -410,7 +428,7 @@ var _ = Describe("race", func() {
 		_, err = p.Get(ctx)
 		Expect(err).To(MatchError(pool.ErrPoolTimeout))
 		p.Put(ctx, conn)
-		conn, err = p.Get(ctx)
+		_, err = p.Get(ctx)
 		Expect(err).NotTo(HaveOccurred())
 
 		stats = p.Stats()
