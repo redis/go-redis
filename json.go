@@ -82,6 +82,7 @@ func (cmd *JSONCmd) SetVal(val string) {
 	cmd.val = val
 }
 
+// Val returns the result of the JSON.GET command as a string.
 func (cmd *JSONCmd) Val() string {
 	if len(cmd.val) == 0 && cmd.expanded != nil {
 		val, err := json.Marshal(cmd.expanded)
@@ -100,6 +101,7 @@ func (cmd *JSONCmd) Result() (string, error) {
 	return cmd.Val(), cmd.Err()
 }
 
+// Expanded returns the result of the JSON.GET command as unmarshalled JSON.
 func (cmd *JSONCmd) Expanded() (interface{}, error) {
 	if len(cmd.val) != 0 && cmd.expanded == nil {
 		err := json.Unmarshal([]byte(cmd.val), &cmd.expanded)
@@ -152,6 +154,7 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 			return err
 		} else if str == "" || err == Nil {
 			cmd.val = ""
+			return Nil
 		} else {
 			cmd.val = str
 		}
