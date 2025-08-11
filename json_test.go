@@ -406,8 +406,8 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(cmd2.Val()).To(Equal(int64(1)))
 
 				cmd3 := client.JSONGet(ctx, "del1", "$")
-				Expect(cmd3.Err()).NotTo(HaveOccurred())
-				Expect(cmd3.Val()).To(HaveLen(0))
+				Expect(cmd3.Err()).To(Equal(redis.Nil))
+				Expect(cmd3.Val()).To(Equal(""))
 			})
 
 			It("should JSONDel with $", Label("json.del", "json"), func() {
