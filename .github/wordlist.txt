@@ -75,3 +75,4 @@ StreamingCredentialsProvider
 oauth
 entraid
 MiB
+KiB
