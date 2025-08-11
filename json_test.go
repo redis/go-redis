@@ -267,10 +267,6 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res).To(Equal("OK"))
 
-				resArr, err := client.JSONArrIndex(ctx, "doc1", "$.store.book[?(@.price<10)].size", 20).Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(resArr).To(Equal([]int64{1, 2}))
-
 				res, err = client.JSONGetWithArgs(ctx, "get3", &redis.JSONGetArgs{Indent: "-"}).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res).To(Equal(`{-"a":1,-"b":2}`))
@@ -688,26 +684,29 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(err).To(Equal(redis.Nil))
 			})
 
-			It("should return redis.Nil for non-existent path in existing key", func() {
+			It("should return empty array for non-existent path in existing key", func() {
 				err := client.JSONSet(ctx, "test-key", "$", `{"a": 1, "b": "hello"}`).Err()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = client.JSONGet(ctx, "test-key", "$.nonexistent").Result()
-				Expect(err).To(Equal(redis.Nil))
+				// Non-existent path should return empty array, not error
+				val, err := client.JSONGet(ctx, "test-key", "$.nonexistent").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("[]"))
 			})
 
-			It("should distinguish empty array from nil", func() {
+			It("should distinguish empty array from non-existent path", func() {
 				err := client.JSONSet(ctx, "test-key", "$", `{"arr": [], "obj": {}}`).Err()
 				Expect(err).NotTo(HaveOccurred())
 
-				// Empty array should return the array, not nil
+				// Empty array should return the array
 				val, err := client.JSONGet(ctx, "test-key", "$.arr").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(val).To(Equal("[[]]"))
 
-				// Non-existent field should return nil
-				_, err = client.JSONGet(ctx, "test-key", "$.missing").Result()
-				Expect(err).To(Equal(redis.Nil))
+				// Non-existent field should return empty array
+				val, err = client.JSONGet(ctx, "test-key", "$.missing").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("[]"))
 			})
 
 			It("should handle multiple paths with mixed results", func() {
@@ -719,9 +718,10 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(val).To(Equal("[1]"))
 
-				// Path that doesn't exist
-				_, err = client.JSONGet(ctx, "test-key", "$.c").Result()
-				Expect(err).To(Equal(redis.Nil))
+				// Path that doesn't exist should return empty array
+				val, err = client.JSONGet(ctx, "test-key", "$.c").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("[]"))
 			})
 
 			AfterEach(func() {

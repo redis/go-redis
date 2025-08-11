@@ -115,6 +115,7 @@ func (cmd *JSONCmd) Expanded() (interface{}, error) {
 
 func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 	// nil response from JSON.(M)GET (cmd.baseCmd.err will be "redis: nil")
+	// This happens when the key doesn't exist
 	if cmd.baseCmd.Err() == Nil {
 		cmd.val = ""
 		return Nil
@@ -134,10 +135,11 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 			return err
 		}
 
-		// Empty array could indicate no results found for JSON path
+		// Empty array means no results found for JSON path, but key exists
+		// This should return "[]", not an error
 		if size == 0 {
-			cmd.val = ""
-			return Nil
+			cmd.val = "[]"
+			return nil
 		}
 
 		expanded := make([]interface{}, size)
