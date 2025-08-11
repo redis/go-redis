@@ -23,7 +23,6 @@ jobs:
         uses: actions/stale@v9
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          debug-only: true
 
           # Default stale policy
           days-before-stale: ${{ env.DAYS_BEFORE_STALE }}
@@ -68,7 +67,6 @@ jobs:
         uses: actions/stale@v9
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          debug-only: true
 
           # Accelerated timeline for needs-information
           days-before-stale: ${{ env.NEEDS_INFO_DAYS_BEFORE_STALE }}
