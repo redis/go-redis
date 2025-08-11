@@ -90,6 +90,20 @@ type FailoverOptions struct {
 	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
 
+	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
+	// Larger buffers can improve performance for commands that return large responses.
+	// Smaller buffers can improve memory usage for larger pools.
+	//
+	// default: 256KiB (262144 bytes)
+	ReadBufferSize int
+
+	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
+	// Larger buffers can improve performance for large pipelines and commands with many arguments.
+	// Smaller buffers can improve memory usage for larger pools.
+	//
+	// default: 256KiB (262144 bytes)
+	WriteBufferSize int
+
 	PoolFIFO bool
 
 	PoolSize        int
@@ -138,6 +152,9 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
 
+		ReadBufferSize:  opt.ReadBufferSize,
+		WriteBufferSize: opt.WriteBufferSize,
+
 		DialTimeout:           opt.DialTimeout,
 		ReadTimeout:           opt.ReadTimeout,
 		WriteTimeout:          opt.WriteTimeout,
@@ -177,6 +194,9 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
+
+		ReadBufferSize:  opt.ReadBufferSize,
+		WriteBufferSize: opt.WriteBufferSize,
 
 		DialTimeout:           opt.DialTimeout,
 		ReadTimeout:           opt.ReadTimeout,
@@ -223,6 +243,9 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
+
+		ReadBufferSize:  opt.ReadBufferSize,
+		WriteBufferSize: opt.WriteBufferSize,
 
 		DialTimeout:           opt.DialTimeout,
 		ReadTimeout:           opt.ReadTimeout,
