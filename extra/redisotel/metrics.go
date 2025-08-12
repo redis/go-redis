@@ -22,7 +22,7 @@ type metricsState struct {
 
 // InstrumentMetrics starts reporting OpenTelemetry Metrics.
 //
-// Based on https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/semantic_conventions/database-metrics.md
+// Based on https://github.com/open-telemetry/semantic-conventions/blob/main/docs/database/database-metrics.md
 func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 	baseOpts := make([]baseOption, len(opts))
 	for i, opt := range opts {
