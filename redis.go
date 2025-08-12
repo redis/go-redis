@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hscan"
+	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/push"
@@ -204,19 +206,35 @@ func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) e
 //------------------------------------------------------------------------------
 
 type baseClient struct {
-	opt      *Options
-	connPool pool.Pooler
+	opt        *Options
+	optLock    sync.RWMutex
+	connPool   pool.Pooler
+	pubsubPool *pool.PubSubPool
 	hooksMixin
 
 	onClose func() error // hook called when client is closed
 
 	// Push notification processing
 	pushProcessor push.NotificationProcessor
+
+	// Connection processor for handling connection lifecycle events
+	connectionProcessor interfaces.ConnectionProcessor
+
+	// Hitless upgrade manager
+	hitlessManager *hitless.HitlessManager
 }
 
 func (c *baseClient) clone() *baseClient {
-	clone := *c
-	return &clone
+	clone := &baseClient{
+		opt:                 c.opt,
+		connPool:            c.connPool,
+		pubsubPool:          c.pubsubPool,
+		onClose:             c.onClose,
+		pushProcessor:       c.pushProcessor,
+		connectionProcessor: c.connectionProcessor,
+		hitlessManager:      c.hitlessManager,
+	}
+	return clone
 }
 
 func (c *baseClient) withTimeout(timeout time.Duration) *baseClient {
@@ -411,6 +429,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
+	var hitlessHandshakeErr error
 	_, err = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
@@ -424,11 +443,47 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			pipe.ClientSetName(ctx, c.opt.ClientName)
 		}
 
+		// Enable maintenance notifications if hitless upgrades are configured
+		if c.opt.HitlessUpgradeConfig.IsEnabled() && c.opt.Protocol == 3 {
+			hitlessHandshakeErr = pipe.ClientMaintNotifications(
+				ctx,
+				true,
+				c.opt.HitlessUpgradeConfig.EndpointType.String(),
+			).Err()
+		}
+
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize connection options: %w", err)
 	}
+
+	if hitlessHandshakeErr != nil {
+		c.optLock.RLock()
+		// handshake failed
+		switch c.opt.HitlessUpgradeConfig.Enabled {
+		case hitless.MaintNotificationsEnabled:
+			// enabled mode, fail the connection
+			return fmt.Errorf("failed to enable maintenance notifications: %w", hitlessHandshakeErr)
+		case hitless.MaintNotificationsAuto:
+			// auto mode, disable hitless upgrades and continue
+			c.disableHitlessUpgrades()
+			c.optLock.RUnlock()
+			c.optLock.Lock()
+			c.opt.HitlessUpgradeConfig.Enabled = hitless.MaintNotificationsDisabled
+			c.optLock.Unlock()
+		}
+	} else if c.opt.HitlessUpgradeConfig.IsEnabled() && c.opt.Protocol == 3 {
+		// handshake was executed successfully
+		// to make sure that the handshake will be executed on other connections as well if it was successfully
+		// executed on this connection, we will force the handshake to be executed on all connections
+		c.optLock.Lock()
+		c.opt.HitlessUpgradeConfig.Enabled = hitless.MaintNotificationsEnabled
+		c.optLock.Unlock()
+	}
+
+	cn.SetUsable(true)
+	cn.Inited = true
 
 	if !c.opt.DisableIdentity && !c.opt.DisableIndentity {
 		libName := ""
@@ -449,6 +504,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if c.opt.OnConnect != nil {
 		return c.opt.OnConnect(ctx, conn)
 	}
+
+	// Set the connection initialization function for potential reconnections
+	cn.SetInitConnFunc(c.createInitConnFunc())
 
 	return nil
 }
@@ -593,6 +651,43 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 	return context.Background()
 }
 
+// createInitConnFunc creates a connection initialization function that can be used for reconnections.
+func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) error {
+	return func(ctx context.Context, cn *pool.Conn) error {
+		return c.initConn(ctx, cn)
+	}
+}
+
+func (c *baseClient) enableHitlessUpgrades() error {
+	// Create hitless manager, used for operation tracking and push notification handling
+	manager, err := initializeHitlessManager(c, c.opt.HitlessUpgradeConfig)
+	if err != nil {
+		return err
+	}
+	// Set the manager reference
+	c.hitlessManager = manager
+	// Create the connection processor from the hitless manager, used for connection lifecycle events
+	// based on the connection flags (some set by the hitless manager and its notification handlers)
+	hitlessConnectionProcessor := manager.CreateConnectionProcessor(c.opt.Protocol, c.dialHook)
+	// Set reference to the pool for connection removal on handoff failure
+	hitlessConnectionProcessor.SetPool(c.connPool)
+	// Set the processor reference to the client
+	c.connectionProcessor = hitlessConnectionProcessor
+	return nil
+}
+
+func (c *baseClient) disableHitlessUpgrades() error {
+	if c.hitlessManager != nil {
+		c.hitlessManager.Close()
+		c.hitlessManager = nil
+	}
+	if c.connectionProcessor != nil {
+		c.connectionProcessor.Shutdown(context.Background())
+		c.connectionProcessor = nil
+	}
+	return nil
+}
+
 // Close closes the client, releasing any open resources.
 //
 // It is rare to Close a Client, as the Client is meant to be
@@ -606,6 +701,11 @@ func (c *baseClient) Close() error {
 	}
 	if err := c.connPool.Close(); err != nil && firstErr == nil {
 		firstErr = err
+	}
+	if c.pubsubPool != nil {
+		if err := c.pubsubPool.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
 }
@@ -810,11 +910,32 @@ func NewClient(opt *Options) *Client {
 	// Initialize push notification processor using shared helper
 	// Use void processor for RESP2 connections (push notifications not available)
 	c.pushProcessor = initializePushProcessor(opt)
-
-	// Update options with the initialized push processor for connection pool
+	// Update options with the initialized push processor
 	opt.PushNotificationProcessor = c.pushProcessor
 
-	c.connPool = newConnPool(opt, c.dialHook)
+	// Initialize hitless upgrades first if enabled to get the connection processor
+	if opt.HitlessUpgradeConfig.IsEnabled() {
+		if opt.Protocol != 3 {
+			internal.Logger.Printf(context.Background(), "hitless: RESP3 protocol required for hitless upgrades, but Protocol is %d", opt.Protocol)
+		} else {
+			err := c.enableHitlessUpgrades()
+			if err != nil {
+				internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
+				if opt.HitlessUpgradeConfig.Enabled == hitless.MaintNotificationsEnabled {
+					// panic so we fail fast without breaking existing clients api
+					panic(fmt.Errorf("failed to enable hitless upgrades: %w", err))
+				}
+			}
+		}
+	}
+
+	// Create connection pool with the processor (nil if hitless upgrades disabled)
+	c.connPool = newConnPool(opt, c.dialHook, c.connectionProcessor)
+
+	// Create separate PubSub pool
+	c.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
+		return c.dialHook(ctx, opt.Network, opt.Addr)
+	})
 
 	return &c
 }
@@ -849,6 +970,12 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 // Options returns read-only Options that were used to create the client.
 func (c *Client) Options() *Options {
 	return c.opt
+}
+
+// GetHitlessManager returns the hitless manager instance for monitoring and control.
+// Returns nil if hitless upgrades are not enabled.
+func (c *Client) GetHitlessManager() *hitless.HitlessManager {
+	return c.hitlessManager
 }
 
 // initializePushProcessor initializes the push notification processor for any client type.
@@ -887,6 +1014,8 @@ type PoolStats pool.Stats
 // PoolStats returns connection pool stats.
 func (c *Client) PoolStats() *PoolStats {
 	stats := c.connPool.Stats()
+	pubsubStats := c.pubsubPool.Stats()
+	stats.PubSubStats = pubsubStats
 	return (*PoolStats)(stats)
 }
 
@@ -921,11 +1050,25 @@ func (c *Client) TxPipeline() Pipeliner {
 func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
-
 		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			return c.newConn(ctx)
+			cn, err := c.pubsubPool.Get(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			// will return nil if already initialized
+			err = c.initConn(ctx, cn)
+			if err != nil {
+				c.pubsubPool.Remove(ctx, cn, err)
+				return nil, err
+			}
+
+			return cn, nil
 		},
-		closeConn:     c.connPool.CloseConn,
+		closeConn: func(cn *pool.Conn) error {
+			c.pubsubPool.Remove(context.Background(), cn, nil)
+			return nil
+		},
 		pushProcessor: c.pushProcessor,
 	}
 	pubsub.init()
@@ -1113,6 +1256,19 @@ func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.Notifica
 	return push.NotificationHandlerContext{
 		Client:   c,
 		ConnPool: c.connPool,
-		Conn:     cn,
+		Conn:     &connectionAdapter{conn: cn}, // Wrap in adapter for easier interface access
 	}
+}
+
+// initializeHitlessManager initializes hitless upgrade manager for a client.
+func initializeHitlessManager(client *baseClient, config *HitlessUpgradeConfig) (*hitless.HitlessManager, error) {
+	// Create client adapter
+	clientAdapterInstance := NewClientAdapter(client)
+
+	// Create hitless manager directly
+	manager, err := hitless.NewHitlessManager(clientAdapterInstance, config)
+	if err != nil {
+		return nil, err
+	}
+	return manager, nil
 }

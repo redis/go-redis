@@ -38,6 +38,7 @@ type ClusterOptions struct {
 	ClientName string
 
 	// NewClient creates a cluster node client with provided name and options.
+	// If NewClient is set by the user, the user is responsible for handling hitless upgrades and push notifications.
 	NewClient func(opt *Options) *Client
 
 	// The maximum number of retries before giving up. Command is retried
@@ -129,6 +130,14 @@ type ClusterOptions struct {
 	// When a node is marked as failing, it will be avoided for this duration.
 	// Default is 15 seconds.
 	FailingTimeoutSeconds int
+
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// When HitlessUpgradeConfig.Enabled is not "disabled", the client will handle
+	// cluster upgrade notifications gracefully and manage connection/pool state
+	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
+	// If nil, hitless upgrades are in "auto" mode and will be enabled if the server supports it.
+	// The ClusterClient does not directly work with hitless, it is up to the clients in the Nodes map to work with hitless.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
 
 func (opt *ClusterOptions) init() {
@@ -360,8 +369,9 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// much use for ClusterSlots config).  This means we cannot execute the
 		// READONLY command against that node -- setting readOnly to false in such
 		// situations in the options below will prevent that from happening.
-		readOnly:      opt.ReadOnly && opt.ClusterSlots == nil,
-		UnstableResp3: opt.UnstableResp3,
+		readOnly:             opt.ReadOnly && opt.ClusterSlots == nil,
+		UnstableResp3:        opt.UnstableResp3,
+		HitlessUpgradeConfig: opt.HitlessUpgradeConfig,
 	}
 }
 

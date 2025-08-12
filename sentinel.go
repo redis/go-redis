@@ -16,8 +16,8 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
-	"github.com/redis/go-redis/v9/push"
 	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/push"
 )
 
 //------------------------------------------------------------------------------
@@ -139,6 +139,14 @@ type FailoverOptions struct {
 	FailingTimeoutSeconds int
 
 	UnstableResp3 bool
+
+	// Hitless is not supported for FailoverClients at the moment
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// When HitlessUpgradeConfig.Enabled is not "disabled", the client will handle
+	// upgrade notifications gracefully and manage connection/pool state transitions
+	// seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
+	// If nil, hitless upgrades are disabled.
+	//HitlessUpgradeConfig *HitlessUpgradeConfig
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -455,8 +463,6 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	opt.Dialer = masterReplicaDialer(failover)
 	opt.init()
 
-	var connPool *pool.ConnPool
-
 	rdb := &Client{
 		baseClient: &baseClient{
 			opt: opt,
@@ -468,15 +474,22 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// Use void processor by default for RESP2 connections
 	rdb.pushProcessor = initializePushProcessor(opt)
 
-	connPool = newConnPool(opt, rdb.dialHook)
-	rdb.connPool = connPool
+	rdb.connPool = newConnPool(opt, rdb.dialHook, rdb.connectionProcessor)
+
+	// Create separate PubSub pool
+	rdb.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
+		return rdb.dialHook(ctx, opt.Network, opt.Addr)
+	})
+
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
-		_ = connPool.Filter(func(cn *pool.Conn) bool {
-			return cn.RemoteAddr().String() != addr
-		})
+		if connPool, ok := rdb.connPool.(*pool.ConnPool); ok {
+			_ = connPool.Filter(func(cn *pool.Conn) bool {
+				return cn.RemoteAddr().String() != addr
+			})
+		}
 	}
 	failover.mu.Unlock()
 
@@ -542,7 +555,12 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
 	})
-	c.connPool = newConnPool(opt, c.dialHook)
+	c.connPool = newConnPool(opt, c.dialHook, c.connectionProcessor)
+
+	// Create separate PubSub pool
+	c.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
+		return c.dialHook(ctx, opt.Network, opt.Addr)
+	})
 
 	return c
 }
@@ -569,11 +587,26 @@ func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
 func (c *SentinelClient) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
-
 		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			return c.newConn(ctx)
+			cn, err := c.pubsubPool.Get(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			// will return nil if already initialized
+			err = c.initConn(ctx, cn)
+			if err != nil {
+				c.pubsubPool.Remove(ctx, cn, err)
+				return nil, err
+			}
+
+			return cn, nil
 		},
-		closeConn: c.connPool.CloseConn,
+		closeConn: func(cn *pool.Conn) error {
+			c.pubsubPool.Remove(context.Background(), cn, nil)
+			return nil
+		},
+		pushProcessor: c.pushProcessor,
 	}
 	pubsub.init()
 	return pubsub
