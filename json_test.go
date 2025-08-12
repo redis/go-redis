@@ -142,6 +142,10 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				resArr, err := client.JSONArrIndex(ctx, "doc1", "$.store.book[?(@.price<10)].size", 20).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resArr).To(Equal([]int64{1, 2}))
+
+				_, err = client.JSONGet(ctx, "this-key-does-not-exist", "$").Result()
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(BeIdenticalTo(redis.Nil))
 			})
 
 			It("should JSONArrInsert", Label("json.arrinsert", "json"), func() {
@@ -402,8 +406,8 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(cmd2.Val()).To(Equal(int64(1)))
 
 				cmd3 := client.JSONGet(ctx, "del1", "$")
-				Expect(cmd3.Err()).NotTo(HaveOccurred())
-				Expect(cmd3.Val()).To(HaveLen(0))
+				Expect(cmd3.Err()).To(Equal(redis.Nil))
+				Expect(cmd3.Val()).To(Equal(""))
 			})
 
 			It("should JSONDel with $", Label("json.del", "json"), func() {
@@ -671,6 +675,58 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(cmd2.Val()).To(HaveLen(1))
 				// RESP2 v RESP3
 				Expect(cmd2.Val()[0]).To(Or(Equal([]interface{}{"boolean"}), Equal("boolean")))
+			})
+		})
+
+		Describe("JSON Nil Handling", func() {
+			It("should return redis.Nil for non-existent key", func() {
+				_, err := client.JSONGet(ctx, "non-existent-key", "$").Result()
+				Expect(err).To(Equal(redis.Nil))
+			})
+
+			It("should return empty array for non-existent path in existing key", func() {
+				err := client.JSONSet(ctx, "test-key", "$", `{"a": 1, "b": "hello"}`).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Non-existent path should return empty array, not error
+				val, err := client.JSONGet(ctx, "test-key", "$.nonexistent").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("[]"))
+			})
+
+			It("should distinguish empty array from non-existent path", func() {
+				err := client.JSONSet(ctx, "test-key", "$", `{"arr": [], "obj": {}}`).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Empty array should return the array
+				val, err := client.JSONGet(ctx, "test-key", "$.arr").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("[[]]"))
+
+				// Non-existent field should return empty array
+				val, err = client.JSONGet(ctx, "test-key", "$.missing").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("[]"))
+			})
+
+			It("should handle multiple paths with mixed results", func() {
+				err := client.JSONSet(ctx, "test-key", "$", `{"a": 1, "b": 2}`).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Path that exists
+				val, err := client.JSONGet(ctx, "test-key", "$.a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("[1]"))
+
+				// Path that doesn't exist should return empty array
+				val, err = client.JSONGet(ctx, "test-key", "$.c").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("[]"))
+			})
+
+			AfterEach(func() {
+				// Clean up test keys
+				client.Del(ctx, "test-key", "non-existent-key")
 			})
 		})
 	}
