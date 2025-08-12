@@ -231,6 +231,11 @@ type Options struct {
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	// When unstable mode is enabled, the client will use RESP3 protocol and only be able to use RawResult
 	UnstableResp3 bool
+
+	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
+	// When a node is marked as failing, it will be avoided for this duration.
+	// Default is 15 seconds.
+	FailingTimeoutSeconds int
 }
 
 func (opt *Options) init() {

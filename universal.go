@@ -98,7 +98,13 @@ type UniversalOptions struct {
 	DisableIdentity bool
 
 	IdentitySuffix string
-	UnstableResp3  bool
+
+	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
+	// When a node is marked as failing, it will be avoided for this duration.
+	// Only applies to cluster clients. Default is 15 seconds.
+	FailingTimeoutSeconds int
+
+	UnstableResp3 bool
 
 	// IsClusterMode can be used when only one Addrs is provided (e.g. Elasticache supports setting up cluster mode with configuration endpoint).
 	IsClusterMode bool
@@ -149,10 +155,11 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 
 		TLSConfig: o.TLSConfig,
 
-		DisableIdentity:  o.DisableIdentity,
-		DisableIndentity: o.DisableIndentity,
-		IdentitySuffix:   o.IdentitySuffix,
-		UnstableResp3:    o.UnstableResp3,
+		DisableIdentity:       o.DisableIdentity,
+		DisableIndentity:      o.DisableIndentity,
+		IdentitySuffix:        o.IdentitySuffix,
+		FailingTimeoutSeconds: o.FailingTimeoutSeconds,
+		UnstableResp3:         o.UnstableResp3,
 	}
 }
 

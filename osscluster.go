@@ -124,6 +124,11 @@ type ClusterOptions struct {
 
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	UnstableResp3 bool
+
+	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
+	// When a node is marked as failing, it will be avoided for this duration.
+	// Default is 15 seconds.
+	FailingTimeoutSeconds int
 }
 
 func (opt *ClusterOptions) init() {
@@ -179,6 +184,10 @@ func (opt *ClusterOptions) init() {
 
 	if opt.NewClient == nil {
 		opt.NewClient = NewClient
+	}
+
+	if opt.FailingTimeoutSeconds == 0 {
+		opt.FailingTimeoutSeconds = 15
 	}
 }
 
@@ -284,6 +293,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
+	o.FailingTimeoutSeconds = q.int("failing_timeout_seconds")
 
 	if q.err != nil {
 		return nil, q.err
@@ -330,20 +340,21 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		WriteTimeout:          opt.WriteTimeout,
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:         opt.PoolFIFO,
-		PoolSize:         opt.PoolSize,
-		PoolTimeout:      opt.PoolTimeout,
-		MinIdleConns:     opt.MinIdleConns,
-		MaxIdleConns:     opt.MaxIdleConns,
-		MaxActiveConns:   opt.MaxActiveConns,
-		ConnMaxIdleTime:  opt.ConnMaxIdleTime,
-		ConnMaxLifetime:  opt.ConnMaxLifetime,
-		ReadBufferSize:   opt.ReadBufferSize,
-		WriteBufferSize:  opt.WriteBufferSize,
-		DisableIdentity:  opt.DisableIdentity,
-		DisableIndentity: opt.DisableIdentity,
-		IdentitySuffix:   opt.IdentitySuffix,
-		TLSConfig:        opt.TLSConfig,
+		PoolFIFO:              opt.PoolFIFO,
+		PoolSize:              opt.PoolSize,
+		PoolTimeout:           opt.PoolTimeout,
+		MinIdleConns:          opt.MinIdleConns,
+		MaxIdleConns:          opt.MaxIdleConns,
+		MaxActiveConns:        opt.MaxActiveConns,
+		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
+		ConnMaxLifetime:       opt.ConnMaxLifetime,
+		ReadBufferSize:        opt.ReadBufferSize,
+		WriteBufferSize:       opt.WriteBufferSize,
+		DisableIdentity:       opt.DisableIdentity,
+		DisableIndentity:      opt.DisableIdentity,
+		IdentitySuffix:        opt.IdentitySuffix,
+		FailingTimeoutSeconds: opt.FailingTimeoutSeconds,
+		TLSConfig:             opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
 		// cluster whose nodes are not in clustering mode (otherwise there isn't
 		// much use for ClusterSlots config).  This means we cannot execute the
@@ -432,7 +443,7 @@ func (n *clusterNode) MarkAsFailing() {
 }
 
 func (n *clusterNode) Failing() bool {
-	const timeout = 15 // 15 seconds
+	timeout := int64(n.Client.opt.FailingTimeoutSeconds)
 
 	failing := atomic.LoadUint32(&n.failing)
 	if failing == 0 {
