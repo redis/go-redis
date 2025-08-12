@@ -1,17 +1,37 @@
 # Release Notes
 
-# 9.12.0-beta.1 (2025-08-04)
+# 9.12.1 (2025-08-11)
+## 🚀 Highlights
+In the last version (9.12.0) the client introduced bigger write and read buffer sized. The default value we set was 512KiB.
+However, users reported that this is too big for most use cases and can lead to high memory usage.
+In this version the default value is changed to 256KiB. The `README.md` was updated to reflect the
+correct default value and include a note that the default value can be changed.
+
+## 🐛 Bug Fixes
+
+- fix(options): Add buffer sizes to failover. Update README ([#3468](https://github.com/redis/go-redis/pull/3468))
+
+## 🧰 Maintenance
+
+- fix(options): Add buffer sizes to failover. Update README ([#3468](https://github.com/redis/go-redis/pull/3468))
+- chore: update & fix otel example ([#3466](https://github.com/redis/go-redis/pull/3466))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@ndyakov](https://github.com/ndyakov) and [@vmihailenco](https://github.com/vmihailenco)
+
+# 9.12.0 (2025-08-05)
 
 ## 🚀 Highlights
 
-- This is a beta release for Redis 8.2 support.
+- This release includes support for [Redis 8.2](https://redis.io/docs/latest/operate/oss_and_stack/stack-with-enterprise/release-notes/redisce/redisos-8.2-release-notes/).
 - Introduces an experimental Query Builders for `FTSearch`, `FTAggregate` and other search commands.
 - Adds support for `EPSILON` option in `FT.VSIM`.
-- Includes bug fixes and improvements related to search and community contributions for [redisotel](https://github.com/redis/go-redis/tree/master/extra/redisotel).
+- Includes bug fixes and improvements contributed by the community related to ring and [redisotel](https://github.com/redis/go-redis/tree/master/extra/redisotel).
 
 ## Changes
-
-- chore(github): Improve stale issue workflow ([#3458](https://github.com/redis/go-redis/pull/3458))
+- Improve stale issue workflow ([#3458](https://github.com/redis/go-redis/pull/3458))
 - chore(ci): Add 8.2 rc2 pre build for CI ([#3459](https://github.com/redis/go-redis/pull/3459))
 - Added new stream commands ([#3450](https://github.com/redis/go-redis/pull/3450))
 - feat: Add "skip_verify" to Sentinel ([#3428](https://github.com/redis/go-redis/pull/3428))
@@ -21,19 +41,25 @@
 
 ## 🚀 New Features
 
+- feat: recover addIdleConn may occur panic ([#2445](https://github.com/redis/go-redis/pull/2445))
+- feat(ring): specify custom health check func via HeartbeatFn option ([#2940](https://github.com/redis/go-redis/pull/2940))
 - Add Query Builder for RediSearch commands ([#3436](https://github.com/redis/go-redis/pull/3436))
-- Add configurable buffer sizes for Redis connections ([#3453](https://github.com/redis/go-redis/pull/3453))
+- add configurable buffer sizes for Redis connections ([#3453](https://github.com/redis/go-redis/pull/3453))
 - Add VAMANA vector type to RediSearch ([#3449](https://github.com/redis/go-redis/pull/3449))
 - VSIM add `EPSILON` option ([#3454](https://github.com/redis/go-redis/pull/3454))
 - Add closing support to otel metrics instrumentation ([#3444](https://github.com/redis/go-redis/pull/3444))
 
 ## 🐛 Bug Fixes
 
+- fix(redisotel): fix buggy append in reportPoolStats ([#3122](https://github.com/redis/go-redis/pull/3122))
 - fix(search): return results even if doc is empty ([#3457](https://github.com/redis/go-redis/pull/3457))
 - [ISSUE-3402]: Ring.Pipelined return dial timeout error ([#3403](https://github.com/redis/go-redis/pull/3403))
 
 ## 🧰 Maintenance
 
+- Merges stale issues jobs into one job with two steps ([#3463](https://github.com/redis/go-redis/pull/3463))
+- improve code readability ([#3446](https://github.com/redis/go-redis/pull/3446))
+- chore(release): 9.12.0-beta.1 ([#3460](https://github.com/redis/go-redis/pull/3460))
 - DOC-5472 time series doc examples ([#3443](https://github.com/redis/go-redis/pull/3443))
 - Add VAMANA compression algorithm tests ([#3461](https://github.com/redis/go-redis/pull/3461))
 - bumped redis 8.2 version used in the CI/CD ([#3451](https://github.com/redis/go-redis/pull/3451))
@@ -41,13 +67,12 @@
 ## Contributors
 We'd like to thank all the contributors who worked on this release!
 
-[@andy-stark-redis](https://github.com/andy-stark-redis), [@cxljs](https://github.com/cxljs), [@htemelski-redis](https://github.com/htemelski-redis), [@jouir](https://github.com/jouir), [@ndyakov](https://github.com/ndyakov), [@ofekshenawa](https://github.com/ofekshenawa), [@rokn](https://github.com/rokn) and [@smnvdev](https://github.com/smnvdev)
+[@andy-stark-redis](https://github.com/andy-stark-redis), [@cxljs](https://github.com/cxljs), [@elena-kolevska](https://github.com/elena-kolevska), [@htemelski-redis](https://github.com/htemelski-redis), [@jouir](https://github.com/jouir), [@monkey92t](https://github.com/monkey92t), [@ndyakov](https://github.com/ndyakov), [@ofekshenawa](https://github.com/ofekshenawa), [@rokn](https://github.com/rokn), [@smnvdev](https://github.com/smnvdev), [@strobil](https://github.com/strobil) and [@wzy9607](https://github.com/wzy9607)
 
 ## New Contributors
-* [@htemelski-redis](https://github.com/htemelski-redis) made their first contribution in https://github.com/redis/go-redis/pull/3409
-* [@smnvdev](https://github.com/smnvdev) made their first contribution in https://github.com/redis/go-redis/pull/3403
-* [@rokn](https://github.com/rokn) made their first contribution in https://github.com/redis/go-redis/pull/3444
-
+* [@htemelski-redis](https://github.com/htemelski-redis) made their first contribution in [#3409](https://github.com/redis/go-redis/pull/3409)
+* [@smnvdev](https://github.com/smnvdev) made their first contribution in [#3403](https://github.com/redis/go-redis/pull/3403)
+* [@rokn](https://github.com/rokn) made their first contribution in [#3444](https://github.com/redis/go-redis/pull/3444)
 
 # 9.11.0 (2025-06-24)
 

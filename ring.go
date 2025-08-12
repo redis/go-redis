@@ -24,6 +24,12 @@ import (
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
 
+// defaultHeartbeatFn is the default function used to check the shard liveness
+var defaultHeartbeatFn = func(ctx context.Context, client *Client) bool {
+	err := client.Ping(ctx).Err()
+	return err == nil || err == pool.ErrPoolTimeout
+}
+
 //------------------------------------------------------------------------------
 
 type ConsistentHash interface {
@@ -56,9 +62,13 @@ type RingOptions struct {
 	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
 	ClientName string
 
-	// Frequency of PING commands sent to check shards availability.
+	// Frequency of executing HeartbeatFn to check shards availability.
 	// Shard is considered down after 3 subsequent failed checks.
 	HeartbeatFrequency time.Duration
+
+	// A function used to check the shard liveness
+	// if not set, defaults to defaultHeartbeatFn
+	HeartbeatFn func(ctx context.Context, client *Client) bool
 
 	// NewConsistentHash returns a consistent hash that is used
 	// to distribute keys across the shards.
@@ -118,14 +128,14 @@ type RingOptions struct {
 	// Larger buffers can improve performance for commands that return large responses.
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 0.5MiB (524288 bytes)
+	// default: 256KiB (262144 bytes)
 	ReadBufferSize int
 
 	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
 	// Larger buffers can improve performance for large pipelines and commands with many arguments.
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 0.5MiB (524288 bytes)
+	// default: 256KiB (262144 bytes)
 	WriteBufferSize int
 
 	TLSConfig *tls.Config
@@ -155,6 +165,10 @@ func (opt *RingOptions) init() {
 
 	if opt.HeartbeatFrequency == 0 {
 		opt.HeartbeatFrequency = 500 * time.Millisecond
+	}
+
+	if opt.HeartbeatFn == nil {
+		opt.HeartbeatFn = defaultHeartbeatFn
 	}
 
 	if opt.NewConsistentHash == nil {
@@ -474,8 +488,7 @@ func (c *ringSharding) Heartbeat(ctx context.Context, frequency time.Duration) {
 
 			// note: `c.List()` return a shadow copy of `[]*ringShard`.
 			for _, shard := range c.List() {
-				err := shard.Client.Ping(ctx).Err()
-				isUp := err == nil || err == pool.ErrPoolTimeout
+				isUp := c.opt.HeartbeatFn(ctx, shard.Client)
 				if shard.Vote(isUp) {
 					internal.Logger.Printf(ctx, "ring shard state changed: %s", shard)
 					rebalance = true

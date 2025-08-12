@@ -34,12 +34,12 @@ var _ = Describe("Buffer Size Configuration", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer connPool.CloseConn(cn)
 
-		// Check that default buffer sizes are used (0.5MiB)
+		// Check that default buffer sizes are used (256KiB)
 		writerBufSize := getWriterBufSizeUnsafe(cn)
 		readerBufSize := getReaderBufSizeUnsafe(cn)
 
-		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 0.5MiB buffer size
-		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 0.5MiB buffer size
+		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 256KiB buffer size
+		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 256KiB buffer size
 	})
 
 	It("should use custom buffer sizes when specified", func() {
@@ -79,16 +79,16 @@ var _ = Describe("Buffer Size Configuration", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer connPool.CloseConn(cn)
 
-		// Check that default buffer sizes are used (0.5MiB)
+		// Check that default buffer sizes are used (256KiB)
 		writerBufSize := getWriterBufSizeUnsafe(cn)
 		readerBufSize := getReaderBufSizeUnsafe(cn)
 
-		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 0.5MiB buffer size
-		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 0.5MiB buffer size
+		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 256KiB buffer size
+		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 256KiB buffer size
 	})
 
-	It("should use 0.5MiB default buffer sizes for standalone NewConn", func() {
-		// Test that NewConn (without pool) also uses 0.5MiB defaults
+	It("should use 256KiB default buffer sizes for standalone NewConn", func() {
+		// Test that NewConn (without pool) also uses 256KiB buffers
 		netConn := newDummyConn()
 		cn := pool.NewConn(netConn)
 		defer cn.Close()
@@ -96,11 +96,11 @@ var _ = Describe("Buffer Size Configuration", func() {
 		writerBufSize := getWriterBufSizeUnsafe(cn)
 		readerBufSize := getReaderBufSizeUnsafe(cn)
 
-		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 0.5MiB buffer size
-		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 0.5MiB buffer size
+		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 256KiB buffer size
+		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 256KiB buffer size
 	})
 
-	It("should use 0.5MiB defaults even when pool is created directly without buffer sizes", func() {
+	It("should use 256KiB defaults even when pool is created directly without buffer sizes", func() {
 		// Test the scenario where someone creates a pool directly (like in tests)
 		// without setting ReadBufferSize and WriteBufferSize
 		connPool = pool.NewConnPool(&pool.Options{
@@ -114,12 +114,12 @@ var _ = Describe("Buffer Size Configuration", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer connPool.CloseConn(cn)
 
-		// Should still get 0.5MiB defaults because NewConnPool sets them
+		// Should still get 256KiB defaults because NewConnPool sets them
 		writerBufSize := getWriterBufSizeUnsafe(cn)
 		readerBufSize := getReaderBufSizeUnsafe(cn)
 
-		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 0.5MiB buffer size
-		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 0.5MiB buffer size
+		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 256KiB buffer size
+		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 256KiB buffer size
 	})
 })
 

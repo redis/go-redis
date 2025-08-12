@@ -93,6 +93,20 @@ type FailoverOptions struct {
 	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
 
+	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
+	// Larger buffers can improve performance for commands that return large responses.
+	// Smaller buffers can improve memory usage for larger pools.
+	//
+	// default: 256KiB (262144 bytes)
+	ReadBufferSize int
+
+	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
+	// Larger buffers can improve performance for large pipelines and commands with many arguments.
+	// Smaller buffers can improve memory usage for larger pools.
+	//
+	// default: 256KiB (262144 bytes)
+	WriteBufferSize int
+
 	PoolFIFO bool
 
 	PoolSize        int
@@ -118,7 +132,13 @@ type FailoverOptions struct {
 	DisableIdentity bool
 
 	IdentitySuffix string
-	UnstableResp3  bool
+
+	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
+	// When a node is marked as failing, it will be avoided for this duration.
+	// Only applies to failover cluster clients. Default is 15 seconds.
+	FailingTimeoutSeconds int
+
+	UnstableResp3 bool
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -140,6 +160,9 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
+
+		ReadBufferSize:  opt.ReadBufferSize,
+		WriteBufferSize: opt.WriteBufferSize,
 
 		DialTimeout:           opt.DialTimeout,
 		ReadTimeout:           opt.ReadTimeout,
@@ -180,6 +203,9 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
+
+		ReadBufferSize:  opt.ReadBufferSize,
+		WriteBufferSize: opt.WriteBufferSize,
 
 		DialTimeout:           opt.DialTimeout,
 		ReadTimeout:           opt.ReadTimeout,
@@ -227,6 +253,9 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
 
+		ReadBufferSize:  opt.ReadBufferSize,
+		WriteBufferSize: opt.WriteBufferSize,
+
 		DialTimeout:           opt.DialTimeout,
 		ReadTimeout:           opt.ReadTimeout,
 		WriteTimeout:          opt.WriteTimeout,
@@ -243,10 +272,10 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		TLSConfig: opt.TLSConfig,
 
-		DisableIdentity:  opt.DisableIdentity,
-		DisableIndentity: opt.DisableIndentity,
-
-		IdentitySuffix: opt.IdentitySuffix,
+		DisableIdentity:       opt.DisableIdentity,
+		DisableIndentity:      opt.DisableIndentity,
+		IdentitySuffix:        opt.IdentitySuffix,
+		FailingTimeoutSeconds: opt.FailingTimeoutSeconds,
 	}
 }
 
@@ -681,10 +710,10 @@ type sentinelFailover struct {
 	onFailover func(ctx context.Context, addr string)
 	onUpdate   func(ctx context.Context)
 
-	mu          sync.RWMutex
-	_masterAddr string
-	sentinel    *SentinelClient
-	pubsub      *PubSub
+	mu         sync.RWMutex
+	masterAddr string
+	sentinel   *SentinelClient
+	pubsub     *PubSub
 }
 
 func (c *sentinelFailover) Close() error {
@@ -945,7 +974,7 @@ func parseReplicaAddrs(addrs []map[string]string, keepDisconnected bool) []strin
 
 func (c *sentinelFailover) trySwitchMaster(ctx context.Context, addr string) {
 	c.mu.RLock()
-	currentAddr := c._masterAddr //nolint:ifshort
+	currentAddr := c.masterAddr //nolint:ifshort
 	c.mu.RUnlock()
 
 	if addr == currentAddr {
@@ -955,10 +984,10 @@ func (c *sentinelFailover) trySwitchMaster(ctx context.Context, addr string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if addr == c._masterAddr {
+	if addr == c.masterAddr {
 		return
 	}
-	c._masterAddr = addr
+	c.masterAddr = addr
 
 	internal.Logger.Printf(ctx, "sentinel: new master=%q addr=%q",
 		c.opt.MasterName, addr)
