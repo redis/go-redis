@@ -1,5 +1,26 @@
 # Release Notes
 
+# 9.12.1 (2025-08-11)
+## 🚀 Highlights
+In the last version (9.12.0) the client introduced bigger write and read buffer sized. The default value we set was 512KiB.
+However, users reported that this is too big for most use cases and can lead to high memory usage.
+In this version the default value is changed to 256KiB. The `README.md` was updated to reflect the
+correct default value and include a note that the default value can be changed.
+
+## 🐛 Bug Fixes
+
+- fix(options): Add buffer sizes to failover. Update README ([#3468](https://github.com/redis/go-redis/pull/3468))
+
+## 🧰 Maintenance
+
+- fix(options): Add buffer sizes to failover. Update README ([#3468](https://github.com/redis/go-redis/pull/3468))
+- chore: update & fix otel example ([#3466](https://github.com/redis/go-redis/pull/3466))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@ndyakov](https://github.com/ndyakov) and [@vmihailenco](https://github.com/vmihailenco)
+
 # 9.12.0 (2025-08-05)
 
 ## 🚀 Highlights

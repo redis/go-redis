@@ -129,7 +129,13 @@ type FailoverOptions struct {
 	DisableIdentity bool
 
 	IdentitySuffix string
-	UnstableResp3  bool
+
+	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
+	// When a node is marked as failing, it will be avoided for this duration.
+	// Only applies to failover cluster clients. Default is 15 seconds.
+	FailingTimeoutSeconds int
+
+	UnstableResp3 bool
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -263,10 +269,10 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		TLSConfig: opt.TLSConfig,
 
-		DisableIdentity:  opt.DisableIdentity,
-		DisableIndentity: opt.DisableIndentity,
-
-		IdentitySuffix: opt.IdentitySuffix,
+		DisableIdentity:       opt.DisableIdentity,
+		DisableIndentity:      opt.DisableIndentity,
+		IdentitySuffix:        opt.IdentitySuffix,
+		FailingTimeoutSeconds: opt.FailingTimeoutSeconds,
 	}
 }
 
