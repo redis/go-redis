@@ -24,15 +24,8 @@ type HandoffRequest struct {
 	ConnID            uint64 // Unique connection identifier
 	Endpoint          string
 	SeqID             int64
-	Result            chan HandoffResult
 	StopWorkerRequest bool
 	Pool              pool.Pooler // Pool to remove connection from on failure
-}
-
-// HandoffResult represents the result of a handoff operation
-type HandoffResult struct {
-	Conn *pool.Conn
-	Err  error
 }
 
 // RedisConnectionProcessor implements interfaces.ConnectionProcessor for Redis-specific connection handling
@@ -141,7 +134,7 @@ func (rcp *RedisConnectionProcessor) log(level int, message string) {
 
 // IsHandoffPending returns true if the given connection has a pending handoff
 func (rcp *RedisConnectionProcessor) IsHandoffPending(conn *pool.Conn) bool {
-	_, pending := rcp.pending.Load(conn)
+	_, pending := rcp.pending.Load(conn.GetID())
 	return pending
 }
 
@@ -199,7 +192,7 @@ func (rcp *RedisConnectionProcessor) ProcessConnectionOnPut(ctx context.Context,
 	// first check if we should handoff for faster rejection
 	if cn.ShouldHandoff() {
 		// check pending handoff to not queue the same connection twice
-		_, hasPendingHandoff := rcp.pending.Load(cn)
+		_, hasPendingHandoff := rcp.pending.Load(cn.GetID())
 		if !hasPendingHandoff {
 			// Check for empty endpoint first (synchronous check)
 			if cn.GetHandoffEndpoint() == "" {
@@ -301,7 +294,7 @@ func (rcp *RedisConnectionProcessor) queueHandoffWithTimeout(request HandoffRequ
 	case rcp.handoffQueue <- request:
 		return
 	case <-rcp.shutdown:
-		rcp.pending.Delete(cn)
+		rcp.pending.Delete(cn.GetID())
 		return
 	default:
 		// Queue is full - log and attempt scaling
@@ -315,8 +308,6 @@ func (rcp *RedisConnectionProcessor) queueHandoffWithTimeout(request HandoffRequ
 		rcp.scaleUpWorkers()
 	}
 
-	// TODO: reimplement? extract as config?
-	// Second attempt - try queuing with timeout of 2 seconds
 	queueTimeout := 5 * time.Second // Default fallback
 	if rcp.config != nil {
 		queueTimeout = rcp.config.HandoffQueueTimeout
@@ -336,13 +327,13 @@ func (rcp *RedisConnectionProcessor) queueHandoffWithTimeout(request HandoffRequ
 	case <-timeout.C:
 		// Timeout expired - drop the connection
 		err := fmt.Errorf("handoff queue timeout after %v", queueTimeout)
-		rcp.pending.Delete(cn)
+		rcp.pending.Delete(cn.GetID())
 		if rcp.config != nil && rcp.config.LogLevel >= 0 { // Error level
 			internal.Logger.Printf(context.Background(), err.Error())
 		}
 		return
 	case <-rcp.shutdown:
-		rcp.pending.Delete(cn)
+		rcp.pending.Delete(cn.GetID())
 		return
 	}
 }
@@ -438,7 +429,7 @@ func (rcp *RedisConnectionProcessor) processHandoffRequest(request HandoffReques
 	}
 
 	// Remove from pending map
-	defer rcp.pending.Delete(request.Conn)
+	defer rcp.pending.Delete(request.Conn.GetID())
 
 	// Perform the handoff
 	err := rcp.performConnectionHandoffWithPool(context.Background(), request.Conn, request.Pool)
@@ -487,10 +478,9 @@ func (rcp *RedisConnectionProcessor) performConnectionHandoffWithPool(ctx contex
 
 	newEndpoint := cn.GetHandoffEndpoint()
 	if newEndpoint == "" {
-		// TODO(hitless): maybe auto?
-		// Handle by performing the handoff to the current endpoint in N seconds,
+		// TODO(hitless): Handle by performing the handoff to the current endpoint in N seconds,
 		// Where N is the time in the moving notification...
-		// Won't work for now!
+		// For now, clear the handoff state and return
 		cn.ClearHandoffState()
 		return nil
 	}
@@ -525,8 +515,9 @@ func (rcp *RedisConnectionProcessor) performConnectionHandoffWithPool(ctx contex
 	// Create new connection to the new endpoint
 	newNetConn, err := endpointDialer(ctx)
 	if err != nil {
-		// TODO(hitless): requeue the handoff request
+		// TODO(hitless): retry
 		// This is the only case where we should retry the handoff request
+		// Should we do anything else other than return the error?
 		return err
 	}
 

@@ -364,8 +364,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 
 		// Simulate a pending handoff by marking for handoff and queuing
 		conn.MarkForHandoff("new-endpoint:6379", 12345)
-		resultChan := make(chan HandoffResult, 1)
-		processor.pending.Store(conn, resultChan)
+		processor.pending.Store(conn.GetID(), int64(12345)) // Store connID -> seqID
 		conn.MarkQueuedForHandoff() // Mark as queued (sets usable=false)
 
 		ctx := context.Background()
@@ -391,11 +390,10 @@ func TestRedisConnectionProcessor(t *testing.T) {
 
 		// Test adding to pending map
 		conn.MarkForHandoff("new-endpoint:6379", 12345)
-		resultChan := make(chan HandoffResult, 1)
-		processor.pending.Store(conn, resultChan)
+		processor.pending.Store(conn.GetID(), int64(12345)) // Store connID -> seqID
 		conn.MarkQueuedForHandoff() // Mark as queued (sets usable=false)
 
-		if _, pending := processor.pending.Load(conn); !pending {
+		if _, pending := processor.pending.Load(conn.GetID()); !pending {
 			t.Error("Connection should be in pending map")
 		}
 

@@ -16,7 +16,7 @@ type NotificationHandler struct {
 	manager *HitlessManager
 }
 
-// HandlePushNotification processes push notifications.
+// HandlePushNotification processes push notifications with hook support.
 func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) == 0 {
 		return ErrInvalidNotification
@@ -27,21 +27,33 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 		return ErrInvalidNotification
 	}
 
+	// Process pre-hooks - they can modify the notification or skip processing
+	modifiedNotification, shouldContinue := snh.manager.processPreHooks(ctx, notificationType, notification)
+	if !shouldContinue {
+		return nil // Hooks decided to skip processing
+	}
+
+	var err error
 	switch notificationType {
-	case "MOVING":
-		return snh.handleMoving(ctx, handlerCtx, notification)
-	case "MIGRATING":
-		return snh.handleMigrating(ctx, handlerCtx, notification)
-	case "MIGRATED":
-		return snh.handleMigrated(ctx, handlerCtx, notification)
-	case "FAILING_OVER":
-		return snh.handleFailingOver(ctx, handlerCtx, notification)
-	case "FAILED_OVER":
-		return snh.handleFailedOver(ctx, handlerCtx, notification)
+	case NotificationMoving:
+		err = snh.handleMoving(ctx, handlerCtx, modifiedNotification)
+	case NotificationMigrating:
+		err = snh.handleMigrating(ctx, handlerCtx, modifiedNotification)
+	case NotificationMigrated:
+		err = snh.handleMigrated(ctx, handlerCtx, modifiedNotification)
+	case NotificationFailingOver:
+		err = snh.handleFailingOver(ctx, handlerCtx, modifiedNotification)
+	case NotificationFailedOver:
+		err = snh.handleFailedOver(ctx, handlerCtx, modifiedNotification)
 	default:
 		// Ignore other notification types (e.g., pub/sub messages)
-		return nil
+		err = nil
 	}
+
+	// Process post-hooks with the result
+	snh.manager.processPostHooks(ctx, notificationType, modifiedNotification, err)
+
+	return err
 }
 
 // handleMoving processes MOVING notifications.
