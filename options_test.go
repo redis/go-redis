@@ -50,27 +50,27 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 			o:   &Options{Addr: "12345:6379"},
 		}, {
 			url: "rediss://localhost:123",
-			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost"}},
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 		}, {
-			url: "rediss://localhost:123?ServerName=abc&TLSMinVersion=1&TLSMaxVersion=3&TLSInsecureSkipVerify=true",
+			url: "rediss://localhost:123?tls_server_name=abc&tls_min_version=1&tls_max_version=3&skip_verify=true",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "abc", MinVersion: 1, MaxVersion: 3, InsecureSkipVerify: true}},
 		}, {
-			url: "rediss://localhost:123?TLSCertPEMFile=./testdata/testcert.pem&TLSKeyPEMFile=./testdata/testkey.pem",
-			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", Certificates: []tls.Certificate{testCert}}},
+			url: "rediss://localhost:123?tls_cert_file=./testdata/testcert.pem&tls_key_file=./testdata/testkey.pem",
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{testCert}}},
 		}, {
-			url: "rediss://localhost:123?TLSCertPEMFile=./testdata/doesnotexist.pem&TLSKeyPEMFile=./testdata/testkey.pem",
+			url: "rediss://localhost:123?tls_cert_file=./testdata/doesnotexist.pem&tls_key_file=./testdata/testkey.pem",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "abc"}},
-			err: errors.New("redis: Error loading X509 Key Pair: open ./testdata/doesnotexist.pem: no such file or directory"),
+			err: errors.New("redis: error loading TLS certificate: open ./testdata/doesnotexist.pem: no such file or directory"),
 		}, {
-			url: "rediss://localhost:123?TLSCertPEMFile=./testdata/testcert.pem",
+			url: "rediss://localhost:123?tls_cert_file=./testdata/testcert.pem",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "abc"}},
-			err: errors.New("redis: TLSCertPEMFile and TLSKeyPEMFile URL parameters must be both set or both omitted"),
+			err: errors.New("redis: tls_cert_file and tls_key_file URL parameters must be both set or both omitted"),
 		}, {
-			url: "rediss://localhost:123?TLSKeyPEMFile=./testdata/testkey.pem",
-			err: errors.New("redis: TLSCertPEMFile and TLSKeyPEMFile URL parameters must be both set or both omitted"),
+			url: "rediss://localhost:123?tls_key_file=./testdata/testkey.pem",
+			err: errors.New("redis: tls_cert_file and tls_key_file URL parameters must be both set or both omitted"),
 		}, {
 			url: "rediss://localhost:123/?skip_verify=true",
-			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", InsecureSkipVerify: true}},
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},
 		}, {
 			url: "redis://:bar@localhost:123",
 			o:   &Options{Addr: "localhost:123", Password: "bar"},

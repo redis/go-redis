@@ -358,6 +358,10 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
 //   - use "skip_verify=true" to ignore TLS certificate validation
+//   - for rediss:// URLs, additional TLS parameters are supported:
+//   - tls_cert_file and tls_key_file: paths to client certificate and key files
+//   - tls_min_version and tls_max_version: TLS version constraints (e.g., 771 for TLS 1.2)
+//   - tls_server_name: override server name for certificate validation
 //
 // Examples:
 //
@@ -577,32 +581,35 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	}
 
 	if u.Scheme == "rediss" {
-		tlsCertPEMFile := q.string("TLSCertPEMFile")
-		tlsKeyPEMFile := q.string("TLSKeyPEMFile")
+		tlsCertFile := q.string("tls_cert_file")
+		tlsKeyFile := q.string("tls_key_file")
 
-		if (tlsCertPEMFile == "") != (tlsKeyPEMFile == "") {
-			return nil, fmt.Errorf("redis: TLSCertPEMFile and TLSKeyPEMFile URL parameters must be both set or both omitted")
+		if (tlsCertFile == "") != (tlsKeyFile == "") {
+			return nil, fmt.Errorf("redis: tls_cert_file and tls_key_file URL parameters must be both set or both omitted")
 		}
 
-		if tlsCertPEMFile != "" {
-			cert, certLoadErr := tls.LoadX509KeyPair(tlsCertPEMFile, tlsKeyPEMFile)
+		if tlsCertFile != "" {
+			cert, certLoadErr := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile)
 			if certLoadErr != nil {
-				return nil, fmt.Errorf("redis: Error loading X509 Key Pair: %w", certLoadErr)
+				return nil, fmt.Errorf("redis: error loading TLS certificate: %w", certLoadErr)
 			}
 
 			o.TLSConfig.Certificates = []tls.Certificate{cert}
 		}
 
-		o.TLSConfig.MinVersion = uint16(q.int("TLSMinVersion"))
-		o.TLSConfig.MaxVersion = uint16(q.int("TLSMaxVersion"))
-		o.TLSConfig.InsecureSkipVerify = q.bool("TLSInsecureSkipVerify")
+		if q.has("tls_min_version") {
+			o.TLSConfig.MinVersion = uint16(q.int("tls_min_version"))
+		}
+		if q.has("tls_max_version") {
+			o.TLSConfig.MaxVersion = uint16(q.int("tls_max_version"))
+		}
 
-		serverNameOverride := q.string("ServerName")
-		if serverNameOverride != "" {
+		tlsServerName := q.string("tls_server_name")
+		if tlsServerName != "" {
 			// we explicitly check for this query parameter, so we don't overwrite
 			// the default server name (the hostname of the Redis server) if it's
 			// not given
-			o.TLSConfig.ServerName = serverNameOverride
+			o.TLSConfig.ServerName = tlsServerName
 		}
 	}
 	if q.err != nil {
