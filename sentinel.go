@@ -441,7 +441,8 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 			}
 			// Handle TLS version setting securely
 			if minVer == 0 {
-				// Don't set MinVersion, let Go use its secure default
+				// Explicitly set MinVersion to TLS 1.2 for security
+				o.TLSConfig.MinVersion = tls.VersionTLS12
 			} else if minVer < int(tls.VersionTLS12) {
 				return nil, fmt.Errorf("redis: tls_min_version %d is insecure (minimum allowed is TLS 1.2: %d)", minVer, tls.VersionTLS12)
 			} else {
