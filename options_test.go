@@ -70,7 +70,7 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 			err: errors.New("redis: TLSCertPEMFile and TLSKeyPEMFile URL parameters must be both set or both omitted"),
 		}, {
 			url: "rediss://localhost:123/?skip_verify=true",
-			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{InsecureSkipVerify: true}},
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", InsecureSkipVerify: true}},
 		}, {
 			url: "redis://:bar@localhost:123",
 			o:   &Options{Addr: "localhost:123", Password: "bar"},
