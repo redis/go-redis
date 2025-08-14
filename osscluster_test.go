@@ -1645,7 +1645,7 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 		}, {
 			test: "MissingRedissPort",
 			url:  "rediss://localhost",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 		}, {
 			test: "MultipleRedisURLs",
 			url:  "redis://localhost:123?addr=localhost:1234&addr=localhost:12345",
