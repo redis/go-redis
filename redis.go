@@ -13,7 +13,6 @@ import (
 	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hscan"
-	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/push"
@@ -217,8 +216,8 @@ type baseClient struct {
 	// Push notification processing
 	pushProcessor push.NotificationProcessor
 
-	// Connection processor for handling connection lifecycle events
-	connectionProcessor interfaces.ConnectionProcessor
+	// Pool hooks manager for handling connection lifecycle events
+	poolHooks *pool.PoolHookManager
 
 	// Hitless upgrade manager
 	hitlessManager *hitless.HitlessManager
@@ -226,13 +225,13 @@ type baseClient struct {
 
 func (c *baseClient) clone() *baseClient {
 	clone := &baseClient{
-		opt:                 c.opt,
-		connPool:            c.connPool,
-		pubsubPool:          c.pubsubPool,
-		onClose:             c.onClose,
-		pushProcessor:       c.pushProcessor,
-		connectionProcessor: c.connectionProcessor,
-		hitlessManager:      c.hitlessManager,
+		opt:            c.opt,
+		connPool:       c.connPool,
+		pubsubPool:     c.pubsubPool,
+		onClose:        c.onClose,
+		pushProcessor:  c.pushProcessor,
+		poolHooks:      c.poolHooks,
+		hitlessManager: c.hitlessManager,
 	}
 	return clone
 }
@@ -666,13 +665,17 @@ func (c *baseClient) enableHitlessUpgrades() error {
 	}
 	// Set the manager reference
 	c.hitlessManager = manager
-	// Create the connection processor from the hitless manager, used for connection lifecycle events
-	// based on the connection flags (some set by the hitless manager and its notification handlers)
-	hitlessConnectionProcessor := manager.CreateConnectionProcessor(c.opt.Protocol, c.dialHook)
+
+	// Create pool hooks manager and add hitless hook
+	c.poolHooks = pool.NewPoolHookManager()
+	hitlessHook := manager.CreatePoolHook(c.opt.Protocol, c.dialHook)
+
 	// Set reference to the pool for connection removal on handoff failure
-	hitlessConnectionProcessor.SetPool(c.connPool)
-	// Set the processor reference to the client
-	c.connectionProcessor = hitlessConnectionProcessor
+	hitlessHook.SetPool(c.connPool)
+
+	// Add the hitless hook to the hooks manager
+	c.poolHooks.AddHook(hitlessHook)
+
 	return nil
 }
 
@@ -681,9 +684,9 @@ func (c *baseClient) disableHitlessUpgrades() error {
 		c.hitlessManager.Close()
 		c.hitlessManager = nil
 	}
-	if c.connectionProcessor != nil {
-		c.connectionProcessor.Shutdown(context.Background())
-		c.connectionProcessor = nil
+	if c.poolHooks != nil {
+		// Clear all hooks
+		c.poolHooks = nil
 	}
 	return nil
 }
@@ -929,11 +932,13 @@ func NewClient(opt *Options) *Client {
 		}
 	}
 
-	// Create connection pool with the processor (nil if hitless upgrades disabled)
-	c.connPool = newConnPool(opt, c.dialHook, c.connectionProcessor)
+	// Create connection pool with the hooks (nil if hitless upgrades disabled)
+	c.connPool = newConnPool(opt, c.dialHook, c.poolHooks)
 
-	// Create separate PubSub pool
-	c.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
+	// Create separate PubSub pool with hooks
+	pubsubConfig := newConnPoolConfig(opt)
+	pubsubConfig.PoolHooks = c.poolHooks
+	c.pubsubPool = pool.NewPubSubPool(pubsubConfig, func(ctx context.Context) (net.Conn, error) {
 		return c.dialHook(ctx, opt.Network, opt.Addr)
 	})
 

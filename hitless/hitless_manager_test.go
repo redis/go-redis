@@ -3,7 +3,6 @@ package hitless
 import (
 	"context"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,32 +68,6 @@ func (mo *MockOptions) NewDialer() func(context.Context) (net.Conn, error) {
 	return func(ctx context.Context) (net.Conn, error) {
 		return nil, nil
 	}
-}
-
-// TestHook for testing hook functionality
-type TestHook struct {
-	PreHookCalled      atomic.Int32
-	PostHookCalled     atomic.Int32
-	ModifyNotification bool
-	BlockProcessing    bool
-}
-
-func (th *TestHook) PreHook(ctx context.Context, notificationType string, notification []interface{}) ([]interface{}, bool) {
-	th.PreHookCalled.Add(1)
-
-	if th.ModifyNotification && notificationType == NotificationMoving && len(notification) > 3 {
-		// Modify the endpoint in the notification
-		modifiedNotification := make([]interface{}, len(notification))
-		copy(modifiedNotification, notification)
-		modifiedNotification[3] = "modified-endpoint:6379"
-		return modifiedNotification, !th.BlockProcessing
-	}
-
-	return notification, !th.BlockProcessing
-}
-
-func (th *TestHook) PostHook(ctx context.Context, notificationType string, notification []interface{}, result error) {
-	th.PostHookCalled.Add(1)
 }
 
 func TestHitlessManagerRefactoring(t *testing.T) {
@@ -198,73 +171,6 @@ func TestHitlessManagerRefactoring(t *testing.T) {
 
 		if manager.GetActiveOperationCount() != 0 {
 			t.Errorf("Expected 0 active operations after cleanup, got %d", manager.GetActiveOperationCount())
-		}
-	})
-
-	t.Run("HookFunctionality", func(t *testing.T) {
-		config := DefaultConfig()
-		client := &MockClient{options: &MockOptions{}}
-
-		manager, err := NewHitlessManager(client, config)
-		if err != nil {
-			t.Fatalf("Failed to create hitless manager: %v", err)
-		}
-		defer manager.Close()
-
-		// Create test hooks
-		hook1 := &TestHook{}
-		hook2 := &TestHook{ModifyNotification: true}
-		hook3 := &TestHook{BlockProcessing: true}
-
-		// Add hooks
-		manager.AddHook(hook1)
-		manager.AddHook(hook2)
-
-		ctx := context.Background()
-		notification := []interface{}{NotificationMoving, "12345", "30", "original-endpoint:6379"}
-
-		// Test pre-hooks
-		modifiedNotification, shouldContinue := manager.processPreHooks(ctx, NotificationMoving, notification)
-		if !shouldContinue {
-			t.Error("Expected processing to continue")
-		}
-
-		if hook1.PreHookCalled.Load() != 1 {
-			t.Errorf("Expected hook1 PreHook to be called once, got %d", hook1.PreHookCalled.Load())
-		}
-
-		if hook2.PreHookCalled.Load() != 1 {
-			t.Errorf("Expected hook2 PreHook to be called once, got %d", hook2.PreHookCalled.Load())
-		}
-
-		// Check if notification was modified by hook2
-		if len(modifiedNotification) < 4 || modifiedNotification[3] != "modified-endpoint:6379" {
-			t.Errorf("Expected notification to be modified, got %v", modifiedNotification)
-		}
-
-		// Test post-hooks
-		manager.processPostHooks(ctx, NotificationMoving, modifiedNotification, nil)
-
-		if hook1.PostHookCalled.Load() != 1 {
-			t.Errorf("Expected hook1 PostHook to be called once, got %d", hook1.PostHookCalled.Load())
-		}
-
-		if hook2.PostHookCalled.Load() != 1 {
-			t.Errorf("Expected hook2 PostHook to be called once, got %d", hook2.PostHookCalled.Load())
-		}
-
-		// Test blocking hook
-		manager.AddHook(hook3)
-		_, shouldContinue = manager.processPreHooks(ctx, NotificationMoving, notification)
-		if shouldContinue {
-			t.Error("Expected processing to be blocked by hook3")
-		}
-
-		// Test hook removal
-		manager.RemoveHook(hook3)
-		_, shouldContinue = manager.processPreHooks(ctx, NotificationMoving, notification)
-		if !shouldContinue {
-			t.Error("Expected processing to continue after removing blocking hook")
 		}
 	})
 

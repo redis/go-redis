@@ -6,8 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/redis/go-redis/v9/internal/interfaces"
 )
 
 // Config contains configuration for PubSub connections.
@@ -22,8 +20,8 @@ type Config struct {
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
-	// ConnectionProcessor handles protocol-specific connection processing
-	ConnectionProcessor interfaces.ConnectionProcessor
+	// PoolHooks provides a flexible hook system for connection processing
+	PoolHooks *PoolHookManager
 }
 
 // PubSubPool manages connections specifically for PubSub operations.
@@ -70,9 +68,9 @@ func (p *PubSubPool) Get(ctx context.Context) (*Conn, error) {
 	cn := NewConn(netConn)
 	cn.pooled = false
 
-	// Process connection if processor is available
-	if processor := p.cfg.ConnectionProcessor; processor != nil {
-		if err := processor.ProcessConnectionOnGet(ctx, cn); err != nil {
+	// Process connection if hooks are available
+	if p.cfg.PoolHooks != nil {
+		if err := p.cfg.PoolHooks.ProcessOnGet(ctx, cn, true); err != nil {
 			_ = cn.Close()
 			return nil, err
 		}
@@ -109,9 +107,9 @@ func (p *PubSubPool) Remove(ctx context.Context, cn *Conn, err error) {
 	}
 	p.mu.Unlock()
 
-	// Process connection before closing if processor is available
-	if processor := p.cfg.ConnectionProcessor; processor != nil {
-		_, _, _ = processor.ProcessConnectionOnPut(ctx, cn)
+	// Process connection before closing if hooks are available
+	if p.cfg.PoolHooks != nil {
+		_, _, _ = p.cfg.PoolHooks.ProcessOnPut(ctx, cn)
 	}
 
 	_ = cn.Close()

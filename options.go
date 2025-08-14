@@ -15,7 +15,6 @@ import (
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/hitless"
-	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/push"
@@ -658,23 +657,23 @@ func newConnPoolConfig(opt *Options) *pool.Config {
 func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
-	processor interfaces.ConnectionProcessor,
+	hooks *pool.PoolHookManager,
 ) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return dialer(ctx, opt.Network, opt.Addr)
 		},
-		PoolFIFO:            opt.PoolFIFO || opt.HitlessUpgradeConfig.IsEnabled(), // Always FIFO with hitless upgrades
-		PoolSize:            opt.PoolSize,
-		PoolTimeout:         opt.PoolTimeout,
-		DialTimeout:         opt.DialTimeout,
-		MinIdleConns:        opt.MinIdleConns,
-		MaxIdleConns:        opt.MaxIdleConns,
-		MaxActiveConns:      opt.MaxActiveConns,
-		ConnMaxIdleTime:     opt.ConnMaxIdleTime,
-		ConnMaxLifetime:     opt.ConnMaxLifetime,
-		ConnectionProcessor: processor,
-		ReadBufferSize:      opt.ReadBufferSize,
-		WriteBufferSize:     opt.WriteBufferSize,
+		PoolFIFO:        opt.PoolFIFO || opt.HitlessUpgradeConfig.IsEnabled(), // Always FIFO with hitless upgrades
+		PoolSize:        opt.PoolSize,
+		PoolTimeout:     opt.PoolTimeout,
+		DialTimeout:     opt.DialTimeout,
+		MinIdleConns:    opt.MinIdleConns,
+		MaxIdleConns:    opt.MaxIdleConns,
+		MaxActiveConns:  opt.MaxActiveConns,
+		ConnMaxIdleTime: opt.ConnMaxIdleTime,
+		ConnMaxLifetime: opt.ConnMaxLifetime,
+		PoolHooks: hooks,
+		ReadBufferSize:  opt.ReadBufferSize,
+		WriteBufferSize: opt.WriteBufferSize,
 	})
 }

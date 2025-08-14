@@ -63,17 +63,4 @@ type ConnectionWithRelaxedTimeout interface {
 	ClearRelaxedTimeout()
 }
 
-// ConnectionProcessor defines the interface for processing connections in the pool.
-// This allows different implementations (e.g., hitless upgrade processors) to be plugged in.
-type ConnectionProcessor interface {
-	// ProcessConnectionOnGet is called when a connection is retrieved from the pool.
-	// It can modify the connection or return an error to prevent its use.
-	ProcessConnectionOnGet(ctx context.Context, conn interface{}) error
 
-	// ProcessConnectionOnPut is called when a connection is returned to the pool.
-	// It returns whether the connection should be pooled and whether it should be removed.
-	ProcessConnectionOnPut(ctx context.Context, conn interface{}) (shouldPool bool, shouldRemove bool, err error)
-
-	// Shutdown gracefully shuts down the processor.
-	Shutdown(ctx context.Context) error
-}

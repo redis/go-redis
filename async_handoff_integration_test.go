@@ -41,17 +41,20 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 		}
 
 		// Create processor with event-driven handoff support
-		processor := hitless.NewRedisConnectionProcessor(3, baseDialer, nil, nil)
+		processor := hitless.NewPoolHook(3, baseDialer, nil, nil)
 		defer processor.Shutdown(context.Background())
 
-		// Create a test pool with the processor
+		// Create a test pool with hooks
+		hookManager := pool.NewPoolHookManager()
+		hookManager.AddHook(processor)
+
 		testPool := pool.NewConnPool(&pool.Options{
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
-			ConnectionProcessor: processor,
-			PoolSize:           5,
-			PoolTimeout:        time.Second,
+			PoolHooks: hookManager,
+			PoolSize:       5,
+			PoolTimeout:    time.Second,
 		})
 		defer testPool.Close()
 
@@ -128,16 +131,20 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := hitless.NewRedisConnectionProcessor(3, baseDialer, nil, nil)
+		processor := hitless.NewPoolHook(3, baseDialer, nil, nil)
 		defer processor.Shutdown(context.Background())
+
+		// Create hooks manager and add processor as hook
+		hookManager := pool.NewPoolHookManager()
+		hookManager.AddHook(processor)
 
 		testPool := pool.NewConnPool(&pool.Options{
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
-			ConnectionProcessor: processor,
-			PoolSize:           10,
-			PoolTimeout:        time.Second,
+			PoolHooks: hookManager,
+			PoolSize:       10,
+			PoolTimeout:    time.Second,
 		})
 		defer testPool.Close()
 
@@ -193,16 +200,20 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			return nil, &net.OpError{Op: "dial", Err: &net.DNSError{Name: addr}}
 		}
 
-		processor := hitless.NewRedisConnectionProcessor(3, failingDialer, nil, nil)
+		processor := hitless.NewPoolHook(3, failingDialer, nil, nil)
 		defer processor.Shutdown(context.Background())
+
+		// Create hooks manager and add processor as hook
+		hookManager := pool.NewPoolHookManager()
+		hookManager.AddHook(processor)
 
 		testPool := pool.NewConnPool(&pool.Options{
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
-			ConnectionProcessor: processor,
-			PoolSize:           3,
-			PoolTimeout:        time.Second,
+			PoolHooks: hookManager,
+			PoolSize:       3,
+			PoolTimeout:    time.Second,
 		})
 		defer testPool.Close()
 
@@ -249,15 +260,19 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := hitless.NewRedisConnectionProcessor(3, slowDialer, nil, nil)
+		processor := hitless.NewPoolHook(3, slowDialer, nil, nil)
+
+		// Create hooks manager and add processor as hook
+		hookManager := pool.NewPoolHookManager()
+		hookManager.AddHook(processor)
 
 		testPool := pool.NewConnPool(&pool.Options{
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
-			ConnectionProcessor: processor,
-			PoolSize:           2,
-			PoolTimeout:        time.Second,
+			PoolHooks: hookManager,
+			PoolSize:       2,
+			PoolTimeout:    time.Second,
 		})
 		defer testPool.Close()
 

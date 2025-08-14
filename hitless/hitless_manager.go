@@ -98,27 +98,9 @@ func NewHitlessManager(client interfaces.ClientInterface, config *Config) (*Hitl
 	return hm, nil
 }
 
-// AddHook adds a notification hook to the manager.
-// Hooks are called in the order they were added.
-func (hm *HitlessManager) AddHook(hook NotificationHook) {
-	hm.hooksMu.Lock()
-	defer hm.hooksMu.Unlock()
-	hm.hooks = append(hm.hooks, hook)
-}
-
-// RemoveHook removes a notification hook from the manager.
-func (hm *HitlessManager) RemoveHook(hook NotificationHook) {
-	hm.hooksMu.Lock()
-	defer hm.hooksMu.Unlock()
-
-	for i, h := range hm.hooks {
-		if h == hook {
-			// Remove hook by swapping with last element and truncating
-			hm.hooks[i] = hm.hooks[len(hm.hooks)-1]
-			hm.hooks = hm.hooks[:len(hm.hooks)-1]
-			break
-		}
-	}
+// CreatePoolHook creates a pool hook with a custom dialer.
+func (hm *HitlessManager) CreatePoolHook(baseDialer func(context.Context, string, string) (net.Conn, error)) *PoolHook {
+	return hm.createPoolHook(baseDialer)
 }
 
 // setupPushNotifications sets up push notification handling by registering with the client's processor.
@@ -246,11 +228,6 @@ func (hm *HitlessManager) GetState() State {
 	return StateIdle
 }
 
-// GetConfig returns the hitless manager configuration.
-func (hm *HitlessManager) GetConfig() *Config {
-	return hm.config.Clone()
-}
-
 // processPreHooks calls all pre-hooks and returns the modified notification and whether to continue processing.
 func (hm *HitlessManager) processPreHooks(ctx context.Context, notificationType string, notification []interface{}) ([]interface{}, bool) {
 	hm.hooksMu.RLock()
@@ -320,16 +297,15 @@ func (fh *FilterHook) PostHook(ctx context.Context, notificationType string, not
 	// No post-processing needed for filter hook
 }
 
-// CreateConnectionProcessor creates a connection processor with this manager already set.
-// Returns the processor as the shared interface type.
-func (hm *HitlessManager) CreateConnectionProcessor(protocol int, baseDialer func(context.Context, string, string) (net.Conn, error)) *RedisConnectionProcessor {
+// createPoolHook creates a pool hook with this manager already set.
+func (hm *HitlessManager) createPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error)) *PoolHook {
 	// Get pool size from client options for better worker defaults
 	poolSize := 0
 	if hm.options != nil {
 		poolSize = hm.options.GetPoolSize()
 	}
 
-	processor := NewRedisConnectionProcessorWithPoolSize(protocol, baseDialer, hm.config, hm, poolSize)
+	hook := NewPoolHookWithPoolSize(baseDialer, hm.config, hm, poolSize)
 
-	return processor
+	return hook
 }

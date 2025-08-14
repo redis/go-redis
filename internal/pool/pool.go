@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
-	"github.com/redis/go-redis/v9/internal/interfaces"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 var (
@@ -82,9 +82,9 @@ type Options struct {
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
-	// ConnectionProcessor handles protocol-specific connection processing
-	// If nil, connections are processed with default behavior
-	ConnectionProcessor interfaces.ConnectionProcessor
+	// PoolHooks provides a flexible hook system for connection processing
+	// If nil, connections are processed with default behavior (no hooks)
+	PoolHooks *PoolHookManager
 }
 
 type lastDialErrorWrap struct {
@@ -110,6 +110,9 @@ type ConnPool struct {
 	waitDurationNs atomic.Int64
 
 	_closed uint32 // atomic
+
+	// Pool hooks manager for flexible connection processing
+	hookManager *PoolHookManager
 }
 
 var _ Pooler = (*ConnPool)(nil)
@@ -123,6 +126,9 @@ func NewConnPool(opt *Options) *ConnPool {
 		idleConns: make([]*Conn, 0, opt.PoolSize),
 	}
 
+	// Initialize hooks system
+	p.initializeHooks()
+
 	// Only create MinIdleConns if explicitly requested (> 0)
 	// This avoids creating connections during pool initialization for tests
 	if opt.MinIdleConns > 0 {
@@ -132,6 +138,30 @@ func NewConnPool(opt *Options) *ConnPool {
 	}
 
 	return p
+}
+
+// initializeHooks sets up the pool hooks system.
+func (p *ConnPool) initializeHooks() {
+	// Initialize hooks manager
+	if p.cfg.PoolHooks != nil {
+		p.hookManager = p.cfg.PoolHooks
+	} else {
+		p.hookManager = NewPoolHookManager()
+	}
+}
+
+// AddPoolHook adds a pool hook to the pool.
+func (p *ConnPool) AddPoolHook(hook PoolHook) {
+	if p.hookManager != nil {
+		p.hookManager.AddHook(hook)
+	}
+}
+
+// RemovePoolHook removes a pool hook from the pool.
+func (p *ConnPool) RemovePoolHook(hook PoolHook) {
+	if p.hookManager != nil {
+		p.hookManager.RemoveHook(hook)
+	}
 }
 
 func (p *ConnPool) checkMinIdleConns() {
@@ -321,6 +351,9 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 
 // getConn returns a connection from the pool.
 func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
+	var cn *Conn
+	var err error
+
 	if p.closed() {
 		return nil, ErrClosed
 	}
@@ -338,7 +371,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 		tries++
 		p.connsMu.Lock()
-		cn, err := p.popIdle()
+		cn, err = p.popIdle()
 		p.connsMu.Unlock()
 
 		if err != nil {
@@ -355,10 +388,9 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 			continue
 		}
 
-		// Process connection using the connection processor if available
-		// Fast path: check processor existence once and cache the result
-		if processor := p.cfg.ConnectionProcessor; processor != nil {
-			if err := processor.ProcessConnectionOnGet(ctx, cn); err != nil {
+		// Process connection using the hooks system
+		if p.hookManager != nil {
+			if err := p.hookManager.ProcessOnGet(ctx, cn, false); err != nil {
 				// Failed to process connection, discard it
 				_ = p.CloseConn(cn)
 				continue
@@ -375,6 +407,15 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	if err != nil {
 		p.freeTurn()
 		return nil, err
+	}
+
+	// Process connection using the hooks system
+	if p.hookManager != nil {
+		if err := p.hookManager.ProcessOnGet(ctx, newcn, true); err != nil {
+			// Failed to process connection, discard it
+			_ = p.CloseConn(newcn)
+			return nil, err
+		}
 	}
 
 	return newcn, nil
@@ -477,22 +518,31 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 }
 
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
-	// Process connection using the connection processor if available
+	// Process connection using the hooks system
 	shouldPool := true
 	shouldRemove := false
 	var err error
 
-	// Fast path: cache processor reference to avoid repeated field access
-	if processor := p.cfg.ConnectionProcessor; processor != nil {
-		shouldPool, shouldRemove, err = processor.ProcessConnectionOnPut(ctx, cn)
+	if cn.HasBufferedData() {
+		// Peek at the reply type to check if it's a push notification
+		if replyType, err := cn.PeekReplyTypeSafe(); err != nil || replyType != proto.RespPush {
+			// Not a push notification or error peeking, remove connection
+			internal.Logger.Printf(ctx, "Conn has unread data (not push notification), removing it")
+			p.Remove(ctx, cn, err)
+		}
+		// It's a push notification, allow pooling (client will handle it)
+	}
+
+	if p.hookManager != nil {
+		shouldPool, shouldRemove, err = p.hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
-			internal.Logger.Printf(ctx, "Connection processor error: %v", err)
+			internal.Logger.Printf(ctx, "Connection hook error: %v", err)
 			p.Remove(ctx, cn, err)
 			return
 		}
 	}
 
-	// If processor says to remove the connection, do so
+	// If hooks say to remove the connection, do so
 	if shouldRemove {
 		p.Remove(ctx, cn, nil)
 		return

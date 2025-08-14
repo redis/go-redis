@@ -95,8 +95,8 @@ func (mp *mockPool) Close() error {
 	return nil
 }
 
-// TestRedisConnectionProcessor tests the Redis connection processor functionality
-func TestRedisConnectionProcessor(t *testing.T) {
+// TestConnectionHook tests the Redis connection processor functionality
+func TestConnectionHook(t *testing.T) {
 	// Create a base dialer for testing
 	baseDialer := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return &mockNetConn{addr: addr}, nil
@@ -112,7 +112,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			MaxHandoffRetries: 3,
 			LogLevel:         2,
 		}
-		processor := NewRedisConnectionProcessor(3, baseDialer, config, nil)
+		processor := NewPoolHook(3, baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -139,9 +139,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		conn.SetInitConnFunc(initConnFunc)
 
 		ctx := context.Background()
-		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 		if err != nil {
-			t.Errorf("ProcessConnectionOnPut should not error: %v", err)
+			t.Errorf("OnPut should not error: %v", err)
 		}
 
 		// Should pool the connection immediately (handoff queued)
@@ -202,14 +202,14 @@ func TestRedisConnectionProcessor(t *testing.T) {
 	})
 
 	t.Run("HandoffNotNeeded", func(t *testing.T) {
-		processor := NewRedisConnectionProcessor(3, baseDialer, nil, nil)
+		processor := NewPoolHook(3, baseDialer, nil, nil)
 		conn := createMockPoolConnection()
 		// Don't mark for handoff
 
 		ctx := context.Background()
-		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 		if err != nil {
-			t.Errorf("ProcessConnectionOnPut should not error when handoff not needed: %v", err)
+			t.Errorf("OnPut should not error when handoff not needed: %v", err)
 		}
 
 		// Should pool the connection normally
@@ -222,16 +222,16 @@ func TestRedisConnectionProcessor(t *testing.T) {
 	})
 
 	t.Run("EmptyEndpoint", func(t *testing.T) {
-		processor := NewRedisConnectionProcessor(3, baseDialer, nil, nil)
+		processor := NewPoolHook(3, baseDialer, nil, nil)
 		conn := createMockPoolConnection()
 		if err := conn.MarkForHandoff("", 12345); err != nil { // Empty endpoint
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
 		}
 
 		ctx := context.Background()
-		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 		if err != nil {
-			t.Errorf("ProcessConnectionOnPut should not error with empty endpoint: %v", err)
+			t.Errorf("OnPut should not error with empty endpoint: %v", err)
 		}
 
 		// Should pool the connection (empty endpoint clears state)
@@ -263,7 +263,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			MaxHandoffRetries: 3, // Explicit queue size to avoid 0-size queue
 			LogLevel:         2,
 		}
-		processor := NewRedisConnectionProcessor(3, failingDialer, config, nil)
+		processor := NewPoolHook(3, failingDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -272,9 +272,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 		if err != nil {
-			t.Errorf("ProcessConnectionOnPut should not return error to caller: %v", err)
+			t.Errorf("OnPut should not return error to caller: %v", err)
 		}
 
 		// Should pool the connection initially (handoff queued)
@@ -314,7 +314,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 	})
 
 	t.Run("BufferedDataRESP2", func(t *testing.T) {
-		processor := NewRedisConnectionProcessor(2, baseDialer, nil, nil)
+		processor := NewPoolHook(2, baseDialer, nil, nil)
 		conn := createMockPoolConnection()
 
 		// For this test, we'll just verify the logic works for connections without buffered data
@@ -322,9 +322,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		// which is outside the scope of the Redis connection processor
 
 		ctx := context.Background()
-		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 		if err != nil {
-			t.Errorf("ProcessConnectionOnPut should not error: %v", err)
+			t.Errorf("OnPut should not error: %v", err)
 		}
 
 		// Should pool the connection normally (no buffered data in mock)
@@ -336,18 +336,18 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		}
 	})
 
-	t.Run("ProcessConnectionOnGet", func(t *testing.T) {
-		processor := NewRedisConnectionProcessor(3, baseDialer, nil, nil)
+	t.Run("OnGet", func(t *testing.T) {
+		processor := NewPoolHook(3, baseDialer, nil, nil)
 		conn := createMockPoolConnection()
 
 		ctx := context.Background()
-		err := processor.ProcessConnectionOnGet(ctx, conn)
+		err := processor.OnGet(ctx, conn)
 		if err != nil {
-			t.Errorf("ProcessConnectionOnGet should not error for normal connection: %v", err)
+			t.Errorf("OnGet should not error for normal connection: %v", err)
 		}
 	})
 
-	t.Run("ProcessConnectionOnGetWithPendingHandoff", func(t *testing.T) {
+	t.Run("OnGetWithPendingHandoff", func(t *testing.T) {
 		config := &Config{
 			Enabled:          MaintNotificationsAuto,
 			EndpointType:     EndpointTypeAuto,
@@ -357,7 +357,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			MaxHandoffRetries: 3, // Explicit queue size to avoid 0-size queue
 			LogLevel:         2,
 		}
-		processor := NewRedisConnectionProcessor(3, baseDialer, config, nil)
+		processor := NewPoolHook(3, baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -368,7 +368,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		conn.MarkQueuedForHandoff() // Mark as queued (sets usable=false)
 
 		ctx := context.Background()
-		err := processor.ProcessConnectionOnGet(ctx, conn)
+		err := processor.OnGet(ctx, conn)
 		if err != ErrConnectionMarkedForHandoff {
 			t.Errorf("Expected ErrConnectionMarkedForHandoff, got %v", err)
 		}
@@ -378,7 +378,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 	})
 
 	t.Run("EventDrivenStateManagement", func(t *testing.T) {
-		processor := NewRedisConnectionProcessor(3, baseDialer, nil, nil)
+		processor := NewPoolHook(3, baseDialer, nil, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -397,9 +397,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			t.Error("Connection should be in pending map")
 		}
 
-		// Test ProcessConnectionOnGet with pending handoff
+		// Test OnGet with pending handoff
 		ctx := context.Background()
-		err := processor.ProcessConnectionOnGet(ctx, conn)
+		err := processor.OnGet(ctx, conn)
 		if err != ErrConnectionMarkedForHandoff {
 			t.Error("Should return ErrConnectionMarkedForHandoff for pending connection")
 		}
@@ -414,8 +414,8 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		conn.ClearHandoffState()
 		conn.SetUsable(true) // Make connection usable again
 
-		// Test ProcessConnectionOnGet without pending handoff
-		err = processor.ProcessConnectionOnGet(ctx, conn)
+		// Test OnGet without pending handoff
+		err = processor.OnGet(ctx, conn)
 		if err != nil {
 			t.Errorf("Should not return error for non-pending connection: %v", err)
 		}
@@ -437,7 +437,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewRedisConnectionProcessor(3, baseDialer, config, nil)
+		processor := NewPoolHook(3, baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Create multiple connections that need handoff to fill the queue
@@ -458,9 +458,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 
 		// Process connections - should trigger scaling and timeout logic
 		for _, conn := range connections {
-			shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+			shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 			if err != nil {
-				t.Logf("ProcessConnectionOnPut returned error (expected with timeout): %v", err)
+				t.Logf("OnPut returned error (expected with timeout): %v", err)
 			}
 
 			if shouldPool && !shouldRemove {
@@ -489,7 +489,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			LogLevel:         2, // Info level to see scaling logs
 		}
 
-		processor := NewRedisConnectionProcessor(3, baseDialer, config, nil)
+		processor := NewPoolHook(3, baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Verify initial worker count and scaling level
@@ -523,7 +523,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			LogLevel:                   2,
 		}
 
-		processor := NewRedisConnectionProcessor(3, baseDialer, config, nil)
+		processor := NewPoolHook(3, baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		ctx := context.Background()
@@ -540,7 +540,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		})
 
 		// Process the connection to trigger handoff
-		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 		if err != nil {
 			t.Errorf("Handoff should succeed: %v", err)
 		}
@@ -603,7 +603,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			LogLevel:         2,
 		}
 
-		processor := NewRedisConnectionProcessor(3, baseDialer, config, nil)
+		processor := NewPoolHook(3, baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		ctx := context.Background()
@@ -623,10 +623,10 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			t.Error("Connection should be usable after initialization")
 		}
 
-		// ProcessConnectionOnGet should succeed for usable connection
-		err := processor.ProcessConnectionOnGet(ctx, conn)
+		// OnGet should succeed for usable connection
+		err := processor.OnGet(ctx, conn)
 		if err != nil {
-			t.Errorf("ProcessConnectionOnGet should succeed for usable connection: %v", err)
+			t.Errorf("OnGet should succeed for usable connection: %v", err)
 		}
 
 		// Mark connection for handoff
@@ -647,19 +647,19 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			t.Error("Connection should be marked for handoff")
 		}
 
-		// ProcessConnectionOnGet should fail for connection marked for handoff
-		err = processor.ProcessConnectionOnGet(ctx, conn)
+		// OnGet should fail for connection marked for handoff
+		err = processor.OnGet(ctx, conn)
 		if err == nil {
-			t.Error("ProcessConnectionOnGet should fail for connection marked for handoff")
+			t.Error("OnGet should fail for connection marked for handoff")
 		}
 		if err != ErrConnectionMarkedForHandoff {
 			t.Errorf("Expected ErrConnectionMarkedForHandoff, got %v", err)
 		}
 
 		// Process the connection to trigger handoff
-		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 		if err != nil {
-			t.Errorf("ProcessConnectionOnPut should succeed: %v", err)
+			t.Errorf("OnPut should succeed: %v", err)
 		}
 		if !shouldPool || shouldRemove {
 			t.Error("Connection should be pooled after handoff")
@@ -673,10 +673,10 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			t.Error("Connection should be usable after handoff completion")
 		}
 
-		// ProcessConnectionOnGet should succeed again
-		err = processor.ProcessConnectionOnGet(ctx, conn)
+		// OnGet should succeed again
+		err = processor.OnGet(ctx, conn)
 		if err != nil {
-			t.Errorf("ProcessConnectionOnGet should succeed after handoff completion: %v", err)
+			t.Errorf("OnGet should succeed after handoff completion: %v", err)
 		}
 
 		t.Logf("Usable flag behavior test completed successfully")
@@ -691,7 +691,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			LogLevel:         2,
 		}
 
-		processor := NewRedisConnectionProcessorWithPoolSize(3, baseDialer, config, nil, 100) // Pool size: 100
+		processor := NewPoolHookWithPoolSize(3, baseDialer, config, nil, 100) // Pool size: 100
 		defer processor.Shutdown(context.Background())
 
 		// Verify queue capacity matches configured size
@@ -716,7 +716,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 				return nil
 			})
 
-			shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+			shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 			if err != nil {
 				t.Errorf("Failed to queue handoff %d: %v", i, err)
 			}
@@ -753,7 +753,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			LogLevel:         2,
 		}
 
-		processor := NewRedisConnectionProcessor(3, failingDialer, config, nil)
+		processor := NewPoolHook(3, failingDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Create a mock pool that tracks removals
@@ -774,9 +774,9 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		})
 
 		// Process the connection - handoff should fail and connection should be removed
-		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 		if err != nil {
-			t.Errorf("ProcessConnectionOnPut should not error: %v", err)
+			t.Errorf("OnPut should not error: %v", err)
 		}
 		if !shouldPool || shouldRemove {
 			t.Error("Connection should be pooled after failed handoff attempt")
@@ -807,7 +807,7 @@ func TestRedisConnectionProcessor(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewRedisConnectionProcessor(3, baseDialer, config, nil)
+		processor := NewPoolHook(3, baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -821,10 +821,10 @@ func TestRedisConnectionProcessor(t *testing.T) {
 		})
 
 		ctx := context.Background()
-		shouldPool, shouldRemove, err := processor.ProcessConnectionOnPut(ctx, conn)
+		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 
 		if err != nil {
-			t.Fatalf("ProcessConnectionOnPut failed: %v", err)
+			t.Fatalf("OnPut failed: %v", err)
 		}
 
 		if !shouldPool {

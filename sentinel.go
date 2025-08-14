@@ -474,7 +474,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// Use void processor by default for RESP2 connections
 	rdb.pushProcessor = initializePushProcessor(opt)
 
-	rdb.connPool = newConnPool(opt, rdb.dialHook, rdb.connectionProcessor)
+	rdb.connPool = newConnPool(opt, rdb.dialHook, rdb.poolHooks)
 
 	// Create separate PubSub pool
 	rdb.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
@@ -555,7 +555,7 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
 	})
-	c.connPool = newConnPool(opt, c.dialHook, c.connectionProcessor)
+	c.connPool = newConnPool(opt, c.dialHook, c.poolHooks)
 
 	// Create separate PubSub pool
 	c.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
