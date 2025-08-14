@@ -302,6 +302,10 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
 //   - use "skip_verify=true" to ignore TLS certificate validation
+//   - for rediss:// URLs, additional TLS parameters are supported:
+//   - tls_cert_file and tls_key_file: paths to client certificate and key files
+//   - tls_min_version and tls_max_version: TLS version constraints (e.g., 771 for TLS 1.2)
+//   - tls_server_name: override server name for certificate validation
 //
 // Example:
 //
@@ -411,6 +415,39 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 
 	if o.TLSConfig != nil && q.has("skip_verify") {
 		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
+	}
+
+	if u.Scheme == "rediss" {
+		tlsCertFile := q.string("tls_cert_file")
+		tlsKeyFile := q.string("tls_key_file")
+
+		if (tlsCertFile == "") != (tlsKeyFile == "") {
+			return nil, fmt.Errorf("redis: tls_cert_file and tls_key_file URL parameters must be both set or both omitted")
+		}
+
+		if tlsCertFile != "" {
+			cert, certLoadErr := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile)
+			if certLoadErr != nil {
+				return nil, fmt.Errorf("redis: error loading TLS certificate: %w", certLoadErr)
+			}
+
+			o.TLSConfig.Certificates = []tls.Certificate{cert}
+		}
+
+		if q.has("tls_min_version") {
+			o.TLSConfig.MinVersion = uint16(q.int("tls_min_version"))
+		}
+		if q.has("tls_max_version") {
+			o.TLSConfig.MaxVersion = uint16(q.int("tls_max_version"))
+		}
+
+		tlsServerName := q.string("tls_server_name")
+		if tlsServerName != "" {
+			// we explicitly check for this query parameter, so we don't overwrite
+			// the default server name (the hostname of the Redis server) if it's
+			// not given
+			o.TLSConfig.ServerName = tlsServerName
+		}
 	}
 
 	// any parameters left?
