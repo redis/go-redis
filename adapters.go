@@ -17,8 +17,8 @@ var ErrInvalidCommand = errors.New("invalid command type")
 // ErrInvalidPool is returned when the pool type is not supported.
 var ErrInvalidPool = errors.New("invalid pool type")
 
-// NewClientAdapter creates a new client adapter for regular Redis clients.
-func NewClientAdapter(client *baseClient) interfaces.ClientInterface {
+// newClientAdapter creates a new client adapter for regular Redis clients.
+func newClientAdapter(client *baseClient) interfaces.ClientInterface {
 	return &clientAdapter{client: client}
 }
 

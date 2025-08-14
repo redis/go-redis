@@ -45,6 +45,7 @@ type Conn struct {
 
 	Inited    bool
 	pooled    bool
+	pubsub    bool
 	createdAt time.Time
 	expiresAt time.Time
 
@@ -605,4 +606,12 @@ func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	}
 
 	return noDeadline
+}
+
+func (cn *Conn) IsPubSub() bool {
+	return cn.pubsub
+}
+
+func (cn *Conn) IsPooled() bool {
+	return cn.pooled
 }

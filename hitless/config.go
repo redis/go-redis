@@ -206,26 +206,26 @@ func DefaultConfig() *Config {
 		LogLevel:                   1,
 
 		// Connection Handoff Configuration
-		MaxHandoffRetries:         3,
-		HandoffQueueTimeout:       5 * time.Second,
-		HandoffRetryDelay:         1 * time.Second,
+		MaxHandoffRetries:   3,
+		HandoffQueueTimeout: 5 * time.Second,
+		HandoffRetryDelay:   1 * time.Second,
 
 		// Worker Scaling Configuration
-		WorkerScaleDownDelay:      30 * time.Second,
-		WorkerScaleUpDelay:        5 * time.Second,
-		WorkerIdleTimeout:         60 * time.Second,
+		WorkerScaleDownDelay: 30 * time.Second,
+		WorkerScaleUpDelay:   5 * time.Second,
+		WorkerIdleTimeout:    60 * time.Second,
 
 		// Connection Validation Configuration
-		ConnectionValidationTimeout:    2 * time.Second,
-		ConnectionHealthCheckInterval:  10 * time.Second,
+		ConnectionValidationTimeout:   2 * time.Second,
+		ConnectionHealthCheckInterval: 10 * time.Second,
 
 		// Operation Tracking Configuration
 		OperationCleanupInterval: 5 * time.Minute,
 		MaxActiveOperations:      10000,
 
 		// Notification Processing Configuration
-		NotificationBufferSize:   1000,
-		NotificationTimeout:      1 * time.Second,
+		NotificationBufferSize: 1000,
+		NotificationTimeout:    1 * time.Second,
 	}
 }
 
@@ -316,90 +316,6 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
-}
-
-// ProductionConfig returns a Config optimized for production environments.
-// This configuration is tuned for high-load scenarios with enhanced reliability.
-func ProductionConfig() *Config {
-	return &Config{
-		// Basic settings
-		Enabled:                    MaintNotificationsEnabled,
-		EndpointType:               EndpointTypeAuto,
-		RelaxedTimeout:             45 * time.Second,
-		HandoffTimeout:             20 * time.Second,
-		PostHandoffRelaxedDuration: 15 * time.Second,
-
-		// Enhanced performance settings for production
-		MaxHandoffRetries:         5,
-		HandoffQueueTimeout:       10 * time.Second,
-		HandoffRetryDelay:         2 * time.Second,
-
-		// Worker scaling for high load
-		MinWorkers:                8,
-		MaxWorkers:                64,
-		HandoffQueueSize:          2000,
-		WorkerScaleDownDelay:      60 * time.Second,
-		WorkerScaleUpDelay:        3 * time.Second,
-		WorkerIdleTimeout:         120 * time.Second,
-
-		// Connection management
-		ConnectionValidationTimeout:    3 * time.Second,
-		ConnectionHealthCheckInterval:  30 * time.Second,
-
-		// Operation management for high throughput
-		OperationCleanupInterval: 2 * time.Minute,
-		MaxActiveOperations:      50000,
-
-		// Monitoring and observability
-		LogLevel:                  1, // Warnings and errors
-		NotificationBufferSize:    5000,
-		NotificationTimeout:       2 * time.Second,
-
-		// Existing fields
-		ScaleDownDelay: 2 * time.Second,
-	}
-}
-
-// DevelopmentConfig returns a Config optimized for development environments.
-// This configuration prioritizes debugging and has conservative resource usage.
-func DevelopmentConfig() *Config {
-	return &Config{
-		// Basic settings
-		Enabled:                    MaintNotificationsAuto,
-		EndpointType:               EndpointTypeAuto,
-		RelaxedTimeout:             10 * time.Second,
-		HandoffTimeout:             5 * time.Second,
-		PostHandoffRelaxedDuration: 3 * time.Second,
-
-		// Conservative performance settings
-		MaxHandoffRetries:         3,
-		HandoffQueueTimeout:       5 * time.Second,
-		HandoffRetryDelay:         1 * time.Second,
-
-		// Minimal worker scaling
-		MinWorkers:                2,
-		MaxWorkers:                8,
-		HandoffQueueSize:          100,
-		WorkerScaleDownDelay:      30 * time.Second,
-		WorkerScaleUpDelay:        5 * time.Second,
-		WorkerIdleTimeout:         60 * time.Second,
-
-		// Connection management
-		ConnectionValidationTimeout:    2 * time.Second,
-		ConnectionHealthCheckInterval:  10 * time.Second,
-
-		// Frequent cleanup for testing
-		OperationCleanupInterval: 30 * time.Second,
-		MaxActiveOperations:      1000,
-
-		// Verbose logging for debugging
-		LogLevel:                  3, // Debug level
-		NotificationBufferSize:    100,
-		NotificationTimeout:       1 * time.Second,
-
-		// Existing fields
-		ScaleDownDelay: 2 * time.Second,
-	}
 }
 
 // ApplyDefaults applies default values to any zero-value fields in the configuration.
@@ -579,18 +495,18 @@ func (c *Config) Clone() *Config {
 		LogLevel:                   c.LogLevel,
 
 		// New configuration fields
-		MaxHandoffRetries:                c.MaxHandoffRetries,
-		HandoffQueueTimeout:              c.HandoffQueueTimeout,
-		HandoffRetryDelay:                c.HandoffRetryDelay,
-		WorkerScaleDownDelay:             c.WorkerScaleDownDelay,
-		WorkerScaleUpDelay:               c.WorkerScaleUpDelay,
-		WorkerIdleTimeout:                c.WorkerIdleTimeout,
-		ConnectionValidationTimeout:      c.ConnectionValidationTimeout,
-		ConnectionHealthCheckInterval:    c.ConnectionHealthCheckInterval,
-		OperationCleanupInterval:         c.OperationCleanupInterval,
-		MaxActiveOperations:              c.MaxActiveOperations,
-		NotificationBufferSize:           c.NotificationBufferSize,
-		NotificationTimeout:              c.NotificationTimeout,
+		MaxHandoffRetries:             c.MaxHandoffRetries,
+		HandoffQueueTimeout:           c.HandoffQueueTimeout,
+		HandoffRetryDelay:             c.HandoffRetryDelay,
+		WorkerScaleDownDelay:          c.WorkerScaleDownDelay,
+		WorkerScaleUpDelay:            c.WorkerScaleUpDelay,
+		WorkerIdleTimeout:             c.WorkerIdleTimeout,
+		ConnectionValidationTimeout:   c.ConnectionValidationTimeout,
+		ConnectionHealthCheckInterval: c.ConnectionHealthCheckInterval,
+		OperationCleanupInterval:      c.OperationCleanupInterval,
+		MaxActiveOperations:           c.MaxActiveOperations,
+		NotificationBufferSize:        c.NotificationBufferSize,
+		NotificationTimeout:           c.NotificationTimeout,
 	}
 }
 

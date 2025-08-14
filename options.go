@@ -657,7 +657,6 @@ func newConnPoolConfig(opt *Options) *pool.Config {
 func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
-	hooks *pool.PoolHookManager,
 ) *pool.ConnPool {
 	return pool.NewConnPool(&pool.Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
@@ -672,7 +671,6 @@ func newConnPool(
 		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
-		PoolHooks: hooks,
 		ReadBufferSize:  opt.ReadBufferSize,
 		WriteBufferSize: opt.WriteBufferSize,
 	})

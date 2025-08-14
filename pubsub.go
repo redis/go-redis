@@ -22,7 +22,7 @@ import (
 type PubSub struct {
 	opt *Options
 
-	newConn   func(ctx context.Context, channels []string) (*pool.Conn, error)
+	newConn   func(ctx context.Context, addr string, channels []string) (*pool.Conn, error)
 	closeConn func(*pool.Conn) error
 
 	mu        sync.Mutex
@@ -76,10 +76,18 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 		return c.cn, nil
 	}
 
+	if c.opt.Addr == "" {
+		// TODO(hitless):
+		// this is probably cluster client
+		// c.newConn will ignore the addr argument
+		// will be changed when we have hitless upgrades for cluster clients
+		c.opt.Addr = internal.RedisNull
+	}
+
 	channels := mapKeys(c.channels)
 	channels = append(channels, newChannels...)
 
-	cn, err := c.newConn(ctx, channels)
+	cn, err := c.newConn(ctx, c.opt.Addr, channels)
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +179,17 @@ func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allo
 }
 
 func (c *PubSub) reconnect(ctx context.Context, reason error) {
+	if c.cn != nil && c.cn.ShouldHandoff() {
+		newEndpoint := c.cn.GetHandoffEndpoint()
+		// If new endpoint is NULL, use the original address
+		if newEndpoint == internal.RedisNull {
+			newEndpoint = c.opt.Addr
+		}
+
+		if newEndpoint != "" {
+			c.opt.Addr = newEndpoint
+		}
+	}
 	_ = c.closeTheCn(reason)
 	_, _ = c.conn(ctx, nil)
 }

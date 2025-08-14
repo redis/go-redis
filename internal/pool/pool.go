@@ -46,10 +46,9 @@ type Stats struct {
 	Unusable       uint32 // number of times a connection was found to be unusable
 	WaitDurationNs int64  // total time spent for waiting a connection in nanoseconds
 
-	TotalConns  uint32 // number of total connections in the pool
-	IdleConns   uint32 // number of idle connections in the pool
-	StaleConns  uint32 // number of stale connections removed from the pool
-	PubSubStats PubSubStats
+	TotalConns uint32 // number of total connections in the pool
+	IdleConns  uint32 // number of idle connections in the pool
+	StaleConns uint32 // number of stale connections removed from the pool
 }
 
 type Pooler interface {
@@ -63,6 +62,9 @@ type Pooler interface {
 	Len() int
 	IdleLen() int
 	Stats() *Stats
+
+	AddPoolHook(hook PoolHook)
+	RemovePoolHook(hook PoolHook)
 
 	Close() error
 }
@@ -81,10 +83,6 @@ type Options struct {
 	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
-
-	// PoolHooks provides a flexible hook system for connection processing
-	// If nil, connections are processed with default behavior (no hooks)
-	PoolHooks *PoolHookManager
 }
 
 type lastDialErrorWrap struct {
@@ -142,19 +140,15 @@ func NewConnPool(opt *Options) *ConnPool {
 
 // initializeHooks sets up the pool hooks system.
 func (p *ConnPool) initializeHooks() {
-	// Initialize hooks manager
-	if p.cfg.PoolHooks != nil {
-		p.hookManager = p.cfg.PoolHooks
-	} else {
-		p.hookManager = NewPoolHookManager()
-	}
+	p.hookManager = NewPoolHookManager()
 }
 
 // AddPoolHook adds a pool hook to the pool.
 func (p *ConnPool) AddPoolHook(hook PoolHook) {
-	if p.hookManager != nil {
-		p.hookManager.AddHook(hook)
+	if p.hookManager == nil {
+		p.initializeHooks()
 	}
+	p.hookManager.AddHook(hook)
 }
 
 // RemovePoolHook removes a pool hook from the pool.

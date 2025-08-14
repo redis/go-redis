@@ -524,6 +524,9 @@ func (c cmdable) ClientInfo(ctx context.Context) *ClientInfoCmd {
 func (c cmdable) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
 	args := []interface{}{"client", "maint_notifications"}
 	if enabled {
+		if endpointType == "" {
+			endpointType = "none"
+		}
 		args = append(args, "on", "moving-endpoint-type", endpointType)
 	} else {
 		args = append(args, "off")

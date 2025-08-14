@@ -474,12 +474,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// Use void processor by default for RESP2 connections
 	rdb.pushProcessor = initializePushProcessor(opt)
 
-	rdb.connPool = newConnPool(opt, rdb.dialHook, rdb.poolHooks)
-
-	// Create separate PubSub pool
-	rdb.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
-		return rdb.dialHook(ctx, opt.Network, opt.Addr)
-	})
+	rdb.connPool = newConnPool(opt, rdb.dialHook)
 
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
 
@@ -555,12 +550,7 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
 	})
-	c.connPool = newConnPool(opt, c.dialHook, c.poolHooks)
-
-	// Create separate PubSub pool
-	c.pubsubPool = pool.NewPubSubPool(newConnPoolConfig(opt), func(ctx context.Context) (net.Conn, error) {
-		return c.dialHook(ctx, opt.Network, opt.Addr)
-	})
+	c.connPool = newConnPool(opt, c.dialHook)
 
 	return c
 }
@@ -587,28 +577,30 @@ func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
 func (c *SentinelClient) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
-		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			cn, err := c.pubsubPool.Get(ctx)
+		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+			netConn, err := c.dialHook(ctx, c.opt.Network, addr)
 			if err != nil {
 				return nil, err
 			}
+			cn := pool.NewConnWithBufferSize(netConn, c.opt.ReadBufferSize, c.opt.WriteBufferSize)
 
 			// will return nil if already initialized
 			err = c.initConn(ctx, cn)
 			if err != nil {
-				c.pubsubPool.Remove(ctx, cn, err)
+				_ = cn.Close()
 				return nil, err
 			}
 
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
-			c.pubsubPool.Remove(context.Background(), cn, nil)
+			_ = cn.Close()
 			return nil
 		},
 		pushProcessor: c.pushProcessor,
 	}
 	pubsub.init()
+
 	return pubsub
 }
 

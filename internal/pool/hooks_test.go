@@ -18,7 +18,7 @@ type TestHook struct {
 	ShouldRemove bool
 }
 
-func (th *TestHook) OnGet(ctx context.Context, conn *Conn) error {
+func (th *TestHook) OnGet(ctx context.Context, conn *Conn, isNewConn bool) error {
 	th.OnGetCalled++
 	return th.GetError
 }
@@ -51,7 +51,7 @@ func TestPoolHookManager(t *testing.T) {
 	ctx := context.Background()
 	conn := &Conn{} // Mock connection
 	
-	err := manager.ProcessOnGet(ctx, conn)
+	err := manager.ProcessOnGet(ctx, conn, false)
 	if err != nil {
 		t.Errorf("ProcessOnGet should not error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestHookErrorHandling(t *testing.T) {
 	conn := &Conn{}
 	
 	// Test that error stops processing
-	err := manager.ProcessOnGet(ctx, conn)
+	err := manager.ProcessOnGet(ctx, conn, false)
 	if err == nil {
 		t.Error("Expected error from ProcessOnGet")
 	}
@@ -179,13 +179,15 @@ func TestPoolWithHooks(t *testing.T) {
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return &net.TCPConn{}, nil // Mock connection
 		},
-		PoolSize:        1,
-		DialTimeout:     time.Second,
-		PoolHooks: hookManager,
+		PoolSize:    1,
+		DialTimeout: time.Second,
 	}
 
 	pool := NewConnPool(opt)
 	defer pool.Close()
+
+	// Add hook to pool after creation
+	pool.AddPoolHook(testHook)
 
 	// Verify hooks are initialized
 	if pool.hookManager == nil {

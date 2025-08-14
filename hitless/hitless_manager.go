@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/interfaces"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 // Push notification type constants for hitless upgrades
@@ -56,6 +57,7 @@ type HitlessManager struct {
 	client  interfaces.ClientInterface
 	config  *Config
 	options interfaces.OptionsInterface
+	pool    pool.Pooler
 
 	// MOVING operation tracking - using sync.Map for better concurrent performance
 	activeMovingOps sync.Map // map[MovingOperationKey]*MovingOperation
@@ -65,8 +67,9 @@ type HitlessManager struct {
 	closed               atomic.Bool  // Manager closed state
 
 	// Notification hooks for extensibility
-	hooks   []NotificationHook
-	hooksMu sync.RWMutex // Protects hooks slice
+	hooks        []NotificationHook
+	hooksMu      sync.RWMutex // Protects hooks slice
+	poolHooksRef *PoolHook
 }
 
 // MovingOperation tracks an active MOVING operation.
@@ -78,13 +81,14 @@ type MovingOperation struct {
 }
 
 // NewHitlessManager creates a new simplified hitless manager.
-func NewHitlessManager(client interfaces.ClientInterface, config *Config) (*HitlessManager, error) {
+func NewHitlessManager(client interfaces.ClientInterface, pool pool.Pooler, config *Config) (*HitlessManager, error) {
 	if client == nil {
 		return nil, ErrInvalidClient
 	}
 
 	hm := &HitlessManager{
 		client:  client,
+		pool:    pool,
 		options: client.GetOptions(),
 		config:  config.Clone(),
 		hooks:   make([]NotificationHook, 0),
@@ -98,9 +102,10 @@ func NewHitlessManager(client interfaces.ClientInterface, config *Config) (*Hitl
 	return hm, nil
 }
 
-// CreatePoolHook creates a pool hook with a custom dialer.
-func (hm *HitlessManager) CreatePoolHook(baseDialer func(context.Context, string, string) (net.Conn, error)) *PoolHook {
-	return hm.createPoolHook(baseDialer)
+// GetPoolHook creates a pool hook with a custom dialer.
+func (hm *HitlessManager) InitPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error)) {
+	poolHook := hm.createPoolHook(baseDialer)
+	hm.pool.AddPoolHook(poolHook)
 }
 
 // setupPushNotifications sets up push notification handling by registering with the client's processor.
@@ -208,6 +213,16 @@ func (hm *HitlessManager) Close() error {
 		return nil // Already closed
 	}
 
+	// Shutdown the pool hook
+	err := hm.poolHooksRef.Shutdown(context.Background())
+	if err != nil {
+		// was not able to close pool hook, keep closed state false
+		hm.closed.Store(false)
+		return err
+	}
+	// Remove the pool hook from the pool
+	hm.pool.RemovePoolHook(hm.poolHooksRef)
+
 	// Clear all active operations
 	hm.activeMovingOps.Range(func(key, value interface{}) bool {
 		hm.activeMovingOps.Delete(key)
@@ -299,13 +314,17 @@ func (fh *FilterHook) PostHook(ctx context.Context, notificationType string, not
 
 // createPoolHook creates a pool hook with this manager already set.
 func (hm *HitlessManager) createPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error)) *PoolHook {
+	if hm.poolHooksRef != nil {
+		return hm.poolHooksRef
+	}
 	// Get pool size from client options for better worker defaults
 	poolSize := 0
 	if hm.options != nil {
 		poolSize = hm.options.GetPoolSize()
 	}
 
-	hook := NewPoolHookWithPoolSize(baseDialer, hm.config, hm, poolSize)
+	hm.poolHooksRef = NewPoolHookWithPoolSize(baseDialer, hm.config, hm, poolSize)
+	hm.poolHooksRef.SetPool(hm.pool)
 
-	return hook
+	return hm.poolHooksRef
 }

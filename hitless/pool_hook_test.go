@@ -112,7 +112,7 @@ func TestConnectionHook(t *testing.T) {
 			MaxHandoffRetries: 3,
 			LogLevel:         2,
 		}
-		processor := NewPoolHook(3, baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -202,7 +202,7 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("HandoffNotNeeded", func(t *testing.T) {
-		processor := NewPoolHook(3, baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, nil, nil)
 		conn := createMockPoolConnection()
 		// Don't mark for handoff
 
@@ -222,7 +222,7 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("EmptyEndpoint", func(t *testing.T) {
-		processor := NewPoolHook(3, baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, nil, nil)
 		conn := createMockPoolConnection()
 		if err := conn.MarkForHandoff("", 12345); err != nil { // Empty endpoint
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
@@ -263,7 +263,7 @@ func TestConnectionHook(t *testing.T) {
 			MaxHandoffRetries: 3, // Explicit queue size to avoid 0-size queue
 			LogLevel:         2,
 		}
-		processor := NewPoolHook(3, failingDialer, config, nil)
+		processor := NewPoolHook(failingDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -314,7 +314,7 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("BufferedDataRESP2", func(t *testing.T) {
-		processor := NewPoolHook(2, baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, nil, nil)
 		conn := createMockPoolConnection()
 
 		// For this test, we'll just verify the logic works for connections without buffered data
@@ -337,11 +337,11 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("OnGet", func(t *testing.T) {
-		processor := NewPoolHook(3, baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, nil, nil)
 		conn := createMockPoolConnection()
 
 		ctx := context.Background()
-		err := processor.OnGet(ctx, conn)
+		err := processor.OnGet(ctx, conn, false)
 		if err != nil {
 			t.Errorf("OnGet should not error for normal connection: %v", err)
 		}
@@ -357,7 +357,7 @@ func TestConnectionHook(t *testing.T) {
 			MaxHandoffRetries: 3, // Explicit queue size to avoid 0-size queue
 			LogLevel:         2,
 		}
-		processor := NewPoolHook(3, baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -368,7 +368,7 @@ func TestConnectionHook(t *testing.T) {
 		conn.MarkQueuedForHandoff() // Mark as queued (sets usable=false)
 
 		ctx := context.Background()
-		err := processor.OnGet(ctx, conn)
+		err := processor.OnGet(ctx, conn, false)
 		if err != ErrConnectionMarkedForHandoff {
 			t.Errorf("Expected ErrConnectionMarkedForHandoff, got %v", err)
 		}
@@ -378,7 +378,7 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("EventDrivenStateManagement", func(t *testing.T) {
-		processor := NewPoolHook(3, baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, nil, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -399,7 +399,7 @@ func TestConnectionHook(t *testing.T) {
 
 		// Test OnGet with pending handoff
 		ctx := context.Background()
-		err := processor.OnGet(ctx, conn)
+		err := processor.OnGet(ctx, conn, false)
 		if err != ErrConnectionMarkedForHandoff {
 			t.Error("Should return ErrConnectionMarkedForHandoff for pending connection")
 		}
@@ -415,7 +415,7 @@ func TestConnectionHook(t *testing.T) {
 		conn.SetUsable(true) // Make connection usable again
 
 		// Test OnGet without pending handoff
-		err = processor.OnGet(ctx, conn)
+		err = processor.OnGet(ctx, conn, false)
 		if err != nil {
 			t.Errorf("Should not return error for non-pending connection: %v", err)
 		}
@@ -437,7 +437,7 @@ func TestConnectionHook(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewPoolHook(3, baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Create multiple connections that need handoff to fill the queue
@@ -489,7 +489,7 @@ func TestConnectionHook(t *testing.T) {
 			LogLevel:         2, // Info level to see scaling logs
 		}
 
-		processor := NewPoolHook(3, baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Verify initial worker count and scaling level
@@ -523,7 +523,7 @@ func TestConnectionHook(t *testing.T) {
 			LogLevel:                   2,
 		}
 
-		processor := NewPoolHook(3, baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		ctx := context.Background()
@@ -603,7 +603,7 @@ func TestConnectionHook(t *testing.T) {
 			LogLevel:         2,
 		}
 
-		processor := NewPoolHook(3, baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		ctx := context.Background()
@@ -624,7 +624,7 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		// OnGet should succeed for usable connection
-		err := processor.OnGet(ctx, conn)
+		err := processor.OnGet(ctx, conn, false)
 		if err != nil {
 			t.Errorf("OnGet should succeed for usable connection: %v", err)
 		}
@@ -648,7 +648,7 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		// OnGet should fail for connection marked for handoff
-		err = processor.OnGet(ctx, conn)
+		err = processor.OnGet(ctx, conn, false)
 		if err == nil {
 			t.Error("OnGet should fail for connection marked for handoff")
 		}
@@ -674,7 +674,7 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		// OnGet should succeed again
-		err = processor.OnGet(ctx, conn)
+		err = processor.OnGet(ctx, conn, false)
 		if err != nil {
 			t.Errorf("OnGet should succeed after handoff completion: %v", err)
 		}
@@ -691,7 +691,7 @@ func TestConnectionHook(t *testing.T) {
 			LogLevel:         2,
 		}
 
-		processor := NewPoolHookWithPoolSize(3, baseDialer, config, nil, 100) // Pool size: 100
+		processor := NewPoolHookWithPoolSize(baseDialer, config, nil, 100) // Pool size: 100
 		defer processor.Shutdown(context.Background())
 
 		// Verify queue capacity matches configured size
@@ -753,7 +753,7 @@ func TestConnectionHook(t *testing.T) {
 			LogLevel:         2,
 		}
 
-		processor := NewPoolHook(3, failingDialer, config, nil)
+		processor := NewPoolHook(failingDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Create a mock pool that tracks removals
@@ -807,7 +807,7 @@ func TestConnectionHook(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewPoolHook(3, baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()

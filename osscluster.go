@@ -1840,12 +1840,13 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	return err
 }
 
+// hitless won't work here for now
 func (c *ClusterClient) pubSub() *PubSub {
 	var node *clusterNode
 	pubsub := &PubSub{
 		opt: c.opt.clientOptions(),
 
-		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
+		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
 			if node != nil {
 				panic("node != nil")
 			}

@@ -249,7 +249,7 @@ func TestProcessorWithConfig(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewPoolHook(3, baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// The processor should be created successfully with custom config
@@ -269,7 +269,7 @@ func TestProcessorWithConfig(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewPoolHook(3, baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Should work with partial config (defaults applied)
@@ -283,7 +283,7 @@ func TestProcessorWithConfig(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewPoolHook(3, baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, nil, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Should use default config when nil is passed
@@ -308,7 +308,7 @@ func TestIntegrationWithApplyDefaults(t *testing.T) {
 		}
 
 		// Create processor - should apply defaults to missing fields
-		processor := NewPoolHook(3, baseDialer, partialConfig, nil)
+		processor := NewPoolHook(baseDialer, partialConfig, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Processor should be created successfully
@@ -406,53 +406,8 @@ func TestEnhancedConfigValidation(t *testing.T) {
 	})
 }
 
-func TestProductionConfig(t *testing.T) {
-	config := ProductionConfig()
-
-	// Test production-specific values
-	if config.Enabled != MaintNotificationsEnabled {
-		t.Errorf("Expected production config to have Enabled = MaintNotificationsEnabled, got %v", config.Enabled)
-	}
-	if config.MaxHandoffRetries != 5 {
-		t.Errorf("Expected production config to have MaxHandoffRetries = 5, got %d", config.MaxHandoffRetries)
-	}
-	if config.HandoffQueueTimeout != 10*time.Second {
-		t.Errorf("Expected production config to have HandoffQueueTimeout = 10s, got %v", config.HandoffQueueTimeout)
-	}
-	if config.MaxActiveOperations != 50000 {
-		t.Errorf("Expected production config to have MaxActiveOperations = 50000, got %d", config.MaxActiveOperations)
-	}
-
-	// Should be valid
-	config.ApplyDefaultsWithPoolSize(100)
-	if err := config.Validate(); err != nil {
-		t.Errorf("Production config should be valid, got error: %v", err)
-	}
-}
-
-func TestDevelopmentConfig(t *testing.T) {
-	config := DevelopmentConfig()
-
-	// Test development-specific values
-	if config.Enabled != MaintNotificationsAuto {
-		t.Errorf("Expected development config to have Enabled = MaintNotificationsAuto, got %v", config.Enabled)
-	}
-	if config.LogLevel != 3 {
-		t.Errorf("Expected development config to have LogLevel = 3 (debug), got %d", config.LogLevel)
-	}
-	if config.MaxActiveOperations != 1000 {
-		t.Errorf("Expected development config to have MaxActiveOperations = 1000, got %d", config.MaxActiveOperations)
-	}
-
-	// Should be valid
-	config.ApplyDefaultsWithPoolSize(100)
-	if err := config.Validate(); err != nil {
-		t.Errorf("Development config should be valid, got error: %v", err)
-	}
-}
-
 func TestConfigClone(t *testing.T) {
-	original := ProductionConfig()
+	original := DefaultConfig()
 	original.MaxHandoffRetries = 7
 	original.HandoffQueueTimeout = 8 * time.Second
 
