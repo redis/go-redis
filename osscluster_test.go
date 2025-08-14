@@ -1681,7 +1681,7 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 		}, {
 			test: "RedissUsernamePassword",
 			url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 		}, {
 			test: "QueryParameters",
 			url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
