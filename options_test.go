@@ -78,6 +78,9 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 			url: "rediss://localhost:123?tls_min_version=70000",
 			err: errors.New("redis: invalid tls_min_version: 70000 (must be between 0 and 65535)"),
 		}, {
+			url: "rediss://localhost:123?tls_min_version=0",
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
+		}, {
 			url: "rediss://localhost:123/?skip_verify=true",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},
 		}, {

@@ -329,22 +329,28 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 			if minVer < 0 || minVer > 65535 {
 				return nil, fmt.Errorf("redis: invalid tls_min_version: %d (must be between 0 and 65535)", minVer)
 			}
-			// Enforce minimum TLS 1.2 for security
-			if minVer > 0 && minVer < int(tls.VersionTLS12) {
+			// Handle TLS version setting securely
+			if minVer == 0 {
+				// Don't set MinVersion, let Go use its secure default
+			} else if minVer < int(tls.VersionTLS12) {
 				return nil, fmt.Errorf("redis: tls_min_version %d is insecure (minimum allowed is TLS 1.2: %d)", minVer, tls.VersionTLS12)
+			} else {
+				o.TLSConfig.MinVersion = uint16(minVer)
 			}
-			o.TLSConfig.MinVersion = uint16(minVer)
 		}
 		if q.has("tls_max_version") {
 			maxVer := q.int("tls_max_version")
 			if maxVer < 0 || maxVer > 65535 {
 				return nil, fmt.Errorf("redis: invalid tls_max_version: %d (must be between 0 and 65535)", maxVer)
 			}
-			// Ensure max version is not lower than TLS 1.2
-			if maxVer > 0 && maxVer < int(tls.VersionTLS12) {
+			// Handle TLS max version setting securely
+			if maxVer == 0 {
+				// Don't set MaxVersion, let Go use its secure default
+			} else if maxVer < int(tls.VersionTLS12) {
 				return nil, fmt.Errorf("redis: tls_max_version %d is insecure (minimum allowed is TLS 1.2: %d)", maxVer, tls.VersionTLS12)
+			} else {
+				o.TLSConfig.MaxVersion = uint16(maxVer)
 			}
-			o.TLSConfig.MaxVersion = uint16(maxVer)
 		}
 
 		tlsServerName := q.string("tls_server_name")
