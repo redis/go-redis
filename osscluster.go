@@ -329,14 +329,17 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 			if minVer < 0 || minVer > 65535 {
 				return nil, fmt.Errorf("redis: invalid tls_min_version: %d (must be between 0 and 65535)", minVer)
 			}
-			// Handle TLS version setting securely
+			// Always enforce TLS 1.2 as minimum
 			if minVer == 0 {
-				// Don't set MinVersion, let Go use its secure default
+				o.TLSConfig.MinVersion = tls.VersionTLS12
 			} else if minVer < int(tls.VersionTLS12) {
 				return nil, fmt.Errorf("redis: tls_min_version %d is insecure (minimum allowed is TLS 1.2: %d)", minVer, tls.VersionTLS12)
 			} else {
 				o.TLSConfig.MinVersion = uint16(minVer)
 			}
+		} else {
+			// If not specified, always set minimum to TLS 1.2
+			o.TLSConfig.MinVersion = tls.VersionTLS12
 		}
 		if q.has("tls_max_version") {
 			maxVer := q.int("tls_max_version")
