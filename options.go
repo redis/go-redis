@@ -360,7 +360,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //   - use "skip_verify=true" to ignore TLS certificate validation
 //   - for rediss:// URLs, additional TLS parameters are supported:
 //   - tls_cert_file and tls_key_file: paths to client certificate and key files
-//   - tls_min_version and tls_max_version: TLS version constraints (e.g., 771 for TLS 1.2)
+//   - tls_min_version and tls_max_version: TLS version constraints (minimum TLS 1.2: 771, TLS 1.3: 772)
 //   - tls_server_name: override server name for certificate validation
 //
 // Examples:
@@ -598,10 +598,26 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 		}
 
 		if q.has("tls_min_version") {
-			o.TLSConfig.MinVersion = uint16(q.int("tls_min_version"))
+			minVer := q.int("tls_min_version")
+			if minVer < 0 || minVer > 65535 {
+				return nil, fmt.Errorf("redis: invalid tls_min_version: %d (must be between 0 and 65535)", minVer)
+			}
+			// Enforce minimum TLS 1.2 for security
+			if minVer > 0 && minVer < int(tls.VersionTLS12) {
+				return nil, fmt.Errorf("redis: tls_min_version %d is insecure (minimum allowed is TLS 1.2: %d)", minVer, tls.VersionTLS12)
+			}
+			o.TLSConfig.MinVersion = uint16(minVer)
 		}
 		if q.has("tls_max_version") {
-			o.TLSConfig.MaxVersion = uint16(q.int("tls_max_version"))
+			maxVer := q.int("tls_max_version")
+			if maxVer < 0 || maxVer > 65535 {
+				return nil, fmt.Errorf("redis: invalid tls_max_version: %d (must be between 0 and 65535)", maxVer)
+			}
+			// Ensure max version is not lower than TLS 1.2
+			if maxVer > 0 && maxVer < int(tls.VersionTLS12) {
+				return nil, fmt.Errorf("redis: tls_max_version %d is insecure (minimum allowed is TLS 1.2: %d)", maxVer, tls.VersionTLS12)
+			}
+			o.TLSConfig.MaxVersion = uint16(maxVer)
 		}
 
 		tlsServerName := q.string("tls_server_name")

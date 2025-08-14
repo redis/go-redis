@@ -52,8 +52,8 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 			url: "rediss://localhost:123",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 		}, {
-			url: "rediss://localhost:123?tls_server_name=abc&tls_min_version=1&tls_max_version=3&skip_verify=true",
-			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "abc", MinVersion: 1, MaxVersion: 3, InsecureSkipVerify: true}},
+			url: "rediss://localhost:123?tls_server_name=abc&tls_min_version=771&tls_max_version=772&skip_verify=true",
+			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "abc", MinVersion: 771, MaxVersion: 772, InsecureSkipVerify: true}},
 		}, {
 			url: "rediss://localhost:123?tls_cert_file=./testdata/testcert.pem&tls_key_file=./testdata/testkey.pem",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{testCert}}},
@@ -68,6 +68,15 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 		}, {
 			url: "rediss://localhost:123?tls_key_file=./testdata/testkey.pem",
 			err: errors.New("redis: tls_cert_file and tls_key_file URL parameters must be both set or both omitted"),
+		}, {
+			url: "rediss://localhost:123?tls_min_version=1",
+			err: errors.New("redis: tls_min_version 1 is insecure (minimum allowed is TLS 1.2: 771)"),
+		}, {
+			url: "rediss://localhost:123?tls_max_version=1",
+			err: errors.New("redis: tls_max_version 1 is insecure (minimum allowed is TLS 1.2: 771)"),
+		}, {
+			url: "rediss://localhost:123?tls_min_version=70000",
+			err: errors.New("redis: invalid tls_min_version: 70000 (must be between 0 and 65535)"),
 		}, {
 			url: "rediss://localhost:123/?skip_verify=true",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},

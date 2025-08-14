@@ -1656,8 +1656,8 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
 		}, {
 			test: "RedissTLSParams",
-			url:  "rediss://localhost:123?tls_server_name=abc&tls_min_version=1&tls_max_version=3&skip_verify=true",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "abc", MinVersion: 1, MaxVersion: 3, InsecureSkipVerify: true}},
+			url:  "rediss://localhost:123?tls_server_name=abc&tls_min_version=771&tls_max_version=772&skip_verify=true",
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "abc", MinVersion: 771, MaxVersion: 772, InsecureSkipVerify: true}},
 		}, {
 			test: "RedissTLSCert",
 			url:  "rediss://localhost:123?tls_cert_file=./testdata/testcert.pem&tls_key_file=./testdata/testkey.pem",
