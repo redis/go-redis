@@ -1637,7 +1637,7 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 		}, {
 			test: "ParseRedissURL",
 			url:  "rediss://localhost:123",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 		}, {
 			test: "MissingRedisPort",
 			url:  "redis://localhost",
@@ -1653,7 +1653,7 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 		}, {
 			test: "MultipleRedissURLs",
 			url:  "rediss://localhost:123?addr=localhost:1234&addr=localhost:12345",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 		}, {
 			test: "RedissTLSParams",
 			url:  "rediss://localhost:123?tls_server_name=abc&tls_min_version=771&tls_max_version=772&skip_verify=true",
@@ -1661,11 +1661,11 @@ EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
 		}, {
 			test: "RedissTLSCert",
 			url:  "rediss://localhost:123?tls_cert_file=./testdata/testcert.pem&tls_key_file=./testdata/testkey.pem",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", Certificates: []tls.Certificate{testCert}}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{testCert}}},
 		}, {
 			test: "RedissSkipVerify",
 			url:  "rediss://localhost:123?skip_verify=true",
-			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", InsecureSkipVerify: true}},
+			o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},
 		}, {
 			test: "OnlyPassword",
 			url:  "redis://:bar@localhost:123",
