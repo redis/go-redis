@@ -30,7 +30,7 @@ func (mh *MetricsHook) PreHook(ctx context.Context, notificationType string, not
 
 	// Store start time in context for duration calculation
 	startTime := time.Now()
-	ctx = context.WithValue(ctx, "start_time", startTime)
+	_ = context.WithValue(ctx, "start_time", startTime) // Context not used further
 
 	return notification, true
 }

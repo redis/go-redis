@@ -85,7 +85,6 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	}
 
 	newEndpoint := ""
-	ok = false
 	if len(notification) > 3 {
 		// Extract new endpoint
 		newEndpoint, ok = notification[3].(string)
@@ -119,7 +118,10 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 		// do this in a goroutine to avoid blocking the notification handler
 		go func() {
 			time.Sleep(time.Duration(timeS/2) * time.Second)
-			snh.markConnForHandoff(poolConn, newEndpoint, seqID, deadline)
+			if err := snh.markConnForHandoff(poolConn, newEndpoint, seqID, deadline); err != nil {
+				// Log error but don't fail the goroutine
+				internal.Logger.Printf(context.Background(), "hitless: failed to mark connection for handoff: %v", err)
+			}
 		}()
 		return nil
 	}

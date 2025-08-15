@@ -124,12 +124,6 @@ func (ph *PoolHook) GetScaleLevel() int {
 	return ph.scaleLevel
 }
 
-// log logs a message if the log level is appropriate
-func (ph *PoolHook) log(level int, message string) {
-	if ph.config.LogLevel >= level {
-		internal.Logger.Printf(context.Background(), message)
-	}
-}
 
 // IsHandoffPending returns true if the given connection has a pending handoff
 func (ph *PoolHook) IsHandoffPending(conn *pool.Conn) bool {
@@ -172,7 +166,10 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 					internal.Logger.Printf(ctx, "Failed to queue handoff: %v", err)
 					return false, true, nil // Don't pool, remove connection, no error to caller
 				}
-				conn.MarkQueuedForHandoff()
+				if err := conn.MarkQueuedForHandoff(); err != nil {
+					// If marking fails, remove the connection instead
+					return false, true, nil
+				}
 				return true, false, nil
 			}
 		}

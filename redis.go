@@ -216,16 +216,21 @@ type baseClient struct {
 	pushProcessor push.NotificationProcessor
 
 	// Hitless upgrade manager
-	hitlessManager *hitless.HitlessManager
+	hitlessManager     *hitless.HitlessManager
+	hitlessManagerLock sync.RWMutex
 }
 
 func (c *baseClient) clone() *baseClient {
+	c.hitlessManagerLock.RLock()
+	hitlessManager := c.hitlessManager
+	c.hitlessManagerLock.RUnlock()
+
 	clone := &baseClient{
 		opt:            c.opt,
 		connPool:       c.connPool,
 		onClose:        c.onClose,
 		pushProcessor:  c.pushProcessor,
-		hitlessManager: c.hitlessManager,
+		hitlessManager: hitlessManager,
 	}
 	return clone
 }
@@ -458,7 +463,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				return fmt.Errorf("failed to enable maintenance notifications: %w", hitlessHandshakeErr)
 			case hitless.MaintNotificationsAuto:
 				// auto mode, disable hitless upgrades and continue
-				c.disableHitlessUpgrades()
+				if err := c.disableHitlessUpgrades(); err != nil {
+					// Log error but continue - auto mode should be resilient
+					internal.Logger.Printf(ctx, "hitless: failed to disable hitless upgrades in auto mode: %v", err)
+				}
 				c.optLock.RUnlock()
 				c.optLock.Lock()
 				c.opt.HitlessUpgradeConfig.Enabled = hitless.MaintNotificationsDisabled
@@ -663,13 +671,20 @@ func (c *baseClient) enableHitlessUpgrades() error {
 	if err != nil {
 		return err
 	}
-	// Set the manager reference
+	// Set the manager reference and initialize pool hook
+	c.hitlessManagerLock.Lock()
 	c.hitlessManager = manager
-	c.hitlessManager.InitPoolHook(c.dialHook)
+	c.hitlessManagerLock.Unlock()
+
+	// Initialize pool hook (safe to call without lock since manager is now set)
+	manager.InitPoolHook(c.dialHook)
 	return nil
 }
 
 func (c *baseClient) disableHitlessUpgrades() error {
+	c.hitlessManagerLock.Lock()
+	defer c.hitlessManagerLock.Unlock()
+
 	// Close the hitless manager
 	if c.hitlessManager != nil {
 		// Closing the manager will also shutdown the pool hook
@@ -686,8 +701,14 @@ func (c *baseClient) disableHitlessUpgrades() error {
 // long-lived and shared between many goroutines.
 func (c *baseClient) Close() error {
 	var firstErr error
+
+	// Close hitless manager first
+	if err := c.disableHitlessUpgrades(); err != nil {
+		firstErr = err
+	}
+
 	if c.onClose != nil {
-		if err := c.onClose(); err != nil {
+		if err := c.onClose(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -957,6 +978,8 @@ func (c *Client) Options() *Options {
 // GetHitlessManager returns the hitless manager instance for monitoring and control.
 // Returns nil if hitless upgrades are not enabled.
 func (c *Client) GetHitlessManager() *hitless.HitlessManager {
+	c.hitlessManagerLock.RLock()
+	defer c.hitlessManagerLock.RUnlock()
 	return c.hitlessManager
 }
 
@@ -1241,7 +1264,4 @@ func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.Notifica
 	}
 }
 
-// initializeHitlessManager initializes hitless upgrade manager for a client.
-func initializeHitlessManager(client *baseClient, config *HitlessUpgradeConfig) (*hitless.HitlessManager, error) {
-	return nil, nil // TODO: Implement hitless manager initialization
-}
+
