@@ -3,9 +3,9 @@ package hitless
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -20,12 +20,11 @@ type HitlessManagerInterface interface {
 
 // HandoffRequest represents a request to handoff a connection to a new endpoint
 type HandoffRequest struct {
-	Conn              *pool.Conn
-	ConnID            uint64 // Unique connection identifier
-	Endpoint          string
-	SeqID             int64
-	StopWorkerRequest bool
-	Pool              pool.Pooler // Pool to remove connection from on failure
+	Conn     *pool.Conn
+	ConnID   uint64 // Unique connection identifier
+	Endpoint string
+	SeqID    int64
+	Pool     pool.Pooler // Pool to remove connection from on failure
 }
 
 // PoolHook implements pool.PoolHook for Redis-specific connection handling
@@ -44,18 +43,10 @@ type PoolHook struct {
 	shutdownOnce sync.Once           // Ensure clean shutdown
 	workerWg     sync.WaitGroup      // Track worker goroutines
 
-	// Dynamic worker scaling
-	minWorkers     int
-	maxWorkers     int
-	currentWorkers int
-	scalingMu      sync.Mutex
-	scaleLevel     int // 0=min, 1=max
-
-	// Scale down optimization
-	scaleDownTimer     *time.Timer
-	scaleDownMu        sync.Mutex
-	lastCompletionTime time.Time
-	scaleDownDelay     time.Duration
+	// On-demand worker management
+	maxWorkers    int
+	activeWorkers int32         // Atomic counter for active workers
+	workerTimeout time.Duration // How long workers wait for work before exiting
 
 	// Simple state tracking
 	pending sync.Map // map[uint64]int64 (connID -> seqID)
@@ -87,20 +78,16 @@ func NewPoolHookWithPoolSize(baseDialer func(context.Context, string, string) (n
 		// handoffQueue is a buffered channel for queuing handoff requests
 		handoffQueue: make(chan HandoffRequest, config.HandoffQueueSize),
 		// shutdown is a channel for signaling shutdown
-		shutdown:   make(chan struct{}),
-		minWorkers: config.MinWorkers,
-		maxWorkers: config.MaxWorkers,
-		// Start with minimum workers
-		currentWorkers: config.MinWorkers,
-		scaleLevel:     0, // Start at minimum
-		config:         config,
+		shutdown:      make(chan struct{}),
+		maxWorkers:    config.MaxWorkers,
+		activeWorkers: 0,                // Start with no workers - create on demand
+		workerTimeout: 30 * time.Second, // Workers exit after 30s of inactivity
+		config:        config,
 		// Hitless manager for operation completion tracking
 		hitlessManager: hitlessManager,
-		scaleDownDelay: config.ScaleDownDelay,
 	}
 
-	// Start worker goroutines at minimum level
-	ph.startWorkers(ph.minWorkers)
+	// No upfront worker creation - workers are created on demand
 
 	return ph
 }
@@ -110,18 +97,17 @@ func (ph *PoolHook) SetPool(pooler pool.Pooler) {
 	ph.pool = pooler
 }
 
-// GetCurrentWorkers returns the current number of workers (for testing)
+// GetCurrentWorkers returns the current number of active workers (for testing)
 func (ph *PoolHook) GetCurrentWorkers() int {
-	ph.scalingMu.Lock()
-	defer ph.scalingMu.Unlock()
-	return ph.currentWorkers
+	return int(atomic.LoadInt32(&ph.activeWorkers))
 }
 
-// GetScaleLevel returns the current scale level (for testing)
+// GetScaleLevel returns 1 if workers are active, 0 if none (for testing compatibility)
 func (ph *PoolHook) GetScaleLevel() int {
-	ph.scalingMu.Lock()
-	defer ph.scalingMu.Unlock()
-	return ph.scaleLevel
+	if atomic.LoadInt32(&ph.activeWorkers) > 0 {
+		return 1
+	}
+	return 0
 }
 
 // IsHandoffPending returns true if the given connection has a pending handoff
@@ -177,183 +163,56 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 	return true, false, nil
 }
 
-// startWorkers starts the worker goroutines for processing handoff requests
-func (ph *PoolHook) startWorkers(count int) {
+// ensureWorkerAvailable ensures at least one worker is available to process requests
+// Creates a new worker if needed and under the max limit
+func (ph *PoolHook) ensureWorkerAvailable() {
 	select {
 	case <-ph.shutdown:
 		return
 	default:
-		hookID := fmt.Sprintf("%p", ph)
-		internal.Logger.Printf(context.Background(), "hitless: starting %d workers for hook %s", count, hookID)
-		for i := 0; i < count; i++ {
-			ph.workerWg.Add(1)
-			go ph.handoffWorker()
+		// Check if we need a new worker
+		currentWorkers := atomic.LoadInt32(&ph.activeWorkers)
+		if currentWorkers < int32(ph.maxWorkers) {
+			// Try to create a new worker (atomic increment to prevent race)
+			if atomic.CompareAndSwapInt32(&ph.activeWorkers, currentWorkers, currentWorkers+1) {
+				ph.workerWg.Add(1)
+				go ph.onDemandWorker()
+			}
 		}
 	}
 }
 
-// scaleUpWorkers scales up workers when queue is full (single step: min → max)
-func (ph *PoolHook) scaleUpWorkers() {
-	ph.scalingMu.Lock()
-	defer ph.scalingMu.Unlock()
-
-	if ph.scaleLevel >= 1 {
-		return // Already at maximum scale
-	}
-
-	previousWorkers := ph.currentWorkers
-	targetWorkers := ph.maxWorkers
-
-	// Ensure we don't go below current workers
-	if targetWorkers <= ph.currentWorkers {
-		return
-	}
-
-	additionalWorkers := targetWorkers - ph.currentWorkers
-	ph.startWorkers(additionalWorkers)
-	ph.currentWorkers = targetWorkers
-	ph.scaleLevel = 1
-
-	if ph.config != nil && ph.config.LogLevel >= 2 { // Info level
-		internal.Logger.Printf(context.Background(),
-			"hitless: scaled up workers from %d to %d (max level) due to queue pressure",
-			previousWorkers, ph.currentWorkers)
-	}
-}
-
-// scaleDownWorkers returns to minimum worker count when queue is empty
-func (ph *PoolHook) scaleDownWorkers() {
-	ph.scalingMu.Lock()
-	defer ph.scalingMu.Unlock()
-
-	if ph.scaleLevel == 0 {
-		return // Already at minimum scale
-	}
-
-	// Send stop worker requests to excess workers
-	excessWorkers := ph.currentWorkers - ph.minWorkers
-	previousWorkers := ph.currentWorkers
-
-	for i := 0; i < excessWorkers; i++ {
-		stopRequest := HandoffRequest{
-			StopWorkerRequest: true,
-		}
-
-		// Try to send stop request without blocking
-		select {
-		case ph.handoffQueue <- stopRequest:
-			// Stop request sent successfully
-		default:
-			// Queue is full, worker will naturally exit when queue empties
-			break
-		}
-	}
-
-	ph.currentWorkers = ph.minWorkers
-	ph.scaleLevel = 0
-
-	if ph.config != nil && ph.config.LogLevel >= 2 { // Info level
-		internal.Logger.Printf(context.Background(),
-			"hitless: scaling down workers from %d to %d (sent %d stop requests)",
-			previousWorkers, ph.minWorkers, excessWorkers)
-	}
-}
-
-// scheduleScaleDownCheck schedules a scale down check after a delay
-// This is called after completing a handoff request to avoid expensive immediate checks
-func (ph *PoolHook) scheduleScaleDownCheck() {
-	ph.scaleDownMu.Lock()
-	defer ph.scaleDownMu.Unlock()
-
-	// Update last completion time
-	ph.lastCompletionTime = time.Now()
-
-	// If timer already exists, reset it
-	if ph.scaleDownTimer != nil {
-		ph.scaleDownTimer.Reset(ph.scaleDownDelay)
-		return
-	}
-
-	// Create new timer
-	ph.scaleDownTimer = time.AfterFunc(ph.scaleDownDelay, func() {
-		ph.performScaleDownCheck()
-	})
-}
-
-// performScaleDownCheck performs the actual scale down check
-// This runs in a background goroutine after the delay
-func (ph *PoolHook) performScaleDownCheck() {
-	ph.scaleDownMu.Lock()
-	defer ph.scaleDownMu.Unlock()
-
-	// Clear the timer since it has fired
-	ph.scaleDownTimer = nil
-
-	// Check if we should scale down
-	if ph.shouldScaleDown() {
-		ph.scaleDownWorkers()
-	}
-}
-
-// shouldScaleDown checks if conditions are met for scaling down
-// This is the expensive check that we want to minimize
-func (ph *PoolHook) shouldScaleDown() bool {
-	// Quick check: if we're already at minimum scale, no need to scale down
-	if ph.scaleLevel == 0 {
-		return false
-	}
-
-	// Quick check: if queue is not empty, don't scale down
-	if len(ph.handoffQueue) > 0 {
-		return false
-	}
-
-	// Expensive check: count pending handoffs
-	pendingCount := 0
-	ph.pending.Range(func(key, value interface{}) bool {
-		pendingCount++
-		return pendingCount < 5 // Early exit if we find several pending
-	})
-
-	// Only scale down if no pending handoffs
-	return pendingCount == 0
-}
-
-// handoffWorker processes handoff requests from the queue
-func (ph *PoolHook) handoffWorker() {
-	defer ph.workerWg.Done()
-
-	// Debug: Log worker start with PoolHook pointer for identification
-	hookID := fmt.Sprintf("%p", ph)
-	internal.Logger.Printf(context.Background(), "hitless: worker started for hook %s", hookID)
+// onDemandWorker processes handoff requests and exits when idle
+func (ph *PoolHook) onDemandWorker() {
+	defer func() {
+		// Decrement active worker count when exiting
+		atomic.AddInt32(&ph.activeWorkers, -1)
+		ph.workerWg.Done()
+	}()
 
 	for {
 		select {
 		case request := <-ph.handoffQueue:
-			internal.Logger.Printf(context.Background(), "hitless: worker %s received request", hookID)
-			// Check if this is a stop worker request
-			if request.StopWorkerRequest {
-				if ph.config != nil && ph.config.LogLevel >= 2 { // Info level
-					internal.Logger.Printf(context.Background(),
-						"hitless: worker %s received stop request, exiting", hookID)
-				}
-				return // Exit this worker
-			}
-
 			// Check for shutdown before processing
 			select {
 			case <-ph.shutdown:
 				// Clean up the request before exiting
 				ph.pending.Delete(request.ConnID)
-				internal.Logger.Printf(context.Background(), "hitless: worker %s exiting due to shutdown during request", hookID)
 				return
 			default:
-				// Continue with processing
-				internal.Logger.Printf(context.Background(), "hitless: worker %s processing request", hookID)
+				// Process the request
 				ph.processHandoffRequest(request)
 			}
+
+		case <-time.After(ph.workerTimeout):
+			// Worker has been idle for too long, exit to save resources
+			if ph.config != nil && ph.config.LogLevel >= 3 { // Debug level
+				internal.Logger.Printf(context.Background(),
+					"hitless: worker exiting due to inactivity timeout (%v)", ph.workerTimeout)
+			}
+			return
+
 		case <-ph.shutdown:
-			internal.Logger.Printf(context.Background(), "hitless: worker %s exiting due to shutdown", hookID)
 			return
 		}
 	}
@@ -361,11 +220,6 @@ func (ph *PoolHook) handoffWorker() {
 
 // processHandoffRequest processes a single handoff request
 func (ph *PoolHook) processHandoffRequest(request HandoffRequest) {
-	// Safety check: ignore stop worker requests (should be handled in worker)
-	if request.StopWorkerRequest {
-		return
-	}
-
 	// Remove from pending map
 	defer ph.pending.Delete(request.Conn.GetID())
 
@@ -395,9 +249,8 @@ func (ph *PoolHook) processHandoffRequest(request HandoffRequest) {
 		internal.Logger.Printf(context.Background(), "Handoff failed for connection WILL RETRY: %v", err)
 	}
 
-	// Schedule a scale down check after completing this handoff request
-	// This avoids expensive immediate checks and prevents rapid scaling cycles
-	ph.scheduleScaleDownCheck()
+	// No need for scale down scheduling with on-demand workers
+	// Workers automatically exit when idle
 }
 
 // queueHandoff queues a handoff request for processing
@@ -423,6 +276,8 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 		case ph.handoffQueue <- request:
 			// Store in pending map
 			ph.pending.Store(request.ConnID, request.SeqID)
+			// Ensure we have a worker to process this request
+			ph.ensureWorkerAvailable()
 			return nil
 		default:
 			// Queue is full - log and attempt scaling
@@ -434,8 +289,8 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 		}
 	}
 
-	// Scale up workers to handle the load
-	go ph.scaleUpWorkers()
+	// Ensure we have workers available to handle the load
+	ph.ensureWorkerAvailable()
 	return errors.New("queue full")
 }
 
@@ -578,19 +433,10 @@ func (ph *PoolHook) createEndpointDialer(endpoint string) func(context.Context) 
 
 // Shutdown gracefully shuts down the processor, waiting for workers to complete
 func (ph *PoolHook) Shutdown(ctx context.Context) error {
-	hookID := fmt.Sprintf("%p", ph)
-	internal.Logger.Printf(context.Background(), "hitless: Shutdown called for hook %s", hookID)
 	ph.shutdownOnce.Do(func() {
-		internal.Logger.Printf(context.Background(), "hitless: closing shutdown channel for hook %s", hookID)
 		close(ph.shutdown)
 
-		// Clean up scale down timer
-		ph.scaleDownMu.Lock()
-		if ph.scaleDownTimer != nil {
-			ph.scaleDownTimer.Stop()
-			ph.scaleDownTimer = nil
-		}
-		ph.scaleDownMu.Unlock()
+		// No timers to clean up with on-demand workers
 	})
 
 	// Wait for workers to complete

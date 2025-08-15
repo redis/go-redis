@@ -510,24 +510,21 @@ func TestConnectionHook(t *testing.T) {
 		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
-		// Verify initial worker count and scaling level
-		if processor.currentWorkers != 1 {
-			t.Errorf("Expected 1 initial worker, got %d", processor.currentWorkers)
+		// Verify initial worker count (should be 0 with on-demand workers)
+		if processor.GetCurrentWorkers() != 0 {
+			t.Errorf("Expected 0 initial workers with on-demand system, got %d", processor.GetCurrentWorkers())
 		}
-		if processor.scaleLevel != 0 {
-			t.Errorf("Processor should be at scale level 0 initially, got %d", processor.scaleLevel)
-		}
-		if processor.minWorkers != 1 {
-			t.Errorf("Expected minWorkers=1, got %d", processor.minWorkers)
+		if processor.GetScaleLevel() != 0 {
+			t.Errorf("Processor should be at scale level 0 initially, got %d", processor.GetScaleLevel())
 		}
 		if processor.maxWorkers != 4 {
 			t.Errorf("Expected maxWorkers=4, got %d", processor.maxWorkers)
 		}
 
-		// The scaling behavior is tested in other tests (ScaleDownDelayBehavior)
+		// The on-demand worker behavior creates workers only when needed
 		// This test just verifies the basic configuration is correct
-		t.Logf("Worker scaling configuration verified - Min: %d, Max: %d, Current: %d",
-			processor.minWorkers, processor.maxWorkers, processor.currentWorkers)
+		t.Logf("On-demand worker configuration verified - Max: %d, Current: %d",
+			processor.maxWorkers, processor.GetCurrentWorkers())
 	})
 
 	t.Run("PassiveTimeoutRestoration", func(t *testing.T) {

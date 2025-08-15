@@ -103,7 +103,7 @@ type Config struct {
 	// HandoffQueueSize is the size of the buffered channel used to queue handoff requests.
 	// If the queue is full, new handoff requests will be rejected.
 	//
-	// Default: 10x max workers, but never more than pool size
+	// Default: 10x max workers, but never more than pool size, min 2
 	HandoffQueueSize int
 
 	// PostHandoffRelaxedDuration is how long to keep relaxed timeouts on the new connection
@@ -382,6 +382,10 @@ func (c *Config) ApplyDefaultsWithPoolSize(poolSize int) *Config {
 		result.HandoffQueueSize = util.Min(workerBasedSize, poolSize)
 	} else {
 		result.HandoffQueueSize = c.HandoffQueueSize
+	}
+	// Ensure minimum queue size of 2
+	if result.HandoffQueueSize < 2 {
+		result.HandoffQueueSize = 2
 	}
 
 	if c.PostHandoffRelaxedDuration <= 0 {
