@@ -469,16 +469,16 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				// enabled mode, fail the connection
 				c.optLock.RUnlock()
 				return fmt.Errorf("failed to enable maintenance notifications: %w", hitlessHandshakeErr)
-			case hitless.MaintNotificationsAuto:
+			default: // will handle auto and any other
 				c.optLock.RUnlock()
 				c.optLock.Lock()
+				c.opt.HitlessUpgradeConfig.Enabled = hitless.MaintNotificationsDisabled
+				c.optLock.Unlock()
 				// auto mode, disable hitless upgrades and continue
 				if err := c.disableHitlessUpgrades(); err != nil {
 					// Log error but continue - auto mode should be resilient
 					internal.Logger.Printf(ctx, "hitless: failed to disable hitless upgrades in auto mode: %v", err)
 				}
-				c.opt.HitlessUpgradeConfig.Enabled = hitless.MaintNotificationsDisabled
-				c.optLock.Unlock()
 			}
 		} else {
 			// handshake was executed successfully
