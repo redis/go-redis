@@ -509,8 +509,6 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 			p.idleConns = append(p.idleConns, cn)
 		} else {
 			// LIFO: put at beginning (will be picked up last since we pop from end)
-			// currently isUsable is only set for hitless upgrades, so this is a no-op
-			// but we may need it in the future, so leaving it here for now.
 			p.idleConns = append([]*Conn{cn}, p.idleConns...)
 		}
 	}

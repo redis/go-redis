@@ -448,20 +448,15 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	c.optLock.RLock()
 	hitlessEnabled := c.opt.HitlessUpgradeConfig.IsEnabled()
 	protocol := c.opt.Protocol
-	//endpointType := c.opt.HitlessUpgradeConfig.EndpointType
+	endpointType := c.opt.HitlessUpgradeConfig.EndpointType
 	c.optLock.RUnlock()
 	var hitlessHandshakeErr error
 	if hitlessEnabled && protocol == 3 {
-		/*
-			pipe := conn.Pipeline()
-			hitlessHandshakeErr = pipe.ClientMaintNotifications(
-				ctx,
-				true,
-				endpointType.String(),
-			).Err()
-			pipe.Exec(ctx)
-
-		*/
+		hitlessHandshakeErr = conn.ClientMaintNotifications(
+			ctx,
+			true,
+			endpointType.String(),
+		).Err()
 		if hitlessHandshakeErr != nil {
 			if !isRedisError(hitlessHandshakeErr) {
 				// if not redis error, fail the connection

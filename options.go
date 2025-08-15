@@ -152,8 +152,6 @@ type Options struct {
 	//	- true for FIFO pool
 	//	- false for LIFO pool.
 	//
-	// NOTE: If you are using HitlessUpgrades, this will be ignored and pool will always be FIFO.
-	//
 	// Note that FIFO has slightly higher overhead compared to LIFO,
 	// but it helps closing idle connections faster reducing the pool size.
 	// default: false
@@ -648,7 +646,7 @@ func newConnPool(
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return dialer(ctx, opt.Network, opt.Addr)
 		},
-		PoolFIFO:                 opt.PoolFIFO || opt.HitlessUpgradeConfig.IsEnabled(), // Always FIFO with hitless upgrades
+		PoolFIFO:                 opt.PoolFIFO,
 		PoolSize:                 int32(opt.PoolSize),
 		PoolTimeout:              opt.PoolTimeout,
 		DialTimeout:              opt.DialTimeout,
