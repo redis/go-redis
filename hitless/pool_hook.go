@@ -3,6 +3,7 @@ package hitless
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -178,9 +179,16 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 
 // startWorkers starts the worker goroutines for processing handoff requests
 func (ph *PoolHook) startWorkers(count int) {
-	for i := 0; i < count; i++ {
-		ph.workerWg.Add(1)
-		go ph.handoffWorker()
+	select {
+	case <-ph.shutdown:
+		return
+	default:
+		hookID := fmt.Sprintf("%p", ph)
+		internal.Logger.Printf(context.Background(), "hitless: starting %d workers for hook %s", count, hookID)
+		for i := 0; i < count; i++ {
+			ph.workerWg.Add(1)
+			go ph.handoffWorker()
+		}
 	}
 }
 
@@ -315,14 +323,19 @@ func (ph *PoolHook) shouldScaleDown() bool {
 func (ph *PoolHook) handoffWorker() {
 	defer ph.workerWg.Done()
 
+	// Debug: Log worker start with PoolHook pointer for identification
+	hookID := fmt.Sprintf("%p", ph)
+	internal.Logger.Printf(context.Background(), "hitless: worker started for hook %s", hookID)
+
 	for {
 		select {
 		case request := <-ph.handoffQueue:
+			internal.Logger.Printf(context.Background(), "hitless: worker %s received request", hookID)
 			// Check if this is a stop worker request
 			if request.StopWorkerRequest {
 				if ph.config != nil && ph.config.LogLevel >= 2 { // Info level
 					internal.Logger.Printf(context.Background(),
-						"hitless: worker received stop request, exiting")
+						"hitless: worker %s received stop request, exiting", hookID)
 				}
 				return // Exit this worker
 			}
@@ -332,12 +345,15 @@ func (ph *PoolHook) handoffWorker() {
 			case <-ph.shutdown:
 				// Clean up the request before exiting
 				ph.pending.Delete(request.ConnID)
+				internal.Logger.Printf(context.Background(), "hitless: worker %s exiting due to shutdown during request", hookID)
 				return
 			default:
 				// Continue with processing
+				internal.Logger.Printf(context.Background(), "hitless: worker %s processing request", hookID)
 				ph.processHandoffRequest(request)
 			}
 		case <-ph.shutdown:
+			internal.Logger.Printf(context.Background(), "hitless: worker %s exiting due to shutdown", hookID)
 			return
 		}
 	}
@@ -562,7 +578,10 @@ func (ph *PoolHook) createEndpointDialer(endpoint string) func(context.Context) 
 
 // Shutdown gracefully shuts down the processor, waiting for workers to complete
 func (ph *PoolHook) Shutdown(ctx context.Context) error {
+	hookID := fmt.Sprintf("%p", ph)
+	internal.Logger.Printf(context.Background(), "hitless: Shutdown called for hook %s", hookID)
 	ph.shutdownOnce.Do(func() {
+		internal.Logger.Printf(context.Background(), "hitless: closing shutdown channel for hook %s", hookID)
 		close(ph.shutdown)
 
 		// Clean up scale down timer
