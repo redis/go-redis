@@ -8,6 +8,13 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 )
 
+// contextKey is a custom type for context keys to avoid collisions
+type contextKey string
+
+const (
+	startTimeKey contextKey = "start_time"
+)
+
 // MetricsHook collects metrics about notification processing.
 type MetricsHook struct {
 	NotificationCounts map[string]int64
@@ -30,7 +37,7 @@ func (mh *MetricsHook) PreHook(ctx context.Context, notificationType string, not
 
 	// Store start time in context for duration calculation
 	startTime := time.Now()
-	_ = context.WithValue(ctx, "start_time", startTime) // Context not used further
+	_ = context.WithValue(ctx, startTimeKey, startTime) // Context not used further
 
 	return notification, true
 }
@@ -38,7 +45,7 @@ func (mh *MetricsHook) PreHook(ctx context.Context, notificationType string, not
 // PostHook records processing completion and any errors.
 func (mh *MetricsHook) PostHook(ctx context.Context, notificationType string, notification []interface{}, result error) {
 	// Calculate processing duration
-	if startTime, ok := ctx.Value("start_time").(time.Time); ok {
+	if startTime, ok := ctx.Value(startTimeKey).(time.Time); ok {
 		duration := time.Since(startTime)
 		mh.ProcessingTimes[notificationType] = duration
 	}
