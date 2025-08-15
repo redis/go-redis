@@ -24,6 +24,8 @@ var (
 	// ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
 
+	popAttempts  = 10
+	getAttempts  = 3
 	minTime      = time.Unix(-2208988800, 0) // Jan 1, 1900
 	maxTime      = minTime.Add(1<<63 - 1)
 	noExpiration = maxTime
@@ -356,14 +358,16 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		return nil, err
 	}
 
-	tries := 0
 	now := time.Now()
+	attempts := 0
 	for {
-		if tries > 10 {
-			log.Printf("redis: connection pool: failed to get a connection after %d tries", tries)
+
+		if attempts >= getAttempts {
+			log.Printf("redis: connection pool: failed to get an connection accepted by hook after %d attempts", attempts)
 			break
 		}
-		tries++
+		attempts++
+
 		p.connsMu.Lock()
 		cn, err = p.popIdle()
 		p.connsMu.Unlock()
@@ -407,6 +411,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	if p.hookManager != nil {
 		if err := p.hookManager.ProcessOnGet(ctx, newcn, true); err != nil {
 			// Failed to process connection, discard it
+			log.Printf("redis: connection pool: failed to process new connection by hook: %v", err)
 			_ = p.CloseConn(newcn)
 			return nil, err
 		}
@@ -467,9 +472,8 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 
 	var cn *Conn
 	attempts := 0
-	maxAttempts := len(p.idleConns) + 1 // Prevent infinite loop
 
-	for attempts < maxAttempts {
+	for attempts < popAttempts {
 		if len(p.idleConns) == 0 {
 			return nil, nil
 		}
@@ -503,7 +507,8 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 	}
 
 	// If we exhausted all attempts without finding a usable connection, return nil
-	if attempts >= maxAttempts {
+	if attempts >= popAttempts {
+		log.Printf("redis: connection pool: failed to get an usable connection after %d attempts", popAttempts)
 		return nil, nil
 	}
 

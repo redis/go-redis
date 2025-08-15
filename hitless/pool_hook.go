@@ -138,6 +138,7 @@ func (ph *PoolHook) OnGet(ctx context.Context, conn *pool.Conn, _ bool) error {
 	// in a handoff state at the moment.
 
 	// Check if connection is usable (not in a handoff state)
+	// Should not happen since the pool will not return a connection that is not usable.
 	if !conn.IsUsable() {
 		return ErrConnectionMarkedForHandoff
 	}

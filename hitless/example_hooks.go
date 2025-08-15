@@ -2,7 +2,6 @@ package hitless
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -201,63 +200,4 @@ func (vh *ValidationHook) PreHook(ctx context.Context, notificationType string, 
 // PostHook does nothing for validation hook.
 func (vh *ValidationHook) PostHook(ctx context.Context, notificationType string, notification []interface{}, result error) {
 	// No post-processing needed
-}
-
-// ExampleUsage demonstrates how to use the hooks and notification types with HitlessManager.
-func ExampleUsage() {
-	// This is just an example - in real usage, you'd have actual client and config
-	fmt.Println("Example of using hooks and notification types with HitlessManager:")
-	fmt.Println()
-
-	fmt.Println("1. Using notification type constants:")
-	fmt.Printf("   MOVING: %s\n", NotificationMoving)
-	fmt.Printf("   MIGRATING: %s\n", NotificationMigrating)
-	fmt.Printf("   MIGRATED: %s\n", NotificationMigrated)
-	fmt.Printf("   FAILING_OVER: %s\n", NotificationFailingOver)
-	fmt.Printf("   FAILED_OVER: %s\n", NotificationFailedOver)
-	fmt.Println()
-
-	fmt.Println("2. Using notification type sets:")
-	fmt.Println("   // Register handlers for all notification types")
-	fmt.Println("   manager.RegisterSelectiveHandlers(AllNotificationTypes())")
-	fmt.Println()
-	fmt.Println("   // Register handlers only for MOVING notifications")
-	fmt.Println("   manager.RegisterSelectiveHandlers(MovingOnlyNotifications())")
-	fmt.Println()
-	fmt.Println("   // Register handlers only for migration-related notifications")
-	fmt.Println("   manager.RegisterSelectiveHandlers(MigrationNotifications())")
-	fmt.Println()
-	fmt.Println("   // Register handlers only for failover-related notifications")
-	fmt.Println("   manager.RegisterSelectiveHandlers(FailoverNotifications())")
-	fmt.Println()
-	fmt.Println("   // Register handlers for custom set of notifications")
-	fmt.Println("   customTypes := NewNotificationTypeSet(NotificationMoving, NotificationMigrated)")
-	fmt.Println("   manager.RegisterSelectiveHandlers(customTypes)")
-	fmt.Println()
-
-	fmt.Println("3. Create hooks:")
-	fmt.Println("   metricsHook := NewMetricsHook()")
-	fmt.Println("   rewriteHook := NewEndpointRewriteHook(map[string]string{")
-	fmt.Println("       \"old-redis:6379\": \"new-redis:6379\",")
-	fmt.Println("   })")
-	fmt.Println("   throttleHook := NewThrottleHook(10) // 10 notifications per second")
-	fmt.Println("   validationHook := NewValidationHook(true) // strict mode")
-	fmt.Println()
-
-	fmt.Println("4. Add hooks to manager:")
-	fmt.Println("   manager.AddHook(validationHook)  // Validate first")
-	fmt.Println("   manager.AddHook(throttleHook)    // Then throttle")
-	fmt.Println("   manager.AddHook(rewriteHook)     // Then rewrite")
-	fmt.Println("   manager.AddHook(metricsHook)     // Finally collect metrics")
-	fmt.Println()
-
-	fmt.Println("5. Hooks will be called in order for each notification:")
-	fmt.Println("   - ValidationHook validates the notification")
-	fmt.Println("   - ThrottleHook may skip processing if rate limit exceeded")
-	fmt.Println("   - EndpointRewriteHook may modify the endpoint")
-	fmt.Println("   - MetricsHook collects processing statistics")
-	fmt.Println()
-
-	fmt.Println("6. Remove hooks when no longer needed:")
-	fmt.Println("   manager.RemoveHook(throttleHook)")
 }

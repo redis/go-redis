@@ -45,7 +45,6 @@ type Conn struct {
 
 	Inited    bool
 	pooled    bool
-	pubsub    bool
 	createdAt time.Time
 	expiresAt time.Time
 
@@ -453,18 +452,6 @@ func (cn *Conn) IncrementAndGetHandoffRetries(n int) int {
 	return cn.incrementHandoffRetries(n)
 }
 
-// Rd returns the connection's reader for protocol-specific processing
-func (cn *Conn) Rd() *proto.Reader {
-	return cn.rd
-}
-
-// Reader returns the connection's proto reader for processing notifications
-// Note: This method should be used carefully as it returns the raw reader.
-// For thread-safe operations, use HasBufferedData() and PeekReplyTypeSafe().
-func (cn *Conn) Reader() *proto.Reader {
-	return cn.rd
-}
-
 // HasBufferedData safely checks if the connection has buffered data.
 // This method is used to avoid data races when checking for push notifications.
 func (cn *Conn) HasBufferedData() bool {
@@ -606,12 +593,4 @@ func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	}
 
 	return noDeadline
-}
-
-func (cn *Conn) IsPubSub() bool {
-	return cn.pubsub
-}
-
-func (cn *Conn) IsPooled() bool {
-	return cn.pooled
 }
