@@ -660,3 +660,21 @@ func newConnPool(
 		PushNotificationsEnabled: opt.Protocol == 3,
 	})
 }
+
+func newPubSubPool(opt *Options, dialer func(ctx context.Context, network, addr string) (net.Conn, error),
+) *pool.PubSubPool {
+	return pool.NewPubSubPool(&pool.Options{
+		PoolFIFO:                 opt.PoolFIFO,
+		PoolSize:                 int32(opt.PoolSize),
+		PoolTimeout:              opt.PoolTimeout,
+		DialTimeout:              opt.DialTimeout,
+		MinIdleConns:             int32(opt.MinIdleConns),
+		MaxIdleConns:             int32(opt.MaxIdleConns),
+		MaxActiveConns:           int32(opt.MaxActiveConns),
+		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
+		ConnMaxLifetime:          opt.ConnMaxLifetime,
+		ReadBufferSize:           32 * 1024,
+		WriteBufferSize:          32 * 1024,
+		PushNotificationsEnabled: opt.Protocol == 3,
+	}, dialer)
+}

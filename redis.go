@@ -205,9 +205,10 @@ func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) e
 //------------------------------------------------------------------------------
 
 type baseClient struct {
-	opt      *Options
-	optLock  sync.RWMutex
-	connPool pool.Pooler
+	opt        *Options
+	optLock    sync.RWMutex
+	connPool   pool.Pooler
+	pubSubPool *pool.PubSubPool
 	hooksMixin
 
 	onClose func() error // hook called when client is closed
@@ -723,6 +724,9 @@ func (c *baseClient) Close() error {
 	if err := c.connPool.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
+	if err := c.pubSubPool.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
 	return firstErr
 }
 
@@ -929,8 +933,9 @@ func NewClient(opt *Options) *Client {
 	// Update options with the initialized push processor
 	opt.PushNotificationProcessor = c.pushProcessor
 
-	// Create connection pool with the hooks (nil if hitless upgrades disabled)
+	// Create connection pools
 	c.connPool = newConnPool(opt, c.dialHook)
+	c.pubSubPool = newPubSubPool(opt, c.dialHook)
 
 	// Initialize hitless upgrades first if enabled and protocol is RESP3
 	if opt.HitlessUpgradeConfig.IsEnabled() && opt.Protocol == 3 {
@@ -1023,6 +1028,7 @@ type PoolStats pool.Stats
 // PoolStats returns connection pool stats.
 func (c *Client) PoolStats() *PoolStats {
 	stats := c.connPool.Stats()
+	stats.PubSubStats = *(c.pubSubPool.Stats())
 	return (*PoolStats)(stats)
 }
 
@@ -1058,25 +1064,22 @@ func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
-			netConn, err := c.dialHook(ctx, c.opt.Network, addr)
+			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
 			if err != nil {
 				return nil, err
 			}
-			cn := pool.NewConnWithBufferSize(netConn, c.opt.ReadBufferSize, c.opt.WriteBufferSize)
-
 			// will return nil if already initialized
 			err = c.initConn(ctx, cn)
 			if err != nil {
 				_ = cn.Close()
 				return nil, err
 			}
-
-			c.connPool.TrackConn(cn)
+			c.pubSubPool.TrackConn(cn)
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
+			c.pubSubPool.UntrackConn(cn)
 			_ = cn.Close()
-			c.connPool.UntrackConn(cn)
 			return nil
 		},
 		pushProcessor: c.pushProcessor,
