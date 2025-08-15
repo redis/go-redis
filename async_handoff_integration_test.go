@@ -269,6 +269,7 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 		}
 
 		processor := hitless.NewPoolHook(slowDialer, "tcp", nil, nil)
+		defer processor.Shutdown(context.Background())
 
 		// Create hooks manager and add processor as hook
 		hookManager := pool.NewPoolHookManager()

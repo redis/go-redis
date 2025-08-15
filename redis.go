@@ -448,11 +448,17 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 
 	// Enable maintenance notifications if hitless upgrades are configured
-	if c.opt.HitlessUpgradeConfig.IsEnabled() && c.opt.Protocol == 3 {
+	c.optLock.RLock()
+	hitlessEnabled := c.opt.HitlessUpgradeConfig.IsEnabled()
+	protocol := c.opt.Protocol
+	endpointType := c.opt.HitlessUpgradeConfig.EndpointType
+	c.optLock.RUnlock()
+
+	if hitlessEnabled && protocol == 3 {
 		hitlessHandshakeErr = conn.ClientMaintNotifications(
 			ctx,
 			true,
-			c.opt.HitlessUpgradeConfig.EndpointType.String(),
+			endpointType.String(),
 		).Err()
 		if hitlessHandshakeErr != nil {
 			c.optLock.RLock()
