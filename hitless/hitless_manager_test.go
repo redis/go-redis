@@ -64,6 +64,10 @@ func (mo *MockOptions) GetPoolSize() int {
 	return 10
 }
 
+func (mo *MockOptions) GetNetwork() string {
+	return "tcp"
+}
+
 func (mo *MockOptions) NewDialer() func(context.Context) (net.Conn, error) {
 	return func(ctx context.Context) (net.Conn, error) {
 		return nil, nil

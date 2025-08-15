@@ -436,43 +436,42 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			pipe.ClientSetName(ctx, c.opt.ClientName)
 		}
 
-		// Enable maintenance notifications if hitless upgrades are configured
-		if c.opt.HitlessUpgradeConfig.IsEnabled() && c.opt.Protocol == 3 {
-			hitlessHandshakeErr = pipe.ClientMaintNotifications(
-				ctx,
-				true,
-				c.opt.HitlessUpgradeConfig.EndpointType.String(),
-			).Err()
-		}
-
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize connection options: %w", err)
 	}
 
-	if hitlessHandshakeErr != nil {
-		c.optLock.RLock()
-		// handshake failed
-		switch c.opt.HitlessUpgradeConfig.Enabled {
-		case hitless.MaintNotificationsEnabled:
-			// enabled mode, fail the connection
-			return fmt.Errorf("failed to enable maintenance notifications: %w", hitlessHandshakeErr)
-		case hitless.MaintNotificationsAuto:
-			// auto mode, disable hitless upgrades and continue
-			c.disableHitlessUpgrades()
-			c.optLock.RUnlock()
+	// Enable maintenance notifications if hitless upgrades are configured
+	if c.opt.HitlessUpgradeConfig.IsEnabled() && c.opt.Protocol == 3 {
+		hitlessHandshakeErr = conn.ClientMaintNotifications(
+			ctx,
+			true,
+			c.opt.HitlessUpgradeConfig.EndpointType.String(),
+		).Err()
+		if hitlessHandshakeErr != nil {
+			c.optLock.RLock()
+			// handshake failed
+			switch c.opt.HitlessUpgradeConfig.Enabled {
+			case hitless.MaintNotificationsEnabled:
+				// enabled mode, fail the connection
+				return fmt.Errorf("failed to enable maintenance notifications: %w", hitlessHandshakeErr)
+			case hitless.MaintNotificationsAuto:
+				// auto mode, disable hitless upgrades and continue
+				c.disableHitlessUpgrades()
+				c.optLock.RUnlock()
+				c.optLock.Lock()
+				c.opt.HitlessUpgradeConfig.Enabled = hitless.MaintNotificationsDisabled
+				c.optLock.Unlock()
+			}
+		} else {
+			// handshake was executed successfully
+			// to make sure that the handshake will be executed on other connections as well if it was successfully
+			// executed on this connection, we will force the handshake to be executed on all connections
 			c.optLock.Lock()
-			c.opt.HitlessUpgradeConfig.Enabled = hitless.MaintNotificationsDisabled
+			c.opt.HitlessUpgradeConfig.Enabled = hitless.MaintNotificationsEnabled
 			c.optLock.Unlock()
 		}
-	} else if c.opt.HitlessUpgradeConfig.IsEnabled() && c.opt.Protocol == 3 {
-		// handshake was executed successfully
-		// to make sure that the handshake will be executed on other connections as well if it was successfully
-		// executed on this connection, we will force the handshake to be executed on all connections
-		c.optLock.Lock()
-		c.opt.HitlessUpgradeConfig.Enabled = hitless.MaintNotificationsEnabled
-		c.optLock.Unlock()
 	}
 
 	cn.SetUsable(true)

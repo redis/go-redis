@@ -286,7 +286,7 @@ func (hm *HitlessManager) createPoolHook(baseDialer func(context.Context, string
 		poolSize = hm.options.GetPoolSize()
 	}
 
-	hm.poolHooksRef = NewPoolHookWithPoolSize(baseDialer, hm.config, hm, poolSize)
+	hm.poolHooksRef = NewPoolHookWithPoolSize(baseDialer, hm.options.GetNetwork(), hm.config, hm, poolSize)
 	hm.poolHooksRef.SetPool(hm.pool)
 
 	return hm.poolHooksRef

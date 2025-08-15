@@ -52,6 +52,11 @@ func (oa *optionsAdapter) GetWriteTimeout() time.Duration {
 	return oa.options.WriteTimeout
 }
 
+// GetNetwork returns the network type.
+func (oa *optionsAdapter) GetNetwork() string {
+	return oa.options.Network
+}
+
 // GetAddr returns the connection address.
 func (oa *optionsAdapter) GetAddr() string {
 	return oa.options.Addr

@@ -32,6 +32,9 @@ type OptionsInterface interface {
 	// GetWriteTimeout returns the write timeout.
 	GetWriteTimeout() time.Duration
 
+	// GetNetwork returns the network type.
+	GetNetwork() string
+
 	// GetAddr returns the connection address.
 	GetAddr() string
 
@@ -62,5 +65,3 @@ type ConnectionWithRelaxedTimeout interface {
 	// ClearRelaxedTimeout clears relaxed timeouts for this connection.
 	ClearRelaxedTimeout()
 }
-
-

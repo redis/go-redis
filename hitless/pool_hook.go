@@ -14,6 +14,7 @@ import (
 
 // HitlessManagerInterface defines the interface for completing handoff operations
 type HitlessManagerInterface interface {
+	TrackMovingOperationWithConnID(ctx context.Context, newEndpoint string, deadline time.Time, seqID int64, connID uint64) error
 	UntrackOperationWithConnID(seqID int64, connID uint64)
 }
 
@@ -31,7 +32,11 @@ type HandoffRequest struct {
 // with hitless upgrade support.
 type PoolHook struct {
 	// Base dialer for creating connections to new endpoints during handoffs
+	// args are network and address
 	baseDialer func(context.Context, string, string) (net.Conn, error)
+
+	// Network type (e.g., "tcp", "unix")
+	network string
 
 	// Event-driven handoff support
 	handoffQueue chan HandoffRequest // Queue for handoff requests
@@ -55,7 +60,7 @@ type PoolHook struct {
 	// Simple state tracking
 	pending sync.Map // map[uint64]int64 (connID -> seqID)
 
-	// Configuration for the processor
+	// Configuration for the hitless upgrade
 	config *Config
 
 	// Hitless manager for operation completion tracking
@@ -66,19 +71,19 @@ type PoolHook struct {
 }
 
 // NewPoolHook creates a new pool hook
-func NewPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error), config *Config, hitlessManager HitlessManagerInterface) *PoolHook {
-	return NewPoolHookWithPoolSize(baseDialer, config, hitlessManager, 0)
+func NewPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error), network string, config *Config, hitlessManager HitlessManagerInterface) *PoolHook {
+	return NewPoolHookWithPoolSize(baseDialer, network, config, hitlessManager, 0)
 }
 
 // NewPoolHookWithPoolSize creates a new pool hook with pool size for better worker defaults
-func NewPoolHookWithPoolSize(baseDialer func(context.Context, string, string) (net.Conn, error), config *Config, hitlessManager HitlessManagerInterface, poolSize int) *PoolHook {
+func NewPoolHookWithPoolSize(baseDialer func(context.Context, string, string) (net.Conn, error), network string, config *Config, hitlessManager HitlessManagerInterface, poolSize int) *PoolHook {
 	// Apply defaults to any missing configuration fields, using pool size for worker calculations
 	config = config.ApplyDefaultsWithPoolSize(poolSize)
 
 	ph := &PoolHook{
 		// baseDialer is used to create connections to new endpoints during handoffs
 		baseDialer: baseDialer,
-		// Note: CLIENT MAINT_NOTIFICATIONS is handled during client initialization
+		network:    network,
 		// handoffQueue is a buffered channel for queuing handoff requests
 		handoffQueue: make(chan HandoffRequest, config.HandoffQueueSize),
 		// shutdown is a channel for signaling shutdown
@@ -551,7 +556,7 @@ func (ph *PoolHook) createEndpointDialer(endpoint string) func(context.Context) 
 		}
 
 		// Use the base dialer to connect to the new endpoint
-		return ph.baseDialer(ctx, "tcp", net.JoinHostPort(host, port))
+		return ph.baseDialer(ctx, ph.network, net.JoinHostPort(host, port))
 	}
 }
 

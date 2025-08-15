@@ -112,15 +112,15 @@ func TestConnectionHook(t *testing.T) {
 
 	t.Run("SuccessfulEventDrivenHandoff", func(t *testing.T) {
 		config := &Config{
-			Enabled:          MaintNotificationsAuto,
-			EndpointType:     EndpointTypeAuto,
-			MinWorkers:       1,
-			MaxWorkers:       1, // Use only 1 worker to ensure synchronization
-			HandoffQueueSize: 10, // Explicit queue size to avoid 0-size queue
+			Enabled:           MaintNotificationsAuto,
+			EndpointType:      EndpointTypeAuto,
+			MinWorkers:        1,
+			MaxWorkers:        1,  // Use only 1 worker to ensure synchronization
+			HandoffQueueSize:  10, // Explicit queue size to avoid 0-size queue
 			MaxHandoffRetries: 3,
-			LogLevel:         2,
+			LogLevel:          2,
 		}
-		processor := NewPoolHook(baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -210,7 +210,7 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("HandoffNotNeeded", func(t *testing.T) {
-		processor := NewPoolHook(baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, "tcp", nil, nil)
 		conn := createMockPoolConnection()
 		// Don't mark for handoff
 
@@ -230,7 +230,7 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("EmptyEndpoint", func(t *testing.T) {
-		processor := NewPoolHook(baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, "tcp", nil, nil)
 		conn := createMockPoolConnection()
 		if err := conn.MarkForHandoff("", 12345); err != nil { // Empty endpoint
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
@@ -263,15 +263,15 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		config := &Config{
-			Enabled:          MaintNotificationsAuto,
-			EndpointType:     EndpointTypeAuto,
-			MinWorkers:       1,
-			MaxWorkers:       2,
-			HandoffQueueSize: 10,
+			Enabled:           MaintNotificationsAuto,
+			EndpointType:      EndpointTypeAuto,
+			MinWorkers:        1,
+			MaxWorkers:        2,
+			HandoffQueueSize:  10,
 			MaxHandoffRetries: 3, // Explicit queue size to avoid 0-size queue
-			LogLevel:         2,
+			LogLevel:          2,
 		}
-		processor := NewPoolHook(failingDialer, config, nil)
+		processor := NewPoolHook(failingDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -298,6 +298,8 @@ func TestConnectionHook(t *testing.T) {
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
 
+		// wait for handoff to start
+		time.Sleep(100 * time.Millisecond)
 		handoffCompleted := false
 		for !handoffCompleted {
 			select {
@@ -322,7 +324,7 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("BufferedDataRESP2", func(t *testing.T) {
-		processor := NewPoolHook(baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, "tcp", nil, nil)
 		conn := createMockPoolConnection()
 
 		// For this test, we'll just verify the logic works for connections without buffered data
@@ -345,7 +347,7 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("OnGet", func(t *testing.T) {
-		processor := NewPoolHook(baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, "tcp", nil, nil)
 		conn := createMockPoolConnection()
 
 		ctx := context.Background()
@@ -357,15 +359,15 @@ func TestConnectionHook(t *testing.T) {
 
 	t.Run("OnGetWithPendingHandoff", func(t *testing.T) {
 		config := &Config{
-			Enabled:          MaintNotificationsAuto,
-			EndpointType:     EndpointTypeAuto,
-			MinWorkers:       1,
-			MaxWorkers:       2,
-			HandoffQueueSize: 10,
+			Enabled:           MaintNotificationsAuto,
+			EndpointType:      EndpointTypeAuto,
+			MinWorkers:        1,
+			MaxWorkers:        2,
+			HandoffQueueSize:  10,
 			MaxHandoffRetries: 3, // Explicit queue size to avoid 0-size queue
-			LogLevel:         2,
+			LogLevel:          2,
 		}
-		processor := NewPoolHook(baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -373,7 +375,7 @@ func TestConnectionHook(t *testing.T) {
 		// Simulate a pending handoff by marking for handoff and queuing
 		conn.MarkForHandoff("new-endpoint:6379", 12345)
 		processor.pending.Store(conn.GetID(), int64(12345)) // Store connID -> seqID
-		conn.MarkQueuedForHandoff() // Mark as queued (sets usable=false)
+		conn.MarkQueuedForHandoff()                         // Mark as queued (sets usable=false)
 
 		ctx := context.Background()
 		err := processor.OnGet(ctx, conn, false)
@@ -386,7 +388,7 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("EventDrivenStateManagement", func(t *testing.T) {
-		processor := NewPoolHook(baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, "tcp", nil, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()
@@ -399,7 +401,7 @@ func TestConnectionHook(t *testing.T) {
 		// Test adding to pending map
 		conn.MarkForHandoff("new-endpoint:6379", 12345)
 		processor.pending.Store(conn.GetID(), int64(12345)) // Store connID -> seqID
-		conn.MarkQueuedForHandoff() // Mark as queued (sets usable=false)
+		conn.MarkQueuedForHandoff()                         // Mark as queued (sets usable=false)
 
 		if _, pending := processor.pending.Load(conn.GetID()); !pending {
 			t.Error("Connection should be in pending map")
@@ -432,11 +434,11 @@ func TestConnectionHook(t *testing.T) {
 	t.Run("EventDrivenQueueOptimization", func(t *testing.T) {
 		// Create processor with small queue to test optimization features
 		config := &Config{
-			MinWorkers:       1,
-			MaxWorkers:       3,
-			HandoffQueueSize: 2,
+			MinWorkers:        1,
+			MaxWorkers:        3,
+			HandoffQueueSize:  2,
 			MaxHandoffRetries: 3, // Small queue to trigger optimizations
-			LogLevel:         3, // Debug level to see optimization logs
+			LogLevel:          3, // Debug level to see optimization logs
 		}
 
 		baseDialer := func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -445,7 +447,7 @@ func TestConnectionHook(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewPoolHook(baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Create multiple connections that need handoff to fill the queue
@@ -490,14 +492,14 @@ func TestConnectionHook(t *testing.T) {
 	t.Run("WorkerScalingBehavior", func(t *testing.T) {
 		// Create processor with small queue to test scaling behavior
 		config := &Config{
-			MinWorkers:       1,
-			MaxWorkers:       4,
-			HandoffQueueSize: 1,
+			MinWorkers:        1,
+			MaxWorkers:        4,
+			HandoffQueueSize:  1,
 			MaxHandoffRetries: 3, // Very small queue to force scaling
-			LogLevel:         2, // Info level to see scaling logs
+			LogLevel:          2, // Info level to see scaling logs
 		}
 
-		processor := NewPoolHook(baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Verify initial worker count and scaling level
@@ -531,7 +533,7 @@ func TestConnectionHook(t *testing.T) {
 			LogLevel:                   2,
 		}
 
-		processor := NewPoolHook(baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		ctx := context.Background()
@@ -604,14 +606,14 @@ func TestConnectionHook(t *testing.T) {
 
 	t.Run("UsableFlagBehavior", func(t *testing.T) {
 		config := &Config{
-			MinWorkers:       1,
-			MaxWorkers:       2,
-			HandoffQueueSize: 10,
+			MinWorkers:        1,
+			MaxWorkers:        2,
+			HandoffQueueSize:  10,
 			MaxHandoffRetries: 3,
-			LogLevel:         2,
+			LogLevel:          2,
 		}
 
-		processor := NewPoolHook(baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		ctx := context.Background()
@@ -692,14 +694,14 @@ func TestConnectionHook(t *testing.T) {
 
 	t.Run("StaticQueueBehavior", func(t *testing.T) {
 		config := &Config{
-			MinWorkers:       1,
-			MaxWorkers:       3,
-			HandoffQueueSize: 50,
+			MinWorkers:        1,
+			MaxWorkers:        3,
+			HandoffQueueSize:  50,
 			MaxHandoffRetries: 3, // Explicit static queue size
-			LogLevel:         2,
+			LogLevel:          2,
 		}
 
-		processor := NewPoolHookWithPoolSize(baseDialer, config, nil, 100) // Pool size: 100
+		processor := NewPoolHookWithPoolSize(baseDialer, "tcp", config, nil, 100) // Pool size: 100
 		defer processor.Shutdown(context.Background())
 
 		// Verify queue capacity matches configured size
@@ -754,14 +756,14 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		config := &Config{
-			MinWorkers:       1,
-			MaxWorkers:       2,
-			HandoffQueueSize: 10,
+			MinWorkers:        1,
+			MaxWorkers:        2,
+			HandoffQueueSize:  10,
 			MaxHandoffRetries: 3,
-			LogLevel:         2,
+			LogLevel:          2,
 		}
 
-		processor := NewPoolHook(failingDialer, config, nil)
+		processor := NewPoolHook(failingDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Create a mock pool that tracks removals
@@ -815,7 +817,7 @@ func TestConnectionHook(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewPoolHook(baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		conn := createMockPoolConnection()

@@ -249,7 +249,7 @@ func TestProcessorWithConfig(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewPoolHook(baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// The processor should be created successfully with custom config
@@ -269,7 +269,7 @@ func TestProcessorWithConfig(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewPoolHook(baseDialer, config, nil)
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Should work with partial config (defaults applied)
@@ -283,7 +283,7 @@ func TestProcessorWithConfig(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := NewPoolHook(baseDialer, nil, nil)
+		processor := NewPoolHook(baseDialer, "tcp", nil, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Should use default config when nil is passed
@@ -308,7 +308,7 @@ func TestIntegrationWithApplyDefaults(t *testing.T) {
 		}
 
 		// Create processor - should apply defaults to missing fields
-		processor := NewPoolHook(baseDialer, partialConfig, nil)
+		processor := NewPoolHook(baseDialer, "tcp", partialConfig, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Processor should be created successfully
