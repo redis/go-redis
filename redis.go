@@ -932,18 +932,14 @@ func NewClient(opt *Options) *Client {
 	// Create connection pool with the hooks (nil if hitless upgrades disabled)
 	c.connPool = newConnPool(opt, c.dialHook)
 
-	// Initialize hitless upgrades first if enabled to get the connection processor
-	if opt.HitlessUpgradeConfig.IsEnabled() {
-		if opt.Protocol != 3 {
-			internal.Logger.Printf(context.Background(), "hitless: RESP3 protocol required for hitless upgrades, but Protocol is %d", opt.Protocol)
-		} else {
-			err := c.enableHitlessUpgrades()
-			if err != nil {
-				internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
-				if opt.HitlessUpgradeConfig.Enabled == hitless.MaintNotificationsEnabled {
-					// panic so we fail fast without breaking existing clients api
-					panic(fmt.Errorf("failed to enable hitless upgrades: %w", err))
-				}
+	// Initialize hitless upgrades first if enabled and protocol is RESP3
+	if opt.HitlessUpgradeConfig.IsEnabled() && opt.Protocol == 3 {
+		err := c.enableHitlessUpgrades()
+		if err != nil {
+			internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
+			if opt.HitlessUpgradeConfig.Enabled == hitless.MaintNotificationsEnabled {
+				// panic so we fail fast without breaking existing clients api
+				panic(fmt.Errorf("failed to enable hitless upgrades: %w", err))
 			}
 		}
 	}

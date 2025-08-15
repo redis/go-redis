@@ -388,24 +388,29 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 	}
 
 	select {
-	case ph.handoffQueue <- request:
-		// Store in pending map
-		ph.pending.Store(request.ConnID, request.SeqID)
-		return nil
+	// priority to shutdown
 	case <-ph.shutdown:
-		ph.pending.Delete(request.ConnID)
 		return errors.New("shutdown")
 	default:
-		// Queue is full - log and attempt scaling
-		if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
-			internal.Logger.Printf(context.Background(),
-				"hitless: handoff queue is full (%d/%d), attempting timeout queuing and scaling workers",
-				len(ph.handoffQueue), cap(ph.handoffQueue))
+		select {
+		case <-ph.shutdown:
+			return errors.New("shutdown")
+		case ph.handoffQueue <- request:
+			// Store in pending map
+			ph.pending.Store(request.ConnID, request.SeqID)
+			return nil
+		default:
+			// Queue is full - log and attempt scaling
+			if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
+				internal.Logger.Printf(context.Background(),
+					"hitless: handoff queue is full (%d/%d), attempting timeout queuing and scaling workers",
+					len(ph.handoffQueue), cap(ph.handoffQueue))
+			}
 		}
-
-		// Scale up workers to handle the load
-		go ph.scaleUpWorkers()
 	}
+
+	// Scale up workers to handle the load
+	go ph.scaleUpWorkers()
 	return errors.New("queue full")
 }
 

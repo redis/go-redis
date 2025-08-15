@@ -5,7 +5,6 @@ import (
 	. "github.com/bsm/gomega"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/redis/go-redis/v9/hitless"
 )
 
 var _ = Describe("UniversalClient", func() {
@@ -54,9 +53,6 @@ var _ = Describe("UniversalClient", func() {
 			Addrs:         cluster.addrs(),
 			Protocol:      3,
 			UnstableResp3: true,
-			HitlessUpgradeConfig: &redis.HitlessUpgradeConfig{
-				Enabled: hitless.MaintNotificationsDisabled,
-			},
 		})
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 		a := func() { client.FTInfo(ctx, "all").Result() }
@@ -68,9 +64,6 @@ var _ = Describe("UniversalClient", func() {
 			Addrs:         cluster.addrs(),
 			Protocol:      3,
 			UnstableResp3: true,
-			HitlessUpgradeConfig: &redis.HitlessUpgradeConfig{
-				Enabled: hitless.MaintNotificationsDisabled,
-			},
 		})
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 		a := func() { client.FTInfo(ctx, "all").Result() }

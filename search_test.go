@@ -13,7 +13,6 @@ import (
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/helper"
-	"github.com/redis/go-redis/v9/hitless"
 )
 
 func WaitForIndexing(c *redis.Client, index string) {
@@ -3334,14 +3333,7 @@ var _ = Describe("RediSearch FT.Config with Resp2 and Resp3", Label("search", "N
 	var clientResp3 *redis.Client
 	BeforeEach(func() {
 		clientResp2 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
-		clientResp3 = redis.NewClient(&redis.Options{
-			Addr: ":6379",
-			Protocol: 3,
-			UnstableResp3: true,
-			HitlessUpgradeConfig: &redis.HitlessUpgradeConfig{
-				Enabled: hitless.MaintNotificationsDisabled,
-			},
-		})
+		clientResp3 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3: true})
 		Expect(clientResp3.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
@@ -3381,21 +3373,8 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 	var client2 *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr: ":6379",
-			Protocol: 3,
-			UnstableResp3: true,
-			HitlessUpgradeConfig: &redis.HitlessUpgradeConfig{
-				Enabled: hitless.MaintNotificationsDisabled,
-			},
-		})
-		client2 = redis.NewClient(&redis.Options{
-			Addr: ":6379",
-			Protocol: 3,
-			HitlessUpgradeConfig: &redis.HitlessUpgradeConfig{
-				Enabled: hitless.MaintNotificationsDisabled,
-			},
-		})
+		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3: true})
+		client2 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
