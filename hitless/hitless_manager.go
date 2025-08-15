@@ -213,15 +213,19 @@ func (hm *HitlessManager) Close() error {
 		return nil // Already closed
 	}
 
-	// Shutdown the pool hook
-	err := hm.poolHooksRef.Shutdown(context.Background())
-	if err != nil {
-		// was not able to close pool hook, keep closed state false
-		hm.closed.Store(false)
-		return err
+	// Shutdown the pool hook if it exists
+	if hm.poolHooksRef != nil {
+		err := hm.poolHooksRef.Shutdown(context.Background())
+		if err != nil {
+			// was not able to close pool hook, keep closed state false
+			hm.closed.Store(false)
+			return err
+		}
+		// Remove the pool hook from the pool
+		if hm.pool != nil {
+			hm.pool.RemovePoolHook(hm.poolHooksRef)
+		}
 	}
-	// Remove the pool hook from the pool
-	hm.pool.RemovePoolHook(hm.poolHooksRef)
 
 	// Clear all active operations
 	hm.activeMovingOps.Range(func(key, value interface{}) bool {

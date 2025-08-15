@@ -91,6 +91,14 @@ func (mp *mockPool) Stats() *pool.Stats {
 	return &pool.Stats{}
 }
 
+func (mp *mockPool) AddPoolHook(hook pool.PoolHook) {
+	// Mock implementation - do nothing
+}
+
+func (mp *mockPool) RemovePoolHook(hook pool.PoolHook) {
+	// Mock implementation - do nothing
+}
+
 func (mp *mockPool) Close() error {
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/push"
@@ -109,26 +110,38 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 		return ErrInvalidNotification
 	}
 
-	// TODO(hitless): if newEndpoint is empty, we should schedule a handoff to the current endpoint in timeS/2 seconds
+	deadline := time.Now().Add(time.Duration(timeS) * time.Second)
+	// If newEndpoint is empty, we should schedule a handoff to the current endpoint in timeS/2 seconds
+	if newEndpoint == "" || newEndpoint == internal.RedisNull {
+		// same as current endpoint
+		newEndpoint = snh.manager.options.GetAddr()
+		// delay the handoff for timeS/2 seconds to the same endpoint
+		// do this in a goroutine to avoid blocking the notification handler
+		go func() {
+			time.Sleep(time.Duration(timeS/2) * time.Second)
+			snh.markConnForHandoff(poolConn, newEndpoint, seqID, deadline)
+		}()
+		return nil
+	}
 
-	// Mark the connection for handoff
-	if err := poolConn.MarkForHandoff(newEndpoint, seqID); err != nil {
+	return snh.markConnForHandoff(poolConn, newEndpoint, seqID, deadline)
+}
+
+func (snh *NotificationHandler) markConnForHandoff(conn *pool.Conn, newEndpoint string, seqID int64, deadline time.Time) error {
+	if err := conn.MarkForHandoff(newEndpoint, seqID); err != nil {
 		// Connection is already marked for handoff, which is acceptable
 		// This can happen if multiple MOVING notifications are received for the same connection
 		return nil
 	}
-
 	// Optionally track in hitless manager for monitoring/debugging
 	if snh.manager != nil {
-		connID := poolConn.GetID()
-		deadline := time.Now().Add(time.Duration(timeS) * time.Second)
+		connID := conn.GetID()
 
 		// Track the operation (ignore errors since this is optional)
 		_ = snh.manager.TrackMovingOperationWithConnID(context.Background(), newEndpoint, deadline, seqID, connID)
 	} else {
 		return fmt.Errorf("hitless: manager not initialized")
 	}
-
 	return nil
 }
 

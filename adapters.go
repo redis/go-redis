@@ -77,7 +77,7 @@ func (oa *optionsAdapter) NewDialer() func(context.Context) (net.Conn, error) {
 	baseDialer := oa.options.NewDialer()
 	return func(ctx context.Context) (net.Conn, error) {
 		// Extract network and address from the options
-		network := "tcp"
+		network := oa.options.Network
 		addr := oa.options.Addr
 		return baseDialer(ctx, network, addr)
 	}

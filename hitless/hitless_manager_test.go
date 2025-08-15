@@ -75,7 +75,7 @@ func TestHitlessManagerRefactoring(t *testing.T) {
 		config := DefaultConfig()
 		client := &MockClient{options: &MockOptions{}}
 
-		manager, err := NewHitlessManager(client, config)
+		manager, err := NewHitlessManager(client, nil, config)
 		if err != nil {
 			t.Fatalf("Failed to create hitless manager: %v", err)
 		}
@@ -136,7 +136,7 @@ func TestHitlessManagerRefactoring(t *testing.T) {
 		config := DefaultConfig()
 		client := &MockClient{options: &MockOptions{}}
 
-		manager, err := NewHitlessManager(client, config)
+		manager, err := NewHitlessManager(client, nil, config)
 		if err != nil {
 			t.Fatalf("Failed to create hitless manager: %v", err)
 		}
@@ -178,7 +178,7 @@ func TestHitlessManagerRefactoring(t *testing.T) {
 		config := DefaultConfig()
 		client := &MockClient{options: &MockOptions{}}
 
-		manager, err := NewHitlessManager(client, config)
+		manager, err := NewHitlessManager(client, nil, config)
 		if err != nil {
 			t.Fatalf("Failed to create hitless manager: %v", err)
 		}
