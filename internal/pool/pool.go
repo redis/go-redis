@@ -68,6 +68,9 @@ type Pooler interface {
 	AddPoolHook(hook PoolHook)
 	RemovePoolHook(hook PoolHook)
 
+	TrackConn(*Conn)
+	UntrackConn(*Conn)
+
 	Close() error
 }
 
@@ -735,4 +738,23 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 		}
 	}
 	return true
+}
+
+func (p *ConnPool) TrackConn(cn *Conn) {
+	p.connsMu.Lock()
+	p.poolSize.Add(1)
+	p.conns = append(p.conns, cn)
+	p.connsMu.Unlock()
+}
+
+func (p *ConnPool) UntrackConn(cn *Conn) {
+	p.connsMu.Lock()
+	for i, c := range p.conns {
+		if c == cn {
+			p.conns = append(p.conns[:i], p.conns[i+1:]...)
+			p.poolSize.Add(-1)
+			break
+		}
+	}
+	p.connsMu.Unlock()
 }

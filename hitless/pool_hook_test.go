@@ -99,6 +99,14 @@ func (mp *mockPool) RemovePoolHook(hook pool.PoolHook) {
 	// Mock implementation - do nothing
 }
 
+func (mp *mockPool) TrackConn(conn *pool.Conn) {
+	// Mock implementation - do nothing
+}
+
+func (mp *mockPool) UntrackConn(conn *pool.Conn) {
+	// Mock implementation - do nothing
+}
+
 func (mp *mockPool) Close() error {
 	return nil
 }

@@ -1071,10 +1071,12 @@ func (c *Client) pubSub() *PubSub {
 				return nil, err
 			}
 
+			c.connPool.TrackConn(cn)
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
 			_ = cn.Close()
+			c.connPool.UntrackConn(cn)
 			return nil
 		},
 		pushProcessor: c.pushProcessor,

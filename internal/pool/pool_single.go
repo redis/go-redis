@@ -62,3 +62,7 @@ func (p *SingleConnPool) Stats() *Stats {
 func (p *SingleConnPool) AddPoolHook(hook PoolHook) {}
 
 func (p *SingleConnPool) RemovePoolHook(hook PoolHook) {}
+
+func (p *SingleConnPool) TrackConn(cn *Conn) {}
+
+func (p *SingleConnPool) UntrackConn(cn *Conn) {}
