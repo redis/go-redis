@@ -215,7 +215,11 @@ func (hm *HitlessManager) Close() error {
 
 	// Shutdown the pool hook if it exists
 	if hm.poolHooksRef != nil {
-		err := hm.poolHooksRef.Shutdown(context.Background())
+		// Use a timeout to prevent hanging indefinitely
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := hm.poolHooksRef.Shutdown(shutdownCtx)
 		if err != nil {
 			// was not able to close pool hook, keep closed state false
 			hm.closed.Store(false)

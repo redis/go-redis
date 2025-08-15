@@ -397,8 +397,25 @@ func (ph *PoolHook) processHandoffRequest(request HandoffRequest) {
 	// Remove from pending map
 	defer ph.pending.Delete(request.Conn.GetID())
 
-	// Perform the handoff
-	err := ph.performConnectionHandoffWithPool(context.Background(), request.Conn, request.Pool)
+	// Create a context that respects shutdown signal
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Create a context that also respects the shutdown signal
+	shutdownCtx, shutdownCancel := context.WithCancel(ctx)
+	defer shutdownCancel()
+
+	// Monitor shutdown signal in a separate goroutine
+	go func() {
+		select {
+		case <-ph.shutdown:
+			shutdownCancel()
+		case <-shutdownCtx.Done():
+		}
+	}()
+
+	// Perform the handoff with cancellable context
+	err := ph.performConnectionHandoffWithPool(shutdownCtx, request.Conn, request.Pool)
 
 	// If handoff failed, restore the handoff state for potential retry
 	if err != nil {
