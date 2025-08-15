@@ -88,16 +88,16 @@ type Config struct {
 
 	// MinWorkers is the minimum number of worker goroutines for processing handoff requests.
 	// The processor starts with this number of workers and scales down to this level when idle.
-	// If zero, defaults to max(1, PoolSize/25) to be proportional to connection pool size.
+	// If zero, defaults to max(1, PoolSize/50) to be proportional to connection pool size.
 	//
-	// Default: max(1, PoolSize/25)
+	// Default: max(1, PoolSize/50)
 	MinWorkers int
 
 	// MaxWorkers is the maximum number of worker goroutines for processing handoff requests.
 	// The processor will scale up to this number when under load.
-	// If zero, defaults to max(MinWorkers*4, PoolSize/5) to handle bursts effectively.
+	// If zero, defaults to max(MinWorkers*4, PoolSize/10) to handle bursts effectively.
 	//
-	// Default: max(MinWorkers*4, PoolSize/5)
+	// Default: max(MinWorkers*4, PoolSize/10)
 	MaxWorkers int
 
 	// HandoffQueueSize is the size of the buffered channel used to queue handoff requests.
@@ -517,14 +517,14 @@ func (c *Config) applyWorkerDefaults(poolSize int) {
 		poolSize = 10 * runtime.GOMAXPROCS(0)
 	}
 
-	// MinWorkers: max(1, poolSize/25) - conservative baseline
+	// MinWorkers: max(1, poolSize/50) - conservative baseline
 	if c.MinWorkers == 0 {
-		c.MinWorkers = util.Max(1, poolSize/25)
+		c.MinWorkers = util.Max(1, poolSize/50)
 	}
 
-	// MaxWorkers: max(MinWorkers*4, poolSize/5) - handle bursts effectively
+	// MaxWorkers: max(MinWorkers*4, poolSize/10) - handle bursts effectively
 	if c.MaxWorkers == 0 {
-		c.MaxWorkers = util.Max(c.MinWorkers*4, poolSize/5)
+		c.MaxWorkers = util.Max(c.MinWorkers*4, poolSize/10)
 	}
 
 	// Ensure MaxWorkers >= MinWorkers

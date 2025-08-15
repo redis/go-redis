@@ -3,7 +3,6 @@ package hitless
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -252,57 +251,6 @@ func (ph *PoolHook) scaleDownWorkers() {
 	}
 }
 
-// queueHandoffWithTimeout attempts to queue a handoff request with timeout and scaling
-func (ph *PoolHook) queueHandoffWithTimeout(request HandoffRequest, cn *pool.Conn) {
-	// First attempt - try immediate queuing
-	select {
-	case ph.handoffQueue <- request:
-		return
-	case <-ph.shutdown:
-		ph.pending.Delete(cn.GetID())
-		return
-	default:
-		// Queue is full - log and attempt scaling
-		if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
-			internal.Logger.Printf(context.Background(),
-				"hitless: handoff queue is full (%d/%d), attempting timeout queuing and scaling workers",
-				len(ph.handoffQueue), cap(ph.handoffQueue))
-		}
-
-		// Scale up workers to handle the load
-		ph.scaleUpWorkers()
-	}
-
-	queueTimeout := 5 * time.Second // Default fallback
-	if ph.config != nil {
-		queueTimeout = ph.config.HandoffQueueTimeout
-	}
-
-	timeout := time.NewTimer(queueTimeout)
-	defer timeout.Stop()
-
-	select {
-	case ph.handoffQueue <- request:
-		// Queued successfully after timeout
-		if ph.config != nil && ph.config.LogLevel >= 2 { // Info level
-			internal.Logger.Printf(context.Background(),
-				"hitless: handoff queued successfully after scaling workers")
-		}
-		return
-	case <-timeout.C:
-		// Timeout expired - drop the connection
-		err := fmt.Errorf("handoff queue timeout after %v", queueTimeout)
-		ph.pending.Delete(cn.GetID())
-		if ph.config != nil && ph.config.LogLevel >= 0 { // Error level
-			internal.Logger.Printf(context.Background(), err.Error())
-		}
-		return
-	case <-ph.shutdown:
-		ph.pending.Delete(cn.GetID())
-		return
-	}
-}
-
 // scheduleScaleDownCheck schedules a scale down check after a delay
 // This is called after completing a handoff request to avoid expensive immediate checks
 func (ph *PoolHook) scheduleScaleDownCheck() {
@@ -439,11 +387,26 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 		Pool:     ph.pool, // Include pool for connection removal on failure
 	}
 
-	// Store in pending map
-	ph.pending.Store(request.ConnID, request.SeqID)
+	select {
+	case ph.handoffQueue <- request:
+		// Store in pending map
+		ph.pending.Store(request.ConnID, request.SeqID)
+		return nil
+	case <-ph.shutdown:
+		ph.pending.Delete(request.ConnID)
+		return errors.New("shutdown")
+	default:
+		// Queue is full - log and attempt scaling
+		if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
+			internal.Logger.Printf(context.Background(),
+				"hitless: handoff queue is full (%d/%d), attempting timeout queuing and scaling workers",
+				len(ph.handoffQueue), cap(ph.handoffQueue))
+		}
 
-	go ph.queueHandoffWithTimeout(request, conn)
-	return nil
+		// Scale up workers to handle the load
+		go ph.scaleUpWorkers()
+	}
+	return errors.New("queue full")
 }
 
 // performConnectionHandoffWithPool performs the actual connection handoff with pool for connection removal on failure
