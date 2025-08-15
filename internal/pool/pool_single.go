@@ -1,6 +1,8 @@
 package pool
 
-import "context"
+import (
+	"context"
+)
 
 type SingleConnPool struct {
 	pool      Pooler

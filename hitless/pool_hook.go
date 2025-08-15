@@ -124,7 +124,6 @@ func (ph *PoolHook) GetScaleLevel() int {
 	return ph.scaleLevel
 }
 
-
 // IsHandoffPending returns true if the given connection has a pending handoff
 func (ph *PoolHook) IsHandoffPending(conn *pool.Conn) bool {
 	_, pending := ph.pending.Load(conn.GetID())
@@ -132,7 +131,7 @@ func (ph *PoolHook) IsHandoffPending(conn *pool.Conn) bool {
 }
 
 // OnGet is called when a connection is retrieved from the pool
-func (ph *PoolHook) OnGet(ctx context.Context, conn *pool.Conn, _ bool) error {
+func (ph *PoolHook) OnGet(ctx context.Context, conn *pool.Conn, isNewConn bool) error {
 	// NOTE: There are two conditions to make sure we don't return a connection that should be handed off or is
 	// in a handoff state at the moment.
 
@@ -508,7 +507,7 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 	oldConn := conn.GetNetConn()
 
 	// Replace the connection and execute initialization
-	err = conn.SetNetConnWithInitConn(ctx, newNetConn)
+	err = conn.SetNetConnAndInitConn(ctx, newNetConn)
 	if err != nil {
 		// Remove the connection from the pool since it's in a bad state
 		if pooler != nil {

@@ -43,7 +43,7 @@ type Conn struct {
 	// Only used for the brief period during SetNetConn and HasBufferedData/PeekReplyTypeSafe
 	readerMu sync.RWMutex
 
-	Inited    bool
+	Inited    atomic.Bool
 	pooled    bool
 	createdAt time.Time
 	expiresAt time.Time
@@ -200,6 +200,10 @@ func (cn *Conn) IsUsable() bool {
 	return cn.isUsable()
 }
 
+func (cn *Conn) IsInited() bool {
+	return cn.Inited.Load()
+}
+
 // SetUsable sets the usable flag for the connection (lock-free).
 func (cn *Conn) SetUsable(usable bool) {
 	cn.setUsable(usable)
@@ -347,12 +351,7 @@ func (cn *Conn) SetInitConnFunc(fn func(context.Context, *Conn) error) {
 // ExecuteInitConn runs the stored connection initialization function if available.
 func (cn *Conn) ExecuteInitConn(ctx context.Context) error {
 	if cn.initConnFunc != nil {
-		if err := cn.initConnFunc(ctx, cn); err != nil {
-			return err
-		}
-		cn.Inited = true
-		cn.setUsable(true) // Use atomic operation
-		return nil
+		return cn.initConnFunc(ctx, cn)
 	}
 	return fmt.Errorf("redis: no initConnFunc set for connection %d", cn.GetID())
 }
@@ -378,10 +377,10 @@ func (cn *Conn) GetNetConn() net.Conn {
 	return cn.getNetConn()
 }
 
-// SetNetConnWithInitConn replaces the underlying connection and executes the initialization.
-func (cn *Conn) SetNetConnWithInitConn(ctx context.Context, netConn net.Conn) error {
+// SetNetConnAndInitConn replaces the underlying connection and executes the initialization.
+func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) error {
 	// New connection is not initialized yet
-	cn.Inited = false
+	cn.Inited.Store(false)
 	// Replace the underlying connection
 	cn.SetNetConn(netConn)
 	return cn.ExecuteInitConn(ctx)

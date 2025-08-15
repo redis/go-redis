@@ -640,8 +640,6 @@ func getUserPassword(u *url.URL) (string, string) {
 	return user, password
 }
 
-
-
 func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
@@ -650,16 +648,17 @@ func newConnPool(
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return dialer(ctx, opt.Network, opt.Addr)
 		},
-		PoolFIFO:        opt.PoolFIFO || opt.HitlessUpgradeConfig.IsEnabled(), // Always FIFO with hitless upgrades
-		PoolSize:        opt.PoolSize,
-		PoolTimeout:     opt.PoolTimeout,
-		DialTimeout:     opt.DialTimeout,
-		MinIdleConns:    opt.MinIdleConns,
-		MaxIdleConns:    opt.MaxIdleConns,
-		MaxActiveConns:  opt.MaxActiveConns,
-		ConnMaxIdleTime: opt.ConnMaxIdleTime,
-		ConnMaxLifetime: opt.ConnMaxLifetime,
-		ReadBufferSize:  opt.ReadBufferSize,
-		WriteBufferSize: opt.WriteBufferSize,
+		PoolFIFO:                 opt.PoolFIFO || opt.HitlessUpgradeConfig.IsEnabled(), // Always FIFO with hitless upgrades
+		PoolSize:                 int32(opt.PoolSize),
+		PoolTimeout:              opt.PoolTimeout,
+		DialTimeout:              opt.DialTimeout,
+		MinIdleConns:             int32(opt.MinIdleConns),
+		MaxIdleConns:             int32(opt.MaxIdleConns),
+		MaxActiveConns:           int32(opt.MaxActiveConns),
+		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
+		ConnMaxLifetime:          opt.ConnMaxLifetime,
+		ReadBufferSize:           opt.ReadBufferSize,
+		WriteBufferSize:          opt.WriteBufferSize,
+		PushNotificationsEnabled: opt.Protocol == 3,
 	})
 }

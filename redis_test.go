@@ -12,9 +12,9 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
-
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/hitless"
 )
 
 type redisHookError struct{}
@@ -627,6 +627,10 @@ var _ = Describe("Hook with MinIdleConns", func() {
 	BeforeEach(func() {
 		options := redisOptions()
 		options.MinIdleConns = 1
+		options.HitlessUpgradeConfig = &redis.HitlessUpgradeConfig{
+			Enabled: hitless.MaintNotificationsDisabled,
+		}
+		options.HitlessUpgradeConfig = nil
 		client = redis.NewClient(options)
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
@@ -652,6 +656,7 @@ var _ = Describe("Hook with MinIdleConns", func() {
 			processHook: func(hook redis.ProcessHook) redis.ProcessHook {
 				return func(ctx context.Context, cmd redis.Cmder) error {
 					res = append(res, "hook-2-process-start")
+					res = append(res, cmd.String())
 					err := hook(ctx, cmd)
 					res = append(res, "hook-2-process-end")
 					return err

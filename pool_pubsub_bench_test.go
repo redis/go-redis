@@ -71,11 +71,11 @@ func BenchmarkPoolGetPut(b *testing.B) {
 		b.Run(fmt.Sprintf("PoolSize_%d", poolSize), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
 				Dialer:          dummyDialer,
-				PoolSize:        poolSize,
+				PoolSize:        int32(poolSize),
 				PoolTimeout:     time.Second,
 				DialTimeout:     time.Second,
 				ConnMaxIdleTime: time.Hour,
-				MinIdleConns:    0, // Start with no idle connections
+				MinIdleConns:    int32(0), // Start with no idle connections
 			})
 			defer connPool.Close()
 
@@ -113,8 +113,8 @@ func BenchmarkPoolGetPutWithMinIdle(b *testing.B) {
 		b.Run(fmt.Sprintf("Pool_%d_MinIdle_%d", config.poolSize, config.minIdleConns), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
 				Dialer:          dummyDialer,
-				PoolSize:        config.poolSize,
-				MinIdleConns:    config.minIdleConns,
+				PoolSize:        int32(config.poolSize),
+				MinIdleConns:    int32(config.minIdleConns),
 				PoolTimeout:     time.Second,
 				DialTimeout:     time.Second,
 				ConnMaxIdleTime: time.Hour,
@@ -143,11 +143,11 @@ func BenchmarkPoolConcurrentGetPut(b *testing.B) {
 
 	connPool := pool.NewConnPool(&pool.Options{
 		Dialer:          dummyDialer,
-		PoolSize:        32,
+		PoolSize:        int32(32),
 		PoolTimeout:     time.Second,
 		DialTimeout:     time.Second,
 		ConnMaxIdleTime: time.Hour,
-		MinIdleConns:    0,
+		MinIdleConns:    int32(0),
 	})
 	defer connPool.Close()
 

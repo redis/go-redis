@@ -290,7 +290,7 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 		return nil, err
 	}
 
-	if cn.Inited {
+	if cn.IsInited() {
 		return cn, nil
 	}
 
@@ -372,12 +372,10 @@ func (c *baseClient) wrappedOnClose(newOnClose func() error) func() error {
 }
 
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
-	if cn.Inited {
+	if !cn.Inited.CompareAndSwap(false, true) {
 		return nil
 	}
-
 	var err error
-	cn.Inited = true
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
 	conn := newConn(c.opt, connPool, &c.hooksMixin)
 
@@ -427,7 +425,6 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
-	var hitlessHandshakeErr error
 	_, err = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
@@ -451,16 +448,25 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	c.optLock.RLock()
 	hitlessEnabled := c.opt.HitlessUpgradeConfig.IsEnabled()
 	protocol := c.opt.Protocol
-	endpointType := c.opt.HitlessUpgradeConfig.EndpointType
+	//endpointType := c.opt.HitlessUpgradeConfig.EndpointType
 	c.optLock.RUnlock()
-
+	var hitlessHandshakeErr error
 	if hitlessEnabled && protocol == 3 {
-		hitlessHandshakeErr = conn.ClientMaintNotifications(
-			ctx,
-			true,
-			endpointType.String(),
-		).Err()
+		/*
+			pipe := conn.Pipeline()
+			hitlessHandshakeErr = pipe.ClientMaintNotifications(
+				ctx,
+				true,
+				endpointType.String(),
+			).Err()
+			pipe.Exec(ctx)
+
+		*/
 		if hitlessHandshakeErr != nil {
+			if !isRedisError(hitlessHandshakeErr) {
+				// if not redis error, fail the connection
+				return hitlessHandshakeErr
+			}
 			c.optLock.RLock()
 			// handshake failed
 			switch c.opt.HitlessUpgradeConfig.Enabled {
@@ -489,9 +495,6 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
-	cn.SetUsable(true)
-	cn.Inited = true
-
 	if !c.opt.DisableIdentity && !c.opt.DisableIndentity {
 		libName := ""
 		libVer := Version()
@@ -508,12 +511,15 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
-	if c.opt.OnConnect != nil {
-		return c.opt.OnConnect(ctx, conn)
-	}
+	cn.SetUsable(true)
+	cn.Inited.Store(true)
 
 	// Set the connection initialization function for potential reconnections
 	cn.SetInitConnFunc(c.createInitConnFunc())
+
+	if c.opt.OnConnect != nil {
+		return c.opt.OnConnect(ctx, conn)
+	}
 
 	return nil
 }
