@@ -327,7 +327,16 @@ func (ph *PoolHook) handoffWorker() {
 				return // Exit this worker
 			}
 
-			ph.processHandoffRequest(request)
+			// Check for shutdown before processing
+			select {
+			case <-ph.shutdown:
+				// Clean up the request before exiting
+				ph.pending.Delete(request.ConnID)
+				return
+			default:
+				// Continue with processing
+				ph.processHandoffRequest(request)
+			}
 		case <-ph.shutdown:
 			return
 		}
@@ -505,7 +514,6 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 		// Keep the handoff state for retry
 		return err
 	}
-	// Note: CLIENT MAINT_NOTIFICATIONS is sent during client initialization, not per connection
 	defer func() {
 		if oldConn != nil {
 			oldConn.Close()
@@ -542,7 +550,9 @@ func (ph *PoolHook) createEndpointDialer(endpoint string) func(context.Context) 
 		if err != nil {
 			// If no port specified, assume default Redis port
 			host = endpoint
-			port = "6379"
+			if port == "" {
+				port = "6379"
+			}
 		}
 
 		// Use the base dialer to connect to the new endpoint
