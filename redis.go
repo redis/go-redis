@@ -448,16 +448,14 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				// if not redis error, fail the connection
 				return hitlessHandshakeErr
 			}
-			c.optLock.RLock()
-			// handshake failed
+			c.optLock.Lock()
+			// handshake failed - check and modify config atomically
 			switch c.opt.HitlessUpgradeConfig.Enabled {
 			case hitless.MaintNotificationsEnabled:
 				// enabled mode, fail the connection
-				c.optLock.RUnlock()
+				c.optLock.Unlock()
 				return fmt.Errorf("failed to enable maintenance notifications: %w", hitlessHandshakeErr)
 			default: // will handle auto and any other
-				c.optLock.RUnlock()
-				c.optLock.Lock()
 				c.opt.HitlessUpgradeConfig.Enabled = hitless.MaintNotificationsDisabled
 				c.optLock.Unlock()
 				// auto mode, disable hitless upgrades and continue
