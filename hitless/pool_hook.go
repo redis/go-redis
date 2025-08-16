@@ -151,8 +151,20 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 					internal.Logger.Printf(ctx, "Failed to queue handoff: %v", err)
 					return false, true, nil // Don't pool, remove connection, no error to caller
 				}
+
+				// Check if handoff was already processed by a worker before we can mark it as queued
+				if !conn.ShouldHandoff() {
+					// Handoff was already processed - this is normal and the connection should be pooled
+					return true, false, nil
+				}
+
 				if err := conn.MarkQueuedForHandoff(); err != nil {
-					// If marking fails, remove the connection instead
+					// If marking fails, check if handoff was processed in the meantime
+					if !conn.ShouldHandoff() {
+						// Handoff was processed - this is normal, pool the connection
+						return true, false, nil
+					}
+					// Other error - remove the connection
 					return false, true, nil
 				}
 				return true, false, nil
@@ -281,10 +293,12 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 			return nil
 		default:
 			// Queue is full - log and attempt scaling
+			queueLen := len(ph.handoffQueue)
+			queueCap := cap(ph.handoffQueue)
 			if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
 				internal.Logger.Printf(context.Background(),
 					"hitless: handoff queue is full (%d/%d), attempting timeout queuing and scaling workers",
-					len(ph.handoffQueue), cap(ph.handoffQueue))
+					queueLen, queueCap)
 			}
 		}
 	}

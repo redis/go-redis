@@ -735,22 +735,22 @@ func TestConnectionHook(t *testing.T) {
 			if err != nil {
 				t.Errorf("Failed to queue handoff %d: %v", i, err)
 			}
+
 			if !shouldPool || shouldRemove {
-				t.Errorf("Connection %d should be pooled after handoff", i)
+				t.Errorf("Connection %d should be pooled after handoff (shouldPool=%v, shouldRemove=%v)",
+					i, shouldPool, shouldRemove)
 			}
 		}
 
 		// Verify queue capacity remains static (the main purpose of this test)
 		finalCapacity := cap(processor.handoffQueue)
+
 		if finalCapacity != 50 {
 			t.Errorf("Queue capacity should remain static at 50, got %d", finalCapacity)
 		}
 
 		// Note: We don't check queue size here because workers process items quickly
 		// The important thing is that the capacity remains static regardless of pool size
-		currentQueueSize := len(processor.handoffQueue)
-		t.Logf("Static queue test completed - Capacity: %d, Current size: %d",
-			finalCapacity, currentQueueSize)
 	})
 
 	t.Run("ConnectionRemovalOnHandoffFailure", func(t *testing.T) {
