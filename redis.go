@@ -706,11 +706,15 @@ func (c *baseClient) Close() error {
 			firstErr = err
 		}
 	}
-	if err := c.connPool.Close(); err != nil && firstErr == nil {
-		firstErr = err
+	if c.connPool != nil {
+		if err := c.connPool.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	if err := c.pubSubPool.Close(); err != nil && firstErr == nil {
-		firstErr = err
+	if c.pubSubPool != nil {
+		if err := c.pubSubPool.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
 }
