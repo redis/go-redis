@@ -2,7 +2,6 @@ package pool
 
 import (
 	"context"
-	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -34,7 +33,7 @@ func NewPubSubPool(opt *Options, netDialer func(ctx context.Context, network, ad
 
 func (p *PubSubPool) NewConn(ctx context.Context, network string, addr string, channels []string) (*Conn, error) {
 	if p.closed.Load() {
-		return nil, errors.New("pubsub pool is closed")
+		return nil, ErrClosed
 	}
 
 	netConn, err := p.netDialer(ctx, network, addr)
