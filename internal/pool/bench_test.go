@@ -2,6 +2,7 @@ package pool_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func BenchmarkPoolGetPut(b *testing.B) {
 		b.Run(bm.String(), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
 				Dialer:          dummyDialer,
-				PoolSize:        bm.poolSize,
+				PoolSize:        int32(bm.poolSize),
 				PoolTimeout:     time.Second,
 				DialTimeout:     1 * time.Second,
 				ConnMaxIdleTime: time.Hour,
@@ -75,7 +76,7 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 		b.Run(bm.String(), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
 				Dialer:          dummyDialer,
-				PoolSize:        bm.poolSize,
+				PoolSize:        int32(bm.poolSize),
 				PoolTimeout:     time.Second,
 				DialTimeout:     1 * time.Second,
 				ConnMaxIdleTime: time.Hour,
@@ -89,7 +90,7 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 					if err != nil {
 						b.Fatal(err)
 					}
-					connPool.Remove(ctx, cn, nil)
+					connPool.Remove(ctx, cn, errors.New("Bench test remove"))
 				}
 			})
 		})

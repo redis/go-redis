@@ -22,7 +22,7 @@ import (
 type PubSub struct {
 	opt *Options
 
-	newConn   func(ctx context.Context, channels []string) (*pool.Conn, error)
+	newConn   func(ctx context.Context, addr string, channels []string) (*pool.Conn, error)
 	closeConn func(*pool.Conn) error
 
 	mu        sync.Mutex
@@ -42,6 +42,9 @@ type PubSub struct {
 
 	// Push notification processor for handling generic push notifications
 	pushProcessor push.NotificationProcessor
+
+	// Cleanup callback for hitless upgrade tracking
+	onClose func()
 }
 
 func (c *PubSub) init() {
@@ -73,10 +76,18 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 		return c.cn, nil
 	}
 
+	if c.opt.Addr == "" {
+		// TODO(hitless):
+		// this is probably cluster client
+		// c.newConn will ignore the addr argument
+		// will be changed when we have hitless upgrades for cluster clients
+		c.opt.Addr = internal.RedisNull
+	}
+
 	channels := mapKeys(c.channels)
 	channels = append(channels, newChannels...)
 
-	cn, err := c.newConn(ctx, channels)
+	cn, err := c.newConn(ctx, c.opt.Addr, channels)
 	if err != nil {
 		return nil, err
 	}
@@ -157,12 +168,28 @@ func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allo
 	if c.cn != cn {
 		return
 	}
+
+	if !cn.IsUsable() || cn.ShouldHandoff() {
+		c.reconnect(ctx, fmt.Errorf("pubsub: connection is not usable"))
+	}
+
 	if isBadConn(err, allowTimeout, c.opt.Addr) {
 		c.reconnect(ctx, err)
 	}
 }
 
 func (c *PubSub) reconnect(ctx context.Context, reason error) {
+	if c.cn != nil && c.cn.ShouldHandoff() {
+		newEndpoint := c.cn.GetHandoffEndpoint()
+		// If new endpoint is NULL, use the original address
+		if newEndpoint == internal.RedisNull {
+			newEndpoint = c.opt.Addr
+		}
+
+		if newEndpoint != "" {
+			c.opt.Addr = newEndpoint
+		}
+	}
 	_ = c.closeTheCn(reason)
 	_, _ = c.conn(ctx, nil)
 }
@@ -188,6 +215,11 @@ func (c *PubSub) Close() error {
 	}
 	c.closed = true
 	close(c.exit)
+
+	// Call cleanup callback if set
+	if c.onClose != nil {
+		c.onClose()
+	}
 
 	return c.closeTheCn(pool.ErrClosed)
 }
@@ -461,6 +493,7 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 // Receive returns a message as a Subscription, Message, Pong or error.
 // See PubSub example for details. This is low-level API and in most cases
 // Channel should be used instead.
+// This will block until a message is received.
 func (c *PubSub) Receive(ctx context.Context) (interface{}, error) {
 	return c.ReceiveTimeout(ctx, 0)
 }
@@ -543,7 +576,8 @@ func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interfac
 }
 
 func (c *PubSub) processPendingPushNotificationWithReader(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
-	if c.pushProcessor == nil {
+	// Only process push notifications for RESP3 connections with a processor
+	if c.opt.Protocol != 3 || c.pushProcessor == nil {
 		return nil
 	}
 

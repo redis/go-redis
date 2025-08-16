@@ -199,3 +199,11 @@ func (p *StickyConnPool) IdleLen() int {
 func (p *StickyConnPool) Stats() *Stats {
 	return &Stats{}
 }
+
+func (p *StickyConnPool) AddPoolHook(hook PoolHook) {}
+
+func (p *StickyConnPool) RemovePoolHook(hook PoolHook) {}
+
+func (p *StickyConnPool) TrackConn(cn *Conn) {}
+
+func (p *StickyConnPool) UntrackConn(cn *Conn) {}

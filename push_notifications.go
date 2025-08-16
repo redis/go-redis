@@ -4,24 +4,6 @@ import (
 	"github.com/redis/go-redis/v9/push"
 )
 
-// Push notification constants for cluster operations
-const (
-	// MOVING indicates a slot is being moved to a different node
-	PushNotificationMoving = "MOVING"
-
-	// MIGRATING indicates a slot is being migrated from this node
-	PushNotificationMigrating = "MIGRATING"
-
-	// MIGRATED indicates a slot has been migrated to this node
-	PushNotificationMigrated = "MIGRATED"
-
-	// FAILING_OVER indicates a failover is starting
-	PushNotificationFailingOver = "FAILING_OVER"
-
-	// FAILED_OVER indicates a failover has completed
-	PushNotificationFailedOver = "FAILED_OVER"
-)
-
 // NewPushNotificationProcessor creates a new push notification processor
 // This processor maintains a registry of handlers and processes push notifications
 // It is used for RESP3 connections where push notifications are available

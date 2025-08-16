@@ -1,6 +1,8 @@
 package pool
 
-import "context"
+import (
+	"context"
+)
 
 type SingleConnPool struct {
 	pool      Pooler
@@ -56,3 +58,11 @@ func (p *SingleConnPool) IdleLen() int {
 func (p *SingleConnPool) Stats() *Stats {
 	return &Stats{}
 }
+
+func (p *SingleConnPool) AddPoolHook(hook PoolHook) {}
+
+func (p *SingleConnPool) RemovePoolHook(hook PoolHook) {}
+
+func (p *SingleConnPool) TrackConn(cn *Conn) {}
+
+func (p *SingleConnPool) UntrackConn(cn *Conn) {}
