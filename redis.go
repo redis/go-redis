@@ -251,21 +251,6 @@ func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.getAddr(), c.opt.DB)
 }
 
-func (c *baseClient) newConn(ctx context.Context) (*pool.Conn, error) {
-	cn, err := c.connPool.NewConn(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	err = c.initConn(ctx, cn)
-	if err != nil {
-		_ = c.connPool.CloseConn(cn)
-		return nil, err
-	}
-
-	return cn, nil
-}
-
 func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 	if c.opt.Limiter != nil {
 		err := c.opt.Limiter.Allow()

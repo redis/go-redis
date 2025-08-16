@@ -119,7 +119,8 @@ type ConnPool struct {
 	_closed uint32 // atomic
 
 	// Pool hooks manager for flexible connection processing
-	hookManager *PoolHookManager
+	hookManagerMu sync.RWMutex
+	hookManager   *PoolHookManager
 }
 
 var _ Pooler = (*ConnPool)(nil)
@@ -151,6 +152,9 @@ func (p *ConnPool) initializeHooks() {
 
 // AddPoolHook adds a pool hook to the pool.
 func (p *ConnPool) AddPoolHook(hook PoolHook) {
+	p.hookManagerMu.Lock()
+	defer p.hookManagerMu.Unlock()
+
 	if p.hookManager == nil {
 		p.initializeHooks()
 	}
@@ -159,6 +163,9 @@ func (p *ConnPool) AddPoolHook(hook PoolHook) {
 
 // RemovePoolHook removes a pool hook from the pool.
 func (p *ConnPool) RemovePoolHook(hook PoolHook) {
+	p.hookManagerMu.Lock()
+	defer p.hookManagerMu.Unlock()
+
 	if p.hookManager != nil {
 		p.hookManager.RemoveHook(hook)
 	}
@@ -387,8 +394,12 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 
 		// Process connection using the hooks system
-		if p.hookManager != nil {
-			if err := p.hookManager.ProcessOnGet(ctx, cn, false); err != nil {
+		p.hookManagerMu.RLock()
+		hookManager := p.hookManager
+		p.hookManagerMu.RUnlock()
+
+		if hookManager != nil {
+			if err := hookManager.ProcessOnGet(ctx, cn, false); err != nil {
 				log.Printf("redis: connection pool: failed to process idle connection by hook: %v", err)
 				// Failed to process connection, discard it
 				_ = p.CloseConn(cn)
@@ -409,8 +420,12 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	}
 
 	// Process connection using the hooks system
-	if p.hookManager != nil {
-		if err := p.hookManager.ProcessOnGet(ctx, newcn, true); err != nil {
+	p.hookManagerMu.RLock()
+	hookManager := p.hookManager
+	p.hookManagerMu.RUnlock()
+
+	if hookManager != nil {
+		if err := hookManager.ProcessOnGet(ctx, newcn, true); err != nil {
 			// Failed to process connection, discard it
 			log.Printf("redis: connection pool: failed to process new connection by hook: %v", err)
 			_ = p.CloseConn(newcn)
@@ -532,8 +547,12 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		// It's a push notification, allow pooling (client will handle it)
 	}
 
-	if p.hookManager != nil {
-		shouldPool, shouldRemove, err = p.hookManager.ProcessOnPut(ctx, cn)
+	p.hookManagerMu.RLock()
+	hookManager := p.hookManager
+	p.hookManagerMu.RUnlock()
+
+	if hookManager != nil {
+		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
 			internal.Logger.Printf(ctx, "Connection hook error: %v", err)
 			p.Remove(ctx, cn, err)
