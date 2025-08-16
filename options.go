@@ -347,6 +347,13 @@ func (opt *Options) init() {
 
 func (opt *Options) clone() *Options {
 	clone := *opt
+
+	// Deep clone HitlessUpgradeConfig to avoid sharing between clients
+	if opt.HitlessUpgradeConfig != nil {
+		configClone := *opt.HitlessUpgradeConfig
+		clone.HitlessUpgradeConfig = &configClone
+	}
+
 	return &clone
 }
 

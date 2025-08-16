@@ -328,6 +328,13 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
+	// Clone HitlessUpgradeConfig to avoid sharing between cluster node clients
+	var hitlessConfig *HitlessUpgradeConfig
+	if opt.HitlessUpgradeConfig != nil {
+		configClone := *opt.HitlessUpgradeConfig
+		hitlessConfig = &configClone
+	}
+
 	return &Options{
 		ClientName: opt.ClientName,
 		Dialer:     opt.Dialer,
@@ -371,7 +378,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// situations in the options below will prevent that from happening.
 		readOnly:             opt.ReadOnly && opt.ClusterSlots == nil,
 		UnstableResp3:        opt.UnstableResp3,
-		HitlessUpgradeConfig: opt.HitlessUpgradeConfig,
+		HitlessUpgradeConfig: hitlessConfig,
 	}
 }
 
