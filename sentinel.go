@@ -475,6 +475,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	rdb.pushProcessor = initializePushProcessor(opt)
 
 	rdb.connPool = newConnPool(opt, rdb.dialHook)
+	rdb.pubSubPool = newPubSubPool(opt, rdb.dialHook)
 
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
 
@@ -551,6 +552,7 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		process: c.baseClient.process,
 	})
 	c.connPool = newConnPool(opt, c.dialHook)
+	c.pubSubPool = newPubSubPool(opt, c.dialHook)
 
 	return c
 }

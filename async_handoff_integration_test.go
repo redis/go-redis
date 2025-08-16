@@ -71,19 +71,26 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			t.Fatalf("Failed to get connection: %v", err)
 		}
 
-		// Set initialization function
+		// Set initialization function with a small delay to ensure handoff is pending
 		initConnCalled := false
 		initConnFunc := func(ctx context.Context, cn *pool.Conn) error {
+			time.Sleep(50 * time.Millisecond) // Add delay to keep handoff pending
 			initConnCalled = true
 			return nil
 		}
 		conn.SetInitConnFunc(initConnFunc)
 
 		// Mark connection for handoff
-		conn.MarkForHandoff("new-endpoint:6379", 12345)
+		err = conn.MarkForHandoff("new-endpoint:6379", 12345)
+		if err != nil {
+			t.Fatalf("Failed to mark connection for handoff: %v", err)
+		}
 
 		// Return connection to pool - this should queue handoff
 		testPool.Put(ctx, conn)
+
+		// Give the on-demand worker a moment to start processing
+		time.Sleep(10 * time.Millisecond)
 
 		// Verify handoff was queued
 		if !processor.IsHandoffPending(conn) {
@@ -303,14 +310,19 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
 		}
 
-		// Set a mock initialization function
+		// Set a mock initialization function with delay to ensure handoff is pending
 		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
+			time.Sleep(50 * time.Millisecond) // Add delay to keep handoff pending
 			return nil
 		})
 
 		testPool.Put(ctx, conn)
 
-		// Verify handoff was queued
+		// Give the on-demand worker a moment to start and begin processing
+		// The handoff should be pending because the slowDialer takes 100ms
+		time.Sleep(10 * time.Millisecond)
+
+		// Verify handoff was queued and is being processed
 		if !processor.IsHandoffPending(conn) {
 			t.Error("Handoff should be queued in pending map")
 		}

@@ -3,7 +3,6 @@ package pool
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -156,7 +155,6 @@ func (p *ConnPool) AddPoolHook(hook PoolHook) {
 		p.initializeHooks()
 	}
 	p.hookManager.AddHook(hook)
-	p.hookManager = nil
 }
 
 // RemovePoolHook removes a pool hook from the pool.
@@ -164,7 +162,6 @@ func (p *ConnPool) RemovePoolHook(hook PoolHook) {
 	if p.hookManager != nil {
 		p.hookManager.RemoveHook(hook)
 	}
-	p.hookManager = nil
 }
 
 func (p *ConnPool) checkMinIdleConns() {
@@ -300,7 +297,6 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	cn := NewConnWithBufferSize(netConn, p.cfg.ReadBufferSize, p.cfg.WriteBufferSize)
 	cn.pooled = pooled
-	fmt.Printf("New conn %d, pooled: %v\n", cn.GetID(), cn.pooled)
 	if p.cfg.ConnMaxLifetime > 0 {
 		cn.expiresAt = time.Now().Add(p.cfg.ConnMaxLifetime)
 	} else {
@@ -596,7 +592,6 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 }
 
 func (p *ConnPool) Remove(_ context.Context, cn *Conn, reason error) {
-	internal.Logger.Printf(context.Background(), "Removing connection %d from pool: %v", cn.GetID(), reason)
 	p.removeConnWithLock(cn)
 	p.freeTurn()
 	_ = p.closeConn(cn)

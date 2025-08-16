@@ -1845,7 +1845,6 @@ func (c *ClusterClient) pubSub() *PubSub {
 	var node *clusterNode
 	pubsub := &PubSub{
 		opt: c.opt.clientOptions(),
-
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
 			if node != nil {
 				panic("node != nil")
@@ -1861,14 +1860,19 @@ func (c *ClusterClient) pubSub() *PubSub {
 			if err != nil {
 				return nil, err
 			}
-
-			cn, err := node.Client.newConn(context.TODO())
+			cn, err := node.Client.pubSubPool.NewConn(ctx, node.Client.opt.Network, node.Client.opt.Addr, channels)
 			if err != nil {
 				node = nil
-
 				return nil, err
 			}
-
+			// will return nil if already initialized
+			err = node.Client.initConn(ctx, cn)
+			if err != nil {
+				_ = cn.Close()
+				node = nil
+				return nil, err
+			}
+			node.Client.pubSubPool.TrackConn(cn)
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
