@@ -614,6 +614,9 @@ func (p *ConnPool) Remove(_ context.Context, cn *Conn, reason error) {
 	p.removeConnWithLock(cn)
 	p.freeTurn()
 	_ = p.closeConn(cn)
+
+	// Check if we need to create new idle connections to maintain MinIdleConns
+	p.checkMinIdleConns()
 }
 
 func (p *ConnPool) CloseConn(cn *Conn) error {
@@ -630,6 +633,11 @@ func (p *ConnPool) removeConnWithLock(cn *Conn) {
 func (p *ConnPool) removeConn(cn *Conn) {
 	delete(p.conns, cn.GetID())
 	atomic.AddUint32(&p.stats.StaleConns, 1)
+
+	// Decrement pool size counter when removing a connection
+	if cn.pooled {
+		p.poolSize.Add(-1)
+	}
 }
 
 func (p *ConnPool) closeConn(cn *Conn) error {
