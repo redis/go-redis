@@ -432,7 +432,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// Enable maintenance notifications if hitless upgrades are configured
 	c.optLock.RLock()
-	hitlessEnabled := c.opt.HitlessUpgradeConfig.IsEnabled()
+	hitlessEnabled := c.opt.HitlessUpgradeConfig != nil && c.opt.HitlessUpgradeConfig.Enabled != hitless.MaintNotificationsDisabled
 	protocol := c.opt.Protocol
 	endpointType := c.opt.HitlessUpgradeConfig.EndpointType
 	c.optLock.RUnlock()
@@ -923,7 +923,7 @@ func NewClient(opt *Options) *Client {
 	c.pubSubPool = newPubSubPool(opt, c.dialHook)
 
 	// Initialize hitless upgrades first if enabled and protocol is RESP3
-	if opt.HitlessUpgradeConfig.IsEnabled() && opt.Protocol == 3 {
+	if opt.HitlessUpgradeConfig != nil && opt.HitlessUpgradeConfig.Enabled != hitless.MaintNotificationsDisabled && opt.Protocol == 3 {
 		err := c.enableHitlessUpgrades()
 		if err != nil {
 			internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
