@@ -269,8 +269,17 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	}
 
 	p.connsMu.Lock()
-	p.conns[cn.GetID()] = cn
 	defer p.connsMu.Unlock()
+	if p.closed() {
+		_ = cn.Close()
+		return nil, ErrClosed
+	}
+	// Check if pool was closed while we were waiting for the lock
+	if p.conns == nil {
+		p.conns = make(map[uint64]*Conn)
+	}
+	p.conns[cn.GetID()] = cn
+
 	if pooled {
 		// If pool is full remove the cn on next Put.
 		currentPoolSize := p.poolSize.Load()
