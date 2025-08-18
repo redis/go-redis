@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 var (
@@ -72,8 +73,13 @@ type Options struct {
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
+
+	// Protocol version for optimization (3 = RESP3 with push notifications, 2 = RESP2 without)
+	Protocol int
+
 	ReadBufferSize  int
 	WriteBufferSize int
+
 }
 
 type lastDialErrorWrap struct {
@@ -391,10 +397,26 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 }
 
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
+	shouldRemove := false
 	if cn.rd.Buffered() > 0 {
-		internal.Logger.Printf(ctx, "Conn has unread data")
-		p.Remove(ctx, cn, BadConnError{})
-		return
+		// Check if this might be push notification data
+		if p.cfg.Protocol == 3 {
+			// we know that there is something in the buffer, so peek at the next reply type without
+			// the potential to block and check if it's a push notification
+			if replyType, err := cn.rd.PeekReplyType(); err != nil || replyType != proto.RespPush {
+				shouldRemove = true
+			}
+		} else {
+			// not a push notification since protocol 2 doesn't support them
+			shouldRemove = true
+		}
+
+		if shouldRemove {
+			// For non-RESP3 or data that is not a push notification, buffered data is unexpected
+			internal.Logger.Printf(ctx, "Conn has unread data, closing it")
+			p.Remove(ctx, cn, BadConnError{})
+			return
+		}
 	}
 
 	if !cn.pooled {
@@ -538,8 +560,24 @@ func (p *ConnPool) isHealthyConn(cn *Conn) bool {
 		return false
 	}
 
-	if connCheck(cn.netConn) != nil {
-		return false
+	// Check connection health, but be aware of push notifications
+	if err := connCheck(cn.netConn); err != nil {
+		// If there's unexpected data, it might be push notifications (RESP3)
+		// However, push notification processing is now handled by the client
+		// before WithReader to ensure proper context is available to handlers
+		if err == errUnexpectedRead && p.cfg.Protocol == 3 {
+			// we know that there is something in the buffer, so peek at the next reply type without
+			// the potential to block
+			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
+				// For RESP3 connections with push notifications, we allow some buffered data
+				// The client will process these notifications before using the connection
+				internal.Logger.Printf(context.Background(), "push: connection has buffered data, likely push notifications - will be processed by client")
+				return true // Connection is healthy, client will handle notifications
+			}
+			return false // Unexpected data, not push notifications, connection is unhealthy
+		} else {
+			return false
+		}
 	}
 
 	cn.SetUsedAt(now)
