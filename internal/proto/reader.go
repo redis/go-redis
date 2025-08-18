@@ -12,8 +12,8 @@ import (
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
-// DefaultBufferSize is the default size for read/write buffers (256 KiB).
-const DefaultBufferSize = 256 * 1024
+// DefaultBufferSize is the default size for read/write buffers (32 KiB).
+const DefaultBufferSize = 32 * 1024
 
 // redis resp protocol data type.
 const (
