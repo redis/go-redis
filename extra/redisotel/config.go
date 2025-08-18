@@ -19,8 +19,9 @@ type config struct {
 	tp     trace.TracerProvider
 	tracer trace.Tracer
 
-	dbStmtEnabled bool
-	callerEnabled bool
+	dbStmtEnabled     bool
+	callerEnabled     bool
+	commandExclusions []string
 
 	// Metrics options.
 
@@ -54,13 +55,13 @@ func (fn option) metrics() {}
 
 func newConfig(opts ...baseOption) *config {
 	conf := &config{
-		dbSystem: "redis",
-		attrs:    []attribute.KeyValue{},
-
-		tp:            otel.GetTracerProvider(),
-		mp:            otel.GetMeterProvider(),
-		dbStmtEnabled: true,
-		callerEnabled: true,
+		dbSystem:          "redis",
+		attrs:             []attribute.KeyValue{},
+		commandExclusions: []string{},
+		tp:                otel.GetTracerProvider(),
+		mp:                otel.GetMeterProvider(),
+		dbStmtEnabled:     true,
+		callerEnabled:     true,
 	}
 
 	for _, opt := range opts {
@@ -121,6 +122,13 @@ func WithDBStatement(on bool) TracingOption {
 func WithCallerEnabled(on bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.callerEnabled = on
+	})
+}
+
+// WithCommandExclusions tells the tracing hook to exclude the specified redis commands.
+func WithCommandExclusions(exclusions []string) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.commandExclusions = exclusions
 	})
 }
 
