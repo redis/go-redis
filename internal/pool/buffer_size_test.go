@@ -26,7 +26,7 @@ var _ = Describe("Buffer Size Configuration", func() {
 	It("should use default buffer sizes when not specified", func() {
 		connPool = pool.NewConnPool(&pool.Options{
 			Dialer:      dummyDialer,
-			PoolSize:    1,
+			PoolSize:    int32(1),
 			PoolTimeout: 1000,
 		})
 
@@ -48,7 +48,7 @@ var _ = Describe("Buffer Size Configuration", func() {
 
 		connPool = pool.NewConnPool(&pool.Options{
 			Dialer:          dummyDialer,
-			PoolSize:        1,
+			PoolSize:        int32(1),
 			PoolTimeout:     1000,
 			ReadBufferSize:  customReadSize,
 			WriteBufferSize: customWriteSize,
@@ -69,7 +69,7 @@ var _ = Describe("Buffer Size Configuration", func() {
 	It("should handle zero buffer sizes by using defaults", func() {
 		connPool = pool.NewConnPool(&pool.Options{
 			Dialer:          dummyDialer,
-			PoolSize:        1,
+			PoolSize:        int32(1),
 			PoolTimeout:     1000,
 			ReadBufferSize:  0, // Should use default
 			WriteBufferSize: 0, // Should use default
@@ -105,7 +105,7 @@ var _ = Describe("Buffer Size Configuration", func() {
 		// without setting ReadBufferSize and WriteBufferSize
 		connPool = pool.NewConnPool(&pool.Options{
 			Dialer:      dummyDialer,
-			PoolSize:    1,
+			PoolSize:    int32(1),
 			PoolTimeout: 1000,
 			// ReadBufferSize and WriteBufferSize are not set (will be 0)
 		})

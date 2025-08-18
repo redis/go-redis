@@ -38,6 +38,7 @@ type ClusterOptions struct {
 	ClientName string
 
 	// NewClient creates a cluster node client with provided name and options.
+	// If NewClient is set by the user, the user is responsible for handling hitless upgrades and push notifications.
 	NewClient func(opt *Options) *Client
 
 	// The maximum number of retries before giving up. Command is retried
@@ -129,6 +130,14 @@ type ClusterOptions struct {
 	// When a node is marked as failing, it will be avoided for this duration.
 	// Default is 15 seconds.
 	FailingTimeoutSeconds int
+
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// When HitlessUpgradeConfig.Mode is not "disabled", the client will handle
+	// cluster upgrade notifications gracefully and manage connection/pool state
+	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
+	// If nil, hitless upgrades are in "auto" mode and will be enabled if the server supports it.
+	// The ClusterClient does not directly work with hitless, it is up to the clients in the Nodes map to work with hitless.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
 
 func (opt *ClusterOptions) init() {
@@ -319,6 +328,13 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
+	// Clone HitlessUpgradeConfig to avoid sharing between cluster node clients
+	var hitlessConfig *HitlessUpgradeConfig
+	if opt.HitlessUpgradeConfig != nil {
+		configClone := *opt.HitlessUpgradeConfig
+		hitlessConfig = &configClone
+	}
+
 	return &Options{
 		ClientName: opt.ClientName,
 		Dialer:     opt.Dialer,
@@ -360,8 +376,9 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// much use for ClusterSlots config).  This means we cannot execute the
 		// READONLY command against that node -- setting readOnly to false in such
 		// situations in the options below will prevent that from happening.
-		readOnly:      opt.ReadOnly && opt.ClusterSlots == nil,
-		UnstableResp3: opt.UnstableResp3,
+		readOnly:             opt.ReadOnly && opt.ClusterSlots == nil,
+		UnstableResp3:        opt.UnstableResp3,
+		HitlessUpgradeConfig: hitlessConfig,
 	}
 }
 
@@ -1830,12 +1847,12 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	return err
 }
 
+// hitless won't work here for now
 func (c *ClusterClient) pubSub() *PubSub {
 	var node *clusterNode
 	pubsub := &PubSub{
 		opt: c.opt.clientOptions(),
-
-		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
+		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
 			if node != nil {
 				panic("node != nil")
 			}
@@ -1850,18 +1867,25 @@ func (c *ClusterClient) pubSub() *PubSub {
 			if err != nil {
 				return nil, err
 			}
-
-			cn, err := node.Client.newConn(context.TODO())
+			cn, err := node.Client.pubSubPool.NewConn(ctx, node.Client.opt.Network, node.Client.opt.Addr, channels)
 			if err != nil {
 				node = nil
-
 				return nil, err
 			}
-
+			// will return nil if already initialized
+			err = node.Client.initConn(ctx, cn)
+			if err != nil {
+				_ = cn.Close()
+				node = nil
+				return nil, err
+			}
+			node.Client.pubSubPool.TrackConn(cn)
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
-			err := node.Client.connPool.CloseConn(cn)
+			// Untrack connection from PubSubPool
+			node.Client.pubSubPool.UntrackConn(cn)
+			err := cn.Close()
 			node = nil
 			return err
 		},

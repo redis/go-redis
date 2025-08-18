@@ -1,8 +1,6 @@
 package push
 
-import (
-	"github.com/redis/go-redis/v9/internal/pool"
-)
+// No imports needed for this file
 
 // NotificationHandlerContext provides context information about where a push notification was received.
 // This struct allows handlers to make informed decisions based on the source of the notification
@@ -35,7 +33,12 @@ type NotificationHandlerContext struct {
 	PubSub interface{}
 
 	// Conn is the specific connection on which the notification was received.
-	Conn *pool.Conn
+	// It is interface to both allow for future expansion and to avoid
+	// circular dependencies. The developer is responsible for type assertion.
+	// It can be one of the following types:
+	// - *pool.Conn
+	// - *connectionAdapter (for hitless upgrades)
+	Conn interface{}
 
 	// IsBlocking indicates if the notification was received on a blocking connection.
 	IsBlocking bool
