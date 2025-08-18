@@ -128,14 +128,14 @@ type RingOptions struct {
 	// Larger buffers can improve performance for commands that return large responses.
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 256KiB (262144 bytes)
+	// default: 32KiB (32768 bytes)
 	ReadBufferSize int
 
 	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
 	// Larger buffers can improve performance for large pipelines and commands with many arguments.
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 256KiB (262144 bytes)
+	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
 	TLSConfig *tls.Config
