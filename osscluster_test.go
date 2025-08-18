@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -644,9 +645,171 @@ var _ = Describe("ClusterClient", func() {
 			}, 30*time.Second).ShouldNot(HaveOccurred())
 		})
 
+		It("supports PubSub with ReadOnly option", func() {
+			opt = redisClusterOptions()
+			opt.ReadOnly = true
+			client = cluster.newClusterClient(ctx, opt)
+
+			pubsub := client.Subscribe(ctx, "mychannel")
+			defer pubsub.Close()
+
+			Eventually(func() error {
+				var masterPubsubChannels atomic.Int64
+				var slavePubsubChannels atomic.Int64
+
+				err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+					info := master.InfoMap(ctx, "stats")
+					if info.Err() != nil {
+						return info.Err()
+					}
+
+					pc, err := strconv.Atoi(info.Item("Stats", "pubsub_channels"))
+					if err != nil {
+						return err
+					}
+
+					masterPubsubChannels.Add(int64(pc))
+
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+
+				err = client.ForEachSlave(ctx, func(ctx context.Context, slave *redis.Client) error {
+					info := slave.InfoMap(ctx, "stats")
+					if info.Err() != nil {
+						return info.Err()
+					}
+
+					pc, err := strconv.Atoi(info.Item("Stats", "pubsub_channels"))
+					if err != nil {
+						return err
+					}
+
+					slavePubsubChannels.Add(int64(pc))
+
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+
+				if c := masterPubsubChannels.Load(); c != int64(0) {
+					return fmt.Errorf("total master pubsub_channels is %d; expected 0", c)
+				}
+
+				if c := slavePubsubChannels.Load(); c != int64(1) {
+					return fmt.Errorf("total slave pubsub_channels is %d; expected 1", c)
+				}
+
+				return nil
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+
+			Eventually(func() error {
+				_, err := client.Publish(ctx, "mychannel", "hello").Result()
+				if err != nil {
+					return err
+				}
+
+				msg, err := pubsub.ReceiveTimeout(ctx, time.Second)
+				if err != nil {
+					return err
+				}
+
+				_, ok := msg.(*redis.Message)
+				if !ok {
+					return fmt.Errorf("got %T, wanted *redis.Message", msg)
+				}
+
+				return nil
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+		})
+
 		It("supports sharded PubSub", func() {
 			pubsub := client.SSubscribe(ctx, "mychannel")
 			defer pubsub.Close()
+
+			Eventually(func() error {
+				_, err := client.SPublish(ctx, "mychannel", "hello").Result()
+				if err != nil {
+					return err
+				}
+
+				msg, err := pubsub.ReceiveTimeout(ctx, time.Second)
+				if err != nil {
+					return err
+				}
+
+				_, ok := msg.(*redis.Message)
+				if !ok {
+					return fmt.Errorf("got %T, wanted *redis.Message", msg)
+				}
+
+				return nil
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+		})
+
+		It("supports sharded PubSub with ReadOnly option", func() {
+			opt = redisClusterOptions()
+			opt.ReadOnly = true
+			client = cluster.newClusterClient(ctx, opt)
+
+			pubsub := client.SSubscribe(ctx, "mychannel")
+			defer pubsub.Close()
+
+			Eventually(func() error {
+				var masterPubsubShardChannels atomic.Int64
+				var slavePubsubShardChannels atomic.Int64
+
+				err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+					info := master.InfoMap(ctx, "stats")
+					if info.Err() != nil {
+						return info.Err()
+					}
+
+					pc, err := strconv.Atoi(info.Item("Stats", "pubsubshard_channels"))
+					if err != nil {
+						return err
+					}
+
+					masterPubsubShardChannels.Add(int64(pc))
+
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+
+				err = client.ForEachSlave(ctx, func(ctx context.Context, slave *redis.Client) error {
+					info := slave.InfoMap(ctx, "stats")
+					if info.Err() != nil {
+						return info.Err()
+					}
+
+					pc, err := strconv.Atoi(info.Item("Stats", "pubsubshard_channels"))
+					if err != nil {
+						return err
+					}
+
+					slavePubsubShardChannels.Add(int64(pc))
+
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+
+				if c := masterPubsubShardChannels.Load(); c != int64(0) {
+					return fmt.Errorf("total master pubsubshard_channels is %d; expected 0", c)
+				}
+
+				if c := slavePubsubShardChannels.Load(); c != int64(1) {
+					return fmt.Errorf("total slave pubsubshard_channels is %d; expected 1", c)
+				}
+
+				return nil
+			}, 30*time.Second).ShouldNot(HaveOccurred())
 
 			Eventually(func() error {
 				_, err := client.SPublish(ctx, "mychannel", "hello").Result()
