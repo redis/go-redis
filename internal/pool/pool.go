@@ -539,7 +539,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 
 	// If we exhausted all attempts without finding a usable connection, return nil
 	if attempts >= popAttempts {
-		log.Printf("redis: connection pool: failed to get an usable connection after %d attempts", popAttempts)
+		log.Printf("redis: connection pool: failed to get a usable connection after %d attempts", popAttempts)
 		return nil, nil
 	}
 
