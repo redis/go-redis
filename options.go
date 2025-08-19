@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/url"
 	"runtime"
@@ -18,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/util"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -30,17 +30,6 @@ type Limiter interface {
 	// ReportResult reports the result of the previously allowed operation.
 	// nil indicates a success, non-nil error usually indicates a failure.
 	ReportResult(result error)
-}
-
-// safeIntToInt32 safely converts an int to int32, returning an error if overflow would occur.
-func safeIntToInt32(value int, fieldName string) (int32, error) {
-	if value > math.MaxInt32 {
-		return 0, fmt.Errorf("redis: %s value %d exceeds maximum allowed value %d", fieldName, value, math.MaxInt32)
-	}
-	if value < math.MinInt32 {
-		return 0, fmt.Errorf("redis: %s value %d is below minimum allowed value %d", fieldName, value, math.MinInt32)
-	}
-	return int32(value), nil
 }
 
 // Options keeps the settings to set up redis connection.
@@ -661,22 +650,22 @@ func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
 ) (*pool.ConnPool, error) {
-	poolSize, err := safeIntToInt32(opt.PoolSize, "PoolSize")
+	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
 		return nil, err
 	}
 
-	minIdleConns, err := safeIntToInt32(opt.MinIdleConns, "MinIdleConns")
+	minIdleConns, err := util.SafeIntToInt32(opt.MinIdleConns, "MinIdleConns")
 	if err != nil {
 		return nil, err
 	}
 
-	maxIdleConns, err := safeIntToInt32(opt.MaxIdleConns, "MaxIdleConns")
+	maxIdleConns, err := util.SafeIntToInt32(opt.MaxIdleConns, "MaxIdleConns")
 	if err != nil {
 		return nil, err
 	}
 
-	maxActiveConns, err := safeIntToInt32(opt.MaxActiveConns, "MaxActiveConns")
+	maxActiveConns, err := util.SafeIntToInt32(opt.MaxActiveConns, "MaxActiveConns")
 	if err != nil {
 		return nil, err
 	}
@@ -702,22 +691,22 @@ func newConnPool(
 
 func newPubSubPool(opt *Options, dialer func(ctx context.Context, network, addr string) (net.Conn, error),
 ) (*pool.PubSubPool, error) {
-	poolSize, err := safeIntToInt32(opt.PoolSize, "PoolSize")
+	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
 		return nil, err
 	}
 
-	minIdleConns, err := safeIntToInt32(opt.MinIdleConns, "MinIdleConns")
+	minIdleConns, err := util.SafeIntToInt32(opt.MinIdleConns, "MinIdleConns")
 	if err != nil {
 		return nil, err
 	}
 
-	maxIdleConns, err := safeIntToInt32(opt.MaxIdleConns, "MaxIdleConns")
+	maxIdleConns, err := util.SafeIntToInt32(opt.MaxIdleConns, "MaxIdleConns")
 	if err != nil {
 		return nil, err
 	}
 
-	maxActiveConns, err := safeIntToInt32(opt.MaxActiveConns, "MaxActiveConns")
+	maxActiveConns, err := util.SafeIntToInt32(opt.MaxActiveConns, "MaxActiveConns")
 	if err != nil {
 		return nil, err
 	}
