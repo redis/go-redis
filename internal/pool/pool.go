@@ -24,8 +24,18 @@ var (
 	// ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
 
-	popAttempts  = 10
-	getAttempts  = 3
+	// popAttempts is the maximum number of attempts to find a usable connection
+	// when popping from the idle connection pool. This handles cases where connections
+	// are temporarily marked as unusable (e.g., during hitless upgrades or network issues).
+	// Value of 10 provides sufficient resilience without excessive overhead.
+	popAttempts = 10
+
+	// getAttempts is the maximum number of attempts to get a connection that passes
+	// hook validation (e.g., hitless upgrade hooks). This protects against race conditions
+	// where hooks might temporarily reject connections during cluster transitions.
+	// Value of 3 balances resilience with performance - most hook rejections resolve quickly.
+	getAttempts = 3
+
 	minTime      = time.Unix(-2208988800, 0) // Jan 1, 1900
 	maxTime      = minTime.Add(1<<63 - 1)
 	noExpiration = maxTime

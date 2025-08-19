@@ -37,6 +37,7 @@ var (
 	ErrHandoffInProgress   = errors.New("hitless: handoff already in progress")
 	ErrNoHandoffInProgress = errors.New("hitless: no handoff in progress")
 	ErrConnectionFailed    = errors.New("hitless: failed to establish new connection")
+	ErrHandoffQueueFull    = errors.New("hitless: handoff queue is full, cannot queue new handoff requests - consider increasing HandoffQueueSize or MaxWorkers in configuration")
 )
 
 // Dead error variables removed - unused in simplified architecture

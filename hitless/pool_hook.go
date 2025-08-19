@@ -309,7 +309,7 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 
 	// Ensure we have workers available to handle the load
 	ph.ensureWorkerAvailable()
-	return errors.New("queue full")
+	return ErrHandoffQueueFull
 }
 
 // performConnectionHandoffWithPool performs the actual connection handoff with pool for connection removal on failure

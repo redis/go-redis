@@ -456,6 +456,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				c.optLock.Unlock()
 				return fmt.Errorf("failed to enable maintenance notifications: %w", hitlessHandshakeErr)
 			default: // will handle auto and any other
+				internal.Logger.Printf(ctx, "hitless: auto mode fallback: hitless upgrades disabled due to handshake failure: %v", hitlessHandshakeErr)
 				c.opt.HitlessUpgradeConfig.Mode = hitless.MaintNotificationsDisabled
 				c.optLock.Unlock()
 				// auto mode, disable hitless upgrades and continue
@@ -562,6 +563,8 @@ func (c *baseClient) assertUnstableCommand(cmd Cmder) bool {
 		if c.opt.UnstableResp3 {
 			return true
 		} else {
+			// TODO: find the best way to remove the panic and return error here
+			// The client should not panic when executing a command, only when initializing.
 			panic("RESP3 responses for this command are disabled because they may still change. Please set the flag UnstableResp3 .  See the [README](https://github.com/redis/go-redis/blob/master/README.md) and the release notes for guidance.")
 		}
 	default:
@@ -921,8 +924,15 @@ func NewClient(opt *Options) *Client {
 	opt.PushNotificationProcessor = c.pushProcessor
 
 	// Create connection pools
-	c.connPool = newConnPool(opt, c.dialHook)
-	c.pubSubPool = newPubSubPool(opt, c.dialHook)
+	var err error
+	c.connPool, err = newConnPool(opt, c.dialHook)
+	if err != nil {
+		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
+	}
+	c.pubSubPool, err = newPubSubPool(opt, c.dialHook)
+	if err != nil {
+		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
+	}
 
 	// Initialize hitless upgrades first if enabled and protocol is RESP3
 	if opt.HitlessUpgradeConfig != nil && opt.HitlessUpgradeConfig.Mode != hitless.MaintNotificationsDisabled && opt.Protocol == 3 {
