@@ -3,7 +3,6 @@ package pool
 import (
 	"context"
 	"errors"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -386,7 +385,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	attempts := 0
 	for {
 		if attempts >= getAttempts {
-			log.Printf("redis: connection pool: failed to get a connection accepted by hook after %d attempts", attempts)
+			internal.Logger.Printf(ctx, "redis: connection pool: failed to get a connection accepted by hook after %d attempts", attempts)
 			break
 		}
 		attempts++
@@ -416,7 +415,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 
 		if hookManager != nil {
 			if err := hookManager.ProcessOnGet(ctx, cn, false); err != nil {
-				log.Printf("redis: connection pool: failed to process idle connection by hook: %v", err)
+				internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", err)
 				// Failed to process connection, discard it
 				_ = p.CloseConn(cn)
 				continue
@@ -443,7 +442,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	if hookManager != nil {
 		if err := hookManager.ProcessOnGet(ctx, newcn, true); err != nil {
 			// Failed to process connection, discard it
-			log.Printf("redis: connection pool: failed to process new connection by hook: %v", err)
+			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection by hook: %v", err)
 			_ = p.CloseConn(newcn)
 			return nil, err
 		}
@@ -539,7 +538,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 
 	// If we exhausted all attempts without finding a usable connection, return nil
 	if attempts >= popAttempts {
-		log.Printf("redis: connection pool: failed to get a usable connection after %d attempts", popAttempts)
+		internal.Logger.Printf(context.Background(), "redis: connection pool: failed to get a usable connection after %d attempts", popAttempts)
 		return nil, nil
 	}
 
@@ -764,5 +763,3 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 	}
 	return true
 }
-
-
