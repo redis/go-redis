@@ -386,7 +386,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	attempts := 0
 	for {
 		if attempts >= getAttempts {
-			log.Printf("redis: connection pool: failed to get an connection accepted by hook after %d attempts", attempts)
+			log.Printf("redis: connection pool: failed to get a connection accepted by hook after %d attempts", attempts)
 			break
 		}
 		attempts++
