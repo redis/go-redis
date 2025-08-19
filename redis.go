@@ -930,7 +930,16 @@ func NewClient(opt *Options) *Client {
 		if err != nil {
 			internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
 			if opt.HitlessUpgradeConfig.Mode == hitless.MaintNotificationsEnabled {
-				// panic so we fail fast without breaking existing clients api
+				/*
+					Design decision: panic here to fail fast if hitless upgrades cannot be enabled when explicitly requested.
+					We choose to panic instead of returning an error to avoid breaking the existing client API, which does not expect
+					an error from NewClient. This ensures that misconfiguration or critical initialization failures are surfaced
+					immediately, rather than allowing the client to continue in a partially initialized or inconsistent state.
+					Clients relying on hitless upgrades should be aware that initialization errors will cause a panic, and should
+					handle this accordingly (e.g., via recover or by validating configuration before calling NewClient).
+					This approach is only used when HitlessUpgradeConfig.Mode is MaintNotificationsEnabled, indicating that hitless
+					upgrades are required for correct operation. In other modes, initialization failures are logged but do not panic.
+				*/
 				panic(fmt.Errorf("failed to enable hitless upgrades: %w", err))
 			}
 		}
