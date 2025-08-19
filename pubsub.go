@@ -493,7 +493,12 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 // Receive returns a message as a Subscription, Message, Pong or error.
 // See PubSub example for details. This is low-level API and in most cases
 // Channel should be used instead.
-// This will block until a message is received.
+// Receive returns a message as a Subscription, Message, Pong, or an error.
+// See PubSub example for details. This is a low-level API and in most cases
+// Channel should be used instead.
+// This method blocks until a message is received or an error occurs.
+// It may return early with an error if the context is canceled, the connection fails,
+// or other internal errors occur.
 func (c *PubSub) Receive(ctx context.Context) (interface{}, error) {
 	return c.ReceiveTimeout(ctx, 0)
 }
