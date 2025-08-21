@@ -274,26 +274,33 @@ func (ph *PoolHook) processHandoffRequest(request HandoffRequest) {
 
 			internal.Logger.Printf(context.Background(), "Handoff failed for connection WILL RETRY After %v: %v", afterTime, err)
 			time.AfterFunc(afterTime, func() {
-				ph.queueHandoff(request.Conn)
+				if err := ph.queueHandoff(request.Conn); err != nil {
+					internal.Logger.Printf(context.Background(), "can't queue handoff for retry: %v", err)
+					ph.removeConn(ctx, request, err)
+				}
 			})
 		} else {
-			pooler := request.Pool
-			conn := request.Conn
-			if pooler != nil {
-				go pooler.Remove(ctx, conn, err)
-				if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
-					internal.Logger.Printf(ctx,
-						"hitless: removed connection %d from pool due to max handoff retries reached",
-						conn.GetID())
-				}
-			} else {
-				go conn.Close()
-				if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
-					internal.Logger.Printf(ctx,
-						"hitless: no pool provided for connection %d, cannot remove due to handoff initialization failure: %v",
-						conn.GetID(), err)
-				}
-			}
+			go ph.removeConn(ctx, request, err)
+		}
+	}
+}
+
+func (ph *PoolHook) removeConn(ctx context.Context, request HandoffRequest, err error) {
+	pooler := request.Pool
+	conn := request.Conn
+	if pooler != nil {
+		pooler.Remove(ctx, conn, err)
+		if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
+			internal.Logger.Printf(ctx,
+				"hitless: removed connection %d from pool due to max handoff retries reached",
+				conn.GetID())
+		}
+	} else {
+		conn.Close()
+		if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
+			internal.Logger.Printf(ctx,
+				"hitless: no pool provided for connection %d, cannot remove due to handoff initialization failure: %v",
+				conn.GetID(), err)
 		}
 	}
 }
