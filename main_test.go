@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal"
 )
 
 const (
@@ -103,9 +105,11 @@ var _ = BeforeSuite(func() {
 	fmt.Printf("REDIS_VERSION: %.1f\n", RedisVersion)
 	fmt.Printf("CLIENT_LIBS_TEST_IMAGE: %v\n", os.Getenv("CLIENT_LIBS_TEST_IMAGE"))
 
-	tlogger := &TestLogger{}
+	// set logger that will filter some of the noise from the tests
+	tlogger := NewTestLogger()
 	tlogger.Filter("ERR unknown subcommand 'maint_notifications'")
 	redis.SetLogger(tlogger)
+
 	if RedisVersion < 7.0 || RedisVersion > 9 {
 		panic("incorrect or not supported redis version")
 	}
@@ -403,20 +407,30 @@ func (h *hook) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.Process
 	return hook
 }
 
+func NewTestLogger() *TestLogger {
+	intLogger := internal.Logger
+
+	return &TestLogger{
+		intLogger,
+		[]string{},
+	}
+}
+
 // TestLogger is a logger that filters out specific substrings so
 // the test output is not polluted with noise.
 type TestLogger struct {
+	intLogger          internal.Logging
 	filteredSugstrings []string
 }
 
 func (t *TestLogger) Filter(substr string) {
 	t.filteredSugstrings = append(t.filteredSugstrings, substr)
 }
-func (t *TestLogger) Printf(ctx context.Context, format string, v ...interface{}) {
+func (t *TestLogger) Printf(_ context.Context, format string, v ...interface{}) {
 	for _, substr := range t.filteredSugstrings {
 		if strings.Contains(format, substr) {
 			return
 		}
 	}
-	fmt.Printf(format, v...)
+	t.intLogger.Printf(ctx, format, v...)
 }
