@@ -103,6 +103,9 @@ var _ = BeforeSuite(func() {
 	fmt.Printf("REDIS_VERSION: %.1f\n", RedisVersion)
 	fmt.Printf("CLIENT_LIBS_TEST_IMAGE: %v\n", os.Getenv("CLIENT_LIBS_TEST_IMAGE"))
 
+	tlogger := &TestLogger{}
+	tlogger.Filter("ERR unknown subcommand 'maint_notifications'")
+	redis.SetLogger(tlogger)
 	if RedisVersion < 7.0 || RedisVersion > 9 {
 		panic("incorrect or not supported redis version")
 	}
@@ -398,4 +401,22 @@ func (h *hook) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.Process
 		return h.processPipelineHook(hook)
 	}
 	return hook
+}
+
+// TestLogger is a logger that filters out specific substrings so
+// the test output is not polluted with noise.
+type TestLogger struct {
+	filteredSugstrings []string
+}
+
+func (t *TestLogger) Filter(substr string) {
+	t.filteredSugstrings = append(t.filteredSugstrings, substr)
+}
+func (t *TestLogger) Printf(ctx context.Context, format string, v ...interface{}) {
+	for _, substr := range t.filteredSugstrings {
+		if strings.Contains(format, substr) {
+			return
+		}
+	}
+	fmt.Printf(format, v...)
 }

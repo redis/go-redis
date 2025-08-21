@@ -456,7 +456,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				c.optLock.Unlock()
 				return fmt.Errorf("failed to enable maintenance notifications: %w", hitlessHandshakeErr)
 			default: // will handle auto and any other
-				internal.Logger.Printf(ctx, "hitless: auto mode fallback: hitless upgrades disabled due to handshake failure: %v", hitlessHandshakeErr)
+				internal.Logger.Printf(ctx, "hitless: auto mode fallback: hitless upgrades disabled due to handshake error: %v", hitlessHandshakeErr)
 				c.opt.HitlessUpgradeConfig.Mode = hitless.MaintNotificationsDisabled
 				c.optLock.Unlock()
 				// auto mode, disable hitless upgrades and continue
@@ -1280,3 +1280,13 @@ func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.Notifica
 		Conn:     &connectionAdapter{conn: cn}, // Wrap in adapter for easier interface access
 	}
 }
+
+// VoidLogger is a logger that does nothing.
+// Used to disable logging and thus speed up the library.
+type VoidLogger struct{}
+
+func (v *VoidLogger) Printf(_ context.Context, _ string, _ ...interface{}) {
+	// do nothing
+}
+
+var _ internal.Logging = (*VoidLogger)(nil)
