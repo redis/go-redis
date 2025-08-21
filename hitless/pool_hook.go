@@ -257,16 +257,45 @@ func (ph *PoolHook) processHandoffRequest(request HandoffRequest) {
 	}()
 
 	// Perform the handoff with cancellable context
-	err := ph.performConnectionHandoffWithPool(shutdownCtx, request.Conn, request.Pool)
-
-	// If handoff failed, restore the handoff state for potential retry
+	shouldRetry, err := ph.performConnectionHandoffWithPool(shutdownCtx, request.Conn, request.Pool)
 	if err != nil {
-		request.Conn.RestoreHandoffState()
-		internal.Logger.Printf(context.Background(), "Handoff failed for connection WILL RETRY: %v", err)
-	}
+		if shouldRetry {
+			now := time.Now()
+			deadline, ok := shutdownCtx.Deadline()
+			if !ok || deadline.Before(now) {
+				// wait half the timeout before retrying if no deadline or deadline has passed
+				deadline = now.Add(handoffTimeout / 2)
+			}
 
-	// No need for scale down scheduling with on-demand workers
-	// Workers automatically exit when idle
+			afterTime := deadline.Sub(now)
+			if afterTime < handoffTimeout/2 {
+				afterTime = handoffTimeout / 2
+			}
+
+			internal.Logger.Printf(context.Background(), "Handoff failed for connection WILL RETRY After %v: %v", afterTime, err)
+			time.AfterFunc(afterTime, func() {
+				ph.queueHandoff(request.Conn)
+			})
+		} else {
+			pooler := request.Pool
+			conn := request.Conn
+			if pooler != nil {
+				go pooler.Remove(ctx, conn, err)
+				if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
+					internal.Logger.Printf(ctx,
+						"hitless: removed connection %d from pool due to max handoff retries reached",
+						conn.GetID())
+				}
+			} else {
+				go conn.Close()
+				if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
+					internal.Logger.Printf(ctx,
+						"hitless: no pool provided for connection %d, cannot remove due to handoff initialization failure: %v",
+						conn.GetID(), err)
+				}
+			}
+		}
+	}
 }
 
 // queueHandoff queues a handoff request for processing
@@ -313,8 +342,8 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 }
 
 // performConnectionHandoffWithPool performs the actual connection handoff with pool for connection removal on failure
-// if err is returned, connection will be removed from pool
-func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *pool.Conn, pooler pool.Pooler) error {
+// When error is returned, the connection handoff should be retried if err is not ErrMaxHandoffRetriesReached
+func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *pool.Conn, pooler pool.Pooler) (shouldRetry bool, err error) {
 	// Clear handoff state after successful handoff
 	seqID := conn.GetMovingSeqID()
 	connID := conn.GetID()
@@ -326,11 +355,7 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 
 	newEndpoint := conn.GetHandoffEndpoint()
 	if newEndpoint == "" {
-		// TODO(hitless): Handle by performing the handoff to the current endpoint in N seconds,
-		// Where N is the time in the moving notification...
-		// For now, clear the handoff state and return
-		conn.ClearHandoffState()
-		return nil
+		return false, ErrInvalidHandoffState
 	}
 
 	retries := conn.IncrementAndGetHandoffRetries(1)
@@ -345,23 +370,8 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 				"hitless: reached max retries (%d) for handoff of connection %d to %s",
 				maxRetries, conn.GetID(), conn.GetHandoffEndpoint())
 		}
-		err := ErrMaxHandoffRetriesReached
-		if pooler != nil {
-			go pooler.Remove(ctx, conn, err)
-			if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
-				internal.Logger.Printf(ctx,
-					"hitless: removed connection %d from pool due to max handoff retries reached",
-					conn.GetID())
-			}
-		} else {
-			go conn.Close()
-			if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
-				internal.Logger.Printf(ctx,
-					"hitless: no pool provided for connection %d, cannot remove due to handoff initialization failure: %v",
-					conn.GetID(), err)
-			}
-		}
-		return err
+		// won't retry on ErrMaxHandoffRetriesReached
+		return false, ErrMaxHandoffRetriesReached
 	}
 
 	// Create endpoint-specific dialer
@@ -370,10 +380,9 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 	// Create new connection to the new endpoint
 	newNetConn, err := endpointDialer(ctx)
 	if err != nil {
-		// TODO(hitless): retry
-		// This is the only case where we should retry the handoff request
-		// Should we do anything else other than return the error?
-		return err
+		// hitless: will retry
+		// Maybe a network error - retry after a delay
+		return true, err
 	}
 
 	// Get the old connection
@@ -382,26 +391,9 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 	// Replace the connection and execute initialization
 	err = conn.SetNetConnAndInitConn(ctx, newNetConn)
 	if err != nil {
-		// Remove the connection from the pool since it's in a bad state
-		if pooler != nil {
-			// Use pool.Pooler interface directly - no adapter needed
-			go pooler.Remove(ctx, conn, err)
-			if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
-				internal.Logger.Printf(ctx,
-					"hitless: removed connection %d from pool due to handoff initialization failure: %v",
-					conn.GetID(), err)
-			}
-		} else {
-			go conn.Close()
-			if ph.config != nil && ph.config.LogLevel >= 1 { // Warning level
-				internal.Logger.Printf(ctx,
-					"hitless: no pool provided for connection %d, cannot remove due to handoff initialization failure: %v",
-					conn.GetID(), err)
-			}
-		}
-
-		// Keep the handoff state for retry
-		return err
+		// hitless: won't retry
+		// Initialization failed - remove the connection
+		return false, err
 	}
 	defer func() {
 		if oldConn != nil {
@@ -428,7 +420,7 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 		}
 	}
 
-	return nil
+	return false, nil
 }
 
 // createEndpointDialer creates a dialer function that connects to a specific endpoint

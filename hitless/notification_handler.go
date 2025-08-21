@@ -3,7 +3,6 @@ package hitless
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -63,24 +62,14 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	if len(notification) < 3 {
 		return ErrInvalidNotification
 	}
-	seqIDStr, ok := notification[1].(string)
+	seqID, ok := notification[1].(int64)
 	if !ok {
-		return ErrInvalidNotification
-	}
-
-	seqID, err := strconv.ParseInt(seqIDStr, 10, 64)
-	if err != nil {
 		return ErrInvalidNotification
 	}
 
 	// Extract timeS
-	timeSStr, ok := notification[2].(string)
+	timeS, ok := notification[2].(int64)
 	if !ok {
-		return ErrInvalidNotification
-	}
-
-	timeS, err := strconv.ParseInt(timeSStr, 10, 64)
-	if err != nil {
 		return ErrInvalidNotification
 	}
 
@@ -116,16 +105,17 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 		newEndpoint = snh.manager.options.GetAddr()
 		// delay the handoff for timeS/2 seconds to the same endpoint
 		// do this in a goroutine to avoid blocking the notification handler
-		go func() {
-			time.Sleep(time.Duration(timeS/2) * time.Second)
+		// NOTE: This timer is started while parsing the notification, so the connection is not marked for handoff
+		// and there should be no possibility of a race condition or double handoff.
+		time.AfterFunc(time.Duration(timeS/2)*time.Second, func() {
 			if poolConn == nil || poolConn.IsClosed() {
 				return
 			}
 			if err := snh.markConnForHandoff(poolConn, newEndpoint, seqID, deadline); err != nil {
 				// Log error but don't fail the goroutine
-				internal.Logger.Printf(context.Background(), "hitless: failed to mark connection for handoff: %v", err)
+				internal.Logger.Printf(ctx, "hitless: failed to mark connection for handoff: %v", err)
 			}
-		}()
+		})
 		return nil
 	}
 
