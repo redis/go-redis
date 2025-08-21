@@ -267,8 +267,8 @@ func TestConnectionHook(t *testing.T) {
 			EndpointType:      EndpointTypeAuto,
 			MaxWorkers:        2,
 			HandoffQueueSize:  10,
-			MaxHandoffRetries: 3,
-			HandoffTimeout:    1 * time.Second, // Shorter timeout for faster test
+			MaxHandoffRetries: 2, // Reduced retries for faster test
+			HandoffTimeout:    500 * time.Millisecond, // Shorter timeout for faster test
 			LogLevel:          2,
 		}
 		processor := NewPoolHook(failingDialer, "tcp", config, nil)
@@ -294,13 +294,12 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		// Wait for handoff to complete and fail with proper timeout and polling
-		// Use longer timeout to account for handoff timeout + processing time
-		timeout := time.After(5 * time.Second)
+		timeout := time.After(3 * time.Second)
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
 
 		// wait for handoff to start
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		handoffCompleted := false
 		for !handoffCompleted {
 			select {
@@ -318,10 +317,17 @@ func TestConnectionHook(t *testing.T) {
 			t.Error("Connection should be removed from pending map after failed handoff")
 		}
 
-		// Handoff state should still be set (since handoff failed)
-		if !conn.ShouldHandoff() {
-			t.Error("Connection should still be marked for handoff after failed handoff")
+		// Wait for retries to complete (with MaxHandoffRetries=2, it will retry twice then give up)
+		// Each retry has a delay of handoffTimeout/2 = 250ms, so wait for all retries to complete
+		time.Sleep(800 * time.Millisecond)
+
+		// After max retries are reached, the connection should be removed from pool
+		// and handoff state should be cleared
+		if conn.ShouldHandoff() {
+			t.Error("Connection should not be marked for handoff after max retries reached")
 		}
+
+		t.Logf("EventDrivenHandoffDialerError test completed successfully")
 	})
 
 	t.Run("BufferedDataRESP2", func(t *testing.T) {
