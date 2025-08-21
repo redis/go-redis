@@ -18,7 +18,6 @@ var (
 
 	// Configuration validation errors
 	ErrInvalidHandoffRetries = errors.New("hitless: MaxHandoffRetries must be between 1 and 10")
-	ErrInvalidHandoffState   = errors.New("hitless: Conn is in invalid state for handoff")
 )
 
 // Integration errors
@@ -34,4 +33,13 @@ var (
 // Notification errors
 var (
 	ErrInvalidNotification = errors.New("hitless: invalid notification format")
+)
+
+// connection handoff errors
+var (
+	// ErrConnectionMarkedForHandoff is returned when a connection is marked for handoff
+	// and should not be used until the handoff is complete
+	ErrConnectionMarkedForHandoff = errors.New("hitless: connection marked for handoff")
+	// ErrConnectionInvalidHandoffState is returned when a connection is in an invalid state for handoff
+	ErrConnectionInvalidHandoffState = errors.New("hitless: connection is in invalid state for handoff")
 )

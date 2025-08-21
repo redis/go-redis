@@ -355,7 +355,7 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 
 	newEndpoint := conn.GetHandoffEndpoint()
 	if newEndpoint == "" {
-		return false, ErrInvalidHandoffState
+		return false, ErrConnectionInvalidHandoffState
 	}
 
 	retries := conn.IncrementAndGetHandoffRetries(1)
@@ -445,8 +445,7 @@ func (ph *PoolHook) createEndpointDialer(endpoint string) func(context.Context) 
 func (ph *PoolHook) Shutdown(ctx context.Context) error {
 	ph.shutdownOnce.Do(func() {
 		close(ph.shutdown)
-
-		// No timers to clean up with on-demand workers
+		// workers will exit when they finish their current request
 	})
 
 	// Wait for workers to complete
@@ -463,7 +462,3 @@ func (ph *PoolHook) Shutdown(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
-
-// ErrConnectionMarkedForHandoff is returned when a connection is marked for handoff
-// and should not be used until the handoff is complete
-var ErrConnectionMarkedForHandoff = errors.New("connection marked for handoff")
