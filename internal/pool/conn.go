@@ -409,14 +409,6 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	return nil
 }
 
-// RestoreHandoffState restores the handoff state after a failed handoff (lock-free).
-func (cn *Conn) RestoreHandoffState() {
-	// Restore shouldHandoff flag for retry
-	cn.shouldHandoffAtomic.Store(true)
-	// Keep usable=false to prevent the connection from being used until handoff succeeds
-	cn.setUsable(false)
-}
-
 // ShouldHandoff returns true if the connection needs to be handed off (lock-free).
 func (cn *Conn) ShouldHandoff() bool {
 	return cn.shouldHandoff()

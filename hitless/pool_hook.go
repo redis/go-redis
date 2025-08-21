@@ -138,40 +138,40 @@ func (ph *PoolHook) OnGet(ctx context.Context, conn *pool.Conn, isNewConn bool) 
 // OnPut is called when a connection is returned to the pool
 func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool, shouldRemove bool, err error) {
 	// first check if we should handoff for faster rejection
-	if conn.ShouldHandoff() {
-		// check pending handoff to not queue the same connection twice
-		_, hasPendingHandoff := ph.pending.Load(conn.GetID())
-		if !hasPendingHandoff {
-			// Check for empty endpoint first (synchronous check)
-			if conn.GetHandoffEndpoint() == "" {
-				conn.ClearHandoffState()
-			} else {
-				if err := ph.queueHandoff(conn); err != nil {
-					// Failed to queue handoff, remove the connection
-					internal.Logger.Printf(ctx, "Failed to queue handoff: %v", err)
-					return false, true, nil // Don't pool, remove connection, no error to caller
-				}
-
-				// Check if handoff was already processed by a worker before we can mark it as queued
-				if !conn.ShouldHandoff() {
-					// Handoff was already processed - this is normal and the connection should be pooled
-					return true, false, nil
-				}
-
-				if err := conn.MarkQueuedForHandoff(); err != nil {
-					// If marking fails, check if handoff was processed in the meantime
-					if !conn.ShouldHandoff() {
-						// Handoff was processed - this is normal, pool the connection
-						return true, false, nil
-					}
-					// Other error - remove the connection
-					return false, true, nil
-				}
-				return true, false, nil
-			}
-		}
+	if !conn.ShouldHandoff() {
+		// Default behavior (no handoff): pool the connection
+		return true, false, nil
 	}
-	// Default: pool the connection
+
+	// check pending handoff to not queue the same connection twice
+	_, hasPendingHandoff := ph.pending.Load(conn.GetID())
+	if hasPendingHandoff {
+		// Default behavior (pending handoff): pool the connection
+		return true, false, nil
+	}
+
+	if err := ph.queueHandoff(conn); err != nil {
+		// Failed to queue handoff, remove the connection
+		internal.Logger.Printf(ctx, "Failed to queue handoff: %v", err)
+		// Don't pool, remove connection, no error to caller
+		return false, true, nil
+	}
+
+	// Check if handoff was already processed by a worker before we can mark it as queued
+	if !conn.ShouldHandoff() {
+		// Handoff was already processed - this is normal and the connection should be pooled
+		return true, false, nil
+	}
+
+	if err := conn.MarkQueuedForHandoff(); err != nil {
+		// If marking fails, check if handoff was processed in the meantime
+		if !conn.ShouldHandoff() {
+			// Handoff was processed - this is normal, pool the connection
+			return true, false, nil
+		}
+		// Other error - remove the connection
+		return false, true, nil
+	}
 	return true, false, nil
 }
 
