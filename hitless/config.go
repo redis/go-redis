@@ -3,6 +3,7 @@ package hitless
 import (
 	"net"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/util"
@@ -183,8 +184,6 @@ func (c *Config) Validate() error {
 		return ErrInvalidHandoffRetries
 	}
 
-
-
 	return nil
 }
 
@@ -284,8 +283,6 @@ func (c *Config) ApplyDefaultsWithPoolSize(poolSize int) *Config {
 		result.MaxHandoffRetries = c.MaxHandoffRetries
 	}
 
-
-
 	return result
 }
 
@@ -334,44 +331,92 @@ func (c *Config) applyWorkerDefaults(poolSize int) {
 
 // DetectEndpointType automatically detects the appropriate endpoint type
 // based on the connection address and TLS configuration.
+//
+// For IP addresses:
+//   - If TLS is enabled: requests FQDN for proper certificate validation
+//   - If TLS is disabled: requests IP for better performance
+//
+// For hostnames:
+//   - If TLS is enabled: always requests FQDN for proper certificate validation
+//   - If TLS is disabled: requests IP for better performance
+//
+// Internal vs External detection:
+//   - For IPs: uses private IP range detection
+//   - For hostnames: uses heuristics based on common internal naming patterns
 func DetectEndpointType(addr string, tlsEnabled bool) EndpointType {
-	// Parse the address to determine if it's an IP or hostname
-	isPrivate := isPrivateIP(addr)
-
-	var endpointType EndpointType
-
-	if tlsEnabled {
-		// TLS requires FQDN for certificate validation
-		if isPrivate {
-			endpointType = EndpointTypeInternalFQDN
-		} else {
-			endpointType = EndpointTypeExternalFQDN
-		}
-	} else {
-		// No TLS, can use IP addresses
-		if isPrivate {
-			endpointType = EndpointTypeInternalIP
-		} else {
-			endpointType = EndpointTypeExternalIP
-		}
-	}
-
-	return endpointType
-}
-
-// isPrivateIP checks if the given address is in a private IP range.
-func isPrivateIP(addr string) bool {
 	// Extract host from "host:port" format
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr // Assume no port
 	}
 
+	// Check if the host is an IP address or hostname
 	ip := net.ParseIP(host)
-	if ip == nil {
-		return false // Not an IP address (likely hostname)
+	isIPAddress := ip != nil
+	var endpointType EndpointType
+
+	if isIPAddress {
+		// Address is an IP - determine if it's private or public
+		isPrivate := ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
+
+		if tlsEnabled {
+			// TLS with IP addresses - still prefer FQDN for certificate validation
+			if isPrivate {
+				endpointType = EndpointTypeInternalFQDN
+			} else {
+				endpointType = EndpointTypeExternalFQDN
+			}
+		} else {
+			// No TLS - can use IP addresses directly
+			if isPrivate {
+				endpointType = EndpointTypeInternalIP
+			} else {
+				endpointType = EndpointTypeExternalIP
+			}
+		}
+	} else {
+		// Address is a hostname
+		isInternalHostname := isInternalHostname(host)
+		if isInternalHostname {
+			endpointType = EndpointTypeInternalFQDN
+		} else {
+			endpointType = EndpointTypeExternalFQDN
+		}
 	}
 
-	// Check for private/loopback ranges
-	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
+	return endpointType
+}
+
+// isInternalHostname determines if a hostname appears to be internal/private.
+// This is a heuristic based on common naming patterns.
+func isInternalHostname(hostname string) bool {
+	// Convert to lowercase for comparison
+	hostname = strings.ToLower(hostname)
+
+	// Common internal hostname patterns
+	internalPatterns := []string{
+		"localhost",
+		".local",
+		".internal",
+		".corp",
+		".lan",
+		".intranet",
+		".private",
+	}
+
+	// Check for exact match or suffix match
+	for _, pattern := range internalPatterns {
+		if hostname == pattern || strings.HasSuffix(hostname, pattern) {
+			return true
+		}
+	}
+
+	// Check for RFC 1918 style hostnames (e.g., redis-1, db-server, etc.)
+	// If hostname doesn't contain dots, it's likely internal
+	if !strings.Contains(hostname, ".") {
+		return true
+	}
+
+	// Default to external for fully qualified domain names
+	return false
 }

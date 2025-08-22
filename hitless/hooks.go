@@ -22,27 +22,14 @@ func (lh *LoggingHook) PreHook(ctx context.Context, notificationType string, not
 // PostHook logs the result after processing.
 func (lh *LoggingHook) PostHook(ctx context.Context, notificationType string, notification []interface{}, result error) {
 	if result != nil && lh.LogLevel >= 1 { // Warning level
-		internal.Logger.Printf(ctx, "hitless: %s notification processing failed: %v", notificationType, result)
+		internal.Logger.Printf(ctx, "hitless: %s notification processing failed: %v - %v", notificationType, result, notification)
 	} else if lh.LogLevel >= 3 { // Debug level
 		internal.Logger.Printf(ctx, "hitless: %s notification processed successfully", notificationType)
 	}
 }
 
-// FilterHook is an example hook that can filter out certain notifications.
-type FilterHook struct {
-	BlockedTypes map[string]bool
-}
-
-// PreHook filters notifications based on type.
-func (fh *FilterHook) PreHook(ctx context.Context, notificationType string, notification []interface{}) ([]interface{}, bool) {
-	if fh.BlockedTypes[notificationType] {
-		internal.Logger.Printf(ctx, "hitless: filtering out %s notification", notificationType)
-		return notification, false // Skip processing
-	}
-	return notification, true
-}
-
-// PostHook does nothing for filter hook.
-func (fh *FilterHook) PostHook(ctx context.Context, notificationType string, notification []interface{}, result error) {
-	// No post-processing needed for filter hook
+// NewLoggingHook creates a new logging hook with the specified log level.
+// Log levels: 0=errors, 1=warnings, 2=info, 3=debug
+func NewLoggingHook(logLevel int) *LoggingHook {
+	return &LoggingHook{LogLevel: logLevel}
 }

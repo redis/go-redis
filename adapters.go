@@ -103,8 +103,8 @@ func (ca *connectionAdapter) IsUsable() bool {
 	return ca.conn.IsUsable()
 }
 
-// GetPoolConnection returns the underlying pool connection.
-func (ca *connectionAdapter) GetPoolConnection() *pool.Conn {
+// GetPoolConn returns the underlying pool connection.
+func (ca *connectionAdapter) GetPoolConn() *pool.Conn {
 	return ca.conn
 }
 

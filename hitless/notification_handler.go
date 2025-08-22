@@ -19,11 +19,13 @@ type NotificationHandler struct {
 // HandlePushNotification processes push notifications with hook support.
 func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) == 0 {
+		internal.Logger.Printf(ctx, "hitless: invalid notification format: %v", notification)
 		return ErrInvalidNotification
 	}
 
 	notificationType, ok := notification[0].(string)
 	if !ok {
+		internal.Logger.Printf(ctx, "hitless: invalid notification type format: %v", notification[0])
 		return ErrInvalidNotification
 	}
 
@@ -60,16 +62,19 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 // ["MOVING", seqNum, timeS, endpoint] - per-connection handoff
 func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) < 3 {
+		internal.Logger.Printf(ctx, "hitless: invalid MOVING notification: %v", notification)
 		return ErrInvalidNotification
 	}
 	seqID, ok := notification[1].(int64)
 	if !ok {
+		internal.Logger.Printf(ctx, "hitless: invalid seqID in MOVING notification: %v", notification[1])
 		return ErrInvalidNotification
 	}
 
 	// Extract timeS
 	timeS, ok := notification[2].(int64)
 	if !ok {
+		internal.Logger.Printf(ctx, "hitless: invalid timeS in MOVING notification: %v", notification[2])
 		return ErrInvalidNotification
 	}
 
@@ -78,6 +83,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 		// Extract new endpoint
 		newEndpoint, ok = notification[3].(string)
 		if !ok {
+			internal.Logger.Printf(ctx, "hitless: invalid newEndpoint in MOVING notification: %v", notification[3])
 			return ErrInvalidNotification
 		}
 	}
@@ -85,6 +91,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	// Get the connection that received this notification
 	conn := handlerCtx.Conn
 	if conn == nil {
+		internal.Logger.Printf(ctx, "hitless: no connection in handler context for MOVING notification")
 		return ErrInvalidNotification
 	}
 
@@ -95,6 +102,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	} else if pc, ok := conn.(*pool.Conn); ok {
 		poolConn = pc
 	} else {
+		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for MOVING notification - %T %#v", conn, handlerCtx)
 		return ErrInvalidNotification
 	}
 
@@ -145,17 +153,20 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 	// MIGRATING notifications indicate that a connection is about to be migrated
 	// Apply relaxed timeouts to the specific connection that received this notification
 	if len(notification) < 2 {
+		internal.Logger.Printf(ctx, "hitless: invalid MIGRATING notification: %v", notification)
 		return ErrInvalidNotification
 	}
 
 	// Get the connection from handler context and type assert to connectionAdapter
 	if handlerCtx.Conn == nil {
+		internal.Logger.Printf(ctx, "hitless: no connection in handler context for MIGRATING notification")
 		return ErrInvalidNotification
 	}
 
 	// Type assert to connectionAdapter which implements ConnectionWithRelaxedTimeout
 	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
 	if !ok {
+		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for MIGRATING notification")
 		return ErrInvalidNotification
 	}
 
@@ -169,17 +180,20 @@ func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx p
 	// MIGRATED notifications indicate that a connection migration has completed
 	// Restore normal timeouts for the specific connection that received this notification
 	if len(notification) < 2 {
+		internal.Logger.Printf(ctx, "hitless: invalid MIGRATED notification: %v", notification)
 		return ErrInvalidNotification
 	}
 
 	// Get the connection from handler context and type assert to connectionAdapter
 	if handlerCtx.Conn == nil {
+		internal.Logger.Printf(ctx, "hitless: no connection in handler context for MIGRATED notification")
 		return ErrInvalidNotification
 	}
 
 	// Type assert to connectionAdapter which implements ConnectionWithRelaxedTimeout
 	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
 	if !ok {
+		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for MIGRATED notification")
 		return ErrInvalidNotification
 	}
 
@@ -193,17 +207,20 @@ func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCt
 	// FAILING_OVER notifications indicate that a connection is about to failover
 	// Apply relaxed timeouts to the specific connection that received this notification
 	if len(notification) < 2 {
+		internal.Logger.Printf(ctx, "hitless: invalid FAILING_OVER notification: %v", notification)
 		return ErrInvalidNotification
 	}
 
 	// Get the connection from handler context and type assert to connectionAdapter
 	if handlerCtx.Conn == nil {
+		internal.Logger.Printf(ctx, "hitless: no connection in handler context for FAILING_OVER notification")
 		return ErrInvalidNotification
 	}
 
 	// Type assert to connectionAdapter which implements ConnectionWithRelaxedTimeout
 	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
 	if !ok {
+		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for FAILING_OVER notification")
 		return ErrInvalidNotification
 	}
 
@@ -217,17 +234,20 @@ func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx
 	// FAILED_OVER notifications indicate that a connection failover has completed
 	// Restore normal timeouts for the specific connection that received this notification
 	if len(notification) < 2 {
+		internal.Logger.Printf(ctx, "hitless: invalid FAILED_OVER notification: %v", notification)
 		return ErrInvalidNotification
 	}
 
 	// Get the connection from handler context and type assert to connectionAdapter
 	if handlerCtx.Conn == nil {
+		internal.Logger.Printf(ctx, "hitless: no connection in handler context for FAILED_OVER notification")
 		return ErrInvalidNotification
 	}
 
 	// Type assert to connectionAdapter which implements ConnectionWithRelaxedTimeout
 	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
 	if !ok {
+		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for FAILED_OVER notification")
 		return ErrInvalidNotification
 	}
 

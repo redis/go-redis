@@ -13,8 +13,6 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
-
-
 // Push notification type constants for hitless upgrades
 const (
 	NotificationMoving      = "MOVING"
@@ -296,4 +294,10 @@ func (hm *HitlessManager) createPoolHook(baseDialer func(context.Context, string
 	hm.poolHooksRef.SetPool(hm.pool)
 
 	return hm.poolHooksRef
+}
+
+func (hm *HitlessManager) AddNotificationHook(notificationHook NotificationHook) {
+	hm.hooksMu.Lock()
+	defer hm.hooksMu.Unlock()
+	hm.hooks = append(hm.hooks, notificationHook)
 }
