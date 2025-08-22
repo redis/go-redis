@@ -301,7 +301,7 @@ func main() {
 
 ### Buffer Size Configuration
 
-go-redis uses 0.5MiB read and write buffers by default for optimal performance. For high-throughput applications or large pipelines, you can customize buffer sizes:
+go-redis uses 32KiB read and write buffers by default for optimal performance. For high-throughput applications or large pipelines, you can customize buffer sizes:
 
 ```go
 rdb := redis.NewClient(&redis.Options{
@@ -376,7 +376,7 @@ You can find further details in the [query dialect documentation](https://redis.
 
 #### Custom buffer sizes
 Prior to v9.12, the buffer size was the default go value of 4096 bytes. Starting from v9.12, 
-go-redis uses 256KiB read and write buffers by default for optimal performance.
+go-redis uses 32KiB read and write buffers by default for optimal performance.
 For high-throughput applications or large pipelines, you can customize buffer sizes:
 
 ```go
