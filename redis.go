@@ -1077,6 +1077,7 @@ func (c *Client) pubSub() *PubSub {
 			// will return nil if already initialized
 			err = c.initConn(ctx, cn)
 			if err != nil {
+				internal.Logger.Printf(ctx, "pubsub: conn[%d] to ADDR %s [usable, handoff] = [%v, %v] after initConn returned %v", cn.GetID(), addr, cn.IsUsable(), cn.ShouldHandoff(), err)
 				_ = cn.Close()
 				return nil, err
 			}
@@ -1277,7 +1278,7 @@ func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.Notifica
 	return push.NotificationHandlerContext{
 		Client:   c,
 		ConnPool: c.connPool,
-		Conn:     &connectionAdapter{conn: cn}, // Wrap in adapter for easier interface access
+		Conn:     cn, // Wrap in adapter for easier interface access
 	}
 }
 

@@ -49,23 +49,62 @@ Config: &hitless.Config{
 - **Auto-calculated**: `10 × MaxWorkers`, capped by pool size
 - **Always capped**: Queue size never exceeds pool size
 
-## Metrics Hook Example
+## Notification Hooks
 
-A metrics collection hook is available in `example_hooks.go` that demonstrates how to monitor hitless upgrade operations:
+Notification hooks allow you to monitor and customize hitless upgrade operations. The `NotificationHook` interface provides pre and post processing hooks:
+
+```go
+type NotificationHook interface {
+    PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool)
+    PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error)
+}
+```
+
+### Example: Metrics Collection Hook
+
+A metrics collection hook is available in `example_hooks.go`:
 
 ```go
 import "github.com/redis/go-redis/v9/hitless"
 
 metricsHook := hitless.NewMetricsHook()
-// Use with your monitoring system
+manager.AddNotificationHook(metricsHook)
+
+// Access metrics
+metrics := metricsHook.GetMetrics()
 ```
 
-The metrics hook tracks:
+### Example: Custom Logging Hook
+
+```go
+type CustomHook struct{}
+
+func (h *CustomHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
+    // Log notification with connection details
+    if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
+        log.Printf("Processing %s on connection %d", notificationType, conn.GetID())
+    }
+    return notification, true // Continue processing
+}
+
+func (h *CustomHook) PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error) {
+    if result != nil {
+        log.Printf("Failed to process %s: %v", notificationType, result)
+    }
+}
+```
+
+The notification context provides access to:
+- **Client**: The Redis client instance
+- **Pool**: The connection pool
+- **Conn**: The specific connection that received the notification
+- **IsBlocking**: Whether the notification was received on a blocking connection
+
+Hooks can track:
 - Handoff success/failure rates
-- Handoff duration
-- Queue depth
-- Worker utilization
-- Connection lifecycle events
+- Processing duration
+- Connection-specific metrics
+- Custom business logic
 
 ## Requirements
 

@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // LoggingHook is an example hook implementation that logs all notifications.
@@ -12,19 +14,28 @@ type LoggingHook struct {
 }
 
 // PreHook logs the notification before processing and allows modification.
-func (lh *LoggingHook) PreHook(ctx context.Context, notificationType string, notification []interface{}) ([]interface{}, bool) {
+func (lh *LoggingHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
 	if lh.LogLevel >= 2 { // Info level
-		internal.Logger.Printf(ctx, "hitless: processing %s notification: %v", notificationType, notification)
+		// Log the notification type and content
+		connID := uint64(0)
+		if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
+			connID = conn.GetID()
+		}
+		internal.Logger.Printf(ctx, "hitless: conn[%d] processing %s notification: %v", connID, notificationType, notification)
 	}
 	return notification, true // Continue processing with unmodified notification
 }
 
 // PostHook logs the result after processing.
-func (lh *LoggingHook) PostHook(ctx context.Context, notificationType string, notification []interface{}, result error) {
+func (lh *LoggingHook) PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error) {
+	connID := uint64(0)
+	if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
+		connID = conn.GetID()
+	}
 	if result != nil && lh.LogLevel >= 1 { // Warning level
-		internal.Logger.Printf(ctx, "hitless: %s notification processing failed: %v - %v", notificationType, result, notification)
+		internal.Logger.Printf(ctx, "hitless: conn[%d] %s notification processing failed: %v - %v", connID, notificationType, result, notification)
 	} else if lh.LogLevel >= 3 { // Debug level
-		internal.Logger.Printf(ctx, "hitless: %s notification processed successfully", notificationType)
+		internal.Logger.Printf(ctx, "hitless: conn[%d] %s notification processed successfully", connID, notificationType)
 	}
 }
 

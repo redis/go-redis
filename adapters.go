@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/interfaces"
-	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -86,43 +85,6 @@ func (oa *optionsAdapter) NewDialer() func(context.Context) (net.Conn, error) {
 		addr := oa.options.Addr
 		return baseDialer(ctx, network, addr)
 	}
-}
-
-// connectionAdapter adapts a Redis connection to interfaces.ConnectionWithRelaxedTimeout
-type connectionAdapter struct {
-	conn *pool.Conn
-}
-
-// Close closes the connection.
-func (ca *connectionAdapter) Close() error {
-	return ca.conn.Close()
-}
-
-// IsUsable returns true if the connection is safe to use for new commands.
-func (ca *connectionAdapter) IsUsable() bool {
-	return ca.conn.IsUsable()
-}
-
-// GetPoolConn returns the underlying pool connection.
-func (ca *connectionAdapter) GetPoolConn() *pool.Conn {
-	return ca.conn
-}
-
-// SetRelaxedTimeout sets relaxed timeouts for this connection during hitless upgrades.
-// These timeouts remain active until explicitly cleared.
-func (ca *connectionAdapter) SetRelaxedTimeout(readTimeout, writeTimeout time.Duration) {
-	ca.conn.SetRelaxedTimeout(readTimeout, writeTimeout)
-}
-
-// SetRelaxedTimeoutWithDeadline sets relaxed timeouts with an expiration deadline.
-// After the deadline, timeouts automatically revert to normal values.
-func (ca *connectionAdapter) SetRelaxedTimeoutWithDeadline(readTimeout, writeTimeout time.Duration, deadline time.Time) {
-	ca.conn.SetRelaxedTimeoutWithDeadline(readTimeout, writeTimeout, deadline)
-}
-
-// ClearRelaxedTimeout clears relaxed timeouts for this connection.
-func (ca *connectionAdapter) ClearRelaxedTimeout() {
-	ca.conn.ClearRelaxedTimeout()
 }
 
 // pushProcessorAdapter adapts a push.NotificationProcessor to implement interfaces.NotificationProcessor.

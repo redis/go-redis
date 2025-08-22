@@ -30,7 +30,7 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 	}
 
 	// Process pre-hooks - they can modify the notification or skip processing
-	modifiedNotification, shouldContinue := snh.manager.processPreHooks(ctx, notificationType, notification)
+	modifiedNotification, shouldContinue := snh.manager.processPreHooks(ctx, handlerCtx, notificationType, notification)
 	if !shouldContinue {
 		return nil // Hooks decided to skip processing
 	}
@@ -53,7 +53,7 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 	}
 
 	// Process post-hooks with the result
-	snh.manager.processPostHooks(ctx, notificationType, modifiedNotification, err)
+	snh.manager.processPostHooks(ctx, handlerCtx, notificationType, modifiedNotification, err)
 
 	return err
 }
@@ -97,9 +97,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 
 	// Type assert to get the underlying pool connection
 	var poolConn *pool.Conn
-	if connAdapter, ok := conn.(interface{ GetPoolConn() *pool.Conn }); ok {
-		poolConn = connAdapter.GetPoolConn()
-	} else if pc, ok := conn.(*pool.Conn); ok {
+	if pc, ok := conn.(*pool.Conn); ok {
 		poolConn = pc
 	} else {
 		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for MOVING notification - %T %#v", conn, handlerCtx)
@@ -157,13 +155,11 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 		return ErrInvalidNotification
 	}
 
-	// Get the connection from handler context and type assert to connectionAdapter
 	if handlerCtx.Conn == nil {
 		internal.Logger.Printf(ctx, "hitless: no connection in handler context for MIGRATING notification")
 		return ErrInvalidNotification
 	}
 
-	// Type assert to connectionAdapter which implements ConnectionWithRelaxedTimeout
 	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
 	if !ok {
 		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for MIGRATING notification")
@@ -184,13 +180,11 @@ func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx p
 		return ErrInvalidNotification
 	}
 
-	// Get the connection from handler context and type assert to connectionAdapter
 	if handlerCtx.Conn == nil {
 		internal.Logger.Printf(ctx, "hitless: no connection in handler context for MIGRATED notification")
 		return ErrInvalidNotification
 	}
 
-	// Type assert to connectionAdapter which implements ConnectionWithRelaxedTimeout
 	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
 	if !ok {
 		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for MIGRATED notification")
@@ -211,13 +205,11 @@ func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCt
 		return ErrInvalidNotification
 	}
 
-	// Get the connection from handler context and type assert to connectionAdapter
 	if handlerCtx.Conn == nil {
 		internal.Logger.Printf(ctx, "hitless: no connection in handler context for FAILING_OVER notification")
 		return ErrInvalidNotification
 	}
 
-	// Type assert to connectionAdapter which implements ConnectionWithRelaxedTimeout
 	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
 	if !ok {
 		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for FAILING_OVER notification")
@@ -238,13 +230,11 @@ func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx
 		return ErrInvalidNotification
 	}
 
-	// Get the connection from handler context and type assert to connectionAdapter
 	if handlerCtx.Conn == nil {
 		internal.Logger.Printf(ctx, "hitless: no connection in handler context for FAILED_OVER notification")
 		return ErrInvalidNotification
 	}
 
-	// Type assert to connectionAdapter which implements ConnectionWithRelaxedTimeout
 	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
 	if !ok {
 		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for FAILED_OVER notification")

@@ -311,9 +311,50 @@ func (opt *Options) init() {
 
 ```go
 type NotificationProcessor interface {
-    ProcessPushNotification(ctx context.Context, data []byte) error
-    RegisterHandler(notificationType string, handler NotificationHandler) error
-    Close() error
+    RegisterHandler(pushNotificationName string, handler interface{}, protected bool) error
+    UnregisterHandler(pushNotificationName string) error
+    GetHandler(pushNotificationName string) interface{}
+}
+
+type NotificationHandler interface {
+    HandlePushNotification(ctx context.Context, handlerCtx NotificationHandlerContext, notification []interface{}) error
+}
+```
+
+### Notification Hooks
+
+```go
+type NotificationHook interface {
+    PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool)
+    PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error)
+}
+
+// NotificationHandlerContext provides context for notification processing
+type NotificationHandlerContext struct {
+    Client     interface{} // Redis client instance
+    Pool       interface{} // Connection pool
+    Conn       interface{} // Specific connection (*pool.Conn)
+    IsBlocking bool        // Whether notification was on blocking connection
+}
+```
+
+### Hook Implementation Pattern
+
+```go
+func (h *CustomHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
+    // Access connection information
+    if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
+        connID := conn.GetID()
+        // Process with connection context
+    }
+    return notification, true // Continue processing
+}
+
+func (h *CustomHook) PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error) {
+    // Handle processing result
+    if result != nil {
+        // Log or handle error
+    }
 }
 ```
 

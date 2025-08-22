@@ -117,7 +117,7 @@ func (ph *PoolHook) IsHandoffPending(conn *pool.Conn) bool {
 }
 
 // OnGet is called when a connection is retrieved from the pool
-func (ph *PoolHook) OnGet(ctx context.Context, conn *pool.Conn, isNewConn bool) error {
+func (ph *PoolHook) OnGet(ctx context.Context, conn *pool.Conn, _ bool) error {
 	// NOTE: There are two conditions to make sure we don't return a connection that should be handed off or is
 	// in a handoff state at the moment.
 
@@ -234,6 +234,7 @@ func (ph *PoolHook) onDemandWorker() {
 func (ph *PoolHook) processHandoffRequest(request HandoffRequest) {
 	// Remove from pending map
 	defer ph.pending.Delete(request.Conn.GetID())
+	internal.Logger.Printf(context.Background(), "hitless: conn[%d] Processing handoff request start", request.Conn.GetID())
 
 	// Create a context with handoff timeout from config
 	handoffTimeout := 30 * time.Second // Default fallback
@@ -366,6 +367,7 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 	}
 
 	retries := conn.IncrementAndGetHandoffRetries(1)
+	internal.Logger.Printf(ctx, "hitless: conn[%d] Retry %d: Performing handoff to %s(was %s)", conn.GetID(), retries, newEndpoint, conn.RemoteAddr().String())
 	maxRetries := 3 // Default fallback
 	if ph.config != nil {
 		maxRetries = ph.config.MaxHandoffRetries
@@ -387,6 +389,7 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 	// Create new connection to the new endpoint
 	newNetConn, err := endpointDialer(ctx)
 	if err != nil {
+		internal.Logger.Printf(ctx, "hitless: conn[%d] Failed to dial new endpoint %s: %v", conn.GetID(), newEndpoint, err)
 		// hitless: will retry
 		// Maybe a network error - retry after a delay
 		return true, err
@@ -409,6 +412,7 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 	}()
 
 	conn.ClearHandoffState()
+	internal.Logger.Printf(ctx, "hitless: conn[%d] Handoff to %s successful", conn.GetID(), newEndpoint)
 
 	// Apply relaxed timeout to the new connection for the configured post-handoff duration
 	// This gives the new connection more time to handle operations during cluster transition

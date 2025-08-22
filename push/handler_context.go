@@ -37,7 +37,6 @@ type NotificationHandlerContext struct {
 	// circular dependencies. The developer is responsible for type assertion.
 	// It can be one of the following types:
 	// - *pool.Conn
-	// - *connectionAdapter (for hitless upgrades)
 	Conn interface{}
 
 	// IsBlocking indicates if the notification was received on a blocking connection.

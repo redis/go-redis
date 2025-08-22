@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // Push notification type constants for hitless upgrades
@@ -35,8 +36,8 @@ var hitlessNotificationTypes = []string{
 // PreHook can modify the notification and return false to skip processing
 // PostHook is called after successful processing
 type NotificationHook interface {
-	PreHook(ctx context.Context, notificationType string, notification []interface{}) ([]interface{}, bool)
-	PostHook(ctx context.Context, notificationType string, notification []interface{}, result error)
+	PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool)
+	PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error)
 }
 
 // MovingOperationKey provides a unique key for tracking MOVING operations
@@ -252,14 +253,14 @@ func (hm *HitlessManager) GetState() State {
 }
 
 // processPreHooks calls all pre-hooks and returns the modified notification and whether to continue processing.
-func (hm *HitlessManager) processPreHooks(ctx context.Context, notificationType string, notification []interface{}) ([]interface{}, bool) {
+func (hm *HitlessManager) processPreHooks(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
 	hm.hooksMu.RLock()
 	defer hm.hooksMu.RUnlock()
 
 	currentNotification := notification
 
 	for _, hook := range hm.hooks {
-		modifiedNotification, shouldContinue := hook.PreHook(ctx, notificationType, currentNotification)
+		modifiedNotification, shouldContinue := hook.PreHook(ctx, notificationCtx, notificationType, currentNotification)
 		if !shouldContinue {
 			return modifiedNotification, false
 		}
@@ -270,12 +271,12 @@ func (hm *HitlessManager) processPreHooks(ctx context.Context, notificationType 
 }
 
 // processPostHooks calls all post-hooks with the processing result.
-func (hm *HitlessManager) processPostHooks(ctx context.Context, notificationType string, notification []interface{}, result error) {
+func (hm *HitlessManager) processPostHooks(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error) {
 	hm.hooksMu.RLock()
 	defer hm.hooksMu.RUnlock()
 
 	for _, hook := range hm.hooks {
-		hook.PostHook(ctx, notificationType, notification, result)
+		hook.PostHook(ctx, notificationCtx, notificationType, notification, result)
 	}
 }
 

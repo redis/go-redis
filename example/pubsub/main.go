@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -12,11 +13,15 @@ import (
 )
 
 var ctx = context.Background()
+var cntErrors atomic.Int64
+var cntSuccess atomic.Int64
+var startTime = time.Now()
 
 // This example is not supposed to be run as is. It is just a test to see how pubsub behaves in relation to pool management.
 // It was used to find regressions in pool management in hitless mode.
 // Please don't use it as a reference for how to use pubsub.
 func main() {
+	startTime = time.Now()
 	wg := &sync.WaitGroup{}
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
@@ -25,6 +30,12 @@ func main() {
 		},
 	})
 	_ = rdb.FlushDB(ctx).Err()
+	hitlessManager := rdb.GetHitlessManager()
+	if hitlessManager == nil {
+		panic("hitless manager is nil")
+	}
+	loggingHook := hitless.NewLoggingHook(3)
+	hitlessManager.AddNotificationHook(loggingHook)
 
 	go func() {
 		for {
@@ -62,7 +73,8 @@ func main() {
 	subCtx, cancelSubCtx = context.WithCancel(ctx)
 	for i := 0; i < 10; i++ {
 		if err := rdb.Incr(ctx, "publishers").Err(); err != nil {
-			panic(err)
+			fmt.Println("incr error:", err)
+			cntErrors.Add(1)
 		}
 		wg.Add(1)
 		go floodThePool(pubCtx, rdb, wg)
@@ -70,12 +82,14 @@ func main() {
 
 	for i := 0; i < 500; i++ {
 		if err := rdb.Incr(ctx, "subscribers").Err(); err != nil {
-			panic(err)
+			fmt.Println("incr error:", err)
+			cntErrors.Add(1)
 		}
+
 		wg.Add(1)
 		go subscribe(subCtx, rdb, "test2", i, wg)
 	}
-	time.Sleep(5 * time.Second)
+	time.Sleep(120 * time.Second)
 	fmt.Println("canceling publishers")
 	cancelPublishers()
 	time.Sleep(10 * time.Second)
@@ -95,6 +109,9 @@ func main() {
 	fmt.Printf("if drained = published*subscribers: %d\n", publishedInt*subscribersInt)
 
 	time.Sleep(2 * time.Second)
+	fmt.Println("errors:", cntErrors.Load())
+	fmt.Println("success:", cntSuccess.Load())
+	fmt.Println("time:", time.Since(startTime))
 }
 
 func floodThePool(ctx context.Context, rdb *redis.Client, wg *sync.WaitGroup) {
@@ -107,14 +124,18 @@ func floodThePool(ctx context.Context, rdb *redis.Client, wg *sync.WaitGroup) {
 		}
 		err := rdb.Publish(ctx, "test2", "hello").Err()
 		if err != nil {
-			// noop
-			//log.Println("publish error:", err)
+			if err.Error() != "context canceled" {
+				log.Println("publish error:", err)
+				cntErrors.Add(1)
+			}
 		}
 
 		err = rdb.Incr(ctx, "published").Err()
 		if err != nil {
-			// noop
-			//log.Println("incr error:", err)
+			if err.Error() != "context canceled" {
+				log.Println("incr error:", err)
+				cntErrors.Add(1)
+			}
 		}
 		time.Sleep(10 * time.Nanosecond)
 	}
@@ -137,7 +158,10 @@ func subscribe(ctx context.Context, rdb *redis.Client, topic string, subscriberI
 			case msg := <-recChan:
 				err := rdb.Incr(ctx, "received").Err()
 				if err != nil {
-					log.Println("incr error:", err)
+					if err.Error() != "context canceled" {
+						log.Printf("%s\n", err.Error())
+						cntErrors.Add(1)
+					}
 				}
 				_ = msg // Use the message to avoid unused variable warning
 			}
