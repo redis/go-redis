@@ -57,8 +57,8 @@ func Example_instrumentation() {
 	// finished dialing tcp :6379
 	// starting processing: <[hello 3]>
 	// finished processing: <[hello 3]>
-	// starting processing: <[client maint_notifications on moving-endpoint-type external-ip]>
-	// finished processing: <[client maint_notifications on moving-endpoint-type external-ip]>
+	// starting processing: <[client maint_notifications on moving-endpoint-type internal-fqdn]>
+	// finished processing: <[client maint_notifications on moving-endpoint-type internal-fqdn]>
 	// finished processing: <[ping]>
 }
 
@@ -80,8 +80,8 @@ func ExamplePipeline_instrumentation() {
 	// finished dialing tcp :6379
 	// starting processing: <[hello 3]>
 	// finished processing: <[hello 3]>
-	// starting processing: <[client maint_notifications on moving-endpoint-type external-ip]>
-	// finished processing: <[client maint_notifications on moving-endpoint-type external-ip]>
+	// starting processing: <[client maint_notifications on moving-endpoint-type internal-fqdn]>
+	// finished processing: <[client maint_notifications on moving-endpoint-type internal-fqdn]>
 	// pipeline finished processing: [[ping] [ping]]
 }
 
@@ -103,8 +103,8 @@ func ExampleClient_Watch_instrumentation() {
 	// finished dialing tcp :6379
 	// starting processing: <[hello 3]>
 	// finished processing: <[hello 3]>
-	// starting processing: <[client maint_notifications on moving-endpoint-type external-ip]>
-	// finished processing: <[client maint_notifications on moving-endpoint-type external-ip]>
+	// starting processing: <[client maint_notifications on moving-endpoint-type internal-fqdn]>
+	// finished processing: <[client maint_notifications on moving-endpoint-type internal-fqdn]>
 	// finished processing: <[watch foo]>
 	// starting processing: <[ping]>
 	// finished processing: <[ping]>

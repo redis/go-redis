@@ -26,8 +26,8 @@ var (
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during hitless upgrades or network issues).
-	// Value of 10 provides sufficient resilience without excessive overhead.
-	popAttempts = 10
+	// Value of 20 provides sufficient resilience without excessive overhead.
+	popAttempts = 20
 
 	// getAttempts is the maximum number of attempts to get a connection that passes
 	// hook validation (e.g., hitless upgrade hooks). This protects against race conditions
