@@ -906,6 +906,8 @@ func NewClient(opt *Options) *Client {
 	if opt == nil {
 		panic("redis: NewClient nil options")
 	}
+	// clone to not share options with the caller
+	opt = opt.clone()
 	opt.init()
 
 	// Push notifications are always enabled for RESP3 (cannot be disabled)
@@ -920,8 +922,8 @@ func NewClient(opt *Options) *Client {
 	// Initialize push notification processor using shared helper
 	// Use void processor for RESP2 connections (push notifications not available)
 	c.pushProcessor = initializePushProcessor(opt)
-	// Update options with the initialized push processor
-	opt.PushNotificationProcessor = c.pushProcessor
+	// set opt push processor for child clients
+	c.opt.PushNotificationProcessor = c.pushProcessor
 
 	// Create connection pools
 	var err error
