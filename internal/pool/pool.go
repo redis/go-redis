@@ -289,7 +289,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if pooled {
 		// If pool is full remove the cn on next Put.
 		currentPoolSize := p.poolSize.Load()
-		if currentPoolSize >= int32(p.cfg.PoolSize) {
+		if currentPoolSize >= p.cfg.PoolSize {
 			cn.pooled = false
 		} else {
 			p.poolSize.Add(1)

@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/push"
 )
 
 const (
@@ -125,6 +126,10 @@ type ClusterOptions struct {
 
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	UnstableResp3 bool
+
+	// PushNotificationProcessor is the processor for handling push notifications.
+	// If nil, a default processor will be created for RESP3 connections.
+	PushNotificationProcessor push.NotificationProcessor
 
 	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
 	// When a node is marked as failing, it will be avoided for this duration.
@@ -376,9 +381,10 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// much use for ClusterSlots config).  This means we cannot execute the
 		// READONLY command against that node -- setting readOnly to false in such
 		// situations in the options below will prevent that from happening.
-		readOnly:             opt.ReadOnly && opt.ClusterSlots == nil,
-		UnstableResp3:        opt.UnstableResp3,
-		HitlessUpgradeConfig: hitlessConfig,
+		readOnly:                  opt.ReadOnly && opt.ClusterSlots == nil,
+		UnstableResp3:             opt.UnstableResp3,
+		HitlessUpgradeConfig:      hitlessConfig,
+		PushNotificationProcessor: opt.PushNotificationProcessor,
 	}
 }
 

@@ -97,9 +97,10 @@ type Config struct {
 
 	// HandoffQueueSize is the size of the buffered channel used to queue handoff requests.
 	// If the queue is full, new handoff requests will be rejected.
-	// Always capped by pool size since you can't handoff more connections than exist.
+	// Scales with both worker count and pool size for better burst handling.
 	//
-	// Default: 10x max workers, capped by pool size, min 2
+	// Default: max(8x workers, max(50, PoolSize/2)), capped by 2x pool size
+	// When set: min 50, capped by 2x pool size
 	HandoffQueueSize int
 
 	// PostHandoffRelaxedDuration is how long to keep relaxed timeouts on the new connection
@@ -230,32 +231,27 @@ func (c *Config) ApplyDefaultsWithPoolSize(poolSize int) *Config {
 		result.HandoffTimeout = c.HandoffTimeout
 	}
 
-	// Apply defaults for integer fields (zero means not set)
-	if c.HandoffQueueSize <= 0 {
-		result.HandoffQueueSize = defaults.HandoffQueueSize
-	} else {
-		result.HandoffQueueSize = c.HandoffQueueSize
-	}
-
 	// Copy worker configuration
 	result.MaxWorkers = c.MaxWorkers
 
 	// Apply worker defaults based on pool size
 	result.applyWorkerDefaults(poolSize)
 
-	// Apply queue size defaults based on max workers, capped by pool size
+	// Apply queue size defaults with hybrid scaling approach
 	if c.HandoffQueueSize <= 0 {
-		// Queue size: 10x max workers, but never more than pool size
-		workerBasedSize := result.MaxWorkers * 10
-		result.HandoffQueueSize = util.Min(workerBasedSize, poolSize)
+		// Default: max(8x workers, max(50, PoolSize/2)), capped by 2x pool size
+		workerBasedSize := result.MaxWorkers * 8
+		poolBasedSize := util.Max(50, poolSize/2)
+		result.HandoffQueueSize = util.Max(workerBasedSize, poolBasedSize)
 	} else {
-		result.HandoffQueueSize = c.HandoffQueueSize
+		// When explicitly set: enforce minimum of 50
+		result.HandoffQueueSize = util.Max(50, c.HandoffQueueSize)
 	}
 
-	// Always cap queue size by pool size - no point having more queue slots than connections
-	result.HandoffQueueSize = util.Min(result.HandoffQueueSize, poolSize)
+	// Always cap queue size by 2x pool size - balances burst capacity with memory efficiency
+	result.HandoffQueueSize = util.Min(result.HandoffQueueSize, poolSize*2)
 
-	// Ensure minimum queue size of 2
+	// Ensure minimum queue size of 2 (fallback for very small pools)
 	if result.HandoffQueueSize < 2 {
 		result.HandoffQueueSize = 2
 	}

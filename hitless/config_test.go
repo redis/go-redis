@@ -116,13 +116,15 @@ func TestApplyDefaults(t *testing.T) {
 			t.Errorf("Expected MaxWorkers to be > 0 after applying defaults, got %d", result.MaxWorkers)
 		}
 
-		// HandoffQueueSize should be auto-calculated (10 * MaxWorkers, capped by pool size)
-		workerBasedSize := result.MaxWorkers * 10
+		// HandoffQueueSize should be auto-calculated with hybrid scaling
+		workerBasedSize := result.MaxWorkers * 8
 		poolSize := 100 // Default pool size used in ApplyDefaults
-		expectedQueueSize := util.Min(workerBasedSize, poolSize)
+		poolBasedSize := util.Max(50, poolSize/2)
+		expectedQueueSize := util.Max(workerBasedSize, poolBasedSize)
+		expectedQueueSize = util.Min(expectedQueueSize, poolSize*2) // Cap by 2x pool size
 		if result.HandoffQueueSize != expectedQueueSize {
-			t.Errorf("Expected HandoffQueueSize to be %d (util.Min(10*MaxWorkers=%d, poolSize=%d)), got %d",
-				expectedQueueSize, workerBasedSize, poolSize, result.HandoffQueueSize)
+			t.Errorf("Expected HandoffQueueSize to be %d (max(8*MaxWorkers=%d, max(50, poolSize/2=%d)) capped by 2*poolSize=%d), got %d",
+				expectedQueueSize, workerBasedSize, poolBasedSize, poolSize*2, result.HandoffQueueSize)
 		}
 	})
 
@@ -139,24 +141,50 @@ func TestApplyDefaults(t *testing.T) {
 			t.Errorf("Expected MaxWorkers to be 12 (explicitly set), got %d", result.MaxWorkers)
 		}
 
-		// Should apply default for unset fields (auto-calculated queue size, capped by pool size)
-		workerBasedSize := result.MaxWorkers * 10
+		// Should apply default for unset fields (auto-calculated queue size with hybrid scaling)
+		workerBasedSize := result.MaxWorkers * 8
 		poolSize := 100 // Default pool size used in ApplyDefaults
-		expectedQueueSize := util.Min(workerBasedSize, poolSize)
+		poolBasedSize := util.Max(50, poolSize/2)
+		expectedQueueSize := util.Max(workerBasedSize, poolBasedSize)
+		expectedQueueSize = util.Min(expectedQueueSize, poolSize*2) // Cap by 2x pool size
 		if result.HandoffQueueSize != expectedQueueSize {
-			t.Errorf("Expected HandoffQueueSize to be %d (util.Min(10*MaxWorkers=%d, poolSize=%d)), got %d",
-				expectedQueueSize, workerBasedSize, poolSize, result.HandoffQueueSize)
+			t.Errorf("Expected HandoffQueueSize to be %d (max(8*MaxWorkers=%d, max(50, poolSize/2=%d)) capped by 2*poolSize=%d), got %d",
+				expectedQueueSize, workerBasedSize, poolBasedSize, poolSize*2, result.HandoffQueueSize)
 		}
 
-		// Test explicit queue size capping by pool size
+		// Test explicit queue size capping by 2x pool size
 		configWithLargeQueue := &Config{
 			MaxWorkers:       5,
-			HandoffQueueSize: 1000, // Much larger than pool size
+			HandoffQueueSize: 1000, // Much larger than 2x pool size
 		}
 
 		resultCapped := configWithLargeQueue.ApplyDefaultsWithPoolSize(20) // Small pool size
-		if resultCapped.HandoffQueueSize != 20 {
-			t.Errorf("Expected HandoffQueueSize to be capped by pool size (20), got %d", resultCapped.HandoffQueueSize)
+		expectedCap := 20 * 2 // 2x pool size = 40
+		if resultCapped.HandoffQueueSize != expectedCap {
+			t.Errorf("Expected HandoffQueueSize to be capped by 2x pool size (%d), got %d", expectedCap, resultCapped.HandoffQueueSize)
+		}
+
+		// Test explicit queue size minimum enforcement
+		configWithSmallQueue := &Config{
+			MaxWorkers:       5,
+			HandoffQueueSize: 10, // Below minimum of 50
+		}
+
+		resultMinimum := configWithSmallQueue.ApplyDefaultsWithPoolSize(100) // Large pool size
+		if resultMinimum.HandoffQueueSize != 50 {
+			t.Errorf("Expected HandoffQueueSize to be enforced minimum (50), got %d", resultMinimum.HandoffQueueSize)
+		}
+
+		// Test that large explicit values are capped by 2x pool size
+		configWithVeryLargeQueue := &Config{
+			MaxWorkers:       5,
+			HandoffQueueSize: 500, // Much larger than 2x pool size
+		}
+
+		resultVeryLarge := configWithVeryLargeQueue.ApplyDefaultsWithPoolSize(100) // Pool size 100
+		expectedVeryLargeCap := 100 * 2 // 2x pool size = 200
+		if resultVeryLarge.HandoffQueueSize != expectedVeryLargeCap {
+			t.Errorf("Expected very large HandoffQueueSize to be capped by 2x pool size (%d), got %d", expectedVeryLargeCap, resultVeryLarge.HandoffQueueSize)
 		}
 
 		if result.RelaxedTimeout != 10*time.Second {
@@ -183,13 +211,15 @@ func TestApplyDefaults(t *testing.T) {
 			t.Errorf("Expected MaxWorkers to be > 0 (auto-calculated), got %d", result.MaxWorkers)
 		}
 
-		// HandoffQueueSize should be auto-calculated (10 * MaxWorkers, capped by pool size)
-		workerBasedSize := result.MaxWorkers * 10
+		// HandoffQueueSize should be auto-calculated with hybrid scaling
+		workerBasedSize := result.MaxWorkers * 8
 		poolSize := 100 // Default pool size used in ApplyDefaults
-		expectedQueueSize := util.Min(workerBasedSize, poolSize)
+		poolBasedSize := util.Max(50, poolSize/2)
+		expectedQueueSize := util.Max(workerBasedSize, poolBasedSize)
+		expectedQueueSize = util.Min(expectedQueueSize, poolSize*2) // Cap by 2x pool size
 		if result.HandoffQueueSize != expectedQueueSize {
-			t.Errorf("Expected HandoffQueueSize to be %d (util.Min(10*MaxWorkers=%d, poolSize=%d)), got %d",
-				expectedQueueSize, workerBasedSize, poolSize, result.HandoffQueueSize)
+			t.Errorf("Expected HandoffQueueSize to be %d (max(8*MaxWorkers=%d, max(50, poolSize/2=%d)) capped by 2*poolSize=%d), got %d",
+				expectedQueueSize, workerBasedSize, poolBasedSize, poolSize*2, result.HandoffQueueSize)
 		}
 
 		if result.RelaxedTimeout != 10*time.Second {
@@ -294,19 +324,21 @@ func TestIntegrationWithApplyDefaults(t *testing.T) {
 			t.Errorf("Expected LogLevel to be 2, got %d", expectedConfig.LogLevel)
 		}
 
-		// Should apply defaults for missing fields (auto-calculated queue size, capped by pool size)
-		workerBasedSize := expectedConfig.MaxWorkers * 10
+		// Should apply defaults for missing fields (auto-calculated queue size with hybrid scaling)
+		workerBasedSize := expectedConfig.MaxWorkers * 8
 		poolSize := 100 // Default pool size used in ApplyDefaults
-		expectedQueueSize := util.Min(workerBasedSize, poolSize)
+		poolBasedSize := util.Max(50, poolSize/2)
+		expectedQueueSize := util.Max(workerBasedSize, poolBasedSize)
+		expectedQueueSize = util.Min(expectedQueueSize, poolSize*2) // Cap by 2x pool size
 		if expectedConfig.HandoffQueueSize != expectedQueueSize {
-			t.Errorf("Expected HandoffQueueSize to be %d (util.Min(10*MaxWorkers=%d, poolSize=%d)), got %d",
-				expectedQueueSize, workerBasedSize, poolSize, expectedConfig.HandoffQueueSize)
+			t.Errorf("Expected HandoffQueueSize to be %d (max(8*MaxWorkers=%d, max(50, poolSize/2=%d)) capped by 2*poolSize=%d), got %d",
+				expectedQueueSize, workerBasedSize, poolBasedSize, poolSize*2, expectedConfig.HandoffQueueSize)
 		}
 
-		// Test that queue size is always capped by pool size
-		if expectedConfig.HandoffQueueSize > poolSize {
-			t.Errorf("HandoffQueueSize (%d) should never exceed pool size (%d)",
-				expectedConfig.HandoffQueueSize, poolSize)
+		// Test that queue size is always capped by 2x pool size
+		if expectedConfig.HandoffQueueSize > poolSize*2 {
+			t.Errorf("HandoffQueueSize (%d) should never exceed 2x pool size (%d)",
+				expectedConfig.HandoffQueueSize, poolSize*2)
 		}
 
 		if expectedConfig.RelaxedTimeout != 10*time.Second {

@@ -46,8 +46,17 @@ Config: &hitless.Config{
 - **On-demand**: Workers created when needed, cleaned up when idle
 
 ### Queue Sizing
-- **Auto-calculated**: `10 × MaxWorkers`, capped by pool size
-- **Always capped**: Queue size never exceeds pool size
+- **Auto-calculated**: `max(8 × MaxWorkers, max(50, PoolSize/2))` - hybrid scaling
+  - Worker-based: 8 handoffs per worker for burst processing
+  - Pool-based: Scales with pool size (minimum 50, up to PoolSize/2)
+  - Takes the larger of the two for optimal performance
+- **Explicit values**: `max(50, set_value)` - enforces minimum 50 when set
+- **Always capped**: Queue size never exceeds `2 × PoolSize` for memory efficiency
+
+**Examples:**
+- Pool 10: Queue 50 (max(8×3, max(50, 5)) = max(24, 50) = 50)
+- Pool 100: Queue 80 (max(8×10, max(50, 50)) = max(80, 50) = 80)
+- Pool 200: Queue 100 (max(8×10, max(50, 100)) = max(80, 100) = 100)
 
 ## Notification Hooks
 

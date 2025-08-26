@@ -273,7 +273,7 @@ func (ph *PoolHook) processHandoffRequest(request HandoffRequest) {
 				afterTime = handoffTimeout / 2
 			}
 
-			internal.Logger.Printf(context.Background(), "Handoff failed for connection WILL RETRY After %v: %v", afterTime, err)
+			internal.Logger.Printf(context.Background(), "Handoff failed for conn[%d] WILL RETRY After %v: %v", request.ConnID, afterTime, err)
 			time.AfterFunc(afterTime, func() {
 				if err := ph.queueHandoff(request.Conn); err != nil {
 					internal.Logger.Printf(context.Background(), "can't queue handoff for retry: %v", err)

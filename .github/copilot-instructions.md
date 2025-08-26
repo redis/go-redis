@@ -307,6 +307,19 @@ func (opt *Options) init() {
 }
 ```
 
+### Hitless Upgrade Scaling
+
+**MaxWorkers**: `min(10, max(1, PoolSize/3))`
+- Scales with pool size but caps at 10 workers
+- Minimum 1 worker for very small pools
+- Minimum 10 when explicitly set
+
+**HandoffQueueSize**: `max(8×MaxWorkers, max(50, PoolSize/2))` capped by `2×PoolSize`
+- Hybrid scaling: worker-based (8 per worker) and pool-based (PoolSize/2)
+- Takes the larger value for optimal burst handling
+- Minimum 50 when explicitly set
+- Memory-efficient cap at 2× pool size
+
 ### Push Notification Handling
 
 ```go
