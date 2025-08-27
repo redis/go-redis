@@ -68,8 +68,10 @@ func NewPoolHook(baseDialer func(context.Context, string, string) (net.Conn, err
 
 // NewPoolHookWithPoolSize creates a new pool hook with pool size for better worker defaults
 func NewPoolHookWithPoolSize(baseDialer func(context.Context, string, string) (net.Conn, error), network string, config *Config, hitlessManager HitlessManagerInterface, poolSize int) *PoolHook {
-	// Apply defaults to any missing configuration fields, using pool size for worker calculations
-	config = config.ApplyDefaultsWithPoolSize(poolSize)
+	// Apply defaults if config is nil or has zero values
+	if config == nil {
+		config = config.ApplyDefaultsWithPoolSize(poolSize)
+	}
 
 	ph := &PoolHook{
 		// baseDialer is used to create connections to new endpoints during handoffs
@@ -86,9 +88,6 @@ func NewPoolHookWithPoolSize(baseDialer func(context.Context, string, string) (n
 		// Hitless manager for operation completion tracking
 		hitlessManager: hitlessManager,
 	}
-
-	// No upfront worker creation - workers are created on demand
-
 	return ph
 }
 

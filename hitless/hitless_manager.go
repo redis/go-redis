@@ -148,7 +148,9 @@ func (hm *HitlessManager) TrackMovingOperationWithConnID(ctx context.Context, ne
 	// Use LoadOrStore for atomic check-and-set operation
 	if _, loaded := hm.activeMovingOps.LoadOrStore(key, movingOp); loaded {
 		// Duplicate MOVING notification, ignore
-		internal.Logger.Printf(ctx, "Duplicate MOVING operation ignored: %s", key.String())
+		if hm.config.LogLevel >= 3 { // Warning level
+			internal.Logger.Printf(ctx, "hitless: conn[%d] seqID[%d] Duplicate MOVING operation ignored: %s", connID, seqID, key.String())
+		}
 		return nil
 	}
 
@@ -170,6 +172,10 @@ func (hm *HitlessManager) UntrackOperationWithConnID(seqID int64, connID uint64)
 	if _, loaded := hm.activeMovingOps.LoadAndDelete(key); loaded {
 		// Decrement active operation count only if operation existed
 		hm.activeOperationCount.Add(-1)
+	} else {
+		if hm.config.LogLevel >= 3 { // Warning level
+			internal.Logger.Printf(context.Background(), "hitless: conn[%d] seqID[%d] Operation not found for untracking: %s", connID, seqID, key.String())
+		}
 	}
 }
 

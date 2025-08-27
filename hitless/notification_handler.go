@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
-	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -107,6 +106,10 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	deadline := time.Now().Add(time.Duration(timeS) * time.Second)
 	// If newEndpoint is empty, we should schedule a handoff to the current endpoint in timeS/2 seconds
 	if newEndpoint == "" || newEndpoint == internal.RedisNull {
+		if snh.manager.config.LogLevel >= 3 { // Debug level
+			internal.Logger.Printf(ctx, "hitless: conn[%d] scheduling handoff to current endpoint in %v seconds",
+				poolConn.GetID(), timeS/2)
+		}
 		// same as current endpoint
 		newEndpoint = snh.manager.options.GetAddr()
 		// delay the handoff for timeS/2 seconds to the same endpoint
@@ -137,7 +140,6 @@ func (snh *NotificationHandler) markConnForHandoff(conn *pool.Conn, newEndpoint 
 	// Optionally track in hitless manager for monitoring/debugging
 	if snh.manager != nil {
 		connID := conn.GetID()
-
 		// Track the operation (ignore errors since this is optional)
 		_ = snh.manager.TrackMovingOperationWithConnID(context.Background(), newEndpoint, deadline, seqID, connID)
 	} else {
@@ -160,14 +162,18 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 		return ErrInvalidNotification
 	}
 
-	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
+	conn, ok := handlerCtx.Conn.(*pool.Conn)
 	if !ok {
 		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for MIGRATING notification")
 		return ErrInvalidNotification
 	}
 
 	// Apply relaxed timeout to this specific connection
-	connAdapter.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
+	if snh.manager.config.LogLevel >= 3 { // Debug level
+		internal.Logger.Printf(ctx, "hitless: conn[%d] applying relaxed timeout (%v) for MIGRATING notification",
+			snh.manager.config.RelaxedTimeout, conn.GetID())
+	}
+	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 	return nil
 }
 
@@ -185,14 +191,18 @@ func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx p
 		return ErrInvalidNotification
 	}
 
-	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
+	conn, ok := handlerCtx.Conn.(*pool.Conn)
 	if !ok {
 		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for MIGRATED notification")
 		return ErrInvalidNotification
 	}
 
 	// Clear relaxed timeout for this specific connection
-	connAdapter.ClearRelaxedTimeout()
+	if snh.manager.config.LogLevel >= 3 { // Debug level
+		connID := conn.GetID()
+		internal.Logger.Printf(ctx, "hitless: conn[%d] clearing relaxed timeout for MIGRATED notification", connID)
+	}
+	conn.ClearRelaxedTimeout()
 	return nil
 }
 
@@ -210,14 +220,18 @@ func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCt
 		return ErrInvalidNotification
 	}
 
-	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
+	conn, ok := handlerCtx.Conn.(*pool.Conn)
 	if !ok {
 		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for FAILING_OVER notification")
 		return ErrInvalidNotification
 	}
 
 	// Apply relaxed timeout to this specific connection
-	connAdapter.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
+	if snh.manager.config.LogLevel >= 3 { // Debug level
+		connID := conn.GetID()
+		internal.Logger.Printf(ctx, "hitless: conn[%d] applying relaxed timeout (%v) for FAILING_OVER notification", connID, snh.manager.config.RelaxedTimeout)
+	}
+	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 	return nil
 }
 
@@ -235,13 +249,17 @@ func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx
 		return ErrInvalidNotification
 	}
 
-	connAdapter, ok := handlerCtx.Conn.(interfaces.ConnectionWithRelaxedTimeout)
+	conn, ok := handlerCtx.Conn.(*pool.Conn)
 	if !ok {
 		internal.Logger.Printf(ctx, "hitless: invalid connection type in handler context for FAILED_OVER notification")
 		return ErrInvalidNotification
 	}
 
 	// Clear relaxed timeout for this specific connection
-	connAdapter.ClearRelaxedTimeout()
+	if snh.manager.config.LogLevel >= 3 { // Debug level
+		connID := conn.GetID()
+		internal.Logger.Printf(ctx, "hitless: conn[%d] clearing relaxed timeout for FAILED_OVER notification", connID)
+	}
+	conn.ClearRelaxedTimeout()
 	return nil
 }

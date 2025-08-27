@@ -8,7 +8,8 @@ import (
 	"time"
 )
 
-// Forward declaration to avoid circular imports
+// NotificationProcessor is (most probably) a push.NotificationProcessor
+// forward declaration to avoid circular imports
 type NotificationProcessor interface {
 	RegisterHandler(pushNotificationName string, handler interface{}, protected bool) error
 	UnregisterHandler(pushNotificationName string) error
@@ -25,6 +26,7 @@ type ClientInterface interface {
 }
 
 // OptionsInterface defines the interface for client options.
+// Uses an adapter pattern to avoid circular dependencies.
 type OptionsInterface interface {
 	// GetReadTimeout returns the read timeout.
 	GetReadTimeout() time.Duration
@@ -49,19 +51,4 @@ type OptionsInterface interface {
 
 	// NewDialer returns a new dialer function for the connection.
 	NewDialer() func(context.Context) (net.Conn, error)
-}
-
-// ConnectionWithRelaxedTimeout defines the interface for connections that support relaxed timeout adjustment.
-// This is used by the hitless upgrade system for per-connection timeout management.
-type ConnectionWithRelaxedTimeout interface {
-	// SetRelaxedTimeout sets relaxed timeouts for this connection during hitless upgrades.
-	// These timeouts remain active until explicitly cleared.
-	SetRelaxedTimeout(readTimeout, writeTimeout time.Duration)
-
-	// SetRelaxedTimeoutWithDeadline sets relaxed timeouts with an expiration deadline.
-	// After the deadline, timeouts automatically revert to normal values.
-	SetRelaxedTimeoutWithDeadline(readTimeout, writeTimeout time.Duration, deadline time.Time)
-
-	// ClearRelaxedTimeout clears relaxed timeouts for this connection.
-	ClearRelaxedTimeout()
 }

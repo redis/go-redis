@@ -528,6 +528,7 @@ func TestConnectionHook(t *testing.T) {
 		config := &Config{
 			MaxWorkers:                 2,
 			HandoffQueueSize:           10,
+			MaxHandoffRetries:          3, // Allow retries for successful handoff
 			PostHandoffRelaxedDuration: 100 * time.Millisecond, // Fast expiration for testing
 			RelaxedTimeout:             5 * time.Second,
 			LogLevel:                   2,
@@ -805,6 +806,7 @@ func TestConnectionHook(t *testing.T) {
 		config := &Config{
 			MaxWorkers:                 2,
 			HandoffQueueSize:           10,
+			MaxHandoffRetries:          3, // Allow retries for successful handoff
 			RelaxedTimeout:             5 * time.Second,
 			PostHandoffRelaxedDuration: 100 * time.Millisecond, // Short for testing
 		}

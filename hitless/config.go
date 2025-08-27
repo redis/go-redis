@@ -1,11 +1,13 @@
 package hitless
 
 import (
+	"context"
 	"net"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
@@ -279,6 +281,11 @@ func (c *Config) ApplyDefaultsWithPoolSize(poolSize int) *Config {
 		result.MaxHandoffRetries = c.MaxHandoffRetries
 	}
 
+	if result.LogLevel >= 3 {
+		result.LogLevel = 3
+		internal.Logger.Printf(context.Background(), "hitless: debug logging enabled")
+		internal.Logger.Printf(context.Background(), "hitless: config: %+v", result)
+	}
 	return result
 }
 

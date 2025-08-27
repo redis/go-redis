@@ -485,11 +485,10 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			// Log the error but don't fail the command execution
 			// Push notification processing errors shouldn't break normal Redis operations
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+			internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
 		}
 		return c.cmd.readReply(rd)
 	})
-
 	c.releaseConnWithLock(ctx, cn, err, timeout > 0)
 
 	if err != nil {
