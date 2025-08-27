@@ -1,9 +1,7 @@
 package redis_test
 
 import (
-	"context"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"strconv"
@@ -15,6 +13,7 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal"
 )
 
 const (
@@ -54,8 +53,6 @@ var (
 	sentinelMaster, sentinelSlave1, sentinelSlave2 *redis.Client
 	sentinel1, sentinel2, sentinel3                *redis.Client
 )
-
-var TLogger *TestLogger
 
 var cluster = &clusterScenario{
 	ports:   []string{"16600", "16601", "16602", "16603", "16604", "16605"},
@@ -107,11 +104,11 @@ var _ = BeforeSuite(func() {
 	fmt.Printf("REDIS_VERSION: %.1f\n", RedisVersion)
 	fmt.Printf("CLIENT_LIBS_TEST_IMAGE: %v\n", os.Getenv("CLIENT_LIBS_TEST_IMAGE"))
 
-	// set logger that will filter some of the noise from the tests
-	TLogger := NewTestLogger()
-	TLogger.Filter("ERR unknown subcommand 'maint_notifications'")
-	TLogger.Filter("test panic")
-	redis.SetLogger(TLogger)
+	filterLogger := internal.NewFilterLogger([]string{
+		"ERR unknown subcommand 'maint_notifications'",
+		"test panic",
+	})
+	redis.SetLogger(filterLogger)
 
 	if RedisVersion < 7.0 || RedisVersion > 9 {
 		panic("incorrect or not supported redis version")
@@ -408,44 +405,4 @@ func (h *hook) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.Process
 		return h.processPipelineHook(hook)
 	}
 	return hook
-}
-
-func NewTestLogger() *TestLogger {
-	intLogger := log.New(os.Stderr, "redis: ", log.LstdFlags|log.Lshortfile)
-	return &TestLogger{
-		intLogger,
-		[]string{},
-	}
-}
-
-// TestLogger is a logger that filters out specific substrings so
-// the test output is not polluted with noise.
-type TestLogger struct {
-	log                *log.Logger
-	filteredSubstrings []string
-}
-
-// Filter adds a substring to the filter list.
-func (tl *TestLogger) Filter(substr string) {
-	tl.filteredSubstrings = append(tl.filteredSubstrings, substr)
-}
-
-// Unfilter removes a substring from the filter list.
-func (tl *TestLogger) Unfilter(substr string) {
-	for i, s := range tl.filteredSubstrings {
-		if s == substr {
-			tl.filteredSubstrings = append(tl.filteredSubstrings[:i], tl.filteredSubstrings[i+1:]...)
-			return
-		}
-	}
-}
-
-func (tl *TestLogger) Printf(_ context.Context, format string, v ...interface{}) {
-	msg := fmt.Sprintf(format, v...)
-	for _, substr := range tl.filteredSubstrings {
-		if strings.Contains(msg, substr) {
-			return
-		}
-	}
-	_ = tl.log.Output(2, msg)
 }

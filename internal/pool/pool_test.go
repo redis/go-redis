@@ -10,6 +10,8 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal"
 
 	"github.com/redis/go-redis/v9/internal/pool"
 )
@@ -436,3 +438,8 @@ var _ = Describe("race", func() {
 		Expect(stats.Timeouts).To(Equal(uint32(1)))
 	})
 })
+
+func init() {
+	filterLogger := internal.NewFilterLogger([]string{"test panic"})
+	redis.SetLogger(filterLogger)
+}
