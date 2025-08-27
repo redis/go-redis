@@ -15,7 +15,6 @@ docker.stop:
 	docker compose --profile all down
 
 test:
-	echo $(REDIS_VERSION)
 	$(MAKE) docker.start
 	@if [ -z "$(REDIS_VERSION)" ]; then \
 		echo "REDIS_VERSION not set, running all tests"; \
