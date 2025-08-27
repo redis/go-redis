@@ -171,7 +171,8 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 	// Apply relaxed timeout to this specific connection
 	if snh.manager.config.LogLevel >= 3 { // Debug level
 		internal.Logger.Printf(ctx, "hitless: conn[%d] applying relaxed timeout (%v) for MIGRATING notification",
-			snh.manager.config.RelaxedTimeout, conn.GetID())
+			conn.GetID(),
+			snh.manager.config.RelaxedTimeout)
 	}
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 	return nil
