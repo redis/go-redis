@@ -627,7 +627,13 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 
 func (p *ConnPool) Remove(_ context.Context, cn *Conn, reason error) {
 	p.removeConnWithLock(cn)
-	p.freeTurn()
+
+	// Only free a turn if the connection was actually pooled
+	// This prevents queue imbalance when removing connections that weren't obtained through Get()
+	if cn.pooled {
+		p.freeTurn()
+	}
+
 	_ = p.closeConn(cn)
 
 	// Check if we need to create new idle connections to maintain MinIdleConns
