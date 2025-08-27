@@ -1,12 +1,21 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
+REDIS_VERSION ?= 8.2
+RE_CLUSTER ?= false
+RCE_DOCKER ?= true
+CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:8.2.1-pre
 
 docker.start:
+	export RE_CLUSTER=$(RE_CLUSTER) && \
+	export RCE_DOCKER=$(RCE_DOCKER) && \
+	export REDIS_VERSION=$(REDIS_VERSION) && \
+	export CLIENT_LIBS_TEST_IMAGE=$(CLIENT_LIBS_TEST_IMAGE) && \
 	docker compose --profile all up -d --quiet-pull
 
 docker.stop:
 	docker compose --profile all down
 
 test:
+	echo $(REDIS_VERSION)
 	$(MAKE) docker.start
 	@if [ -z "$(REDIS_VERSION)" ]; then \
 		echo "REDIS_VERSION not set, running all tests"; \
@@ -27,6 +36,9 @@ test.ci:
 	set -e; for dir in $(GO_MOD_DIRS); do \
 	  echo "go test in $${dir}"; \
 	  (cd "$${dir}" && \
+	    export RE_CLUSTER=$(RE_CLUSTER) && \
+	    export RCE_DOCKER=$(RCE_DOCKER) && \
+	    export REDIS_VERSION=$(REDIS_VERSION) && \
 	    go mod tidy -compat=1.18 && \
 	    go vet && \
 	    go test -v -coverprofile=coverage.txt -covermode=atomic ./... -race -skip Example); \
@@ -38,6 +50,9 @@ test.ci.skip-vectorsets:
 	set -e; for dir in $(GO_MOD_DIRS); do \
 	  echo "go test in $${dir} (skipping vector sets)"; \
 	  (cd "$${dir}" && \
+	    export RE_CLUSTER=$(RE_CLUSTER) && \
+	    export RCE_DOCKER=$(RCE_DOCKER) && \
+	    export REDIS_VERSION=$(REDIS_VERSION) && \
 	    go mod tidy -compat=1.18 && \
 	    go vet && \
 	    go test -v -coverprofile=coverage.txt -covermode=atomic ./... -race \
@@ -47,11 +62,17 @@ test.ci.skip-vectorsets:
 	go vet -vettool ./internal/customvet/customvet
 
 bench:
+	export RE_CLUSTER=$(RE_CLUSTER) && \
+	export RCE_DOCKER=$(RCE_DOCKER) && \
+	export REDIS_VERSION=$(REDIS_VERSION) && \
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem -skip Example
 
 .PHONY: all test test.ci test.ci.skip-vectorsets bench fmt
 
 build:
+	export RE_CLUSTER=$(RE_CLUSTER) && \
+	export RCE_DOCKER=$(RCE_DOCKER) && \
+	export REDIS_VERSION=$(REDIS_VERSION) && \
 	go build .
 
 fmt:
