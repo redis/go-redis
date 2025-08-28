@@ -536,11 +536,12 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 			// LIFO: put at beginning (will be picked up last since we pop from end)
 			p.idleConns = append([]*Conn{cn}, p.idleConns...)
 		}
+		cn = nil
 	}
 
 	// If we exhausted all attempts without finding a usable connection, return nil
-	if attempts > 1 && attempts >= maxAttempts {
-		//internal.Logger.Printf(context.Background(), "redis: connection pool: failed to get a usable connection after %d attempts", attempts)
+	if int32(attempts) >= p.poolSize.Load() {
+		internal.Logger.Printf(context.Background(), "redis: connection pool: failed to get a usable connection after %d attempts", attempts)
 		return nil, nil
 	}
 
