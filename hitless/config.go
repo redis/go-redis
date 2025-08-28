@@ -9,6 +9,18 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/logging"
+)
+
+// LogLevel represents the logging level for hitless upgrades
+type LogLevel = logging.LogLevel
+
+// Log level constants for hitless upgrades
+const (
+	LogLevelError LogLevel = logging.LogLevelError // 0 - errors only
+	LogLevelWarn  LogLevel = logging.LogLevelWarn  // 1 - warnings and errors
+	LogLevelInfo  LogLevel = logging.LogLevelInfo  // 2 - info, warnings, and errors
+	LogLevelDebug LogLevel = logging.LogLevelDebug // 3 - debug, info, warnings, and errors
 )
 
 // MaintNotificationsMode represents the maintenance notifications mode
@@ -116,9 +128,9 @@ type Config struct {
 	ScaleDownDelay time.Duration
 
 	// LogLevel controls the verbosity of hitless upgrade logging.
-	// 0 = errors only, 1 = warnings, 2 = info, 3 = debug
-	// Default: 1 (warnings)
-	LogLevel int
+	// LogLevelError (0) = errors only, LogLevelWarn (1) = warnings, LogLevelInfo (2) = info, LogLevelDebug (3) = debug
+	// Default: LogLevelWarn (warnings)
+	LogLevel LogLevel
 
 	// MaxHandoffRetries is the maximum number of times to retry a failed handoff.
 	// After this many retries, the connection will be removed from the pool.
@@ -141,7 +153,7 @@ func DefaultConfig() *Config {
 		HandoffQueueSize:           0, // Auto-calculated based on max workers
 		PostHandoffRelaxedDuration: 0, // Auto-calculated based on relaxed timeout
 		ScaleDownDelay:             2 * time.Second,
-		LogLevel:                   1,
+		LogLevel:                   LogLevelWarn,
 
 		// Connection Handoff Configuration
 		MaxHandoffRetries: 3,
@@ -168,7 +180,7 @@ func (c *Config) Validate() error {
 	if c.PostHandoffRelaxedDuration < 0 {
 		return ErrInvalidPostHandoffRelaxedDuration
 	}
-	if c.LogLevel < 0 || c.LogLevel > 3 {
+	if !c.LogLevel.IsValid() {
 		return ErrInvalidLogLevel
 	}
 
@@ -281,8 +293,7 @@ func (c *Config) ApplyDefaultsWithPoolSize(poolSize int) *Config {
 		result.MaxHandoffRetries = c.MaxHandoffRetries
 	}
 
-	if result.LogLevel >= 3 {
-		result.LogLevel = 3
+	if result.LogLevel >= LogLevelDebug {
 		internal.Logger.Printf(context.Background(), "hitless: debug logging enabled")
 		internal.Logger.Printf(context.Background(), "hitless: config: %+v", result)
 	}

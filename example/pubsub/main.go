@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/hitless"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 var ctx = context.Background()
@@ -34,7 +35,7 @@ func main() {
 	if hitlessManager == nil {
 		panic("hitless manager is nil")
 	}
-	loggingHook := hitless.NewLoggingHook(3)
+	loggingHook := hitless.NewLoggingHook(logging.LogLevelDebug)
 	hitlessManager.AddNotificationHook(loggingHook)
 
 	go func() {

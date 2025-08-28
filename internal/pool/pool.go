@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/util"
 )
 
 var (
@@ -26,14 +27,14 @@ var (
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during hitless upgrades or network issues).
-	// Value of 20 provides sufficient resilience without excessive overhead.
-	popAttempts = 20
+	// Value of 50 provides sufficient resilience without excessive overhead.
+	popAttempts = 50
 
 	// getAttempts is the maximum number of attempts to get a connection that passes
 	// hook validation (e.g., hitless upgrade hooks). This protects against race conditions
 	// where hooks might temporarily reject connections during cluster transitions.
-	// Value of 3 balances resilience with performance - most hook rejections resolve quickly.
-	getAttempts = 3
+	// Value of 2 balances resilience with performance - most hook rejections resolve quickly.
+	getAttempts = 2
 
 	minTime      = time.Unix(-2208988800, 0) // Jan 1, 1900
 	maxTime      = minTime.Add(1<<63 - 1)
@@ -505,7 +506,8 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 	var cn *Conn
 	attempts := 0
 
-	for attempts < popAttempts {
+	maxAttempts := util.Min(popAttempts, n)
+	for attempts < maxAttempts {
 		if len(p.idleConns) == 0 {
 			return nil, nil
 		}
@@ -537,8 +539,8 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 	}
 
 	// If we exhausted all attempts without finding a usable connection, return nil
-	if attempts >= popAttempts {
-		internal.Logger.Printf(context.Background(), "redis: connection pool: failed to get a usable connection after %d attempts", popAttempts)
+	if attempts > 1 && attempts >= maxAttempts {
+		//internal.Logger.Printf(context.Background(), "redis: connection pool: failed to get a usable connection after %d attempts", attempts)
 		return nil, nil
 	}
 

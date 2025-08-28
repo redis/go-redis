@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 func TestConfig(t *testing.T) {
@@ -293,8 +294,8 @@ func TestIntegrationWithApplyDefaults(t *testing.T) {
 	t.Run("ProcessorWithPartialConfigAppliesDefaults", func(t *testing.T) {
 		// Create a partial config with only some fields set
 		partialConfig := &Config{
-			MaxWorkers: 15, // Custom value (>= 10 to test preservation)
-			LogLevel:   2,  // Custom value
+			MaxWorkers: 15,                    // Custom value (>= 10 to test preservation)
+			LogLevel:   logging.LogLevelInfo, // Custom value
 			// Other fields left as zero values - should get defaults
 		}
 

@@ -106,7 +106,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	deadline := time.Now().Add(time.Duration(timeS) * time.Second)
 	// If newEndpoint is empty, we should schedule a handoff to the current endpoint in timeS/2 seconds
 	if newEndpoint == "" || newEndpoint == internal.RedisNull {
-		if snh.manager.config.LogLevel >= 3 { // Debug level
+		if snh.manager.config.LogLevel >= LogLevelDebug { // Debug level
 			internal.Logger.Printf(ctx, "hitless: conn[%d] scheduling handoff to current endpoint in %v seconds",
 				poolConn.GetID(), timeS/2)
 		}
@@ -169,7 +169,7 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 	}
 
 	// Apply relaxed timeout to this specific connection
-	if snh.manager.config.LogLevel >= 3 { // Debug level
+	if snh.manager.config.LogLevel >= LogLevelDebug { // Debug level
 		internal.Logger.Printf(ctx, "hitless: conn[%d] applying relaxed timeout (%v) for MIGRATING notification",
 			conn.GetID(),
 			snh.manager.config.RelaxedTimeout)
@@ -199,7 +199,7 @@ func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx p
 	}
 
 	// Clear relaxed timeout for this specific connection
-	if snh.manager.config.LogLevel >= 3 { // Debug level
+	if snh.manager.config.LogLevel >= LogLevelDebug { // Debug level
 		connID := conn.GetID()
 		internal.Logger.Printf(ctx, "hitless: conn[%d] clearing relaxed timeout for MIGRATED notification", connID)
 	}
@@ -228,7 +228,7 @@ func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCt
 	}
 
 	// Apply relaxed timeout to this specific connection
-	if snh.manager.config.LogLevel >= 3 { // Debug level
+	if snh.manager.config.LogLevel >= LogLevelDebug { // Debug level
 		connID := conn.GetID()
 		internal.Logger.Printf(ctx, "hitless: conn[%d] applying relaxed timeout (%v) for FAILING_OVER notification", connID, snh.manager.config.RelaxedTimeout)
 	}
@@ -257,7 +257,7 @@ func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx
 	}
 
 	// Clear relaxed timeout for this specific connection
-	if snh.manager.config.LogLevel >= 3 { // Debug level
+	if snh.manager.config.LogLevel >= LogLevelDebug { // Debug level
 		connID := conn.GetID()
 		internal.Logger.Printf(ctx, "hitless: conn[%d] clearing relaxed timeout for FAILED_OVER notification", connID)
 	}

@@ -6,6 +6,19 @@ import (
 	"log"
 	"os"
 	"strings"
+
+	"github.com/redis/go-redis/v9/logging"
+)
+
+// LogLevel is an alias to the public logging.LogLevel for internal use
+type LogLevel = logging.LogLevel
+
+// Log level constants for internal use
+const (
+	LogLevelError = logging.LogLevelError
+	LogLevelWarn  = logging.LogLevelWarn
+	LogLevelInfo  = logging.LogLevelInfo
+	LogLevelDebug = logging.LogLevelDebug
 )
 
 // TODO (ned): Revisit logging

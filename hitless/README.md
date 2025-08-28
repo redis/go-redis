@@ -26,7 +26,10 @@ client := redis.NewClient(opt)
 ## Configuration
 
 ```go
-import "github.com/redis/go-redis/v9/hitless"
+import (
+    "github.com/redis/go-redis/v9/hitless"
+    "github.com/redis/go-redis/v9/logging"
+)
 
 Config: &hitless.Config{
     Mode:                       hitless.MaintNotificationsAuto, // Notification mode
@@ -34,7 +37,7 @@ Config: &hitless.Config{
     HandoffTimeout:             15 * time.Second, // Handoff operation timeout
     RelaxedTimeout:             10 * time.Second, // Extended timeout during migrations
     PostHandoffRelaxedDuration: 20 * time.Second, // Keep relaxed timeout after handoff
-    LogLevel:                   1,  // 0=errors, 1=warnings, 2=info, 3=debug
+    LogLevel:                   logging.LogLevelWarn, // LogLevelError, LogLevelWarn, LogLevelInfo, LogLevelDebug
     MaxWorkers:                 15, // Concurrent handoff workers
     HandoffQueueSize:           50, // Handoff request queue size
 }

@@ -5,17 +5,18 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/push"
 )
 
 // LoggingHook is an example hook implementation that logs all notifications.
 type LoggingHook struct {
-	LogLevel int
+	LogLevel logging.LogLevel
 }
 
 // PreHook logs the notification before processing and allows modification.
 func (lh *LoggingHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
-	if lh.LogLevel >= 2 { // Info level
+	if lh.LogLevel >= logging.LogLevelInfo { // Info level
 		// Log the notification type and content
 		connID := uint64(0)
 		if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
@@ -32,15 +33,15 @@ func (lh *LoggingHook) PostHook(ctx context.Context, notificationCtx push.Notifi
 	if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
 		connID = conn.GetID()
 	}
-	if result != nil && lh.LogLevel >= 1 { // Warning level
+	if result != nil && lh.LogLevel >= logging.LogLevelWarn { // Warning level
 		internal.Logger.Printf(ctx, "hitless: conn[%d] %s notification processing failed: %v - %v", connID, notificationType, result, notification)
-	} else if lh.LogLevel >= 3 { // Debug level
+	} else if lh.LogLevel >= logging.LogLevelDebug { // Debug level
 		internal.Logger.Printf(ctx, "hitless: conn[%d] %s notification processed successfully", connID, notificationType)
 	}
 }
 
 // NewLoggingHook creates a new logging hook with the specified log level.
-// Log levels: 0=errors, 1=warnings, 2=info, 3=debug
-func NewLoggingHook(logLevel int) *LoggingHook {
+// Log levels: LogLevelError=errors, LogLevelWarn=warnings, LogLevelInfo=info, LogLevelDebug=debug
+func NewLoggingHook(logLevel logging.LogLevel) *LoggingHook {
 	return &LoggingHook{LogLevel: logLevel}
 }
