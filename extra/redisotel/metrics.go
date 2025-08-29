@@ -166,6 +166,7 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 	waitsDuration, err := conf.meter.Int64ObservableUpDownCounter(
 		"db.client.connections.waits_duration",
 		metric.WithDescription("The total time spent for waiting a connection in nanoseconds"),
+		metric.WithUnit("ns"),
 	)
 	if err != nil {
 		return nil, err
