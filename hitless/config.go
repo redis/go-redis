@@ -136,7 +136,7 @@ func DefaultConfig() *Config {
 		MaxWorkers:                 0, // Auto-calculated based on pool size
 		HandoffQueueSize:           0, // Auto-calculated based on max workers
 		PostHandoffRelaxedDuration: 0, // Auto-calculated based on relaxed timeout
-		LogLevel:                   LogLevelError,
+		LogLevel:                   logging.LogLevelError,
 
 		// Connection Handoff Configuration
 		MaxHandoffRetries: 3,
