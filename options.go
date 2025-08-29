@@ -109,7 +109,7 @@ type Options struct {
 
 	// DialTimeout for establishing new connections.
 	//
-	// default: 5 seconds
+	// default: 10 seconds
 	DialTimeout time.Duration
 
 	// ReadTimeout for socket reads. If reached, commands will fail
@@ -275,7 +275,7 @@ func (opt *Options) init() {
 		opt.Protocol = 3
 	}
 	if opt.DialTimeout == 0 {
-		opt.DialTimeout = 5 * time.Second
+		opt.DialTimeout = 10 * time.Second
 	}
 	if opt.Dialer == nil {
 		opt.Dialer = NewDialer(opt)
@@ -335,7 +335,7 @@ func (opt *Options) init() {
 		opt.MaxRetryBackoff = 512 * time.Millisecond
 	}
 
-	opt.HitlessUpgradeConfig = opt.HitlessUpgradeConfig.ApplyDefaultsWithPoolSize(opt.PoolSize)
+	opt.HitlessUpgradeConfig = opt.HitlessUpgradeConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
 
 	// auto-detect endpoint type if not specified
 	endpointType := opt.HitlessUpgradeConfig.EndpointType

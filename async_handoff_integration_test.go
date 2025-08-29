@@ -17,12 +17,12 @@ type mockNetConn struct {
 }
 
 func (m *mockNetConn) Read(b []byte) (n int, err error)   { return 0, nil }
-func (m *mockNetConn) Write(b []byte) (n int, err error) { return len(b), nil }
-func (m *mockNetConn) Close() error                      { return nil }
-func (m *mockNetConn) LocalAddr() net.Addr               { return &mockAddr{m.addr} }
-func (m *mockNetConn) RemoteAddr() net.Addr              { return &mockAddr{m.addr} }
-func (m *mockNetConn) SetDeadline(t time.Time) error     { return nil }
-func (m *mockNetConn) SetReadDeadline(t time.Time) error { return nil }
+func (m *mockNetConn) Write(b []byte) (n int, err error)  { return len(b), nil }
+func (m *mockNetConn) Close() error                       { return nil }
+func (m *mockNetConn) LocalAddr() net.Addr                { return &mockAddr{m.addr} }
+func (m *mockNetConn) RemoteAddr() net.Addr               { return &mockAddr{m.addr} }
+func (m *mockNetConn) SetDeadline(t time.Time) error      { return nil }
+func (m *mockNetConn) SetReadDeadline(t time.Time) error  { return nil }
 func (m *mockNetConn) SetWriteDeadline(t time.Time) error { return nil }
 
 type mockAddr struct {
@@ -152,8 +152,8 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
 
-			PoolSize:       int32(10),
-			PoolTimeout:    time.Second,
+			PoolSize:    int32(10),
+			PoolTimeout: time.Second,
 		})
 		defer testPool.Close()
 
@@ -175,7 +175,7 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 				// Get connection
 				conn, err := testPool.Get(ctx)
 				if err != nil {
-					t.Errorf("Failed to get connection %d: %v", id, err)
+					t.Errorf("Failed to get conn[%d]: %v", id, err)
 					return
 				}
 
@@ -224,8 +224,8 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
 
-			PoolSize:       int32(3),
-			PoolTimeout:    time.Second,
+			PoolSize:    int32(3),
+			PoolTimeout: time.Second,
 		})
 		defer testPool.Close()
 
@@ -287,8 +287,8 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
 
-			PoolSize:       int32(2),
-			PoolTimeout:    time.Second,
+			PoolSize:    int32(2),
+			PoolTimeout: time.Second,
 		})
 		defer testPool.Close()
 

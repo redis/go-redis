@@ -103,29 +103,24 @@ type Config struct {
 
 	// MaxWorkers is the maximum number of worker goroutines for processing handoff requests.
 	// Workers are created on-demand and automatically cleaned up when idle.
-	// If zero, defaults to min(10, PoolSize/3) to handle bursts effectively.
-	// If explicitly set, enforces minimum of 10 workers.
+	// If zero, defaults to min(10, PoolSize/2) to handle bursts effectively.
+	// If explicitly set, enforces minimum of PoolSize/2
 	//
-	// Default: min(10, PoolSize/3), Minimum when set: 10
+	// Default: min(PoolSize/2, max(10, PoolSize/3)), Minimum when set: PoolSize/2
 	MaxWorkers int
 
 	// HandoffQueueSize is the size of the buffered channel used to queue handoff requests.
 	// If the queue is full, new handoff requests will be rejected.
 	// Scales with both worker count and pool size for better burst handling.
 	//
-	// Default: max(8x workers, max(50, PoolSize/2)), capped by 2x pool size
-	// When set: min 50, capped by 2x pool size
+	// Default: max(20×MaxWorkers, PoolSize), capped by MaxActiveConns+1 (if set) or 5×PoolSize
+	// When set: minimum 200, capped by MaxActiveConns+1 (if set) or 5×PoolSize
 	HandoffQueueSize int
 
 	// PostHandoffRelaxedDuration is how long to keep relaxed timeouts on the new connection
 	// after a handoff completes. This provides additional resilience during cluster transitions.
 	// Default: 2 * RelaxedTimeout
 	PostHandoffRelaxedDuration time.Duration
-
-	// ScaleDownDelay is the delay before checking if workers should be scaled down.
-	// This prevents expensive checks on every handoff completion and avoids rapid scaling cycles.
-	// Default: 2 seconds
-	ScaleDownDelay time.Duration
 
 	// LogLevel controls the verbosity of hitless upgrade logging.
 	// LogLevelError (0) = errors only, LogLevelWarn (1) = warnings, LogLevelInfo (2) = info, LogLevelDebug (3) = debug
@@ -152,7 +147,6 @@ func DefaultConfig() *Config {
 		MaxWorkers:                 0, // Auto-calculated based on pool size
 		HandoffQueueSize:           0, // Auto-calculated based on max workers
 		PostHandoffRelaxedDuration: 0, // Auto-calculated based on relaxed timeout
-		ScaleDownDelay:             2 * time.Second,
 		LogLevel:                   LogLevelWarn,
 
 		// Connection Handoff Configuration
@@ -212,6 +206,13 @@ func (c *Config) ApplyDefaults() *Config {
 // using the provided pool size to calculate worker defaults.
 // This ensures that partially configured structs get sensible defaults for missing fields.
 func (c *Config) ApplyDefaultsWithPoolSize(poolSize int) *Config {
+	return c.ApplyDefaultsWithPoolConfig(poolSize, 0)
+}
+
+// ApplyDefaultsWithPoolConfig applies default values to any zero-value fields in the configuration,
+// using the provided pool size and max active connections to calculate worker and queue defaults.
+// This ensures that partially configured structs get sensible defaults for missing fields.
+func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *Config {
 	if c == nil {
 		return DefaultConfig().ApplyDefaultsWithPoolSize(poolSize)
 	}
@@ -251,19 +252,25 @@ func (c *Config) ApplyDefaultsWithPoolSize(poolSize int) *Config {
 	// Apply worker defaults based on pool size
 	result.applyWorkerDefaults(poolSize)
 
-	// Apply queue size defaults with hybrid scaling approach
+	// Apply queue size defaults with new scaling approach
 	if c.HandoffQueueSize <= 0 {
-		// Default: max(8x workers, max(50, PoolSize/2)), capped by 2x pool size
-		workerBasedSize := result.MaxWorkers * 8
-		poolBasedSize := util.Max(50, poolSize/2)
+		// Default: max(20x workers, PoolSize), capped by maxActiveConns or 5x pool size
+		workerBasedSize := result.MaxWorkers * 20
+		poolBasedSize := poolSize
 		result.HandoffQueueSize = util.Max(workerBasedSize, poolBasedSize)
 	} else {
-		// When explicitly set: enforce minimum of 50
-		result.HandoffQueueSize = util.Max(50, c.HandoffQueueSize)
+		// When explicitly set: enforce minimum of 200
+		result.HandoffQueueSize = util.Max(200, c.HandoffQueueSize)
 	}
 
-	// Always cap queue size by 2x pool size - balances burst capacity with memory efficiency
-	result.HandoffQueueSize = util.Min(result.HandoffQueueSize, poolSize*2)
+	// Cap queue size: use maxActiveConns+1 if set, otherwise 5x pool size
+	var queueCap int
+	if maxActiveConns > 0 {
+		queueCap = maxActiveConns + 1
+	} else {
+		queueCap = poolSize * 5
+	}
+	result.HandoffQueueSize = util.Min(result.HandoffQueueSize, queueCap)
 
 	// Ensure minimum queue size of 2 (fallback for very small pools)
 	if result.HandoffQueueSize < 2 {
@@ -274,12 +281,6 @@ func (c *Config) ApplyDefaultsWithPoolSize(poolSize int) *Config {
 		result.PostHandoffRelaxedDuration = result.RelaxedTimeout * 2
 	} else {
 		result.PostHandoffRelaxedDuration = c.PostHandoffRelaxedDuration
-	}
-
-	if c.ScaleDownDelay <= 0 {
-		result.ScaleDownDelay = defaults.ScaleDownDelay
-	} else {
-		result.ScaleDownDelay = c.ScaleDownDelay
 	}
 
 	// LogLevel: 0 is a valid value (errors only), so we need to check if it was explicitly set
@@ -314,7 +315,6 @@ func (c *Config) Clone() *Config {
 		MaxWorkers:                 c.MaxWorkers,
 		HandoffQueueSize:           c.HandoffQueueSize,
 		PostHandoffRelaxedDuration: c.PostHandoffRelaxedDuration,
-		ScaleDownDelay:             c.ScaleDownDelay,
 		LogLevel:                   c.LogLevel,
 
 		// Configuration fields
@@ -330,11 +330,11 @@ func (c *Config) applyWorkerDefaults(poolSize int) {
 	}
 
 	if c.MaxWorkers == 0 {
-		// When not set: min(10, poolSize/3) - don't exceed 10 workers for small pools
-		c.MaxWorkers = util.Min(10, poolSize/3)
+		// When not set: min(poolSize/2, max(10, poolSize/3)) - balanced scaling approach
+		c.MaxWorkers = util.Min(poolSize/2, util.Max(10, poolSize/3))
 	} else {
-		// When explicitly set: max(10, set_value) - ensure at least 10 workers
-		c.MaxWorkers = util.Max(10, c.MaxWorkers)
+		// When explicitly set: max(poolSize/2, set_value) - ensure at least poolSize/2 workers
+		c.MaxWorkers = util.Max(poolSize/2, c.MaxWorkers)
 	}
 
 	// Ensure minimum of 1 worker (fallback for very small pools)

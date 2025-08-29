@@ -43,6 +43,7 @@ func (p *PubSubPool) NewConn(ctx context.Context, network string, addr string, c
 		return nil, err
 	}
 	cn := NewConnWithBufferSize(netConn, p.opt.ReadBufferSize, p.opt.WriteBufferSize)
+	cn.pubsub = true
 	atomic.AddUint32(&p.stats.Created, 1)
 	return cn, nil
 
@@ -55,7 +56,7 @@ func (p *PubSubPool) TrackConn(cn *Conn) {
 
 func (p *PubSubPool) UntrackConn(cn *Conn) {
 	if !cn.IsUsable() || cn.ShouldHandoff() {
-		internal.Logger.Printf(context.Background(), "pubsub: untracking connection %d [usable, handoff] = [%v, %v]", cn.GetID(), cn.IsUsable(), cn.ShouldHandoff())
+		internal.Logger.Printf(context.Background(), "pubsub: untracking conn[%d] [usable, handoff] = [%v, %v]", cn.GetID(), cn.IsUsable(), cn.ShouldHandoff())
 	}
 	atomic.AddUint32(&p.stats.Active, ^uint32(0))
 	atomic.AddUint32(&p.stats.Untracked, 1)

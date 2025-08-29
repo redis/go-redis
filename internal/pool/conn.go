@@ -45,6 +45,7 @@ type Conn struct {
 
 	Inited    atomic.Bool
 	pooled    bool
+	pubsub    bool
 	closed    atomic.Bool
 	createdAt time.Time
 	expiresAt time.Time
@@ -201,6 +202,16 @@ func (cn *Conn) IsUsable() bool {
 	return cn.isUsable()
 }
 
+// IsPooled returns true if the connection is managed by a pool and will be pooled on Put.
+func (cn *Conn) IsPooled() bool {
+	return cn.pooled
+}
+
+// IsPubSub returns true if the connection is used for PubSub.
+func (cn *Conn) IsPubSub() bool {
+	return cn.pubsub
+}
+
 func (cn *Conn) IsInited() bool {
 	return cn.Inited.Load()
 }
@@ -223,9 +234,7 @@ func (cn *Conn) SetRelaxedTimeout(readTimeout, writeTimeout time.Duration) {
 // After the deadline, timeouts automatically revert to normal values.
 // Uses atomic operations for lock-free access.
 func (cn *Conn) SetRelaxedTimeoutWithDeadline(readTimeout, writeTimeout time.Duration, deadline time.Time) {
-	cn.relaxedCounter.Add(1)
-	cn.relaxedReadTimeoutNs.Store(int64(readTimeout))
-	cn.relaxedWriteTimeoutNs.Store(int64(writeTimeout))
+	cn.SetRelaxedTimeout(readTimeout, writeTimeout)
 	cn.relaxedDeadlineNs.Store(deadline.UnixNano())
 }
 
@@ -354,15 +363,12 @@ func (cn *Conn) ExecuteInitConn(ctx context.Context) error {
 	if cn.initConnFunc != nil {
 		return cn.initConnFunc(ctx, cn)
 	}
-	return fmt.Errorf("redis: no initConnFunc set for connection %d", cn.GetID())
+	return fmt.Errorf("redis: no initConnFunc set for conn[%d]", cn.GetID())
 }
 
 func (cn *Conn) SetNetConn(netConn net.Conn) {
 	// Store the new connection atomically first (lock-free)
 	cn.setNetConn(netConn)
-	// Clear relaxed timeouts when connection is replaced
-	cn.clearRelaxedTimeout()
-
 	// Protect reader reset operations to avoid data races
 	// Use write lock since we're modifying the reader state
 	cn.readerMu.Lock()

@@ -103,6 +103,15 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 		return ErrInvalidNotification
 	}
 
+	// If the connection is closed or not pooled, we can ignore the notification
+	// this connection won't be remembered by the pool and will be garbage collected
+	// Keep pubsub connections around since they are not pooled but are long-lived
+	// and should be allowed to handoff (the pubsub instance will reconnect and change
+	// the underlying *pool.Conn)
+	if (poolConn.IsClosed() || !poolConn.IsPooled()) && !poolConn.IsPubSub() {
+		return nil
+	}
+
 	deadline := time.Now().Add(time.Duration(timeS) * time.Second)
 	// If newEndpoint is empty, we should schedule a handoff to the current endpoint in timeS/2 seconds
 	if newEndpoint == "" || newEndpoint == internal.RedisNull {
@@ -133,6 +142,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 
 func (snh *NotificationHandler) markConnForHandoff(conn *pool.Conn, newEndpoint string, seqID int64, deadline time.Time) error {
 	if err := conn.MarkForHandoff(newEndpoint, seqID); err != nil {
+		internal.Logger.Printf(context.Background(), "hitless: failed to mark connection for handoff: %v", err)
 		// Connection is already marked for handoff, which is acceptable
 		// This can happen if multiple MOVING notifications are received for the same connection
 		return nil

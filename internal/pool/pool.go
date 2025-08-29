@@ -28,13 +28,14 @@ var (
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during hitless upgrades or network issues).
 	// Value of 50 provides sufficient resilience without excessive overhead.
+	// This is capped by the idle connection count, so we won't loop excessively.
 	popAttempts = 50
 
 	// getAttempts is the maximum number of attempts to get a connection that passes
 	// hook validation (e.g., hitless upgrade hooks). This protects against race conditions
 	// where hooks might temporarily reject connections during cluster transitions.
-	// Value of 2 balances resilience with performance - most hook rejections resolve quickly.
-	getAttempts = 2
+	// Value of 3 balances resilience with performance - most hook rejections resolve quickly.
+	getAttempts = 3
 
 	minTime      = time.Unix(-2208988800, 0) // Jan 1, 1900
 	maxTime      = minTime.Add(1<<63 - 1)
@@ -262,7 +263,9 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, ErrPoolExhausted
 	}
 
-	cn, err := p.dialConn(ctx, pooled)
+	dialCtx, cancel := context.WithTimeout(ctx, p.cfg.DialTimeout)
+	defer cancel()
+	cn, err := p.dialConn(dialCtx, pooled)
 	if err != nil {
 		return nil, err
 	}
@@ -309,24 +312,55 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, p.getLastDialError()
 	}
 
-	netConn, err := p.cfg.Dialer(ctx)
-	if err != nil {
-		p.setLastDialError(err)
-		if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.cfg.PoolSize) {
-			go p.tryDial()
+	// Retry dialing with backoff
+	// the context timeout is already handled by the context passed in
+	// so we may never reach the max retries, higher values don't hurt
+	const maxRetries = 10
+	const backoffDuration = 100 * time.Millisecond
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Add backoff delay for retry attempts
+		// (not for the first attempt, do at least one)
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				// we should have lastErr set, but just in case
+				if lastErr == nil {
+					lastErr = ctx.Err()
+				}
+				break
+			case <-time.After(backoffDuration):
+				// Continue with retry
+			}
 		}
-		return nil, err
+
+		netConn, err := p.cfg.Dialer(ctx)
+		if err != nil {
+			lastErr = err
+			// Continue to next retry attempt
+			continue
+		}
+
+		// Success - create connection
+		cn := NewConnWithBufferSize(netConn, p.cfg.ReadBufferSize, p.cfg.WriteBufferSize)
+		cn.pooled = pooled
+		if p.cfg.ConnMaxLifetime > 0 {
+			cn.expiresAt = time.Now().Add(p.cfg.ConnMaxLifetime)
+		} else {
+			cn.expiresAt = noExpiration
+		}
+
+		return cn, nil
 	}
 
-	cn := NewConnWithBufferSize(netConn, p.cfg.ReadBufferSize, p.cfg.WriteBufferSize)
-	cn.pooled = pooled
-	if p.cfg.ConnMaxLifetime > 0 {
-		cn.expiresAt = time.Now().Add(p.cfg.ConnMaxLifetime)
-	} else {
-		cn.expiresAt = noExpiration
+	internal.Logger.Printf(ctx, "redis: connection pool: failed to dial after %d attempts: %v", maxRetries, lastErr)
+	// All retries failed - handle error tracking
+	p.setLastDialError(lastErr)
+	if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.cfg.PoolSize) {
+		go p.tryDial()
 	}
-
-	return cn, nil
+	return nil, lastErr
 }
 
 func (p *ConnPool) tryDial() {
@@ -386,7 +420,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	attempts := 0
 	for {
 		if attempts >= getAttempts {
-			internal.Logger.Printf(ctx, "redis: connection pool: was not able to get a connection accepted by hook after %d attempts", attempts)
+			internal.Logger.Printf(ctx, "redis: connection pool: was not able to get a healthy connection after %d attempts", attempts)
 			break
 		}
 		attempts++
@@ -448,7 +482,6 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 			return nil, err
 		}
 	}
-
 	return newcn, nil
 }
 
@@ -497,6 +530,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 	if p.closed() {
 		return nil, ErrClosed
 	}
+	defer p.checkMinIdleConns()
 
 	n := len(p.idleConns)
 	if n == 0 {
@@ -540,12 +574,11 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 	}
 
 	// If we exhausted all attempts without finding a usable connection, return nil
-	if int32(attempts) >= p.poolSize.Load() {
+	if attempts > 1 && attempts >= maxAttempts && int32(attempts) >= p.poolSize.Load() {
 		internal.Logger.Printf(context.Background(), "redis: connection pool: failed to get a usable connection after %d attempts", attempts)
 		return nil, nil
 	}
 
-	p.checkMinIdleConns()
 	return cn, nil
 }
 
@@ -631,11 +664,7 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 func (p *ConnPool) Remove(_ context.Context, cn *Conn, reason error) {
 	p.removeConnWithLock(cn)
 
-	// Only free a turn if the connection was actually pooled
-	// This prevents queue imbalance when removing connections that weren't obtained through Get()
-	if cn.pooled {
-		p.freeTurn()
-	}
+	p.freeTurn()
 
 	_ = p.closeConn(cn)
 
@@ -655,12 +684,22 @@ func (p *ConnPool) removeConnWithLock(cn *Conn) {
 }
 
 func (p *ConnPool) removeConn(cn *Conn) {
-	delete(p.conns, cn.GetID())
+	cid := cn.GetID()
+	delete(p.conns, cid)
 	atomic.AddUint32(&p.stats.StaleConns, 1)
 
 	// Decrement pool size counter when removing a connection
 	if cn.pooled {
 		p.poolSize.Add(-1)
+		// this can be idle conn
+		for idx, ic := range p.idleConns {
+			if ic.GetID() == cid {
+				internal.Logger.Printf(context.Background(), "redis: connection pool: removing idle conn[%d]", cid)
+				p.idleConns = append(p.idleConns[:idx], p.idleConns[idx+1:]...)
+				p.idleConnsLen.Add(-1)
+				break
+			}
+		}
 	}
 }
 
@@ -745,6 +784,7 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 		return false
 	}
 
+	// Check if connection has exceeded idle timeout
 	if p.cfg.ConnMaxIdleTime > 0 && now.Sub(cn.UsedAt()) >= p.cfg.ConnMaxIdleTime {
 		return false
 	}

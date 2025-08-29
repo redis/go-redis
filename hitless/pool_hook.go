@@ -2,7 +2,6 @@ package hitless
 
 import (
 	"context"
-	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -44,9 +43,10 @@ type PoolHook struct {
 	workerWg     sync.WaitGroup      // Track worker goroutines
 
 	// On-demand worker management
-	maxWorkers    int
-	activeWorkers int32         // Atomic counter for active workers
-	workerTimeout time.Duration // How long workers wait for work before exiting
+	maxWorkers     int
+	activeWorkers  atomic.Int32
+	workerTimeout  time.Duration // How long workers wait for work before exiting
+	workersScaling atomic.Bool
 
 	// Simple state tracking
 	pending sync.Map // map[uint64]int64 (connID -> seqID)
@@ -82,8 +82,9 @@ func NewPoolHookWithPoolSize(baseDialer func(context.Context, string, string) (n
 		// shutdown is a channel for signaling shutdown
 		shutdown:      make(chan struct{}),
 		maxWorkers:    config.MaxWorkers,
-		activeWorkers: 0,                // Start with no workers - create on demand
-		workerTimeout: 30 * time.Second, // Workers exit after 30s of inactivity
+		activeWorkers: atomic.Int32{}, // Start with no workers - create on demand
+		// NOTE: maybe we would like to make this configurable?
+		workerTimeout: 15 * time.Second, // Workers exit after 15s of inactivity
 		config:        config,
 		// Hitless manager for operation completion tracking
 		hitlessManager: hitlessManager,
@@ -98,15 +99,7 @@ func (ph *PoolHook) SetPool(pooler pool.Pooler) {
 
 // GetCurrentWorkers returns the current number of active workers (for testing)
 func (ph *PoolHook) GetCurrentWorkers() int {
-	return int(atomic.LoadInt32(&ph.activeWorkers))
-}
-
-// GetScaleLevel returns 1 if workers are active, 0 if none (for testing compatibility)
-func (ph *PoolHook) GetScaleLevel() int {
-	if atomic.LoadInt32(&ph.activeWorkers) > 0 {
-		return 1
-	}
-	return 0
+	return int(ph.activeWorkers.Load())
 }
 
 // IsHandoffPending returns true if the given connection has a pending handoff
@@ -181,14 +174,21 @@ func (ph *PoolHook) ensureWorkerAvailable() {
 	case <-ph.shutdown:
 		return
 	default:
-		// Check if we need a new worker
-		currentWorkers := atomic.LoadInt32(&ph.activeWorkers)
-		if currentWorkers < int32(ph.maxWorkers) {
-			// Try to create a new worker (atomic increment to prevent race)
-			if atomic.CompareAndSwapInt32(&ph.activeWorkers, currentWorkers, currentWorkers+1) {
+		if ph.workersScaling.CompareAndSwap(false, true) {
+			defer ph.workersScaling.Store(false)
+			// Check if we need a new worker
+			currentWorkers := ph.activeWorkers.Load()
+			workersWas := currentWorkers
+			for currentWorkers <= int32(ph.maxWorkers) {
 				ph.workerWg.Add(1)
 				go ph.onDemandWorker()
+				currentWorkers++
 			}
+			// workersWas is always <= currentWorkers
+			// currentWorkers will be maxWorkers, but if we have a worker that was closed
+			// while we were creating new workers, just add the difference between
+			// the currentWorkers and the number of workers we observed initially (i.e. the number of workers we created)
+			ph.activeWorkers.Add(currentWorkers - workersWas)
 		}
 	}
 }
@@ -197,12 +197,21 @@ func (ph *PoolHook) ensureWorkerAvailable() {
 func (ph *PoolHook) onDemandWorker() {
 	defer func() {
 		// Decrement active worker count when exiting
-		atomic.AddInt32(&ph.activeWorkers, -1)
+		ph.activeWorkers.Add(-1)
 		ph.workerWg.Done()
 	}()
 
 	for {
 		select {
+		case <-ph.shutdown:
+			return
+		case <-time.After(ph.workerTimeout):
+			// Worker has been idle for too long, exit to save resources
+			if ph.config != nil && ph.config.LogLevel >= LogLevelDebug { // Debug level
+				internal.Logger.Printf(context.Background(),
+					"hitless: worker exiting due to inactivity timeout (%v)", ph.workerTimeout)
+			}
+			return
 		case request := <-ph.handoffQueue:
 			// Check for shutdown before processing
 			select {
@@ -214,17 +223,6 @@ func (ph *PoolHook) onDemandWorker() {
 				// Process the request
 				ph.processHandoffRequest(request)
 			}
-
-		case <-time.After(ph.workerTimeout):
-			// Worker has been idle for too long, exit to save resources
-			if ph.config != nil && ph.config.LogLevel >= LogLevelDebug { // Debug level
-				internal.Logger.Printf(context.Background(),
-					"hitless: worker exiting due to inactivity timeout (%v)", ph.workerTimeout)
-			}
-			return
-
-		case <-ph.shutdown:
-			return
 		}
 	}
 }
@@ -257,20 +255,21 @@ func (ph *PoolHook) processHandoffRequest(request HandoffRequest) {
 	}()
 
 	// Perform the handoff with cancellable context
-	shouldRetry, err := ph.performConnectionHandoffWithPool(shutdownCtx, request.Conn, request.Pool)
+	shouldRetry, err := ph.performConnectionHandoff(shutdownCtx, request.Conn)
 	minRetryBackoff := 500 * time.Millisecond
 	if err != nil {
 		if shouldRetry {
 			now := time.Now()
 			deadline, ok := shutdownCtx.Deadline()
+			thirdOfTimeout := handoffTimeout / 3
 			if !ok || deadline.Before(now) {
 				// wait half the timeout before retrying if no deadline or deadline has passed
-				deadline = now.Add(handoffTimeout / 2)
+				deadline = now.Add(thirdOfTimeout)
 			}
 
 			afterTime := deadline.Sub(now)
-			if afterTime > handoffTimeout/2 {
-				afterTime = handoffTimeout / 2
+			if afterTime > thirdOfTimeout {
+				afterTime = thirdOfTimeout
 			}
 			if afterTime < minRetryBackoff {
 				afterTime = minRetryBackoff
@@ -280,12 +279,12 @@ func (ph *PoolHook) processHandoffRequest(request HandoffRequest) {
 			time.AfterFunc(afterTime, func() {
 				if err := ph.queueHandoff(request.Conn); err != nil {
 					internal.Logger.Printf(context.Background(), "can't queue handoff for retry: %v", err)
-					ph.removeConn(context.Background(), request, err)
+					ph.closeConnFromRequest(context.Background(), request, err)
 				}
 			})
 			return
 		} else {
-			go ph.removeConn(ctx, request, err)
+			go ph.closeConnFromRequest(ctx, request, err)
 		}
 
 		// Clear handoff state if not returned for retry
@@ -297,21 +296,22 @@ func (ph *PoolHook) processHandoffRequest(request HandoffRequest) {
 	}
 }
 
-func (ph *PoolHook) removeConn(ctx context.Context, request HandoffRequest, err error) {
+// closeConn closes the connection and logs the reason
+func (ph *PoolHook) closeConnFromRequest(ctx context.Context, request HandoffRequest, err error) {
 	pooler := request.Pool
 	conn := request.Conn
 	if pooler != nil {
-		pooler.Remove(ctx, conn, err)
+		pooler.CloseConn(conn)
 		if ph.config != nil && ph.config.LogLevel >= LogLevelWarn { // Warning level
 			internal.Logger.Printf(ctx,
-				"hitless: removed connection %d from pool due to max handoff retries reached",
-				conn.GetID())
+				"hitless: removed conn[%d] from pool due to max handoff retries reached: %v",
+				conn.GetID(), err)
 		}
 	} else {
 		conn.Close()
 		if ph.config != nil && ph.config.LogLevel >= LogLevelWarn { // Warning level
 			internal.Logger.Printf(ctx,
-				"hitless: no pool provided for connection %d, cannot remove due to handoff initialization failure: %v",
+				"hitless: no pool provided for conn[%d], cannot remove due to handoff initialization failure: %v",
 				conn.GetID(), err)
 		}
 	}
@@ -332,11 +332,11 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 	select {
 	// priority to shutdown
 	case <-ph.shutdown:
-		return errors.New("shutdown")
+		return ErrShutdown
 	default:
 		select {
 		case <-ph.shutdown:
-			return errors.New("shutdown")
+			return ErrShutdown
 		case ph.handoffQueue <- request:
 			// Store in pending map
 			ph.pending.Store(request.ConnID, request.SeqID)
@@ -344,13 +344,30 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 			ph.ensureWorkerAvailable()
 			return nil
 		default:
-			// Queue is full - log and attempt scaling
-			queueLen := len(ph.handoffQueue)
-			queueCap := cap(ph.handoffQueue)
-			if ph.config != nil && ph.config.LogLevel >= LogLevelWarn { // Warning level
-				internal.Logger.Printf(context.Background(),
-					"hitless: handoff queue is full (%d/%d), attempting timeout queuing and scaling workers",
-					queueLen, queueCap)
+			select {
+			case <-ph.shutdown:
+				return ErrShutdown
+			case ph.handoffQueue <- request:
+				// Store in pending map
+				ph.pending.Store(request.ConnID, request.SeqID)
+				// Ensure we have a worker to process this request
+				ph.ensureWorkerAvailable()
+				return nil
+			case <-time.After(100 * time.Millisecond): // give workers a chance to process
+				// Queue is full - log and attempt scaling
+				queueLen := len(ph.handoffQueue)
+				queueCap := cap(ph.handoffQueue)
+				if ph.config != nil && ph.config.LogLevel >= LogLevelWarn { // Warning level
+					internal.Logger.Printf(context.Background(),
+						"hitless: handoff queue is full (%d/%d), cant queue handoff request for conn[%d] seqID[%d]",
+						queueLen, queueCap, request.ConnID, request.SeqID)
+					if ph.config.LogLevel >= LogLevelDebug { // Debug level
+						ph.pending.Range(func(k, v interface{}) bool {
+							internal.Logger.Printf(context.Background(), "hitless: pending handoff for conn[%d] seqID[%d]", k, v)
+							return true
+						})
+					}
+				}
 			}
 		}
 	}
@@ -360,9 +377,9 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 	return ErrHandoffQueueFull
 }
 
-// performConnectionHandoffWithPool performs the actual connection handoff with pool for connection removal on failure
+// performConnectionHandoff performs the actual connection handoff
 // When error is returned, the connection handoff should be retried if err is not ErrMaxHandoffRetriesReached
-func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *pool.Conn, pooler pool.Pooler) (shouldRetry bool, err error) {
+func (ph *PoolHook) performConnectionHandoff(ctx context.Context, conn *pool.Conn) (shouldRetry bool, err error) {
 	// Clear handoff state after successful handoff
 	connID := conn.GetID()
 
@@ -381,7 +398,7 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 	if retries > maxRetries {
 		if ph.config != nil && ph.config.LogLevel >= LogLevelWarn { // Warning level
 			internal.Logger.Printf(ctx,
-				"hitless: reached max retries (%d) for handoff of connection %d to %s",
+				"hitless: reached max retries (%d) for handoff of conn[%d] to %s",
 				maxRetries, conn.GetID(), conn.GetHandoffEndpoint())
 		}
 		// won't retry on ErrMaxHandoffRetriesReached
@@ -403,6 +420,23 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 	// Get the old connection
 	oldConn := conn.GetNetConn()
 
+	// Apply relaxed timeout to the new connection for the configured post-handoff duration
+	// This gives the new connection more time to handle operations during cluster transition
+	// Setting this here (before initing the connection) ensures that the connection is going
+	// to use the relaxed timeout for the first operation (auth/ACL select)
+	if ph.config != nil && ph.config.PostHandoffRelaxedDuration > 0 {
+		relaxedTimeout := ph.config.RelaxedTimeout
+		// Set relaxed timeout with deadline - no background goroutine needed
+		deadline := time.Now().Add(ph.config.PostHandoffRelaxedDuration)
+		conn.SetRelaxedTimeoutWithDeadline(relaxedTimeout, relaxedTimeout, deadline)
+
+		if ph.config.LogLevel >= 2 { // Info level
+			internal.Logger.Printf(context.Background(),
+				"hitless: conn[%d] applied post-handoff relaxed timeout (%v) until %v",
+				connID, relaxedTimeout, deadline.Format("15:04:05.000"))
+		}
+	}
+
 	// Replace the connection and execute initialization
 	err = conn.SetNetConnAndInitConn(ctx, newNetConn)
 	if err != nil {
@@ -418,23 +452,6 @@ func (ph *PoolHook) performConnectionHandoffWithPool(ctx context.Context, conn *
 
 	conn.ClearHandoffState()
 	internal.Logger.Printf(ctx, "hitless: conn[%d] Handoff to %s successful", conn.GetID(), newEndpoint)
-
-	// Apply relaxed timeout to the new connection for the configured post-handoff duration
-	// This gives the new connection more time to handle operations during cluster transition
-	if ph.config != nil && ph.config.PostHandoffRelaxedDuration > 0 {
-		relaxedTimeout := ph.config.RelaxedTimeout
-		postHandoffDuration := ph.config.PostHandoffRelaxedDuration
-
-		// Set relaxed timeout with deadline - no background goroutine needed
-		deadline := time.Now().Add(postHandoffDuration)
-		conn.SetRelaxedTimeoutWithDeadline(relaxedTimeout, relaxedTimeout, deadline)
-
-		if ph.config.LogLevel >= 2 { // Info level
-			internal.Logger.Printf(context.Background(),
-				"hitless: conn[%d] applied post-handoff relaxed timeout (%v) until %v",
-				connID, relaxedTimeout, deadline.Format("15:04:05.000"))
-		}
-	}
 
 	return false, nil
 }

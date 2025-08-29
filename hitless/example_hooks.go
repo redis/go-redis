@@ -38,7 +38,7 @@ func (mh *MetricsHook) PreHook(ctx context.Context, notificationCtx push.Notific
 
 	// Log connection information if available
 	if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
-		internal.Logger.Printf(ctx, "hitless: metrics hook processing %s notification on connection %d", notificationType, conn.GetID())
+		internal.Logger.Printf(ctx, "hitless: metrics hook processing %s notification on conn[%d]", notificationType, conn.GetID())
 	}
 
 	// Store start time in context for duration calculation
@@ -62,7 +62,7 @@ func (mh *MetricsHook) PostHook(ctx context.Context, notificationCtx push.Notifi
 
 		// Log error details with connection information
 		if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
-			internal.Logger.Printf(ctx, "hitless: metrics hook recorded error for %s notification on connection %d: %v", notificationType, conn.GetID(), result)
+			internal.Logger.Printf(ctx, "hitless: metrics hook recorded error for %s notification on conn[%d]: %v", notificationType, conn.GetID(), result)
 		}
 	}
 }

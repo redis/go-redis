@@ -39,27 +39,31 @@ Config: &hitless.Config{
     PostHandoffRelaxedDuration: 20 * time.Second, // Keep relaxed timeout after handoff
     LogLevel:                   logging.LogLevelWarn, // LogLevelError, LogLevelWarn, LogLevelInfo, LogLevelDebug
     MaxWorkers:                 15, // Concurrent handoff workers
-    HandoffQueueSize:           50, // Handoff request queue size
+    HandoffQueueSize:           300, // Handoff request queue size
 }
 ```
 
 ### Worker Scaling
-- **Auto-calculated**: `min(10, PoolSize/3)` - scales with pool size, capped at 10
-- **Explicit values**: `max(10, set_value)` - enforces minimum 10 workers
+- **Auto-calculated**: `min(PoolSize/2, max(10, PoolSize/3))` - balanced scaling approach
+- **Explicit values**: `max(PoolSize/2, set_value)` - enforces minimum PoolSize/2 workers
 - **On-demand**: Workers created when needed, cleaned up when idle
 
 ### Queue Sizing
-- **Auto-calculated**: `max(8 × MaxWorkers, max(50, PoolSize/2))` - hybrid scaling
-  - Worker-based: 8 handoffs per worker for burst processing
-  - Pool-based: Scales with pool size (minimum 50, up to PoolSize/2)
+- **Auto-calculated**: `max(20 × MaxWorkers, PoolSize)` - hybrid scaling
+  - Worker-based: 20 handoffs per worker for burst processing
+  - Pool-based: Scales directly with pool size
   - Takes the larger of the two for optimal performance
-- **Explicit values**: `max(50, set_value)` - enforces minimum 50 when set
-- **Always capped**: Queue size never exceeds `2 × PoolSize` for memory efficiency
+- **Explicit values**: `max(200, set_value)` - enforces minimum 200 when set
+- **Capping**: Queue size capped by `MaxActiveConns+1` (if set) or `5 × PoolSize` for memory efficiency
 
-**Examples:**
-- Pool 10: Queue 50 (max(8×3, max(50, 5)) = max(24, 50) = 50)
-- Pool 100: Queue 80 (max(8×10, max(50, 50)) = max(80, 50) = 80)
-- Pool 200: Queue 100 (max(8×10, max(50, 100)) = max(80, 100) = 100)
+**Examples (without MaxActiveConns):**
+- Pool 10: Workers 5, Queue 100 (max(20×5, 10) = 100, capped at 5×10 = 50)
+- Pool 100: Workers 33, Queue 660 (max(20×33, 100) = 660, capped at 5×100 = 500)
+- Pool 200: Workers 66, Queue 1320 (max(20×66, 200) = 1320, capped at 5×200 = 1000)
+
+**Examples (with MaxActiveConns=150):**
+- Pool 100: Workers 33, Queue 151 (max(20×33, 100) = 660, capped at MaxActiveConns+1 = 151)
+- Pool 200: Workers 66, Queue 151 (max(20×66, 200) = 1320, capped at MaxActiveConns+1 = 151)
 
 ## Notification Hooks
 
@@ -94,7 +98,7 @@ type CustomHook struct{}
 func (h *CustomHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
     // Log notification with connection details
     if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
-        log.Printf("Processing %s on connection %d", notificationType, conn.GetID())
+        log.Printf("Processing %s on conn[%d]", notificationType, conn.GetID())
     }
     return notification, true // Continue processing
 }

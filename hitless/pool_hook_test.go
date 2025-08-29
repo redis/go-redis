@@ -267,7 +267,7 @@ func TestConnectionHook(t *testing.T) {
 			EndpointType:      EndpointTypeAuto,
 			MaxWorkers:        2,
 			HandoffQueueSize:  10,
-			MaxHandoffRetries: 2, // Reduced retries for faster test
+			MaxHandoffRetries: 2,                      // Reduced retries for faster test
 			HandoffTimeout:    500 * time.Millisecond, // Shorter timeout for faster test
 			LogLevel:          2,
 		}
@@ -460,7 +460,7 @@ func TestConnectionHook(t *testing.T) {
 		for i := 0; i < 5; i++ {
 			connections[i] = createMockPoolConnection()
 			if err := connections[i].MarkForHandoff("new-endpoint:6379", int64(i)); err != nil {
-				t.Fatalf("Failed to mark connection %d for handoff: %v", i, err)
+				t.Fatalf("Failed to mark conn[%d] for handoff: %v", i, err)
 			}
 			// Set a mock initialization function
 			connections[i].SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
@@ -510,9 +510,6 @@ func TestConnectionHook(t *testing.T) {
 		if processor.GetCurrentWorkers() != 0 {
 			t.Errorf("Expected 0 initial workers with on-demand system, got %d", processor.GetCurrentWorkers())
 		}
-		if processor.GetScaleLevel() != 0 {
-			t.Errorf("Processor should be at scale level 0 initially, got %d", processor.GetScaleLevel())
-		}
 		if processor.maxWorkers != 15 {
 			t.Errorf("Expected maxWorkers=15, got %d", processor.maxWorkers)
 		}
@@ -528,7 +525,7 @@ func TestConnectionHook(t *testing.T) {
 		config := &Config{
 			MaxWorkers:                 2,
 			HandoffQueueSize:           10,
-			MaxHandoffRetries:          3, // Allow retries for successful handoff
+			MaxHandoffRetries:          3,                      // Allow retries for successful handoff
 			PostHandoffRelaxedDuration: 100 * time.Millisecond, // Fast expiration for testing
 			RelaxedTimeout:             5 * time.Second,
 			LogLevel:                   2,
@@ -718,7 +715,7 @@ func TestConnectionHook(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			conn := createMockPoolConnection()
 			if err := conn.MarkForHandoff("new-endpoint:6379", int64(i+1)); err != nil {
-				t.Fatalf("Failed to mark connection %d for handoff: %v", i, err)
+				t.Fatalf("Failed to mark conn[%d] for handoff: %v", i, err)
 			}
 			// Set a mock initialization function
 			conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
@@ -731,7 +728,7 @@ func TestConnectionHook(t *testing.T) {
 			}
 
 			if !shouldPool || shouldRemove {
-				t.Errorf("Connection %d should be pooled after handoff (shouldPool=%v, shouldRemove=%v)",
+				t.Errorf("conn[%d] should be pooled after handoff (shouldPool=%v, shouldRemove=%v)",
 					i, shouldPool, shouldRemove)
 			}
 		}
@@ -795,7 +792,7 @@ func TestConnectionHook(t *testing.T) {
 
 		// Verify that the connection was removed from the pool
 		if !mockPool.WasRemoved(conn.GetID()) {
-			t.Errorf("Connection %d should have been removed from pool after handoff failure", conn.GetID())
+			t.Errorf("conn[%d] should have been removed from pool after handoff failure", conn.GetID())
 		}
 
 		t.Logf("Connection removal on handoff failure test completed successfully")

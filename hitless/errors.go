@@ -43,3 +43,8 @@ var (
 	// ErrConnectionInvalidHandoffState is returned when a connection is in an invalid state for handoff
 	ErrConnectionInvalidHandoffState = errors.New("hitless: connection is in invalid state for handoff")
 )
+
+// general errors
+var (
+	ErrShutdown = errors.New("hitless: shutdown")
+)
