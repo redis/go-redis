@@ -346,3 +346,7 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 		}
 	})
 }
+
+func init() {
+	SetLogger(&VoidLogger{})
+}

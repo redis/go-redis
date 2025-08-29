@@ -11,8 +11,6 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
-	"github.com/redis/go-redis/v9/internal"
-
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
@@ -440,6 +438,5 @@ var _ = Describe("race", func() {
 })
 
 func init() {
-	filterLogger := internal.NewFilterLogger([]string{"test panic", "was not able to get a healthy connection after"})
-	redis.SetLogger(filterLogger)
+	redis.SetLogger(&redis.VoidLogger{})
 }
