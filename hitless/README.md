@@ -1,127 +1,98 @@
 # Hitless Upgrades
 
-Seamless Redis connection handoffs during topology changes without interrupting operations.
+Seamless Redis connection handoffs during cluster changes without dropping connections.
 
 ## Quick Start
 
 ```go
-import "github.com/redis/go-redis/v9/hitless"
-
-opt := &redis.Options{
+client := redis.NewClient(&redis.Options{
     Addr:     "localhost:6379",
     Protocol: 3, // RESP3 required
-    HitlessUpgrades: &redis.HitlessUpgradeConfig{
-        Mode: hitless.MaintNotificationsEnabled, // or MaintNotificationsAuto
+    HitlessUpgrades: &hitless.Config{
+        Mode: hitless.MaintNotificationsEnabled,
     },
-}
-client := redis.NewClient(opt)
+})
 ```
 
 ## Modes
 
-- **`MaintNotificationsDisabled`**: Hitless upgrades are completely disabled
-- **`MaintNotificationsEnabled`**: Hitless upgrades are forcefully enabled (fails if server doesn't support it)
-- **`MaintNotificationsAuto`**: Hitless upgrades are enabled if server supports it (default)
+- **`MaintNotificationsDisabled`** - Hitless upgrades disabled
+- **`MaintNotificationsEnabled`** - Forcefully enabled (fails if server doesn't support)
+- **`MaintNotificationsAuto`** - Auto-detect server support (default)
 
 ## Configuration
 
 ```go
-import (
-    "github.com/redis/go-redis/v9/hitless"
-    "github.com/redis/go-redis/v9/logging"
-)
-
-Config: &hitless.Config{
-    Mode:                       hitless.MaintNotificationsAuto, // Notification mode
-    MaxHandoffRetries:           3,  // Retry failed handoffs
-    HandoffTimeout:             15 * time.Second, // Handoff operation timeout
-    RelaxedTimeout:             10 * time.Second, // Extended timeout during migrations
-    PostHandoffRelaxedDuration: 20 * time.Second, // Keep relaxed timeout after handoff
-    LogLevel:                   logging.LogLevelWarn, // LogLevelError, LogLevelWarn, LogLevelInfo, LogLevelDebug
-    MaxWorkers:                 15, // Concurrent handoff workers
-    HandoffQueueSize:           300, // Handoff request queue size
+&hitless.Config{
+    Mode:                       hitless.MaintNotificationsAuto,
+    EndpointType:               hitless.EndpointTypeAuto,
+    RelaxedTimeout:             10 * time.Second,
+    HandoffTimeout:             15 * time.Second,
+    MaxHandoffRetries:          3,
+    MaxWorkers:                 0,    // Auto-calculated
+    HandoffQueueSize:           0,    // Auto-calculated
+    PostHandoffRelaxedDuration: 0,    // 2 * RelaxedTimeout
+    LogLevel:                   logging.LogLevelError,
 }
 ```
 
-### Worker Scaling
-- **Auto-calculated**: `min(PoolSize/2, max(10, PoolSize/3))` - balanced scaling approach
-- **Explicit values**: `max(PoolSize/2, set_value)` - enforces minimum PoolSize/2 workers
-- **On-demand**: Workers created when needed, cleaned up when idle
+### Endpoint Types
 
-### Queue Sizing
-- **Auto-calculated**: `max(20 × MaxWorkers, PoolSize)` - hybrid scaling
-  - Worker-based: 20 handoffs per worker for burst processing
-  - Pool-based: Scales directly with pool size
-  - Takes the larger of the two for optimal performance
-- **Explicit values**: `max(200, set_value)` - enforces minimum 200 when set
-- **Capping**: Queue size capped by `MaxActiveConns+1` (if set) or `5 × PoolSize` for memory efficiency
+- **`EndpointTypeAuto`** - Auto-detect based on connection (default)
+- **`EndpointTypeInternalIP`** - Internal IP address
+- **`EndpointTypeInternalFQDN`** - Internal FQDN
+- **`EndpointTypeExternalIP`** - External IP address
+- **`EndpointTypeExternalFQDN`** - External FQDN
+- **`EndpointTypeNone`** - No endpoint (reconnect with current config)
 
-**Examples (without MaxActiveConns):**
-- Pool 10: Workers 5, Queue 100 (max(20×5, 10) = 100, capped at 5×10 = 50)
-- Pool 100: Workers 33, Queue 660 (max(20×33, 100) = 660, capped at 5×100 = 500)
-- Pool 200: Workers 66, Queue 1320 (max(20×66, 200) = 1320, capped at 5×200 = 1000)
+### Auto-Scaling
 
-**Examples (with MaxActiveConns=150):**
-- Pool 100: Workers 33, Queue 151 (max(20×33, 100) = 660, capped at MaxActiveConns+1 = 151)
-- Pool 200: Workers 66, Queue 151 (max(20×66, 200) = 1320, capped at MaxActiveConns+1 = 151)
+**Workers**: `min(PoolSize/2, max(10, PoolSize/3))` when auto-calculated
+**Queue**: `max(20×Workers, PoolSize)` capped by `MaxActiveConns+1` or `5×PoolSize`
 
-## Notification Hooks
+**Examples:**
+- Pool 100: 33 workers, 660 queue (capped at 500)
+- Pool 100 + MaxActiveConns 150: 33 workers, 151 queue
 
-Notification hooks allow you to monitor and customize hitless upgrade operations. The `NotificationHook` interface provides pre and post processing hooks:
+## How It Works
+
+1. Redis sends push notifications about cluster changes
+2. Client creates new connections to updated endpoints
+3. Active operations transfer to new connections
+4. Old connections close gracefully
+
+## Supported Notifications
+
+- `MOVING` - Slot moving to new node
+- `MIGRATING` - Slot in migration state
+- `MIGRATED` - Migration completed
+- `FAILING_OVER` - Node failing over
+- `FAILED_OVER` - Failover completed
+
+## Hooks (Optional)
+
+Monitor and customize hitless operations:
 
 ```go
 type NotificationHook interface {
-    PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool)
-    PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error)
+    PreHook(ctx, notificationCtx, notificationType, notification) ([]interface{}, bool)
+    PostHook(ctx, notificationCtx, notificationType, notification, result)
 }
+
+// Add custom hook
+manager.AddNotificationHook(&MyHook{})
 ```
 
-### Example: Metrics Collection Hook
-
-A metrics collection hook is available in `example_hooks.go`:
+### Metrics Hook Example
 
 ```go
-import "github.com/redis/go-redis/v9/hitless"
-
+// Create metrics hook
 metricsHook := hitless.NewMetricsHook()
 manager.AddNotificationHook(metricsHook)
 
-// Access metrics
+// Access collected metrics
 metrics := metricsHook.GetMetrics()
+fmt.Printf("Notification counts: %v\n", metrics["notification_counts"])
+fmt.Printf("Processing times: %v\n", metrics["processing_times"])
+fmt.Printf("Error counts: %v\n", metrics["error_counts"])
 ```
-
-### Example: Custom Logging Hook
-
-```go
-type CustomHook struct{}
-
-func (h *CustomHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
-    // Log notification with connection details
-    if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
-        log.Printf("Processing %s on conn[%d]", notificationType, conn.GetID())
-    }
-    return notification, true // Continue processing
-}
-
-func (h *CustomHook) PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error) {
-    if result != nil {
-        log.Printf("Failed to process %s: %v", notificationType, result)
-    }
-}
-```
-
-The notification context provides access to:
-- **Client**: The Redis client instance
-- **Pool**: The connection pool
-- **Conn**: The specific connection that received the notification
-- **IsBlocking**: Whether the notification was received on a blocking connection
-
-Hooks can track:
-- Handoff success/failure rates
-- Processing duration
-- Connection-specific metrics
-- Custom business logic
-
-## Requirements
-
-- **RESP3 Protocol**: Required for push notifications
