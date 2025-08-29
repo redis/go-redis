@@ -181,9 +181,6 @@ func (hm *HitlessManager) UntrackOperationWithConnID(seqID int64, connID uint64)
 	} else {
 		if hm.config.LogLevel >= LogLevelDebug { // Debug level
 			internal.Logger.Printf(context.Background(), "hitless: conn[%d] seqID[%d] Operation not found for untracking: %s", connID, seqID, key.String())
-			for key := range hm.GetActiveMovingOperations() {
-				internal.Logger.Printf(context.Background(), "hitless: active op: key: %s", key.String())
-			}
 		}
 	}
 }
