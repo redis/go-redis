@@ -1079,7 +1079,6 @@ func (c *Client) pubSub() *PubSub {
 			// will return nil if already initialized
 			err = c.initConn(ctx, cn)
 			if err != nil {
-				internal.Logger.Printf(ctx, "pubsub: conn[%d] to ADDR %s [usable, handoff] = [%v, %v] after initConn returned %v", cn.GetID(), addr, cn.IsUsable(), cn.ShouldHandoff(), err)
 				_ = cn.Close()
 				return nil, err
 			}

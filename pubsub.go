@@ -170,16 +170,10 @@ func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allo
 	}
 
 	if !cn.IsUsable() || cn.ShouldHandoff() {
-		if cn.ShouldHandoff() {
-			internal.Logger.Printf(ctx, "pubsub: connection[%d] is marked for handoff, reconnecting", cn.GetID())
-		} else {
-			internal.Logger.Printf(ctx, "pubsub: connection[%d] is not usable, reconnecting", cn.GetID())
-		}
 		c.reconnect(ctx, fmt.Errorf("pubsub: connection is not usable"))
 	}
 
 	if isBadConn(err, allowTimeout, c.opt.Addr) {
-		internal.Logger.Printf(ctx, "pubsub: releasing connection[%d]: %v", cn.GetID(), err)
 		c.reconnect(ctx, err)
 	}
 }
@@ -206,9 +200,6 @@ func (c *PubSub) reconnect(ctx context.Context, reason error) {
 func (c *PubSub) closeTheCn(reason error) error {
 	if c.cn == nil {
 		return nil
-	}
-	if !c.closed {
-		internal.Logger.Printf(c.getContext(), "redis: discarding bad PubSub connection[%d]: %s, %v", c.cn.GetID(), reason, c.cn.RemoteAddr())
 	}
 	err := c.closeConn(c.cn)
 	c.cn = nil

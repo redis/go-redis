@@ -5,8 +5,6 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
-
-	"github.com/redis/go-redis/v9/internal"
 )
 
 type PubSubStats struct {
@@ -55,9 +53,6 @@ func (p *PubSubPool) TrackConn(cn *Conn) {
 }
 
 func (p *PubSubPool) UntrackConn(cn *Conn) {
-	if !cn.IsUsable() || cn.ShouldHandoff() {
-		internal.Logger.Printf(context.Background(), "pubsub: untracking conn[%d] [usable, handoff] = [%v, %v]", cn.GetID(), cn.IsUsable(), cn.ShouldHandoff())
-	}
 	atomic.AddUint32(&p.stats.Active, ^uint32(0))
 	atomic.AddUint32(&p.stats.Untracked, 1)
 	p.activeConns.Delete(cn.GetID())

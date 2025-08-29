@@ -43,11 +43,8 @@ var Logger Logging = &logger{
 }
 
 func NewFilterLogger(substr []string) Logging {
-	l := Logger
-	if _, ok := l.(*logger); !ok {
-		l = &logger{
-			log: log.New(os.Stderr, "redis: ", log.LstdFlags|log.Lshortfile),
-		}
+	l := &logger{
+		log: log.New(os.Stderr, "redis: ", log.LstdFlags|log.Lshortfile),
 	}
 	return &filterLogger{logger: l, substr: substr}
 }

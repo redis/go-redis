@@ -107,6 +107,9 @@ var _ = BeforeSuite(func() {
 	filterLogger := internal.NewFilterLogger([]string{
 		"ERR unknown subcommand 'maint_notifications'",
 		"test panic",
+		"sentinel:",
+		"hitless:",
+		"pubsub:",
 	})
 	redis.SetLogger(filterLogger)
 
