@@ -301,7 +301,7 @@ func (ph *PoolHook) closeConnFromRequest(ctx context.Context, request HandoffReq
 	pooler := request.Pool
 	conn := request.Conn
 	if pooler != nil {
-		pooler.CloseConn(conn)
+		pooler.Remove(ctx, conn, err)
 		if ph.config != nil && ph.config.LogLevel >= LogLevelWarn { // Warning level
 			internal.Logger.Printf(ctx,
 				"hitless: removed conn[%d] from pool due to max handoff retries reached: %v",

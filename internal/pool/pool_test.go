@@ -440,6 +440,6 @@ var _ = Describe("race", func() {
 })
 
 func init() {
-	filterLogger := internal.NewFilterLogger([]string{"test panic"})
+	filterLogger := internal.NewFilterLogger([]string{"test panic", "was not able to get a healthy connection after"})
 	redis.SetLogger(filterLogger)
 }
