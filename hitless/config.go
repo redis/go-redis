@@ -221,28 +221,24 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 	result := &Config{}
 
 	// Apply defaults for enum fields (empty/zero means not set)
-	if c.Mode == "" {
-		result.Mode = defaults.Mode
-	} else {
+	result.Mode = defaults.Mode
+	if c.Mode != "" {
 		result.Mode = c.Mode
 	}
 
-	if c.EndpointType == "" {
-		result.EndpointType = defaults.EndpointType
-	} else {
+	result.EndpointType = defaults.EndpointType
+	if c.EndpointType != "" {
 		result.EndpointType = c.EndpointType
 	}
 
 	// Apply defaults for duration fields (zero means not set)
-	if c.RelaxedTimeout <= 0 {
-		result.RelaxedTimeout = defaults.RelaxedTimeout
-	} else {
+	result.RelaxedTimeout = defaults.RelaxedTimeout
+	if c.RelaxedTimeout > 0 {
 		result.RelaxedTimeout = c.RelaxedTimeout
 	}
 
-	if c.HandoffTimeout <= 0 {
-		result.HandoffTimeout = defaults.HandoffTimeout
-	} else {
+	result.HandoffTimeout = defaults.HandoffTimeout
+	if c.HandoffTimeout > 0 {
 		result.HandoffTimeout = c.HandoffTimeout
 	}
 
@@ -253,12 +249,11 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 	result.applyWorkerDefaults(poolSize)
 
 	// Apply queue size defaults with new scaling approach
-	if c.HandoffQueueSize <= 0 {
-		// Default: max(20x workers, PoolSize), capped by maxActiveConns or 5x pool size
-		workerBasedSize := result.MaxWorkers * 20
-		poolBasedSize := poolSize
-		result.HandoffQueueSize = util.Max(workerBasedSize, poolBasedSize)
-	} else {
+	// Default: max(20x workers, PoolSize), capped by maxActiveConns or 5x pool size
+	workerBasedSize := result.MaxWorkers * 20
+	poolBasedSize := poolSize
+	result.HandoffQueueSize = util.Max(workerBasedSize, poolBasedSize)
+	if c.HandoffQueueSize > 0 {
 		// When explicitly set: enforce minimum of 200
 		result.HandoffQueueSize = util.Max(200, c.HandoffQueueSize)
 	}
@@ -277,9 +272,8 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 		result.HandoffQueueSize = 2
 	}
 
-	if c.PostHandoffRelaxedDuration <= 0 {
-		result.PostHandoffRelaxedDuration = result.RelaxedTimeout * 2
-	} else {
+	result.PostHandoffRelaxedDuration = result.RelaxedTimeout * 2
+	if c.PostHandoffRelaxedDuration > 0 {
 		result.PostHandoffRelaxedDuration = c.PostHandoffRelaxedDuration
 	}
 
@@ -288,9 +282,8 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 	result.LogLevel = c.LogLevel
 
 	// Apply defaults for configuration fields
-	if c.MaxHandoffRetries <= 0 {
-		result.MaxHandoffRetries = defaults.MaxHandoffRetries
-	} else {
+	result.MaxHandoffRetries = defaults.MaxHandoffRetries
+	if c.MaxHandoffRetries > 0 {
 		result.MaxHandoffRetries = c.MaxHandoffRetries
 	}
 
@@ -329,12 +322,12 @@ func (c *Config) applyWorkerDefaults(poolSize int) {
 		poolSize = 10 * runtime.GOMAXPROCS(0)
 	}
 
-	if c.MaxWorkers == 0 {
-		// When not set: min(poolSize/2, max(10, poolSize/3)) - balanced scaling approach
-		c.MaxWorkers = util.Min(poolSize/2, util.Max(10, poolSize/3))
-	} else {
+	// When not set: min(poolSize/2, max(10, poolSize/3)) - balanced scaling approach
+	originalMaxWorkers := c.MaxWorkers
+	c.MaxWorkers = util.Min(poolSize/2, util.Max(10, poolSize/3))
+	if originalMaxWorkers != 0 {
 		// When explicitly set: max(poolSize/2, set_value) - ensure at least poolSize/2 workers
-		c.MaxWorkers = util.Max(poolSize/2, c.MaxWorkers)
+		c.MaxWorkers = util.Max(poolSize/2, originalMaxWorkers)
 	}
 
 	// Ensure minimum of 1 worker (fallback for very small pools)
