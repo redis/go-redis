@@ -262,6 +262,10 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 	var queueCap int
 	if maxActiveConns > 0 {
 		queueCap = maxActiveConns + 1
+		// Ensure queue cap is at least 2 for very small maxActiveConns
+		if queueCap < 2 {
+			queueCap = 2
+		}
 	} else {
 		queueCap = poolSize * 5
 	}

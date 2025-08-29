@@ -1,3 +1,5 @@
+// Package logging provides logging level constants and utilities for the go-redis library.
+// This package centralizes logging configuration to ensure consistency across all components.
 package logging
 
 // LogLevel represents the logging level

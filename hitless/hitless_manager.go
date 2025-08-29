@@ -186,6 +186,8 @@ func (hm *HitlessManager) UntrackOperationWithConnID(seqID int64, connID uint64)
 }
 
 // GetActiveMovingOperations returns active operations with composite keys.
+// WARNING: This method creates a new map and copies all operations on every call.
+// Use sparingly, especially in hot paths or high-frequency logging.
 func (hm *HitlessManager) GetActiveMovingOperations() map[MovingOperationKey]*MovingOperation {
 	result := make(map[MovingOperationKey]*MovingOperation)
 

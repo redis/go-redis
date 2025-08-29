@@ -130,8 +130,8 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 				return
 			}
 			if err := snh.markConnForHandoff(poolConn, newEndpoint, seqID, deadline); err != nil {
-				// Log error but don't fail the goroutine
-				internal.Logger.Printf(ctx, "hitless: failed to mark connection for handoff: %v", err)
+				// Log error but don't fail the goroutine - use background context since original may be cancelled
+				internal.Logger.Printf(context.Background(), "hitless: failed to mark connection for handoff: %v", err)
 			}
 		})
 		return nil
