@@ -319,26 +319,22 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	const backoffDuration = 100 * time.Millisecond
 
 	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Add backoff delay for retry attempts
-		// (not for the first attempt, do at least one)
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				// we should have lastErr set, but just in case
-				if lastErr == nil {
-					lastErr = ctx.Err()
-				}
-				break
-			case <-time.After(backoffDuration):
-				// Continue with retry
-			}
-		}
-
+	shouldLoop := true
+	// when the timeout is reached, we should stop retrying
+	// but keep the lastErr to return to the caller
+	// instead of a generic context deadline exceeded error
+	for attempt := 0; (attempt < maxRetries) && shouldLoop; attempt++ {
 		netConn, err := p.cfg.Dialer(ctx)
 		if err != nil {
 			lastErr = err
-			// Continue to next retry attempt
+			// Add backoff delay for retry attempts
+			// (not for the first attempt, do at least one)
+			select {
+			case <-ctx.Done():
+				shouldLoop = false
+			case <-time.After(backoffDuration):
+				// Continue with retry
+			}
 			continue
 		}
 
