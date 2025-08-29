@@ -207,7 +207,7 @@ func (ph *PoolHook) onDemandWorker() {
 			return
 		case <-time.After(ph.workerTimeout):
 			// Worker has been idle for too long, exit to save resources
-			if ph.config != nil && ph.config.LogLevel >= LogLevelDebug { // Debug level
+			if ph.config != nil && ph.config.LogLevel.InfoOrAbove() { // Debug level
 				internal.Logger.Printf(context.Background(),
 					"hitless: worker exiting due to inactivity timeout (%v)", ph.workerTimeout)
 			}
@@ -302,14 +302,14 @@ func (ph *PoolHook) closeConnFromRequest(ctx context.Context, request HandoffReq
 	conn := request.Conn
 	if pooler != nil {
 		pooler.Remove(ctx, conn, err)
-		if ph.config != nil && ph.config.LogLevel >= LogLevelWarn { // Warning level
+		if ph.config != nil && ph.config.LogLevel.WarnOrAbove() { // Warning level
 			internal.Logger.Printf(ctx,
 				"hitless: removed conn[%d] from pool due to max handoff retries reached: %v",
 				conn.GetID(), err)
 		}
 	} else {
 		conn.Close()
-		if ph.config != nil && ph.config.LogLevel >= LogLevelWarn { // Warning level
+		if ph.config != nil && ph.config.LogLevel.WarnOrAbove() { // Warning level
 			internal.Logger.Printf(ctx,
 				"hitless: no pool provided for conn[%d], cannot remove due to handoff initialization failure: %v",
 				conn.GetID(), err)
@@ -357,11 +357,11 @@ func (ph *PoolHook) queueHandoff(conn *pool.Conn) error {
 				// Queue is full - log and attempt scaling
 				queueLen := len(ph.handoffQueue)
 				queueCap := cap(ph.handoffQueue)
-				if ph.config != nil && ph.config.LogLevel >= LogLevelWarn { // Warning level
+				if ph.config != nil && ph.config.LogLevel.WarnOrAbove() { // Warning level
 					internal.Logger.Printf(context.Background(),
 						"hitless: handoff queue is full (%d/%d), cant queue handoff request for conn[%d] seqID[%d]",
 						queueLen, queueCap, request.ConnID, request.SeqID)
-					if ph.config.LogLevel >= LogLevelDebug { // Debug level
+					if ph.config.LogLevel.DebugOrAbove() { // Debug level
 						ph.pending.Range(func(k, v interface{}) bool {
 							internal.Logger.Printf(context.Background(), "hitless: pending handoff for conn[%d] seqID[%d]", k, v)
 							return true
@@ -396,7 +396,7 @@ func (ph *PoolHook) performConnectionHandoff(ctx context.Context, conn *pool.Con
 	}
 
 	if retries > maxRetries {
-		if ph.config != nil && ph.config.LogLevel >= LogLevelWarn { // Warning level
+		if ph.config != nil && ph.config.LogLevel.WarnOrAbove() { // Warning level
 			internal.Logger.Printf(ctx,
 				"hitless: reached max retries (%d) for handoff of conn[%d] to %s",
 				maxRetries, conn.GetID(), conn.GetHandoffEndpoint())
@@ -430,7 +430,7 @@ func (ph *PoolHook) performConnectionHandoff(ctx context.Context, conn *pool.Con
 		deadline := time.Now().Add(ph.config.PostHandoffRelaxedDuration)
 		conn.SetRelaxedTimeoutWithDeadline(relaxedTimeout, relaxedTimeout, deadline)
 
-		if ph.config.LogLevel >= 2 { // Info level
+		if ph.config.LogLevel.InfoOrAbove() {
 			internal.Logger.Printf(context.Background(),
 				"hitless: conn[%d] applied post-handoff relaxed timeout (%v) until %v",
 				connID, relaxedTimeout, deadline.Format("15:04:05.000"))

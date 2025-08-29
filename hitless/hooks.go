@@ -16,7 +16,7 @@ type LoggingHook struct {
 
 // PreHook logs the notification before processing and allows modification.
 func (lh *LoggingHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
-	if lh.LogLevel >= logging.LogLevelInfo { // Info level
+	if lh.LogLevel.InfoOrAbove() { // Info level
 		// Log the notification type and content
 		connID := uint64(0)
 		if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
@@ -33,9 +33,9 @@ func (lh *LoggingHook) PostHook(ctx context.Context, notificationCtx push.Notifi
 	if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
 		connID = conn.GetID()
 	}
-	if result != nil && lh.LogLevel >= logging.LogLevelWarn { // Warning level
+	if result != nil && lh.LogLevel.WarnOrAbove() { // Warning level
 		internal.Logger.Printf(ctx, "hitless: conn[%d] %s notification processing failed: %v - %v", connID, notificationType, result, notification)
-	} else if lh.LogLevel >= logging.LogLevelDebug { // Debug level
+	} else if lh.LogLevel.DebugOrAbove() { // Debug level
 		internal.Logger.Printf(ctx, "hitless: conn[%d] %s notification processed successfully", connID, notificationType)
 	}
 }

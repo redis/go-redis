@@ -12,6 +12,7 @@ import (
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 var _ = Describe("ConnPool", func() {
@@ -438,5 +439,5 @@ var _ = Describe("race", func() {
 })
 
 func init() {
-	redis.SetLogger(&redis.VoidLogger{})
+	logging.Disable()
 }

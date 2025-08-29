@@ -148,12 +148,12 @@ func (hm *HitlessManager) TrackMovingOperationWithConnID(ctx context.Context, ne
 	// Use LoadOrStore for atomic check-and-set operation
 	if _, loaded := hm.activeMovingOps.LoadOrStore(key, movingOp); loaded {
 		// Duplicate MOVING notification, ignore
-		if hm.config.LogLevel >= LogLevelDebug { // Debug level
+		if hm.config.LogLevel.DebugOrAbove() { // Debug level
 			internal.Logger.Printf(context.Background(), "hitless: conn[%d] seqID[%d] Duplicate MOVING operation ignored: %s", connID, seqID, key.String())
 		}
 		return nil
 	}
-	if hm.config.LogLevel >= LogLevelDebug { // Debug level
+	if hm.config.LogLevel.DebugOrAbove() { // Debug level
 		internal.Logger.Printf(context.Background(), "hitless: conn[%d] seqID[%d] Tracking MOVING operation: %s", connID, seqID, key.String())
 	}
 
@@ -173,13 +173,13 @@ func (hm *HitlessManager) UntrackOperationWithConnID(seqID int64, connID uint64)
 
 	// Remove from active operations atomically
 	if _, loaded := hm.activeMovingOps.LoadAndDelete(key); loaded {
-		if hm.config.LogLevel >= LogLevelDebug { // Debug level
+		if hm.config.LogLevel.DebugOrAbove() { // Debug level
 			internal.Logger.Printf(context.Background(), "hitless: conn[%d] seqID[%d] Untracking MOVING operation: %s", connID, seqID, key.String())
 		}
 		// Decrement active operation count only if operation existed
 		hm.activeOperationCount.Add(-1)
 	} else {
-		if hm.config.LogLevel >= LogLevelDebug { // Debug level
+		if hm.config.LogLevel.DebugOrAbove() { // Debug level
 			internal.Logger.Printf(context.Background(), "hitless: conn[%d] seqID[%d] Operation not found for untracking: %s", connID, seqID, key.String())
 		}
 	}

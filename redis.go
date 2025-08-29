@@ -1282,13 +1282,3 @@ func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.Notifica
 		Conn:     cn, // Wrap in adapter for easier interface access
 	}
 }
-
-// VoidLogger is a logger that does nothing.
-// Used to disable logging and thus speed up the library.
-type VoidLogger struct{}
-
-func (v *VoidLogger) Printf(_ context.Context, _ string, _ ...interface{}) {
-	// do nothing
-}
-
-var _ internal.Logging = (*VoidLogger)(nil)

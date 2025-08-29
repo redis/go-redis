@@ -12,17 +12,6 @@ import (
 	"github.com/redis/go-redis/v9/logging"
 )
 
-// LogLevel represents the logging level for hitless upgrades
-type LogLevel = logging.LogLevel
-
-// Log level constants for hitless upgrades
-const (
-	LogLevelError LogLevel = logging.LogLevelError // 0 - errors only
-	LogLevelWarn  LogLevel = logging.LogLevelWarn  // 1 - warnings and errors
-	LogLevelInfo  LogLevel = logging.LogLevelInfo  // 2 - info, warnings, and errors
-	LogLevelDebug LogLevel = logging.LogLevelDebug // 3 - debug, info, warnings, and errors
-)
-
 // MaintNotificationsMode represents the maintenance notifications mode
 type MaintNotificationsMode string
 
@@ -124,8 +113,8 @@ type Config struct {
 
 	// LogLevel controls the verbosity of hitless upgrade logging.
 	// LogLevelError (0) = errors only, LogLevelWarn (1) = warnings, LogLevelInfo (2) = info, LogLevelDebug (3) = debug
-	// Default: LogLevelError(0)
-	LogLevel LogLevel
+	// Default: logging.LogLevelError(0)
+	LogLevel logging.LogLevel
 
 	// MaxHandoffRetries is the maximum number of times to retry a failed handoff.
 	// After this many retries, the connection will be removed from the pool.
@@ -291,7 +280,7 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 		result.MaxHandoffRetries = c.MaxHandoffRetries
 	}
 
-	if result.LogLevel >= LogLevelDebug {
+	if result.LogLevel.DebugOrAbove() {
 		internal.Logger.Printf(context.Background(), "hitless: debug logging enabled")
 		internal.Logger.Printf(context.Background(), "hitless: config: %+v", result)
 	}
