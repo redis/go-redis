@@ -124,7 +124,7 @@ type Config struct {
 
 	// LogLevel controls the verbosity of hitless upgrade logging.
 	// LogLevelError (0) = errors only, LogLevelWarn (1) = warnings, LogLevelInfo (2) = info, LogLevelDebug (3) = debug
-	// Default: LogLevelWarn (warnings)
+	// Default: LogLevelError(0)
 	LogLevel LogLevel
 
 	// MaxHandoffRetries is the maximum number of times to retry a failed handoff.
@@ -147,7 +147,7 @@ func DefaultConfig() *Config {
 		MaxWorkers:                 0, // Auto-calculated based on pool size
 		HandoffQueueSize:           0, // Auto-calculated based on max workers
 		PostHandoffRelaxedDuration: 0, // Auto-calculated based on relaxed timeout
-		LogLevel:                   LogLevelWarn,
+		LogLevel:                   LogLevelError,
 
 		// Connection Handoff Configuration
 		MaxHandoffRetries: 3,
