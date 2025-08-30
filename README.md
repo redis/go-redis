@@ -432,34 +432,12 @@ res, err := rdb.Do(ctx, "set", "key", "value").Result()
 
 ## Run the test
 
-go-redis will start a redis-server and run the test cases.
-
-The paths of redis-server bin file and redis config file are defined in `main_test.go`:
-
-```go
-var (
-	redisServerBin, _  = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
-	redisServerConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
-)
-```
-
-For local testing, you can change the variables to refer to your local files, or create a soft link
-to the corresponding folder for redis-server and copy the config file to `testdata/redis/`:
-
+Start a Redis server, then run:
 ```shell
-ln -s /usr/bin/redis-server ./go-redis/testdata/redis/src
-cp ./go-redis/testdata/redis.conf ./go-redis/testdata/redis/
+go test <your options>
 ```
 
-Lastly, run:
-
-```shell
-go test
-```
-
-Another option is to run your specific tests with an already running redis. The example below, tests
-against a redis running on port 9999.:
-
+If the Redis server isn't running on port 6379, make sure to set the REDIS_PORT environment variable. For example, the test below runs against a Redis instance on port 9999.:
 ```shell
 REDIS_PORT=9999 go test <your options>
 ```
