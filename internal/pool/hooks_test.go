@@ -177,8 +177,9 @@ func TestPoolWithHooks(t *testing.T) {
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return &net.TCPConn{}, nil // Mock connection
 		},
-		PoolSize:    1,
-		DialTimeout: time.Second,
+		PoolSize:           1,
+		MaxConcurrentDials: 1,
+		DialTimeout:        time.Second,
 	}
 
 	pool := NewConnPool(opt)
