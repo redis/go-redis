@@ -38,6 +38,9 @@ type Pipeliner interface {
 
 	// Exec is to send all the commands buffered in the pipeline to the redis-server.
 	Exec(ctx context.Context) ([]Cmder, error)
+
+	// Cmds returns the list of queued commands.
+	Cmds() []Cmder
 }
 
 var _ Pipeliner = (*Pipeline)(nil)
@@ -118,4 +121,8 @@ func (c *Pipeline) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([
 
 func (c *Pipeline) TxPipeline() Pipeliner {
 	return c
+}
+
+func (c *Pipeline) Cmds() []Cmder {
+	return c.cmds
 }
