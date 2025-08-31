@@ -432,14 +432,9 @@ res, err := rdb.Do(ctx, "set", "key", "value").Result()
 
 ## Run the test
 
-Start a Redis server, then run:
+Recommended to use Docker, just need to run:
 ```shell
-go test <your options>
-```
-
-If the Redis server isn't running on port 6379, make sure to set the REDIS_PORT environment variable. For example, the test below runs against a Redis instance on port 9999.:
-```shell
-REDIS_PORT=9999 go test <your options>
+make test
 ```
 
 ## See also
