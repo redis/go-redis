@@ -34,7 +34,6 @@ type Limiter interface {
 
 // Options keeps the settings to set up redis connection.
 type Options struct {
-
 	// Network type, either tcp or unix.
 	//
 	// default: is tcp.
