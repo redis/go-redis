@@ -112,6 +112,16 @@ type Options struct {
 	// default: 10 seconds
 	DialTimeout time.Duration
 
+	// DialerRetries is the maximum number of retry attempts when dialing fails.
+	//
+	// default: 5
+	DialerRetries int
+
+	// DialerRetryTimeout is the backoff duration between retry attempts.
+	//
+	// default: 100 milliseconds
+	DialerRetryTimeout time.Duration
+
 	// ReadTimeout for socket reads. If reached, commands will fail
 	// with a timeout instead of blocking. Supported values:
 	//
@@ -276,6 +286,12 @@ func (opt *Options) init() {
 	}
 	if opt.DialTimeout == 0 {
 		opt.DialTimeout = 10 * time.Second
+	}
+	if opt.DialerRetries == 0 {
+		opt.DialerRetries = 5
+	}
+	if opt.DialerRetryTimeout == 0 {
+		opt.DialerRetryTimeout = 100 * time.Millisecond
 	}
 	if opt.Dialer == nil {
 		opt.Dialer = NewDialer(opt)
@@ -678,6 +694,8 @@ func newConnPool(
 		PoolSize:                 poolSize,
 		PoolTimeout:              opt.PoolTimeout,
 		DialTimeout:              opt.DialTimeout,
+		DialerRetries:            opt.DialerRetries,
+		DialerRetryTimeout:       opt.DialerRetryTimeout,
 		MinIdleConns:             minIdleConns,
 		MaxIdleConns:             maxIdleConns,
 		MaxActiveConns:           maxActiveConns,
@@ -716,6 +734,8 @@ func newPubSubPool(opt *Options, dialer func(ctx context.Context, network, addr 
 		PoolSize:                 poolSize,
 		PoolTimeout:              opt.PoolTimeout,
 		DialTimeout:              opt.DialTimeout,
+		DialerRetries:            opt.DialerRetries,
+		DialerRetryTimeout:       opt.DialerRetryTimeout,
 		MinIdleConns:             minIdleConns,
 		MaxIdleConns:             maxIdleConns,
 		MaxActiveConns:           maxActiveConns,

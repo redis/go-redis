@@ -99,6 +99,14 @@ type Options struct {
 	ConnMaxIdleTime          time.Duration
 	ConnMaxLifetime          time.Duration
 	PushNotificationsEnabled bool
+
+	// DialerRetries is the maximum number of retry attempts when dialing fails.
+	// Default: 5
+	DialerRetries int
+
+	// DialerRetryTimeout is the backoff duration between retry attempts.
+	// Default: 100ms
+	DialerRetryTimeout time.Duration
 }
 
 type lastDialErrorWrap struct {
@@ -315,8 +323,14 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	// Retry dialing with backoff
 	// the context timeout is already handled by the context passed in
 	// so we may never reach the max retries, higher values don't hurt
-	const maxRetries = 10
-	const backoffDuration = 100 * time.Millisecond
+	maxRetries := p.cfg.DialerRetries
+	if maxRetries <= 0 {
+		maxRetries = 5 // Default value
+	}
+	backoffDuration := p.cfg.DialerRetryTimeout
+	if backoffDuration <= 0 {
+		backoffDuration = 100 * time.Millisecond // Default value
+	}
 
 	var lastErr error
 	shouldLoop := true

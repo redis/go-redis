@@ -437,6 +437,70 @@ var _ = Describe("race", func() {
 	})
 })
 
+// TestDialerRetryConfiguration tests the new DialerRetries and DialerRetryTimeout options
+func TestDialerRetryConfiguration(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("CustomDialerRetries", func(t *testing.T) {
+		attempts := 0
+		failingDialer := func(ctx context.Context) (net.Conn, error) {
+			attempts++
+			return nil, errors.New("dial failed")
+		}
+
+		connPool := pool.NewConnPool(&pool.Options{
+			Dialer:             failingDialer,
+			PoolSize:           1,
+			PoolTimeout:        time.Second,
+			DialTimeout:        time.Second,
+			DialerRetries:      3, // Custom retry count
+			DialerRetryTimeout: 10 * time.Millisecond, // Fast retries for testing
+		})
+		defer connPool.Close()
+
+		_, err := connPool.Get(ctx)
+		if err == nil {
+			t.Error("Expected error from failing dialer")
+		}
+
+		// Should have attempted at least 3 times (DialerRetries = 3)
+		// There might be additional attempts due to pool logic
+		if attempts < 3 {
+			t.Errorf("Expected at least 3 dial attempts, got %d", attempts)
+		}
+		if attempts > 6 {
+			t.Errorf("Expected around 3 dial attempts, got %d (too many)", attempts)
+		}
+	})
+
+	t.Run("DefaultDialerRetries", func(t *testing.T) {
+		attempts := 0
+		failingDialer := func(ctx context.Context) (net.Conn, error) {
+			attempts++
+			return nil, errors.New("dial failed")
+		}
+
+		connPool := pool.NewConnPool(&pool.Options{
+			Dialer:      failingDialer,
+			PoolSize:    1,
+			PoolTimeout: time.Second,
+			DialTimeout: time.Second,
+			// DialerRetries and DialerRetryTimeout not set - should use defaults
+		})
+		defer connPool.Close()
+
+		_, err := connPool.Get(ctx)
+		if err == nil {
+			t.Error("Expected error from failing dialer")
+		}
+
+		// Should have attempted 5 times (default DialerRetries = 5)
+		if attempts != 5 {
+			t.Errorf("Expected 5 dial attempts (default), got %d", attempts)
+		}
+	})
+}
+
 func init() {
 	logging.Disable()
 }

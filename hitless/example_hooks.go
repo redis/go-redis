@@ -21,6 +21,9 @@ type MetricsHook struct {
 	NotificationCounts map[string]int64
 	ProcessingTimes    map[string]time.Duration
 	ErrorCounts        map[string]int64
+	HandoffCounts      int64 // Total handoffs initiated
+	HandoffSuccesses   int64 // Successful handoffs
+	HandoffFailures    int64 // Failed handoffs
 }
 
 // NewMetricsHook creates a new metrics collection hook.
