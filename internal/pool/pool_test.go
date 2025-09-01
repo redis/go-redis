@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -442,9 +443,9 @@ func TestDialerRetryConfiguration(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("CustomDialerRetries", func(t *testing.T) {
-		attempts := 0
+		var attempts int64
 		failingDialer := func(ctx context.Context) (net.Conn, error) {
-			attempts++
+			atomic.AddInt64(&attempts, 1)
 			return nil, errors.New("dial failed")
 		}
 
@@ -465,18 +466,19 @@ func TestDialerRetryConfiguration(t *testing.T) {
 
 		// Should have attempted at least 3 times (DialerRetries = 3)
 		// There might be additional attempts due to pool logic
-		if attempts < 3 {
-			t.Errorf("Expected at least 3 dial attempts, got %d", attempts)
+		finalAttempts := atomic.LoadInt64(&attempts)
+		if finalAttempts < 3 {
+			t.Errorf("Expected at least 3 dial attempts, got %d", finalAttempts)
 		}
-		if attempts > 6 {
-			t.Errorf("Expected around 3 dial attempts, got %d (too many)", attempts)
+		if finalAttempts > 6 {
+			t.Errorf("Expected around 3 dial attempts, got %d (too many)", finalAttempts)
 		}
 	})
 
 	t.Run("DefaultDialerRetries", func(t *testing.T) {
-		attempts := 0
+		var attempts int64
 		failingDialer := func(ctx context.Context) (net.Conn, error) {
-			attempts++
+			atomic.AddInt64(&attempts, 1)
 			return nil, errors.New("dial failed")
 		}
 
@@ -495,8 +497,9 @@ func TestDialerRetryConfiguration(t *testing.T) {
 		}
 
 		// Should have attempted 5 times (default DialerRetries = 5)
-		if attempts != 5 {
-			t.Errorf("Expected 5 dial attempts (default), got %d", attempts)
+		finalAttempts := atomic.LoadInt64(&attempts)
+		if finalAttempts != 5 {
+			t.Errorf("Expected 5 dial attempts (default), got %d", finalAttempts)
 		}
 	})
 }
