@@ -1834,14 +1834,33 @@ func (c *ClusterClient) pubSub() *PubSub {
 			}
 
 			var err error
+
 			if len(channels) > 0 {
 				slot := hashtag.Slot(channels[0])
-				node, err = c.slotMasterNode(ctx, slot)
+
+				// newConn in PubSub is only used for subscription connections, so it is safe to
+				// assume that a slave node can always be used when client options specify ReadOnly.
+				if c.opt.ReadOnly {
+					state, err := c.state.Get(ctx)
+					if err != nil {
+						return nil, err
+					}
+
+					node, err = c.slotReadOnlyNode(state, slot)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					node, err = c.slotMasterNode(ctx, slot)
+					if err != nil {
+						return nil, err
+					}
+				}
 			} else {
 				node, err = c.nodes.Random()
-			}
-			if err != nil {
-				return nil, err
+				if err != nil {
+					return nil, err
+				}
 			}
 
 			cn, err := node.Client.newConn(context.TODO())
