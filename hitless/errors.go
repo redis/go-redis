@@ -48,3 +48,8 @@ var (
 var (
 	ErrShutdown = errors.New("hitless: shutdown")
 )
+
+// circuit breaker errors
+var (
+	ErrCircuitBreakerOpen = errors.New("hitless: circuit breaker is open, failing fast")
+)

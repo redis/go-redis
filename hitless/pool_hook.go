@@ -105,6 +105,16 @@ func (ph *PoolHook) GetHandoffQueue() chan HandoffRequest {
 	return ph.workerManager.getHandoffQueue()
 }
 
+// GetCircuitBreakerStats returns circuit breaker statistics for monitoring
+func (ph *PoolHook) GetCircuitBreakerStats() []CircuitBreakerStats {
+	return ph.workerManager.getCircuitBreakerStats()
+}
+
+// ResetCircuitBreakers resets all circuit breakers (useful for testing)
+func (ph *PoolHook) ResetCircuitBreakers() {
+	ph.workerManager.resetCircuitBreakers()
+}
+
 // OnGet is called when a connection is retrieved from the pool
 func (ph *PoolHook) OnGet(ctx context.Context, conn *pool.Conn, _ bool) error {
 	// NOTE: There are two conditions to make sure we don't return a connection that should be handed off or is

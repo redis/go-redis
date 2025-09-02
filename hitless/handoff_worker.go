@@ -33,18 +33,22 @@ type handoffWorkerManager struct {
 
 	// Pool hook reference for handoff processing
 	poolHook *PoolHook
+
+	// Circuit breaker manager for endpoint failure handling
+	circuitBreakerManager *CircuitBreakerManager
 }
 
 // newHandoffWorkerManager creates a new handoff worker manager
 func newHandoffWorkerManager(config *Config, poolHook *PoolHook) *handoffWorkerManager {
 	return &handoffWorkerManager{
-		handoffQueue:  make(chan HandoffRequest, config.HandoffQueueSize),
-		shutdown:      make(chan struct{}),
-		maxWorkers:    config.MaxWorkers,
-		activeWorkers: atomic.Int32{}, // Start with no workers - create on demand
-		workerTimeout: 15 * time.Second, // Workers exit after 15s of inactivity
-		config:        config,
-		poolHook:      poolHook,
+		handoffQueue:          make(chan HandoffRequest, config.HandoffQueueSize),
+		shutdown:              make(chan struct{}),
+		maxWorkers:            config.MaxWorkers,
+		activeWorkers:         atomic.Int32{}, // Start with no workers - create on demand
+		workerTimeout:         15 * time.Second, // Workers exit after 15s of inactivity
+		config:                config,
+		poolHook:              poolHook,
+		circuitBreakerManager: newCircuitBreakerManager(config),
 	}
 }
 
@@ -66,6 +70,16 @@ func (hwm *handoffWorkerManager) getMaxWorkers() int {
 // getHandoffQueue returns the handoff queue for testing purposes
 func (hwm *handoffWorkerManager) getHandoffQueue() chan HandoffRequest {
 	return hwm.handoffQueue
+}
+
+// getCircuitBreakerStats returns circuit breaker statistics for monitoring
+func (hwm *handoffWorkerManager) getCircuitBreakerStats() []CircuitBreakerStats {
+	return hwm.circuitBreakerManager.GetAllStats()
+}
+
+// resetCircuitBreakers resets all circuit breakers (useful for testing)
+func (hwm *handoffWorkerManager) resetCircuitBreakers() {
+	hwm.circuitBreakerManager.Reset()
 }
 
 // isHandoffPending returns true if the given connection has a pending handoff
@@ -286,8 +300,37 @@ func (hwm *handoffWorkerManager) performConnectionHandoff(ctx context.Context, c
 		return false, ErrConnectionInvalidHandoffState
 	}
 
+	// Use circuit breaker to protect against failing endpoints
+	circuitBreaker := hwm.circuitBreakerManager.GetCircuitBreaker(newEndpoint)
+
+	// Check if circuit breaker is open before attempting handoff
+	if circuitBreaker.IsOpen() {
+		internal.Logger.Printf(ctx, "hitless: conn[%d] handoff to %s failed fast due to circuit breaker", connID, newEndpoint)
+		return false, ErrCircuitBreakerOpen // Don't retry when circuit breaker is open
+	}
+
+	// Perform the handoff
+	shouldRetry, err = hwm.performHandoffInternal(ctx, conn, newEndpoint, connID)
+
+	// Update circuit breaker based on result
+	if err != nil {
+		// Only track dial/network errors in circuit breaker, not initialization errors
+		if shouldRetry {
+			circuitBreaker.recordFailure()
+		}
+		return shouldRetry, err
+	}
+
+	// Success - record in circuit breaker
+	circuitBreaker.recordSuccess()
+	return false, nil
+}
+
+// performHandoffInternal performs the actual handoff logic (extracted for circuit breaker integration)
+func (hwm *handoffWorkerManager) performHandoffInternal(ctx context.Context, conn *pool.Conn, newEndpoint string, connID uint64) (shouldRetry bool, err error) {
+
 	retries := conn.IncrementAndGetHandoffRetries(1)
-	internal.Logger.Printf(ctx, "hitless: conn[%d] Retry %d: Performing handoff to %s(was %s)", conn.GetID(), retries, newEndpoint, conn.RemoteAddr().String())
+	internal.Logger.Printf(ctx, "hitless: conn[%d] Retry %d: Performing handoff to %s(was %s)", connID, retries, newEndpoint, conn.RemoteAddr().String())
 	maxRetries := 3 // Default fallback
 	if hwm.config != nil {
 		maxRetries = hwm.config.MaxHandoffRetries
@@ -297,7 +340,7 @@ func (hwm *handoffWorkerManager) performConnectionHandoff(ctx context.Context, c
 		if hwm.config != nil && hwm.config.LogLevel.WarnOrAbove() { // Warning level
 			internal.Logger.Printf(ctx,
 				"hitless: reached max retries (%d) for handoff of conn[%d] to %s",
-				maxRetries, conn.GetID(), conn.GetHandoffEndpoint())
+				maxRetries, connID, newEndpoint)
 		}
 		// won't retry on ErrMaxHandoffRetriesReached
 		return false, ErrMaxHandoffRetriesReached
@@ -309,7 +352,7 @@ func (hwm *handoffWorkerManager) performConnectionHandoff(ctx context.Context, c
 	// Create new connection to the new endpoint
 	newNetConn, err := endpointDialer(ctx)
 	if err != nil {
-		internal.Logger.Printf(ctx, "hitless: conn[%d] Failed to dial new endpoint %s: %v", conn.GetID(), newEndpoint, err)
+		internal.Logger.Printf(ctx, "hitless: conn[%d] Failed to dial new endpoint %s: %v", connID, newEndpoint, err)
 		// hitless: will retry
 		// Maybe a network error - retry after a delay
 		return true, err
@@ -349,7 +392,7 @@ func (hwm *handoffWorkerManager) performConnectionHandoff(ctx context.Context, c
 	}()
 
 	conn.ClearHandoffState()
-	internal.Logger.Printf(ctx, "hitless: conn[%d] Handoff to %s successful", conn.GetID(), newEndpoint)
+	internal.Logger.Printf(ctx, "hitless: conn[%d] Handoff to %s successful", connID, newEndpoint)
 
 	return false, nil
 }

@@ -2,6 +2,7 @@ package hitless
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -76,5 +77,24 @@ func (mh *MetricsHook) GetMetrics() map[string]interface{} {
 		"notification_counts": mh.NotificationCounts,
 		"processing_times":    mh.ProcessingTimes,
 		"error_counts":        mh.ErrorCounts,
+	}
+}
+
+// ExampleCircuitBreakerMonitor demonstrates how to monitor circuit breaker status
+func ExampleCircuitBreakerMonitor(poolHook *PoolHook) {
+	// Get circuit breaker statistics
+	stats := poolHook.GetCircuitBreakerStats()
+
+	for _, stat := range stats {
+		fmt.Printf("Circuit Breaker for %s:\n", stat.Endpoint)
+		fmt.Printf("  State: %s\n", stat.State)
+		fmt.Printf("  Failures: %d\n", stat.Failures)
+		fmt.Printf("  Last Failure: %v\n", stat.LastFailureTime)
+		fmt.Printf("  Last Success: %v\n", stat.LastSuccessTime)
+
+		// Alert if circuit breaker is open
+		if stat.State.String() == "open" {
+			fmt.Printf("  ⚠️  ALERT: Circuit breaker is OPEN for %s\n", stat.Endpoint)
+		}
 	}
 }
