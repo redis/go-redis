@@ -169,7 +169,7 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		// Connection should be in pending map while initialization is blocked
-		if _, pending := processor.pending.Load(conn.GetID()); !pending {
+		if _, pending := processor.GetPendingMap().Load(conn.GetID()); !pending {
 			t.Error("Connection should be in pending handoffs map")
 		}
 
@@ -187,14 +187,14 @@ func TestConnectionHook(t *testing.T) {
 			case <-timeout:
 				t.Fatal("Timeout waiting for handoff to complete")
 			case <-ticker.C:
-				if _, pending := processor.pending.Load(conn); !pending {
+				if _, pending := processor.GetPendingMap().Load(conn); !pending {
 					handoffCompleted = true
 				}
 			}
 		}
 
 		// Verify handoff completed (removed from pending map)
-		if _, pending := processor.pending.Load(conn); pending {
+		if _, pending := processor.GetPendingMap().Load(conn); pending {
 			t.Error("Connection should be removed from pending map after handoff")
 		}
 
@@ -306,14 +306,14 @@ func TestConnectionHook(t *testing.T) {
 			case <-timeout:
 				t.Fatal("Timeout waiting for failed handoff to complete")
 			case <-ticker.C:
-				if _, pending := processor.pending.Load(conn.GetID()); !pending {
+				if _, pending := processor.GetPendingMap().Load(conn.GetID()); !pending {
 					handoffCompleted = true
 				}
 			}
 		}
 
 		// Connection should be removed from pending map after failed handoff
-		if _, pending := processor.pending.Load(conn.GetID()); pending {
+		if _, pending := processor.GetPendingMap().Load(conn.GetID()); pending {
 			t.Error("Connection should be removed from pending map after failed handoff")
 		}
 
@@ -380,8 +380,8 @@ func TestConnectionHook(t *testing.T) {
 
 		// Simulate a pending handoff by marking for handoff and queuing
 		conn.MarkForHandoff("new-endpoint:6379", 12345)
-		processor.pending.Store(conn.GetID(), int64(12345)) // Store connID -> seqID
-		conn.MarkQueuedForHandoff()                         // Mark as queued (sets usable=false)
+		processor.GetPendingMap().Store(conn.GetID(), int64(12345)) // Store connID -> seqID
+		conn.MarkQueuedForHandoff()                                 // Mark as queued (sets usable=false)
 
 		ctx := context.Background()
 		err := processor.OnGet(ctx, conn, false)
@@ -390,7 +390,7 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		// Clean up
-		processor.pending.Delete(conn)
+		processor.GetPendingMap().Delete(conn)
 	})
 
 	t.Run("EventDrivenStateManagement", func(t *testing.T) {
@@ -400,16 +400,16 @@ func TestConnectionHook(t *testing.T) {
 		conn := createMockPoolConnection()
 
 		// Test initial state - no pending handoffs
-		if _, pending := processor.pending.Load(conn); pending {
+		if _, pending := processor.GetPendingMap().Load(conn); pending {
 			t.Error("New connection should not have pending handoffs")
 		}
 
 		// Test adding to pending map
 		conn.MarkForHandoff("new-endpoint:6379", 12345)
-		processor.pending.Store(conn.GetID(), int64(12345)) // Store connID -> seqID
-		conn.MarkQueuedForHandoff()                         // Mark as queued (sets usable=false)
+		processor.GetPendingMap().Store(conn.GetID(), int64(12345)) // Store connID -> seqID
+		conn.MarkQueuedForHandoff()                                 // Mark as queued (sets usable=false)
 
-		if _, pending := processor.pending.Load(conn.GetID()); !pending {
+		if _, pending := processor.GetPendingMap().Load(conn.GetID()); !pending {
 			t.Error("Connection should be in pending map")
 		}
 
@@ -421,8 +421,8 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		// Test removing from pending map and clearing handoff state
-		processor.pending.Delete(conn)
-		if _, pending := processor.pending.Load(conn); pending {
+		processor.GetPendingMap().Delete(conn)
+		if _, pending := processor.GetPendingMap().Load(conn); pending {
 			t.Error("Connection should be removed from pending map")
 		}
 
@@ -510,14 +510,14 @@ func TestConnectionHook(t *testing.T) {
 		if processor.GetCurrentWorkers() != 0 {
 			t.Errorf("Expected 0 initial workers with on-demand system, got %d", processor.GetCurrentWorkers())
 		}
-		if processor.maxWorkers != 15 {
-			t.Errorf("Expected maxWorkers=15, got %d", processor.maxWorkers)
+		if processor.GetMaxWorkers() != 15 {
+			t.Errorf("Expected maxWorkers=15, got %d", processor.GetMaxWorkers())
 		}
 
 		// The on-demand worker behavior creates workers only when needed
 		// This test just verifies the basic configuration is correct
 		t.Logf("On-demand worker configuration verified - Max: %d, Current: %d",
-			processor.maxWorkers, processor.GetCurrentWorkers())
+			processor.GetMaxWorkers(), processor.GetCurrentWorkers())
 	})
 
 	t.Run("PassiveTimeoutRestoration", func(t *testing.T) {
@@ -567,7 +567,7 @@ func TestConnectionHook(t *testing.T) {
 			case <-timeout:
 				t.Fatal("Timeout waiting for handoff to complete")
 			case <-ticker.C:
-				if _, pending := processor.pending.Load(conn); !pending {
+				if _, pending := processor.GetPendingMap().Load(conn); !pending {
 					handoffCompleted = true
 				}
 			}
@@ -701,7 +701,7 @@ func TestConnectionHook(t *testing.T) {
 		defer processor.Shutdown(context.Background())
 
 		// Verify queue capacity matches configured size
-		queueCapacity := cap(processor.handoffQueue)
+		queueCapacity := cap(processor.GetHandoffQueue())
 		if queueCapacity != 50 {
 			t.Errorf("Expected queue capacity 50, got %d", queueCapacity)
 		}
@@ -734,7 +734,7 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		// Verify queue capacity remains static (the main purpose of this test)
-		finalCapacity := cap(processor.handoffQueue)
+		finalCapacity := cap(processor.GetHandoffQueue())
 
 		if finalCapacity != 50 {
 			t.Errorf("Queue capacity should remain static at 50, got %d", finalCapacity)
@@ -851,7 +851,7 @@ func TestConnectionHook(t *testing.T) {
 			case <-timeout:
 				t.Fatal("Timeout waiting for handoff to complete")
 			case <-ticker.C:
-				if _, pending := processor.pending.Load(conn); !pending {
+				if _, pending := processor.GetPendingMap().Load(conn); !pending {
 					handoffCompleted = true
 				}
 			}
