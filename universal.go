@@ -61,6 +61,20 @@ type UniversalOptions struct {
 	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
 
+	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
+	// Larger buffers can improve performance for commands that return large responses.
+	// Smaller buffers can improve memory usage for larger pools.
+	//
+	// default: 32KiB (32768 bytes)
+	ReadBufferSize int
+
+	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
+	// Larger buffers can improve performance for large pipelines and commands with many arguments.
+	// Smaller buffers can improve memory usage for larger pools.
+	//
+	// default: 32KiB (32768 bytes)
+	WriteBufferSize int
+
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
@@ -98,7 +112,13 @@ type UniversalOptions struct {
 	DisableIdentity bool
 
 	IdentitySuffix string
-	UnstableResp3  bool
+
+	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
+	// When a node is marked as failing, it will be avoided for this duration.
+	// Only applies to cluster clients. Default is 15 seconds.
+	FailingTimeoutSeconds int
+
+	UnstableResp3 bool
 
 	// IsClusterMode can be used when only one Addrs is provided (e.g. Elasticache supports setting up cluster mode with configuration endpoint).
 	IsClusterMode bool
@@ -137,6 +157,9 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		WriteTimeout:          o.WriteTimeout,
 		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
 
+		ReadBufferSize:  o.ReadBufferSize,
+		WriteBufferSize: o.WriteBufferSize,
+
 		PoolFIFO: o.PoolFIFO,
 
 		PoolSize:        o.PoolSize,
@@ -149,10 +172,11 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 
 		TLSConfig: o.TLSConfig,
 
-		DisableIdentity:  o.DisableIdentity,
-		DisableIndentity: o.DisableIndentity,
-		IdentitySuffix:   o.IdentitySuffix,
-		UnstableResp3:    o.UnstableResp3,
+		DisableIdentity:       o.DisableIdentity,
+		DisableIndentity:      o.DisableIndentity,
+		IdentitySuffix:        o.IdentitySuffix,
+		FailingTimeoutSeconds: o.FailingTimeoutSeconds,
+		UnstableResp3:         o.UnstableResp3,
 	}
 }
 
@@ -192,6 +216,9 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		ReadTimeout:           o.ReadTimeout,
 		WriteTimeout:          o.WriteTimeout,
 		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+
+		ReadBufferSize:  o.ReadBufferSize,
+		WriteBufferSize: o.WriteBufferSize,
 
 		PoolFIFO:        o.PoolFIFO,
 		PoolSize:        o.PoolSize,
@@ -242,6 +269,9 @@ func (o *UniversalOptions) Simple() *Options {
 		ReadTimeout:           o.ReadTimeout,
 		WriteTimeout:          o.WriteTimeout,
 		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+
+		ReadBufferSize:  o.ReadBufferSize,
+		WriteBufferSize: o.WriteBufferSize,
 
 		PoolFIFO:        o.PoolFIFO,
 		PoolSize:        o.PoolSize,

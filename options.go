@@ -135,14 +135,14 @@ type Options struct {
 	// Larger buffers can improve performance for commands that return large responses.
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 256KiB (262144 bytes)
+	// default: 32KiB (32768 bytes)
 	ReadBufferSize int
 
 	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
 	// Larger buffers can improve performance for large pipelines and commands with many arguments.
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 256KiB (262144 bytes)
+	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
 	// PoolFIFO type of connection pool.
@@ -231,6 +231,11 @@ type Options struct {
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	// When unstable mode is enabled, the client will use RESP3 protocol and only be able to use RawResult
 	UnstableResp3 bool
+
+	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
+	// When a node is marked as failing, it will be avoided for this duration.
+	// Default is 15 seconds.
+	FailingTimeoutSeconds int
 }
 
 func (opt *Options) init() {

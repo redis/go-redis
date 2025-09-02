@@ -36,6 +36,30 @@ var _ = Describe("pipelining", func() {
 		Expect(get.Val()).To(Equal(""))
 	})
 
+	It("exports queued commands", func() {
+		p := client.Pipeline()
+		cmds := p.Cmds()
+		Expect(cmds).To(BeEmpty())
+
+		p.Set(ctx, "foo", "bar", 0)
+		p.Get(ctx, "foo")
+		cmds = p.Cmds()
+		Expect(cmds).To(HaveLen(p.Len()))
+		Expect(cmds[0].Name()).To(Equal("set"))
+		Expect(cmds[1].Name()).To(Equal("get"))
+
+		cmds, err := p.Exec(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cmds).To(HaveLen(2))
+		Expect(cmds[0].Name()).To(Equal("set"))
+		Expect(cmds[0].(*redis.StatusCmd).Val()).To(Equal("OK"))
+		Expect(cmds[1].Name()).To(Equal("get"))
+		Expect(cmds[1].(*redis.StringCmd).Val()).To(Equal("bar"))
+
+		cmds = p.Cmds()
+		Expect(cmds).To(BeEmpty())
+	})
+
 	assertPipeline := func() {
 		It("returns no errors when there are no commands", func() {
 			_, err := pipe.Exec(ctx)

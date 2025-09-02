@@ -94,14 +94,14 @@ type FailoverOptions struct {
 	// Larger buffers can improve performance for commands that return large responses.
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 256KiB (262144 bytes)
+	// default: 32KiB (32768 bytes)
 	ReadBufferSize int
 
 	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
 	// Larger buffers can improve performance for large pipelines and commands with many arguments.
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 256KiB (262144 bytes)
+	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
 	PoolFIFO bool
@@ -129,7 +129,13 @@ type FailoverOptions struct {
 	DisableIdentity bool
 
 	IdentitySuffix string
-	UnstableResp3  bool
+
+	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
+	// When a node is marked as failing, it will be avoided for this duration.
+	// Only applies to failover cluster clients. Default is 15 seconds.
+	FailingTimeoutSeconds int
+
+	UnstableResp3 bool
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -195,8 +201,9 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
 
-		ReadBufferSize:  opt.ReadBufferSize,
-		WriteBufferSize: opt.WriteBufferSize,
+		// The sentinel client uses a 4KiB read/write buffer size.
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
 
 		DialTimeout:           opt.DialTimeout,
 		ReadTimeout:           opt.ReadTimeout,
@@ -238,6 +245,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		MaxRedirects: opt.MaxRetries,
 
+		ReadOnly:       opt.ReplicaOnly,
 		RouteByLatency: opt.RouteByLatency,
 		RouteRandomly:  opt.RouteRandomly,
 
@@ -263,10 +271,10 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		TLSConfig: opt.TLSConfig,
 
-		DisableIdentity:  opt.DisableIdentity,
-		DisableIndentity: opt.DisableIndentity,
-
-		IdentitySuffix: opt.IdentitySuffix,
+		DisableIdentity:       opt.DisableIdentity,
+		DisableIndentity:      opt.DisableIndentity,
+		IdentitySuffix:        opt.IdentitySuffix,
+		FailingTimeoutSeconds: opt.FailingTimeoutSeconds,
 	}
 }
 
