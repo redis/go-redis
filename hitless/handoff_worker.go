@@ -44,7 +44,7 @@ func newHandoffWorkerManager(config *Config, poolHook *PoolHook) *handoffWorkerM
 		handoffQueue:          make(chan HandoffRequest, config.HandoffQueueSize),
 		shutdown:              make(chan struct{}),
 		maxWorkers:            config.MaxWorkers,
-		activeWorkers:         atomic.Int32{}, // Start with no workers - create on demand
+		activeWorkers:         atomic.Int32{},   // Start with no workers - create on demand
 		workerTimeout:         15 * time.Second, // Workers exit after 15s of inactivity
 		config:                config,
 		poolHook:              poolHook,
@@ -423,14 +423,14 @@ func (hwm *handoffWorkerManager) closeConnFromRequest(ctx context.Context, reque
 		pooler.Remove(ctx, conn, err)
 		if hwm.config != nil && hwm.config.LogLevel.WarnOrAbove() { // Warning level
 			internal.Logger.Printf(ctx,
-				"hitless: removed conn[%d] from pool due to max handoff retries reached: %v",
+				"hitless: removed conn[%d] from pool due: %v",
 				conn.GetID(), err)
 		}
 	} else {
 		conn.Close()
 		if hwm.config != nil && hwm.config.LogLevel.WarnOrAbove() { // Warning level
 			internal.Logger.Printf(ctx,
-				"hitless: no pool provided for conn[%d], cannot remove due to handoff initialization failure: %v",
+				"hitless: no pool provided for conn[%d], cannot remove due to: %v",
 				conn.GetID(), err)
 		}
 	}

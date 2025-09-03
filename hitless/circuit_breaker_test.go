@@ -10,7 +10,10 @@ import (
 
 func TestCircuitBreaker(t *testing.T) {
 	config := &Config{
-		LogLevel: logging.LogLevelError, // Reduce noise in tests
+		LogLevel:                       logging.LogLevelError, // Reduce noise in tests
+		CircuitBreakerFailureThreshold: 5,
+		CircuitBreakerResetTimeout:     60 * time.Second,
+		CircuitBreakerMaxRequests:      3,
 	}
 
 	t.Run("InitialState", func(t *testing.T) {
@@ -44,7 +47,7 @@ func TestCircuitBreaker(t *testing.T) {
 	t.Run("FailureThreshold", func(t *testing.T) {
 		cb := newCircuitBreaker("test-endpoint:6379", config)
 		testError := errors.New("test error")
-		
+
 		// Fail 4 times (below threshold of 5)
 		for i := 0; i < 4; i++ {
 			err := cb.Execute(func() error {
@@ -57,7 +60,7 @@ func TestCircuitBreaker(t *testing.T) {
 				t.Errorf("Circuit should still be closed after %d failures", i+1)
 			}
 		}
-		
+
 		// 5th failure should open the circuit
 		err := cb.Execute(func() error {
 			return testError
@@ -65,7 +68,7 @@ func TestCircuitBreaker(t *testing.T) {
 		if err != testError {
 			t.Errorf("Expected test error, got %v", err)
 		}
-		
+
 		if cb.GetState() != CircuitBreakerOpen {
 			t.Errorf("Expected state %v, got %v", CircuitBreakerOpen, cb.GetState())
 		}
@@ -92,8 +95,13 @@ func TestCircuitBreaker(t *testing.T) {
 	})
 
 	t.Run("HalfOpenTransition", func(t *testing.T) {
-		cb := newCircuitBreaker("test-endpoint:6379", config)
-		cb.resetTimeout = 100 * time.Millisecond // Short timeout for testing
+		testConfig := &Config{
+			LogLevel:                       logging.LogLevelError,
+			CircuitBreakerFailureThreshold: 5,
+			CircuitBreakerResetTimeout:     100 * time.Millisecond, // Short timeout for testing
+			CircuitBreakerMaxRequests:      3,
+		}
+		cb := newCircuitBreaker("test-endpoint:6379", testConfig)
 		testError := errors.New("test error")
 		
 		// Force circuit to open
@@ -125,9 +133,13 @@ func TestCircuitBreaker(t *testing.T) {
 	})
 
 	t.Run("HalfOpenToClosedTransition", func(t *testing.T) {
-		cb := newCircuitBreaker("test-endpoint:6379", config)
-		cb.resetTimeout = 50 * time.Millisecond
-		cb.maxRequests = 3
+		testConfig := &Config{
+			LogLevel:                       logging.LogLevelError,
+			CircuitBreakerFailureThreshold: 5,
+			CircuitBreakerResetTimeout:     50 * time.Millisecond,
+			CircuitBreakerMaxRequests:      3,
+		}
+		cb := newCircuitBreaker("test-endpoint:6379", testConfig)
 		testError := errors.New("test error")
 		
 		// Force circuit to open
@@ -155,8 +167,13 @@ func TestCircuitBreaker(t *testing.T) {
 	})
 
 	t.Run("HalfOpenToOpenOnFailure", func(t *testing.T) {
-		cb := newCircuitBreaker("test-endpoint:6379", config)
-		cb.resetTimeout = 50 * time.Millisecond
+		testConfig := &Config{
+			LogLevel:                       logging.LogLevelError,
+			CircuitBreakerFailureThreshold: 5,
+			CircuitBreakerResetTimeout:     50 * time.Millisecond,
+			CircuitBreakerMaxRequests:      3,
+		}
+		cb := newCircuitBreaker("test-endpoint:6379", testConfig)
 		testError := errors.New("test error")
 		
 		// Force circuit to open
@@ -216,7 +233,10 @@ func TestCircuitBreaker(t *testing.T) {
 
 func TestCircuitBreakerManager(t *testing.T) {
 	config := &Config{
-		LogLevel: logging.LogLevelError,
+		LogLevel:                       logging.LogLevelError,
+		CircuitBreakerFailureThreshold: 5,
+		CircuitBreakerResetTimeout:     60 * time.Second,
+		CircuitBreakerMaxRequests:      3,
 	}
 
 	t.Run("GetCircuitBreaker", func(t *testing.T) {
@@ -287,6 +307,50 @@ func TestCircuitBreakerManager(t *testing.T) {
 		
 		if cb.failures.Load() != 0 {
 			t.Error("Failure count should be reset to 0")
+		}
+	})
+
+	t.Run("ConfigurableParameters", func(t *testing.T) {
+		config := &Config{
+			LogLevel:                       logging.LogLevelError,
+			CircuitBreakerFailureThreshold: 10,
+			CircuitBreakerResetTimeout:     30 * time.Second,
+			CircuitBreakerMaxRequests:      5,
+		}
+
+		cb := newCircuitBreaker("test-endpoint:6379", config)
+
+		// Test that configuration values are used
+		if cb.failureThreshold != 10 {
+			t.Errorf("Expected failureThreshold=10, got %d", cb.failureThreshold)
+		}
+		if cb.resetTimeout != 30*time.Second {
+			t.Errorf("Expected resetTimeout=30s, got %v", cb.resetTimeout)
+		}
+		if cb.maxRequests != 5 {
+			t.Errorf("Expected maxRequests=5, got %d", cb.maxRequests)
+		}
+
+		// Test that circuit opens after configured threshold
+		testError := errors.New("test error")
+		for i := 0; i < 9; i++ {
+			err := cb.Execute(func() error { return testError })
+			if err != testError {
+				t.Errorf("Expected test error, got %v", err)
+			}
+			if cb.GetState() != CircuitBreakerClosed {
+				t.Errorf("Circuit should still be closed after %d failures", i+1)
+			}
+		}
+
+		// 10th failure should open the circuit
+		err := cb.Execute(func() error { return testError })
+		if err != testError {
+			t.Errorf("Expected test error, got %v", err)
+		}
+
+		if cb.GetState() != CircuitBreakerOpen {
+			t.Errorf("Expected state %v, got %v", CircuitBreakerOpen, cb.GetState())
 		}
 	})
 }

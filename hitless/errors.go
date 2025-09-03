@@ -53,3 +53,10 @@ var (
 var (
 	ErrCircuitBreakerOpen = errors.New("hitless: circuit breaker is open, failing fast")
 )
+
+// circuit breaker configuration errors
+var (
+	ErrInvalidCircuitBreakerFailureThreshold = errors.New("hitless: circuit breaker failure threshold must be >= 1")
+	ErrInvalidCircuitBreakerResetTimeout     = errors.New("hitless: circuit breaker reset timeout must be >= 0")
+	ErrInvalidCircuitBreakerMaxRequests      = errors.New("hitless: circuit breaker max requests must be >= 1")
+)

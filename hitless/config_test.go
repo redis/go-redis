@@ -33,6 +33,17 @@ func TestConfig(t *testing.T) {
 			t.Errorf("Expected MaxHandoffRetries to be 3, got %d", config.MaxHandoffRetries)
 		}
 
+		// Circuit breaker defaults
+		if config.CircuitBreakerFailureThreshold != 5 {
+			t.Errorf("Expected CircuitBreakerFailureThreshold=5, got %d", config.CircuitBreakerFailureThreshold)
+		}
+		if config.CircuitBreakerResetTimeout != 60*time.Second {
+			t.Errorf("Expected CircuitBreakerResetTimeout=60s, got %v", config.CircuitBreakerResetTimeout)
+		}
+		if config.CircuitBreakerMaxRequests != 3 {
+			t.Errorf("Expected CircuitBreakerMaxRequests=3, got %d", config.CircuitBreakerMaxRequests)
+		}
+
 		if config.HandoffTimeout != 15*time.Second {
 			t.Errorf("Expected HandoffTimeout to be 15s, got %v", config.HandoffTimeout)
 		}
@@ -376,6 +387,25 @@ func TestEnhancedConfigValidation(t *testing.T) {
 			t.Error("Expected validation error for MaxHandoffRetries = 11")
 		}
 		config.MaxHandoffRetries = 3 // Reset to valid value
+
+		// Test circuit breaker validation
+		config.CircuitBreakerFailureThreshold = 0
+		if err := config.Validate(); err != ErrInvalidCircuitBreakerFailureThreshold {
+			t.Errorf("Expected ErrInvalidCircuitBreakerFailureThreshold, got %v", err)
+		}
+		config.CircuitBreakerFailureThreshold = 5 // Reset to valid value
+
+		config.CircuitBreakerResetTimeout = -1 * time.Second
+		if err := config.Validate(); err != ErrInvalidCircuitBreakerResetTimeout {
+			t.Errorf("Expected ErrInvalidCircuitBreakerResetTimeout, got %v", err)
+		}
+		config.CircuitBreakerResetTimeout = 60 * time.Second // Reset to valid value
+
+		config.CircuitBreakerMaxRequests = 0
+		if err := config.Validate(); err != ErrInvalidCircuitBreakerMaxRequests {
+			t.Errorf("Expected ErrInvalidCircuitBreakerMaxRequests, got %v", err)
+		}
+		config.CircuitBreakerMaxRequests = 3 // Reset to valid value
 
 		// Should pass validation again
 		if err := config.Validate(); err != nil {

@@ -116,6 +116,19 @@ type Config struct {
 	// Default: logging.LogLevelError(0)
 	LogLevel logging.LogLevel
 
+	// Circuit breaker configuration for endpoint failure handling
+	// CircuitBreakerFailureThreshold is the number of failures before opening the circuit.
+	// Default: 5
+	CircuitBreakerFailureThreshold int
+
+	// CircuitBreakerResetTimeout is how long to wait before testing if the endpoint recovered.
+	// Default: 60 seconds
+	CircuitBreakerResetTimeout time.Duration
+
+	// CircuitBreakerMaxRequests is the maximum number of requests allowed in half-open state.
+	// Default: 3
+	CircuitBreakerMaxRequests int
+
 	// MaxHandoffRetries is the maximum number of times to retry a failed handoff.
 	// After this many retries, the connection will be removed from the pool.
 	// Default: 3
@@ -137,6 +150,11 @@ func DefaultConfig() *Config {
 		HandoffQueueSize:           0, // Auto-calculated based on max workers
 		PostHandoffRelaxedDuration: 0, // Auto-calculated based on relaxed timeout
 		LogLevel:                   logging.LogLevelError,
+
+		// Circuit breaker configuration
+		CircuitBreakerFailureThreshold: 5,
+		CircuitBreakerResetTimeout:     60 * time.Second,
+		CircuitBreakerMaxRequests:      3,
 
 		// Connection Handoff Configuration
 		MaxHandoffRetries: 3,
@@ -165,6 +183,17 @@ func (c *Config) Validate() error {
 	}
 	if !c.LogLevel.IsValid() {
 		return ErrInvalidLogLevel
+	}
+
+	// Circuit breaker validation
+	if c.CircuitBreakerFailureThreshold < 1 {
+		return ErrInvalidCircuitBreakerFailureThreshold
+	}
+	if c.CircuitBreakerResetTimeout < 0 {
+		return ErrInvalidCircuitBreakerResetTimeout
+	}
+	if c.CircuitBreakerMaxRequests < 1 {
+		return ErrInvalidCircuitBreakerMaxRequests
 	}
 
 	// Validate Mode (maintenance notifications mode)
@@ -280,6 +309,22 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 		result.MaxHandoffRetries = c.MaxHandoffRetries
 	}
 
+	// Circuit breaker configuration
+	result.CircuitBreakerFailureThreshold = defaults.CircuitBreakerFailureThreshold
+	if c.CircuitBreakerFailureThreshold > 0 {
+		result.CircuitBreakerFailureThreshold = c.CircuitBreakerFailureThreshold
+	}
+
+	result.CircuitBreakerResetTimeout = defaults.CircuitBreakerResetTimeout
+	if c.CircuitBreakerResetTimeout > 0 {
+		result.CircuitBreakerResetTimeout = c.CircuitBreakerResetTimeout
+	}
+
+	result.CircuitBreakerMaxRequests = defaults.CircuitBreakerMaxRequests
+	if c.CircuitBreakerMaxRequests > 0 {
+		result.CircuitBreakerMaxRequests = c.CircuitBreakerMaxRequests
+	}
+
 	if result.LogLevel.DebugOrAbove() {
 		internal.Logger.Printf(context.Background(), "hitless: debug logging enabled")
 		internal.Logger.Printf(context.Background(), "hitless: config: %+v", result)
@@ -302,6 +347,11 @@ func (c *Config) Clone() *Config {
 		HandoffQueueSize:           c.HandoffQueueSize,
 		PostHandoffRelaxedDuration: c.PostHandoffRelaxedDuration,
 		LogLevel:                   c.LogLevel,
+
+		// Circuit breaker configuration
+		CircuitBreakerFailureThreshold: c.CircuitBreakerFailureThreshold,
+		CircuitBreakerResetTimeout:     c.CircuitBreakerResetTimeout,
+		CircuitBreakerMaxRequests:      c.CircuitBreakerMaxRequests,
 
 		// Configuration fields
 		MaxHandoffRetries: c.MaxHandoffRetries,

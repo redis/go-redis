@@ -56,13 +56,16 @@ type CircuitBreaker struct {
 
 // newCircuitBreaker creates a new circuit breaker for an endpoint
 func newCircuitBreaker(endpoint string, config *Config) *CircuitBreaker {
-	// Use sensible defaults if not configured
-	failureThreshold := 10
-	resetTimeout := 500 * time.Millisecond
-	maxRequests := 10
+	// Use configuration values with sensible defaults
+	failureThreshold := 5
+	resetTimeout := 60 * time.Second
+	maxRequests := 3
 
-	// These could be added to Config in the future without breaking API
-	// For now, use internal defaults that work well
+	if config != nil {
+		failureThreshold = config.CircuitBreakerFailureThreshold
+		resetTimeout = config.CircuitBreakerResetTimeout
+		maxRequests = config.CircuitBreakerMaxRequests
+	}
 
 	return &CircuitBreaker{
 		failureThreshold: failureThreshold,
