@@ -285,6 +285,11 @@ func (hwm *handoffWorkerManager) shutdownWorkers(ctx context.Context) error {
 	hwm.shutdownOnce.Do(func() {
 		close(hwm.shutdown)
 		// workers will exit when they finish their current request
+
+		// Shutdown circuit breaker manager cleanup goroutine
+		if hwm.circuitBreakerManager != nil {
+			hwm.circuitBreakerManager.Shutdown()
+		}
 	})
 
 	// Wait for workers to complete

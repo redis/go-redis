@@ -244,8 +244,9 @@ func (cn *Conn) ClearRelaxedTimeout() {
 	// Atomically decrement counter and check if we should clear
 	newCount := cn.relaxedCounter.Add(-1)
 	if newCount <= 0 {
-		// Use compare-and-swap to ensure only one goroutine clears
-		if cn.relaxedCounter.CompareAndSwap(newCount, 0) {
+		// Use atomic load to get current value for CAS to avoid stale value race
+		current := cn.relaxedCounter.Load()
+		if current <= 0 && cn.relaxedCounter.CompareAndSwap(current, 0) {
 			cn.clearRelaxedTimeout()
 		}
 	}
