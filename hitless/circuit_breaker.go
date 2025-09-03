@@ -101,17 +101,18 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerOpen), int32(CircuitBreakerHalfOpen)) {
 				cb.requests.Store(0)
 				cb.successes.Store(0)
-				state = CircuitBreakerHalfOpen // Update local state
 				if cb.config != nil && cb.config.LogLevel.InfoOrAbove() {
 					internal.Logger.Printf(context.Background(),
 						"hitless: circuit breaker for %s transitioning to half-open", cb.endpoint)
 				}
+				// Fall through to half-open logic
 			} else {
 				return ErrCircuitBreakerOpen
 			}
 		} else {
 			return ErrCircuitBreakerOpen
 		}
+		fallthrough
 	case CircuitBreakerHalfOpen:
 		requests := cb.requests.Add(1)
 		if requests > int64(cb.maxRequests) {
@@ -168,10 +169,11 @@ func (cb *CircuitBreaker) recordSuccess() {
 
 	state := CircuitBreakerState(cb.state.Load())
 
-	if state == CircuitBreakerClosed {
+	switch state {
+	case CircuitBreakerClosed:
 		// Reset failure count on success in closed state
 		cb.failures.Store(0)
-	} else if state == CircuitBreakerHalfOpen {
+	case CircuitBreakerHalfOpen:
 		successes := cb.successes.Add(1)
 
 		// If we've had enough successful requests, close the circuit
