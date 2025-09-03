@@ -117,6 +117,12 @@ func (hwm *handoffWorkerManager) ensureWorkerAvailable() {
 // onDemandWorker processes handoff requests and exits when idle
 func (hwm *handoffWorkerManager) onDemandWorker() {
 	defer func() {
+		// Handle panics to ensure proper cleanup
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(),
+				"hitless: worker panic recovered: %v", r)
+		}
+
 		// Decrement active worker count when exiting
 		hwm.activeWorkers.Add(-1)
 		hwm.workerWg.Done()
