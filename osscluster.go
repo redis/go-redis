@@ -804,12 +804,25 @@ func replaceLoopbackHost(nodeAddr, originHost string) string {
 	return net.JoinHostPort(originHost, nodePort)
 }
 
+// isLoopback returns true if the host is a loopback address.
+// For IP addresses, it uses net.IP.IsLoopback().
+// For hostnames, it recognizes well-known loopback hostnames like "localhost"
+// and Docker-specific loopback patterns like "*.docker.internal".
 func isLoopback(host string) bool {
 	ip := net.ParseIP(host)
-	if ip == nil {
+	if ip != nil {
+		return ip.IsLoopback()
+	}
+
+	if strings.ToLower(host) == "localhost" {
 		return true
 	}
-	return ip.IsLoopback()
+
+	if strings.HasSuffix(strings.ToLower(host), ".docker.internal") {
+		return true
+	}
+
+	return false
 }
 
 func (c *clusterState) slotMasterNode(slot int) (*clusterNode, error) {
@@ -1864,14 +1877,33 @@ func (c *ClusterClient) pubSub() *PubSub {
 			}
 
 			var err error
+
 			if len(channels) > 0 {
 				slot := hashtag.Slot(channels[0])
-				node, err = c.slotMasterNode(ctx, slot)
+
+				// newConn in PubSub is only used for subscription connections, so it is safe to
+				// assume that a slave node can always be used when client options specify ReadOnly.
+				if c.opt.ReadOnly {
+					state, err := c.state.Get(ctx)
+					if err != nil {
+						return nil, err
+					}
+
+					node, err = c.slotReadOnlyNode(state, slot)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					node, err = c.slotMasterNode(ctx, slot)
+					if err != nil {
+						return nil, err
+					}
+				}
 			} else {
 				node, err = c.nodes.Random()
-			}
-			if err != nil {
-				return nil, err
+				if err != nil {
+					return nil, err
+				}
 			}
 			cn, err := node.Client.pubSubPool.NewConn(ctx, node.Client.opt.Network, node.Client.opt.Addr, channels)
 			if err != nil {

@@ -385,3 +385,38 @@ var _ = Describe("ClusterClient", func() {
 		})
 	})
 })
+
+var _ = Describe("isLoopback", func() {
+	DescribeTable("should correctly identify loopback addresses",
+		func(host string, expected bool) {
+			result := isLoopback(host)
+			Expect(result).To(Equal(expected))
+		},
+		// IP addresses
+		Entry("IPv4 loopback", "127.0.0.1", true),
+		Entry("IPv6 loopback", "::1", true),
+		Entry("IPv4 non-loopback", "192.168.1.1", false),
+		Entry("IPv6 non-loopback", "2001:db8::1", false),
+
+		// Well-known loopback hostnames
+		Entry("localhost lowercase", "localhost", true),
+		Entry("localhost uppercase", "LOCALHOST", true),
+		Entry("localhost mixed case", "LocalHost", true),
+
+		// Docker-specific loopbacks
+		Entry("host.docker.internal", "host.docker.internal", true),
+		Entry("HOST.DOCKER.INTERNAL", "HOST.DOCKER.INTERNAL", true),
+		Entry("custom.docker.internal", "custom.docker.internal", true),
+		Entry("app.docker.internal", "app.docker.internal", true),
+
+		// Non-loopback hostnames
+		Entry("redis hostname", "redis-cluster", false),
+		Entry("FQDN", "redis.example.com", false),
+		Entry("docker but not internal", "redis.docker.com", false),
+
+		// Edge cases
+		Entry("empty string", "", false),
+		Entry("invalid IP", "256.256.256.256", false),
+		Entry("partial docker internal", "docker.internal", false),
+	)
+})
