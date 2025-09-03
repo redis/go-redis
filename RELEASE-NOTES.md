@@ -1,5 +1,49 @@
 # Release Notes
 
+# 9.13.0 (2025-09-03)
+
+## Highlights
+- Pipeliner expose queued commands ([#3496](https://github.com/redis/go-redis/pull/3496))
+- Ensure that JSON.GET returns Nil response ([#3470](https://github.com/redis/go-redis/pull/3470))
+- Fixes on Read and Write buffer sizes and UniversalOptions
+
+## Changes
+- Pipeliner expose queued commands ([#3496](https://github.com/redis/go-redis/pull/3496))
+- fix(test): fix a timing issue in pubsub test ([#3498](https://github.com/redis/go-redis/pull/3498))
+- Allow users to enable read-write splitting in failover mode. ([#3482](https://github.com/redis/go-redis/pull/3482))
+- Set the read/write buffer size of the sentinel client to 4KiB ([#3476](https://github.com/redis/go-redis/pull/3476))
+
+## 🚀 New Features
+
+- fix(otel): register wait metrics ([#3499](https://github.com/redis/go-redis/pull/3499))
+- Support subscriptions against cluster slave nodes ([#3480](https://github.com/redis/go-redis/pull/3480))
+- Add wait metrics to otel ([#3493](https://github.com/redis/go-redis/pull/3493))
+- Clean failing timeout implementation ([#3472](https://github.com/redis/go-redis/pull/3472))
+
+## 🐛 Bug Fixes
+
+- Do not assume that all non-IP hosts are loopbacks ([#3085](https://github.com/redis/go-redis/pull/3085))
+- Ensure that JSON.GET returns Nil response ([#3470](https://github.com/redis/go-redis/pull/3470))
+
+## 🧰 Maintenance
+
+- fix(otel): register wait metrics ([#3499](https://github.com/redis/go-redis/pull/3499))
+- fix(make test): Add default env in makefile ([#3491](https://github.com/redis/go-redis/pull/3491))
+- Update the introduction to running tests in README.md ([#3495](https://github.com/redis/go-redis/pull/3495))
+- test: Add comprehensive edge case tests for IncrByFloat command ([#3477](https://github.com/redis/go-redis/pull/3477))
+- Set the default read/write buffer size of Redis connection to 32KiB ([#3483](https://github.com/redis/go-redis/pull/3483))
+- Bumps test image to 8.2.1-pre ([#3478](https://github.com/redis/go-redis/pull/3478))
+- fix UniversalOptions miss ReadBufferSize and WriteBufferSize options ([#3485](https://github.com/redis/go-redis/pull/3485))
+- chore(deps): bump actions/checkout from 4 to 5 ([#3484](https://github.com/redis/go-redis/pull/3484))
+- Removes dry run for stale issues policy ([#3471](https://github.com/redis/go-redis/pull/3471))
+- Update otel metrics URL ([#3474](https://github.com/redis/go-redis/pull/3474))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@LINKIWI](https://github.com/LINKIWI), [@cxljs](https://github.com/cxljs), [@cybersmeashish](https://github.com/cybersmeashish), [@elena-kolevska](https://github.com/elena-kolevska), [@htemelski-redis](https://github.com/htemelski-redis), [@mwhooker](https://github.com/mwhooker), [@ndyakov](https://github.com/ndyakov), [@ofekshenawa](https://github.com/ofekshenawa), [@suever](https://github.com/suever)
+
+
 # 9.12.1 (2025-08-11)
 ## 🚀 Highlights
 In the last version (9.12.0) the client introduced bigger write and read buffer sized. The default value we set was 512KiB.
