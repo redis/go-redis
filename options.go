@@ -14,9 +14,11 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/push"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // Limiter is the interface of a rate limiter or a circuit breaker.
@@ -107,8 +109,18 @@ type Options struct {
 
 	// DialTimeout for establishing new connections.
 	//
-	// default: 5 seconds
+	// default: 10 seconds
 	DialTimeout time.Duration
+
+	// DialerRetries is the maximum number of retry attempts when dialing fails.
+	//
+	// default: 5
+	DialerRetries int
+
+	// DialerRetryTimeout is the backoff duration between retry attempts.
+	//
+	// default: 100 milliseconds
+	DialerRetryTimeout time.Duration
 
 	// ReadTimeout for socket reads. If reached, commands will fail
 	// with a timeout instead of blocking. Supported values:
@@ -153,6 +165,7 @@ type Options struct {
 	//
 	// Note that FIFO has slightly higher overhead compared to LIFO,
 	// but it helps closing idle connections faster reducing the pool size.
+	// default: false
 	PoolFIFO bool
 
 	// PoolSize is the base number of socket connections.
@@ -244,7 +257,18 @@ type Options struct {
 	// When a node is marked as failing, it will be avoided for this duration.
 	// Default is 15 seconds.
 	FailingTimeoutSeconds int
+
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// When HitlessUpgradeConfig.Mode is not "disabled", the client will handle
+	// cluster upgrade notifications gracefully and manage connection/pool state
+	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
+	// If nil, hitless upgrades are in "auto" mode and will be enabled if the server supports it.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
+
+// HitlessUpgradeConfig provides configuration options for hitless upgrades.
+// This is an alias to hitless.Config for convenience.
+type HitlessUpgradeConfig = hitless.Config
 
 func (opt *Options) init() {
 	if opt.Addr == "" {
@@ -261,7 +285,13 @@ func (opt *Options) init() {
 		opt.Protocol = 3
 	}
 	if opt.DialTimeout == 0 {
-		opt.DialTimeout = 5 * time.Second
+		opt.DialTimeout = 10 * time.Second
+	}
+	if opt.DialerRetries == 0 {
+		opt.DialerRetries = 5
+	}
+	if opt.DialerRetryTimeout == 0 {
+		opt.DialerRetryTimeout = 100 * time.Millisecond
 	}
 	if opt.Dialer == nil {
 		opt.Dialer = NewDialer(opt)
@@ -320,11 +350,34 @@ func (opt *Options) init() {
 	case 0:
 		opt.MaxRetryBackoff = 512 * time.Millisecond
 	}
+
+	opt.HitlessUpgradeConfig = opt.HitlessUpgradeConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
+
+	// auto-detect endpoint type if not specified
+	endpointType := opt.HitlessUpgradeConfig.EndpointType
+	if endpointType == "" || endpointType == hitless.EndpointTypeAuto {
+		// Auto-detect endpoint type if not specified
+		endpointType = hitless.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
+	}
+	opt.HitlessUpgradeConfig.EndpointType = endpointType
 }
 
 func (opt *Options) clone() *Options {
 	clone := *opt
+
+	// Deep clone HitlessUpgradeConfig to avoid sharing between clients
+	if opt.HitlessUpgradeConfig != nil {
+		configClone := *opt.HitlessUpgradeConfig
+		clone.HitlessUpgradeConfig = &configClone
+	}
+
 	return &clone
+}
+
+// NewDialer returns a function that will be used as the default dialer
+// when none is specified in Options.Dialer.
+func (opt *Options) NewDialer() func(context.Context, string, string) (net.Conn, error) {
+	return NewDialer(opt)
 }
 
 // NewDialer returns a function that will be used as the default dialer
@@ -612,23 +665,84 @@ func getUserPassword(u *url.URL) (string, string) {
 func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
-) *pool.ConnPool {
+) (*pool.ConnPool, error) {
+	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
+	if err != nil {
+		return nil, err
+	}
+
+	minIdleConns, err := util.SafeIntToInt32(opt.MinIdleConns, "MinIdleConns")
+	if err != nil {
+		return nil, err
+	}
+
+	maxIdleConns, err := util.SafeIntToInt32(opt.MaxIdleConns, "MaxIdleConns")
+	if err != nil {
+		return nil, err
+	}
+
+	maxActiveConns, err := util.SafeIntToInt32(opt.MaxActiveConns, "MaxActiveConns")
+	if err != nil {
+		return nil, err
+	}
+
 	return pool.NewConnPool(&pool.Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return dialer(ctx, opt.Network, opt.Addr)
 		},
-		PoolFIFO:        opt.PoolFIFO,
-		PoolSize:        opt.PoolSize,
-		PoolTimeout:     opt.PoolTimeout,
-		DialTimeout:     opt.DialTimeout,
-		MinIdleConns:    opt.MinIdleConns,
-		MaxIdleConns:    opt.MaxIdleConns,
-		MaxActiveConns:  opt.MaxActiveConns,
-		ConnMaxIdleTime: opt.ConnMaxIdleTime,
-		ConnMaxLifetime: opt.ConnMaxLifetime,
-		// Pass protocol version for push notification optimization
-		Protocol: opt.Protocol,
-		ReadBufferSize:  opt.ReadBufferSize,
-		WriteBufferSize: opt.WriteBufferSize,
-	})
+		PoolFIFO:                 opt.PoolFIFO,
+		PoolSize:                 poolSize,
+		PoolTimeout:              opt.PoolTimeout,
+		DialTimeout:              opt.DialTimeout,
+		DialerRetries:            opt.DialerRetries,
+		DialerRetryTimeout:       opt.DialerRetryTimeout,
+		MinIdleConns:             minIdleConns,
+		MaxIdleConns:             maxIdleConns,
+		MaxActiveConns:           maxActiveConns,
+		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
+		ConnMaxLifetime:          opt.ConnMaxLifetime,
+		ReadBufferSize:           opt.ReadBufferSize,
+		WriteBufferSize:          opt.WriteBufferSize,
+		PushNotificationsEnabled: opt.Protocol == 3,
+	}), nil
+}
+
+func newPubSubPool(opt *Options, dialer func(ctx context.Context, network, addr string) (net.Conn, error),
+) (*pool.PubSubPool, error) {
+	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
+	if err != nil {
+		return nil, err
+	}
+
+	minIdleConns, err := util.SafeIntToInt32(opt.MinIdleConns, "MinIdleConns")
+	if err != nil {
+		return nil, err
+	}
+
+	maxIdleConns, err := util.SafeIntToInt32(opt.MaxIdleConns, "MaxIdleConns")
+	if err != nil {
+		return nil, err
+	}
+
+	maxActiveConns, err := util.SafeIntToInt32(opt.MaxActiveConns, "MaxActiveConns")
+	if err != nil {
+		return nil, err
+	}
+
+	return pool.NewPubSubPool(&pool.Options{
+		PoolFIFO:                 opt.PoolFIFO,
+		PoolSize:                 poolSize,
+		PoolTimeout:              opt.PoolTimeout,
+		DialTimeout:              opt.DialTimeout,
+		DialerRetries:            opt.DialerRetries,
+		DialerRetryTimeout:       opt.DialerRetryTimeout,
+		MinIdleConns:             minIdleConns,
+		MaxIdleConns:             maxIdleConns,
+		MaxActiveConns:           maxActiveConns,
+		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
+		ConnMaxLifetime:          opt.ConnMaxLifetime,
+		ReadBufferSize:           32 * 1024,
+		WriteBufferSize:          32 * 1024,
+		PushNotificationsEnabled: opt.Protocol == 3,
+	}, dialer), nil
 }

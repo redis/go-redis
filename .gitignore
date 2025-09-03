@@ -9,3 +9,6 @@ coverage.txt
 **/coverage.txt
 .vscode
 tmp/*
+
+# Hitless upgrade documentation (temporary)
+hitless/docs/
