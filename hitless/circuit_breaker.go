@@ -80,24 +80,7 @@ func newCircuitBreaker(endpoint string, config *Config) *CircuitBreaker {
 // IsOpen returns true if the circuit breaker is open (rejecting requests)
 func (cb *CircuitBreaker) IsOpen() bool {
 	state := CircuitBreakerState(cb.state.Load())
-
-	if state == CircuitBreakerOpen {
-		// Check if we should transition to half-open
-		if cb.shouldAttemptReset() {
-			if cb.state.CompareAndSwap(int32(CircuitBreakerOpen), int32(CircuitBreakerHalfOpen)) {
-				cb.requests.Store(0)
-				cb.successes.Store(0)
-				if cb.config != nil && cb.config.LogLevel.InfoOrAbove() {
-					internal.Logger.Printf(context.Background(),
-						"hitless: circuit breaker for %s transitioning to half-open", cb.endpoint)
-				}
-				return false // Now in half-open state, allow requests
-			}
-		}
-		return true // Still open
-	}
-
-	return false
+	return state == CircuitBreakerOpen
 }
 
 // shouldAttemptReset checks if enough time has passed to attempt reset
@@ -108,15 +91,28 @@ func (cb *CircuitBreaker) shouldAttemptReset() bool {
 
 // Execute runs the given function with circuit breaker protection
 func (cb *CircuitBreaker) Execute(fn func() error) error {
-	// Fast path: if circuit is open, fail immediately
-	if cb.IsOpen() {
-		return ErrCircuitBreakerOpen
-	}
-
+	// Single atomic state load for consistency
 	state := CircuitBreakerState(cb.state.Load())
 
-	// In half-open state, limit the number of requests
-	if state == CircuitBreakerHalfOpen {
+	switch state {
+	case CircuitBreakerOpen:
+		if cb.shouldAttemptReset() {
+			// Attempt transition to half-open
+			if cb.state.CompareAndSwap(int32(CircuitBreakerOpen), int32(CircuitBreakerHalfOpen)) {
+				cb.requests.Store(0)
+				cb.successes.Store(0)
+				state = CircuitBreakerHalfOpen // Update local state
+				if cb.config != nil && cb.config.LogLevel.InfoOrAbove() {
+					internal.Logger.Printf(context.Background(),
+						"hitless: circuit breaker for %s transitioning to half-open", cb.endpoint)
+				}
+			} else {
+				return ErrCircuitBreakerOpen
+			}
+		} else {
+			return ErrCircuitBreakerOpen
+		}
+	case CircuitBreakerHalfOpen:
 		requests := cb.requests.Add(1)
 		if requests > int64(cb.maxRequests) {
 			cb.requests.Add(-1) // Revert the increment
@@ -124,7 +120,7 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 		}
 	}
 
-	// Execute the function
+	// Execute the function with consistent state
 	err := fn()
 
 	if err != nil {
@@ -221,46 +217,136 @@ type CircuitBreakerStats struct {
 	LastSuccessTime time.Time
 }
 
+// CircuitBreakerEntry wraps a circuit breaker with access tracking
+type CircuitBreakerEntry struct {
+	breaker    *CircuitBreaker
+	lastAccess atomic.Int64 // Unix timestamp
+	created    time.Time
+}
+
 // CircuitBreakerManager manages circuit breakers for multiple endpoints
 type CircuitBreakerManager struct {
-	breakers sync.Map // map[string]*CircuitBreaker
-	config   *Config
+	breakers    sync.Map // map[string]*CircuitBreakerEntry
+	config      *Config
+	cleanupStop chan struct{}
+	cleanupMu   sync.Mutex
+	lastCleanup atomic.Int64 // Unix timestamp
 }
 
 // newCircuitBreakerManager creates a new circuit breaker manager
 func newCircuitBreakerManager(config *Config) *CircuitBreakerManager {
-	return &CircuitBreakerManager{
-		config: config,
+	cbm := &CircuitBreakerManager{
+		config:      config,
+		cleanupStop: make(chan struct{}),
 	}
+	cbm.lastCleanup.Store(time.Now().Unix())
+
+	// Start background cleanup goroutine
+	go cbm.cleanupLoop()
+
+	return cbm
 }
 
 // GetCircuitBreaker returns the circuit breaker for an endpoint, creating it if necessary
 func (cbm *CircuitBreakerManager) GetCircuitBreaker(endpoint string) *CircuitBreaker {
-	if breaker, ok := cbm.breakers.Load(endpoint); ok {
-		return breaker.(*CircuitBreaker)
+	now := time.Now().Unix()
+
+	if entry, ok := cbm.breakers.Load(endpoint); ok {
+		cbEntry := entry.(*CircuitBreakerEntry)
+		cbEntry.lastAccess.Store(now)
+		return cbEntry.breaker
 	}
 
-	// Create new circuit breaker
+	// Create new circuit breaker with metadata
 	newBreaker := newCircuitBreaker(endpoint, cbm.config)
-	actual, _ := cbm.breakers.LoadOrStore(endpoint, newBreaker)
-	return actual.(*CircuitBreaker)
+	newEntry := &CircuitBreakerEntry{
+		breaker: newBreaker,
+		created: time.Now(),
+	}
+	newEntry.lastAccess.Store(now)
+
+	actual, _ := cbm.breakers.LoadOrStore(endpoint, newEntry)
+	return actual.(*CircuitBreakerEntry).breaker
 }
 
 // GetAllStats returns statistics for all circuit breakers
 func (cbm *CircuitBreakerManager) GetAllStats() []CircuitBreakerStats {
 	var stats []CircuitBreakerStats
 	cbm.breakers.Range(func(key, value interface{}) bool {
-		breaker := value.(*CircuitBreaker)
-		stats = append(stats, breaker.GetStats())
+		entry := value.(*CircuitBreakerEntry)
+		stats = append(stats, entry.breaker.GetStats())
 		return true
 	})
 	return stats
 }
 
+// cleanupLoop runs background cleanup of unused circuit breakers
+func (cbm *CircuitBreakerManager) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute) // Cleanup every 5 minutes
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			cbm.cleanup()
+		case <-cbm.cleanupStop:
+			return
+		}
+	}
+}
+
+// cleanup removes circuit breakers that haven't been accessed recently
+func (cbm *CircuitBreakerManager) cleanup() {
+	// Prevent concurrent cleanups
+	if !cbm.cleanupMu.TryLock() {
+		return
+	}
+	defer cbm.cleanupMu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-30 * time.Minute).Unix() // 30 minute TTL
+
+	var toDelete []string
+	count := 0
+
+	cbm.breakers.Range(func(key, value interface{}) bool {
+		endpoint := key.(string)
+		entry := value.(*CircuitBreakerEntry)
+
+		count++
+
+		// Remove if not accessed recently
+		if entry.lastAccess.Load() < cutoff {
+			toDelete = append(toDelete, endpoint)
+		}
+
+		return true
+	})
+
+	// Delete expired entries
+	for _, endpoint := range toDelete {
+		cbm.breakers.Delete(endpoint)
+	}
+
+	// Log cleanup results
+	if len(toDelete) > 0 && cbm.config != nil && cbm.config.LogLevel.InfoOrAbove() {
+		internal.Logger.Printf(context.Background(),
+			"hitless: circuit breaker cleanup removed %d/%d entries", len(toDelete), count)
+	}
+
+	cbm.lastCleanup.Store(now.Unix())
+}
+
+// Shutdown stops the cleanup goroutine
+func (cbm *CircuitBreakerManager) Shutdown() {
+	close(cbm.cleanupStop)
+}
+
 // Reset resets all circuit breakers (useful for testing)
 func (cbm *CircuitBreakerManager) Reset() {
 	cbm.breakers.Range(func(key, value interface{}) bool {
-		breaker := value.(*CircuitBreaker)
+		entry := value.(*CircuitBreakerEntry)
+		breaker := entry.breaker
 		breaker.state.Store(int32(CircuitBreakerClosed))
 		breaker.failures.Store(0)
 		breaker.successes.Store(0)

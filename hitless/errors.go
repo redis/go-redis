@@ -2,6 +2,8 @@ package hitless
 
 import (
 	"errors"
+	"fmt"
+	"time"
 )
 
 // Configuration errors
@@ -53,6 +55,47 @@ var (
 var (
 	ErrCircuitBreakerOpen = errors.New("hitless: circuit breaker is open, failing fast")
 )
+
+// CircuitBreakerError provides detailed context for circuit breaker failures
+type CircuitBreakerError struct {
+	Endpoint     string
+	State        string
+	Failures     int64
+	LastFailure  time.Time
+	NextAttempt  time.Time
+	Message      string
+}
+
+func (e *CircuitBreakerError) Error() string {
+	if e.NextAttempt.IsZero() {
+		return fmt.Sprintf("hitless: circuit breaker %s for %s (failures: %d, last: %v): %s",
+			e.State, e.Endpoint, e.Failures, e.LastFailure, e.Message)
+	}
+	return fmt.Sprintf("hitless: circuit breaker %s for %s (failures: %d, last: %v, next attempt: %v): %s",
+		e.State, e.Endpoint, e.Failures, e.LastFailure, e.NextAttempt, e.Message)
+}
+
+// HandoffError provides detailed context for connection handoff failures
+type HandoffError struct {
+	ConnectionID   uint64
+	SourceEndpoint string
+	TargetEndpoint string
+	Attempt        int
+	MaxAttempts    int
+	Duration       time.Duration
+	FinalError     error
+	Message        string
+}
+
+func (e *HandoffError) Error() string {
+	return fmt.Sprintf("hitless: handoff failed for conn[%d] %s→%s (attempt %d/%d, duration: %v): %s",
+		e.ConnectionID, e.SourceEndpoint, e.TargetEndpoint,
+		e.Attempt, e.MaxAttempts, e.Duration, e.Message)
+}
+
+func (e *HandoffError) Unwrap() error {
+	return e.FinalError
+}
 
 // circuit breaker configuration errors
 var (

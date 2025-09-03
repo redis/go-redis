@@ -100,7 +100,7 @@ func (hwm *handoffWorkerManager) ensureWorkerAvailable() {
 			// Check if we need a new worker
 			currentWorkers := hwm.activeWorkers.Load()
 			workersWas := currentWorkers
-			for currentWorkers <= int32(hwm.maxWorkers) {
+			for currentWorkers < int32(hwm.maxWorkers) {
 				hwm.workerWg.Add(1)
 				go hwm.onDemandWorker()
 				currentWorkers++
@@ -122,13 +122,26 @@ func (hwm *handoffWorkerManager) onDemandWorker() {
 		hwm.workerWg.Done()
 	}()
 
+	// Create reusable timer to prevent timer leaks
+	timer := time.NewTimer(hwm.workerTimeout)
+	defer timer.Stop()
+
 	for {
+		// Reset timer for next iteration
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(hwm.workerTimeout)
+
 		select {
 		case <-hwm.shutdown:
 			return
-		case <-time.After(hwm.workerTimeout):
+		case <-timer.C:
 			// Worker has been idle for too long, exit to save resources
-			if hwm.config != nil && hwm.config.LogLevel.InfoOrAbove() { // Debug level
+			if hwm.config != nil && hwm.config.LogLevel.InfoOrAbove() {
 				internal.Logger.Printf(context.Background(),
 					"hitless: worker exiting due to inactivity timeout (%v)", hwm.workerTimeout)
 			}
