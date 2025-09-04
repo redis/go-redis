@@ -454,7 +454,7 @@ func TestDialerRetryConfiguration(t *testing.T) {
 			PoolSize:           1,
 			PoolTimeout:        time.Second,
 			DialTimeout:        time.Second,
-			DialerRetries:      3, // Custom retry count
+			DialerRetries:      3,                     // Custom retry count
 			DialerRetryTimeout: 10 * time.Millisecond, // Fast retries for testing
 		})
 		defer connPool.Close()

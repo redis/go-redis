@@ -109,7 +109,7 @@ type Options struct {
 
 	// DialTimeout for establishing new connections.
 	//
-	// default: 10 seconds
+	// default: 5 seconds
 	DialTimeout time.Duration
 
 	// DialerRetries is the maximum number of retry attempts when dialing fails.
@@ -285,7 +285,7 @@ func (opt *Options) init() {
 		opt.Protocol = 3
 	}
 	if opt.DialTimeout == 0 {
-		opt.DialTimeout = 10 * time.Second
+		opt.DialTimeout = 5 * time.Second
 	}
 	if opt.DialerRetries == 0 {
 		opt.DialerRetries = 5

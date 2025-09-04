@@ -171,7 +171,7 @@ func TestApplyDefaults(t *testing.T) {
 		}
 
 		resultCapped := configWithLargeQueue.ApplyDefaultsWithPoolSize(20) // Small pool size
-		expectedCap := 20 * 5 // 5x pool size = 100
+		expectedCap := 20 * 5                                              // 5x pool size = 100
 		if resultCapped.HandoffQueueSize != expectedCap {
 			t.Errorf("Expected HandoffQueueSize to be capped by 5x pool size (%d), got %d", expectedCap, resultCapped.HandoffQueueSize)
 		}
@@ -194,7 +194,7 @@ func TestApplyDefaults(t *testing.T) {
 		}
 
 		resultVeryLarge := configWithVeryLargeQueue.ApplyDefaultsWithPoolSize(100) // Pool size 100
-		expectedVeryLargeCap := 100 * 5 // 5x pool size = 500
+		expectedVeryLargeCap := 100 * 5                                            // 5x pool size = 500
 		if resultVeryLarge.HandoffQueueSize != expectedVeryLargeCap {
 			t.Errorf("Expected very large HandoffQueueSize to be capped by 5x pool size (%d), got %d", expectedVeryLargeCap, resultVeryLarge.HandoffQueueSize)
 		}
@@ -305,7 +305,7 @@ func TestIntegrationWithApplyDefaults(t *testing.T) {
 	t.Run("ProcessorWithPartialConfigAppliesDefaults", func(t *testing.T) {
 		// Create a partial config with only some fields set
 		partialConfig := &Config{
-			MaxWorkers: 15,                    // Custom value (>= 10 to test preservation)
+			MaxWorkers: 15,                   // Custom value (>= 10 to test preservation)
 			LogLevel:   logging.LogLevelInfo, // Custom value
 			// Other fields left as zero values - should get defaults
 		}

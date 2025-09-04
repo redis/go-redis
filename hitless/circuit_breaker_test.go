@@ -18,11 +18,11 @@ func TestCircuitBreaker(t *testing.T) {
 
 	t.Run("InitialState", func(t *testing.T) {
 		cb := newCircuitBreaker("test-endpoint:6379", config)
-		
+
 		if cb.IsOpen() {
 			t.Error("Circuit breaker should start in closed state")
 		}
-		
+
 		if cb.GetState() != CircuitBreakerClosed {
 			t.Errorf("Expected state %v, got %v", CircuitBreakerClosed, cb.GetState())
 		}
@@ -30,15 +30,15 @@ func TestCircuitBreaker(t *testing.T) {
 
 	t.Run("SuccessfulExecution", func(t *testing.T) {
 		cb := newCircuitBreaker("test-endpoint:6379", config)
-		
+
 		err := cb.Execute(func() error {
 			return nil // Success
 		})
-		
+
 		if err != nil {
 			t.Errorf("Expected no error, got %v", err)
 		}
-		
+
 		if cb.GetState() != CircuitBreakerClosed {
 			t.Errorf("Expected state %v, got %v", CircuitBreakerClosed, cb.GetState())
 		}
@@ -77,18 +77,18 @@ func TestCircuitBreaker(t *testing.T) {
 	t.Run("OpenCircuitFailsFast", func(t *testing.T) {
 		cb := newCircuitBreaker("test-endpoint:6379", config)
 		testError := errors.New("test error")
-		
+
 		// Force circuit to open
 		for i := 0; i < 5; i++ {
 			cb.Execute(func() error { return testError })
 		}
-		
+
 		// Now it should fail fast
 		err := cb.Execute(func() error {
 			t.Error("Function should not be called when circuit is open")
 			return nil
 		})
-		
+
 		if err != ErrCircuitBreakerOpen {
 			t.Errorf("Expected ErrCircuitBreakerOpen, got %v", err)
 		}
@@ -103,30 +103,30 @@ func TestCircuitBreaker(t *testing.T) {
 		}
 		cb := newCircuitBreaker("test-endpoint:6379", testConfig)
 		testError := errors.New("test error")
-		
+
 		// Force circuit to open
 		for i := 0; i < 5; i++ {
 			cb.Execute(func() error { return testError })
 		}
-		
+
 		if cb.GetState() != CircuitBreakerOpen {
 			t.Error("Circuit should be open")
 		}
-		
+
 		// Wait for reset timeout
 		time.Sleep(150 * time.Millisecond)
-		
+
 		// Next call should transition to half-open
 		executed := false
 		err := cb.Execute(func() error {
 			executed = true
 			return nil // Success
 		})
-		
+
 		if err != nil {
 			t.Errorf("Expected no error, got %v", err)
 		}
-		
+
 		if !executed {
 			t.Error("Function should have been executed in half-open state")
 		}
@@ -141,15 +141,15 @@ func TestCircuitBreaker(t *testing.T) {
 		}
 		cb := newCircuitBreaker("test-endpoint:6379", testConfig)
 		testError := errors.New("test error")
-		
+
 		// Force circuit to open
 		for i := 0; i < 5; i++ {
 			cb.Execute(func() error { return testError })
 		}
-		
+
 		// Wait for reset timeout
 		time.Sleep(100 * time.Millisecond)
-		
+
 		// Execute successful requests in half-open state
 		for i := 0; i < 3; i++ {
 			err := cb.Execute(func() error {
@@ -159,7 +159,7 @@ func TestCircuitBreaker(t *testing.T) {
 				t.Errorf("Expected no error on attempt %d, got %v", i+1, err)
 			}
 		}
-		
+
 		// Circuit should now be closed
 		if cb.GetState() != CircuitBreakerClosed {
 			t.Errorf("Expected state %v, got %v", CircuitBreakerClosed, cb.GetState())
@@ -175,24 +175,24 @@ func TestCircuitBreaker(t *testing.T) {
 		}
 		cb := newCircuitBreaker("test-endpoint:6379", testConfig)
 		testError := errors.New("test error")
-		
+
 		// Force circuit to open
 		for i := 0; i < 5; i++ {
 			cb.Execute(func() error { return testError })
 		}
-		
+
 		// Wait for reset timeout
 		time.Sleep(100 * time.Millisecond)
-		
+
 		// First request in half-open state fails
 		err := cb.Execute(func() error {
 			return testError
 		})
-		
+
 		if err != testError {
 			t.Errorf("Expected test error, got %v", err)
 		}
-		
+
 		// Circuit should be open again
 		if cb.GetState() != CircuitBreakerOpen {
 			t.Errorf("Expected state %v, got %v", CircuitBreakerOpen, cb.GetState())
@@ -204,8 +204,8 @@ func TestCircuitBreaker(t *testing.T) {
 		testError := errors.New("test error")
 
 		// Execute some operations
-		cb.Execute(func() error { return testError })  // Failure
-		cb.Execute(func() error { return testError })  // Failure
+		cb.Execute(func() error { return testError }) // Failure
+		cb.Execute(func() error { return testError }) // Failure
 
 		stats := cb.GetStats()
 
@@ -241,15 +241,15 @@ func TestCircuitBreakerManager(t *testing.T) {
 
 	t.Run("GetCircuitBreaker", func(t *testing.T) {
 		manager := newCircuitBreakerManager(config)
-		
+
 		cb1 := manager.GetCircuitBreaker("endpoint1:6379")
 		cb2 := manager.GetCircuitBreaker("endpoint2:6379")
 		cb3 := manager.GetCircuitBreaker("endpoint1:6379") // Same as cb1
-		
+
 		if cb1 == cb2 {
 			t.Error("Different endpoints should have different circuit breakers")
 		}
-		
+
 		if cb1 != cb3 {
 			t.Error("Same endpoint should return the same circuit breaker")
 		}
@@ -257,27 +257,27 @@ func TestCircuitBreakerManager(t *testing.T) {
 
 	t.Run("GetAllStats", func(t *testing.T) {
 		manager := newCircuitBreakerManager(config)
-		
+
 		// Create circuit breakers for different endpoints
 		cb1 := manager.GetCircuitBreaker("endpoint1:6379")
 		cb2 := manager.GetCircuitBreaker("endpoint2:6379")
-		
+
 		// Execute some operations
 		cb1.Execute(func() error { return nil })
 		cb2.Execute(func() error { return errors.New("test error") })
-		
+
 		stats := manager.GetAllStats()
-		
+
 		if len(stats) != 2 {
 			t.Errorf("Expected 2 circuit breaker stats, got %d", len(stats))
 		}
-		
+
 		// Check that we have stats for both endpoints
 		endpoints := make(map[string]bool)
 		for _, stat := range stats {
 			endpoints[stat.Endpoint] = true
 		}
-		
+
 		if !endpoints["endpoint1:6379"] || !endpoints["endpoint2:6379"] {
 			t.Error("Missing stats for expected endpoints")
 		}
@@ -286,25 +286,25 @@ func TestCircuitBreakerManager(t *testing.T) {
 	t.Run("Reset", func(t *testing.T) {
 		manager := newCircuitBreakerManager(config)
 		testError := errors.New("test error")
-		
+
 		cb := manager.GetCircuitBreaker("test-endpoint:6379")
-		
+
 		// Force circuit to open
 		for i := 0; i < 5; i++ {
 			cb.Execute(func() error { return testError })
 		}
-		
+
 		if cb.GetState() != CircuitBreakerOpen {
 			t.Error("Circuit should be open")
 		}
-		
+
 		// Reset all circuit breakers
 		manager.Reset()
-		
+
 		if cb.GetState() != CircuitBreakerClosed {
 			t.Error("Circuit should be closed after reset")
 		}
-		
+
 		if cb.failures.Load() != 0 {
 			t.Error("Failure count should be reset to 0")
 		}
