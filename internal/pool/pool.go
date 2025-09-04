@@ -122,6 +122,14 @@ type wantConn struct {
 	result    chan wantConnResult // channel to deliver connection or error
 }
 
+// getCtxForDial returns context for dial or nil if connection was delivered or canceled.
+func (w *wantConn) getCtxForDial() context.Context {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.ctx
+}
+
 func (w *wantConn) tryDeliver(cn *Conn, err error) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -576,12 +584,13 @@ func (p *ConnPool) asyncNewConn(ctx context.Context) (*Conn, error) {
 		defer w.cancelCtx()
 		defer func() { <-p.dialsInProgress }() // Release connection creation permission
 
-		cn, cnErr := p.newConn(w.ctx, true)
+		dialCtx := w.getCtxForDial()
+		cn, cnErr := p.newConn(dialCtx, true)
 		delivered := w.tryDeliver(cn, cnErr)
 		if cnErr == nil && delivered {
 			return
 		} else if cnErr == nil && !delivered {
-			p.Put(w.ctx, cn)
+			p.Put(dialCtx, cn)
 		} else { // freeTurn after error
 			p.freeTurn()
 		}
