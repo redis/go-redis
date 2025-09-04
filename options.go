@@ -139,10 +139,6 @@ type Options struct {
 	// default: 3 seconds
 	WriteTimeout time.Duration
 
-	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
-	// If 0, defaults to PoolSize/4+1. If negative, unlimited goroutines (not recommended).
-	MaxConcurrentDials int
-
 	// ContextTimeoutEnabled controls whether the client respects context timeouts and deadlines.
 	// See https://redis.uptrace.dev/guide/go-redis-debugging.html#timeouts
 	ContextTimeoutEnabled bool
@@ -178,6 +174,10 @@ type Options struct {
 	//
 	// default: 10 * runtime.GOMAXPROCS(0)
 	PoolSize int
+
+	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
+	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
+	MaxConcurrentDials int
 
 	// PoolTimeout is the amount of time client waits for connection if all connections
 	// are busy before returning an error.
