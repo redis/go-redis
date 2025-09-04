@@ -122,6 +122,9 @@ type UniversalOptions struct {
 
 	// IsClusterMode can be used when only one Addrs is provided (e.g. Elasticache supports setting up cluster mode with configuration endpoint).
 	IsClusterMode bool
+
+	// HitlessUpgradeConfig provides configuration for hitless upgrades.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -177,6 +180,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		IdentitySuffix:        o.IdentitySuffix,
 		FailingTimeoutSeconds: o.FailingTimeoutSeconds,
 		UnstableResp3:         o.UnstableResp3,
+		HitlessUpgradeConfig:  o.HitlessUpgradeConfig,
 	}
 }
 
@@ -237,6 +241,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		DisableIndentity: o.DisableIndentity,
 		IdentitySuffix:   o.IdentitySuffix,
 		UnstableResp3:    o.UnstableResp3,
+		// Note: HitlessUpgradeConfig not supported for FailoverOptions
 	}
 }
 
@@ -284,10 +289,11 @@ func (o *UniversalOptions) Simple() *Options {
 
 		TLSConfig: o.TLSConfig,
 
-		DisableIdentity:  o.DisableIdentity,
-		DisableIndentity: o.DisableIndentity,
-		IdentitySuffix:   o.IdentitySuffix,
-		UnstableResp3:    o.UnstableResp3,
+		DisableIdentity:      o.DisableIdentity,
+		DisableIndentity:     o.DisableIndentity,
+		IdentitySuffix:       o.IdentitySuffix,
+		UnstableResp3:        o.UnstableResp3,
+		HitlessUpgradeConfig: o.HitlessUpgradeConfig,
 	}
 }
 

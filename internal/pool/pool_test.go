@@ -2,15 +2,17 @@ package pool_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
-
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 var _ = Describe("ConnPool", func() {
@@ -20,7 +22,7 @@ var _ = Describe("ConnPool", func() {
 	BeforeEach(func() {
 		connPool = pool.NewConnPool(&pool.Options{
 			Dialer:          dummyDialer,
-			PoolSize:        10,
+			PoolSize:        int32(10),
 			PoolTimeout:     time.Hour,
 			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
@@ -45,11 +47,11 @@ var _ = Describe("ConnPool", func() {
 				<-closedChan
 				return &net.TCPConn{}, nil
 			},
-			PoolSize:        10,
+			PoolSize:        int32(10),
 			PoolTimeout:     time.Hour,
 			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
-			MinIdleConns:    minIdleConns,
+			MinIdleConns:    int32(minIdleConns),
 		})
 		wg.Wait()
 		Expect(connPool.Close()).NotTo(HaveOccurred())
@@ -105,7 +107,7 @@ var _ = Describe("ConnPool", func() {
 			// ok
 		}
 
-		connPool.Remove(ctx, cn, nil)
+		connPool.Remove(ctx, cn, errors.New("test"))
 
 		// Check that Get is unblocked.
 		select {
@@ -130,8 +132,8 @@ var _ = Describe("MinIdleConns", func() {
 	newConnPool := func() *pool.ConnPool {
 		connPool := pool.NewConnPool(&pool.Options{
 			Dialer:          dummyDialer,
-			PoolSize:        poolSize,
-			MinIdleConns:    minIdleConns,
+			PoolSize:        int32(poolSize),
+			MinIdleConns:    int32(minIdleConns),
 			PoolTimeout:     100 * time.Millisecond,
 			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: -1,
@@ -168,7 +170,7 @@ var _ = Describe("MinIdleConns", func() {
 
 			Context("after Remove", func() {
 				BeforeEach(func() {
-					connPool.Remove(ctx, cn, nil)
+					connPool.Remove(ctx, cn, errors.New("test"))
 				})
 
 				It("has idle connections", func() {
@@ -245,7 +247,7 @@ var _ = Describe("MinIdleConns", func() {
 				BeforeEach(func() {
 					perform(len(cns), func(i int) {
 						mu.RLock()
-						connPool.Remove(ctx, cns[i], nil)
+						connPool.Remove(ctx, cns[i], errors.New("test"))
 						mu.RUnlock()
 					})
 
@@ -309,7 +311,7 @@ var _ = Describe("race", func() {
 	It("does not happen on Get, Put, and Remove", func() {
 		connPool = pool.NewConnPool(&pool.Options{
 			Dialer:          dummyDialer,
-			PoolSize:        10,
+			PoolSize:        int32(10),
 			PoolTimeout:     time.Minute,
 			DialTimeout:     1 * time.Second,
 			ConnMaxIdleTime: time.Millisecond,
@@ -328,7 +330,7 @@ var _ = Describe("race", func() {
 				cn, err := connPool.Get(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
-					connPool.Remove(ctx, cn, nil)
+					connPool.Remove(ctx, cn, errors.New("test"))
 				}
 			}
 		})
@@ -339,15 +341,15 @@ var _ = Describe("race", func() {
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				return &net.TCPConn{}, nil
 			},
-			PoolSize:     1000,
-			MinIdleConns: 50,
+			PoolSize:     int32(1000),
+			MinIdleConns: int32(50),
 			PoolTimeout:  3 * time.Second,
 			DialTimeout:  1 * time.Second,
 		}
 		p := pool.NewConnPool(opt)
 
 		var wg sync.WaitGroup
-		for i := 0; i < opt.PoolSize; i++ {
+		for i := int32(0); i < opt.PoolSize; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -366,8 +368,8 @@ var _ = Describe("race", func() {
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				panic("test panic")
 			},
-			PoolSize:     100,
-			MinIdleConns: 30,
+			PoolSize:     int32(100),
+			MinIdleConns: int32(30),
 		}
 		p := pool.NewConnPool(opt)
 
@@ -377,14 +379,14 @@ var _ = Describe("race", func() {
 			state := p.Stats()
 			return state.TotalConns == 0 && state.IdleConns == 0 && p.QueueLen() == 0
 		}, "3s", "50ms").Should(BeTrue())
-  })
-  
+	})
+
 	It("wait", func() {
 		opt := &pool.Options{
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				return &net.TCPConn{}, nil
 			},
-			PoolSize:    1,
+			PoolSize:    int32(1),
 			PoolTimeout: 3 * time.Second,
 		}
 		p := pool.NewConnPool(opt)
@@ -415,7 +417,7 @@ var _ = Describe("race", func() {
 
 				return &net.TCPConn{}, nil
 			},
-			PoolSize:    1,
+			PoolSize:    int32(1),
 			PoolTimeout: testPoolTimeout,
 		}
 		p := pool.NewConnPool(opt)
@@ -435,3 +437,73 @@ var _ = Describe("race", func() {
 		Expect(stats.Timeouts).To(Equal(uint32(1)))
 	})
 })
+
+// TestDialerRetryConfiguration tests the new DialerRetries and DialerRetryTimeout options
+func TestDialerRetryConfiguration(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("CustomDialerRetries", func(t *testing.T) {
+		var attempts int64
+		failingDialer := func(ctx context.Context) (net.Conn, error) {
+			atomic.AddInt64(&attempts, 1)
+			return nil, errors.New("dial failed")
+		}
+
+		connPool := pool.NewConnPool(&pool.Options{
+			Dialer:             failingDialer,
+			PoolSize:           1,
+			PoolTimeout:        time.Second,
+			DialTimeout:        time.Second,
+			DialerRetries:      3,                     // Custom retry count
+			DialerRetryTimeout: 10 * time.Millisecond, // Fast retries for testing
+		})
+		defer connPool.Close()
+
+		_, err := connPool.Get(ctx)
+		if err == nil {
+			t.Error("Expected error from failing dialer")
+		}
+
+		// Should have attempted at least 3 times (DialerRetries = 3)
+		// There might be additional attempts due to pool logic
+		finalAttempts := atomic.LoadInt64(&attempts)
+		if finalAttempts < 3 {
+			t.Errorf("Expected at least 3 dial attempts, got %d", finalAttempts)
+		}
+		if finalAttempts > 6 {
+			t.Errorf("Expected around 3 dial attempts, got %d (too many)", finalAttempts)
+		}
+	})
+
+	t.Run("DefaultDialerRetries", func(t *testing.T) {
+		var attempts int64
+		failingDialer := func(ctx context.Context) (net.Conn, error) {
+			atomic.AddInt64(&attempts, 1)
+			return nil, errors.New("dial failed")
+		}
+
+		connPool := pool.NewConnPool(&pool.Options{
+			Dialer:      failingDialer,
+			PoolSize:    1,
+			PoolTimeout: time.Second,
+			DialTimeout: time.Second,
+			// DialerRetries and DialerRetryTimeout not set - should use defaults
+		})
+		defer connPool.Close()
+
+		_, err := connPool.Get(ctx)
+		if err == nil {
+			t.Error("Expected error from failing dialer")
+		}
+
+		// Should have attempted 5 times (default DialerRetries = 5)
+		finalAttempts := atomic.LoadInt64(&attempts)
+		if finalAttempts != 5 {
+			t.Errorf("Expected 5 dial attempts (default), got %d", finalAttempts)
+		}
+	})
+}
+
+func init() {
+	logging.Disable()
+}
