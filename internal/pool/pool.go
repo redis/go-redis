@@ -566,7 +566,7 @@ func (p *ConnPool) asyncNewConn(ctx context.Context) (*Conn, error) {
 		return nil, ctx.Err()
 	}
 
-	dialCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.cfg.DialTimeout)
+	dialCtx, cancel := context.WithTimeout(context.Background(), p.cfg.DialTimeout)
 
 	w := &wantConn{
 		ctx:       dialCtx,
