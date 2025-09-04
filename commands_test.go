@@ -3019,7 +3019,8 @@ var _ = Describe("Commands", func() {
 
 			res, err = client.HPTTL(ctx, "myhash", "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 1))
+			// overhead of the push notification check is about 1-2ms for 100 commands
+			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 2))
 		})
 
 		It("should HGETDEL", Label("hash", "HGETDEL"), func() {
