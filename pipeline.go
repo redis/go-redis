@@ -30,8 +30,11 @@ type Pipeliner interface {
 	// If a certain Redis command is not yet supported, you can use Do to execute it.
 	Do(ctx context.Context, args ...interface{}) *Cmd
 
-	// Process puts the commands to be executed into the pipeline buffer.
+	// Process queues the cmd for later execution.
 	Process(ctx context.Context, cmd Cmder) error
+
+	// BatchProcess adds multiple commands to be executed into the pipeline buffer.
+	BatchProcess(ctx context.Context, cmd ...Cmder) error
 
 	// Discard discards all commands in the pipeline buffer that have not yet been executed.
 	Discard()
@@ -79,7 +82,12 @@ func (c *Pipeline) Do(ctx context.Context, args ...interface{}) *Cmd {
 
 // Process queues the cmd for later execution.
 func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
-	c.cmds = append(c.cmds, cmd)
+	return c.BatchProcess(ctx, cmd)
+}
+
+// BatchProcess queues multiple cmds for later execution.
+func (c *Pipeline) BatchProcess(ctx context.Context, cmd ...Cmder) error {
+	c.cmds = append(c.cmds, cmd...)
 	return nil
 }
 
