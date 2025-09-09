@@ -2,6 +2,7 @@ package hitless
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -235,12 +236,18 @@ func (hwm *handoffWorkerManager) processHandoffRequest(request HandoffRequest) {
 // queueHandoff queues a handoff request for processing
 // if err is returned, connection will be removed from pool
 func (hwm *handoffWorkerManager) queueHandoff(conn *pool.Conn) error {
-	// Create handoff request
+	// Get handoff info atomically to prevent race conditions
+	shouldHandoff, endpoint, seqID := conn.GetHandoffInfo()
+	if !shouldHandoff {
+		return errors.New("connection is not marked for handoff")
+	}
+
+	// Create handoff request with atomically retrieved data
 	request := HandoffRequest{
 		Conn:     conn,
 		ConnID:   conn.GetID(),
-		Endpoint: conn.GetHandoffEndpoint(),
-		SeqID:    conn.GetMovingSeqID(),
+		Endpoint: endpoint,
+		SeqID:    seqID,
 		Pool:     hwm.poolHook.pool, // Include pool for connection removal on failure
 	}
 

@@ -18,6 +18,15 @@ var noDeadline = time.Time{}
 // Global atomic counter for connection IDs
 var connIDCounter uint64
 
+// HandoffState represents the atomic state for connection handoffs
+// This struct is stored atomically to prevent race conditions between
+// checking handoff status and reading handoff parameters
+type HandoffState struct {
+	ShouldHandoff bool   // Whether connection should be handed off
+	Endpoint      string // New endpoint for handoff
+	SeqID         int64  // Sequence ID from MOVING notification
+}
+
 // atomicNetConn is a wrapper to ensure consistent typing in atomic.Value
 type atomicNetConn struct {
 	conn net.Conn
@@ -69,11 +78,11 @@ type Conn struct {
 
 	// Handoff state - using atomic operations for lock-free access
 	usableAtomic         atomic.Bool   // Connection usability state
-	shouldHandoffAtomic  atomic.Bool   // Whether connection should be handed off
-	movingSeqIDAtomic    atomic.Int64  // Sequence ID from MOVING notification
 	handoffRetriesAtomic atomic.Uint32 // Retry counter for handoff attempts
-	// newEndpointAtomic needs special handling as it's a string
-	newEndpointAtomic atomic.Value // stores string
+
+	// Atomic handoff state to prevent race conditions
+	// Stores *HandoffState to ensure atomic updates of all handoff-related fields
+	handoffStateAtomic atomic.Value // stores *HandoffState
 
 	onClose func() error
 }
@@ -104,12 +113,17 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 	// Store netConn atomically for lock-free access using wrapper
 	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
 
-	// Initialize atomic handoff state
+	// Initialize atomic state
 	cn.usableAtomic.Store(false)        // false initially, set to true after initialization
-	cn.shouldHandoffAtomic.Store(false) // false initially
-	cn.movingSeqIDAtomic.Store(0)       // 0 initially
 	cn.handoffRetriesAtomic.Store(0)    // 0 initially
-	cn.newEndpointAtomic.Store("")      // empty string initially
+
+	// Initialize handoff state atomically
+	initialHandoffState := &HandoffState{
+		ShouldHandoff: false,
+		Endpoint:      "",
+		SeqID:         0,
+	}
+	cn.handoffStateAtomic.Store(initialHandoffState)
 
 	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
@@ -154,37 +168,38 @@ func (cn *Conn) setUsable(usable bool) {
 	cn.usableAtomic.Store(usable)
 }
 
-// shouldHandoff returns true if connection needs handoff (lock-free).
-func (cn *Conn) shouldHandoff() bool {
-	return cn.shouldHandoffAtomic.Load()
+// getHandoffState returns the current handoff state atomically (lock-free).
+func (cn *Conn) getHandoffState() *HandoffState {
+	state := cn.handoffStateAtomic.Load()
+	if state == nil {
+		// Return default state if not initialized
+		return &HandoffState{
+			ShouldHandoff: false,
+			Endpoint:      "",
+			SeqID:         0,
+		}
+	}
+	return state.(*HandoffState)
 }
 
-// setShouldHandoff sets the handoff flag atomically (lock-free).
-func (cn *Conn) setShouldHandoff(should bool) {
-	cn.shouldHandoffAtomic.Store(should)
+// setHandoffState sets the handoff state atomically (lock-free).
+func (cn *Conn) setHandoffState(state *HandoffState) {
+	cn.handoffStateAtomic.Store(state)
+}
+
+// shouldHandoff returns true if connection needs handoff (lock-free).
+func (cn *Conn) shouldHandoff() bool {
+	return cn.getHandoffState().ShouldHandoff
 }
 
 // getMovingSeqID returns the sequence ID atomically (lock-free).
 func (cn *Conn) getMovingSeqID() int64 {
-	return cn.movingSeqIDAtomic.Load()
-}
-
-// setMovingSeqID sets the sequence ID atomically (lock-free).
-func (cn *Conn) setMovingSeqID(seqID int64) {
-	cn.movingSeqIDAtomic.Store(seqID)
+	return cn.getHandoffState().SeqID
 }
 
 // getNewEndpoint returns the new endpoint atomically (lock-free).
 func (cn *Conn) getNewEndpoint() string {
-	if endpoint := cn.newEndpointAtomic.Load(); endpoint != nil {
-		return endpoint.(string)
-	}
-	return ""
-}
-
-// setNewEndpoint sets the new endpoint atomically (lock-free).
-func (cn *Conn) setNewEndpoint(endpoint string) {
-	cn.newEndpointAtomic.Store(endpoint)
+	return cn.getHandoffState().Endpoint
 }
 
 // setHandoffRetries sets the retry count atomically (lock-free).
@@ -396,24 +411,74 @@ func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) err
 
 // MarkForHandoff marks the connection for handoff due to MOVING notification (lock-free).
 // Returns an error if the connection is already marked for handoff.
+// This method uses atomic compare-and-swap to ensure all handoff state is updated atomically.
 func (cn *Conn) MarkForHandoff(newEndpoint string, seqID int64) error {
-	// Use single atomic CAS operation for state transition
-	if !cn.shouldHandoffAtomic.CompareAndSwap(false, true) {
-		return errors.New("connection is already marked for handoff")
+	const maxRetries = 50
+	const baseDelay = time.Microsecond
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		currentState := cn.getHandoffState()
+
+		// Check if already marked for handoff
+		if currentState.ShouldHandoff {
+			return errors.New("connection is already marked for handoff")
+		}
+
+		// Create new state with handoff enabled
+		newState := &HandoffState{
+			ShouldHandoff: true,
+			Endpoint:      newEndpoint,
+			SeqID:         seqID,
+		}
+
+		// Atomic compare-and-swap to update entire state
+		if cn.handoffStateAtomic.CompareAndSwap(currentState, newState) {
+			return nil
+		}
+
+		// If CAS failed, add exponential backoff to reduce contention
+		if attempt < maxRetries-1 {
+			delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
+			time.Sleep(delay)
+		}
 	}
 
-	cn.setNewEndpoint(newEndpoint)
-	cn.setMovingSeqID(seqID)
-	return nil
+	return fmt.Errorf("failed to mark connection for handoff after %d attempts due to high contention", maxRetries)
 }
 
 func (cn *Conn) MarkQueuedForHandoff() error {
-	// Use single atomic CAS operation for state transition
-	if !cn.shouldHandoffAtomic.CompareAndSwap(true, false) {
-		return errors.New("connection was not marked for handoff")
+	const maxRetries = 50
+	const baseDelay = time.Microsecond
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		currentState := cn.getHandoffState()
+
+		// Check if marked for handoff
+		if !currentState.ShouldHandoff {
+			return errors.New("connection was not marked for handoff")
+		}
+
+		// Create new state with handoff disabled (queued)
+		newState := &HandoffState{
+			ShouldHandoff: false,
+			Endpoint:      currentState.Endpoint, // Preserve endpoint for handoff processing
+			SeqID:         currentState.SeqID,    // Preserve seqID for handoff processing
+		}
+
+		// Atomic compare-and-swap to update state
+		if cn.handoffStateAtomic.CompareAndSwap(currentState, newState) {
+			cn.setUsable(false)
+			return nil
+		}
+
+		// If CAS failed, add exponential backoff to reduce contention
+		if attempt < maxRetries-1 {
+			delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
+			time.Sleep(delay)
+		}
 	}
-	cn.setUsable(false)
-	return nil
+
+	return fmt.Errorf("failed to mark connection as queued for handoff after %d attempts due to high contention", maxRetries)
 }
 
 // ShouldHandoff returns true if the connection needs to be handed off (lock-free).
@@ -431,6 +496,14 @@ func (cn *Conn) GetMovingSeqID() int64 {
 	return cn.getMovingSeqID()
 }
 
+// GetHandoffInfo returns all handoff information atomically (lock-free).
+// This method prevents race conditions by returning all handoff state in a single atomic operation.
+// Returns (shouldHandoff, endpoint, seqID).
+func (cn *Conn) GetHandoffInfo() (bool, string, int64) {
+	state := cn.getHandoffState()
+	return state.ShouldHandoff, state.Endpoint, state.SeqID
+}
+
 // GetID returns the unique identifier for this connection.
 func (cn *Conn) GetID() uint64 {
 	return cn.id
@@ -438,10 +511,15 @@ func (cn *Conn) GetID() uint64 {
 
 // ClearHandoffState clears the handoff state after successful handoff (lock-free).
 func (cn *Conn) ClearHandoffState() {
-	// clear handoff state
-	cn.setShouldHandoff(false)
-	cn.setNewEndpoint("")
-	cn.setMovingSeqID(0)
+	// Create clean state
+	cleanState := &HandoffState{
+		ShouldHandoff: false,
+		Endpoint:      "",
+		SeqID:         0,
+	}
+
+	// Atomically set clean state
+	cn.setHandoffState(cleanState)
 	cn.setHandoffRetries(0)
 	cn.setUsable(true) // Connection is safe to use again after handoff completes
 }
