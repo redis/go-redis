@@ -1712,10 +1712,16 @@ func (c *ClusterClient) txPipelineReadQueued(
 
 	for _, cmd := range cmds {
 		err := statusCmd.readReply(rd)
-		if err == nil || c.checkMovedErr(ctx, cmd, err, failedCmds) || isRedisError(err) {
-			continue
+		if err != nil {
+			if c.checkMovedErr(ctx, cmd, err, failedCmds) {
+				// will be processed later
+				continue
+			}
+			cmd.SetErr(err)
+			if !isRedisError(err) {
+				return err
+			}
 		}
-		return err
 	}
 
 	// Parse number of replies.
