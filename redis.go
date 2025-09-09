@@ -703,9 +703,12 @@ func txPipelineReadQueued(rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) 
 	}
 
 	// Parse +QUEUED.
-	for range cmds {
-		if err := statusCmd.readReply(rd); err != nil && !isRedisError(err) {
-			return err
+	for _, cmd := range cmds {
+		if err := statusCmd.readReply(rd); err != nil {
+			cmd.SetErr(err)
+			if !isRedisError(err) {
+				return err
+			}
 		}
 	}
 
