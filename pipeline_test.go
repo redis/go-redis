@@ -114,6 +114,25 @@ var _ = Describe("pipelining", func() {
 			err := pipe.Do(ctx).Err()
 			Expect(err).To(Equal(errors.New("redis: please enter the command to be executed")))
 		})
+
+		It("should process", func() {
+			err := pipe.Process(ctx, redis.NewCmd(ctx, "asking"))
+			Expect(err).To(Equal(nil))
+			Expect(pipe.Cmds()).To(HaveLen(1))
+		})
+
+		It("should batchProcess", func() {
+			err := pipe.BatchProcess(ctx, redis.NewCmd(ctx, "asking"))
+			Expect(err).To(Equal(nil))
+			Expect(pipe.Cmds()).To(HaveLen(1))
+
+			pipe.Discard()
+			Expect(pipe.Cmds()).To(HaveLen(0))
+
+			err = pipe.BatchProcess(ctx, redis.NewCmd(ctx, "asking"), redis.NewCmd(ctx, "set", "key", "value"))
+			Expect(err).To(Equal(nil))
+			Expect(pipe.Cmds()).To(HaveLen(2))
+		})
 	}
 
 	Describe("Pipeline", func() {
