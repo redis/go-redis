@@ -630,6 +630,7 @@ func (c *baseClient) generalProcessPipeline(
 			return err
 		})
 		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) {
+			setCmdsErr(cmds, lastErr)
 			return lastErr
 		}
 	}
