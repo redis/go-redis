@@ -2,22 +2,45 @@
 
 set -e
 
+DRY_RUN=1
+
+if [ $# -eq 0 ]; then
+    echo "Error: Tag version is required"
+    help
+fi
+
+TAG=$1
+shift
+
+while getopts "t" opt; do
+    case $opt in
+        t)
+            DRY_RUN=0
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            exit 1
+            ;;
+    esac
+done
+
 help() {
     cat <<- EOF
-Usage: TAG=tag $0
+Usage: $0 TAGVERSION [-t]
 
 Creates git tags for public Go packages.
 
-VARIABLES:
-  TAG        git tag, for example, v1.0.0
+ARGUMENTS:
+  TAGVERSION    Tag version to create, for example v1.0.0
+
+OPTIONS:
+  -t           Execute git commands (default: dry run)
 EOF
     exit 0
 }
 
-if [ -z "$TAG" ]
-then
-    printf "TAG env var is required\n\n";
-    help
+if [ "$DRY_RUN" -eq 1 ]; then
+    echo "Running in dry-run mode"
 fi
 
 if ! grep -Fq "\"${TAG#v}\"" version.go
@@ -31,12 +54,21 @@ PACKAGE_DIRS=$(find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; \
   | sed 's/^\.\///' \
   | sort)
 
-git tag ${TAG}
-git push origin ${TAG}
+
+execute_git_command() {
+    if [ "$DRY_RUN" -eq 0 ]; then
+        "$@"
+    else
+        echo "DRY-RUN: Would execute: $@"
+    fi
+}
+
+execute_git_command git tag ${TAG}
+execute_git_command git push origin ${TAG}
 
 for dir in $PACKAGE_DIRS
 do
     printf "tagging ${dir}/${TAG}\n"
-    git tag ${dir}/${TAG}
-    git push origin ${dir}/${TAG}
+    execute_git_command git tag ${dir}/${TAG}
+    execute_git_command git push origin ${dir}/${TAG}
 done
