@@ -1,5 +1,25 @@
 # Release Notes
 
+# 9.15.0-beta.1 (2025-09-10)
+
+## Highlights
+This beta release includes a pre-production version of processing push notifications and hitless upgrades.
+
+### Hitless Upgrades
+Hitless upgrades is a major new feature that allows for zero-downtime upgrades in Redis clusters.
+You can find more information in the [Hitless Upgrades documentation](https://github.com/redis/go-redis/tree/master/hitless).
+
+# Changes
+
+## 🚀 New Features
+- [CAE-1088] & [CAE-1072] feat: RESP3 notifications support & Hitless notifications handling ([#3418](https://github.com/redis/go-redis/pull/3418))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@ndyakov](https://github.com/ndyakov), [@htemelski-redis](https://github.com/htemelski-redis), [@ofekshenawa](https://github.com/ofekshenawa)
+
+
 # 9.14.0 (2025-09-10)
 
 ## Highlights
