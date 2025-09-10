@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"slices"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
@@ -102,6 +104,12 @@ func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 
+		cmdString := rediscmd.CmdString(cmd)
+
+		if slices.Contains(th.conf.commandExclusions, cmdString) {
+			return nil
+		}
+
 		attrs := make([]attribute.KeyValue, 0, 8)
 		if th.conf.callerEnabled {
 			fn, file, line := funcFileLine("github.com/redis/go-redis")
@@ -113,7 +121,6 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		}
 
 		if th.conf.dbStmtEnabled {
-			cmdString := rediscmd.CmdString(cmd)
 			attrs = append(attrs, semconv.DBStatement(cmdString))
 		}
 
