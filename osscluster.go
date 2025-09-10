@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/push"
 )
 
 const (
@@ -38,6 +39,7 @@ type ClusterOptions struct {
 	ClientName string
 
 	// NewClient creates a cluster node client with provided name and options.
+	// If NewClient is set by the user, the user is responsible for handling hitless upgrades and push notifications.
 	NewClient func(opt *Options) *Client
 
 	// The maximum number of retries before giving up. Command is retried
@@ -125,10 +127,22 @@ type ClusterOptions struct {
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	UnstableResp3 bool
 
+	// PushNotificationProcessor is the processor for handling push notifications.
+	// If nil, a default processor will be created for RESP3 connections.
+	PushNotificationProcessor push.NotificationProcessor
+
 	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
 	// When a node is marked as failing, it will be avoided for this duration.
 	// Default is 15 seconds.
 	FailingTimeoutSeconds int
+
+	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
+	// When HitlessUpgradeConfig.Mode is not "disabled", the client will handle
+	// cluster upgrade notifications gracefully and manage connection/pool state
+	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
+	// If nil, hitless upgrades are in "auto" mode and will be enabled if the server supports it.
+	// The ClusterClient does not directly work with hitless, it is up to the clients in the Nodes map to work with hitless.
+	HitlessUpgradeConfig *HitlessUpgradeConfig
 }
 
 func (opt *ClusterOptions) init() {
@@ -319,6 +333,13 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
+	// Clone HitlessUpgradeConfig to avoid sharing between cluster node clients
+	var hitlessConfig *HitlessUpgradeConfig
+	if opt.HitlessUpgradeConfig != nil {
+		configClone := *opt.HitlessUpgradeConfig
+		hitlessConfig = &configClone
+	}
+
 	return &Options{
 		ClientName: opt.ClientName,
 		Dialer:     opt.Dialer,
@@ -360,8 +381,10 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// much use for ClusterSlots config).  This means we cannot execute the
 		// READONLY command against that node -- setting readOnly to false in such
 		// situations in the options below will prevent that from happening.
-		readOnly:      opt.ReadOnly && opt.ClusterSlots == nil,
-		UnstableResp3: opt.UnstableResp3,
+		readOnly:                  opt.ReadOnly && opt.ClusterSlots == nil,
+		UnstableResp3:             opt.UnstableResp3,
+		HitlessUpgradeConfig:      hitlessConfig,
+		PushNotificationProcessor: opt.PushNotificationProcessor,
 	}
 }
 
@@ -1664,7 +1687,7 @@ func (c *ClusterClient) processTxPipelineNode(
 }
 
 func (c *ClusterClient) processTxPipelineNodeConn(
-	ctx context.Context, _ *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
+	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
@@ -1682,7 +1705,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
 		if err := c.txPipelineReadQueued(
-			ctx, rd, statusCmd, trimmedCmds, failedCmds,
+			ctx, node, cn, rd, statusCmd, trimmedCmds, failedCmds,
 		); err != nil {
 			setCmdsErr(cmds, err)
 
@@ -1694,23 +1717,37 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 			return err
 		}
 
-		return pipelineReadCmds(rd, trimmedCmds)
+		return node.Client.pipelineReadCmds(ctx, cn, rd, trimmedCmds)
 	})
 }
 
 func (c *ClusterClient) txPipelineReadQueued(
 	ctx context.Context,
+	node *clusterNode,
+	cn *pool.Conn,
 	rd *proto.Reader,
 	statusCmd *StatusCmd,
 	cmds []Cmder,
 	failedCmds *cmdsMap,
 ) error {
 	// Parse queued replies.
+	// To be sure there are no buffered push notifications, we process them before reading the reply
+	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		// Log the error but don't fail the command execution
+		// Push notification processing errors shouldn't break normal Redis operations
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+	}
 	if err := statusCmd.readReply(rd); err != nil {
 		return err
 	}
 
 	for _, cmd := range cmds {
+		// To be sure there are no buffered push notifications, we process them before reading the reply
+		if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			// Log the error but don't fail the command execution
+			// Push notification processing errors shouldn't break normal Redis operations
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		}
 		err := statusCmd.readReply(rd)
 		if err != nil {
 			if c.checkMovedErr(ctx, cmd, err, failedCmds) {
@@ -1724,6 +1761,12 @@ func (c *ClusterClient) txPipelineReadQueued(
 		}
 	}
 
+	// To be sure there are no buffered push notifications, we process them before reading the reply
+	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		// Log the error but don't fail the command execution
+		// Push notification processing errors shouldn't break normal Redis operations
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+	}
 	// Parse number of replies.
 	line, err := rd.ReadLine()
 	if err != nil {
@@ -1829,12 +1872,12 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	return err
 }
 
+// hitless won't work here for now
 func (c *ClusterClient) pubSub() *PubSub {
 	var node *clusterNode
 	pubsub := &PubSub{
 		opt: c.opt.clientOptions(),
-
-		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
+		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
 			if node != nil {
 				panic("node != nil")
 			}
@@ -1868,18 +1911,25 @@ func (c *ClusterClient) pubSub() *PubSub {
 					return nil, err
 				}
 			}
-
-			cn, err := node.Client.newConn(context.TODO())
+			cn, err := node.Client.pubSubPool.NewConn(ctx, node.Client.opt.Network, node.Client.opt.Addr, channels)
 			if err != nil {
 				node = nil
-
 				return nil, err
 			}
-
+			// will return nil if already initialized
+			err = node.Client.initConn(ctx, cn)
+			if err != nil {
+				_ = cn.Close()
+				node = nil
+				return nil, err
+			}
+			node.Client.pubSubPool.TrackConn(cn)
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
-			err := node.Client.connPool.CloseConn(cn)
+			// Untrack connection from PubSubPool
+			node.Client.pubSubPool.UntrackConn(cn)
+			err := cn.Close()
 			node = nil
 			return err
 		},

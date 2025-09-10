@@ -16,6 +16,8 @@ import (
 	. "github.com/bsm/gomega"
 )
 
+var ctx = context.TODO()
+
 var _ = Describe("newClusterState", func() {
 	var state *clusterState
 

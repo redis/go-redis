@@ -13,6 +13,7 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 const (
@@ -102,6 +103,7 @@ var _ = BeforeSuite(func() {
 	fmt.Printf("RCEDocker: %v\n", RCEDocker)
 	fmt.Printf("REDIS_VERSION: %.1f\n", RedisVersion)
 	fmt.Printf("CLIENT_LIBS_TEST_IMAGE: %v\n", os.Getenv("CLIENT_LIBS_TEST_IMAGE"))
+	logging.Disable()
 
 	if RedisVersion < 7.0 || RedisVersion > 9 {
 		panic("incorrect or not supported redis version")
