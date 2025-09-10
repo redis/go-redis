@@ -1,5 +1,31 @@
 # Release Notes
 
+# 9.14.0 (2025-09-10)
+
+## Highlights
+- Added batch process method to the pipeline ([#3510](https://github.com/redis/go-redis/pull/3510))
+
+# Changes
+
+## 🚀 New Features
+
+- Added batch process method to the pipeline ([#3510](https://github.com/redis/go-redis/pull/3510))
+
+## 🐛 Bug Fixes
+
+- fix: SetErr on Cmd if the command cannot be queued correctly in multi/exec ([#3509](https://github.com/redis/go-redis/pull/3509))
+
+## 🧰 Maintenance
+
+- Updates release drafter config to exclude dependabot ([#3511](https://github.com/redis/go-redis/pull/3511))
+- chore(deps): bump actions/setup-go from 5 to 6 ([#3504](https://github.com/redis/go-redis/pull/3504))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@elena-kolevska](https://github.com/elena-kolevksa), [@htemelski-redis](https://github.com/htemelski-redis) and [@ndyakov](https://github.com/ndyakov)
+
+
 # 9.13.0 (2025-09-03)
 
 ## Highlights
