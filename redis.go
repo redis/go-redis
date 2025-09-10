@@ -764,6 +764,7 @@ func (c *baseClient) generalProcessPipeline(
 			return err
 		})
 		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) {
+			setCmdsErr(cmds, lastErr)
 			return lastErr
 		}
 	}
@@ -859,13 +860,16 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	}
 
 	// Parse +QUEUED.
-	for range cmds {
+  for _, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
-		if err := statusCmd.readReply(rd); err != nil && !isRedisError(err) {
-			return err
+		if err := statusCmd.readReply(rd); err != nil {
+			cmd.SetErr(err)
+			if !isRedisError(err) {
+				return err
+			}
 		}
 	}
 

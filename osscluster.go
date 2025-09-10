@@ -1749,10 +1749,16 @@ func (c *ClusterClient) txPipelineReadQueued(
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := statusCmd.readReply(rd)
-		if err == nil || c.checkMovedErr(ctx, cmd, err, failedCmds) || isRedisError(err) {
-			continue
+		if err != nil {
+			if c.checkMovedErr(ctx, cmd, err, failedCmds) {
+				// will be processed later
+				continue
+			}
+			cmd.SetErr(err)
+			if !isRedisError(err) {
+				return err
+			}
 		}
-		return err
 	}
 
 	// To be sure there are no buffered push notifications, we process them before reading the reply
