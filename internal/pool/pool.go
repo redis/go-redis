@@ -546,7 +546,7 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 			return
 		} else if cnErr == nil && !delivered {
 			p.putIdleConn(dialCtx, cn)
-			freeTurnCalled = true // putIdleConn 内部已调用 freeTurn
+			freeTurnCalled = true
 		} else {
 			p.freeTurn()
 			freeTurnCalled = true
