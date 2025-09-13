@@ -366,13 +366,21 @@ func TestWantConnQueue_ThreadSafety(t *testing.T) {
 // Benchmark tests
 func BenchmarkWantConnQueue_Enqueue(b *testing.B) {
 	q := newWantConnQueue()
+	
+	// Pre-allocate a pool of wantConn to reuse  
+	const poolSize = 1000
+	wantConnPool := make([]*wantConn, poolSize)
+	for i := 0; i < poolSize; i++ {
+		wantConnPool[i] = &wantConn{
+			ctx:    context.Background(), 
+			result: make(chan wantConnResult, 1),
+		}
+	}
+	
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		w := &wantConn{
-			ctx:    context.Background(),
-			result: make(chan wantConnResult, 1),
-		}
+		w := wantConnPool[i%poolSize]
 		q.enqueue(w)
 	}
 }
@@ -380,8 +388,11 @@ func BenchmarkWantConnQueue_Enqueue(b *testing.B) {
 func BenchmarkWantConnQueue_Dequeue(b *testing.B) {
 	q := newWantConnQueue()
 
-	// Pre-populate queue
-	for i := 0; i < b.N; i++ {
+	// Use a reasonable fixed size for pre-population to avoid memory issues
+	const queueSize = 10000
+	
+	// Pre-populate queue with a fixed reasonable size
+	for i := 0; i < queueSize; i++ {
 		w := &wantConn{
 			ctx:    context.Background(),
 			result: make(chan wantConnResult, 1),
@@ -390,20 +401,41 @@ func BenchmarkWantConnQueue_Dequeue(b *testing.B) {
 	}
 
 	b.ResetTimer()
+	
+	// Benchmark dequeue operations, refilling as needed
 	for i := 0; i < b.N; i++ {
-		q.dequeue()
+		if _, ok := q.dequeue(); !ok {
+			// Queue is empty, refill a batch
+			for j := 0; j < 1000; j++ {
+				w := &wantConn{
+					ctx:    context.Background(),
+					result: make(chan wantConnResult, 1),
+				}
+				q.enqueue(w)
+			}
+			// Dequeue again
+			q.dequeue()
+		}
 	}
 }
 
 func BenchmarkWantConnQueue_EnqueueDequeue(b *testing.B) {
 	q := newWantConnQueue()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		w := &wantConn{
+	
+	// Pre-allocate a pool of wantConn to reuse
+	const poolSize = 1000
+	wantConnPool := make([]*wantConn, poolSize)
+	for i := 0; i < poolSize; i++ {
+		wantConnPool[i] = &wantConn{
 			ctx:    context.Background(),
 			result: make(chan wantConnResult, 1),
 		}
+	}
+	
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		w := wantConnPool[i%poolSize]
 		q.enqueue(w)
 		q.dequeue()
 	}
