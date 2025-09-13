@@ -60,7 +60,7 @@ var _ = Describe("ConnPool", func() {
 		Expect(connPool.Close()).NotTo(HaveOccurred())
 		close(closedChan)
 
-		// We wait for 1 second and believe that checkMinIdleConns has been executed.
+		// We wait for 1 second and believe that checkIdleConns has been executed.
 		time.Sleep(time.Second)
 
 		Expect(connPool.Stats()).To(Equal(&pool.Stats{
@@ -519,7 +519,7 @@ func TestDialerRetryConfiguration(t *testing.T) {
 	})
 }
 
-var _ = Describe("asyncNewConn", func() {
+var _ = Describe("queuedNewConn", func() {
 	ctx := context.Background()
 
 	It("should successfully create connection when pool is exhausted", func() {
@@ -607,7 +607,7 @@ var _ = Describe("asyncNewConn", func() {
 
 	It("should handle context cancellation while waiting for connection result", func() {
 		// This test focuses on proper error handling when context is cancelled
-		// during asyncNewConn execution (not testing connection reuse)
+		// during queuedNewConn execution (not testing connection reuse)
 
 		slowDialer := func(ctx context.Context) (net.Conn, error) {
 			// Simulate slow dialing
@@ -633,7 +633,7 @@ var _ = Describe("asyncNewConn", func() {
 		defer cancel()
 
 		// This request should timeout while waiting for connection creation result
-		// Testing the error handling path in asyncNewConn select statement
+		// Testing the error handling path in queuedNewConn select statement
 		done := make(chan struct{})
 		var err2 error
 		go func() {
@@ -781,7 +781,7 @@ var _ = Describe("asyncNewConn", func() {
 		go func() {
 			defer GinkgoRecover()
 			defer close(done1)
-			// This will trigger asyncNewConn since pool is full
+			// This will trigger queuedNewConn since pool is full
 			conn, err := testPool.Get(ctx)
 			if err == nil {
 				// Put connection back to pool after creation
@@ -821,6 +821,93 @@ var _ = Describe("asyncNewConn", func() {
 		Expect(duration).To(BeNumerically("<", 50*time.Millisecond))
 
 		testPool.Put(ctx, conn3)
+	})
+
+	It("recover queuedNewConn panic", func() {
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				panic("test panic in queuedNewConn")
+			},
+			PoolSize:           int32(10),
+			MaxConcurrentDials: 10,
+			DialTimeout:        1 * time.Second,
+			PoolTimeout:        1 * time.Second,
+		}
+		testPool := pool.NewConnPool(opt)
+		defer testPool.Close()
+
+		// Trigger queuedNewConn - calling Get() on empty pool will trigger it
+		// Since dialer will panic, it should be handled by recover
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		// Try to get connections multiple times, each will trigger panic but should be properly recovered
+		for i := 0; i < 3; i++ {
+			conn, err := testPool.Get(ctx)
+			// Connection should be nil, error should exist (panic converted to error)
+			Expect(conn).To(BeNil())
+			Expect(err).To(HaveOccurred())
+		}
+
+		// Verify state after panic recovery:
+		// - turn should be properly released (QueueLen() == 0)
+		// - connection counts should be correct (TotalConns == 0, IdleConns == 0)
+		Eventually(func() bool {
+			stats := testPool.Stats()
+			queueLen := testPool.QueueLen()
+			return stats.TotalConns == 0 && stats.IdleConns == 0 && queueLen == 0
+		}, "3s", "50ms").Should(BeTrue())
+	})
+
+	It("should handle connection creation success but delivery failure (putIdleConn path)", func() {
+		// This test covers the most important untested branch in queuedNewConn:
+		// cnErr == nil && !delivered -> putIdleConn()
+
+		// Use slow dialer to ensure request times out before connection is ready
+		slowDialer := func(ctx context.Context) (net.Conn, error) {
+			// Delay long enough for client request to timeout first
+			time.Sleep(300 * time.Millisecond)
+			return newDummyConn(), nil
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             slowDialer,
+			PoolSize:           1,
+			MaxConcurrentDials: 2,
+			DialTimeout:        500 * time.Millisecond, // Long enough for dialer to complete
+			PoolTimeout:        100 * time.Millisecond, // Client requests will timeout quickly
+		})
+		defer testPool.Close()
+
+		// Record initial idle connection count
+		initialIdleConns := testPool.Stats().IdleConns
+
+		// Make a request that will timeout
+		// This request will start queuedNewConn, create connection, but fail to deliver due to timeout
+		shortCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+
+		conn, err := testPool.Get(shortCtx)
+
+		// Request should fail due to timeout
+		Expect(err).To(HaveOccurred())
+		Expect(conn).To(BeNil())
+
+		// However, background queuedNewConn should continue and complete connection creation
+		// Since it cannot deliver (request timed out), it should call putIdleConn to add connection to idle pool
+		Eventually(func() bool {
+			stats := testPool.Stats()
+			return stats.IdleConns > initialIdleConns
+		}, "1s", "50ms").Should(BeTrue())
+
+		// Verify the connection can indeed be used by subsequent requests
+		conn2, err2 := testPool.Get(context.Background())
+		Expect(err2).NotTo(HaveOccurred())
+		Expect(conn2).NotTo(BeNil())
+		Expect(conn2.IsUsable()).To(BeTrue())
+
+		// Cleanup
+		testPool.Put(context.Background(), conn2)
 	})
 })
 

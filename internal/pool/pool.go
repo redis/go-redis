@@ -114,65 +114,6 @@ type lastDialErrorWrap struct {
 	err error
 }
 
-type wantConn struct {
-	mu        sync.Mutex      // protects ctx, done and sending of the result
-	ctx       context.Context // context for dial, cleared after delivered or canceled
-	cancelCtx context.CancelFunc
-	done      bool                // true after delivered or canceled
-	result    chan wantConnResult // channel to deliver connection or error
-}
-
-// getCtxForDial returns context for dial or nil if connection was delivered or canceled.
-func (w *wantConn) getCtxForDial() context.Context {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	return w.ctx
-}
-
-func (w *wantConn) tryDeliver(cn *Conn, err error) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.done {
-		return false
-	}
-
-	w.done = true
-	w.ctx = nil
-
-	w.result <- wantConnResult{cn: cn, err: err}
-	close(w.result)
-
-	return true
-}
-
-func (w *wantConn) cancel(ctx context.Context, p *ConnPool) {
-	w.mu.Lock()
-	var cn *Conn
-	if w.done {
-		select {
-		case result := <-w.result:
-			cn = result.cn
-		default:
-		}
-	} else {
-		close(w.result)
-	}
-
-	w.done = true
-	w.ctx = nil
-	w.mu.Unlock()
-
-	if cn != nil {
-		p.Put(ctx, cn)
-	}
-}
-
-type wantConnResult struct {
-	cn  *Conn
-	err error
-}
-
 type ConnPool struct {
 	cfg *Options
 
@@ -181,6 +122,7 @@ type ConnPool struct {
 
 	queue           chan struct{}
 	dialsInProgress chan struct{}
+	dialsQueue      *wantConnQueue
 
 	connsMu   sync.Mutex
 	conns     map[uint64]*Conn
@@ -209,6 +151,7 @@ func NewConnPool(opt *Options) *ConnPool {
 		queue:           make(chan struct{}, opt.PoolSize),
 		conns:           make(map[uint64]*Conn),
 		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
+		dialsQueue:      newWantConnQueue(),
 		idleConns:       make([]*Conn, 0, opt.PoolSize),
 	}
 
@@ -288,6 +231,7 @@ func (p *ConnPool) checkMinIdleConns() {
 			return
 		}
 	}
+
 }
 
 func (p *ConnPool) addIdleConn() error {
@@ -535,7 +479,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 
 	atomic.AddUint32(&p.stats.Misses, 1)
 
-	newcn, err := p.asyncNewConn(ctx)
+	newcn, err := p.queuedNewConn(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -556,8 +500,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	return newcn, nil
 }
 
-func (p *ConnPool) asyncNewConn(ctx context.Context) (*Conn, error) {
-	// First try to acquire permission to create a connection
+func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 	select {
 	case p.dialsInProgress <- struct{}{}:
 		// Got permission, proceed to create connection
@@ -580,7 +523,19 @@ func (p *ConnPool) asyncNewConn(ctx context.Context) (*Conn, error) {
 		}
 	}()
 
+	p.dialsQueue.enqueue(w)
+
 	go func(w *wantConn) {
+		var freeTurnCalled bool
+		defer func() {
+			if err := recover(); err != nil {
+				if !freeTurnCalled {
+					p.freeTurn()
+				}
+				internal.Logger.Printf(context.Background(), "queuedNewConn panic: %+v", err)
+			}
+		}()
+
 		defer w.cancelCtx()
 		defer func() { <-p.dialsInProgress }() // Release connection creation permission
 
@@ -590,9 +545,11 @@ func (p *ConnPool) asyncNewConn(ctx context.Context) (*Conn, error) {
 		if cnErr == nil && delivered {
 			return
 		} else if cnErr == nil && !delivered {
-			p.Put(dialCtx, cn)
-		} else { // freeTurn after error
+			p.putIdleConn(dialCtx, cn)
+			freeTurnCalled = true // putIdleConn 内部已调用 freeTurn
+		} else {
 			p.freeTurn()
+			freeTurnCalled = true
 		}
 	}(w)
 
@@ -604,6 +561,34 @@ func (p *ConnPool) asyncNewConn(ctx context.Context) (*Conn, error) {
 		err = result.err
 		return result.cn, err
 	}
+}
+
+func (p *ConnPool) putIdleConn(ctx context.Context, cn *Conn) {
+	for {
+		w, ok := p.dialsQueue.dequeue()
+		if !ok {
+			break
+		}
+		if w.tryDeliver(cn, nil) {
+			return
+		}
+	}
+
+	cn.SetUsable(true)
+
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+
+	if p.closed() {
+		_ = cn.Close()
+		return
+	}
+
+	// poolSize is increased in newConn
+	p.idleConns = append(p.idleConns, cn)
+	p.idleConnsLen.Add(1)
+
+	p.freeTurn()
 }
 
 func (p *ConnPool) waitTurn(ctx context.Context) error {
