@@ -366,17 +366,17 @@ func TestWantConnQueue_ThreadSafety(t *testing.T) {
 // Benchmark tests
 func BenchmarkWantConnQueue_Enqueue(b *testing.B) {
 	q := newWantConnQueue()
-	
-	// Pre-allocate a pool of wantConn to reuse  
+
+	// Pre-allocate a pool of wantConn to reuse
 	const poolSize = 1000
 	wantConnPool := make([]*wantConn, poolSize)
 	for i := 0; i < poolSize; i++ {
 		wantConnPool[i] = &wantConn{
-			ctx:    context.Background(), 
+			ctx:    context.Background(),
 			result: make(chan wantConnResult, 1),
 		}
 	}
-	
+
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -390,7 +390,7 @@ func BenchmarkWantConnQueue_Dequeue(b *testing.B) {
 
 	// Use a reasonable fixed size for pre-population to avoid memory issues
 	const queueSize = 10000
-	
+
 	// Pre-populate queue with a fixed reasonable size
 	for i := 0; i < queueSize; i++ {
 		w := &wantConn{
@@ -401,7 +401,7 @@ func BenchmarkWantConnQueue_Dequeue(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	
+
 	// Benchmark dequeue operations, refilling as needed
 	for i := 0; i < b.N; i++ {
 		if _, ok := q.dequeue(); !ok {
@@ -421,7 +421,7 @@ func BenchmarkWantConnQueue_Dequeue(b *testing.B) {
 
 func BenchmarkWantConnQueue_EnqueueDequeue(b *testing.B) {
 	q := newWantConnQueue()
-	
+
 	// Pre-allocate a pool of wantConn to reuse
 	const poolSize = 1000
 	wantConnPool := make([]*wantConn, poolSize)
@@ -431,7 +431,7 @@ func BenchmarkWantConnQueue_EnqueueDequeue(b *testing.B) {
 			result: make(chan wantConnResult, 1),
 		}
 	}
-	
+
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
