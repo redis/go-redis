@@ -768,7 +768,10 @@ func (c *baseClient) generalProcessPipeline(
 			return err
 		})
 		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) {
-			setCmdsErr(cmds, lastErr)
+			// The error should be set here only when failing to obtain the conn.
+			if !isRedisError(lastErr) {
+				setCmdsErr(cmds, lastErr)
+			}
 			return lastErr
 		}
 	}
@@ -864,7 +867,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	}
 
 	// Parse +QUEUED.
-  for _, cmd := range cmds {
+	for _, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
