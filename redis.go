@@ -630,7 +630,10 @@ func (c *baseClient) generalProcessPipeline(
 			return err
 		})
 		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) {
-			setCmdsErr(cmds, lastErr)
+			// The error should be set here only when failing to obtain the conn.
+			if !isRedisError(lastErr) {
+				setCmdsErr(cmds, lastErr)
+			}
 			return lastErr
 		}
 	}
