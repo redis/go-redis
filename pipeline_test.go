@@ -60,7 +60,7 @@ var _ = Describe("pipelining", func() {
 		Expect(cmds).To(BeEmpty())
 	})
 
-	It("basic pipeline exec", func() {
+	It("pipeline: basic exec", func() {
 		p := client.Pipeline()
 		p.Get(ctx, "key")
 		p.Set(ctx, "key", "value", 0)
@@ -73,6 +73,24 @@ var _ = Describe("pipelining", func() {
 		Expect(cmds[1].Err()).NotTo(HaveOccurred())
 		Expect(cmds[2].(*redis.StringCmd).Val()).To(Equal("value"))
 		Expect(cmds[2].Err()).NotTo(HaveOccurred())
+	})
+
+	It("pipeline: exec pipeline when get conn failed", func() {
+		p := client.Pipeline()
+		p.Get(ctx, "key")
+		p.Set(ctx, "key", "value", 0)
+		p.Get(ctx, "key")
+
+		client.Close()
+
+		cmds, err := p.Exec(ctx)
+		Expect(err).To(Equal(redis.ErrClosed))
+		Expect(cmds).To(HaveLen(3))
+		for _, cmd := range cmds {
+			Expect(cmd.Err()).To(Equal(redis.ErrClosed))
+		}
+
+		client = redis.NewClient(redisOptions())
 	})
 
 	assertPipeline := func() {
