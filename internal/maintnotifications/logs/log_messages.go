@@ -75,7 +75,6 @@ const (
 	HandoffQueueFullMessage                          = "handoff queue is full"
 	FailedToDialNewEndpointMessage                   = "failed to dial new endpoint"
 	ApplyingRelaxedTimeoutDueToPostHandoffMessage    = "applying relaxed timeout due to post-handoff"
-	SetNetConnAndInitConnTimingMessage               = "SetNetConnAndInitConn took"
 	HandoffSuccessMessage                            = "handoff succeeded"
 	RemovingConnectionFromPoolMessage                = "removing connection from pool"
 	NoPoolProvidedMessageCannotRemoveMessage         = "no pool provided, cannot remove connection, closing it"
@@ -112,7 +111,6 @@ const (
 	// ========================================
 	InvalidNotificationFormatMessage              = "invalid notification format"
 	InvalidNotificationTypeFormatMessage          = "invalid notification type format"
-	InvalidNotificationMessage                    = "invalid notification"
 	InvalidSeqIDInMovingNotificationMessage       = "invalid seqID in MOVING notification"
 	InvalidTimeSInMovingNotificationMessage       = "invalid timeS in MOVING notification"
 	InvalidNewEndpointInMovingNotificationMessage = "invalid newEndpoint in MOVING notification"
@@ -125,15 +123,9 @@ const (
 	FailedToMarkForHandoffMessage                 = "failed to mark connection for handoff"
 
 	// ========================================
-	// UNUSED CONSTANTS - Not currently used in codebase
+	// used in pool/conn
 	// ========================================
-	UnrelaxedTimeoutAfterDeadlineMessage      = "clearing relaxed timeout after deadline"
-	FailedToMarkQueuedForHandoffMessage       = "failed to mark connection as queued for handoff"
-	ConnectionAlreadyMarkedForHandoffMessage  = "already marked for handoff"
-	CircuitBreakerHalfOpenMessage             = "circuit breaker is half-open, testing if endpoint recovered"
-	FailingDueToCircuitBreakerMessage         = "failing due to circuit breaker"
-	ShuttingDownMessage                       = "shutting down"
-	ConnectionInInvalidStateForHandoffMessage = "connection is in invalid state for handoff"
+	UnrelaxedTimeoutAfterDeadlineMessage = "clearing relaxed timeout after deadline"
 )
 
 func HandoffStarted(connID uint64, newEndpoint string) string {
@@ -210,21 +202,6 @@ func FailedToMarkForHandoff(connID uint64, err error) string {
 		"error":  err.Error(),
 	})
 	return fmt.Sprintf("conn[%d] %s: %v %s", connID, FailedToMarkForHandoffMessage, err, string(data))
-}
-
-func FailedToMarkQueuedForHandoff(connID uint64, err error) string {
-	data, _ := json.Marshal(map[string]interface{}{
-		"connID": connID,
-		"error":  err.Error(),
-	})
-	return fmt.Sprintf("conn[%d] %s: %v %s", connID, FailedToMarkQueuedForHandoffMessage, err, string(data))
-}
-
-func ConnectionAlreadyMarkedForHandoff(connID uint64) string {
-	data, _ := json.Marshal(map[string]interface{}{
-		"connID": connID,
-	})
-	return fmt.Sprintf("conn[%d] %s %s", connID, ConnectionAlreadyMarkedForHandoffMessage, string(data))
 }
 
 func FailedToDialNewEndpoint(connID uint64, endpoint string, err error) string {
@@ -335,38 +312,7 @@ func CircuitBreakerOpen(connID uint64, endpoint string) string {
 	return fmt.Sprintf("conn[%d] %s for %s %s", connID, CircuitBreakerOpenMessage, endpoint, string(data))
 }
 
-func CircuitBreakerHalfOpen(endpoint string) string {
-	data, _ := json.Marshal(map[string]interface{}{
-		"endpoint": endpoint,
-	})
-	return fmt.Sprintf("%s for %s %s", CircuitBreakerHalfOpenMessage, endpoint, string(data))
-}
-
-func FailingDueToCircuitBreaker(connID uint64, endpoint string) string {
-	data, _ := json.Marshal(map[string]interface{}{
-		"connID":   connID,
-		"endpoint": endpoint,
-	})
-	return fmt.Sprintf("conn[%d] %s for %s %s", connID, FailingDueToCircuitBreakerMessage, endpoint, string(data))
-}
-
-// System functions
-func ShuttingDown() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", ShuttingDownMessage, string(data))
-}
-
-// Connection state functions
-func ConnectionInInvalidStateForHandoff(connID uint64, state string) string {
-	data, _ := json.Marshal(map[string]interface{}{
-		"connID": connID,
-		"state":  state,
-	})
-	return fmt.Sprintf("conn[%d] %s (state: %s) %s", connID, ConnectionInInvalidStateForHandoffMessage, state, string(data))
-}
-
 // Additional handoff functions for specific cases
-
 func ConnectionNotMarkedForHandoff(connID uint64) string {
 	data, _ := json.Marshal(map[string]interface{}{
 		"connID": connID,
@@ -476,31 +422,9 @@ func FailedToRegisterHandler(notificationType string, err error) string {
 	return fmt.Sprintf("%s for %s: %v %s", FailedToRegisterHandlerMessage, notificationType, err, string(data))
 }
 
-func ConnectionMarkedForHandoffError(connID uint64) string {
-	data, _ := json.Marshal(map[string]interface{}{
-		"connID": connID,
-	})
-	return fmt.Sprintf("%s %s", ConnectionMarkedForHandoffErrorMessage, string(data))
-}
-
-func ConnectionInvalidHandoffStateError(connID uint64, state string) string {
-	data, _ := json.Marshal(map[string]interface{}{
-		"connID": connID,
-		"state":  state,
-	})
-	return fmt.Sprintf("%s: %s %s", ConnectionInvalidHandoffStateErrorMessage, state, string(data))
-}
-
 func ShutdownError() string {
 	data, _ := json.Marshal(map[string]interface{}{})
 	return fmt.Sprintf("%s %s", ShutdownErrorMessage, string(data))
-}
-
-func CircuitBreakerOpenError(endpoint string) string {
-	data, _ := json.Marshal(map[string]interface{}{
-		"endpoint": endpoint,
-	})
-	return fmt.Sprintf("%s for %s %s", CircuitBreakerOpenErrorMessage, endpoint, string(data))
 }
 
 // Configuration validation error functions
@@ -615,15 +539,6 @@ func WorkerExitingDueToInactivityTimeout(timeout interface{}) string {
 		"timeout": fmt.Sprintf("%v", timeout),
 	})
 	return fmt.Sprintf("%s (%v) %s", WorkerExitingDueToInactivityTimeoutMessage, timeout, string(data))
-}
-
-func SetNetConnAndInitConnTiming(connID uint64, duration interface{}, err error) string {
-	data, _ := json.Marshal(map[string]interface{}{
-		"connID":   connID,
-		"duration": fmt.Sprintf("%v", duration),
-		"error":    err.Error(),
-	})
-	return fmt.Sprintf("conn[%d] %s %v: err: %v %s", connID, SetNetConnAndInitConnTimingMessage, duration, err, string(data))
 }
 
 func ApplyingRelaxedTimeoutDueToPostHandoff(connID uint64, timeout interface{}, until string) string {
