@@ -118,7 +118,6 @@ func TestConnectionHook(t *testing.T) {
 			MaxWorkers:        1,  // Use only 1 worker to ensure synchronization
 			HandoffQueueSize:  10, // Explicit queue size to avoid 0-size queue
 			MaxHandoffRetries: 3,
-			LogLevel:          2,
 		}
 		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
@@ -269,7 +268,6 @@ func TestConnectionHook(t *testing.T) {
 			HandoffQueueSize:  10,
 			MaxHandoffRetries: 2,                      // Reduced retries for faster test
 			HandoffTimeout:    500 * time.Millisecond, // Shorter timeout for faster test
-			LogLevel:          2,
 		}
 		processor := NewPoolHook(failingDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
@@ -371,7 +369,6 @@ func TestConnectionHook(t *testing.T) {
 			MaxWorkers:        2,
 			HandoffQueueSize:  10,
 			MaxHandoffRetries: 3, // Explicit queue size to avoid 0-size queue
-			LogLevel:          2,
 		}
 		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
@@ -443,7 +440,6 @@ func TestConnectionHook(t *testing.T) {
 			MaxWorkers:        3,
 			HandoffQueueSize:  2,
 			MaxHandoffRetries: 3, // Small queue to trigger optimizations
-			LogLevel:          3, // Debug level to see optimization logs
 		}
 
 		baseDialer := func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -500,7 +496,6 @@ func TestConnectionHook(t *testing.T) {
 			MaxWorkers:        15, // Set to >= 10 to test explicit value preservation
 			HandoffQueueSize:  1,
 			MaxHandoffRetries: 3, // Very small queue to force scaling
-			LogLevel:          2, // Info level to see scaling logs
 		}
 
 		processor := NewPoolHook(baseDialer, "tcp", config, nil)
@@ -528,7 +523,6 @@ func TestConnectionHook(t *testing.T) {
 			MaxHandoffRetries:          3,                      // Allow retries for successful handoff
 			PostHandoffRelaxedDuration: 100 * time.Millisecond, // Fast expiration for testing
 			RelaxedTimeout:             5 * time.Second,
-			LogLevel:                   2,
 		}
 
 		processor := NewPoolHook(baseDialer, "tcp", config, nil)
@@ -607,7 +601,6 @@ func TestConnectionHook(t *testing.T) {
 			MaxWorkers:        2,
 			HandoffQueueSize:  10,
 			MaxHandoffRetries: 3,
-			LogLevel:          2,
 		}
 
 		processor := NewPoolHook(baseDialer, "tcp", config, nil)
@@ -694,7 +687,6 @@ func TestConnectionHook(t *testing.T) {
 			MaxWorkers:        3,
 			HandoffQueueSize:  50,
 			MaxHandoffRetries: 3, // Explicit static queue size
-			LogLevel:          2,
 		}
 
 		processor := NewPoolHookWithPoolSize(baseDialer, "tcp", config, nil, 100) // Pool size: 100
@@ -755,7 +747,6 @@ func TestConnectionHook(t *testing.T) {
 			MaxWorkers:        2,
 			HandoffQueueSize:  10,
 			MaxHandoffRetries: 3,
-			LogLevel:          2,
 		}
 
 		processor := NewPoolHook(failingDialer, "tcp", config, nil)
@@ -906,7 +897,6 @@ func TestConnectionHook(t *testing.T) {
 			HandoffQueueSize:  10,
 			HandoffTimeout:    customTimeout, // Custom timeout
 			MaxHandoffRetries: 1,             // Single retry to speed up test
-			LogLevel:          2,
 		}
 
 		processor := NewPoolHook(baseDialer, "tcp", config, nil)

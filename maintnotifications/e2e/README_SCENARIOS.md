@@ -5,6 +5,19 @@ This directory contains comprehensive end-to-end test scenarios for Redis push n
 ## ⚠️ **Important Note**
 **Maintenance notifications are currently supported only in standalone Redis clients.** Cluster clients (ClusterClient, FailoverClient, etc.) do not yet support maintenance notifications functionality.
 
+## Introduction
+
+To run those tests you would need a fault injector service, please review the client and feel free to implement your
+fault injector of choice. Those tests are tailored for Redis Enterprise, but can be adapted to other Redis distributions where
+a fault injector is available.
+
+Once you have fault injector service up and running, you can execute the tests by running the `run-e2e-tests.sh` script.
+there are three environment variables that need to be set before running the tests:
+
+- `REDIS_ENDPOINTS_CONFIG_PATH`: Path to Redis endpoints configuration
+- `FAULT_INJECTION_API_URL`: URL of the fault injector server
+- `E2E_SCENARIO_TESTS`: Set to `true` to enable scenario tests
+
 ## Test Scenarios Overview
 
 ### 1. Basic Push Notifications (`scenario_push_notifications_test.go`)
@@ -61,7 +74,7 @@ This directory contains comprehensive end-to-end test scenarios for Redis push n
 ### 5. Stress Test Scenario (`scenario_stress_test.go`)
 **Extreme load and concurrent operations**
 - **Purpose**: Test system limits and behavior under extreme stress
-- **Features Tested**: Maximum concurrent operations, multiple fault injections
+- **Features Tested**: Maximum concurrent operations, multiple clients
 - **Configuration**:
   - 4 clients with 150 pool size each
   - 200 max connections per client
@@ -79,8 +92,8 @@ This directory contains comprehensive end-to-end test scenarios for Redis push n
 
 ### Prerequisites
 - Set environment variable: `E2E_SCENARIO_TESTS=true`
-- Redis Enterprise cluster available (for most scenarios)
-- Fault injection service available (for enterprise scenarios)
+- Redis Enterprise cluster available
+- Fault injection service available
 - Appropriate network access and permissions
 - **Note**: Tests use standalone Redis clients only (cluster clients not supported)
 
@@ -95,21 +108,8 @@ E2E_SCENARIO_TESTS=true go test -v -timeout 30m ./maintnotifications/e2e -run Te
 
 ### All Scenarios Execution
 ```bash
-# Run all scenarios (will take ~1.75 hours)
-E2E_SCENARIO_TESTS=true go test -v -timeout 2h ./maintnotifications/e2e
+./scripts/run-e2e-tests.sh
 ```
-
-## Scenario Configuration Matrix
-
-| Scenario | Clients | Pool Size | Max Conn | Workers | Queue | Timeout | Duration |
-|----------|---------|-----------|----------|---------|-------|---------|----------|
-| Basic | 1 | 10 | 15 | 20 | default | 30s | 10m |
-| Endpoint Types | 1 | 8 | 12 | 15 | default | 30s | 20m |
-| Timeout Configs | 1 | 10 | 15 | 20 | default | varies | 25m |
-| TLS Configs | 1 | 8 | 12 | 15 | default | 30s | 20m |
-| Stress Test | 4 | 150 | 200 | 50 | 1000 | 60s | 30m |
-
-
 ## Expected Outcomes
 
 ### Success Criteria
@@ -138,13 +138,4 @@ E2E_SCENARIO_TESTS=true go test -v -timeout 2h ./maintnotifications/e2e
 - Enable detailed logging in scenarios
 - Use `dump = true` to see full log analysis
 - Check pool statistics for connection issues
-- Monitor system resources during stress tests
-
-## Contributing
-
-When adding new scenarios:
-1. Follow the existing pattern and naming convention
-2. Include comprehensive validation logic
-3. Add appropriate timeouts and error handling
-4. Document the scenario purpose and configuration
-5. Update this README with the new scenario details
+- Monitor client resources during stress tests

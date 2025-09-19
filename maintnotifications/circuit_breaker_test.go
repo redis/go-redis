@@ -4,13 +4,10 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/redis/go-redis/v9/logging"
 )
 
 func TestCircuitBreaker(t *testing.T) {
 	config := &Config{
-		LogLevel:                       logging.LogLevelError, // Reduce noise in tests
 		CircuitBreakerFailureThreshold: 5,
 		CircuitBreakerResetTimeout:     60 * time.Second,
 		CircuitBreakerMaxRequests:      3,
@@ -96,7 +93,6 @@ func TestCircuitBreaker(t *testing.T) {
 
 	t.Run("HalfOpenTransition", func(t *testing.T) {
 		testConfig := &Config{
-			LogLevel:                       logging.LogLevelError,
 			CircuitBreakerFailureThreshold: 5,
 			CircuitBreakerResetTimeout:     100 * time.Millisecond, // Short timeout for testing
 			CircuitBreakerMaxRequests:      3,
@@ -134,7 +130,6 @@ func TestCircuitBreaker(t *testing.T) {
 
 	t.Run("HalfOpenToClosedTransition", func(t *testing.T) {
 		testConfig := &Config{
-			LogLevel:                       logging.LogLevelError,
 			CircuitBreakerFailureThreshold: 5,
 			CircuitBreakerResetTimeout:     50 * time.Millisecond,
 			CircuitBreakerMaxRequests:      3,
@@ -168,7 +163,6 @@ func TestCircuitBreaker(t *testing.T) {
 
 	t.Run("HalfOpenToOpenOnFailure", func(t *testing.T) {
 		testConfig := &Config{
-			LogLevel:                       logging.LogLevelError,
 			CircuitBreakerFailureThreshold: 5,
 			CircuitBreakerResetTimeout:     50 * time.Millisecond,
 			CircuitBreakerMaxRequests:      3,
@@ -233,7 +227,6 @@ func TestCircuitBreaker(t *testing.T) {
 
 func TestCircuitBreakerManager(t *testing.T) {
 	config := &Config{
-		LogLevel:                       logging.LogLevelError,
 		CircuitBreakerFailureThreshold: 5,
 		CircuitBreakerResetTimeout:     60 * time.Second,
 		CircuitBreakerMaxRequests:      3,
@@ -312,7 +305,6 @@ func TestCircuitBreakerManager(t *testing.T) {
 
 	t.Run("ConfigurableParameters", func(t *testing.T) {
 		config := &Config{
-			LogLevel:                       logging.LogLevelError,
 			CircuitBreakerFailureThreshold: 10,
 			CircuitBreakerResetTimeout:     30 * time.Second,
 			CircuitBreakerMaxRequests:      5,

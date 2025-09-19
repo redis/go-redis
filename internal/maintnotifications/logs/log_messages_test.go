@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal"
 )
 
 // validateJSONInLogMessage extracts and validates JSON from a log message
@@ -48,8 +50,13 @@ func validateJSONInLogMessage(t *testing.T, logMessage string, expectedData map[
 }
 
 func TestHandoffLogFunctions(t *testing.T) {
+	// Set debug level for testing
+	oldLogLevel := internal.LogLevel
+	internal.LogLevel = 3 // Debug level
+	defer func() { internal.LogLevel = oldLogLevel }()
+
 	t.Run("HandoffStarted", func(t *testing.T) {
-		result := HandoffStarted(LogLevelDebug, 123, "localhost:6379")
+		result := HandoffStarted(123, "localhost:6379")
 		if !strings.Contains(result, "conn[123] handoff started to localhost:6379") {
 			t.Errorf("Expected message to contain handoff started text, got: %s", result)
 		}
@@ -61,7 +68,7 @@ func TestHandoffLogFunctions(t *testing.T) {
 
 	t.Run("HandoffFailed", func(t *testing.T) {
 		err := errors.New("connection refused")
-		result := HandoffFailed(LogLevelDebug, 123, "localhost:6379", 2, 3, err)
+		result := HandoffFailed(123, "localhost:6379", 2, 3, err)
 		if !strings.Contains(result, "conn[123] handoff failed to localhost:6379 (attempt 2/3): connection refused") {
 			t.Errorf("Expected message to contain handoff failed text, got: %s", result)
 		}
@@ -75,7 +82,7 @@ func TestHandoffLogFunctions(t *testing.T) {
 	})
 
 	t.Run("HandoffSucceeded", func(t *testing.T) {
-		result := HandoffSucceeded(LogLevelDebug, 123, "localhost:6379")
+		result := HandoffSucceeded(123, "localhost:6379")
 		if !strings.Contains(result, "conn[123] handoff succeeded to localhost:6379") {
 			t.Errorf("Expected message to contain handoff succeeded text, got: %s", result)
 		}
@@ -87,8 +94,13 @@ func TestHandoffLogFunctions(t *testing.T) {
 }
 
 func TestTimeoutLogFunctions(t *testing.T) {
+	// Set debug level for testing
+	oldLogLevel := internal.LogLevel
+	internal.LogLevel = 3 // Debug level
+	defer func() { internal.LogLevel = oldLogLevel }()
+
 	t.Run("RelaxedTimeoutDueToNotification", func(t *testing.T) {
-		result := RelaxedTimeoutDueToNotification(LogLevelDebug, 123, "MIGRATING", "10s")
+		result := RelaxedTimeoutDueToNotification(123, "MIGRATING", "10s")
 		expected := "conn[123] applying relaxed timeout due to notification MIGRATING (10s) {\"connID\":123,\"notificationType\":\"MIGRATING\",\"timeout\":\"10s\"}"
 		if result != expected {
 			t.Errorf("Expected %q, got %q", expected, result)
@@ -96,7 +108,7 @@ func TestTimeoutLogFunctions(t *testing.T) {
 	})
 
 	t.Run("UnrelaxedTimeout", func(t *testing.T) {
-		result := UnrelaxedTimeout(LogLevelDebug, 123)
+		result := UnrelaxedTimeout(123)
 		expected := "conn[123] clearing relaxed timeout {\"connID\":123}"
 		if result != expected {
 			t.Errorf("Expected %q, got %q", expected, result)
@@ -104,7 +116,7 @@ func TestTimeoutLogFunctions(t *testing.T) {
 	})
 
 	t.Run("UnrelaxedTimeoutAfterDeadline", func(t *testing.T) {
-		result := UnrelaxedTimeoutAfterDeadline(LogLevelDebug, 123)
+		result := UnrelaxedTimeoutAfterDeadline(123)
 		expected := "conn[123] clearing relaxed timeout after deadline {\"connID\":123}"
 		if result != expected {
 			t.Errorf("Expected %q, got %q", expected, result)
@@ -148,8 +160,13 @@ func TestHandoffQueueLogFunctions(t *testing.T) {
 }
 
 func TestNotificationLogFunctions(t *testing.T) {
+	// Set debug level for testing
+	oldLogLevel := internal.LogLevel
+	internal.LogLevel = 3 // Debug level
+	defer func() { internal.LogLevel = oldLogLevel }()
+
 	t.Run("ProcessingNotification", func(t *testing.T) {
-		result := ProcessingNotification(LogLevelDebug, 123, 1, "MOVING", []interface{}{"MOVING", "slot_data"})
+		result := ProcessingNotification(123, 1, "MOVING", []interface{}{"MOVING", "slot_data"})
 		if !strings.Contains(result, "conn[123] seqId[1] processing notification MOVING:") {
 			t.Errorf("Expected message to contain processing notification, got %q", result)
 		}
@@ -157,14 +174,14 @@ func TestNotificationLogFunctions(t *testing.T) {
 
 	t.Run("ProcessingNotificationFailed", func(t *testing.T) {
 		err := errors.New("invalid notification")
-		result := ProcessingNotificationFailed(LogLevelDebug, 123, "MOVING", err, []interface{}{"MOVING"})
+		result := ProcessingNotificationFailed(123, "MOVING", err, []interface{}{"MOVING"})
 		if !strings.Contains(result, "conn[123] failed to process notification MOVING: invalid notification") {
 			t.Errorf("Expected message to contain failed processing, got %q", result)
 		}
 	})
 
 	t.Run("ProcessingNotificationSucceeded", func(t *testing.T) {
-		result := ProcessingNotificationSucceeded(LogLevelDebug, 123, "MOVING")
+		result := ProcessingNotificationSucceeded(123, "MOVING")
 		expected := "conn[123] processed notification successfully MOVING {\"connID\":123,\"notificationType\":\"MOVING\"}"
 		if result != expected {
 			t.Errorf("Expected %q, got %q", expected, result)
@@ -173,8 +190,13 @@ func TestNotificationLogFunctions(t *testing.T) {
 }
 
 func TestMovingOperationLogFunctions(t *testing.T) {
+	// Set debug level for testing
+	oldLogLevel := internal.LogLevel
+	internal.LogLevel = 3 // Debug level
+	defer func() { internal.LogLevel = oldLogLevel }()
+
 	t.Run("DuplicateMovingOperation", func(t *testing.T) {
-		result := DuplicateMovingOperation(LogLevelDebug, 123, "localhost:6379", 456)
+		result := DuplicateMovingOperation(123, "localhost:6379", 456)
 		expected := "conn[123] duplicate MOVING operation ignored for localhost:6379 (seqID: 456) {\"connID\":123,\"endpoint\":\"localhost:6379\",\"seqID\":456}"
 		if result != expected {
 			t.Errorf("Expected %q, got %q", expected, result)
@@ -182,7 +204,7 @@ func TestMovingOperationLogFunctions(t *testing.T) {
 	})
 
 	t.Run("TrackingMovingOperation", func(t *testing.T) {
-		result := TrackingMovingOperation(LogLevelDebug, 123, "localhost:6379", 456)
+		result := TrackingMovingOperation(123, "localhost:6379", 456)
 		expected := "conn[123] tracking MOVING operation for localhost:6379 (seqID: 456) {\"connID\":123,\"endpoint\":\"localhost:6379\",\"seqID\":456}"
 		if result != expected {
 			t.Errorf("Expected %q, got %q", expected, result)
@@ -190,7 +212,7 @@ func TestMovingOperationLogFunctions(t *testing.T) {
 	})
 
 	t.Run("UntrackingMovingOperation", func(t *testing.T) {
-		result := UntrackingMovingOperation(LogLevelDebug, 123, 456)
+		result := UntrackingMovingOperation(123, 456)
 		expected := "conn[123] untracking MOVING operation (seqID: 456) {\"connID\":123,\"seqID\":456}"
 		if result != expected {
 			t.Errorf("Expected %q, got %q", expected, result)
@@ -198,7 +220,7 @@ func TestMovingOperationLogFunctions(t *testing.T) {
 	})
 
 	t.Run("OperationNotTracked", func(t *testing.T) {
-		result := OperationNotTracked(LogLevelDebug, 123, 456)
+		result := OperationNotTracked(123, 456)
 		expected := "conn[123] operation not tracked (seqID: 456) {\"connID\":123,\"seqID\":456}"
 		if result != expected {
 			t.Errorf("Expected %q, got %q", expected, result)
@@ -207,15 +229,20 @@ func TestMovingOperationLogFunctions(t *testing.T) {
 }
 
 func TestConditionalJSONLogging(t *testing.T) {
+	oldLogLevel := internal.LogLevel
+	defer func() { internal.LogLevel = oldLogLevel }()
+
 	t.Run("DebugLevel_IncludesJSON", func(t *testing.T) {
-		result := HandoffStarted(LogLevelDebug, 123, "localhost:6379")
+		internal.LogLevel = 3 // Debug level
+		result := HandoffStarted(123, "localhost:6379")
 		if !strings.Contains(result, "{\"connID\":123,\"endpoint\":\"localhost:6379\"}") {
 			t.Errorf("Expected JSON to be included at Debug level, got: %s", result)
 		}
 	})
 
 	t.Run("ErrorLevel_ExcludesJSON", func(t *testing.T) {
-		result := HandoffStarted(LogLevelError, 123, "localhost:6379")
+		internal.LogLevel = 0 // Error level
+		result := HandoffStarted(123, "localhost:6379")
 		if strings.Contains(result, "{") {
 			t.Errorf("Expected JSON to be excluded at Error level, got: %s", result)
 		}
@@ -226,11 +253,12 @@ func TestConditionalJSONLogging(t *testing.T) {
 	})
 
 	t.Run("InfoLevel_ExcludesJSON", func(t *testing.T) {
-		result := DuplicateMovingOperation(LogLevelInfo, 123, "localhost:6379", 456)
+		internal.LogLevel = 2 // Info level
+		result := DuplicateMovingOperation(123, "localhost:6379", 456)
 		if strings.Contains(result, "{") {
 			t.Errorf("Expected JSON to be excluded at Info level, got: %s", result)
 		}
-		expected := "conn[123] duplicate MOVING operation ignored for localhost:6379 (seqID: 456)"
+		expected := "conn[123] duplicate MOVING operation ignored for localhost:6379 seqID[456]"
 		if result != expected {
 			t.Errorf("Expected %q, got %q", expected, result)
 		}
@@ -306,30 +334,35 @@ func TestConnectionStateLogFunctions(t *testing.T) {
 
 // TestAllFunctionsHaveStructuredFormat ensures all log functions have structured format
 func TestAllFunctionsHaveStructuredFormat(t *testing.T) {
+	// Set debug level for testing
+	oldLogLevel := internal.LogLevel
+	internal.LogLevel = 3 // Debug level
+	defer func() { internal.LogLevel = oldLogLevel }()
+
 	testCases := []struct {
 		name     string
 		function func() string
 	}{
-		{"HandoffStarted", func() string { return HandoffStarted(LogLevelDebug, 1, "test") }},
-		{"HandoffFailed", func() string { return HandoffFailed(LogLevelDebug, 1, "test", 1, 3, errors.New("test")) }},
-		{"HandoffSucceeded", func() string { return HandoffSucceeded(LogLevelDebug, 1, "test") }},
-		{"RelaxedTimeoutDueToNotification", func() string { return RelaxedTimeoutDueToNotification(LogLevelDebug, 1, "TEST", "5s") }},
+		{"HandoffStarted", func() string { return HandoffStarted(1, "test") }},
+		{"HandoffFailed", func() string { return HandoffFailed(1, "test", 1, 3, errors.New("test")) }},
+		{"HandoffSucceeded", func() string { return HandoffSucceeded(1, "test") }},
+		{"RelaxedTimeoutDueToNotification", func() string { return RelaxedTimeoutDueToNotification(1, "TEST", "5s") }},
 
-		{"UnrelaxedTimeout", func() string { return UnrelaxedTimeout(LogLevelDebug, 1) }},
-		{"UnrelaxedTimeoutAfterDeadline", func() string { return UnrelaxedTimeoutAfterDeadline(LogLevelDebug, 1) }},
+		{"UnrelaxedTimeout", func() string { return UnrelaxedTimeout(1) }},
+		{"UnrelaxedTimeoutAfterDeadline", func() string { return UnrelaxedTimeoutAfterDeadline(1) }},
 		{"HandoffQueueFull", func() string { return HandoffQueueFull(1, 10) }},
 		{"FailedToQueueHandoff", func() string { return FailedToQueueHandoff(1, errors.New("test")) }},
 		{"ConnectionAlreadyMarkedForHandoff", func() string { return ConnectionAlreadyMarkedForHandoff(1) }},
 		{"ReachedMaxHandoffRetries", func() string { return ReachedMaxHandoffRetries(1, "test", 3) }},
-		{"ProcessingNotification", func() string { return ProcessingNotification(LogLevelDebug, 1, 2, "TEST", "data") }},
+		{"ProcessingNotification", func() string { return ProcessingNotification(1, 2, "TEST", "data") }},
 		{"ProcessingNotificationFailed", func() string {
-			return ProcessingNotificationFailed(LogLevelDebug, 1, "TEST", errors.New("test"), "data")
+			return ProcessingNotificationFailed(1, "TEST", errors.New("test"), "data")
 		}},
-		{"ProcessingNotificationSucceeded", func() string { return ProcessingNotificationSucceeded(LogLevelDebug, 1, "TEST") }},
-		{"DuplicateMovingOperation", func() string { return DuplicateMovingOperation(LogLevelDebug, 1, "test", 1) }},
-		{"TrackingMovingOperation", func() string { return TrackingMovingOperation(LogLevelDebug, 1, "test", 1) }},
-		{"UntrackingMovingOperation", func() string { return UntrackingMovingOperation(LogLevelDebug, 1, 1) }},
-		{"OperationNotTracked", func() string { return OperationNotTracked(LogLevelDebug, 1, 1) }},
+		{"ProcessingNotificationSucceeded", func() string { return ProcessingNotificationSucceeded(1, "TEST") }},
+		{"DuplicateMovingOperation", func() string { return DuplicateMovingOperation(1, "test", 1) }},
+		{"TrackingMovingOperation", func() string { return TrackingMovingOperation(1, "test", 1) }},
+		{"UntrackingMovingOperation", func() string { return UntrackingMovingOperation(1, 1) }},
+		{"OperationNotTracked", func() string { return OperationNotTracked(1, 1) }},
 		{"RemovingConnectionFromPool", func() string { return RemovingConnectionFromPool(1, errors.New("test")) }},
 		{"NoPoolProvidedCannotRemove", func() string { return NoPoolProvidedCannotRemove(1, errors.New("test")) }},
 		{"CircuitBreakerOpen", func() string { return CircuitBreakerOpen(1, "test") }},
@@ -338,8 +371,8 @@ func TestAllFunctionsHaveStructuredFormat(t *testing.T) {
 		{"ShuttingDown", func() string { return ShuttingDown() }},
 		{"ConnectionInInvalidStateForHandoff", func() string { return ConnectionInInvalidStateForHandoff(1, "test") }},
 
-		{"HandoffStarted", func() string { return HandoffStarted(LogLevelDebug, 1, "localhost:6379") }},
-		{"HandoffFailed", func() string { return HandoffFailed(LogLevelDebug, 1, "localhost:6379", 1, 3, errors.New("test")) }},
+		{"HandoffStarted", func() string { return HandoffStarted(1, "localhost:6379") }},
+		{"HandoffFailed", func() string { return HandoffFailed(1, "localhost:6379", 1, 3, errors.New("test")) }},
 		{"ConnectionNotMarkedForHandoff", func() string { return ConnectionNotMarkedForHandoff(1) }},
 		{"HandoffRetryAttempt", func() string { return HandoffRetryAttempt(1, 2, "new", "old") }},
 		{"CannotQueueHandoffForRetry", func() string { return CannotQueueHandoffForRetry(errors.New("test")) }},

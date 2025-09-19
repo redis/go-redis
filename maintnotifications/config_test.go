@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/util"
-	"github.com/redis/go-redis/v9/logging"
 )
 
 func TestConfig(t *testing.T) {
@@ -73,7 +72,6 @@ func TestConfig(t *testing.T) {
 			MaxWorkers:                 -1, // This should be invalid
 			HandoffQueueSize:           100,
 			PostHandoffRelaxedDuration: 10 * time.Second,
-			LogLevel:                   1,
 			MaxHandoffRetries:          3, // Add required field
 		}
 		if err := config.Validate(); err != ErrInvalidHandoffWorkers {
@@ -213,7 +211,6 @@ func TestApplyDefaults(t *testing.T) {
 			MaxWorkers:       0, // Zero value should get auto-calculated defaults
 			HandoffQueueSize: 0, // Zero value should get default
 			RelaxedTimeout:   0, // Zero value should get default
-			LogLevel:         0, // Zero is valid for LogLevel (errors only)
 		}
 
 		result := config.ApplyDefaultsWithPoolSize(100) // Use explicit pool size for testing
@@ -238,10 +235,7 @@ func TestApplyDefaults(t *testing.T) {
 			t.Errorf("Expected RelaxedTimeout to be 10s (default), got %v", result.RelaxedTimeout)
 		}
 
-		// LogLevel 0 should be preserved (it's a valid value)
-		if result.LogLevel != 0 {
-			t.Errorf("Expected LogLevel to be 0 (preserved), got %d", result.LogLevel)
-		}
+
 	})
 }
 
@@ -305,8 +299,7 @@ func TestIntegrationWithApplyDefaults(t *testing.T) {
 	t.Run("ProcessorWithPartialConfigAppliesDefaults", func(t *testing.T) {
 		// Create a partial config with only some fields set
 		partialConfig := &Config{
-			MaxWorkers: 15,                   // Custom value (>= 10 to test preservation)
-			LogLevel:   logging.LogLevelInfo, // Custom value
+			MaxWorkers: 15, // Custom value (>= 10 to test preservation)
 			// Other fields left as zero values - should get defaults
 		}
 
@@ -332,9 +325,7 @@ func TestIntegrationWithApplyDefaults(t *testing.T) {
 			t.Errorf("Expected MaxWorkers to be 50, got %d", expectedConfig.MaxWorkers)
 		}
 
-		if expectedConfig.LogLevel != 2 {
-			t.Errorf("Expected LogLevel to be 2, got %d", expectedConfig.LogLevel)
-		}
+
 
 		// Should apply defaults for missing fields (auto-calculated queue size with hybrid scaling)
 		workerBasedSize := expectedConfig.MaxWorkers * 20
