@@ -2,6 +2,7 @@ package maintnotifications
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -123,7 +124,7 @@ func (hm *Manager) setupPushNotifications() error {
 	// Register handlers for all upgrade notifications with the client's processor
 	for _, notificationType := range maintenanceNotificationTypes {
 		if err := processor.RegisterHandler(notificationType, handler, true); err != nil {
-			return fmt.Errorf(logs.FailedToRegisterHandler(notificationType, err))
+			return errors.New(logs.FailedToRegisterHandler(notificationType, err))
 		}
 	}
 

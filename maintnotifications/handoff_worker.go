@@ -2,7 +2,7 @@ package maintnotifications
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -261,7 +261,7 @@ func (hwm *handoffWorkerManager) queueHandoff(conn *pool.Conn) error {
 		if internal.LogLevel.InfoOrAbove() {
 			internal.Logger.Printf(context.Background(), logs.ConnectionNotMarkedForHandoff(conn.GetID()))
 		}
-		return fmt.Errorf(logs.ConnectionNotMarkedForHandoffError(conn.GetID()))
+		return errors.New(logs.ConnectionNotMarkedForHandoffError(conn.GetID()))
 	}
 
 	// Create handoff request with atomically retrieved data

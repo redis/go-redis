@@ -2,7 +2,7 @@ package maintnotifications
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -154,7 +154,7 @@ func (snh *NotificationHandler) markConnForHandoff(conn *pool.Conn, newEndpoint 
 		// Track the operation (ignore errors since this is optional)
 		_ = snh.operationsManager.TrackMovingOperationWithConnID(context.Background(), newEndpoint, deadline, seqID, connID)
 	} else {
-		return fmt.Errorf(logs.ManagerNotInitialized())
+		return errors.New(logs.ManagerNotInitialized())
 	}
 	return nil
 }
