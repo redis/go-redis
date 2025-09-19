@@ -1,0 +1,176 @@
+version: '3.8'
+
+services:
+  # Redis cluster nodes
+  redis-node-1:
+    image: redis:7-alpine
+    command: redis-server --port 7001 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --appendfsync everysec --save 900 1 --save 300 10
+    ports:
+      - "7001:7001"
+    volumes:
+      - redis-node-1-data:/data
+    networks:
+      - redis-cluster
+
+  redis-node-2:
+    image: redis:7-alpine
+    command: redis-server --port 7002 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --appendfsync everysec --save 900 1 --save 300 10
+    ports:
+      - "7002:7002"
+    volumes:
+      - redis-node-2-data:/data
+    networks:
+      - redis-cluster
+
+  redis-node-3:
+    image: redis:7-alpine
+    command: redis-server --port 7003 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --appendfsync everysec --save 900 1 --save 300 10
+    ports:
+      - "7003:7003"
+    volumes:
+      - redis-node-3-data:/data
+    networks:
+      - redis-cluster
+
+  redis-node-4:
+    image: redis:7-alpine
+    command: redis-server --port 7004 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --appendfsync everysec --save 900 1 --save 300 10
+    ports:
+      - "7004:7004"
+    volumes:
+      - redis-node-4-data:/data
+    networks:
+      - redis-cluster
+
+  redis-node-5:
+    image: redis:7-alpine
+    command: redis-server --port 7005 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --appendfsync everysec --save 900 1 --save 300 10
+    ports:
+      - "7005:7005"
+    volumes:
+      - redis-node-5-data:/data
+    networks:
+      - redis-cluster
+
+  redis-node-6:
+    image: redis:7-alpine
+    command: redis-server --port 7006 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --appendfsync everysec --save 900 1 --save 300 10
+    ports:
+      - "7006:7006"
+    volumes:
+      - redis-node-6-data:/data
+    networks:
+      - redis-cluster
+
+  # Cluster initialization
+  redis-cluster-init:
+    image: redis:7-alpine
+    depends_on:
+      - redis-node-1
+      - redis-node-2
+      - redis-node-3
+      - redis-node-4
+      - redis-node-5
+      - redis-node-6
+    command: >
+      sh -c "
+        sleep 10 &&
+        redis-cli --cluster create 
+        redis-node-1:7001 
+        redis-node-2:7002 
+        redis-node-3:7003 
+        redis-node-4:7004 
+        redis-node-5:7005 
+        redis-node-6:7006 
+        --cluster-replicas 1 
+        --cluster-yes
+      "
+    networks:
+      - redis-cluster
+
+  # Single Redis instance for simple tests
+  redis-single:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --appendfsync everysec --save 900 1 --save 300 10
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-single-data:/data
+    networks:
+      - redis-cluster
+
+  # Network simulation tools (for network condition testing)
+  network-sim:
+    image: alpine:latest
+    command: sleep infinity
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - redis-cluster
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # Fault injector server
+  fault-injector:
+    build:
+      context: ../../
+      dockerfile: hitless/e2e/Dockerfile.fault-injector
+    ports:
+      - "8080:8080"
+    environment:
+      - FAULT_INJECTOR_PORT=8080
+      - FAULT_INJECTOR_HOST=0.0.0.0
+      - FAULT_INJECTOR_LOG=info
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - redis-cluster
+    depends_on:
+      - redis-single
+      - redis-node-1
+
+  # Monitoring and observability
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    environment:
+      - REDIS_ADDR=redis://redis-single:6379
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis-single
+    networks:
+      - redis-cluster
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - redis-cluster
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - redis-cluster
+
+volumes:
+  redis-node-1-data:
+  redis-node-2-data:
+  redis-node-3-data:
+  redis-node-4-data:
+  redis-node-5-data:
+  redis-node-6-data:
+  redis-single-data:
+  grafana-data:
+
+networks:
+  redis-cluster:
+    driver: bridge

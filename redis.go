@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
-	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -28,6 +28,11 @@ const Nil = proto.Nil
 // Use with VoidLogger to disable logging.
 func SetLogger(logger internal.Logging) {
 	internal.Logger = logger
+}
+
+// SetLogLevel sets the log level for the library.
+func SetLogLevel(logLevel internal.LogLevelT) {
+	internal.LogLevel = logLevel
 }
 
 //------------------------------------------------------------------------------
@@ -216,22 +221,22 @@ type baseClient struct {
 	// Push notification processing
 	pushProcessor push.NotificationProcessor
 
-	// Hitless upgrade manager
-	hitlessManager     *hitless.HitlessManager
-	hitlessManagerLock sync.RWMutex
+	// Maintenance notifications manager
+	maintNotificationsManager     *maintnotifications.Manager
+	maintNotificationsManagerLock sync.RWMutex
 }
 
 func (c *baseClient) clone() *baseClient {
-	c.hitlessManagerLock.RLock()
-	hitlessManager := c.hitlessManager
-	c.hitlessManagerLock.RUnlock()
+	c.maintNotificationsManagerLock.RLock()
+	maintNotificationsManager := c.maintNotificationsManager
+	c.maintNotificationsManagerLock.RUnlock()
 
 	clone := &baseClient{
-		opt:            c.opt,
-		connPool:       c.connPool,
-		onClose:        c.onClose,
-		pushProcessor:  c.pushProcessor,
-		hitlessManager: hitlessManager,
+		opt:                       c.opt,
+		connPool:                  c.connPool,
+		onClose:                   c.onClose,
+		pushProcessor:             c.pushProcessor,
+		maintNotificationsManager: maintNotificationsManager,
 	}
 	return clone
 }
@@ -430,39 +435,39 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return fmt.Errorf("failed to initialize connection options: %w", err)
 	}
 
-	// Enable maintenance notifications if hitless upgrades are configured
+	// Enable maintnotifications if maintnotifications are configured
 	c.optLock.RLock()
-	hitlessEnabled := c.opt.HitlessUpgradeConfig != nil && c.opt.HitlessUpgradeConfig.Mode != hitless.MaintNotificationsDisabled
+	maintNotifEnabled := c.opt.MaintNotificationsConfig != nil && c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled
 	protocol := c.opt.Protocol
-	endpointType := c.opt.HitlessUpgradeConfig.EndpointType
+	endpointType := c.opt.MaintNotificationsConfig.EndpointType
 	c.optLock.RUnlock()
-	var hitlessHandshakeErr error
-	if hitlessEnabled && protocol == 3 {
-		hitlessHandshakeErr = conn.ClientMaintNotifications(
+	var maintNotifHandshakeErr error
+	if maintNotifEnabled && protocol == 3 {
+		maintNotifHandshakeErr = conn.ClientMaintNotifications(
 			ctx,
 			true,
 			endpointType.String(),
 		).Err()
-		if hitlessHandshakeErr != nil {
-			if !isRedisError(hitlessHandshakeErr) {
+		if maintNotifHandshakeErr != nil {
+			if !isRedisError(maintNotifHandshakeErr) {
 				// if not redis error, fail the connection
-				return hitlessHandshakeErr
+				return maintNotifHandshakeErr
 			}
 			c.optLock.Lock()
 			// handshake failed - check and modify config atomically
-			switch c.opt.HitlessUpgradeConfig.Mode {
-			case hitless.MaintNotificationsEnabled:
+			switch c.opt.MaintNotificationsConfig.Mode {
+			case maintnotifications.ModeEnabled:
 				// enabled mode, fail the connection
 				c.optLock.Unlock()
-				return fmt.Errorf("failed to enable maintenance notifications: %w", hitlessHandshakeErr)
+				return fmt.Errorf("failed to enable maintnotifications: %w", maintNotifHandshakeErr)
 			default: // will handle auto and any other
-				internal.Logger.Printf(ctx, "hitless: auto mode fallback: hitless upgrades disabled due to handshake error: %v", hitlessHandshakeErr)
-				c.opt.HitlessUpgradeConfig.Mode = hitless.MaintNotificationsDisabled
+				internal.Logger.Printf(ctx, "auto mode fallback: maintnotifications disabled due to handshake error: %v", maintNotifHandshakeErr)
+				c.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeDisabled
 				c.optLock.Unlock()
-				// auto mode, disable hitless upgrades and continue
-				if err := c.disableHitlessUpgrades(); err != nil {
+				// auto mode, disable maintnotifications and continue
+				if err := c.disableMaintNotificationsUpgrades(); err != nil {
 					// Log error but continue - auto mode should be resilient
-					internal.Logger.Printf(ctx, "hitless: failed to disable hitless upgrades in auto mode: %v", err)
+					internal.Logger.Printf(ctx, "failed to disable maintnotifications in auto mode: %v", err)
 				}
 			}
 		} else {
@@ -470,7 +475,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			// to make sure that the handshake will be executed on other connections as well if it was successfully
 			// executed on this connection, we will force the handshake to be executed on all connections
 			c.optLock.Lock()
-			c.opt.HitlessUpgradeConfig.Mode = hitless.MaintNotificationsEnabled
+			c.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeEnabled
 			c.optLock.Unlock()
 		}
 	}
@@ -657,39 +662,39 @@ func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) erro
 	}
 }
 
-// enableHitlessUpgrades initializes the hitless upgrade manager and pool hook.
+// enableMaintNotificationsUpgrades initializes the maintnotifications upgrade manager and pool hook.
 // This function is called during client initialization.
-// will register push notification handlers for all hitless upgrade events.
+// will register push notification handlers for all maintenance upgrade events.
 // will start background workers for handoff processing in the pool hook.
-func (c *baseClient) enableHitlessUpgrades() error {
+func (c *baseClient) enableMaintNotificationsUpgrades() error {
 	// Create client adapter
 	clientAdapterInstance := newClientAdapter(c)
 
-	// Create hitless manager directly
-	manager, err := hitless.NewHitlessManager(clientAdapterInstance, c.connPool, c.opt.HitlessUpgradeConfig)
+	// Create maintnotifications manager directly
+	manager, err := maintnotifications.NewManager(clientAdapterInstance, c.connPool, c.opt.MaintNotificationsConfig)
 	if err != nil {
 		return err
 	}
 	// Set the manager reference and initialize pool hook
-	c.hitlessManagerLock.Lock()
-	c.hitlessManager = manager
-	c.hitlessManagerLock.Unlock()
+	c.maintNotificationsManagerLock.Lock()
+	c.maintNotificationsManager = manager
+	c.maintNotificationsManagerLock.Unlock()
 
 	// Initialize pool hook (safe to call without lock since manager is now set)
 	manager.InitPoolHook(c.dialHook)
 	return nil
 }
 
-func (c *baseClient) disableHitlessUpgrades() error {
-	c.hitlessManagerLock.Lock()
-	defer c.hitlessManagerLock.Unlock()
+func (c *baseClient) disableMaintNotificationsUpgrades() error {
+	c.maintNotificationsManagerLock.Lock()
+	defer c.maintNotificationsManagerLock.Unlock()
 
-	// Close the hitless manager
-	if c.hitlessManager != nil {
+	// Close the maintnotifications manager
+	if c.maintNotificationsManager != nil {
 		// Closing the manager will also shutdown the pool hook
 		// and remove it from the pool
-		c.hitlessManager.Close()
-		c.hitlessManager = nil
+		c.maintNotificationsManager.Close()
+		c.maintNotificationsManager = nil
 	}
 	return nil
 }
@@ -701,8 +706,8 @@ func (c *baseClient) disableHitlessUpgrades() error {
 func (c *baseClient) Close() error {
 	var firstErr error
 
-	// Close hitless manager first
-	if err := c.disableHitlessUpgrades(); err != nil {
+	// Close maintnotifications manager first
+	if err := c.disableMaintNotificationsUpgrades(); err != nil {
 		firstErr = err
 	}
 
@@ -864,7 +869,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	}
 
 	// Parse +QUEUED.
-  for _, cmd := range cmds {
+	for _, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
@@ -944,23 +949,23 @@ func NewClient(opt *Options) *Client {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
 
-	// Initialize hitless upgrades first if enabled and protocol is RESP3
-	if opt.HitlessUpgradeConfig != nil && opt.HitlessUpgradeConfig.Mode != hitless.MaintNotificationsDisabled && opt.Protocol == 3 {
-		err := c.enableHitlessUpgrades()
+	// Initialize maintnotifications first if enabled and protocol is RESP3
+	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {
+		err := c.enableMaintNotificationsUpgrades()
 		if err != nil {
-			internal.Logger.Printf(context.Background(), "hitless: failed to initialize hitless upgrades: %v", err)
-			if opt.HitlessUpgradeConfig.Mode == hitless.MaintNotificationsEnabled {
+			internal.Logger.Printf(context.Background(), "failed to initialize maintnotifications: %v", err)
+			if opt.MaintNotificationsConfig.Mode == maintnotifications.ModeEnabled {
 				/*
-					Design decision: panic here to fail fast if hitless upgrades cannot be enabled when explicitly requested.
+					Design decision: panic here to fail fast if maintnotifications cannot be enabled when explicitly requested.
 					We choose to panic instead of returning an error to avoid breaking the existing client API, which does not expect
 					an error from NewClient. This ensures that misconfiguration or critical initialization failures are surfaced
 					immediately, rather than allowing the client to continue in a partially initialized or inconsistent state.
-					Clients relying on hitless upgrades should be aware that initialization errors will cause a panic, and should
+					Clients relying on maintnotifications should be aware that initialization errors will cause a panic, and should
 					handle this accordingly (e.g., via recover or by validating configuration before calling NewClient).
-					This approach is only used when HitlessUpgradeConfig.Mode is MaintNotificationsEnabled, indicating that hitless
+					This approach is only used when MaintNotificationsConfig.Mode is MaintNotificationsEnabled, indicating that maintnotifications
 					upgrades are required for correct operation. In other modes, initialization failures are logged but do not panic.
 				*/
-				panic(fmt.Errorf("failed to enable hitless upgrades: %w", err))
+				panic(fmt.Errorf("failed to enable maintnotifications: %w", err))
 			}
 		}
 	}
@@ -1000,12 +1005,12 @@ func (c *Client) Options() *Options {
 	return c.opt
 }
 
-// GetHitlessManager returns the hitless manager instance for monitoring and control.
-// Returns nil if hitless upgrades are not enabled.
-func (c *Client) GetHitlessManager() *hitless.HitlessManager {
-	c.hitlessManagerLock.RLock()
-	defer c.hitlessManagerLock.RUnlock()
-	return c.hitlessManager
+// GetMaintNotificationsManager returns the maintnotifications manager instance for monitoring and control.
+// Returns nil if maintnotifications are not enabled.
+func (c *Client) GetMaintNotificationsManager() *maintnotifications.Manager {
+	c.maintNotificationsManagerLock.RLock()
+	defer c.maintNotificationsManagerLock.RUnlock()
+	return c.maintNotificationsManager
 }
 
 // initializePushProcessor initializes the push notification processor for any client type.
@@ -1257,7 +1262,7 @@ func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn
 	}
 
 	// Use WithReader to access the reader and process push notifications
-	// This is critical for hitless upgrades to work properly
+	// This is critical for maintnotifications to work properly
 	// NOTE: almost no timeouts are set for this read, so it should not block
 	// longer than necessary, 10us should be plenty of time to read if there are any push notifications
 	// on the socket.

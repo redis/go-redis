@@ -26,13 +26,13 @@ var (
 
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
-	// are temporarily marked as unusable (e.g., during hitless upgrades or network issues).
+	// are temporarily marked as unusable (e.g., during maintenanceNotifications upgrades or network issues).
 	// Value of 50 provides sufficient resilience without excessive overhead.
 	// This is capped by the idle connection count, so we won't loop excessively.
 	popAttempts = 50
 
 	// getAttempts is the maximum number of attempts to get a connection that passes
-	// hook validation (e.g., hitless upgrade hooks). This protects against race conditions
+	// hook validation (e.g., maintenanceNotifications upgrade hooks). This protects against race conditions
 	// where hooks might temporarily reject connections during cluster transitions.
 	// Value of 3 balances resilience with performance - most hook rejections resolve quickly.
 	getAttempts = 3
@@ -257,7 +257,7 @@ func (p *ConnPool) addIdleConn() error {
 // NewConn creates a new connection and returns it to the user.
 // This will still obey MaxActiveConns but will not include it in the pool and won't increase the pool size.
 //
-// NOTE: If you directly get a connection from the pool, it won't be pooled and won't support hitless upgrades.
+// NOTE: If you directly get a connection from the pool, it won't be pooled and won't support maintnotifications upgrades.
 func (p *ConnPool) NewConn(ctx context.Context) (*Conn, error) {
 	return p.newConn(ctx, false)
 }
@@ -812,7 +812,7 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
 				// For RESP3 connections with push notifications, we allow some buffered data
 				// The client will process these notifications before using the connection
-				internal.Logger.Printf(context.Background(), "push: connection has buffered data, likely push notifications - will be processed by client")
+				internal.Logger.Printf(context.Background(), "push: conn[%d] has buffered data, likely push notifications - will be processed by client", cn.GetID())
 				return true // Connection is healthy, client will handle notifications
 			}
 			return false // Unexpected data, not push notifications, connection is unhealthy

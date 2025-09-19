@@ -520,7 +520,7 @@ func (c cmdable) ClientInfo(ctx context.Context) *ClientInfoCmd {
 	return cmd
 }
 
-// ClientMaintNotifications enables or disables maintenance notifications for hitless upgrades.
+// ClientMaintNotifications enables or disables maintenance notifications for maintenance upgrades.
 // When enabled, the client will receive push notifications about Redis maintenance events.
 func (c cmdable) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
 	args := []interface{}{"client", "maint_notifications"}

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/logging"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 var ctx = context.Background()
@@ -26,16 +26,20 @@ func main() {
 	wg := &sync.WaitGroup{}
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
-		HitlessUpgradeConfig: &redis.HitlessUpgradeConfig{
-			Mode: hitless.MaintNotificationsEnabled,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode:                       maintnotifications.ModeEnabled,
+			EndpointType:               maintnotifications.EndpointTypeExternalIP,
+			HandoffTimeout:             10 * time.Second,
+			RelaxedTimeout:             10 * time.Second,
+			PostHandoffRelaxedDuration: 10 * time.Second,
 		},
 	})
 	_ = rdb.FlushDB(ctx).Err()
-	hitlessManager := rdb.GetHitlessManager()
+	hitlessManager := rdb.GetMaintNotificationsManager()
 	if hitlessManager == nil {
 		panic("hitless manager is nil")
 	}
-	loggingHook := hitless.NewLoggingHook(logging.LogLevelDebug)
+	loggingHook := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
 	hitlessManager.AddNotificationHook(loggingHook)
 
 	go func() {

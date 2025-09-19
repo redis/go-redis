@@ -10,5 +10,5 @@ coverage.txt
 .vscode
 tmp/*
 
-# Hitless upgrade documentation (temporary)
-hitless/docs/
+# maintenanceNotifications upgrade documentation (temporary)
+maintenanceNotifications/docs/
