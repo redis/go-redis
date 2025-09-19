@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/logging"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 var ctx = context.Background()
@@ -19,24 +19,28 @@ var cntSuccess atomic.Int64
 var startTime = time.Now()
 
 // This example is not supposed to be run as is. It is just a test to see how pubsub behaves in relation to pool management.
-// It was used to find regressions in pool management in hitless mode.
+// It was used to find regressions in pool management in maintnotifications mode.
 // Please don't use it as a reference for how to use pubsub.
 func main() {
 	startTime = time.Now()
 	wg := &sync.WaitGroup{}
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
-		HitlessUpgradeConfig: &redis.HitlessUpgradeConfig{
-			Mode: hitless.MaintNotificationsEnabled,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode:                       maintnotifications.ModeEnabled,
+			EndpointType:               maintnotifications.EndpointTypeExternalIP,
+			HandoffTimeout:             10 * time.Second,
+			RelaxedTimeout:             10 * time.Second,
+			PostHandoffRelaxedDuration: 10 * time.Second,
 		},
 	})
 	_ = rdb.FlushDB(ctx).Err()
-	hitlessManager := rdb.GetHitlessManager()
-	if hitlessManager == nil {
-		panic("hitless manager is nil")
+	maintnotificationsManager := rdb.GetMaintNotificationsManager()
+	if maintnotificationsManager == nil {
+		panic("maintnotifications manager is nil")
 	}
-	loggingHook := hitless.NewLoggingHook(logging.LogLevelDebug)
-	hitlessManager.AddNotificationHook(loggingHook)
+	loggingHook := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+	maintnotificationsManager.AddNotificationHook(loggingHook)
 
 	go func() {
 		for {

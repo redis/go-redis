@@ -140,13 +140,14 @@ type FailoverOptions struct {
 
 	UnstableResp3 bool
 
-	// Hitless is not supported for FailoverClients at the moment
-	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
-	// When HitlessUpgradeConfig.Mode is not "disabled", the client will handle
+	// MaintNotificationsConfig is not supported for FailoverClients at the moment
+	// MaintNotificationsConfig provides custom configuration for maintnotifications upgrades.
+	// When MaintNotificationsConfig.Mode is not "disabled", the client will handle
 	// upgrade notifications gracefully and manage connection/pool state transitions
 	// seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
-	// If nil, hitless upgrades are disabled.
-	//HitlessUpgradeConfig *HitlessUpgradeConfig
+	// If nil, maintnotifications upgrades are disabled.
+	// (however if Mode is nil, it defaults to "auto" - enable if server supports it)
+	//MaintNotificationsConfig *maintnotifications.Config
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {

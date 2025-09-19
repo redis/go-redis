@@ -4,14 +4,14 @@ import "testing"
 
 func TestLogLevel_String(t *testing.T) {
 	tests := []struct {
-		level    LogLevel
+		level    LogLevelT
 		expected string
 	}{
 		{LogLevelError, "ERROR"},
 		{LogLevelWarn, "WARN"},
 		{LogLevelInfo, "INFO"},
 		{LogLevelDebug, "DEBUG"},
-		{LogLevel(99), "UNKNOWN"},
+		{LogLevelT(99), "UNKNOWN"},
 	}
 
 	for _, test := range tests {
@@ -23,16 +23,16 @@ func TestLogLevel_String(t *testing.T) {
 
 func TestLogLevel_IsValid(t *testing.T) {
 	tests := []struct {
-		level    LogLevel
+		level    LogLevelT
 		expected bool
 	}{
 		{LogLevelError, true},
 		{LogLevelWarn, true},
 		{LogLevelInfo, true},
 		{LogLevelDebug, true},
-		{LogLevel(-1), false},
-		{LogLevel(4), false},
-		{LogLevel(99), false},
+		{LogLevelT(-1), false},
+		{LogLevelT(4), false},
+		{LogLevelT(99), false},
 	}
 
 	for _, test := range tests {

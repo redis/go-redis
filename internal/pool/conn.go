@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -59,7 +61,7 @@ type Conn struct {
 	createdAt time.Time
 	expiresAt time.Time
 
-	// Hitless upgrade support: relaxed timeouts during migrations/failovers
+	// maintenanceNotifications upgrade support: relaxed timeouts during migrations/failovers
 	// Using atomic operations for lock-free access to avoid mutex contention
 	relaxedReadTimeoutNs  atomic.Int64 // time.Duration as nanoseconds
 	relaxedWriteTimeoutNs atomic.Int64 // time.Duration as nanoseconds
@@ -73,7 +75,7 @@ type Conn struct {
 	// Connection initialization function for reconnections
 	initConnFunc func(context.Context, *Conn) error
 
-	// Connection identifier for unique tracking across handoffs
+	// Connection identifier for unique tracking
 	id uint64 // Unique numeric identifier for this connection
 
 	// Handoff state - using atomic operations for lock-free access
@@ -114,8 +116,8 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
 
 	// Initialize atomic state
-	cn.usableAtomic.Store(false)        // false initially, set to true after initialization
-	cn.handoffRetriesAtomic.Store(0)    // 0 initially
+	cn.usableAtomic.Store(false)     // false initially, set to true after initialization
+	cn.handoffRetriesAtomic.Store(0) // 0 initially
 
 	// Initialize handoff state atomically
 	initialHandoffState := &HandoffState{
@@ -236,7 +238,7 @@ func (cn *Conn) SetUsable(usable bool) {
 	cn.setUsable(usable)
 }
 
-// SetRelaxedTimeout sets relaxed timeouts for this connection during hitless upgrades.
+// SetRelaxedTimeout sets relaxed timeouts for this connection during maintenanceNotifications upgrades.
 // These timeouts will be used for all subsequent commands until the deadline expires.
 // Uses atomic operations for lock-free access.
 func (cn *Conn) SetRelaxedTimeout(readTimeout, writeTimeout time.Duration) {
@@ -258,7 +260,8 @@ func (cn *Conn) SetRelaxedTimeoutWithDeadline(readTimeout, writeTimeout time.Dur
 func (cn *Conn) ClearRelaxedTimeout() {
 	// Atomically decrement counter and check if we should clear
 	newCount := cn.relaxedCounter.Add(-1)
-	if newCount <= 0 {
+	deadlineNs := cn.relaxedDeadlineNs.Load()
+	if newCount <= 0 && (deadlineNs == 0 || time.Now().UnixNano() >= deadlineNs) {
 		// Use atomic load to get current value for CAS to avoid stale value race
 		current := cn.relaxedCounter.Load()
 		if current <= 0 && cn.relaxedCounter.CompareAndSwap(current, 0) {
@@ -325,8 +328,9 @@ func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Durati
 		return time.Duration(readTimeoutNs)
 	} else {
 		// Deadline has passed, clear relaxed timeouts atomically and use normal timeout
-		cn.relaxedCounter.Add(-1)
-		if cn.relaxedCounter.Load() <= 0 {
+		newCount := cn.relaxedCounter.Add(-1)
+		if newCount <= 0 {
+			internal.Logger.Printf(context.Background(), logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
 			cn.clearRelaxedTimeout()
 		}
 		return normalTimeout
@@ -357,8 +361,9 @@ func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Durat
 		return time.Duration(writeTimeoutNs)
 	} else {
 		// Deadline has passed, clear relaxed timeouts atomically and use normal timeout
-		cn.relaxedCounter.Add(-1)
-		if cn.relaxedCounter.Load() <= 0 {
+		newCount := cn.relaxedCounter.Add(-1)
+		if newCount <= 0 {
+			internal.Logger.Printf(context.Background(), logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
 			cn.clearRelaxedTimeout()
 		}
 		return normalTimeout
@@ -472,6 +477,7 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 		}
 
 		// If CAS failed, add exponential backoff to reduce contention
+		// the delay will be 1, 2, 4... up to 512 microseconds
 		if attempt < maxRetries-1 {
 			delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
 			time.Sleep(delay)
@@ -527,6 +533,11 @@ func (cn *Conn) ClearHandoffState() {
 // IncrementAndGetHandoffRetries atomically increments and returns handoff retries (lock-free).
 func (cn *Conn) IncrementAndGetHandoffRetries(n int) int {
 	return cn.incrementHandoffRetries(n)
+}
+
+// GetHandoffRetries returns the current handoff retry count (lock-free).
+func (cn *Conn) HandoffRetries() int {
+	return int(cn.handoffRetriesAtomic.Load())
 }
 
 // HasBufferedData safely checks if the connection has buffered data.
@@ -603,7 +614,7 @@ func (cn *Conn) WithWriter(
 		} else {
 			// If getNetConn() returns nil, we still need to respect the timeout
 			// Return an error to prevent indefinite blocking
-			return fmt.Errorf("redis: connection not available for write operation")
+			return fmt.Errorf("redis: conn[%d] not available for write operation", cn.GetID())
 		}
 	}
 

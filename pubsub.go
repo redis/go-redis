@@ -43,7 +43,7 @@ type PubSub struct {
 	// Push notification processor for handling generic push notifications
 	pushProcessor push.NotificationProcessor
 
-	// Cleanup callback for hitless upgrade tracking
+	// Cleanup callback for maintenanceNotifications upgrade tracking
 	onClose func()
 }
 
@@ -77,10 +77,10 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 	}
 
 	if c.opt.Addr == "" {
-		// TODO(hitless):
+		// TODO(maintenanceNotifications):
 		// this is probably cluster client
 		// c.newConn will ignore the addr argument
-		// will be changed when we have hitless upgrades for cluster clients
+		// will be changed when we have maintenanceNotifications upgrades for cluster clients
 		c.opt.Addr = internal.RedisNull
 	}
 

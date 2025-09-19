@@ -1,4 +1,4 @@
-package hitless
+package maintnotifications
 
 import (
 	"context"
@@ -74,14 +74,14 @@ func (mo *MockOptions) NewDialer() func(context.Context) (net.Conn, error) {
 	}
 }
 
-func TestHitlessManagerRefactoring(t *testing.T) {
+func TestManagerRefactoring(t *testing.T) {
 	t.Run("AtomicStateTracking", func(t *testing.T) {
 		config := DefaultConfig()
 		client := &MockClient{options: &MockOptions{}}
 
-		manager, err := NewHitlessManager(client, nil, config)
+		manager, err := NewManager(client, nil, config)
 		if err != nil {
-			t.Fatalf("Failed to create hitless manager: %v", err)
+			t.Fatalf("Failed to create maintnotifications manager: %v", err)
 		}
 		defer manager.Close()
 
@@ -140,9 +140,9 @@ func TestHitlessManagerRefactoring(t *testing.T) {
 		config := DefaultConfig()
 		client := &MockClient{options: &MockOptions{}}
 
-		manager, err := NewHitlessManager(client, nil, config)
+		manager, err := NewManager(client, nil, config)
 		if err != nil {
-			t.Fatalf("Failed to create hitless manager: %v", err)
+			t.Fatalf("Failed to create maintnotifications manager: %v", err)
 		}
 		defer manager.Close()
 
@@ -182,9 +182,9 @@ func TestHitlessManagerRefactoring(t *testing.T) {
 		config := DefaultConfig()
 		client := &MockClient{options: &MockOptions{}}
 
-		manager, err := NewHitlessManager(client, nil, config)
+		manager, err := NewManager(client, nil, config)
 		if err != nil {
-			t.Fatalf("Failed to create hitless manager: %v", err)
+			t.Fatalf("Failed to create maintnotifications manager: %v", err)
 		}
 		defer manager.Close()
 
@@ -219,23 +219,23 @@ func TestHitlessManagerRefactoring(t *testing.T) {
 			NotificationFailedOver,
 		}
 
-		if len(hitlessNotificationTypes) != len(expectedTypes) {
-			t.Errorf("Expected %d notification types, got %d", len(expectedTypes), len(hitlessNotificationTypes))
+		if len(maintenanceNotificationTypes) != len(expectedTypes) {
+			t.Errorf("Expected %d notification types, got %d", len(expectedTypes), len(maintenanceNotificationTypes))
 		}
 
 		// Test that all expected types are present
 		typeMap := make(map[string]bool)
-		for _, t := range hitlessNotificationTypes {
+		for _, t := range maintenanceNotificationTypes {
 			typeMap[t] = true
 		}
 
 		for _, expected := range expectedTypes {
 			if !typeMap[expected] {
-				t.Errorf("Expected notification type %s not found in hitlessNotificationTypes", expected)
+				t.Errorf("Expected notification type %s not found in maintenanceNotificationTypes", expected)
 			}
 		}
 
-		// Test that hitlessNotificationTypes contains all expected constants
+		// Test that maintenanceNotificationTypes contains all expected constants
 		expectedConstants := []string{
 			NotificationMoving,
 			NotificationMigrating,
@@ -246,14 +246,14 @@ func TestHitlessManagerRefactoring(t *testing.T) {
 
 		for _, expected := range expectedConstants {
 			found := false
-			for _, actual := range hitlessNotificationTypes {
+			for _, actual := range maintenanceNotificationTypes {
 				if actual == expected {
 					found = true
 					break
 				}
 			}
 			if !found {
-				t.Errorf("Expected constant %s not found in hitlessNotificationTypes", expected)
+				t.Errorf("Expected constant %s not found in maintenanceNotificationTypes", expected)
 			}
 		}
 	})

@@ -9,6 +9,7 @@ coverage.txt
 **/coverage.txt
 .vscode
 tmp/*
+*.test
 
-# Hitless upgrade documentation (temporary)
-hitless/docs/
+# maintenanceNotifications upgrade documentation (temporary)
+maintenanceNotifications/docs/
