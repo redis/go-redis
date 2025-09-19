@@ -38,7 +38,9 @@ func TestPushNotifications(t *testing.T) {
 		t.Logf(format, args...)
 	}
 
+	var errorsDetected = false
 	var e = func(format string, args ...interface{}) {
+		errorsDetected = true
 		format = "[%s][ERROR]  " + format
 		ts := time.Now().Format("15:04:05.000")
 		args = append([]interface{}{ts}, args...)
@@ -248,6 +250,28 @@ func TestPushNotifications(t *testing.T) {
 		t.Fatalf("Failed to trigger bind action: %v", err)
 	}
 
+	// start a second client but don't execute any commands on it
+	p("Starting a second client to observe notification during moving...")
+	client2, err := factory.Create("push-notification-client-2", &CreateClientOptions{
+		Protocol:       3, // RESP3 required for push notifications
+		PoolSize:       poolSize,
+		MinIdleConns:   minIdleConns,
+		MaxActiveConns: maxConnections,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode:           maintnotifications.ModeEnabled,
+			RelaxedTimeout: 30 * time.Minute,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	// setup tracking for second client
+	tracker2 := NewTrackingNotificationsHook()
+	logger2 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+	setupNotificationHooks(client2, tracker2, logger2)
+	commandsRunner2, _ := NewCommandRunner(client2)
+	t.Log("Second client created")
+
 	// Use a channel to communicate errors from the goroutine
 	errChan := make(chan error, 1)
 
@@ -263,26 +287,8 @@ func TestPushNotifications(t *testing.T) {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
 		}, 2*time.Minute)
 		commandsRunner.Stop()
-
-		p("Starting a second client to observe notification during moving...")
-		client2, err := factory.Create("push-notification-client-2", &CreateClientOptions{
-			Protocol:       3, // RESP3 required for push notifications
-			PoolSize:       poolSize,
-			MinIdleConns:   minIdleConns,
-			MaxActiveConns: maxConnections,
-			MaintNotificationsConfig: &maintnotifications.Config{
-				Mode:           maintnotifications.ModeEnabled,
-				RelaxedTimeout: 30 * time.Minute,
-			},
-		})
-		if err != nil {
-			errChan <- fmt.Errorf("failed to create client: %v", err)
-			return
-		}
-		tracker2 := NewTrackingNotificationsHook()
-		logger2 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
-		setupNotificationHooks(client2, tracker2, logger2)
-		commandsRunner2, _ := NewCommandRunner(client2)
+		// once moving is received, start a second client commands runner
+		p("Starting commands on second client")
 		go commandsRunner2.FireCommandsUntilStop(ctx)
 		defer func() {
 			// stop the second runner
@@ -291,14 +297,16 @@ func TestPushNotifications(t *testing.T) {
 			factory.Destroy("push-notification-client-2")
 		}()
 		// wait for moving on second client
-		// we know the maxconn is 15, so connID 17 should be from the second client
+		// we know the maxconn is 15, assuming 16/17 was used to init the second client, so connID 18 should be from the second client
 		// also validate big enough relaxed timeout
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
-			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING") && connID(s, 17)
+			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING") && connID(s, 18)
 		}, 2*time.Minute)
 		if !found {
 			errChan <- fmt.Errorf("MOVING notification was not received within 2 minutes ON A SECOND CLIENT")
 			return
+		} else {
+			p("MOVING notification received on second client %v", logs2.ExtractDataFromLogMessage(match))
 		}
 		// wait for relaxation of 30m
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
@@ -307,6 +315,8 @@ func TestPushNotifications(t *testing.T) {
 		if !found {
 			errChan <- fmt.Errorf("relaxed timeout was not applied within 2 minutes ON A SECOND CLIENT")
 			return
+		} else {
+			p("Relaxed timeout applied on second client")
 		}
 		// Signal success
 		errChan <- nil
@@ -320,7 +330,7 @@ func TestPushNotifications(t *testing.T) {
 
 	// Wait for the goroutine to complete and check for errors
 	if err := <-errChan; err != nil {
-		t.Fatalf("Goroutine error: %v", err)
+		t.Fatalf("Second client goroutine error: %v", err)
 	}
 
 	// Wait for bind action to complete
@@ -335,9 +345,9 @@ func TestPushNotifications(t *testing.T) {
 
 	p("MOVING notification test completed successfully")
 
-	p("Executing commands and collecting logs for analysis... This will take 10-15 seconds...")
+	p("Executing commands and collecting logs for analysis... This will take 30 seconds...")
 	go commandsRunner.FireCommandsUntilStop(ctx)
-	time.Sleep(10 * time.Second)
+	time.Sleep(30 * time.Second)
 	commandsRunner.Stop()
 	allLogsAnalysis := logCollector.GetAnalysis()
 	trackerAnalysis := tracker.GetAnalysis()
@@ -436,8 +446,15 @@ func TestPushNotifications(t *testing.T) {
 		e("Expected no additional handoff retries, got %d", allLogsAnalysis.TotalHandoffRetries-allLogsAnalysis.TotalHandoffCount)
 	}
 
-	p("Analysis complete, no errors found")
+	if errorsDetected {
+		logCollector.DumpLogs()
+		trackerAnalysis.Print(t)
+		logCollector.Clear()
+		tracker.Clear()
+		t.Fatalf("[FAIL] Errors detected in push notification test")
+	}
 
+	p("Analysis complete, no errors found")
 	// print analysis here, don't dump logs later
 	dump = false
 	allLogsAnalysis.Print(t)
