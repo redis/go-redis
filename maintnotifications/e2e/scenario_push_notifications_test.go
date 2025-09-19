@@ -248,7 +248,16 @@ func TestPushNotifications(t *testing.T) {
 		t.Fatalf("Failed to trigger bind action: %v", err)
 	}
 
+	// Use a channel to communicate errors from the goroutine
+	errChan := make(chan error, 1)
+
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				errChan <- fmt.Errorf("goroutine panic: %v", r)
+			}
+		}()
+
 		p("Waiting for MOVING notification")
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
@@ -267,13 +276,20 @@ func TestPushNotifications(t *testing.T) {
 			},
 		})
 		if err != nil {
-			t.Fatalf("Failed to create client: %v", err)
+			errChan <- fmt.Errorf("failed to create client: %v", err)
+			return
 		}
 		tracker2 := NewTrackingNotificationsHook()
 		logger2 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
 		setupNotificationHooks(client2, tracker2, logger2)
 		commandsRunner2, _ := NewCommandRunner(client2)
 		go commandsRunner2.FireCommandsUntilStop(ctx)
+		defer func() {
+			// stop the second runner
+			commandsRunner2.Stop()
+			// destroy the second client
+			factory.Destroy("push-notification-client-2")
+		}()
 		// wait for moving on second client
 		// we know the maxconn is 15, so connID 17 should be from the second client
 		// also validate big enough relaxed timeout
@@ -281,29 +297,31 @@ func TestPushNotifications(t *testing.T) {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING") && connID(s, 17)
 		}, 2*time.Minute)
 		if !found {
-			t.Fatal("MOVING notification was not received within 2 minutes ON A SECOND CLIENT")
+			errChan <- fmt.Errorf("MOVING notification was not received within 2 minutes ON A SECOND CLIENT")
+			return
 		}
 		// wait for relaxation of 30m
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ApplyingRelaxedTimeoutDueToPostHandoffMessage) && strings.Contains(s, "30m")
 		}, 2*time.Minute)
 		if !found {
-			t.Fatal("Relaxed timeout was not applied within 2 minutes ON A SECOND CLIENT")
+			errChan <- fmt.Errorf("relaxed timeout was not applied within 2 minutes ON A SECOND CLIENT")
+			return
 		}
-		// stop the second runner
-		commandsRunner2.Stop()
-		// destroy the second client
-		factory.Destroy("push-notification-client-2")
+		// Signal success
+		errChan <- nil
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
-	if !found {
-		t.Fatal("MOVING notification was not received within 2 minutes ON A SECOND CLIENT")
-	}
 
 	movingData := logs2.ExtractDataFromLogMessage(match)
 	p("MOVING notification received. %v", movingData)
 	seqIDToObserve = int64(movingData["seqID"].(float64))
 	connIDToObserve = uint64(movingData["connID"].(float64))
+
+	// Wait for the goroutine to complete and check for errors
+	if err := <-errChan; err != nil {
+		t.Fatalf("Goroutine error: %v", err)
+	}
 
 	// Wait for bind action to complete
 	bindStatus, err := faultInjector.WaitForAction(ctx, bindResp.ActionID,
