@@ -23,6 +23,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 	defer cancel()
 
 	var dump = true
+	var errorsDetected = false
 	var p = func(format string, args ...interface{}) {
 		format = "[%s][ENDPOINT-TYPES] " + format
 		ts := time.Now().Format("15:04:05.000")
@@ -53,14 +54,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		},
 	}
 
-	logCollector.ClearLogs()
 	defer func() {
-		if dump {
-			p("Dumping logs...")
-			logCollector.DumpLogs()
-			p("Log Analysis:")
-			logCollector.GetAnalysis().Print(t)
-		}
 		logCollector.Clear()
 	}()
 
@@ -88,6 +82,9 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 	// Test each endpoint type
 	for _, endpointTest := range endpointTypes {
 		t.Run(endpointTest.name, func(t *testing.T) {
+			// Clear logs between endpoint type tests
+			logCollector.Clear()
+			dump = true // reset dump flag
 			// redefine p and e for each test to get
 			// proper test name in logs and proper test failures
 			var p = func(format string, args ...interface{}) {
@@ -98,6 +95,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			}
 
 			var e = func(format string, args ...interface{}) {
+				errorsDetected = true
 				format = "[%s][ENDPOINT-TYPES][ERROR] " + format
 				ts := time.Now().Format("15:04:05.000")
 				args = append([]interface{}{ts}, args...)
@@ -315,16 +313,20 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				e("Expected MOVING notifications with %s endpoint type, got none", endpointTest.name)
 			}
 
-			p("Endpoint type %s test completed successfully", endpointTest.name)
+			if errorsDetected {
+				logCollector.DumpLogs()
+				trackerAnalysis.Print(t)
+				logCollector.Clear()
+				tracker.Clear()
+				t.Fatalf("[FAIL] Errors detected with %s endpoint type", endpointTest.name)
+			}
 			dump = false
+			p("Endpoint type %s test completed successfully", endpointTest.name)
 			logCollector.GetAnalysis().Print(t)
 			trackerAnalysis.Print(t)
 			logCollector.Clear()
 			tracker.Clear()
 		})
-
-		// Clear logs between endpoint type tests
-		logCollector.ClearLogs()
 	}
 
 	p("All endpoint types tested successfully")

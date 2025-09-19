@@ -37,7 +37,7 @@ there are three environment variables that need to be set before running the tes
 - **Purpose**: Test push notifications with different endpoint types
 - **Features Tested**: ExternalIP, InternalIP, InternalFQDN, ExternalFQDN endpoint types
 - **Configuration**: Standard setup with varying endpoint types
-- **Duration**: ~20 minutes (multiple sub-tests)
+- **Duration**: ~5 minutes 
 - **Key Validations**:
   - Functionality with each endpoint type
   - Proper endpoint resolution
@@ -52,7 +52,7 @@ there are three environment variables that need to be set before running the tes
   - Conservative: 60s handoff, 20s relaxed, 5s post-handoff
   - Aggressive: 5s handoff, 3s relaxed, 1s post-handoff
   - HighLatency: 90s handoff, 30s relaxed, 10m post-handoff
-- **Duration**: ~25 minutes (3 sub-tests)
+- **Duration**: ~10 minutes (3 sub-tests)
 - **Key Validations**:
   - Timeout behavior matches configuration
   - Recovery times appropriate for each strategy
@@ -63,7 +63,7 @@ there are three environment variables that need to be set before running the tes
 - **Purpose**: Test push notifications with different TLS configurations
 - **Features Tested**: NoTLS, TLSInsecure, TLSSecure, TLSMinimal, TLSStrict
 - **Configuration**: Framework for testing various TLS settings (TLS config handled at connection level)
-- **Duration**: ~20 minutes (multiple sub-tests)
+- **Duration**: ~10 minutes (multiple sub-tests)
 - **Key Validations**:
   - Functionality with each TLS configuration
   - Performance impact of encryption
@@ -80,7 +80,7 @@ there are three environment variables that need to be set before running the tes
   - 200 max connections per client
   - 50 workers, 1000 queue size
   - Concurrent failover/migration actions
-- **Duration**: ~30 minutes
+- **Duration**: ~15 minutes
 - **Key Validations**:
   - System stability under extreme load
   - Error rates within stress limits (<20%)

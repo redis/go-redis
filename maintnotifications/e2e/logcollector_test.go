@@ -285,10 +285,11 @@ type LogAnalisis struct {
 	FailedOverCount    int64
 	UnexpectedCount    int64
 
-	TotalHandoffCount     int64
-	FailedHandoffCount    int64
-	SucceededHandoffCount int64
-	TotalHandoffRetries   int64
+	TotalHandoffCount             int64
+	FailedHandoffCount            int64
+	SucceededHandoffCount         int64
+	TotalHandoffRetries           int64
+	TotalHandoffToCurrentEndpoint int64
 }
 
 func NewLogAnalysis(logs []string) *LogAnalisis {
@@ -357,6 +358,10 @@ func (la *LogAnalisis) Analyze() {
 			la.connLogs[connID] = append(la.connLogs[connID], log)
 		}
 
+		if strings.Contains(log, logs2.SchedulingHandoffToCurrentEndpointMessage) {
+			la.TotalHandoffToCurrentEndpoint++
+		}
+
 		if strings.Contains(log, logs2.HandoffSuccessMessage) {
 			la.SucceededHandoffCount++
 		}
@@ -374,13 +379,34 @@ func (la *LogAnalisis) Analyze() {
 
 func (la *LogAnalisis) Print(t *testing.T) {
 	t.Logf("Log Analysis results for %d logs and %d connections:", len(la.logs), len(la.connIds))
-	t.Logf("Connections: %v", la.connIds)
+	t.Logf("Connection Count: %d", la.ConnectionCount)
+	t.Logf("-------------")
+	t.Logf("-Timeout Analysis-")
+	t.Logf("-------------")
 	t.Logf("Timeout Errors: %d", la.TimeoutErrorsCount)
 	t.Logf("Relaxed Timeout Count: %d", la.RelaxedTimeoutCount)
 	t.Logf(" - Relaxed Timeout After Post-Handoff: %d", la.RelaxedPostHandoffCount)
 	t.Logf("Unrelaxed Timeout Count: %d", la.UnrelaxedTimeoutCount)
 	t.Logf(" - Unrelaxed Timeout After Moving: %d", la.UnrelaxedAfterMoving)
-	t.Logf("Connection Count: %d", la.ConnectionCount)
+	t.Logf("-------------")
+	t.Logf("-Handoff Analysis-")
+	t.Logf("-------------")
+	t.Logf("Total Handoffs: %d", la.TotalHandoffCount)
+	t.Logf(" - Succeeded: %d", la.SucceededHandoffCount)
+	t.Logf(" - Failed: %d", la.FailedHandoffCount)
+	t.Logf(" - Retries: %d", la.TotalHandoffRetries)
+	t.Logf(" - Handoffs to current endpoint: %d", la.TotalHandoffToCurrentEndpoint)
+	t.Logf("-------------")
+	t.Logf("-Notification Analysis-")
+	t.Logf("-------------")
+	t.Logf("Total Notifications: %d", la.TotalNotifications)
+	t.Logf(" - MOVING: %d", la.MovingCount)
+	t.Logf(" - MIGRATING: %d", la.MigratingCount)
+	t.Logf(" - MIGRATED: %d", la.MigratedCount)
+	t.Logf(" - FAILING_OVER: %d", la.FailingOverCount)
+	t.Logf(" - FAILED_OVER: %d", la.FailedOverCount)
+	t.Logf(" - Unexpected: %d", la.UnexpectedCount)
+	t.Logf("-------------")
 	t.Logf("Log Analysis completed successfully")
 }
 

@@ -181,45 +181,45 @@ func UnrelaxedTimeoutAfterDeadline(connID uint64) string {
 
 // Handoff queue and marking functions
 func HandoffQueueFull(queueLen, queueCap int) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s (%d/%d), cannot queue new handoff requests - consider increasing HandoffQueueSize or MaxWorkers in configuration", HandoffQueueFullMessage, queueLen, queueCap)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"queueLen": queueLen,
 		"queueCap": queueCap,
 	})
-	return fmt.Sprintf("%s (%d/%d), cannot queue new handoff requests - consider increasing HandoffQueueSize or MaxWorkers in configuration %s", HandoffQueueFullMessage, queueLen, queueCap, string(data))
 }
 
 func FailedToQueueHandoff(connID uint64, err error) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s: %v", connID, FailedToQueueHandoffMessage, err)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID": connID,
 		"error":  err.Error(),
 	})
-	return fmt.Sprintf("conn[%d] %s: %v %s", connID, FailedToQueueHandoffMessage, err, string(data))
 }
 
 func FailedToMarkForHandoff(connID uint64, err error) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s: %v", connID, FailedToMarkForHandoffMessage, err)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID": connID,
 		"error":  err.Error(),
 	})
-	return fmt.Sprintf("conn[%d] %s: %v %s", connID, FailedToMarkForHandoffMessage, err, string(data))
 }
 
 func FailedToDialNewEndpoint(connID uint64, endpoint string, err error) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s %s: %v", connID, FailedToDialNewEndpointMessage, endpoint, err)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID":   connID,
 		"endpoint": endpoint,
 		"error":    err.Error(),
 	})
-	return fmt.Sprintf("conn[%d] %s %s: %v %s", connID, FailedToDialNewEndpointMessage, endpoint, err, string(data))
 }
 
 func ReachedMaxHandoffRetries(connID uint64, endpoint string, maxRetries int) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s to %s (max retries: %d)", connID, ReachedMaxHandoffRetriesMessage, endpoint, maxRetries)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID":     connID,
 		"endpoint":   endpoint,
 		"maxRetries": maxRetries,
 	})
-	return fmt.Sprintf("conn[%d] %s to %s (max retries: %d) %s", connID, ReachedMaxHandoffRetriesMessage, endpoint, maxRetries, string(data))
 }
 
 // Notification processing functions
@@ -288,36 +288,36 @@ func OperationNotTracked(connID uint64, seqID int64) string {
 
 // Connection pool functions
 func RemovingConnectionFromPool(connID uint64, reason error) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s due to: %v", connID, RemovingConnectionFromPoolMessage, reason)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID": connID,
 		"reason": reason.Error(),
 	})
-	return fmt.Sprintf("conn[%d] %s due to: %v %s", connID, RemovingConnectionFromPoolMessage, reason, string(data))
 }
 
 func NoPoolProvidedCannotRemove(connID uint64, reason error) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s due to: %v", connID, NoPoolProvidedMessageCannotRemoveMessage, reason)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID": connID,
 		"reason": reason.Error(),
 	})
-	return fmt.Sprintf("conn[%d] %s due to: %v %s", connID, NoPoolProvidedMessageCannotRemoveMessage, reason, string(data))
 }
 
 // Circuit breaker functions
 func CircuitBreakerOpen(connID uint64, endpoint string) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s for %s", connID, CircuitBreakerOpenMessage, endpoint)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID":   connID,
 		"endpoint": endpoint,
 	})
-	return fmt.Sprintf("conn[%d] %s for %s %s", connID, CircuitBreakerOpenMessage, endpoint, string(data))
 }
 
 // Additional handoff functions for specific cases
 func ConnectionNotMarkedForHandoff(connID uint64) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s", connID, ConnectionNotMarkedForHandoffMessage)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID": connID,
 	})
-	return fmt.Sprintf("conn[%d] %s %s", connID, ConnectionNotMarkedForHandoffMessage, string(data))
 }
 
 func ConnectionNotMarkedForHandoffError(connID uint64) string {
@@ -325,294 +325,274 @@ func ConnectionNotMarkedForHandoffError(connID uint64) string {
 }
 
 func HandoffRetryAttempt(connID uint64, retries int, newEndpoint string, oldEndpoint string) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] Retry %d: %s to %s(was %s)", connID, retries, HandoffRetryAttemptMessage, newEndpoint, oldEndpoint)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID":      connID,
 		"retries":     retries,
 		"newEndpoint": newEndpoint,
 		"oldEndpoint": oldEndpoint,
 	})
-	return fmt.Sprintf("conn[%d] Retry %d: %s to %s(was %s) %s", connID, retries, HandoffRetryAttemptMessage, newEndpoint, oldEndpoint, string(data))
 }
 
 func CannotQueueHandoffForRetry(err error) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s: %v", CannotQueueHandoffForRetryMessage, err)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"error": err.Error(),
 	})
-	return fmt.Sprintf("%s: %v %s", CannotQueueHandoffForRetryMessage, err, string(data))
 }
 
 // Validation and error functions
 func InvalidNotificationFormat(notification interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s: %v", InvalidNotificationFormatMessage, notification)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"notification": fmt.Sprintf("%v", notification),
 	})
-	return fmt.Sprintf("%s: %v %s", InvalidNotificationFormatMessage, notification, string(data))
 }
 
 func InvalidNotificationTypeFormat(notificationType interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s: %v", InvalidNotificationTypeFormatMessage, notificationType)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"notificationType": fmt.Sprintf("%v", notificationType),
 	})
-	return fmt.Sprintf("%s: %v %s", InvalidNotificationTypeFormatMessage, notificationType, string(data))
 }
 
 // InvalidNotification creates a log message for invalid notifications of any type
 func InvalidNotification(notificationType string, notification interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("invalid %s notification: %v", notificationType, notification)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"notificationType": notificationType,
 		"notification":     fmt.Sprintf("%v", notification),
 	})
-	return fmt.Sprintf("invalid %s notification: %v %s", notificationType, notification, string(data))
 }
 
 func InvalidSeqIDInMovingNotification(seqID interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s: %v", InvalidSeqIDInMovingNotificationMessage, seqID)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"seqID": fmt.Sprintf("%v", seqID),
 	})
-	return fmt.Sprintf("%s: %v %s", InvalidSeqIDInMovingNotificationMessage, seqID, string(data))
 }
 
 func InvalidTimeSInMovingNotification(timeS interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s: %v", InvalidTimeSInMovingNotificationMessage, timeS)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"timeS": fmt.Sprintf("%v", timeS),
 	})
-	return fmt.Sprintf("%s: %v %s", InvalidTimeSInMovingNotificationMessage, timeS, string(data))
 }
 
 func InvalidNewEndpointInMovingNotification(newEndpoint interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s: %v", InvalidNewEndpointInMovingNotificationMessage, newEndpoint)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"newEndpoint": fmt.Sprintf("%v", newEndpoint),
 	})
-	return fmt.Sprintf("%s: %v %s", InvalidNewEndpointInMovingNotificationMessage, newEndpoint, string(data))
 }
 
 func NoConnectionInHandlerContext(notificationType string) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s for %s notification", NoConnectionInHandlerContextMessage, notificationType)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"notificationType": notificationType,
 	})
-	return fmt.Sprintf("%s for %s notification %s", NoConnectionInHandlerContextMessage, notificationType, string(data))
 }
 
 func InvalidConnectionTypeInHandlerContext(notificationType string, conn interface{}, handlerCtx interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s for %s notification - %T %#v", InvalidConnectionTypeInHandlerContextMessage, notificationType, conn, handlerCtx)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"notificationType": notificationType,
 		"connType":         fmt.Sprintf("%T", conn),
 	})
-	return fmt.Sprintf("%s for %s notification - %T %#v %s", InvalidConnectionTypeInHandlerContextMessage, notificationType, conn, handlerCtx, string(data))
 }
 
 func SchedulingHandoffToCurrentEndpoint(connID uint64, seconds float64) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s in %v seconds", connID, SchedulingHandoffToCurrentEndpointMessage, seconds)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID":  connID,
 		"seconds": seconds,
 	})
-	return fmt.Sprintf("conn[%d] %s in %v seconds %s", connID, SchedulingHandoffToCurrentEndpointMessage, seconds, string(data))
 }
 
 func ManagerNotInitialized() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", ManagerNotInitializedMessage, string(data))
+	return appendJSONIfDebug(ManagerNotInitializedMessage, map[string]interface{}{})
 }
 
 func FailedToRegisterHandler(notificationType string, err error) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s for %s: %v", FailedToRegisterHandlerMessage, notificationType, err)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"notificationType": notificationType,
 		"error":            err.Error(),
 	})
-	return fmt.Sprintf("%s for %s: %v %s", FailedToRegisterHandlerMessage, notificationType, err, string(data))
 }
 
 func ShutdownError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", ShutdownErrorMessage, string(data))
+	return appendJSONIfDebug(ShutdownErrorMessage, map[string]interface{}{})
 }
 
 // Configuration validation error functions
 func InvalidRelaxedTimeoutError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidRelaxedTimeoutErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidRelaxedTimeoutErrorMessage, map[string]interface{}{})
 }
 
 func InvalidHandoffTimeoutError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidHandoffTimeoutErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidHandoffTimeoutErrorMessage, map[string]interface{}{})
 }
 
 func InvalidHandoffWorkersError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidHandoffWorkersErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidHandoffWorkersErrorMessage, map[string]interface{}{})
 }
 
 func InvalidHandoffQueueSizeError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidHandoffQueueSizeErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidHandoffQueueSizeErrorMessage, map[string]interface{}{})
 }
 
 func InvalidPostHandoffRelaxedDurationError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidPostHandoffRelaxedDurationErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidPostHandoffRelaxedDurationErrorMessage, map[string]interface{}{})
 }
 
 func InvalidEndpointTypeError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidEndpointTypeErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidEndpointTypeErrorMessage, map[string]interface{}{})
 }
 
 func InvalidMaintNotificationsError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidMaintNotificationsErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidMaintNotificationsErrorMessage, map[string]interface{}{})
 }
 
 func InvalidHandoffRetriesError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidHandoffRetriesErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidHandoffRetriesErrorMessage, map[string]interface{}{})
 }
 
 func InvalidClientError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidClientErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidClientErrorMessage, map[string]interface{}{})
 }
 
 func InvalidNotificationError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidNotificationErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidNotificationErrorMessage, map[string]interface{}{})
 }
 
 func MaxHandoffRetriesReachedError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", MaxHandoffRetriesReachedErrorMessage, string(data))
+	return appendJSONIfDebug(MaxHandoffRetriesReachedErrorMessage, map[string]interface{}{})
 }
 
 func HandoffQueueFullError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", HandoffQueueFullErrorMessage, string(data))
+	return appendJSONIfDebug(HandoffQueueFullErrorMessage, map[string]interface{}{})
 }
 
 func InvalidCircuitBreakerFailureThresholdError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidCircuitBreakerFailureThresholdErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidCircuitBreakerFailureThresholdErrorMessage, map[string]interface{}{})
 }
 
 func InvalidCircuitBreakerResetTimeoutError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidCircuitBreakerResetTimeoutErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidCircuitBreakerResetTimeoutErrorMessage, map[string]interface{}{})
 }
 
 func InvalidCircuitBreakerMaxRequestsError() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", InvalidCircuitBreakerMaxRequestsErrorMessage, string(data))
+	return appendJSONIfDebug(InvalidCircuitBreakerMaxRequestsErrorMessage, map[string]interface{}{})
 }
 
 // Configuration and debug functions
 func DebugLoggingEnabled() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", DebugLoggingEnabledMessage, string(data))
+	return appendJSONIfDebug(DebugLoggingEnabledMessage, map[string]interface{}{})
 }
 
 func ConfigDebug(config interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s: %+v", ConfigDebugMessage, config)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"config": fmt.Sprintf("%+v", config),
 	})
-	return fmt.Sprintf("%s: %+v %s", ConfigDebugMessage, config, string(data))
 }
 
 // Handoff worker functions
 func WorkerExitingDueToShutdown() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", WorkerExitingDueToShutdownMessage, string(data))
+	return appendJSONIfDebug(WorkerExitingDueToShutdownMessage, map[string]interface{}{})
 }
 
 func WorkerExitingDueToShutdownWhileProcessing() string {
-	data, _ := json.Marshal(map[string]interface{}{})
-	return fmt.Sprintf("%s %s", WorkerExitingDueToShutdownWhileProcessingMessage, string(data))
+	return appendJSONIfDebug(WorkerExitingDueToShutdownWhileProcessingMessage, map[string]interface{}{})
 }
 
 func WorkerPanicRecovered(panicValue interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s: %v", WorkerPanicRecoveredMessage, panicValue)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"panic": fmt.Sprintf("%v", panicValue),
 	})
-	return fmt.Sprintf("%s: %v %s", WorkerPanicRecoveredMessage, panicValue, string(data))
 }
 
 func WorkerExitingDueToInactivityTimeout(timeout interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s (%v)", WorkerExitingDueToInactivityTimeoutMessage, timeout)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"timeout": fmt.Sprintf("%v", timeout),
 	})
-	return fmt.Sprintf("%s (%v) %s", WorkerExitingDueToInactivityTimeoutMessage, timeout, string(data))
 }
 
 func ApplyingRelaxedTimeoutDueToPostHandoff(connID uint64, timeout interface{}, until string) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s (%v) until %s", connID, ApplyingRelaxedTimeoutDueToPostHandoffMessage, timeout, until)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID":  connID,
 		"timeout": fmt.Sprintf("%v", timeout),
 		"until":   until,
 	})
-	return fmt.Sprintf("conn[%d] %s (%v) until %s %s", connID, ApplyingRelaxedTimeoutDueToPostHandoffMessage, timeout, until, string(data))
 }
 
 // Example hooks functions
 func MetricsHookProcessingNotification(notificationType string, connID uint64) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s %s notification on conn[%d]", MetricsHookProcessingNotificationMessage, notificationType, connID)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"notificationType": notificationType,
 		"connID":           connID,
 	})
-	return fmt.Sprintf("%s %s notification on conn[%d] %s", MetricsHookProcessingNotificationMessage, notificationType, connID, string(data))
 }
 
 func MetricsHookRecordedError(notificationType string, connID uint64, err error) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s for %s notification on conn[%d]: %v", MetricsHookRecordedErrorMessage, notificationType, connID, err)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"notificationType": notificationType,
 		"connID":           connID,
 		"error":            err.Error(),
 	})
-	return fmt.Sprintf("%s for %s notification on conn[%d]: %v %s", MetricsHookRecordedErrorMessage, notificationType, connID, err, string(data))
 }
 
 // Pool hook functions
 func MarkedForHandoff(connID uint64) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("conn[%d] %s", connID, MarkedForHandoffMessage)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID": connID,
 	})
-	return fmt.Sprintf("conn[%d] %s %s", connID, MarkedForHandoffMessage, string(data))
 }
 
 // Circuit breaker additional functions
 func CircuitBreakerTransitioningToHalfOpen(endpoint string) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s for %s", CircuitBreakerTransitioningToHalfOpenMessage, endpoint)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"endpoint": endpoint,
 	})
-	return fmt.Sprintf("%s for %s %s", CircuitBreakerTransitioningToHalfOpenMessage, endpoint, string(data))
 }
 
 func CircuitBreakerOpened(endpoint string, failures int64) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s for endpoint %s after %d failures", CircuitBreakerOpenedMessage, endpoint, failures)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"endpoint": endpoint,
 		"failures": failures,
 	})
-	return fmt.Sprintf("%s for endpoint %s after %d failures %s", CircuitBreakerOpenedMessage, endpoint, failures, string(data))
 }
 
 func CircuitBreakerReopened(endpoint string) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s for endpoint %s due to failure in half-open state", CircuitBreakerReopenedMessage, endpoint)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"endpoint": endpoint,
 	})
-	return fmt.Sprintf("%s for endpoint %s due to failure in half-open state %s", CircuitBreakerReopenedMessage, endpoint, string(data))
 }
 
 func CircuitBreakerClosed(endpoint string, successes int64) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s for endpoint %s after %d successful requests", CircuitBreakerClosedMessage, endpoint, successes)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"endpoint":  endpoint,
 		"successes": successes,
 	})
-	return fmt.Sprintf("%s for endpoint %s after %d successful requests %s", CircuitBreakerClosedMessage, endpoint, successes, string(data))
 }
 
 func CircuitBreakerCleanup(removed int, total int) string {
-	data, _ := json.Marshal(map[string]interface{}{
+	message := fmt.Sprintf("%s removed %d/%d entries", CircuitBreakerCleanupMessage, removed, total)
+	return appendJSONIfDebug(message, map[string]interface{}{
 		"removed": removed,
 		"total":   total,
 	})
-	return fmt.Sprintf("%s removed %d/%d entries %s", CircuitBreakerCleanupMessage, removed, total, string(data))
 }
 
 // ExtractDataFromLogMessage extracts structured data from maintnotifications log messages

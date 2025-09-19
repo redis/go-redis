@@ -3,6 +3,7 @@ package maintnotifications
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -84,8 +85,14 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 		// Extract new endpoint
 		newEndpoint, ok = notification[3].(string)
 		if !ok {
-			internal.Logger.Printf(ctx, logs.InvalidNewEndpointInMovingNotification(notification[3]))
-			return ErrInvalidNotification
+			stringified := fmt.Sprintf("%v", notification[3])
+			// this could be <nil> which is valid
+			if notification[3] == nil || stringified == internal.RedisNull {
+				newEndpoint = ""
+			} else {
+				internal.Logger.Printf(ctx, logs.InvalidNewEndpointInMovingNotification(notification[3]))
+				return ErrInvalidNotification
+			}
 		}
 	}
 
