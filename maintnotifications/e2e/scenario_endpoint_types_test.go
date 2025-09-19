@@ -283,7 +283,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			p("Bind action completed for %s: %s", endpointTest.name, bindStatus.Status)
 
 			// Continue traffic for analysis
-			time.Sleep(5 * time.Second)
+			time.Sleep(30 * time.Second)
 			commandsRunner.Stop()
 
 			// Analyze results for this endpoint type
