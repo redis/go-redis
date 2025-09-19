@@ -236,11 +236,11 @@ func setupNotificationHooks(client redis.UniversalClient, hooks ...maintnotifica
 
 // setupRegularClientNotificationHook sets up notification hook for regular clients
 func setupRegularClientNotificationHook(client *redis.Client, hook maintnotifications.NotificationHook) {
-	hitlessManager := client.GetMaintNotificationsManager()
-	if hitlessManager != nil {
-		hitlessManager.AddNotificationHook(hook)
+	maintnotificationsManager := client.GetMaintNotificationsManager()
+	if maintnotificationsManager != nil {
+		maintnotificationsManager.AddNotificationHook(hook)
 	} else {
-		fmt.Printf("[TNH] Warning: Hitless manager not available for tracking\n")
+		fmt.Printf("[TNH] Warning: Maintenance notifications manager not available for tracking\n")
 	}
 }
 
@@ -250,11 +250,11 @@ func setupClusterClientNotificationHook(client *redis.ClusterClient, hook maintn
 
 	// Register hook on existing nodes
 	err := client.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
-		hitlessManager := nodeClient.GetMaintNotificationsManager()
-		if hitlessManager != nil {
-			hitlessManager.AddNotificationHook(hook)
+		maintnotificationsManager := nodeClient.GetMaintNotificationsManager()
+		if maintnotificationsManager != nil {
+			maintnotificationsManager.AddNotificationHook(hook)
 		} else {
-			fmt.Printf("[TNH] Warning: Hitless manager not available for tracking on node: %s\n", nodeClient.Options().Addr)
+			fmt.Printf("[TNH] Warning: Maintenance notifications manager not available for tracking on node: %s\n", nodeClient.Options().Addr)
 		}
 		return nil
 	})
@@ -265,11 +265,11 @@ func setupClusterClientNotificationHook(client *redis.ClusterClient, hook maintn
 
 	// Register hook on new nodes
 	client.OnNewNode(func(nodeClient *redis.Client) {
-		hitlessManager := nodeClient.GetMaintNotificationsManager()
-		if hitlessManager != nil {
-			hitlessManager.AddNotificationHook(hook)
+		maintnotificationsManager := nodeClient.GetMaintNotificationsManager()
+		if maintnotificationsManager != nil {
+			maintnotificationsManager.AddNotificationHook(hook)
 		} else {
-			fmt.Printf("[TNH] Warning: Hitless manager not available for tracking on new node: %s\n", nodeClient.Options().Addr)
+			fmt.Printf("[TNH] Warning: Maintenance notifications manager not available for tracking on new node: %s\n", nodeClient.Options().Addr)
 		}
 	})
 }

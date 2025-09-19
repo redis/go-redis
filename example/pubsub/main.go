@@ -19,7 +19,7 @@ var cntSuccess atomic.Int64
 var startTime = time.Now()
 
 // This example is not supposed to be run as is. It is just a test to see how pubsub behaves in relation to pool management.
-// It was used to find regressions in pool management in hitless mode.
+// It was used to find regressions in pool management in maintnotifications mode.
 // Please don't use it as a reference for how to use pubsub.
 func main() {
 	startTime = time.Now()
@@ -35,12 +35,12 @@ func main() {
 		},
 	})
 	_ = rdb.FlushDB(ctx).Err()
-	hitlessManager := rdb.GetMaintNotificationsManager()
-	if hitlessManager == nil {
-		panic("hitless manager is nil")
+	maintnotificationsManager := rdb.GetMaintNotificationsManager()
+	if maintnotificationsManager == nil {
+		panic("maintnotifications manager is nil")
 	}
 	loggingHook := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
-	hitlessManager.AddNotificationHook(loggingHook)
+	maintnotificationsManager.AddNotificationHook(loggingHook)
 
 	go func() {
 		for {

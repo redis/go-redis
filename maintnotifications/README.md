@@ -1,6 +1,9 @@
-# Hitless Upgrades
+# Maintenance Notifications
 
-Seamless Redis connection handoffs during cluster changes without dropping connections.
+Seamless Redis connection handoffs during cluster maintenance operations without dropping connections.
+
+## ⚠️ **Important Note**
+**Maintenance notifications are currently supported only in standalone Redis clients.** Cluster clients (ClusterClient, FailoverClient, etc.) do not yet support this functionality.
 
 ## Quick Start
 
@@ -8,31 +11,30 @@ Seamless Redis connection handoffs during cluster changes without dropping conne
 client := redis.NewClient(&redis.Options{
     Addr:     "localhost:6379",
     Protocol: 3, // RESP3 required
-    HitlessUpgrades: &hitless.Config{
-        Mode: hitless.ModeEnabled,
+	MaintNotificationsConfig: &maintnotifications.Config{
+        Mode: maintnotifications.ModeEnabled,
     },
 })
 ```
 
 ## Modes
 
-- **`ModeDisabled`** - Hitless upgrades disabled
+- **`ModeDisabled`** - Maintenance notifications disabled
 - **`ModeEnabled`** - Forcefully enabled (fails if server doesn't support)
 - **`ModeAuto`** - Auto-detect server support (default)
 
 ## Configuration
 
 ```go
-&hitless.Config{
-    Mode:                       hitless.ModeAuto,
-    EndpointType:               hitless.EndpointTypeAuto,
+&maintnotifications.Config{
+    Mode:                       maintnotifications.ModeAuto,
+    EndpointType:               maintnotifications.EndpointTypeAuto,
     RelaxedTimeout:             10 * time.Second,
     HandoffTimeout:             15 * time.Second,
     MaxHandoffRetries:          3,
     MaxWorkers:                 0,    // Auto-calculated
     HandoffQueueSize:           0,    // Auto-calculated
     PostHandoffRelaxedDuration: 0,    // 2 * RelaxedTimeout
-    LogLevel:                   logging.LogLevelError,
 }
 ```
 
@@ -56,7 +58,7 @@ client := redis.NewClient(&redis.Options{
 
 ## How It Works
 
-1. Redis sends push notifications about cluster changes
+1. Redis sends push notifications about cluster maintenance operations
 2. Client creates new connections to updated endpoints
 3. Active operations transfer to new connections
 4. Old connections close gracefully
@@ -71,7 +73,7 @@ client := redis.NewClient(&redis.Options{
 
 ## Hooks (Optional)
 
-Monitor and customize hitless operations:
+Monitor and customize maintenance notification operations:
 
 ```go
 type NotificationHook interface {
@@ -87,7 +89,7 @@ manager.AddNotificationHook(&MyHook{})
 
 ```go
 // Create metrics hook
-metricsHook := hitless.NewMetricsHook()
+metricsHook := maintnotifications.NewMetricsHook()
 manager.AddNotificationHook(metricsHook)
 
 // Access collected metrics

@@ -615,7 +615,7 @@ func CircuitBreakerCleanup(removed int, total int) string {
 	return fmt.Sprintf("%s removed %d/%d entries %s", CircuitBreakerCleanupMessage, removed, total, string(data))
 }
 
-// ExtractDataFromLogMessage extracts structured data from hitless log messages
+// ExtractDataFromLogMessage extracts structured data from maintnotifications log messages
 // Returns a map containing the parsed key-value pairs from the structured data section
 // Example: "conn[123] handoff started to localhost:6379 {"connID":123,"endpoint":"localhost:6379"}"
 // Returns: map[string]interface{}{"connID": 123, "endpoint": "localhost:6379"}
