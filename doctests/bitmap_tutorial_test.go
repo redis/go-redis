@@ -94,3 +94,145 @@ func ExampleClient_bitcount() {
 	// Output:
 	// 1
 }
+
+func ExampleClient_bitop_setup() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password docs
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
+	rdb.Del(ctx, "A", "B", "C", "R")
+	// REMOVE_END
+
+	// STEP_START bitop_setup
+	rdb.SetBit(ctx, "A", 0, 1)
+	rdb.SetBit(ctx, "A", 1, 1)
+	rdb.SetBit(ctx, "A", 3, 1)
+	rdb.SetBit(ctx, "A", 4, 1)
+	ba, _ := rdb.Get(ctx, "A").Bytes()
+	fmt.Printf("%08b\n", ba[0])
+	// >>> 11011000
+
+	rdb.SetBit(ctx, "B", 3, 1)
+	rdb.SetBit(ctx, "B", 4, 1)
+	rdb.SetBit(ctx, "B", 7, 1)
+	bb, _ := rdb.Get(ctx, "B").Bytes()
+	fmt.Printf("%08b\n", bb[0])
+	// >>> 00011001
+
+	rdb.SetBit(ctx, "C", 1, 1)
+	rdb.SetBit(ctx, "C", 2, 1)
+	rdb.SetBit(ctx, "C", 4, 1)
+	rdb.SetBit(ctx, "C", 5, 1)
+	bc, _ := rdb.Get(ctx, "C").Bytes()
+	fmt.Printf("%08b\n", bc[0])
+	// >>> 01101100
+	// STEP_END
+
+	// Output:
+	// 11011000
+	// 00011001
+	// 01101100
+}
+
+func ExampleClient_bitop_ops() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password docs
+		DB:       0,  // use default DB
+	})
+
+	// REMOVE_START
+	// start with fresh database
+	rdb.FlushDB(ctx)
+	rdb.Del(ctx, "A", "B", "C", "R")
+	// REMOVE_END
+
+	// HIDE_START
+	rdb.SetBit(ctx, "A", 0, 1)
+	rdb.SetBit(ctx, "A", 1, 1)
+	rdb.SetBit(ctx, "A", 3, 1)
+	rdb.SetBit(ctx, "A", 4, 1)
+	rdb.SetBit(ctx, "B", 3, 1)
+	rdb.SetBit(ctx, "B", 4, 1)
+	rdb.SetBit(ctx, "B", 7, 1)
+	rdb.SetBit(ctx, "C", 1, 1)
+	rdb.SetBit(ctx, "C", 2, 1)
+	rdb.SetBit(ctx, "C", 4, 1)
+	rdb.SetBit(ctx, "C", 5, 1)
+	// HIDE_END
+
+	// STEP_START bitop_and
+	rdb.BitOpAnd(ctx, "R", "A", "B", "C")
+	br, _ := rdb.Get(ctx, "R").Bytes()
+	fmt.Printf("%08b\n", br[0])
+	// >>> 00001000
+	// STEP_END
+
+	// STEP_START bitop_or
+	rdb.BitOpOr(ctx, "R", "A", "B", "C")
+	br, _ = rdb.Get(ctx, "R").Bytes()
+	fmt.Printf("%08b\n", br[0])
+	// >>> 11111101
+	// STEP_END
+
+	// STEP_START bitop_xor
+	rdb.BitOpXor(ctx, "R", "A", "B")
+	br, _ = rdb.Get(ctx, "R").Bytes()
+	fmt.Printf("%08b\n", br[0])
+	// >>> 11000001
+	// STEP_END
+
+	// STEP_START bitop_not
+	rdb.BitOpNot(ctx, "R", "A")
+	br, _ = rdb.Get(ctx, "R").Bytes()
+	fmt.Printf("%08b\n", br[0])
+	// >>> 00100111
+	// STEP_END
+
+	// STEP_START bitop_diff
+	rdb.BitOpDiff(ctx, "R", "A", "B", "C")
+	br, _ = rdb.Get(ctx, "R").Bytes()
+	fmt.Printf("%08b\n", br[0])
+	// >>> 10000000
+	// STEP_END
+
+	// STEP_START bitop_diff1
+	rdb.BitOpDiff1(ctx, "R", "A", "B", "C")
+	br, _ = rdb.Get(ctx, "R").Bytes()
+	fmt.Printf("%08b\n", br[0])
+	// >>> 00100101
+	// STEP_END
+
+	// STEP_START bitop_andor
+	rdb.BitOpAndOr(ctx, "R", "A", "B", "C")
+	br, _ = rdb.Get(ctx, "R").Bytes()
+	fmt.Printf("%08b\n", br[0])
+	// >>> 01011000
+	// STEP_END
+
+	// STEP_START bitop_one
+	rdb.BitOpOne(ctx, "R", "A", "B", "C")
+	br, _ = rdb.Get(ctx, "R").Bytes()
+	fmt.Printf("%08b\n", br[0])
+	// >>> 10100101
+	// STEP_END
+
+	// Output:
+	// 00001000
+	// 11111101
+	// 11000001
+	// 00100111
+	// 10000000
+	// 00100101
+	// 01011000
+	// 10100101
+}
