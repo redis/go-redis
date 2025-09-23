@@ -95,7 +95,7 @@ func ExampleClient_bitcount() {
 	// 1
 }
 
-func ExampleClient_bitop_setup() {
+func ExampleClient_bitops() {
 	ctx := context.Background()
 
 	rdb := redis.NewClient(&redis.Options{
@@ -134,41 +134,6 @@ func ExampleClient_bitop_setup() {
 	fmt.Printf("%08b\n", bc[0])
 	// >>> 01101100
 	// STEP_END
-
-	// Output:
-	// 11011000
-	// 00011001
-	// 01101100
-}
-
-func ExampleClient_bitop_ops() {
-	ctx := context.Background()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password docs
-		DB:       0,  // use default DB
-	})
-
-	// REMOVE_START
-	// start with fresh database
-	rdb.FlushDB(ctx)
-	rdb.Del(ctx, "A", "B", "C", "R")
-	// REMOVE_END
-
-	// HIDE_START
-	rdb.SetBit(ctx, "A", 0, 1)
-	rdb.SetBit(ctx, "A", 1, 1)
-	rdb.SetBit(ctx, "A", 3, 1)
-	rdb.SetBit(ctx, "A", 4, 1)
-	rdb.SetBit(ctx, "B", 3, 1)
-	rdb.SetBit(ctx, "B", 4, 1)
-	rdb.SetBit(ctx, "B", 7, 1)
-	rdb.SetBit(ctx, "C", 1, 1)
-	rdb.SetBit(ctx, "C", 2, 1)
-	rdb.SetBit(ctx, "C", 4, 1)
-	rdb.SetBit(ctx, "C", 5, 1)
-	// HIDE_END
 
 	// STEP_START bitop_and
 	rdb.BitOpAnd(ctx, "R", "A", "B", "C")
@@ -227,6 +192,9 @@ func ExampleClient_bitop_ops() {
 	// STEP_END
 
 	// Output:
+	// 11011000
+	// 00011001
+	// 01101100
 	// 00001000
 	// 11111101
 	// 11000001
