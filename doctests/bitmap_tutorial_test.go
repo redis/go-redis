@@ -164,28 +164,40 @@ func ExampleClient_bitops() {
 	// STEP_END
 
 	// STEP_START bitop_diff
-	rdb.BitOpDiff(ctx, "R", "A", "B", "C")
+	_, err := rdb.BitOpDiff(ctx, "R", "A", "B", "C").Result()
+	if err != nil {
+		panic(err)
+	}
 	br, _ = rdb.Get(ctx, "R").Bytes()
 	fmt.Printf("%08b\n", br[0])
 	// >>> 10000000
 	// STEP_END
 
 	// STEP_START bitop_diff1
-	rdb.BitOpDiff1(ctx, "R", "A", "B", "C")
+	_, err = rdb.BitOpDiff1(ctx, "R", "A", "B", "C").Result()
+	if err != nil {
+		panic(err)
+	}
 	br, _ = rdb.Get(ctx, "R").Bytes()
 	fmt.Printf("%08b\n", br[0])
 	// >>> 00100101
 	// STEP_END
 
 	// STEP_START bitop_andor
-	rdb.BitOpAndOr(ctx, "R", "A", "B", "C")
+	_, err = rdb.BitOpAndOr(ctx, "R", "A", "B", "C").Result()
+	if err != nil {
+		panic(err)
+	}
 	br, _ = rdb.Get(ctx, "R").Bytes()
 	fmt.Printf("%08b\n", br[0])
 	// >>> 01011000
 	// STEP_END
 
 	// STEP_START bitop_one
-	rdb.BitOpOne(ctx, "R", "A", "B", "C")
+	_, err = rdb.BitOpOne(ctx, "R", "A", "B", "C").Result()
+	if err != nil {
+		panic(err)
+	}
 	br, _ = rdb.Get(ctx, "R").Bytes()
 	fmt.Printf("%08b\n", br[0])
 	// >>> 10100101
