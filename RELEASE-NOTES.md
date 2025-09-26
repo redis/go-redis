@@ -1,6 +1,6 @@
 # Release Notes
 
-# 9.15.0-beta.2 (2025-09-26)
+# 9.15.0-beta.3 (2025-09-26)
 
 ## Highlights
 This beta release includes a pre-production version of processing push notifications and hitless upgrades.
