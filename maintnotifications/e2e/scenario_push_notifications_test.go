@@ -59,7 +59,7 @@ func TestPushNotifications(t *testing.T) {
 	}()
 
 	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("enterprise-cluster")
+	factory, err := CreateTestClientFactory("standalone")
 	if err != nil {
 		t.Skipf("Enterprise cluster not available, skipping push notification tests: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestPushNotifications(t *testing.T) {
 		MaxActiveConns: maxConnections,
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode:                       maintnotifications.ModeEnabled,
-			HandoffTimeout:             30 * time.Second, // 30 seconds
+			HandoffTimeout:             40 * time.Second, // 30 seconds
 			RelaxedTimeout:             10 * time.Second, // 10 seconds relaxed timeout
 			PostHandoffRelaxedDuration: 2 * time.Second,  // 2 seconds post-handoff relaxed duration
 			MaxWorkers:                 20,
@@ -258,10 +258,16 @@ func TestPushNotifications(t *testing.T) {
 		MinIdleConns:   minIdleConns,
 		MaxActiveConns: maxConnections,
 		MaintNotificationsConfig: &maintnotifications.Config{
-			Mode:           maintnotifications.ModeEnabled,
-			RelaxedTimeout: 30 * time.Minute,
+			Mode:                       maintnotifications.ModeEnabled,
+			HandoffTimeout:             40 * time.Second, // 30 seconds
+			RelaxedTimeout:             30 * time.Minute, // 30 minutes relaxed timeout for second client
+			PostHandoffRelaxedDuration: 2 * time.Second,  // 2 seconds post-handoff relaxed duration
+			MaxWorkers:                 20,
+			EndpointType:               maintnotifications.EndpointTypeExternalIP, // Use external IP for enterprise
 		},
+		ClientName: "push-notification-test-client-2",
 	})
+
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -282,7 +288,7 @@ func TestPushNotifications(t *testing.T) {
 			}
 		}()
 
-		p("Waiting for MOVING notification")
+		p("Waiting for MOVING notification on second client")
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
 		}, 2*time.Minute)

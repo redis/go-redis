@@ -1,37 +1,5 @@
 package e2e
 
-import (
-	"context"
-	"sync"
-
-	"github.com/redis/go-redis/v9"
-)
-
-func pingOnAllIdleConns(client redis.UniversalClient) error {
-	idleConnsNum := client.PoolStats().IdleConns
-	wg := sync.WaitGroup{}
-	err := error(nil)
-	errCh := make(chan error, idleConnsNum)
-	if idleConnsNum == 0 {
-		idleConnsNum = 1
-	}
-	for i := uint32(0); i < idleConnsNum; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errCh <- client.Ping(context.Background()).Err()
-		}()
-	}
-	wg.Wait()
-	close(errCh)
-	for err = range errCh {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func isTimeout(errMsg string) bool {
 	return contains(errMsg, "i/o timeout") ||
 		contains(errMsg, "deadline exceeded") ||

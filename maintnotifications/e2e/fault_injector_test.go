@@ -525,17 +525,20 @@ func (c *FaultInjectorClient) request(ctx context.Context, method, path string, 
 
 // GetClusterNodes returns a list of cluster node IDs
 func GetClusterNodes() []string {
+	// TODO Implement
 	// This would typically be configured via environment or discovery
 	return []string{"node-1", "node-2", "node-3", "node-4", "node-5", "node-6"}
 }
 
 // GetMasterNodes returns a list of master node IDs
 func GetMasterNodes() []string {
+	// TODO Implement
 	return []string{"node-1", "node-2", "node-3"}
 }
 
 // GetSlaveNodes returns a list of slave node IDs
 func GetSlaveNodes() []string {
+	// TODO Implement
 	return []string{"node-4", "node-5", "node-6"}
 }
 
