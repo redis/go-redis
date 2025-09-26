@@ -10,49 +10,14 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 )
 
-// LogLevel represents the logging level
-type LogLevel int
+type LogLevelT = internal.LogLevelT
 
-// Log level constants for the entire go-redis library
 const (
-	LogLevelError LogLevel = iota // 0 - errors only
-	LogLevelWarn                  // 1 - warnings and errors
-	LogLevelInfo                  // 2 - info, warnings, and errors
-	LogLevelDebug                 // 3 - debug, info, warnings, and errors
+	LogLevelError = internal.LogLevelError
+	LogLevelWarn  = internal.LogLevelWarn
+	LogLevelInfo  = internal.LogLevelInfo
+	LogLevelDebug = internal.LogLevelDebug
 )
-
-// String returns the string representation of the log level
-func (l LogLevel) String() string {
-	switch l {
-	case LogLevelError:
-		return "ERROR"
-	case LogLevelWarn:
-		return "WARN"
-	case LogLevelInfo:
-		return "INFO"
-	case LogLevelDebug:
-		return "DEBUG"
-	default:
-		return "UNKNOWN"
-	}
-}
-
-// IsValid returns true if the log level is valid
-func (l LogLevel) IsValid() bool {
-	return l >= LogLevelError && l <= LogLevelDebug
-}
-
-func (l LogLevel) WarnOrAbove() bool {
-	return l >= LogLevelWarn
-}
-
-func (l LogLevel) InfoOrAbove() bool {
-	return l >= LogLevelInfo
-}
-
-func (l LogLevel) DebugOrAbove() bool {
-	return l >= LogLevelDebug
-}
 
 // VoidLogger is a logger that does nothing.
 // Used to disable logging and thus speed up the library.
@@ -77,6 +42,11 @@ func Disable() {
 // It will override any custom logger that was set before and set the DefaultLogger.
 func Enable() {
 	internal.Logger = internal.NewDefaultLogger()
+}
+
+// SetLogLevel sets the log level for the library.
+func SetLogLevel(logLevel LogLevelT) {
+	internal.LogLevel = logLevel
 }
 
 // NewBlacklistLogger returns a new logger that filters out messages containing any of the substrings.

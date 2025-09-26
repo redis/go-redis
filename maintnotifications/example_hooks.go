@@ -1,4 +1,4 @@
-package hitless
+package maintnotifications
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -14,7 +15,7 @@ import (
 type contextKey string
 
 const (
-	startTimeKey contextKey = "notif_hitless_start_time"
+	startTimeKey contextKey = "maint_notif_start_time"
 )
 
 // MetricsHook collects metrics about notification processing.
@@ -42,7 +43,7 @@ func (mh *MetricsHook) PreHook(ctx context.Context, notificationCtx push.Notific
 
 	// Log connection information if available
 	if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
-		internal.Logger.Printf(ctx, "hitless: metrics hook processing %s notification on conn[%d]", notificationType, conn.GetID())
+		internal.Logger.Printf(ctx, logs.MetricsHookProcessingNotification(notificationType, conn.GetID()))
 	}
 
 	// Store start time in context for duration calculation
@@ -66,7 +67,7 @@ func (mh *MetricsHook) PostHook(ctx context.Context, notificationCtx push.Notifi
 
 		// Log error details with connection information
 		if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
-			internal.Logger.Printf(ctx, "hitless: metrics hook recorded error for %s notification on conn[%d]: %v", notificationType, conn.GetID(), result)
+			internal.Logger.Printf(ctx, logs.MetricsHookRecordedError(notificationType, conn.GetID(), result))
 		}
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9/hitless"
+	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/logging"
 )
@@ -42,7 +42,7 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 		}
 
 		// Create processor with event-driven handoff support
-		processor := hitless.NewPoolHook(baseDialer, "tcp", nil, nil)
+		processor := maintnotifications.NewPoolHook(baseDialer, "tcp", nil, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Create a test pool with hooks
@@ -141,7 +141,7 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := hitless.NewPoolHook(baseDialer, "tcp", nil, nil)
+		processor := maintnotifications.NewPoolHook(baseDialer, "tcp", nil, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Create hooks manager and add processor as hook
@@ -213,7 +213,7 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			return nil, &net.OpError{Op: "dial", Err: &net.DNSError{Name: addr}}
 		}
 
-		processor := hitless.NewPoolHook(failingDialer, "tcp", nil, nil)
+		processor := maintnotifications.NewPoolHook(failingDialer, "tcp", nil, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Create hooks manager and add processor as hook
@@ -276,7 +276,7 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			return &mockNetConn{addr: addr}, nil
 		}
 
-		processor := hitless.NewPoolHook(slowDialer, "tcp", nil, nil)
+		processor := maintnotifications.NewPoolHook(slowDialer, "tcp", nil, nil)
 		defer processor.Shutdown(context.Background())
 
 		// Create hooks manager and add processor as hook
