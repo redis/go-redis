@@ -3,11 +3,13 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
 	logs2 "github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/maintnotifications"
@@ -272,6 +274,38 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			}
 			movingData := logs2.ExtractDataFromLogMessage(match)
 			p("MOVING notification received for %s. %v", endpointTest.name, movingData)
+
+			notification, ok := movingData["notification"].(string)
+			if !ok {
+				e("invalid notification message")
+			}
+
+			notification = notification[:len(notification)-1]
+			notificationParts := strings.Split(notification, " ")
+			address := notificationParts[len(notificationParts)-1]
+
+			switch endpointTest.endpointType {
+			case maintnotifications.EndpointTypeExternalFQDN:
+				address = strings.Split(address, ":")[0]
+				address = strings.SplitN(address, ".", 2)[1]
+
+				expectedAddress := strings.SplitN(endpointConfig.Host, ".", 2)[1]
+
+				if address != expectedAddress {
+					e("invalid fqdn, expected: %s, got: %s", expectedAddress, address)
+				}
+
+			case maintnotifications.EndpointTypeExternalIP:
+				address = strings.Split(address, ":")[0]
+				ip := net.ParseIP(address)
+				if ip == nil {
+					e("invalid message format, expected valid IP, got: %s", address)
+				}
+			case maintnotifications.EndpointTypeNone:
+				if address != internal.RedisNull {
+					e("invalid endpoint type, expected: %s, got: %s", internal.RedisNull, address)
+				}
+			}
 
 			// Wait for bind to complete
 			bindStatus, err := faultInjector.WaitForAction(ctx, bindResp.ActionID,
