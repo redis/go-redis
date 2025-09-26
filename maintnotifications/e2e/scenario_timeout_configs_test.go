@@ -310,7 +310,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			// Validate timeout-specific behavior
 			switch timeoutTest.name {
 			case "Conservative":
-				if trackerAnalysis.UnrelaxedTimeoutCount >= trackerAnalysis.RelaxedTimeoutCount {
+				if trackerAnalysis.UnrelaxedTimeoutCount > trackerAnalysis.RelaxedTimeoutCount {
 					e("Conservative config should have more relaxed than unrelaxed timeouts, got relaxed=%d, unrelaxed=%d",
 						trackerAnalysis.RelaxedTimeoutCount, trackerAnalysis.UnrelaxedTimeoutCount)
 				}

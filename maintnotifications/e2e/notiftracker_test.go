@@ -86,7 +86,7 @@ func (tnh *TrackingNotificationsHook) Clear() {
 func (tnh *TrackingNotificationsHook) PreHook(_ context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
 	tnh.increaseNotificationCount(notificationType)
 	tnh.storeDiagnosticsEvent(notificationType, notification, notificationCtx)
-	tnh.increaseRelaxedTimeoutCount(notificationType, notification, notificationCtx)
+	tnh.increaseRelaxedTimeoutCount(notificationType)
 	return notification, true
 }
 
@@ -209,7 +209,7 @@ func (tnh *TrackingNotificationsHook) increaseNotificationCount(notificationType
 	}
 }
 
-func (tnh *TrackingNotificationsHook) increaseRelaxedTimeoutCount(notificationType string, notification []interface{}, notificationCtx push.NotificationHandlerContext) {
+func (tnh *TrackingNotificationsHook) increaseRelaxedTimeoutCount(notificationType string) {
 	switch notificationType {
 	case "MIGRATING", "FAILING_OVER":
 		tnh.relaxedTimeoutCount.Add(1)

@@ -68,49 +68,42 @@ func (cr *CommandRunner) FireCommandsUntilStop(ctx context.Context) {
 			return
 		case <-ctx.Done():
 			return
-		default:
-			select {
-			case <-cr.stopCh:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				poolSize := cr.client.PoolStats().IdleConns
-				if poolSize == 0 {
-					poolSize = 1
-				}
-				wg := sync.WaitGroup{}
-				for i := 0; i < int(poolSize); i++ {
-					wg.Add(1)
-					go func(i int) {
-						defer wg.Done()
-						key := fmt.Sprintf("timeout-test-key-%d-%d", counter, i)
-						value := fmt.Sprintf("timeout-test-value-%d-%d", counter, i)
-
-						// Use a short timeout context for individual operations
-						opCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-						err := cr.client.Set(opCtx, key, value, time.Minute).Err()
-						cancel()
-
-						cr.operationCount.Add(1)
-						if err != nil {
-							fmt.Printf("Error: %v\n", err)
-							cr.errorCount.Add(1)
-
-							// Check if it's a timeout error
-							if isTimeoutError(err) {
-								cr.timeoutErrors.Add(1)
-							}
-
-							cr.errorsMutex.Lock()
-							cr.errors = append(cr.errors, err)
-							cr.errorsMutex.Unlock()
-						}
-					}(i)
-				}
-				wg.Wait()
-				counter++
+		case <-ticker.C:
+			poolSize := cr.client.PoolStats().IdleConns
+			if poolSize == 0 {
+				poolSize = 1
 			}
+			wg := sync.WaitGroup{}
+			for i := 0; i < int(poolSize); i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					key := fmt.Sprintf("timeout-test-key-%d-%d", counter, i)
+					value := fmt.Sprintf("timeout-test-value-%d-%d", counter, i)
+
+					// Use a short timeout context for individual operations
+					opCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+					err := cr.client.Set(opCtx, key, value, time.Minute).Err()
+					cancel()
+
+					cr.operationCount.Add(1)
+					if err != nil {
+						fmt.Printf("Error: %v\n", err)
+						cr.errorCount.Add(1)
+
+						// Check if it's a timeout error
+						if isTimeoutError(err) {
+							cr.timeoutErrors.Add(1)
+						}
+
+						cr.errorsMutex.Lock()
+						cr.errors = append(cr.errors, err)
+						cr.errorsMutex.Unlock()
+					}
+				}(i)
+			}
+			wg.Wait()
+			counter++
 		}
 	}
 }
