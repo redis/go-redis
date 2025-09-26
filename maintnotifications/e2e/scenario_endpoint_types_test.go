@@ -287,10 +287,20 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			switch endpointTest.endpointType {
 			case maintnotifications.EndpointTypeExternalFQDN:
 				address = strings.Split(address, ":")[0]
-				address = strings.SplitN(address, ".", 2)[1]
+				addressParts := strings.SplitN(address, ".", 2)
+				if len(addressParts) != 2 {
+					e("invalid address %s", address)
+				} else {
+					address = addressParts[1]
+				}
 
-				expectedAddress := strings.SplitN(endpointConfig.Host, ".", 2)[1]
-
+				var expectedAddress string
+				hostParts := strings.SplitN(endpointConfig.Host, ".", 2)
+				if len(hostParts) != 2 {
+					e("invalid host %s", endpointConfig.Host)
+				} else {
+					expectedAddress = hostParts[1]
+				}
 				if address != expectedAddress {
 					e("invalid fqdn, expected: %s, got: %s", expectedAddress, address)
 				}
