@@ -2,7 +2,13 @@
 
 package pool
 
-import "net"
+import (
+	"errors"
+	"net"
+)
+
+// errUnexpectedRead is placeholder error variable for non-unix build constraints
+var errUnexpectedRead = errors.New("unexpected read from socket")
 
 func connCheck(conn net.Conn) error {
 	return nil
