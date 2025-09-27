@@ -142,6 +142,10 @@ func (w *Writer) WriteArg(v interface{}) error {
 			return w.uint(0)
 		}
 		return w.uint(*v)
+	case uintptr:
+		return w.uint(uint64(v))
+	case *uintptr:
+		return w.uint(uint64(*v))
 	case float32:
 		return w.float(float64(v))
 	case *float32:
