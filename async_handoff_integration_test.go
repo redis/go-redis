@@ -53,8 +53,9 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
-			PoolSize:    int32(5),
-			PoolTimeout: time.Second,
+			PoolSize:           int32(5),
+			MaxConcurrentDials: 5,
+			PoolTimeout:        time.Second,
 		})
 
 		// Add the hook to the pool after creation
@@ -153,8 +154,9 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
 
-			PoolSize:    int32(10),
-			PoolTimeout: time.Second,
+			PoolSize:           int32(10),
+			MaxConcurrentDials: 10,
+			PoolTimeout:        time.Second,
 		})
 		defer testPool.Close()
 
@@ -225,8 +227,9 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
 
-			PoolSize:    int32(3),
-			PoolTimeout: time.Second,
+			PoolSize:           int32(3),
+			MaxConcurrentDials: 3,
+			PoolTimeout:        time.Second,
 		})
 		defer testPool.Close()
 
@@ -288,8 +291,9 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 				return &mockNetConn{addr: "original:6379"}, nil
 			},
 
-			PoolSize:    int32(2),
-			PoolTimeout: time.Second,
+			PoolSize:           int32(2),
+			MaxConcurrentDials: 2,
+			PoolTimeout:        time.Second,
 		})
 		defer testPool.Close()
 

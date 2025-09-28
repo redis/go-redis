@@ -70,12 +70,13 @@ func BenchmarkPoolGetPut(b *testing.B) {
 	for _, poolSize := range poolSizes {
 		b.Run(fmt.Sprintf("PoolSize_%d", poolSize), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
-				Dialer:          dummyDialer,
-				PoolSize:        int32(poolSize),
-				PoolTimeout:     time.Second,
-				DialTimeout:     time.Second,
-				ConnMaxIdleTime: time.Hour,
-				MinIdleConns:    int32(0), // Start with no idle connections
+				Dialer:             dummyDialer,
+				PoolSize:           int32(poolSize),
+				MaxConcurrentDials: poolSize,
+				PoolTimeout:        time.Second,
+				DialTimeout:        time.Second,
+				ConnMaxIdleTime:    time.Hour,
+				MinIdleConns:       int32(0), // Start with no idle connections
 			})
 			defer connPool.Close()
 
@@ -112,12 +113,13 @@ func BenchmarkPoolGetPutWithMinIdle(b *testing.B) {
 	for _, config := range configs {
 		b.Run(fmt.Sprintf("Pool_%d_MinIdle_%d", config.poolSize, config.minIdleConns), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
-				Dialer:          dummyDialer,
-				PoolSize:        int32(config.poolSize),
-				MinIdleConns:    int32(config.minIdleConns),
-				PoolTimeout:     time.Second,
-				DialTimeout:     time.Second,
-				ConnMaxIdleTime: time.Hour,
+				Dialer:             dummyDialer,
+				PoolSize:           int32(config.poolSize),
+				MaxConcurrentDials: config.poolSize,
+				MinIdleConns:       int32(config.minIdleConns),
+				PoolTimeout:        time.Second,
+				DialTimeout:        time.Second,
+				ConnMaxIdleTime:    time.Hour,
 			})
 			defer connPool.Close()
 
@@ -142,12 +144,13 @@ func BenchmarkPoolConcurrentGetPut(b *testing.B) {
 	ctx := context.Background()
 
 	connPool := pool.NewConnPool(&pool.Options{
-		Dialer:          dummyDialer,
-		PoolSize:        int32(32),
-		PoolTimeout:     time.Second,
-		DialTimeout:     time.Second,
-		ConnMaxIdleTime: time.Hour,
-		MinIdleConns:    int32(0),
+		Dialer:             dummyDialer,
+		PoolSize:           int32(32),
+		MaxConcurrentDials: 32,
+		PoolTimeout:        time.Second,
+		DialTimeout:        time.Second,
+		ConnMaxIdleTime:    time.Hour,
+		MinIdleConns:       int32(0),
 	})
 	defer connPool.Close()
 
