@@ -415,6 +415,10 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
 //   - use "skip_verify=true" to ignore TLS certificate validation
+//   - for rediss:// URLs, additional TLS parameters are supported:
+//   - tls_cert_file and tls_key_file: paths to client certificate and key files
+//   - tls_min_version and tls_max_version: TLS version constraints (minimum TLS 1.2: 771, TLS 1.3: 772)
+//   - tls_server_name: override server name for certificate validation
 //
 // Examples:
 //
@@ -631,6 +635,64 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 		o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	} else {
 		o.ConnMaxLifetime = q.duration("max_conn_age")
+	}
+
+	if u.Scheme == "rediss" {
+		tlsCertFile := q.string("tls_cert_file")
+		tlsKeyFile := q.string("tls_key_file")
+
+		if (tlsCertFile == "") != (tlsKeyFile == "") {
+			return nil, fmt.Errorf("redis: tls_cert_file and tls_key_file URL parameters must be both set or both omitted")
+		}
+
+		if tlsCertFile != "" {
+			cert, certLoadErr := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile)
+			if certLoadErr != nil {
+				return nil, fmt.Errorf("redis: error loading TLS certificate: %w", certLoadErr)
+			}
+
+			o.TLSConfig.Certificates = []tls.Certificate{cert}
+		}
+
+		if q.has("tls_min_version") {
+			minVer := q.int("tls_min_version")
+			if minVer < 0 || minVer > 65535 {
+				return nil, fmt.Errorf("redis: invalid tls_min_version: %d (must be between 0 and 65535)", minVer)
+			}
+			// Always set MinVersion to at least TLS 1.2
+			if minVer == 0 {
+				o.TLSConfig.MinVersion = tls.VersionTLS12
+			} else if minVer < int(tls.VersionTLS12) {
+				return nil, fmt.Errorf("redis: tls_min_version %d is insecure (minimum allowed is TLS 1.2: %d)", minVer, tls.VersionTLS12)
+			} else {
+				o.TLSConfig.MinVersion = uint16(minVer)
+			}
+		} else {
+			// If not set, default to TLS 1.2
+			o.TLSConfig.MinVersion = tls.VersionTLS12
+		}
+		if q.has("tls_max_version") {
+			maxVer := q.int("tls_max_version")
+			if maxVer < 0 || maxVer > 65535 {
+				return nil, fmt.Errorf("redis: invalid tls_max_version: %d (must be between 0 and 65535)", maxVer)
+			}
+			// Handle TLS max version setting securely
+			if maxVer == 0 {
+				// Don't set MaxVersion, let Go use its secure default
+			} else if maxVer < int(tls.VersionTLS12) {
+				return nil, fmt.Errorf("redis: tls_max_version %d is insecure (minimum allowed is TLS 1.2: %d)", maxVer, tls.VersionTLS12)
+			} else {
+				o.TLSConfig.MaxVersion = uint16(maxVer)
+			}
+		}
+
+		tlsServerName := q.string("tls_server_name")
+		if tlsServerName != "" {
+			// we explicitly check for this query parameter, so we don't overwrite
+			// the default server name (the hostname of the Redis server) if it's
+			// not given
+			o.TLSConfig.ServerName = tlsServerName
+		}
 	}
 	if q.err != nil {
 		return nil, q.err
