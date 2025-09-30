@@ -77,7 +77,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 	}()
 
 	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("standalone")
+	factory, err := CreateTestClientFactory("m-standalone")
 	if err != nil {
 		t.Skipf("Enterprise cluster not available, skipping timeout configs test: %v", err)
 	}

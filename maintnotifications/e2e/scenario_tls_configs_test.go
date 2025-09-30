@@ -74,7 +74,7 @@ func TestTLSConfigurationsPushNotifications(t *testing.T) {
 	}()
 
 	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("standalone")
+	factory, err := CreateTestClientFactory("m-standalone")
 	if err != nil {
 		t.Skipf("Enterprise cluster not available, skipping TLS configs test: %v", err)
 	}
