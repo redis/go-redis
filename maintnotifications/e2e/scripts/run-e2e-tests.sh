@@ -3,7 +3,7 @@
 # Maintenance Notifications E2E Tests Runner
 # This script sets up the environment and runs the maintnotifications upgrade E2E tests
 
-set -euo pipefail
+set -eu
 
 # Script directory and repository root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

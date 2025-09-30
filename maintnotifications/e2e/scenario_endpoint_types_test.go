@@ -357,6 +357,14 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				e("Expected MOVING notifications with %s endpoint type, got none", endpointTest.name)
 			}
 
+			logAnalysis := logCollector.GetAnalysis()
+			if logAnalysis.TotalHandoffCount == 0 {
+				e("Expected at least one handoff with %s endpoint type, got none", endpointTest.name)
+			}
+			if logAnalysis.TotalHandoffCount != logAnalysis.SucceededHandoffCount {
+				e("Expected all handoffs to succeed with %s endpoint type, got %d failed", endpointTest.name, logAnalysis.FailedHandoffCount)
+			}
+
 			if errorsDetected {
 				logCollector.DumpLogs()
 				trackerAnalysis.Print(t)
