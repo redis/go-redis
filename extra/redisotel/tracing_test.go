@@ -95,6 +95,138 @@ func TestWithoutCaller(t *testing.T) {
 	}
 }
 
+func TestWithCommandFilter(t *testing.T) {
+
+	t.Run("filter out ping command", func(t *testing.T) {
+		provider := sdktrace.NewTracerProvider()
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithCommandFilter(func(cmd redis.Cmder) bool {
+				return cmd.Name() == "ping"
+			}),
+		)
+		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+		cmd := redis.NewCmd(ctx, "ping")
+		defer span.End()
+
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			innerSpan := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan)
+			if innerSpan.Name() != "redis-test" || innerSpan.Name() == "ping" {
+				t.Fatalf("ping command should not be traced")
+			}
+
+			return nil
+		})
+		err := processHook(ctx, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("do not filter ping command", func(t *testing.T) {
+		provider := sdktrace.NewTracerProvider()
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithCommandFilter(func(cmd redis.Cmder) bool {
+				return false // never filter
+			}),
+		)
+		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+		cmd := redis.NewCmd(ctx, "ping")
+		defer span.End()
+
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			innerSpan := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan)
+			if innerSpan.Name() != "ping" {
+				t.Fatalf("ping command should be traced")
+			}
+
+			return nil
+		})
+		err := processHook(ctx, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("auth command filtered with basic command filter", func(t *testing.T) {
+		provider := sdktrace.NewTracerProvider()
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithCommandFilter(BasicCommandFilter),
+		)
+		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+		cmd := redis.NewCmd(ctx, "auth", "test-password")
+		defer span.End()
+
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			innerSpan := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan)
+			if innerSpan.Name() != "redis-test" || innerSpan.Name() == "auth" {
+				t.Fatalf("auth command should not be traced by default")
+			}
+
+			return nil
+		})
+		err := processHook(ctx, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("hello command filtered with basic command filter when sensitive", func(t *testing.T) {
+		provider := sdktrace.NewTracerProvider()
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithCommandFilter(BasicCommandFilter),
+		)
+		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+		cmd := redis.NewCmd(ctx, "hello", 3, "AUTH", "test-user", "test-password")
+		defer span.End()
+
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			innerSpan := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan)
+			if innerSpan.Name() != "redis-test" || innerSpan.Name() == "hello" {
+				t.Fatalf("auth command should not be traced by default")
+			}
+
+			return nil
+		})
+		err := processHook(ctx, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("hello command not filtered with basic command filter when not sensitive", func(t *testing.T) {
+		provider := sdktrace.NewTracerProvider()
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithCommandFilter(BasicCommandFilter),
+		)
+		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+		cmd := redis.NewCmd(ctx, "hello", 3)
+		defer span.End()
+
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			innerSpan := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan)
+			if innerSpan.Name() != "hello" {
+				t.Fatalf("hello command should be traced")
+			}
+
+			return nil
+		})
+		err := processHook(ctx, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestTracingHook_DialHook(t *testing.T) {
 	imsb := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
