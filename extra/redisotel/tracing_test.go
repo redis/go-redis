@@ -151,11 +151,12 @@ func TestWithCommandFilter(t *testing.T) {
 		}
 	})
 
-	t.Run("auth command filtered by default", func(t *testing.T) {
+	t.Run("auth command filtered with basic command filter", func(t *testing.T) {
 		provider := sdktrace.NewTracerProvider()
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
+			WithCommandFilter(BasicCommandFilter),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		cmd := redis.NewCmd(ctx, "auth", "test-password")
@@ -175,11 +176,12 @@ func TestWithCommandFilter(t *testing.T) {
 		}
 	})
 
-	t.Run("hello command filtered by default when sensitive", func(t *testing.T) {
+	t.Run("hello command filtered with basic command filter when sensitive", func(t *testing.T) {
 		provider := sdktrace.NewTracerProvider()
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
+			WithCommandFilter(BasicCommandFilter),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		cmd := redis.NewCmd(ctx, "hello", 3, "AUTH", "test-user", "test-password")
@@ -199,11 +201,12 @@ func TestWithCommandFilter(t *testing.T) {
 		}
 	})
 
-	t.Run("hello command not filtered by default when not sensitive", func(t *testing.T) {
+	t.Run("hello command not filtered with basic command filter when not sensitive", func(t *testing.T) {
 		provider := sdktrace.NewTracerProvider()
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
+			WithCommandFilter(BasicCommandFilter),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		cmd := redis.NewCmd(ctx, "hello", 3)

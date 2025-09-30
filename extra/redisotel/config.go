@@ -65,7 +65,6 @@ func newConfig(opts ...baseOption) *config {
 		mp:            otel.GetMeterProvider(),
 		dbStmtEnabled: true,
 		callerEnabled: true,
-		filter:        defaultCommandFilter,
 	}
 
 	for _, opt := range opts {
@@ -137,7 +136,7 @@ func WithCommandFilter(filter func(cmd redis.Cmder) bool) TracingOption {
 	})
 }
 
-func defaultCommandFilter(cmd redis.Cmder) bool {
+func BasicCommandFilter(cmd redis.Cmder) bool {
 	if strings.ToLower(cmd.Name()) == "auth" {
 		return true
 	}
