@@ -30,7 +30,7 @@ type DatabaseEndpoint struct {
 
 // DatabaseConfig represents the configuration for a single database
 type DatabaseConfig struct {
-	BdbID                int                `json:"bdb_id,omitempty"`
+	BdbID                interface{}        `json:"bdb_id,omitempty"`
 	Username             string             `json:"username,omitempty"`
 	Password             string             `json:"password,omitempty"`
 	TLS                  bool               `json:"tls"`
@@ -157,13 +157,23 @@ func GetDatabaseConfig(databasesConfig DatabasesConfig, databaseName string) (*R
 		return nil, fmt.Errorf("no endpoints found in database configuration")
 	}
 
+	var bdbId int
+	switch (dbConfig.BdbID).(type) {
+	case int:
+		bdbId = dbConfig.BdbID.(int)
+	case float64:
+		bdbId = int(dbConfig.BdbID.(float64))
+	case string:
+		bdbId, _ = strconv.Atoi(dbConfig.BdbID.(string))
+	}
+
 	return &RedisConnectionConfig{
 		Host:                 host,
 		Port:                 port,
 		Username:             dbConfig.Username,
 		Password:             dbConfig.Password,
 		TLS:                  dbConfig.TLS,
-		BdbID:                dbConfig.BdbID,
+		BdbID:                bdbId,
 		CertificatesLocation: dbConfig.CertificatesLocation,
 		Endpoints:            dbConfig.Endpoints,
 	}, nil

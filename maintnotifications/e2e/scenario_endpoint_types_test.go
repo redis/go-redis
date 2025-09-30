@@ -61,7 +61,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 	}()
 
 	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("m-standalone")
+	factory, err := CreateTestClientFactory("m-standard")
 	if err != nil {
 		t.Skipf("Enterprise cluster not available, skipping endpoint types test: %v", err)
 	}
