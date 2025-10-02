@@ -59,7 +59,7 @@ func TestPushNotifications(t *testing.T) {
 	}()
 
 	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("m-standard")
+	factory, err := CreateTestClientFactory("standalone")
 	if err != nil {
 		t.Skipf("Enterprise cluster not available, skipping push notification tests: %v", err)
 	}
