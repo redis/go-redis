@@ -14,7 +14,7 @@ import (
 )
 
 // TestStressPushNotifications tests push notifications under extreme stress conditions
-func _TestStressPushNotifications(t *testing.T) {
+func TestStressPushNotifications(t *testing.T) {
 	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}

@@ -14,7 +14,7 @@ import (
 )
 
 // TestPushNotifications tests Redis Enterprise push notifications (MOVING, MIGRATING, MIGRATED)
-func _TestPushNotifications(t *testing.T) {
+func TestPushNotifications(t *testing.T) {
 	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}

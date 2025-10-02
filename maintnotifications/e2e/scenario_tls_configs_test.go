@@ -15,7 +15,7 @@ import (
 
 // TODO ADD TLS CONFIGS
 // TestTLSConfigurationsPushNotifications tests push notifications with different TLS configurations
-func _TestTLSConfigurationsPushNotifications(t *testing.T) {
+func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}

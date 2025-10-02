@@ -44,16 +44,16 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			endpointType: maintnotifications.EndpointTypeExternalIP,
 			description:  "External IP endpoint type for enterprise clusters",
 		},
-		// {
-		// 	name:         "ExternalFQDN",
-		// 	endpointType: maintnotifications.EndpointTypeExternalFQDN,
-		// 	description:  "External FQDN endpoint type for DNS-based routing",
-		// },
-		// {
-		// 	name:         "None",
-		// 	endpointType: maintnotifications.EndpointTypeNone,
-		// 	description:  "No endpoint type - reconnect with current config",
-		// },
+		{
+			name:         "ExternalFQDN",
+			endpointType: maintnotifications.EndpointTypeExternalFQDN,
+			description:  "External FQDN endpoint type for DNS-based routing",
+		},
+		{
+			name:         "None",
+			endpointType: maintnotifications.EndpointTypeNone,
+			description:  "No endpoint type - reconnect with current config",
+		},
 	}
 
 	defer func() {
