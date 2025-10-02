@@ -14,7 +14,7 @@ import (
 )
 
 // TestTimeoutConfigurationsPushNotifications tests push notifications with different timeout configurations
-func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
+func _TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}

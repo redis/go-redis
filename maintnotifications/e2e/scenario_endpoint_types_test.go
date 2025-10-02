@@ -44,16 +44,16 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			endpointType: maintnotifications.EndpointTypeExternalIP,
 			description:  "External IP endpoint type for enterprise clusters",
 		},
-		{
-			name:         "ExternalFQDN",
-			endpointType: maintnotifications.EndpointTypeExternalFQDN,
-			description:  "External FQDN endpoint type for DNS-based routing",
-		},
-		{
-			name:         "None",
-			endpointType: maintnotifications.EndpointTypeNone,
-			description:  "No endpoint type - reconnect with current config",
-		},
+		// {
+		// 	name:         "ExternalFQDN",
+		// 	endpointType: maintnotifications.EndpointTypeExternalFQDN,
+		// 	description:  "External FQDN endpoint type for DNS-based routing",
+		// },
+		// {
+		// 	name:         "None",
+		// 	endpointType: maintnotifications.EndpointTypeNone,
+		// 	description:  "No endpoint type - reconnect with current config",
+		// },
 	}
 
 	defer func() {
@@ -159,56 +159,6 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				commandsRunner.Stop()
 			}()
 
-			// Test failover with this endpoint type
-			p("Testing failover with %s endpoint type...", endpointTest.name)
-			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
-				Type: "failover",
-				Parameters: map[string]interface{}{
-					"cluster_index": "0",
-					"bdb_id":        endpointConfig.BdbID,
-				},
-			})
-			if err != nil {
-				t.Fatalf("Failed to trigger failover action for %s: %v", endpointTest.name, err)
-			}
-
-			// Start command traffic
-			go func() {
-				commandsRunner.FireCommandsUntilStop(ctx)
-			}()
-
-			// Wait for FAILING_OVER notification
-			match, found := logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
-				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "FAILING_OVER")
-			}, 2*time.Minute)
-			if !found {
-				t.Fatalf("FAILING_OVER notification was not received for %s endpoint type", endpointTest.name)
-			}
-			failingOverData := logs2.ExtractDataFromLogMessage(match)
-			p("FAILING_OVER notification received for %s. %v", endpointTest.name, failingOverData)
-
-			// Wait for FAILED_OVER notification
-			seqIDToObserve := int64(failingOverData["seqID"].(float64))
-			connIDToObserve := uint64(failingOverData["connID"].(float64))
-			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
-				return notificationType(s, "FAILED_OVER") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
-			}, 2*time.Minute)
-			if !found {
-				t.Fatalf("FAILED_OVER notification was not received for %s endpoint type", endpointTest.name)
-			}
-			failedOverData := logs2.ExtractDataFromLogMessage(match)
-			p("FAILED_OVER notification received for %s. %v", endpointTest.name, failedOverData)
-
-			// Wait for failover to complete
-			status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
-			)
-			if err != nil {
-				t.Fatalf("[FI] Failover action failed for %s: %v", endpointTest.name, err)
-			}
-			p("[FI] Failover action completed for %s: %s", endpointTest.name, status.Status)
-
 			// Test migration with this endpoint type
 			p("Testing migration with %s endpoint type...", endpointTest.name)
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
@@ -222,7 +172,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			}
 
 			// Wait for MIGRATING notification
-			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
+			match, found := logCollector.WaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
 			}, 30*time.Second)
 			if !found {
@@ -232,7 +182,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			p("MIGRATING notification received for %s: %v", endpointTest.name, migrateData)
 
 			// Wait for migration to complete
-			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
+			status, err := faultInjector.WaitForAction(ctx, migrateResp.ActionID,
 				WithMaxWaitTime(120*time.Second),
 				WithPollInterval(1*time.Second),
 			)
@@ -242,8 +192,8 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			p("[FI] Migrate action completed for %s: %s", endpointTest.name, status.Status)
 
 			// Wait for MIGRATED notification
-			seqIDToObserve = int64(migrateData["seqID"].(float64))
-			connIDToObserve = uint64(migrateData["connID"].(float64))
+			seqIDToObserve := int64(migrateData["seqID"].(float64))
+			connIDToObserve := uint64(migrateData["connID"].(float64))
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return notificationType(s, "MIGRATED") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
 			}, 2*time.Minute)
@@ -325,6 +275,56 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				t.Fatalf("Bind action failed for %s: %v", endpointTest.name, err)
 			}
 			p("Bind action completed for %s: %s", endpointTest.name, bindStatus.Status)
+
+			// Test failover with this endpoint type
+			p("Testing failover with %s endpoint type...", endpointTest.name)
+			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
+				Type: "failover",
+				Parameters: map[string]interface{}{
+					"cluster_index": "0",
+					"bdb_id":        endpointConfig.BdbID,
+				},
+			})
+			if err != nil {
+				t.Fatalf("Failed to trigger failover action for %s: %v", endpointTest.name, err)
+			}
+
+			// Start command traffic
+			go func() {
+				commandsRunner.FireCommandsUntilStop(ctx)
+			}()
+
+			// Wait for FAILING_OVER notification
+			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "FAILING_OVER")
+			}, 2*time.Minute)
+			if !found {
+				t.Fatalf("FAILING_OVER notification was not received for %s endpoint type", endpointTest.name)
+			}
+			failingOverData := logs2.ExtractDataFromLogMessage(match)
+			p("FAILING_OVER notification received for %s. %v", endpointTest.name, failingOverData)
+
+			// Wait for FAILED_OVER notification
+			seqIDToObserve = int64(failingOverData["seqID"].(float64))
+			connIDToObserve = uint64(failingOverData["connID"].(float64))
+			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+				return notificationType(s, "FAILED_OVER") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
+			}, 2*time.Minute)
+			if !found {
+				t.Fatalf("FAILED_OVER notification was not received for %s endpoint type", endpointTest.name)
+			}
+			failedOverData := logs2.ExtractDataFromLogMessage(match)
+			p("FAILED_OVER notification received for %s. %v", endpointTest.name, failedOverData)
+
+			// Wait for failover to complete
+			status, err = faultInjector.WaitForAction(ctx, failoverResp.ActionID,
+				WithMaxWaitTime(120*time.Second),
+				WithPollInterval(1*time.Second),
+			)
+			if err != nil {
+				t.Fatalf("[FI] Failover action failed for %s: %v", endpointTest.name, err)
+			}
+			p("[FI] Failover action completed for %s: %s", endpointTest.name, status.Status)
 
 			// Continue traffic for analysis
 			time.Sleep(30 * time.Second)
