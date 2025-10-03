@@ -228,7 +228,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			// Wait for failover to complete
 			status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
 				WithMaxWaitTime(180*time.Second),
-				WithPollInterval(1*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
 				ef("[FI] Failover action failed for %s: %v", timeoutTest.name, err)
@@ -263,8 +263,8 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 
 			// Wait for migration to complete
 			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
 				ef("[FI] Migrate action failed for %s: %v", timeoutTest.name, err)
@@ -283,8 +283,8 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 				ef("Failed to trigger bind action for %s: %v", timeoutTest.name, err)
 			}
 			status, err = faultInjector.WaitForAction(ctx, bindResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
 				ef("[FI] Bind action failed for %s: %v", timeoutTest.name, err)

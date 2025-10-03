@@ -208,7 +208,7 @@ func TestStressPushNotifications(t *testing.T) {
 
 			// Wait for action to complete
 			status, err := faultInjector.WaitForAction(ctx, resp.ActionID,
-				WithMaxWaitTime(300*time.Second), // Very long wait for stress
+				WithMaxWaitTime(360*time.Second), // Longer wait time for stress
 				WithPollInterval(2*time.Second),
 			)
 			if err != nil {

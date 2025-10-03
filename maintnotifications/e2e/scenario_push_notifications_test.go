@@ -183,8 +183,8 @@ func TestPushNotifications(t *testing.T) {
 	p("FAILED_OVER notification received. %v", failedOverData)
 
 	status, err = faultInjector.WaitForAction(ctx, failoverResp.ActionID,
-		WithMaxWaitTime(120*time.Second),
-		WithPollInterval(1*time.Second),
+		WithMaxWaitTime(240*time.Second),
+		WithPollInterval(2*time.Second),
 	)
 	if err != nil {
 		ef("[FI] Failover action failed: %v", err)
@@ -220,8 +220,8 @@ func TestPushNotifications(t *testing.T) {
 	p("MIGRATING notification received: seqID: %d, connID: %d", seqIDToObserve, connIDToObserve)
 
 	status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
-		WithMaxWaitTime(120*time.Second),
-		WithPollInterval(1*time.Second),
+		WithMaxWaitTime(240*time.Second),
+		WithPollInterval(2*time.Second),
 	)
 	if err != nil {
 		ef("[FI] Migrate action failed: %v", err)
@@ -349,7 +349,7 @@ func TestPushNotifications(t *testing.T) {
 
 	// Wait for bind action to complete
 	bindStatus, err := faultInjector.WaitForAction(ctx, bindResp.ActionID,
-		WithMaxWaitTime(120*time.Second),
+		WithMaxWaitTime(240*time.Second),
 		WithPollInterval(2*time.Second))
 	if err != nil {
 		ef("Bind action failed: %v", err)

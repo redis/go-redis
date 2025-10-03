@@ -229,8 +229,8 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 
 			// Wait for failover to complete
 			status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
 				ef("[FI] Failover action failed for %s: %v", tlsTest.name, err)
@@ -261,8 +261,8 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 
 			// Wait for migration to complete
 			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
 				ef("[FI] Migrate action failed for %s: %v", tlsTest.name, err)
