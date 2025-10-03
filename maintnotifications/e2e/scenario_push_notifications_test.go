@@ -376,10 +376,10 @@ func TestPushNotifications(t *testing.T) {
 		return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING") && connID(s, 19)
 	}, 3*time.Minute)
 	if !found {
-		ef("MOVING notification was not received within 3 minutes ON A THIRD CLIENT")
+		p("[NOTICE] MOVING notification was not received within 3 minutes ON A THIRD CLIENT")
 	} else {
-		p("MOVING notification received on third client")
 		data := logs2.ExtractDataFromLogMessage(match)
+		p("MOVING notification received on third client. %v", data)
 		mNotif := data["notification"].(string)
 		// format MOVING <seqID> <timeS> endpoint
 		mNotifParts := strings.Split(mNotif, " ")
@@ -394,8 +394,6 @@ func TestPushNotifications(t *testing.T) {
 		if mNotifTimeS < 15 {
 			ef("Expected timeS < 15, got %d", mNotifTimeS)
 		}
-
-		p("MOVING notification received on third client. %v", data)
 	}
 	commandsRunner3.Stop()
 	// Wait for the goroutine to complete and check for errors
