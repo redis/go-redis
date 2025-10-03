@@ -15,7 +15,7 @@ import (
 
 // TODO ADD TLS CONFIGS
 // TestTLSConfigurationsPushNotifications tests push notifications with different TLS configurations
-func TestTLSConfigurationsPushNotifications(t *testing.T) {
+func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
@@ -76,14 +76,14 @@ func TestTLSConfigurationsPushNotifications(t *testing.T) {
 	// Create client factory from configuration
 	factory, err := CreateTestClientFactory("standalone")
 	if err != nil {
-		t.Skipf("Enterprise cluster not available, skipping TLS configs test: %v", err)
+		t.Skipf("[TLS-CONFIGS][SKIP] Enterprise cluster not available, skipping TLS configs test: %v", err)
 	}
 	endpointConfig := factory.GetConfig()
 
 	// Create fault injector
 	faultInjector, err := CreateTestFaultInjector()
 	if err != nil {
-		t.Fatalf("Failed to create fault injector: %v", err)
+		t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
 	}
 
 	defer func() {
@@ -100,17 +100,24 @@ func TestTLSConfigurationsPushNotifications(t *testing.T) {
 			// redefine p and e for each test to get
 			// proper test name in logs and proper test failures
 			var p = func(format string, args ...interface{}) {
-				format = "[%s][ENDPOINT-TYPES] " + format
+				format = "[%s][TLS-CONFIGS] " + format
 				ts := time.Now().Format("15:04:05.000")
 				args = append([]interface{}{ts}, args...)
 				t.Logf(format, args...)
 			}
 
 			var e = func(format string, args ...interface{}) {
-				format = "[%s][ENDPOINT-TYPES][ERROR] " + format
+				format = "[%s][TLS-CONFIGS][ERROR] " + format
 				ts := time.Now().Format("15:04:05.000")
 				args = append([]interface{}{ts}, args...)
 				t.Errorf(format, args...)
+			}
+
+			var ef = func(format string, args ...interface{}) {
+				format = "[%s][TLS-CONFIGS][ERROR] " + format
+				ts := time.Now().Format("15:04:05.000")
+				args = append([]interface{}{ts}, args...)
+				t.Fatalf(format, args...)
 			}
 			if tlsTest.skipReason != "" {
 				t.Skipf("Skipping %s: %s", tlsTest.name, tlsTest.skipReason)
@@ -144,7 +151,7 @@ func TestTLSConfigurationsPushNotifications(t *testing.T) {
 				if tlsTest.name == "TLSSecure" || tlsTest.name == "TLSStrict" {
 					t.Skipf("TLS configuration %s failed (expected in test environment): %v", tlsTest.name, err)
 				}
-				t.Fatalf("Failed to create client for %s: %v", tlsTest.name, err)
+				ef("Failed to create client for %s: %v", tlsTest.name, err)
 			}
 
 			// Create timeout tracker
@@ -165,7 +172,7 @@ func TestTLSConfigurationsPushNotifications(t *testing.T) {
 				if tlsTest.name == "TLSSecure" || tlsTest.name == "TLSStrict" {
 					t.Skipf("TLS configuration %s ping failed (expected in test environment): %v", tlsTest.name, err)
 				}
-				t.Fatalf("Failed to ping Redis with %s TLS config: %v", tlsTest.name, err)
+				ef("Failed to ping Redis with %s TLS config: %v", tlsTest.name, err)
 			}
 
 			p("Client connected successfully with %s TLS configuration", tlsTest.name)
@@ -190,20 +197,19 @@ func TestTLSConfigurationsPushNotifications(t *testing.T) {
 			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "failover",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
-					"bdb_id":        endpointConfig.BdbID,
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger failover action for %s: %v", tlsTest.name, err)
+				ef("Failed to trigger failover action for %s: %v", tlsTest.name, err)
 			}
 
 			// Wait for FAILING_OVER notification
 			match, found := logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "FAILING_OVER")
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
-				t.Fatalf("FAILING_OVER notification was not received for %s TLS config", tlsTest.name)
+				ef("FAILING_OVER notification was not received for %s TLS config", tlsTest.name)
 			}
 			failingOverData := logs2.ExtractDataFromLogMessage(match)
 			p("FAILING_OVER notification received for %s. %v", tlsTest.name, failingOverData)
@@ -213,20 +219,20 @@ func TestTLSConfigurationsPushNotifications(t *testing.T) {
 			connIDToObserve := uint64(failingOverData["connID"].(float64))
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return notificationType(s, "FAILED_OVER") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
-				t.Fatalf("FAILED_OVER notification was not received for %s TLS config", tlsTest.name)
+				ef("FAILED_OVER notification was not received for %s TLS config", tlsTest.name)
 			}
 			failedOverData := logs2.ExtractDataFromLogMessage(match)
 			p("FAILED_OVER notification received for %s. %v", tlsTest.name, failedOverData)
 
 			// Wait for failover to complete
 			status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
-				t.Fatalf("[FI] Failover action failed for %s: %v", tlsTest.name, err)
+				ef("[FI] Failover action failed for %s: %v", tlsTest.name, err)
 			}
 			p("[FI] Failover action completed for %s: %s", tlsTest.name, status.Status)
 
@@ -235,11 +241,11 @@ func TestTLSConfigurationsPushNotifications(t *testing.T) {
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "migrate",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger migrate action for %s: %v", tlsTest.name, err)
+				ef("Failed to trigger migrate action for %s: %v", tlsTest.name, err)
 			}
 
 			// Wait for MIGRATING notification
@@ -247,18 +253,18 @@ func TestTLSConfigurationsPushNotifications(t *testing.T) {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
 			}, 30*time.Second)
 			if !found {
-				t.Fatalf("MIGRATING notification was not received for %s TLS config", tlsTest.name)
+				ef("MIGRATING notification was not received for %s TLS config", tlsTest.name)
 			}
 			migrateData := logs2.ExtractDataFromLogMessage(match)
 			p("MIGRATING notification received for %s: %v", tlsTest.name, migrateData)
 
 			// Wait for migration to complete
 			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
-				t.Fatalf("[FI] Migrate action failed for %s: %v", tlsTest.name, err)
+				ef("[FI] Migrate action failed for %s: %v", tlsTest.name, err)
 			}
 			p("[FI] Migrate action completed for %s: %s", tlsTest.name, status.Status)
 

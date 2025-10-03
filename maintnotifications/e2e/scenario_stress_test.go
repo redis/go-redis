@@ -16,7 +16,7 @@ import (
 // TestStressPushNotifications tests push notifications under extreme stress conditions
 func TestStressPushNotifications(t *testing.T) {
 	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
-		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
+		t.Skip("[STRESS][SKIP] Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -30,11 +30,20 @@ func TestStressPushNotifications(t *testing.T) {
 		t.Logf(format, args...)
 	}
 
+	var errorsDetected = false
 	var e = func(format string, args ...interface{}) {
+		errorsDetected = true
 		format = "[%s][STRESS][ERROR] " + format
 		ts := time.Now().Format("15:04:05.000")
 		args = append([]interface{}{ts}, args...)
 		t.Errorf(format, args...)
+	}
+	var ef = func(format string, args ...interface{}) {
+		errorsDetected = true
+		format = "[%s][STRESS][ERROR] " + format
+		ts := time.Now().Format("15:04:05.000")
+		args = append([]interface{}{ts}, args...)
+		t.Fatalf(format, args...)
 	}
 
 	logCollector.ClearLogs()
@@ -51,14 +60,14 @@ func TestStressPushNotifications(t *testing.T) {
 	// Create client factory from configuration
 	factory, err := CreateTestClientFactory("standalone")
 	if err != nil {
-		t.Skipf("Enterprise cluster not available, skipping stress test: %v", err)
+		t.Skipf("[STRESS][SKIP] Enterprise cluster not available, skipping stress test: %v", err)
 	}
 	endpointConfig := factory.GetConfig()
 
 	// Create fault injector
 	faultInjector, err := CreateTestFaultInjector()
 	if err != nil {
-		t.Fatalf("Failed to create fault injector: %v", err)
+		ef("Failed to create fault injector: %v", err)
 	}
 
 	// Extreme stress configuration
@@ -90,7 +99,7 @@ func TestStressPushNotifications(t *testing.T) {
 			ClientName: fmt.Sprintf("stress-test-client-%d", i),
 		})
 		if err != nil {
-			t.Fatalf("Failed to create stress client %d: %v", i, err)
+			ef("Failed to create stress client %d: %v", i, err)
 		}
 		clients = append(clients, client)
 
@@ -124,7 +133,7 @@ func TestStressPushNotifications(t *testing.T) {
 	for i, client := range clients {
 		err = client.Ping(ctx).Err()
 		if err != nil {
-			t.Fatalf("Failed to ping Redis with stress client %d: %v", i, err)
+			ef("Failed to ping Redis with stress client %d: %v", i, err)
 		}
 	}
 
@@ -179,15 +188,14 @@ func TestStressPushNotifications(t *testing.T) {
 				resp, err = faultInjector.TriggerAction(ctx, ActionRequest{
 					Type: "failover",
 					Parameters: map[string]interface{}{
-						"cluster_index": "0",
-						"bdb_id":        endpointConfig.BdbID,
+						"bdb_id": endpointConfig.BdbID,
 					},
 				})
 			case "migrate":
 				resp, err = faultInjector.TriggerAction(ctx, ActionRequest{
 					Type: "migrate",
 					Parameters: map[string]interface{}{
-						"cluster_index": "0",
+						"bdb_id":        endpointConfig.BdbID,
 					},
 				})
 			}
@@ -199,7 +207,7 @@ func TestStressPushNotifications(t *testing.T) {
 
 			// Wait for action to complete
 			status, err := faultInjector.WaitForAction(ctx, resp.ActionID,
-				WithMaxWaitTime(300*time.Second), // Very long wait for stress
+				WithMaxWaitTime(360*time.Second), // Longer wait time for stress
 				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
@@ -287,14 +295,18 @@ func TestStressPushNotifications(t *testing.T) {
 		e("Too many notification processing errors under stress: %d/%d", totalProcessingErrors, totalTrackerNotifications)
 	}
 
-	p("Stress test completed successfully!")
+	if errorsDetected {
+		ef("Errors detected under stress")
+	}
+
+	dump = false
+	p("[SUCCESS] Stress test completed successfully!")
 	p("Processed %d operations across %d clients with %d connections",
 		totalOperations, numClients, allLogsAnalysis.ConnectionCount)
 	p("Error rate: %.2f%%, Notification processing errors: %d/%d",
 		errorRate, totalProcessingErrors, totalTrackerNotifications)
 
 	// Print final analysis
-	dump = false
 	allLogsAnalysis.Print(t)
 	for i, tracker := range trackers {
 		p("=== Stress Client %d Analysis ===", i)
