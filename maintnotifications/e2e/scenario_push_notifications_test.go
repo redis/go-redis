@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -162,7 +163,7 @@ func TestPushNotifications(t *testing.T) {
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
 	if !found {
-		ef("FAILING_OVER notification was not received within 2 minutes")
+		ef("FAILING_OVER notification was not received within 3 minutes")
 	}
 	failingOverData := logs2.ExtractDataFromLogMessage(match)
 	p("FAILING_OVER notification received. %v", failingOverData)
@@ -177,7 +178,7 @@ func TestPushNotifications(t *testing.T) {
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
 	if !found {
-		ef("FAILED_OVER notification was not received within 2 minutes")
+		ef("FAILED_OVER notification was not received within 3 minutes")
 	}
 	failedOverData := logs2.ExtractDataFromLogMessage(match)
 	p("FAILED_OVER notification received. %v", failedOverData)
@@ -237,7 +238,7 @@ func TestPushNotifications(t *testing.T) {
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
 	if !found {
-		ef("MIGRATED notification was not received within 2 minutes")
+		ef("MIGRATED notification was not received within 3 minutes")
 	}
 	migratedData := logs2.ExtractDataFromLogMessage(match)
 	p("MIGRATED notification received. %v", migratedData)
@@ -284,7 +285,7 @@ func TestPushNotifications(t *testing.T) {
 	logger2 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
 	setupNotificationHooks(client2, tracker2, logger2)
 	commandsRunner2, _ := NewCommandRunner(client2)
-	t.Log("Second client created")
+	p("Second client created")
 
 	// Use a channel to communicate errors from the goroutine
 	errChan := make(chan error, 1)
@@ -317,7 +318,7 @@ func TestPushNotifications(t *testing.T) {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING") && connID(s, 18)
 		}, 3*time.Minute)
 		if !found {
-			errChan <- fmt.Errorf("MOVING notification was not received within 2 minutes ON A SECOND CLIENT")
+			errChan <- fmt.Errorf("MOVING notification was not received within 3 minutes ON A SECOND CLIENT")
 			return
 		} else {
 			p("MOVING notification received on second client %v", logs2.ExtractDataFromLogMessage(match))
@@ -327,7 +328,7 @@ func TestPushNotifications(t *testing.T) {
 			return strings.Contains(s, logs2.ApplyingRelaxedTimeoutDueToPostHandoffMessage) && strings.Contains(s, "30m")
 		}, 3*time.Minute)
 		if !found {
-			errChan <- fmt.Errorf("relaxed timeout was not applied within 2 minutes ON A SECOND CLIENT")
+			errChan <- fmt.Errorf("relaxed timeout was not applied within 3 minutes ON A SECOND CLIENT")
 			return
 		} else {
 			p("Relaxed timeout applied on second client")
@@ -342,6 +343,61 @@ func TestPushNotifications(t *testing.T) {
 	seqIDToObserve = int64(movingData["seqID"].(float64))
 	connIDToObserve = uint64(movingData["connID"].(float64))
 
+	// start a third client but don't execute any commands on it
+	p("Starting a third client to observe notification during moving...")
+	client3, err := factory.Create("push-notification-client-2", &CreateClientOptions{
+		Protocol:       3, // RESP3 required for push notifications
+		PoolSize:       poolSize,
+		MinIdleConns:   minIdleConns,
+		MaxActiveConns: maxConnections,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode:                       maintnotifications.ModeEnabled,
+			HandoffTimeout:             40 * time.Second, // 30 seconds
+			RelaxedTimeout:             30 * time.Minute, // 30 minutes relaxed timeout for second client
+			PostHandoffRelaxedDuration: 2 * time.Second,  // 2 seconds post-handoff relaxed duration
+			MaxWorkers:                 20,
+			EndpointType:               maintnotifications.EndpointTypeExternalIP, // Use external IP for enterprise
+		},
+		ClientName: "push-notification-test-client-3",
+	})
+
+	if err != nil {
+		ef("failed to create client: %v", err)
+	}
+	// setup tracking for second client
+	tracker3 := NewTrackingNotificationsHook()
+	logger3 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+	setupNotificationHooks(client3, tracker3, logger3)
+	commandsRunner3, _ := NewCommandRunner(client3)
+	p("Third client created")
+	go commandsRunner3.FireCommandsUntilStop(ctx)
+	// wait for moving on third client
+	match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+		return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING") && connID(s, 19)
+	}, 3*time.Minute)
+	if !found {
+		ef("MOVING notification was not received within 3 minutes ON A THIRD CLIENT")
+	} else {
+		p("MOVING notification received on third client")
+		data := logs2.ExtractDataFromLogMessage(match)
+		mNotif := data["notification"].(string)
+		// format MOVING <seqID> <timeS> endpoint
+		mNotifParts := strings.Split(mNotif, " ")
+		if len(mNotifParts) != 4 {
+			ef("Invalid MOVING notification format: %s", mNotif)
+		}
+		mNotifTimeS, err := strconv.Atoi(mNotifParts[2])
+		if err != nil {
+			ef("Invalid timeS in MOVING notification: %s", mNotif)
+		}
+		// expect timeS to be less than 15
+		if mNotifTimeS < 15 {
+			ef("Expected timeS < 15, got %d", mNotifTimeS)
+		}
+
+		p("MOVING notification received on third client. %v", data)
+	}
+	commandsRunner3.Stop()
 	// Wait for the goroutine to complete and check for errors
 	if err := <-errChan; err != nil {
 		ef("Second client goroutine error: %v", err)
