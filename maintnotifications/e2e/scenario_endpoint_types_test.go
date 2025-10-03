@@ -70,7 +70,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 	// Create fault injector
 	faultInjector, err := CreateTestFaultInjector()
 	if err != nil {
-		t.Fatalf("Failed to create fault injector: %v", err)
+		t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
 	}
 
 	defer func() {
@@ -103,6 +103,15 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				args = append([]interface{}{ts}, args...)
 				t.Errorf(format, args...)
 			}
+
+			var ef = func(format string, args ...interface{}) {
+				errorsDetected = true
+				format = "[%s][ENDPOINT-TYPES][ERROR] " + format
+				ts := time.Now().Format("15:04:05.000")
+				args = append([]interface{}{ts}, args...)
+				t.Fatalf(format, args...)
+			}
+
 			p("Testing endpoint type: %s - %s", endpointTest.name, endpointTest.description)
 
 			minIdleConns := 3
@@ -126,7 +135,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				ClientName: fmt.Sprintf("endpoint-test-%s", endpointTest.name),
 			})
 			if err != nil {
-				t.Fatalf("Failed to create client for %s: %v", endpointTest.name, err)
+				ef("Failed to create client for %s: %v", endpointTest.name, err)
 			}
 
 			// Create timeout tracker
@@ -144,7 +153,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			// Verify initial connectivity
 			err = client.Ping(ctx).Err()
 			if err != nil {
-				t.Fatalf("Failed to ping Redis with %s endpoint type: %v", endpointTest.name, err)
+				ef("Failed to ping Redis with %s endpoint type: %v", endpointTest.name, err)
 			}
 
 			p("Client connected successfully with %s endpoint type", endpointTest.name)
@@ -169,7 +178,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger failover action for %s: %v", endpointTest.name, err)
+				ef("Failed to trigger failover action for %s: %v", endpointTest.name, err)
 			}
 
 			// Start command traffic
@@ -182,7 +191,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "FAILING_OVER")
 			}, 2*time.Minute)
 			if !found {
-				t.Fatalf("FAILING_OVER notification was not received for %s endpoint type", endpointTest.name)
+				ef("FAILING_OVER notification was not received for %s endpoint type", endpointTest.name)
 			}
 			failingOverData := logs2.ExtractDataFromLogMessage(match)
 			p("FAILING_OVER notification received for %s. %v", endpointTest.name, failingOverData)
@@ -194,7 +203,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				return notificationType(s, "FAILED_OVER") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
 			}, 2*time.Minute)
 			if !found {
-				t.Fatalf("FAILED_OVER notification was not received for %s endpoint type", endpointTest.name)
+				ef("FAILED_OVER notification was not received for %s endpoint type", endpointTest.name)
 			}
 			failedOverData := logs2.ExtractDataFromLogMessage(match)
 			p("FAILED_OVER notification received for %s. %v", endpointTest.name, failedOverData)
@@ -205,7 +214,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				WithPollInterval(1*time.Second),
 			)
 			if err != nil {
-				t.Fatalf("[FI] Failover action failed for %s: %v", endpointTest.name, err)
+				ef("[FI] Failover action failed for %s: %v", endpointTest.name, err)
 			}
 			p("[FI] Failover action completed for %s: %s", endpointTest.name, status.Status)
 
@@ -218,7 +227,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger migrate action for %s: %v", endpointTest.name, err)
+				ef("Failed to trigger migrate action for %s: %v", endpointTest.name, err)
 			}
 
 			// Wait for MIGRATING notification
@@ -226,7 +235,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
 			}, 30*time.Second)
 			if !found {
-				t.Fatalf("MIGRATING notification was not received for %s endpoint type", endpointTest.name)
+				ef("MIGRATING notification was not received for %s endpoint type", endpointTest.name)
 			}
 			migrateData := logs2.ExtractDataFromLogMessage(match)
 			p("MIGRATING notification received for %s: %v", endpointTest.name, migrateData)
@@ -237,7 +246,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				WithPollInterval(1*time.Second),
 			)
 			if err != nil {
-				t.Fatalf("[FI] Migrate action failed for %s: %v", endpointTest.name, err)
+				ef("[FI] Migrate action failed for %s: %v", endpointTest.name, err)
 			}
 			p("[FI] Migrate action completed for %s: %s", endpointTest.name, status.Status)
 
@@ -248,7 +257,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				return notificationType(s, "MIGRATED") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
 			}, 2*time.Minute)
 			if !found {
-				t.Fatalf("MIGRATED notification was not received for %s endpoint type", endpointTest.name)
+				ef("MIGRATED notification was not received for %s endpoint type", endpointTest.name)
 			}
 			migratedData := logs2.ExtractDataFromLogMessage(match)
 			p("MIGRATED notification received for %s. %v", endpointTest.name, migratedData)
@@ -262,7 +271,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger bind action for %s: %v", endpointTest.name, err)
+				ef("Failed to trigger bind action for %s: %v", endpointTest.name, err)
 			}
 
 			// Wait for MOVING notification
@@ -270,7 +279,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
 			}, 2*time.Minute)
 			if !found {
-				t.Fatalf("MOVING notification was not received for %s endpoint type", endpointTest.name)
+				ef("MOVING notification was not received for %s endpoint type", endpointTest.name)
 			}
 			movingData := logs2.ExtractDataFromLogMessage(match)
 			p("MOVING notification received for %s. %v", endpointTest.name, movingData)
@@ -322,7 +331,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				WithMaxWaitTime(120*time.Second),
 				WithPollInterval(2*time.Second))
 			if err != nil {
-				t.Fatalf("Bind action failed for %s: %v", endpointTest.name, err)
+				ef("Bind action failed for %s: %v", endpointTest.name, err)
 			}
 			p("Bind action completed for %s: %s", endpointTest.name, bindStatus.Status)
 
@@ -370,7 +379,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				trackerAnalysis.Print(t)
 				logCollector.Clear()
 				tracker.Clear()
-				t.Fatalf("[FAIL] Errors detected with %s endpoint type", endpointTest.name)
+				ef("[FAIL] Errors detected with %s endpoint type", endpointTest.name)
 			}
 			dump = false
 			p("Endpoint type %s test completed successfully", endpointTest.name)

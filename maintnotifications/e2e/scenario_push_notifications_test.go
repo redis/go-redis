@@ -32,7 +32,7 @@ func TestPushNotifications(t *testing.T) {
 	var status *ActionStatusResponse
 
 	var p = func(format string, args ...interface{}) {
-		format = "[%s] " + format
+		format = "[%s][PUSH-NOTIFICATIONS] " + format
 		ts := time.Now().Format("15:04:05.000")
 		args = append([]interface{}{ts}, args...)
 		t.Logf(format, args...)
@@ -41,10 +41,18 @@ func TestPushNotifications(t *testing.T) {
 	var errorsDetected = false
 	var e = func(format string, args ...interface{}) {
 		errorsDetected = true
-		format = "[%s][ERROR]  " + format
+		format = "[%s][PUSH-NOTIFICATIONS][ERROR]  " + format
 		ts := time.Now().Format("15:04:05.000")
 		args = append([]interface{}{ts}, args...)
 		t.Errorf(format, args...)
+	}
+
+	var ef = func(format string, args ...interface{}) {
+		errorsDetected = true
+		format = "[%s][PUSH-NOTIFICATIONS][ERROR]  " + format
+		ts := time.Now().Format("15:04:05.000")
+		args = append([]interface{}{ts}, args...)
+		t.Fatalf(format, args...)
 	}
 
 	logCollector.ClearLogs()
@@ -61,14 +69,14 @@ func TestPushNotifications(t *testing.T) {
 	// Create client factory from configuration
 	factory, err := CreateTestClientFactory("standalone")
 	if err != nil {
-		t.Skipf("Enterprise cluster not available, skipping push notification tests: %v", err)
+		t.Skipf("[PUSH-NOTIFICATIONS][SKIP] Enterprise cluster not available, skipping push notification tests: %v", err)
 	}
 	endpointConfig := factory.GetConfig()
 
 	// Create fault injector
 	faultInjector, err := CreateTestFaultInjector()
 	if err != nil {
-		t.Fatalf("Failed to create fault injector: %v", err)
+		ef("Failed to create fault injector: %v", err)
 	}
 
 	minIdleConns := 5
@@ -91,7 +99,7 @@ func TestPushNotifications(t *testing.T) {
 		ClientName: "push-notification-test-client",
 	})
 	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
+		ef("Failed to create client: %v", err)
 	}
 
 	defer func() {
@@ -116,7 +124,7 @@ func TestPushNotifications(t *testing.T) {
 	// Verify initial connectivity
 	err = client.Ping(ctx).Err()
 	if err != nil {
-		t.Fatalf("Failed to ping Redis: %v", err)
+		ef("Failed to ping Redis: %v", err)
 	}
 
 	p("Client connected successfully, starting push notification test")
@@ -143,7 +151,7 @@ func TestPushNotifications(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("Failed to trigger failover action: %v", err)
+		ef("Failed to trigger failover action: %v", err)
 	}
 	go func() {
 		p("Waiting for FAILING_OVER notification")
@@ -154,7 +162,7 @@ func TestPushNotifications(t *testing.T) {
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
 	if !found {
-		t.Fatal("FAILING_OVER notification was not received within 2 minutes")
+		ef("FAILING_OVER notification was not received within 2 minutes")
 	}
 	failingOverData := logs2.ExtractDataFromLogMessage(match)
 	p("FAILING_OVER notification received. %v", failingOverData)
@@ -169,7 +177,7 @@ func TestPushNotifications(t *testing.T) {
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
 	if !found {
-		t.Fatal("FAILED_OVER notification was not received within 2 minutes")
+		ef("FAILED_OVER notification was not received within 2 minutes")
 	}
 	failedOverData := logs2.ExtractDataFromLogMessage(match)
 	p("FAILED_OVER notification received. %v", failedOverData)
@@ -179,7 +187,7 @@ func TestPushNotifications(t *testing.T) {
 		WithPollInterval(1*time.Second),
 	)
 	if err != nil {
-		t.Fatalf("[FI] Failover action failed: %v", err)
+		ef("[FI] Failover action failed: %v", err)
 	}
 	fmt.Printf("[FI] Failover action completed: %s\n", status.Status)
 
@@ -194,7 +202,7 @@ func TestPushNotifications(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("Failed to trigger migrate action: %v", err)
+		ef("Failed to trigger migrate action: %v", err)
 	}
 	go func() {
 		match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
@@ -204,7 +212,7 @@ func TestPushNotifications(t *testing.T) {
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
 	if !found {
-		t.Fatal("MIGRATING notification for migrate action was not received within 20 seconds")
+		ef("MIGRATING notification for migrate action was not received within 20 seconds")
 	}
 	migrateData := logs2.ExtractDataFromLogMessage(match)
 	seqIDToObserve = int64(migrateData["seqID"].(float64))
@@ -216,7 +224,7 @@ func TestPushNotifications(t *testing.T) {
 		WithPollInterval(1*time.Second),
 	)
 	if err != nil {
-		t.Fatalf("[FI] Migrate action failed: %v", err)
+		ef("[FI] Migrate action failed: %v", err)
 	}
 	fmt.Printf("[FI] Migrate action completed: %s\n", status.Status)
 
@@ -229,7 +237,7 @@ func TestPushNotifications(t *testing.T) {
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
 	if !found {
-		t.Fatal("MIGRATED notification was not received within 2 minutes")
+		ef("MIGRATED notification was not received within 2 minutes")
 	}
 	migratedData := logs2.ExtractDataFromLogMessage(match)
 	p("MIGRATED notification received. %v", migratedData)
@@ -247,7 +255,7 @@ func TestPushNotifications(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("Failed to trigger bind action: %v", err)
+		ef("Failed to trigger bind action: %v", err)
 	}
 
 	// start a second client but don't execute any commands on it
@@ -269,7 +277,7 @@ func TestPushNotifications(t *testing.T) {
 	})
 
 	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
+		ef("failed to create client: %v", err)
 	}
 	// setup tracking for second client
 	tracker2 := NewTrackingNotificationsHook()
@@ -336,7 +344,7 @@ func TestPushNotifications(t *testing.T) {
 
 	// Wait for the goroutine to complete and check for errors
 	if err := <-errChan; err != nil {
-		t.Fatalf("Second client goroutine error: %v", err)
+		ef("Second client goroutine error: %v", err)
 	}
 
 	// Wait for bind action to complete
@@ -344,7 +352,7 @@ func TestPushNotifications(t *testing.T) {
 		WithMaxWaitTime(120*time.Second),
 		WithPollInterval(2*time.Second))
 	if err != nil {
-		t.Fatalf("Bind action failed: %v", err)
+		ef("Bind action failed: %v", err)
 	}
 
 	p("Bind action completed: %s", bindStatus.Status)
@@ -457,7 +465,7 @@ func TestPushNotifications(t *testing.T) {
 		trackerAnalysis.Print(t)
 		logCollector.Clear()
 		tracker.Clear()
-		t.Fatalf("[FAIL] Errors detected in push notification test")
+		ef("[FAIL] Errors detected in push notification test")
 	}
 
 	p("Analysis complete, no errors found")
