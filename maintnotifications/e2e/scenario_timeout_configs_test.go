@@ -195,7 +195,6 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "failover",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
 					"bdb_id":        endpointConfig.BdbID,
 				},
 			})
@@ -244,7 +243,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "migrate",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
+					"bdb_id":        endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
@@ -275,7 +274,6 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "bind",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
 					"bdb_id":        endpointConfig.BdbID,
 				},
 			})

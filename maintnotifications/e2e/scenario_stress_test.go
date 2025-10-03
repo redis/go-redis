@@ -188,15 +188,14 @@ func TestStressPushNotifications(t *testing.T) {
 				resp, err = faultInjector.TriggerAction(ctx, ActionRequest{
 					Type: "failover",
 					Parameters: map[string]interface{}{
-						"cluster_index": "0",
-						"bdb_id":        endpointConfig.BdbID,
+						"bdb_id": endpointConfig.BdbID,
 					},
 				})
 			case "migrate":
 				resp, err = faultInjector.TriggerAction(ctx, ActionRequest{
 					Type: "migrate",
 					Parameters: map[string]interface{}{
-						"cluster_index": "0",
+						"bdb_id":        endpointConfig.BdbID,
 					},
 				})
 			}

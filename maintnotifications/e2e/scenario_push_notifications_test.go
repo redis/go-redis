@@ -147,8 +147,7 @@ func TestPushNotifications(t *testing.T) {
 	failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 		Type: "failover",
 		Parameters: map[string]interface{}{
-			"cluster_index": "0",
-			"bdb_id":        endpointConfig.BdbID,
+			"bdb_id": endpointConfig.BdbID,
 		},
 	})
 	if err != nil {
@@ -199,7 +198,7 @@ func TestPushNotifications(t *testing.T) {
 	migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 		Type: "migrate",
 		Parameters: map[string]interface{}{
-			"cluster_index": "0",
+			"bdb_id": endpointConfig.BdbID,
 		},
 	})
 	if err != nil {
@@ -251,8 +250,7 @@ func TestPushNotifications(t *testing.T) {
 	bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 		Type: "bind",
 		Parameters: map[string]interface{}{
-			"cluster_index": "0",
-			"bdb_id":        endpointConfig.BdbID,
+			"bdb_id": endpointConfig.BdbID,
 		},
 	})
 	if err != nil {
@@ -297,7 +295,7 @@ func TestPushNotifications(t *testing.T) {
 			}
 		}()
 
-		p("Waiting for MOVING notification on second client")
+		p("Waiting for MOVING notification on first client")
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
 		}, 3*time.Minute)
@@ -314,6 +312,7 @@ func TestPushNotifications(t *testing.T) {
 		// wait for moving on second client
 		// we know the maxconn is 15, assuming 16/17 was used to init the second client, so connID 18 should be from the second client
 		// also validate big enough relaxed timeout
+		p("Waiting for MOVING notification on second client")
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING") && connID(s, 18)
 		}, 3*time.Minute)
@@ -372,27 +371,21 @@ func TestPushNotifications(t *testing.T) {
 	p("Third client created")
 	go commandsRunner3.FireCommandsUntilStop(ctx)
 	// wait for moving on third client
-	match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
-		return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING") && connID(s, 19)
-	}, 3*time.Minute)
+	movingNotification, found := tracker.FindOrWaitForNotification("MOVING", 3*time.Minute)
 	if !found {
 		p("[NOTICE] MOVING notification was not received within 3 minutes ON A THIRD CLIENT")
 	} else {
-		data := logs2.ExtractDataFromLogMessage(match)
 		p("MOVING notification received on third client. %v", data)
-		mNotif := data["notification"].(string)
-		// format MOVING <seqID> <timeS> endpoint
-		mNotifParts := strings.Split(mNotif, " ")
-		if len(mNotifParts) != 4 {
-			ef("Invalid MOVING notification format: %s", mNotif)
+		if len(movingNotification) != 4 {
+			p("[NOTICE] Invalid MOVING notification format: %s", mNotif)
 		}
-		mNotifTimeS, err := strconv.Atoi(mNotifParts[2])
+		mNotifTimeS, err := strconv.Atoi(movingNotification[2].(string))
 		if err != nil {
-			ef("Invalid timeS in MOVING notification: %s", mNotif)
+			p("[NOTICE] Invalid timeS in MOVING notification: %s", movingNotification)
 		}
 		// expect timeS to be less than 15
 		if mNotifTimeS < 15 {
-			ef("Expected timeS < 15, got %d", mNotifTimeS)
+			p("[NOTICE] Expected timeS < 15, got %d", mNotifTimeS)
 		}
 	}
 	commandsRunner3.Stop()

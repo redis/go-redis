@@ -173,8 +173,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "failover",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
-					"bdb_id":        endpointConfig.BdbID,
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
@@ -223,7 +222,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "migrate",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
@@ -266,8 +265,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "bind",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
-					"bdb_id":        endpointConfig.BdbID,
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
