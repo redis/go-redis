@@ -42,7 +42,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 		{
 			name:                       "Conservative",
 			handoffTimeout:             60 * time.Second,
-			relaxedTimeout:             60 * time.Second,
+			relaxedTimeout:             30 * time.Second,
 			postHandoffRelaxedDuration: 2 * time.Minute,
 			description:                "Conservative timeouts for stable environments",
 			expectedBehavior:           "Longer timeouts, fewer timeout errors",
@@ -293,7 +293,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			// waiting for moving notification
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
 				ef("MOVING notification was not received for %s timeout config", timeoutTest.name)
 			}

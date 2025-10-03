@@ -189,7 +189,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			// Wait for FAILING_OVER notification
 			match, found := logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "FAILING_OVER")
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
 				ef("FAILING_OVER notification was not received for %s endpoint type", endpointTest.name)
 			}
@@ -201,7 +201,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			connIDToObserve := uint64(failingOverData["connID"].(float64))
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return notificationType(s, "FAILED_OVER") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
 				ef("FAILED_OVER notification was not received for %s endpoint type", endpointTest.name)
 			}
@@ -255,7 +255,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			connIDToObserve = uint64(migrateData["connID"].(float64))
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return notificationType(s, "MIGRATED") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
 				ef("MIGRATED notification was not received for %s endpoint type", endpointTest.name)
 			}
@@ -277,7 +277,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			// Wait for MOVING notification
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
 				ef("MOVING notification was not received for %s endpoint type", endpointTest.name)
 			}

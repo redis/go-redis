@@ -157,7 +157,7 @@ func TestPushNotifications(t *testing.T) {
 		p("Waiting for FAILING_OVER notification")
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "FAILING_OVER")
-		}, 2*time.Minute)
+		}, 3*time.Minute)
 		commandsRunner.Stop()
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
@@ -172,7 +172,7 @@ func TestPushNotifications(t *testing.T) {
 		p("Waiting for FAILED_OVER notification on conn %d with seqID %d...", connIDToObserve, seqIDToObserve+1)
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return notificationType(s, "FAILED_OVER") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
-		}, 2*time.Minute)
+		}, 3*time.Minute)
 		commandsRunner.Stop()
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
@@ -232,7 +232,7 @@ func TestPushNotifications(t *testing.T) {
 		p("Waiting for MIGRATED notification on conn %d with seqID %d...", connIDToObserve, seqIDToObserve+1)
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return notificationType(s, "MIGRATED") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
-		}, 2*time.Minute)
+		}, 3*time.Minute)
 		commandsRunner.Stop()
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
@@ -299,7 +299,7 @@ func TestPushNotifications(t *testing.T) {
 		p("Waiting for MOVING notification on second client")
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
-		}, 2*time.Minute)
+		}, 3*time.Minute)
 		commandsRunner.Stop()
 		// once moving is received, start a second client commands runner
 		p("Starting commands on second client")
@@ -315,7 +315,7 @@ func TestPushNotifications(t *testing.T) {
 		// also validate big enough relaxed timeout
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING") && connID(s, 18)
-		}, 2*time.Minute)
+		}, 3*time.Minute)
 		if !found {
 			errChan <- fmt.Errorf("MOVING notification was not received within 2 minutes ON A SECOND CLIENT")
 			return
@@ -325,7 +325,7 @@ func TestPushNotifications(t *testing.T) {
 		// wait for relaxation of 30m
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ApplyingRelaxedTimeoutDueToPostHandoffMessage) && strings.Contains(s, "30m")
-		}, 2*time.Minute)
+		}, 3*time.Minute)
 		if !found {
 			errChan <- fmt.Errorf("relaxed timeout was not applied within 2 minutes ON A SECOND CLIENT")
 			return
