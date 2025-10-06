@@ -189,6 +189,14 @@ func TestPushNotifications(t *testing.T) {
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
 	if !found {
+		status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
+			WithMaxWaitTime(240*time.Second),
+			WithPollInterval(2*time.Second),
+		)
+		if err != nil {
+			ef("[FI] Migrate action failed: %v", err)
+		}
+		p("[FI] Migrate action completed: %s %s", status.Status, actionOutputIfFailed(status))
 		ef("MIGRATING notification for migrate action was not received within 60 seconds")
 	}
 	migrateData := logs2.ExtractDataFromLogMessage(match)
