@@ -375,9 +375,9 @@ func TestPushNotifications(t *testing.T) {
 	if !found {
 		p("[NOTICE] MOVING notification was not received within 3 minutes ON A THIRD CLIENT")
 	} else {
-		p("MOVING notification received on third client. %v", data)
+		p("MOVING notification received on third client. %v", movingNotification)
 		if len(movingNotification) != 4 {
-			p("[NOTICE] Invalid MOVING notification format: %s", mNotif)
+			p("[NOTICE] Invalid MOVING notification format: %s", movingNotification)
 		}
 		mNotifTimeS, err := strconv.Atoi(movingNotification[2].(string))
 		if err != nil {
