@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -27,28 +26,17 @@ func TestStressPushNotifications(t *testing.T) {
 	var errorsDetected = false
 
 	var p = func(format string, args ...interface{}) {
-		_, filename, line, _ := runtime.Caller(1)
-		format = "%s:%d [%s][STRESS] " + format + "\n"
-		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{filename, line, ts}, args...)
-		fmt.Printf(format, args...)
+		printLog("STRESS", false, format, args...)
 	}
 
 	var e = func(format string, args ...interface{}) {
 		errorsDetected = true
-		_, filename, line, _ := runtime.Caller(1)
-		format = "%s:%d [%s][STRESS][ERROR] " + format + "\n"
-		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{filename, line, ts}, args...)
-		fmt.Printf(format, args...)
+		printLog("STRESS", true, format, args...)
 	}
 
 	var ef = func(format string, args ...interface{}) {
-		errorsDetected = true
-		format = "[%s][STRESS][ERROR] " + format
-		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{ts}, args...)
-		t.Fatalf(format, args...)
+		printLog("STRESS", true, format, args...)
+		t.FailNow()
 	}
 
 	logCollector.ClearLogs()

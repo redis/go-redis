@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -27,20 +26,12 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 
 	var errorsDetected = false
 	var p = func(format string, args ...interface{}) {
-		_, filename, line, _ := runtime.Caller(1)
-		format = "%s:%d [%s][TIMEOUT-CONFIGS] " + format + "\n"
-		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{filename, line, ts}, args...)
-		fmt.Printf(format, args...)
+		printLog("TIMEOUT-CONFIGS", false, format, args...)
 	}
 
 	var e = func(format string, args ...interface{}) {
 		errorsDetected = true
-		_, filename, line, _ := runtime.Caller(1)
-		format = "%s:%d [%s][TIMEOUT-CONFIGS][ERROR] " + format + "\n"
-		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{filename, line, ts}, args...)
-		fmt.Printf(format, args...)
+		printLog("TIMEOUT-CONFIGS", true, format, args...)
 	}
 
 	// Test different timeout configurations
@@ -109,10 +100,8 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 		t.Run(timeoutTest.name, func(t *testing.T) {
 			errorsDetected = false
 			var ef = func(format string, args ...interface{}) {
-				format = "[%s][TIMEOUT-CONFIGS][ERROR] " + format
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Fatalf(format, args...)
+				printLog("TIMEOUT-CONFIGS", true, format, args...)
+				t.FailNow()
 			}
 
 			p("Testing timeout configuration: %s - %s", timeoutTest.name, timeoutTest.description)

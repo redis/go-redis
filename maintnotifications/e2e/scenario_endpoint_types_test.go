@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -94,28 +93,17 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			// redefine p and e for each test to get
 			// proper test name in logs and proper test failures
 			var p = func(format string, args ...interface{}) {
-				_, filename, line, _ := runtime.Caller(1)
-				format = "%s:%d [%s][ENDPOINT-TYPES] " + format + "\n"
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{filename, line, ts}, args...)
-				fmt.Printf(format, args...)
+				printLog("ENDPOINT-TYPES", false, format, args...)
 			}
 
 			var e = func(format string, args ...interface{}) {
 				errorsDetected = true
-				_, filename, line, _ := runtime.Caller(1)
-				format = "%s:%d [%s][ENDPOINT-TYPES][ERROR] " + format + "\n"
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{filename, line, ts}, args...)
-				fmt.Printf(format, args...)
+				printLog("ENDPOINT-TYPES", true, format, args...)
 			}
 
 			var ef = func(format string, args ...interface{}) {
-				errorsDetected = true
-				format = "[%s][ENDPOINT-TYPES][ERROR] " + format
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Fatalf(format, args...)
+				printLog("ENDPOINT-TYPES", true, format, args...)
+				t.FailNow()
 			}
 
 			p("Testing endpoint type: %s - %s", endpointTest.name, endpointTest.description)
