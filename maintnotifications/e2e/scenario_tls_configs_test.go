@@ -199,7 +199,7 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("[FI] Migrate action failed for %s: %v", tlsTest.name, err)
 			}
-			p("[FI] Migrate action completed for %s: %s", tlsTest.name, status.Status)
+			p("[FI] Migrate action completed for %s: %+v", tlsTest.name, status)
 
 			// Continue traffic for a bit to observe TLS behavior
 			time.Sleep(5 * time.Second)

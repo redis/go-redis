@@ -205,7 +205,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("[FI] Failover action failed for %s: %v", endpointTest.name, err)
 			}
-			p("[FI] Failover action completed for %s: %v", endpointTest.name, status)
+			p("[FI] Failover action completed for %s: %+v", endpointTest.name, status)
 
 			// Test migration with this endpoint type
 			p("Testing migration with %s endpoint type...", endpointTest.name)
@@ -227,7 +227,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("[FI] Migrate action failed for %s: %v", endpointTest.name, err)
 			}
-			p("[FI] Migrate action completed for %s: %v", endpointTest.name, status)
+			p("[FI] Migrate action completed for %s: %+v", endpointTest.name, status)
 
 			// Wait for MIGRATING notification
 			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
@@ -321,7 +321,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("Bind action failed for %s: %v", endpointTest.name, err)
 			}
-			p("Bind action completed for %s: %v", endpointTest.name, bindStatus)
+			p("Bind action completed for %s: %+v", endpointTest.name, bindStatus)
 
 			// Continue traffic for analysis
 			time.Sleep(30 * time.Second)

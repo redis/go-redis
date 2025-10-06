@@ -209,7 +209,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("[FI] Failover action failed for %s: %v", timeoutTest.name, err)
 			}
-			p("[FI] Failover action completed for %s: %s", timeoutTest.name, status.Status)
+			p("[FI] Failover action completed for %s: %+v", timeoutTest.name, status)
 
 			// Continue traffic to observe timeout behavior
 			p("Continuing traffic for %v to observe timeout behavior...", timeoutTest.relaxedTimeout*2)
@@ -236,7 +236,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 				ef("[FI] Migrate action failed for %s: %v", timeoutTest.name, err)
 			}
 
-			p("[FI] Migrate action completed for %s: %s", timeoutTest.name, status.Status)
+			p("[FI] Migrate action completed for %s: %+v", timeoutTest.name, status)
 
 			// Wait for MIGRATING notification
 			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
@@ -265,7 +265,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("[FI] Bind action failed for %s: %v", timeoutTest.name, err)
 			}
-			p("[FI] Bind action completed for %s: %s", timeoutTest.name, status.Status)
+			p("[FI] Bind action completed for %s: %+v", timeoutTest.name, status)
 			// waiting for moving notification
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
