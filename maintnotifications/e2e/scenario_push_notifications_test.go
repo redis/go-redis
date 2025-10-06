@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -379,8 +378,8 @@ func TestPushNotifications(t *testing.T) {
 		if len(movingNotification) != 4 {
 			p("[NOTICE] Invalid MOVING notification format: %s", movingNotification)
 		}
-		mNotifTimeS, err := movingNotification[2].(int64)
-		if err != nil {
+		mNotifTimeS, ok := movingNotification[2].(int64)
+		if !ok {
 			p("[NOTICE] Invalid timeS in MOVING notification: %s", movingNotification)
 		}
 		// expect timeS to be less than 15
