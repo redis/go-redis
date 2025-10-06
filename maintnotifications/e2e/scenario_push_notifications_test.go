@@ -182,7 +182,7 @@ func TestPushNotifications(t *testing.T) {
 		ef("Failed to trigger migrate action: %v", err)
 	}
 	go func() {
-		match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
+		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
 		}, 60*time.Second)
 		commandsRunner.Stop()

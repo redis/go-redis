@@ -60,6 +60,13 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		logCollector.Clear()
 	}()
 
+	// Create fault injector
+	faultInjector, err := CreateTestFaultInjector()
+	if err != nil {
+		t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
+	}
+
+
 	// Create client factory from configuration
 	factory, err := CreateTestClientFactory("standalone")
 	if err != nil {
@@ -67,11 +74,6 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 	}
 	endpointConfig := factory.GetConfig()
 
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
-	if err != nil {
-		t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
-	}
 
 	defer func() {
 		if dump {
@@ -230,7 +232,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			p("[FI] Migrate action completed for %s: %+v", endpointTest.name, status)
 
 			// Wait for MIGRATING notification
-			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
+			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
 			}, 60*time.Second)
 			if !found {

@@ -239,7 +239,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			p("[FI] Migrate action completed for %s: %+v", timeoutTest.name, status)
 
 			// Wait for MIGRATING notification
-			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
+			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
 			}, 60*time.Second)
 			if !found {
