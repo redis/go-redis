@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -93,18 +94,20 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			// redefine p and e for each test to get
 			// proper test name in logs and proper test failures
 			var p = func(format string, args ...interface{}) {
-				format = "[%s][ENDPOINT-TYPES] " + format
+				_, filename, line, _ := runtime.Caller(1)
+				format = "%s:%d [%s][ENDPOINT-TYPES] " + format + "\n"
 				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Logf(format, args...)
+				args = append([]interface{}{filename, line, ts}, args...)
+				fmt.Printf(format, args...)
 			}
 
 			var e = func(format string, args ...interface{}) {
 				errorsDetected = true
-				format = "[%s][ENDPOINT-TYPES][ERROR] " + format
+				_, filename, line, _ := runtime.Caller(1)
+				format = "%s:%d [%s][ENDPOINT-TYPES][ERROR] " + format + "\n"
 				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Errorf(format, args...)
+				args = append([]interface{}{filename, line, ts}, args...)
+				fmt.Printf(format, args...)
 			}
 
 			var ef = func(format string, args ...interface{}) {
@@ -146,10 +149,6 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
 			setupNotificationHooks(client, tracker, logger)
 			defer func() {
-				if dump {
-					p("Tracker analysis for %s:", endpointTest.name)
-					tracker.GetAnalysis().Print(t)
-				}
 				tracker.Clear()
 			}()
 
@@ -218,7 +217,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("[FI] Failover action failed for %s: %v", endpointTest.name, err)
 			}
-			p("[FI] Failover action completed for %s: %s", endpointTest.name, status.Status)
+			p("[FI] Failover action completed for %s: %v", endpointTest.name, status)
 
 			// Test migration with this endpoint type
 			p("Testing migration with %s endpoint type...", endpointTest.name)
@@ -240,7 +239,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("[FI] Migrate action failed for %s: %v", endpointTest.name, err)
 			}
-			p("[FI] Migrate action completed for %s: %s", endpointTest.name, status.Status)
+			p("[FI] Migrate action completed for %s: %v", endpointTest.name, status)
 
 			// Wait for MIGRATING notification
 			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
@@ -334,7 +333,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("Bind action failed for %s: %v", endpointTest.name, err)
 			}
-			p("Bind action completed for %s: %s", endpointTest.name, bindStatus.Status)
+			p("Bind action completed for %s: %v", endpointTest.name, bindStatus)
 
 			// Continue traffic for analysis
 			time.Sleep(30 * time.Second)
@@ -382,7 +381,6 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				tracker.Clear()
 				ef("[FAIL] Errors detected with %s endpoint type", endpointTest.name)
 			}
-			dump = false
 			p("Endpoint type %s test completed successfully", endpointTest.name)
 			logCollector.GetAnalysis().Print(t)
 			trackerAnalysis.Print(t)

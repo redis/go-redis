@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -30,21 +31,23 @@ func TestPushNotifications(t *testing.T) {
 	var found bool
 
 	var status *ActionStatusResponse
+	var errorsDetected = false
 
 	var p = func(format string, args ...interface{}) {
-		format = "[%s][PUSH-NOTIFICATIONS] " + format
+		_, filename, line, _ := runtime.Caller(1)
+		format = "%s:%d [%s][PUSH-NOTIFICATIONS] " + format + "\n"
 		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{ts}, args...)
-		t.Logf(format, args...)
+		args = append([]interface{}{filename, line, ts}, args...)
+		fmt.Printf(format, args...)
 	}
 
-	var errorsDetected = false
 	var e = func(format string, args ...interface{}) {
 		errorsDetected = true
-		format = "[%s][PUSH-NOTIFICATIONS][ERROR]  " + format
+		_, filename, line, _ := runtime.Caller(1)
+		format = "%s:%d [%s][PUSH-NOTIFICATIONS][ERROR] " + format + "\n"
 		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{ts}, args...)
-		t.Errorf(format, args...)
+		args = append([]interface{}{filename, line, ts}, args...)
+		fmt.Printf(format, args...)
 	}
 
 	var ef = func(format string, args ...interface{}) {
@@ -57,12 +60,6 @@ func TestPushNotifications(t *testing.T) {
 
 	logCollector.ClearLogs()
 	defer func() {
-		if dump {
-			p("Dumping logs...")
-			logCollector.DumpLogs()
-			p("Log Analysis:")
-			logCollector.GetAnalysis().Print(t)
-		}
 		logCollector.Clear()
 	}()
 
@@ -103,10 +100,6 @@ func TestPushNotifications(t *testing.T) {
 	}
 
 	defer func() {
-		if dump {
-			p("Pool stats:")
-			factory.PrintPoolStats(t)
-		}
 		factory.DestroyAll()
 	}()
 
@@ -115,9 +108,6 @@ func TestPushNotifications(t *testing.T) {
 	logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
 	setupNotificationHooks(client, tracker, logger)
 	defer func() {
-		if dump {
-			tracker.GetAnalysis().Print(t)
-		}
 		tracker.Clear()
 	}()
 
@@ -188,7 +178,7 @@ func TestPushNotifications(t *testing.T) {
 	if err != nil {
 		ef("[FI] Failover action failed: %v", err)
 	}
-	fmt.Printf("[FI] Failover action completed: %s\n", status.Status)
+	p("[FI] Failover action completed: %v", status)
 
 	p("FAILING_OVER / FAILED_OVER notifications test completed successfully")
 
@@ -225,7 +215,7 @@ func TestPushNotifications(t *testing.T) {
 	if err != nil {
 		ef("[FI] Migrate action failed: %v", err)
 	}
-	fmt.Printf("[FI] Migrate action completed: %s\n", status.Status)
+	p("[FI] Migrate action completed: %v", status)
 
 	go func() {
 		p("Waiting for MIGRATED notification on conn %d with seqID %d...", connIDToObserve, seqIDToObserve+1)
@@ -401,7 +391,7 @@ func TestPushNotifications(t *testing.T) {
 		ef("Bind action failed: %v", err)
 	}
 
-	p("Bind action completed: %s", bindStatus.Status)
+	p("Bind action completed: %v", bindStatus)
 
 	p("MOVING notification test completed successfully")
 
@@ -515,8 +505,6 @@ func TestPushNotifications(t *testing.T) {
 	}
 
 	p("Analysis complete, no errors found")
-	// print analysis here, don't dump logs later
-	dump = false
 	allLogsAnalysis.Print(t)
 	trackerAnalysis.Print(t)
 	p("Command runner stats:")

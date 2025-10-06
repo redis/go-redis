@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -24,11 +25,22 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 	defer cancel()
 
 	var dump = true
+	var errorsDetected = false
 	var p = func(format string, args ...interface{}) {
-		format = "[%s][TLS-CONFIGS] " + format
+		_, filename, line, _ := runtime.Caller(1)
+		format = "%s:%d [%s][TLS-CONFIGS] " + format + "\n"
 		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{ts}, args...)
-		t.Logf(format, args...)
+		args = append([]interface{}{filename, line, ts}, args...)
+		fmt.Printf(format, args...)
+	}
+
+	var e = func(format string, args ...interface{}) {
+		errorsDetected = true
+		_, filename, line, _ := runtime.Caller(1)
+		format = "%s:%d [%s][TLS-CONFIGS][ERROR] " + format + "\n"
+		ts := time.Now().Format("15:04:05.000")
+		args = append([]interface{}{filename, line, ts}, args...)
+		fmt.Printf(format, args...)
 	}
 
 	// Test different TLS configurations
@@ -64,12 +76,6 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 
 	logCollector.ClearLogs()
 	defer func() {
-		if dump {
-			p("Dumping logs...")
-			logCollector.DumpLogs()
-			p("Log Analysis:")
-			logCollector.GetAnalysis().Print(t)
-		}
 		logCollector.Clear()
 	}()
 
@@ -97,28 +103,14 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 	// Test each TLS configuration
 	for _, tlsTest := range tlsConfigs {
 		t.Run(tlsTest.name, func(t *testing.T) {
-			// redefine p and e for each test to get
-			// proper test name in logs and proper test failures
-			var p = func(format string, args ...interface{}) {
-				format = "[%s][TLS-CONFIGS] " + format
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Logf(format, args...)
-			}
-
-			var e = func(format string, args ...interface{}) {
-				format = "[%s][TLS-CONFIGS][ERROR] " + format
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Errorf(format, args...)
-			}
-
+			errorsDetected = false
 			var ef = func(format string, args ...interface{}) {
 				format = "[%s][TLS-CONFIGS][ERROR] " + format
 				ts := time.Now().Format("15:04:05.000")
 				args = append([]interface{}{ts}, args...)
 				t.Fatalf(format, args...)
 			}
+
 			if tlsTest.skipReason != "" {
 				t.Skipf("Skipping %s: %s", tlsTest.name, tlsTest.skipReason)
 			}
@@ -159,10 +151,6 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 			logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
 			setupNotificationHooks(client, tracker, logger)
 			defer func() {
-				if dump {
-					p("Tracker analysis for %s:", tlsTest.name)
-					tracker.GetAnalysis().Print(t)
-				}
 				tracker.Clear()
 			}()
 
@@ -249,6 +237,13 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 				e("Expected MIGRATING notifications with %s TLS config, got none", tlsTest.name)
 			}
 
+			if errorsDetected {
+				logCollector.DumpLogs()
+				trackerAnalysis.Print(t)
+				logCollector.Clear()
+				tracker.Clear()
+				ef("[FAIL] Errors detected with %s TLS config", tlsTest.name)
+			}
 			// TLS-specific validations
 			stats := commandsRunner.GetStats()
 			switch tlsTest.name {

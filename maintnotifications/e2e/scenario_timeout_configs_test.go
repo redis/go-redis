@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -23,11 +24,23 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 	defer cancel()
 
 	var dump = true
+
+	var errorsDetected = false
 	var p = func(format string, args ...interface{}) {
-		format = "[%s][TIMEOUT-CONFIGS] " + format
+		_, filename, line, _ := runtime.Caller(1)
+		format = "%s:%d [%s][TIMEOUT-CONFIGS] " + format + "\n"
 		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{ts}, args...)
-		t.Logf(format, args...)
+		args = append([]interface{}{filename, line, ts}, args...)
+		fmt.Printf(format, args...)
+	}
+
+	var e = func(format string, args ...interface{}) {
+		errorsDetected = true
+		_, filename, line, _ := runtime.Caller(1)
+		format = "%s:%d [%s][TIMEOUT-CONFIGS][ERROR] " + format + "\n"
+		ts := time.Now().Format("15:04:05.000")
+		args = append([]interface{}{filename, line, ts}, args...)
+		fmt.Printf(format, args...)
 	}
 
 	// Test different timeout configurations
@@ -67,12 +80,6 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 
 	logCollector.ClearLogs()
 	defer func() {
-		if dump {
-			p("Dumping logs...")
-			logCollector.DumpLogs()
-			p("Log Analysis:")
-			logCollector.GetAnalysis().Print(t)
-		}
 		logCollector.Clear()
 	}()
 
@@ -100,22 +107,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 	// Test each timeout configuration
 	for _, timeoutTest := range timeoutConfigs {
 		t.Run(timeoutTest.name, func(t *testing.T) {
-			// redefine p and e for each test to get
-			// proper test name in logs and proper test failures
-			var p = func(format string, args ...interface{}) {
-				format = "[%s][TIMEOUT-CONFIGS] " + format
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Logf(format, args...)
-			}
-
-			var e = func(format string, args ...interface{}) {
-				format = "[%s][TIMEOUT-CONFIGS][ERROR] " + format
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Errorf(format, args...)
-			}
-
+			errorsDetected = false
 			var ef = func(format string, args ...interface{}) {
 				format = "[%s][TIMEOUT-CONFIGS][ERROR] " + format
 				ts := time.Now().Format("15:04:05.000")
@@ -157,10 +149,6 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
 			setupNotificationHooks(client, tracker, logger)
 			defer func() {
-				if dump {
-					p("Tracker analysis for %s:", timeoutTest.name)
-					tracker.GetAnalysis().Print(t)
-				}
 				tracker.Clear()
 			}()
 
@@ -271,7 +259,6 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			migrateData := logs2.ExtractDataFromLogMessage(match)
 			p("MIGRATING notification received for %s: %v", timeoutTest.name, migrateData)
 
-
 			// do a bind action
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "bind",
@@ -358,6 +345,13 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 				e("Expected successful handoffs with %s config, got none", timeoutTest.name)
 			}
 
+			if errorsDetected {
+				logCollector.DumpLogs()
+				trackerAnalysis.Print(t)
+				logCollector.Clear()
+				tracker.Clear()
+				ef("[FAIL] Errors detected with %s timeout config", timeoutTest.name)
+			}
 			p("Timeout configuration %s test completed successfully in %v", timeoutTest.name, testDuration)
 			p("Command runner stats:")
 			p("Operations: %d, Errors: %d, Timeout Errors: %d",

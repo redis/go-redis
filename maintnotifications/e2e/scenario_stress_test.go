@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -23,21 +24,25 @@ func TestStressPushNotifications(t *testing.T) {
 	defer cancel()
 
 	var dump = true
+	var errorsDetected = false
+
 	var p = func(format string, args ...interface{}) {
-		format = "[%s][STRESS] " + format
+		_, filename, line, _ := runtime.Caller(1)
+		format = "%s:%d [%s][STRESS] " + format + "\n"
 		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{ts}, args...)
-		t.Logf(format, args...)
+		args = append([]interface{}{filename, line, ts}, args...)
+		fmt.Printf(format, args...)
 	}
 
-	var errorsDetected = false
 	var e = func(format string, args ...interface{}) {
 		errorsDetected = true
-		format = "[%s][STRESS][ERROR] " + format
+		_, filename, line, _ := runtime.Caller(1)
+		format = "%s:%d [%s][STRESS][ERROR] " + format + "\n"
 		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{ts}, args...)
-		t.Errorf(format, args...)
+		args = append([]interface{}{filename, line, ts}, args...)
+		fmt.Printf(format, args...)
 	}
+
 	var ef = func(format string, args ...interface{}) {
 		errorsDetected = true
 		format = "[%s][STRESS][ERROR] " + format
@@ -48,12 +53,6 @@ func TestStressPushNotifications(t *testing.T) {
 
 	logCollector.ClearLogs()
 	defer func() {
-		if dump {
-			p("Dumping logs...")
-			logCollector.DumpLogs()
-			p("Log Analysis:")
-			logCollector.GetAnalysis().Print(t)
-		}
 		logCollector.Clear()
 	}()
 
@@ -118,10 +117,6 @@ func TestStressPushNotifications(t *testing.T) {
 		if dump {
 			p("Pool stats:")
 			factory.PrintPoolStats(t)
-			for i, tracker := range trackers {
-				p("Stress client %d analysis:", i)
-				tracker.GetAnalysis().Print(t)
-			}
 		}
 		for _, runner := range commandRunners {
 			runner.Stop()
@@ -195,7 +190,7 @@ func TestStressPushNotifications(t *testing.T) {
 				resp, err = faultInjector.TriggerAction(ctx, ActionRequest{
 					Type: "migrate",
 					Parameters: map[string]interface{}{
-						"bdb_id":        endpointConfig.BdbID,
+						"bdb_id": endpointConfig.BdbID,
 					},
 				})
 			}
@@ -297,6 +292,15 @@ func TestStressPushNotifications(t *testing.T) {
 
 	if errorsDetected {
 		ef("Errors detected under stress")
+		logCollector.DumpLogs()
+		for i, tracker := range trackers {
+			p("=== Stress Client %d Analysis ===", i)
+			tracker.GetAnalysis().Print(t)
+		}
+		logCollector.Clear()
+		for _, tracker := range trackers {
+			tracker.Clear()
+		}
 	}
 
 	dump = false
