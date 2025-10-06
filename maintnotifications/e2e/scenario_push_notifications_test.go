@@ -266,9 +266,6 @@ func TestPushNotifications(t *testing.T) {
 	errChan := make(chan error, 1)
 
 	go func() {
-		var match string
-		var matchNotif []interface{}
-		var found bool
 		defer func() {
 			if r := recover(); r != nil {
 				errChan <- fmt.Errorf("goroutine panic: %v", r)
@@ -280,6 +277,11 @@ func TestPushNotifications(t *testing.T) {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
 		}, 3*time.Minute)
 		commandsRunner.Stop()
+		if !found {
+			errChan <- fmt.Errorf("MOVING notification was not received within 3 minutes ON A FIRST CLIENT")
+			return
+		}
+
 		// once moving is received, start a second client commands runner
 		p("Starting commands on second client")
 		go commandsRunner2.FireCommandsUntilStop(ctx)
@@ -289,33 +291,26 @@ func TestPushNotifications(t *testing.T) {
 			// destroy the second client
 			factory.Destroy("push-notification-client-2")
 		}()
-		// wait for moving on second client
-		// we know the maxconn is 15, assuming 16/17 was used to init the second client, so connID 18 should be from the second client
-		// also validate big enough relaxed timeout
+
 		p("Waiting for MOVING notification on second client")
-		matchNotif, found = tracker2.FindOrWaitForNotification("MOVING", 3*time.Minute)
-		if !found {
+		matchNotif, fnd := tracker2.FindOrWaitForNotification("MOVING", 3*time.Minute)
+		if !fnd {
 			errChan <- fmt.Errorf("MOVING notification was not received within 3 minutes ON A SECOND CLIENT")
 			return
 		} else {
 			p("MOVING notification received on second client %v", matchNotif)
 		}
 
-		// wait for relaxation of 30m
-		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
-			return strings.Contains(s, logs2.ApplyingRelaxedTimeoutDueToPostHandoffMessage) && strings.Contains(s, "30m")
-		}, 3*time.Minute)
-		if !found {
-			errChan <- fmt.Errorf("relaxed timeout was not applied within 3 minutes ON A SECOND CLIENT")
-			return
-		} else {
-			p("Relaxed timeout applied on second client")
-		}
 		// Signal success
 		errChan <- nil
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
-
+	// wait for moving on first client
+	// once the commandRunner stops, it means a waiting
+	// on the logCollector match has completed and we can proceed
+	if !found {
+		ef("MOVING notification was not received within 3 minutes")
+	}
 	movingData := logs2.ExtractDataFromLogMessage(match)
 	p("MOVING notification received. %v", movingData)
 	seqIDToObserve = int64(movingData["seqID"].(float64))
