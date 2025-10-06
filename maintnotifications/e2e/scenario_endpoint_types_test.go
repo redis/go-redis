@@ -86,7 +86,10 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		t.Run(endpointTest.name, func(t *testing.T) {
 			// Clear logs between endpoint type tests
 			logCollector.Clear()
-			dump = true // reset dump flag
+			// reset errors detected flag
+			errorsDetected = false
+			// reset dump flag
+			dump = true
 			// redefine p and e for each test to get
 			// proper test name in logs and proper test failures
 			var p = func(format string, args ...interface{}) {
@@ -229,16 +232,6 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				ef("Failed to trigger migrate action for %s: %v", endpointTest.name, err)
 			}
 
-			// Wait for MIGRATING notification
-			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
-				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
-			}, 60*time.Second)
-			if !found {
-				ef("MIGRATING notification was not received for %s endpoint type", endpointTest.name)
-			}
-			migrateData := logs2.ExtractDataFromLogMessage(match)
-			p("MIGRATING notification received for %s: %v", endpointTest.name, migrateData)
-
 			// Wait for migration to complete
 			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
 				WithMaxWaitTime(240*time.Second),
@@ -248,6 +241,16 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				ef("[FI] Migrate action failed for %s: %v", endpointTest.name, err)
 			}
 			p("[FI] Migrate action completed for %s: %s", endpointTest.name, status.Status)
+
+			// Wait for MIGRATING notification
+			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
+				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
+			}, 60*time.Second)
+			if !found {
+				ef("MIGRATING notification was not received for %s endpoint type", endpointTest.name)
+			}
+			migrateData := logs2.ExtractDataFromLogMessage(match)
+			p("MIGRATING notification received for %s: %v", endpointTest.name, migrateData)
 
 			// Wait for MIGRATED notification
 			seqIDToObserve = int64(migrateData["seqID"].(float64))

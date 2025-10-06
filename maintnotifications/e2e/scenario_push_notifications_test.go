@@ -379,7 +379,7 @@ func TestPushNotifications(t *testing.T) {
 		if len(movingNotification) != 4 {
 			p("[NOTICE] Invalid MOVING notification format: %s", movingNotification)
 		}
-		mNotifTimeS, err := strconv.Atoi(movingNotification[2].(string))
+		mNotifTimeS, err := movingNotification[2].(int64)
 		if err != nil {
 			p("[NOTICE] Invalid timeS in MOVING notification: %s", movingNotification)
 		}
