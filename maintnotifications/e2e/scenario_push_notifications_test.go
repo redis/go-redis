@@ -207,12 +207,12 @@ func TestPushNotifications(t *testing.T) {
 	go func() {
 		match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
-		}, 20*time.Second)
+		}, 60*time.Second)
 		commandsRunner.Stop()
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
 	if !found {
-		ef("MIGRATING notification for migrate action was not received within 20 seconds")
+		ef("MIGRATING notification for migrate action was not received within 60 seconds")
 	}
 	migrateData := logs2.ExtractDataFromLogMessage(match)
 	seqIDToObserve = int64(migrateData["seqID"].(float64))

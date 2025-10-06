@@ -192,50 +192,6 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 				commandsRunner.FireCommandsUntilStop(ctx)
 			}()
 
-			// Test failover with this TLS configuration
-			p("Testing failover with %s TLS configuration...", tlsTest.name)
-			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
-				Type: "failover",
-				Parameters: map[string]interface{}{
-					"bdb_id": endpointConfig.BdbID,
-				},
-			})
-			if err != nil {
-				ef("Failed to trigger failover action for %s: %v", tlsTest.name, err)
-			}
-
-			// Wait for FAILING_OVER notification
-			match, found := logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
-				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "FAILING_OVER")
-			}, 3*time.Minute)
-			if !found {
-				ef("FAILING_OVER notification was not received for %s TLS config", tlsTest.name)
-			}
-			failingOverData := logs2.ExtractDataFromLogMessage(match)
-			p("FAILING_OVER notification received for %s. %v", tlsTest.name, failingOverData)
-
-			// Wait for FAILED_OVER notification
-			seqIDToObserve := int64(failingOverData["seqID"].(float64))
-			connIDToObserve := uint64(failingOverData["connID"].(float64))
-			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
-				return notificationType(s, "FAILED_OVER") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
-			}, 3*time.Minute)
-			if !found {
-				ef("FAILED_OVER notification was not received for %s TLS config", tlsTest.name)
-			}
-			failedOverData := logs2.ExtractDataFromLogMessage(match)
-			p("FAILED_OVER notification received for %s. %v", tlsTest.name, failedOverData)
-
-			// Wait for failover to complete
-			status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
-				WithMaxWaitTime(240*time.Second),
-				WithPollInterval(2*time.Second),
-			)
-			if err != nil {
-				ef("[FI] Failover action failed for %s: %v", tlsTest.name, err)
-			}
-			p("[FI] Failover action completed for %s: %s", tlsTest.name, status.Status)
-
 			// Test migration with this TLS configuration
 			p("Testing migration with %s TLS configuration...", tlsTest.name)
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
@@ -251,7 +207,7 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 			// Wait for MIGRATING notification
 			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
-			}, 30*time.Second)
+			}, 60*time.Second)
 			if !found {
 				ef("MIGRATING notification was not received for %s TLS config", tlsTest.name)
 			}

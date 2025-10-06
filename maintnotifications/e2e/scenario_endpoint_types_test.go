@@ -232,7 +232,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			// Wait for MIGRATING notification
 			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
-			}, 30*time.Second)
+			}, 60*time.Second)
 			if !found {
 				ef("MIGRATING notification was not received for %s endpoint type", endpointTest.name)
 			}

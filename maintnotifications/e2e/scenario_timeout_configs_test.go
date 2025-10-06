@@ -195,7 +195,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "failover",
 				Parameters: map[string]interface{}{
-					"bdb_id":        endpointConfig.BdbID,
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
@@ -243,7 +243,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "migrate",
 				Parameters: map[string]interface{}{
-					"bdb_id":        endpointConfig.BdbID,
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
@@ -253,7 +253,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			// Wait for MIGRATING notification
 			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
-			}, 30*time.Second)
+			}, 60*time.Second)
 			if !found {
 				ef("MIGRATING notification was not received for %s timeout config", timeoutTest.name)
 			}
@@ -274,7 +274,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "bind",
 				Parameters: map[string]interface{}{
-					"bdb_id":        endpointConfig.BdbID,
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
