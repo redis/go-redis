@@ -66,14 +66,12 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
 	}
 
-
 	// Create client factory from configuration
 	factory, err := CreateTestClientFactory("standalone")
 	if err != nil {
 		t.Skipf("Enterprise cluster not available, skipping endpoint types test: %v", err)
 	}
 	endpointConfig := factory.GetConfig()
-
 
 	defer func() {
 		if dump {
@@ -207,7 +205,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("[FI] Failover action failed for %s: %v", endpointTest.name, err)
 			}
-			p("[FI] Failover action completed for %s: %+v", endpointTest.name, status.Status)
+			p("[FI] Failover action completed for %s: %s %s", endpointTest.name, status.Status, actionOutputIfFailed(status))
 
 			// Test migration with this endpoint type
 			p("Testing migration with %s endpoint type...", endpointTest.name)
@@ -229,7 +227,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("[FI] Migrate action failed for %s: %v", endpointTest.name, err)
 			}
-			p("[FI] Migrate action completed for %s: %+v", endpointTest.name, status.Status)
+			p("[FI] Migrate action completed for %s: %s %s", endpointTest.name, status.Status, actionOutputIfFailed(status))
 
 			// Wait for MIGRATING notification
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
@@ -323,7 +321,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			if err != nil {
 				ef("Bind action failed for %s: %v", endpointTest.name, err)
 			}
-			p("Bind action completed for %s: %+v", endpointTest.name, bindStatus.Status)
+			p("Bind action completed for %s: %s %s", endpointTest.name, bindStatus.Status, actionOutputIfFailed(bindStatus))
 
 			// Continue traffic for analysis
 			time.Sleep(30 * time.Second)

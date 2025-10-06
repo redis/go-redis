@@ -166,7 +166,7 @@ func TestPushNotifications(t *testing.T) {
 	if err != nil {
 		ef("[FI] Failover action failed: %v", err)
 	}
-	p("[FI] Failover action completed: %+v", status.Status)
+	p("[FI] Failover action completed: %v %s", status.Status, actionOutputIfFailed(status))
 
 	p("FAILING_OVER / FAILED_OVER notifications test completed successfully")
 
@@ -203,7 +203,7 @@ func TestPushNotifications(t *testing.T) {
 	if err != nil {
 		ef("[FI] Migrate action failed: %v", err)
 	}
-	p("[FI] Migrate action completed: %+v", status.Status)
+	p("[FI] Migrate action completed: %s %s", status.Status, actionOutputIfFailed(status))
 
 	go func() {
 		p("Waiting for MIGRATED notification on conn %d with seqID %d...", connIDToObserve, seqIDToObserve+1)
@@ -382,7 +382,7 @@ func TestPushNotifications(t *testing.T) {
 		ef("Bind action failed: %v", err)
 	}
 
-	p("Bind action completed: %+v", bindStatus.Status)
+	p("Bind action completed: %s %s", bindStatus.Status, actionOutputIfFailed(bindStatus))
 
 	p("MOVING notification test completed successfully")
 

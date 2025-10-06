@@ -61,3 +61,16 @@ func printLog(group string, isError bool, format string, args ...interface{}) {
 	args = append([]interface{}{filename, line, ts, group}, args...)
 	fmt.Printf(finalFormat, args...)
 }
+
+func actionOutputIfFailed(status *ActionStatusResponse) string {
+	if status.Status != StatusFailed {
+		return ""
+	}
+	if status.Error != nil {
+		return fmt.Sprintf("%v", status.Error)
+	}
+	if status.Output == nil {
+		return ""
+	}
+	return fmt.Sprintf("%+v", status.Output)
+}
