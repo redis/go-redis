@@ -250,6 +250,17 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 				ef("Failed to trigger migrate action for %s: %v", timeoutTest.name, err)
 			}
 
+			// Wait for migration to complete
+			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
+			)
+			if err != nil {
+				ef("[FI] Migrate action failed for %s: %v", timeoutTest.name, err)
+			}
+
+			p("[FI] Migrate action completed for %s: %s", timeoutTest.name, status.Status)
+
 			// Wait for MIGRATING notification
 			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
@@ -260,15 +271,6 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			migrateData := logs2.ExtractDataFromLogMessage(match)
 			p("MIGRATING notification received for %s: %v", timeoutTest.name, migrateData)
 
-			// Wait for migration to complete
-			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
-				WithMaxWaitTime(240*time.Second),
-				WithPollInterval(2*time.Second),
-			)
-			if err != nil {
-				ef("[FI] Migrate action failed for %s: %v", timeoutTest.name, err)
-			}
-			p("[FI] Migrate action completed for %s: %s", timeoutTest.name, status.Status)
 
 			// do a bind action
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
