@@ -205,7 +205,7 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 			}
 
 			// Wait for MIGRATING notification
-			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
+			match, found := logCollector.WaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
 			}, 60*time.Second)
 			if !found {
@@ -215,7 +215,7 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 			p("MIGRATING notification received for %s: %v", tlsTest.name, migrateData)
 
 			// Wait for migration to complete
-			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
+			status, err := faultInjector.WaitForAction(ctx, migrateResp.ActionID,
 				WithMaxWaitTime(240*time.Second),
 				WithPollInterval(2*time.Second),
 			)
