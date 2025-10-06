@@ -199,10 +199,10 @@ func TestStressPushNotifications(t *testing.T) {
 			}
 
 			actionMutex.Lock()
-			actionResults = append(actionResults, fmt.Sprintf("%s: %+v", actionName, status))
+			actionResults = append(actionResults, fmt.Sprintf("%s: %+v", actionName, status.Status))
 			actionMutex.Unlock()
 
-			p("[FI] %s action completed: %+v", actionName, status)
+			p("[FI] %s action completed: %+v", actionName, status.Status)
 		}(action.name, action.action, action.delay)
 	}
 

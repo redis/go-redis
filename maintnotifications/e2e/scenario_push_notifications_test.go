@@ -166,7 +166,7 @@ func TestPushNotifications(t *testing.T) {
 	if err != nil {
 		ef("[FI] Failover action failed: %v", err)
 	}
-	p("[FI] Failover action completed: %+v", status)
+	p("[FI] Failover action completed: %+v", status.Status)
 
 	p("FAILING_OVER / FAILED_OVER notifications test completed successfully")
 
@@ -203,7 +203,7 @@ func TestPushNotifications(t *testing.T) {
 	if err != nil {
 		ef("[FI] Migrate action failed: %v", err)
 	}
-	p("[FI] Migrate action completed: %+v", status)
+	p("[FI] Migrate action completed: %+v", status.Status)
 
 	go func() {
 		p("Waiting for MIGRATED notification on conn %d with seqID %d...", connIDToObserve, seqIDToObserve+1)
@@ -266,6 +266,9 @@ func TestPushNotifications(t *testing.T) {
 	errChan := make(chan error, 1)
 
 	go func() {
+		var match string
+		var matchNotif []interface{}
+		var found bool
 		defer func() {
 			if r := recover(); r != nil {
 				errChan <- fmt.Errorf("goroutine panic: %v", r)
@@ -290,15 +293,14 @@ func TestPushNotifications(t *testing.T) {
 		// we know the maxconn is 15, assuming 16/17 was used to init the second client, so connID 18 should be from the second client
 		// also validate big enough relaxed timeout
 		p("Waiting for MOVING notification on second client")
-		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
-			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING") && connID(s, 18)
-		}, 3*time.Minute)
+		matchNotif, found = tracker2.FindOrWaitForNotification("MOVING", 3*time.Minute)
 		if !found {
 			errChan <- fmt.Errorf("MOVING notification was not received within 3 minutes ON A SECOND CLIENT")
 			return
 		} else {
-			p("MOVING notification received on second client %v", logs2.ExtractDataFromLogMessage(match))
+			p("MOVING notification received on second client %v", matchNotif)
 		}
+
 		// wait for relaxation of 30m
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 			return strings.Contains(s, logs2.ApplyingRelaxedTimeoutDueToPostHandoffMessage) && strings.Contains(s, "30m")
@@ -319,6 +321,7 @@ func TestPushNotifications(t *testing.T) {
 	seqIDToObserve = int64(movingData["seqID"].(float64))
 	connIDToObserve = uint64(movingData["connID"].(float64))
 
+	time.Sleep(3 * time.Second)
 	// start a third client but don't execute any commands on it
 	p("Starting a third client to observe notification during moving...")
 	client3, err := factory.Create("push-notification-client-2", &CreateClientOptions{
@@ -348,7 +351,7 @@ func TestPushNotifications(t *testing.T) {
 	p("Third client created")
 	go commandsRunner3.FireCommandsUntilStop(ctx)
 	// wait for moving on third client
-	movingNotification, found := tracker.FindOrWaitForNotification("MOVING", 3*time.Minute)
+	movingNotification, found := tracker3.FindOrWaitForNotification("MOVING", 3*time.Minute)
 	if !found {
 		p("[NOTICE] MOVING notification was not received within 3 minutes ON A THIRD CLIENT")
 	} else {
@@ -379,7 +382,7 @@ func TestPushNotifications(t *testing.T) {
 		ef("Bind action failed: %v", err)
 	}
 
-	p("Bind action completed: %+v", bindStatus)
+	p("Bind action completed: %+v", bindStatus.Status)
 
 	p("MOVING notification test completed successfully")
 
