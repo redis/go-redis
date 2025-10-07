@@ -500,19 +500,16 @@ func GetAvailableDatabases(configPath string) ([]string, error) {
 // ConvertEnvDatabaseConfigToFaultInjectorConfig converts EnvDatabaseConfig to fault injector DatabaseConfig
 func ConvertEnvDatabaseConfigToFaultInjectorConfig(envConfig EnvDatabaseConfig, name string) (DatabaseConfig, error) {
 	var port int
-	var dnsName string
 
 	// Extract port and DNS name from raw_endpoints or endpoints
 	if len(envConfig.RawEndpoints) > 0 {
 		endpoint := envConfig.RawEndpoints[0]
 		port = endpoint.Port
-		dnsName = endpoint.DNSName
 	} else if len(envConfig.Endpoints) > 0 {
 		endpointURL, err := url.Parse(envConfig.Endpoints[0])
 		if err != nil {
 			return DatabaseConfig{}, fmt.Errorf("failed to parse endpoint URL: %w", err)
 		}
-		dnsName = endpointURL.Hostname()
 		portStr := endpointURL.Port()
 		if portStr != "" {
 			port, err = strconv.Atoi(portStr)
