@@ -527,18 +527,30 @@ func ConvertEnvDatabaseConfigToFaultInjectorConfig(envConfig EnvDatabaseConfig, 
 	randomPortOffset := 1 + rand.Intn(10) // Random port offset to avoid conflicts
 
 	// Build the database config for fault injector
+	// TODO: Make this configurable
+	// IT is the defaults for a sharded database at the moment
 	dbConfig := DatabaseConfig{
-		Name:            name,
-		Port:            port + randomPortOffset,
-		MemorySize:      268435456, // 256MB default
-		Replication:     true,
-		EvictionPolicy:  "noeviction",
-		ProxyPolicy:     "single",
-		AutoUpgrade:     true,
-		Sharding:        true,
-		ShardsCount:     2,
+		Name:           name,
+		Port:           port + randomPortOffset,
+		MemorySize:     268435456, // 256MB default
+		Replication:    true,
+		EvictionPolicy: "noeviction",
+		ProxyPolicy:    "single",
+		AutoUpgrade:    true,
+		Sharding:       true,
+		ShardsCount:    2,
+		ShardKeyRegex: []ShardKeyRegexPattern{
+			{Regex: ".*\\{(?<tag>.*)\\}.*"},
+			{Regex: "(?<tag>.*)"},
+		},
 		ShardsPlacement: "dense",
-		OSSCluster:      false,
+		ModuleList: []DatabaseModule{
+			{ModuleArgs: "", ModuleName: "ReJSON"},
+			{ModuleArgs: "", ModuleName: "search"},
+			{ModuleArgs: "", ModuleName: "timeseries"},
+			{ModuleArgs: "", ModuleName: "bf"},
+		},
+		OSSCluster: false,
 	}
 
 	// If we have raw_endpoints with cluster info, configure for cluster
