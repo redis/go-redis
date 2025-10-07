@@ -23,14 +23,6 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
 
-	// Setup: Create fresh database and client factory for this test
-	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
-	defer cleanup()
-	t.Logf("[TLS-CONFIGS] Created test database with bdb_id: %d", bdbID)
-
-	// Wait for database to be fully ready
-	time.Sleep(10 * time.Second)
-
 	var dump = true
 	var errorsDetected = false
 	var p = func(format string, args ...interface{}) {
@@ -78,26 +70,30 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 		logCollector.Clear()
 	}()
 
-	// Get endpoint config from factory (now connected to new database)
-	endpointConfig := factory.GetConfig()
-
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
-	if err != nil {
-		t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
-	}
-
-	defer func() {
-		if dump {
-			p("Pool stats:")
-			factory.PrintPoolStats(t)
-		}
-		// Note: factory.DestroyAll() is called by cleanup() function
-	}()
-
-	// Test each TLS configuration
+	// Test each TLS configuration with its own fresh database
 	for _, tlsTest := range tlsConfigs {
 		t.Run(tlsTest.name, func(t *testing.T) {
+			// Setup: Create fresh database and client factory for THIS TLS config test
+			bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+			defer cleanup()
+			t.Logf("[TLS-CONFIGS-%s] Created test database with bdb_id: %d", tlsTest.name, bdbID)
+
+			// Get endpoint config from factory (now connected to new database)
+			endpointConfig := factory.GetConfig()
+
+			// Create fault injector
+			faultInjector, err := CreateTestFaultInjector()
+			if err != nil {
+				t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
+			}
+
+			defer func() {
+				if dump {
+					p("Pool stats:")
+					factory.PrintPoolStats(t)
+				}
+			}()
+
 			errorsDetected = false
 			var ef = func(format string, args ...interface{}) {
 				printLog("TLS-CONFIGS", true, format, args...)

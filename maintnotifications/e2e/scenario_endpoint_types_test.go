@@ -24,14 +24,6 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
 
-	// Setup: Create fresh database and client factory for this test
-	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
-	defer cleanup()
-	t.Logf("[ENDPOINT-TYPES] Created test database with bdb_id: %d", bdbID)
-
-	// Wait for database to be fully ready
-	time.Sleep(10 * time.Second)
-
 	var dump = true
 	var errorsDetected = false
 
@@ -62,26 +54,29 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		logCollector.Clear()
 	}()
 
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
-	if err != nil {
-		t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
-	}
-
-	// Get endpoint config from factory (now connected to new database)
-	endpointConfig := factory.GetConfig()
-
-	defer func() {
-		if dump {
-			fmt.Println("Pool stats:")
-			factory.PrintPoolStats(t)
-		}
-		// Note: factory.DestroyAll() is called by cleanup() function
-	}()
-
-	// Test each endpoint type
+	// Test each endpoint type with its own fresh database
 	for _, endpointTest := range endpointTypes {
 		t.Run(endpointTest.name, func(t *testing.T) {
+			// Setup: Create fresh database and client factory for THIS endpoint type test
+			bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+			defer cleanup()
+			t.Logf("[ENDPOINT-TYPES-%s] Created test database with bdb_id: %d", endpointTest.name, bdbID)
+
+			// Create fault injector
+			faultInjector, err := CreateTestFaultInjector()
+			if err != nil {
+				t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
+			}
+
+			// Get endpoint config from factory (now connected to new database)
+			endpointConfig := factory.GetConfig()
+
+			defer func() {
+				if dump {
+					fmt.Println("Pool stats:")
+					factory.PrintPoolStats(t)
+				}
+			}()
 			// Clear logs between endpoint type tests
 			logCollector.Clear()
 			// reset errors detected flag

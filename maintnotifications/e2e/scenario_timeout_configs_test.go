@@ -22,14 +22,6 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	// Setup: Create fresh database and client factory for this test
-	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
-	defer cleanup()
-	t.Logf("[TIMEOUT-CONFIGS] Created test database with bdb_id: %d", bdbID)
-
-	// Wait for database to be fully ready
-	time.Sleep(10 * time.Second)
-
 	var dump = true
 
 	var errorsDetected = false
@@ -82,26 +74,30 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 		logCollector.Clear()
 	}()
 
-	// Get endpoint config from factory (now connected to new database)
-	endpointConfig := factory.GetConfig()
-
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
-	if err != nil {
-		t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
-	}
-
-	defer func() {
-		if dump {
-			p("Pool stats:")
-			factory.PrintPoolStats(t)
-		}
-		// Note: factory.DestroyAll() is called by cleanup() function
-	}()
-
-	// Test each timeout configuration
+	// Test each timeout configuration with its own fresh database
 	for _, timeoutTest := range timeoutConfigs {
 		t.Run(timeoutTest.name, func(t *testing.T) {
+			// Setup: Create fresh database and client factory for THIS timeout config test
+			bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+			defer cleanup()
+			t.Logf("[TIMEOUT-CONFIGS-%s] Created test database with bdb_id: %d", timeoutTest.name, bdbID)
+
+			// Get endpoint config from factory (now connected to new database)
+			endpointConfig := factory.GetConfig()
+
+			// Create fault injector
+			faultInjector, err := CreateTestFaultInjector()
+			if err != nil {
+				t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
+			}
+
+			defer func() {
+				if dump {
+					p("Pool stats:")
+					factory.PrintPoolStats(t)
+				}
+			}()
+
 			errorsDetected = false
 			var ef = func(format string, args ...interface{}) {
 				printLog("TIMEOUT-CONFIGS", true, format, args...)
