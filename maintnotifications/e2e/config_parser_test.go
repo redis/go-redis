@@ -684,8 +684,9 @@ func (m *TestDatabaseManager) Cleanup(ctx context.Context) {
 
 // SetupTestDatabaseFromEnv creates a database from environment config and returns a cleanup function
 // Usage:
-//   cleanup := SetupTestDatabaseFromEnv(t, ctx, "my-test-db")
-//   defer cleanup()
+//
+//	cleanup := SetupTestDatabaseFromEnv(t, ctx, "my-test-db")
+//	defer cleanup()
 func SetupTestDatabaseFromEnv(t *testing.T, ctx context.Context, databaseName string) (bdbID int, cleanup func()) {
 	// Get environment config
 	envConfig, err := GetEnvConfig()
@@ -743,8 +744,9 @@ func SetupTestDatabaseFromEnv(t *testing.T, ctx context.Context, databaseName st
 
 // SetupTestDatabaseWithConfig creates a database with custom config and returns a cleanup function
 // Usage:
-//   bdbID, cleanup := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
-//   defer cleanup()
+//
+//	bdbID, cleanup := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
+//	defer cleanup()
 func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig DatabaseConfig) (bdbID int, cleanup func()) {
 	// Create fault injector
 	faultInjector, err := CreateTestFaultInjector()
@@ -772,8 +774,9 @@ func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig Dat
 // SetupTestDatabaseAndFactory creates a database from environment config and returns both bdbID, factory, and cleanup function
 // This is the recommended way to setup tests as it ensures the client factory connects to the newly created database
 // Usage:
-//   bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
-//   defer cleanup()
+//
+//	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+//	defer cleanup()
 func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName string) (bdbID int, factory *ClientFactory, cleanup func()) {
 	// Create the database
 	bdbID, cleanupDB := SetupTestDatabaseFromEnv(t, ctx, databaseName)
@@ -796,8 +799,9 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 
 // SetupTestDatabaseAndFactoryWithConfig creates a database with custom config and returns both bdbID, factory, and cleanup function
 // Usage:
-//   bdbID, factory, cleanup := SetupTestDatabaseAndFactoryWithConfig(t, ctx, "standalone", dbConfig)
-//   defer cleanup()
+//
+//	bdbID, factory, cleanup := SetupTestDatabaseAndFactoryWithConfig(t, ctx, "standalone", dbConfig)
+//	defer cleanup()
 func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, databaseName string, dbConfig DatabaseConfig) (bdbID int, factory *ClientFactory, cleanup func()) {
 	// Create the database
 	bdbID, cleanupDB := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
