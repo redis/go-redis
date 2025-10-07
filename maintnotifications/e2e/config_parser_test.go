@@ -181,6 +181,73 @@ func GetDatabaseConfig(databasesConfig EnvDatabasesConfig, databaseName string) 
 	}, nil
 }
 
+// ConvertEnvDatabaseConfigToRedisConnectionConfig converts EnvDatabaseConfig to RedisConnectionConfig
+func ConvertEnvDatabaseConfigToRedisConnectionConfig(dbConfig EnvDatabaseConfig) (*RedisConnectionConfig, error) {
+	// Parse connection details from endpoints or raw_endpoints
+	var host string
+	var port int
+
+	if len(dbConfig.RawEndpoints) > 0 {
+		// Use raw_endpoints if available (for more complex configurations)
+		endpoint := dbConfig.RawEndpoints[0] // Use the first endpoint
+		host = endpoint.DNSName
+		port = endpoint.Port
+	} else if len(dbConfig.Endpoints) > 0 {
+		// Parse from endpoints URLs
+		endpointURL, err := url.Parse(dbConfig.Endpoints[0])
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse endpoint URL %s: %w", dbConfig.Endpoints[0], err)
+		}
+
+		host = endpointURL.Hostname()
+		portStr := endpointURL.Port()
+		if portStr == "" {
+			// Default ports based on scheme
+			switch endpointURL.Scheme {
+			case "redis":
+				port = 6379
+			case "rediss":
+				port = 6380
+			default:
+				port = 6379
+			}
+		} else {
+			port, err = strconv.Atoi(portStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid port in endpoint URL %s: %w", dbConfig.Endpoints[0], err)
+			}
+		}
+
+		// Override TLS setting based on scheme if not explicitly set
+		if endpointURL.Scheme == "rediss" {
+			dbConfig.TLS = true
+		}
+	} else {
+		return nil, fmt.Errorf("no endpoints found in database configuration")
+	}
+
+	var bdbId int
+	switch dbConfig.BdbID.(type) {
+	case int:
+		bdbId = dbConfig.BdbID.(int)
+	case float64:
+		bdbId = int(dbConfig.BdbID.(float64))
+	case string:
+		bdbId, _ = strconv.Atoi(dbConfig.BdbID.(string))
+	}
+
+	return &RedisConnectionConfig{
+		Host:                 host,
+		Port:                 port,
+		Username:             dbConfig.Username,
+		Password:             dbConfig.Password,
+		TLS:                  dbConfig.TLS,
+		BdbID:                bdbId,
+		CertificatesLocation: dbConfig.CertificatesLocation,
+		Endpoints:            dbConfig.Endpoints,
+	}, nil
+}
+
 // ClientFactory manages Redis client creation and lifecycle
 type ClientFactory struct {
 	config  *RedisConnectionConfig
@@ -606,6 +673,7 @@ func (m *TestDatabaseManager) CreateDatabaseFromEnvConfig(ctx context.Context, e
 }
 
 // CreateDatabase creates a database and waits for it to be ready
+// Returns the bdb_id of the created database
 func (m *TestDatabaseManager) CreateDatabase(ctx context.Context, dbConfig DatabaseConfig) (int, error) {
 	m.t.Logf("Creating database '%s' on port %d...", dbConfig.Name, dbConfig.Port)
 
@@ -648,6 +716,122 @@ func (m *TestDatabaseManager) CreateDatabase(ctx context.Context, dbConfig Datab
 	m.t.Logf("Database created successfully with bdb_id: %d", bdbID)
 
 	return bdbID, nil
+}
+
+// CreateDatabaseAndGetConfig creates a database and returns both the bdb_id and the full connection config from the fault injector response
+// This includes endpoints, username, password, TLS settings, and raw_endpoints
+func (m *TestDatabaseManager) CreateDatabaseAndGetConfig(ctx context.Context, dbConfig DatabaseConfig) (int, EnvDatabaseConfig, error) {
+	m.t.Logf("Creating database '%s' on port %d...", dbConfig.Name, dbConfig.Port)
+
+	resp, err := m.faultInjector.CreateDatabase(ctx, m.clusterIndex, dbConfig)
+	if err != nil {
+		return 0, EnvDatabaseConfig{}, fmt.Errorf("failed to trigger database creation: %w", err)
+	}
+
+	m.t.Logf("Database creation triggered. Action ID: %s", resp.ActionID)
+
+	// Wait for creation to complete
+	status, err := m.faultInjector.WaitForAction(ctx, resp.ActionID,
+		WithMaxWaitTime(5*time.Minute),
+		WithPollInterval(5*time.Second))
+	if err != nil {
+		return 0, EnvDatabaseConfig{}, fmt.Errorf("failed to wait for database creation: %w", err)
+	}
+
+	if status.Status != StatusSuccess {
+		return 0, EnvDatabaseConfig{}, fmt.Errorf("database creation failed: %v", status.Error)
+	}
+
+	// Extract database configuration from output
+	var envConfig EnvDatabaseConfig
+	if status.Output == nil {
+		return 0, EnvDatabaseConfig{}, fmt.Errorf("no output in creation response")
+	}
+
+	// Extract bdb_id
+	var bdbID int
+	if id, ok := status.Output["bdb_id"].(float64); ok {
+		bdbID = int(id)
+		envConfig.BdbID = bdbID
+	} else {
+		return 0, EnvDatabaseConfig{}, fmt.Errorf("failed to extract bdb_id from creation output")
+	}
+
+	// Extract username
+	if username, ok := status.Output["username"].(string); ok {
+		envConfig.Username = username
+	}
+
+	// Extract password
+	if password, ok := status.Output["password"].(string); ok {
+		envConfig.Password = password
+	}
+
+	// Extract TLS setting
+	if tls, ok := status.Output["tls"].(bool); ok {
+		envConfig.TLS = tls
+	}
+
+	// Extract endpoints
+	if endpoints, ok := status.Output["endpoints"].([]interface{}); ok {
+		envConfig.Endpoints = make([]string, 0, len(endpoints))
+		for _, ep := range endpoints {
+			if epStr, ok := ep.(string); ok {
+				envConfig.Endpoints = append(envConfig.Endpoints, epStr)
+			}
+		}
+	}
+
+	// Extract raw_endpoints
+	if rawEndpoints, ok := status.Output["raw_endpoints"].([]interface{}); ok {
+		envConfig.RawEndpoints = make([]DatabaseEndpoint, 0, len(rawEndpoints))
+		for _, rawEp := range rawEndpoints {
+			if rawEpMap, ok := rawEp.(map[string]interface{}); ok {
+				var dbEndpoint DatabaseEndpoint
+
+				// Extract addr
+				if addr, ok := rawEpMap["addr"].([]interface{}); ok {
+					dbEndpoint.Addr = make([]string, 0, len(addr))
+					for _, a := range addr {
+						if aStr, ok := a.(string); ok {
+							dbEndpoint.Addr = append(dbEndpoint.Addr, aStr)
+						}
+					}
+				}
+
+				// Extract other fields
+				if addrType, ok := rawEpMap["addr_type"].(string); ok {
+					dbEndpoint.AddrType = addrType
+				}
+				if dnsName, ok := rawEpMap["dns_name"].(string); ok {
+					dbEndpoint.DNSName = dnsName
+				}
+				if preferredEndpointType, ok := rawEpMap["oss_cluster_api_preferred_endpoint_type"].(string); ok {
+					dbEndpoint.OSSClusterAPIPreferredEndpointType = preferredEndpointType
+				}
+				if preferredIPType, ok := rawEpMap["oss_cluster_api_preferred_ip_type"].(string); ok {
+					dbEndpoint.OSSClusterAPIPreferredIPType = preferredIPType
+				}
+				if port, ok := rawEpMap["port"].(float64); ok {
+					dbEndpoint.Port = int(port)
+				}
+				if proxyPolicy, ok := rawEpMap["proxy_policy"].(string); ok {
+					dbEndpoint.ProxyPolicy = proxyPolicy
+				}
+				if uid, ok := rawEpMap["uid"].(string); ok {
+					dbEndpoint.UID = uid
+				}
+
+				envConfig.RawEndpoints = append(envConfig.RawEndpoints, dbEndpoint)
+			}
+		}
+	}
+
+	m.createdBdbID = bdbID
+	m.t.Logf("Database created successfully with bdb_id: %d", bdbID)
+	m.t.Logf("Database endpoints: %v", envConfig.Endpoints)
+
+	return bdbID, envConfig, nil
 }
 
 // DeleteDatabase deletes the created database
@@ -823,65 +1007,52 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 		t.Fatalf("Database %s not found in configuration", databaseName)
 	}
 
-	// Convert to DatabaseConfig to get the port
+	// Convert to DatabaseConfig
 	dbConfig, err := ConvertEnvDatabaseConfigToFaultInjectorConfig(envDbConfig, fmt.Sprintf("e2e-test-%s-%d", databaseName, time.Now().Unix()))
 	if err != nil {
 		t.Fatalf("Failed to convert config: %v", err)
 	}
 
-	// Create the database
-	bdbID, cleanupDB := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
-
-	// Update the environment config with the new database's connection details
-	// The new database uses the port we specified in dbConfig
-	newEnvConfig := envDbConfig
-	newEnvConfig.BdbID = bdbID
-
-	// Update endpoints to point to the new database's port
-	// Extract host from original endpoints
-	var host string
-	var scheme string
-	if len(envDbConfig.Endpoints) > 0 {
-		// Parse the first endpoint to get host and scheme
-		endpoint := envDbConfig.Endpoints[0]
-		if strings.HasPrefix(endpoint, "redis://") {
-			scheme = "redis"
-			host = strings.TrimPrefix(endpoint, "redis://")
-		} else if strings.HasPrefix(endpoint, "rediss://") {
-			scheme = "rediss"
-			host = strings.TrimPrefix(endpoint, "rediss://")
-		}
-		// Remove port from host if present
-		if colonIdx := strings.Index(host, ":"); colonIdx != -1 {
-			host = host[:colonIdx]
-		}
+	// Create fault injector
+	faultInjector, err := CreateTestFaultInjector()
+	if err != nil {
+		t.Fatalf("Failed to create fault injector: %v", err)
 	}
 
-	// If we couldn't extract host, use localhost as fallback
-	if host == "" {
-		host = "localhost"
-	}
-	if scheme == "" {
-		if envDbConfig.TLS {
-			scheme = "rediss"
-		} else {
-			scheme = "redis"
-		}
+	// Create database manager
+	dbManager := NewTestDatabaseManager(t, faultInjector, 0)
+
+	// Create the database and get the actual connection config from fault injector
+	bdbID, newEnvConfig, err := dbManager.CreateDatabaseAndGetConfig(ctx, dbConfig)
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
 	}
 
-	// Construct new endpoint with the new database's port
-	newEndpoint := fmt.Sprintf("%s://%s:%d", scheme, host, dbConfig.Port)
-	newEnvConfig.Endpoints = []string{newEndpoint}
+	t.Logf("Database created successfully:")
+	t.Logf("  bdb_id: %d", bdbID)
+	t.Logf("  endpoints: %v", newEnvConfig.Endpoints)
+	t.Logf("  username: %s", newEnvConfig.Username)
+	t.Logf("  TLS: %v", newEnvConfig.TLS)
 
-	t.Logf("New database endpoint: %s (bdb_id: %d)", newEndpoint, bdbID)
+	// Use certificate location from original config if not provided by fault injector
+	if newEnvConfig.CertificatesLocation == "" && envDbConfig.CertificatesLocation != "" {
+		newEnvConfig.CertificatesLocation = envDbConfig.CertificatesLocation
+	}
 
-	// Create client factory with the updated config
-	factory = NewClientFactory(newEnvConfig)
+	// Convert EnvDatabaseConfig to RedisConnectionConfig
+	redisConfig, err := ConvertEnvDatabaseConfigToRedisConnectionConfig(newEnvConfig)
+	if err != nil {
+		dbManager.Cleanup(ctx)
+		t.Fatalf("Failed to convert database config: %v", err)
+	}
+
+	// Create client factory with the actual config from fault injector
+	factory = NewClientFactory(redisConfig)
 
 	// Combined cleanup function
 	cleanup = func() {
 		factory.DestroyAll()
-		cleanupDB()
+		dbManager.Cleanup(ctx)
 	}
 
 	return bdbID, factory, cleanup
@@ -923,58 +1094,46 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 		t.Fatalf("Database %s not found in configuration", databaseName)
 	}
 
-	// Create the database
-	bdbID, cleanupDB := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
-
-	// Update the environment config with the new database's connection details
-	newEnvConfig := envDbConfig
-	newEnvConfig.BdbID = bdbID
-
-	// Update endpoints to point to the new database's port
-	// Extract host from original endpoints
-	var host string
-	var scheme string
-	if len(envDbConfig.Endpoints) > 0 {
-		// Parse the first endpoint to get host and scheme
-		endpoint := envDbConfig.Endpoints[0]
-		if strings.HasPrefix(endpoint, "redis://") {
-			scheme = "redis"
-			host = strings.TrimPrefix(endpoint, "redis://")
-		} else if strings.HasPrefix(endpoint, "rediss://") {
-			scheme = "rediss"
-			host = strings.TrimPrefix(endpoint, "rediss://")
-		}
-		// Remove port from host if present
-		if colonIdx := strings.Index(host, ":"); colonIdx != -1 {
-			host = host[:colonIdx]
-		}
+	// Create fault injector
+	faultInjector, err := CreateTestFaultInjector()
+	if err != nil {
+		t.Fatalf("Failed to create fault injector: %v", err)
 	}
 
-	// If we couldn't extract host, use localhost as fallback
-	if host == "" {
-		host = "localhost"
-	}
-	if scheme == "" {
-		if envDbConfig.TLS {
-			scheme = "rediss"
-		} else {
-			scheme = "redis"
-		}
+	// Create database manager
+	dbManager := NewTestDatabaseManager(t, faultInjector, 0)
+
+	// Create the database and get the actual connection config from fault injector
+	bdbID, newEnvConfig, err := dbManager.CreateDatabaseAndGetConfig(ctx, dbConfig)
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
 	}
 
-	// Construct new endpoint with the new database's port
-	newEndpoint := fmt.Sprintf("%s://%s:%d", scheme, host, dbConfig.Port)
-	newEnvConfig.Endpoints = []string{newEndpoint}
+	t.Logf("Database created successfully:")
+	t.Logf("  bdb_id: %d", bdbID)
+	t.Logf("  endpoints: %v", newEnvConfig.Endpoints)
+	t.Logf("  username: %s", newEnvConfig.Username)
+	t.Logf("  TLS: %v", newEnvConfig.TLS)
 
-	t.Logf("New database endpoint: %s (bdb_id: %d)", newEndpoint, bdbID)
+	// Use certificate location from original config if not provided by fault injector
+	if newEnvConfig.CertificatesLocation == "" && envDbConfig.CertificatesLocation != "" {
+		newEnvConfig.CertificatesLocation = envDbConfig.CertificatesLocation
+	}
 
-	// Create client factory with the updated config
-	factory = NewClientFactory(newEnvConfig)
+	// Convert EnvDatabaseConfig to RedisConnectionConfig
+	redisConfig, err := ConvertEnvDatabaseConfigToRedisConnectionConfig(newEnvConfig)
+	if err != nil {
+		dbManager.Cleanup(ctx)
+		t.Fatalf("Failed to convert database config: %v", err)
+	}
+
+	// Create client factory with the actual config from fault injector
+	factory = NewClientFactory(redisConfig)
 
 	// Combined cleanup function
 	cleanup = func() {
 		factory.DestroyAll()
-		cleanupDB()
+		dbManager.Cleanup(ctx)
 	}
 
 	return bdbID, factory, cleanup
