@@ -157,7 +157,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			}()
 
 			// Test failover with this endpoint type
-			p("Testing failover with %s endpoint type on database %s[bdb_id:%s]...", endpointTest.name, endpointConfig.Name, endpointConfig.BdbID)
+			p("Testing failover with %s endpoint type on database [bdb_id:%s]...", endpointTest.name, endpointConfig.BdbID)
 			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "failover",
 				Parameters: map[string]interface{}{

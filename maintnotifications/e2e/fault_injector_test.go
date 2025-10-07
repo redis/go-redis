@@ -124,6 +124,7 @@ func (c *FaultInjectorClient) ListActions(ctx context.Context) ([]ActionType, er
 // TriggerAction triggers a specific action
 func (c *FaultInjectorClient) TriggerAction(ctx context.Context, action ActionRequest) (*ActionResponse, error) {
 	var response ActionResponse
+	fmt.Printf("[FI] Triggering action: %+v\n", action)
 	err := c.request(ctx, "POST", "/action", action, &response)
 	return &response, err
 }
