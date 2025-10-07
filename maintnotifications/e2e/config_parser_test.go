@@ -28,8 +28,8 @@ type DatabaseEndpoint struct {
 	UID                                string   `json:"uid"`
 }
 
-// DatabaseConfig represents the configuration for a single database
-type DatabaseConfig struct {
+// EnvDatabaseConfig represents the configuration for a single database
+type EnvDatabaseConfig struct {
 	BdbID                interface{}        `json:"bdb_id,omitempty"`
 	Username             string             `json:"username,omitempty"`
 	Password             string             `json:"password,omitempty"`
@@ -39,8 +39,8 @@ type DatabaseConfig struct {
 	Endpoints            []string           `json:"endpoints"`
 }
 
-// DatabasesConfig represents the complete configuration file structure
-type DatabasesConfig map[string]DatabaseConfig
+// EnvDatabasesConfig represents the complete configuration file structure
+type EnvDatabasesConfig map[string]EnvDatabaseConfig
 
 // EnvConfig represents environment configuration for test scenarios
 type EnvConfig struct {
@@ -80,13 +80,13 @@ func GetEnvConfig() (*EnvConfig, error) {
 }
 
 // GetDatabaseConfigFromEnv reads database configuration from a file
-func GetDatabaseConfigFromEnv(filePath string) (DatabasesConfig, error) {
+func GetDatabaseConfigFromEnv(filePath string) (EnvDatabasesConfig, error) {
 	fileContent, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read database config from %s: %w", filePath, err)
 	}
 
-	var config DatabasesConfig
+	var config EnvDatabasesConfig
 	if err := json.Unmarshal(fileContent, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse database config from %s: %w", filePath, err)
 	}
@@ -95,8 +95,8 @@ func GetDatabaseConfigFromEnv(filePath string) (DatabasesConfig, error) {
 }
 
 // GetDatabaseConfig gets Redis connection parameters for a specific database
-func GetDatabaseConfig(databasesConfig DatabasesConfig, databaseName string) (*RedisConnectionConfig, error) {
-	var dbConfig DatabaseConfig
+func GetDatabaseConfig(databasesConfig EnvDatabasesConfig, databaseName string) (*RedisConnectionConfig, error) {
+	var dbConfig EnvDatabaseConfig
 	var exists bool
 
 	if databaseName == "" {
@@ -447,6 +447,30 @@ func CreateTestClientFactory(databaseName string) (*ClientFactory, error) {
 	return NewClientFactory(dbConfig), nil
 }
 
+// CreateTestClientFactoryWithBdbID creates a client factory using a specific bdb_id
+// This is useful when you've created a fresh database and want to connect to it
+func CreateTestClientFactoryWithBdbID(databaseName string, bdbID int) (*ClientFactory, error) {
+	envConfig, err := GetEnvConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get environment config: %w", err)
+	}
+
+	databasesConfig, err := GetDatabaseConfigFromEnv(envConfig.RedisEndpointsConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database config: %w", err)
+	}
+
+	dbConfig, err := GetDatabaseConfig(databasesConfig, databaseName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database config for %s: %w", databaseName, err)
+	}
+
+	// Override the bdb_id with the newly created database ID
+	dbConfig.BdbID = bdbID
+
+	return NewClientFactory(dbConfig), nil
+}
+
 // CreateTestFaultInjector creates a fault injector client from environment configuration
 func CreateTestFaultInjector() (*FaultInjectorClient, error) {
 	envConfig, err := GetEnvConfig()
@@ -470,4 +494,325 @@ func GetAvailableDatabases(configPath string) ([]string, error) {
 	}
 
 	return databases, nil
+}
+
+// ConvertEnvDatabaseConfigToFaultInjectorConfig converts EnvDatabaseConfig to fault injector DatabaseConfig
+func ConvertEnvDatabaseConfigToFaultInjectorConfig(envConfig EnvDatabaseConfig, name string) (DatabaseConfig, error) {
+	var port int
+	var dnsName string
+
+	// Extract port and DNS name from raw_endpoints or endpoints
+	if len(envConfig.RawEndpoints) > 0 {
+		endpoint := envConfig.RawEndpoints[0]
+		port = endpoint.Port
+		dnsName = endpoint.DNSName
+	} else if len(envConfig.Endpoints) > 0 {
+		endpointURL, err := url.Parse(envConfig.Endpoints[0])
+		if err != nil {
+			return DatabaseConfig{}, fmt.Errorf("failed to parse endpoint URL: %w", err)
+		}
+		dnsName = endpointURL.Hostname()
+		portStr := endpointURL.Port()
+		if portStr != "" {
+			port, err = strconv.Atoi(portStr)
+			if err != nil {
+				return DatabaseConfig{}, fmt.Errorf("invalid port: %w", err)
+			}
+		} else {
+			port = 6379 // default
+		}
+	} else {
+		return DatabaseConfig{}, fmt.Errorf("no endpoints found in configuration")
+	}
+
+	// Build the database config for fault injector
+	dbConfig := DatabaseConfig{
+		Name:           name,
+		Port:           port,
+		MemorySize:     268435456, // 256MB default
+		Replication:    false,
+		EvictionPolicy: "noeviction",
+		Sharding:       false,
+		AutoUpgrade:    true,
+		ShardsCount:    1,
+		OSSCluster:     false,
+	}
+
+	// If we have raw_endpoints with cluster info, configure for cluster
+	if len(envConfig.RawEndpoints) > 0 {
+		endpoint := envConfig.RawEndpoints[0]
+
+		// Check if this is a cluster configuration
+		if endpoint.ProxyPolicy != "" && endpoint.ProxyPolicy != "single" {
+			dbConfig.OSSCluster = true
+			dbConfig.Sharding = true
+			dbConfig.ShardsCount = 3 // default for cluster
+			dbConfig.ProxyPolicy = endpoint.ProxyPolicy
+			dbConfig.Replication = true
+		}
+
+		if endpoint.OSSClusterAPIPreferredIPType != "" {
+			dbConfig.OSSClusterAPIPreferredIPType = endpoint.OSSClusterAPIPreferredIPType
+		}
+	}
+
+	return dbConfig, nil
+}
+
+// TestDatabaseManager manages database lifecycle for tests
+type TestDatabaseManager struct {
+	faultInjector *FaultInjectorClient
+	clusterIndex  int
+	createdBdbID  int
+	dbConfig      DatabaseConfig
+	t             *testing.T
+}
+
+// NewTestDatabaseManager creates a new test database manager
+func NewTestDatabaseManager(t *testing.T, faultInjector *FaultInjectorClient, clusterIndex int) *TestDatabaseManager {
+	return &TestDatabaseManager{
+		faultInjector: faultInjector,
+		clusterIndex:  clusterIndex,
+		t:             t,
+	}
+}
+
+// CreateDatabaseFromEnvConfig creates a database using EnvDatabaseConfig
+func (m *TestDatabaseManager) CreateDatabaseFromEnvConfig(ctx context.Context, envConfig EnvDatabaseConfig, name string) (int, error) {
+	// Convert EnvDatabaseConfig to DatabaseConfig
+	dbConfig, err := ConvertEnvDatabaseConfigToFaultInjectorConfig(envConfig, name)
+	if err != nil {
+		return 0, fmt.Errorf("failed to convert config: %w", err)
+	}
+
+	m.dbConfig = dbConfig
+	return m.CreateDatabase(ctx, dbConfig)
+}
+
+// CreateDatabase creates a database and waits for it to be ready
+func (m *TestDatabaseManager) CreateDatabase(ctx context.Context, dbConfig DatabaseConfig) (int, error) {
+	m.t.Logf("Creating database '%s' on port %d...", dbConfig.Name, dbConfig.Port)
+
+	resp, err := m.faultInjector.CreateDatabase(ctx, m.clusterIndex, dbConfig)
+	if err != nil {
+		return 0, fmt.Errorf("failed to trigger database creation: %w", err)
+	}
+
+	m.t.Logf("Database creation triggered. Action ID: %s", resp.ActionID)
+
+	// Wait for creation to complete
+	status, err := m.faultInjector.WaitForAction(ctx, resp.ActionID,
+		WithMaxWaitTime(5*time.Minute),
+		WithPollInterval(5*time.Second))
+	if err != nil {
+		return 0, fmt.Errorf("failed to wait for database creation: %w", err)
+	}
+
+	if status.Status != StatusSuccess {
+		return 0, fmt.Errorf("database creation failed: %v", status.Error)
+	}
+
+	// Extract bdb_id from output
+	var bdbID int
+	if status.Output != nil {
+		if id, ok := status.Output["bdb_id"].(float64); ok {
+			bdbID = int(id)
+		} else if resultMap, ok := status.Output["result"].(map[string]interface{}); ok {
+			if id, ok := resultMap["bdb_id"].(float64); ok {
+				bdbID = int(id)
+			}
+		}
+	}
+
+	if bdbID == 0 {
+		return 0, fmt.Errorf("failed to extract bdb_id from creation output")
+	}
+
+	m.createdBdbID = bdbID
+	m.t.Logf("Database created successfully with bdb_id: %d", bdbID)
+
+	return bdbID, nil
+}
+
+// DeleteDatabase deletes the created database
+func (m *TestDatabaseManager) DeleteDatabase(ctx context.Context) error {
+	if m.createdBdbID == 0 {
+		return fmt.Errorf("no database to delete (bdb_id is 0)")
+	}
+
+	m.t.Logf("Deleting database with bdb_id: %d...", m.createdBdbID)
+
+	resp, err := m.faultInjector.DeleteDatabase(ctx, m.clusterIndex, m.createdBdbID)
+	if err != nil {
+		return fmt.Errorf("failed to trigger database deletion: %w", err)
+	}
+
+	m.t.Logf("Database deletion triggered. Action ID: %s", resp.ActionID)
+
+	// Wait for deletion to complete
+	status, err := m.faultInjector.WaitForAction(ctx, resp.ActionID,
+		WithMaxWaitTime(2*time.Minute),
+		WithPollInterval(3*time.Second))
+	if err != nil {
+		return fmt.Errorf("failed to wait for database deletion: %w", err)
+	}
+
+	if status.Status != StatusSuccess {
+		return fmt.Errorf("database deletion failed: %v", status.Error)
+	}
+
+	m.t.Logf("Database deleted successfully")
+	m.createdBdbID = 0
+
+	return nil
+}
+
+// GetBdbID returns the created database ID
+func (m *TestDatabaseManager) GetBdbID() int {
+	return m.createdBdbID
+}
+
+// Cleanup ensures the database is deleted (safe to call multiple times)
+func (m *TestDatabaseManager) Cleanup(ctx context.Context) {
+	if m.createdBdbID != 0 {
+		if err := m.DeleteDatabase(ctx); err != nil {
+			m.t.Logf("Warning: Failed to cleanup database: %v", err)
+		}
+	}
+}
+
+// SetupTestDatabaseFromEnv creates a database from environment config and returns a cleanup function
+// Usage:
+//   cleanup := SetupTestDatabaseFromEnv(t, ctx, "my-test-db")
+//   defer cleanup()
+func SetupTestDatabaseFromEnv(t *testing.T, ctx context.Context, databaseName string) (bdbID int, cleanup func()) {
+	// Get environment config
+	envConfig, err := GetEnvConfig()
+	if err != nil {
+		t.Fatalf("Failed to get environment config: %v", err)
+	}
+
+	// Get database config from environment
+	databasesConfig, err := GetDatabaseConfigFromEnv(envConfig.RedisEndpointsConfigPath)
+	if err != nil {
+		t.Fatalf("Failed to get database config: %v", err)
+	}
+
+	// Get the specific database config
+	var envDbConfig EnvDatabaseConfig
+	var exists bool
+	if databaseName == "" {
+		// Get first database if no name provided
+		for _, config := range databasesConfig {
+			envDbConfig = config
+			exists = true
+			break
+		}
+	} else {
+		envDbConfig, exists = databasesConfig[databaseName]
+	}
+
+	if !exists {
+		t.Fatalf("Database %s not found in configuration", databaseName)
+	}
+
+	// Create fault injector
+	faultInjector, err := CreateTestFaultInjector()
+	if err != nil {
+		t.Fatalf("Failed to create fault injector: %v", err)
+	}
+
+	// Create database manager
+	dbManager := NewTestDatabaseManager(t, faultInjector, 0)
+
+	// Create the database
+	testDBName := fmt.Sprintf("e2e-test-%s-%d", databaseName, time.Now().Unix())
+	bdbID, err = dbManager.CreateDatabaseFromEnvConfig(ctx, envDbConfig, testDBName)
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	// Return cleanup function
+	cleanup = func() {
+		dbManager.Cleanup(ctx)
+	}
+
+	return bdbID, cleanup
+}
+
+// SetupTestDatabaseWithConfig creates a database with custom config and returns a cleanup function
+// Usage:
+//   bdbID, cleanup := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
+//   defer cleanup()
+func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig DatabaseConfig) (bdbID int, cleanup func()) {
+	// Create fault injector
+	faultInjector, err := CreateTestFaultInjector()
+	if err != nil {
+		t.Fatalf("Failed to create fault injector: %v", err)
+	}
+
+	// Create database manager
+	dbManager := NewTestDatabaseManager(t, faultInjector, 0)
+
+	// Create the database
+	bdbID, err = dbManager.CreateDatabase(ctx, dbConfig)
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	// Return cleanup function
+	cleanup = func() {
+		dbManager.Cleanup(ctx)
+	}
+
+	return bdbID, cleanup
+}
+
+// SetupTestDatabaseAndFactory creates a database from environment config and returns both bdbID, factory, and cleanup function
+// This is the recommended way to setup tests as it ensures the client factory connects to the newly created database
+// Usage:
+//   bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+//   defer cleanup()
+func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName string) (bdbID int, factory *ClientFactory, cleanup func()) {
+	// Create the database
+	bdbID, cleanupDB := SetupTestDatabaseFromEnv(t, ctx, databaseName)
+
+	// Create client factory that connects to the new database
+	factory, err := CreateTestClientFactoryWithBdbID(databaseName, bdbID)
+	if err != nil {
+		cleanupDB() // Clean up the database if factory creation fails
+		t.Fatalf("Failed to create client factory for new database: %v", err)
+	}
+
+	// Combined cleanup function
+	cleanup = func() {
+		factory.DestroyAll()
+		cleanupDB()
+	}
+
+	return bdbID, factory, cleanup
+}
+
+// SetupTestDatabaseAndFactoryWithConfig creates a database with custom config and returns both bdbID, factory, and cleanup function
+// Usage:
+//   bdbID, factory, cleanup := SetupTestDatabaseAndFactoryWithConfig(t, ctx, "standalone", dbConfig)
+//   defer cleanup()
+func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, databaseName string, dbConfig DatabaseConfig) (bdbID int, factory *ClientFactory, cleanup func()) {
+	// Create the database
+	bdbID, cleanupDB := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
+
+	// Create client factory that connects to the new database
+	factory, err := CreateTestClientFactoryWithBdbID(databaseName, bdbID)
+	if err != nil {
+		cleanupDB() // Clean up the database if factory creation fails
+		t.Fatalf("Failed to create client factory for new database: %v", err)
+	}
+
+	// Combined cleanup function
+	cleanup = func() {
+		factory.DestroyAll()
+		cleanupDB()
+	}
+
+	return bdbID, factory, cleanup
 }

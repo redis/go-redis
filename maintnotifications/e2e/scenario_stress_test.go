@@ -19,8 +19,16 @@ func TestStressPushNotifications(t *testing.T) {
 		t.Skip("[STRESS][SKIP] Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
 	defer cancel()
+
+	// Setup: Create fresh database and client factory for this test
+	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+	defer cleanup()
+	t.Logf("[STRESS] Created test database with bdb_id: %d", bdbID)
+
+	// Wait for database to be fully ready
+	time.Sleep(10 * time.Second)
 
 	var dump = true
 	var errorsDetected = false
@@ -44,11 +52,7 @@ func TestStressPushNotifications(t *testing.T) {
 		logCollector.Clear()
 	}()
 
-	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("standalone")
-	if err != nil {
-		t.Skipf("[STRESS][SKIP] Enterprise cluster not available, skipping stress test: %v", err)
-	}
+	// Get endpoint config from factory (now connected to new database)
 	endpointConfig := factory.GetConfig()
 
 	// Create fault injector

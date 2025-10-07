@@ -19,8 +19,16 @@ func TestPushNotifications(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
+
+	// Setup: Create fresh database and client factory for this test
+	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+	defer cleanup()
+	t.Logf("[PUSH-NOTIFICATIONS] Created test database with bdb_id: %d", bdbID)
+
+	// Wait for database to be fully ready
+	time.Sleep(10 * time.Second)
 
 	var dump = true
 	var seqIDToObserve int64
@@ -51,11 +59,7 @@ func TestPushNotifications(t *testing.T) {
 		logCollector.Clear()
 	}()
 
-	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("standalone")
-	if err != nil {
-		t.Skipf("[PUSH-NOTIFICATIONS][SKIP] Enterprise cluster not available, skipping push notification tests: %v", err)
-	}
+	// Get endpoint config from factory (now connected to new database)
 	endpointConfig := factory.GetConfig()
 
 	// Create fault injector

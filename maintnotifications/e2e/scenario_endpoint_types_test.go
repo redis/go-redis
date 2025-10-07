@@ -21,17 +21,19 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
+
+	// Setup: Create fresh database and client factory for this test
+	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+	defer cleanup()
+	t.Logf("[ENDPOINT-TYPES] Created test database with bdb_id: %d", bdbID)
+
+	// Wait for database to be fully ready
+	time.Sleep(10 * time.Second)
 
 	var dump = true
 	var errorsDetected = false
-	var p = func(format string, args ...interface{}) {
-		format = "[%s][ENDPOINT-TYPES] " + format
-		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{ts}, args...)
-		t.Logf(format, args...)
-	}
 
 	// Test different endpoint types
 	endpointTypes := []struct {
@@ -66,19 +68,15 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
 	}
 
-	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("standalone")
-	if err != nil {
-		t.Skipf("Enterprise cluster not available, skipping endpoint types test: %v", err)
-	}
+	// Get endpoint config from factory (now connected to new database)
 	endpointConfig := factory.GetConfig()
 
 	defer func() {
 		if dump {
-			p("Pool stats:")
+			fmt.Println("Pool stats:")
 			factory.PrintPoolStats(t)
 		}
-		factory.DestroyAll()
+		// Note: factory.DestroyAll() is called by cleanup() function
 	}()
 
 	// Test each endpoint type
@@ -377,5 +375,5 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		})
 	}
 
-	p("All endpoint types tested successfully")
+	t.Log("All endpoint types tested successfully")
 }

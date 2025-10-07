@@ -356,22 +356,22 @@ func (c *FaultInjectorClient) DisableMaintenanceMode(ctx context.Context, nodeID
 
 // Database Management Actions
 
-// DatabaseConfig represents the configuration for creating a database
+// EnvDatabaseConfig represents the configuration for creating a database
 type DatabaseConfig struct {
-	Name                            string                   `json:"name"`
-	Port                            int                      `json:"port"`
-	MemorySize                      int64                    `json:"memory_size"`
-	Replication                     bool                     `json:"replication"`
-	EvictionPolicy                  string                   `json:"eviction_policy"`
-	Sharding                        bool                     `json:"sharding"`
-	AutoUpgrade                     bool                     `json:"auto_upgrade"`
-	ShardsCount                     int                      `json:"shards_count"`
-	ModuleList                      []DatabaseModule         `json:"module_list,omitempty"`
-	OSSCluster                      bool                     `json:"oss_cluster"`
-	OSSClusterAPIPreferredIPType    string                   `json:"oss_cluster_api_preferred_ip_type,omitempty"`
-	ProxyPolicy                     string                   `json:"proxy_policy,omitempty"`
-	ShardsPlacement                 string                   `json:"shards_placement,omitempty"`
-	ShardKeyRegex                   []ShardKeyRegexPattern   `json:"shard_key_regex,omitempty"`
+	Name                         string                 `json:"name"`
+	Port                         int                    `json:"port"`
+	MemorySize                   int64                  `json:"memory_size"`
+	Replication                  bool                   `json:"replication"`
+	EvictionPolicy               string                 `json:"eviction_policy"`
+	Sharding                     bool                   `json:"sharding"`
+	AutoUpgrade                  bool                   `json:"auto_upgrade"`
+	ShardsCount                  int                    `json:"shards_count"`
+	ModuleList                   []DatabaseModule       `json:"module_list,omitempty"`
+	OSSCluster                   bool                   `json:"oss_cluster"`
+	OSSClusterAPIPreferredIPType string                 `json:"oss_cluster_api_preferred_ip_type,omitempty"`
+	ProxyPolicy                  string                 `json:"proxy_policy,omitempty"`
+	ShardsPlacement              string                 `json:"shards_placement,omitempty"`
+	ShardKeyRegex                []ShardKeyRegexPattern `json:"shard_key_regex,omitempty"`
 }
 
 // DatabaseModule represents a Redis module configuration

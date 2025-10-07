@@ -19,8 +19,16 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
+
+	// Setup: Create fresh database and client factory for this test
+	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+	defer cleanup()
+	t.Logf("[TIMEOUT-CONFIGS] Created test database with bdb_id: %d", bdbID)
+
+	// Wait for database to be fully ready
+	time.Sleep(10 * time.Second)
 
 	var dump = true
 
@@ -74,11 +82,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 		logCollector.Clear()
 	}()
 
-	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("standalone")
-	if err != nil {
-		t.Skipf("[TIMEOUT-CONFIGS][SKIP] Enterprise cluster not available, skipping timeout configs test: %v", err)
-	}
+	// Get endpoint config from factory (now connected to new database)
 	endpointConfig := factory.GetConfig()
 
 	// Create fault injector
@@ -92,7 +96,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			p("Pool stats:")
 			factory.PrintPoolStats(t)
 		}
-		factory.DestroyAll()
+		// Note: factory.DestroyAll() is called by cleanup() function
 	}()
 
 	// Test each timeout configuration
