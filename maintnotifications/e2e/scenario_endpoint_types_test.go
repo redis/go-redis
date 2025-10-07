@@ -157,7 +157,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			}()
 
 			// Test failover with this endpoint type
-			p("Testing failover with %s endpoint type...", endpointTest.name)
+			p("Testing failover with %s endpoint type on database %s[bdb_id:%s]...", endpointTest.name, endpointConfig.Name, endpointConfig.BdbID)
 			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "failover",
 				Parameters: map[string]interface{}{
@@ -172,6 +172,16 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			go func() {
 				commandsRunner.FireCommandsUntilStop(ctx)
 			}()
+
+			// Wait for failover to complete
+			status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
+			)
+			if err != nil {
+				ef("[FI] Failover action failed for %s: %v", endpointTest.name, err)
+			}
+			p("[FI] Failover action completed for %s: %s %s", endpointTest.name, status.Status, actionOutputIfFailed(status))
 
 			// Wait for FAILING_OVER notification
 			match, found := logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
@@ -194,16 +204,6 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			}
 			failedOverData := logs2.ExtractDataFromLogMessage(match)
 			p("FAILED_OVER notification received for %s. %v", endpointTest.name, failedOverData)
-
-			// Wait for failover to complete
-			status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
-				WithMaxWaitTime(240*time.Second),
-				WithPollInterval(2*time.Second),
-			)
-			if err != nil {
-				ef("[FI] Failover action failed for %s: %v", endpointTest.name, err)
-			}
-			p("[FI] Failover action completed for %s: %s %s", endpointTest.name, status.Status, actionOutputIfFailed(status))
 
 			// Test migration with this endpoint type
 			p("Testing migration with %s endpoint type...", endpointTest.name)
