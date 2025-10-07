@@ -44,6 +44,10 @@ const (
 	// Sequence and complex actions
 	ActionSequence       ActionType = "sequence_of_actions"
 	ActionExecuteCommand ActionType = "execute_command"
+
+	// Database management actions
+	ActionDeleteDatabase ActionType = "delete_database"
+	ActionCreateDatabase ActionType = "create_database"
 )
 
 // ActionStatus represents the status of an action
@@ -346,6 +350,80 @@ func (c *FaultInjectorClient) DisableMaintenanceMode(ctx context.Context, nodeID
 		Parameters: map[string]interface{}{
 			"node_id": nodeID,
 			"enabled": false,
+		},
+	})
+}
+
+// Database Management Actions
+
+// DatabaseConfig represents the configuration for creating a database
+type DatabaseConfig struct {
+	Name                            string                   `json:"name"`
+	Port                            int                      `json:"port"`
+	MemorySize                      int64                    `json:"memory_size"`
+	Replication                     bool                     `json:"replication"`
+	EvictionPolicy                  string                   `json:"eviction_policy"`
+	Sharding                        bool                     `json:"sharding"`
+	AutoUpgrade                     bool                     `json:"auto_upgrade"`
+	ShardsCount                     int                      `json:"shards_count"`
+	ModuleList                      []DatabaseModule         `json:"module_list,omitempty"`
+	OSSCluster                      bool                     `json:"oss_cluster"`
+	OSSClusterAPIPreferredIPType    string                   `json:"oss_cluster_api_preferred_ip_type,omitempty"`
+	ProxyPolicy                     string                   `json:"proxy_policy,omitempty"`
+	ShardsPlacement                 string                   `json:"shards_placement,omitempty"`
+	ShardKeyRegex                   []ShardKeyRegexPattern   `json:"shard_key_regex,omitempty"`
+}
+
+// DatabaseModule represents a Redis module configuration
+type DatabaseModule struct {
+	ModuleArgs string `json:"module_args"`
+	ModuleName string `json:"module_name"`
+}
+
+// ShardKeyRegexPattern represents a shard key regex pattern
+type ShardKeyRegexPattern struct {
+	Regex string `json:"regex"`
+}
+
+// DeleteDatabase deletes a database
+// Parameters:
+//   - clusterIndex: The index of the cluster
+//   - bdbID: The database ID to delete
+func (c *FaultInjectorClient) DeleteDatabase(ctx context.Context, clusterIndex int, bdbID int) (*ActionResponse, error) {
+	return c.TriggerAction(ctx, ActionRequest{
+		Type: ActionDeleteDatabase,
+		Parameters: map[string]interface{}{
+			"cluster_index": clusterIndex,
+			"bdb_id":        bdbID,
+		},
+	})
+}
+
+// CreateDatabase creates a new database
+// Parameters:
+//   - clusterIndex: The index of the cluster
+//   - databaseConfig: The database configuration
+func (c *FaultInjectorClient) CreateDatabase(ctx context.Context, clusterIndex int, databaseConfig DatabaseConfig) (*ActionResponse, error) {
+	return c.TriggerAction(ctx, ActionRequest{
+		Type: ActionCreateDatabase,
+		Parameters: map[string]interface{}{
+			"cluster_index":   clusterIndex,
+			"database_config": databaseConfig,
+		},
+	})
+}
+
+// CreateDatabaseFromMap creates a new database using a map for configuration
+// This is useful when you want to pass a raw configuration map
+// Parameters:
+//   - clusterIndex: The index of the cluster
+//   - databaseConfig: The database configuration as a map
+func (c *FaultInjectorClient) CreateDatabaseFromMap(ctx context.Context, clusterIndex int, databaseConfig map[string]interface{}) (*ActionResponse, error) {
+	return c.TriggerAction(ctx, ActionRequest{
+		Type: ActionCreateDatabase,
+		Parameters: map[string]interface{}{
+			"cluster_index":   clusterIndex,
+			"database_config": databaseConfig,
 		},
 	})
 }
