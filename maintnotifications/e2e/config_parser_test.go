@@ -528,15 +528,17 @@ func ConvertEnvDatabaseConfigToFaultInjectorConfig(envConfig EnvDatabaseConfig, 
 
 	// Build the database config for fault injector
 	dbConfig := DatabaseConfig{
-		Name:           name,
-		Port:           port + randomPortOffset,
-		MemorySize:     268435456, // 256MB default
-		Replication:    false,
-		EvictionPolicy: "noeviction",
-		Sharding:       false,
-		AutoUpgrade:    true,
-		ShardsCount:    1,
-		OSSCluster:     false,
+		Name:            name,
+		Port:            port + randomPortOffset,
+		MemorySize:      268435456, // 256MB default
+		Replication:     true,
+		EvictionPolicy:  "noeviction",
+		ProxyPolicy:     "single",
+		AutoUpgrade:     true,
+		Sharding:        true,
+		ShardsCount:     2,
+		ShardsPlacement: "dense",
+		OSSCluster:      false,
 	}
 
 	// If we have raw_endpoints with cluster info, configure for cluster
