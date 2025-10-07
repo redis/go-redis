@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/url"
 	"os"
 	"strconv"
@@ -517,16 +518,18 @@ func ConvertEnvDatabaseConfigToFaultInjectorConfig(envConfig EnvDatabaseConfig, 
 				return DatabaseConfig{}, fmt.Errorf("invalid port: %w", err)
 			}
 		} else {
-			port = 6379 // default
+			port = 6379 * 2 // default*2
 		}
 	} else {
 		return DatabaseConfig{}, fmt.Errorf("no endpoints found in configuration")
 	}
 
+	randomPortOffset := 1 + rand.Intn(10) // Random port offset to avoid conflicts
+
 	// Build the database config for fault injector
 	dbConfig := DatabaseConfig{
 		Name:           name,
-		Port:           port,
+		Port:           port + randomPortOffset,
 		MemorySize:     268435456, // 256MB default
 		Replication:    false,
 		EvictionPolicy: "noeviction",
