@@ -312,6 +312,7 @@ func (cf *ClientFactory) Create(key string, options *CreateClientOptions) (redis
 			}
 		}
 
+		fmt.Printf("Creating single client with options: %+v\n", clientOptions)
 		client = redis.NewClient(clientOptions)
 	}
 
@@ -792,15 +793,90 @@ func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig Dat
 //	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
 //	defer cleanup()
 func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName string) (bdbID int, factory *ClientFactory, cleanup func()) {
-	// Create the database
-	bdbID, cleanupDB := SetupTestDatabaseFromEnv(t, ctx, databaseName)
-
-	// Create client factory that connects to the new database
-	factory, err := CreateTestClientFactoryWithBdbID(databaseName, bdbID)
+	// Get environment config
+	envConfig, err := GetEnvConfig()
 	if err != nil {
-		cleanupDB() // Clean up the database if factory creation fails
-		t.Fatalf("Failed to create client factory for new database: %v", err)
+		t.Fatalf("Failed to get environment config: %v", err)
 	}
+
+	// Get database config from environment
+	databasesConfig, err := GetDatabaseConfigFromEnv(envConfig.RedisEndpointsConfigPath)
+	if err != nil {
+		t.Fatalf("Failed to get database config: %v", err)
+	}
+
+	// Get the specific database config
+	var envDbConfig EnvDatabaseConfig
+	var exists bool
+	if databaseName == "" {
+		// Get first database if no name provided
+		for _, config := range databasesConfig {
+			envDbConfig = config
+			exists = true
+			break
+		}
+	} else {
+		envDbConfig, exists = databasesConfig[databaseName]
+	}
+
+	if !exists {
+		t.Fatalf("Database %s not found in configuration", databaseName)
+	}
+
+	// Convert to DatabaseConfig to get the port
+	dbConfig, err := ConvertEnvDatabaseConfigToFaultInjectorConfig(envDbConfig, fmt.Sprintf("e2e-test-%s-%d", databaseName, time.Now().Unix()))
+	if err != nil {
+		t.Fatalf("Failed to convert config: %v", err)
+	}
+
+	// Create the database
+	bdbID, cleanupDB := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
+
+	// Update the environment config with the new database's connection details
+	// The new database uses the port we specified in dbConfig
+	newEnvConfig := envDbConfig
+	newEnvConfig.BdbID = bdbID
+
+	// Update endpoints to point to the new database's port
+	// Extract host from original endpoints
+	var host string
+	var scheme string
+	if len(envDbConfig.Endpoints) > 0 {
+		// Parse the first endpoint to get host and scheme
+		endpoint := envDbConfig.Endpoints[0]
+		if strings.HasPrefix(endpoint, "redis://") {
+			scheme = "redis"
+			host = strings.TrimPrefix(endpoint, "redis://")
+		} else if strings.HasPrefix(endpoint, "rediss://") {
+			scheme = "rediss"
+			host = strings.TrimPrefix(endpoint, "rediss://")
+		}
+		// Remove port from host if present
+		if colonIdx := strings.Index(host, ":"); colonIdx != -1 {
+			host = host[:colonIdx]
+		}
+	}
+
+	// If we couldn't extract host, use localhost as fallback
+	if host == "" {
+		host = "localhost"
+	}
+	if scheme == "" {
+		if envDbConfig.TLS {
+			scheme = "rediss"
+		} else {
+			scheme = "redis"
+		}
+	}
+
+	// Construct new endpoint with the new database's port
+	newEndpoint := fmt.Sprintf("%s://%s:%d", scheme, host, dbConfig.Port)
+	newEnvConfig.Endpoints = []string{newEndpoint}
+
+	t.Logf("New database endpoint: %s (bdb_id: %d)", newEndpoint, bdbID)
+
+	// Create client factory with the updated config
+	factory = NewClientFactory(newEnvConfig)
 
 	// Combined cleanup function
 	cleanup = func() {
@@ -817,15 +893,83 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 //	bdbID, factory, cleanup := SetupTestDatabaseAndFactoryWithConfig(t, ctx, "standalone", dbConfig)
 //	defer cleanup()
 func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, databaseName string, dbConfig DatabaseConfig) (bdbID int, factory *ClientFactory, cleanup func()) {
+	// Get environment config to use as template for connection details
+	envConfig, err := GetEnvConfig()
+	if err != nil {
+		t.Fatalf("Failed to get environment config: %v", err)
+	}
+
+	// Get database config from environment
+	databasesConfig, err := GetDatabaseConfigFromEnv(envConfig.RedisEndpointsConfigPath)
+	if err != nil {
+		t.Fatalf("Failed to get database config: %v", err)
+	}
+
+	// Get the specific database config as template
+	var envDbConfig EnvDatabaseConfig
+	var exists bool
+	if databaseName == "" {
+		// Get first database if no name provided
+		for _, config := range databasesConfig {
+			envDbConfig = config
+			exists = true
+			break
+		}
+	} else {
+		envDbConfig, exists = databasesConfig[databaseName]
+	}
+
+	if !exists {
+		t.Fatalf("Database %s not found in configuration", databaseName)
+	}
+
 	// Create the database
 	bdbID, cleanupDB := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
 
-	// Create client factory that connects to the new database
-	factory, err := CreateTestClientFactoryWithBdbID(databaseName, bdbID)
-	if err != nil {
-		cleanupDB() // Clean up the database if factory creation fails
-		t.Fatalf("Failed to create client factory for new database: %v", err)
+	// Update the environment config with the new database's connection details
+	newEnvConfig := envDbConfig
+	newEnvConfig.BdbID = bdbID
+
+	// Update endpoints to point to the new database's port
+	// Extract host from original endpoints
+	var host string
+	var scheme string
+	if len(envDbConfig.Endpoints) > 0 {
+		// Parse the first endpoint to get host and scheme
+		endpoint := envDbConfig.Endpoints[0]
+		if strings.HasPrefix(endpoint, "redis://") {
+			scheme = "redis"
+			host = strings.TrimPrefix(endpoint, "redis://")
+		} else if strings.HasPrefix(endpoint, "rediss://") {
+			scheme = "rediss"
+			host = strings.TrimPrefix(endpoint, "rediss://")
+		}
+		// Remove port from host if present
+		if colonIdx := strings.Index(host, ":"); colonIdx != -1 {
+			host = host[:colonIdx]
+		}
 	}
+
+	// If we couldn't extract host, use localhost as fallback
+	if host == "" {
+		host = "localhost"
+	}
+	if scheme == "" {
+		if envDbConfig.TLS {
+			scheme = "rediss"
+		} else {
+			scheme = "redis"
+		}
+	}
+
+	// Construct new endpoint with the new database's port
+	newEndpoint := fmt.Sprintf("%s://%s:%d", scheme, host, dbConfig.Port)
+	newEnvConfig.Endpoints = []string{newEndpoint}
+
+	t.Logf("New database endpoint: %s (bdb_id: %d)", newEndpoint, bdbID)
+
+	// Create client factory with the updated config
+	factory = NewClientFactory(newEnvConfig)
 
 	// Combined cleanup function
 	cleanup = func() {
