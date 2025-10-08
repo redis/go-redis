@@ -21,7 +21,7 @@ type slotResult struct {
 
 // routeAndRun routes a command to the appropriate cluster nodes and executes it
 func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *clusterNode) error {
-	policy := c.getCommandPolicy(ctx, cmd)
+	policy := c.cmdPolicyManager.getCmdPolicy(cmd)
 
 	switch {
 	case policy != nil && policy.Request == routing.ReqAllNodes:
@@ -38,11 +38,13 @@ func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *cluste
 }
 
 // getCommandPolicy retrieves the routing policy for a command
-func (c *ClusterClient) getCommandPolicy(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
-	if cmdInfo := c.cmdInfo(ctx, cmd.Name()); cmdInfo != nil && cmdInfo.Tips != nil {
-		return cmdInfo.Tips
-	}
-	return nil
+func (c *ClusterClient) getCommandPolicy(cmd Cmder) *routing.CommandPolicy {
+
+	return c.cmdPolicyManager.getCmdPolicy(cmd)
+	// if cmdInfo := c.cmdInfo(ctx, cmd.Name()); cmdInfo != nil && cmdInfo.Tips != nil {
+	// 	return cmdInfo.Tips
+	// }
+	// return nil
 }
 
 // executeDefault handles standard command routing based on keys

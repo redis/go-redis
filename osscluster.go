@@ -1014,10 +1014,11 @@ func (c *clusterStateHolder) ReloadOrGet(ctx context.Context) (*clusterState, er
 // or more underlying connections. It's safe for concurrent use by
 // multiple goroutines.
 type ClusterClient struct {
-	opt           *ClusterOptions
-	nodes         *clusterNodes
-	state         *clusterStateHolder
-	cmdsInfoCache *cmdsInfoCache
+	opt              *ClusterOptions
+	nodes            *clusterNodes
+	state            *clusterStateHolder
+	cmdsInfoCache    *cmdsInfoCache
+	cmdPolicyManager *commandPolicyManager
 	cmdable
 	hooksMixin
 }
@@ -1035,6 +1036,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.state = newClusterStateHolder(c.loadState)
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
+	c.cmdPolicyManager = newCommandPolicyManager(nil)
 	c.initHooks(hooks{
 		dial:       nil,
 		process:    c.process,
@@ -1419,7 +1421,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 
 	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
 		for _, cmd := range cmds {
-			policy := c.getCommandPolicy(ctx, cmd)
+			policy := c.cmdPolicyManager.getCmdPolicy(cmd)
 			if policy != nil && !policy.CanBeUsedInPipeline() {
 				return fmt.Errorf(
 					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
@@ -1436,7 +1438,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	}
 
 	for _, cmd := range cmds {
-		policy := c.getCommandPolicy(ctx, cmd)
+		policy := c.cmdPolicyManager.getCmdPolicy(cmd)
 		if policy != nil && !policy.CanBeUsedInPipeline() {
 			return fmt.Errorf(
 				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
