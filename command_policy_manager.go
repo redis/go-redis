@@ -7,113 +7,120 @@ import (
 	"github.com/redis/go-redis/v9/internal/routing"
 )
 
-var defaultPolicies = map[string]*routing.CommandPolicy{
-	"ft.create": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.search": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.aggregate": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.dictadd": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.dictdump": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.dictdel": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.suglen": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultHashSlot,
-	},
-	"ft.cursor": {
-		Request:  routing.ReqSpecial,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.sugadd": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultHashSlot,
-	},
-	"ft.sugget": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultHashSlot,
-	},
-	"ft.sugdel": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultHashSlot,
-	},
-	"ft.spellcheck": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.explain": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.explaincli": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.aliasadd": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.aliasupdate": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.aliasdel": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.info": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.tagvals": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.syndump": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.synupdate": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.profile": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.alter": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.dropindex": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
-	},
-	"ft.drop": {
-		Request:  routing.ReqDefault,
-		Response: routing.RespDefaultKeyless,
+type (
+	module      = string
+	commandName = string
+)
+
+var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
+	"ft": {
+		"create": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"search": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"aggregate": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"dictadd": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"dictdump": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"dictdel": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"suglen": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultHashSlot,
+		},
+		"cursor": {
+			Request:  routing.ReqSpecial,
+			Response: routing.RespDefaultKeyless,
+		},
+		"sugadd": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultHashSlot,
+		},
+		"sugget": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultHashSlot,
+		},
+		"sugdel": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultHashSlot,
+		},
+		"spellcheck": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"explain": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"explaincli": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"aliasadd": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"aliasupdate": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"aliasdel": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"info": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"tagvals": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"syndump": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"synupdate": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"profile": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"alter": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"dropindex": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
+		"drop": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+		},
 	},
 }
 
 type commandPolicyManager struct {
 	rwmutex             *sync.RWMutex
-	clientPolicies      map[string]*routing.CommandPolicy
-	overwrittenPolicies map[string]*routing.CommandPolicy
+	clientPolicies      map[module]map[commandName]*routing.CommandPolicy
+	overwrittenPolicies map[module]map[commandName]*routing.CommandPolicy
 }
 
 func newCommandPolicyManager(overwrites interface{}) *commandPolicyManager {
@@ -134,17 +141,29 @@ func (cpm *commandPolicyManager) getCmdPolicy(cmd Cmder) *routing.CommandPolicy 
 	defer cpm.rwmutex.RUnlock()
 
 	cmdName := strings.ToLower(cmd.Name())
-	if policy, ok := cpm.overwrittenPolicies[cmdName]; ok {
+
+	module := "code"
+	command := cmdName
+	cmdParts := strings.Split(cmdName, ".")
+	if len(cmdParts) == 2 {
+		module = cmdParts[0]
+		command = cmdParts[1]
+	}
+
+	if policy, ok := cpm.overwrittenPolicies[module][command]; ok {
 		return policy
 	}
 
-	if policy, ok := cpm.clientPolicies[cmdName]; ok {
+	if policy, ok := cpm.clientPolicies[module][command]; ok {
 		return policy
 	}
 
-	if policy, ok := defaultPolicies[cmdName]; ok {
+	if policy, ok := defaultPolicies[module][command]; ok {
 		return policy
 	}
 
-	return nil
+	return &routing.CommandPolicy{
+		Request:  routing.ReqDefault,
+		Response: routing.RespDefaultKeyless,
+	}
 }
