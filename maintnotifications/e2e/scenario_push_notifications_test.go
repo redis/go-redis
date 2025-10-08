@@ -422,9 +422,9 @@ func TestPushNotifications(t *testing.T) {
 		e("Expected relaxed timeouts after post-handoff, got none")
 	}
 	// validate number of connections we do not exceed max connections
-	// we started a second client, so we expect 2x the connections
-	if allLogsAnalysis.ConnectionCount > int64(maxConnections)*2 {
-		e("Expected no more than %d connections, got %d", maxConnections, allLogsAnalysis.ConnectionCount)
+	// we started three clients, so we expect 3x the connections
+	if allLogsAnalysis.ConnectionCount > int64(maxConnections)*3 {
+		e("Expected no more than %d connections, got %d", maxConnections*3, allLogsAnalysis.ConnectionCount)
 	}
 
 	if allLogsAnalysis.ConnectionCount < int64(minIdleConns) {

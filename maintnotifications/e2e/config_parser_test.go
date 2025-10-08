@@ -379,7 +379,6 @@ func (cf *ClientFactory) Create(key string, options *CreateClientOptions) (redis
 			}
 		}
 
-		fmt.Printf("Creating single client with options: %+v\n", clientOptions)
 		client = redis.NewClient(clientOptions)
 	}
 
@@ -675,14 +674,10 @@ func (m *TestDatabaseManager) CreateDatabaseFromEnvConfig(ctx context.Context, e
 // CreateDatabase creates a database and waits for it to be ready
 // Returns the bdb_id of the created database
 func (m *TestDatabaseManager) CreateDatabase(ctx context.Context, dbConfig DatabaseConfig) (int, error) {
-	m.t.Logf("Creating database '%s' on port %d...", dbConfig.Name, dbConfig.Port)
-
 	resp, err := m.faultInjector.CreateDatabase(ctx, m.clusterIndex, dbConfig)
 	if err != nil {
 		return 0, fmt.Errorf("failed to trigger database creation: %w", err)
 	}
-
-	m.t.Logf("Database creation triggered. Action ID: %s", resp.ActionID)
 
 	// Wait for creation to complete
 	status, err := m.faultInjector.WaitForAction(ctx, resp.ActionID,
@@ -713,7 +708,6 @@ func (m *TestDatabaseManager) CreateDatabase(ctx context.Context, dbConfig Datab
 	}
 
 	m.createdBdbID = bdbID
-	m.t.Logf("Database created successfully with bdb_id: %d", bdbID)
 
 	return bdbID, nil
 }
@@ -721,14 +715,10 @@ func (m *TestDatabaseManager) CreateDatabase(ctx context.Context, dbConfig Datab
 // CreateDatabaseAndGetConfig creates a database and returns both the bdb_id and the full connection config from the fault injector response
 // This includes endpoints, username, password, TLS settings, and raw_endpoints
 func (m *TestDatabaseManager) CreateDatabaseAndGetConfig(ctx context.Context, dbConfig DatabaseConfig) (int, EnvDatabaseConfig, error) {
-	m.t.Logf("Creating database '%s' on port %d...", dbConfig.Name, dbConfig.Port)
-
 	resp, err := m.faultInjector.CreateDatabase(ctx, m.clusterIndex, dbConfig)
 	if err != nil {
 		return 0, EnvDatabaseConfig{}, fmt.Errorf("failed to trigger database creation: %w", err)
 	}
-
-	m.t.Logf("Database creation triggered. Action ID: %s", resp.ActionID)
 
 	// Wait for creation to complete
 	status, err := m.faultInjector.WaitForAction(ctx, resp.ActionID,
@@ -828,9 +818,6 @@ func (m *TestDatabaseManager) CreateDatabaseAndGetConfig(ctx context.Context, db
 	}
 
 	m.createdBdbID = bdbID
-	m.t.Logf("Database created successfully with bdb_id: %d", bdbID)
-	m.t.Logf("Database endpoints: %v", envConfig.Endpoints)
-
 	return bdbID, envConfig, nil
 }
 
@@ -840,14 +827,11 @@ func (m *TestDatabaseManager) DeleteDatabase(ctx context.Context) error {
 		return fmt.Errorf("no database to delete (bdb_id is 0)")
 	}
 
-	m.t.Logf("Deleting database with bdb_id: %d...", m.createdBdbID)
-
 	resp, err := m.faultInjector.DeleteDatabase(ctx, m.clusterIndex, m.createdBdbID)
 	if err != nil {
 		return fmt.Errorf("failed to trigger database deletion: %w", err)
 	}
 
-	m.t.Logf("Database deletion triggered. Action ID: %s", resp.ActionID)
 
 	// Wait for deletion to complete
 	status, err := m.faultInjector.WaitForAction(ctx, resp.ActionID,
@@ -861,7 +845,6 @@ func (m *TestDatabaseManager) DeleteDatabase(ctx context.Context) error {
 		return fmt.Errorf("database deletion failed: %v", status.Error)
 	}
 
-	m.t.Logf("Database deleted successfully")
 	m.createdBdbID = 0
 
 	return nil
@@ -1028,12 +1011,6 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 		t.Fatalf("Failed to create test database: %v", err)
 	}
 
-	t.Logf("Database created successfully:")
-	t.Logf("  bdb_id: %d", bdbID)
-	t.Logf("  endpoints: %v", newEnvConfig.Endpoints)
-	t.Logf("  username: %s", newEnvConfig.Username)
-	t.Logf("  TLS: %v", newEnvConfig.TLS)
-
 	// Use certificate location from original config if not provided by fault injector
 	if newEnvConfig.CertificatesLocation == "" && envDbConfig.CertificatesLocation != "" {
 		newEnvConfig.CertificatesLocation = envDbConfig.CertificatesLocation
@@ -1108,12 +1085,6 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
-
-	t.Logf("Database created successfully:")
-	t.Logf("  bdb_id: %d", bdbID)
-	t.Logf("  endpoints: %v", newEnvConfig.Endpoints)
-	t.Logf("  username: %s", newEnvConfig.Username)
-	t.Logf("  TLS: %v", newEnvConfig.TLS)
 
 	// Use certificate location from original config if not provided by fault injector
 	if newEnvConfig.CertificatesLocation == "" && envDbConfig.CertificatesLocation != "" {
