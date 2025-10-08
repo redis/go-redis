@@ -37,16 +37,6 @@ func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *cluste
 	}
 }
 
-// getCommandPolicy retrieves the routing policy for a command
-func (c *ClusterClient) getCommandPolicy(cmd Cmder) *routing.CommandPolicy {
-
-	return c.cmdPolicyManager.getCmdPolicy(cmd)
-	// if cmdInfo := c.cmdInfo(ctx, cmd.Name()); cmdInfo != nil && cmdInfo.Tips != nil {
-	// 	return cmdInfo.Tips
-	// }
-	// return nil
-}
-
 // executeDefault handles standard command routing based on keys
 func (c *ClusterClient) executeDefault(ctx context.Context, cmd Cmder, node *clusterNode) error {
 	if c.hasKeys(cmd) {
