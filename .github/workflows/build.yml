@@ -2,9 +2,9 @@ name: Go
 
 on:
   push:
-    branches: [master, v9, v9.7, '*']
+    branches: [master, v9, v9.7, v9.8, 'ndyakov/*', 'ofekshenawa/*', 'htemelski/*', 'ce/*']
   pull_request:
-    branches: [master, v9, v9.7, '*']
+    branches: [master, v9, v9.7, v9.8, 'ndyakov/*', 'ofekshenawa/*', 'htemelski/*', 'ce/*']
 
 permissions:
   contents: read
