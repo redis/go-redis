@@ -1,4 +1,4 @@
-package hitless
+package maintnotifications
 
 import (
 	"context"
@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
-// HitlessManagerInterface defines the interface for completing handoff operations
-type HitlessManagerInterface interface {
+// OperationsManagerInterface defines the interface for completing handoff operations
+type OperationsManagerInterface interface {
 	TrackMovingOperationWithConnID(ctx context.Context, newEndpoint string, deadline time.Time, seqID int64, connID uint64) error
 	UntrackOperationWithConnID(seqID int64, connID uint64)
 }
@@ -26,7 +27,7 @@ type HandoffRequest struct {
 }
 
 // PoolHook implements pool.PoolHook for Redis-specific connection handling
-// with hitless upgrade support.
+// with maintenance notifications support.
 type PoolHook struct {
 	// Base dialer for creating connections to new endpoints during handoffs
 	// args are network and address
@@ -38,23 +39,23 @@ type PoolHook struct {
 	// Worker manager for background handoff processing
 	workerManager *handoffWorkerManager
 
-	// Configuration for the hitless upgrade
+	// Configuration for the maintenance notifications
 	config *Config
 
-	// Hitless manager for operation completion tracking
-	hitlessManager HitlessManagerInterface
+	// Operations manager interface for operation completion tracking
+	operationsManager OperationsManagerInterface
 
 	// Pool interface for removing connections on handoff failure
 	pool pool.Pooler
 }
 
 // NewPoolHook creates a new pool hook
-func NewPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error), network string, config *Config, hitlessManager HitlessManagerInterface) *PoolHook {
-	return NewPoolHookWithPoolSize(baseDialer, network, config, hitlessManager, 0)
+func NewPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error), network string, config *Config, operationsManager OperationsManagerInterface) *PoolHook {
+	return NewPoolHookWithPoolSize(baseDialer, network, config, operationsManager, 0)
 }
 
 // NewPoolHookWithPoolSize creates a new pool hook with pool size for better worker defaults
-func NewPoolHookWithPoolSize(baseDialer func(context.Context, string, string) (net.Conn, error), network string, config *Config, hitlessManager HitlessManagerInterface, poolSize int) *PoolHook {
+func NewPoolHookWithPoolSize(baseDialer func(context.Context, string, string) (net.Conn, error), network string, config *Config, operationsManager OperationsManagerInterface, poolSize int) *PoolHook {
 	// Apply defaults if config is nil or has zero values
 	if config == nil {
 		config = config.ApplyDefaultsWithPoolSize(poolSize)
@@ -62,11 +63,10 @@ func NewPoolHookWithPoolSize(baseDialer func(context.Context, string, string) (n
 
 	ph := &PoolHook{
 		// baseDialer is used to create connections to new endpoints during handoffs
-		baseDialer: baseDialer,
-		network:    network,
-		config:     config,
-		// Hitless manager for operation completion tracking
-		hitlessManager: hitlessManager,
+		baseDialer:        baseDialer,
+		network:           network,
+		config:            config,
+		operationsManager: operationsManager,
 	}
 
 	// Create worker manager
@@ -150,7 +150,7 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 
 	if err := ph.workerManager.queueHandoff(conn); err != nil {
 		// Failed to queue handoff, remove the connection
-		internal.Logger.Printf(ctx, "Failed to queue handoff: %v", err)
+		internal.Logger.Printf(ctx, logs.FailedToQueueHandoff(conn.GetID(), err))
 		// Don't pool, remove connection, no error to caller
 		return false, true, nil
 	}
@@ -170,6 +170,7 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 		// Other error - remove the connection
 		return false, true, nil
 	}
+	internal.Logger.Printf(ctx, logs.MarkedForHandoff(conn.GetID()))
 	return true, false, nil
 }
 

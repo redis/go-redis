@@ -60,6 +60,39 @@ var _ = Describe("pipelining", func() {
 		Expect(cmds).To(BeEmpty())
 	})
 
+	It("pipeline: basic exec", func() {
+		p := client.Pipeline()
+		p.Get(ctx, "key")
+		p.Set(ctx, "key", "value", 0)
+		p.Get(ctx, "key")
+		cmds, err := p.Exec(ctx)
+		Expect(err).To(Equal(redis.Nil))
+		Expect(cmds).To(HaveLen(3))
+		Expect(cmds[0].Err()).To(Equal(redis.Nil))
+		Expect(cmds[1].(*redis.StatusCmd).Val()).To(Equal("OK"))
+		Expect(cmds[1].Err()).NotTo(HaveOccurred())
+		Expect(cmds[2].(*redis.StringCmd).Val()).To(Equal("value"))
+		Expect(cmds[2].Err()).NotTo(HaveOccurred())
+	})
+
+	It("pipeline: exec pipeline when get conn failed", func() {
+		p := client.Pipeline()
+		p.Get(ctx, "key")
+		p.Set(ctx, "key", "value", 0)
+		p.Get(ctx, "key")
+
+		client.Close()
+
+		cmds, err := p.Exec(ctx)
+		Expect(err).To(Equal(redis.ErrClosed))
+		Expect(cmds).To(HaveLen(3))
+		for _, cmd := range cmds {
+			Expect(cmd.Err()).To(Equal(redis.ErrClosed))
+		}
+
+		client = redis.NewClient(redisOptions())
+	})
+
 	assertPipeline := func() {
 		It("returns no errors when there are no commands", func() {
 			_, err := pipe.Exec(ctx)

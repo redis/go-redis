@@ -49,6 +49,25 @@ then
     exit 1
 fi
 
+GOMOD_ERRORS=0
+
+# Check go.mod files for correct dependency versions
+while read -r mod_file; do
+    # Look for go-redis packages in require statements
+    while read -r pkg version; do
+        if [ "$version" != "${TAG}" ]; then
+            printf "Error: %s has incorrect version for package %s: %s (expected %s)\n" "$mod_file" "$pkg" "$version" "${TAG}"
+            GOMOD_ERRORS=$((GOMOD_ERRORS + 1))
+        fi
+    done < <(awk '/^require|^require \(/{p=1;next} /^\)/{p=0} p{if($1 ~ /^github\.com\/redis\/go-redis/){print $1, $2}}' "$mod_file")
+done < <(find . -type f -name 'go.mod')
+
+# Exit if there are gomod errors
+if [ $GOMOD_ERRORS -gt 0 ]; then
+    exit 1
+fi
+
+
 PACKAGE_DIRS=$(find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; \
   | grep -E -v "example|internal" \
   | sed 's/^\.\///' \

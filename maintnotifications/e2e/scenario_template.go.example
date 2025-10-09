@@ -1,0 +1,245 @@
+
+
+package e2e
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/hitless"
+)
+
+// TestScenarioTemplate is a template for writing scenario tests
+// Copy this file and rename it to scenario_your_test_name.go
+func TestScenarioTemplate(t *testing.T) {
+	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
+		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	// Step 1: Create client factory from configuration
+	factory, err := CreateTestClientFactory("enterprise-cluster") // or "standalone0"
+	if err != nil {
+		t.Fatalf("Failed to create client factory: %v", err)
+	}
+	defer factory.DestroyAll()
+
+	// Step 2: Create fault injector
+	faultInjector, err := CreateTestFaultInjector()
+	if err != nil {
+		t.Fatalf("Failed to create fault injector: %v", err)
+	}
+
+	// Step 3: Create Redis client with hitless upgrades
+	client, err := factory.Create("scenario-client", &CreateClientOptions{
+		Protocol: 3,
+		HitlessUpgradeConfig: &hitless.Config{
+			Mode:           hitless.MaintNotificationsEnabled,
+			HandoffTimeout: 30000, // 30 seconds
+			RelaxedTimeout: 10000, // 10 seconds
+			MaxWorkers:     20,
+		},
+		ClientName: "scenario-test-client",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Step 4: Verify initial connectivity
+	err = client.Ping(ctx).Err()
+	if err != nil {
+		t.Fatalf("Failed to ping Redis: %v", err)
+	}
+
+	t.Log("Initial setup completed successfully")
+
+	// Step 5: Start background operations (optional)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	go func() {
+		counter := 0
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				key := fmt.Sprintf("test-key-%d", counter)
+				value := fmt.Sprintf("test-value-%d", counter)
+
+				err := client.Set(ctx, key, value, time.Minute).Err()
+				if err != nil {
+					t.Logf("Background operation failed: %v", err)
+				}
+
+				counter++
+			}
+		}
+	}()
+
+	// Step 6: Wait for baseline operations
+	time.Sleep(5 * time.Second)
+
+	// Step 7: Trigger fault injection scenario
+	t.Log("Triggering fault injection scenario...")
+
+	// Example: Cluster failover
+	// resp, err := faultInjector.TriggerClusterFailover(ctx, "node-1", false)
+	// if err != nil {
+	//     t.Fatalf("Failed to trigger failover: %v", err)
+	// }
+
+	// Example: Network latency
+	// nodes := []string{"localhost:7001", "localhost:7002"}
+	// resp, err := faultInjector.SimulateNetworkLatency(ctx, nodes, 100*time.Millisecond, 20*time.Millisecond)
+	// if err != nil {
+	//     t.Fatalf("Failed to simulate latency: %v", err)
+	// }
+
+	// Example: Complex sequence
+	// sequence := []SequenceAction{
+	//     {
+	//         Type: ActionNetworkLatency,
+	//         Parameters: map[string]interface{}{
+	//             "nodes":   []string{"localhost:7001"},
+	//             "latency": "50ms",
+	//         },
+	//     },
+	//     {
+	//         Type: ActionClusterFailover,
+	//         Parameters: map[string]interface{}{
+	//             "node_id": "node-1",
+	//             "force":   false,
+	//         },
+	//         Delay: 10 * time.Second,
+	//     },
+	// }
+	// resp, err := faultInjector.ExecuteSequence(ctx, sequence)
+	// if err != nil {
+	//     t.Fatalf("Failed to execute sequence: %v", err)
+	// }
+
+	// Step 8: Wait for fault injection to complete
+	// status, err := faultInjector.WaitForAction(ctx, resp.ActionID,
+	//     WithMaxWaitTime(120*time.Second),
+	//     WithPollInterval(2*time.Second))
+	// if err != nil {
+	//     t.Fatalf("Fault injection failed: %v", err)
+	// }
+	// t.Logf("Fault injection completed: %s", status.Status)
+
+	// Step 9: Verify client remains operational during and after fault injection
+	time.Sleep(10 * time.Second)
+
+	err = client.Ping(ctx).Err()
+	if err != nil {
+		t.Errorf("Client not responsive after fault injection: %v", err)
+	}
+
+	// Step 10: Perform additional validation
+	testKey := "validation-key"
+	testValue := "validation-value"
+
+	err = client.Set(ctx, testKey, testValue, time.Minute).Err()
+	if err != nil {
+		t.Errorf("Failed to set validation key: %v", err)
+	}
+
+	retrievedValue, err := client.Get(ctx, testKey).Result()
+	if err != nil {
+		t.Errorf("Failed to get validation key: %v", err)
+	} else if retrievedValue != testValue {
+		t.Errorf("Validation failed: expected %s, got %s", testValue, retrievedValue)
+	}
+
+	t.Log("Scenario test completed successfully")
+}
+
+// Helper functions for common scenario patterns
+
+func performContinuousOperations(ctx context.Context, client redis.UniversalClient, workerID int, stopCh <-chan struct{}, errorCh chan<- error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	counter := 0
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			key := fmt.Sprintf("worker_%d_key_%d", workerID, counter)
+			value := fmt.Sprintf("value_%d", counter)
+
+			// Perform operation with timeout
+			opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err := client.Set(opCtx, key, value, time.Minute).Err()
+			cancel()
+
+			if err != nil {
+				select {
+				case errorCh <- err:
+				default:
+				}
+			}
+
+			counter++
+		}
+	}
+}
+
+func validateClusterHealth(ctx context.Context, client redis.UniversalClient) error {
+	// Basic connectivity test
+	if err := client.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("ping failed: %w", err)
+	}
+
+	// Test basic operations
+	testKey := "health-check-key"
+	testValue := "health-check-value"
+
+	if err := client.Set(ctx, testKey, testValue, time.Minute).Err(); err != nil {
+		return fmt.Errorf("set operation failed: %w", err)
+	}
+
+	retrievedValue, err := client.Get(ctx, testKey).Result()
+	if err != nil {
+		return fmt.Errorf("get operation failed: %w", err)
+	}
+
+	if retrievedValue != testValue {
+		return fmt.Errorf("value mismatch: expected %s, got %s", testValue, retrievedValue)
+	}
+
+	// Clean up
+	client.Del(ctx, testKey)
+
+	return nil
+}
+
+func waitForStableOperations(ctx context.Context, client redis.UniversalClient, duration time.Duration) error {
+	deadline := time.Now().Add(duration)
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if err := validateClusterHealth(ctx, client); err != nil {
+				return fmt.Errorf("cluster health check failed: %w", err)
+			}
+		}
+	}
+
+	return nil
+}

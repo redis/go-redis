@@ -1,5 +1,5 @@
 // Package interfaces provides shared interfaces used by both the main redis package
-// and the hitless upgrade package to avoid circular dependencies.
+// and the maintnotifications upgrade package to avoid circular dependencies.
 package interfaces
 
 import (
@@ -16,7 +16,7 @@ type NotificationProcessor interface {
 	GetHandler(pushNotificationName string) interface{}
 }
 
-// ClientInterface defines the interface that clients must implement for hitless upgrades.
+// ClientInterface defines the interface that clients must implement for maintnotifications upgrades.
 type ClientInterface interface {
 	// GetOptions returns the client options.
 	GetOptions() OptionsInterface
