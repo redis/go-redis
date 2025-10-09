@@ -951,10 +951,9 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 //------------------------------------------------------------------------------
 
 type clusterStateHolder struct {
-	load                 func(ctx context.Context) (*clusterState, error)
-	commandsCacheRefresh func()
-	state                atomic.Value
-	reloading            uint32 // atomic
+	load      func(ctx context.Context) (*clusterState, error)
+	state     atomic.Value
+	reloading uint32 // atomic
 }
 
 func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error)) *clusterStateHolder {
