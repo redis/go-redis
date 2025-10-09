@@ -102,6 +102,12 @@ func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 
+		// Check if the command should be filtered out
+		if th.conf.filter != nil && th.conf.filter(cmd) {
+			// If so, just call the next hook
+			return hook(ctx, cmd)
+		}
+
 		attrs := make([]attribute.KeyValue, 0, 8)
 		if th.conf.callerEnabled {
 			fn, file, line := funcFileLine("github.com/redis/go-redis")
