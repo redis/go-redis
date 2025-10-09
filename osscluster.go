@@ -957,13 +957,9 @@ type clusterStateHolder struct {
 	reloading            uint32 // atomic
 }
 
-func newClusterStateHolder(
-	load func(ctx context.Context) (*clusterState, error),
-	commandsCacheRefresh func(),
-) *clusterStateHolder {
+func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error)) *clusterStateHolder {
 	return &clusterStateHolder{
-		load:                 load,
-		commandsCacheRefresh: commandsCacheRefresh,
+		load: load,
 	}
 }
 
@@ -972,7 +968,6 @@ func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) 
 	if err != nil {
 		return nil, err
 	}
-	c.commandsCacheRefresh()
 	c.state.Store(state)
 	return state, nil
 }
@@ -1039,7 +1034,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 
-	c.state = newClusterStateHolder(c.loadState, c.cmdsInfoCache.Refresh)
+	c.state = newClusterStateHolder(c.loadState)
 	c.cmdable = c.Process
 	c.initHooks(hooks{
 		dial:       nil,
