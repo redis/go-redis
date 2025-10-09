@@ -951,15 +951,19 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 //------------------------------------------------------------------------------
 
 type clusterStateHolder struct {
-	load func(ctx context.Context) (*clusterState, error)
-
-	state     atomic.Value
-	reloading uint32 // atomic
+	load                 func(ctx context.Context) (*clusterState, error)
+	commandsCacheRefresh func()
+	state                atomic.Value
+	reloading            uint32 // atomic
 }
 
-func newClusterStateHolder(fn func(ctx context.Context) (*clusterState, error)) *clusterStateHolder {
+func newClusterStateHolder(
+	load func(ctx context.Context) (*clusterState, error),
+	commandsCacheRefresh func(),
+) *clusterStateHolder {
 	return &clusterStateHolder{
-		load: fn,
+		load:                 load,
+		commandsCacheRefresh: commandsCacheRefresh,
 	}
 }
 
@@ -968,6 +972,7 @@ func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) 
 	if err != nil {
 		return nil, err
 	}
+	c.commandsCacheRefresh()
 	c.state.Store(state)
 	return state, nil
 }
@@ -1032,9 +1037,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		nodes: newClusterNodes(opt),
 	}
 
-	c.state = newClusterStateHolder(c.loadState)
-	// TODO: execute on handshake, should be called again on reconnect
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
+
+	c.state = newClusterStateHolder(c.loadState, c.cmdsInfoCache.Refresh)
 	c.cmdable = c.Process
 	c.initHooks(hooks{
 		dial:       nil,

@@ -4443,7 +4443,6 @@ func (c *cmdsInfoCache) Get(ctx context.Context) (map[string]*CommandInfo, error
 	return c.cmds, err
 }
 
-// TODO: Call it on client reconnect
 func (c *cmdsInfoCache) Refresh() {
 	c.refreshLock.Lock()
 	defer c.refreshLock.Unlock()
