@@ -1014,11 +1014,10 @@ func (c *clusterStateHolder) ReloadOrGet(ctx context.Context) (*clusterState, er
 // or more underlying connections. It's safe for concurrent use by
 // multiple goroutines.
 type ClusterClient struct {
-	opt              *ClusterOptions
-	nodes            *clusterNodes
-	state            *clusterStateHolder
-	cmdsInfoCache    *cmdsInfoCache
-	cmdPolicyManager *commandPolicyManager
+	opt           *ClusterOptions
+	nodes         *clusterNodes
+	state         *clusterStateHolder
+	cmdsInfoCache *cmdsInfoCache
 	cmdable
 	hooksMixin
 }
@@ -1034,9 +1033,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	}
 
 	c.state = newClusterStateHolder(c.loadState)
+	// TODO: execute on handshake, should be called again on reconnect
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
-	c.cmdPolicyManager = newCommandPolicyManager(nil)
 	c.initHooks(hooks{
 		dial:       nil,
 		process:    c.process,
@@ -1421,7 +1420,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 
 	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
 		for _, cmd := range cmds {
-			policy := c.cmdPolicyManager.getCmdPolicy(cmd)
+			policy := c.getCommandPolicy(ctx, cmd)
 			if policy != nil && !policy.CanBeUsedInPipeline() {
 				return fmt.Errorf(
 					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
@@ -1438,7 +1437,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	}
 
 	for _, cmd := range cmds {
-		policy := c.cmdPolicyManager.getCmdPolicy(cmd)
+		policy := c.getCommandPolicy(ctx, cmd)
 		if policy != nil && !policy.CanBeUsedInPipeline() {
 			return fmt.Errorf(
 				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
@@ -2077,6 +2076,7 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 	return nil, firstErr
 }
 
+// cmdInfo will fetch and cache the command policies after the first execution
 func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	// Use a separate context that won't be canceled to ensure command info lookup
 	// doesn't fail due to original context cancellation

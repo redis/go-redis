@@ -4409,8 +4409,9 @@ func (cmd *CommandsInfoCmd) Clone() Cmder {
 type cmdsInfoCache struct {
 	fn func(ctx context.Context) (map[string]*CommandInfo, error)
 
-	once internal.Once
-	cmds map[string]*CommandInfo
+	once        internal.Once
+	refreshLock sync.Mutex
+	cmds        map[string]*CommandInfo
 }
 
 func newCmdsInfoCache(fn func(ctx context.Context) (map[string]*CommandInfo, error)) *cmdsInfoCache {
@@ -4420,6 +4421,9 @@ func newCmdsInfoCache(fn func(ctx context.Context) (map[string]*CommandInfo, err
 }
 
 func (c *cmdsInfoCache) Get(ctx context.Context) (map[string]*CommandInfo, error) {
+	c.refreshLock.Lock()
+	defer c.refreshLock.Unlock()
+
 	err := c.once.Do(func() error {
 		cmds, err := c.fn(ctx)
 		if err != nil {
@@ -4437,6 +4441,14 @@ func (c *cmdsInfoCache) Get(ctx context.Context) (map[string]*CommandInfo, error
 		return nil
 	})
 	return c.cmds, err
+}
+
+// TODO: Call it on client reconnect
+func (c *cmdsInfoCache) Refresh() {
+	c.refreshLock.Lock()
+	defer c.refreshLock.Unlock()
+
+	c.once = internal.Once{}
 }
 
 // ------------------------------------------------------------------------------
