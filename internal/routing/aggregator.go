@@ -14,8 +14,8 @@ type ResponseAggregator interface {
 	// AddWithKey processes a single shard response for a specific key (used by keyed aggregators).
 	AddWithKey(key string, result interface{}, err error) error
 
-	// Finish returns the final aggregated result and any error.
-	Finish() (interface{}, error)
+	// Result returns the final aggregated result and any error.
+	Result() (interface{}, error)
 }
 
 // NewResponseAggregator creates an aggregator based on the response policy.
@@ -83,7 +83,7 @@ func (a *AllSucceededAggregator) AddWithKey(key string, result interface{}, err 
 	return a.Add(result, err)
 }
 
-func (a *AllSucceededAggregator) Finish() (interface{}, error) {
+func (a *AllSucceededAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -121,7 +121,7 @@ func (a *OneSucceededAggregator) AddWithKey(key string, result interface{}, err 
 	return a.Add(result, err)
 }
 
-func (a *OneSucceededAggregator) Finish() (interface{}, error) {
+func (a *OneSucceededAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -165,7 +165,7 @@ func (a *AggSumAggregator) AddWithKey(key string, result interface{}, err error)
 	return a.Add(result, err)
 }
 
-func (a *AggSumAggregator) Finish() (interface{}, error) {
+func (a *AggSumAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -211,7 +211,7 @@ func (a *AggMinAggregator) AddWithKey(key string, result interface{}, err error)
 	return a.Add(result, err)
 }
 
-func (a *AggMinAggregator) Finish() (interface{}, error) {
+func (a *AggMinAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -260,7 +260,7 @@ func (a *AggMaxAggregator) AddWithKey(key string, result interface{}, err error)
 	return a.Add(result, err)
 }
 
-func (a *AggMaxAggregator) Finish() (interface{}, error) {
+func (a *AggMaxAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -311,7 +311,7 @@ func (a *AggLogicalAndAggregator) AddWithKey(key string, result interface{}, err
 	return a.Add(result, err)
 }
 
-func (a *AggLogicalAndAggregator) Finish() (interface{}, error) {
+func (a *AggLogicalAndAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -362,7 +362,7 @@ func (a *AggLogicalOrAggregator) AddWithKey(key string, result interface{}, err 
 	return a.Add(result, err)
 }
 
-func (a *AggLogicalOrAggregator) Finish() (interface{}, error) {
+func (a *AggLogicalOrAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -437,7 +437,7 @@ func (a *DefaultKeylessAggregator) AddWithKey(key string, result interface{}, er
 	return a.Add(result, err)
 }
 
-func (a *DefaultKeylessAggregator) Finish() (interface{}, error) {
+func (a *DefaultKeylessAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -497,7 +497,7 @@ func (a *DefaultKeyedAggregator) SetKeyOrder(keyOrder []string) {
 	a.keyOrder = keyOrder
 }
 
-func (a *DefaultKeyedAggregator) Finish() (interface{}, error) {
+func (a *DefaultKeyedAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -545,7 +545,7 @@ func (a *SpecialAggregator) AddWithKey(key string, result interface{}, err error
 	return a.Add(result, err)
 }
 
-func (a *SpecialAggregator) Finish() (interface{}, error) {
+func (a *SpecialAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 

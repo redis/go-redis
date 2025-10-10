@@ -22,15 +22,17 @@ type slotResult struct {
 // routeAndRun routes a command to the appropriate cluster nodes and executes it
 func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *clusterNode) error {
 	policy := c.getCommandPolicy(ctx, cmd)
-
-	switch {
-	case policy != nil && policy.Request == routing.ReqAllNodes:
+	if policy == nil {
+		return c.executeDefault(ctx, cmd, node)
+	}
+	switch policy.Request {
+	case routing.ReqAllNodes:
 		return c.executeOnAllNodes(ctx, cmd, policy)
-	case policy != nil && policy.Request == routing.ReqAllShards:
+	case routing.ReqAllShards:
 		return c.executeOnAllShards(ctx, cmd, policy)
-	case policy != nil && policy.Request == routing.ReqMultiShard:
+	case routing.ReqMultiShard:
 		return c.executeMultiShard(ctx, cmd, policy)
-	case policy != nil && policy.Request == routing.ReqSpecial:
+	case routing.ReqSpecial:
 		return c.executeSpecialCommand(ctx, cmd, policy, node)
 	default:
 		return c.executeDefault(ctx, cmd, node)
@@ -39,8 +41,8 @@ func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *cluste
 
 // getCommandPolicy retrieves the routing policy for a command
 func (c *ClusterClient) getCommandPolicy(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
-	if cmdInfo := c.cmdInfo(ctx, cmd.Name()); cmdInfo != nil && cmdInfo.Tips != nil {
-		return cmdInfo.Tips
+	if cmdInfo := c.cmdInfo(ctx, cmd.Name()); cmdInfo != nil && cmdInfo.CommandPolicy != nil {
+		return cmdInfo.CommandPolicy
 	}
 	return nil
 }
@@ -243,7 +245,7 @@ func createCommandByType(ctx context.Context, cmdType CmdType, args ...interface
 	case CmdTypeKeyFlags:
 		return NewKeyFlagsCmd(ctx, args...)
 	case CmdTypeDuration:
-		return NewDurationCmd(ctx, time.Second, args...)
+		return NewDurationCmd(ctx, time.Millisecond, args...)
 	}
 	return NewCmd(ctx, args...)
 }
@@ -462,7 +464,7 @@ func (c *ClusterClient) createAggregator(policy *routing.CommandPolicy, cmd Cmde
 
 // finishAggregation completes the aggregation process and sets the result
 func (c *ClusterClient) finishAggregation(cmd Cmder, aggregator routing.ResponseAggregator) error {
-	finalValue, finalErr := aggregator.Finish()
+	finalValue, finalErr := aggregator.Result()
 	if finalErr != nil {
 		cmd.SetErr(finalErr)
 		return finalErr

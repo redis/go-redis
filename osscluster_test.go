@@ -1708,14 +1708,14 @@ var _ = Describe("Command Tips tests", func() {
 		for cmdName, expected := range expectedPolicies {
 			actualCmd := cmds[cmdName]
 
-			Expect(actualCmd.Tips).NotTo(BeNil())
+			Expect(actualCmd.CommandPolicy).NotTo(BeNil())
 
 			// Verify request_policy from COMMAND matches router policy
-			actualRequestPolicy := actualCmd.Tips.Request.String()
+			actualRequestPolicy := actualCmd.CommandPolicy.Request.String()
 			Expect(actualRequestPolicy).To(Equal(expected.RequestPolicy))
 
 			// Verify response_policy from COMMAND matches router policy
-			actualResponsePolicy := actualCmd.Tips.Response.String()
+			actualResponsePolicy := actualCmd.CommandPolicy.Response.String()
 			Expect(actualResponsePolicy).To(Equal(expected.ResponsePolicy))
 		}
 	})
@@ -1730,9 +1730,9 @@ var _ = Describe("Command Tips tests", func() {
 
 			touchCmd := cmds["touch"]
 
-			Expect(touchCmd.Tips).NotTo(BeNil())
-			Expect(touchCmd.Tips.Request.String()).To(Equal("multi_shard"))
-			Expect(touchCmd.Tips.Response.String()).To(Equal("agg_sum"))
+			Expect(touchCmd.CommandPolicy).NotTo(BeNil())
+			Expect(touchCmd.CommandPolicy.Request.String()).To(Equal("multi_shard"))
+			Expect(touchCmd.CommandPolicy.Response.String()).To(Equal("agg_sum"))
 
 			keys := []string{"key1", "key2", "key3", "key4", "key5"}
 			for _, key := range keys {
@@ -1754,9 +1754,9 @@ var _ = Describe("Command Tips tests", func() {
 
 			flushallCmd := cmds["flushall"]
 
-			Expect(flushallCmd.Tips).NotTo(BeNil())
-			Expect(flushallCmd.Tips.Request.String()).To(Equal("all_shards"))
-			Expect(flushallCmd.Tips.Response.String()).To(Equal("all_succeeded"))
+			Expect(flushallCmd.CommandPolicy).NotTo(BeNil())
+			Expect(flushallCmd.CommandPolicy.Request.String()).To(Equal("all_shards"))
+			Expect(flushallCmd.CommandPolicy.Response.String()).To(Equal("all_succeeded"))
 
 			testKeys := []string{"test1", "test2", "test3"}
 			for _, key := range testKeys {
@@ -1781,9 +1781,9 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			pingCmd := cmds["ping"]
-			Expect(pingCmd.Tips).NotTo(BeNil())
-			Expect(pingCmd.Tips.Request.String()).To(Equal("all_shards"))
-			Expect(pingCmd.Tips.Response.String()).To(Equal("all_succeeded"))
+			Expect(pingCmd.CommandPolicy).NotTo(BeNil())
+			Expect(pingCmd.CommandPolicy.Request.String()).To(Equal("all_shards"))
+			Expect(pingCmd.CommandPolicy.Response.String()).To(Equal("all_succeeded"))
 
 			result := client.Ping(ctx)
 			Expect(result.Err()).NotTo(HaveOccurred())
@@ -1798,9 +1798,9 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			dbsizeCmd := cmds["dbsize"]
-			Expect(dbsizeCmd.Tips).NotTo(BeNil())
-			Expect(dbsizeCmd.Tips.Request.String()).To(Equal("all_shards"))
-			Expect(dbsizeCmd.Tips.Response.String()).To(Equal("agg_sum"))
+			Expect(dbsizeCmd.CommandPolicy).NotTo(BeNil())
+			Expect(dbsizeCmd.CommandPolicy.Request.String()).To(Equal("all_shards"))
+			Expect(dbsizeCmd.CommandPolicy.Response.String()).To(Equal("agg_sum"))
 
 			testKeys := []string{"dbsize_test1", "dbsize_test2", "dbsize_test3"}
 			for _, key := range testKeys {
@@ -1830,13 +1830,13 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			ftCreateCmd, exists := cmds["ft.create"]
-			if !exists || ftCreateCmd.Tips == nil {
+			if !exists || ftCreateCmd.CommandPolicy == nil {
 				Skip("FT.CREATE command or tips not available")
 			}
 
 			// DDL commands should NOT be broadcasted - they should go to coordinator only
-			Expect(ftCreateCmd.Tips).NotTo(BeNil())
-			requestPolicy := ftCreateCmd.Tips.Request.String()
+			Expect(ftCreateCmd.CommandPolicy).NotTo(BeNil())
+			requestPolicy := ftCreateCmd.CommandPolicy.Request.String()
 			Expect(requestPolicy).NotTo(Equal("all_shards"))
 			Expect(requestPolicy).NotTo(Equal("all_nodes"))
 
@@ -1869,12 +1869,12 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			ftAlterCmd, exists := cmds["ft.alter"]
-			if !exists || ftAlterCmd.Tips == nil {
+			if !exists || ftAlterCmd.CommandPolicy == nil {
 				Skip("FT.ALTER command or tips not available")
 			}
 
-			Expect(ftAlterCmd.Tips).NotTo(BeNil())
-			requestPolicy := ftAlterCmd.Tips.Request.String()
+			Expect(ftAlterCmd.CommandPolicy).NotTo(BeNil())
+			requestPolicy := ftAlterCmd.CommandPolicy.Request.String()
 			Expect(requestPolicy).NotTo(Equal("all_shards"))
 			Expect(requestPolicy).NotTo(Equal("all_nodes"))
 
@@ -2003,11 +2003,11 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			touchCmd, exists := cmds["touch"]
-			if !exists || touchCmd.Tips == nil {
+			if !exists || touchCmd.CommandPolicy == nil {
 				Skip("TOUCH command or tips not available")
 			}
 
-			Expect(touchCmd.Tips.Response.String()).To(Equal("agg_sum"))
+			Expect(touchCmd.CommandPolicy.Response.String()).To(Equal("agg_sum"))
 
 			testKeys := []string{
 				"touch_test_key_1111", // These keys should map to different hash slots
@@ -2053,11 +2053,11 @@ var _ = Describe("Command Tips tests", func() {
 
 			// FLUSHALL command with all_succeeded aggregation policy
 			flushallCmd, exists := cmds["flushall"]
-			if !exists || flushallCmd.Tips == nil {
+			if !exists || flushallCmd.CommandPolicy == nil {
 				Skip("FLUSHALL command or tips not available")
 			}
 
-			Expect(flushallCmd.Tips.Response.String()).To(Equal("all_succeeded"))
+			Expect(flushallCmd.CommandPolicy.Response.String()).To(Equal("all_succeeded"))
 
 			for i := 0; i < len(masterNodes); i++ {
 				testKey := fmt.Sprintf("flush_test_key_%d_%d", i, time.Now().UnixNano())
@@ -2077,11 +2077,11 @@ var _ = Describe("Command Tips tests", func() {
 
 			// WAIT command aggregation policy - verify agg_min policy
 			waitCmd, exists := cmds["wait"]
-			if !exists || waitCmd.Tips == nil {
+			if !exists || waitCmd.CommandPolicy == nil {
 				Skip("WAIT command or tips not available")
 			}
 
-			Expect(waitCmd.Tips.Response.String()).To(Equal("agg_min"))
+			Expect(waitCmd.CommandPolicy.Response.String()).To(Equal("agg_min"))
 
 			// Set up some data to replicate
 			testKey := "wait_test_key_1111"
@@ -2101,11 +2101,11 @@ var _ = Describe("Command Tips tests", func() {
 
 			// SCRIPT EXISTS command aggregation policy - verify agg_logical_and policy
 			scriptExistsCmd, exists := cmds["script exists"]
-			if !exists || scriptExistsCmd.Tips == nil {
+			if !exists || scriptExistsCmd.CommandPolicy == nil {
 				Skip("SCRIPT EXISTS command or tips not available")
 			}
 
-			Expect(scriptExistsCmd.Tips.Response.String()).To(Equal("agg_logical_and"))
+			Expect(scriptExistsCmd.CommandPolicy.Response.String()).To(Equal("agg_logical_and"))
 
 			// Load a script on all shards
 			testScript := "return 'hello'"
@@ -2157,11 +2157,11 @@ var _ = Describe("Command Tips tests", func() {
 					continue
 				}
 
-				if cmd.Tips == nil {
+				if cmd.CommandPolicy == nil {
 					continue
 				}
 
-				actualPolicy := cmd.Tips.Response.String()
+				actualPolicy := cmd.CommandPolicy.Response.String()
 				Expect(actualPolicy).To(Equal(expectedPolicy))
 			}
 		})
@@ -2194,7 +2194,7 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			pingCmd, exists := cmds["ping"]
-			if exists && pingCmd.Tips != nil {
+			if exists && pingCmd.CommandPolicy != nil {
 			}
 
 			pingResult := client.Ping(ctx)
