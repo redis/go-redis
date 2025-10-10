@@ -665,13 +665,13 @@ var _ = Describe("Commands", func() {
 
 			cmd := cmds["touch"]
 			Expect(cmd.Name).To(Equal("touch"))
-			Expect(cmd.Tips.Request).To(Equal(routing.ReqMultiShard))
-			Expect(cmd.Tips.Response).To(Equal(routing.RespAggSum))
+			Expect(cmd.CommandPolicy.Request).To(Equal(routing.ReqMultiShard))
+			Expect(cmd.CommandPolicy.Response).To(Equal(routing.RespAggSum))
 
 			cmd = cmds["flushall"]
 			Expect(cmd.Name).To(Equal("flushall"))
-			Expect(cmd.Tips.Request).To(Equal(routing.ReqAllShards))
-			Expect(cmd.Tips.Response).To(Equal(routing.RespAllSucceeded))
+			Expect(cmd.CommandPolicy.Request).To(Equal(routing.ReqAllShards))
+			Expect(cmd.CommandPolicy.Response).To(Equal(routing.RespAllSucceeded))
 		})
 
 		It("should return all command names", func() {
