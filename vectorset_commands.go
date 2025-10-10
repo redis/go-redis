@@ -348,12 +348,10 @@ func (c cmdable) VSimWithArgsWithScores(ctx context.Context, key string, val Vec
 }
 
 // `VRANGE key start end count`
+// a negative count means to return all the elements in the vector set.
 // note: the API is experimental and may be subject to change.
 func (c cmdable) VRange(ctx context.Context, key, start, end string, count int64) *StringSliceCmd {
-	args := []any{"vrange", key, start, end}
-	if count != 0 {
-		args = append(args, count)
-	}
+	args := []any{"vrange", key, start, end, count}
 	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
