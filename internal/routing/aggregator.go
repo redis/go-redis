@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
+
+	"github.com/redis/go-redis/v9/internal/util"
 )
 
 // ResponseAggregator defines the interface for aggregating responses from multiple shards.
@@ -32,11 +35,18 @@ func NewResponseAggregator(policy ResponsePolicy, cmdName string) ResponseAggreg
 	case RespAggSum:
 		return &AggSumAggregator{}
 	case RespAggMin:
-		return &AggMinAggregator{}
+		return &AggMinAggregator{
+			res: util.NewAtomicMin(),
+		}
 	case RespAggMax:
-		return &AggMaxAggregator{}
+		return &AggMaxAggregator{
+			res: util.NewAtomicMax(),
+		}
 	case RespAggLogicalAnd:
-		return &AggLogicalAndAggregator{}
+		andAgg := &AggLogicalAndAggregator{}
+		andAgg.res.Add(1)
+
+		return andAgg
 	case RespAggLogicalOr:
 		return &AggLogicalOrAggregator{}
 	case RespSpecial:
@@ -58,62 +68,54 @@ func NewDefaultAggregator(isKeyed bool) ResponseAggregator {
 // AllSucceededAggregator returns one non-error reply if every shard succeeded,
 // propagates the first error otherwise.
 type AllSucceededAggregator struct {
-	mu        sync.Mutex
-	result    interface{}
-	firstErr  error
-	hasResult bool
+	err atomic.Value
+	res atomic.Value
 }
 
 func (a *AllSucceededAggregator) Add(result interface{}, err error) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if err != nil && a.firstErr == nil {
-		a.firstErr = err
+	if err != nil {
+		a.err.CompareAndSwap(nil, err)
 		return nil
 	}
-	if err == nil && !a.hasResult {
-		a.result = result
-		a.hasResult = true
+
+	if result != nil {
+		a.res.CompareAndSwap(nil, result)
 	}
+
 	return nil
+}
+
+func (a *AllSucceededAggregator) Result() (interface{}, error) {
+	var err error
+	res, e := a.res.Load(), a.err.Load()
+	if e != nil {
+		err = e.(error)
+	}
+
+	return res, err
 }
 
 func (a *AllSucceededAggregator) AddWithKey(key string, result interface{}, err error) error {
 	return a.Add(result, err)
 }
 
-func (a *AllSucceededAggregator) Result() (interface{}, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.firstErr != nil {
-		return nil, a.firstErr
-	}
-	return a.result, nil
-}
-
 // OneSucceededAggregator returns the first non-error reply,
 // if all shards errored, returns any one of those errors.
 type OneSucceededAggregator struct {
-	mu        sync.Mutex
-	result    interface{}
-	firstErr  error
-	hasResult bool
+	err atomic.Value
+	res atomic.Value
 }
 
 func (a *OneSucceededAggregator) Add(result interface{}, err error) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if err != nil && a.firstErr == nil {
-		a.firstErr = err
+	if err != nil {
+		a.err.CompareAndSwap(nil, err)
 		return nil
 	}
-	if err == nil && !a.hasResult {
-		a.result = result
-		a.hasResult = true
+
+	if result != nil {
+		a.res.CompareAndSwap(nil, result)
 	}
+
 	return nil
 }
 
@@ -122,42 +124,33 @@ func (a *OneSucceededAggregator) AddWithKey(key string, result interface{}, err 
 }
 
 func (a *OneSucceededAggregator) Result() (interface{}, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.hasResult {
-		return a.result, nil
+	res, e := a.res.Load(), a.err.Load()
+	if res != nil {
+		return nil, e.(error)
 	}
-	return nil, a.firstErr
+
+	return res, nil
 }
 
 // AggSumAggregator sums numeric replies from all shards.
 type AggSumAggregator struct {
-	mu        sync.Mutex
-	sum       int64
-	hasResult bool
-	firstErr  error
+	err atomic.Value
+	res *int64
 }
 
 func (a *AggSumAggregator) Add(result interface{}, err error) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	if err != nil {
+		a.err.CompareAndSwap(nil, err)
+	}
 
-	if err != nil && a.firstErr == nil {
-		a.firstErr = err
-		return nil
-	}
-	if err == nil {
+	if result != nil {
 		val, err := toInt64(result)
-		if err != nil && a.firstErr == nil {
-			a.firstErr = err
-			return nil
+		if err != nil {
+			return err
 		}
-		if err == nil {
-			a.sum += val
-			a.hasResult = true
-		}
+		atomic.AddInt64(a.res, val)
 	}
+
 	return nil
 }
 
@@ -166,17 +159,19 @@ func (a *AggSumAggregator) AddWithKey(key string, result interface{}, err error)
 }
 
 func (a *AggSumAggregator) Result() (interface{}, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.firstErr != nil {
-		return nil, a.firstErr
+	res, err := atomic.LoadInt64(a.res), a.err.Load()
+	if err != nil {
+		return nil, err.(error)
 	}
-	return a.sum, nil
+
+	return res, nil
 }
 
 // AggMinAggregator returns the minimum numeric value from all shards.
 type AggMinAggregator struct {
+	err atomic.Value
+	res *util.AtomicMin
+
 	mu        sync.Mutex
 	min       int64
 	hasResult bool
@@ -184,26 +179,19 @@ type AggMinAggregator struct {
 }
 
 func (a *AggMinAggregator) Add(result interface{}, err error) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if err != nil && a.firstErr == nil {
-		a.firstErr = err
+	if err != nil {
+		a.err.CompareAndSwap(nil, err)
 		return nil
 	}
-	if err == nil {
-		val, err := toInt64(result)
-		if err != nil && a.firstErr == nil {
-			a.firstErr = err
-			return nil
-		}
-		if err == nil {
-			if !a.hasResult || val < a.min {
-				a.min = val
-				a.hasResult = true
-			}
-		}
+
+	intVal, e := toInt64(result)
+	if e != nil {
+		a.err.CompareAndSwap(nil, err)
+		return nil
 	}
+
+	a.res.Value(intVal)
+
 	return nil
 }
 
@@ -212,47 +200,38 @@ func (a *AggMinAggregator) AddWithKey(key string, result interface{}, err error)
 }
 
 func (a *AggMinAggregator) Result() (interface{}, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.firstErr != nil {
-		return nil, a.firstErr
+	err := a.err.Load()
+	if err != nil {
+		return nil, err.(error)
 	}
-	if !a.hasResult {
+
+	val, hasVal := a.res.Min()
+	if !hasVal {
 		return nil, fmt.Errorf("redis: no valid results to aggregate for min operation")
 	}
-	return a.min, nil
+	return val, nil
 }
 
 // AggMaxAggregator returns the maximum numeric value from all shards.
 type AggMaxAggregator struct {
-	mu        sync.Mutex
-	max       int64
-	hasResult bool
-	firstErr  error
+	err atomic.Value
+	res *util.AtomicMax
 }
 
 func (a *AggMaxAggregator) Add(result interface{}, err error) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if err != nil && a.firstErr == nil {
-		a.firstErr = err
+	if err != nil {
+		a.err.CompareAndSwap(nil, err)
 		return nil
 	}
-	if err == nil {
-		val, err := toInt64(result)
-		if err != nil && a.firstErr == nil {
-			a.firstErr = err
-			return nil
-		}
-		if err == nil {
-			if !a.hasResult || val > a.max {
-				a.max = val
-				a.hasResult = true
-			}
-		}
+
+	intVal, e := toInt64(result)
+	if e != nil {
+		a.err.CompareAndSwap(nil, err)
+		return nil
 	}
+
+	a.res.Value(intVal)
+
 	return nil
 }
 
@@ -261,49 +240,45 @@ func (a *AggMaxAggregator) AddWithKey(key string, result interface{}, err error)
 }
 
 func (a *AggMaxAggregator) Result() (interface{}, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.firstErr != nil {
-		return nil, a.firstErr
+	err := a.err.Load()
+	if err != nil {
+		return nil, err.(error)
 	}
-	if !a.hasResult {
+
+	val, hasVal := a.res.Max()
+	if !hasVal {
 		return nil, fmt.Errorf("redis: no valid results to aggregate for max operation")
 	}
-	return a.max, nil
+	return val, nil
 }
 
 // AggLogicalAndAggregator performs logical AND on boolean values.
 type AggLogicalAndAggregator struct {
-	mu        sync.Mutex
-	result    bool
-	hasResult bool
-	firstErr  error
+	err       atomic.Value
+	res       atomic.Int64
+	hasResult atomic.Bool
 }
 
 func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if err != nil && a.firstErr == nil {
-		a.firstErr = err
+	if err != nil {
+		a.err.CompareAndSwap(nil, err)
 		return nil
 	}
-	if err == nil {
-		val, err := toBool(result)
-		if err != nil && a.firstErr == nil {
-			a.firstErr = err
-			return nil
-		}
-		if err == nil {
-			if !a.hasResult {
-				a.result = val
-				a.hasResult = true
-			} else {
-				a.result = a.result && val
-			}
-		}
+
+	val, e := toBool(result)
+	if e != nil {
+		a.err.CompareAndSwap(nil, e)
+		return nil
 	}
+
+	if val {
+		a.res.And(1)
+	} else {
+		a.res.And(0)
+	}
+
+	a.hasResult.Store(true)
+
 	return nil
 }
 
@@ -312,49 +287,44 @@ func (a *AggLogicalAndAggregator) AddWithKey(key string, result interface{}, err
 }
 
 func (a *AggLogicalAndAggregator) Result() (interface{}, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.firstErr != nil {
-		return nil, a.firstErr
+	err := a.err.Load()
+	if err != nil {
+		return nil, err.(error)
 	}
-	if !a.hasResult {
+
+	if !a.hasResult.Load() {
 		return nil, fmt.Errorf("redis: no valid results to aggregate for logical AND operation")
 	}
-	return a.result, nil
+	return a.res.Load() != 0, nil
 }
 
 // AggLogicalOrAggregator performs logical OR on boolean values.
 type AggLogicalOrAggregator struct {
-	mu        sync.Mutex
-	result    bool
-	hasResult bool
-	firstErr  error
+	err       atomic.Value
+	res       atomic.Int64
+	hasResult atomic.Bool
 }
 
 func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if err != nil && a.firstErr == nil {
-		a.firstErr = err
+	if err != nil {
+		a.err.CompareAndSwap(nil, err)
 		return nil
 	}
-	if err == nil {
-		val, err := toBool(result)
-		if err != nil && a.firstErr == nil {
-			a.firstErr = err
-			return nil
-		}
-		if err == nil {
-			if !a.hasResult {
-				a.result = val
-				a.hasResult = true
-			} else {
-				a.result = a.result || val
-			}
-		}
+
+	val, e := toBool(result)
+	if e != nil {
+		a.err.CompareAndSwap(nil, e)
+		return nil
 	}
+
+	if val {
+		a.res.Or(1)
+	} else {
+		a.res.Or(0)
+	}
+
+	a.hasResult.Store(true)
+
 	return nil
 }
 
@@ -363,16 +333,15 @@ func (a *AggLogicalOrAggregator) AddWithKey(key string, result interface{}, err 
 }
 
 func (a *AggLogicalOrAggregator) Result() (interface{}, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.firstErr != nil {
-		return nil, a.firstErr
+	err := a.err.Load()
+	if err != nil {
+		return nil, err.(error)
 	}
-	if !a.hasResult {
+
+	if !a.hasResult.Load() {
 		return nil, fmt.Errorf("redis: no valid results to aggregate for logical OR operation")
 	}
-	return a.result, nil
+	return a.res.Load() != 0, nil
 }
 
 func toInt64(val interface{}) (int64, error) {
