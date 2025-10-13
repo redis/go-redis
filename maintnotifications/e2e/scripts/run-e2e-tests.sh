@@ -134,15 +134,14 @@ export FAULT_INJECTION_API_URL="$FAULT_INJECTOR_URL"
 export E2E_SCENARIO_TESTS="true"
 
 # Build test command
-TEST_CMD="go test -json -tags=e2e -v"
+TEST_CMD="go test -json -tags=e2e"
 
 if [[ -n "$TIMEOUT" ]]; then
     TEST_CMD="$TEST_CMD -timeout=$TIMEOUT"
 fi
 
-if [[ -n "$VERBOSE" ]]; then
-    TEST_CMD="$TEST_CMD $VERBOSE"
-fi
+# Note: -v flag is not compatible with -json output format
+# The -json format already provides verbose test information
 
 if [[ -n "$RUN_PATTERN" ]]; then
     TEST_CMD="$TEST_CMD -run $RUN_PATTERN"
