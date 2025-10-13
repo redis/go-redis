@@ -134,7 +134,7 @@ export FAULT_INJECTION_API_URL="$FAULT_INJECTOR_URL"
 export E2E_SCENARIO_TESTS="true"
 
 # Build test command
-TEST_CMD="go test -tags=e2e -v"
+TEST_CMD="go test -json -tags=e2e -v"
 
 if [[ -n "$TIMEOUT" ]]; then
     TEST_CMD="$TEST_CMD -timeout=$TIMEOUT"
