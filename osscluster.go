@@ -2079,7 +2079,7 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	// Use a separate context that won't be canceled to ensure command info lookup
 	// doesn't fail due to original context cancellation
-	cmdInfoCtx := context.Background()
+	cmdInfoCtx := c.context(ctx)
 	if c.opt.ContextTimeoutEnabled && ctx != nil {
 		// If context timeout is enabled, still use a reasonable timeout
 		var cancel context.CancelFunc
@@ -2089,13 +2089,13 @@ func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 
 	cmdsInfo, err := c.cmdsInfoCache.Get(cmdInfoCtx)
 	if err != nil {
-		internal.Logger.Printf(context.TODO(), "getting command info: %s", err)
+		internal.Logger.Printf(cmdInfoCtx, "getting command info: %s", err)
 		return nil
 	}
 
 	info := cmdsInfo[name]
 	if info == nil {
-		internal.Logger.Printf(context.TODO(), "info for cmd=%s not found", name)
+		internal.Logger.Printf(cmdInfoCtx, "info for cmd=%s not found", name)
 	}
 	return info
 }
