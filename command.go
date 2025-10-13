@@ -6832,6 +6832,12 @@ func (cmd *MonitorCmd) Stop() {
 	cmd.status = monitorStatusStop
 }
 
+func (cmd *MonitorCmd) Clone() Cmder {
+	// MonitorCmd cannot be safely cloned due to channels and goroutines
+	// Return a new MonitorCmd with the same channel
+	return newMonitorCmd(cmd.ctx, cmd.ch)
+}
+
 // ExtractCommandValue extracts the value from a command result using the fast enum-based approach
 func ExtractCommandValue(cmd interface{}) interface{} {
 	// First try to get the command type using the interface
@@ -6927,10 +6933,4 @@ func ExtractCommandValue(cmd interface{}) interface{} {
 
 	// If we can't get the command type, return nil
 	return nil
-}
-
-func (cmd *MonitorCmd) Clone() Cmder {
-	// MonitorCmd cannot be safely cloned due to channels and goroutines
-	// Return a new MonitorCmd with the same channel
-	return newMonitorCmd(cmd.ctx, cmd.ch)
 }

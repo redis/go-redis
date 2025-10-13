@@ -1,12 +1,20 @@
 package routing
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
 
 	"github.com/redis/go-redis/v9/internal/util"
+)
+
+var (
+	ErrMaxAggregation = errors.New("redis: no valid results to aggregate for max operation")
+	ErrMinAggregation = errors.New("redis: no valid results to aggregate for min operation")
+	ErrAndAggregation = errors.New("redis: no valid results to aggregate for logical AND operation")
+	ErrOrAggregation  = errors.New("redis: no valid results to aggregate for logical OR operation")
 )
 
 // ResponseAggregator defines the interface for aggregating responses from multiple shards.
@@ -171,11 +179,6 @@ func (a *AggSumAggregator) Result() (interface{}, error) {
 type AggMinAggregator struct {
 	err atomic.Value
 	res *util.AtomicMin
-
-	mu        sync.Mutex
-	min       int64
-	hasResult bool
-	firstErr  error
 }
 
 func (a *AggMinAggregator) Add(result interface{}, err error) error {
@@ -207,7 +210,7 @@ func (a *AggMinAggregator) Result() (interface{}, error) {
 
 	val, hasVal := a.res.Min()
 	if !hasVal {
-		return nil, fmt.Errorf("redis: no valid results to aggregate for min operation")
+		return nil, ErrMinAggregation
 	}
 	return val, nil
 }
@@ -247,7 +250,7 @@ func (a *AggMaxAggregator) Result() (interface{}, error) {
 
 	val, hasVal := a.res.Max()
 	if !hasVal {
-		return nil, fmt.Errorf("redis: no valid results to aggregate for max operation")
+		return nil, ErrMaxAggregation
 	}
 	return val, nil
 }
@@ -293,7 +296,7 @@ func (a *AggLogicalAndAggregator) Result() (interface{}, error) {
 	}
 
 	if !a.hasResult.Load() {
-		return nil, fmt.Errorf("redis: no valid results to aggregate for logical AND operation")
+		return nil, ErrAndAggregation
 	}
 	return a.res.Load() != 0, nil
 }
@@ -339,7 +342,7 @@ func (a *AggLogicalOrAggregator) Result() (interface{}, error) {
 	}
 
 	if !a.hasResult.Load() {
-		return nil, fmt.Errorf("redis: no valid results to aggregate for logical OR operation")
+		return nil, ErrOrAggregation
 	}
 	return a.res.Load() != 0, nil
 }
@@ -533,13 +536,6 @@ func (a *SpecialAggregator) Result() (interface{}, error) {
 	return nil, nil
 }
 
-// SetAggregatorFunc allows setting custom aggregation logic for special commands.
-func (a *SpecialAggregator) SetAggregatorFunc(fn func([]interface{}, []error) (interface{}, error)) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.aggregatorFunc = fn
-}
-
 // SpecialAggregatorRegistry holds custom aggregation functions for specific commands.
 var SpecialAggregatorRegistry = make(map[string]func([]interface{}, []error) (interface{}, error))
 
@@ -552,7 +548,7 @@ func RegisterSpecialAggregator(cmdName string, fn func([]interface{}, []error) (
 func NewSpecialAggregator(cmdName string) *SpecialAggregator {
 	agg := &SpecialAggregator{}
 	if fn, exists := SpecialAggregatorRegistry[cmdName]; exists {
-		agg.SetAggregatorFunc(fn)
+		agg.aggregatorFunc = fn
 	}
 	return agg
 }
