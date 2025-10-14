@@ -441,6 +441,16 @@ func (p *ConnPool) removeConnWithLock(cn *Conn) {
 }
 
 func (p *ConnPool) removeConn(cn *Conn) {
+	// check idleConns and remove it if present
+	for i, c := range p.idleConns {
+		if c == cn {
+			p.idleConns = append(p.idleConns[:i], p.idleConns[i+1:]...)
+			p.idleConnsLen--
+			break
+		}
+	}
+
+	// then check conns and remove it
 	for i, c := range p.conns {
 		if c == cn {
 			p.conns = append(p.conns[:i], p.conns[i+1:]...)
@@ -451,6 +461,7 @@ func (p *ConnPool) removeConn(cn *Conn) {
 			break
 		}
 	}
+
 	atomic.AddUint32(&p.stats.StaleConns, 1)
 }
 
