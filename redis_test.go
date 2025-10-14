@@ -872,6 +872,7 @@ var _ = Describe("Credentials Provider Priority", func() {
 })
 
 type mockStreamingProvider struct {
+	mu          sync.RWMutex
 	credentials auth.Credentials
 	err         error
 	updates     chan auth.Credentials
@@ -885,12 +886,18 @@ func (m *mockStreamingProvider) Subscribe(listener auth.CredentialsListener) (au
 	// Start goroutine to handle updates
 	go func() {
 		for creds := range m.updates {
+			m.mu.Lock()
 			m.credentials = creds
+			m.mu.Unlock()
 			listener.OnNext(creds)
 		}
 	}()
 
-	return m.credentials, func() (err error) {
+	m.mu.RLock()
+	currentCreds := m.credentials
+	m.mu.RUnlock()
+
+	return currentCreds, func() (err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				// this is just a mock:

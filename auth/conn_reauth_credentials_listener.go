@@ -37,12 +37,7 @@ func (c *ConnReAuthCredentialsListener) OnNext(credentials Credentials) {
 	// this is important because the connection pool may be in the process of reconnecting the connection
 	// and we don't want to interfere with that process
 	// but we also don't want to block for too long, so incorporate a timeout
-	for {
-		// we were able to mark the connection as unusable
-		if c.conn.Usable.CompareAndSwap(true, false) {
-			break
-		}
-
+	for !c.conn.Usable.CompareAndSwap(true, false) {
 		select {
 		case <-timeout:
 			err = pool.ErrConnUnusableTimeout

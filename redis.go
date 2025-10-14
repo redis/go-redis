@@ -308,7 +308,7 @@ func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.Cred
 	credListener, ok := c.credListeners[poolCn]
 	c.credListenersLock.RUnlock()
 	if ok {
-		return credListener.(auth.CredentialsListener), func() {
+		return credListener, func() {
 			c.removeCredListener(poolCn)
 		}
 	}
