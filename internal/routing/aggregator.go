@@ -97,7 +97,7 @@ func (a *AllSucceededAggregator) Add(result interface{}, err error) error {
 
 func (a *AllSucceededAggregator) BatchAdd(results map[string]interface{}, err error) error {
 	for _, res := range results {
-		a.Add(res, err)
+		_ = a.Add(res, err)
 	}
 
 	return nil
@@ -139,7 +139,7 @@ func (a *OneSucceededAggregator) Add(result interface{}, err error) error {
 
 func (a *OneSucceededAggregator) BatchAdd(results map[string]interface{}, err error) error {
 	for _, res := range results {
-		a.Add(res, err)
+		_ = a.Add(res, err)
 	}
 
 	return nil
@@ -182,7 +182,7 @@ func (a *AggSumAggregator) Add(result interface{}, err error) error {
 
 func (a *AggSumAggregator) BatchAdd(results map[string]interface{}, err error) error {
 	for _, res := range results {
-		a.Add(res, err)
+		_ = a.Add(res, err)
 	}
 
 	return nil
@@ -226,7 +226,7 @@ func (a *AggMinAggregator) Add(result interface{}, err error) error {
 
 func (a *AggMinAggregator) BatchAdd(results map[string]interface{}, err error) error {
 	for _, res := range results {
-		a.Add(res, err)
+		_ = a.Add(res, err)
 	}
 
 	return nil
@@ -274,7 +274,7 @@ func (a *AggMaxAggregator) Add(result interface{}, err error) error {
 
 func (a *AggMaxAggregator) BatchAdd(results map[string]interface{}, err error) error {
 	for _, res := range results {
-		a.Add(res, err)
+		_ = a.Add(res, err)
 	}
 
 	return nil
@@ -329,7 +329,7 @@ func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
 
 func (a *AggLogicalAndAggregator) BatchAdd(results map[string]interface{}, err error) error {
 	for _, res := range results {
-		a.Add(res, err)
+		_ = a.Add(res, err)
 	}
 
 	return nil
@@ -383,7 +383,7 @@ func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
 
 func (a *AggLogicalOrAggregator) BatchAdd(results map[string]interface{}, err error) error {
 	for _, res := range results {
-		a.Add(res, err)
+		_ = a.Add(res, err)
 	}
 
 	return nil
@@ -469,7 +469,7 @@ func (a *DefaultKeylessAggregator) Add(result interface{}, err error) error {
 
 func (a *DefaultKeylessAggregator) BatchAdd(results map[string]interface{}, err error) error {
 	for _, res := range results {
-		a.add(res, err)
+		_ = a.add(res, err)
 	}
 
 	return nil
@@ -525,7 +525,7 @@ func (a *DefaultKeyedAggregator) Add(result interface{}, err error) error {
 
 func (a *DefaultKeyedAggregator) BatchAdd(results map[string]interface{}, err error) error {
 	for _, res := range results {
-		a.add(res, err)
+		_ = a.add(res, err)
 	}
 
 	return nil
@@ -546,8 +546,7 @@ func (a *DefaultKeyedAggregator) AddWithKey(key string, result interface{}, err 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.addWithKey(key, result, err)
-	return nil
+	return a.addWithKey(key, result, err)
 }
 
 func (a *DefaultKeyedAggregator) BatchAddWithKeyOrder(results map[string]interface{}, keyOrder []string) error {
@@ -618,7 +617,7 @@ func (a *SpecialAggregator) Add(result interface{}, err error) error {
 
 func (a *SpecialAggregator) BatchAdd(results map[string]interface{}, err error) error {
 	for _, res := range results {
-		a.add(res, err)
+		_ = a.add(res, err)
 	}
 
 	return nil
