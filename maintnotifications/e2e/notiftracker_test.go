@@ -81,6 +81,37 @@ func (tnh *TrackingNotificationsHook) Clear() {
 	tnh.migratedCount.Store(0)
 	tnh.failingOverCount.Store(0)
 }
+// wait for notification in prehook
+func (tnh *TrackingNotificationsHook) FindOrWaitForNotification(notificationType string, timeout time.Duration) (notification []interface{}, found bool) {
+	if notification, found := tnh.FindNotification(notificationType); found {
+		return notification, true
+	}
+
+	// wait for notification
+	timeoutCh := time.After(timeout)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	for {
+		select {
+		case <-timeoutCh:
+			return nil, false
+		case <-ticker.C:
+			if notification, found := tnh.FindNotification(notificationType); found {
+				return notification, true
+			}
+		}
+	}
+}
+
+func (tnh *TrackingNotificationsHook) FindNotification(notificationType string) (notification []interface{}, found bool) {
+	tnh.mutex.RLock()
+	defer tnh.mutex.RUnlock()
+	for _, event := range tnh.diagnosticsLog {
+		if event.Type == notificationType {
+			return event.Details["notification"].([]interface{}), true
+		}
+	}
+	return nil, false
+}
 
 // PreHook captures timeout-related events before processing
 func (tnh *TrackingNotificationsHook) PreHook(_ context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
