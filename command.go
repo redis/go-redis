@@ -153,6 +153,33 @@ const (
 )
 >>>>>>> b6633bf9 (centralize cluster command routing in osscluster_router.go and refactor osscluster.go (#6))
 
+type (
+	CmdTypeXAutoClaimValue struct {
+		messages []XMessage
+		start    string
+	}
+
+	CmdTypeXAutoClaimJustIDValue struct {
+		ids   []string
+		start string
+	}
+
+	CmdTypeScanValue struct {
+		keys   []string
+		cursor uint64
+	}
+
+	CmdTypeKeyValuesValue struct {
+		key    string
+		values []string
+	}
+
+	CmdTypeZSliceWithKeyValue struct {
+		key    string
+		zSlice []Z
+	}
+)
+
 type Cmder interface {
 	// command name.
 	// e.g. "set k v ex 10" -> "set", "cluster info" -> "cluster".
@@ -6981,6 +7008,10 @@ func ExtractCommandValue(cmd interface{}) interface{} {
 
 		// Use fast type-based extraction
 		switch cmdType {
+		case CmdTypeGeneric:
+			if genericCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+				return genericCmd.Val()
+			}
 		case CmdTypeString:
 			if stringCmd, ok := cmd.(interface{ Val() string }); ok {
 				return stringCmd.Val()
@@ -7001,20 +7032,216 @@ func ExtractCommandValue(cmd interface{}) interface{} {
 			if statusCmd, ok := cmd.(interface{ Val() string }); ok {
 				return statusCmd.Val()
 			}
-		case CmdTypeDuration, CmdTypeTime, CmdTypeStringStructMap, CmdTypeXMessageSlice,
-			CmdTypeXStreamSlice, CmdTypeXPending, CmdTypeXPendingExt, CmdTypeXAutoClaim,
-			CmdTypeXAutoClaimJustID, CmdTypeXInfoConsumers, CmdTypeXInfoGroups, CmdTypeXInfoStream,
-			CmdTypeXInfoStreamFull, CmdTypeZSlice, CmdTypeZWithKey, CmdTypeScan, CmdTypeClusterSlots,
-			CmdTypeGeoSearchLocation, CmdTypeGeoPos, CmdTypeCommandsInfo, CmdTypeSlowLog,
-			CmdTypeKeyValues, CmdTypeZSliceWithKey, CmdTypeFunctionList, CmdTypeFunctionStats,
-			CmdTypeLCS, CmdTypeKeyFlags, CmdTypeClusterLinks, CmdTypeClusterShards,
-			CmdTypeRankWithScore, CmdTypeClientInfo, CmdTypeACLLog, CmdTypeInfo, CmdTypeMonitor,
-			CmdTypeJSON, CmdTypeJSONSlice, CmdTypeIntPointerSlice, CmdTypeScanDump, CmdTypeBFInfo,
-			CmdTypeCFInfo, CmdTypeCMSInfo, CmdTypeTopKInfo, CmdTypeTDigestInfo, CmdTypeFTSearch,
-			CmdTypeFTInfo, CmdTypeFTSpellCheck, CmdTypeFTSynDump, CmdTypeAggregate,
-			CmdTypeTSTimestampValue, CmdTypeTSTimestampValueSlice:
-			if durationCmd, ok := cmd.(interface{ Val() interface{} }); ok {
+		case CmdTypeDuration:
+			if durationCmd, ok := cmd.(interface{ Val() time.Duration }); ok {
 				return durationCmd.Val()
+			}
+		case CmdTypeTime:
+			if timeCmd, ok := cmd.(interface{ Val() time.Time }); ok {
+				return timeCmd.Val()
+			}
+		case CmdTypeStringStructMap:
+			if structMapCmd, ok := cmd.(interface{ Val() map[string]struct{} }); ok {
+				return structMapCmd.Val()
+			}
+		case CmdTypeXMessageSlice:
+			if xMessageSliceCmd, ok := cmd.(interface{ Val() []XMessage }); ok {
+				return xMessageSliceCmd.Val()
+			}
+		case CmdTypeXStreamSlice:
+			if xStreamSliceCmd, ok := cmd.(interface{ Val() []XStream }); ok {
+				return xStreamSliceCmd.Val()
+			}
+		case CmdTypeXPending:
+			if xPendingCmd, ok := cmd.(interface{ Val() *XPending }); ok {
+				return xPendingCmd.Val()
+			}
+		case CmdTypeXPendingExt:
+			if xPendingExtCmd, ok := cmd.(interface{ Val() []XPendingExt }); ok {
+				return xPendingExtCmd.Val()
+			}
+		case CmdTypeXAutoClaim:
+			if xAutoClaimCmd, ok := cmd.(interface{ Val() ([]XMessage, string) }); ok {
+				messages, start := xAutoClaimCmd.Val()
+				return CmdTypeXAutoClaimValue{messages: messages, start: start}
+			}
+		case CmdTypeXAutoClaimJustID:
+			if xAutoClaimJustIDCmd, ok := cmd.(interface{ Val() ([]string, string) }); ok {
+				ids, start := xAutoClaimJustIDCmd.Val()
+				return CmdTypeXAutoClaimJustIDValue{ids: ids, start: start}
+			}
+		case CmdTypeXInfoConsumers:
+			if xInfoConsumersCmd, ok := cmd.(interface{ Val() []XInfoConsumer }); ok {
+				return xInfoConsumersCmd.Val()
+			}
+		case CmdTypeXInfoGroups:
+			if xInfoGroupsCmd, ok := cmd.(interface{ Val() []XInfoGroup }); ok {
+				return xInfoGroupsCmd.Val()
+			}
+		case CmdTypeXInfoStream:
+			if xInfoStreamCmd, ok := cmd.(interface{ Val() *XInfoStream }); ok {
+				return xInfoStreamCmd.Val()
+			}
+		case CmdTypeXInfoStreamFull:
+			if xInfoStreamFullCmd, ok := cmd.(interface{ Val() *XInfoStreamFull }); ok {
+				return xInfoStreamFullCmd.Val()
+			}
+		case CmdTypeZSlice:
+			if zSliceCmd, ok := cmd.(interface{ Val() []Z }); ok {
+				return zSliceCmd.Val()
+			}
+		case CmdTypeZWithKey:
+			if zWithKeyCmd, ok := cmd.(interface{ Val() *ZWithKey }); ok {
+				return zWithKeyCmd.Val()
+			}
+		case CmdTypeScan:
+			if scanCmd, ok := cmd.(interface{ Val() ([]string, uint64) }); ok {
+				keys, cursor := scanCmd.Val()
+				return CmdTypeScanValue{keys: keys, cursor: cursor}
+			}
+		case CmdTypeClusterSlots:
+			if clusterSlotsCmd, ok := cmd.(interface{ Val() []ClusterSlot }); ok {
+				return clusterSlotsCmd.Val()
+			}
+		case CmdTypeGeoLocation:
+			if geoLocationCmd, ok := cmd.(interface{ Val() []GeoLocation }); ok {
+				return geoLocationCmd.Val()
+			}
+		case CmdTypeGeoSearchLocation:
+			if geoSearchLocationCmd, ok := cmd.(interface{ Val() []GeoLocation }); ok {
+				return geoSearchLocationCmd.Val()
+			}
+		case CmdTypeGeoPos:
+			if geoPosCmd, ok := cmd.(interface{ Val() []*GeoPos }); ok {
+				return geoPosCmd.Val()
+			}
+		case CmdTypeCommandsInfo:
+			if commandsInfoCmd, ok := cmd.(interface {
+				Val() map[string]*CommandInfo
+			}); ok {
+				return commandsInfoCmd.Val()
+			}
+		case CmdTypeSlowLog:
+			if slowLogCmd, ok := cmd.(interface{ Val() []SlowLog }); ok {
+				return slowLogCmd.Val()
+			}
+		case CmdTypeKeyValues:
+			if keyValuesCmd, ok := cmd.(interface{ Val() (string, []string) }); ok {
+				key, values := keyValuesCmd.Val()
+				return CmdTypeKeyValuesValue{key: key, values: values}
+			}
+		case CmdTypeZSliceWithKey:
+			if zSliceWithKeyCmd, ok := cmd.(interface{ Val() (string, []Z) }); ok {
+				key, zSlice := zSliceWithKeyCmd.Val()
+				return CmdTypeZSliceWithKeyValue{key: key, zSlice: zSlice}
+			}
+		case CmdTypeFunctionList:
+			if functionListCmd, ok := cmd.(interface{ Val() []Library }); ok {
+				return functionListCmd.Val()
+			}
+		case CmdTypeFunctionStats:
+			if functionStatsCmd, ok := cmd.(interface{ Val() FunctionStats }); ok {
+				return functionStatsCmd.Val()
+			}
+		case CmdTypeLCS:
+			if lcsCmd, ok := cmd.(interface{ Val() *LCSMatch }); ok {
+				return lcsCmd.Val()
+			}
+		case CmdTypeKeyFlags:
+			if keyFlagsCmd, ok := cmd.(interface{ Val() []KeyFlags }); ok {
+				return keyFlagsCmd.Val()
+			}
+		case CmdTypeClusterLinks:
+			if clusterLinksCmd, ok := cmd.(interface{ Val() []ClusterLink }); ok {
+				return clusterLinksCmd.Val()
+			}
+		case CmdTypeClusterShards:
+			if clusterShardsCmd, ok := cmd.(interface{ Val() []ClusterShard }); ok {
+				return clusterShardsCmd.Val()
+			}
+		case CmdTypeRankWithScore:
+			if rankWithScoreCmd, ok := cmd.(interface{ Val() RankScore }); ok {
+				return rankWithScoreCmd.Val()
+			}
+		case CmdTypeClientInfo:
+			if clientInfoCmd, ok := cmd.(interface{ Val() *ClientInfo }); ok {
+				return clientInfoCmd.Val()
+			}
+		case CmdTypeACLLog:
+			if aclLogCmd, ok := cmd.(interface{ Val() []*ACLLogEntry }); ok {
+				return aclLogCmd.Val()
+			}
+		case CmdTypeInfo:
+			if infoCmd, ok := cmd.(interface{ Val() string }); ok {
+				return infoCmd.Val()
+			}
+		case CmdTypeMonitor:
+			if monitorCmd, ok := cmd.(interface{ Val() string }); ok {
+				return monitorCmd.Val()
+			}
+		case CmdTypeJSON:
+			if jsonCmd, ok := cmd.(interface{ Val() string }); ok {
+				return jsonCmd.Val()
+			}
+		case CmdTypeJSONSlice:
+			if jsonSliceCmd, ok := cmd.(interface{ Val() []interface{} }); ok {
+				return jsonSliceCmd.Val()
+			}
+		case CmdTypeIntPointerSlice:
+			if intPointerSliceCmd, ok := cmd.(interface{ Val() []*int64 }); ok {
+				return intPointerSliceCmd.Val()
+			}
+		case CmdTypeScanDump:
+			if scanDumpCmd, ok := cmd.(interface{ Val() ScanDump }); ok {
+				return scanDumpCmd.Val()
+			}
+		case CmdTypeBFInfo:
+			if bfInfoCmd, ok := cmd.(interface{ Val() BFInfo }); ok {
+				return bfInfoCmd.Val()
+			}
+		case CmdTypeCFInfo:
+			if cfInfoCmd, ok := cmd.(interface{ Val() CFInfo }); ok {
+				return cfInfoCmd.Val()
+			}
+		case CmdTypeCMSInfo:
+			if cmsInfoCmd, ok := cmd.(interface{ Val() CMSInfo }); ok {
+				return cmsInfoCmd.Val()
+			}
+		case CmdTypeTopKInfo:
+			if topKInfoCmd, ok := cmd.(interface{ Val() TopKInfo }); ok {
+				return topKInfoCmd.Val()
+			}
+		case CmdTypeTDigestInfo:
+			if tDigestInfoCmd, ok := cmd.(interface{ Val() TDigestInfo }); ok {
+				return tDigestInfoCmd.Val()
+			}
+		case CmdTypeFTSearch:
+			if ftSearchCmd, ok := cmd.(interface{ Val() FTSearchResult }); ok {
+				return ftSearchCmd.Val()
+			}
+		case CmdTypeFTInfo:
+			if ftInfoCmd, ok := cmd.(interface{ Val() FTInfoResult }); ok {
+				return ftInfoCmd.Val()
+			}
+		case CmdTypeFTSpellCheck:
+			if ftSpellCheckCmd, ok := cmd.(interface{ Val() []SpellCheckResult }); ok {
+				return ftSpellCheckCmd.Val()
+			}
+		case CmdTypeFTSynDump:
+			if ftSynDumpCmd, ok := cmd.(interface{ Val() []FTSynDumpResult }); ok {
+				return ftSynDumpCmd.Val()
+			}
+		case CmdTypeAggregate:
+			if aggregateCmd, ok := cmd.(interface{ Val() *FTAggregateResult }); ok {
+				return aggregateCmd.Val()
+			}
+		case CmdTypeTSTimestampValue:
+			if tsTimestampValueCmd, ok := cmd.(interface{ Val() TSTimestampValue }); ok {
+				return tsTimestampValueCmd.Val()
+			}
+		case CmdTypeTSTimestampValueSlice:
+			if tsTimestampValueSliceCmd, ok := cmd.(interface{ Val() []TSTimestampValue }); ok {
+				return tsTimestampValueSliceCmd.Val()
 			}
 		case CmdTypeStringSlice:
 			if stringSliceCmd, ok := cmd.(interface{ Val() []string }); ok {
@@ -7032,6 +7259,14 @@ func ExtractCommandValue(cmd interface{}) interface{} {
 			if floatSliceCmd, ok := cmd.(interface{ Val() []float64 }); ok {
 				return floatSliceCmd.Val()
 			}
+		case CmdTypeSlice:
+			if sliceCmd, ok := cmd.(interface{ Val() []interface{} }); ok {
+				return sliceCmd.Val()
+			}
+		case CmdTypeKeyValueSlice:
+			if keyValueSliceCmd, ok := cmd.(interface{ Val() []KeyValue }); ok {
+				return keyValueSliceCmd.Val()
+			}
 		case CmdTypeMapStringString:
 			if mapCmd, ok := cmd.(interface{ Val() map[string]string }); ok {
 				return mapCmd.Val()
@@ -7042,7 +7277,7 @@ func ExtractCommandValue(cmd interface{}) interface{} {
 			}
 		case CmdTypeMapStringInterfaceSlice:
 			if mapCmd, ok := cmd.(interface {
-				Val() map[string][]interface{}
+				Val() []map[string]interface{}
 			}); ok {
 				return mapCmd.Val()
 			}
@@ -7051,12 +7286,12 @@ func ExtractCommandValue(cmd interface{}) interface{} {
 				return mapCmd.Val()
 			}
 		case CmdTypeMapStringStringSlice:
-			if mapCmd, ok := cmd.(interface{ Val() map[string][]string }); ok {
+			if mapCmd, ok := cmd.(interface{ Val() []map[string]string }); ok {
 				return mapCmd.Val()
 			}
 		case CmdTypeMapMapStringInterface:
 			if mapCmd, ok := cmd.(interface {
-				Val() map[string][]interface{}
+				Val() map[string]interface{}
 			}); ok {
 				return mapCmd.Val()
 			}

@@ -399,7 +399,7 @@ func (c *ClusterClient) aggregateKeyedValues(cmd Cmder, keyedResults map[string]
 	if keyedAgg, isKeyedAgg = aggregator.(*routing.DefaultKeyedAggregator); isKeyedAgg {
 		err = keyedAgg.BatchAddWithKeyOrder(keyedResults, keyOrder)
 	} else {
-		err = aggregator.BatchAdd(keyedResults, nil)
+		err = aggregator.BatchAdd(keyedResults)
 	}
 
 	if err != nil {
@@ -430,6 +430,7 @@ func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *rout
 	// Add all results to aggregator
 	for _, shardCmd := range cmds {
 		value := ExtractCommandValue(shardCmd)
+		//TODO: Rewrite as batch
 		if err := aggregator.Add(value, shardCmd.Err()); err != nil {
 			return err
 		}
@@ -636,14 +637,14 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 		}
 	case CmdTypeXAutoClaim:
 		if c, ok := cmd.(*XAutoClaimCmd); ok {
-			if v, ok := value.([]XMessage); ok {
-				c.SetVal(v, "") // Default start value
+			if v, ok := value.(CmdTypeXAutoClaimValue); ok {
+				c.SetVal(v.messages, v.start)
 			}
 		}
 	case CmdTypeXAutoClaimJustID:
 		if c, ok := cmd.(*XAutoClaimJustIDCmd); ok {
-			if v, ok := value.([]string); ok {
-				c.SetVal(v, "") // Default start value
+			if v, ok := value.(CmdTypeXAutoClaimJustIDValue); ok {
+				c.SetVal(v.ids, v.start)
 			}
 		}
 	case CmdTypeXInfoConsumers:
@@ -684,8 +685,8 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 		}
 	case CmdTypeScan:
 		if c, ok := cmd.(*ScanCmd); ok {
-			if v, ok := value.([]string); ok {
-				c.SetVal(v, uint64(0)) // Default cursor
+			if v, ok := value.(CmdTypeScanValue); ok {
+				c.SetVal(v.keys, v.cursor)
 			}
 		}
 	case CmdTypeClusterSlots:
@@ -745,15 +746,15 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 	case CmdTypeKeyValues:
 		if c, ok := cmd.(*KeyValuesCmd); ok {
 			// KeyValuesCmd needs a key string and values slice
-			if key, ok := value.(string); ok {
-				c.SetVal(key, []string{}) // Default empty values
+			if v, ok := value.(CmdTypeKeyValuesValue); ok {
+				c.SetVal(v.key, v.values)
 			}
 		}
 	case CmdTypeZSliceWithKey:
 		if c, ok := cmd.(*ZSliceWithKeyCmd); ok {
 			// ZSliceWithKeyCmd needs a key string and Z slice
-			if key, ok := value.(string); ok {
-				c.SetVal(key, []Z{}) // Default empty Z slice
+			if v, ok := value.(CmdTypeZSliceWithKeyValue); ok {
+				c.SetVal(v.key, v.zSlice)
 			}
 		}
 	case CmdTypeFunctionList:
