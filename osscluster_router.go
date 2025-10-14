@@ -393,21 +393,17 @@ func (c *ClusterClient) aggregateKeyedValues(cmd Cmder, keyedResults map[string]
 	aggregator := c.createAggregator(policy, cmd, true)
 
 	// Set key order for keyed aggregators
-	if keyedAgg, ok := aggregator.(*routing.DefaultKeyedAggregator); ok {
-		keyedAgg.SetKeyOrder(keyOrder)
+	var keyedAgg *routing.DefaultKeyedAggregator
+	var isKeyedAgg bool
+	var err error
+	if keyedAgg, isKeyedAgg = aggregator.(*routing.DefaultKeyedAggregator); isKeyedAgg {
+		err = keyedAgg.BatchAddWithKeyOrder(keyedResults, keyOrder)
+	} else {
+		err = aggregator.BatchAdd(keyedResults, nil)
 	}
 
-	// Add results with keys
-	for key, value := range keyedResults {
-		if keyedAgg, ok := aggregator.(*routing.DefaultKeyedAggregator); ok {
-			if err := keyedAgg.AddWithKey(key, value, nil); err != nil {
-				return err
-			}
-		} else {
-			if err := aggregator.Add(value, nil); err != nil {
-				return err
-			}
-		}
+	if err != nil {
+		return err
 	}
 
 	return c.finishAggregation(cmd, aggregator)
