@@ -427,13 +427,19 @@ func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *rout
 
 	aggregator := c.createAggregator(policy, cmd, false)
 
+	batchWithErrs := []routing.AggregatorResErr{}
 	// Add all results to aggregator
 	for _, shardCmd := range cmds {
 		value := ExtractCommandValue(shardCmd)
-		//TODO: Rewrite as batch
-		if err := aggregator.Add(value, shardCmd.Err()); err != nil {
-			return err
-		}
+		batchWithErrs = append(batchWithErrs, routing.AggregatorResErr{
+			Result: value,
+			Err:    shardCmd.Err(),
+		})
+	}
+
+	err := aggregator.BatchWithErrs(batchWithErrs)
+	if err != nil {
+		return err
 	}
 
 	return c.finishAggregation(cmd, aggregator)
