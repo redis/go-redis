@@ -225,7 +225,7 @@ type baseClient struct {
 	maintNotificationsManager     *maintnotifications.Manager
 	maintNotificationsManagerLock sync.RWMutex
 
-	credListeners     map[uint64]auth.CredentialsListener
+	credListeners     map[*pool.Conn]auth.CredentialsListener
 	credListenersLock sync.RWMutex
 }
 
@@ -305,7 +305,7 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 // The credentials listener is removed from the map when the connection is closed.
 func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.CredentialsListener, func()) {
 	c.credListenersLock.RLock()
-	credListener, ok := c.credListeners[poolCn.GetID()]
+	credListener, ok := c.credListeners[poolCn]
 	c.credListenersLock.RUnlock()
 	if ok {
 		return credListener.(auth.CredentialsListener), func() {
@@ -319,7 +319,7 @@ func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.Cred
 		c.reAuthConnection(),
 		c.onAuthenticationErr(),
 	)
-	c.credListeners[poolCn.GetID()] = newCredListener
+	c.credListeners[poolCn] = newCredListener
 	return newCredListener, func() {
 		c.removeCredListener(poolCn)
 	}
@@ -328,7 +328,7 @@ func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.Cred
 func (c *baseClient) removeCredListener(poolCn *pool.Conn) {
 	c.credListenersLock.Lock()
 	defer c.credListenersLock.Unlock()
-	delete(c.credListeners, poolCn.GetID())
+	delete(c.credListeners, poolCn)
 }
 
 func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
@@ -988,6 +988,10 @@ func NewClient(opt *Options) *Client {
 	c.pubSubPool, err = newPubSubPool(opt, c.dialHook)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
+	}
+
+	if c.opt.StreamingCredentialsProvider != nil {
+		c.credListeners = make(map[*pool.Conn]auth.CredentialsListener)
 	}
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3
