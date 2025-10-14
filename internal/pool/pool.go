@@ -24,6 +24,9 @@ var (
 	// ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
 
+	// ErrConnUnusableTimeout is returned when a connection is not usable and we timed out trying to mark it as unusable.
+	ErrConnUnusableTimeout = errors.New("redis: timed out trying to mark connection as unusable")
+
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during maintenanceNotifications upgrades or network issues).

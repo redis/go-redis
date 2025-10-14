@@ -112,6 +112,8 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 		return false
 	case context.Canceled, context.DeadlineExceeded:
 		return true
+		case pool.ErrConnUnusableTimeout:
+		return true
 	}
 
 	if isRedisError(err) {

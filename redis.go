@@ -224,6 +224,9 @@ type baseClient struct {
 	// Maintenance notifications manager
 	maintNotificationsManager     *maintnotifications.Manager
 	maintNotificationsManagerLock sync.RWMutex
+
+	credListeners     map[uint64]auth.CredentialsListener
+	credListenersLock sync.RWMutex
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -237,6 +240,7 @@ func (c *baseClient) clone() *baseClient {
 		onClose:                   c.onClose,
 		pushProcessor:             c.pushProcessor,
 		maintNotificationsManager: maintNotificationsManager,
+		credListeners:             c.credListeners,
 	}
 	return clone
 }
@@ -296,18 +300,43 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) newReAuthCredentialsListener(poolCn *pool.Conn) auth.CredentialsListener {
-	return auth.NewReAuthCredentialsListener(
-		c.reAuthConnection(poolCn),
-		c.onAuthenticationErr(poolCn),
+// connReAuthCredentialsListener returns a credentials listener that can be used to re-authenticate the connection.
+// The credentials listener is stored in a map, so that it can be reused for multiple connections.
+// The credentials listener is removed from the map when the connection is closed.
+func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.CredentialsListener, func()) {
+	c.credListenersLock.RLock()
+	credListener, ok := c.credListeners[poolCn.GetID()]
+	c.credListenersLock.RUnlock()
+	if ok {
+		return credListener.(auth.CredentialsListener), func() {
+			c.removeCredListener(poolCn)
+		}
+	}
+	c.credListenersLock.Lock()
+	defer c.credListenersLock.Unlock()
+	newCredListener := auth.NewConnReAuthCredentialsListener(
+		poolCn,
+		c.reAuthConnection(),
+		c.onAuthenticationErr(),
 	)
+	c.credListeners[poolCn.GetID()] = newCredListener
+	return newCredListener, func() {
+		c.removeCredListener(poolCn)
+	}
 }
 
-func (c *baseClient) reAuthConnection(poolCn *pool.Conn) func(credentials auth.Credentials) error {
-	return func(credentials auth.Credentials) error {
+func (c *baseClient) removeCredListener(poolCn *pool.Conn) {
+	c.credListenersLock.Lock()
+	defer c.credListenersLock.Unlock()
+	delete(c.credListeners, poolCn.GetID())
+}
+
+func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
+	return func(poolCn *pool.Conn, credentials auth.Credentials) error {
 		var err error
 		username, password := credentials.BasicAuth()
 		ctx := context.Background()
+
 		connPool := pool.NewSingleConnPool(c.connPool, poolCn)
 		// hooksMixin are intentionally empty here
 		cn := newConn(c.opt, connPool, nil)
@@ -320,8 +349,8 @@ func (c *baseClient) reAuthConnection(poolCn *pool.Conn) func(credentials auth.C
 		return err
 	}
 }
-func (c *baseClient) onAuthenticationErr(poolCn *pool.Conn) func(err error) {
-	return func(err error) {
+func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
+	return func(poolCn *pool.Conn, err error) {
 		if err != nil {
 			if isBadConn(err, false, c.opt.Addr) {
 				// Close the connection to force a reconnection.
@@ -372,13 +401,20 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
+		credListener, removeCredListener := c.connReAuthCredentialsListener(cn)
 		credentials, unsubscribeFromCredentialsProvider, err := c.opt.StreamingCredentialsProvider.
-			Subscribe(c.newReAuthCredentialsListener(cn))
+			Subscribe(credListener)
 		if err != nil {
 			return fmt.Errorf("failed to subscribe to streaming credentials: %w", err)
 		}
-		c.onClose = c.wrappedOnClose(unsubscribeFromCredentialsProvider)
-		cn.SetOnClose(unsubscribeFromCredentialsProvider)
+
+		unsubscribe := func() error {
+			removeCredListener()
+			return unsubscribeFromCredentialsProvider()
+		}
+		c.onClose = c.wrappedOnClose(unsubscribe)
+		cn.SetOnClose(unsubscribe)
+
 		username, password = credentials.BasicAuth()
 	} else if c.opt.CredentialsProviderContext != nil {
 		username, password, err = c.opt.CredentialsProviderContext(ctx)
@@ -496,6 +532,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
+	// mark the connection as usable and inited
+	// once returned to the pool as idle, this connection can be used by other clients
 	cn.SetUsable(true)
 	cn.Inited.Store(true)
 

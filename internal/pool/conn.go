@@ -40,6 +40,9 @@ func generateConnID() uint64 {
 }
 
 type Conn struct {
+	// Connection identifier for unique tracking
+	id uint64 // Unique numeric identifier for this connection
+
 	usedAt int64 // atomic
 
 	// Lock-free netConn access using atomic.Value
@@ -54,7 +57,9 @@ type Conn struct {
 	// Only used for the brief period during SetNetConn and HasBufferedData/PeekReplyTypeSafe
 	readerMu sync.RWMutex
 
-	Inited    atomic.Bool
+	Usable atomic.Bool
+	Inited atomic.Bool
+
 	pooled    bool
 	pubsub    bool
 	closed    atomic.Bool
@@ -75,18 +80,14 @@ type Conn struct {
 	// Connection initialization function for reconnections
 	initConnFunc func(context.Context, *Conn) error
 
-	// Connection identifier for unique tracking
-	id uint64 // Unique numeric identifier for this connection
-
 	// Handoff state - using atomic operations for lock-free access
-	usableAtomic         atomic.Bool   // Connection usability state
 	handoffRetriesAtomic atomic.Uint32 // Retry counter for handoff attempts
 
 	// Atomic handoff state to prevent race conditions
 	// Stores *HandoffState to ensure atomic updates of all handoff-related fields
 	handoffStateAtomic atomic.Value // stores *HandoffState
 
-	onClose func() error
+	onClose      func() error
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -116,7 +117,7 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
 
 	// Initialize atomic state
-	cn.usableAtomic.Store(false)     // false initially, set to true after initialization
+	cn.Usable.Store(false)           // false initially, set to true after initialization
 	cn.handoffRetriesAtomic.Store(0) // 0 initially
 
 	// Initialize handoff state atomically
@@ -162,12 +163,12 @@ func (cn *Conn) setNetConn(netConn net.Conn) {
 
 // isUsable returns true if the connection is safe to use (lock-free).
 func (cn *Conn) isUsable() bool {
-	return cn.usableAtomic.Load()
+	return cn.Usable.Load()
 }
 
 // setUsable sets the usable flag atomically (lock-free).
 func (cn *Conn) setUsable(usable bool) {
-	cn.usableAtomic.Store(usable)
+	cn.Usable.Store(usable)
 }
 
 // getHandoffState returns the current handoff state atomically (lock-free).
@@ -456,6 +457,12 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	const baseDelay = time.Microsecond
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		// first we need to mark the connection as not usable
+		// to prevent the pool from returning it to the caller
+		if !cn.Usable.CompareAndSwap(true, false) {
+			continue
+		}
+
 		currentState := cn.getHandoffState()
 
 		// Check if marked for handoff
@@ -472,7 +479,6 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 
 		// Atomic compare-and-swap to update state
 		if cn.handoffStateAtomic.CompareAndSwap(currentState, newState) {
-			cn.setUsable(false)
 			return nil
 		}
 
