@@ -319,6 +319,12 @@ func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.Cred
 		c.reAuthConnection(),
 		c.onAuthenticationErr(),
 	)
+	// main case where the connection can be stuck in the listener for a long time is when we have a handoff
+	// so we set the checkUsableTimeout to the handoff timeout if maintnotifications are enabled
+	// the default timeout if no maintnotifications config is provided is 1 second
+	if c.opt.MaintNotificationsConfig != nil && c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
+		newCredListener.SetCheckUsableTimeout(c.opt.MaintNotificationsConfig.HandoffTimeout)
+	}
 	c.credListeners[poolCn] = newCredListener
 	return newCredListener, func() {
 		c.removeCredListener(poolCn)

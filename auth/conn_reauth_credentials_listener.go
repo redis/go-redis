@@ -13,10 +13,18 @@ import (
 // - reAuth: a function that takes the new credentials and returns an error if any.
 // - onErr: a function that takes an error and handles it.
 // - conn: the connection to re-authenticate.
+// - checkUsableTimeout: the timeout to wait for the connection to be usable - default is 1 second.
 type ConnReAuthCredentialsListener struct {
+	// reAuth is called when the credentials are updated.
 	reAuth func(conn *pool.Conn, credentials Credentials) error
-	onErr  func(conn *pool.Conn, err error)
-	conn   *pool.Conn
+	// onErr is called when an error occurs.
+	onErr func(conn *pool.Conn, err error)
+	// conn is the connection to re-authenticate.
+	conn *pool.Conn
+	// checkUsableTimeout is the timeout to wait for the connection to be usable
+	// when the credentials are updated.
+	// default is 1 second
+	checkUsableTimeout time.Duration
 }
 
 // OnNext is called when the credentials are updated.
@@ -32,7 +40,9 @@ func (c *ConnReAuthCredentialsListener) OnNext(credentials Credentials) {
 	}
 
 	var err error
-	timeout := time.After(1 * time.Second)
+
+	// this hard-coded timeout is not ideal
+	timeout := time.After(c.checkUsableTimeout)
 	// wait for the connection to be usable
 	// this is important because the connection pool may be in the process of reconnecting the connection
 	// and we don't want to interfere with that process
@@ -68,15 +78,22 @@ func (c *ConnReAuthCredentialsListener) OnError(err error) {
 	c.onErr(c.conn, err)
 }
 
+// SetCheckUsableTimeout sets the timeout for the connection to be usable.
+func (c *ConnReAuthCredentialsListener) SetCheckUsableTimeout(timeout time.Duration) {
+	c.checkUsableTimeout = timeout
+}
+
 // NewConnReAuthCredentialsListener creates a new ConnReAuthCredentialsListener.
 // Implements the auth.CredentialsListener interface.
 func NewConnReAuthCredentialsListener(conn *pool.Conn, reAuth func(conn *pool.Conn, credentials Credentials) error, onErr func(conn *pool.Conn, err error)) *ConnReAuthCredentialsListener {
 	return &ConnReAuthCredentialsListener{
-		conn:   conn,
-		reAuth: reAuth,
-		onErr:  onErr,
+		conn:               conn,
+		reAuth:             reAuth,
+		onErr:              onErr,
+		checkUsableTimeout: 1 * time.Second,
 	}
 }
+
 
 // Ensure ConnReAuthCredentialsListener implements the CredentialsListener interface.
 var _ CredentialsListener = (*ConnReAuthCredentialsListener)(nil)
