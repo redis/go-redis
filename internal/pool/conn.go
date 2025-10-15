@@ -458,6 +458,14 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 
 	connAquired := false
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		// If CAS failed, add exponential backoff to reduce contention
+		// the delay will be 1, 2, 4... up to 512 microseconds
+		// Moving this to the top of the loop to avoid "continue" without delay
+		if attempt > 0 && attempt < maxRetries-1 {
+			delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
+			time.Sleep(delay)
+		}
+
 		// first we need to mark the connection as not usable
 		// to prevent the pool from returning it to the caller
 		if !connAquired && !cn.Usable.CompareAndSwap(true, false) {
@@ -480,18 +488,12 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 
 		// Atomic compare-and-swap to update state
 		if cn.handoffStateAtomic.CompareAndSwap(currentState, newState) {
-			if connAquired {
-				cn.Usable.Store(true)
-			}
+			// queue the handoff for processing
+			// the connection is now "acquired" (marked as not usable) by the handoff
+			// and it won't be returned to any other callers until the handoff is complete
 			return nil
 		}
 
-		// If CAS failed, add exponential backoff to reduce contention
-		// the delay will be 1, 2, 4... up to 512 microseconds
-		if attempt < maxRetries-1 {
-			delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
-			time.Sleep(delay)
-		}
 	}
 
 	return fmt.Errorf("failed to mark connection as queued for handoff after %d attempts due to high contention", maxRetries)
