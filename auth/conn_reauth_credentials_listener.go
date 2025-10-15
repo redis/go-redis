@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"runtime"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -47,12 +48,14 @@ func (c *ConnReAuthCredentialsListener) OnNext(credentials Credentials) {
 	// this is important because the connection pool may be in the process of reconnecting the connection
 	// and we don't want to interfere with that process
 	// but we also don't want to block for too long, so incorporate a timeout
+compandswap:
 	for !c.conn.Usable.CompareAndSwap(true, false) {
 		select {
 		case <-timeout:
 			err = pool.ErrConnUnusableTimeout
-			break
+			break compandswap
 		default:
+			runtime.Gosched()
 		}
 	}
 	if err != nil {
@@ -61,9 +64,7 @@ func (c *ConnReAuthCredentialsListener) OnNext(credentials Credentials) {
 	}
 	// we set the usable flag, so restore it back to usable after we're done
 	defer c.conn.SetUsable(true)
-
-	err = c.reAuth(c.conn, credentials)
-	if err != nil {
+	if err = c.reAuth(c.conn, credentials); err != nil {
 		c.OnError(err)
 	}
 }
@@ -93,7 +94,6 @@ func NewConnReAuthCredentialsListener(conn *pool.Conn, reAuth func(conn *pool.Co
 		checkUsableTimeout: 1 * time.Second,
 	}
 }
-
 
 // Ensure ConnReAuthCredentialsListener implements the CredentialsListener interface.
 var _ CredentialsListener = (*ConnReAuthCredentialsListener)(nil)

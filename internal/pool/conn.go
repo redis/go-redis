@@ -87,7 +87,7 @@ type Conn struct {
 	// Stores *HandoffState to ensure atomic updates of all handoff-related fields
 	handoffStateAtomic atomic.Value // stores *HandoffState
 
-	onClose      func() error
+	onClose func() error
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -456,15 +456,16 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	const maxRetries = 50
 	const baseDelay = time.Microsecond
 
+	connAquired := false
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// first we need to mark the connection as not usable
 		// to prevent the pool from returning it to the caller
-		if !cn.Usable.CompareAndSwap(true, false) {
+		if !connAquired && !cn.Usable.CompareAndSwap(true, false) {
 			continue
 		}
+		connAquired = true
 
 		currentState := cn.getHandoffState()
-
 		// Check if marked for handoff
 		if !currentState.ShouldHandoff {
 			return errors.New("connection was not marked for handoff")
@@ -479,6 +480,9 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 
 		// Atomic compare-and-swap to update state
 		if cn.handoffStateAtomic.CompareAndSwap(currentState, newState) {
+			if connAquired {
+				cn.Usable.Store(true)
+			}
 			return nil
 		}
 
