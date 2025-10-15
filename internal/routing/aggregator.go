@@ -108,16 +108,24 @@ func (a *AllSucceededAggregator) BatchAdd(results map[string]AggregatorResErr) e
 		if err != nil {
 			return err
 		}
+
+		if res.Err != nil {
+			return nil
+		}
 	}
 
 	return nil
 }
 
-func (a *AllSucceededAggregator) BatchSlice(values []AggregatorResErr) error {
-	for _, val := range values {
-		err := a.Add(val.Result, val.Err)
+func (a *AllSucceededAggregator) BatchSlice(result []AggregatorResErr) error {
+	for _, res := range result {
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
+		}
+
+		if res.Err != nil {
+			return nil
 		}
 	}
 
@@ -164,6 +172,10 @@ func (a *OneSucceededAggregator) BatchAdd(results map[string]AggregatorResErr) e
 		if err != nil {
 			return err
 		}
+
+		if res.Err == nil {
+			return nil
+		}
 	}
 
 	return nil
@@ -173,11 +185,15 @@ func (a *OneSucceededAggregator) AddWithKey(key string, result interface{}, err 
 	return a.Add(result, err)
 }
 
-func (a *OneSucceededAggregator) BatchSlice(values []AggregatorResErr) error {
-	for _, val := range values {
-		err := a.Add(val.Result, val.Err)
+func (a *OneSucceededAggregator) BatchSlice(result []AggregatorResErr) error {
+	for _, res := range result {
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
+		}
+
+		if res.Err == nil {
+			return nil
 		}
 	}
 
@@ -221,6 +237,10 @@ func (a *AggSumAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 		if err != nil {
 			return err
 		}
+
+		if res.Err != nil {
+			return nil
+		}
 	}
 
 	return nil
@@ -230,11 +250,15 @@ func (a *AggSumAggregator) AddWithKey(key string, result interface{}, err error)
 	return a.Add(result, err)
 }
 
-func (a *AggSumAggregator) BatchSlice(values []AggregatorResErr) error {
-	for _, val := range values {
-		err := a.Add(val.Result, val.Err)
+func (a *AggSumAggregator) BatchSlice(result []AggregatorResErr) error {
+	for _, res := range result {
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
+		}
+
+		if res.Err != nil {
+			return nil
 		}
 	}
 
@@ -279,6 +303,10 @@ func (a *AggMinAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 		if err != nil {
 			return err
 		}
+
+		if res.Err != nil {
+			return nil
+		}
 	}
 
 	return nil
@@ -288,11 +316,15 @@ func (a *AggMinAggregator) AddWithKey(key string, result interface{}, err error)
 	return a.Add(result, err)
 }
 
-func (a *AggMinAggregator) BatchSlice(values []AggregatorResErr) error {
-	for _, val := range values {
-		err := a.Add(val.Result, val.Err)
+func (a *AggMinAggregator) BatchSlice(result []AggregatorResErr) error {
+	for _, res := range result {
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
+		}
+
+		if res.Err != nil {
+			return nil
 		}
 	}
 
@@ -341,6 +373,10 @@ func (a *AggMaxAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 		if err != nil {
 			return err
 		}
+
+		if res.Err != nil {
+			return nil
+		}
 	}
 
 	return nil
@@ -350,11 +386,15 @@ func (a *AggMaxAggregator) AddWithKey(key string, result interface{}, err error)
 	return a.Add(result, err)
 }
 
-func (a *AggMaxAggregator) BatchSlice(values []AggregatorResErr) error {
-	for _, val := range values {
-		err := a.Add(val.Result, val.Err)
+func (a *AggMaxAggregator) BatchSlice(result []AggregatorResErr) error {
+	for _, res := range result {
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
+		}
+
+		if res.Err != nil {
+			return nil
 		}
 	}
 
@@ -410,6 +450,10 @@ func (a *AggLogicalAndAggregator) BatchAdd(results map[string]AggregatorResErr) 
 		if err != nil {
 			return err
 		}
+
+		if res.Err != nil {
+			return nil
+		}
 	}
 
 	return nil
@@ -419,11 +463,15 @@ func (a *AggLogicalAndAggregator) AddWithKey(key string, result interface{}, err
 	return a.Add(result, err)
 }
 
-func (a *AggLogicalAndAggregator) BatchSlice(values []AggregatorResErr) error {
-	for _, val := range values {
-		err := a.Add(val.Result, val.Err)
+func (a *AggLogicalAndAggregator) BatchSlice(result []AggregatorResErr) error {
+	for _, res := range result {
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
+		}
+
+		if res.Err != nil {
+			return nil
 		}
 	}
 
@@ -478,6 +526,10 @@ func (a *AggLogicalOrAggregator) BatchAdd(results map[string]AggregatorResErr) e
 		if err != nil {
 			return err
 		}
+
+		if res.Err != nil {
+			return nil
+		}
 	}
 
 	return nil
@@ -487,11 +539,15 @@ func (a *AggLogicalOrAggregator) AddWithKey(key string, result interface{}, err 
 	return a.Add(result, err)
 }
 
-func (a *AggLogicalOrAggregator) BatchSlice(values []AggregatorResErr) error {
-	for _, val := range values {
-		err := a.Add(val.Result, val.Err)
+func (a *AggLogicalOrAggregator) BatchSlice(result []AggregatorResErr) error {
+	for _, res := range result {
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
+		}
+
+		if res.Err != nil {
+			return nil
 		}
 	}
 
@@ -581,6 +637,10 @@ func (a *DefaultKeylessAggregator) BatchAdd(results map[string]AggregatorResErr)
 		if err != nil {
 			return err
 		}
+
+		if res.Err != nil {
+			return nil
+		}
 	}
 
 	return nil
@@ -590,14 +650,18 @@ func (a *DefaultKeylessAggregator) AddWithKey(key string, result interface{}, er
 	return a.Add(result, err)
 }
 
-func (a *DefaultKeylessAggregator) BatchSlice(values []AggregatorResErr) error {
+func (a *DefaultKeylessAggregator) BatchSlice(result []AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for _, val := range values {
-		err := a.add(val.Result, val.Err)
+	for _, res := range result {
+		err := a.add(res.Result, res.Err)
 		if err != nil {
 			return err
+		}
+
+		if res.Err != nil {
+			return nil
 		}
 	}
 
@@ -657,6 +721,10 @@ func (a *DefaultKeyedAggregator) BatchAdd(results map[string]AggregatorResErr) e
 		if err != nil {
 			return err
 		}
+
+		if res.Err != nil {
+			return nil
+		}
 	}
 
 	return nil
@@ -685,8 +753,15 @@ func (a *DefaultKeyedAggregator) BatchAddWithKeyOrder(results map[string]Aggrega
 	defer a.mu.Unlock()
 
 	a.keyOrder = keyOrder
-	for key, val := range results {
-		_ = a.addWithKey(key, val.Result, val.Err)
+	for key, res := range results {
+		err := a.addWithKey(key, res.Result, res.Err)
+		if err != nil {
+			return nil
+		}
+
+		if res.Err != nil {
+			return nil
+		}
 	}
 
 	return nil
@@ -698,14 +773,18 @@ func (a *DefaultKeyedAggregator) SetKeyOrder(keyOrder []string) {
 	a.keyOrder = keyOrder
 }
 
-func (a *DefaultKeyedAggregator) BatchSlice(values []AggregatorResErr) error {
+func (a *DefaultKeyedAggregator) BatchSlice(result []AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for _, val := range values {
-		err := a.add(val.Result, val.Err)
+	for _, res := range result {
+		err := a.add(res.Result, res.Err)
 		if err != nil {
 			return err
+		}
+
+		if res.Err != nil {
+			return nil
 		}
 	}
 
@@ -769,6 +848,10 @@ func (a *SpecialAggregator) BatchAdd(results map[string]AggregatorResErr) error 
 		if err != nil {
 			return err
 		}
+
+		if res.Err != nil {
+			return nil
+		}
 	}
 
 	return nil
@@ -778,14 +861,18 @@ func (a *SpecialAggregator) AddWithKey(key string, result interface{}, err error
 	return a.Add(result, err)
 }
 
-func (a *SpecialAggregator) BatchSlice(values []AggregatorResErr) error {
+func (a *SpecialAggregator) BatchSlice(result []AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for _, val := range values {
-		err := a.add(val.Result, val.Err)
+	for _, res := range result {
+		err := a.add(res.Result, res.Err)
 		if err != nil {
 			return err
+		}
+
+		if res.Err != nil {
+			return nil
 		}
 	}
 
