@@ -13,7 +13,9 @@ type CredentialsListeners struct {
 }
 
 func NewCredentialsListeners() *CredentialsListeners {
-	return &CredentialsListeners{}
+	return &CredentialsListeners{
+		listeners: make(map[*pool.Conn]auth2.CredentialsListener),
+	}
 }
 
 func (c *CredentialsListeners) Add(poolCn *pool.Conn, listener auth2.CredentialsListener) {
