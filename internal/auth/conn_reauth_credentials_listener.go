@@ -54,6 +54,9 @@ func (c *ConnReAuthCredentialsListener) OnNext(credentials auth2.Credentials) {
 		case <-timeout:
 			err = pool.ErrConnUnusableTimeout
 		default:
+			// small sleep to avoid busy looping
+			time.Sleep(100 * time.Microsecond)
+			// yield the thread to allow other goroutines to run
 			runtime.Gosched()
 		}
 	}
@@ -61,11 +64,17 @@ func (c *ConnReAuthCredentialsListener) OnNext(credentials auth2.Credentials) {
 		defer c.conn.SetUsable(true)
 	}
 
+	// This check just verifies that the connection is not in use.
+	// If the connection is in use, we don't want to interfere with that.
+	// As soon as the connection is not in use, we mark it as in use.
 	for err == nil && !c.conn.Used.CompareAndSwap(false, true) {
 		select {
 		case <-timeout:
 			err = pool.ErrConnUnusableTimeout
 		default:
+			// small sleep to avoid busy looping
+			time.Sleep(100 * time.Microsecond)
+			// yield the thread to allow other goroutines to run
 			runtime.Gosched()
 		}
 	}

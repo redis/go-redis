@@ -123,16 +123,19 @@ var _ = Describe("Buffer Size Configuration", func() {
 })
 
 // Helper functions to extract buffer sizes using unsafe pointers
-// The struct layout must match pool.Conn exactly to avoid checkptr violations
+// The struct layout must match pool.Conn exactly to avoid checkptr violations.
+// checkptr is Go's pointer safety checker, which ensures that unsafe pointer
+// conversions are valid. If the struct layouts do not match exactly, this can
+// cause runtime panics or incorrect memory access due to invalid pointer dereferencing.
 func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 	// Import required for atomic types
 	type atomicBool struct{ _ uint32 }
 	type atomicInt64 struct{ _ int64 }
 
 	cnPtr := (*struct {
-		id            uint64        // First field in pool.Conn
-		usedAt        int64         // Second field (atomic)
-		netConnAtomic interface{}   // atomic.Value (interface{} has same size)
+		id            uint64      // First field in pool.Conn
+		usedAt        int64       // Second field (atomic)
+		netConnAtomic interface{} // atomic.Value (interface{} has same size)
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer
@@ -156,9 +159,9 @@ func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 
 func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		id            uint64        // First field in pool.Conn
-		usedAt        int64         // Second field (atomic)
-		netConnAtomic interface{}   // atomic.Value (interface{} has same size)
+		id            uint64      // First field in pool.Conn
+		usedAt        int64       // Second field (atomic)
+		netConnAtomic interface{} // atomic.Value (interface{} has same size)
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer

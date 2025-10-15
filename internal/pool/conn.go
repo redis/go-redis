@@ -493,10 +493,13 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 
 		// first we need to mark the connection as not usable
 		// to prevent the pool from returning it to the caller
-		if !connAcquired && !cn.Usable.CompareAndSwap(true, false) {
-			continue
+		if !connAcquired {
+			if cn.Usable.CompareAndSwap(true, false) {
+				connAcquired = true
+			} else {
+				continue
+			}
 		}
-		connAcquired = true
 
 		currentState := cn.getHandoffState()
 		// Check if marked for handoff

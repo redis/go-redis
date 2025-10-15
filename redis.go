@@ -319,7 +319,7 @@ func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.Cred
 	// Design decision: The main case we expect the connection to be in a non-usable state is when it is being reconnected
 	// during a handoff from maintnotifications.
 	// Setting the checkUsableTimeout to the handoff timeout if maintnotifications are enabled
-	// the default timeout if no maintnotifications are disabled is going to PoolTimeout.
+	// the default timeout if maintnotifications are disabled is going to PoolTimeout.
 	//
 	// Note: Due to the auto by default mode of MaintNotificationsConfig
 	// the timeout for the first connection will probably be the value of MaintNotificationsConfig.HandoffTimeout
