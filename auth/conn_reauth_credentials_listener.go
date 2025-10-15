@@ -48,22 +48,37 @@ func (c *ConnReAuthCredentialsListener) OnNext(credentials Credentials) {
 	// this is important because the connection pool may be in the process of reconnecting the connection
 	// and we don't want to interfere with that process
 	// but we also don't want to block for too long, so incorporate a timeout
-compandswap:
-	for !c.conn.Usable.CompareAndSwap(true, false) {
+	for err == nil && !c.conn.Usable.CompareAndSwap(true, false) {
 		select {
 		case <-timeout:
 			err = pool.ErrConnUnusableTimeout
-			break compandswap
 		default:
 			runtime.Gosched()
 		}
 	}
+	if err == nil {
+		defer c.conn.SetUsable(true)
+	}
+
+	for err == nil && !c.conn.Used.CompareAndSwap(false, true) {
+		select {
+		case <-timeout:
+			err = pool.ErrConnUnusableTimeout
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	// we timed out waiting for the connection to be usable
+	// do not try to re-authenticate, instead call the onErr function
+	// which will handle the error and close the connection if needed
 	if err != nil {
 		c.OnError(err)
 		return
 	}
+
+	defer c.conn.Used.Store(false)
 	// we set the usable flag, so restore it back to usable after we're done
-	defer c.conn.SetUsable(true)
 	if err = c.reAuth(c.conn, credentials); err != nil {
 		c.OnError(err)
 	}

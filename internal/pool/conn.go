@@ -57,7 +57,32 @@ type Conn struct {
 	// Only used for the brief period during SetNetConn and HasBufferedData/PeekReplyTypeSafe
 	readerMu sync.RWMutex
 
+	// Design note:
+	// Why have both Usable and Used?
+	// _Usable_ is used to mark a connection as safe for use by clients, the connection can still
+	// be in the pool but not Usable at the moment (e.g. handoff in progress).
+	// _Used_ is used to mark a connection as used when a command is going to be processed on that connection.
+	// this is going to happen once the connection is picked from the pool.
+	//
+	// If a background operation needs to use the connection, it will mark it as Not Usable and only use it when it
+	// is not in use. That way, the connection won't be used to send multiple commands at the same time and
+	// potentially corrupt the command stream.
+
+	// Usable flag to mark connection as safe for use
+	// It is false before initialization and after a handoff is marked
+	// It will be false during other background operations like re-authentication
 	Usable atomic.Bool
+
+	// Used flag to mark connection as used when a command is going to be
+	// processed on that connection. This is used to prevent a race condition with
+	// background operations that may execute commands, like re-authentication.
+	Used atomic.Bool
+
+	// Inited flag to mark connection as initialized, this is almost the same as usable
+	// but it is used to make sure we don't initialize a network connection twice
+	// On handoff, the network connection is replaced, but the Conn struct is reused
+	// this flag will be set to false when the network connection is replaced and
+	// set to true after the new network connection is initialized
 	Inited atomic.Bool
 
 	pooled    bool
@@ -456,7 +481,7 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	const maxRetries = 50
 	const baseDelay = time.Microsecond
 
-	connAquired := false
+	connAcquired := false
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// If CAS failed, add exponential backoff to reduce contention
 		// the delay will be 1, 2, 4... up to 512 microseconds
@@ -468,10 +493,10 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 
 		// first we need to mark the connection as not usable
 		// to prevent the pool from returning it to the caller
-		if !connAquired && !cn.Usable.CompareAndSwap(true, false) {
+		if !connAcquired && !cn.Usable.CompareAndSwap(true, false) {
 			continue
 		}
-		connAquired = true
+		connAcquired = true
 
 		currentState := cn.getHandoffState()
 		// Check if marked for handoff
@@ -539,7 +564,8 @@ func (cn *Conn) ClearHandoffState() {
 	// Atomically set clean state
 	cn.setHandoffState(cleanState)
 	cn.setHandoffRetries(0)
-	cn.setUsable(true) // Connection is safe to use again after handoff completes
+	// Clearing handoff state also means the connection is usable again
+	cn.setUsable(true)
 }
 
 // IncrementAndGetHandoffRetries atomically increments and returns handoff retries (lock-free).

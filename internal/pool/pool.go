@@ -239,6 +239,7 @@ func (p *ConnPool) addIdleConn() error {
 	if err != nil {
 		return err
 	}
+
 	// Mark connection as usable after successful creation
 	// This is essential for normal pool operations
 	cn.SetUsable(true)
@@ -280,6 +281,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	// Mark connection as usable after successful creation
 	// This is essential for normal pool operations
 	cn.SetUsable(true)
@@ -571,8 +573,10 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		attempts++
 
 		if cn.IsUsable() {
-			p.idleConnsLen.Add(-1)
-			break
+			if cn.Used.CompareAndSwap(false, true) {
+				p.idleConnsLen.Add(-1)
+				break
+			}
 		}
 
 		// Connection is not usable, put it back in the pool
@@ -665,6 +669,12 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	} else {
 		p.removeConnWithLock(cn)
 		shouldCloseConn = true
+	}
+
+	// Mark connection as not used only
+	// if it's not being closed
+	if !shouldCloseConn {
+		cn.Used.Store(false)
 	}
 
 	p.freeTurn()

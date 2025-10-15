@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"time"
 )
 
 type SingleConnPool struct {
@@ -31,12 +32,26 @@ func (p *SingleConnPool) Get(ctx context.Context) (*Conn, error) {
 	if p.stickyErr != nil {
 		return nil, p.stickyErr
 	}
+	if p.cn == nil {
+		return nil, ErrClosed
+	}
+	p.cn.Used.Store(true)
+	p.cn.SetUsedAt(time.Now())
 	return p.cn, nil
 }
 
-func (p *SingleConnPool) Put(ctx context.Context, cn *Conn) {}
+func (p *SingleConnPool) Put(ctx context.Context, cn *Conn) {
+	if p.cn == nil {
+		return
+	}
+	if p.cn != cn {
+		return
+	}
+	p.cn.Used.Store(false)
+}
 
 func (p *SingleConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
+	cn.Used.Store(false)
 	p.cn = nil
 	p.stickyErr = reason
 }

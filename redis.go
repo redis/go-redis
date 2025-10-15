@@ -549,6 +549,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// mark the connection as usable and inited
 	// once returned to the pool as idle, this connection can be used by other clients
 	cn.SetUsable(true)
+	cn.Used.Store(false)
 	cn.Inited.Store(true)
 
 	// Set the connection initialization function for potential reconnections
