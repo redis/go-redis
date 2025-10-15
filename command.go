@@ -7001,7 +7001,7 @@ func (cmd *MonitorCmd) Clone() Cmder {
 }
 
 // ExtractCommandValue extracts the value from a command result using the fast enum-based approach
-func ExtractCommandValue(cmd interface{}) interface{} {
+func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 	// First try to get the command type using the interface
 	if cmdTypeGetter, ok := cmd.(CmdTypeGetter); ok {
 		cmdType := cmdTypeGetter.GetCmdType()
@@ -7009,298 +7009,499 @@ func ExtractCommandValue(cmd interface{}) interface{} {
 		// Use fast type-based extraction
 		switch cmdType {
 		case CmdTypeGeneric:
-			if genericCmd, ok := cmd.(interface{ Val() interface{} }); ok {
-				return genericCmd.Val()
+			if genericCmd, ok := cmd.(interface {
+				Val() interface{}
+				Err() error
+			}); ok {
+				return genericCmd.Val(), genericCmd.Err()
 			}
 		case CmdTypeString:
-			if stringCmd, ok := cmd.(interface{ Val() string }); ok {
-				return stringCmd.Val()
+			if stringCmd, ok := cmd.(interface {
+				Val() string
+				Err() error
+			}); ok {
+				return stringCmd.Val(), stringCmd.Err()
 			}
 		case CmdTypeInt:
-			if intCmd, ok := cmd.(interface{ Val() int64 }); ok {
-				return intCmd.Val()
+			if intCmd, ok := cmd.(interface {
+				Val() int64
+				Err() error
+			}); ok {
+				return intCmd.Val(), intCmd.Err()
 			}
 		case CmdTypeBool:
-			if boolCmd, ok := cmd.(interface{ Val() bool }); ok {
-				return boolCmd.Val()
+			if boolCmd, ok := cmd.(interface {
+				Val() bool
+				Err() error
+			}); ok {
+				return boolCmd.Val(), boolCmd.Err()
 			}
 		case CmdTypeFloat:
-			if floatCmd, ok := cmd.(interface{ Val() float64 }); ok {
-				return floatCmd.Val()
+			if floatCmd, ok := cmd.(interface {
+				Val() float64
+				Err() error
+			}); ok {
+				return floatCmd.Val(), floatCmd.Err()
 			}
 		case CmdTypeStatus:
-			if statusCmd, ok := cmd.(interface{ Val() string }); ok {
-				return statusCmd.Val()
+			if statusCmd, ok := cmd.(interface {
+				Val() string
+				Err() error
+			}); ok {
+				return statusCmd.Val(), statusCmd.Err()
 			}
 		case CmdTypeDuration:
-			if durationCmd, ok := cmd.(interface{ Val() time.Duration }); ok {
-				return durationCmd.Val()
+			if durationCmd, ok := cmd.(interface {
+				Val() time.Duration
+				Err() error
+			}); ok {
+				return durationCmd.Val(), durationCmd.Err()
 			}
 		case CmdTypeTime:
-			if timeCmd, ok := cmd.(interface{ Val() time.Time }); ok {
-				return timeCmd.Val()
+			if timeCmd, ok := cmd.(interface {
+				Val() time.Time
+				Err() error
+			}); ok {
+				return timeCmd.Val(), timeCmd.Err()
 			}
 		case CmdTypeStringStructMap:
-			if structMapCmd, ok := cmd.(interface{ Val() map[string]struct{} }); ok {
-				return structMapCmd.Val()
+			if structMapCmd, ok := cmd.(interface {
+				Val() map[string]struct{}
+				Err() error
+			}); ok {
+				return structMapCmd.Val(), structMapCmd.Err()
 			}
 		case CmdTypeXMessageSlice:
-			if xMessageSliceCmd, ok := cmd.(interface{ Val() []XMessage }); ok {
-				return xMessageSliceCmd.Val()
+			if xMessageSliceCmd, ok := cmd.(interface {
+				Val() []XMessage
+				Err() error
+			}); ok {
+				return xMessageSliceCmd.Val(), xMessageSliceCmd.Err()
 			}
 		case CmdTypeXStreamSlice:
-			if xStreamSliceCmd, ok := cmd.(interface{ Val() []XStream }); ok {
-				return xStreamSliceCmd.Val()
+			if xStreamSliceCmd, ok := cmd.(interface {
+				Val() []XStream
+				Err() error
+			}); ok {
+				return xStreamSliceCmd.Val(), xStreamSliceCmd.Err()
 			}
 		case CmdTypeXPending:
-			if xPendingCmd, ok := cmd.(interface{ Val() *XPending }); ok {
-				return xPendingCmd.Val()
+			if xPendingCmd, ok := cmd.(interface {
+				Val() *XPending
+				Err() error
+			}); ok {
+				return xPendingCmd.Val(), xPendingCmd.Err()
 			}
 		case CmdTypeXPendingExt:
-			if xPendingExtCmd, ok := cmd.(interface{ Val() []XPendingExt }); ok {
-				return xPendingExtCmd.Val()
+			if xPendingExtCmd, ok := cmd.(interface {
+				Val() []XPendingExt
+				Err() error
+			}); ok {
+				return xPendingExtCmd.Val(), xPendingExtCmd.Err()
 			}
 		case CmdTypeXAutoClaim:
-			if xAutoClaimCmd, ok := cmd.(interface{ Val() ([]XMessage, string) }); ok {
+			if xAutoClaimCmd, ok := cmd.(interface {
+				Val() ([]XMessage, string)
+				Err() error
+			}); ok {
 				messages, start := xAutoClaimCmd.Val()
-				return CmdTypeXAutoClaimValue{messages: messages, start: start}
+				return CmdTypeXAutoClaimValue{messages: messages, start: start}, xAutoClaimCmd.Err()
 			}
 		case CmdTypeXAutoClaimJustID:
-			if xAutoClaimJustIDCmd, ok := cmd.(interface{ Val() ([]string, string) }); ok {
+			if xAutoClaimJustIDCmd, ok := cmd.(interface {
+				Val() ([]string, string)
+				Err() error
+			}); ok {
 				ids, start := xAutoClaimJustIDCmd.Val()
-				return CmdTypeXAutoClaimJustIDValue{ids: ids, start: start}
+				return CmdTypeXAutoClaimJustIDValue{ids: ids, start: start}, xAutoClaimJustIDCmd.Err()
 			}
 		case CmdTypeXInfoConsumers:
-			if xInfoConsumersCmd, ok := cmd.(interface{ Val() []XInfoConsumer }); ok {
-				return xInfoConsumersCmd.Val()
+			if xInfoConsumersCmd, ok := cmd.(interface {
+				Val() []XInfoConsumer
+				Err() error
+			}); ok {
+				return xInfoConsumersCmd.Val(), xInfoConsumersCmd.Err()
 			}
 		case CmdTypeXInfoGroups:
-			if xInfoGroupsCmd, ok := cmd.(interface{ Val() []XInfoGroup }); ok {
-				return xInfoGroupsCmd.Val()
+			if xInfoGroupsCmd, ok := cmd.(interface {
+				Val() []XInfoGroup
+				Err() error
+			}); ok {
+				return xInfoGroupsCmd.Val(), xInfoGroupsCmd.Err()
 			}
 		case CmdTypeXInfoStream:
-			if xInfoStreamCmd, ok := cmd.(interface{ Val() *XInfoStream }); ok {
-				return xInfoStreamCmd.Val()
+			if xInfoStreamCmd, ok := cmd.(interface {
+				Val() *XInfoStream
+				Err() error
+			}); ok {
+				return xInfoStreamCmd.Val(), xInfoStreamCmd.Err()
 			}
 		case CmdTypeXInfoStreamFull:
-			if xInfoStreamFullCmd, ok := cmd.(interface{ Val() *XInfoStreamFull }); ok {
-				return xInfoStreamFullCmd.Val()
+			if xInfoStreamFullCmd, ok := cmd.(interface {
+				Val() *XInfoStreamFull
+				Err() error
+			}); ok {
+				return xInfoStreamFullCmd.Val(), xInfoStreamFullCmd.Err()
 			}
 		case CmdTypeZSlice:
-			if zSliceCmd, ok := cmd.(interface{ Val() []Z }); ok {
-				return zSliceCmd.Val()
+			if zSliceCmd, ok := cmd.(interface {
+				Val() []Z
+				Err() error
+			}); ok {
+				return zSliceCmd.Val(), zSliceCmd.Err()
 			}
 		case CmdTypeZWithKey:
-			if zWithKeyCmd, ok := cmd.(interface{ Val() *ZWithKey }); ok {
-				return zWithKeyCmd.Val()
+			if zWithKeyCmd, ok := cmd.(interface {
+				Val() *ZWithKey
+				Err() error
+			}); ok {
+				return zWithKeyCmd.Val(), zWithKeyCmd.Err()
 			}
 		case CmdTypeScan:
-			if scanCmd, ok := cmd.(interface{ Val() ([]string, uint64) }); ok {
+			if scanCmd, ok := cmd.(interface {
+				Val() ([]string, uint64)
+				Err() error
+			}); ok {
 				keys, cursor := scanCmd.Val()
-				return CmdTypeScanValue{keys: keys, cursor: cursor}
+				return CmdTypeScanValue{keys: keys, cursor: cursor}, scanCmd.Err()
 			}
 		case CmdTypeClusterSlots:
-			if clusterSlotsCmd, ok := cmd.(interface{ Val() []ClusterSlot }); ok {
-				return clusterSlotsCmd.Val()
+			if clusterSlotsCmd, ok := cmd.(interface {
+				Val() []ClusterSlot
+				Err() error
+			}); ok {
+				return clusterSlotsCmd.Val(), clusterSlotsCmd.Err()
 			}
 		case CmdTypeGeoLocation:
-			if geoLocationCmd, ok := cmd.(interface{ Val() []GeoLocation }); ok {
-				return geoLocationCmd.Val()
+			if geoLocationCmd, ok := cmd.(interface {
+				Val() []GeoLocation
+				Err() error
+			}); ok {
+				return geoLocationCmd.Val(), geoLocationCmd.Err()
 			}
 		case CmdTypeGeoSearchLocation:
-			if geoSearchLocationCmd, ok := cmd.(interface{ Val() []GeoLocation }); ok {
-				return geoSearchLocationCmd.Val()
+			if geoSearchLocationCmd, ok := cmd.(interface {
+				Val() []GeoLocation
+				Err() error
+			}); ok {
+				return geoSearchLocationCmd.Val(), geoSearchLocationCmd.Err()
 			}
 		case CmdTypeGeoPos:
-			if geoPosCmd, ok := cmd.(interface{ Val() []*GeoPos }); ok {
-				return geoPosCmd.Val()
+			if geoPosCmd, ok := cmd.(interface {
+				Val() []*GeoPos
+				Err() error
+			}); ok {
+				return geoPosCmd.Val(), geoPosCmd.Err()
 			}
 		case CmdTypeCommandsInfo:
 			if commandsInfoCmd, ok := cmd.(interface {
 				Val() map[string]*CommandInfo
+				Err() error
 			}); ok {
-				return commandsInfoCmd.Val()
+				return commandsInfoCmd.Val(), commandsInfoCmd.Err()
 			}
 		case CmdTypeSlowLog:
-			if slowLogCmd, ok := cmd.(interface{ Val() []SlowLog }); ok {
-				return slowLogCmd.Val()
+			if slowLogCmd, ok := cmd.(interface {
+				Val() []SlowLog
+				Err() error
+			}); ok {
+				return slowLogCmd.Val(), slowLogCmd.Err()
 			}
 		case CmdTypeKeyValues:
-			if keyValuesCmd, ok := cmd.(interface{ Val() (string, []string) }); ok {
+			if keyValuesCmd, ok := cmd.(interface {
+				Val() (string, []string)
+				Err() error
+			}); ok {
 				key, values := keyValuesCmd.Val()
-				return CmdTypeKeyValuesValue{key: key, values: values}
+				return CmdTypeKeyValuesValue{key: key, values: values}, keyValuesCmd.Err()
 			}
 		case CmdTypeZSliceWithKey:
-			if zSliceWithKeyCmd, ok := cmd.(interface{ Val() (string, []Z) }); ok {
+			if zSliceWithKeyCmd, ok := cmd.(interface {
+				Val() (string, []Z)
+				Err() error
+			}); ok {
 				key, zSlice := zSliceWithKeyCmd.Val()
-				return CmdTypeZSliceWithKeyValue{key: key, zSlice: zSlice}
+				return CmdTypeZSliceWithKeyValue{key: key, zSlice: zSlice}, zSliceWithKeyCmd.Err()
 			}
 		case CmdTypeFunctionList:
-			if functionListCmd, ok := cmd.(interface{ Val() []Library }); ok {
-				return functionListCmd.Val()
+			if functionListCmd, ok := cmd.(interface {
+				Val() []Library
+				Err() error
+			}); ok {
+				return functionListCmd.Val(), functionListCmd.Err()
 			}
 		case CmdTypeFunctionStats:
-			if functionStatsCmd, ok := cmd.(interface{ Val() FunctionStats }); ok {
-				return functionStatsCmd.Val()
+			if functionStatsCmd, ok := cmd.(interface {
+				Val() FunctionStats
+				Err() error
+			}); ok {
+				return functionStatsCmd.Val(), functionStatsCmd.Err()
 			}
 		case CmdTypeLCS:
-			if lcsCmd, ok := cmd.(interface{ Val() *LCSMatch }); ok {
-				return lcsCmd.Val()
+			if lcsCmd, ok := cmd.(interface {
+				Val() *LCSMatch
+				Err() error
+			}); ok {
+				return lcsCmd.Val(), lcsCmd.Err()
 			}
 		case CmdTypeKeyFlags:
-			if keyFlagsCmd, ok := cmd.(interface{ Val() []KeyFlags }); ok {
-				return keyFlagsCmd.Val()
+			if keyFlagsCmd, ok := cmd.(interface {
+				Val() []KeyFlags
+				Err() error
+			}); ok {
+				return keyFlagsCmd.Val(), keyFlagsCmd.Err()
 			}
 		case CmdTypeClusterLinks:
-			if clusterLinksCmd, ok := cmd.(interface{ Val() []ClusterLink }); ok {
-				return clusterLinksCmd.Val()
+			if clusterLinksCmd, ok := cmd.(interface {
+				Val() []ClusterLink
+				Err() error
+			}); ok {
+				return clusterLinksCmd.Val(), clusterLinksCmd.Err()
 			}
 		case CmdTypeClusterShards:
-			if clusterShardsCmd, ok := cmd.(interface{ Val() []ClusterShard }); ok {
-				return clusterShardsCmd.Val()
+			if clusterShardsCmd, ok := cmd.(interface {
+				Val() []ClusterShard
+				Err() error
+			}); ok {
+				return clusterShardsCmd.Val(), clusterShardsCmd.Err()
 			}
 		case CmdTypeRankWithScore:
-			if rankWithScoreCmd, ok := cmd.(interface{ Val() RankScore }); ok {
-				return rankWithScoreCmd.Val()
+			if rankWithScoreCmd, ok := cmd.(interface {
+				Val() RankScore
+				Err() error
+			}); ok {
+				return rankWithScoreCmd.Val(), rankWithScoreCmd.Err()
 			}
 		case CmdTypeClientInfo:
-			if clientInfoCmd, ok := cmd.(interface{ Val() *ClientInfo }); ok {
-				return clientInfoCmd.Val()
+			if clientInfoCmd, ok := cmd.(interface {
+				Val() *ClientInfo
+				Err() error
+			}); ok {
+				return clientInfoCmd.Val(), clientInfoCmd.Err()
 			}
 		case CmdTypeACLLog:
-			if aclLogCmd, ok := cmd.(interface{ Val() []*ACLLogEntry }); ok {
-				return aclLogCmd.Val()
+			if aclLogCmd, ok := cmd.(interface {
+				Val() []*ACLLogEntry
+				Err() error
+			}); ok {
+				return aclLogCmd.Val(), aclLogCmd.Err()
 			}
 		case CmdTypeInfo:
-			if infoCmd, ok := cmd.(interface{ Val() string }); ok {
-				return infoCmd.Val()
+			if infoCmd, ok := cmd.(interface {
+				Val() string
+				Err() error
+			}); ok {
+				return infoCmd.Val(), infoCmd.Err()
 			}
 		case CmdTypeMonitor:
-			if monitorCmd, ok := cmd.(interface{ Val() string }); ok {
-				return monitorCmd.Val()
+			if monitorCmd, ok := cmd.(interface {
+				Val() string
+				Err() error
+			}); ok {
+				return monitorCmd.Val(), monitorCmd.Err()
 			}
 		case CmdTypeJSON:
-			if jsonCmd, ok := cmd.(interface{ Val() string }); ok {
-				return jsonCmd.Val()
+			if jsonCmd, ok := cmd.(interface {
+				Val() string
+				Err() error
+			}); ok {
+				return jsonCmd.Val(), jsonCmd.Err()
 			}
 		case CmdTypeJSONSlice:
-			if jsonSliceCmd, ok := cmd.(interface{ Val() []interface{} }); ok {
-				return jsonSliceCmd.Val()
+			if jsonSliceCmd, ok := cmd.(interface {
+				Val() []interface{}
+				Err() error
+			}); ok {
+				return jsonSliceCmd.Val(), jsonSliceCmd.Err()
 			}
 		case CmdTypeIntPointerSlice:
-			if intPointerSliceCmd, ok := cmd.(interface{ Val() []*int64 }); ok {
-				return intPointerSliceCmd.Val()
+			if intPointerSliceCmd, ok := cmd.(interface {
+				Val() []*int64
+				Err() error
+			}); ok {
+				return intPointerSliceCmd.Val(), intPointerSliceCmd.Err()
 			}
 		case CmdTypeScanDump:
-			if scanDumpCmd, ok := cmd.(interface{ Val() ScanDump }); ok {
-				return scanDumpCmd.Val()
+			if scanDumpCmd, ok := cmd.(interface {
+				Val() ScanDump
+				Err() error
+			}); ok {
+				return scanDumpCmd.Val(), scanDumpCmd.Err()
 			}
 		case CmdTypeBFInfo:
-			if bfInfoCmd, ok := cmd.(interface{ Val() BFInfo }); ok {
-				return bfInfoCmd.Val()
+			if bfInfoCmd, ok := cmd.(interface {
+				Val() BFInfo
+				Err() error
+			}); ok {
+				return bfInfoCmd.Val(), bfInfoCmd.Err()
 			}
 		case CmdTypeCFInfo:
-			if cfInfoCmd, ok := cmd.(interface{ Val() CFInfo }); ok {
-				return cfInfoCmd.Val()
+			if cfInfoCmd, ok := cmd.(interface {
+				Val() CFInfo
+				Err() error
+			}); ok {
+				return cfInfoCmd.Val(), cfInfoCmd.Err()
 			}
 		case CmdTypeCMSInfo:
-			if cmsInfoCmd, ok := cmd.(interface{ Val() CMSInfo }); ok {
-				return cmsInfoCmd.Val()
+			if cmsInfoCmd, ok := cmd.(interface {
+				Val() CMSInfo
+				Err() error
+			}); ok {
+				return cmsInfoCmd.Val(), cmsInfoCmd.Err()
 			}
 		case CmdTypeTopKInfo:
-			if topKInfoCmd, ok := cmd.(interface{ Val() TopKInfo }); ok {
-				return topKInfoCmd.Val()
+			if topKInfoCmd, ok := cmd.(interface {
+				Val() TopKInfo
+				Err() error
+			}); ok {
+				return topKInfoCmd.Val(), topKInfoCmd.Err()
 			}
 		case CmdTypeTDigestInfo:
-			if tDigestInfoCmd, ok := cmd.(interface{ Val() TDigestInfo }); ok {
-				return tDigestInfoCmd.Val()
+			if tDigestInfoCmd, ok := cmd.(interface {
+				Val() TDigestInfo
+				Err() error
+			}); ok {
+				return tDigestInfoCmd.Val(), tDigestInfoCmd.Err()
 			}
 		case CmdTypeFTSearch:
-			if ftSearchCmd, ok := cmd.(interface{ Val() FTSearchResult }); ok {
-				return ftSearchCmd.Val()
+			if ftSearchCmd, ok := cmd.(interface {
+				Val() FTSearchResult
+				Err() error
+			}); ok {
+				return ftSearchCmd.Val(), ftSearchCmd.Err()
 			}
 		case CmdTypeFTInfo:
-			if ftInfoCmd, ok := cmd.(interface{ Val() FTInfoResult }); ok {
-				return ftInfoCmd.Val()
+			if ftInfoCmd, ok := cmd.(interface {
+				Val() FTInfoResult
+				Err() error
+			}); ok {
+				return ftInfoCmd.Val(), ftInfoCmd.Err()
 			}
 		case CmdTypeFTSpellCheck:
-			if ftSpellCheckCmd, ok := cmd.(interface{ Val() []SpellCheckResult }); ok {
-				return ftSpellCheckCmd.Val()
+			if ftSpellCheckCmd, ok := cmd.(interface {
+				Val() []SpellCheckResult
+				Err() error
+			}); ok {
+				return ftSpellCheckCmd.Val(), ftSpellCheckCmd.Err()
 			}
 		case CmdTypeFTSynDump:
-			if ftSynDumpCmd, ok := cmd.(interface{ Val() []FTSynDumpResult }); ok {
-				return ftSynDumpCmd.Val()
+			if ftSynDumpCmd, ok := cmd.(interface {
+				Val() []FTSynDumpResult
+				Err() error
+			}); ok {
+				return ftSynDumpCmd.Val(), ftSynDumpCmd.Err()
 			}
 		case CmdTypeAggregate:
-			if aggregateCmd, ok := cmd.(interface{ Val() *FTAggregateResult }); ok {
-				return aggregateCmd.Val()
+			if aggregateCmd, ok := cmd.(interface {
+				Val() *FTAggregateResult
+				Err() error
+			}); ok {
+				return aggregateCmd.Val(), aggregateCmd.Err()
 			}
 		case CmdTypeTSTimestampValue:
-			if tsTimestampValueCmd, ok := cmd.(interface{ Val() TSTimestampValue }); ok {
-				return tsTimestampValueCmd.Val()
+			if tsTimestampValueCmd, ok := cmd.(interface {
+				Val() TSTimestampValue
+				Err() error
+			}); ok {
+				return tsTimestampValueCmd.Val(), tsTimestampValueCmd.Err()
 			}
 		case CmdTypeTSTimestampValueSlice:
-			if tsTimestampValueSliceCmd, ok := cmd.(interface{ Val() []TSTimestampValue }); ok {
-				return tsTimestampValueSliceCmd.Val()
+			if tsTimestampValueSliceCmd, ok := cmd.(interface {
+				Val() []TSTimestampValue
+				Err() error
+			}); ok {
+				return tsTimestampValueSliceCmd.Val(), tsTimestampValueSliceCmd.Err()
 			}
 		case CmdTypeStringSlice:
-			if stringSliceCmd, ok := cmd.(interface{ Val() []string }); ok {
-				return stringSliceCmd.Val()
+			if stringSliceCmd, ok := cmd.(interface {
+				Val() []string
+				Err() error
+			}); ok {
+				return stringSliceCmd.Val(), stringSliceCmd.Err()
 			}
 		case CmdTypeIntSlice:
-			if intSliceCmd, ok := cmd.(interface{ Val() []int64 }); ok {
-				return intSliceCmd.Val()
+			if intSliceCmd, ok := cmd.(interface {
+				Val() []int64
+				Err() error
+			}); ok {
+				return intSliceCmd.Val(), intSliceCmd.Err()
 			}
 		case CmdTypeBoolSlice:
-			if boolSliceCmd, ok := cmd.(interface{ Val() []bool }); ok {
-				return boolSliceCmd.Val()
+			if boolSliceCmd, ok := cmd.(interface {
+				Val() []bool
+				Err() error
+			}); ok {
+				return boolSliceCmd.Val(), boolSliceCmd.Err()
 			}
 		case CmdTypeFloatSlice:
-			if floatSliceCmd, ok := cmd.(interface{ Val() []float64 }); ok {
-				return floatSliceCmd.Val()
+			if floatSliceCmd, ok := cmd.(interface {
+				Val() []float64
+				Err() error
+			}); ok {
+				return floatSliceCmd.Val(), floatSliceCmd.Err()
 			}
 		case CmdTypeSlice:
-			if sliceCmd, ok := cmd.(interface{ Val() []interface{} }); ok {
-				return sliceCmd.Val()
+			if sliceCmd, ok := cmd.(interface {
+				Val() []interface{}
+				Err() error
+			}); ok {
+				return sliceCmd.Val(), sliceCmd.Err()
 			}
 		case CmdTypeKeyValueSlice:
-			if keyValueSliceCmd, ok := cmd.(interface{ Val() []KeyValue }); ok {
-				return keyValueSliceCmd.Val()
+			if keyValueSliceCmd, ok := cmd.(interface {
+				Val() []KeyValue
+				Err() error
+			}); ok {
+				return keyValueSliceCmd.Val(), keyValueSliceCmd.Err()
 			}
 		case CmdTypeMapStringString:
-			if mapCmd, ok := cmd.(interface{ Val() map[string]string }); ok {
-				return mapCmd.Val()
+			if mapCmd, ok := cmd.(interface {
+				Val() map[string]string
+				Err() error
+			}); ok {
+				return mapCmd.Val(), mapCmd.Err()
 			}
 		case CmdTypeMapStringInt:
-			if mapCmd, ok := cmd.(interface{ Val() map[string]int64 }); ok {
-				return mapCmd.Val()
+			if mapCmd, ok := cmd.(interface {
+				Val() map[string]int64
+				Err() error
+			}); ok {
+				return mapCmd.Val(), mapCmd.Err()
 			}
 		case CmdTypeMapStringInterfaceSlice:
 			if mapCmd, ok := cmd.(interface {
 				Val() []map[string]interface{}
+				Err() error
 			}); ok {
-				return mapCmd.Val()
+				return mapCmd.Val(), mapCmd.Err()
 			}
 		case CmdTypeMapStringInterface:
-			if mapCmd, ok := cmd.(interface{ Val() map[string]interface{} }); ok {
-				return mapCmd.Val()
+			if mapCmd, ok := cmd.(interface {
+				Val() map[string]interface{}
+				Err() error
+			}); ok {
+				return mapCmd.Val(), mapCmd.Err()
 			}
 		case CmdTypeMapStringStringSlice:
-			if mapCmd, ok := cmd.(interface{ Val() []map[string]string }); ok {
-				return mapCmd.Val()
+			if mapCmd, ok := cmd.(interface {
+				Val() []map[string]string
+				Err() error
+			}); ok {
+				return mapCmd.Val(), mapCmd.Err()
 			}
 		case CmdTypeMapMapStringInterface:
 			if mapCmd, ok := cmd.(interface {
 				Val() map[string]interface{}
+				Err() error
 			}); ok {
-				return mapCmd.Val()
+				return mapCmd.Val(), mapCmd.Err()
 			}
 		default:
 			// For unknown command types, return nil
-			return nil
+			return nil, nil
 		}
 	}
 
 	// If we can't get the command type, return nil
-	return nil
+	return nil, nil
 }

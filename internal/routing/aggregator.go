@@ -25,9 +25,9 @@ type ResponseAggregator interface {
 	// AddWithKey processes a single shard response for a specific key (used by keyed aggregators).
 	AddWithKey(key string, result interface{}, err error) error
 
-	BatchAdd(map[string]interface{}) error
+	BatchAdd(map[string]AggregatorResErr) error
 
-	BatchWithErrs([]AggregatorResErr) error
+	BatchSlice([]AggregatorResErr) error
 
 	// Result returns the final aggregated result and any error.
 	Result() (interface{}, error)
@@ -102,9 +102,9 @@ func (a *AllSucceededAggregator) Add(result interface{}, err error) error {
 	return nil
 }
 
-func (a *AllSucceededAggregator) BatchAdd(results map[string]interface{}) error {
+func (a *AllSucceededAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	for _, res := range results {
-		err := a.Add(res, nil)
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
 		}
@@ -113,7 +113,7 @@ func (a *AllSucceededAggregator) BatchAdd(results map[string]interface{}) error 
 	return nil
 }
 
-func (a *AllSucceededAggregator) BatchWithErrs(values []AggregatorResErr) error {
+func (a *AllSucceededAggregator) BatchSlice(values []AggregatorResErr) error {
 	for _, val := range values {
 		err := a.Add(val.Result, val.Err)
 		if err != nil {
@@ -158,9 +158,9 @@ func (a *OneSucceededAggregator) Add(result interface{}, err error) error {
 	return nil
 }
 
-func (a *OneSucceededAggregator) BatchAdd(results map[string]interface{}) error {
+func (a *OneSucceededAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	for _, res := range results {
-		err := a.Add(res, nil)
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
 		}
@@ -173,7 +173,7 @@ func (a *OneSucceededAggregator) AddWithKey(key string, result interface{}, err 
 	return a.Add(result, err)
 }
 
-func (a *OneSucceededAggregator) BatchWithErrs(values []AggregatorResErr) error {
+func (a *OneSucceededAggregator) BatchSlice(values []AggregatorResErr) error {
 	for _, val := range values {
 		err := a.Add(val.Result, val.Err)
 		if err != nil {
@@ -215,9 +215,9 @@ func (a *AggSumAggregator) Add(result interface{}, err error) error {
 	return nil
 }
 
-func (a *AggSumAggregator) BatchAdd(results map[string]interface{}) error {
+func (a *AggSumAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	for _, res := range results {
-		err := a.Add(res, nil)
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
 		}
@@ -230,7 +230,7 @@ func (a *AggSumAggregator) AddWithKey(key string, result interface{}, err error)
 	return a.Add(result, err)
 }
 
-func (a *AggSumAggregator) BatchWithErrs(values []AggregatorResErr) error {
+func (a *AggSumAggregator) BatchSlice(values []AggregatorResErr) error {
 	for _, val := range values {
 		err := a.Add(val.Result, val.Err)
 		if err != nil {
@@ -273,9 +273,9 @@ func (a *AggMinAggregator) Add(result interface{}, err error) error {
 	return nil
 }
 
-func (a *AggMinAggregator) BatchAdd(results map[string]interface{}) error {
+func (a *AggMinAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	for _, res := range results {
-		err := a.Add(res, nil)
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
 		}
@@ -288,7 +288,7 @@ func (a *AggMinAggregator) AddWithKey(key string, result interface{}, err error)
 	return a.Add(result, err)
 }
 
-func (a *AggMinAggregator) BatchWithErrs(values []AggregatorResErr) error {
+func (a *AggMinAggregator) BatchSlice(values []AggregatorResErr) error {
 	for _, val := range values {
 		err := a.Add(val.Result, val.Err)
 		if err != nil {
@@ -335,9 +335,9 @@ func (a *AggMaxAggregator) Add(result interface{}, err error) error {
 	return nil
 }
 
-func (a *AggMaxAggregator) BatchAdd(results map[string]interface{}) error {
+func (a *AggMaxAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	for _, res := range results {
-		err := a.Add(res, nil)
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
 		}
@@ -350,7 +350,7 @@ func (a *AggMaxAggregator) AddWithKey(key string, result interface{}, err error)
 	return a.Add(result, err)
 }
 
-func (a *AggMaxAggregator) BatchWithErrs(values []AggregatorResErr) error {
+func (a *AggMaxAggregator) BatchSlice(values []AggregatorResErr) error {
 	for _, val := range values {
 		err := a.Add(val.Result, val.Err)
 		if err != nil {
@@ -404,9 +404,9 @@ func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
 	return nil
 }
 
-func (a *AggLogicalAndAggregator) BatchAdd(results map[string]interface{}) error {
+func (a *AggLogicalAndAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	for _, res := range results {
-		err := a.Add(res, nil)
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
 		}
@@ -419,7 +419,7 @@ func (a *AggLogicalAndAggregator) AddWithKey(key string, result interface{}, err
 	return a.Add(result, err)
 }
 
-func (a *AggLogicalAndAggregator) BatchWithErrs(values []AggregatorResErr) error {
+func (a *AggLogicalAndAggregator) BatchSlice(values []AggregatorResErr) error {
 	for _, val := range values {
 		err := a.Add(val.Result, val.Err)
 		if err != nil {
@@ -472,9 +472,9 @@ func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
 	return nil
 }
 
-func (a *AggLogicalOrAggregator) BatchAdd(results map[string]interface{}) error {
+func (a *AggLogicalOrAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	for _, res := range results {
-		err := a.Add(res, nil)
+		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
 		}
@@ -487,7 +487,7 @@ func (a *AggLogicalOrAggregator) AddWithKey(key string, result interface{}, err 
 	return a.Add(result, err)
 }
 
-func (a *AggLogicalOrAggregator) BatchWithErrs(values []AggregatorResErr) error {
+func (a *AggLogicalOrAggregator) BatchSlice(values []AggregatorResErr) error {
 	for _, val := range values {
 		err := a.Add(val.Result, val.Err)
 		if err != nil {
@@ -572,9 +572,12 @@ func (a *DefaultKeylessAggregator) Add(result interface{}, err error) error {
 	return a.add(result, err)
 }
 
-func (a *DefaultKeylessAggregator) BatchAdd(results map[string]interface{}) error {
+func (a *DefaultKeylessAggregator) BatchAdd(results map[string]AggregatorResErr) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	for _, res := range results {
-		err := a.add(res, nil)
+		err := a.add(res.Result, res.Err)
 		if err != nil {
 			return err
 		}
@@ -587,7 +590,7 @@ func (a *DefaultKeylessAggregator) AddWithKey(key string, result interface{}, er
 	return a.Add(result, err)
 }
 
-func (a *DefaultKeylessAggregator) BatchWithErrs(values []AggregatorResErr) error {
+func (a *DefaultKeylessAggregator) BatchSlice(values []AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -645,12 +648,12 @@ func (a *DefaultKeyedAggregator) Add(result interface{}, err error) error {
 	return a.add(result, err)
 }
 
-func (a *DefaultKeyedAggregator) BatchAdd(results map[string]interface{}) error {
+func (a *DefaultKeyedAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	for _, res := range results {
-		err := a.add(res, nil)
+		err := a.add(res.Result, res.Err)
 		if err != nil {
 			return err
 		}
@@ -677,13 +680,13 @@ func (a *DefaultKeyedAggregator) AddWithKey(key string, result interface{}, err 
 	return a.addWithKey(key, result, err)
 }
 
-func (a *DefaultKeyedAggregator) BatchAddWithKeyOrder(results map[string]interface{}, keyOrder []string) error {
+func (a *DefaultKeyedAggregator) BatchAddWithKeyOrder(results map[string]AggregatorResErr, keyOrder []string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.keyOrder = keyOrder
 	for key, val := range results {
-		_ = a.addWithKey(key, val, nil)
+		_ = a.addWithKey(key, val.Result, val.Err)
 	}
 
 	return nil
@@ -695,7 +698,7 @@ func (a *DefaultKeyedAggregator) SetKeyOrder(keyOrder []string) {
 	a.keyOrder = keyOrder
 }
 
-func (a *DefaultKeyedAggregator) BatchWithErrs(values []AggregatorResErr) error {
+func (a *DefaultKeyedAggregator) BatchSlice(values []AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -757,12 +760,12 @@ func (a *SpecialAggregator) Add(result interface{}, err error) error {
 	return a.add(result, err)
 }
 
-func (a *SpecialAggregator) BatchAdd(results map[string]interface{}) error {
+func (a *SpecialAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	for _, res := range results {
-		err := a.add(res, nil)
+		err := a.add(res.Result, res.Err)
 		if err != nil {
 			return err
 		}
@@ -775,7 +778,7 @@ func (a *SpecialAggregator) AddWithKey(key string, result interface{}, err error
 	return a.Add(result, err)
 }
 
-func (a *SpecialAggregator) BatchWithErrs(values []AggregatorResErr) error {
+func (a *SpecialAggregator) BatchSlice(values []AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 

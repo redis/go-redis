@@ -337,7 +337,7 @@ func (c *ClusterClient) executeParallel(ctx context.Context, cmd Cmder, nodes []
 
 // aggregateMultiSlotResults aggregates results from multi-slot execution
 func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder, results <-chan slotResult, keyOrder []string, policy *routing.CommandPolicy) error {
-	keyedResults := make(map[string]interface{})
+	keyedResults := make(map[string]routing.AggregatorResErr)
 	var firstErr error
 
 	for result := range results {
@@ -349,43 +349,39 @@ func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder
 			if strings.ToLower(cmd.Name()) == "mget" {
 				if sliceCmd, ok := result.cmd.(*SliceCmd); ok {
 					values := sliceCmd.Val()
+					err := sliceCmd.Err()
 					if len(values) == len(result.keys) {
 						for i, key := range result.keys {
-							keyedResults[key] = values[i]
+							keyedResults[key] = routing.AggregatorResErr{Result: values[i], Err: err}
 						}
 					} else {
 						// Fallback: map all keys to the entire result
 						for _, key := range result.keys {
-							keyedResults[key] = values
+							keyedResults[key] = routing.AggregatorResErr{Result: values, Err: err}
 						}
 					}
 				} else {
 					// Fallback for non-SliceCmd results
-					value := ExtractCommandValue(result.cmd)
+					value, err := ExtractCommandValue(result.cmd)
 					for _, key := range result.keys {
-						keyedResults[key] = value
+						keyedResults[key] = routing.AggregatorResErr{Result: value, Err: err}
 					}
 				}
 			} else {
 				// For other commands, map each key to the entire result
-				value := ExtractCommandValue(result.cmd)
+				value, err := ExtractCommandValue(result.cmd)
 				for _, key := range result.keys {
-					keyedResults[key] = value
+					keyedResults[key] = routing.AggregatorResErr{Result: value, Err: err}
 				}
 			}
 		}
-	}
-
-	if firstErr != nil {
-		cmd.SetErr(firstErr)
-		return firstErr
 	}
 
 	return c.aggregateKeyedValues(cmd, keyedResults, keyOrder, policy)
 }
 
 // aggregateKeyedValues aggregates individual key-value pairs while preserving key order
-func (c *ClusterClient) aggregateKeyedValues(cmd Cmder, keyedResults map[string]interface{}, keyOrder []string, policy *routing.CommandPolicy) error {
+func (c *ClusterClient) aggregateKeyedValues(cmd Cmder, keyedResults map[string]routing.AggregatorResErr, keyOrder []string, policy *routing.CommandPolicy) error {
 	if len(keyedResults) == 0 {
 		return fmt.Errorf("redis: no results to aggregate")
 	}
@@ -421,7 +417,7 @@ func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *rout
 			cmd.SetErr(err)
 			return err
 		}
-		value := ExtractCommandValue(shardCmd)
+		value, _ := ExtractCommandValue(shardCmd)
 		return c.setCommandValue(cmd, value)
 	}
 
@@ -430,14 +426,14 @@ func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *rout
 	batchWithErrs := []routing.AggregatorResErr{}
 	// Add all results to aggregator
 	for _, shardCmd := range cmds {
-		value := ExtractCommandValue(shardCmd)
+		value, err := ExtractCommandValue(shardCmd)
 		batchWithErrs = append(batchWithErrs, routing.AggregatorResErr{
 			Result: value,
-			Err:    shardCmd.Err(),
+			Err:    err,
 		})
 	}
 
-	err := aggregator.BatchWithErrs(batchWithErrs)
+	err := aggregator.BatchSlice(batchWithErrs)
 	if err != nil {
 		return err
 	}
