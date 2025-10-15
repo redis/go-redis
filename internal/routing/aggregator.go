@@ -117,8 +117,8 @@ func (a *AllSucceededAggregator) BatchAdd(results map[string]AggregatorResErr) e
 	return nil
 }
 
-func (a *AllSucceededAggregator) BatchSlice(result []AggregatorResErr) error {
-	for _, res := range result {
+func (a *AllSucceededAggregator) BatchSlice(results []AggregatorResErr) error {
+	for _, res := range results {
 		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
@@ -185,8 +185,8 @@ func (a *OneSucceededAggregator) AddWithKey(key string, result interface{}, err 
 	return a.Add(result, err)
 }
 
-func (a *OneSucceededAggregator) BatchSlice(result []AggregatorResErr) error {
-	for _, res := range result {
+func (a *OneSucceededAggregator) BatchSlice(results []AggregatorResErr) error {
+	for _, res := range results {
 		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
@@ -202,7 +202,7 @@ func (a *OneSucceededAggregator) BatchSlice(result []AggregatorResErr) error {
 
 func (a *OneSucceededAggregator) Result() (interface{}, error) {
 	res, e := a.res.Load(), a.err.Load()
-	if res != nil {
+	if res == nil {
 		return nil, e.(error)
 	}
 
@@ -223,6 +223,7 @@ func (a *AggSumAggregator) Add(result interface{}, err error) error {
 	if result != nil {
 		val, err := toInt64(result)
 		if err != nil {
+			a.err.CompareAndSwap(nil, err)
 			return err
 		}
 		atomic.AddInt64(a.res, val)
@@ -232,37 +233,49 @@ func (a *AggSumAggregator) Add(result interface{}, err error) error {
 }
 
 func (a *AggSumAggregator) BatchAdd(results map[string]AggregatorResErr) error {
-	for _, res := range results {
-		err := a.Add(res.Result, res.Err)
-		if err != nil {
-			return err
-		}
+	var sum int64
 
+	for _, res := range results {
 		if res.Err != nil {
+			a.Add(res.Result, res.Err)
 			return nil
 		}
+
+		intRes, err := toInt64(res)
+		if err != nil {
+			a.Add(nil, err)
+			return nil
+		}
+
+		sum += intRes
 	}
 
-	return nil
+	return a.Add(sum, nil)
 }
 
 func (a *AggSumAggregator) AddWithKey(key string, result interface{}, err error) error {
 	return a.Add(result, err)
 }
 
-func (a *AggSumAggregator) BatchSlice(result []AggregatorResErr) error {
-	for _, res := range result {
-		err := a.Add(res.Result, res.Err)
-		if err != nil {
-			return err
-		}
+func (a *AggSumAggregator) BatchSlice(results []AggregatorResErr) error {
+	var sum int64
 
+	for _, res := range results {
 		if res.Err != nil {
+			a.Add(res.Result, res.Err)
 			return nil
 		}
+
+		intRes, err := toInt64(res)
+		if err != nil {
+			a.Add(nil, err)
+			return nil
+		}
+
+		sum += intRes
 	}
 
-	return nil
+	return a.Add(sum, nil)
 }
 
 func (a *AggSumAggregator) Result() (interface{}, error) {
@@ -298,37 +311,55 @@ func (a *AggMinAggregator) Add(result interface{}, err error) error {
 }
 
 func (a *AggMinAggregator) BatchAdd(results map[string]AggregatorResErr) error {
-	for _, res := range results {
-		err := a.Add(res.Result, res.Err)
-		if err != nil {
-			return err
-		}
+	min := int64(math.MaxInt64)
 
+	for _, res := range results {
 		if res.Err != nil {
+			_ = a.Add(nil, res.Err)
 			return nil
 		}
+
+		resInt, err := toInt64(res.Result)
+		if err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		if resInt < min {
+			min = resInt
+		}
+
 	}
 
-	return nil
+	return a.Add(min, nil)
 }
 
 func (a *AggMinAggregator) AddWithKey(key string, result interface{}, err error) error {
 	return a.Add(result, err)
 }
 
-func (a *AggMinAggregator) BatchSlice(result []AggregatorResErr) error {
-	for _, res := range result {
-		err := a.Add(res.Result, res.Err)
-		if err != nil {
-			return err
-		}
+func (a *AggMinAggregator) BatchSlice(results []AggregatorResErr) error {
+	min := int64(math.MaxInt64)
 
+	for _, res := range results {
 		if res.Err != nil {
+			_ = a.Add(nil, res.Err)
 			return nil
 		}
+
+		resInt, err := toInt64(res.Result)
+		if err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		if resInt < min {
+			min = resInt
+		}
+
 	}
 
-	return nil
+	return a.Add(min, nil)
 }
 
 func (a *AggMinAggregator) Result() (interface{}, error) {
@@ -368,37 +399,55 @@ func (a *AggMaxAggregator) Add(result interface{}, err error) error {
 }
 
 func (a *AggMaxAggregator) BatchAdd(results map[string]AggregatorResErr) error {
-	for _, res := range results {
-		err := a.Add(res.Result, res.Err)
-		if err != nil {
-			return err
-		}
+	max := int64(math.MinInt64)
 
+	for _, res := range results {
 		if res.Err != nil {
+			_ = a.Add(nil, res.Err)
 			return nil
 		}
+
+		resInt, err := toInt64(res.Result)
+		if err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		if resInt > max {
+			max = resInt
+		}
+
 	}
 
-	return nil
+	return a.Add(max, nil)
 }
 
 func (a *AggMaxAggregator) AddWithKey(key string, result interface{}, err error) error {
 	return a.Add(result, err)
 }
 
-func (a *AggMaxAggregator) BatchSlice(result []AggregatorResErr) error {
-	for _, res := range result {
-		err := a.Add(res.Result, res.Err)
-		if err != nil {
-			return err
-		}
+func (a *AggMaxAggregator) BatchSlice(results []AggregatorResErr) error {
+	max := int64(math.MinInt64)
 
+	for _, res := range results {
 		if res.Err != nil {
+			_ = a.Add(nil, res.Err)
 			return nil
 		}
+
+		resInt, err := toInt64(res.Result)
+		if err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		if resInt > max {
+			max = resInt
+		}
+
 	}
 
-	return nil
+	return a.Add(max, nil)
 }
 
 func (a *AggMaxAggregator) Result() (interface{}, error) {
@@ -463,8 +512,8 @@ func (a *AggLogicalAndAggregator) AddWithKey(key string, result interface{}, err
 	return a.Add(result, err)
 }
 
-func (a *AggLogicalAndAggregator) BatchSlice(result []AggregatorResErr) error {
-	for _, res := range result {
+func (a *AggLogicalAndAggregator) BatchSlice(results []AggregatorResErr) error {
+	for _, res := range results {
 		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
@@ -539,8 +588,8 @@ func (a *AggLogicalOrAggregator) AddWithKey(key string, result interface{}, err 
 	return a.Add(result, err)
 }
 
-func (a *AggLogicalOrAggregator) BatchSlice(result []AggregatorResErr) error {
-	for _, res := range result {
+func (a *AggLogicalOrAggregator) BatchSlice(results []AggregatorResErr) error {
+	for _, res := range results {
 		err := a.Add(res.Result, res.Err)
 		if err != nil {
 			return err
@@ -650,11 +699,11 @@ func (a *DefaultKeylessAggregator) AddWithKey(key string, result interface{}, er
 	return a.Add(result, err)
 }
 
-func (a *DefaultKeylessAggregator) BatchSlice(result []AggregatorResErr) error {
+func (a *DefaultKeylessAggregator) BatchSlice(results []AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for _, res := range result {
+	for _, res := range results {
 		err := a.add(res.Result, res.Err)
 		if err != nil {
 			return err
@@ -773,11 +822,11 @@ func (a *DefaultKeyedAggregator) SetKeyOrder(keyOrder []string) {
 	a.keyOrder = keyOrder
 }
 
-func (a *DefaultKeyedAggregator) BatchSlice(result []AggregatorResErr) error {
+func (a *DefaultKeyedAggregator) BatchSlice(results []AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for _, res := range result {
+	for _, res := range results {
 		err := a.add(res.Result, res.Err)
 		if err != nil {
 			return err
@@ -861,11 +910,11 @@ func (a *SpecialAggregator) AddWithKey(key string, result interface{}, err error
 	return a.Add(result, err)
 }
 
-func (a *SpecialAggregator) BatchSlice(result []AggregatorResErr) error {
+func (a *SpecialAggregator) BatchSlice(results []AggregatorResErr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for _, res := range result {
+	for _, res := range results {
 		err := a.add(res.Result, res.Err)
 		if err != nil {
 			return err
