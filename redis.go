@@ -319,9 +319,15 @@ func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.Cred
 		c.reAuthConnection(),
 		c.onAuthenticationErr(),
 	)
-	// main case where the connection can be stuck in the listener for a long time is when we have a handoff
-	// so we set the checkUsableTimeout to the handoff timeout if maintnotifications are enabled
-	// the default timeout if no maintnotifications config is provided is 1 second
+	// Design decision: The main case we expect the connection to be in a non-usable state is when it is being reconnected
+	// during a handoff from maintnotifications.
+	// Setting the checkUsableTimeout to the handoff timeout if maintnotifications are enabled
+	// the default timeout if no maintnotifications are disabled is going to be 1 second.
+	//
+	// Note: Due to the auto by default mode of MaintNotificationsConfig
+	// the timeout for the first connection will probably be the value of MaintNotificationsConfig.HandoffTimeout
+	// (15s by default) which is not ideal if maintnotifications are not needed, but safer than timing out in the case
+	// of enabling maintnotifications later.
 	if c.opt.MaintNotificationsConfig != nil && c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
 		newCredListener.SetCheckUsableTimeout(c.opt.MaintNotificationsConfig.HandoffTimeout)
 	}
