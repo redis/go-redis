@@ -4,6 +4,7 @@ import (
 	"runtime"
 	"time"
 
+	auth2 "github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
@@ -17,7 +18,7 @@ import (
 // - checkUsableTimeout: the timeout to wait for the connection to be usable - default is 1 second.
 type ConnReAuthCredentialsListener struct {
 	// reAuth is called when the credentials are updated.
-	reAuth func(conn *pool.Conn, credentials Credentials) error
+	reAuth func(conn *pool.Conn, credentials auth2.Credentials) error
 	// onErr is called when an error occurs.
 	onErr func(conn *pool.Conn, err error)
 	// conn is the connection to re-authenticate.
@@ -31,7 +32,7 @@ type ConnReAuthCredentialsListener struct {
 // OnNext is called when the credentials are updated.
 // It calls the reAuth function with the new credentials.
 // If the reAuth function returns an error, it calls the onErr function with the error.
-func (c *ConnReAuthCredentialsListener) OnNext(credentials Credentials) {
+func (c *ConnReAuthCredentialsListener) OnNext(credentials auth2.Credentials) {
 	if c.conn.IsClosed() {
 		return
 	}
@@ -101,7 +102,7 @@ func (c *ConnReAuthCredentialsListener) SetCheckUsableTimeout(timeout time.Durat
 
 // NewConnReAuthCredentialsListener creates a new ConnReAuthCredentialsListener.
 // Implements the auth.CredentialsListener interface.
-func NewConnReAuthCredentialsListener(conn *pool.Conn, reAuth func(conn *pool.Conn, credentials Credentials) error, onErr func(conn *pool.Conn, err error)) *ConnReAuthCredentialsListener {
+func NewConnReAuthCredentialsListener(conn *pool.Conn, reAuth func(conn *pool.Conn, credentials auth2.Credentials) error, onErr func(conn *pool.Conn, err error)) *ConnReAuthCredentialsListener {
 	return &ConnReAuthCredentialsListener{
 		conn:               conn,
 		reAuth:             reAuth,
@@ -111,4 +112,4 @@ func NewConnReAuthCredentialsListener(conn *pool.Conn, reAuth func(conn *pool.Co
 }
 
 // Ensure ConnReAuthCredentialsListener implements the CredentialsListener interface.
-var _ CredentialsListener = (*ConnReAuthCredentialsListener)(nil)
+var _ auth2.CredentialsListener = (*ConnReAuthCredentialsListener)(nil)

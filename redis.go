@@ -11,6 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
+	auth2 "github.com/redis/go-redis/v9/internal/auth"
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -225,8 +226,8 @@ type baseClient struct {
 	maintNotificationsManager     *maintnotifications.Manager
 	maintNotificationsManagerLock sync.RWMutex
 
-	credListeners     map[*pool.Conn]auth.CredentialsListener
-	credListenersLock sync.RWMutex
+	// thread-safe map of pool connections to credentials listeners
+	credListeners *auth2.CredentialsListeners
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -304,17 +305,13 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 // The credentials listener is stored in a map, so that it can be reused for multiple connections.
 // The credentials listener is removed from the map when the connection is closed.
 func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.CredentialsListener, func()) {
-	c.credListenersLock.RLock()
-	credListener, ok := c.credListeners[poolCn]
-	c.credListenersLock.RUnlock()
+	credListener, ok := c.credListeners.Get(poolCn)
 	if ok {
 		return credListener, func() {
-			c.removeCredListener(poolCn)
+			c.credListeners.Remove(poolCn)
 		}
 	}
-	c.credListenersLock.Lock()
-	defer c.credListenersLock.Unlock()
-	newCredListener := auth.NewConnReAuthCredentialsListener(
+	newCredListener := auth2.NewConnReAuthCredentialsListener(
 		poolCn,
 		c.reAuthConnection(),
 		c.onAuthenticationErr(),
@@ -333,16 +330,10 @@ func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.Cred
 	} else {
 		newCredListener.SetCheckUsableTimeout(c.opt.PoolTimeout)
 	}
-	c.credListeners[poolCn] = newCredListener
+	c.credListeners.Add(poolCn, newCredListener)
 	return newCredListener, func() {
-		c.removeCredListener(poolCn)
+		c.credListeners.Remove(poolCn)
 	}
-}
-
-func (c *baseClient) removeCredListener(poolCn *pool.Conn) {
-	c.credListenersLock.Lock()
-	defer c.credListenersLock.Unlock()
-	delete(c.credListeners, poolCn)
 }
 
 func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
@@ -1005,9 +996,7 @@ func NewClient(opt *Options) *Client {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
 
-	if c.opt.StreamingCredentialsProvider != nil {
-		c.credListeners = make(map[*pool.Conn]auth.CredentialsListener)
-	}
+	c.credListeners = auth2.NewCredentialsListeners()
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3
 	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {
