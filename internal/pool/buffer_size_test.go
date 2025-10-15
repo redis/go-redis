@@ -128,10 +128,6 @@ var _ = Describe("Buffer Size Configuration", func() {
 // conversions are valid. If the struct layouts do not match exactly, this can
 // cause runtime panics or incorrect memory access due to invalid pointer dereferencing.
 func getWriterBufSizeUnsafe(cn *pool.Conn) int {
-	// Import required for atomic types
-	type atomicBool struct{ _ uint32 }
-	type atomicInt64 struct{ _ int64 }
-
 	cnPtr := (*struct {
 		id            uint64      // First field in pool.Conn
 		usedAt        int64       // Second field (atomic)
