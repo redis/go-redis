@@ -70,6 +70,8 @@ func (p *SingleConnPool) IdleLen() int {
 	return 0
 }
 
+func (p *SingleConnPool) Size() int { return 1 }
+
 func (p *SingleConnPool) Stats() *Stats {
 	return &Stats{}
 }

@@ -11,7 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
-	auth2 "github.com/redis/go-redis/v9/internal/auth"
+	"github.com/redis/go-redis/v9/internal/auth/streaming"
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -217,7 +217,9 @@ type baseClient struct {
 	pubSubPool *pool.PubSubPool
 	hooksMixin
 
-	onClose func() error // hook called when client is closed
+	onClose      func() error // hook called when client is closed
+	onCloseSlice []func() error
+	onCloseMu    sync.Mutex
 
 	// Push notification processing
 	pushProcessor push.NotificationProcessor
@@ -226,8 +228,8 @@ type baseClient struct {
 	maintNotificationsManager     *maintnotifications.Manager
 	maintNotificationsManagerLock sync.RWMutex
 
-	// thread-safe map of pool connections to credentials listeners
-	credListeners *auth2.CredentialsListeners
+	// streamingCredentialsManager is used to manage streaming credentials
+	streamingCredentialsManager *streaming.Manager
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -236,12 +238,12 @@ func (c *baseClient) clone() *baseClient {
 	c.maintNotificationsManagerLock.RUnlock()
 
 	clone := &baseClient{
-		opt:                       c.opt,
-		connPool:                  c.connPool,
-		onClose:                   c.onClose,
-		pushProcessor:             c.pushProcessor,
-		maintNotificationsManager: maintNotificationsManager,
-		credListeners:             c.credListeners,
+		opt:                         c.opt,
+		connPool:                    c.connPool,
+		onClose:                     c.onClose,
+		pushProcessor:               c.pushProcessor,
+		maintNotificationsManager:   maintNotificationsManager,
+		streamingCredentialsManager: c.streamingCredentialsManager,
 	}
 	return clone
 }
@@ -301,41 +303,6 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
-// connReAuthCredentialsListener returns a credentials listener that can be used to re-authenticate the connection.
-// The credentials listener is stored in a map, so that it can be reused for multiple connections.
-// The credentials listener is removed from the map when the connection is closed.
-func (c *baseClient) connReAuthCredentialsListener(poolCn *pool.Conn) (auth.CredentialsListener, func()) {
-	credListener, ok := c.credListeners.Get(poolCn)
-	if ok {
-		return credListener, func() {
-			c.credListeners.Remove(poolCn)
-		}
-	}
-	newCredListener := auth2.NewConnReAuthCredentialsListener(
-		poolCn,
-		c.reAuthConnection(),
-		c.onAuthenticationErr(),
-	)
-	// Design decision: The main case we expect the connection to be in a non-usable state is when it is being reconnected
-	// during a handoff from maintnotifications.
-	// Setting the checkUsableTimeout to the handoff timeout if maintnotifications are enabled
-	// the default timeout if maintnotifications are disabled is going to PoolTimeout.
-	//
-	// Note: Due to the auto by default mode of MaintNotificationsConfig
-	// the timeout for the first connection will probably be the value of MaintNotificationsConfig.HandoffTimeout
-	// (15s by default) which is not ideal if maintnotifications are not needed, but safer than timing out in the case
-	// of enabling maintnotifications later.
-	if c.opt.MaintNotificationsConfig != nil && c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
-		newCredListener.SetCheckUsableTimeout(c.opt.MaintNotificationsConfig.HandoffTimeout)
-	} else {
-		newCredListener.SetCheckUsableTimeout(c.opt.PoolTimeout)
-	}
-	c.credListeners.Add(poolCn, newCredListener)
-	return newCredListener, func() {
-		c.credListeners.Remove(poolCn)
-	}
-}
-
 func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
 	return func(poolCn *pool.Conn, credentials auth.Credentials) error {
 		var err error
@@ -343,6 +310,7 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 		ctx := context.Background()
 
 		connPool := pool.NewSingleConnPool(c.connPool, poolCn)
+
 		// hooksMixin are intentionally empty here
 		cn := newConn(c.opt, connPool, nil)
 
@@ -351,6 +319,7 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 		} else {
 			err = cn.Auth(ctx, password).Err()
 		}
+
 		return err
 	}
 }
@@ -406,19 +375,20 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
-		credListener, removeCredListener := c.connReAuthCredentialsListener(cn)
+		credListener := c.streamingCredentialsManager.Listener(
+			cn,
+			c.reAuthConnection(),
+			c.onAuthenticationErr(),
+		)
+
 		credentials, unsubscribeFromCredentialsProvider, err := c.opt.StreamingCredentialsProvider.
 			Subscribe(credListener)
 		if err != nil {
 			return fmt.Errorf("failed to subscribe to streaming credentials: %w", err)
 		}
 
-		unsubscribe := func() error {
-			removeCredListener()
-			return unsubscribeFromCredentialsProvider()
-		}
-		c.onClose = c.wrappedOnClose(unsubscribe)
-		cn.SetOnClose(unsubscribe)
+		c.onClose = c.wrappedOnClose(unsubscribeFromCredentialsProvider)
+		cn.SetOnClose(unsubscribeFromCredentialsProvider)
 
 		username, password = credentials.BasicAuth()
 	} else if c.opt.CredentialsProviderContext != nil {
@@ -996,7 +966,10 @@ func NewClient(opt *Options) *Client {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
 
-	c.credListeners = auth2.NewCredentialsListeners()
+	if opt.StreamingCredentialsProvider != nil {
+		c.streamingCredentialsManager = streaming.NewManager(c.connPool, c.opt.PoolTimeout)
+		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+	}
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3
 	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {

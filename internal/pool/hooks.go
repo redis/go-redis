@@ -16,6 +16,10 @@ type PoolHook interface {
 	// OnPut is called when a connection is returned to the pool.
 	// It returns whether the connection should be pooled and whether it should be removed.
 	OnPut(ctx context.Context, conn *Conn) (shouldPool bool, shouldRemove bool, err error)
+
+	// OnRemove is called when a connection is removed from the pool.
+	// It can be used for cleanup or logging purposes.
+	OnRemove(ctx context.Context, conn *Conn, reason error)
 }
 
 // PoolHookManager manages multiple pool hooks.
@@ -94,6 +98,15 @@ func (phm *PoolHookManager) ProcessOnPut(ctx context.Context, conn *Conn) (shoul
 	}
 
 	return shouldPool, false, nil
+}
+
+// ProcessOnRemove calls all OnRemove hooks in order.
+func (phm *PoolHookManager) ProcessOnRemove(ctx context.Context, conn *Conn, reason error) {
+	phm.hooksMu.RLock()
+	defer phm.hooksMu.RUnlock()
+	for _, hook := range phm.hooks {
+		hook.OnRemove(ctx, conn, reason)
+	}
 }
 
 // GetHookCount returns the number of registered hooks (for testing).

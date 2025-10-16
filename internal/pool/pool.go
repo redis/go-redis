@@ -80,6 +80,7 @@ type Pooler interface {
 	Len() int
 	IdleLen() int
 	Stats() *Stats
+	Size() int
 
 	AddPoolHook(hook PoolHook)
 	RemovePoolHook(hook PoolHook)
@@ -684,7 +685,15 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	}
 }
 
-func (p *ConnPool) Remove(_ context.Context, cn *Conn, reason error) {
+func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
+	p.hookManagerMu.RLock()
+	hookManager := p.hookManager
+	p.hookManagerMu.RUnlock()
+
+	if hookManager != nil {
+		hookManager.ProcessOnRemove(ctx, cn, reason)
+	}
+
 	p.removeConnWithLock(cn)
 
 	p.freeTurn()
@@ -744,6 +753,10 @@ func (p *ConnPool) IdleLen() int {
 	n := p.idleConnsLen.Load()
 	p.connsMu.Unlock()
 	return int(n)
+}
+
+func (p *ConnPool) Size() int {
+	return int(p.cfg.PoolSize)
 }
 
 func (p *ConnPool) Stats() *Stats {
