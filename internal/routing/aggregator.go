@@ -237,14 +237,12 @@ func (a *AggSumAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 
 	for _, res := range results {
 		if res.Err != nil {
-			a.Add(res.Result, res.Err)
-			return nil
+			return a.Add(res.Result, res.Err)
 		}
 
 		intRes, err := toInt64(res)
 		if err != nil {
-			a.Add(nil, err)
-			return nil
+			return a.Add(nil, err)
 		}
 
 		sum += intRes
@@ -262,14 +260,12 @@ func (a *AggSumAggregator) BatchSlice(results []AggregatorResErr) error {
 
 	for _, res := range results {
 		if res.Err != nil {
-			a.Add(res.Result, res.Err)
-			return nil
+			return a.Add(res.Result, res.Err)
 		}
 
 		intRes, err := toInt64(res)
 		if err != nil {
-			a.Add(nil, err)
-			return nil
+			return a.Add(nil, err)
 		}
 
 		sum += intRes
@@ -494,7 +490,7 @@ func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
 }
 
 func (a *AggLogicalAndAggregator) BatchAdd(results map[string]AggregatorResErr) error {
-	var result bool = true
+	result := true
 
 	for _, res := range results {
 		if res.Err != nil {
@@ -517,7 +513,7 @@ func (a *AggLogicalAndAggregator) AddWithKey(key string, result interface{}, err
 }
 
 func (a *AggLogicalAndAggregator) BatchSlice(results []AggregatorResErr) error {
-	var result bool = true
+	result := true
 
 	for _, res := range results {
 		if res.Err != nil {
@@ -578,7 +574,7 @@ func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
 }
 
 func (a *AggLogicalOrAggregator) BatchAdd(results map[string]AggregatorResErr) error {
-	var result bool = false
+	result := false
 
 	for _, res := range results {
 		if res.Err != nil {
@@ -601,7 +597,7 @@ func (a *AggLogicalOrAggregator) AddWithKey(key string, result interface{}, err 
 }
 
 func (a *AggLogicalOrAggregator) BatchSlice(results []AggregatorResErr) error {
-	var result bool = false
+	result := false
 
 	for _, res := range results {
 		if res.Err != nil {
