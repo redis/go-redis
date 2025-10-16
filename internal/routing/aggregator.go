@@ -494,18 +494,22 @@ func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
 }
 
 func (a *AggLogicalAndAggregator) BatchAdd(results map[string]AggregatorResErr) error {
+	var result bool = true
+
 	for _, res := range results {
-		err := a.Add(res.Result, res.Err)
-		if err != nil {
-			return err
+		if res.Err != nil {
+			return a.Add(nil, res.Err)
 		}
 
-		if res.Err != nil {
-			return nil
+		boolRes, err := toBool(res.Result)
+		if err != nil {
+			return a.Add(nil, err)
 		}
+
+		result = result && boolRes
 	}
 
-	return nil
+	return a.Add(result, nil)
 }
 
 func (a *AggLogicalAndAggregator) AddWithKey(key string, result interface{}, err error) error {
@@ -513,18 +517,22 @@ func (a *AggLogicalAndAggregator) AddWithKey(key string, result interface{}, err
 }
 
 func (a *AggLogicalAndAggregator) BatchSlice(results []AggregatorResErr) error {
+	var result bool = true
+
 	for _, res := range results {
-		err := a.Add(res.Result, res.Err)
-		if err != nil {
-			return err
+		if res.Err != nil {
+			return a.Add(nil, res.Err)
 		}
 
-		if res.Err != nil {
-			return nil
+		boolRes, err := toBool(res.Result)
+		if err != nil {
+			return a.Add(nil, err)
 		}
+
+		result = result && boolRes
 	}
 
-	return nil
+	return a.Add(result, nil)
 }
 
 func (a *AggLogicalAndAggregator) Result() (interface{}, error) {
@@ -570,18 +578,22 @@ func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
 }
 
 func (a *AggLogicalOrAggregator) BatchAdd(results map[string]AggregatorResErr) error {
+	var result bool = false
+
 	for _, res := range results {
-		err := a.Add(res.Result, res.Err)
-		if err != nil {
-			return err
+		if res.Err != nil {
+			return a.Add(nil, res.Err)
 		}
 
-		if res.Err != nil {
-			return nil
+		boolRes, err := toBool(res.Result)
+		if err != nil {
+			return a.Add(nil, err)
 		}
+
+		result = result || boolRes
 	}
 
-	return nil
+	return a.Add(result, nil)
 }
 
 func (a *AggLogicalOrAggregator) AddWithKey(key string, result interface{}, err error) error {
@@ -589,18 +601,22 @@ func (a *AggLogicalOrAggregator) AddWithKey(key string, result interface{}, err 
 }
 
 func (a *AggLogicalOrAggregator) BatchSlice(results []AggregatorResErr) error {
+	var result bool = false
+
 	for _, res := range results {
-		err := a.Add(res.Result, res.Err)
-		if err != nil {
-			return err
+		if res.Err != nil {
+			return a.Add(nil, res.Err)
 		}
 
-		if res.Err != nil {
-			return nil
+		boolRes, err := toBool(res.Result)
+		if err != nil {
+			return a.Add(nil, err)
 		}
+
+		result = result || boolRes
 	}
 
-	return nil
+	return a.Add(result, nil)
 }
 
 func (a *AggLogicalOrAggregator) Result() (interface{}, error) {
