@@ -117,37 +117,40 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 	},
 }
 
-type CommandInfoResolver interface {
-	GetCommandPolicy(ctx context.Context, cmdName string) *routing.CommandPolicy
-	SetFallbackResolver(fallback CommandInfoResolver)
-}
-
-type internalCommandInfoResolver struct {
+type CommandInfoResolver struct {
 	resolve          func(ctx context.Context, cmdName string) *routing.CommandPolicy
-	fallBackResolver CommandInfoResolver
+	fallBackResolver *CommandInfoResolver
 }
 
-func NewDefaultCommandPolicyResolver() *internalCommandInfoResolver {
-	return &internalCommandInfoResolver{
-		resolve: func(ctx context.Context, cmdName string) *routing.CommandPolicy {
-			module := "core"
-			command := cmdName
-			cmdParts := strings.Split(cmdName, ".")
-			if len(cmdParts) == 2 {
-				module = cmdParts[0]
-				command = cmdParts[1]
-			}
-
-			if policy, ok := defaultPolicies[module][command]; ok {
-				return policy
-			}
-
-			return nil
-		},
+func NewCommandInfoResolver(resolver func(ctx context.Context, cmdName string) *routing.CommandPolicy) *CommandInfoResolver {
+	return &CommandInfoResolver{
+		resolve: resolver,
 	}
 }
 
-func (r *internalCommandInfoResolver) GetCommandPolicy(ctx context.Context, cmdName string) *routing.CommandPolicy {
+func NewDefaultCommandPolicyResolver() *CommandInfoResolver {
+	return NewCommandInfoResolver(func(ctx context.Context, cmdName string) *routing.CommandPolicy {
+		module := "core"
+		command := cmdName
+		cmdParts := strings.Split(cmdName, ".")
+		if len(cmdParts) == 2 {
+			module = cmdParts[0]
+			command = cmdParts[1]
+		}
+
+		if policy, ok := defaultPolicies[module][command]; ok {
+			return policy
+		}
+
+		return nil
+	})
+}
+
+func (r *CommandInfoResolver) GetCommandPolicy(ctx context.Context, cmdName string) *routing.CommandPolicy {
+	if r.resolve == nil {
+		return nil
+	}
+
 	policy := r.resolve(ctx, cmdName)
 	if policy != nil {
 		return policy
@@ -160,6 +163,6 @@ func (r *internalCommandInfoResolver) GetCommandPolicy(ctx context.Context, cmdN
 	return nil
 }
 
-func (r *internalCommandInfoResolver) SetFallbackResolver(fallbackResolver CommandInfoResolver) {
+func (r *CommandInfoResolver) SetFallbackResolver(fallbackResolver *CommandInfoResolver) {
 	r.fallBackResolver = fallbackResolver
 }
