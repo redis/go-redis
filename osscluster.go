@@ -19,6 +19,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 const (
@@ -108,6 +109,10 @@ type ClusterOptions struct {
 
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
 	UnstableResp3 bool
+
+	// ShardPicker is used to pick a shard when the request_policy is
+	// ReqDefault and the command has no keys.
+	ShardPicker routing.ShardPicker
 }
 
 func (opt *ClusterOptions) init() {
@@ -157,6 +162,10 @@ func (opt *ClusterOptions) init() {
 
 	if opt.NewClient == nil {
 		opt.NewClient = NewClient
+	}
+
+	if opt.ShardPicker == nil {
+		opt.ShardPicker = &routing.RoundRobinPicker{}
 	}
 }
 
@@ -850,15 +859,14 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 //------------------------------------------------------------------------------
 
 type clusterStateHolder struct {
-	load func(ctx context.Context) (*clusterState, error)
-
+	load      func(ctx context.Context) (*clusterState, error)
 	state     atomic.Value
 	reloading uint32 // atomic
 }
 
-func newClusterStateHolder(fn func(ctx context.Context) (*clusterState, error)) *clusterStateHolder {
+func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error)) *clusterStateHolder {
 	return &clusterStateHolder{
-		load: fn,
+		load: load,
 	}
 }
 
@@ -913,10 +921,11 @@ func (c *clusterStateHolder) ReloadOrGet(ctx context.Context) (*clusterState, er
 // or more underlying connections. It's safe for concurrent use by
 // multiple goroutines.
 type ClusterClient struct {
-	opt           *ClusterOptions
-	nodes         *clusterNodes
-	state         *clusterStateHolder
-	cmdsInfoCache *cmdsInfoCache
+	opt             *ClusterOptions
+	nodes           *clusterNodes
+	state           *clusterStateHolder
+	cmdsInfoCache   *cmdsInfoCache
+	cmdInfoResolver *CommandInfoResolver
 	cmdable
 	hooksMixin
 }
@@ -924,9 +933,6 @@ type ClusterClient struct {
 // NewClusterClient returns a Redis Cluster client as described in
 // http://redis.io/topics/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
-	if opt == nil {
-		panic("redis: NewClusterClient nil options")
-	}
 	opt.init()
 
 	c := &ClusterClient{
@@ -934,10 +940,15 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		nodes: newClusterNodes(opt),
 	}
 
-	c.state = newClusterStateHolder(c.loadState)
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
-	c.cmdable = c.Process
 
+	c.state = newClusterStateHolder(c.loadState)
+
+	dynamicResolver := c.NewDynamicResolver()
+	dynamicResolver.SetFallbackResolver(NewDefaultCommandPolicyResolver())
+	c.SetCommandInfoResolver(dynamicResolver)
+
+	c.cmdable = c.Process
 	c.initHooks(hooks{
 		dial:       nil,
 		process:    c.process,
@@ -1005,13 +1016,13 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 
 		if ask {
 			ask = false
-
 			pipe := node.Client.Pipeline()
 			_ = pipe.Process(ctx, NewCmd(ctx, "asking"))
 			_ = pipe.Process(ctx, cmd)
 			_, lastErr = pipe.Exec(ctx)
 		} else {
-			lastErr = node.Client.Process(ctx, cmd)
+			// Execute the command on the selected node
+			lastErr = c.routeAndRun(ctx, cmd, node)
 		}
 
 		// If there is no error - we are done.
@@ -1329,6 +1340,12 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 
 	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
 		for _, cmd := range cmds {
+			policy := c.extractCommandInfo(ctx, cmd)
+			if policy != nil && !policy.CanBeUsedInPipeline() {
+				return fmt.Errorf(
+					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
+				)
+			}
 			slot := c.cmdSlot(ctx, cmd)
 			node, err := c.slotReadOnlyNode(state, slot)
 			if err != nil {
@@ -1340,6 +1357,12 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	}
 
 	for _, cmd := range cmds {
+		policy := c.extractCommandInfo(ctx, cmd)
+		if policy != nil && !policy.CanBeUsedInPipeline() {
+			return fmt.Errorf(
+				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
+			)
+		}
 		slot := c.cmdSlot(ctx, cmd)
 		node, err := state.slotMasterNode(slot)
 		if err != nil {
@@ -1820,7 +1843,6 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 
 	for _, idx := range perm {
 		addr := addrs[idx]
-
 		node, err := c.nodes.GetOrCreate(addr)
 		if err != nil {
 			if firstErr == nil {
@@ -1833,6 +1855,7 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 		if err == nil {
 			return info, nil
 		}
+
 		if firstErr == nil {
 			firstErr = err
 		}
@@ -1844,16 +1867,27 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 	return nil, firstErr
 }
 
+// cmdInfo will fetch and cache the command policies after the first execution
 func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
-	cmdsInfo, err := c.cmdsInfoCache.Get(ctx)
+	// Use a separate context that won't be canceled to ensure command info lookup
+	// doesn't fail due to original context cancellation
+	cmdInfoCtx := c.context(ctx)
+	if c.opt.ContextTimeoutEnabled && ctx != nil {
+		// If context timeout is enabled, still use a reasonable timeout
+		var cancel context.CancelFunc
+		cmdInfoCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+	}
+
+	cmdsInfo, err := c.cmdsInfoCache.Get(cmdInfoCtx)
 	if err != nil {
-		internal.Logger.Printf(context.TODO(), "getting command info: %s", err)
+		internal.Logger.Printf(cmdInfoCtx, "getting command info: %s", err)
 		return nil
 	}
 
 	info := cmdsInfo[name]
 	if info == nil {
-		internal.Logger.Printf(context.TODO(), "info for cmd=%s not found", name)
+		internal.Logger.Printf(cmdInfoCtx, "info for cmd=%s not found", name)
 	}
 	return info
 }
@@ -1946,6 +1980,31 @@ func (c *ClusterClient) context(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.Background()
+}
+
+func (c *ClusterClient) GetResolver() *CommandInfoResolver {
+	return c.cmdInfoResolver
+}
+
+func (c *ClusterClient) SetCommandInfoResolver(cmdInfoResolver *CommandInfoResolver) {
+	c.cmdInfoResolver = cmdInfoResolver
+}
+
+// extractCommandInfo retrieves the routing policy for a command
+func (c *ClusterClient) extractCommandInfo(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
+	if cmdInfo := c.cmdInfo(ctx, cmd.Name()); cmdInfo != nil && cmdInfo.CommandPolicy != nil {
+		return cmdInfo.CommandPolicy
+	}
+
+	return nil
+}
+
+// NewDynamicResolver returns a CommandInfoResolver
+// that uses the underlying cmdInfo cache to resolve the policies
+func (c *ClusterClient) NewDynamicResolver() *CommandInfoResolver {
+	return &CommandInfoResolver{
+		resolve: c.extractCommandInfo,
+	}
 }
 
 func appendUniqueNode(nodes []*clusterNode, node *clusterNode) []*clusterNode {
