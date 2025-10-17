@@ -860,12 +860,15 @@ var _ = Describe("Credentials Provider Priority", func() {
 		client.AddHook(recorder.Hook())
 		// wrongpass
 		Expect(client.Ping(context.Background()).Err()).To(HaveOccurred())
+		time.Sleep(10 * time.Millisecond)
 		Expect(recorder.Contains("AUTH initial_user")).To(BeTrue())
 
 		// Update credentials
 		opt.StreamingCredentialsProvider.(*mockStreamingProvider).updates <- updatedCreds
 		// wrongpass
+		time.Sleep(10 * time.Millisecond)
 		Expect(client.Ping(context.Background()).Err()).To(HaveOccurred())
+		time.Sleep(10 * time.Millisecond)
 		Expect(recorder.Contains("AUTH updated_user")).To(BeTrue())
 		close(updatesChan)
 	})
