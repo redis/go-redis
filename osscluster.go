@@ -1017,7 +1017,7 @@ type ClusterClient struct {
 	nodes           *clusterNodes
 	state           *clusterStateHolder
 	cmdsInfoCache   *cmdsInfoCache
-	cmdInfoResolver CommandInfoResolver
+	cmdInfoResolver *CommandInfoResolver
 	cmdable
 	hooksMixin
 }
@@ -1036,7 +1036,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 
 	c.state = newClusterStateHolder(c.loadState)
 
-	c.cmdInfoResolver = c.NewDynamicResolver()
+	dynamicResolver := c.NewDynamicResolver()
+	dynamicResolver.SetFallbackResolver(NewDefaultCommandPolicyResolver())
+	c.SetCommandInfoResolver(dynamicResolver)
 
 	c.cmdable = c.Process
 	c.initHooks(hooks{
@@ -2197,11 +2199,11 @@ func (c *ClusterClient) context(ctx context.Context) context.Context {
 	return context.Background()
 }
 
-func (c *ClusterClient) GetResolver() CommandInfoResolver {
+func (c *ClusterClient) GetResolver() *CommandInfoResolver {
 	return c.cmdInfoResolver
 }
 
-func (c *ClusterClient) SetCommandInfoResolver(cmdInfoResolver CommandInfoResolver) {
+func (c *ClusterClient) SetCommandInfoResolver(cmdInfoResolver *CommandInfoResolver) {
 	c.cmdInfoResolver = cmdInfoResolver
 }
 
@@ -2214,8 +2216,10 @@ func (c *ClusterClient) extractCommandInfo(ctx context.Context, cmdName string) 
 	return nil
 }
 
-func (c *ClusterClient) NewDynamicResolver() CommandInfoResolver {
-	return &internalCommandInfoResolver{
+// NewDynamicResolver returns a CommandInfoResolver
+// that uses the underlying cmdInfo cache to resolve the policies
+func (c *ClusterClient) NewDynamicResolver() *CommandInfoResolver {
+	return &CommandInfoResolver{
 		resolve: c.extractCommandInfo,
 	}
 }
