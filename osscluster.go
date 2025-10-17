@@ -1425,7 +1425,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 
 	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
 		for _, cmd := range cmds {
-			policy := c.extractCommandInfo(ctx, cmd.Name())
+			policy := c.extractCommandInfo(ctx, cmd)
 			if policy != nil && !policy.CanBeUsedInPipeline() {
 				return fmt.Errorf(
 					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
@@ -1442,7 +1442,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	}
 
 	for _, cmd := range cmds {
-		policy := c.extractCommandInfo(ctx, cmd.Name())
+		policy := c.extractCommandInfo(ctx, cmd)
 		if policy != nil && !policy.CanBeUsedInPipeline() {
 			return fmt.Errorf(
 				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
@@ -2208,8 +2208,8 @@ func (c *ClusterClient) SetCommandInfoResolver(cmdInfoResolver *CommandInfoResol
 }
 
 // extractCommandInfo retrieves the routing policy for a command
-func (c *ClusterClient) extractCommandInfo(ctx context.Context, cmdName string) *routing.CommandPolicy {
-	if cmdInfo := c.cmdInfo(ctx, cmdName); cmdInfo != nil && cmdInfo.CommandPolicy != nil {
+func (c *ClusterClient) extractCommandInfo(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
+	if cmdInfo := c.cmdInfo(ctx, cmd.Name()); cmdInfo != nil && cmdInfo.CommandPolicy != nil {
 		return cmdInfo.CommandPolicy
 	}
 
