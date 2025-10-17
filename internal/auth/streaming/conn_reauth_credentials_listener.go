@@ -35,6 +35,25 @@ func (c *ConnReAuthCredentialsListener) OnNext(credentials auth.Credentials) {
 		return
 	}
 
+	// this connection is not in use, so we can re-authenticate it
+	if c.conn.Used.CompareAndSwap(false, true) {
+		// try to acquire the connection for background operation
+		if c.conn.Usable.CompareAndSwap(true, false) {
+			err := c.reAuth(c.conn, credentials)
+			if err != nil {
+				c.OnError(err)
+			}
+			c.conn.Usable.Store(true)
+			c.conn.Used.Store(false)
+			return
+		}
+		c.conn.Used.Store(false)
+	}
+	// else if the connection is in use, mark it for re-authentication
+	// and connection pool hook will re-authenticate it when it is returned to the pool
+	// or in case the connection WAS in the pool, but handoff is in progress, the pool hook
+	// will re-authenticate it when the handoff is complete
+	// and the connection is acquired from the pool
 	c.manager.MarkForReAuth(c.conn, func(err error) {
 		if err != nil {
 			c.OnError(err)
