@@ -21,17 +21,11 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
 
 	var dump = true
 	var errorsDetected = false
-	var p = func(format string, args ...interface{}) {
-		format = "[%s][ENDPOINT-TYPES] " + format
-		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{ts}, args...)
-		t.Logf(format, args...)
-	}
 
 	// Test different endpoint types
 	endpointTypes := []struct {
@@ -60,49 +54,51 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		logCollector.Clear()
 	}()
 
-	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("standalone")
-	if err != nil {
-		t.Skipf("Enterprise cluster not available, skipping endpoint types test: %v", err)
-	}
-	endpointConfig := factory.GetConfig()
-
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
-	if err != nil {
-		t.Fatalf("Failed to create fault injector: %v", err)
-	}
-
-	defer func() {
-		if dump {
-			p("Pool stats:")
-			factory.PrintPoolStats(t)
-		}
-		factory.DestroyAll()
-	}()
-
-	// Test each endpoint type
+	// Test each endpoint type with its own fresh database
 	for _, endpointTest := range endpointTypes {
 		t.Run(endpointTest.name, func(t *testing.T) {
+			// Setup: Create fresh database and client factory for THIS endpoint type test
+			bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+			defer cleanup()
+			t.Logf("[ENDPOINT-TYPES-%s] Created test database with bdb_id: %d", endpointTest.name, bdbID)
+
+			// Create fault injector
+			faultInjector, err := CreateTestFaultInjector()
+			if err != nil {
+				t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
+			}
+
+			// Get endpoint config from factory (now connected to new database)
+			endpointConfig := factory.GetConfig()
+
+			defer func() {
+				if dump {
+					fmt.Println("Pool stats:")
+					factory.PrintPoolStats(t)
+				}
+			}()
 			// Clear logs between endpoint type tests
 			logCollector.Clear()
-			dump = true // reset dump flag
+			// reset errors detected flag
+			errorsDetected = false
+			// reset dump flag
+			dump = true
 			// redefine p and e for each test to get
 			// proper test name in logs and proper test failures
 			var p = func(format string, args ...interface{}) {
-				format = "[%s][ENDPOINT-TYPES] " + format
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Logf(format, args...)
+				printLog("ENDPOINT-TYPES", false, format, args...)
 			}
 
 			var e = func(format string, args ...interface{}) {
 				errorsDetected = true
-				format = "[%s][ENDPOINT-TYPES][ERROR] " + format
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Errorf(format, args...)
+				printLog("ENDPOINT-TYPES", true, format, args...)
 			}
+
+			var ef = func(format string, args ...interface{}) {
+				printLog("ENDPOINT-TYPES", true, format, args...)
+				t.FailNow()
+			}
+
 			p("Testing endpoint type: %s - %s", endpointTest.name, endpointTest.description)
 
 			minIdleConns := 3
@@ -126,7 +122,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				ClientName: fmt.Sprintf("endpoint-test-%s", endpointTest.name),
 			})
 			if err != nil {
-				t.Fatalf("Failed to create client for %s: %v", endpointTest.name, err)
+				ef("Failed to create client for %s: %v", endpointTest.name, err)
 			}
 
 			// Create timeout tracker
@@ -134,17 +130,13 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
 			setupNotificationHooks(client, tracker, logger)
 			defer func() {
-				if dump {
-					p("Tracker analysis for %s:", endpointTest.name)
-					tracker.GetAnalysis().Print(t)
-				}
 				tracker.Clear()
 			}()
 
 			// Verify initial connectivity
 			err = client.Ping(ctx).Err()
 			if err != nil {
-				t.Fatalf("Failed to ping Redis with %s endpoint type: %v", endpointTest.name, err)
+				ef("Failed to ping Redis with %s endpoint type: %v", endpointTest.name, err)
 			}
 
 			p("Client connected successfully with %s endpoint type", endpointTest.name)
@@ -160,16 +152,15 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			}()
 
 			// Test failover with this endpoint type
-			p("Testing failover with %s endpoint type...", endpointTest.name)
+			p("Testing failover with %s endpoint type on database [bdb_id:%s]...", endpointTest.name, endpointConfig.BdbID)
 			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "failover",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
-					"bdb_id":        endpointConfig.BdbID,
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger failover action for %s: %v", endpointTest.name, err)
+				ef("Failed to trigger failover action for %s: %v", endpointTest.name, err)
 			}
 
 			// Start command traffic
@@ -177,12 +168,22 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				commandsRunner.FireCommandsUntilStop(ctx)
 			}()
 
+			// Wait for failover to complete
+			status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
+			)
+			if err != nil {
+				ef("[FI] Failover action failed for %s: %v", endpointTest.name, err)
+			}
+			p("[FI] Failover action completed for %s: %s %s", endpointTest.name, status.Status, actionOutputIfFailed(status))
+
 			// Wait for FAILING_OVER notification
 			match, found := logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "FAILING_OVER")
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
-				t.Fatalf("FAILING_OVER notification was not received for %s endpoint type", endpointTest.name)
+				ef("FAILING_OVER notification was not received for %s endpoint type", endpointTest.name)
 			}
 			failingOverData := logs2.ExtractDataFromLogMessage(match)
 			p("FAILING_OVER notification received for %s. %v", endpointTest.name, failingOverData)
@@ -192,63 +193,53 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			connIDToObserve := uint64(failingOverData["connID"].(float64))
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return notificationType(s, "FAILED_OVER") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
-				t.Fatalf("FAILED_OVER notification was not received for %s endpoint type", endpointTest.name)
+				ef("FAILED_OVER notification was not received for %s endpoint type", endpointTest.name)
 			}
 			failedOverData := logs2.ExtractDataFromLogMessage(match)
 			p("FAILED_OVER notification received for %s. %v", endpointTest.name, failedOverData)
-
-			// Wait for failover to complete
-			status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
-			)
-			if err != nil {
-				t.Fatalf("[FI] Failover action failed for %s: %v", endpointTest.name, err)
-			}
-			p("[FI] Failover action completed for %s: %s", endpointTest.name, status.Status)
 
 			// Test migration with this endpoint type
 			p("Testing migration with %s endpoint type...", endpointTest.name)
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "migrate",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger migrate action for %s: %v", endpointTest.name, err)
+				ef("Failed to trigger migrate action for %s: %v", endpointTest.name, err)
 			}
-
-			// Wait for MIGRATING notification
-			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
-				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
-			}, 30*time.Second)
-			if !found {
-				t.Fatalf("MIGRATING notification was not received for %s endpoint type", endpointTest.name)
-			}
-			migrateData := logs2.ExtractDataFromLogMessage(match)
-			p("MIGRATING notification received for %s: %v", endpointTest.name, migrateData)
 
 			// Wait for migration to complete
 			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
-				t.Fatalf("[FI] Migrate action failed for %s: %v", endpointTest.name, err)
+				ef("[FI] Migrate action failed for %s: %v", endpointTest.name, err)
 			}
-			p("[FI] Migrate action completed for %s: %s", endpointTest.name, status.Status)
+			p("[FI] Migrate action completed for %s: %s %s", endpointTest.name, status.Status, actionOutputIfFailed(status))
+
+			// Wait for MIGRATING notification
+			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
+			}, 60*time.Second)
+			if !found {
+				ef("MIGRATING notification was not received for %s endpoint type", endpointTest.name)
+			}
+			migrateData := logs2.ExtractDataFromLogMessage(match)
+			p("MIGRATING notification received for %s: %v", endpointTest.name, migrateData)
 
 			// Wait for MIGRATED notification
 			seqIDToObserve = int64(migrateData["seqID"].(float64))
 			connIDToObserve = uint64(migrateData["connID"].(float64))
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return notificationType(s, "MIGRATED") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
-				t.Fatalf("MIGRATED notification was not received for %s endpoint type", endpointTest.name)
+				ef("MIGRATED notification was not received for %s endpoint type", endpointTest.name)
 			}
 			migratedData := logs2.ExtractDataFromLogMessage(match)
 			p("MIGRATED notification received for %s. %v", endpointTest.name, migratedData)
@@ -257,20 +248,19 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "bind",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
-					"bdb_id":        endpointConfig.BdbID,
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger bind action for %s: %v", endpointTest.name, err)
+				ef("Failed to trigger bind action for %s: %v", endpointTest.name, err)
 			}
 
 			// Wait for MOVING notification
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
-				t.Fatalf("MOVING notification was not received for %s endpoint type", endpointTest.name)
+				ef("MOVING notification was not received for %s endpoint type", endpointTest.name)
 			}
 			movingData := logs2.ExtractDataFromLogMessage(match)
 			p("MOVING notification received for %s. %v", endpointTest.name, movingData)
@@ -319,12 +309,12 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 
 			// Wait for bind to complete
 			bindStatus, err := faultInjector.WaitForAction(ctx, bindResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
+				WithMaxWaitTime(240*time.Second),
 				WithPollInterval(2*time.Second))
 			if err != nil {
-				t.Fatalf("Bind action failed for %s: %v", endpointTest.name, err)
+				ef("Bind action failed for %s: %v", endpointTest.name, err)
 			}
-			p("Bind action completed for %s: %s", endpointTest.name, bindStatus.Status)
+			p("Bind action completed for %s: %s %s", endpointTest.name, bindStatus.Status, actionOutputIfFailed(bindStatus))
 
 			// Continue traffic for analysis
 			time.Sleep(30 * time.Second)
@@ -357,14 +347,21 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				e("Expected MOVING notifications with %s endpoint type, got none", endpointTest.name)
 			}
 
+			logAnalysis := logCollector.GetAnalysis()
+			if logAnalysis.TotalHandoffCount == 0 {
+				e("Expected at least one handoff with %s endpoint type, got none", endpointTest.name)
+			}
+			if logAnalysis.TotalHandoffCount != logAnalysis.SucceededHandoffCount {
+				e("Expected all handoffs to succeed with %s endpoint type, got %d failed", endpointTest.name, logAnalysis.FailedHandoffCount)
+			}
+
 			if errorsDetected {
 				logCollector.DumpLogs()
 				trackerAnalysis.Print(t)
 				logCollector.Clear()
 				tracker.Clear()
-				t.Fatalf("[FAIL] Errors detected with %s endpoint type", endpointTest.name)
+				ef("[FAIL] Errors detected with %s endpoint type", endpointTest.name)
 			}
-			dump = false
 			p("Endpoint type %s test completed successfully", endpointTest.name)
 			logCollector.GetAnalysis().Print(t)
 			trackerAnalysis.Print(t)
@@ -373,5 +370,5 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 		})
 	}
 
-	p("All endpoint types tested successfully")
+	t.Log("All endpoint types tested successfully")
 }
