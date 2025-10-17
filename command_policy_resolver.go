@@ -118,17 +118,17 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 }
 
 type CommandInfoResolver interface {
-	getCommandPolicy(ctx context.Context, cmdName string) *routing.CommandPolicy
-	setFallbackResolver(fallback CommandInfoResolver)
+	GetCommandPolicy(ctx context.Context, cmdName string) *routing.CommandPolicy
+	SetFallbackResolver(fallback CommandInfoResolver)
 }
 
-type resolver struct {
+type internalCommandInfoResolver struct {
 	resolve          func(ctx context.Context, cmdName string) *routing.CommandPolicy
 	fallBackResolver CommandInfoResolver
 }
 
-func NewDefaultCommandPolicyResolver() *resolver {
-	return &resolver{
+func NewDefaultCommandPolicyResolver() *internalCommandInfoResolver {
+	return &internalCommandInfoResolver{
 		resolve: func(ctx context.Context, cmdName string) *routing.CommandPolicy {
 			module := "core"
 			command := cmdName
@@ -147,19 +147,19 @@ func NewDefaultCommandPolicyResolver() *resolver {
 	}
 }
 
-func (r *resolver) getCommandPolicy(ctx context.Context, cmdName string) *routing.CommandPolicy {
+func (r *internalCommandInfoResolver) GetCommandPolicy(ctx context.Context, cmdName string) *routing.CommandPolicy {
 	policy := r.resolve(ctx, cmdName)
 	if policy != nil {
 		return policy
 	}
 
 	if r.fallBackResolver != nil {
-		return r.fallBackResolver.getCommandPolicy(ctx, cmdName)
+		return r.fallBackResolver.GetCommandPolicy(ctx, cmdName)
 	}
 
 	return nil
 }
 
-func (r *resolver) setFallbackResolver(fallbackResolver CommandInfoResolver) {
+func (r *internalCommandInfoResolver) SetFallbackResolver(fallbackResolver CommandInfoResolver) {
 	r.fallBackResolver = fallbackResolver
 }

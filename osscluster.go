@@ -1998,7 +1998,7 @@ func (c *ClusterClient) extractCommandInfo(ctx context.Context, cmdName string) 
 }
 
 func (c *ClusterClient) NewDynamicResolver() CommandInfoResolver {
-	return &resolver{
+	return &internalCommandInfoResolver{
 		resolve: c.extractCommandInfo,
 	}
 }
