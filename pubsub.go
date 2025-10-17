@@ -465,7 +465,6 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 	}
 
 	// Don't hold the lock to allow subscriptions and pings.
-
 	cn, err := c.connWithLock(ctx)
 	if err != nil {
 		return nil, err

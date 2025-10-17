@@ -116,22 +116,22 @@ func (ph *PoolHook) ResetCircuitBreakers() {
 }
 
 // OnGet is called when a connection is retrieved from the pool
-func (ph *PoolHook) OnGet(ctx context.Context, conn *pool.Conn, _ bool) error {
+func (ph *PoolHook) OnGet(_ context.Context, conn *pool.Conn, _ bool) (accept bool, err error) {
 	// NOTE: There are two conditions to make sure we don't return a connection that should be handed off or is
 	// in a handoff state at the moment.
 
 	// Check if connection is usable (not in a handoff state)
 	// Should not happen since the pool will not return a connection that is not usable.
 	if !conn.IsUsable() {
-		return ErrConnectionMarkedForHandoff
+		return false, ErrConnectionMarkedForHandoff
 	}
 
 	// Check if connection is marked for handoff, which means it will be queued for handoff on put.
 	if conn.ShouldHandoff() {
-		return ErrConnectionMarkedForHandoff
+		return false, ErrConnectionMarkedForHandoff
 	}
 
-	return nil
+	return true, nil
 }
 
 // OnPut is called when a connection is returned to the pool
@@ -172,6 +172,10 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 	}
 	internal.Logger.Printf(ctx, logs.MarkedForHandoff(conn.GetID()))
 	return true, false, nil
+}
+
+func (ph *PoolHook) OnRemove(_ context.Context, _ *pool.Conn, _ error) {
+	// Not used
 }
 
 // Shutdown gracefully shuts down the processor, waiting for workers to complete

@@ -410,7 +410,9 @@ var _ = Describe("SentinelAclAuth", func() {
 	})
 })
 
-func TestParseFailoverURL(t *testing.T) {
+// renaming from TestParseFailoverURL to TestParseSentinelURL
+// to be easier to find Failed tests in the test output
+func TestParseSentinelURL(t *testing.T) {
 	cases := []struct {
 		url string
 		o   *redis.FailoverOptions

@@ -40,6 +40,9 @@ func generateConnID() uint64 {
 }
 
 type Conn struct {
+	// Connection identifier for unique tracking
+	id uint64 // Unique numeric identifier for this connection
+
 	usedAt int64 // atomic
 
 	// Lock-free netConn access using atomic.Value
@@ -54,7 +57,34 @@ type Conn struct {
 	// Only used for the brief period during SetNetConn and HasBufferedData/PeekReplyTypeSafe
 	readerMu sync.RWMutex
 
-	Inited    atomic.Bool
+	// Design note:
+	// Why have both Usable and Used?
+	// _Usable_ is used to mark a connection as safe for use by clients, the connection can still
+	// be in the pool but not Usable at the moment (e.g. handoff in progress).
+	// _Used_ is used to mark a connection as used when a command is going to be processed on that connection.
+	// this is going to happen once the connection is picked from the pool.
+	//
+	// If a background operation needs to use the connection, it will mark it as Not Usable and only use it when it
+	// is not in use. That way, the connection won't be used to send multiple commands at the same time and
+	// potentially corrupt the command stream.
+
+	// Usable flag to mark connection as safe for use
+	// It is false before initialization and after a handoff is marked
+	// It will be false during other background operations like re-authentication
+	Usable atomic.Bool
+
+	// Used flag to mark connection as used when a command is going to be
+	// processed on that connection. This is used to prevent a race condition with
+	// background operations that may execute commands, like re-authentication.
+	Used atomic.Bool
+
+	// Inited flag to mark connection as initialized, this is almost the same as usable
+	// but it is used to make sure we don't initialize a network connection twice
+	// On handoff, the network connection is replaced, but the Conn struct is reused
+	// this flag will be set to false when the network connection is replaced and
+	// set to true after the new network connection is initialized
+	Inited atomic.Bool
+
 	pooled    bool
 	pubsub    bool
 	closed    atomic.Bool
@@ -75,11 +105,7 @@ type Conn struct {
 	// Connection initialization function for reconnections
 	initConnFunc func(context.Context, *Conn) error
 
-	// Connection identifier for unique tracking
-	id uint64 // Unique numeric identifier for this connection
-
 	// Handoff state - using atomic operations for lock-free access
-	usableAtomic         atomic.Bool   // Connection usability state
 	handoffRetriesAtomic atomic.Uint32 // Retry counter for handoff attempts
 
 	// Atomic handoff state to prevent race conditions
@@ -116,7 +142,7 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
 
 	// Initialize atomic state
-	cn.usableAtomic.Store(false)     // false initially, set to true after initialization
+	cn.Usable.Store(false)           // false initially, set to true after initialization
 	cn.handoffRetriesAtomic.Store(0) // 0 initially
 
 	// Initialize handoff state atomically
@@ -162,12 +188,12 @@ func (cn *Conn) setNetConn(netConn net.Conn) {
 
 // isUsable returns true if the connection is safe to use (lock-free).
 func (cn *Conn) isUsable() bool {
-	return cn.usableAtomic.Load()
+	return cn.Usable.Load()
 }
 
 // setUsable sets the usable flag atomically (lock-free).
 func (cn *Conn) setUsable(usable bool) {
-	cn.usableAtomic.Store(usable)
+	cn.Usable.Store(usable)
 }
 
 // getHandoffState returns the current handoff state atomically (lock-free).
@@ -455,9 +481,27 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	const maxRetries = 50
 	const baseDelay = time.Microsecond
 
+	connAcquired := false
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		currentState := cn.getHandoffState()
+		// If CAS failed, add exponential backoff to reduce contention
+		// the delay will be 1, 2, 4... up to 512 microseconds
+		// Moving this to the top of the loop to avoid "continue" without delay
+		if attempt > 0 && attempt < maxRetries-1 {
+			delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
+			time.Sleep(delay)
+		}
 
+		// first we need to mark the connection as not usable
+		// to prevent the pool from returning it to the caller
+		if !connAcquired {
+			if cn.Usable.CompareAndSwap(true, false) {
+				connAcquired = true
+			} else {
+				continue
+			}
+		}
+
+		currentState := cn.getHandoffState()
 		// Check if marked for handoff
 		if !currentState.ShouldHandoff {
 			return errors.New("connection was not marked for handoff")
@@ -472,16 +516,12 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 
 		// Atomic compare-and-swap to update state
 		if cn.handoffStateAtomic.CompareAndSwap(currentState, newState) {
-			cn.setUsable(false)
+			// queue the handoff for processing
+			// the connection is now "acquired" (marked as not usable) by the handoff
+			// and it won't be returned to any other callers until the handoff is complete
 			return nil
 		}
 
-		// If CAS failed, add exponential backoff to reduce contention
-		// the delay will be 1, 2, 4... up to 512 microseconds
-		if attempt < maxRetries-1 {
-			delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
-			time.Sleep(delay)
-		}
 	}
 
 	return fmt.Errorf("failed to mark connection as queued for handoff after %d attempts due to high contention", maxRetries)
@@ -527,7 +567,8 @@ func (cn *Conn) ClearHandoffState() {
 	// Atomically set clean state
 	cn.setHandoffState(cleanState)
 	cn.setHandoffRetries(0)
-	cn.setUsable(true) // Connection is safe to use again after handoff completes
+	// Clearing handoff state also means the connection is usable again
+	cn.setUsable(true)
 }
 
 // IncrementAndGetHandoffRetries atomically increments and returns handoff retries (lock-free).
