@@ -309,8 +309,8 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 
 		connPool := pool.NewSingleConnPool(c.connPool, poolCn)
 
-		// hooksMixin are intentionally empty here
-		cn := newConn(c.opt, connPool, nil)
+		// Pass hooks so that reauth commands are recorded/traced
+		cn := newConn(c.opt, connPool, &c.hooksMixin)
 
 		if username != "" {
 			err = cn.AuthACL(ctx, username, password).Err()
