@@ -10,12 +10,13 @@ import (
 
 // TestHook for testing hook functionality
 type TestHook struct {
-	OnGetCalled  int
-	OnPutCalled  int
-	GetError     error
-	PutError     error
-	ShouldPool   bool
-	ShouldRemove bool
+	OnGetCalled    int
+	OnPutCalled    int
+	OnRemoveCalled int
+	GetError       error
+	PutError       error
+	ShouldPool     bool
+	ShouldRemove   bool
 }
 
 func (th *TestHook) OnGet(ctx context.Context, conn *Conn, isNewConn bool) error {
@@ -26,6 +27,10 @@ func (th *TestHook) OnGet(ctx context.Context, conn *Conn, isNewConn bool) error
 func (th *TestHook) OnPut(ctx context.Context, conn *Conn) (shouldPool bool, shouldRemove bool, err error) {
 	th.OnPutCalled++
 	return th.ShouldPool, th.ShouldRemove, th.PutError
+}
+
+func (th *TestHook) OnRemove(ctx context.Context, conn *Conn, reason error) {
+	th.OnRemoveCalled++
 }
 
 func TestPoolHookManager(t *testing.T) {
