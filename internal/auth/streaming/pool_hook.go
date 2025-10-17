@@ -104,9 +104,15 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 					reAuthFn(err)
 					return
 				default:
-					// Try to acquire: set Usable=false only if Used=false
-					if !conn.Used.Load() && conn.Usable.CompareAndSwap(true, false) {
-						acquired = true
+					// Try to acquire: set Usable=false, then check Used
+					if conn.Usable.CompareAndSwap(true, false) {
+						if !conn.Used.Load() {
+							acquired = true
+						} else {
+							// Release Usable and retry
+							conn.Usable.Store(true)
+							time.Sleep(time.Millisecond)
+						}
 					} else {
 						time.Sleep(time.Millisecond)
 					}
