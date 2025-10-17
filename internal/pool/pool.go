@@ -434,6 +434,12 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 
 	now := time.Now()
 	attempts := 0
+
+	// get hooks manager
+	p.hookManagerMu.RLock()
+	hookManager := p.hookManager
+	p.hookManagerMu.RUnlock()
+
 	for {
 		if attempts >= getAttempts {
 			internal.Logger.Printf(ctx, "redis: connection pool: was not able to get a healthy connection after %d attempts", attempts)
@@ -460,15 +466,17 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 
 		// Process connection using the hooks system
-		p.hookManagerMu.RLock()
-		hookManager := p.hookManager
-		p.hookManagerMu.RUnlock()
-
 		if hookManager != nil {
-			if err := hookManager.ProcessOnGet(ctx, cn, false); err != nil {
+			acceptConn, err := hookManager.ProcessOnGet(ctx, cn, false)
+			if err != nil {
 				internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", err)
-				// Failed to process connection, discard it
 				_ = p.CloseConn(cn)
+				continue
+			}
+			if !acceptConn {
+				internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
+				p.Put(ctx, cn)
+				cn = nil
 				continue
 			}
 		}
@@ -486,14 +494,13 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	}
 
 	// Process connection using the hooks system
-	p.hookManagerMu.RLock()
-	hookManager := p.hookManager
-	p.hookManagerMu.RUnlock()
-
 	if hookManager != nil {
-		if err := hookManager.ProcessOnGet(ctx, newcn, true); err != nil {
+		acceptConn, err := hookManager.ProcessOnGet(ctx, newcn, true)
+		// both errors and accept=false mean a hook rejected the connection
+		// this should not happen with a new connection, but we handle it gracefully
+		if err != nil || !acceptConn {
 			// Failed to process connection, discard it
-			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection by hook: %v", err)
+			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accpet=%v, err=%v", newcn.GetID(), acceptConn, err)
 			_ = p.CloseConn(newcn)
 			return nil, err
 		}

@@ -9,9 +9,13 @@ import (
 type PoolHook interface {
 	// OnGet is called when a connection is retrieved from the pool.
 	// It can modify the connection or return an error to prevent its use.
+	// The accept flag can be used to prevent the connection from being used.
+	// On Accept = false the connection is rejected and returned to the pool.
+	// The error can be used to prevent the connection from being used and returned to the pool.
+	// On Errors, the connection is removed from the pool.
 	// It has isNewConn flag to indicate if this is a new connection (rather than idle from the pool)
 	// The flag can be used for gathering metrics on pool hit/miss ratio.
-	OnGet(ctx context.Context, conn *Conn, isNewConn bool) error
+	OnGet(ctx context.Context, conn *Conn, isNewConn bool) (accept bool, err error)
 
 	// OnPut is called when a connection is returned to the pool.
 	// It returns whether the connection should be pooled and whether it should be removed.
@@ -60,16 +64,21 @@ func (phm *PoolHookManager) RemoveHook(hook PoolHook) {
 
 // ProcessOnGet calls all OnGet hooks in order.
 // If any hook returns an error, processing stops and the error is returned.
-func (phm *PoolHookManager) ProcessOnGet(ctx context.Context, conn *Conn, isNewConn bool) error {
+func (phm *PoolHookManager) ProcessOnGet(ctx context.Context, conn *Conn, isNewConn bool) (acceptConn bool, err error) {
 	phm.hooksMu.RLock()
 	defer phm.hooksMu.RUnlock()
 
 	for _, hook := range phm.hooks {
-		if err := hook.OnGet(ctx, conn, isNewConn); err != nil {
-			return err
+		acceptConn, err := hook.OnGet(ctx, conn, isNewConn)
+		if err != nil {
+			return false, err
+		}
+
+		if !acceptConn {
+			return false, nil
 		}
 	}
-	return nil
+	return true, nil
 }
 
 // ProcessOnPut calls all OnPut hooks in order.

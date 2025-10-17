@@ -56,9 +56,12 @@ func TestPoolHookManager(t *testing.T) {
 	ctx := context.Background()
 	conn := &Conn{} // Mock connection
 
-	err := manager.ProcessOnGet(ctx, conn, false)
+	accept, err := manager.ProcessOnGet(ctx, conn, false)
 	if err != nil {
 		t.Errorf("ProcessOnGet should not error: %v", err)
+	}
+	if !accept {
+		t.Error("Expected accept to be true")
 	}
 
 	if hook1.OnGetCalled != 1 {
@@ -117,9 +120,12 @@ func TestHookErrorHandling(t *testing.T) {
 	conn := &Conn{}
 
 	// Test that error stops processing
-	err := manager.ProcessOnGet(ctx, conn, false)
+	accept, err := manager.ProcessOnGet(ctx, conn, false)
 	if err == nil {
 		t.Error("Expected error from ProcessOnGet")
+	}
+	if accept {
+		t.Error("Expected accept to be false")
 	}
 
 	if errorHook.OnGetCalled != 1 {
