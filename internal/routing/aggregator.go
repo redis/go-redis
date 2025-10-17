@@ -50,7 +50,9 @@ func NewResponseAggregator(policy ResponsePolicy, cmdName string) ResponseAggreg
 	case RespOneSucceeded:
 		return &OneSucceededAggregator{}
 	case RespAggSum:
-		return &AggSumAggregator{}
+		return &AggSumAggregator{
+			// res:
+		}
 	case RespAggMin:
 		return &AggMinAggregator{
 			res: util.NewAtomicMin(),
@@ -212,7 +214,7 @@ func (a *OneSucceededAggregator) Result() (interface{}, error) {
 // AggSumAggregator sums numeric replies from all shards.
 type AggSumAggregator struct {
 	err atomic.Value
-	res *int64
+	res int64
 }
 
 func (a *AggSumAggregator) Add(result interface{}, err error) error {
@@ -226,7 +228,7 @@ func (a *AggSumAggregator) Add(result interface{}, err error) error {
 			a.err.CompareAndSwap(nil, err)
 			return err
 		}
-		atomic.AddInt64(a.res, val)
+		atomic.AddInt64(&a.res, val)
 	}
 
 	return nil
@@ -240,7 +242,7 @@ func (a *AggSumAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 			return a.Add(res.Result, res.Err)
 		}
 
-		intRes, err := toInt64(res)
+		intRes, err := toInt64(res.Result)
 		if err != nil {
 			return a.Add(nil, err)
 		}
@@ -263,7 +265,7 @@ func (a *AggSumAggregator) BatchSlice(results []AggregatorResErr) error {
 			return a.Add(res.Result, res.Err)
 		}
 
-		intRes, err := toInt64(res)
+		intRes, err := toInt64(res.Result)
 		if err != nil {
 			return a.Add(nil, err)
 		}
@@ -275,7 +277,7 @@ func (a *AggSumAggregator) BatchSlice(results []AggregatorResErr) error {
 }
 
 func (a *AggSumAggregator) Result() (interface{}, error) {
-	res, err := atomic.LoadInt64(a.res), a.err.Load()
+	res, err := atomic.LoadInt64(&a.res), a.err.Load()
 	if err != nil {
 		return nil, err.(error)
 	}

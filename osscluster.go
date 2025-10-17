@@ -921,10 +921,11 @@ func (c *clusterStateHolder) ReloadOrGet(ctx context.Context) (*clusterState, er
 // or more underlying connections. It's safe for concurrent use by
 // multiple goroutines.
 type ClusterClient struct {
-	opt           *ClusterOptions
-	nodes         *clusterNodes
-	state         *clusterStateHolder
-	cmdsInfoCache *cmdsInfoCache
+	opt             *ClusterOptions
+	nodes           *clusterNodes
+	state           *clusterStateHolder
+	cmdsInfoCache   *cmdsInfoCache
+	cmdInfoResolver CommandInfoResolver
 	cmdable
 	hooksMixin
 }
@@ -942,6 +943,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 
 	c.state = newClusterStateHolder(c.loadState)
+
+	c.cmdInfoResolver = c.NewDynamicResolver()
+
 	c.cmdable = c.Process
 	c.initHooks(hooks{
 		dial:       nil,
@@ -1334,7 +1338,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 
 	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
 		for _, cmd := range cmds {
-			policy := c.getCommandPolicy(ctx, cmd)
+			policy := c.extractCommandInfo(ctx, cmd.Name())
 			if policy != nil && !policy.CanBeUsedInPipeline() {
 				return fmt.Errorf(
 					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
@@ -1351,7 +1355,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	}
 
 	for _, cmd := range cmds {
-		policy := c.getCommandPolicy(ctx, cmd)
+		policy := c.extractCommandInfo(ctx, cmd.Name())
 		if policy != nil && !policy.CanBeUsedInPipeline() {
 			return fmt.Errorf(
 				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
@@ -1974,6 +1978,29 @@ func (c *ClusterClient) context(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.Background()
+}
+
+func (c *ClusterClient) GetResolver() CommandInfoResolver {
+	return c.cmdInfoResolver
+}
+
+func (c *ClusterClient) SetCommandInfoResolver(cmdInfoResolver CommandInfoResolver) {
+	c.cmdInfoResolver = cmdInfoResolver
+}
+
+// extractCommandInfo retrieves the routing policy for a command
+func (c *ClusterClient) extractCommandInfo(ctx context.Context, cmdName string) *routing.CommandPolicy {
+	if cmdInfo := c.cmdInfo(ctx, cmdName); cmdInfo != nil && cmdInfo.CommandPolicy != nil {
+		return cmdInfo.CommandPolicy
+	}
+
+	return nil
+}
+
+func (c *ClusterClient) NewDynamicResolver() CommandInfoResolver {
+	return &resolver{
+		resolve: c.extractCommandInfo,
+	}
 }
 
 func appendUniqueNode(nodes []*clusterNode, node *clusterNode) []*clusterNode {
