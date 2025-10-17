@@ -63,7 +63,7 @@ func (s *clusterScenario) newClusterClient(
 	ctx context.Context, opt *redis.ClusterOptions,
 ) *redis.ClusterClient {
 	client := s.newClusterClientUnstable(opt)
-
+	client.SetCommandInfoResolver(client.NewDynamicResolver())
 	err := eventually(func() error {
 		if opt.ClusterSlots != nil {
 			return nil
@@ -1360,7 +1360,6 @@ var _ = Describe("ClusterClient", func() {
 				return slots, nil
 			}
 			client = cluster.newClusterClient(ctx, opt)
-
 			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
 				return master.FlushDB(ctx).Err()
 			})
