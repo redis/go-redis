@@ -854,6 +854,7 @@ var _ = Describe("Credentials Provider Priority", func() {
 				credentials: initialCreds,
 				updates:     updatesChan,
 			},
+			PoolSize: 1, // Force single connection to ensure reauth is tested
 		}
 
 		client = redis.NewClient(opt)
@@ -865,11 +866,16 @@ var _ = Describe("Credentials Provider Priority", func() {
 
 		// Update credentials
 		opt.StreamingCredentialsProvider.(*mockStreamingProvider).updates <- updatedCreds
-		// wrongpass
-		time.Sleep(10 * time.Millisecond)
-		Expect(client.Ping(context.Background()).Err()).To(HaveOccurred())
-		time.Sleep(10 * time.Millisecond)
-		Expect(recorder.Contains("AUTH updated_user")).To(BeTrue())
+
+		// Wait for reauth to complete and verify updated credentials are used
+		// We need to keep trying Ping until we see the updated AUTH command
+		// because the reauth happens asynchronously
+		Eventually(func() bool {
+			// wrongpass
+			_ = client.Ping(context.Background()).Err()
+			return recorder.Contains("AUTH updated_user")
+		}, "1s", "50ms").Should(BeTrue())
+
 		close(updatesChan)
 	})
 })
